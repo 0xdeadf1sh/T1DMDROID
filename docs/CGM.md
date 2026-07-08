@@ -101,6 +101,10 @@ crc  = crc32_normal(P[0..15], init=seed)          // MSB-first, poly 0x04C11DB7,
 valid_packet = (crc == le32(P[16..19]))
 ```
 
+> **The four-word sum accumulates in a wrapping `uint32`** (mod 2³²) before the
+> `mod 0x7FA777`. The golden vectors below never overflow 2³²; real advertisements
+> routinely do, so a wider (full-precision) accumulator yields the wrong seed for them.
+
 `crc32_normal` (bit-serial, big-endian bit order):
 
 ```
