@@ -1,0 +1,58 @@
+package com.t1dm.calc
+
+import com.t1dm.core.model.BackendId
+import com.t1dm.core.model.Precision
+
+/**
+ * The decision-relevant facts about the CGM anchor the whole recommendation rests on (§3.6-D/-F).
+ * The forecast anchors on `last_bg`, so a stale or fabricated current-BG is the single largest
+ * dosing hazard; these fields are both the freshness-gate inputs and the card fields.
+ *
+ * [lastMeasuredTsMs] null ⇒ there is no MEASURED reading at all (fail closed). [interpolatedFraction]
+ * is the fraction of the recent anchor context that is INTERPOLATED or WARMUP — a fabricated
+ * interpolated line must never silently drive a dose. [currentBgMgdl] is the last real value, used
+ * by the hypo-treatment path.
+ */
+data class AnchorInfo(
+    val lastMeasuredTsMs: Long?,
+    val anchorTsMs: Long,
+    val currentBgMgdl: Double?,
+    val interpolatedFraction: Double,
+    val warmup: Boolean,
+) {
+    fun ageMs(nowMs: Long): Long? = lastMeasuredTsMs?.let { nowMs - it }
+}
+
+/**
+ * IOB/COB computed from **logged doses only** (§3.6-F), with the timestamp of the last logged dose so
+ * the mandatory-confirmation rail can flag a long log gap. [iobU] null ⇒ IOB is unknown (the store
+ * failed); an unknown IOB with a nonzero recommendation fails the IOB rail closed.
+ */
+data class IobSnapshot(
+    val iobU: Double?,
+    val cobG: Double,
+    val lastLoggedDoseTsMs: Long?,
+) {
+    fun minSinceLastDose(nowMs: Long): Long? = lastLoggedDoseTsMs?.let { (nowMs - it) / 60_000L }
+}
+
+/** The backend/precision provenance of the selected model + the fp16↔fp32 agreement verdict (§3.6-E). */
+data class BackendInfo(
+    val backend: BackendId,
+    val precision: Precision,
+    /** null = not measured; true/false = last agreement probe within/outside the hypo-relevant tolerance. */
+    val agreementOk: Boolean?,
+) {
+    /** The selected model must be fp32-authoritative, or (if fp16-driven) agree with fp32 (§3.6-E). */
+    val trustworthy: Boolean get() = precision == Precision.FP32 || agreementOk == true
+}
+
+/** Fail-closed source of the CGM anchor facts; null ⇒ no signal at all (the freshness gate blocks). */
+fun interface AnchorInfoSource {
+    suspend fun current(nowMs: Long): AnchorInfo?
+}
+
+/** Fail-closed source of the logged-dose IOB/COB snapshot; null ⇒ store failure. */
+fun interface IobSource {
+    suspend fun snapshot(nowMs: Long): IobSnapshot?
+}

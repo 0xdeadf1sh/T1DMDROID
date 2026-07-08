@@ -25,6 +25,7 @@ class T1dmApplication : Application() {
 
         container = AppContainer(this)
         container.startInference()
+        container.startBuilders() // seed the bundled glycemic dictionary + insulin presets (off-main, idempotent)
         CgmWatchdog.enqueue(this)
         SyncDrainWorker.enqueue(this) // deferrable outbox drain fallback (FGS drains opportunistically)
     }

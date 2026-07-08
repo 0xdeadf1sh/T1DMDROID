@@ -86,7 +86,8 @@ dispatches the handler. Sessions persist across WebSocket reconnects.
 | `rw` | Every endpoint. At most one live `rw` token exists at a time. |
 | `ro` | Read endpoints only. One per device, with an optional operator label. |
 
-`GET /v1/health` is the sole unauthenticated endpoint.
+Every `/v1` endpoint requires a valid bearer token — `GET /v1/health` included. There is no
+unauthenticated route.
 
 ## Errors
 
@@ -515,7 +516,7 @@ See the [Stats](#stats) schema for the full field set.
 
 ### GET /v1/health
 
-Unauthenticated liveness probe.
+Liveness probe. Requires a valid bearer token, like every other endpoint.
 
 ```json
 { "status": "ok", "ws_clients": 3 }

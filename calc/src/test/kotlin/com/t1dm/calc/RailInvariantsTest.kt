@@ -1,0 +1,191 @@
+package com.t1dm.calc
+
+import com.t1dm.core.model.ForecastStatus
+import kotlinx.coroutines.test.runTest
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import kotlin.random.Random
+
+/**
+ * The `rail-invariants` property tests (PLAN Phase 4 §7, risk S15) — the **blocking** CI gate. They
+ * assert the three load-bearing safety properties across randomized inputs:
+ *
+ *  1. **fail-closed** on missing / DEGENERATE / STALE / collapsed-band input — an enabled rail BLOCKS,
+ *     never silently passes;
+ *  2. **all-rails-off = identity** — with every optional rail disabled the recommendation is exactly
+ *     the objective's argmin, unaltered;
+ *  3. **no actuator** — structurally there is no code path from an [AdviceResult] to insulin delivery
+ *     (asserted in [NoActuatorStructuralTest]).
+ */
+class RailInvariantsTest {
+
+    private val now = 1_900_000_000_000L
+
+    // ── (1) Fail-closed on each bad-input class ─────────────────────────────────────────
+
+    @Test
+    fun refuses_when_forecast_missing() = runTest {
+        val advisor = advisorOf(
+            port = FakeForecastPort(forceEligibility = ForecastEligibility.MISSING),
+            anchor = fakeAnchor(now), iob = fakeIob(now),
+        )
+        val r = advisor.recommendBolus(now, emptyList(), CalcConfig())
+        assertTrue("a missing forecast must refuse", r is AdviceResult.Refused)
+    }
+
+    @Test
+    fun refuses_when_forecast_degenerate() = runTest {
+        val advisor = advisorOf(
+            port = FakeForecastPort(forceEligibility = ForecastEligibility.DEGENERATE, forceStatus = ForecastStatus.RAIL_PINNED),
+            anchor = fakeAnchor(now), iob = fakeIob(now),
+        )
+        val r = advisor.recommendBolus(now, emptyList(), CalcConfig())
+        assertTrue("a degenerate forecast must refuse", r is AdviceResult.Refused)
+        assertTrue((r as AdviceResult.Refused).reasons.first().contains("degenerate", ignoreCase = true))
+    }
+
+    @Test
+    fun refuses_when_anchor_stale() = runTest {
+        val advisor = advisorOf(
+            port = FakeForecastPort(),
+            anchor = fakeAnchor(now, ageMin = 40), iob = fakeIob(now), // 40 min > 15 min default
+        )
+        val r = advisor.recommendBolus(now, emptyList(), CalcConfig())
+        assertTrue("a stale anchor must refuse", r is AdviceResult.Refused)
+        assertTrue((r as AdviceResult.Refused).reasons.first().contains("stale", ignoreCase = true))
+    }
+
+    @Test
+    fun refuses_when_no_measured_reading() = runTest {
+        val advisor = advisorOf(FakeForecastPort(), anchor = fakeAnchor(now, hasMeasured = false), iob = fakeIob(now))
+        assertTrue(advisor.recommendBolus(now, emptyList(), CalcConfig()) is AdviceResult.Refused)
+    }
+
+    @Test
+    fun refuses_when_no_anchor_at_all() = runTest {
+        val advisor = advisorOf(FakeForecastPort(), anchor = null, iob = fakeIob(now))
+        assertTrue(advisor.recommendBolus(now, emptyList(), CalcConfig()) is AdviceResult.Refused)
+    }
+
+    @Test
+    fun refuses_when_no_selected_model() = runTest {
+        val advisor = advisorOf(FakeForecastPort(), anchor = fakeAnchor(now), iob = fakeIob(now), backend = null)
+        assertTrue(advisor.recommendBolus(now, emptyList(), CalcConfig()) is AdviceResult.Refused)
+    }
+
+    @Test
+    fun refuses_when_fp16_disagrees() = runTest {
+        val backend = BackendInfo(com.t1dm.core.model.BackendId.EXECUTORCH_NEURON_FP16, com.t1dm.core.model.Precision.FP16, agreementOk = false)
+        val advisor = advisorOf(FakeForecastPort(), anchor = fakeAnchor(now), iob = fakeIob(now), backend = backend)
+        assertTrue(advisor.recommendBolus(now, emptyList(), CalcConfig()) is AdviceResult.Refused)
+    }
+
+    @Test
+    fun each_rail_blocks_not_passes_on_ineligible_fan() {
+        // Direct unit assertion of the "an enabled rail never passes bad input" contract.
+        for (elig in listOf(ForecastEligibility.MISSING, ForecastEligibility.DEGENERATE, ForecastEligibility.STALE)) {
+            val bad = PredFan(3.0, emptyList(), STEP_MS, 24, ForecastStatus.COLLAPSED_BAND, elig)
+            assertTrue("baseline gate must block $elig", Rails.baselineDegeneracy(bad) is RailVerdict.Block)
+            assertTrue("predicted-low veto must block $elig", Rails.predictedLowVeto(bad, CalcConfig()) is RailVerdict.Block)
+        }
+    }
+
+    @Test
+    fun iob_ceiling_blocks_nonzero_dose_when_iob_unknown() {
+        val v = Rails.iobCeiling(iob = IobSnapshot(iobU = null, cobG = 0.0, lastLoggedDoseTsMs = null), candidateU = 4.0, config = CalcConfig())
+        assertTrue("unknown IOB + nonzero dose must block", v is RailVerdict.Block)
+        // …but a zero dose is always safe.
+        assertEquals(RailVerdict.Pass, Rails.iobCeiling(IobSnapshot(null, 0.0, null), 0.0, CalcConfig()))
+    }
+
+    // ── (2) All-rails-off = identity ────────────────────────────────────────────────────
+
+    @Test
+    fun all_rails_off_is_identity_over_randomized_scenarios() = runTest {
+        val rng = Random(42)
+        repeat(60) {
+            val start = 90.0 + rng.nextDouble() * 180.0        // 90..270 mg/dL start
+            val sens = 8.0 + rng.nextDouble() * 20.0           // mg/dL per U
+            val port = FakeForecastPort(startBg = start, mgdlPerU = sens)
+            val config = CalcConfig(rails = RailToggles.ALL_OFF, objective = randomObjective(rng))
+            val advisor = advisorOf(port, anchor = fakeAnchor(now, currentBg = start), iob = fakeIob(now))
+
+            val r = advisor.recommendBolus(now, emptyList(), config)
+            assertTrue("rails-off must never refuse a fresh eligible forecast", r is AdviceResult.Recommended)
+            r as AdviceResult.Recommended
+            // Identity: the chosen dose is exactly the objective argmin (ranked-best), with no rail edits.
+            assertEquals("rails-off best == argmin", r.ranked.first().doseU, r.best.doseU, 0.0)
+            assertTrue("rails-off adds no rail notes", r.railNotes.isEmpty())
+            assertFalse("rails-off forces no confirmation", r.requiresConfirmation)
+            assertNull("rails-off is not a rescue", r.rescueCarbsG)
+        }
+    }
+
+    private fun randomObjective(rng: Random): Objective = when (rng.nextInt(3)) {
+        0 -> Objective.MinTimeOutOfRange
+        1 -> Objective.MinKovatchevRisk
+        else -> Objective.HitTargetAtTime(atMsFromNow = 60 * 60_000L)
+    }
+
+    // ── Rail behaviours (protective, not just present) ──────────────────────────────────
+
+    @Test
+    fun predicted_low_veto_pulls_the_dose_back_from_a_low_tail() = runTest {
+        // Aggressive sensitivity + low-ish start ⇒ large doses drive a predicted low; the veto must
+        // choose a dose whose lower band never crosses the floor, or fall back to 0 U.
+        val port = FakeForecastPort(startBg = 130.0, mgdlPerU = 40.0)
+        val advisor = advisorOf(port, anchor = fakeAnchor(now, currentBg = 130.0), iob = fakeIob(now, iobU = 0.0))
+        val r = advisor.recommendBolus(now, emptyList(), CalcConfig()) as AdviceResult.Recommended
+        val safe = r.best.doseU == 0.0 || (r.best.fan.minLowerBg() ?: 0.0) >= CalcConfig().predictedLowThresholdMgdl
+        assertTrue("veto must keep the recommended dose out of predicted-low territory", safe)
+    }
+
+    @Test
+    fun iob_unknown_forces_zero_dose_fallback() = runTest {
+        val port = FakeForecastPort(startBg = 240.0, mgdlPerU = 15.0) // hyper ⇒ a bolus is otherwise wanted
+        val advisor = advisorOf(port, anchor = fakeAnchor(now), iob = IobSnapshot(null, 0.0, null))
+        val r = advisor.recommendBolus(now, emptyList(), CalcConfig()) as AdviceResult.Recommended
+        assertEquals("unknown IOB must fall back to 0 U", 0.0, r.best.doseU, 0.0)
+        assertTrue(r.railNotes.any { it.contains("IOB", ignoreCase = true) })
+    }
+
+    @Test
+    fun long_log_gap_with_nonzero_dose_is_mandatory_confirmation() = runTest {
+        val port = FakeForecastPort(startBg = 240.0, mgdlPerU = 15.0)
+        val advisor = advisorOf(port, anchor = fakeAnchor(now), iob = fakeIob(now, iobU = 0.0, lastLoggedMinAgo = 4 * 60))
+        val r = advisor.recommendBolus(now, emptyList(), CalcConfig()) as AdviceResult.Recommended
+        assertTrue("a nonzero dose was expected", r.best.doseU > 0.0)
+        assertTrue("long log gap must force confirmation", r.requiresConfirmation)
+        assertTrue(r.card.requiresConfirmation)
+        assertTrue(r.card.confirmationReasons.isNotEmpty())
+    }
+
+    @Test
+    fun hypo_now_takes_the_carb_rescue_path_and_withholds_insulin() = runTest {
+        val port = FakeForecastPort(startBg = 62.0, mgdlPerU = 15.0)
+        val advisor = advisorOf(port, anchor = fakeAnchor(now, currentBg = 62.0), iob = fakeIob(now))
+        val r = advisor.recommendBolus(now, emptyList(), CalcConfig()) as AdviceResult.Recommended
+        assertEquals("hypo path withholds insulin", 0.0, r.best.doseU, 0.0)
+        assertNotNull("hypo path recommends rescue carbs", r.rescueCarbsG)
+        assertTrue(r.rescueCarbsG!! > 0.0)
+        assertTrue(r.requiresConfirmation)
+    }
+
+    @Test
+    fun decision_card_carries_every_point_of_decision_field() = runTest {
+        val port = FakeForecastPort(startBg = 230.0, mgdlPerU = 15.0)
+        val advisor = advisorOf(port, anchor = fakeAnchor(now, ageMin = 3, interpolatedFraction = 0.1), iob = fakeIob(now, iobU = 1.5, lastLoggedMinAgo = 20))
+        val r = advisor.recommendBolus(now, emptyList(), CalcConfig()) as AdviceResult.Recommended
+        val c = r.card
+        assertEquals(3L, c.ageOfLastRealReadingMin)
+        assertEquals(0.1, c.interpolatedFraction, 1e-9)
+        assertEquals(com.t1dm.core.model.Precision.FP32, c.precision)
+        assertEquals(1.5, c.assumedIobU!!, 1e-9)
+        assertEquals(20L, c.minSinceLastLoggedDose)
+        assertNotNull("band width surfaced", c.bandWidthMgdl)
+    }
+}

@@ -7,14 +7,21 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import com.t1dm.core.model.IobCobReadout
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import com.t1dm.app.di.AppContainer.BolusAdviceUi
+import com.t1dm.app.service.DoseCalcService
+import com.t1dm.feature.insulin.BolusCalculatorScreen
 import com.t1dm.core.model.InferenceState
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
@@ -29,6 +36,8 @@ import kotlinx.coroutines.launch
 import com.t1dm.feature.dashboard.DashboardScreen
 import com.t1dm.feature.hardware.HardwareScreen
 import com.t1dm.feature.insulin.InsulinScreen
+import com.t1dm.feature.insulin.InsulinTypeBuilderScreen
+import com.t1dm.feature.meals.MealBuilderScreen
 import com.t1dm.feature.journal.JournalScreen
 import com.t1dm.feature.meals.MealsScreen
 import com.t1dm.feature.models.ModelsScreen
@@ -96,6 +105,10 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
             val latest by container.latestReading.collectAsState(null)
             val active by container.activeSource.collectAsState(null)
             val inference by container.inferenceState.collectAsState(InferenceState())
+            // IOB/COB recomputed off-main whenever the reading stream advances (~5 min cadence).
+            val iobCob by produceState<IobCobReadout?>(null, readings.size) {
+                value = runCatching { container.iobCobNow() }.getOrNull()
+            }
             DashboardScreen(
                 readings = readings,
                 latest = latest,
@@ -103,6 +116,8 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 thresholds = container.alarmConfig.thresholds,
                 predictions = inference.predictions,
                 kovatchevF = container.nativeCore::kovatchevF,
+                iobCob = iobCob,
+                curveChannels = container::dashboardCurveChannels,
             )
         }
         composable("stats") { StatsScreen() }
@@ -121,8 +136,84 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 state = status.toPanelState(active, container.outboxMaxSize, container.outboxMaxAgeMs),
             )
         }
-        composable("meals") { MealsScreen() }
-        composable("insulin") { InsulinScreen() }
+        composable("meals") {
+            val scope = rememberCoroutineScope()
+            var refresh by remember { mutableStateOf(0) }
+            val iobCob by produceState<IobCobReadout?>(null, refresh) {
+                value = runCatching { container.iobCobNow() }.getOrNull()
+            }
+            Column {
+                MealsScreen(
+                    iobCob = iobCob,
+                    previewCurve = container.previewCarbCurve,
+                    onLogMeal = { grams, gi -> scope.launch { container.logCarb(grams, gi); refresh++ } },
+                )
+                TextButton(onClick = { navController.navigate("meals/builder") }) {
+                    Text("Open meal builder →")
+                }
+            }
+        }
+        composable("meals/builder") {
+            val scope = rememberCoroutineScope()
+            val saved by container.savedMeals.collectAsState(emptyList())
+            val custom by container.customFoods.collectAsState(emptyList())
+            MealBuilderScreen(
+                savedMeals = saved,
+                customFoods = custom,
+                onSearch = { q -> container.mealsController.searchFoods(q) },
+                onResolve = { comps -> container.mealsController.resolvePreview(comps) },
+                onLogMeal = { comps -> scope.launch { container.mealsController.logMeal(comps) } },
+                onSaveMeal = { name, comps -> scope.launch { container.mealsController.saveMeal(name, comps) } },
+                onSaveFood = { food -> scope.launch { container.mealsController.saveCustomFood(food) } },
+                onDeleteFood = { id -> scope.launch { container.mealsController.deleteCustomFood(id) } },
+                onDeleteMeal = { id -> scope.launch { container.mealsController.deleteSavedMeal(id) } },
+            )
+        }
+        composable("insulin") {
+            val scope = rememberCoroutineScope()
+            var refresh by remember { mutableStateOf(0) }
+            val iobCob by produceState<IobCobReadout?>(null, refresh) {
+                value = runCatching { container.iobCobNow() }.getOrNull()
+            }
+            Column {
+                InsulinScreen(
+                    iobCob = iobCob,
+                    previewBolus = container.previewBolusCurve,
+                    onLogBolus = { units, preset -> scope.launch { container.logBolus(units, preset); refresh++ } },
+                    onLogBasal = { units, preset -> scope.launch { container.logBasal(units, preset); refresh++ } },
+                )
+                TextButton(onClick = { navController.navigate("insulin/types") }) {
+                    Text("Insulin types & custom curves →")
+                }
+                TextButton(onClick = { navController.navigate("insulin/bolusCalc") }) {
+                    Text("Bolus advisor (model-driven) →")
+                }
+            }
+        }
+        composable("insulin/bolusCalc") {
+            val scope = rememberCoroutineScope()
+            val ctx = LocalContext.current
+            val ui by container.bolusAdvice.collectAsState()
+            BolusCalculatorScreen(
+                result = (ui as? BolusAdviceUi.Ready)?.result,
+                onAccept = { c ->
+                    scope.launch { container.acceptAdvisedBolus(c.doseU) }
+                    DoseCalcService.cancel(ctx)
+                },
+                onRecompute = { DoseCalcService.recommend(ctx) },
+            )
+        }
+        composable("insulin/types") {
+            val scope = rememberCoroutineScope()
+            val types by container.insulinTypes.collectAsState(emptyList())
+            InsulinTypeBuilderScreen(
+                types = types,
+                onResolve = { type, units -> container.insulinController.resolvePreview(type, units) },
+                onSaveType = { type -> scope.launch { container.insulinController.saveCustomType(type) } },
+                onDeleteType = { id -> scope.launch { container.insulinController.deleteCustomType(id) } },
+                onLogDose = { type, units -> scope.launch { container.insulinController.logDose(type, units) } },
+            )
+        }
         composable("security") { SecurityScreen() }
         composable("settings") {
             SettingsScreen(
@@ -169,6 +260,16 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 allSourceNames = sources.map { it.displayName },
             )
         }
-        composable("journal") { JournalScreen() }
+        composable("journal") {
+            val scope = rememberCoroutineScope()
+            val notes by container.journalNotes.collectAsState(emptyList())
+            val mood by container.latestMood.collectAsState(null)
+            JournalScreen(
+                notes = notes,
+                currentMood = mood,
+                onSaveNote = { text -> scope.launch { container.saveNote(text) } },
+                onPickMood = { m -> scope.launch { container.saveMood(m) } },
+            )
+        }
     }
 }

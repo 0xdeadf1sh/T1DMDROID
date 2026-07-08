@@ -1,0 +1,169 @@
+package com.t1dm.data.curve
+
+import com.t1dm.core.model.BasalSchedule
+import com.t1dm.core.model.CurveEvent
+import com.t1dm.core.model.CurveKind
+
+/**
+ * Source of the logged carb/insulin/basal events the [ChannelBuilder] reconstructs channels
+ * from (PLAN.private.md §3.3). Kept as an interface so `:calc`/tests can substitute a fake and
+ * so the builder never reaches into Room directly. The default implementation
+ * ([com.t1dm.data.curve.RoomDoseStore]) reads `logged_dose` / `logged_meal` / `basal_schedule`
+ * and resolves each row into a [CurveEvent] via the [CurveEngine].
+ *
+ * "Overlapping [fromMs, toMs)" — an event is returned when its ACTION overlaps the window, so a
+ * dose taken before `fromMs` whose PK tail reaches into the window is included (existing-dose
+ * tails carried forward, PLAN §3.3). Callers query a padded window (`fromMs - maxDia`) and let
+ * bucketize/onBoard clip.
+ */
+interface DoseStore {
+    /** Resolved carb appearance ([CurveKind.CARB]) events whose Ra window overlaps `[fromMs,toMs)`. */
+    suspend fun carbEvents(fromMs: Long, toMs: Long): List<CurveEvent>
+
+    /** Resolved discrete insulin ([CurveKind.INSULIN]) events — logged boluses (gamma PK) and
+     *  any logged basal injections (Bateman) — whose action overlaps `[fromMs,toMs)`. The
+     *  idealized repeating background is [activeBasalSchedule] instead; a caller uses one basal
+     *  representation or the other, never both, to avoid double-counting. */
+    suspend fun insulinEvents(fromMs: Long, toMs: Long): List<CurveEvent>
+
+    /** The active daily basal schedule (MDI), or null if none is configured. */
+    suspend fun activeBasalSchedule(): BasalSchedule?
+}
+
+/** The two normalized-ready raw channels over a grid: carbs (Ra) and insulin (combined). */
+data class ContextChannels(val carb: DoubleArray, val insulin: DoubleArray) {
+    override fun equals(other: Any?): Boolean =
+        other is ContextChannels && carb.contentEquals(other.carb) && insulin.contentEquals(other.insulin)
+
+    override fun hashCode(): Int = 31 * carb.contentHashCode() + insulin.contentHashCode()
+}
+
+/**
+ * The future carb/insulin channels for announced-future conditioning (PLAN §3.3), plus the IOB
+ * at the roll start. [carb]/[insulin] are per-5-min amounts over the prediction/roll horizon,
+ * feeding `build_context`'s `announced_carb` / `announced_insulin`. They fold together
+ * (a) existing-dose PK/Ra TAILS carried past the roll start, (b) user-announced future meals/
+ * boluses, (c) an optional CANDIDATE dose the calculator is scoring, and (d) the auto-extended
+ * basal background.
+ */
+data class FutureChannels(
+    val carb: DoubleArray,
+    val insulin: DoubleArray,
+    val iobAtStart: Double,
+    val cobAtStart: Double,
+) {
+    override fun equals(other: Any?): Boolean =
+        other is FutureChannels && carb.contentEquals(other.carb) && insulin.contentEquals(other.insulin) &&
+            iobAtStart == other.iobAtStart && cobAtStart == other.cobAtStart
+
+    override fun hashCode(): Int {
+        var h = carb.contentHashCode()
+        h = 31 * h + insulin.contentHashCode()
+        h = 31 * h + iobAtStart.hashCode()
+        h = 31 * h + cobAtStart.hashCode()
+        return h
+    }
+}
+
+/**
+ * Builds the model's two event-reconstructed input channels from the dose store (PLAN §3.3).
+ * ONE transform, three consumers:
+ *  - [contextChannels] — the historical carb/insulin context that feeds `build_context`
+ *    (feat 1 / feat 2) alongside the CGM-derived BG channel;
+ *  - [futureOverrides] — the announced-future conditioning the calculators inject into the
+ *    prediction zone (existing tails + announced + candidate + auto-extended basal);
+ *  - [onBoard] — IOB/COB as remaining tail area, surfaced with provenance by the caller.
+ *
+ * Carb/insulin channels are EVENT-RECONSTRUCTED here, so the CGM reboot-gap interpolation only
+ * ever touches the BG channel (PLAN §3.3).
+ */
+class ChannelBuilder(
+    private val engine: CurveEngine,
+    private val store: DoseStore,
+) {
+    /**
+     * The historical context channels over `[gridStartMs, gridStartMs + nSteps·STEP_MS)`:
+     * carb appearance (feat 1) and combined insulin action = bolus PK + auto-extended basal
+     * (feat 2). Reads events from a window padded back by [PAD_MIN] so a dose taken just before
+     * the grid still contributes its overlapping tail.
+     */
+    suspend fun contextChannels(gridStartMs: Long, nSteps: Int): ContextChannels {
+        val gridEndMs = gridStartMs + nSteps * CurveEngine.STEP_MS
+        val fromPadded = gridStartMs - PAD_MS
+        val carbs = store.carbEvents(fromPadded, gridEndMs)
+        val boluses = store.insulinEvents(fromPadded, gridEndMs)
+        val basal = store.activeBasalSchedule()
+            ?.let { engine.extendBasal(it, fromPadded, gridEndMs) }
+            .orEmpty()
+
+        val carbCh = engine.bucketize(carbs, gridStartMs, nSteps, CurveKind.CARB)
+        val insulinCh = engine.bucketize(boluses + basal, gridStartMs, nSteps, CurveKind.INSULIN)
+        return ContextChannels(carbCh, insulinCh)
+    }
+
+    /**
+     * The announced-future channels over the roll horizon
+     * `[rollStartMs, rollStartMs + nSteps·STEP_MS)`. [announced] is the user's announced future
+     * meals/boluses; [candidate] is an optional dose the calculator is scoring (both are
+     * pre-resolved [CurveEvent]s with absolute `startMs`). Existing-dose tails that spill past
+     * [rollStartMs] are pulled from the store; the active basal is auto-extended across the
+     * horizon. Also returns IOB/COB at [rollStartMs] (remaining tail area from the STORE doses
+     * only — announced/candidate excluded so the card's "IOB from logged doses only" holds).
+     */
+    suspend fun futureOverrides(
+        rollStartMs: Long,
+        nSteps: Int,
+        announced: List<CurveEvent>,
+        candidate: List<CurveEvent>?,
+    ): FutureChannels {
+        val horizonEndMs = rollStartMs + nSteps * CurveEngine.STEP_MS
+        val fromPadded = rollStartMs - PAD_MS
+
+        val storeCarbs = store.carbEvents(fromPadded, horizonEndMs)
+        val storeInsulin = store.insulinEvents(fromPadded, horizonEndMs)
+        val basal = store.activeBasalSchedule()
+            ?.let { engine.extendBasal(it, fromPadded, horizonEndMs) }
+            .orEmpty()
+
+        val annCarbs = announced.filter { it.kind == CurveKind.CARB }
+        val annInsulin = announced.filter { it.kind == CurveKind.INSULIN }
+        val candInsulin = candidate?.filter { it.kind == CurveKind.INSULIN }.orEmpty()
+        val candCarbs = candidate?.filter { it.kind == CurveKind.CARB }.orEmpty()
+
+        val carbCh = engine.bucketize(
+            storeCarbs + annCarbs + candCarbs,
+            rollStartMs,
+            nSteps,
+            CurveKind.CARB,
+        )
+        val insulinCh = engine.bucketize(
+            storeInsulin + basal + annInsulin + candInsulin,
+            rollStartMs,
+            nSteps,
+            CurveKind.INSULIN,
+        )
+
+        // IOB/COB provenance: logged (store) doses only — NOT announced/candidate (PLAN §3.6-F).
+        val iob = engine.onBoard(storeInsulin + basal, rollStartMs, CurveKind.INSULIN)
+        val cob = engine.onBoard(storeCarbs, rollStartMs, CurveKind.CARB)
+        return FutureChannels(carbCh, insulinCh, iob, cob)
+    }
+
+    /** IOB/COB at [atMs] from the logged store doses only (the value the decision card shows). */
+    suspend fun onBoard(atMs: Long, kind: CurveKind): Double {
+        val from = atMs - PAD_MS
+        val events = when (kind) {
+            CurveKind.CARB -> store.carbEvents(from, atMs + CurveEngine.STEP_MS)
+            CurveKind.INSULIN ->
+                store.insulinEvents(from, atMs + CurveEngine.STEP_MS) +
+                    (store.activeBasalSchedule()?.let { engine.extendBasal(it, from, atMs + CurveEngine.STEP_MS) }.orEmpty())
+        }
+        return engine.onBoard(events, atMs, kind)
+    }
+
+    companion object {
+        /** Look-back padding (minutes) covering the longest plausible action tail (degludec ~42 h). */
+        const val PAD_MIN: Long = 48 * 60
+        val PAD_MS: Long = PAD_MIN * 60_000
+    }
+}

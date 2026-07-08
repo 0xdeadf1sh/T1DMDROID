@@ -1,6 +1,9 @@
 package com.t1dm.core.common
 
+import com.t1dm.core.model.BasalSchedule
 import com.t1dm.core.model.BuiltContext
+import com.t1dm.core.model.CurveEvent
+import com.t1dm.core.model.CurveKind
 import com.t1dm.core.model.DecodedAdvert
 import com.t1dm.core.model.Forecast
 import com.t1dm.core.model.ForecastStatus
@@ -69,4 +72,29 @@ interface NativeCore {
     /** The safety guard every rail/alert gates on (§3.6-B): rejects non-finite, rail-pinned,
      *  collapsed-band, and mis-ordered forecasts. */
     fun forecastDegeneracyCheck(forecast: Forecast): ForecastStatus
+
+    // ── Shared curve/PK engine (Phase 4, PLAN §3.3; bit-faithful to simulator.py) ────
+
+    /** Gamma-distributed Ra/PK curve, amount-per-5-min-step, `sum == total` (carbs +
+     *  bolus shape; == `simulator.gamma_curve`). */
+    fun gamma(total: Double, k: Double, theta: Double, durMin: Double): List<Double>
+
+    /** Bateman long-acting basal curve, amount-per-5-min-step, `sum == total`
+     *  (== `simulator.basal_curve`, default 5 h tail-clip). */
+    fun bateman(total: Double, durMin: Double, ka: Double, ke: Double): List<Double>
+
+    /** Resolve a rapid-acting bolus of [doseU] into an insulin [CurveEvent] at `startMs=0`
+     *  (dose-scaled DIA/θ; == `simulator.bolus_pk_for_dose` + `gamma_curve`). */
+    fun bolusPkForDose(doseU: Double): CurveEvent
+
+    /** Sum every [kind]-matching event's curve onto the fixed grid
+     *  `[gridStartMs, gridStartMs + nSteps·STEP_MS)`; pre-grid tails carry forward. */
+    fun bucketize(events: List<CurveEvent>, gridStartMs: Long, nSteps: Int, kind: CurveKind): List<Double>
+
+    /** IOB/COB at [atMs] = the remaining tail area of every [kind]-matching event. */
+    fun onBoard(events: List<CurveEvent>, atMs: Long, kind: CurveKind): Double
+
+    /** Expand a daily-repeating [schedule] into the Bateman events whose action overlaps
+     *  `[fromMs, toMs)` (the auto-extended near-flat basal background). */
+    fun extendBasal(schedule: BasalSchedule, fromMs: Long, toMs: Long): List<CurveEvent>
 }

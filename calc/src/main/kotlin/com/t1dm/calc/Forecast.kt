@@ -1,0 +1,90 @@
+package com.t1dm.calc
+
+import com.t1dm.core.model.CurveEvent
+import com.t1dm.core.model.ForecastStatus
+
+/**
+ * Why a rolled forecast fan may not be trusted to drive a rail or a dose selection (PLAN §3.6-B/-C/-D).
+ * Only [ELIGIBLE] fans may score a candidate or clear a rail; every other value forces the
+ * dependent rail to fail closed.
+ */
+enum class ForecastEligibility {
+    /** Finite, monotone, non-collapsed, and anchored on a fresh MEASURED reading. */
+    ELIGIBLE,
+
+    /** The Rust `forecast_degeneracy_check` rejected the fan (NaN / rail-pinned / collapsed / mis-ordered). */
+    DEGENERATE,
+
+    /** The anchor is older than the freshness gate (§3.6-D). */
+    STALE,
+
+    /** No selected model / no `.pte` / no context — the forecast could not be produced at all. */
+    MISSING,
+}
+
+/** One step of the rolled fan in mg/dL: the median plus the extreme band edges (τ=.05 / τ=.95). */
+data class FanStep(
+    val medianBg: Double,
+    val lowerBg: Double,
+    val upperBg: Double,
+) {
+    val bandWidth: Double get() = upperBg - lowerBg
+}
+
+/**
+ * A candidate dose's forecast fan, rolled to the full action window (~5 h) by re-feeding the median
+ * (INFERENCE.md §9). [steps] is step-major over the whole roll; [validatedSteps] marks the prefix
+ * inside the validated `PREDICTION_HORIZON_HOURS` window that dose *selection* is capped to — the
+ * tail beyond is carried for context and scored only at [HorizonPolicy.beyondWindowWeight].
+ *
+ * **Fail-closed contract.** A [ForecastPort] never throws for a degenerate/stale/absent forecast; it
+ * returns a fan whose [eligibility] is non-[ForecastEligibility.ELIGIBLE] and whose [steps] may be
+ * empty. Consumers must check [eligible] before reading any band.
+ */
+data class PredFan(
+    val candidateU: Double,
+    val steps: List<FanStep>,
+    val stepMs: Long,
+    val validatedSteps: Int,
+    val worstStatus: ForecastStatus,
+    val eligibility: ForecastEligibility,
+) {
+    val eligible: Boolean get() = eligibility == ForecastEligibility.ELIGIBLE
+
+    /** The lowest lower-band value across the whole roll (the predicted-low veto reads this). */
+    fun minLowerBg(): Double? = steps.minOfOrNull { it.lowerBg }
+
+    /** The step index (0-based) at which the lower band first dips below [mgdl], or null. */
+    fun firstLowerBelow(mgdl: Double): Int? =
+        steps.indexOfFirst { it.lowerBg < mgdl }.takeIf { it >= 0 }
+}
+
+/**
+ * A request to roll the SELECTED fp32-authoritative model under one announced-future scenario. Maps
+ * one-to-one onto [com.t1dm.data.curve.ChannelBuilder.futureOverrides]: [announced] is the user's
+ * committed future meals/boluses, [candidate] the dose the calculator is scoring (null = the
+ * do-nothing baseline). [candidateU] is the candidate's total insulin, carried for the card / IOB rail.
+ */
+data class ForecastRequest(
+    val rollStartMs: Long,
+    val fullRollSteps: Int,
+    val validatedSteps: Int,
+    val announced: List<CurveEvent>,
+    val candidate: List<CurveEvent>?,
+    val candidateU: Double,
+)
+
+/**
+ * The seam to the selected model's rolled forecast (PLAN §3.2 `ForecastEngine`, used by `:calc`).
+ * The real implementation ([RollingForecaster]) drives `ChannelBuilder` → `NativeCore.buildContext`
+ * → the fp32 backend → `assemble_decode` → `forecast_degeneracy_check`, per roll. Calculators and
+ * their property tests depend only on this interface, so the safety logic is exercised against a
+ * deterministic fake with no model on device.
+ */
+interface ForecastPort {
+    /**
+     * Roll one candidate to the full window. **Fail-closed**: on a missing model, a degenerate roll,
+     * or a stale anchor, return a non-eligible [PredFan] — never throw, never fabricate a band.
+     */
+    suspend fun roll(request: ForecastRequest): PredFan
+}

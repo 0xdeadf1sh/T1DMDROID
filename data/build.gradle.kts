@@ -27,8 +27,14 @@ dependencies {
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)
+    // Ship our own SQLite (with FTS5) — HyperOS/Android 16 system SQLite omits the fts5 module.
+    implementation(libs.androidx.sqlite.bundled)
 
     implementation(libs.kotlinx.coroutines.core)
+
+    // Host JVM unit tests for the curve/channel layer (StubNativeCore Kotlin port + fakes).
+    testImplementation(libs.junit)
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:${libs.versions.coroutines.get()}")
 
     androidTestImplementation(libs.androidx.test.junit)
     androidTestImplementation("androidx.test:runner:1.6.2")

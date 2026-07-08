@@ -11,6 +11,8 @@ dependencies {
     implementation(project(":core:design"))
     implementation(project(":core:model"))
     implementation(project(":core:common"))
+    implementation(project(":ui:graph")) // reusable draggable-knot CurveEditor / CurvePreview
+    implementation(project(":calc")) // the fail-closed bolus/basal advisory engine (AdviceResult / DecisionCard)
 
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.bundles.compose)

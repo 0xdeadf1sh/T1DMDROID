@@ -5,9 +5,11 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import java.io.IOException
-import java.net.HttpURLConnection
-import java.net.URL
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import java.util.concurrent.TimeUnit
 
 /** A raw `/v1` request the drainer executes verbatim; `body` is UTF-8 JSON or `null` for GETs. */
 data class SyncRequest(val method: String, val path: String, val body: ByteArray?) {
@@ -62,36 +64,37 @@ internal val SyncJson: Json = Json {
     classDiscriminator = "type"
 }
 
-class HttpUrlConnectionSyncClient(
+/** Default OkHttp client for the outbox drain — a shared connection pool, plaintext-friendly. */
+private fun defaultSyncOkHttp(connectTimeoutMs: Long, readTimeoutMs: Long): OkHttpClient =
+    OkHttpClient.Builder()
+        .connectTimeout(connectTimeoutMs, TimeUnit.MILLISECONDS)
+        .readTimeout(readTimeoutMs, TimeUnit.MILLISECONDS)
+        .writeTimeout(readTimeoutMs, TimeUnit.MILLISECONDS)
+        .build()
+
+private val JSON_MEDIA_TYPE = "application/json".toMediaType()
+
+class OkHttpSyncClient(
     private val endpoint: suspend () -> ServerEndpoint?,
     private val dispatchers: T1dmDispatchers,
-    private val connectTimeoutMs: Int = 10_000,
-    private val readTimeoutMs: Int = 20_000,
+    private val client: OkHttpClient = defaultSyncOkHttp(10_000, 20_000),
 ) : SyncHttpClient {
 
+    /**
+     * OkHttp does NOT throw on 4xx/5xx (the drainer classifies via [SyncResponse]); it throws
+     * `IOException` only on transport failure, which propagates so the drainer backs off. Every
+     * call — `/v1/health` included — carries the active profile's `rw` Bearer token.
+     */
     override suspend fun execute(request: SyncRequest): SyncResponse = withContext(dispatchers.io) {
         val ep = endpoint() ?: throw NoActiveProfileException()
-        val conn = (URL(ep.baseUrl + request.path).openConnection() as HttpURLConnection).apply {
-            requestMethod = request.method
-            connectTimeout = connectTimeoutMs
-            readTimeout = readTimeoutMs
-            setRequestProperty("Authorization", "Bearer ${ep.token}")
-            setRequestProperty("Accept", "application/json")
-            if (request.body != null) {
-                doOutput = true
-                setRequestProperty("Content-Type", "application/json")
-            }
-        }
-        try {
-            request.body?.let { conn.outputStream.use { os -> os.write(it) } }
-            val code = conn.responseCode
-            val stream = if (code in 200..399) conn.inputStream else conn.errorStream
-            val bytes = stream?.use { it.readBytes() } ?: ByteArray(0)
-            SyncResponse(code, bytes)
-        } catch (e: IOException) {
-            throw e // transport failure → the drainer retries with backoff
-        } finally {
-            conn.disconnect()
+        val builder = Request.Builder()
+            .url(ep.baseUrl + request.path)
+            .header("Authorization", "Bearer ${ep.token}")
+            .header("Accept", "application/json")
+        val reqBody = request.body?.toRequestBody(JSON_MEDIA_TYPE)
+        builder.method(request.method, reqBody)
+        client.newCall(builder.build()).execute().use { resp ->
+            SyncResponse(resp.code, resp.body?.bytes() ?: ByteArray(0))
         }
     }
 

@@ -16,6 +16,11 @@ uniffi::setup_scaffolding!();
 mod preproc;
 pub use preproc::*;
 
+/// The shared curve/PK engine (gamma Ra + Bateman basal + bolus PK, bucketize, IOB/COB,
+/// basal tiling). Phase 4, PLAN.private.md §3.3; bit-faithful to `simulator.py`.
+mod curve;
+pub use curve::*;
+
 // ── Kovatchev risk transform constants (INFERENCE.md §5, §11) ──────────────────────
 const KOV_SCALE: f64 = 1.509;
 const KOV_POWER: f64 = 1.084;

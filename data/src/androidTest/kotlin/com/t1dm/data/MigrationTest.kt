@@ -1,37 +1,103 @@
 package com.t1dm.data
 
 import androidx.room.testing.MigrationTestHelper
-import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
+import androidx.sqlite.driver.bundled.BundledSQLiteDriver
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.t1dm.data.db.AppDatabase
 import com.t1dm.data.db.MigrationRunner
+import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
  * Validates the keep-forever ALTER-only migration (PLAN.private.md Phase 1: destructive migration is
- * FORBIDDEN). Creates the schema at v1, applies [MigrationRunner.MIGRATION_1_2], and lets
- * MigrationTestHelper assert the migrated DB matches the exported v2 schema exactly — catching any
- * DDL drift (index names, AUTOINCREMENT, nullability) between the hand-written migration and Room.
+ * FORBIDDEN). Creates the schema at version N, applies the hand-written migration(s), and lets
+ * [MigrationTestHelper] assert the migrated DB matches the exported N+1 schema exactly — catching any
+ * DDL drift (index names, AUTOINCREMENT, nullability) between the migration and Room.
+ *
+ * Uses the **driver-based** [MigrationTestHelper] constructor with [BundledSQLiteDriver]: production
+ * ships the bundled SQLite (its FTS5 — the OEM/HyperOS system SQLite omits `fts5`, see [AppDatabase]),
+ * so migrations now run as connection-based `SQLiteConnection.execSQL` and the test must open the same
+ * driver. The connection-based `runMigrationsAndValidate(version, migrations)` is lenient about
+ * unknown tables, which is exactly right for v5 — the FTS5 `food_fts` shadow tables are Room-invisible
+ * virtual tables that a strict stray-table check would false-positive on.
  */
 @RunWith(AndroidJUnit4::class)
 class MigrationTest {
 
+    private val instrumentation = InstrumentationRegistry.getInstrumentation()
+    private val dbFile = instrumentation.targetContext.getDatabasePath(TEST_DB)
+
     @get:Rule
     val helper = MigrationTestHelper(
-        InstrumentationRegistry.getInstrumentation(),
-        AppDatabase::class.java,
-        emptyList(),
-        FrameworkSQLiteOpenHelperFactory(),
+        instrumentation,
+        dbFile,
+        BundledSQLiteDriver(),
+        AppDatabase::class,
     )
+
+    @Before
+    fun cleanFile() {
+        // Each @Test recreates the DB at v1/vN from scratch; drop any file the previous method left.
+        dbFile.delete()
+        instrumentation.targetContext.getDatabasePath("$TEST_DB-wal").delete()
+        instrumentation.targetContext.getDatabasePath("$TEST_DB-shm").delete()
+    }
 
     @Test
     fun migrate1To2_additiveTablesMatchSchema() {
-        helper.createDatabase(TEST_DB, 1).close()
-        // validateDroppedTables=true and the exported 2.json together prove exact structural parity.
-        helper.runMigrationsAndValidate(TEST_DB, 2, true, MigrationRunner.MIGRATION_1_2)
+        helper.createDatabase(1).close()
+        helper.runMigrationsAndValidate(2, listOf(MigrationRunner.MIGRATION_1_2))
+    }
+
+    @Test
+    fun migrate2To3_curveEngineTablesMatchSchema() {
+        helper.createDatabase(2).close()
+        helper.runMigrationsAndValidate(3, listOf(MigrationRunner.MIGRATION_2_3))
+    }
+
+    @Test
+    fun migrate3To4_noteTableMatchesSchema() {
+        helper.createDatabase(3).close()
+        helper.runMigrationsAndValidate(4, listOf(MigrationRunner.MIGRATION_3_4))
+    }
+
+    @Test
+    fun migrate1To4_fullChain() {
+        helper.createDatabase(1).close()
+        helper.runMigrationsAndValidate(
+            4,
+            listOf(
+                MigrationRunner.MIGRATION_1_2,
+                MigrationRunner.MIGRATION_2_3,
+                MigrationRunner.MIGRATION_3_4,
+            ),
+        )
+    }
+
+    @Test
+    fun migrate4To5_mealBuilderTablesMatchSchema() {
+        helper.createDatabase(4).close()
+        // The FTS5 `food_fts` + its shadow tables (created by MIGRATION_4_5) are Room-invisible; the
+        // connection-based validator ignores unknown tables, so every ENTITY table is still checked
+        // against 5.json while the virtual tables are left alone.
+        helper.runMigrationsAndValidate(5, listOf(MigrationRunner.MIGRATION_4_5))
+    }
+
+    @Test
+    fun migrate1To5_fullChain() {
+        helper.createDatabase(1).close()
+        helper.runMigrationsAndValidate(
+            5,
+            listOf(
+                MigrationRunner.MIGRATION_1_2,
+                MigrationRunner.MIGRATION_2_3,
+                MigrationRunner.MIGRATION_3_4,
+                MigrationRunner.MIGRATION_4_5,
+            ),
+        )
     }
 
     private companion object {

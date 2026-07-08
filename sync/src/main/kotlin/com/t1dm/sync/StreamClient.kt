@@ -2,6 +2,7 @@ package com.t1dm.sync
 
 import com.t1dm.core.common.T1dmDispatchers
 import com.t1dm.data.SamplePatch
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -11,17 +12,21 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.isActive
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.JsonElement
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
 import timber.log.Timber
-import java.net.InetSocketAddress
-import java.net.Socket
-import java.net.URI
-import javax.net.ssl.SSLSocketFactory
+import java.util.concurrent.TimeUnit
 import kotlin.random.Random
 
 /** Reconnect tunables for the WS stream. */
 data class StreamConfig(
     val baseReconnectMs: Long = 2_000,
     val maxReconnectMs: Long = 60_000,
+    /** OkHttp application-level keepalive; a missed pong fails the socket and triggers reconnect. */
+    val pingIntervalMs: Long = 20_000,
 )
 
 /**
@@ -42,16 +47,27 @@ interface StreamClient {
     fun events(): Flow<StreamEvent>
 }
 
+/** Default OkHttp client for the stream — no read timeout (long-lived), pings keep it alive. */
+private fun defaultStreamOkHttp(config: StreamConfig): OkHttpClient =
+    OkHttpClient.Builder()
+        .connectTimeout(10_000, TimeUnit.MILLISECONDS)
+        .readTimeout(0, TimeUnit.MILLISECONDS)
+        .pingInterval(config.pingIntervalMs, TimeUnit.MILLISECONDS)
+        .build()
+
 /**
- * Raw-socket RFC 6455 client (no OkHttp). It follows the active profile via [endpoint], reconnects
- * with jittered backoff, answers Pings with Pongs, and tracks the last-seen event ts so a
- * [StreamEvent.Reconnected] hands the catch-up a cursor. Only `sample` and `alert` are surfaced; the
- * other three event types are decoded-and-ignored. All socket work is on [T1dmDispatchers.io].
+ * OkHttp-backed RFC 6455 client. It follows the active profile via [endpoint], reconnects with
+ * jittered backoff, relies on OkHttp's built-in ping/pong keepalive, and tracks the last-seen event
+ * ts so a [StreamEvent.Reconnected] hands the catch-up a cursor. Only `sample` and `alert` are
+ * surfaced; the other three event types are decoded-and-ignored. Collection is confined to
+ * [T1dmDispatchers.io]; OkHttp delivers callbacks on its own dispatcher and we hop back via the
+ * channel.
  */
 class WebSocketStreamClient(
     private val endpoint: suspend () -> ServerEndpoint?,
     private val dispatchers: T1dmDispatchers,
     private val config: StreamConfig = StreamConfig(),
+    private val client: OkHttpClient = defaultStreamOkHttp(config),
 ) : StreamClient {
 
     override fun events(): Flow<StreamEvent> = channelFlow {
@@ -61,38 +77,47 @@ class WebSocketStreamClient(
         while (currentCoroutineContext().isActive) {
             val ep = endpoint()
             if (ep == null) { delay(config.baseReconnectMs); continue }
-            var socket: Socket? = null
-            try {
-                socket = connect(ep)
-                attempt = 0
-                if (everConnected) trySend(StreamEvent.Reconnected(lastCursor)) else trySend(StreamEvent.Connected)
-                everConnected = true
-                val input = socket.getInputStream()
-                val output = socket.getOutputStream()
-                readLoop@ while (currentCoroutineContext().isActive) {
-                    val frame = WsFrames.readFrame(input)
-                    when (frame.opcode) {
-                        WsFrames.OP_TEXT, WsFrames.OP_CONT -> {
-                            val text = String(frame.payload, Charsets.UTF_8)
-                            decode(text)?.let { ev ->
-                                if (ev is StreamEvent.Sample) lastCursor = ev.patch.ts
-                                if (ev is StreamEvent.Alert) lastCursor = ev.ts
-                                trySend(ev)
-                            }
-                        }
-                        WsFrames.OP_PING ->
-                            output.write(WsFrames.encodeClientFrame(WsFrames.OP_PONG, frame.payload))
-                        WsFrames.OP_CLOSE -> break@readLoop
+            val closed = CompletableDeferred<Unit>()
+            val request = Request.Builder()
+                .url(ep.baseUrl + "/v1/stream?token=${ep.token}")
+                .build()
+            val listener = object : WebSocketListener() {
+                override fun onOpen(webSocket: WebSocket, response: Response) {
+                    attempt = 0 // a live connection resets the backoff ladder
+                    if (everConnected) trySend(StreamEvent.Reconnected(lastCursor)) else trySend(StreamEvent.Connected)
+                    everConnected = true
+                }
+
+                override fun onMessage(webSocket: WebSocket, text: String) {
+                    decode(text)?.let { ev ->
+                        if (ev is StreamEvent.Sample) lastCursor = ev.patch.ts
+                        if (ev is StreamEvent.Alert) lastCursor = ev.ts
+                        trySend(ev)
                     }
                 }
-            } catch (e: Exception) {
-                Timber.tag(TAG).d(e, "stream dropped; will reconnect")
+
+                override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                    webSocket.close(NORMAL_CLOSURE, null)
+                    closed.complete(Unit)
+                }
+
+                override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                    closed.complete(Unit)
+                }
+
+                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                    Timber.tag(TAG).d(t, "stream dropped; will reconnect")
+                    closed.complete(Unit)
+                }
+            }
+            val webSocket = client.newWebSocket(request, listener)
+            try {
+                closed.await()
             } finally {
-                runCatching { socket?.close() }
+                webSocket.cancel()
                 trySend(StreamEvent.Disconnected)
             }
-            val backoff = reconnectDelay(attempt++)
-            delay(backoff)
+            delay(reconnectDelay(attempt++))
         }
         awaitClose { }
     }.flowOn(dispatchers.io)
@@ -105,46 +130,6 @@ class WebSocketStreamClient(
         }
     }.getOrNull()
 
-    private fun connect(ep: ServerEndpoint): Socket {
-        val uri = URI(ep.baseUrl)
-        val secure = uri.scheme.equals("https", ignoreCase = true)
-        val port = if (uri.port != -1) uri.port else if (secure) 443 else 80
-        val raw = Socket()
-        raw.connect(InetSocketAddress(uri.host, port), 10_000)
-        val socket = if (secure) {
-            (SSLSocketFactory.getDefault() as SSLSocketFactory)
-                .createSocket(raw, uri.host, port, true)
-        } else {
-            raw
-        }
-        val key = android.util.Base64.encodeToString(Random.nextBytes(16), android.util.Base64.NO_WRAP)
-        val path = "/v1/stream?token=${ep.token}"
-        val req = buildString {
-            append("GET $path HTTP/1.1\r\n")
-            append("Host: ${uri.host}:$port\r\n")
-            append("Upgrade: websocket\r\n")
-            append("Connection: Upgrade\r\n")
-            append("Sec-WebSocket-Key: $key\r\n")
-            append("Sec-WebSocket-Version: 13\r\n\r\n")
-        }
-        socket.getOutputStream().write(req.toByteArray(Charsets.US_ASCII))
-        socket.getOutputStream().flush()
-        readHandshakeResponse(socket.getInputStream())
-        return socket
-    }
-
-    /** Consume the HTTP 101 response headers up to the blank line; throw if not a 101 upgrade. */
-    private fun readHandshakeResponse(input: java.io.InputStream) {
-        val sb = StringBuilder()
-        while (!(sb.length >= 4 && sb.substring(sb.length - 4) == "\r\n\r\n")) {
-            val c = input.read()
-            if (c < 0) throw java.io.EOFException("handshake truncated")
-            sb.append(c.toChar())
-        }
-        val statusLine = sb.toString().substringBefore("\r\n")
-        require("101" in statusLine) { "ws upgrade failed: $statusLine" }
-    }
-
     private fun reconnectDelay(attempt: Int): Long {
         val exp = (config.baseReconnectMs * (1L shl attempt.coerceAtMost(20)))
             .coerceAtMost(config.maxReconnectMs)
@@ -153,5 +138,6 @@ class WebSocketStreamClient(
 
     private companion object {
         const val TAG = "StreamClient"
+        const val NORMAL_CLOSURE = 1000
     }
 }

@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.SkipQueryVerification
 import androidx.room.Upsert
 import kotlinx.coroutines.flow.Flow
 
@@ -73,6 +74,10 @@ interface SampleDao {
 
     @Query("SELECT * FROM sample WHERE ts > :cursor ORDER BY ts LIMIT :limit")
     suspend fun page(cursor: Long, limit: Int): List<SampleEntity>
+
+    /** The most recent non-null mood, for the journal picker's "current mood" read (Phase 4). */
+    @Query("SELECT mood FROM sample WHERE mood IS NOT NULL ORDER BY ts DESC LIMIT 1")
+    fun observeLatestMood(): Flow<Int?>
 }
 
 @Dao
@@ -83,6 +88,82 @@ interface DoseEventDao {
 
     @Query("SELECT * FROM dose_event WHERE tsMs BETWEEN :fromMs AND :toMs ORDER BY tsMs")
     fun observeRange(fromMs: Long, toMs: Long): Flow<List<DoseEventEntity>>
+}
+
+@Dao
+interface LoggedDoseDao {
+    @Insert suspend fun insert(dose: LoggedDoseEntity): Long
+
+    @Upsert suspend fun upsert(dose: LoggedDoseEntity)
+
+    /** Event window read for curve/channel reconstruction (PLAN §3.3). Ordered oldest-first. */
+    @Query("SELECT * FROM logged_dose WHERE tsMs BETWEEN :fromMs AND :toMs ORDER BY tsMs")
+    suspend fun inRange(fromMs: Long, toMs: Long): List<LoggedDoseEntity>
+
+    @Query("SELECT * FROM logged_dose WHERE tsMs BETWEEN :fromMs AND :toMs ORDER BY tsMs")
+    fun observeRange(fromMs: Long, toMs: Long): Flow<List<LoggedDoseEntity>>
+
+    /** Timestamp of the most recent logged insulin dose (IOB provenance, §3.6-F); null = none. */
+    @Query("SELECT MAX(tsMs) FROM logged_dose")
+    suspend fun latestTs(): Long?
+
+    @Query("DELETE FROM logged_dose WHERE id = :id")
+    suspend fun delete(id: Long)
+}
+
+@Dao
+interface LoggedMealDao {
+    @Insert suspend fun insert(meal: LoggedMealEntity): Long
+
+    @Upsert suspend fun upsert(meal: LoggedMealEntity)
+
+    @Query("SELECT * FROM logged_meal WHERE tsMs BETWEEN :fromMs AND :toMs ORDER BY tsMs")
+    suspend fun inRange(fromMs: Long, toMs: Long): List<LoggedMealEntity>
+
+    @Query("SELECT * FROM logged_meal WHERE tsMs BETWEEN :fromMs AND :toMs ORDER BY tsMs")
+    fun observeRange(fromMs: Long, toMs: Long): Flow<List<LoggedMealEntity>>
+
+    @Query("DELETE FROM logged_meal WHERE id = :id")
+    suspend fun delete(id: Long)
+}
+
+@Dao
+interface BasalScheduleDao {
+    @Insert suspend fun insert(row: BasalScheduleEntity): Long
+
+    @Insert suspend fun insertAll(rows: List<BasalScheduleEntity>)
+
+    /** The active schedule's injections (one BasalSchedule), ordered by time-of-day. */
+    @Query("SELECT * FROM basal_schedule WHERE active = 1 ORDER BY timeOfDayMin")
+    suspend fun activeDoses(): List<BasalScheduleEntity>
+
+    @Query("SELECT * FROM basal_schedule WHERE active = 1 ORDER BY timeOfDayMin")
+    fun observeActive(): Flow<List<BasalScheduleEntity>>
+
+    @Query("SELECT * FROM basal_schedule WHERE scheduleId = :scheduleId ORDER BY timeOfDayMin")
+    suspend fun byScheduleId(scheduleId: String): List<BasalScheduleEntity>
+
+    @Query("UPDATE basal_schedule SET active = 0")
+    suspend fun clearActive()
+
+    @Query("UPDATE basal_schedule SET active = 1 WHERE scheduleId = :scheduleId")
+    suspend fun setActive(scheduleId: String)
+
+    @Query("DELETE FROM basal_schedule WHERE scheduleId = :scheduleId")
+    suspend fun deleteSchedule(scheduleId: String)
+}
+
+@Dao
+interface NoteDao {
+    @Insert suspend fun insert(note: NoteEntity): Long
+
+    /** Newest-first journal feed (Phase 4). */
+    @Query("SELECT * FROM note ORDER BY tsMs DESC LIMIT :limit")
+    fun observeRecent(limit: Int): Flow<List<NoteEntity>>
+
+    /** The latest logged-note timestamp, if any (glanceable "last journalled" read). */
+    @Query("SELECT MAX(tsMs) FROM note")
+    suspend fun latestTs(): Long?
 }
 
 @Dao
@@ -206,4 +287,83 @@ interface HwTelemetryDao {
             "AND tsMs BETWEEN :fromMs AND :toMs ORDER BY tsMs",
     )
     suspend fun range(modelId: String?, fromMs: Long, toMs: Long): List<HwTelemetryEntity>
+}
+
+@Dao
+interface FoodDao {
+    @Insert suspend fun insert(food: FoodEntity): Long
+
+    @Insert suspend fun insertAll(foods: List<FoodEntity>)
+
+    @Upsert suspend fun upsert(food: FoodEntity)
+
+    @Query("SELECT COUNT(*) FROM food") suspend fun count(): Int
+
+    @Query("SELECT * FROM food WHERE id = :id") suspend fun byId(id: Long): FoodEntity?
+
+    /**
+     * Full-text search over `food_fts` (external-content FTS5 on `food`), ranked by relevance.
+     * [match] is a raw FTS5 MATCH expression (the repository appends `*` for prefix search).
+     * `@SkipQueryVerification` because `food_fts` is a hand-rolled virtual table Room does not
+     * model as an entity (created in [MigrationRunner.MIGRATION_3_4] + the DB `onCreate` callback).
+     */
+    @SkipQueryVerification
+    @Query(
+        "SELECT food.* FROM food JOIN food_fts ON food.id = food_fts.rowid " +
+            "WHERE food_fts MATCH :match ORDER BY rank LIMIT :limit",
+    )
+    suspend fun search(match: String, limit: Int): List<FoodEntity>
+
+    /** Alphabetical browse (empty-query fallback). */
+    @Query("SELECT * FROM food ORDER BY name LIMIT :limit")
+    suspend fun all(limit: Int): List<FoodEntity>
+
+    @Query("SELECT * FROM food WHERE custom = 1 ORDER BY updatedAt DESC")
+    fun observeCustom(): Flow<List<FoodEntity>>
+
+    /** Only a user-added food may be deleted; seed rows are immutable. */
+    @Query("DELETE FROM food WHERE id = :id AND custom = 1")
+    suspend fun deleteCustom(id: Long)
+}
+
+@Dao
+interface SavedMealDao {
+    @Insert suspend fun insertMeal(meal: SavedMealEntity): Long
+
+    @Insert suspend fun insertItems(items: List<SavedMealItemEntity>)
+
+    @Query("SELECT * FROM saved_meal ORDER BY updatedAt DESC")
+    fun observeMeals(): Flow<List<SavedMealEntity>>
+
+    @Query("SELECT * FROM saved_meal ORDER BY updatedAt DESC")
+    suspend fun allMeals(): List<SavedMealEntity>
+
+    @Query("SELECT * FROM saved_meal_item WHERE mealId = :mealId")
+    suspend fun itemsOf(mealId: Long): List<SavedMealItemEntity>
+
+    @Query("DELETE FROM saved_meal_item WHERE mealId = :mealId")
+    suspend fun deleteItems(mealId: Long)
+
+    @Query("DELETE FROM saved_meal WHERE id = :id")
+    suspend fun deleteMeal(id: Long)
+}
+
+@Dao
+interface InsulinTypeDao {
+    @Insert suspend fun insert(type: InsulinTypeEntity): Long
+
+    @Insert suspend fun insertAll(types: List<InsulinTypeEntity>)
+
+    @Upsert suspend fun upsert(type: InsulinTypeEntity)
+
+    @Query("SELECT COUNT(*) FROM insulin_type WHERE builtin = 1") suspend fun builtinCount(): Int
+
+    @Query("SELECT * FROM insulin_type ORDER BY builtin DESC, name")
+    fun observeAll(): Flow<List<InsulinTypeEntity>>
+
+    @Query("SELECT * FROM insulin_type ORDER BY builtin DESC, name")
+    suspend fun all(): List<InsulinTypeEntity>
+
+    @Query("DELETE FROM insulin_type WHERE id = :id AND builtin = 0")
+    suspend fun deleteCustom(id: Long)
 }

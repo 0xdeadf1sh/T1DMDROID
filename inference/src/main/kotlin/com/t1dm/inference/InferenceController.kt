@@ -14,6 +14,8 @@ import com.t1dm.core.model.ModelPrediction
 import com.t1dm.core.model.Precision
 import com.t1dm.core.model.RunningModel
 import com.t1dm.inference.backend.GraphIo
+import com.t1dm.inference.backend.GraphInput
+import com.t1dm.inference.backend.GraphOutput
 import com.t1dm.inference.backend.InferenceBackend
 import com.t1dm.inference.backend.LoadedModel
 import com.t1dm.inference.backend.StubBackend
@@ -166,6 +168,39 @@ class InferenceController(
             note = "DEGENERATE forecast forced (debug) — ineligible for rails/alerts",
         )
         Timber.tag(TAG).w("debugPublishDegenerate: forced NON_FINITE forecast for %s", id)
+    }
+
+    /**
+     * Immutable snapshot of the SELECTED model's provenance for the `:calc` dose advisor
+     * ([com.t1dm.core.model] types only, so `:inference` keeps no `:calc` dependency). [real] is
+     * false when the [StubBackend] stood in for a missing/failed `.pte` — the calculator treats a
+     * non-real selected model as "no model" and fails closed (§3.6-E).
+     */
+    data class SelectedModelInfo(
+        val id: String,
+        val descriptor: ModelDescriptor,
+        val backend: BackendId,
+        val precision: Precision,
+        val real: Boolean,
+    )
+
+    /** The selected model's provenance, or null when nothing is loaded/selected. */
+    fun selectedModelInfo(): SelectedModelInfo? {
+        val id = selectedId ?: return null
+        val e = loaded[id] ?: return null
+        return SelectedModelInfo(id, e.bundle.descriptor, e.effectiveBackend, e.precision, e.real)
+    }
+
+    /**
+     * Run one forward on the SELECTED model for the dose calculator's rolled search. Confined to the
+     * single-thread `inference` dispatcher AND serialised against a live 5-min cycle through
+     * [cycleMutex] (§2.3 — never two forwards concurrent on the one APU/CPU command queue). Throws if
+     * no model is selected/loaded; the [com.t1dm.calc.RollingForecaster] catches and fails closed.
+     */
+    suspend fun runSelected(input: GraphInput): GraphOutput = cycleMutex.withLock {
+        val id = selectedId ?: error("no selected model")
+        val e = loaded[id] ?: error("selected model not loaded")
+        withContext(dispatchers.inference) { e.backend.run(e.handle, input) }
     }
 
     /** Manually pick the selected (fp32-authoritative) model; a no-op if [id] is not loaded. */

@@ -71,6 +71,8 @@ fun GlucoseGraph(
     thresholds: AlertThresholds? = null,
     initialWindowMin: Float = 180f,
     predictions: List<PredSeries> = emptyList(),
+    curveOverlay: CurveOverlayFrame? = null,
+    curveToggles: CurveOverlayToggles = CurveOverlayToggles(),
     onScrub: ((GraphScrub?) -> Unit)? = null,
 ) {
     val cs = MaterialTheme.colorScheme
@@ -275,6 +277,17 @@ fun GlucoseGraph(
             // (4) Axes.
             drawLine(axisColor, Offset(plotLeft, plotTop), Offset(plotLeft, plotBottom), 1.5f)
             drawLine(axisColor, Offset(plotLeft, plotBottom), Offset(plotRight, plotBottom), 1.5f)
+
+            // (4.5) Curve overlay (carb Ra + insulin action) in the bottom band, UNDER the BG line
+            //       so it never occludes the glucose trace (PLAN.private.md Phase 4 — toggleable).
+            if (curveOverlay != null && curveToggles.any) {
+                fun absToPx(ms: Double): Float = (plotLeft + (ms - viewStartMs) * ppm).toFloat()
+                val bandTop = plotBottom - plotHeight * 0.30f
+                drawCurveOverlay(
+                    curveOverlay, curveToggles, ::absToPx, bandTop, plotBottom,
+                    carbColor = cs.secondary, insulinColor = cs.tertiary,
+                )
+            }
 
             // (5) BG polyline, segment-styled by provenance; gaps broken.
             for (i in iLo until iHi) {
