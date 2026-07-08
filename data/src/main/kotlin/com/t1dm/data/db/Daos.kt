@@ -93,6 +93,9 @@ interface CgmAdvertRawDao {
     suspend fun pruneBefore(beforeMs: Long): Int
 }
 
+/** Lightweight projection for size/age eviction — priority is a Kotlin concern (see `:sync`). */
+data class OutboxEvictRow(val id: Long, val kind: OutboxKind, val createdAtMs: Long)
+
 @Dao
 interface OutboxDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
@@ -100,18 +103,87 @@ interface OutboxDao {
 
     @Query(
         "SELECT * FROM outbox WHERE state = :state AND nextAttemptMs <= :nowMs " +
-            "ORDER BY createdAtMs LIMIT :limit",
+            "ORDER BY createdAtMs, id LIMIT :limit",
     )
     suspend fun dueBatch(state: OutboxState, nowMs: Long, limit: Int): List<OutboxEntity>
 
     @Query("SELECT COUNT(*) FROM outbox")
     fun observeDepth(): Flow<Int>
 
+    @Query("SELECT COUNT(*) FROM outbox")
+    suspend fun count(): Int
+
+    /** Oldest enqueue time across the queue, for the Network panel's age-vs-bound read (null = empty). */
+    @Query("SELECT MIN(createdAtMs) FROM outbox")
+    suspend fun oldestCreatedAt(): Long?
+
+    /** Oldest-first over the whole queue (bounded by the configured max size); priority-ranked and
+     *  trimmed in Kotlin because Android SQLite lacks `DELETE … ORDER BY … LIMIT`. */
+    @Query("SELECT id, kind, createdAtMs FROM outbox ORDER BY createdAtMs, id")
+    suspend fun evictionRows(): List<OutboxEvictRow>
+
     @Query("DELETE FROM outbox WHERE id = :id")
     suspend fun delete(id: Long)
 
+    @Query("DELETE FROM outbox WHERE id IN (:ids)")
+    suspend fun deleteAll(ids: List<Long>): Int
+
+    /** Reclaim rows wedged in INFLIGHT by a crash mid-send, back to PENDING for the next drain. */
+    @Query("UPDATE outbox SET state = :to WHERE state = :from")
+    suspend fun resetState(from: OutboxState, to: OutboxState): Int
+
     @Query("UPDATE outbox SET state = :state, attempts = :attempts, nextAttemptMs = :nextAttemptMs WHERE id = :id")
     suspend fun reschedule(id: Long, state: OutboxState, attempts: Int, nextAttemptMs: Long)
+}
+
+@Dao
+interface PredictionDao {
+    /** One row per `(madeAtMs, modelId)`; a re-run of the same cycle REPLACEs in place. */
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(prediction: PredictionEntity): Long
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAll(predictions: List<PredictionEntity>)
+
+    /** Every model's prediction at the most recent cycle, selected model first (overlay rehydrate). */
+    @Query(
+        "SELECT * FROM prediction WHERE madeAtMs = (SELECT MAX(madeAtMs) FROM prediction) " +
+            "ORDER BY selected DESC, modelId",
+    )
+    suspend fun latestCycle(): List<PredictionEntity>
+
+    @Query("SELECT * FROM prediction WHERE madeAtMs BETWEEN :fromMs AND :toMs ORDER BY madeAtMs DESC, modelId")
+    suspend fun range(fromMs: Long, toMs: Long): List<PredictionEntity>
+
+    /** The single newest prediction row, for a glanceable "latest forecast" observer. */
+    @Query("SELECT * FROM prediction ORDER BY madeAtMs DESC, selected DESC LIMIT 1")
+    fun observeLatest(): Flow<PredictionEntity?>
+}
+
+@Dao
+interface ServerProfileDao {
+    @Upsert suspend fun upsert(profile: ServerProfileEntity)
+
+    @Query("SELECT * FROM server_profile ORDER BY createdAtMs")
+    fun observeAll(): Flow<List<ServerProfileEntity>>
+
+    @Query("SELECT * FROM server_profile WHERE active = 1 LIMIT 1")
+    fun observeActive(): Flow<ServerProfileEntity?>
+
+    @Query("SELECT * FROM server_profile WHERE active = 1 LIMIT 1")
+    suspend fun active(): ServerProfileEntity?
+
+    @Query("SELECT * FROM server_profile WHERE id = :id")
+    suspend fun byId(id: String): ServerProfileEntity?
+
+    @Query("UPDATE server_profile SET active = 0")
+    suspend fun clearActive()
+
+    @Query("UPDATE server_profile SET active = 1 WHERE id = :id")
+    suspend fun setActive(id: String)
+
+    @Query("DELETE FROM server_profile WHERE id = :id")
+    suspend fun delete(id: String)
 }
 
 @Dao

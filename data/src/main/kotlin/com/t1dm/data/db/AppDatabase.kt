@@ -7,11 +7,12 @@ import androidx.room.RoomDatabase
 import androidx.room.TypeConverters
 
 /**
- * Room v1 (PLAN.private.md Phase 1 / §3.5). Single keep-forever database; every later revision is
- * ALTER-only (see [MigrationRunner]) — the store is never dropped, so `exportSchema` stays on and
- * the generated `schemas/<db>/N.json` back the migration validation.
+ * Room v2 (PLAN.private.md Phase 1 / §3.5; Phase 3 adds `prediction` + `server_profile`). Single
+ * keep-forever database; every later revision is ALTER-only (see [MigrationRunner]) — the store is
+ * never dropped, so `exportSchema` stays on and the generated `schemas/<db>/N.json` back the
+ * migration validation.
  *
- * The eight entities and their DAOs are the frozen Phase-1 surface; this class only wires them.
+ * v2 is a purely **additive** migration: two new tables, no column change to any Phase-1 table.
  */
 @Database(
     entities = [
@@ -23,8 +24,10 @@ import androidx.room.TypeConverters
         OutboxEntity::class,
         KvEntity::class,
         HwTelemetryEntity::class,
+        PredictionEntity::class,
+        ServerProfileEntity::class,
     ],
-    version = 1,
+    version = 2,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -37,6 +40,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun outboxDao(): OutboxDao
     abstract fun kvDao(): KvDao
     abstract fun hwTelemetryDao(): HwTelemetryDao
+    abstract fun predictionDao(): PredictionDao
+    abstract fun serverProfileDao(): ServerProfileDao
 
     companion object {
         const val NAME = "t1dm.db"

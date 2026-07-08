@@ -5,6 +5,9 @@ import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
 import androidx.room.TypeConverters
+import com.t1dm.core.model.BackendId
+import com.t1dm.core.model.ForecastStatus
+import com.t1dm.core.model.Precision
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 
@@ -141,6 +144,71 @@ data class KvEntity(
     @PrimaryKey val key: String,
     val value: String,
     val updatedAt: Long,
+)
+
+/**
+ * Dedicated forecast store (Room v2, PLAN.private.md Phase 3 deliverable). Matches the server
+ * `Prediction` schema — `made_at`(=cycle grid ts), `model_id`, `horizon_steps`, `line`, the
+ * `nQuantiles × H` `fan`, and the optional circadian `tod`/`tod_conf` — and *replaces* the Phase-2
+ * `kv`-blob `PredictionStore` as the source of truth for the dashboard overlay and the
+ * `PREDICTIONS` outbox push.
+ *
+ * The numeric series ride as little-endian `f64` BLOBs (see [Blobs]): [lineBlob] is `H` doubles
+ * (== the 0.5 quantile row); [fanBlob] is `nQuantiles·H` **quantile-major** doubles in the exact
+ * server row order `[0.05,0.1,0.25,0.5,0.75,0.9,0.95]` (`fan[q·H + s]`), so a wire push is a
+ * straight reshape with no re-transpose. The local rehydrate fields ([backend]/[precision]/
+ * [selected]/[stale]/[status]/[lastBg]/[latencyMs]/[anchorTsMs]/[stepMs]) let a full
+ * [com.t1dm.core.model.ModelPrediction] be reconstructed for the overlay.
+ *
+ * `(madeAtMs, modelId)` is unique — one row per model per cycle — so a re-run of the same cycle
+ * REPLACEs in place (idempotent local store) rather than accreting duplicates.
+ */
+@Entity(
+    tableName = "prediction",
+    indices = [
+        Index(value = ["madeAtMs", "modelId"], unique = true),
+        Index("madeAtMs"),
+        Index("modelId"),
+    ],
+)
+@TypeConverters(Converters::class)
+data class PredictionEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val madeAtMs: Long,                 // == ModelPrediction.cycleTsMs; server `made_at`
+    val modelId: String,
+    val horizonSteps: Int,
+    val nQuantiles: Int,
+    val stepMs: Long,
+    val anchorTsMs: Long,
+    val lastBg: Double,
+    @ColumnInfo(typeAffinity = ColumnInfo.BLOB) val lineBlob: ByteArray,   // H f64
+    @ColumnInfo(typeAffinity = ColumnInfo.BLOB) val fanBlob: ByteArray,    // nQuantiles·H f64, q-major
+    @ColumnInfo(typeAffinity = ColumnInfo.BLOB) val todBlob: ByteArray?,   // 12 f64 or null
+    val todConf: Double?,
+    val status: ForecastStatus,
+    val backend: BackendId,
+    val precision: Precision,
+    val selected: Boolean,
+    val stale: Boolean,
+    val latencyMs: Double?,
+    val createdAtMs: Long,
+)
+
+/**
+ * A configured T1DMSERVER endpoint (Room v2, PLAN.private.md Phase 3 deliverable). The schema is
+ * **N-profile from the start** with **exactly one** `active = true`; full CRUD/switch UI is Phase 7
+ * but the shape is frozen now so later work is additive. The `rw` **token never lands here** — it
+ * lives in the Keystore-backed `TokenStore`, keyed by [id] — so a DB export/backup never leaks the
+ * secret. `baseUrl` is a bare `http(s)://host:port` (Tailscale ⇒ TLS is moot).
+ */
+@Entity(tableName = "server_profile")
+data class ServerProfileEntity(
+    @PrimaryKey val id: String,
+    val label: String,
+    val baseUrl: String,
+    val active: Boolean,
+    val createdAtMs: Long,
+    val updatedAtMs: Long,
 )
 
 /** Hardware / inference telemetry; Phase 2 tags rows by `modelId` (PLAN.private.md §2.4). */

@@ -5,6 +5,7 @@ import com.t1dm.core.common.T1dmDispatchers
 import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.CgmSourceDescriptor
 import com.t1dm.core.model.CgmSourceId
+import com.t1dm.core.model.ModelPrediction
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.data.db.AppDatabase
 import com.t1dm.data.db.CgmAdvertRawEntity
@@ -16,7 +17,9 @@ import com.t1dm.data.db.KvEntity
 import com.t1dm.data.db.OutboxEntity
 import com.t1dm.data.db.OutboxKind
 import com.t1dm.data.db.OutboxState
+import com.t1dm.data.db.PredictionEntity
 import com.t1dm.data.db.SampleEntity
+import com.t1dm.data.db.ServerProfileEntity
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
@@ -47,6 +50,8 @@ class T1dmRepository(
     private val outbox get() = db.outboxDao()
     private val kv get() = db.kvDao()
     private val telemetry get() = db.hwTelemetryDao()
+    private val predictions get() = db.predictionDao()
+    private val profiles get() = db.serverProfileDao()
 
     // ─── CGM sources ────────────────────────────────────────────────────────────────────────
 
@@ -208,6 +213,9 @@ class T1dmRepository(
 
     fun observeOutboxDepth(): Flow<Int> = outbox.observeDepth()
 
+    /** Oldest enqueue timestamp across the queue (null = empty); Network panel age-vs-bound read. */
+    suspend fun oldestOutboxCreatedAt(): Long? = withContext(io) { outbox.oldestCreatedAt() }
+
     private suspend fun enqueueIngest(gridTs: Long, nowMs: Long) =
         enqueueRow(OutboxKind.INGEST, "ingest:sample:$gridTs", ByteArray(0), nowMs)
 
@@ -227,6 +235,70 @@ class T1dmRepository(
             state = OutboxState.PENDING,
         ),
     )
+
+    // ─── Predictions (dedicated table; replaces the Phase-2 kv blob) ──────────────────────────
+
+    /** Persist every running model's forecast for one cycle; `(madeAtMs, modelId)` REPLACEs. */
+    suspend fun upsertPredictions(preds: List<ModelPrediction>, nowMs: Long) = withContext(io) {
+        predictions.upsertAll(preds.map { it.toEntity(nowMs) })
+    }
+
+    /** The whole most-recent cycle, selected model first — the overlay-rehydrate read. */
+    suspend fun latestCyclePredictions(): List<ModelPrediction> = withContext(io) {
+        predictions.latestCycle().map { it.toModel() }
+    }
+
+    suspend fun predictionsInRange(fromMs: Long, toMs: Long): List<ModelPrediction> =
+        withContext(io) { predictions.range(fromMs, toMs).map { it.toModel() } }
+
+    fun observeLatestPrediction(): Flow<ModelPrediction?> =
+        predictions.observeLatest().map { it?.toModel() }
+
+    // ─── Server profiles (N-profile, one active; token lives in the TokenStore) ───────────────
+
+    fun observeProfiles(): Flow<List<ServerProfileEntity>> = profiles.observeAll()
+
+    fun observeActiveProfile(): Flow<ServerProfileEntity?> = profiles.observeActive()
+
+    suspend fun activeProfile(): ServerProfileEntity? = withContext(io) { profiles.active() }
+
+    suspend fun profileById(id: String): ServerProfileEntity? = withContext(io) { profiles.byId(id) }
+
+    /** Upsert a profile; when [makeActive], enforce exactly-one-active atomically. */
+    suspend fun upsertProfile(profile: ServerProfileEntity, makeActive: Boolean) = withContext(io) {
+        db.withTransaction {
+            profiles.upsert(profile)
+            if (makeActive) {
+                profiles.clearActive()
+                profiles.setActive(profile.id)
+            }
+        }
+    }
+
+    suspend fun setActiveProfile(id: String) = withContext(io) {
+        db.withTransaction {
+            profiles.clearActive()
+            profiles.setActive(id)
+        }
+    }
+
+    suspend fun deleteProfile(id: String) = withContext(io) { profiles.delete(id) }
+
+    // ─── Catch-up merge (WS reconnect / REST series) ──────────────────────────────────────────
+
+    /**
+     * Fold a server-originated wide row into `sample` under last-writer-wins (§3.5). Returns `true`
+     * iff a write occurred (the incoming row was strictly newer). Runs in a transaction so the
+     * read-modify-write cannot race a concurrent local projection.
+     */
+    suspend fun mergeServerSample(patch: SamplePatch): Boolean = withContext(io) {
+        requireGrid(patch.ts)
+        db.withTransaction {
+            val merged = LwwMerge.merge(samples.byTs(patch.ts), patch) ?: return@withTransaction false
+            samples.upsert(merged)
+            true
+        }
+    }
 
     // ─── kv / hw_telemetry ──────────────────────────────────────────────────────────────────
 

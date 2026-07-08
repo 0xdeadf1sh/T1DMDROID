@@ -1,6 +1,9 @@
 package com.t1dm.data.db
 
 import androidx.room.TypeConverter
+import com.t1dm.core.model.BackendId
+import com.t1dm.core.model.ForecastStatus
+import com.t1dm.core.model.Precision
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 
@@ -26,4 +29,14 @@ class Converters {
 
     @TypeConverter fun outboxStateToString(v: OutboxState?): String? = v?.name
     @TypeConverter fun stringToOutboxState(v: String?): OutboxState? = v?.let(OutboxState::valueOf)
+
+    @TypeConverter fun forecastStatusToString(v: ForecastStatus?): String? = v?.name
+    @TypeConverter fun stringToForecastStatus(v: String?): ForecastStatus? =
+        v?.let(ForecastStatus::valueOf)
+
+    @TypeConverter fun backendIdToString(v: BackendId?): String? = v?.name
+    @TypeConverter fun stringToBackendId(v: String?): BackendId? = v?.let(BackendId::valueOf)
+
+    @TypeConverter fun precisionToString(v: Precision?): String? = v?.name
+    @TypeConverter fun stringToPrecision(v: String?): Precision? = v?.let(Precision::valueOf)
 }

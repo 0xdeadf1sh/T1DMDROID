@@ -157,8 +157,16 @@ class CgmScanService : LifecycleService() {
                         nowMs = System.currentTimeMillis(),
                     )
                 }.onFailure { Timber.tag(TAG).w(it, "inference GridTick failed (alarm path unaffected)") }
+                // Flush the freshly-enqueued PREDICTIONS/INGEST promptly when the tailnet is up
+                // (opportunistic; the periodic drain + WorkManager are the fallbacks).
+                runCatching { container.syncManager.drainNow() }
+                    .onFailure { Timber.tag(TAG).w(it, "post-tick drain failed (independent of inference)") }
             }
         }
+
+        // 7) Server sync (Phase 3): the durable-outbox drainer + WS stream + catch-up, hosted in the
+        //    FGS scope. A SIBLING of the alarm + inference paths — a sync failure never touches them.
+        container.syncManager.launch(lifecycleScope)
     }
 
     private fun startScan() {
@@ -208,8 +216,27 @@ class CgmScanService : LifecycleService() {
                 container.inferenceController.refreshModels()
                 container.inferenceController.debugPublishDegenerate(System.currentTimeMillis())
             }
+            ACTION_SET_SERVER -> configureServer(
+                url = intent.getStringExtra(EXTRA_URL) ?: "http://127.0.0.1:8443",
+                token = intent.getStringExtra(EXTRA_TOKEN).orEmpty(),
+                label = intent.getStringExtra(EXTRA_LABEL) ?: "local",
+            )
         }
         return START_STICKY
+    }
+
+    /**
+     * Debug: configure + activate the server profile and flush the durable outbox — the sensor-free
+     * equivalent of the Settings → Server screen (PLAN.private.md Phase 3 verify). Drives the REAL
+     * [com.t1dm.app.di.AppContainer.saveServerProfile] → health → drain path, not a bypass.
+     */
+    private fun configureServer(url: String, token: String, label: String) {
+        lifecycleScope.launch {
+            container.saveServerProfile(label, url, token)
+            val health = container.checkServerHealth()
+            Timber.tag(TAG).i("SET_SERVER url=%s label=%s health=%s", url, label, health)
+            container.syncManager.drainNow()
+        }
     }
 
     /**
@@ -351,11 +378,15 @@ class CgmScanService : LifecycleService() {
         const val ACTION_INJECT_STEPS = "com.t1dm.app.INJECT_STEPS"
         const val ACTION_RUN_CYCLE = "com.t1dm.app.RUN_CYCLE"
         const val ACTION_FORCE_DEGENERATE = "com.t1dm.app.FORCE_DEGENERATE"
+        const val ACTION_SET_SERVER = "com.t1dm.app.SET_SERVER"
         const val EXTRA_BG = "bg"
         const val EXTRA_AGE_MIN = "ageMin"
         const val EXTRA_WARMUP = "warmup"
         const val EXTRA_TREND = "trend"
         const val EXTRA_CUMULATIVE = "cumulative"
+        const val EXTRA_URL = "url"
+        const val EXTRA_TOKEN = "token"
+        const val EXTRA_LABEL = "label"
 
         private const val GRID_MS = 300_000L
         private fun snapToGrid(ts: Long): Long =

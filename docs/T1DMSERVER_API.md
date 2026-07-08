@@ -37,7 +37,7 @@ otherwise. The server binds `server.bind:server.port` (default `0.0.0.0:8443`).
   - [GET /v1/photos/{id}](#get-v1photosid)
   - [GET /v1/models](#get-v1models)
   - [GET /v1/models/{id}/meta](#get-v1modelsidmeta)
-  - [GET /v1/models/{id}/model.pt](#get-v1modelsidmodelpt)
+  - [GET /v1/models/{id}/download](#get-v1modelsiddownload)
   - [GET /v1/stats](#get-v1stats)
   - [GET /v1/health](#get-v1health)
 - [WebSocket](#websocket)
@@ -201,9 +201,10 @@ fan-out.
 
 ```json
 {
-  "id": "lstm-v3",
-  "name": "LSTM v3",
-  "path": "models/lstm-v3.pt",
+  "id": "lstm-v3.pte",
+  "name": "lstm-v3",
+  "ext": "pte",
+  "path": "models/lstm-v3.pte",
   "meta": { "arch": "lstm", "params": 1200000, "trained": "2026-06-01" },
   "sha256": "…",
   "bytes": 4823104,
@@ -211,14 +212,18 @@ fan-out.
 }
 ```
 
-`meta` is **opaque JSON**: stored, served, and rendered verbatim, never
-interpreted. `path` is relative to `storage.data_dir`.
+`id` is the full artifact filename, so format variants of one logical model
+(`net.pt`, `net.onnx`) register as distinct rows. `name` is the filename stem
+and `ext` is its lowercased extension without the dot (`pt`, `onnx`, `pte`;
+empty when the file has none), so a consumer learns the format without parsing
+the server-local `path`. `meta` is **opaque JSON**: stored, served, and rendered
+verbatim, never interpreted. `path` is relative to `storage.data_dir`.
 
 ### Stats
 
 ```json
 {
-  "window": "24h",
+  "window": "7d",
   "tir": 0.72,
   "time_below": 0.04,
   "time_above": 0.24,
@@ -237,7 +242,7 @@ interpreted. `path` is relative to `storage.data_dir`.
 }
 ```
 
-`window` is one of `24h`, `7d`, `30d`. The three time-fraction fields (`tir`,
+`window` is one of `7d`, `30d`, `90d`. The three time-fraction fields (`tir`,
 `time_below`, `time_above`) are fractions in `0..=1` about the 70–180 mg/dL
 range. `gmi` and `cv` are percentages; `tdd` is units/day; `bg_hr_corr` is a
 Pearson correlation in `-1..=1`; `n_samples` is the number of grid samples that
@@ -478,21 +483,32 @@ the id is unknown.
 { "arch": "lstm", "params": 1200000, "trained": "2026-06-01" }
 ```
 
-### GET /v1/models/{id}/model.pt
+### GET /v1/models/{id}/download
 
-Streams the model artifact as `application/octet-stream`. Response headers carry
-`Content-Length` and `X-SHA256` (the artifact's content hash) for integrity
-verification. `404` if the id is unknown.
+Streams the model artifact of any format as `application/octet-stream`, in
+bounded chunks so a large file is never buffered whole. Response headers carry
+`Content-Length`, `X-SHA256` (the artifact's content hash) for integrity
+verification, and a `Content-Disposition` filename carrying the artifact's real
+extension. `404` if the id is unknown.
 
 ### GET /v1/stats
 
-Query: `window` = `24h` | `7d` | `30d` (default `24h`). An unrecognized window
-is `400`.
+Query parameters:
+
+| Param | Type | Meaning |
+| --- | --- | --- |
+| `window` | enum | `7d` \| `30d` \| `90d` (default `7d`). An unrecognized window is `400`. |
+| `refresh` | bool | When truthy (`1`/`true`), bypass the cache and compute fresh. |
+
+Stats are **daily-cached**: each window is recomputed at most once per day (on a
+server background task and lazily on first read past the TTL), and the cached
+block is served on request. Pass `?refresh=1` to force a fresh compute,
+bypassing the cache.
 
 Response `200`:
 
 ```json
-{ "stats": { "window": "24h", "tir": 0.72, "…": "…" } }
+{ "stats": { "window": "7d", "tir": 0.72, "…": "…" } }
 ```
 
 See the [Stats](#stats) schema for the full field set.

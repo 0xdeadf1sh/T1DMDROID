@@ -5,6 +5,7 @@ import android.content.pm.ApplicationInfo
 import android.os.StrictMode
 import com.t1dm.app.di.AppContainer
 import com.t1dm.app.service.CgmWatchdog
+import com.t1dm.app.sync.SyncDrainWorker
 import timber.log.Timber
 
 class T1dmApplication : Application() {
@@ -25,6 +26,7 @@ class T1dmApplication : Application() {
         container = AppContainer(this)
         container.startInference()
         CgmWatchdog.enqueue(this)
+        SyncDrainWorker.enqueue(this) // deferrable outbox drain fallback (FGS drains opportunistically)
     }
 
     private fun installStrictMode() {

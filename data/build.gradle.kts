@@ -10,6 +10,8 @@ android {
         // In-memory Room tests run instrumented on the target device (sensor-free, deterministic).
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
+    // Exported schemas ship as androidTest assets so MigrationTestHelper can validate v1→v2.
+    sourceSets.getByName("androidTest").assets.srcDir("$projectDir/schemas")
 }
 
 room {
@@ -30,5 +32,6 @@ dependencies {
 
     androidTestImplementation(libs.androidx.test.junit)
     androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.room:room-testing:${libs.versions.room.get()}")
     androidTestImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:${libs.versions.coroutines.get()}")
 }

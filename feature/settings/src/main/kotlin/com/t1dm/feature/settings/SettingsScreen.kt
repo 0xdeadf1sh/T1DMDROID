@@ -16,11 +16,11 @@ import androidx.compose.ui.unit.dp
  * Server/Watch/units/theme arrive in later phases). Rows are plain until their phase lands.
  */
 @Composable
-fun SettingsScreen(onOpenCgm: () -> Unit = {}) {
+fun SettingsScreen(onOpenCgm: () -> Unit = {}, onOpenServer: () -> Unit = {}) {
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         Text("Settings", style = MaterialTheme.typography.headlineSmall)
         SettingRow("CGM", enabled = true, onClick = onOpenCgm)
-        SettingRow("Server", enabled = false)
+        SettingRow("Server", enabled = true, onClick = onOpenServer)
         SettingRow("Watch", enabled = false)
         SettingRow("Units / theme / alerts", enabled = false)
     }
