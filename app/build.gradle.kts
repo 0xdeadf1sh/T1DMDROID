@@ -70,6 +70,9 @@ dependencies {
     implementation(project(":core:design"))
 
     implementation(project(":data"))
+    // :data exposes Room via `implementation`; the composition root builds the DB, so it needs
+    // room-runtime on its own classpath to name AppDatabase/RoomDatabase.
+    implementation(libs.androidx.room.runtime)
     implementation(project(":cgm"))
     implementation(project(":sensors"))
     implementation(project(":inference"))
@@ -91,6 +94,8 @@ dependencies {
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.lifecycle.service)
+    implementation(libs.androidx.work.runtime.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.navigation.compose)
     implementation(libs.kotlinx.coroutines.android)

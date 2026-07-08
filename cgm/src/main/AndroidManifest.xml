@@ -1,0 +1,16 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      Passive advertisement-only scanning (PLAN.private.md Phase 1, cgm-ingestion memory):
+      BLUETOOTH_SCAN with neverForLocation, no location, no BLUETOOTH_CONNECT. Declared by the
+      module that owns the scan so the seam is self-describing; it merges into the app manifest.
+    -->
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation" />
+
+    <uses-feature
+        android:name="android.hardware.bluetooth_le"
+        android:required="true" />
+
+</manifest>

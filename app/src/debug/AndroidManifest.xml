@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <!-- Debug-only: lets `adb shell am broadcast` drive the sensor-free verification hooks.
+             Absent from release. -->
+        <receiver
+            android:name=".service.CgmDebugReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.t1dm.app.INJECT_READING" />
+                <action android:name="com.t1dm.app.FORCE_SIGNAL_LOSS" />
+                <action android:name="com.t1dm.app.INJECT_STEPS" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

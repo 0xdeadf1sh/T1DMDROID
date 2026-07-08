@@ -78,16 +78,29 @@ val cargoNdkBuild = tasks.register<Exec>("cargoNdkBuild") {
     group = "rust"
     description = "Cross-build libt1dm_core.so for arm64-v8a into jniLibs via cargo-ndk."
     workingDir = rootProject.projectDir
+    // Track the crate sources as inputs so a Rust change actually re-runs the cross-build.
+    // Without this, Gradle marked the task up-to-date and repackaged a STALE .so; the Kotlin
+    // bindings then referenced symbols the packaged library lacked (see build-gotchas memory).
+    inputs.dir(crateDir)
+    inputs.file(rootProject.layout.projectDirectory.file("Cargo.lock"))
     outputs.dir(generatedJniLibsDir)
     val ndk = findNdkHome()
+    // Host-only machines (no NDK) legitimately SKIP the cross-build — the module still compiles
+    // against the host-generated bindings. But a machine that HAS an NDK yet lacks cargo-ndk is
+    // misconfigured: fail LOUDLY (a silent skip would package a missing or stale .so).
     onlyIf {
-        val ok = ndk != null && onPath("cargo-ndk")
-        if (!ok) logger.warn(
-            "cargoNdkBuild SKIPPED — need an NDK (found: $ndk) and cargo-ndk on PATH " +
-                "(found: ${onPath("cargo-ndk")}). Run: cargo install cargo-ndk; " +
-                "android sdk install \"ndk;28.1.13356709\"."
+        if (ndk == null) {
+            logger.warn("cargoNdkBuild SKIPPED — no NDK found; the arm64 .so will not be built (host-only).")
+            false
+        } else {
+            true
+        }
+    }
+    doFirst {
+        if (!onPath("cargo-ndk")) throw GradleException(
+            "cargoNdkBuild needs cargo-ndk on PATH (NDK found at $ndk). Install it with " +
+                "`cargo install cargo-ndk` and ensure ~/.cargo/bin is on PATH."
         )
-        ok
     }
     if (ndk != null) environment("ANDROID_NDK_HOME", ndk)
     val out = generatedJniLibsDir.get().asFile.absolutePath

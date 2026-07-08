@@ -8,6 +8,7 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.navigation.NavHostController
@@ -15,6 +16,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.t1dm.app.di.AppContainer
 import com.t1dm.feature.dashboard.DashboardScreen
 import com.t1dm.feature.hardware.HardwareScreen
 import com.t1dm.feature.insulin.InsulinScreen
@@ -23,6 +25,7 @@ import com.t1dm.feature.meals.MealsScreen
 import com.t1dm.feature.models.ModelsScreen
 import com.t1dm.feature.network.NetworkScreen
 import com.t1dm.feature.security.SecurityScreen
+import com.t1dm.feature.settings.CgmSettingsScreen
 import com.t1dm.feature.settings.SettingsScreen
 import com.t1dm.feature.stats.StatsScreen
 
@@ -42,7 +45,7 @@ private val destinations = listOf(
 )
 
 @Composable
-fun T1dmApp() {
+fun T1dmApp(container: AppContainer) {
     val navController = rememberNavController()
     Scaffold(
         bottomBar = { T1dmBottomBar(navController) },
@@ -50,7 +53,7 @@ fun T1dmApp() {
         Column(Modifier.fillMaxSize().padding(padding)) {
             // Flavor-specific: real text in the public build, no-op in the personal build.
             Disclaimer()
-            T1dmNavHost(navController)
+            T1dmNavHost(navController, container)
         }
     }
 }
@@ -77,9 +80,20 @@ private fun T1dmBottomBar(navController: NavHostController) {
 }
 
 @Composable
-private fun T1dmNavHost(navController: NavHostController) {
+private fun T1dmNavHost(navController: NavHostController, container: AppContainer) {
     NavHost(navController = navController, startDestination = "dashboard") {
-        composable("dashboard") { DashboardScreen() }
+        composable("dashboard") {
+            val readings by container.dashboardReadings.collectAsState(emptyList())
+            val latest by container.latestReading.collectAsState(null)
+            val active by container.activeSource.collectAsState(null)
+            DashboardScreen(
+                readings = readings,
+                latest = latest,
+                activeSourceName = active?.displayName,
+                thresholds = container.alarmConfig.thresholds,
+                kovatchevF = container.nativeCore::kovatchevF,
+            )
+        }
         composable("stats") { StatsScreen() }
         composable("models") { ModelsScreen() }
         composable("hardware") { HardwareScreen() }
@@ -87,7 +101,18 @@ private fun T1dmNavHost(navController: NavHostController) {
         composable("meals") { MealsScreen() }
         composable("insulin") { InsulinScreen() }
         composable("security") { SecurityScreen() }
-        composable("settings") { SettingsScreen() }
+        composable("settings") {
+            SettingsScreen(onOpenCgm = { navController.navigate("settings/cgm") })
+        }
+        composable("settings/cgm") {
+            val active by container.activeSource.collectAsState(null)
+            val sources by container.allSources.collectAsState(emptyList())
+            CgmSettingsScreen(
+                activeSourceName = active?.displayName,
+                activeStatus = active?.let { "active" },
+                allSourceNames = sources.map { it.displayName },
+            )
+        }
         composable("journal") { JournalScreen() }
     }
 }
