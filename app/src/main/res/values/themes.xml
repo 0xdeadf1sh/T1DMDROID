@@ -1,0 +1,3 @@
+<resources>
+    <style name="Theme.T1dm" parent="android:Theme.Material.NoActionBar" />
+</resources>

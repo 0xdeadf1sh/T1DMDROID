@@ -1,0 +1,13 @@
+# Cargo workspace root for the T1DMDROID native core. Profiles must live at the
+# workspace root (Cargo ignores `[profile.*]` in member manifests), so the
+# release profile the plan mandates is declared here and inherited by every member.
+[workspace]
+resolver = "2"
+members = ["crates/t1dm-core"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

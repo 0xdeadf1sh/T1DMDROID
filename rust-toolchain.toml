@@ -1,0 +1,6 @@
+# Pins the toolchain + the Android cross target. rustup honours this for both the host
+# `cargo test` and the `cargo ndk` cross-build; the aarch64-linux-android std must be
+# installed (`rustup target add aarch64-linux-android`).
+[toolchain]
+channel = "stable"
+targets = ["aarch64-linux-android"]

@@ -1,0 +1,9 @@
+# Android cross-link flags. cargo-ndk supplies the NDK clang linker itself; here we add
+# the load-segment alignment Android 15/16 require on arm64 (16 KB pages) plus its 4 KB
+# ELF header padding. Do NOT hardcode `linker` here — leave that to cargo-ndk so the
+# NDK path is not baked into a tracked file.
+[target.aarch64-linux-android]
+rustflags = [
+    "-C", "link-arg=-Wl,-z,max-page-size=16384",
+    "-C", "link-arg=-Wl,-z,common-page-size=16384",
+]

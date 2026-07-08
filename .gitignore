@@ -1,0 +1,42 @@
+# ── Private / never-ship: working notes, secrets, local config ──────────────
+# (see CLAUDE.md private/public seam — these must never enter the GPL tree)
+*.private.md
+PLAN.private.md
+NOTES.md
+scratch/
+local.properties
+keystore.properties
+*.jks
+*.keystore
+secrets.properties
+*.local.*
+
+# ── Android / Gradle ────────────────────────────────────────────────────────
+.gradle/
+build/
+captures/
+.cxx/
+*.apk
+*.aab
+*.ap_
+*.dex
+output.json
+
+# ── Kotlin / IntelliJ / Android Studio ──────────────────────────────────────
+.idea/
+*.iml
+.kotlin/
+
+# ── Rust (t1dm-core) ────────────────────────────────────────────────────────
+target/
+**/target/
+# Cargo.lock is intentionally committed (app, not a library).
+
+# ── Large model binaries (keep out of git history; use LFS / release assets) ─
+*.pt
+*.pte
+models/*.bin
+
+# ── Misc ────────────────────────────────────────────────────────────────────
+.DS_Store
+*.log

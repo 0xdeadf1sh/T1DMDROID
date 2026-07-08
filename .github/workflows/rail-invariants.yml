@@ -1,0 +1,15 @@
+name: rail-invariants
+
+# Property-test gate for the calculators' safety-rail invariants (PLAN.private.md 3.6):
+# fail-closed on missing / degenerate / stale input, and all-rails-off = identity.
+# Placeholder-green until :calc lands its rails (Phase 4), then this becomes blocking.
+on:
+  push:
+  pull_request:
+
+jobs:
+  rail-invariants:
+    runs-on: ubuntu-latest
+    steps:
+      - name: placeholder
+        run: echo "rail-invariants placeholder (Phase 4)"

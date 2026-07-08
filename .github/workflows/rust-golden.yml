@@ -1,0 +1,17 @@
+name: rust-golden
+
+# Bit-for-bit golden gate for the Rust core (crate t1dm-core, at crates/t1dm-core).
+# Phase 0: only the roundtrip proof exists; the CGM.md / INFERENCE.md byte + golden
+# vectors are added as unit tests as they come online (PLAN.private.md §2.2, §3.6).
+on:
+  push:
+  pull_request:
+
+jobs:
+  golden:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: cargo test -p t1dm-core
+        run: cargo test -p t1dm-core

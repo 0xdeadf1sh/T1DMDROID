@@ -1,0 +1,102 @@
+import java.util.Properties
+
+plugins {
+    id("t1dm.android.application")
+    id("t1dm.android.compose")
+}
+
+// Release signing: read a gitignored keystore.properties if present, else fall back to the
+// debug keystore so `assembleRelease` always produces an installable APK on a fresh checkout.
+val keystorePropsFile = rootProject.file("keystore.properties")
+val hasKeystore = keystorePropsFile.exists()
+val keystoreProps = Properties().apply {
+    if (hasKeystore) keystorePropsFile.inputStream().use { load(it) }
+}
+
+android {
+    namespace = "com.t1dm.app"
+
+    defaultConfig {
+        applicationId = "com.t1dm.app"
+        versionCode = 1
+        versionName = "0.0.1-phase0"
+
+        // arm64-v8a only (single target device). Harmless until native .so libs ship.
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
+    }
+
+    flavorDimensions += "distribution"
+    productFlavors {
+        // Personal build: the medical disclaimer is compiled out (no-op stub source set).
+        create("personal") {
+            dimension = "distribution"
+        }
+        // Public build: ships the real disclaimer composable.
+        create("public") {
+            dimension = "distribution"
+            applicationIdSuffix = ".pub"
+        }
+    }
+
+    signingConfigs {
+        if (hasKeystore) {
+            create("release") {
+                storeFile = file(keystoreProps.getProperty("storeFile"))
+                storePassword = keystoreProps.getProperty("storePassword")
+                keyAlias = keystoreProps.getProperty("keyAlias")
+                keyPassword = keystoreProps.getProperty("keyPassword")
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            signingConfig = if (hasKeystore) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
+        }
+    }
+}
+
+dependencies {
+    implementation(project(":core:common"))
+    implementation(project(":core:model"))
+    implementation(project(":core:native"))
+    implementation(project(":core:design"))
+
+    implementation(project(":data"))
+    implementation(project(":cgm"))
+    implementation(project(":sensors"))
+    implementation(project(":inference"))
+    implementation(project(":calc"))
+    implementation(project(":alerts"))
+    implementation(project(":sync"))
+    implementation(project(":watch"))
+
+    implementation(project(":feature:dashboard"))
+    implementation(project(":feature:stats"))
+    implementation(project(":feature:models"))
+    implementation(project(":feature:hardware"))
+    implementation(project(":feature:network"))
+    implementation(project(":feature:meals"))
+    implementation(project(":feature:insulin"))
+    implementation(project(":feature:security"))
+    implementation(project(":feature:settings"))
+    implementation(project(":feature:journal"))
+
+    implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.navigation.compose)
+    implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.timber)
+
+    implementation(platform(libs.androidx.compose.bom))
+    implementation(libs.bundles.compose)
+    debugImplementation(libs.androidx.compose.ui.tooling)
+}
