@@ -75,6 +75,18 @@ data class ModelPrediction(
 enum class InferenceCause { GRID_TICK, MANUAL, SYNTHETIC, COLLECTING_CONTEXT }
 
 /**
+ * Warmup-gate progress (inference-runtime.md — the WARMUP gate). While fewer than [requiredHours] of
+ * MEASURED (non-interpolated) BG have accrued in the trailing window, the cycle suppresses every
+ * prediction and the dashboard shows "collecting context — [measuredHours] / [requiredHours] h".
+ * [requiredHours] is the user's `warmupHours` setting, floored at the model's MIN_CONTEXT (8 h).
+ * This is DISTINCT from the per-cycle freshness gate (§3.6-D): freshness marks an aged anchor STALE;
+ * warmup withholds forecasts until enough real history exists to condition on at all.
+ */
+data class WarmupProgress(val measuredHours: Double, val requiredHours: Double) {
+    val fraction: Double get() = if (requiredHours <= 0.0) 1.0 else (measuredHours / requiredHours).coerceIn(0.0, 1.0)
+}
+
+/**
  * The immutable snapshot the UI observes as a `StateFlow` (PLAN.private.md Phase 2). Carries the
  * running set, this cycle's per-model predictions (selected first), rolling latencies, and a
  * plain-language [note] for the "collecting context" / "forecast unavailable" states — every
@@ -89,6 +101,8 @@ data class InferenceState(
     val lastCycleDurationMs: Long? = null,
     /** `false` when the selected model is served by the [BackendId.STUB] fallback (no real `.pte`). */
     val realBackendAvailable: Boolean = true,
+    /** Non-null while the WARMUP gate is withholding forecasts (predictions cleared); null once met. */
+    val warmup: WarmupProgress? = null,
     val note: String? = null,
 ) {
     val selectedPrediction: ModelPrediction? get() = predictions.firstOrNull { it.selected }

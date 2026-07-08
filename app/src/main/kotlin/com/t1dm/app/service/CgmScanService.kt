@@ -16,12 +16,18 @@ import com.t1dm.alerts.AndroidAlarmNotifier
 import com.t1dm.app.T1dmApplication
 import com.t1dm.app.di.AppContainer
 import com.t1dm.cgm.BleAdvertScanner
+import com.t1dm.core.model.BolusPreset
 import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.CgmSourceDescriptor
 import com.t1dm.core.model.CgmSourceId
 import com.t1dm.core.model.InferenceCause
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
+import com.t1dm.data.curve.CurveEngine
+import com.t1dm.data.db.DoseKind
+import com.t1dm.data.db.LoggedDoseEntity
+import com.t1dm.data.db.LoggedMealEntity
+import kotlin.math.sin
 import com.t1dm.inference.SyntheticContext
 import com.t1dm.sensors.RoomStepSampleWriter
 import com.t1dm.sensors.StepBucketer
@@ -221,8 +227,114 @@ class CgmScanService : LifecycleService() {
                 token = intent.getStringExtra(EXTRA_TOKEN).orEmpty(),
                 label = intent.getStringExtra(EXTRA_LABEL) ?: "local",
             )
+            // ── Phase-4 verification hooks (drive the REAL container writers / gate paths) ──
+            ACTION_SEED_CONTEXT -> seedMeasuredContext(intent.getDoubleExtra(EXTRA_HOURS, 25.0))
+            ACTION_RUN_GRID_TICK -> lifecycleScope.launch {
+                container.inferenceController.refreshModels()
+                container.inferenceController.runFromHistory(
+                    cause = InferenceCause.GRID_TICK, nowMs = System.currentTimeMillis(),
+                )
+            }
+            ACTION_SET_WARMUP -> lifecycleScope.launch {
+                container.setWarmupHours(intent.getIntExtra(EXTRA_HOURS, 24))
+            }
+            ACTION_LOG_MEAL -> logMeal(
+                grams = intent.getDoubleExtra(EXTRA_GRAMS, 60.0),
+                gi = intent.getDoubleExtra(EXTRA_GI, 80.0),
+                ageMin = intent.getIntExtra(EXTRA_AGE_MIN, 0),
+            )
+            ACTION_LOG_BOLUS -> logBolus(
+                units = intent.getDoubleExtra(EXTRA_UNITS, 4.0),
+                ageMin = intent.getIntExtra(EXTRA_AGE_MIN, 0),
+            )
+            ACTION_LOG_MOOD -> lifecycleScope.launch {
+                container.saveMood(intent.getIntExtra(EXTRA_MOOD, 3))
+            }
+            ACTION_LOG_NOTE -> lifecycleScope.launch {
+                container.saveNote(intent.getStringExtra(EXTRA_TEXT) ?: "verify note")
+            }
         }
         return START_STICKY
+    }
+
+    /**
+     * Debug: log a meal. `ageMin == 0` drives the REAL [AppContainer.logCarb] (curve reconstruction
+     * + carbs series enqueue), matching a Meals-screen tap. `ageMin > 0` backdates the `logged_meal`
+     * row so its appearance (Ra) curve sits INSIDE the context window — used to make the dashboard
+     * forecast reshape visibly for the conditioning check (§3.3).
+     */
+    private fun logMeal(grams: Double, gi: Double, ageMin: Int) {
+        lifecycleScope.launch {
+            if (ageMin <= 0) {
+                container.logCarb(grams, gi)
+            } else {
+                val now = System.currentTimeMillis()
+                val ts = snapToGrid(now - ageMin * 60_000L)
+                val (k, theta, dur) = CurveEngine.Presets.carbGammaForGi(gi)
+                container.repository.logMeal(
+                    LoggedMealEntity(
+                        tsMs = ts, grams = grams, gi = gi, k = k, theta = theta,
+                        durationMin = dur, customCurve = null,
+                        tzOffsetMin = TimeZone.getDefault().getOffset(ts) / 60_000,
+                        note = "backdated", updatedAt = now,
+                    ),
+                )
+            }
+            Timber.tag(TAG).i("LOG_MEAL grams=%.0f gi=%.0f ageMin=%d", grams, gi, ageMin)
+        }
+    }
+
+    /**
+     * Debug: log a bolus. `ageMin == 0` drives the REAL [AppContainer.logBolus] (enqueue included);
+     * `ageMin > 0` backdates the `logged_dose` so its PK action pulls down inside the context window.
+     */
+    private fun logBolus(units: Double, ageMin: Int) {
+        lifecycleScope.launch {
+            if (ageMin <= 0) {
+                container.logBolus(units, BolusPreset.NOVORAPID)
+            } else {
+                val now = System.currentTimeMillis()
+                val ts = snapToGrid(now - ageMin * 60_000L)
+                val (k, theta, dur) = CurveEngine.Presets.bolusGammaParams(units)
+                container.repository.logLoggedDose(
+                    LoggedDoseEntity(
+                        tsMs = ts, kind = DoseKind.BOLUS, units = units, durationMin = dur,
+                        k = k, theta = theta, kaPerHour = null, kePerHour = null,
+                        tzOffsetMin = TimeZone.getDefault().getOffset(ts) / 60_000,
+                        note = "backdated", updatedAt = now,
+                    ),
+                )
+            }
+            Timber.tag(TAG).i("LOG_BOLUS units=%.1f ageMin=%d", units, ageMin)
+        }
+    }
+
+    /**
+     * Debug: bulk-seed [hours] of MEASURED, NORMAL grid-aligned readings on the active source so the
+     * WARMUP numerator ([RoomBgHistoryProvider.measuredStepsInWindow]) and the context history both
+     * have real signal to work with (sensor-free). Deterministic diurnal wave in a sane band.
+     */
+    private fun seedMeasuredContext(hours: Double) {
+        lifecycleScope.launch {
+            val src = ensureActiveSource()
+            val now = System.currentTimeMillis()
+            val anchor = snapToGrid(now)
+            val steps = (hours * 60.0 / 5.0).toInt().coerceIn(1, 4096)
+            for (i in 0 until steps) {
+                val ts = anchor - (steps - 1L - i) * GRID_MS
+                val bg = (120.0 + 30.0 * sin(i / 20.0)).coerceIn(70.0, 200.0)
+                container.repository.upsertReading(
+                    CgmReading(
+                        sourceId = src, tsMs = ts, bgMgdl = bg.toInt(),
+                        trendTenthsPerMin = 0, minFromStart = i, quality = 100,
+                        provenance = ReadingProvenance.MEASURED, flag = ReadingFlag.NORMAL,
+                        tzOffsetMin = TimeZone.getDefault().getOffset(ts) / 60_000,
+                        rxWallMs = ts, rssi = -60,
+                    ),
+                )
+            }
+            Timber.tag(TAG).i("SEED_CONTEXT hours=%.1f steps=%d src=%s", hours, steps, src.value)
+        }
     }
 
     /**
@@ -379,6 +491,13 @@ class CgmScanService : LifecycleService() {
         const val ACTION_RUN_CYCLE = "com.t1dm.app.RUN_CYCLE"
         const val ACTION_FORCE_DEGENERATE = "com.t1dm.app.FORCE_DEGENERATE"
         const val ACTION_SET_SERVER = "com.t1dm.app.SET_SERVER"
+        const val ACTION_SEED_CONTEXT = "com.t1dm.app.SEED_CONTEXT"
+        const val ACTION_RUN_GRID_TICK = "com.t1dm.app.RUN_GRID_TICK"
+        const val ACTION_SET_WARMUP = "com.t1dm.app.SET_WARMUP"
+        const val ACTION_LOG_MEAL = "com.t1dm.app.LOG_MEAL"
+        const val ACTION_LOG_BOLUS = "com.t1dm.app.LOG_BOLUS"
+        const val ACTION_LOG_MOOD = "com.t1dm.app.LOG_MOOD"
+        const val ACTION_LOG_NOTE = "com.t1dm.app.LOG_NOTE"
         const val EXTRA_BG = "bg"
         const val EXTRA_AGE_MIN = "ageMin"
         const val EXTRA_WARMUP = "warmup"
@@ -387,6 +506,12 @@ class CgmScanService : LifecycleService() {
         const val EXTRA_URL = "url"
         const val EXTRA_TOKEN = "token"
         const val EXTRA_LABEL = "label"
+        const val EXTRA_HOURS = "hours"
+        const val EXTRA_GRAMS = "grams"
+        const val EXTRA_GI = "gi"
+        const val EXTRA_UNITS = "units"
+        const val EXTRA_MOOD = "mood"
+        const val EXTRA_TEXT = "text"
 
         private const val GRID_MS = 300_000L
         private fun snapToGrid(ts: Long): Long =

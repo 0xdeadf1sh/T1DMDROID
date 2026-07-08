@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -26,6 +27,7 @@ import com.t1dm.core.model.ModelPrediction
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.core.model.UnitSpace
+import com.t1dm.core.model.WarmupProgress
 import com.t1dm.ui.graph.CurveOverlayFrame
 import com.t1dm.ui.graph.CurveOverlayToggles
 import com.t1dm.ui.graph.GlucoseGraph
@@ -59,6 +61,7 @@ fun DashboardScreen(
     kovatchevF: ((Double) -> Double)? = null,
     iobCob: IobCobReadout? = null,
     curveChannels: (suspend (gridStartMs: Long, nSteps: Int) -> Pair<DoubleArray, DoubleArray>)? = null,
+    warmup: WarmupProgress? = null,
 ) {
     val frame by produceState(GraphFrame.EMPTY, readings, unit) {
         value = graphFrameOf(readings, unit, kovatchevF = kovatchevF)
@@ -89,6 +92,7 @@ fun DashboardScreen(
 
     Column(Modifier.fillMaxSize()) {
         DashboardHeader(latest, activeSourceName, unit)
+        warmup?.let { WarmupBanner(it) }
         if (iobCob != null || curveChannels != null) {
             OverlayControls(iobCob, toggles) { toggles = it }
         }
@@ -105,6 +109,31 @@ fun DashboardScreen(
 
 private const val STEP_MS: Long = 300_000L
 private const val MAX_OVERLAY_STEPS: Int = 4032 // ~14 days of 5-min buckets
+
+/**
+ * The WARMUP-gate banner (inference-runtime.md): while fewer than the configured hours of MEASURED
+ * context have accrued, the forecast overlay is empty and this states the progress. Cleared the
+ * moment the gate is met and a cycle publishes.
+ */
+@Composable
+private fun WarmupBanner(warmup: WarmupProgress) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
+        Text(
+            "Collecting context — %.1f / %.0f h of measured BG".format(warmup.measuredHours, warmup.requiredHours),
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.primary,
+        )
+        LinearProgressIndicator(
+            progress = { warmup.fraction.toFloat() },
+            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+        )
+        Text(
+            "Forecasts resume once enough real history exists to condition on.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+        )
+    }
+}
 
 /** IOB/COB read-out + the carb/insulin overlay toggles (PLAN.private.md Phase 4). */
 @Composable

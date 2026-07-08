@@ -1,7 +1,7 @@
 package com.t1dm.sync
 
 import com.t1dm.core.model.ModelPrediction
-import com.t1dm.data.T1dmRepository
+import com.t1dm.data.OutboxSink
 import com.t1dm.data.db.OutboxKind
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -45,7 +45,7 @@ internal const val INGEST_DEDUP_PREFIX = "ingest:sample:"
  * "dedup BEFORE send" that makes the non-idempotent `PUT /v1/predictions` safe: the same
  * cycle+models batch can be enqueued only once.
  */
-class OutboxEnqueuer(private val repo: T1dmRepository) {
+class OutboxEnqueuer(private val repo: OutboxSink) {
 
     /** All running models' forecasts for one cycle, as a single `PUT /v1/predictions` batch. */
     suspend fun enqueuePredictions(cycleTsMs: Long, preds: List<ModelPrediction>, nowMs: Long): Long {

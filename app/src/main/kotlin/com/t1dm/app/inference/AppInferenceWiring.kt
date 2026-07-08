@@ -53,8 +53,36 @@ class RoomBgHistoryProvider(
             if (v != null) last = v
             out[i] = last
         }
-        // Anchor freshness on the last MEASURED reading (interpolated points never reset it, §3.6-D).
-        val lastMeasured = readings.lastOrNull { it.provenance == ReadingProvenance.MEASURED }?.tsMs ?: anchor
-        return BgSeries(out, lastMeasured)
+        // Anchor freshness on the MOST-RECENT MEASURED reading (interpolated points never reset it,
+        // §3.6-D). `readings` is ordered newest-first (DAO `ORDER BY tsMs DESC`), so the freshest
+        // measured sample is the FIRST match — `lastOrNull` would pick the oldest and wrongly age the
+        // anchor (⇒ perpetual STALE + a fan anchored into the far past, off-screen).
+        val lastMeasured = readings.firstOrNull { it.provenance == ReadingProvenance.MEASURED }?.tsMs ?: anchor
+        return BgSeries(out, anchorTsMs = lastMeasured, gridStartMs = start)
+    }
+
+    /**
+     * WARMUP-gate numerator (inference-runtime.md): how many MEASURED (non-interpolated), NORMAL
+     * readings sit inside the trailing [windowSteps] grid slots. Interpolated carry-forward and
+     * WARMUP/INVALID rows do NOT count — only real sensor signal advances warmup.
+     */
+    override suspend fun measuredStepsInWindow(windowSteps: Int): Int {
+        if (windowSteps <= 0) return 0
+        val srcId = registry.active.value ?: repository.activeSourceId() ?: return 0
+        val readings = repository.recentReadings(srcId, windowSteps + 12)
+            .filter {
+                it.bgMgdl != null &&
+                    it.flag == ReadingFlag.NORMAL &&
+                    it.provenance == ReadingProvenance.MEASURED
+            }
+        if (readings.isEmpty()) return 0
+        val anchor = readings.maxOf { it.tsMs }
+        val windowStart = anchor - (windowSteps - 1L) * GRID_MS
+        // Distinct 5-min grid slots covered by a measured reading within the trailing window.
+        return readings.asSequence()
+            .filter { it.tsMs >= windowStart }
+            .map { it.tsMs / GRID_MS }
+            .distinct()
+            .count()
     }
 }

@@ -58,7 +58,10 @@ import com.t1dm.data.db.LoggedMealEntity
 import com.t1dm.data.db.NoteEntity
 import com.t1dm.sync.NoteWriteDto
 import com.t1dm.sync.SeriesPointDto
+import com.t1dm.inference.ContextChannelSource
+import com.t1dm.inference.FutureOverrideSource
 import com.t1dm.inference.InferenceController
+import com.t1dm.inference.InferenceControllerDefaults
 import com.t1dm.inference.buildInferenceController
 import com.t1dm.sync.CatchUpCoordinator
 import com.t1dm.sync.DrainConfig
@@ -80,9 +83,19 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapLatest
+import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.plus
+
+/** kv key + bound for the WARMUP setting (inference-runtime.md). */
+private const val KV_WARMUP_HOURS = "inference.warmup_hours"
+private const val WARMUP_HOURS_MAX = 72
 
 /**
  * The manual composition root (PLAN.private.md — "DI/wiring: manual is fine"). Built once in
@@ -143,10 +156,44 @@ class AppContainer(context: Context) {
             // Phase 3: the dedicated `prediction` table is the source of truth, and every cycle
             // enqueues a deduped `PREDICTIONS` batch for all running models (retires the kv blob).
             predictionStore = RoomPredictionStore(repository, outboxEnqueuer, syncStatusStore),
+            // Phase 4 completion: the main-view forecast now conditions feat 1 / feat 2 on the
+            // reconstructed carb-appearance + insulin-action channels (PLAN §3.3), not `normalize(0)`.
+            contextChannels = ContextChannelSource { gridStartMs, nSteps ->
+                dashboardCurveChannels(gridStartMs, nSteps)
+            },
+            // ...and the PREDICTION ZONE on the COMMITTED dose tails (already-logged meals/doses still
+            // absorbing past the now-boundary), via the SAME curve engine the calculator uses — so a
+            // just-logged meal RAISES the forecast rather than pulling it down (PLAN §3.3).
+            futureOverrides = FutureOverrideSource { rollStartMs, nFutureSteps ->
+                dashboardFutureChannels(rollStartMs, nFutureSteps)
+            },
+            // WARMUP gate: read the user's setting fresh each cycle (inference-runtime.md).
+            warmupHoursProvider = { warmupHours() },
         )
     }
 
     val inferenceState: StateFlow<InferenceState> get() = inferenceController.state
+
+    // ── WARMUP setting (inference-runtime.md) — kv-backed, floored at the model MIN_CONTEXT ──────
+
+    /** The trailing-window WARMUP requirement, in hours. Default 24; floored at the model MIN_CONTEXT
+     *  (8 h) so the gate can never fall below the context the model needs to run at all. */
+    suspend fun warmupHours(): Double =
+        (repository.getKv(KV_WARMUP_HOURS)?.toDoubleOrNull() ?: InferenceControllerDefaults.WARMUP_HOURS)
+            .coerceAtLeast(InferenceControllerDefaults.MIN_WARMUP_HOURS.toDouble())
+
+    /** Settings read model: the current whole-hour warmup window (floored), for the human-readable row. */
+    val warmupHoursSetting: Flow<Int> = repository.observeKv(KV_WARMUP_HOURS).map { raw ->
+        (raw?.toDoubleOrNull() ?: InferenceControllerDefaults.WARMUP_HOURS)
+            .coerceAtLeast(InferenceControllerDefaults.MIN_WARMUP_HOURS.toDouble())
+            .toInt()
+    }
+
+    /** Persist the warmup window (whole hours), clamped to `[MIN_CONTEXT, 72]`. Off-main. */
+    suspend fun setWarmupHours(hours: Int) {
+        val clamped = hours.coerceIn(InferenceControllerDefaults.MIN_WARMUP_HOURS, WARMUP_HOURS_MAX)
+        repository.putKv(KV_WARMUP_HOURS, clamped.toString(), System.currentTimeMillis())
+    }
 
     /** Discover on-device models + rehydrate the last predictions once at startup (off-main). */
     fun startInference() {
@@ -310,6 +357,18 @@ class AppContainer(context: Context) {
     suspend fun dashboardCurveChannels(gridStartMs: Long, nSteps: Int): Pair<DoubleArray, DoubleArray> {
         val ch = channelBuilder.contextChannels(gridStartMs, nSteps)
         return ch.carb to ch.insulin
+    }
+
+    /**
+     * The COMMITTED dose tails over the prediction horizon `[rollStartMs, +nFutureSteps·STEP)` — the
+     * already-logged meals/doses (+ auto-extended basal) still absorbing past the now-boundary (PLAN
+     * §3.3). `announced`/`candidate` are empty here: those are the calculator's what-if injections, and
+     * the committed logged doses are carried by `futureOverrides`' OWN store reads (passing them again
+     * as `announced` would double-count). This is exactly the `RollingForecaster` baseline-roll input,
+     * so the dashboard's directional response to a logged dose matches the calculator's. Off-main. */
+    suspend fun dashboardFutureChannels(rollStartMs: Long, nFutureSteps: Int): Pair<DoubleArray, DoubleArray> {
+        val fc = channelBuilder.futureOverrides(rollStartMs, nFutureSteps, announced = emptyList(), candidate = null)
+        return fc.carb to fc.insulin
     }
 
     /** IOB/COB now, with §3.6-F provenance (logged doses only; last-logged age; basal presence). */
@@ -520,6 +579,24 @@ class AppContainer(context: Context) {
     val latestReading: Flow<CgmReading?> = activeSource.flatMapLatest { d ->
         if (d == null) flowOf(null) else repository.observeLatestReading(d.id)
     }
+
+    /**
+     * IOB/COB (§3.6-F) recomputed off-main on ANY trigger that can change it: a reading emit AND a
+     * dose/meal write. Every log path (`logCarb`/`logBolus`/`logBasal`, `MealsController.logMeal`,
+     * `InsulinController.logDose`) folds its amount into a `sample` row via `mergeSampleInTx`, so
+     * `observeSamples` fires on every write — the fix for the fresh-log staleness (the old per-screen
+     * `produceState(readings.size)` only refreshed on a reading emit ⇒ 0 U/0 g until the next reading).
+     * `mapLatest` cancels an in-flight compute on a newer trigger; collected on [appScope] (default
+     * dispatcher) and the store reads themselves hop to IO, so this never touches the main thread.
+     */
+    val iobCob: StateFlow<IobCobReadout?> =
+        merge(
+            dashboardReadings.map { },
+            repository.observeSamples(0L, Long.MAX_VALUE).map { },
+        )
+            .onStart { emit(Unit) }
+            .mapLatest { runCatching { iobCobNow() }.getOrNull() }
+            .stateIn(appScope, SharingStarted.WhileSubscribed(5_000), null)
 
     /** Set once [com.t1dm.app.service.CgmScanService] is up, so the UI can reflect service state. */
     val serviceRunning = MutableStateFlow(false)

@@ -23,6 +23,7 @@ object SyntheticContext {
         }
         val step = 300_000L
         val gridAnchor = Math.floorDiv(anchorTsMs, step) * step
-        return BgSeries(mgdl, gridAnchor)
+        val gridStart = gridAnchor - (steps - 1).toLong() * step
+        return BgSeries(mgdl, anchorTsMs = gridAnchor, gridStartMs = gridStart)
     }
 }

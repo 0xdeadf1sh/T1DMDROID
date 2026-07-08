@@ -49,7 +49,7 @@ import kotlinx.coroutines.withContext
 class T1dmRepository(
     private val db: AppDatabase,
     private val dispatchers: T1dmDispatchers,
-) {
+) : OutboxSink {
     private val io get() = dispatchers.io
 
     private val sources get() = db.cgmSourceDao()
@@ -380,7 +380,7 @@ class T1dmRepository(
     // ─── Outbox ─────────────────────────────────────────────────────────────────────────────
 
     /** Thin enqueue-on-write (PLAN Phase 1); dedup is enforced by the unique `dedupKey` index. */
-    suspend fun enqueue(
+    override suspend fun enqueue(
         kind: OutboxKind,
         dedupKey: String,
         payload: ByteArray,

@@ -85,6 +85,30 @@ class ChannelBuilderTest {
     }
 
     @Test
+    fun futureOverrides_committed_tails_land_in_correct_channel_no_swap() = runTest {
+        // The exact call the DASHBOARD's FutureOverrideSource makes (announced/candidate empty): the
+        // committed logged meal + bolus, already absorbing before the roll start, must carry their
+        // TAILS into the prediction zone in the RIGHT channel — carb→feat1, insulin→feat2, no swap —
+        // so the main-view forecast RAISES on a committed meal (not the old zeroed pred-zone dip).
+        val rollStart = 4_000_000_000_000L
+        val committedMeal = engine.carbEvent(grams = 50.0, startMs = rollStart - 15 * 60_000L, k = 3.0, theta = 20.0, durMin = 240.0)
+        val committedBolus = engine.bolusEvent(units = 4.0, startMs = rollStart - 15 * 60_000L)
+        val builder = ChannelBuilder(engine, FakeStore(carbs = listOf(committedMeal), insulin = listOf(committedBolus)))
+
+        val fc = builder.futureOverrides(rollStart, nSteps = 48, announced = emptyList(), candidate = null)
+
+        // Both committed tails are present and positive (committed action carried past the boundary)…
+        assertTrue("committed carb tail must appear in the carb channel", fc.carb.sum() > 0.0)
+        assertTrue("committed insulin tail must appear in the insulin channel", fc.insulin.sum() > 0.0)
+        // …and neither leaks a spurious total larger than its source event (no cross-contamination).
+        assertTrue(fc.carb.sum() <= 50.0 + 1e-9 && fc.insulin.sum() <= 4.0 + 1e-9)
+        assertTrue(fc.carb.all { it >= 0.0 } && fc.insulin.all { it >= 0.0 })
+        // Remaining-on-board at the roll start is a fraction of each dose (some already acted).
+        assertTrue(fc.cobAtStart > 0.0 && fc.cobAtStart < 50.0)
+        assertTrue(fc.iobAtStart > 0.0 && fc.iobAtStart < 4.0)
+    }
+
+    @Test
     fun futureOverrides_extends_basal_background() = runTest {
         val rollStart = 3_000_000_000_000L
         val sched = BasalSchedule(

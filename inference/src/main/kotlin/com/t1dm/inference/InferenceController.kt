@@ -52,6 +52,16 @@ class InferenceController(
     private val freshnessThresholdMs: Long = 15 * 60_000L,
     /** Manual running-set cap (PLAN.private.md §2.3). Default 1 selected model this phase. */
     private val maxRunning: Int = 1,
+    /** Reconstructed carb/insulin context channels (PLAN §3.3); null ⇒ `normalize(0)` baseline. */
+    private val contextChannels: ContextChannelSource? = null,
+    /** Committed dose tails carried into the PREDICTION ZONE (PLAN §3.3); null ⇒ `normalize(0)`
+     *  baseline. Distinct from [contextChannels] (the past): this is the already-logged action that
+     *  keeps absorbing past the now-boundary, so the forecast responds to a just-logged dose the way
+     *  the calculator's baseline roll does. See [FutureOverrideSource]. */
+    private val futureOverrides: FutureOverrideSource? = null,
+    /** The user's `warmupHours` setting, read FRESH each cycle (kv-backed). Floored at MIN_CONTEXT
+     *  (8 h) inside the gate. inference-runtime.md — the WARMUP gate. */
+    private val warmupHoursProvider: suspend () -> Double = { DEFAULT_WARMUP_HOURS },
 ) {
     private val _state = MutableStateFlow(InferenceState())
     val state: StateFlow<InferenceState> = _state.asStateFlow()
@@ -217,9 +227,30 @@ class InferenceController(
         if (descAny == null) { refreshOrNote(); return }
         val minSteps = descAny.minContextPatches * GraphIo.PATCH_DIM / 3      // 16·6 = 96 steps (8 h)
         val maxSteps = descAny.maxContextPatches * GraphIo.PATCH_DIM / 3      // 48·6 = 288 steps (24 h)
+
+        // ── WARMUP gate (inference-runtime.md): withhold forecasts until at least `warmupHours` of
+        //    MEASURED (non-interpolated) context has accrued, floored at the model's MIN_CONTEXT.
+        //    DISTINCT from the per-cycle freshness gate below; both remain in force.
+        val minContextHours = minSteps * GRID_MS / MS_PER_HOUR
+        val requiredHours = warmupHoursProvider().coerceAtLeast(minContextHours)
+        val requiredSteps = Math.round(requiredHours * MS_PER_HOUR / GRID_MS).toInt()
+        val measuredSteps = runCatching { history.measuredStepsInWindow(requiredSteps) }.getOrDefault(0)
+        if (measuredSteps < requiredSteps) {
+            val measuredHours = measuredSteps * GRID_MS / MS_PER_HOUR
+            _state.value = _state.value.copy(
+                predictions = emptyList(), // clear the overlay while warming
+                lastCause = InferenceCause.COLLECTING_CONTEXT,
+                warmup = com.t1dm.core.model.WarmupProgress(measuredHours, requiredHours),
+                note = "collecting context — %.1f / %.0f h of measured data".format(measuredHours, requiredHours),
+            )
+            Timber.tag(TAG).i("warmup: %.1f/%.0f h measured — forecasts suppressed", measuredHours, requiredHours)
+            return
+        }
+
         val series = history.recentBgSeries(maxSteps, minSteps)
         if (series == null) {
             _state.value = _state.value.copy(
+                predictions = emptyList(),
                 lastCause = InferenceCause.COLLECTING_CONTEXT,
                 note = "collecting context — the model needs ≥${descAny.minContextPatches} patches (8 h) of BG",
             )
@@ -240,9 +271,23 @@ class InferenceController(
         val t0 = System.nanoTime()
         val preds = ArrayList<ModelPrediction>(loaded.size)
 
+        // ONE shared context build across the running set: the carb-appearance (feat 1) + insulin-
+        // action (feat 2) channels reconstructed from the logged meals/doses/basal (PLAN §3.3),
+        // aligned to the BG grid. Model-independent (the per-desc normalization happens in
+        // build_context); a null/failed source falls back to the `normalize(0)` no-dose baseline.
+        val doseChannels = buildDoseChannels(series)
+
+        // ONE shared PREDICTION-ZONE build: the COMMITTED dose tails (already-logged meals/doses still
+        // absorbing past the now-boundary) reconstructed via the SAME curve engine the calculator's
+        // baseline roll uses (PLAN §3.3). Carried into build_context's announced-future slots so a
+        // just-logged meal RAISES (and a just-logged insulin LOWERS) the main-view forecast, instead
+        // of appearing in the past then vanishing at the boundary (an impossible drop-off ⇒ wrong dip).
+        // Model-independent (rollStartMs is the grid boundary; predSteps is the fixed pred zone).
+        val futureChannels = buildFutureChannels(series, loaded.values.first().bundle.descriptor)
+
         // Serial fan-out over the running set (never concurrent on the one command queue).
         for ((id, entry) in loaded) {
-            val pred = runCatching { runOne(entry, id == selectedId, series, cycleTs, stale) }
+            val pred = runCatching { runOne(entry, id == selectedId, series, doseChannels, futureChannels, cycleTs, stale) }
                 .getOrElse {
                     Timber.tag(TAG).w(it, "model %s cycle failed", id); null
                 }
@@ -259,6 +304,7 @@ class InferenceController(
             lastCause = cause,
             lastCycleDurationMs = durationMs,
             realBackendAvailable = loaded[selectedId]?.real ?: false,
+            warmup = null, // a published cycle clears the warmup banner
             note = if (stale) "forecast STALE — last real BG is ${(nowMs - series.anchorTsMs) / 60_000} min old" else null,
         )
         runCatching { predictionStore.persist(cycleTs, preds) }
@@ -273,11 +319,13 @@ class InferenceController(
         entry: Entry,
         selected: Boolean,
         series: BgSeries,
+        doseChannels: DoseChannels,
+        futureChannels: DoseChannels?,
         cycleTs: Long,
         stale: Boolean,
     ): ModelPrediction {
         val desc = entry.bundle.descriptor
-        val ctx = buildContext(desc, series.mgdl)
+        val ctx = buildContext(desc, series.mgdl, doseChannels, futureChannels)
         val input = GraphIo.graphInput(ctx, desc.negFill)
 
         val t0 = System.nanoTime()
@@ -309,12 +357,72 @@ class InferenceController(
         )
     }
 
-    /** Carb/insulin context is the `normalize(0)` no-dose baseline this phase (Phase 4 = curves). */
-    private suspend fun buildContext(desc: ModelDescriptor, mgdl: DoubleArray): BuiltContext =
+    /** The two shared context channels for a cycle, index-aligned to the BG grid. */
+    private class DoseChannels(val carb: DoubleArray, val insulin: DoubleArray)
+
+    /**
+     * Reconstruct the carb-appearance + insulin-action channels ONCE for the cycle from the logged
+     * events (PLAN §3.3), aligned to `series.gridStartMs`. Off-main via the source's own dispatcher.
+     * A missing/failed source or a length mismatch falls back to the `normalize(0)` no-dose baseline.
+     */
+    private suspend fun buildDoseChannels(series: BgSeries): DoseChannels {
+        val n = series.mgdl.size
+        val src = contextChannels ?: return DoseChannels(DoubleArray(n), DoubleArray(n))
+        return runCatching {
+            val (carb, insulin) = src.channels(series.gridStartMs, n)
+            if (carb.size == n && insulin.size == n) DoseChannels(carb, insulin)
+            else DoseChannels(DoubleArray(n), DoubleArray(n))
+        }.getOrElse {
+            Timber.tag(TAG).w(it, "context channel build failed; falling back to no-dose baseline")
+            DoseChannels(DoubleArray(n), DoubleArray(n))
+        }
+    }
+
+    /**
+     * Reconstruct the COMMITTED prediction-zone dose tails ONCE for the cycle (PLAN §3.3). Aligned to
+     * the grid boundary one step past the last context sample (`gridStartMs + n·STEP`) — so the tail
+     * carried here continues seamlessly from the [contextChannels] past. Length = the model's fixed
+     * pred zone (P·S). A missing/failed source or mismatch ⇒ `null`, i.e. the `normalize(0)` no-dose
+     * baseline (exact pre-Phase-4c behaviour). Uses the SAME `ChannelBuilder.futureOverrides` engine
+     * as `RollingForecaster`, so the directional response is identical.
+     */
+    private suspend fun buildFutureChannels(series: BgSeries, desc: ModelDescriptor): DoseChannels? {
+        val src = futureOverrides ?: return null
+        val predSteps = predSteps(desc)
+        if (predSteps <= 0) return null
+        val rollStartMs = series.gridStartMs + series.mgdl.size.toLong() * GRID_MS
+        return runCatching {
+            val (carb, insulin) = src.overrides(rollStartMs, predSteps)
+            DoseChannels(carb, insulin)
+        }.getOrElse {
+            Timber.tag(TAG).w(it, "future-override build failed; prediction zone falls back to no-dose baseline")
+            null
+        }
+    }
+
+    /** The fixed prediction-zone step count for a descriptor: P·S (mirrors RollingForecaster). */
+    private fun predSteps(desc: ModelDescriptor): Int =
+        (desc.predictionHorizonHours * STEPS_PER_HOUR / desc.patchSize) * desc.patchSize
+
+    /**
+     * Build the normalized context, conditioning feat 1 (carb) / feat 2 (insulin) on the past
+     * reconstructed channels [ch] AND the prediction zone on the COMMITTED future tails [future]
+     * (PLAN §3.3) — so the main-view forecast reflects logged meals/doses across the now-boundary.
+     * `future == null` seeds the pred-zone dose slots to `normalize(0)` (no committed dose / unwired).
+     * Feat order is fixed carb-then-insulin at every `native.buildContext` slot (context AND
+     * announced), identical to `RollingForecaster` — no swap.
+     */
+    private suspend fun buildContext(
+        desc: ModelDescriptor,
+        mgdl: DoubleArray,
+        ch: DoseChannels,
+        future: DoseChannels?,
+    ): BuiltContext =
         withContext(dispatchers.default) {
-            val bg = mgdl.toList()
-            val zeros = List(mgdl.size) { 0.0 }
-            native.buildContext(desc, bg, zeros, zeros, null, null)
+            val predSteps = predSteps(desc)
+            val annCarb = future?.let { f -> List(predSteps) { f.carb.getOrElse(it) { 0.0 } } }
+            val annInsulin = future?.let { f -> List(predSteps) { f.insulin.getOrElse(it) { 0.0 } } }
+            native.buildContext(desc, mgdl.toList(), ch.carb.toList(), ch.insulin.toList(), annCarb, annInsulin)
         }
 
     private fun runningModels(): List<RunningModel> = loaded.map { (id, e) ->
@@ -345,6 +453,11 @@ class InferenceController(
     private companion object {
         const val TAG = "CycleRunner"
         const val GRID_MS = 300_000L
+        const val MS_PER_HOUR = 3_600_000.0
+        /** 5-min grid ⇒ 12 steps/hour (mirrors calc HorizonPolicy.STEPS_PER_HOUR). */
+        const val STEPS_PER_HOUR = 12
+        /** inference-runtime.md default warmup window (h); the setting floors at MIN_CONTEXT = 8 h. */
+        const val DEFAULT_WARMUP_HOURS = 24.0
         const val N_QUANTILES = 7
         const val CARRY_SPREAD = 0.0 // single-window (≤2 h) this phase; rolling widening is Phase 4
         const val LATENCY_WINDOW = 60

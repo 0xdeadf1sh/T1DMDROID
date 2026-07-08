@@ -12,11 +12,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import com.t1dm.core.model.IobCobReadout
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import com.t1dm.app.di.AppContainer.BolusAdviceUi
@@ -45,6 +43,7 @@ import com.t1dm.feature.network.NetworkScreen
 import com.t1dm.feature.security.SecurityScreen
 import com.t1dm.feature.settings.CgmSettingsScreen
 import com.t1dm.feature.settings.SettingsScreen
+import com.t1dm.feature.settings.WarmupSettingsScreen
 import com.t1dm.feature.stats.StatsScreen
 
 private data class Destination(val route: String, val label: String)
@@ -105,10 +104,8 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
             val latest by container.latestReading.collectAsState(null)
             val active by container.activeSource.collectAsState(null)
             val inference by container.inferenceState.collectAsState(InferenceState())
-            // IOB/COB recomputed off-main whenever the reading stream advances (~5 min cadence).
-            val iobCob by produceState<IobCobReadout?>(null, readings.size) {
-                value = runCatching { container.iobCobNow() }.getOrNull()
-            }
+            // IOB/COB recomputed off-main on any reading emit OR dose/meal write (shared StateFlow).
+            val iobCob by container.iobCob.collectAsState()
             DashboardScreen(
                 readings = readings,
                 latest = latest,
@@ -118,6 +115,7 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 kovatchevF = container.nativeCore::kovatchevF,
                 iobCob = iobCob,
                 curveChannels = container::dashboardCurveChannels,
+                warmup = inference.warmup,
             )
         }
         composable("stats") { StatsScreen() }
@@ -138,15 +136,12 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
         }
         composable("meals") {
             val scope = rememberCoroutineScope()
-            var refresh by remember { mutableStateOf(0) }
-            val iobCob by produceState<IobCobReadout?>(null, refresh) {
-                value = runCatching { container.iobCobNow() }.getOrNull()
-            }
+            val iobCob by container.iobCob.collectAsState()
             Column {
                 MealsScreen(
                     iobCob = iobCob,
                     previewCurve = container.previewCarbCurve,
-                    onLogMeal = { grams, gi -> scope.launch { container.logCarb(grams, gi); refresh++ } },
+                    onLogMeal = { grams, gi -> scope.launch { container.logCarb(grams, gi) } },
                 )
                 TextButton(onClick = { navController.navigate("meals/builder") }) {
                     Text("Open meal builder →")
@@ -171,16 +166,13 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
         }
         composable("insulin") {
             val scope = rememberCoroutineScope()
-            var refresh by remember { mutableStateOf(0) }
-            val iobCob by produceState<IobCobReadout?>(null, refresh) {
-                value = runCatching { container.iobCobNow() }.getOrNull()
-            }
+            val iobCob by container.iobCob.collectAsState()
             Column {
                 InsulinScreen(
                     iobCob = iobCob,
                     previewBolus = container.previewBolusCurve,
-                    onLogBolus = { units, preset -> scope.launch { container.logBolus(units, preset); refresh++ } },
-                    onLogBasal = { units, preset -> scope.launch { container.logBasal(units, preset); refresh++ } },
+                    onLogBolus = { units, preset -> scope.launch { container.logBolus(units, preset) } },
+                    onLogBasal = { units, preset -> scope.launch { container.logBasal(units, preset) } },
                 )
                 TextButton(onClick = { navController.navigate("insulin/types") }) {
                     Text("Insulin types & custom curves →")
@@ -219,6 +211,15 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
             SettingsScreen(
                 onOpenCgm = { navController.navigate("settings/cgm") },
                 onOpenServer = { navController.navigate("settings/server") },
+                onOpenWarmup = { navController.navigate("settings/warmup") },
+            )
+        }
+        composable("settings/warmup") {
+            val scope = rememberCoroutineScope()
+            val hours by container.warmupHoursSetting.collectAsState(24)
+            WarmupSettingsScreen(
+                hours = hours,
+                onChange = { h -> scope.launch { container.setWarmupHours(h) } },
             )
         }
         composable("settings/server") {
