@@ -1,25 +1,45 @@
 package com.t1dm.core.nativecore
 
 import com.t1dm.core.common.NativeCore
+import com.t1dm.core.model.BuiltContext
+import com.t1dm.core.model.ChannelStat
 import com.t1dm.core.model.DecodedAdvert
+import com.t1dm.core.model.Forecast
+import com.t1dm.core.model.ForecastStatus
+import com.t1dm.core.model.ModelDescriptor
 import com.t1dm.core.model.PrevGlucose
 import uniffi.t1dm_core.CoreException
 import uniffi.t1dm_core.advertCrc32 as uniffiAdvertCrc32
+import uniffi.t1dm_core.assembleDecode as uniffiAssembleDecode
+import uniffi.t1dm_core.buildContext as uniffiBuildContext
+import uniffi.t1dm_core.causalSmooth as uniffiCausalSmooth
 import uniffi.t1dm_core.decodeAdvert as uniffiDecodeAdvert
+import uniffi.t1dm_core.denormalizeSample as uniffiDenormalizeSample
+import uniffi.t1dm_core.forecastDegeneracyCheck as uniffiForecastDegeneracyCheck
 import uniffi.t1dm_core.kovatchevF as uniffiKovatchevF
 import uniffi.t1dm_core.kovatchevFInv as uniffiKovatchevFInv
+import uniffi.t1dm_core.normalizeSample as uniffiNormalizeSample
+import uniffi.t1dm_core.parseDescriptor as uniffiParseDescriptor
 import uniffi.t1dm_core.roundtrip as uniffiRoundtrip
+import uniffi.t1dm_core.BuiltContext as UniffiBuiltContext
+import uniffi.t1dm_core.ChannelStat as UniffiChannelStat
 import uniffi.t1dm_core.DecodedAdvert as UniffiDecodedAdvert
+import uniffi.t1dm_core.Forecast as UniffiForecast
+import uniffi.t1dm_core.ForecastStatus as UniffiForecastStatus
+import uniffi.t1dm_core.ModelDescriptor as UniffiModelDescriptor
 
 /**
  * The real [NativeCore], backed by the uniffi-generated binding into the Rust `t1dm-core`
  * crate. Requires libt1dm_core.so in jniLibs (produced by the `cargoNdkBuild` task); until
  * the NDK cross-build runs, [StubNativeCore] stands in so the app runs on host-only tooling.
  *
- * The Rust `decode_advert` returns `Result`, so a short or CRC-failing payload surfaces as
- * `CoreException.Decode`; we map that to the frozen contract's `null` here. The uniffi
- * record types live under `uniffi.t1dm_core`; [toModel] projects them onto the `:core:model`
- * data classes that every downstream consumer speaks.
+ * The Rust `decode_advert` / `parse_descriptor` return `Result`, so a short or CRC-failing
+ * payload (resp. malformed descriptor) surfaces as `CoreException` and we map it to the
+ * frozen contract's `null`. The remaining pre/post fns surface a malformed shape as
+ * `CoreException` too; those are programmer errors on this side of the seam (the Rust is the
+ * numeric authority), so they propagate rather than being swallowed. The uniffi record types
+ * live under `uniffi.t1dm_core`; the [toModel]/[toUniffi] projections translate them to and
+ * from the `:core:model` data classes every downstream consumer speaks.
  */
 class UniffiNativeCore : NativeCore {
     override fun roundtrip(msg: String): String = uniffiRoundtrip(msg)
@@ -36,6 +56,45 @@ class UniffiNativeCore : NativeCore {
     override fun kovatchevF(mgdl: Double): Double = uniffiKovatchevF(mgdl)
 
     override fun kovatchevFInv(risk: Double): Double = uniffiKovatchevFInv(risk)
+
+    // ── Model pre/post pipeline (Phase 2, INFERENCE.md §§6-8) ───────────────────────
+
+    override fun parseDescriptor(json: String): ModelDescriptor? =
+        try {
+            uniffiParseDescriptor(json).toModel()
+        } catch (_: CoreException) {
+            null
+        }
+
+    override fun causalSmooth(series: List<Double>, clampMin: Double?, clampMax: Double?): List<Double> =
+        uniffiCausalSmooth(series, clampMin, clampMax)
+
+    override fun normalizeSample(desc: ModelDescriptor, bg: Double, carb: Double, insulin: Double): List<Double> =
+        uniffiNormalizeSample(desc.toUniffi(), bg, carb, insulin)
+
+    override fun denormalizeSample(desc: ModelDescriptor, z: List<Double>): List<Double> =
+        uniffiDenormalizeSample(desc.toUniffi(), z)
+
+    override fun buildContext(
+        desc: ModelDescriptor,
+        bg: List<Double>,
+        carb: List<Double>,
+        insulin: List<Double>,
+        announcedCarb: List<Double>?,
+        announcedInsulin: List<Double>?,
+    ): BuiltContext =
+        uniffiBuildContext(desc.toUniffi(), bg, carb, insulin, announcedCarb, announcedInsulin).toModel()
+
+    override fun assembleDecode(
+        desc: ModelDescriptor,
+        headRaw: List<Double>,
+        lastBg: Double,
+        carrySpread: Double,
+    ): Forecast =
+        uniffiAssembleDecode(desc.toUniffi(), headRaw, lastBg, carrySpread).toModel()
+
+    override fun forecastDegeneracyCheck(forecast: Forecast): ForecastStatus =
+        uniffiForecastDegeneracyCheck(forecast.toUniffi()).toModel()
 }
 
 private fun UniffiDecodedAdvert.toModel(): DecodedAdvert = DecodedAdvert(
@@ -48,3 +107,71 @@ private fun UniffiDecodedAdvert.toModel(): DecodedAdvert = DecodedAdvert(
     prev = prev.map { PrevGlucose(glucoseMgdl = it.glucoseMgdl, valid = it.valid, quality = it.quality) },
     crc32 = crc32,
 )
+
+private fun UniffiChannelStat.toModel(): ChannelStat = ChannelStat(mean = mean, std = std)
+
+private fun ChannelStat.toUniffi(): UniffiChannelStat = UniffiChannelStat(mean = mean, std = std)
+
+private fun UniffiModelDescriptor.toModel(): ModelDescriptor = ModelDescriptor(
+    bg = bg.toModel(),
+    carb = carb.toModel(),
+    insulin = insulin.toModel(),
+    ropeBase = ropeBase,
+    medianGlobalDim = medianGlobalDim,
+    stepBasisType = stepBasisType,
+    quantileSpreadMin = quantileSpreadMin,
+    negFill = negFill,
+    predictionHorizonHours = predictionHorizonHours,
+    maxContextPatches = maxContextPatches,
+    minContextPatches = minContextPatches,
+    patchSize = patchSize,
+    nInputFeatures = nInputFeatures,
+    conformalEnabled = conformalEnabled,
+)
+
+private fun ModelDescriptor.toUniffi(): UniffiModelDescriptor = UniffiModelDescriptor(
+    bg = bg.toUniffi(),
+    carb = carb.toUniffi(),
+    insulin = insulin.toUniffi(),
+    ropeBase = ropeBase,
+    medianGlobalDim = medianGlobalDim,
+    stepBasisType = stepBasisType,
+    quantileSpreadMin = quantileSpreadMin,
+    negFill = negFill,
+    predictionHorizonHours = predictionHorizonHours,
+    maxContextPatches = maxContextPatches,
+    minContextPatches = minContextPatches,
+    patchSize = patchSize,
+    nInputFeatures = nInputFeatures,
+    conformalEnabled = conformalEnabled,
+)
+
+private fun UniffiBuiltContext.toModel(): BuiltContext = BuiltContext(
+    nCtx = nCtx,
+    predictionPatches = predictionPatches,
+    context = context,
+    pred = pred,
+    lastBg = lastBg,
+)
+
+private fun UniffiForecast.toModel(): Forecast = Forecast(
+    medianRisk = medianRisk,
+    qTauRisk = qTauRisk,
+    medianBg = medianBg,
+    bandsMgdl = bandsMgdl,
+)
+
+private fun Forecast.toUniffi(): UniffiForecast = UniffiForecast(
+    medianRisk = medianRisk,
+    qTauRisk = qTauRisk,
+    medianBg = medianBg,
+    bandsMgdl = bandsMgdl,
+)
+
+private fun UniffiForecastStatus.toModel(): ForecastStatus = when (this) {
+    UniffiForecastStatus.OK -> ForecastStatus.OK
+    UniffiForecastStatus.NON_FINITE -> ForecastStatus.NON_FINITE
+    UniffiForecastStatus.RAIL_PINNED -> ForecastStatus.RAIL_PINNED
+    UniffiForecastStatus.COLLAPSED_BAND -> ForecastStatus.COLLAPSED_BAND
+    UniffiForecastStatus.MISORDERED_QUANTILES -> ForecastStatus.MISORDERED_QUANTILES
+}

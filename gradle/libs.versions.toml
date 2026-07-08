@@ -14,6 +14,9 @@ datastore = "1.1.1"
 work = "2.10.0"
 serialization = "1.7.3"
 timber = "5.0.1"
+# ExecuTorch Android runtime — MUST match the exporter's reported version (descriptor.json
+# executorch_version). 1.3.1 ships arm64-v8a + x86_64 XNNPACK .so in the AAR.
+executorch = "1.3.1"
 junit = "4.13.2"
 androidxJunit = "1.2.1"
 # Native toolchain (consumed by :core:native — see t1dm.android.rust convention plugin):
@@ -45,6 +48,8 @@ androidx-datastore-preferences = { group = "androidx.datastore", name = "datasto
 androidx-work-runtime-ktx = { group = "androidx.work", name = "work-runtime-ktx", version.ref = "work" }
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "serialization" }
 timber = { group = "com.jakewharton.timber", name = "timber", version.ref = "timber" }
+# ExecuTorch AAR (Gradle metadata pulls fbjni/soloader/kotlin-stdlib/core-ktx transitively).
+executorch-android = { group = "org.pytorch", name = "executorch-android", version.ref = "executorch" }
 jna = { group = "net.java.dev.jna", name = "jna", version.ref = "jna" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-test-junit = { group = "androidx.test.ext", name = "junit", version.ref = "androidxJunit" }

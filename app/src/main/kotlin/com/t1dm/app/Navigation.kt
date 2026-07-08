@@ -11,6 +11,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import com.t1dm.core.model.InferenceState
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -86,17 +87,25 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
             val readings by container.dashboardReadings.collectAsState(emptyList())
             val latest by container.latestReading.collectAsState(null)
             val active by container.activeSource.collectAsState(null)
+            val inference by container.inferenceState.collectAsState(InferenceState())
             DashboardScreen(
                 readings = readings,
                 latest = latest,
                 activeSourceName = active?.displayName,
                 thresholds = container.alarmConfig.thresholds,
+                predictions = inference.predictions,
                 kovatchevF = container.nativeCore::kovatchevF,
             )
         }
         composable("stats") { StatsScreen() }
-        composable("models") { ModelsScreen() }
-        composable("hardware") { HardwareScreen() }
+        composable("models") {
+            val inference by container.inferenceState.collectAsState(InferenceState())
+            ModelsScreen(state = inference, onSelect = container.inferenceController::selectModel)
+        }
+        composable("hardware") {
+            val inference by container.inferenceState.collectAsState(InferenceState())
+            HardwareScreen(state = inference)
+        }
         composable("network") { NetworkScreen() }
         composable("meals") { MealsScreen() }
         composable("insulin") { InsulinScreen() }

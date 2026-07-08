@@ -70,6 +70,7 @@ fun GlucoseGraph(
     modifier: Modifier = Modifier,
     thresholds: AlertThresholds? = null,
     initialWindowMin: Float = 180f,
+    predictions: List<PredSeries> = emptyList(),
     onScrub: ((GraphScrub?) -> Unit)? = null,
 ) {
     val cs = MaterialTheme.colorScheme
@@ -90,8 +91,17 @@ fun GlucoseGraph(
 
     fun plotW(): Double = (canvasSize.width - leftPx - rightPx).toDouble().coerceAtLeast(1.0)
 
+    // The effective right edge of the data: the last reading OR the furthest forecast step, so the
+    // 2 h forecast horizon (which lies in the future, past the last reading) stays on-screen when a
+    // prediction overlay is present.
+    fun dataEndMs(): Double {
+        val fe = if (frame.isEmpty) 0.0 else frame.absMs(frame.size - 1)
+        val pe = predictions.maxTsMs()?.toDouble() ?: return fe
+        return maxOf(fe, pe)
+    }
+
     fun spanBounds(): Pair<Double, Double> {
-        val range = if (frame.isEmpty) 0.0 else frame.absMs(frame.size - 1) - frame.absMs(0)
+        val range = if (frame.isEmpty) 0.0 else dataEndMs() - frame.absMs(0)
         val minSpan = 15.0 * 60_000.0
         val maxSpan = maxOf(range, initialWindowMin.toDouble() * 60_000.0) * 1.2
         return minSpan to maxSpan.coerceAtLeast(minSpan)
@@ -102,16 +112,16 @@ fun GlucoseGraph(
         val (minSpan, maxSpan) = spanBounds()
         viewSpanMs = viewSpanMs.coerceIn(minSpan, maxSpan)
         val ds = frame.absMs(0)
-        val de = frame.absMs(frame.size - 1)
+        val de = dataEndMs()
         val range = de - ds
         viewStartMs = if (viewSpanMs >= range) ds - (viewSpanMs - range) / 2.0
         else viewStartMs.coerceIn(ds, de - viewSpanMs)
     }
 
     // Initialise on the first frame; keep tracking the latest point until the user scrolls back.
-    LaunchedEffect(frame) {
+    LaunchedEffect(frame, predictions) {
         if (frame.isEmpty) return@LaunchedEffect
-        val de = frame.absMs(frame.size - 1)
+        val de = dataEndMs()
         if (viewStartMs.isNaN() || followLatest) viewStartMs = de - viewSpanMs
         clamp()
     }
@@ -140,7 +150,7 @@ fun GlucoseGraph(
                         viewStartMs = focusMs - frac * newSpan
                     }
                     viewStartMs -= pan.x / ppm
-                    val de = frame.absMs(frame.size - 1)
+                    val de = dataEndMs()
                     clamp()
                     followLatest = (viewStartMs + viewSpanMs) >= de - viewSpanMs * 0.02
                 }
@@ -187,6 +197,24 @@ fun GlucoseGraph(
             for (i in iLo..iHi) {
                 if (frame.ys[i] < yMin) yMin = frame.ys[i]
                 if (frame.ys[i] > yMax) yMax = frame.ys[i]
+            }
+            // Fold visible forecast points (median + outer band) into the auto-fit so the overlay
+            // never clips off the top/bottom of the plot.
+            if (predictions.isNotEmpty()) {
+                val vLo = viewStartMs
+                val vHi = viewStartMs + viewSpanMs
+                for (s in predictions) {
+                    for (i in 0 until s.size) {
+                        val t = s.tsMs[i].toDouble()
+                        if (t < vLo || t > vHi) continue
+                        if (s.median[i] < yMin) yMin = s.median[i]
+                        if (s.median[i] > yMax) yMax = s.median[i]
+                        if (!s.degenerate) {
+                            if (s.lo[0][i] < yMin) yMin = s.lo[0][i]
+                            if (s.hi[0][i] > yMax) yMax = s.hi[0][i]
+                        }
+                    }
+                }
             }
             if (!yMin.isFinite() || !yMax.isFinite()) { yMin = 0f; yMax = 1f }
             val minSpanY = minValueSpan(frame.unit)
@@ -277,6 +305,21 @@ fun GlucoseGraph(
                             drawCircle(interpColor, r, c, style = Stroke(width = 1.4f))
                         else -> drawCircle(lineColor, r, c)
                     }
+                }
+            }
+
+            // (6.5) Prediction overlay: quantile fan + median for each running model. Non-selected
+            //       models are drawn first (faint), the selected model last (on top, full fan).
+            if (predictions.isNotEmpty()) {
+                fun absToPx(ms: Double): Float = (plotLeft + (ms - viewStartMs) * ppm).toFloat()
+                val predLine = cs.tertiary
+                val fan = cs.tertiary
+                val flag = cs.error
+                for (s in predictions) if (!s.selected) {
+                    drawPredSeries(s, ::absToPx, ::yToPx, plotTop, plotBottom, predLine, fan, flag)
+                }
+                for (s in predictions) if (s.selected) {
+                    drawPredSeries(s, ::absToPx, ::yToPx, plotTop, plotBottom, predLine, fan, flag)
                 }
             }
 

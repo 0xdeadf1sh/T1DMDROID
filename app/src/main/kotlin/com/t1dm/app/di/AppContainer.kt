@@ -3,6 +3,8 @@ package com.t1dm.app.di
 import android.content.Context
 import com.t1dm.alerts.AlarmConfig
 import com.t1dm.app.cgm.AppCgmRepository
+import com.t1dm.app.inference.KvPredictionStore
+import com.t1dm.app.inference.RoomBgHistoryProvider
 import com.t1dm.cgm.AidexXPlugin
 import com.t1dm.cgm.AidexXSourceRegistry
 import com.t1dm.core.common.DefaultT1dmDispatchers
@@ -10,9 +12,15 @@ import com.t1dm.core.common.NativeCore
 import com.t1dm.core.common.T1dmDispatchers
 import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.CgmSourceDescriptor
+import com.t1dm.core.model.InferenceState
 import com.t1dm.core.nativecore.UniffiNativeCore
 import com.t1dm.data.T1dmRepository
 import com.t1dm.data.db.AppDatabase
+import com.t1dm.inference.InferenceController
+import com.t1dm.inference.buildInferenceController
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
+import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
@@ -63,6 +71,34 @@ class AppContainer(context: Context) {
 
     /** Conservative boot defaults (§3.6-A); user config replaces these later. */
     val alarmConfig: AlarmConfig = AlarmConfig.DEFAULT
+
+    // ─── Inference runtime (Phase 2) ──────────────────────────────────────────────────────────
+
+    /** Dev-time models dir on the app's external files (adb-pushable; the 27 MB .pte is NOT bundled).
+     *  Push with: `adb push descriptor.json <this>/` and `adb push t1dmai_best.xnnpack.pte <this>/`. */
+    val modelsDir: File = File(appContext.getExternalFilesDir(null), "models").apply { mkdirs() }
+
+    /** The Phase-2 orchestrator: builds one shared context per cycle, fans out serially over the
+     *  running set, decodes + guards in Rust, publishes + persists predictions tagged by model_id. */
+    val inferenceController: InferenceController by lazy {
+        buildInferenceController(
+            native = nativeCore,
+            dispatchers = dispatchers,
+            modelsDir = modelsDir,
+            history = RoomBgHistoryProvider(repository, registry),
+            predictionStore = KvPredictionStore(repository),
+        )
+    }
+
+    val inferenceState: StateFlow<InferenceState> get() = inferenceController.state
+
+    /** Discover on-device models + rehydrate the last predictions once at startup (off-main). */
+    fun startInference() {
+        appScope.launch {
+            inferenceController.restoreLast()
+            inferenceController.refreshModels()
+        }
+    }
 
     // ─── Dashboard read models (DB-backed so they survive process death) ──────────────────────
 

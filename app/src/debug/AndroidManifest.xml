@@ -11,6 +11,8 @@
                 <action android:name="com.t1dm.app.INJECT_READING" />
                 <action android:name="com.t1dm.app.FORCE_SIGNAL_LOSS" />
                 <action android:name="com.t1dm.app.INJECT_STEPS" />
+                <action android:name="com.t1dm.app.RUN_CYCLE" />
+                <action android:name="com.t1dm.app.FORCE_DEGENERATE" />
             </intent-filter>
         </receiver>
     </application>

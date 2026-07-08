@@ -11,6 +11,11 @@
 
 uniffi::setup_scaffolding!();
 
+/// Model pre/post-processing pipeline (savgol, normalize, context build, quantile
+/// assemble/decode, degeneracy guard). Phase 2, INFERENCE.md §§6-8.
+mod preproc;
+pub use preproc::*;
+
 // ── Kovatchev risk transform constants (INFERENCE.md §5, §11) ──────────────────────
 const KOV_SCALE: f64 = 1.509;
 const KOV_POWER: f64 = 1.084;

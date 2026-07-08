@@ -1,0 +1,22 @@
+{
+  "arch_version": "risk-v2",
+  "graph_cut": "head_raw",
+  "input_seq_len": 52,
+  "normalization_stats": {
+    "bg_absolute":      { "mean": 0.44047466508264904, "std": 0.850689863940899 },
+    "carb_intake":      { "mean": 0.3310011982005517,  "std": 0.45281299084561305 },
+    "insulin_combined": { "mean": 0.13433219518059492, "std": 0.09111449226803763 }
+  },
+  "rope_base": 1000,
+  "median_mode": "global",
+  "median_global_dim": 6,
+  "step_basis_type": "dct",
+  "quantile_spread_min": 0.001,
+  "neg_fill": -30000.0,
+  "prediction_horizon_hours": 2,
+  "max_context_patches": 48,
+  "min_context_patches": 16,
+  "patch_size": 6,
+  "n_input_features": 3,
+  "conformal_enabled": false
+}

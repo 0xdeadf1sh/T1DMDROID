@@ -17,12 +17,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.model.AlertThresholds
 import com.t1dm.core.model.CgmReading
+import com.t1dm.core.model.ModelPrediction
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.core.model.UnitSpace
 import com.t1dm.ui.graph.GlucoseGraph
 import com.t1dm.ui.graph.GraphFrame
+import com.t1dm.ui.graph.PredSeries
 import com.t1dm.ui.graph.graphFrameOf
+import com.t1dm.ui.graph.predOverlayOf
 
 /**
  * The live BG dashboard (PLAN.private.md Phase 1 — "Dashboard shows the live graph + current
@@ -38,10 +41,14 @@ fun DashboardScreen(
     activeSourceName: String?,
     thresholds: AlertThresholds? = null,
     unit: UnitSpace = UnitSpace.MgDl,
+    predictions: List<ModelPrediction> = emptyList(),
     kovatchevF: ((Double) -> Double)? = null,
 ) {
     val frame by produceState(GraphFrame.EMPTY, readings, unit) {
         value = graphFrameOf(readings, unit, kovatchevF = kovatchevF)
+    }
+    val overlay by produceState(emptyList<PredSeries>(), predictions, unit) {
+        value = predOverlayOf(predictions, unit, kovatchevF = kovatchevF)
     }
 
     Column(Modifier.fillMaxSize()) {
@@ -50,6 +57,7 @@ fun DashboardScreen(
             frame = frame,
             modifier = Modifier.fillMaxWidth().weight(1f),
             thresholds = thresholds,
+            predictions = overlay,
         )
     }
 }

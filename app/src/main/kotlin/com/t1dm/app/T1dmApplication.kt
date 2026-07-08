@@ -23,6 +23,7 @@ class T1dmApplication : Application() {
         }
 
         container = AppContainer(this)
+        container.startInference()
         CgmWatchdog.enqueue(this)
     }
 

@@ -36,6 +36,8 @@ target/
 *.pt
 *.pte
 models/*.bin
+# generated .pte + descriptor.json (regenerate via T1DMAI/exporters)
+models/exported/
 
 # ── Misc ────────────────────────────────────────────────────────────────────
 .DS_Store

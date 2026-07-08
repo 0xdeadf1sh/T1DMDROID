@@ -19,8 +19,10 @@ import com.t1dm.cgm.BleAdvertScanner
 import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.CgmSourceDescriptor
 import com.t1dm.core.model.CgmSourceId
+import com.t1dm.core.model.InferenceCause
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
+import com.t1dm.inference.SyntheticContext
 import com.t1dm.sensors.RoomStepSampleWriter
 import com.t1dm.sensors.StepBucketer
 import com.t1dm.sensors.StepRecorder
@@ -132,13 +134,29 @@ class CgmScanService : LifecycleService() {
         // 4) Step counter → sample.steps.
         startSteps()
 
-        // 5) kv heartbeat / grid liveness (§2.3 — the FGS owns the 5-min tick; Phase 1 has no
-        //    inference to fan out, so the heartbeat is the tick's sole Phase-1 consumer).
+        // 5) kv heartbeat / grid liveness (§2.3 — the FGS owns the 5-min tick).
         lifecycleScope.launch {
             while (isActive) {
                 val now = System.currentTimeMillis()
                 runCatching { container.repository.putKv(KV_LAST_ALIVE, now.toString(), now) }
                 delay(HEARTBEAT_MS)
+            }
+        }
+
+        // 6) The 5-min inference GridTick — a SIBLING scope, structurally independent of the
+        //    model-free alarm path above (§2.3, §3.6-A): a failed cycle never touches the alarm.
+        //    Aligned to the grid; each tick fans the shared context out over the running set.
+        lifecycleScope.launch {
+            container.inferenceController.refreshModels()
+            while (isActive) {
+                val now = System.currentTimeMillis()
+                delay(GRID_MS - (now % GRID_MS)) // sleep to the next 5-min boundary
+                runCatching {
+                    container.inferenceController.runFromHistory(
+                        cause = InferenceCause.GRID_TICK,
+                        nowMs = System.currentTimeMillis(),
+                    )
+                }.onFailure { Timber.tag(TAG).w(it, "inference GridTick failed (alarm path unaffected)") }
             }
         }
     }
@@ -185,8 +203,30 @@ class CgmScanService : LifecycleService() {
                 trendTenths = 0,
             )
             ACTION_INJECT_STEPS -> injectStepCounter(intent.getLongExtra(EXTRA_CUMULATIVE, 0L))
+            ACTION_RUN_CYCLE -> runSyntheticCycle()
+            ACTION_FORCE_DEGENERATE -> lifecycleScope.launch {
+                container.inferenceController.refreshModels()
+                container.inferenceController.debugPublishDegenerate(System.currentTimeMillis())
+            }
         }
         return START_STICKY
+    }
+
+    /**
+     * Debug: run one full inference cycle on a synthetic 24 h BG series (cold-start verification —
+     * the sensor is not needed). Exercises build_context → backend → assemble_decode → degeneracy
+     * guard → overlay/panels end-to-end, driving the REAL controller path (not a bypass).
+     */
+    private fun runSyntheticCycle() {
+        lifecycleScope.launch {
+            container.inferenceController.refreshModels()
+            val now = System.currentTimeMillis()
+            container.inferenceController.runCycle(
+                cause = InferenceCause.SYNTHETIC,
+                series = SyntheticContext.plausible24h(anchorTsMs = now),
+                nowMs = now,
+            )
+        }
     }
 
     // ─── Debug injection (sensor-free exit-criteria verification) ─────────────────────────────
@@ -309,6 +349,8 @@ class CgmScanService : LifecycleService() {
         const val ACTION_INJECT_READING = "com.t1dm.app.INJECT_READING"
         const val ACTION_FORCE_SIGNAL_LOSS = "com.t1dm.app.FORCE_SIGNAL_LOSS"
         const val ACTION_INJECT_STEPS = "com.t1dm.app.INJECT_STEPS"
+        const val ACTION_RUN_CYCLE = "com.t1dm.app.RUN_CYCLE"
+        const val ACTION_FORCE_DEGENERATE = "com.t1dm.app.FORCE_DEGENERATE"
         const val EXTRA_BG = "bg"
         const val EXTRA_AGE_MIN = "ageMin"
         const val EXTRA_WARMUP = "warmup"

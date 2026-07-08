@@ -103,6 +103,10 @@ class T1dmRepository(
     fun observeLatestReading(sourceId: CgmSourceId): Flow<CgmReading?> =
         readings.observeLatest(sourceId.value).map { it?.toModel() }
 
+    /** The most recent [limit] readings for [sourceId], newest first (Phase-2 inference context). */
+    suspend fun recentReadings(sourceId: CgmSourceId, limit: Int): List<CgmReading> =
+        withContext(io) { readings.recent(sourceId.value, limit).map { it.toModel() } }
+
     /**
      * Grid-stamp upsert-in-place; if the reading is on the active source and not INVALID, project
      * its bg into `sample` (LWW on `rxWallMs`) and enqueue one INGEST item for that grid slot.
