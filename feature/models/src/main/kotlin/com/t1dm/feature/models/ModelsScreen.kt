@@ -19,22 +19,28 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.InferenceState
+import com.t1dm.core.model.ModelMeta
 import com.t1dm.core.model.ModelPrediction
 import com.t1dm.core.model.RunningModel
 
 /**
- * The Models panel (PLAN.private.md Phase 2 §3.5 / Models section): the loaded running set and which
- * model is selected (fp32-authoritative). Tapping a row selects it. Each row also surfaces this
- * cycle's forecast status (OK / DEGENERATE class / STALE) so the running set's health is legible at
- * a glance. The full auto-adopted registry + `X-SHA256` artifact download is Phase 3.5.
+ * The Models panel (PLAN.private.md Phase 7C — item 7): the loaded running set, each row now carrying
+ * the size-reasoning META (parameter count, on-disk `.pte` size, and the key arch dims from the
+ * descriptor) so a model's footprint is legible at a glance, plus this cycle's forecast status. Tapping
+ * a row opens its PERFORMANCE drill-down ([ModelDetailScreen], item 24). Selection is on a long-press-
+ * free single tap in the pre-7D layout via the caret; the fp32-authoritative pick is [onSelect].
  */
 @Composable
-fun ModelsScreen(state: InferenceState, onSelect: (String) -> Unit) {
+fun ModelsScreen(
+    state: InferenceState,
+    onSelect: (String) -> Unit,
+    onOpen: (String) -> Unit,
+) {
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item {
             Text("Models", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Text(
-                "${state.running.size} loaded · tap to select the fp32-authoritative model",
+                "${state.running.size} loaded · tap a row for performance · tap the ● to select",
                 style = MaterialTheme.typography.bodySmall,
             )
             state.note?.let {
@@ -52,7 +58,13 @@ fun ModelsScreen(state: InferenceState, onSelect: (String) -> Unit) {
             }
         } else {
             items(state.running, key = { it.modelId }) { model ->
-                ModelRow(model, state.predictions.firstOrNull { it.modelId == model.modelId }, onSelect)
+                ModelRow(
+                    model = model,
+                    prediction = state.predictions.firstOrNull { it.modelId == model.modelId },
+                    meta = state.metaOf(model.modelId),
+                    onSelect = onSelect,
+                    onOpen = onOpen,
+                )
                 HorizontalDivider()
             }
         }
@@ -60,9 +72,15 @@ fun ModelsScreen(state: InferenceState, onSelect: (String) -> Unit) {
 }
 
 @Composable
-private fun ModelRow(model: RunningModel, prediction: ModelPrediction?, onSelect: (String) -> Unit) {
+private fun ModelRow(
+    model: RunningModel,
+    prediction: ModelPrediction?,
+    meta: ModelMeta?,
+    onSelect: (String) -> Unit,
+    onOpen: (String) -> Unit,
+) {
     Column(
-        Modifier.fillMaxWidth().clickable { onSelect(model.modelId) }.padding(vertical = 8.dp),
+        Modifier.fillMaxWidth().clickable { onOpen(model.modelId) }.padding(vertical = 8.dp),
     ) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(
@@ -70,6 +88,7 @@ private fun ModelRow(model: RunningModel, prediction: ModelPrediction?, onSelect
                 style = MaterialTheme.typography.bodyLarge,
                 fontWeight = if (model.selected) FontWeight.Bold else FontWeight.Normal,
                 fontFamily = FontFamily.Monospace,
+                modifier = Modifier.clickable { onSelect(model.modelId) },
             )
             Text(statusLabel(prediction), style = MaterialTheme.typography.labelMedium, color = statusColor(prediction))
         }
@@ -79,7 +98,42 @@ private fun ModelRow(model: RunningModel, prediction: ModelPrediction?, onSelect
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        // Size-reasoning meta line (item 7): real param count + on-disk size + arch dims.
+        meta?.let { m ->
+            Text(
+                metaLine(m),
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
+}
+
+internal fun metaLine(m: ModelMeta): String {
+    val parts = buildList {
+        m.paramCount?.let { add("${fmtParams(it)} params") }
+        m.diskBytes?.let { add(fmtBytes(it)) }
+        val dims = listOfNotNull(
+            m.dModel?.let { "d$it" },
+            m.nLayers?.let { "L$it" },
+            m.nHeads?.let { "H$it" },
+        )
+        if (dims.isNotEmpty()) add(dims.joinToString("·"))
+    }
+    return if (parts.isEmpty()) "meta n/a (no descriptor model_card)" else parts.joinToString(" · ")
+}
+
+internal fun fmtParams(n: Long): String = when {
+    n >= 1_000_000 -> "%.2fM".format(n / 1_000_000.0)
+    n >= 1_000 -> "%.1fk".format(n / 1_000.0)
+    else -> n.toString()
+}
+
+internal fun fmtBytes(b: Long): String = when {
+    b >= 1L shl 20 -> "%.1f MB".format(b / (1L shl 20).toDouble())
+    b >= 1L shl 10 -> "%.1f KB".format(b / (1L shl 10).toDouble())
+    else -> "$b B"
 }
 
 @Composable

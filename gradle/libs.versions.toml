@@ -30,6 +30,9 @@ glance = "1.1.1"
 ndk = "28.1.13356709"     # r28.x — required for Android 15/16 16 KB page alignment
 uniffi = "0.29"           # host-verified 0.29.5; Rust FFI codegen (see :core:native)
 jna = "5.14.0"            # runtime dep of the uniffi-generated Kotlin bindings (loads the cdylib)
+# QR scanner for the Server-token affordance (Phase 7C item 12). Apache-2.0, embeds ZXing core;
+# NO Google Play Services dependency (sideload-safe). Ships its own CaptureActivity + CAMERA request.
+zxingEmbedded = "4.3.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -63,6 +66,7 @@ executorch-android = { group = "org.pytorch", name = "executorch-android", versi
 jna = { group = "net.java.dev.jna", name = "jna", version.ref = "jna" }
 androidx-glance-appwidget = { group = "androidx.glance", name = "glance-appwidget", version.ref = "glance" }
 androidx-glance-material3 = { group = "androidx.glance", name = "glance-material3", version.ref = "glance" }
+zxing-android-embedded = { group = "com.journeyapps", name = "zxing-android-embedded", version.ref = "zxingEmbedded" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-test-junit = { group = "androidx.test.ext", name = "junit", version.ref = "androidxJunit" }
 # Build-logic classpath (Gradle plugin artifacts consumed by the convention plugins):

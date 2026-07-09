@@ -21,6 +21,7 @@ fun buildInferenceController(
     contextChannels: ContextChannelSource? = null,
     futureOverrides: FutureOverrideSource? = null,
     warmupHoursProvider: suspend () -> Double = { InferenceControllerDefaults.WARMUP_HOURS },
+    telemetryStore: TelemetryStore? = null,
 ): InferenceController {
     val store = ModelStore(modelsDir, native)
     val controller = InferenceController(
@@ -32,6 +33,7 @@ fun buildInferenceController(
         contextChannels = contextChannels,
         futureOverrides = futureOverrides,
         warmupHoursProvider = warmupHoursProvider,
+        telemetryStore = telemetryStore,
     )
     controller.registerBackend(ExecuTorchXnnpackBackend())
     controller.registerBackend(ExecuTorchNeuronBackend())

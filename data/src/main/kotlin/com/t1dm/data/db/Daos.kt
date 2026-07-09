@@ -60,6 +60,11 @@ interface CgmReadingDao {
             "ORDER BY tsMs DESC LIMIT :limit",
     )
     suspend fun recent(sourceId: String, limit: Int): List<CgmReadingEntity>
+
+    /** Every reading (any source) in `[fromMs, toMs]` — the realized-BG series the accuracy
+     *  aggregator pairs matured forecasts against (Phase 7C). Filtered/matched in Kotlin. */
+    @Query("SELECT * FROM cgm_reading WHERE tsMs BETWEEN :fromMs AND :toMs ORDER BY tsMs")
+    suspend fun readingsInRange(fromMs: Long, toMs: Long): List<CgmReadingEntity>
 }
 
 @Dao
@@ -129,7 +134,22 @@ interface LoggedMealDao {
 
     @Query("DELETE FROM logged_meal WHERE id = :id")
     suspend fun delete(id: Long)
+
+    /**
+     * The last [limit] DISTINCT `(grams, gi)` meals with a non-null GI — the "recent meals"
+     * quick-picks (Phase 7C, item 9). `GROUP BY grams, gi` collapses repeats; `MAX(tsMs)` orders by
+     * the most-recent occurrence. Meals logged via the multi-food builder (gi IS NULL, custom curve)
+     * are excluded — the simple carb form cannot round-trip them.
+     */
+    @Query(
+        "SELECT grams AS grams, gi AS gi FROM logged_meal WHERE gi IS NOT NULL " +
+            "GROUP BY grams, gi ORDER BY MAX(tsMs) DESC LIMIT :limit",
+    )
+    fun observeRecentDistinct(limit: Int): Flow<List<RecentMealRow>>
 }
+
+/** Projection for [LoggedMealDao.observeRecentDistinct] — just the two fields the carb form binds. */
+data class RecentMealRow(val grams: Double, val gi: Double?)
 
 @Dao
 interface BasalScheduleDao {
@@ -280,6 +300,12 @@ interface KvDao {
 
     @Query("SELECT value FROM kv WHERE `key` = :key")
     fun observe(key: String): Flow<String?>
+
+    /** Every kv row (Phase 7C item 17 — versioned config export). Ordered for a stable dump. */
+    @Query("SELECT * FROM kv ORDER BY `key`")
+    suspend fun all(): List<KvEntity>
+
+    @Upsert suspend fun putAll(entries: List<KvEntity>)
 }
 
 @Dao

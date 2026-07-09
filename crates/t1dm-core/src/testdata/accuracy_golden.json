@@ -1,0 +1,108 @@
+{
+  "pairs": [
+    {
+      "horizon_min": 30,
+      "predicted": 120.0,
+      "realized": 115.0,
+      "band_lo": 100.0,
+      "band_hi": 140.0,
+      "has_band": true
+    },
+    {
+      "horizon_min": 30,
+      "predicted": 150.0,
+      "realized": 160.0,
+      "band_lo": 130.0,
+      "band_hi": 170.0,
+      "has_band": true
+    },
+    {
+      "horizon_min": 30,
+      "predicted": 90.0,
+      "realized": 85.0,
+      "band_lo": 72.0,
+      "band_hi": 108.0,
+      "has_band": true
+    },
+    {
+      "horizon_min": 30,
+      "predicted": 200.0,
+      "realized": 210.0,
+      "band_lo": 180.0,
+      "band_hi": 220.0,
+      "has_band": true
+    },
+    {
+      "horizon_min": 30,
+      "predicted": 70.0,
+      "realized": 72.0,
+      "band_lo": 55.0,
+      "band_hi": 88.0,
+      "has_band": true
+    },
+    {
+      "horizon_min": 60,
+      "predicted": 130.0,
+      "realized": 140.0,
+      "band_lo": 105.0,
+      "band_hi": 155.0,
+      "has_band": true
+    },
+    {
+      "horizon_min": 60,
+      "predicted": 160.0,
+      "realized": 150.0,
+      "band_lo": 135.0,
+      "band_hi": 185.0,
+      "has_band": true
+    },
+    {
+      "horizon_min": 60,
+      "predicted": 100.0,
+      "realized": 95.0,
+      "band_lo": 80.0,
+      "band_hi": 120.0,
+      "has_band": true
+    },
+    {
+      "horizon_min": 120,
+      "predicted": 180.0,
+      "realized": 165.0,
+      "band_lo": 150.0,
+      "band_hi": 210.0,
+      "has_band": true
+    },
+    {
+      "horizon_min": 120,
+      "predicted": 90.0,
+      "realized": 110.0,
+      "band_lo": 70.0,
+      "band_hi": 112.0,
+      "has_band": true
+    }
+  ],
+  "min_samples": 3,
+  "expected": {
+    "30": {
+      "n": 5,
+      "rmse": 7.1274118725,
+      "mae": 6.4,
+      "mard": 4.8039723136,
+      "coverage90": 1.0
+    },
+    "60": {
+      "n": 3,
+      "rmse": 8.6602540378,
+      "mae": 8.3333333333,
+      "mard": 6.3575605681,
+      "coverage90": 1.0
+    },
+    "120": {
+      "n": 2,
+      "rmse": 17.6776695297,
+      "mae": 17.5,
+      "mard": 13.6363636364,
+      "coverage90": 1.0
+    }
+  }
+}

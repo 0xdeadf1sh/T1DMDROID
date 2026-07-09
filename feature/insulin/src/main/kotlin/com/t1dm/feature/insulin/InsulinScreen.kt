@@ -14,6 +14,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -30,8 +31,14 @@ import androidx.compose.ui.unit.dp
 import com.t1dm.core.model.BasalPreset
 import com.t1dm.core.model.BolusPreset
 import com.t1dm.core.model.IobCobReadout
+import kotlin.math.roundToInt
 
 private enum class Tab { BOLUS, BASAL }
+
+// Insulin slider bounds (Phase 7C, item 11): 1–20 U in 1 U steps ⇒ 20 stops ⇒ 18 interior steps.
+private const val DOSE_MIN = 1.0
+private const val DOSE_MAX = 20.0
+private const val DOSE_STEPS = 18
 
 /**
  * The Phase-4 insulin entry surface (PLAN.private.md deliverable 1 — "manual bolus/basal entry").
@@ -140,14 +147,26 @@ private fun BasalEntry(onLogBasal: (Double, BasalPreset) -> Unit) {
 
 @Composable
 private fun UnitsField(value: String, onChange: (String) -> Unit) {
-    OutlinedTextField(
-        value = value,
-        onValueChange = { onChange(it.filter { c -> c.isDigit() || c == '.' }) },
-        label = { Text("Units (U)") },
-        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-        singleLine = true,
-        modifier = Modifier.fillMaxWidth(),
-    )
+    Column(Modifier.fillMaxWidth()) {
+        OutlinedTextField(
+            value = value,
+            onValueChange = { onChange(it.filter { c -> c.isDigit() || c == '.' }) },
+            label = { Text("Units (U)") },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        // Insulin slider (1–20 U, 1 U steps) bound to the SAME dose value: dragging rewrites the
+        // text, typing repositions the thumb (rounded/clamped). Empty/out-of-range text parks the
+        // thumb at 1 U without clobbering what the user typed.
+        val units = value.toDoubleOrNull()
+        Slider(
+            value = (units ?: DOSE_MIN).coerceIn(DOSE_MIN, DOSE_MAX).toFloat(),
+            onValueChange = { onChange(it.roundToInt().toString()) },
+            valueRange = DOSE_MIN.toFloat()..DOSE_MAX.toFloat(),
+            steps = DOSE_STEPS,
+        )
+    }
 }
 
 @Composable

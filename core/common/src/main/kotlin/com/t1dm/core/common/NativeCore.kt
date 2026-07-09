@@ -1,5 +1,7 @@
 package com.t1dm.core.common
 
+import com.t1dm.core.model.AccuracyPair
+import com.t1dm.core.model.AccuracyReport
 import com.t1dm.core.model.AdvancedStats
 import com.t1dm.core.model.BasalSchedule
 import com.t1dm.core.model.BuiltContext
@@ -120,4 +122,12 @@ interface NativeCore {
         targetHigh: Int,
         agpBins: Int,
     ): AdvancedStats
+
+    // ── Forecast accuracy (Phase 7C, t1dm-core::accuracy) ───────────────────────────
+
+    /** Reduce matured `(predicted median, realized BG)` [pairs] to per-horizon RMSE/MAE/MARD
+     *  (+ central-90 coverage). A horizon with fewer than [minSamples] matured pairs is still
+     *  returned with its true `n` and `sufficient = false` so the UI can say "insufficient
+     *  history" plainly. Total on any input; a bad argument yields [AccuracyReport.EMPTY]. */
+    fun accuracyAtHorizons(pairs: List<AccuracyPair>, minSamples: Int): AccuracyReport
 }

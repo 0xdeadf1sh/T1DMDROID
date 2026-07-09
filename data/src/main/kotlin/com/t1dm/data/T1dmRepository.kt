@@ -7,8 +7,12 @@ import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.CgmSourceDescriptor
 import com.t1dm.core.model.CgmSourceId
 import com.t1dm.core.model.JournalNote
+import com.t1dm.core.model.AccuracyPair
+import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.ModelPrediction
 import com.t1dm.core.model.ReadingFlag
+import com.t1dm.core.model.ReadingProvenance
+import com.t1dm.core.model.RecentMeal
 import com.t1dm.data.db.AppDatabase
 import com.t1dm.data.db.BasalScheduleEntity
 import com.t1dm.data.db.CgmAdvertRawEntity
@@ -249,6 +253,12 @@ class T1dmRepository(
     suspend fun loggedMealsInRange(fromMs: Long, toMs: Long): List<LoggedMealEntity> =
         withContext(io) { loggedMeals.inRange(fromMs, toMs) }
 
+    /** The last [limit] distinct GI-bearing meals as [RecentMeal] quick-picks (Phase 7C, item 9). */
+    fun observeRecentMeals(limit: Int = 3): Flow<List<RecentMeal>> =
+        loggedMeals.observeRecentDistinct(limit).map { rows ->
+            rows.mapNotNull { r -> r.gi?.let { gi -> RecentMeal(r.grams, gi) } }
+        }
+
     /**
      * Replace a basal schedule's injections and (optionally) make it the active one. All rows for
      * [scheduleId] are dropped and re-inserted; activation is exactly-one atomically.
@@ -434,6 +444,87 @@ class T1dmRepository(
     fun observeLatestPrediction(): Flow<ModelPrediction?> =
         predictions.observeLatest().map { it?.toModel() }
 
+    /**
+     * Pair every MATURED forecast of [modelId] with the realized MEASURED BG at each of [horizonsMin]
+     * minutes past the forecast's `madeAt`, for the on-device accuracy aggregator (Phase 7C, Models
+     * drill-down). Walks the dedicated `prediction` table over `[sinceMs, nowMs]`, and for each finite
+     * (non-degenerate) row emits an [AccuracyPair] per horizon whose target time `madeAt + h` is (a)
+     * already in the past (matured) and (b) matched by a MEASURED/NORMAL reading within [toleranceMs]
+     * — the nearest such reading. `predicted` is the median line at the horizon step; `band_lo/hi` are
+     * the τ.05 / τ.95 fan edges there (for central-90 coverage). No match ⇒ that (row, horizon) is
+     * silently skipped, so a horizon simply accrues fewer pairs (surfaced as "insufficient history").
+     */
+    suspend fun forecastAccuracyPairs(
+        modelId: String,
+        horizonsMin: List<Int>,
+        sinceMs: Long,
+        nowMs: Long,
+        toleranceMs: Long = 150_000L, // half a 5-min grid step
+    ): List<AccuracyPair> = withContext(io) {
+        val maxHorizonMs = (horizonsMin.maxOrNull() ?: 0).toLong() * 60_000L
+        // Realized truth: MEASURED, in-range-flagged readings from sinceMs out to the last maturable
+        // target. Sorted ascending for a binary-search nearest match.
+        val truth = readings.readingsInRange(sinceMs, nowMs + maxHorizonMs)
+            .asSequence()
+            .filter { it.bgMgdl != null && it.provenance == ReadingProvenance.MEASURED && it.flag == ReadingFlag.NORMAL }
+            .map { it.tsMs to it.bgMgdl!! }
+            .distinctBy { it.first }
+            .sortedBy { it.first }
+            .toList()
+        if (truth.isEmpty()) return@withContext emptyList()
+        val truthTs = LongArray(truth.size) { truth[it].first }
+
+        val rows = predictions.range(sinceMs, nowMs).map { it.toModel() }
+            .filter { it.modelId == modelId && it.status == ForecastStatus.OK }
+        val out = ArrayList<AccuracyPair>()
+        for (p in rows) {
+            val h = p.medianBg.size
+            val nq = p.nQuantiles
+            if (h == 0 || nq <= 0 || p.stepMs <= 0) continue
+            for (hMin in horizonsMin) {
+                val stepIdx = ((hMin.toLong() * 60_000L) / p.stepMs).toInt() - 1
+                if (stepIdx < 0 || stepIdx >= h) continue
+                val targetTs = p.cycleTsMs + hMin.toLong() * 60_000L
+                if (targetTs > nowMs) continue // not yet matured
+                val realized = nearestWithin(truthTs, truth, targetTs, toleranceMs) ?: continue
+                val predicted = p.medianBg[stepIdx]
+                if (!predicted.isFinite()) continue
+                val lo = p.bandsMgdl.getOrNull(stepIdx * nq)
+                val hi = p.bandsMgdl.getOrNull(stepIdx * nq + (nq - 1))
+                val hasBand = lo != null && hi != null && lo.isFinite() && hi.isFinite()
+                out += AccuracyPair(
+                    horizonMin = hMin,
+                    predicted = predicted,
+                    realized = realized.toDouble(),
+                    bandLo = lo ?: 0.0,
+                    bandHi = hi ?: 0.0,
+                    hasBand = hasBand,
+                )
+            }
+        }
+        out
+    }
+
+    /** Nearest realized BG to [targetTs] within [toleranceMs], or null. Binary search on [truthTs]. */
+    private fun nearestWithin(
+        truthTs: LongArray,
+        truth: List<Pair<Long, Int>>,
+        targetTs: Long,
+        toleranceMs: Long,
+    ): Int? {
+        if (truthTs.isEmpty()) return null
+        var idx = truthTs.binarySearch(targetTs)
+        if (idx < 0) idx = -(idx + 1)
+        var best: Int? = null
+        var bestDelta = Long.MAX_VALUE
+        for (j in (idx - 1)..(idx + 1)) {
+            if (j < 0 || j >= truthTs.size) continue
+            val d = kotlin.math.abs(truthTs[j] - targetTs)
+            if (d <= toleranceMs && d < bestDelta) { bestDelta = d; best = truth[j].second }
+        }
+        return best
+    }
+
     // ─── Server profiles (N-profile, one active; token lives in the TokenStore) ───────────────
 
     fun observeProfiles(): Flow<List<ServerProfileEntity>> = profiles.observeAll()
@@ -488,6 +579,14 @@ class T1dmRepository(
     suspend fun getKv(key: String): String? = withContext(io) { kv.get(key) }
 
     fun observeKv(key: String): Flow<String?> = kv.observe(key)
+
+    /** Every kv key→value pair (Phase 7C item 17 — config export). Off-main. */
+    suspend fun allKv(): Map<String, String> =
+        withContext(io) { kv.all().associate { it.key to it.value } }
+
+    /** Bulk-write kv pairs in one upsert (config import). Off-main. */
+    suspend fun putKvBatch(pairs: Map<String, String>, nowMs: Long) =
+        withContext(io) { kv.putAll(pairs.map { (k, v) -> KvEntity(k, v, nowMs) }) }
 
     suspend fun recordTelemetry(row: HwTelemetryEntity): Long =
         withContext(io) { telemetry.insert(row) }

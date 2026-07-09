@@ -57,6 +57,18 @@ enum class BolusPreset(val label: String) {
  * `CurveEngine.Presets.carbGammaForGi`. The set is a small curated span, not a licensed table
  * (the FTS5 food DB is a later deliverable, gated on S9).
  */
+/**
+ * A recently-logged meal surfaced as a quick-select chip on the meal entry surface (Phase 7C,
+ * item 9). It carries just the two fields the simple carb form binds — [grams] and [gi] — so a tap
+ * pre-fills both the grams field/slider and the GI slider. Only GI-bearing logged meals qualify
+ * (meals logged through the multi-food builder carry a custom curve and a null GI, which the simple
+ * form cannot round-trip); `:app` selects the last few DISTINCT `(grams, gi)` pairs.
+ */
+data class RecentMeal(val grams: Double, val gi: Double) {
+    /** A compact chip label, e.g. "45 g · GI 65". */
+    val label: String get() = "${grams.toInt()} g · GI ${gi.toInt()}"
+}
+
 enum class GiChip(val label: String, val gi: Double) {
     JUICE("Juice / glucose", 100.0),
     WHITE_BREAD("White bread", 75.0),

@@ -13,18 +13,34 @@ val keystoreProps = Properties().apply {
     if (hasKeystore) keystorePropsFile.inputStream().use { load(it) }
 }
 
+// Short git SHA for the About panel's internal build info (Phase 7C). Degrades to "unknown"
+// off a git checkout so a fresh export still builds.
+val gitSha: String = runCatching {
+    val p = ProcessBuilder("git", "rev-parse", "--short", "HEAD")
+        .directory(rootProject.projectDir).redirectErrorStream(true).start()
+    p.inputStream.bufferedReader().readText().trim().ifBlank { "unknown" }
+}.getOrDefault("unknown")
+
 android {
     namespace = "com.t1dm.app"
 
     defaultConfig {
         applicationId = "com.t1dm.app"
-        versionCode = 1
-        versionName = "0.0.1-phase0"
+        versionCode = 8
+        versionName = "0.7.3-phase7c"
 
         // arm64-v8a only (single target device). Harmless until native .so libs ship.
         ndk {
             abiFilters += "arm64-v8a"
         }
+
+        // About-panel build provenance (public-safe).
+        buildConfigField("String", "GIT_SHA", "\"$gitSha\"")
+        buildConfigField("String", "EXECUTORCH_VERSION", "\"1.3.1\"")
+    }
+
+    buildFeatures {
+        buildConfig = true
     }
 
     flavorDimensions += "distribution"

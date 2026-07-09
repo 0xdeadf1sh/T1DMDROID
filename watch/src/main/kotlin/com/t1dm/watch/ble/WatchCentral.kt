@@ -26,6 +26,10 @@ interface WatchCentral {
     /** Read the STATUS identity block (epoch/proto/id), or null if unavailable. */
     suspend fun readStatus(): ByteArray?
 
+    /** Read the connected peripheral's RSSI in dBm (Phase 7C — watch signal strength), or null if
+     *  unavailable / not connected. Default null keeps non-Android fakes total. */
+    suspend fun readRssi(): Int? = null
+
     /** Write [bytes] to the KEX characteristic (write-with-response). Throws on failure. */
     suspend fun writeKex(bytes: ByteArray)
 

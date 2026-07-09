@@ -1,6 +1,9 @@
 package com.t1dm.core.nativecore
 
 import com.t1dm.core.common.NativeCore
+import com.t1dm.core.model.AccuracyPair
+import com.t1dm.core.model.AccuracyReport
+import com.t1dm.core.model.HorizonAccuracy
 import com.t1dm.core.model.AdvancedStats
 import com.t1dm.core.model.AgpBin
 import com.t1dm.core.model.BasalDoseSpec
@@ -20,6 +23,7 @@ import com.t1dm.core.model.PredictedTime
 import com.t1dm.core.model.PrevGlucose
 import com.t1dm.core.model.TimeHead
 import uniffi.t1dm_core.CoreException
+import uniffi.t1dm_core.accuracyAtHorizons as uniffiAccuracyAtHorizons
 import uniffi.t1dm_core.advancedStats as uniffiAdvancedStats
 import uniffi.t1dm_core.advertCrc32 as uniffiAdvertCrc32
 import uniffi.t1dm_core.assembleDecode as uniffiAssembleDecode
@@ -40,6 +44,9 @@ import uniffi.t1dm_core.normalizeSample as uniffiNormalizeSample
 import uniffi.t1dm_core.onBoard as uniffiOnBoard
 import uniffi.t1dm_core.parseDescriptor as uniffiParseDescriptor
 import uniffi.t1dm_core.roundtrip as uniffiRoundtrip
+import uniffi.t1dm_core.AccuracyPair as UniffiAccuracyPair
+import uniffi.t1dm_core.AccuracyReport as UniffiAccuracyReport
+import uniffi.t1dm_core.HorizonAccuracy as UniffiHorizonAccuracy
 import uniffi.t1dm_core.AdvancedStats as UniffiAdvancedStats
 import uniffi.t1dm_core.AgpBin as UniffiAgpBin
 import uniffi.t1dm_core.BasalDoseSpec as UniffiBasalDoseSpec
@@ -185,7 +192,42 @@ class UniffiNativeCore : NativeCore {
         } catch (_: CoreException) {
             AdvancedStats.EMPTY
         }
+
+    /**
+     * Rust `accuracy_at_horizons` is total (empty/non-finite pairs handled internally) and only
+     * `Err`s on an impossible argument; we map any `CoreException` to [AccuracyReport.EMPTY] so the
+     * drill-down can never crash on a malformed pair set — the safety posture is fail-closed.
+     */
+    override fun accuracyAtHorizons(pairs: List<AccuracyPair>, minSamples: Int): AccuracyReport =
+        try {
+            uniffiAccuracyAtHorizons(pairs.map { it.toUniffi() }, minSamples.toUInt()).toModel()
+        } catch (_: CoreException) {
+            AccuracyReport.EMPTY
+        }
 }
+
+private fun AccuracyPair.toUniffi(): UniffiAccuracyPair = UniffiAccuracyPair(
+    horizonMin = horizonMin.toUInt(),
+    predicted = predicted,
+    realized = realized,
+    bandLo = bandLo,
+    bandHi = bandHi,
+    hasBand = hasBand,
+)
+
+private fun UniffiHorizonAccuracy.toModel(): HorizonAccuracy = HorizonAccuracy(
+    horizonMin = horizonMin.toInt(),
+    n = n.toInt(),
+    rmse = rmse, mae = mae, mard = mard,
+    coverage90 = coverage90,
+    sufficient = sufficient,
+)
+
+private fun UniffiAccuracyReport.toModel(): AccuracyReport = AccuracyReport(
+    horizons = horizons.map { it.toModel() },
+    nPairs = nPairs.toInt(),
+    minSamples = minSamples.toInt(),
+)
 
 private fun StatSample.toUniffi(): UniffiStatSample = UniffiStatSample(
     tsMs = tsMs,

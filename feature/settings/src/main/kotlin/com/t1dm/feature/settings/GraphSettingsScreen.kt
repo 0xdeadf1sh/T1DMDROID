@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -26,10 +27,13 @@ import androidx.compose.ui.unit.dp
 fun GraphSettingsScreen(
     minMgdl: Int,
     maxMgdl: Int,
+    windowHours: Int,
+    windowPresets: List<Int>,
     onChange: (Int, Int) -> Unit,
+    onSetWindow: (Int) -> Unit,
 ) {
     Column(Modifier.fillMaxSize().padding(16.dp)) {
-        Text("BG graph range", style = MaterialTheme.typography.headlineSmall)
+        Text("BG graph range & window", style = MaterialTheme.typography.headlineSmall)
         Text(
             "The glucose axis always covers this window. It expands automatically above the ceiling " +
                 "so a high reading is never clipped off the top.",
@@ -54,8 +58,19 @@ fun GraphSettingsScreen(
             "Default 20–250 mg/dL.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-            modifier = Modifier.padding(top = 20.dp),
+            modifier = Modifier.padding(top = 12.dp),
         )
+
+        Text(
+            "Default time window",
+            style = MaterialTheme.typography.titleSmall,
+            modifier = Modifier.padding(top = 24.dp, bottom = 8.dp),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            windowPresets.forEach { h ->
+                FilterChip(selected = h == windowHours, onClick = { onSetWindow(h) }, label = { Text("${h}h") })
+            }
+        }
     }
 }
 

@@ -74,3 +74,17 @@ interface PredictionStore {
     suspend fun persist(cycleTsMs: Long, predictions: List<ModelPrediction>)
     suspend fun loadLast(): List<ModelPrediction>?
 }
+
+/** A durable cumulative inference-telemetry counter for one model (Phase 7C — Models drill-down). */
+data class CumulativeTelemetry(val predictions: Long, val totalInferenceMs: Double)
+
+/**
+ * Persists the CUMULATIVE per-model inference telemetry (#predictions + total backend wall-time) so
+ * the Models drill-down's "total time spent on inference" survives process restarts. Implemented in
+ * `:app` over the Room `kv` store (a single JSON blob) to keep `:inference` free of a schema
+ * dependency. A `null` store (tests / unwired) ⇒ the counters live only in memory for the session.
+ */
+interface TelemetryStore {
+    suspend fun load(): Map<String, CumulativeTelemetry>
+    suspend fun save(all: Map<String, CumulativeTelemetry>)
+}

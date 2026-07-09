@@ -51,6 +51,7 @@ fun SecurityScreen(
                 Kv("Recv nonce (seq)", state.recvSeq.toString())
                 state.lastAckSeq?.let { Kv("Last PUSH_ACK", it.toString()) }
                 state.lastPush?.let { Kv("Last push", it) }
+                Kv("Signal (RSSI)", state.rssiDbm?.let { "$it dBm" } ?: "no signal")
                 if (state.lowPowerSuspended) Kv("Low-power", "pusher suspended")
             }
         }
@@ -109,6 +110,8 @@ data class SecurityPanelState(
     val lastPush: String? = null,
     val lastAckSeq: Long? = null,
     val lowPowerSuspended: Boolean = false,
+    /** Connected-peripheral signal strength in dBm (periodic readRemoteRssi), or null. */
+    val rssiDbm: Int? = null,
     val lastError: String? = null,
     val canPair: Boolean = true,
     val canConfirmSas: Boolean = false,

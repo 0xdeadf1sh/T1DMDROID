@@ -54,6 +54,7 @@ class AndroidWatchCentral(
     private var writeDone: CompletableDeferred<Boolean>? = null
     private var readDone: CompletableDeferred<ByteArray?>? = null
     private var cccdDone: CompletableDeferred<Boolean>? = null
+    private var rssiDone: CompletableDeferred<Int?>? = null
 
     @Volatile
     override var isReady: Boolean = false
@@ -99,6 +100,14 @@ class AndroidWatchCentral(
         readDone = CompletableDeferred()
         if (gatt?.readCharacteristic(ch) != true) return null
         withTimeout(OP_TIMEOUT_MS) { readDone!!.await() }
+    }
+
+    override suspend fun readRssi(): Int? = opLock.withLock {
+        val g = gatt ?: return null
+        if (!isReady) return null
+        rssiDone = CompletableDeferred()
+        if (!g.readRemoteRssi()) return null
+        runCatching { withTimeout(OP_TIMEOUT_MS) { rssiDone!!.await() } }.getOrNull()
     }
 
     override suspend fun writeKex(bytes: ByteArray) = writeChar(WatchGatt.KEX, bytes, withResponse = true)
@@ -204,6 +213,10 @@ class AndroidWatchCentral(
             value: ByteArray,
         ) {
             if (ch.uuid == WatchGatt.CONTROL) emit(WatchCentralEvent.Notified(value.copyOf()))
+        }
+
+        override fun onReadRemoteRssi(g: BluetoothGatt, rssi: Int, status: Int) {
+            rssiDone?.complete(if (status == BluetoothGatt.GATT_SUCCESS) rssi else null)
         }
     }
 

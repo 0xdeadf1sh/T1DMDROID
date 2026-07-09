@@ -33,6 +33,10 @@ data class WatchSecurityState(
     val lastAckSeq: Long? = null,
     val lowPowerSuspended: Boolean = false,
 
+    /** Connected-peripheral signal strength in dBm from a periodic `readRemoteRssi` (Phase 7C);
+     *  null when disconnected or not yet sampled. Surfaced in the Security panel + BG-panel WCH light. */
+    val rssiDbm: Int? = null,
+
     /** The most recent plain-language error/refusal, if any (human-readable everywhere). */
     val lastError: String? = null,
 ) {

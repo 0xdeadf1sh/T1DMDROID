@@ -3,7 +3,10 @@ package com.t1dm.inference
 import com.t1dm.core.common.NativeCore
 import com.t1dm.core.model.BackendId
 import com.t1dm.core.model.ModelDescriptor
+import com.t1dm.core.model.ModelMeta
 import com.t1dm.core.model.Precision
+import com.t1dm.core.model.ReferenceMetrics
+import org.json.JSONArray
 import org.json.JSONObject
 import timber.log.Timber
 import java.io.File
@@ -21,6 +24,8 @@ data class ModelBundle(
     val backendId: BackendId,
     val precision: Precision,
     val descriptorJson: String,
+    /** Size-reasoning + reference metadata for the Models panel (Phase 7C); never decode-critical. */
+    val meta: ModelMeta,
 )
 
 /**
@@ -93,6 +98,46 @@ class ModelStore(
             backendId = backendOf(engine),
             precision = precisionOf(obj.optString("precision", "fp32")),
             descriptorJson = json,
+            meta = metaOf(id, obj, pte),
+        )
+    }
+
+    /**
+     * Build the display-only [ModelMeta] from the raw descriptor object + the on-disk artifact.
+     * Everything here is OUTSIDE the Rust pre/post contract (`geometry`, the exporter-stamped
+     * `model_card`, top-level `arch_version`/`executorch_version`) plus the `stat`'d `.pte` size —
+     * so it never touches decode and degrades every absent field to null rather than failing.
+     */
+    private fun metaOf(id: String, obj: JSONObject, pte: File): ModelMeta {
+        val geo = obj.optJSONObject("geometry")
+        val card = obj.optJSONObject("model_card")
+        val ref = card?.optJSONObject("reference_metrics")
+        return ModelMeta(
+            modelId = id,
+            paramCount = card?.optLongOrNull("param_count"),
+            diskBytes = if (pte.exists()) pte.length() else null,
+            dModel = geo?.optIntOrNull("D_MODEL"),
+            nLayers = geo?.optIntOrNull("N_LAYERS"),
+            nHeads = geo?.optIntOrNull("N_HEADS"),
+            patchDim = geo?.optIntOrNull("PATCH_DIM"),
+            minContextPatches = geo?.optIntOrNull("MIN_CONTEXT_PATCHES"),
+            maxContextPatches = geo?.optIntOrNull("MAX_CONTEXT_PATCHES"),
+            predictionHorizonHours = obj.optJSONObject("constants")?.optIntOrNull("PREDICTION_HORIZON_HOURS"),
+            archVersion = obj.optStringOrNull("arch_version"),
+            executorchVersion = obj.optStringOrNull("executorch_version"),
+            valStep = card?.optIntOrNull("val_step"),
+            reference = ref?.let {
+                ReferenceMetrics(
+                    horizonsMin = it.optJSONArray("horizons_min").toIntList(),
+                    rmseMgdl = it.optJSONArray("rmse_mgdl").toDoubleNullList(),
+                    mardPct = it.optJSONArray("mard_pct").toDoubleNullList(),
+                    clarkeAPct = it.optJSONArray("clarke_a_pct").toDoubleNullList(),
+                    coverage90 = it.optJSONArray("coverage90").toDoubleNullList(),
+                    clarkeAbPct = it.optDoubleOrNull("clarke_ab_pct"),
+                    todMaeH = it.optDoubleOrNull("tod_mae_h"),
+                    todMaeHiconfH = it.optDoubleOrNull("tod_mae_hiconf_h"),
+                )
+            },
         )
     }
 
@@ -147,3 +192,19 @@ class ModelStore(
         const val TAG = "ModelStore"
     }
 }
+
+// ── null-tolerant JSON accessors (a missing/JSONObject.NULL key ⇒ null, never a default) ──
+private fun JSONObject.optLongOrNull(key: String): Long? = if (has(key) && !isNull(key)) optLong(key) else null
+private fun JSONObject.optIntOrNull(key: String): Int? = if (has(key) && !isNull(key)) optInt(key) else null
+private fun JSONObject.optDoubleOrNull(key: String): Double? =
+    if (has(key) && !isNull(key)) optDouble(key).takeIf { it.isFinite() } else null
+private fun JSONObject.optStringOrNull(key: String): String? =
+    if (has(key) && !isNull(key)) optString(key).ifBlank { null } else null
+
+private fun JSONArray?.toIntList(): List<Int> =
+    if (this == null) emptyList() else (0 until length()).map { optInt(it) }
+
+private fun JSONArray?.toDoubleNullList(): List<Double?> =
+    if (this == null) emptyList() else (0 until length()).map {
+        if (isNull(it)) null else optDouble(it).takeIf { d -> d.isFinite() }
+    }

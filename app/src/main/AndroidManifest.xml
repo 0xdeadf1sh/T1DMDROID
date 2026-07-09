@@ -28,6 +28,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
+    <!-- QR token scan (Phase 7C item 12): the ZXing CaptureActivity uses the camera to read a
+         server-token / {baseUrl,token} QR. Optional feature — the token can always be typed. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
 
     <application

@@ -1,48 +1,59 @@
 package com.t1dm.feature.settings
 
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 
 /**
- * The Settings root (PLAN.private.md Phase 1 — the CGM sub-screen is the only live entry now;
- * Server/Watch/units/theme arrive in later phases). Rows are plain until their phase lands.
+ * The Settings root — the complete configuration hub (PLAN.private.md Phase 7C, items 14 & 17). Every
+ * user-tunable knob in the app is reachable from here, grouped into sub-sections; the safety-critical,
+ * deliberately-UNBOUNDED knobs (alarm thresholds, calculator rails/thresholds, loss-of-signal windows)
+ * are grouped under "Alarms & safety" and flagged inside their own screens (safety-posture.md). The
+ * bottom-nav overflow is deliberately left for Phase 7D — this pass only fleshes out the hub.
+ *
+ * Pure/stateless: it holds no state, only routes. Each row navigates to a dedicated sub-screen that
+ * the caller ([com.t1dm.app] Navigation) wires to the persisted value + its setter.
  */
 @Composable
 fun SettingsScreen(
+    onOpenDisplay: () -> Unit = {},
+    onOpenGraph: () -> Unit = {},
+    onOpenAlarmThresholds: () -> Unit = {},
+    onOpenSignalSafety: () -> Unit = {},
+    onOpenAlerts: () -> Unit = {},
+    onOpenWarmup: () -> Unit = {},
+    onOpenCalculator: () -> Unit = {},
+    onOpenCurveParams: () -> Unit = {},
+    onOpenModels: () -> Unit = {},
     onOpenCgm: () -> Unit = {},
     onOpenServer: () -> Unit = {},
-    onOpenWarmup: () -> Unit = {},
     onOpenWatch: () -> Unit = {},
-    onOpenGraph: () -> Unit = {},
+    onOpenPower: () -> Unit = {},
+    onOpenData: () -> Unit = {},
+    onOpenAbout: () -> Unit = {},
 ) {
-    Column(Modifier.fillMaxSize().padding(16.dp)) {
-        Text("Settings", style = MaterialTheme.typography.headlineSmall)
-        SettingRow("CGM", enabled = true, onClick = onOpenCgm)
-        SettingRow("Server", enabled = true, onClick = onOpenServer)
-        SettingRow("Warmup", enabled = true, onClick = onOpenWarmup)
-        SettingRow("Watch", enabled = true, onClick = onOpenWatch)
-        SettingRow("BG graph range", enabled = true, onClick = onOpenGraph)
-        SettingRow("Units / theme / alerts", enabled = false)
-    }
-}
+    SettingsScaffold("Settings") {
+        SettingsSectionHeader("Display & units")
+        SettingsNavRow("Units & targets", "mg/dL · mmol/L · Kovatchev, BG target range, animations", onClick = onOpenDisplay)
+        SettingsNavRow("BG graph range & window", "Y-axis floor/ceiling and the default time window", onClick = onOpenGraph)
 
-@Composable
-private fun SettingRow(label: String, enabled: Boolean, onClick: () -> Unit = {}) {
-    val modifier = Modifier
-        .fillMaxWidth()
-        .let { if (enabled) it.clickable(onClick = onClick) else it }
-        .padding(vertical = 14.dp)
-    Text(
-        text = if (enabled) label else "$label (later)",
-        modifier = modifier,
-        style = MaterialTheme.typography.bodyLarge,
-    )
+        SettingsSectionHeader("Alarms & safety")
+        SettingsNavRow("Alarm thresholds", "Urgent-low / low / high / urgent-high — unbounded", onClick = onOpenAlarmThresholds)
+        SettingsNavRow("Signal & freshness", "Loss-of-signal windows and dosing staleness gate", onClick = onOpenSignalSafety)
+        SettingsNavRow("Alert sound & vibration", "Per-tier tone, K90 vibration, DND bypass, repeat", onClick = onOpenAlerts)
+
+        SettingsSectionHeader("Forecast & models")
+        SettingsNavRow("Forecast warmup", "How much real history the forecast waits for", onClick = onOpenWarmup)
+        SettingsNavRow("Dose calculator", "Objective, asymmetry, rails, and rail thresholds — unbounded", onClick = onOpenCalculator)
+        SettingsNavRow("Curve & PK parameters", "Carb-appearance and insulin-action defaults (read-only)", onClick = onOpenCurveParams)
+        SettingsNavRow("Models & backend", "Select the running model; inference backend/precision", onClick = onOpenModels)
+
+        SettingsSectionHeader("Devices & sync")
+        SettingsNavRow("CGM source", "Active sensor and recorded sources", onClick = onOpenCgm)
+        SettingsNavRow("Server profile", "Base URL + rw token (QR scan), health check", onClick = onOpenServer)
+        SettingsNavRow("Watch", "ESP32-C3 glance pairing and status", onClick = onOpenWatch)
+        SettingsNavRow("Low-power mode", "Battery-saver entry percentage and behaviour", onClick = onOpenPower)
+
+        SettingsSectionHeader("Data")
+        SettingsNavRow("Backup & restore config", "Export or import every setting as a JSON file", onClick = onOpenData)
+        SettingsNavRow("About", "Version, build, licence, model provenance", onClick = onOpenAbout)
+    }
 }

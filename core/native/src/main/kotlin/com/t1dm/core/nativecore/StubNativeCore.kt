@@ -1,6 +1,9 @@
 package com.t1dm.core.nativecore
 
 import com.t1dm.core.common.NativeCore
+import com.t1dm.core.model.AccuracyPair
+import com.t1dm.core.model.AccuracyReport
+import com.t1dm.core.model.HorizonAccuracy
 import com.t1dm.core.model.AdvancedStats
 import com.t1dm.core.model.BasalSchedule
 import com.t1dm.core.model.BuiltContext
@@ -202,6 +205,37 @@ class StubNativeCore : NativeCore {
         targetHigh: Int,
         agpBins: Int,
     ): AdvancedStats = AdvancedStats.EMPTY
+
+    // ── Forecast accuracy (Phase 7C) ────────────────────────────────────────────────
+    // Unlike the stats block, the accuracy reduction is trivial arithmetic (no golden-gated
+    // Rust numerics), so the host stub reproduces it faithfully — this keeps the data-layer
+    // pairing + the drill-down host-testable without the .so. Bit-identical to
+    // `t1dm-core::accuracy::accuracy_at_horizons`.
+    override fun accuracyAtHorizons(pairs: List<AccuracyPair>, minSamples: Int): AccuracyReport {
+        val byHorizon = pairs
+            .filter { it.predicted.isFinite() && it.realized.isFinite() }
+            .groupBy { it.horizonMin }
+        val horizons = byHorizon.toSortedMap().map { (h, rows) ->
+            val n = rows.size
+            var sq = 0.0; var abs = 0.0; var ard = 0.0; var covHits = 0.0; var covN = 0
+            for (r in rows) {
+                val e = r.predicted - r.realized
+                sq += e * e; abs += kotlin.math.abs(e)
+                ard += kotlin.math.abs(e) / kotlin.math.max(r.realized, 1.0)
+                if (r.hasBand) { covN++; if (r.realized in r.bandLo..r.bandHi) covHits += 1.0 }
+            }
+            HorizonAccuracy(
+                horizonMin = h,
+                n = n,
+                rmse = kotlin.math.sqrt(sq / n),
+                mae = abs / n,
+                mard = 100.0 * ard / n,
+                coverage90 = if (covN > 0) covHits / covN else null,
+                sufficient = n >= minSamples,
+            )
+        }
+        return AccuracyReport(horizons, byHorizon.values.sumOf { it.size }, minSamples)
+    }
 
     private companion object {
         const val DT_MIN = 5.0

@@ -10,7 +10,9 @@ import com.t1dm.core.model.InferenceCause
 import com.t1dm.core.model.InferenceState
 import com.t1dm.core.model.ModelDescriptor
 import com.t1dm.core.model.ModelLatency
+import com.t1dm.core.model.ModelMeta
 import com.t1dm.core.model.ModelPrediction
+import com.t1dm.core.model.ModelTelemetry
 import com.t1dm.core.model.Precision
 import com.t1dm.core.model.PredictedTime
 import com.t1dm.core.model.RunningModel
@@ -63,6 +65,9 @@ class InferenceController(
     /** The user's `warmupHours` setting, read FRESH each cycle (kv-backed). Floored at MIN_CONTEXT
      *  (8 h) inside the gate. inference-runtime.md — the WARMUP gate. */
     private val warmupHoursProvider: suspend () -> Double = { DEFAULT_WARMUP_HOURS },
+    /** Durable cumulative per-model inference telemetry (Phase 7C — Models drill-down). Null ⇒
+     *  session-only in-memory counters. */
+    private val telemetryStore: TelemetryStore? = null,
 ) {
     private val _state = MutableStateFlow(InferenceState())
     val state: StateFlow<InferenceState> = _state.asStateFlow()
@@ -82,6 +87,9 @@ class InferenceController(
     private val loaded = LinkedHashMap<String, Entry>()
     private var selectedId: String? = null
     private val latencySamples = HashMap<String, ArrayDeque<Double>>()
+    /** Cumulative per-model telemetry (durable via [telemetryStore]); loaded once, then in-memory. */
+    private val cumulative = HashMap<String, CumulativeTelemetry>()
+    private var telemetryLoaded = false
     private val cycleMutex = Mutex()
 
     /** Register the backends the controller may route to (real XNNPACK + documented NPU stubs). */
@@ -105,6 +113,10 @@ class InferenceController(
      * the `inference` thread.
      */
     suspend fun refreshModels() = withContext(dispatchers.inference) {
+        if (!telemetryLoaded) {
+            runCatching { telemetryStore?.load() }.getOrNull()?.let { cumulative.putAll(it) }
+            telemetryLoaded = true
+        }
         val bundles = store.discover()
         val keep = bundles.take(maxRunning).associateBy { it.id }
 
@@ -126,7 +138,12 @@ class InferenceController(
                 "running on the StubBackend (no working .pte) — real forecast path blocked"
             else -> null
         }
-        _state.value = _state.value.copy(running = runningModels(), note = note)
+        _state.value = _state.value.copy(
+            running = runningModels(),
+            metas = metasSnapshot(),
+            telemetry = telemetrySnapshot(),
+            note = note,
+        )
         Timber.tag(TAG).i("refreshModels loaded=%s selected=%s note=%s", loaded.keys, selectedId, note)
     }
 
@@ -351,6 +368,8 @@ class InferenceController(
             running = runningModels(),
             predictions = preds,
             latencies = latencySnapshot(),
+            metas = metasSnapshot(),
+            telemetry = telemetrySnapshot(),
             lastCycleTsMs = cycleTs,
             lastCause = cause,
             lastCycleDurationMs = durationMs,
@@ -360,6 +379,8 @@ class InferenceController(
         )
         runCatching { predictionStore.persist(cycleTs, preds) }
             .onFailure { Timber.tag(TAG).w(it, "prediction persist failed") }
+        runCatching { telemetryStore?.save(HashMap(cumulative)) }
+            .onFailure { Timber.tag(TAG).w(it, "telemetry persist failed") }
         val selPt = preds.firstOrNull { it.selected }?.predictedTime
         Timber.tag(TAG).i(
             "cycle cause=%s models=%d dur=%dms selected=%s status=%s predHour=%s",
@@ -385,6 +406,7 @@ class InferenceController(
         val out = withContext(dispatchers.inference) { entry.backend.run(entry.handle, input) }
         val latMs = (System.nanoTime() - t0) / 1_000_000.0
         recordLatency(entry.bundle.id, latMs)
+        recordCumulative(entry.bundle.id, latMs)
 
         val forecast: Forecast = withContext(dispatchers.default) {
             native.assembleDecode(desc, out.headRaw.map { it.toDouble() }, ctx.lastBg, CARRY_SPREAD)
@@ -514,6 +536,19 @@ class InferenceController(
         val q = latencySamples.getOrPut(id) { ArrayDeque() }
         q.addLast(ms)
         while (q.size > LATENCY_WINDOW) q.removeFirst()
+    }
+
+    private fun recordCumulative(id: String, ms: Double) {
+        val cur = cumulative[id] ?: CumulativeTelemetry(0, 0.0)
+        cumulative[id] = CumulativeTelemetry(cur.predictions + 1, cur.totalInferenceMs + ms)
+    }
+
+    /** The loaded running set's static meta (param count / disk size / arch dims / reference). */
+    private fun metasSnapshot(): List<ModelMeta> = loaded.values.map { it.bundle.meta }
+
+    /** Cumulative per-model telemetry for every model that has ever run this install. */
+    private fun telemetrySnapshot(): List<ModelTelemetry> = cumulative.map { (id, c) ->
+        ModelTelemetry(id, c.predictions, c.totalInferenceMs)
     }
 
     private fun latencySnapshot(): List<ModelLatency> = latencySamples.map { (id, q) ->

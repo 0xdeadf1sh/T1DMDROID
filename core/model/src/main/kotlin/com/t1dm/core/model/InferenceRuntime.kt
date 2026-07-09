@@ -31,6 +31,56 @@ data class RunningModel(
     val selected: Boolean,
 )
 
+/**
+ * Static, size-reasoning metadata for a running model (Phase 7C — Models panel meta rows). The
+ * arch dims + [paramCount] come from the descriptor (`geometry` + the display-only `model_card`
+ * block the exporter stamps); [diskBytes] is the `stat`'d artifact size (null when the `.pte` is
+ * absent and the StubBackend stands in). [reference] carries the model's own held-out validation
+ * metrics (train.py) as a REFERENCE — distinct from the on-device realized [AccuracyReport].
+ */
+data class ModelMeta(
+    val modelId: String,
+    val paramCount: Long? = null,
+    val diskBytes: Long? = null,
+    val dModel: Int? = null,
+    val nLayers: Int? = null,
+    val nHeads: Int? = null,
+    val patchDim: Int? = null,
+    val minContextPatches: Int? = null,
+    val maxContextPatches: Int? = null,
+    val predictionHorizonHours: Int? = null,
+    val archVersion: String? = null,
+    val executorchVersion: String? = null,
+    val valStep: Int? = null,
+    val reference: ReferenceMetrics? = null,
+)
+
+/** The exported model's held-out validation reference metrics (from the descriptor `model_card`). */
+data class ReferenceMetrics(
+    val horizonsMin: List<Int>,
+    val rmseMgdl: List<Double?>,
+    val mardPct: List<Double?>,
+    val clarkeAPct: List<Double?>,
+    val coverage90: List<Double?>,
+    val clarkeAbPct: Double?,
+    val todMaeH: Double?,
+    val todMaeHiconfH: Double?,
+)
+
+/**
+ * CUMULATIVE per-model inference telemetry (Phase 7C — Models drill-down). Unlike [ModelLatency]
+ * (a rolling p50/p95 window), this is a durable running total the CycleRunner increments every
+ * cycle and persists, surviving process restarts: how many forecasts a model has produced, the
+ * TOTAL wall-time spent in its backend forward, and the derived average.
+ */
+data class ModelTelemetry(
+    val modelId: String,
+    val predictions: Long,
+    val totalInferenceMs: Double,
+) {
+    val avgInferenceMs: Double get() = if (predictions > 0) totalInferenceMs / predictions else 0.0
+}
+
 /** Rolling per-model backend latency (ms) for the Hardware panel (PLAN.private.md Phase 2 §8). */
 data class ModelLatency(
     val modelId: String,
@@ -123,6 +173,8 @@ data class InferenceState(
     val running: List<RunningModel> = emptyList(),
     val predictions: List<ModelPrediction> = emptyList(),
     val latencies: List<ModelLatency> = emptyList(),
+    val metas: List<ModelMeta> = emptyList(),
+    val telemetry: List<ModelTelemetry> = emptyList(),
     val lastCycleTsMs: Long? = null,
     val lastCause: InferenceCause? = null,
     val lastCycleDurationMs: Long? = null,
@@ -138,4 +190,10 @@ data class InferenceState(
     val selectedPredictedTime: PredictedTime? get() = selectedPrediction?.predictedTime
 
     fun latencyOf(modelId: String): ModelLatency? = latencies.firstOrNull { it.modelId == modelId }
+
+    fun metaOf(modelId: String): ModelMeta? = metas.firstOrNull { it.modelId == modelId }
+
+    fun telemetryOf(modelId: String): ModelTelemetry? = telemetry.firstOrNull { it.modelId == modelId }
+
+    fun runningOf(modelId: String): RunningModel? = running.firstOrNull { it.modelId == modelId }
 }

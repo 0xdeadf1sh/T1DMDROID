@@ -31,6 +31,11 @@ pub use watch::*;
 mod stats;
 pub use stats::*;
 
+/// On-device forecast-accuracy aggregator (per-horizon RMSE/MAE/MARD + central-90
+/// coverage) over matured prediction↔realization pairs. Phase 7C, PLAN.private.md §"Phase 7".
+mod accuracy;
+pub use accuracy::*;
+
 // ── Kovatchev risk transform constants (INFERENCE.md §5, §11) ──────────────────────
 const KOV_SCALE: f64 = 1.509;
 const KOV_POWER: f64 = 1.084;

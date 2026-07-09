@@ -2,12 +2,16 @@ package com.t1dm.app.di
 
 import android.content.Context
 import android.media.RingtoneManager
-import android.net.Uri
 import com.t1dm.alerts.AlarmConfig
 import com.t1dm.alerts.AlertActuatorConfig
-import com.t1dm.alerts.VibrationPreset
 import com.t1dm.app.cgm.AppCgmRepository
+import com.t1dm.app.hardware.HardwareProbe
+import com.t1dm.app.inference.KvTelemetryStore
 import com.t1dm.app.inference.RoomBgHistoryProvider
+import com.t1dm.app.settings.SettingsStore
+import com.t1dm.app.BuildConfig
+import com.t1dm.feature.hardware.HardwareInfo
+import com.t1dm.feature.settings.AboutInfo
 import com.t1dm.app.sync.RoomPredictionStore
 import com.t1dm.app.sync.SyncManager
 import com.t1dm.app.sync.SyncStatus
@@ -32,6 +36,7 @@ import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.CgmSourceDescriptor
 import com.t1dm.core.model.CurveKind
 import com.t1dm.core.model.CurveEvent
+import com.t1dm.core.model.AccuracyReport
 import com.t1dm.core.model.InferenceState
 import com.t1dm.core.model.IobCobReadout
 import com.t1dm.core.model.JournalNote
@@ -73,6 +78,7 @@ import com.t1dm.data.meals.MealsController
 import com.t1dm.data.stats.StatsRepository
 import com.t1dm.feature.stats.StatsViewModel
 import com.t1dm.core.model.Food
+import com.t1dm.core.model.RecentMeal
 import com.t1dm.core.model.InsulinType
 import com.t1dm.core.model.SavedMeal
 import com.t1dm.data.db.AppDatabase
@@ -101,6 +107,7 @@ import com.t1dm.sync.TokenStore
 import com.t1dm.sync.WebSocketStreamClient
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -124,12 +131,9 @@ import kotlinx.coroutines.plus
 private const val KV_WARMUP_HOURS = "inference.warmup_hours"
 private const val WARMUP_HOURS_MAX = 72
 
-/** kv keys for the Phase-7B alert actuator config (Settings alerts sub-section lands in 7C). */
-private const val KV_ALERT_CRIT_SOUND = "alerts.sound.critical"
-private const val KV_ALERT_WARN_SOUND = "alerts.sound.warning"
-private const val KV_ALERT_CRIT_VIB = "alerts.vib.critical"
-private const val KV_ALERT_WARN_VIB = "alerts.vib.warning"
-private const val KV_ALERT_BYPASS_DND = "alerts.bypass_dnd"
+/** The clinical/published horizons the on-device accuracy aggregator reports (Phase 7C). */
+private val ACCURACY_HORIZONS_MIN = listOf(30, 60, 120)
+
 
 /**
  * The manual composition root (PLAN.private.md — "DI/wiring: manual is fine"). Built once in
@@ -170,33 +174,73 @@ class AppContainer(context: Context) {
         )
     }
 
-    /** Conservative boot defaults (§3.6-A); user config replaces these later. */
-    val alarmConfig: AlarmConfig = AlarmConfig.DEFAULT
-
-    // ─── Alert actuators (Phase 7B — per-band sound + K90 vibration; kv-backed) ──────────────────
+    /** The complete kv-backed Settings surface (Phase 7C — items 14 & 17). Assembles the module-level
+     *  [AlarmConfig] / [com.t1dm.calc.CalcConfig] policies from the raw persisted knobs. */
+    val settingsStore: SettingsStore by lazy { SettingsStore(repository) }
 
     /**
-     * The per-severity sound + vibration config for the alert notifications (item 2), read from the
-     * kv store so a Settings alerts sub-section (7C) can override it. Defaults: an audible ALARM-usage
-     * tone on the critical tier (so an urgent-low sounds through DND out of the box) and a silent,
-     * vibrate-only warning tier. Mic-recorded custom sounds are DEFERRED (RECORD_AUDIO not requested);
-     * the picker plumbing stores a content Uri under [KV_ALERT_CRIT_SOUND] / [KV_ALERT_WARN_SOUND].
+     * The deterministic-alarm policy (§3.6-A). Conservative boot defaults until [refreshAlarmConfig]
+     * hydrates the user's persisted thresholds. A `@Volatile var` (not a `val`) so a Settings edit —
+     * after re-persisting — is picked up by the live property readers (dashboard band colouring,
+     * glance surfaces, reachability lights); the already-running deterministic [AlarmEngine] captured
+     * its snapshot at FGS start, so a threshold change fully applies to that path on the next service
+     * start (a reopen), which the Settings screen states plainly.
+     */
+    @Volatile
+    var alarmConfig: AlarmConfig = AlarmConfig.DEFAULT
+        private set
+
+    /** Reload [alarmConfig] from the persisted knobs (called at startup + after a Settings save). */
+    suspend fun refreshAlarmConfig() {
+        alarmConfig = runCatching { settingsStore.currentAlarmConfig() }.getOrDefault(AlarmConfig.DEFAULT)
+    }
+
+    // ─── Alert actuators (Phase 7B — per-band sound + K90 vibration; kv-backed via SettingsStore) ──
+
+    /**
+     * The per-severity sound + vibration config for the alert notifications (item 2), assembled from
+     * the [SettingsStore] knobs. Sound is a per-tier on/off over the system ALARM-usage tone (so an
+     * urgent-low sounds through DND out of the box); a fully custom mic/mp3 picker is DEFERRED
+     * (RECORD_AUDIO not requested). Additive — a sound/vibration choice can never change WHEN an alarm
+     * fires, only how it is announced (§3.6-A).
      */
     suspend fun alertActuatorConfig(): AlertActuatorConfig {
-        val crit = repository.getKv(KV_ALERT_CRIT_SOUND)?.takeIf { it.isNotBlank() }?.let(Uri::parse)
-            ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
-        val warn = repository.getKv(KV_ALERT_WARN_SOUND)?.takeIf { it.isNotBlank() }?.let(Uri::parse)
+        val alarmTone = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
         return AlertActuatorConfig(
-            warningSound = warn,
-            criticalSound = crit,
-            warningVibration = vibPreset(repository.getKv(KV_ALERT_WARN_VIB), VibrationPreset.DOUBLE),
-            criticalVibration = vibPreset(repository.getKv(KV_ALERT_CRIT_VIB), VibrationPreset.INSISTENT),
-            bypassDnd = repository.getKv(KV_ALERT_BYPASS_DND) != "0",
+            warningSound = if (settingsStore.currentWarningSoundOn()) alarmTone else null,
+            criticalSound = if (settingsStore.currentCriticalSoundOn()) alarmTone else null,
+            warningVibration = settingsStore.currentWarningVibration(),
+            criticalVibration = settingsStore.currentCriticalVibration(),
+            bypassDnd = settingsStore.currentBypassDnd(),
         )
     }
 
-    private fun vibPreset(raw: String?, fallback: VibrationPreset): VibrationPreset =
-        raw?.let { runCatching { VibrationPreset.valueOf(it) }.getOrNull() } ?: fallback
+    /** Persist an alarm-threshold edit and re-hydrate the live [alarmConfig] snapshot. */
+    suspend fun saveAlarmThresholds(urgentLow: Int, low: Int, high: Int, urgentHigh: Int) {
+        settingsStore.setAlarmThresholds(urgentLow, low, high, urgentHigh)
+        refreshAlarmConfig()
+    }
+
+    /** Persist a loss-of-signal window edit and re-hydrate [alarmConfig]. */
+    suspend fun saveLossWindows(lossMin: Int, lossEscalatedMin: Int) {
+        settingsStore.setLossWindows(lossMin, lossEscalatedMin)
+        refreshAlarmConfig()
+    }
+
+    /** Persist the repeat cadence and re-hydrate [alarmConfig]. */
+    suspend fun saveRepeatCadence(min: Int) {
+        settingsStore.setRepeatCadence(min)
+        refreshAlarmConfig()
+    }
+
+    /** Export the full config as pretty JSON (for a SAF write). Off-main. */
+    suspend fun exportConfigJson(): String = withContext(dispatchers.io) { settingsStore.exportJson() }
+
+    /** Import a config JSON (from a SAF read); re-hydrates [alarmConfig]. Returns keys applied, or
+     *  throws with a plain-language message on a malformed/foreign file. Off-main. */
+    suspend fun importConfigJson(text: String): Int = withContext(dispatchers.io) {
+        settingsStore.importJson(text).also { refreshAlarmConfig() }
+    }
 
     // ─── Inference runtime (Phase 2) ──────────────────────────────────────────────────────────
 
@@ -228,10 +272,62 @@ class AppContainer(context: Context) {
             },
             // WARMUP gate: read the user's setting fresh each cycle (inference-runtime.md).
             warmupHoursProvider = { warmupHours() },
+            // Phase 7C: durable cumulative per-model inference telemetry for the Models drill-down.
+            telemetryStore = KvTelemetryStore(repository),
         )
     }
 
     val inferenceState: StateFlow<InferenceState> get() = inferenceController.state
+
+    /** Build the read-only About-panel model (Phase 7C — item 18): identity, version/build, licence,
+     *  and the loaded model's provenance. Public-safe (no secrets). Reads the selected model's meta. */
+    fun aboutInfo(): AboutInfo {
+        val meta = inferenceState.value.let { st -> st.selectedPrediction?.modelId ?: st.running.firstOrNull { it.selected }?.modelId }
+            ?.let { id -> inferenceState.value.metaOf(id) } ?: inferenceState.value.metas.firstOrNull()
+        val nativeOk = runCatching { nativeCore.roundtrip("about") == "rust-core echo: about" }.getOrDefault(false)
+        return AboutInfo(
+            appName = "T1DM",
+            versionName = BuildConfig.VERSION_NAME,
+            versionCode = BuildConfig.VERSION_CODE,
+            applicationId = appContext.packageName,
+            flavor = BuildConfig.FLAVOR,
+            buildType = BuildConfig.BUILD_TYPE,
+            gitSha = BuildConfig.GIT_SHA,
+            license = "GNU General Public License v3.0 (GPL-3.0). This program is free software: you may " +
+                "redistribute it and/or modify it under the terms of the GPL as published by the Free " +
+                "Software Foundation, either version 3, or (at your option) any later version. Distributed " +
+                "WITHOUT ANY WARRANTY. Advisory only — this software never actuates insulin.",
+            modelId = meta?.modelId,
+            modelArchVersion = meta?.archVersion,
+            modelParamCount = meta?.paramCount,
+            executorchVersion = meta?.executorchVersion ?: BuildConfig.EXECUTORCH_VERSION,
+            nativeCoreStatus = if (nativeOk) "t1dm-core (uniffi) — alive" else "t1dm-core — stub / unavailable",
+        )
+    }
+
+    /** Detected-hardware probe for the Hardware panel top readout (Phase 7C — item 8). */
+    private val hardwareProbe by lazy { HardwareProbe(appContext) }
+
+    /** Probe the device hardware off-main (Build/proc/sys/services + an EGL renderer query). */
+    suspend fun detectHardware(): HardwareInfo =
+        withContext(dispatchers.io) { hardwareProbe.probe() }
+
+    /**
+     * On-device realized forecast accuracy for [modelId] over the trailing [days] (Phase 7C — Models
+     * drill-down): pairs every matured `prediction` row with the realized MEASURED BG at 30/60/120 min
+     * and reduces to per-horizon RMSE/MAE/MARD + central-90 coverage in the golden-gated Rust core.
+     * A horizon with fewer than [minSamples] matured pairs is flagged insufficient. Off-main.
+     */
+    suspend fun modelAccuracy(
+        modelId: String,
+        days: Int = 14,
+        minSamples: Int = 6,
+    ): AccuracyReport {
+        val now = System.currentTimeMillis()
+        val since = now - days.toLong() * 86_400_000L
+        val pairs = repository.forecastAccuracyPairs(modelId, ACCURACY_HORIZONS_MIN, since, now)
+        return nativeCore.accuracyAtHorizons(pairs, minSamples)
+    }
 
     // ── WARMUP setting (inference-runtime.md) — kv-backed, floored at the model MIN_CONTEXT ──────
 
@@ -254,9 +350,11 @@ class AppContainer(context: Context) {
         repository.putKv(KV_WARMUP_HOURS, clamped.toString(), System.currentTimeMillis())
     }
 
-    /** Discover on-device models + rehydrate the last predictions once at startup (off-main). */
+    /** Discover on-device models + rehydrate the last predictions once at startup (off-main). Also
+     *  hydrates the live [alarmConfig] snapshot from the persisted thresholds before the FGS reads it. */
     fun startInference() {
         appScope.launch {
+            refreshAlarmConfig()
             inferenceController.restoreLast()
             inferenceController.refreshModels()
         }
@@ -387,6 +485,9 @@ class AppContainer(context: Context) {
 
     val savedMeals: Flow<List<SavedMeal>> get() = mealsController.savedMeals
     val customFoods: Flow<List<Food>> get() = mealsController.customFoods
+
+    /** The last 3 distinct GI-bearing logged meals, as quick-pick chips (Phase 7C, item 9). */
+    val recentMeals: Flow<List<RecentMeal>> get() = repository.observeRecentMeals(3)
     val insulinTypes: Flow<List<InsulinType>> get() = insulinController.types
 
     /** Seed the bundled glycemic dictionary + the three insulin presets once, off-main (idempotent). */
@@ -504,14 +605,17 @@ class AppContainer(context: Context) {
 
     /** Run one fail-closed bolus recommendation (optionally conditioned on an announced meal). Called
      *  from [com.t1dm.app.service.DoseCalcService] on a cancellable foreground job. */
-    suspend fun runBolusAdvice(announcedCarbG: Double, announcedGi: Double, config: CalcConfig = CalcConfig()) {
+    suspend fun runBolusAdvice(announcedCarbG: Double, announcedGi: Double, config: CalcConfig? = null) {
         bolusAdvice.value = BolusAdviceUi.Running
+        // The user's persisted calculator policy (target / objective / asymmetry / rails / thresholds),
+        // loaded fresh per run so a Settings edit takes effect on the next recommendation.
+        val cfg = config ?: runCatching { settingsStore.currentCalcConfig() }.getOrDefault(CalcConfig())
         val now = System.currentTimeMillis()
         val announced: List<CurveEvent> = if (announcedCarbG > 0.0) {
             val (k, theta, dur) = CurveEngine.Presets.carbGammaForGi(announcedGi)
             listOf(curveEngine.carbEvent(announcedCarbG, now, k, theta, dur))
         } else emptyList()
-        val result = runCatching { doseAdvisor.recommendBolus(now, announced, config) }
+        val result = runCatching { doseAdvisor.recommendBolus(now, announced, cfg) }
             .getOrElse { AdviceResult.Refused(listOf("Calculator error — ${it.message ?: it::class.simpleName}. Refusing to recommend a dose.")) }
         bolusAdvice.value = BolusAdviceUi.Ready(result)
     }
@@ -699,9 +803,14 @@ class AppContainer(context: Context) {
         }
     }
 
-    /** BLE signal strengths (item 20): CGM RSSI from the active source's last advert; watch RSSI is
-     *  wired-but-null until a `:watch` `readRemoteRssi` source exists (lights up automatically then). */
-    val bgSignals: Flow<BgSignals> = latestReading.map { BgSignals(cgmRssi = it?.rssi, watchRssi = null) }
+    /** BLE signal strengths (item 20): CGM RSSI from the active source's last advert, and the watch
+     *  RSSI now sourced from the `:watch` periodic `readRemoteRssi` poll (Phase 7C — fills the null the
+     *  7A BG panel left). Null on either side ⇒ "no signal" in the WCH/CGM lights. */
+    val bgSignals: Flow<BgSignals> by lazy {
+        combine(latestReading, watchSecurity) { latest, watch ->
+            BgSignals(cgmRssi = latest?.rssi, watchRssi = watch.rssiDbm)
+        }
+    }
 
     private fun serverLight(sync: SyncStatus, profile: ServerProfile?): ReachLight = when {
         profile == null -> ReachLight(LinkHealth.OFF, "no server profile configured")
@@ -763,7 +872,12 @@ class AppContainer(context: Context) {
                 thresholds = alarmConfig.thresholds,
                 lossMin = alarmConfig.lossMin,
             ),
-            lowPower = AndroidLowPowerProvider(appContext),
+            lowPower = AndroidLowPowerProvider(
+                context = appContext,
+                enabled = { settingsStore.currentLowPowerEnabled() },
+                thresholdPercent = { settingsStore.currentLowPowerPercent() },
+                useOsSaver = { settingsStore.currentLowPowerUseOsSaver() },
+            ),
             dispatchers = dispatchers,
             config = WatchLinkConfig(enabled = true, autoConnect = true),
         )

@@ -61,6 +61,7 @@ class WatchLink(
     private var session: WatchSession? = null
     private var eventJob: Job? = null
     private var reconnectJob: Job? = null
+    private var rssiJob: Job? = null
 
     private var helloAck: CompletableDeferred<ControlFrame.HelloAck>? = null
     private var confirmAck: CompletableDeferred<ControlFrame.ConfirmAck>? = null
@@ -75,6 +76,26 @@ class WatchLink(
                 !config.enabled -> setPhase(WatchLinkPhase.UNPAIRED)
                 pairing?.bonded == true && config.autoConnect -> resumeAndConnect(pairing)
                 else -> setPhase(if (pairing?.bonded == true) WatchLinkPhase.RECONNECTING else WatchLinkPhase.UNPAIRED)
+            }
+        }
+        startRssiPoll(scope)
+    }
+
+    /**
+     * Periodic RSSI sampler (Phase 7C — watch signal strength). While a transport is ready it reads
+     * the peripheral RSSI every [RSSI_POLL_MS] and publishes it to the panel + BG-panel WCH light;
+     * when disconnected it clears the reading (null ⇒ "no signal"). Off-main; a failed read is
+     * swallowed (the link liveness path is untouched).
+     */
+    private fun startRssiPoll(scope: CoroutineScope) {
+        rssiJob?.cancel()
+        rssiJob = scope.launch(dispatchers.io) {
+            while (true) {
+                val dbm = if (config.enabled && central?.isReady == true) {
+                    runCatching { central?.readRssi() }.getOrNull()
+                } else null
+                if (_state.value.rssiDbm != dbm) _state.update { it.copy(rssiDbm = dbm) }
+                delay(RSSI_POLL_MS)
             }
         }
     }
@@ -356,5 +377,7 @@ class WatchLink(
 
     companion object {
         private const val TAG = "WatchLink"
+        /** RSSI sampling cadence (ms) — frequent enough for a live signal bar, cheap on the radio. */
+        private const val RSSI_POLL_MS = 15_000L
     }
 }

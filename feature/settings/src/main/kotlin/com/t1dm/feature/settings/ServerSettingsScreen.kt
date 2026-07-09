@@ -1,5 +1,6 @@
 package com.t1dm.feature.settings
 
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -21,13 +22,20 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
+import org.json.JSONObject
 
 /**
- * Settings → Server sub-screen (PLAN.private.md Phase 3 deliverable 2). Configures the single active
- * profile — base URL + the `rw` token — with a health-check probe and a status read-out. The token
- * field is write-only: it is blank on entry (the secret lives in the Keystore, never surfaced) and a
- * blank value on save keeps the stored one. For the adb-reverse local case the base URL is
- * `http://127.0.0.1:8443` (Tailscale ⇒ TLS is moot).
+ * Settings → Server sub-screen (PLAN.private.md Phase 3 deliverable 2 + Phase 7C item 12 QR scan).
+ * Configures the single active profile — base URL + the `rw` token — with a health-check probe and a
+ * status read-out. The token field is write-only: blank on entry (the secret lives in the Keystore,
+ * never surfaced) and a blank value on save keeps the stored one.
+ *
+ * The "Scan QR" affordance opens the ZXing embedded scanner (no Play Services); it accepts either a
+ * bare token string or a `{baseUrl|url, token}` JSON object. The scanned token still flows through
+ * [onSave] into the Keystore-backed TokenStore, never the DB. Camera-denied / cancelled / malformed
+ * QR each produce a plain-language message.
  *
  * State is hoisted: the screen holds only the in-progress form text; persistence, activation, and the
  * health probe are `:app` concerns passed as callbacks.
@@ -46,6 +54,24 @@ fun ServerSettingsScreen(
     var label by remember(initialLabel) { mutableStateOf(initialLabel) }
     var baseUrl by remember(initialBaseUrl) { mutableStateOf(initialBaseUrl) }
     var token by remember { mutableStateOf("") }
+    var scanMessage by remember { mutableStateOf<String?>(null) }
+
+    val scanLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
+        val raw = result.contents
+        if (raw == null) {
+            scanMessage = "Scan cancelled (or camera permission denied). You can also type the token."
+            return@rememberLauncherForActivityResult
+        }
+        when (val parsed = parseServerQr(raw)) {
+            is ServerQrPayload.Invalid -> scanMessage = "That QR did not contain a usable token — ${parsed.reason}"
+            is ServerQrPayload.Valid -> {
+                token = parsed.token
+                if (!parsed.baseUrl.isNullOrBlank()) baseUrl = parsed.baseUrl
+                scanMessage = "Scanned a token${if (!parsed.baseUrl.isNullOrBlank()) " and base URL" else ""}. " +
+                    "Review, then Save + activate."
+            }
+        }
+    }
 
     Column(
         Modifier
@@ -84,6 +110,24 @@ fun ServerSettingsScreen(
             modifier = Modifier.fillMaxWidth(),
         )
 
+        OutlinedButton(
+            onClick = {
+                scanMessage = null
+                scanLauncher.launch(
+                    ScanOptions().apply {
+                        setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                        setPrompt("Scan the server token QR")
+                        setBeepEnabled(false)
+                        setOrientationLocked(false)
+                    },
+                )
+            },
+        ) { Text("Scan QR") }
+
+        if (scanMessage != null) {
+            Text(scanMessage!!, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Button(
                 onClick = { onSave(label.trim(), baseUrl.trim(), token.trim()) },
@@ -99,4 +143,31 @@ fun ServerSettingsScreen(
             Text(healthStatus, style = MaterialTheme.typography.bodyMedium)
         }
     }
+}
+
+/** The two accepted QR payload shapes (item 12): a bare token, or `{baseUrl|url, token}` JSON. */
+sealed interface ServerQrPayload {
+    data class Valid(val token: String, val baseUrl: String?) : ServerQrPayload
+    data class Invalid(val reason: String) : ServerQrPayload
+}
+
+/**
+ * Parse a scanned QR string. A `{...}` JSON body may carry `token` plus an optional `baseUrl`/`url`;
+ * anything else is treated as a bare token. Fail-closed: an empty token yields [ServerQrPayload.Invalid]
+ * with a plain reason. Pure — unit-testable without a camera.
+ */
+fun parseServerQr(raw: String): ServerQrPayload {
+    val trimmed = raw.trim()
+    if (trimmed.isEmpty()) return ServerQrPayload.Invalid("it was empty.")
+    if (trimmed.startsWith("{")) {
+        val obj = runCatching { JSONObject(trimmed) }.getOrNull()
+            ?: return ServerQrPayload.Invalid("it looked like JSON but did not parse.")
+        val token = obj.optString("token").trim()
+        if (token.isEmpty()) return ServerQrPayload.Invalid("the JSON had no \"token\" field.")
+        val baseUrl = sequenceOf("baseUrl", "url", "base_url")
+            .map { obj.optString(it).trim() }
+            .firstOrNull { it.isNotEmpty() }
+        return ServerQrPayload.Valid(token, baseUrl)
+    }
+    return ServerQrPayload.Valid(trimmed, null)
 }

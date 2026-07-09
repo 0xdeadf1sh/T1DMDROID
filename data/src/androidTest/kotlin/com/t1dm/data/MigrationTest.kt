@@ -100,6 +100,29 @@ class MigrationTest {
         )
     }
 
+    @Test
+    fun migrate5To6_reseedIsSchemaNeutral() {
+        // MIGRATION_5_6 is a data-only re-seed (inserts the grown FoodSeed rows into `food`); the
+        // schema must be byte-identical to 5, so validating against 6.json still passes.
+        helper.createDatabase(5).close()
+        helper.runMigrationsAndValidate(6, listOf(MigrationRunner.MIGRATION_5_6))
+    }
+
+    @Test
+    fun migrate1To6_fullChain() {
+        helper.createDatabase(1).close()
+        helper.runMigrationsAndValidate(
+            6,
+            listOf(
+                MigrationRunner.MIGRATION_1_2,
+                MigrationRunner.MIGRATION_2_3,
+                MigrationRunner.MIGRATION_3_4,
+                MigrationRunner.MIGRATION_4_5,
+                MigrationRunner.MIGRATION_5_6,
+            ),
+        )
+    }
+
     private companion object {
         const val TEST_DB = "migration-test.db"
     }

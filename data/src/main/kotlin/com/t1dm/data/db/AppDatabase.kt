@@ -20,7 +20,9 @@ import kotlinx.coroutines.Dispatchers
  * and `basal_schedule`, no change to any existing table. v4 (Phase 4, journal) adds the `note`
  * table — the durable producer for the outbox's reserved `NOTE` class. v5 (Phase 4, meal builder)
  * adds the glycemic dictionary (`food` + the FTS5 `food_fts` shadow), `saved_meal`/
- * `saved_meal_item`, and `insulin_type` — all additive.
+ * `saved_meal_item`, and `insulin_type` — all additive. v6 (Phase 7C) is a **data-only** re-seed
+ * (no schema change) folding the grown `FoodSeed` catalogue into an already-seeded install; see
+ * [MigrationRunner.MIGRATION_5_6].
  */
 @Database(
     entities = [
@@ -43,7 +45,7 @@ import kotlinx.coroutines.Dispatchers
         SavedMealItemEntity::class,
         InsulinTypeEntity::class,
     ],
-    version = 5,
+    version = 6,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)

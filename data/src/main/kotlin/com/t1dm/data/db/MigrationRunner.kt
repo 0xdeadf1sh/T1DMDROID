@@ -4,6 +4,7 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.SQLiteConnection
 import androidx.sqlite.execSQL
+import com.t1dm.data.meals.FoodSeed
 
 /**
  * The single registry of schema migrations (PLAN.private.md Phase 1). Keep-forever storage
@@ -156,7 +157,52 @@ object MigrationRunner {
         }
     }
 
-    val ALL: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+    /**
+     * v5 → v6 (PLAN.private.md Phase 7C, glycemic-dictionary expansion): a **data-only** additive
+     * re-seed — no table or column is added or changed, so a fresh `createAllTables` at v6 is
+     * schema-identical to v5. Its sole job is to fold the grown [FoodSeed] catalogue into an
+     * install that already seeded the smaller Phase-4 set: it inserts every bundled row NOT already
+     * present (matched by the `name` + `brand` natural key, restricted to seeded `custom = 0` rows),
+     * so the ~171 original rows are preserved and the new ones appended. A fresh install never runs
+     * this — it seeds the full catalogue in Kotlin via `MealsController.seedIfEmpty`.
+     *
+     * Inserting into `food` fires the [FoodFts] `food_ai` AFTER-INSERT trigger (created by
+     * [MIGRATION_4_5]/`onCreate`), so `food_fts` repopulates for exactly the new rows — no duplicate
+     * FTS entries for the pre-existing ones, which the `NOT EXISTS` guard skips. Reading the current
+     * [FoodSeed.ROWS] keeps this convergent: whatever the catalogue is at build time, running the
+     * migration chain always lands the DB on the full current set (idempotent under re-runs).
+     */
+    val MIGRATION_5_6 = object : Migration(5, 6) {
+        override fun migrate(connection: SQLiteConnection) {
+            val ts = System.currentTimeMillis()
+            // Numbered params (?1..?7) so the NOT EXISTS subquery reuses name/brand without rebinding.
+            // `brand IS ?2` is null-safe equality (matches both a NULL brand and a literal one).
+            val stmt = connection.prepare(
+                "INSERT INTO `food` (name, brand, carbsPer100g, gi, category, source, custom, customCurve, updatedAt) " +
+                    "SELECT ?1, ?2, ?3, ?4, ?5, ?6, 0, NULL, ?7 " +
+                    "WHERE NOT EXISTS (SELECT 1 FROM `food` WHERE name = ?1 AND brand IS ?2 AND custom = 0)",
+            )
+            try {
+                for (r in FoodSeed.ROWS) {
+                    stmt.bindText(1, r.name)
+                    if (r.brand == null) stmt.bindNull(2) else stmt.bindText(2, r.brand)
+                    stmt.bindDouble(3, r.carbsPer100g)
+                    if (r.gi == null) stmt.bindNull(4) else stmt.bindDouble(4, r.gi)
+                    stmt.bindText(5, r.category)
+                    stmt.bindText(6, FoodSeed.SOURCE)
+                    stmt.bindLong(7, ts)
+                    stmt.step()
+                    stmt.reset()
+                    stmt.clearBindings()
+                }
+            } finally {
+                stmt.close()
+            }
+        }
+    }
+
+    val ALL: Array<Migration> =
+        arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
 
     /** Apply every registered migration to a builder; the sole path that wires migrations. */
     fun <T : RoomDatabase> configure(builder: RoomDatabase.Builder<T>): RoomDatabase.Builder<T> =

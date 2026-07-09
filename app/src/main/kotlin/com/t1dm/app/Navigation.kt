@@ -9,6 +9,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -38,15 +39,33 @@ import com.t1dm.feature.insulin.InsulinTypeBuilderScreen
 import com.t1dm.feature.meals.MealBuilderScreen
 import com.t1dm.feature.journal.JournalScreen
 import com.t1dm.feature.meals.MealsScreen
+import com.t1dm.feature.models.ModelDetailScreen
 import com.t1dm.feature.models.ModelsScreen
+import com.t1dm.core.model.AccuracyReport
 import com.t1dm.feature.network.NetworkScreen
 import com.t1dm.feature.security.SecurityPanelState
 import com.t1dm.feature.security.SecurityScreen
+import com.t1dm.feature.settings.AboutScreen
+import com.t1dm.feature.settings.AlarmThresholdsScreen
+import com.t1dm.feature.settings.AlertsSettingsScreen
+import com.t1dm.feature.settings.CalculatorSettingsScreen
 import com.t1dm.feature.settings.CgmSettingsScreen
+import com.t1dm.feature.settings.CurveParams
+import com.t1dm.feature.settings.CurveParamsScreen
+import com.t1dm.feature.settings.DataSettingsScreen
+import com.t1dm.feature.settings.DisplaySettingsScreen
 import com.t1dm.feature.settings.GraphSettingsScreen
+import com.t1dm.feature.settings.PowerSettingsScreen
 import com.t1dm.feature.settings.SettingsScreen
+import com.t1dm.feature.settings.SignalSafetyScreen
 import com.t1dm.feature.settings.WarmupSettingsScreen
 import com.t1dm.feature.settings.WatchSettingsScreen
+import com.t1dm.alerts.VibrationPreset
+import com.t1dm.app.settings.SettingsStore
+import com.t1dm.data.curve.CurveEngine
+import com.t1dm.data.settings.GraphSettingsStore
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import com.t1dm.watch.WatchSecurityState
 import com.t1dm.feature.stats.StatsScreen
 
@@ -65,6 +84,7 @@ private fun WatchSecurityState.toPanelState() = SecurityPanelState(
     lastPush = lastPushMs?.let { "${(System.currentTimeMillis() - it) / 1000}s ago" },
     lastAckSeq = lastAckSeq,
     lowPowerSuspended = lowPowerSuspended,
+    rssiDbm = rssiDbm,
     lastError = lastError,
     canPair = canPair,
     canConfirmSas = canConfirmSas,
@@ -168,11 +188,36 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
         }
         composable("models") {
             val inference by container.inferenceState.collectAsState(InferenceState())
-            ModelsScreen(state = inference, onSelect = container.inferenceController::selectModel)
+            ModelsScreen(
+                state = inference,
+                onSelect = container.inferenceController::selectModel,
+                onOpen = { id -> navController.navigate("models/$id") },
+            )
+        }
+        composable("models/{modelId}") { entry ->
+            val modelId = entry.arguments?.getString("modelId") ?: return@composable
+            val inference by container.inferenceState.collectAsState(InferenceState())
+            var accuracy by remember(modelId) { mutableStateOf<AccuracyReport?>(null) }
+            var loading by remember(modelId) { mutableStateOf(true) }
+            var reloadTick by remember(modelId) { mutableStateOf(0) }
+            LaunchedEffect(modelId, reloadTick) {
+                loading = true
+                accuracy = runCatching { container.modelAccuracy(modelId) }.getOrNull()
+                loading = false
+            }
+            ModelDetailScreen(
+                state = inference,
+                modelId = modelId,
+                accuracy = accuracy,
+                accuracyLoading = loading,
+                onRecomputeAccuracy = { reloadTick++ },
+            )
         }
         composable("hardware") {
             val inference by container.inferenceState.collectAsState(InferenceState())
-            HardwareScreen(state = inference)
+            var hardware by remember { mutableStateOf(com.t1dm.feature.hardware.HardwareInfo.UNKNOWN) }
+            LaunchedEffect(Unit) { hardware = container.detectHardware() }
+            HardwareScreen(state = inference, hardware = hardware)
         }
         composable("network") {
             val status by container.syncStatus.collectAsState(SyncStatus())
@@ -184,9 +229,11 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
         composable("meals") {
             val scope = rememberCoroutineScope()
             val iobCob by container.iobCob.collectAsState()
+            val recent by container.recentMeals.collectAsState(emptyList())
             Column {
                 MealsScreen(
                     iobCob = iobCob,
+                    recentMeals = recent,
                     previewCurve = container.previewCarbCurve,
                     onLogMeal = { grams, gi -> scope.launch { container.logCarb(grams, gi) } },
                 )
@@ -265,20 +312,206 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
         }
         composable("settings") {
             SettingsScreen(
+                onOpenDisplay = { navController.navigate("settings/display") },
+                onOpenGraph = { navController.navigate("settings/graph") },
+                onOpenAlarmThresholds = { navController.navigate("settings/alarms") },
+                onOpenSignalSafety = { navController.navigate("settings/signal") },
+                onOpenAlerts = { navController.navigate("settings/alerts") },
+                onOpenWarmup = { navController.navigate("settings/warmup") },
+                onOpenCalculator = { navController.navigate("settings/calculator") },
+                onOpenCurveParams = { navController.navigate("settings/curves") },
+                onOpenModels = { navController.navigate("models") },
                 onOpenCgm = { navController.navigate("settings/cgm") },
                 onOpenServer = { navController.navigate("settings/server") },
-                onOpenWarmup = { navController.navigate("settings/warmup") },
                 onOpenWatch = { navController.navigate("settings/watch") },
-                onOpenGraph = { navController.navigate("settings/graph") },
+                onOpenPower = { navController.navigate("settings/power") },
+                onOpenData = { navController.navigate("settings/data") },
+                onOpenAbout = { navController.navigate("about") },
             )
+        }
+        composable("about") {
+            AboutScreen(info = container.aboutInfo())
         }
         composable("settings/graph") {
             val scope = rememberCoroutineScope()
             val range by container.graphRange.collectAsState(com.t1dm.data.settings.BgRange.DEFAULT)
+            val windowHours by container.graphWindowHours.collectAsState(GraphSettingsStore.DEFAULT_WINDOW_HOURS)
             GraphSettingsScreen(
                 minMgdl = range.minMgdl,
                 maxMgdl = range.maxMgdl,
+                windowHours = windowHours,
+                windowPresets = GraphSettingsStore.WINDOW_PRESETS,
                 onChange = { min, max -> scope.launch { container.setGraphRange(min, max) } },
+                onSetWindow = { h -> scope.launch { container.setGraphWindowHours(h) } },
+            )
+        }
+        composable("settings/display") {
+            val scope = rememberCoroutineScope()
+            val statsState by container.statsViewModel.state.collectAsState()
+            val animations by container.settingsStore.animationsEnabled.collectAsState(true)
+            DisplaySettingsScreen(
+                unitSpace = statsState.unitSpace,
+                targetLow = statsState.targetRange.lowMgdl,
+                targetHigh = statsState.targetRange.highMgdl,
+                animationsEnabled = animations,
+                onSetUnitSpace = { container.statsViewModel.setUnitSpace(it) },
+                onSetTargetRange = { lo, hi -> container.statsViewModel.setTargetRange(lo, hi) },
+                onSetAnimationsEnabled = { on -> scope.launch { container.settingsStore.setAnimationsEnabled(on) } },
+            )
+        }
+        composable("settings/alarms") {
+            val scope = rememberCoroutineScope()
+            val ul by container.settingsStore.alarmUrgentLow.collectAsState(55)
+            val lo by container.settingsStore.alarmLow.collectAsState(70)
+            val hi by container.settingsStore.alarmHigh.collectAsState(180)
+            val uh by container.settingsStore.alarmUrgentHigh.collectAsState(250)
+            AlarmThresholdsScreen(
+                urgentLow = ul, low = lo, high = hi, urgentHigh = uh,
+                onChange = { a, b, c, d -> scope.launch { container.saveAlarmThresholds(a, b, c, d) } },
+            )
+        }
+        composable("settings/signal") {
+            val scope = rememberCoroutineScope()
+            val lossMin by container.settingsStore.lossMin.collectAsState(20)
+            val lossEsc by container.settingsStore.lossEscalatedMin.collectAsState(12)
+            val staleMin by container.settingsStore.calcFreshnessMin.collectAsState(15)
+            SignalSafetyScreen(
+                lossMin = lossMin,
+                lossEscalatedMin = lossEsc,
+                dosingStaleMin = staleMin,
+                onSetLoss = { a, b -> scope.launch { container.saveLossWindows(a, b) } },
+                onSetDosingStale = { m -> scope.launch { container.settingsStore.setCalcFreshnessMin(m) } },
+            )
+        }
+        composable("settings/alerts") {
+            val scope = rememberCoroutineScope()
+            val warnVib by container.settingsStore.warningVibration.collectAsState(VibrationPreset.DOUBLE.name)
+            val critVib by container.settingsStore.criticalVibration.collectAsState(VibrationPreset.INSISTENT.name)
+            val warnSound by container.settingsStore.warningSoundOn.collectAsState(false)
+            val critSound by container.settingsStore.criticalSoundOn.collectAsState(true)
+            val bypass by container.settingsStore.bypassDnd.collectAsState(true)
+            val cadence by container.settingsStore.repeatCadenceMin.collectAsState(5)
+            AlertsSettingsScreen(
+                vibrationOptions = VibrationPreset.entries.map { it.name },
+                warningVibration = warnVib,
+                criticalVibration = critVib,
+                warningSoundOn = warnSound,
+                criticalSoundOn = critSound,
+                bypassDnd = bypass,
+                repeatCadenceMin = cadence,
+                onSetWarningVibration = { n -> scope.launch { container.settingsStore.setWarningVibration(VibrationPreset.valueOf(n)) } },
+                onSetCriticalVibration = { n -> scope.launch { container.settingsStore.setCriticalVibration(VibrationPreset.valueOf(n)) } },
+                onSetWarningSoundOn = { on -> scope.launch { container.settingsStore.setWarningSoundOn(on) } },
+                onSetCriticalSoundOn = { on -> scope.launch { container.settingsStore.setCriticalSoundOn(on) } },
+                onSetBypassDnd = { on -> scope.launch { container.settingsStore.setBypassDnd(on) } },
+                onSetRepeatCadence = { m -> scope.launch { container.saveRepeatCadence(m) } },
+            )
+        }
+        composable("settings/calculator") {
+            val scope = rememberCoroutineScope()
+            val ss = container.settingsStore
+            val objective by ss.calcObjective.collectAsState(SettingsStore.OBJ_KOVATCHEV)
+            val tLow by ss.calcTargetLow.collectAsState(70.0)
+            val tHigh by ss.calcTargetHigh.collectAsState(180.0)
+            val tMid by ss.calcTargetMid.collectAsState(110.0)
+            val hypoW by ss.calcHypoWeight.collectAsState(3.0)
+            val hyperW by ss.calcHyperWeight.collectAsState(1.0)
+            val predLow by ss.calcPredictedLow.collectAsState(70.0)
+            val iobCeil by ss.calcIobCeiling.collectAsState(12.0)
+            val gridMax by ss.calcGridMaxU.collectAsState(15.0)
+            val gridStep by ss.calcGridStepU.collectAsState(0.5)
+            val rFresh by ss.railFreshness.collectAsState(true)
+            val rPred by ss.railPredictedLow.collectAsState(true)
+            val rIob by ss.railIobCeiling.collectAsState(true)
+            val rConfirm by ss.railConfirm.collectAsState(true)
+            val rHypo by ss.railHypoTreatment.collectAsState(true)
+            CalculatorSettingsScreen(
+                objectiveOptions = listOf(
+                    SettingsStore.OBJ_KOVATCHEV to "Min Kovatchev risk",
+                    SettingsStore.OBJ_MIN_TOR to "Min time out of range",
+                    SettingsStore.OBJ_HIT_TARGET to "Hit target (1 h)",
+                ),
+                objective = objective,
+                targetLow = tLow, targetHigh = tHigh, targetMid = tMid,
+                hypoWeight = hypoW, hyperWeight = hyperW,
+                predictedLow = predLow, iobCeiling = iobCeil,
+                gridMaxU = gridMax, gridStepU = gridStep,
+                railFreshness = rFresh, railPredictedLow = rPred, railIobCeiling = rIob,
+                railConfirm = rConfirm, railHypoTreatment = rHypo,
+                onSetObjective = { k -> scope.launch { ss.setCalcObjective(k) } },
+                onSetTarget = { lo, hi, mid -> scope.launch { ss.setCalcTarget(lo, hi, mid) } },
+                onSetAsymmetry = { hypo, hyper -> scope.launch { ss.setCalcAsymmetry(hypo, hyper) } },
+                onSetPredictedLow = { v -> scope.launch { ss.setCalcPredictedLow(v) } },
+                onSetIobCeiling = { v -> scope.launch { ss.setCalcIobCeiling(v) } },
+                onSetGrid = { mx, st -> scope.launch { ss.setCalcGrid(mx, st) } },
+                onSetRailFreshness = { on -> scope.launch { ss.setRail(SettingsStore.RAIL_FRESHNESS, on) } },
+                onSetRailPredictedLow = { on -> scope.launch { ss.setRail(SettingsStore.RAIL_PREDICTED_LOW, on) } },
+                onSetRailIobCeiling = { on -> scope.launch { ss.setRail(SettingsStore.RAIL_IOB, on) } },
+                onSetRailConfirm = { on -> scope.launch { ss.setRail(SettingsStore.RAIL_CONFIRM, on) } },
+                onSetRailHypoTreatment = { on -> scope.launch { ss.setRail(SettingsStore.RAIL_HYPO, on) } },
+            )
+        }
+        composable("settings/curves") {
+            val hi = CurveEngine.Presets.carbGammaForGi(100.0)
+            val lo = CurveEngine.Presets.carbGammaForGi(0.0)
+            CurveParamsScreen(
+                params = CurveParams(
+                    bolusGammaK = CurveEngine.Presets.BOLUS_GAMMA_K,
+                    bolusGammaTheta = CurveEngine.Presets.BOLUS_GAMMA_THETA,
+                    bolusDiaBaseHours = CurveEngine.Presets.BOLUS_DIA_BASE_HOURS,
+                    basalKaPerHour = CurveEngine.Presets.BASAL_KA_PER_HOUR,
+                    basalKePerHour = CurveEngine.Presets.BASAL_KE_PER_HOUR,
+                    lantusDiaHours = CurveEngine.Presets.LANTUS_DIA_MIN / 60.0,
+                    tresibaDiaHours = CurveEngine.Presets.TRESIBA_DIA_MIN / 60.0,
+                    carbHighGiK = hi.first, carbHighGiTheta = hi.second,
+                    carbLowGiK = lo.first, carbLowGiTheta = lo.second,
+                ),
+            )
+        }
+        composable("settings/power") {
+            val scope = rememberCoroutineScope()
+            val enabled by container.settingsStore.lowPowerEnabled.collectAsState(true)
+            val pct by container.settingsStore.lowPowerPercent.collectAsState(SettingsStore.DEFAULT_LOW_POWER_PCT)
+            val osSaver by container.settingsStore.lowPowerUseOsSaver.collectAsState(true)
+            PowerSettingsScreen(
+                enabled = enabled, percent = pct, useOsSaver = osSaver,
+                onSetEnabled = { on -> scope.launch { container.settingsStore.setLowPowerEnabled(on) } },
+                onSetPercent = { p -> scope.launch { container.settingsStore.setLowPowerPercent(p) } },
+                onSetUseOsSaver = { on -> scope.launch { container.settingsStore.setLowPowerUseOsSaver(on) } },
+            )
+        }
+        composable("settings/data") {
+            val scope = rememberCoroutineScope()
+            val ctx = LocalContext.current
+            var status by remember { mutableStateOf<String?>(null) }
+            val exportLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.CreateDocument("application/json"),
+            ) { uri ->
+                if (uri == null) { status = "Export cancelled." } else scope.launch {
+                    status = runCatching {
+                        val json = container.exportConfigJson()
+                        ctx.contentResolver.openOutputStream(uri)?.use { it.write(json.toByteArray()) }
+                            ?: error("could not open the chosen file for writing")
+                        "Exported settings to the chosen file."
+                    }.getOrElse { "Export failed — ${it.message ?: it::class.simpleName}." }
+                }
+            }
+            val importLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.OpenDocument(),
+            ) { uri ->
+                if (uri == null) { status = "Import cancelled." } else scope.launch {
+                    status = runCatching {
+                        val text = ctx.contentResolver.openInputStream(uri)?.use { it.readBytes().decodeToString() }
+                            ?: error("could not open the chosen file for reading")
+                        val n = container.importConfigJson(text)
+                        "Imported $n settings. Reopen the app for alarm-threshold changes to fully apply."
+                    }.getOrElse { "Import failed — ${it.message ?: it::class.simpleName}." }
+                }
+            }
+            DataSettingsScreen(
+                status = status,
+                onExport = { status = null; exportLauncher.launch("t1dm-config.json") },
+                onImport = { status = null; importLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
             )
         }
         composable("settings/watch") {

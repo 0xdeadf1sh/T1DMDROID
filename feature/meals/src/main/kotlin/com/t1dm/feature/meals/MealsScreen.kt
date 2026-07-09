@@ -8,6 +8,8 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
@@ -29,6 +31,13 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.model.GiChip
 import com.t1dm.core.model.IobCobReadout
+import com.t1dm.core.model.RecentMeal
+import kotlin.math.roundToInt
+
+// Carb slider bounds (Phase 7C, item 9): 5–120 g in 5 g steps ⇒ 24 stops ⇒ 22 interior Slider steps.
+private const val CARB_MIN = 5.0
+private const val CARB_MAX = 120.0
+private const val CARB_STEPS = 22
 
 /**
  * The Phase-4 carb entry surface (PLAN.private.md deliverable 1 — "manual carb entry"). Logs a meal
@@ -45,6 +54,7 @@ import com.t1dm.core.model.IobCobReadout
 @Composable
 fun MealsScreen(
     iobCob: IobCobReadout? = null,
+    recentMeals: List<RecentMeal> = emptyList(),
     previewCurve: (suspend (grams: Double, gi: Double) -> DoubleArray)? = null,
     onLogMeal: (grams: Double, gi: Double) -> Unit = { _, _ -> },
 ) {
@@ -64,6 +74,33 @@ fun MealsScreen(
             singleLine = true,
             modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
         )
+        // Carb slider (5–120 g, 5 g steps) bound to the SAME grams value: dragging rewrites the text,
+        // typing repositions the thumb (rounded/clamped into range). An out-of-range or empty text
+        // simply parks the thumb at the low end without overwriting what the user typed.
+        Slider(
+            value = (grams ?: CARB_MIN).coerceIn(CARB_MIN, CARB_MAX).toFloat(),
+            onValueChange = { gramsText = it.roundToInt().toString() },
+            valueRange = CARB_MIN.toFloat()..CARB_MAX.toFloat(),
+            steps = CARB_STEPS,
+        )
+
+        if (recentMeals.isNotEmpty()) {
+            Text(
+                "Recent meals",
+                style = MaterialTheme.typography.labelMedium,
+                modifier = Modifier.padding(top = 8.dp),
+            )
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                recentMeals.forEach { m ->
+                    AssistChip(
+                        onClick = { gramsText = m.grams.toInt().toString(); gi = m.gi.toFloat() },
+                        label = { Text(m.label) },
+                        leadingIcon = { Text("↺", style = MaterialTheme.typography.labelLarge) },
+                        colors = AssistChipDefaults.assistChipColors(),
+                    )
+                }
+            }
+        }
 
         Text(
             "Glycemic index: ${gi.toInt()}",

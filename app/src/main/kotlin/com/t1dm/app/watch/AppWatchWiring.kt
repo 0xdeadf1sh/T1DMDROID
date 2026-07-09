@@ -98,11 +98,32 @@ class AppWatchGlanceSource(
     }
 }
 
-/** Battery-saver / low-power detection (progress.md Q9 — default 20 %, configurable). Uses the OS
- *  power-save signal, the cheapest reliable proxy for the phone's own conservation state. */
-class AndroidLowPowerProvider(context: Context) : LowPowerProvider {
+/**
+ * Battery-saver / low-power detection (progress.md Q9 — default entry 20 %, configurable). Two
+ * independent triggers, both settings-gated (Phase 7C item 14): the OS power-save signal AND a
+ * user-set battery-percentage floor. When the whole feature is disabled it never suspends the watch
+ * push. Every input is read fresh per call so a Settings change takes effect on the next 5-min tick;
+ * a failed battery read fails OPEN (not low-power) so the push is never wrongly muted.
+ */
+class AndroidLowPowerProvider(
+    private val context: Context,
+    private val enabled: suspend () -> Boolean,
+    private val thresholdPercent: suspend () -> Int,
+    private val useOsSaver: suspend () -> Boolean,
+) : LowPowerProvider {
     private val pm = context.getSystemService(PowerManager::class.java)
-    override suspend fun isLowPower(): Boolean = pm?.isPowerSaveMode == true
+
+    override suspend fun isLowPower(): Boolean {
+        if (!enabled()) return false
+        if (useOsSaver() && pm?.isPowerSaveMode == true) return true
+        val pct = batteryPercent() ?: return false
+        return pct <= thresholdPercent()
+    }
+
+    private fun batteryPercent(): Int? = runCatching {
+        val bm = context.getSystemService(android.os.BatteryManager::class.java)
+        bm?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)?.takeIf { it in 0..100 }
+    }.getOrNull()
 }
 
 /** Windowed nonce ceiling in the Room `kv` store, per epoch (PLAN risk S6 burn-the-window). */

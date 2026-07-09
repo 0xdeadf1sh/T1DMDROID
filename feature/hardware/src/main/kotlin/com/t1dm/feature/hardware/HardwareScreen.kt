@@ -27,8 +27,35 @@ import com.t1dm.core.model.RunningModel
  * the per-model split is already keyed so it drops in without a layout change.
  */
 @Composable
-fun HardwareScreen(state: InferenceState) {
+fun HardwareScreen(state: InferenceState, hardware: HardwareInfo = HardwareInfo.UNKNOWN) {
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        // ── Detected hardware readout (item 8) ──
+        item {
+            Text("Device hardware", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Column(Modifier.padding(top = 4.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                HwRow("Device", hardware.device)
+                HwRow("SoC", hardware.soc)
+                HwRow("CPU", hardware.cpuTopology)
+                HwRow("CPU max freq", hardware.cpuMaxFreqsGhz.takeIf { it.isNotEmpty() }
+                    ?.joinToString(" / ") { "%.2f".format(it) }?.let { "$it GHz" })
+                HwRow("GPU", hardware.gpuRenderer)
+                HwRow("NPU / APU", hardware.npu)
+                HwRow("RAM", if (hardware.ramTotalMb != null)
+                    "${hardware.ramAvailMb ?: "?"} / ${hardware.ramTotalMb} MB free" else null)
+                HwRow("Display", hardware.display)
+                HwRow("Android", hardware.androidVersion)
+                HwRow("Security patch", hardware.securityPatch)
+                HwRow("ABI / page", listOfNotNull(
+                    hardware.abis.firstOrNull(),
+                    hardware.pageSizeKb?.let { "${it}KB pages" },
+                ).joinToString(" · ").ifBlank { null })
+                HwRow("Thermal", hardware.thermalStatus)
+                HwRow("Battery", hardware.battery)
+                HwRow("ExecuTorch backends", hardware.backends.takeIf { it.isNotEmpty() }?.joinToString(", "))
+            }
+            HorizontalDivider(Modifier.padding(top = 8.dp))
+        }
+
         item {
             Text("Inference hardware", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             val cadence = state.lastCycleDurationMs?.let { "$it ms" } ?: "—"
@@ -74,6 +101,19 @@ private fun ModelRow(model: RunningModel, latency: ModelLatency?) {
             Stat("runs", latency?.runs?.toString() ?: "0")
             Stat("agree Δ", "—") // fp16 shadow deferred (§3.6-E)
         }
+    }
+}
+
+@Composable
+private fun HwRow(label: String, value: String?) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(
+            value ?: "n/a",
+            style = MaterialTheme.typography.bodySmall,
+            fontFamily = FontFamily.Monospace,
+            color = if (value == null) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+        )
     }
 }
 

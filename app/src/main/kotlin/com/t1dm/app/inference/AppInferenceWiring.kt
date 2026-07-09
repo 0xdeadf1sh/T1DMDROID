@@ -5,7 +5,11 @@ import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.inference.BgHistoryProvider
 import com.t1dm.inference.BgSeries
+import com.t1dm.inference.CumulativeTelemetry
+import com.t1dm.inference.TelemetryStore
 import com.t1dm.data.T1dmRepository
+import org.json.JSONObject
+import timber.log.Timber
 import java.util.TreeMap
 
 /**
@@ -84,5 +88,43 @@ class RoomBgHistoryProvider(
             .map { it.tsMs / GRID_MS }
             .distinct()
             .count()
+    }
+}
+
+/**
+ * `:app` implementation of the `:inference` [TelemetryStore] port (Phase 7C — Models drill-down): the
+ * CUMULATIVE per-model inference telemetry (#predictions + total backend wall-time) as one JSON blob
+ * in the Room `kv` store, keyed [KV_KEY]. Kept off the schema (a single kv row) so `:inference` needs
+ * no Room dependency; O(1) read/write per cycle. Malformed/absent ⇒ an empty map (fail-open), so a
+ * corrupt row can never break a cycle — the counters simply restart.
+ */
+class KvTelemetryStore(private val repository: T1dmRepository) : TelemetryStore {
+
+    override suspend fun load(): Map<String, CumulativeTelemetry> {
+        val raw = repository.getKv(KV_KEY) ?: return emptyMap()
+        return runCatching {
+            val obj = JSONObject(raw)
+            buildMap {
+                obj.keys().forEach { id ->
+                    val o = obj.getJSONObject(id)
+                    put(id, CumulativeTelemetry(o.optLong("n"), o.optDouble("ms")))
+                }
+            }
+        }.getOrElse {
+            Timber.tag("Telemetry").w(it, "unparseable telemetry blob; resetting counters")
+            emptyMap()
+        }
+    }
+
+    override suspend fun save(all: Map<String, CumulativeTelemetry>) {
+        val obj = JSONObject()
+        for ((id, c) in all) {
+            obj.put(id, JSONObject().put("n", c.predictions).put("ms", c.totalInferenceMs))
+        }
+        repository.putKv(KV_KEY, obj.toString(), System.currentTimeMillis())
+    }
+
+    private companion object {
+        const val KV_KEY = "inference.telemetry.cumulative"
     }
 }
