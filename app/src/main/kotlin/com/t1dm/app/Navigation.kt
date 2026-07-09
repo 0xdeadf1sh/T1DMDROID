@@ -43,6 +43,7 @@ import com.t1dm.feature.network.NetworkScreen
 import com.t1dm.feature.security.SecurityPanelState
 import com.t1dm.feature.security.SecurityScreen
 import com.t1dm.feature.settings.CgmSettingsScreen
+import com.t1dm.feature.settings.GraphSettingsScreen
 import com.t1dm.feature.settings.SettingsScreen
 import com.t1dm.feature.settings.WarmupSettingsScreen
 import com.t1dm.feature.settings.WatchSettingsScreen
@@ -125,12 +126,17 @@ private fun T1dmBottomBar(navController: NavHostController) {
 private fun T1dmNavHost(navController: NavHostController, container: AppContainer) {
     NavHost(navController = navController, startDestination = "dashboard") {
         composable("dashboard") {
+            val scope = rememberCoroutineScope()
             val readings by container.dashboardReadings.collectAsState(emptyList())
             val latest by container.latestReading.collectAsState(null)
             val active by container.activeSource.collectAsState(null)
             val inference by container.inferenceState.collectAsState(InferenceState())
             // IOB/COB recomputed off-main on any reading emit OR dose/meal write (shared StateFlow).
             val iobCob by container.iobCob.collectAsState()
+            val range by container.graphRange.collectAsState(com.t1dm.data.settings.BgRange.DEFAULT)
+            val windowHours by container.graphWindowHours.collectAsState(6)
+            val reachability by container.bgReachability.collectAsState(null)
+            val signals by container.bgSignals.collectAsState(null)
             DashboardScreen(
                 readings = readings,
                 latest = latest,
@@ -141,6 +147,12 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 iobCob = iobCob,
                 curveChannels = container::dashboardCurveChannels,
                 warmup = inference.warmup,
+                rangeMinMgdl = range.minMgdl,
+                rangeMaxMgdl = range.maxMgdl,
+                initialWindowHours = windowHours,
+                onSetWindowHours = { h -> scope.launch { container.setGraphWindowHours(h) } },
+                reachability = reachability,
+                signals = signals,
             )
         }
         composable("stats") {
@@ -257,6 +269,16 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 onOpenServer = { navController.navigate("settings/server") },
                 onOpenWarmup = { navController.navigate("settings/warmup") },
                 onOpenWatch = { navController.navigate("settings/watch") },
+                onOpenGraph = { navController.navigate("settings/graph") },
+            )
+        }
+        composable("settings/graph") {
+            val scope = rememberCoroutineScope()
+            val range by container.graphRange.collectAsState(com.t1dm.data.settings.BgRange.DEFAULT)
+            GraphSettingsScreen(
+                minMgdl = range.minMgdl,
+                maxMgdl = range.maxMgdl,
+                onChange = { min, max -> scope.launch { container.setGraphRange(min, max) } },
             )
         }
         composable("settings/watch") {

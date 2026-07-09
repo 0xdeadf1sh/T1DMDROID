@@ -40,8 +40,9 @@ class GraphInput(val patches: FloatBuffer, val mask: FloatBuffer)
 /**
  * The graph output (PLAN.private.md §2.4). [headRaw] is the flattened `4·6·7 = 168` `head_raw`
  * in risk space, C-contiguous over `(P, S, C)` so the flat index is `(p·6 + s)·7 + c` — exactly
- * what `t1dm-core::assemble_decode` consumes. [timeLogits] is the optional diagnostic hour-of-day
- * probe; the graph is cut before it, so it is always `null` here.
+ * what `t1dm-core::assemble_decode` consumes. [timeLogits] is the co-trained hour-of-day time
+ * probe (slot 1, flat `(P, N_BINS)`) when the exported `.pte` emits it, else `null` (a `head_raw`-
+ * only export, or the [StubBackend]); `t1dm-core::decode_time` reduces it to a predicted hour.
  */
 class GraphOutput(val headRaw: FloatArray, val timeLogits: FloatArray? = null)
 

@@ -16,7 +16,9 @@ import com.t1dm.core.model.DecodedAdvert
 import com.t1dm.core.model.Forecast
 import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.ModelDescriptor
+import com.t1dm.core.model.PredictedTime
 import com.t1dm.core.model.PrevGlucose
+import com.t1dm.core.model.TimeHead
 import uniffi.t1dm_core.CoreException
 import uniffi.t1dm_core.advancedStats as uniffiAdvancedStats
 import uniffi.t1dm_core.advertCrc32 as uniffiAdvertCrc32
@@ -27,6 +29,7 @@ import uniffi.t1dm_core.bucketize as uniffiBucketize
 import uniffi.t1dm_core.buildContext as uniffiBuildContext
 import uniffi.t1dm_core.causalSmooth as uniffiCausalSmooth
 import uniffi.t1dm_core.decodeAdvert as uniffiDecodeAdvert
+import uniffi.t1dm_core.decodeTime as uniffiDecodeTime
 import uniffi.t1dm_core.denormalizeSample as uniffiDenormalizeSample
 import uniffi.t1dm_core.extendBasal as uniffiExtendBasal
 import uniffi.t1dm_core.forecastDegeneracyCheck as uniffiForecastDegeneracyCheck
@@ -50,6 +53,8 @@ import uniffi.t1dm_core.Forecast as UniffiForecast
 import uniffi.t1dm_core.ForecastStatus as UniffiForecastStatus
 import uniffi.t1dm_core.ModelDescriptor as UniffiModelDescriptor
 import uniffi.t1dm_core.MoodSummary as UniffiMoodSummary
+import uniffi.t1dm_core.PredictedTime as UniffiPredictedTime
+import uniffi.t1dm_core.TimeHead as UniffiTimeHead
 import uniffi.t1dm_core.StatSample as UniffiStatSample
 import uniffi.t1dm_core.SubBands as UniffiSubBands
 
@@ -120,6 +125,16 @@ class UniffiNativeCore : NativeCore {
 
     override fun forecastDegeneracyCheck(forecast: Forecast): ForecastStatus =
         uniffiForecastDegeneracyCheck(forecast.toUniffi()).toModel()
+
+    /** Rust `decode_time` throws `CoreException` on a bad shape / non-finite logit; we map it to
+     *  the fail-open `null` so a malformed time output can never crash a cycle (the BG forecast
+     *  path is unaffected). */
+    override fun decodeTime(timeLogits: List<Double>, nBins: Int, binHours: Double): PredictedTime? =
+        try {
+            uniffiDecodeTime(timeLogits, nBins, binHours).toModel()
+        } catch (_: CoreException) {
+            null
+        }
 
     // ── Shared curve/PK engine (Phase 4, PLAN §3.3) ─────────────────────────────────
 
@@ -263,6 +278,19 @@ private fun UniffiChannelStat.toModel(): ChannelStat = ChannelStat(mean = mean, 
 
 private fun ChannelStat.toUniffi(): UniffiChannelStat = UniffiChannelStat(mean = mean, std = std)
 
+private fun UniffiTimeHead.toModel(): TimeHead = TimeHead(
+    outputIndex = outputIndex, nBins = nBins, binHours = binHours,
+)
+
+private fun TimeHead.toUniffi(): UniffiTimeHead = UniffiTimeHead(
+    outputIndex = outputIndex, nBins = nBins, binHours = binHours,
+)
+
+private fun UniffiPredictedTime.toModel(): PredictedTime = PredictedTime(
+    probs = probs, predictedHour = predictedHour, resultantR = resultantR,
+    nBins = nBins, binHours = binHours,
+)
+
 private fun UniffiModelDescriptor.toModel(): ModelDescriptor = ModelDescriptor(
     bg = bg.toModel(),
     carb = carb.toModel(),
@@ -278,6 +306,7 @@ private fun UniffiModelDescriptor.toModel(): ModelDescriptor = ModelDescriptor(
     patchSize = patchSize,
     nInputFeatures = nInputFeatures,
     conformalEnabled = conformalEnabled,
+    time = time?.toModel(),
 )
 
 private fun ModelDescriptor.toUniffi(): UniffiModelDescriptor = UniffiModelDescriptor(
@@ -295,6 +324,7 @@ private fun ModelDescriptor.toUniffi(): UniffiModelDescriptor = UniffiModelDescr
     patchSize = patchSize,
     nInputFeatures = nInputFeatures,
     conformalEnabled = conformalEnabled,
+    time = time?.toUniffi(),
 )
 
 private fun UniffiBuiltContext.toModel(): BuiltContext = BuiltContext(

@@ -12,6 +12,7 @@ import com.t1dm.core.model.ModelDescriptor
 import com.t1dm.core.model.ModelLatency
 import com.t1dm.core.model.ModelPrediction
 import com.t1dm.core.model.Precision
+import com.t1dm.core.model.PredictedTime
 import com.t1dm.core.model.RunningModel
 import com.t1dm.inference.backend.GraphIo
 import com.t1dm.inference.backend.GraphInput
@@ -309,9 +310,11 @@ class InferenceController(
         )
         runCatching { predictionStore.persist(cycleTs, preds) }
             .onFailure { Timber.tag(TAG).w(it, "prediction persist failed") }
+        val selPt = preds.firstOrNull { it.selected }?.predictedTime
         Timber.tag(TAG).i(
-            "cycle cause=%s models=%d dur=%dms selected=%s status=%s",
+            "cycle cause=%s models=%d dur=%dms selected=%s status=%s predHour=%s",
             cause, preds.size, durationMs, selectedId, preds.firstOrNull { it.selected }?.status,
+            selPt?.let { "%.2fh R=%.3f (%d bins)".format(it.predictedHour, it.resultantR, it.nBins) } ?: "n/a",
         )
     }
 
@@ -339,6 +342,12 @@ class InferenceController(
         val status: ForecastStatus =
             withContext(dispatchers.default) { native.forecastDegeneracyCheck(forecast) }
 
+        // Circadian-phase belief (Phase 7A): the co-trained time probe's second `.pte` output,
+        // reduced to a predicted hour-of-day in the Rust core. Purely additive — fail-OPEN to null
+        // (descriptor lacks a time section, backend returned no slot-1 tensor, or the decode
+        // throws) so it can NEVER perturb the BG forecast/degeneracy path above.
+        val predictedTime: PredictedTime? = decodeTimeSafely(desc, out.timeLogits)
+
         return ModelPrediction(
             modelId = entry.bundle.id,
             cycleTsMs = cycleTs,
@@ -354,7 +363,29 @@ class InferenceController(
             selected = selected,
             stale = stale,
             latencyMs = latMs,
+            predictedTime = predictedTime,
         )
+    }
+
+    /**
+     * Decode the time-probe's slot-1 logits into a circadian-phase belief, fail-OPEN. Returns null
+     * unless the descriptor declares a time section AND the backend produced a matching flat
+     * `(P, nBins)` tensor; any decode error (mapped by [NativeCore.decodeTime] to null) or a
+     * length mismatch also yields null. Never throws — the caller must not let a time-probe hiccup
+     * touch the BG forecast.
+     */
+    private suspend fun decodeTimeSafely(desc: ModelDescriptor, timeLogits: FloatArray?): PredictedTime? {
+        val time = desc.time ?: return null
+        val logits = timeLogits ?: return null
+        if (time.nBins <= 0 || logits.isEmpty() || logits.size % time.nBins != 0) return null
+        return runCatching {
+            withContext(dispatchers.default) {
+                native.decodeTime(logits.map { it.toDouble() }, time.nBins, time.binHours)
+            }
+        }.getOrElse {
+            Timber.tag(TAG).w(it, "time-probe decode failed; predicted hour omitted this cycle")
+            null
+        }
     }
 
     /** The two shared context channels for a cycle, index-aligned to the BG grid. */

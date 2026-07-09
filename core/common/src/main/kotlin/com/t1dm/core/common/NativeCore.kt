@@ -9,6 +9,7 @@ import com.t1dm.core.model.DecodedAdvert
 import com.t1dm.core.model.Forecast
 import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.ModelDescriptor
+import com.t1dm.core.model.PredictedTime
 import com.t1dm.core.model.StatSample
 
 /**
@@ -74,6 +75,12 @@ interface NativeCore {
     /** The safety guard every rail/alert gates on (§3.6-B): rejects non-finite, rail-pinned,
      *  collapsed-band, and mis-ordered forecasts. */
     fun forecastDegeneracyCheck(forecast: Forecast): ForecastStatus
+
+    /** Decode the time-probe's per-patch logits (flat `(P, nBins)`, the `.pte` slot-1 tensor)
+     *  into a single hour-of-day belief via the `origin_patch` reduction (softmax patch 0 + mean
+     *  resultant). `null` on a bad shape / non-finite logit (fail-open — the predicted hour is
+     *  optional and never blocks the BG forecast). */
+    fun decodeTime(timeLogits: List<Double>, nBins: Int, binHours: Double): PredictedTime?
 
     // ── Shared curve/PK engine (Phase 4, PLAN §3.3; bit-faithful to simulator.py) ────
 

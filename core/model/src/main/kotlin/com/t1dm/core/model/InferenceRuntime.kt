@@ -63,6 +63,13 @@ data class ModelPrediction(
     val selected: Boolean,
     val stale: Boolean,
     val latencyMs: Double?,
+    /**
+     * The model's decoded circadian-phase belief this cycle, or null when the descriptor lacks a
+     * time section (graph cut at `head_raw`), the backend returned no second output, or the decode
+     * failed (fail-open — never blocks the BG forecast). Reachable for the BG panel via
+     * [InferenceState.selectedPrediction]`?.predictedTime`.
+     */
+    val predictedTime: PredictedTime? = null,
 ) {
     /** `true` iff this forecast is fit to render/drive (finite, ordered, non-collapsed, fresh). */
     val eligible: Boolean get() = status == ForecastStatus.OK && !stale
@@ -70,6 +77,26 @@ data class ModelPrediction(
     /** The step count `P·S` of the horizon (derived from [medianBg]). */
     val horizonSteps: Int get() = medianBg.size
 }
+
+/**
+ * The decoded hour-of-day belief of a model's co-trained TIME PROBE for one cycle (mirrors the
+ * Rust `PredictedTime`; PLAN.private.md Phase 7A). This is a CIRCADIAN-PHASE belief — the model's
+ * estimate of **what hour-of-day it currently is**, NOT a per-forecast-step timestamp. A
+ * predicted-time axis for the forecast is [predictedHour] plus each step's offset.
+ *
+ * [probs] is the [nBins]-long softmax of the ORIGIN prediction patch's logits; [predictedHour] the
+ * mean-resultant hour in `[0,24)`; [resultantR] the resultant length in `[0,1]` = the circular
+ * concentration (confidence — near 0 means the belief is diffuse / effectively undefined).
+ * Non-null only when the selected model's descriptor carries a time section AND the decode
+ * succeeded; the BG panel must treat null as "predicted time unavailable in this model build".
+ */
+data class PredictedTime(
+    val probs: List<Double>,
+    val predictedHour: Double,
+    val resultantR: Double,
+    val nBins: Int,
+    val binHours: Double,
+)
 
 /** What triggered a cycle, surfaced for the Hardware/Models panels and logs. */
 enum class InferenceCause { GRID_TICK, MANUAL, SYNTHETIC, COLLECTING_CONTEXT }
@@ -106,5 +133,9 @@ data class InferenceState(
     val note: String? = null,
 ) {
     val selectedPrediction: ModelPrediction? get() = predictions.firstOrNull { it.selected }
+
+    /** The selected model's circadian-phase belief this cycle, or null when unavailable (BG panel). */
+    val selectedPredictedTime: PredictedTime? get() = selectedPrediction?.predictedTime
+
     fun latencyOf(modelId: String): ModelLatency? = latencies.firstOrNull { it.modelId == modelId }
 }

@@ -51,6 +51,14 @@ import com.t1dm.inference.backend.GraphInput
 import com.t1dm.core.nativecore.UniffiNativeCore
 import com.t1dm.app.stats.AppStatsSource
 import com.t1dm.data.T1dmRepository
+import com.t1dm.data.settings.BgRange
+import com.t1dm.data.settings.GraphSettingsStore
+import com.t1dm.feature.dashboard.BgReachability
+import com.t1dm.feature.dashboard.BgSignals
+import com.t1dm.feature.dashboard.LinkHealth
+import com.t1dm.feature.dashboard.ReachLight
+import com.t1dm.app.sync.WsConnState
+import com.t1dm.watch.WatchLinkPhase
 import com.t1dm.data.curve.ChannelBuilder
 import com.t1dm.data.curve.CurveEngine
 import com.t1dm.data.curve.DoseStore
@@ -95,8 +103,11 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapLatest
@@ -612,6 +623,77 @@ class AppContainer(context: Context) {
 
     /** Set once [com.t1dm.app.service.CgmScanService] is up, so the UI can reflect service state. */
     val serviceRunning = MutableStateFlow(false)
+
+    // ─── BG-panel display settings + chrome (Phase 7A) ────────────────────────────────────────
+
+    /** kv-backed Y-axis range + default window length (items 1 & 5); lives in `:data`. */
+    val graphSettings: GraphSettingsStore by lazy { GraphSettingsStore(repository) }
+
+    val graphRange: Flow<BgRange> get() = graphSettings.range
+    val graphWindowHours: Flow<Int> get() = graphSettings.windowHours
+
+    suspend fun setGraphWindowHours(hours: Int) = graphSettings.setWindowHours(hours)
+
+    suspend fun setGraphRange(minMgdl: Int, maxMgdl: Int) = graphSettings.setRange(minMgdl, maxMgdl)
+
+    /** A slow wall-clock tick so the reachability lights age even without a new emission (freshness
+     *  is time-relative). 15 s is ample for a 5-min data cadence and negligible for battery. */
+    private val reachabilityTicker: Flow<Long> = flow {
+        while (true) { emit(System.currentTimeMillis()); delay(15_000L) }
+    }
+
+    /**
+     * The three BG-panel reachability lights (item 23): SERVER (sync transport), CGM (last MEASURED
+     * age vs the loss-of-signal window), WATCH (link phase). Every state carries a plain-language
+     * label the panel reveals on tap. Neutral-typed so `:feature:dashboard` never sees `:sync`/`:watch`.
+     */
+    val bgReachability: Flow<BgReachability> by lazy {
+        combine(
+            syncStatus,
+            activeServerProfile,
+            latestReading,
+            watchSecurity,
+            reachabilityTicker,
+        ) { sync, profile, latest, watch, now ->
+            BgReachability(
+                server = serverLight(sync, profile),
+                cgm = cgmLight(latest, now),
+                watch = watchLight(watch.phase),
+            )
+        }
+    }
+
+    /** BLE signal strengths (item 20): CGM RSSI from the active source's last advert; watch RSSI is
+     *  wired-but-null until a `:watch` `readRemoteRssi` source exists (lights up automatically then). */
+    val bgSignals: Flow<BgSignals> = latestReading.map { BgSignals(cgmRssi = it?.rssi, watchRssi = null) }
+
+    private fun serverLight(sync: SyncStatus, profile: ServerProfile?): ReachLight = when {
+        profile == null -> ReachLight(LinkHealth.OFF, "no server profile configured")
+        sync.lastDrain?.standDown == com.t1dm.sync.DrainResult.StandDown.AUTH ->
+            ReachLight(LinkHealth.DEGRADED, "auth failed — check token")
+        sync.wsState == WsConnState.CONNECTED -> ReachLight(LinkHealth.OK, "connected — streaming & draining")
+        sync.wsState == WsConnState.RECONNECTING -> ReachLight(LinkHealth.DEGRADED, "reconnecting…")
+        else -> ReachLight(LinkHealth.DOWN, "disconnected from ${profile.baseUrl}")
+    }
+
+    private fun cgmLight(latest: CgmReading?, nowMs: Long): ReachLight {
+        if (latest == null) return ReachLight(LinkHealth.DOWN, "no CGM readings yet")
+        val ageMin = (nowMs - latest.tsMs) / 60_000L
+        val measured = latest.provenance == ReadingProvenance.MEASURED && latest.flag != ReadingFlag.WARMUP
+        return when {
+            ageMin <= 7 && measured -> ReachLight(LinkHealth.OK, "receiving — ${ageMin}m since last reading")
+            ageMin <= alarmConfig.lossMin -> ReachLight(LinkHealth.DEGRADED, "aging/interpolated — ${ageMin}m old")
+            else -> ReachLight(LinkHealth.DOWN, "signal lost — ${ageMin}m since last MEASURED")
+        }
+    }
+
+    private fun watchLight(phase: WatchLinkPhase): ReachLight = when (phase) {
+        WatchLinkPhase.UNPAIRED -> ReachLight(LinkHealth.OFF, "no watch paired")
+        WatchLinkPhase.LIVE -> ReachLight(LinkHealth.OK, "paired — pushing every 5 min")
+        WatchLinkPhase.SUSPENDED_LOW_POWER -> ReachLight(LinkHealth.DEGRADED, "low-power — push suspended")
+        WatchLinkPhase.ERROR -> ReachLight(LinkHealth.DOWN, "link error — re-pair needed")
+        else -> ReachLight(LinkHealth.DEGRADED, "connecting — ${phase.name.lowercase().replace('_', ' ')}")
+    }
 
     // ─── Stats (Phase 6) ──────────────────────────────────────────────────────────────────────
     // The server cached block (O(1) fast path) ⊕ the local Rust `advancedStats` recompute over the

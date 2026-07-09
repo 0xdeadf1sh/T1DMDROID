@@ -21,6 +21,7 @@ fun SettingsScreen(
     onOpenServer: () -> Unit = {},
     onOpenWarmup: () -> Unit = {},
     onOpenWatch: () -> Unit = {},
+    onOpenGraph: () -> Unit = {},
 ) {
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         Text("Settings", style = MaterialTheme.typography.headlineSmall)
@@ -28,6 +29,7 @@ fun SettingsScreen(
         SettingRow("Server", enabled = true, onClick = onOpenServer)
         SettingRow("Warmup", enabled = true, onClick = onOpenWarmup)
         SettingRow("Watch", enabled = true, onClick = onOpenWatch)
+        SettingRow("BG graph range", enabled = true, onClick = onOpenGraph)
         SettingRow("Units / theme / alerts", enabled = false)
     }
 }

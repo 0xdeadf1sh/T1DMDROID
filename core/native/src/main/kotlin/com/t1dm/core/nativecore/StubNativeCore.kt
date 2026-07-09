@@ -11,6 +11,7 @@ import com.t1dm.core.model.DecodedAdvert
 import com.t1dm.core.model.Forecast
 import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.ModelDescriptor
+import com.t1dm.core.model.PredictedTime
 import kotlin.math.exp
 import kotlin.math.pow
 import kotlin.math.roundToLong
@@ -70,6 +71,10 @@ class StubNativeCore : NativeCore {
 
     override fun forecastDegeneracyCheck(forecast: Forecast): ForecastStatus =
         TODO("Phase 2: native forecast_degeneracy_check")
+
+    // The time-probe decode lives in Rust (golden-gated); the host stub has no .so, so it
+    // fails OPEN to null — the predicted hour is optional and never blocks the BG path.
+    override fun decodeTime(timeLogits: List<Double>, nBins: Int, binHours: Double): PredictedTime? = null
 
     // ── Shared curve/PK engine (Phase 4) ────────────────────────────────────────────
     // Unlike the pre/post pipeline (which needs the model), the curve math is pure and

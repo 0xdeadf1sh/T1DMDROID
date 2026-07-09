@@ -153,3 +153,30 @@ internal fun DrawScope.drawPredSeries(
 /** The furthest forecast timestamp across all series, for viewport extension; `null` if none. */
 internal fun List<PredSeries>.maxTsMs(): Long? =
     mapNotNull { if (it.isEmpty) null else it.tsMs.last() }.maxOrNull()
+
+/**
+ * The approaching hypo/hyper crossings (item 16): the FIRST step at which the SELECTED, §3.6-eligible
+ * forecast median (mg/dL) drops below [lowMgdl] or rises above [highMgdl], each with an ETA from
+ * [nowMs]. Returns nothing for a degenerate/stale forecast or when nothing is selected — so a marker
+ * is never fabricated. Computed in mg/dL (the thresholds' space) regardless of the display unit.
+ */
+fun excursionsOf(
+    predictions: List<ModelPrediction>,
+    lowMgdl: Int,
+    highMgdl: Int,
+    nowMs: Long = System.currentTimeMillis(),
+): List<ExcursionMarker> {
+    val p = predictions.firstOrNull { it.selected && it.eligible } ?: return emptyList()
+    val out = ArrayList<ExcursionMarker>(2)
+    var hypo = false
+    var hyper = false
+    for (i in p.medianBg.indices) {
+        val ts = p.anchorTsMs + (i + 1L) * p.stepMs
+        val v = p.medianBg[i]
+        val eta = ((ts - nowMs) / 60_000L).coerceAtLeast(0L)
+        if (!hypo && v < lowMgdl) { out.add(ExcursionMarker(ts, hyper = false, thresholdMgdl = lowMgdl, etaMin = eta)); hypo = true }
+        if (!hyper && v > highMgdl) { out.add(ExcursionMarker(ts, hyper = true, thresholdMgdl = highMgdl, etaMin = eta)); hyper = true }
+        if (hypo && hyper) break
+    }
+    return out
+}

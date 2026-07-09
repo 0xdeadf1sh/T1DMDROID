@@ -38,6 +38,19 @@ class CurveOverlayFrame internal constructor(
     /** Absolute epoch-ms at the LEFT edge of bucket [i]. */
     fun tsAt(i: Int): Long = gridStartMs + i.toLong() * stepMs
 
+    /** Bucket index containing absolute epoch-ms [ms], or -1 when outside the grid. */
+    fun indexAt(ms: Long): Int {
+        if (size == 0) return -1
+        val i = ((ms - gridStartMs) / stepMs).toInt()
+        return if (i in 0 until size) i else -1
+    }
+
+    /** Carb Ra (grams-per-step) at [ms]; 0 when outside the grid. */
+    fun carbAt(ms: Long): Float = indexAt(ms).let { if (it < 0) 0f else carb[it] }
+
+    /** Insulin action (units-per-step) at [ms]; 0 when outside the grid. */
+    fun insulinAt(ms: Long): Float = indexAt(ms).let { if (it < 0) 0f else insulin[it] }
+
     companion object {
         val EMPTY = CurveOverlayFrame(0L, 300_000L, FloatArray(0), FloatArray(0), 0f, 0f)
     }
@@ -101,8 +114,12 @@ internal fun DrawScope.drawCurveOverlay(
 ) {
     if (frame.isEmpty || !toggles.any) return
     val bandH = (plotBottom - bandTop).coerceAtLeast(1f)
-    val half = frame.stepMs / 2.0
 
+    // Anchoring (PLAN.private.md Phase 7A item 4): `values[i]` is the appearance/action integrated
+    // over `[tsAt(i), tsAt(i)+step)` — i.e. the gamma sample at t = (i+1)·step from the event, which
+    // starts at 0. So each bucket's value is plotted at its RIGHT edge `tsAt(i)+step`, and a run of
+    // positive buckets opens from `(tsAt(firstBucket), 0)` — the event instant — so the curve begins
+    // at (logTime, 0) and rises, instead of appearing already-onboard at the log time.
     fun drawChannel(values: FloatArray, peak: Float, color: Color) {
         if (peak <= 0f) return
         val fill = Path()
@@ -110,22 +127,33 @@ internal fun DrawScope.drawCurveOverlay(
         var open = false
         for (i in values.indices) {
             val v = values[i]
-            val cx = absToPx(frame.tsAt(i) + half) // centre of the bucket
+            val xRight = absToPx((frame.tsAt(i) + frame.stepMs).toDouble()) // right edge = t=(i+1)·step
             if (v <= 0f) {
-                if (open) { fill.lineTo(cx, plotBottom); fill.close(); open = false }
+                if (open) {
+                    // Return to the floor at this bucket's LEFT edge (= last positive bucket's right).
+                    val xZero = absToPx(frame.tsAt(i).toDouble())
+                    roof.lineTo(xZero, plotBottom)
+                    fill.lineTo(xZero, plotBottom); fill.close()
+                    open = false
+                }
                 continue
             }
             val y = plotBottom - (v / peak) * bandH * 0.92f
             if (!open) {
-                fill.moveTo(cx, plotBottom); fill.lineTo(cx, y)
-                roof.moveTo(cx, y)
+                val xLeft = absToPx(frame.tsAt(i).toDouble()) // the event instant: curve is 0 here
+                fill.moveTo(xLeft, plotBottom); fill.lineTo(xRight, y)
+                roof.moveTo(xLeft, plotBottom); roof.lineTo(xRight, y)
                 open = true
             } else {
-                fill.lineTo(cx, y)
-                roof.lineTo(cx, y)
+                fill.lineTo(xRight, y)
+                roof.lineTo(xRight, y)
             }
         }
-        if (open) { fill.lineTo(absToPx(frame.tsAt(values.size - 1) + half), plotBottom); fill.close() }
+        if (open) {
+            val xEnd = absToPx((frame.tsAt(values.size - 1) + frame.stepMs).toDouble())
+            roof.lineTo(xEnd, plotBottom)
+            fill.lineTo(xEnd, plotBottom); fill.close()
+        }
         drawPath(fill, color.copy(alpha = 0.16f))
         drawPath(roof, color.copy(alpha = 0.7f), style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.6f))
     }

@@ -1,11 +1,20 @@
 package com.t1dm.feature.dashboard
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -18,22 +27,28 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.model.AlertThresholds
 import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.IobCobReadout
 import com.t1dm.core.model.ModelPrediction
+import com.t1dm.core.model.PredictedTime
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.core.model.UnitSpace
 import com.t1dm.core.model.WarmupProgress
 import com.t1dm.ui.graph.CurveOverlayFrame
 import com.t1dm.ui.graph.CurveOverlayToggles
+import com.t1dm.ui.graph.ExcursionMarker
 import com.t1dm.ui.graph.GlucoseGraph
 import com.t1dm.ui.graph.GraphFrame
 import com.t1dm.ui.graph.PredSeries
+import com.t1dm.ui.graph.PredictedClock
 import com.t1dm.ui.graph.curveOverlayOf
+import com.t1dm.ui.graph.excursionsOf
 import com.t1dm.ui.graph.graphFrameOf
 import com.t1dm.ui.graph.predOverlayOf
 
@@ -62,6 +77,13 @@ fun DashboardScreen(
     iobCob: IobCobReadout? = null,
     curveChannels: (suspend (gridStartMs: Long, nSteps: Int) -> Pair<DoubleArray, DoubleArray>)? = null,
     warmup: WarmupProgress? = null,
+    // Phase 7A — BG-panel overhaul.
+    rangeMinMgdl: Int = 20,
+    rangeMaxMgdl: Int = 250,
+    initialWindowHours: Int = 6,
+    onSetWindowHours: ((Int) -> Unit)? = null,
+    reachability: BgReachability? = null,
+    signals: BgSignals? = null,
 ) {
     val frame by produceState(GraphFrame.EMPTY, readings, unit) {
         value = graphFrameOf(readings, unit, kovatchevF = kovatchevF)
@@ -71,44 +93,76 @@ fun DashboardScreen(
     }
 
     var toggles by remember { mutableStateOf(CurveOverlayToggles()) }
+    var windowHours by remember(initialWindowHours) { mutableStateOf(initialWindowHours) }
 
-    // Reconstruct the carb/insulin channels over the readings' grid span (extended past the last
-    // reading to cover the forecast horizon), off-thread. Only when a channel is toggled on and the
-    // resolver is wired — otherwise the overlay is EMPTY and the graph draws nothing extra.
-    val curveOverlay by produceState(CurveOverlayFrame.EMPTY, readings, predictions, toggles, curveChannels) {
+    // Reconstruct the carb/insulin channels over the readings' grid span, extended INTO THE FUTURE by
+    // a fixed horizon so the committed doses' appearance/action tails are visible in the prediction
+    // zone (item 2), not only their history — off-thread. Built whenever the resolver is wired (not
+    // gated on the toggles) so the scrub read-out can report the rates even with the overlay hidden;
+    // the DRAW is still gated by [toggles].
+    val curveOverlay by produceState(CurveOverlayFrame.EMPTY, readings, predictions, curveChannels) {
         val resolver = curveChannels
-        if (resolver == null || !toggles.any || readings.isEmpty()) {
+        if (resolver == null || readings.isEmpty()) {
             value = CurveOverlayFrame.EMPTY
             return@produceState
         }
         val gridStart = readings.minOf { it.tsMs } / STEP_MS * STEP_MS
         val lastReading = readings.maxOf { it.tsMs }
         val lastForecast = predictions.maxOfOrNull { it.anchorTsMs + it.horizonSteps.toLong() * it.stepMs } ?: lastReading
-        val end = maxOf(lastReading, lastForecast)
+        // Always reach at least OVERLAY_FUTURE_MS past now so a just-logged dose shows its rising tail
+        // even before a forecast exists (warmup); the same event-reconstructed channel carries both
+        // the past and the future portions (bucketize lays the full curve across the window).
+        val end = maxOf(lastReading, lastForecast, System.currentTimeMillis() + OVERLAY_FUTURE_MS)
         val nSteps = (((end - gridStart) / STEP_MS).toInt() + 1).coerceIn(1, MAX_OVERLAY_STEPS)
         val (carb, insulin) = resolver(gridStart, nSteps)
         value = curveOverlayOf(carb, insulin, gridStart, STEP_MS)
     }
 
+    // The selected model's circadian-phase clock (item 21) + its approaching excursions (item 16).
+    val selected = predictions.firstOrNull { it.selected }
+    val predictedClock = selected?.predictedTime?.toClock(selected.anchorTsMs)
+    val excursions: List<ExcursionMarker> = remember(predictions, thresholds) {
+        if (thresholds == null) emptyList()
+        else excursionsOf(predictions, thresholds.lowMgdl, thresholds.highMgdl)
+    }
+
     Column(Modifier.fillMaxSize()) {
-        DashboardHeader(latest, activeSourceName, unit)
+        reachability?.let { ReachabilityBar(it, signals) }
+        DashboardHeader(latest, activeSourceName, unit, signals?.cgmRssi ?: latest?.rssi)
         warmup?.let { WarmupBanner(it) }
         if (iobCob != null || curveChannels != null) {
-            OverlayControls(iobCob, toggles) { toggles = it }
+            OverlayControls(iobCob, toggles, windowHours, { toggles = it }) { h ->
+                windowHours = h
+                onSetWindowHours?.invoke(h)
+            }
         }
         GlucoseGraph(
             frame = frame,
             modifier = Modifier.fillMaxWidth().weight(1f),
             thresholds = thresholds,
+            initialWindowMin = windowHours * 60f,
             predictions = overlay,
             curveOverlay = curveOverlay,
             curveToggles = toggles,
+            rangeMinMgdl = rangeMinMgdl,
+            rangeMaxMgdl = rangeMaxMgdl,
+            predictedClock = predictedClock,
+            excursions = excursions,
         )
     }
 }
 
+/** Build the graph's [PredictedClock] from a decoded circadian belief, gating out a diffuse (low-R)
+ *  belief whose hour is effectively undefined — the top axis then quietly reads "model time n/a". */
+private fun PredictedTime.toClock(anchorTsMs: Long): PredictedClock? =
+    if (resultantR <= MIN_CLOCK_R) null
+    else PredictedClock(predictedHour = predictedHour, anchorTsMs = anchorTsMs, resultantR = resultantR)
+
 private const val STEP_MS: Long = 300_000L
 private const val MAX_OVERLAY_STEPS: Int = 4032 // ~14 days of 5-min buckets
+private const val OVERLAY_FUTURE_MS: Long = 6L * 3_600_000L // show ~6 h of future dose tails
+/** Below this resultant length the circadian belief is too diffuse to anchor a clock axis on. */
+private const val MIN_CLOCK_R: Double = 0.05
 
 /**
  * The WARMUP-gate banner (inference-runtime.md): while fewer than the configured hours of MEASURED
@@ -135,41 +189,135 @@ private fun WarmupBanner(warmup: WarmupProgress) {
     }
 }
 
-/** IOB/COB read-out + the carb/insulin overlay toggles (PLAN.private.md Phase 4). */
+/** IOB/COB read-out + the carb/insulin overlay toggles (Phase 4) + the 6/12/24h window buttons
+ *  (item 5). */
 @Composable
 private fun OverlayControls(
     iobCob: IobCobReadout?,
     toggles: CurveOverlayToggles,
+    windowHours: Int,
     onToggle: (CurveOverlayToggles) -> Unit,
+    onWindow: (Int) -> Unit,
 ) {
-    Row(
-        Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        FilterChip(
-            selected = toggles.carbs,
-            onClick = { onToggle(toggles.copy(carbs = !toggles.carbs)) },
-            label = { Text("Carbs") },
-        )
-        FilterChip(
-            selected = toggles.insulin,
-            onClick = { onToggle(toggles.copy(insulin = !toggles.insulin)) },
-            label = { Text("Insulin") },
-        )
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            FilterChip(
+                selected = toggles.carbs,
+                onClick = { onToggle(toggles.copy(carbs = !toggles.carbs)) },
+                label = { Text("Carbs") },
+            )
+            FilterChip(
+                selected = toggles.insulin,
+                onClick = { onToggle(toggles.copy(insulin = !toggles.insulin)) },
+                label = { Text("Insulin") },
+            )
+            Spacer(Modifier.weight(1f))
+            listOf(6, 12, 24).forEach { h ->
+                FilterChip(
+                    selected = windowHours == h,
+                    onClick = { onWindow(h) },
+                    label = { Text("${h}h") },
+                )
+            }
+        }
         iobCob?.let {
             Text(
                 "IOB ${"%.1f".format(it.iobU)}U · COB ${"%.0f".format(it.cobG)}g" +
                     (it.minsSinceLastLoggedInsulin?.let { m -> " · logged ${m}m ago" } ?: ""),
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                modifier = Modifier.padding(top = 2.dp),
             )
         }
     }
 }
 
+// ─── Reachability + signal strength chrome (items 20 & 23) ─────────────────────────────────────
+
+/** Health of one link the traffic light shows. OFF = not configured/paired (a neutral grey, not a
+ *  fault). Neutral by design so `:feature:dashboard` stays free of `:sync`/`:watch` — `:app` maps
+ *  the transport/link state onto this. */
+enum class LinkHealth { OK, DEGRADED, DOWN, OFF }
+
+/** One reachability light + its tap-to-reveal plain-language label (human-readable everywhere). */
+data class ReachLight(val health: LinkHealth, val label: String)
+
+/** The three BG-panel reachability lights (item 23): server / CGM / watch. */
+data class BgReachability(val server: ReachLight, val cgm: ReachLight, val watch: ReachLight)
+
+/** BLE signal strengths surfaced in the BG panel (item 20). Watch RSSI is null until a source wires
+ *  `readRemoteRssi` through `:watch` — the field lights up automatically when present. */
+data class BgSignals(val cgmRssi: Int? = null, val watchRssi: Int? = null)
+
+/** Three centered traffic-lights across the top of the BG panel; tapping toggles the labels. */
 @Composable
-private fun DashboardHeader(latest: CgmReading?, activeSourceName: String?, unit: UnitSpace) {
+private fun ReachabilityBar(r: BgReachability, signals: BgSignals?) {
+    var showLabels by remember { mutableStateOf(false) }
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)
+            .clickable { showLabels = !showLabels },
+        horizontalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterHorizontally),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        ReachChip("SRV", r.server, showLabels, null)
+        ReachChip("CGM", r.cgm, showLabels, signals?.cgmRssi)
+        ReachChip("WCH", r.watch, showLabels, signals?.watchRssi)
+    }
+}
+
+@Composable
+private fun ReachChip(tag: String, light: ReachLight, showLabel: Boolean, rssi: Int?) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        Box(Modifier.size(9.dp).clip(CircleShape).background(light.health.color()))
+        Text(tag, style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f))
+        rssi?.let { SignalBars(it) }
+        if (showLabel) {
+            Text(light.label, style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+        }
+    }
+}
+
+/** A four-bar RSSI meter + the raw dBm (item 20). Buckets follow the usual BLE bands. */
+@Composable
+private fun SignalBars(rssi: Int) {
+    val filled = when {
+        rssi >= -60 -> 4
+        rssi >= -70 -> 3
+        rssi >= -80 -> 2
+        rssi >= -90 -> 1
+        else -> 0
+    }
+    val on = MaterialTheme.colorScheme.primary
+    val off = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.20f)
+    Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(1.dp)) {
+        for (i in 1..4) {
+            Box(
+                Modifier.width(3.dp).height((3 + i * 2).dp)
+                    .clip(RoundedCornerShape(1.dp))
+                    .background(if (i <= filled) on else off),
+            )
+        }
+        Text(" ${rssi}dBm", style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+    }
+}
+
+@Composable
+private fun LinkHealth.color(): Color = when (this) {
+    LinkHealth.OK -> Color(0xFF3DD68C)
+    LinkHealth.DEGRADED -> MaterialTheme.colorScheme.secondary
+    LinkHealth.DOWN -> MaterialTheme.colorScheme.error
+    LinkHealth.OFF -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.30f)
+}
+
+@Composable
+private fun DashboardHeader(latest: CgmReading?, activeSourceName: String?, unit: UnitSpace, cgmRssi: Int?) {
     Row(
         Modifier.fillMaxWidth().padding(16.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -188,7 +336,10 @@ private fun DashboardHeader(latest: CgmReading?, activeSourceName: String?, unit
         }
         Column(horizontalAlignment = Alignment.End) {
             Text(text = trendArrow(latest?.trendTenthsPerMin), style = MaterialTheme.typography.headlineMedium)
-            Text(text = activeSourceName ?: "no source", style = MaterialTheme.typography.bodySmall)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(text = activeSourceName ?: "no source", style = MaterialTheme.typography.bodySmall)
+                cgmRssi?.let { SignalBars(it) }
+            }
         }
     }
 }

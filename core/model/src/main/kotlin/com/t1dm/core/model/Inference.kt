@@ -11,6 +11,14 @@ package com.t1dm.core.model
 data class ChannelStat(val mean: Double, val std: Double)
 
 /**
+ * The co-trained hour-of-day TIME PROBE section of a descriptor (mirrors the Rust `TimeHead`).
+ * Non-null iff the exported `.pte` emits the second `time_logits` output; a graph cut at
+ * `head_raw` leaves it null and the app surfaces no predicted-hour belief. [outputIndex] is the
+ * positional `.pte` output slot; [nBins]/[binHours] describe the hour-of-day circle.
+ */
+data class TimeHead(val outputIndex: Int, val nBins: Int, val binHours: Double)
+
+/**
  * The pre/post contract parsed from a model `descriptor.json` (PLAN §2.4) — the sole
  * source of the normalization stats plus the checkpoint-absent decode constants.
  */
@@ -29,6 +37,8 @@ data class ModelDescriptor(
     val patchSize: Int,
     val nInputFeatures: Int,
     val conformalEnabled: Boolean,
+    /** The co-trained time-probe descriptor, or null when the graph is cut at `head_raw`. */
+    val time: TimeHead? = null,
 )
 
 /**

@@ -12,7 +12,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -20,6 +19,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
@@ -48,8 +48,42 @@ import kotlin.math.log10
 import kotlin.math.pow
 import kotlin.math.roundToInt
 
-/** What the scrub cursor currently points at; emitted so a host (dashboard read-out) can react. */
-data class GraphScrub(val tsMs: Long, val value: Float, val flag: Int, val unit: UnitSpace)
+/**
+ * What the scrub cursor currently points at, emitted so the dashboard read-out can render it
+ * (PLAN.private.md Phase 7A item 3). The cursor is TIME-anchored — it can land in the PREDICTION
+ * zone past the last reading, where [bgValue] comes from the selected model's median and [modelHour]
+ * is the model's predicted clock at that step. All values are already in the active [unit].
+ */
+data class GraphScrub(
+    val tsMs: Long,
+    val tzOffsetMin: Int,
+    /** BG in the active unit at the cursor: a measured/interpolated reading in the past, the selected
+     *  model's median in the prediction zone, or null when neither is available. */
+    val bgValue: Float?,
+    val inPredZone: Boolean,
+    /** Raw carb appearance (grams per 5-min) at the cursor, or null when no overlay is present. */
+    val carbRate: Float?,
+    /** Raw insulin action (units per 5-min) at the cursor, or null when no overlay is present. */
+    val insulinRate: Float?,
+    /** The model's predicted clock hour in `[0,24)` at the cursor, or null when the probe is absent. */
+    val modelHour: Double?,
+    val unit: UnitSpace,
+)
+
+/**
+ * The selected model's circadian-phase belief, threaded to the graph so the TOP axis can render the
+ * model's PREDICTED clock (item 21) and the scrub read-out can report predicted time in the forecast
+ * zone. [predictedHour] is the model's estimate of the current hour-of-day at [anchorTsMs]; the
+ * predicted clock at any later time t is `predictedHour + (t − anchor)` hours, mod 24.
+ */
+data class PredictedClock(val predictedHour: Double, val anchorTsMs: Long, val resultantR: Double)
+
+/**
+ * An approaching threshold crossing the selected, §3.6-eligible forecast predicts (item 16): the
+ * FIRST time its median crosses below the low or above the high threshold. Drawn as a marker at the
+ * crossing with an ETA; produced only for an eligible forecast, so a degenerate/stale one shows none.
+ */
+data class ExcursionMarker(val tsMs: Long, val hyper: Boolean, val thresholdMgdl: Int, val etaMin: Long)
 
 /**
  * The Phase-1 live BG graph (PLAN.private.md Phase 1 / ux-decisions "Graph = the centrepiece"):
@@ -73,6 +107,10 @@ fun GlucoseGraph(
     predictions: List<PredSeries> = emptyList(),
     curveOverlay: CurveOverlayFrame? = null,
     curveToggles: CurveOverlayToggles = CurveOverlayToggles(),
+    rangeMinMgdl: Int? = null,
+    rangeMaxMgdl: Int? = null,
+    predictedClock: PredictedClock? = null,
+    excursions: List<ExcursionMarker> = emptyList(),
     onScrub: ((GraphScrub?) -> Unit)? = null,
 ) {
     val cs = MaterialTheme.colorScheme
@@ -81,14 +119,17 @@ fun GlucoseGraph(
 
     val leftPx = with(density) { 46.dp.toPx() }
     val rightPx = with(density) { 12.dp.toPx() }
-    val topPx = with(density) { 10.dp.toPx() }
+    // Reserve a top strip for the model's predicted-clock axis (item 21) when it is available.
+    val topPx = with(density) { (if (predictedClock != null) 24.dp else 10.dp).toPx() }
     val bottomPx = with(density) { 20.dp.toPx() }
 
     // Viewport in ABSOLUTE epoch-ms (stable across frame rebuilds whose t0 may shift).
     var viewStartMs by remember { mutableStateOf(Double.NaN) }
     var viewSpanMs by remember { mutableStateOf(initialWindowMin.toDouble() * 60_000.0) }
     var followLatest by remember { mutableStateOf(true) }
-    var scrubIdx by remember { mutableIntStateOf(-1) }
+    // TIME-anchored scrub cursor (absolute epoch-ms; NaN = inactive) so it can land in the forecast
+    // zone past the last reading (item 3), not only on a BG sample.
+    var scrubMs by remember { mutableStateOf(Double.NaN) }
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
 
     fun plotW(): Double = (canvasSize.width - leftPx - rightPx).toDouble().coerceAtLeast(1.0)
@@ -128,6 +169,14 @@ fun GlucoseGraph(
         clamp()
     }
 
+    // The 6h / 12h / 24h window buttons (item 5) drive [initialWindowMin]; a change resets the visible
+    // span and re-follows the latest reading so the button feels immediate.
+    LaunchedEffect(initialWindowMin) {
+        viewSpanMs = initialWindowMin.toDouble() * 60_000.0
+        followLatest = true
+        if (!frame.isEmpty) { viewStartMs = dataEndMs() - viewSpanMs; clamp() }
+    }
+
     if (frame.isEmpty) {
         Box(modifier.height(220.dp), contentAlignment = Alignment.Center) {
             Text("No glucose data yet", color = cs.onSurface.copy(alpha = 0.6f), fontSize = 13.sp)
@@ -157,21 +206,19 @@ fun GlucoseGraph(
                     followLatest = (viewStartMs + viewSpanMs) >= de - viewSpanMs * 0.02
                 }
             }
-            // Long-press then drag = scrub.
-            .pointerInput(Unit) {
+            // Long-press then drag = scrub. Time-anchored so the cursor works in the forecast zone.
+            .pointerInput(frame, predictions, curveOverlay, predictedClock) {
+                fun at(x: Float) {
+                    val ppm = plotW() / viewSpanMs
+                    val ms = (viewStartMs + (x - leftPx) / ppm).coerceIn(frame.absMs(0), dataEndMs())
+                    scrubMs = ms
+                    onScrub?.invoke(buildScrub(frame, predictions, curveOverlay, predictedClock, ms))
+                }
                 detectDragGesturesAfterLongPress(
-                    onDragStart = { pos ->
-                        val ppm = plotW() / viewSpanMs
-                        scrubIdx = frame.nearestIndex(viewStartMs + (pos.x - leftPx) / ppm)
-                        onScrub?.invoke(scrubTarget(frame, scrubIdx))
-                    },
-                    onDrag = { change, _ ->
-                        val ppm = plotW() / viewSpanMs
-                        scrubIdx = frame.nearestIndex(viewStartMs + (change.position.x - leftPx) / ppm)
-                        onScrub?.invoke(scrubTarget(frame, scrubIdx))
-                    },
-                    onDragEnd = { scrubIdx = -1; onScrub?.invoke(null) },
-                    onDragCancel = { scrubIdx = -1; onScrub?.invoke(null) },
+                    onDragStart = { pos -> at(pos.x) },
+                    onDrag = { change, _ -> at(change.position.x) },
+                    onDragEnd = { scrubMs = Double.NaN; onScrub?.invoke(null) },
+                    onDragCancel = { scrubMs = Double.NaN; onScrub?.invoke(null) },
                 )
             },
     ) {
@@ -219,13 +266,22 @@ fun GlucoseGraph(
                 }
             }
             if (!yMin.isFinite() || !yMax.isFinite()) { yMin = 0f; yMax = 1f }
-            val minSpanY = minValueSpan(frame.unit)
-            if (yMax - yMin < minSpanY) {
-                val mid = (yMax + yMin) / 2f
-                yMin = mid - minSpanY / 2f; yMax = mid + minSpanY / 2f
+            // Fixed axis span (item 1): always cover the configured [MIN, MAX] and GROW above MAX to
+            // never clip a high reading (and below MIN to never clip a low). The range is mg/dL-defined,
+            // so it applies to mg/dL + mmol/L; Kovatchev risk space keeps the data-driven auto-fit.
+            val fixedApplies = rangeMinMgdl != null && rangeMaxMgdl != null && frame.unit != UnitSpace.Kovatchev
+            if (fixedApplies) {
+                val (a, b) = fixedYRange(yMin, yMax, frame.unit, rangeMinMgdl, rangeMaxMgdl)
+                yMin = a; yMax = b
+            } else {
+                val minSpanY = minValueSpan(frame.unit)
+                if (yMax - yMin < minSpanY) {
+                    val mid = (yMax + yMin) / 2f
+                    yMin = mid - minSpanY / 2f; yMax = mid + minSpanY / 2f
+                }
+                val padY = (yMax - yMin) * 0.08f
+                yMin -= padY; yMax += padY
             }
-            val padY = (yMax - yMin) * 0.08f
-            yMin -= padY; yMax += padY
             val ppv = plotHeight / (yMax - yMin)
 
             fun xToPx(min: Float): Float =
@@ -258,12 +314,16 @@ fun GlucoseGraph(
                 vy += vStep
             }
 
-            // (3) Vertical time grid + bottom-axis labels.
+            // (3) Vertical time grid + bottom-axis labels (ACTUAL local time, item 21). The TOP axis
+            //     carries the model's PREDICTED clock when the circadian probe is present, else a quiet
+            //     "model time n/a" — never a fabricated axis.
             val tStepMs = niceTimeStepMs(viewSpanMs)
             val tzMs = frame.tzOffsetMin * 60_000L
             var tick = floor((viewStartMs + tzMs) / tStepMs) * tStepMs - tzMs
             if (tick < viewStartMs) tick += tStepMs
             val endMs = viewStartMs + viewSpanMs
+            val modelLabelColor = cs.tertiary.copy(alpha = 0.8f)
+            val modelStyle = TextStyle(color = modelLabelColor, fontSize = 10.sp)
             while (tick <= endMs) {
                 val px = (plotLeft + (tick - viewStartMs) * ppm).toFloat()
                 drawLine(gridColor, Offset(px, plotTop), Offset(px, plotBottom), 1f)
@@ -271,7 +331,23 @@ fun GlucoseGraph(
                 var lx = px - label.size.width / 2f
                 lx = lx.coerceIn(plotLeft, plotRight - label.size.width)
                 drawText(label, topLeft = Offset(lx, plotBottom + 3f))
+                if (predictedClock != null) {
+                    val mlbl = measurer.measure(predictedClockLabel(tick.toLong(), predictedClock), modelStyle)
+                    var mlx = px - mlbl.size.width / 2f
+                    mlx = mlx.coerceIn(plotLeft, plotRight - mlbl.size.width)
+                    drawText(mlbl, topLeft = Offset(mlx, plotTop - mlbl.size.height - 2f))
+                }
                 tick += tStepMs
+            }
+            // Timezone caption on the local axis, and the model-axis tag / n/a note.
+            val tzCap = measurer.measure(tzLabel(frame.tzOffsetMin), TextStyle(color = axisColor, fontSize = 8.sp))
+            drawText(tzCap, topLeft = Offset(2f, plotBottom + 3f))
+            if (predictedClock != null) {
+                val tag = measurer.measure("model", TextStyle(color = modelLabelColor, fontSize = 8.sp))
+                drawText(tag, topLeft = Offset(2f, (plotTop - tag.size.height - 2f).coerceAtLeast(0f)))
+            } else {
+                val na = measurer.measure("model time n/a", TextStyle(color = axisColor, fontSize = 9.sp))
+                drawText(na, topLeft = Offset(plotLeft + 4f, plotTop + 2f))
             }
 
             // (4) Axes.
@@ -336,30 +412,172 @@ fun GlucoseGraph(
                 }
             }
 
-            // (7) Scrub cursor.
-            if (scrubIdx in iLo..iHi) {
-                val cx = xToPx(frame.xs[scrubIdx])
-                val cy = yToPx(frame.ys[scrubIdx])
-                drawLine(cs.onSurface.copy(alpha = 0.5f), Offset(cx, plotTop), Offset(cx, plotBottom), 1f)
-                drawCircle(cs.onSurface, 4f, Offset(cx, cy), style = Stroke(width = 2f))
-                val txt = "${formatValue(frame.ys[scrubIdx], frame.unit)}  ${formatClock(frame.absMs(scrubIdx).toLong(), frame.tzOffsetMin)}"
-                val lbl = measurer.measure(txt, TextStyle(color = cs.onPrimary, fontSize = 10.sp))
-                val bx = (cx + 6f).coerceAtMost(plotRight - lbl.size.width - 8f)
-                drawRoundRect(
-                    cs.primary,
-                    topLeft = Offset(bx - 4f, plotTop),
-                    size = androidx.compose.ui.geometry.Size(lbl.size.width + 8f, lbl.size.height + 6f),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(4f, 4f),
-                )
-                drawText(lbl, topLeft = Offset(bx, plotTop + 3f))
+            // (6.7) Predicted-excursion markers (item 16): the approaching hypo/hyper crossing of the
+            //       §3.6-eligible forecast median, with an ETA. Suppressed in Kovatchev space (mg/dL
+            //       thresholds) and off-plot; the caller already withholds these for a degenerate/stale
+            //       forecast, so their mere presence is meaningful.
+            if (frame.unit != UnitSpace.Kovatchev) {
+                for (ex in excursions) {
+                    val x = (plotLeft + (ex.tsMs - viewStartMs) * ppm).toFloat()
+                    if (x < plotLeft || x > plotRight) continue
+                    val y = yToPx(convertMgdlTo(ex.thresholdMgdl.toFloat(), frame.unit))
+                    val col = if (ex.hyper) cs.secondary else cs.error
+                    val r = 5f
+                    val tri = Path().apply {
+                        if (ex.hyper) { moveTo(x, y - r); lineTo(x - r, y + r); lineTo(x + r, y + r) }
+                        else { moveTo(x, y + r); lineTo(x - r, y - r); lineTo(x + r, y - r) }
+                        close()
+                    }
+                    drawPath(tri, col)
+                    drawLine(col.copy(alpha = 0.5f), Offset(x, plotTop), Offset(x, plotBottom), 1f,
+                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(2f, 4f)))
+                    val kind = if (ex.hyper) "hyper" else "hypo"
+                    val lbl = measurer.measure("$kind ~${ex.etaMin}m", TextStyle(color = col, fontSize = 9.sp))
+                    var lx = x - lbl.size.width / 2f
+                    lx = lx.coerceIn(plotLeft, plotRight - lbl.size.width)
+                    val ly = if (ex.hyper) (y - r - lbl.size.height - 2f).coerceAtLeast(plotTop) else (y + r + 2f)
+                    drawText(lbl, topLeft = Offset(lx, ly))
+                }
+            }
+
+            // (7) Scrub cursor — time-anchored, so it reads in the forecast zone too (item 3).
+            if (!scrubMs.isNaN()) {
+                val cx = (plotLeft + (scrubMs - viewStartMs) * ppm).toFloat()
+                if (cx in plotLeft..plotRight) {
+                    val sc = buildScrub(frame, predictions, curveOverlay, predictedClock, scrubMs)
+                    drawLine(cs.onSurface.copy(alpha = 0.5f), Offset(cx, plotTop), Offset(cx, plotBottom), 1f)
+                    sc.bgValue?.let { drawCircle(cs.onSurface, 4f, Offset(cx, yToPx(it)), style = Stroke(width = 2f)) }
+                    val lines = scrubLines(sc)
+                    val measured = lines.map { measurer.measure(it, TextStyle(color = cs.onPrimary, fontSize = 10.sp)) }
+                    val boxW = (measured.maxOf { it.size.width }).toFloat() + 10f
+                    val lineH = measured.first().size.height.toFloat()
+                    val boxH = lineH * measured.size + 6f
+                    val bx = (cx + 6f).coerceAtMost(plotRight - boxW - 2f).coerceAtLeast(plotLeft)
+                    drawRoundRect(
+                        cs.primary,
+                        topLeft = Offset(bx, plotTop),
+                        size = androidx.compose.ui.geometry.Size(boxW, boxH),
+                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(4f, 4f),
+                    )
+                    measured.forEachIndexed { i, m ->
+                        drawText(m, topLeft = Offset(bx + 5f, plotTop + 3f + i * lineH))
+                    }
+                }
             }
         }
     }
 }
 
-private fun scrubTarget(frame: GraphFrame, idx: Int): GraphScrub? =
-    if (idx < 0) null
-    else GraphScrub(frame.absMs(idx).toLong(), frame.ys[idx], frame.flags[idx], frame.unit)
+/** Sample the graph at absolute [ms] for the scrub read-out (item 3). BG comes from the reading
+ *  series in the past and the selected model's median in the prediction zone; carb/insulin rates from
+ *  the overlay; the model clock from the circadian probe. */
+private fun buildScrub(
+    frame: GraphFrame,
+    predictions: List<PredSeries>,
+    overlay: CurveOverlayFrame?,
+    clock: PredictedClock?,
+    ms: Double,
+): GraphScrub {
+    val lastFrameMs = if (frame.isEmpty) Long.MIN_VALUE else frame.absMs(frame.size - 1).toLong()
+    val inPred = ms > lastFrameMs
+    val bg: Float? = when {
+        !inPred && !frame.isEmpty -> frame.nearestIndex(ms).let { if (it < 0) null else frame.ys[it] }
+        else -> selectedMedianAt(predictions, ms)
+    }
+    val carb = overlay?.carbAt(ms.toLong())?.takeIf { overlay.carbMax > 0f }
+    val insulin = overlay?.insulinAt(ms.toLong())?.takeIf { overlay.insulinMax > 0f }
+    val modelHour = clock?.let { predictedHourAt(ms.toLong(), it) }
+    return GraphScrub(
+        tsMs = ms.toLong(),
+        tzOffsetMin = frame.tzOffsetMin,
+        bgValue = bg,
+        inPredZone = inPred,
+        carbRate = carb,
+        insulinRate = insulin,
+        modelHour = modelHour,
+        unit = frame.unit,
+    )
+}
+
+/** The selected model's median (in the frame's unit) at the step nearest absolute [ms], or null. */
+private fun selectedMedianAt(predictions: List<PredSeries>, ms: Double): Float? {
+    val s = predictions.firstOrNull { it.selected && !it.degenerate && !it.stale } ?: return null
+    if (s.isEmpty) return null
+    var best = 0
+    var bestD = Double.MAX_VALUE
+    for (i in 0 until s.size) {
+        val d = kotlin.math.abs(s.tsMs[i].toDouble() - ms)
+        if (d < bestD) { bestD = d; best = i }
+    }
+    return s.median[best]
+}
+
+private fun predictedHourAt(ms: Long, clock: PredictedClock): Double {
+    val dh = (ms - clock.anchorTsMs).toDouble() / 3_600_000.0
+    var h = (clock.predictedHour + dh) % 24.0
+    if (h < 0) h += 24.0
+    return h
+}
+
+private fun predictedClockLabel(ms: Long, clock: PredictedClock): String {
+    val h = predictedHourAt(ms, clock)
+    val hh = floor(h).toInt()
+    val mm = ((h - hh) * 60.0).roundToInt().coerceIn(0, 59)
+    return "%02d:%02d".format(hh % 24, mm)
+}
+
+/** The scrub read-out lines: BG, carb + insulin rates, and the clock (local always; model in the
+ *  prediction zone). */
+private fun scrubLines(sc: GraphScrub): List<String> {
+    val out = ArrayList<String>(4)
+    out.add("BG " + (sc.bgValue?.let { formatValue(it, sc.unit) + (if (sc.inPredZone) "*" else "") } ?: "--"))
+    val rates = buildString {
+        sc.carbRate?.let { append("C %.1fg".format(it)) }
+        sc.insulinRate?.let { if (isNotEmpty()) append("  "); append("I %.2fU".format(it)) }
+    }
+    if (rates.isNotEmpty()) out.add(rates)
+    out.add(formatClock(sc.tsMs, sc.tzOffsetMin) + " loc")
+    if (sc.modelHour != null) {
+        val hh = floor(sc.modelHour).toInt(); val mm = ((sc.modelHour - hh) * 60.0).roundToInt().coerceIn(0, 59)
+        out.add("%02d:%02d mdl".format(hh % 24, mm))
+    }
+    return out
+}
+
+private fun convertMgdlTo(mgdl: Float, unit: UnitSpace): Float = when (unit) {
+    UnitSpace.MgDl, UnitSpace.Kovatchev -> mgdl
+    UnitSpace.MmolL -> (mgdl / 18.0182).toFloat()
+}
+
+/**
+ * The fixed-span Y-axis rule (item 1): the axis always covers the configured [rangeMinMgdl]..
+ * [rangeMaxMgdl] (converted into [unit]) and GROWS to include any data beyond — above the ceiling for
+ * highs, below the floor for lows — then rounds out to a sensible tick. Never clips a reading.
+ * Extracted from the Canvas so it can be unit-tested. [dataYMin]/[dataYMax] are the visible data (+
+ * forecast) extremes already in [unit].
+ */
+internal fun fixedYRange(
+    dataYMin: Float,
+    dataYMax: Float,
+    unit: UnitSpace,
+    rangeMinMgdl: Int,
+    rangeMaxMgdl: Int,
+): Pair<Float, Float> {
+    val rLo = convertMgdlTo(rangeMinMgdl.toFloat(), unit)
+    val rHi = convertMgdlTo(rangeMaxMgdl.toFloat(), unit)
+    var yMin = minOf(dataYMin, rLo)
+    var yMax = maxOf(dataYMax, rHi)
+    val step = niceStep((yMax - yMin).toDouble() / 5.0)
+    yMax = (Math.ceil(yMax / step) * step).toFloat()
+    yMin = (floor(yMin / step) * step).toFloat()
+    return yMin to yMax
+}
+
+private fun tzLabel(tzOffsetMin: Int): String {
+    val sign = if (tzOffsetMin < 0) "-" else "+"
+    val a = kotlin.math.abs(tzOffsetMin)
+    return "UTC$sign${a / 60}" + (if (a % 60 != 0) ":%02d".format(a % 60) else "")
+}
 
 /** Smallest visible-value span so a near-flat trace still fills the plot instead of a single pixel. */
 private fun minValueSpan(unit: UnitSpace): Float = when (unit) {

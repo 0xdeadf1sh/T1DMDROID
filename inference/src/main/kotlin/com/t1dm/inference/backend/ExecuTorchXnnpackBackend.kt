@@ -44,7 +44,13 @@ class ExecuTorchXnnpackBackend : InferenceBackend {
         require(out.isNotEmpty() && out[0].isTensor) { "backend returned no head_raw tensor" }
         val head = out[0].toTensor().dataAsFloatArray
         require(head.size == PRED_STEPS * N_Q) { "head_raw size ${head.size} != ${PRED_STEPS * N_Q}" }
-        return GraphOutput(head)
+        // Slot 1 is the co-trained time probe (`time_logits`, (1,P,N_BINS)) — present only in a
+        // time-exported `.pte`. Read it OPPORTUNISTICALLY and defensively: a head_raw-only export
+        // has a single output, so a missing/non-tensor slot 1 leaves timeLogits null (no crash,
+        // BG path unaffected). The Rust `decode_time` owns the softmax/resultant downstream.
+        val timeLogits: FloatArray? =
+            if (out.size > 1 && out[1].isTensor) out[1].toTensor().dataAsFloatArray else null
+        return GraphOutput(head, timeLogits)
     }
 
     override fun close(m: LoadedModel) {

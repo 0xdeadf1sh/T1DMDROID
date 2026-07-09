@@ -64,6 +64,18 @@ pub struct ChannelStat {
     pub std: f64,
 }
 
+/// The co-trained hour-of-day TIME PROBE section of a descriptor (the second `.pte`
+/// output). Present iff the exported graph emits `time_logits`; a graph cut at `head_raw`
+/// leaves this `None` and the app surfaces no predicted-hour belief (fail-open, never
+/// hard-depended-on). `output_index` is the positional `.pte` slot (1 in the current
+/// export); `n_bins`/`bin_hours` describe the hour-of-day circle the logits softmax over.
+#[derive(Debug, Clone, Copy, PartialEq, uniffi::Record)]
+pub struct TimeHead {
+    pub output_index: i32,
+    pub n_bins: i32,
+    pub bin_hours: f64,
+}
+
 /// The full pre/post contract parsed from `descriptor.json` — the app's sole source of
 /// the normalization stats plus the decode-critical constants absent from the
 /// checkpoint (INFERENCE.md §3.1, PLAN §2.4). Downstream Rust reads every constant from
@@ -93,6 +105,10 @@ pub struct ModelDescriptor {
     /// deployment (INFERENCE.md §8.4 — a simulator-fit delta must never silently
     /// narrow the safety bands).
     pub conformal_enabled: bool,
+    /// The co-trained hour-of-day time-probe descriptor, or `None` when the exported graph
+    /// is cut at `head_raw` (BG fan only). Consumed by [`decode_time`] to surface a
+    /// circadian-phase belief; its absence is graceful (no predicted-hour rendered).
+    pub time: Option<TimeHead>,
 }
 
 impl ModelDescriptor {
@@ -128,6 +144,13 @@ struct NormStatsDto {
 }
 
 #[derive(Deserialize)]
+struct TimeDto {
+    output_index: i32,
+    n_bins: i32,
+    bin_hours: f64,
+}
+
+#[derive(Deserialize)]
 struct DescriptorDto {
     normalization_stats: NormStatsDto,
     rope_base: i32,
@@ -141,6 +164,8 @@ struct DescriptorDto {
     patch_size: i32,
     n_input_features: i32,
     conformal_enabled: bool,
+    #[serde(default)]
+    time: Option<TimeDto>,
 }
 
 /// Parse a model `descriptor.json` (PLAN §2.4) into a [`ModelDescriptor`]. Returns
@@ -160,6 +185,28 @@ pub fn parse_descriptor(json: String) -> Result<ModelDescriptor, CoreError> {
             reason: format!("unsupported step_basis_type {:?} (want \"dct\")", d.step_basis_type),
         });
     }
+    // The time-probe section is OPTIONAL (a `head_raw`-only export omits it). When present it
+    // must describe a non-degenerate hour circle, else the predicted-hour decode is unusable.
+    let time = match d.time {
+        None => None,
+        Some(t) => {
+            if t.n_bins <= 0 {
+                return Err(CoreError::Decode {
+                    reason: format!("time.n_bins {} must be > 0", t.n_bins),
+                });
+            }
+            if !(t.bin_hours.is_finite() && t.bin_hours > 0.0) {
+                return Err(CoreError::Decode {
+                    reason: format!("time.bin_hours {} must be finite and > 0", t.bin_hours),
+                });
+            }
+            Some(TimeHead {
+                output_index: t.output_index,
+                n_bins: t.n_bins,
+                bin_hours: t.bin_hours,
+            })
+        }
+    };
     Ok(ModelDescriptor {
         bg: d.normalization_stats.bg_absolute,
         carb: d.normalization_stats.carb_intake,
@@ -175,6 +222,7 @@ pub fn parse_descriptor(json: String) -> Result<ModelDescriptor, CoreError> {
         patch_size: d.patch_size,
         n_input_features: d.n_input_features,
         conformal_enabled: d.conformal_enabled,
+        time,
     })
 }
 
@@ -608,6 +656,115 @@ pub fn forecast_degeneracy_check(f: &Forecast) -> ForecastStatus {
     ForecastStatus::Ok
 }
 
+// ── Time-probe decode (circadian-phase belief) ──────────────────────────────────────
+
+/// The decoded hour-of-day belief of the co-trained TIME PROBE (the second `.pte`
+/// output). [`probs`] is the `n_bins`-long softmax of the ORIGIN prediction patch's
+/// logits; [`predicted_hour`] is the mean-resultant hour in `[0,24)`; [`resultant_r`] is
+/// the resultant length in `[0,1]` = the circular concentration (confidence). This is the
+/// model's belief about **what hour-of-day it currently is** (a circadian phase), NOT a
+/// per-forecast-step timestamp — a predicted-time axis is this hour plus the step offset.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct PredictedTime {
+    pub probs: Vec<f64>,
+    pub predicted_hour: f64,
+    pub resultant_r: f64,
+    pub n_bins: i32,
+    pub bin_hours: f64,
+}
+
+/// Numerically-stable softmax over `logits` (shift by the max). An empty slice yields an
+/// empty vector; a zero/underflowing partition falls back to uniform so no NaN escapes.
+fn softmax(logits: &[f64]) -> Vec<f64> {
+    let n = logits.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let max = logits.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let mut exps: Vec<f64> = logits.iter().map(|&l| (l - max).exp()).collect();
+    let sum: f64 = exps.iter().sum();
+    if sum > 0.0 && sum.is_finite() {
+        for e in &mut exps {
+            *e /= sum;
+        }
+    } else {
+        let u = 1.0 / n as f64;
+        for e in &mut exps {
+            *e = u;
+        }
+    }
+    exps
+}
+
+/// Port of `utils.time_of_day_resultant`: the probability-weighted mean resultant vector
+/// over the hour-of-day circle. Bin `k` sits at center hour `bin_hours·(k + 0.5)` mapped
+/// to angle `θ_k = 2π·center/24`; the resultant is `(Σ pₖcosθₖ, Σ pₖsinθₖ)`. Returns
+/// `(hour, R)` with `hour = (atan2(sin,cos) mod 2π)·24/2π ∈ [0,24)` and
+/// `R = hypot(cos,sin) ∈ [0,1]`. At `R → 0` the resultant vanishes and `hour` is FP-noise
+/// (the caller treats it as undefined via [`R_DEGENERATE_EPS`]).
+fn time_of_day_resultant(probs: &[f64], bin_hours: f64) -> (f64, f64) {
+    let mut c = 0.0f64;
+    let mut s = 0.0f64;
+    for (k, &p) in probs.iter().enumerate() {
+        let center = bin_hours * (k as f64 + 0.5);
+        let theta = std::f64::consts::TAU * center / 24.0;
+        c += p * theta.cos();
+        s += p * theta.sin();
+    }
+    let r = c.hypot(s);
+    let mut ang = s.atan2(c); // (-π, π]
+    if ang < 0.0 {
+        ang += std::f64::consts::TAU;
+    }
+    let hour = ang * 24.0 / std::f64::consts::TAU;
+    (hour, r)
+}
+
+/// Decode the time-probe's per-prediction-patch logits (`time_logits`, flat row-major
+/// `(P, n_bins)` = the `.pte` slot-1 tensor) into a single hour-of-day belief per the
+/// declared `origin_patch` reduction: softmax the ORIGIN patch (index 0) and take its mean
+/// resultant. Total on hostile input — a non-multiple length, a zero `n_bins`, or a
+/// non-finite logit yields `Err` (the caller maps it to a null predicted-time, fail-open).
+/// Faithful to T1DMAI's `inference.estimate_current_hour` (`time_pred[:,0,:]`).
+#[uniffi::export]
+pub fn decode_time(time_logits: Vec<f64>, n_bins: i32, bin_hours: f64) -> Result<PredictedTime, CoreError> {
+    if n_bins <= 0 {
+        return Err(CoreError::Decode {
+            reason: format!("n_bins {n_bins} must be > 0"),
+        });
+    }
+    let nb = n_bins as usize;
+    if time_logits.is_empty() || time_logits.len() % nb != 0 {
+        return Err(CoreError::Decode {
+            reason: format!(
+                "time_logits length {} is not a positive multiple of n_bins {nb}",
+                time_logits.len()
+            ),
+        });
+    }
+    if !(bin_hours.is_finite() && bin_hours > 0.0) {
+        return Err(CoreError::Decode {
+            reason: format!("bin_hours {bin_hours} must be finite and > 0"),
+        });
+    }
+    // origin_patch reduction: the first n_bins entries are prediction patch 0.
+    let patch0 = &time_logits[0..nb];
+    if patch0.iter().any(|v| !v.is_finite()) {
+        return Err(CoreError::Decode {
+            reason: "time_logits[origin_patch] contains a non-finite value".to_string(),
+        });
+    }
+    let probs = softmax(patch0);
+    let (hour, r) = time_of_day_resultant(&probs, bin_hours);
+    Ok(PredictedTime {
+        probs,
+        predicted_hour: hour,
+        resultant_r: r,
+        n_bins,
+        bin_hours,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -645,6 +802,7 @@ mod tests {
             patch_size: 6,
             n_input_features: 3,
             conformal_enabled: false,
+            time: None,
         }
     }
 
@@ -910,5 +1068,122 @@ mod tests {
         let g = golden();
         let f = assemble_decode(&d, f64s(&g["head_raw"]), g["last_bg"].as_f64().unwrap(), 0.0).unwrap();
         assert_eq!(forecast_degeneracy_check(&f), ForecastStatus::Ok);
+    }
+
+    // ── Time-probe decode goldens (testdata/time_head_golden.json) ───────────────────
+
+    const TIME_GOLDEN: &str = include_str!("testdata/time_head_golden.json");
+
+    fn time_golden() -> Value {
+        serde_json::from_str(TIME_GOLDEN).unwrap()
+    }
+
+    /// Circular |Δhour| on the 24 h clock (wrap-aware).
+    fn circ_dhour(a: f64, b: f64) -> f64 {
+        let mut d = (a - b).rem_euclid(24.0);
+        if d > 12.0 {
+            d = 24.0 - d;
+        }
+        d.abs()
+    }
+
+    /// Reproduce softmax + `time_of_day_resultant`/`decode_bins` for every golden row.
+    #[test]
+    fn time_head_golden_rows() {
+        let g = time_golden();
+        let bin_hours = g["bin_hours"].as_f64().unwrap();
+        let n_bins = g["n_bins"].as_i64().unwrap() as usize;
+        let hour_tol = g["hour_tol"].as_f64().unwrap();
+        let r_tol = g["R_tol"].as_f64().unwrap();
+        let r_deg = g["R_degenerate_eps"].as_f64().unwrap();
+
+        for row in g["rows"].as_array().unwrap() {
+            let name = row["name"].as_str().unwrap();
+            let logits = f64s(&row["logits"]);
+            assert_eq!(logits.len(), n_bins, "{name}: logit count");
+            let want_probs = f64s(&row["probs"]);
+            let want_hour = row["hour"].as_f64().unwrap();
+            let want_r = row["R"].as_f64().unwrap();
+            let hour_defined = row["hour_defined"].as_bool().unwrap();
+
+            let probs = softmax(&logits);
+            assert_close(&probs, &want_probs, 1e-4, &format!("{name} probs"));
+
+            let (hour, r) = time_of_day_resultant(&probs, bin_hours);
+            assert!(
+                (r - want_r).abs() <= r_tol,
+                "{name}: R got {r}, want {want_r} (|Δ|={:.3e} > {r_tol:.1e})",
+                (r - want_r).abs()
+            );
+            // Sanity: hour_defined agrees with the resultant magnitude.
+            assert_eq!(r >= r_deg, hour_defined, "{name}: hour_defined vs R>=eps");
+            if hour_defined {
+                let dh = circ_dhour(hour, want_hour);
+                assert!(dh <= hour_tol, "{name}: hour got {hour}, want {want_hour} (circΔ={dh:.3e} > {hour_tol:.1e})");
+            }
+        }
+    }
+
+    /// `decode_time` reduces to the ORIGIN patch (index 0): a flat (P, n_bins) buffer built
+    /// from the four real model per-patch logit rows must decode to `model_patch0`'s belief.
+    #[test]
+    fn decode_time_origin_patch_reduction() {
+        let g = time_golden();
+        let bin_hours = g["bin_hours"].as_f64().unwrap();
+        let n_bins = g["n_bins"].as_i64().unwrap() as i32;
+        let rows = g["rows"].as_array().unwrap();
+        let patch_rows: Vec<&Value> = rows
+            .iter()
+            .filter(|r| r["name"].as_str().unwrap().starts_with("model_patch"))
+            .collect();
+        assert_eq!(patch_rows.len(), 4, "expected 4 model patch rows");
+
+        // Concatenate all four patches row-major into one (4, n_bins) flat buffer.
+        let mut flat: Vec<f64> = Vec::new();
+        for r in &patch_rows {
+            flat.extend(f64s(&r["logits"]));
+        }
+        let pt = decode_time(flat, n_bins, bin_hours).expect("decode_time must succeed");
+
+        let want = &patch_rows[0]; // origin = model_patch0
+        assert_eq!(pt.n_bins, n_bins);
+        assert_eq!(pt.bin_hours, bin_hours);
+        assert_close(&pt.probs, &f64s(&want["probs"]), 1e-4, "decode_time probs");
+        let dh = circ_dhour(pt.predicted_hour, want["hour"].as_f64().unwrap());
+        assert!(dh <= g["hour_tol"].as_f64().unwrap(), "decode_time hour circΔ={dh:.3e}");
+        assert!((pt.resultant_r - want["R"].as_f64().unwrap()).abs() <= g["R_tol"].as_f64().unwrap());
+    }
+
+    /// `decode_time` is total on hostile input — never panics, always `Err` on bad shape.
+    #[test]
+    fn decode_time_rejects_bad_input() {
+        assert!(decode_time(vec![], 12, 2.0).is_err()); // empty
+        assert!(decode_time(vec![0.0; 5], 12, 2.0).is_err()); // not a multiple of n_bins
+        assert!(decode_time(vec![0.0; 12], 0, 2.0).is_err()); // zero n_bins
+        assert!(decode_time(vec![0.0; 12], 12, 0.0).is_err()); // zero bin_hours
+        let mut nan = vec![0.0; 12];
+        nan[3] = f64::NAN;
+        assert!(decode_time(nan, 12, 2.0).is_err()); // non-finite origin logit
+    }
+
+    /// The descriptor's optional time section parses when present and is `None` when absent.
+    #[test]
+    fn parse_descriptor_time_section() {
+        // Absent ⇒ None (the reference flat descriptor carries no time probe).
+        let base = include_str!("../../../models/descriptor.json");
+        assert!(parse_descriptor(base.to_string()).unwrap().time.is_none());
+
+        // Present ⇒ parsed. Splice a flat "time" object into the reference descriptor.
+        let mut v: Value = serde_json::from_str(base).unwrap();
+        v["time"] = serde_json::json!({ "output_index": 1, "n_bins": 12, "bin_hours": 2.0 });
+        let d = parse_descriptor(v.to_string()).unwrap();
+        let t = d.time.expect("time section must parse");
+        assert_eq!(t.output_index, 1);
+        assert_eq!(t.n_bins, 12);
+        assert_eq!(t.bin_hours, 2.0);
+
+        // A degenerate time section (n_bins ≤ 0) fails closed.
+        v["time"] = serde_json::json!({ "output_index": 1, "n_bins": 0, "bin_hours": 2.0 });
+        assert!(parse_descriptor(v.to_string()).is_err());
     }
 }

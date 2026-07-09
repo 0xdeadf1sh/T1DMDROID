@@ -172,25 +172,29 @@ fun CurvePreview(
             if (values.isEmpty()) return@Canvas
             val yMax = (values.maxOrNull() ?: 0.0).coerceAtLeast(1e-9)
             val n = values.size
-            fun px(i: Int): Float = padPx + i.toFloat() / (n - 1).coerceAtLeast(1) * (w - 2 * padPx)
+            // Anchoring (PLAN.private.md Phase 7A item 4): `values[i]` is the gamma sample at
+            // t = (i+1)·stepMin, and the curve is 0 at t=0 (the log instant). Plot over `n+1` slots so
+            // slot 0 = (t=0, 0) and slot i+1 = (t=(i+1)·step, values[i]); the shape now rises FROM the
+            // log instant instead of starting already-onboard at value[0].
+            fun px(slot: Int): Float = padPx + slot.toFloat() / n * (w - 2 * padPx)
             fun py(v: Double): Float = (h - padPx) - ((v / yMax) * (h - 2 * padPx)).toFloat()
 
             val fill = Path().apply {
                 moveTo(px(0), h - padPx)
-                values.forEachIndexed { i, v -> lineTo(px(i), py(v)) }
-                lineTo(px(n - 1), h - padPx)
+                values.forEachIndexed { i, v -> lineTo(px(i + 1), py(v)) }
+                lineTo(px(n), h - padPx)
                 close()
             }
             drawPath(fill, cs.primary.copy(alpha = 0.18f))
             val line = Path().apply {
-                moveTo(px(0), py(values[0]))
-                values.forEachIndexed { i, v -> if (i > 0) lineTo(px(i), py(v)) }
+                moveTo(px(0), py(0.0)) // (log instant, 0)
+                values.forEachIndexed { i, v -> lineTo(px(i + 1), py(v)) }
             }
             drawPath(line, cs.primary, style = Stroke(width = 2.5f, cap = StrokeCap.Round))
 
             val peak = values.indices.maxByOrNull { values[it] } ?: 0
             if (values[peak] > 0.0) {
-                drawCircle(cs.secondary, radius = 5f, center = Offset(px(peak), py(values[peak])))
+                drawCircle(cs.secondary, radius = 5f, center = Offset(px(peak + 1), py(values[peak])))
             }
         }
     }

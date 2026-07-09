@@ -120,6 +120,16 @@ class ModelStore(
             put("patch_size", geometry.optInt("PATCH_SIZE", 6))
             put("n_input_features", geometry.optInt("N_INPUT_FEATURES", 3))
             put("conformal_enabled", conformal.optBoolean("enabled", false))
+            // Optional co-trained time-probe section (a `head_raw`-only export omits it). Project the
+            // exporter's nested `time` block onto the flat schema `parse_descriptor` reads; absent ⇒
+            // no key ⇒ the Rust parse leaves `ModelDescriptor.time` null (no predicted hour surfaced).
+            o.optJSONObject("time")?.let { t ->
+                put("time", JSONObject().apply {
+                    put("output_index", t.optInt("output_index", 1))
+                    put("n_bins", t.optInt("n_bins", 12))
+                    put("bin_hours", t.optDouble("bin_hours", 2.0))
+                })
+            }
         }
     }
 
