@@ -11,6 +11,7 @@ dependencies {
     implementation(project(":core:design"))
     implementation(project(":core:model"))
     implementation(project(":core:common"))
+    implementation(project(":ui:graph"))
 
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.bundles.compose)

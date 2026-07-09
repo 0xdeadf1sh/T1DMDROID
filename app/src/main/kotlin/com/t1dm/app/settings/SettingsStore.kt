@@ -227,6 +227,28 @@ class SettingsStore(
     val animationsEnabled: Flow<Boolean> = boolFlow(K_UI_ANIMATIONS, true)
     suspend fun setAnimationsEnabled(on: Boolean) = put(K_UI_ANIMATIONS, if (on) "1" else "0")
 
+    // ── Theme + font (item 25 — three themes + JSON import + a bundled font; persisted, exportable) ──
+    // The custom-theme JSON is stored verbatim so a re-selection of "custom" reconstructs the palette.
+    val themeId: Flow<String> = repository.observeKv(K_UI_THEME).map { it ?: DEFAULT_THEME }
+    val fontId: Flow<String> = repository.observeKv(K_UI_FONT).map { it ?: DEFAULT_FONT }
+    val customThemeJson: Flow<String?> = repository.observeKv(K_UI_CUSTOM_THEME)
+
+    suspend fun currentThemeId(): String = repository.getKv(K_UI_THEME) ?: DEFAULT_THEME
+    suspend fun currentFontId(): String = repository.getKv(K_UI_FONT) ?: DEFAULT_FONT
+    suspend fun currentCustomThemeJson(): String? = repository.getKv(K_UI_CUSTOM_THEME)
+
+    suspend fun setThemeId(id: String) = put(K_UI_THEME, id)
+    suspend fun setFontId(id: String) = put(K_UI_FONT, id)
+    /** Persist a validated custom-theme JSON blob (the caller validates via `parseThemeJson` first). */
+    suspend fun setCustomThemeJson(json: String) = put(K_UI_CUSTOM_THEME, json)
+
+    // ── Custom Bézier curve templates (item 19 — the Settings custom-curve designers) ───────────
+    // Stored as the compact `BezierCurve.encode` string under the exportable graph.* prefix.
+    val carbBezier: Flow<String?> = repository.observeKv(K_CURVE_CARB_BEZIER)
+    val insulinBezier: Flow<String?> = repository.observeKv(K_CURVE_INSULIN_BEZIER)
+    suspend fun setCarbBezier(encoded: String) = put(K_CURVE_CARB_BEZIER, encoded)
+    suspend fun setInsulinBezier(encoded: String) = put(K_CURVE_INSULIN_BEZIER, encoded)
+
     // ── Config export / import (item 17 — versioned, via SAF) ──────────────────────────────────
     // Exports ONLY the config keys (the allowlisted prefixes) — never runtime state such as the
     // watch nonce ceilings (exporting/importing those across devices would risk (key,nonce) reuse)
@@ -330,5 +352,12 @@ class SettingsStore(
         private const val K_RAIL_HYPO = "calc.rail_hypo"
 
         private const val K_UI_ANIMATIONS = "ui.animations"
+        private const val K_UI_THEME = "ui.theme"
+        private const val K_UI_FONT = "ui.font"
+        private const val K_UI_CUSTOM_THEME = "ui.custom_theme_json"
+        private const val K_CURVE_CARB_BEZIER = "graph.curve_carb_bezier"
+        private const val K_CURVE_INSULIN_BEZIER = "graph.curve_insulin_bezier"
+        const val DEFAULT_THEME = "tron"
+        const val DEFAULT_FONT = "system"
     }
 }

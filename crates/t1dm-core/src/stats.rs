@@ -35,6 +35,19 @@ const DAY_MS: f64 = 86_400_000.0;
 /// Clinical AGP fixed sub-band edges (mg/dL); the target edges are user-configurable.
 const VERY_LOW: f64 = 54.0;
 const VERY_HIGH: f64 = 250.0;
+/// mg/dL → mmol/L (the SI molar-mass conversion for glucose, 18.0182 mg/dL per mmol/L).
+const MMOL_PER_MGDL: f64 = 1.0 / 18.0182;
+/// Schlichtkrull M-value ideal reference glucose (mg/dL).
+const M_REF: f64 = 120.0;
+/// GRADE region thresholds (mmol/L), Hill 2007: hypo < 3.9, hyper > 7.8.
+const GRADE_HYPO_MMOL: f64 = 3.9;
+const GRADE_HYPER_MMOL: f64 = 7.8;
+/// Glucose distribution histogram: 20 mg/dL bins over [40, 400) → 18 bins (tails clamp in).
+const HIST_LO: f64 = 40.0;
+const HIST_HI: f64 = 400.0;
+const HIST_BIN: f64 = 20.0;
+/// An excursion episode needs at least this many consecutive in-band samples.
+const EPISODE_MIN_SAMPLES: usize = 2;
 
 /// One input sample on the shared 5-min grid. `bg_mgdl` is required; the treatment /
 /// activity channels are `None` where the grid cell carries no such event.
@@ -83,6 +96,66 @@ pub struct MoodSummary {
     pub max: i32,
 }
 
+/// Sample-count TIR/TBR/TAR within a fixed 6-hour time-of-day bucket (start 0/360/720/1080
+/// minutes). A count-based fraction (not time-weighted) over the bucket's valid-BG samples —
+/// the diurnal breakdown the single overall time-weighted TIR cannot express. All four
+/// buckets are always emitted (an empty bucket carries `n == 0` and zero fractions).
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct TodBucket {
+    pub start_min: u32,
+    pub n: u32,
+    pub tir: f64,
+    pub tbr: f64,
+    pub tar: f64,
+}
+
+/// One fixed-width bin of the glucose distribution histogram: 20 mg/dL bins spanning
+/// `[40, 400)` (18 bins); readings below/above clamp into the end bins. `frac = count / n`.
+/// Every bin is emitted (including empties) so the chart draws a full distribution.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct HistBin {
+    pub lo: f64,
+    pub hi: f64,
+    pub count: u32,
+    pub frac: f64,
+}
+
+/// Aggregate of the hypo (resp. hyper) excursion EPISODES: a maximal run of ≥2 consecutive
+/// valid samples strictly below `target_low` (resp. above `target_high`), split by a sensor
+/// dropout gap (> `MAX_GAP_MS`). `mean_extreme` is the mean per-episode nadir (hypo) / peak
+/// (hyper); `worst_extreme` the single most extreme reading across all episodes.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct EpisodeSummary {
+    pub count: u32,
+    pub total_duration_ms: i64,
+    pub mean_duration_ms: f64,
+    pub mean_extreme: f64,
+    pub worst_extreme: f64,
+}
+
+impl EpisodeSummary {
+    fn empty() -> Self {
+        EpisodeSummary {
+            count: 0,
+            total_duration_ms: 0,
+            mean_duration_ms: 0.0,
+            mean_extreme: 0.0,
+            worst_extreme: 0.0,
+        }
+    }
+}
+
+/// GRADE (Hill et al. 2007) mean risk score plus its hypo/eu/hyper attribution — the
+/// fraction of the summed score contributed by readings in each region (thresholds 3.9 /
+/// 7.8 mmol/L). The three fractions sum to 1 whenever the score is positive.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct GradeSplit {
+    pub grade: f64,
+    pub hypo: f64,
+    pub eu: f64,
+    pub hyper: f64,
+}
+
 /// The full advanced-stats block. Range-dependent + richer metrics on top of the
 /// server's shared block; the shared fields (`mean_bg`/`sd`/`cv`/`gmi` and the raw
 /// treatment totals) reproduce the server bit-for-bit for the parity check. Daily rates
@@ -124,6 +197,31 @@ pub struct AdvancedStats {
     pub mood: Option<MoodSummary>,
     /// AGP percentile ribbon, one entry per populated time-of-day bin, ascending.
     pub agp: Vec<AgpBin>,
+    // ── Variability & risk extensions (Phase 7D) ──────────────────────────────
+    /// Mean Of Daily Differences — |ΔBG| at matched minute-of-day across consecutive days.
+    pub modd: f64,
+    /// CONGA at 1 / 2 / 4 h lag (SD of the n-hour net glycemic action).
+    pub conga1: f64,
+    pub conga2: f64,
+    pub conga4: f64,
+    /// J-index = 0.001·(mean + SD)² (mg/dL space).
+    pub j_index: f64,
+    /// Schlichtkrull M-value (ideal reference 120 mg/dL).
+    pub m_value: f64,
+    /// Average Daily Risk Range (Kovatchev).
+    pub adrr: f64,
+    /// Between-day SD of the per-day mean glucose (day-to-day variability).
+    pub dtd_sd: f64,
+    /// GRADE score + hypo/eu/hyper attribution.
+    pub grade: GradeSplit,
+    /// Diurnal TIR — four fixed 6-hour time-of-day buckets (always length 4).
+    pub tod: Vec<TodBucket>,
+    /// Glucose distribution histogram (20 mg/dL bins over [40,400); always length 18).
+    pub histogram: Vec<HistBin>,
+    /// Hypo (< target_low) excursion-episode aggregate.
+    pub hypo_episodes: EpisodeSummary,
+    /// Hyper (> target_high) excursion-episode aggregate.
+    pub hyper_episodes: EpisodeSummary,
 }
 
 impl AdvancedStats {
@@ -153,6 +251,19 @@ impl AdvancedStats {
             mean_steps: None,
             mood: None,
             agp: Vec::new(),
+            modd: 0.0,
+            conga1: 0.0,
+            conga2: 0.0,
+            conga4: 0.0,
+            j_index: 0.0,
+            m_value: 0.0,
+            adrr: 0.0,
+            dtd_sd: 0.0,
+            grade: GradeSplit { grade: 0.0, hypo: 0.0, eu: 0.0, hyper: 0.0 },
+            tod: Vec::new(),
+            histogram: Vec::new(),
+            hypo_episodes: EpisodeSummary::empty(),
+            hyper_episodes: EpisodeSummary::empty(),
         }
     }
 }
@@ -209,6 +320,214 @@ fn mage(bg: &[f64], sd: f64) -> f64 {
         0.0
     } else {
         sum / count as f64
+    }
+}
+
+/// The UTC day index a timestamp falls in (days since the epoch). Used for the day-partitioned
+/// variability metrics (MODD / ADRR / day-to-day). A fixed offset, so day boundaries are
+/// consistent within the record even if not local-midnight aligned.
+#[inline]
+fn day_of(ts_ms: i64) -> i64 {
+    ts_ms.div_euclid(DAY_MS as i64)
+}
+
+/// The minute-of-day (0..1440) a timestamp falls in.
+#[inline]
+fn minute_of_day(ts_ms: i64) -> i64 {
+    ts_ms.rem_euclid(DAY_MS as i64) / 60_000
+}
+
+/// MODD — Mean Of Daily Differences (Molnar et al. 1972): the mean |ΔBG| between readings
+/// exactly 24 h apart, matched on identical minute-of-day across consecutive days. 0 when no
+/// matched pair exists. A `BTreeMap` keeps the summation order deterministic.
+fn modd(valid: &[&StatSample]) -> f64 {
+    use std::collections::BTreeMap;
+    let mut by_key: BTreeMap<(i64, i64), f64> = BTreeMap::new();
+    for s in valid {
+        by_key.insert((day_of(s.ts_ms), minute_of_day(s.ts_ms)), s.bg_mgdl);
+    }
+    let mut sum = 0.0;
+    let mut count = 0u32;
+    for (&(day, m), &bg) in &by_key {
+        if let Some(&prev) = by_key.get(&(day - 1, m)) {
+            sum += (bg - prev).abs();
+            count += 1;
+        }
+    }
+    if count == 0 {
+        0.0
+    } else {
+        sum / count as f64
+    }
+}
+
+/// CONGA-n — Continuous Overlapping Net Glycemic Action (McDonnell et al. 2005): the
+/// population SD of the differences `Dt = bg(t) − bg(t − n·60 min)` over every t whose
+/// n-hour-earlier reading is present. 0 with fewer than two such differences.
+fn conga(valid: &[&StatSample], hours: i64) -> f64 {
+    use std::collections::BTreeMap;
+    let mut by_ts: BTreeMap<i64, f64> = BTreeMap::new();
+    for s in valid {
+        by_ts.insert(s.ts_ms, s.bg_mgdl);
+    }
+    let lag = hours * 3_600_000;
+    let mut diffs: Vec<f64> = Vec::new();
+    for (&ts, &bg) in &by_ts {
+        if let Some(&prev) = by_ts.get(&(ts - lag)) {
+            diffs.push(bg - prev);
+        }
+    }
+    if diffs.len() < 2 {
+        return 0.0;
+    }
+    let m = diffs.iter().sum::<f64>() / diffs.len() as f64;
+    let var = diffs.iter().map(|d| (d - m).powi(2)).sum::<f64>() / diffs.len() as f64;
+    var.sqrt()
+}
+
+/// The per-reading GRADE contribution (Hill et al. 2007): `425·[log10(log10(bg mmol/L)) +
+/// 0.16]²`, capped at 50. The mmol value is floored just above 1 so the nested log stays
+/// real for any positive BG (physiological BG ≫ 18 mg/dL never hits the floor).
+#[inline]
+fn grade_contrib(bg_mgdl: f64) -> f64 {
+    let mmol = (bg_mgdl * MMOL_PER_MGDL).max(1.000_001);
+    (425.0 * (mmol.log10().log10() + 0.16).powi(2)).min(50.0)
+}
+
+/// ADRR — Average Daily Risk Range (Kovatchev et al. 2006): the mean over days of
+/// `max(low-risk) + max(high-risk)`, where risk `r(bg) = 10·f(bg)²`. 0 with no readings.
+fn adrr(valid: &[&StatSample]) -> f64 {
+    use std::collections::BTreeMap;
+    let mut per_day: BTreeMap<i64, (f64, f64)> = BTreeMap::new();
+    for s in valid {
+        let f = kovatchev_f(s.bg_mgdl);
+        let r = 10.0 * f * f;
+        let (lr, hr) = if f < 0.0 { (r, 0.0) } else if f > 0.0 { (0.0, r) } else { (0.0, 0.0) };
+        let e = per_day.entry(day_of(s.ts_ms)).or_insert((0.0, 0.0));
+        e.0 = e.0.max(lr);
+        e.1 = e.1.max(hr);
+    }
+    if per_day.is_empty() {
+        return 0.0;
+    }
+    let sum: f64 = per_day.values().map(|&(lr, hr)| lr + hr).sum();
+    sum / per_day.len() as f64
+}
+
+/// Between-day SD of the per-day mean glucose (day-to-day variability). 0 with < 2 days.
+fn dtd_sd(valid: &[&StatSample]) -> f64 {
+    use std::collections::BTreeMap;
+    let mut per_day: BTreeMap<i64, (f64, u32)> = BTreeMap::new();
+    for s in valid {
+        let e = per_day.entry(day_of(s.ts_ms)).or_insert((0.0, 0));
+        e.0 += s.bg_mgdl;
+        e.1 += 1;
+    }
+    let means: Vec<f64> = per_day.values().map(|&(sum, c)| sum / c as f64).collect();
+    if means.len() < 2 {
+        return 0.0;
+    }
+    let m = means.iter().sum::<f64>() / means.len() as f64;
+    let var = means.iter().map(|v| (v - m).powi(2)).sum::<f64>() / means.len() as f64;
+    var.sqrt()
+}
+
+/// Four fixed 6-hour diurnal buckets (00-06/06-12/12-18/18-24), each carrying its
+/// sample-count TBR/TIR/TAR vs the target edges. Always four entries.
+fn tod_buckets(valid: &[&StatSample], tlo: f64, thi: f64) -> Vec<TodBucket> {
+    let mut cnt = [[0u32; 3]; 4]; // [bucket][below, in, above]
+    for s in valid {
+        let b = (minute_of_day(s.ts_ms) / 360) as usize;
+        let idx = if s.bg_mgdl < tlo { 0 } else if s.bg_mgdl <= thi { 1 } else { 2 };
+        cnt[b][idx] += 1;
+    }
+    (0..4)
+        .map(|b| {
+            let n = cnt[b][0] + cnt[b][1] + cnt[b][2];
+            let inv = if n > 0 { 1.0 / n as f64 } else { 0.0 };
+            TodBucket {
+                start_min: b as u32 * 360,
+                n,
+                tbr: cnt[b][0] as f64 * inv,
+                tir: cnt[b][1] as f64 * inv,
+                tar: cnt[b][2] as f64 * inv,
+            }
+        })
+        .collect()
+}
+
+/// The 18-bin glucose distribution histogram (20 mg/dL bins, [40,400), tails clamped).
+fn histogram(bgs: &[f64]) -> Vec<HistBin> {
+    let nbins = ((HIST_HI - HIST_LO) / HIST_BIN) as usize;
+    let mut counts = vec![0u32; nbins];
+    for &bg in bgs {
+        let idx = (((bg - HIST_LO) / HIST_BIN).floor() as isize).clamp(0, nbins as isize - 1) as usize;
+        counts[idx] += 1;
+    }
+    let n = bgs.len() as f64;
+    (0..nbins)
+        .map(|i| HistBin {
+            lo: HIST_LO + i as f64 * HIST_BIN,
+            hi: HIST_LO + (i + 1) as f64 * HIST_BIN,
+            count: counts[i],
+            frac: if n > 0.0 { counts[i] as f64 / n } else { 0.0 },
+        })
+        .collect()
+}
+
+/// Detect the hypo (`below == true`, edge `target_low`) / hyper (`below == false`, edge
+/// `target_high`) excursion episodes and aggregate them. An episode is a maximal run of
+/// ≥ `EPISODE_MIN_SAMPLES` consecutive in-band valid samples; a dropout gap (> `MAX_GAP_MS`)
+/// splits a run. Duration is last−first ts; the extreme is the run's nadir/peak.
+fn episodes(valid: &[&StatSample], edge: f64, below: bool) -> EpisodeSummary {
+    let mut runs: Vec<Vec<(i64, f64)>> = Vec::new();
+    let mut cur: Vec<(i64, f64)> = Vec::new();
+    let mut prev_ts: Option<i64> = None;
+    let close_run = |cur: &mut Vec<(i64, f64)>, runs: &mut Vec<Vec<(i64, f64)>>| {
+        if cur.len() >= EPISODE_MIN_SAMPLES {
+            runs.push(std::mem::take(cur));
+        } else {
+            cur.clear();
+        }
+    };
+    for s in valid {
+        let in_band = if below { s.bg_mgdl < edge } else { s.bg_mgdl > edge };
+        let gap_break = prev_ts.map_or(false, |p| s.ts_ms - p > MAX_GAP_MS);
+        if in_band && !gap_break {
+            cur.push((s.ts_ms, s.bg_mgdl));
+        } else {
+            close_run(&mut cur, &mut runs);
+            if in_band {
+                cur.push((s.ts_ms, s.bg_mgdl));
+            }
+        }
+        prev_ts = Some(s.ts_ms);
+    }
+    close_run(&mut cur, &mut runs);
+
+    if runs.is_empty() {
+        return EpisodeSummary::empty();
+    }
+    let count = runs.len() as u32;
+    let mut total_dur = 0i64;
+    let mut ext_sum = 0.0;
+    let mut worst = if below { f64::INFINITY } else { f64::NEG_INFINITY };
+    for r in &runs {
+        total_dur += r.last().unwrap().0 - r.first().unwrap().0;
+        let ext = if below {
+            r.iter().map(|&(_, b)| b).fold(f64::INFINITY, f64::min)
+        } else {
+            r.iter().map(|&(_, b)| b).fold(f64::NEG_INFINITY, f64::max)
+        };
+        ext_sum += ext;
+        worst = if below { worst.min(ext) } else { worst.max(ext) };
+    }
+    EpisodeSummary {
+        count,
+        total_duration_ms: total_dur,
+        mean_duration_ms: total_dur as f64 / count as f64,
+        mean_extreme: ext_sum / count as f64,
+        worst_extreme: worst,
     }
 }
 
@@ -390,6 +709,43 @@ pub fn advanced_stats(
         });
     }
 
+    // ── variability & risk extensions (Phase 7D) ─────────────────────────────
+    let modd_v = modd(&valid);
+    let conga1 = conga(&valid, 1);
+    let conga2 = conga(&valid, 2);
+    let conga4 = conga(&valid, 4);
+    let j_index = 0.001 * (mean_bg + sd).powi(2);
+    let m_value = bgs.iter().map(|&bg| (10.0 * (bg / M_REF).log10()).abs().powi(3)).sum::<f64>() / n as f64;
+    let adrr_v = adrr(&valid);
+    let dtd = dtd_sd(&valid);
+
+    // GRADE score + region attribution.
+    let (mut g_sum, mut g_hypo, mut g_eu, mut g_hyper) = (0.0, 0.0, 0.0, 0.0);
+    for &bg in &bgs {
+        let g = grade_contrib(bg);
+        g_sum += g;
+        let mmol = bg * MMOL_PER_MGDL;
+        if mmol < GRADE_HYPO_MMOL {
+            g_hypo += g;
+        } else if mmol > GRADE_HYPER_MMOL {
+            g_hyper += g;
+        } else {
+            g_eu += g;
+        }
+    }
+    let inv_g = if g_sum > 0.0 { 1.0 / g_sum } else { 0.0 };
+    let grade = GradeSplit {
+        grade: g_sum / n as f64,
+        hypo: g_hypo * inv_g,
+        eu: g_eu * inv_g,
+        hyper: g_hyper * inv_g,
+    };
+
+    let tod = tod_buckets(&valid, tlo, thi);
+    let histogram = histogram(&bgs);
+    let hypo_episodes = episodes(&valid, tlo, true);
+    let hyper_episodes = episodes(&valid, thi, false);
+
     Ok(AdvancedStats {
         n_samples: n as u32,
         span_ms,
@@ -413,6 +769,19 @@ pub fn advanced_stats(
         mean_steps,
         mood,
         agp,
+        modd: modd_v,
+        conga1,
+        conga2,
+        conga4,
+        j_index,
+        m_value,
+        adrr: adrr_v,
+        dtd_sd: dtd,
+        grade,
+        tod,
+        histogram,
+        hypo_episodes,
+        hyper_episodes,
     })
 }
 
@@ -517,6 +886,138 @@ mod tests {
             close(got.p75, want["p75"].as_f64().unwrap(), 1e-9, "agp.p75");
             close(got.p95, want["p95"].as_f64().unwrap(), 1e-9, "agp.p95");
         }
+
+        // ── Phase-7D extensions (independent numpy reference in the golden) ──
+        close(out.modd, e["modd"].as_f64().unwrap(), 1e-6, "modd");
+        close(out.conga1, e["conga1"].as_f64().unwrap(), 1e-6, "conga1");
+        close(out.conga2, e["conga2"].as_f64().unwrap(), 1e-6, "conga2");
+        close(out.conga4, e["conga4"].as_f64().unwrap(), 1e-6, "conga4");
+        close(out.j_index, e["j_index"].as_f64().unwrap(), 1e-6, "j_index");
+        close(out.m_value, e["m_value"].as_f64().unwrap(), 1e-6, "m_value");
+        close(out.adrr, e["adrr"].as_f64().unwrap(), 1e-6, "adrr");
+        close(out.dtd_sd, e["dtd_sd"].as_f64().unwrap(), 1e-6, "dtd_sd");
+        let eg = &e["grade"];
+        close(out.grade.grade, eg["grade"].as_f64().unwrap(), 1e-6, "grade");
+        close(out.grade.hypo, eg["hypo"].as_f64().unwrap(), 1e-9, "grade.hypo");
+        close(out.grade.eu, eg["eu"].as_f64().unwrap(), 1e-9, "grade.eu");
+        close(out.grade.hyper, eg["hyper"].as_f64().unwrap(), 1e-9, "grade.hyper");
+        // GRADE region fractions partition the score.
+        close(out.grade.hypo + out.grade.eu + out.grade.hyper, 1.0, 1e-9, "grade split sum");
+
+        let et = e["tod"].as_array().unwrap();
+        assert_eq!(out.tod.len(), 4, "four diurnal buckets");
+        assert_eq!(out.tod.len(), et.len(), "tod count");
+        for (got, want) in out.tod.iter().zip(et) {
+            assert_eq!(got.start_min, want["start_min"].as_u64().unwrap() as u32);
+            assert_eq!(got.n, want["n"].as_u64().unwrap() as u32, "tod.n");
+            close(got.tir, want["tir"].as_f64().unwrap(), 1e-9, "tod.tir");
+            close(got.tbr, want["tbr"].as_f64().unwrap(), 1e-9, "tod.tbr");
+            close(got.tar, want["tar"].as_f64().unwrap(), 1e-9, "tod.tar");
+        }
+
+        let eh = e["histogram"].as_array().unwrap();
+        assert_eq!(out.histogram.len(), 18, "18 histogram bins");
+        assert_eq!(out.histogram.len(), eh.len(), "histogram count");
+        let mut hist_total = 0u32;
+        for (got, want) in out.histogram.iter().zip(eh) {
+            close(got.lo, want["lo"].as_f64().unwrap(), 1e-9, "hist.lo");
+            close(got.hi, want["hi"].as_f64().unwrap(), 1e-9, "hist.hi");
+            assert_eq!(got.count, want["count"].as_u64().unwrap() as u32, "hist.count");
+            close(got.frac, want["frac"].as_f64().unwrap(), 1e-9, "hist.frac");
+            hist_total += got.count;
+        }
+        assert_eq!(hist_total, out.n_samples, "histogram counts every valid sample");
+
+        for (got, key) in [(&out.hypo_episodes, "hypo_episodes"), (&out.hyper_episodes, "hyper_episodes")] {
+            let w = &e[key];
+            assert_eq!(got.count, w["count"].as_u64().unwrap() as u32, "{key}.count");
+            assert_eq!(got.total_duration_ms, w["total_duration_ms"].as_i64().unwrap(), "{key}.dur");
+            close(got.mean_duration_ms, w["mean_duration_ms"].as_f64().unwrap(), 1e-6, "ep.mean_dur");
+            close(got.mean_extreme, w["mean_extreme"].as_f64().unwrap(), 1e-9, "ep.mean_extreme");
+            close(got.worst_extreme, w["worst_extreme"].as_f64().unwrap(), 1e-9, "ep.worst");
+        }
+    }
+
+    // ── hand-computed anchors for the extensions the periodic golden leaves degenerate ──
+
+    fn s(ts_ms: i64, bg: f64) -> StatSample {
+        StatSample { ts_ms, bg_mgdl: bg, carbs_g: None, bolus_u: None, basal_u: None, steps: None, mood: None }
+    }
+
+    #[test]
+    fn modd_and_dtd_hand_computed() {
+        // Two days, one matched minute-of-day (00:00) per day: day0 = 100, day1 = 140.
+        // MODD = |140−100| = 40. Daily means differ (100 vs 140) → dtd_sd = SD([100,140]) = 20.
+        let day = 86_400_000i64;
+        let out = advanced_stats(vec![s(0, 100.0), s(day, 140.0)], 70, 180, 24).unwrap();
+        close(out.modd, 40.0, 1e-9, "modd two-day");
+        close(out.dtd_sd, 20.0, 1e-9, "dtd two-day");
+        // A single day → no matched pair, no between-day SD: both 0, no NaN.
+        let one = advanced_stats(vec![s(0, 100.0), s(300_000, 120.0)], 70, 180, 24).unwrap();
+        close(one.modd, 0.0, 1e-12, "modd single day");
+        close(one.dtd_sd, 0.0, 1e-12, "dtd single day");
+    }
+
+    #[test]
+    fn conga_hand_computed() {
+        // 5-min grid, values [100,110,130]; CONGA-5min-lag differences = [10,20];
+        // reuse the 1-hour path shape by lagging 5 min is awkward, so test the 1h lag:
+        // samples one hour apart [100, 130, 160] → Dt = [30,30], SD = 0.
+        let hr = 3_600_000i64;
+        let out = advanced_stats(vec![s(0, 100.0), s(hr, 130.0), s(2 * hr, 160.0)], 70, 180, 24).unwrap();
+        close(out.conga1, 0.0, 1e-9, "conga1 constant slope → 0 SD");
+        // Uneven: [100, 130, 150] → Dt = [30, 20]; population SD = 5.
+        let out2 = advanced_stats(vec![s(0, 100.0), s(hr, 130.0), s(2 * hr, 150.0)], 70, 180, 24).unwrap();
+        close(out2.conga1, 5.0, 1e-9, "conga1 uneven");
+    }
+
+    #[test]
+    fn j_and_m_value_hand_computed() {
+        // Constant 120 mg/dL: SD = 0 → J = 0.001·120² = 14.4; M = |10·log10(120/120)|³ = 0.
+        let flat: Vec<StatSample> = (0..6).map(|i| s(i * 300_000, 120.0)).collect();
+        let out = advanced_stats(flat, 70, 180, 24).unwrap();
+        close(out.j_index, 14.4, 1e-9, "j-index @120 flat");
+        close(out.m_value, 0.0, 1e-12, "m-value @120 flat");
+    }
+
+    #[test]
+    fn episodes_hand_computed() {
+        // 30-min grid (== MAX_GAP_MS, no gap break). One hypo run (2 samples: 60,50) and one
+        // hyper run (3 samples: 200,240,210), separated by an in-range sample.
+        let g = 1_800_000i64;
+        let series = vec![
+            s(0, 120.0),          // in range
+            s(g, 60.0),           // hypo start
+            s(2 * g, 50.0),       // hypo (nadir 50)
+            s(3 * g, 120.0),      // recover
+            s(4 * g, 200.0),      // hyper start
+            s(5 * g, 240.0),      // hyper (peak 240)
+            s(6 * g, 210.0),      // hyper
+            s(7 * g, 120.0),      // recover
+        ];
+        let out = advanced_stats(series, 70, 180, 24).unwrap();
+        assert_eq!(out.hypo_episodes.count, 1, "one hypo episode");
+        assert_eq!(out.hypo_episodes.total_duration_ms, g, "hypo dur = one 30-min step");
+        close(out.hypo_episodes.mean_extreme, 50.0, 1e-9, "hypo nadir");
+        close(out.hypo_episodes.worst_extreme, 50.0, 1e-9, "hypo worst nadir");
+        assert_eq!(out.hyper_episodes.count, 1, "one hyper episode");
+        assert_eq!(out.hyper_episodes.total_duration_ms, 2 * g, "hyper dur = two steps");
+        close(out.hyper_episodes.mean_extreme, 240.0, 1e-9, "hyper peak");
+        // A lone below-target sample (< min-samples) is NOT an episode.
+        let lone = advanced_stats(vec![s(0, 120.0), s(g, 55.0), s(2 * g, 120.0)], 70, 180, 24).unwrap();
+        assert_eq!(lone.hypo_episodes.count, 0, "single-sample dip is not an episode");
+    }
+
+    #[test]
+    fn grade_split_hand_computed() {
+        // All-euglycemic constant 120 mg/dL (6.66 mmol, between 3.9 and 7.8) → the whole score
+        // is attributed to `eu`; hypo and hyper fractions are 0.
+        let flat: Vec<StatSample> = (0..6).map(|i| s(i * 300_000, 120.0)).collect();
+        let out = advanced_stats(flat, 70, 180, 24).unwrap();
+        close(out.grade.eu, 1.0, 1e-12, "grade all-eu");
+        close(out.grade.hypo, 0.0, 1e-12, "grade hypo 0");
+        close(out.grade.hyper, 0.0, 1e-12, "grade hyper 0");
+        assert!(out.grade.grade > 0.0, "even eu glucose carries a small positive GRADE");
     }
 
     // ── independent anchors (not routed through the golden generator) ────────

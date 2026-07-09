@@ -32,7 +32,7 @@ fun SettingsScreen(
 ) {
     SettingsScaffold("Settings") {
         SettingsSectionHeader("Display & units")
-        SettingsNavRow("Units & targets", "mg/dL · mmol/L · Kovatchev, BG target range, animations", onClick = onOpenDisplay)
+        SettingsNavRow("Theme, font, units & targets", "3 themes + JSON import, bundled OFL fonts, unit space, BG target, animations", onClick = onOpenDisplay)
         SettingsNavRow("BG graph range & window", "Y-axis floor/ceiling and the default time window", onClick = onOpenGraph)
 
         SettingsSectionHeader("Alarms & safety")
@@ -43,7 +43,7 @@ fun SettingsScreen(
         SettingsSectionHeader("Forecast & models")
         SettingsNavRow("Forecast warmup", "How much real history the forecast waits for", onClick = onOpenWarmup)
         SettingsNavRow("Dose calculator", "Objective, asymmetry, rails, and rail thresholds — unbounded", onClick = onOpenCalculator)
-        SettingsNavRow("Curve & PK parameters", "Carb-appearance and insulin-action defaults (read-only)", onClick = onOpenCurveParams)
+        SettingsNavRow("Curve & PK parameters", "Carb-appearance and insulin-action presets + Bézier custom-curve designers", onClick = onOpenCurveParams)
         SettingsNavRow("Models & backend", "Select the running model; inference backend/precision", onClick = onOpenModels)
 
         SettingsSectionHeader("Devices & sync")

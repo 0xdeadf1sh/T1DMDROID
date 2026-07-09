@@ -7,9 +7,9 @@ import com.t1dm.core.design.T1dmColorScheme
 /**
  * The Glance palette snapshot: the widgets render under the SAME [T1dmColorScheme] the Activity
  * uses, so the home/lock tiles read in the current app theme instead of the launcher's dynamic
- * Material default (PLAN Phase 7B — "palette-snapshot theming"). glance-material3 maps the Compose
- * `ColorScheme` tokens onto Glance's `widgetBackground`/`onSurface`/… providers. The app is a single
- * dark Tron scheme today, so day and night resolve to the same providers; when Phase 7D adds the
- * three-theme selector this constant follows [T1dmColorScheme] and every widget re-themes for free.
+ * Material default (PLAN Phase 7B/7D — "palette-snapshot theming"). glance-material3 maps the Compose
+ * `ColorScheme` tokens onto Glance's `widgetBackground`/`onSurface`/… providers. Computed on each
+ * widget refresh (a `get()` property, NOT a cached `val`) so a theme change picks up the newly-active
+ * [T1dmColorScheme] the next time the FGS refreshes the surfaces — no widget-code change per theme.
  */
-internal val T1dmGlanceColors: ColorProviders = material3ColorProviders(T1dmColorScheme)
+internal val T1dmGlanceColors: ColorProviders get() = material3ColorProviders(T1dmColorScheme)

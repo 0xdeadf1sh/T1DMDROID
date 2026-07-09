@@ -28,7 +28,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.model.InsulinKind
 import com.t1dm.core.model.InsulinType
-import com.t1dm.core.model.PwlCurve
+import com.t1dm.core.model.BezierCurve
 import com.t1dm.ui.graph.CurveEditor
 import com.t1dm.ui.graph.CurvePreview
 
@@ -111,7 +111,7 @@ private fun CustomTypeBuilder(onSaveType: (InsulinType) -> Unit) {
     var p1Text by remember { mutableStateOf("") } // k (bolus) or ka (basal)
     var p2Text by remember { mutableStateOf("") } // theta (bolus) or ke (basal)
     var drawCurve by remember { mutableStateOf(false) }
-    var curve by remember { mutableStateOf(PwlCurve.triangle(300.0)) }
+    var curve by remember { mutableStateOf(BezierCurve.default(300.0)) }
 
     Text("Add a custom insulin type", style = MaterialTheme.typography.titleMedium)
     OutlinedTextField(
@@ -137,8 +137,17 @@ private fun CustomTypeBuilder(onSaveType: (InsulinType) -> Unit) {
             modifier = Modifier.padding(start = 8.dp),
         )
     }
+    val curveDegenerate = drawCurve && curve.isDegenerate()
     if (drawCurve) {
         CurveEditor(curve = curve, onChange = { curve = it }, resetKey = durText)
+        if (curveDegenerate) {
+            Text(
+                "The custom action curve is flat — it would encode no insulin. Draw a hump, or turn the " +
+                    "custom curve off to use the PK parameters.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
     } else {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedTextField(
@@ -177,7 +186,7 @@ private fun CustomTypeBuilder(onSaveType: (InsulinType) -> Unit) {
             onSaveType(type)
             name = ""; p1Text = ""; p2Text = ""; drawCurve = false
         },
-        enabled = name.isNotBlank(),
+        enabled = name.isNotBlank() && !curveDegenerate,
     ) { Text("Save type") }
 }
 

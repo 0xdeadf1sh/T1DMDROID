@@ -1,12 +1,20 @@
 package com.t1dm.feature.settings
 
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import com.t1dm.core.model.UnitSpace
 
 /**
- * Settings → Units & targets (PLAN.private.md Phase 7C item 14; ux-decisions.md). The GLOBAL glucose
- * unit space (mg/dL default · mmol/L · Kovatchev raw risk), the single GLOBAL stats target range
- * (distinct from the alarm thresholds), and the "disable all animations" toggle. Pure/stateless.
+ * Settings → Display (PLAN.private.md Phase 7C item 14 + 7D item 25; ux-decisions.md). The GLOBAL
+ * glucose unit space, the single GLOBAL stats target range, the "disable all animations" toggle, and
+ * — new in 7D — the THEME + FONT switcher and the custom-theme JSON import. Pure/stateless: theme/font
+ * ids are opaque strings the caller (`:app` Navigation, which owns `:core:design`) supplies + persists,
+ * so this module stays free of a `:core:design` dependency.
  */
 @Composable
 fun DisplaySettingsScreen(
@@ -14,11 +22,41 @@ fun DisplaySettingsScreen(
     targetLow: Int,
     targetHigh: Int,
     animationsEnabled: Boolean,
+    themeOptions: List<Pair<String, String>>,
+    selectedThemeId: String,
+    fontOptions: List<Pair<String, String>>,
+    selectedFontId: String,
+    customThemeName: String?,
+    importStatus: String?,
     onSetUnitSpace: (UnitSpace) -> Unit,
     onSetTargetRange: (low: Int, high: Int) -> Unit,
     onSetAnimationsEnabled: (Boolean) -> Unit,
+    onSelectTheme: (String) -> Unit,
+    onSelectFont: (String) -> Unit,
+    onImportCustomTheme: () -> Unit,
 ) {
-    SettingsScaffold("Units & targets") {
+    SettingsScaffold("Display") {
+        SettingsSectionHeader("Theme")
+        SettingsNote("Recolours the whole app — graph bands, stats, alerts, widgets, the Circadian dial.")
+        ChipPicker("Colour theme", themeOptions, selectedThemeId) { onSelectTheme(it) }
+        if (customThemeName != null) {
+            Text(
+                "Custom theme loaded: $customThemeName",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+        OutlinedButton(onClick = onImportCustomTheme, modifier = Modifier.padding(top = 4.dp)) {
+            Text(if (customThemeName != null) "Replace custom theme (JSON)…" else "Import custom theme (JSON)…")
+        }
+        if (importStatus != null) {
+            Text(importStatus, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+
+        SettingsSectionHeader("Font")
+        SettingsNote("A global type family — three bundled OFL monospaces, or the system default.")
+        ChipPicker("Font family", fontOptions, selectedFontId) { onSelectFont(it) }
+
         SettingsSectionHeader("Glucose unit")
         ChipPicker(
             "Display and axis unit",

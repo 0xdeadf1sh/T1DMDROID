@@ -44,6 +44,38 @@ data class AgpBin(
 /** Mood summary over the samples that carried a mood score. */
 data class MoodSummary(val mean: Double, val n: Int, val min: Int, val max: Int)
 
+/** Sample-count TIR/TBR/TAR within a fixed 6-hour diurnal bucket ([startMin] = 0/360/720/1080). */
+data class TodBucket(
+    val startMin: Int,
+    val n: Int,
+    val tir: Double,
+    val tbr: Double,
+    val tar: Double,
+)
+
+/** One 20 mg/dL glucose-distribution histogram bin over [40,400) (tails clamp into the ends). */
+data class HistBin(val lo: Double, val hi: Double, val count: Int, val frac: Double)
+
+/** Aggregate of the hypo/hyper excursion episodes (count/duration/mean-extreme/worst-extreme). */
+data class EpisodeSummary(
+    val count: Int,
+    val totalDurationMs: Long,
+    val meanDurationMs: Double,
+    val meanExtreme: Double,
+    val worstExtreme: Double,
+) {
+    companion object {
+        val EMPTY = EpisodeSummary(0, 0L, 0.0, 0.0, 0.0)
+    }
+}
+
+/** GRADE mean score plus its hypo/eu/hyper attribution (fractions summing to 1 when positive). */
+data class GradeSplit(val grade: Double, val hypo: Double, val eu: Double, val hyper: Double) {
+    companion object {
+        val EMPTY = GradeSplit(0.0, 0.0, 0.0, 0.0)
+    }
+}
+
 /** The full locally-recomputed advanced-stats block (Rust `AdvancedStats`). */
 data class AdvancedStats(
     val nSamples: Int,
@@ -68,6 +100,20 @@ data class AdvancedStats(
     val meanSteps: Double?,
     val mood: MoodSummary?,
     val agp: List<AgpBin>,
+    // ── Variability & risk extensions (Phase 7D) ──
+    val modd: Double,
+    val conga1: Double,
+    val conga2: Double,
+    val conga4: Double,
+    val jIndex: Double,
+    val mValue: Double,
+    val adrr: Double,
+    val dtdSd: Double,
+    val grade: GradeSplit,
+    val tod: List<TodBucket>,
+    val histogram: List<HistBin>,
+    val hypoEpisodes: EpisodeSummary,
+    val hyperEpisodes: EpisodeSummary,
 ) {
     val isEmpty: Boolean get() = nSamples == 0
 
@@ -82,6 +128,10 @@ data class AdvancedStats(
             totalCarbs = 0.0, totalBolus = 0.0, totalBasal = 0.0,
             meanDailyCarbs = 0.0, tdd = 0.0, bolusBasalRatio = 0.0,
             meanSteps = null, mood = null, agp = emptyList(),
+            modd = 0.0, conga1 = 0.0, conga2 = 0.0, conga4 = 0.0,
+            jIndex = 0.0, mValue = 0.0, adrr = 0.0, dtdSd = 0.0,
+            grade = GradeSplit.EMPTY, tod = emptyList(), histogram = emptyList(),
+            hypoEpisodes = EpisodeSummary.EMPTY, hyperEpisodes = EpisodeSummary.EMPTY,
         )
     }
 }

@@ -30,7 +30,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.model.Food
 import com.t1dm.core.model.MealComponent
-import com.t1dm.core.model.PwlCurve
+import com.t1dm.core.model.BezierCurve
 import com.t1dm.core.model.ResolvedMealCurve
 import com.t1dm.core.model.SavedMeal
 import com.t1dm.ui.graph.CurveEditor
@@ -240,7 +240,7 @@ private fun FoodBuilder(
     var carbsText by remember { mutableStateOf("") }
     var giText by remember { mutableStateOf("") }
     var useCustomCurve by remember { mutableStateOf(false) }
-    var curve by remember { mutableStateOf(PwlCurve.triangle(180.0)) }
+    var curve by remember { mutableStateOf(BezierCurve.default(180.0)) }
 
     Text("Add a custom food", style = MaterialTheme.typography.titleMedium)
     OutlinedTextField(
@@ -271,8 +271,17 @@ private fun FoodBuilder(
             modifier = Modifier.padding(start = 8.dp),
         )
     }
+    val curveDegenerate = useCustomCurve && curve.isDegenerate()
     if (useCustomCurve) {
         CurveEditor(curve = curve, onChange = { curve = it })
+        if (curveDegenerate) {
+            Text(
+                "The custom appearance curve is flat — it would encode no carbs. Draw a hump, or turn the " +
+                    "custom curve off to fall back to the GI preset.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
     }
     Button(
         onClick = {
@@ -289,7 +298,7 @@ private fun FoodBuilder(
                 name = ""; carbsText = ""; giText = ""; useCustomCurve = false
             }
         },
-        enabled = name.isNotBlank() && carbsText.toDoubleOrNull() != null,
+        enabled = name.isNotBlank() && carbsText.toDoubleOrNull() != null && !curveDegenerate,
     ) { Text("Save food") }
 
     if (customFoods.isNotEmpty()) {

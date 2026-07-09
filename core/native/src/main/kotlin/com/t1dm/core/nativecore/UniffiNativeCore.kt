@@ -10,8 +10,12 @@ import com.t1dm.core.model.BasalDoseSpec
 import com.t1dm.core.model.BasalSchedule
 import com.t1dm.core.model.BuiltContext
 import com.t1dm.core.model.MoodSummary
+import com.t1dm.core.model.EpisodeSummary
+import com.t1dm.core.model.GradeSplit
+import com.t1dm.core.model.HistBin
 import com.t1dm.core.model.StatSample
 import com.t1dm.core.model.SubBands
+import com.t1dm.core.model.TodBucket
 import com.t1dm.core.model.ChannelStat
 import com.t1dm.core.model.CurveEvent
 import com.t1dm.core.model.CurveKind
@@ -60,6 +64,10 @@ import uniffi.t1dm_core.Forecast as UniffiForecast
 import uniffi.t1dm_core.ForecastStatus as UniffiForecastStatus
 import uniffi.t1dm_core.ModelDescriptor as UniffiModelDescriptor
 import uniffi.t1dm_core.MoodSummary as UniffiMoodSummary
+import uniffi.t1dm_core.EpisodeSummary as UniffiEpisodeSummary
+import uniffi.t1dm_core.GradeSplit as UniffiGradeSplit
+import uniffi.t1dm_core.HistBin as UniffiHistBin
+import uniffi.t1dm_core.TodBucket as UniffiTodBucket
 import uniffi.t1dm_core.PredictedTime as UniffiPredictedTime
 import uniffi.t1dm_core.TimeHead as UniffiTimeHead
 import uniffi.t1dm_core.StatSample as UniffiStatSample
@@ -252,6 +260,26 @@ private fun UniffiMoodSummary.toModel(): MoodSummary = MoodSummary(
     mean = mean, n = n.toInt(), min = min, max = max,
 )
 
+private fun UniffiTodBucket.toModel(): TodBucket = TodBucket(
+    startMin = startMin.toInt(), n = n.toInt(), tir = tir, tbr = tbr, tar = tar,
+)
+
+private fun UniffiHistBin.toModel(): HistBin = HistBin(
+    lo = lo, hi = hi, count = count.toInt(), frac = frac,
+)
+
+private fun UniffiEpisodeSummary.toModel(): EpisodeSummary = EpisodeSummary(
+    count = count.toInt(),
+    totalDurationMs = totalDurationMs,
+    meanDurationMs = meanDurationMs,
+    meanExtreme = meanExtreme,
+    worstExtreme = worstExtreme,
+)
+
+private fun UniffiGradeSplit.toModel(): GradeSplit = GradeSplit(
+    grade = grade, hypo = hypo, eu = eu, hyper = hyper,
+)
+
 private fun UniffiAdvancedStats.toModel(): AdvancedStats = AdvancedStats(
     nSamples = nSamples.toInt(),
     spanMs = spanMs,
@@ -264,6 +292,14 @@ private fun UniffiAdvancedStats.toModel(): AdvancedStats = AdvancedStats(
     meanSteps = meanSteps,
     mood = mood?.toModel(),
     agp = agp.map { it.toModel() },
+    modd = modd,
+    conga1 = conga1, conga2 = conga2, conga4 = conga4,
+    jIndex = jIndex, mValue = mValue, adrr = adrr, dtdSd = dtdSd,
+    grade = grade.toModel(),
+    tod = tod.map { it.toModel() },
+    histogram = histogram.map { it.toModel() },
+    hypoEpisodes = hypoEpisodes.toModel(),
+    hyperEpisodes = hyperEpisodes.toModel(),
 )
 
 private fun UniffiCurveKind.toModel(): CurveKind = when (this) {

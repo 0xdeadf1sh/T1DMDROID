@@ -28,9 +28,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.model.AdvancedStats
+import com.t1dm.core.model.EpisodeSummary
 import com.t1dm.core.model.StatsComposite
 import com.t1dm.core.model.StatsWindow
 import com.t1dm.core.model.SubBands
+import com.t1dm.core.model.TargetRange
+import com.t1dm.core.model.TodBucket
 import com.t1dm.core.model.UnitSpace
 
 /**
@@ -49,6 +52,8 @@ fun StatsScreen(
     onSetUnitSpace: (UnitSpace) -> Unit,
     onSetTargetRange: (Int, Int) -> Unit,
     onRecompute: () -> Unit,
+    onExportPdf: () -> Unit = {},
+    exportStatus: String? = null,
 ) {
     Column(
         Modifier
@@ -70,11 +75,12 @@ fun StatsScreen(
             OutlinedButton(onClick = onRecompute, enabled = !state.recomputing) {
                 Text(if (state.recomputing) "Recomputing…" else "Recompute locally")
             }
-            Text(
-                "Cross-checks the server cache against a fresh local recompute.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-            )
+            OutlinedButton(onClick = onExportPdf, enabled = state.composite != null) {
+                Text("Export PDF")
+            }
+        }
+        exportStatus?.let {
+            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
         }
 
         val composite = state.composite
@@ -143,7 +149,65 @@ fun StatsScreen(
                 Metric("LBGI", fmt(local.lbgi, 1), "risk")
                 Metric("HBGI", fmt(local.hbgi, 1), "risk")
                 Metric("MAGE", fmtSpread(local.mage, unit), spreadUnit(unit))
+                Metric("GRI", fmt(griOf(local.subBands), 0), "index")
                 Metric("Samples", local.nSamples.toString(), "")
+            }
+        }
+
+        // ── Variability & risk indices ─────────────────────────────────────────────────────────
+        SectionCard("Variability & risk") {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Metric("MODD", fmtSpread(local.modd, unit), spreadUnit(unit))
+                Metric("CONGA-1h", fmtSpread(local.conga1, unit), spreadUnit(unit))
+                Metric("CONGA-2h", fmtSpread(local.conga2, unit), spreadUnit(unit))
+                Metric("CONGA-4h", fmtSpread(local.conga4, unit), spreadUnit(unit))
+                Metric("Day-to-day", fmtSpread(local.dtdSd, unit), spreadUnit(unit))
+                Metric("J-index", fmt(local.jIndex, 1), "index")
+                Metric("M-value", fmt(local.mValue, 1), "index")
+                Metric("ADRR", fmt(local.adrr, 1), "risk")
+                Metric("GRADE", fmt(local.grade.grade, 1), "index")
+            }
+            Box(Modifier.height(6.dp))
+            Text(
+                "GRADE attribution — hypo ${fmtPct(local.grade.hypo)} · euglycemic ${fmtPct(local.grade.eu)} · " +
+                    "hyper ${fmtPct(local.grade.hyper)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+            )
+        }
+
+        // ── Diurnal time-in-range (four 6-hour buckets) ─────────────────────────────────────────
+        if (local.tod.any { it.n > 0 }) {
+            SectionCard("Time in range by time of day") {
+                local.tod.forEach { b -> DiurnalRow(b) }
+            }
+        }
+
+        // ── Glucose distribution histogram ──────────────────────────────────────────────────────
+        if (local.histogram.any { it.count > 0 }) {
+            SectionCard("Glucose distribution") {
+                Text(
+                    "Share of readings in each 20 mg/dL band.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
+                HistogramChart(local, composite.targetRange)
+            }
+        }
+
+        // ── Hypo / hyper episode tables ─────────────────────────────────────────────────────────
+        SectionCard("Excursion episodes") {
+            EpisodeRow("Hypo (< ${composite.targetRange.lowMgdl})", local.hypoEpisodes, isHypo = true, unit = unit, kovatchevF = kovatchevF)
+            Box(Modifier.height(8.dp))
+            EpisodeRow("Hyper (> ${composite.targetRange.highMgdl})", local.hyperEpisodes, isHypo = false, unit = unit, kovatchevF = kovatchevF)
+            if (local.hypoEpisodes.count == 0 && local.hyperEpisodes.count == 0) {
+                Box(Modifier.height(4.dp))
+                Text(
+                    "No sustained excursions (≥2 consecutive readings) outside the target range in this window.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                )
             }
         }
 
@@ -291,6 +355,102 @@ private fun TirLegend(label: String, frac: Double, color: Color) {
     }
 }
 
+private fun todLabel(startMin: Int): String = when (startMin) {
+    0 -> "Night 00–06"
+    360 -> "Morning 06–12"
+    720 -> "Afternoon 12–18"
+    else -> "Evening 18–24"
+}
+
+@Composable
+private fun DiurnalRow(b: TodBucket) {
+    Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(todLabel(b.startMin), style = MaterialTheme.typography.bodySmall)
+            Text(
+                if (b.n > 0) "in range ${fmtPct(b.tir)} · n=${b.n}" else "no readings",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+            )
+        }
+        Box(Modifier.height(4.dp))
+        Row(Modifier.fillMaxWidth().height(14.dp)) {
+            if (b.n == 0) {
+                Box(Modifier.weight(1f).fillMaxHeight().background(Color(0x22FFFFFF)))
+            } else {
+                listOf(b.tbr to BAND_LOW, b.tir to BAND_IN, b.tar to BAND_HIGH).forEach { (frac, c) ->
+                    if (frac > 0.0) Box(Modifier.weight(frac.toFloat()).fillMaxHeight().background(c))
+                }
+            }
+        }
+    }
+}
+
+/** A simple vertical-bar histogram; each 20 mg/dL bin's height ∝ its share, coloured by which
+ *  clinical band the bin's centre falls in relative to the target range. */
+@Composable
+private fun HistogramChart(s: AdvancedStats, target: TargetRange) {
+    val maxFrac = s.histogram.maxOfOrNull { it.frac }?.takeIf { it > 0.0 } ?: 1.0
+    Row(
+        Modifier.fillMaxWidth().height(120.dp),
+        horizontalArrangement = Arrangement.spacedBy(1.dp),
+        verticalAlignment = Alignment.Bottom,
+    ) {
+        s.histogram.forEach { bin ->
+            val mid = (bin.lo + bin.hi) / 2.0
+            val color = when {
+                mid < target.lowMgdl -> BAND_LOW
+                mid > target.highMgdl -> BAND_HIGH
+                else -> BAND_IN
+            }
+            Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .fillMaxHeight((bin.frac / maxFrac).toFloat().coerceIn(0f, 1f).let { if (bin.count > 0) it.coerceAtLeast(0.02f) else 0f })
+                        .background(color),
+                )
+            }
+        }
+    }
+    Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text("40", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+        Text("mg/dL", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+        Text("400", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+    }
+}
+
+@Composable
+private fun EpisodeRow(label: String, e: EpisodeSummary, isHypo: Boolean, unit: UnitSpace, kovatchevF: (Double) -> Double) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+        Column {
+            Text(label, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+            if (e.count > 0) {
+                Text(
+                    "${e.count} · avg ${fmtDurationMin(e.meanDurationMs)} · " +
+                        "${if (isHypo) "nadir" else "peak"} ${fmtLevel(e.meanExtreme, unit, kovatchevF)} " +
+                        "(worst ${fmtLevel(e.worstExtreme, unit, kovatchevF)}) ${unitLabel(unit)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                )
+            } else {
+                Text("none", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
+            }
+        }
+        Text(
+            e.count.toString(),
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold,
+            color = if (isHypo) BAND_VLOW else BAND_VHIGH,
+        )
+    }
+}
+
+private fun fmtDurationMin(ms: Double): String {
+    val min = (ms / 60_000.0).toInt()
+    return if (min >= 60) "${min / 60}h${(min % 60).toString().padStart(2, '0')}" else "${min}m"
+}
+
 // ── Formatting ────────────────────────────────────────────────────────────────────────────────
 
 private fun perChannelMetrics(s: AdvancedStats): List<Triple<String, String, String>> = buildList {
@@ -322,6 +482,11 @@ private fun fmtLevel(mgdl: Double, unit: UnitSpace, kovatchevF: (Double) -> Doub
 }
 
 private fun fmtPct(frac: Double): String = "${fmt(frac * 100.0, 1)}%"
+
+/** Glycemia Risk Index (Klonoff 2022): a single 0-100 composite of the hypo/hyper sub-bands (fractions
+ *  here, so ×100 to percent). GRI = 3·VLow + 2.4·Low + 1.6·VHigh + 0.8·High, capped at 100. */
+internal fun griOf(b: SubBands): Double =
+    (3.0 * b.veryLow * 100 + 2.4 * b.low * 100 + 1.6 * b.veryHigh * 100 + 0.8 * b.high * 100).coerceIn(0.0, 100.0)
 
 private fun fmt(v: Double, dp: Int): String = String.format("%.${dp}f", v)
 

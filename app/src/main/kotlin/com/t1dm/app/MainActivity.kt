@@ -8,9 +8,17 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import com.t1dm.app.di.AppContainer
 import com.t1dm.app.service.CgmScanService
+import com.t1dm.core.design.T1dmFontId
 import com.t1dm.core.design.T1dmTheme
+import com.t1dm.core.design.ThemeIds
+import com.t1dm.core.design.TronPalette
+import com.t1dm.core.design.paletteForId
+import com.t1dm.core.design.parseThemeJson
 import timber.log.Timber
 
 class MainActivity : ComponentActivity() {
@@ -31,7 +39,20 @@ class MainActivity : ComponentActivity() {
         requestRuntimePermissions()
 
         setContent {
-            T1dmTheme {
+            val ss = container.settingsStore
+            val themeId by ss.themeId.collectAsState("tron")
+            val fontKey by ss.fontId.collectAsState("system")
+            val animations by ss.animationsEnabled.collectAsState(true)
+            val customJson by ss.customThemeJson.collectAsState(null)
+            val palette = remember(themeId, customJson) {
+                val cj = customJson
+                if (themeId == ThemeIds.CUSTOM && !cj.isNullOrBlank()) {
+                    runCatching { parseThemeJson(cj) }.getOrDefault(TronPalette)
+                } else {
+                    paletteForId(themeId)
+                }
+            }
+            T1dmTheme(palette = palette, font = T1dmFontId.forKey(fontKey), animationsEnabled = animations) {
                 T1dmApp(container)
             }
         }

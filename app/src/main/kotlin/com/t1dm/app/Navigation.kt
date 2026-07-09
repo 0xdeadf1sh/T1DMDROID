@@ -1,11 +1,21 @@
 package com.t1dm.app
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -16,12 +26,19 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.t1dm.app.di.AppContainer.BolusAdviceUi
 import com.t1dm.app.service.DoseCalcService
 import com.t1dm.feature.insulin.BolusCalculatorScreen
 import com.t1dm.core.model.InferenceState
+import com.t1dm.core.model.BezierCurve
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -68,6 +85,11 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import com.t1dm.watch.WatchSecurityState
 import com.t1dm.feature.stats.StatsScreen
+import com.t1dm.feature.dashboard.CircadianScreen
+import com.t1dm.core.design.BundledPalettes
+import com.t1dm.core.design.T1dmFontId
+import com.t1dm.core.design.ThemeIds
+import com.t1dm.core.design.parseThemeJson
 
 /** Map the `:watch` security state onto the feature-local panel model (keeps `:feature:security`
  *  free of a `:watch` dependency — the removable seam). */
@@ -92,19 +114,22 @@ private fun WatchSecurityState.toPanelState() = SecurityPanelState(
     canReset = canReset,
 )
 
-private data class Destination(val route: String, val label: String)
+private data class Destination(val route: String, val label: String, val glyph: String)
 
+// Item 13 — a LARGE-ICON, HORIZONTALLY-SCROLLABLE row (no fixed-bar overflow). Glyphs are emoji so the
+// bar needs no material-icons dependency (none is on the classpath) and reads under every theme.
 private val destinations = listOf(
-    Destination("dashboard", "BG"),
-    Destination("stats", "Stats"),
-    Destination("models", "Models"),
-    Destination("hardware", "HW"),
-    Destination("network", "Net"),
-    Destination("meals", "Meals"),
-    Destination("insulin", "Insulin"),
-    Destination("security", "Sec"),
-    Destination("settings", "Set"),
-    Destination("journal", "Journal"),
+    Destination("dashboard", "BG", "📈"),
+    Destination("circadian", "Clock", "🕒"),
+    Destination("stats", "Stats", "📊"),
+    Destination("models", "Models", "🧠"),
+    Destination("hardware", "HW", "🔩"),
+    Destination("network", "Net", "🌐"),
+    Destination("meals", "Meals", "🍽️"),
+    Destination("insulin", "Insulin", "💉"),
+    Destination("security", "Sec", "🔒"),
+    Destination("journal", "Journal", "📓"),
+    Destination("settings", "Set", "⚙️"),
 )
 
 @Composable
@@ -121,24 +146,75 @@ fun T1dmApp(container: AppContainer) {
     }
 }
 
+/**
+ * The bottom navigation (item 13): a horizontally-scrollable row of large-icon tiles, one per
+ * destination, so all ~11 tabs are reachable by scrolling instead of cramming into a fixed bar. The
+ * selected tile is marked with a themed pill + a coloured label; on selection it is scrolled into
+ * view so the current destination always stays visible.
+ */
 @Composable
 private fun T1dmBottomBar(navController: NavHostController) {
     val backStackEntry by navController.currentBackStackEntryAsState()
     val current = backStackEntry?.destination?.route
-    NavigationBar {
-        destinations.forEach { d ->
-            NavigationBarItem(
-                selected = current == d.route,
-                onClick = {
-                    navController.navigate(d.route) {
-                        launchSingleTop = true
-                        restoreState = true
-                        popUpTo("dashboard") { saveState = true }
-                    }
-                },
-                icon = { Text(d.label) },
-            )
+    val scrollState = rememberScrollState()
+    val selectedIndex = destinations.indexOfFirst { it.route == current }
+
+    // Keep the selected tile on-screen as the destination changes.
+    LaunchedEffect(selectedIndex, scrollState.maxValue) {
+        if (selectedIndex >= 0 && scrollState.maxValue > 0) {
+            val approxTilePx = (scrollState.maxValue + 1) / destinations.size.coerceAtLeast(1)
+            scrollState.animateScrollTo((selectedIndex * approxTilePx - approxTilePx).coerceAtLeast(0))
         }
+    }
+
+    Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 3.dp) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .horizontalScroll(scrollState)
+                .navigationBarsPadding()
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            destinations.forEach { d ->
+                NavTile(
+                    destination = d,
+                    selected = current == d.route,
+                    onClick = {
+                        navController.navigate(d.route) {
+                            launchSingleTop = true
+                            restoreState = true
+                            popUpTo("dashboard") { saveState = true }
+                        }
+                    },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun NavTile(destination: Destination, selected: Boolean, onClick: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    val bg = if (selected) cs.primary.copy(alpha = 0.16f) else Color.Transparent
+    Column(
+        Modifier
+            .clip(RoundedCornerShape(16.dp))
+            .background(bg)
+            .clickable(onClick = onClick)
+            .widthIn(min = 64.dp)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(3.dp),
+    ) {
+        Text(destination.glyph, fontSize = 24.sp)
+        Text(
+            destination.label,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+            color = if (selected) cs.primary else cs.onSurfaceVariant,
+            maxLines = 1,
+        )
     }
 }
 
@@ -175,8 +251,33 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 signals = signals,
             )
         }
+        composable("circadian") {
+            val inference by container.inferenceState.collectAsState(InferenceState())
+            CircadianScreen(
+                predictedTime = inference.selectedPredictedTime,
+                realBackendAvailable = inference.realBackendAvailable,
+            )
+        }
         composable("stats") {
             val statsState by container.statsViewModel.state.collectAsState()
+            val ctx = LocalContext.current
+            val scope = rememberCoroutineScope()
+            var exportStatus by remember { mutableStateOf<String?>(null) }
+            val pdfLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.CreateDocument("application/pdf"),
+            ) { uri ->
+                val composite = container.statsViewModel.state.value.composite
+                if (uri == null) { exportStatus = "PDF export cancelled." }
+                else if (composite == null) { exportStatus = "No statistics to export yet." }
+                else scope.launch {
+                    exportStatus = runCatching {
+                        ctx.contentResolver.openOutputStream(uri)?.use {
+                            com.t1dm.app.stats.StatsPdf.write(it, composite)
+                        } ?: error("could not open the chosen file for writing")
+                        "Exported the statistics report to the chosen file."
+                    }.getOrElse { "PDF export failed — ${it.message ?: it::class.simpleName}." }
+                }
+            }
             StatsScreen(
                 state = statsState,
                 kovatchevF = container.nativeCore::kovatchevF,
@@ -184,6 +285,8 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 onSetUnitSpace = container.statsViewModel::setUnitSpace,
                 onSetTargetRange = container.statsViewModel::setTargetRange,
                 onRecompute = container.statsViewModel::recompute,
+                onExportPdf = { exportStatus = null; pdfLauncher.launch("t1dm-stats-${statsState.window.wire}.pdf") },
+                exportStatus = exportStatus,
             )
         }
         composable("models") {
@@ -347,16 +450,55 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
         }
         composable("settings/display") {
             val scope = rememberCoroutineScope()
+            val ctx = LocalContext.current
             val statsState by container.statsViewModel.state.collectAsState()
-            val animations by container.settingsStore.animationsEnabled.collectAsState(true)
+            val ss = container.settingsStore
+            val animations by ss.animationsEnabled.collectAsState(true)
+            val themeId by ss.themeId.collectAsState(SettingsStore.DEFAULT_THEME)
+            val fontId by ss.fontId.collectAsState(SettingsStore.DEFAULT_FONT)
+            val customJson by ss.customThemeJson.collectAsState(null)
+            var importStatus by remember { mutableStateOf<String?>(null) }
+            // Parse the loaded custom-theme JSON only for its display name; failures degrade quietly.
+            val customName = remember(customJson) {
+                customJson?.takeIf { it.isNotBlank() }?.let {
+                    runCatching { parseThemeJson(it).displayName }.getOrNull()
+                }
+            }
+            val themeOptions = remember {
+                BundledPalettes.map { it.id to it.displayName } + (ThemeIds.CUSTOM to "Custom")
+            }
+            val fontOptions = remember { T1dmFontId.entries.map { it.storageKey to it.displayName } }
+            val importLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.OpenDocument(),
+            ) { uri ->
+                if (uri == null) { importStatus = "Theme import cancelled." } else scope.launch {
+                    importStatus = runCatching {
+                        val text = ctx.contentResolver.openInputStream(uri)?.use { it.readBytes().decodeToString() }
+                            ?: error("could not open the chosen file for reading")
+                        val palette = parseThemeJson(text) // validates + throws a plain-language message
+                        ss.setCustomThemeJson(text)
+                        ss.setThemeId(ThemeIds.CUSTOM)
+                        "Loaded custom theme \"${palette.displayName}\"."
+                    }.getOrElse { it.message ?: "Theme import failed." }
+                }
+            }
             DisplaySettingsScreen(
                 unitSpace = statsState.unitSpace,
                 targetLow = statsState.targetRange.lowMgdl,
                 targetHigh = statsState.targetRange.highMgdl,
                 animationsEnabled = animations,
+                themeOptions = themeOptions,
+                selectedThemeId = themeId,
+                fontOptions = fontOptions,
+                selectedFontId = fontId,
+                customThemeName = customName,
+                importStatus = importStatus,
                 onSetUnitSpace = { container.statsViewModel.setUnitSpace(it) },
                 onSetTargetRange = { lo, hi -> container.statsViewModel.setTargetRange(lo, hi) },
-                onSetAnimationsEnabled = { on -> scope.launch { container.settingsStore.setAnimationsEnabled(on) } },
+                onSetAnimationsEnabled = { on -> scope.launch { ss.setAnimationsEnabled(on) } },
+                onSelectTheme = { id -> scope.launch { ss.setThemeId(id) } },
+                onSelectFont = { id -> scope.launch { ss.setFontId(id) } },
+                onImportCustomTheme = { importStatus = null; importLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
             )
         }
         composable("settings/alarms") {
@@ -452,8 +594,13 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
             )
         }
         composable("settings/curves") {
+            val scope = rememberCoroutineScope()
             val hi = CurveEngine.Presets.carbGammaForGi(100.0)
             val lo = CurveEngine.Presets.carbGammaForGi(0.0)
+            val carbEnc by container.settingsStore.carbBezier.collectAsState(null)
+            val insEnc by container.settingsStore.insulinBezier.collectAsState(null)
+            val carbCurve = remember(carbEnc) { BezierCurve.decode(carbEnc) ?: BezierCurve.default(180.0) }
+            val insulinCurve = remember(insEnc) { BezierCurve.decode(insEnc) ?: BezierCurve.default(300.0) }
             CurveParamsScreen(
                 params = CurveParams(
                     bolusGammaK = CurveEngine.Presets.BOLUS_GAMMA_K,
@@ -466,6 +613,10 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                     carbHighGiK = hi.first, carbHighGiTheta = hi.second,
                     carbLowGiK = lo.first, carbLowGiTheta = lo.second,
                 ),
+                carbCurve = carbCurve,
+                insulinCurve = insulinCurve,
+                onSaveCarbCurve = { c -> scope.launch { container.settingsStore.setCarbBezier(BezierCurve.encode(c)) } },
+                onSaveInsulinCurve = { c -> scope.launch { container.settingsStore.setInsulinBezier(BezierCurve.encode(c)) } },
             )
         }
         composable("settings/power") {
