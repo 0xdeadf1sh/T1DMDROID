@@ -1,53 +1,38 @@
 package com.t1dm.alerts
 
 import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
-import android.os.VibrationEffect
-import android.os.Vibrator
-import android.os.VibratorManager
 import com.t1dm.core.model.AlertBand
 
 /**
- * Phase-1 emission for the deterministic alarm: a basic notification per active alarm plus
- * vibration (PLAN.private.md §3.6-A — rich per-band sound is Phase 7). Two channels separate the
- * urgent tier (heads-up, DND-bypass) from the plain tier; both are silent by design and speak only
- * through the K90 actuators for now.
+ * Android emission for the deterministic alarm (PLAN.private.md §3.6-A + Phase-7 alert polish). Two
+ * severity channels (shared with the model-driven predictive presenter via [AlertChannels]) separate
+ * the urgent tier — heads-up, DND-bypass, a full-screen intent over the lock screen, a per-band
+ * configurable alarm sound, and an insistent K90 vibration primitive — from the plain tier.
+ *
+ * This class only PRESENTS the [AlarmState] the pure engine produces; it consumes state and never
+ * decides when an alarm fires (safety §3.6). The actuator config + the full-screen [PendingIntent]
+ * are injected by `:app` (the module stays free of a settings / Activity dependency); both default to
+ * the silent, no-full-screen Phase-1 behaviour so tests and headless contexts are unaffected.
  *
  * Notifications are addressed by fixed ids so a cleared sub-alarm cancels precisely.
  */
-class AndroidAlarmNotifier(context: Context) : AlarmNotifier {
+class AndroidAlarmNotifier(
+    context: Context,
+    private val actuatorConfig: AlertActuatorConfig = AlertActuatorConfig.SILENT,
+    private val fullScreenIntent: () -> PendingIntent? = { null },
+    private val contentIntent: () -> PendingIntent? = { null },
+) : AlarmNotifier {
 
     private val app = context.applicationContext
-    private val nm = app.getSystemService(NotificationManager::class.java)
-    private val vibrator: Vibrator =
-        (app.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager).defaultVibrator
-
-    init {
-        nm.createNotificationChannels(
-            listOf(
-                NotificationChannel(CH_WARNING, "Glucose alerts", NotificationManager.IMPORTANCE_DEFAULT).apply {
-                    description = "Low / high glucose and lost-signal warnings."
-                    enableVibration(true)
-                    vibrationPattern = WARN_PATTERN
-                    setSound(null, null)
-                },
-                NotificationChannel(CH_CRITICAL, "Urgent glucose alerts", NotificationManager.IMPORTANCE_HIGH).apply {
-                    description = "Urgent-low / urgent-high and escalated lost-signal alarms."
-                    enableVibration(true)
-                    vibrationPattern = CRIT_PATTERN
-                    setBypassDnd(true)
-                    lockscreenVisibility = Notification.VISIBILITY_PUBLIC
-                    setSound(null, null)
-                },
-            ),
-        )
-    }
+    private val nm = app.getSystemService(android.app.NotificationManager::class.java)
+    private val vibrations = VibrationActuator(app)
+    private val channels = AlertChannels.ensure(app, actuatorConfig)
 
     override fun emit(state: AlarmState) {
-        state.threshold?.let { post(ID_THRESHOLD, "glucose", it) } ?: nm.cancel(ID_THRESHOLD)
-        state.signalLoss?.let { post(ID_LOSS, "signal", it) } ?: nm.cancel(ID_LOSS)
+        state.threshold?.let { post(ID_THRESHOLD, "glucose", it) } ?: nm.cancel("glucose", ID_THRESHOLD)
+        state.signalLoss?.let { post(ID_LOSS, "signal", it) } ?: nm.cancel("signal", ID_LOSS)
         state.primary?.let { vibrate(it) }
     }
 
@@ -56,29 +41,38 @@ class AndroidAlarmNotifier(context: Context) : AlarmNotifier {
     }
 
     override fun clear() {
-        nm.cancel(ID_THRESHOLD)
-        nm.cancel(ID_LOSS)
+        nm.cancel("glucose", ID_THRESHOLD)
+        nm.cancel("signal", ID_LOSS)
     }
 
     private fun post(id: Int, tag: String, alarm: ActiveAlarm) {
         if (!nm.areNotificationsEnabled()) return
-        val channel = if (alarm.severity == AlarmSeverity.CRITICAL) CH_CRITICAL else CH_WARNING
-        val notification = Notification.Builder(app, channel)
+        val critical = alarm.severity == AlarmSeverity.CRITICAL
+        val builder = Notification.Builder(app, if (critical) channels.critical else channels.warning)
             .setSmallIcon(android.R.drawable.stat_sys_warning)
             .setContentTitle(titleOf(alarm))
             .setContentText(alarm.message)
             .setStyle(Notification.BigTextStyle().bigText(alarm.message))
             .setCategory(Notification.CATEGORY_ALARM)
             .setVisibility(Notification.VISIBILITY_PUBLIC)
-            .setOngoing(alarm.severity == AlarmSeverity.CRITICAL)
+            .setOngoing(critical)
             .setAutoCancel(false)
-            .build()
-        nm.notify(tag, id, notification)
+            .setContentIntent(contentIntent())
+        if (critical) {
+            // Full-screen over the lock screen for urgent tiers (item 2 / PLAN S11). Android falls
+            // back to a heads-up banner when the screen is on or the special access is ungranted.
+            fullScreenIntent()?.let { builder.setFullScreenIntent(it, true) }
+        }
+        nm.notify(tag, id, builder.build())
     }
 
     private fun vibrate(alarm: ActiveAlarm) {
-        val pattern = if (alarm.severity == AlarmSeverity.CRITICAL) CRIT_PATTERN else WARN_PATTERN
-        vibrator.vibrate(VibrationEffect.createWaveform(pattern, -1))
+        val preset = if (alarm.severity == AlarmSeverity.CRITICAL) {
+            actuatorConfig.criticalVibration
+        } else {
+            actuatorConfig.warningVibration
+        }
+        vibrations.buzz(preset)
     }
 
     private fun titleOf(alarm: ActiveAlarm): String = when (alarm) {
@@ -93,11 +87,7 @@ class AndroidAlarmNotifier(context: Context) : AlarmNotifier {
     }
 
     private companion object {
-        const val CH_WARNING = "t1dm.alerts.glucose"
-        const val CH_CRITICAL = "t1dm.alerts.glucose.urgent"
         const val ID_THRESHOLD = 4101
         const val ID_LOSS = 4102
-        val WARN_PATTERN = longArrayOf(0, 400, 250, 400)
-        val CRIT_PATTERN = longArrayOf(0, 600, 200, 600, 200, 600)
     }
 }

@@ -3,6 +3,7 @@ package com.t1dm.app.service
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.content.Intent
@@ -12,9 +13,27 @@ import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import com.t1dm.alerts.AlarmController
 import com.t1dm.alerts.AlarmEngine
+import com.t1dm.alerts.AlarmSeverity
+import com.t1dm.alerts.AlertActuatorConfig
 import com.t1dm.alerts.AndroidAlarmNotifier
+import com.t1dm.app.MainActivity
 import com.t1dm.app.T1dmApplication
 import com.t1dm.app.di.AppContainer
+import com.t1dm.app.notify.AlertRepeatScheduler
+import com.t1dm.app.notify.BgGlance
+import com.t1dm.app.notify.BgGlanceComputer
+import com.t1dm.app.notify.LiveNotificationPresenter
+import com.t1dm.app.notify.PredictiveAlertPresenter
+import androidx.glance.appwidget.updateAll
+import com.t1dm.app.widget.BgTileWidget
+import com.t1dm.app.widget.LockGlanceWidget
+import com.t1dm.app.widget.PredictionGlanceWidget
+import com.t1dm.core.model.InferenceState
+import com.t1dm.core.model.UnitSpace
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.flow.onStart
 import com.t1dm.cgm.BleAdvertScanner
 import com.t1dm.core.model.BolusPreset
 import com.t1dm.core.model.CgmReading
@@ -61,11 +80,21 @@ class CgmScanService : LifecycleService() {
     private lateinit var container: AppContainer
     private lateinit var alarmEngine: AlarmEngine
     private lateinit var alarmController: AlarmController
+    private var alarmNotifier: AndroidAlarmNotifier? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var started = false
 
     /** The merged reading bus feeding the alarm engine: real active-source readings + injected. */
     private val readingBus = MutableSharedFlow<CgmReading>(replay = 0, extraBufferCapacity = 128)
+
+    // ── Phase-7B glanceable surfaces (all additive; never gate the deterministic alarm) ──────────
+    private lateinit var livePresenter: LiveNotificationPresenter
+    private val predictiveAlerts by lazy {
+        PredictiveAlertPresenter(this, ::fullScreenIntent, ::contentIntent)
+    }
+    private val repeatScheduler by lazy { AlertRepeatScheduler(this) }
+    @Volatile private var alertActuatorCfg = AlertActuatorConfig.SILENT
+    @Volatile private var repeatArmed = false
 
     /** Debug step folding so injected TYPE_STEP_COUNTER cumulatives bucket exactly as the sensor's. */
     private val debugBucketer = StepBucketer()
@@ -89,13 +118,7 @@ class CgmScanService : LifecycleService() {
         }
         startForegroundNotified()
         acquireWakeLock()
-
-        alarmEngine = AlarmEngine(container.alarmConfig)
-        alarmController = AlarmController(
-            engine = alarmEngine,
-            notifier = AndroidAlarmNotifier(this),
-            config = container.alarmConfig,
-        )
+        livePresenter = LiveNotificationPresenter(this, CH_SERVICE, contentIntent())
 
         startPipeline()
         container.serviceRunning.value = true
@@ -112,17 +135,42 @@ class CgmScanService : LifecycleService() {
 
         // 1) Deterministic alarm path — the reading bus + a wall-clock ticker drive the engine.
         //    Confined to a single-threaded `default` slice (§2.3): keeps the notifier's Room-free
-        //    posting off the main thread AND serialises the two collectors driving the engine.
+        //    posting off the main thread AND serialises the two collectors driving the engine. The
+        //    actuator config (per-band sound + K90 vibration) + the full-screen/content intents are
+        //    read once here and handed to the notifier — the alert-polish wiring is ADDITIVE and can
+        //    never change WHEN the engine fires (§3.6-A), only how it is announced.
         val alarmScope = CoroutineScope(
             lifecycleScope.coroutineContext + container.dispatchers.default.limitedParallelism(1),
         )
-        alarmController.launchIn(alarmScope, readingBus)
         alarmScope.launch {
+            val cfg = runCatching { container.alertActuatorConfig() }.getOrDefault(AlertActuatorConfig.SILENT)
+            alertActuatorCfg = cfg
+            alarmEngine = AlarmEngine(container.alarmConfig)
+            val notifier = AndroidAlarmNotifier(
+                context = this@CgmScanService,
+                actuatorConfig = cfg,
+                fullScreenIntent = ::fullScreenIntent,
+                contentIntent = ::contentIntent,
+            )
+            alarmNotifier = notifier
+            alarmController = AlarmController(alarmEngine, notifier, container.alarmConfig)
+            alarmController.launchIn(alarmScope, readingBus)
             alarmController.state.collect { st ->
                 Timber.tag(TAG).i(
                     "ALARM active=%b threshold=%s loss=%s primarySeverity=%s",
                     st.isActive, st.threshold?.band, st.signalLoss?.windowMin, st.primary?.severity,
                 )
+                // Exact-alarm repeat cadence for a persisting CRITICAL alarm (edge-triggered so the
+                // timer is not pushed out on every state emit). Doze-resilient backstop to the
+                // in-process tick; both only RE-announce an already-active alarm.
+                val critical = st.isActive && st.primary?.severity == AlarmSeverity.CRITICAL
+                if (critical && !repeatArmed) {
+                    repeatScheduler.schedule(container.alarmConfig.repeatCadenceMin)
+                    repeatArmed = true
+                } else if (!critical && repeatArmed) {
+                    repeatScheduler.cancel()
+                    repeatArmed = false
+                }
             }
         }
 
@@ -182,6 +230,75 @@ class CgmScanService : LifecycleService() {
         // 8) Watch link (Phase 5): resume an existing pairing + reconnect/backoff, hosted in the FGS
         //    scope. Dormant until the user pairs; the 5-min push above drives the glance cadence.
         container.watchLink.start(lifecycleScope)
+
+        // 9) Phase-7B glanceable surfaces: the always-on BG notification (item 15), the §3.6-gated
+        //    predictive urgent alert (item 2), and the home/lock widgets. All fed by the ONE shared
+        //    BgGlanceComputer so notification, widgets, and watch agree. Off-main (default) — the
+        //    lifecycleScope of a LifecycleService is Main, so compute/DB/updateAll must not run there.
+        //    A ticker forces re-emit so the "updated N min ago" ages between readings.
+        lifecycleScope.launch(container.dispatchers.default) {
+            val ticker = kotlinx.coroutines.flow.flow {
+                while (isActive) { emit(Unit); delay(NOTIF_TICK_MS) }
+            }
+            combine(
+                container.latestReading.onStart { emit(null) },
+                container.inferenceState,
+                container.statsRepository.unitSpace.onStart { emit(UnitSpace.MgDl) },
+                ticker,
+            ) { latest, state, unit, _ ->
+                Triple(latest, state, unit)
+            }.collectLatest { (latest, state, unit) ->
+                runCatching { refreshGlanceSurfaces(latest, state, unit) }
+                    .onFailure { Timber.tag(TAG).w(it, "glance refresh failed (alarm path unaffected)") }
+            }
+        }
+    }
+
+    /**
+     * Recompute the shared glance and push it to the three additive surfaces: the ongoing FGS
+     * notification (updated in place on the same id), the model-PREDICTIVE urgent alert (suppressed
+     * while a deterministic critical breach is already firing, so it can only ever add an EARLIER
+     * warning), and the widgets. The §3.6 gate lives inside [BgGlanceComputer]; here we only render.
+     */
+    private suspend fun refreshGlanceSurfaces(latest: CgmReading?, state: InferenceState, unit: UnitSpace) {
+        val glance: BgGlance = BgGlanceComputer.compute(
+            latest = latest,
+            state = state,
+            thresholds = container.alarmConfig.thresholds,
+            lossMin = container.alarmConfig.lossMin,
+            staleMin = 15,
+            nowMs = System.currentTimeMillis(),
+        )
+        val nm = getSystemService(NotificationManager::class.java)
+        runCatching { nm.notify(NOTIF_ID, livePresenter.build(glance, unit)) }
+
+        val deterministicCriticalActive = ::alarmController.isInitialized &&
+            alarmController.state.value.threshold?.severity == AlarmSeverity.CRITICAL
+        predictiveAlerts.update(glance, alertActuatorCfg, deterministicCriticalActive)
+
+        runCatching {
+            BgTileWidget().updateAll(this)
+            PredictionGlanceWidget().updateAll(this)
+            LockGlanceWidget().updateAll(this)
+        }
+    }
+
+    /** Content tap → open the app. */
+    private fun contentIntent(): PendingIntent {
+        val i = Intent(this, MainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        return PendingIntent.getActivity(
+            this, 1, i, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+    }
+
+    /** Full-screen intent for urgent alarms — launches the app over the lock screen (item 2). */
+    private fun fullScreenIntent(): PendingIntent {
+        val i = Intent(this, MainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        return PendingIntent.getActivity(
+            this, 2, i, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
     }
 
     private fun startScan() {
@@ -230,6 +347,31 @@ class CgmScanService : LifecycleService() {
             ACTION_FORCE_DEGENERATE -> lifecycleScope.launch {
                 container.inferenceController.refreshModels()
                 container.inferenceController.debugPublishDegenerate(System.currentTimeMillis())
+            }
+            // Debug: drive the POSITIVE predictive path HyperOS blocked in 7A — inject a fresh
+            // MEASURED anchor + publish an eligible forecast ramping to a target, so the notification's
+            // "approaching …" line + the full-screen predictive-urgent alert reach their fired state.
+            ACTION_FORCE_PREDICT -> {
+                val start = intent.getIntExtra(EXTRA_START_BG, 120)
+                val end = intent.getIntExtra(EXTRA_END_BG, 55)
+                injectReading(bgMgdl = start, ageMin = 0, warmup = false, trendTenths = -18)
+                lifecycleScope.launch {
+                    container.inferenceController.refreshModels()
+                    container.inferenceController.debugPublishForecast(
+                        System.currentTimeMillis(), start.toDouble(), end.toDouble(),
+                    )
+                }
+            }
+            // Exact-alarm repeat tick: re-announce a still-active CRITICAL alarm and re-arm.
+            ACTION_ALERT_REPEAT -> {
+                val st = if (::alarmController.isInitialized) alarmController.state.value else null
+                if (st != null && st.isActive && st.primary?.severity == AlarmSeverity.CRITICAL) {
+                    alarmNotifier?.emit(st)
+                    repeatScheduler.schedule(container.alarmConfig.repeatCadenceMin)
+                } else {
+                    repeatScheduler.cancel()
+                    repeatArmed = false
+                }
             }
             ACTION_SET_SERVER -> configureServer(
                 url = intent.getStringExtra(EXTRA_URL) ?: "http://127.0.0.1:8443",
@@ -499,6 +641,8 @@ class CgmScanService : LifecycleService() {
         private const val CH_SERVICE = "t1dm.service.cgm"
         private const val NOTIF_ID = 4100
         private const val HEARTBEAT_MS = 60_000L
+        /** How often the always-on notification re-renders so its "updated N ago" age stays honest. */
+        private const val NOTIF_TICK_MS = 30_000L
         const val KV_LAST_ALIVE = "last_alive_ts"
 
         private val DEBUG_SOURCE = CgmSourceId("aidexx:DEBUG")
@@ -508,6 +652,9 @@ class CgmScanService : LifecycleService() {
         const val ACTION_INJECT_STEPS = "com.t1dm.app.INJECT_STEPS"
         const val ACTION_RUN_CYCLE = "com.t1dm.app.RUN_CYCLE"
         const val ACTION_FORCE_DEGENERATE = "com.t1dm.app.FORCE_DEGENERATE"
+        const val ACTION_FORCE_PREDICT = "com.t1dm.app.FORCE_PREDICT"
+        /** Delivered by [AlertRepeatScheduler] via [com.t1dm.app.notify.AlertRepeatReceiver]. */
+        const val ACTION_ALERT_REPEAT = AlertRepeatScheduler.ACTION_ALERT_REPEAT
         const val ACTION_SET_SERVER = "com.t1dm.app.SET_SERVER"
         const val ACTION_SEED_CONTEXT = "com.t1dm.app.SEED_CONTEXT"
         const val ACTION_RUN_GRID_TICK = "com.t1dm.app.RUN_GRID_TICK"
@@ -535,6 +682,8 @@ class CgmScanService : LifecycleService() {
         const val EXTRA_UNITS = "units"
         const val EXTRA_MOOD = "mood"
         const val EXTRA_TEXT = "text"
+        const val EXTRA_START_BG = "startBg"
+        const val EXTRA_END_BG = "endBg"
 
         private const val GRID_MS = 300_000L
         private fun snapToGrid(ts: Long): Long =

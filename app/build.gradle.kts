@@ -104,4 +104,11 @@ dependencies {
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.bundles.compose)
     debugImplementation(libs.androidx.compose.ui.tooling)
+
+    // Home / lock glance widgets (Phase 7B).
+    implementation(libs.androidx.glance.appwidget)
+    implementation(libs.androidx.glance.material3)
+
+    testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.core)
 }

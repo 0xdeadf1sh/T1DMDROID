@@ -1,5 +1,6 @@
 package com.t1dm.core.design
 
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
@@ -23,6 +24,14 @@ private val T1dmDarkColors = darkColorScheme(
     surface = TronPanel,
     onSurface = TronInk,
 )
+
+/**
+ * The app's currently-active color scheme, exposed so non-Compose surfaces (the Glance widgets)
+ * can snapshot the same palette the Activity renders — widget == app theme (PLAN Phase 7B). Until
+ * the three-theme selector lands (§3.4 / Phase 7D) this is the single Tron scheme; 7D repoints this
+ * to the persisted selection and every glanceable surface follows.
+ */
+val T1dmColorScheme: ColorScheme = T1dmDarkColors
 
 @Composable
 fun T1dmTheme(content: @Composable () -> Unit) {

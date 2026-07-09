@@ -23,6 +23,9 @@ okhttp = "4.12.0"
 executorch = "1.3.1"
 junit = "4.13.2"
 androidxJunit = "1.2.1"
+# Glance app-widgets (home + lock glances; PLAN Phase 7 — a pre-approved dep). 1.1.x ships the
+# appwidget + material3 artifacts against the AndroidX Compose runtime it bundles.
+glance = "1.1.1"
 # Native toolchain (consumed by :core:native — see t1dm.android.rust convention plugin):
 ndk = "28.1.13356709"     # r28.x — required for Android 15/16 16 KB page alignment
 uniffi = "0.29"           # host-verified 0.29.5; Rust FFI codegen (see :core:native)
@@ -58,6 +61,8 @@ okhttp-mockwebserver = { group = "com.squareup.okhttp3", name = "mockwebserver",
 # ExecuTorch AAR (Gradle metadata pulls fbjni/soloader/kotlin-stdlib/core-ktx transitively).
 executorch-android = { group = "org.pytorch", name = "executorch-android", version.ref = "executorch" }
 jna = { group = "net.java.dev.jna", name = "jna", version.ref = "jna" }
+androidx-glance-appwidget = { group = "androidx.glance", name = "glance-appwidget", version.ref = "glance" }
+androidx-glance-material3 = { group = "androidx.glance", name = "glance-material3", version.ref = "glance" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-test-junit = { group = "androidx.test.ext", name = "junit", version.ref = "androidxJunit" }
 # Build-logic classpath (Gradle plugin artifacts consumed by the convention plugins):

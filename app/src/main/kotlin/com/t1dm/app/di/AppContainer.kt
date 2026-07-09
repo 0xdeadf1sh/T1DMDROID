@@ -1,7 +1,11 @@
 package com.t1dm.app.di
 
 import android.content.Context
+import android.media.RingtoneManager
+import android.net.Uri
 import com.t1dm.alerts.AlarmConfig
+import com.t1dm.alerts.AlertActuatorConfig
+import com.t1dm.alerts.VibrationPreset
 import com.t1dm.app.cgm.AppCgmRepository
 import com.t1dm.app.inference.RoomBgHistoryProvider
 import com.t1dm.app.sync.RoomPredictionStore
@@ -120,6 +124,13 @@ import kotlinx.coroutines.plus
 private const val KV_WARMUP_HOURS = "inference.warmup_hours"
 private const val WARMUP_HOURS_MAX = 72
 
+/** kv keys for the Phase-7B alert actuator config (Settings alerts sub-section lands in 7C). */
+private const val KV_ALERT_CRIT_SOUND = "alerts.sound.critical"
+private const val KV_ALERT_WARN_SOUND = "alerts.sound.warning"
+private const val KV_ALERT_CRIT_VIB = "alerts.vib.critical"
+private const val KV_ALERT_WARN_VIB = "alerts.vib.warning"
+private const val KV_ALERT_BYPASS_DND = "alerts.bypass_dnd"
+
 /**
  * The manual composition root (PLAN.private.md — "DI/wiring: manual is fine"). Built once in
  * [com.t1dm.app.T1dmApplication] and reached via `(application as T1dmApplication).container`.
@@ -161,6 +172,31 @@ class AppContainer(context: Context) {
 
     /** Conservative boot defaults (§3.6-A); user config replaces these later. */
     val alarmConfig: AlarmConfig = AlarmConfig.DEFAULT
+
+    // ─── Alert actuators (Phase 7B — per-band sound + K90 vibration; kv-backed) ──────────────────
+
+    /**
+     * The per-severity sound + vibration config for the alert notifications (item 2), read from the
+     * kv store so a Settings alerts sub-section (7C) can override it. Defaults: an audible ALARM-usage
+     * tone on the critical tier (so an urgent-low sounds through DND out of the box) and a silent,
+     * vibrate-only warning tier. Mic-recorded custom sounds are DEFERRED (RECORD_AUDIO not requested);
+     * the picker plumbing stores a content Uri under [KV_ALERT_CRIT_SOUND] / [KV_ALERT_WARN_SOUND].
+     */
+    suspend fun alertActuatorConfig(): AlertActuatorConfig {
+        val crit = repository.getKv(KV_ALERT_CRIT_SOUND)?.takeIf { it.isNotBlank() }?.let(Uri::parse)
+            ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+        val warn = repository.getKv(KV_ALERT_WARN_SOUND)?.takeIf { it.isNotBlank() }?.let(Uri::parse)
+        return AlertActuatorConfig(
+            warningSound = warn,
+            criticalSound = crit,
+            warningVibration = vibPreset(repository.getKv(KV_ALERT_WARN_VIB), VibrationPreset.DOUBLE),
+            criticalVibration = vibPreset(repository.getKv(KV_ALERT_CRIT_VIB), VibrationPreset.INSISTENT),
+            bypassDnd = repository.getKv(KV_ALERT_BYPASS_DND) != "0",
+        )
+    }
+
+    private fun vibPreset(raw: String?, fallback: VibrationPreset): VibrationPreset =
+        raw?.let { runCatching { VibrationPreset.valueOf(it) }.getOrNull() } ?: fallback
 
     // ─── Inference runtime (Phase 2) ──────────────────────────────────────────────────────────
 

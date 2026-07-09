@@ -182,6 +182,56 @@ class InferenceController(
     }
 
     /**
+     * Debug-only: publish an ELIGIBLE (OK, fresh) forecast whose median ramps linearly from [startBg]
+     * to [endBg] over the horizon, so the §3.6-gated predictive surfaces (the always-on notification's
+     * "approaching …" line and the full-screen predictive-urgent alert) can be driven to their POSITIVE
+     * state without a live descending sensor trace — the exact path HyperOS blocked in Phase 7A. The
+     * fan is a fixed ±15 mg/dL monotone band so it passes the degeneracy guard's intent by construction.
+     * Not wired in release.
+     */
+    fun debugPublishForecast(nowMs: Long, startBg: Double, endBg: Double) {
+        val id = selectedId ?: loaded.keys.firstOrNull() ?: return
+        val entry = loaded[id] ?: return
+        val cycleTs = snapToGrid(nowMs)
+        val n = 24
+        val median = DoubleArray(n) { i ->
+            startBg + (endBg - startBg) * (i + 1).toDouble() / n
+        }.toList()
+        val bands = ArrayList<Double>(n * N_QUANTILES)
+        for (i in 0 until n) {
+            val m = median[i]
+            for (q in 0 until N_QUANTILES) {
+                val frac = if (N_QUANTILES <= 1) 0.5 else q.toDouble() / (N_QUANTILES - 1)
+                bands.add(m - 15.0 + 30.0 * frac) // ascending-τ, monotone, non-collapsed
+            }
+        }
+        val pred = ModelPrediction(
+            modelId = id,
+            cycleTsMs = cycleTs,
+            anchorTsMs = cycleTs,
+            stepMs = GRID_MS,
+            medianBg = median,
+            bandsMgdl = bands,
+            nQuantiles = N_QUANTILES,
+            lastBg = startBg,
+            status = ForecastStatus.OK,
+            backend = entry.effectiveBackend,
+            precision = entry.precision,
+            selected = true,
+            stale = false,
+            latencyMs = null,
+        )
+        _state.value = _state.value.copy(
+            predictions = listOf(pred),
+            lastCycleTsMs = cycleTs,
+            lastCause = InferenceCause.MANUAL,
+            warmup = null,
+            note = "SYNTHETIC eligible forecast (debug) ${startBg.toInt()}→${endBg.toInt()} mg/dL",
+        )
+        Timber.tag(TAG).w("debugPublishForecast: %s %.0f→%.0f", id, startBg, endBg)
+    }
+
+    /**
      * Immutable snapshot of the SELECTED model's provenance for the `:calc` dose advisor
      * ([com.t1dm.core.model] types only, so `:inference` keeps no `:calc` dependency). [real] is
      * false when the [StubBackend] stood in for a missing/failed `.pte` — the calculator treats a

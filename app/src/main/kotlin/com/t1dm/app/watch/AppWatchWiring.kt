@@ -13,7 +13,6 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import com.t1dm.core.model.AlertThresholds
-import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.InferenceState
 import com.t1dm.data.T1dmRepository
 import com.t1dm.watch.LowPowerProvider
@@ -25,7 +24,6 @@ import com.t1dm.watch.proto.WatchPush
 import com.t1dm.watch.proto.WatchStatus
 import com.t1dm.watch.proto.WatchTrend
 import kotlinx.coroutines.flow.StateFlow
-import kotlin.math.roundToInt
 
 /**
  * `:app` bindings for the `:watch` ports (the removable seam — everything the module needs about the
@@ -54,88 +52,50 @@ class AppWatchGlanceSource(
     override suspend fun currentGlance(nowMs: Long): WatchPush? {
         val src = repository.activeSourceId() ?: return null
         val latest = repository.recentReadings(src, 1).firstOrNull() ?: return null
-        val bg = latest.bgMgdl
-        val ageMs = (nowMs - latest.rxWallMs).coerceAtLeast(0L)
-        val band = bg?.let { thresholds.bandFor(it) }
 
-        val state = inferenceState.value
-        val sel = state.selectedPrediction
-        val eligible = sel?.eligible == true
-        val fcEnd = sel?.takeIf { eligible }?.medianBg?.lastOrNull()?.roundToInt()
-        val horizon = sel?.horizonSteps ?: 0
-
-        val predLow = eligible && sel!!.medianBg.any { it < thresholds.lowMgdl }
-        val predHigh = eligible && sel!!.medianBg.any { it >= thresholds.highMgdl }
-        val signalLoss = ageMs > lossMin * 60_000L
-        val stale = ageMs > staleMin * 60_000L
-        val alarmActive = band == com.t1dm.core.model.AlertBand.URGENT_LOW ||
-            band == com.t1dm.core.model.AlertBand.URGENT_HIGH || signalLoss
+        // Lift the ONE shared computation (BgGlanceComputer) so the watch, the always-on
+        // notification, and the widgets agree by construction (PLAN Phase 7B). The §3.6 gate lives
+        // there; the watch just maps the glance onto its frozen wire record.
+        val g = com.t1dm.app.notify.BgGlanceComputer.compute(
+            latest = latest,
+            state = inferenceState.value,
+            thresholds = thresholds,
+            lossMin = lossMin,
+            staleMin = staleMin,
+            nowMs = nowMs,
+        )
 
         return WatchPush(
-            bgMgdl = bg,
-            trendTenths = latest.trendTenthsPerMin,
-            readingAgeMs = ageMs,
-            alertBand = band,
-            forecastStatus = sel?.status,
-            fcEndMgdl = fcEnd,
-            fcHorizonSteps = horizon,
-            fcTrend = classifyTrend(latest.trendTenthsPerMin, bg, fcEnd),
-            summary = summarize(bg, latest.trendTenthsPerMin, eligible, fcEnd, horizon, sel?.status, state.warmup != null),
+            bgMgdl = g.bgMgdl,
+            trendTenths = g.trendTenths,
+            readingAgeMs = g.readingAgeMs,
+            alertBand = g.band,
+            forecastStatus = g.forecastStatus,
+            fcEndMgdl = g.fcEndMgdl,
+            fcHorizonSteps = g.horizonSteps,
+            fcTrend = g.trend.toWatchTrend(),
+            summary = g.summary,
             status = WatchStatus(
-                stale = stale,
-                signalLoss = signalLoss,
-                warmup = state.warmup != null,
-                predictedLowCrossing = predLow,
-                predictedHighCrossing = predHigh,
-                alarmActive = alarmActive,
-                forecastUnavailable = sel == null || !eligible,
+                stale = g.stale,
+                signalLoss = g.signalLoss,
+                warmup = g.warmup,
+                predictedLowCrossing = g.predictedLowCrossing,
+                predictedHighCrossing = g.predictedHighCrossing,
+                alarmActive = g.alarmActive,
+                // Preserve the frozen wire semantics: "no eligible forecast" (true in warmup too,
+                // where fcEnd is null) — the warmup bit distinguishes the collecting-context case.
+                forecastUnavailable = g.fcEndMgdl == null,
             ),
         )
     }
 
-    private fun classifyTrend(trendTenths: Int?, bg: Int?, fcEnd: Int?): WatchTrend {
-        // Prefer the measured rate; fall back to the forecast delta.
-        val rate = trendTenths?.let { it / 10.0 } ?: run {
-            if (bg != null && fcEnd != null) (fcEnd - bg) / 24.0 else 0.0
-        }
-        return when {
-            rate > 2.0 -> WatchTrend.RISING_FAST
-            rate > 0.5 -> WatchTrend.RISING
-            rate < -2.0 -> WatchTrend.FALLING_FAST
-            rate < -0.5 -> WatchTrend.FALLING
-            else -> WatchTrend.FLAT
-        }
+    private fun com.t1dm.app.notify.GlanceTrend.toWatchTrend(): WatchTrend = when (this) {
+        com.t1dm.app.notify.GlanceTrend.RISING_FAST -> WatchTrend.RISING_FAST
+        com.t1dm.app.notify.GlanceTrend.RISING -> WatchTrend.RISING
+        com.t1dm.app.notify.GlanceTrend.FLAT -> WatchTrend.FLAT
+        com.t1dm.app.notify.GlanceTrend.FALLING -> WatchTrend.FALLING
+        com.t1dm.app.notify.GlanceTrend.FALLING_FAST -> WatchTrend.FALLING_FAST
     }
-
-    private fun summarize(
-        bg: Int?, trendTenths: Int?, eligible: Boolean, fcEnd: Int?, horizonSteps: Int,
-        status: ForecastStatus?, warmup: Boolean,
-    ): String = when {
-        warmup -> "collecting context"
-        eligible && fcEnd != null -> {
-            val mins = horizonSteps * 5
-            val h = if (mins % 60 == 0) "${mins / 60}h" else "${mins}m"
-            val dir = when {
-                bg == null -> "to"
-                fcEnd - bg > 10 -> "rising to"
-                bg - fcEnd > 10 -> "falling to"
-                else -> "steady ~"
-            }
-            "$dir $fcEnd in $h"
-        }
-        status != null && status != ForecastStatus.OK -> "forecast unavailable"
-        bg != null -> {
-            val arrow = when {
-                (trendTenths ?: 0) > 20 -> "↑↑"
-                (trendTenths ?: 0) > 5 -> "↑"
-                (trendTenths ?: 0) < -20 -> "↓↓"
-                (trendTenths ?: 0) < -5 -> "↓"
-                else -> "→"
-            }
-            "$bg $arrow"
-        }
-        else -> "no reading"
-    }.let { if (it.length <= WatchPush.MAX_SUMMARY) it else it.take(WatchPush.MAX_SUMMARY) }
 }
 
 /** Battery-saver / low-power detection (progress.md Q9 — default 20 %, configurable). Uses the OS

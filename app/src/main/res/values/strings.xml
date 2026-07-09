@@ -1,3 +1,6 @@
 <resources>
     <string name="app_name">T1DM</string>
+    <string name="widget_bg_tile_desc">Current glucose and trend</string>
+    <string name="widget_prediction_desc">Glucose forecast glance</string>
+    <string name="widget_lock_desc">Compact glucose glance</string>
 </resources>
