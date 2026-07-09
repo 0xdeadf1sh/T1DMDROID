@@ -8,6 +8,15 @@ import com.t1dm.app.sync.RoomPredictionStore
 import com.t1dm.app.sync.SyncManager
 import com.t1dm.app.sync.SyncStatus
 import com.t1dm.app.sync.SyncStatusStore
+import com.t1dm.app.watch.AndroidLowPowerProvider
+import com.t1dm.app.watch.AppWatchGlanceSource
+import com.t1dm.app.watch.RoomNonceStore
+import com.t1dm.app.watch.RoomWatchPairingStore
+import com.t1dm.watch.WatchLink
+import com.t1dm.watch.WatchLinkConfig
+import com.t1dm.watch.WatchSecurityState
+import com.t1dm.watch.ble.AndroidWatchCentral
+import com.t1dm.app.watch.UniffiWatchSessionFactory
 import com.t1dm.cgm.AidexXPlugin
 import com.t1dm.cgm.AidexXSourceRegistry
 import com.t1dm.core.common.DefaultT1dmDispatchers
@@ -600,4 +609,40 @@ class AppContainer(context: Context) {
 
     /** Set once [com.t1dm.app.service.CgmScanService] is up, so the UI can reflect service state. */
     val serviceRunning = MutableStateFlow(false)
+
+    // ─── Watch link (Phase 5) — a CLEAN REMOVABLE SEAM ────────────────────────────────────────
+    // The optional ESP32-C3 accessory. Everything the :watch module needs is bound here from the
+    // rest of the app; deleting this block + AppWatchWiring + the module excises the whole feature.
+    // The crypto is the AUTHORITATIVE uniffi-backed WatchSession (t1dm-core: X25519 → HKDF-SHA256 →
+    // per-direction AES-128-GCM, deterministic SAS, windowed+burned nonce; docs/WATCH_BLE.md). The
+    // :watch module's loopback session is now a host-test double only.
+
+    val watchLink: WatchLink by lazy {
+        WatchLink(
+            centralProvider = { AndroidWatchCentral(appContext, dispatchers) },
+            sessionFactory = UniffiWatchSessionFactory(),
+            nonceStore = RoomNonceStore(repository),
+            pairingStore = RoomWatchPairingStore(repository),
+            glanceSource = AppWatchGlanceSource(
+                repository = repository,
+                inferenceState = inferenceState,
+                thresholds = alarmConfig.thresholds,
+                lossMin = alarmConfig.lossMin,
+            ),
+            lowPower = AndroidLowPowerProvider(appContext),
+            dispatchers = dispatchers,
+            config = WatchLinkConfig(enabled = true, autoConnect = true),
+        )
+    }
+
+    /** The Security/Crypto panel's read model (session state, key fingerprint, nonce counter, SAS). */
+    val watchSecurity: StateFlow<WatchSecurityState> get() = watchLink.state
+
+    fun pairWatch() = watchLink.beginPairing()
+    fun confirmWatchSas() = watchLink.confirmSas()
+    fun rotateWatchKeys() = watchLink.rotate()
+    fun unpairWatch() = watchLink.unpair()
+
+    /** The FGS 5-min grid tick calls this to seal + push one glance (suspends in low-power mode). */
+    suspend fun pushToWatch(nowMs: Long) = watchLink.pushNow(nowMs)
 }

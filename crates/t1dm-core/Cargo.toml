@@ -22,3 +22,11 @@ thiserror = "2"
 # the app never touches the `.pt` pickle.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Watch link crypto (PLAN §3, watch-link): X25519 ECDH → HKDF-SHA256 → per-direction
+# AES-128-GCM, with a deterministic SAS. Well-reviewed RustCrypto/dalek primitives.
+x25519-dalek = { version = "2", default-features = false, features = ["static_secrets", "zeroize"] }
+hkdf = "0.12"
+sha2 = "0.10"
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+zeroize = "1"

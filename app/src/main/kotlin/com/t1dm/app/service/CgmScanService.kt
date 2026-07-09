@@ -167,12 +167,21 @@ class CgmScanService : LifecycleService() {
                 // (opportunistic; the periodic drain + WorkManager are the fallbacks).
                 runCatching { container.syncManager.drainNow() }
                     .onFailure { Timber.tag(TAG).w(it, "post-tick drain failed (independent of inference)") }
+                // Watch push (Phase 5): seal + write one glance to the ESP32-C3 on the same 5-min
+                // boundary. A SIBLING of inference/sync — a watch failure never touches the alarm
+                // path, and it self-suspends in low-power mode. Off-main inside pushNow.
+                runCatching { container.pushToWatch(System.currentTimeMillis()) }
+                    .onFailure { Timber.tag(TAG).w(it, "watch push failed (independent of alarm/inference)") }
             }
         }
 
         // 7) Server sync (Phase 3): the durable-outbox drainer + WS stream + catch-up, hosted in the
         //    FGS scope. A SIBLING of the alarm + inference paths — a sync failure never touches them.
         container.syncManager.launch(lifecycleScope)
+
+        // 8) Watch link (Phase 5): resume an existing pairing + reconnect/backoff, hosted in the FGS
+        //    scope. Dormant until the user pairs; the 5-min push above drives the glance cadence.
+        container.watchLink.start(lifecycleScope)
     }
 
     private fun startScan() {
@@ -252,6 +261,15 @@ class CgmScanService : LifecycleService() {
             }
             ACTION_LOG_NOTE -> lifecycleScope.launch {
                 container.saveNote(intent.getStringExtra(EXTRA_TEXT) ?: "verify note")
+            }
+            // ── Phase-5 watch verification hooks (drive the REAL WatchLink against the emulator) ──
+            ACTION_WATCH_PAIR -> { container.pairWatch(); Timber.tag(TAG).i("WATCH_PAIR") }
+            ACTION_WATCH_CONFIRM -> { container.confirmWatchSas(); Timber.tag(TAG).i("WATCH_CONFIRM") }
+            ACTION_WATCH_ROTATE -> { container.rotateWatchKeys(); Timber.tag(TAG).i("WATCH_ROTATE") }
+            ACTION_WATCH_UNPAIR -> { container.unpairWatch(); Timber.tag(TAG).i("WATCH_UNPAIR") }
+            ACTION_WATCH_PUSH -> lifecycleScope.launch {
+                container.pushToWatch(System.currentTimeMillis())
+                Timber.tag(TAG).i("WATCH_PUSH state=%s", container.watchSecurity.value.phase)
             }
         }
         return START_STICKY
@@ -498,6 +516,11 @@ class CgmScanService : LifecycleService() {
         const val ACTION_LOG_BOLUS = "com.t1dm.app.LOG_BOLUS"
         const val ACTION_LOG_MOOD = "com.t1dm.app.LOG_MOOD"
         const val ACTION_LOG_NOTE = "com.t1dm.app.LOG_NOTE"
+        const val ACTION_WATCH_PAIR = "com.t1dm.app.WATCH_PAIR"
+        const val ACTION_WATCH_CONFIRM = "com.t1dm.app.WATCH_CONFIRM"
+        const val ACTION_WATCH_ROTATE = "com.t1dm.app.WATCH_ROTATE"
+        const val ACTION_WATCH_UNPAIR = "com.t1dm.app.WATCH_UNPAIR"
+        const val ACTION_WATCH_PUSH = "com.t1dm.app.WATCH_PUSH"
         const val EXTRA_BG = "bg"
         const val EXTRA_AGE_MIN = "ageMin"
         const val EXTRA_WARMUP = "warmup"

@@ -40,11 +40,36 @@ import com.t1dm.feature.journal.JournalScreen
 import com.t1dm.feature.meals.MealsScreen
 import com.t1dm.feature.models.ModelsScreen
 import com.t1dm.feature.network.NetworkScreen
+import com.t1dm.feature.security.SecurityPanelState
 import com.t1dm.feature.security.SecurityScreen
 import com.t1dm.feature.settings.CgmSettingsScreen
 import com.t1dm.feature.settings.SettingsScreen
 import com.t1dm.feature.settings.WarmupSettingsScreen
+import com.t1dm.feature.settings.WatchSettingsScreen
+import com.t1dm.watch.WatchSecurityState
 import com.t1dm.feature.stats.StatsScreen
+
+/** Map the `:watch` security state onto the feature-local panel model (keeps `:feature:security`
+ *  free of a `:watch` dependency — the removable seam). */
+private fun WatchSecurityState.toPanelState() = SecurityPanelState(
+    phase = phase.name.lowercase().replace('_', ' '),
+    deviceName = deviceName,
+    sessionState = sessionState.name.lowercase(),
+    epoch = epoch,
+    keyFingerprint = keyFingerprint,
+    sendSeq = sendSeq,
+    recvSeq = recvSeq,
+    sas = sas?.digits,
+    sasWords = sas?.words,
+    lastPush = lastPushMs?.let { "${(System.currentTimeMillis() - it) / 1000}s ago" },
+    lastAckSeq = lastAckSeq,
+    lowPowerSuspended = lowPowerSuspended,
+    lastError = lastError,
+    canPair = canPair,
+    canConfirmSas = canConfirmSas,
+    canRotate = canRotate,
+    canReset = canReset,
+)
 
 private data class Destination(val route: String, val label: String)
 
@@ -206,12 +231,30 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 onLogDose = { type, units -> scope.launch { container.insulinController.logDose(type, units) } },
             )
         }
-        composable("security") { SecurityScreen() }
+        composable("security") {
+            val watch by container.watchSecurity.collectAsState()
+            SecurityScreen(
+                state = watch.toPanelState(),
+                onPair = container::pairWatch,
+                onConfirmSas = container::confirmWatchSas,
+                onRotate = container::rotateWatchKeys,
+                onUnpair = container::unpairWatch,
+            )
+        }
         composable("settings") {
             SettingsScreen(
                 onOpenCgm = { navController.navigate("settings/cgm") },
                 onOpenServer = { navController.navigate("settings/server") },
                 onOpenWarmup = { navController.navigate("settings/warmup") },
+                onOpenWatch = { navController.navigate("settings/watch") },
+            )
+        }
+        composable("settings/watch") {
+            val watch by container.watchSecurity.collectAsState()
+            WatchSettingsScreen(
+                linkStatus = watch.phase.name.lowercase().replace('_', ' '),
+                deviceName = watch.deviceName,
+                onOpenSecurity = { navController.navigate("security") },
             )
         }
         composable("settings/warmup") {

@@ -21,6 +21,11 @@ pub use preproc::*;
 mod curve;
 pub use curve::*;
 
+/// Watch-link cryptography (X25519 ECDH → HKDF-SHA256 → per-direction AES-128-GCM with a
+/// windowed nonce + deterministic SAS). Phase 5, PLAN.private.md §3, [[watch-link]].
+mod watch;
+pub use watch::*;
+
 // ── Kovatchev risk transform constants (INFERENCE.md §5, §11) ──────────────────────
 const KOV_SCALE: f64 = 1.509;
 const KOV_POWER: f64 = 1.084;

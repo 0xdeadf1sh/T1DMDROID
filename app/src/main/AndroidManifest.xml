@@ -3,10 +3,13 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
 
-    <!-- Passive advertisement scan only: no location, no BLUETOOTH_CONNECT (cgm-ingestion). -->
+    <!-- CGM: passive advertisement scan only, no location. The watch (Phase 5) additionally needs
+         a CONNECTED GATT session — BLUETOOTH_CONNECT, declared by the :watch module and merged here
+         (watch-link.md / build-gotchas.md). The scan permission is shared with the CGM path. -->
     <uses-permission
         android:name="android.permission.BLUETOOTH_SCAN"
         android:usesPermissionFlags="neverForLocation" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
 
     <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />

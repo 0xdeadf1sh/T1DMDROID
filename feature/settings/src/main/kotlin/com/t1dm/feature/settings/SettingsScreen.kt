@@ -20,13 +20,14 @@ fun SettingsScreen(
     onOpenCgm: () -> Unit = {},
     onOpenServer: () -> Unit = {},
     onOpenWarmup: () -> Unit = {},
+    onOpenWatch: () -> Unit = {},
 ) {
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         Text("Settings", style = MaterialTheme.typography.headlineSmall)
         SettingRow("CGM", enabled = true, onClick = onOpenCgm)
         SettingRow("Server", enabled = true, onClick = onOpenServer)
         SettingRow("Warmup", enabled = true, onClick = onOpenWarmup)
-        SettingRow("Watch", enabled = false)
+        SettingRow("Watch", enabled = true, onClick = onOpenWatch)
         SettingRow("Units / theme / alerts", enabled = false)
     }
 }
