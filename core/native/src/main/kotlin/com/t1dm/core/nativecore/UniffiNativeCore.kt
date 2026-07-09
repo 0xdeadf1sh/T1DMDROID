@@ -1,9 +1,14 @@
 package com.t1dm.core.nativecore
 
 import com.t1dm.core.common.NativeCore
+import com.t1dm.core.model.AdvancedStats
+import com.t1dm.core.model.AgpBin
 import com.t1dm.core.model.BasalDoseSpec
 import com.t1dm.core.model.BasalSchedule
 import com.t1dm.core.model.BuiltContext
+import com.t1dm.core.model.MoodSummary
+import com.t1dm.core.model.StatSample
+import com.t1dm.core.model.SubBands
 import com.t1dm.core.model.ChannelStat
 import com.t1dm.core.model.CurveEvent
 import com.t1dm.core.model.CurveKind
@@ -13,6 +18,7 @@ import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.ModelDescriptor
 import com.t1dm.core.model.PrevGlucose
 import uniffi.t1dm_core.CoreException
+import uniffi.t1dm_core.advancedStats as uniffiAdvancedStats
 import uniffi.t1dm_core.advertCrc32 as uniffiAdvertCrc32
 import uniffi.t1dm_core.assembleDecode as uniffiAssembleDecode
 import uniffi.t1dm_core.bateman as uniffiBateman
@@ -31,6 +37,8 @@ import uniffi.t1dm_core.normalizeSample as uniffiNormalizeSample
 import uniffi.t1dm_core.onBoard as uniffiOnBoard
 import uniffi.t1dm_core.parseDescriptor as uniffiParseDescriptor
 import uniffi.t1dm_core.roundtrip as uniffiRoundtrip
+import uniffi.t1dm_core.AdvancedStats as UniffiAdvancedStats
+import uniffi.t1dm_core.AgpBin as UniffiAgpBin
 import uniffi.t1dm_core.BasalDoseSpec as UniffiBasalDoseSpec
 import uniffi.t1dm_core.BasalSchedule as UniffiBasalSchedule
 import uniffi.t1dm_core.BuiltContext as UniffiBuiltContext
@@ -41,6 +49,9 @@ import uniffi.t1dm_core.DecodedAdvert as UniffiDecodedAdvert
 import uniffi.t1dm_core.Forecast as UniffiForecast
 import uniffi.t1dm_core.ForecastStatus as UniffiForecastStatus
 import uniffi.t1dm_core.ModelDescriptor as UniffiModelDescriptor
+import uniffi.t1dm_core.MoodSummary as UniffiMoodSummary
+import uniffi.t1dm_core.StatSample as UniffiStatSample
+import uniffi.t1dm_core.SubBands as UniffiSubBands
 
 /**
  * The real [NativeCore], backed by the uniffi-generated binding into the Rust `t1dm-core`
@@ -134,7 +145,69 @@ class UniffiNativeCore : NativeCore {
 
     override fun extendBasal(schedule: BasalSchedule, fromMs: Long, toMs: Long): List<CurveEvent> =
         uniffiExtendBasal(schedule.toUniffi(), fromMs, toMs).map { it.toModel() }
+
+    // ── Advanced stats (Phase 6) ────────────────────────────────────────────────────
+
+    /**
+     * Rust `advanced_stats` throws only on a bad range / bin count (both caller-controlled and
+     * validated upstream); the empty/all-invalid series returns `AdvancedStats::empty()` as `Ok`.
+     * We nonetheless map any `CoreException` to the model's fail-closed [AdvancedStats.EMPTY] so a
+     * malformed argument can never crash the stats screen — the safety posture is fail-closed.
+     */
+    override fun advancedStats(
+        samples: List<StatSample>,
+        targetLow: Int,
+        targetHigh: Int,
+        agpBins: Int,
+    ): AdvancedStats =
+        try {
+            uniffiAdvancedStats(
+                samples.map { it.toUniffi() },
+                targetLow.toUShort(),
+                targetHigh.toUShort(),
+                agpBins.toUInt(),
+            ).toModel()
+        } catch (_: CoreException) {
+            AdvancedStats.EMPTY
+        }
 }
+
+private fun StatSample.toUniffi(): UniffiStatSample = UniffiStatSample(
+    tsMs = tsMs,
+    bgMgdl = bgMgdl,
+    carbsG = carbsG,
+    bolusU = bolusU,
+    basalU = basalU,
+    steps = steps,
+    mood = mood,
+)
+
+private fun UniffiSubBands.toModel(): SubBands = SubBands(
+    veryLow = veryLow, low = low, inRange = inRange, high = high, veryHigh = veryHigh,
+)
+
+private fun UniffiAgpBin.toModel(): AgpBin = AgpBin(
+    minuteOfDay = minuteOfDay.toInt(),
+    p5 = p5, p25 = p25, p50 = p50, p75 = p75, p95 = p95,
+)
+
+private fun UniffiMoodSummary.toModel(): MoodSummary = MoodSummary(
+    mean = mean, n = n.toInt(), min = min, max = max,
+)
+
+private fun UniffiAdvancedStats.toModel(): AdvancedStats = AdvancedStats(
+    nSamples = nSamples.toInt(),
+    spanMs = spanMs,
+    tir = tir, tbr = tbr, tar = tar,
+    subBands = subBands.toModel(),
+    lbgi = lbgi, hbgi = hbgi, mage = mage,
+    meanBg = meanBg, sd = sd, cv = cv, gmi = gmi,
+    totalCarbs = totalCarbs, totalBolus = totalBolus, totalBasal = totalBasal,
+    meanDailyCarbs = meanDailyCarbs, tdd = tdd, bolusBasalRatio = bolusBasalRatio,
+    meanSteps = meanSteps,
+    mood = mood?.toModel(),
+    agp = agp.map { it.toModel() },
+)
 
 private fun UniffiCurveKind.toModel(): CurveKind = when (this) {
     UniffiCurveKind.CARB -> CurveKind.CARB

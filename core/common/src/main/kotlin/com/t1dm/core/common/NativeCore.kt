@@ -1,5 +1,6 @@
 package com.t1dm.core.common
 
+import com.t1dm.core.model.AdvancedStats
 import com.t1dm.core.model.BasalSchedule
 import com.t1dm.core.model.BuiltContext
 import com.t1dm.core.model.CurveEvent
@@ -8,6 +9,7 @@ import com.t1dm.core.model.DecodedAdvert
 import com.t1dm.core.model.Forecast
 import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.ModelDescriptor
+import com.t1dm.core.model.StatSample
 
 /**
  * Kotlin-facing surface of the Rust `t1dm-core` crate. :app (and every consumer) depends on
@@ -97,4 +99,18 @@ interface NativeCore {
     /** Expand a daily-repeating [schedule] into the Bateman events whose action overlaps
      *  `[fromMs, toMs)` (the auto-extended near-flat basal background). */
     fun extendBasal(schedule: BasalSchedule, fromMs: Long, toMs: Long): List<CurveEvent>
+
+    // ── Advanced stats (Phase 6, PLAN §"Phase 6 — Stats"; t1dm-core::stats) ─────────
+
+    /** The full advanced-stats block (TIR/TBR/TAR + sub-bands, LBGI/HBGI, MAGE, the shared
+     *  server-parity block, per-channel totals, and the AGP percentile ribbon) over [samples]
+     *  vs the `[targetLow, targetHigh]` mg/dL range, binned to [agpBins] time-of-day bins
+     *  (must divide 1440). Fail-closed: an empty/all-invalid series yields
+     *  [AdvancedStats.EMPTY]; a bad range/bin argument yields it too rather than throwing. */
+    fun advancedStats(
+        samples: List<StatSample>,
+        targetLow: Int,
+        targetHigh: Int,
+        agpBins: Int,
+    ): AdvancedStats
 }

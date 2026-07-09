@@ -75,6 +75,10 @@ interface SampleDao {
     @Query("SELECT * FROM sample WHERE ts > :cursor ORDER BY ts LIMIT :limit")
     suspend fun page(cursor: Long, limit: Int): List<SampleEntity>
 
+    /** One-shot windowed read (oldest-first) for the stats recompute (PLAN Phase 6). */
+    @Query("SELECT * FROM sample WHERE ts BETWEEN :fromMs AND :toMs ORDER BY ts")
+    suspend fun rangeList(fromMs: Long, toMs: Long): List<SampleEntity>
+
     /** The most recent non-null mood, for the journal picker's "current mood" read (Phase 4). */
     @Query("SELECT mood FROM sample WHERE mood IS NOT NULL ORDER BY ts DESC LIMIT 1")
     fun observeLatestMood(): Flow<Int?>

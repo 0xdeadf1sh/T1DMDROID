@@ -182,6 +182,10 @@ class T1dmRepository(
 
     suspend fun sampleAt(ts: Long): SampleEntity? = withContext(io) { samples.byTs(ts) }
 
+    /** Windowed wide-sample read for the stats recompute (PLAN Phase 6); oldest-first. */
+    suspend fun samplesInRange(fromMs: Long, toMs: Long): List<SampleEntity> =
+        withContext(io) { samples.rangeList(fromMs, toMs) }
+
     /** Steps arrive already bucketed on the 5-min grid by :sensors (PLAN §3.5). */
     suspend fun recordSteps(gridTs: Long, tzOffsetMin: Int, steps: Int, nowMs: Long) =
         mergeSample(gridTs, tzOffsetMin, nowMs) { it.copy(steps = steps) }

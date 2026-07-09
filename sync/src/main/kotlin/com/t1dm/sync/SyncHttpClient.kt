@@ -51,7 +51,9 @@ interface SyncHttpClient {
     suspend fun postNote(body: NoteWriteDto): IdAck
     suspend fun postAlert(body: AlertWriteDto): IdAck
     suspend fun getSeries(from: Long?, to: Long?, cursor: Long?, limit: Int?, fields: String?): SeriesPageDto
-    suspend fun getStats(window: String): StatsDto
+    /** Read the server's daily-cached stats block for [window] (`7d|30d|90d`). [refresh] forces the
+     *  server to recompute fresh (`?refresh=1`, PLAN §5) rather than serve the ≤24 h cache. */
+    suspend fun getStats(window: String, refresh: Boolean = false): StatsDto
     /** Photo multipart is stubbed this phase (PLAN.private.md Phase 3). */
     suspend fun postPhotoStub(): Nothing
 }
@@ -142,8 +144,8 @@ class OkHttpSyncClient(
         return get("/v1/series" + if (q.isEmpty()) "" else "?$q")
     }
 
-    override suspend fun getStats(window: String): StatsDto =
-        get<StatsEnvelope>("/v1/stats?window=$window").stats
+    override suspend fun getStats(window: String, refresh: Boolean): StatsDto =
+        get<StatsEnvelope>("/v1/stats?window=$window" + if (refresh) "&refresh=1" else "").stats
 
     override suspend fun postPhotoStub(): Nothing =
         TODO("photo multipart path is stubbed for Phase 3 (PLAN.private.md)")

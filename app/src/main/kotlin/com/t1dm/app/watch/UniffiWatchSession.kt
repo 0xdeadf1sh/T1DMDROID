@@ -95,8 +95,10 @@ class UniffiWatchSession internal constructor(
         state = state,
         epoch = epoch,
         keyFingerprint = runCatching { fingerprint(rust.publicKey()) }.getOrNull(),
-        sendSeq = lastSendSeq,
-        recvSeq = lastRecvSeq,
+        // The authoritative counters live in Rust and survive a restore (send_seq resumes at the burned
+        // ceiling, not 0); the local vars only cover the pre-LIVE handshake, where the getters Err.
+        sendSeq = runCatching { rust.sendSeq().toLong() }.getOrDefault(lastSendSeq),
+        recvSeq = runCatching { rust.recvMin().toLong() }.getOrDefault(lastRecvSeq),
         sas = if (state == WatchSessionState.AWAIT_SAS) runCatching { sas() }.getOrNull() else null,
     )
 

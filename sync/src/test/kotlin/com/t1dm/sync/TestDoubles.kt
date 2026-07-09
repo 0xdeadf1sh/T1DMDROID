@@ -95,7 +95,7 @@ class RecordingHttpClient(
     override suspend fun postNote(body: NoteWriteDto) = nope()
     override suspend fun postAlert(body: AlertWriteDto) = nope()
     override suspend fun getSeries(from: Long?, to: Long?, cursor: Long?, limit: Int?, fields: String?) = nope()
-    override suspend fun getStats(window: String) = nope()
+    override suspend fun getStats(window: String, refresh: Boolean) = nope()
     override suspend fun postPhotoStub(): Nothing = nope()
 }
 

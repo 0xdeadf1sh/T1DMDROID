@@ -1,8 +1,10 @@
 package com.t1dm.core.nativecore
 
 import com.t1dm.core.common.NativeCore
+import com.t1dm.core.model.AdvancedStats
 import com.t1dm.core.model.BasalSchedule
 import com.t1dm.core.model.BuiltContext
+import com.t1dm.core.model.StatSample
 import com.t1dm.core.model.CurveEvent
 import com.t1dm.core.model.CurveKind
 import com.t1dm.core.model.DecodedAdvert
@@ -184,6 +186,17 @@ class StubNativeCore : NativeCore {
         out.sortBy { it.startMs }
         return out
     }
+
+    // ── Advanced stats (Phase 6) ────────────────────────────────────────────────────
+    // The stats math lives entirely in Rust (golden-gated); the host stub cannot reproduce it
+    // without the .so, so it yields the fail-closed empty block. The real path is [UniffiNativeCore];
+    // JVM unit tests that need real numbers drive the Rust crate directly (cargo) or a canned fake.
+    override fun advancedStats(
+        samples: List<StatSample>,
+        targetLow: Int,
+        targetHigh: Int,
+        agpBins: Int,
+    ): AdvancedStats = AdvancedStats.EMPTY
 
     private companion object {
         const val DT_MIN = 5.0

@@ -320,6 +320,25 @@ impl WatchSession {
         Ok(matches!(self.lock()?.phase, Phase::Established(_)))
     }
 
+    /// The authoritative next send seq to emit (`send_next`). After `restore` this is the
+    /// burned ceiling, so the phone panel surfaces the resumed counter, not a local 0.
+    /// `Err` while still in handshake.
+    pub fn send_seq(&self) -> Result<u64, CoreError> {
+        match &self.lock()?.phase {
+            Phase::Established(e) => Ok(e.send_next),
+            Phase::Handshake => Err(dec("no session: still in handshake")),
+        }
+    }
+
+    /// The authoritative receive replay floor (`recv_min`): the smallest seq still
+    /// acceptable to `open`. `Err` while still in handshake.
+    pub fn recv_min(&self) -> Result<u64, CoreError> {
+        match &self.lock()?.phase {
+            Phase::Established(e) => Ok(e.recv_min),
+            Phase::Handshake => Err(dec("no session: still in handshake")),
+        }
+    }
+
     /// Accept the peer's public key: run ECDH, derive the epoch-0 root + both direction
     /// keys, and arm the counters. Idempotent-unsafe: re-accepting resets the session to
     /// a fresh epoch-0 (use `rotate` to advance an established link).
@@ -790,6 +809,40 @@ mod tests {
         assert_eq!(b2.open(f2, vec![]).unwrap(), b"n");
     }
 
+    // ── resume surfaces the real counters, not a local 0 ─────────────────────────────
+    #[test]
+    fn send_seq_recv_min_resume_after_restore() {
+        let a = WatchSession::new();
+        let b = WatchSession::new();
+        a.accept_peer(b.public_key().unwrap()).unwrap();
+        b.accept_peer(a.public_key().unwrap()).unwrap();
+        // Fresh session: counters start at 0; handshake-phase peers Err before establish.
+        assert_eq!(a.send_seq().unwrap(), 0);
+        assert_eq!(a.recv_min().unwrap(), 0);
+        assert!(WatchSession::new().send_seq().is_err());
+        assert!(WatchSession::new().recv_min().is_err());
+
+        // Emit a few frames so send_next advances; b's recv_min tracks them.
+        for _ in 0..3 {
+            let f = a.seal(b"x".to_vec(), vec![]).unwrap();
+            b.open(f, vec![]).unwrap();
+        }
+        assert_eq!(a.send_seq().unwrap(), 3);
+        assert_eq!(b.recv_min().unwrap(), 3);
+
+        // Checkpoint → the persisted ceiling is send_next + NONCE_WINDOW.
+        let blob = a.export_state().unwrap();
+        drop(a);
+        let a2 = WatchSession::restore(blob).unwrap();
+        // Resume must surface the BURNED ceiling (3 + NONCE_WINDOW), never a local 0.
+        assert_eq!(a2.send_seq().unwrap(), 3 + NONCE_WINDOW, "resumed send seq == burned ceiling");
+
+        // recv_min likewise survives a restore of the receiving side.
+        let bblob = b.export_state().unwrap();
+        let b2 = WatchSession::restore(bblob).unwrap();
+        assert_eq!(b2.recv_min().unwrap(), 3, "resumed recv floor persists");
+    }
+
     #[test]
     fn hostile_inputs_never_panic() {
         let s = WatchSession::new();
@@ -805,6 +858,8 @@ mod tests {
         assert!(s.rotate().is_err());
         assert!(s.export_state().is_err());
         assert!(s.epoch().is_err());
+        assert!(s.send_seq().is_err());
+        assert!(s.recv_min().is_err());
         // Malformed restore blobs.
         assert!(WatchSession::restore(vec![]).is_err());
         assert!(WatchSession::restore(vec![0u8; 200]).is_err());

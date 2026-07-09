@@ -26,6 +26,11 @@ pub use curve::*;
 mod watch;
 pub use watch::*;
 
+/// Advanced glycemic statistics (TIR/TBR/TAR, LBGI/HBGI, MAGE, AGP percentile bands,
+/// per-channel) vs a user-configurable target range. Phase 6, PLAN.private.md §"Phase 6".
+mod stats;
+pub use stats::*;
+
 // ── Kovatchev risk transform constants (INFERENCE.md §5, §11) ──────────────────────
 const KOV_SCALE: f64 = 1.509;
 const KOV_POWER: f64 = 1.084;

@@ -49,6 +49,7 @@ import com.t1dm.calc.SelectedModelHandle
 import com.t1dm.calc.SelectedModelProvider
 import com.t1dm.inference.backend.GraphInput
 import com.t1dm.core.nativecore.UniffiNativeCore
+import com.t1dm.app.stats.AppStatsSource
 import com.t1dm.data.T1dmRepository
 import com.t1dm.data.curve.ChannelBuilder
 import com.t1dm.data.curve.CurveEngine
@@ -57,6 +58,8 @@ import com.t1dm.data.curve.MealCurveResolver
 import com.t1dm.data.curve.RoomDoseStore
 import com.t1dm.data.meals.InsulinController
 import com.t1dm.data.meals.MealsController
+import com.t1dm.data.stats.StatsRepository
+import com.t1dm.feature.stats.StatsViewModel
 import com.t1dm.core.model.Food
 import com.t1dm.core.model.InsulinType
 import com.t1dm.core.model.SavedMeal
@@ -610,6 +613,19 @@ class AppContainer(context: Context) {
     /** Set once [com.t1dm.app.service.CgmScanService] is up, so the UI can reflect service state. */
     val serviceRunning = MutableStateFlow(false)
 
+    // ─── Stats (Phase 6) ──────────────────────────────────────────────────────────────────────
+    // The server cached block (O(1) fast path) ⊕ the local Rust `advancedStats` recompute over the
+    // wide `sample` series. Settings (target range, unit space) are kv-backed in :data; the server
+    // fetch is the :sync client; the two are unioned by the feature VM off the main thread.
+
+    /** kv-backed target range + unit space, plus the off-main local recompute (Rust). */
+    val statsRepository: StatsRepository by lazy { StatsRepository(repository, nativeCore, dispatchers) }
+
+    private val statsSource by lazy { AppStatsSource(statsRepository, syncHttpClient, nativeCore, dispatchers) }
+
+    /** The hoisted Stats state holder; app-lifetime so the window/composite survive Activity churn. */
+    val statsViewModel: StatsViewModel by lazy { StatsViewModel(statsSource, appScope) }
+
     // ─── Watch link (Phase 5) — a CLEAN REMOVABLE SEAM ────────────────────────────────────────
     // The optional ESP32-C3 accessory. Everything the :watch module needs is bound here from the
     // rest of the app; deleting this block + AppWatchWiring + the module excises the whole feature.
@@ -622,7 +638,7 @@ class AppContainer(context: Context) {
             centralProvider = { AndroidWatchCentral(appContext, dispatchers) },
             sessionFactory = UniffiWatchSessionFactory(),
             nonceStore = RoomNonceStore(repository),
-            pairingStore = RoomWatchPairingStore(repository),
+            pairingStore = RoomWatchPairingStore(repository, appContext),
             glanceSource = AppWatchGlanceSource(
                 repository = repository,
                 inferenceState = inferenceState,

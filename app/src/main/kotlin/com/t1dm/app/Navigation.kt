@@ -143,7 +143,17 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 warmup = inference.warmup,
             )
         }
-        composable("stats") { StatsScreen() }
+        composable("stats") {
+            val statsState by container.statsViewModel.state.collectAsState()
+            StatsScreen(
+                state = statsState,
+                kovatchevF = container.nativeCore::kovatchevF,
+                onSelectWindow = container.statsViewModel::selectWindow,
+                onSetUnitSpace = container.statsViewModel::setUnitSpace,
+                onSetTargetRange = container.statsViewModel::setTargetRange,
+                onRecompute = container.statsViewModel::recompute,
+            )
+        }
         composable("models") {
             val inference by container.inferenceState.collectAsState(InferenceState())
             ModelsScreen(state = inference, onSelect = container.inferenceController::selectModel)
