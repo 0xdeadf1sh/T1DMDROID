@@ -4,6 +4,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import com.t1dm.core.model.ModelPrediction
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -100,6 +101,43 @@ fun buildCurveOverlay(
         if (bas[i] > bMax) bMax = bas[i]
     }
     return CurveOverlayFrame(gridStartMs, stepMs, c, ins, cMax, iMax, bas, bMax)
+}
+
+/** Below this units-per-step the insulin channel is treated as carrying no action (item 16). */
+const val INSULIN_EPS: Float = 1e-6f
+
+/** How far ahead the no-future-insulin advisory (item 16) looks when no forecast bounds it. */
+const val NO_INSULIN_HORIZON_MS: Long = 3L * 3_600_000L
+
+/**
+ * Item-16 advisory predicate (pure): does NO insulin action cover the window from [nowMs] out to the
+ * forecast horizon? The horizon is the latest forecast end, or `nowMs + `[NO_INSULIN_HORIZON_MS] when
+ * no forecast bounds it. The auto-extended basal is already summed into [CurveOverlayFrame.insulin]
+ * (model-io-curves.md), so an active basal schedule — like a committed bolus tail — keeps this `false`.
+ *
+ * Fail-safe rule: when there is **no reconstructable channel at all** (`frame.size == 0`, e.g. a fresh
+ * wipe with no readings yet) the answer is `false` — nothing to reason about, so do not warn. Note this
+ * keys on `size`, NOT [CurveOverlayFrame.isEmpty]: a channel that HAS buckets but is flat-zero (readings
+ * exist, yet genuinely no bolus and no basal cover the hours ahead) is precisely the case the user
+ * SHOULD be warned about, so it must not be swallowed by the `carbMax<=0 && insulinMax<=0` short-circuit.
+ * Advisory only — the app never actuates.
+ */
+fun noFutureInsulinOverForecast(
+    frame: CurveOverlayFrame,
+    predictions: List<ModelPrediction>,
+    nowMs: Long,
+): Boolean {
+    if (frame.size == 0) return false
+    val lastForecast = predictions.maxOfOrNull { it.anchorTsMs + it.horizonSteps.toLong() * it.stepMs }
+    val horizonEnd = maxOf(lastForecast ?: 0L, nowMs + NO_INSULIN_HORIZON_MS)
+    var i = frame.indexAt(nowMs).let { if (it < 0) 0 else it }
+    while (i < frame.size) {
+        val ts = frame.tsAt(i)
+        if (ts > horizonEnd) break
+        if (ts >= nowMs && frame.insulin[i] > INSULIN_EPS) return false
+        i++
+    }
+    return true
 }
 
 /**

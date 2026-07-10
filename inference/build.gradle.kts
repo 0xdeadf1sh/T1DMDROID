@@ -19,7 +19,19 @@ dependencies {
     implementation(project(":core:common"))
 
     // ExecuTorch Android runtime, pinned to the exporter's version (descriptor.json → 1.3.1).
-    implementation(libs.executorch.android)
+    //
+    // `-Pt1dm.vulkan=false` selects the STOCK org.pytorch AAR (XNNPACK only) — used to capture the
+    // authoritative-CPU baseline for the "CPU path unchanged" proof. The DEFAULT (property absent or
+    // any value ≠ "false") selects the vendored custom AAR, whose single libexecutorch.so carries
+    // BOTH VulkanBackend and the same XnnpackBackend. flatDir supplies no POM, so the AAR's runtime
+    // transitives (fbjni / soloader nativeloader) are declared explicitly to match the stock POM.
+    if (providers.gradleProperty("t1dm.vulkan").orNull == "false") {
+        implementation(libs.executorch.android)
+    } else {
+        implementation(group = "", name = "executorch-vulkan-1.3.1", version = "", ext = "aar")
+        implementation("com.facebook.fbjni:fbjni:0.7.0")
+        implementation("com.facebook.soloader:nativeloader:0.10.5")
+    }
 
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.timber)

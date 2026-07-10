@@ -87,6 +87,7 @@ import com.t1dm.feature.settings.PowerSettingsScreen
 import com.t1dm.feature.settings.SettingsScreen
 import com.t1dm.feature.settings.SignalSafetyScreen
 import com.t1dm.feature.settings.WarmupSettingsScreen
+import com.t1dm.feature.settings.ForecastBackendScreen
 import com.t1dm.feature.settings.WatchSettingsScreen
 import com.t1dm.alerts.VibrationPreset
 import com.t1dm.app.settings.SettingsStore
@@ -189,6 +190,7 @@ private fun crumbsFor(route: String?, modelId: String?): List<Crumb> {
         "settings/signal" -> settings(Crumb("Alarms & safety", "settings"), Crumb("Signal safety", null))
         "settings/alerts" -> settings(Crumb("Sound & vibration", null))
         "settings/warmup" -> settings(Crumb("Warmup", null))
+        "settings/backend" -> settings(Crumb("Compute backend", null))
         "settings/calculator" -> settings(Crumb("Bolus calculator", null))
         "settings/curves" -> settings(Crumb("Curve & PK", null))
         "settings/cgm" -> settings(Crumb("CGM source", null))
@@ -212,46 +214,64 @@ private fun Breadcrumb(navController: NavHostController) {
     val modelId = backStackEntry?.arguments?.getString("modelId")
     val crumbs = remember(route, modelId) { crumbsFor(route, modelId) }
     val cs = MaterialTheme.colorScheme
+    // N10 — the app short name + short version (major.minor.patch, suffix stripped) on the right.
+    val shortVersion = remember { BuildConfig.VERSION_NAME.substringBefore('-') }
     Row(
+        // N1 — the breadcrumb bar shares the app BACKGROUND (not a surface tint) so it reads as chrome
+        // over the same canvas.
         Modifier
             .fillMaxWidth()
-            .background(cs.surface)
-            .horizontalScroll(rememberScrollState())
+            .background(cs.background)
             .padding(horizontal = 12.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        crumbs.forEachIndexed { i, crumb ->
-            if (i > 0) {
-                Text("›", style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant)
-            }
-            val isLast = i == crumbs.lastIndex
-            Text(
-                crumb.label,
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = if (isLast) FontWeight.Bold else FontWeight.Normal,
-                color = when {
-                    isLast -> cs.onSurface
-                    crumb.route != null -> cs.primary
-                    else -> cs.onSurfaceVariant
-                },
-                maxLines = 1,
-                modifier = if (!isLast && crumb.route != null) {
-                    Modifier
-                        .clip(RoundedCornerShape(6.dp))
-                        .clickable {
-                            // Ascend: pop the stack back to the already-present ancestor (dropping the
-                            // child sub-view). If it isn't on the stack, navigate to it fresh.
-                            if (!navController.popBackStack(crumb.route, inclusive = false)) {
-                                navController.navigate(crumb.route) { launchSingleTop = true }
+        Row(
+            // The trail scrolls sideways so a long path never wraps; the version tag stays pinned right.
+            Modifier.weight(1f).horizontalScroll(rememberScrollState()),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            crumbs.forEachIndexed { i, crumb ->
+                if (i > 0) {
+                    Text("›", style = MaterialTheme.typography.bodyMedium, color = cs.onSurfaceVariant)
+                }
+                val isLast = i == crumbs.lastIndex
+                Text(
+                    crumb.label,
+                    // N1 — larger, more legible breadcrumb type.
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = if (isLast) FontWeight.Bold else FontWeight.Normal,
+                    color = when {
+                        isLast -> cs.onSurface
+                        crumb.route != null -> cs.primary
+                        else -> cs.onSurfaceVariant
+                    },
+                    maxLines = 1,
+                    modifier = if (!isLast && crumb.route != null) {
+                        Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .clickable {
+                                // Ascend: pop the stack back to the already-present ancestor (dropping the
+                                // child sub-view). If it isn't on the stack, navigate to it fresh.
+                                if (!navController.popBackStack(crumb.route, inclusive = false)) {
+                                    navController.navigate(crumb.route) { launchSingleTop = true }
+                                }
                             }
-                        }
-                        .padding(horizontal = 8.dp, vertical = 8.dp)
-                } else {
-                    Modifier.padding(horizontal = 8.dp, vertical = 8.dp)
-                },
-            )
+                            .padding(horizontal = 8.dp, vertical = 8.dp)
+                    } else {
+                        Modifier.padding(horizontal = 8.dp, vertical = 8.dp)
+                    },
+                )
+            }
         }
+        Text(
+            "T1DM · $shortVersion",
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Medium,
+            color = cs.onSurfaceVariant,
+            maxLines = 1,
+            modifier = Modifier.padding(start = 8.dp),
+        )
     }
 }
 
@@ -505,6 +525,7 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 InsulinScreen(
                     iobCob = iobCob,
                     previewBolus = container.previewBolusCurve,
+                    previewBasal = container.previewBasalCurve,
                     onLogBolus = { units, preset -> scope.launch { container.logBolus(units, preset) } },
                     onLogBasal = { units, preset -> scope.launch { container.logBasal(units, preset) } },
                 )
@@ -558,6 +579,7 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 onOpenSignalSafety = { navController.navigate("settings/signal") },
                 onOpenAlerts = { navController.navigate("settings/alerts") },
                 onOpenWarmup = { navController.navigate("settings/warmup") },
+                onOpenComputeBackend = { navController.navigate("settings/backend") },
                 onOpenCalculator = { navController.navigate("settings/calculator") },
                 onOpenCurveParams = { navController.navigate("settings/curves") },
                 onOpenModels = { navController.navigate("models") },
@@ -839,6 +861,21 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
             WarmupSettingsScreen(
                 hours = hours,
                 onChange = { h -> scope.launch { container.setWarmupHours(h) } },
+            )
+        }
+        composable("settings/backend") {
+            val scope = rememberCoroutineScope()
+            val st by container.inferenceState.collectAsState()
+            val requested by container.forecastBackendSetting.collectAsState(null)
+            val sel = st.running.firstOrNull { it.selected }
+            ForecastBackendScreen(
+                catalog = st.backendCatalog,
+                requested = requested,
+                executing = sel?.backend,
+                executingPrecision = sel?.precision,
+                comparison = st.backendComparison,
+                onSelect = { b -> scope.launch { container.setForecastBackend(b) } },
+                onRunComparison = { scope.launch { container.runBackendComparison() } },
             )
         }
         composable("settings/server") {

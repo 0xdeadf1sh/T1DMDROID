@@ -153,8 +153,9 @@ class HardwareProbe(private val context: Context) {
             "on-device blocked: NeuroPilot runtime is Play-delivered (PODAI), unavailable to a sideload build",
         "ExecuTorch Neuron fp16 (NPU) — unavailable: executorch-android 1.3.1 AAR ships no MediaTek/Neuron delegate",
         "LiteRT Neuron (legacy TFLite delegate) — superseded by the LiteRT NPU path",
-        "ExecuTorch Vulkan fp32 (GPU) — custom AAR built + VulkanBackend registered; graph delegates 95% on host; " +
-            "on-device blocked: no .vulkan.pte serializes under ET 1.3.1 + torch 2.12.1 (Vulkan-pass FakeTensorMode assert)",
+        "ExecuTorch Vulkan fp32 (GPU) — custom AAR wired; VulkanBackend registered; .vulkan.pte loads + RUNS " +
+            "on-device (95% of the graph on Vulkan) and PASSES the fp32-agreement gate; selectable in Settings → " +
+            "Forecast & models → Compute backend (this small model runs slower than CPU — see the per-backend rows below)",
     )
 
     /**

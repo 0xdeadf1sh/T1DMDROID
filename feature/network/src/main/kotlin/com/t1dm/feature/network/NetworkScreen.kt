@@ -49,8 +49,7 @@ fun NetworkScreen(state: NetworkPanelState = NetworkPanelState()) {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Text("Network", style = MaterialTheme.typography.headlineSmall)
-
+        // N1 — the "Network" title lives in the breadcrumb; no duplicate in-view header.
         Section("Server")
         if (!state.hasProfile) {
             Field("profile", "none — configure in Settings → Server")
@@ -93,19 +92,16 @@ private fun Section(title: String) {
     )
 }
 
+/** N6 — every field now goes through the shared aligned key/value table (fixed-weight columns,
+ *  right-aligned tabular-figure values) so labels and values no longer smush together. */
 @Composable
 private fun Field(label: String, value: String) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(
-            label,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(end = 12.dp),
-        )
-        Text(value, style = MaterialTheme.typography.bodyMedium)
-    }
+    com.t1dm.core.design.KeyValueRow(
+        label = label,
+        value = value,
+        labelStyle = MaterialTheme.typography.bodyMedium,
+        valueStyle = MaterialTheme.typography.bodyMedium,
+    )
 }
 
 private fun age(ms: Long?): String = if (ms == null) "empty" else duration(ms)

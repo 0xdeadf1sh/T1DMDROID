@@ -20,6 +20,7 @@ fun SettingsScreen(
     onOpenSignalSafety: () -> Unit = {},
     onOpenAlerts: () -> Unit = {},
     onOpenWarmup: () -> Unit = {},
+    onOpenComputeBackend: () -> Unit = {},
     onOpenCalculator: () -> Unit = {},
     onOpenCurveParams: () -> Unit = {},
     onOpenModels: () -> Unit = {},
@@ -42,6 +43,7 @@ fun SettingsScreen(
 
         SettingsSectionHeader("Forecast & models")
         SettingsNavRow("Forecast warmup", "How much real history the forecast waits for", onClick = onOpenWarmup)
+        SettingsNavRow("Compute backend (CPU / GPU)", "Run the forecast on the CPU authority or the Vulkan GPU; measure & agreement-gate", onClick = onOpenComputeBackend)
         SettingsNavRow("Dose calculator", "Objective, asymmetry, rails, and rail thresholds — unbounded", onClick = onOpenCalculator)
         SettingsNavRow("Curve & PK parameters", "Carb-appearance and insulin-action presets + Bézier custom-curve designers", onClick = onOpenCurveParams)
         SettingsNavRow("Models & backend", "Select the running model; inference backend/precision", onClick = onOpenModels)

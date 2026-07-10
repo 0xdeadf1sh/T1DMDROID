@@ -31,6 +31,7 @@ import com.t1dm.cgm.AidexXSourceRegistry
 import com.t1dm.core.common.DefaultT1dmDispatchers
 import com.t1dm.core.common.NativeCore
 import com.t1dm.core.common.T1dmDispatchers
+import com.t1dm.core.model.BackendId
 import com.t1dm.core.model.BasalPreset
 import com.t1dm.core.model.BolusPreset
 import com.t1dm.core.model.CgmReading
@@ -134,6 +135,9 @@ import kotlinx.coroutines.plus
 /** kv key + bound for the WARMUP setting (inference-runtime.md). */
 private const val KV_WARMUP_HOURS = "inference.warmup_hours"
 private const val WARMUP_HOURS_MAX = 72
+
+/** kv key for the forecast-backend switcher (issue 20 STEP 4): the BackendId enum name, or absent = auto. */
+private const val KV_FORECAST_BACKEND = "inference.forecast_backend"
 
 /** The clinical/published horizons the on-device accuracy aggregator reports (Phase 7C). */
 private val ACCURACY_HORIZONS_MIN = listOf(30, 60, 120)
@@ -366,13 +370,41 @@ class AppContainer(context: Context) {
         repository.putKv(KV_WARMUP_HOURS, clamped.toString(), System.currentTimeMillis())
     }
 
+    // ── Forecast-backend switcher (issue 20 STEP 4) — kv-backed; governs the FORECAST CYCLE only ──
+
+    /** The persisted forecast-backend preference (null/blank ⇒ auto = the fp32 XNNPACK authority). */
+    private suspend fun forecastBackendPref(): BackendId? =
+        repository.getKv(KV_FORECAST_BACKEND)?.takeIf { it.isNotBlank() }
+            ?.let { name -> runCatching { BackendId.valueOf(name) }.getOrNull() }
+
+    /** Settings read model: the requested backend (or null for auto), for the selector's current row. */
+    val forecastBackendSetting: Flow<BackendId?> = repository.observeKv(KV_FORECAST_BACKEND).map { raw ->
+        raw?.takeIf { it.isNotBlank() }?.let { name -> runCatching { BackendId.valueOf(name) }.getOrNull() }
+    }
+
+    /**
+     * Persist + apply the forecast-backend choice. Governs the forecast cycle ONLY; dosing stays
+     * fail-closed on a non-authoritative backend until the agreement probe passes (§3.6-E). Returns
+     * the backend that is ACTUALLY active afterwards (may differ from the request if it failed to load).
+     */
+    suspend fun setForecastBackend(backend: BackendId?): BackendId? {
+        repository.putKv(KV_FORECAST_BACKEND, backend?.name ?: "", System.currentTimeMillis())
+        return inferenceController.setForecastBackend(backend)
+    }
+
+    /** Run the on-device GPU-vs-CPU comparison + agreement probe (issue 20 STEP 3). Off the main
+     *  thread inside the controller; publishes the result into [inferenceState]. */
+    suspend fun runBackendComparison(runs: Int = 20) = inferenceController.runBackendComparison(runs)
+
     /** Discover on-device models + rehydrate the last predictions once at startup (off-main). Also
      *  hydrates the live [alarmConfig] snapshot from the persisted thresholds before the FGS reads it. */
     fun startInference() {
         appScope.launch {
             refreshAlarmConfig()
             inferenceController.restoreLast()
-            inferenceController.refreshModels()
+            // Apply the persisted forecast-backend choice BEFORE the first discovery so the active
+            // handle + "executing on" line are correct from the first tick.
+            inferenceController.setForecastBackend(forecastBackendPref())
         }
     }
 
@@ -581,6 +613,22 @@ class AppContainer(context: Context) {
         curveEngine.bolusPk(units).values.toDoubleArray()
     }
 
+    /** Live preview of the LONG-ACTING basal PK-action Bateman curve (issue N9): the same curve
+     *  [logBasal] commits — the opted-in clinical basal preset's DIA/ka/ke if selected, else the
+     *  in-distribution simulator Bateman for the chosen [BasalPreset]. Broad + near-flat by design. */
+    val previewBasalCurve: suspend (Double, BasalPreset) -> DoubleArray = { units, preset ->
+        val clinical = selectedClinicalBasal()
+        if (clinical != null) {
+            curveEngine.bateman(units, clinical.diaMin, clinical.kaPerHour, clinical.kePerHour)
+        } else {
+            val diaMin = when (preset) {
+                BasalPreset.LANTUS -> CurveEngine.Presets.LANTUS_DIA_MIN
+                BasalPreset.TRESIBA -> CurveEngine.Presets.TRESIBA_DIA_MIN
+            }
+            curveEngine.bateman(units, diaMin, CurveEngine.Presets.BASAL_KA_PER_HOUR, CurveEngine.Presets.BASAL_KE_PER_HOUR)
+        }
+    }
+
     /** The dashboard overlay resolver: the two reconstructed channels over a grid window (off-main). */
     suspend fun dashboardCurveChannels(gridStartMs: Long, nSteps: Int): Pair<DoubleArray, DoubleArray> {
         val ch = channelBuilder.contextChannels(gridStartMs, nSteps)
@@ -629,7 +677,7 @@ class AppContainer(context: Context) {
         if (info == null || !info.real) null
         else object : SelectedModelHandle {
             override val descriptor = info.descriptor
-            override val backendInfo = BackendInfo(info.backend, info.precision, agreementOk = null)
+            override val backendInfo = BackendInfo(info.backend, info.precision, agreementOk = info.agreementOk)
             override suspend fun run(input: GraphInput): com.t1dm.inference.backend.GraphOutput =
                 inferenceController.runSelected(input)
         }
@@ -661,7 +709,7 @@ class AppContainer(context: Context) {
     /** §3.6-E backend/precision provenance; null (⇒ refusal) when there is no real selected model. */
     private val backendSource = BackendInfoSource {
         val info = inferenceController.selectedModelInfo()
-        if (info == null || !info.real) null else BackendInfo(info.backend, info.precision, agreementOk = null)
+        if (info == null || !info.real) null else BackendInfo(info.backend, info.precision, agreementOk = info.agreementOk)
     }
 
     /** The fail-closed bolus advisor: freshness/fp16 gate → grid search → degeneracy → rails → card. */

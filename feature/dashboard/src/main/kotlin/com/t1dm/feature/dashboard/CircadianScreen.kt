@@ -66,7 +66,7 @@ fun CircadianScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text("Circadian clock", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        // N1 — the "Circadian clock" title lives in the breadcrumb; no duplicate in-view header.
         Text(
             "The model's belief about what hour-of-day the current physiology resembles — a circular " +
                 "histogram over 12 two-hour bins with a hand at its resultant hour.",

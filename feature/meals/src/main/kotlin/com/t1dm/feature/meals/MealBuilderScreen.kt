@@ -5,9 +5,19 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -163,21 +173,40 @@ private fun FoodSearch(
         singleLine = true,
         modifier = Modifier.fillMaxWidth(),
     )
-    results.take(12).forEach { food ->
-        Row(
-            Modifier.fillMaxWidth().clickable { selected = food }.padding(vertical = 6.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Column {
-                Text(foodLabel(food), style = MaterialTheme.typography.bodyMedium)
-                Text(
-                    "${"%.0f".format(food.carbsPer100g)} g/100 g" +
-                        (food.giOrNull?.let { " · GI ${it.toInt()}" } ?: " · GI —"),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
-                )
+    // N8 — the whole seeded catalogue (401 foods) is now reachable: the browse list is a bounded,
+    // independently-scrollable LazyColumn with a visible scrollbar, instead of a fixed first-N slice
+    // that clipped everything past the top. Search still narrows it. A bounded height lets it nest
+    // inside the outer vertical scroll without an infinite-constraint conflict.
+    Text(
+        "${results.size} match(es)" + if (query.isBlank()) " — scroll to browse the full catalogue" else "",
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+    )
+    val listState = rememberLazyListState()
+    val barColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+    LazyColumn(
+        state = listState,
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(max = 340.dp)
+            .verticalScrollbar(listState, barColor),
+    ) {
+        items(results, key = { it.id.takeIf { id -> id != 0L } ?: it.name }) { food ->
+            Row(
+                Modifier.fillMaxWidth().clickable { selected = food }.padding(vertical = 6.dp, horizontal = 2.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(foodLabel(food), style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "${"%.0f".format(food.carbsPer100g)} g/100 g" +
+                            (food.giOrNull?.let { " · GI ${it.toInt()}" } ?: " · GI —"),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                    )
+                }
+                if (selected?.id == food.id && food.id != 0L) Text("selected")
             }
-            if (selected?.id == food.id && food.id != 0L) Text("selected")
         }
     }
     selected?.let { food ->
@@ -310,6 +339,28 @@ private fun FoodBuilder(
             }
         }
     }
+}
+
+/** N8 — a minimal always-visible vertical scrollbar for the browse list, drawn from the list state's
+ *  layout info: a proportional thumb whose position tracks the scroll offset. */
+private fun Modifier.verticalScrollbar(state: LazyListState, color: Color): Modifier = drawWithContent {
+    drawContent()
+    val info = state.layoutInfo
+    val total = info.totalItemsCount
+    val visible = info.visibleItemsInfo
+    if (total == 0 || visible.isEmpty() || visible.size >= total) return@drawWithContent
+    val first = visible.first().index
+    val fraction = visible.size.toFloat() / total
+    val thumbH = (size.height * fraction).coerceAtLeast(24f)
+    val progress = first.toFloat() / (total - visible.size).coerceAtLeast(1)
+    val top = (size.height - thumbH) * progress
+    val w = 4f
+    drawRoundRect(
+        color = color,
+        topLeft = Offset(size.width - w - 2f, top),
+        size = Size(w, thumbH),
+        cornerRadius = CornerRadius(2f, 2f),
+    )
 }
 
 private fun foodLabel(f: Food): String = if (f.brand.isNullOrBlank()) f.name else "${f.name} (${f.brand})"

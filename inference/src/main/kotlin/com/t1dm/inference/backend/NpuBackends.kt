@@ -114,19 +114,64 @@ class ExecuTorchVulkanBackend : InferenceBackend {
     override val id = BackendId.EXECUTORCH_VULKAN_FP32
     override val caps = BackendCaps(precision = Precision.FP32)
 
-    override fun load(desc: ModelDescriptor, pte: File): LoadedModel =
-        throw NotImplementedError(
-            "EXECUTORCH_VULKAN_FP32: the custom Vulkan-delegate AAR is built and registers the " +
-                "VulkanBackend, and the graph delegates 95% to the GPU on host — but no .vulkan.pte " +
-                "can be serialized under ExecuTorch 1.3.1 + torch 2.12.1: the Vulkan preprocess " +
-                "fusion passes hit a FakeTensorMode-mismatch AssertionError in exir/pass_base.py. " +
-                "Emit a .vulkan.pte (torch matched to ET 1.3.1, or patched passes) to enable; fp32 " +
-                "XNNPACK CPU stays authoritative and this path must pass the agreement gate before " +
-                "it can drive a dose.",
-        )
+    private class EtModel(
+        override val id: String,
+        override val caps: BackendCaps,
+        val module: org.pytorch.executorch.Module,
+    ) : LoadedModel
 
-    override fun run(m: LoadedModel, x: GraphInput): GraphOutput = throw NotImplementedError(NOT_YET)
-    override fun close(m: LoadedModel) = Unit
+    /**
+     * Load the `.vulkan.pte`. The custom AAR's `libexecutorch.so` registers `VulkanBackend`, so
+     * `Module.load` resolves the Vulkan-delegated subgraphs at load time (the delegate builds its
+     * Vulkan compute context + shaders here). A device without a working Vulkan compute path throws
+     * from native — the controller catches it and falls back to the [StubBackend], never silently to
+     * a different backend. The artifact is REQUIRED to be the `.vulkan.pte` (the XNNPACK `.pte` would
+     * load fine on the same runtime but would NOT exercise the GPU — the descriptor's `engine` routes
+     * the right artifact here).
+     */
+    override fun load(desc: ModelDescriptor, pte: File): LoadedModel {
+        require(pte.exists()) { "vulkan pte artifact missing: ${pte.absolutePath}" }
+        val module = org.pytorch.executorch.Module.load(
+            pte.absolutePath,
+            org.pytorch.executorch.Module.LOAD_MODE_MMAP_USE_MLOCK_IGNORE_ERRORS,
+        )
+        return EtModel(pte.nameWithoutExtension, caps, module)
+    }
+
+    /**
+     * One forward `(patches, struct-mask) → (head_raw, time_logits?)`, identical output contract to
+     * [ExecuTorchXnnpackBackend] — the same modified forward was lowered, only the partitioner
+     * differs, so slot 0 is `head_raw (1,4,6,7)` flattened to 168 and slot 1 the optional time
+     * probe. Blocking; the controller confines it to the single-thread `inference` dispatcher.
+     */
+    override fun run(m: LoadedModel, x: GraphInput): GraphOutput {
+        val model = m as EtModel
+        val patches = org.pytorch.executorch.Tensor.fromBlob(
+            x.patches, longArrayOf(1, GraphIo.T.toLong(), GraphIo.PATCH_DIM.toLong()),
+        )
+        val mask = org.pytorch.executorch.Tensor.fromBlob(
+            x.mask, longArrayOf(GraphIo.T.toLong(), GraphIo.T.toLong()),
+        )
+        val out = model.module.forward(
+            org.pytorch.executorch.EValue.from(patches),
+            org.pytorch.executorch.EValue.from(mask),
+        )
+        require(out.isNotEmpty() && out[0].isTensor) { "vulkan backend returned no head_raw tensor" }
+        val head = out[0].toTensor().dataAsFloatArray
+        require(head.size == PRED_STEPS * N_Q) { "head_raw size ${head.size} != ${PRED_STEPS * N_Q}" }
+        val timeLogits: FloatArray? =
+            if (out.size > 1 && out[1].isTensor) out[1].toTensor().dataAsFloatArray else null
+        return GraphOutput(head, timeLogits)
+    }
+
+    override fun close(m: LoadedModel) {
+        runCatching { (m as EtModel).module.destroy() }
+    }
+
+    private companion object {
+        const val PRED_STEPS = GraphIo.PRED * GraphIo.PATCH_DIM / 3 // 4·6 = 24 output steps
+        const val N_Q = 7
+    }
 }
 
 private const val NOT_YET = "NPU/GPU backend load must succeed before run; this path is unavailable (see load())."

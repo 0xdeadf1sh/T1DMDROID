@@ -17,6 +17,11 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        // Vendored custom ExecuTorch 1.3.1 AAR with EXECUTORCH_BUILD_VULKAN=ON (issue 20). Consumed
+        // by :inference behind the `t1dm.vulkan` gradle property; carries BOTH VulkanBackend and the
+        // authoritative XnnpackBackend. flatDir carries no POM, so :inference adds the AAR's runtime
+        // transitives (fbjni / soloader) explicitly.
+        flatDir { dirs("$rootDir/third_party/executorch-vulkan") }
     }
 }
 

@@ -148,7 +148,11 @@ private fun CobLine(r: IobCobReadout) {
     )
 }
 
-/** A tiny filled sparkline of a per-5-min curve — a preview only, not the dashboard overlay. */
+/** A tiny filled sparkline of a per-5-min curve — a preview only, not the dashboard overlay. N7 — the
+ *  rendered curve is 0 at t=0 with the first sample at t=+5 min: `values[i]` is the appearance/action
+ *  over `[i·5, (i+1)·5)` min, so it is anchored at slot `i+1` and slot 0 is the zero baseline (mirrors
+ *  `CurvePreview` / the dashboard overlay). Previously `values[0]` was drawn at x=0, so a high-GI Ra
+ *  (whose +5 min sample is already ~65 % of the peak) appeared to start mid-rise / instantly. */
 @Composable
 internal fun CurveSparkline(values: DoubleArray, color: Color) {
     Canvas(Modifier.fillMaxWidth().height(56.dp).padding(vertical = 4.dp)) {
@@ -156,13 +160,13 @@ internal fun CurveSparkline(values: DoubleArray, color: Color) {
         val peak = values.maxOrNull()?.toFloat() ?: return@Canvas
         if (peak <= 0f) return@Canvas
         val n = values.size
-        val dx = size.width / (n - 1).coerceAtLeast(1)
+        val dx = size.width / n
         val path = Path().apply {
-            moveTo(0f, size.height)
+            moveTo(0f, size.height) // t=0, value 0
             for (i in 0 until n) {
-                lineTo(i * dx, size.height - (values[i].toFloat() / peak) * size.height * 0.9f)
+                lineTo((i + 1) * dx, size.height - (values[i].toFloat() / peak) * size.height * 0.9f)
             }
-            lineTo((n - 1) * dx, size.height)
+            lineTo(n * dx, size.height)
             close()
         }
         drawPath(path, color.copy(alpha = 0.25f))

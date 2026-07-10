@@ -1,7 +1,14 @@
 package com.t1dm.feature.dashboard
 
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -10,12 +17,14 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -29,8 +38,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.t1dm.core.design.LocalAnimationsEnabled
+import com.t1dm.core.design.LocalT1dmSemantics
+import com.t1dm.core.design.iconStyleForTheme
 import com.t1dm.core.model.AlertThresholds
 import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.IobCobReadout
@@ -52,6 +65,7 @@ import com.t1dm.ui.graph.smoothedTraceOf
 import com.t1dm.ui.graph.curveOverlayOf
 import com.t1dm.ui.graph.excursionsOf
 import com.t1dm.ui.graph.graphFrameOf
+import com.t1dm.ui.graph.noFutureInsulinOverForecast
 import com.t1dm.ui.graph.predOverlayOf
 
 /**
@@ -138,22 +152,7 @@ fun DashboardScreen(
     // tail nor a basal schedule (the auto-extended basal is already folded into the combined channel,
     // so an active schedule keeps this false). Purely advisory; never actuates.
     val noFutureInsulin = remember(curveOverlay, predictions) {
-        val f = curveOverlay
-        if (f.isEmpty) false
-        else {
-            val now = System.currentTimeMillis()
-            val lastForecast = predictions.maxOfOrNull { it.anchorTsMs + it.horizonSteps.toLong() * it.stepMs }
-            val horizonEnd = maxOf(lastForecast ?: 0L, now + NO_INSULIN_HORIZON_MS)
-            var i = f.indexAt(now).let { if (it < 0) 0 else it }
-            var any = false
-            while (i < f.size) {
-                val ts = f.tsAt(i)
-                if (ts > horizonEnd) break
-                if (ts >= now && f.insulin[i] > INSULIN_EPS) { any = true; break }
-                i++
-            }
-            !any
-        }
+        noFutureInsulinOverForecast(curveOverlay, predictions, System.currentTimeMillis())
     }
 
     // Issue 13: the smoothed model-input trace (built off-thread; null unless the smoother is wired).
@@ -223,10 +222,6 @@ private fun PredictedTime.toClock(anchorTsMs: Long): PredictedClock? =
 private const val STEP_MS: Long = 300_000L
 private const val MAX_OVERLAY_STEPS: Int = 4032 // ~14 days of 5-min buckets
 private const val OVERLAY_FUTURE_MS: Long = 6L * 3_600_000L // show ~6 h of future dose tails
-/** How far ahead the no-future-insulin advisory (item 16) looks when no forecast bounds it. */
-private const val NO_INSULIN_HORIZON_MS: Long = 3L * 3_600_000L
-/** Below this units-per-step the insulin channel is treated as no action present (item 16). */
-private const val INSULIN_EPS: Float = 1e-6f
 /** Below this resultant length the circadian belief is too diffuse to anchor a clock axis on. */
 private const val MIN_CLOCK_R: Double = 0.05
 
@@ -291,8 +286,10 @@ private fun OverlayControls(
     onWindow: (Int) -> Unit,
 ) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+        // N2 — the Carbs / Insulin / Smoothed / 6h / 12h / 24h chips no longer fit across a phone width,
+        // so they live in a HORIZONTALLY-SCROLLABLE row (mirroring the scrollable nav) — nothing clips.
         Row(
-            Modifier.fillMaxWidth(),
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -313,7 +310,6 @@ private fun OverlayControls(
                     label = { Text("Smoothed") },
                 )
             }
-            Spacer(Modifier.weight(1f))
             listOf(6, 12, 24).forEach { h ->
                 FilterChip(
                     selected = windowHours == h,
@@ -372,7 +368,9 @@ private fun ReachabilityBar(r: BgReachability, signals: BgSignals?) {
 @Composable
 private fun ReachChip(tag: String, light: ReachLight, showLabel: Boolean, rssi: Int?) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-        Box(Modifier.size(9.dp).clip(CircleShape).background(light.health.color()))
+        // N4b — the traffic light animates by state: steady green when OK, a slow amber pulse when
+        // degraded, an urgent red pulse when down; static (no pulse) when animations are disabled (N4c).
+        PulsingDot(light.health)
         Text(tag, style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f))
         rssi?.let { SignalBars(it) }
@@ -381,6 +379,62 @@ private fun ReachChip(tag: String, light: ReachLight, showLabel: Boolean, rssi: 
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
         }
     }
+}
+
+/** The animated reachability light (N4b/N4c): a pulsing dot whose cadence encodes severity, collapsing
+ *  to a steady dot the instant [LocalAnimationsEnabled] is off. */
+@Composable
+private fun PulsingDot(health: LinkHealth) {
+    val animationsOn = LocalAnimationsEnabled.current
+    val color = health.color()
+    // Only DEGRADED (slow) and DOWN (urgent) pulse; OK/OFF are steady.
+    val periodMs = when (health) {
+        LinkHealth.DEGRADED -> 1400
+        LinkHealth.DOWN -> 600
+        else -> 0
+    }
+    val alpha = if (animationsOn && periodMs > 0) {
+        val transition = rememberInfiniteTransition(label = "reach")
+        transition.animateFloat(
+            initialValue = 1f,
+            targetValue = 0.25f,
+            animationSpec = infiniteRepeatable(tween(periodMs), RepeatMode.Reverse),
+            label = "reachAlpha",
+        ).value
+    } else 1f
+    Box(Modifier.size(9.dp).clip(CircleShape).background(color.copy(alpha = color.alpha * alpha)))
+}
+
+/** N4a — the animated per-theme time-of-day icon, right of the current BG value. */
+@Composable
+private fun TimeOfDayIcon() {
+    val animationsOn = LocalAnimationsEnabled.current
+    // Re-evaluate the period once a minute so it stays honest without a busy loop.
+    val hour by produceState(java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)) {
+        while (true) {
+            value = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
+            kotlinx.coroutines.delay(60_000)
+        }
+    }
+    val style = iconStyleForTheme(LocalT1dmSemantics.current.id)
+    val period = com.t1dm.core.design.dayPeriodFor(hour)
+    val icon = remember(period, style) { com.t1dm.core.design.timeOfDayIcon(period, style) }
+    // A subtle breathing scale; a static 1f when motion is disabled (N4c).
+    val scale = if (animationsOn) {
+        val transition = rememberInfiniteTransition(label = "tod")
+        transition.animateFloat(
+            initialValue = 0.9f,
+            targetValue = 1.0f,
+            animationSpec = infiniteRepeatable(tween(2600), RepeatMode.Reverse),
+            label = "todScale",
+        ).value
+    } else 1f
+    Icon(
+        imageVector = icon,
+        contentDescription = "Time of day: ${period.name.lowercase()}",
+        tint = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.size(28.dp).graphicsLayer { scaleX = scale; scaleY = scale },
+    )
 }
 
 /** A four-bar RSSI meter + the raw dBm (item 20). Buckets follow the usual BLE bands. */
@@ -395,13 +449,21 @@ private fun SignalBars(rssi: Int) {
     }
     val on = MaterialTheme.colorScheme.primary
     val off = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.20f)
-    Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(1.dp)) {
-        for (i in 1..4) {
-            Box(
-                Modifier.width(3.dp).height((3 + i * 2).dp)
-                    .clip(RoundedCornerShape(1.dp))
-                    .background(if (i <= filled) on else off),
-            )
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(1.dp)) {
+        // N4d — the bars sat slightly too low against the source name / dBm text; a small upward offset
+        // lifts them to the text centre while keeping the ascending-bar baseline.
+        Row(
+            Modifier.offset(y = (-2).dp),
+            verticalAlignment = Alignment.Bottom,
+            horizontalArrangement = Arrangement.spacedBy(1.dp),
+        ) {
+            for (i in 1..4) {
+                Box(
+                    Modifier.width(3.dp).height((3 + i * 2).dp)
+                        .clip(RoundedCornerShape(1.dp))
+                        .background(if (i <= filled) on else off),
+                )
+            }
         }
         Text(" ${rssi}dBm", style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
@@ -424,11 +486,17 @@ private fun DashboardHeader(latest: CgmReading?, activeSourceName: String?, unit
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column {
-            Text(
-                text = formatBg(latest?.bgMgdl, unit),
-                style = MaterialTheme.typography.displaySmall,
-                fontWeight = FontWeight.Bold,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = formatBg(latest?.bgMgdl, unit),
+                    style = MaterialTheme.typography.displaySmall,
+                    fontWeight = FontWeight.Bold,
+                )
+                // N4a — a per-theme morning/noon/evening/night icon derived from the ACTUAL local time,
+                // in the same geometry system as the nav icons, subtly animated (honouring the
+                // "disable all animations" toggle via LocalAnimationsEnabled).
+                TimeOfDayIcon()
+            }
             Text(
                 text = unitLabel(unit) + (latest?.let { statusSuffix(it) } ?: ""),
                 style = MaterialTheme.typography.bodyMedium,

@@ -7,12 +7,15 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -39,9 +42,9 @@ fun ModelsScreen(
 ) {
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item {
-            Text("Models", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            // N1 — the "Models" title lives in the breadcrumb; no duplicate in-view header.
             Text(
-                "${state.running.size} loaded · tap a row for performance · tap the ● to select",
+                "${state.running.size} loaded · tap a row for performance · tap the radio to select",
                 style = MaterialTheme.typography.bodySmall,
             )
             state.note?.let {
@@ -80,16 +83,24 @@ private fun ModelRow(
     onSelect: (String) -> Unit,
     onOpen: (String) -> Unit,
 ) {
+    // N3 — tapping ANYWHERE on the row (name included) opens the detail; "select this model" is now an
+    // explicit RadioButton, never an invisible tap target on the title. Previously the name carried its
+    // own `onSelect` clickable that consumed the tap, so only the description below opened the detail.
     Column(
         Modifier.fillMaxWidth().clickable { onOpen(model.modelId) }.padding(vertical = 8.dp),
     ) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            RadioButton(
+                selected = model.selected,
+                onClick = { onSelect(model.modelId) },
+                modifier = Modifier.size(28.dp),
+            )
             Text(
-                (if (model.selected) "● " else "○ ") + model.modelId,
+                model.modelId,
                 style = MaterialTheme.typography.bodyLarge,
                 fontWeight = if (model.selected) FontWeight.Bold else FontWeight.Normal,
                 fontFamily = FontFamily.Monospace,
-                modifier = Modifier.clickable { onSelect(model.modelId) },
+                modifier = Modifier.weight(1f).padding(start = 8.dp),
             )
             Text(statusLabel(prediction), style = MaterialTheme.typography.labelMedium, color = statusColor(prediction))
         }

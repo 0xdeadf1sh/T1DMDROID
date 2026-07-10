@@ -137,6 +137,74 @@ class BgPanelTest {
         assertEquals(0f, noBasal.basalMax, 1e-6f)
     }
 
+    // ── item 16: no-future-insulin advisory (noFutureInsulinOverForecast) ────────────────────────
+
+    /** Grid whose bucket 0 == [now]; buckets extend NSTEP·5-min forward, some possibly before [now]. */
+    private fun overlay(insulinPerStep: DoubleArray, gridStart: Long, carbPerStep: DoubleArray = DoubleArray(insulinPerStep.size)) =
+        buildCurveOverlay(carb = carbPerStep, insulin = insulinPerStep, gridStartMs = gridStart, stepMs = STEP)
+
+    @Test fun noFutureInsulin_true_whenNonEmptyOverlayHasAllZeroFutureInsulin() {
+        val now = 1_700_000_000_000L
+        // 48 buckets from `now`, a visible carb tick (⇒ overlay is non-empty) but insulin flat-zero.
+        val insulin = DoubleArray(48) { 0.0 }
+        val carb = DoubleArray(48) { if (it == 4) 6.0 else 0.0 }
+        val f = overlay(insulin, now, carb)
+        assertFalse("carb makes it non-empty", f.isEmpty)
+        assertTrue(noFutureInsulinOverForecast(f, emptyList(), now))
+    }
+
+    @Test fun noFutureInsulin_true_whenReconstructableChannelIsGenuinelyAllZero() {
+        // The item-16(c) improvement: buckets EXIST (readings present) but no carb and no insulin —
+        // isEmpty short-circuits true, yet the user genuinely has zero insulin ahead ⇒ they SHOULD warn.
+        val now = 1_700_000_000_000L
+        val f = overlay(DoubleArray(48) { 0.0 }, now)
+        assertTrue("flat-zero channel still counts as empty for rendering", f.isEmpty)
+        assertTrue("but the advisory keys on size, not isEmpty", noFutureInsulinOverForecast(f, emptyList(), now))
+    }
+
+    @Test fun noFutureInsulin_false_whenBolusTailCoversHorizon() {
+        val now = 1_700_000_000_000L
+        // A bolus action tail landing ~1 h ahead (bucket 12), inside the 3 h default horizon.
+        val insulin = DoubleArray(48) { if (it in 10..16) 0.30 else 0.0 }
+        assertFalse(noFutureInsulinOverForecast(overlay(insulin, now), emptyList(), now))
+    }
+
+    @Test fun noFutureInsulin_false_whenBasalScheduleCoversHorizon() {
+        val now = 1_700_000_000_000L
+        // An auto-extended basal is summed into the combined channel: a thin but non-zero action everywhere.
+        val insulin = DoubleArray(48) { 0.01 }
+        assertFalse(noFutureInsulinOverForecast(overlay(insulin, now), emptyList(), now))
+    }
+
+    @Test fun noFutureInsulin_true_whenBolusTailExpiredInThePast() {
+        // The on-device repro: a short-DIA bolus logged earlier whose action tail expires BEFORE `now`.
+        val now = 1_700_000_000_000L
+        val gridStart = now - 20 * STEP // 20 past buckets, then `now`, then future
+        val insulin = DoubleArray(40) { if (it in 2..8) 0.4 else 0.0 } // action only in the past
+        assertTrue(noFutureInsulinOverForecast(overlay(insulin, gridStart), emptyList(), now))
+    }
+
+    @Test fun noFutureInsulin_true_whenInsulinLandsPastTheHorizonEnd() {
+        val now = 1_700_000_000_000L
+        // Insulin only at bucket 40 (> the 36-bucket = 3 h horizon) ⇒ nothing covers the window ⇒ warn.
+        val insulin = DoubleArray(48) { if (it == 40) 0.5 else 0.0 }
+        assertTrue(noFutureInsulinOverForecast(overlay(insulin, now), emptyList(), now))
+    }
+
+    @Test fun noFutureInsulin_forecastEndExtendsTheHorizon() {
+        val now = 1_700_000_000_000L
+        // Insulin lands at bucket 40 (past the default 3 h horizon). A forecast reaching bucket 44
+        // extends the horizon so that action now DOES cover the window ⇒ no warning.
+        val insulin = DoubleArray(48) { if (it == 40) 0.5 else 0.0 }
+        val fc = pred(medians = List(44) { 110.0 }, anchor = now) // horizon end = now + 44·STEP
+        assertFalse(noFutureInsulinOverForecast(overlay(insulin, now), listOf(fc), now))
+    }
+
+    @Test fun noFutureInsulin_false_whenOverlayHasNoBuckets() {
+        // Fresh wipe / no readings ⇒ EMPTY frame (size 0) ⇒ fail-safe, nothing to reason about ⇒ no warn.
+        assertFalse(noFutureInsulinOverForecast(CurveOverlayFrame.EMPTY, emptyList(), 1_700_000_000_000L))
+    }
+
     // ── item 13: smoothed model-input trace ─────────────────────────────────────────────────────
 
     private fun reading(ts: Long, bg: Int, flag: ReadingFlag = ReadingFlag.NORMAL) = CgmReading(

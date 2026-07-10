@@ -48,6 +48,48 @@ fun BackendId.displayName(): String = when (this) {
     BackendId.STUB -> "Stub (fixed output — no .pte)"
 }
 
+/**
+ * One entry in the forecast-backend switcher catalog (issue 20 STEP 4). Enumerates a backend the
+ * controller can route the FORECAST CYCLE to, with an evidence-based availability verdict: [available]
+ * is true only when a real `.pte` for this engine is on device AND its native `load` succeeded on the
+ * runtime classpath; otherwise [reason] states plainly why not (no artifact, no delegate in the AAR,
+ * a partner-gated runtime, a load failure). [precision] is the numeric precision the backend runs at.
+ * [authoritative] marks the fp32 XNNPACK CPU reference — the only backend trusted for dosing without
+ * an agreement probe (§3.6-E).
+ */
+data class BackendAvailability(
+    val backend: BackendId,
+    val precision: Precision,
+    val available: Boolean,
+    val authoritative: Boolean,
+    val reason: String?,
+)
+
+/**
+ * The honest on-device comparison of a NON-authoritative backend against the fp32 XNNPACK authority
+ * (issue 20 STEP 3 + the §3.6-E agreement gate). Both backends run the SAME fixed deterministic input;
+ * timings are medians over [runs] warm forwards plus the first (cold) forward, numerics are the worst-
+ * case absolute deltas of `head_raw` (risk space) and the decoded mg/dL median fan. [agreementOk] is
+ * the gate verdict: the decoded-mg/dL worst delta is within [toleranceMgdl]. A backend only feeds the
+ * dosing path once [agreementOk] is true (BackendInfo.trustworthy) — the forecast may still render.
+ */
+data class BackendComparison(
+    val backend: BackendId,
+    val authority: BackendId,
+    val runs: Int,
+    val warmMedianMsBackend: Double,
+    val warmMedianMsAuthority: Double,
+    val coldMsBackend: Double,
+    val coldMsAuthority: Double,
+    val maxAbsHeadRawDelta: Double,
+    val maxAbsDecodedMgdlDelta: Double,
+    val toleranceMgdl: Double,
+    val agreementOk: Boolean,
+    /** Resident-set growth (KB) attributable to the backend's load, best-effort; null if unmeasured.
+     *  Mali heaps are UNIFIED with system RAM — this is process RSS, not a discrete VRAM figure. */
+    val loadRssGrowthKb: Long? = null,
+)
+
 /** One model in the running set (≤5; SPEC.private.md §2.3), tagged by the descriptor's `model_id`. */
 data class RunningModel(
     val modelId: String,
@@ -222,6 +264,15 @@ data class InferenceState(
     /** Whether the SELECTED model's descriptor declares a time section at all (distinguishes the
      *  "no time section" empty state from a "decode failed" one). Defaults true until a cycle sets it. */
     val selectedHasTimeSection: Boolean = true,
+    /** The forecast-backend switcher catalog (issue 20 STEP 4): every routable backend with an
+     *  evidence-based availability verdict. Drives the Settings selector + the Hardware panel rows. */
+    val backendCatalog: List<BackendAvailability> = emptyList(),
+    /** The backend the user REQUESTED for the forecast cycle (kv-persisted). null ⇒ auto (authority).
+     *  The backend ACTUALLY executing is [selectedPrediction]`.backend` / the selected [RunningModel]. */
+    val requestedBackend: BackendId? = null,
+    /** The last on-device GPU-vs-CPU comparison (timings + numerics + agreement verdict), or null
+     *  until one has been run (the switcher/Hardware panel trigger it when a GPU backend is active). */
+    val backendComparison: BackendComparison? = null,
     val note: String? = null,
 ) {
     val selectedPrediction: ModelPrediction? get() = predictions.firstOrNull { it.selected }

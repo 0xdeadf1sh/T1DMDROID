@@ -43,5 +43,3 @@ models/exported/
 .DS_Store
 *.log
 
-# Locally-built ExecuTorch Vulkan AAR (4 MB binary; rebuild via third_party/executorch-vulkan/BUILD_PROVENANCE.txt)
-third_party/**/*.aar

@@ -58,6 +58,7 @@ private const val DOSE_STEPS = 18
 fun InsulinScreen(
     iobCob: IobCobReadout? = null,
     previewBolus: (suspend (units: Double) -> DoubleArray)? = null,
+    previewBasal: (suspend (units: Double, preset: BasalPreset) -> DoubleArray)? = null,
     onLogBolus: (units: Double, preset: BolusPreset) -> Unit = { _, _ -> },
     onLogBasal: (units: Double, preset: BasalPreset) -> Unit = { _, _ -> },
 ) {
@@ -79,7 +80,7 @@ fun InsulinScreen(
 
         when (tab) {
             Tab.BOLUS -> BolusEntry(previewBolus, onLogBolus)
-            Tab.BASAL -> BasalEntry(onLogBasal)
+            Tab.BASAL -> BasalEntry(previewBasal, onLogBasal)
         }
     }
 }
@@ -118,7 +119,10 @@ private fun BolusEntry(
 }
 
 @Composable
-private fun BasalEntry(onLogBasal: (Double, BasalPreset) -> Unit) {
+private fun BasalEntry(
+    previewBasal: (suspend (units: Double, preset: BasalPreset) -> DoubleArray)?,
+    onLogBasal: (Double, BasalPreset) -> Unit,
+) {
     var unitsText by remember { mutableStateOf("") }
     var preset by remember { mutableStateOf(BasalPreset.TRESIBA) }
     val units = unitsText.toDoubleOrNull()
@@ -130,6 +134,23 @@ private fun BasalEntry(onLogBasal: (Double, BasalPreset) -> Unit) {
                 FilterChip(selected = preset == p, onClick = { preset = p }, label = { Text(p.label) })
             }
         }
+
+        // N9 — the basal PK-action curve, previewed like the bolus but normalized to its OWN peak so
+        // its deliberately broad, near-flat plateau is visible (a 24–42 h Bateman spreads a dose so
+        // thinly it would otherwise vanish on any shared scale). Labelled so the flatness reads as
+        // intended, not as a bug.
+        if (previewBasal != null && units != null && units > 0.0) {
+            Text(
+                "PK action — units per 5 min (long-acting; broad + near-flat by design)",
+                style = MaterialTheme.typography.labelMedium,
+                modifier = Modifier.padding(top = 8.dp),
+            )
+            val curve by produceState(DoubleArray(0), units, preset) {
+                value = runCatching { previewBasal(units, preset) }.getOrDefault(DoubleArray(0))
+            }
+            CurveSparkline(curve, MaterialTheme.colorScheme.tertiary)
+        }
+
         Text(
             "Logged as a discrete long-acting injection. A repeating daily schedule + the day-long " +
                 "basal-rate search live in the dose calculator (Settings → Basal).",
@@ -190,7 +211,10 @@ private fun IobLine(r: IobCobReadout) {
     }
 }
 
-/** A tiny filled sparkline of a per-5-min PK curve (preview only). */
+/** A tiny filled sparkline of a per-5-min PK curve (preview only). N7 — the curve is 0 at t=0 with the
+ *  first sample at t=+5 min: `values[i]` is the appearance/action over `[i·5, (i+1)·5)` min, so it is
+ *  anchored at slot `i+1` and slot 0 is the zero baseline (mirrors `CurvePreview` / the dashboard
+ *  overlay). Previously `values[0]` was drawn at x=0, making a high-GI curve appear to start mid-rise. */
 @Composable
 internal fun CurveSparkline(values: DoubleArray, color: Color) {
     Canvas(Modifier.fillMaxWidth().height(56.dp).padding(vertical = 4.dp)) {
@@ -198,13 +222,13 @@ internal fun CurveSparkline(values: DoubleArray, color: Color) {
         val peak = values.maxOrNull()?.toFloat() ?: return@Canvas
         if (peak <= 0f) return@Canvas
         val n = values.size
-        val dx = size.width / (n - 1).coerceAtLeast(1)
+        val dx = size.width / n
         val path = Path().apply {
-            moveTo(0f, size.height)
+            moveTo(0f, size.height) // t=0, value 0
             for (i in 0 until n) {
-                lineTo(i * dx, size.height - (values[i].toFloat() / peak) * size.height * 0.9f)
+                lineTo((i + 1) * dx, size.height - (values[i].toFloat() / peak) * size.height * 0.9f)
             }
-            lineTo((n - 1) * dx, size.height)
+            lineTo(n * dx, size.height)
             close()
         }
         drawPath(path, color.copy(alpha = 0.25f))

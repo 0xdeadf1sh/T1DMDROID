@@ -53,19 +53,10 @@ fun HardwareScreen(state: InferenceState, hardware: HardwareInfo = HardwareInfo.
                 HwRow("Thermal", hardware.thermalStatus)
                 HwRow("Battery", hardware.battery)
             }
-            // Inference-backend catalog (issue 1): one line per routing target + why it is/ isn't usable.
-            Text(
-                "Inference backends",
-                style = MaterialTheme.typography.bodySmall,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(top = 6.dp),
-            )
-            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                hardware.backends.forEach { b ->
-                    Text("· $b", style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
+            // N5 — the per-backend availability + evidence-based unavailability reasons moved to
+            // Settings → Forecast & models → Compute backend, where a user actually chooses a backend.
+            // Hardware keeps device + GPU/Vulkan capability + the live "Executing on" line + per-model
+            // timing below.
             HorizontalDivider(Modifier.padding(top = 8.dp))
         }
 
@@ -118,6 +109,20 @@ fun HardwareScreen(state: InferenceState, hardware: HardwareInfo = HardwareInfo.
             state.note?.let {
                 Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             }
+            HorizontalDivider(Modifier.padding(top = 8.dp))
+        }
+
+        // N5 — the forecast-backend availability catalog + evidence reasons now live in
+        // Settings → Forecast & models → Compute backend (the switcher), not here. A single pointer
+        // is kept so a user knows where to change/inspect it.
+        item {
+            Text(
+                "Choose the active compute backend, and see each backend's availability + reasons and " +
+                    "the last GPU-vs-CPU agreement measurement, in Settings → Forecast & models → " +
+                    "Compute backend.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             HorizontalDivider(Modifier.padding(top = 8.dp))
         }
 

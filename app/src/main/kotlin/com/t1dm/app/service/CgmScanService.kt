@@ -35,6 +35,8 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.onStart
 import com.t1dm.cgm.BleAdvertScanner
+import com.t1dm.core.model.BackendComparison
+import com.t1dm.core.model.BackendId
 import com.t1dm.core.model.BasalPreset
 import com.t1dm.core.model.BolusPreset
 import com.t1dm.core.model.CgmReading
@@ -379,6 +381,12 @@ class CgmScanService : LifecycleService() {
                 token = intent.getStringExtra(EXTRA_TOKEN).orEmpty(),
                 label = intent.getStringExtra(EXTRA_LABEL) ?: "local",
             )
+            // Issue-5 verify: drive the REST catch-up (download) direction — the reset→re-add-profile→
+            // RE-DOWNLOAD round-trip. Pages GET /v1/series from the start and LWW-merges into `sample`.
+            ACTION_RESYNC -> lifecycleScope.launch {
+                val merged = container.resyncFromServer()
+                Timber.tag(TAG).i("RESYNC merged=%d rows", merged)
+            }
             // ── Phase-4 verification hooks (drive the REAL container writers / gate paths) ──
             ACTION_SEED_CONTEXT -> seedMeasuredContext(intent.getDoubleExtra(EXTRA_HOURS, 25.0))
             ACTION_RUN_GRID_TICK -> lifecycleScope.launch {
@@ -389,6 +397,25 @@ class CgmScanService : LifecycleService() {
             }
             ACTION_SET_WARMUP -> lifecycleScope.launch {
                 container.setWarmupHours(intent.getIntExtra(EXTRA_HOURS, 24))
+            }
+            // ── Issue-20 Vulkan verification hooks (drive the REAL backend switcher / probe) ──
+            ACTION_SET_BACKEND -> lifecycleScope.launch {
+                val name = intent.getStringExtra(EXTRA_BACKEND).orEmpty()
+                val pref = name.takeIf { it.isNotBlank() }?.let { runCatching { BackendId.valueOf(it) }.getOrNull() }
+                val active = container.setForecastBackend(pref)
+                Timber.tag(TAG).i("SET_BACKEND requested=%s active=%s", pref, active)
+            }
+            ACTION_BACKEND_COMPARE -> lifecycleScope.launch {
+                container.inferenceController.refreshModels()
+                val cmp = container.runBackendComparison(intent.getIntExtra(EXTRA_RUNS, 20))
+                writeBackendReport(cmp)
+            }
+            ACTION_DUMP_HEADRAW -> lifecycleScope.launch {
+                val name = intent.getStringExtra(EXTRA_BACKEND) ?: BackendId.EXECUTORCH_XNNPACK_FP32.name
+                val bid = runCatching { BackendId.valueOf(name) }.getOrNull() ?: BackendId.EXECUTORCH_XNNPACK_FP32
+                container.inferenceController.refreshModels()
+                val head = container.inferenceController.debugHeadRaw(bid)
+                dumpHeadRaw(bid, head)
             }
             ACTION_LOG_MEAL -> logMeal(
                 grams = intent.getDoubleExtra(EXTRA_GRAMS, 60.0),
@@ -652,6 +679,37 @@ class CgmScanService : LifecycleService() {
         }
     }
 
+    /** Debug (issue 20): write the GPU-vs-CPU comparison to filesDir/backend_report.txt for adb read. */
+    private fun writeBackendReport(cmp: BackendComparison?) {
+        val f = java.io.File(filesDir, "backend_report.txt")
+        val text = if (cmp == null) {
+            "backend comparison: UNAVAILABLE (no non-authoritative backend loaded to compare)\n"
+        } else buildString {
+            appendLine("backend comparison (${cmp.backend} vs ${cmp.authority}), runs=${cmp.runs}")
+            appendLine("warm median ms:  backend=%.3f  authority=%.3f".format(cmp.warmMedianMsBackend, cmp.warmMedianMsAuthority))
+            appendLine("cold ms:         backend=%.3f  authority=%.3f".format(cmp.coldMsBackend, cmp.coldMsAuthority))
+            appendLine("max|Δ| head_raw (risk):   %.6e".format(cmp.maxAbsHeadRawDelta))
+            appendLine("max|Δ| decoded mg/dL:     %.6f  (tol %.2f)".format(cmp.maxAbsDecodedMgdlDelta, cmp.toleranceMgdl))
+            appendLine("AGREEMENT: ${if (cmp.agreementOk) "PASS" else "FAIL"}")
+            appendLine("load RSS growth KB: ${cmp.loadRssGrowthKb ?: "n/a"}")
+        }
+        runCatching { f.writeText(text) }
+        Timber.tag(TAG).i("BACKEND_COMPARE →\n%s", text)
+    }
+
+    /** Debug (issue 20): dump one backend's head_raw (168 floats) to filesDir for a byte-exact
+     *  stock-vs-custom-AAR CPU-unchanged diff. */
+    private fun dumpHeadRaw(bid: BackendId, head: FloatArray?) {
+        val f = java.io.File(filesDir, "headraw_$bid.txt")
+        val text = if (head == null) "head_raw UNAVAILABLE for $bid (variant not loaded)\n"
+        else buildString {
+            appendLine("head_raw $bid n=${head.size} bitsum=${head.fold(0L) { a, v -> a + java.lang.Float.floatToRawIntBits(v) }}")
+            head.forEach { appendLine("%.9e".format(it)) }
+        }
+        runCatching { f.writeText(text) }
+        Timber.tag(TAG).i("DUMP_HEADRAW %s size=%s", bid, head?.size)
+    }
+
     companion object {
         private const val TAG = "CgmScan"
         private const val CH_SERVICE = "t1dm.service.cgm"
@@ -672,6 +730,7 @@ class CgmScanService : LifecycleService() {
         /** Delivered by [AlertRepeatScheduler] via [com.t1dm.app.notify.AlertRepeatReceiver]. */
         const val ACTION_ALERT_REPEAT = AlertRepeatScheduler.ACTION_ALERT_REPEAT
         const val ACTION_SET_SERVER = "com.t1dm.app.SET_SERVER"
+        const val ACTION_RESYNC = "com.t1dm.app.RESYNC"
         const val ACTION_SEED_CONTEXT = "com.t1dm.app.SEED_CONTEXT"
         const val ACTION_RUN_GRID_TICK = "com.t1dm.app.RUN_GRID_TICK"
         const val ACTION_SET_WARMUP = "com.t1dm.app.SET_WARMUP"
@@ -685,6 +744,11 @@ class CgmScanService : LifecycleService() {
         const val ACTION_WATCH_ROTATE = "com.t1dm.app.WATCH_ROTATE"
         const val ACTION_WATCH_UNPAIR = "com.t1dm.app.WATCH_UNPAIR"
         const val ACTION_WATCH_PUSH = "com.t1dm.app.WATCH_PUSH"
+        const val ACTION_SET_BACKEND = "com.t1dm.app.SET_BACKEND"
+        const val ACTION_BACKEND_COMPARE = "com.t1dm.app.BACKEND_COMPARE"
+        const val ACTION_DUMP_HEADRAW = "com.t1dm.app.DUMP_HEADRAW"
+        const val EXTRA_BACKEND = "backend"
+        const val EXTRA_RUNS = "runs"
         const val EXTRA_BG = "bg"
         const val EXTRA_TRESIBA = "tresiba"
         const val EXTRA_AGE_MIN = "ageMin"

@@ -1,5 +1,6 @@
 package com.t1dm.feature.settings
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -13,8 +14,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 
 /**
@@ -55,6 +58,20 @@ fun AboutScreen(info: AboutInfo) {
         Kv("Package", info.applicationId)
         Kv("Flavor / type", "${info.flavor} · ${info.buildType}")
         Kv("Git", info.gitSha)
+
+        Section("Source")
+        val uriHandler = LocalUriHandler.current
+        val repoUrl = "https://github.com/0xdeadf1sh/T1DMDROID"
+        Text(
+            repoUrl,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.primary,
+            textDecoration = TextDecoration.Underline,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { uriHandler.openUri(repoUrl) }
+                .padding(vertical = 4.dp),
+        )
 
         Section("Model")
         Kv("Model id", info.modelId ?: "none loaded")

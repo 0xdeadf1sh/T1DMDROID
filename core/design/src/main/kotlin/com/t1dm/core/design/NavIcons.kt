@@ -136,6 +136,48 @@ private fun settings(s: IconStyle) = glyph("settings", s) { // gear (octagon + b
     moveTo(12f, 9f); arcTo(3f, 3f, 0f, true, false, 12.01f, 9f); close()
 }
 
+// ── Time-of-day glyphs (issue N4a) — the same per-theme geometry system as the nav icons, so morning /
+//    noon / evening / night read as Tron-angular · Umbrella-blocky · Kitty-rounded like everything else.
+
+enum class DayPeriod { MORNING, NOON, EVENING, NIGHT }
+
+/** Map a local hour-of-day `[0,24)` to its period: morning 5–11, noon 11–17, evening 17–21, night else. */
+fun dayPeriodFor(hour: Int): DayPeriod = when (hour) {
+    in 5..10 -> DayPeriod.MORNING
+    in 11..16 -> DayPeriod.NOON
+    in 17..20 -> DayPeriod.EVENING
+    else -> DayPeriod.NIGHT
+}
+
+private fun morning(s: IconStyle) = glyph("morning", s) { // sun rising over a horizon (upper half-disc)
+    moveTo(4f, 16f); lineTo(20f, 16f); lineTo(20f, 17f); lineTo(4f, 17f); close()
+    moveTo(6f, 16f); arcTo(6f, 6f, 0f, false, true, 18f, 16f); close()
+}
+
+private fun noon(s: IconStyle) = glyph("noon", s) { // full sun disc
+    moveTo(12f, 6f); arcTo(6f, 6f, 0f, true, true, 11.99f, 6f); close()
+}
+
+private fun evening(s: IconStyle) = glyph("evening", s) { // sun setting below a horizon (lower half-disc)
+    moveTo(4f, 8f); lineTo(20f, 8f); lineTo(20f, 9f); lineTo(4f, 9f); close()
+    moveTo(6f, 9f); arcTo(6f, 6f, 0f, false, false, 18f, 9f); close()
+}
+
+private fun night(s: IconStyle) = glyph("night", s) { // crescent moon
+    moveTo(15f, 4f)
+    arcTo(8f, 8f, 0f, true, false, 15f, 20f)
+    arcTo(6.4f, 6.4f, 0f, true, true, 15f, 4f)
+    close()
+}
+
+/** Resolve a day-period to its themed [ImageVector], in the same geometry family as [navIcon]. */
+fun timeOfDayIcon(period: DayPeriod, style: IconStyle): ImageVector = when (period) {
+    DayPeriod.MORNING -> morning(style)
+    DayPeriod.NOON -> noon(style)
+    DayPeriod.EVENING -> evening(style)
+    DayPeriod.NIGHT -> night(style)
+}
+
 /** Resolve a nav route to its themed [ImageVector]. Unknown routes fall back to the settings gear. */
 fun navIcon(route: String, style: IconStyle): ImageVector = when (route) {
     "dashboard" -> dashboard(style)

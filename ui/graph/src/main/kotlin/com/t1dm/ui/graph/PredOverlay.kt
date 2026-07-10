@@ -9,6 +9,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.ModelPrediction
 import com.t1dm.core.model.UnitSpace
+import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -174,8 +175,9 @@ fun excursionsOf(
         val ts = p.anchorTsMs + (i + 1L) * p.stepMs
         val v = p.medianBg[i]
         val eta = ((ts - nowMs) / 60_000L).coerceAtLeast(0L)
-        if (!hypo && v < lowMgdl) { out.add(ExcursionMarker(ts, hyper = false, thresholdMgdl = lowMgdl, etaMin = eta)); hypo = true }
-        if (!hyper && v > highMgdl) { out.add(ExcursionMarker(ts, hyper = true, thresholdMgdl = highMgdl, etaMin = eta)); hyper = true }
+        val level = v.roundToInt()
+        if (!hypo && v < lowMgdl) { out.add(ExcursionMarker(ts, hyper = false, thresholdMgdl = lowMgdl, etaMin = eta, levelMgdl = level)); hypo = true }
+        if (!hyper && v > highMgdl) { out.add(ExcursionMarker(ts, hyper = true, thresholdMgdl = highMgdl, etaMin = eta, levelMgdl = level)); hyper = true }
         if (hypo && hyper) break
     }
     return out

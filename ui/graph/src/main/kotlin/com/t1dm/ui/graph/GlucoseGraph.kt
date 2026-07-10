@@ -83,7 +83,15 @@ data class PredictedClock(val predictedHour: Double, val anchorTsMs: Long, val r
  * FIRST time its median crosses below the low or above the high threshold. Drawn as a marker at the
  * crossing with an ETA; produced only for an eligible forecast, so a degenerate/stale one shows none.
  */
-data class ExcursionMarker(val tsMs: Long, val hyper: Boolean, val thresholdMgdl: Int, val etaMin: Long)
+data class ExcursionMarker(
+    val tsMs: Long,
+    val hyper: Boolean,
+    val thresholdMgdl: Int,
+    val etaMin: Long,
+    /** The forecast MEDIAN (mg/dL) at the crossing step — the marker sits ON the median here (item N12),
+     *  at the predicted time and level, not at the bare threshold and never in an unrelated corner. */
+    val levelMgdl: Int,
+)
 
 /**
  * The Phase-1 live BG graph (Phase 1 / ux-decisions "Graph = the centrepiece"):
@@ -454,7 +462,9 @@ fun GlucoseGraph(
                 for (ex in excursions) {
                     val x = (plotLeft + (ex.tsMs - viewStartMs) * ppm).toFloat()
                     if (x < plotLeft || x > plotRight) continue
-                    val y = yToPx(convertMgdlTo(ex.thresholdMgdl.toFloat(), frame.unit))
+                    // N12 — anchor the marker ON the forecast median at the crossing (its predicted
+                    // level), not at the bare threshold, so it reads as a point on the predicted curve.
+                    val y = yToPx(convertMgdlTo(ex.levelMgdl.toFloat(), frame.unit))
                     val col = if (ex.hyper) cs.secondary else cs.error
                     val r = 5f
                     val tri = Path().apply {
@@ -466,7 +476,11 @@ fun GlucoseGraph(
                     drawLine(col.copy(alpha = 0.5f), Offset(x, plotTop), Offset(x, plotBottom), 1f,
                         pathEffect = PathEffect.dashPathEffect(floatArrayOf(2f, 4f)))
                     val kind = if (ex.hyper) "hyper" else "hypo"
-                    val lbl = measurer.measure("$kind ~${ex.etaMin}m", TextStyle(color = col, fontSize = 9.sp))
+                    // ETA + the predicted level beside the marker (item N12).
+                    val lbl = measurer.measure(
+                        "$kind ${formatValue(convertMgdlTo(ex.levelMgdl.toFloat(), frame.unit), frame.unit)} ~${ex.etaMin}m",
+                        TextStyle(color = col, fontSize = 9.sp),
+                    )
                     var lx = x - lbl.size.width / 2f
                     lx = lx.coerceIn(plotLeft, plotRight - lbl.size.width)
                     val ly = if (ex.hyper) (y - r - lbl.size.height - 2f).coerceAtLeast(plotTop) else (y + r + 2f)
