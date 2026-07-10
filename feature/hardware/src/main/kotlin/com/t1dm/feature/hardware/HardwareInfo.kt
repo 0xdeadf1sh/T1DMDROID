@@ -23,6 +23,9 @@ data class HardwareInfo(
     val securityPatch: String?,
     val thermalStatus: String?,
     val battery: String?,
+    /** The battery-sensor temperature in Celsius (U9); rendered in the user's chosen unit by the UI.
+     *  Null when unreadable. There is no readable fan RPM on this device — never a proxied figure. */
+    val batteryTempC: Double? = null,
     val backends: List<String>,
     /** GPU / Vulkan compute capability readout (issue 20 — STEP 5); null before the probe runs. */
     val vulkan: VulkanInfo? = null,
@@ -33,8 +36,8 @@ data class HardwareInfo(
             device = "…", soc = null, cpuTopology = null, cpuMaxFreqsGhz = emptyList(),
             abis = emptyList(), pageSizeKb = null, ramTotalMb = null, ramAvailMb = null,
             gpuRenderer = null, npu = null, display = null, androidVersion = null,
-            securityPatch = null, thermalStatus = null, battery = null, backends = emptyList(),
-            vulkan = null,
+            securityPatch = null, thermalStatus = null, battery = null, batteryTempC = null,
+            backends = emptyList(), vulkan = null,
         )
     }
 }

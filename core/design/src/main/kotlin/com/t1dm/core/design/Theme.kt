@@ -51,12 +51,15 @@ fun T1dmTheme(
     val scheme = palette.toColorScheme()
     T1dmColorScheme = scheme
     T1dmActivePalette = palette
-    // Issue 4 — the red-rectangle touch flash. Material's default ripple tints from the local content
-    // colour; on a surface whose content resolves to `error` (mapped to [urgentLow] = red) an
-    // unclipped bounded ripple painted a red rectangle on every tap. Pin the ripple to the theme
-    // accent so it can never resolve to the alarm-red: cyan under Tron, pink under Hello Kitty, and a
-    // deliberate (not stray) corporate red only under Umbrella, where the accent IS red.
-    val ripple = RippleConfiguration(color = palette.primary)
+    // U3 — the red-rectangle touch flash. Material's default ripple tints from the local content
+    // colour; on a surface whose content resolves to `error` (= [urgentLow] = red) a bounded ripple on
+    // an unclipped clickable painted a red rectangle on every tap. A prior fix pinned the ripple to
+    // `palette.primary`, but on the Umbrella (and any red-accent Custom) theme the PRIMARY itself IS
+    // red, so the press rectangle was still red. Decouple the press indication from the accent entirely:
+    // pin it to the neutral INK role (light on dark themes, dark on light), so a tap can never render as
+    // an alarm-red rectangle on any theme, while staying a visible, restrained highlight. Alpha is left
+    // at Material's subtle default so it reads as a highlight, not a filled block.
+    val ripple = RippleConfiguration(color = palette.ink)
     CompositionLocalProvider(
         LocalT1dmSemantics provides palette,
         LocalAnimationsEnabled provides animationsEnabled,

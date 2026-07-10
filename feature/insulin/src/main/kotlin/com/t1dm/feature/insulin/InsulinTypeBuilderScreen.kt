@@ -58,8 +58,6 @@ fun InsulinTypeBuilderScreen(
         Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text("Insulin types", style = MaterialTheme.typography.titleLarge)
-
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             types.forEach { t ->
                 FilterChip(

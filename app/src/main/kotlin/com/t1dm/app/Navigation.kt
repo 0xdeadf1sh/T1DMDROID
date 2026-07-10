@@ -1,5 +1,10 @@
 package com.t1dm.app
 
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -25,8 +30,12 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -60,6 +69,7 @@ import com.t1dm.app.sync.SyncStatus
 import com.t1dm.app.sync.toPanelState
 import com.t1dm.feature.settings.ServerSettingsScreen
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import com.t1dm.feature.dashboard.DashboardScreen
 import com.t1dm.feature.hardware.HardwareScreen
 import com.t1dm.feature.insulin.InsulinScreen
@@ -154,7 +164,7 @@ fun T1dmApp(container: AppContainer) {
         Column(Modifier.fillMaxSize().padding(padding)) {
             // Flavor-specific: real text in the public build, no-op in the personal build.
             Disclaimer()
-            Breadcrumb(navController)
+            Breadcrumb(navController, container)
             T1dmNavHost(navController, container)
         }
     }
@@ -208,7 +218,7 @@ private fun crumbsFor(route: String?, modelId: String?): List<Crumb> {
  * flat (a single scrollable row) so long trails never wrap.
  */
 @Composable
-private fun Breadcrumb(navController: NavHostController) {
+private fun Breadcrumb(navController: NavHostController, container: AppContainer) {
     val backStackEntry by navController.currentBackStackEntryAsState()
     val route = backStackEntry?.destination?.route
     val modelId = backStackEntry?.arguments?.getString("modelId")
@@ -216,6 +226,9 @@ private fun Breadcrumb(navController: NavHostController) {
     val cs = MaterialTheme.colorScheme
     // N10 — the app short name + short version (major.minor.patch, suffix stripped) on the right.
     val shortVersion = remember { BuildConfig.VERSION_NAME.substringBefore('-') }
+    // U1 — the app-wide glycemic status, recomputed as the forecast state changes.
+    val inference by container.inferenceState.collectAsState(InferenceState())
+    val status = remember(inference) { glycemicStatusOf(inference, container.alarmConfig.thresholds) }
     Row(
         // N1 — the breadcrumb bar shares the app BACKGROUND (not a surface tint) so it reads as chrome
         // over the same canvas.
@@ -226,20 +239,20 @@ private fun Breadcrumb(navController: NavHostController) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Row(
-            // The trail scrolls sideways so a long path never wraps; the version tag stays pinned right.
+            // The trail scrolls sideways so a long path never wraps; the status + version stay pinned.
             Modifier.weight(1f).horizontalScroll(rememberScrollState()),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             crumbs.forEachIndexed { i, crumb ->
                 if (i > 0) {
-                    Text("›", style = MaterialTheme.typography.bodyMedium, color = cs.onSurfaceVariant)
+                    Text("›", style = MaterialTheme.typography.titleMedium, color = cs.onSurfaceVariant)
                 }
                 val isLast = i == crumbs.lastIndex
                 Text(
                     crumb.label,
-                    // N1 — larger, more legible breadcrumb type.
-                    style = MaterialTheme.typography.bodyMedium,
+                    // U4 — materially larger, more legible breadcrumb type.
+                    style = MaterialTheme.typography.titleMedium,
                     fontWeight = if (isLast) FontWeight.Bold else FontWeight.Normal,
                     color = when {
                         isLast -> cs.onSurface
@@ -264,6 +277,10 @@ private fun Breadcrumb(navController: NavHostController) {
                 )
             }
         }
+        // U1 — the prominent, app-wide glycemic status: GREEN "STABLE", RED "HYPO/HYPER in NM", or a
+        // neutral tappable "VOID" when the forecast is ineligible (never green off a stale/degenerate
+        // /warmup forecast — that is the false-reassurance §3.6 exists to prevent).
+        GlycemicStatusBadge(status)
         Text(
             "T1DM · $shortVersion",
             style = MaterialTheme.typography.labelMedium,
@@ -273,6 +290,92 @@ private fun Breadcrumb(navController: NavHostController) {
             modifier = Modifier.padding(start = 8.dp),
         )
     }
+}
+
+/** The app-wide glycemic status (U1). It is a strict function of the CURRENT forecast eligibility:
+ *  a green STABLE is a positive claim and is emitted ONLY for a §3.6-eligible forecast with no
+ *  predicted crossing; every ineligible state is VOID with a plain-language reason. */
+private sealed interface GlyStatus {
+    val text: String
+    object Stable : GlyStatus { override val text = "STABLE" }
+    data class Excursion(val hyper: Boolean, val etaMin: Long) : GlyStatus {
+        override val text: String get() = (if (hyper) "HYPER" else "HYPO") + " in ${etaMin}M"
+    }
+    data class Void(val reason: String) : GlyStatus { override val text = "VOID" }
+}
+
+/** Derive the status from the selected model's forecast + the alarm thresholds. Fail-closed: any
+ *  ineligibility (warmup / no forecast / stale / degenerate) yields VOID, never STABLE. */
+private fun glycemicStatusOf(inf: InferenceState, thr: com.t1dm.core.model.AlertThresholds?): GlyStatus {
+    inf.warmup?.let {
+        return GlyStatus.Void(
+            "Collecting context — %.1f / %.0f h of measured glucose so far. No stable-or-excursion call is made until enough real history exists to forecast on."
+                .format(it.measuredHours, it.requiredHours),
+        )
+    }
+    val p = inf.selectedPrediction
+        ?: return GlyStatus.Void("No forecast yet — waiting for the first model cycle on live glucose.")
+    if (p.stale) {
+        return GlyStatus.Void("The forecast's anchor reading is stale (older than the freshness gate). No status is claimed off an aged reading.")
+    }
+    if (p.status != com.t1dm.core.model.ForecastStatus.OK) {
+        return GlyStatus.Void("The forecast is degenerate (collapsed or rail-pinned) and is ineligible, so no glycemic status is claimed.")
+    }
+    thr ?: return GlyStatus.Void("No glucose thresholds are configured to judge a crossing against.")
+    val nowMs = System.currentTimeMillis()
+    for (i in p.medianBg.indices) {
+        val v = p.medianBg[i]
+        val ts = p.anchorTsMs + (i + 1L) * p.stepMs
+        val eta = ((ts - nowMs) / 60_000L).coerceAtLeast(0L)
+        if (v <= thr.lowMgdl) return GlyStatus.Excursion(hyper = false, etaMin = eta)
+        if (v >= thr.highMgdl) return GlyStatus.Excursion(hyper = true, etaMin = eta)
+    }
+    return GlyStatus.Stable
+}
+
+@Composable
+private fun GlycemicStatusBadge(status: GlyStatus) {
+    val animationsOn = LocalAnimationsEnabled.current
+    val ctx = LocalContext.current
+    val stableGreen = Color(0xFF3DD68C)
+    val color = when (status) {
+        is GlyStatus.Stable -> stableGreen
+        is GlyStatus.Excursion -> MaterialTheme.colorScheme.error
+        is GlyStatus.Void -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    // A gentle breathe for STABLE, an urgent pulse for a predicted excursion, static for VOID — and
+    // static whenever the global "disable all animations" flag is off (LocalAnimationsEnabled).
+    val periodMs = when (status) {
+        is GlyStatus.Stable -> 2600
+        is GlyStatus.Excursion -> 700
+        is GlyStatus.Void -> 0
+    }
+    val floor = if (status is GlyStatus.Excursion) 0.35f else 0.8f
+    val alpha = if (animationsOn && periodMs > 0) {
+        val transition = rememberInfiniteTransition(label = "status")
+        transition.animateFloat(
+            initialValue = 1f,
+            targetValue = floor,
+            animationSpec = infiniteRepeatable(tween(periodMs), RepeatMode.Reverse),
+            label = "statusAlpha",
+        ).value
+    } else 1f
+    val mod = if (status is GlyStatus.Void) {
+        Modifier
+            .clip(RoundedCornerShape(6.dp))
+            .clickable { android.widget.Toast.makeText(ctx, status.reason, android.widget.Toast.LENGTH_LONG).show() }
+            .padding(horizontal = 8.dp, vertical = 4.dp)
+    } else {
+        Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+    }
+    Text(
+        status.text,
+        style = MaterialTheme.typography.titleSmall,
+        fontWeight = FontWeight.Bold,
+        color = color.copy(alpha = color.alpha * alpha),
+        maxLines = 1,
+        modifier = mod,
+    )
 }
 
 /**
@@ -289,11 +392,25 @@ private fun T1dmBottomBar(navController: NavHostController) {
     val selectedIndex = destinations.indexOfFirst { it.route == current }
     val animationsOn = LocalAnimationsEnabled.current
 
-    // Keep the selected tile on-screen as the destination changes — snapping when motion is disabled.
-    LaunchedEffect(selectedIndex, scrollState.maxValue, animationsOn) {
-        if (selectedIndex >= 0 && scrollState.maxValue > 0) {
-            val approxTilePx = (scrollState.maxValue + 1) / destinations.size.coerceAtLeast(1)
-            val target = (selectedIndex * approxTilePx - approxTilePx).coerceAtLeast(0)
+    // U7 — scroll so the SELECTED tile is always FULLY visible, first and last tiles included. The
+    // prior heuristic (an averaged tile width times the index) overshot for edge tiles because tiles
+    // aren't equal-width (the selected one is wider). Instead we record each tile's real content-space
+    // edges + the viewport width and nudge the scroll only as far as needed to reveal the selected one.
+    val tileEdges = remember { mutableStateMapOf<Int, Pair<Int, Int>>() }
+    var viewportW by remember { mutableStateOf(0) }
+    val selectedEdges = tileEdges[selectedIndex]
+    LaunchedEffect(selectedIndex, selectedEdges, viewportW, scrollState.maxValue, animationsOn) {
+        val edges = selectedEdges ?: return@LaunchedEffect
+        if (viewportW <= 0) return@LaunchedEffect
+        val (l, r) = edges
+        val pad = 12
+        val cur = scrollState.value
+        val target = when {
+            l - pad < cur -> l - pad
+            r + pad > cur + viewportW -> r + pad - viewportW
+            else -> cur
+        }.coerceIn(0, scrollState.maxValue)
+        if (target != cur) {
             if (animationsOn) scrollState.animateScrollTo(target) else scrollState.scrollTo(target)
         }
     }
@@ -302,15 +419,17 @@ private fun T1dmBottomBar(navController: NavHostController) {
         Row(
             Modifier
                 .fillMaxWidth()
+                .onSizeChanged { viewportW = it.width }
                 .horizontalScroll(scrollState)
                 .navigationBarsPadding()
                 .padding(horizontal = 8.dp, vertical = 6.dp),
             horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            destinations.forEach { d ->
+            destinations.forEachIndexed { index, d ->
                 NavTile(
                     destination = d,
                     selected = current == d.route,
+                    onEdges = { l, r -> tileEdges[index] = l to r },
                     onClick = {
                         navController.navigate(d.route) {
                             launchSingleTop = true
@@ -325,13 +444,17 @@ private fun T1dmBottomBar(navController: NavHostController) {
 }
 
 @Composable
-private fun NavTile(destination: Destination, selected: Boolean, onClick: () -> Unit) {
+private fun NavTile(destination: Destination, selected: Boolean, onEdges: (Int, Int) -> Unit, onClick: () -> Unit) {
     val cs = MaterialTheme.colorScheme
     val bg = if (selected) cs.primary.copy(alpha = 0.16f) else Color.Transparent
     val style = iconStyleForTheme(LocalT1dmSemantics.current.id)
     val icon = remember(destination.route, style) { navIcon(destination.route, style) }
     Column(
         Modifier
+            .onGloballyPositioned {
+                val left = it.positionInParent().x.toInt()
+                onEdges(left, left + it.size.width)
+            }
             .clip(RoundedCornerShape(16.dp))
             .background(bg)
             .clickable(onClick = onClick)
@@ -380,6 +503,14 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
             val windowHours by container.graphWindowHours.collectAsState(6)
             val reachability by container.bgReachability.collectAsState(null)
             val signals by container.bgSignals.collectAsState(null)
+            val tempUnit by container.temperatureUnit.collectAsState(com.t1dm.core.model.TempUnit.CELSIUS)
+            // Poll the device (battery-sensor) temperature off-main every 30 s (U9 — no fan RPM).
+            val deviceTempC by produceState<Double?>(null) {
+                while (true) {
+                    value = withContext(container.dispatchers.io) { container.readDeviceTempC() }
+                    kotlinx.coroutines.delay(30_000)
+                }
+            }
             DashboardScreen(
                 readings = readings,
                 latest = latest,
@@ -397,6 +528,8 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 onSetWindowHours = { h -> scope.launch { container.setGraphWindowHours(h) } },
                 reachability = reachability,
                 signals = signals,
+                deviceTempC = deviceTempC,
+                temperatureUnit = tempUnit,
                 circadianTime = inference.circadianTime,
                 circadianAnchorMs = inference.circadianAnchorMs,
                 smoothMgdl = { arr -> container.nativeCore.causalSmooth(arr.toList(), 20.0, 500.0).toDoubleArray() },
@@ -477,7 +610,8 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
             val inference by container.inferenceState.collectAsState(InferenceState())
             var hardware by remember { mutableStateOf(com.t1dm.feature.hardware.HardwareInfo.UNKNOWN) }
             LaunchedEffect(Unit) { hardware = container.detectHardware() }
-            HardwareScreen(state = inference, hardware = hardware)
+            val tempUnit by container.temperatureUnit.collectAsState(com.t1dm.core.model.TempUnit.CELSIUS)
+            HardwareScreen(state = inference, hardware = hardware, temperatureUnit = tempUnit)
         }
         composable("network") {
             val status by container.syncStatus.collectAsState(SyncStatus())
@@ -615,6 +749,7 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
             val animations by ss.animationsEnabled.collectAsState(true)
             val themeId by ss.themeId.collectAsState(SettingsStore.DEFAULT_THEME)
             val fontId by ss.fontId.collectAsState(SettingsStore.DEFAULT_FONT)
+            val tempUnit by container.temperatureUnit.collectAsState(com.t1dm.core.model.TempUnit.CELSIUS)
             val customJson by ss.customThemeJson.collectAsState(null)
             var importStatus by remember { mutableStateOf<String?>(null) }
             // Parse the loaded custom-theme JSON only for its display name; failures degrade quietly.
@@ -652,12 +787,14 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 selectedFontId = fontId,
                 customThemeName = customName,
                 importStatus = importStatus,
+                temperatureUnit = tempUnit,
                 onSetUnitSpace = { container.statsViewModel.setUnitSpace(it) },
                 onSetTargetRange = { lo, hi -> container.statsViewModel.setTargetRange(lo, hi) },
                 onSetAnimationsEnabled = { on -> scope.launch { ss.setAnimationsEnabled(on) } },
                 onSelectTheme = { id -> scope.launch { ss.setThemeId(id) } },
                 onSelectFont = { id -> scope.launch { ss.setFontId(id) } },
                 onImportCustomTheme = { importStatus = null; importLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
+                onSetTemperatureUnit = { u -> scope.launch { container.setTemperatureUnit(u) } },
             )
         }
         composable("settings/alarms") {

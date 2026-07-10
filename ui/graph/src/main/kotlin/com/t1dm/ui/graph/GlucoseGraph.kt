@@ -118,7 +118,6 @@ fun GlucoseGraph(
     rangeMinMgdl: Int? = null,
     rangeMaxMgdl: Int? = null,
     predictedClock: PredictedClock? = null,
-    excursions: List<ExcursionMarker> = emptyList(),
     smoothed: SmoothedTrace? = null,
     showSmoothed: Boolean = false,
     onScrub: ((GraphScrub?) -> Unit)? = null,
@@ -454,41 +453,9 @@ fun GlucoseGraph(
                 }
             }
 
-            // (6.7) Predicted-excursion markers (item 16): the approaching hypo/hyper crossing of the
-            //       §3.6-eligible forecast median, with an ETA. Suppressed in Kovatchev space (mg/dL
-            //       thresholds) and off-plot; the caller already withholds these for a degenerate/stale
-            //       forecast, so their mere presence is meaningful.
-            if (frame.unit != UnitSpace.Kovatchev) {
-                for (ex in excursions) {
-                    val x = (plotLeft + (ex.tsMs - viewStartMs) * ppm).toFloat()
-                    if (x < plotLeft || x > plotRight) continue
-                    // N12 — anchor the marker ON the forecast median at the crossing (its predicted
-                    // level), not at the bare threshold, so it reads as a point on the predicted curve.
-                    val y = yToPx(convertMgdlTo(ex.levelMgdl.toFloat(), frame.unit))
-                    val col = if (ex.hyper) cs.secondary else cs.error
-                    val r = 5f
-                    val tri = Path().apply {
-                        if (ex.hyper) { moveTo(x, y - r); lineTo(x - r, y + r); lineTo(x + r, y + r) }
-                        else { moveTo(x, y + r); lineTo(x - r, y - r); lineTo(x + r, y - r) }
-                        close()
-                    }
-                    drawPath(tri, col)
-                    drawLine(col.copy(alpha = 0.5f), Offset(x, plotTop), Offset(x, plotBottom), 1f,
-                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(2f, 4f)))
-                    val kind = if (ex.hyper) "hyper" else "hypo"
-                    // ETA + the predicted level beside the marker (item N12).
-                    val lbl = measurer.measure(
-                        "$kind ${formatValue(convertMgdlTo(ex.levelMgdl.toFloat(), frame.unit), frame.unit)} ~${ex.etaMin}m",
-                        TextStyle(color = col, fontSize = 9.sp),
-                    )
-                    var lx = x - lbl.size.width / 2f
-                    lx = lx.coerceIn(plotLeft, plotRight - lbl.size.width)
-                    val ly = if (ex.hyper) (y - r - lbl.size.height - 2f).coerceAtLeast(plotTop) else (y + r + 2f)
-                    drawText(lbl, topLeft = Offset(lx, ly))
-                }
-            }
-
-            // (7) Scrub cursor — time-anchored, so it reads in the forecast zone too (item 3).
+            // (7) Scrub cursor — time-anchored, so it reads in the forecast zone too (item 3). U8 — the
+            //     read-out box is now PINNED at the right-hand middle of the plot (not floating by the
+            //     thumb) and updates continuously as the thumb moves, so a finger never occludes it.
             if (!scrubMs.isNaN()) {
                 val cx = (plotLeft + (scrubMs - viewStartMs) * ppm).toFloat()
                 if (cx in plotLeft..plotRight) {
@@ -496,19 +463,21 @@ fun GlucoseGraph(
                     drawLine(cs.onSurface.copy(alpha = 0.5f), Offset(cx, plotTop), Offset(cx, plotBottom), 1f)
                     sc.bgValue?.let { drawCircle(cs.onSurface, 4f, Offset(cx, yToPx(it)), style = Stroke(width = 2f)) }
                     val lines = scrubLines(sc)
-                    val measured = lines.map { measurer.measure(it, TextStyle(color = cs.onPrimary, fontSize = 10.sp)) }
-                    val boxW = (measured.maxOf { it.size.width }).toFloat() + 10f
+                    val measured = lines.map { measurer.measure(it, TextStyle(color = cs.onPrimary, fontSize = 11.sp)) }
+                    val boxW = (measured.maxOf { it.size.width }).toFloat() + 12f
                     val lineH = measured.first().size.height.toFloat()
-                    val boxH = lineH * measured.size + 6f
-                    val bx = (cx + 6f).coerceAtMost(plotRight - boxW - 2f).coerceAtLeast(plotLeft)
+                    val boxH = lineH * measured.size + 8f
+                    // Fixed at the right-hand middle of the plot.
+                    val bx = (plotRight - boxW - 6f).coerceAtLeast(plotLeft)
+                    val by = ((plotTop + plotBottom) / 2f - boxH / 2f).coerceIn(plotTop, plotBottom - boxH)
                     drawRoundRect(
                         cs.primary,
-                        topLeft = Offset(bx, plotTop),
+                        topLeft = Offset(bx, by),
                         size = androidx.compose.ui.geometry.Size(boxW, boxH),
-                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(4f, 4f),
+                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(5f, 5f),
                     )
                     measured.forEachIndexed { i, m ->
-                        drawText(m, topLeft = Offset(bx + 5f, plotTop + 3f + i * lineH))
+                        drawText(m, topLeft = Offset(bx + 6f, by + 4f + i * lineH))
                     }
                 }
             }

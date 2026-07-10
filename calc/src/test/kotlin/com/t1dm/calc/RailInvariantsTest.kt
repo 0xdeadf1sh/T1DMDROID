@@ -85,10 +85,47 @@ class RailInvariantsTest {
     }
 
     @Test
+    fun authority_pinned_dosing_survives_a_non_agreeing_displayed_gpu() = runTest {
+        // The root-cause fix (§3.6-E): the switcher governs the DISPLAYED forecast only; dose advice is
+        // ALWAYS computed on the fp32 XNNPACK CPU authority. So even while a non-agreeing Vulkan GPU
+        // renders what the user sees, `:calc` consumes an authority-produced forecast and the advisor
+        // EMITS advice — the backend-agreement refusal never arises in normal use. This is exactly the
+        // BackendInfo the composition root builds when Vulkan is selected: backend == the CPU authority
+        // (trustworthy by construction), displayedBackend == the GPU (informational only).
+        val authorityWhileGpuDisplayed = BackendInfo(
+            backend = com.t1dm.core.model.BackendId.EXECUTORCH_XNNPACK_FP32,
+            precision = com.t1dm.core.model.Precision.FP32,
+            agreementOk = null,
+            displayedBackend = com.t1dm.core.model.BackendId.EXECUTORCH_VULKAN_FP32,
+        )
+        assertTrue("authority-pinned dosing is trustworthy regardless of the displayed backend",
+            authorityWhileGpuDisplayed.trustworthy)
+        val advisor = advisorOf(
+            FakeForecastPort(startBg = 230.0, mgdlPerU = 15.0),
+            anchor = fakeAnchor(now), iob = fakeIob(now, iobU = 0.0),
+            backend = authorityWhileGpuDisplayed,
+        )
+        val r = advisor.recommendBolus(now, emptyList(), CalcConfig())
+        assertTrue("a non-agreeing DISPLAYED backend must NOT refuse when dosing runs on the authority",
+            r is AdviceResult.Recommended)
+        r as AdviceResult.Recommended
+        // The forecast :calc consumed is the AUTHORITY's: the decision card records the fp32 CPU path,
+        // never the GPU the user is looking at.
+        assertEquals(com.t1dm.core.model.BackendId.EXECUTORCH_XNNPACK_FP32, r.card.backend)
+        assertEquals(com.t1dm.core.model.Precision.FP32, r.card.precision)
+        // …and a small NON-BLOCKING note discloses that the GPU only rendered the display.
+        assertTrue("a non-blocking display-provenance note is surfaced",
+            r.railNotes.any { it.contains("rendered by", ignoreCase = true) && it.contains("CPU authority", ignoreCase = true) })
+    }
+
+    @Test
     fun gpu_backend_cannot_feed_calc_without_agreement() = runTest {
         // §3.6-E / issue 20 STEP 6: selecting a GPU/NPU backend must NOT silently feed the dosing
         // path. Even at fp32, a NON-AUTHORITATIVE backend (the Vulkan GPU delegate) is trustworthy
         // for a dose ONLY once it has PASSED the fp32-agreement probe — never on precision alone.
+        // The composition root now feeds `:calc` the authority (never a raw GPU BackendInfo), so this
+        // is satisfied BY CONSTRUCTION; the assertions below still pin the DoseAdvisor's fail-closed
+        // contract directly — a bad BackendInfo reaching it (defence in depth) must STILL block.
         val vulkanUnproven = BackendInfo(
             com.t1dm.core.model.BackendId.EXECUTORCH_VULKAN_FP32,
             com.t1dm.core.model.Precision.FP32,
@@ -105,6 +142,13 @@ class RailInvariantsTest {
         assertTrue(BackendInfo(com.t1dm.core.model.BackendId.EXECUTORCH_XNNPACK_FP32, com.t1dm.core.model.Precision.FP32, null).trustworthy)
         assertTrue(BackendInfo(com.t1dm.core.model.BackendId.EXECUTORCH_VULKAN_FP32, com.t1dm.core.model.Precision.FP32, agreementOk = true).trustworthy)
         assertFalse(BackendInfo(com.t1dm.core.model.BackendId.EXECUTORCH_VULKAN_FP32, com.t1dm.core.model.Precision.FP32, agreementOk = false).trustworthy)
+        // The fp16 Vulkan GPU delegate is held to the SAME gate: fp16 alone is never trustworthy for a
+        // dose; only a PASSED agreement probe (agreementOk == true) admits it, and a FAIL keeps it out.
+        assertFalse("fp16 GPU without a probe must not be trustworthy",
+            BackendInfo(com.t1dm.core.model.BackendId.EXECUTORCH_VULKAN_FP16, com.t1dm.core.model.Precision.FP16, agreementOk = null).trustworthy)
+        assertFalse("fp16 GPU that FAILS the probe must not be trustworthy",
+            BackendInfo(com.t1dm.core.model.BackendId.EXECUTORCH_VULKAN_FP16, com.t1dm.core.model.Precision.FP16, agreementOk = false).trustworthy)
+        assertTrue(BackendInfo(com.t1dm.core.model.BackendId.EXECUTORCH_VULKAN_FP16, com.t1dm.core.model.Precision.FP16, agreementOk = true).trustworthy)
     }
 
     @Test

@@ -1,6 +1,7 @@
 package com.t1dm.calc
 
 import com.t1dm.core.model.CurveEvent
+import com.t1dm.core.model.displayName
 import kotlin.math.max
 
 /** Fail-closed source of the selected model's backend/precision/agreement provenance; null ⇒ no model. */
@@ -73,6 +74,17 @@ class DoseAdvisor(
         if (degen is RailVerdict.Block) return AdviceResult.Refused(listOf(degen.reason))
 
         val notes = ArrayList<String>()
+
+        // Non-blocking informational note (§3.6-E): the dose is ALWAYS computed on the fp32 CPU
+        // authority, but the switcher may be rendering the DISPLAYED forecast on a GPU/NPU backend.
+        // Tell the user so — never a warning, never a refusal; the recommendation proceeds unchanged.
+        val displayed = backend.displayedBackend
+        if (displayed != null && displayed != backend.backend) {
+            notes.add(
+                "Displayed forecast is rendered by ${displayed.displayName()}; this dose was computed on " +
+                    "the fp32 CPU authority (${backend.backend.displayName()}).",
+            )
+        }
 
         // (5) hypo-treatment carb-rescue path — withhold insulin, recommend carbs.
         if (config.rails.hypoTreatment && inHypoTerritory(anchor, result.baseline, config)) {

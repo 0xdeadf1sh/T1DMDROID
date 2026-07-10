@@ -30,7 +30,6 @@ fun WarmupSettingsScreen(
     onChange: (Int) -> Unit,
 ) {
     Column(Modifier.fillMaxSize().padding(16.dp)) {
-        Text("Warmup", style = MaterialTheme.typography.headlineSmall)
         Text(
             "Before showing a forecast, the model waits for this much real (measured) BG history. " +
                 "Interpolated fill and sensor warm-up readings do not count.",

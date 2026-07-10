@@ -30,6 +30,7 @@ enum class BackendId {
     LITERT_NEURON_FP16,
     LITERT_NPU,
     EXECUTORCH_VULKAN_FP32,
+    EXECUTORCH_VULKAN_FP16,
     STUB,
 }
 
@@ -40,12 +41,13 @@ enum class BackendId {
  * target itself.
  */
 fun BackendId.displayName(): String = when (this) {
-    BackendId.EXECUTORCH_XNNPACK_FP32 -> "ExecuTorch XNNPACK fp32 (CPU)"
-    BackendId.EXECUTORCH_NEURON_FP16 -> "ExecuTorch Neuron fp16 (NPU)"
-    BackendId.LITERT_NEURON_FP16 -> "LiteRT Neuron fp16 (NPU, legacy delegate)"
-    BackendId.LITERT_NPU -> "LiteRT NPU fp32 (MediaTek NeuroPilot)"
-    BackendId.EXECUTORCH_VULKAN_FP32 -> "ExecuTorch Vulkan fp32 (GPU compute)"
-    BackendId.STUB -> "Stub (fixed output — no .pte)"
+    BackendId.EXECUTORCH_XNNPACK_FP32 -> "XNNPACK CPU · fp32"
+    BackendId.EXECUTORCH_NEURON_FP16 -> "Neuron NPU · fp16"
+    BackendId.LITERT_NEURON_FP16 -> "LiteRT Neuron NPU · fp16"
+    BackendId.LITERT_NPU -> "LiteRT NPU · fp32"
+    BackendId.EXECUTORCH_VULKAN_FP32 -> "Vulkan GPU · fp32"
+    BackendId.EXECUTORCH_VULKAN_FP16 -> "Vulkan GPU · fp16"
+    BackendId.STUB -> "Stub · no .pte"
 }
 
 /**

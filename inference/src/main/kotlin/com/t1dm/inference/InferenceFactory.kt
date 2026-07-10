@@ -2,6 +2,8 @@ package com.t1dm.inference
 
 import com.t1dm.core.common.NativeCore
 import com.t1dm.core.common.T1dmDispatchers
+import com.t1dm.core.model.BackendId
+import com.t1dm.core.model.Precision
 import com.t1dm.inference.backend.ExecuTorchNeuronBackend
 import com.t1dm.inference.backend.ExecuTorchVulkanBackend
 import com.t1dm.inference.backend.ExecuTorchXnnpackBackend
@@ -42,6 +44,9 @@ fun buildInferenceController(
     controller.registerBackend(LiteRtNeuronBackend())
     controller.registerBackend(LiteRtNpuBackend())
     controller.registerBackend(ExecuTorchVulkanBackend())
+    controller.registerBackend(
+        ExecuTorchVulkanBackend(BackendId.EXECUTORCH_VULKAN_FP16, Precision.FP16),
+    )
     return controller
 }
 

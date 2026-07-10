@@ -360,13 +360,34 @@ class InferenceController(
         val agreementOk: Boolean?,
     )
 
-    /** The selected model's provenance, or null when nothing is loaded/selected. */
+    /** The selected model's provenance as it is DISPLAYED (the switcher-chosen active backend), or
+     *  null when nothing is loaded/selected. This follows [forecastBackendPref]; it drives the
+     *  "Executing on:" line and panels — NOT the dosing path (see [authorityModelInfo]). */
     fun selectedModelInfo(): SelectedModelInfo? {
         val id = selectedId ?: return null
         val e = loaded[id] ?: return null
         val agreement = if (e.effectiveBackend == BackendId.EXECUTORCH_XNNPACK_FP32) null
                         else agreementByBackend[e.effectiveBackend]
         return SelectedModelInfo(id, e.bundle.descriptor, e.effectiveBackend, e.precision, e.real, agreement)
+    }
+
+    /**
+     * The AUTHORITATIVE fp32 XNNPACK CPU provenance for the selected model's DOSING path (§3.6-E).
+     * Deliberately ignores [forecastBackendPref]: dose advice must ALWAYS be computed on the fp32 CPU
+     * authority regardless of which backend the switcher renders the DISPLAYED forecast with, so this
+     * resolves the loaded XNNPACK variant directly from [loadedVariants] (the authority `.pte` is the
+     * deployed one and is always loaded when discovery succeeds). [backend] is therefore always
+     * [BackendId.EXECUTORCH_XNNPACK_FP32] and [agreementOk] is null (trusted by construction —
+     * `BackendInfo.trustworthy`). Returns null (⇒ `:calc` fails closed) when the authority variant is
+     * not loaded — a genuinely model-free state, never a silent promotion of a GPU/NPU path.
+     */
+    fun authorityModelInfo(): SelectedModelInfo? {
+        val id = selectedId ?: return null
+        val e = loadedVariants[id]?.get(BackendId.EXECUTORCH_XNNPACK_FP32) ?: return null
+        if (!e.real) return null
+        return SelectedModelInfo(
+            id, e.bundle.descriptor, BackendId.EXECUTORCH_XNNPACK_FP32, e.precision, e.real, agreementOk = null,
+        )
     }
 
     /**
@@ -378,6 +399,21 @@ class InferenceController(
     suspend fun runSelected(input: GraphInput): GraphOutput = cycleMutex.withLock {
         val id = selectedId ?: error("no selected model")
         val e = loaded[id] ?: error("selected model not loaded")
+        withContext(dispatchers.inference) { e.backend.run(e.handle, input) }
+    }
+
+    /**
+     * Run one forward for the DOSE CALCULATOR on the AUTHORITATIVE fp32 XNNPACK variant of the selected
+     * model — NEVER the switcher-chosen display backend (§3.6-E). The forecast the `:calc` rails consume
+     * is thus produced on the fp32 CPU authority whatever the user is looking at, so the backend-agreement
+     * refusal never arises in normal use. A CPU forward is ~13.8 ms — negligible against the 5-min cycle.
+     * Same confinement + [cycleMutex] serialisation as [runSelected]. Throws when the authority variant is
+     * not loaded; [com.t1dm.calc.RollingForecaster] catches and fails closed.
+     */
+    suspend fun runSelectedAuthority(input: GraphInput): GraphOutput = cycleMutex.withLock {
+        val id = selectedId ?: error("no selected model")
+        val e = loadedVariants[id]?.get(BackendId.EXECUTORCH_XNNPACK_FP32)
+            ?: error("fp32 XNNPACK authority variant not loaded for $id")
         withContext(dispatchers.inference) { e.backend.run(e.handle, input) }
     }
 
@@ -846,13 +882,16 @@ class InferenceController(
         const val PROBE_ANCHOR_MS = 1_700_000_000_000L
         /** §3.6-E agreement tolerance on the decoded mg/dL median (the hypo-relevant band tol). */
         const val AGREEMENT_TOL_MGDL = 3.0
-        /** Stable switcher display order (authority first, then GPU, then the NPU catalog). */
+        /**
+         * Stable switcher display order. Only backends that can actually load on this build are
+         * listed: the fp32 XNNPACK CPU authority and the fp16 Vulkan GPU. `EXECUTORCH_VULKAN_FP32`
+         * is deliberately absent — Vulkan ships fp16, so no fp32 `.vulkan.pte` is deployed and the
+         * entry could only ever refuse with "artifact missing". The NPU ids stay in [BackendId] (and
+         * in the Hardware catalog's reasons) but are not offered as choices.
+         */
         val BACKEND_ORDER = listOf(
             BackendId.EXECUTORCH_XNNPACK_FP32,
-            BackendId.EXECUTORCH_VULKAN_FP32,
-            BackendId.LITERT_NPU,
-            BackendId.EXECUTORCH_NEURON_FP16,
-            BackendId.LITERT_NEURON_FP16,
+            BackendId.EXECUTORCH_VULKAN_FP16,
         )
 
         fun maxAbsDelta(a: FloatArray, b: FloatArray): Double {

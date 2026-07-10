@@ -227,6 +227,10 @@ class SettingsStore(
     val animationsEnabled: Flow<Boolean> = boolFlow(K_UI_ANIMATIONS, true)
     suspend fun setAnimationsEnabled(on: Boolean) = put(K_UI_ANIMATIONS, if (on) "1" else "0")
 
+    // ── Device-temperature unit (U9 — no fan; show a labelled device temperature, C/F/K) ─────────
+    val temperatureUnit: Flow<String> = repository.observeKv(K_UI_TEMP_UNIT).map { it ?: DEFAULT_TEMP_UNIT }
+    suspend fun setTemperatureUnit(key: String) = put(K_UI_TEMP_UNIT, key)
+
     // ── Theme + font (item 25 — three themes + JSON import + a bundled font; persisted, exportable) ──
     // The custom-theme JSON is stored verbatim so a re-selection of "custom" reconstructs the palette.
     val themeId: Flow<String> = repository.observeKv(K_UI_THEME).map { it ?: DEFAULT_THEME }
@@ -368,6 +372,8 @@ class SettingsStore(
         private const val K_UI_THEME = "ui.theme"
         private const val K_UI_FONT = "ui.font"
         private const val K_UI_CUSTOM_THEME = "ui.custom_theme_json"
+        private const val K_UI_TEMP_UNIT = "ui.temp_unit"
+        const val DEFAULT_TEMP_UNIT = "C"
         private const val K_CURVE_CARB_BEZIER = "graph.curve_carb_bezier"
         private const val K_CURVE_INSULIN_BEZIER = "graph.curve_insulin_bezier"
         private const val K_CURVE_RAPID_PRESET = "graph.curve_rapid_preset"

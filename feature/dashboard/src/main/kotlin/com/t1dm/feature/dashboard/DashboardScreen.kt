@@ -51,11 +51,11 @@ import com.t1dm.core.model.ModelPrediction
 import com.t1dm.core.model.PredictedTime
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
+import com.t1dm.core.model.TempUnit
 import com.t1dm.core.model.UnitSpace
 import com.t1dm.core.model.WarmupProgress
 import com.t1dm.ui.graph.CurveOverlayFrame
 import com.t1dm.ui.graph.CurveOverlayToggles
-import com.t1dm.ui.graph.ExcursionMarker
 import com.t1dm.ui.graph.GlucoseGraph
 import com.t1dm.ui.graph.GraphFrame
 import com.t1dm.ui.graph.PredSeries
@@ -63,7 +63,6 @@ import com.t1dm.ui.graph.PredictedClock
 import com.t1dm.ui.graph.SmoothedTrace
 import com.t1dm.ui.graph.smoothedTraceOf
 import com.t1dm.ui.graph.curveOverlayOf
-import com.t1dm.ui.graph.excursionsOf
 import com.t1dm.ui.graph.graphFrameOf
 import com.t1dm.ui.graph.noFutureInsulinOverForecast
 import com.t1dm.ui.graph.predOverlayOf
@@ -101,6 +100,10 @@ fun DashboardScreen(
     onSetWindowHours: ((Int) -> Unit)? = null,
     reachability: BgReachability? = null,
     signals: BgSignals? = null,
+    // U9 — no fan (RPM is permission-denied even to adb); show the device battery-sensor temperature,
+    // labelled, in the user's chosen unit, to the right of the WCH reachability light.
+    deviceTempC: Double? = null,
+    temperatureUnit: TempUnit = TempUnit.CELSIUS,
     // Issues 7 & 9 — the warmup-surviving circadian belief, so the TOP axis renders the predicted
     // clock even while the BG forecast is (correctly) suppressed. Falls back to the selected
     // prediction's copy once a full cycle publishes.
@@ -170,13 +173,9 @@ fun DashboardScreen(
     val clockSource = selected?.predictedTime ?: circadianTime
     val clockAnchor = selected?.anchorTsMs ?: circadianAnchorMs
     val predictedClock = if (clockSource != null && clockAnchor != null) clockSource.toClock(clockAnchor) else null
-    val excursions: List<ExcursionMarker> = remember(predictions, thresholds) {
-        if (thresholds == null) emptyList()
-        else excursionsOf(predictions, thresholds.lowMgdl, thresholds.highMgdl)
-    }
 
     Column(Modifier.fillMaxSize()) {
-        reachability?.let { ReachabilityBar(it, signals) }
+        reachability?.let { ReachabilityBar(it, signals, deviceTempC, temperatureUnit) }
         DashboardHeader(latest, activeSourceName, unit, signals?.cgmRssi ?: latest?.rssi)
         warmup?.let { WarmupBanner(it) }
         if (noFutureInsulin) NoFutureInsulinBanner()
@@ -206,7 +205,6 @@ fun DashboardScreen(
             rangeMinMgdl = rangeMinMgdl,
             rangeMaxMgdl = rangeMaxMgdl,
             predictedClock = predictedClock,
-            excursions = excursions,
             smoothed = smoothed,
             showSmoothed = showSmoothed,
         )
@@ -242,11 +240,6 @@ private fun WarmupBanner(warmup: WarmupProgress) {
             progress = { warmup.fraction.toFloat() },
             modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
         )
-        Text(
-            "Forecasts resume once enough real history exists to condition on.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-        )
     }
 }
 
@@ -262,12 +255,6 @@ private fun NoFutureInsulinBanner() {
             "No insulin on board over the forecast window",
             style = MaterialTheme.typography.labelLarge,
             color = MaterialTheme.colorScheme.secondary,
-        )
-        Text(
-            "Neither a committed bolus tail nor a basal schedule covers the hours ahead. If you take " +
-                "long-acting basal, set its schedule so the model and calculator see your background insulin.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
         )
     }
 }
@@ -347,9 +334,10 @@ data class BgReachability(val server: ReachLight, val cgm: ReachLight, val watch
  *  `readRemoteRssi` through `:watch` — the field lights up automatically when present. */
 data class BgSignals(val cgmRssi: Int? = null, val watchRssi: Int? = null)
 
-/** Three centered traffic-lights across the top of the BG panel; tapping toggles the labels. */
+/** Three centered traffic-lights across the top of the BG panel; tapping toggles the labels. To the
+ *  RIGHT of the WCH light sits the labelled device temperature (U9 — there is no readable fan). */
 @Composable
-private fun ReachabilityBar(r: BgReachability, signals: BgSignals?) {
+private fun ReachabilityBar(r: BgReachability, signals: BgSignals?, deviceTempC: Double?, tempUnit: TempUnit) {
     var showLabels by remember { mutableStateOf(false) }
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)
@@ -362,7 +350,19 @@ private fun ReachabilityBar(r: BgReachability, signals: BgSignals?) {
         // meter); this chip keeps just its traffic-light so the CGM RSSI is shown in exactly one place.
         ReachChip("CGM", r.cgm, showLabels, null)
         ReachChip("WCH", r.watch, showLabels, signals?.watchRssi)
+        deviceTempC?.let { TempChip(it, tempUnit) }
     }
+}
+
+/** The device temperature (U9): the battery sensor's reading in the chosen unit, LABELLED as such so
+ *  it is never mistaken for a fan/ambient figure (there is no readable fan RPM on this device). */
+@Composable
+private fun TempChip(celsius: Double, unit: TempUnit) {
+    Text(
+        "TEMP ${unit.format(celsius)}",
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f),
+    )
 }
 
 @Composable

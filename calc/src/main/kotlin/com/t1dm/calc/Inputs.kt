@@ -42,6 +42,15 @@ data class BackendInfo(
     val precision: Precision,
     /** null = not measured; true/false = last agreement probe within/outside the hypo-relevant tolerance. */
     val agreementOk: Boolean?,
+    /**
+     * The backend actually RENDERING the displayed forecast, when the switcher has it on a
+     * non-authoritative path while dosing runs on the fp32 CPU authority ([backend]). Null ⇒ the
+     * displayed forecast came from the authority too (nothing to note). PURELY INFORMATIONAL: it never
+     * touches [trustworthy] or any rail — it only drives a small non-blocking note so the user knows the
+     * dose was computed on the CPU authority even though a GPU/NPU rendered what they see (§3.6-E: the
+     * switcher governs the DISPLAYED forecast only).
+     */
+    val displayedBackend: BackendId? = null,
 ) {
     /**
      * §3.6-E: only the AUTHORITATIVE fp32 XNNPACK CPU backend may drive a dose unconditionally.

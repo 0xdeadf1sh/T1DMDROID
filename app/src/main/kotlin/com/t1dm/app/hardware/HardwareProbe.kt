@@ -39,6 +39,7 @@ class HardwareProbe(private val context: Context) {
         securityPatch = runCatching { Build.VERSION.SECURITY_PATCH }.getOrNull()?.ifBlank { null },
         thermalStatus = thermalStatus(),
         battery = battery(),
+        batteryTempC = batteryTempC(),
         backends = backends(),
         vulkan = runCatching { VulkanProbe.probe() }.getOrNull(),
     )
@@ -120,13 +121,18 @@ class HardwareProbe(private val context: Context) {
         val bm = context.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
         val pct = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
         val intent = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-        val tempC = intent?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, -1)?.takeIf { it >= 0 }?.let { it / 10.0 }
         val charging = intent?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) == BatteryManager.BATTERY_STATUS_CHARGING
         buildString {
             append("$pct%")
             if (charging) append(" (charging)")
-            tempC?.let { append(" · ${"%.1f".format(it)}°C") }
         }
+    }.getOrNull()
+
+    /** The battery-sensor temperature in Celsius (U9). The dedicated Temperature row renders it in the
+     *  user's chosen C/F/K unit, so it is no longer folded into the [battery] string. */
+    private fun batteryTempC(): Double? = runCatching {
+        val intent = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        intent?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, -1)?.takeIf { it > 0 }?.let { it / 10.0 }
     }.getOrNull()
 
     private fun npu(): String? = runCatching {

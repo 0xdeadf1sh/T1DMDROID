@@ -28,7 +28,6 @@ fun WatchSettingsScreen(
         Modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text("Watch", style = MaterialTheme.typography.headlineSmall)
         Text(
             "An optional ESP32-C3 wrist glance. Every 5 minutes the phone pushes your current BG, " +
                 "trend, a one-line forecast, the alert band, and status — encrypted end-to-end. " +

@@ -62,10 +62,8 @@ fun StatsScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text("Statistics", style = MaterialTheme.typography.headlineSmall)
-            Box(Modifier.width(12.dp))
-            if (state.loading) CircularProgressIndicator(Modifier.height(18.dp).width(18.dp), strokeWidth = 2.dp)
+        if (state.loading) {
+            CircularProgressIndicator(Modifier.height(18.dp).width(18.dp), strokeWidth = 2.dp)
         }
 
         WindowSwitcher(state.window, onSelectWindow)

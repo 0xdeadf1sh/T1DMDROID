@@ -19,6 +19,7 @@ import androidx.compose.ui.unit.dp
 import com.t1dm.core.model.InferenceState
 import com.t1dm.core.model.ModelLatency
 import com.t1dm.core.model.RunningModel
+import com.t1dm.core.model.TempUnit
 import com.t1dm.core.model.displayName
 
 /**
@@ -28,7 +29,11 @@ import com.t1dm.core.model.displayName
  * the per-model split is already keyed so it drops in without a layout change.
  */
 @Composable
-fun HardwareScreen(state: InferenceState, hardware: HardwareInfo = HardwareInfo.UNKNOWN) {
+fun HardwareScreen(
+    state: InferenceState,
+    hardware: HardwareInfo = HardwareInfo.UNKNOWN,
+    temperatureUnit: TempUnit = TempUnit.CELSIUS,
+) {
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         // ── Detected hardware readout (item 8) ──
         item {
@@ -52,6 +57,9 @@ fun HardwareScreen(state: InferenceState, hardware: HardwareInfo = HardwareInfo.
                 ).joinToString(" · ").ifBlank { null })
                 HwRow("Thermal", hardware.thermalStatus)
                 HwRow("Battery", hardware.battery)
+                // U9 — the device temperature (battery sensor) in the user's chosen unit. No fan RPM is
+                // shown: it is permission-denied even to adb shell on this device, so never proxied.
+                HwRow("Temperature", hardware.batteryTempC?.let { temperatureUnit.format(it) })
             }
             // N5 — the per-backend availability + evidence-based unavailability reasons moved to
             // Settings → Forecast & models → Compute backend, where a user actually chooses a backend.
@@ -90,9 +98,9 @@ fun HardwareScreen(state: InferenceState, hardware: HardwareInfo = HardwareInfo.
             // The LIVE execution truth (issue 1 — no "stub" ambiguity): the selected model's actual
             // backend this cycle, named explicitly. STUB means no working .pte reached the device.
             val selected = state.running.firstOrNull { it.selected }
-            val executing = selected
-                ?.let { "${it.backend.displayName()} · ${it.precision.name}" }
-                ?: "no model selected"
+            // displayName() already carries the precision (e.g. "XNNPACK CPU · fp32"), so don't append
+            // the raw enum precision again.
+            val executing = selected?.backend?.displayName() ?: "no model selected"
             Text(
                 "Executing on: $executing",
                 style = MaterialTheme.typography.bodyMedium,
@@ -147,7 +155,11 @@ private fun ModelRow(model: RunningModel, latency: ModelLatency?) {
                 fontWeight = if (model.selected) FontWeight.Bold else FontWeight.Normal,
                 fontFamily = FontFamily.Monospace,
             )
-            Text("${model.backend.name} · ${model.precision.name}", style = MaterialTheme.typography.labelMedium)
+            Text(
+                model.backend.displayName(),
+                style = MaterialTheme.typography.labelMedium,
+                textAlign = androidx.compose.ui.text.style.TextAlign.End,
+            )
         }
         Row(Modifier.fillMaxWidth().padding(top = 2.dp), horizontalArrangement = Arrangement.spacedBy(18.dp)) {
             Stat("p50", latency?.let { fmt(it.p50Ms) } ?: "—")

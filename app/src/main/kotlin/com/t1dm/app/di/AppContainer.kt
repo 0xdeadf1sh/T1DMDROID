@@ -85,6 +85,7 @@ import com.t1dm.core.model.Food
 import com.t1dm.core.model.RecentMeal
 import com.t1dm.core.model.InsulinType
 import com.t1dm.core.model.SavedMeal
+import com.t1dm.core.model.TempUnit
 import com.t1dm.data.db.AppDatabase
 import com.t1dm.data.db.DoseKind
 import com.t1dm.data.db.LoggedDoseEntity
@@ -331,6 +332,19 @@ class AppContainer(context: Context) {
     /** Probe the device hardware off-main (Build/proc/sys/services + an EGL renderer query). */
     suspend fun detectHardware(): HardwareInfo =
         withContext(dispatchers.io) { hardwareProbe.probe() }
+
+    // ── Device temperature (U9 — no fan; the RPM is permission-denied even to adb, so we surface a
+    // genuinely readable, LABELLED device temperature instead). The source is BatteryManager's
+    // EXTRA_TEMPERATURE (tenths of °C); display unit is user-selectable C/F/K.
+    val temperatureUnit: Flow<TempUnit> = settingsStore.temperatureUnit.map { TempUnit.fromKey(it) }
+    suspend fun setTemperatureUnit(u: TempUnit) = settingsStore.setTemperatureUnit(u.key)
+
+    /** The device (battery-sensor) temperature in Celsius, or null if unreadable. Cheap sticky-intent
+     *  read; call off-main from a poller. This is a REAL sensor value — never a proxied fan figure. */
+    fun readDeviceTempC(): Double? = runCatching {
+        val intent = appContext.registerReceiver(null, android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        intent?.getIntExtra(android.os.BatteryManager.EXTRA_TEMPERATURE, -1)?.takeIf { it > 0 }?.let { it / 10.0 }
+    }.getOrNull()
 
     /**
      * On-device realized forecast accuracy for [modelId] over the trailing [days] (Phase 7C — Models
@@ -673,14 +687,32 @@ class AppContainer(context: Context) {
     /** The selected fp32-authoritative model handle for `:calc`; null (⇒ fail-closed refusal) when
      *  nothing is loaded/selected OR the [StubBackend] stood in for a missing `.pte` (`real == false`). */
     private val selectedModelProvider = SelectedModelProvider {
-        val info = inferenceController.selectedModelInfo()
+        val info = inferenceController.authorityModelInfo()
         if (info == null || !info.real) null
         else object : SelectedModelHandle {
             override val descriptor = info.descriptor
-            override val backendInfo = BackendInfo(info.backend, info.precision, agreementOk = info.agreementOk)
+            override val backendInfo = calcBackendInfo(info)
             override suspend fun run(input: GraphInput): com.t1dm.inference.backend.GraphOutput =
-                inferenceController.runSelected(input)
+                inferenceController.runSelectedAuthority(input)
         }
+    }
+
+    /**
+     * The `:calc` backend provenance, pinned to the fp32 XNNPACK CPU **authority** (§3.6-E). Dose
+     * advice always runs on the authority regardless of the switcher, so [info] is [authorityModelInfo]
+     * (backend == XNNPACK, agreementOk == null ⇒ trustworthy by construction). We additionally carry the
+     * currently-DISPLAYED backend when it differs, so the advisor can emit a small non-blocking note that
+     * a GPU/NPU rendered the forecast while the dose was computed on the CPU authority. Informational
+     * only — it can never affect `trustworthy` or a rail.
+     */
+    private fun calcBackendInfo(info: com.t1dm.inference.InferenceController.SelectedModelInfo): BackendInfo {
+        val displayed = inferenceController.selectedModelInfo()?.backend
+        return BackendInfo(
+            backend = info.backend,
+            precision = info.precision,
+            agreementOk = info.agreementOk,
+            displayedBackend = displayed?.takeIf { it != info.backend },
+        )
     }
 
     /** The production rolled-forecast port: reuses the shared curve/channel engine + BG history, drives
@@ -708,8 +740,8 @@ class AppContainer(context: Context) {
 
     /** §3.6-E backend/precision provenance; null (⇒ refusal) when there is no real selected model. */
     private val backendSource = BackendInfoSource {
-        val info = inferenceController.selectedModelInfo()
-        if (info == null || !info.real) null else BackendInfo(info.backend, info.precision, agreementOk = info.agreementOk)
+        val info = inferenceController.authorityModelInfo()
+        if (info == null || !info.real) null else calcBackendInfo(info)
     }
 
     /** The fail-closed bolus advisor: freshness/fp16 gate → grid search → degeneracy → rails → card. */

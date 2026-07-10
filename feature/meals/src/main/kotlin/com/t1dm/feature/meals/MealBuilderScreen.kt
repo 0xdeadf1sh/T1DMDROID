@@ -76,8 +76,6 @@ fun MealBuilderScreen(
         Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text("Meal builder", style = MaterialTheme.typography.titleLarge)
-
         BuilderSummary(components, onResolve, onLogMeal, onSaveMeal)
         HorizontalDivider()
         FoodSearch(onSearch) { food, grams ->

@@ -90,14 +90,20 @@ fun ForecastBackendScreen(
             selected = requested == null,
             onClick = { refusal = null; onSelect(null) },
         )
-        catalog.forEach { b ->
-            val precision = if (b.precision == Precision.FP16) "fp16" else "fp32"
+        // U5 — this build ships exactly two real compute paths: the XNNPACK CPU authority and the
+        // Vulkan GPU delegate. The Play-delivered NeuroPilot NPU / legacy LiteRT rows are not
+        // reachable in a sideload build, so they are not offered here at all.
+        val shown = catalog.filter {
+            it.backend == BackendId.EXECUTORCH_XNNPACK_FP32 ||
+                it.backend == BackendId.EXECUTORCH_VULKAN_FP16 ||
+                it.backend == BackendId.EXECUTORCH_VULKAN_FP32
+        }
+        shown.forEach { b ->
             BackendChoiceRow(
                 title = b.backend.displayName(),
                 subtitle = buildString {
-                    append(precision)
-                    if (b.authoritative) append(" · authority")
-                    if (b.available) append(" · available") else append(" · unavailable")
+                    if (b.authoritative) append("authority · ")
+                    if (b.available) append("available") else append("unavailable")
                     b.reason?.let { append("\n"); append(it) }
                 },
                 available = b.available,

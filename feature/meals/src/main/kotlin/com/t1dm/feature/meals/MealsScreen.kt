@@ -63,7 +63,6 @@ fun MealsScreen(
     val grams = gramsText.toDoubleOrNull()
 
     Column(Modifier.fillMaxWidth().padding(16.dp)) {
-        Text("Log carbs", style = MaterialTheme.typography.titleLarge)
         iobCob?.let { CobLine(it) }
 
         OutlinedTextField(

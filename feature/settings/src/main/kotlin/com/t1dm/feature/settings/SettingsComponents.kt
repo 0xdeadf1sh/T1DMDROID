@@ -30,14 +30,17 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.text.KeyboardOptions
 
-/** A scrollable settings page with a headline title and consistent padding/spacing. */
+/**
+ * A scrollable settings page with consistent padding/spacing. U4 — the page name is carried by the
+ * breadcrumb bar, so no in-view headline is rendered here (the [title] is retained for call-site
+ * documentation and any future accessibility label, not drawn).
+ */
 @Composable
-fun SettingsScaffold(title: String, content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit) {
+fun SettingsScaffold(@Suppress("UNUSED_PARAMETER") title: String, content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit) {
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         content()
     }
 }

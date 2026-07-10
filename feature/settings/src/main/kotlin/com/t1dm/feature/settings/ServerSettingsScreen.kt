@@ -80,7 +80,6 @@ fun ServerSettingsScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text("Server", style = MaterialTheme.typography.headlineSmall)
         Text(
             if (isActive) "active profile" else "no active profile",
             style = MaterialTheme.typography.labelMedium,

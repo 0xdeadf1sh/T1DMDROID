@@ -183,6 +183,7 @@ class ModelStore(
         "executorch_neuron_fp16", "executorch_neuron" -> BackendId.EXECUTORCH_NEURON_FP16
         "litert_neuron_fp16", "litert_neuron" -> BackendId.LITERT_NEURON_FP16
         "litert_npu_fp32", "litert_npu_fp16", "litert_npu" -> BackendId.LITERT_NPU
+        "executorch_vulkan_fp16" -> BackendId.EXECUTORCH_VULKAN_FP16
         "executorch_vulkan_fp32", "executorch_vulkan" -> BackendId.EXECUTORCH_VULKAN_FP32
         else -> BackendId.EXECUTORCH_XNNPACK_FP32
     }

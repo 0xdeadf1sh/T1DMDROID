@@ -22,8 +22,7 @@ fun CgmSettingsScreen(
     allSourceNames: List<String>,
 ) {
     Column(Modifier.fillMaxSize().padding(16.dp)) {
-        Text("CGM", style = MaterialTheme.typography.headlineSmall)
-        Text("Active source", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 16.dp))
+        Text("Active source", style = MaterialTheme.typography.labelMedium)
         Text(
             text = activeSourceName?.let { "$it${activeStatus?.let { s -> " • $s" } ?: ""}" }
                 ?: "none yet — scanning",

@@ -50,7 +50,6 @@ fun BolusCalculatorScreen(
         Modifier.fillMaxWidth().padding(16.dp).verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text("Bolus advisor", style = MaterialTheme.typography.titleLarge)
         when (result) {
             null -> Text("No recommendation yet — tap Recompute.", style = MaterialTheme.typography.bodyMedium)
             is AdviceResult.Refused -> RefusedCard(result)

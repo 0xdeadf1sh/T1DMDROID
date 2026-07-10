@@ -65,7 +65,6 @@ fun InsulinScreen(
     var tab by remember { mutableStateOf(Tab.BOLUS) }
 
     Column(Modifier.fillMaxWidth().padding(16.dp)) {
-        Text("Log insulin", style = MaterialTheme.typography.titleLarge)
         iobCob?.let { IobLine(it) }
 
         SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(top = 12.dp)) {

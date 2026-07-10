@@ -90,7 +90,12 @@ class LiteRtNeuronBackend : InferenceBackend {
 }
 
 /**
- * ExecuTorch Vulkan GPU-compute delegate, fp32 on the Mali GPU (issue 20). The custom
+ * ExecuTorch Vulkan GPU-compute delegate on the Mali GPU (issue 20). One class serves BOTH the
+ * fp32 ([BackendId.EXECUTORCH_VULKAN_FP32]) and the fp16 ([BackendId.EXECUTORCH_VULKAN_FP16])
+ * variants: the precision is baked into the `.pte` by the exporter's `force_fp16` (fp16 GPU
+ * storage+compute; the input/output STAGING buffers stay fp32, so `Tensor.fromBlob(FloatArray)` and
+ * `dataAsFloatArray` are unchanged) and routed by the descriptor `engine`, so `load`/`run` are
+ * precision-agnostic here — only [id]/[caps] differ. The custom
  * `executorch-android` AAR built from ExecuTorch 1.3.1 source with `EXECUTORCH_BUILD_VULKAN=ON`
  * DOES register the Vulkan backend (verified: the packaged `libexecutorch.so` carries the
  * `VulkanBackend` symbol + op library, alongside XNNPACK). The host PARTITION report is strong —
@@ -110,9 +115,11 @@ class LiteRtNeuronBackend : InferenceBackend {
  * `head_raw`/`time_logits` read like [ExecuTorchXnnpackBackend], and its numerics must still pass
  * the fp32-agreement gate before it may feed any §3.6 dosing decision.
  */
-class ExecuTorchVulkanBackend : InferenceBackend {
-    override val id = BackendId.EXECUTORCH_VULKAN_FP32
-    override val caps = BackendCaps(precision = Precision.FP32)
+class ExecuTorchVulkanBackend(
+    override val id: BackendId = BackendId.EXECUTORCH_VULKAN_FP32,
+    precision: Precision = Precision.FP32,
+) : InferenceBackend {
+    override val caps = BackendCaps(precision = precision)
 
     private class EtModel(
         override val id: String,

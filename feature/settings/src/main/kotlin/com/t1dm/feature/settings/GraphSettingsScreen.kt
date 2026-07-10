@@ -33,7 +33,6 @@ fun GraphSettingsScreen(
     onSetWindow: (Int) -> Unit,
 ) {
     Column(Modifier.fillMaxSize().padding(16.dp)) {
-        Text("BG graph range & window", style = MaterialTheme.typography.headlineSmall)
         Text(
             "The glucose axis always covers this window. It expands automatically above the ceiling " +
                 "so a high reading is never clipped off the top.",
