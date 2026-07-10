@@ -23,6 +23,7 @@ import com.t1dm.app.notify.AlertRepeatScheduler
 import com.t1dm.app.notify.BgGlance
 import com.t1dm.app.notify.BgGlanceComputer
 import com.t1dm.app.notify.LiveNotificationPresenter
+import com.t1dm.app.notify.NotificationIcons
 import com.t1dm.app.notify.PredictiveAlertPresenter
 import androidx.glance.appwidget.updateAll
 import com.t1dm.app.widget.BgTileWidget
@@ -154,6 +155,16 @@ class CgmScanService : LifecycleService() {
                 actuatorConfig = cfg,
                 fullScreenIntent = ::fullScreenIntent,
                 contentIntent = ::contentIntent,
+                // Per-theme alarm glyph (issue I1): urgent tiers get the DISTINCT bell (ALARM); the
+                // plain tier the warning triangle. Geometry follows the active theme snapshot.
+                smallIcon = { critical ->
+                    NotificationIcons.icon(
+                        this@CgmScanService,
+                        if (critical) NotificationIcons.Glyph.ALARM else NotificationIcons.Glyph.WARNING,
+                        container.iconStyle,
+                    )
+                },
+                accentColor = { container.notificationAccentArgb },
             )
             alarmNotifier = notifier
             alarmController = AlarmController(alarmEngine, notifier, container.alarmConfig)
@@ -272,12 +283,16 @@ class CgmScanService : LifecycleService() {
             staleMin = 15,
             nowMs = System.currentTimeMillis(),
         )
+        val style = container.iconStyle
+        val accent = container.notificationAccentArgb
         val nm = getSystemService(NotificationManager::class.java)
-        runCatching { nm.notify(NOTIF_ID, livePresenter.build(glance, unit)) }
+        runCatching {
+            nm.notify(NOTIF_ID, livePresenter.build(glance, unit, style, accent, state.selectedPredictedTime))
+        }
 
         val deterministicCriticalActive = ::alarmController.isInitialized &&
             alarmController.state.value.threshold?.severity == AlarmSeverity.CRITICAL
-        predictiveAlerts.update(glance, alertActuatorCfg, deterministicCriticalActive)
+        predictiveAlerts.update(glance, alertActuatorCfg, deterministicCriticalActive, style, accent)
 
         runCatching {
             BgTileWidget().updateAll(this)
@@ -649,7 +664,8 @@ class CgmScanService : LifecycleService() {
 
     private fun startForegroundNotified() {
         val notif: Notification = Notification.Builder(this, CH_SERVICE)
-            .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
+            .setSmallIcon(NotificationIcons.res(NotificationIcons.Glyph.MONITOR, container.iconStyle))
+            .setColor(container.notificationAccentArgb)
             .setContentTitle("T1DM monitoring active")
             .setContentText("Scanning for CGM, counting steps, watching alarms.")
             .setOngoing(true)

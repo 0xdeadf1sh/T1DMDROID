@@ -14,6 +14,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 
 /**
@@ -39,7 +40,7 @@ fun WarmupSettingsScreen(
 
         Row(
             Modifier.fillMaxWidth().padding(top = 24.dp),
-            horizontalArrangement = Arrangement.spacedBy(16.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             OutlinedButton(
@@ -47,10 +48,15 @@ fun WarmupSettingsScreen(
                 enabled = hours > minHours,
             ) { Text("−1 h") }
 
+            // I13 — the ±1 h buttons keep their intrinsic size; the value field flexes (weight) and
+            // centres, so a wide value like "1 day (24 h)" can never balloon the steppers.
             Text(
                 text = formatHours(hours),
                 style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.weight(1f),
             )
 
             Button(

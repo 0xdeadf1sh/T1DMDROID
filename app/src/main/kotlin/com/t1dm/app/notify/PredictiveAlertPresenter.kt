@@ -7,6 +7,7 @@ import android.content.Context
 import com.t1dm.alerts.AlertActuatorConfig
 import com.t1dm.alerts.AlertChannels
 import com.t1dm.alerts.VibrationActuator
+import com.t1dm.core.design.IconStyle
 
 /**
  * Posts the model-PREDICTIVE urgent alert (item 2): when the SELECTED model forecasts an urgent-low
@@ -32,7 +33,13 @@ class PredictiveAlertPresenter(
     /** The crossing signature last announced, so an unchanged prediction does not re-buzz each cycle. */
     private var lastKey: String? = null
 
-    fun update(glance: BgGlance, config: AlertActuatorConfig, alarmCriticalActive: Boolean) {
+    fun update(
+        glance: BgGlance,
+        config: AlertActuatorConfig,
+        alarmCriticalActive: Boolean,
+        style: IconStyle,
+        accentArgb: Int,
+    ) {
         val urgent = glance.urgent
         if (urgent == null || alarmCriticalActive || !nm.areNotificationsEnabled()) {
             nm.cancel(TAG, ID)
@@ -50,7 +57,8 @@ class PredictiveAlertPresenter(
         val body = "${BgFormat.crossingLine(urgent)} — forecast ${urgent.projectedMgdl} mg/dL " +
             "(crossing ${urgent.thresholdMgdl}) in $eta. Model prediction; verify."
         val builder = Notification.Builder(app, channels.critical)
-            .setSmallIcon(android.R.drawable.stat_sys_warning)
+            .setSmallIcon(NotificationIcons.res(NotificationIcons.Glyph.WARNING, style))
+            .setColor(accentArgb)
             .setContentTitle(title)
             .setContentText(body)
             .setStyle(Notification.BigTextStyle().bigText(body))

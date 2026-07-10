@@ -8,6 +8,7 @@ import com.t1dm.core.model.ModelPrediction
 import com.t1dm.core.model.Precision
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
+import com.t1dm.core.model.RolledForecast
 import com.t1dm.core.model.UnitSpace
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -241,5 +242,70 @@ class BgPanelTest {
         // A misbehaving smoother that changes length yields an EMPTY trace rather than a misaligned draw.
         val trace = buildSmoothedTrace(readings, UnitSpace.MgDl, smoothMgdl = { doubleArrayOf(1.0) })
         assertTrue(trace.isEmpty)
+    }
+
+    // ── I2: the ephemeral, DISPLAY-ONLY rolled forecast ──────────────────────────────────────────
+
+    private fun rolled(
+        medians: DoubleArray,
+        anchor: Long = 1_700_000_000_000L,
+        validatedSteps: Int = 24,
+        degenerate: Boolean = false,
+        requestedHours: Double = 6.0,
+    ) = RolledForecast(
+        anchorTsMs = anchor, stepMs = STEP,
+        medianBg = medians,
+        lowerBg = DoubleArray(medians.size) { medians[it] - 5 },
+        upperBg = DoubleArray(medians.size) { medians[it] + 5 },
+        validatedSteps = validatedSteps, requestedHours = requestedHours,
+        eligible = !degenerate, degenerate = degenerate, reason = null,
+        completedRolls = medians.size / 24, requestedRolls = 3,
+    )
+
+    @Test fun rolledSeries_buildsUnitConvertedFanWithTimestamps() {
+        val anchor = 1_700_000_000_000L
+        val rf = rolled(DoubleArray(48) { 120.0 }, anchor = anchor)
+        val s = buildRolledSeries(rf, UnitSpace.MgDl, null)!!
+        assertEquals(48, s.size)
+        // Step i is at anchor + (i+1)·STEP — the same convention as the cycle forecast.
+        assertEquals(anchor + STEP, s.tsMs[0])
+        assertEquals(anchor + 48 * STEP, s.tsMs[47])
+        assertEquals(120f, s.median[0], 1e-4f)
+        // mmol/L converts once.
+        val mmol = buildRolledSeries(rf, UnitSpace.MmolL, null)!!
+        assertEquals(120f / 18.0182f, mmol.median[0], 1e-4f)
+    }
+
+    @Test fun rolledSeries_splitsValidatedFromExtrapolated() {
+        // 48 steps = 4 h; the first 24 (2 h) are validated, the remaining 24 are extrapolated.
+        val s = buildRolledSeries(rolled(DoubleArray(48) { 120.0 }), UnitSpace.MgDl, null)!!
+        assertEquals(24, s.validatedSteps)
+        assertEquals(24, s.extrapolatedSteps)
+    }
+
+    @Test fun rolledSeries_emptyRollDrawsNothing() {
+        assertNull(buildRolledSeries(RolledForecast.NONE, UnitSpace.MgDl, null))
+        assertNull(buildRolledSeries(null, UnitSpace.MgDl, null))
+    }
+
+    /**
+     * THE SAFETY PIN (I2): a rolled forecast — even one whose EXTRAPOLATED tail plunges deep into hypo —
+     * is invisible to the alerting path. `excursionsOf` (which feeds the in-graph marker, and mirrors the
+     * top-bar indicator / notification countdown) consumes ONLY `List<ModelPrediction>`; a `RolledForecast`
+     * is a DISTINCT type with no conversion into a `ModelPrediction`, so it can never contribute a crossing.
+     * "HYPO in 19H" is therefore impossible off a rolled fan.
+     */
+    @Test fun rolledForecast_cannotReachTheAlertingPath() {
+        val anchor = 1_700_000_000_000L
+        // A roll whose tail collapses to 20 mg/dL far past the validated 2 h.
+        val medians = DoubleArray(48) { if (it >= 30) 20.0 else 120.0 }
+        val rf = rolled(medians, anchor = anchor)
+        val series = buildRolledSeries(rf, UnitSpace.MgDl, null)!!
+        // The deep-hypo tail IS present in the render model (so it is drawn, hatched)…
+        assertTrue("extrapolated tail is drawn", series.extrapolatedSteps > 0)
+        assertTrue("tail reaches hypo", series.median.any { it <= 20f })
+        // …yet the alert path, given only the (empty) prediction list, sees NO crossing. There is no
+        // overload of excursionsOf that accepts a RolledForecast/RolledSeries — the seam is the type gap.
+        assertTrue(excursionsOf(emptyList(), lowMgdl = 70, highMgdl = 180, nowMs = anchor).isEmpty())
     }
 }

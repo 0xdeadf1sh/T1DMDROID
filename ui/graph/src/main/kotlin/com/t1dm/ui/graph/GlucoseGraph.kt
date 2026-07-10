@@ -29,6 +29,7 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.IntSize
@@ -120,6 +121,11 @@ fun GlucoseGraph(
     predictedClock: PredictedClock? = null,
     smoothed: SmoothedTrace? = null,
     showSmoothed: Boolean = false,
+    // I2 — the ephemeral, display-only rolled forecast (never drives an alert/dose).
+    rolled: RolledSeries? = null,
+    // I3 — extend the pannable right edge this far past now so the committed dose curves in the empty
+    // future are reachable (up to 24 h), WITHOUT auto-following into that empty region.
+    futureExtentMs: Long = 0L,
     onScrub: ((GraphScrub?) -> Unit)? = null,
 ) {
     val cs = MaterialTheme.colorScheme
@@ -143,17 +149,23 @@ fun GlucoseGraph(
 
     fun plotW(): Double = (canvasSize.width - leftPx - rightPx).toDouble().coerceAtLeast(1.0)
 
-    // The effective right edge of the data: the last reading OR the furthest forecast step, so the
-    // 2 h forecast horizon (which lies in the future, past the last reading) stays on-screen when a
-    // prediction overlay is present.
-    fun dataEndMs(): Double {
+    // Where the AUTO-FOLLOW settles: the last reading OR the furthest forecast/rolled step, so the
+    // forecast horizon (in the future, past the last reading) stays on-screen — but NOT the empty
+    // future-view region, which the user reaches only by panning.
+    fun followEndMs(): Double {
         val fe = if (frame.isEmpty) 0.0 else frame.absMs(frame.size - 1)
-        val pe = predictions.maxTsMs()?.toDouble() ?: return fe
-        return maxOf(fe, pe)
+        val pe = predictions.maxTsMs()?.toDouble() ?: fe
+        val re = rolled?.maxTsMs?.toDouble() ?: fe
+        return maxOf(fe, pe, re)
     }
 
+    // The furthest the viewport may be PANNED to (I3): the data/forecast end, extended into the empty
+    // future by [futureExtentMs] so the committed dose curves out there are reachable.
+    fun panEndMs(): Double =
+        maxOf(followEndMs(), (System.currentTimeMillis() + futureExtentMs).toDouble())
+
     fun spanBounds(): Pair<Double, Double> {
-        val range = if (frame.isEmpty) 0.0 else dataEndMs() - frame.absMs(0)
+        val range = if (frame.isEmpty) 0.0 else panEndMs() - frame.absMs(0)
         val minSpan = 15.0 * 60_000.0
         val maxSpan = maxOf(range, initialWindowMin.toDouble() * 60_000.0) * 1.2
         return minSpan to maxSpan.coerceAtLeast(minSpan)
@@ -164,7 +176,7 @@ fun GlucoseGraph(
         val (minSpan, maxSpan) = spanBounds()
         viewSpanMs = viewSpanMs.coerceIn(minSpan, maxSpan)
         val ds = frame.absMs(0)
-        val de = dataEndMs()
+        val de = panEndMs()
         val range = de - ds
         viewStartMs = if (viewSpanMs >= range) ds - (viewSpanMs - range) / 2.0
         else viewStartMs.coerceIn(ds, de - viewSpanMs)
@@ -173,8 +185,20 @@ fun GlucoseGraph(
     // Initialise on the first frame; keep tracking the latest point until the user scrolls back.
     LaunchedEffect(frame, predictions) {
         if (frame.isEmpty) return@LaunchedEffect
-        val de = dataEndMs()
+        val de = followEndMs()
         if (viewStartMs.isNaN() || followLatest) viewStartMs = de - viewSpanMs
+        clamp()
+    }
+
+    // I2 — when an on-demand rolled forecast newly lands, AUTO-PAN right so its far edge is visible,
+    // widening the span to include ~1 h of context before the roll's anchor.
+    LaunchedEffect(rolled) {
+        if (rolled == null || rolled.isEmpty || frame.isEmpty) return@LaunchedEffect
+        val end = rolled.maxTsMs!!.toDouble()
+        val start = rolled.tsMs.first().toDouble() - 60.0 * 60_000.0
+        viewSpanMs = (end - start).coerceAtLeast(initialWindowMin.toDouble() * 60_000.0)
+        viewStartMs = end - viewSpanMs
+        followLatest = false
         clamp()
     }
 
@@ -183,7 +207,7 @@ fun GlucoseGraph(
     LaunchedEffect(initialWindowMin) {
         viewSpanMs = initialWindowMin.toDouble() * 60_000.0
         followLatest = true
-        if (!frame.isEmpty) { viewStartMs = dataEndMs() - viewSpanMs; clamp() }
+        if (!frame.isEmpty) { viewStartMs = followEndMs() - viewSpanMs; clamp() }
     }
 
     if (frame.isEmpty) {
@@ -210,16 +234,16 @@ fun GlucoseGraph(
                         viewStartMs = focusMs - frac * newSpan
                     }
                     viewStartMs -= pan.x / ppm
-                    val de = dataEndMs()
+                    val de = followEndMs()
                     clamp()
                     followLatest = (viewStartMs + viewSpanMs) >= de - viewSpanMs * 0.02
                 }
             }
             // Long-press then drag = scrub. Time-anchored so the cursor works in the forecast zone.
-            .pointerInput(frame, predictions, curveOverlay, predictedClock) {
+            .pointerInput(frame, predictions, curveOverlay, predictedClock, rolled) {
                 fun at(x: Float) {
                     val ppm = plotW() / viewSpanMs
-                    val ms = (viewStartMs + (x - leftPx) / ppm).coerceIn(frame.absMs(0), dataEndMs())
+                    val ms = (viewStartMs + (x - leftPx) / ppm).coerceIn(frame.absMs(0), panEndMs())
                     scrubMs = ms
                     onScrub?.invoke(buildScrub(frame, predictions, curveOverlay, predictedClock, ms))
                 }
@@ -274,6 +298,17 @@ fun GlucoseGraph(
                     }
                 }
             }
+            // Fold the visible rolled forecast (I2) into the auto-fit too, so the extrapolated tail
+            // never clips off the plot.
+            rolled?.let { rs ->
+                val vLo = viewStartMs; val vHi = viewStartMs + viewSpanMs
+                for (i in 0 until rs.size) {
+                    val t = rs.tsMs[i].toDouble()
+                    if (t < vLo || t > vHi) continue
+                    if (rs.lo[i] < yMin) yMin = rs.lo[i]
+                    if (rs.hi[i] > yMax) yMax = rs.hi[i]
+                }
+            }
             if (!yMin.isFinite() || !yMax.isFinite()) { yMin = 0f; yMax = 1f }
             // Fixed axis span (item 1): always cover the configured [MIN, MAX] and GROW above MAX to
             // never clip a high reading (and below MIN to never clip a low). The range is mg/dL-defined,
@@ -306,6 +341,9 @@ fun GlucoseGraph(
             val warmupColor = cs.secondary
             val dash = PathEffect.dashPathEffect(floatArrayOf(6f, 6f))
             val labelStyle = TextStyle(color = labelColor, fontSize = 10.sp)
+            // I5 — "Smoothed" is a SWAP, not an overlay: when on (and a smooth exists) the raw sensor
+            // polyline is REPLACED by the model-input smoothed trace, so exactly one trace is on screen.
+            val swapToSmoothed = showSmoothed && smoothed != null && !smoothed.isEmpty
 
             // (1) Threshold band tints, if supplied.
             thresholds?.let { drawBands(it, frame.unit, plotLeft, plotRight, ::yToPx, yMin, yMax, cs.error, cs.secondary) }
@@ -374,8 +412,9 @@ fun GlucoseGraph(
                 )
             }
 
-            // (5) BG polyline, segment-styled by provenance; gaps broken.
-            for (i in iLo until iHi) {
+            // (5) BG polyline, segment-styled by provenance; gaps broken. Suppressed when the smoothed
+            //     model-input trace has replaced it (I5).
+            if (!swapToSmoothed) for (i in iLo until iHi) {
                 if (frame.breakAfter[i]) continue
                 val fa = frame.flags[i]
                 val fb = frame.flags[i + 1]
@@ -392,8 +431,9 @@ fun GlucoseGraph(
                 )
             }
 
-            // (6) Point markers — only when uncluttered, so distinctions stay legible.
-            if (iHi - iLo <= 240) {
+            // (6) Point markers — only when uncluttered, so distinctions stay legible. Suppressed while
+            //     the smoothed trace is shown in place of the raw one (I5).
+            if (!swapToSmoothed && iHi - iLo <= 240) {
                 val r = 2.6f
                 for (i in iLo..iHi) {
                     val c = Offset(xToPx(frame.xs[i]), yToPx(frame.ys[i]))
@@ -406,35 +446,33 @@ fun GlucoseGraph(
                 }
             }
 
-            // (6.4) Smoothed model-input overlay (item 13): the causal Savitzky-Golay trace the model
-            //       actually consumes (mg/dL, before any risk transform), drawn distinctly — a thin
-            //       dash-dot line in the tertiary hue — so it is unmistakable against the solid primary
-            //       raw trace. Breaks are honoured so a dropout is not bridged with a fictitious line.
-            if (showSmoothed && smoothed != null && !smoothed.isEmpty) {
+            // (6.4) Smoothed model-input trace (item 13; I5 — now a SWAP): the causal Savitzky-Golay
+            //       series the model actually consumes (mg/dL, before any risk transform). When the
+            //       "Smoothed" toggle is on it REPLACES the raw trace (drawn above only when off), so a
+            //       single trace is ever on screen; the legend states which one. Breaks are honoured so a
+            //       dropout is not bridged with a fictitious line.
+            if (swapToSmoothed) {
                 val vLo = viewStartMs
                 val vHi = viewStartMs + viewSpanMs
-                val smColor = cs.tertiary
-                val smEffect = PathEffect.dashPathEffect(floatArrayOf(5f, 3f, 1f, 3f))
+                val smColor = lineColor // drawn AS the primary trace, since it stands in for the raw one
                 val path = Path()
                 var open = false
-                for (i in 0 until smoothed.size) {
+                fun flush() { if (open) { drawPath(path, smColor, style = Stroke(width = 2.2f, cap = StrokeCap.Round)); path.reset(); open = false } }
+                for (i in 0 until smoothed!!.size) {
                     val t = smoothed.tsMs[i].toDouble()
                     // Cull to the visible window (± one span) so a long history is cheap to paint.
-                    if (t < vLo - viewSpanMs || t > vHi + viewSpanMs) {
-                        if (open) { drawPath(path, smColor.copy(alpha = 0.9f), style = Stroke(width = 1.8f, pathEffect = smEffect)); path.reset(); open = false }
-                        continue
-                    }
+                    if (t < vLo - viewSpanMs || t > vHi + viewSpanMs) { flush(); continue }
                     val x = (plotLeft + (t - viewStartMs) * ppm).toFloat()
                     val y = yToPx(smoothed.ys[i])
                     if (!open) { path.moveTo(x, y); open = true } else path.lineTo(x, y)
-                    if (i < smoothed.size - 1 && smoothed.breakAfter[i]) {
-                        drawPath(path, smColor.copy(alpha = 0.9f), style = Stroke(width = 1.8f, pathEffect = smEffect))
-                        path.reset(); open = false
-                    }
+                    if (i < smoothed.size - 1 && smoothed.breakAfter[i]) flush()
                 }
-                if (open) drawPath(path, smColor.copy(alpha = 0.9f), style = Stroke(width = 1.8f, pathEffect = smEffect))
-                // Plain-language legend so the overlay is never mistaken for the sensor trace.
+                flush()
                 val leg = measurer.measure("model input — smoothed", TextStyle(color = smColor, fontSize = 9.sp))
+                drawText(leg, topLeft = Offset((plotRight - leg.size.width - 4f).coerceAtLeast(plotLeft), plotTop + 2f))
+            } else if (smoothed != null && !smoothed.isEmpty) {
+                // The raw sensor trace is showing (section 5); label it so the toggle's state is legible.
+                val leg = measurer.measure("sensor — raw", TextStyle(color = lineColor, fontSize = 9.sp))
                 drawText(leg, topLeft = Offset((plotRight - leg.size.width - 4f).coerceAtLeast(plotLeft), plotTop + 2f))
             }
 
@@ -453,6 +491,18 @@ fun GlucoseGraph(
                 }
             }
 
+            // (6.6) The ephemeral, DISPLAY-ONLY rolled forecast (I2): the extrapolated tail beyond the
+            //       validated 2 h is drawn hatched/dimmed with a boundary + legend, so it can never be
+            //       mistaken for a validated forecast (and it never drives an alert or a dose).
+            rolled?.let { rs ->
+                fun absToPx(ms: Double): Float = (plotLeft + (ms - viewStartMs) * ppm).toFloat()
+                drawRolledSeries(rs, ::absToPx, ::yToPx, plotTop, plotBottom, cs.tertiary, cs.onSurface)
+                val legendText = if (rs.degenerate) "extrapolated · degenerated · display-only"
+                else "extrapolated · unvalidated · display-only"
+                val leg = measurer.measure(legendText, TextStyle(color = cs.onSurface.copy(alpha = 0.7f), fontSize = 9.sp))
+                drawText(leg, topLeft = Offset((plotRight - leg.size.width - 4f).coerceAtLeast(plotLeft), plotBottom - leg.size.height - 2f))
+            }
+
             // (7) Scrub cursor — time-anchored, so it reads in the forecast zone too (item 3). U8 — the
             //     read-out box is now PINNED at the right-hand middle of the plot (not floating by the
             //     thumb) and updates continuously as the thumb moves, so a finger never occludes it.
@@ -462,9 +512,13 @@ fun GlucoseGraph(
                     val sc = buildScrub(frame, predictions, curveOverlay, predictedClock, scrubMs)
                     drawLine(cs.onSurface.copy(alpha = 0.5f), Offset(cx, plotTop), Offset(cx, plotBottom), 1f)
                     sc.bgValue?.let { drawCircle(cs.onSurface, 4f, Offset(cx, yToPx(it)), style = Stroke(width = 2f)) }
+                    // I4 — a STABLE read-out: monospace/tabular figures + values padded to a constant
+                    //      width, and the box sized from a fixed WIDEST-line template (not the live
+                    //      content) so it never reflows as the thumb moves.
+                    val scrubStyle = TextStyle(color = cs.onPrimary, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
                     val lines = scrubLines(sc)
-                    val measured = lines.map { measurer.measure(it, TextStyle(color = cs.onPrimary, fontSize = 11.sp)) }
-                    val boxW = (measured.maxOf { it.size.width }).toFloat() + 12f
+                    val measured = lines.map { measurer.measure(it, scrubStyle) }
+                    val boxW = measurer.measure(SCRUB_WIDTH_TEMPLATE, scrubStyle).size.width.toFloat() + 12f
                     val lineH = measured.first().size.height.toFloat()
                     val boxH = lineH * measured.size + 8f
                     // Fixed at the right-hand middle of the plot.
@@ -543,14 +597,20 @@ private fun predictedClockLabel(ms: Long, clock: PredictedClock): String {
     return "%02d:%02d".format(hh % 24, mm)
 }
 
+/** The widest line the scrub read-out can ever produce; the box is sized from this fixed template (I4)
+ *  so it never resizes as the values under the cursor change. Must stay ≥ the widest real line. */
+private const val SCRUB_WIDTH_TEMPLATE = "C 199.9g  I 99.99U"
+
 /** The scrub read-out lines: BG, carb + insulin rates, and the clock (local always; model in the
- *  prediction zone). */
+ *  prediction zone). I4 — numeric fields are padded to a constant character count so, with tabular
+ *  monospace figures, the columns hold still as the cursor moves. */
 private fun scrubLines(sc: GraphScrub): List<String> {
     val out = ArrayList<String>(4)
-    out.add("BG " + (sc.bgValue?.let { formatValue(it, sc.unit) + (if (sc.inPredZone) "*" else "") } ?: "--"))
+    val bgStr = sc.bgValue?.let { formatValue(it, sc.unit) + (if (sc.inPredZone) "*" else "") } ?: "--"
+    out.add("BG " + bgStr.padStart(7))
     val rates = buildString {
-        sc.carbRate?.let { append("C %.1fg".format(it)) }
-        sc.insulinRate?.let { if (isNotEmpty()) append("  "); append("I %.2fU".format(it)) }
+        sc.carbRate?.let { append("C %5.1fg".format(it)) }
+        sc.insulinRate?.let { if (isNotEmpty()) append("  "); append("I %5.2fU".format(it)) }
     }
     if (rates.isNotEmpty()) out.add(rates)
     out.add(formatClock(sc.tsMs, sc.tzOffsetMin) + " loc")

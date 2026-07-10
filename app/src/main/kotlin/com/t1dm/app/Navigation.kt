@@ -6,6 +6,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -229,6 +230,11 @@ private fun Breadcrumb(navController: NavHostController, container: AppContainer
     // U1 — the app-wide glycemic status, recomputed as the forecast state changes.
     val inference by container.inferenceState.collectAsState(InferenceState())
     val status = remember(inference) { glycemicStatusOf(inference, container.alarmConfig.thresholds) }
+    // I6 — when animations are on the trail MARQUEES (scrolls itself) so a long path is eventually
+    // readable in full; with motion disabled it falls back to a manual horizontal scroll (never a moving
+    // marquee). Either way weight(1f) keeps it from ever overlapping the status badge / version.
+    val animationsOn = LocalAnimationsEnabled.current
+    val trailScroll = rememberScrollState()
     Row(
         // N1 — the breadcrumb bar shares the app BACKGROUND (not a surface tint) so it reads as chrome
         // over the same canvas.
@@ -240,7 +246,13 @@ private fun Breadcrumb(navController: NavHostController, container: AppContainer
     ) {
         Row(
             // The trail scrolls sideways so a long path never wraps; the status + version stay pinned.
-            Modifier.weight(1f).horizontalScroll(rememberScrollState()),
+            // I6 — marquee when animations are on, manual scroll otherwise.
+            Modifier
+                .weight(1f)
+                .then(
+                    if (animationsOn) Modifier.basicMarquee(iterations = Int.MAX_VALUE)
+                    else Modifier.horizontalScroll(trailScroll),
+                ),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
@@ -511,6 +523,12 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                     kotlinx.coroutines.delay(30_000)
                 }
             }
+            // I2 — the ephemeral, display-only rolled forecast (never reaches alerts/dosing).
+            val rolled by container.rolledForecast.collectAsState()
+            val rollComputing by container.rollComputing.collectAsState()
+            // I11/I12 — per-channel data-movement pulses + the user-entered sensor-lifetime countdown.
+            val pulses by container.bgPulses.collectAsState(null)
+            val sensorExpiry by container.sensorExpiryMs.collectAsState(null)
             DashboardScreen(
                 readings = readings,
                 latest = latest,
@@ -528,11 +546,17 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 onSetWindowHours = { h -> scope.launch { container.setGraphWindowHours(h) } },
                 reachability = reachability,
                 signals = signals,
+                pulses = pulses,
                 deviceTempC = deviceTempC,
                 temperatureUnit = tempUnit,
+                sensorExpiryMs = sensorExpiry,
                 circadianTime = inference.circadianTime,
                 circadianAnchorMs = inference.circadianAnchorMs,
                 smoothMgdl = { arr -> container.nativeCore.causalSmooth(arr.toList(), 20.0, 500.0).toDoubleArray() },
+                rolledForecast = rolled,
+                rollComputing = rollComputing,
+                onRoll = { hours -> container.requestRollForDisplay(hours) },
+                onClearRoll = { container.clearRoll() },
             )
         }
         composable("circadian") {
@@ -795,6 +819,10 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 onSelectFont = { id -> scope.launch { ss.setFontId(id) } },
                 onImportCustomTheme = { importStatus = null; importLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
                 onSetTemperatureUnit = { u -> scope.launch { container.setTemperatureUnit(u) } },
+                widgetPinSupported = com.t1dm.app.widget.WidgetPinner.isSupported(ctx),
+                widgetPinActions = com.t1dm.app.widget.WidgetPinner.Widget.entries.map { w ->
+                    w.label to { com.t1dm.app.widget.WidgetPinner.request(ctx, w); Unit }
+                },
             )
         }
         composable("settings/alarms") {
@@ -1050,12 +1078,19 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
             )
         }
         composable("settings/cgm") {
+            val scope = rememberCoroutineScope()
             val active by container.activeSource.collectAsState(null)
             val sources by container.allSources.collectAsState(emptyList())
+            val signals by container.bgSignals.collectAsState(null)
+            val expiry by container.sensorExpiryMs.collectAsState(null)
             CgmSettingsScreen(
                 activeSourceName = active?.displayName,
                 activeStatus = active?.let { "active" },
                 allSourceNames = sources.map { it.displayName },
+                activeRssi = signals?.cgmRssi,
+                sensorExpiryMs = expiry,
+                onSetSensorLifetime = { d, h, m -> scope.launch { container.setSensorLifetime(d, h, m) } },
+                onClearSensorLifetime = { scope.launch { container.clearSensorLifetime() } },
             )
         }
         composable("journal") {

@@ -5,6 +5,7 @@ import com.t1dm.core.common.T1dmDispatchers
 import com.t1dm.core.model.CurveEvent
 import com.t1dm.core.model.Forecast
 import com.t1dm.core.model.ForecastStatus
+import com.t1dm.core.model.RolledForecast
 import com.t1dm.data.curve.ChannelBuilder
 import com.t1dm.inference.BgHistoryProvider
 import com.t1dm.inference.backend.GraphIo
@@ -33,20 +34,105 @@ class RollingForecaster(
 ) : ForecastPort {
 
     override suspend fun roll(request: ForecastRequest): PredFan {
-        val model = selected.current() ?: return missing(request, "no selected model")
+        val r = rollInternal(request)
+        return when (r.eligibility) {
+            ForecastEligibility.MISSING -> missing(request, r.reason ?: "forecast unavailable")
+            else -> PredFan(request.candidateU, r.steps, STEP_MS, request.validatedSteps, r.status, r.eligibility)
+        }
+    }
+
+    /**
+     * The ON-DEMAND, display-only rolled forecast (issue I2). Runs on the SAME fp32-authoritative
+     * [rollInternal] path as the dose calculator (the exact autoregressive re-feed + PER-ROLL Rust
+     * degeneracy guard — no math is duplicated), but produces a [RolledForecast] instead of a
+     * [PredFan]. The result is EPHEMERAL and carries its anchor so the graph can place and auto-pan to
+     * it; it is a distinct type that CANNOT enter `:calc`, the top-bar indicator, or the notification
+     * countdown (all of which read [PredFan] / `InferenceState`, never a [RolledForecast]).
+     *
+     * Fail-closed: any per-roll degeneracy STOPS the roll, keeps the valid prefix, and marks the
+     * result [RolledForecast.degenerate] with a plain reason. A missing model / context yields
+     * [RolledForecast.missing]. Never throws.
+     */
+    suspend fun rollForDisplay(nowMs: Long, requestedHours: Double, validatedSteps: Int): RolledForecast {
+        val fullRollSteps = Math.round(requestedHours * HorizonPolicy.STEPS_PER_HOUR).toInt().coerceAtLeast(1)
+        val requestedRolls = (fullRollSteps + validatedSteps - 1) / validatedSteps.coerceAtLeast(1)
+        // Baseline roll: the already-committed meals/doses (+ auto-extended basal) only. announced and
+        // candidate are empty — exactly the dashboard's baseline conditioning (matches the calculator's
+        // 0 U baseline), so the displayed roll agrees with the cycle forecast over the first 2 h.
+        val request = ForecastRequest(
+            rollStartMs = nowMs,
+            fullRollSteps = fullRollSteps,
+            validatedSteps = validatedSteps,
+            announced = emptyList(),
+            candidate = null,
+            candidateU = 0.0,
+        )
+        val r = rollInternal(request)
+        val anchor = r.anchorTsMs
+        if (anchor == null || (r.eligibility == ForecastEligibility.MISSING)) {
+            return RolledForecast.missing(requestedHours, requestedRolls, r.reason ?: "forecast unavailable")
+        }
+        val n = r.steps.size
+        val median = DoubleArray(n) { r.steps[it].medianBg }
+        val lower = DoubleArray(n) { r.steps[it].lowerBg }
+        val upper = DoubleArray(n) { r.steps[it].upperBg }
+        val degenerate = r.eligibility == ForecastEligibility.DEGENERATE
+        val eligible = r.eligibility == ForecastEligibility.ELIGIBLE
+        val validHours = r.completedRolls * (validatedSteps / HorizonPolicy.STEPS_PER_HOUR.toDouble())
+        val reason = when {
+            degenerate -> "The rolled forecast degenerated after about %.1f h; only the valid portion is shown.".format(validHours)
+            else -> null
+        }
+        return RolledForecast(
+            anchorTsMs = anchor,
+            stepMs = STEP_MS,
+            medianBg = median,
+            lowerBg = lower,
+            upperBg = upper,
+            validatedSteps = validatedSteps,
+            requestedHours = requestedHours,
+            eligible = eligible,
+            degenerate = degenerate,
+            reason = reason,
+            completedRolls = r.completedRolls,
+            requestedRolls = requestedRolls,
+        )
+    }
+
+    /** The accumulated result of the shared rolling loop, before it is projected onto a [PredFan] or a
+     *  [RolledForecast]. [anchorTsMs] is null only when no context series could be obtained. */
+    private data class Rolled(
+        val anchorTsMs: Long?,
+        val steps: List<FanStep>,
+        val status: ForecastStatus,
+        val eligibility: ForecastEligibility,
+        val reason: String?,
+        val completedRolls: Int,
+    )
+
+    /**
+     * The single source of the rolling math, shared by [roll] (dose path) and [rollForDisplay]
+     * (display path). Re-feeds the median per roll and gates EVERY roll on the Rust degeneracy check;
+     * on the first degeneracy it stops and returns the valid prefix marked [ForecastEligibility.DEGENERATE].
+     */
+    private suspend fun rollInternal(request: ForecastRequest): Rolled {
+        val model = selected.current()
+            ?: return Rolled(null, emptyList(), ForecastStatus.OK, ForecastEligibility.MISSING, "no selected model", 0)
         val desc = model.descriptor
         // PREDICTION_PATCHES isn't a descriptor field; derive it from the validated horizon (2 h ⇒ 4).
         val predPatches = desc.predictionHorizonHours * HorizonPolicy.STEPS_PER_HOUR / desc.patchSize
         val predSteps = predPatches * desc.patchSize                   // 4·6 = 24 steps per forward
-        if (predSteps <= 0) return missing(request, "descriptor prediction window is 0")
+        if (predSteps <= 0) return Rolled(null, emptyList(), ForecastStatus.OK, ForecastEligibility.MISSING, "descriptor prediction window is 0", 0)
 
         val minSteps = desc.minContextPatches * desc.patchSize
         val maxSteps = desc.maxContextPatches * desc.patchSize
         val series = history.recentBgSeries(maxSteps, minSteps)
-            ?: return missing(request, "still collecting context (< $minSteps steps)")
+            ?: return Rolled(null, emptyList(), ForecastStatus.OK, ForecastEligibility.MISSING, "still collecting context (< $minSteps steps)", 0)
 
         val nCtx = series.mgdl.size
-        if (nCtx % desc.patchSize != 0 || nCtx < minSteps) return missing(request, "context length $nCtx not a valid multiple")
+        if (nCtx % desc.patchSize != 0 || nCtx < minSteps) {
+            return Rolled(series.anchorTsMs, emptyList(), ForecastStatus.OK, ForecastEligibility.MISSING, "context length $nCtx not a valid multiple", 0)
+        }
 
         // The whole future window (store tails + announced + candidate + auto-extended basal), sliced
         // per roll into prediction-zone dose channels. Also yields the logged-only IOB/COB.
@@ -78,12 +164,14 @@ class RollingForecaster(
                 }
             } catch (t: Throwable) {
                 Timber.tag(TAG).w(t, "roll %d failed for candidate %s U", r, request.candidateU)
-                return missing(request, "forecast forward failed: ${t.message}")
+                return Rolled(series.anchorTsMs, outSteps.toList(), ForecastStatus.OK, ForecastEligibility.MISSING, "forecast forward failed: ${t.message}", r)
             }
 
             val status = withContext(dispatchers.default) { native.forecastDegeneracyCheck(forecast) }
             if (status != ForecastStatus.OK) {
-                return PredFan(request.candidateU, outSteps, STEP_MS, request.validatedSteps, status, ForecastEligibility.DEGENERATE)
+                // §3.6-B: a degenerate roll makes the WHOLE rolled forecast ineligible; keep the valid
+                // prefix (rolls 0..r-1) so display can show what was sound, but never re-feed r.
+                return Rolled(series.anchorTsMs, outSteps.toList(), status, ForecastEligibility.DEGENERATE, null, r)
             }
 
             appendWindow(forecast, predSteps, outSteps, desc.patchSize, predPatches)
@@ -98,8 +186,8 @@ class RollingForecaster(
             carrySpread += terminalHalfWidth(forecast)
         }
 
-        val trimmed = if (outSteps.size > request.fullRollSteps) outSteps.subList(0, request.fullRollSteps).toList() else outSteps
-        return PredFan(request.candidateU, trimmed, STEP_MS, request.validatedSteps, ForecastStatus.OK, ForecastEligibility.ELIGIBLE)
+        val trimmed = if (outSteps.size > request.fullRollSteps) outSteps.subList(0, request.fullRollSteps).toList() else outSteps.toList()
+        return Rolled(series.anchorTsMs, trimmed, ForecastStatus.OK, ForecastEligibility.ELIGIBLE, null, nRolls)
     }
 
     /** Map one roll's decoded [Forecast] (step-major mg/dL median + P·S·7 band fan) into [FanStep]s. */

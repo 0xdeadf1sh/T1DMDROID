@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
@@ -269,9 +270,15 @@ private fun UnitSwitcher(current: UnitSpace, onSelect: (UnitSpace) -> Unit) {
 
 // ── Building blocks ─────────────────────────────────────────────────────────────────────────
 
+/** I15 — the Stats containers use the theme's `surfaceVariant` role (defined per-theme, light and dark)
+ *  instead of Material's default card grey, so they read as part of the active palette. */
+@Composable
+private fun statsCardColors() =
+    CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+
 @Composable
 private fun SectionCard(title: String, content: @Composable () -> Unit) {
-    Card(Modifier.fillMaxWidth()) {
+    Card(Modifier.fillMaxWidth(), colors = statsCardColors()) {
         Column(Modifier.padding(14.dp)) {
             Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Box(Modifier.height(8.dp))
@@ -282,14 +289,14 @@ private fun SectionCard(title: String, content: @Composable () -> Unit) {
 
 @Composable
 private fun InfoCard(text: String) {
-    Card(Modifier.fillMaxWidth()) {
+    Card(Modifier.fillMaxWidth(), colors = statsCardColors()) {
         Text(text, Modifier.padding(14.dp), style = MaterialTheme.typography.bodyMedium)
     }
 }
 
 @Composable
 private fun Metric(label: String, value: String, unit: String) {
-    Card(Modifier.width(104.dp)) {
+    Card(Modifier.width(104.dp), colors = statsCardColors()) {
         Column(Modifier.padding(10.dp)) {
             Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
             Text(value, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
@@ -314,7 +321,8 @@ private fun TirBar(bands: SubBands) {
             .height(28.dp),
     ) {
         if (!anyData) {
-            Box(Modifier.weight(1f).fillMaxHeight().background(Color(0x33FFFFFF)))
+            // I15 — the empty-state fill tracks the theme (was a hardcoded translucent white).
+            Box(Modifier.weight(1f).fillMaxHeight().background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)))
             return@Row
         }
         segs.forEach { (frac, color) ->
@@ -374,7 +382,7 @@ private fun DiurnalRow(b: TodBucket) {
         Box(Modifier.height(4.dp))
         Row(Modifier.fillMaxWidth().height(14.dp)) {
             if (b.n == 0) {
-                Box(Modifier.weight(1f).fillMaxHeight().background(Color(0x22FFFFFF)))
+                Box(Modifier.weight(1f).fillMaxHeight().background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)))
             } else {
                 listOf(b.tbr to BAND_LOW, b.tir to BAND_IN, b.tar to BAND_HIGH).forEach { (frac, c) ->
                     if (frac > 0.0) Box(Modifier.weight(frac.toFloat()).fillMaxHeight().background(c))

@@ -15,6 +15,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 
 /**
@@ -77,15 +78,20 @@ fun GraphSettingsScreen(
 private fun Stepper(label: String, value: Int, onDown: () -> Unit, onUp: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().padding(top = 24.dp),
-        horizontalArrangement = Arrangement.spacedBy(16.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(label, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(end = 8.dp))
+        Text(label, style = MaterialTheme.typography.bodyLarge)
+        // I13 — the ± buttons keep their intrinsic size; the VALUE field flexes (weight) and centres, so
+        // a wide value can never balloon the steppers.
         OutlinedButton(onClick = onDown) { Text("−5") }
         Text(
             text = "$value mg/dL",
             style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.weight(1f),
         )
         Button(onClick = onUp) { Text("+5") }
     }

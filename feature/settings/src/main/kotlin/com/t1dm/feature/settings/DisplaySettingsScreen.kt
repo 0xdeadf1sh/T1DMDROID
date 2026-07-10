@@ -37,6 +37,8 @@ fun DisplaySettingsScreen(
     onSelectFont: (String) -> Unit,
     onImportCustomTheme: () -> Unit,
     onSetTemperatureUnit: (TempUnit) -> Unit,
+    widgetPinSupported: Boolean = false,
+    widgetPinActions: List<Pair<String, () -> Unit>> = emptyList(),
 ) {
     SettingsScaffold("Display") {
         SettingsSectionHeader("Theme")
@@ -90,6 +92,22 @@ fun DisplaySettingsScreen(
             ),
             temperatureUnit,
         ) { onSetTemperatureUnit(it) }
+
+        SettingsSectionHeader("Widgets")
+        if (widgetPinSupported && widgetPinActions.isNotEmpty()) {
+            SettingsNote("Add a T1DM widget straight to your home screen — the launcher will ask you to confirm.")
+            widgetPinActions.forEach { (label, onPin) ->
+                OutlinedButton(onClick = onPin, modifier = Modifier.padding(top = 4.dp)) {
+                    Text("Add \"$label\" widget")
+                }
+            }
+        } else {
+            SettingsNote(
+                "This launcher can't add widgets from inside the app. To add one manually: long-press an " +
+                    "empty spot on the home screen, tap Widgets, find T1DM, and drag the BG tile, Prediction " +
+                    "glance, or Lock-screen glance onto the screen.",
+            )
+        }
 
         SettingsSectionHeader("Motion")
         ToggleRow("Animations", animationsEnabled, "Turn off all motion for a static UI") { onSetAnimationsEnabled(it) }

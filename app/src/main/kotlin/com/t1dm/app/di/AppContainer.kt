@@ -46,6 +46,7 @@ import com.t1dm.core.model.IobCobReadout
 import com.t1dm.core.model.JournalNote
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
+import com.t1dm.core.model.RolledForecast
 import com.t1dm.calc.AdviceResult
 import com.t1dm.calc.AnchorInfo
 import com.t1dm.calc.AnchorInfoSource
@@ -66,6 +67,7 @@ import com.t1dm.app.stats.AppStatsSource
 import com.t1dm.data.T1dmRepository
 import com.t1dm.data.settings.BgRange
 import com.t1dm.data.settings.GraphSettingsStore
+import com.t1dm.feature.dashboard.BgPulses
 import com.t1dm.feature.dashboard.BgReachability
 import com.t1dm.feature.dashboard.BgSignals
 import com.t1dm.feature.dashboard.LinkHealth
@@ -116,6 +118,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
@@ -203,6 +206,26 @@ class AppContainer(context: Context) {
     suspend fun refreshAlarmConfig() {
         alarmConfig = runCatching { settingsStore.currentAlarmConfig() }.getOrDefault(AlarmConfig.DEFAULT)
     }
+
+    // ─── Theme snapshot (issue I1 — per-theme notification icon geometry + accent) ─────────────────
+    // The notification presenters run outside Compose (in the FGS / a short-lived service), so they
+    // cannot read `LocalT1dmSemantics`. This @Volatile snapshot, kept current by a collector on the
+    // persisted `themeId`, lets them resolve the active glyph GEOMETRY + accent synchronously.
+    @Volatile
+    var themeIdSnapshot: String = com.t1dm.core.design.ThemeIds.TRON
+        private set
+
+    @Volatile
+    var customThemeJsonSnapshot: String? = null
+        private set
+
+    /** The active theme's notification-icon geometry family (Tron angular / Umbrella blocky / Kitty round). */
+    val iconStyle: com.t1dm.core.design.IconStyle
+        get() = com.t1dm.core.design.iconStyleForTheme(themeIdSnapshot)
+
+    /** The active theme's accent (primary) as an ARGB int for `Notification.Builder.setColor`. */
+    val notificationAccentArgb: Int
+        get() = com.t1dm.app.notify.NotificationIcons.accentArgb(themeIdSnapshot, customThemeJsonSnapshot)
 
     // ─── Alert actuators (Phase 7B — per-band sound + K90 vibration; kv-backed via SettingsStore) ──
 
@@ -420,6 +443,9 @@ class AppContainer(context: Context) {
             // handle + "executing on" line are correct from the first tick.
             inferenceController.setForecastBackend(forecastBackendPref())
         }
+        // Keep the notification-icon theme snapshot current (issue I1).
+        appScope.launch { settingsStore.themeId.collect { themeIdSnapshot = it } }
+        appScope.launch { settingsStore.customThemeJson.collect { customThemeJsonSnapshot = it } }
     }
 
     // ─── Server sync (Phase 3) ────────────────────────────────────────────────────────────────
@@ -775,6 +801,59 @@ class AppContainer(context: Context) {
 
     fun clearBolusAdvice() { bolusAdvice.value = BolusAdviceUi.Idle }
 
+    // ── I2: the ON-DEMAND, DISPLAY-ONLY rolled forecast ────────────────────────────────────────────
+    //
+    // This is EPHEMERAL UI state, structurally isolated from the safety surfaces: it is a
+    // [RolledForecast] (a distinct type from [ModelPrediction]/[PredFan]), it is NEVER written into
+    // [inferenceState].predictions, it is NEVER passed to [doseAdvisor], and it is NEVER read by the
+    // ongoing-notification computer or the top-bar indicator (both read [inferenceState]). So a
+    // 12×-rolled fan can never raise an alert or influence a dose — "HYPO in 19H" is impossible.
+
+    /** The ephemeral rolled fan the BG panel draws, or null when none is requested. */
+    val rolledForecast = MutableStateFlow<RolledForecast?>(null)
+
+    /** True while a roll is being computed (drives the panel's progress spinner). */
+    val rollComputing = MutableStateFlow(false)
+
+    private var rollJob: Job? = null
+
+    /**
+     * Compute one on-demand autoregressive roll to [requestedHours] on the fp32 CPU **authority**
+     * (never the GPU — sequential rolls multiply forwards, and the GPU is ~4.5× worse per forward),
+     * reusing the `:calc` [RollingForecaster] math with the Rust degeneracy guard PER ROLL. Fail-closed:
+     * a missing model, a degenerate roll, or any error yields a non-eligible [RolledForecast] with a
+     * plain reason — never a throw. The result is display-only.
+     */
+    fun requestRollForDisplay(requestedHours: Double) {
+        rollJob?.cancel()
+        rollJob = appScope.launch {
+            rollComputing.value = true
+            try {
+                val cfg = runCatching { settingsStore.currentCalcConfig() }.getOrDefault(CalcConfig())
+                val validated = cfg.horizon.validatedSteps
+                val rf = runCatching {
+                    rollingForecaster.rollForDisplay(System.currentTimeMillis(), requestedHours, validated)
+                }.getOrElse {
+                    RolledForecast.missing(
+                        requestedHours,
+                        Math.ceil(requestedHours / 2.0).toInt(),
+                        "Roll failed — ${it.message ?: it::class.simpleName}. No rolled forecast is shown.",
+                    )
+                }
+                rolledForecast.value = rf
+            } finally {
+                rollComputing.value = false
+            }
+        }
+    }
+
+    /** Dismiss the ephemeral rolled forecast. */
+    fun clearRoll() {
+        rollJob?.cancel()
+        rollComputing.value = false
+        rolledForecast.value = null
+    }
+
     /** Record the human's acceptance of an advised bolus — logs it exactly like a manual bolus (the
      *  same self-describing `logged_dose` + series push). This never actuates; it only journals the
      *  dose the user tells us they administered. A 0 U / carb-rescue acceptance logs nothing here. */
@@ -1016,6 +1095,34 @@ class AppContainer(context: Context) {
             BgSignals(cgmRssi = latest?.rssi, watchRssi = watch.rssiDbm)
         }
     }
+
+    /** I12 — per-channel "last activity" tokens that advance the instant a channel MOVES, so the BG
+     *  panel can flash that light. CGM: the newest reading's timestamp. SRV: a monotonic sum of
+     *  streamed-in rows (wsCursor) + successful model pushes + server alerts — i.e. any send/receive.
+     *  WCH: the last push instant. A token change fires a one-shot flash; the value itself is opaque. */
+    val bgPulses: Flow<BgPulses> by lazy {
+        combine(latestReading, syncStatus, watchSecurity) { latest, sync, watch ->
+            val serverToken = (sync.wsCursor ?: 0L) + sync.alertCount +
+                sync.modelPushes.values.sumOf { it.count }
+            BgPulses(
+                server = serverToken,
+                cgm = latest?.tsMs ?: 0L,
+                watch = watch.lastPushMs ?: 0L,
+            )
+        }
+    }
+
+    /** I11 — the user-entered CGM sensor-lifetime expiry instant (epoch-ms), or null when unset. */
+    val sensorExpiryMs: Flow<Long?> get() = settingsStore.sensorExpiryMs
+
+    /** Set/renew the sensor lifetime from a user-entered remaining duration; stores the absolute
+     *  expiry so the countdown survives restarts. */
+    suspend fun setSensorLifetime(days: Int, hours: Int, minutes: Int) {
+        val durationMs = ((days.toLong() * 24 + hours) * 60 + minutes) * 60_000L
+        settingsStore.setSensorExpiryMs(System.currentTimeMillis() + durationMs)
+    }
+
+    suspend fun clearSensorLifetime() = settingsStore.clearSensorExpiry()
 
     private fun serverLight(sync: SyncStatus, profile: ServerProfile?): ReachLight = when {
         profile == null -> ReachLight(LinkHealth.OFF, "no server profile configured")

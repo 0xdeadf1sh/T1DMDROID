@@ -257,6 +257,14 @@ class SettingsStore(
     // curves). Persisted by the preset's stable label; the default is the in-distribution simulator
     // shape, so a fresh install (and every unchanged install) keeps forecasts in-distribution. The
     // apply-at-log path (AppContainer.logBolus/logBasal) resolves the selected label to its spec.
+    // ── CGM sensor lifetime (I11) — a USER-ENTERED absolute expiry instant (epoch-ms). Because the
+    // passive-advertisement sensor exposes no true age, the user enters remaining life and we store the
+    // resulting expiry; the BG panel + CGM settings count it down. Device/sensor-specific, so it is
+    // deliberately NOT part of the exportable config set. Empty/absent ⇒ null ⇒ no countdown shown.
+    val sensorExpiryMs: Flow<Long?> = repository.observeKv(K_CGM_SENSOR_EXPIRY).map { it?.toLongOrNull() }
+    suspend fun setSensorExpiryMs(ms: Long) = put(K_CGM_SENSOR_EXPIRY, ms.toString())
+    suspend fun clearSensorExpiry() = put(K_CGM_SENSOR_EXPIRY, "")
+
     val selectedRapidPreset: Flow<String> =
         repository.observeKv(K_CURVE_RAPID_PRESET).map { it ?: DEFAULT_RAPID_PRESET_LABEL }
     val selectedBasalPreset: Flow<String> =
@@ -376,6 +384,7 @@ class SettingsStore(
         const val DEFAULT_TEMP_UNIT = "C"
         private const val K_CURVE_CARB_BEZIER = "graph.curve_carb_bezier"
         private const val K_CURVE_INSULIN_BEZIER = "graph.curve_insulin_bezier"
+        private const val K_CGM_SENSOR_EXPIRY = "cgm.sensor_expiry_ms"
         private const val K_CURVE_RAPID_PRESET = "graph.curve_rapid_preset"
         private const val K_CURVE_BASAL_PRESET = "graph.curve_basal_preset"
         /** The in-distribution simulator defaults (must equal the labels in `insulin_preset_catalog`). */

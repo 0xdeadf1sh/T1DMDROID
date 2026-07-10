@@ -128,9 +128,23 @@ private fun BasalEntry(
 
     Column(Modifier.fillMaxWidth().padding(top = 12.dp)) {
         UnitsField(unitsText) { unitsText = it }
-        Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        // I14 — the basal presets render identically regardless of their (uneven-length) labels: each is
+        // a full-width row with a leading selection dot and a single-line label, so "Lantus · glargine ·
+        // ~24 h" and "Tresiba · degludec · ~42 h" line up instead of one stretching while the other wraps.
+        Column(Modifier.fillMaxWidth().padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             BasalPreset.entries.forEach { p ->
-                FilterChip(selected = preset == p, onClick = { preset = p }, label = { Text(p.label) })
+                FilterChip(
+                    selected = preset == p,
+                    onClick = { preset = p },
+                    label = {
+                        Text(
+                            p.label,
+                            maxLines = 1,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
         }
 

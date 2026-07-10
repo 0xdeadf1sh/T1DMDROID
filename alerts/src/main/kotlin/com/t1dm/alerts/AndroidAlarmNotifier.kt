@@ -23,6 +23,15 @@ class AndroidAlarmNotifier(
     private val actuatorConfig: AlertActuatorConfig = AlertActuatorConfig.SILENT,
     private val fullScreenIntent: () -> PendingIntent? = { null },
     private val contentIntent: () -> PendingIntent? = { null },
+    /**
+     * The per-theme small icon (issue I1), supplied by `:app` (this module cannot reach `:core:design`
+     * or `:app`'s `R`). `critical` is true for the URGENT tier, so `:app` can hand back a DISTINCT,
+     * unmistakable alarm glyph for urgent alarms vs the plain-tier warning. Presentation only — this
+     * never changes WHEN the pure engine fires (§3.6-A). Defaults to null → the platform warning icon.
+     */
+    private val smallIcon: (critical: Boolean) -> android.graphics.drawable.Icon? = { null },
+    /** The active theme accent (ARGB) for `setColor`; null ⇒ leave unset. */
+    private val accentColor: () -> Int? = { null },
 ) : AlarmNotifier {
 
     private val app = context.applicationContext
@@ -49,7 +58,6 @@ class AndroidAlarmNotifier(
         if (!nm.areNotificationsEnabled()) return
         val critical = alarm.severity == AlarmSeverity.CRITICAL
         val builder = Notification.Builder(app, if (critical) channels.critical else channels.warning)
-            .setSmallIcon(android.R.drawable.stat_sys_warning)
             .setContentTitle(titleOf(alarm))
             .setContentText(alarm.message)
             .setStyle(Notification.BigTextStyle().bigText(alarm.message))
@@ -58,6 +66,9 @@ class AndroidAlarmNotifier(
             .setOngoing(critical)
             .setAutoCancel(false)
             .setContentIntent(contentIntent())
+        val icon = smallIcon(critical)
+        if (icon != null) builder.setSmallIcon(icon) else builder.setSmallIcon(android.R.drawable.stat_sys_warning)
+        accentColor()?.let { builder.setColor(it) }
         if (critical) {
             // Full-screen over the lock screen for urgent tiers (item 2 / risk S11). Android falls
             // back to a heads-up banner when the screen is on or the special access is ungranted.

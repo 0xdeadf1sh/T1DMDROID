@@ -37,8 +37,10 @@ class T1dmApplication : Application() {
                 .detectDiskWrites()
                 .detectCustomSlowCalls()
                 .detectNetwork()
+                // No penaltyFlashScreen: its full-window red border (fired on a main-thread disk
+                // read/write, e.g. a theme/font/unit KV touch) was the "red press-flash". Violations
+                // still surface via penaltyLog — the diagnostic stays, the red frame goes.
                 .penaltyLog()
-                .penaltyFlashScreen()
                 .build(),
         )
         StrictMode.setVmPolicy(

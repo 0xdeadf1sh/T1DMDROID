@@ -17,18 +17,21 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -41,8 +44,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import kotlin.math.roundToInt
 import com.t1dm.core.design.LocalAnimationsEnabled
 import com.t1dm.core.design.LocalT1dmSemantics
+import com.t1dm.core.design.SignalBars
 import com.t1dm.core.design.iconStyleForTheme
 import com.t1dm.core.model.AlertThresholds
 import com.t1dm.core.model.CgmReading
@@ -50,6 +55,7 @@ import com.t1dm.core.model.IobCobReadout
 import com.t1dm.core.model.ModelPrediction
 import com.t1dm.core.model.PredictedTime
 import com.t1dm.core.model.ReadingFlag
+import com.t1dm.core.model.RolledForecast
 import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.core.model.TempUnit
 import com.t1dm.core.model.UnitSpace
@@ -60,7 +66,9 @@ import com.t1dm.ui.graph.GlucoseGraph
 import com.t1dm.ui.graph.GraphFrame
 import com.t1dm.ui.graph.PredSeries
 import com.t1dm.ui.graph.PredictedClock
+import com.t1dm.ui.graph.RolledSeries
 import com.t1dm.ui.graph.SmoothedTrace
+import com.t1dm.ui.graph.rolledSeriesOf
 import com.t1dm.ui.graph.smoothedTraceOf
 import com.t1dm.ui.graph.curveOverlayOf
 import com.t1dm.ui.graph.graphFrameOf
@@ -100,10 +108,16 @@ fun DashboardScreen(
     onSetWindowHours: ((Int) -> Unit)? = null,
     reachability: BgReachability? = null,
     signals: BgSignals? = null,
+    // I12 — per-channel data-movement tokens; a change flashes that channel's reachability light.
+    pulses: BgPulses? = null,
     // U9 — no fan (RPM is permission-denied even to adb); show the device battery-sensor temperature,
     // labelled, in the user's chosen unit, to the right of the WCH reachability light.
     deviceTempC: Double? = null,
     temperatureUnit: TempUnit = TempUnit.CELSIUS,
+    // I11 — the user-entered sensor-lifetime expiry instant (absolute epoch-ms), counted down live to
+    // the right of the TEMP readout. Null ⇒ nothing shown (no estimate entered). It is a user estimate,
+    // NOT read from the passive-advertisement sensor.
+    sensorExpiryMs: Long? = null,
     // Issues 7 & 9 — the warmup-surviving circadian belief, so the TOP axis renders the predicted
     // clock even while the BG forecast is (correctly) suppressed. Falls back to the selected
     // prediction's copy once a full cycle publishes.
@@ -113,6 +127,13 @@ fun DashboardScreen(
     // toggle overlays the smoothed model-input trace. Native call is passed as a lambda so this module
     // keeps no JNI dependency.
     smoothMgdl: ((DoubleArray) -> DoubleArray)? = null,
+    // I2 — the ephemeral, DISPLAY-ONLY rolled forecast (never drives an alert/dose). [onRoll] runs one
+    // on-demand roll to the requested horizon (hours) on the fp32 CPU authority; [rollComputing] gates
+    // the progress UI; [onClearRoll] dismisses the ephemeral overlay.
+    rolledForecast: RolledForecast? = null,
+    rollComputing: Boolean = false,
+    onRoll: ((Double) -> Unit)? = null,
+    onClearRoll: (() -> Unit)? = null,
 ) {
     val frame by produceState(GraphFrame.EMPTY, readings, unit) {
         value = graphFrameOf(readings, unit, kovatchevF = kovatchevF)
@@ -123,6 +144,17 @@ fun DashboardScreen(
 
     var toggles by remember { mutableStateOf(CurveOverlayToggles()) }
     var windowHours by remember(initialWindowHours) { mutableStateOf(initialWindowHours) }
+    // I3 — a +24 h future-view toggle: extends the pannable right edge (and the reconstructed dose
+    // curves) up to 24 h ahead, WITHOUT fabricating a BG line where no forecast exists.
+    var futureView by remember { mutableStateOf(false) }
+    val futureExtentMs = if (futureView) FUTURE_VIEW_MS else 0L
+    // I2 — the Roll confirmation dialog + its chosen horizon (30 min…12 h, 30-min steps, default 2 h).
+    var showRollDialog by remember { mutableStateOf(false) }
+
+    // The rolled fan converted to the active unit once, off-thread (mirrors the prediction overlay).
+    val rolledSeries by produceState<RolledSeries?>(null, rolledForecast, unit) {
+        value = rolledSeriesOf(rolledForecast, unit, kovatchevF)
+    }
 
     // Reconstruct the carb/insulin channels over the readings' grid span, extended INTO THE FUTURE by
     // a fixed horizon so the committed doses' appearance/action tails are visible in the prediction
@@ -132,7 +164,7 @@ fun DashboardScreen(
     // Keyed on iobCob too so a just-logged dose (which emits a new IOB/COB read-out) rebuilds the
     // overlay immediately, rather than waiting for the next CGM reading — this keeps the insulin/basal
     // overlay (issue 18) and the no-future-insulin advisory (issue 16) current the moment a dose lands.
-    val curveOverlay by produceState(CurveOverlayFrame.EMPTY, readings, predictions, curveChannels, basalChannel, iobCob) {
+    val curveOverlay by produceState(CurveOverlayFrame.EMPTY, readings, predictions, curveChannels, basalChannel, iobCob, futureView, rolledForecast) {
         val resolver = curveChannels
         if (resolver == null || readings.isEmpty()) {
             value = CurveOverlayFrame.EMPTY
@@ -141,10 +173,13 @@ fun DashboardScreen(
         val gridStart = readings.minOf { it.tsMs } / STEP_MS * STEP_MS
         val lastReading = readings.maxOf { it.tsMs }
         val lastForecast = predictions.maxOfOrNull { it.anchorTsMs + it.horizonSteps.toLong() * it.stepMs } ?: lastReading
+        val rolledEnd = rolledForecast?.takeUnless { it.isEmpty }?.horizonEndMs ?: lastReading
         // Always reach at least OVERLAY_FUTURE_MS past now so a just-logged dose shows its rising tail
         // even before a forecast exists (warmup); the same event-reconstructed channel carries both
-        // the past and the future portions (bucketize lays the full curve across the window).
-        val end = maxOf(lastReading, lastForecast, System.currentTimeMillis() + OVERLAY_FUTURE_MS)
+        // the past and the future portions (bucketize lays the full curve across the window). When the
+        // +24 h future view (I3) or an on-demand roll (I2) is active, reach out to cover it so the
+        // committed carb/insulin curves render across the empty future too.
+        val end = maxOf(lastReading, lastForecast, rolledEnd, System.currentTimeMillis() + maxOf(OVERLAY_FUTURE_MS, futureExtentMs))
         val nSteps = (((end - gridStart) / STEP_MS).toInt() + 1).coerceIn(1, MAX_OVERLAY_STEPS)
         val (carb, insulin) = resolver(gridStart, nSteps)
         val basal = basalChannel?.invoke(gridStart, nSteps) ?: DoubleArray(0)
@@ -175,17 +210,22 @@ fun DashboardScreen(
     val predictedClock = if (clockSource != null && clockAnchor != null) clockSource.toClock(clockAnchor) else null
 
     Column(Modifier.fillMaxSize()) {
-        reachability?.let { ReachabilityBar(it, signals, deviceTempC, temperatureUnit) }
+        reachability?.let { ReachabilityBar(it, signals, pulses, deviceTempC, temperatureUnit, sensorExpiryMs) }
         DashboardHeader(latest, activeSourceName, unit, signals?.cgmRssi ?: latest?.rssi)
         warmup?.let { WarmupBanner(it) }
         if (noFutureInsulin) NoFutureInsulinBanner()
-        if (iobCob != null || curveChannels != null || smoothMgdl != null) {
+        if (iobCob != null || curveChannels != null || smoothMgdl != null || onRoll != null) {
             OverlayControls(
                 iobCob = iobCob,
                 toggles = toggles,
                 windowHours = windowHours,
                 smoothAvailable = smoothMgdl != null,
                 showSmoothed = showSmoothed,
+                rollAvailable = onRoll != null,
+                rollComputing = rollComputing,
+                onRollClick = { showRollDialog = true },
+                futureView = futureView,
+                onToggleFutureView = { futureView = it },
                 onToggle = { toggles = it },
                 onToggleSmoothed = { showSmoothed = it },
                 onWindow = { h ->
@@ -193,6 +233,11 @@ fun DashboardScreen(
                     onSetWindowHours?.invoke(h)
                 },
             )
+        }
+        // I2 — the ephemeral rolled-forecast status line: a plain reason when it is degenerate/absent,
+        // otherwise a note that the drawn tail is extrapolated + display-only, with a Clear affordance.
+        rolledForecast?.takeIf { !it.isEmpty || it.reason != null }?.let { rf ->
+            RolledStatusBanner(rf, onClear = onClearRoll)
         }
         GlucoseGraph(
             frame = frame,
@@ -207,7 +252,100 @@ fun DashboardScreen(
             predictedClock = predictedClock,
             smoothed = smoothed,
             showSmoothed = showSmoothed,
+            rolled = rolledSeries,
+            futureExtentMs = futureExtentMs,
         )
+    }
+
+    if (showRollDialog) {
+        RollConfirmDialog(
+            onDismiss = { showRollDialog = false },
+            onConfirm = { hours ->
+                showRollDialog = false
+                onRoll?.invoke(hours)
+            },
+        )
+    }
+}
+
+/** Honest units for the roll horizon: whole hours or "N h 30 min", and "30 min" below one hour. */
+private fun rollHoursLabel(hours: Double): String {
+    val totalHalf = Math.round(hours * 2).toInt() // in 30-min units
+    val h = totalHalf / 2
+    val half = totalHalf % 2 == 1
+    return when {
+        h == 0 -> "30 min"
+        half -> "$h h 30 min"
+        else -> "$h h"
+    }
+}
+
+/**
+ * The I2 Roll confirmation. The copy is deliberately honest: the roll re-feeds the model's own 2 h
+ * forecast into its context N times, and everything beyond 2 h is EXTRAPOLATED, unvalidated, and shown
+ * for inspection only — it never raises an alert. A slider picks 30 min…12 h in 30-min steps.
+ */
+@Composable
+private fun RollConfirmDialog(onDismiss: () -> Unit, onConfirm: (Double) -> Unit) {
+    // Slider stops 1..24 map to 0.5 h … 12 h in 30-min steps; default index 4 = 2 h.
+    var stepIdx by remember { mutableStateOf(4f) }
+    val hours = (stepIdx.roundToInt().coerceIn(1, 24)) * 0.5
+    val rolls = Math.ceil(hours / 2.0).toInt()
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = { TextButton(onClick = { onConfirm(hours) }) { Text("Roll ${rollHoursLabel(hours)}") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        title = { Text("Roll the forecast forward") },
+        text = {
+            Column {
+                Text(
+                    "Rolling re-feeds the model's own 2-hour forecast back into its context $rolls " +
+                        "time${if (rolls == 1) "" else "s"}. Beyond 2 hours the result is EXTRAPOLATED and " +
+                        "unvalidated — error compounds with each roll. It is shown for inspection only and " +
+                        "will not raise alerts.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Spacer(Modifier.height(16.dp))
+                Text("Horizon: ${rollHoursLabel(hours)}", style = MaterialTheme.typography.labelLarge)
+                Slider(
+                    value = stepIdx,
+                    onValueChange = { stepIdx = it },
+                    valueRange = 1f..24f,
+                    steps = 22, // 24 discrete stops (endpoints + 22 interior)
+                )
+                Text(
+                    "30 min – 12 h · $rolls forward${if (rolls == 1) "" else "s"} on the CPU authority",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                )
+            }
+        },
+    )
+}
+
+/** The ephemeral rolled-forecast status line (I2). States the honest disposition in plain language. */
+@Composable
+private fun RolledStatusBanner(rf: RolledForecast, onClear: (() -> Unit)?) {
+    val msg = when {
+        rf.reason != null -> rf.reason!!
+        rf.isEmpty -> "No rolled forecast to show."
+        else -> "Rolled to ${rollHoursLabel(rf.requestedHours)} — the region past 2 h is extrapolated and display-only."
+    }
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            msg,
+            style = MaterialTheme.typography.labelMedium,
+            color = if (rf.degenerate) MaterialTheme.colorScheme.error
+            else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
+            modifier = Modifier.weight(1f),
+        )
+        onClear?.let {
+            TextButton(onClick = it) { Text("Clear") }
+        }
     }
 }
 
@@ -220,6 +358,7 @@ private fun PredictedTime.toClock(anchorTsMs: Long): PredictedClock? =
 private const val STEP_MS: Long = 300_000L
 private const val MAX_OVERLAY_STEPS: Int = 4032 // ~14 days of 5-min buckets
 private const val OVERLAY_FUTURE_MS: Long = 6L * 3_600_000L // show ~6 h of future dose tails
+private const val FUTURE_VIEW_MS: Long = 24L * 3_600_000L // I3 — +24 h future-view extent
 /** Below this resultant length the circadian belief is too diffuse to anchor a clock axis on. */
 private const val MIN_CLOCK_R: Double = 0.05
 
@@ -268,18 +407,34 @@ private fun OverlayControls(
     windowHours: Int,
     smoothAvailable: Boolean,
     showSmoothed: Boolean,
+    rollAvailable: Boolean,
+    rollComputing: Boolean,
+    onRollClick: () -> Unit,
+    futureView: Boolean,
+    onToggleFutureView: (Boolean) -> Unit,
     onToggle: (CurveOverlayToggles) -> Unit,
     onToggleSmoothed: (Boolean) -> Unit,
     onWindow: (Int) -> Unit,
 ) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-        // N2 — the Carbs / Insulin / Smoothed / 6h / 12h / 24h chips no longer fit across a phone width,
-        // so they live in a HORIZONTALLY-SCROLLABLE row (mirroring the scrollable nav) — nothing clips.
+        // N2 — the Roll / Carbs / Insulin / Smoothed / +24h / 6h / 12h / 24h chips no longer fit across a
+        // phone width, so they live in a HORIZONTALLY-SCROLLABLE row (mirroring the nav) — nothing clips.
         Row(
             Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            // I2 — the Roll button, to the LEFT of the Carbs chip. Shows a spinner while computing.
+            if (rollAvailable) {
+                AssistChip(
+                    onClick = { if (!rollComputing) onRollClick() },
+                    enabled = !rollComputing,
+                    label = { Text(if (rollComputing) "Rolling…" else "Roll") },
+                    leadingIcon = if (rollComputing) {
+                        { CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp) }
+                    } else null,
+                )
+            }
             FilterChip(
                 selected = toggles.carbs,
                 onClick = { onToggle(toggles.copy(carbs = !toggles.carbs)) },
@@ -304,6 +459,13 @@ private fun OverlayControls(
                     label = { Text("${h}h") },
                 )
             }
+            // I3 — the +24 h future-view toggle: pan into the empty future to see the committed dose
+            // curves out there (no fabricated BG line where no forecast exists).
+            FilterChip(
+                selected = futureView,
+                onClick = { onToggleFutureView(!futureView) },
+                label = { Text("+24h") },
+            )
         }
         iobCob?.let {
             Text(
@@ -334,10 +496,23 @@ data class BgReachability(val server: ReachLight, val cgm: ReachLight, val watch
  *  `readRemoteRssi` through `:watch` — the field lights up automatically when present. */
 data class BgSignals(val cgmRssi: Int? = null, val watchRssi: Int? = null)
 
+/** I12 — per-channel "last activity" tokens: a monotonically-advancing key (a timestamp works) that
+ *  changes the instant a channel MOVES — CGM on a new reading, SRV on a send/receive, WCH on a
+ *  push/ack. A change triggers a one-shot flash on that channel's light, DISTINCT from its steady
+ *  colour state. Unchanged/zero ⇒ no flash. `:app` supplies the tokens; the dashboard only animates. */
+data class BgPulses(val server: Long = 0L, val cgm: Long = 0L, val watch: Long = 0L)
+
 /** Three centered traffic-lights across the top of the BG panel; tapping toggles the labels. To the
  *  RIGHT of the WCH light sits the labelled device temperature (U9 — there is no readable fan). */
 @Composable
-private fun ReachabilityBar(r: BgReachability, signals: BgSignals?, deviceTempC: Double?, tempUnit: TempUnit) {
+private fun ReachabilityBar(
+    r: BgReachability,
+    signals: BgSignals?,
+    pulses: BgPulses?,
+    deviceTempC: Double?,
+    tempUnit: TempUnit,
+    sensorExpiryMs: Long?,
+) {
     var showLabels by remember { mutableStateOf(false) }
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)
@@ -345,12 +520,54 @@ private fun ReachabilityBar(r: BgReachability, signals: BgSignals?, deviceTempC:
         horizontalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        ReachChip("SRV", r.server, showLabels, null)
+        ReachChip("SRV", r.server, showLabels, null, pulses?.server ?: 0L)
         // Issue 3: the CGM link's signal bars live ONLY in the header now (the "AiDEX X … −60 dBm"
         // meter); this chip keeps just its traffic-light so the CGM RSSI is shown in exactly one place.
-        ReachChip("CGM", r.cgm, showLabels, null)
-        ReachChip("WCH", r.watch, showLabels, signals?.watchRssi)
+        ReachChip("CGM", r.cgm, showLabels, null, pulses?.cgm ?: 0L)
+        ReachChip("WCH", r.watch, showLabels, signals?.watchRssi, pulses?.watch ?: 0L)
         deviceTempC?.let { TempChip(it, tempUnit) }
+        // I11 — the user-entered sensor lifetime, counted down live, immediately right of the TEMP chip.
+        sensorExpiryMs?.let { SensorLifeChip(it) }
+    }
+}
+
+/** I11 — the sensor-lifetime countdown chip. Because the AiDEX X is a passive advertisement listener
+ *  we cannot read the sensor's true age, so this counts down a USER-ENTERED expiry instant, showing the
+ *  largest meaningful unit (`10d` / `5h` / `10m` / `35s` · "rem."). It re-reads the wall clock on a
+ *  cadence matched to the displayed granularity so it stays honest without a busy loop. It is plainly a
+ *  user estimate, not a reading from the sensor (see Settings → CGM source). */
+@Composable
+private fun SensorLifeChip(expiryMs: Long) {
+    val now by produceState(System.currentTimeMillis(), expiryMs) {
+        while (true) {
+            value = System.currentTimeMillis()
+            val remaining = expiryMs - value
+            // Tick every second under a minute, else once a minute — enough to keep the largest unit fresh.
+            kotlinx.coroutines.delay(if (remaining in 1..60_000L) 1_000L else 60_000L)
+        }
+    }
+    val remainingMs = expiryMs - now
+    val text = if (remainingMs <= 0L) "sensor expired" else "${formatRemaining(remainingMs)} rem."
+    Text(
+        text,
+        style = MaterialTheme.typography.labelSmall,
+        color = if (remainingMs <= 0L) MaterialTheme.colorScheme.error
+        else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f),
+    )
+}
+
+/** Largest meaningful unit of a positive remaining duration: days, else hours, else minutes, else
+ *  seconds. */
+private fun formatRemaining(ms: Long): String {
+    val totalSec = ms / 1000
+    val days = totalSec / 86_400
+    val hours = totalSec / 3_600
+    val minutes = totalSec / 60
+    return when {
+        days >= 1 -> "${days}d"
+        hours >= 1 -> "${hours}h"
+        minutes >= 1 -> "${minutes}m"
+        else -> "${totalSec}s"
     }
 }
 
@@ -366,11 +583,12 @@ private fun TempChip(celsius: Double, unit: TempUnit) {
 }
 
 @Composable
-private fun ReachChip(tag: String, light: ReachLight, showLabel: Boolean, rssi: Int?) {
+private fun ReachChip(tag: String, light: ReachLight, showLabel: Boolean, rssi: Int?, pulseKey: Long = 0L) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
         // N4b — the traffic light animates by state: steady green when OK, a slow amber pulse when
         // degraded, an urgent red pulse when down; static (no pulse) when animations are disabled (N4c).
-        PulsingDot(light.health)
+        // I12 — additionally, a one-shot flash halo fires whenever [pulseKey] changes (the channel moved).
+        PulsingDot(light.health, pulseKey)
         Text(tag, style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f))
         rssi?.let { SignalBars(it) }
@@ -382,9 +600,12 @@ private fun ReachChip(tag: String, light: ReachLight, showLabel: Boolean, rssi: 
 }
 
 /** The animated reachability light (N4b/N4c): a pulsing dot whose cadence encodes severity, collapsing
- *  to a steady dot the instant [LocalAnimationsEnabled] is off. */
+ *  to a steady dot the instant [LocalAnimationsEnabled] is off. I12 — on top of the STATE animation, a
+ *  transient halo blooms and fades once each time [pulseKey] changes (the channel moved: a new reading,
+ *  a send/receive, a push/ack). The halo is an expanding ring — visually distinct from the steady/
+ *  degraded/down colour states — and is suppressed entirely when animations are disabled. */
 @Composable
-private fun PulsingDot(health: LinkHealth) {
+private fun PulsingDot(health: LinkHealth, pulseKey: Long = 0L) {
     val animationsOn = LocalAnimationsEnabled.current
     val color = health.color()
     // Only DEGRADED (slow) and DOWN (urgent) pulse; OK/OFF are steady.
@@ -402,7 +623,34 @@ private fun PulsingDot(health: LinkHealth) {
             label = "reachAlpha",
         ).value
     } else 1f
-    Box(Modifier.size(9.dp).clip(CircleShape).background(color.copy(alpha = color.alpha * alpha)))
+    // I12 — the one-shot data-movement flash. `snapTo(1)` then `animateTo(0)` gives an expanding,
+    // fading ring; keyed on [pulseKey] so it re-fires on every channel move. Never animates on the
+    // very first composition (pulseKey seeds from the current value in the caller) or when motion is off.
+    val flash = remember { androidx.compose.animation.core.Animatable(0f) }
+    if (animationsOn) {
+        LaunchedEffect(pulseKey) {
+            if (pulseKey != 0L) {
+                flash.snapTo(1f)
+                flash.animateTo(0f, tween(700))
+            }
+        }
+    }
+    Box(contentAlignment = Alignment.Center) {
+        val f = flash.value
+        if (f > 0f) {
+            Box(
+                Modifier
+                    .size(9.dp)
+                    .graphicsLayer {
+                        val s = 1f + f * 1.6f
+                        scaleX = s; scaleY = s; this.alpha = f * 0.7f
+                    }
+                    .clip(CircleShape)
+                    .background(color.copy(alpha = color.alpha)),
+            )
+        }
+        Box(Modifier.size(9.dp).clip(CircleShape).background(color.copy(alpha = color.alpha * alpha)))
+    }
 }
 
 /** N4a — the animated per-theme time-of-day icon, right of the current BG value. */
@@ -435,39 +683,6 @@ private fun TimeOfDayIcon() {
         tint = MaterialTheme.colorScheme.primary,
         modifier = Modifier.size(28.dp).graphicsLayer { scaleX = scale; scaleY = scale },
     )
-}
-
-/** A four-bar RSSI meter + the raw dBm (item 20). Buckets follow the usual BLE bands. */
-@Composable
-private fun SignalBars(rssi: Int) {
-    val filled = when {
-        rssi >= -60 -> 4
-        rssi >= -70 -> 3
-        rssi >= -80 -> 2
-        rssi >= -90 -> 1
-        else -> 0
-    }
-    val on = MaterialTheme.colorScheme.primary
-    val off = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.20f)
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(1.dp)) {
-        // N4d — the bars sat slightly too low against the source name / dBm text; a small upward offset
-        // lifts them to the text centre while keeping the ascending-bar baseline.
-        Row(
-            Modifier.offset(y = (-2).dp),
-            verticalAlignment = Alignment.Bottom,
-            horizontalArrangement = Arrangement.spacedBy(1.dp),
-        ) {
-            for (i in 1..4) {
-                Box(
-                    Modifier.width(3.dp).height((3 + i * 2).dp)
-                        .clip(RoundedCornerShape(1.dp))
-                        .background(if (i <= filled) on else off),
-                )
-            }
-        }
-        Text(" ${rssi}dBm", style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
-    }
 }
 
 @Composable
