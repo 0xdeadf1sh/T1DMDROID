@@ -1,4 +1,4 @@
-//! The shared curve / PK engine (PLAN.private.md §3.3) — the ONE transform that feeds
+//! The shared curve / PK engine (SPEC.private.md §3.3) — the ONE transform that feeds
 //! historical context channels, announced-future what-if conditioning, and IOB/COB
 //! display. Every function here is **bit-for-bit faithful to `T1DMSIM/simulator.py` at
 //! FIXED, noise-free presets**: `gamma_curve` (Ra carbs + bolus PK), `basal_curve`
@@ -12,7 +12,7 @@
 //! PK peaking ~50 min; basal = broad Bateman, near-flat) — NOT delivery, NOT IOB. Basal
 //! and bolus are summed into one `insulin_combined` channel; carbs are their own channel.
 //!
-//! Honest fidelity claim (PLAN §3.3): the golden gate proves the *functions* at fixed
+//! Honest fidelity claim (SPEC §3.3): the golden gate proves the *functions* at fixed
 //! params — it can NOT prove the *parameter selection*, because the simulator draws
 //! per-patient k/θ/DIA and 5 % per-event noise from RNG distributions we cannot
 //! reconstruct for a real person. So we pin the canonical central presets and treat
@@ -34,7 +34,7 @@ const DT_MINUTES: f64 = 5.0;
 /// the Room `sample` grid is keyed at the same cadence, so bucketize is a pure index map.
 pub const STEP_MS: i64 = 300_000;
 
-// ── Canonical NOISE-FREE presets, transcribed from simulator.py (PLAN §3.3) ─────────────
+// ── Canonical NOISE-FREE presets, transcribed from simulator.py (SPEC §3.3) ─────────────
 // These are the simulator's *central* values with all per-patient / per-event RNG noise
 // switched off. They are the app's quick-preset defaults; the user may override k/θ/DIA in
 // the curve editors, but the model was trained on this neighbourhood.
@@ -113,7 +113,7 @@ pub struct BasalDoseSpec {
     pub ke_per_hour: f64,
 }
 
-/// A day-long basal schedule (PLAN §3.6 "day-long basal schedule search"). `tz_offset_min`
+/// A day-long basal schedule (SPEC §3.6 "day-long basal schedule search"). `tz_offset_min`
 /// maps epoch-ms to the local midnight the `time_of_day_min` offsets are measured from.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct BasalSchedule {
@@ -237,6 +237,232 @@ pub fn bolus_pk_for_dose(dose_u: f64) -> CurveEvent {
     }
 }
 
+// ── exp_action_curve (Loop/OpenAPS biexponential) — CLINICAL rapid-acting presets ───────
+//
+// SELECTABLE, OPT-IN clinical presets (post-Phase-7 fix, issue 19). The DEFAULT curves above
+// stay simulator-matched / in-distribution; these are the clinically-grounded ALTERNATIVES the
+// user may opt into, at the cost of moving the model's insulin-action channel OFF the training
+// distribution (the calculator/IOB become more clinically faithful, the forecast less trustworthy).
+//
+// The rapid-acting families use the exponential insulin-activity model shared by Loop and
+// OpenAPS/oref0 (Dragan Maksimović's scalable form; OpenAPS `understanding-insulin-on-board-
+// calculations`, oref0 `lib/iob/calculate.js`). Parameterised by ONLY (peak_min, dia_min); the
+// activity fraction per unit time is
+//     τ = tp·(1 − tp/td)/(1 − 2·tp/td),  a = 2τ/td,  S = 1/(1 − a + (1+a)·e^(−td/τ))
+//     IA(t) = (S/τ²)·t·(1 − t/td)·e^(−t/τ)      (0 at t=0 and t=td, single peak at t=tp)
+// sampled at t=(i+1)·dt like `gamma`, clamped ≥0, then sum-normalised to the dose.
+//
+// HONEST golden claim (mirrors gamma/bateman above): the goldens pin this FUNCTION — its shape,
+// non-negativity, sum-to-dose, and that the peak lands at the cited `peak_min` and the tail
+// vanishes by the cited `dia_min`. They do NOT prove that any real person's insulin kinetics match
+// the published population PK the presets are drawn from; that is an explicit clinical CHOICE the
+// user makes when opting in, warned in plain language at the picker.
+
+/// Loop/OpenAPS exponential insulin-activity curve, amount-per-`dt`-step, `sum == total`. Peaks at
+/// `peak_min` and returns to ~0 by `dia_min`. `n = floor(dia_min/dt)`; a non-positive `n`, or an
+/// out-of-range `peak_min` (must satisfy `0 < peak_min < dia_min/2` for a finite τ), yields `[0.0]`.
+#[uniffi::export]
+pub fn exp_action_curve(total: f64, peak_min: f64, dia_min: f64) -> Vec<f64> {
+    let n_steps = (dia_min / DT_MINUTES) as i64;
+    if n_steps <= 0 || peak_min <= 0.0 || peak_min >= dia_min / 2.0 {
+        return vec![0.0];
+    }
+    let n = n_steps as usize;
+    let tp = peak_min;
+    let td = dia_min;
+    let tau = tp * (1.0 - tp / td) / (1.0 - 2.0 * tp / td);
+    let a = 2.0 * tau / td;
+    let s = 1.0 / (1.0 - a + (1.0 + a) * (-td / tau).exp());
+    let mut values = vec![0.0f64; n];
+    let mut area = 0.0f64;
+    for (i, v) in values.iter_mut().enumerate() {
+        let t = (i as f64 + 1.0) * DT_MINUTES; // t = arange(1, n+1)·dt (rises from 0, like gamma)
+        let ia = (s / (tau * tau)) * t * (1.0 - t / td) * (-t / tau).exp();
+        let ia = ia.max(0.0);
+        *v = ia;
+        area += ia;
+    }
+    if area > 0.0 {
+        let scale = total / area;
+        for v in values.iter_mut() {
+            *v *= scale;
+        }
+    }
+    values
+}
+
+// ── Clinical insulin preset library (issue 19) ───────────────────────────────────────────
+
+/// The insulin families the user administers (locked decision). `Simulator` is the DEFAULT,
+/// in-distribution shape (unchanged); the rest are OPT-IN clinical presets. Rapid families resolve
+/// to [`exp_action_curve`]; basal families to [`bateman`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum InsulinPreset {
+    /// DEFAULT — the simulator-matched dose-scaled gamma ([`bolus_pk_for_dose`]). In-distribution.
+    SimulatorBolus,
+    /// DEFAULT — the simulator-matched Bateman background. In-distribution.
+    SimulatorBasal,
+    // Rapid-acting (exponential activity model; peak/DIA cited on `InsulinPresetSpec`).
+    AspartNovorapid,
+    FiaspFasterAspart,
+    LisproHumalog,
+    LisproLyumjev,
+    // Long-acting basal (Bateman; DIA + flattening rates cited on `InsulinPresetSpec`).
+    GlargineU100Lantus,
+    GlargineU300Toujeo,
+    DegludecTresiba,
+}
+
+/// Which curve family + channel a preset feeds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum InsulinFamily {
+    /// Rapid-acting bolus → [`exp_action_curve`] (or the simulator gamma for `SimulatorBolus`).
+    RapidExp,
+    /// Long-acting basal → [`bateman`] (or the simulator Bateman for `SimulatorBasal`).
+    BasalBateman,
+    /// The simulator DEFAULT bolus (dose-scaled gamma via [`bolus_pk_for_dose`]).
+    SimulatorGamma,
+}
+
+/// A resolved preset: its family, the citeable peak/DIA, the Bateman rates (basal only), a display
+/// label, and a one-line source citation. `peak_min` is 0 for a flat basal profile (no pronounced
+/// peak). Consumed by the Kotlin `CurveEngine`/`SettingsStore` to build the ACTUAL logged curve and
+/// to render the picker with its citation + off-distribution warning.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct InsulinPresetSpec {
+    pub preset: InsulinPreset,
+    pub family: InsulinFamily,
+    pub label: String,
+    /// Peak activity time (minutes); 0 for a deliberately-flat basal.
+    pub peak_min: f64,
+    /// Duration of insulin action (minutes).
+    pub dia_min: f64,
+    /// Bateman absorption/elimination (1/h) — meaningful only for `BasalBateman`.
+    pub ka_per_hour: f64,
+    pub ke_per_hour: f64,
+    /// Whether this is an OFF-training-distribution clinical preset (false only for the two
+    /// `Simulator*` defaults). Drives the plain-language warning at the picker.
+    pub off_distribution: bool,
+    /// One-line provenance for the peak/DIA (shown verbatim in the picker; keep plain + public-safe).
+    pub citation: String,
+}
+
+/// The full preset catalogue. Peak/DIA citations:
+/// - Rapid aspart/lispro (NovoRapid, Humalog): peak 75 min — the Loop/OpenAPS rapid-acting adult
+///   exponential preset (LoopDocs; OpenAPS IOB docs). DIA 360 min (Loop `rapidActingAdult`).
+/// - Faster aspart (Fiasp) / ultra-rapid lispro (Lyumjev): peak 55/45 min — Loop `.fiasp` preset
+///   (peak 55) and the ultra-rapid class (Fiasp SC time-to-peak ≈ 26 min earlier than aspart;
+///   Bionic Wookiee "Insulin timings 2022" recommends peak≈45 for Lyumjev). DIA 360/300 min.
+/// - Glargine U100 (Lantus): DIA ~24 h; U300 (Toujeo): ~36 h, flatter GIR; degludec (Tresiba):
+///   ~42 h, flat profile, t½ >25 h (Healio ultra-long review; Tresiba/Toujeo product PK).
+///   The Bateman ka/ke are our MODELING choice to render each basal's flatness (lower ka/ke ⇒
+///   flatter, later, longer) — cited only for the DIA, not the exact shape (see the honest note).
+#[uniffi::export]
+pub fn insulin_preset_catalog() -> Vec<InsulinPresetSpec> {
+    fn rapid(preset: InsulinPreset, label: &str, peak: f64, dia: f64, cite: &str) -> InsulinPresetSpec {
+        InsulinPresetSpec {
+            preset,
+            family: InsulinFamily::RapidExp,
+            label: label.to_string(),
+            peak_min: peak,
+            dia_min: dia,
+            ka_per_hour: 0.0,
+            ke_per_hour: 0.0,
+            off_distribution: true,
+            citation: cite.to_string(),
+        }
+    }
+    fn basal(preset: InsulinPreset, label: &str, dia_h: f64, ka: f64, ke: f64, cite: &str) -> InsulinPresetSpec {
+        InsulinPresetSpec {
+            preset,
+            family: InsulinFamily::BasalBateman,
+            label: label.to_string(),
+            peak_min: (ka.ln() - ke.ln()) / (ka - ke) * 60.0, // tmax of the Bateman (informational)
+            dia_min: dia_h * 60.0,
+            ka_per_hour: ka,
+            ke_per_hour: ke,
+            off_distribution: true,
+            citation: cite.to_string(),
+        }
+    }
+    vec![
+        InsulinPresetSpec {
+            preset: InsulinPreset::SimulatorBolus,
+            family: InsulinFamily::SimulatorGamma,
+            label: "Simulator bolus (default, in-distribution)".to_string(),
+            peak_min: (BOLUS_GAMMA_K - 1.0) * BOLUS_GAMMA_THETA,
+            dia_min: BOLUS_DIA_BASE_HOURS * 60.0,
+            ka_per_hour: 0.0,
+            ke_per_hour: 0.0,
+            off_distribution: false,
+            citation: "T1DMSIM dose-scaled gamma (the model's training distribution)".to_string(),
+        },
+        rapid(
+            InsulinPreset::AspartNovorapid,
+            "Aspart · NovoRapid/Novolog",
+            75.0,
+            360.0,
+            "Loop/OpenAPS rapid-acting adult exponential: peak 75 min, DIA 6 h",
+        ),
+        rapid(
+            InsulinPreset::FiaspFasterAspart,
+            "Faster aspart · Fiasp",
+            55.0,
+            360.0,
+            "Loop `.fiasp` exponential preset: peak 55 min, DIA 6 h",
+        ),
+        rapid(
+            InsulinPreset::LisproHumalog,
+            "Lispro · Humalog",
+            75.0,
+            360.0,
+            "Loop/OpenAPS rapid-acting adult exponential: peak 75 min, DIA 6 h",
+        ),
+        rapid(
+            InsulinPreset::LisproLyumjev,
+            "Ultra-rapid lispro · Lyumjev",
+            45.0,
+            300.0,
+            "Ultra-rapid class (Fiasp-like); Bionic Wookiee 2022 peak ≈45 min, DIA 5 h",
+        ),
+        InsulinPresetSpec {
+            preset: InsulinPreset::SimulatorBasal,
+            family: InsulinFamily::SimulatorGamma, // resolved to Bateman by the caller; flagged default
+            label: "Simulator basal (default, in-distribution)".to_string(),
+            peak_min: (BASAL_KA_PER_HOUR.ln() - BASAL_KE_PER_HOUR.ln()) / (BASAL_KA_PER_HOUR - BASAL_KE_PER_HOUR) * 60.0,
+            dia_min: LANTUS_DIA_MIN,
+            ka_per_hour: BASAL_KA_PER_HOUR,
+            ke_per_hour: BASAL_KE_PER_HOUR,
+            off_distribution: false,
+            citation: "T1DMSIM Bateman background (the model's training distribution)".to_string(),
+        },
+        basal(
+            InsulinPreset::GlargineU100Lantus,
+            "Glargine U100 · Lantus",
+            24.0,
+            0.30,
+            0.07,
+            "Glargine U100 duration ~24 h (Healio ultra-long-acting review)",
+        ),
+        basal(
+            InsulinPreset::GlargineU300Toujeo,
+            "Glargine U300 · Toujeo",
+            36.0,
+            0.18,
+            0.05,
+            "Glargine U300 duration ~36 h, flatter GIR than U100 (Healio review)",
+        ),
+        basal(
+            InsulinPreset::DegludecTresiba,
+            "Degludec · Tresiba",
+            42.0,
+            0.12,
+            0.04,
+            "Degludec duration ~42 h, flat profile, t½ >25 h (Healio review)",
+        ),
+    ]
+}
+
 // ── bucketize — lay events onto a fixed 5-min grid (channel construction) ────────────────
 
 /// Sum every `kind`-matching event's per-step curve onto the fixed grid
@@ -283,7 +509,7 @@ pub fn bucketize(
 /// its forward integral is precisely the action still to come: `total` before onset, 0
 /// after DIA. A step already in progress at `at_ms` is treated as delivered (conservative
 /// for IOB — never over-states insulin still to act). Provenance ("IOB from logged doses
-/// only") lives with the caller (PLAN §3.6-F).
+/// only") lives with the caller (SPEC §3.6-F).
 #[uniffi::export]
 pub fn on_board(events: Vec<CurveEvent>, at_ms: i64, kind: CurveKind) -> f64 {
     let mut acc = 0.0f64;
@@ -455,6 +681,65 @@ mod tests {
         assert_eq!((peak as f64 + 1.0) * DT_MINUTES, 50.0);
     }
 
+    // ── exp_action_curve: byte-match the Loop/OpenAPS reference + shape properties ─────────
+    #[test]
+    fn exp_action_matches_reference() {
+        // Byte-match against the Python transcription of the Loop/OpenAPS exponential formula
+        // (scratchpad reference). This pins the FUNCTION arithmetic, NOT that any person's kinetics
+        // match the population PK — that is the user's explicit opt-in choice (see the module note).
+        for c in golden()["exp_action"].as_array().unwrap() {
+            let got = exp_action_curve(
+                c["total"].as_f64().unwrap(),
+                c["peak"].as_f64().unwrap(),
+                c["dia"].as_f64().unwrap(),
+            );
+            assert_close(&got, &f64s(&c["values"]), 1e-9, "exp_action");
+        }
+    }
+
+    #[test]
+    fn exp_action_non_negative_sums_to_dose_and_peaks_at_citation() {
+        // Shape/non-negativity/sum-to-dose + the peak lands at the cited peak_min (±1 step), and the
+        // tail has decayed near-zero by DIA — the properties the goldens promise for issue 19.
+        for (peak, dia) in [(75.0, 360.0), (55.0, 360.0), (45.0, 300.0)] {
+            let v = exp_action_curve(5.0, peak, dia);
+            assert!(v.iter().all(|&x| x >= 0.0), "negative activity for peak {peak}");
+            assert!((v.iter().sum::<f64>() - 5.0).abs() < 1e-9, "sum != dose for peak {peak}");
+            let argmax = v.iter().enumerate().max_by(|a, b| a.1.partial_cmp(b.1).unwrap()).unwrap().0;
+            let peak_t = (argmax as f64 + 1.0) * DT_MINUTES;
+            assert!((peak_t - peak).abs() <= DT_MINUTES, "peak at {peak_t} min, cited {peak}");
+            // Last step (t≈DIA) is essentially spent.
+            assert!(*v.last().unwrap() < 0.02 * v[argmax], "tail not decayed by DIA for peak {peak}");
+        }
+    }
+
+    #[test]
+    fn exp_action_degenerate_inputs_are_total() {
+        assert_eq!(exp_action_curve(5.0, 0.0, 300.0), vec![0.0]);   // non-positive peak
+        assert_eq!(exp_action_curve(5.0, 200.0, 300.0), vec![0.0]); // peak >= dia/2 (τ singular)
+        assert_eq!(exp_action_curve(5.0, 30.0, 0.0), vec![0.0]);    // non-positive dia
+    }
+
+    // ── insulin_preset_catalog: the two Simulator defaults are IN-distribution; clinical ones OUT ──
+    #[test]
+    fn preset_catalog_defaults_are_in_distribution() {
+        let cat = insulin_preset_catalog();
+        // Exactly the two `Simulator*` presets are in-distribution; every clinical preset is flagged.
+        let in_dist: Vec<_> = cat.iter().filter(|s| !s.off_distribution).map(|s| s.preset).collect();
+        assert_eq!(in_dist, vec![InsulinPreset::SimulatorBolus, InsulinPreset::SimulatorBasal]);
+        assert!(cat.iter().filter(|s| s.off_distribution).count() >= 6, "expect >=6 clinical presets");
+        // Every rapid preset's cited peak resolves to a real, positive, correctly-peaked curve.
+        for s in cat.iter().filter(|s| s.family == InsulinFamily::RapidExp) {
+            let v = exp_action_curve(5.0, s.peak_min, s.dia_min);
+            assert!(v.len() > 1 && (v.iter().sum::<f64>() - 5.0).abs() < 1e-9, "{} bad curve", s.label);
+        }
+        // Every basal preset's Bateman renders a sum-to-dose background over its DIA.
+        for s in cat.iter().filter(|s| s.family == InsulinFamily::BasalBateman) {
+            let v = bateman(24.0, s.dia_min, s.ka_per_hour, s.ke_per_hour);
+            assert!((v.iter().sum::<f64>() - 24.0).abs() < 1e-9, "{} basal sum != dose", s.label);
+        }
+    }
+
     // ── bucketize: grid alignment, tail carry-forward, kind filter ───────────────────────
     #[test]
     fn bucketize_places_and_sums() {
@@ -602,7 +887,7 @@ mod tests {
         assert!((daily - 24.0).abs() < 1e-6, "mid-window daily basal integral {daily} != dose");
     }
 
-    // ── Counterfactual sign/monotonicity (the real fidelity check, PLAN §3.3) ────────────
+    // ── Counterfactual sign/monotonicity (the real fidelity check, SPEC §3.3) ────────────
     #[test]
     fn counterfactual_more_carbs_larger_channel() {
         // The operational fidelity claim at the curve level: a larger meal produces a

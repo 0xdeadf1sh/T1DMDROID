@@ -35,7 +35,7 @@ import kotlin.math.min
 import kotlin.math.sin
 
 /**
- * The Circadian Clock (item 22 / PLAN Phase 7D). Renders the selected model's decoded hour-of-day
+ * The Circadian Clock (item 22 / Phase 7D). Renders the selected model's decoded hour-of-day
  * belief ([PredictedTime]) as a 24-hour dial: a 12-wedge circular histogram (wedge k spans
  * `[2k, 2k+2)` h, its radius + opacity ∝ `probs[k]`) with an analog-clock HAND at
  * [PredictedTime.predictedHour] whose length + alpha ∝ [PredictedTime.resultantR] (the confidence /
@@ -51,6 +51,12 @@ import kotlin.math.sin
 fun CircadianScreen(
     predictedTime: PredictedTime?,
     realBackendAvailable: Boolean,
+    /** Whether the selected model's descriptor even declares a time section (issue 7 — true null cause). */
+    hasTimeSection: Boolean = true,
+    /** Whether the forecast is still WARMING UP / collecting context (issue 7 — the real reason during warmup). */
+    warmingUp: Boolean = false,
+    /** Whether [predictedTime], when present, was formed on limited warmup context (⇒ low-confidence caveat). */
+    lowContext: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -69,9 +75,11 @@ fun CircadianScreen(
         )
 
         if (predictedTime == null) {
-            EmptyCircadian(realBackendAvailable)
+            EmptyCircadian(realBackendAvailable, hasTimeSection, warmingUp)
             return@Column
         }
+
+        if (lowContext) LowContextCaveat()
 
         // A gentle 10-second tick so the local-time hand stays honest without a busy loop.
         val nowMs by produceState(System.currentTimeMillis()) {
@@ -93,6 +101,7 @@ fun CircadianScreen(
         ReadoutRow("Model hour", formatHour(predictedTime.predictedHour))
         ReadoutRow("Confidence (resultant R)", "%.2f".format(predictedTime.resultantR))
         ReadoutRow("Local time", formatHour(localHour))
+        ReadoutRow("Model − local offset", formatOffset(predictedTime.predictedHour - localHour))
         ReadoutRow("Bins", "${predictedTime.nBins} × ${"%.0f".format(predictedTime.binHours)} h")
         if (predictedTime.resultantR < 0.05) {
             Text(
@@ -104,16 +113,53 @@ fun CircadianScreen(
     }
 }
 
+/**
+ * The four DISTINCT reasons the hour-of-day belief can be absent, each named plainly (issue 7 — the
+ * old copy misattributed a warmup gap to "no time section"). Precedence: a stub backend has no probe
+ * at all; then a descriptor without a time section; then warmup (transient, resolves as history
+ * accrues); otherwise the probe ran but its output could not be decoded this cycle.
+ */
 @Composable
-private fun EmptyCircadian(realBackendAvailable: Boolean) {
-    val msg = if (!realBackendAvailable) {
-        "Model time unavailable — the forecast is currently served by the fallback stub backend, which " +
-            "carries no circadian probe."
-    } else {
-        "Model time unavailable in this build — the selected model's descriptor has no time section, so " +
-            "there is no hour-of-day belief to render."
+private fun EmptyCircadian(realBackendAvailable: Boolean, hasTimeSection: Boolean, warmingUp: Boolean) {
+    val msg = when {
+        !realBackendAvailable ->
+            "Model time unavailable — the forecast is currently served by the fallback stub backend, " +
+                "which carries no circadian probe."
+        !hasTimeSection ->
+            "Model time unavailable — the selected model's descriptor has no time section, so there is " +
+                "no hour-of-day belief to render."
+        warmingUp ->
+            "Model time not available yet — still collecting context (warmup). The circadian probe " +
+                "needs at least the model's minimum history (≈8 h of BG) before it can form a belief; " +
+                "it will appear here, low-confidence at first, once enough real BG has accrued."
+        else ->
+            "Model time unavailable — the time probe ran this cycle but its output could not be decoded " +
+                "into an hour-of-day belief."
     }
     Text(msg, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+}
+
+/** Caveat shown above the dial when the belief was formed on limited warmup context (issues 7 & 9). */
+@Composable
+private fun LowContextCaveat() {
+    Text(
+        "Low-confidence — formed during warmup on limited history while the BG forecast is withheld. " +
+            "This is a circadian-phase belief, not a glucose forecast; it firms up as more real BG accrues.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.secondary,
+    )
+}
+
+/** A signed hour offset wrapped to `[-12, 12)` h, e.g. "+1:30" / "−2:00". */
+private fun formatOffset(deltaHours: Double): String {
+    var d = deltaHours % 24.0
+    if (d < -12.0) d += 24.0
+    if (d >= 12.0) d -= 24.0
+    val sign = if (d < 0) "−" else "+"
+    val a = kotlin.math.abs(d)
+    val hh = a.toInt()
+    val mm = ((a - hh) * 60.0).toInt()
+    return "%s%d:%02d".format(sign, hh, mm)
 }
 
 @Composable

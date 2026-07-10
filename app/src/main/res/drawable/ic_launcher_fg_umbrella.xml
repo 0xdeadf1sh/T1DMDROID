@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Umbrella Corp: blocky, hard-edged, hazard. A solid white octagon quartered by heavy red spokes
+     into wedges (the corporate hazard mark), square-capped, no rounding. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#EFE7E8"
+        android:pathData="M43,25 L65,25 L83,43 L83,65 L65,83 L43,83 L25,65 L25,43 Z" />
+    <path
+        android:strokeColor="#7A0010"
+        android:strokeWidth="5"
+        android:strokeLineCap="square"
+        android:fillColor="#00000000"
+        android:pathData="M54,54 L54,25 M54,54 L83,43 M54,54 L83,65 M54,54 L54,83 M54,54 L25,65 M54,54 L25,43" />
+    <path
+        android:fillColor="#7A0010"
+        android:pathData="M54,48 L60,54 L54,60 L48,54 Z" />
+</vector>

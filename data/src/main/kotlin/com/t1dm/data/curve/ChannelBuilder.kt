@@ -6,14 +6,14 @@ import com.t1dm.core.model.CurveKind
 
 /**
  * Source of the logged carb/insulin/basal events the [ChannelBuilder] reconstructs channels
- * from (PLAN.private.md §3.3). Kept as an interface so `:calc`/tests can substitute a fake and
+ * from (SPEC.private.md §3.3). Kept as an interface so `:calc`/tests can substitute a fake and
  * so the builder never reaches into Room directly. The default implementation
  * ([com.t1dm.data.curve.RoomDoseStore]) reads `logged_dose` / `logged_meal` / `basal_schedule`
  * and resolves each row into a [CurveEvent] via the [CurveEngine].
  *
  * "Overlapping [fromMs, toMs)" — an event is returned when its ACTION overlaps the window, so a
  * dose taken before `fromMs` whose PK tail reaches into the window is included (existing-dose
- * tails carried forward, PLAN §3.3). Callers query a padded window (`fromMs - maxDia`) and let
+ * tails carried forward, SPEC §3.3). Callers query a padded window (`fromMs - maxDia`) and let
  * bucketize/onBoard clip.
  */
 interface DoseStore {
@@ -28,6 +28,11 @@ interface DoseStore {
 
     /** The active daily basal schedule (MDI), or null if none is configured. */
     suspend fun activeBasalSchedule(): BasalSchedule?
+
+    /** Only the discrete long-acting BASAL injections (not boluses) whose action overlaps
+     *  `[fromMs,toMs)` — the basal subset of [insulinEvents], used purely for the dashboard's
+     *  separate basal overlay series (issue 18). Default empty for fakes that don't distinguish. */
+    suspend fun basalInjectionEvents(fromMs: Long, toMs: Long): List<CurveEvent> = emptyList()
 }
 
 /** The two normalized-ready raw channels over a grid: carbs (Ra) and insulin (combined). */
@@ -39,7 +44,7 @@ data class ContextChannels(val carb: DoubleArray, val insulin: DoubleArray) {
 }
 
 /**
- * The future carb/insulin channels for announced-future conditioning (PLAN §3.3), plus the IOB
+ * The future carb/insulin channels for announced-future conditioning (SPEC §3.3), plus the IOB
  * at the roll start. [carb]/[insulin] are per-5-min amounts over the prediction/roll horizon,
  * feeding `build_context`'s `announced_carb` / `announced_insulin`. They fold together
  * (a) existing-dose PK/Ra TAILS carried past the roll start, (b) user-announced future meals/
@@ -66,7 +71,7 @@ data class FutureChannels(
 }
 
 /**
- * Builds the model's two event-reconstructed input channels from the dose store (PLAN §3.3).
+ * Builds the model's two event-reconstructed input channels from the dose store (SPEC §3.3).
  * ONE transform, three consumers:
  *  - [contextChannels] — the historical carb/insulin context that feeds `build_context`
  *    (feat 1 / feat 2) alongside the CGM-derived BG channel;
@@ -75,7 +80,7 @@ data class FutureChannels(
  *  - [onBoard] — IOB/COB as remaining tail area, surfaced with provenance by the caller.
  *
  * Carb/insulin channels are EVENT-RECONSTRUCTED here, so the CGM reboot-gap interpolation only
- * ever touches the BG channel (PLAN §3.3).
+ * ever touches the BG channel (SPEC §3.3).
  */
 class ChannelBuilder(
     private val engine: CurveEngine,
@@ -143,10 +148,26 @@ class ChannelBuilder(
             CurveKind.INSULIN,
         )
 
-        // IOB/COB provenance: logged (store) doses only — NOT announced/candidate (PLAN §3.6-F).
+        // IOB/COB provenance: logged (store) doses only — NOT announced/candidate (SPEC §3.6-F).
         val iob = engine.onBoard(storeInsulin + basal, rollStartMs, CurveKind.INSULIN)
         val cob = engine.onBoard(storeCarbs, rollStartMs, CurveKind.CARB)
         return FutureChannels(carbCh, insulinCh, iob, cob)
+    }
+
+    /**
+     * The BASAL-only insulin channel over `[gridStartMs, gridStartMs + nSteps·STEP_MS)` (issue 18):
+     * the auto-extended daily schedule plus any discrete logged long-acting injections, bucketized on
+     * the same grid as [contextChannels]. Purely for the dashboard's separate basal overlay series —
+     * the model still consumes the COMBINED insulin channel from [contextChannels].
+     */
+    suspend fun basalChannel(gridStartMs: Long, nSteps: Int): DoubleArray {
+        val gridEndMs = gridStartMs + nSteps * CurveEngine.STEP_MS
+        val fromPadded = gridStartMs - PAD_MS
+        val injections = store.basalInjectionEvents(fromPadded, gridEndMs)
+        val schedule = store.activeBasalSchedule()
+            ?.let { engine.extendBasal(it, fromPadded, gridEndMs) }
+            .orEmpty()
+        return engine.bucketize(injections + schedule, gridStartMs, nSteps, CurveKind.INSULIN)
     }
 
     /** IOB/COB at [atMs] from the logged store doses only (the value the decision card shows). */

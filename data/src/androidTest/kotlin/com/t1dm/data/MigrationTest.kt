@@ -12,7 +12,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * Validates the keep-forever ALTER-only migration (PLAN.private.md Phase 1: destructive migration is
+ * Validates the keep-forever ALTER-only migration (Phase 1: destructive migration is
  * FORBIDDEN). Creates the schema at version N, applies the hand-written migration(s), and lets
  * [MigrationTestHelper] assert the migrated DB matches the exported N+1 schema exactly — catching any
  * DDL drift (index names, AUTOINCREMENT, nullability) between the migration and Room.

@@ -22,7 +22,7 @@ import org.junit.runner.RunWith
 
 /**
  * In-memory Room verification of the Phase-3 dedicated `prediction` table + the wide-sample LWW
- * catch-up merge (PLAN.private.md Phase 3). Instrumented so the real SQLite exercises the fan-BLOB
+ * catch-up merge (Phase 3). Instrumented so the real SQLite exercises the fan-BLOB
  * round-trip and the `(madeAtMs, modelId)` REPLACE.
  */
 @RunWith(AndroidJUnit4::class)

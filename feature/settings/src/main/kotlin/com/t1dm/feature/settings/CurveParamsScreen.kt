@@ -1,23 +1,31 @@
 package com.t1dm.feature.settings
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.model.BezierCurve
+import com.t1dm.core.model.InsulinFamily
+import com.t1dm.core.model.InsulinPresetSpec
 import com.t1dm.ui.graph.CurveEditor
 import com.t1dm.ui.graph.CurvePreview
 
@@ -50,6 +58,13 @@ fun CurveParamsScreen(
     insulinCurve: BezierCurve,
     onSaveCarbCurve: (BezierCurve) -> Unit,
     onSaveInsulinCurve: (BezierCurve) -> Unit,
+    // Issue 19 — the selectable clinical insulin preset library.
+    presetCatalog: List<InsulinPresetSpec> = emptyList(),
+    selectedRapidLabel: String = "",
+    selectedBasalLabel: String = "",
+    onSelectRapid: (String) -> Unit = {},
+    onSelectBasal: (String) -> Unit = {},
+    previewPreset: (suspend (InsulinPresetSpec) -> DoubleArray)? = null,
 ) {
     SettingsScaffold("Curve & PK parameters") {
         SettingsNote(
@@ -57,6 +72,17 @@ fun CurveParamsScreen(
                 "calculator use (model-io-curves.md). The parametric presets below are the defaults; the " +
                 "Bézier designers let you author a custom shape that normalises to the dose total.",
         )
+
+        if (presetCatalog.isNotEmpty()) {
+            InsulinPresetSection(
+                catalog = presetCatalog,
+                selectedRapidLabel = selectedRapidLabel,
+                selectedBasalLabel = selectedBasalLabel,
+                onSelectRapid = onSelectRapid,
+                onSelectBasal = onSelectBasal,
+                previewPreset = previewPreset,
+            )
+        }
 
         SettingsSectionHeader("Custom carb-appearance curve (Bézier)")
         SettingsNote("Drag the control points; tap empty space to add one, long-press to remove. Grams-per-5-min, area = the meal total.")
@@ -81,6 +107,88 @@ fun CurveParamsScreen(
         SettingsNote("High-GI carbs peak early and sharp; low-GI carbs spread out.")
         Kv("High GI k / θ", "%.1f / %.0f".format(params.carbHighGiK, params.carbHighGiTheta))
         Kv("Low GI k / θ", "%.1f / %.0f".format(params.carbLowGiK, params.carbLowGiTheta))
+    }
+}
+
+/**
+ * The issue-19 clinical insulin preset picker. The DEFAULT (and every unchanged install) is the
+ * in-distribution simulator curve, so forecasts never silently degrade; choosing a clinically-grounded
+ * preset makes the calculator/IOB more clinically faithful. Each preset shows its published peak/DIA +
+ * a one-line citation; selecting one is silent and immediate and applies to NEWLY-logged doses only
+ * (past logs are self-describing and keep their original curve). Per the user's decision there is NO
+ * off-distribution warning — only the neutral factual labels below.
+ */
+@Composable
+private fun InsulinPresetSection(
+    catalog: List<InsulinPresetSpec>,
+    selectedRapidLabel: String,
+    selectedBasalLabel: String,
+    onSelectRapid: (String) -> Unit,
+    onSelectBasal: (String) -> Unit,
+    previewPreset: (suspend (InsulinPresetSpec) -> DoubleArray)?,
+) {
+    // Partition by family; the two in-distribution simulator defaults head their respective lists.
+    val simBolus = catalog.firstOrNull { it.family == InsulinFamily.SimulatorGamma && it.label.startsWith("Simulator bolus") }
+    val simBasal = catalog.firstOrNull { it.family == InsulinFamily.SimulatorGamma && it.label.startsWith("Simulator basal") }
+    val rapids = listOfNotNull(simBolus) + catalog.filter { it.family == InsulinFamily.RapidExp }
+    val basals = listOfNotNull(simBasal) + catalog.filter { it.family == InsulinFamily.BasalBateman }
+
+    SettingsSectionHeader("Insulin action preset (clinical, selectable)")
+    SettingsNote(
+        "The default is the simulator-matched shape the model was trained on. The clinical presets encode " +
+            "published population PK for the insulins you use — more faithful for IOB and the dosing " +
+            "calculator. Each shows its peak/DIA and citation below.",
+    )
+
+    PresetGroup("Rapid-acting (bolus)", rapids, selectedRapidLabel, onSelectRapid, previewPreset)
+    PresetGroup("Long-acting (basal)", basals, selectedBasalLabel, onSelectBasal, previewPreset)
+}
+
+@Composable
+private fun PresetGroup(
+    title: String,
+    presets: List<InsulinPresetSpec>,
+    selectedLabel: String,
+    onSelect: (String) -> Unit,
+    previewPreset: (suspend (InsulinPresetSpec) -> DoubleArray)?,
+) {
+    if (presets.isEmpty()) return
+    val selected = presets.firstOrNull { it.label == selectedLabel } ?: presets.first()
+    Text(
+        title,
+        style = MaterialTheme.typography.titleSmall,
+        fontWeight = FontWeight.SemiBold,
+        modifier = Modifier.padding(top = 8.dp, bottom = 2.dp),
+    )
+    presets.forEach { spec ->
+        Row(
+            Modifier.fillMaxWidth()
+                .selectable(selected = spec.label == selected.label, onClick = { onSelect(spec.label) })
+                .padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            RadioButton(selected = spec.label == selected.label, onClick = { onSelect(spec.label) })
+            Column(Modifier.padding(start = 4.dp).weight(1f)) {
+                Text(spec.label, style = MaterialTheme.typography.bodyMedium)
+                val peakTxt = if (spec.peakMin > 0.0) "peak ${"%.0f".format(spec.peakMin)} min · " else ""
+                Text(
+                    "${peakTxt}DIA ${"%.1f".format(spec.diaMin / 60.0)} h — ${spec.citation}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+    // Live preview of the selected preset's resolved action curve (5 U reference).
+    if (previewPreset != null) {
+        val curve by produceState(DoubleArray(0), selected) { value = previewPreset(selected) }
+        if (curve.isNotEmpty()) {
+            CurvePreview(
+                values = curve.asList(),
+                height = 90.dp,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
     }
 }
 

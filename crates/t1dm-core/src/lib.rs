@@ -2,7 +2,7 @@
 //! members: the AiDEX X advertisement decode + its bespoke CRC32 (CGM.md §3.1/§3.2)
 //! and the Kovatchev risk transform `f`/`f_inv` with clamp guards (INFERENCE.md §5).
 //! Model pre/post, the curve engine and watch crypto land in later phases
-//! (PLAN.private.md §2.2).
+//! (SPEC.private.md §2.2).
 //!
 //! Release builds are `panic = "abort"`, so a panic tears down the whole process.
 //! The discipline that follows: **every `#[uniffi::export]` fn returns `Result` (or is
@@ -17,22 +17,22 @@ mod preproc;
 pub use preproc::*;
 
 /// The shared curve/PK engine (gamma Ra + Bateman basal + bolus PK, bucketize, IOB/COB,
-/// basal tiling). Phase 4, PLAN.private.md §3.3; bit-faithful to `simulator.py`.
+/// basal tiling). Phase 4, SPEC.private.md §3.3; bit-faithful to `simulator.py`.
 mod curve;
 pub use curve::*;
 
 /// Watch-link cryptography (X25519 ECDH → HKDF-SHA256 → per-direction AES-128-GCM with a
-/// windowed nonce + deterministic SAS). Phase 5, PLAN.private.md §3, [[watch-link]].
+/// windowed nonce + deterministic SAS). Phase 5, SPEC.private.md §3, [[watch-link]].
 mod watch;
 pub use watch::*;
 
 /// Advanced glycemic statistics (TIR/TBR/TAR, LBGI/HBGI, MAGE, AGP percentile bands,
-/// per-channel) vs a user-configurable target range. Phase 6, PLAN.private.md §"Phase 6".
+/// per-channel) vs a user-configurable target range. Phase 6, SPEC.private.md §"Phase 6".
 mod stats;
 pub use stats::*;
 
 /// On-device forecast-accuracy aggregator (per-horizon RMSE/MAE/MARD + central-90
-/// coverage) over matured prediction↔realization pairs. Phase 7C, PLAN.private.md §"Phase 7".
+/// coverage) over matured prediction↔realization pairs. Phase 7C, SPEC.private.md §"Phase 7".
 mod accuracy;
 pub use accuracy::*;
 

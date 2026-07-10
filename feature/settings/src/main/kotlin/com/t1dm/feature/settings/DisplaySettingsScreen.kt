@@ -10,7 +10,7 @@ import androidx.compose.ui.unit.dp
 import com.t1dm.core.model.UnitSpace
 
 /**
- * Settings → Display (PLAN.private.md Phase 7C item 14 + 7D item 25; ux-decisions.md). The GLOBAL
+ * Settings → Display (Phase 7C item 14 + 7D item 25; ux-decisions.md). The GLOBAL
  * glucose unit space, the single GLOBAL stats target range, the "disable all animations" toggle, and
  * — new in 7D — the THEME + FONT switcher and the custom-theme JSON import. Pure/stateless: theme/font
  * ids are opaque strings the caller (`:app` Navigation, which owns `:core:design`) supplies + persists,

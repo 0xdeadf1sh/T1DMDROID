@@ -9,7 +9,7 @@ import com.t1dm.core.model.UnitSpace
 /**
  * The widgets' read of the shared glance: they run the SAME [BgGlanceComputer] over the same active
  * reading + selected forecast the notification and watch use, so every surface agrees by
- * construction (PLAN Phase 7B). Pull-based — invoked inside `provideGlance`, refreshed whenever the
+ * construction (Phase 7B). Pull-based — invoked inside `provideGlance`, refreshed whenever the
  * foreground service calls `updateAll` on a new reading or 5-min cycle (no Activity required).
  */
 internal data class WidgetSnapshot(val glance: BgGlance, val unit: UnitSpace)

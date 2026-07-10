@@ -12,7 +12,7 @@ import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 
 /**
- * Room v1 frozen schema (PLAN.private.md §3.5 / Phase 1). Entities + DAOs only; the @Database
+ * Room v1 frozen schema (SPEC.private.md §3.5 / Phase 1). Entities + DAOs only; the @Database
  * wiring, the ALTER-only migration runner, repositories, and tests belong to the Data
  * implementer. Keep-forever storage FORBIDS destructive migration — every later change is
  * additive (nullable columns, new tables), never a drop.
@@ -25,13 +25,13 @@ import com.t1dm.core.model.ReadingProvenance
 enum class DoseKind { BOLUS, BASAL }
 
 /** Durable outbound-queue item class; eviction priority ALERT > NOTE > INGEST > PREDICTIONS >
- *  SERIES > PHOTO (PLAN.private.md Phase 3). */
+ *  SERIES > PHOTO (Phase 3). */
 enum class OutboxKind { ALERT, NOTE, INGEST, PREDICTIONS, SERIES, PHOTO }
 
 /** Lifecycle of an outbox row across drain attempts. */
 enum class OutboxState { PENDING, INFLIGHT, FAILED }
 
-/** One recorded CGM source; exactly one row has `active = true` (PLAN.private.md §3.1). */
+/** One recorded CGM source; exactly one row has `active = true` (SPEC.private.md §3.1). */
 @Entity(tableName = "cgm_source")
 data class CgmSourceEntity(
     @PrimaryKey val sourceId: String,
@@ -46,7 +46,7 @@ data class CgmSourceEntity(
 
 /**
  * Authoritative per-source reading store, grid-keyed on `(sourceId, tsMs)` so the GridStamper
- * upserts in place (PLAN.private.md §3.1). `tsMs % 300_000 == 0` for every row.
+ * upserts in place (SPEC.private.md §3.1). `tsMs % 300_000 == 0` for every row.
  */
 @Entity(
     tableName = "cgm_reading",
@@ -69,7 +69,7 @@ data class CgmReadingEntity(
 )
 
 /**
- * The materialized wide 9-series projection (PLAN.private.md §3.5). All series nullable from
+ * The materialized wide 9-series projection (SPEC.private.md §3.5). All series nullable from
  * the start; `hr/sleep/exercise` stay null until a source exists (adding one is data-only, no
  * migration). Merge is last-writer-wins on [updatedAt].
  */
@@ -106,12 +106,12 @@ data class DoseEventEntity(
 )
 
 /**
- * A logged insulin dose with its full curve/PK parameters (Room v3, PLAN.private.md §3.3/§3.5,
+ * A logged insulin dose with its full curve/PK parameters (Room v3, SPEC.private.md §3.3/§3.5,
  * Phase 4). Unlike the Phase-1 [DoseEventEntity] (units only), this row is **self-describing**:
  * it carries the exact gamma (bolus) or Bateman (basal) parameters used to reconstruct the
  * insulin-action curve, so the reconstructed `insulin_combined` channel is stable even if the
  * quick-preset defaults change later. Carb/insulin channels are event-reconstructed from these
- * rows, so the CGM reboot-gap interpolation touches BG only (PLAN §3.3).
+ * rows, so the CGM reboot-gap interpolation touches BG only (SPEC §3.3).
  *
  * A [DoseKind.BOLUS] fills `k`/`theta` (gamma, `simulator.bolus_pk_for_dose`); a
  * [DoseKind.BASAL] fills `kaPerHour`/`kePerHour` (Bateman). `durationMin` is the DIA; `units`
@@ -164,7 +164,7 @@ data class LoggedMealEntity(
  * One injection of a daily-repeating basal schedule (Room v3, Phase 4). Rows sharing a
  * [scheduleId] form one schedule; exactly one schedule has `active = 1`. The active rows expand
  * (via `extend_basal`) into the near-flat Bateman background the model always sees, and are the
- * search space for the day-long basal calculator (PLAN §3.6). `timeOfDayMin` is minutes from the
+ * search space for the day-long basal calculator (SPEC §3.6). `timeOfDayMin` is minutes from the
  * local midnight defined by `tzOffsetMin`.
  */
 @Entity(tableName = "basal_schedule", indices = [Index("scheduleId"), Index("active")])
@@ -183,7 +183,7 @@ data class BasalScheduleEntity(
 )
 
 /**
- * One entry of the bundled glycemic dictionary (Room v4, PLAN.private.md Phase 4 deliverable 3).
+ * One entry of the bundled glycemic dictionary (Room v4, Phase 4 deliverable 3).
  * Carbs-per-100 g + glycemic index for common foods (`FoodSeed`), plus user-added custom foods
  * ([custom] = 1). Full-text search rides the external-content FTS5 shadow table `food_fts` (kept
  * in sync by triggers, created in [MigrationRunner.MIGRATION_3_4] and the DB `onCreate` callback);
@@ -254,7 +254,7 @@ data class InsulinTypeEntity(
     val updatedAt: Long,
 )
 
-/** Raw captured adverts for forensics / replay (PLAN.private.md Phase 1). */
+/** Raw captured adverts for forensics / replay (Phase 1). */
 @Entity(tableName = "cgm_advert_raw", indices = [Index("rxWallMs")])
 data class CgmAdvertRawEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -266,7 +266,7 @@ data class CgmAdvertRawEntity(
     val minFromStart: Int?,
 )
 
-/** Durable outbound queue (PLAN.private.md §Phase 1 thin enqueue-on-write; drained in Phase 3). */
+/** Durable outbound queue (Phase 1 thin enqueue-on-write; drained in Phase 3). */
 @Entity(
     tableName = "outbox",
     indices = [
@@ -296,7 +296,7 @@ data class KvEntity(
 )
 
 /**
- * Dedicated forecast store (Room v2, PLAN.private.md Phase 3 deliverable). Matches the server
+ * Dedicated forecast store (Room v2, Phase 3 deliverable). Matches the server
  * `Prediction` schema — `made_at`(=cycle grid ts), `model_id`, `horizon_steps`, `line`, the
  * `nQuantiles × H` `fan`, and the optional circadian `tod`/`tod_conf` — and *replaces* the Phase-2
  * `kv`-blob `PredictionStore` as the source of truth for the dashboard overlay and the
@@ -344,7 +344,7 @@ data class PredictionEntity(
 )
 
 /**
- * A configured T1DMSERVER endpoint (Room v2, PLAN.private.md Phase 3 deliverable). The schema is
+ * A configured T1DMSERVER endpoint (Room v2, Phase 3 deliverable). The schema is
  * **N-profile from the start** with **exactly one** `active = true`; full CRUD/switch UI is Phase 7
  * but the shape is frozen now so later work is additive. The `rw` **token never lands here** — it
  * lives in the Keystore-backed `TokenStore`, keyed by [id] — so a DB export/backup never leaks the
@@ -361,7 +361,7 @@ data class ServerProfileEntity(
 )
 
 /**
- * A free-text journal note (Room v4, PLAN.private.md Phase 4 deliverable 2 — the locked "mood +
+ * A free-text journal note (Room v4, Phase 4 deliverable 2 — the locked "mood +
  * free-text journal now" scope). This is the durable producer the outbox's reserved `NOTE` class
  * was awaiting: each row is mirrored via `POST /v1/notes`. Unlike the wide `sample`, [tsMs] is the
  * wall-clock instant the note was written (NOT grid-snapped) — a note annotates a moment, not a
@@ -376,7 +376,7 @@ data class NoteEntity(
     val updatedAt: Long,
 )
 
-/** Hardware / inference telemetry; Phase 2 tags rows by `modelId` (PLAN.private.md §2.4). */
+/** Hardware / inference telemetry; Phase 2 tags rows by `modelId` (SPEC.private.md §2.4). */
 @Entity(tableName = "hw_telemetry", indices = [Index("tsMs"), Index("modelId")])
 data class HwTelemetryEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,

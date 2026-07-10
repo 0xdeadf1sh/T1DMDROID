@@ -6,7 +6,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 
 /**
- * The kv-backed BG-panel display settings (PLAN.private.md Phase 7A — BG-panel overhaul, items 1 &
+ * The kv-backed BG-panel display settings (Phase 7A — BG-panel overhaul, items 1 &
  * 5). Two knobs live here so the graph module and the dashboard stay stateless and so a restart
  * restores the user's choice:
  *  - the glucose Y-axis floor/ceiling ([BgRange]) the axis must always span (default 20–250 mg/dL);

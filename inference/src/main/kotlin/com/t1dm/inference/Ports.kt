@@ -22,7 +22,7 @@ data class BgSeries(val mgdl: DoubleArray, val anchorTsMs: Long, val gridStartMs
 }
 
 /**
- * Supplies the shared BG history a cycle conditions on (PLAN.private.md Phase 2 deliverable 4) plus
+ * Supplies the shared BG history a cycle conditions on (Phase 2 deliverable 4) plus
  * the measured-context coverage the WARMUP gate reads (inference-runtime.md). The `:app`
  * implementation projects the active source's grid-aligned readings; a shorter-than-`minSteps`
  * return means "still collecting context" (the model needs ≥16 patches = 8 h).
@@ -49,7 +49,7 @@ fun interface ContextChannelSource {
 }
 
 /**
- * The COMMITTED dose tails carried into the PREDICTION ZONE (PLAN §3.3). A meal/bolus logged just
+ * The COMMITTED dose tails carried into the PREDICTION ZONE (SPEC §3.3). A meal/bolus logged just
  * before the now-boundary is still absorbing over the next hours — that action is committed, not a
  * what-if — so the main-view forecast must see it continue past the boundary rather than vanish
  * (which would make the model read a physically-impossible carb drop-off and dip the forecast). The
@@ -65,7 +65,7 @@ fun interface FutureOverrideSource {
 }
 
 /**
- * Persists a cycle's predictions and reloads the latest on restart (PLAN.private.md Phase 2:
+ * Persists a cycle's predictions and reloads the latest on restart (Phase 2:
  * "persist a prediction … expose via StateFlow"). Implemented in `:app` over the Room `kv` store to
  * keep `:inference` free of a schema dependency; the dedicated `prediction` table + `PREDICTIONS`
  * outbox enqueue land in Phase 3.

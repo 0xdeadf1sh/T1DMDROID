@@ -33,7 +33,7 @@ import com.t1dm.ui.graph.CurveEditor
 import com.t1dm.ui.graph.CurvePreview
 
 /**
- * The insulin **type** builder (PLAN.private.md Phase 4 deliverable 4, `:feature:insulin`) — the
+ * The insulin **type** builder (Phase 4 deliverable 4, `:feature:insulin`) — the
  * "pick a saved insulin type / draw a custom curve" seam the dose-entry [InsulinScreen] points at.
  * It lists the quick presets (Novorapid gamma; Lantus/Tresiba Bateman) plus any user-defined types,
  * shows the live **PK-action** preview for a trial dose ([onResolve]), lets a dose be logged against

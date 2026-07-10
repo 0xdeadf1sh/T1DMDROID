@@ -29,7 +29,7 @@ data class ModelBundle(
 )
 
 /**
- * Loads dev-time `.pte` + `descriptor.json` pairs from a device directory (PLAN.private.md Phase 2:
+ * Loads dev-time `.pte` + `descriptor.json` pairs from a device directory (Phase 2:
  * "loads the dev-time `.pte` + `descriptor.json` from a device path (adb-pushable; do NOT bundle a
  * 27 MB `.pte` into committed assets)"). The `.pte` is gitignored; the exporter drops it plus its
  * descriptor into `models/exported/`, and it is pushed to the app's external files dir
@@ -144,7 +144,7 @@ class ModelStore(
     /**
      * Normalize a descriptor into the flat schema `t1dm-core::parse_descriptor` consumes. A flat
      * descriptor (top-level `rope_base`) passes through unchanged; the exporter's nested descriptor
-     * (`geometry` / `constants` / `conformal`, PLAN.private.md §2.4) is projected onto the flat keys.
+     * (`geometry` / `constants` / `conformal`, SPEC.private.md §2.4) is projected onto the flat keys.
      * `normalization_stats` is top-level in both.
      */
     private fun flattenDescriptor(o: JSONObject): JSONObject {
@@ -182,6 +182,8 @@ class ModelStore(
         "executorch_xnnpack_fp32", "executorch_xnnpack" -> BackendId.EXECUTORCH_XNNPACK_FP32
         "executorch_neuron_fp16", "executorch_neuron" -> BackendId.EXECUTORCH_NEURON_FP16
         "litert_neuron_fp16", "litert_neuron" -> BackendId.LITERT_NEURON_FP16
+        "litert_npu_fp32", "litert_npu_fp16", "litert_npu" -> BackendId.LITERT_NPU
+        "executorch_vulkan_fp32", "executorch_vulkan" -> BackendId.EXECUTORCH_VULKAN_FP32
         else -> BackendId.EXECUTORCH_XNNPACK_FP32
     }
 

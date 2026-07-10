@@ -12,7 +12,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 
 /**
- * Settings → Watch (PLAN.private.md § Settings — CGM / Server / Watch are the three primary
+ * Settings → Watch (SPEC.private.md § Settings — CGM / Server / Watch are the three primary
  * sub-screens; the Watch one first surfaces in Phase 5). The optional ESP32-C3 accessory: the app
  * fully works without it (watch-link.md). Pairing, the SAS comparison, key rotation, and unpair all
  * live in the dedicated Security/Crypto panel; this screen states the link status in plain language

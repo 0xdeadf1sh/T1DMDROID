@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_bg_umbrella" />
+    <foreground android:drawable="@drawable/ic_launcher_fg_umbrella" />
+    <monochrome android:drawable="@drawable/ic_launcher_fg_umbrella" />
+</adaptive-icon>

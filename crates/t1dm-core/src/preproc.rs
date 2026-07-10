@@ -2,7 +2,7 @@
 //!
 //! The ExecuTorch graph is cut at `head_raw` (B,4,6,7) in risk space; everything on
 //! either side of that cut lives here, in fp64 Rust, as the numerical authority
-//! (PLAN.private.md §2.4/§3.2). The descriptor JSON is the SOLE source of the
+//! (SPEC.private.md §2.4/§3.2). The descriptor JSON is the SOLE source of the
 //! normalization stats and the checkpoint-absent decode constants — the app never
 //! parses the `.pt` pickle.
 //!
@@ -53,7 +53,7 @@ const COLLAPSE_EPS_MGDL: f64 = 1e-4;
 /// Non-monotonicity tolerance for the ascending quantile fan (risk space).
 const MONOTONE_TOL: f64 = 1e-9;
 
-// ── Model descriptor (INFERENCE.md §2, PLAN §2.4) ───────────────────────────────────
+// ── Model descriptor (INFERENCE.md §2, SPEC §2.4) ───────────────────────────────────
 
 /// Per-channel normalization statistics. `bg_absolute` lives in Kovatchev **risk**
 /// space (mean/std fit on `f(bg)`); `carb_intake` / `insulin_combined` in **log1p**
@@ -78,7 +78,7 @@ pub struct TimeHead {
 
 /// The full pre/post contract parsed from `descriptor.json` — the app's sole source of
 /// the normalization stats plus the decode-critical constants absent from the
-/// checkpoint (INFERENCE.md §3.1, PLAN §2.4). Downstream Rust reads every constant from
+/// checkpoint (INFERENCE.md §3.1, SPEC §2.4). Downstream Rust reads every constant from
 /// here so a re-exported model can never silently diverge from its baked graph.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct ModelDescriptor {
@@ -168,7 +168,7 @@ struct DescriptorDto {
     time: Option<TimeDto>,
 }
 
-/// Parse a model `descriptor.json` (PLAN §2.4) into a [`ModelDescriptor`]. Returns
+/// Parse a model `descriptor.json` (SPEC §2.4) into a [`ModelDescriptor`]. Returns
 /// `Err(CoreError::Decode)` — never panics — on malformed JSON or a missing field.
 #[uniffi::export]
 pub fn parse_descriptor(json: String) -> Result<ModelDescriptor, CoreError> {
@@ -323,7 +323,7 @@ pub fn denormalize_sample(desc: &ModelDescriptor, z: Vec<f64>) -> Result<Vec<f64
 /// (`flat = global_step·3 + feat`); `pred` is the `P·PATCH_SIZE·N_FEAT` prediction zone
 /// (BG feat 0 = literal 0; dose feats = `normalize(0)` baseline or announced doses);
 /// `last_bg` is the mg/dL persistence anchor. The backend left-pads `context` to the
-/// fixed T=52 artifact and builds the struct mask (PLAN §2.4).
+/// fixed T=52 artifact and builds the struct mask (SPEC §2.4).
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct BuiltContext {
     pub n_ctx: i32,

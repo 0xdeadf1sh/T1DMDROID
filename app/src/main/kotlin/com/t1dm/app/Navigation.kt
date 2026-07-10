@@ -10,9 +10,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -22,6 +24,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -34,9 +37,17 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.font.FontFamily
+import com.t1dm.core.design.LocalAnimationsEnabled
+import com.t1dm.core.design.LocalT1dmSemantics
+import com.t1dm.core.design.iconStyleForTheme
+import com.t1dm.core.design.navEnter
+import com.t1dm.core.design.navExit
+import com.t1dm.core.design.navIcon
 import com.t1dm.app.di.AppContainer.BolusAdviceUi
 import com.t1dm.app.service.DoseCalcService
 import com.t1dm.feature.insulin.BolusCalculatorScreen
+import com.t1dm.core.model.InferenceCause
 import com.t1dm.core.model.InferenceState
 import com.t1dm.core.model.BezierCurve
 import androidx.navigation.NavHostController
@@ -114,22 +125,23 @@ private fun WatchSecurityState.toPanelState() = SecurityPanelState(
     canReset = canReset,
 )
 
-private data class Destination(val route: String, val label: String, val glyph: String)
+private data class Destination(val route: String, val label: String)
 
-// Item 13 — a LARGE-ICON, HORIZONTALLY-SCROLLABLE row (no fixed-bar overflow). Glyphs are emoji so the
-// bar needs no material-icons dependency (none is on the classpath) and reads under every theme.
+// Item 13 — a LARGE-ICON, HORIZONTALLY-SCROLLABLE row (no fixed-bar overflow). Each tile draws the
+// per-theme vector glyph (issues 2/6 — geometry re-derived from the active theme via [navIcon]); no
+// icon dependency is on the classpath, so these are authored Compose ImageVectors.
 private val destinations = listOf(
-    Destination("dashboard", "BG", "📈"),
-    Destination("circadian", "Clock", "🕒"),
-    Destination("stats", "Stats", "📊"),
-    Destination("models", "Models", "🧠"),
-    Destination("hardware", "HW", "🔩"),
-    Destination("network", "Net", "🌐"),
-    Destination("meals", "Meals", "🍽️"),
-    Destination("insulin", "Insulin", "💉"),
-    Destination("security", "Sec", "🔒"),
-    Destination("journal", "Journal", "📓"),
-    Destination("settings", "Set", "⚙️"),
+    Destination("dashboard", "BG"),
+    Destination("circadian", "Clock"),
+    Destination("stats", "Stats"),
+    Destination("models", "Models"),
+    Destination("hardware", "HW"),
+    Destination("network", "Net"),
+    Destination("meals", "Meals"),
+    Destination("insulin", "Insulin"),
+    Destination("security", "Sec"),
+    Destination("journal", "Journal"),
+    Destination("settings", "Set"),
 )
 
 @Composable
@@ -141,7 +153,104 @@ fun T1dmApp(container: AppContainer) {
         Column(Modifier.fillMaxSize().padding(padding)) {
             // Flavor-specific: real text in the public build, no-op in the personal build.
             Disclaimer()
+            Breadcrumb(navController)
             T1dmNavHost(navController, container)
+        }
+    }
+}
+
+/** One node in the location trail (issue 14). [route] non-null ⇒ tappable to ascend to it. */
+private data class Crumb(val label: String, val route: String?)
+
+/** The path from a top-level section down to the current sub-screen, most-recent last. The final
+ *  crumb is the current screen (never tappable). Intermediate crumbs ascend to their route. */
+private fun crumbsFor(route: String?, modelId: String?): List<Crumb> {
+    fun settings(vararg tail: Crumb) = listOf(Crumb("Settings", "settings"), *tail)
+    return when (route) {
+        null, "dashboard" -> listOf(Crumb("BG", null))
+        "circadian" -> listOf(Crumb("Circadian clock", null))
+        "stats" -> listOf(Crumb("Stats", null))
+        "models" -> listOf(Crumb("Models", null))
+        "models/{modelId}" -> listOf(Crumb("Models", "models"), Crumb(modelId ?: "model", null))
+        "hardware" -> listOf(Crumb("Hardware", null))
+        "network" -> listOf(Crumb("Network", null))
+        "meals" -> listOf(Crumb("Meals", null))
+        "meals/builder" -> listOf(Crumb("Meals", "meals"), Crumb("Meal builder", null))
+        "insulin" -> listOf(Crumb("Insulin", null))
+        "insulin/types" -> listOf(Crumb("Insulin", "insulin"), Crumb("Types & curves", null))
+        "insulin/bolusCalc" -> listOf(Crumb("Insulin", "insulin"), Crumb("Bolus advisor", null))
+        "security" -> listOf(Crumb("Security", null))
+        "journal" -> listOf(Crumb("Journal", null))
+        "settings" -> listOf(Crumb("Settings", null))
+        "about" -> settings(Crumb("About", null))
+        "settings/display" -> settings(Crumb("Display & theme", null))
+        "settings/graph" -> settings(Crumb("Graph", null))
+        "settings/alarms" -> settings(Crumb("Alarms & safety", "settings"), Crumb("Thresholds", null))
+        "settings/signal" -> settings(Crumb("Alarms & safety", "settings"), Crumb("Signal safety", null))
+        "settings/alerts" -> settings(Crumb("Sound & vibration", null))
+        "settings/warmup" -> settings(Crumb("Warmup", null))
+        "settings/calculator" -> settings(Crumb("Bolus calculator", null))
+        "settings/curves" -> settings(Crumb("Curve & PK", null))
+        "settings/cgm" -> settings(Crumb("CGM source", null))
+        "settings/server" -> settings(Crumb("Server", null))
+        "settings/watch" -> settings(Crumb("Watch", null))
+        "settings/power" -> settings(Crumb("Low power", null))
+        "settings/data" -> settings(Crumb("Backup & reset", null))
+        else -> listOf(Crumb(route, null))
+    }
+}
+
+/**
+ * The breadcrumb bar (issue 14): a nav-aware trail of where the user is as they descend through
+ * panels. Each ancestor crumb is tappable to ascend to it; the current screen is the bold tail. Kept
+ * flat (a single scrollable row) so long trails never wrap.
+ */
+@Composable
+private fun Breadcrumb(navController: NavHostController) {
+    val backStackEntry by navController.currentBackStackEntryAsState()
+    val route = backStackEntry?.destination?.route
+    val modelId = backStackEntry?.arguments?.getString("modelId")
+    val crumbs = remember(route, modelId) { crumbsFor(route, modelId) }
+    val cs = MaterialTheme.colorScheme
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .background(cs.surface)
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        crumbs.forEachIndexed { i, crumb ->
+            if (i > 0) {
+                Text("›", style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant)
+            }
+            val isLast = i == crumbs.lastIndex
+            Text(
+                crumb.label,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = if (isLast) FontWeight.Bold else FontWeight.Normal,
+                color = when {
+                    isLast -> cs.onSurface
+                    crumb.route != null -> cs.primary
+                    else -> cs.onSurfaceVariant
+                },
+                maxLines = 1,
+                modifier = if (!isLast && crumb.route != null) {
+                    Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable {
+                            // Ascend: pop the stack back to the already-present ancestor (dropping the
+                            // child sub-view). If it isn't on the stack, navigate to it fresh.
+                            if (!navController.popBackStack(crumb.route, inclusive = false)) {
+                                navController.navigate(crumb.route) { launchSingleTop = true }
+                            }
+                        }
+                        .padding(horizontal = 8.dp, vertical = 8.dp)
+                } else {
+                    Modifier.padding(horizontal = 8.dp, vertical = 8.dp)
+                },
+            )
         }
     }
 }
@@ -158,12 +267,14 @@ private fun T1dmBottomBar(navController: NavHostController) {
     val current = backStackEntry?.destination?.route
     val scrollState = rememberScrollState()
     val selectedIndex = destinations.indexOfFirst { it.route == current }
+    val animationsOn = LocalAnimationsEnabled.current
 
-    // Keep the selected tile on-screen as the destination changes.
-    LaunchedEffect(selectedIndex, scrollState.maxValue) {
+    // Keep the selected tile on-screen as the destination changes — snapping when motion is disabled.
+    LaunchedEffect(selectedIndex, scrollState.maxValue, animationsOn) {
         if (selectedIndex >= 0 && scrollState.maxValue > 0) {
             val approxTilePx = (scrollState.maxValue + 1) / destinations.size.coerceAtLeast(1)
-            scrollState.animateScrollTo((selectedIndex * approxTilePx - approxTilePx).coerceAtLeast(0))
+            val target = (selectedIndex * approxTilePx - approxTilePx).coerceAtLeast(0)
+            if (animationsOn) scrollState.animateScrollTo(target) else scrollState.scrollTo(target)
         }
     }
 
@@ -197,6 +308,8 @@ private fun T1dmBottomBar(navController: NavHostController) {
 private fun NavTile(destination: Destination, selected: Boolean, onClick: () -> Unit) {
     val cs = MaterialTheme.colorScheme
     val bg = if (selected) cs.primary.copy(alpha = 0.16f) else Color.Transparent
+    val style = iconStyleForTheme(LocalT1dmSemantics.current.id)
+    val icon = remember(destination.route, style) { navIcon(destination.route, style) }
     Column(
         Modifier
             .clip(RoundedCornerShape(16.dp))
@@ -207,7 +320,12 @@ private fun NavTile(destination: Destination, selected: Boolean, onClick: () -> 
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(3.dp),
     ) {
-        Text(destination.glyph, fontSize = 24.sp)
+        Icon(
+            imageVector = icon,
+            contentDescription = destination.label,
+            tint = if (selected) cs.primary else cs.onSurfaceVariant,
+            modifier = Modifier.size(28.dp),
+        )
         Text(
             destination.label,
             style = MaterialTheme.typography.labelMedium,
@@ -220,7 +338,16 @@ private fun NavTile(destination: Destination, selected: Boolean, onClick: () -> 
 
 @Composable
 private fun T1dmNavHost(navController: NavHostController, container: AppContainer) {
-    NavHost(navController = navController, startDestination = "dashboard") {
+    // Issue 17 — the "disable all animations" flag must collapse the screen crossfade to a snap.
+    val animationsOn = LocalAnimationsEnabled.current
+    NavHost(
+        navController = navController,
+        startDestination = "dashboard",
+        enterTransition = { navEnter(animationsOn) },
+        exitTransition = { navExit(animationsOn) },
+        popEnterTransition = { navEnter(animationsOn) },
+        popExitTransition = { navExit(animationsOn) },
+    ) {
         composable("dashboard") {
             val scope = rememberCoroutineScope()
             val readings by container.dashboardReadings.collectAsState(emptyList())
@@ -242,6 +369,7 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 kovatchevF = container.nativeCore::kovatchevF,
                 iobCob = iobCob,
                 curveChannels = container::dashboardCurveChannels,
+                basalChannel = container::dashboardBasalChannel,
                 warmup = inference.warmup,
                 rangeMinMgdl = range.minMgdl,
                 rangeMaxMgdl = range.maxMgdl,
@@ -249,6 +377,9 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 onSetWindowHours = { h -> scope.launch { container.setGraphWindowHours(h) } },
                 reachability = reachability,
                 signals = signals,
+                circadianTime = inference.circadianTime,
+                circadianAnchorMs = inference.circadianAnchorMs,
+                smoothMgdl = { arr -> container.nativeCore.causalSmooth(arr.toList(), 20.0, 500.0).toDoubleArray() },
             )
         }
         composable("circadian") {
@@ -256,6 +387,12 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
             CircadianScreen(
                 predictedTime = inference.selectedPredictedTime,
                 realBackendAvailable = inference.realBackendAvailable,
+                hasTimeSection = inference.selectedHasTimeSection,
+                // The real reason during warmup / before the first cycle — never "no time section".
+                warmingUp = inference.warmup != null ||
+                    inference.lastCause == InferenceCause.COLLECTING_CONTEXT ||
+                    inference.lastCycleTsMs == null,
+                lowContext = inference.circadianLowContext,
             )
         }
         composable("stats") {
@@ -547,6 +684,7 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 onSetCriticalSoundOn = { on -> scope.launch { container.settingsStore.setCriticalSoundOn(on) } },
                 onSetBypassDnd = { on -> scope.launch { container.settingsStore.setBypassDnd(on) } },
                 onSetRepeatCadence = { m -> scope.launch { container.saveRepeatCadence(m) } },
+                onPreviewVibration = { n -> container.previewVibration(n) },
             )
         }
         composable("settings/calculator") {
@@ -601,6 +739,11 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
             val insEnc by container.settingsStore.insulinBezier.collectAsState(null)
             val carbCurve = remember(carbEnc) { BezierCurve.decode(carbEnc) ?: BezierCurve.default(180.0) }
             val insulinCurve = remember(insEnc) { BezierCurve.decode(insEnc) ?: BezierCurve.default(300.0) }
+            val presetCatalog by produceState(emptyList<com.t1dm.core.model.InsulinPresetSpec>()) {
+                value = container.insulinPresetCatalog()
+            }
+            val selRapid by container.settingsStore.selectedRapidPreset.collectAsState("")
+            val selBasal by container.settingsStore.selectedBasalPreset.collectAsState("")
             CurveParamsScreen(
                 params = CurveParams(
                     bolusGammaK = CurveEngine.Presets.BOLUS_GAMMA_K,
@@ -617,6 +760,12 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 insulinCurve = insulinCurve,
                 onSaveCarbCurve = { c -> scope.launch { container.settingsStore.setCarbBezier(BezierCurve.encode(c)) } },
                 onSaveInsulinCurve = { c -> scope.launch { container.settingsStore.setInsulinBezier(BezierCurve.encode(c)) } },
+                presetCatalog = presetCatalog,
+                selectedRapidLabel = selRapid,
+                selectedBasalLabel = selBasal,
+                onSelectRapid = { l -> scope.launch { container.settingsStore.setRapidPreset(l) } },
+                onSelectBasal = { l -> scope.launch { container.settingsStore.setBasalPreset(l) } },
+                previewPreset = { spec -> container.previewPresetCurve(spec) },
             )
         }
         composable("settings/power") {
@@ -659,10 +808,21 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                     }.getOrElse { "Import failed — ${it.message ?: it::class.simpleName}." }
                 }
             }
+            var resetting by remember { mutableStateOf(false) }
             DataSettingsScreen(
                 status = status,
+                resetting = resetting,
                 onExport = { status = null; exportLauncher.launch("t1dm-config.json") },
                 onImport = { status = null; importLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
+                onReset = {
+                    if (!resetting) {
+                        resetting = true
+                        scope.launch {
+                            container.resetAllData()
+                            container.restartApp() // fresh process ⇒ first-run state; never returns
+                        }
+                    }
+                },
             )
         }
         composable("settings/watch") {
@@ -699,6 +859,10 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                         container.saveServerProfile(label, baseUrl, token)
                         health = "saved — running health check…"
                         health = container.checkServerHealth()
+                        // Re-download the historical series (Phase-3 REST catch-up). This is what
+                        // refills an empty store after a reset → re-add-profile round-trip.
+                        val merged = runCatching { container.resyncFromServer() }.getOrDefault(0)
+                        if (merged > 0) health = (health ?: "") + " · re-downloaded $merged history point(s)"
                         busy = false
                     }
                 },

@@ -11,7 +11,7 @@ import org.junit.Test
 import kotlin.random.Random
 
 /**
- * The `rail-invariants` property tests (PLAN Phase 4 §7, risk S15) — the **blocking** CI gate. They
+ * The `rail-invariants` property tests (Phase 4 §7, risk S15) — the **blocking** CI gate. They
  * assert the three load-bearing safety properties across randomized inputs:
  *
  *  1. **fail-closed** on missing / DEGENERATE / STALE / collapsed-band input — an enabled rail BLOCKS,
@@ -82,6 +82,29 @@ class RailInvariantsTest {
         val backend = BackendInfo(com.t1dm.core.model.BackendId.EXECUTORCH_NEURON_FP16, com.t1dm.core.model.Precision.FP16, agreementOk = false)
         val advisor = advisorOf(FakeForecastPort(), anchor = fakeAnchor(now), iob = fakeIob(now), backend = backend)
         assertTrue(advisor.recommendBolus(now, emptyList(), CalcConfig()) is AdviceResult.Refused)
+    }
+
+    @Test
+    fun gpu_backend_cannot_feed_calc_without_agreement() = runTest {
+        // §3.6-E / issue 20 STEP 6: selecting a GPU/NPU backend must NOT silently feed the dosing
+        // path. Even at fp32, a NON-AUTHORITATIVE backend (the Vulkan GPU delegate) is trustworthy
+        // for a dose ONLY once it has PASSED the fp32-agreement probe — never on precision alone.
+        val vulkanUnproven = BackendInfo(
+            com.t1dm.core.model.BackendId.EXECUTORCH_VULKAN_FP32,
+            com.t1dm.core.model.Precision.FP32,
+            agreementOk = null,
+        )
+        assertFalse("fp32 GPU without an agreement probe must not be trustworthy", vulkanUnproven.trustworthy)
+        val advisor = advisorOf(FakeForecastPort(), anchor = fakeAnchor(now), iob = fakeIob(now), backend = vulkanUnproven)
+        assertTrue(
+            "dosing must fail closed on an unproven GPU backend",
+            advisor.recommendBolus(now, emptyList(), CalcConfig()) is AdviceResult.Refused,
+        )
+        // The authoritative CPU path stays trusted; the GPU path becomes trusted ONLY once it agrees,
+        // and a measured DISAGREEMENT keeps it out of :calc.
+        assertTrue(BackendInfo(com.t1dm.core.model.BackendId.EXECUTORCH_XNNPACK_FP32, com.t1dm.core.model.Precision.FP32, null).trustworthy)
+        assertTrue(BackendInfo(com.t1dm.core.model.BackendId.EXECUTORCH_VULKAN_FP32, com.t1dm.core.model.Precision.FP32, agreementOk = true).trustworthy)
+        assertFalse(BackendInfo(com.t1dm.core.model.BackendId.EXECUTORCH_VULKAN_FP32, com.t1dm.core.model.Precision.FP32, agreementOk = false).trustworthy)
     }
 
     @Test

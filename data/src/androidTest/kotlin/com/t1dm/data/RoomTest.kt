@@ -22,7 +22,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * In-memory Room verification of the Phase-1 persistence invariants (PLAN.private.md §3.1/§3.5).
+ * In-memory Room verification of the Phase-1 persistence invariants (SPEC.private.md §3.1/§3.5).
  * Instrumented (real device SQLite) — deterministic and sensor-free.
  */
 @RunWith(AndroidJUnit4::class)

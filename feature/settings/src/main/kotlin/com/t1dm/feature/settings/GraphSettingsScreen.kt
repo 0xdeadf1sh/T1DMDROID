@@ -18,7 +18,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
 /**
- * Settings → BG graph range (PLAN.private.md Phase 7A item 1). The glucose Y-axis always spans at
+ * Settings → BG graph range (Phase 7A item 1). The glucose Y-axis always spans at
  * least [minMgdl]..[maxMgdl]; it grows ABOVE the ceiling to never clip a high reading. Both are
  * mg/dL and stepped in 5-mg/dL increments; [onChange] persists the new pair (`min < max` enforced
  * upstream). Pure/stateless — the caller owns the persisted value.

@@ -39,14 +39,14 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 
 /**
- * The single write/read gateway over [AppDatabase] (PLAN.private.md §3.5). Every mutation runs on
+ * The single write/read gateway over [AppDatabase] (SPEC.private.md §3.5). Every mutation runs on
  * [T1dmDispatchers.io]; contributing-event writes atomically re-project the wide `sample` row and
  * thinly enqueue an `INGEST` outbox item (drained in Phase 3). Reads surface [Flow]s.
  *
  * Invariants enforced here rather than in the schema:
  *  - grid alignment: every `sample`/`cgm_reading` timestamp satisfies `ts % GRID_MS == 0`;
  *  - grid upsert-in-place: `(sourceId, tsMs)` is the reading key, so a MEASURED value overwrites a
- *    prior INTERPOLATED one at the same slot (PLAN §3.1);
+ *    prior INTERPOLATED one at the same slot (SPEC §3.1);
  *  - projection provenance: INVALID readings never reach `sample`; the sample carries the bg
  *    provenance/flag so downstream (alarm, graph) can honour §3.6-A.
  */
@@ -124,7 +124,7 @@ class T1dmRepository(
         }
     }
 
-    /** Enforce exactly-one-active atomically (PLAN §3.1). */
+    /** Enforce exactly-one-active atomically (SPEC §3.1). */
     suspend fun setActiveSource(id: CgmSourceId) = withContext(io) {
         inWriteTx {
             sources.clearActive()
@@ -186,11 +186,11 @@ class T1dmRepository(
 
     suspend fun sampleAt(ts: Long): SampleEntity? = withContext(io) { samples.byTs(ts) }
 
-    /** Windowed wide-sample read for the stats recompute (PLAN Phase 6); oldest-first. */
+    /** Windowed wide-sample read for the stats recompute (Phase 6); oldest-first. */
     suspend fun samplesInRange(fromMs: Long, toMs: Long): List<SampleEntity> =
         withContext(io) { samples.rangeList(fromMs, toMs) }
 
-    /** Steps arrive already bucketed on the 5-min grid by :sensors (PLAN §3.5). */
+    /** Steps arrive already bucketed on the 5-min grid by :sensors (SPEC §3.5). */
     suspend fun recordSteps(gridTs: Long, tzOffsetMin: Int, steps: Int, nowMs: Long) =
         mergeSample(gridTs, tzOffsetMin, nowMs) { it.copy(steps = steps) }
 
@@ -212,7 +212,7 @@ class T1dmRepository(
         }
     }
 
-    // ─── Curve-engine event stores (Room v3, PLAN §3.3) ──────────────────────────────────────
+    // ─── Curve-engine event stores (Room v3, SPEC §3.3) ──────────────────────────────────────
 
     /**
      * Log an insulin dose with its full curve params (`logged_dose`) and fold its units into the
@@ -284,7 +284,7 @@ class T1dmRepository(
     /** Timestamp of the most recent logged insulin dose (IOB provenance, §3.6-F); null = none. */
     suspend fun latestLoggedInsulinTs(): Long? = withContext(io) { loggedDoses.latestTs() }
 
-    // ─── Journal notes (Room v4, PLAN §Phase 4 deliverable 2) ────────────────────────────────
+    // ─── Journal notes (Room v4, Phase 4 deliverable 2) ────────────────────────────────
 
     /**
      * Persist a free-text journal note. Unlike a dose/meal/mood, a note is NOT projected into the
@@ -299,7 +299,7 @@ class T1dmRepository(
     /** The most recent non-null mood across the wide sample (journal picker "current mood"). */
     fun observeLatestMood(): Flow<Int?> = samples.observeLatestMood()
 
-    // ─── Glycemic dictionary / saved meals / insulin types (Room v5, PLAN §Phase 4) ───────────
+    // ─── Glycemic dictionary / saved meals / insulin types (Room v5, Phase 4) ───────────
 
     suspend fun foodCount(): Int = withContext(io) { db.foodDao().count() }
 
@@ -393,7 +393,7 @@ class T1dmRepository(
 
     // ─── Outbox ─────────────────────────────────────────────────────────────────────────────
 
-    /** Thin enqueue-on-write (PLAN Phase 1); dedup is enforced by the unique `dedupKey` index. */
+    /** Thin enqueue-on-write (Phase 1); dedup is enforced by the unique `dedupKey` index. */
     override suspend fun enqueue(
         kind: OutboxKind,
         dedupKey: String,
@@ -590,6 +590,44 @@ class T1dmRepository(
 
     suspend fun recordTelemetry(row: HwTelemetryEntity): Long =
         withContext(io) { telemetry.insert(row) }
+
+    // ─── Full app reset (issue 5 — DESTRUCTIVE) ───────────────────────────────────────────────
+
+    /**
+     * Erase every user + runtime table in ONE transaction, returning the store to its first-run
+     * contents at the **CURRENT** schema version — this is a row-only wipe (never a drop/recreate,
+     * which would risk landing on an older schema; Phase-1 keep-forever store). What survives is
+     * exactly what a fresh install ships: the seed `food` dictionary and the builtin `insulin_type`
+     * presets (only the user-added `custom`/non-builtin rows go). Wiping the whole `kv` table both
+     * resets every setting to its coded default (readers fall back when a key is absent) AND clears
+     * the watch pairing bits, epoch, and the burned nonce ceilings, so a later re-pair with fresh
+     * X25519 keys can never reuse a (key, nonce) pair. The model `.pte`/`.tflite` artifacts live on
+     * the filesystem, not in Room, so they are untouched. Secrets that live outside Room (the
+     * Keystore-wrapped server token) are burned by the caller. Off-main.
+     */
+    suspend fun wipeAllData() = withContext(io) {
+        inWriteTx {
+            readings.deleteAll()
+            samples.deleteAll()
+            sources.deleteAll()
+            doses.deleteAll()
+            loggedDoses.deleteAll()
+            loggedMeals.deleteAll()
+            basalSchedules.deleteAll()
+            advertsRaw.deleteAll()
+            outbox.deleteAllRows()
+            predictions.deleteAll()
+            profiles.deleteAll()
+            telemetry.deleteAll()
+            db.noteDao().deleteAll()
+            db.savedMealDao().deleteAllItems()
+            db.savedMealDao().deleteAllMeals()
+            db.foodDao().deleteAllCustom()
+            db.insulinTypeDao().deleteAllCustom()
+            // kv LAST: it holds the watch nonce ceilings + pairing bits + every setting.
+            kv.deleteAll()
+        }
+    }
 
     companion object {
         const val GRID_MS: Long = 300_000L

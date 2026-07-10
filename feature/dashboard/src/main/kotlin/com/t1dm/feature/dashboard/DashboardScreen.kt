@@ -47,13 +47,15 @@ import com.t1dm.ui.graph.GlucoseGraph
 import com.t1dm.ui.graph.GraphFrame
 import com.t1dm.ui.graph.PredSeries
 import com.t1dm.ui.graph.PredictedClock
+import com.t1dm.ui.graph.SmoothedTrace
+import com.t1dm.ui.graph.smoothedTraceOf
 import com.t1dm.ui.graph.curveOverlayOf
 import com.t1dm.ui.graph.excursionsOf
 import com.t1dm.ui.graph.graphFrameOf
 import com.t1dm.ui.graph.predOverlayOf
 
 /**
- * The live BG dashboard (PLAN.private.md Phase 1 — "Dashboard shows the live graph + current
+ * The live BG dashboard (Phase 1 — "Dashboard shows the live graph + current
  * BG/trend from the Repository Flow"). It is a pure function of the state `:app` collects from the
  * repository: a header with the latest measurement + trend + active source, and the reusable
  * [GlucoseGraph] over a [GraphFrame] built off-thread by [graphFrameOf]. No storage, no service,
@@ -76,6 +78,7 @@ fun DashboardScreen(
     kovatchevF: ((Double) -> Double)? = null,
     iobCob: IobCobReadout? = null,
     curveChannels: (suspend (gridStartMs: Long, nSteps: Int) -> Pair<DoubleArray, DoubleArray>)? = null,
+    basalChannel: (suspend (gridStartMs: Long, nSteps: Int) -> DoubleArray)? = null,
     warmup: WarmupProgress? = null,
     // Phase 7A — BG-panel overhaul.
     rangeMinMgdl: Int = 20,
@@ -84,6 +87,15 @@ fun DashboardScreen(
     onSetWindowHours: ((Int) -> Unit)? = null,
     reachability: BgReachability? = null,
     signals: BgSignals? = null,
+    // Issues 7 & 9 — the warmup-surviving circadian belief, so the TOP axis renders the predicted
+    // clock even while the BG forecast is (correctly) suppressed. Falls back to the selected
+    // prediction's copy once a full cycle publishes.
+    circadianTime: PredictedTime? = null,
+    circadianAnchorMs: Long? = null,
+    // Issue 13 — the causal SavGol smoother (mg/dL, clamps [20,500]) the model consumes; when wired, a
+    // toggle overlays the smoothed model-input trace. Native call is passed as a lambda so this module
+    // keeps no JNI dependency.
+    smoothMgdl: ((DoubleArray) -> DoubleArray)? = null,
 ) {
     val frame by produceState(GraphFrame.EMPTY, readings, unit) {
         value = graphFrameOf(readings, unit, kovatchevF = kovatchevF)
@@ -100,7 +112,10 @@ fun DashboardScreen(
     // zone (item 2), not only their history — off-thread. Built whenever the resolver is wired (not
     // gated on the toggles) so the scrub read-out can report the rates even with the overlay hidden;
     // the DRAW is still gated by [toggles].
-    val curveOverlay by produceState(CurveOverlayFrame.EMPTY, readings, predictions, curveChannels) {
+    // Keyed on iobCob too so a just-logged dose (which emits a new IOB/COB read-out) rebuilds the
+    // overlay immediately, rather than waiting for the next CGM reading — this keeps the insulin/basal
+    // overlay (issue 18) and the no-future-insulin advisory (issue 16) current the moment a dose lands.
+    val curveOverlay by produceState(CurveOverlayFrame.EMPTY, readings, predictions, curveChannels, basalChannel, iobCob) {
         val resolver = curveChannels
         if (resolver == null || readings.isEmpty()) {
             value = CurveOverlayFrame.EMPTY
@@ -115,12 +130,47 @@ fun DashboardScreen(
         val end = maxOf(lastReading, lastForecast, System.currentTimeMillis() + OVERLAY_FUTURE_MS)
         val nSteps = (((end - gridStart) / STEP_MS).toInt() + 1).coerceIn(1, MAX_OVERLAY_STEPS)
         val (carb, insulin) = resolver(gridStart, nSteps)
-        value = curveOverlayOf(carb, insulin, gridStart, STEP_MS)
+        val basal = basalChannel?.invoke(gridStart, nSteps) ?: DoubleArray(0)
+        value = curveOverlayOf(carb, insulin, gridStart, STEP_MS, basal)
     }
 
+    // Issue 16: advise when NO insulin action covers the forecast horizon — neither a committed bolus
+    // tail nor a basal schedule (the auto-extended basal is already folded into the combined channel,
+    // so an active schedule keeps this false). Purely advisory; never actuates.
+    val noFutureInsulin = remember(curveOverlay, predictions) {
+        val f = curveOverlay
+        if (f.isEmpty) false
+        else {
+            val now = System.currentTimeMillis()
+            val lastForecast = predictions.maxOfOrNull { it.anchorTsMs + it.horizonSteps.toLong() * it.stepMs }
+            val horizonEnd = maxOf(lastForecast ?: 0L, now + NO_INSULIN_HORIZON_MS)
+            var i = f.indexAt(now).let { if (it < 0) 0 else it }
+            var any = false
+            while (i < f.size) {
+                val ts = f.tsAt(i)
+                if (ts > horizonEnd) break
+                if (ts >= now && f.insulin[i] > INSULIN_EPS) { any = true; break }
+                i++
+            }
+            !any
+        }
+    }
+
+    // Issue 13: the smoothed model-input trace (built off-thread; null unless the smoother is wired).
+    val smoothed by produceState<SmoothedTrace?>(null, readings, unit, smoothMgdl) {
+        val f = smoothMgdl
+        value = if (f == null || readings.isEmpty()) null
+        else smoothedTraceOf(readings, unit, f, kovatchevF)
+    }
+    var showSmoothed by remember { mutableStateOf(false) }
+
     // The selected model's circadian-phase clock (item 21) + its approaching excursions (item 16).
+    // Issues 7 & 9: prefer the in-cycle prediction's belief, but fall back to the warmup-surviving
+    // [circadianTime] so the TOP axis still renders the predicted clock while forecasts are withheld.
     val selected = predictions.firstOrNull { it.selected }
-    val predictedClock = selected?.predictedTime?.toClock(selected.anchorTsMs)
+    val clockSource = selected?.predictedTime ?: circadianTime
+    val clockAnchor = selected?.anchorTsMs ?: circadianAnchorMs
+    val predictedClock = if (clockSource != null && clockAnchor != null) clockSource.toClock(clockAnchor) else null
     val excursions: List<ExcursionMarker> = remember(predictions, thresholds) {
         if (thresholds == null) emptyList()
         else excursionsOf(predictions, thresholds.lowMgdl, thresholds.highMgdl)
@@ -130,11 +180,21 @@ fun DashboardScreen(
         reachability?.let { ReachabilityBar(it, signals) }
         DashboardHeader(latest, activeSourceName, unit, signals?.cgmRssi ?: latest?.rssi)
         warmup?.let { WarmupBanner(it) }
-        if (iobCob != null || curveChannels != null) {
-            OverlayControls(iobCob, toggles, windowHours, { toggles = it }) { h ->
-                windowHours = h
-                onSetWindowHours?.invoke(h)
-            }
+        if (noFutureInsulin) NoFutureInsulinBanner()
+        if (iobCob != null || curveChannels != null || smoothMgdl != null) {
+            OverlayControls(
+                iobCob = iobCob,
+                toggles = toggles,
+                windowHours = windowHours,
+                smoothAvailable = smoothMgdl != null,
+                showSmoothed = showSmoothed,
+                onToggle = { toggles = it },
+                onToggleSmoothed = { showSmoothed = it },
+                onWindow = { h ->
+                    windowHours = h
+                    onSetWindowHours?.invoke(h)
+                },
+            )
         }
         GlucoseGraph(
             frame = frame,
@@ -148,6 +208,8 @@ fun DashboardScreen(
             rangeMaxMgdl = rangeMaxMgdl,
             predictedClock = predictedClock,
             excursions = excursions,
+            smoothed = smoothed,
+            showSmoothed = showSmoothed,
         )
     }
 }
@@ -161,6 +223,10 @@ private fun PredictedTime.toClock(anchorTsMs: Long): PredictedClock? =
 private const val STEP_MS: Long = 300_000L
 private const val MAX_OVERLAY_STEPS: Int = 4032 // ~14 days of 5-min buckets
 private const val OVERLAY_FUTURE_MS: Long = 6L * 3_600_000L // show ~6 h of future dose tails
+/** How far ahead the no-future-insulin advisory (item 16) looks when no forecast bounds it. */
+private const val NO_INSULIN_HORIZON_MS: Long = 3L * 3_600_000L
+/** Below this units-per-step the insulin channel is treated as no action present (item 16). */
+private const val INSULIN_EPS: Float = 1e-6f
 /** Below this resultant length the circadian belief is too diffuse to anchor a clock axis on. */
 private const val MIN_CLOCK_R: Double = 0.05
 
@@ -189,6 +255,28 @@ private fun WarmupBanner(warmup: WarmupProgress) {
     }
 }
 
+/**
+ * The item-16 advisory: no insulin action covers the forecast window — no committed bolus tail and no
+ * basal schedule reaching into it. Advisory only (the app never actuates); it states the plain-language
+ * reason so an absent basal/bolus is visible rather than silently assumed.
+ */
+@Composable
+private fun NoFutureInsulinBanner() {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
+        Text(
+            "No insulin on board over the forecast window",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.secondary,
+        )
+        Text(
+            "Neither a committed bolus tail nor a basal schedule covers the hours ahead. If you take " +
+                "long-acting basal, set its schedule so the model and calculator see your background insulin.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+        )
+    }
+}
+
 /** IOB/COB read-out + the carb/insulin overlay toggles (Phase 4) + the 6/12/24h window buttons
  *  (item 5). */
 @Composable
@@ -196,7 +284,10 @@ private fun OverlayControls(
     iobCob: IobCobReadout?,
     toggles: CurveOverlayToggles,
     windowHours: Int,
+    smoothAvailable: Boolean,
+    showSmoothed: Boolean,
     onToggle: (CurveOverlayToggles) -> Unit,
+    onToggleSmoothed: (Boolean) -> Unit,
     onWindow: (Int) -> Unit,
 ) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
@@ -215,6 +306,13 @@ private fun OverlayControls(
                 onClick = { onToggle(toggles.copy(insulin = !toggles.insulin)) },
                 label = { Text("Insulin") },
             )
+            if (smoothAvailable) {
+                FilterChip(
+                    selected = showSmoothed,
+                    onClick = { onToggleSmoothed(!showSmoothed) },
+                    label = { Text("Smoothed") },
+                )
+            }
             Spacer(Modifier.weight(1f))
             listOf(6, 12, 24).forEach { h ->
                 FilterChip(
@@ -264,7 +362,9 @@ private fun ReachabilityBar(r: BgReachability, signals: BgSignals?) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         ReachChip("SRV", r.server, showLabels, null)
-        ReachChip("CGM", r.cgm, showLabels, signals?.cgmRssi)
+        // Issue 3: the CGM link's signal bars live ONLY in the header now (the "AiDEX X … −60 dBm"
+        // meter); this chip keeps just its traffic-light so the CGM RSSI is shown in exactly one place.
+        ReachChip("CGM", r.cgm, showLabels, null)
         ReachChip("WCH", r.watch, showLabels, signals?.watchRssi)
     }
 }

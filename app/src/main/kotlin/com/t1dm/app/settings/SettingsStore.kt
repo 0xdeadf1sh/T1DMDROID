@@ -15,7 +15,7 @@ import kotlinx.coroutines.flow.map
 import org.json.JSONObject
 
 /**
- * The complete, kv-backed configuration surface for the Settings hub (PLAN.private.md Phase 7C —
+ * The complete, kv-backed configuration surface for the Settings hub (Phase 7C —
  * items 14 & 17, "expose EVERY knob"). Every user-tunable knob that the rest of the app boots with a
  * hard-coded default for is persisted here so a restart restores it, and — per safety-posture.md —
  * the thresholds are **user-set and deliberately UNBOUNDED**: this store only coerces values to a
@@ -249,6 +249,19 @@ class SettingsStore(
     suspend fun setCarbBezier(encoded: String) = put(K_CURVE_CARB_BEZIER, encoded)
     suspend fun setInsulinBezier(encoded: String) = put(K_CURVE_INSULIN_BEZIER, encoded)
 
+    // ── Clinical insulin PRESET selection (issue 19 — the OPT-IN, off-distribution rapid/basal
+    // curves). Persisted by the preset's stable label; the default is the in-distribution simulator
+    // shape, so a fresh install (and every unchanged install) keeps forecasts in-distribution. The
+    // apply-at-log path (AppContainer.logBolus/logBasal) resolves the selected label to its spec.
+    val selectedRapidPreset: Flow<String> =
+        repository.observeKv(K_CURVE_RAPID_PRESET).map { it ?: DEFAULT_RAPID_PRESET_LABEL }
+    val selectedBasalPreset: Flow<String> =
+        repository.observeKv(K_CURVE_BASAL_PRESET).map { it ?: DEFAULT_BASAL_PRESET_LABEL }
+    suspend fun currentRapidPreset(): String = repository.getKv(K_CURVE_RAPID_PRESET) ?: DEFAULT_RAPID_PRESET_LABEL
+    suspend fun currentBasalPreset(): String = repository.getKv(K_CURVE_BASAL_PRESET) ?: DEFAULT_BASAL_PRESET_LABEL
+    suspend fun setRapidPreset(label: String) = put(K_CURVE_RAPID_PRESET, label)
+    suspend fun setBasalPreset(label: String) = put(K_CURVE_BASAL_PRESET, label)
+
     // ── Config export / import (item 17 — versioned, via SAF) ──────────────────────────────────
     // Exports ONLY the config keys (the allowlisted prefixes) — never runtime state such as the
     // watch nonce ceilings (exporting/importing those across devices would risk (key,nonce) reuse)
@@ -357,6 +370,11 @@ class SettingsStore(
         private const val K_UI_CUSTOM_THEME = "ui.custom_theme_json"
         private const val K_CURVE_CARB_BEZIER = "graph.curve_carb_bezier"
         private const val K_CURVE_INSULIN_BEZIER = "graph.curve_insulin_bezier"
+        private const val K_CURVE_RAPID_PRESET = "graph.curve_rapid_preset"
+        private const val K_CURVE_BASAL_PRESET = "graph.curve_basal_preset"
+        /** The in-distribution simulator defaults (must equal the labels in `insulin_preset_catalog`). */
+        const val DEFAULT_RAPID_PRESET_LABEL = "Simulator bolus (default, in-distribution)"
+        const val DEFAULT_BASAL_PRESET_LABEL = "Simulator basal (default, in-distribution)"
         const val DEFAULT_THEME = "tron"
         const val DEFAULT_FONT = "system"
     }

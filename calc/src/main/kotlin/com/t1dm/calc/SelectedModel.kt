@@ -5,7 +5,7 @@ import com.t1dm.inference.backend.GraphInput
 import com.t1dm.inference.backend.GraphOutput
 
 /**
- * A handle to the SELECTED fp32-authoritative model (PLAN §3.2). `:calc` scores on the selected model
+ * A handle to the SELECTED fp32-authoritative model (SPEC §3.2). `:calc` scores on the selected model
  * only; the `:app` composition root supplies this from the [com.t1dm.inference.InferenceController]'s
  * currently-selected loaded model. [run] must confine the blocking backend forward to the single-thread
  * `inference` dispatcher (§2.3) — the [RollingForecaster] treats it as already-confined.

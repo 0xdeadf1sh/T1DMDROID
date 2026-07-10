@@ -21,7 +21,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * Instrumented verification of the fresh-install seed path (PLAN.private.md Phase 7C, meal-builder
+ * Instrumented verification of the fresh-install seed path (Phase 7C, meal-builder
  * catalogue). Builds a DB with the SAME wiring production uses — the [BundledSQLiteDriver] (whose
  * SQLite ships `fts5`, unlike the HyperOS/Android-16 system build) plus the [FoodFts] `onCreate`
  * callback — seeds the full [FoodSeed] catalogue, and asserts (a) every row lands in `food` and

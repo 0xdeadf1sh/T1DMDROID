@@ -11,7 +11,7 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 /**
- * Per-profile `rw` token at rest (PLAN.private.md Phase 3: "token in a Keystore-backed TokenStore").
+ * Per-profile `rw` token at rest (Phase 3: "token in a Keystore-backed TokenStore").
  * The token is the single credential the phone holds; it must never sit in the keep-forever Room DB
  * (which a backup/export could leak), so it lives here keyed by profile id. The interface is tiny so
  * tests substitute an in-memory implementation.
@@ -20,6 +20,9 @@ interface TokenStore {
     suspend fun get(profileId: String): String?
     suspend fun put(profileId: String, token: String)
     suspend fun remove(profileId: String)
+
+    /** Burn EVERY stored token (issue 5, app reset) — every profile's `rw` credential at once. */
+    suspend fun clearAll()
 }
 
 /** Deterministic, non-persistent store for host tests and previews. */
@@ -28,6 +31,7 @@ class InMemoryTokenStore(seed: Map<String, String> = emptyMap()) : TokenStore {
     override suspend fun get(profileId: String): String? = map[profileId]
     override suspend fun put(profileId: String, token: String) { map[profileId] = token }
     override suspend fun remove(profileId: String) { map.remove(profileId) }
+    override suspend fun clearAll() { map.clear() }
 }
 
 /**
@@ -64,6 +68,16 @@ class KeystoreTokenStore(context: Context) : TokenStore {
 
     override suspend fun remove(profileId: String) {
         prefs.edit().remove(profileId).apply()
+    }
+
+    /** Full-erase (issue 5): drop every wrapped token AND the AndroidKeyStore wrapping key, so no
+     *  ciphertext and no key survive the reset. A fresh token minted later regenerates the key. */
+    override suspend fun clearAll() {
+        prefs.edit().clear().apply()
+        runCatching {
+            val ks = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+            if (ks.containsAlias(KEY_ALIAS)) ks.deleteEntry(KEY_ALIAS)
+        }
     }
 
     private fun key(): SecretKey {

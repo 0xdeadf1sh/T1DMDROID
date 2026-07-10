@@ -7,7 +7,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 
 /**
- * Eviction priority (PLAN.private.md Phase 3): `ALERT > NOTE > INGEST > PREDICTIONS > SERIES >
+ * Eviction priority (Phase 3): `ALERT > NOTE > INGEST > PREDICTIONS > SERIES >
  * PHOTO`. Higher rank survives; when the queue is over its size bound the lowest-rank, oldest rows
  * are dropped first. An ALERT (a safety signal) is the last thing ever evicted; a stale display
  * PREDICTION or a PHOTO is the first.
@@ -39,7 +39,7 @@ data class OutboxRequest(val method: String, val path: String, val body: String)
 internal const val INGEST_DEDUP_PREFIX = "ingest:sample:"
 
 /**
- * Enqueue-on-write producer API (PLAN.private.md Phase 3). The integrate agent calls these from the
+ * Enqueue-on-write producer API (Phase 3). The integrate agent calls these from the
  * CycleRunner / event writers; each serializes the wire body into an [OutboxRequest] envelope and
  * appends a deduped outbox row. Dedup is enforced by the unique `dedupKey` index — this is the
  * "dedup BEFORE send" that makes the non-idempotent `PUT /v1/predictions` safe: the same

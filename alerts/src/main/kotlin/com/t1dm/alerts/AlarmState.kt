@@ -3,7 +3,7 @@ package com.t1dm.alerts
 import com.t1dm.core.model.AlertBand
 
 /**
- * Severity of a firing alarm (PLAN.private.md §3.6-A). [CRITICAL] is the tier that, from Phase 7,
+ * Severity of a firing alarm (SPEC.private.md §3.6-A). [CRITICAL] is the tier that, from Phase 7,
  * bypasses Do-Not-Disturb and carries the loudest actuators; in Phase 1 it drives the urgent
  * notification channel and the insistent vibration pattern. Ordinal order is load-bearing:
  * CRITICAL must sort above WARNING when choosing the single primary alarm to surface.
@@ -22,7 +22,7 @@ sealed interface ActiveAlarm {
 
 /**
  * A threshold band breach evaluated directly on a MEASURED, in-warm-up-cleared reading — no
- * forecast, no backend, no Rust decode involved (PLAN.private.md §3.6-A threshold alarm).
+ * forecast, no backend, no Rust decode involved (SPEC.private.md §3.6-A threshold alarm).
  */
 data class ThresholdBreach(
     val band: AlertBand,
@@ -35,7 +35,7 @@ data class ThresholdBreach(
 
 /**
  * A loss-of-signal alarm: no MEASURED reading has arrived within the (possibly escalated) window
- * (PLAN.private.md §3.6-A loss-of-signal alarm). Interpolated gap-fill can never postpone it, so
+ * (SPEC.private.md §3.6-A loss-of-signal alarm). Interpolated gap-fill can never postpone it, so
  * a fabricated line hidden inside a dropout still surfaces as lost signal.
  */
 data class SignalLoss(

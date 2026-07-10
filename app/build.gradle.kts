@@ -34,9 +34,24 @@ android {
             abiFilters += "arm64-v8a"
         }
 
+        // Vulkan capability-probe JNI shim (issue 20 — STEP 5). arm64-only C++17, links the NDK
+        // Vulkan loader; enumerates the GPU without running the model.
+        externalNativeBuild {
+            cmake {
+                cppFlags += "-std=c++17"
+            }
+        }
+
         // About-panel build provenance (public-safe).
         buildConfigField("String", "GIT_SHA", "\"$gitSha\"")
         buildConfigField("String", "EXECUTORCH_VERSION", "\"1.3.1\"")
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     buildFeatures {

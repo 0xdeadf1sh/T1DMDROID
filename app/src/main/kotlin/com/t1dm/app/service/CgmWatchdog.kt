@@ -11,7 +11,7 @@ import timber.log.Timber
 import java.util.concurrent.TimeUnit
 
 /**
- * The deferrable watchdog (PLAN.private.md §2.3 — "WorkManager watchdog"). It periodically nudges
+ * The deferrable watchdog (SPEC.private.md §2.3 — "WorkManager watchdog"). It periodically nudges
  * [CgmScanService] back up should HyperOS/Doze have killed it out from under `START_STICKY` and
  * `onTaskRemoved`. Starting a foreground service from a background Worker can be refused on 14+, so
  * the restart is best-effort and swallowed — the model-free loss-of-signal alarm still covers any

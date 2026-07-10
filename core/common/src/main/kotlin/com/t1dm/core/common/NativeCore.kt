@@ -40,7 +40,7 @@ interface NativeCore {
 
     // ── Model pre/post pipeline (Phase 2, INFERENCE.md §§6-8) ───────────────────────
 
-    /** Parse a model `descriptor.json` (PLAN §2.4); `null` on malformed JSON / a missing field. */
+    /** Parse a model `descriptor.json` (SPEC §2.4); `null` on malformed JSON / a missing field. */
     fun parseDescriptor(json: String): ModelDescriptor?
 
     /** Strictly-causal one-sided Savitzky-Golay smooth (INFERENCE.md §7.1); optional output
@@ -84,7 +84,7 @@ interface NativeCore {
      *  optional and never blocks the BG forecast). */
     fun decodeTime(timeLogits: List<Double>, nBins: Int, binHours: Double): PredictedTime?
 
-    // ── Shared curve/PK engine (Phase 4, PLAN §3.3; bit-faithful to simulator.py) ────
+    // ── Shared curve/PK engine (Phase 4, SPEC §3.3; bit-faithful to simulator.py) ────
 
     /** Gamma-distributed Ra/PK curve, amount-per-5-min-step, `sum == total` (carbs +
      *  bolus shape; == `simulator.gamma_curve`). */
@@ -98,6 +98,14 @@ interface NativeCore {
      *  (dose-scaled DIA/θ; == `simulator.bolus_pk_for_dose` + `gamma_curve`). */
     fun bolusPkForDose(doseU: Double): CurveEvent
 
+    /** Loop/OpenAPS exponential insulin-activity curve (OPT-IN clinical rapid presets, issue 19),
+     *  amount-per-5-min-step, `sum == total`; peaks at [peakMin], ~0 by [diaMin]. Off-distribution. */
+    fun expActionCurve(total: Double, peakMin: Double, diaMin: Double): List<Double>
+
+    /** The clinical insulin preset catalogue (issue 19): the two in-distribution simulator defaults
+     *  plus the OPT-IN, off-distribution rapid/basal presets, each with its peak/DIA + citation. */
+    fun insulinPresetCatalog(): List<com.t1dm.core.model.InsulinPresetSpec>
+
     /** Sum every [kind]-matching event's curve onto the fixed grid
      *  `[gridStartMs, gridStartMs + nSteps·STEP_MS)`; pre-grid tails carry forward. */
     fun bucketize(events: List<CurveEvent>, gridStartMs: Long, nSteps: Int, kind: CurveKind): List<Double>
@@ -109,7 +117,7 @@ interface NativeCore {
      *  `[fromMs, toMs)` (the auto-extended near-flat basal background). */
     fun extendBasal(schedule: BasalSchedule, fromMs: Long, toMs: Long): List<CurveEvent>
 
-    // ── Advanced stats (Phase 6, PLAN §"Phase 6 — Stats"; t1dm-core::stats) ─────────
+    // ── Advanced stats (Phase 6, SPEC §"Phase 6 — Stats"; t1dm-core::stats) ─────────
 
     /** The full advanced-stats block (TIR/TBR/TAR + sub-bands, LBGI/HBGI, MAGE, the shared
      *  server-parity block, per-channel totals, and the AGP percentile ribbon) over [samples]

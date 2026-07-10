@@ -1,7 +1,7 @@
 package com.t1dm.core.model
 
 /**
- * The UI- and persistence-facing inference-runtime domain types (Phase 2, PLAN.private.md §3.2 /
+ * The UI- and persistence-facing inference-runtime domain types (Phase 2, SPEC.private.md §3.2 /
  * §2.4). They live in `:core:model` — not `:inference` — so the graph overlay (`:ui:graph`) and the
  * Hardware / Models panels can render a forecast and per-model telemetry without depending on the
  * ExecuTorch backend module. The `InferenceBackend` seam itself (GraphInput/GraphOutput/backends)
@@ -12,18 +12,43 @@ package com.t1dm.core.model
 enum class Precision { FP32, FP16 }
 
 /**
- * Which runtime executed a model this cycle (PLAN.private.md §3.2). `STUB` is the fixed-output
- * fallback used when no real `.pte` is present, so the whole pipeline still builds and runs; the
- * Neuron / LiteRT ids are declared but their backends are documented stubs this phase.
+ * Which runtime executed a model this cycle (SPEC.private.md §3.2). `STUB` is the fixed-output
+ * fallback used when no real `.pte` is present, so the whole pipeline still builds and runs.
+ *
+ * [EXECUTORCH_XNNPACK_FP32] is the authoritative CPU path (the only one that executes today).
+ * [LITERT_NPU] is the LiteRT-unified MediaTek-NeuroPilot NPU path (issue 1): its `.tflite` artifact
+ * converts from the SAME modified forward via litert-torch and matches the fp32 authority to
+ * `max|Δ| ≈ 1.4e-6` on host, but on-device execution is blocked for a sideload build (the NeuroPilot
+ * NPU runtime ships via Google Play PODAI / Play Feature Delivery). [EXECUTORCH_NEURON_FP16] and the
+ * legacy [LITERT_NEURON_FP16] TFLite-delegate id remain enumerated but unavailable — see each
+ * backend's plain-language reason ([com.t1dm.inference.backend]). The distinction is surfaced
+ * verbatim on the Hardware / Models panels — no "stub" ambiguity.
  */
 enum class BackendId {
     EXECUTORCH_XNNPACK_FP32,
     EXECUTORCH_NEURON_FP16,
     LITERT_NEURON_FP16,
+    LITERT_NPU,
+    EXECUTORCH_VULKAN_FP32,
     STUB,
 }
 
-/** One model in the running set (≤5; PLAN.private.md §2.3), tagged by the descriptor's `model_id`. */
+/**
+ * Human-readable backend label for the Hardware / Models panels (issue 1 — no "stub" ambiguity).
+ * Names the engine + numeric precision + the compute unit it targets; the *live* execution truth is
+ * the panel's "Executing on:" line (from the selected [RunningModel]), while this names the routing
+ * target itself.
+ */
+fun BackendId.displayName(): String = when (this) {
+    BackendId.EXECUTORCH_XNNPACK_FP32 -> "ExecuTorch XNNPACK fp32 (CPU)"
+    BackendId.EXECUTORCH_NEURON_FP16 -> "ExecuTorch Neuron fp16 (NPU)"
+    BackendId.LITERT_NEURON_FP16 -> "LiteRT Neuron fp16 (NPU, legacy delegate)"
+    BackendId.LITERT_NPU -> "LiteRT NPU fp32 (MediaTek NeuroPilot)"
+    BackendId.EXECUTORCH_VULKAN_FP32 -> "ExecuTorch Vulkan fp32 (GPU compute)"
+    BackendId.STUB -> "Stub (fixed output — no .pte)"
+}
+
+/** One model in the running set (≤5; SPEC.private.md §2.3), tagged by the descriptor's `model_id`. */
 data class RunningModel(
     val modelId: String,
     val backend: BackendId,
@@ -81,7 +106,7 @@ data class ModelTelemetry(
     val avgInferenceMs: Double get() = if (predictions > 0) totalInferenceMs / predictions else 0.0
 }
 
-/** Rolling per-model backend latency (ms) for the Hardware panel (PLAN.private.md Phase 2 §8). */
+/** Rolling per-model backend latency (ms) for the Hardware panel (Phase 2 §8). */
 data class ModelLatency(
     val modelId: String,
     val runs: Int,
@@ -91,7 +116,7 @@ data class ModelLatency(
 )
 
 /**
- * A decoded forecast for one model at one 5-min cycle (PLAN.private.md Phase 2 deliverable 4).
+ * A decoded forecast for one model at one 5-min cycle (Phase 2 deliverable 4).
  * [medianBg] is the `P·S` mg/dL headline line; [bandsMgdl] the `P·S·[nQuantiles]` ascending-τ fan
  * (step-major `i = p·S + s`, then the τ column), both already `f_inv`-decoded in the Rust core.
  * [status] is the §3.6-B degeneracy verdict; a non-`OK` prediction is ineligible to drive a rail
@@ -130,7 +155,7 @@ data class ModelPrediction(
 
 /**
  * The decoded hour-of-day belief of a model's co-trained TIME PROBE for one cycle (mirrors the
- * Rust `PredictedTime`; PLAN.private.md Phase 7A). This is a CIRCADIAN-PHASE belief — the model's
+ * Rust `PredictedTime`; Phase 7A). This is a CIRCADIAN-PHASE belief — the model's
  * estimate of **what hour-of-day it currently is**, NOT a per-forecast-step timestamp. A
  * predicted-time axis for the forecast is [predictedHour] plus each step's offset.
  *
@@ -164,7 +189,7 @@ data class WarmupProgress(val measuredHours: Double, val requiredHours: Double) 
 }
 
 /**
- * The immutable snapshot the UI observes as a `StateFlow` (PLAN.private.md Phase 2). Carries the
+ * The immutable snapshot the UI observes as a `StateFlow` (Phase 2). Carries the
  * running set, this cycle's per-model predictions (selected first), rolling latencies, and a
  * plain-language [note] for the "collecting context" / "forecast unavailable" states — every
  * refusal states WHY (progress.md Q10).
@@ -182,12 +207,28 @@ data class InferenceState(
     val realBackendAvailable: Boolean = true,
     /** Non-null while the WARMUP gate is withholding forecasts (predictions cleared); null once met. */
     val warmup: WarmupProgress? = null,
+    /**
+     * The selected model's circadian-phase belief, published INDEPENDENTLY of the BG forecast so it
+     * SURVIVES the warmup gate (issues 7 & 9). During a full cycle this equals the selected
+     * prediction's [PredictedTime]; during warmup it is a low-context belief formed from whatever
+     * history exists while [predictions] stays (correctly) empty. It is a phase belief, NOT a glucose
+     * forecast and NOT a dosing signal — no §3.6 gate depends on it.
+     */
+    val circadianTime: PredictedTime? = null,
+    /** Anchor (epoch-ms) the [circadianTime] belief was formed at — the clock offset is measured from it. */
+    val circadianAnchorMs: Long? = null,
+    /** True when [circadianTime] was formed during warmup on limited history (⇒ show a low-confidence caveat). */
+    val circadianLowContext: Boolean = false,
+    /** Whether the SELECTED model's descriptor declares a time section at all (distinguishes the
+     *  "no time section" empty state from a "decode failed" one). Defaults true until a cycle sets it. */
+    val selectedHasTimeSection: Boolean = true,
     val note: String? = null,
 ) {
     val selectedPrediction: ModelPrediction? get() = predictions.firstOrNull { it.selected }
 
-    /** The selected model's circadian-phase belief this cycle, or null when unavailable (BG panel). */
-    val selectedPredictedTime: PredictedTime? get() = selectedPrediction?.predictedTime
+    /** The selected model's circadian-phase belief this cycle, or null when unavailable (BG panel).
+     *  Prefers the warmup-surviving [circadianTime]; falls back to the in-cycle prediction's copy. */
+    val selectedPredictedTime: PredictedTime? get() = circadianTime ?: selectedPrediction?.predictedTime
 
     fun latencyOf(modelId: String): ModelLatency? = latencies.firstOrNull { it.modelId == modelId }
 

@@ -3,7 +3,7 @@ package com.t1dm.feature.settings
 import androidx.compose.runtime.Composable
 
 /**
- * Settings → Low-power mode (PLAN.private.md Phase 7C item 14; progress.md Q9 — default entry 20 %,
+ * Settings → Low-power mode (Phase 7C item 14; progress.md Q9 — default entry 20 %,
  * configurable). When the phone crosses the battery floor (or, optionally, the OS battery-saver turns
  * on) the watch push suspends after one final flagged frame; the CGM scan and alarms keep running.
  * Pure/stateless.

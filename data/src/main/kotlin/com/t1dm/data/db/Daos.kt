@@ -9,7 +9,7 @@ import androidx.room.Upsert
 import kotlinx.coroutines.flow.Flow
 
 /**
- * Frozen DAO surface for the Room v1 schema (PLAN.private.md Phase 1). Signatures only — Room
+ * Frozen DAO surface for the Room v1 schema (Phase 1). Signatures only — Room
  * generates the bodies once the @Database (Data implementer) references these. Observable reads
  * return [Flow]; mutations are `suspend` (callers dispatch on IO).
  */
@@ -38,11 +38,15 @@ interface CgmSourceDao {
 
     @Query("UPDATE cgm_source SET active = 1 WHERE sourceId = :sourceId")
     suspend fun setActive(sourceId: String)
+
+    /** Full-erase (issue 5, app reset). Row-only DELETE — the schema/table is untouched. */
+    @Query("DELETE FROM cgm_source")
+    suspend fun deleteAll()
 }
 
 @Dao
 interface CgmReadingDao {
-    /** Grid-stamp upsert on `(sourceId, tsMs)` (PLAN.private.md §3.1). */
+    /** Grid-stamp upsert on `(sourceId, tsMs)` (SPEC.private.md §3.1). */
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(reading: CgmReadingEntity)
 
@@ -65,6 +69,9 @@ interface CgmReadingDao {
      *  aggregator pairs matured forecasts against (Phase 7C). Filtered/matched in Kotlin. */
     @Query("SELECT * FROM cgm_reading WHERE tsMs BETWEEN :fromMs AND :toMs ORDER BY tsMs")
     suspend fun readingsInRange(fromMs: Long, toMs: Long): List<CgmReadingEntity>
+
+    @Query("DELETE FROM cgm_reading")
+    suspend fun deleteAll()
 }
 
 @Dao
@@ -80,13 +87,16 @@ interface SampleDao {
     @Query("SELECT * FROM sample WHERE ts > :cursor ORDER BY ts LIMIT :limit")
     suspend fun page(cursor: Long, limit: Int): List<SampleEntity>
 
-    /** One-shot windowed read (oldest-first) for the stats recompute (PLAN Phase 6). */
+    /** One-shot windowed read (oldest-first) for the stats recompute (Phase 6). */
     @Query("SELECT * FROM sample WHERE ts BETWEEN :fromMs AND :toMs ORDER BY ts")
     suspend fun rangeList(fromMs: Long, toMs: Long): List<SampleEntity>
 
     /** The most recent non-null mood, for the journal picker's "current mood" read (Phase 4). */
     @Query("SELECT mood FROM sample WHERE mood IS NOT NULL ORDER BY ts DESC LIMIT 1")
     fun observeLatestMood(): Flow<Int?>
+
+    @Query("DELETE FROM sample")
+    suspend fun deleteAll()
 }
 
 @Dao
@@ -97,6 +107,9 @@ interface DoseEventDao {
 
     @Query("SELECT * FROM dose_event WHERE tsMs BETWEEN :fromMs AND :toMs ORDER BY tsMs")
     fun observeRange(fromMs: Long, toMs: Long): Flow<List<DoseEventEntity>>
+
+    @Query("DELETE FROM dose_event")
+    suspend fun deleteAll()
 }
 
 @Dao
@@ -105,7 +118,7 @@ interface LoggedDoseDao {
 
     @Upsert suspend fun upsert(dose: LoggedDoseEntity)
 
-    /** Event window read for curve/channel reconstruction (PLAN §3.3). Ordered oldest-first. */
+    /** Event window read for curve/channel reconstruction (SPEC §3.3). Ordered oldest-first. */
     @Query("SELECT * FROM logged_dose WHERE tsMs BETWEEN :fromMs AND :toMs ORDER BY tsMs")
     suspend fun inRange(fromMs: Long, toMs: Long): List<LoggedDoseEntity>
 
@@ -118,6 +131,9 @@ interface LoggedDoseDao {
 
     @Query("DELETE FROM logged_dose WHERE id = :id")
     suspend fun delete(id: Long)
+
+    @Query("DELETE FROM logged_dose")
+    suspend fun deleteAll()
 }
 
 @Dao
@@ -146,6 +162,9 @@ interface LoggedMealDao {
             "GROUP BY grams, gi ORDER BY MAX(tsMs) DESC LIMIT :limit",
     )
     fun observeRecentDistinct(limit: Int): Flow<List<RecentMealRow>>
+
+    @Query("DELETE FROM logged_meal")
+    suspend fun deleteAll()
 }
 
 /** Projection for [LoggedMealDao.observeRecentDistinct] — just the two fields the carb form binds. */
@@ -175,6 +194,9 @@ interface BasalScheduleDao {
 
     @Query("DELETE FROM basal_schedule WHERE scheduleId = :scheduleId")
     suspend fun deleteSchedule(scheduleId: String)
+
+    @Query("DELETE FROM basal_schedule")
+    suspend fun deleteAll()
 }
 
 @Dao
@@ -188,6 +210,9 @@ interface NoteDao {
     /** The latest logged-note timestamp, if any (glanceable "last journalled" read). */
     @Query("SELECT MAX(tsMs) FROM note")
     suspend fun latestTs(): Long?
+
+    @Query("DELETE FROM note")
+    suspend fun deleteAll()
 }
 
 @Dao
@@ -196,6 +221,9 @@ interface CgmAdvertRawDao {
 
     @Query("DELETE FROM cgm_advert_raw WHERE rxWallMs < :beforeMs")
     suspend fun pruneBefore(beforeMs: Long): Int
+
+    @Query("DELETE FROM cgm_advert_raw")
+    suspend fun deleteAll()
 }
 
 /** Lightweight projection for size/age eviction — priority is a Kotlin concern (see `:sync`). */
@@ -239,6 +267,10 @@ interface OutboxDao {
 
     @Query("UPDATE outbox SET state = :state, attempts = :attempts, nextAttemptMs = :nextAttemptMs WHERE id = :id")
     suspend fun reschedule(id: Long, state: OutboxState, attempts: Int, nextAttemptMs: Long)
+
+    /** Full-erase (issue 5): drop the entire queue (distinct from the id-list [deleteAll]). */
+    @Query("DELETE FROM outbox")
+    suspend fun deleteAllRows()
 }
 
 @Dao
@@ -263,6 +295,9 @@ interface PredictionDao {
     /** The single newest prediction row, for a glanceable "latest forecast" observer. */
     @Query("SELECT * FROM prediction ORDER BY madeAtMs DESC, selected DESC LIMIT 1")
     fun observeLatest(): Flow<PredictionEntity?>
+
+    @Query("DELETE FROM prediction")
+    suspend fun deleteAll()
 }
 
 @Dao
@@ -289,6 +324,9 @@ interface ServerProfileDao {
 
     @Query("DELETE FROM server_profile WHERE id = :id")
     suspend fun delete(id: String)
+
+    @Query("DELETE FROM server_profile")
+    suspend fun deleteAll()
 }
 
 @Dao
@@ -306,6 +344,11 @@ interface KvDao {
     suspend fun all(): List<KvEntity>
 
     @Upsert suspend fun putAll(entries: List<KvEntity>)
+
+    /** Full-erase (issue 5): drops every setting (readers fall back to coded defaults) AND the watch
+     *  pairing/epoch/nonce-ceiling rows, so a later re-pair cannot reuse a (key, nonce) pair. */
+    @Query("DELETE FROM kv")
+    suspend fun deleteAll()
 }
 
 @Dao
@@ -317,6 +360,9 @@ interface HwTelemetryDao {
             "AND tsMs BETWEEN :fromMs AND :toMs ORDER BY tsMs",
     )
     suspend fun range(modelId: String?, fromMs: Long, toMs: Long): List<HwTelemetryEntity>
+
+    @Query("DELETE FROM hw_telemetry")
+    suspend fun deleteAll()
 }
 
 @Dao
@@ -354,6 +400,11 @@ interface FoodDao {
     /** Only a user-added food may be deleted; seed rows are immutable. */
     @Query("DELETE FROM food WHERE id = :id AND custom = 1")
     suspend fun deleteCustom(id: Long)
+
+    /** Full-erase (issue 5): drop every USER-added food; the shipped seed dictionary is kept so the
+     *  store returns to its first-run contents. The `food_ad` trigger keeps `food_fts` in lockstep. */
+    @Query("DELETE FROM food WHERE custom = 1")
+    suspend fun deleteAllCustom()
 }
 
 @Dao
@@ -376,6 +427,12 @@ interface SavedMealDao {
 
     @Query("DELETE FROM saved_meal WHERE id = :id")
     suspend fun deleteMeal(id: Long)
+
+    @Query("DELETE FROM saved_meal_item")
+    suspend fun deleteAllItems()
+
+    @Query("DELETE FROM saved_meal")
+    suspend fun deleteAllMeals()
 }
 
 @Dao
@@ -396,4 +453,8 @@ interface InsulinTypeDao {
 
     @Query("DELETE FROM insulin_type WHERE id = :id AND builtin = 0")
     suspend fun deleteCustom(id: Long)
+
+    /** Full-erase (issue 5): drop every USER-added type; the builtin presets are kept (first-run). */
+    @Query("DELETE FROM insulin_type WHERE builtin = 0")
+    suspend fun deleteAllCustom()
 }

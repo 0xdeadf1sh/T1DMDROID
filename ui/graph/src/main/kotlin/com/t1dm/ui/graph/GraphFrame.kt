@@ -8,7 +8,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * An immutable, primitive-array snapshot of a glucose series ready to draw (PLAN.private.md
+ * An immutable, primitive-array snapshot of a glucose series ready to draw (SPEC.private.md
  * Phase 1 / §3.4). All heavy work — unit-transform, decimation, gap detection — is done ONCE, off
  * the main thread, in [buildGraphFrame]; [com.t1dm.ui.graph.GlucoseGraph] only maps these arrays to
  * pixels and paints. No boxing, no `List<CgmReading>` retained: the Canvas never touches domain
@@ -69,7 +69,7 @@ class GraphFrame internal constructor(
     }
 }
 
-/** Suspend wrapper: build a [GraphFrame] off the main thread (PLAN.private.md §2.3, GraphFrame row). */
+/** Suspend wrapper: build a [GraphFrame] off the main thread (SPEC.private.md §2.3, GraphFrame row). */
 suspend fun graphFrameOf(
     readings: List<CgmReading>,
     unit: UnitSpace = UnitSpace.MgDl,
@@ -85,7 +85,7 @@ suspend fun graphFrameOf(
  * value-less readings (INVALID / null bg), sorts by time, converts into [unit], marks dropout
  * breaks, then decimates with a min/max envelope if the count exceeds [maxPoints].
  *
- * Kovatchev raw-space needs the native `f(g)` (PLAN.private.md §3.4); pass it as [kovatchevF]. When
+ * Kovatchev raw-space needs the native `f(g)` (SPEC.private.md §3.4); pass it as [kovatchevF]. When
  * absent, [UnitSpace.Kovatchev] falls back to mg/dL rather than fabricating a curve.
  */
 fun buildGraphFrame(

@@ -3,7 +3,7 @@ package com.t1dm.feature.settings
 import androidx.compose.runtime.Composable
 
 /**
- * Settings → Alert sound & vibration (PLAN.private.md Phase 7C item 14, over the Phase-7B actuators).
+ * Settings → Alert sound & vibration (Phase 7C item 14, over the Phase-7B actuators).
  * Per-tier tone on/off (over the system ALARM-usage sound so urgent alerts pierce DND), a K90
  * vibration preset per tier, the DND-bypass switch for the urgent tier, and the repeat cadence for a
  * persisting critical alarm. Vibration presets are passed as opaque name strings so this module stays
@@ -26,17 +26,20 @@ fun AlertsSettingsScreen(
     onSetCriticalSoundOn: (Boolean) -> Unit,
     onSetBypassDnd: (Boolean) -> Unit,
     onSetRepeatCadence: (Int) -> Unit,
+    /** Issue 8 — play the tapped preset immediately so the user can feel it before committing. */
+    onPreviewVibration: (String) -> Unit = {},
 ) {
     val opts = vibrationOptions.map { it to it.lowercase().replaceFirstChar(Char::uppercase) }
 
     SettingsScaffold("Alert sound & vibration") {
         SettingsSectionHeader("Warning tier (low / high / approaching)")
         ToggleRow("Play a sound", warningSoundOn, "Off = vibrate only") { onSetWarningSoundOn(it) }
-        ChipPicker("Vibration", opts, warningVibration) { onSetWarningVibration(it) }
+        ChipPicker("Vibration", opts, warningVibration) { onPreviewVibration(it); onSetWarningVibration(it) }
+        SettingsNote("Tap a preset to feel it now.")
 
         SettingsSectionHeader("Urgent tier (urgent-low / urgent-high / predicted)")
         ToggleRow("Play a sound", criticalSoundOn, "The alarm-usage tone, audible in silent mode") { onSetCriticalSoundOn(it) }
-        ChipPicker("Vibration", opts, criticalVibration) { onSetCriticalVibration(it) }
+        ChipPicker("Vibration", opts, criticalVibration) { onPreviewVibration(it); onSetCriticalVibration(it) }
         ToggleRow("Bypass Do-Not-Disturb", bypassDnd, "Urgent alerts sound even under DND") { onSetBypassDnd(it) }
 
         SettingsSectionHeader("Repeat")

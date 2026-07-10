@@ -38,7 +38,7 @@ data class PipelineOutput(
 }
 
 /**
- * The passive-advert decode pipeline for one CGM source (PLAN.private.md Phase 1):
+ * The passive-advert decode pipeline for one CGM source (Phase 1):
  *
  * ```
  * AdStructureParser → DedupRing(minFromStart) → CRC gate + decode (NativeCore)

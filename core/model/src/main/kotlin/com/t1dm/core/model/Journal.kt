@@ -1,7 +1,7 @@
 package com.t1dm.core.model
 
 /**
- * Phase-4 manual-entry + journal domain types (PLAN.private.md Phase 4, deliverables 1–2).
+ * Phase-4 manual-entry + journal domain types (Phase 4, deliverables 1–2).
  * These cross the `:feature:{journal,meals,insulin}` ⇄ `:app` seam as pure value types so the
  * feature screens stay dependency-light (only `:core:*`) — the Room/`:data`/`:sync` wiring lives
  * in `:app`, exactly as the Phase-1 `DashboardScreen` is fed state + callbacks from the container.
@@ -36,7 +36,7 @@ data class IobCobReadout(
 /**
  * A long-acting basal quick-preset for the insulin entry surface. The label is presentation-only;
  * `:app` maps the preset onto the canonical Bateman DIA + rate constants (`CurveEngine.Presets`),
- * keeping the numeric authority in one place (PLAN §3.3).
+ * keeping the numeric authority in one place (SPEC §3.3).
  */
 enum class BasalPreset(val label: String) {
     LANTUS("Lantus · glargine · ~24 h"),

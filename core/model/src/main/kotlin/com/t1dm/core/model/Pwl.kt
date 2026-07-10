@@ -4,7 +4,7 @@ package com.t1dm.core.model
 data class PwlKnot(val xMin: Double, val y: Double)
 
 /**
- * A piecewise-linear curve authored by the draggable-knot editor (PLAN.private.md Phase 4
+ * A piecewise-linear curve authored by the draggable-knot editor (Phase 4
  * deliverable 4 — "piecewise-linear draggable-knot editor, no snap, linear amount axis"). It is a
  * pure shape: the knots' absolute [y] scale is irrelevant because [sampleNormalized] area-
  * normalizes to a caller-supplied total. This is what backs a custom carb-appearance or insulin-

@@ -11,7 +11,7 @@ import kotlin.math.roundToInt
 /**
  * The single, model-space snapshot every glanceable surface renders — the always-on notification
  * (item 15), the home/lock widgets, and (via [com.t1dm.app.watch.AppWatchGlanceSource]) the watch
- * push — so all three AGREE by construction (PLAN Phase 7B). It carries the current BG + trend +
+ * push — so all three AGREE by construction (Phase 7B). It carries the current BG + trend +
  * reading age, the deterministic band, and a §3.6-GATED forecast read-out: the predictive crossing
  * fields are non-null ONLY when the selected model's forecast is eligible (fresh MEASURED anchor,
  * passes the degeneracy guard) and not withheld by the warmup gate.
@@ -72,7 +72,7 @@ data class PredictiveCrossing(
 
 /**
  * The pure, Android-free glance computation lifted out of the watch source so the notification,
- * widgets, and watch all share ONE algorithm (PLAN Phase 7B "lift that same computation"). The
+ * widgets, and watch all share ONE algorithm (Phase 7B "lift that same computation"). The
  * §3.6 gate is the `eligible` predicate: a forecast drives NO predictive field unless
  * `status == OK && !stale`, and the warmup gate (predictions cleared, `state.warmup != null`)
  * degrades every surface to BG + trend with an honest "collecting context".

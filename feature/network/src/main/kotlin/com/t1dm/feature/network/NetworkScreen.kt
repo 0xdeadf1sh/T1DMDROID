@@ -19,7 +19,7 @@ import androidx.compose.ui.unit.dp
 data class ModelPushRow(val modelId: String, val count: Long, val bytes: Long)
 
 /**
- * Everything the Network panel renders (PLAN.private.md Phase 3 deliverable 6). Transport-typed
+ * Everything the Network panel renders (Phase 3 deliverable 6). Transport-typed
  * facts (drain outcome, WS lifecycle, backoff) arrive pre-formatted from `:app`; simple counters
  * arrive numeric so the panel can render them against their configured bounds. Purely a read model.
  */

@@ -26,7 +26,7 @@ data class DrainResult(
 }
 
 /**
- * The durable outbox drainer (PLAN.private.md Phase 3). One [drainOnce] pass, called by the
+ * The durable outbox drainer (Phase 3). One [drainOnce] pass, called by the
  * foreground service tick and a WorkManager fallback: it evicts by size/age, then replays due
  * `PENDING` rows FIFO through the [SyncHttpClient], deleting on success, dropping malformed 4xx,
  * and rescheduling transient failures (5xx / IO / 429) with [Backoff]. A single-process [Mutex]

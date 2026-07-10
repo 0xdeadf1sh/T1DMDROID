@@ -18,7 +18,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
 /**
- * Read-only "About" panel (PLAN.private.md Phase 7C — item 18): app identity, version/build, the
+ * Read-only "About" panel (Phase 7C — item 18): app identity, version/build, the
  * GPL-3.0 licence, the loaded model's provenance (id + descriptor arch + ExecuTorch version), the git
  * SHA, and internal build info. All copy is PUBLIC-SAFE — no tokens, no keys, no host-internal paths.
  */
@@ -80,8 +80,5 @@ private fun Section(title: String) {
 
 @Composable
 private fun Kv(k: String, v: String) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 1.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(k, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(v, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
-    }
+    com.t1dm.core.design.KeyValueRow(k, v, numeric = false)
 }

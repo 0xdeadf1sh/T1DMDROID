@@ -4,7 +4,7 @@ import com.t1dm.core.model.CurveEvent
 import com.t1dm.core.model.ForecastStatus
 
 /**
- * Why a rolled forecast fan may not be trusted to drive a rail or a dose selection (PLAN §3.6-B/-C/-D).
+ * Why a rolled forecast fan may not be trusted to drive a rail or a dose selection (SPEC §3.6-B/-C/-D).
  * Only [ELIGIBLE] fans may score a candidate or clear a rail; every other value forces the
  * dependent rail to fail closed.
  */
@@ -75,7 +75,7 @@ data class ForecastRequest(
 )
 
 /**
- * The seam to the selected model's rolled forecast (PLAN §3.2 `ForecastEngine`, used by `:calc`).
+ * The seam to the selected model's rolled forecast (SPEC §3.2 `ForecastEngine`, used by `:calc`).
  * The real implementation ([RollingForecaster]) drives `ChannelBuilder` → `NativeCore.buildContext`
  * → the fp32 backend → `assemble_decode` → `forecast_degeneracy_check`, per roll. Calculators and
  * their property tests depend only on this interface, so the safety logic is exercised against a

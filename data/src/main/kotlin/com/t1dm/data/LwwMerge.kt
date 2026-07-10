@@ -32,7 +32,7 @@ data class SamplePatch(
 
 /**
  * Last-writer-wins reconciliation of a server [SamplePatch] against the local row, per 5-min bucket
- * on `updated_at` (PLAN.private.md §3.5 / server-integration memory). The phone is the sole writer,
+ * on `updated_at` (SPEC.private.md §3.5 / server-integration memory). The phone is the sole writer,
  * so a catch-up row is the phone's own earlier push reflected back; LWW at bucket granularity, with
  * per-field gap preservation, keeps not-yet-synced local fields intact.
  */

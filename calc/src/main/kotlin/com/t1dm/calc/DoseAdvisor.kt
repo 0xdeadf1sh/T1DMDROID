@@ -9,7 +9,7 @@ fun interface BackendInfoSource {
 }
 
 /**
- * The top-level advisory orchestrator (PLAN §3.6, Phase 4 §5). It sequences the whole fail-closed
+ * The top-level advisory orchestrator (SPEC §3.6, Phase 4 §5). It sequences the whole fail-closed
  * pipeline for a bolus recommendation:
  *
  *  1. gather the §3.6-D/-E/-F inputs (anchor, IOB, backend) — any missing input fails its rail closed;
@@ -48,8 +48,16 @@ class DoseAdvisor(
             return AdviceResult.Refused(listOf("No selected model — refusing to recommend a dose."))
         }
         if (!backend.trustworthy) {
+            val why = if (backend.agreementOk == false) {
+                "disagrees with the fp32 CPU reference"
+            } else {
+                "has not passed the fp32-agreement gate"
+            }
             return AdviceResult.Refused(
-                listOf("Selected model is fp16 and disagrees with the fp32 reference (${backend.backend}) — withholding to fail safe."),
+                listOf(
+                    "Selected backend ${backend.backend} ($why) is not the fp32 CPU authority — " +
+                        "withholding the dose to fail safe (the forecast may still show).",
+                ),
             )
         }
 

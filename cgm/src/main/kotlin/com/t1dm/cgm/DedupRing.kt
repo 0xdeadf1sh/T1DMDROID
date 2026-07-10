@@ -1,7 +1,7 @@
 package com.t1dm.cgm
 
 /**
- * A tiny fixed-capacity ring of recently-committed `minFromStart` values (PLAN.private.md Phase
+ * A tiny fixed-capacity ring of recently-committed `minFromStart` values (SPEC.private.md Phase
  * 1). The AiDEX X re-advertises the same minute's reading several times, so the pipeline commits
  * each `minFromStart` exactly once. [contains] is a cheap short-circuit *before* the CRC/decode;
  * [record] is only invoked after a CRC-valid decode, so a corrupted frame can never poison a

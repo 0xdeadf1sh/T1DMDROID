@@ -21,7 +21,7 @@ import kotlinx.coroutines.withContext
  * `:sync`); the server cached block is fetched separately and unioned upstream.
  *
  * The recompute is dispatched on [T1dmDispatchers.default] — the heavy Rust reduction must never
- * block the UI (PLAN §2.3). Fail-closed by construction: an empty/sparse window yields
+ * block the UI (SPEC §2.3). Fail-closed by construction: an empty/sparse window yields
  * [AdvancedStats.EMPTY] (the Rust guarantees no NaN), never a throw.
  */
 class StatsRepository(

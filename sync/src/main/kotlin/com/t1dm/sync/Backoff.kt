@@ -1,7 +1,7 @@
 package com.t1dm.sync
 
 /**
- * Tunables for the durable outbox (PLAN.private.md Phase 3): exponential backoff with jitter, plus
+ * Tunables for the durable outbox (Phase 3): exponential backoff with jitter, plus
  * the size AND age bounds — both user-configurable per the sync decisions. Defaults are conservative
  * placeholders; the Settings → Server screen surfaces them in Phase 7.
  */

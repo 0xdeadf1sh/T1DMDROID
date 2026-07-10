@@ -7,7 +7,7 @@ import kotlin.math.ceil
 data class BezierPoint(val xMin: Double, val y: Double)
 
 /**
- * A smooth cubic curve authored by the Bézier control-point editor (PLAN.private.md Phase 7D item 19
+ * A smooth cubic curve authored by the Bézier control-point editor (Phase 7D item 19
  * — "replace the piecewise-linear editor with a cubic Bézier control-point editor"). It is a pure
  * SHAPE: the absolute [y] scale is irrelevant because [sampleNormalized] area-normalises to a
  * caller-supplied dose total, exactly as the gamma / Bateman presets and the old [PwlCurve] did — so

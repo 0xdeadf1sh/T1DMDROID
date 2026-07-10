@@ -8,7 +8,7 @@ import android.net.Uri
 import android.os.VibrationEffect
 
 /**
- * User-configurable per-severity actuators for the alert notifications (PLAN Phase 7 "Alert polish"):
+ * User-configurable per-severity actuators for the alert notifications (Phase 7 "Alert polish"):
  * a sound Uri (null ⇒ silent — vibrate only) and a K90 vibration preset per tier, plus the DND-bypass
  * bit for the urgent tier. Deliberately a plain value type; `:app` reads the kv-backed choices and
  * supplies it (the module stays free of a settings dependency). Additive to the deterministic path —

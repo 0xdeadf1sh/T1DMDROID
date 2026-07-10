@@ -1,10 +1,10 @@
 package com.t1dm.core.model
 
-/** Deterministic glucose bands for the model-free alarm (PLAN.private.md §3.6-A). */
+/** Deterministic glucose bands for the model-free alarm (SPEC.private.md §3.6-A). */
 enum class AlertBand { URGENT_LOW, LOW, IN_RANGE, HIGH, URGENT_HIGH }
 
 /**
- * User-set, deliberately UNBOUNDED alarm boundaries (PLAN.private.md safety lock). Ordered
+ * User-set, deliberately UNBOUNDED alarm boundaries (SPEC.private.md safety lock). Ordered
  * `urgentLow < low <= high < urgentHigh`. [bandFor] is the frozen band classification the
  * model-free threshold alarm evaluates directly on a MEASURED reading — no forecast involved.
  */

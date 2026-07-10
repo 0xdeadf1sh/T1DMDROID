@@ -17,7 +17,7 @@ import kotlinx.coroutines.flow.flowOn
 import java.util.UUID
 
 /**
- * Passive AiDEX X advertisement scanner (PLAN.private.md Phase 1). Filters at the BLE layer on
+ * Passive AiDEX X advertisement scanner (Phase 1). Filters at the BLE layer on
  * manufacturer 0x0059 **and** the 0x181F CGM service, in `SCAN_MODE_BALANCED`, legacy adverts,
  * `CALLBACK_TYPE_ALL_MATCHES`, `reportDelay 0`. Name-prefix (`LinX-`, …) can't be expressed as a
  * `ScanFilter` (that needs an exact name), so it is post-filtered here.

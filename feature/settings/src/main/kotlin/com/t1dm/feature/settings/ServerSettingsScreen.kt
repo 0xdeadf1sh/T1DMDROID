@@ -27,7 +27,7 @@ import com.journeyapps.barcodescanner.ScanOptions
 import org.json.JSONObject
 
 /**
- * Settings → Server sub-screen (PLAN.private.md Phase 3 deliverable 2 + Phase 7C item 12 QR scan).
+ * Settings → Server sub-screen (Phase 3 deliverable 2 + Phase 7C item 12 QR scan).
  * Configures the single active profile — base URL + the `rw` token — with a health-check probe and a
  * status read-out. The token field is write-only: blank on entry (the secret lives in the Keystore,
  * never surfaced) and a blank value on save keeps the stored one.
@@ -86,6 +86,14 @@ fun ServerSettingsScreen(
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        if (!hasToken) {
+            Text(
+                "Enter your rw token to connect. If you just reset the app, your previous token was " +
+                    "erased and must be re-entered — saving it re-downloads your history from the server.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
 
         OutlinedTextField(
             value = label,

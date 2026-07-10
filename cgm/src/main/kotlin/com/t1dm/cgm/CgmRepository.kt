@@ -5,7 +5,7 @@ import com.t1dm.core.model.CgmSourceDescriptor
 import com.t1dm.core.model.CgmSourceId
 
 /**
- * The persistence seam the CGM pipeline writes through (PLAN.private.md Phase 1 — "persist through
+ * The persistence seam the CGM pipeline writes through (Phase 1 — "persist through
  * the :data Repository"). Declared here in domain types (`:core:model`) rather than Room entities
  * so the pipeline never couples to storage; the Room-backed implementation belongs to the Data
  * implementer (`@Database` + migration runner are theirs to add) and maps these calls onto

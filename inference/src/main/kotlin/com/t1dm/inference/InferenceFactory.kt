@@ -3,8 +3,10 @@ package com.t1dm.inference
 import com.t1dm.core.common.NativeCore
 import com.t1dm.core.common.T1dmDispatchers
 import com.t1dm.inference.backend.ExecuTorchNeuronBackend
+import com.t1dm.inference.backend.ExecuTorchVulkanBackend
 import com.t1dm.inference.backend.ExecuTorchXnnpackBackend
 import com.t1dm.inference.backend.LiteRtNeuronBackend
+import com.t1dm.inference.backend.LiteRtNpuBackend
 import java.io.File
 
 /**
@@ -38,6 +40,8 @@ fun buildInferenceController(
     controller.registerBackend(ExecuTorchXnnpackBackend())
     controller.registerBackend(ExecuTorchNeuronBackend())
     controller.registerBackend(LiteRtNeuronBackend())
+    controller.registerBackend(LiteRtNpuBackend())
+    controller.registerBackend(ExecuTorchVulkanBackend())
     return controller
 }
 

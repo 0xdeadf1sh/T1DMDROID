@@ -14,7 +14,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
- * The AiDEX X [CgmSource] (PLAN.private.md §3.1). It does not own the radio — a single shared
+ * The AiDEX X [CgmSource] (SPEC.private.md §3.1). It does not own the radio — a single shared
  * [BleAdvertScanner], driven by [AidexXSourceRegistry], routes recognized adverts here via
  * [ingest]. Each accepted advert is decoded, classified, grid-stamped, persisted through the
  * [CgmRepository], and re-emitted on [readings].

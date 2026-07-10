@@ -13,7 +13,7 @@ import timber.log.Timber
 import java.util.TreeMap
 
 /**
- * `:app` implementation of the `:inference` [BgHistoryProvider] port (PLAN.private.md Phase 2
+ * `:app` implementation of the `:inference` [BgHistoryProvider] port (Phase 2
  * deliverable 4): the shared BG history the cycle conditions on, projected off Room + the CGM
  * registry. The Phase-2 `kv`-blob [com.t1dm.inference.PredictionStore] is retired in Phase 3 —
  * [com.t1dm.app.sync.RoomPredictionStore] now persists to the dedicated `prediction` table and

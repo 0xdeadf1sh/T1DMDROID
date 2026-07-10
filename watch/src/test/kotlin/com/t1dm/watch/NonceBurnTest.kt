@@ -9,7 +9,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * The cold-start "burn-the-window" guarantee (PLAN risk S6): on resume, the send counter must
+ * The cold-start "burn-the-window" guarantee (risk S6): on resume, the send counter must
  * restart STRICTLY ABOVE any persisted ceiling so no `(key,nonce)` pair can ever repeat across
  * process death / a battery yank.
  */

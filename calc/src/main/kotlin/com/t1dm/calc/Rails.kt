@@ -1,7 +1,7 @@
 package com.t1dm.calc
 
 /**
- * The fail-closed guard-rails (PLAN §3.6-C). Every rail is **structurally fail-closed**: on missing,
+ * The fail-closed guard-rails (SPEC §3.6-C). Every rail is **structurally fail-closed**: on missing,
  * degenerate, stale, or collapsed input an *enabled* rail BLOCKS (or forces confirmation) rather than
  * silently passing the dose — "a rail that reads as protection but passes the dose is worse than no
  * rail". A *disabled* rail is an explicit no-op (the user's unbounded-thresholds lock), and that is the

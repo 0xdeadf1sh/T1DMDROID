@@ -26,7 +26,7 @@ import com.t1dm.calc.Candidate
 import com.t1dm.calc.DecisionCard
 
 /**
- * The ranked-candidate bolus-calculator surface (PLAN.private.md Phase 4 §5 + §3.6-F). It is a pure,
+ * The ranked-candidate bolus-calculator surface (Phase 4 §5 + §3.6-F). It is a pure,
  * stateless function of the [AdviceResult] the `:app` computed off-thread via `DoseAdvisor`; the UI
  * itself never scores, never gates — it only *presents* the fail-closed verdict and holds the
  * point-of-decision acknowledgement.

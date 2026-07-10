@@ -54,7 +54,7 @@ class AppWatchGlanceSource(
         val latest = repository.recentReadings(src, 1).firstOrNull() ?: return null
 
         // Lift the ONE shared computation (BgGlanceComputer) so the watch, the always-on
-        // notification, and the widgets agree by construction (PLAN Phase 7B). The §3.6 gate lives
+        // notification, and the widgets agree by construction (Phase 7B). The §3.6 gate lives
         // there; the watch just maps the glance onto its frozen wire record.
         val g = com.t1dm.app.notify.BgGlanceComputer.compute(
             latest = latest,
@@ -126,7 +126,7 @@ class AndroidLowPowerProvider(
     }.getOrNull()
 }
 
-/** Windowed nonce ceiling in the Room `kv` store, per epoch (PLAN risk S6 burn-the-window). */
+/** Windowed nonce ceiling in the Room `kv` store, per epoch (risk S6 burn-the-window). */
 class RoomNonceStore(private val repository: T1dmRepository) : NonceStore {
     override suspend fun loadCeiling(epoch: Int): Long =
         repository.getKv(key(epoch))?.toLongOrNull() ?: 0L
@@ -201,11 +201,18 @@ internal class WatchKeyCipher(context: Context) {
         }
     }
 
-    private companion object {
-        const val ANDROID_KEYSTORE = "AndroidKeyStore"
-        const val KEY_ALIAS = "t1dm_watch_key"
-        const val TRANSFORM = "AES/GCM/NoPadding"
-        const val GCM_TAG_BITS = 128
+    companion object {
+        private const val ANDROID_KEYSTORE = "AndroidKeyStore"
+        private const val KEY_ALIAS = "t1dm_watch_key"
+        private const val TRANSFORM = "AES/GCM/NoPadding"
+        private const val GCM_TAG_BITS = 128
+
+        /** Full-erase (issue 5): delete the wrapping key. The wrapped watch key MATERIAL is a kv blob
+         *  (dropped by the DB wipe); removing the alias burns the last recoverable trace. Idempotent. */
+        fun deleteKey() = runCatching {
+            val ks = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+            if (ks.containsAlias(KEY_ALIAS)) ks.deleteEntry(KEY_ALIAS)
+        }
     }
 }
 

@@ -1,7 +1,7 @@
 package com.t1dm.core.model
 
 /**
- * One food + portion in a meal being built (PLAN.private.md Phase 4). A component snapshots the
+ * One food + portion in a meal being built (Phase 4). A component snapshots the
  * food's carbs-per-100 g, GI, and optional custom appearance shape at the moment it was added, so a
  * saved meal survives a later edit or deletion of the underlying [Food]. [foodId] is a soft link
  * back to the dictionary (null for an ad-hoc entry).
@@ -18,7 +18,7 @@ data class MealComponent(
     val carbs: Double get() = carbsPer100g * grams / 100.0
 }
 
-/** A named, reusable multi-food meal (PLAN.private.md Phase 4 "saved meals"). */
+/** A named, reusable multi-food meal (Phase 4 "saved meals"). */
 data class SavedMeal(
     val id: Long,
     val name: String,

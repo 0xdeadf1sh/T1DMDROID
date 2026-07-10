@@ -17,7 +17,7 @@ import kotlinx.coroutines.withContext
 import java.util.TimeZone
 
 /**
- * Orchestrates the meal builder (PLAN.private.md Phase 4 deliverable 3/4) over the [T1dmRepository]
+ * Orchestrates the meal builder (Phase 4 deliverable 3/4) over the [T1dmRepository]
  * glycemic dictionary + the [MealCurveResolver]. It is the seam `:app` hands the (pure-Compose)
  * `:feature:meals` screen: search/browse foods, resolve the live combined carb-appearance preview,
  * save custom foods + saved meals, and LOG a meal (which folds into the wide sample and reshapes the

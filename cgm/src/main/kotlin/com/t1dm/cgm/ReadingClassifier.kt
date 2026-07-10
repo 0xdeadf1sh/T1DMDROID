@@ -4,7 +4,7 @@ import com.t1dm.core.model.DecodedAdvert
 import com.t1dm.core.model.ReadingFlag
 
 /**
- * The validity + WARMUP gate (PLAN.private.md §3.1). Operates on an already CRC-validated
+ * The validity + WARMUP gate (SPEC.private.md §3.1). Operates on an already CRC-validated
  * [DecodedAdvert]:
  *
  *  - `INVALID`  — fails the value gate: bad valid-bit or out-of-range BG. Dropped by the pipeline;

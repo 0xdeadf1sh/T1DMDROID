@@ -22,9 +22,10 @@ import com.t1dm.core.model.InferenceState
 import com.t1dm.core.model.ModelMeta
 import com.t1dm.core.model.ModelPrediction
 import com.t1dm.core.model.RunningModel
+import com.t1dm.core.model.displayName
 
 /**
- * The Models panel (PLAN.private.md Phase 7C — item 7): the loaded running set, each row now carrying
+ * The Models panel (Phase 7C — item 7): the loaded running set, each row now carrying
  * the size-reasoning META (parameter count, on-disk `.pte` size, and the key arch dims from the
  * descriptor) so a model's footprint is legible at a glance, plus this cycle's forecast status. Tapping
  * a row opens its PERFORMANCE drill-down ([ModelDetailScreen], item 24). Selection is on a long-press-
@@ -93,7 +94,7 @@ private fun ModelRow(
             Text(statusLabel(prediction), style = MaterialTheme.typography.labelMedium, color = statusColor(prediction))
         }
         Text(
-            "${model.backend.name} · ${model.precision.name}" +
+            "${model.backend.displayName()} · ${model.precision.name}" +
                 (prediction?.let { " · anchor ${it.lastBg.toInt()} mg/dL" } ?: ""),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,

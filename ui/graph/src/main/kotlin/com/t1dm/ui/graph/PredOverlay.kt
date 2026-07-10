@@ -13,7 +13,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * The forecast-overlay model (PLAN.private.md Phase 2 deliverable 7): the selected model's median
+ * The forecast-overlay model (Phase 2 deliverable 7): the selected model's median
  * line + 7-level quantile fan drawn over [GlucoseGraph], with the other running models drawn
  * faintly, and `DEGENERATE`/`STALE` states visibly flagged. Values are already unit-converted and
  * carried as absolute epoch-ms per forecast step, so the Canvas only maps them to pixels — the same
@@ -38,7 +38,7 @@ class PredSeries internal constructor(
     val isEmpty: Boolean get() = tsMs.isEmpty()
 }
 
-/** Build the overlay off-thread from the cycle's predictions (PLAN.private.md §2.3). */
+/** Build the overlay off-thread from the cycle's predictions (SPEC.private.md §2.3). */
 suspend fun predOverlayOf(
     predictions: List<ModelPrediction>,
     unit: UnitSpace = UnitSpace.MgDl,

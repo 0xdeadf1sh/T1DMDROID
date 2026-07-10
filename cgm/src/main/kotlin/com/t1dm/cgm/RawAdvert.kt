@@ -1,7 +1,7 @@
 package com.t1dm.cgm
 
 /**
- * One captured BLE advertisement, copied off the binder thread (PLAN.private.md §2.3 — the scan
+ * One captured BLE advertisement, copied off the binder thread (SPEC.private.md §2.3 — the scan
  * callback does "bytes copy + wall-time map + channel offer only"). [adBytes] is the *raw* AD
  * structure array (`ScanRecord.getBytes()`), re-parsed by [AdStructureParser] ourselves because
  * Android merges the two 0x0059 manufacturer structures and `getManufacturerSpecificData()`

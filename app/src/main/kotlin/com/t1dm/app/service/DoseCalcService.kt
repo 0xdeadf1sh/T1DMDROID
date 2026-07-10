@@ -15,7 +15,7 @@ import kotlinx.coroutines.launch
 import timber.log.Timber
 
 /**
- * The short-lived foreground service that hosts the dose calculator's rolled grid-search (PLAN.private.md
+ * The short-lived foreground service that hosts the dose calculator's rolled grid-search (SPEC.private.md
  * Phase 4 §5). The search fans a candidate grid through the selected fp32 model, rolling each to the full
  * ~5 h window — seconds of CPU/APU work that must survive the Activity going to the background, hence a
  * `dataSync` foreground service rather than an in-composition coroutine.

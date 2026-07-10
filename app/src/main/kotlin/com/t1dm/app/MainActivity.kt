@@ -8,6 +8,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -52,6 +53,8 @@ class MainActivity : ComponentActivity() {
                     paletteForId(themeId)
                 }
             }
+            // Keep the home-screen launcher icon in step with the selected theme (issues 2/6).
+            LaunchedEffect(themeId) { LauncherIconManager.apply(applicationContext, themeId) }
             T1dmTheme(palette = palette, font = T1dmFontId.forKey(fontKey), animationsEnabled = animations) {
                 T1dmApp(container)
             }

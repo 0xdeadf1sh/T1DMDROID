@@ -5,7 +5,7 @@ import com.t1dm.core.model.CgmSourceDescriptor
 import com.t1dm.core.model.CgmSourceId
 
 /**
- * The AiDEX X / LinX vendor adapter (PLAN.private.md §3.1). Recognition is by advertised name /
+ * The AiDEX X / LinX vendor adapter (SPEC.private.md §3.1). Recognition is by advertised name /
  * serial suffix, NEVER by BLE address (resolvable-random rotates, CGM.md §1). The id is
  * `"aidexx:<serial>"`, e.g. `"aidexx:22222C74D9"`.
  */

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Tron: thin, angular, circuit-like. A stroked hexagon with mitred corners, radial conduit spokes,
+     and a small diamond node — no rounding anywhere. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:strokeColor="#00E5FF"
+        android:strokeWidth="4"
+        android:strokeLineJoin="miter"
+        android:strokeLineCap="butt"
+        android:fillColor="#00000000"
+        android:pathData="M54,26 L79,40.5 L79,67.5 L54,82 L29,67.5 L29,40.5 Z" />
+    <path
+        android:strokeColor="#00E5FF"
+        android:strokeWidth="3"
+        android:strokeLineCap="butt"
+        android:fillColor="#00000000"
+        android:pathData="M54,26 L54,44 M54,64 L54,82 M29,40.5 L46,50 M79,40.5 L62,50 M29,67.5 L46,58 M79,67.5 L62,58" />
+    <path
+        android:fillColor="#00E5FF"
+        android:pathData="M54,48 L60,54 L54,60 L48,54 Z" />
+</vector>

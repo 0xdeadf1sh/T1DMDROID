@@ -15,7 +15,7 @@ import kotlinx.coroutines.withContext
 import java.util.TimeZone
 
 /**
- * Orchestrates the insulin builder (PLAN.private.md Phase 4, `:feature:insulin`): the seeded quick
+ * Orchestrates the insulin builder (Phase 4, `:feature:insulin`): the seeded quick
  * presets (Novorapid gamma; Lantus/Tresiba Bateman), user-defined custom types (incl. a drawn
  * action curve), the live PK-action preview, and logging a dose. A logged dose is stored
  * self-describingly on `logged_dose`: the resolved PK curve rides in `customCurve` so it
@@ -102,7 +102,7 @@ class InsulinController(
         }
 
     companion object {
-        /** The three quick presets (PLAN.private.md Phase 4; params from `CurveEngine.Presets`). */
+        /** The three quick presets (Phase 4; params from `CurveEngine.Presets`). */
         val BUILTINS: List<InsulinType> = listOf(
             InsulinType(
                 id = 0, name = "Novorapid", kind = InsulinKind.BOLUS,

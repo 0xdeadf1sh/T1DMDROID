@@ -13,7 +13,7 @@ enum class WsConnState { DISCONNECTED, CONNECTED, RECONNECTING }
 data class ModelPushStat(val count: Long, val bytes: Long)
 
 /**
- * The live sync telemetry the Network panel renders (PLAN.private.md Phase 3 deliverable 6). Purely
+ * The live sync telemetry the Network panel renders (Phase 3 deliverable 6). Purely
  * observational and process-scoped — it is rebuilt from the outbox/stream on each launch, never
  * persisted — so a restart simply zeroes the counters while the durable outbox itself survives.
  */

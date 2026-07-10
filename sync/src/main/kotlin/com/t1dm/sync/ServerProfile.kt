@@ -3,7 +3,7 @@ package com.t1dm.sync
 /**
  * A resolved server profile: the persisted [ServerProfileEntity] metadata plus its `rw` token from
  * the Keystore-backed [TokenStore]. Kept separate from the Room entity so the secret never rides in
- * a data-class that could be logged or serialized alongside the DB (PLAN.private.md Phase 3).
+ * a data-class that could be logged or serialized alongside the DB (Phase 3).
  */
 data class ServerProfile(
     val id: String,

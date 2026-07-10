@@ -6,7 +6,7 @@ import com.t1dm.core.model.Precision
 import java.io.File
 
 /**
- * A fixed-output fallback backend (PLAN.private.md Phase 2: "If Phase A produced NO working `.pte`,
+ * A fixed-output fallback backend (Phase 2: "If Phase A produced NO working `.pte`,
  * wire a StubBackend returning a fixed plausible head_raw so the whole path builds + runs, and mark
  * the real path blocked"). It emits a gentle, monotone, non-degenerate `head_raw` so the full
  * CycleRunner → assemble_decode → degeneracy-guard → overlay path is exercisable with no model

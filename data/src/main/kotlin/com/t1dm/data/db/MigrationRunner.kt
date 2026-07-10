@@ -7,7 +7,7 @@ import androidx.sqlite.execSQL
 import com.t1dm.data.meals.FoodSeed
 
 /**
- * The single registry of schema migrations (PLAN.private.md Phase 1). Keep-forever storage
+ * The single registry of schema migrations (Phase 1). Keep-forever storage
  * FORBIDS destructive migration: every future change is a new [Migration] whose body is
  * append-only DDL — `ALTER TABLE … ADD COLUMN`, `CREATE TABLE`, `CREATE INDEX` — never a
  * `DROP`/`RENAME`-that-loses-data and never `fallbackToDestructiveMigration`.
@@ -19,7 +19,7 @@ import com.t1dm.data.meals.FoodSeed
 object MigrationRunner {
 
     /**
-     * v1 → v2 (PLAN.private.md Phase 3): additive only — the dedicated `prediction` table and the
+     * v1 → v2 (Phase 3): additive only — the dedicated `prediction` table and the
      * N-profile `server_profile` table. No Phase-1 table is touched.
      */
     val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -51,7 +51,7 @@ object MigrationRunner {
     }
 
     /**
-     * v2 → v3 (PLAN.private.md §3.3, Phase 4): additive only — the curve-engine event stores
+     * v2 → v3 (SPEC.private.md §3.3, Phase 4): additive only — the curve-engine event stores
      * `logged_dose` (self-describing bolus/basal curve params), `logged_meal` (grams + GI +
      * optional custom appearance curve), and `basal_schedule` (daily MDI schedule / search
      * space). No existing table is touched. DDL transcribed verbatim from the generated
@@ -92,7 +92,7 @@ object MigrationRunner {
     }
 
     /**
-     * v3 → v4 (PLAN.private.md Phase 4, journal): additive only — the free-text `note` table
+     * v3 → v4 (Phase 4, journal): additive only — the free-text `note` table
      * (the durable `NOTE`-outbox producer). No existing table is touched. DDL transcribed verbatim
      * from the generated `schemas/<db>/4.json` so the migrated DB is byte-identical to a fresh
      * `createAllTables`.
@@ -109,7 +109,7 @@ object MigrationRunner {
     }
 
     /**
-     * v4 → v5 (PLAN.private.md Phase 4, meal builder): additive only — the glycemic dictionary
+     * v4 → v5 (Phase 4, meal builder): additive only — the glycemic dictionary
      * `food`, the `saved_meal`/`saved_meal_item` pair, `insulin_type`, and the hand-rolled FTS5
      * search index [FoodFts] over `food`. No existing table is touched. The entity-table DDL is
      * transcribed verbatim from the generated `schemas/<db>/5.json`; the FTS5 virtual table + its
@@ -158,7 +158,7 @@ object MigrationRunner {
     }
 
     /**
-     * v5 → v6 (PLAN.private.md Phase 7C, glycemic-dictionary expansion): a **data-only** additive
+     * v5 → v6 (Phase 7C, glycemic-dictionary expansion): a **data-only** additive
      * re-seed — no table or column is added or changed, so a fresh `createAllTables` at v6 is
      * schema-identical to v5. Its sole job is to fold the grown [FoodSeed] catalogue into an
      * install that already seeded the smaller Phase-4 set: it inserts every bundled row NOT already

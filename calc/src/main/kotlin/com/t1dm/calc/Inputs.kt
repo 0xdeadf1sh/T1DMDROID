@@ -43,8 +43,16 @@ data class BackendInfo(
     /** null = not measured; true/false = last agreement probe within/outside the hypo-relevant tolerance. */
     val agreementOk: Boolean?,
 ) {
-    /** The selected model must be fp32-authoritative, or (if fp16-driven) agree with fp32 (§3.6-E). */
-    val trustworthy: Boolean get() = precision == Precision.FP32 || agreementOk == true
+    /**
+     * §3.6-E: only the AUTHORITATIVE fp32 XNNPACK CPU backend may drive a dose unconditionally.
+     * ANY other backend — a GPU/NPU path, even at fp32 (e.g. the Vulkan delegate) — is NEVER
+     * silently promoted: it is trustworthy for dosing ONLY once it has PASSED the fp32-agreement
+     * probe ([agreementOk] == true). A selected non-authoritative backend whose agreement is
+     * unmeasured (null) or failed (false) fails the dosing path CLOSED, while the forecast may
+     * still render. (Precision alone is not sufficient — a fp32 GPU result can still diverge from
+     * the CPU authority, so it must be measured, not assumed.)
+     */
+    val trustworthy: Boolean get() = backend == BackendId.EXECUTORCH_XNNPACK_FP32 || agreementOk == true
 }
 
 /** Fail-closed source of the CGM anchor facts; null ⇒ no signal at all (the freshness gate blocks). */

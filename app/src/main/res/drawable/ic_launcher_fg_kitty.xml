@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Hello Kitty: rounded, soft, cute. A round cat face with two soft ears, a little bow, and gently
+     rounded whisker strokes — every corner curved. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- ears -->
+    <path
+        android:fillColor="#4A2C3A"
+        android:pathData="M33,34 C36,44 42,49 48,51 C43,44 41,38 40,32 C37,31 35,32 33,34 Z" />
+    <path
+        android:fillColor="#4A2C3A"
+        android:pathData="M75,34 C72,44 66,49 60,51 C65,44 67,38 68,32 C71,31 73,32 75,34 Z" />
+    <!-- face -->
+    <path
+        android:fillColor="#4A2C3A"
+        android:pathData="M54,40 m-24,0 a24,22 0 1,0 48,0 a24,22 0 1,0 -48,0 Z" />
+    <!-- whiskers -->
+    <path
+        android:strokeColor="#FFD1E3"
+        android:strokeWidth="2.4"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:pathData="M40,42 C36,42 33,43 30,45 M40,48 C36,48 33,49 30,51 M68,42 C72,42 75,43 78,45 M68,48 C72,48 75,49 78,51" />
+    <!-- bow -->
+    <path
+        android:fillColor="#FF8FB3"
+        android:pathData="M68,30 C74,26 80,26 80,33 C80,40 74,40 68,36 Z" />
+</vector>

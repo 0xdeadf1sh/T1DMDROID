@@ -6,7 +6,7 @@ import android.content.Context
 import com.t1dm.core.model.AlertBand
 
 /**
- * Android emission for the deterministic alarm (PLAN.private.md §3.6-A + Phase-7 alert polish). Two
+ * Android emission for the deterministic alarm (SPEC.private.md §3.6-A + Phase-7 alert polish). Two
  * severity channels (shared with the model-driven predictive presenter via [AlertChannels]) separate
  * the urgent tier — heads-up, DND-bypass, a full-screen intent over the lock screen, a per-band
  * configurable alarm sound, and an insistent K90 vibration primitive — from the plain tier.
@@ -59,7 +59,7 @@ class AndroidAlarmNotifier(
             .setAutoCancel(false)
             .setContentIntent(contentIntent())
         if (critical) {
-            // Full-screen over the lock screen for urgent tiers (item 2 / PLAN S11). Android falls
+            // Full-screen over the lock screen for urgent tiers (item 2 / risk S11). Android falls
             // back to a heads-up banner when the screen is on or the special access is ungranted.
             fullScreenIntent()?.let { builder.setFullScreenIntent(it, true) }
         }

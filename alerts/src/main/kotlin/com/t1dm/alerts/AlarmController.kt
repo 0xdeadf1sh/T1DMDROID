@@ -10,7 +10,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 
 /**
- * Wires the deterministic alarm path together for the foreground service (PLAN.private.md §2.3,
+ * Wires the deterministic alarm path together for the foreground service (SPEC.private.md §2.3,
  * §3.6-A): a stream of grid-stamped readings and a wall-clock ticker drive the [AlarmEngine], whose
  * state changes are pushed to an [AlarmNotifier]. A persisting CRITICAL alarm is re-vibrated on the
  * repeat cadence even when its state has not changed.

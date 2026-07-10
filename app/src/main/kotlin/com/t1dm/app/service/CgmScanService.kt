@@ -35,6 +35,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.onStart
 import com.t1dm.cgm.BleAdvertScanner
+import com.t1dm.core.model.BasalPreset
 import com.t1dm.core.model.BolusPreset
 import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.CgmSourceDescriptor
@@ -63,7 +64,7 @@ import timber.log.Timber
 import java.util.TimeZone
 
 /**
- * The always-on Phase-1 foreground service (PLAN.private.md §2.3, Phase 1). It hosts, in one place
+ * The always-on Phase-1 foreground service (SPEC.private.md §2.3, Phase 1). It hosts, in one place
  * and with **no `:inference` dependency**: the passive BLE scan, the step counter, the 5-min grid
  * heartbeat, and the deterministic model-free alarm path (§3.6-A). Typed
  * `connectedDevice|dataSync`, `START_STICKY`, restarted from [onTaskRemoved] + a WorkManager
@@ -398,6 +399,10 @@ class CgmScanService : LifecycleService() {
                 units = intent.getDoubleExtra(EXTRA_UNITS, 4.0),
                 ageMin = intent.getIntExtra(EXTRA_AGE_MIN, 0),
             )
+            ACTION_LOG_BASAL -> logBasalDebug(
+                units = intent.getDoubleExtra(EXTRA_UNITS, 20.0),
+                tresiba = intent.getIntExtra(EXTRA_TRESIBA, 0) != 0,
+            )
             ACTION_LOG_MOOD -> lifecycleScope.launch {
                 container.saveMood(intent.getIntExtra(EXTRA_MOOD, 3))
             }
@@ -470,6 +475,17 @@ class CgmScanService : LifecycleService() {
     }
 
     /**
+     * Debug: log a discrete long-acting basal injection (issue 18 verify), driving the REAL
+     * [AppContainer.logBasal] so any selected clinical basal preset (issue 19) applies too.
+     */
+    private fun logBasalDebug(units: Double, tresiba: Boolean) {
+        lifecycleScope.launch {
+            container.logBasal(units, if (tresiba) BasalPreset.TRESIBA else BasalPreset.LANTUS)
+            Timber.tag(TAG).i("LOG_BASAL units=%.1f tresiba=%b", units, tresiba)
+        }
+    }
+
+    /**
      * Debug: bulk-seed [hours] of MEASURED, NORMAL grid-aligned readings on the active source so the
      * WARMUP numerator ([RoomBgHistoryProvider.measuredStepsInWindow]) and the context history both
      * have real signal to work with (sensor-free). Deterministic diurnal wave in a sane band.
@@ -499,7 +515,7 @@ class CgmScanService : LifecycleService() {
 
     /**
      * Debug: configure + activate the server profile and flush the durable outbox — the sensor-free
-     * equivalent of the Settings → Server screen (PLAN.private.md Phase 3 verify). Drives the REAL
+     * equivalent of the Settings → Server screen (Phase 3 verify). Drives the REAL
      * [com.t1dm.app.di.AppContainer.saveServerProfile] → health → drain path, not a bypass.
      */
     private fun configureServer(url: String, token: String, label: String) {
@@ -661,6 +677,7 @@ class CgmScanService : LifecycleService() {
         const val ACTION_SET_WARMUP = "com.t1dm.app.SET_WARMUP"
         const val ACTION_LOG_MEAL = "com.t1dm.app.LOG_MEAL"
         const val ACTION_LOG_BOLUS = "com.t1dm.app.LOG_BOLUS"
+        const val ACTION_LOG_BASAL = "com.t1dm.app.LOG_BASAL"
         const val ACTION_LOG_MOOD = "com.t1dm.app.LOG_MOOD"
         const val ACTION_LOG_NOTE = "com.t1dm.app.LOG_NOTE"
         const val ACTION_WATCH_PAIR = "com.t1dm.app.WATCH_PAIR"
@@ -669,6 +686,7 @@ class CgmScanService : LifecycleService() {
         const val ACTION_WATCH_UNPAIR = "com.t1dm.app.WATCH_UNPAIR"
         const val ACTION_WATCH_PUSH = "com.t1dm.app.WATCH_PUSH"
         const val EXTRA_BG = "bg"
+        const val EXTRA_TRESIBA = "tresiba"
         const val EXTRA_AGE_MIN = "ageMin"
         const val EXTRA_WARMUP = "warmup"
         const val EXTRA_TREND = "trend"

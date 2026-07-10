@@ -59,6 +59,11 @@ class FakeOutboxDao : OutboxDao {
         return before - rows.size
     }
 
+    override suspend fun deleteAllRows() {
+        rows.clear()
+        depth.value = 0
+    }
+
     override suspend fun resetState(from: OutboxState, to: OutboxState): Int {
         var n = 0
         rows.keys.toList().forEach { k ->

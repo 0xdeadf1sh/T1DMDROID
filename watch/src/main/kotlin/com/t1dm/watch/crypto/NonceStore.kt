@@ -1,7 +1,7 @@
 package com.t1dm.watch.crypto
 
 /**
- * Durable persistence of the per-epoch send-counter CEILING (PLAN risk S6, "windowed send-counter +
+ * Durable persistence of the per-epoch send-counter CEILING (risk S6, "windowed send-counter +
  * cold-start burn-the-window"). The AEAD nonce is a monotonic counter; reusing a `(key,nonce)` pair
  * annihilates GCM confidentiality AND integrity, so across process death / a `kill -9` / a battery
  * yank we must resume STRICTLY ABOVE the last value that could conceivably have gone out.

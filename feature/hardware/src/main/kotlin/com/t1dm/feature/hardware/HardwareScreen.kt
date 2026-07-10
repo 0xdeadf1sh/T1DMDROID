@@ -19,9 +19,10 @@ import androidx.compose.ui.unit.dp
 import com.t1dm.core.model.InferenceState
 import com.t1dm.core.model.ModelLatency
 import com.t1dm.core.model.RunningModel
+import com.t1dm.core.model.displayName
 
 /**
- * The Hardware panel — per-model inference rows (PLAN.private.md Phase 2 §8 "Hardware panel — per-
+ * The Hardware panel — per-model inference rows (Phase 2 §8 "Hardware panel — per-
  * model rows"): each `model_id`'s backend, precision, and p50/p95 latency, plus the aggregate cycle
  * duration/cause. The fp16 agreement Δ column is stubbed pending the deferred NPU shadow (§3.6-E);
  * the per-model split is already keyed so it drops in without a layout change.
@@ -51,18 +52,67 @@ fun HardwareScreen(state: InferenceState, hardware: HardwareInfo = HardwareInfo.
                 ).joinToString(" · ").ifBlank { null })
                 HwRow("Thermal", hardware.thermalStatus)
                 HwRow("Battery", hardware.battery)
-                HwRow("ExecuTorch backends", hardware.backends.takeIf { it.isNotEmpty() }?.joinToString(", "))
+            }
+            // Inference-backend catalog (issue 1): one line per routing target + why it is/ isn't usable.
+            Text(
+                "Inference backends",
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(top = 6.dp),
+            )
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                hardware.backends.forEach { b ->
+                    Text("· $b", style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            HorizontalDivider(Modifier.padding(top = 8.dp))
+        }
+
+        // ── GPU / Vulkan compute capability (issue 20 — STEP 5) ──
+        item {
+            Text("GPU / Vulkan compute", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            val vk = hardware.vulkan
+            when {
+                vk == null ->
+                    Text("probing…", style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                !vk.available && vk.rows.isEmpty() ->
+                    Text(vk.note ?: "Vulkan unavailable", style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error)
+                else -> Column(Modifier.padding(top = 4.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    vk.rows.forEach { (label, value) -> HwRow(label, value) }
+                    Text(
+                        "This describes the GPU itself; the model runs on Vulkan only when a Vulkan-delegate " +
+                            "ExecuTorch backend is selected (fp32 CPU XNNPACK stays authoritative).",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
             }
             HorizontalDivider(Modifier.padding(top = 8.dp))
         }
 
         item {
             Text("Inference hardware", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            // The LIVE execution truth (issue 1 — no "stub" ambiguity): the selected model's actual
+            // backend this cycle, named explicitly. STUB means no working .pte reached the device.
+            val selected = state.running.firstOrNull { it.selected }
+            val executing = selected
+                ?.let { "${it.backend.displayName()} · ${it.precision.name}" }
+                ?: "no model selected"
+            Text(
+                "Executing on: $executing",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Bold,
+                fontFamily = FontFamily.Monospace,
+            )
             val cadence = state.lastCycleDurationMs?.let { "$it ms" } ?: "—"
             val cause = state.lastCause?.name ?: "—"
             Text(
                 "last cycle: $cadence · cause $cause" +
-                    (if (!state.realBackendAvailable) " · STUB backend (real path blocked)" else ""),
+                    (if (!state.realBackendAvailable) " · real forecast path blocked (no .pte)" else ""),
                 style = MaterialTheme.typography.bodySmall,
             )
             state.note?.let {
@@ -106,15 +156,9 @@ private fun ModelRow(model: RunningModel, latency: ModelLatency?) {
 
 @Composable
 private fun HwRow(label: String, value: String?) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(
-            value ?: "n/a",
-            style = MaterialTheme.typography.bodySmall,
-            fontFamily = FontFamily.Monospace,
-            color = if (value == null) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
-        )
-    }
+    // Shared aligned key/value table (issues 10/11/15) — a long SoC/renderer string wraps at word
+    // boundaries instead of stealing the value's column and fracturing a bare number.
+    com.t1dm.core.design.KeyValueRow(label, value, numeric = false)
 }
 
 @Composable

@@ -10,7 +10,7 @@ import timber.log.Timber
  * The Phase-3 [PredictionStore] that retires the Phase-2 `kv`-blob store: the dedicated `prediction`
  * table is now the source of truth for the dashboard overlay + rehydrate, and every persisted cycle
  * additionally enqueues a single deduped `PUT /v1/predictions` batch (all running models) into the
- * durable outbox (PLAN.private.md Phase 3 deliverable 3).
+ * durable outbox (Phase 3 deliverable 3).
  *
  * Persist order is table-first: the local store must reflect a cycle even if the enqueue is skipped.
  * Only forecasts whose line + fan are finite are pushed — the JSON encoder rejects NaN/Inf, and a

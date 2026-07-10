@@ -3,12 +3,12 @@ package com.t1dm.calc
 import kotlin.math.min
 
 /**
- * Scores a candidate's forecast fan under the selected [Objective] (PLAN Phase 4 §5). Lower is
+ * Scores a candidate's forecast fan under the selected [Objective] (Phase 4 §5). Lower is
  * better. Three invariants hold across every objective:
  *
  *  1. **Horizon weighting** — a step inside the validated window weighs 1.0; a step beyond it weighs
  *     [HorizonPolicy.beyondWindowWeight], so dose *selection* is dominated by the validated ≤2 h
- *     horizon while the far roll still nudges ties (PLAN § 5h-roll finding).
+ *     horizon while the far roll still nudges ties (SPEC § 5h-roll finding).
  *  2. **Hypo off the lower band** — hypo penalties read [FanStep.lowerBg] (the widening quantile),
  *     hyper penalties read [FanStep.medianBg]. A calculator must never trade a real hypo tail for a
  *     prettier median.

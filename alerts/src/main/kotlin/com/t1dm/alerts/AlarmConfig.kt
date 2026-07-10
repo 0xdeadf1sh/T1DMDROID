@@ -3,7 +3,7 @@ package com.t1dm.alerts
 import com.t1dm.core.model.AlertThresholds
 
 /**
- * Tunables for the deterministic alarm path (PLAN.private.md §3.6-A). Every threshold is user-set
+ * Tunables for the deterministic alarm path (SPEC.private.md §3.6-A). Every threshold is user-set
  * and deliberately unbounded (safety lock); the values here are only the conservative defaults the
  * app boots with before the user's config loads.
  *

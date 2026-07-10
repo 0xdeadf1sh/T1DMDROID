@@ -2,7 +2,7 @@ package com.t1dm.data.curve
 
 /**
  * Maps a food's glycemic index onto the carb **appearance (Ra)** gamma parameters
- * (PLAN.private.md Phase 4 — `GiToGamma`; [model-io-curves]). It is a thin, documented façade over
+ * (Phase 4 — `GiToGamma`; [model-io-curves]). It is a thin, documented façade over
  * [CurveEngine.Presets.carbGammaForGi] so the meal builder has one named, testable entry point and
  * never hard-codes the simulator's central values.
  *

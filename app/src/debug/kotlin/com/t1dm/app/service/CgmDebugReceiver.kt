@@ -6,7 +6,7 @@ import android.content.Intent
 import android.os.Bundle
 
 /**
- * Debug-only bridge for the sensor-free exit-criteria checks (PLAN.private.md Phase 1 verify).
+ * Debug-only bridge for the sensor-free exit-criteria checks (Phase 1 verify).
  * HyperOS refuses `am start-foreground-service` against a non-exported service, so this exported
  * receiver — present ONLY in the debug build (see `src/debug/AndroidManifest.xml`) — takes an
  * `adb shell am broadcast` and forwards its action/extras to [CgmScanService], which stays

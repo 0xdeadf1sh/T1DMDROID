@@ -3,7 +3,7 @@ package com.t1dm.alerts
 import com.t1dm.core.model.CgmReading
 
 /**
- * The model-free loss-of-signal alarm (PLAN.private.md §3.6-A). Fires when no MEASURED reading has
+ * The model-free loss-of-signal alarm (SPEC.private.md §3.6-A). Fires when no MEASURED reading has
  * arrived for the configured window, and escalates (shorter window, CRITICAL) when the last real
  * reading was low or falling — the exact windows in which a user relying on urgent-low is otherwise
  * unprotected (official app steals the sensor, out-of-range, Doze kill).

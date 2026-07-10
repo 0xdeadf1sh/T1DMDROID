@@ -14,7 +14,7 @@ import com.t1dm.data.db.LoggedMealEntity
 import com.t1dm.data.db.toDoubleList
 
 /**
- * The Room-backed [DoseStore] (PLAN.private.md §3.3): resolves `logged_dose` / `logged_meal`
+ * The Room-backed [DoseStore] (SPEC.private.md §3.3): resolves `logged_dose` / `logged_meal`
  * rows into [CurveEvent]s via the [CurveEngine], and reads the active `basal_schedule`. Each
  * row is self-describing (it carries its own curve params), so reconstruction is stable across
  * preset changes; a meal's optional `customCurve` BLOB overrides the gamma. Window queries use
@@ -33,6 +33,9 @@ class RoomDoseStore(
 
     override suspend fun insulinEvents(fromMs: Long, toMs: Long): List<CurveEvent> =
         loggedDoses.inRange(fromMs, toMs).map { it.toCurveEvent() }
+
+    override suspend fun basalInjectionEvents(fromMs: Long, toMs: Long): List<CurveEvent> =
+        loggedDoses.inRange(fromMs, toMs).filter { it.kind == DoseKind.BASAL }.map { it.toCurveEvent() }
 
     override suspend fun activeBasalSchedule(): BasalSchedule? {
         val rows = basalSchedules.activeDoses()

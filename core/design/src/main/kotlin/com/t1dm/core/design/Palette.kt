@@ -7,7 +7,7 @@ import androidx.compose.ui.graphics.Color
 import org.json.JSONObject
 
 /**
- * The app's semantic colour token set (PLAN.private.md §3.4 / ux-decisions.md — "3 themes via
+ * The app's semantic colour token set (SPEC.private.md §3.4 / ux-decisions.md — "3 themes via
  * semantic colour tokens"). Every surface that must repaint per theme — the graph bands, the stats
  * risk bands, the alert tiers, the widgets, the Circadian dial — reads these *roles*, not raw
  * literals, so a theme swap recolours the whole app coherently.

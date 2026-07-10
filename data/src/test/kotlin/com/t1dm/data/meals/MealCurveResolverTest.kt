@@ -14,7 +14,7 @@ import org.junit.Test
 
 /**
  * Host JVM tests for the GI→gamma mapping and the multi-food carb-appearance mixer over
- * [StubNativeCore] (the Kotlin port of `t1dm-core::curve`). Per PLAN §3.3 the real fidelity check
+ * [StubNativeCore] (the Kotlin port of `t1dm-core::curve`). Per SPEC §3.3 the real fidelity check
  * is counterfactual sign/monotonicity — more carbs ⇒ larger curve, higher GI ⇒ earlier peak — not
  * byte-equality against a stochastic run.
  */

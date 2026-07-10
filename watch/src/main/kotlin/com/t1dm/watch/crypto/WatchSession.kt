@@ -151,7 +151,7 @@ class WatchKeyMaterial(val bytes: ByteArray)
  * Constructs / resumes a [WatchSession]. :app binds either the uniffi-backed factory or the
  * loopback one. [resume] is the cold-start path: it reloads persisted keys AND seeds the send
  * counter to `max(persistedSeq, burnedCeiling) + 1`, guaranteeing no `(key,nonce)` reuse across
- * process death / a battery yank (PLAN risk S6, "burn-the-window").
+ * process death / a battery yank (risk S6, "burn-the-window").
  */
 interface WatchSessionFactory {
     /** A brand-new, UNPAIRED session. */

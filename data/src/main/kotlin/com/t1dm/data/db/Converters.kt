@@ -8,7 +8,7 @@ import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 
 /**
- * Enum ⇄ String Room converters (PLAN.private.md Phase 1 "Enum @TypeConverters"). Names, not
+ * Enum ⇄ String Room converters (Phase 1 "Enum @TypeConverters"). Names, not
  * ordinals, so reordering an enum can never silently reinterpret persisted rows. Registered
  * per-entity now; the @Database implementer re-declares @TypeConverters(Converters::class) at
  * the database level.

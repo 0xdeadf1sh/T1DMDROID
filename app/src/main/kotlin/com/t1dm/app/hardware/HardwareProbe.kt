@@ -15,7 +15,7 @@ import com.t1dm.feature.hardware.HardwareInfo
 import java.io.File
 
 /**
- * Best-effort detected-hardware probe for the Hardware panel top readout (PLAN.private.md Phase 7C —
+ * Best-effort detected-hardware probe for the Hardware panel top readout (Phase 7C —
  * item 8). Reads Build/os APIs, /proc, /sys, ActivityManager, Display, and the thermal/battery
  * services; EVERY field is guarded so an unavailable source degrades to null ("n/a" in the UI) rather
  * than crashing. Nothing here is on a hot path — [probe] is called once when the panel opens (off-main
@@ -40,6 +40,7 @@ class HardwareProbe(private val context: Context) {
         thermalStatus = thermalStatus(),
         battery = battery(),
         backends = backends(),
+        vulkan = runCatching { VulkanProbe.probe() }.getOrNull(),
     )
 
     private fun soc(): String? = runCatching {
@@ -139,10 +140,21 @@ class HardwareProbe(private val context: Context) {
         }
     }.getOrNull()
 
+    /**
+     * The inference-backend catalog (issue 1 — no "stub" ambiguity). Static routing targets + a plain
+     * reason for each; the LIVE truth of which one executed is the Hardware panel's "Executing on:"
+     * line (from the selected model's [com.t1dm.core.model.RunningModel.backend]). fp32 CPU XNNPACK is
+     * the authority; the LiteRT NPU artifact is proven on host but blocked on-device for a sideload
+     * build. Kept a `List<String>` so the panel renders it without an API change.
+     */
     private fun backends(): List<String> = listOf(
-        "ExecuTorch XNNPACK fp32 (CPU) — active",
-        "ExecuTorch Neuron fp16 (NPU) — stub",
-        "LiteRT Neuron fp16 (NPU) — stub",
+        "ExecuTorch XNNPACK fp32 (CPU) — AUTHORITATIVE, executes",
+        "LiteRT NPU (MediaTek NeuroPilot) — .tflite converts + matches fp32 to Δ≈1.4e-6 on host; " +
+            "on-device blocked: NeuroPilot runtime is Play-delivered (PODAI), unavailable to a sideload build",
+        "ExecuTorch Neuron fp16 (NPU) — unavailable: executorch-android 1.3.1 AAR ships no MediaTek/Neuron delegate",
+        "LiteRT Neuron (legacy TFLite delegate) — superseded by the LiteRT NPU path",
+        "ExecuTorch Vulkan fp32 (GPU) — custom AAR built + VulkanBackend registered; graph delegates 95% on host; " +
+            "on-device blocked: no .vulkan.pte serializes under ET 1.3.1 + torch 2.12.1 (Vulkan-pass FakeTensorMode assert)",
     )
 
     /**

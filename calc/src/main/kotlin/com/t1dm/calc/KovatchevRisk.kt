@@ -11,7 +11,7 @@ import kotlin.math.pow
  *
  * `f(bg) = SCALE · (ln(bg)^POWER − OFFSET)`, clamped to `[20, 500]`. Risk `r = 10 · f²`, split into
  * a low-BG branch (`f < 0` ⇒ LBGI) and a high-BG branch (`f > 0` ⇒ HBGI) — the standard Kovatchev
- * decomposition. Hypo risk is scored off the lower band, hyper off the median (PLAN § 5h-roll finding).
+ * decomposition. Hypo risk is scored off the lower band, hyper off the median (SPEC § 5h-roll finding).
  */
 object KovatchevRisk {
     const val SCALE = 1.509

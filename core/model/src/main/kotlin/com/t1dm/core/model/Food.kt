@@ -1,7 +1,7 @@
 package com.t1dm.core.model
 
 /**
- * One entry of the glycemic dictionary (PLAN.private.md Phase 4 deliverable 3). A food is a
+ * One entry of the glycemic dictionary (Phase 4 deliverable 3). A food is a
  * per-100 g nutrition fact plus an optional glycemic index; the meal builder scales it by a
  * portion (grams) and the curve engine turns `(gi, grams)` into a carb **appearance (Ra)** gamma
  * ([model-io-curves]). Nutrient facts are not copyrightable — see `FoodSeed` for provenance.
@@ -10,7 +10,7 @@ package com.t1dm.core.model
  * falls back to a medium-GI default (or [customCurve] when present). [customCurve], when set, is a
  * user-authored **normalized appearance shape** (per-5-min buckets summing to 1.0) that OVERRIDES
  * the GI-derived gamma for this food; scaling it by the portion's carbs yields the Ra curve. This
- * is the food-builder's "draw your own curve" path (PLAN Phase 4 deliverable 4).
+ * is the food-builder's "draw your own curve" path (Phase 4 deliverable 4).
  */
 data class Food(
     val id: Long,

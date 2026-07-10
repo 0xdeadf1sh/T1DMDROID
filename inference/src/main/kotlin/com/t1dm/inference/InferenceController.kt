@@ -32,7 +32,7 @@ import timber.log.Timber
 import kotlin.math.max
 
 /**
- * The Phase-2 inference orchestrator (PLAN.private.md §3.2, Phase 2 deliverable 4). It owns the
+ * The Phase-2 inference orchestrator (SPEC.private.md §3.2, Phase 2 deliverable 4). It owns the
  * running set (≤5, default 1), the loaded backend handles, and the observable [state]. A cycle —
  * fired by the 5-min `GridTick` in `CgmScanService`, or manually/synthetically — builds one shared
  * BG history, fans out **serially** over the running set on the single-thread `inference`
@@ -53,11 +53,11 @@ class InferenceController(
     private val predictionStore: PredictionStore,
     /** §3.6-D freshness gate default (Q10): last MEASURED older than this ⇒ forecast STALE. */
     private val freshnessThresholdMs: Long = 15 * 60_000L,
-    /** Manual running-set cap (PLAN.private.md §2.3). Default 1 selected model this phase. */
+    /** Manual running-set cap (SPEC.private.md §2.3). Default 1 selected model this phase. */
     private val maxRunning: Int = 1,
-    /** Reconstructed carb/insulin context channels (PLAN §3.3); null ⇒ `normalize(0)` baseline. */
+    /** Reconstructed carb/insulin context channels (SPEC §3.3); null ⇒ `normalize(0)` baseline. */
     private val contextChannels: ContextChannelSource? = null,
-    /** Committed dose tails carried into the PREDICTION ZONE (PLAN §3.3); null ⇒ `normalize(0)`
+    /** Committed dose tails carried into the PREDICTION ZONE (SPEC §3.3); null ⇒ `normalize(0)`
      *  baseline. Distinct from [contextChannels] (the past): this is the already-logged action that
      *  keeps absorbing past the now-boundary, so the forecast responds to a just-logged dose the way
      *  the calculator's baseline roll does. See [FutureOverrideSource]. */
@@ -165,7 +165,7 @@ class InferenceController(
 
     /**
      * Debug-only: publish a NON_FINITE forecast for the selected model so the overlay/panels can be
-     * verified to flag a degenerate forecast as ineligible (PLAN.private.md Phase 2 verify:
+     * verified to flag a degenerate forecast as ineligible (Phase 2 verify:
      * "force-degenerate intent confirms the fan is flagged and ineligible"). Not wired in release.
      */
     fun debugPublishDegenerate(nowMs: Long) {
@@ -305,21 +305,43 @@ class InferenceController(
         val measuredSteps = runCatching { history.measuredStepsInWindow(requiredSteps) }.getOrDefault(0)
         if (measuredSteps < requiredSteps) {
             val measuredHours = measuredSteps * GRID_MS / MS_PER_HOUR
+            // The BG forecast stays (correctly) suppressed — §3.6 gates untouched, [predictions] empty.
+            // BUT the circadian-phase belief is NOT a glucose forecast and NOT a dosing signal, and it
+            // degrades gracefully with little context, so we still publish it (issues 7 & 9) as a
+            // low-context belief. It survives warmup via [circadianTime], never re-entering the forecast
+            // path. Fail-OPEN to null when there is not yet enough raw history to run a single forward.
+            val warmupBelief = runCatching { circadianDuringWarmup() }.getOrNull()
+            val selEntry = loaded[selectedId]
             _state.value = _state.value.copy(
                 predictions = emptyList(), // clear the overlay while warming
                 lastCause = InferenceCause.COLLECTING_CONTEXT,
                 warmup = com.t1dm.core.model.WarmupProgress(measuredHours, requiredHours),
+                circadianTime = warmupBelief?.first,
+                circadianAnchorMs = warmupBelief?.second,
+                circadianLowContext = warmupBelief != null,
+                realBackendAvailable = selEntry?.real ?: false,
+                selectedHasTimeSection = selEntry?.bundle?.descriptor?.time != null,
                 note = "collecting context — %.1f / %.0f h of measured data".format(measuredHours, requiredHours),
             )
-            Timber.tag(TAG).i("warmup: %.1f/%.0f h measured — forecasts suppressed", measuredHours, requiredHours)
+            Timber.tag(TAG).i(
+                "warmup: %.1f/%.0f h measured — forecasts suppressed; circadian=%s",
+                measuredHours, requiredHours,
+                warmupBelief?.let { "%.2fh R=%.3f".format(it.first.predictedHour, it.first.resultantR) } ?: "n/a",
+            )
             return
         }
 
         val series = history.recentBgSeries(maxSteps, minSteps)
         if (series == null) {
+            val selEntry = loaded[selectedId]
             _state.value = _state.value.copy(
                 predictions = emptyList(),
                 lastCause = InferenceCause.COLLECTING_CONTEXT,
+                circadianTime = null,
+                circadianAnchorMs = null,
+                circadianLowContext = false,
+                realBackendAvailable = selEntry?.real ?: false,
+                selectedHasTimeSection = selEntry?.bundle?.descriptor?.time != null,
                 note = "collecting context — the model needs ≥${descAny.minContextPatches} patches (8 h) of BG",
             )
             Timber.tag(TAG).i("cycle skipped: still collecting context")
@@ -340,14 +362,14 @@ class InferenceController(
         val preds = ArrayList<ModelPrediction>(loaded.size)
 
         // ONE shared context build across the running set: the carb-appearance (feat 1) + insulin-
-        // action (feat 2) channels reconstructed from the logged meals/doses/basal (PLAN §3.3),
+        // action (feat 2) channels reconstructed from the logged meals/doses/basal (SPEC §3.3),
         // aligned to the BG grid. Model-independent (the per-desc normalization happens in
         // build_context); a null/failed source falls back to the `normalize(0)` no-dose baseline.
         val doseChannels = buildDoseChannels(series)
 
         // ONE shared PREDICTION-ZONE build: the COMMITTED dose tails (already-logged meals/doses still
         // absorbing past the now-boundary) reconstructed via the SAME curve engine the calculator's
-        // baseline roll uses (PLAN §3.3). Carried into build_context's announced-future slots so a
+        // baseline roll uses (SPEC §3.3). Carried into build_context's announced-future slots so a
         // just-logged meal RAISES (and a just-logged insulin LOWERS) the main-view forecast, instead
         // of appearing in the past then vanishing at the boundary (an impossible drop-off ⇒ wrong dip).
         // Model-independent (rollStartMs is the grid boundary; predSteps is the fixed pred zone).
@@ -364,6 +386,7 @@ class InferenceController(
         preds.sortByDescending { it.selected }
 
         val durationMs = ((System.nanoTime() - t0) / 1_000_000.0).toLong()
+        val selPred = preds.firstOrNull { it.selected }
         _state.value = _state.value.copy(
             running = runningModels(),
             predictions = preds,
@@ -374,6 +397,12 @@ class InferenceController(
             lastCause = cause,
             lastCycleDurationMs = durationMs,
             realBackendAvailable = loaded[selectedId]?.real ?: false,
+            // A full cycle republishes the circadian belief from the selected prediction (full context,
+            // not low-context) so the clock/dial track the live forecast the moment warmup clears.
+            circadianTime = selPred?.predictedTime,
+            circadianAnchorMs = selPred?.predictedTime?.let { selPred.anchorTsMs },
+            circadianLowContext = false,
+            selectedHasTimeSection = loaded[selectedId]?.bundle?.descriptor?.time != null,
             warmup = null, // a published cycle clears the warmup banner
             note = if (stale) "forecast STALE — last real BG is ${(nowMs - series.anchorTsMs) / 60_000} min old" else null,
         )
@@ -460,12 +489,45 @@ class InferenceController(
         }
     }
 
+    /**
+     * Run ONE forward on the selected model DURING WARMUP purely to obtain the circadian-phase belief
+     * (issues 7 & 9) — the BG forecast stays suppressed and is never derived here. Returns the decoded
+     * belief + the series anchor it was formed at, or null when it cannot run at all: no real backend
+     * (the stub carries no probe), a descriptor without a time section, too little raw history for a
+     * single forward, or any decode hiccup. Serialised on [cycleMutex] like every other forward so it
+     * never overlaps a calculator `runSelected` on the one command queue. Never throws (the caller
+     * wraps it too); a time-probe hiccup must not perturb the warmup gate.
+     */
+    private suspend fun circadianDuringWarmup(): Pair<PredictedTime, Long>? {
+        val id = selectedId ?: return null
+        val entry = loaded[id] ?: return null
+        if (!entry.real) return null                       // StubBackend has no circadian probe
+        val desc = entry.bundle.descriptor
+        if (desc.time == null) return null                 // model has no hour-of-day head
+        val minSteps = desc.minContextPatches * GraphIo.PATCH_DIM / 3
+        val maxSteps = desc.maxContextPatches * GraphIo.PATCH_DIM / 3
+        val series = runCatching { history.recentBgSeries(maxSteps, minSteps) }.getOrNull() ?: return null
+        return cycleMutex.withLock {
+            runCatching {
+                val doseChannels = buildDoseChannels(series)
+                val futureChannels = buildFutureChannels(series, desc)
+                val ctx = buildContext(desc, series.mgdl, doseChannels, futureChannels)
+                val input = GraphIo.graphInput(ctx, desc.negFill)
+                val out = withContext(dispatchers.inference) { entry.backend.run(entry.handle, input) }
+                decodeTimeSafely(desc, out.timeLogits)?.let { it to series.anchorTsMs }
+            }.getOrElse {
+                Timber.tag(TAG).w(it, "warmup circadian forward failed; predicted hour omitted")
+                null
+            }
+        }
+    }
+
     /** The two shared context channels for a cycle, index-aligned to the BG grid. */
     private class DoseChannels(val carb: DoubleArray, val insulin: DoubleArray)
 
     /**
      * Reconstruct the carb-appearance + insulin-action channels ONCE for the cycle from the logged
-     * events (PLAN §3.3), aligned to `series.gridStartMs`. Off-main via the source's own dispatcher.
+     * events (SPEC §3.3), aligned to `series.gridStartMs`. Off-main via the source's own dispatcher.
      * A missing/failed source or a length mismatch falls back to the `normalize(0)` no-dose baseline.
      */
     private suspend fun buildDoseChannels(series: BgSeries): DoseChannels {
@@ -482,7 +544,7 @@ class InferenceController(
     }
 
     /**
-     * Reconstruct the COMMITTED prediction-zone dose tails ONCE for the cycle (PLAN §3.3). Aligned to
+     * Reconstruct the COMMITTED prediction-zone dose tails ONCE for the cycle (SPEC §3.3). Aligned to
      * the grid boundary one step past the last context sample (`gridStartMs + n·STEP`) — so the tail
      * carried here continues seamlessly from the [contextChannels] past. Length = the model's fixed
      * pred zone (P·S). A missing/failed source or mismatch ⇒ `null`, i.e. the `normalize(0)` no-dose
@@ -510,7 +572,7 @@ class InferenceController(
     /**
      * Build the normalized context, conditioning feat 1 (carb) / feat 2 (insulin) on the past
      * reconstructed channels [ch] AND the prediction zone on the COMMITTED future tails [future]
-     * (PLAN §3.3) — so the main-view forecast reflects logged meals/doses across the now-boundary.
+     * (SPEC §3.3) — so the main-view forecast reflects logged meals/doses across the now-boundary.
      * `future == null` seeds the pred-zone dose slots to `normalize(0)` (no committed dose / unwired).
      * Feat order is fixed carb-then-insulin at every `native.buildContext` slot (context AND
      * announced), identical to `RollingForecaster` — no swap.

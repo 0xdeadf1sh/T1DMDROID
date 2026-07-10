@@ -10,7 +10,7 @@ import androidx.sqlite.driver.bundled.BundledSQLiteDriver
 import kotlinx.coroutines.Dispatchers
 
 /**
- * Room v2 (PLAN.private.md Phase 1 / §3.5; Phase 3 adds `prediction` + `server_profile`). Single
+ * Room v2 (Phase 1 / §3.5; Phase 3 adds `prediction` + `server_profile`). Single
  * keep-forever database; every later revision is ALTER-only (see [MigrationRunner]) — the store is
  * never dropped, so `exportSchema` stays on and the generated `schemas/<db>/N.json` back the
  * migration validation.
@@ -71,10 +71,14 @@ abstract class AppDatabase : RoomDatabase() {
     companion object {
         const val NAME = "t1dm.db"
 
+        /** The current keep-forever schema version (must equal the `@Database(version = …)` above).
+         *  A full app reset ([T1dmRepository.wipeAllData]) row-wipes at THIS version — never a drop. */
+        const val SCHEMA_VERSION = 6
+
         /**
          * Build the on-disk database. Migrations come exclusively from [MigrationRunner];
          * `fallbackToDestructiveMigration` is deliberately never invoked — a keep-forever store
-         * must never wipe on a schema mismatch (PLAN.private.md Phase 1).
+         * must never wipe on a schema mismatch (Phase 1).
          *
          * The [FoodFts] FTS5 virtual table is not a Room entity, so a fresh install (Room's
          * `createAllTables` builds only entity tables) needs it created in `onCreate`; an upgrade

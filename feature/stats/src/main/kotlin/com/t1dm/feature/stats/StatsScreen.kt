@@ -423,7 +423,8 @@ private fun HistogramChart(s: AdvancedStats, target: TargetRange) {
 @Composable
 private fun EpisodeRow(label: String, e: EpisodeSummary, isHypo: Boolean, unit: UnitSpace, kovatchevF: (Double) -> Double) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-        Column {
+        // weight(1f) so the descriptive line wraps instead of starving the count column (issue 11).
+        Column(Modifier.weight(1f).padding(end = 12.dp)) {
             Text(label, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
             if (e.count > 0) {
                 Text(

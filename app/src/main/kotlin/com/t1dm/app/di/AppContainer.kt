@@ -1,6 +1,7 @@
 package com.t1dm.app.di
 
 import android.content.Context
+import android.content.Intent
 import android.media.RingtoneManager
 import com.t1dm.alerts.AlarmConfig
 import com.t1dm.alerts.AlertActuatorConfig
@@ -36,6 +37,8 @@ import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.CgmSourceDescriptor
 import com.t1dm.core.model.CurveKind
 import com.t1dm.core.model.CurveEvent
+import com.t1dm.core.model.InsulinFamily
+import com.t1dm.core.model.InsulinPresetSpec
 import com.t1dm.core.model.AccuracyReport
 import com.t1dm.core.model.InferenceState
 import com.t1dm.core.model.IobCobReadout
@@ -84,6 +87,7 @@ import com.t1dm.core.model.SavedMeal
 import com.t1dm.data.db.AppDatabase
 import com.t1dm.data.db.DoseKind
 import com.t1dm.data.db.LoggedDoseEntity
+import com.t1dm.data.db.toBlob
 import com.t1dm.data.db.LoggedMealEntity
 import com.t1dm.data.db.NoteEntity
 import com.t1dm.sync.NoteWriteDto
@@ -136,7 +140,7 @@ private val ACCURACY_HORIZONS_MIN = listOf(30, 60, 120)
 
 
 /**
- * The manual composition root (PLAN.private.md — "DI/wiring: manual is fine"). Built once in
+ * The manual composition root (SPEC.private.md — "DI/wiring: manual is fine"). Built once in
  * [com.t1dm.app.T1dmApplication] and reached via `(application as T1dmApplication).container`.
  * Everything long-lived that the UI, the [com.t1dm.app.service.CgmScanService], and the debug
  * hooks share is constructed here exactly once; nothing constructs its own database, dispatchers,
@@ -215,6 +219,18 @@ class AppContainer(context: Context) {
         )
     }
 
+    /** The K90 vibration actuator, reused for the Settings preview (issue 8) so the user feels a
+     *  preset the instant they tap it, before committing. Shares the deterministic notifier's actuator
+     *  semantics (primitive Composition → waveform fallback). */
+    private val vibrationActuator by lazy { com.t1dm.alerts.VibrationActuator(appContext) }
+
+    /** Immediately play a vibration preset by its opaque name (Settings → Alerts preview, issue 8).
+     *  Unknown names are ignored. Purely a preview — never touches the alarm path (§3.6-A). */
+    fun previewVibration(name: String) {
+        val preset = runCatching { com.t1dm.alerts.VibrationPreset.valueOf(name) }.getOrNull() ?: return
+        vibrationActuator.buzz(preset)
+    }
+
     /** Persist an alarm-threshold edit and re-hydrate the live [alarmConfig] snapshot. */
     suspend fun saveAlarmThresholds(urgentLow: Int, low: Int, high: Int, urgentHigh: Int) {
         settingsStore.setAlarmThresholds(urgentLow, low, high, urgentHigh)
@@ -260,13 +276,13 @@ class AppContainer(context: Context) {
             // enqueues a deduped `PREDICTIONS` batch for all running models (retires the kv blob).
             predictionStore = RoomPredictionStore(repository, outboxEnqueuer, syncStatusStore),
             // Phase 4 completion: the main-view forecast now conditions feat 1 / feat 2 on the
-            // reconstructed carb-appearance + insulin-action channels (PLAN §3.3), not `normalize(0)`.
+            // reconstructed carb-appearance + insulin-action channels (SPEC §3.3), not `normalize(0)`.
             contextChannels = ContextChannelSource { gridStartMs, nSteps ->
                 dashboardCurveChannels(gridStartMs, nSteps)
             },
             // ...and the PREDICTION ZONE on the COMMITTED dose tails (already-logged meals/doses still
             // absorbing past the now-boundary), via the SAME curve engine the calculator uses — so a
-            // just-logged meal RAISES the forecast rather than pulling it down (PLAN §3.3).
+            // just-logged meal RAISES the forecast rather than pulling it down (SPEC §3.3).
             futureOverrides = FutureOverrideSource { rollStartMs, nFutureSteps ->
                 dashboardFutureChannels(rollStartMs, nFutureSteps)
             },
@@ -443,6 +459,58 @@ class AppContainer(context: Context) {
         )
     }
 
+    /**
+     * Re-download the FULL historical series from the active server profile (the Phase-3 REST
+     * catch-up). Pages `GET /v1/series` from the very start and LWW-merges every row into the wide
+     * `sample` table. This is the re-sync the reset round-trip relies on: after a wipe the user
+     * re-enters the token, and this refills the (now-empty) series from T1DMSERVER. Returns the number
+     * of rows merged; 0 when no profile/token is configured. Off-main; never blocks the alarm path.
+     */
+    suspend fun resyncFromServer(): Int = withContext(dispatchers.io) {
+        if (serverProfileStore.activeEndpoint() == null) 0
+        else runCatching { catchUpCoordinator.catchUp(null) }.getOrDefault(0)
+    }
+
+    // ─── Full app reset (issue 5 — DESTRUCTIVE, IRREVERSIBLE) ──────────────────────────────────
+
+    /**
+     * Erase EVERYTHING and return the app to a first-run state, without a manual force-stop. Order
+     * matters: (1) stop the always-on foreground service so the inference cycle, the sync drain, the
+     * 5-min watch push, and the glance collectors all halt — nothing may re-write a reading or a watch
+     * nonce ceiling under the wipe (§3.6-A: there is no data left to alarm on, and the deterministic
+     * path is rebuilt on the post-reset relaunch); (2) row-wipe every user/runtime table at the
+     * current schema version, keeping the shipped model artifacts + seed dictionaries (see
+     * [T1dmRepository.wipeAllData]) — this also clears the watch pairing/epoch/nonce-ceiling kv rows;
+     * (3) burn the secrets that live OUTSIDE Room — the Keystore-wrapped server token(s) and the watch
+     * key-wrapping alias (the watch key material itself was a kv blob, already gone in step 2). The
+     * caller then relaunches via [restartApp] so every app-lifetime StateFlow rebuilds from the empty
+     * store. Off-main.
+     */
+    suspend fun resetAllData() = withContext(dispatchers.io) {
+        runCatching { appContext.stopService(Intent(appContext, com.t1dm.app.service.CgmScanService::class.java)) }
+        serviceRunning.value = false
+        // Drop the in-memory watch session + disable the link BEFORE the wipe so no late 5-min push can
+        // re-persist key material or a nonce ceiling into the kv rows we are about to clear (which would
+        // resurrect the pairing the reset is erasing). Only touch it if the watch was ever wired up.
+        runCatching { watchLink.stopForReset() }
+        repository.wipeAllData()
+        runCatching { tokenStore.clearAll() }
+        com.t1dm.app.watch.WatchKeyCipher.deleteKey()
+    }
+
+    /**
+     * Relaunch the app in a fresh process (issue 5) — the clean alternative to a manual force-stop.
+     * A brand-new process rebuilds [AppContainer] against the wiped store, so every cached StateFlow
+     * (predictions, IOB/COB, watch session, theme, settings) returns to its first-run value and the
+     * foreground service restarts from [MainActivity]. Never returns.
+     */
+    fun restartApp() {
+        appContext.packageManager.getLaunchIntentForPackage(appContext.packageName)
+            ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            ?.let { appContext.startActivity(it) }
+        Runtime.getRuntime().exit(0)
+    }
+
     /** One-shot health probe against the active profile; a human-readable status line. */
     suspend fun checkServerHealth(): String = runCatching {
         val h = syncHttpClient.health()
@@ -456,7 +524,7 @@ class AppContainer(context: Context) {
 
     // ─── Curve engine + manual entry + journal (Phase 4) ──────────────────────────────────────
 
-    /** The shared curve/PK engine (thin JNI bridge; PLAN §3.3), reused for entry previews, the
+    /** The shared curve/PK engine (thin JNI bridge; SPEC §3.3), reused for entry previews, the
      *  dashboard overlays, IOB/COB, and (downstream) `:inference`/`:calc` conditioning. */
     val curveEngine: CurveEngine by lazy { CurveEngine(nativeCore, dispatchers) }
 
@@ -469,7 +537,7 @@ class AppContainer(context: Context) {
         )
     }
 
-    /** Reconstructs the carb-appearance / insulin-action channels from the logged events (PLAN §3.3). */
+    /** Reconstructs the carb-appearance / insulin-action channels from the logged events (SPEC §3.3). */
     val channelBuilder: ChannelBuilder by lazy { ChannelBuilder(curveEngine, doseStore) }
 
     // ── Meal builder + insulin-type builder (Phase 4 deliverables 3/4) ─────────────────────────
@@ -518,6 +586,11 @@ class AppContainer(context: Context) {
         val ch = channelBuilder.contextChannels(gridStartMs, nSteps)
         return ch.carb to ch.insulin
     }
+
+    /** The BASAL-only overlay sub-channel over the same grid (issue 18): auto-extended schedule +
+     *  logged long-acting injections, for the dashboard's separate basal series. Off-main. */
+    suspend fun dashboardBasalChannel(gridStartMs: Long, nSteps: Int): DoubleArray =
+        channelBuilder.basalChannel(gridStartMs, nSteps)
 
     /**
      * The COMMITTED dose tails over the prediction horizon `[rollStartMs, +nFutureSteps·STEP)` — the
@@ -671,36 +744,88 @@ class AppContainer(context: Context) {
         outboxEnqueuer.enqueueSeries("carbs", listOf(SeriesPointDto(snapToGrid(now), grams)), now)
     }
 
-    /** Log a bolus: self-describing `logged_dose` (dose-scaled gamma) + `sample.bolus` + series. */
+    /** The clinical insulin preset catalogue (issue 19), for the Settings picker + apply-at-log. */
+    suspend fun insulinPresetCatalog(): List<InsulinPresetSpec> = curveEngine.presetCatalog()
+
+    /** Resolve a preset's action curve for a 5 U reference (the Settings picker's live preview). */
+    suspend fun previewPresetCurve(spec: InsulinPresetSpec): DoubleArray = when (spec.family) {
+        InsulinFamily.RapidExp -> curveEngine.expAction(5.0, spec.peakMin, spec.diaMin)
+        InsulinFamily.BasalBateman -> curveEngine.bateman(5.0, spec.diaMin, spec.kaPerHour, spec.kePerHour)
+        InsulinFamily.SimulatorGamma ->
+            if (spec.label.startsWith("Simulator basal")) {
+                curveEngine.bateman(5.0, spec.diaMin, spec.kaPerHour, spec.kePerHour)
+            } else {
+                curveEngine.bolusPk(5.0).values.toDoubleArray()
+            }
+    }
+
+    /** The selected rapid preset spec (issue 19), or null when the in-distribution simulator default. */
+    private suspend fun selectedClinicalRapid(): InsulinPresetSpec? {
+        val label = settingsStore.currentRapidPreset()
+        return insulinPresetCatalog().firstOrNull { it.label == label && it.family == InsulinFamily.RapidExp }
+    }
+
+    /** The selected basal preset spec (issue 19), or null when the in-distribution simulator default. */
+    private suspend fun selectedClinicalBasal(): InsulinPresetSpec? {
+        val label = settingsStore.currentBasalPreset()
+        return insulinPresetCatalog().firstOrNull { it.label == label && it.family == InsulinFamily.BasalBateman }
+    }
+
+    /** Log a bolus: self-describing `logged_dose` + `sample.bolus` + series. The DEFAULT is the
+     *  dose-scaled simulator gamma (in-distribution); if the user has opted into a clinical rapid
+     *  preset (issue 19), the resolved exponential curve rides in `customCurve` so it reconstructs
+     *  exactly and past logs are untouched. */
     suspend fun logBolus(units: Double, preset: BolusPreset) {
         val now = System.currentTimeMillis()
         val tz = tzOffsetMin(now)
-        val (k, theta, dur) = CurveEngine.Presets.bolusGammaParams(units)
-        repository.logLoggedDose(
+        val clinical = selectedClinicalRapid()
+        val entity = if (clinical != null) {
+            val curve = curveEngine.expAction(units, clinical.peakMin, clinical.diaMin)
+            LoggedDoseEntity(
+                tsMs = now, kind = DoseKind.BOLUS, units = units, durationMin = clinical.diaMin,
+                k = null, theta = null, kaPerHour = null, kePerHour = null,
+                customCurve = if (curve.isEmpty()) null else curve.toList().toBlob(),
+                tzOffsetMin = tz, note = clinical.label, updatedAt = now,
+            )
+        } else {
+            val (k, theta, dur) = CurveEngine.Presets.bolusGammaParams(units)
             LoggedDoseEntity(
                 tsMs = now, kind = DoseKind.BOLUS, units = units, durationMin = dur,
                 k = k, theta = theta, kaPerHour = null, kePerHour = null,
                 tzOffsetMin = tz, note = preset.name, updatedAt = now,
-            ),
-        )
+            )
+        }
+        repository.logLoggedDose(entity)
         outboxEnqueuer.enqueueSeries("bolus", listOf(SeriesPointDto(snapToGrid(now), units)), now)
     }
 
-    /** Log a discrete long-acting basal injection: `logged_dose` (Bateman) + `sample.basal` + series. */
+    /** Log a discrete long-acting basal injection: `logged_dose` (Bateman) + `sample.basal` + series.
+     *  DEFAULT is the in-distribution simulator Bateman; an opted-in clinical basal preset (issue 19)
+     *  supplies its own DIA + ka/ke (self-describing, so reconstruction stays stable). */
     suspend fun logBasal(units: Double, preset: BasalPreset) {
         val now = System.currentTimeMillis()
         val tz = tzOffsetMin(now)
-        val diaMin = when (preset) {
-            BasalPreset.LANTUS -> CurveEngine.Presets.LANTUS_DIA_MIN
-            BasalPreset.TRESIBA -> CurveEngine.Presets.TRESIBA_DIA_MIN
+        val clinical = selectedClinicalBasal()
+        val diaMin: Double
+        val ka: Double
+        val ke: Double
+        val note: String
+        if (clinical != null) {
+            diaMin = clinical.diaMin; ka = clinical.kaPerHour; ke = clinical.kePerHour; note = clinical.label
+        } else {
+            diaMin = when (preset) {
+                BasalPreset.LANTUS -> CurveEngine.Presets.LANTUS_DIA_MIN
+                BasalPreset.TRESIBA -> CurveEngine.Presets.TRESIBA_DIA_MIN
+            }
+            ka = CurveEngine.Presets.BASAL_KA_PER_HOUR
+            ke = CurveEngine.Presets.BASAL_KE_PER_HOUR
+            note = preset.name
         }
         repository.logLoggedDose(
             LoggedDoseEntity(
                 tsMs = now, kind = DoseKind.BASAL, units = units, durationMin = diaMin,
-                k = null, theta = null,
-                kaPerHour = CurveEngine.Presets.BASAL_KA_PER_HOUR,
-                kePerHour = CurveEngine.Presets.BASAL_KE_PER_HOUR,
-                tzOffsetMin = tz, note = preset.name, updatedAt = now,
+                k = null, theta = null, kaPerHour = ka, kePerHour = ke,
+                tzOffsetMin = tz, note = note, updatedAt = now,
             ),
         )
         outboxEnqueuer.enqueueSeries("basal", listOf(SeriesPointDto(snapToGrid(now), units)), now)

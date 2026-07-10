@@ -1,7 +1,7 @@
 package com.t1dm.cgm
 
 /**
- * Re-parses raw BLE AD structures ourselves (PLAN.private.md Phase 1). Android's
+ * Re-parses raw BLE AD structures ourselves (Phase 1). Android's
  * `ScanRecord.getManufacturerSpecificData(0x0059)` returns the *merged* concatenation of the
  * two 0x0059 structures the AiDEX X advertises (the 20-byte glucose block and the ~5-byte status
  * block, CGM.md §3), so it cannot be trusted to hand back the glucose payload cleanly. We walk

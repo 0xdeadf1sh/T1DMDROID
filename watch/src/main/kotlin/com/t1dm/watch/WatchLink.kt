@@ -102,6 +102,24 @@ class WatchLink(
 
     fun setConfig(newConfig: WatchLinkConfig) { config = newConfig }
 
+    /**
+     * Synchronous teardown for a FULL APP RESET (issue 5). Disables the link and drops the in-memory
+     * session so no subsequent 5-min push can re-persist key material or a nonce ceiling into the
+     * `kv` store while it is being wiped — otherwise a late push could resurrect the very pairing the
+     * reset is erasing. Does NOT touch the stores (the reset wipes them); leaves the link UNPAIRED so
+     * a re-pair starts from a fresh X25519 handshake (a new key ⇒ no (key, nonce) reuse). Idempotent.
+     */
+    fun stopForReset() {
+        config = config.copy(enabled = false)
+        rssiJob?.cancel()
+        eventJob?.cancel()
+        reconnectJob?.cancel()
+        runCatching { central?.disconnect() }
+        central = null
+        session = null
+        _state.value = WatchSecurityState()
+    }
+
     // ── Pairing ──────────────────────────────────────────────────────────────────────────────
 
     /** Manual "Pair watch": connect the transport and run the handshake up to AWAIT_SAS. */

@@ -3,7 +3,7 @@ package com.t1dm.feature.settings
 import androidx.compose.runtime.Composable
 
 /**
- * Settings → Signal & freshness (PLAN.private.md Phase 7C item 14; §3.6-A/D). Two safety windows:
+ * Settings → Signal & freshness (Phase 7C item 14; §3.6-A/D). Two safety windows:
  *  - the **loss-of-signal** window (minutes with no MEASURED reading before the model-free alarm
  *    fires) and its **escalated** shortening when the last real reading was low or falling;
  *  - the **dosing staleness gate**: the calculator refuses to recommend a dose off an anchor older

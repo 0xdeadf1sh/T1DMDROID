@@ -1,7 +1,7 @@
 package com.t1dm.calc
 
 /**
- * The user-configurable policy for the dose calculators (PLAN.private.md §3.6, Phase 4
+ * The user-configurable policy for the dose calculators (SPEC.private.md §3.6, Phase 4
  * deliverable 5/6). Every numeric threshold here is **user-set and deliberately UNBOUNDED** —
  * the user overrode the compiled ceiling, and the advisory-only + manual-administration model is
  * the terminal safety net (safety-posture.md). The *rails* still exist and still fail closed; a
@@ -18,7 +18,7 @@ data class TargetRange(
     val targetMgdl: Double = 110.0,
 )
 
-/** The selectable scoring objective for the forecast fan (PLAN Phase 4 §5). */
+/** The selectable scoring objective for the forecast fan (Phase 4 §5). */
 sealed interface Objective {
     /** Minimise the horizon-weighted count of steps predicted out of [TargetRange]. */
     data object MinTimeOutOfRange : Objective
@@ -43,7 +43,7 @@ data class Asymmetry(
 /**
  * Per-rail enable switches (safety-posture.md — "guard-rail toggles exist"). A disabled rail is a
  * no-op; an **enabled** rail always fails closed on missing / degenerate / stale / collapsed input
- * (PLAN §3.6-C). [degeneracyGate] is intentionally not disableable through the normal path — scoring
+ * (SPEC §3.6-C). [degeneracyGate] is intentionally not disableable through the normal path — scoring
  * a degenerate fan is meaningless — and is enforced structurally regardless of this flag.
  */
 data class RailToggles(
@@ -54,7 +54,7 @@ data class RailToggles(
     val hypoTreatment: Boolean = true,
 ) {
     companion object {
-        /** All optional rails disabled — the "all-rails-off = identity" CI invariant (PLAN Phase 4 §7). */
+        /** All optional rails disabled — the "all-rails-off = identity" CI invariant (Phase 4 §7). */
         val ALL_OFF = RailToggles(
             freshnessGate = false,
             predictedLowVeto = false,
@@ -95,7 +95,7 @@ data class GridSpec(
 }
 
 /**
- * The split-bolus search envelope (PLAN Phase 4 §6 — "coarse fraction × gap grid under a
+ * The split-bolus search envelope (Phase 4 §6 — "coarse fraction × gap grid under a
  * configurable cap"). [maxParts] and [maxGapMin] are the user's cap; [gapGridMin] the coarse gaps.
  */
 data class SplitSpec(
@@ -126,7 +126,7 @@ data class HorizonPolicy(
 
 /**
  * The complete calculator policy. All thresholds are user-set and unbounded; the rails they tune
- * still fail closed (PLAN §3.6-C). Conservative *defaults* per open-Q10 sign-off.
+ * still fail closed (SPEC §3.6-C). Conservative *defaults* per open-Q10 sign-off.
  */
 data class CalcConfig(
     val target: TargetRange = TargetRange(),

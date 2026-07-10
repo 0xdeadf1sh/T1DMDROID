@@ -6,7 +6,7 @@ import android.content.Intent
 import timber.log.Timber
 
 /**
- * Resumes the passive monitor after a reboot (PLAN.private.md Phase 1 exit criteria — "a forced
+ * Resumes the passive monitor after a reboot (Phase 1 exit criteria — "a forced
  * reboot leaves a bounded gap and the service auto-restarts"). Starting a
  * `connectedDevice|dataSync` foreground service from `BOOT_COMPLETED` is permitted on 14+.
  */

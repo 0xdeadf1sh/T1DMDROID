@@ -9,7 +9,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Guards the self-describing bolus-logging path (Phase 4, PLAN §3.3). The insulin entry surface
+ * Guards the self-describing bolus-logging path (Phase 4, SPEC §3.3). The insulin entry surface
  * stores `CurveEngine.Presets.bolusGammaParams(dose)` on the `logged_dose` row, and `RoomDoseStore`
  * later reconstructs the curve via `gamma(units, k, theta, durMin)`. That reconstruction MUST equal
  * the authoritative `bolusPkForDose(dose)` the model/calculator would otherwise see — otherwise a

@@ -1,7 +1,7 @@
 package com.t1dm.data.meals
 
 /**
- * The bundled starter glycemic dictionary (PLAN.private.md Phase 4 deliverable 3 / risk S9; grown in
+ * The bundled starter glycemic dictionary (Phase 4 deliverable 3 / risk S9; grown in
  * Phase 7C). A hand-curated ~400-food catalogue spanning the real breadth of a diet —
  * grains/bread/rice/pasta, potatoes, legumes, fruit, vegetables, dairy, nuts/seeds, sweets/snacks,
  * drinks, and common prepared/regional dishes — sufficient to build most meals; the user extends it

@@ -19,7 +19,7 @@ data class ChannelStat(val mean: Double, val std: Double)
 data class TimeHead(val outputIndex: Int, val nBins: Int, val binHours: Double)
 
 /**
- * The pre/post contract parsed from a model `descriptor.json` (PLAN §2.4) — the sole
+ * The pre/post contract parsed from a model `descriptor.json` (SPEC §2.4) — the sole
  * source of the normalization stats plus the checkpoint-absent decode constants.
  */
 data class ModelDescriptor(

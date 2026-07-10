@@ -23,7 +23,7 @@ data class BasalCandidate(
 )
 
 /**
- * The day-long basal calculator (PLAN Phase 4 §6 — "a day-long Bateman-schedule search, run when the
+ * The day-long basal calculator (Phase 4 §6 — "a day-long Bateman-schedule search, run when the
  * user injects basal"). It grid-searches the daily basal total (optionally split across the
  * [template] injections), rolls each candidate over a long horizon, and scores the fasting fan under
  * the configured objective (hypo off the lower band). Fail-closed: a degenerate/stale/missing roll

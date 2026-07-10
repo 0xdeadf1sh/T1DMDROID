@@ -4,7 +4,7 @@ import androidx.sqlite.SQLiteConnection
 import androidx.sqlite.execSQL
 
 /**
- * The hand-rolled **FTS5** full-text index over the `food` dictionary (PLAN.private.md Phase 4
+ * The hand-rolled **FTS5** full-text index over the `food` dictionary (Phase 4
  * deliverable 3 — "seed it into Room with FTS5 search"). Room has no `@Fts5` annotation, so the
  * virtual table is not a Room entity; it is an **external-content** FTS5 table (`content='food'`)
  * kept in lockstep with `food` by insert/update/delete triggers. Because it is Room-invisible, the

@@ -1,4 +1,4 @@
-//! On-device forecast-accuracy aggregator (Phase 7C, PLAN.private.md Phase 7 "Models
+//! On-device forecast-accuracy aggregator (Phase 7C, Phase 7 "Models
 //! drill-down — performance").
 //!
 //! A pure, golden-gated reducer: given already-matured `(predicted median BG, realized

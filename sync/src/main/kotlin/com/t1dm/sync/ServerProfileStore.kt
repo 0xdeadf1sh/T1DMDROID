@@ -6,7 +6,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
 /**
- * N-profile server store with exactly one active profile (PLAN.private.md Phase 3 / server-
+ * N-profile server store with exactly one active profile (Phase 3 / server-
  * integration memory). Profile *metadata* persists in Room (via [T1dmRepository]); the `rw` token
  * persists in the Keystore-backed [TokenStore], keyed by profile id. Full CRUD/switch UI is Phase 7,
  * but the schema is N-profile now so that work is additive, not a migration.

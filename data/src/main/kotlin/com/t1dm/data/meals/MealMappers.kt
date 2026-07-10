@@ -12,7 +12,7 @@ import com.t1dm.data.db.toBlob
 import com.t1dm.data.db.toDoubleList
 
 /**
- * Entity ⇄ model projections for the meal builder / insulin builder (PLAN.private.md Phase 4).
+ * Entity ⇄ model projections for the meal builder / insulin builder (Phase 4).
  * Kept out of the concurrently-edited `Mappers.kt` and scoped to this package. The normalized
  * custom-curve BLOBs use the shared little-endian `f64` codec ([toBlob]/[toDoubleList]).
  */

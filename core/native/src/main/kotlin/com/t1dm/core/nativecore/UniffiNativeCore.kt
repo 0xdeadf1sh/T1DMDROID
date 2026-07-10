@@ -19,6 +19,8 @@ import com.t1dm.core.model.TodBucket
 import com.t1dm.core.model.ChannelStat
 import com.t1dm.core.model.CurveEvent
 import com.t1dm.core.model.CurveKind
+import com.t1dm.core.model.InsulinFamily
+import com.t1dm.core.model.InsulinPresetSpec
 import com.t1dm.core.model.DecodedAdvert
 import com.t1dm.core.model.Forecast
 import com.t1dm.core.model.ForecastStatus
@@ -39,6 +41,8 @@ import uniffi.t1dm_core.causalSmooth as uniffiCausalSmooth
 import uniffi.t1dm_core.decodeAdvert as uniffiDecodeAdvert
 import uniffi.t1dm_core.decodeTime as uniffiDecodeTime
 import uniffi.t1dm_core.denormalizeSample as uniffiDenormalizeSample
+import uniffi.t1dm_core.expActionCurve as uniffiExpActionCurve
+import uniffi.t1dm_core.insulinPresetCatalog as uniffiInsulinPresetCatalog
 import uniffi.t1dm_core.extendBasal as uniffiExtendBasal
 import uniffi.t1dm_core.forecastDegeneracyCheck as uniffiForecastDegeneracyCheck
 import uniffi.t1dm_core.gamma as uniffiGamma
@@ -59,6 +63,8 @@ import uniffi.t1dm_core.BuiltContext as UniffiBuiltContext
 import uniffi.t1dm_core.ChannelStat as UniffiChannelStat
 import uniffi.t1dm_core.CurveEvent as UniffiCurveEvent
 import uniffi.t1dm_core.CurveKind as UniffiCurveKind
+import uniffi.t1dm_core.InsulinFamily as UniffiInsulinFamily
+import uniffi.t1dm_core.InsulinPresetSpec as UniffiInsulinPresetSpec
 import uniffi.t1dm_core.DecodedAdvert as UniffiDecodedAdvert
 import uniffi.t1dm_core.Forecast as UniffiForecast
 import uniffi.t1dm_core.ForecastStatus as UniffiForecastStatus
@@ -151,7 +157,7 @@ class UniffiNativeCore : NativeCore {
             null
         }
 
-    // ── Shared curve/PK engine (Phase 4, PLAN §3.3) ─────────────────────────────────
+    // ── Shared curve/PK engine (Phase 4, SPEC §3.3) ─────────────────────────────────
 
     override fun gamma(total: Double, k: Double, theta: Double, durMin: Double): List<Double> =
         uniffiGamma(total, k, theta, durMin)
@@ -161,6 +167,12 @@ class UniffiNativeCore : NativeCore {
 
     override fun bolusPkForDose(doseU: Double): CurveEvent =
         uniffiBolusPkForDose(doseU).toModel()
+
+    override fun expActionCurve(total: Double, peakMin: Double, diaMin: Double): List<Double> =
+        uniffiExpActionCurve(total, peakMin, diaMin)
+
+    override fun insulinPresetCatalog(): List<InsulinPresetSpec> =
+        uniffiInsulinPresetCatalog().map { it.toModel() }
 
     override fun bucketize(
         events: List<CurveEvent>,
@@ -311,6 +323,26 @@ private fun CurveKind.toUniffi(): UniffiCurveKind = when (this) {
     CurveKind.CARB -> UniffiCurveKind.CARB
     CurveKind.INSULIN -> UniffiCurveKind.INSULIN
 }
+
+private fun UniffiInsulinFamily.toModel(): InsulinFamily = when (this) {
+    UniffiInsulinFamily.RAPID_EXP -> InsulinFamily.RapidExp
+    UniffiInsulinFamily.BASAL_BATEMAN -> InsulinFamily.BasalBateman
+    UniffiInsulinFamily.SIMULATOR_GAMMA -> InsulinFamily.SimulatorGamma
+}
+
+// The Rust `preset` enum is intentionally NOT projected — the app keys a selection by the stable
+// [InsulinPresetSpec.label] and drives the curve off the numeric peak/DIA/ka/ke fields, so no
+// fragile round-trip of the uniffi enum variant names is needed (issue 19).
+private fun UniffiInsulinPresetSpec.toModel(): InsulinPresetSpec = InsulinPresetSpec(
+    family = family.toModel(),
+    label = label,
+    peakMin = peakMin,
+    diaMin = diaMin,
+    kaPerHour = kaPerHour,
+    kePerHour = kePerHour,
+    offDistribution = offDistribution,
+    citation = citation,
+)
 
 private fun UniffiCurveEvent.toModel(): CurveEvent = CurveEvent(
     startMs = startMs,

@@ -1,0 +1,28 @@
+executorch-vulkan-1.3.1.aar
+===========================
+
+Custom ExecuTorch 1.3.1 Android AAR built from source with the Vulkan GPU-compute
+delegate enabled (issue 20 / STEP 2). Vendored, not yet wired into :inference — the
+production dependency remains org.pytorch:executorch-android:1.3.1 so the authoritative
+fp32 XNNPACK CPU path stays byte-untouched (safety rule E) until an on-device Vulkan run
+is possible.
+
+Source:    github.com/pytorch/executorch @ tag v1.3.1 (commit e2f18eb)
+Toolchain: NDK r28b (28.1.13356709), arm64-v8a only, ANDROID_PLATFORM=android-26
+Flags:     EXECUTORCH_BUILD_VULKAN=ON, EXECUTORCH_BUILD_EXTENSION_LLM=OFF
+Shaders:   system glslc (shaderc 2026.2 / glslang 1.4.350) — the NDK's bundled glslc
+           (shaderc 2022.3) is too old for GL_EXT_integer_dot_product used by the int8
+           quantized-linear shaders and fails the shader build with -Werror.
+
+Verification of the packaged jni/arm64-v8a/libexecutorch.so:
+  - carries the VulkanBackend symbol (N10executorch8backends6vulkan..VulkanBackendE)
+    and the "ExecuTorch Vulkan Delegate" string + full Vulkan op library (129 vulkan
+    strings)
+  - retains the XnnpackBackend registration (both backends coexist)
+  - libvulkan is dlopen'd at runtime (not a NEEDED entry), as expected
+
+vulkan_partition_report.json: host VulkanPartitioner census of the SAME modified
+head_raw+time_logits forward — 974/1024 edge ops (95.1%) delegate to Vulkan across 18
+subgraphs; the fallbacks are the boolean attention-mask reduction (logical_not/any.dim/
+eq.Scalar), the 0.5 mask-scale (mul.Scalar), and the RoPE inv-freq base (pow.Scalar/
+reciprocal). RoPE trig, SDPA, ALiBi, and the einsum step-basis all delegate.

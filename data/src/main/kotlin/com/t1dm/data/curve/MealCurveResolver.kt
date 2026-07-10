@@ -7,7 +7,7 @@ import com.t1dm.core.model.ResolvedMealCurve
 import kotlin.math.ceil
 
 /**
- * Mixes several [MealComponent]s into ONE combined carb **appearance (Ra)** curve (PLAN.private.md
+ * Mixes several [MealComponent]s into ONE combined carb **appearance (Ra)** curve (SPEC.private.md
  * Phase 4 — `MealCurveResolver`; [model-io-curves]). Each component becomes a [CurveEvent] — a
  * per-food gamma from its GI ([GiToGamma]), or its user-drawn normalized [MealComponent.customCurve]
  * scaled to the portion's carbs — and the events are summed onto a shared 5-min grid via the Rust

@@ -8,7 +8,7 @@ import com.t1dm.core.model.CurveKind
 import kotlinx.coroutines.withContext
 
 /**
- * The shared curve/PK engine (PLAN.private.md §3.3) — a **thin JNI bridge** over the Rust
+ * The shared curve/PK engine (SPEC.private.md §3.3) — a **thin JNI bridge** over the Rust
  * `t1dm-core::curve` functions, with every call dispatched on [T1dmDispatchers.default]. It
  * is the ONE transform that serves all three consumers: historical context channels,
  * announced-future what-if conditioning, and IOB/COB display (remaining tail area).
@@ -20,7 +20,7 @@ import kotlinx.coroutines.withContext
  *
  * The numeric authority is the Rust; this class only marshals and dispatches. The canonical
  * NOISE-FREE presets ([Presets]) are the simulator's central values — an explicit
- * in-distribution choice (PLAN §3.3), not a proof of per-person fidelity.
+ * in-distribution choice (SPEC §3.3), not a proof of per-person fidelity.
  */
 class CurveEngine(
     private val native: NativeCore,
@@ -33,6 +33,15 @@ class CurveEngine(
     /** Raw Bateman long-acting basal curve, amount-per-5-min-step, `sum == total`. */
     suspend fun bateman(total: Double, durMin: Double, ka: Double, ke: Double): DoubleArray =
         withContext(dispatchers.default) { native.bateman(total, durMin, ka, ke).toDoubleArray() }
+
+    /** Loop/OpenAPS exponential insulin-action curve (OPT-IN clinical rapid preset, issue 19),
+     *  amount-per-5-min-step, `sum == total`; peaks at [peakMin], ~0 by [diaMin]. Off-distribution. */
+    suspend fun expAction(total: Double, peakMin: Double, diaMin: Double): DoubleArray =
+        withContext(dispatchers.default) { native.expActionCurve(total, peakMin, diaMin).toDoubleArray() }
+
+    /** The clinical insulin preset catalogue (issue 19), for the Settings picker + apply-at-log. */
+    suspend fun presetCatalog(): List<com.t1dm.core.model.InsulinPresetSpec> =
+        withContext(dispatchers.default) { native.insulinPresetCatalog() }
 
     /** Resolve a rapid-acting bolus into an insulin [CurveEvent] at `startMs=0` (caller shifts). */
     suspend fun bolusPk(doseU: Double): CurveEvent =
@@ -80,7 +89,7 @@ class CurveEngine(
     }
 
     /**
-     * The canonical NOISE-FREE presets, transcribed from `simulator.py` (PLAN §3.3). Quick-
+     * The canonical NOISE-FREE presets, transcribed from `simulator.py` (SPEC §3.3). Quick-
      * preset defaults for the insulin/food builders; the model was trained on this
      * neighbourhood.
      */

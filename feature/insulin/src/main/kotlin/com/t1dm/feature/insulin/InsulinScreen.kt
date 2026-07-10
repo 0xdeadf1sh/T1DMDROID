@@ -41,7 +41,7 @@ private const val DOSE_MAX = 20.0
 private const val DOSE_STEPS = 18
 
 /**
- * The Phase-4 insulin entry surface (PLAN.private.md deliverable 1 — "manual bolus/basal entry").
+ * The Phase-4 insulin entry surface (deliverable 1 — "manual bolus/basal entry").
  * Both channels feed the model as a **PK action** rate (model-io-curves.md): a bolus is a gamma
  * peaking ~50 min ([BolusPreset]); a basal is a broad, near-flat Bateman ([BasalPreset]). `:app`
  * writes the self-describing `logged_dose` row (gamma params from `CurveEngine.Presets`

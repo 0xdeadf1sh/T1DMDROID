@@ -11,6 +11,9 @@ import com.t1dm.core.model.StatSample
 import com.t1dm.core.model.CurveEvent
 import com.t1dm.core.model.CurveKind
 import com.t1dm.core.model.DecodedAdvert
+import com.t1dm.core.model.InsulinFamily
+import com.t1dm.core.model.InsulinPresetSpec
+import kotlin.math.ln
 import com.t1dm.core.model.Forecast
 import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.ModelDescriptor
@@ -125,6 +128,57 @@ class StubNativeCore : NativeCore {
         val area = curve.sum()
         if (area > 0.0) for (i in 0 until n) curve[i] *= total / area
         return curve.asList()
+    }
+
+    override fun expActionCurve(total: Double, peakMin: Double, diaMin: Double): List<Double> {
+        // Host mirror of the Loop/OpenAPS exponential activity model (golden-checked against Rust).
+        val n = (diaMin / DT_MIN).toInt()
+        if (n <= 0 || peakMin <= 0.0 || peakMin >= diaMin / 2.0) return listOf(0.0)
+        val tp = peakMin
+        val td = diaMin
+        val tau = tp * (1.0 - tp / td) / (1.0 - 2.0 * tp / td)
+        val a = 2.0 * tau / td
+        val s = 1.0 / (1.0 - a + (1.0 + a) * exp(-td / tau))
+        val v = DoubleArray(n)
+        var area = 0.0
+        for (i in 0 until n) {
+            val t = (i + 1) * DT_MIN
+            val ia = maxOf(0.0, (s / (tau * tau)) * t * (1.0 - t / td) * exp(-t / tau))
+            v[i] = ia
+            area += ia
+        }
+        if (area > 0.0) for (i in 0 until n) v[i] *= total / area
+        return v.asList()
+    }
+
+    override fun insulinPresetCatalog(): List<InsulinPresetSpec> {
+        // Host mirror of the Rust `insulin_preset_catalog()` (issue 19); values/citations transcribed.
+        fun rapid(label: String, peak: Double, dia: Double, cite: String) =
+            InsulinPresetSpec(InsulinFamily.RapidExp, label, peak, dia, 0.0, 0.0, true, cite)
+        fun basal(label: String, diaH: Double, ka: Double, ke: Double, cite: String) =
+            InsulinPresetSpec(
+                InsulinFamily.BasalBateman, label,
+                (ln(ka) - ln(ke)) / (ka - ke) * 60.0, diaH * 60.0, ka, ke, true, cite,
+            )
+        return listOf(
+            InsulinPresetSpec(
+                InsulinFamily.SimulatorGamma, "Simulator bolus (default, in-distribution)",
+                (3.0 - 1.0) * 25.0, 2.5 * 60.0, 0.0, 0.0, false,
+                "T1DMSIM dose-scaled gamma (the model's training distribution)",
+            ),
+            rapid("Aspart · NovoRapid/Novolog", 75.0, 360.0, "Loop/OpenAPS rapid-acting adult exponential: peak 75 min, DIA 6 h"),
+            rapid("Faster aspart · Fiasp", 55.0, 360.0, "Loop `.fiasp` exponential preset: peak 55 min, DIA 6 h"),
+            rapid("Lispro · Humalog", 75.0, 360.0, "Loop/OpenAPS rapid-acting adult exponential: peak 75 min, DIA 6 h"),
+            rapid("Ultra-rapid lispro · Lyumjev", 45.0, 300.0, "Ultra-rapid class (Fiasp-like); Bionic Wookiee 2022 peak ≈45 min, DIA 5 h"),
+            InsulinPresetSpec(
+                InsulinFamily.SimulatorGamma, "Simulator basal (default, in-distribution)",
+                (ln(0.30) - ln(0.07)) / (0.30 - 0.07) * 60.0, 24.0 * 60.0, 0.30, 0.07, false,
+                "T1DMSIM Bateman background (the model's training distribution)",
+            ),
+            basal("Glargine U100 · Lantus", 24.0, 0.30, 0.07, "Glargine U100 duration ~24 h (Healio ultra-long-acting review)"),
+            basal("Glargine U300 · Toujeo", 36.0, 0.18, 0.05, "Glargine U300 duration ~36 h, flatter GIR than U100 (Healio review)"),
+            basal("Degludec · Tresiba", 42.0, 0.12, 0.04, "Degludec duration ~42 h, flat profile, t½ >25 h (Healio review)"),
+        )
     }
 
     override fun bolusPkForDose(doseU: Double): CurveEvent {

@@ -12,7 +12,7 @@ import kotlinx.coroutines.launch
 import timber.log.Timber
 
 /**
- * The `:app` sync orchestrator (PLAN.private.md Phase 3 deliverables 3–4, 6–7). It binds the durable
+ * The `:app` sync orchestrator (Phase 3 deliverables 3–4, 6–7). It binds the durable
  * outbox drainer, the WebSocket catch-up coordinator, and the Network-panel telemetry into the
  * always-on foreground service scope. Three long-lived collectors, all on [T1dmDispatchers.io]:
  *

@@ -13,7 +13,7 @@ fun interface BolusResolver {
 }
 
 /**
- * The bounded grid-search bolus engine (PLAN Phase 4 §5). For each candidate dose it feeds the dose
+ * The bounded grid-search bolus engine (Phase 4 §5). For each candidate dose it feeds the dose
  * as announced future insulin into the SELECTED fp32-authoritative model via [ForecastPort], rolls to
  * the full window, scores the fan under the configured objective, and returns the candidates ranked
  * best-first. It is pure with respect to the rails — the [DoseAdvisor] layers the fail-closed rails and

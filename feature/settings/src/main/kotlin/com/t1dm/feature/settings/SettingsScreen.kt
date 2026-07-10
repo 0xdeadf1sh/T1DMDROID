@@ -3,7 +3,7 @@ package com.t1dm.feature.settings
 import androidx.compose.runtime.Composable
 
 /**
- * The Settings root — the complete configuration hub (PLAN.private.md Phase 7C, items 14 & 17). Every
+ * The Settings root — the complete configuration hub (Phase 7C, items 14 & 17). Every
  * user-tunable knob in the app is reachable from here, grouped into sub-sections; the safety-critical,
  * deliberately-UNBOUNDED knobs (alarm thresholds, calculator rails/thresholds, loss-of-signal windows)
  * are grouped under "Alarms & safety" and flagged inside their own screens (safety-posture.md). The
@@ -53,7 +53,7 @@ fun SettingsScreen(
         SettingsNavRow("Low-power mode", "Battery-saver entry percentage and behaviour", onClick = onOpenPower)
 
         SettingsSectionHeader("Data")
-        SettingsNavRow("Backup & restore config", "Export or import every setting as a JSON file", onClick = onOpenData)
+        SettingsNavRow("Backup & reset", "Export/import settings as JSON, or erase all data", onClick = onOpenData)
         SettingsNavRow("About", "Version, build, licence, model provenance", onClick = onOpenAbout)
     }
 }

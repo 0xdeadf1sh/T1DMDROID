@@ -29,7 +29,7 @@ import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 
 /**
- * The Phase-4 journal surface (PLAN.private.md deliverable 2 — the locked "mood + free-text journal
+ * The Phase-4 journal surface (deliverable 2 — the locked "mood + free-text journal
  * now" scope): a free-text composer that writes the local `note` table + enqueues a `NOTE` outbox
  * push (`POST /v1/notes`), and a mood picker that folds into `sample.mood` (`PUT /v1/series/mood`).
  *

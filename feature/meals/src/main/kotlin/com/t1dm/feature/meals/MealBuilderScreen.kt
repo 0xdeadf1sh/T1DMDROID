@@ -39,7 +39,7 @@ import kotlinx.coroutines.launch
 import androidx.compose.runtime.rememberCoroutineScope
 
 /**
- * The multi-food meal builder (PLAN.private.md Phase 4 deliverable 3/4) — the rich seam the simple
+ * The multi-food meal builder (Phase 4 deliverable 3/4) — the rich seam the simple
  * carb-entry [MealsScreen] points at. It searches the bundled glycemic dictionary (FTS5), assembles
  * a portioned component list, shows the LIVE combined **appearance (Ra)** curve
  * ([MealCurveResolver], via [onResolve]) with its total carbs + peak time, and can save the meal,

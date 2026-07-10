@@ -22,9 +22,10 @@ import com.t1dm.core.model.InferenceState
 import com.t1dm.core.model.ModelMeta
 import com.t1dm.core.model.ModelTelemetry
 import com.t1dm.core.model.ReferenceMetrics
+import com.t1dm.core.model.displayName
 
 /**
- * The per-model PERFORMANCE drill-down (PLAN.private.md Phase 7C — item 24). Four blocks:
+ * The per-model PERFORMANCE drill-down (Phase 7C — item 24). Four blocks:
  *
  *  1. META — parameter count, on-disk size, arch dims + geometry (item 7, size reasoning).
  *  2. TELEMETRY — this install's cumulative avg inference EXEC time, #predictions, and TOTAL time
@@ -54,7 +55,7 @@ fun ModelDetailScreen(
             Text(modelId, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
             running?.let {
                 Text(
-                    "${it.backend.name} · ${it.precision.name}" + (if (it.selected) " · SELECTED (fp32-authoritative)" else ""),
+                    "${it.backend.displayName()} · ${it.precision.name}" + (if (it.selected) " · SELECTED (fp32-authoritative)" else ""),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -136,22 +137,25 @@ private fun HorizonRow(h: HorizonAccuracy) {
 
 @Composable
 private fun ReferenceRows(ref: ReferenceMetrics) {
-    Row(Modifier.fillMaxWidth().padding(top = 2.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-        Text("horizon", style = MaterialTheme.typography.labelSmall, modifier = Modifier, fontFamily = FontFamily.Monospace)
-        Text("RMSE", style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace)
-        Text("MARD", style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace)
-        Text("Clarke-A", style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace)
-        Text("cov90", style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace)
-    }
-    ref.horizonsMin.forEachIndexed { i, h ->
-        Row(Modifier.fillMaxWidth().padding(vertical = 1.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-            Mono("${h}m")
-            Mono(ref.rmseMgdl.getOrNull(i)?.let { "%.1f".format(it) } ?: "—")
-            Mono(ref.mardPct.getOrNull(i)?.let { "%.1f%%".format(it) } ?: "—")
-            Mono(ref.clarkeAPct.getOrNull(i)?.let { "%.0f%%".format(it) } ?: "—")
-            Mono(ref.coverage90.getOrNull(i)?.let { "%.0f%%".format(it * 100) } ?: "—")
-        }
-    }
+    // Shared aligned grid (issues 10/11/15) — fixed-weight columns, right-aligned tabular numerics.
+    com.t1dm.core.design.DataTable(
+        columns = listOf(
+            com.t1dm.core.design.TableColumn("horizon", 0.9f),
+            com.t1dm.core.design.TableColumn("RMSE", 1f, numeric = true),
+            com.t1dm.core.design.TableColumn("MARD", 1f, numeric = true),
+            com.t1dm.core.design.TableColumn("Clarke-A", 1.1f, numeric = true),
+            com.t1dm.core.design.TableColumn("cov90", 1f, numeric = true),
+        ),
+        rows = ref.horizonsMin.mapIndexed { i, h ->
+            listOf(
+                "${h}m",
+                ref.rmseMgdl.getOrNull(i)?.let { "%.1f".format(it) } ?: "—",
+                ref.mardPct.getOrNull(i)?.let { "%.1f%%".format(it) } ?: "—",
+                ref.clarkeAPct.getOrNull(i)?.let { "%.0f%%".format(it) } ?: "—",
+                ref.coverage90.getOrNull(i)?.let { "%.0f%%".format(it * 100) } ?: "—",
+            )
+        },
+    )
 }
 
 // ── small building blocks ──
@@ -169,10 +173,7 @@ private inline fun androidx.compose.foundation.lazy.LazyListScope.section(
 
 @Composable
 private fun KeyVal(k: String, v: String) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(k, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(v, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
-    }
+    com.t1dm.core.design.KeyValueRow(k, v, numeric = false)
 }
 
 @Composable

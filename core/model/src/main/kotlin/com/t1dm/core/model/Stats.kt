@@ -1,7 +1,7 @@
 package com.t1dm.core.model
 
 /**
- * Domain mirrors of the Rust `t1dm-core::stats` records (PLAN.private.md Phase 6). Kept free of
+ * Domain mirrors of the Rust `t1dm-core::stats` records (Phase 6). Kept free of
  * the uniffi binding so every consumer speaks these `:core:model` types; `:core:native` projects
  * to/from the generated records at the seam (as it does for the curve/forecast surfaces).
  *
@@ -137,7 +137,7 @@ data class AdvancedStats(
 }
 
 /**
- * The global, user-configurable stats target range (PLAN §3.4 / ux-decisions.md). Drives
+ * The global, user-configurable stats target range (SPEC §3.4 / ux-decisions.md). Drives
  * TIR/TBR/TAR and is DISTINCT from the alarm thresholds. Default 70-180 mg/dL (the ADA/consensus
  * time-in-range window).
  */
@@ -195,7 +195,7 @@ data class StatsComposite(
     val recomputed: Boolean,
 )
 
-/** The 7/30/90-day stats windows (server contract: serde `"7d"/"30d"/"90d"`; PLAN §5). */
+/** The 7/30/90-day stats windows (server contract: serde `"7d"/"30d"/"90d"`; T1DMSERVER stats contract). */
 enum class StatsWindow(val wire: String, val days: Int) {
     D7("7d", 7),
     D30("30d", 30),

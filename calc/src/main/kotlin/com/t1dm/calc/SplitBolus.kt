@@ -4,7 +4,7 @@ import com.t1dm.core.model.CurveEvent
 import kotlinx.coroutines.yield
 
 /**
- * The split-bolus search (PLAN Phase 4 §6 — "coarse fraction × gap grid under a configurable cap").
+ * The split-bolus search (Phase 4 §6 — "coarse fraction × gap grid under a configurable cap").
  * Given a total dose, it explores delivering it as [SplitSpec.maxParts] parts over
  * [SplitSpec.gapGridMin] gaps with [SplitSpec.firstFractionGrid] front-loadings, rolls each
  * arrangement through the same fp32 [ForecastPort], and returns the best-scoring split alongside the

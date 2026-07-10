@@ -8,13 +8,13 @@ import java.nio.ByteOrder
  * fan/line/tod). LE is fixed so a DB copied between hosts decodes identically; the app is
  * arm64-only (little-endian) so this is also a no-copy match for the on-device buffers.
  */
-internal fun DoubleArray.toBlob(): ByteArray {
+fun DoubleArray.toBlob(): ByteArray {
     val buf = ByteBuffer.allocate(size * Double.SIZE_BYTES).order(ByteOrder.LITTLE_ENDIAN)
     for (v in this) buf.putDouble(v)
     return buf.array()
 }
 
-internal fun List<Double>.toBlob(): ByteArray = toDoubleArray().toBlob()
+fun List<Double>.toBlob(): ByteArray = toDoubleArray().toBlob()
 
 internal fun ByteArray.toDoubleArray(): DoubleArray {
     require(size % Double.SIZE_BYTES == 0) { "blob length $size is not an f64 multiple" }

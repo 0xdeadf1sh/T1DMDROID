@@ -12,7 +12,7 @@ import kotlinx.coroutines.withContext
 import timber.log.Timber
 
 /**
- * The production [ForecastPort] (PLAN Phase 4 §5 `RollingForecaster`). It rolls the selected
+ * The production [ForecastPort] (Phase 4 §5 `RollingForecaster`). It rolls the selected
  * fp32-authoritative model to the full action window by re-feeding the median (INFERENCE.md §9),
  * conditioning each window's prediction zone on the announced-future + candidate curves from
  * [ChannelBuilder.futureOverrides], and gating every roll through the Rust degeneracy guard (§3.6-B)
@@ -20,7 +20,7 @@ import timber.log.Timber
  *
  * **Fail-closed by construction.** No selected model, too little context, an exception, or any roll
  * failing `forecast_degeneracy_check` yields a non-eligible [PredFan] — never a throw, never a
- * fabricated band. This path is exercised on-device (PLAN Phase 4 "Verify on K90"); the calculator's
+ * fabricated band. This path is exercised on-device (Phase 4 "Verify on K90"); the calculator's
  * safety logic is unit-tested against a deterministic fake port instead, since the host build has no
  * `.pte` and `StubNativeCore` leaves the model pre/post as `TODO`.
  */

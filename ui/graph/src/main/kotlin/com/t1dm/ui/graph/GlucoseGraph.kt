@@ -50,7 +50,7 @@ import kotlin.math.roundToInt
 
 /**
  * What the scrub cursor currently points at, emitted so the dashboard read-out can render it
- * (PLAN.private.md Phase 7A item 3). The cursor is TIME-anchored — it can land in the PREDICTION
+ * (Phase 7A item 3). The cursor is TIME-anchored — it can land in the PREDICTION
  * zone past the last reading, where [bgValue] comes from the selected model's median and [modelHour]
  * is the model's predicted clock at that step. All values are already in the active [unit].
  */
@@ -86,7 +86,7 @@ data class PredictedClock(val predictedHour: Double, val anchorTsMs: Long, val r
 data class ExcursionMarker(val tsMs: Long, val hyper: Boolean, val thresholdMgdl: Int, val etaMin: Long)
 
 /**
- * The Phase-1 live BG graph (PLAN.private.md Phase 1 / ux-decisions "Graph = the centrepiece"):
+ * The Phase-1 live BG graph (Phase 1 / ux-decisions "Graph = the centrepiece"):
  * a background grid, time (x) and glucose (y) axes, the BG polyline with INTERPOLATED and WARMUP
  * points rendered visually distinct, pan / pinch-zoom / long-press-scrub gestures, and an auto-fit
  * Y computed over the visible window. It draws a pre-built immutable [GraphFrame] only — never a
@@ -111,6 +111,8 @@ fun GlucoseGraph(
     rangeMaxMgdl: Int? = null,
     predictedClock: PredictedClock? = null,
     excursions: List<ExcursionMarker> = emptyList(),
+    smoothed: SmoothedTrace? = null,
+    showSmoothed: Boolean = false,
     onScrub: ((GraphScrub?) -> Unit)? = null,
 ) {
     val cs = MaterialTheme.colorScheme
@@ -355,7 +357,7 @@ fun GlucoseGraph(
             drawLine(axisColor, Offset(plotLeft, plotBottom), Offset(plotRight, plotBottom), 1.5f)
 
             // (4.5) Curve overlay (carb Ra + insulin action) in the bottom band, UNDER the BG line
-            //       so it never occludes the glucose trace (PLAN.private.md Phase 4 — toggleable).
+            //       so it never occludes the glucose trace (Phase 4 — toggleable).
             if (curveOverlay != null && curveToggles.any) {
                 fun absToPx(ms: Double): Float = (plotLeft + (ms - viewStartMs) * ppm).toFloat()
                 val bandTop = plotBottom - plotHeight * 0.30f
@@ -395,6 +397,38 @@ fun GlucoseGraph(
                         else -> drawCircle(lineColor, r, c)
                     }
                 }
+            }
+
+            // (6.4) Smoothed model-input overlay (item 13): the causal Savitzky-Golay trace the model
+            //       actually consumes (mg/dL, before any risk transform), drawn distinctly — a thin
+            //       dash-dot line in the tertiary hue — so it is unmistakable against the solid primary
+            //       raw trace. Breaks are honoured so a dropout is not bridged with a fictitious line.
+            if (showSmoothed && smoothed != null && !smoothed.isEmpty) {
+                val vLo = viewStartMs
+                val vHi = viewStartMs + viewSpanMs
+                val smColor = cs.tertiary
+                val smEffect = PathEffect.dashPathEffect(floatArrayOf(5f, 3f, 1f, 3f))
+                val path = Path()
+                var open = false
+                for (i in 0 until smoothed.size) {
+                    val t = smoothed.tsMs[i].toDouble()
+                    // Cull to the visible window (± one span) so a long history is cheap to paint.
+                    if (t < vLo - viewSpanMs || t > vHi + viewSpanMs) {
+                        if (open) { drawPath(path, smColor.copy(alpha = 0.9f), style = Stroke(width = 1.8f, pathEffect = smEffect)); path.reset(); open = false }
+                        continue
+                    }
+                    val x = (plotLeft + (t - viewStartMs) * ppm).toFloat()
+                    val y = yToPx(smoothed.ys[i])
+                    if (!open) { path.moveTo(x, y); open = true } else path.lineTo(x, y)
+                    if (i < smoothed.size - 1 && smoothed.breakAfter[i]) {
+                        drawPath(path, smColor.copy(alpha = 0.9f), style = Stroke(width = 1.8f, pathEffect = smEffect))
+                        path.reset(); open = false
+                    }
+                }
+                if (open) drawPath(path, smColor.copy(alpha = 0.9f), style = Stroke(width = 1.8f, pathEffect = smEffect))
+                // Plain-language legend so the overlay is never mistaken for the sensor trace.
+                val leg = measurer.measure("model input — smoothed", TextStyle(color = smColor, fontSize = 9.sp))
+                drawText(leg, topLeft = Offset((plotRight - leg.size.width - 4f).coerceAtLeast(plotLeft), plotTop + 2f))
             }
 
             // (6.5) Prediction overlay: quantile fan + median for each running model. Non-selected

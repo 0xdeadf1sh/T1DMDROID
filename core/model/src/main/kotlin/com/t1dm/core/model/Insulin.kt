@@ -9,7 +9,7 @@ package com.t1dm.core.model
 enum class InsulinKind { BOLUS, BASAL }
 
 /**
- * A configured insulin type for the builder (PLAN.private.md Phase 4, `:feature:insulin`): the
+ * A configured insulin type for the builder (Phase 4, `:feature:insulin`): the
  * quick presets (Novorapid gamma; Lantus/Tresiba Bateman) plus any user-defined custom type. It is
  * **self-describing** — it carries the exact curve parameters, so a dose logged against it
  * reconstructs the same PK-action curve even if defaults later change.

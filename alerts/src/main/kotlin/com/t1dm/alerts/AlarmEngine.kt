@@ -7,7 +7,7 @@ import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * Combines the two deterministic evaluators ([ThresholdAlarm], [LossOfSignalAlarm]) and publishes
- * the merged [AlarmState] as a Flow (PLAN.private.md §3.6-A). This is the testable heart of the
+ * the merged [AlarmState] as a Flow (SPEC.private.md §3.6-A). This is the testable heart of the
  * model-free path: it has no `:inference` dependency, no Android dependency, and reads no clock —
  * time enters only through [onReading]/[onTick].
  *

@@ -40,7 +40,7 @@ private const val CARB_MAX = 120.0
 private const val CARB_STEPS = 22
 
 /**
- * The Phase-4 carb entry surface (PLAN.private.md deliverable 1 — "manual carb entry"). Logs a meal
+ * The Phase-4 carb entry surface (deliverable 1 — "manual carb entry"). Logs a meal
  * as grams + a glycemic index that parameterizes the **appearance (Ra)** gamma (model-io-curves.md:
  * carbs feed the model as grams-per-5-min Ra, juice ⇒ high early peak, bread ⇒ spread). `:app` writes
  * the self-describing `logged_meal` row (via `CurveEngine.Presets.carbGammaForGi`), folds grams into

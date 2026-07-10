@@ -13,7 +13,7 @@ import timber.log.Timber
 import java.util.concurrent.TimeUnit
 
 /**
- * The deferrable outbox drain (PLAN.private.md Phase 3 deliverable 7). It complements the
+ * The deferrable outbox drain (Phase 3 deliverable 7). It complements the
  * foreground-service opportunistic drain: when the FGS is dead or Doze has parked the app, this
  * WorkManager job still flushes the durable queue on the next network-available window. Requires
  * connectivity so it never wakes to a guaranteed transport failure; a thrown pass yields `retry` so

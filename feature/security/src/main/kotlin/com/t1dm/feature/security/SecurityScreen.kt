@@ -87,10 +87,11 @@ fun SecurityScreen(
 
 @Composable
 private fun Kv(key: String, value: String) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(key, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(value, style = MaterialTheme.typography.bodyMedium, fontFamily = FontFamily.Monospace)
-    }
+    com.t1dm.core.design.KeyValueRow(
+        key, value, numeric = false,
+        labelStyle = MaterialTheme.typography.bodyMedium,
+        valueStyle = MaterialTheme.typography.bodyMedium,
+    )
 }
 
 /**

@@ -30,7 +30,7 @@ import com.t1dm.core.model.BezierPoint
 import kotlin.math.hypot
 
 /**
- * A reusable CUBIC BÉZIER **draggable-control-point** curve editor (PLAN.private.md Phase 7D item 19,
+ * A reusable CUBIC BÉZIER **draggable-control-point** curve editor (Phase 7D item 19,
  * replacing the piecewise-linear knot editor). Shared by the meal builder (a custom carb-appearance
  * shape) and the insulin builder (a custom action shape). The rendered stroke is the same C¹ cubic
  * the sampler integrates ([BezierCurve.valueAt]) so the drawing IS the preview. Interactions mirror
