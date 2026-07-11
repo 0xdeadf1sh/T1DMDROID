@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The per-theme backdrops are resolved at runtime via Resources.getIdentifier("theme_bg_<id>"),
+     so R8's resource shrinker sees no static reference and would drop them. Keep them explicitly. -->
+<resources xmlns:tools="http://schemas.android.com/tools"
+    tools:keep="@drawable/theme_bg_*" />
