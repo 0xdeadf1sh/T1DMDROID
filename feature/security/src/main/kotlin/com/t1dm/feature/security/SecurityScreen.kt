@@ -1,9 +1,5 @@
 package com.t1dm.feature.security
 
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -16,9 +12,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.ui.Alignment
-import com.t1dm.core.design.LocalAnimationsEnabled
 import com.t1dm.core.design.drawEsp32Watch
-import kotlin.math.PI
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
@@ -49,24 +43,13 @@ fun SecurityScreen(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        // The panel leads with a large animated ESP32 wrist device — the accessory this whole screen
-        // pairs and secures. Its display breathes and a data-blip advances (a still figure when motion
-        // is off); every hue is drawn from the active theme.
+        // The panel leads with a large, still ESP32 wrist device — the accessory this whole screen
+        // pairs and secures. A round, merely-lit device; every hue is drawn from the active theme.
         val cs = MaterialTheme.colorScheme
-        val animationsOn = LocalAnimationsEnabled.current
-        val phase = if (animationsOn) {
-            val transition = rememberInfiniteTransition(label = "esp32")
-            transition.animateFloat(
-                initialValue = 0f,
-                targetValue = (2f * PI).toFloat(),
-                animationSpec = infiniteRepeatable(tween(4000)),
-                label = "esp32phase",
-            ).value
-        } else 0f
         Canvas(
             Modifier.fillMaxWidth(0.62f).aspectRatio(1f).align(Alignment.CenterHorizontally),
         ) {
-            drawEsp32Watch(phase, cs.primary, cs.error, cs.onSurface)
+            drawEsp32Watch(cs.primary, cs.onSurface)
         }
 
         Card(

@@ -68,6 +68,10 @@ class InferenceController(
     /** The user's `warmupHours` setting, read FRESH each cycle (kv-backed). Floored at MIN_CONTEXT
      *  (8 h) inside the gate. inference-runtime.md — the WARMUP gate. */
     private val warmupHoursProvider: suspend () -> Double = { DEFAULT_WARMUP_HOURS },
+    /** The user's PER-MODEL forecast-backend preference (kv-backed in :app), re-read FRESH for every
+     *  discovered model id at each discovery. null ⇒ auto (the fp32 XNNPACK authority). Steers the
+     *  DISPLAY forecast cycle ONLY — the dosing/authority path ignores it entirely (§3.6-E). */
+    private val backendPrefProvider: suspend (modelId: String) -> BackendId? = { null },
     /** Durable cumulative per-model inference telemetry (Phase 7C — Models drill-down). Null ⇒
      *  session-only in-memory counters. */
     private val telemetryStore: TelemetryStore? = null,
@@ -94,8 +98,9 @@ class InferenceController(
     private val loadedVariants = LinkedHashMap<String, LinkedHashMap<BackendId, Entry>>()
     /** The evidence-based forecast-backend switcher catalog (issue 20 STEP 4). */
     private var catalog: List<BackendAvailability> = emptyList()
-    /** The user's requested forecast backend (kv-persisted in :app); null ⇒ auto (authority). */
-    private var forecastBackendPref: BackendId? = null
+    /** The user's requested forecast backend PER MODEL id (kv-persisted in :app); absent/null ⇒ auto
+     *  (authority). Repopulated from [backendPrefProvider] on every discovery. */
+    private val forecastBackendPrefs = HashMap<String, BackendId?>()
     /** Cached fp32-agreement verdict per NON-authority backend (null until a comparison runs). */
     private val agreementByBackend = HashMap<BackendId, Boolean>()
     /** The last on-device GPU-vs-CPU comparison (timings + numerics + agreement). */
@@ -148,6 +153,12 @@ class InferenceController(
             variants.getOrPut(b.id) { LinkedHashMap() }[b.backendId] = b
         }
 
+        // Re-read the persisted PER-MODEL backend preference for every discovered id (suspend provider;
+        // fine on the inference dispatcher). A stale entry for a vanished model simply goes unused.
+        for (id in variants.keys) {
+            forecastBackendPrefs[id] = runCatching { backendPrefProvider(id) }.getOrNull()
+        }
+
         // The single running model this phase (maxRunning=1): the first discovered id.
         val primaryId = variants.keys.firstOrNull()
         catalog = buildCatalog(primaryId)
@@ -175,13 +186,14 @@ class InferenceController(
             metas = metasSnapshot(),
             telemetry = telemetrySnapshot(),
             backendCatalog = catalog,
-            requestedBackend = forecastBackendPref,
+            requestedBackend = selectedId?.let { forecastBackendPrefs[it] },
+            requestedBackendByModel = HashMap(forecastBackendPrefs),
             backendComparison = lastComparison,
             note = note,
         )
         Timber.tag(TAG).i(
-            "refreshModels variants=%s active=%s pref=%s catalog=%s",
-            variants.mapValues { it.value.keys }, loaded[selectedId]?.effectiveBackend, forecastBackendPref,
+            "refreshModels variants=%s active=%s prefs=%s catalog=%s",
+            variants.mapValues { it.value.keys }, loaded[selectedId]?.effectiveBackend, forecastBackendPrefs,
             catalog.joinToString { "${it.backend}:${if (it.available) "ok" else "x"}" },
         )
     }
@@ -235,7 +247,7 @@ class InferenceController(
      *  authority, else any loaded variant, else the StubBackend (real path blocked). */
     private fun chooseActive(id: String): Entry {
         val vmap = loadedVariants[id] ?: LinkedHashMap()
-        val chosen = forecastBackendPref?.let { vmap[it] }
+        val chosen = forecastBackendPrefs[id]?.let { vmap[it] }
             ?: vmap[BackendId.EXECUTORCH_XNNPACK_FP32]
             ?: vmap.values.firstOrNull()
         if (chosen != null) return chosen
@@ -245,16 +257,18 @@ class InferenceController(
     }
 
     /**
-     * Set the FORECAST-CYCLE backend (issue 20 STEP 4). Governs the forecast cycle ONLY; the dosing
-     * path stays fail-closed on a non-authoritative backend until the agreement probe passes (§3.6-E).
-     * Re-runs discovery so the active handle + catalog + "executing on" line reflect the choice; if the
-     * requested backend cannot load, the controller falls back to the authority and the requested-vs-
-     * executing divergence is visible to the user. Returns the backend ACTUALLY active afterwards.
+     * Set the FORECAST-CYCLE backend for one model id (issue 20 STEP 4). Governs the DISPLAY forecast
+     * cycle ONLY; the dosing path stays fail-closed on a non-authoritative backend until the agreement
+     * probe passes (§3.6-E). Assumes the caller has already persisted the choice to kv (discovery re-reads
+     * it via [backendPrefProvider]); re-runs discovery so the active handle + catalog + "executing on" line
+     * reflect the choice; if the requested backend cannot load, the controller falls back to the authority
+     * and the requested-vs-executing divergence is visible to the user. Returns the backend ACTUALLY active
+     * for [modelId] afterwards.
      */
-    suspend fun setForecastBackend(pref: BackendId?): BackendId? {
-        forecastBackendPref = pref
+    suspend fun setForecastBackend(modelId: String, pref: BackendId?): BackendId? {
+        forecastBackendPrefs[modelId] = pref
         refreshModels()
-        return loaded[selectedId]?.effectiveBackend
+        return loaded[modelId]?.effectiveBackend
     }
 
     /**
@@ -361,7 +375,7 @@ class InferenceController(
     )
 
     /** The selected model's provenance as it is DISPLAYED (the switcher-chosen active backend), or
-     *  null when nothing is loaded/selected. This follows [forecastBackendPref]; it drives the
+     *  null when nothing is loaded/selected. This follows [forecastBackendPrefs]; it drives the
      *  "Executing on:" line and panels — NOT the dosing path (see [authorityModelInfo]). */
     fun selectedModelInfo(): SelectedModelInfo? {
         val id = selectedId ?: return null
@@ -373,7 +387,7 @@ class InferenceController(
 
     /**
      * The AUTHORITATIVE fp32 XNNPACK CPU provenance for the selected model's DOSING path (§3.6-E).
-     * Deliberately ignores [forecastBackendPref]: dose advice must ALWAYS be computed on the fp32 CPU
+     * Deliberately ignores [forecastBackendPrefs]: dose advice must ALWAYS be computed on the fp32 CPU
      * authority regardless of which backend the switcher renders the DISPLAYED forecast with, so this
      * resolves the loaded XNNPACK variant directly from [loadedVariants] (the authority `.pte` is the
      * deployed one and is always loaded when discovery succeeds). [backend] is therefore always

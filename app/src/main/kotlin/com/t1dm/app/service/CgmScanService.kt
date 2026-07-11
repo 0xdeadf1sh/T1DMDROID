@@ -167,6 +167,9 @@ class CgmScanService : LifecycleService() {
                 accentColor = { container.notificationAccentArgb },
                 // DEATH mode: the pure engine keeps firing (§3.6-A), the notifier presents nothing.
                 suppressed = { container.deathModeSnapshot },
+                // Rate-limit sound+vibration to at most once per configured interval while an alarm
+                // holds the same band, read live so a Settings change applies without a rebuild.
+                minActuationIntervalMs = { container.alarmConfig.minActuationIntervalMin * 60_000L },
             )
             alarmNotifier = notifier
             alarmController = AlarmController(alarmEngine, notifier, container.alarmConfig)
@@ -428,8 +431,14 @@ class CgmScanService : LifecycleService() {
             ACTION_SET_BACKEND -> lifecycleScope.launch {
                 val name = intent.getStringExtra(EXTRA_BACKEND).orEmpty()
                 val pref = name.takeIf { it.isNotBlank() }?.let { runCatching { BackendId.valueOf(it) }.getOrNull() }
-                val active = container.setForecastBackend(pref)
-                Timber.tag(TAG).i("SET_BACKEND requested=%s active=%s", pref, active)
+                val modelId = container.inferenceController.state.value.running.firstOrNull { it.selected }?.modelId
+                    ?: container.inferenceController.state.value.running.firstOrNull()?.modelId
+                if (modelId == null) {
+                    Timber.tag(TAG).w("SET_BACKEND ignored — no running model to target")
+                } else {
+                    val active = container.setForecastBackend(modelId, pref)
+                    Timber.tag(TAG).i("SET_BACKEND model=%s requested=%s active=%s", modelId, pref, active)
+                }
             }
             ACTION_BACKEND_COMPARE -> lifecycleScope.launch {
                 container.inferenceController.refreshModels()

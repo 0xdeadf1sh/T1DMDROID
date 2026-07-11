@@ -269,9 +269,14 @@ data class InferenceState(
     /** The forecast-backend switcher catalog (issue 20 STEP 4): every routable backend with an
      *  evidence-based availability verdict. Drives the Settings selector + the Hardware panel rows. */
     val backendCatalog: List<BackendAvailability> = emptyList(),
-    /** The backend the user REQUESTED for the forecast cycle (kv-persisted). null ⇒ auto (authority).
-     *  The backend ACTUALLY executing is [selectedPrediction]`.backend` / the selected [RunningModel]. */
+    /** The backend the user REQUESTED for the forecast cycle of the SELECTED model (kv-persisted).
+     *  null ⇒ auto (authority). The backend ACTUALLY executing is [selectedPrediction]`.backend` /
+     *  the selected [RunningModel]. See [requestedBackendByModel] for the full per-model map. */
     val requestedBackend: BackendId? = null,
+    /** The requested forecast backend PER MODEL id (kv-persisted; issue 20 STEP 4 is now per-model).
+     *  An id absent here (or mapped to null) means auto = the fp32 XNNPACK authority. Steers only the
+     *  DISPLAY forecast — never the dosing/authority path (§3.6-E). */
+    val requestedBackendByModel: Map<String, BackendId?> = emptyMap(),
     /** The last on-device GPU-vs-CPU comparison (timings + numerics + agreement verdict), or null
      *  until one has been run (the switcher/Hardware panel trigger it when a GPU backend is active). */
     val backendComparison: BackendComparison? = null,
@@ -290,4 +295,7 @@ data class InferenceState(
     fun telemetryOf(modelId: String): ModelTelemetry? = telemetry.firstOrNull { it.modelId == modelId }
 
     fun runningOf(modelId: String): RunningModel? = running.firstOrNull { it.modelId == modelId }
+
+    /** The requested forecast backend for [modelId] (null ⇒ auto = the fp32 XNNPACK authority). */
+    fun requestedBackendOf(modelId: String): BackendId? = requestedBackendByModel[modelId]
 }

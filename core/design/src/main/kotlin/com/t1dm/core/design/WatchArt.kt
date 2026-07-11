@@ -2,62 +2,42 @@ package com.t1dm.core.design
 
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.RoundRect
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.lerp
-import kotlin.math.PI
-import kotlin.math.cos
-import kotlin.math.sin
 
 /**
  * The companion WATCH iconography: a DIY, ESP32-based wrist device rendered wholly in Compose Canvas,
  * drawn centred and scaled to fill the caller's `size`. Where [DeathArt] speaks the funereal, this
- * speaks the hobbyist-hardware key — brushed metal, a glowing OLED glanceable read-out, an honest
- * nod to the board beneath. Every hue derives from the three roles the caller passes so the device
- * renders in each theme's own light: [primary] the theme accent (the display's glow), [accent] the
- * alarm-red for a rising-fast flourish, [ink] the neutral foreground (the case and strap metal).
+ * speaks the hobbyist-hardware key — brushed metal, a round display painted with a minimalist
+ * "Bliss" (Windows XP) wallpaper, an honest nod to the board beneath. The CASE hues derive from the
+ * two roles the caller passes so the metal renders in each theme's own light: [primary] the theme
+ * accent (case highlights and glass), [ink] the neutral foreground (the case and strap metal); the
+ * wallpaper itself is painted in its own fixed sky-and-hill palette.
  */
 
 private fun Color.toward(other: Color, t: Float): Color = lerp(this, other, t)
 private val Color.deep get() = toward(Color.Black, 0.52f)
 private val Color.abyss get() = toward(Color.Black, 0.82f)
 
-// Seven-segment illumination map — which segments burn for each glyph on a faux OLED read-out.
-private val SEG = mapOf(
-    '0' to "abcdef",
-    '1' to "bc",
-    '2' to "abged",
-    '3' to "abgcd",
-    '4' to "fgbc",
-    '5' to "afgcd",
-    '6' to "afgedc",
-    '7' to "abc",
-    '8' to "abcdefg",
-    '9' to "abcfgd",
-)
-
 /**
- * A large, dignified DIY smartwatch: a brushed rounded-square case, a glowing OLED display bearing a
- * glanceable BG read-out (a seven-segment figure, a rising trend arrow, a scrolling trace), side
- * buttons, a stitched wrist strap curving above and below, and a peek of PCB-green at the foot. Off
- * [phase] the display breathes and a data-blip advances along the trace so it feels alive and
- * "pushing every five minutes"; passing 0f yields a still, merely-lit device.
+ * A large, dignified DIY smartwatch: a brushed circular case, a round display bearing a minimalist
+ * Windows-XP "Bliss" wallpaper (blue sky, white clouds, a green hill), side buttons, a stitched wrist
+ * strap curving above and below, and a peek of PCB-green at the foot. A still, powered device; the
+ * case hues are drawn from the two roles the caller passes, the wallpaper from its own fixed palette.
  */
-fun DrawScope.drawEsp32Watch(phase: Float, primary: Color, accent: Color, ink: Color) {
+fun DrawScope.drawEsp32Watch(primary: Color, ink: Color) {
     val w = size.width
     val h = size.height
     val cx = w / 2f
     val cy = h / 2f
-    val breath = 0.5f + 0.5f * sin(phase * 1.1f)          // 0..1 glow envelope
-    val blip = ((phase / (2f * PI.toFloat())) % 1f + 1f) % 1f // 0..1 looping blip position
 
     val caseHalf = w * 0.28f
     val caseL = cx - caseHalf
@@ -129,179 +109,124 @@ fun DrawScope.drawEsp32Watch(phase: Float, primary: Color, accent: Color, ink: C
         drawLine(pad.copy(alpha = 0.6f), Offset(cx + k * caseHalf * 0.24f, caseB + caseHalf * 0.06f), Offset(cx + k * caseHalf * 0.24f, caseB + caseHalf * 0.16f), strokeWidth = w * 0.004f)
     }
 
-    // ── side buttons on the right flank ───────────────────────────────────────────────────────────
+    // ── side buttons on the right flank, meeting the round case edge ───────────────────────────────
     val btnMetal = Brush.horizontalGradient(listOf(ink.toward(Color.White, 0.18f), ink.deep), startX = caseR, endX = caseR + w * 0.05f)
-    for (by in floatArrayOf(cy - caseHalf * 0.45f, cy + caseHalf * 0.30f)) {
-        val bh = if (by < cy) caseHalf * 0.34f else caseHalf * 0.22f
+    for (by in floatArrayOf(cy - caseHalf * 0.40f, cy + caseHalf * 0.28f)) {
+        val bh = if (by < cy) caseHalf * 0.30f else caseHalf * 0.20f
+        // Anchor the inner edge just inside the circle at this height so it kisses the round rim.
+        val dyc = by - cy
+        val edgeX = cx + kotlin.math.sqrt((caseHalf * caseHalf - dyc * dyc).coerceAtLeast(0f))
         drawRoundRect(
             btnMetal,
-            topLeft = Offset(caseR - w * 0.006f, by - bh / 2f),
+            topLeft = Offset(edgeX - w * 0.006f, by - bh / 2f),
             size = Size(w * 0.045f, bh),
             cornerRadius = CornerRadius(w * 0.012f, w * 0.012f),
         )
         drawRoundRect(
             ink.abyss.copy(alpha = 0.55f),
-            topLeft = Offset(caseR - w * 0.006f, by - bh / 2f),
+            topLeft = Offset(edgeX - w * 0.006f, by - bh / 2f),
             size = Size(w * 0.045f, bh),
             cornerRadius = CornerRadius(w * 0.012f, w * 0.012f),
             style = Stroke(width = w * 0.003f),
         )
     }
 
-    // ── the brushed case ─────────────────────────────────────────────────────────────────────────
-    val caseRad = CornerRadius(caseHalf * 0.42f, caseHalf * 0.42f)
+    // ── the brushed circular case ──────────────────────────────────────────────────────────────────
     // A soft cast shadow beneath the case lifts it off the strap.
-    drawRoundRect(
+    drawCircle(
         Color.Black.copy(alpha = 0.28f),
-        topLeft = Offset(caseL + w * 0.012f, caseT + h * 0.016f),
-        size = Size(caseHalf * 2f, caseHalf * 2f),
-        cornerRadius = caseRad,
+        radius = caseHalf,
+        center = Offset(cx + w * 0.012f, cy + h * 0.016f),
     )
-    drawRoundRect(
+    drawCircle(
         Brush.linearGradient(
             colors = listOf(ink.toward(Color.White, 0.24f), ink, ink.deep, ink.abyss),
             start = Offset(caseL, caseT), end = Offset(caseR, caseB),
         ),
-        topLeft = Offset(caseL, caseT),
-        size = Size(caseHalf * 2f, caseHalf * 2f),
-        cornerRadius = caseRad,
+        radius = caseHalf,
+        center = Offset(cx, cy),
     )
     // A cold rim-light on the upper-left bezel, a dark contour all round.
-    drawRoundRect(
+    drawCircle(
         primary.toward(Color.White, 0.3f).copy(alpha = 0.25f),
-        topLeft = Offset(caseL, caseT),
-        size = Size(caseHalf * 2f, caseHalf * 2f),
-        cornerRadius = caseRad,
+        radius = caseHalf,
+        center = Offset(cx, cy),
         style = Stroke(width = w * 0.006f),
     )
-    drawRoundRect(
+    drawCircle(
         ink.abyss.copy(alpha = 0.8f),
-        topLeft = Offset(caseL, caseT),
-        size = Size(caseHalf * 2f, caseHalf * 2f),
-        cornerRadius = caseRad,
+        radius = caseHalf,
+        center = Offset(cx, cy),
         style = Stroke(width = w * 0.004f),
     )
 
-    // ── the display ──────────────────────────────────────────────────────────────────────────────
+    // ── the round display — a minimalist "Bliss" (Windows XP) wallpaper ───────────────────────────────
     val bezel = caseHalf * 0.20f
-    val sL = caseL + bezel
-    val sT = caseT + bezel
-    val sR = caseR - bezel
-    val sB = caseB - bezel
-    val sW = sR - sL
-    val sH = sB - sT
-    val scrRad = CornerRadius(caseHalf * 0.26f, caseHalf * 0.26f)
-    val screenPath = Path().apply {
-        addRoundRect(RoundRect(sL, sT, sR, sB, scrRad))
-    }
-    // The dark glass.
-    drawRoundRect(
-        Brush.verticalGradient(listOf(ink.abyss.toward(Color.Black, 0.5f), Color.Black), startY = sT, endY = sB),
-        topLeft = Offset(sL, sT),
-        size = Size(sW, sH),
-        cornerRadius = scrRad,
-    )
-
-    clipPath(screenPath) {
-        // The OLED's ambient glow, breathing off phase.
-        drawCircle(
-            Brush.radialGradient(
-                colors = listOf(primary.copy(alpha = 0.22f + 0.16f * breath), primary.copy(alpha = 0f)),
-                center = Offset(sL + sW * 0.5f, sT + sH * 0.42f),
-                radius = sW * 0.75f,
+    val sRad = caseHalf - bezel
+    val sL = cx - sRad
+    val sT = cy - sRad
+    val sR = cx + sRad
+    val sB = cy + sRad
+    val sW = sRad * 2f
+    val sH = sRad * 2f
+    clipPath(Path().apply { addOval(Rect(sL, sT, sR, sB)) }) {
+        // Sky — a bright blue deepening upward, paling toward the horizon.
+        drawRect(
+            Brush.verticalGradient(
+                0f to Color(0xFF2C6BC0),
+                0.55f to Color(0xFF6FA8DC),
+                1f to Color(0xFFCFE3F5),
+                startY = sT, endY = sB,
             ),
-            radius = sW * 0.75f,
-            center = Offset(sL + sW * 0.5f, sT + sH * 0.42f),
+            topLeft = Offset(sL, sT),
+            size = Size(sW, sH),
         )
+        // Two soft white clouds drifting the upper sky.
+        cloud(sL + sW * 0.28f, sT + sH * 0.24f, sW * 0.15f)
+        cloud(sL + sW * 0.68f, sT + sH * 0.33f, sW * 0.11f)
 
-        // A scrolling glucose trace across the lower band.
-        val baseY = sB - sH * 0.22f
-        val amp = sH * 0.12f
-        val trace = Path()
-        val n = 44
-        fun traceY(u: Float): Float = baseY - amp * (sin(u) * 0.6f + sin(u * 0.5f + 1.1f) * 0.4f)
-        for (i in 0..n) {
-            val x = sL + sW * i / n
-            val u = i.toFloat() / n * 4.2f - phase * 0.6f
-            if (i == 0) trace.moveTo(x, traceY(u)) else trace.lineTo(x, traceY(u))
+        // The iconic green hill — one smooth grassy crest, lit along its ridge.
+        val ridge = Path().apply {
+            moveTo(sL, sT + sH * 0.70f)
+            cubicTo(
+                sL + sW * 0.24f, sT + sH * 0.47f,
+                sL + sW * 0.58f, sT + sH * 0.60f,
+                sR, sT + sH * 0.74f,
+            )
         }
-        drawPath(trace, primary.copy(alpha = 0.55f), style = Stroke(width = w * 0.005f, cap = StrokeCap.Round, join = StrokeJoin.Round))
-
-        // The live data-blip riding the trace — the "pushed every 5 min" heartbeat.
-        val bx = sL + sW * blip
-        val bu = blip * 4.2f - phase * 0.6f
-        val byv = traceY(bu)
-        drawCircle(primary.copy(alpha = 0.18f + 0.22f * breath), radius = w * 0.03f * (0.7f + 0.3f * breath), center = Offset(bx, byv))
-        drawCircle(primary.toward(Color.White, 0.5f), radius = w * 0.009f, center = Offset(bx, byv))
-
-        // The glanceable BG figure, "5.8", in seven-segment glow.
-        val onSeg = primary.toward(Color.White, 0.35f).copy(alpha = 0.85f + 0.15f * breath)
-        val offSeg = primary.copy(alpha = 0.08f)
-        val dw = sW * 0.17f
-        val dh = sH * 0.4f
-        val dy = sT + sH * 0.14f
-        val d1x = sL + sW * 0.12f
-        val d2x = d1x + dw * 1.55f
-        sevenSeg('5', d1x, dy, dw, dh, onSeg, offSeg)
-        sevenSeg('8', d2x, dy, dw, dh, onSeg, offSeg)
-        // The decimal point.
-        drawCircle(onSeg, radius = dw * 0.09f, center = Offset(d1x + dw * 1.28f, dy + dh))
-
-        // A rising trend arrow to the right of the figure.
-        val ax = sL + sW * 0.78f
-        val ay = dy + dh * 0.5f
-        val arrowCol = primary.toward(accent, 0.35f).copy(alpha = 0.85f + 0.15f * breath)
-        val al = sW * 0.11f
-        val tail = Offset(ax - al * 0.5f, ay + al * 0.5f)
-        val head = Offset(ax + al * 0.5f, ay - al * 0.5f)
-        drawLine(arrowCol, tail, head, strokeWidth = w * 0.008f, cap = StrokeCap.Round)
-        drawLine(arrowCol, head, Offset(head.x - al * 0.5f, head.y), strokeWidth = w * 0.008f, cap = StrokeCap.Round)
-        drawLine(arrowCol, head, Offset(head.x, head.y + al * 0.5f), strokeWidth = w * 0.008f, cap = StrokeCap.Round)
-
-        // A faint scanline texture and a glass reflection sweeping the upper-left.
-        var yy = sT + sH * 0.06f
-        while (yy < sB) {
-            drawLine(Color.Black.copy(alpha = 0.12f), Offset(sL, yy), Offset(sR, yy), strokeWidth = w * 0.0015f)
-            yy += sH * 0.045f
+        val hill = Path().apply {
+            addPath(ridge)
+            lineTo(sR, sB)
+            lineTo(sL, sB)
+            close()
         }
         drawPath(
-            Path().apply {
-                moveTo(sL, sT)
-                lineTo(sL + sW * 0.55f, sT)
-                lineTo(sL, sT + sH * 0.62f)
-                close()
-            },
-            Color.White.copy(alpha = 0.06f),
+            hill,
+            Brush.verticalGradient(
+                0f to Color(0xFF7CB342),
+                0.5f to Color(0xFF558B2F),
+                1f to Color(0xFF33691E),
+                startY = sT + sH * 0.46f, endY = sB,
+            ),
         )
+        // A pale sun-lit rim along the crest.
+        drawPath(ridge, Color.White.copy(alpha = 0.26f), style = Stroke(width = w * 0.004f, cap = StrokeCap.Round))
     }
 
     // The glass edge catching the light.
-    drawRoundRect(
+    drawCircle(
         ink.toward(Color.White, 0.14f).copy(alpha = 0.35f),
-        topLeft = Offset(sL, sT),
-        size = Size(sW, sH),
-        cornerRadius = scrRad,
+        radius = sRad,
+        center = Offset(cx, cy),
         style = Stroke(width = w * 0.003f),
     )
 }
 
-/**
- * Paints a single seven-segment glyph in the cell [x],[y],[cw]×[chh]; lit segments burn in [on],
- * the dark ones ghost in [off] as an unlit OLED cell would.
- */
-private fun DrawScope.sevenSeg(ch: Char, x: Float, y: Float, cw: Float, chh: Float, on: Color, off: Color) {
-    val segs = SEG[ch] ?: return
-    val th = cw * 0.15f
-    val pad = th * 0.7f
-    val midY = y + chh / 2f
-    fun seg(id: Char, a: Offset, b: Offset) {
-        drawLine(if (id in segs) on else off, a, b, strokeWidth = th, cap = StrokeCap.Round)
-    }
-    seg('a', Offset(x + pad, y), Offset(x + cw - pad, y))
-    seg('g', Offset(x + pad, midY), Offset(x + cw - pad, midY))
-    seg('d', Offset(x + pad, y + chh), Offset(x + cw - pad, y + chh))
-    seg('f', Offset(x, y + pad), Offset(x, midY - pad * 0.3f))
-    seg('b', Offset(x + cw, y + pad), Offset(x + cw, midY - pad * 0.3f))
-    seg('e', Offset(x, midY + pad * 0.3f), Offset(x, y + chh - pad))
-    seg('c', Offset(x + cw, midY + pad * 0.3f), Offset(x + cw, y + chh - pad))
+/** A soft, minimalist cloud puff — a small cluster of white discs. */
+private fun DrawScope.cloud(x: Float, y: Float, r: Float) {
+    val white = Color.White.copy(alpha = 0.90f)
+    drawCircle(white, radius = r * 0.55f, center = Offset(x - r * 0.60f, y + r * 0.12f))
+    drawCircle(white, radius = r * 0.78f, center = Offset(x, y))
+    drawCircle(white, radius = r * 0.50f, center = Offset(x + r * 0.62f, y + r * 0.16f))
+    drawCircle(white, radius = r * 0.44f, center = Offset(x + r * 0.16f, y - r * 0.34f))
 }

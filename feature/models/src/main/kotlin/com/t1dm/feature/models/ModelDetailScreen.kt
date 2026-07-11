@@ -1,5 +1,7 @@
 package com.t1dm.feature.models
 
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -7,17 +9,28 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.model.AccuracyReport
+import com.t1dm.core.model.BackendAvailability
+import com.t1dm.core.model.BackendComparison
+import com.t1dm.core.model.BackendId
 import com.t1dm.core.model.HorizonAccuracy
 import com.t1dm.core.model.InferenceState
 import com.t1dm.core.model.ModelMeta
@@ -46,6 +59,11 @@ fun ModelDetailScreen(
     accuracy: AccuracyReport?,
     accuracyLoading: Boolean,
     onRecomputeAccuracy: () -> Unit,
+    catalog: List<BackendAvailability>,
+    requestedBackend: BackendId?,
+    comparison: BackendComparison?,
+    onSelectBackend: (BackendId?) -> Unit,
+    onRunComparison: () -> Unit,
 ) {
     val meta = state.metaOf(modelId)
     val telemetry = state.telemetryOf(modelId)
@@ -89,6 +107,21 @@ fun ModelDetailScreen(
                 state.latencyOf(modelId)?.let {
                     KeyVal("recent p50 / p95", "${fmtMs(it.p50Ms)} / ${fmtMs(it.p95Ms)}")
                 }
+            }
+        }
+
+        // ── Compute backend (per-model forecast switcher; issue 20 STEP 4) ──
+        // Only meaningful while the model is in the running set (a loaded backend to switch).
+        if (running != null) {
+            section("Compute backend") {
+                ComputeBackendControls(
+                    running = running,
+                    catalog = catalog,
+                    requestedBackend = requestedBackend,
+                    comparison = comparison,
+                    onSelectBackend = onSelectBackend,
+                    onRunComparison = onRunComparison,
+                )
             }
         }
 
@@ -165,6 +198,151 @@ private fun ReferenceRows(ref: ReferenceMetrics) {
             )
         },
     )
+}
+
+/**
+ * The per-model forecast-backend chooser (issue 20 STEP 4, relocated from Settings). Governs the
+ * DISPLAY forecast only; per §3.6-E dose advice always runs on the fp32 XNNPACK CPU authority (or a
+ * backend that PASSED the agreement probe), so a non-authoritative choice renders the forecast while
+ * dosing stays pinned to the CPU authority.
+ */
+@Composable
+private fun ComputeBackendControls(
+    running: com.t1dm.core.model.RunningModel,
+    catalog: List<BackendAvailability>,
+    requestedBackend: BackendId?,
+    comparison: BackendComparison?,
+    onSelectBackend: (BackendId?) -> Unit,
+    onRunComparison: () -> Unit,
+) {
+    var refusal by remember { mutableStateOf<String?>(null) }
+
+    Note(
+        "Choose which compute unit runs this model's display forecast — dose advice always stays on the " +
+            "fp32 XNNPACK CPU authority unless another backend passes the agreement probe below.",
+    )
+
+    // Live truth: what is ACTUALLY executing (may differ from the request on a load failure).
+    Row(Modifier.fillMaxWidth().padding(top = 4.dp)) {
+        Text("Executing on ", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(
+            "${running.backend.displayName()} · ${running.precision.name}",
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.Bold,
+        )
+    }
+
+    // Auto row (auto = the fp32 CPU authority).
+    BackendChoiceRow(
+        title = "Auto (fp32 CPU authority)",
+        subtitle = "Always the authoritative XNNPACK CPU path — trusted for dose advice.",
+        available = true,
+        selected = requestedBackend == null,
+        onClick = { refusal = null; onSelectBackend(null) },
+    )
+    // This build ships exactly two real compute paths: the XNNPACK CPU authority and the Vulkan GPU
+    // delegate. The Play-delivered NeuroPilot NPU / legacy LiteRT rows are not reachable here.
+    val shown = catalog.filter {
+        it.backend == BackendId.EXECUTORCH_XNNPACK_FP32 ||
+            it.backend == BackendId.EXECUTORCH_VULKAN_FP16 ||
+            it.backend == BackendId.EXECUTORCH_VULKAN_FP32
+    }
+    shown.forEach { b ->
+        BackendChoiceRow(
+            title = b.backend.displayName(),
+            subtitle = buildString {
+                if (b.authoritative) append("authority · ")
+                if (b.available) append("available") else append("unavailable")
+                b.reason?.let { append("\n"); append(it) }
+            },
+            available = b.available,
+            selected = requestedBackend == b.backend,
+            onClick = {
+                if (b.available) { refusal = null; onSelectBackend(b.backend) }
+                else refusal = "${b.backend.displayName()} is unavailable: ${b.reason ?: "no artifact on device"}"
+            },
+        )
+    }
+    refusal?.let {
+        Text(
+            it,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+    }
+
+    Note(
+        "Runs the selected backend and the CPU authority on the same fixed input and compares speed and " +
+            "numerics — a PASS on the decoded-mg/dL agreement is what lets that backend feed dose advice.",
+    )
+    Button(onClick = { refusal = null; onRunComparison() }) { Text("Run agreement probe & measure") }
+    comparison?.let { BackendComparisonCard(it) }
+}
+
+@Composable
+private fun BackendChoiceRow(
+    title: String,
+    subtitle: String,
+    available: Boolean,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    val borderColor = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .border(if (selected) 2.dp else 1.dp, borderColor, RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick)
+            .padding(12.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Column(Modifier.weight(1f).padding(end = 8.dp)) {
+            Text(
+                title,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                color = if (available) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Text(
+            if (selected) "●" else "○",
+            style = MaterialTheme.typography.titleMedium,
+            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun BackendComparisonCard(c: BackendComparison) {
+    val pass = c.agreementOk
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = if (pass) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.errorContainer,
+        ),
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(
+                "${c.backend.displayName()}  vs  ${c.authority.displayName()}",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+            )
+            Mono("warm median   GPU ${"%.2f".format(c.warmMedianMsBackend)} ms   CPU ${"%.2f".format(c.warmMedianMsAuthority)} ms")
+            Mono("cold          GPU ${"%.1f".format(c.coldMsBackend)} ms   CPU ${"%.1f".format(c.coldMsAuthority)} ms")
+            Mono("max|Δ| head_raw    ${"%.3e".format(c.maxAbsHeadRawDelta)}")
+            Mono("max|Δ| mg/dL       ${"%.4f".format(c.maxAbsDecodedMgdlDelta)}  (tol ${"%.1f".format(c.toleranceMgdl)})")
+            c.loadRssGrowthKb?.let { Mono("load RSS growth    $it KB (unified memory)") }
+            Text(
+                if (pass) "AGREEMENT: PASS — this backend may feed dose advice."
+                else "AGREEMENT: FAIL — forecast only; dose advice stays on the CPU authority.",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Bold,
+                color = if (pass) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onErrorContainer,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
+    }
 }
 
 // ── small building blocks ──
