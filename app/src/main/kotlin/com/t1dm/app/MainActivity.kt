@@ -62,6 +62,14 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        // Re-evaluate inference immediately on resume so the panels reflect the CURRENT context instead of
+        // the last 5-min grid cycle's possibly-stale forecast (which lingered as a STABLE read-out on
+        // reopen). Serialised + gated identically inside the controller — never bypasses a §3.6 gate.
+        container.reevaluateInferenceNow()
+    }
+
     private fun requestRuntimePermissions() {
         val wanted = buildList {
             add(Manifest.permission.BLUETOOTH_SCAN)

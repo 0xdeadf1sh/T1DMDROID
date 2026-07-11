@@ -41,6 +41,7 @@ import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.CgmSourceDescriptor
 import com.t1dm.core.model.CurveKind
 import com.t1dm.core.model.CurveEvent
+import com.t1dm.core.model.InferenceCause
 import com.t1dm.core.model.InsulinFamily
 import com.t1dm.core.model.InsulinPresetSpec
 import com.t1dm.core.model.AccuracyReport
@@ -344,6 +345,18 @@ class AppContainer(context: Context) {
     }
 
     val inferenceState: StateFlow<InferenceState> get() = inferenceController.state
+
+    /**
+     * Re-run one inference evaluation now (e.g. on app resume) so the panels reflect the CURRENT context
+     * promptly instead of the last 5-min grid cycle's possibly-stale forecast. Serialised with the FGS
+     * cycles by the controller's own mutex and gated identically — this never bypasses a §3.6 gate, it
+     * only re-runs the same evaluation sooner.
+     */
+    fun reevaluateInferenceNow() {
+        appScope.launch {
+            runCatching { inferenceController.runFromHistory(InferenceCause.GRID_TICK, System.currentTimeMillis()) }
+        }
+    }
 
     /** Build the read-only About-panel model (Phase 7C — item 18): identity, version/build, licence,
      *  and the loaded model's provenance. Public-safe (no secrets). Reads the selected model's meta. */
