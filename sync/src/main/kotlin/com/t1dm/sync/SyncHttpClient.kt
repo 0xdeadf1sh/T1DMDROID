@@ -5,6 +5,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
@@ -38,6 +39,14 @@ data class SyncResponse(val code: Int, val body: ByteArray) {
 class NoActiveProfileException : IllegalStateException("no active server profile / token")
 
 /**
+ * A downloaded model artifact held in memory (≤~9 MB, an acceptable buffer) beside the server's
+ * declared content hash from the `X-SHA256` response header. The coordinator verifies the bytes
+ * against [sha256] before the artifact is placed where ModelStore can discover it; [sha256] is
+ * `null` if the server omitted the header (the registry-row hash is then the fallback source).
+ */
+class ModelArtifact(val bytes: ByteArray, val sha256: String?)
+
+/**
  * The `/v1` client (docs/T1DMSERVER_API.md). [execute] is the generic path the [QueueDrainer] drives
  * with an outbox envelope; the typed helpers are the read/health surface the Network panel and
  * catch-up use. Every call carries the active profile's `rw` Bearer token and runs on
@@ -58,6 +67,12 @@ interface SyncHttpClient {
     /** Attach a meal photo: `POST /v1/photos`, multipart `ts` (epoch-ms) + `image` file part whose
      *  filename carries the extension. Returns the server's `{ok,id,sha256}` ack. */
     suspend fun postPhoto(tsMs: Long, bytes: ByteArray, ext: String): PhotoAck
+    /** `GET /v1/models` — the served model registry, envelope-unwrapped like [getStats]. */
+    suspend fun listModels(): List<ModelDto>
+    /** `GET /v1/models/{id}/download` — streams the `application/octet-stream` artifact into memory
+     *  and surfaces the `X-SHA256` response header so the caller can verify integrity. A 4xx/5xx
+     *  surfaces as a plain failure (`require`). */
+    suspend fun downloadModel(id: String): ModelArtifact
 }
 
 /** Shared JSON: tolerant on read, gap-omitting on write (an absent field must never null a row). */
@@ -148,6 +163,34 @@ class OkHttpSyncClient(
 
     override suspend fun getStats(window: String, refresh: Boolean): StatsDto =
         get<StatsEnvelope>("/v1/stats?window=$window" + if (refresh) "&refresh=1" else "").stats
+
+    override suspend fun listModels(): List<ModelDto> = get<ModelsEnvelope>("/v1/models").models
+
+    /**
+     * A DIRECT streaming GET (not the JSON [get] helper): the artifact is a large binary. Rides its
+     * own call on [T1dmDispatchers.io], carries the `rw` Bearer token, and surfaces `X-SHA256` for
+     * the caller's integrity check. [id] is a `.pte` filename with no special chars in practice, but
+     * it is percent-encoded as a single path segment via [HttpUrl] for safety. Throws
+     * [NoActiveProfileException] with no endpoint; a 4xx/5xx surfaces via [require].
+     */
+    override suspend fun downloadModel(id: String): ModelArtifact = withContext(dispatchers.io) {
+        val ep = endpoint() ?: throw NoActiveProfileException()
+        val url = ep.baseUrl.toHttpUrl().newBuilder()
+            .addPathSegments("v1/models")
+            .addPathSegment(id)
+            .addPathSegments("download")
+            .build()
+        val request = Request.Builder()
+            .url(url)
+            .header("Authorization", "Bearer ${ep.token}")
+            .get()
+            .build()
+        client.newCall(request).execute().use { resp ->
+            val bytes = resp.body?.bytes() ?: ByteArray(0) // ~5-9 MB in memory, acceptable
+            require(resp.isSuccessful) { "GET /v1/models/$id/download -> ${resp.code}" }
+            ModelArtifact(bytes, resp.header("X-SHA256"))
+        }
+    }
 
     /**
      * A DIRECT multipart POST (not the JSON outbox): a photo is a large binary, unfit for the

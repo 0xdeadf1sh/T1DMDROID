@@ -74,13 +74,18 @@ class ModelStore(
         // The Rust `parse_descriptor` (golden-gated) expects the FLAT descriptor schema; the exporter
         // emits a RICHER NESTED one (geometry/constants/conformal). Flatten the nested form here so
         // the app consumes the real exported artifact without touching the exporter or the parser.
-        val flat = flattenDescriptor(obj).toString()
+        // A malformed descriptor (e.g. a server-served one missing `normalization_stats`) must SKIP
+        // ITSELF, not throw out of `discover()`'s mapNotNull and disable discovery of every other model.
+        val flat = runCatching { flattenDescriptor(obj).toString() }.getOrElse {
+            Timber.tag(TAG).w(it, "descriptor %s is malformed (%s); skipping", descriptorFile.name, it.message)
+            return null
+        }
         val desc = native.parseDescriptor(flat)
         if (desc == null) {
             Timber.tag(TAG).w("descriptor %s failed the §2.4 pre/post parse; skipping", descriptorFile.name)
             return null
         }
-        val id = obj.optString("id").ifBlank { descriptorFile.name.removeSuffix(".descriptor.json").ifBlank { "model" } }
+        val id = resolveId(descriptorFile, obj)
         val artifact = obj.optString("artifact").ifBlank { "$id.xnnpack.pte" }
         // The `.pte` is gitignored + adb-pushed separately from the (tracked) descriptor, so it may
         // be absent. Return the bundle anyway with a non-existent [pte] File — the controller checks
@@ -100,6 +105,41 @@ class ModelStore(
             descriptorJson = json,
             meta = metaOf(id, obj, pte),
         )
+    }
+
+    /**
+     * The model's stable id: the descriptor's top-level `id`, else the descriptor filename with its
+     * `.descriptor.json` suffix stripped (a bare `descriptor.json` keeps its name), else `"model"`.
+     * Sole source of truth so `discover` and [delete] agree on which artifact a modelId names.
+     */
+    private fun resolveId(descriptorFile: File, obj: JSONObject): String =
+        obj.optString("id").ifBlank { descriptorFile.name.removeSuffix(".descriptor.json").ifBlank { "model" } }
+
+    /**
+     * Delete every descriptor + `.pte` pair on disk whose resolved id equals [modelId] (a model may
+     * ship under several backend-variant descriptors, all sharing one id). Returns true if anything
+     * was removed. The ModelSyncCoordinator `pending/` staging dir is a subdirectory and so is never
+     * a descriptor here (the `isFile` filter excludes it) — leave staged updates untouched.
+     */
+    fun delete(modelId: String): Boolean {
+        val dir = ensureDir()
+        val descriptors = dir.listFiles { f ->
+            f.isFile && (f.name == "descriptor.json" || f.name.endsWith(".descriptor.json"))
+        }.orEmpty()
+        var removed = false
+        for (descriptorFile in descriptors) {
+            val parsed = runCatching { JSONObject(descriptorFile.readText()) }
+            val obj = parsed.getOrNull()
+            if (obj == null) {
+                Timber.tag(TAG).w(parsed.exceptionOrNull(), "descriptor %s unreadable/invalid during delete; skipping", descriptorFile.name)
+                continue
+            }
+            if (resolveId(descriptorFile, obj) != modelId) continue
+            val artifact = obj.optString("artifact").ifBlank { "$modelId.xnnpack.pte" }
+            if (File(dir, artifact).takeIf { it.exists() }?.delete() == true) removed = true
+            if (descriptorFile.delete()) removed = true
+        }
+        return removed
     }
 
     /**

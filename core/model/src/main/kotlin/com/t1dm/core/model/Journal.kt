@@ -24,6 +24,11 @@ data class JournalNote(
  * logged insulin — surfaced here as [minsSinceLastLoggedInsulin] — is the signal the dose card
  * escalates on ("IOB from logged doses only; last logged N min ago"). [hasBasalSchedule] tells the
  * reader whether the near-flat basal background is included in [iobU].
+ *
+ * [iobZeroMs] is the wall-clock instant the combined insulin action (logged doses + active basal
+ * tails only) finally decays to zero — the anchor the circadian panel's insulin-exhaustion
+ * countdown projects DKA/coma/death forward from. Null when no insulin is on board (nothing to
+ * exhaust); display-only, never read by §3.6.
  */
 data class IobCobReadout(
     val atMs: Long,
@@ -31,6 +36,7 @@ data class IobCobReadout(
     val cobG: Double,
     val minsSinceLastLoggedInsulin: Long?,
     val hasBasalSchedule: Boolean,
+    val iobZeroMs: Long? = null,
 )
 
 /**

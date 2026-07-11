@@ -4,6 +4,7 @@ import com.t1dm.core.model.AlertBand
 import com.t1dm.core.model.ReadingProvenance
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -65,5 +66,27 @@ class AlarmEngineTest {
         assertEquals(AlarmSeverity.WARNING, s.threshold!!.severity)
         assertTrue(s.signalLoss!!.escalated)
         assertTrue(s.primary is SignalLoss)
+    }
+
+    @Test
+    fun `over-temperature surfaces through onTick and clears on cooling`() {
+        val e = engine() // default over-temp: alert 44, clear 41
+        e.onTick(MIN, tempC = 44.0)
+        assertNotNull(e.state.value.overTemperature)
+        assertTrue(e.state.value.isActive)
+        e.onTick(2 * MIN, tempC = 41.0)
+        assertNull(e.state.value.overTemperature)
+        assertFalse(e.state.value.isActive)
+    }
+
+    @Test
+    fun `a critical threshold breach outranks a critical over-temperature`() {
+        val e = AlarmEngine(AlarmConfig.DEFAULT.copy(overTempSeverity = AlarmSeverity.CRITICAL))
+        e.onReading(reading(50, rxWallMs = 0)) // urgent low ⇒ CRITICAL threshold
+        e.onTick(MIN, tempC = 45.0)            // CRITICAL over-temp
+        val s = e.state.value
+        assertEquals(AlarmSeverity.CRITICAL, s.threshold!!.severity)
+        assertEquals(AlarmSeverity.CRITICAL, s.overTemperature!!.severity)
+        assertTrue(s.primary is ThresholdBreach) // glucose beats device at equal severity
     }
 }

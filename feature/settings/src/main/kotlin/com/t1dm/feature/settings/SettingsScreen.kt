@@ -31,6 +31,10 @@ fun SettingsScreen(
     onOpenData: () -> Unit = {},
     onOpenAbout: () -> Unit = {},
     onOpenDeath: () -> Unit = {},
+    onOpenForecastCadence: () -> Unit = {},
+    onOpenThermal: () -> Unit = {},
+    onOpenDeviceTemp: () -> Unit = {},
+    onOpenDeathClock: () -> Unit = {},
 ) {
     SettingsScaffold("Settings") {
         SettingsSectionHeader("Display & units")
@@ -41,9 +45,12 @@ fun SettingsScreen(
         SettingsNavRow("Alarm thresholds", "Urgent-low / low / high / urgent-high — unbounded", onClick = onOpenAlarmThresholds)
         SettingsNavRow("Signal & freshness", "Loss-of-signal windows and dosing staleness gate", onClick = onOpenSignalSafety)
         SettingsNavRow("Alert sound & vibration", "Per-tier tone, K90 vibration, DND bypass, repeat", onClick = onOpenAlerts)
+        SettingsNavRow("Device temperature alert", "Warn when the phone runs hot enough to pause forecasting — fires even in DEATH mode", onClick = onOpenDeviceTemp)
 
         SettingsSectionHeader("Forecast & models")
         SettingsNavRow("Forecast warmup", "How much real history the forecast waits for", onClick = onOpenWarmup)
+        SettingsNavRow("Forecast cadence", "Re-forecast on every reading (adaptive) or on a fixed clock period", onClick = onOpenForecastCadence)
+        SettingsNavRow("Thermal gate", "Pause inference when the phone runs too hot — threshold and warning margin", onClick = onOpenThermal)
         SettingsNavRow("Compute backend (CPU / GPU)", "Run the forecast on the CPU authority or the Vulkan GPU; measure & agreement-gate", onClick = onOpenComputeBackend)
         SettingsNavRow("Dose calculator", "Objective, asymmetry, rails, and rail thresholds — unbounded", onClick = onOpenCalculator)
         SettingsNavRow("Curve & PK parameters", "Carb-appearance and insulin-action presets + Bézier custom-curve designers", onClick = onOpenCurveParams)
@@ -60,6 +67,11 @@ fun SettingsScreen(
         SettingsNavRow("About", "Version, build, licence, model provenance", onClick = onOpenAbout)
 
         SettingsSectionHeader("The end")
+        SettingsNavRow(
+            "Death clock",
+            "Tune the insulin-exhaustion projection — hours from IOB-zero to DK, coma, and death",
+            onClick = onOpenDeathClock,
+        )
         SettingsNavRow(
             "DEATH mode",
             "Silence every alarm, disable every safety rail, and still the warnings — irrevocably, until you rescind it",

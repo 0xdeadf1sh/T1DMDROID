@@ -59,27 +59,37 @@ class AndroidAlarmNotifier(
     @Volatile private var lastEpisodeKey: String? = null
 
     override fun emit(state: AlarmState) {
-        if (suppressed()) { clear(); return }
-        val primary = state.primary
-        val key = primary?.let { episodeKey(it) }
+        // D4: DEATH mode suppresses the glucose/signal alarms but the over-temperature alert is
+        // EXEMPT — a phone cooking itself must still say so. So when suppressed we present ONLY the
+        // over-temp alarm (and cancel the glucose/signal ids), and drive the throttle off it alone.
+        val sup = suppressed()
+        val presentable = if (sup) state.overTemperature else state.primary
+        val key = presentable?.let { episodeKey(it) }
         val now = clock()
         // A new band/severity actuates immediately; otherwise honour the min-interval throttle so an
         // every-minute reading stream does not re-sound/re-buzz each tick.
-        val actuate = primary != null &&
+        val actuate = presentable != null &&
             (key != lastEpisodeKey || now - lastActuateMs >= minActuationIntervalMs().coerceAtLeast(0L))
         // `alertOnce = !actuate` turns a throttled re-post into a SILENT content update (no sound/heads-up).
-        state.threshold?.let { post(ID_THRESHOLD, "glucose", it, !actuate) } ?: nm.cancel("glucose", ID_THRESHOLD)
-        state.signalLoss?.let { post(ID_LOSS, "signal", it, !actuate) } ?: nm.cancel("signal", ID_LOSS)
+        if (sup) {
+            nm.cancel("glucose", ID_THRESHOLD)
+            nm.cancel("signal", ID_LOSS)
+        } else {
+            state.threshold?.let { post(ID_THRESHOLD, "glucose", it, !actuate) } ?: nm.cancel("glucose", ID_THRESHOLD)
+            state.signalLoss?.let { post(ID_LOSS, "signal", it, !actuate) } ?: nm.cancel("signal", ID_LOSS)
+        }
+        state.overTemperature?.let { post(ID_OVERTEMP, "device", it, !actuate) } ?: nm.cancel("device", ID_OVERTEMP)
         if (actuate) {
-            primary?.let { vibrate(it) }
+            presentable?.let { vibrate(it) }
             lastActuateMs = now
         }
         lastEpisodeKey = key
     }
 
     override fun reAlert(state: AlarmState) {
-        if (suppressed()) return
-        state.primary?.takeIf { it.severity == AlarmSeverity.CRITICAL }?.let {
+        // Same D4 exemption: in DEATH only the over-temp alarm may re-announce.
+        val target = if (suppressed()) state.overTemperature else state.primary
+        target?.takeIf { it.severity == AlarmSeverity.CRITICAL }?.let {
             vibrate(it)
             lastActuateMs = clock()
         }
@@ -88,6 +98,7 @@ class AndroidAlarmNotifier(
     override fun clear() {
         nm.cancel("glucose", ID_THRESHOLD)
         nm.cancel("signal", ID_LOSS)
+        nm.cancel("device", ID_OVERTEMP)
         lastEpisodeKey = null
     }
 
@@ -95,12 +106,19 @@ class AndroidAlarmNotifier(
     private fun episodeKey(alarm: ActiveAlarm): String = when (alarm) {
         is ThresholdBreach -> "t:${alarm.band}:${alarm.severity}"
         is SignalLoss -> "s:${alarm.severity}"
+        is OverTemperature -> "d:${alarm.severity}"
     }
 
     private fun post(id: Int, tag: String, alarm: ActiveAlarm, alertOnce: Boolean) {
         if (!nm.areNotificationsEnabled()) return
         val critical = alarm.severity == AlarmSeverity.CRITICAL
-        val builder = Notification.Builder(app, if (critical) channels.critical else channels.warning)
+        // Over-temp rides its own device channels (never DND-bypass); glucose/signal share the two
+        // glucose-tier channels.
+        val channel = when (alarm) {
+            is OverTemperature -> if (critical) channels.deviceCritical else channels.device
+            else -> if (critical) channels.critical else channels.warning
+        }
+        val builder = Notification.Builder(app, channel)
             .setContentTitle(titleOf(alarm))
             .setContentText(alarm.message)
             .setStyle(Notification.BigTextStyle().bigText(alarm.message))
@@ -139,10 +157,12 @@ class AndroidAlarmNotifier(
             AlertBand.IN_RANGE -> "Glucose in range"
         }
         is SignalLoss -> "Sensor signal lost"
+        is OverTemperature -> "Device temperature high"
     }
 
     private companion object {
         const val ID_THRESHOLD = 4101
         const val ID_LOSS = 4102
+        const val ID_OVERTEMP = 4103
     }
 }

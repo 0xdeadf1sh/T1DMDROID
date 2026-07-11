@@ -4,6 +4,7 @@ import kotlinx.coroutines.runBlocking
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -56,6 +57,64 @@ class OkHttpSyncClientTest {
         assertEquals("/v1/ingest", recorded.path)
         assertEquals("Bearer sekret", recorded.getHeader("Authorization"))
         assertEquals("""{"ts":1}""", recorded.body.readUtf8())
+    }
+
+    @Test
+    fun listModelsParsesRegistryAndKeepsMetaOpaque() = runBlocking {
+        server.enqueue(
+            MockResponse().setBody(
+                """{"models":[
+                    {"id":"m.pte","name":"m","ext":"pte","path":"/x/m.pte",
+                     "meta":{"engine":"executorch_xnnpack_fp32","artifact":"m.pte"},
+                     "sha256":"abc","bytes":42,"discovered_at":7},
+                    {"id":"n.json","meta":null,"sha256":"def"}
+                ]}""",
+            ),
+        )
+
+        val models = client().listModels()
+
+        assertEquals(2, models.size)
+        assertEquals("m.pte", models[0].id)
+        assertEquals("abc", models[0].sha256)
+        assertEquals(42L, models[0].bytes)
+        assertTrue(models[0].meta is kotlinx.serialization.json.JsonObject) // opaque, unparsed
+        assertEquals(null, models[1].meta)
+        val recorded = server.takeRequest()
+        assertEquals("GET", recorded.method)
+        assertEquals("/v1/models", recorded.path)
+        assertEquals("Bearer sekret", recorded.getHeader("Authorization"))
+    }
+
+    @Test
+    fun downloadModelReturnsBytesAndXSha256() = runBlocking {
+        val body = okio.Buffer().write(byteArrayOf(1, 2, 3, 4))
+        server.enqueue(
+            MockResponse()
+                .setHeader("X-SHA256", "deadbeef")
+                .setHeader("Content-Type", "application/octet-stream")
+                .setBody(body),
+        )
+
+        val art = client().downloadModel("t1dmai_best.xnnpack.pte")
+
+        assertArrayEquals(byteArrayOf(1, 2, 3, 4), art.bytes)
+        assertEquals("deadbeef", art.sha256)
+        val recorded = server.takeRequest()
+        assertEquals("GET", recorded.method)
+        assertEquals("/v1/models/t1dmai_best.xnnpack.pte/download", recorded.path)
+        assertEquals("Bearer sekret", recorded.getHeader("Authorization"))
+    }
+
+    @Test
+    fun downloadModelThrowsOnNotFound() {
+        server.enqueue(MockResponse().setResponseCode(404).setBody("unknown"))
+        try {
+            runBlocking { client().downloadModel("missing.pte") }
+            throw AssertionError("expected a require() failure on 404")
+        } catch (e: IllegalArgumentException) {
+            assertTrue(e.message!!.contains("404"))
+        }
     }
 
     @Test

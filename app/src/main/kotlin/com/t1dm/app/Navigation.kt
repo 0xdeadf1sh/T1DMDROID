@@ -63,6 +63,7 @@ import com.t1dm.feature.insulin.BolusCalculatorScreen
 import com.t1dm.core.model.InferenceCause
 import com.t1dm.core.model.InferenceState
 import com.t1dm.core.model.BezierCurve
+import com.t1dm.core.model.DkaTimeline
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -99,11 +100,15 @@ import com.t1dm.feature.settings.CgmSettingsScreen
 import com.t1dm.feature.settings.CurveParams
 import com.t1dm.feature.settings.CurveParamsScreen
 import com.t1dm.feature.settings.DataSettingsScreen
+import com.t1dm.feature.settings.DeathClockSettingsScreen
+import com.t1dm.feature.settings.DeviceTempAlertScreen
 import com.t1dm.feature.settings.DisplaySettingsScreen
+import com.t1dm.feature.settings.ForecastCadenceSettingsScreen
 import com.t1dm.feature.settings.GraphSettingsScreen
 import com.t1dm.feature.settings.PowerSettingsScreen
 import com.t1dm.feature.settings.SettingsScreen
 import com.t1dm.feature.settings.SignalSafetyScreen
+import com.t1dm.feature.settings.ThermalSettingsScreen
 import com.t1dm.feature.settings.WarmupSettingsScreen
 import com.t1dm.feature.settings.WatchSettingsScreen
 import com.t1dm.alerts.VibrationPreset
@@ -234,6 +239,10 @@ private fun crumbsFor(route: String?, modelId: String?): List<Crumb> {
         "settings/signal" -> settings(Crumb("Alarms & safety", "settings"), Crumb("Signal safety", null))
         "settings/alerts" -> settings(Crumb("Sound & vibration", null))
         "settings/warmup" -> settings(Crumb("Warmup", null))
+        "settings/forecast" -> settings(Crumb("Forecast cadence", null))
+        "settings/thermal" -> settings(Crumb("Thermal gate", null))
+        "settings/temperature" -> settings(Crumb("Alarms & safety", "settings"), Crumb("Device temperature", null))
+        "settings/deathclock" -> settings(Crumb("Death clock", null))
         "settings/calculator" -> settings(Crumb("Bolus calculator", null))
         "settings/curves" -> settings(Crumb("Curve & PK", null))
         "settings/cgm" -> settings(Crumb("CGM source", null))
@@ -581,6 +590,14 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
             val sensorExpiry by container.sensorExpiryMs.collectAsState(null)
             // Issue 1 — battery-saver / low-power indicator (polled off-main).
             val lowPowerActive by container.lowPowerActive.collectAsState(false)
+            // F2 — the forecast cadence (adaptive vs a fixed period) drives the next-cycle countdown.
+            val forecastMode by container.settingsStore.forecastMode.collectAsState(SettingsStore.FORECAST_MODE_ADAPTIVE)
+            val forecastPeriod by container.settingsStore.forecastPeriodMin.collectAsState(SettingsStore.DEFAULT_FORECAST_PERIOD_MIN)
+            // F6 — the thermal gate's threshold colours the TEMP chip; a disabled gate passes null so the
+            // chip keeps its neutral colour regardless of the reading.
+            val thermalGateOn by container.thermalGateEnabled.collectAsState(SettingsStore.DEFAULT_THERMAL_ON)
+            val thermalMaxC by container.inferenceMaxTempC.collectAsState(SettingsStore.DEFAULT_MAX_TEMP_C)
+            val thermalWarn by container.thermalWarnMarginC.collectAsState(SettingsStore.DEFAULT_WARN_MARGIN_C)
             DashboardScreen(
                 readings = readings,
                 latest = latest,
@@ -610,10 +627,18 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 onRoll = { hours -> container.requestRollForDisplay(hours) },
                 onClearRoll = { container.clearRoll() },
                 lowPowerActive = lowPowerActive,
+                forecastAdaptive = forecastMode == SettingsStore.FORECAST_MODE_ADAPTIVE,
+                forecastPeriodMin = forecastPeriod,
+                thermalThresholdC = if (thermalGateOn) thermalMaxC else null,
+                thermalWarnMarginC = thermalWarn,
             )
         }
         composable("circadian") {
             val inference by container.inferenceState.collectAsState(InferenceState())
+            // F5 — the IOB-exhaustion countdown needs live IOB + its projected zero-crossing, and the
+            // user-tunable DKA→coma→death offsets.
+            val iobCob by container.iobCob.collectAsState()
+            val dkaTl by container.dkaTimeline.collectAsState(DkaTimeline.DEFAULT)
             CircadianScreen(
                 predictedTime = inference.selectedPredictedTime,
                 realBackendAvailable = inference.realBackendAvailable,
@@ -623,6 +648,9 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                     inference.lastCause == InferenceCause.COLLECTING_CONTEXT ||
                     inference.lastCycleTsMs == null,
                 lowContext = inference.circadianLowContext,
+                iobU = iobCob?.iobU,
+                iobZeroMs = iobCob?.iobZeroMs,
+                dkaTimeline = dkaTl,
             )
         }
         composable("stats") {
@@ -658,10 +686,15 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
         }
         composable("models") {
             val inference by container.inferenceState.collectAsState(InferenceState())
+            val pendingUpdates by container.pendingModelUpdates.collectAsState(emptySet())
+            val scope = rememberCoroutineScope()
             ModelsScreen(
                 state = inference,
                 onSelect = container.inferenceController::selectModel,
                 onOpen = { id -> navController.navigate("models/$id") },
+                pendingUpdates = pendingUpdates,
+                onApplyUpdate = { id -> scope.launch { container.applyModelUpdate(id) } },
+                onDelete = { id -> scope.launch { container.removeModel(id) } },
             )
         }
         composable("models/{modelId}") { entry ->
@@ -908,6 +941,10 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 onOpenData = { navController.navigate("settings/data") },
                 onOpenAbout = { navController.navigate("about") },
                 onOpenDeath = { navController.navigate("settings/death") },
+                onOpenForecastCadence = { navController.navigate("settings/forecast") },
+                onOpenThermal = { navController.navigate("settings/thermal") },
+                onOpenDeviceTemp = { navController.navigate("settings/temperature") },
+                onOpenDeathClock = { navController.navigate("settings/deathclock") },
             )
         }
         composable("settings/death") {
@@ -1206,11 +1243,77 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 onChange = { h -> scope.launch { container.setWarmupHours(h) } },
             )
         }
+        composable("settings/forecast") {
+            val scope = rememberCoroutineScope()
+            val ss = container.settingsStore
+            val mode by ss.forecastMode.collectAsState(SettingsStore.FORECAST_MODE_ADAPTIVE)
+            val period by ss.forecastPeriodMin.collectAsState(SettingsStore.DEFAULT_FORECAST_PERIOD_MIN)
+            ForecastCadenceSettingsScreen(
+                adaptive = mode == SettingsStore.FORECAST_MODE_ADAPTIVE,
+                periodMinutes = period,
+                onSetAdaptive = { on ->
+                    scope.launch {
+                        ss.setForecastMode(if (on) SettingsStore.FORECAST_MODE_ADAPTIVE else SettingsStore.FORECAST_MODE_TIMED)
+                    }
+                },
+                onSetPeriodMinutes = { m -> scope.launch { ss.setForecastPeriodMin(m) } },
+            )
+        }
+        composable("settings/thermal") {
+            val scope = rememberCoroutineScope()
+            val enabled by container.thermalGateEnabled.collectAsState(SettingsStore.DEFAULT_THERMAL_ON)
+            val maxC by container.inferenceMaxTempC.collectAsState(SettingsStore.DEFAULT_MAX_TEMP_C)
+            val warn by container.thermalWarnMarginC.collectAsState(SettingsStore.DEFAULT_WARN_MARGIN_C)
+            ThermalSettingsScreen(
+                enabled = enabled,
+                maxTempC = maxC,
+                warnMarginC = warn,
+                onSetEnabled = { on -> scope.launch { container.setThermalGateEnabled(on) } },
+                onSetMaxTempC = { c -> scope.launch { container.setInferenceMaxTempC(c) } },
+                onSetWarnMarginC = { c -> scope.launch { container.setThermalWarnMarginC(c) } },
+            )
+        }
+        composable("settings/temperature") {
+            val scope = rememberCoroutineScope()
+            val ss = container.settingsStore
+            // The four over-temp knobs persist as one atomic config (saveOverTempConfig also refreshes the
+            // alarm snapshot), so each per-field edit re-saves the tuple with the current siblings.
+            val enabled by ss.overTempEnabled.collectAsState(SettingsStore.DEFAULT_OVERTEMP_ENABLED)
+            val alertC by ss.overTempAlertC.collectAsState(SettingsStore.DEFAULT_OVERTEMP_ALERT_C)
+            val clearC by ss.overTempClearC.collectAsState(SettingsStore.DEFAULT_OVERTEMP_CLEAR_C)
+            val critical by ss.overTempCritical.collectAsState(SettingsStore.DEFAULT_OVERTEMP_CRITICAL)
+            DeviceTempAlertScreen(
+                enabled = enabled,
+                alertC = alertC,
+                clearC = clearC,
+                critical = critical,
+                onSetEnabled = { v -> scope.launch { container.saveOverTempConfig(v, alertC, clearC, critical) } },
+                onSetAlertC = { v -> scope.launch { container.saveOverTempConfig(enabled, v, clearC, critical) } },
+                onSetClearC = { v -> scope.launch { container.saveOverTempConfig(enabled, alertC, v, critical) } },
+                onSetCritical = { v -> scope.launch { container.saveOverTempConfig(enabled, alertC, clearC, v) } },
+            )
+        }
+        composable("settings/deathclock") {
+            val scope = rememberCoroutineScope()
+            val ss = container.settingsStore
+            val dka by ss.dkaAfterIobZeroH.collectAsState(SettingsStore.DEFAULT_DKA_AFTER_IOB_ZERO_H)
+            val coma by ss.comaAfterDkaH.collectAsState(SettingsStore.DEFAULT_COMA_AFTER_DKA_H)
+            val death by ss.deathAfterComaH.collectAsState(SettingsStore.DEFAULT_DEATH_AFTER_COMA_H)
+            DeathClockSettingsScreen(
+                dkaAfterIobZeroH = dka,
+                comaAfterDkaH = coma,
+                deathAfterComaH = death,
+                onSetDka = { h -> scope.launch { ss.setDkaAfterIobZeroH(h) } },
+                onSetComa = { h -> scope.launch { ss.setComaAfterDkaH(h) } },
+                onSetDeath = { h -> scope.launch { ss.setDeathAfterComaH(h) } },
+            )
+        }
         composable("settings/server") {
             val active by container.activeServerProfile.collectAsState(null)
             val scope = rememberCoroutineScope()
             var busy by remember { mutableStateOf(false) }
             var health by remember { mutableStateOf<String?>(null) }
+            val syncStatus by container.modelSyncStatus.collectAsState(null)
             ServerSettingsScreen(
                 initialLabel = active?.label ?: "local",
                 initialBaseUrl = active?.baseUrl ?: "http://127.0.0.1:8443",
@@ -1218,6 +1321,14 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 isActive = active != null,
                 busy = busy,
                 healthStatus = health,
+                syncStatus = syncStatus,
+                onSyncModels = {
+                    scope.launch {
+                        busy = true
+                        container.syncModelsFromServer()
+                        busy = false
+                    }
+                },
                 onSave = { label, baseUrl, token ->
                     scope.launch {
                         busy = true

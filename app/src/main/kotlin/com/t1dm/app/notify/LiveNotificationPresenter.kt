@@ -75,9 +75,9 @@ class LiveNotificationPresenter(
 
     private fun bodyLine(glance: BgGlance, predictedTime: PredictedTime?): String {
         val age = when {
-            glance.signalLoss -> "Signal lost — last reading ${BgFormat.age(glance.readingAgeMs)}"
+            glance.signalLoss -> "Signal lost — last reading ${BgFormat.ageShort(glance.readingAgeMs)}"
             !glance.hasReading -> "Scanning for CGM"
-            else -> "Updated ${BgFormat.age(glance.readingAgeMs)}"
+            else -> "Updated ${BgFormat.ageShort(glance.readingAgeMs)}"
         }
         val forecast = when {
             glance.approaching != null -> BgFormat.crossingLine(glance.approaching)

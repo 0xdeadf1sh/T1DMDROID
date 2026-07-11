@@ -49,6 +49,23 @@ data class SignalLoss(
 ) : ActiveAlarm
 
 /**
+ * A device-over-temperature alarm: the battery-sensor °C has crossed the configured limit, so
+ * inference is being thermally gated (locked decisions D1/D4). This is a device-health notice, not a
+ * glucose condition — it rides its OWN channels and is EXEMPT from DEATH mode's global alarm
+ * suppression (D4): even with alarms silenced, a phone cooking itself still says so. [alertC]/[clearC]
+ * carry the hysteresis band the latching evaluator used.
+ */
+data class OverTemperature(
+    val tempC: Double,
+    val atMs: Long,
+    val alertC: Double,
+    val clearC: Double,
+    override val severity: AlarmSeverity,
+    override val escalated: Boolean,
+    override val message: String,
+) : ActiveAlarm
+
+/**
  * The full deterministic-alarm picture at one instant, exposed as a Flow by [AlarmEngine]. The two
  * sub-alarms are orthogonal and may co-exist (a low that then loses signal). [primary] picks the
  * single condition to raise as the foreground notification.
@@ -56,19 +73,28 @@ data class SignalLoss(
 data class AlarmState(
     val threshold: ThresholdBreach?,
     val signalLoss: SignalLoss?,
+    val overTemperature: OverTemperature? = null,
 ) {
-    val isActive: Boolean get() = threshold != null || signalLoss != null
+    val isActive: Boolean get() = threshold != null || signalLoss != null || overTemperature != null
 
-    val alarms: List<ActiveAlarm> get() = listOfNotNull(threshold, signalLoss)
+    val alarms: List<ActiveAlarm> get() = listOfNotNull(threshold, signalLoss, overTemperature)
 
-    /** Highest-severity active alarm; a threshold breach wins a severity tie (an urgent-low is more
-     *  immediately actionable than a signal loss of the same tier). `null` when clear. */
+    /** Highest-severity active alarm; ties break by kind (see [kindRank]): a glucose threshold breach
+     *  beats a signal loss, which in turn beats a device-over-temperature, at equal severity — the
+     *  over-temp is a device-health notice, less immediately actionable than either glucose condition.
+     *  `null` when clear. */
     val primary: ActiveAlarm?
         get() = alarms.maxWithOrNull(
-            compareBy<ActiveAlarm>({ it.severity.ordinal }, { if (it is ThresholdBreach) 1 else 0 }),
+            compareBy<ActiveAlarm>({ it.severity.ordinal }, { kindRank(it) }),
         )
 
     companion object {
-        val CLEAR = AlarmState(threshold = null, signalLoss = null)
+        val CLEAR = AlarmState(threshold = null, signalLoss = null, overTemperature = null)
+
+        private fun kindRank(a: ActiveAlarm): Int = when (a) {
+            is ThresholdBreach -> 2
+            is SignalLoss -> 1
+            is OverTemperature -> 0
+        }
     }
 }

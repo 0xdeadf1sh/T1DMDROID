@@ -80,10 +80,27 @@ class FakeOutboxDao : OutboxDao {
     fun snapshot(): List<OutboxEntity> = rows.values.toList()
 }
 
+/** A [SyncHttpClient] whose every method throws until a subclass overrides it — a base for focused fakes. */
+open class NoopSyncHttpClient : SyncHttpClient {
+    protected fun nope(): Nothing = throw UnsupportedOperationException("not used in these tests")
+    override suspend fun execute(request: SyncRequest): SyncResponse = nope()
+    override suspend fun health(): HealthDto = nope()
+    override suspend fun ingest(body: IngestDto): IngestAck = nope()
+    override suspend fun putPredictions(preds: List<PredictionWriteDto>): PutPredictionsAck = nope()
+    override suspend fun putSeries(name: String, body: SeriesPutDto): WrittenAck = nope()
+    override suspend fun postNote(body: NoteWriteDto): IdAck = nope()
+    override suspend fun postAlert(body: AlertWriteDto): IdAck = nope()
+    override suspend fun getSeries(from: Long?, to: Long?, cursor: Long?, limit: Int?, fields: String?): SeriesPageDto = nope()
+    override suspend fun getStats(window: String, refresh: Boolean): StatsDto = nope()
+    override suspend fun postPhoto(tsMs: Long, bytes: ByteArray, ext: String): PhotoAck = nope()
+    override suspend fun listModels(): List<ModelDto> = nope()
+    override suspend fun downloadModel(id: String): ModelArtifact = nope()
+}
+
 /** Records every executed request and returns a scripted response (or throws) per call. */
 class RecordingHttpClient(
     private val handler: (SyncRequest, Int) -> SyncResponse,
-) : SyncHttpClient {
+) : NoopSyncHttpClient() {
     val requests = mutableListOf<SyncRequest>()
 
     override suspend fun execute(request: SyncRequest): SyncResponse {
@@ -91,17 +108,6 @@ class RecordingHttpClient(
         requests += request
         return handler(request, idx)
     }
-
-    private fun nope(): Nothing = throw UnsupportedOperationException("not used in these tests")
-    override suspend fun health() = nope()
-    override suspend fun ingest(body: IngestDto) = nope()
-    override suspend fun putPredictions(preds: List<PredictionWriteDto>) = nope()
-    override suspend fun putSeries(name: String, body: SeriesPutDto) = nope()
-    override suspend fun postNote(body: NoteWriteDto) = nope()
-    override suspend fun postAlert(body: AlertWriteDto) = nope()
-    override suspend fun getSeries(from: Long?, to: Long?, cursor: Long?, limit: Int?, fields: String?) = nope()
-    override suspend fun getStats(window: String, refresh: Boolean) = nope()
-    override suspend fun postPhotoStub(): Nothing = nope()
 }
 
 fun ok() = SyncResponse(200, ByteArray(0))

@@ -296,6 +296,10 @@ interface PredictionDao {
     @Query("SELECT * FROM prediction ORDER BY madeAtMs DESC, selected DESC LIMIT 1")
     fun observeLatest(): Flow<PredictionEntity?>
 
+    /** Drop every forecast row of a removed model (Phase 7C model deletion). */
+    @Query("DELETE FROM prediction WHERE modelId = :modelId")
+    suspend fun deleteByModel(modelId: String)
+
     @Query("DELETE FROM prediction")
     suspend fun deleteAll()
 }

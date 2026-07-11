@@ -39,6 +39,19 @@ object BgFormat {
         }
     }
 
+    /** Second-resolution age for the live notification, where a sub-minute stamp needs to visibly
+     *  tick (F1). Unlike [age], which floors to whole minutes, this surfaces "just now" and "${s}s ago"
+     *  so a fresh reading reads as fresh rather than as a static "now". */
+    fun ageShort(ageMs: Long): String {
+        val s = ageMs / 1000L
+        return when {
+            s < 1 -> "just now"
+            s < 60 -> "${s}s ago"
+            s < 3600 -> "${s / 60}m ago"
+            else -> "${s / 3600}h ${(s % 3600) / 60}m ago"
+        }
+    }
+
     /** The one-line predictive warning, e.g. "Approaching hypoglycemia in ~20 min". */
     fun crossingLine(c: PredictiveCrossing): String {
         val what = if (c.kind == PredictiveCrossing.Kind.HYPO) "hypoglycemia" else "hyperglycemia"

@@ -9,6 +9,7 @@ import com.t1dm.core.nativecore.StubNativeCore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -128,5 +129,61 @@ class ChannelBuilderTest {
         // The auto-extended basal puts a positive insulin background at every horizon step.
         assertTrue(fc.insulin.all { it > 0.0 })
         assertTrue(fc.iobAtStart > 0.0)
+    }
+
+    @Test
+    fun insulinZeroMs_single_bolus_is_last_nonzero_step_of_its_pk() = runTest {
+        val g0 = 1_000_000_000_000L
+        val bolus = engine.bolusEvent(units = 5.0, startMs = g0)
+        val builder = ChannelBuilder(engine, FakeStore(insulin = listOf(bolus)))
+
+        val expected = g0 + bolus.values.indexOfLast { it > 0.0 } * bolus.stepMs
+        assertEquals(expected, builder.insulinZeroMs(g0 + 10 * 60 * 60_000L))
+    }
+
+    @Test
+    fun insulinZeroMs_no_insulin_is_null() = runTest {
+        val builder = ChannelBuilder(engine, FakeStore())
+        assertNull(builder.insulinZeroMs(1_000_000_000_000L))
+    }
+
+    @Test
+    fun insulinZeroMs_basal_tail_extends_past_a_shorter_bolus() = runTest {
+        val g0 = 3_000_000_000_000L
+        // A 5 U bolus decays within a few hours; the basal background is still acting hours later,
+        // so the combined zero-crossing must be pushed out to the basal tail, not the bolus tail.
+        val bolus = engine.bolusEvent(units = 5.0, startMs = g0)
+        val sched = BasalSchedule(
+            tzOffsetMin = 0,
+            doses = listOf(
+                BasalDoseSpec(
+                    timeOfDayMin = 8 * 60,
+                    doseU = 24.0,
+                    durationMin = CurveEngine.Presets.TRESIBA_DIA_MIN,
+                    kaPerHour = CurveEngine.Presets.BASAL_KA_PER_HOUR,
+                    kePerHour = CurveEngine.Presets.BASAL_KE_PER_HOUR,
+                ),
+            ),
+        )
+        val builder = ChannelBuilder(engine, FakeStore(insulin = listOf(bolus), schedule = sched))
+
+        val atMs = g0 + 12 * 60 * 60_000L
+        val bolusZero = g0 + bolus.values.indexOfLast { it > 0.0 } * bolus.stepMs
+        val zero = builder.insulinZeroMs(atMs)!!
+        assertTrue("bolus must have decayed before atMs", bolusZero < atMs)
+        assertTrue("basal tail must win the max", zero > bolusZero)
+    }
+
+    @Test
+    fun insulinZeroMs_fully_decayed_past_dose_is_before_now() = runTest {
+        val g0 = 5_000_000_000_000L
+        // A 3 U bolus is long gone 6 h later; the zero instant lies BEFORE atMs (past instants are
+        // not clipped away — the dose still reports where its action ended).
+        val bolus = engine.bolusEvent(units = 3.0, startMs = g0)
+        val builder = ChannelBuilder(engine, FakeStore(insulin = listOf(bolus)))
+
+        val atMs = g0 + 6 * 60 * 60_000L
+        val zero = builder.insulinZeroMs(atMs)!!
+        assertTrue(zero < atMs)
     }
 }

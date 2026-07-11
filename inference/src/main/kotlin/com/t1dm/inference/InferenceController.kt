@@ -19,6 +19,7 @@ import com.t1dm.core.model.ModelTelemetry
 import com.t1dm.core.model.Precision
 import com.t1dm.core.model.PredictedTime
 import com.t1dm.core.model.RunningModel
+import com.t1dm.core.model.ThermalStatus
 import com.t1dm.inference.backend.GraphIo
 import com.t1dm.inference.backend.GraphInput
 import com.t1dm.inference.backend.GraphOutput
@@ -75,6 +76,11 @@ class InferenceController(
     /** Durable cumulative per-model inference telemetry (Phase 7C — Models drill-down). Null ⇒
      *  session-only in-memory counters. */
     private val telemetryStore: TelemetryStore? = null,
+    /** D1/D4 thermal gate: the current [ThermalStatus] (BATTERY-sensor °C, thresholds from Settings),
+     *  or null when the gate is disabled / the temperature is unreadable ⇒ never gates. Read FRESH each
+     *  cycle. This gate has NO death-mode check — it stays active in DEATH (the one §3.6 rail DEATH does
+     *  not defeat), since running the APU into a thermal fault is a hardware risk, not a glucose alarm. */
+    private val thermalProvider: suspend () -> ThermalStatus? = { null },
 ) {
     private val _state = MutableStateFlow(InferenceState())
     val state: StateFlow<InferenceState> = _state.asStateFlow()
@@ -119,6 +125,11 @@ class InferenceController(
     @Volatile
     private var warmupSatisfiedUpTo = 0
     private val cycleMutex = Mutex()
+    /** Thermal-gate hysteresis latch: once the die crosses [ThermalStatus.thresholdC] we stay BLOCKED
+     *  until it falls back below `thresholdC - resumeMarginC`, so a temperature hovering on the
+     *  threshold cannot flap the forecast on and off cycle to cycle. In-memory only. */
+    @Volatile
+    private var thermalBlocked = false
 
     /** Register the backends the controller may route to (real XNNPACK + documented NPU stubs). */
     fun registerBackend(backend: InferenceBackend) { backends[backend.id] = backend }
@@ -185,7 +196,7 @@ class InferenceController(
 
         val note = when {
             bundles.isEmpty() ->
-                "no model on device — adb push a descriptor.json (+ .pte) to the app models dir"
+                "no model — add a server and Sync models (Settings → Server)"
             loaded.values.none { it.real } ->
                 "running on the StubBackend (no working .pte) — real forecast path blocked"
             loaded[selectedId]?.effectiveBackend?.let { it != BackendId.EXECUTORCH_XNNPACK_FP32 } == true ->
@@ -452,6 +463,25 @@ class InferenceController(
     }
 
     /**
+     * Delete the model with descriptor id [id] from disk (its descriptor+`.pte` pair(s) via
+     * [ModelStore.delete]) and purge its in-memory footprint: the durable per-model telemetry, the
+     * rolling-latency window, and the forecast-backend preference. Serialised on [cycleMutex] so it
+     * never races a live cycle over the loaded set, and the actual file removal runs on the `inference`
+     * thread. [refreshModels] re-scans afterwards, closing the just-deleted handles and reselecting the
+     * next remaining model (or none), and we strip any stale prediction for [id] from the overlay
+     * immediately so the graph does not keep drawing a fan for a model that no longer exists. Returns
+     * whether a matching artifact was actually removed from disk.
+     */
+    suspend fun deleteModel(id: String): Boolean = cycleMutex.withLock {
+        val removed = withContext(dispatchers.inference) { runCatching { store.delete(id) }.getOrDefault(false) }
+        cumulative.remove(id); latencySamples.remove(id); forecastBackendPrefs.remove(id)
+        runCatching { telemetryStore?.save(HashMap(cumulative)) }
+        refreshModels()
+        _state.value = _state.value.copy(predictions = _state.value.predictions.filterNot { it.modelId == id })
+        removed
+    }
+
+    /**
      * Run the honest on-device comparison of the non-authority backend (the Vulkan GPU delegate)
      * against the fp32 XNNPACK authority (issue 20 STEP 3 + §3.6-E). Both run the SAME fixed
      * deterministic input; [runs] warm forwards each are timed (median) plus the first cold forward,
@@ -556,10 +586,35 @@ class InferenceController(
         return GraphIo.graphInput(ctx, desc.negFill)
     }
 
+    /**
+     * D1/D4 thermal gate (read FRESH each cycle): consult [thermalProvider] and, with hysteresis,
+     * decide whether inference must pause because the device is too hot. Returns the banner note while
+     * BLOCKED, else null (and clears the latch). A null status (gate disabled or temperature
+     * unreadable) never gates. Latches at [ThermalStatus.thresholdC] and resumes only below
+     * `thresholdC - resumeMarginC` so a temperature hovering on the threshold cannot flap the forecast.
+     */
+    private suspend fun overTempNote(): String? {
+        val t = thermalProvider() ?: run { thermalBlocked = false; return null }
+        val block = if (thermalBlocked) t.currentC > t.thresholdC - t.resumeMarginC
+                    else t.currentC >= t.thresholdC
+        thermalBlocked = block
+        return if (block) "inference paused — device at %.1f°C ≥ %.1f°C threshold".format(t.currentC, t.thresholdC) else null
+    }
+
     /** Fire a cycle off the shared BG history (the `GridTick` path). */
     suspend fun runFromHistory(cause: InferenceCause = InferenceCause.GRID_TICK, nowMs: Long) {
         val descAny = loaded.values.firstOrNull()?.bundle?.descriptor
         if (descAny == null) { refreshOrNote(); return }
+        // Thermal gate BEFORE the warmup gate: while blocked, publish a clean over-temp banner (empty
+        // predictions, PRESERVING circadianTime so the clock stays lit) instead of a warmup/forecast
+        // state. runCycle carries the universal chokepoint guard; this one only sharpens the message.
+        overTempNote()?.let { note ->
+            _state.value = _state.value.copy(
+                predictions = emptyList(), lastCause = InferenceCause.OVER_TEMPERATURE, note = note,
+            )
+            Timber.tag(TAG).i(note)
+            return
+        }
         val minSteps = descAny.minContextPatches * GraphIo.PATCH_DIM / 3      // 16·6 = 96 steps (8 h)
         val maxSteps = descAny.maxContextPatches * GraphIo.PATCH_DIM / 3      // 48·6 = 288 steps (24 h)
 
@@ -630,6 +685,16 @@ class InferenceController(
      */
     suspend fun runCycle(cause: InferenceCause, series: BgSeries, nowMs: Long) = cycleMutex.withLock {
         if (loaded.isEmpty()) { refreshOrNote(); if (loaded.isEmpty()) return@withLock }
+        // Thermal gate — the UNIVERSAL chokepoint: every forecast (grid tick, manual, synthetic) funnels
+        // through here, so blocking here blocks them all. Empty predictions + OVER_TEMPERATURE cause;
+        // circadianTime is left untouched by copy() so the clock stays lit while inference is paused.
+        overTempNote()?.let { note ->
+            _state.value = _state.value.copy(
+                predictions = emptyList(), lastCause = InferenceCause.OVER_TEMPERATURE, note = note,
+            )
+            Timber.tag(TAG).i(note)
+            return@withLock
+        }
         val cycleTs = snapToGrid(nowMs)
         val stale = (nowMs - series.anchorTsMs) > freshnessThresholdMs
         val t0 = System.nanoTime()
@@ -869,6 +934,16 @@ class InferenceController(
     private fun runningModels(): List<RunningModel> = loaded.map { (id, e) ->
         RunningModel(id, e.effectiveBackend, e.precision, id == selectedId)
     }
+
+    /**
+     * The on-disk `.pte` filenames of the currently-loaded running set — the identity the model-sync
+     * coordinator keys on to decide whether a server update would overwrite a LIVE (dosing-relevant)
+     * artifact (⇒ stage for manual apply) versus a new/stub one (⇒ apply in place). NOT the descriptor
+     * `model_id`, which can diverge from the artifact filename for an adb-pushed model. Empty when no
+     * model is loaded. A stub stand-in's bundle still names its intended `.pte`, but that file is absent,
+     * so the coordinator's own live-file check routes it to apply-in-place.
+     */
+    fun runningArtifactFileNames(): Set<String> = loaded.values.map { it.bundle.pte.name }.toSet()
 
     private fun recordLatency(id: String, ms: Double) {
         val q = latencySamples.getOrPut(id) { ArrayDeque() }

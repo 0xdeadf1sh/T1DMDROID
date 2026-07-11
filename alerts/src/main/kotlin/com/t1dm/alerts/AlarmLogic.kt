@@ -47,6 +47,11 @@ internal fun thresholdMessage(band: AlertBand, bgMgdl: Int, t: AlertThresholds):
     AlertBand.IN_RANGE -> "In range: $bgMgdl mg/dL."
 }
 
+/** Plain-language over-temperature message; states the reading and the cool-below hysteresis point,
+ *  since that (not the fire threshold) is what the user must reach to resume forecasting. */
+internal fun overTempMessage(tempC: Double, clearC: Double): String =
+    "Device too hot: %.1f°C — forecasting paused until it cools below %.0f°C.".format(tempC, clearC)
+
 /** Plain-language loss-of-signal message stating the window that lapsed and the last known value. */
 internal fun signalLossMessage(windowMin: Int, escalated: Boolean, lastBgMgdl: Int?): String {
     val last = lastBgMgdl?.let { " Last reading $it mg/dL." } ?: ""

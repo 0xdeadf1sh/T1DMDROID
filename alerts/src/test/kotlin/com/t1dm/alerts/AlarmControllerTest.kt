@@ -83,6 +83,36 @@ class AlarmControllerTest {
     }
 
     @Test
+    fun `temperature closure drives over-temp fire and clear through the ticker`() = runTest {
+        val notifier = FakeNotifier()
+        var now = 0L
+        var temp: Double? = 30.0
+        val controller = AlarmController(
+            AlarmEngine(config), notifier, config, clock = { now }, temperatureC = { temp },
+        )
+        val readings = MutableSharedFlow<com.t1dm.core.model.CgmReading>(extraBufferCapacity = 64)
+        val ticks = MutableSharedFlow<Unit>(extraBufferCapacity = 64)
+        val job = controller.launchIn(this, readings, ticks)
+        runCurrent()
+
+        temp = 45.0
+        now = MIN
+        ticks.emit(Unit)
+        runCurrent()
+        assertNotNull(notifier.lastEmit?.overTemperature)
+
+        val clearsBefore = notifier.clearCount
+        temp = 40.0
+        now = 2 * MIN
+        ticks.emit(Unit)
+        runCurrent()
+        assertNull(controller.state.value.overTemperature)
+        assertTrue(notifier.clearCount > clearsBefore)
+
+        job.cancel()
+    }
+
+    @Test
     fun `no active alarm keeps the sink clear`() = runTest {
         val notifier = FakeNotifier()
         var now = 0L

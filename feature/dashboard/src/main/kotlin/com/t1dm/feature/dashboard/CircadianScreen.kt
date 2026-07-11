@@ -15,6 +15,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -27,6 +28,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.LocalT1dmSemantics
+import com.t1dm.core.model.DkaTimeline
 import com.t1dm.core.model.PredictedTime
 import java.util.Calendar
 import kotlin.math.PI
@@ -57,6 +59,12 @@ fun CircadianScreen(
     warmingUp: Boolean = false,
     /** Whether [predictedTime], when present, was formed on limited warmup context (⇒ low-confidence caveat). */
     lowContext: Boolean = false,
+    /** Current insulin-on-board (U); drives the morbid insulin-exhaustion projection below the dial. */
+    iobU: Double? = null,
+    /** Wall-clock ms at which IOB is projected to decay to zero (logged doses + basal tails); null ⇒ anchor at now. */
+    iobZeroMs: Long? = null,
+    /** User-tunable forward offsets (DKA→coma→death) for the display-only projection. */
+    dkaTimeline: DkaTimeline = DkaTimeline.DEFAULT,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -76,41 +84,99 @@ fun CircadianScreen(
 
         if (predictedTime == null) {
             EmptyCircadian(realBackendAvailable, hasTimeSection, warmingUp)
-            return@Column
-        }
+        } else {
+            if (lowContext) LowContextCaveat()
 
-        if (lowContext) LowContextCaveat()
+            // A gentle 10-second tick so the local-time hand stays honest without a busy loop.
+            val nowMs by produceState(System.currentTimeMillis()) {
+                while (true) {
+                    value = System.currentTimeMillis()
+                    kotlinx.coroutines.delay(10_000)
+                }
+            }
+            val localHour = localHourOfDay(nowMs)
 
-        // A gentle 10-second tick so the local-time hand stays honest without a busy loop.
-        val nowMs by produceState(System.currentTimeMillis()) {
-            while (true) {
-                value = System.currentTimeMillis()
-                kotlinx.coroutines.delay(10_000)
+            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                CircadianDial(
+                    pt = predictedTime,
+                    localHour = localHour,
+                    modifier = Modifier.fillMaxWidth().aspectRatio(1f).padding(8.dp),
+                )
+            }
+
+            ReadoutRow("Model hour", formatHour(predictedTime.predictedHour))
+            ReadoutRow("Confidence (resultant R)", "%.2f".format(predictedTime.resultantR))
+            ReadoutRow("Local time", formatHour(localHour))
+            ReadoutRow("Model − local offset", formatOffset(predictedTime.predictedHour - localHour))
+            ReadoutRow("Bins", "${predictedTime.nBins} × ${"%.0f".format(predictedTime.binHours)} h")
+            if (predictedTime.resultantR < 0.05) {
+                Text(
+                    "The belief is nearly uniform (R ≈ 0) — the model has no strong circadian preference this cycle.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
-        val localHour = localHourOfDay(nowMs)
 
-        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-            CircadianDial(
-                pt = predictedTime,
-                localHour = localHour,
-                modifier = Modifier.fillMaxWidth().aspectRatio(1f).padding(8.dp),
-            )
-        }
+        // The insulin-exhaustion projection is independent of the circadian belief, so it renders in
+        // every mode — even when the clock is absent (stub backend, no time section, or warmup).
+        DeathCountdownSection(iobU, iobZeroMs, dkaTimeline)
+    }
+}
 
-        ReadoutRow("Model hour", formatHour(predictedTime.predictedHour))
-        ReadoutRow("Confidence (resultant R)", "%.2f".format(predictedTime.resultantR))
-        ReadoutRow("Local time", formatHour(localHour))
-        ReadoutRow("Model − local offset", formatOffset(predictedTime.predictedHour - localHour))
-        ReadoutRow("Bins", "${predictedTime.nBins} × ${"%.0f".format(predictedTime.binHours)} h")
-        if (predictedTime.resultantR < 0.05) {
-            Text(
-                "The belief is nearly uniform (R ≈ 0) — the model has no strong circadian preference this cycle.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+/**
+ * A deliberately morbid, DISPLAY-ONLY countdown (F5): from the instant IOB is projected to reach
+ * zero, chain the user-tunable forward offsets DKA → coma → death and count each landmark down live.
+ * No §3.6 rail reads this — it is an estimate, not a clinical alarm (safety-posture.md). When no
+ * zero-crossing is known ([iobZeroMs] null) we anchor at *now*, which is the harshest reading.
+ */
+@Composable
+private fun DeathCountdownSection(iobU: Double?, iobZeroMs: Long?, tl: DkaTimeline) {
+    // A 1-second cadence keeps the seconds column alive; this panel is a stopwatch, not a slow gauge.
+    val nowMs by produceState(System.currentTimeMillis()) {
+        while (true) {
+            value = System.currentTimeMillis()
+            kotlinx.coroutines.delay(1_000L)
         }
     }
+    // Anchor is captured ONCE (not the live nowMs), else landmark − nowMs cancels to a constant and the
+    // clock freezes. With insulin on board it is the projected IOB-zero instant; with none, it is the
+    // moment this section first composed — either way a fixed instant the 1 s ticker counts down against.
+    val anchor = remember(iobZeroMs) { iobZeroMs ?: System.currentTimeMillis() }
+    fun h(x: Double) = (x * 3_600_000.0).toLong()
+    val tDka = anchor + h(tl.iobZeroToDkaHours)
+    val tComa = tDka + h(tl.dkaToComaHours)
+    val tDeath = tComa + h(tl.comaToDeathHours)
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text("Insulin-exhaustion projection", style = MaterialTheme.typography.labelLarge)
+        CountdownRow("Time until DK", tDka - nowMs)
+        CountdownRow("Time until Coma", tComa - nowMs)
+        CountdownRow("Time until Death", tDeath - nowMs)
+    }
+}
+
+/** Reuses [ReadoutRow]'s label/value layout; the countdown flips to the error tint once it lapses. */
+@Composable
+private fun CountdownRow(label: String, remainingMs: Long) {
+    androidx.compose.foundation.layout.Row(
+        Modifier.fillMaxWidth().padding(vertical = 2.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Text(label, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(
+            formatDdHhMmSs(remainingMs),
+            style = MaterialTheme.typography.titleMedium,
+            fontFamily = FontFamily.Monospace,
+            fontWeight = FontWeight.Bold,
+            color = if (remainingMs <= 0) MaterialTheme.colorScheme.error else Color.Unspecified,
+        )
+    }
+}
+
+/** dd:hh:mm:ss, clamped at zero so a lapsed landmark reads "00:00:00:00" rather than a negative wrap. */
+private fun formatDdHhMmSs(ms: Long): String {
+    val s = (ms / 1000).coerceAtLeast(0)
+    return "%02d:%02d:%02d:%02d".format(s / 86_400, (s % 86_400) / 3_600, (s % 3_600) / 60, s % 60)
 }
 
 /**

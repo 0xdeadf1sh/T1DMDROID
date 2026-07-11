@@ -42,6 +42,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import kotlin.math.roundToInt
@@ -58,6 +59,7 @@ import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.RolledForecast
 import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.core.model.TempUnit
+import com.t1dm.core.model.ThermalLevel
 import com.t1dm.core.model.UnitSpace
 import com.t1dm.core.model.WarmupProgress
 import com.t1dm.ui.graph.CurveOverlayFrame
@@ -137,6 +139,15 @@ fun DashboardScreen(
     rollComputing: Boolean = false,
     onRoll: ((Double) -> Unit)? = null,
     onClearRoll: (() -> Unit)? = null,
+    // F2 — forecast cadence. In adaptive mode a cycle runs on every CGM reading, so the fixed
+    // grid-boundary countdown is meaningless (the panel just states it is adaptive); in timed mode the
+    // countdown ticks to the next [forecastPeriodMin]-minute wall-clock boundary the driver fires on.
+    forecastAdaptive: Boolean = true,
+    forecastPeriodMin: Int = 5,
+    // F6 — the thermal-gate threshold (battery-sensor °C) that colours the TEMP chip amber/red as the
+    // device nears/crosses it. Null when the gate is disabled ⇒ the chip stays its neutral colour.
+    thermalThresholdC: Double? = null,
+    thermalWarnMarginC: Double = 3.0,
 ) {
     val frame by produceState(GraphFrame.EMPTY, readings, unit) {
         value = graphFrameOf(readings, unit, kovatchevF = kovatchevF)
@@ -212,7 +223,9 @@ fun DashboardScreen(
     val predictedClock = if (clockSource != null && clockAnchor != null) clockSource.toClock(clockAnchor) else null
 
     Column(Modifier.fillMaxSize()) {
-        reachability?.let { ReachabilityBar(it, signals, pulses, deviceTempC, temperatureUnit, sensorExpiryMs) }
+        reachability?.let {
+            ReachabilityBar(it, signals, pulses, deviceTempC, temperatureUnit, sensorExpiryMs, thermalThresholdC, thermalWarnMarginC)
+        }
         DashboardHeader(latest, activeSourceName, unit, signals?.cgmRssi ?: latest?.rssi)
         warmup?.let { WarmupBanner(it) }
         if (noFutureInsulin) NoFutureInsulinBanner()
@@ -220,6 +233,8 @@ fun DashboardScreen(
             OverlayControls(
                 iobCob = iobCob,
                 showNextForecast = warmup == null && !lowPowerActive,
+                forecastAdaptive = forecastAdaptive,
+                forecastPeriodMin = forecastPeriodMin,
                 toggles = toggles,
                 windowHours = windowHours,
                 smoothAvailable = smoothMgdl != null,
@@ -405,6 +420,8 @@ private fun NoFutureInsulinBanner() {
 private fun OverlayControls(
     iobCob: IobCobReadout?,
     showNextForecast: Boolean,
+    forecastAdaptive: Boolean,
+    forecastPeriodMin: Int,
     toggles: CurveOverlayToggles,
     windowHours: Int,
     smoothAvailable: Boolean,
@@ -485,21 +502,31 @@ private fun OverlayControls(
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                         )
                     }
-                    NextForecastCountdown()
+                    NextForecastCountdown(forecastAdaptive, forecastPeriodMin)
                 }
             }
         }
     }
 }
 
-/** Issue 2 — a live "Next forecast in Xm Ys" readout. The model runs one cycle on each 5-minute
- *  wall-clock grid boundary ([STEP_MS]); this ticks every second to the next boundary. Shows "Xm Ys"
- *  at/above one minute and "Ys" below it. */
+/** Issue 2 — a live "Next forecast in Xm Ys" readout. In TIMED mode the driver fires one cycle on each
+ *  [forecastPeriodMin]-minute wall-clock boundary, so this ticks every second down to it (shows "Xm Ys"
+ *  at/above one minute, "Ys" below). In ADAPTIVE mode a cycle runs on every reading, so there is no
+ *  fixed boundary to count toward — the line simply states that adaptive cadence is in effect. */
 @Composable
-private fun NextForecastCountdown() {
-    val remainingMs by produceState(nextForecastRemainingMs()) {
+private fun NextForecastCountdown(adaptive: Boolean, periodMin: Int) {
+    if (adaptive) {
+        Text(
+            "Adaptive forecast enabled",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+        )
+        return
+    }
+    val periodMs = periodMin.coerceAtLeast(1) * 60_000L
+    val remainingMs by produceState(nextForecastRemainingMs(periodMs), periodMs) {
         while (true) {
-            value = nextForecastRemainingMs()
+            value = nextForecastRemainingMs(periodMs)
             kotlinx.coroutines.delay(1_000L)
         }
     }
@@ -514,10 +541,10 @@ private fun NextForecastCountdown() {
     )
 }
 
-/** Milliseconds until the next 5-min wall-clock grid boundary — the next model cycle. */
-private fun nextForecastRemainingMs(): Long {
+/** Milliseconds until the next [periodMs] wall-clock boundary — the next timed model cycle. */
+private fun nextForecastRemainingMs(periodMs: Long): Long {
     val now = System.currentTimeMillis()
-    return (now / STEP_MS + 1) * STEP_MS - now
+    return (now / periodMs + 1) * periodMs - now
 }
 
 // ─── Reachability + signal strength chrome (items 20 & 23) ─────────────────────────────────────
@@ -553,6 +580,8 @@ private fun ReachabilityBar(
     deviceTempC: Double?,
     tempUnit: TempUnit,
     sensorExpiryMs: Long?,
+    thermalThresholdC: Double?,
+    thermalWarnMarginC: Double,
 ) {
     var showLabels by remember { mutableStateOf(false) }
     Row(
@@ -566,7 +595,7 @@ private fun ReachabilityBar(
         // meter); this chip keeps just its traffic-light so the CGM RSSI is shown in exactly one place.
         ReachChip("CGM", r.cgm, showLabels, null, pulses?.cgm ?: 0L)
         ReachChip("WCH", r.watch, showLabels, signals?.watchRssi, pulses?.watch ?: 0L)
-        deviceTempC?.let { TempChip(it, tempUnit) }
+        deviceTempC?.let { TempChip(it, tempUnit, thermalThresholdC, thermalWarnMarginC) }
         // I11 — the user-entered sensor lifetime, counted down live, immediately right of the TEMP chip.
         sensorExpiryMs?.let { SensorLifeChip(it) }
     }
@@ -597,6 +626,41 @@ private fun SensorLifeChip(expiryMs: Long) {
     )
 }
 
+/** F1 — a live "received Ns ago" chip under the source name, driven off the raw phone-receive wall time
+ *  ([CgmReading.rxWallMs], before the grid snap) so the freshness of the CGM link is legible at a glance.
+ *  It ticks each second while the reading is under a minute old, then falls back to a per-minute cadence
+ *  so it stays honest without a busy loop. */
+@Composable
+private fun LastReadingChip(rxWallMs: Long) {
+    val now by produceState(System.currentTimeMillis(), rxWallMs) {
+        while (true) {
+            value = System.currentTimeMillis()
+            kotlinx.coroutines.delay(if ((value - rxWallMs) in 0..60_000L) 1_000L else 60_000L)
+        }
+    }
+    Text(
+        "received ${formatAge((now - rxWallMs).coerceAtLeast(0))}",
+        style = MaterialTheme.typography.labelSmall,
+        // Tabular monospace so the per-second reflow (proportional digits) no longer shifts the chip.
+        fontFamily = FontFamily.Monospace,
+        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+    )
+}
+
+/** Elapsed-time phrasing for the last-reading chip: seconds, minutes, hours (h + m), then days. The
+ *  numeric fields are space-padded to a fixed width so — under the chip's monospace font — the string
+ *  keeps a constant width as it ticks (a leading space is one digit cell), and the End-anchored chip
+ *  never shifts when a single digit rolls over to two (9s → 10s). */
+private fun formatAge(ms: Long): String {
+    val s = ms / 1000
+    return when {
+        s < 60 -> "%2ds ago".format(s)
+        s < 3600 -> "%2dm ago".format(s / 60)
+        s < 86_400 -> "%2dh %2dm ago".format(s / 3600, (s % 3600) / 60)
+        else -> "%2dd ago".format(s / 86_400)
+    }
+}
+
 /** Largest meaningful unit of a positive remaining duration: days, else hours, else minutes, else
  *  seconds. */
 private fun formatRemaining(ms: Long): String {
@@ -613,13 +677,22 @@ private fun formatRemaining(ms: Long): String {
 }
 
 /** The device temperature (U9): the battery sensor's reading in the chosen unit, LABELLED as such so
- *  it is never mistaken for a fan/ambient figure (there is no readable fan RPM on this device). */
+ *  it is never mistaken for a fan/ambient figure (there is no readable fan RPM on this device). F6 — it
+ *  also carries the inference thermal-gate state: as the battery sensor nears the gate threshold the
+ *  glyph turns amber (WARN band) and turns red once it crosses (CRITICAL, inference paused). A null
+ *  [thermalThresholdC] (gate disabled) leaves it its neutral colour. */
 @Composable
-private fun TempChip(celsius: Double, unit: TempUnit) {
+private fun TempChip(celsius: Double, unit: TempUnit, thermalThresholdC: Double?, thermalWarnMarginC: Double) {
+    val level = com.t1dm.core.model.thermalLevel(celsius, thermalThresholdC, thermalWarnMarginC)
+    val color = when (level) {
+        ThermalLevel.NORMAL -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
+        ThermalLevel.WARN -> LocalT1dmSemantics.current.high
+        ThermalLevel.CRITICAL -> LocalT1dmSemantics.current.urgentHigh
+    }
     Text(
         "TEMP ${unit.format(celsius)}",
         style = MaterialTheme.typography.labelSmall,
-        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f),
+        color = color,
     )
 }
 
@@ -764,6 +837,7 @@ private fun DashboardHeader(latest: CgmReading?, activeSourceName: String?, unit
                 Text(text = activeSourceName ?: "no source", style = MaterialTheme.typography.bodySmall)
                 cgmRssi?.let { SignalBars(it) }
             }
+            latest?.rxWallMs?.let { LastReadingChip(it) }
         }
     }
 }

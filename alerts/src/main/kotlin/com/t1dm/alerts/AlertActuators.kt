@@ -70,10 +70,20 @@ object AlertChannels {
 
     fun ids(config: AlertActuatorConfig): Ids {
         val v = config.version()
-        return Ids(warning = "t1dm.alerts.glucose.v$v", critical = "t1dm.alerts.glucose.urgent.v$v")
+        return Ids(
+            warning = "t1dm.alerts.glucose.v$v",
+            critical = "t1dm.alerts.glucose.urgent.v$v",
+            device = "t1dm.alerts.device.v$v",
+            deviceCritical = "t1dm.alerts.device.urgent.v$v",
+        )
     }
 
-    data class Ids(val warning: String, val critical: String)
+    data class Ids(
+        val warning: String,
+        val critical: String,
+        val device: String,
+        val deviceCritical: String,
+    )
 
     /** Idempotently (re)create both channels for [config] and return their ids. Prunes stale ones. */
     fun ensure(context: Context, config: AlertActuatorConfig): Ids {
@@ -97,11 +107,29 @@ object AlertChannels {
             lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
             setSound(config.criticalSound, if (config.criticalSound != null) alarmAttrs else null)
         }
-        nm.createNotificationChannels(listOf(warning, critical))
+        // Device-over-temperature (D4) rides its OWN channels so it is manageable separately in system
+        // settings and — unlike the urgent glucose tier — NEVER bypasses Do-Not-Disturb: a thermal
+        // notice is device-health, not a glucose emergency, and must not punch through DND.
+        val device = NotificationChannel(ids.device, "Device temperature", NotificationManager.IMPORTANCE_DEFAULT).apply {
+            description = "Device (battery-sensor) temperature is high — forecasting is paused until it cools."
+            configureVibration(config.warningVibration)
+            setSound(config.warningSound, if (config.warningSound != null) alarmAttrs else null)
+        }
+        val deviceCritical = NotificationChannel(ids.deviceCritical, "Urgent device temperature", NotificationManager.IMPORTANCE_HIGH).apply {
+            description = "Device temperature critically high."
+            configureVibration(config.criticalVibration)
+            lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
+            setSound(config.criticalSound, if (config.criticalSound != null) alarmAttrs else null)
+        }
+        nm.createNotificationChannels(listOf(warning, critical, device, deviceCritical))
 
         // Prune older-versioned channels so the settings list stays clean.
+        val keep = setOf(ids.warning, ids.critical, ids.device, ids.deviceCritical)
         nm.notificationChannels
-            .filter { it.id.startsWith("t1dm.alerts.glucose") && it.id != ids.warning && it.id != ids.critical }
+            .filter {
+                (it.id.startsWith("t1dm.alerts.glucose") || it.id.startsWith("t1dm.alerts.device")) &&
+                    it.id !in keep
+            }
             .forEach { nm.deleteNotificationChannel(it.id) }
         return ids
     }

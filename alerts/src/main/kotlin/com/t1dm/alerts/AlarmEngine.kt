@@ -18,6 +18,7 @@ class AlarmEngine(config: AlarmConfig = AlarmConfig.DEFAULT) {
 
     private val threshold = ThresholdAlarm(config.thresholds)
     private val lossOfSignal = LossOfSignalAlarm(config)
+    private val overTemp = OverTemperatureAlarm(config)
 
     private val _state = MutableStateFlow(AlarmState.CLEAR)
     val state: StateFlow<AlarmState> = _state.asStateFlow()
@@ -31,14 +32,16 @@ class AlarmEngine(config: AlarmConfig = AlarmConfig.DEFAULT) {
         publish()
     }
 
-    /** Wall-clock tick: only the loss-of-signal window is time-dependent. */
+    /** Wall-clock tick: re-evaluates the time-dependent loss-of-signal window and, given the current
+     *  battery-sensor [tempC] (null when unreadable), the latching over-temperature alarm. */
     @Synchronized
-    fun onTick(nowMs: Long) {
+    fun onTick(nowMs: Long, tempC: Double? = null) {
         lossOfSignal.evaluate(nowMs)
+        overTemp.evaluate(tempC, nowMs)
         publish()
     }
 
     private fun publish() {
-        _state.value = AlarmState(threshold.breach, lossOfSignal.loss)
+        _state.value = AlarmState(threshold.breach, lossOfSignal.loss, overTemp.state)
     }
 }

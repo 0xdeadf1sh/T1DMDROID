@@ -218,7 +218,32 @@ data class PredictedTime(
 )
 
 /** What triggered a cycle, surfaced for the Hardware/Models panels and logs. */
-enum class InferenceCause { GRID_TICK, MANUAL, SYNTHETIC, COLLECTING_CONTEXT }
+enum class InferenceCause { GRID_TICK, MANUAL, SYNTHETIC, COLLECTING_CONTEXT, OVER_TEMPERATURE }
+
+/**
+ * The device-temperature reading the inference gate reasons over (D1: the BATTERY-sensor °C — a true
+ * die temp is unreadable on this device). [thresholdC] is the pause line; [warnMarginC] is how far
+ * below it the TEMP chip turns amber; [resumeMarginC] is the hysteresis band the controller keeps
+ * inference paused across until the reading falls below `thresholdC - resumeMarginC` (avoids flapping
+ * on/off at the boundary). All fields are Celsius.
+ */
+data class ThermalStatus(
+    val currentC: Double,
+    val thresholdC: Double,
+    val warnMarginC: Double,
+    val resumeMarginC: Double,
+)
+
+/** TEMP-chip band (D1): NORMAL below the warn margin, WARN within it, CRITICAL at/above threshold. */
+enum class ThermalLevel { NORMAL, WARN, CRITICAL }
+
+/** Compares in Celsius; thresholdC null ⇒ NORMAL (gate disabled ⇒ chip stays its normal color). */
+fun thermalLevel(celsius: Double, thresholdC: Double?, warnMarginC: Double): ThermalLevel = when {
+    thresholdC == null -> ThermalLevel.NORMAL
+    celsius >= thresholdC -> ThermalLevel.CRITICAL
+    celsius >= thresholdC - warnMarginC -> ThermalLevel.WARN
+    else -> ThermalLevel.NORMAL
+}
 
 /**
  * Warmup-gate progress (inference-runtime.md — the WARMUP gate). While fewer than [requiredHours] of

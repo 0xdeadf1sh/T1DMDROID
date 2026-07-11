@@ -99,6 +99,31 @@ data class IdAck(val ok: Boolean = false, val id: Long = 0)
 @Serializable
 data class PhotoAck(val ok: Boolean = false, val id: Long = 0, val sha256: String = "")
 
+// ── Model registry (read: GET /v1/models) ─────────────────────────────────────────────────────
+
+/**
+ * A served model-registry row (`GET /v1/models`). [id] IS the artifact filename (e.g.
+ * `t1dmai_best.xnnpack.pte`); [meta] is the opaque sidecar JSON — the exporter's descriptor —
+ * retained as an unparsed [JsonElement] (`null` when the server has no sidecar), which the
+ * coordinator inspects with `jsonObject`/`jsonPrimitive` and writes back verbatim (bar the
+ * normalized `id`/`artifact` fields). [sha256] is the registry-declared content hash, cross-checked
+ * against the download's `X-SHA256` response header.
+ */
+@Serializable
+data class ModelDto(
+    val id: String,
+    val name: String = "",
+    val ext: String = "",
+    val path: String = "",
+    val meta: JsonElement? = null,
+    val sha256: String = "",
+    val bytes: Long = 0,
+    val discovered_at: Long = 0,
+)
+
+@Serializable
+data class ModelsEnvelope(val models: List<ModelDto> = emptyList())
+
 // ── Stats (read: GET /v1/stats) ───────────────────────────────────────────────────────────────
 
 @Serializable

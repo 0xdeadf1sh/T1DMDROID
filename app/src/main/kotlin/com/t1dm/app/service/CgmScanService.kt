@@ -25,6 +25,7 @@ import com.t1dm.app.notify.BgGlanceComputer
 import com.t1dm.app.notify.LiveNotificationPresenter
 import com.t1dm.app.notify.NotificationIcons
 import com.t1dm.app.notify.PredictiveAlertPresenter
+import com.t1dm.app.settings.SettingsStore
 import androidx.glance.appwidget.updateAll
 import com.t1dm.app.widget.BgTileWidget
 import com.t1dm.app.widget.LockGlanceWidget
@@ -32,6 +33,9 @@ import com.t1dm.app.widget.PredictionGlanceWidget
 import com.t1dm.core.model.InferenceState
 import com.t1dm.core.model.UnitSpace
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.onStart
@@ -172,7 +176,12 @@ class CgmScanService : LifecycleService() {
                 minActuationIntervalMs = { container.alarmConfig.minActuationIntervalMin * 60_000L },
             )
             alarmNotifier = notifier
-            alarmController = AlarmController(alarmEngine, notifier, container.alarmConfig)
+            // F7: feed the battery-sensor °C into the engine so the deterministic over-temp alarm
+            // (§3.6-A) latches/clears with hysteresis; read live so a Settings change applies at once.
+            alarmController = AlarmController(
+                alarmEngine, notifier, container.alarmConfig,
+                temperatureC = { container.readDeviceTempC() },
+            )
             alarmController.launchIn(alarmScope, readingBus)
             alarmController.state.collect { st ->
                 Timber.tag(TAG).i(
@@ -217,21 +226,16 @@ class CgmScanService : LifecycleService() {
             }
         }
 
-        // 6) The 5-min inference GridTick — a SIBLING scope, structurally independent of the
-        //    model-free alarm path above (§2.3, §3.6-A): a failed cycle never touches the alarm.
-        //    Aligned to the grid; each tick fans the shared context out over the running set.
+        // 6a) 5-min housekeeping — the sync drain + watch push, kept on the exact grid boundary they
+        //     have always ridden. A SIBLING scope, structurally independent of the model-free alarm
+        //     path above (§2.3, §3.6-A): a failed drain or push never touches the alarm. Inference no
+        //     longer rides this loop — it has moved to its own forecast-cadence driver (6b) — but the
+        //     sync+watch cadence is deliberately UNCHANGED (still one drain + one push per 5-min tick).
         lifecycleScope.launch {
-            container.inferenceController.refreshModels()
             while (isActive) {
                 val now = System.currentTimeMillis()
                 delay(GRID_MS - (now % GRID_MS)) // sleep to the next 5-min boundary
-                runCatching {
-                    container.inferenceController.runFromHistory(
-                        cause = InferenceCause.GRID_TICK,
-                        nowMs = System.currentTimeMillis(),
-                    )
-                }.onFailure { Timber.tag(TAG).w(it, "inference GridTick failed (alarm path unaffected)") }
-                // Flush the freshly-enqueued PREDICTIONS/INGEST promptly when the tailnet is up
+                // Flush the enqueued PREDICTIONS/INGEST promptly when the tailnet is up
                 // (opportunistic; the periodic drain + WorkManager are the fallbacks).
                 runCatching { container.syncManager.drainNow() }
                     .onFailure { Timber.tag(TAG).w(it, "post-tick drain failed (independent of inference)") }
@@ -240,6 +244,41 @@ class CgmScanService : LifecycleService() {
                 // path, and it self-suspends in low-power mode. Off-main inside pushNow.
                 runCatching { container.pushToWatch(System.currentTimeMillis()) }
                     .onFailure { Timber.tag(TAG).w(it, "watch push failed (independent of alarm/inference)") }
+            }
+        }
+
+        // 6b) The inference forecast-cadence driver — a SINGLE consumer, structurally independent of
+        //     the model-free alarm path (§2.3, §3.6-A): a failed cycle never touches the alarm.
+        //     ADAPTIVE (the default) fires one forecast per incoming reading — the model tracks the
+        //     sensor's own irregular cadence; TIMED fires on a wall-clock grid aligned to the
+        //     user-configured period. The two tick sources are merged and CONFLATED so a burst can
+        //     only ever collapse to the latest `nowMs`, never queue a backlog. The mode is read live
+        //     off the snapshot every emit, so a Settings flip takes effect without a service restart.
+        //     CRITICAL: this drives ONLY runFromHistory (never runCycle/publish) — the history-fed
+        //     chokepoint that the §3.6 gate and warmup latch already guard.
+        lifecycleScope.launch(container.dispatchers.default) {
+            container.inferenceController.refreshModels()
+            val adaptiveTicks = readingBus
+                .filter { container.forecastModeSnapshot == SettingsStore.FORECAST_MODE_ADAPTIVE }
+                .map { System.currentTimeMillis() }
+            val timedTicks = flow {
+                while (isActive) {
+                    if (container.forecastModeSnapshot == SettingsStore.FORECAST_MODE_TIMED) {
+                        val periodMs = container.forecastPeriodMin() * 60_000L
+                        val now = System.currentTimeMillis()
+                        delay((periodMs - now % periodMs).coerceAtLeast(1L)) // to the next period boundary
+                        // Re-check after the sleep: the user may have left TIMED while we waited.
+                        if (container.forecastModeSnapshot == SettingsStore.FORECAST_MODE_TIMED) {
+                            emit(System.currentTimeMillis())
+                        }
+                    } else {
+                        delay(MODE_POLL_MS) // idle-poll until the mode flips back to TIMED
+                    }
+                }
+            }
+            merge(adaptiveTicks, timedTicks).conflate().collect { nowMs ->
+                runCatching { container.inferenceController.runFromHistory(InferenceCause.GRID_TICK, nowMs) }
+                    .onFailure { Timber.tag(TAG).w(it, "inference cycle failed (alarm path unaffected)") }
             }
         }
 
@@ -804,6 +843,8 @@ class CgmScanService : LifecycleService() {
         const val EXTRA_END_BG = "endBg"
 
         private const val GRID_MS = 300_000L
+        /** How often the TIMED forecast driver wakes to notice a flip back into TIMED mode. */
+        private const val MODE_POLL_MS = 30_000L
         private fun snapToGrid(ts: Long): Long =
             Math.floorDiv(ts + GRID_MS / 2, GRID_MS) * GRID_MS
 

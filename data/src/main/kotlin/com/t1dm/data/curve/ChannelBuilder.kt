@@ -182,6 +182,27 @@ class ChannelBuilder(
         return engine.onBoard(events, atMs, kind)
     }
 
+    /**
+     * The wall-clock instant the combined insulin action last carries a positive value — the moment
+     * IOB decays to zero, which the circadian panel projects DKA/coma/death forward from. Gathers
+     * the SAME logged boluses + auto-extended basal tails as [onBoard]'s INSULIN branch (so the
+     * "logged doses only" provenance holds), then, per event, finds the last non-zero step of its
+     * PK curve and maps it back to absolute time; the latest such instant across all events wins —
+     * a still-acting basal background pushes the zero past a shorter, already-decayed bolus. Null
+     * when no insulin event carries any action (nothing on board). Does NOT clip past instants: an
+     * event whose tail already lies before [atMs] still contributes, so a fully-decayed dose yields
+     * a zero instant earlier than [atMs] rather than being dropped.
+     */
+    suspend fun insulinZeroMs(atMs: Long): Long? {
+        val from = atMs - PAD_MS
+        val events = store.insulinEvents(from, atMs + CurveEngine.STEP_MS) +
+            (store.activeBasalSchedule()?.let { engine.extendBasal(it, from, atMs + CurveEngine.STEP_MS) }.orEmpty())
+        return events.asSequence()
+            .filter { it.kind == CurveKind.INSULIN }
+            .mapNotNull { ev -> ev.values.indexOfLast { it > 0.0 }.takeIf { it >= 0 }?.let { j -> ev.startMs + j * ev.stepMs } }
+            .maxOrNull()
+    }
+
     companion object {
         /** Look-back padding (minutes) covering the longest plausible action tail (degludec ~42 h). */
         const val PAD_MIN: Long = 48 * 60

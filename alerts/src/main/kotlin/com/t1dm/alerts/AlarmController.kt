@@ -24,6 +24,10 @@ class AlarmController(
     private val notifier: AlarmNotifier,
     private val config: AlarmConfig = AlarmConfig.DEFAULT,
     private val clock: () -> Long = System::currentTimeMillis,
+    /** The current battery-sensor °C (locked decision D1), read live on each tick so the
+     *  over-temperature alarm tracks the device without a settings/service dependency here. Null when
+     *  unreadable — the evaluator treats that as inert. Defaults to never-hot for tests/headless. */
+    private val temperatureC: () -> Double? = { null },
 ) {
     val state: StateFlow<AlarmState> get() = engine.state
 
@@ -50,7 +54,7 @@ class AlarmController(
     }
 
     private fun onTick() {
-        engine.onTick(clock())
+        engine.onTick(clock(), temperatureC())
         val current = engine.state.value
         val primary = current.primary ?: return
         val now = clock()

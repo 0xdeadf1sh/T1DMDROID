@@ -17,6 +17,11 @@ import com.t1dm.core.model.AlertThresholds
  *   this often. A new band/severity always actuates immediately; the notification text still updates
  *   silently in between. Presentation-only: this never changes WHEN the pure engine fires (§3.6-A).
  * @param tickIntervalMs wall-clock cadence at which the loss-of-signal window is re-evaluated.
+ * @param overTempEnabled whether the device-over-temperature alarm participates at all (D4).
+ * @param overTempAlertC battery-sensor °C at or above which the over-temp alarm fires.
+ * @param overTempClearC battery-sensor °C at or below which it clears; the gap to [overTempAlertC] is
+ *   deliberate hysteresis so a temperature hovering near the limit does not chatter.
+ * @param overTempSeverity the tier the over-temp alarm announces at (WARNING vs the loud CRITICAL).
  */
 data class AlarmConfig(
     val thresholds: AlertThresholds,
@@ -26,6 +31,10 @@ data class AlarmConfig(
     val repeatCadenceMin: Int = 5,
     val minActuationIntervalMin: Int = 5,
     val tickIntervalMs: Long = 60_000L,
+    val overTempEnabled: Boolean = true,
+    val overTempAlertC: Double = 44.0,
+    val overTempClearC: Double = 41.0,
+    val overTempSeverity: AlarmSeverity = AlarmSeverity.WARNING,
 ) {
     companion object {
         val DEFAULT = AlarmConfig(

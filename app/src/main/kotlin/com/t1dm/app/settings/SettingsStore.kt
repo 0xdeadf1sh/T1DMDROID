@@ -1,6 +1,7 @@
 package com.t1dm.app.settings
 
 import com.t1dm.alerts.AlarmConfig
+import com.t1dm.alerts.AlarmSeverity
 import com.t1dm.alerts.VibrationPreset
 import com.t1dm.calc.Asymmetry
 import com.t1dm.calc.CalcConfig
@@ -96,6 +97,11 @@ class SettingsStore(
         lossEscalatedMin = getInt(K_LOSS_ESCALATED_MIN, DEF.lossEscalatedMin),
         repeatCadenceMin = getInt(K_REPEAT_CADENCE, DEF.repeatCadenceMin),
         minActuationIntervalMin = getInt(K_MIN_ACTUATION, DEF.minActuationIntervalMin),
+        overTempEnabled = getBool(K_OVERTEMP_ENABLED, DEFAULT_OVERTEMP_ENABLED),
+        overTempAlertC = getDouble(K_OVERTEMP_ALERT_C, DEFAULT_OVERTEMP_ALERT_C),
+        overTempClearC = getDouble(K_OVERTEMP_CLEAR_C, DEFAULT_OVERTEMP_CLEAR_C),
+        overTempSeverity = if (getBool(K_OVERTEMP_CRITICAL, DEFAULT_OVERTEMP_CRITICAL))
+            AlarmSeverity.CRITICAL else AlarmSeverity.WARNING,
     )
 
     // ── Alert actuators (per-band vibration + DND bypass; sounds handled with Uri in AppContainer) ──
@@ -134,6 +140,63 @@ class SettingsStore(
     suspend fun currentLowPowerEnabled(): Boolean = getBool(K_POWER_ENABLED, true)
     suspend fun currentLowPowerPercent(): Int = getInt(K_POWER_PCT, DEFAULT_LOW_POWER_PCT)
     suspend fun currentLowPowerUseOsSaver(): Boolean = getBool(K_POWER_OS_SAVER, true)
+
+    // ── Forecast cadence (F2 — adaptive per-reading vs a fixed wall-clock period) ────────────────
+    // ADAPTIVE re-forecasts on every CGM reading; TIMED fires on a phone-clock grid of N minutes.
+    // Read as a live snapshot by the single-consumer forecast driver in CgmScanService.
+
+    val forecastMode: Flow<String> =
+        repository.observeKv(K_FORECAST_MODE).map { it ?: FORECAST_MODE_ADAPTIVE }
+    val forecastPeriodMin: Flow<Int> = intFlow(K_FORECAST_PERIOD_MIN, DEFAULT_FORECAST_PERIOD_MIN)
+
+    suspend fun currentForecastMode(): String = repository.getKv(K_FORECAST_MODE) ?: FORECAST_MODE_ADAPTIVE
+    suspend fun currentForecastPeriodMin(): Int = getInt(K_FORECAST_PERIOD_MIN, DEFAULT_FORECAST_PERIOD_MIN)
+    suspend fun setForecastMode(mode: String) = put(K_FORECAST_MODE, mode)
+    suspend fun setForecastPeriodMin(min: Int) =
+        put(K_FORECAST_PERIOD_MIN, min.coerceIn(FORECAST_PERIOD_MIN_MIN, FORECAST_PERIOD_MIN_MAX).toString())
+
+    // ── Thermal gate (D1/D3/D6 — pause inference on the BATTERY-sensor °C; a truer die temp is
+    // unreadable here). Gate ENABLED by default; the threshold/warn-margin are user-set (floored at 0).
+    // The gate reads the battery °C irrespective of DEATH (D4: it stays active in DEATH mode).
+
+    val thermalGateEnabled: Flow<Boolean> = boolFlow(K_INF_THERMAL_ON, DEFAULT_THERMAL_ON)
+    val inferenceMaxTempC: Flow<Double> = doubleFlow(K_INF_MAX_TEMP_C, DEFAULT_MAX_TEMP_C)
+    val thermalWarnMarginC: Flow<Double> = doubleFlow(K_INF_WARN_MARGIN_C, DEFAULT_WARN_MARGIN_C)
+
+    suspend fun currentThermalGateEnabled(): Boolean = getBool(K_INF_THERMAL_ON, DEFAULT_THERMAL_ON)
+    suspend fun currentInferenceMaxTempC(): Double = getDouble(K_INF_MAX_TEMP_C, DEFAULT_MAX_TEMP_C)
+    suspend fun currentThermalWarnMarginC(): Double = getDouble(K_INF_WARN_MARGIN_C, DEFAULT_WARN_MARGIN_C)
+
+    suspend fun setThermalGateEnabled(on: Boolean) = put(K_INF_THERMAL_ON, if (on) "1" else "0")
+    suspend fun setInferenceMaxTempC(c: Double) = put(K_INF_MAX_TEMP_C, c.coerceAtLeast(0.0).toString())
+    suspend fun setThermalWarnMarginC(c: Double) = put(K_INF_WARN_MARGIN_C, c.coerceAtLeast(0.0).toString())
+
+    // ── Death-clock offsets (F5 — the morbid IOB-exhaustion projection). DISPLAY-ONLY forward offsets
+    // (hours) from each prior landmark; no §3.6 gate reads these. Tunable per D2, floored at 0.
+
+    val dkaAfterIobZeroH: Flow<Double> = doubleFlow(K_DEATH_DKA_H, DEFAULT_DKA_AFTER_IOB_ZERO_H)
+    val comaAfterDkaH: Flow<Double> = doubleFlow(K_DEATH_COMA_H, DEFAULT_COMA_AFTER_DKA_H)
+    val deathAfterComaH: Flow<Double> = doubleFlow(K_DEATH_DEATH_H, DEFAULT_DEATH_AFTER_COMA_H)
+
+    suspend fun setDkaAfterIobZeroH(h: Double) = put(K_DEATH_DKA_H, h.coerceAtLeast(0.0).toString())
+    suspend fun setComaAfterDkaH(h: Double) = put(K_DEATH_COMA_H, h.coerceAtLeast(0.0).toString())
+    suspend fun setDeathAfterComaH(h: Double) = put(K_DEATH_DEATH_H, h.coerceAtLeast(0.0).toString())
+
+    // ── Over-temperature alarm (F7 — the battery-°C alert, distinct from the inference gate). Fires at
+    // alertC, clears at clearC (hysteresis); D4-exempt from DEATH's global suppression. Folded into
+    // currentAlarmConfig() above so it rides the same snapshot the AlarmEngine is built from.
+
+    val overTempEnabled: Flow<Boolean> = boolFlow(K_OVERTEMP_ENABLED, DEFAULT_OVERTEMP_ENABLED)
+    val overTempAlertC: Flow<Double> = doubleFlow(K_OVERTEMP_ALERT_C, DEFAULT_OVERTEMP_ALERT_C)
+    val overTempClearC: Flow<Double> = doubleFlow(K_OVERTEMP_CLEAR_C, DEFAULT_OVERTEMP_CLEAR_C)
+    val overTempCritical: Flow<Boolean> = boolFlow(K_OVERTEMP_CRITICAL, DEFAULT_OVERTEMP_CRITICAL)
+
+    suspend fun setOverTempConfig(enabled: Boolean, alertC: Double, clearC: Double, critical: Boolean) {
+        put(K_OVERTEMP_ENABLED, if (enabled) "1" else "0")
+        put(K_OVERTEMP_ALERT_C, alertC.coerceAtLeast(0.0).toString())
+        put(K_OVERTEMP_CLEAR_C, clearC.coerceAtLeast(0.0).toString())
+        put(K_OVERTEMP_CRITICAL, if (critical) "1" else "0")
+    }
 
     // ── Calculator policy (§3.6 — every threshold user-set, UNBOUNDED) ─────────────────────────
 
@@ -371,7 +434,55 @@ class SettingsStore(
 
         /** kv-key prefixes that constitute exportable configuration. */
         private val CONFIG_PREFIXES = listOf("alarm.", "alerts.", "power.", "calc.", "ui.", "graph.", "stats.")
-        private val CONFIG_EXACT_KEYS = setOf("inference.warmup_hours")
+        // NOTE: no blanket `inference.` prefix — that would sweep runtime telemetry into the export.
+        // The four `alarm.overtemp_*` keys ride the existing `alarm.` prefix already. `death.enabled`
+        // stays deliberately non-exportable; only the display-only death-clock OFFSETS are exported.
+        private val CONFIG_EXACT_KEYS = setOf(
+            "inference.warmup_hours",
+            K_FORECAST_MODE,
+            K_FORECAST_PERIOD_MIN,
+            K_INF_THERMAL_ON,
+            K_INF_MAX_TEMP_C,
+            K_INF_WARN_MARGIN_C,
+            K_DEATH_DKA_H,
+            K_DEATH_COMA_H,
+            K_DEATH_DEATH_H,
+        )
+
+        // ── Forecast cadence (PUBLIC — CgmScanService reads the mode) ─────────────────────────────
+        const val K_FORECAST_MODE = "inference.forecast_mode"
+        const val K_FORECAST_PERIOD_MIN = "inference.forecast_period_min"
+        const val FORECAST_MODE_ADAPTIVE = "adaptive"
+        const val FORECAST_MODE_TIMED = "timed"
+        const val DEFAULT_FORECAST_PERIOD_MIN = 5
+        const val FORECAST_PERIOD_MIN_MIN = 1
+        const val FORECAST_PERIOD_MIN_MAX = 60
+
+        // ── Thermal gate (PUBLIC) ─────────────────────────────────────────────────────────────────
+        const val K_INF_THERMAL_ON = "inference.thermal_gate_enabled"
+        const val K_INF_MAX_TEMP_C = "inference.max_temp_c"
+        const val K_INF_WARN_MARGIN_C = "inference.thermal_warn_margin_c"
+        const val DEFAULT_THERMAL_ON = true
+        const val DEFAULT_MAX_TEMP_C = 45.0
+        const val DEFAULT_WARN_MARGIN_C = 3.0
+
+        // ── Death-clock offsets (PUBLIC) ──────────────────────────────────────────────────────────
+        const val K_DEATH_DKA_H = "death.dka_after_iob_zero_h"
+        const val K_DEATH_COMA_H = "death.coma_after_dka_h"
+        const val K_DEATH_DEATH_H = "death.death_after_coma_h"
+        const val DEFAULT_DKA_AFTER_IOB_ZERO_H = 2.0
+        const val DEFAULT_COMA_AFTER_DKA_H = 29.0
+        const val DEFAULT_DEATH_AFTER_COMA_H = 59.0
+
+        // ── Over-temperature alarm (PUBLIC) ───────────────────────────────────────────────────────
+        const val K_OVERTEMP_ENABLED = "alarm.overtemp_enabled"
+        const val K_OVERTEMP_ALERT_C = "alarm.overtemp_alert_c"
+        const val K_OVERTEMP_CLEAR_C = "alarm.overtemp_clear_c"
+        const val K_OVERTEMP_CRITICAL = "alarm.overtemp_critical"
+        const val DEFAULT_OVERTEMP_ENABLED = true
+        const val DEFAULT_OVERTEMP_ALERT_C = 44.0
+        const val DEFAULT_OVERTEMP_CLEAR_C = 41.0
+        const val DEFAULT_OVERTEMP_CRITICAL = false
 
         // ── kv keys ────────────────────────────────────────────────────────────────────────────
         private const val K_ALARM_URGENT_LOW = "alarm.urgent_low_mgdl"

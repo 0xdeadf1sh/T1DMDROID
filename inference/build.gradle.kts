@@ -35,4 +35,9 @@ dependencies {
 
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.timber)
+
+    testImplementation(libs.junit)
+    // Android's JVM unit-test android.jar stubs org.json to throw "not mocked"; ModelStore parses
+    // descriptor JSON with org.json, so the real implementation must shadow the stub on the test path.
+    testImplementation("org.json:json:20240303")
 }

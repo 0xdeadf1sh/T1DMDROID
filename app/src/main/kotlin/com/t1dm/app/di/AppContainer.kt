@@ -51,6 +51,8 @@ import com.t1dm.core.model.JournalNote
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.core.model.RolledForecast
+import com.t1dm.core.model.ThermalStatus
+import com.t1dm.core.model.DkaTimeline
 import com.t1dm.calc.AdviceResult
 import com.t1dm.calc.AnchorInfo
 import com.t1dm.calc.AnchorInfoSource
@@ -107,6 +109,7 @@ import com.t1dm.inference.InferenceControllerDefaults
 import com.t1dm.inference.buildInferenceController
 import com.t1dm.sync.CatchUpCoordinator
 import com.t1dm.sync.DrainConfig
+import com.t1dm.sync.ModelSyncCoordinator
 import com.t1dm.sync.NoActiveProfileException
 import com.t1dm.sync.OkHttpSyncClient
 import com.t1dm.sync.OutboxEnqueuer
@@ -120,6 +123,7 @@ import com.t1dm.sync.WebSocketStreamClient
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import timber.log.Timber
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -242,6 +246,16 @@ class AppContainer(context: Context) {
     val deathMode: Flow<Boolean> get() = settingsStore.deathMode
     suspend fun setDeathMode(on: Boolean) = settingsStore.setDeathMode(on)
 
+    // ─── Forecast-cadence snapshot (F2) — mirrors deathModeSnapshot: the FGS's single-consumer forecast
+    // driver reads the ADAPTIVE-vs-TIMED mode synchronously off this @Volatile, kept current by a
+    // collector on the persisted flag, without re-suspending into SettingsStore on every reading tick. ──
+    @Volatile
+    var forecastModeSnapshot: String = SettingsStore.FORECAST_MODE_ADAPTIVE
+        private set
+
+    /** The TIMED-mode forecast period (whole minutes), read fresh per timed tick by the FGS driver. */
+    suspend fun forecastPeriodMin(): Int = settingsStore.currentForecastPeriodMin()
+
     // ─── Alert actuators (Phase 7B — per-band sound + K90 vibration; kv-backed via SettingsStore) ──
 
     /**
@@ -298,6 +312,14 @@ class AppContainer(context: Context) {
         refreshAlarmConfig()
     }
 
+    /** F7 (D1/D4) — persist the over-temperature ALERT knobs and re-hydrate [alarmConfig] so the next
+     *  service start builds an [AlarmEngine] carrying them. The over-temp alarm is EXEMPT from DEATH's
+     *  global suppression (D4): it still fires when the device runs hot even with alarms silenced. */
+    suspend fun saveOverTempConfig(enabled: Boolean, alertC: Double, clearC: Double, critical: Boolean) {
+        settingsStore.setOverTempConfig(enabled, alertC, clearC, critical)
+        refreshAlarmConfig()
+    }
+
     /** Export the full config as pretty JSON (for a SAF write). Off-main. */
     suspend fun exportConfigJson(): String = withContext(dispatchers.io) { settingsStore.exportJson() }
 
@@ -341,6 +363,20 @@ class AppContainer(context: Context) {
             backendPrefProvider = { id -> forecastBackendPref(id) },
             // Phase 7C: durable cumulative per-model inference telemetry for the Models drill-down.
             telemetryStore = KvTelemetryStore(repository),
+            // F6 THERMAL GATE (D1: battery-sensor °C): re-read the enable flag + thresholds fresh per
+            // cycle. Disabled ⇒ null ⇒ no gate. Deliberately NO death-mode check (D4: the over-temp
+            // inference gate stays ACTIVE in DEATH — the die does not care about the alarm override).
+            thermalProvider = {
+                if (!settingsStore.currentThermalGateEnabled()) null
+                else withContext(dispatchers.io) { readDeviceTempC() }?.let { c ->
+                    ThermalStatus(
+                        currentC = c,
+                        thresholdC = settingsStore.currentInferenceMaxTempC(),
+                        warnMarginC = settingsStore.currentThermalWarnMarginC(),
+                        resumeMarginC = THERMAL_RESUME_MARGIN_C,
+                    )
+                }
+            },
         )
     }
 
@@ -403,6 +439,16 @@ class AppContainer(context: Context) {
         val intent = appContext.registerReceiver(null, android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED))
         intent?.getIntExtra(android.os.BatteryManager.EXTRA_TEMPERATURE, -1)?.takeIf { it > 0 }?.let { it / 10.0 }
     }.getOrNull()
+
+    // ── Thermal inference gate (F6, D1/D3) — passthroughs to the persisted knobs. The gate itself is
+    // wired into the controller via `thermalProvider` above (re-read fresh each cycle); these expose the
+    // same knobs to the Settings sub-screen + the dashboard TEMP-chip colouring. Celsius throughout. ──
+    val thermalGateEnabled: Flow<Boolean> = settingsStore.thermalGateEnabled
+    val inferenceMaxTempC: Flow<Double> = settingsStore.inferenceMaxTempC
+    val thermalWarnMarginC: Flow<Double> = settingsStore.thermalWarnMarginC
+    suspend fun setThermalGateEnabled(on: Boolean) = settingsStore.setThermalGateEnabled(on)
+    suspend fun setInferenceMaxTempC(c: Double) = settingsStore.setInferenceMaxTempC(c)
+    suspend fun setThermalWarnMarginC(c: Double) = settingsStore.setThermalWarnMarginC(c)
 
     /**
      * On-device realized forecast accuracy for [modelId] over the trailing [days] (Phase 7C — Models
@@ -481,11 +527,19 @@ class AppContainer(context: Context) {
             // Discovery re-reads each model's persisted forecast-backend choice via backendPrefProvider,
             // so the active handle + "executing on" line are correct from the first tick.
             inferenceController.refreshModels()
+            // Surface any update staged in a prior session (killed before applying) even before a sync.
+            refreshPendingModelUpdates()
+            // Trigger 1 — auto-fetch from the active server at startup (product decision 1). Sequenced
+            // AFTER the initial discovery so the running-set is known: an update to the just-loaded dosing
+            // model is then staged for manual apply, never applied-in-place before load, while a fresh
+            // install adopts a newly-fetched model. A slow/failed network is swallowed inside autoSyncModels.
+            autoSyncModels("startup")
         }
         // Keep the notification-icon theme snapshot current (issue I1).
         appScope.launch { settingsStore.themeId.collect { themeIdSnapshot = it } }
         appScope.launch { settingsStore.customThemeJson.collect { customThemeJsonSnapshot = it } }
         appScope.launch { settingsStore.deathMode.collect { deathModeSnapshot = it } }
+        appScope.launch { settingsStore.forecastMode.collect { forecastModeSnapshot = it } }
     }
 
     // ─── Server sync (Phase 3) ────────────────────────────────────────────────────────────────
@@ -501,6 +555,39 @@ class AppContainer(context: Context) {
             endpoint = { serverProfileStore.activeEndpoint() },
             dispatchers = dispatchers,
         )
+    }
+
+    /**
+     * Fetches the server's model registry and reconciles it into [modelsDir] so a fresh export becomes
+     * discoverable by `ModelStore.discover()`. Inference-agnostic: the "is this the running model?"
+     * question is the injected running-set provider — the loaded models' on-disk `.pte` FILENAMES (via
+     * [InferenceController.runningArtifactFileNames]), NOT their descriptor ids (which can diverge from
+     * the filename for an adb-pushed model and would let the guard miss). So an update to the
+     * CURRENTLY-DOSING model is STAGED (never silently swapped) and surfaced for a manual
+     * [applyModelUpdate], while a brand-new model is applied in place and adopted on the next
+     * `refreshModels()`. Verification (bytes' SHA-256 vs `X-SHA256`) happens inside the coordinator
+     * BEFORE anything discoverable is written.
+     */
+    val modelSyncCoordinator: ModelSyncCoordinator by lazy {
+        ModelSyncCoordinator(
+            modelsDir = modelsDir,
+            http = syncHttpClient,
+            runningArtifacts = { inferenceController.runningArtifactFileNames() },
+        )
+    }
+
+    /** Last human-readable model-sync result line for the Settings → Server read-out (null until run). */
+    val modelSyncStatus = MutableStateFlow<String?>(null)
+
+    /** Descriptor ids with a downloaded-but-unapplied update staged in `pending/` — the "update
+     *  available — apply" surface for the Models screen (product decision 2). Refreshed after every
+     *  sync/apply; a staged update never swaps the running/dosing model on its own. */
+    val pendingModelUpdates = MutableStateFlow<Set<String>>(emptySet())
+
+    private suspend fun refreshPendingModelUpdates() {
+        pendingModelUpdates.value = withContext(dispatchers.io) {
+            runCatching { modelSyncCoordinator.pendingModelIds() }.getOrDefault(emptySet())
+        }
     }
 
     val outboxEnqueuer: OutboxEnqueuer by lazy { OutboxEnqueuer(repository) }
@@ -634,6 +721,9 @@ class AppContainer(context: Context) {
             makeActive = true,
             nowMs = System.currentTimeMillis(),
         )
+        // Trigger 2 — a profile is now active: auto-fetch models (product decision 1). Silent/logged;
+        // covers both the Settings save and the debug configureServer entrypoint that funnel here.
+        launchAutoModelSync("profile-saved")
     }
 
     /**
@@ -698,6 +788,92 @@ class AppContainer(context: Context) {
         withContext(dispatchers.io) {
             runCatching { syncHttpClient.postPhoto(tsMs, bytes, ext); Unit }
         }
+
+    /**
+     * The MANUAL "Sync models from server" entrypoint (Settings → Server). Runs the coordinator off the
+     * main thread, then re-discovers so a fresh download becomes loadable, and publishes a plain-language
+     * result line into [modelSyncStatus]. Never throws — a network/list failure surfaces as a status
+     * line, not a crash. A running-model update is downloaded but STAGED (see [applyModelUpdate]); a new
+     * model is adopted on the trailing `refreshModels()`.
+     */
+    suspend fun syncModelsFromServer(): String {
+        val line = if (serverProfileStore.activeEndpoint() == null) {
+            "no active profile / token configured"
+        } else {
+            runCatching {
+                val summary = withContext(dispatchers.io) { modelSyncCoordinator.sync() }
+                inferenceController.refreshModels()
+                summarizeModelSync(summary)
+            }.getOrElse { e -> "sync failed — ${e.message ?: e::class.simpleName}" }
+        }
+        refreshPendingModelUpdates()
+        modelSyncStatus.value = line
+        return line
+    }
+
+    /**
+     * Promote a staged running-model update (`pending/`) into the live models dir and re-discover so the
+     * new artifact is loaded and re-selected — the manual half of auto-download / manual-apply (product
+     * decision 2), mirroring the running-set selection flow. Returns false if no complete staged pair
+     * exists. Off-main.
+     */
+    suspend fun applyModelUpdate(modelId: String): Boolean = withContext(dispatchers.io) {
+        val applied = runCatching { modelSyncCoordinator.applyPending(modelId) }.getOrDefault(false)
+        if (applied) inferenceController.refreshModels()
+        refreshPendingModelUpdates()
+        applied
+    }
+
+    /**
+     * F4 — delete a discovered model (Models screen ✕). Removes the on-disk descriptor+pte pair and prunes
+     * the controller's per-model state, then wipes its persisted predictions + forecast-backend kv row and
+     * re-runs discovery so the running-set + any pending-update surface reflow. Each step is guarded so a
+     * partial failure never crashes the UI; a re-evaluation follows so the panels drop the gone model's
+     * forecast promptly (the selected model deleted ⇒ fail-closed "no model" until another is selected).
+     */
+    suspend fun removeModel(modelId: String) {
+        runCatching { inferenceController.deleteModel(modelId) }
+        withContext(dispatchers.io) {
+            runCatching { repository.deletePredictionsForModel(modelId) }
+            runCatching { repository.putKv(kvForecastBackend(modelId), "", System.currentTimeMillis()) }
+        }
+        refreshPendingModelUpdates()
+        reevaluateInferenceNow()
+    }
+
+    /** "downloaded N · M update(s) available · K up to date · S skipped · F failed" (empty ⇒ nothing served). */
+    private fun summarizeModelSync(s: com.t1dm.sync.ModelSyncSummary): String {
+        if (s.outcomes.isEmpty()) return "no models served"
+        return buildList {
+            if (s.fetchedNew.isNotEmpty()) add("downloaded ${s.fetchedNew.size}")
+            if (s.updatesPendingApply.isNotEmpty()) add("${s.updatesPendingApply.size} update(s) available — apply in Models")
+            if (s.alreadyCurrent.isNotEmpty()) add("${s.alreadyCurrent.size} up to date")
+            if (s.skipped.isNotEmpty()) add("${s.skipped.size} skipped")
+            if (s.failed.isNotEmpty()) add("${s.failed.size} failed")
+        }.joinToString(" · ").ifEmpty { "nothing to do" }
+    }
+
+    /**
+     * The AUTO model-sync body (startup + after a profile is saved): silent, off-main, guarded. A
+     * down/absent endpoint throws in the coordinator and is swallowed (logged, never a crash — product
+     * decision 1), then discovery re-runs so any fresh download is adopted and the pending-update surface
+     * refreshed. Suspends so the startup path can sequence it AFTER the initial discovery (so the
+     * running-set — hence the "never swap the running model" gate — is populated). Deliberately does NOT
+     * touch [modelSyncStatus] (that line is the manual button's).
+     */
+    private suspend fun autoSyncModels(reason: String) {
+        if (serverProfileStore.activeEndpoint() == null) return
+        runCatching { modelSyncCoordinator.sync() }
+            .onFailure { Timber.tag(ModelSyncCoordinator.TAG).w(it, "auto model sync failed (%s)", reason) }
+        runCatching { inferenceController.refreshModels() }
+        refreshPendingModelUpdates()
+    }
+
+    /** Fire-and-forget wrapper for the profile-saved trigger, where the model is already loaded so no
+     *  ordering vs. the initial discovery is needed (the startup path awaits [autoSyncModels] directly). */
+    private fun launchAutoModelSync(reason: String) {
+        appScope.launch { autoSyncModels(reason) }
+    }
 
     /** One-shot health probe against the active profile; a human-readable status line. */
     suspend fun checkServerHealth(): String = runCatching {
@@ -815,14 +991,27 @@ class AppContainer(context: Context) {
         val cob = channelBuilder.onBoard(now, CurveKind.CARB)
         val lastLogged = repository.latestLoggedInsulinTs()
         val hasBasal = repository.activeBasalDoses().isNotEmpty()
+        // F5: the instant the last active insulin (logged doses + basal tails) decays to zero — the
+        // landmark the circadian panel's insulin-exhaustion countdown projects forward from.
+        val iobZeroMs = runCatching { channelBuilder.insulinZeroMs(now) }.getOrNull()
         return IobCobReadout(
             atMs = now,
             iobU = iob,
             cobG = cob,
             minsSinceLastLoggedInsulin = lastLogged?.let { (now - it) / 60_000L },
             hasBasalSchedule = hasBasal,
+            iobZeroMs = iobZeroMs,
         )
     }
+
+    /** F5: the user-tunable DKA→coma→death offsets (hours, forward from IOB-zero), for the circadian
+     *  panel's morbid insulin-exhaustion projection. DISPLAY-ONLY — no §3.6 gate reads this. */
+    val dkaTimeline: Flow<DkaTimeline> =
+        combine(
+            settingsStore.dkaAfterIobZeroH,
+            settingsStore.comaAfterDkaH,
+            settingsStore.deathAfterComaH,
+        ) { a, b, c -> DkaTimeline(a, b, c) }
 
     // ─── Dose calculator (Phase 4 §5 + §3.6 safety architecture) ────────────────────────────────
 
@@ -1338,4 +1527,11 @@ class AppContainer(context: Context) {
 
     /** The FGS 5-min grid tick calls this to seal + push one glance (suspends in low-power mode). */
     suspend fun pushToWatch(nowMs: Long) = watchLink.pushNow(nowMs)
+
+    companion object {
+        /** F6 — hysteresis: once the thermal gate has tripped, inference resumes only after the die cools
+         *  to `thresholdC - THERMAL_RESUME_MARGIN_C`, so a reading hovering at the threshold cannot flap
+         *  the forecast on and off cycle-to-cycle. */
+        const val THERMAL_RESUME_MARGIN_C = 2.0
+    }
 }

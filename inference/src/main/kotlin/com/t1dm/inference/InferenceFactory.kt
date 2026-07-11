@@ -4,6 +4,7 @@ import com.t1dm.core.common.NativeCore
 import com.t1dm.core.common.T1dmDispatchers
 import com.t1dm.core.model.BackendId
 import com.t1dm.core.model.Precision
+import com.t1dm.core.model.ThermalStatus
 import com.t1dm.inference.backend.ExecuTorchNeuronBackend
 import com.t1dm.inference.backend.ExecuTorchVulkanBackend
 import com.t1dm.inference.backend.ExecuTorchXnnpackBackend
@@ -27,6 +28,7 @@ fun buildInferenceController(
     warmupHoursProvider: suspend () -> Double = { InferenceControllerDefaults.WARMUP_HOURS },
     backendPrefProvider: suspend (modelId: String) -> BackendId? = { null },
     telemetryStore: TelemetryStore? = null,
+    thermalProvider: suspend () -> ThermalStatus? = { null },
 ): InferenceController {
     val store = ModelStore(modelsDir, native)
     val controller = InferenceController(
@@ -40,6 +42,7 @@ fun buildInferenceController(
         warmupHoursProvider = warmupHoursProvider,
         backendPrefProvider = backendPrefProvider,
         telemetryStore = telemetryStore,
+        thermalProvider = thermalProvider,
     )
     controller.registerBackend(ExecuTorchXnnpackBackend())
     controller.registerBackend(ExecuTorchNeuronBackend())

@@ -48,8 +48,10 @@ fun ServerSettingsScreen(
     isActive: Boolean,
     busy: Boolean,
     healthStatus: String?,
+    syncStatus: String?,
     onSave: (label: String, baseUrl: String, token: String) -> Unit,
     onHealthCheck: () -> Unit,
+    onSyncModels: () -> Unit,
 ) {
     var label by remember(initialLabel) { mutableStateOf(initialLabel) }
     var baseUrl by remember(initialBaseUrl) { mutableStateOf(initialBaseUrl) }
@@ -148,6 +150,16 @@ fun ServerSettingsScreen(
         if (healthStatus != null) {
             Text("Status", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 4.dp))
             Text(healthStatus, style = MaterialTheme.typography.bodyMedium)
+        }
+
+        // Fetch the served model registry into the app's models dir (product decision 1). A new model is
+        // adopted on the next discovery; an update to the running model is staged and surfaced in Models.
+        OutlinedButton(onClick = onSyncModels, enabled = !busy && isActive, modifier = Modifier.padding(top = 8.dp)) {
+            Text(if (busy) "syncing…" else "Sync models from server")
+        }
+        if (syncStatus != null) {
+            Text("Models", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 4.dp))
+            Text(syncStatus, style = MaterialTheme.typography.bodyMedium)
         }
     }
 }
