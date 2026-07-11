@@ -677,8 +677,17 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
         composable("network") {
             val status by container.syncStatus.collectAsState(SyncStatus())
             val active by container.activeServerProfile.collectAsState(null)
+            // Issue 2 — poll the device's own network posture off-main every ~4 s and attach it to the
+            // panel model (the SyncStatus mapping is device-net-agnostic; we .copy(net = …) it in here).
+            val net by produceState<com.t1dm.feature.network.NetworkDiagnostics?>(null) {
+                while (true) {
+                    value = container.networkDiagnostics()
+                    kotlinx.coroutines.delay(4000)
+                }
+            }
             NetworkScreen(
-                state = status.toPanelState(active, container.outboxMaxSize, container.outboxMaxAgeMs),
+                state = status.toPanelState(active, container.outboxMaxSize, container.outboxMaxAgeMs)
+                    .copy(net = net),
             )
         }
         composable("meals") {
@@ -876,7 +885,9 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
         }
         composable("settings/death") {
             val scope = rememberCoroutineScope()
-            val death by container.deathMode.collectAsState(false)
+            // Seed the initial value from the hot snapshot so opening the page while DEATH mode is
+            // already engaged shows the sealed reaper straight away, not a WARNING(skull)→SEALED flash.
+            val death by container.deathMode.collectAsState(container.deathModeSnapshot)
             DeathModeScreen(
                 active = death,
                 onActivate = { scope.launch { container.setDeathMode(true) } },

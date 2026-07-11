@@ -542,3 +542,168 @@ fun DrawScope.drawSkull(phase: Float, primary: Color, accent: Color, ink: Color)
         strokeWidth = w * 0.003f,
     )
 }
+
+// ── the covenant paper ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * The "Release of Liability" — a signed covenant on aged parchment, drawn so the rescind animation
+ * can cleave it down the middle. Unlike the memento-mori figures the sheet is rendered as genuine
+ * PAPER, blended toward white so it reads as a pale document on Tron and Umbrella's dark ground and
+ * on Hello Kitty's light ground alike. [primary] lends the parchment its faint warmth and rules the
+ * heading; [accent] is the wax seal; [ink] darkens the deckled edge and the drop-shadow; the writing
+ * is struck in a near-black derived so it stays legible on the pale sheet in every theme. [phase]
+ * gives only a whisper of sway — 0f is still.
+ */
+fun DrawScope.drawContract(phase: Float, primary: Color, accent: Color, ink: Color) {
+    val w = size.width
+    val h = size.height
+    val cx = w / 2f
+    val cy = h / 2f
+    val sway = sin(phase) * 0.9f
+
+    // The sheet is inherently pale: a warm parchment struck from white, faintly cast by the theme.
+    val parchTop = Color.White.toward(primary, 0.05f).toward(accent, 0.02f)
+    val parchBot = parchTop.toward(ink, 0.10f).toward(accent, 0.03f)
+    val writing = Color.Black.toward(primary, 0.16f) // near-black ink, a hair of the theme's hue
+    val edge = ink.toward(Color.Black, 0.35f)
+
+    val l = w * 0.145f
+    val r = w * 0.855f
+    val t = h * 0.115f
+    val b = h * 0.885f
+    val corner = w * 0.028f
+    val deckle = w * 0.0045f
+    val sheet = deckledSheet(l, t, r, b, corner, deckle)
+
+    // A static bias plus the idle sway; the covenant hangs a touch askew like a pinned notice.
+    rotate(-2.4f + sway, pivot = Offset(cx, cy)) {
+        // A soft, doubled drop-shadow to lift the paper off the ground.
+        translate(w * 0.020f, h * 0.024f) { drawPath(sheet, edge.copy(alpha = 0.20f)) }
+        translate(w * 0.010f, h * 0.013f) { drawPath(sheet, edge.copy(alpha = 0.22f)) }
+
+        // The sheet itself, aged from a lit top edge to a duskier foot.
+        drawPath(
+            sheet,
+            Brush.verticalGradient(colors = listOf(parchTop, parchBot), startY = t, endY = b),
+        )
+        drawPath(sheet, edge.copy(alpha = 0.35f), style = Stroke(width = w * 0.004f))
+        // A faint inner rule and a ghost of a vertical fold — the seam the tear will follow.
+        drawPath(sheet, writing.copy(alpha = 0.06f), style = Stroke(width = w * 0.0025f))
+        drawLine(
+            writing.copy(alpha = 0.07f),
+            Offset(cx, t + h * 0.02f), Offset(cx, b - h * 0.02f),
+            strokeWidth = w * 0.0025f,
+        )
+
+        val contentL = l + (r - l) * 0.09f
+        val contentR = r - (r - l) * 0.09f
+        val span = contentR - contentL
+
+        // Heading block: two bold ruled bars standing in for a title and its subheading.
+        val headY = t + (b - t) * 0.12f
+        drawLine(
+            writing.copy(alpha = 0.85f),
+            Offset(contentL, headY), Offset(contentL + span * 0.58f, headY),
+            strokeWidth = (b - t) * 0.022f, cap = StrokeCap.Round,
+        )
+        drawLine(
+            writing.copy(alpha = 0.6f),
+            Offset(contentL, headY + (b - t) * 0.05f), Offset(contentL + span * 0.36f, headY + (b - t) * 0.05f),
+            strokeWidth = (b - t) * 0.012f, cap = StrokeCap.Round,
+        )
+
+        // Justified body: thin ruled lines, some run full, some fall short to end a paragraph.
+        val ruleY = b - (b - t) * 0.155f
+        val textTop = headY + (b - t) * 0.135f
+        val textBot = ruleY - (b - t) * 0.06f
+        val ends = floatArrayOf(1.0f, 0.94f, 0.99f, 0.63f, 1.0f, 0.9f, 0.97f, 0.52f)
+        for (i in ends.indices) {
+            val ly = textTop + (textBot - textTop) * (i.toFloat() / (ends.size - 1))
+            drawLine(
+                writing.copy(alpha = 0.62f),
+                Offset(contentL, ly), Offset(contentL + span * ends[i], ly),
+                strokeWidth = (b - t) * 0.006f, cap = StrokeCap.Round,
+            )
+        }
+
+        // The signature: a hand-scrawled flourish riding above its ruling.
+        val scrawl = Path().apply {
+            val sy = ruleY - (b - t) * 0.018f
+            val sx = contentL + span * 0.02f
+            moveTo(sx, sy)
+            cubicTo(sx + span * 0.06f, sy - (b - t) * 0.05f, sx + span * 0.10f, sy + (b - t) * 0.03f, sx + span * 0.16f, sy - (b - t) * 0.02f)
+            cubicTo(sx + span * 0.20f, sy - (b - t) * 0.06f, sx + span * 0.26f, sy + (b - t) * 0.04f, sx + span * 0.34f, sy - (b - t) * 0.01f)
+            cubicTo(sx + span * 0.40f, sy - (b - t) * 0.05f, sx + span * 0.46f, sy + (b - t) * 0.02f, sx + span * 0.5f, sy - (b - t) * 0.03f)
+        }
+        drawPath(scrawl, writing.toward(primary, 0.22f).copy(alpha = 0.82f), style = Stroke(width = (b - t) * 0.009f, cap = StrokeCap.Round, join = StrokeJoin.Round))
+        drawLine(
+            writing.copy(alpha = 0.5f),
+            Offset(contentL, ruleY), Offset(contentL + span * 0.6f, ruleY),
+            strokeWidth = (b - t) * 0.005f,
+        )
+        // A small notary "X" anchoring the signature line.
+        drawLine(writing.copy(alpha = 0.5f), Offset(contentL - span * 0.01f, ruleY - (b - t) * 0.02f), Offset(contentL + span * 0.02f, ruleY + (b - t) * 0.01f), strokeWidth = (b - t) * 0.005f)
+        drawLine(writing.copy(alpha = 0.5f), Offset(contentL - span * 0.01f, ruleY + (b - t) * 0.01f), Offset(contentL + span * 0.02f, ruleY - (b - t) * 0.02f), strokeWidth = (b - t) * 0.005f)
+
+        // The wax seal, pressed near the lower-right: a molten disc bearing a faint sigil.
+        val sealCx = contentR - span * 0.09f
+        val sealCy = b - (b - t) * 0.155f
+        val sealR = span * 0.085f
+        drawCircle(edge.copy(alpha = 0.28f), radius = sealR * 1.02f, center = Offset(sealCx + w * 0.005f, sealCy + h * 0.006f))
+        drawCircle(
+            Brush.radialGradient(
+                colors = listOf(accent.toward(Color.White, 0.28f), accent, accent.toward(Color.Black, 0.45f)),
+                center = Offset(sealCx - sealR * 0.3f, sealCy - sealR * 0.3f),
+                radius = sealR * 1.5f,
+            ),
+            radius = sealR,
+            center = Offset(sealCx, sealCy),
+        )
+        drawCircle(accent.toward(Color.Black, 0.5f).copy(alpha = 0.7f), radius = sealR, center = Offset(sealCx, sealCy), style = Stroke(width = w * 0.004f))
+        drawCircle(accent.toward(Color.White, 0.3f).copy(alpha = 0.45f), radius = sealR * 0.66f, center = Offset(sealCx, sealCy), style = Stroke(width = w * 0.0035f))
+        // A five-rayed sigil impressed into the wax.
+        val sigilInk = accent.toward(Color.White, 0.4f).copy(alpha = 0.5f)
+        for (k in 0 until 5) {
+            val a = (k.toFloat() / 5f) * (2f * kotlin.math.PI.toFloat()) - kotlin.math.PI.toFloat() / 2f
+            drawLine(
+                sigilInk,
+                Offset(sealCx, sealCy),
+                Offset(sealCx + kotlin.math.cos(a) * sealR * 0.5f, sealCy + kotlin.math.sin(a) * sealR * 0.5f),
+                strokeWidth = w * 0.0035f, cap = StrokeCap.Round,
+            )
+        }
+    }
+}
+
+/**
+ * A rounded rectangle whose edges are gently perturbed to read as the deckled, hand-torn margin of a
+ * sheet of paper. Corners are rounded by [corner]; each edge waves by at most [deckle].
+ */
+private fun deckledSheet(l: Float, t: Float, r: Float, b: Float, corner: Float, deckle: Float): Path {
+    val p = Path()
+    val n = 12
+    fun mix(a: Float, z: Float, f: Float) = a + (z - a) * f
+    p.moveTo(l + corner, t)
+    for (i in 1..n) {
+        val f = i.toFloat() / n
+        p.lineTo(mix(l + corner, r - corner, f), t - deckle * sin(i * 1.9f))
+    }
+    p.quadraticTo(r, t, r, t + corner)
+    for (i in 1..n) {
+        val f = i.toFloat() / n
+        p.lineTo(r + deckle * sin(i * 2.1f + 1.3f), mix(t + corner, b - corner, f))
+    }
+    p.quadraticTo(r, b, r - corner, b)
+    for (i in 1..n) {
+        val f = i.toFloat() / n
+        p.lineTo(mix(r - corner, l + corner, f), b + deckle * sin(i * 1.7f + 0.6f))
+    }
+    p.quadraticTo(l, b, l, b - corner)
+    for (i in 1..n) {
+        val f = i.toFloat() / n
+        p.lineTo(l - deckle * sin(i * 2.0f + 2.1f), mix(b - corner, t + corner, f))
+    }
+    p.quadraticTo(l, t, l + corner, t)
+    p.close()
+    return p
+}

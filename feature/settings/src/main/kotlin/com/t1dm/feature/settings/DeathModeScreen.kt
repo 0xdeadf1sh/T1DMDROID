@@ -477,21 +477,21 @@ private fun TearingRite(onTornAway: () -> Unit) {
             close()
         }
 
-        // Each half is the same reaper, clipped to one side of the rift and carried off as a rigid
-        // shard — the clip travels with the transform so the piece stays whole while it falls.
+        // Each half is the same contract paper, clipped to one side of the rift and carried off as a
+        // rigid shard — the clip travels with the transform so the piece stays whole while it falls.
         withTransform({
             rotate(-24f * t, pivot = Offset(w * 0.30f, h * 0.5f))
             translate(-w * 0.55f * t, h * 0.7f * t)
             clipPath(leftPiece)
         }) {
-            drawReaper(0f, primary = cs.primary, accent = cs.error, ink = cs.onSurface)
+            drawContract(0f, primary = cs.primary, accent = cs.error, ink = cs.onSurface)
         }
         withTransform({
             rotate(22f * t, pivot = Offset(w * 0.70f, h * 0.5f))
             translate(w * 0.55f * t, h * 0.7f * t)
             clipPath(rightPiece)
         }) {
-            drawReaper(0f, primary = cs.primary, accent = cs.error, ink = cs.onSurface)
+            drawContract(0f, primary = cs.primary, accent = cs.error, ink = cs.onSurface)
         }
 
         // A raw seam of red glows in the rift for the instant before the halves part.

@@ -3,6 +3,11 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- Network panel device diagnostics (issue 2): read the active transport / validated-internet
+         state and the Wi-Fi signal/link. Both are normal permissions — no runtime prompt. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+
     <!-- CGM: passive advertisement scan only, no location. The watch (Phase 5) additionally needs
          a CONNECTED GATT session — BLUETOOTH_CONNECT, declared by the :watch module and merged here
          (watch-link.md / build-gotchas.md). The scan permission is shared with the CGM path. -->

@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -56,190 +57,190 @@ fun StatsScreen(
     onExportPdf: () -> Unit = {},
     exportStatus: String? = null,
 ) {
-    Column(
-        Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-    ) {
-        // A fixed-height slot so the busy indicator never inserts/removes a row (issue 6): switching
-        // window/unit or recomputing keeps every already-rendered element exactly in place.
-        Box(Modifier.height(18.dp)) {
-            if (state.loading) {
-                CircularProgressIndicator(Modifier.height(18.dp).width(18.dp), strokeWidth = 2.dp)
+    // Wrap in a Box so the busy indicator is a weightless overlay (issue 1/6): it never inserts or
+    // removes a row, so switching window/unit or recomputing keeps every element exactly in place —
+    // and, unlike the old reserved top slot, it costs no dead space above the window switcher.
+    Box(Modifier.fillMaxSize()) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            WindowSwitcher(state.window, onSelectWindow)
+            UnitSwitcher(state.unitSpace, onSetUnitSpace)
+
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                OutlinedButton(onClick = onRecompute, enabled = !state.recomputing) {
+                    Text(if (state.recomputing) "Recomputing…" else "Recompute locally")
+                }
+                OutlinedButton(onClick = onExportPdf, enabled = state.composite != null) {
+                    Text("Export PDF")
+                }
             }
-        }
-
-        WindowSwitcher(state.window, onSelectWindow)
-        UnitSwitcher(state.unitSpace, onSetUnitSpace)
-
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            OutlinedButton(onClick = onRecompute, enabled = !state.recomputing) {
-                Text(if (state.recomputing) "Recomputing…" else "Recompute locally")
+            exportStatus?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
             }
-            OutlinedButton(onClick = onExportPdf, enabled = state.composite != null) {
-                Text("Export PDF")
+
+            val composite = state.composite
+            if (composite == null) {
+                Text("Loading statistics…", style = MaterialTheme.typography.bodyMedium)
+                return@Column
             }
-        }
-        exportStatus?.let {
-            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
-        }
 
-        val composite = state.composite
-        if (composite == null) {
-            Text("Loading statistics…", style = MaterialTheme.typography.bodyMedium)
-            return@Column
-        }
-
-        composite.serverReason?.let {
-            InfoCard(it)
-        }
-
-        if (state.emptyReason != null) {
-            InfoCard(state.emptyReason)
-            return@Column
-        }
-
-        val local = composite.local
-        val unit = composite.unitSpace
-
-        // ── AGP ────────────────────────────────────────────────────────────────────────────────
-        if (local.agp.isNotEmpty()) {
-            SectionCard("Ambulatory glucose profile") {
-                Text(
-                    "Median (line) with the 25-75 % and 5-95 % percentile bands across the day.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                    modifier = Modifier.padding(bottom = 8.dp),
-                )
-                AgpChart(
-                    agp = local.agp,
-                    unit = unit,
-                    target = composite.targetRange,
-                    kovatchevF = kovatchevF,
-                    medianColor = MaterialTheme.colorScheme.primary,
-                )
+            composite.serverReason?.let {
+                InfoCard(it)
             }
-        } else {
-            InfoCard("AGP needs local BG history — none in this window yet.")
-        }
 
-        // ── Time in range ────────────────────────────────────────────────────────────────────
-        SectionCard("Time in range — target ${composite.targetRange.lowMgdl}–${composite.targetRange.highMgdl} mg/dL") {
-            TirBar(local.subBands)
-            Box(Modifier.height(10.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                TirLegend("Below", local.tbr, BAND_LOW)
-                TirLegend("In range", local.tir, BAND_IN)
-                TirLegend("Above", local.tar, BAND_HIGH)
+            if (state.emptyReason != null) {
+                InfoCard(state.emptyReason)
+                return@Column
             }
-            Box(Modifier.height(12.dp))
-            TargetRangeEditor(
-                low = composite.targetRange.lowMgdl,
-                high = composite.targetRange.highMgdl,
-                onChange = onSetTargetRange,
-            )
-        }
 
-        // ── Metric cards ─────────────────────────────────────────────────────────────────────
-        SectionCard("Glycemic metrics") {
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Metric("Mean", fmtLevel(local.meanBg, unit, kovatchevF), unitLabel(unit))
-                Metric("GMI", fmt(local.gmi, 1), "%")
-                Metric("CV", fmt(local.cv, 1), "%")
-                Metric("SD", fmtSpread(local.sd, unit), spreadUnit(unit))
-                Metric("LBGI", fmt(local.lbgi, 1), "risk")
-                Metric("HBGI", fmt(local.hbgi, 1), "risk")
-                Metric("MAGE", fmtSpread(local.mage, unit), spreadUnit(unit))
-                Metric("GRI", fmt(griOf(local.subBands), 0), "index")
-                Metric("Samples", local.nSamples.toString(), "")
+            val local = composite.local
+            val unit = composite.unitSpace
+
+            // ── AGP ────────────────────────────────────────────────────────────────────────────────
+            if (local.agp.isNotEmpty()) {
+                SectionCard("Ambulatory glucose profile") {
+                    Text(
+                        "Median (line) with the 25-75 % and 5-95 % percentile bands across the day.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                        modifier = Modifier.padding(bottom = 8.dp),
+                    )
+                    AgpChart(
+                        agp = local.agp,
+                        unit = unit,
+                        target = composite.targetRange,
+                        kovatchevF = kovatchevF,
+                        medianColor = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            } else {
+                InfoCard("AGP needs local BG history — none in this window yet.")
             }
-        }
 
-        // ── Variability & risk indices ─────────────────────────────────────────────────────────
-        SectionCard("Variability & risk") {
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Metric("MODD", fmtSpread(local.modd, unit), spreadUnit(unit))
-                Metric("CONGA-1h", fmtSpread(local.conga1, unit), spreadUnit(unit))
-                Metric("CONGA-2h", fmtSpread(local.conga2, unit), spreadUnit(unit))
-                Metric("CONGA-4h", fmtSpread(local.conga4, unit), spreadUnit(unit))
-                Metric("Day-to-day", fmtSpread(local.dtdSd, unit), spreadUnit(unit))
-                Metric("J-index", fmt(local.jIndex, 1), "index")
-                Metric("M-value", fmt(local.mValue, 1), "index")
-                Metric("ADRR", fmt(local.adrr, 1), "risk")
-                Metric("GRADE", fmt(local.grade.grade, 1), "index")
-            }
-            Box(Modifier.height(6.dp))
-            Text(
-                "GRADE attribution — hypo ${fmtPct(local.grade.hypo)} · euglycemic ${fmtPct(local.grade.eu)} · " +
-                    "hyper ${fmtPct(local.grade.hyper)}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-            )
-        }
-
-        // ── Diurnal time-in-range (four 6-hour buckets) ─────────────────────────────────────────
-        if (local.tod.any { it.n > 0 }) {
-            SectionCard("Time in range by time of day") {
-                local.tod.forEach { b -> DiurnalRow(b) }
-            }
-        }
-
-        // ── Glucose distribution histogram ──────────────────────────────────────────────────────
-        if (local.histogram.any { it.count > 0 }) {
-            SectionCard("Glucose distribution") {
-                Text(
-                    "Share of readings in each 20 mg/dL band.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                    modifier = Modifier.padding(bottom = 8.dp),
-                )
-                HistogramChart(local, composite.targetRange)
-            }
-        }
-
-        // ── Hypo / hyper episode tables ─────────────────────────────────────────────────────────
-        SectionCard("Excursion episodes") {
-            EpisodeRow("Hypo (< ${composite.targetRange.lowMgdl})", local.hypoEpisodes, isHypo = true, unit = unit, kovatchevF = kovatchevF)
-            Box(Modifier.height(8.dp))
-            EpisodeRow("Hyper (> ${composite.targetRange.highMgdl})", local.hyperEpisodes, isHypo = false, unit = unit, kovatchevF = kovatchevF)
-            if (local.hypoEpisodes.count == 0 && local.hyperEpisodes.count == 0) {
-                Box(Modifier.height(4.dp))
-                Text(
-                    "No sustained excursions (≥2 consecutive readings) outside the target range in this window.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+            // ── Time in range ────────────────────────────────────────────────────────────────────
+            SectionCard("Time in range — target ${composite.targetRange.lowMgdl}–${composite.targetRange.highMgdl} mg/dL") {
+                TirBar(local.subBands)
+                Box(Modifier.height(10.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    TirLegend("Below", local.tbr, BAND_LOW)
+                    TirLegend("In range", local.tir, BAND_IN)
+                    TirLegend("Above", local.tar, BAND_HIGH)
+                }
+                Box(Modifier.height(12.dp))
+                TargetRangeEditor(
+                    low = composite.targetRange.lowMgdl,
+                    high = composite.targetRange.highMgdl,
+                    onChange = onSetTargetRange,
                 )
             }
-        }
 
-        // ── Per-channel (only where data exists) ──────────────────────────────────────────────
-        val channels = perChannelMetrics(local)
-        if (channels.isNotEmpty()) {
-            SectionCard("Treatments & activity") {
+            // ── Metric cards ─────────────────────────────────────────────────────────────────────
+            SectionCard("Glycemic metrics") {
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    channels.forEach { (label, value, u) -> Metric(label, value, u) }
+                    Metric("Mean", fmtLevel(local.meanBg, unit, kovatchevF), unitLabel(unit))
+                    Metric("GMI", fmt(local.gmi, 1), "%")
+                    Metric("CV", fmt(local.cv, 1), "%")
+                    Metric("SD", fmtSpread(local.sd, unit), spreadUnit(unit))
+                    Metric("LBGI", fmt(local.lbgi, 1), "risk")
+                    Metric("HBGI", fmt(local.hbgi, 1), "risk")
+                    Metric("MAGE", fmtSpread(local.mage, unit), spreadUnit(unit))
+                    Metric("GRI", fmt(griOf(local.subBands), 0), "index")
+                    Metric("Samples", local.nSamples.toString(), "")
+                }
+            }
+
+            // ── Variability & risk indices ─────────────────────────────────────────────────────────
+            SectionCard("Variability & risk") {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Metric("MODD", fmtSpread(local.modd, unit), spreadUnit(unit))
+                    Metric("CONGA-1h", fmtSpread(local.conga1, unit), spreadUnit(unit))
+                    Metric("CONGA-2h", fmtSpread(local.conga2, unit), spreadUnit(unit))
+                    Metric("CONGA-4h", fmtSpread(local.conga4, unit), spreadUnit(unit))
+                    Metric("Day-to-day", fmtSpread(local.dtdSd, unit), spreadUnit(unit))
+                    Metric("J-index", fmt(local.jIndex, 1), "index")
+                    Metric("M-value", fmt(local.mValue, 1), "index")
+                    Metric("ADRR", fmt(local.adrr, 1), "risk")
+                    Metric("GRADE", fmt(local.grade.grade, 1), "index")
+                }
+                Box(Modifier.height(6.dp))
+                Text(
+                    "GRADE attribution — hypo ${fmtPct(local.grade.hypo)} · euglycemic ${fmtPct(local.grade.eu)} · " +
+                        "hyper ${fmtPct(local.grade.hyper)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                )
+            }
+
+            // ── Diurnal time-in-range (four 6-hour buckets) ─────────────────────────────────────────
+            if (local.tod.any { it.n > 0 }) {
+                SectionCard("Time in range by time of day") {
+                    local.tod.forEach { b -> DiurnalRow(b) }
+                }
+            }
+
+            // ── Glucose distribution histogram ──────────────────────────────────────────────────────
+            if (local.histogram.any { it.count > 0 }) {
+                SectionCard("Glucose distribution") {
+                    Text(
+                        "Share of readings in each 20 mg/dL band.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                        modifier = Modifier.padding(bottom = 8.dp),
+                    )
+                    HistogramChart(local, composite.targetRange)
+                }
+            }
+
+            // ── Hypo / hyper episode tables ─────────────────────────────────────────────────────────
+            SectionCard("Excursion episodes") {
+                EpisodeRow("Hypo (< ${composite.targetRange.lowMgdl})", local.hypoEpisodes, isHypo = true, unit = unit, kovatchevF = kovatchevF)
+                Box(Modifier.height(8.dp))
+                EpisodeRow("Hyper (> ${composite.targetRange.highMgdl})", local.hyperEpisodes, isHypo = false, unit = unit, kovatchevF = kovatchevF)
+                if (local.hypoEpisodes.count == 0 && local.hyperEpisodes.count == 0) {
+                    Box(Modifier.height(4.dp))
+                    Text(
+                        "No sustained excursions (≥2 consecutive readings) outside the target range in this window.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                    )
+                }
+            }
+
+            // ── Per-channel (only where data exists) ──────────────────────────────────────────────
+            val channels = perChannelMetrics(local)
+            if (channels.isNotEmpty()) {
+                SectionCard("Treatments & activity") {
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        channels.forEach { (label, value, u) -> Metric(label, value, u) }
+                    }
+                }
+            }
+
+            // ── Server parity cross-check ─────────────────────────────────────────────────────────
+            composite.server?.let { s ->
+                SectionCard("Server cache (cross-check)") {
+                    Text(
+                        "n=${s.nSamples} · mean ${fmtLevel(s.meanBg, unit, kovatchevF)} ${unitLabel(unit)} · " +
+                            "GMI ${fmt(s.gmi, 1)}% · CV ${fmt(s.cv, 1)}% · SD ${fmtSpread(s.sd, unit)} ${spreadUnit(unit)}",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Text(
+                        "Local recompute: mean ${fmtLevel(local.meanBg, unit, kovatchevF)} · GMI ${fmt(local.gmi, 1)}% · " +
+                            "CV ${fmt(local.cv, 1)}% · SD ${fmtSpread(local.sd, unit)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
                 }
             }
         }
-
-        // ── Server parity cross-check ─────────────────────────────────────────────────────────
-        composite.server?.let { s ->
-            SectionCard("Server cache (cross-check)") {
-                Text(
-                    "n=${s.nSamples} · mean ${fmtLevel(s.meanBg, unit, kovatchevF)} ${unitLabel(unit)} · " +
-                        "GMI ${fmt(s.gmi, 1)}% · CV ${fmt(s.cv, 1)}% · SD ${fmtSpread(s.sd, unit)} ${spreadUnit(unit)}",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                Text(
-                    "Local recompute: mean ${fmtLevel(local.meanBg, unit, kovatchevF)} · GMI ${fmt(local.gmi, 1)}% · " +
-                        "CV ${fmt(local.cv, 1)}% · SD ${fmtSpread(local.sd, unit)}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                    modifier = Modifier.padding(top = 4.dp),
-                )
-            }
+        if (state.loading) {
+            CircularProgressIndicator(Modifier.align(Alignment.TopEnd).padding(16.dp).size(18.dp), strokeWidth = 2.dp)
         }
     }
 }

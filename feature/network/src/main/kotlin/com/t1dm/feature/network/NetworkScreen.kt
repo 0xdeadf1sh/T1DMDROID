@@ -18,6 +18,27 @@ import androidx.compose.ui.unit.dp
 /** One `model_id`'s cumulative `PUT /v1/predictions` push accounting (this process lifetime). */
 data class ModelPushRow(val modelId: String, val count: Long, val bytes: Long)
 
+/** One up, non-loopback local interface and its (non-link-local) addresses. Plain read model — the
+ *  `:app` layer gathers these from `java.net.NetworkInterface`; this module stays Android-free. */
+data class NetIface(val name: String, val addresses: List<String>)
+
+/**
+ * A snapshot of the DEVICE's own network posture (issue 2), gathered off-main in `:app` and attached
+ * to [NetworkPanelState] by the navigation layer. Purely a read model — no Android types leak here.
+ */
+data class NetworkDiagnostics(
+    val online: Boolean,
+    val validated: Boolean,
+    val transport: String,
+    val metered: Boolean,
+    val wifiSsid: String?,
+    val wifiRssiDbm: Int?,
+    val wifiLevel: Int?,
+    val wifiLinkMbps: Int?,
+    val wifiFreqMhz: Int?,
+    val interfaces: List<NetIface>,
+)
+
 /**
  * Everything the Network panel renders (Phase 3 deliverable 6). Transport-typed
  * facts (drain outcome, WS lifecycle, backoff) arrive pre-formatted from `:app`; simple counters
@@ -38,6 +59,7 @@ data class NetworkPanelState(
     val lastAlert: String? = null,
     val alertCount: Long = 0,
     val modelPushes: List<ModelPushRow> = emptyList(),
+    val net: NetworkDiagnostics? = null,
 )
 
 @Composable
@@ -50,6 +72,36 @@ fun NetworkScreen(state: NetworkPanelState = NetworkPanelState()) {
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         // N1 — the "Network" title lives in the breadcrumb; no duplicate in-view header.
+        // Issue 2 — the DEVICE's own network comes first (online/transport/Wi-Fi/interfaces), gathered
+        // off-main by `:app`; before the first snapshot arrives (net == null) the sections read "gathering…".
+        val net = state.net
+        Section("Connectivity")
+        if (net == null) {
+            Field("status", "gathering…")
+        } else {
+            Field("online", yesNo(net.online))
+            Field("internet validated", yesNo(net.validated))
+            Field("transport", net.transport)
+            Field("metered", yesNo(net.metered))
+        }
+
+        if (net != null) {
+            Section("Wi-Fi")
+            Field("signal", wifiSignal(net.wifiRssiDbm, net.wifiLevel))
+            Field("link", net.wifiLinkMbps?.let { "$it Mbps" } ?: "—")
+            Field("frequency", net.wifiFreqMhz?.let { "$it MHz" } ?: "—")
+            Field("SSID", net.wifiSsid ?: "— (needs location)")
+
+            Section("Interfaces & addresses")
+            if (net.interfaces.isEmpty()) {
+                Field("—", "no active interfaces")
+            } else {
+                net.interfaces.forEach { iface ->
+                    Field(iface.name, iface.addresses.joinToString(", ").ifBlank { "—" })
+                }
+            }
+        }
+
         Section("Server")
         if (!state.hasProfile) {
             Field("profile", "none — configure in Settings → Server")
@@ -102,6 +154,15 @@ private fun Field(label: String, value: String) {
         labelStyle = MaterialTheme.typography.bodyMedium,
         valueStyle = MaterialTheme.typography.bodyMedium,
     )
+}
+
+private fun yesNo(b: Boolean): String = if (b) "yes" else "no"
+
+/** e.g. "-57 dBm (4/4)"; "—" when Wi-Fi is off / disconnected (no readable RSSI). */
+private fun wifiSignal(rssiDbm: Int?, level: Int?): String = when {
+    rssiDbm == null -> "—"
+    level == null -> "$rssiDbm dBm"
+    else -> "$rssiDbm dBm ($level/4)"
 }
 
 private fun age(ms: Long?): String = if (ms == null) "empty" else duration(ms)

@@ -1,6 +1,7 @@
 package com.t1dm.app.di
 
 import android.content.Context
+import android.net.NetworkCapabilities
 import android.content.Intent
 import android.media.RingtoneManager
 import com.t1dm.alerts.AlarmConfig
@@ -12,6 +13,8 @@ import com.t1dm.app.inference.RoomBgHistoryProvider
 import com.t1dm.app.settings.SettingsStore
 import com.t1dm.app.BuildConfig
 import com.t1dm.feature.hardware.HardwareInfo
+import com.t1dm.feature.network.NetIface
+import com.t1dm.feature.network.NetworkDiagnostics
 import com.t1dm.feature.settings.AboutInfo
 import com.t1dm.app.sync.RoomPredictionStore
 import com.t1dm.app.sync.SyncManager
@@ -518,6 +521,71 @@ class AppContainer(context: Context) {
     /** Configured outbox bounds (surfaced on the Network panel next to the live depth/age). */
     val outboxMaxAgeMs: Long get() = drainConfig.maxAgeMs
     val outboxMaxSize: Int get() = drainConfig.maxQueueSize
+
+    /**
+     * Issue 2 — a snapshot of the DEVICE's own network posture for the Network panel: whether we are
+     * online (and internet-validated), the active transport, the Wi-Fi signal/link/SSID, and the up
+     * non-loopback interfaces + their addresses (so Tailscale's `tun0`, `wlan0`, etc. surface). Every
+     * service read is wrapped so a missing service / SecurityException / Wi-Fi-off yields a safe partial
+     * snapshot rather than a throw. Off-main. Advisory display only — never touches any rail.
+     */
+    suspend fun networkDiagnostics(): NetworkDiagnostics = withContext(dispatchers.io) {
+        val cm = runCatching {
+            appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+        }.getOrNull()
+        val caps = runCatching { cm?.let { it.getNetworkCapabilities(it.activeNetwork) } }.getOrNull()
+        val online = caps != null && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        val validated = caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
+        val transport = when {
+            caps == null -> "none"
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "Wi-Fi"
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "Cellular"
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "Ethernet"
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> "VPN"
+            else -> "none"
+        }
+        val metered = caps == null || !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+
+        val wifi = runCatching {
+            appContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
+        }.getOrNull()
+        // WifiInfo.INVALID_RSSI (-127) means "no readable RSSI" (Wi-Fi off / disconnected).
+        val info = runCatching { @Suppress("DEPRECATION") wifi?.connectionInfo }.getOrNull()
+        val rssi = runCatching { info?.rssi }.getOrNull()?.takeIf { it != -127 && it > -200 }
+        val level = rssi?.let {
+            runCatching { @Suppress("DEPRECATION") android.net.wifi.WifiManager.calculateSignalLevel(it, 5) }.getOrNull()
+        }
+        val linkMbps = runCatching { info?.linkSpeed }.getOrNull()?.takeIf { it > 0 }
+        val freq = runCatching { info?.frequency }.getOrNull()?.takeIf { it > 0 }
+        val ssid = runCatching {
+            @Suppress("DEPRECATION") info?.ssid?.trim('"')?.takeIf { it.isNotBlank() && it != "<unknown ssid>" }
+        }.getOrNull()
+
+        val interfaces = runCatching {
+            java.net.NetworkInterface.getNetworkInterfaces()?.toList().orEmpty()
+                .filter { runCatching { it.isUp && !it.isLoopback }.getOrDefault(false) }
+                .map { ni ->
+                    val addrs = ni.inetAddresses.toList()
+                        .filterNot { it.isLinkLocalAddress || it.isLoopbackAddress }
+                        .mapNotNull { it.hostAddress?.substringBefore('%')?.takeIf { s -> s.isNotBlank() } }
+                    NetIface(ni.name, addrs)
+                }
+                .filter { it.addresses.isNotEmpty() }
+        }.getOrDefault(emptyList())
+
+        NetworkDiagnostics(
+            online = online,
+            validated = validated,
+            transport = transport,
+            metered = metered,
+            wifiSsid = ssid,
+            wifiRssiDbm = rssi,
+            wifiLevel = level,
+            wifiLinkMbps = linkMbps,
+            wifiFreqMhz = freq,
+            interfaces = interfaces,
+        )
+    }
 
     // ─── Server profile read models + config actions (Settings → Server) ──────────────────────
 
