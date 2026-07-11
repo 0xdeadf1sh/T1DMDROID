@@ -127,8 +127,14 @@ class InferenceController(
     suspend fun restoreLast() {
         val last = runCatching { predictionStore.loadLast() }.getOrNull() ?: return
         if (last.isNotEmpty()) {
+            // Rehydrate the circadian belief from the restored selected forecast too (the graph's clock
+            // axis reads [circadianTime] directly), so a cold start doesn't show a lit forecast with a
+            // dark clock until the first live cycle. Null belief leaves the clock as-is.
+            val sel = last.firstOrNull { it.selected }
             _state.value = _state.value.copy(
                 predictions = last.sortedByDescending { it.selected },
+                circadianTime = sel?.predictedTime ?: _state.value.circadianTime,
+                circadianAnchorMs = sel?.predictedTime?.let { sel.anchorTsMs } ?: _state.value.circadianAnchorMs,
                 note = "restored ${last.size} prediction(s) from last run",
             )
         }
