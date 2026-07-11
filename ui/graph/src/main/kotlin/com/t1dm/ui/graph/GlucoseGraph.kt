@@ -246,7 +246,7 @@ fun GlucoseGraph(
                     val ppm = plotW() / viewSpanMs
                     val ms = (viewStartMs + (x - leftPx) / ppm).coerceIn(frame.absMs(0), panEndMs())
                     scrubMs = ms
-                    onScrub?.invoke(buildScrub(frame, predictions, curveOverlay, predictedClock, ms))
+                    onScrub?.invoke(buildScrub(frame, predictions, curveOverlay, predictedClock, rolled, ms))
                 }
                 detectDragGesturesAfterLongPress(
                     onDragStart = { pos -> at(pos.x) },
@@ -513,7 +513,7 @@ fun GlucoseGraph(
                 if (!scrubMs.isNaN()) {
                     val cx = (plotLeft + (scrubMs - viewStartMs) * ppm).toFloat()
                     if (cx in plotLeft..plotRight) {
-                        val sc = buildScrub(frame, predictions, curveOverlay, predictedClock, scrubMs)
+                        val sc = buildScrub(frame, predictions, curveOverlay, predictedClock, rolled, scrubMs)
                         drawLine(cs.onSurface.copy(alpha = 0.5f), Offset(cx, plotTop), Offset(cx, plotBottom), 1f)
                         sc.bgValue?.let { drawCircle(cs.onSurface, 4f, Offset(cx, yToPx(it)), style = Stroke(width = 2f)) }
                         // I4 — a STABLE, TABULATED read-out: a two-column table (short label ⟶ right-aligned
@@ -562,13 +562,17 @@ private fun buildScrub(
     predictions: List<PredSeries>,
     overlay: CurveOverlayFrame?,
     clock: PredictedClock?,
+    rolled: RolledSeries?,
     ms: Double,
 ): GraphScrub {
     val lastFrameMs = if (frame.isEmpty) Long.MIN_VALUE else frame.absMs(frame.size - 1).toLong()
     val inPred = ms > lastFrameMs
+    // In the forecast zone the read-out reports the selected model's median; when no validated forecast
+    // exists there (e.g. warmup) it falls back to the DISPLAY-ONLY rolled forecast so scrubbing over the
+    // extrapolated tail still reports its predicted BG rather than "--".
     val bg: Float? = when {
         !inPred && !frame.isEmpty -> frame.nearestIndex(ms).let { if (it < 0) null else frame.ys[it] }
-        else -> selectedMedianAt(predictions, ms)
+        else -> selectedMedianAt(predictions, ms) ?: rolled?.medianAt(ms)
     }
     val carb = overlay?.carbAt(ms.toLong())?.takeIf { overlay.carbMax > 0f }
     val insulin = overlay?.insulinAt(ms.toLong())?.takeIf { overlay.insulinMax > 0f }

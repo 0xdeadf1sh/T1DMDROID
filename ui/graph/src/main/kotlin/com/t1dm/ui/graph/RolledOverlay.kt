@@ -37,6 +37,22 @@ class RolledSeries internal constructor(
     val isEmpty: Boolean get() = tsMs.isEmpty()
     val extrapolatedSteps: Int get() = (size - validatedSteps).coerceAtLeast(0)
     val maxTsMs: Long? get() = if (isEmpty) null else tsMs.last()
+
+    /** The rolled median (already in the frame's unit) at the step nearest absolute [ms], or null when
+     *  the cursor is outside the drawn span — so the scrub read-out reports the predicted BG exactly
+     *  where the rolled line is, and nothing beyond it. */
+    fun medianAt(ms: Double): Float? {
+        if (isEmpty) return null
+        val half = if (size >= 2) kotlin.math.abs(tsMs[1] - tsMs[0]) / 2.0 else 0.0
+        if (ms < tsMs.first() - half || ms > tsMs.last() + half) return null
+        var best = 0
+        var bestD = Double.MAX_VALUE
+        for (i in 0 until size) {
+            val d = kotlin.math.abs(tsMs[i].toDouble() - ms)
+            if (d < bestD) { bestD = d; best = i }
+        }
+        return median[best]
+    }
 }
 
 /** Build the rolled overlay off-thread, unit-converting the mg/dL fan once (mirrors [predOverlayOf]). */
