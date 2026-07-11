@@ -25,6 +25,8 @@ object LauncherIconManager {
         ThemeIds.TRON to "$NS.LauncherTron",
         ThemeIds.UMBRELLA to "$NS.LauncherUmbrella",
         ThemeIds.HELLO_KITTY to "$NS.LauncherKitty",
+        ThemeIds.WINDOWS_XP to "$NS.LauncherXp",
+        ThemeIds.TETO to "$NS.LauncherTeto",
     )
 
     /** A custom theme borrows the Tron launcher geometry (matches [iconStyleForTheme]). */

@@ -19,16 +19,20 @@ import androidx.compose.ui.unit.dp
  *    caps/joins, giving heavy, stamped, corporate marks.
  *  - **Hello Kitty** — rounded, soft, cute: the silhouette is *stroked* with a thicker line and fully
  *    rounded caps/joins, so every corner softens.
+ *  - **Windows XP** — glossy Luna beveling: a medium *stroke* with rounded joins but clean butt caps.
+ *  - **Teto Kasane** — chunky and brash: a heavy *stroke* with square caps and hard mitred corners.
  *
  * Fill-vs-stroke + sharp-vs-round is a real geometric transform of the same path, coherent across the
  * whole set, and legible small in both light and dark palettes (the [ImageVector] is drawn white and
  * tinted by the caller's `LocalContentColor`, so contrast is the theme's job).
  */
-enum class IconStyle { TRON, UMBRELLA, KITTY }
+enum class IconStyle { TRON, UMBRELLA, KITTY, XP, TETO }
 
 fun iconStyleForTheme(themeId: String?): IconStyle = when (themeId) {
     ThemeIds.UMBRELLA -> IconStyle.UMBRELLA
     ThemeIds.HELLO_KITTY -> IconStyle.KITTY
+    ThemeIds.WINDOWS_XP -> IconStyle.XP
+    ThemeIds.TETO -> IconStyle.TETO
     else -> IconStyle.TRON // Tron default; a custom theme borrows the Tron geometry.
 }
 
@@ -43,6 +47,10 @@ private fun geo(style: IconStyle): Geo = when (style) {
     IconStyle.TRON -> Geo(stroke = true, strokeWidth = 1.5f, cap = StrokeCap.Butt, join = StrokeJoin.Miter)
     IconStyle.UMBRELLA -> Geo(stroke = false, strokeWidth = 0f, cap = StrokeCap.Square, join = StrokeJoin.Miter)
     IconStyle.KITTY -> Geo(stroke = true, strokeWidth = 2.3f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+    // Windows XP — glossy Luna beveling: a medium stroke, rounded joins, clean butt caps.
+    IconStyle.XP -> Geo(stroke = true, strokeWidth = 1.9f, cap = StrokeCap.Butt, join = StrokeJoin.Round)
+    // Teto Kasane — chunky, brash, stamped: a heavy stroke with square caps and hard mitred corners.
+    IconStyle.TETO -> Geo(stroke = true, strokeWidth = 2.8f, cap = StrokeCap.Square, join = StrokeJoin.Miter)
 }
 
 /** Build a 24dp icon from a closed silhouette, rendered fill-or-stroke per [style]. Every glyph is a
@@ -117,10 +125,11 @@ private fun insulin(s: IconStyle) = glyph("insulin", s) { // syringe barrel (dia
     moveTo(15f, 5f); lineTo(19f, 9f); lineTo(17f, 11f); lineTo(13f, 7f); close()
 }
 
-private fun security(s: IconStyle) = glyph("sec", s) { // padlock
-    moveTo(6f, 10f); lineTo(18f, 10f); lineTo(18f, 20f); lineTo(6f, 20f); close()
-    moveTo(8f, 10f); lineTo(8f, 7f); arcTo(4f, 4f, 0f, true, true, 16f, 7f); lineTo(16f, 10f)
-    lineTo(14f, 10f); lineTo(14f, 7f); arcTo(2f, 2f, 0f, true, false, 10f, 7f); lineTo(10f, 10f); close()
+private fun security(s: IconStyle) = glyph("watch", s) { // a wristwatch (the companion-device panel)
+    moveTo(12f, 6.5f); arcTo(5.5f, 5.5f, 0f, true, true, 11.99f, 6.5f); close() // round case
+    moveTo(9.6f, 6.9f); lineTo(14.4f, 6.9f); lineTo(13.9f, 2.2f); lineTo(10.1f, 2.2f); close() // upper strap
+    moveTo(9.6f, 17.1f); lineTo(14.4f, 17.1f); lineTo(13.9f, 21.8f); lineTo(10.1f, 21.8f); close() // lower strap
+    moveTo(17.4f, 10.7f); lineTo(19.2f, 10.7f); lineTo(19.2f, 13.3f); lineTo(17.4f, 13.3f); close() // crown
 }
 
 private fun journal(s: IconStyle) = glyph("journal", s) { // book with spine

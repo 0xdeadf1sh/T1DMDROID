@@ -71,6 +71,8 @@ object ThemeIds {
     const val TRON = "tron"
     const val UMBRELLA = "umbrella"
     const val HELLO_KITTY = "hello_kitty"
+    const val WINDOWS_XP = "windows_xp"
+    const val TETO = "teto"
     const val CUSTOM = "custom"
 }
 
@@ -140,8 +142,55 @@ val HelloKittyPalette = T1dmPalette(
     urgentHigh = Color(0xFFFF2D6E),
 )
 
-/** The three bundled palettes, in selector order (Tron first = default). */
-val BundledPalettes: List<T1dmPalette> = listOf(TronPalette, UmbrellaPalette, HelloKittyPalette)
+/** Windows XP — light "Luna": a pale-sky background, white/silver surfaces, the Luna-blue primary and
+ *  the Bliss/Start green secondary. */
+val WindowsXpPalette = T1dmPalette(
+    id = ThemeIds.WINDOWS_XP,
+    displayName = "Windows XP",
+    dark = false,
+    background = Color(0xFFEAF2FB),
+    surface = Color(0xFFFFFFFF),
+    surfaceVariant = Color(0xFFDCE6F2),
+    primary = Color(0xFF1A5FD8),
+    onPrimary = Color(0xFFFFFFFF),
+    secondary = Color(0xFF4E9A2C),
+    onSecondary = Color(0xFFFFFFFF),
+    ink = Color(0xFF16263B),
+    inkMuted = Color(0xFF5B7088),
+    grid = Color(0xFFC3D4E8),
+    urgentLow = Color(0xFFE53935),
+    low = Color(0xFFEF9A1E),
+    inRange = Color(0xFF2E9E52),
+    high = Color(0xFFF07A1E),
+    urgentHigh = Color(0xFFC62828),
+)
+
+/** Teto Kasane — dark crimson-on-near-black: the scarlet Teto-red primary, a bright territory-pink
+ *  secondary, a warm-black ground with a faint red cast. */
+val TetoPalette = T1dmPalette(
+    id = ThemeIds.TETO,
+    displayName = "Teto Kasane",
+    dark = true,
+    background = Color(0xFF0D0609),
+    surface = Color(0xFF1A0B0F),
+    surfaceVariant = Color(0xFF281218),
+    primary = Color(0xFFE23B4E),
+    onPrimary = Color(0xFF1E0206),
+    secondary = Color(0xFFFF6F91),
+    onSecondary = Color(0xFF2C0512),
+    ink = Color(0xFFF4E3E7),
+    inkMuted = Color(0xFFB58D97),
+    grid = Color(0xFF3B1822),
+    urgentLow = Color(0xFFFF3B5F),
+    low = Color(0xFFFFA23D),
+    inRange = Color(0xFF46D17F),
+    high = Color(0xFFFF8A2C),
+    urgentHigh = Color(0xFFC90A2E),
+)
+
+/** The bundled palettes, in selector order (Tron first = default). */
+val BundledPalettes: List<T1dmPalette> =
+    listOf(TronPalette, UmbrellaPalette, HelloKittyPalette, WindowsXpPalette, TetoPalette)
 
 /** Resolve a persisted id to a bundled palette, falling back to [TronPalette]. Custom themes are
  *  reconstructed from their JSON separately via [parseThemeJson]. */
