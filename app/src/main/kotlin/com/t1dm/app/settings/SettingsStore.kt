@@ -74,6 +74,7 @@ class SettingsStore(
     val lossMin: Flow<Int> = intFlow(K_LOSS_MIN, DEF.lossMin)
     val lossEscalatedMin: Flow<Int> = intFlow(K_LOSS_ESCALATED_MIN, DEF.lossEscalatedMin)
     val repeatCadenceMin: Flow<Int> = intFlow(K_REPEAT_CADENCE, DEF.repeatCadenceMin)
+    val minActuationMin: Flow<Int> = intFlow(K_MIN_ACTUATION, DEF.minActuationIntervalMin)
 
     suspend fun setLossWindows(lossMin: Int, lossEscalatedMin: Int) {
         put(K_LOSS_MIN, lossMin.coerceAtLeast(1).toString())
@@ -81,6 +82,7 @@ class SettingsStore(
     }
 
     suspend fun setRepeatCadence(min: Int) = put(K_REPEAT_CADENCE, min.coerceAtLeast(1).toString())
+    suspend fun setMinActuationMin(min: Int) = put(K_MIN_ACTUATION, min.coerceAtLeast(0).toString())
 
     /** Assemble the deterministic-alarm policy from the persisted knobs (defaults where unset). */
     suspend fun currentAlarmConfig(): AlarmConfig = AlarmConfig(
@@ -93,6 +95,7 @@ class SettingsStore(
         lossMin = getInt(K_LOSS_MIN, DEF.lossMin),
         lossEscalatedMin = getInt(K_LOSS_ESCALATED_MIN, DEF.lossEscalatedMin),
         repeatCadenceMin = getInt(K_REPEAT_CADENCE, DEF.repeatCadenceMin),
+        minActuationIntervalMin = getInt(K_MIN_ACTUATION, DEF.minActuationIntervalMin),
     )
 
     // ── Alert actuators (per-band vibration + DND bypass; sounds handled with Uri in AppContainer) ──
@@ -251,6 +254,12 @@ class SettingsStore(
     val animationsEnabled: Flow<Boolean> = boolFlow(K_UI_ANIMATIONS, true)
     suspend fun setAnimationsEnabled(on: Boolean) = put(K_UI_ANIMATIONS, if (on) "1" else "0")
 
+    // ── Themed background image opacity (0–100 %; 0 = off). The per-theme Canvas backdrop is drawn at
+    // this alpha behind the whole app. Exportable (ui.* prefix) so it travels with a shared config.
+    val backgroundAlphaPct: Flow<Int> = intFlow(K_UI_BG_ALPHA, DEFAULT_BG_ALPHA_PCT)
+    suspend fun currentBackgroundAlphaPct(): Int = getInt(K_UI_BG_ALPHA, DEFAULT_BG_ALPHA_PCT)
+    suspend fun setBackgroundAlphaPct(pct: Int) = put(K_UI_BG_ALPHA, pct.coerceIn(0, 100).toString())
+
     // ── Device-temperature unit (U9 — no fan; show a labelled device temperature, C/F/K) ─────────
     val temperatureUnit: Flow<String> = repository.observeKv(K_UI_TEMP_UNIT).map { it ?: DEFAULT_TEMP_UNIT }
     suspend fun setTemperatureUnit(key: String) = put(K_UI_TEMP_UNIT, key)
@@ -372,6 +381,7 @@ class SettingsStore(
         private const val K_LOSS_MIN = "alarm.loss_min"
         private const val K_LOSS_ESCALATED_MIN = "alarm.loss_escalated_min"
         private const val K_REPEAT_CADENCE = "alarm.repeat_cadence_min"
+        private const val K_MIN_ACTUATION = "alarm.min_actuation_min"
 
         private const val K_VIB_WARN = "alerts.vib.warning"
         private const val K_VIB_CRIT = "alerts.vib.critical"
@@ -403,6 +413,8 @@ class SettingsStore(
         private const val K_DEATH = "death.enabled"
 
         private const val K_UI_ANIMATIONS = "ui.animations"
+        private const val K_UI_BG_ALPHA = "ui.background_alpha"
+        const val DEFAULT_BG_ALPHA_PCT = 15
         private const val K_UI_THEME = "ui.theme"
         private const val K_UI_FONT = "ui.font"
         private const val K_UI_CUSTOM_THEME = "ui.custom_theme_json"

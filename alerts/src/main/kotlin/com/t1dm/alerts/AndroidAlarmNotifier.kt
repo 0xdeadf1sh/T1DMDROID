@@ -38,6 +38,15 @@ class AndroidAlarmNotifier(
      * never changes WHEN the engine fires. Defaults to never-suppressed for tests/headless contexts.
      */
     private val suppressed: () -> Boolean = { false },
+    /**
+     * Minimum interval (ms) between an alarm's SOUND+VIBRATION actuations while it stays in the same
+     * band — so a once-a-minute reading stream that keeps re-emitting the same alarm re-announces at
+     * most this often. A NEW band/severity always actuates at once; the notification text still updates
+     * silently in between. Read live so a Settings change takes effect without rebuilding the notifier.
+     * Defaults to 0 (no throttle) for tests / headless contexts.
+     */
+    private val minActuationIntervalMs: () -> Long = { 0L },
+    private val clock: () -> Long = System::currentTimeMillis,
 ) : AlarmNotifier {
 
     private val app = context.applicationContext
@@ -45,24 +54,50 @@ class AndroidAlarmNotifier(
     private val vibrations = VibrationActuator(app)
     private val channels = AlertChannels.ensure(app, actuatorConfig)
 
+    // Throttle state: when the primary alarm last actuated (sound+buzz) and for which episode.
+    @Volatile private var lastActuateMs = Long.MIN_VALUE
+    @Volatile private var lastEpisodeKey: String? = null
+
     override fun emit(state: AlarmState) {
         if (suppressed()) { clear(); return }
-        state.threshold?.let { post(ID_THRESHOLD, "glucose", it) } ?: nm.cancel("glucose", ID_THRESHOLD)
-        state.signalLoss?.let { post(ID_LOSS, "signal", it) } ?: nm.cancel("signal", ID_LOSS)
-        state.primary?.let { vibrate(it) }
+        val primary = state.primary
+        val key = primary?.let { episodeKey(it) }
+        val now = clock()
+        // A new band/severity actuates immediately; otherwise honour the min-interval throttle so an
+        // every-minute reading stream does not re-sound/re-buzz each tick.
+        val actuate = primary != null &&
+            (key != lastEpisodeKey || now - lastActuateMs >= minActuationIntervalMs().coerceAtLeast(0L))
+        // `alertOnce = !actuate` turns a throttled re-post into a SILENT content update (no sound/heads-up).
+        state.threshold?.let { post(ID_THRESHOLD, "glucose", it, !actuate) } ?: nm.cancel("glucose", ID_THRESHOLD)
+        state.signalLoss?.let { post(ID_LOSS, "signal", it, !actuate) } ?: nm.cancel("signal", ID_LOSS)
+        if (actuate) {
+            primary?.let { vibrate(it) }
+            lastActuateMs = now
+        }
+        lastEpisodeKey = key
     }
 
     override fun reAlert(state: AlarmState) {
         if (suppressed()) return
-        state.primary?.takeIf { it.severity == AlarmSeverity.CRITICAL }?.let { vibrate(it) }
+        state.primary?.takeIf { it.severity == AlarmSeverity.CRITICAL }?.let {
+            vibrate(it)
+            lastActuateMs = clock()
+        }
     }
 
     override fun clear() {
         nm.cancel("glucose", ID_THRESHOLD)
         nm.cancel("signal", ID_LOSS)
+        lastEpisodeKey = null
     }
 
-    private fun post(id: Int, tag: String, alarm: ActiveAlarm) {
+    /** A stable identity for the current alarm episode — a change (band or severity) actuates at once. */
+    private fun episodeKey(alarm: ActiveAlarm): String = when (alarm) {
+        is ThresholdBreach -> "t:${alarm.band}:${alarm.severity}"
+        is SignalLoss -> "s:${alarm.severity}"
+    }
+
+    private fun post(id: Int, tag: String, alarm: ActiveAlarm, alertOnce: Boolean) {
         if (!nm.areNotificationsEnabled()) return
         val critical = alarm.severity == AlarmSeverity.CRITICAL
         val builder = Notification.Builder(app, if (critical) channels.critical else channels.warning)
@@ -71,6 +106,7 @@ class AndroidAlarmNotifier(
             .setStyle(Notification.BigTextStyle().bigText(alarm.message))
             .setCategory(Notification.CATEGORY_ALARM)
             .setVisibility(Notification.VISIBILITY_PUBLIC)
+            .setOnlyAlertOnce(alertOnce)
             .setOngoing(critical)
             .setAutoCancel(false)
             .setContentIntent(contentIntent())

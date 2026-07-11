@@ -143,8 +143,9 @@ import kotlinx.coroutines.plus
 private const val KV_WARMUP_HOURS = "inference.warmup_hours"
 private const val WARMUP_HOURS_MAX = 72
 
-/** kv key for the forecast-backend switcher (issue 20 STEP 4): the BackendId enum name, or absent = auto. */
-private const val KV_FORECAST_BACKEND = "inference.forecast_backend"
+/** Per-model kv key for the forecast-backend switcher (issue 20 STEP 4): the BackendId enum name per
+ *  model id, or absent = auto (the fp32 XNNPACK authority). */
+private fun kvForecastBackend(modelId: String) = "inference.forecast_backend.$modelId"
 
 /** The clinical/published horizons the on-device accuracy aggregator reports (Phase 7C). */
 private val ACCURACY_HORIZONS_MIN = listOf(30, 60, 120)
@@ -290,6 +291,12 @@ class AppContainer(context: Context) {
         refreshAlarmConfig()
     }
 
+    /** Persist the minimum sound+vibration actuation interval and re-hydrate [alarmConfig]. */
+    suspend fun saveMinActuationMin(min: Int) {
+        settingsStore.setMinActuationMin(min)
+        refreshAlarmConfig()
+    }
+
     /** Export the full config as pretty JSON (for a SAF write). Off-main. */
     suspend fun exportConfigJson(): String = withContext(dispatchers.io) { settingsStore.exportJson() }
 
@@ -329,6 +336,8 @@ class AppContainer(context: Context) {
             },
             // WARMUP gate: read the user's setting fresh each cycle (inference-runtime.md).
             warmupHoursProvider = { warmupHours() },
+            // Per-model forecast-backend preference, re-read fresh for every discovered id (issue 20).
+            backendPrefProvider = { id -> forecastBackendPref(id) },
             // Phase 7C: durable cumulative per-model inference telemetry for the Models drill-down.
             telemetryStore = KvTelemetryStore(repository),
         )
@@ -422,24 +431,28 @@ class AppContainer(context: Context) {
 
     // ── Forecast-backend switcher (issue 20 STEP 4) — kv-backed; governs the FORECAST CYCLE only ──
 
-    /** The persisted forecast-backend preference (null/blank ⇒ auto = the fp32 XNNPACK authority). */
-    private suspend fun forecastBackendPref(): BackendId? =
-        repository.getKv(KV_FORECAST_BACKEND)?.takeIf { it.isNotBlank() }
+    /** The persisted forecast-backend preference for [modelId] (null/blank ⇒ auto = fp32 XNNPACK). */
+    private suspend fun forecastBackendPref(modelId: String): BackendId? =
+        repository.getKv(kvForecastBackend(modelId))?.takeIf { it.isNotBlank() }
             ?.let { name -> runCatching { BackendId.valueOf(name) }.getOrNull() }
 
-    /** Settings read model: the requested backend (or null for auto), for the selector's current row. */
-    val forecastBackendSetting: Flow<BackendId?> = repository.observeKv(KV_FORECAST_BACKEND).map { raw ->
-        raw?.takeIf { it.isNotBlank() }?.let { name -> runCatching { BackendId.valueOf(name) }.getOrNull() }
-    }
+    /** Settings read model: the requested backend for [modelId] (or null for auto), for the selector's
+     *  current row on the model's detail screen. */
+    fun forecastBackendSetting(modelId: String): Flow<BackendId?> =
+        repository.observeKv(kvForecastBackend(modelId)).map { raw ->
+            raw?.takeIf { it.isNotBlank() }?.let { name -> runCatching { BackendId.valueOf(name) }.getOrNull() }
+        }
 
     /**
-     * Persist + apply the forecast-backend choice. Governs the forecast cycle ONLY; dosing stays
-     * fail-closed on a non-authoritative backend until the agreement probe passes (§3.6-E). Returns
-     * the backend that is ACTUALLY active afterwards (may differ from the request if it failed to load).
+     * Persist + apply the forecast-backend choice for one model. Governs the DISPLAY forecast cycle
+     * ONLY; dosing stays fail-closed on a non-authoritative backend until the agreement probe passes
+     * (§3.6-E). Persists to kv FIRST (the controller's discovery re-reads it), then re-runs discovery.
+     * Returns the backend ACTUALLY active for [modelId] afterwards (may differ from the request if it
+     * failed to load).
      */
-    suspend fun setForecastBackend(backend: BackendId?): BackendId? {
-        repository.putKv(KV_FORECAST_BACKEND, backend?.name ?: "", System.currentTimeMillis())
-        return inferenceController.setForecastBackend(backend)
+    suspend fun setForecastBackend(modelId: String, backend: BackendId?): BackendId? {
+        repository.putKv(kvForecastBackend(modelId), backend?.name ?: "", System.currentTimeMillis())
+        return inferenceController.setForecastBackend(modelId, backend)
     }
 
     /** Run the on-device GPU-vs-CPU comparison + agreement probe (issue 20 STEP 3). Off the main
@@ -452,9 +465,9 @@ class AppContainer(context: Context) {
         appScope.launch {
             refreshAlarmConfig()
             inferenceController.restoreLast()
-            // Apply the persisted forecast-backend choice BEFORE the first discovery so the active
-            // handle + "executing on" line are correct from the first tick.
-            inferenceController.setForecastBackend(forecastBackendPref())
+            // Discovery re-reads each model's persisted forecast-backend choice via backendPrefProvider,
+            // so the active handle + "executing on" line are correct from the first tick.
+            inferenceController.refreshModels()
         }
         // Keep the notification-icon theme snapshot current (issue I1).
         appScope.launch { settingsStore.themeId.collect { themeIdSnapshot = it } }

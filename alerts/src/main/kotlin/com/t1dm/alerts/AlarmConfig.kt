@@ -12,6 +12,10 @@ import com.t1dm.core.model.AlertThresholds
  * @param fallingTrendThresholdTenths trend (0.1 mg/dL/min units) at or below which a reading counts
  *   as "falling" for loss-of-signal escalation; negative means dropping.
  * @param repeatCadenceMin how often a persisting CRITICAL alarm re-vibrates while unchanged.
+ * @param minActuationIntervalMin minimum minutes between an alarm's SOUND+VIBRATION actuations while
+ *   it stays in the same band — so a once-a-minute reading stream re-announces (sound/buzz) at most
+ *   this often. A new band/severity always actuates immediately; the notification text still updates
+ *   silently in between. Presentation-only: this never changes WHEN the pure engine fires (§3.6-A).
  * @param tickIntervalMs wall-clock cadence at which the loss-of-signal window is re-evaluated.
  */
 data class AlarmConfig(
@@ -20,6 +24,7 @@ data class AlarmConfig(
     val lossEscalatedMin: Int = 12,
     val fallingTrendThresholdTenths: Int = -10,
     val repeatCadenceMin: Int = 5,
+    val minActuationIntervalMin: Int = 5,
     val tickIntervalMs: Long = 60_000L,
 ) {
     companion object {

@@ -23,6 +23,7 @@ fun DisplaySettingsScreen(
     targetLow: Int,
     targetHigh: Int,
     animationsEnabled: Boolean,
+    backgroundAlphaPct: Int,
     themeOptions: List<Pair<String, String>>,
     selectedThemeId: String,
     fontOptions: List<Pair<String, String>>,
@@ -33,6 +34,7 @@ fun DisplaySettingsScreen(
     onSetUnitSpace: (UnitSpace) -> Unit,
     onSetTargetRange: (low: Int, high: Int) -> Unit,
     onSetAnimationsEnabled: (Boolean) -> Unit,
+    onSetBackgroundAlpha: (Int) -> Unit,
     onSelectTheme: (String) -> Unit,
     onSelectFont: (String) -> Unit,
     onImportCustomTheme: () -> Unit,
@@ -57,6 +59,10 @@ fun DisplaySettingsScreen(
         if (importStatus != null) {
             Text(importStatus, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
+
+        SettingsSectionHeader("Background")
+        SettingsNote("Each theme paints its own motif behind the whole app — the Windows flag, Kasane Teto, the Tron grid, the Umbrella mark, the Hello Kitty face. Set its opacity (0 % turns it off).")
+        IntStepper("Background image opacity", backgroundAlphaPct, "%", step = 5, min = 0, max = 100) { onSetBackgroundAlpha(it) }
 
         SettingsSectionHeader("Font")
         SettingsNote("A global type family — three bundled OFL monospaces, or the system default.")

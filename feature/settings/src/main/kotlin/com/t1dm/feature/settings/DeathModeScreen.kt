@@ -100,7 +100,6 @@ fun DeathModeScreen(active: Boolean, onActivate: () -> Unit, onDeactivate: () ->
     LaunchedEffect(sealed) { if (!sealed) { stage = Rite.WARNING; tearing = false } }
 
     val animationsOn = LocalAnimationsEnabled.current
-    val cs = MaterialTheme.colorScheme
 
     val view = when {
         tearing -> DeathView.TEARING
@@ -110,11 +109,9 @@ fun DeathModeScreen(active: Boolean, onActivate: () -> Unit, onDeactivate: () ->
         else -> DeathView.WARNING
     }
 
-    Box(
-        Modifier
-            .fillMaxSize()
-            .background(cs.background),
-    ) {
+    // Transparent root so the per-theme backdrop shows through at the user's opacity, like every other
+    // screen — the DEATH rite sits over the same canvas rather than blotting it out.
+    Box(Modifier.fillMaxSize()) {
         AnimatedContent(
             targetState = view,
             transitionSpec = {

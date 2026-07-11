@@ -20,12 +20,14 @@ fun AlertsSettingsScreen(
     criticalSoundOn: Boolean,
     bypassDnd: Boolean,
     repeatCadenceMin: Int,
+    minActuationMin: Int,
     onSetWarningVibration: (String) -> Unit,
     onSetCriticalVibration: (String) -> Unit,
     onSetWarningSoundOn: (Boolean) -> Unit,
     onSetCriticalSoundOn: (Boolean) -> Unit,
     onSetBypassDnd: (Boolean) -> Unit,
     onSetRepeatCadence: (Int) -> Unit,
+    onSetMinActuation: (Int) -> Unit,
     /** Issue 8 — play the tapped preset immediately so the user can feel it before committing. */
     onPreviewVibration: (String) -> Unit = {},
 ) {
@@ -45,6 +47,14 @@ fun AlertsSettingsScreen(
         SettingsSectionHeader("Repeat")
         SettingsNote("How often a still-active urgent alarm re-announces itself.")
         IntStepper("Repeat cadence", repeatCadenceMin, "min", step = 1, min = 1) { onSetRepeatCadence(it) }
+
+        SettingsSectionHeader("Rate limit")
+        SettingsNote(
+            "The least time between an alarm's sound + vibration while it stays in the same band, so a " +
+                "fast reading stream can't re-buzz every minute. A new or worsening band still alerts at " +
+                "once. 0 = no limit.",
+        )
+        IntStepper("Minimum time between alerts", minActuationMin, "min", step = 1, min = 0) { onSetMinActuation(it) }
 
         SettingsNote(
             "A changed sound or vibration migrates to a fresh notification channel — you may briefly " +

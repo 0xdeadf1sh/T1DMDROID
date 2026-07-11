@@ -12,6 +12,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -51,6 +52,7 @@ import androidx.compose.ui.text.font.FontFamily
 import com.t1dm.core.design.LocalAnimationsEnabled
 import com.t1dm.core.design.LocalDeathMode
 import com.t1dm.core.design.LocalT1dmSemantics
+import com.t1dm.core.design.ThemeBackdrop
 import com.t1dm.core.design.iconStyleForTheme
 import com.t1dm.core.design.navEnter
 import com.t1dm.core.design.navExit
@@ -103,7 +105,6 @@ import com.t1dm.feature.settings.PowerSettingsScreen
 import com.t1dm.feature.settings.SettingsScreen
 import com.t1dm.feature.settings.SignalSafetyScreen
 import com.t1dm.feature.settings.WarmupSettingsScreen
-import com.t1dm.feature.settings.ForecastBackendScreen
 import com.t1dm.feature.settings.WatchSettingsScreen
 import com.t1dm.alerts.VibrationPreset
 import com.t1dm.app.settings.SettingsStore
@@ -163,26 +164,42 @@ private val destinations = listOf(
     Destination("circadian", "Clock"),
     Destination("stats", "Stats"),
     Destination("models", "Models"),
-    Destination("hardware", "HW"),
-    Destination("network", "Net"),
+    Destination("hardware", "Hardware"),
+    Destination("network", "Network"),
     Destination("meals", "Meals"),
     Destination("insulin", "Insulin"),
-    Destination("security", "Sec"),
+    Destination("security", "Watch"),
     Destination("journal", "Journal"),
-    Destination("settings", "Set"),
+    Destination("settings", "Settings"),
 )
 
 @Composable
 fun T1dmApp(container: AppContainer) {
     val navController = rememberNavController()
-    Scaffold(
-        bottomBar = { T1dmBottomBar(navController) },
-    ) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding)) {
-            // Flavor-specific: real text in the public build, no-op in the personal build.
-            Disclaimer()
-            Breadcrumb(navController, container)
-            T1dmNavHost(navController, container)
+    // The per-theme Canvas backdrop (7D): an opaque theme-background base, the themed motif layered over
+    // it at the user's chosen opacity, then a TRANSPARENT Scaffold so the motif reads behind every
+    // screen. Painting the base ourselves is what lets the motif sit at a low alpha without the window
+    // showing through (a colour composited over itself is unchanged, so the painter's own bg-fill is a
+    // no-op on the flat regions and only the motif is dimmed).
+    val bgAlphaPct by container.settingsStore.backgroundAlphaPct
+        .collectAsState(com.t1dm.app.settings.SettingsStore.DEFAULT_BG_ALPHA_PCT)
+    Box(Modifier.fillMaxSize().background(LocalT1dmSemantics.current.background)) {
+        ThemeBackdrop(bgAlphaPct)
+        Scaffold(
+            containerColor = Color.Transparent,
+            // A transparent container makes Scaffold derive contentColor from contentColorFor(Transparent),
+            // which is Unspecified and collapses to LocalContentColor (= black) — blacking out every
+            // surface that inherits its colour (e.g. the big BG read-out + trend arrow). Pin it back to
+            // the theme's on-background ink so inherited-colour content stays legible.
+            contentColor = MaterialTheme.colorScheme.onBackground,
+            bottomBar = { T1dmBottomBar(navController) },
+        ) { padding ->
+            Column(Modifier.fillMaxSize().padding(padding)) {
+                // Flavor-specific: real text in the public build, no-op in the personal build.
+                Disclaimer()
+                Breadcrumb(navController, container)
+                T1dmNavHost(navController, container)
+            }
         }
     }
 }
@@ -207,7 +224,7 @@ private fun crumbsFor(route: String?, modelId: String?): List<Crumb> {
         "insulin" -> listOf(Crumb("Insulin", null))
         "insulin/types" -> listOf(Crumb("Insulin", "insulin"), Crumb("Types & curves", null))
         "insulin/bolusCalc" -> listOf(Crumb("Insulin", "insulin"), Crumb("Bolus advisor", null))
-        "security" -> listOf(Crumb("Security", null))
+        "security" -> listOf(Crumb("Watch", null))
         "journal" -> listOf(Crumb("Journal", null))
         "settings" -> listOf(Crumb("Settings", null))
         "about" -> settings(Crumb("About", null))
@@ -217,7 +234,6 @@ private fun crumbsFor(route: String?, modelId: String?): List<Crumb> {
         "settings/signal" -> settings(Crumb("Alarms & safety", "settings"), Crumb("Signal safety", null))
         "settings/alerts" -> settings(Crumb("Sound & vibration", null))
         "settings/warmup" -> settings(Crumb("Warmup", null))
-        "settings/backend" -> settings(Crumb("Compute backend", null))
         "settings/calculator" -> settings(Crumb("Bolus calculator", null))
         "settings/curves" -> settings(Crumb("Curve & PK", null))
         "settings/cgm" -> settings(Crumb("CGM source", null))
@@ -255,11 +271,11 @@ private fun Breadcrumb(navController: NavHostController, container: AppContainer
     val animationsOn = LocalAnimationsEnabled.current
     val trailScroll = rememberScrollState()
     Row(
-        // N1 — the breadcrumb bar shares the app BACKGROUND (not a surface tint) so it reads as chrome
-        // over the same canvas.
+        // N1 — the breadcrumb bar reads as chrome over the same canvas, so it stays TRANSPARENT: the
+        // per-theme backdrop shows through it at the same opacity as the rest of the app (its base sits
+        // on the app background painted by T1dmApp).
         Modifier
             .fillMaxWidth()
-            .background(cs.background)
             .padding(horizontal = 12.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -650,7 +666,9 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
         }
         composable("models/{modelId}") { entry ->
             val modelId = entry.arguments?.getString("modelId") ?: return@composable
+            val scope = rememberCoroutineScope()
             val inference by container.inferenceState.collectAsState(InferenceState())
+            val requested by container.forecastBackendSetting(modelId).collectAsState(null)
             var accuracy by remember(modelId) { mutableStateOf<AccuracyReport?>(null) }
             var loading by remember(modelId) { mutableStateOf(true) }
             var reloadTick by remember(modelId) { mutableStateOf(0) }
@@ -665,6 +683,11 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 accuracy = accuracy,
                 accuracyLoading = loading,
                 onRecomputeAccuracy = { reloadTick++ },
+                catalog = inference.backendCatalog,
+                requestedBackend = requested,
+                comparison = inference.backendComparison,
+                onSelectBackend = { b -> scope.launch { container.setForecastBackend(modelId, b) } },
+                onRunComparison = { scope.launch { container.runBackendComparison() } },
             )
         }
         composable("hardware") {
@@ -863,6 +886,7 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
             )
         }
         composable("settings") {
+            val inf by container.inferenceState.collectAsState(InferenceState())
             SettingsScreen(
                 onOpenDisplay = { navController.navigate("settings/display") },
                 onOpenGraph = { navController.navigate("settings/graph") },
@@ -870,7 +894,10 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 onOpenSignalSafety = { navController.navigate("settings/signal") },
                 onOpenAlerts = { navController.navigate("settings/alerts") },
                 onOpenWarmup = { navController.navigate("settings/warmup") },
-                onOpenComputeBackend = { navController.navigate("settings/backend") },
+                onOpenComputeBackend = {
+                    val id = inf.running.firstOrNull { it.selected }?.modelId ?: inf.running.firstOrNull()?.modelId
+                    navController.navigate(if (id != null) "models/$id" else "models")
+                },
                 onOpenCalculator = { navController.navigate("settings/calculator") },
                 onOpenCurveParams = { navController.navigate("settings/curves") },
                 onOpenModels = { navController.navigate("models") },
@@ -920,6 +947,7 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
             val fontId by ss.fontId.collectAsState(SettingsStore.DEFAULT_FONT)
             val tempUnit by container.temperatureUnit.collectAsState(com.t1dm.core.model.TempUnit.CELSIUS)
             val customJson by ss.customThemeJson.collectAsState(null)
+            val bgAlphaPct by ss.backgroundAlphaPct.collectAsState(com.t1dm.app.settings.SettingsStore.DEFAULT_BG_ALPHA_PCT)
             var importStatus by remember { mutableStateOf<String?>(null) }
             // Parse the loaded custom-theme JSON only for its display name; failures degrade quietly.
             val customName = remember(customJson) {
@@ -950,6 +978,7 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 targetLow = statsState.targetRange.lowMgdl,
                 targetHigh = statsState.targetRange.highMgdl,
                 animationsEnabled = animations,
+                backgroundAlphaPct = bgAlphaPct,
                 themeOptions = themeOptions,
                 selectedThemeId = themeId,
                 fontOptions = fontOptions,
@@ -960,6 +989,7 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 onSetUnitSpace = { container.statsViewModel.setUnitSpace(it) },
                 onSetTargetRange = { lo, hi -> container.statsViewModel.setTargetRange(lo, hi) },
                 onSetAnimationsEnabled = { on -> scope.launch { ss.setAnimationsEnabled(on) } },
+                onSetBackgroundAlpha = { pct -> scope.launch { ss.setBackgroundAlphaPct(pct) } },
                 onSelectTheme = { id -> scope.launch { ss.setThemeId(id) } },
                 onSelectFont = { id -> scope.launch { ss.setFontId(id) } },
                 onImportCustomTheme = { importStatus = null; importLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
@@ -1002,6 +1032,7 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
             val critSound by container.settingsStore.criticalSoundOn.collectAsState(true)
             val bypass by container.settingsStore.bypassDnd.collectAsState(true)
             val cadence by container.settingsStore.repeatCadenceMin.collectAsState(5)
+            val minActuation by container.settingsStore.minActuationMin.collectAsState(5)
             AlertsSettingsScreen(
                 vibrationOptions = VibrationPreset.entries.map { it.name },
                 warningVibration = warnVib,
@@ -1010,12 +1041,14 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 criticalSoundOn = critSound,
                 bypassDnd = bypass,
                 repeatCadenceMin = cadence,
+                minActuationMin = minActuation,
                 onSetWarningVibration = { n -> scope.launch { container.settingsStore.setWarningVibration(VibrationPreset.valueOf(n)) } },
                 onSetCriticalVibration = { n -> scope.launch { container.settingsStore.setCriticalVibration(VibrationPreset.valueOf(n)) } },
                 onSetWarningSoundOn = { on -> scope.launch { container.settingsStore.setWarningSoundOn(on) } },
                 onSetCriticalSoundOn = { on -> scope.launch { container.settingsStore.setCriticalSoundOn(on) } },
                 onSetBypassDnd = { on -> scope.launch { container.settingsStore.setBypassDnd(on) } },
                 onSetRepeatCadence = { m -> scope.launch { container.saveRepeatCadence(m) } },
+                onSetMinActuation = { m -> scope.launch { container.saveMinActuationMin(m) } },
                 onPreviewVibration = { n -> container.previewVibration(n) },
             )
         }
@@ -1171,21 +1204,6 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
             WarmupSettingsScreen(
                 hours = hours,
                 onChange = { h -> scope.launch { container.setWarmupHours(h) } },
-            )
-        }
-        composable("settings/backend") {
-            val scope = rememberCoroutineScope()
-            val st by container.inferenceState.collectAsState()
-            val requested by container.forecastBackendSetting.collectAsState(null)
-            val sel = st.running.firstOrNull { it.selected }
-            ForecastBackendScreen(
-                catalog = st.backendCatalog,
-                requested = requested,
-                executing = sel?.backend,
-                executingPrecision = sel?.precision,
-                comparison = st.backendComparison,
-                onSelect = { b -> scope.launch { container.setForecastBackend(b) } },
-                onRunComparison = { scope.launch { container.runBackendComparison() } },
             )
         }
         composable("settings/server") {
