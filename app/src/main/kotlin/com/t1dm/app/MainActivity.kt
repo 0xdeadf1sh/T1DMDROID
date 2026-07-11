@@ -8,7 +8,6 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -54,8 +53,6 @@ class MainActivity : ComponentActivity() {
                     paletteForId(themeId)
                 }
             }
-            // Keep the home-screen launcher icon in step with the selected theme (issues 2/6).
-            LaunchedEffect(themeId) { LauncherIconManager.apply(applicationContext, themeId) }
             T1dmTheme(palette = palette, font = T1dmFontId.forKey(fontKey), animationsEnabled = animations, deathMode = death) {
                 T1dmApp(container)
             }
@@ -68,6 +65,23 @@ class MainActivity : ComponentActivity() {
         // the last 5-min grid cycle's possibly-stale forecast (which lingered as a STABLE read-out on
         // reopen). Serialised + gated identically inside the controller — never bypasses a §3.6 gate.
         container.reevaluateInferenceNow()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // Defer the theme→launcher-icon swap to backgrounding: toggling an <activity-alias> while the
+        // task is foregrounded lets HyperOS's recents evict us mid-swap (see build gotchas). By onStop
+        // the user has left, so the churn is invisible and the eviction window is closed.
+        // Never disable the alias that launched us (`intent.component.className` resolves to the alias
+        // for an alias-launched Activity) — belt-and-braces against a recents eviction that could
+        // otherwise strand the task on a now-disabled component.
+        runCatching {
+            LauncherIconManager.apply(
+                applicationContext,
+                container.themeIdSnapshot,
+                keepEnabledAlias = intent?.component?.className,
+            )
+        }
     }
 
     private fun requestRuntimePermissions() {

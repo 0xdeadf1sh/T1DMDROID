@@ -33,7 +33,12 @@ object LauncherIconManager {
     private fun aliasForThemeId(themeId: String?): String =
         aliasForTheme[themeId] ?: aliasForTheme.getValue(ThemeIds.TRON)
 
-    fun apply(context: Context, themeId: String?) {
+    /**
+     * @param keepEnabledAlias an alias to leave enabled regardless — pass the alias that launched the
+     * current task (Option-B guard) so a swap can never disable the very component the launcher/recents
+     * is holding a handle to, which on HyperOS can otherwise strand or evict the task.
+     */
+    fun apply(context: Context, themeId: String?, keepEnabledAlias: String? = null) {
         val pm = context.packageManager
         val pkg = context.packageName
         val wanted = aliasForThemeId(themeId)
@@ -52,7 +57,7 @@ object LauncherIconManager {
                 PackageManager.COMPONENT_ENABLED_STATE_ENABLED,
                 PackageManager.DONT_KILL_APP,
             )
-            aliasForTheme.values.filter { it != wanted }.forEach { alias ->
+            aliasForTheme.values.filter { it != wanted && it != keepEnabledAlias }.forEach { alias ->
                 pm.setComponentEnabledSetting(
                     ComponentName(pkg, alias),
                     PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
