@@ -112,6 +112,12 @@ class InferenceController(
     /** Cumulative per-model telemetry (durable via [telemetryStore]); loaded once, then in-memory. */
     private val cumulative = HashMap<String, CumulativeTelemetry>()
     private var telemetryLoaded = false
+    /** WARMUP hysteresis: the largest `requiredSteps` window whose completion coverage has EVER been met.
+     *  Warmup completion latches monotonically at or below it, so a single dropped slot from a gappy
+     *  passive CGM cannot flap the forecast (and the glycemic status + circadian clock) back into
+     *  "collecting context". In-memory only — a process restart re-evaluates from history. */
+    @Volatile
+    private var warmupSatisfiedUpTo = 0
     private val cycleMutex = Mutex()
 
     /** Register the backends the controller may route to (real XNNPACK + documented NPU stubs). */
@@ -558,7 +564,14 @@ class InferenceController(
         val requiredHours = warmupHoursProvider().coerceAtLeast(minContextHours)
         val requiredSteps = Math.round(requiredHours * MS_PER_HOUR / GRID_MS).toInt()
         val measuredSteps = runCatching { history.measuredStepsInWindow(requiredSteps) }.getOrDefault(0)
-        if (measuredSteps < requiredSteps) {
+        // Warmup completes at WARMUP_COMPLETION_FRACTION coverage of the required window — a passive
+        // advertisement CGM never fills every slot, so demanding a gapless window kept the forecast stuck
+        // in (and flapping around) warmup. Once met it LATCHES monotonically, so a later dropped slot can
+        // no longer flap the forecast, glycemic status, and circadian clock back into "collecting context".
+        val completionSteps = kotlin.math.ceil(requiredSteps * WARMUP_COMPLETION_FRACTION).toInt()
+        if (measuredSteps >= completionSteps) warmupSatisfiedUpTo = maxOf(warmupSatisfiedUpTo, requiredSteps)
+        val warmedUp = measuredSteps >= completionSteps || requiredSteps <= warmupSatisfiedUpTo
+        if (!warmedUp) {
             val measuredHours = measuredSteps * GRID_MS / MS_PER_HOUR
             // The BG forecast stays (correctly) suppressed — §3.6 gates untouched, [predictions] empty.
             // BUT the circadian-phase belief is NOT a glucose forecast and NOT a dosing signal, and it
@@ -653,10 +666,12 @@ class InferenceController(
             lastCycleDurationMs = durationMs,
             realBackendAvailable = loaded[selectedId]?.real ?: false,
             // A full cycle republishes the circadian belief from the selected prediction (full context,
-            // not low-context) so the clock/dial track the live forecast the moment warmup clears.
-            circadianTime = selPred?.predictedTime,
-            circadianAnchorMs = selPred?.predictedTime?.let { selPred.anchorTsMs },
-            circadianLowContext = false,
+            // not low-context) so the clock/dial track the live forecast the moment warmup clears. When
+            // THIS cycle's forecast carries no decoded time, keep the last known belief rather than
+            // blinking the clock OFF while a forecast is showing (a slow circadian phase, not a dosing signal).
+            circadianTime = selPred?.predictedTime ?: _state.value.circadianTime,
+            circadianAnchorMs = selPred?.predictedTime?.let { selPred.anchorTsMs } ?: _state.value.circadianAnchorMs,
+            circadianLowContext = if (selPred?.predictedTime != null) false else _state.value.circadianLowContext,
             selectedHasTimeSection = loaded[selectedId]?.bundle?.descriptor?.time != null,
             warmup = null, // a published cycle clears the warmup banner
             note = if (stale) "forecast STALE — last real BG is ${(nowMs - series.anchorTsMs) / 60_000} min old" else null,
@@ -933,6 +948,10 @@ class InferenceController(
         const val STEPS_PER_HOUR = 12
         /** inference-runtime.md default warmup window (h); the setting floors at MIN_CONTEXT = 8 h. */
         const val DEFAULT_WARMUP_HOURS = 24.0
+        /** Warmup completes at this fraction of the required window covered by MEASURED slots, tolerating
+         *  the gaps a passive advertisement CGM inevitably leaves (a fully gapless window is unrealistic
+         *  and made completion flap). Paired with the monotonic [warmupSatisfiedUpTo] latch. */
+        const val WARMUP_COMPLETION_FRACTION = 0.85
         const val N_QUANTILES = 7
         const val CARRY_SPREAD = 0.0 // single-window (≤2 h) this phase; rolling widening is Phase 4
         const val LATENCY_WINDOW = 60
