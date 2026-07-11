@@ -37,6 +37,10 @@ class DoseAdvisor(
         nowMs: Long,
         announced: List<CurveEvent>,
         config: CalcConfig,
+        // Opt-in override (defaults off): emit the objective argmin even off a degenerate/stale/missing
+        // baseline instead of refusing. The app engages it only for its user-acknowledged total-silence
+        // mode; every safety default and every test leaves it false, so the §3.6-B refusal stands.
+        bypassDegeneracyGate: Boolean = false,
     ): AdviceResult {
         val anchor = anchorSource.current(nowMs)
         val iob = iobSource.snapshot(nowMs)
@@ -71,7 +75,7 @@ class DoseAdvisor(
 
         // (4) baseline degeneracy gate.
         val degen = Rails.baselineDegeneracy(result.baseline)
-        if (degen is RailVerdict.Block) return AdviceResult.Refused(listOf(degen.reason))
+        if (!bypassDegeneracyGate && degen is RailVerdict.Block) return AdviceResult.Refused(listOf(degen.reason))
 
         val notes = ArrayList<String>()
 

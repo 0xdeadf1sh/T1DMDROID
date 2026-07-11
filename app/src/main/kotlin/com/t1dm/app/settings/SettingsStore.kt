@@ -193,7 +193,7 @@ class SettingsStore(
             OBJ_HIT_TARGET -> Objective.HitTargetAtTime(60 * 60_000L)
             else -> Objective.MinKovatchevRisk
         }
-        return calcDef.copy(
+        val assembled = calcDef.copy(
             target = CalcTargetRange(
                 lowMgdl = getDouble(K_CALC_TARGET_LOW, calcDef.target.lowMgdl),
                 highMgdl = getDouble(K_CALC_TARGET_HIGH, calcDef.target.highMgdl),
@@ -220,7 +220,31 @@ class SettingsStore(
             predictedLowThresholdMgdl = getDouble(K_CALC_PRED_LOW, calcDef.predictedLowThresholdMgdl),
             iobCeilingU = getDouble(K_CALC_IOB_CEIL, calcDef.iobCeilingU),
         )
+        if (!currentDeathMode()) return assembled
+        // §3.6 override for DEATH mode: every optional user-safety rail off + its threshold neutralised,
+        // so the advisor still emits a number off a stale/degenerate forecast. The structural
+        // backend-agreement + baseline-degeneracy refusals in DoseAdvisor are untouched (not config-driven).
+        return assembled.copy(
+            rails = RailToggles(
+                freshnessGate = false,
+                predictedLowVeto = false,
+                iobCeiling = false,
+                mandatoryConfirmation = false,
+                hypoTreatment = false,
+            ),
+            freshnessMaxAgeMs = Long.MAX_VALUE,
+            predictedLowThresholdMgdl = 0.0,
+            iobCeilingU = Double.MAX_VALUE,
+        )
     }
+
+    // ── DEATH mode (the total-silence override) — persisted, deliberately NOT in the exportable set
+    // (it must never travel with a shared config). Reading it flips the calculator to the §3.6 override
+    // below and silences the active alarm surfaces (the FGS gate reads it via AppContainer). ─────────
+
+    val deathMode: Flow<Boolean> = boolFlow(K_DEATH, false)
+    suspend fun currentDeathMode(): Boolean = getBool(K_DEATH, false)
+    suspend fun setDeathMode(on: Boolean) = put(K_DEATH, if (on) "1" else "0")
 
     // ── UI (ux-decisions.md — a global "disable all animations" toggle) ────────────────────────
 
@@ -375,6 +399,8 @@ class SettingsStore(
         private const val K_RAIL_IOB = "calc.rail_iob"
         private const val K_RAIL_CONFIRM = "calc.rail_confirm"
         private const val K_RAIL_HYPO = "calc.rail_hypo"
+
+        private const val K_DEATH = "death.enabled"
 
         private const val K_UI_ANIMATIONS = "ui.animations"
         private const val K_UI_THEME = "ui.theme"

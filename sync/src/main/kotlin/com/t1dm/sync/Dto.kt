@@ -94,6 +94,11 @@ data class AlertWriteDto(val ts: Long, val kind: String, val payload: JsonElemen
 @Serializable
 data class IdAck(val ok: Boolean = false, val id: Long = 0)
 
+// ── Photo (write: POST /v1/photos, multipart/form-data) ───────────────────────────────────────
+
+@Serializable
+data class PhotoAck(val ok: Boolean = false, val id: Long = 0, val sha256: String = "")
+
 // ── Stats (read: GET /v1/stats) ───────────────────────────────────────────────────────────────
 
 @Serializable

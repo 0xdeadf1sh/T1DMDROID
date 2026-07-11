@@ -20,6 +20,10 @@ val LocalT1dmSemantics = staticCompositionLocalOf { TronPalette }
  *  surfaced here so any animated surface can honour it without re-plumbing the setting). */
 val LocalAnimationsEnabled = staticCompositionLocalOf { true }
 
+/** Whether DEATH mode is engaged app-wide (all safety warnings suppressed). Read by warning
+ *  surfaces (e.g. DangerBanner) so they render nothing while it is on. */
+val LocalDeathMode = staticCompositionLocalOf { false }
+
 /**
  * The currently-active Material [ColorScheme], mirrored into a plain holder so non-Compose surfaces
  * (the Glance widgets, refreshed headlessly from the FGS) snapshot the SAME palette the Activity
@@ -46,6 +50,7 @@ fun T1dmTheme(
     palette: T1dmPalette = TronPalette,
     font: T1dmFontId = T1dmFontId.SYSTEM,
     animationsEnabled: Boolean = true,
+    deathMode: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     val scheme = palette.toColorScheme()
@@ -63,6 +68,7 @@ fun T1dmTheme(
     CompositionLocalProvider(
         LocalT1dmSemantics provides palette,
         LocalAnimationsEnabled provides animationsEnabled,
+        LocalDeathMode provides deathMode,
         LocalRippleConfiguration provides ripple,
     ) {
         MaterialTheme(

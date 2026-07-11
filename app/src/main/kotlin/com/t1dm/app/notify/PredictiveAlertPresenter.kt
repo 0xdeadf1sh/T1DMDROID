@@ -78,6 +78,12 @@ class PredictiveAlertPresenter(
         }
     }
 
+    /** Withdraw any showing predictive alert (DEATH mode); the next eligible [update] re-announces. */
+    fun clear() {
+        nm.cancel(TAG, ID)
+        lastKey = null
+    }
+
     private companion object {
         const val TAG = "predict"
         const val ID = 4103

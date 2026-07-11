@@ -44,6 +44,7 @@ class MainActivity : ComponentActivity() {
             val themeId by ss.themeId.collectAsState("tron")
             val fontKey by ss.fontId.collectAsState("system")
             val animations by ss.animationsEnabled.collectAsState(true)
+            val death by ss.deathMode.collectAsState(false)
             val customJson by ss.customThemeJson.collectAsState(null)
             val palette = remember(themeId, customJson) {
                 val cj = customJson
@@ -55,7 +56,7 @@ class MainActivity : ComponentActivity() {
             }
             // Keep the home-screen launcher icon in step with the selected theme (issues 2/6).
             LaunchedEffect(themeId) { LauncherIconManager.apply(applicationContext, themeId) }
-            T1dmTheme(palette = palette, font = T1dmFontId.forKey(fontKey), animationsEnabled = animations) {
+            T1dmTheme(palette = palette, font = T1dmFontId.forKey(fontKey), animationsEnabled = animations, deathMode = death) {
                 T1dmApp(container)
             }
         }

@@ -6,6 +6,7 @@ import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -54,8 +55,9 @@ interface SyncHttpClient {
     /** Read the server's daily-cached stats block for [window] (`7d|30d|90d`). [refresh] forces the
      *  server to recompute fresh (`?refresh=1`, T1DMSERVER stats contract) rather than serve the ≤24 h cache. */
     suspend fun getStats(window: String, refresh: Boolean = false): StatsDto
-    /** Photo multipart is stubbed this phase (Phase 3). */
-    suspend fun postPhotoStub(): Nothing
+    /** Attach a meal photo: `POST /v1/photos`, multipart `ts` (epoch-ms) + `image` file part whose
+     *  filename carries the extension. Returns the server's `{ok,id,sha256}` ack. */
+    suspend fun postPhoto(tsMs: Long, bytes: ByteArray, ext: String): PhotoAck
 }
 
 /** Shared JSON: tolerant on read, gap-omitting on write (an absent field must never null a row). */
@@ -147,6 +149,31 @@ class OkHttpSyncClient(
     override suspend fun getStats(window: String, refresh: Boolean): StatsDto =
         get<StatsEnvelope>("/v1/stats?window=$window" + if (refresh) "&refresh=1" else "").stats
 
-    override suspend fun postPhotoStub(): Nothing =
-        TODO("photo multipart path is stubbed for Phase 3 (SPEC.private.md)")
+    /**
+     * A DIRECT multipart POST (not the JSON outbox): a photo is a large binary, unfit for the
+     * text-JSON replay queue, so it rides its own call on [T1dmDispatchers.io]. Throws
+     * [NoActiveProfileException] with no endpoint; a 4xx/5xx surfaces via [require] so the caller's
+     * `runCatching` reports a plain failure. The server derives the extension from the filename.
+     */
+    override suspend fun postPhoto(tsMs: Long, bytes: ByteArray, ext: String): PhotoAck =
+        withContext(dispatchers.io) {
+            val ep = endpoint() ?: throw NoActiveProfileException()
+            val mediaType = "image/${if (ext == "png") "png" else "jpeg"}".toMediaType()
+            val body = MultipartBody.Builder()
+                .setType(MultipartBody.FORM)
+                .addFormDataPart("ts", tsMs.toString())
+                .addFormDataPart("image", "meal.$ext", bytes.toRequestBody(mediaType))
+                .build()
+            val request = Request.Builder()
+                .url("${ep.baseUrl}/v1/photos")
+                .header("Authorization", "Bearer ${ep.token}")
+                .header("Accept", "application/json")
+                .post(body)
+                .build()
+            client.newCall(request).execute().use { resp ->
+                val respBody = resp.body?.bytes() ?: ByteArray(0)
+                require(resp.isSuccessful) { "POST /v1/photos -> ${resp.code}" }
+                SyncJson.decodeFromString(String(respBody, Charsets.UTF_8))
+            }
+        }
 }

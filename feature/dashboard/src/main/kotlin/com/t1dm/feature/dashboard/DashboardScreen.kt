@@ -102,6 +102,9 @@ fun DashboardScreen(
     basalChannel: (suspend (gridStartMs: Long, nSteps: Int) -> DoubleArray)? = null,
     warmup: WarmupProgress? = null,
     // Phase 7A — BG-panel overhaul.
+    // Issue 1 — suppress the "next forecast" countdown when no forecast is actually being made: during
+    // warmup (context collection) or under battery-saver/low-power. The app wires the real value.
+    lowPowerActive: Boolean = false,
     rangeMinMgdl: Int = 20,
     rangeMaxMgdl: Int = 250,
     initialWindowHours: Int = 6,
@@ -144,10 +147,9 @@ fun DashboardScreen(
 
     var toggles by remember { mutableStateOf(CurveOverlayToggles()) }
     var windowHours by remember(initialWindowHours) { mutableStateOf(initialWindowHours) }
-    // I3 — a +24 h future-view toggle: extends the pannable right edge (and the reconstructed dose
-    // curves) up to 24 h ahead, WITHOUT fabricating a BG line where no forecast exists.
-    var futureView by remember { mutableStateOf(false) }
-    val futureExtentMs = if (futureView) FUTURE_VIEW_MS else 0L
+    // Issue 7 — future-panning is ALWAYS available: the pannable right edge extends 24 h ahead so the
+    // user can swipe right into the empty future (auto-follow still settles on the DATA/forecast end, so
+    // the panel opens at "now"). No BG line is fabricated where no forecast exists.
     // I2 — the Roll confirmation dialog + its chosen horizon (30 min…12 h, 30-min steps, default 2 h).
     var showRollDialog by remember { mutableStateOf(false) }
 
@@ -164,7 +166,7 @@ fun DashboardScreen(
     // Keyed on iobCob too so a just-logged dose (which emits a new IOB/COB read-out) rebuilds the
     // overlay immediately, rather than waiting for the next CGM reading — this keeps the insulin/basal
     // overlay (issue 18) and the no-future-insulin advisory (issue 16) current the moment a dose lands.
-    val curveOverlay by produceState(CurveOverlayFrame.EMPTY, readings, predictions, curveChannels, basalChannel, iobCob, futureView, rolledForecast) {
+    val curveOverlay by produceState(CurveOverlayFrame.EMPTY, readings, predictions, curveChannels, basalChannel, iobCob, rolledForecast) {
         val resolver = curveChannels
         if (resolver == null || readings.isEmpty()) {
             value = CurveOverlayFrame.EMPTY
@@ -176,10 +178,10 @@ fun DashboardScreen(
         val rolledEnd = rolledForecast?.takeUnless { it.isEmpty }?.horizonEndMs ?: lastReading
         // Always reach at least OVERLAY_FUTURE_MS past now so a just-logged dose shows its rising tail
         // even before a forecast exists (warmup); the same event-reconstructed channel carries both
-        // the past and the future portions (bucketize lays the full curve across the window). When the
-        // +24 h future view (I3) or an on-demand roll (I2) is active, reach out to cover it so the
-        // committed carb/insulin curves render across the empty future too.
-        val end = maxOf(lastReading, lastForecast, rolledEnd, System.currentTimeMillis() + maxOf(OVERLAY_FUTURE_MS, futureExtentMs))
+        // the past and the future portions (bucketize lays the full curve across the window). Issue 7 —
+        // reach the full 24 h future the graph can now always pan to (and any farther on-demand roll)
+        // so the committed carb/insulin curves render across the empty future too.
+        val end = maxOf(lastReading, lastForecast, rolledEnd, System.currentTimeMillis() + maxOf(OVERLAY_FUTURE_MS, FUTURE_VIEW_MS))
         val nSteps = (((end - gridStart) / STEP_MS).toInt() + 1).coerceIn(1, MAX_OVERLAY_STEPS)
         val (carb, insulin) = resolver(gridStart, nSteps)
         val basal = basalChannel?.invoke(gridStart, nSteps) ?: DoubleArray(0)
@@ -217,6 +219,7 @@ fun DashboardScreen(
         if (iobCob != null || curveChannels != null || smoothMgdl != null || onRoll != null) {
             OverlayControls(
                 iobCob = iobCob,
+                showNextForecast = warmup == null && !lowPowerActive,
                 toggles = toggles,
                 windowHours = windowHours,
                 smoothAvailable = smoothMgdl != null,
@@ -224,8 +227,6 @@ fun DashboardScreen(
                 rollAvailable = onRoll != null,
                 rollComputing = rollComputing,
                 onRollClick = { showRollDialog = true },
-                futureView = futureView,
-                onToggleFutureView = { futureView = it },
                 onToggle = { toggles = it },
                 onToggleSmoothed = { showSmoothed = it },
                 onWindow = { h ->
@@ -253,7 +254,7 @@ fun DashboardScreen(
             smoothed = smoothed,
             showSmoothed = showSmoothed,
             rolled = rolledSeries,
-            futureExtentMs = futureExtentMs,
+            futureExtentMs = FUTURE_VIEW_MS,
         )
     }
 
@@ -403,6 +404,7 @@ private fun NoFutureInsulinBanner() {
 @Composable
 private fun OverlayControls(
     iobCob: IobCobReadout?,
+    showNextForecast: Boolean,
     toggles: CurveOverlayToggles,
     windowHours: Int,
     smoothAvailable: Boolean,
@@ -410,15 +412,13 @@ private fun OverlayControls(
     rollAvailable: Boolean,
     rollComputing: Boolean,
     onRollClick: () -> Unit,
-    futureView: Boolean,
-    onToggleFutureView: (Boolean) -> Unit,
     onToggle: (CurveOverlayToggles) -> Unit,
     onToggleSmoothed: (Boolean) -> Unit,
     onWindow: (Int) -> Unit,
 ) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-        // N2 — the Roll / Carbs / Insulin / Smoothed / +24h / 6h / 12h / 24h chips no longer fit across a
-        // phone width, so they live in a HORIZONTALLY-SCROLLABLE row (mirroring the nav) — nothing clips.
+        // N2 — the Roll / Carbs / Insulin / Smoothed / 6h / 12h / 24h chips no longer fit across a phone
+        // width, so they live in a HORIZONTALLY-SCROLLABLE row (mirroring the nav) — nothing clips.
         Row(
             Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -459,24 +459,65 @@ private fun OverlayControls(
                     label = { Text("${h}h") },
                 )
             }
-            // I3 — the +24 h future-view toggle: pan into the empty future to see the committed dose
-            // curves out there (no fabricated BG line where no forecast exists).
-            FilterChip(
-                selected = futureView,
-                onClick = { onToggleFutureView(!futureView) },
-                label = { Text("+24h") },
-            )
         }
-        iobCob?.let {
-            Text(
-                "IOB ${"%.1f".format(it.iobU)}U · COB ${"%.0f".format(it.cobG)}g" +
-                    (it.minsSinceLastLoggedInsulin?.let { m -> " · logged ${m}m ago" } ?: ""),
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                modifier = Modifier.padding(top = 2.dp),
-            )
+        // Issue 1 — the IOB/COB read-out and the live "next forecast" countdown share one line, kept
+        // horizontally scrollable so neither clips. The countdown stays a separate composable so its
+        // per-second tick never re-renders the static IOB/COB text. It is shown only when a forecast is
+        // actually being made ([showNextForecast] = not in warmup and not low-power).
+        if (iobCob != null || showNextForecast) {
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                iobCob?.let {
+                    Text(
+                        "IOB ${"%.1f".format(it.iobU)}U · COB ${"%.0f".format(it.cobG)}g" +
+                            (it.minsSinceLastLoggedInsulin?.let { m -> " · logged ${m}m ago" } ?: ""),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                    )
+                }
+                if (showNextForecast) {
+                    if (iobCob != null) {
+                        Text(
+                            " · ",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                        )
+                    }
+                    NextForecastCountdown()
+                }
+            }
         }
     }
+}
+
+/** Issue 2 — a live "Next forecast in Xm Ys" readout. The model runs one cycle on each 5-minute
+ *  wall-clock grid boundary ([STEP_MS]); this ticks every second to the next boundary. Shows "Xm Ys"
+ *  at/above one minute and "Ys" below it. */
+@Composable
+private fun NextForecastCountdown() {
+    val remainingMs by produceState(nextForecastRemainingMs()) {
+        while (true) {
+            value = nextForecastRemainingMs()
+            kotlinx.coroutines.delay(1_000L)
+        }
+    }
+    val totalSec = (remainingMs / 1000).coerceAtLeast(0)
+    val mins = totalSec / 60
+    val secs = totalSec % 60
+    val text = if (mins >= 1) "Next forecast in ${mins}m ${secs}s" else "Next forecast in ${secs}s"
+    Text(
+        text,
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+    )
+}
+
+/** Milliseconds until the next 5-min wall-clock grid boundary — the next model cycle. */
+private fun nextForecastRemainingMs(): Long {
+    val now = System.currentTimeMillis()
+    return (now / STEP_MS + 1) * STEP_MS - now
 }
 
 // ─── Reachability + signal strength chrome (items 20 & 23) ─────────────────────────────────────

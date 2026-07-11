@@ -227,6 +227,16 @@ class AppContainer(context: Context) {
     val notificationAccentArgb: Int
         get() = com.t1dm.app.notify.NotificationIcons.accentArgb(themeIdSnapshot, customThemeJsonSnapshot)
 
+    // ─── DEATH mode (the total-silence override) — mirrors themeIdSnapshot: a @Volatile snapshot kept
+    // current by a collector on the persisted flag, so the FGS alarm + predictive gates read it
+    // synchronously. The persisted flag lives in SettingsStore and is deliberately never exported. ────
+    @Volatile
+    var deathModeSnapshot: Boolean = false
+        private set
+
+    val deathMode: Flow<Boolean> get() = settingsStore.deathMode
+    suspend fun setDeathMode(on: Boolean) = settingsStore.setDeathMode(on)
+
     // ─── Alert actuators (Phase 7B — per-band sound + K90 vibration; kv-backed via SettingsStore) ──
 
     /**
@@ -446,6 +456,7 @@ class AppContainer(context: Context) {
         // Keep the notification-icon theme snapshot current (issue I1).
         appScope.launch { settingsStore.themeId.collect { themeIdSnapshot = it } }
         appScope.launch { settingsStore.customThemeJson.collect { customThemeJsonSnapshot = it } }
+        appScope.launch { settingsStore.deathMode.collect { deathModeSnapshot = it } }
     }
 
     // ─── Server sync (Phase 3) ────────────────────────────────────────────────────────────────
@@ -582,6 +593,17 @@ class AppContainer(context: Context) {
             ?.let { appContext.startActivity(it) }
         Runtime.getRuntime().exit(0)
     }
+
+    /**
+     * Issue 7 — upload a meal photo (`POST /v1/photos`, multipart) around a just-logged meal. A direct
+     * multipart call (not the JSON outbox), wrapped so no server/IO fault can crash the UI: with no
+     * profile/token, or a transport/HTTP failure, this returns a failed [Result] the caller renders as
+     * a plain status line. Never actuates anything. Off-main.
+     */
+    suspend fun uploadMealPhoto(tsMs: Long, bytes: ByteArray, ext: String): Result<Unit> =
+        withContext(dispatchers.io) {
+            runCatching { syncHttpClient.postPhoto(tsMs, bytes, ext); Unit }
+        }
 
     /** One-shot health probe against the active profile; a human-readable status line. */
     suspend fun checkServerHealth(): String = runCatching {
@@ -794,7 +816,9 @@ class AppContainer(context: Context) {
             val (k, theta, dur) = CurveEngine.Presets.carbGammaForGi(announcedGi)
             listOf(curveEngine.carbEvent(announcedCarbG, now, k, theta, dur))
         } else emptyList()
-        val result = runCatching { doseAdvisor.recommendBolus(now, announced, cfg) }
+        // DEATH mode also lifts the structural §3.6-B degeneracy refusal (the rails are already off via
+        // currentCalcConfig) so the advisor emits a number rather than refusing off a bad forecast.
+        val result = runCatching { doseAdvisor.recommendBolus(now, announced, cfg, bypassDegeneracyGate = deathModeSnapshot) }
             .getOrElse { AdviceResult.Refused(listOf("Calculator error — ${it.message ?: it::class.simpleName}. Refusing to recommend a dose.")) }
         bolusAdvice.value = BolusAdviceUi.Ready(result)
     }
@@ -1172,6 +1196,26 @@ class AppContainer(context: Context) {
     // per-direction AES-128-GCM, deterministic SAS, windowed+burned nonce; docs/WATCH_BLE.md). The
     // :watch module's loopback session is now a host-test double only.
 
+    /** Battery-saver / low-power detector, shared by the watch push (which suspends in low power) and
+     *  the dashboard's issue-1 low-power indicator ([lowPowerActive]). Reads its knobs fresh per call. */
+    private val lowPower: AndroidLowPowerProvider by lazy {
+        AndroidLowPowerProvider(
+            context = appContext,
+            enabled = { settingsStore.currentLowPowerEnabled() },
+            thresholdPercent = { settingsStore.currentLowPowerPercent() },
+            useOsSaver = { settingsStore.currentLowPowerUseOsSaver() },
+        )
+    }
+
+    /** Issue 1 — whether battery-saver/low-power is engaged, polled off-main every 30 s (mirrors the
+     *  dashboard's device-temperature poll). A read failure fails OPEN (not low-power). */
+    val lowPowerActive: Flow<Boolean> = flow {
+        while (true) {
+            emit(withContext(dispatchers.io) { runCatching { lowPower.isLowPower() }.getOrDefault(false) })
+            delay(30_000)
+        }
+    }
+
     val watchLink: WatchLink by lazy {
         WatchLink(
             centralProvider = { AndroidWatchCentral(appContext, dispatchers) },
@@ -1184,12 +1228,7 @@ class AppContainer(context: Context) {
                 thresholds = alarmConfig.thresholds,
                 lossMin = alarmConfig.lossMin,
             ),
-            lowPower = AndroidLowPowerProvider(
-                context = appContext,
-                enabled = { settingsStore.currentLowPowerEnabled() },
-                thresholdPercent = { settingsStore.currentLowPowerPercent() },
-                useOsSaver = { settingsStore.currentLowPowerUseOsSaver() },
-            ),
+            lowPower = lowPower,
             dispatchers = dispatchers,
             config = WatchLinkConfig(enabled = true, autoConnect = true),
         )

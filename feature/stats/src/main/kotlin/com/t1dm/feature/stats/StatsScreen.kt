@@ -63,8 +63,12 @@ fun StatsScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        if (state.loading) {
-            CircularProgressIndicator(Modifier.height(18.dp).width(18.dp), strokeWidth = 2.dp)
+        // A fixed-height slot so the busy indicator never inserts/removes a row (issue 6): switching
+        // window/unit or recomputing keeps every already-rendered element exactly in place.
+        Box(Modifier.height(18.dp)) {
+            if (state.loading) {
+                CircularProgressIndicator(Modifier.height(18.dp).width(18.dp), strokeWidth = 2.dp)
+            }
         }
 
         WindowSwitcher(state.window, onSelectWindow)

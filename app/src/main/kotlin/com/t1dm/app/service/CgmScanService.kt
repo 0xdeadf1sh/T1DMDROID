@@ -165,6 +165,8 @@ class CgmScanService : LifecycleService() {
                     )
                 },
                 accentColor = { container.notificationAccentArgb },
+                // DEATH mode: the pure engine keeps firing (§3.6-A), the notifier presents nothing.
+                suppressed = { container.deathModeSnapshot },
             )
             alarmNotifier = notifier
             alarmController = AlarmController(alarmEngine, notifier, container.alarmConfig)
@@ -177,7 +179,8 @@ class CgmScanService : LifecycleService() {
                 // Exact-alarm repeat cadence for a persisting CRITICAL alarm (edge-triggered so the
                 // timer is not pushed out on every state emit). Doze-resilient backstop to the
                 // in-process tick; both only RE-announce an already-active alarm.
-                val critical = st.isActive && st.primary?.severity == AlarmSeverity.CRITICAL
+                val critical = st.isActive && st.primary?.severity == AlarmSeverity.CRITICAL &&
+                    !container.deathModeSnapshot
                 if (critical && !repeatArmed) {
                     repeatScheduler.schedule(container.alarmConfig.repeatCadenceMin)
                     repeatArmed = true
@@ -266,6 +269,13 @@ class CgmScanService : LifecycleService() {
                     .onFailure { Timber.tag(TAG).w(it, "glance refresh failed (alarm path unaffected)") }
             }
         }
+
+        // 10) DEATH mode: when the flag flips on, tear down any showing active alarm + predictive
+        //     alert immediately (the snapshot gate already suppresses future emissions). The ongoing
+        //     LiveNotificationPresenter monitoring surface is deliberately left intact.
+        lifecycleScope.launch {
+            container.deathMode.collect { on -> if (on) { alarmNotifier?.clear(); predictiveAlerts.clear() } }
+        }
     }
 
     /**
@@ -292,7 +302,8 @@ class CgmScanService : LifecycleService() {
 
         val deterministicCriticalActive = ::alarmController.isInitialized &&
             alarmController.state.value.threshold?.severity == AlarmSeverity.CRITICAL
-        predictiveAlerts.update(glance, alertActuatorCfg, deterministicCriticalActive, style, accent)
+        if (container.deathModeSnapshot) predictiveAlerts.clear()
+        else predictiveAlerts.update(glance, alertActuatorCfg, deterministicCriticalActive, style, accent)
 
         runCatching {
             BgTileWidget().updateAll(this)

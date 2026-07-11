@@ -51,6 +51,7 @@ class LiveNotificationPresenter(
             .setOngoing(true)
             .setOnlyAlertOnce(true) // updates in place, never re-buzzes; the alarm path owns sound
             .setCategory(Notification.CATEGORY_STATUS)
+            .setVisibility(Notification.VISIBILITY_PUBLIC) // the full read-out shows on the lock screen (I6)
             .setContentIntent(contentIntent)
             .build()
     }
@@ -59,7 +60,17 @@ class LiveNotificationPresenter(
         if (!glance.hasReading) return "No CGM reading yet"
         val v = BgFormat.value(glance.bgMgdl, unit)
         val arrow = BgFormat.arrow(glance.trend)
-        return "$v $arrow ${BgFormat.unitLabel(unit)}"
+        return "${statusToken(glance)} · $v $arrow ${BgFormat.unitLabel(unit)}"
+    }
+
+    /** The glycemic STATUS token (I6), derived from the glance EXACTLY as the top-bar indicator
+     *  (Navigation.glycemicStatusOf) and the lock widget do — fail-closed, so warmup / no eligible
+     *  forecast / an ineligible one reads VOID and never a positive STABLE claim. */
+    private fun statusToken(glance: BgGlance): String = when {
+        glance.warmup || glance.forecastUnavailable || !glance.forecastEligible -> "VOID"
+        glance.approaching != null ->
+            if (glance.approaching!!.kind == PredictiveCrossing.Kind.HYPO) "HYPO" else "HYPER"
+        else -> "STABLE"
     }
 
     private fun bodyLine(glance: BgGlance, predictedTime: PredictedTime?): String {
@@ -76,7 +87,20 @@ class LiveNotificationPresenter(
             else -> null
         }
         val circadian = predictedTime?.let { circadianLine(it) }
-        return listOfNotNull(age, forecast, circadian).joinToString("\n")
+        return listOfNotNull(age, forecast, circadian, nextForecastLine()).joinToString("\n")
+    }
+
+    /** "Next forecast in Xm Ys" (I2): the model cycles on each 5-minute wall-clock boundary, so the
+     *  countdown targets the next such boundary. Recomputed at build time; the 30 s re-render cadence
+     *  keeps it roughly current between the model's own cycles. */
+    private fun nextForecastLine(): String {
+        val nowMs = System.currentTimeMillis()
+        val nextMs = (nowMs / 300_000L + 1) * 300_000L
+        val remSec = ((nextMs - nowMs).coerceAtLeast(0L) / 1000L).toInt()
+        val m = remSec / 60
+        val s = remSec % 60
+        val rem = if (m >= 1) "${m}m ${s}s" else "${s}s"
+        return "Next forecast in $rem"
     }
 
     /** The model's circadian-phase belief as a clock read-out. Not gated — a phase belief, not a

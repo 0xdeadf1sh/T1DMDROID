@@ -12,6 +12,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -94,13 +95,21 @@ fun ModelDetailScreen(
         // ── 3. On-device realized accuracy ──
         section("On-device realized accuracy") {
             Note("Forecast median vs the realized sensor BG at each horizon (advisory — a forecast-accuracy statement, not a dosing claim).")
+            // Keep the prior horizon rows on screen through a recompute (issue 6): only collapse to the
+            // one-line "Computing…" when there is NO prior accuracy; otherwise the rows stay put and a
+            // subtle inline hint (in the button row, so section height is unchanged) marks the refresh.
+            val horizons = accuracy?.horizons.orEmpty()
             when {
+                horizons.isNotEmpty() -> horizons.forEach { HorizonRow(it) }
                 accuracyLoading -> Note("Computing…")
-                accuracy == null || accuracy.horizons.isEmpty() ->
-                    Note("Insufficient history — no matured forecasts have been paired with a realized reading yet.")
-                else -> accuracy.horizons.forEach { HorizonRow(it) }
+                else -> Note("Insufficient history — no matured forecasts have been paired with a realized reading yet.")
             }
-            TextButton(onClick = onRecomputeAccuracy) { Text("Recompute") }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = onRecomputeAccuracy) { Text("Recompute") }
+                if (accuracyLoading && horizons.isNotEmpty()) {
+                    Note("Recomputing…")
+                }
+            }
         }
 
         // ── 4. Reference (held-out validation) ──

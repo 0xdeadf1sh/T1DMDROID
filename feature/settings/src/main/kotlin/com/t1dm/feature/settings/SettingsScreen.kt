@@ -30,6 +30,7 @@ fun SettingsScreen(
     onOpenPower: () -> Unit = {},
     onOpenData: () -> Unit = {},
     onOpenAbout: () -> Unit = {},
+    onOpenDeath: () -> Unit = {},
 ) {
     SettingsScaffold("Settings") {
         SettingsSectionHeader("Display & units")
@@ -57,5 +58,12 @@ fun SettingsScreen(
         SettingsSectionHeader("Data")
         SettingsNavRow("Backup & reset", "Export/import settings as JSON, or erase all data", onClick = onOpenData)
         SettingsNavRow("About", "Version, build, licence, model provenance", onClick = onOpenAbout)
+
+        SettingsSectionHeader("The end")
+        SettingsNavRow(
+            "DEATH mode",
+            "Silence every alarm, disable every safety rail, and still the warnings — irrevocably, until you rescind it",
+            onClick = onOpenDeath,
+        )
     }
 }

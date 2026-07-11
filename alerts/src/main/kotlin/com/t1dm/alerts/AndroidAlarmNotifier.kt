@@ -32,6 +32,12 @@ class AndroidAlarmNotifier(
     private val smallIcon: (critical: Boolean) -> android.graphics.drawable.Icon? = { null },
     /** The active theme accent (ARGB) for `setColor`; null ⇒ leave unset. */
     private val accentColor: () -> Int? = { null },
+    /**
+     * Advisory suppression gate (DEATH mode): when true this notifier PRESENTS nothing — the pure
+     * [AlarmEngine] still fires (§3.6-A computes), we just don't announce it. Presentation only; this
+     * never changes WHEN the engine fires. Defaults to never-suppressed for tests/headless contexts.
+     */
+    private val suppressed: () -> Boolean = { false },
 ) : AlarmNotifier {
 
     private val app = context.applicationContext
@@ -40,12 +46,14 @@ class AndroidAlarmNotifier(
     private val channels = AlertChannels.ensure(app, actuatorConfig)
 
     override fun emit(state: AlarmState) {
+        if (suppressed()) { clear(); return }
         state.threshold?.let { post(ID_THRESHOLD, "glucose", it) } ?: nm.cancel("glucose", ID_THRESHOLD)
         state.signalLoss?.let { post(ID_LOSS, "signal", it) } ?: nm.cancel("signal", ID_LOSS)
         state.primary?.let { vibrate(it) }
     }
 
     override fun reAlert(state: AlarmState) {
+        if (suppressed()) return
         state.primary?.takeIf { it.severity == AlarmSeverity.CRITICAL }?.let { vibrate(it) }
     }
 

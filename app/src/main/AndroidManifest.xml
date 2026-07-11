@@ -35,9 +35,14 @@
 
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
 
+    <!-- Fallback application icon: surfaces that request the *app* icon (notably the app-logo chip
+         beside the app name in every notification) use this, not a launcher alias, so without it they
+         fall back to the platform default robot. Tron is the default theme. -->
     <application
         android:name=".T1dmApplication"
         android:label="@string/app_name"
+        android:icon="@mipmap/ic_launcher_tron"
+        android:roundIcon="@mipmap/ic_launcher_tron"
         android:supportsRtl="true"
         android:usesCleartextTraffic="true"
         android:theme="@style/Theme.T1dm">
@@ -104,6 +109,18 @@
             android:name=".service.DoseCalcService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- Issue 7 — share camera-capture temp files (meal photos) with the camera app via a
+             content:// Uri; also grants read to the bytes we re-open for the multipart upload. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
         <receiver
             android:name=".service.BootReceiver"

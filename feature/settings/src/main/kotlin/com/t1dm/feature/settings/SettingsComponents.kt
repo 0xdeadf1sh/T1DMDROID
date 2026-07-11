@@ -85,6 +85,8 @@ fun SettingsNavRow(label: String, subtitle: String? = null, enabled: Boolean = t
 /** A prominent DANGER banner for the unbounded/safety-critical knobs (safety-posture.md). */
 @Composable
 fun DangerBanner(text: String) {
+    // While DEATH mode is engaged every safety warning across Settings is stilled.
+    if (com.t1dm.core.design.LocalDeathMode.current) return
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
         Text(
             text,

@@ -49,6 +49,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.font.FontFamily
 import com.t1dm.core.design.LocalAnimationsEnabled
+import com.t1dm.core.design.LocalDeathMode
 import com.t1dm.core.design.LocalT1dmSemantics
 import com.t1dm.core.design.iconStyleForTheme
 import com.t1dm.core.design.navEnter
@@ -69,6 +70,10 @@ import com.t1dm.app.di.AppContainer
 import com.t1dm.app.sync.SyncStatus
 import com.t1dm.app.sync.toPanelState
 import com.t1dm.feature.settings.ServerSettingsScreen
+import com.t1dm.feature.settings.DeathModeScreen
+import com.t1dm.app.notify.BgFormat
+import com.t1dm.app.notify.BgGlanceComputer
+import com.t1dm.core.model.UnitSpace
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.t1dm.feature.dashboard.DashboardScreen
@@ -105,7 +110,10 @@ import com.t1dm.app.settings.SettingsStore
 import com.t1dm.data.curve.CurveEngine
 import com.t1dm.data.settings.GraphSettingsStore
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import com.t1dm.watch.WatchSecurityState
 import com.t1dm.feature.stats.StatsScreen
 import com.t1dm.feature.dashboard.CircadianScreen
@@ -136,6 +144,14 @@ private fun WatchSecurityState.toPanelState() = SecurityPanelState(
     canRotate = canRotate,
     canReset = canReset,
 )
+
+/** The photo filename extension the server splits on (issue 7): PNG stays PNG, everything else rides
+ *  as JPEG. Derived from the Uri's MIME type, defaulting to jpg (the camera-capture format). */
+private fun photoExtFor(ctx: android.content.Context, uri: android.net.Uri): String =
+    when (runCatching { ctx.contentResolver.getType(uri) }.getOrNull()) {
+        "image/png" -> "png"
+        else -> "jpg"
+    }
 
 private data class Destination(val route: String, val label: String)
 
@@ -209,6 +225,7 @@ private fun crumbsFor(route: String?, modelId: String?): List<Crumb> {
         "settings/watch" -> settings(Crumb("Watch", null))
         "settings/power" -> settings(Crumb("Low power", null))
         "settings/data" -> settings(Crumb("Backup & reset", null))
+        "settings/death" -> settings(Crumb("DEATH", null))
         else -> listOf(Crumb(route, null))
     }
 }
@@ -225,8 +242,10 @@ private fun Breadcrumb(navController: NavHostController, container: AppContainer
     val modelId = backStackEntry?.arguments?.getString("modelId")
     val crumbs = remember(route, modelId) { crumbsFor(route, modelId) }
     val cs = MaterialTheme.colorScheme
-    // N10 — the app short name + short version (major.minor.patch, suffix stripped) on the right.
-    val shortVersion = remember { BuildConfig.VERSION_NAME.substringBefore('-') }
+    // The current BG number + trend arrow on the right (no unit label — chrome, not a read-out).
+    val reading by container.latestReading.collectAsState(null)
+    val unit by container.statsRepository.unitSpace.collectAsState(UnitSpace.MgDl)
+    val death = LocalDeathMode.current
     // U1 — the app-wide glycemic status, recomputed as the forecast state changes.
     val inference by container.inferenceState.collectAsState(InferenceState())
     val status = remember(inference) { glycemicStatusOf(inference, container.alarmConfig.thresholds) }
@@ -293,14 +312,29 @@ private fun Breadcrumb(navController: NavHostController, container: AppContainer
         // neutral tappable "VOID" when the forecast is ineligible (never green off a stale/degenerate
         // /warmup forecast — that is the false-reassurance §3.6 exists to prevent).
         GlycemicStatusBadge(status)
+        val bgNumber = BgFormat.value(reading?.bgMgdl, unit)
+        val bgArrow = BgFormat.arrow(
+            BgGlanceComputer.classifyTrend(reading?.trendTenthsPerMin, reading?.bgMgdl, null),
+        )
         Text(
-            "T1DM · $shortVersion",
+            "$bgNumber $bgArrow",
             style = MaterialTheme.typography.labelMedium,
             fontWeight = FontWeight.Medium,
             color = cs.onSurfaceVariant,
             maxLines = 1,
             modifier = Modifier.padding(start = 8.dp),
         )
+        // DEATH mode: a themed skull pinned to the far end of the trail.
+        if (death) {
+            Text(
+                "☠",
+                style = MaterialTheme.typography.titleMedium,
+                fontSize = 20.sp,
+                color = cs.error,
+                maxLines = 1,
+                modifier = Modifier.padding(start = 8.dp),
+            )
+        }
     }
 }
 
@@ -529,6 +563,8 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
             // I11/I12 — per-channel data-movement pulses + the user-entered sensor-lifetime countdown.
             val pulses by container.bgPulses.collectAsState(null)
             val sensorExpiry by container.sensorExpiryMs.collectAsState(null)
+            // Issue 1 — battery-saver / low-power indicator (polled off-main).
+            val lowPowerActive by container.lowPowerActive.collectAsState(false)
             DashboardScreen(
                 readings = readings,
                 latest = latest,
@@ -557,6 +593,7 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 rollComputing = rollComputing,
                 onRoll = { hours -> container.requestRollForDisplay(hours) },
                 onClearRoll = { container.clearRoll() },
+                lowPowerActive = lowPowerActive,
             )
         }
         composable("circadian") {
@@ -646,14 +683,101 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
         }
         composable("meals") {
             val scope = rememberCoroutineScope()
+            val ctx = LocalContext.current
             val iobCob by container.iobCob.collectAsState()
             val recent by container.recentMeals.collectAsState(emptyList())
+            // Issue 7 — the pending photo (a content:// Uri from the camera or the gallery), its decoded
+            // thumbnail, and the last upload status. Every Uri/IO touch is wrapped so nothing can crash.
+            var pendingPhotoUri by remember { mutableStateOf<android.net.Uri?>(null) }
+            var photoThumbnail by remember { mutableStateOf<ImageBitmap?>(null) }
+            var uploadStatus by remember { mutableStateOf<String?>(null) }
+
+            // Decode the Uri's bytes to a downscaled thumbnail off-main; a failure clears the preview.
+            suspend fun loadThumbnail(uri: android.net.Uri) {
+                photoThumbnail = withContext(container.dispatchers.io) {
+                    runCatching {
+                        ctx.contentResolver.openInputStream(uri)?.use { stream ->
+                            val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = 4 }
+                            android.graphics.BitmapFactory.decodeStream(stream, null, opts)?.asImageBitmap()
+                        }
+                    }.getOrNull()
+                }
+            }
+
+            val cameraLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.TakePicture(),
+            ) { ok ->
+                val uri = pendingPhotoUri
+                if (ok && uri != null) {
+                    uploadStatus = null
+                    scope.launch { loadThumbnail(uri) }
+                } else {
+                    pendingPhotoUri = null
+                }
+            }
+            val galleryLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.PickVisualMedia(),
+            ) { uri ->
+                if (uri != null) {
+                    pendingPhotoUri = uri
+                    uploadStatus = null
+                    scope.launch { loadThumbnail(uri) }
+                }
+            }
+
             Column {
                 MealsScreen(
                     iobCob = iobCob,
                     recentMeals = recent,
                     previewCurve = container.previewCarbCurve,
-                    onLogMeal = { grams, gi -> scope.launch { container.logCarb(grams, gi) } },
+                    photoThumbnail = photoThumbnail,
+                    uploadStatus = uploadStatus,
+                    onTakePhoto = {
+                        val uri = runCatching {
+                            val dir = java.io.File(ctx.cacheDir, "meal_photos").apply { mkdirs() }
+                            val file = java.io.File(dir, "meal_${System.currentTimeMillis()}.jpg")
+                            androidx.core.content.FileProvider.getUriForFile(
+                                ctx, "${ctx.packageName}.fileprovider", file,
+                            )
+                        }.getOrNull()
+                        if (uri != null) {
+                            pendingPhotoUri = uri
+                            uploadStatus = null
+                            runCatching { cameraLauncher.launch(uri) }
+                        }
+                    },
+                    onChoosePhoto = {
+                        galleryLauncher.launch(
+                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                        )
+                    },
+                    onClearPhoto = {
+                        pendingPhotoUri = null
+                        photoThumbnail = null
+                        uploadStatus = null
+                    },
+                    onLogMeal = { grams, gi ->
+                        scope.launch {
+                            container.logCarb(grams, gi)
+                            val uri = pendingPhotoUri
+                            if (uri != null) {
+                                val now = System.currentTimeMillis()
+                                val bytes = withContext(container.dispatchers.io) {
+                                    runCatching { ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
+                                }
+                                uploadStatus = if (bytes == null) {
+                                    "Meal logged, but the photo could not be read."
+                                } else {
+                                    container.uploadMealPhoto(now, bytes, photoExtFor(ctx, uri)).fold(
+                                        onSuccess = { "Meal logged and photo uploaded." },
+                                        onFailure = { "Meal logged; photo upload failed — ${it.message ?: it::class.simpleName}." },
+                                    )
+                                }
+                                pendingPhotoUri = null
+                                photoThumbnail = null
+                            }
+                        }
+                    },
                 )
                 TextButton(onClick = { navController.navigate("meals/builder") }) {
                     Text("Open meal builder →")
@@ -747,6 +871,16 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 onOpenPower = { navController.navigate("settings/power") },
                 onOpenData = { navController.navigate("settings/data") },
                 onOpenAbout = { navController.navigate("about") },
+                onOpenDeath = { navController.navigate("settings/death") },
+            )
+        }
+        composable("settings/death") {
+            val scope = rememberCoroutineScope()
+            val death by container.deathMode.collectAsState(false)
+            DeathModeScreen(
+                active = death,
+                onActivate = { scope.launch { container.setDeathMode(true) } },
+                onDeactivate = { scope.launch { container.setDeathMode(false) } },
             )
         }
         composable("about") {

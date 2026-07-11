@@ -24,6 +24,7 @@ import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
@@ -401,137 +402,151 @@ fun GlucoseGraph(
             drawLine(axisColor, Offset(plotLeft, plotTop), Offset(plotLeft, plotBottom), 1.5f)
             drawLine(axisColor, Offset(plotLeft, plotBottom), Offset(plotRight, plotBottom), 1.5f)
 
-            // (4.5) Curve overlay (carb Ra + insulin action) in the bottom band, UNDER the BG line
-            //       so it never occludes the glucose trace (Phase 4 — toggleable).
-            if (curveOverlay != null && curveToggles.any) {
-                fun absToPx(ms: Double): Float = (plotLeft + (ms - viewStartMs) * ppm).toFloat()
-                val bandTop = plotBottom - plotHeight * 0.30f
-                drawCurveOverlay(
-                    curveOverlay, curveToggles, ::absToPx, bandTop, plotBottom,
-                    carbColor = cs.secondary, insulinColor = cs.tertiary,
-                )
-            }
-
-            // (5) BG polyline, segment-styled by provenance; gaps broken. Suppressed when the smoothed
-            //     model-input trace has replaced it (I5).
-            if (!swapToSmoothed) for (i in iLo until iHi) {
-                if (frame.breakAfter[i]) continue
-                val fa = frame.flags[i]
-                val fb = frame.flags[i + 1]
-                val (col, effect) = when {
-                    fa == GraphFrame.FLAG_WARMUP || fb == GraphFrame.FLAG_WARMUP -> warmupColor to dash
-                    fa == GraphFrame.FLAG_INTERPOLATED || fb == GraphFrame.FLAG_INTERPOLATED -> interpColor to dash
-                    else -> lineColor to null
+            // Clip data-drawing sections to the plot rectangle so no trace spills over the y-axis
+            // labels or off the plot edges; grid, axes, and margin captions above stay OUTSIDE it.
+            clipRect(left = plotLeft, top = plotTop, right = plotRight, bottom = plotBottom) {
+                // (4.5) Curve overlay (carb Ra + insulin action) in the bottom band, UNDER the BG line
+                //       so it never occludes the glucose trace (Phase 4 — toggleable).
+                if (curveOverlay != null && curveToggles.any) {
+                    fun absToPx(ms: Double): Float = (plotLeft + (ms - viewStartMs) * ppm).toFloat()
+                    val bandTop = plotBottom - plotHeight * 0.30f
+                    drawCurveOverlay(
+                        curveOverlay, curveToggles, ::absToPx, bandTop, plotBottom,
+                        carbColor = cs.secondary, insulinColor = cs.tertiary,
+                    )
                 }
-                drawLine(
-                    col,
-                    Offset(xToPx(frame.xs[i]), yToPx(frame.ys[i])),
-                    Offset(xToPx(frame.xs[i + 1]), yToPx(frame.ys[i + 1])),
-                    strokeWidth = 2.2f, cap = StrokeCap.Round, pathEffect = effect,
-                )
-            }
 
-            // (6) Point markers — only when uncluttered, so distinctions stay legible. Suppressed while
-            //     the smoothed trace is shown in place of the raw one (I5).
-            if (!swapToSmoothed && iHi - iLo <= 240) {
-                val r = 2.6f
-                for (i in iLo..iHi) {
-                    val c = Offset(xToPx(frame.xs[i]), yToPx(frame.ys[i]))
-                    when (frame.flags[i]) {
-                        GraphFrame.FLAG_WARMUP -> drawCircle(warmupColor, r, c)
-                        GraphFrame.FLAG_INTERPOLATED ->
-                            drawCircle(interpColor, r, c, style = Stroke(width = 1.4f))
-                        else -> drawCircle(lineColor, r, c)
+                // (5) BG polyline, segment-styled by provenance; gaps broken. Suppressed when the smoothed
+                //     model-input trace has replaced it (I5).
+                if (!swapToSmoothed) for (i in iLo until iHi) {
+                    if (frame.breakAfter[i]) continue
+                    val fa = frame.flags[i]
+                    val fb = frame.flags[i + 1]
+                    val (col, effect) = when {
+                        fa == GraphFrame.FLAG_WARMUP || fb == GraphFrame.FLAG_WARMUP -> warmupColor to dash
+                        fa == GraphFrame.FLAG_INTERPOLATED || fb == GraphFrame.FLAG_INTERPOLATED -> interpColor to dash
+                        else -> lineColor to null
+                    }
+                    drawLine(
+                        col,
+                        Offset(xToPx(frame.xs[i]), yToPx(frame.ys[i])),
+                        Offset(xToPx(frame.xs[i + 1]), yToPx(frame.ys[i + 1])),
+                        strokeWidth = 2.2f, cap = StrokeCap.Round, pathEffect = effect,
+                    )
+                }
+
+                // (6) Point markers — only when uncluttered, so distinctions stay legible. Suppressed while
+                //     the smoothed trace is shown in place of the raw one (I5).
+                if (!swapToSmoothed && iHi - iLo <= 240) {
+                    val r = 2.6f
+                    for (i in iLo..iHi) {
+                        val c = Offset(xToPx(frame.xs[i]), yToPx(frame.ys[i]))
+                        when (frame.flags[i]) {
+                            GraphFrame.FLAG_WARMUP -> drawCircle(warmupColor, r, c)
+                            GraphFrame.FLAG_INTERPOLATED ->
+                                drawCircle(interpColor, r, c, style = Stroke(width = 1.4f))
+                            else -> drawCircle(lineColor, r, c)
+                        }
                     }
                 }
-            }
 
-            // (6.4) Smoothed model-input trace (item 13; I5 — now a SWAP): the causal Savitzky-Golay
-            //       series the model actually consumes (mg/dL, before any risk transform). When the
-            //       "Smoothed" toggle is on it REPLACES the raw trace (drawn above only when off), so a
-            //       single trace is ever on screen; the legend states which one. Breaks are honoured so a
-            //       dropout is not bridged with a fictitious line.
-            if (swapToSmoothed) {
-                val vLo = viewStartMs
-                val vHi = viewStartMs + viewSpanMs
-                val smColor = lineColor // drawn AS the primary trace, since it stands in for the raw one
-                val path = Path()
-                var open = false
-                fun flush() { if (open) { drawPath(path, smColor, style = Stroke(width = 2.2f, cap = StrokeCap.Round)); path.reset(); open = false } }
-                for (i in 0 until smoothed!!.size) {
-                    val t = smoothed.tsMs[i].toDouble()
-                    // Cull to the visible window (± one span) so a long history is cheap to paint.
-                    if (t < vLo - viewSpanMs || t > vHi + viewSpanMs) { flush(); continue }
-                    val x = (plotLeft + (t - viewStartMs) * ppm).toFloat()
-                    val y = yToPx(smoothed.ys[i])
-                    if (!open) { path.moveTo(x, y); open = true } else path.lineTo(x, y)
-                    if (i < smoothed.size - 1 && smoothed.breakAfter[i]) flush()
+                // (6.4) Smoothed model-input trace (item 13; I5 — now a SWAP): the causal Savitzky-Golay
+                //       series the model actually consumes (mg/dL, before any risk transform). When the
+                //       "Smoothed" toggle is on it REPLACES the raw trace (drawn above only when off), so a
+                //       single trace is ever on screen; the legend states which one. Breaks are honoured so a
+                //       dropout is not bridged with a fictitious line.
+                if (swapToSmoothed) {
+                    val vLo = viewStartMs
+                    val vHi = viewStartMs + viewSpanMs
+                    val smColor = lineColor // drawn AS the primary trace, since it stands in for the raw one
+                    val path = Path()
+                    var open = false
+                    fun flush() { if (open) { drawPath(path, smColor, style = Stroke(width = 2.2f, cap = StrokeCap.Round)); path.reset(); open = false } }
+                    for (i in 0 until smoothed!!.size) {
+                        val t = smoothed.tsMs[i].toDouble()
+                        // Cull to the visible window (± one span) so a long history is cheap to paint.
+                        if (t < vLo - viewSpanMs || t > vHi + viewSpanMs) { flush(); continue }
+                        val x = (plotLeft + (t - viewStartMs) * ppm).toFloat()
+                        val y = yToPx(smoothed.ys[i])
+                        if (!open) { path.moveTo(x, y); open = true } else path.lineTo(x, y)
+                        if (i < smoothed.size - 1 && smoothed.breakAfter[i]) flush()
+                    }
+                    flush()
+                    val leg = measurer.measure("model input — smoothed", TextStyle(color = smColor, fontSize = 9.sp))
+                    drawText(leg, topLeft = Offset((plotRight - leg.size.width - 4f).coerceAtLeast(plotLeft), plotTop + 2f))
+                } else if (smoothed != null && !smoothed.isEmpty) {
+                    // The raw sensor trace is showing (section 5); label it so the toggle's state is legible.
+                    val leg = measurer.measure("sensor — raw", TextStyle(color = lineColor, fontSize = 9.sp))
+                    drawText(leg, topLeft = Offset((plotRight - leg.size.width - 4f).coerceAtLeast(plotLeft), plotTop + 2f))
                 }
-                flush()
-                val leg = measurer.measure("model input — smoothed", TextStyle(color = smColor, fontSize = 9.sp))
-                drawText(leg, topLeft = Offset((plotRight - leg.size.width - 4f).coerceAtLeast(plotLeft), plotTop + 2f))
-            } else if (smoothed != null && !smoothed.isEmpty) {
-                // The raw sensor trace is showing (section 5); label it so the toggle's state is legible.
-                val leg = measurer.measure("sensor — raw", TextStyle(color = lineColor, fontSize = 9.sp))
-                drawText(leg, topLeft = Offset((plotRight - leg.size.width - 4f).coerceAtLeast(plotLeft), plotTop + 2f))
-            }
 
-            // (6.5) Prediction overlay: quantile fan + median for each running model. Non-selected
-            //       models are drawn first (faint), the selected model last (on top, full fan).
-            if (predictions.isNotEmpty()) {
-                fun absToPx(ms: Double): Float = (plotLeft + (ms - viewStartMs) * ppm).toFloat()
-                val predLine = cs.tertiary
-                val fan = cs.tertiary
-                val flag = cs.error
-                for (s in predictions) if (!s.selected) {
-                    drawPredSeries(s, ::absToPx, ::yToPx, plotTop, plotBottom, predLine, fan, flag)
+                // (6.5) Prediction overlay: quantile fan + median for each running model. Non-selected
+                //       models are drawn first (faint), the selected model last (on top, full fan).
+                if (predictions.isNotEmpty()) {
+                    fun absToPx(ms: Double): Float = (plotLeft + (ms - viewStartMs) * ppm).toFloat()
+                    val predLine = cs.tertiary
+                    val fan = cs.tertiary
+                    val flag = cs.error
+                    for (s in predictions) if (!s.selected) {
+                        drawPredSeries(s, ::absToPx, ::yToPx, plotTop, plotBottom, predLine, fan, flag)
+                    }
+                    for (s in predictions) if (s.selected) {
+                        drawPredSeries(s, ::absToPx, ::yToPx, plotTop, plotBottom, predLine, fan, flag)
+                    }
                 }
-                for (s in predictions) if (s.selected) {
-                    drawPredSeries(s, ::absToPx, ::yToPx, plotTop, plotBottom, predLine, fan, flag)
+
+                // (6.6) The ephemeral, DISPLAY-ONLY rolled forecast (I2): the extrapolated tail beyond the
+                //       validated 2 h is drawn hatched/dimmed with a boundary + legend, so it can never be
+                //       mistaken for a validated forecast (and it never drives an alert or a dose).
+                rolled?.let { rs ->
+                    fun absToPx(ms: Double): Float = (plotLeft + (ms - viewStartMs) * ppm).toFloat()
+                    drawRolledSeries(rs, ::absToPx, ::yToPx, plotTop, plotBottom, cs.tertiary, cs.onSurface)
+                    val legendText = if (rs.degenerate) "extrapolated · degenerated · display-only"
+                    else "extrapolated · unvalidated · display-only"
+                    val leg = measurer.measure(legendText, TextStyle(color = cs.onSurface.copy(alpha = 0.7f), fontSize = 9.sp))
+                    drawText(leg, topLeft = Offset((plotRight - leg.size.width - 4f).coerceAtLeast(plotLeft), plotBottom - leg.size.height - 2f))
                 }
-            }
 
-            // (6.6) The ephemeral, DISPLAY-ONLY rolled forecast (I2): the extrapolated tail beyond the
-            //       validated 2 h is drawn hatched/dimmed with a boundary + legend, so it can never be
-            //       mistaken for a validated forecast (and it never drives an alert or a dose).
-            rolled?.let { rs ->
-                fun absToPx(ms: Double): Float = (plotLeft + (ms - viewStartMs) * ppm).toFloat()
-                drawRolledSeries(rs, ::absToPx, ::yToPx, plotTop, plotBottom, cs.tertiary, cs.onSurface)
-                val legendText = if (rs.degenerate) "extrapolated · degenerated · display-only"
-                else "extrapolated · unvalidated · display-only"
-                val leg = measurer.measure(legendText, TextStyle(color = cs.onSurface.copy(alpha = 0.7f), fontSize = 9.sp))
-                drawText(leg, topLeft = Offset((plotRight - leg.size.width - 4f).coerceAtLeast(plotLeft), plotBottom - leg.size.height - 2f))
-            }
-
-            // (7) Scrub cursor — time-anchored, so it reads in the forecast zone too (item 3). U8 — the
-            //     read-out box is now PINNED at the right-hand middle of the plot (not floating by the
-            //     thumb) and updates continuously as the thumb moves, so a finger never occludes it.
-            if (!scrubMs.isNaN()) {
-                val cx = (plotLeft + (scrubMs - viewStartMs) * ppm).toFloat()
-                if (cx in plotLeft..plotRight) {
-                    val sc = buildScrub(frame, predictions, curveOverlay, predictedClock, scrubMs)
-                    drawLine(cs.onSurface.copy(alpha = 0.5f), Offset(cx, plotTop), Offset(cx, plotBottom), 1f)
-                    sc.bgValue?.let { drawCircle(cs.onSurface, 4f, Offset(cx, yToPx(it)), style = Stroke(width = 2f)) }
-                    // I4 — a STABLE read-out: monospace/tabular figures + values padded to a constant
-                    //      width, and the box sized from a fixed WIDEST-line template (not the live
-                    //      content) so it never reflows as the thumb moves.
-                    val scrubStyle = TextStyle(color = cs.onPrimary, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
-                    val lines = scrubLines(sc)
-                    val measured = lines.map { measurer.measure(it, scrubStyle) }
-                    val boxW = measurer.measure(SCRUB_WIDTH_TEMPLATE, scrubStyle).size.width.toFloat() + 12f
-                    val lineH = measured.first().size.height.toFloat()
-                    val boxH = lineH * measured.size + 8f
-                    // Fixed at the right-hand middle of the plot.
-                    val bx = (plotRight - boxW - 6f).coerceAtLeast(plotLeft)
-                    val by = ((plotTop + plotBottom) / 2f - boxH / 2f).coerceIn(plotTop, plotBottom - boxH)
-                    drawRoundRect(
-                        cs.primary,
-                        topLeft = Offset(bx, by),
-                        size = androidx.compose.ui.geometry.Size(boxW, boxH),
-                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(5f, 5f),
-                    )
-                    measured.forEachIndexed { i, m ->
-                        drawText(m, topLeft = Offset(bx + 6f, by + 4f + i * lineH))
+                // (7) Scrub cursor — time-anchored, so it reads in the forecast zone too (item 3). U8 — the
+                //     read-out box is now PINNED at the right-hand middle of the plot (not floating by the
+                //     thumb) and updates continuously as the thumb moves, so a finger never occludes it.
+                if (!scrubMs.isNaN()) {
+                    val cx = (plotLeft + (scrubMs - viewStartMs) * ppm).toFloat()
+                    if (cx in plotLeft..plotRight) {
+                        val sc = buildScrub(frame, predictions, curveOverlay, predictedClock, scrubMs)
+                        drawLine(cs.onSurface.copy(alpha = 0.5f), Offset(cx, plotTop), Offset(cx, plotBottom), 1f)
+                        sc.bgValue?.let { drawCircle(cs.onSurface, 4f, Offset(cx, yToPx(it)), style = Stroke(width = 2f)) }
+                        // I4 — a STABLE, TABULATED read-out: a two-column table (short label ⟶ right-aligned
+                        //      value) inside the box. Labels are normal-weight; VALUES use tabular monospace
+                        //      figures so digits align. Both columns are sized from FIXED widest templates
+                        //      (the label set + the widest value), never the live content, so the box holds
+                        //      its size and its value column's right edge as the thumb moves.
+                        val labelStyle = TextStyle(color = cs.onPrimary.copy(alpha = 0.72f), fontSize = 11.sp)
+                        val valueStyle = TextStyle(color = cs.onPrimary, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                        val rows = scrubRows(sc)
+                        val padH = 9f; val padV = 8f; val colGap = 14f; val rowGap = 5f
+                        val labelColW = SCRUB_LABELS.maxOf { measurer.measure(it, labelStyle).size.width }.toFloat()
+                        val valueColW = measurer.measure(SCRUB_VALUE_TEMPLATE, valueStyle).size.width.toFloat()
+                        val lineH = measurer.measure(SCRUB_VALUE_TEMPLATE, valueStyle).size.height.toFloat()
+                        val boxW = padH + labelColW + colGap + valueColW + padH
+                        val boxH = padV * 2f + lineH * rows.size + rowGap * (rows.size - 1)
+                        // Fixed at the right-hand middle of the plot.
+                        val bx = (plotRight - boxW - 6f).coerceAtLeast(plotLeft)
+                        val by = ((plotTop + plotBottom) / 2f - boxH / 2f).coerceIn(plotTop, plotBottom - boxH)
+                        drawRoundRect(
+                            cs.primary,
+                            topLeft = Offset(bx, by),
+                            size = androidx.compose.ui.geometry.Size(boxW, boxH),
+                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(5f, 5f),
+                        )
+                        val valueRight = bx + boxW - padH // the value column's shared right edge
+                        rows.forEachIndexed { i, (label, value) ->
+                            val rowTop = by + padV + i * (lineH + rowGap)
+                            val lbl = measurer.measure(label, labelStyle)
+                            val vm = measurer.measure(value, valueStyle)
+                            drawText(lbl, topLeft = Offset(bx + padH, rowTop))
+                            drawText(vm, topLeft = Offset(valueRight - vm.size.width, rowTop))
+                        }
                     }
                 }
             }
@@ -597,26 +612,28 @@ private fun predictedClockLabel(ms: Long, clock: PredictedClock): String {
     return "%02d:%02d".format(hh % 24, mm)
 }
 
-/** The widest line the scrub read-out can ever produce; the box is sized from this fixed template (I4)
- *  so it never resizes as the values under the cursor change. Must stay ≥ the widest real line. */
-private const val SCRUB_WIDTH_TEMPLATE = "C 199.9g  I 99.99U"
+/** Every label the read-out's left column can show; the label column is sized from the widest of these
+ *  fixed strings (I4) so the box never resizes as rows appear or vanish under the cursor. */
+private val SCRUB_LABELS = listOf("BG", "Carb", "Ins", "Local", "Model")
 
-/** The scrub read-out lines: BG, carb + insulin rates, and the clock (local always; model in the
- *  prediction zone). I4 — numeric fields are padded to a constant character count so, with tabular
- *  monospace figures, the columns hold still as the cursor moves. */
-private fun scrubLines(sc: GraphScrub): List<String> {
-    val out = ArrayList<String>(4)
+/** The widest VALUE the right column can ever hold (a carb rate / insulin rate reads "199.9 g" / "99.99 U",
+ *  both wider than any BG or clock value); the value column — and thus the box — is sized from this fixed
+ *  template so its right edge holds still as the tabular figures under the cursor change. */
+private const val SCRUB_VALUE_TEMPLATE = "199.9 g"
+
+/** The scrub read-out as (label, value) pairs for the two-column table: BG, carb + insulin rates, and the
+ *  clock (local always; model in the prediction zone). Only the rows that exist are emitted — carb, insulin
+ *  and model may be absent. Values carry their unit so the right column reads on its own. */
+private fun scrubRows(sc: GraphScrub): List<Pair<String, String>> {
+    val out = ArrayList<Pair<String, String>>(5)
     val bgStr = sc.bgValue?.let { formatValue(it, sc.unit) + (if (sc.inPredZone) "*" else "") } ?: "--"
-    out.add("BG " + bgStr.padStart(7))
-    val rates = buildString {
-        sc.carbRate?.let { append("C %5.1fg".format(it)) }
-        sc.insulinRate?.let { if (isNotEmpty()) append("  "); append("I %5.2fU".format(it)) }
-    }
-    if (rates.isNotEmpty()) out.add(rates)
-    out.add(formatClock(sc.tsMs, sc.tzOffsetMin) + " loc")
-    if (sc.modelHour != null) {
-        val hh = floor(sc.modelHour).toInt(); val mm = ((sc.modelHour - hh) * 60.0).roundToInt().coerceIn(0, 59)
-        out.add("%02d:%02d mdl".format(hh % 24, mm))
+    out.add("BG" to bgStr)
+    sc.carbRate?.let { out.add("Carb" to "%.1f g".format(it)) }
+    sc.insulinRate?.let { out.add("Ins" to "%.2f U".format(it)) }
+    out.add("Local" to formatClock(sc.tsMs, sc.tzOffsetMin))
+    sc.modelHour?.let {
+        val hh = floor(it).toInt(); val mm = ((it - hh) * 60.0).roundToInt().coerceIn(0, 59)
+        out.add("Model" to "%02d:%02d".format(hh % 24, mm))
     }
     return out
 }
