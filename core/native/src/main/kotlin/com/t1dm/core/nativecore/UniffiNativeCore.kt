@@ -34,7 +34,6 @@ import uniffi.t1dm_core.advancedStats as uniffiAdvancedStats
 import uniffi.t1dm_core.advertCrc32 as uniffiAdvertCrc32
 import uniffi.t1dm_core.assembleDecode as uniffiAssembleDecode
 import uniffi.t1dm_core.bateman as uniffiBateman
-import uniffi.t1dm_core.bolusPkForDose as uniffiBolusPkForDose
 import uniffi.t1dm_core.bucketize as uniffiBucketize
 import uniffi.t1dm_core.buildContext as uniffiBuildContext
 import uniffi.t1dm_core.causalSmooth as uniffiCausalSmooth
@@ -164,9 +163,6 @@ class UniffiNativeCore : NativeCore {
 
     override fun bateman(total: Double, durMin: Double, ka: Double, ke: Double): List<Double> =
         uniffiBateman(total, durMin, ka, ke)
-
-    override fun bolusPkForDose(doseU: Double): CurveEvent =
-        uniffiBolusPkForDose(doseU).toModel()
 
     override fun expActionCurve(total: Double, peakMin: Double, diaMin: Double): List<Double> =
         uniffiExpActionCurve(total, peakMin, diaMin)
@@ -327,7 +323,7 @@ private fun CurveKind.toUniffi(): UniffiCurveKind = when (this) {
 private fun UniffiInsulinFamily.toModel(): InsulinFamily = when (this) {
     UniffiInsulinFamily.RAPID_EXP -> InsulinFamily.RapidExp
     UniffiInsulinFamily.BASAL_BATEMAN -> InsulinFamily.BasalBateman
-    UniffiInsulinFamily.SIMULATOR_GAMMA -> InsulinFamily.SimulatorGamma
+    else -> throw IllegalStateException("Unexpected UniffiInsulinFamily: $this")
 }
 
 // The Rust `preset` enum is intentionally NOT projected — the app keys a selection by the stable

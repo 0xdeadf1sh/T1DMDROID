@@ -1,8 +1,8 @@
 //! The shared curve / PK engine (SPEC.private.md §3.3) — the ONE transform that feeds
 //! historical context channels, announced-future what-if conditioning, and IOB/COB
 //! display. Every function here is **bit-for-bit faithful to `T1DMSIM/simulator.py` at
-//! FIXED, noise-free presets**: `gamma_curve` (Ra carbs + bolus PK), `basal_curve`
-//! (Bateman long-acting), and `bolus_pk_for_dose` are transcribed from the simulator so
+//! FIXED, noise-free presets**: `gamma_curve` (Ra carbs) and `basal_curve`
+//! (Bateman long-acting) are transcribed from the simulator so
 //! the app's curves land in the model's training distribution (INFERENCE.md §9,
 //! model-io-curves.md).
 //!
@@ -54,8 +54,6 @@ pub const BOLUS_DIA_MAX_HOURS: f64 = 7.5;
 /// θ drift per unit of `sqrt(dose) - sqrt(5)` (bigger boluses peak slightly later).
 /// `simulator.BOLUS_THETA_DOSE_SLOPE`.
 pub const BOLUS_THETA_DOSE_SLOPE: f64 = 0.06;
-/// The dose the DIA/θ scaling is centred on. `sqrt(5)` in `bolus_pk_for_dose`.
-const BOLUS_REFERENCE_DOSE_U: f64 = 5.0;
 
 /// Long-acting basal Bateman absorption / elimination rates (1/h).
 /// `simulator.BASAL_KA_PER_HOUR` / `_KE_PER_HOUR`. tmax = ln(ka/ke)/(ka-ke) ≈ 6.3 h — a
@@ -83,7 +81,7 @@ pub enum CurveKind {
 
 /// One resolved event: an absolute start time plus its per-5-min-step curve. `values`
 /// sum to `total` over the event's duration (Ra grams for carbs; PK action-units for
-/// insulin). Produced by [`gamma`]/[`bateman`]/[`bolus_pk_for_dose`]/[`extend_basal`],
+/// insulin). Produced by [`gamma`]/[`bateman`]/[`extend_basal`],
 /// consumed by [`bucketize`] (channel building) and [`on_board`] (IOB/COB).
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct CurveEvent {
@@ -206,37 +204,6 @@ pub fn bateman(total_amount: f64, duration_min: f64, ka_per_hour: f64, ke_per_ho
     curve
 }
 
-// ── bolus_pk_for_dose (simulator.py:853) — dose-scaled rapid-acting PK ───────────────────
-
-/// The `(k, θ, duration_min)` a rapid-acting bolus of `dose_units` gets: DIA scales with
-/// dose (`BASE + SCALE·(√dose − √5)`, clamped), θ drifts up so larger depots peak later.
-/// Bit-faithful to `simulator.bolus_pk_for_dose`. `dose` is floored at 0.5 U.
-fn bolus_pk_params(dose_units: f64) -> (f64, f64, f64) {
-    let dose = dose_units.max(0.5);
-    let sqrt_excess = dose.sqrt() - BOLUS_REFERENCE_DOSE_U.sqrt();
-    let duration_h = (BOLUS_DIA_BASE_HOURS + BOLUS_DIA_DOSE_SCALE * sqrt_excess)
-        .clamp(BOLUS_DIA_MIN_HOURS, BOLUS_DIA_MAX_HOURS);
-    let theta = BOLUS_GAMMA_THETA * (1.0 + BOLUS_THETA_DOSE_SLOPE * sqrt_excess);
-    (BOLUS_GAMMA_K, theta, duration_h * 60.0)
-}
-
-/// Resolve a rapid-acting bolus of `dose_u` units into an insulin [`CurveEvent`] at
-/// `start_ms == 0` (the caller shifts it to the injection time). The gamma PK is built with
-/// the dose-scaled params of [`bolus_pk_params`] (== `simulator.bolus_pk_for_dose` +
-/// `gamma_curve`), so `sum(values) == dose_u`.
-#[uniffi::export]
-pub fn bolus_pk_for_dose(dose_u: f64) -> CurveEvent {
-    let (k, theta, dur_min) = bolus_pk_params(dose_u);
-    let values = gamma(dose_u, k, theta, dur_min);
-    CurveEvent {
-        start_ms: 0,
-        step_ms: STEP_MS,
-        kind: CurveKind::Insulin,
-        total: dose_u,
-        values,
-    }
-}
-
 // ── exp_action_curve (Loop/OpenAPS biexponential) — CLINICAL rapid-acting presets ───────
 //
 // SELECTABLE, OPT-IN clinical presets (post-Phase-7 fix, issue 19). The DEFAULT curves above
@@ -298,10 +265,6 @@ pub fn exp_action_curve(total: f64, peak_min: f64, dia_min: f64) -> Vec<f64> {
 /// to [`exp_action_curve`]; basal families to [`bateman`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum InsulinPreset {
-    /// DEFAULT — the simulator-matched dose-scaled gamma ([`bolus_pk_for_dose`]). In-distribution.
-    SimulatorBolus,
-    /// DEFAULT — the simulator-matched Bateman background. In-distribution.
-    SimulatorBasal,
     // Rapid-acting (exponential activity model; peak/DIA cited on `InsulinPresetSpec`).
     AspartNovorapid,
     FiaspFasterAspart,
@@ -316,12 +279,10 @@ pub enum InsulinPreset {
 /// Which curve family + channel a preset feeds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum InsulinFamily {
-    /// Rapid-acting bolus → [`exp_action_curve`] (or the simulator gamma for `SimulatorBolus`).
+    /// Rapid-acting bolus → [`exp_action_curve`].
     RapidExp,
-    /// Long-acting basal → [`bateman`] (or the simulator Bateman for `SimulatorBasal`).
+    /// Long-acting basal → [`bateman`].
     BasalBateman,
-    /// The simulator DEFAULT bolus (dose-scaled gamma via [`bolus_pk_for_dose`]).
-    SimulatorGamma,
 }
 
 /// A resolved preset: its family, the citeable peak/DIA, the Bateman rates (basal only), a display
@@ -386,17 +347,6 @@ pub fn insulin_preset_catalog() -> Vec<InsulinPresetSpec> {
         }
     }
     vec![
-        InsulinPresetSpec {
-            preset: InsulinPreset::SimulatorBolus,
-            family: InsulinFamily::SimulatorGamma,
-            label: "Simulator bolus (default, in-distribution)".to_string(),
-            peak_min: (BOLUS_GAMMA_K - 1.0) * BOLUS_GAMMA_THETA,
-            dia_min: BOLUS_DIA_BASE_HOURS * 60.0,
-            ka_per_hour: 0.0,
-            ke_per_hour: 0.0,
-            off_distribution: false,
-            citation: "T1DMSIM dose-scaled gamma (the model's training distribution)".to_string(),
-        },
         rapid(
             InsulinPreset::AspartNovorapid,
             "Aspart · NovoRapid/Novolog",
@@ -425,17 +375,6 @@ pub fn insulin_preset_catalog() -> Vec<InsulinPresetSpec> {
             300.0,
             "Ultra-rapid class (Fiasp-like); Bionic Wookiee 2022 peak ≈45 min, DIA 5 h",
         ),
-        InsulinPresetSpec {
-            preset: InsulinPreset::SimulatorBasal,
-            family: InsulinFamily::SimulatorGamma, // resolved to Bateman by the caller; flagged default
-            label: "Simulator basal (default, in-distribution)".to_string(),
-            peak_min: (BASAL_KA_PER_HOUR.ln() - BASAL_KE_PER_HOUR.ln()) / (BASAL_KA_PER_HOUR - BASAL_KE_PER_HOUR) * 60.0,
-            dia_min: LANTUS_DIA_MIN,
-            ka_per_hour: BASAL_KA_PER_HOUR,
-            ke_per_hour: BASAL_KE_PER_HOUR,
-            off_distribution: false,
-            citation: "T1DMSIM Bateman background (the model's training distribution)".to_string(),
-        },
         basal(
             InsulinPreset::GlargineU100Lantus,
             "Glargine U100 · Lantus",
@@ -653,34 +592,6 @@ mod tests {
         assert_eq!(*v.last().unwrap(), 0.0); // tail-clipped to zero
     }
 
-    // ── bolus_pk_for_dose == simulator.bolus_pk_for_dose + gamma_curve ───────────────────
-    #[test]
-    fn bolus_pk_matches_simulator() {
-        for c in golden()["bolus_pk"].as_array().unwrap() {
-            let ev = bolus_pk_for_dose(c["dose"].as_f64().unwrap());
-            let (k, theta, dur) = bolus_pk_params(c["dose"].as_f64().unwrap());
-            assert!((k - c["k"].as_f64().unwrap()).abs() < 1e-12, "k");
-            assert!((theta - c["theta"].as_f64().unwrap()).abs() < 1e-12, "theta");
-            assert!((dur - c["dur"].as_f64().unwrap()).abs() < 1e-9, "dur");
-            assert_eq!(ev.kind, CurveKind::Insulin);
-            assert_close(&ev.values, &f64s(&c["values"]), 1e-12, "bolus_pk");
-        }
-    }
-
-    #[test]
-    fn bolus_reference_peaks_at_50_min() {
-        // 5 U reference: gamma peak (k-1)·θ = 2·25 = 50 min ⇒ value index 9 (t=(9+1)·5).
-        let ev = bolus_pk_for_dose(5.0);
-        let peak = ev
-            .values
-            .iter()
-            .enumerate()
-            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-            .unwrap()
-            .0;
-        assert_eq!((peak as f64 + 1.0) * DT_MINUTES, 50.0);
-    }
-
     // ── exp_action_curve: byte-match the Loop/OpenAPS reference + shape properties ─────────
     #[test]
     fn exp_action_matches_reference() {
@@ -718,26 +629,6 @@ mod tests {
         assert_eq!(exp_action_curve(5.0, 0.0, 300.0), vec![0.0]);   // non-positive peak
         assert_eq!(exp_action_curve(5.0, 200.0, 300.0), vec![0.0]); // peak >= dia/2 (τ singular)
         assert_eq!(exp_action_curve(5.0, 30.0, 0.0), vec![0.0]);    // non-positive dia
-    }
-
-    // ── insulin_preset_catalog: the two Simulator defaults are IN-distribution; clinical ones OUT ──
-    #[test]
-    fn preset_catalog_defaults_are_in_distribution() {
-        let cat = insulin_preset_catalog();
-        // Exactly the two `Simulator*` presets are in-distribution; every clinical preset is flagged.
-        let in_dist: Vec<_> = cat.iter().filter(|s| !s.off_distribution).map(|s| s.preset).collect();
-        assert_eq!(in_dist, vec![InsulinPreset::SimulatorBolus, InsulinPreset::SimulatorBasal]);
-        assert!(cat.iter().filter(|s| s.off_distribution).count() >= 6, "expect >=6 clinical presets");
-        // Every rapid preset's cited peak resolves to a real, positive, correctly-peaked curve.
-        for s in cat.iter().filter(|s| s.family == InsulinFamily::RapidExp) {
-            let v = exp_action_curve(5.0, s.peak_min, s.dia_min);
-            assert!(v.len() > 1 && (v.iter().sum::<f64>() - 5.0).abs() < 1e-9, "{} bad curve", s.label);
-        }
-        // Every basal preset's Bateman renders a sum-to-dose background over its DIA.
-        for s in cat.iter().filter(|s| s.family == InsulinFamily::BasalBateman) {
-            let v = bateman(24.0, s.dia_min, s.ka_per_hour, s.ke_per_hour);
-            assert!((v.iter().sum::<f64>() - 24.0).abs() < 1e-9, "{} basal sum != dose", s.label);
-        }
     }
 
     // ── bucketize: grid alignment, tail carry-forward, kind filter ───────────────────────
@@ -811,17 +702,6 @@ mod tests {
         assert_eq!(on_board(vec![ev.clone()], 100 * STEP_MS, CurveKind::Insulin), 0.0);
         // Kind filter: carb query sees nothing.
         assert_eq!(on_board(vec![ev], 0, CurveKind::Carb), 0.0);
-    }
-
-    #[test]
-    fn on_board_monotone_non_increasing() {
-        let ev = bolus_pk_for_dose(7.0);
-        let mut prev = f64::INFINITY;
-        for step in 0..40 {
-            let iob = on_board(vec![ev.clone()], step * STEP_MS, CurveKind::Insulin);
-            assert!(iob <= prev + 1e-12, "IOB rose at step {step}: {iob} > {prev}");
-            prev = iob;
-        }
     }
 
     // ── extend_basal: daily tiling + long-tail carry into the window ─────────────────────
@@ -899,19 +779,6 @@ mod tests {
         let cb = bucketize(vec![big], g0, 48, CurveKind::Carb).unwrap();
         assert!(cs.iter().zip(&cb).all(|(a, b)| b >= a));
         assert!(cb.iter().sum::<f64>() > cs.iter().sum::<f64>());
-    }
-
-    #[test]
-    fn counterfactual_more_insulin_larger_channel() {
-        let g0 = 0i64;
-        let small = bolus_pk_for_dose(3.0);
-        let big = bolus_pk_for_dose(9.0);
-        // Larger dose ⇒ strictly more total insulin action, and more IOB at onset.
-        assert!(big.values.iter().sum::<f64>() > small.values.iter().sum::<f64>());
-        assert!(
-            on_board(vec![big], g0 - 1, CurveKind::Insulin)
-                > on_board(vec![small], g0 - 1, CurveKind::Insulin)
-        );
     }
 
     // Helper: a carb Ra gamma event at start_ms=0 (fast-carb central preset k=3, θ=20).

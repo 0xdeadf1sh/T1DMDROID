@@ -4,7 +4,6 @@ import com.t1dm.core.common.DefaultT1dmDispatchers
 import com.t1dm.core.model.BasalDoseSpec
 import com.t1dm.core.model.BasalSchedule
 import com.t1dm.core.model.CurveEvent
-import com.t1dm.core.model.CurveKind
 import com.t1dm.core.nativecore.StubNativeCore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.runTest
@@ -43,22 +42,13 @@ class ChannelBuilderTest {
     }
 
     @Test
-    fun bolusEvent_reference_peaks_at_50min_and_sums_to_dose() = runTest {
-        val ev = engine.bolusEvent(units = 5.0, startMs = 0L)
-        assertEquals(CurveKind.INSULIN, ev.kind)
-        assertEquals(5.0, ev.values.sum(), 1e-9)
-        val peak = ev.values.indices.maxByOrNull { ev.values[it] }!!
-        assertEquals(50.0, (peak + 1) * 5.0, 0.0) // gamma peak (k-1)·θ = 50 min
-    }
-
-    @Test
     fun contextChannels_separate_carb_and_insulin_by_kind() = runTest {
         val g0 = 1_000_000_000_000L
         val carb = engine.carbEvent(grams = 40.0, startMs = g0, k = 3.0, theta = 20.0, durMin = 240.0)
-        val bolus = engine.bolusEvent(units = 6.0, startMs = g0)
+        val bolus = engine.rapidEvent(units = 6.0, startMs = g0, peakMin = 75.0, diaMin = 360.0)
         val builder = ChannelBuilder(engine, FakeStore(carbs = listOf(carb), insulin = listOf(bolus)))
 
-        val n = 48
+        val n = 72 // 6 h window fully covers the 360-min rapid DIA, so each channel integrates to its total
         val ch = builder.contextChannels(g0, n)
         // Each channel integrates to its event total within the window; kinds don't cross-contaminate.
         assertEquals(40.0, ch.carb.sum(), 1e-6)
@@ -70,11 +60,11 @@ class ChannelBuilderTest {
     fun futureOverrides_carries_existing_tail_and_injects_candidate() = runTest {
         val rollStart = 2_000_000_000_000L
         // A bolus taken 20 min BEFORE the roll start: its PK tail must carry into the horizon.
-        val existing = engine.bolusEvent(units = 5.0, startMs = rollStart - 20 * 60_000L)
+        val existing = engine.rapidEvent(units = 5.0, startMs = rollStart - 20 * 60_000L, peakMin = 75.0, diaMin = 360.0)
         val builder = ChannelBuilder(engine, FakeStore(insulin = listOf(existing)))
 
         val n = 60 // 5 h horizon
-        val candidate = listOf(engine.bolusEvent(units = 3.0, startMs = rollStart))
+        val candidate = listOf(engine.rapidEvent(units = 3.0, startMs = rollStart, peakMin = 75.0, diaMin = 360.0))
         val fc = builder.futureOverrides(rollStart, n, announced = emptyList(), candidate = candidate)
 
         // The insulin channel folds the existing tail + the candidate; strictly more than tail alone.
@@ -93,7 +83,7 @@ class ChannelBuilderTest {
         // so the main-view forecast RAISES on a committed meal (not the old zeroed pred-zone dip).
         val rollStart = 4_000_000_000_000L
         val committedMeal = engine.carbEvent(grams = 50.0, startMs = rollStart - 15 * 60_000L, k = 3.0, theta = 20.0, durMin = 240.0)
-        val committedBolus = engine.bolusEvent(units = 4.0, startMs = rollStart - 15 * 60_000L)
+        val committedBolus = engine.rapidEvent(units = 4.0, startMs = rollStart - 15 * 60_000L, peakMin = 75.0, diaMin = 360.0)
         val builder = ChannelBuilder(engine, FakeStore(carbs = listOf(committedMeal), insulin = listOf(committedBolus)))
 
         val fc = builder.futureOverrides(rollStart, nSteps = 48, announced = emptyList(), candidate = null)
@@ -134,7 +124,7 @@ class ChannelBuilderTest {
     @Test
     fun insulinZeroMs_single_bolus_is_last_nonzero_step_of_its_pk() = runTest {
         val g0 = 1_000_000_000_000L
-        val bolus = engine.bolusEvent(units = 5.0, startMs = g0)
+        val bolus = engine.rapidEvent(units = 5.0, startMs = g0, peakMin = 75.0, diaMin = 360.0)
         val builder = ChannelBuilder(engine, FakeStore(insulin = listOf(bolus)))
 
         val expected = g0 + bolus.values.indexOfLast { it > 0.0 } * bolus.stepMs
@@ -152,7 +142,7 @@ class ChannelBuilderTest {
         val g0 = 3_000_000_000_000L
         // A 5 U bolus decays within a few hours; the basal background is still acting hours later,
         // so the combined zero-crossing must be pushed out to the basal tail, not the bolus tail.
-        val bolus = engine.bolusEvent(units = 5.0, startMs = g0)
+        val bolus = engine.rapidEvent(units = 5.0, startMs = g0, peakMin = 75.0, diaMin = 360.0)
         val sched = BasalSchedule(
             tzOffsetMin = 0,
             doses = listOf(
@@ -177,12 +167,12 @@ class ChannelBuilderTest {
     @Test
     fun insulinZeroMs_fully_decayed_past_dose_is_before_now() = runTest {
         val g0 = 5_000_000_000_000L
-        // A 3 U bolus is long gone 6 h later; the zero instant lies BEFORE atMs (past instants are
-        // not clipped away — the dose still reports where its action ended).
-        val bolus = engine.bolusEvent(units = 3.0, startMs = g0)
+        // A 3 U rapid bolus (6 h DIA) is fully decayed 8 h later; the zero instant lies BEFORE atMs
+        // (past instants are not clipped away — the dose still reports where its action ended).
+        val bolus = engine.rapidEvent(units = 3.0, startMs = g0, peakMin = 75.0, diaMin = 360.0)
         val builder = ChannelBuilder(engine, FakeStore(insulin = listOf(bolus)))
 
-        val atMs = g0 + 6 * 60 * 60_000L
+        val atMs = g0 + 8 * 60 * 60_000L
         val zero = builder.insulinZeroMs(atMs)!!
         assertTrue(zero < atMs)
     }

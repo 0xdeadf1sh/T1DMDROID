@@ -58,6 +58,7 @@ import com.t1dm.data.curve.CurveEngine
 import com.t1dm.data.db.DoseKind
 import com.t1dm.data.db.LoggedDoseEntity
 import com.t1dm.data.db.LoggedMealEntity
+import com.t1dm.data.db.toBlob
 import kotlin.math.sin
 import com.t1dm.inference.SyntheticContext
 import com.t1dm.sensors.RoomStepSampleWriter
@@ -643,11 +644,12 @@ class CgmScanService : LifecycleService() {
             } else {
                 val now = System.currentTimeMillis()
                 val ts = snapToGrid(now - ageMin * 60_000L)
-                val (k, theta, dur) = CurveEngine.Presets.bolusGammaParams(units)
+                val curve = container.curveEngine.expAction(units, 75.0, 360.0)
                 container.repository.logLoggedDose(
                     LoggedDoseEntity(
-                        tsMs = ts, kind = DoseKind.BOLUS, units = units, durationMin = dur,
-                        k = k, theta = theta, kaPerHour = null, kePerHour = null,
+                        tsMs = ts, kind = DoseKind.BOLUS, units = units, durationMin = 360.0,
+                        k = null, theta = null, kaPerHour = null, kePerHour = null,
+                        customCurve = if (curve.isEmpty()) null else curve.toList().toBlob(),
                         tzOffsetMin = TimeZone.getDefault().getOffset(ts) / 60_000,
                         note = "backdated", updatedAt = now,
                     ),

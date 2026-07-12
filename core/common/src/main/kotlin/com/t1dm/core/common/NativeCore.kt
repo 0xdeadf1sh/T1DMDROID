@@ -94,10 +94,6 @@ interface NativeCore {
      *  (== `simulator.basal_curve`, default 5 h tail-clip). */
     fun bateman(total: Double, durMin: Double, ka: Double, ke: Double): List<Double>
 
-    /** Resolve a rapid-acting bolus of [doseU] into an insulin [CurveEvent] at `startMs=0`
-     *  (dose-scaled DIA/θ; == `simulator.bolus_pk_for_dose` + `gamma_curve`). */
-    fun bolusPkForDose(doseU: Double): CurveEvent
-
     /** Loop/OpenAPS exponential insulin-activity curve (OPT-IN clinical rapid presets, issue 19),
      *  amount-per-5-min-step, `sum == total`; peaks at [peakMin], ~0 by [diaMin]. Off-distribution. */
     fun expActionCurve(total: Double, peakMin: Double, diaMin: Double): List<Double>

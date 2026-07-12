@@ -536,9 +536,9 @@ class SettingsStore(
         private const val K_CGM_SENSOR_EXPIRY = "cgm.sensor_expiry_ms"
         private const val K_CURVE_RAPID_PRESET = "graph.curve_rapid_preset"
         private const val K_CURVE_BASAL_PRESET = "graph.curve_basal_preset"
-        /** The in-distribution simulator defaults (must equal the labels in `insulin_preset_catalog`). */
-        const val DEFAULT_RAPID_PRESET_LABEL = "Simulator bolus (default, in-distribution)"
-        const val DEFAULT_BASAL_PRESET_LABEL = "Simulator basal (default, in-distribution)"
+        /** The clinical defaults — NovoRapid rapid / Lantus basal (must equal the labels in `insulin_preset_catalog`). */
+        const val DEFAULT_RAPID_PRESET_LABEL = "Aspart · NovoRapid/Novolog"
+        const val DEFAULT_BASAL_PRESET_LABEL = "Glargine U100 · Lantus"
         const val DEFAULT_THEME = "tron"
         const val DEFAULT_FONT = "system"
     }

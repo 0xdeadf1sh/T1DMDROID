@@ -21,7 +21,6 @@ import com.t1dm.core.model.PredictedTime
 import kotlin.math.exp
 import kotlin.math.pow
 import kotlin.math.roundToLong
-import kotlin.math.sqrt
 
 /**
  * TEMPORARY pure-Kotlin stand-in so the app runs end-to-end while the Rust cross-build is
@@ -161,37 +160,13 @@ class StubNativeCore : NativeCore {
                 (ln(ka) - ln(ke)) / (ka - ke) * 60.0, diaH * 60.0, ka, ke, true, cite,
             )
         return listOf(
-            InsulinPresetSpec(
-                InsulinFamily.SimulatorGamma, "Simulator bolus (default, in-distribution)",
-                (3.0 - 1.0) * 25.0, 2.5 * 60.0, 0.0, 0.0, false,
-                "T1DMSIM dose-scaled gamma (the model's training distribution)",
-            ),
             rapid("Aspart · NovoRapid/Novolog", 75.0, 360.0, "Loop/OpenAPS rapid-acting adult exponential: peak 75 min, DIA 6 h"),
             rapid("Faster aspart · Fiasp", 55.0, 360.0, "Loop `.fiasp` exponential preset: peak 55 min, DIA 6 h"),
             rapid("Lispro · Humalog", 75.0, 360.0, "Loop/OpenAPS rapid-acting adult exponential: peak 75 min, DIA 6 h"),
             rapid("Ultra-rapid lispro · Lyumjev", 45.0, 300.0, "Ultra-rapid class (Fiasp-like); Bionic Wookiee 2022 peak ≈45 min, DIA 5 h"),
-            InsulinPresetSpec(
-                InsulinFamily.SimulatorGamma, "Simulator basal (default, in-distribution)",
-                (ln(0.30) - ln(0.07)) / (0.30 - 0.07) * 60.0, 24.0 * 60.0, 0.30, 0.07, false,
-                "T1DMSIM Bateman background (the model's training distribution)",
-            ),
             basal("Glargine U100 · Lantus", 24.0, 0.30, 0.07, "Glargine U100 duration ~24 h (Healio ultra-long-acting review)"),
             basal("Glargine U300 · Toujeo", 36.0, 0.18, 0.05, "Glargine U300 duration ~36 h, flatter GIR than U100 (Healio review)"),
             basal("Degludec · Tresiba", 42.0, 0.12, 0.04, "Degludec duration ~42 h, flat profile, t½ >25 h (Healio review)"),
-        )
-    }
-
-    override fun bolusPkForDose(doseU: Double): CurveEvent {
-        val dose = maxOf(0.5, doseU)
-        val sqrtExcess = sqrt(dose) - sqrt(5.0)
-        val durH = (2.5 + 0.6 * sqrtExcess).coerceIn(2.0, 7.5)
-        val theta = 25.0 * (1.0 + 0.06 * sqrtExcess)
-        return CurveEvent(
-            startMs = 0L,
-            stepMs = STEP_MS,
-            kind = CurveKind.INSULIN,
-            total = doseU,
-            values = gamma(doseU, 3.0, theta, durH * 60.0),
         )
     }
 

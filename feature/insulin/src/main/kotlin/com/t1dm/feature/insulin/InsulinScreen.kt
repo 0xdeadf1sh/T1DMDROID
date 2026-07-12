@@ -44,8 +44,8 @@ private const val DOSE_STEPS = 18
  * The Phase-4 insulin entry surface (deliverable 1 — "manual bolus/basal entry").
  * Both channels feed the model as a **PK action** rate (model-io-curves.md): a bolus is a gamma
  * peaking ~50 min ([BolusPreset]); a basal is a broad, near-flat Bateman ([BasalPreset]). `:app`
- * writes the self-describing `logged_dose` row (gamma params from `CurveEngine.Presets`
- * .bolusGammaParams / Bateman rates), folds units into the wide `sample` (bolusU / basalU), and
+ * writes the self-describing `logged_dose` row (exponential action for rapid / Bateman rates for
+ * basal), folds units into the wide `sample` (bolusU / basalU), and
  * enqueues `PUT /v1/series/{bolus,basal}`.
  *
  * Stateless + callback-driven, dependency-light. IOB is surfaced at the top with its §3.6-F

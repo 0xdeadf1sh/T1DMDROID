@@ -43,10 +43,6 @@ class CurveEngine(
     suspend fun presetCatalog(): List<com.t1dm.core.model.InsulinPresetSpec> =
         withContext(dispatchers.default) { native.insulinPresetCatalog() }
 
-    /** Resolve a rapid-acting bolus into an insulin [CurveEvent] at `startMs=0` (caller shifts). */
-    suspend fun bolusPk(doseU: Double): CurveEvent =
-        withContext(dispatchers.default) { native.bolusPkForDose(doseU) }
-
     /** Sum every [kind]-matching event's curve onto `[gridStartMs, gridStartMs + nSteps·STEP_MS)`. */
     suspend fun bucketize(
         evs: List<CurveEvent>,
@@ -66,13 +62,9 @@ class CurveEngine(
 
     // ── Higher-level resolvers used by the meal builder / dose logging ──────────────────
 
-    /**
-     * A [CurveEvent] for a bolus of [units] at [startMs] — the dose-scaled gamma PK
-     * ([Presets.BOLUS_GAMMA_K] shape). Returns the resolved gamma params alongside so the
-     * caller can persist them (self-describing `logged_dose`).
-     */
-    suspend fun bolusEvent(units: Double, startMs: Long): CurveEvent =
-        bolusPk(units).copy(startMs = startMs)
+    /** A rapid-acting bolus [CurveEvent] for [units] at [startMs] using the selected preset's exponential action model. */
+    suspend fun rapidEvent(units: Double, startMs: Long, peakMin: Double, diaMin: Double): CurveEvent =
+        withContext(dispatchers.default) { CurveEvent(startMs, STEP_MS, CurveKind.INSULIN, units, native.expActionCurve(units, peakMin, diaMin)) }
 
     /**
      * A carb appearance [CurveEvent] for [grams] at [startMs] using an explicit gamma
@@ -94,34 +86,6 @@ class CurveEngine(
      * neighbourhood.
      */
     object Presets {
-        // Bolus (rapid-acting, e.g. Novorapid/aspart) gamma; peak (k-1)·θ ≈ 50 min at 5 U.
-        const val BOLUS_GAMMA_K: Double = 3.0
-        const val BOLUS_GAMMA_THETA: Double = 25.0
-        const val BOLUS_DIA_BASE_HOURS: Double = 2.5
-
-        // Dose-scaling of the bolus PK, centred on a 5 U reference (== simulator.bolus_pk_for_dose):
-        // larger depots dissolve slower — DIA lengthens and θ drifts with √dose.
-        private const val BOLUS_DIA_DOSE_SCALE: Double = 0.6     // hours per unit of √dose − √5
-        private const val BOLUS_DIA_MIN_HOURS: Double = 2.0
-        private const val BOLUS_DIA_MAX_HOURS: Double = 7.5
-        private const val BOLUS_THETA_DOSE_SLOPE: Double = 0.06  // θ multiplier per √dose − √5
-
-        /**
-         * The self-describing gamma `(k, theta, durMin)` for a rapid-acting bolus of [doseU] —
-         * **bit-identical to `simulator.bolus_pk_for_dose`** (verified against `simulator.py`).
-         * Stored on the `logged_dose` row so `RoomDoseStore` reconstructs the exact same curve via
-         * `gamma(units, k, theta, durMin)` that `native.bolusPkForDose(doseU)` would produce, with
-         * no dependence on these presets staying put.
-         */
-        fun bolusGammaParams(doseU: Double): Triple<Double, Double, Double> {
-            val dose = maxOf(0.5, doseU)
-            val sqrtExcess = Math.sqrt(dose) - Math.sqrt(5.0)
-            val durationH = (BOLUS_DIA_BASE_HOURS + BOLUS_DIA_DOSE_SCALE * sqrtExcess)
-                .coerceIn(BOLUS_DIA_MIN_HOURS, BOLUS_DIA_MAX_HOURS)
-            val theta = BOLUS_GAMMA_THETA * (1.0 + BOLUS_THETA_DOSE_SLOPE * sqrtExcess)
-            return Triple(BOLUS_GAMMA_K, theta, durationH * 60.0)
-        }
-
         // Long-acting basal Bateman rates; tmax ≈ 6.3 h, near-flat once tiled at cadence.
         const val BASAL_KA_PER_HOUR: Double = 0.30
         const val BASAL_KE_PER_HOUR: Double = 0.07

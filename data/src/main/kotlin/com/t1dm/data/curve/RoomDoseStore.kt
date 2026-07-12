@@ -60,12 +60,14 @@ class RoomDoseStore(
         // mirroring the meal path.
         val values = customCurve?.toDoubleList()
             ?: when (kind) {
-                DoseKind.BOLUS -> engine.gamma(
-                    units,
-                    k ?: CurveEngine.Presets.BOLUS_GAMMA_K,
-                    theta ?: CurveEngine.Presets.BOLUS_GAMMA_THETA,
-                    durationMin,
-                ).asList()
+                DoseKind.BOLUS -> if (k != null && theta != null) {
+                    // An already-logged gamma bolus reconstructs from its own stored params.
+                    engine.gamma(units, k, theta, durationMin).asList()
+                } else {
+                    // A clinical exp-action bolus normally rides in customCurve; this is the degenerate
+                    // fallback (NovoRapid-shaped exp action) — no simulator gamma.
+                    engine.expAction(units, minOf(75.0, durationMin * 0.4), durationMin).asList()
+                }
                 DoseKind.BASAL -> engine.bateman(
                     units,
                     durationMin,

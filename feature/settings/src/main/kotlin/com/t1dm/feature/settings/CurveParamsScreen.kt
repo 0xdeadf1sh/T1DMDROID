@@ -38,9 +38,6 @@ import com.t1dm.ui.graph.CurvePreview
  * insulin types in the builders start from these templates.
  */
 data class CurveParams(
-    val bolusGammaK: Double,
-    val bolusGammaTheta: Double,
-    val bolusDiaBaseHours: Double,
     val basalKaPerHour: Double,
     val basalKePerHour: Double,
     val lantusDiaHours: Double,
@@ -92,11 +89,6 @@ fun CurveParamsScreen(
         SettingsNote("The PK action shape (not delivery) — units-per-5-min, area = the delivered dose.")
         BezierDesigner(insulinCurve, defaultDurationMin = 300.0, onSave = onSaveInsulinCurve)
 
-        SettingsSectionHeader("Rapid-acting bolus preset (dose-scaled gamma)")
-        Kv("Shape k", "%.2f".format(params.bolusGammaK))
-        Kv("Scale θ (min)", "%.1f".format(params.bolusGammaTheta))
-        Kv("Base duration of action", "%.1f h".format(params.bolusDiaBaseHours))
-
         SettingsSectionHeader("Long-acting basal preset (Bateman)")
         Kv("Absorption kₐ", "%.2f /h".format(params.basalKaPerHour))
         Kv("Elimination kₑ", "%.2f /h".format(params.basalKePerHour))
@@ -111,12 +103,12 @@ fun CurveParamsScreen(
 }
 
 /**
- * The issue-19 clinical insulin preset picker. The DEFAULT (and every unchanged install) is the
- * in-distribution simulator curve, so forecasts never silently degrade; choosing a clinically-grounded
- * preset makes the calculator/IOB more clinically faithful. Each preset shows its published peak/DIA +
- * a one-line citation; selecting one is silent and immediate and applies to NEWLY-logged doses only
- * (past logs are self-describing and keep their original curve). Per the user's decision there is NO
- * off-distribution warning — only the neutral factual labels below.
+ * The issue-19 clinical insulin preset picker. Every preset is a clinically-grounded, published-PK
+ * shape; the default is now the first clinical preset of each family (rapid/basal) rather than a
+ * simulator curve. Each preset shows its published peak/DIA + a one-line citation; selecting one is
+ * silent and immediate and applies to NEWLY-logged doses only (past logs are self-describing and keep
+ * their original curve). Per the user's decision there is NO off-distribution warning — only the
+ * neutral factual labels below.
  */
 @Composable
 private fun InsulinPresetSection(
@@ -127,17 +119,14 @@ private fun InsulinPresetSection(
     onSelectBasal: (String) -> Unit,
     previewPreset: (suspend (InsulinPresetSpec) -> DoubleArray)?,
 ) {
-    // Partition by family; the two in-distribution simulator defaults head their respective lists.
-    val simBolus = catalog.firstOrNull { it.family == InsulinFamily.SimulatorGamma && it.label.startsWith("Simulator bolus") }
-    val simBasal = catalog.firstOrNull { it.family == InsulinFamily.SimulatorGamma && it.label.startsWith("Simulator basal") }
-    val rapids = listOfNotNull(simBolus) + catalog.filter { it.family == InsulinFamily.RapidExp }
-    val basals = listOfNotNull(simBasal) + catalog.filter { it.family == InsulinFamily.BasalBateman }
+    // Partition by family.
+    val rapids = catalog.filter { it.family == InsulinFamily.RapidExp }
+    val basals = catalog.filter { it.family == InsulinFamily.BasalBateman }
 
     SettingsSectionHeader("Insulin action preset (clinical, selectable)")
     SettingsNote(
-        "The default is the simulator-matched shape the model was trained on. The clinical presets encode " +
-            "published population PK for the insulins you use — more faithful for IOB and the dosing " +
-            "calculator. Each shows its peak/DIA and citation below.",
+        "Every preset encodes published population PK for a specific insulin — the shape used for IOB and " +
+            "the dosing calculator. Each shows its peak/DIA and citation below.",
     )
 
     PresetGroup("Rapid-acting (bolus)", rapids, selectedRapidLabel, onSelectRapid, previewPreset)

@@ -54,9 +54,9 @@ data class BasalSchedule(
 /**
  * Which curve family + channel an insulin preset feeds (mirror of the Rust `InsulinFamily`,
  * issue 19). [RapidExp] = the Loop/OpenAPS exponential activity curve; [BasalBateman] = the
- * long-acting Bateman; [SimulatorGamma] = the in-distribution simulator default.
+ * long-acting Bateman.
  */
-enum class InsulinFamily { RapidExp, BasalBateman, SimulatorGamma }
+enum class InsulinFamily { RapidExp, BasalBateman }
 
 /**
  * One resolved clinical insulin preset (mirror of the Rust `InsulinPresetSpec`, issue 19). These
