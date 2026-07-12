@@ -29,14 +29,13 @@ import com.t1dm.app.notify.NotificationIcons
 import com.t1dm.app.notify.PredictiveAlertPresenter
 import com.t1dm.app.settings.SettingsStore
 import androidx.glance.appwidget.updateAll
-import com.t1dm.app.widget.BgTileWidget
-import com.t1dm.app.widget.LockGlanceWidget
-import com.t1dm.app.widget.PredictionGlanceWidget
+import com.t1dm.app.widget.GlucoseWidget
 import com.t1dm.core.model.InferenceState
 import com.t1dm.core.model.UnitSpace
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
@@ -362,10 +361,18 @@ class CgmScanService : LifecycleService() {
         if (container.deathModeSnapshot) predictiveAlerts.clear()
         else predictiveAlerts.update(glance, alertActuatorCfg, deterministicCriticalActive, style, accent)
 
-        runCatching {
-            BgTileWidget().updateAll(this)
-            PredictionGlanceWidget().updateAll(this)
-            LockGlanceWidget().updateAll(this)
+        runCatching { GlucoseWidget().updateAll(this) }
+        // Freshness blink (tasteful, free motion): a just-arrived reading renders the accent bright;
+        // settle it a beat later with ONE delayed re-render so a new value reads as a brief pulse rather
+        // than a static jump. Gated by the global animations toggle and fired only for a fresh reading —
+        // two updates per reading, never a loop.
+        val animate = runCatching { container.settingsStore.animationsEnabled.first() }.getOrDefault(true)
+        val ageMs = latest?.let { System.currentTimeMillis() - it.rxWallMs } ?: Long.MAX_VALUE
+        if (animate && ageMs in 0 until GlucoseWidget.FRESH_WINDOW_MS) {
+            lifecycleScope.launch(container.dispatchers.default) {
+                delay(GlucoseWidget.FRESH_WINDOW_MS - ageMs + 150L)
+                runCatching { GlucoseWidget().updateAll(this@CgmScanService) }
+            }
         }
     }
 

@@ -174,39 +174,25 @@
             android:name=".notify.AlertRepeatReceiver"
             android:exported="false" />
 
-        <!-- Glance widgets (Phase 7B): current-BG tile, forecast glance, compact lock glance. They
-             refresh from the ingest cycle via updateAll — no Activity required. -->
+        <!-- The single adaptive Glance widget (home + lock). It refreshes from the ingest cycle via
+             updateAll — no Activity required.
+             exported=true: HyperOS's com.miui.home renders the pin-dialog / picker preview from its own
+             process, so the provider must be resolvable cross-process. APPWIDGET_UPDATE is delivered only
+             by the system AppWidgetManager, so exposure is benign. -->
         <receiver
-            android:name=".widget.BgTileWidgetReceiver"
-            android:exported="false">
+            android:name=".widget.GlucoseWidgetReceiver"
+            android:exported="true">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
             </intent-filter>
             <meta-data
                 android:name="android.appwidget.provider"
-                android:resource="@xml/bg_tile_widget_info" />
+                android:resource="@xml/glucose_widget_info" />
         </receiver>
 
+        <!-- Pin-confirmation success callback for WidgetPinner. App-internal. -->
         <receiver
-            android:name=".widget.PredictionGlanceWidgetReceiver"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
-            </intent-filter>
-            <meta-data
-                android:name="android.appwidget.provider"
-                android:resource="@xml/prediction_glance_widget_info" />
-        </receiver>
-
-        <receiver
-            android:name=".widget.LockGlanceWidgetReceiver"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
-            </intent-filter>
-            <meta-data
-                android:name="android.appwidget.provider"
-                android:resource="@xml/lock_glance_widget_info" />
-        </receiver>
+            android:name=".widget.WidgetPinnedReceiver"
+            android:exported="false" />
     </application>
 </manifest>

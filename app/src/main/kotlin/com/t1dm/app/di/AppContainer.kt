@@ -37,6 +37,7 @@ import com.t1dm.core.common.T1dmDispatchers
 import com.t1dm.core.model.BackendId
 import com.t1dm.core.model.BasalPreset
 import com.t1dm.core.model.BolusPreset
+import com.t1dm.core.model.StatsWindow
 import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.CgmSourceDescriptor
 import com.t1dm.core.model.CurveKind
@@ -132,6 +133,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
@@ -245,6 +247,21 @@ class AppContainer(context: Context) {
 
     val deathMode: Flow<Boolean> get() = settingsStore.deathMode
     suspend fun setDeathMode(on: Boolean) = settingsStore.setDeathMode(on)
+
+    /** GMI (estimated HbA1c, %) over the 30-day window, recomputed on a slow cadence (it moves slowly
+     *  and a 30-day recompute is too heavy for the widget's 30 s refresh). Null until first computed or
+     *  when there is too little data. Read synchronously by the glucose widget. */
+    @Volatile
+    var gmiSnapshot: Double? = null
+        private set
+
+    /** Today's cumulative step count (local midnight → now), summed from the per-grid-bucket sample
+     *  steps. Cheap (≤ 288 buckets/day) — read directly by the widget and the BG panel. */
+    suspend fun stepsToday(): Int {
+        val zone = java.time.ZoneId.systemDefault()
+        val midnight = java.time.LocalDate.now(zone).atStartOfDay(zone).toInstant().toEpochMilli()
+        return repository.samplesInRange(midnight, System.currentTimeMillis()).sumOf { it.steps ?: 0 }
+    }
 
     // ─── Forecast-cadence snapshot (F2) — mirrors deathModeSnapshot: the FGS's single-consumer forecast
     // driver reads the ADAPTIVE-vs-TIMED mode synchronously off this @Volatile, kept current by a
@@ -540,6 +557,15 @@ class AppContainer(context: Context) {
         appScope.launch { settingsStore.customThemeJson.collect { customThemeJsonSnapshot = it } }
         appScope.launch { settingsStore.deathMode.collect { deathModeSnapshot = it } }
         appScope.launch { settingsStore.forecastMode.collect { forecastModeSnapshot = it } }
+        // GMI is slow-moving; recompute the 30-day estimate every 30 min (once at startup) so the widget
+        // reads a cheap cached value instead of a 30-day recompute on every 30 s refresh.
+        appScope.launch(dispatchers.default) {
+            while (isActive) {
+                gmiSnapshot = runCatching { statsRepository.localStats(StatsWindow.D30).gmi }
+                    .getOrNull()?.takeIf { it in 3.0..25.0 }
+                delay(30 * 60_000L)
+            }
+        }
     }
 
     // ─── Server sync (Phase 3) ────────────────────────────────────────────────────────────────

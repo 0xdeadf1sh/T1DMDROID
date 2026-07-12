@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Legacy previewImage fallback for launchers that don't render android:previewLayout (notably some
+     HyperOS AddItemActivity paths): a compact card with an upward glucose trend. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="96dp"
+    android:height="48dp"
+    android:viewportWidth="96"
+    android:viewportHeight="48">
+    <path
+        android:fillColor="#1E1B24"
+        android:pathData="M8,4 L88,4 A6,6 0 0 1 94,10 L94,38 A6,6 0 0 1 88,44 L8,44 A6,6 0 0 1 2,38 L2,10 A6,6 0 0 1 8,4 Z" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#7FD1B0"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M14,34 L34,26 L54,30 L80,14" />
+    <path
+        android:fillColor="#7FD1B0"
+        android:pathData="M80,14 m-4,0 a4,4 0 1,0 8,0 a4,4 0 1,0 -8,0" />
+</vector>

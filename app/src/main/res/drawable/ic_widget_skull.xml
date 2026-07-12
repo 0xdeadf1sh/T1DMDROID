@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- DEATH-mode indicator for the widget: a red skull (fail-OPEN override is engaged). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFE5343B"
+        android:fillType="evenOdd"
+        android:pathData="M12,2 C7.03,2 3,6.03 3,11 c0,3.06 1.53,5.76 3.86,7.39 C6.99,18.62 7,19 7,19.5 c0,0.83 0.67,1.5 1.5,1.5 h0.5 v-1.6 h1 V21 h1 v-1.6 h1 V21 h1 v-1.6 h0.5 c0.83,0 1.5,-0.67 1.5,-1.5 0,-0.5 0.01,-0.88 0.14,-1.11 C19.47,16.76 21,14.06 21,11 21,6.03 16.97,2 12,2 Z M8.7,8.4 m-1.7,0 a1.7,1.7 0,1 0,3.4 0 a1.7,1.7 0,1 0,-3.4 0 M15.3,8.4 m-1.7,0 a1.7,1.7 0,1 0,3.4 0 a1.7,1.7 0,1 0,-3.4 0 M12,11.6 l1.3,2.4 h-2.6 Z" />
+</vector>

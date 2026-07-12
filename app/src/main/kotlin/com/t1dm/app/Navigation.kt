@@ -582,6 +582,13 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                     kotlinx.coroutines.delay(30_000)
                 }
             }
+            // Today's steps for the BG-panel STEPS chip, polled off-main on the same 30 s cadence.
+            val stepsToday by produceState<Int?>(null) {
+                while (true) {
+                    value = withContext(container.dispatchers.io) { runCatching { container.stepsToday() }.getOrNull() }
+                    kotlinx.coroutines.delay(30_000)
+                }
+            }
             // I2 — the ephemeral, display-only rolled forecast (never reaches alerts/dosing).
             val rolled by container.rolledForecast.collectAsState()
             val rollComputing by container.rollComputing.collectAsState()
@@ -618,6 +625,7 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 pulses = pulses,
                 deviceTempC = deviceTempC,
                 temperatureUnit = tempUnit,
+                stepsToday = stepsToday,
                 sensorExpiryMs = sensorExpiry,
                 circadianTime = inference.circadianTime,
                 circadianAnchorMs = inference.circadianAnchorMs,

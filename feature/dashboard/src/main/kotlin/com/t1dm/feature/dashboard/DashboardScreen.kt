@@ -39,6 +39,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -119,6 +120,7 @@ fun DashboardScreen(
     // labelled, in the user's chosen unit, to the right of the WCH reachability light.
     deviceTempC: Double? = null,
     temperatureUnit: TempUnit = TempUnit.CELSIUS,
+    stepsToday: Int? = null,
     // I11 — the user-entered sensor-lifetime expiry instant (absolute epoch-ms), counted down live to
     // the right of the TEMP readout. Null ⇒ nothing shown (no estimate entered). It is a user estimate,
     // NOT read from the passive-advertisement sensor.
@@ -224,7 +226,7 @@ fun DashboardScreen(
 
     Column(Modifier.fillMaxSize()) {
         reachability?.let {
-            ReachabilityBar(it, signals, pulses, deviceTempC, temperatureUnit, sensorExpiryMs, thermalThresholdC, thermalWarnMarginC)
+            ReachabilityBar(it, signals, pulses, deviceTempC, temperatureUnit, sensorExpiryMs, thermalThresholdC, thermalWarnMarginC, stepsToday)
         }
         DashboardHeader(latest, activeSourceName, unit, signals?.cgmRssi ?: latest?.rssi)
         warmup?.let { WarmupBanner(it) }
@@ -582,6 +584,7 @@ private fun ReachabilityBar(
     sensorExpiryMs: Long?,
     thermalThresholdC: Double?,
     thermalWarnMarginC: Double,
+    stepsToday: Int?,
 ) {
     var showLabels by remember { mutableStateOf(false) }
     Row(
@@ -596,6 +599,7 @@ private fun ReachabilityBar(
         ReachChip("CGM", r.cgm, showLabels, null, pulses?.cgm ?: 0L)
         ReachChip("WCH", r.watch, showLabels, signals?.watchRssi, pulses?.watch ?: 0L)
         deviceTempC?.let { TempChip(it, tempUnit, thermalThresholdC, thermalWarnMarginC) }
+        stepsToday?.let { StepsChip(it) }
         // I11 — the user-entered sensor lifetime, counted down live, immediately right of the TEMP chip.
         sensorExpiryMs?.let { SensorLifeChip(it) }
     }
@@ -689,11 +693,39 @@ private fun TempChip(celsius: Double, unit: TempUnit, thermalThresholdC: Double?
         ThermalLevel.WARN -> LocalT1dmSemantics.current.high
         ThermalLevel.CRITICAL -> LocalT1dmSemantics.current.urgentHigh
     }
-    Text(
-        "TEMP ${unit.format(celsius)}",
-        style = MaterialTheme.typography.labelSmall,
-        color = color,
-    )
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+        Icon(
+            painter = painterResource(com.t1dm.feature.dashboard.R.drawable.ic_temp),
+            contentDescription = "Device temperature",
+            tint = color,
+            modifier = Modifier.size(14.dp),
+        )
+        Text(unit.format(celsius), style = MaterialTheme.typography.labelSmall, color = color)
+    }
+}
+
+/** BG-panel steps chip: a walking-figure glyph + today's step count, human-readable (400 / 5K / 5.4K). */
+@Composable
+private fun StepsChip(steps: Int) {
+    val color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+        Icon(
+            painter = painterResource(com.t1dm.feature.dashboard.R.drawable.ic_steps),
+            contentDescription = "Steps today",
+            tint = color,
+            modifier = Modifier.size(14.dp),
+        )
+        Text(humanSteps(steps), style = MaterialTheme.typography.labelSmall, color = color)
+    }
+}
+
+/** As-is below 1000, else "K" (e.g. 400, 5K, 5.4K, 12K). */
+private fun humanSteps(n: Int): String {
+    if (n < 1000) return n.toString()
+    val k = n / 1000.0
+    if (k >= 10) return "${Math.round(k)}K"
+    val s = "%.1f".format(k)
+    return (if (s.endsWith(".0")) s.dropLast(2) else s) + "K"
 }
 
 @Composable
