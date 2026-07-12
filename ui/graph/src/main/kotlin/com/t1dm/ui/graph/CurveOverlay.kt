@@ -169,20 +169,11 @@ internal fun DrawScope.drawCurveOverlay(
     if (frame.isEmpty || !toggles.any) return
     val bandH = (plotBottom - bandTop).coerceAtLeast(1f)
 
-    // Issue 18: when the insulin channel is shown AND a basal component exists, reserve a thin strip
-    // at the FLOOR for the basal on its OWN scale, and draw the bolus above it — so a long-acting
-    // basal (whose per-step action is ~1/300 of a bolus peak) is never crushed to an invisible sliver
-    // on the shared insulin scale. The strip is skipped when there is no basal, so a bolus-only view
-    // is unchanged. This is a RENDERING split only; the model still sees the combined channel.
-    val hasBasal = toggles.insulin && frame.basalMax > 0f
-    val basalStripH = if (hasBasal) bandH * 0.32f else 0f
-    val bolusFloor = plotBottom - basalStripH
-
     // Anchoring (Phase 7A item 4): `values[i]` is the appearance/action integrated
     // over `[tsAt(i), tsAt(i)+step)` — the gamma sample at t = (i+1)·step from the event (which starts
     // at 0). Each bucket's value is plotted at its RIGHT edge, and a run of positive buckets opens from
     // `(tsAt(firstBucket), floorY)` — the event instant — so the curve begins at (logTime, 0) and rises.
-    fun drawChannel(values: FloatArray, peak: Float, color: Color, floorY: Float, availH: Float, dashed: Boolean = false) {
+    fun drawChannel(values: FloatArray, peak: Float, color: Color, floorY: Float, availH: Float) {
         if (peak <= 0f) return
         val fill = Path()
         val roof = Path()
@@ -215,35 +206,14 @@ internal fun DrawScope.drawCurveOverlay(
             roof.lineTo(xEnd, floorY)
             fill.lineTo(xEnd, floorY); fill.close()
         }
-        val stroke = if (dashed) {
-            androidx.compose.ui.graphics.drawscope.Stroke(
-                width = 1.4f,
-                pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(6f, 4f), 0f),
-            )
-        } else {
-            androidx.compose.ui.graphics.drawscope.Stroke(width = 1.6f)
-        }
         drawPath(fill, color.copy(alpha = 0.16f))
-        drawPath(roof, color.copy(alpha = 0.7f), style = stroke)
+        drawPath(roof, color.copy(alpha = 0.7f), style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.6f))
     }
 
     // A faint baseline separating the overlay band from the BG plot.
     drawLine(carbColor.copy(alpha = 0.0f), Offset(0f, bandTop), Offset(0f, bandTop), 0f)
     if (toggles.carbs) drawChannel(frame.carb, frame.carbMax, carbColor, plotBottom, bandH)
-    if (toggles.insulin) {
-        if (hasBasal) {
-            // Bolus = combined − basal (both were summed into the same channel), drawn above the strip.
-            val n = frame.insulin.size
-            val bolus = FloatArray(n) { i -> (frame.insulin[i] - frame.basal.getOrElse(i) { 0f }).coerceAtLeast(0f) }
-            var bolusMax = 0f
-            for (v in bolus) if (v > bolusMax) bolusMax = v
-            drawChannel(bolus, bolusMax, insulinColor, bolusFloor, bandH - basalStripH)
-            // The basal on its own scale, in the floor strip, dashed to signal a distinct axis.
-            drawChannel(frame.basal, frame.basalMax, insulinColor, plotBottom, basalStripH, dashed = true)
-            // A faint divider marking the top of the basal strip.
-            drawLine(insulinColor.copy(alpha = 0.25f), Offset(0f, bolusFloor), Offset(size.width, bolusFloor), 1f)
-        } else {
-            drawChannel(frame.insulin, frame.insulinMax, insulinColor, plotBottom, bandH)
-        }
-    }
+    // The insulin channel is drawn as a SINGLE total-insulin curve (bolus + basal already COMBINED into
+    // [frame.insulin], model-io-curves.md) — no separate basal floor-strip.
+    if (toggles.insulin) drawChannel(frame.insulin, frame.insulinMax, insulinColor, plotBottom, bandH)
 }
