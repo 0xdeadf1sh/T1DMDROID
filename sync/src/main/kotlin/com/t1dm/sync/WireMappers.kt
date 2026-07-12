@@ -32,14 +32,21 @@ fun ModelPrediction.toWrite(): PredictionWriteDto {
     )
 }
 
-/** A wide local row → `POST /v1/ingest` bundle (integer series widened to the wire's floats). */
+/**
+ * A wide local row → `POST /v1/ingest` bundle (integer series widened to the wire's floats).
+ * carbs/bolus/basal are DELIBERATELY omitted: the local `sample` holds a dose as a single-bucket
+ * IMPULSE (the log slot), but the server must hold the spread appearance/action CURVE, which is pushed
+ * separately via `PUT /v1/series/{carbs,bolus,basal}` (the `curveSeries` push). Sending them here too
+ * would overwrite that spread with the impulse (ingest's present-fields-overwrite, absent-untouched
+ * contract — so leaving them null leaves the series-pushed curve intact).
+ */
 fun SampleEntity.toIngest(): IngestDto = IngestDto(
     ts = ts,
     tz_offset = tzOffsetMin,
     bg = bgMgdl?.toDouble(),
-    carbs = carbsG,
-    bolus = bolusU,
-    basal = basalU,
+    carbs = null,
+    bolus = null,
+    basal = null,
     hr = hr?.toDouble(),
     steps = steps?.toDouble(),
     sleep = sleep?.toDouble(),

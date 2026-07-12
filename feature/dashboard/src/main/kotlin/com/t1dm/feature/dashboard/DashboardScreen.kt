@@ -185,7 +185,7 @@ fun DashboardScreen(
             value = CurveOverlayFrame.EMPTY
             return@produceState
         }
-        val gridStart = readings.minOf { it.tsMs } / STEP_MS * STEP_MS
+        val oldestReading = readings.minOf { it.tsMs } / STEP_MS * STEP_MS
         val lastReading = readings.maxOf { it.tsMs }
         val lastForecast = predictions.maxOfOrNull { it.anchorTsMs + it.horizonSteps.toLong() * it.stepMs } ?: lastReading
         val rolledEnd = rolledForecast?.takeUnless { it.isEmpty }?.horizonEndMs ?: lastReading
@@ -195,6 +195,12 @@ fun DashboardScreen(
         // reach the full 24 h future the graph can now always pan to (and any farther on-demand roll)
         // so the committed carb/insulin curves render across the empty future too.
         val end = maxOf(lastReading, lastForecast, rolledEnd, System.currentTimeMillis() + maxOf(OVERLAY_FUTURE_MS, FUTURE_VIEW_MS))
+        // Anchor the window to the RECENT region ending at `end`. A server re-sync can push `readings`
+        // back weeks; if gridStart tracked the oldest reading, the MAX_OVERLAY_STEPS cap would strand the
+        // window in the far past and never reach `now` — so a just-logged dose (and recent carb/insulin)
+        // would fall outside it. Clamp the start forward so the capped window always covers the present.
+        val earliestStart = ((end / STEP_MS) - (MAX_OVERLAY_STEPS - 1L)) * STEP_MS
+        val gridStart = maxOf(oldestReading, earliestStart)
         val nSteps = (((end - gridStart) / STEP_MS).toInt() + 1).coerceIn(1, MAX_OVERLAY_STEPS)
         val (carb, insulin) = resolver(gridStart, nSteps)
         val basal = basalChannel?.invoke(gridStart, nSteps) ?: DoubleArray(0)

@@ -59,6 +59,20 @@ interface CgmReadingDao {
     @Query("SELECT * FROM cgm_reading WHERE sourceId = :sourceId ORDER BY tsMs DESC LIMIT 1")
     fun observeLatest(sourceId: String): Flow<CgmReadingEntity?>
 
+    /** The reading at one grid slot for [sourceId], or null — the gap check for server-history
+     *  hydration (a server row only fills a slot the phone has no local reading for). */
+    @Query("SELECT * FROM cgm_reading WHERE sourceId = :sourceId AND tsMs = :ts LIMIT 1")
+    suspend fun byTs(sourceId: String, ts: Long): CgmReadingEntity?
+
+    /** Every grid ts this source already has a reading for — the gap set the sample→reading reconcile
+     *  diffs against so it inserts only the slots that are missing. */
+    @Query("SELECT tsMs FROM cgm_reading WHERE sourceId = :sourceId")
+    suspend fun tsForSource(sourceId: String): List<Long>
+
+    /** Batch gap-fill for the sample→reading reconcile (server history that predates this build). */
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAll(readings: List<CgmReadingEntity>)
+
     @Query(
         "SELECT * FROM cgm_reading WHERE sourceId = :sourceId " +
             "ORDER BY tsMs DESC LIMIT :limit",
@@ -86,6 +100,11 @@ interface SampleDao {
 
     @Query("SELECT * FROM sample WHERE ts > :cursor ORDER BY ts LIMIT :limit")
     suspend fun page(cursor: Long, limit: Int): List<SampleEntity>
+
+    /** Newest grid ts held locally, or null when the projection is empty — the forward cursor a
+     *  fresh WS connect catches up from (only pull rows the phone is missing). */
+    @Query("SELECT MAX(ts) FROM sample")
+    suspend fun maxTs(): Long?
 
     /** One-shot windowed read (oldest-first) for the stats recompute (Phase 6). */
     @Query("SELECT * FROM sample WHERE ts BETWEEN :fromMs AND :toMs ORDER BY ts")
@@ -129,6 +148,19 @@ interface LoggedDoseDao {
     @Query("SELECT MAX(tsMs) FROM logged_dose")
     suspend fun latestTs(): Long?
 
+    /** Grid ts already carrying a logged dose of [kind] — the gap set the sample→dose reconcile skips. */
+    @Query("SELECT DISTINCT tsMs FROM logged_dose WHERE kind = :kind")
+    suspend fun distinctTs(kind: DoseKind): List<Long>
+
+    /** How many logged doses of [kind] whose action curve COVERS grid slot [ts] — the gap check so a
+     *  server curve-sample never doubles a local dose that already spans that bucket. */
+    @Query("SELECT COUNT(*) FROM logged_dose WHERE kind = :kind AND tsMs <= :ts AND tsMs + durationMin * 60000 > :ts")
+    suspend fun coveringCount(ts: Long, kind: DoseKind): Int
+
+    /** Batch gap-fill for the sample→dose reconcile (server bolus history that predates this build). */
+    @Insert
+    suspend fun insertAll(doses: List<LoggedDoseEntity>)
+
     @Query("DELETE FROM logged_dose WHERE id = :id")
     suspend fun delete(id: Long)
 
@@ -147,6 +179,19 @@ interface LoggedMealDao {
 
     @Query("SELECT * FROM logged_meal WHERE tsMs BETWEEN :fromMs AND :toMs ORDER BY tsMs")
     fun observeRange(fromMs: Long, toMs: Long): Flow<List<LoggedMealEntity>>
+
+    /** Grid ts already carrying a logged meal — the gap set the sample→meal reconcile skips. */
+    @Query("SELECT DISTINCT tsMs FROM logged_meal")
+    suspend fun distinctTs(): List<Long>
+
+    /** How many logged meals' appearance curves COVER grid slot [ts] (`tsMs ≤ ts < tsMs + duration`) —
+     *  the gap check so a server curve-sample never doubles a local meal that already spans that bucket. */
+    @Query("SELECT COUNT(*) FROM logged_meal WHERE tsMs <= :ts AND tsMs + durationMin * 60000 > :ts")
+    suspend fun coveringCount(ts: Long): Int
+
+    /** Batch gap-fill for the sample→meal reconcile (server carb history that predates this build). */
+    @Insert
+    suspend fun insertAll(meals: List<LoggedMealEntity>)
 
     @Query("DELETE FROM logged_meal WHERE id = :id")
     suspend fun delete(id: Long)

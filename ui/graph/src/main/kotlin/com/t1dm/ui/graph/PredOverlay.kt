@@ -63,13 +63,18 @@ fun buildPredSeries(
         UnitSpace.Kovatchev -> kovatchevF?.invoke(mgdl) ?: mgdl
     }.toFloat()
 
-    val ts = LongArray(n) { i -> p.anchorTsMs + (i + 1L) * p.stepMs }
-    val median = FloatArray(n) { i -> conv(p.medianBg[i]) }
+    // Prepend the ANCHOR point (the last MEASURED BG at anchorTsMs) as element 0 so the median AND
+    // fan grow OUT OF the last CGM reading instead of floating one step ahead — otherwise the forecast
+    // visibly starts above/below the trace it should continue from. The anchor's fan is zero-width
+    // (lo == hi == lastBg), fanning open from there. Forecast steps 1..n follow at (i)·stepMs.
+    val anchorVal = conv(p.lastBg)
+    val ts = LongArray(n + 1) { i -> p.anchorTsMs + i.toLong() * p.stepMs }
+    val median = FloatArray(n + 1) { i -> if (i == 0) anchorVal else conv(p.medianBg[i - 1]) }
     // Ascending-τ columns: 0=.05 1=.10 2=.25 3=.50 4=.75 5=.90 6=.95. Fan pairs (outer→inner).
     val loCols = intArrayOf(0, 1, 2)
     val hiCols = intArrayOf(q - 1, q - 2, q - 3)
-    val lo = Array(3) { b -> FloatArray(n) { i -> conv(p.bandsMgdl[i * q + loCols[b]]) } }
-    val hi = Array(3) { b -> FloatArray(n) { i -> conv(p.bandsMgdl[i * q + hiCols[b]]) } }
+    val lo = Array(3) { b -> FloatArray(n + 1) { i -> if (i == 0) anchorVal else conv(p.bandsMgdl[(i - 1) * q + loCols[b]]) } }
+    val hi = Array(3) { b -> FloatArray(n + 1) { i -> if (i == 0) anchorVal else conv(p.bandsMgdl[(i - 1) * q + hiCols[b]]) } }
     return PredSeries(
         modelId = p.modelId,
         selected = p.selected,

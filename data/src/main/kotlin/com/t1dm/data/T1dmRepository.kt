@@ -16,6 +16,7 @@ import com.t1dm.core.model.RecentMeal
 import com.t1dm.data.db.AppDatabase
 import com.t1dm.data.db.BasalScheduleEntity
 import com.t1dm.data.db.CgmAdvertRawEntity
+import com.t1dm.data.db.CgmReadingEntity
 import com.t1dm.data.db.CgmSourceEntity
 import com.t1dm.data.db.DoseEventEntity
 import com.t1dm.data.db.DoseKind
@@ -32,6 +33,7 @@ import com.t1dm.data.db.OutboxState
 import com.t1dm.data.db.PredictionEntity
 import com.t1dm.data.db.SampleEntity
 import com.t1dm.data.db.SavedMealEntity
+import com.t1dm.data.db.toBlob
 import com.t1dm.data.db.SavedMealItemEntity
 import com.t1dm.data.db.ServerProfileEntity
 import kotlinx.coroutines.flow.Flow
@@ -185,6 +187,9 @@ class T1dmRepository(
         samples.observeRange(fromMs, toMs)
 
     suspend fun sampleAt(ts: Long): SampleEntity? = withContext(io) { samples.byTs(ts) }
+
+    /** Newest grid ts in the wide projection, or null when empty (the WS-connect catch-up cursor). */
+    suspend fun newestSampleTs(): Long? = withContext(io) { samples.maxTs() }
 
     /** Windowed wide-sample read for the stats recompute (Phase 6); oldest-first. */
     suspend fun samplesInRange(fromMs: Long, toMs: Long): List<SampleEntity> =
@@ -568,9 +573,147 @@ class T1dmRepository(
     suspend fun mergeServerSample(patch: SamplePatch): Boolean = withContext(io) {
         requireGrid(patch.ts)
         inWriteTx {
+            // Hydrate the authoritative cgm_reading store (active source) so server-synced history
+            // reaches BOTH the graph (observeReadings) and the model (recentBgSeries) — sample is a
+            // dead-end for display/inference (SPEC §3.5). GAP-FILL ONLY: never overwrite a local
+            // reading (its provenance/flag is authoritative), and enqueue NO ingest (this data
+            // originated from the phone; re-pushing would echo-loop). The §3.6 alarm/loss-of-signal
+            // path is readingBus-driven (live BLE), never the DB, so a DB write cannot perturb it.
+            val active = sources.activeSourceId()
+            if (active != null && patch.bgMgdl != null && readings.byTs(active, patch.ts) == null) {
+                readings.upsert(
+                    CgmReadingEntity(
+                        sourceId = active,
+                        tsMs = patch.ts,
+                        bgMgdl = patch.bgMgdl,
+                        trendTenthsPerMin = null,
+                        minFromStart = null,
+                        quality = null,
+                        provenance = patch.bgProvenance ?: ReadingProvenance.MEASURED,
+                        flag = patch.bgFlag ?: ReadingFlag.NORMAL,
+                        tzOffsetMin = patch.tzOffsetMin,
+                        rxWallMs = patch.updatedAt,
+                        rssi = null,
+                    ),
+                )
+            }
+            // Hydrate the carb/insulin EVENT tables too (logged_meal / logged_dose) so server-synced
+            // carbs & boluses reach the graph overlay AND the model's dose channels — ChannelBuilder
+            // reads the event tables, never `sample`. This runs for BOTH catch-up rows and LIVE WS
+            // samples (the single chokepoint), so live synthetic data no longer stops at `sample`.
+            // GAP-FILL: skip a slot already carrying a local meal/bolus. Carbs → medium-GI gamma; a bolus
+            // is stored BARE (no gamma params) so RoomDoseStore reconstructs it via the exp-action model
+            // (no simulator gamma). Raw inserts: no re-projection into `sample`, no outbox push.
+            val carbs = patch.carbsG
+            if (carbs != null && carbs > 0.0 && loggedMeals.coveringCount(patch.ts) == 0) {
+                loggedMeals.insert(syncedMeal(patch.ts, carbs, patch.tzOffsetMin, patch.updatedAt))
+            }
+            val bolus = patch.bolusU
+            if (bolus != null && bolus > 0.0 && loggedDoses.coveringCount(patch.ts, DoseKind.BOLUS) == 0) {
+                loggedDoses.insert(syncedBolus(patch.ts, bolus, patch.tzOffsetMin, patch.updatedAt))
+            }
+            val basal = patch.basalU
+            if (basal != null && basal > 0.0 && loggedDoses.coveringCount(patch.ts, DoseKind.BASAL) == 0) {
+                loggedDoses.insert(syncedBasal(patch.ts, basal, patch.tzOffsetMin, patch.updatedAt))
+            }
             val merged = LwwMerge.merge(samples.byTs(patch.ts), patch) ?: return@inWriteTx false
             samples.upsert(merged)
             true
+        }
+    }
+
+    /** A server carb bucket taken AS a single-bucket point of the appearance CURVE — a one-element
+     *  `customCurve` so ChannelBuilder places exactly [value] at [ts]. The union of a meal's buckets
+     *  reproduces the pushed curve verbatim (no re-smearing), closing the app→server→app round-trip. */
+    private fun syncedMeal(ts: Long, value: Double, tzOffsetMin: Int, updatedAt: Long): LoggedMealEntity =
+        LoggedMealEntity(
+            tsMs = ts, grams = value, gi = null, k = null, theta = null, durationMin = GRID_MS / 60_000.0,
+            customCurve = listOf(value).toBlob(), tzOffsetMin = tzOffsetMin, note = "synced", updatedAt = updatedAt,
+        )
+
+    /** A server bolus bucket taken AS a single-bucket point of the action CURVE (see [syncedMeal]). */
+    private fun syncedBolus(ts: Long, value: Double, tzOffsetMin: Int, updatedAt: Long): LoggedDoseEntity =
+        syncedDose(ts, DoseKind.BOLUS, value, tzOffsetMin, updatedAt)
+
+    /** A server basal bucket taken AS a single-bucket point of the action CURVE (see [syncedMeal]). */
+    private fun syncedBasal(ts: Long, value: Double, tzOffsetMin: Int, updatedAt: Long): LoggedDoseEntity =
+        syncedDose(ts, DoseKind.BASAL, value, tzOffsetMin, updatedAt)
+
+    private fun syncedDose(ts: Long, kind: DoseKind, value: Double, tzOffsetMin: Int, updatedAt: Long): LoggedDoseEntity =
+        LoggedDoseEntity(
+            tsMs = ts, kind = kind, units = value, durationMin = GRID_MS / 60_000.0,
+            k = null, theta = null, kaPerHour = null, kePerHour = null, customCurve = listOf(value).toBlob(),
+            tzOffsetMin = tzOffsetMin, note = "synced", updatedAt = updatedAt,
+        )
+
+    /**
+     * One-shot reconcile that gap-fills the active source's `cgm_reading` from the wide `sample`
+     * projection — the migration path for server history synced into `sample` BEFORE the reading
+     * hydration existed (and a belt-and-braces self-heal thereafter). Inserts only slots the source
+     * lacks a reading for (never clobbers a live reading's provenance/flag); the §3.6 alarm path is
+     * live-BLE-driven, not the DB, so this is inert to it. Returns the number of rows inserted; 0 when
+     * there is no active source or nothing is missing. Off-main; one transaction.
+     */
+    suspend fun reconcileReadingsFromSamples(): Int = withContext(io) {
+        val active = sources.activeSourceId() ?: return@withContext 0
+        inWriteTx {
+            val have = readings.tsForSource(active).toHashSet()
+            val fill = samples.rangeList(Long.MIN_VALUE, Long.MAX_VALUE).asSequence()
+                .filter { it.bgMgdl != null && it.ts !in have }
+                .map { s ->
+                    CgmReadingEntity(
+                        sourceId = active,
+                        tsMs = s.ts,
+                        bgMgdl = s.bgMgdl,
+                        trendTenthsPerMin = null,
+                        minFromStart = null,
+                        quality = null,
+                        provenance = s.bgProvenance ?: ReadingProvenance.MEASURED,
+                        flag = s.bgFlag ?: ReadingFlag.NORMAL,
+                        tzOffsetMin = s.tzOffsetMin,
+                        rxWallMs = s.updatedAt,
+                        rssi = null,
+                    )
+                }
+                .toList()
+            if (fill.isNotEmpty()) readings.upsertAll(fill)
+            fill.size
+        }
+    }
+
+    /**
+     * The carb analog of [reconcileReadingsFromSamples]: gap-fill `logged_meal` from the wide `sample`
+     * projection so server-synced carb history reaches the graph overlay AND the model's carb channel
+     * (both read the event table, never `sample`). Each server carb/bolus bucket is taken AS a single-
+     * bucket point of the CURVE (`customCurve = [value]`), so the union of a dose's buckets reproduces the
+     * pushed curve verbatim — no re-smearing — and the app→server→app round-trip is exact (a reset→resync
+     * rebuilds the same curve). GAP-FILL by curve COVERAGE (a bucket already SPANNED by a local event's
+     * curve is skipped, so the app's own pushed future buckets never double its local event); RAW inserts
+     * (no re-projection into `sample`, no outbox enqueue). Basal excluded (auto-extended schedule). This is
+     * the backlog path; live/catch-up rows hydrate inline in [mergeServerSample]. Off-main; one transaction.
+     */
+    suspend fun reconcileDoseEventsFromSamples(): Int = withContext(io) {
+        inWriteTx {
+            val rows = samples.rangeList(Long.MIN_VALUE, Long.MAX_VALUE)
+            val meals = ArrayList<LoggedMealEntity>()
+            val doses = ArrayList<LoggedDoseEntity>()
+            for (s in rows) {
+                val g = s.carbsG
+                if (g != null && g > 0.0 && loggedMeals.coveringCount(s.ts) == 0) {
+                    meals += syncedMeal(s.ts, g, s.tzOffsetMin, s.updatedAt)
+                }
+                val u = s.bolusU
+                if (u != null && u > 0.0 && loggedDoses.coveringCount(s.ts, DoseKind.BOLUS) == 0) {
+                    doses += syncedBolus(s.ts, u, s.tzOffsetMin, s.updatedAt)
+                }
+                val b = s.basalU
+                if (b != null && b > 0.0 && loggedDoses.coveringCount(s.ts, DoseKind.BASAL) == 0) {
+                    doses += syncedBasal(s.ts, b, s.tzOffsetMin, s.updatedAt)
+                }
+            }
+            if (meals.isNotEmpty()) loggedMeals.insertAll(meals)
+            if (doses.isNotEmpty()) loggedDoses.insertAll(doses)
+            meals.size + doses.size
         }
     }
 

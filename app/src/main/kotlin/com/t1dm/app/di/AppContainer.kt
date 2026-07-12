@@ -67,6 +67,7 @@ import com.t1dm.calc.CalcConfig
 import com.t1dm.calc.DoseAdvisor
 import com.t1dm.calc.IobSnapshot
 import com.t1dm.calc.IobSource
+import com.t1dm.calc.Objective
 import com.t1dm.calc.RollingForecaster
 import com.t1dm.calc.SelectedModelHandle
 import com.t1dm.calc.SelectedModelProvider
@@ -973,23 +974,16 @@ class AppContainer(context: Context) {
 
     /** Live preview of the rapid-acting bolus PK-action curve (== `bolus_pk_for_dose`). */
     val previewBolusCurve: suspend (Double) -> DoubleArray = { units ->
-        curveEngine.bolusPk(units).values.toDoubleArray()
+        val rapid = resolveRapid()
+        curveEngine.expAction(units, rapid.peakMin, rapid.diaMin)
     }
 
     /** Live preview of the LONG-ACTING basal PK-action Bateman curve (issue N9): the same curve
      *  [logBasal] commits — the opted-in clinical basal preset's DIA/ka/ke if selected, else the
      *  in-distribution simulator Bateman for the chosen [BasalPreset]. Broad + near-flat by design. */
-    val previewBasalCurve: suspend (Double, BasalPreset) -> DoubleArray = { units, preset ->
-        val clinical = selectedClinicalBasal()
-        if (clinical != null) {
-            curveEngine.bateman(units, clinical.diaMin, clinical.kaPerHour, clinical.kePerHour)
-        } else {
-            val diaMin = when (preset) {
-                BasalPreset.LANTUS -> CurveEngine.Presets.LANTUS_DIA_MIN
-                BasalPreset.TRESIBA -> CurveEngine.Presets.TRESIBA_DIA_MIN
-            }
-            curveEngine.bateman(units, diaMin, CurveEngine.Presets.BASAL_KA_PER_HOUR, CurveEngine.Presets.BASAL_KE_PER_HOUR)
-        }
+    val previewBasalCurve: suspend (Double, BasalPreset) -> DoubleArray = { units, _ ->
+        val basal = resolveBasal()
+        curveEngine.bateman(units, basal.diaMin, basal.kaPerHour, basal.kePerHour)
     }
 
     /** The dashboard overlay resolver: the two reconstructed channels over a grid window (off-main). */
@@ -1090,7 +1084,10 @@ class AppContainer(context: Context) {
     }
 
     /** Resolves a candidate dose into its dose-scaled gamma PK announced-future events (§3.3). */
-    private val bolusResolver = BolusResolver { doseU, atMs -> listOf(curveEngine.bolusEvent(doseU, atMs)) }
+    private val bolusResolver = BolusResolver { doseU, atMs ->
+        val spec = resolveRapid()
+        listOf(curveEngine.rapidEvent(doseU, atMs, spec.peakMin, spec.diaMin))
+    }
 
     private val bolusCalculator by lazy { BolusCalculator(rollingForecaster, bolusResolver) }
 
@@ -1120,11 +1117,20 @@ class AppContainer(context: Context) {
 
     /** Run one fail-closed bolus recommendation (optionally conditioned on an announced meal). Called
      *  from [com.t1dm.app.service.DoseCalcService] on a cancellable foreground job. */
-    suspend fun runBolusAdvice(announcedCarbG: Double, announcedGi: Double, config: CalcConfig? = null) {
+    suspend fun runBolusAdvice(
+        announcedCarbG: Double,
+        announcedGi: Double,
+        manualTargetMgdl: Double? = null,
+        config: CalcConfig? = null,
+    ) {
         bolusAdvice.value = BolusAdviceUi.Running
         // The user's persisted calculator policy (target / objective / asymmetry / rails / thresholds),
         // loaded fresh per run so a Settings edit takes effect on the next recommendation.
-        val cfg = config ?: runCatching { settingsStore.currentCalcConfig() }.getOrDefault(CalcConfig())
+        val base = config ?: runCatching { settingsStore.currentCalcConfig() }.getOrDefault(CalcConfig())
+        // The Bolus advisor screen drives the search toward a single user-set target BG (§3.6, UNBOUNDED —
+        // the slider's [low, high] bounds are the only limit): override the scoring objective so the grid
+        // lands the forecast median on that value. Absent ⇒ the persisted objective stands.
+        val cfg = if (manualTargetMgdl != null) base.copy(objective = Objective.HitTargetBg(manualTargetMgdl)) else base
         val now = System.currentTimeMillis()
         val announced: List<CurveEvent> = if (announcedCarbG > 0.0) {
             val (k, theta, dur) = CurveEngine.Presets.carbGammaForGi(announcedGi)
@@ -1238,7 +1244,10 @@ class AppContainer(context: Context) {
                 durationMin = dur, customCurve = null, tzOffsetMin = tz, note = null, updatedAt = now,
             ),
         )
-        outboxEnqueuer.enqueueSeries("carbs", listOf(SeriesPointDto(snapToGrid(now), grams)), now)
+        // Push the committed carb-appearance CURVE (grams-per-5-min, area = grams), spread across the
+        // future buckets — not a bare impulse — so the server holds the curve the app committed.
+        val carbCurve = curveEngine.gamma(grams, k, theta, dur)
+        outboxEnqueuer.enqueueSeries("carbs", curveSeries(snapToGrid(now), carbCurve, grams), now)
     }
 
     /** The clinical insulin preset catalogue (issue 19), for the Settings picker + apply-at-log. */
@@ -1248,84 +1257,59 @@ class AppContainer(context: Context) {
     suspend fun previewPresetCurve(spec: InsulinPresetSpec): DoubleArray = when (spec.family) {
         InsulinFamily.RapidExp -> curveEngine.expAction(5.0, spec.peakMin, spec.diaMin)
         InsulinFamily.BasalBateman -> curveEngine.bateman(5.0, spec.diaMin, spec.kaPerHour, spec.kePerHour)
-        InsulinFamily.SimulatorGamma ->
-            if (spec.label.startsWith("Simulator basal")) {
-                curveEngine.bateman(5.0, spec.diaMin, spec.kaPerHour, spec.kePerHour)
-            } else {
-                curveEngine.bolusPk(5.0).values.toDoubleArray()
-            }
     }
 
-    /** The selected rapid preset spec (issue 19), or null when the in-distribution simulator default. */
-    private suspend fun selectedClinicalRapid(): InsulinPresetSpec? {
+    /** The active rapid preset spec (issue 19): the selected label, else the default, else the first. */
+    private suspend fun resolveRapid(): InsulinPresetSpec {
+        val cat = insulinPresetCatalog().filter { it.family == InsulinFamily.RapidExp }
         val label = settingsStore.currentRapidPreset()
-        return insulinPresetCatalog().firstOrNull { it.label == label && it.family == InsulinFamily.RapidExp }
+        return cat.firstOrNull { it.label == label } ?: cat.firstOrNull { it.label == SettingsStore.DEFAULT_RAPID_PRESET_LABEL } ?: cat.first()
     }
 
-    /** The selected basal preset spec (issue 19), or null when the in-distribution simulator default. */
-    private suspend fun selectedClinicalBasal(): InsulinPresetSpec? {
+    /** The active basal preset spec (issue 19): the selected label, else the default, else the first. */
+    private suspend fun resolveBasal(): InsulinPresetSpec {
+        val cat = insulinPresetCatalog().filter { it.family == InsulinFamily.BasalBateman }
         val label = settingsStore.currentBasalPreset()
-        return insulinPresetCatalog().firstOrNull { it.label == label && it.family == InsulinFamily.BasalBateman }
+        return cat.firstOrNull { it.label == label } ?: cat.firstOrNull { it.label == SettingsStore.DEFAULT_BASAL_PRESET_LABEL } ?: cat.first()
     }
 
-    /** Log a bolus: self-describing `logged_dose` + `sample.bolus` + series. The DEFAULT is the
-     *  dose-scaled simulator gamma (in-distribution); if the user has opted into a clinical rapid
-     *  preset (issue 19), the resolved exponential curve rides in `customCurve` so it reconstructs
-     *  exactly and past logs are untouched. */
+    /** Log a bolus: self-describing `logged_dose` + `sample.bolus` + series. The action curve is the
+     *  SELECTED clinical rapid preset's exponential model (default NovoRapid); it rides in `customCurve`
+     *  so it reconstructs exactly, and the same committed CURVE is pushed to the server. */
     suspend fun logBolus(units: Double, preset: BolusPreset) {
         val now = System.currentTimeMillis()
         val tz = tzOffsetMin(now)
-        val clinical = selectedClinicalRapid()
-        val entity = if (clinical != null) {
-            val curve = curveEngine.expAction(units, clinical.peakMin, clinical.diaMin)
+        val rapid = resolveRapid()
+        val curve = curveEngine.expAction(units, rapid.peakMin, rapid.diaMin)
+        repository.logLoggedDose(
             LoggedDoseEntity(
-                tsMs = now, kind = DoseKind.BOLUS, units = units, durationMin = clinical.diaMin,
+                tsMs = now, kind = DoseKind.BOLUS, units = units, durationMin = rapid.diaMin,
                 k = null, theta = null, kaPerHour = null, kePerHour = null,
                 customCurve = if (curve.isEmpty()) null else curve.toList().toBlob(),
-                tzOffsetMin = tz, note = clinical.label, updatedAt = now,
-            )
-        } else {
-            val (k, theta, dur) = CurveEngine.Presets.bolusGammaParams(units)
-            LoggedDoseEntity(
-                tsMs = now, kind = DoseKind.BOLUS, units = units, durationMin = dur,
-                k = k, theta = theta, kaPerHour = null, kePerHour = null,
-                tzOffsetMin = tz, note = preset.name, updatedAt = now,
-            )
-        }
-        repository.logLoggedDose(entity)
-        outboxEnqueuer.enqueueSeries("bolus", listOf(SeriesPointDto(snapToGrid(now), units)), now)
+                tzOffsetMin = tz, note = rapid.label, updatedAt = now,
+            ),
+        )
+        // Push the committed insulin-ACTION curve (units-per-5-min, area = units) across its future buckets.
+        outboxEnqueuer.enqueueSeries("bolus", curveSeries(snapToGrid(now), curve, units), now)
     }
 
     /** Log a discrete long-acting basal injection: `logged_dose` (Bateman) + `sample.basal` + series.
-     *  DEFAULT is the in-distribution simulator Bateman; an opted-in clinical basal preset (issue 19)
-     *  supplies its own DIA + ka/ke (self-describing, so reconstruction stays stable). */
+     *  Uses the SELECTED clinical basal preset's DIA + ka/ke (default Lantus); the committed Bateman
+     *  action curve is pushed to the server. */
     suspend fun logBasal(units: Double, preset: BasalPreset) {
         val now = System.currentTimeMillis()
         val tz = tzOffsetMin(now)
-        val clinical = selectedClinicalBasal()
-        val diaMin: Double
-        val ka: Double
-        val ke: Double
-        val note: String
-        if (clinical != null) {
-            diaMin = clinical.diaMin; ka = clinical.kaPerHour; ke = clinical.kePerHour; note = clinical.label
-        } else {
-            diaMin = when (preset) {
-                BasalPreset.LANTUS -> CurveEngine.Presets.LANTUS_DIA_MIN
-                BasalPreset.TRESIBA -> CurveEngine.Presets.TRESIBA_DIA_MIN
-            }
-            ka = CurveEngine.Presets.BASAL_KA_PER_HOUR
-            ke = CurveEngine.Presets.BASAL_KE_PER_HOUR
-            note = preset.name
-        }
+        val basal = resolveBasal()
         repository.logLoggedDose(
             LoggedDoseEntity(
-                tsMs = now, kind = DoseKind.BASAL, units = units, durationMin = diaMin,
-                k = null, theta = null, kaPerHour = ka, kePerHour = ke,
-                tzOffsetMin = tz, note = note, updatedAt = now,
+                tsMs = now, kind = DoseKind.BASAL, units = units, durationMin = basal.diaMin,
+                k = null, theta = null, kaPerHour = basal.kaPerHour, kePerHour = basal.kePerHour,
+                tzOffsetMin = tz, note = basal.label, updatedAt = now,
             ),
         )
-        outboxEnqueuer.enqueueSeries("basal", listOf(SeriesPointDto(snapToGrid(now), units)), now)
+        // Push the committed basal-ACTION Bateman curve (units-per-5-min, area = units) across its window.
+        val basalCurve = curveEngine.bateman(units, basal.diaMin, basal.kaPerHour, basal.kePerHour)
+        outboxEnqueuer.enqueueSeries("basal", curveSeries(snapToGrid(now), basalCurve, units), now)
     }
 
     /** Save a mood: `sample.mood` (grid bucket) + `PUT /v1/series/mood`. */
@@ -1350,13 +1334,25 @@ class AppContainer(context: Context) {
 
     private fun snapToGrid(ts: Long): Long = Math.floorDiv(ts + 150_000L, 300_000L) * 300_000L
 
+    /** Lay a committed appearance/action curve (per-5-min values, area = the dose) onto the grid from
+     *  [gridTs] as a forward series — pushed so the server holds the CURVE, not a bare impulse. Zero
+     *  buckets are dropped; a degenerate empty curve falls back to one [total] impulse at [gridTs]. */
+    private fun curveSeries(gridTs: Long, curve: DoubleArray, total: Double): List<SeriesPointDto> {
+        val pts = curve.asList().mapIndexedNotNull { i, v ->
+            if (v > 0.0) SeriesPointDto(gridTs + i * CurveEngine.STEP_MS, v) else null
+        }
+        return pts.ifEmpty { listOf(SeriesPointDto(gridTs, total)) }
+    }
+
     // ─── Dashboard read models (DB-backed so they survive process death) ──────────────────────
 
     val activeSource: Flow<CgmSourceDescriptor?> = repository.observeActiveSource()
 
     val allSources: Flow<List<CgmSourceDescriptor>> = repository.observeSources()
 
-    /** Every reading of the active source (widest window; Phase-1 volumes are tiny). */
+    /** Every reading of the active source (widest window; Phase-1 volumes are tiny). Server-synced
+     *  history is gap-filled into `cgm_reading` by the catch-up merge (T1dmRepository.mergeServerSample),
+     *  so it flows through here to the graph — and through recentBgSeries to the model — automatically. */
     val dashboardReadings: Flow<List<CgmReading>> = activeSource.flatMapLatest { d ->
         if (d == null) flowOf(emptyList()) else repository.observeReadings(d.id, 0L, Long.MAX_VALUE)
     }

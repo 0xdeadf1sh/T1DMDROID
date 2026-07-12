@@ -901,14 +901,23 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
         composable("insulin/bolusCalc") {
             val scope = rememberCoroutineScope()
             val ctx = LocalContext.current
+            val ss = container.settingsStore
             val ui by container.bolusAdvice.collectAsState()
+            // The target-BG slider spans the calculator's own low/high target (the same band the in-range
+            // objective is scored against); the aim point seeds the initial slider position.
+            val targetLow by ss.calcTargetLow.collectAsState(70.0)
+            val targetHigh by ss.calcTargetHigh.collectAsState(180.0)
+            val targetMid by ss.calcTargetMid.collectAsState(110.0)
             BolusCalculatorScreen(
                 result = (ui as? BolusAdviceUi.Ready)?.result,
+                targetLowMgdl = targetLow,
+                targetHighMgdl = targetHigh,
+                initialTargetMgdl = targetMid,
                 onAccept = { c ->
                     scope.launch { container.acceptAdvisedBolus(c.doseU) }
                     DoseCalcService.cancel(ctx)
                 },
-                onRecompute = { DoseCalcService.recommend(ctx) },
+                onRecompute = { target -> DoseCalcService.recommend(ctx, targetMgdl = target) },
             )
         }
         composable("insulin/types") {
@@ -1162,9 +1171,6 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
             val selBasal by container.settingsStore.selectedBasalPreset.collectAsState("")
             CurveParamsScreen(
                 params = CurveParams(
-                    bolusGammaK = CurveEngine.Presets.BOLUS_GAMMA_K,
-                    bolusGammaTheta = CurveEngine.Presets.BOLUS_GAMMA_THETA,
-                    bolusDiaBaseHours = CurveEngine.Presets.BOLUS_DIA_BASE_HOURS,
                     basalKaPerHour = CurveEngine.Presets.BASAL_KA_PER_HOUR,
                     basalKePerHour = CurveEngine.Presets.BASAL_KE_PER_HOUR,
                     lantusDiaHours = CurveEngine.Presets.LANTUS_DIA_MIN / 60.0,

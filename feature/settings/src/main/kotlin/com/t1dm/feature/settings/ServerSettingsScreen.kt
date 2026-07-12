@@ -33,7 +33,8 @@ import org.json.JSONObject
  * never surfaced) and a blank value on save keeps the stored one.
  *
  * The "Scan QR" affordance opens the ZXing embedded scanner (no Play Services); it accepts either a
- * bare token string or a `{baseUrl|url, token}` JSON object. The scanned token still flows through
+ * bare token string, a `{baseUrl|url, token}` JSON object, or the server's own login-QR shape
+ * `{type, token, addr, port}` (from which the base URL is composed). The scanned token still flows through
  * [onSave] into the Keystore-backed TokenStore, never the DB. Camera-denied / cancelled / malformed
  * QR each produce a plain-language message.
  *
@@ -164,16 +165,18 @@ fun ServerSettingsScreen(
     }
 }
 
-/** The two accepted QR payload shapes (item 12): a bare token, or `{baseUrl|url, token}` JSON. */
+/** The accepted QR payload shapes (item 12): a bare token, `{baseUrl|url, token}` JSON, or the
+ *  server's login QR `{type, token, addr, port}` (base URL composed as `http://addr:port`). */
 sealed interface ServerQrPayload {
     data class Valid(val token: String, val baseUrl: String?) : ServerQrPayload
     data class Invalid(val reason: String) : ServerQrPayload
 }
 
 /**
- * Parse a scanned QR string. A `{...}` JSON body may carry `token` plus an optional `baseUrl`/`url`;
- * anything else is treated as a bare token. Fail-closed: an empty token yields [ServerQrPayload.Invalid]
- * with a plain reason. Pure — unit-testable without a camera.
+ * Parse a scanned QR string. A `{...}` JSON body may carry `token` plus, for the base URL, either an
+ * explicit `baseUrl`/`url`/`base_url` or the server login-QR pair `addr`+`port` (composed as
+ * `http://addr:port`); anything else is treated as a bare token. Fail-closed: an empty token yields
+ * [ServerQrPayload.Invalid] with a plain reason. Pure — unit-testable without a camera.
  */
 fun parseServerQr(raw: String): ServerQrPayload {
     val trimmed = raw.trim()
@@ -186,6 +189,12 @@ fun parseServerQr(raw: String): ServerQrPayload {
         val baseUrl = sequenceOf("baseUrl", "url", "base_url")
             .map { obj.optString(it).trim() }
             .firstOrNull { it.isNotEmpty() }
+            ?: obj.optString("addr").trim().takeIf { it.isNotEmpty() }?.let { addr ->
+                // The server's login QR renders {type, token, addr, port} with no base URL, so
+                // compose one from addr+port. Tailscale makes transport TLS moot ⇒ plain http.
+                val port = obj.optInt("port", 0)
+                if (port in 1..65535) "http://$addr:$port" else "http://$addr"
+            }
         return ServerQrPayload.Valid(token, baseUrl)
     }
     return ServerQrPayload.Valid(trimmed, null)

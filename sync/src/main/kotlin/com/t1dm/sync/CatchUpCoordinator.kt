@@ -23,6 +23,18 @@ class CatchUpCoordinator(
     fun events(): Flow<StreamEvent> = stream.events().onEach { ev ->
         when (ev) {
             is StreamEvent.Sample -> repo.mergeServerSample(ev.patch)
+            // First connect of the session: back-fill from the local head so a fresh (or post-reset)
+            // phone pulls the history it is missing, not only live samples going forward (empty
+            // projection ⇒ null cursor ⇒ full download), then reconcile the wide `sample` history into
+            // `cgm_reading` so the graph and the model actually see it — including history synced in
+            // before the reading hydration existed.
+            is StreamEvent.Connected -> runCatching {
+                catchUp(repo.newestSampleTs())
+                val filled = repo.reconcileReadingsFromSamples()
+                if (filled > 0) Timber.tag(TAG).i("reconciled %d sample rows into cgm_reading", filled)
+                val doses = repo.reconcileDoseEventsFromSamples()
+                if (doses > 0) Timber.tag(TAG).i("reconciled %d carb/bolus events from samples", doses)
+            }.onFailure { Timber.tag(TAG).w(it, "connect catch-up failed") }
             is StreamEvent.Reconnected -> runCatching { catchUp(ev.cursor) }
                 .onFailure { Timber.tag(TAG).w(it, "catch-up failed") }
             else -> Unit
