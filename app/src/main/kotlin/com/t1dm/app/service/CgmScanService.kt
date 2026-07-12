@@ -5,8 +5,10 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.bluetooth.BluetoothManager
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.os.PowerManager
 import androidx.lifecycle.LifecycleService
@@ -62,6 +64,7 @@ import com.t1dm.sensors.StepRecorder
 import com.t1dm.sensors.StepSource
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -107,6 +110,17 @@ class CgmScanService : LifecycleService() {
 
     /** Debug step folding so injected TYPE_STEP_COUNTER cumulatives bucket exactly as the sensor's. */
     private val debugBucketer = StepBucketer()
+
+    /** Adaptive scan report-delay: 0 (real-time, maximum capture sensitivity) while the screen is on;
+     *  [screenOffReportDelayMs] (offloaded batching) while it is off so HyperOS doesn't suspend the scan.
+     *  Emitting a new value restarts the scan in that mode (see [AidexXSourceRegistry.start]). */
+    private val reportDelayFlow = MutableStateFlow(0L)
+    @Volatile private var screenOffReportDelayMs = 0L
+    private val screenReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            reportDelayFlow.value = if (intent.action == Intent.ACTION_SCREEN_OFF) screenOffReportDelayMs else 0L
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -382,18 +396,37 @@ class CgmScanService : LifecycleService() {
             Timber.tag(TAG).w("No BluetoothLeScanner (adapter off / no BLE / permission); scan idle")
             return
         }
-        // Offloaded batching is the only mode that keeps a filtered scan delivering across screen-off
-        // on HyperOS (it suspends a real-time reportDelay=0 scan when locked). The controller buffers
-        // adverts and flushes them (~5 min locked); fall back to real-time only where it can't batch.
-        val reportDelayMs =
+        // ADAPTIVE scan mode. Screen ON → real-time (reportDelay 0, continuous LOW_LATENCY): maximum
+        // capture sensitivity for a weak/marginal advert, which is what the user needs while looking at
+        // the app. Screen OFF → offloaded batching: the only mode HyperOS doesn't suspend when locked
+        // (the controller buffers and flushes ~every 5 min). Batching's lower duty cycle can drop a
+        // marginal signal, so it is used ONLY while the screen is off. Where the controller can't batch,
+        // stay real-time throughout (best effort). The receiver flips the mode; the registry restarts it.
+        screenOffReportDelayMs =
             if (runCatching { adapter.isOffloadedScanBatchingSupported }.getOrDefault(false)) {
                 BATCH_REPORT_DELAY_MS
             } else {
                 0L
             }
-        Timber.tag(TAG).i("BLE scan reportDelayMs=%d (batching=%b)", reportDelayMs, reportDelayMs > 0)
+        val interactive = runCatching { getSystemService(PowerManager::class.java)?.isInteractive == true }
+            .getOrDefault(true)
+        reportDelayFlow.value = if (interactive) 0L else screenOffReportDelayMs
         runCatching {
-            container.registry.start(BleAdvertScanner(scanner, container.dispatchers, reportDelayMs))
+            registerReceiver(
+                screenReceiver,
+                IntentFilter().apply {
+                    addAction(Intent.ACTION_SCREEN_ON)
+                    addAction(Intent.ACTION_SCREEN_OFF)
+                },
+                Context.RECEIVER_NOT_EXPORTED,
+            )
+        }.onFailure { Timber.tag(TAG).w(it, "screen receiver registration failed; scan mode stays fixed") }
+        Timber.tag(TAG).i(
+            "BLE scan adaptive: screenOn=0 screenOff=%d (batching=%b) interactive=%b",
+            screenOffReportDelayMs, screenOffReportDelayMs > 0, interactive,
+        )
+        runCatching {
+            container.registry.start(reportDelayFlow) { d -> BleAdvertScanner(scanner, container.dispatchers, d) }
         }.onFailure { Timber.tag(TAG).w(it, "Failed to start BLE scan") }
     }
 
@@ -727,6 +760,7 @@ class CgmScanService : LifecycleService() {
 
     override fun onDestroy() {
         container.serviceRunning.value = false
+        runCatching { unregisterReceiver(screenReceiver) }
         wakeLock?.let { if (it.isHeld) it.release() }
         super.onDestroy()
     }

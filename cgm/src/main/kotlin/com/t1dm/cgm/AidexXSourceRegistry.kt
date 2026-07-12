@@ -5,10 +5,13 @@ import com.t1dm.core.model.CgmSourceDescriptor
 import com.t1dm.core.model.CgmSourceId
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -37,31 +40,37 @@ class AidexXSourceRegistry(
     private val live = ConcurrentHashMap<String, AidexXSource>()
 
     /**
-     * Begin the shared passive scan; recognized adverts are adopted and routed. Supervised: the
-     * underlying [BleAdvertScanner.rawAdverts] `callbackFlow` closes itself on any `onScanFailed`
-     * (an adapter blip, an MTK-stack hiccup on the screen-off transition), and without this loop a
-     * single such drop would end collection permanently until the next process restart. We restart
-     * with bounded exponential backoff, resetting it once a scan has stayed healthy, so a transient
-     * failure self-heals while a hard-down adapter is retried gently rather than hammered.
+     * Begin the shared passive scan; recognized adverts are adopted and routed. [scannerFor] builds a
+     * scanner for a given report-delay; [reportDelayMs] selects the mode and RESTARTS the scan on every
+     * change (via [collectLatest]) — the caller drives it real-time (0) while the screen is on for full
+     * capture sensitivity and offloaded-batch while it is off so HyperOS does not suspend the scan
+     * ([BleAdvertScanner]). Within each mode the scan is supervised: [BleAdvertScanner.rawAdverts]'
+     * `callbackFlow` closes itself on any `onScanFailed` (an adapter blip, an MTK-stack hiccup), and
+     * without the loop a single drop would end collection until the next process restart. We restart
+     * with bounded exponential backoff, resetting it once a scan has stayed healthy.
      */
-    fun start(scanner: BleAdvertScanner) {
+    fun start(reportDelayMs: Flow<Long>, scannerFor: (Long) -> BleAdvertScanner) {
         scope.launch {
             hydrate()
-            var backoffMs = SCAN_RETRY_MIN_MS
-            while (isActive) {
-                val startedAt = nowMs()
-                try {
-                    scanner.rawAdverts().collect { raw -> onRawAdvert(raw) }
-                } catch (c: CancellationException) {
-                    throw c // scope shutdown — do not restart
-                } catch (t: Throwable) {
-                    Log.w(TAG, "passive scan dropped (${t.message}); restarting in ${backoffMs}ms", t)
-                }
-                if (!isActive) break
-                backoffMs = if (nowMs() - startedAt >= SCAN_HEALTHY_MS) SCAN_RETRY_MIN_MS
-                else (backoffMs * 2).coerceAtMost(SCAN_RETRY_MAX_MS)
-                delay(backoffMs)
+            reportDelayMs.collectLatest { delayMs -> superviseScan(scannerFor(delayMs)) }
+        }
+    }
+
+    private suspend fun superviseScan(scanner: BleAdvertScanner): Unit = coroutineScope {
+        var backoffMs = SCAN_RETRY_MIN_MS
+        while (isActive) {
+            val startedAt = nowMs()
+            try {
+                scanner.rawAdverts().collect { raw -> onRawAdvert(raw) }
+            } catch (c: CancellationException) {
+                throw c // mode switch or scope shutdown — do not restart in place
+            } catch (t: Throwable) {
+                Log.w(TAG, "passive scan dropped (${t.message}); restarting in ${backoffMs}ms", t)
             }
+            if (!isActive) break
+            backoffMs = if (nowMs() - startedAt >= SCAN_HEALTHY_MS) SCAN_RETRY_MIN_MS
+            else (backoffMs * 2).coerceAtMost(SCAN_RETRY_MAX_MS)
+            delay(backoffMs)
         }
     }
 
