@@ -2,6 +2,8 @@ package com.t1dm.feature.meals
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -73,7 +75,7 @@ fun MealsScreen(
     var gi by remember { mutableFloatStateOf(GiChip.MIXED.gi.toFloat()) }
     val grams = gramsText.toDoubleOrNull()
 
-    Column(Modifier.fillMaxWidth().padding(16.dp)) {
+    Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp)) {
         iobCob?.let { CobLine(it) }
 
         OutlinedTextField(
