@@ -15,6 +15,8 @@ import com.t1dm.app.BuildConfig
 import com.t1dm.feature.hardware.HardwareInfo
 import com.t1dm.feature.network.NetIface
 import com.t1dm.feature.network.NetworkDiagnostics
+import com.t1dm.feature.pubs.BlueskyClient
+import com.t1dm.feature.pubs.PubsRepository
 import com.t1dm.feature.settings.AboutInfo
 import com.t1dm.app.sync.RoomPredictionStore
 import com.t1dm.app.sync.SyncManager
@@ -183,6 +185,9 @@ class AppContainer(context: Context) {
     val database: AppDatabase by lazy { AppDatabase.build(appContext) }
 
     val repository: T1dmRepository by lazy { T1dmRepository(database, dispatchers) }
+
+    /** The read-only Bluesky feed for `adapubs.bsky.social` (`:feature:pubs`). */
+    val pubsRepository: PubsRepository by lazy { PubsRepository(BlueskyClient(dispatchers), dispatchers) }
 
     /** The `:cgm` persistence port bound onto the Room-backed [T1dmRepository]. */
     private val cgmRepository by lazy { AppCgmRepository(repository) }

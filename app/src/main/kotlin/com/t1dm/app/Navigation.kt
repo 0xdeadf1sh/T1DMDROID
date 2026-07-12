@@ -86,6 +86,7 @@ import com.t1dm.feature.insulin.InsulinTypeBuilderScreen
 import com.t1dm.feature.meals.MealBuilderScreen
 import com.t1dm.feature.journal.JournalScreen
 import com.t1dm.feature.meals.MealsScreen
+import com.t1dm.feature.pubs.PubsScreen
 import com.t1dm.feature.models.ModelDetailScreen
 import com.t1dm.feature.models.ModelsScreen
 import com.t1dm.core.model.AccuracyReport
@@ -166,6 +167,7 @@ private data class Destination(val route: String, val label: String)
 // icon dependency is on the classpath, so these are authored Compose ImageVectors.
 private val destinations = listOf(
     Destination("dashboard", "BG"),
+    Destination("pubs", "Pubs"),
     Destination("circadian", "Clock"),
     Destination("stats", "Stats"),
     Destination("models", "Models"),
@@ -218,6 +220,7 @@ private fun crumbsFor(route: String?, modelId: String?): List<Crumb> {
     fun settings(vararg tail: Crumb) = listOf(Crumb("Settings", "settings"), *tail)
     return when (route) {
         null, "dashboard" -> listOf(Crumb("BG", null))
+        "pubs" -> listOf(Crumb("Pubs", null))
         "circadian" -> listOf(Crumb("Circadian clock", null))
         "stats" -> listOf(Crumb("Stats", null))
         "models" -> listOf(Crumb("Models", null))
@@ -640,6 +643,9 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 thermalThresholdC = if (thermalGateOn) thermalMaxC else null,
                 thermalWarnMarginC = thermalWarn,
             )
+        }
+        composable("pubs") {
+            PubsScreen(container.pubsRepository)
         }
         composable("circadian") {
             val inference by container.inferenceState.collectAsState(InferenceState())

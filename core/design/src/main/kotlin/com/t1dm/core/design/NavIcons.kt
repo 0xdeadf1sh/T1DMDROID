@@ -77,7 +77,7 @@ private fun glyph(name: String, style: IconStyle, body: PathBuilder.() -> Unit):
     }.build()
 }
 
-// ── The eleven destination silhouettes ───────────────────────────────────────────────────────────
+// ── The twelve destination silhouettes ───────────────────────────────────────────────────────────
 
 private fun dashboard(s: IconStyle) = glyph("bg", s) { // a droplet
     moveTo(12f, 3f); curveTo(16f, 9f, 18f, 12f, 18f, 15f)
@@ -145,6 +145,16 @@ private fun settings(s: IconStyle) = glyph("settings", s) { // gear (octagon + b
     moveTo(12f, 9f); arcTo(3f, 3f, 0f, true, false, 12.01f, 9f); close()
 }
 
+private fun pubs(s: IconStyle) = glyph("pubs", s) { // a page with text lines
+    // Text lines wound opposite the page outline so NonZero fill (Umbrella) knocks them out as holes
+    // instead of collapsing to a solid slab; stroke rendering is direction-agnostic, so the other
+    // themes read the same lines either way.
+    moveTo(6f, 3f); lineTo(18f, 3f); lineTo(18f, 21f); lineTo(6f, 21f); close()
+    moveTo(8f, 7f); lineTo(8f, 8f); lineTo(16f, 8f); lineTo(16f, 7f); close()
+    moveTo(8f, 11f); lineTo(8f, 12f); lineTo(16f, 12f); lineTo(16f, 11f); close()
+    moveTo(8f, 15f); lineTo(8f, 16f); lineTo(13f, 16f); lineTo(13f, 15f); close()
+}
+
 // ── Time-of-day glyphs (issue N4a) — the same per-theme geometry system as the nav icons, so morning /
 //    noon / evening / night read as Tron-angular · Umbrella-blocky · Kitty-rounded like everything else.
 
@@ -190,6 +200,7 @@ fun timeOfDayIcon(period: DayPeriod, style: IconStyle): ImageVector = when (peri
 /** Resolve a nav route to its themed [ImageVector]. Unknown routes fall back to the settings gear. */
 fun navIcon(route: String, style: IconStyle): ImageVector = when (route) {
     "dashboard" -> dashboard(style)
+    "pubs" -> pubs(style)
     "circadian" -> clock(style)
     "stats" -> stats(style)
     "models" -> models(style)

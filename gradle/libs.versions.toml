@@ -33,6 +33,9 @@ jna = "5.14.0"            # runtime dep of the uniffi-generated Kotlin bindings 
 # QR scanner for the Server-token affordance (Phase 7C item 12). Apache-2.0, embeds ZXing core;
 # NO Google Play Services dependency (sideload-safe). Ships its own CaptureActivity + CAMERA request.
 zxingEmbedded = "4.3.0"
+# Image loader for :feature:pubs (Bluesky avatars / embed thumbnails). Coil 3; the
+# coil-network-okhttp fetcher auto-registers via ServiceLoader and pins okhttp 4.12.0.
+coil = "3.3.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -67,6 +70,8 @@ jna = { group = "net.java.dev.jna", name = "jna", version.ref = "jna" }
 androidx-glance-appwidget = { group = "androidx.glance", name = "glance-appwidget", version.ref = "glance" }
 androidx-glance-material3 = { group = "androidx.glance", name = "glance-material3", version.ref = "glance" }
 zxing-android-embedded = { group = "com.journeyapps", name = "zxing-android-embedded", version.ref = "zxingEmbedded" }
+coil-compose = { group = "io.coil-kt.coil3", name = "coil-compose", version.ref = "coil" }
+coil-network-okhttp = { group = "io.coil-kt.coil3", name = "coil-network-okhttp", version.ref = "coil" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-test-junit = { group = "androidx.test.ext", name = "junit", version.ref = "androidxJunit" }
 # Build-logic classpath (Gradle plugin artifacts consumed by the convention plugins):
@@ -76,6 +81,7 @@ compose-gradlePlugin = { group = "org.jetbrains.kotlin", name = "compose-compile
 
 [bundles]
 compose = ["androidx-compose-ui", "androidx-compose-ui-graphics", "androidx-compose-ui-tooling-preview", "androidx-compose-material3", "androidx-compose-foundation"]
+coil = ["coil-compose", "coil-network-okhttp"]
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

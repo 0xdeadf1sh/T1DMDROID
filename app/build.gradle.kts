@@ -26,8 +26,8 @@ android {
 
     defaultConfig {
         applicationId = "com.t1dm.app"
-        versionCode = 14
-        versionName = "0.9.4"
+        versionCode = 15
+        versionName = "0.9.5"
 
         // arm64-v8a only (single target device). Harmless until native .so libs ship.
         ndk {
@@ -118,6 +118,7 @@ dependencies {
     implementation(project(":watch"))
 
     implementation(project(":feature:dashboard"))
+    implementation(project(":feature:pubs"))
     implementation(project(":feature:stats"))
     implementation(project(":feature:models"))
     implementation(project(":feature:hardware"))
