@@ -189,6 +189,22 @@ private fun night(s: IconStyle) = glyph("night", s) { // crescent moon
     close()
 }
 
+private fun heart(s: IconStyle) = glyph("heart", s) { // a heart (the liveness/heartbeat glyph)
+    moveTo(12f, 21.35f)
+    lineTo(10.55f, 20.03f)
+    curveTo(5.4f, 15.36f, 2f, 12.28f, 2f, 8.5f)
+    curveTo(2f, 5.42f, 4.42f, 3f, 7.5f, 3f)
+    curveTo(9.24f, 3f, 10.91f, 3.81f, 12f, 5.09f)
+    curveTo(13.09f, 3.81f, 14.76f, 3f, 16.5f, 3f)
+    curveTo(19.58f, 3f, 22f, 5.42f, 22f, 8.5f)
+    curveTo(22f, 12.28f, 18.6f, 15.36f, 13.45f, 20.04f)
+    close()
+}
+
+/** The themed heart glyph, in the same geometry family as [navIcon] — the dashboard's fixed-60-bpm
+ *  liveness indicator. */
+fun heartIcon(style: IconStyle): ImageVector = heart(style)
+
 /** Resolve a day-period to its themed [ImageVector], in the same geometry family as [navIcon]. */
 fun timeOfDayIcon(period: DayPeriod, style: IconStyle): ImageVector = when (period) {
     DayPeriod.MORNING -> morning(style)

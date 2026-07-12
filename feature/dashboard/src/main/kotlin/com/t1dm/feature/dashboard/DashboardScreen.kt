@@ -3,10 +3,10 @@ package com.t1dm.feature.dashboard
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.keyframes
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
@@ -572,8 +572,9 @@ data class BgSignals(val cgmRssi: Int? = null, val watchRssi: Int? = null)
  *  colour state. Unchanged/zero ⇒ no flash. `:app` supplies the tokens; the dashboard only animates. */
 data class BgPulses(val server: Long = 0L, val cgm: Long = 0L, val watch: Long = 0L)
 
-/** Three centered traffic-lights across the top of the BG panel; tapping toggles the labels. To the
- *  RIGHT of the WCH light sits the labelled device temperature (U9 — there is no readable fan). */
+/** A centered vitals row across the top of the BG panel: the three reachability traffic-lights (server /
+ *  CGM / watch), the labelled device temperature (U9 — there is no readable fan), the step count, a
+ *  fixed-60-bpm liveness heartbeat, and the sensor-lifetime countdown. */
 @Composable
 private fun ReachabilityBar(
     r: BgReachability,
@@ -586,20 +587,20 @@ private fun ReachabilityBar(
     thermalWarnMarginC: Double,
     stepsToday: Int?,
 ) {
-    var showLabels by remember { mutableStateOf(false) }
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)
-            .clickable { showLabels = !showLabels },
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        ReachChip("SRV", r.server, showLabels, null, pulses?.server ?: 0L)
+        ReachChip("SRV", r.server, null, pulses?.server ?: 0L)
         // Issue 3: the CGM link's signal bars live ONLY in the header now (the "AiDEX X … −60 dBm"
         // meter); this chip keeps just its traffic-light so the CGM RSSI is shown in exactly one place.
-        ReachChip("CGM", r.cgm, showLabels, null, pulses?.cgm ?: 0L)
-        ReachChip("WCH", r.watch, showLabels, signals?.watchRssi, pulses?.watch ?: 0L)
+        ReachChip("CGM", r.cgm, null, pulses?.cgm ?: 0L)
+        ReachChip("WCH", r.watch, signals?.watchRssi, pulses?.watch ?: 0L)
         deviceTempC?.let { TempChip(it, tempUnit, thermalThresholdC, thermalWarnMarginC) }
         stepsToday?.let { StepsChip(it) }
+        // A fixed-60-bpm liveness heartbeat, just past the steps count (never a real heart-rate reading).
+        HeartbeatChip()
         // I11 — the user-entered sensor lifetime, counted down live, immediately right of the TEMP chip.
         sensorExpiryMs?.let { SensorLifeChip(it) }
     }
@@ -729,7 +730,7 @@ private fun humanSteps(n: Int): String {
 }
 
 @Composable
-private fun ReachChip(tag: String, light: ReachLight, showLabel: Boolean, rssi: Int?, pulseKey: Long = 0L) {
+private fun ReachChip(tag: String, light: ReachLight, rssi: Int?, pulseKey: Long = 0L) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
         // N4b — the traffic light animates by state: steady green when OK, a slow amber pulse when
         // degraded, an urgent red pulse when down; static (no pulse) when animations are disabled (N4c).
@@ -738,10 +739,48 @@ private fun ReachChip(tag: String, light: ReachLight, showLabel: Boolean, rssi: 
         Text(tag, style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f))
         rssi?.let { SignalBars(it) }
-        if (showLabel) {
-            Text(light.label, style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
-        }
+    }
+}
+
+/** The BG-panel liveness heart (N4a family): a themed heart glyph that beats at a FIXED 60 bpm — one
+ *  lub-dub per second, so the animation cadence *is* the rate — with that rate spelled out as a "60"
+ *  to its right (mirroring the steps chip). Decorative liveness, not a reading from any sensor; the
+ *  heart collapses to a static glyph the instant [LocalAnimationsEnabled] is off (N4c). */
+@Composable
+private fun HeartbeatChip() {
+    val animationsOn = LocalAnimationsEnabled.current
+    val style = iconStyleForTheme(LocalT1dmSemantics.current.id)
+    val icon = remember(style) { com.t1dm.core.design.heartIcon(style) }
+    val color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
+    // 60 bpm ⇒ a 1000 ms beat period. Keyframed as a lub-dub (two quick contractions, then rest) so it
+    // reads as a pulse rather than a breath; the keyframe span equals the period, fixing the cadence.
+    val scale = if (animationsOn) {
+        val transition = rememberInfiniteTransition(label = "heartbeat")
+        transition.animateFloat(
+            initialValue = 1f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = keyframes {
+                    durationMillis = 1000
+                    1.0f at 0
+                    1.30f at 110
+                    1.0f at 230
+                    1.17f at 340
+                    1.0f at 470
+                    1.0f at 1000
+                },
+            ),
+            label = "heartbeatScale",
+        ).value
+    } else 1f
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+        Icon(
+            imageVector = icon,
+            contentDescription = "Heartbeat 60 bpm",
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(14.dp).graphicsLayer { scaleX = scale; scaleY = scale },
+        )
+        Text("60", style = MaterialTheme.typography.labelSmall, color = color)
     }
 }
 
