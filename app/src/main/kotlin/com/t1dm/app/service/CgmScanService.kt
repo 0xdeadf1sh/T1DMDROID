@@ -73,8 +73,9 @@ import java.util.TimeZone
 /**
  * The always-on Phase-1 foreground service (SPEC.private.md §2.3, Phase 1). It hosts, in one place
  * and with **no `:inference` dependency**: the passive BLE scan, the step counter, the 5-min grid
- * heartbeat, and the deterministic model-free alarm path (§3.6-A). Typed
- * `connectedDevice|dataSync`, `START_STICKY`, restarted from [onTaskRemoved] + a WorkManager
+ * heartbeat, and the deterministic model-free alarm path (§3.6-A). Typed **`connectedDevice`**
+ * (NOT `dataSync` — that carries an Android-15+ 6 h/24 h cap and a `BOOT_COMPLETED`-start ban that
+ * would break a 24/7 monitor), `START_STICKY`, restarted from [onTaskRemoved] + a WorkManager
  * watchdog + a `BOOT_COMPLETED` receiver, holding a partial wake-lock across its lifetime and
  * writing a `kv.last_alive_ts` heartbeat.
  *
@@ -741,9 +742,9 @@ class CgmScanService : LifecycleService() {
             .setOngoing(true)
             .setCategory(Notification.CATEGORY_SERVICE)
             .build()
-        val type = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-        startForeground(NOTIF_ID, notif, type)
+        // connectedDevice ONLY — see the manifest note: dataSync's 6 h/24 h cap + BOOT_COMPLETED ban
+        // (Android 15+) would kill an always-on monitor. The BLE scan is the standing justification.
+        startForeground(NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
     }
 
     private fun createChannel() {

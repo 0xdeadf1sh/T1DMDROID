@@ -7,8 +7,9 @@ import timber.log.Timber
 
 /**
  * Resumes the passive monitor after a reboot (Phase 1 exit criteria — "a forced
- * reboot leaves a bounded gap and the service auto-restarts"). Starting a
- * `connectedDevice|dataSync` foreground service from `BOOT_COMPLETED` is permitted on 14+.
+ * reboot leaves a bounded gap and the service auto-restarts"). The service is typed
+ * `connectedDevice`, which IS permitted to start from `BOOT_COMPLETED` — unlike `dataSync`, which
+ * Android 15+ forbids here (a further reason the service dropped the `dataSync` type).
  */
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {

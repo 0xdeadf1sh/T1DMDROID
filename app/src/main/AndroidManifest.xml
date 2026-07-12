@@ -133,10 +133,14 @@
             </intent-filter>
         </activity-alias>
 
+        <!-- connectedDevice ONLY (the CGM/watch BLE is the always-on justification). NOT dataSync:
+             on Android 15+ dataSync carries a 6 h/24 h runtime cap (the service is force-stopped when
+             spent, and the watchdog restart then throws) AND cannot be started from BOOT_COMPLETED —
+             both fatal to a 24/7 monitor. Network sync still runs from this FGS; no type demands it. -->
         <service
             android:name=".service.CgmScanService"
             android:exported="false"
-            android:foregroundServiceType="connectedDevice|dataSync" />
+            android:foregroundServiceType="connectedDevice" />
 
         <service
             android:name=".service.DoseCalcService"
