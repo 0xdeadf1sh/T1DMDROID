@@ -373,15 +373,26 @@ class CgmScanService : LifecycleService() {
     }
 
     private fun startScan() {
-        val scanner = runCatching {
-            getSystemService(BluetoothManager::class.java)?.adapter?.bluetoothLeScanner
+        val adapter = runCatching {
+            getSystemService(BluetoothManager::class.java)?.adapter
         }.getOrNull()
+        val scanner = adapter?.bluetoothLeScanner
         if (scanner == null) {
             Timber.tag(TAG).w("No BluetoothLeScanner (adapter off / no BLE / permission); scan idle")
             return
         }
+        // Offloaded batching is the only mode that keeps a filtered scan delivering across screen-off
+        // on HyperOS (it suspends a real-time reportDelay=0 scan when locked). The controller buffers
+        // adverts and flushes them (~5 min locked); fall back to real-time only where it can't batch.
+        val reportDelayMs =
+            if (runCatching { adapter.isOffloadedScanBatchingSupported }.getOrDefault(false)) {
+                BATCH_REPORT_DELAY_MS
+            } else {
+                0L
+            }
+        Timber.tag(TAG).i("BLE scan reportDelayMs=%d (batching=%b)", reportDelayMs, reportDelayMs > 0)
         runCatching {
-            container.registry.start(BleAdvertScanner(scanner, container.dispatchers))
+            container.registry.start(BleAdvertScanner(scanner, container.dispatchers, reportDelayMs))
         }.onFailure { Timber.tag(TAG).w(it, "Failed to start BLE scan") }
     }
 
@@ -743,6 +754,10 @@ class CgmScanService : LifecycleService() {
                 setShowBadge(false)
             },
         )
+        // Retire the short-lived separate lock-screen glance channel: the single ongoing notification
+        // now surfaces on the keyguard on its own once "show silent notifications on lock screen" is on,
+        // so the second channel is redundant. Harmless no-op once already deleted.
+        runCatching { nm.deleteNotificationChannel("t1dm.glance.bg") }
     }
 
     @Suppress("WakelockTimeout") // Advisory monitor must stay awake across Doze; released in onDestroy.
@@ -789,6 +804,9 @@ class CgmScanService : LifecycleService() {
         private const val TAG = "CgmScan"
         private const val CH_SERVICE = "t1dm.service.cgm"
         private const val NOTIF_ID = 4100
+        /** Batch-scan flush cadence when awake; HyperOS overrides this to ~5 min while locked. Any
+         *  non-zero value engages offloaded batching, which is what survives screen-off. */
+        private const val BATCH_REPORT_DELAY_MS = 10_000L
         private const val HEARTBEAT_MS = 60_000L
         /** How often the always-on notification re-renders so its "updated N ago" age stays honest. */
         private const val NOTIF_TICK_MS = 30_000L

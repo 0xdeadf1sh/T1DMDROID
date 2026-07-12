@@ -1,12 +1,16 @@
 package com.t1dm.cgm
 
+import android.util.Log
 import com.t1dm.core.model.CgmSourceDescriptor
 import com.t1dm.core.model.CgmSourceId
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
 
@@ -32,11 +36,32 @@ class AidexXSourceRegistry(
 
     private val live = ConcurrentHashMap<String, AidexXSource>()
 
-    /** Begin the shared passive scan; recognized adverts are adopted and routed. */
+    /**
+     * Begin the shared passive scan; recognized adverts are adopted and routed. Supervised: the
+     * underlying [BleAdvertScanner.rawAdverts] `callbackFlow` closes itself on any `onScanFailed`
+     * (an adapter blip, an MTK-stack hiccup on the screen-off transition), and without this loop a
+     * single such drop would end collection permanently until the next process restart. We restart
+     * with bounded exponential backoff, resetting it once a scan has stayed healthy, so a transient
+     * failure self-heals while a hard-down adapter is retried gently rather than hammered.
+     */
     fun start(scanner: BleAdvertScanner) {
         scope.launch {
             hydrate()
-            scanner.rawAdverts().collect { raw -> onRawAdvert(raw) }
+            var backoffMs = SCAN_RETRY_MIN_MS
+            while (isActive) {
+                val startedAt = nowMs()
+                try {
+                    scanner.rawAdverts().collect { raw -> onRawAdvert(raw) }
+                } catch (c: CancellationException) {
+                    throw c // scope shutdown — do not restart
+                } catch (t: Throwable) {
+                    Log.w(TAG, "passive scan dropped (${t.message}); restarting in ${backoffMs}ms", t)
+                }
+                if (!isActive) break
+                backoffMs = if (nowMs() - startedAt >= SCAN_HEALTHY_MS) SCAN_RETRY_MIN_MS
+                else (backoffMs * 2).coerceAtMost(SCAN_RETRY_MAX_MS)
+                delay(backoffMs)
+            }
         }
     }
 
@@ -90,5 +115,13 @@ class AidexXSourceRegistry(
             repository.setActive(id)
         }
         return source
+    }
+
+    private companion object {
+        const val TAG = "CgmScan"
+        const val SCAN_RETRY_MIN_MS = 1_000L
+        const val SCAN_RETRY_MAX_MS = 30_000L
+        /** A scan that ran at least this long before dropping is treated as healthy: reset backoff. */
+        const val SCAN_HEALTHY_MS = 60_000L
     }
 }
