@@ -6,7 +6,7 @@ import kotlinx.coroutines.yield
 /**
  * Resolves a candidate insulin dose into its announced-future [CurveEvent]s (the dose-scaled gamma
  * PK), so the calculator stays agnostic of the curve engine. In production this is backed by
- * `CurveEngine.bolusEvent`; in tests a fake returns a marker the fake [ForecastPort] reads.
+ * the selected preset's `CurveEngine.rapidEvent`; in tests a fake returns a marker the fake [ForecastPort] reads.
  */
 fun interface BolusResolver {
     suspend fun resolve(doseU: Double, atMs: Long): List<CurveEvent>

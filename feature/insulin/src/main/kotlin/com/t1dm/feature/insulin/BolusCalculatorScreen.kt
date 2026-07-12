@@ -11,6 +11,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -24,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import com.t1dm.calc.AdviceResult
 import com.t1dm.calc.Candidate
 import com.t1dm.calc.DecisionCard
+import kotlin.math.roundToInt
 
 /**
  * The ranked-candidate bolus-calculator surface (Phase 4 §5 + §3.6-F). It is a pure,
@@ -39,23 +41,73 @@ import com.t1dm.calc.DecisionCard
  *    mandatory confirmation whenever [AdviceResult.Recommended.requiresConfirmation] is set (a long gap
  *    since the last logged dose + a nonzero dose). Accept only ever *records the human's decision* —
  *    it does not, and cannot, actuate insulin.
+ *
+ * The calculator scores every candidate toward a SINGLE target BG the user picks on the [TargetBgSlider]
+ * (§3.6, advisory only). Its bounds are the calculator's own low/high target thresholds — the same band
+ * the in-range objective is measured against — so the chosen target is user-set within [hypo, hyper] and
+ * needs no further clamping; [onRecompute] carries that value down into the fail-closed search.
  */
 @Composable
 fun BolusCalculatorScreen(
     result: AdviceResult?,
+    targetLowMgdl: Double,
+    targetHighMgdl: Double,
+    initialTargetMgdl: Double,
     onAccept: (Candidate) -> Unit = {},
-    onRecompute: () -> Unit = {},
+    onRecompute: (targetMgdl: Double) -> Unit = {},
 ) {
+    // The slider's own bounds ARE the clamp (the calculator low/high target). Guard only the widget's
+    // invariant that start ≤ end (the thresholds are user-set and unbounded, so a mis-ordered or
+    // zero-width pair is possible) — this never narrows the user's target, it only keeps Slider legal.
+    val lo = minOf(targetLowMgdl, targetHighMgdl)
+    val hi = maxOf(targetLowMgdl, targetHighMgdl).let { if (it > lo) it else lo + 1.0 }
+    var targetMgdl by remember(lo, hi, initialTargetMgdl) {
+        mutableStateOf(initialTargetMgdl.coerceIn(lo, hi))
+    }
+
     Column(
         Modifier.fillMaxWidth().padding(16.dp).verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        TargetBgSlider(targetMgdl, lo, hi) { targetMgdl = it }
         when (result) {
             null -> Text("No recommendation yet — tap Recompute.", style = MaterialTheme.typography.bodyMedium)
             is AdviceResult.Refused -> RefusedCard(result)
             is AdviceResult.Recommended -> RecommendedBody(result, onAccept)
         }
-        Button(onClick = onRecompute, modifier = Modifier.padding(top = 4.dp)) { Text("Recompute") }
+        Button(onClick = { onRecompute(targetMgdl) }, modifier = Modifier.padding(top = 4.dp)) { Text("Recompute") }
+    }
+}
+
+/**
+ * The single target-BG picker (§3.6 — advisory only). One slider spanning the calculator's own
+ * [low]…[high] target thresholds; its value is the BG the grid search drives the forecast median toward.
+ * The bounds are the clamp — no separate "safe range" limit is imposed on the user's choice.
+ */
+@Composable
+private fun TargetBgSlider(target: Double, low: Double, high: Double, onChange: (Double) -> Unit) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text("Target BG", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                Text("${target.roundToInt()} mg/dL", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            }
+            Slider(
+                value = target.toFloat(),
+                onValueChange = { onChange(it.toDouble()) },
+                valueRange = low.toFloat()..high.toFloat(),
+            )
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("${low.roundToInt()}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                Text("${high.roundToInt()}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+            }
+            Text(
+                "The grid search scores every candidate so the forecast median lands here. Bounds are your " +
+                    "calculator low/high target. Advisory only — the app never actuates insulin.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+            )
+        }
     }
 }
 

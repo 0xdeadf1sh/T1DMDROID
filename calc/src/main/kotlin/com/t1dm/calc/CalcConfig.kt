@@ -28,6 +28,16 @@ sealed interface Objective {
 
     /** Drive the median to [TargetRange.targetMgdl] at [atMsFromNow] ms past the roll start. */
     data class HitTargetAtTime(val atMsFromNow: Long) : Objective
+
+    /**
+     * Drive the median onto a single user-set BG [targetMgdl] across the whole horizon — the
+     * scalar-target analogue of [MinTimeOutOfRange], scoring the median's distance from one point
+     * rather than an in-range band. [targetMgdl] is user-set and UNBOUNDED (§3.6); the app sources it
+     * from a slider bounded by the calculator's own low/high target so no extra clamp is required. The
+     * lower-band hypo tail stays guarded structurally by the predicted-low VETO rail, so the objective
+     * may read the median as its whole signal.
+     */
+    data class HitTargetBg(val targetMgdl: Double) : Objective
 }
 
 /**

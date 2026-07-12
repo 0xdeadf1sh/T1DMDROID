@@ -1,5 +1,6 @@
 package com.t1dm.calc
 
+import kotlin.math.abs
 import kotlin.math.min
 
 /**
@@ -26,6 +27,7 @@ object Scoring {
             Objective.MinTimeOutOfRange -> scoreTimeOutOfRange(fan, config)
             Objective.MinKovatchevRisk -> scoreKovatchev(fan, config)
             is Objective.HitTargetAtTime -> scoreHitTarget(fan, config, obj)
+            is Objective.HitTargetBg -> scoreHitTargetBg(fan, config, obj)
         }
     }
 
@@ -50,6 +52,27 @@ object Scoring {
         fan.steps.forEachIndexed { i, s ->
             val w = weightAt(i, fan, config)
             acc += w * (a.hypoWeight * KovatchevRisk.lbgi(s.lowerBg) + a.hyperWeight * KovatchevRisk.hbgi(s.medianBg))
+        }
+        return acc
+    }
+
+    /**
+     * Scores a candidate by how close its horizon-weighted MEDIAN sits to a single scalar target BG
+     * (Objective.HitTargetBg). It is the point-target analogue of [scoreTimeOutOfRange]: every step
+     * contributes the absolute median-to-target distance, discounted beyond the validated window and
+     * scaled asymmetrically — an under-target median leans on [Asymmetry.hypoWeight], an over-target
+     * one on [Asymmetry.hyperWeight]. The hypo tail off the lower band is not re-penalised here because
+     * the predicted-low VETO rail already blocks any candidate whose lower band dips below the floor
+     * (Rails.predictedLowVeto), so this objective safely reads the median as its whole signal.
+     */
+    private fun scoreHitTargetBg(fan: PredFan, config: CalcConfig, obj: Objective.HitTargetBg): Double {
+        val a = config.asymmetry
+        val target = obj.targetMgdl
+        var acc = 0.0
+        fan.steps.forEachIndexed { i, s ->
+            val w = weightAt(i, fan, config)
+            val dev = s.medianBg - target
+            acc += (if (dev < 0.0) a.hypoWeight else a.hyperWeight) * w * abs(dev)
         }
         return acc
     }

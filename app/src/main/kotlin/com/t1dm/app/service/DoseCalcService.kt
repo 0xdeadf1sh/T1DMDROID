@@ -13,6 +13,7 @@ import com.t1dm.app.di.AppContainer
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import timber.log.Timber
+import kotlin.math.roundToInt
 
 /**
  * The short-lived foreground service that hosts the dose calculator's rolled grid-search (SPEC.private.md
@@ -45,12 +46,16 @@ class DoseCalcService : LifecycleService() {
         super.onStartCommand(intent, flags, startId)
         when (intent?.action) {
             ACTION_RECOMMEND -> {
-                // Int extras so `adb shell am ... --ei carbG 60 --ei gi 70` works (am has no double flag).
+                // Int extras so `adb shell am ... --ei carbG 60 --ei gi 70 --ei targetMgdl 110` works
+                // (am has no double flag). BG targets are whole mg/dL, the display grain.
                 val grams = intent.getIntExtra(EXTRA_CARB_G, 0).toDouble()
                 val gi = intent.getIntExtra(EXTRA_GI, DEFAULT_GI).toDouble()
+                // The user-set scalar target the calculator scores toward; a sentinel (< 0 / absent) means
+                // "no override" so the persisted objective stands. Unbounded — never clamped here.
+                val target = intent.getIntExtra(EXTRA_TARGET_MGDL, TARGET_NONE).takeIf { it > 0 }?.toDouble()
                 searchJob?.cancel()
                 searchJob = lifecycleScope.launch {
-                    runCatching { container.runBolusAdvice(grams, gi) }
+                    runCatching { container.runBolusAdvice(grams, gi, manualTargetMgdl = target) }
                         .onFailure { Timber.tag(TAG).w(it, "bolus advice failed") }
                     stopSelf()
                 }
@@ -100,17 +105,26 @@ class DoseCalcService : LifecycleService() {
         private const val NOTIF_ID = 4200
         private const val DEFAULT_GI = 55
 
+        /** Sentinel for [EXTRA_TARGET_MGDL] meaning "no scalar-target override" (use the persisted objective). */
+        const val TARGET_NONE = -1
+
         const val ACTION_RECOMMEND = "com.t1dm.app.RECOMMEND_BOLUS"
         const val ACTION_CANCEL = "com.t1dm.app.CANCEL_BOLUS"
         const val EXTRA_CARB_G = "carbG"
         const val EXTRA_GI = "gi"
+        const val EXTRA_TARGET_MGDL = "targetMgdl"
 
-        /** Kick off a (cancellable) bolus recommendation; [carbG] > 0 announces a meal to condition on. */
-        fun recommend(context: Context, carbG: Int = 0, gi: Int = DEFAULT_GI) {
+        /**
+         * Kick off a (cancellable) bolus recommendation; [carbG] > 0 announces a meal to condition on.
+         * [targetMgdl] is the user-set scalar target BG the calculator scores toward (mg/dL); null leaves
+         * the persisted objective in force. It is UNBOUNDED — the slider's own bounds are the only limit.
+         */
+        fun recommend(context: Context, carbG: Int = 0, gi: Int = DEFAULT_GI, targetMgdl: Double? = null) {
             val i = Intent(context, DoseCalcService::class.java).apply {
                 action = ACTION_RECOMMEND
                 putExtra(EXTRA_CARB_G, carbG)
                 putExtra(EXTRA_GI, gi)
+                putExtra(EXTRA_TARGET_MGDL, targetMgdl?.roundToInt() ?: TARGET_NONE)
             }
             context.startForegroundService(i)
         }
