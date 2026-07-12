@@ -3,13 +3,18 @@ package com.t1dm.feature.insulin
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
@@ -53,6 +58,7 @@ fun BolusCalculatorScreen(
     targetLowMgdl: Double,
     targetHighMgdl: Double,
     initialTargetMgdl: Double,
+    isComputing: Boolean = false,
     onAccept: (Candidate) -> Unit = {},
     onRecompute: (targetMgdl: Double) -> Unit = {},
 ) {
@@ -75,7 +81,23 @@ fun BolusCalculatorScreen(
             is AdviceResult.Refused -> RefusedCard(result)
             is AdviceResult.Recommended -> RecommendedBody(result, onAccept)
         }
-        Button(onClick = { onRecompute(targetMgdl) }, modifier = Modifier.padding(top = 4.dp)) { Text("Recompute") }
+        Button(
+            onClick = { onRecompute(targetMgdl) },
+            enabled = !isComputing,
+            modifier = Modifier.padding(top = 4.dp),
+        ) {
+            if (isComputing) {
+                CircularProgressIndicator(
+                    Modifier.size(18.dp),
+                    strokeWidth = 2.dp,
+                    color = LocalContentColor.current,
+                )
+                Spacer(Modifier.width(8.dp))
+                Text("Recomputing…")
+            } else {
+                Text("Recompute")
+            }
+        }
     }
 }
 

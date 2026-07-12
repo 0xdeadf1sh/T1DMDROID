@@ -913,6 +913,7 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 targetLowMgdl = targetLow,
                 targetHighMgdl = targetHigh,
                 initialTargetMgdl = targetMid,
+                isComputing = ui is BolusAdviceUi.Running,
                 onAccept = { c ->
                     scope.launch { container.acceptAdvisedBolus(c.doseU) }
                     DoseCalcService.cancel(ctx)
