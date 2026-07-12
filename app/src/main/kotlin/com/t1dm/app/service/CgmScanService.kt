@@ -30,6 +30,9 @@ import com.t1dm.app.notify.PredictiveAlertPresenter
 import com.t1dm.app.settings.SettingsStore
 import androidx.glance.appwidget.updateAll
 import com.t1dm.app.widget.GlucoseWidget
+import com.t1dm.core.design.applyWidgetPalette
+import com.t1dm.core.design.iconStyleForTheme
+import com.t1dm.core.design.resolvePalette
 import com.t1dm.core.model.InferenceState
 import com.t1dm.core.model.UnitSpace
 import kotlinx.coroutines.flow.combine
@@ -71,6 +74,15 @@ import android.hardware.SensorManager
 import kotlinx.coroutines.delay
 import timber.log.Timber
 import java.util.TimeZone
+
+/** The four live inputs the glance refresh combines: the latest reading, inference state, unit space,
+ *  and the active theme as an (id, customJson) pair (folded in so a theme change repaints at once). */
+private data class GlanceInputs(
+    val latest: CgmReading?,
+    val state: InferenceState,
+    val unit: UnitSpace,
+    val theme: Pair<String, String?>,
+)
 
 /**
  * The always-on Phase-1 foreground service (SPEC.private.md §2.3, Phase 1). It hosts, in one place
@@ -313,15 +325,20 @@ class CgmScanService : LifecycleService() {
             val ticker = kotlinx.coroutines.flow.flow {
                 while (isActive) { emit(Unit); delay(NOTIF_TICK_MS) }
             }
+            val theme = combine(
+                container.settingsStore.themeId,
+                container.settingsStore.customThemeJson,
+            ) { id, json -> id to json }
             combine(
                 container.latestReading.onStart { emit(null) },
                 container.inferenceState,
                 container.statsRepository.unitSpace.onStart { emit(UnitSpace.MgDl) },
                 ticker,
-            ) { latest, state, unit, _ ->
-                Triple(latest, state, unit)
-            }.collectLatest { (latest, state, unit) ->
-                runCatching { refreshGlanceSurfaces(latest, state, unit) }
+                theme,
+            ) { latest, state, unit, _, themeSig ->
+                GlanceInputs(latest, state, unit, themeSig)
+            }.collectLatest { (latest, state, unit, themeSig) ->
+                runCatching { refreshGlanceSurfaces(latest, state, unit, themeSig) }
                     .onFailure { Timber.tag(TAG).w(it, "glance refresh failed (alarm path unaffected)") }
             }
         }
@@ -340,7 +357,12 @@ class CgmScanService : LifecycleService() {
      * while a deterministic critical breach is already firing, so it can only ever add an EARLIER
      * warning), and the widgets. The §3.6 gate lives inside [BgGlanceComputer]; here we only render.
      */
-    private suspend fun refreshGlanceSurfaces(latest: CgmReading?, state: InferenceState, unit: UnitSpace) {
+    private suspend fun refreshGlanceSurfaces(
+        latest: CgmReading?,
+        state: InferenceState,
+        unit: UnitSpace,
+        themeSig: Pair<String, String?>,
+    ) {
         val glance: BgGlance = BgGlanceComputer.compute(
             latest = latest,
             state = state,
@@ -349,8 +371,12 @@ class CgmScanService : LifecycleService() {
             staleMin = 15,
             nowMs = System.currentTimeMillis(),
         )
-        val style = container.iconStyle
-        val accent = container.notificationAccentArgb
+        // Derive the notification geometry/accent AND the widget palette from the SAME (id, json) that
+        // drove this refresh — not the container's independently-collected snapshot — so a theme change
+        // repaints both surfaces at once and can never race the snapshot.
+        val (themeId, customJson) = themeSig
+        val style = iconStyleForTheme(themeId)
+        val accent = NotificationIcons.accentArgb(themeId, customJson)
         val nm = getSystemService(NotificationManager::class.java)
         runCatching {
             nm.notify(NOTIF_ID, livePresenter.build(glance, unit, style, accent, state.selectedPredictedTime))
@@ -361,6 +387,10 @@ class CgmScanService : LifecycleService() {
         if (container.deathModeSnapshot) predictiveAlerts.clear()
         else predictiveAlerts.update(glance, alertActuatorCfg, deterministicCriticalActive, style, accent)
 
+        // Seed the palette globals the widget reads headlessly BEFORE pushing it, so it renders the
+        // persisted theme deterministically (independent of whether an Activity composition has run) and
+        // updates the instant the theme changes rather than on the next reading/ticker.
+        applyWidgetPalette(resolvePalette(themeId, customJson))
         runCatching { GlucoseWidget().updateAll(this) }
         // Freshness blink (tasteful, free motion): a just-arrived reading renders the accent bright;
         // settle it a beat later with ONE delayed re-render so a new value reads as a brief pulse rather

@@ -197,6 +197,16 @@ val BundledPalettes: List<T1dmPalette> =
 fun paletteForId(id: String?): T1dmPalette =
     BundledPalettes.firstOrNull { it.id == id } ?: TronPalette
 
+/** Resolve the persisted (themeId, customThemeJson) pair to the active palette — the ONE place that
+ *  decodes a custom theme, so the Activity, the FGS notification, and the widget all agree. A blank or
+ *  malformed custom JSON falls back to [TronPalette]. */
+fun resolvePalette(themeId: String?, customThemeJson: String?): T1dmPalette =
+    if (themeId == ThemeIds.CUSTOM && !customThemeJson.isNullOrBlank()) {
+        runCatching { parseThemeJson(customThemeJson) }.getOrDefault(TronPalette)
+    } else {
+        paletteForId(themeId)
+    }
+
 // ── Custom-theme JSON import (item 25 — "parse a colour-scheme JSON via SAF into a custom theme") ──
 
 /**

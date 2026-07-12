@@ -25,10 +25,16 @@ val LocalAnimationsEnabled = staticCompositionLocalOf { true }
 val LocalDeathMode = staticCompositionLocalOf { false }
 
 /**
- * The currently-active Material [ColorScheme], mirrored into a plain holder so non-Compose surfaces
- * (the Glance widgets, refreshed headlessly from the FGS) snapshot the SAME palette the Activity
- * renders — widget == app theme (Phase 7B/7D). [T1dmTheme] keeps it in sync on every recompose;
- * the widgets read it live at refresh time.
+ * The currently-active palette + Material [ColorScheme], mirrored into plain holders so the non-Compose
+ * Glance widgets (refreshed headlessly from the FGS) snapshot the app theme — widget == app theme
+ * (Phase 7B/7D). Written by exactly ONE authority, [applyWidgetPalette], which the FGS calls
+ * synchronously right before it pushes the widgets; the widgets read the value it set at render time.
+ *
+ * The Activity does NOT write these — its own Compose tree reads the palette directly (MaterialTheme +
+ * [LocalT1dmSemantics]), never these holders. A second, foreground writer used to race the FGS: while
+ * the Activity is up it recomposes every second (the live "N s ago" ticker), so between the FGS setting
+ * the new palette and the widget's async render it could clobber the holder back to the palette still in
+ * its own not-yet-updated composition state, and the widget would render a beat behind the theme change.
  */
 @Volatile
 var T1dmColorScheme: ColorScheme = TronPalette.toColorScheme()
@@ -39,10 +45,22 @@ var T1dmActivePalette: T1dmPalette = TronPalette
     private set
 
 /**
+ * Seed the process-global palette holders the Glance widgets read, WITHOUT a composition — the SOLE
+ * writer of [T1dmActivePalette]/[T1dmColorScheme]. The FGS calls this from its headless glance refresh
+ * (once per reading/tick/theme-change) right before `updateAll`, so the widget renders the persisted
+ * theme even when no Activity has run (boot / FGS-only start) and the instant the theme changes.
+ */
+fun applyWidgetPalette(palette: T1dmPalette) {
+    T1dmActivePalette = palette
+    T1dmColorScheme = palette.toColorScheme()
+}
+
+/**
  * The app theme (SPEC.private.md §3.4 / Phase 7D). Resolves the [palette] to a Material [ColorScheme]
- * + the chosen [font] to a [androidx.compose.material3.Typography], provides the glucose-band
- * semantics and the animation flag, and mirrors the active scheme into [T1dmColorScheme] for the
- * widgets. All parameters default so the pre-selector call sites (previews) still compile.
+ * + the chosen [font] to a [androidx.compose.material3.Typography], and provides the glucose-band
+ * semantics and the animation flag. All parameters default so the pre-selector call sites (previews)
+ * still compile. It deliberately does NOT touch the widget holders ([T1dmActivePalette]); those are the
+ * FGS's alone (see [applyWidgetPalette]) to keep the foreground recompose from racing the widget render.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -54,8 +72,6 @@ fun T1dmTheme(
     content: @Composable () -> Unit,
 ) {
     val scheme = palette.toColorScheme()
-    T1dmColorScheme = scheme
-    T1dmActivePalette = palette
     // U3 — the red-rectangle touch flash. Material's default ripple tints from the local content
     // colour; on a surface whose content resolves to `error` (= [urgentLow] = red) a bounded ripple on
     // an unclipped clickable painted a red rectangle on every tap. A prior fix pinned the ripple to
