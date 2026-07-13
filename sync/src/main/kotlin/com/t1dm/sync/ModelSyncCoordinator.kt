@@ -156,14 +156,24 @@ class ModelSyncCoordinator(
         return if (isRunning) ModelSyncOutcome.UpdateDownloaded(row.id) else ModelSyncOutcome.FetchedNew(row.id)
     }
 
-    /** Write the served meta verbatim, but with `id`/`artifact` normalized so ModelStore resolves a
-     *  deterministic local id (== [name]) and the exact on-disk `.pte` ([pteName]). */
+    /** Write the served meta verbatim, but with `id` set to the LOGICAL model id ([logicalIdOf] — the
+     *  artifact stem minus its engine infix, e.g. `large.xnnpack` → `large`) and `artifact` to the exact
+     *  on-disk `.pte` ([pteName]). Sharing the logical id across a model's backend variants
+     *  (`.xnnpack`/`.vulkan`/…) is what makes ModelStore + InferenceController group them into ONE model
+     *  with a CPU/GPU toggle instead of N separate models. The running-set/dosing identity keys on the
+     *  `.pte` FILENAME (see [runningArtifacts]), never this id, so grouping cannot swap the dosing model. */
     private fun writeDescriptor(dir: File, descName: String, meta: JsonObject, name: String, pteName: String) {
-        val normalized = JsonObject(meta + mapOf("id" to JsonPrimitive(name), "artifact" to JsonPrimitive(pteName)))
+        val normalized = JsonObject(meta + mapOf("id" to JsonPrimitive(logicalIdOf(name)), "artifact" to JsonPrimitive(pteName)))
         val part = File(dir, "$descName.part")
         writeAndSync(part, normalized.toString().toByteArray(Charsets.UTF_8))
         atomicRename(part, File(dir, descName))
     }
+
+    /** The logical model id: the artifact stem with a trailing engine infix (`.xnnpack`/`.vulkan`/…)
+     *  stripped so a model's backend variants share one id; a stem with no recognized infix (a single
+     *  unqualified model) is returned unchanged. */
+    private fun logicalIdOf(name: String): String =
+        if (name.substringAfterLast('.', "") in ENGINE_INFIXES) name.substringBeforeLast('.') else name
 
     private fun writeAndSync(dest: File, bytes: ByteArray) {
         FileOutputStream(dest).use { fos ->
@@ -190,6 +200,10 @@ class ModelSyncCoordinator(
 
         /** Matches `ModelStore.bundleOf`'s default when a descriptor omits `engine`. */
         private const val DEFAULT_ENGINE = "executorch_xnnpack_fp32"
+
+        /** Filename engine infixes (`<logicalId>.<infix>.pte`) stripped to the logical id so a model's
+         *  backend variants group under one id. Distinct from the descriptor `engine` string. */
+        private val ENGINE_INFIXES = setOf("xnnpack", "vulkan", "neuron", "litert_npu", "npu")
 
         /** The engine strings `ModelStore.backendOf` recognizes; anything else has no backend. */
         private val SUPPORTED_ENGINES = setOf(
