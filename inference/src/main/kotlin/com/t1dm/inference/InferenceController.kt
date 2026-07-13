@@ -37,7 +37,8 @@ import kotlin.math.max
 
 /**
  * The Phase-2 inference orchestrator (SPEC.private.md §3.2, Phase 2 deliverable 4). It owns the
- * running set (≤5, default 1), the loaded backend handles, and the observable [state]. A cycle —
+ * running set (every discovered model up to a user-configurable cap, default 5), the loaded backend
+ * handles, and the observable [state]. A cycle —
  * fired by the 5-min `GridTick` in `CgmScanService`, or manually/synthetically — builds one shared
  * BG history, fans out **serially** over the running set on the single-thread `inference`
  * dispatcher, decodes each `head_raw` in the fp32/fp64 Rust core (`assemble_decode`), gates it
@@ -57,8 +58,10 @@ class InferenceController(
     private val predictionStore: PredictionStore,
     /** §3.6-D freshness gate default (Q10): last MEASURED older than this ⇒ forecast STALE. */
     private val freshnessThresholdMs: Long = 15 * 60_000L,
-    /** Manual running-set cap (SPEC.private.md §2.3). Default 1 selected model this phase. */
-    private val maxRunning: Int = 1,
+    /** The user's running-set cap (SPEC.private.md §2.3), read FRESH each discovery (kv-backed;
+     *  mirrors [warmupHoursProvider]). Every discovered model up to this cap runs each cycle;
+     *  coerced to ≥1. null/throw ⇒ [DEFAULT_MAX_RUNNING]. */
+    private val maxRunningProvider: suspend () -> Int = { DEFAULT_MAX_RUNNING },
     /** Reconstructed carb/insulin context channels (SPEC §3.3); null ⇒ `normalize(0)` baseline. */
     private val contextChannels: ContextChannelSource? = null,
     /** Committed dose tails carried into the PREDICTION ZONE (SPEC §3.3); null ⇒ `normalize(0)`
@@ -152,12 +155,21 @@ class InferenceController(
     }
 
     /**
-     * (Re)discover models on disk and load the running set. Closes handles that dropped out, loads
-     * new ones onto their backend (falling back to the [StubBackend] when the `.pte` is absent or a
-     * real load throws), and selects the first model if none is selected. Runs its native loads on
-     * the `inference` thread.
+     * (Re)discover models on disk and load the running set: every discovered model up to the
+     * [maxRunningProvider] cap (read fresh here), so the panel shows N rows, N forecasts run each
+     * cycle, and N predictions are pushed. Closes handles that dropped out, loads each running model
+     * onto its backend (falling back to the [StubBackend] when the `.pte` is absent or a real load
+     * throws), and preserves the current selection when it stays in the running set, else falls back
+     * to the first running model. Only the SELECTED model gets the full dual-backend catalog +
+     * agreement probe (it alone feeds dosing). Runs its native loads on the `inference` thread.
      */
-    suspend fun refreshModels() = withContext(dispatchers.inference) {
+    suspend fun refreshModels() = cycleMutex.withLock { refreshModelsLocked() }
+
+    /** The body of [refreshModels] WITHOUT acquiring [cycleMutex] — call only while already holding it
+     *  (its in-class callers [deleteModel] and [refreshOrNote] do). External/unlocked callers use the
+     *  public [refreshModels]. Splitting avoids a non-reentrant-[Mutex] deadlock while still serialising
+     *  the loaded-set close/reload against a live [runCycle] — the race the 1→N model fan-out widened. */
+    private suspend fun refreshModelsLocked() = withContext(dispatchers.inference) {
         if (!telemetryLoaded) {
             runCatching { telemetryStore?.load() }.getOrNull()?.let { cumulative.putAll(it) }
             telemetryLoaded = true
@@ -182,27 +194,48 @@ class InferenceController(
             forecastBackendPrefs[id] = runCatching { backendPrefProvider(id) }.getOrNull()
         }
 
-        // The single running model this phase (maxRunning=1): the first discovered id.
-        val primaryId = variants.keys.firstOrNull()
-        catalog = buildCatalog(primaryId)
-
-        if (primaryId != null) {
-            val active = chooseActive(primaryId)
-            loaded[primaryId] = active
-            selectedId = primaryId
-        } else {
-            selectedId = null
+        // The running set this discovery: every discovered id up to the (fresh) user cap. `loaded` was
+        // cleared above; the per-cycle fan-out and runningModels() both iterate it, so loading N here
+        // makes the panel show N rows, run N forecasts, and push N predictions.
+        val cap = runCatching { maxRunningProvider() }.getOrNull()?.coerceAtLeast(1) ?: DEFAULT_MAX_RUNNING
+        val runningIds = variants.keys.take(cap).toList()
+        // Preserve the current selection across refreshes (backend switch / model add-remove) when it
+        // is still in the running set; else fall back to the first running id. selectModel() can only
+        // ever pick a loaded (running) model, so a valid selection stays valid unless the cap shrank
+        // below its position, in which case falling back to the first running model is correct.
+        selectedId = selectedId?.takeIf { it in runningIds } ?: runningIds.firstOrNull()
+        // Full dual-backend catalog + agreement probe for the SELECTED model only (it feeds dosing);
+        // this loads its variants into loadedVariants[selectedId].
+        catalog = buildCatalog(selectedId)
+        for (id in runningIds) {
+            if (id != selectedId) loadModelActive(id)   // selected already loaded by buildCatalog
+            loaded[id] = chooseActive(id)
         }
 
+        // When the cap hides installed models, say so — folded into whichever note applies.
+        val truncated = if (variants.size > cap)
+            "running $cap of ${variants.size} installed models (cap in Settings → Forecast & models)"
+        else null
         val note = when {
             bundles.isEmpty() ->
                 "no model — add a server and Sync models (Settings → Server)"
             loaded.values.none { it.real } ->
-                "running on the StubBackend (no working .pte) — real forecast path blocked"
+                listOfNotNull(
+                    "running on the StubBackend (no working .pte) — real forecast path blocked",
+                    truncated,
+                ).joinToString(" · ")
+            loaded[selectedId]?.effectiveBackend == BackendId.STUB ->
+                listOfNotNull(
+                    "selected model has no working .pte — running on the StubBackend (real forecast path blocked)",
+                    truncated,
+                ).joinToString(" · ")
             loaded[selectedId]?.effectiveBackend?.let { it != BackendId.EXECUTORCH_XNNPACK_FP32 } == true ->
-                "forecast running on ${loaded[selectedId]?.effectiveBackend?.displayName()} " +
-                    "(non-authoritative; dosing needs the agreement probe)"
-            else -> null
+                listOfNotNull(
+                    "forecast running on ${loaded[selectedId]?.effectiveBackend?.displayName()} " +
+                        "(non-authoritative; dosing needs the agreement probe)",
+                    truncated,
+                ).joinToString(" · ")
+            else -> truncated
         }
         _state.value = _state.value.copy(
             running = runningModels(),
@@ -277,6 +310,28 @@ class InferenceController(
         val bundle = variants[id]?.values?.firstOrNull() ?: error("no bundle for $id")
         val handle = stub.load(bundle.descriptor, bundle.pte)
         return Entry(bundle, stub, handle, BackendId.STUB, Precision.FP32, real = false)
+    }
+
+    /** Load backend variant(s) for a NON-selected running model into loadedVariants[id]: ALWAYS the
+     *  fp32 XNNPACK authority when present (so this model can feed dosing the INSTANT it is selected —
+     *  §3.6-E — without waiting for a catalog rebuild), PLUS its persisted display backend (the pref)
+     *  if different, PLUS a fallback to any variant so it still forecasts. Cheap CPU loads; the full
+     *  evidence-based dual-backend probe is [buildCatalog]'s job and runs for the selected model only.
+     *  chooseActive falls back to the StubBackend when nothing loaded. */
+    private fun loadModelActive(id: String) {
+        val vmap = variants[id] ?: return
+        val loadedForId = loadedVariants.getOrPut(id) { LinkedHashMap() }
+        fun tryLoad(bid: BackendId?) {
+            if (bid == null || loadedForId.containsKey(bid)) return
+            val variant = vmap[bid] ?: return
+            val backend = backends[bid] ?: return
+            if (!variant.pte.exists()) return
+            val handle = runCatching { backend.load(variant.descriptor, variant.pte) }.getOrNull() ?: return
+            loadedForId[bid] = Entry(variant, backend, handle, bid, variant.precision, real = true)
+        }
+        tryLoad(BackendId.EXECUTORCH_XNNPACK_FP32) // authority — always, so selecting this model can dose
+        tryLoad(forecastBackendPrefs[id])          // the DISPLAY-active backend (the pref), if different
+        if (loadedForId.isEmpty()) for (bid in vmap.keys) { tryLoad(bid); if (loadedForId.isNotEmpty()) break }
     }
 
     /**
@@ -454,12 +509,29 @@ class InferenceController(
         withContext(dispatchers.inference) { e.backend.run(e.handle, input) }
     }
 
-    /** Manually pick the selected (fp32-authoritative) model; a no-op if [id] is not loaded. */
-    fun selectModel(id: String) {
-        if (id in loaded.keys) {
-            selectedId = id
-            _state.value = _state.value.copy(running = runningModels())
-        }
+    /**
+     * Manually pick the SELECTED model — the one whose forecast the BG panel draws and whose fp32 CPU
+     * authority feeds dosing; a no-op if [id] is not in the running set. All running models keep running
+     * and pushing predictions regardless; selection governs only the DISPLAYED forecast (+ circadian) and
+     * the dosing authority. Two steps: (1) immediately re-flag the already-computed predictions so the
+     * panel switches to [id]'s fan this instant (rather than waiting for the next cycle); (2) re-run
+     * discovery so the Compute-backend switcher catalog + agreement probe describe the newly selected
+     * model (and its dual-backend catalog is (re)loaded). Suspends — callers launch it in a scope.
+     */
+    suspend fun selectModel(id: String) {
+        if (id !in loaded.keys) return
+        selectedId = id
+        val sel = _state.value.predictions.firstOrNull { it.modelId == id }
+        _state.value = _state.value.copy(
+            running = runningModels(),
+            predictions = _state.value.predictions
+                .map { it.copy(selected = it.modelId == id) }
+                .sortedByDescending { it.selected },
+            circadianTime = sel?.predictedTime ?: _state.value.circadianTime,
+            circadianAnchorMs = sel?.predictedTime?.let { sel.anchorTsMs } ?: _state.value.circadianAnchorMs,
+            selectedHasTimeSection = loaded[id]?.bundle?.descriptor?.time != null,
+        )
+        refreshModels()
     }
 
     /**
@@ -476,7 +548,7 @@ class InferenceController(
         val removed = withContext(dispatchers.inference) { runCatching { store.delete(id) }.getOrDefault(false) }
         cumulative.remove(id); latencySamples.remove(id); forecastBackendPrefs.remove(id)
         runCatching { telemetryStore?.save(HashMap(cumulative)) }
-        refreshModels()
+        refreshModelsLocked() // already under cycleMutex — the public refreshModels would self-deadlock
         _state.value = _state.value.copy(predictions = _state.value.predictions.filterNot { it.modelId == id })
         removed
     }
@@ -603,8 +675,11 @@ class InferenceController(
 
     /** Fire a cycle off the shared BG history (the `GridTick` path). */
     suspend fun runFromHistory(cause: InferenceCause = InferenceCause.GRID_TICK, nowMs: Long) {
-        val descAny = loaded.values.firstOrNull()?.bundle?.descriptor
-        if (descAny == null) { refreshOrNote(); return }
+        // Anchor context-window sizing + the warmup gate to the SELECTED model's descriptor (mirrors
+        // buildFutureChannels) — with N running models `loaded.values.first()` is the first-discovered,
+        // NOT necessarily the selected/displayed model whose forecast + warmup these bounds govern.
+        val descAny = (loaded[selectedId] ?: loaded.values.firstOrNull())?.bundle?.descriptor
+        if (descAny == null) { refreshModels(); return }
         // Thermal gate BEFORE the warmup gate: while blocked, publish a clean over-temp banner (empty
         // predictions, PRESERVING circadianTime so the clock stays lit) instead of a warmup/forecast
         // state. runCycle carries the universal chokepoint guard; this one only sharpens the message.
@@ -711,8 +786,9 @@ class InferenceController(
         // baseline roll uses (SPEC §3.3). Carried into build_context's announced-future slots so a
         // just-logged meal RAISES (and a just-logged insulin LOWERS) the main-view forecast, instead
         // of appearing in the past then vanishing at the boundary (an impossible drop-off ⇒ wrong dip).
-        // Model-independent (rollStartMs is the grid boundary; predSteps is the fixed pred zone).
-        val futureChannels = buildFutureChannels(series, loaded.values.first().bundle.descriptor)
+        // Model-independent (rollStartMs is the grid boundary; predSteps is the fixed pred zone) but
+        // anchored to the SELECTED model's descriptor for a stable, deterministic pred-zone length.
+        val futureChannels = buildFutureChannels(series, (loaded[selectedId] ?: loaded.values.first()).bundle.descriptor)
 
         // Serial fan-out over the running set (never concurrent on the one command queue).
         for ((id, entry) in loaded) {
@@ -975,8 +1051,11 @@ class InferenceController(
         )
     }
 
+    /** Reload the running set when it is empty. Its sole caller [runCycle] already holds [cycleMutex],
+     *  so it uses the lock-free [refreshModelsLocked] (calling the locking [refreshModels] here would
+     *  self-deadlock the non-reentrant mutex). */
     private suspend fun refreshOrNote() {
-        if (loaded.isEmpty()) refreshModels()
+        if (loaded.isEmpty()) refreshModelsLocked()
     }
 
     /** Current process resident-set size (KB) from /proc/self/statm; 0 if unreadable (best-effort). */
@@ -985,7 +1064,9 @@ class InferenceController(
         pages * 4L // 4 KB page (K90 runtime page size = 4 KB — see target-device.md)
     }.getOrDefault(0L)
 
-    private companion object {
+    companion object {
+        /** Default running-set cap when [maxRunningProvider] is unset/unreadable (Settings default). */
+        const val DEFAULT_MAX_RUNNING = 5
         const val TAG = "CycleRunner"
         const val GRID_MS = 300_000L
         /** Fixed anchor for the deterministic probe/comparison input — reproducible across builds. */

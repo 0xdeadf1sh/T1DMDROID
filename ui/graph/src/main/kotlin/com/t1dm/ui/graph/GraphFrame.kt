@@ -82,8 +82,9 @@ suspend fun graphFrameOf(
 
 /**
  * Pure CPU transform (no coroutines) — safe to call directly from a `@Preview` or a test. Drops
- * value-less readings (INVALID / null bg), sorts by time, converts into [unit], marks dropout
- * breaks, then decimates with a min/max envelope if the count exceeds [maxPoints].
+ * value-less readings (INVALID / null bg), sorts by time, converts into [unit], marks genuine
+ * dropout breaks on the RAW grid, then decimates with a min/max envelope if the count exceeds
+ * [maxPoints] — carrying only the real breaks through so decimation never fabricates a gap.
  *
  * Kovatchev raw-space needs the native `f(g)` (SPEC.private.md §3.4); pass it as [kovatchevF]. When
  * absent, [UnitSpace.Kovatchev] falls back to mg/dL rather than fabricating a curve.
@@ -117,9 +118,18 @@ fun buildGraphFrame(
         }
     }
 
+    // Genuine dropout breaks live on the RAW grid: decimation drops points and can widen apparent
+    // spacing past maxGapMin with no real gap, so detect the breaks here and carry only these through.
+    // breakPrefix[j] = number of true entries in rawBreak[0, j) — an O(1) "is there a real dropout in
+    // this index range?" test for the decimated path below.
+    val rawBreak = BooleanArray(n) { i -> i < n - 1 && (xs[i + 1] - xs[i]) > maxGapMin }
+    val breakPrefix = IntArray(n + 1)
+    for (j in 0 until n) breakPrefix[j + 1] = breakPrefix[j] + if (rawBreak[j]) 1 else 0
+
+    var srcIdx: IntArray? = null
     if (n > maxPoints) {
         val d = decimateMinMax(xs, ys, flags, maxPoints)
-        xs = d.first; ys = d.second; flags = d.third
+        xs = d.xs; ys = d.ys; flags = d.flags; srcIdx = d.srcIdx
     }
 
     val m = xs.size
@@ -129,7 +139,14 @@ fun buildGraphFrame(
     for (i in 0 until m) {
         if (ys[i] < minY) minY = ys[i]
         if (ys[i] > maxY) maxY = ys[i]
-        if (i < m - 1) breakAfter[i] = (xs[i + 1] - xs[i]) > maxGapMin
+    }
+    if (srcIdx == null) {
+        // No decimation: the kept points ARE the raw grid, so carry rawBreak through verbatim.
+        for (i in 0 until m - 1) breakAfter[i] = rawBreak[i]
+    } else {
+        // Decimated: a segment breaks iff a genuine raw dropout falls between its two kept source
+        // indices (breakPrefix delta > 0), never merely because decimation spaced the points out.
+        for (k in 0 until m - 1) breakAfter[k] = breakPrefix[srcIdx[k + 1]] - breakPrefix[srcIdx[k]] > 0
     }
     return GraphFrame(t0, kept.first().tzOffsetMin, unit, xs, ys, flags, breakAfter, minY, maxY)
 }
@@ -141,21 +158,30 @@ private fun convert(mgdl: Double, unit: UnitSpace, kovatchevF: ((Double) -> Doub
         UnitSpace.Kovatchev -> kovatchevF?.invoke(mgdl) ?: mgdl
     }
 
+/** A min/max-decimation result: the reduced parallel arrays plus [srcIdx], the ORIGINAL pre-
+ *  decimation index of every kept point, so genuine raw dropouts can be re-mapped onto the reduced
+ *  polyline (a break must reflect a real gap, not bucket spacing). */
+private class Decimated(
+    val xs: FloatArray, val ys: FloatArray, val flags: IntArray, val srcIdx: IntArray,
+)
+
 /**
  * Min/max bucket decimation: split the interior into ~[maxPoints]/2 buckets and keep each bucket's
  * lowest and highest sample (in time order). Preserves the visual envelope — spikes and nadirs
- * survive — where naive striding would drop them. Endpoints are always retained.
+ * survive — where naive striding would drop them. Endpoints are always retained, and every kept
+ * point records its source index (see [Decimated.srcIdx]).
  */
 private fun decimateMinMax(
     xs: FloatArray, ys: FloatArray, flags: IntArray, maxPoints: Int,
-): Triple<FloatArray, FloatArray, IntArray> {
+): Decimated {
     val n = xs.size
     val buckets = (maxPoints / 2).coerceAtLeast(1)
     val ox = ArrayList<Float>(maxPoints + 2)
     val oy = ArrayList<Float>(maxPoints + 2)
     val of = ArrayList<Int>(maxPoints + 2)
+    val oi = ArrayList<Int>(maxPoints + 2)
 
-    fun push(i: Int) { ox.add(xs[i]); oy.add(ys[i]); of.add(flags[i]) }
+    fun push(i: Int) { ox.add(xs[i]); oy.add(ys[i]); of.add(flags[i]); oi.add(i) }
 
     push(0)
     val interior = (n - 2).toDouble()
@@ -176,5 +202,5 @@ private fun decimateMinMax(
         if (c != a) push(c)
     }
     push(n - 1)
-    return Triple(ox.toFloatArray(), oy.toFloatArray(), of.toIntArray())
+    return Decimated(ox.toFloatArray(), oy.toFloatArray(), of.toIntArray(), oi.toIntArray())
 }

@@ -106,6 +106,7 @@ import com.t1dm.feature.settings.DeviceTempAlertScreen
 import com.t1dm.feature.settings.DisplaySettingsScreen
 import com.t1dm.feature.settings.ForecastCadenceSettingsScreen
 import com.t1dm.feature.settings.GraphSettingsScreen
+import com.t1dm.feature.settings.ModelCountSettingsScreen
 import com.t1dm.feature.settings.PowerSettingsScreen
 import com.t1dm.feature.settings.SettingsScreen
 import com.t1dm.feature.settings.SignalSafetyScreen
@@ -242,6 +243,7 @@ private fun crumbsFor(route: String?, modelId: String?): List<Crumb> {
         "settings/signal" -> settings(Crumb("Alarms & safety", "settings"), Crumb("Signal safety", null))
         "settings/alerts" -> settings(Crumb("Sound & vibration", null))
         "settings/warmup" -> settings(Crumb("Warmup", null))
+        "settings/models_running" -> settings(Crumb("Models run at once", null))
         "settings/forecast" -> settings(Crumb("Forecast cadence", null))
         "settings/thermal" -> settings(Crumb("Thermal gate", null))
         "settings/temperature" -> settings(Crumb("Alarms & safety", "settings"), Crumb("Device temperature", null))
@@ -608,10 +610,13 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
             val thermalGateOn by container.thermalGateEnabled.collectAsState(SettingsStore.DEFAULT_THERMAL_ON)
             val thermalMaxC by container.inferenceMaxTempC.collectAsState(SettingsStore.DEFAULT_MAX_TEMP_C)
             val thermalWarn by container.thermalWarnMarginC.collectAsState(SettingsStore.DEFAULT_WARN_MARGIN_C)
+            // Issue 3 — the Display glucose unit (mg/dL | mmol/L | Kovatchev) the BG panel + header honour.
+            val glucoseUnit by container.statsRepository.unitSpace.collectAsState(UnitSpace.MgDl)
             DashboardScreen(
                 readings = readings,
                 latest = latest,
                 activeSourceName = active?.displayName,
+                unit = glucoseUnit,
                 thresholds = container.alarmConfig.thresholds,
                 predictions = inference.predictions,
                 kovatchevF = container.nativeCore::kovatchevF,
@@ -704,7 +709,7 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
             val scope = rememberCoroutineScope()
             ModelsScreen(
                 state = inference,
-                onSelect = container.inferenceController::selectModel,
+                onSelect = { id -> scope.launch { container.inferenceController.selectModel(id) } },
                 onOpen = { id -> navController.navigate("models/$id") },
                 pendingUpdates = pendingUpdates,
                 onApplyUpdate = { id -> scope.launch { container.applyModelUpdate(id) } },
@@ -951,6 +956,7 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 onOpenSignalSafety = { navController.navigate("settings/signal") },
                 onOpenAlerts = { navController.navigate("settings/alerts") },
                 onOpenWarmup = { navController.navigate("settings/warmup") },
+                onOpenModelCount = { navController.navigate("settings/models_running") },
                 onOpenComputeBackend = {
                     val id = inf.running.firstOrNull { it.selected }?.modelId ?: inf.running.firstOrNull()?.modelId
                     navController.navigate(if (id != null) "models/$id" else "models")
@@ -1262,6 +1268,14 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
             WarmupSettingsScreen(
                 hours = hours,
                 onChange = { h -> scope.launch { container.setWarmupHours(h) } },
+            )
+        }
+        composable("settings/models_running") {
+            val scope = rememberCoroutineScope()
+            val count by container.maxModelsSetting.collectAsState(5)
+            ModelCountSettingsScreen(
+                count = count,
+                onChange = { n -> scope.launch { container.setMaxModels(n) } },
             )
         }
         composable("settings/forecast") {

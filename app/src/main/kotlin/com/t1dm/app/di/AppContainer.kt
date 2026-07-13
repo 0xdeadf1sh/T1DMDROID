@@ -398,6 +398,9 @@ class AppContainer(context: Context) {
             },
             // WARMUP gate: read the user's setting fresh each cycle (inference-runtime.md).
             warmupHoursProvider = { warmupHours() },
+            // Running-set cap: how many discovered models run (and push a prediction) each cycle,
+            // read fresh each discovery so a Settings edit takes on the next refresh (mirrors warmup).
+            maxRunningProvider = { maxRunningModels() },
             // Per-model forecast-backend preference, re-read fresh for every discovered id (issue 20).
             backendPrefProvider = { id -> forecastBackendPref(id) },
             // Phase 7C: durable cumulative per-model inference telemetry for the Models drill-down.
@@ -526,6 +529,19 @@ class AppContainer(context: Context) {
         val clamped = hours.coerceIn(InferenceControllerDefaults.MIN_WARMUP_HOURS, WARMUP_HOURS_MAX)
         repository.putKv(KV_WARMUP_HOURS, clamped.toString(), System.currentTimeMillis())
     }
+
+    // ── Running-set cap (SPEC.private.md §2.3) — how many discovered models run each cycle; every
+    // running model forecasts + pushes to the server, the SELECTED one draws the BG panel. kv-backed
+    // via SettingsStore (mirrors the warmup knob); the controller re-reads it fresh each discovery. ──
+
+    /** Settings read model: the current running-set cap, for the human-readable stepper row. */
+    val maxModelsSetting: Flow<Int> get() = settingsStore.inferenceMaxModels
+
+    /** Persist the running-set cap (clamped to the SettingsStore bounds). Off-main. */
+    suspend fun setMaxModels(n: Int) = settingsStore.setInferenceMaxModels(n)
+
+    /** One-shot read of the running-set cap for the controller's per-discovery [maxRunningProvider]. */
+    suspend fun maxRunningModels(): Int = settingsStore.currentInferenceMaxModels()
 
     // ── Forecast-backend switcher (issue 20 STEP 4) — kv-backed; governs the FORECAST CYCLE only ──
 

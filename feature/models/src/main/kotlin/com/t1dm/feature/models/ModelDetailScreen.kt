@@ -111,17 +111,29 @@ fun ModelDetailScreen(
         }
 
         // ── Compute backend (per-model forecast switcher; issue 20 STEP 4) ──
-        // Only meaningful while the model is in the running set (a loaded backend to switch).
+        // Only meaningful while the model is in the running set (a loaded backend to switch), AND only
+        // for the SELECTED model: the switcher's [catalog]/[comparison] are the controller's single
+        // selected-model-bound state (backendCatalog / backendComparison), so rendering them for a
+        // non-selected running model would show the SELECTED model's availability + run the agreement
+        // probe against it — a mismatch. Selecting a model rebuilds that catalog for it (selectModel).
         if (running != null) {
             section("Compute backend") {
-                ComputeBackendControls(
-                    running = running,
-                    catalog = catalog,
-                    requestedBackend = requestedBackend,
-                    comparison = comparison,
-                    onSelectBackend = onSelectBackend,
-                    onRunComparison = onRunComparison,
-                )
+                if (running.selected) {
+                    ComputeBackendControls(
+                        running = running,
+                        catalog = catalog,
+                        requestedBackend = requestedBackend,
+                        comparison = comparison,
+                        onSelectBackend = onSelectBackend,
+                        onRunComparison = onRunComparison,
+                    )
+                } else {
+                    Note(
+                        "Compute-backend switching and the agreement probe apply to the SELECTED model. " +
+                            "This model runs on ${running.backend.displayName()} · ${running.precision.name}; " +
+                            "select it on the Models screen (the radio) to view and change its backend.",
+                    )
+                }
             }
         }
 

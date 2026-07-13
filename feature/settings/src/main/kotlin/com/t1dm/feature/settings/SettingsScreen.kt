@@ -20,6 +20,7 @@ fun SettingsScreen(
     onOpenSignalSafety: () -> Unit = {},
     onOpenAlerts: () -> Unit = {},
     onOpenWarmup: () -> Unit = {},
+    onOpenModelCount: () -> Unit = {},
     onOpenComputeBackend: () -> Unit = {},
     onOpenCalculator: () -> Unit = {},
     onOpenCurveParams: () -> Unit = {},
@@ -49,6 +50,7 @@ fun SettingsScreen(
 
         SettingsSectionHeader("Forecast & models")
         SettingsNavRow("Forecast warmup", "How much real history the forecast waits for", onClick = onOpenWarmup)
+        SettingsNavRow("Models run at once", "How many models forecast simultaneously (all push to the server; the selected one shows on the dashboard)", onClick = onOpenModelCount)
         SettingsNavRow("Forecast cadence", "Re-forecast on every reading (adaptive) or on a fixed clock period", onClick = onOpenForecastCadence)
         SettingsNavRow("Thermal gate", "Pause inference when the phone runs too hot — threshold and warning margin", onClick = onOpenThermal)
         SettingsNavRow("Compute backend (CPU / GPU)", "Run the forecast on the CPU authority or the Vulkan GPU; measure & agreement-gate", onClick = onOpenComputeBackend)

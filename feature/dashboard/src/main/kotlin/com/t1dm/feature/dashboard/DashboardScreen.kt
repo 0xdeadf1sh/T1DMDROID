@@ -154,8 +154,10 @@ fun DashboardScreen(
     val frame by produceState(GraphFrame.EMPTY, readings, unit) {
         value = graphFrameOf(readings, unit, kovatchevF = kovatchevF)
     }
+    // Only the SELECTED model's fan is painted; the other running models forecast for
+    // telemetry/sync but must not stipple faint secondary fans over the BG panel.
     val overlay by produceState(emptyList<PredSeries>(), predictions, unit) {
-        value = predOverlayOf(predictions, unit, kovatchevF = kovatchevF)
+        value = predOverlayOf(predictions.filter { it.selected }, unit, kovatchevF = kovatchevF)
     }
 
     var toggles by remember { mutableStateOf(CurveOverlayToggles()) }
@@ -234,7 +236,7 @@ fun DashboardScreen(
         reachability?.let {
             ReachabilityBar(it, signals, pulses, deviceTempC, temperatureUnit, sensorExpiryMs, thermalThresholdC, thermalWarnMarginC, stepsToday)
         }
-        DashboardHeader(latest, activeSourceName, unit, signals?.cgmRssi ?: latest?.rssi)
+        DashboardHeader(latest, activeSourceName, unit, signals?.cgmRssi ?: latest?.rssi, kovatchevF)
         warmup?.let { WarmupBanner(it) }
         if (noFutureInsulin) NoFutureInsulinBanner()
         if (iobCob != null || curveChannels != null || smoothMgdl != null || onRoll != null) {
@@ -885,7 +887,7 @@ private fun LinkHealth.color(): Color = when (this) {
 }
 
 @Composable
-private fun DashboardHeader(latest: CgmReading?, activeSourceName: String?, unit: UnitSpace, cgmRssi: Int?) {
+private fun DashboardHeader(latest: CgmReading?, activeSourceName: String?, unit: UnitSpace, cgmRssi: Int?, kovatchevF: ((Double) -> Double)?) {
     Row(
         Modifier.fillMaxWidth().padding(16.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -894,7 +896,7 @@ private fun DashboardHeader(latest: CgmReading?, activeSourceName: String?, unit
         Column {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
-                    text = formatBg(latest?.bgMgdl, unit),
+                    text = formatBg(latest?.bgMgdl, unit, kovatchevF),
                     style = MaterialTheme.typography.displaySmall,
                     fontWeight = FontWeight.Bold,
                 )
@@ -931,11 +933,15 @@ private fun unitLabel(unit: UnitSpace): String = when (unit) {
     UnitSpace.Kovatchev -> "risk"
 }
 
-private fun formatBg(bgMgdl: Int?, unit: UnitSpace): String {
+/** The big header value in the chosen unit. Kovatchev risk needs its transform threaded in so the
+ *  header agrees with the graph axis (which already applies [kovatchevF]); without it the header would
+ *  fall back to the raw mg/dL integer. */
+private fun formatBg(bgMgdl: Int?, unit: UnitSpace, kovatchevF: ((Double) -> Double)? = null): String {
     if (bgMgdl == null) return "--"
     return when (unit) {
-        UnitSpace.MgDl, UnitSpace.Kovatchev -> bgMgdl.toString()
+        UnitSpace.MgDl -> bgMgdl.toString()
         UnitSpace.MmolL -> String.format("%.1f", bgMgdl / 18.0182)
+        UnitSpace.Kovatchev -> kovatchevF?.let { String.format("%.1f", it(bgMgdl.toDouble())) } ?: bgMgdl.toString()
     }
 }
 

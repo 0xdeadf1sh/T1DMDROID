@@ -171,6 +171,19 @@ class SettingsStore(
     suspend fun setInferenceMaxTempC(c: Double) = put(K_INF_MAX_TEMP_C, c.coerceAtLeast(0.0).toString())
     suspend fun setThermalWarnMarginC(c: Double) = put(K_INF_WARN_MARGIN_C, c.coerceAtLeast(0.0).toString())
 
+    // ── Running-set cap (issues 1/2 — how many discovered models run each cycle). Every running model
+    // forecasts and pushes to the server tagged by its model_id; only the SELECTED model feeds the
+    // dashboard and dosing. User-configurable; coerced to [MIN, MAX], default DEFAULT_MAX_MODELS.
+
+    val inferenceMaxModels: Flow<Int> = repository.observeKv(K_INF_MAX_MODELS)
+        .map { it?.toIntOrNull()?.coerceIn(INF_MAX_MODELS_MIN, INF_MAX_MODELS_MAX) ?: DEFAULT_MAX_MODELS }
+
+    suspend fun currentInferenceMaxModels(): Int =
+        repository.getKv(K_INF_MAX_MODELS)?.toIntOrNull()?.coerceIn(INF_MAX_MODELS_MIN, INF_MAX_MODELS_MAX) ?: DEFAULT_MAX_MODELS
+
+    suspend fun setInferenceMaxModels(n: Int) =
+        put(K_INF_MAX_MODELS, n.coerceIn(INF_MAX_MODELS_MIN, INF_MAX_MODELS_MAX).toString())
+
     // ── Death-clock offsets (F5 — the morbid IOB-exhaustion projection). DISPLAY-ONLY forward offsets
     // (hours) from each prior landmark; no §3.6 gate reads these. Tunable per D2, floored at 0.
 
@@ -444,6 +457,7 @@ class SettingsStore(
             K_INF_THERMAL_ON,
             K_INF_MAX_TEMP_C,
             K_INF_WARN_MARGIN_C,
+            K_INF_MAX_MODELS,
             K_DEATH_DKA_H,
             K_DEATH_COMA_H,
             K_DEATH_DEATH_H,
@@ -465,6 +479,12 @@ class SettingsStore(
         const val DEFAULT_THERMAL_ON = true
         const val DEFAULT_MAX_TEMP_C = 45.0
         const val DEFAULT_WARN_MARGIN_C = 3.0
+
+        // ── Running-set cap (PUBLIC) ──────────────────────────────────────────────────────────────
+        const val K_INF_MAX_MODELS = "inference.max_models"
+        const val DEFAULT_MAX_MODELS = 5
+        const val INF_MAX_MODELS_MIN = 1
+        const val INF_MAX_MODELS_MAX = 8
 
         // ── Death-clock offsets (PUBLIC) ──────────────────────────────────────────────────────────
         const val K_DEATH_DKA_H = "death.dka_after_iob_zero_h"
