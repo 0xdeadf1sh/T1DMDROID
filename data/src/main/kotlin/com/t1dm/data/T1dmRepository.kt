@@ -19,7 +19,6 @@ import com.t1dm.data.db.CgmAdvertRawEntity
 import com.t1dm.data.db.CgmReadingEntity
 import com.t1dm.data.db.CgmSourceEntity
 import com.t1dm.data.db.DoseEventEntity
-import com.t1dm.data.db.DoseKind
 import com.t1dm.data.db.FoodEntity
 import com.t1dm.data.db.InsulinTypeEntity
 import com.t1dm.data.db.LoggedDoseEntity
@@ -33,7 +32,6 @@ import com.t1dm.data.db.OutboxState
 import com.t1dm.data.db.PredictionEntity
 import com.t1dm.data.db.SampleEntity
 import com.t1dm.data.db.SavedMealEntity
-import com.t1dm.data.db.toBlob
 import com.t1dm.data.db.SavedMealItemEntity
 import com.t1dm.data.db.ServerProfileEntity
 import kotlinx.coroutines.flow.Flow
@@ -202,53 +200,44 @@ class T1dmRepository(
     suspend fun recordMood(gridTs: Long, tzOffsetMin: Int, mood: Int, nowMs: Long) =
         mergeSample(gridTs, tzOffsetMin, nowMs) { it.copy(mood = mood) }
 
-    /** Log a discrete dose and fold its units into the enclosing grid bucket's `sample`. */
-    suspend fun logDose(dose: DoseEventEntity): Long = withContext(io) {
-        inWriteTx {
-            val id = doses.insert(dose)
-            val gridTs = snapToGrid(dose.tsMs)
-            mergeSampleInTx(gridTs, dose.tzOffsetMin, dose.updatedAt) { s ->
-                when (dose.kind) {
-                    DoseKind.BOLUS -> s.copy(bolusU = (s.bolusU ?: 0.0) + dose.units)
-                    DoseKind.BASAL -> s.copy(basalU = (s.basalU ?: 0.0) + dose.units)
-                }
-            }
-            id
-        }
-    }
+    /**
+     * Log a Phase-1 discrete dose (`dose_event`). This legacy minimal store is superseded by
+     * [logLoggedDose] (self-describing curve + server push); it no longer projects into `sample` —
+     * the `bolus`/`basal` scalar columns are retired, insulin being a self-describing curve event (§3.1).
+     */
+    suspend fun logDose(dose: DoseEventEntity): Long = withContext(io) { doses.insert(dose) }
 
     // ─── Curve-engine event stores (Room v3, SPEC §3.3) ──────────────────────────────────────
 
     /**
-     * Log an insulin dose with its full curve params (`logged_dose`) and fold its units into the
-     * enclosing grid bucket's `sample` (bolusU / basalU). This is the Phase-4 self-describing
-     * successor to [logDose]; the reconstructed insulin channel reads `logged_dose`, so a caller
-     * uses this OR the legacy [logDose], not both, for the same event.
+     * Log an insulin dose with its full curve params (`logged_dose`) — the self-describing event the
+     * reconstructed insulin channel reads AND the row a `PUT /v1/doses` mirrors (pushed at the `:app`
+     * seam). This repository writer is the single authority for the two invariants the event must
+     * satisfy: it grid-snaps `tsMs` (round-to-nearest, §4-#1) so the event bucket agrees with its own
+     * sample bucket, and it mints the phone `clientId` (§3.2) when the caller left it blank (never
+     * re-minted). No `sample` projection (the `bolus`/`basal` scalar columns are retired, §3.1).
+     *
+     * Returns the PERSISTED entity — snapped `tsMs`, minted `clientId`, DB rowid — so the `:app` seam
+     * builds the matching `PUT /v1/doses` DTO from it and app + wire agree on one id and one grid ts.
      */
-    suspend fun logLoggedDose(dose: LoggedDoseEntity): Long = withContext(io) {
-        inWriteTx {
-            val id = loggedDoses.insert(dose)
-            val gridTs = snapToGrid(dose.tsMs)
-            mergeSampleInTx(gridTs, dose.tzOffsetMin, dose.updatedAt) { s ->
-                when (dose.kind) {
-                    DoseKind.BOLUS -> s.copy(bolusU = (s.bolusU ?: 0.0) + dose.units)
-                    DoseKind.BASAL -> s.copy(basalU = (s.basalU ?: 0.0) + dose.units)
-                }
-            }
-            id
-        }
+    suspend fun logLoggedDose(dose: LoggedDoseEntity): LoggedDoseEntity = withContext(io) {
+        val row = dose.copy(clientId = dose.clientId.ifBlank { newClientId() }, tsMs = snapToGrid(dose.tsMs))
+        row.copy(id = loggedDoses.insert(row))
     }
 
-    /** Log a meal (`logged_meal`) and fold its grams into the enclosing grid bucket's `sample`. */
-    suspend fun logMeal(meal: LoggedMealEntity): Long = withContext(io) {
-        inWriteTx {
-            val id = loggedMeals.insert(meal)
-            val gridTs = snapToGrid(meal.tsMs)
-            mergeSampleInTx(gridTs, meal.tzOffsetMin, meal.updatedAt) { s ->
-                s.copy(carbsG = (s.carbsG ?: 0.0) + meal.grams)
-            }
-            id
-        }
+    /**
+     * Log a meal (`logged_meal`) — the self-describing appearance-curve event the reconstructed carb
+     * channel reads AND the row a `PUT /v1/meals` mirrors (pushed at the `:app` seam). As with
+     * [logLoggedDose] this writer is the single snap+id authority: it grid-snaps `tsMs`
+     * (round-to-nearest, §4-#1) and mints the phone `clientId` (§3.2) when the caller left it blank
+     * (never re-minted). No `sample` projection (the `carbs` scalar is retired, §3.1).
+     *
+     * Returns the PERSISTED entity — snapped `tsMs`, minted `clientId`, DB rowid — so the `:app` seam
+     * builds the matching `PUT /v1/meals` DTO from it and app + wire agree on one id and one grid ts.
+     */
+    suspend fun logMeal(meal: LoggedMealEntity): LoggedMealEntity = withContext(io) {
+        val row = meal.copy(clientId = meal.clientId.ifBlank { newClientId() }, tsMs = snapToGrid(meal.tsMs))
+        row.copy(id = loggedMeals.insert(row))
     }
 
     /** Window reads for curve/channel reconstruction (feed [com.t1dm.data.curve.RoomDoseStore]). */
@@ -288,6 +277,21 @@ class T1dmRepository(
 
     /** Timestamp of the most recent logged insulin dose (IOB provenance, §3.6-F); null = none. */
     suspend fun latestLoggedInsulinTs(): Long? = withContext(io) { loggedDoses.latestTs() }
+
+    /**
+     * Newest event ts held locally — `MAX(ts)` over `logged_meal ∪ logged_dose` — the event
+     * high-water mark the WS-connect catch-up pulls meal/dose history forward from (§3.5), the
+     * event-side twin of [newestSampleTs]. Null when neither store holds a row.
+     */
+    suspend fun newestEventTs(): Long? = withContext(io) {
+        val meal = loggedMeals.latestTs()
+        val dose = loggedDoses.latestTs()
+        when {
+            meal == null -> dose
+            dose == null -> meal
+            else -> maxOf(meal, dose)
+        }
+    }
 
     // ─── Journal notes (Room v4, Phase 4 deliverable 2) ────────────────────────────────
 
@@ -566,9 +570,13 @@ class T1dmRepository(
     // ─── Catch-up merge (WS reconnect / REST series) ──────────────────────────────────────────
 
     /**
-     * Fold a server-originated wide row into `sample` under last-writer-wins (§3.5). Returns `true`
-     * iff a write occurred (the incoming row was strictly newer). Runs in a transaction so the
+     * Fold a server-originated wide row into local state under **no-server-over-local** presence
+     * gap-fill (§3.3). Returns `true` iff a write occurred. Runs in a transaction so the
      * read-modify-write cannot race a concurrent local projection.
+     *
+     * The phone is the sole read-write author, so a catch-up/WS row is only the phone's own earlier
+     * push reflected back; [SampleGapFill] fills ONLY fields the local row lacks and never overwrites
+     * a present local value, comparing no `updated_at` (no cross-clock hazard, decisions #2/#3).
      */
     suspend fun mergeServerSample(patch: SamplePatch): Boolean = withContext(io) {
         requireGrid(patch.ts)
@@ -597,54 +605,14 @@ class T1dmRepository(
                     ),
                 )
             }
-            // Hydrate the carb/insulin EVENT tables too (logged_meal / logged_dose) so server-synced
-            // carbs & boluses reach the graph overlay AND the model's dose channels — ChannelBuilder
-            // reads the event tables, never `sample`. This runs for BOTH catch-up rows and LIVE WS
-            // samples (the single chokepoint), so live synthetic data no longer stops at `sample`.
-            // GAP-FILL: skip a slot already carrying a local meal/bolus. Carbs → medium-GI gamma; a bolus
-            // is stored BARE (no gamma params) so RoomDoseStore reconstructs it via the exp-action model
-            // (no simulator gamma). Raw inserts: no re-projection into `sample`, no outbox push.
-            val carbs = patch.carbsG
-            if (carbs != null && carbs > 0.0 && loggedMeals.coveringCount(patch.ts) == 0) {
-                loggedMeals.insert(syncedMeal(patch.ts, carbs, patch.tzOffsetMin, patch.updatedAt))
-            }
-            val bolus = patch.bolusU
-            if (bolus != null && bolus > 0.0 && loggedDoses.coveringCount(patch.ts, DoseKind.BOLUS) == 0) {
-                loggedDoses.insert(syncedBolus(patch.ts, bolus, patch.tzOffsetMin, patch.updatedAt))
-            }
-            val basal = patch.basalU
-            if (basal != null && basal > 0.0 && loggedDoses.coveringCount(patch.ts, DoseKind.BASAL) == 0) {
-                loggedDoses.insert(syncedBasal(patch.ts, basal, patch.tzOffsetMin, patch.updatedAt))
-            }
-            val merged = LwwMerge.merge(samples.byTs(patch.ts), patch) ?: return@inWriteTx false
+            // Carbs/bolus/basal are NO LONGER projected here: they are self-describing curve events
+            // (logged_meal / logged_dose), hydrated by client_id via [hydrateMealEvent] /
+            // [hydrateDoseEvent] on REST catch-up (§3.4), never smeared out of a scalar sample bucket.
+            val merged = SampleGapFill.fill(samples.byTs(patch.ts), patch) ?: return@inWriteTx false
             samples.upsert(merged)
             true
         }
     }
-
-    /** A server carb bucket taken AS a single-bucket point of the appearance CURVE — a one-element
-     *  `customCurve` so ChannelBuilder places exactly [value] at [ts]. The union of a meal's buckets
-     *  reproduces the pushed curve verbatim (no re-smearing), closing the app→server→app round-trip. */
-    private fun syncedMeal(ts: Long, value: Double, tzOffsetMin: Int, updatedAt: Long): LoggedMealEntity =
-        LoggedMealEntity(
-            tsMs = ts, grams = value, gi = null, k = null, theta = null, durationMin = GRID_MS / 60_000.0,
-            customCurve = listOf(value).toBlob(), tzOffsetMin = tzOffsetMin, note = "synced", updatedAt = updatedAt,
-        )
-
-    /** A server bolus bucket taken AS a single-bucket point of the action CURVE (see [syncedMeal]). */
-    private fun syncedBolus(ts: Long, value: Double, tzOffsetMin: Int, updatedAt: Long): LoggedDoseEntity =
-        syncedDose(ts, DoseKind.BOLUS, value, tzOffsetMin, updatedAt)
-
-    /** A server basal bucket taken AS a single-bucket point of the action CURVE (see [syncedMeal]). */
-    private fun syncedBasal(ts: Long, value: Double, tzOffsetMin: Int, updatedAt: Long): LoggedDoseEntity =
-        syncedDose(ts, DoseKind.BASAL, value, tzOffsetMin, updatedAt)
-
-    private fun syncedDose(ts: Long, kind: DoseKind, value: Double, tzOffsetMin: Int, updatedAt: Long): LoggedDoseEntity =
-        LoggedDoseEntity(
-            tsMs = ts, kind = kind, units = value, durationMin = GRID_MS / 60_000.0,
-            k = null, theta = null, kaPerHour = null, kePerHour = null, customCurve = listOf(value).toBlob(),
-            tzOffsetMin = tzOffsetMin, note = "synced", updatedAt = updatedAt,
-        )
 
     /**
      * One-shot reconcile that gap-fills the active source's `cgm_reading` from the wide `sample`
@@ -682,39 +650,34 @@ class T1dmRepository(
     }
 
     /**
-     * The carb analog of [reconcileReadingsFromSamples]: gap-fill `logged_meal` from the wide `sample`
-     * projection so server-synced carb history reaches the graph overlay AND the model's carb channel
-     * (both read the event table, never `sample`). Each server carb/bolus bucket is taken AS a single-
-     * bucket point of the CURVE (`customCurve = [value]`), so the union of a dose's buckets reproduces the
-     * pushed curve verbatim — no re-smearing — and the app→server→app round-trip is exact (a reset→resync
-     * rebuilds the same curve). GAP-FILL by curve COVERAGE (a bucket already SPANNED by a local event's
-     * curve is skipped, so the app's own pushed future buckets never double its local event); RAW inserts
-     * (no re-projection into `sample`, no outbox enqueue). Basal excluded (auto-extended schedule). This is
-     * the backlog path; live/catch-up rows hydrate inline in [mergeServerSample]. Off-main; one transaction.
+     * Id-keyed hydration of a phone-authored meal/dose event received on REST catch-up (§3.4),
+     * replacing the retired sample→event reconcile. A redelivery conflicts on the unique `clientId`
+     * index and is IGNOREd (idempotent, no duplicate); this NEVER re-projects into `sample` and NEVER
+     * enqueues (the event originated on this phone — re-pushing would echo-loop). Off-main.
      */
-    suspend fun reconcileDoseEventsFromSamples(): Int = withContext(io) {
-        inWriteTx {
-            val rows = samples.rangeList(Long.MIN_VALUE, Long.MAX_VALUE)
-            val meals = ArrayList<LoggedMealEntity>()
-            val doses = ArrayList<LoggedDoseEntity>()
-            for (s in rows) {
-                val g = s.carbsG
-                if (g != null && g > 0.0 && loggedMeals.coveringCount(s.ts) == 0) {
-                    meals += syncedMeal(s.ts, g, s.tzOffsetMin, s.updatedAt)
-                }
-                val u = s.bolusU
-                if (u != null && u > 0.0 && loggedDoses.coveringCount(s.ts, DoseKind.BOLUS) == 0) {
-                    doses += syncedBolus(s.ts, u, s.tzOffsetMin, s.updatedAt)
-                }
-                val b = s.basalU
-                if (b != null && b > 0.0 && loggedDoses.coveringCount(s.ts, DoseKind.BASAL) == 0) {
-                    doses += syncedBasal(s.ts, b, s.tzOffsetMin, s.updatedAt)
-                }
-            }
-            if (meals.isNotEmpty()) loggedMeals.insertAll(meals)
-            if (doses.isNotEmpty()) loggedDoses.insertAll(doses)
-            meals.size + doses.size
-        }
+    suspend fun hydrateMealEvent(ev: LoggedMealEntity): Long = withContext(io) { loggedMeals.insertIgnore(ev) }
+
+    suspend fun hydrateDoseEvent(ev: LoggedDoseEntity): Long = withContext(io) { loggedDoses.insertIgnore(ev) }
+
+    /**
+     * One bounded page of the §3.8 full re-mirror to a freshly-wiped server (the H7 upload direction).
+     * Re-enqueues an `INGEST` dirty-marker for every local `sample` with `ts > [afterTs]`, up to [limit]
+     * rows in ascending `ts` order, and returns the newest ts enqueued — the exclusive cursor for the
+     * next page — or null when no sample remains past [afterTs] (the scalar walk is complete).
+     *
+     * INGEST is reconstruct-at-drain (`QueueDrainer` resolves the current `sample` by ts), so this
+     * re-uploads scalars WITHOUT re-encoding them here, keeping `:data` free of any `:sync` type. It is
+     * idempotent by construction: a still-pending INGEST row for a slot conflicts on its dedupKey
+     * (`ingest:sample:<ts>`) and is ignored; an already-drained slot re-enqueues and re-uploads. The
+     * caller paces the walk (drain between pages) so the outbox size cap is never blown in one shot, and
+     * re-mirrors the curve EVENTS + stats + basal schedule at the `:app`/`:sync` seam (those PUTs carry
+     * `:sync` DTO envelopes this module cannot build), recording `sync.mirrored_epoch` only on completion.
+     */
+    suspend fun reMirrorScalarsBatch(afterTs: Long, limit: Int, nowMs: Long): Long? = withContext(io) {
+        val page = samples.page(afterTs, limit)
+        if (page.isEmpty()) return@withContext null
+        inWriteTx { for (s in page) enqueueIngest(s.ts, nowMs) }
+        page.last().ts
     }
 
     // ─── kv / hw_telemetry ──────────────────────────────────────────────────────────────────
@@ -784,15 +747,16 @@ class T1dmRepository(
         private fun snapToGrid(ts: Long): Long =
             Math.floorDiv(ts + GRID_MS / 2, GRID_MS) * GRID_MS
 
+        /** A fresh phone-minted event id (§3.2). v4 UUID — acceptable per §8.6 (v7 preferred for
+         *  time-ordering but not in the JDK); the repository writer guarantees a non-blank id. */
+        private fun newClientId(): String = java.util.UUID.randomUUID().toString()
+
         private fun emptySample(ts: Long, tzOffsetMin: Int, updatedAt: Long) = SampleEntity(
             ts = ts,
             tzOffsetMin = tzOffsetMin,
             bgMgdl = null,
             bgProvenance = null,
             bgFlag = null,
-            carbsG = null,
-            bolusU = null,
-            basalU = null,
             steps = null,
             mood = null,
             hr = null,

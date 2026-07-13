@@ -123,6 +123,31 @@ class MigrationTest {
         )
     }
 
+    @Test
+    fun migrate6To7_clientIdColumnsAndUniqueIndexMatchSchema() {
+        // v7 (app-authoritative redesign, §3.2/H1): additive `clientId` on logged_meal/logged_dose,
+        // each back-filled with a fresh UUID before the UNIQUE index is built. The retired
+        // sample.carbsG/bolusU/basalU columns are left dead in place, so the schema stays ALTER-only.
+        helper.createDatabase(6).close()
+        helper.runMigrationsAndValidate(7, listOf(MigrationRunner.MIGRATION_6_7))
+    }
+
+    @Test
+    fun migrate1To7_fullChain() {
+        helper.createDatabase(1).close()
+        helper.runMigrationsAndValidate(
+            7,
+            listOf(
+                MigrationRunner.MIGRATION_1_2,
+                MigrationRunner.MIGRATION_2_3,
+                MigrationRunner.MIGRATION_3_4,
+                MigrationRunner.MIGRATION_4_5,
+                MigrationRunner.MIGRATION_5_6,
+                MigrationRunner.MIGRATION_6_7,
+            ),
+        )
+    }
+
     private companion object {
         const val TEST_DB = "migration-test.db"
     }

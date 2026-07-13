@@ -36,12 +36,14 @@ class StatsMappingTest {
 
     @Test
     fun toStatSample_maps_null_bg_to_zero_and_keeps_channels() {
-        val row = sample(ts = 300_000L, bg = null, carbs = 40.0, bolus = 6.0, basal = null, steps = 120, mood = 3)
+        // Post-#5 demotion: samples carry only scalars; carbs/bolus/basal are event-reconstructed and
+        // always null on this projection.
+        val row = sample(ts = 300_000L, bg = null, steps = 120, mood = 3)
         val s = row.toStatSample()
         assertEquals(300_000L, s.tsMs)
         assertEquals(0.0, s.bgMgdl, 0.0) // excluded from BG metrics by the Rust, channels retained
-        assertEquals(40.0, s.carbsG!!, 0.0)
-        assertEquals(6.0, s.bolusU!!, 0.0)
+        assertNull(s.carbsG)
+        assertNull(s.bolusU)
         assertNull(s.basalU)
         assertEquals(120L, s.steps)
         assertEquals(3, s.mood)
@@ -49,7 +51,7 @@ class StatsMappingTest {
 
     @Test
     fun toStatSample_preserves_present_bg() {
-        val s = sample(ts = 600_000L, bg = 142, carbs = null, bolus = null, basal = null, steps = null, mood = null).toStatSample()
+        val s = sample(ts = 600_000L, bg = 142, steps = null, mood = null).toStatSample()
         assertEquals(142.0, s.bgMgdl, 0.0)
         assertNull(s.carbsG)
         assertNull(s.steps)
@@ -58,9 +60,6 @@ class StatsMappingTest {
     private fun sample(
         ts: Long,
         bg: Int?,
-        carbs: Double?,
-        bolus: Double?,
-        basal: Double?,
         steps: Int?,
         mood: Int?,
     ) = SampleEntity(
@@ -69,9 +68,6 @@ class StatsMappingTest {
         bgMgdl = bg,
         bgProvenance = null,
         bgFlag = null,
-        carbsG = carbs,
-        bolusU = bolus,
-        basalU = basal,
         steps = steps,
         mood = mood,
         hr = null,

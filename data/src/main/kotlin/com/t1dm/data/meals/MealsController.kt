@@ -86,13 +86,14 @@ class MealsController(
      * `logged_meal` whose [LoggedMealEntity.customCurve] IS that curve (grams = total carbs), so the
      * reconstructed carb channel reproduces it exactly regardless of later preset changes.
      */
-    suspend fun logMeal(components: List<MealComponent>, tsMs: Long = now()): Long =
+    suspend fun logMeal(components: List<MealComponent>, tsMs: Long = now()): LoggedMealEntity =
         withContext(dispatchers.io) {
             val gridTs = Math.floorDiv(tsMs, CurveEngine.STEP_MS) * CurveEngine.STEP_MS
             val resolved = resolver.resolveCombined(components, gridTs)
             val tz = TimeZone.getDefault().getOffset(gridTs) / 60_000
             repository.logMeal(
                 LoggedMealEntity(
+                    clientId = "",
                     tsMs = gridTs,
                     grams = resolved.totalCarbs,
                     gi = null,

@@ -24,9 +24,14 @@ import com.t1dm.core.model.ReadingProvenance
 /** A discrete dose the user administered (Phase-1 minimal; the curve engine expands it later). */
 enum class DoseKind { BOLUS, BASAL }
 
-/** Durable outbound-queue item class; eviction priority ALERT > NOTE > INGEST > PREDICTIONS >
- *  SERIES > PHOTO (Phase 3). */
-enum class OutboxKind { ALERT, NOTE, INGEST, PREDICTIONS, SERIES, PHOTO }
+/**
+ * Durable outbound-queue item class, persisted by name (adding a constant is additive/safe —
+ * [Converters] round-trips via `OutboxKind.valueOf`). Eviction priority and age-evictability are
+ * defined in `:sync` (`Outbox.kt`, consumed by `QueueDrainer`), not here. `SERIES` is kept only as
+ * a tombstone: the app DB is never wiped, so a `SERIES` row enqueued before this upgrade must still
+ * decode even though nothing enqueues it anymore.
+ */
+enum class OutboxKind { ALERT, DOSE, MEAL, NOTE, INGEST, STATS, PREDICTIONS, SERIES, PHOTO }
 
 /** Lifecycle of an outbox row across drain attempts. */
 enum class OutboxState { PENDING, INFLIGHT, FAILED }
@@ -69,9 +74,10 @@ data class CgmReadingEntity(
 )
 
 /**
- * The materialized wide 9-series projection (SPEC.private.md §3.5). All series nullable from
- * the start; `hr/sleep/exercise` stay null until a source exists (adding one is data-only, no
- * migration). Merge is last-writer-wins on [updatedAt].
+ * The materialized wide scalar projection (SPEC.private.md §3.5): six nullable series —
+ * `bg`, `hr`, `steps`, `sleep`, `exercise`, `mood`. `hr/sleep/exercise` stay null until a source
+ * exists (adding one is data-only, no migration). Carbs/bolus/basal are no longer projected here:
+ * they are self-describing curve events (`logged_meal`/`logged_dose`/`basal_schedule`).
  */
 @Entity(tableName = "sample")
 @TypeConverters(Converters::class)
@@ -81,9 +87,6 @@ data class SampleEntity(
     val bgMgdl: Int?,                  // projected from cgm_reading (active source)
     val bgProvenance: ReadingProvenance?,
     val bgFlag: ReadingFlag?,
-    val carbsG: Double?,               // projected from logged_meal
-    val bolusU: Double?,               // projected from logged_dose
-    val basalU: Double?,               // projected from basal schedule
     val steps: Int?,                   // from :sensors StepSource
     val mood: Int?,                    // from journal mood picker
     val hr: Int?,                      // wired-but-null until a source exists
@@ -117,10 +120,16 @@ data class DoseEventEntity(
  * [DoseKind.BASAL] fills `kaPerHour`/`kePerHour` (Bateman). `durationMin` is the DIA; `units`
  * is the total the curve integrates to.
  */
-@Entity(tableName = "logged_dose", indices = [Index("tsMs")])
+@Entity(
+    tableName = "logged_dose",
+    indices = [Index("tsMs"), Index(value = ["clientId"], unique = true)],
+)
 @TypeConverters(Converters::class)
 data class LoggedDoseEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    // Phone-minted UUID, set once at insert and never re-minted: the idempotency key the server
+    // upserts on (PUT /v1/doses) and the id this row is re-hydrated by on catch-up.
+    val clientId: String,
     val tsMs: Long,
     val kind: DoseKind,
     val units: Double,
@@ -145,9 +154,15 @@ data class LoggedDoseEntity(
  * [customCurve] is non-null it is a user-drawn per-5-min appearance curve (LE `f64` BLOB, see
  * [toBlob]) that OVERRIDES the gamma — the food-builder's custom-curve path.
  */
-@Entity(tableName = "logged_meal", indices = [Index("tsMs")])
+@Entity(
+    tableName = "logged_meal",
+    indices = [Index("tsMs"), Index(value = ["clientId"], unique = true)],
+)
 data class LoggedMealEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    // Phone-minted UUID, set once at insert and never re-minted: the idempotency key the server
+    // upserts on (PUT /v1/meals) and the id this row is re-hydrated by on catch-up.
+    val clientId: String,
     val tsMs: Long,
     val grams: Double,
     val gi: Double?,

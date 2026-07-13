@@ -207,7 +207,7 @@ pub fn parse_descriptor(json: String) -> Result<ModelDescriptor, CoreError> {
             })
         }
     };
-    Ok(ModelDescriptor {
+    let desc = ModelDescriptor {
         bg: d.normalization_stats.bg_absolute,
         carb: d.normalization_stats.carb_intake,
         insulin: d.normalization_stats.insulin_combined,
@@ -223,7 +223,71 @@ pub fn parse_descriptor(json: String) -> Result<ModelDescriptor, CoreError> {
         n_input_features: d.n_input_features,
         conformal_enabled: d.conformal_enabled,
         time,
-    })
+    };
+
+    // ── Fail-closed guards on decode-critical descriptor drift (§3.6-B, INFERENCE.md §11) ──
+    // A re-exported model whose decode constants diverge from its baked graph is REJECTED
+    // here (Decode → a `null` descriptor on the Kotlin side → the model is refused), never
+    // silently trusted: several of these degrade into a *confident-flat* forecast that
+    // `forecast_degeneracy_check` cannot catch (e.g. `median_global_dim=0` pins the median at
+    // the anchor via an empty DCT basis; a negative value casts to `usize::MAX` and defeats
+    // the low-frequency contraction).
+    if desc.median_global_dim < 1 {
+        return Err(CoreError::Decode {
+            reason: format!("median_global_dim {} must be >= 1", desc.median_global_dim),
+        });
+    }
+    if desc.patch_size != PATCH_SIZE as i32 {
+        return Err(CoreError::Decode {
+            reason: format!("patch_size {} != fixed architecture {PATCH_SIZE}", desc.patch_size),
+        });
+    }
+    if !(desc.neg_fill.is_finite() && desc.neg_fill < 0.0) {
+        return Err(CoreError::Decode {
+            reason: format!("neg_fill {} must be finite and < 0", desc.neg_fill),
+        });
+    }
+    if !(desc.quantile_spread_min.is_finite() && desc.quantile_spread_min >= 0.0) {
+        return Err(CoreError::Decode {
+            reason: format!(
+                "quantile_spread_min {} must be finite and >= 0",
+                desc.quantile_spread_min
+            ),
+        });
+    }
+    if !(desc.min_context_patches > 0 && desc.min_context_patches <= desc.max_context_patches) {
+        return Err(CoreError::Decode {
+            reason: format!(
+                "context patch bounds invalid: require 0 < min_context_patches ({}) <= max_context_patches ({})",
+                desc.min_context_patches, desc.max_context_patches
+            ),
+        });
+    }
+    if desc.prediction_horizon_hours <= 0 {
+        return Err(CoreError::Decode {
+            reason: format!(
+                "prediction_horizon_hours {} must be > 0",
+                desc.prediction_horizon_hours
+            ),
+        });
+    }
+    if desc.rope_base <= 0 {
+        return Err(CoreError::Decode {
+            reason: format!("rope_base {} must be > 0", desc.rope_base),
+        });
+    }
+    // Reject a patch_size/horizon that does not tile the prediction hour (defense in depth
+    // over the patch_size guard; also forces a representable prediction-patch count).
+    if desc.prediction_patches().is_err() {
+        return Err(CoreError::Decode {
+            reason: format!(
+                "patch_size {} / prediction_horizon_hours {} does not tile the prediction hour",
+                desc.patch_size, desc.prediction_horizon_hours
+            ),
+        });
+    }
+
+    Ok(desc)
 }
 
 // ── Causal Savitzky-Golay smoother (INFERENCE.md §7.1) ──────────────────────────────
@@ -839,6 +903,40 @@ mod tests {
     fn parse_descriptor_rejects_garbage() {
         assert!(matches!(parse_descriptor("{".into()), Err(CoreError::Decode { .. })));
         assert!(matches!(parse_descriptor("{}".into()), Err(CoreError::Decode { .. })));
+    }
+
+    // ── #16: parse_descriptor fails closed on decode-critical drift ──────────────────
+    #[test]
+    fn parse_descriptor_rejects_decode_critical_drift() {
+        let base = include_str!("../../../models/descriptor.json");
+        // The unmodified reference descriptor passes every guard.
+        assert!(
+            parse_descriptor(base.to_string()).is_ok(),
+            "reference descriptor must still parse"
+        );
+
+        // Splice one drifted field into the reference and assert a fail-closed Decode.
+        let bad = |key: &str, val: Value| -> Result<ModelDescriptor, CoreError> {
+            let mut v: Value = serde_json::from_str(base).unwrap();
+            v[key] = val;
+            parse_descriptor(v.to_string())
+        };
+        let is_decode =
+            |r: Result<ModelDescriptor, CoreError>| matches!(r, Err(CoreError::Decode { .. }));
+
+        assert!(is_decode(bad("median_global_dim", serde_json::json!(0))));
+        assert!(is_decode(bad("median_global_dim", serde_json::json!(-1))));
+        assert!(is_decode(bad("patch_size", serde_json::json!(4))));
+        assert!(is_decode(bad("neg_fill", serde_json::json!(0.0))));
+        assert!(is_decode(bad("neg_fill", serde_json::json!(30000.0))));
+        assert!(is_decode(bad("quantile_spread_min", serde_json::json!(-1e-3))));
+        // NaN is not representable in JSON → serialized as null → Decode at the parse step.
+        assert!(is_decode(bad("quantile_spread_min", serde_json::json!(f64::NAN))));
+        assert!(is_decode(bad("min_context_patches", serde_json::json!(0))));
+        // max < min (reference min_context_patches == 16).
+        assert!(is_decode(bad("max_context_patches", serde_json::json!(8))));
+        assert!(is_decode(bad("prediction_horizon_hours", serde_json::json!(0))));
+        assert!(is_decode(bad("rope_base", serde_json::json!(0))));
     }
 
     // ── SAVGOL taps == scipy.savgol_coeffs(7,2,pos=6,use='dot') ──────────────────────

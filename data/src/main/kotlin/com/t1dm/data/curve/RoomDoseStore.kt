@@ -32,7 +32,7 @@ class RoomDoseStore(
         loggedMeals.inRange(fromMs, toMs).map { it.toCurveEvent() }
 
     override suspend fun insulinEvents(fromMs: Long, toMs: Long): List<CurveEvent> =
-        loggedDoses.inRange(fromMs, toMs).map { it.toCurveEvent() }
+        loggedDoses.inRange(fromMs, toMs).filter { it.kind == DoseKind.BOLUS }.map { it.toCurveEvent() }
 
     override suspend fun basalInjectionEvents(fromMs: Long, toMs: Long): List<CurveEvent> =
         loggedDoses.inRange(fromMs, toMs).filter { it.kind == DoseKind.BASAL }.map { it.toCurveEvent() }

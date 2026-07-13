@@ -100,14 +100,14 @@ class ResetWipeTest {
         repo.logDose(DoseEventEntity(tsMs = 300_000L, kind = DoseKind.BOLUS, units = 2.0, tzOffsetMin = 0, note = null, updatedAt = now))
         repo.logLoggedDose(
             LoggedDoseEntity(
-                tsMs = 300_000L, kind = DoseKind.BOLUS, units = 3.0, durationMin = 300.0,
+                clientId = "", tsMs = 300_000L, kind = DoseKind.BOLUS, units = 3.0, durationMin = 300.0,
                 k = 2.0, theta = 30.0, kaPerHour = null, kePerHour = null,
                 tzOffsetMin = 0, note = "t", updatedAt = now,
             ),
         )
         repo.logMeal(
             LoggedMealEntity(
-                tsMs = 300_000L, grams = 40.0, gi = 70.0, k = 2.0, theta = 20.0,
+                clientId = "", tsMs = 300_000L, grams = 40.0, gi = 70.0, k = 2.0, theta = 20.0,
                 durationMin = 180.0, customCurve = null, tzOffsetMin = 0, note = null, updatedAt = now,
             ),
         )

@@ -32,7 +32,7 @@ class RoomPredictionStore(
         if (finite.isEmpty()) return
         runCatching {
             outbox.enqueuePredictions(cycleTsMs, finite, now)
-            status.onPredictionPush(outbox.predictionWireSizes(finite))
+            status.onPredictionPush(outbox.predictionWireSizes(finite, cycleTsMs, now))
         }.onFailure { Timber.tag(TAG).w(it, "predictions enqueue failed (table already updated)") }
     }
 

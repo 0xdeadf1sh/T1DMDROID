@@ -11,6 +11,9 @@ import com.t1dm.core.model.Precision
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.data.db.AppDatabase
+import com.t1dm.data.db.DoseKind
+import com.t1dm.data.db.LoggedDoseEntity
+import com.t1dm.data.db.LoggedMealEntity
 import kotlinx.coroutines.Dispatchers
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -21,9 +24,15 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * In-memory Room verification of the Phase-3 dedicated `prediction` table + the wide-sample LWW
- * catch-up merge (Phase 3). Instrumented so the real SQLite exercises the fan-BLOB
- * round-trip and the `(madeAtMs, modelId)` REPLACE.
+ * In-memory Room verification of the dedicated `prediction` table (the fan-BLOB round-trip and the
+ * `(madeAtMs, modelId)` REPLACE) plus the post-redesign catch-up reconciliation:
+ *  - `mergeServerSample` now presence-gap-fills the wide `sample` via [SampleGapFill] — it fills
+ *    ONLY scalars the local row lacks and NEVER overwrites a present local value, with NO `updated_at`
+ *    discriminator, so a server echo can never win over local truth (decisions #2/#3). The retired LWW
+ *    fold-of-carbs is gone — carbs/bolus/basal are no longer sample scalars (§3.1).
+ *  - meal/dose history re-hydrates by phone `clientId` via [T1dmRepository.hydrateMealEvent] /
+ *    [T1dmRepository.hydrateDoseEvent] (`@Insert(onConflict = IGNORE)` on the unique `clientId`), so a
+ *    redelivery is a no-op with no duplicate row (§3.4). Instrumented so the real SQLite exercises both.
  */
 @RunWith(AndroidJUnit4::class)
 class PredictionDaoTest {
@@ -112,8 +121,8 @@ class PredictionDaoTest {
     }
 
     @Test
-    fun mergeServerSampleAppliesLwwIntoWideTable() = kotlinx.coroutines.test.runTest {
-        // Seed a local MEASURED bg via the reading projection, then a newer server carbs row folds in.
+    fun mergeServerSampleGapFillsMissingScalarsNeverOverwritingLocal() = kotlinx.coroutines.test.runTest {
+        // Seed a local MEASURED bg (projected into the wide sample via the reading path).
         repo.upsertSource(
             com.t1dm.core.model.CgmSourceDescriptor(
                 id = com.t1dm.core.model.CgmSourceId("aidexx:X"), vendorId = "aidexx",
@@ -126,21 +135,68 @@ class PredictionDaoTest {
             CgmReadingWith(ts, bg = 120, prov = ReadingProvenance.MEASURED, rx = 5_000),
         )
 
+        // A server patch that (a) tries to OVERWRITE the present bg and (b) fills a MISSING scalar (hr).
         val wrote = repo.mergeServerSample(
-            SamplePatch(ts = ts, tzOffsetMin = 0, updatedAt = 9_000, carbsG = 30.0),
+            SamplePatch(ts = ts, tzOffsetMin = 0, updatedAt = 9_000, bgMgdl = 999, hr = 60),
         )
         assertTrue(wrote)
         val s = repo.sampleAt(ts)!!
-        assertEquals(120, s.bgMgdl)          // local bg preserved (gap preservation)
-        assertEquals(30.0, s.carbsG!!, 0.0)  // newer server carbs merged in
+        assertEquals(120, s.bgMgdl)                          // present bg preserved (never clobbered)
+        assertEquals(ReadingProvenance.MEASURED, s.bgProvenance)  // provenance intact (safety rail #5)
+        assertEquals(60, s.hr)                               // the gap (hr) is filled from the server
+        assertEquals(5_000L, s.updatedAt)                    // local updated_at kept, NOT re-stamped
 
-        // An older server write is rejected.
+        // A NEWER server updated_at still cannot win over a present local value — no clock discriminator
+        // (the crux of replacing LWW: presence gap-fill only, decisions #2/#3).
         val wrote2 = repo.mergeServerSample(
-            SamplePatch(ts = ts, tzOffsetMin = 0, updatedAt = 1_000, carbsG = 999.0),
+            SamplePatch(ts = ts, tzOffsetMin = 0, updatedAt = 50_000, bgMgdl = 888, hr = 77),
         )
-        assertFalse(wrote2)
-        assertEquals(30.0, repo.sampleAt(ts)!!.carbsG!!, 0.0)
+        assertFalse(wrote2)                                  // nothing missing ⇒ no write
+        val s2 = repo.sampleAt(ts)!!
+        assertEquals(120, s2.bgMgdl)
+        assertEquals(60, s2.hr)
+        assertEquals(5_000L, s2.updatedAt)
     }
+
+    @Test
+    fun hydrateDoseEventIgnoresRedeliveryByClientId() = kotlinx.coroutines.test.runTest {
+        val ev = doseEvent(clientId = "dose-A", tsMs = 300_000L, units = 5.0)
+        assertTrue(repo.hydrateDoseEvent(ev) > 0)                          // first insert
+        assertEquals(-1L, repo.hydrateDoseEvent(ev.copy(units = 999.0)))   // same clientId ⇒ IGNOREd
+
+        val rows = repo.loggedDosesInRange(0L, 10_000_000L)
+        assertEquals(1, rows.size)                                         // no duplicate row
+        assertEquals(5.0, rows.single().units, 0.0)                        // original retained, not overwritten
+
+        // A distinct clientId still hydrates.
+        assertTrue(repo.hydrateDoseEvent(doseEvent(clientId = "dose-B", tsMs = 600_000L, units = 3.0)) > 0)
+        assertEquals(2, repo.loggedDosesInRange(0L, 10_000_000L).size)
+    }
+
+    @Test
+    fun hydrateMealEventIgnoresRedeliveryByClientId() = kotlinx.coroutines.test.runTest {
+        val ev = mealEvent(clientId = "meal-A", tsMs = 300_000L, grams = 40.0)
+        assertTrue(repo.hydrateMealEvent(ev) > 0)
+        assertEquals(-1L, repo.hydrateMealEvent(ev.copy(grams = 999.0)))
+
+        val rows = repo.loggedMealsInRange(0L, 10_000_000L)
+        assertEquals(1, rows.size)
+        assertEquals(40.0, rows.single().grams, 0.0)
+
+        assertTrue(repo.hydrateMealEvent(mealEvent(clientId = "meal-B", tsMs = 600_000L, grams = 25.0)) > 0)
+        assertEquals(2, repo.loggedMealsInRange(0L, 10_000_000L).size)
+    }
+
+    private fun doseEvent(clientId: String, tsMs: Long, units: Double) = LoggedDoseEntity(
+        clientId = clientId, tsMs = tsMs, kind = DoseKind.BOLUS, units = units, durationMin = 360.0,
+        k = 2.0, theta = 40.0, kaPerHour = null, kePerHour = null,
+        tzOffsetMin = 0, note = null, updatedAt = 1_000,
+    )
+
+    private fun mealEvent(clientId: String, tsMs: Long, grams: Double) = LoggedMealEntity(
+        clientId = clientId, tsMs = tsMs, grams = grams, gi = 50.0, k = null, theta = null,
+        durationMin = 240.0, customCurve = null, tzOffsetMin = 0, note = null, updatedAt = 1_000,
+    )
 
     private fun CgmReadingWith(ts: Long, bg: Int, prov: ReadingProvenance, rx: Long) =
         com.t1dm.core.model.CgmReading(

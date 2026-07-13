@@ -90,15 +90,16 @@ internal fun parseUnitSpace(raw: String?): UnitSpace =
 
 /**
  * Project a wide sample row to a Rust [StatSample]. A null/absent BG maps to `0.0` (the Rust
- * excludes non-positive BG from every glucose metric) while the treatment/activity channels still
- * count toward the totals — matching `advanced_stats`' "channels over all samples" contract.
+ * excludes non-positive BG from every glucose metric); `steps`/`mood` still feed the activity
+ * channels. Carbs/bolus/basal were demoted off the sample row to self-describing curve events
+ * (§5), so they are `null` here.
  */
 internal fun SampleEntity.toStatSample(): StatSample = StatSample(
     tsMs = ts,
     bgMgdl = bgMgdl?.toDouble() ?: 0.0,
-    carbsG = carbsG,
-    bolusU = bolusU,
-    basalU = basalU,
+    carbsG = null,
+    bolusU = null,
+    basalU = null,
     steps = steps?.toLong(),
     mood = mood,
 )

@@ -19,6 +19,7 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import timber.log.Timber
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.random.Random
 
 /** Reconnect tunables for the WS stream. */
@@ -32,7 +33,8 @@ data class StreamConfig(
 /**
  * What the app cares about from `/v1/stream` (deliverable 4): [Sample] rows (projected to the wide
  * table via LWW) and [Alert] fan-out, plus the connection-lifecycle markers the catch-up needs.
- * On [Reconnected] the coordinator does a REST catch-up from [cursor] (the last-seen event ts).
+ * [Reconnected] still carries the last-seen Sample [cursor] for the Network panel, but the coordinator
+ * catches up from its own local high-water marks rather than this value.
  */
 sealed interface StreamEvent {
     data class Sample(val patch: SamplePatch) : StreamEvent
@@ -45,6 +47,16 @@ sealed interface StreamEvent {
 /** The push-stream seam; a [Flow] the service collects. Reconnects internally with backoff. */
 interface StreamClient {
     fun events(): Flow<StreamEvent>
+
+    /**
+     * Overflow desync signal, shared by reference with the catch-up coordinator. It is set to `true`
+     * when a live event is dropped because the stream channel was full (a `trySend` that failed under
+     * load). The coordinator reads-and-clears it on connect and, when set, does a full resync
+     * (`from = null`) instead of an incremental catch-up — the idempotent gap-fill / `ON CONFLICT`
+     * upserts make a complete re-download harmless. This client is the sole producer; only the
+     * coordinator clears it.
+     */
+    val desync: AtomicBoolean
 }
 
 /** Default OkHttp client for the stream — no read timeout (long-lived), pings keep it alive. */
@@ -57,17 +69,19 @@ private fun defaultStreamOkHttp(config: StreamConfig): OkHttpClient =
 
 /**
  * OkHttp-backed RFC 6455 client. It follows the active profile via [endpoint], reconnects with
- * jittered backoff, relies on OkHttp's built-in ping/pong keepalive, and tracks the last-seen event
- * ts so a [StreamEvent.Reconnected] hands the catch-up a cursor. Only `sample` and `alert` are
- * surfaced; the other three event types are decoded-and-ignored. Collection is confined to
- * [T1dmDispatchers.io]; OkHttp delivers callbacks on its own dispatcher and we hop back via the
- * channel.
+ * jittered backoff, and relies on OkHttp's built-in ping/pong keepalive. It keeps a Sample-only
+ * cursor for the Network panel (no longer load-bearing — the coordinator catches up from local
+ * high-water marks, not this cursor) and raises [desync] when the channel overflows and drops a live
+ * event, so the next connect does a full resync. Only `sample` and `alert` are surfaced; the rest are
+ * decoded-and-ignored. Collection is confined to [T1dmDispatchers.io]; OkHttp delivers callbacks on
+ * its own dispatcher and we hop back via the channel.
  */
 class WebSocketStreamClient(
     private val endpoint: suspend () -> ServerEndpoint?,
     private val dispatchers: T1dmDispatchers,
     private val config: StreamConfig = StreamConfig(),
     private val client: OkHttpClient = defaultStreamOkHttp(config),
+    override val desync: AtomicBoolean = AtomicBoolean(false),
 ) : StreamClient {
 
     override fun events(): Flow<StreamEvent> = channelFlow {
@@ -91,8 +105,9 @@ class WebSocketStreamClient(
                 override fun onMessage(webSocket: WebSocket, text: String) {
                     decode(text)?.let { ev ->
                         if (ev is StreamEvent.Sample) lastCursor = ev.patch.ts
-                        if (ev is StreamEvent.Alert) lastCursor = ev.ts
-                        trySend(ev)
+                        // A full channel drops the event silently; flag a desync so the coordinator
+                        // does a full resync on the next connect instead of an incremental one.
+                        if (trySend(ev).isFailure) desync.set(true)
                     }
                 }
 

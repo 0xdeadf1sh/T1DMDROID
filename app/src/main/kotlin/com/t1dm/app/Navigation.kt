@@ -872,7 +872,7 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 customFoods = custom,
                 onSearch = { q -> container.mealsController.searchFoods(q) },
                 onResolve = { comps -> container.mealsController.resolvePreview(comps) },
-                onLogMeal = { comps -> scope.launch { container.mealsController.logMeal(comps) } },
+                onLogMeal = { comps -> scope.launch { container.logBuilderMeal(comps) } },
                 onSaveMeal = { name, comps -> scope.launch { container.mealsController.saveMeal(name, comps) } },
                 onSaveFood = { food -> scope.launch { container.mealsController.saveCustomFood(food) } },
                 onDeleteFood = { id -> scope.launch { container.mealsController.deleteCustomFood(id) } },

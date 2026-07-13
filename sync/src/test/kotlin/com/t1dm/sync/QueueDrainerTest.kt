@@ -23,7 +23,7 @@ class QueueDrainerTest {
     private fun sample(ts: Long, bg: Int) = SampleEntity(
         ts = ts, tzOffsetMin = 0, bgMgdl = bg,
         bgProvenance = ReadingProvenance.MEASURED, bgFlag = ReadingFlag.NORMAL,
-        carbsG = null, bolusU = null, basalU = null, steps = null, mood = null,
+        steps = null, mood = null,
         hr = null, sleep = null, exercise = null, updatedAt = ts,
     )
 
@@ -173,15 +173,19 @@ class QueueDrainerTest {
     }
 
     @Test
-    fun ageEvictionDropsExpiredRegardlessOfPriority() = runTest {
+    fun ageEvictionSparesNonEvictableClinicalKindsButExpiresRegenerable() = runTest {
+        // §3.7: age-eviction is gated on `ageEvictable`. An irreplaceable ALERT (not ageEvictable)
+        // survives past `maxAgeMs`; a regenerable PHOTO expires — priority is irrelevant to age.
         val dao = FakeOutboxDao()
         dao.enqueue(OutboxEntity(kind = OutboxKind.ALERT, dedupKey = "old", payload = ByteArray(0), createdAtMs = 0, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
+        dao.enqueue(OutboxEntity(kind = OutboxKind.PHOTO, dedupKey = "old-photo", payload = ByteArray(0), createdAtMs = 0, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
         dao.enqueue(OutboxEntity(kind = OutboxKind.PHOTO, dedupKey = "new", payload = ByteArray(0), createdAtMs = 9_000, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
         val d = drainer(dao, RecordingHttpClient { _, _ -> ok() }, config = DrainConfig(maxQueueSize = 100, maxAgeMs = 5_000))
 
-        val evicted = d.evict(nowMs = 10_000)   // cutoff = 5_000; the ALERT at ts 0 is expired
+        val evicted = d.evict(nowMs = 10_000)   // cutoff = 5_000; both ts-0 rows are old
 
-        assertEquals(1, evicted)
-        assertEquals(listOf(OutboxKind.PHOTO), dao.snapshot().map { it.kind })
+        assertEquals(1, evicted)   // only the expired PHOTO is dropped; the expired ALERT is spared
+        assertEquals(setOf(OutboxKind.ALERT, OutboxKind.PHOTO), dao.snapshot().map { it.kind }.toSet())
+        assertEquals(listOf("old", "new"), dao.snapshot().map { it.dedupKey })
     }
 }

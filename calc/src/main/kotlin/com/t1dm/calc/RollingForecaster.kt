@@ -136,9 +136,15 @@ class RollingForecaster(
 
         // The whole future window (store tails + announced + candidate + auto-extended basal), sliced
         // per roll into prediction-zone dose channels. Also yields the logged-only IOB/COB.
-        val contextStartMs = series.anchorTsMs - (nCtx - 1).toLong() * STEP_MS
-        val future = channels.futureOverrides(request.rollStartMs, request.fullRollSteps, request.announced, request.candidate)
-        val ctx0 = channels.contextChannels(contextStartMs, nCtx)
+        // §4-#4: origin context at series.gridStartMs and the future at the grid boundary one step past
+        // the last context sample (predZoneStartMs == InferenceController's cycle path), re-anchoring the
+        // candidate by the same shift so bucketize never rounds its leading step to idx<0 (curve.rs) and
+        // under-counts the candidate's lowering effect — a fail-OPEN regression the re-anchor prevents.
+        val predZoneStartMs = series.gridStartMs + nCtx.toLong() * STEP_MS      // == last reading + STEP (matches InferenceController)
+        val candShift = predZoneStartMs - request.rollStartMs
+        val shiftedCandidate = request.candidate?.map { it.copy(startMs = it.startMs + candShift) }  // (c) re-anchor to pred bucket 0
+        val future = channels.futureOverrides(predZoneStartMs, request.fullRollSteps, request.announced, shiftedCandidate)  // (b) future origin
+        val ctx0 = channels.contextChannels(series.gridStartMs, nCtx)           // (a) context origin
 
         // Rolling context windows (mg/dL BG, raw carb/insulin per step). r=0 is the real history;
         // subsequent rolls slide forward, the re-fed median + the future dose channels becoming context.

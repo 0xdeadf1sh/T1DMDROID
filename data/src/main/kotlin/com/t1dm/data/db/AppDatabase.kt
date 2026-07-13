@@ -22,7 +22,10 @@ import kotlinx.coroutines.Dispatchers
  * adds the glycemic dictionary (`food` + the FTS5 `food_fts` shadow), `saved_meal`/
  * `saved_meal_item`, and `insulin_type` — all additive. v6 (Phase 7C) is a **data-only** re-seed
  * (no schema change) folding the grown `FoodSeed` catalogue into an already-seeded install; see
- * [MigrationRunner.MIGRATION_5_6].
+ * [MigrationRunner.MIGRATION_5_6]. v7 (app-authoritative redesign) adds a `clientId` column
+ * (+ UNIQUE index) to `logged_meal`/`logged_dose` — the stable phone-minted id the server keys
+ * meal/dose upserts on and the app re-hydrates by — and leaves the retired
+ * `sample.carbsG/bolusU/basalU` dose projections dead in place; see [MigrationRunner.MIGRATION_6_7].
  */
 @Database(
     entities = [
@@ -45,7 +48,7 @@ import kotlinx.coroutines.Dispatchers
         SavedMealItemEntity::class,
         InsulinTypeEntity::class,
     ],
-    version = 6,
+    version = 7,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -73,7 +76,7 @@ abstract class AppDatabase : RoomDatabase() {
 
         /** The current keep-forever schema version (must equal the `@Database(version = …)` above).
          *  A full app reset ([T1dmRepository.wipeAllData]) row-wipes at THIS version — never a drop. */
-        const val SCHEMA_VERSION = 6
+        const val SCHEMA_VERSION = 7
 
         /**
          * Build the on-disk database. Migrations come exclusively from [MigrationRunner];

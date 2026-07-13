@@ -93,7 +93,9 @@ import com.t1dm.data.meals.InsulinController
 import com.t1dm.data.meals.MealsController
 import com.t1dm.data.stats.StatsRepository
 import com.t1dm.feature.stats.StatsViewModel
+import com.t1dm.core.model.AdvancedStats
 import com.t1dm.core.model.Food
+import com.t1dm.core.model.MealComponent
 import com.t1dm.core.model.RecentMeal
 import com.t1dm.core.model.InsulinType
 import com.t1dm.core.model.SavedMeal
@@ -104,8 +106,11 @@ import com.t1dm.data.db.LoggedDoseEntity
 import com.t1dm.data.db.toBlob
 import com.t1dm.data.db.LoggedMealEntity
 import com.t1dm.data.db.NoteEntity
+import com.t1dm.sync.EventStatDto
 import com.t1dm.sync.NoteWriteDto
-import com.t1dm.sync.SeriesPointDto
+import com.t1dm.sync.StatsPushDto
+import com.t1dm.sync.toDoseEventDto
+import com.t1dm.sync.toMealEventDto
 import com.t1dm.inference.ContextChannelSource
 import com.t1dm.inference.FutureOverrideSource
 import com.t1dm.inference.InferenceController
@@ -159,6 +164,17 @@ private fun kvForecastBackend(modelId: String) = "inference.forecast_backend.$mo
 
 /** The clinical/published horizons the on-device accuracy aggregator reports (Phase 7C). */
 private val ACCURACY_HORIZONS_MIN = listOf(30, 60, 120)
+
+/** §3.8 (H7) — kv key holding the last server `store_epoch` the phone has fully re-mirrored to. */
+private const val KV_MIRRORED_EPOCH = "sync.mirrored_epoch"
+
+/** H7 re-mirror: rows enqueued per drain-paced batch — small enough that one batch added right after
+ *  pacing (which waits for depth ≤ cap/2) stays well under the outbox size cap (§3.7). */
+private const val REMIRROR_BATCH = 500
+
+/** H7 re-mirror: abort pacing after this many 1 s waits; a stalled drain then leaves the epoch
+ *  unrecorded so the walk resumes on the next connect rather than hanging. */
+private const val REMIRROR_MAX_PACE_WAITS = 120
 
 
 /**
@@ -567,9 +583,26 @@ class AppContainer(context: Context) {
         // reads a cheap cached value instead of a 30-day recompute on every 30 s refresh.
         appScope.launch(dispatchers.default) {
             while (isActive) {
+                val now = System.currentTimeMillis()
                 gmiSnapshot = runCatching { statsRepository.localStats(StatsWindow.D30).gmi }
                     .getOrNull()?.takeIf { it in 3.0..25.0 }
+                // §3.6 — the phone is the sole stats author: push all three windows for the server to
+                // store verbatim (it never computes). enqueueStats dedups to ≤1/window/day.
+                pushStats(now)
                 delay(30 * 60_000L)
+            }
+        }
+        // §3.8 (H7) — on each transition into a live WS connection, re-mirror the phone's authoritative
+        // history to the server IFF its store_epoch differs from the last fully-mirrored one (a wiped/new
+        // server, or first-ever sync). The epoch guard makes reconnecting to the same server a no-op.
+        appScope.launch {
+            var wasConnected = false
+            syncStatus.collect { st ->
+                val connected = st.wsState == WsConnState.CONNECTED
+                if (connected && !wasConnected) {
+                    runCatching { reMirrorIfNewServer() }.onFailure { Timber.w(it, "server re-mirror failed") }
+                }
+                wasConnected = connected
             }
         }
     }
@@ -768,6 +801,58 @@ class AppContainer(context: Context) {
     suspend fun resyncFromServer(): Int = withContext(dispatchers.io) {
         if (serverProfileStore.activeEndpoint() == null) 0
         else runCatching { catchUpCoordinator.catchUp(null) }.getOrDefault(0)
+    }
+
+    /**
+     * §3.8 (H7) — re-mirror the phone's authoritative history to a freshly-wiped or brand-new server.
+     * The clean-break cutover (§6) wipes the server, and the outbox holds only *pending* writes, not
+     * history — so on connecting we compare the server's `store_epoch` (authed `GET /v1/health`) against
+     * the last fully-mirrored epoch (kv [KV_MIRRORED_EPOCH]). When they differ (a wiped/new server, or
+     * first-ever sync) we walk the local meals / doses / scalar-sample / stats history in `ts` order and
+     * enqueue each as its idempotent PUT, in bounded, drain-paced batches so the outbox size cap (§3.7)
+     * is never blown in one shot. The epoch is recorded only on FULL completion, so a partial re-mirror
+     * (or a stalled drain) simply resumes on the next connect; every write being idempotent, an overlap
+     * with surviving server rows is a no-op. This is the upload inverse of the [resyncFromServer]
+     * download. Off-main, fully guarded — never actuates, never blocks the alarm path.
+     */
+    private suspend fun reMirrorIfNewServer() = withContext(dispatchers.io) {
+        if (serverProfileStore.activeEndpoint() == null) return@withContext
+        val epoch = syncHttpClient.health().store_epoch?.takeIf { it.isNotBlank() } ?: return@withContext
+        val mirrored = repository.getKv(KV_MIRRORED_EPOCH)
+        if (epoch == mirrored) return@withContext
+        Timber.i("re-mirroring history: server store_epoch %s ≠ mirrored %s", epoch, mirrored)
+        val now = System.currentTimeMillis()
+        // Meals + doses: irreplaceable clinical records (non-age-evictable, high outbox priority).
+        for (chunk in repository.loggedMealsInRange(0L, now).sortedBy { it.tsMs }.chunked(REMIRROR_BATCH)) {
+            pace(); for (m in chunk) outboxEnqueuer.enqueueMeal(m.toMealEventDto(), now)
+        }
+        for (chunk in repository.loggedDosesInRange(0L, now).sortedBy { it.tsMs }.chunked(REMIRROR_BATCH)) {
+            pace(); for (d in chunk) outboxEnqueuer.enqueueDose(d.toDoseEventDto(), now)
+        }
+        // Scalar sample history: one INGEST dirty-marker per bucket (the drainer resolves the current
+        // row and POSTs `/v1/ingest`). Age-evictable, so it is paced hardest against the drain.
+        for (chunk in repository.samplesInRange(0L, now).sortedBy { it.ts }.chunked(REMIRROR_BATCH)) {
+            pace(); for (s in chunk) outboxEnqueuer.enqueueIngest(s.ts, now)
+        }
+        // Latest-per-window stats blocks (deduped ≤1/window/day; a no-op if the slow loop already pushed).
+        pushStats(now)
+        // The whole walk enqueued without a stalled-drain abort ⇒ record this epoch as fully mirrored.
+        repository.putKv(KV_MIRRORED_EPOCH, epoch, now)
+    }
+
+    /**
+     * H7 back-pressure: suspend until the outbox drains below half its size cap before enqueuing the
+     * next re-mirror batch, so a bulk re-push never blows the cap (§3.7) and self-evicts the very
+     * (age-evictable) INGEST markers it just added. Bounded — a drain stalled past [REMIRROR_MAX_PACE_WAITS]
+     * throws, aborting the walk before the epoch is recorded, so it resumes cleanly on the next connect.
+     */
+    private suspend fun pace() {
+        var waits = 0
+        while (syncStatus.value.outboxDepth > outboxMaxSize / 2) {
+            check(waits < REMIRROR_MAX_PACE_WAITS) { "re-mirror drain stalled at depth ${syncStatus.value.outboxDepth}" }
+            delay(1_000L)
+            waits++
+        }
     }
 
     // ─── Full app reset (issue 5 — DESTRUCTIVE, IRREVERSIBLE) ──────────────────────────────────
@@ -1233,21 +1318,32 @@ class AppContainer(context: Context) {
 
     // ── Entry writers: persist the self-describing event, project the wide sample, mirror the series.
 
-    /** Log a meal: `logged_meal` (GI→gamma) + `sample.carbs` + `PUT /v1/series/carbs`. */
+    /** Log a single-food meal: persist the self-describing `logged_meal` (GI→gamma; the repository
+     *  grid-snaps `ts` and mints the `client_id`) and push it as a `PUT /v1/meals` event built from the
+     *  PERSISTED entity, so app + sample + wire agree on one grid ts and one id (§3.1/§3.2). */
     suspend fun logCarb(grams: Double, gi: Double) {
         val now = System.currentTimeMillis()
         val tz = tzOffsetMin(now)
         val (k, theta, dur) = CurveEngine.Presets.carbGammaForGi(gi)
-        repository.logMeal(
+        val meal = repository.logMeal(
             LoggedMealEntity(
-                tsMs = now, grams = grams, gi = gi, k = k, theta = theta,
+                clientId = "", tsMs = now, grams = grams, gi = gi, k = k, theta = theta,
                 durationMin = dur, customCurve = null, tzOffsetMin = tz, note = null, updatedAt = now,
             ),
         )
-        // Push the committed carb-appearance CURVE (grams-per-5-min, area = grams), spread across the
-        // future buckets — not a bare impulse — so the server holds the curve the app committed.
-        val carbCurve = curveEngine.gamma(grams, k, theta, dur)
-        outboxEnqueuer.enqueueSeries("carbs", curveSeries(snapToGrid(now), carbCurve, grams), now)
+        outboxEnqueuer.enqueueMeal(meal.toMealEventDto(), now)
+    }
+
+    /**
+     * Log a multi-food builder meal (the Meals-screen builder path, invoked from Navigation). Persists
+     * via [MealsController] — which resolves the combined appearance curve into `customCurve`, grid-snaps
+     * `ts`, and mints the `client_id` — then pushes the resulting self-describing event as a
+     * `PUT /v1/meals`. Before this the builder persisted but synced nothing (§3.2 builder-never-synced fix).
+     */
+    suspend fun logBuilderMeal(components: List<MealComponent>) {
+        val now = System.currentTimeMillis()
+        val meal = mealsController.logMeal(components)
+        outboxEnqueuer.enqueueMeal(meal.toMealEventDto(), now)
     }
 
     /** The clinical insulin preset catalogue (issue 19), for the Settings picker + apply-at-log. */
@@ -1273,52 +1369,49 @@ class AppContainer(context: Context) {
         return cat.firstOrNull { it.label == label } ?: cat.firstOrNull { it.label == SettingsStore.DEFAULT_BASAL_PRESET_LABEL } ?: cat.first()
     }
 
-    /** Log a bolus: self-describing `logged_dose` + `sample.bolus` + series. The action curve is the
-     *  SELECTED clinical rapid preset's exponential model (default NovoRapid); it rides in `customCurve`
-     *  so it reconstructs exactly, and the same committed CURVE is pushed to the server. */
+    /** Log a bolus: self-describing `logged_dose` (SELECTED clinical rapid preset's exponential action
+     *  model, default NovoRapid, resolved into `customCurve` so it reconstructs exactly) + a
+     *  `PUT /v1/doses` event built from the PERSISTED (grid-snapped, client_id-minted) entity (§3.1/§3.2). */
     suspend fun logBolus(units: Double, preset: BolusPreset) {
         val now = System.currentTimeMillis()
         val tz = tzOffsetMin(now)
         val rapid = resolveRapid()
         val curve = curveEngine.expAction(units, rapid.peakMin, rapid.diaMin)
-        repository.logLoggedDose(
+        val dose = repository.logLoggedDose(
             LoggedDoseEntity(
-                tsMs = now, kind = DoseKind.BOLUS, units = units, durationMin = rapid.diaMin,
+                clientId = "", tsMs = now, kind = DoseKind.BOLUS, units = units, durationMin = rapid.diaMin,
                 k = null, theta = null, kaPerHour = null, kePerHour = null,
                 customCurve = if (curve.isEmpty()) null else curve.toList().toBlob(),
                 tzOffsetMin = tz, note = rapid.label, updatedAt = now,
             ),
         )
-        // Push the committed insulin-ACTION curve (units-per-5-min, area = units) across its future buckets.
-        outboxEnqueuer.enqueueSeries("bolus", curveSeries(snapToGrid(now), curve, units), now)
+        outboxEnqueuer.enqueueDose(dose.toDoseEventDto(), now)
     }
 
-    /** Log a discrete long-acting basal injection: `logged_dose` (Bateman) + `sample.basal` + series.
-     *  Uses the SELECTED clinical basal preset's DIA + ka/ke (default Lantus); the committed Bateman
-     *  action curve is pushed to the server. */
+    /** Log a discrete long-acting basal injection: `logged_dose` (Bateman; SELECTED clinical basal
+     *  preset's DIA + ka/ke, default Lantus, so it reconstructs analytically) + a `PUT /v1/doses` event
+     *  built from the PERSISTED (grid-snapped, client_id-minted) entity (§3.1/§3.2). */
     suspend fun logBasal(units: Double, preset: BasalPreset) {
         val now = System.currentTimeMillis()
         val tz = tzOffsetMin(now)
         val basal = resolveBasal()
-        repository.logLoggedDose(
+        val dose = repository.logLoggedDose(
             LoggedDoseEntity(
-                tsMs = now, kind = DoseKind.BASAL, units = units, durationMin = basal.diaMin,
+                clientId = "", tsMs = now, kind = DoseKind.BASAL, units = units, durationMin = basal.diaMin,
                 k = null, theta = null, kaPerHour = basal.kaPerHour, kePerHour = basal.kePerHour,
                 tzOffsetMin = tz, note = basal.label, updatedAt = now,
             ),
         )
-        // Push the committed basal-ACTION Bateman curve (units-per-5-min, area = units) across its window.
-        val basalCurve = curveEngine.bateman(units, basal.diaMin, basal.kaPerHour, basal.kePerHour)
-        outboxEnqueuer.enqueueSeries("basal", curveSeries(snapToGrid(now), basalCurve, units), now)
+        outboxEnqueuer.enqueueDose(dose.toDoseEventDto(), now)
     }
 
-    /** Save a mood: `sample.mood` (grid bucket) + `PUT /v1/series/mood`. */
+    /** Save a mood into its 5-min `sample` bucket. `recordMood` folds it into the wide sample and
+     *  enqueues the INGEST push, so mood rides the six-scalar `POST /v1/ingest` — no separate curve push. */
     suspend fun saveMood(mood: Int) {
         val now = System.currentTimeMillis()
         val tz = tzOffsetMin(now)
         val gridTs = snapToGrid(now)
         repository.recordMood(gridTs, tz, mood, now)
-        outboxEnqueuer.enqueueSeries("mood", listOf(SeriesPointDto(gridTs, mood.toDouble())), now)
     }
 
     /** Save a free-text note: local `note` table + `POST /v1/notes` (`NOTE` outbox). */
@@ -1326,23 +1419,19 @@ class AppContainer(context: Context) {
         val now = System.currentTimeMillis()
         val tz = tzOffsetMin(now)
         repository.logNote(NoteEntity(tsMs = now, tzOffsetMin = tz, text = text, updatedAt = now))
-        outboxEnqueuer.enqueueNote(NoteWriteDto(ts = now, tz_offset = tz, text = text), now)
+        outboxEnqueuer.enqueueNote(
+            NoteWriteDto(
+                client_id = java.util.UUID.randomUUID().toString(),
+                ts = now, tz_offset = tz, text = text, updated_at = now,
+            ),
+            now,
+        )
     }
 
     private fun tzOffsetMin(nowMs: Long): Int =
         java.time.ZoneId.systemDefault().rules.getOffset(java.time.Instant.ofEpochMilli(nowMs)).totalSeconds / 60
 
     private fun snapToGrid(ts: Long): Long = Math.floorDiv(ts + 150_000L, 300_000L) * 300_000L
-
-    /** Lay a committed appearance/action curve (per-5-min values, area = the dose) onto the grid from
-     *  [gridTs] as a forward series — pushed so the server holds the CURVE, not a bare impulse. Zero
-     *  buckets are dropped; a degenerate empty curve falls back to one [total] impulse at [gridTs]. */
-    private fun curveSeries(gridTs: Long, curve: DoubleArray, total: Double): List<SeriesPointDto> {
-        val pts = curve.asList().mapIndexedNotNull { i, v ->
-            if (v > 0.0) SeriesPointDto(gridTs + i * CurveEngine.STEP_MS, v) else null
-        }
-        return pts.ifEmpty { listOf(SeriesPointDto(gridTs, total)) }
-    }
 
     // ─── Dashboard read models (DB-backed so they survive process death) ──────────────────────
 
@@ -1498,6 +1587,31 @@ class AppContainer(context: Context) {
 
     /** The hoisted Stats state holder; app-lifetime so the window/composite survive Activity churn. */
     val statsViewModel: StatsViewModel by lazy { StatsViewModel(statsSource, appScope) }
+
+    /** Map a locally-recomputed [AdvancedStats] block onto the flat wire block the server stores
+     *  verbatim (§3.6). `mean_hr`/`bg_hr_corr` are not in the phone's [AdvancedStats] yet (§8.2) ⇒ 0. */
+    private fun AdvancedStats.toPush(window: StatsWindow, nowMs: Long): StatsPushDto = StatsPushDto(
+        window = window.wire,
+        updated_at = nowMs,
+        tir = tir, time_below = tbr, time_above = tar,
+        mean_bg = meanBg, gmi = gmi, cv = cv, sd = sd,
+        hypo_events = EventStatDto(hypoEpisodes.count, hypoEpisodes.totalDurationMs),
+        hyper_events = EventStatDto(hyperEpisodes.count, hyperEpisodes.totalDurationMs),
+        mean_daily_carbs = meanDailyCarbs, tdd = tdd, bolus_basal_ratio = bolusBasalRatio,
+        n_samples = nSamples,
+    )
+
+    /**
+     * §3.6 — compute and enqueue the 7/30/90-day stats blocks the server stores verbatim (it never
+     * computes). The sole stats producer: driven from the 30-min slow loop and the H7 re-mirror; each
+     * window is deduped ≤1/window/day inside [OutboxEnqueuer.enqueueStats]. Guarded per window.
+     */
+    private suspend fun pushStats(nowMs: Long) {
+        for (w in StatsWindow.entries) {
+            runCatching { outboxEnqueuer.enqueueStats(statsRepository.localStats(w).toPush(w, nowMs), nowMs) }
+                .onFailure { Timber.w(it, "stats push failed for %s", w.wire) }
+        }
+    }
 
     // ─── Watch link (Phase 5) — a CLEAN REMOVABLE SEAM ────────────────────────────────────────
     // The optional ESP32-C3 accessory. Everything the :watch module needs is bound here from the

@@ -20,10 +20,10 @@ interface DoseStore {
     /** Resolved carb appearance ([CurveKind.CARB]) events whose Ra window overlaps `[fromMs,toMs)`. */
     suspend fun carbEvents(fromMs: Long, toMs: Long): List<CurveEvent>
 
-    /** Resolved discrete insulin ([CurveKind.INSULIN]) events — logged boluses (gamma PK) and
-     *  any logged basal injections (Bateman) — whose action overlaps `[fromMs,toMs)`. The
-     *  idealized repeating background is [activeBasalSchedule] instead; a caller uses one basal
-     *  representation or the other, never both, to avoid double-counting. */
+    /** Resolved discrete BOLUS ([CurveKind.INSULIN], gamma PK) events whose action overlaps
+     *  `[fromMs,toMs)`. Basal is NOT included here (issue #6): the caller pairs this with exactly
+     *  one basal representation — the auto-extended [activeBasalSchedule] if configured, else the
+     *  discrete [basalInjectionEvents] — so a schedule-user who also logs basal never double-counts. */
     suspend fun insulinEvents(fromMs: Long, toMs: Long): List<CurveEvent>
 
     /** The active daily basal schedule (MDI), or null if none is configured. */
@@ -88,7 +88,7 @@ class ChannelBuilder(
 ) {
     /**
      * The historical context channels over `[gridStartMs, gridStartMs + nSteps·STEP_MS)`:
-     * carb appearance (feat 1) and combined insulin action = bolus PK + auto-extended basal
+     * carb appearance (feat 1) and combined insulin action = bolus PK + basal background
      * (feat 2). Reads events from a window padded back by [PAD_MIN] so a dose taken just before
      * the grid still contributes its overlapping tail.
      */
@@ -97,9 +97,7 @@ class ChannelBuilder(
         val fromPadded = gridStartMs - PAD_MS
         val carbs = store.carbEvents(fromPadded, gridEndMs)
         val boluses = store.insulinEvents(fromPadded, gridEndMs)
-        val basal = store.activeBasalSchedule()
-            ?.let { engine.extendBasal(it, fromPadded, gridEndMs) }
-            .orEmpty()
+        val basal = basalEvents(fromPadded, gridEndMs)
 
         val carbCh = engine.bucketize(carbs, gridStartMs, nSteps, CurveKind.CARB)
         val insulinCh = engine.bucketize(boluses + basal, gridStartMs, nSteps, CurveKind.INSULIN)
@@ -111,9 +109,10 @@ class ChannelBuilder(
      * `[rollStartMs, rollStartMs + nSteps·STEP_MS)`. [announced] is the user's announced future
      * meals/boluses; [candidate] is an optional dose the calculator is scoring (both are
      * pre-resolved [CurveEvent]s with absolute `startMs`). Existing-dose tails that spill past
-     * [rollStartMs] are pulled from the store; the active basal is auto-extended across the
-     * horizon. Also returns IOB/COB at [rollStartMs] (remaining tail area from the STORE doses
-     * only — announced/candidate excluded so the card's "IOB from logged doses only" holds).
+     * [rollStartMs] are pulled from the store; the basal background (schedule XOR discrete
+     * injections) spans the horizon. Also returns IOB/COB at [rollStartMs] (remaining tail area
+     * from the STORE doses only — announced/candidate excluded so the card's "IOB from logged
+     * doses only" holds).
      */
     suspend fun futureOverrides(
         rollStartMs: Long,
@@ -126,9 +125,7 @@ class ChannelBuilder(
 
         val storeCarbs = store.carbEvents(fromPadded, horizonEndMs)
         val storeInsulin = store.insulinEvents(fromPadded, horizonEndMs)
-        val basal = store.activeBasalSchedule()
-            ?.let { engine.extendBasal(it, fromPadded, horizonEndMs) }
-            .orEmpty()
+        val basal = basalEvents(fromPadded, horizonEndMs)
 
         val annCarbs = announced.filter { it.kind == CurveKind.CARB }
         val annInsulin = announced.filter { it.kind == CurveKind.INSULIN }
@@ -156,18 +153,16 @@ class ChannelBuilder(
 
     /**
      * The BASAL-only insulin channel over `[gridStartMs, gridStartMs + nSteps·STEP_MS)` (issue 18):
-     * the auto-extended daily schedule plus any discrete logged long-acting injections, bucketized on
-     * the same grid as [contextChannels]. Purely for the dashboard's separate basal overlay series —
-     * the model still consumes the COMBINED insulin channel from [contextChannels].
+     * the single basal representation (auto-extended daily schedule if configured, else the discrete
+     * logged long-acting injections — issue #6 XOR), bucketized on the same grid as [contextChannels].
+     * Purely for the dashboard's separate basal overlay series — the model still consumes the
+     * COMBINED insulin channel from [contextChannels].
      */
     suspend fun basalChannel(gridStartMs: Long, nSteps: Int): DoubleArray {
         val gridEndMs = gridStartMs + nSteps * CurveEngine.STEP_MS
         val fromPadded = gridStartMs - PAD_MS
-        val injections = store.basalInjectionEvents(fromPadded, gridEndMs)
-        val schedule = store.activeBasalSchedule()
-            ?.let { engine.extendBasal(it, fromPadded, gridEndMs) }
-            .orEmpty()
-        return engine.bucketize(injections + schedule, gridStartMs, nSteps, CurveKind.INSULIN)
+        val basal = basalEvents(fromPadded, gridEndMs)
+        return engine.bucketize(basal, gridStartMs, nSteps, CurveKind.INSULIN)
     }
 
     /** IOB/COB at [atMs] from the logged store doses only (the value the decision card shows). */
@@ -177,7 +172,7 @@ class ChannelBuilder(
             CurveKind.CARB -> store.carbEvents(from, atMs + CurveEngine.STEP_MS)
             CurveKind.INSULIN ->
                 store.insulinEvents(from, atMs + CurveEngine.STEP_MS) +
-                    (store.activeBasalSchedule()?.let { engine.extendBasal(it, from, atMs + CurveEngine.STEP_MS) }.orEmpty())
+                    basalEvents(from, atMs + CurveEngine.STEP_MS)
         }
         return engine.onBoard(events, atMs, kind)
     }
@@ -196,12 +191,24 @@ class ChannelBuilder(
     suspend fun insulinZeroMs(atMs: Long): Long? {
         val from = atMs - PAD_MS
         val events = store.insulinEvents(from, atMs + CurveEngine.STEP_MS) +
-            (store.activeBasalSchedule()?.let { engine.extendBasal(it, from, atMs + CurveEngine.STEP_MS) }.orEmpty())
+            basalEvents(from, atMs + CurveEngine.STEP_MS)
         return events.asSequence()
             .filter { it.kind == CurveKind.INSULIN }
             .mapNotNull { ev -> ev.values.indexOfLast { it > 0.0 }.takeIf { it >= 0 }?.let { j -> ev.startMs + j * ev.stepMs } }
             .maxOrNull()
     }
+
+    /**
+     * The single basal representation over `[fromMs, toMs)` (issue #6): the auto-extended active
+     * daily schedule if one is configured, ELSE the discrete logged BASAL injections — schedule
+     * XOR discrete, never both, so a schedule-user who also logs a basal injection never
+     * double-counts. Schedule-primary is the fail-closed direction: presence of a schedule (not the
+     * emptiness of its output over this window) selects it, so a spurious extra basal can't inflate
+     * the combined channel and deflate the forecast into admitting a larger dose.
+     */
+    private suspend fun basalEvents(fromMs: Long, toMs: Long): List<CurveEvent> =
+        store.activeBasalSchedule()?.let { engine.extendBasal(it, fromMs, toMs) }
+            ?: store.basalInjectionEvents(fromMs, toMs)
 
     companion object {
         /** Look-back padding (minutes) covering the longest plausible action tail (degludec ~42 h). */

@@ -48,11 +48,16 @@ class QueueDrainer(
 ) {
     private val mutex = Mutex()
 
-    /** Enforce the size AND age bounds; returns the number of rows evicted. Public for the panel. */
+    /**
+     * Enforce the size AND age bounds; returns the number of rows evicted. Public for the panel.
+     * Age-eviction is gated on [OutboxKind]'s `ageEvictable` — irreplaceable clinical kinds
+     * (ALERT/DOSE/MEAL/NOTE) never expire by age, and yield only to the hard size cap below, after
+     * every regenerable kind by priority. Regenerable kinds still expire past `maxAgeMs`.
+     */
     suspend fun evict(nowMs: Long = clock()): Int = withContext(dispatchers.io) {
         val rows = dao.evictionRows()
         val ageCut = nowMs - config.maxAgeMs
-        val expired = rows.filter { it.createdAtMs < ageCut }.map { it.id }
+        val expired = rows.filter { it.kind.ageEvictable && it.createdAtMs < ageCut }.map { it.id }
         val survivors = rows.filterNot { it.id in expired.toHashSet() }
         val overflow = survivors.size - config.maxQueueSize
         val trimmed = if (overflow > 0) {

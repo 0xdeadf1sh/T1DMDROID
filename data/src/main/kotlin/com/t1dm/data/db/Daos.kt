@@ -137,25 +137,25 @@ interface LoggedDoseDao {
 
     @Upsert suspend fun upsert(dose: LoggedDoseEntity)
 
-    /** Event window read for curve/channel reconstruction (SPEC §3.3). Ordered oldest-first. */
+    /** Id-keyed hydration insert (§3.4): a redelivered event conflicts on the unique `clientId`
+     *  index and is IGNOREd, so a server catch-up never duplicates a phone-authored dose. Returns
+     *  the new rowid, or -1 when the clientId already exists. Never re-projects into `sample`. */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertIgnore(dose: LoggedDoseEntity): Long
+
+    /** Event window read for curve/channel reconstruction (SPEC §3.3) and event-range hydration /
+     *  re-mirror (§3.4/§3.8). Ordered oldest-first. */
     @Query("SELECT * FROM logged_dose WHERE tsMs BETWEEN :fromMs AND :toMs ORDER BY tsMs")
     suspend fun inRange(fromMs: Long, toMs: Long): List<LoggedDoseEntity>
 
     @Query("SELECT * FROM logged_dose WHERE tsMs BETWEEN :fromMs AND :toMs ORDER BY tsMs")
     fun observeRange(fromMs: Long, toMs: Long): Flow<List<LoggedDoseEntity>>
 
-    /** Timestamp of the most recent logged insulin dose (IOB provenance, §3.6-F); null = none. */
+    /** Timestamp of the most recent logged insulin dose (IOB provenance, §3.6-F); null = none. Also
+     *  the dose half of the event high-water mark `T1dmRepository.newestEventTs()` (§3.5), max'd with
+     *  [LoggedMealDao.latestTs] — the WS catch-up pulls only meal/dose history newer than it. */
     @Query("SELECT MAX(tsMs) FROM logged_dose")
     suspend fun latestTs(): Long?
-
-    /** Grid ts already carrying a logged dose of [kind] — the gap set the sample→dose reconcile skips. */
-    @Query("SELECT DISTINCT tsMs FROM logged_dose WHERE kind = :kind")
-    suspend fun distinctTs(kind: DoseKind): List<Long>
-
-    /** How many logged doses of [kind] whose action curve COVERS grid slot [ts] — the gap check so a
-     *  server curve-sample never doubles a local dose that already spans that bucket. */
-    @Query("SELECT COUNT(*) FROM logged_dose WHERE kind = :kind AND tsMs <= :ts AND tsMs + durationMin * 60000 > :ts")
-    suspend fun coveringCount(ts: Long, kind: DoseKind): Int
 
     /** Batch gap-fill for the sample→dose reconcile (server bolus history that predates this build). */
     @Insert
@@ -174,20 +174,24 @@ interface LoggedMealDao {
 
     @Upsert suspend fun upsert(meal: LoggedMealEntity)
 
+    /** Id-keyed hydration insert (§3.4): a redelivered event conflicts on the unique `clientId`
+     *  index and is IGNOREd, so a server catch-up never duplicates a phone-authored meal. Returns
+     *  the new rowid, or -1 when the clientId already exists. Never re-projects into `sample`. */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertIgnore(meal: LoggedMealEntity): Long
+
+    /** Timestamp of the most recent logged meal; null = none. The meal half of the event high-water
+     *  mark `T1dmRepository.newestEventTs()` (§3.5), max'd with [LoggedDoseDao.latestTs]. */
+    @Query("SELECT MAX(tsMs) FROM logged_meal")
+    suspend fun latestTs(): Long?
+
+    /** Event window read for curve/channel reconstruction and event-range hydration / re-mirror
+     *  (§3.4/§3.8). Ordered oldest-first. */
     @Query("SELECT * FROM logged_meal WHERE tsMs BETWEEN :fromMs AND :toMs ORDER BY tsMs")
     suspend fun inRange(fromMs: Long, toMs: Long): List<LoggedMealEntity>
 
     @Query("SELECT * FROM logged_meal WHERE tsMs BETWEEN :fromMs AND :toMs ORDER BY tsMs")
     fun observeRange(fromMs: Long, toMs: Long): Flow<List<LoggedMealEntity>>
-
-    /** Grid ts already carrying a logged meal — the gap set the sample→meal reconcile skips. */
-    @Query("SELECT DISTINCT tsMs FROM logged_meal")
-    suspend fun distinctTs(): List<Long>
-
-    /** How many logged meals' appearance curves COVER grid slot [ts] (`tsMs ≤ ts < tsMs + duration`) —
-     *  the gap check so a server curve-sample never doubles a local meal that already spans that bucket. */
-    @Query("SELECT COUNT(*) FROM logged_meal WHERE tsMs <= :ts AND tsMs + durationMin * 60000 > :ts")
-    suspend fun coveringCount(ts: Long): Int
 
     /** Batch gap-fill for the sample→meal reconcile (server carb history that predates this build). */
     @Insert

@@ -5,6 +5,7 @@ import androidx.room.migration.Migration
 import androidx.sqlite.SQLiteConnection
 import androidx.sqlite.execSQL
 import com.t1dm.data.meals.FoodSeed
+import java.util.UUID
 
 /**
  * The single registry of schema migrations (Phase 1). Keep-forever storage
@@ -201,8 +202,73 @@ object MigrationRunner {
         }
     }
 
+    /**
+     * v6 → v7 (app-authoritative redesign, §3.2/§3.4, H1): additive only — `logged_meal` and
+     * `logged_dose` each gain a phone-minted `clientId` (the stable id the server keys meal/dose
+     * upserts on and the app re-hydrates by) plus a UNIQUE index over it. `ADD COLUMN` requires a
+     * non-null default so pre-existing rows populate, so each legacy row is then back-filled with a
+     * fresh random UUID BEFORE the UNIQUE index is built — otherwise two legacy rows would collide
+     * on the placeholder `''`. The entity declares no column default, so Room's schema validation
+     * ignores the DB-side `DEFAULT ''` (a column default is validated only when the entity declares
+     * one).
+     *
+     * The retired `sample.carbsG/bolusU/basalU` dose projections are intentionally LEFT IN PLACE
+     * (leave-dead): `DROP COLUMN` rewrites the whole table, and once nothing writes them the columns
+     * are inert.
+     */
+    val MIGRATION_6_7 = object : Migration(6, 7) {
+        override fun migrate(connection: SQLiteConnection) {
+            addClientId(connection, "logged_meal")
+            addClientId(connection, "logged_dose")
+            // #5: carbs/bolus/basal are curve EVENTS now, so `sample` must drop those three dead
+            // columns to match SampleEntity — Room validates TableInfo exactly and rejects a table
+            // with extra columns. Rebuild the table (portable) rather than ALTER TABLE DROP COLUMN,
+            // which the bundled SQLite driver does not handle reliably. Schema mirrors 7.json exactly.
+            connection.execSQL(
+                "CREATE TABLE IF NOT EXISTS `sample_new` (`ts` INTEGER NOT NULL, " +
+                    "`tzOffsetMin` INTEGER NOT NULL, `bgMgdl` INTEGER, `bgProvenance` TEXT, " +
+                    "`bgFlag` TEXT, `steps` INTEGER, `mood` INTEGER, `hr` INTEGER, `sleep` INTEGER, " +
+                    "`exercise` INTEGER, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`ts`))",
+            )
+            connection.execSQL(
+                "INSERT INTO `sample_new` " +
+                    "(`ts`,`tzOffsetMin`,`bgMgdl`,`bgProvenance`,`bgFlag`,`steps`,`mood`,`hr`,`sleep`,`exercise`,`updatedAt`) " +
+                    "SELECT `ts`,`tzOffsetMin`,`bgMgdl`,`bgProvenance`,`bgFlag`,`steps`,`mood`,`hr`,`sleep`,`exercise`,`updatedAt` " +
+                    "FROM `sample`",
+            )
+            connection.execSQL("DROP TABLE `sample`")
+            connection.execSQL("ALTER TABLE `sample_new` RENAME TO `sample`")
+        }
+
+        private fun addClientId(connection: SQLiteConnection, table: String) {
+            connection.execSQL("ALTER TABLE `$table` ADD COLUMN `clientId` TEXT NOT NULL DEFAULT ''")
+            val ids = ArrayList<Long>()
+            val select = connection.prepare("SELECT `id` FROM `$table`")
+            try {
+                while (select.step()) ids.add(select.getLong(0))
+            } finally {
+                select.close()
+            }
+            val update = connection.prepare("UPDATE `$table` SET `clientId` = ?1 WHERE `id` = ?2")
+            try {
+                for (id in ids) {
+                    update.bindText(1, UUID.randomUUID().toString())
+                    update.bindLong(2, id)
+                    update.step()
+                    update.reset()
+                    update.clearBindings()
+                }
+            } finally {
+                update.close()
+            }
+            connection.execSQL(
+                "CREATE UNIQUE INDEX IF NOT EXISTS `index_${table}_clientId` ON `$table` (`clientId`)",
+            )
+        }
+    }
+
     val ALL: Array<Migration> =
-        arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+        arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
 
     /** Apply every registered migration to a builder; the sole path that wires migrations. */
     fun <T : RoomDatabase> configure(builder: RoomDatabase.Builder<T>): RoomDatabase.Builder<T> =

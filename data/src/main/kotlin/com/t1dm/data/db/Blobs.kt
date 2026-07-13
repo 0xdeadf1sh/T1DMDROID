@@ -22,4 +22,4 @@ internal fun ByteArray.toDoubleArray(): DoubleArray {
     return DoubleArray(size / Double.SIZE_BYTES) { buf.double }
 }
 
-internal fun ByteArray.toDoubleList(): List<Double> = toDoubleArray().asList()
+fun ByteArray.toDoubleList(): List<Double> = toDoubleArray().asList()

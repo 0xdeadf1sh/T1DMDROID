@@ -77,13 +77,14 @@ class InsulinController(
      * Log [units] of [type] at [tsMs]. The resolved PK curve is persisted as the `logged_dose`
      * `customCurve` (exact reconstruction), with the nominal params kept as provenance metadata.
      */
-    suspend fun logDose(type: InsulinType, units: Double, tsMs: Long = now()): Long =
+    suspend fun logDose(type: InsulinType, units: Double, tsMs: Long = now()): LoggedDoseEntity =
         withContext(dispatchers.io) {
             val gridTs = Math.floorDiv(tsMs, CurveEngine.STEP_MS) * CurveEngine.STEP_MS
             val curve = pkCurve(type, units)
             val tz = TimeZone.getDefault().getOffset(gridTs) / 60_000
             repository.logLoggedDose(
                 LoggedDoseEntity(
+                    clientId = "",
                     tsMs = gridTs,
                     kind = if (type.kind == InsulinKind.BOLUS) DoseKind.BOLUS else DoseKind.BASAL,
                     units = units,

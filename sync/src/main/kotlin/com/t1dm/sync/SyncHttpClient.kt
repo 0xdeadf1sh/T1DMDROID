@@ -57,17 +57,27 @@ interface SyncHttpClient {
     suspend fun health(): HealthDto
     suspend fun ingest(body: IngestDto): IngestAck
     suspend fun putPredictions(preds: List<PredictionWriteDto>): PutPredictionsAck
-    suspend fun putSeries(name: String, body: SeriesPutDto): WrittenAck
+    /** `PUT /v1/meals` — batch-upsert meal curve events, idempotent by `client_id`. */
+    suspend fun putMeals(meals: List<MealEventDto>): EventBatchAck
+    /** `PUT /v1/doses` — batch-upsert dose curve events, idempotent by `client_id`. */
+    suspend fun putDoses(doses: List<DoseEventDto>): EventBatchAck
+    /** `PUT /v1/basal-schedule` — full-replace the active basal template (idempotent by slot `client_id`). */
+    suspend fun putBasalSchedule(body: BasalScheduleDto): EventBatchAck
+    /** `PUT /v1/stats` — push one phone-computed window block, idempotent by `window`. */
+    suspend fun putStats(body: StatsPushDto): EventBatchAck
     suspend fun postNote(body: NoteWriteDto): IdAck
     suspend fun postAlert(body: AlertWriteDto): IdAck
     suspend fun getSeries(from: Long?, to: Long?, cursor: Long?, limit: Int?, fields: String?): SeriesPageDto
-    /** Read the server's daily-cached stats block for [window] (`7d|30d|90d`). [refresh] forces the
-     *  server to recompute fresh (`?refresh=1`, T1DMSERVER stats contract) rather than serve the ≤24 h cache. */
-    suspend fun getStats(window: String, refresh: Boolean = false): StatsDto
+    /** `GET /v1/meals?from&to` — meal curve events in the window (both bounds optional; `null` ⇒ unbounded). */
+    suspend fun getMeals(from: Long?, to: Long?): MealsPageDto
+    /** `GET /v1/doses?from&to` — dose curve events in the window (both bounds optional; `null` ⇒ unbounded). */
+    suspend fun getDoses(from: Long?, to: Long?): DosesPageDto
+    /** `GET /v1/basal-schedule` — the current active basal template. */
+    suspend fun getBasalSchedule(): BasalScheduleDto
     /** Attach a meal photo: `POST /v1/photos`, multipart `ts` (epoch-ms) + `image` file part whose
      *  filename carries the extension. Returns the server's `{ok,id,sha256}` ack. */
     suspend fun postPhoto(tsMs: Long, bytes: ByteArray, ext: String): PhotoAck
-    /** `GET /v1/models` — the served model registry, envelope-unwrapped like [getStats]. */
+    /** `GET /v1/models` — the served model registry, unwrapped from its `models` envelope. */
     suspend fun listModels(): List<ModelDto>
     /** `GET /v1/models/{id}/download` — streams the `application/octet-stream` artifact into memory
      *  and surfaces the `X-SHA256` response header so the caller can verify integrity. A 4xx/5xx
@@ -137,8 +147,17 @@ class OkHttpSyncClient(
     override suspend fun putPredictions(preds: List<PredictionWriteDto>): PutPredictionsAck =
         send("PUT", "/v1/predictions", preds)
 
-    override suspend fun putSeries(name: String, body: SeriesPutDto): WrittenAck =
-        send("PUT", "/v1/series/$name", body)
+    override suspend fun putMeals(meals: List<MealEventDto>): EventBatchAck =
+        send("PUT", "/v1/meals", meals)
+
+    override suspend fun putDoses(doses: List<DoseEventDto>): EventBatchAck =
+        send("PUT", "/v1/doses", doses)
+
+    override suspend fun putBasalSchedule(body: BasalScheduleDto): EventBatchAck =
+        send("PUT", "/v1/basal-schedule", body)
+
+    override suspend fun putStats(body: StatsPushDto): EventBatchAck =
+        send("PUT", "/v1/stats", body)
 
     override suspend fun postNote(body: NoteWriteDto): IdAck = send("POST", "/v1/notes", body)
 
@@ -161,8 +180,23 @@ class OkHttpSyncClient(
         return get("/v1/series" + if (q.isEmpty()) "" else "?$q")
     }
 
-    override suspend fun getStats(window: String, refresh: Boolean): StatsDto =
-        get<StatsEnvelope>("/v1/stats?window=$window" + if (refresh) "&refresh=1" else "").stats
+    override suspend fun getMeals(from: Long?, to: Long?): MealsPageDto {
+        val q = buildList {
+            from?.let { add("from=$it") }
+            to?.let { add("to=$it") }
+        }.joinToString("&")
+        return get("/v1/meals" + if (q.isEmpty()) "" else "?$q")
+    }
+
+    override suspend fun getDoses(from: Long?, to: Long?): DosesPageDto {
+        val q = buildList {
+            from?.let { add("from=$it") }
+            to?.let { add("to=$it") }
+        }.joinToString("&")
+        return get("/v1/doses" + if (q.isEmpty()) "" else "?$q")
+    }
+
+    override suspend fun getBasalSchedule(): BasalScheduleDto = get("/v1/basal-schedule")
 
     override suspend fun listModels(): List<ModelDto> = get<ModelsEnvelope>("/v1/models").models
 

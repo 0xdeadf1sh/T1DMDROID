@@ -622,7 +622,7 @@ class CgmScanService : LifecycleService() {
                 val (k, theta, dur) = CurveEngine.Presets.carbGammaForGi(gi)
                 container.repository.logMeal(
                     LoggedMealEntity(
-                        tsMs = ts, grams = grams, gi = gi, k = k, theta = theta,
+                        clientId = "", tsMs = ts, grams = grams, gi = gi, k = k, theta = theta,
                         durationMin = dur, customCurve = null,
                         tzOffsetMin = TimeZone.getDefault().getOffset(ts) / 60_000,
                         note = "backdated", updatedAt = now,
@@ -647,7 +647,7 @@ class CgmScanService : LifecycleService() {
                 val curve = container.curveEngine.expAction(units, 75.0, 360.0)
                 container.repository.logLoggedDose(
                     LoggedDoseEntity(
-                        tsMs = ts, kind = DoseKind.BOLUS, units = units, durationMin = 360.0,
+                        clientId = "", tsMs = ts, kind = DoseKind.BOLUS, units = units, durationMin = 360.0,
                         k = null, theta = null, kaPerHour = null, kePerHour = null,
                         customCurve = if (curve.isEmpty()) null else curve.toList().toBlob(),
                         tzOffsetMin = TimeZone.getDefault().getOffset(ts) / 60_000,

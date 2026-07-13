@@ -14,6 +14,9 @@ otherwise. The server binds `server.bind:server.port` (default `0.0.0.0:8443`).
 - [Errors](#errors)
 - [Object schemas](#object-schemas)
   - [Sample row](#sample-row)
+  - [Meal event](#meal-event)
+  - [Dose event](#dose-event)
+  - [Basal schedule](#basal-schedule)
   - [Prediction](#prediction)
   - [Note](#note)
   - [Photo (metadata)](#photo-metadata)
@@ -22,13 +25,19 @@ otherwise. The server binds `server.bind:server.port` (default `0.0.0.0:8443`).
   - [Stats](#stats)
 - [Write endpoints (require `rw`)](#write-endpoints-require-rw)
   - [POST /v1/ingest](#post-v1ingest)
-  - [PUT /v1/series/{name}](#put-v1seriesname)
+  - [PUT /v1/meals](#put-v1meals)
+  - [PUT /v1/doses](#put-v1doses)
+  - [PUT /v1/basal-schedule](#put-v1basal-schedule)
   - [PUT /v1/predictions](#put-v1predictions)
+  - [PUT /v1/stats](#put-v1stats)
   - [POST /v1/notes](#post-v1notes)
   - [POST /v1/photos](#post-v1photos)
   - [POST /v1/alerts](#post-v1alerts)
 - [Read endpoints (`ro` or `rw`)](#read-endpoints-ro-or-rw)
   - [GET /v1/series](#get-v1series)
+  - [GET /v1/meals](#get-v1meals)
+  - [GET /v1/doses](#get-v1doses)
+  - [GET /v1/basal-schedule](#get-v1basal-schedule)
   - [GET /v1/predictions](#get-v1predictions)
   - [GET /v1/predictions/latest](#get-v1predictionslatest)
   - [GET /v1/notes](#get-v1notes)
@@ -46,21 +55,43 @@ otherwise. The server binds `server.bind:server.port` (default `0.0.0.0:8443`).
 ## Conventions
 
 - **Timestamps** are integers, milliseconds since the Unix epoch (UTC).
-- **The 5-minute grid.** Every physiologic timestamp sits on a fixed
-  five-minute grid: `ts % 300000 == 0`. A timestamp off the grid is rejected.
-- **`tz_offset`** is the client's UTC offset in minutes at the sample time
+- **The 5-minute grid.** Sample, meal, and dose timestamps sit on a fixed
+  five-minute grid: `ts % 300000 == 0`. A sample timestamp off the grid is
+  rejected; a meal or dose timestamp is snapped to the nearest grid point by the
+  client before it is sent. Note and alert timestamps are wall-clock instants and
+  are not snapped.
+- **`tz_offset`** is the client's UTC offset in minutes at the event time
   (e.g. `-300` for UTC−5), carried alongside the timestamp for local-time
   rendering.
-- **Storage units are fixed:** blood glucose in mg/dL; carbohydrates, bolus,
-  and basal are the amount ingested or delivered *within that 5-minute bucket*
-  (grams and units respectively), so a day of buckets sums to the daily total;
-  heart rate in bpm, steps as a count, and mood as a small integer; `sleep` and
-  `exercise` are stored as plain scalar magnitudes. The mg/dL ↔ mmol/L toggle is
-  display-only and never affects the wire format.
-- **Gaps are explicit.** A missing series value is `null`, never omitted, in
-  read responses.
-- **Total insulin** (`bolus + basal`) is derived at display time and never
-  stored or returned as a field.
+- **Storage units are fixed:** blood glucose in mg/dL; heart rate in bpm; steps
+  as a count; mood as a small integer; `sleep` and `exercise` as plain scalar
+  magnitudes. Carbohydrate, bolus, and basal quantities are not sample columns —
+  each is carried as its own curve event (see [Meal event](#meal-event) and
+  [Dose event](#dose-event)). The mg/dL ↔ mmol/L toggle is display-only and never
+  affects the wire format.
+- **The client owns event identity.** Meals, doses, basal-schedule slots, notes,
+  and alerts are keyed by a client-assigned `client_id` — an opaque string,
+  unique per record. The server stores it as the idempotency key: a redelivery of
+  the same `client_id` is a no-op, so a lost acknowledgement is safely retried.
+- **`updated_at` is client-authored.** Every mutable row carries an `updated_at`,
+  the client's wall-clock at write time. The server stores and returns it
+  verbatim and never re-stamps it. It is also the idempotency tiebreak: a write
+  whose `updated_at` is newer replaces the stored row in place, while an
+  equal-or-older one leaves it untouched.
+- **Server receipt clocks stay internal.** The server records when it received a
+  row, but this internal timestamp is never serialized — it appears on no read or
+  stream frame. (The note, photo, alert, and model rows additionally carry a
+  server-assigned `created_at`/`discovered_at` marking when the server first
+  stored or discovered them.)
+- **Curves are grid-sampled vectors.** A `custom_curve` is a JSON array of `f64`,
+  one value per five-minute bucket on the same 300000 ms grid: the resolved
+  carbohydrate-appearance curve for a meal, or the resolved insulin-action curve
+  for a dose. When present it is authoritative and is echoed byte-for-byte; when
+  absent, the curve is reconstructed from the row's parametric fields.
+- **Gaps are explicit, with a direction asymmetry.** In a read response a missing
+  value is `null`, never omitted. On a client write the two are equivalent: an
+  omitted optional field and an explicit `null` both mean "absent", so a client
+  may omit any optional field it has no value for.
 
 ## Authentication
 
@@ -131,9 +162,6 @@ is present; optional physiologic fields are `null` when absent.
   "ts": 1735689600000,
   "tz_offset": 0,
   "bg": 112.0,
-  "carbs": 40.0,
-  "bolus": 4.0,
-  "basal": 0.8,
   "hr": 68.0,
   "steps": 30.0,
   "sleep": 0.0,
@@ -143,39 +171,160 @@ is present; optional physiologic fields are `null` when absent.
 }
 ```
 
-The nine series are `bg, carbs, bolus, basal, hr, steps, sleep, exercise,
-mood`. All are floating point except `mood`, which is an integer. `updated_at`
-is the millisecond time the row was last written.
+The six scalar series are `bg, hr, steps, sleep, exercise, mood`. All are
+floating point except `mood`, which is an integer. Carbohydrates, bolus, and
+basal are no longer sample columns — each is carried as its own
+[meal](#meal-event) or [dose](#dose-event) event. `updated_at` is the client's
+wall-clock at the moment it last wrote the row, stored verbatim.
+
+### Meal event
+
+A carbohydrate intake, carried as its resolved appearance (Ra) curve or the
+parameters to reconstruct one. Keyed by the client-assigned `client_id`.
+
+```json
+{
+  "client_id": "018f6b2e-3c7a-7e11-9a44-2b6f0e5d9c31",
+  "ts": 1735689600000,
+  "tz_offset": 0,
+  "updated_at": 1735689605000,
+  "grams": 40.0,
+  "duration_min": 180.0,
+  "gi": 52.0,
+  "k": 2.0,
+  "theta": 24.0,
+  "custom_curve": null,
+  "note": "lunch"
+}
+```
+
+- `client_id` — client-assigned opaque id; the idempotency key.
+- `ts` — grid-snapped event time (`ts % 300000 == 0`).
+- `grams` — carbohydrate grams.
+- `duration_min` — modelled appearance duration in minutes.
+- `gi` — glycaemic index (`0..=100`), or `null`.
+- `k`, `theta` — shape and scale of the parametric appearance curve, or `null`
+  when a `custom_curve` is supplied.
+- `custom_curve` — the resolved appearance curve as an `f64` array on the
+  five-minute grid, or `null` for a parametric meal. When present it is
+  authoritative.
+- `note` — free text, or `null`.
+- `updated_at` — client clock, verbatim.
+
+### Dose event
+
+An insulin dose, carried as its resolved action (PK) curve or the parameters to
+reconstruct one. A `bolus` is modelled with the gamma parameters `k`/`theta`; a
+`basal` with the Bateman rates `ka_per_hour`/`ke_per_hour`.
+
+```json
+{
+  "client_id": "018f6b2e-40aa-7c02-8f19-7d3c1a9b4e88",
+  "ts": 1735689600000,
+  "tz_offset": 0,
+  "updated_at": 1735689605000,
+  "kind": "bolus",
+  "units": 4.0,
+  "duration_min": 300.0,
+  "k": 2.0,
+  "theta": 40.0,
+  "ka_per_hour": null,
+  "ke_per_hour": null,
+  "custom_curve": null,
+  "note": null
+}
+```
+
+- `client_id` — client-assigned opaque id; the idempotency key.
+- `ts` — grid-snapped event time (`ts % 300000 == 0`).
+- `kind` — `bolus` or `basal`.
+- `units` — insulin units.
+- `duration_min` — modelled action duration in minutes.
+- `k`, `theta` — gamma parameters of a bolus action curve, or `null`.
+- `ka_per_hour`, `ke_per_hour` — Bateman absorption and elimination rates of a
+  basal action curve, or `null`.
+- `custom_curve` — the resolved action curve as an `f64` array on the five-minute
+  grid, or `null` for a parametric dose. When present it is authoritative.
+- `note` — free text, or `null`.
+- `updated_at` — client clock, verbatim.
+
+### Basal schedule
+
+The active daily-repeating basal template — a set of slots that tile a 24-hour
+day. Sent and returned whole; a `PUT` fully replaces the active schedule.
+
+```json
+{
+  "schedule_id": "sched-2026-07",
+  "active": true,
+  "slots": [
+    {
+      "client_id": "018f6b2e-5100-7a33-b0c2-9e4f2d7a1b60",
+      "label": "overnight",
+      "time_of_day_min": 0,
+      "dose_u": 0.8,
+      "duration_min": 1440.0,
+      "ka_per_hour": 0.5,
+      "ke_per_hour": 0.7,
+      "tz_offset": 0,
+      "updated_at": 1735689605000
+    }
+  ]
+}
+```
+
+- `schedule_id` — id of the schedule as a whole.
+- `active` — whether this is the live schedule.
+- `slots` — the per-time-of-day basal doses; each slot carries:
+  - `client_id` — slot idempotency key.
+  - `label` — human label.
+  - `time_of_day_min` — minutes past local midnight at which the slot applies.
+  - `dose_u` — units delivered by the slot.
+  - `duration_min` — action duration in minutes.
+  - `ka_per_hour`, `ke_per_hour` — Bateman rates of the slot's action curve.
+  - `tz_offset`, `updated_at` — as elsewhere.
 
 ### Prediction
 
 ```json
 {
-  "id": 42,
   "made_at": 1735689600000,
   "model_id": "lstm-v3",
   "horizon_steps": 24,
   "line": [112.0, 118.0, 123.0, "…"],
   "fan": [[…], […], […], […], […], […], […]],
-  "tod": [0.0, 0.0, 0.1, 0.3, "…"],
-  "tod_conf": 0.71,
-  "created_at": 1735689601000
+  "circadian": {
+    "probs": [0.0, 0.0, 0.1, 0.3, "…"],
+    "predicted_hour": 7.5,
+    "resultant_r": 0.71,
+    "n_bins": 12,
+    "bin_hours": 2.0
+  },
+  "updated_at": 1735689605000
 }
 ```
 
+- `made_at` — the client's forecast-cycle timestamp, stored verbatim; together
+  with `model_id` it is the idempotency key.
 - `line` — the predicted median series, length `horizon_steps`, in mg/dL.
 - `fan` — a `7 × horizon_steps` matrix, one row per quantile level in the exact
   ascending order `[0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95]`. Row index 3 (the
   `0.5` level) equals `line`.
-- `tod` — a twelve-bin circadian distribution over 24 hours (two hours per bin);
-  bin units are hours.
-- `tod_conf` — confidence scalar for the `tod` distribution.
+- `circadian` — the model's time-of-day head, or `null` when the model has none.
+  `probs` is the per-bin probability distribution; `predicted_hour` the resolved
+  hour of day; `resultant_r` the circular concentration (confidence) in `0..=1`;
+  `n_bins` the number of bins; `bin_hours` the hours each bin spans.
+- `updated_at` — client clock, verbatim.
 
 ### Note
 
 ```json
-{ "id": 7, "ts": 1735689600000, "tz_offset": 0, "text": "felt low before lunch", "created_at": 1735689601000 }
+{ "id": 7, "client_id": "018f6b2e-6200-7b44-a1d3-0f5e3c8b2a71", "ts": 1735689600000, "tz_offset": 0, "text": "felt low before lunch", "updated_at": 1735689605000, "created_at": 1735689601000 }
 ```
+
+`client_id` is the client-assigned idempotency key; `updated_at` is the client's
+wall-clock at the last edit, stored verbatim. `ts` is a wall-clock instant and is
+not grid-snapped.
 
 ### Photo (metadata)
 
@@ -200,6 +349,7 @@ is the millisecond time the row was last written.
 ```json
 {
   "id": 11,
+  "client_id": "018f6b2e-7300-7c55-b2e4-1a6f4d9c3b82",
   "ts": 1735689600000,
   "kind": "low",
   "payload": { "bg": 58 },
@@ -208,9 +358,9 @@ is the millisecond time the row was last written.
 }
 ```
 
-`payload` is opaque JSON, echoed verbatim. `origin_token` is the id of the
-token that raised the alert (or `null`), and is excluded from the live-stream
-fan-out.
+`client_id` is the client-assigned idempotency key. `payload` is opaque JSON,
+echoed verbatim. `origin_token` is the id of the token that raised the alert (or
+`null`), and is excluded from the live-stream fan-out.
 
 ### Model
 
@@ -239,6 +389,7 @@ verbatim, never interpreted. `path` is relative to `storage.data_dir`.
 ```json
 {
   "window": "7d",
+  "updated_at": 1735689605000,
   "tir": 0.72,
   "time_below": 0.04,
   "time_above": 0.24,
@@ -257,7 +408,8 @@ verbatim, never interpreted. `path` is relative to `storage.data_dir`.
 }
 ```
 
-`window` is one of `7d`, `30d`, `90d`. The three time-fraction fields (`tir`,
+`window` is one of `7d`, `30d`, `90d`; `updated_at` is the client's wall-clock
+when the block was computed, stored verbatim. The three time-fraction fields (`tir`,
 `time_below`, `time_above`) are fractions in `0..=1` about the 70–180 mg/dL
 range. `gmi` and `cv` are percentages; `tdd` is units/day; `bg_hr_corr` is a
 Pearson correlation in `-1..=1`; `n_samples` is the number of grid samples that
@@ -269,10 +421,12 @@ contributed BG to the window.
 
 ### POST /v1/ingest
 
-Atomic five-minute bundle. Physiologic fields are optional; those present
-overwrite the row at `ts` in place, those absent leave the existing values
-untouched. An embedded `prediction` and any `notes` are written in the same
-transaction. Writing the row broadcasts a `sample` event to the live stream.
+Atomic five-minute scalar bundle. Physiologic scalar fields are optional; those
+present overwrite the row at `ts` in place (guarded so a write with a newer
+`updated_at` wins), those absent leave the existing values untouched.
+Carbohydrate, bolus, and basal are no longer part of ingest — log them as
+[meal](#put-v1meals) and [dose](#put-v1doses) events. Writing the row fans out a
+`sample` event to every connected session **except** the origin token's.
 
 Request:
 
@@ -280,23 +434,13 @@ Request:
 {
   "ts": 1735689600000,
   "tz_offset": 0,
-  "bg": 112.0, "carbs": 40.0, "bolus": 4.0, "basal": 0.8,
-  "hr": 68.0, "steps": 30.0, "sleep": 0.0, "exercise": 0.0, "mood": 4,
-  "prediction": {
-    "model_id": "lstm-v3",
-    "horizon_steps": 24,
-    "line": [112.0, 118.0],
-    "fan": [[…], […], […], […], […], […], […]],
-    "tod": [0,0,0,0,0,0,0,0,0,0,0,0],
-    "tod_conf": 0.71
-  },
-  "notes": ["felt low before lunch"]
+  "updated_at": 1735689605000,
+  "bg": 112.0, "hr": 68.0, "steps": 30.0, "sleep": 0.0, "exercise": 0.0, "mood": 4
 }
 ```
 
-Only `ts` and `tz_offset` are required. The embedded prediction object has the
-same fields as the [Prediction](#prediction) schema minus the server-assigned
-`id`, `made_at`, and `created_at`.
+`ts`, `tz_offset`, and `updated_at` are required; the scalar series are all
+optional.
 
 Response `200`:
 
@@ -304,37 +448,109 @@ Response `200`:
 { "ok": true, "ts": 1735689600000 }
 ```
 
-### PUT /v1/series/{name}
+### PUT /v1/meals
 
-Batch upsert, override, and backfill for one series. `name` is one of `bg,
-carbs, bolus, basal, hr, steps, sleep, exercise, mood`; an unknown name is
-`400`. Each point's `ts` is snapped to the grid; the value overwrites that
-column in place, creating the row if needed.
-
-Request:
-
-```json
-{ "samples": [ { "ts": 1735689600000, "value": 110.0 }, { "ts": 1735689900000, "value": 108.0 } ] }
-```
-
-Response `200`:
-
-```json
-{ "ok": true, "written": 2 }
-```
-
-### PUT /v1/predictions
-
-Insert one or more predictions. The body is a JSON array of prediction objects
-(the same shape as the embedded `prediction` in [ingest](#post-v1ingest)).
+Batch upsert of meal events. The body is a JSON array of
+[Meal event](#meal-event) objects (write form: omit any optional field that is
+absent). Idempotent by `client_id` — a redelivery is a no-op, a newer
+`updated_at` replaces the row in place. Fans out one `meal` event per row to
+every session **except** the origin token's.
 
 Request:
 
 ```json
 [
-  { "model_id": "lstm-v3", "horizon_steps": 24, "line": [112.0], "fan": [[…]], "tod": [0,0,0,0,0,0,0,0,0,0,0,0], "tod_conf": 0.71 }
+  {
+    "client_id": "018f6b2e-3c7a-7e11-9a44-2b6f0e5d9c31",
+    "ts": 1735689600000, "tz_offset": 0, "updated_at": 1735689605000,
+    "grams": 40.0, "duration_min": 180.0, "gi": 52.0, "k": 2.0, "theta": 24.0,
+    "note": "lunch"
+  }
 ]
 ```
+
+Response `200` — the accepted `client_id`s, in input order:
+
+```json
+{ "ok": true, "ids": ["018f6b2e-3c7a-7e11-9a44-2b6f0e5d9c31"] }
+```
+
+### PUT /v1/doses
+
+Batch upsert of dose events. The body is a JSON array of
+[Dose event](#dose-event) objects. Idempotent by `client_id` — a redelivery is a
+no-op, a newer `updated_at` replaces the row in place. Fans out one `dose` event
+per row to every session **except** the origin token's.
+
+Request:
+
+```json
+[
+  {
+    "client_id": "018f6b2e-40aa-7c02-8f19-7d3c1a9b4e88",
+    "ts": 1735689600000, "tz_offset": 0, "updated_at": 1735689605000,
+    "kind": "bolus", "units": 4.0, "duration_min": 300.0, "k": 2.0, "theta": 40.0
+  }
+]
+```
+
+Response `200` — the accepted `client_id`s, in input order:
+
+```json
+{ "ok": true, "ids": ["018f6b2e-40aa-7c02-8f19-7d3c1a9b4e88"] }
+```
+
+### PUT /v1/basal-schedule
+
+Full-replace the active basal schedule. The body is a single
+[Basal schedule](#basal-schedule) object; its `slots` replace the stored active
+schedule wholesale. Each slot is idempotent by its `client_id`, and a newer
+`updated_at` replaces a slot in place. Fans out a `basal_schedule` event to every
+session **except** the origin token's.
+
+Request:
+
+```json
+{
+  "schedule_id": "sched-2026-07",
+  "active": true,
+  "slots": [
+    {
+      "client_id": "018f6b2e-5100-7a33-b0c2-9e4f2d7a1b60",
+      "label": "overnight", "time_of_day_min": 0, "dose_u": 0.8,
+      "duration_min": 1440.0, "ka_per_hour": 0.5, "ke_per_hour": 0.7,
+      "tz_offset": 0, "updated_at": 1735689605000
+    }
+  ]
+}
+```
+
+Response `200` — the accepted slot `client_id`s:
+
+```json
+{ "ok": true, "ids": ["018f6b2e-5100-7a33-b0c2-9e4f2d7a1b60"] }
+```
+
+### PUT /v1/predictions
+
+Insert or replace one or more predictions. The body is a JSON array of
+[Prediction](#prediction) objects. Idempotent on `(made_at, model_id)`: a re-run
+of the same cycle overwrites in place, a byte-identical redelivery is a no-op.
+Fans out a `prediction` event to every session **except** the origin token's.
+
+Request:
+
+```json
+[
+  {
+    "made_at": 1735689600000, "model_id": "lstm-v3", "updated_at": 1735689605000,
+    "horizon_steps": 24, "line": [112.0], "fan": [[…]],
+    "circadian": { "probs": [0,0,0,0,0,0,0,0,0,0,0,0], "predicted_hour": 7.5, "resultant_r": 0.71, "n_bins": 12, "bin_hours": 2.0 }
+  }
+]
+```
+
+`circadian` may be `null` or omitted when the model has no time-of-day head.
 
 Response `200` — the server-assigned ids, in input order:
 
@@ -342,20 +558,54 @@ Response `200` — the server-assigned ids, in input order:
 { "ok": true, "ids": [42] }
 ```
 
+### PUT /v1/stats
+
+Push one precomputed statistics block for a window. The server stores the block
+verbatim and serves it back from [GET /v1/stats](#get-v1stats); it performs no
+statistics computation of its own. Idempotent by `window` — a newer `updated_at`
+replaces the stored block in place. Fans out a `stats` event to every session
+**except** the origin token's.
+
+Request:
+
+```json
+{
+  "window": "7d", "updated_at": 1735689605000,
+  "tir": 0.72, "time_below": 0.04, "time_above": 0.24,
+  "mean_bg": 148.3, "gmi": 6.9, "cv": 34.1, "sd": 50.6,
+  "hypo_events": { "count": 2, "duration_ms": 3600000 },
+  "hyper_events": { "count": 5, "duration_ms": 14400000 },
+  "mean_daily_carbs": 172.0, "tdd": 38.5, "bolus_basal_ratio": 1.4,
+  "mean_hr": 71.2, "bg_hr_corr": -0.18, "n_samples": 264
+}
+```
+
+`window` is one of `7d`, `30d`, `90d`. See the [Stats](#stats) schema for the
+full field set.
+
+Response `200`:
+
+```json
+{ "ok": true }
+```
+
 ### POST /v1/notes
 
 Request:
 
 ```json
-{ "ts": 1735689600000, "tz_offset": 0, "text": "note body" }
+{ "client_id": "018f6b2e-6200-7b44-a1d3-0f5e3c8b2a71", "ts": 1735689600000, "tz_offset": 0, "text": "note body", "updated_at": 1735689605000 }
 ```
 
-`tz_offset` defaults to `0` if omitted. Broadcasts a `note` event.
+`client_id` and `updated_at` are required; `tz_offset` defaults to `0` if
+omitted. A note `ts` is a wall-clock instant (not grid-snapped). Idempotent by
+`client_id` — a newer `updated_at` edits the note in place. Fans out a `note`
+event to every connected session **except** the origin token's.
 
-Response `200`:
+Response `200` — the note's `client_id`:
 
 ```json
-{ "ok": true, "id": 7 }
+{ "ok": true, "id": "018f6b2e-6200-7b44-a1d3-0f5e3c8b2a71" }
 ```
 
 ### POST /v1/photos
@@ -381,15 +631,17 @@ the origin token.
 Request:
 
 ```json
-{ "ts": 1735689600000, "kind": "low", "payload": { "bg": 58 } }
+{ "client_id": "018f6b2e-7300-7c55-b2e4-1a6f4d9c3b82", "ts": 1735689600000, "kind": "low", "payload": { "bg": 58 } }
 ```
 
-`payload` is optional and opaque (defaults to `null`).
+`client_id` is required and is the idempotency key; an alert is immutable, so a
+redelivery of the same `client_id` is a no-op. `payload` is optional and opaque
+(defaults to `null`).
 
-Response `200`:
+Response `200` — the alert's `client_id`:
 
 ```json
-{ "ok": true, "id": 11 }
+{ "ok": true, "id": "018f6b2e-7300-7c55-b2e4-1a6f4d9c3b82" }
 ```
 
 ---
@@ -404,7 +656,7 @@ Query parameters:
 
 | Param | Type | Meaning |
 | --- | --- | --- |
-| `fields` | csv | Comma-separated series allowlist (e.g. `bg,carbs,hr`); default all. An unknown name is `400`. |
+| `fields` | csv | Comma-separated series allowlist (e.g. `bg,hr,steps`); default all. An unknown name is `400`. |
 | `from` | int | Inclusive lower `ts` bound. |
 | `to` | int | Inclusive upper `ts` bound. |
 | `limit` | int | Maximum rows to return; default `10000`. |
@@ -418,7 +670,7 @@ Response `200`:
 ```json
 {
   "rows": [
-    { "ts": 1735689600000, "tz_offset": 0, "bg": 112.0, "carbs": null, "bolus": null, "basal": 0.8, "hr": 68.0, "steps": null, "sleep": null, "exercise": null, "mood": null, "updated_at": 1735689605000 }
+    { "ts": 1735689600000, "tz_offset": 0, "bg": 112.0, "hr": 68.0, "steps": null, "sleep": null, "exercise": null, "mood": null, "updated_at": 1735689605000 }
   ],
   "next_cursor": 1735689600000
 }
@@ -427,6 +679,35 @@ Response `200`:
 `next_cursor` is the `ts` of the last row returned (or `null` when the page is
 empty). To page, pass it back as `cursor` until a request returns no rows.
 
+### GET /v1/meals
+
+Fetch meal events over a time range. Query: `from`, `to` (inclusive bounds on
+`ts`). Returned in ascending `ts` order; absent optional fields are explicit
+`null`.
+
+```json
+{ "meals": [ { "client_id": "018f…", "ts": 1735689600000, "tz_offset": 0, "updated_at": 1735689605000, "grams": 40.0, "duration_min": 180.0, "gi": 52.0, "k": 2.0, "theta": 24.0, "custom_curve": null, "note": "lunch" } ] }
+```
+
+### GET /v1/doses
+
+Fetch dose events over a time range. Query: `from`, `to` (inclusive bounds on
+`ts`). Returned in ascending `ts` order; absent optional fields are explicit
+`null`.
+
+```json
+{ "doses": [ { "client_id": "018f…", "ts": 1735689600000, "tz_offset": 0, "updated_at": 1735689605000, "kind": "bolus", "units": 4.0, "duration_min": 300.0, "k": 2.0, "theta": 40.0, "ka_per_hour": null, "ke_per_hour": null, "custom_curve": null, "note": null } ] }
+```
+
+### GET /v1/basal-schedule
+
+The active basal schedule as a [Basal schedule](#basal-schedule) object, or
+`null` when none is active.
+
+```json
+{ "schedule_id": "sched-2026-07", "active": true, "slots": [ { "client_id": "018f…", "label": "overnight", "time_of_day_min": 0, "dose_u": 0.8, "duration_min": 1440.0, "ka_per_hour": 0.5, "ke_per_hour": 0.7, "tz_offset": 0, "updated_at": 1735689605000 } ] }
+```
+
 ### GET /v1/predictions
 
 Query: `from`, `to` (inclusive bounds on `made_at`). Newest first.
@@ -434,7 +715,7 @@ Query: `from`, `to` (inclusive bounds on `made_at`). Newest first.
 Response `200`:
 
 ```json
-{ "predictions": [ { "id": 42, "made_at": 1735689600000, "…": "…" } ] }
+{ "predictions": [ { "made_at": 1735689600000, "model_id": "lstm-v3", "…": "…" } ] }
 ```
 
 ### GET /v1/predictions/latest
@@ -444,7 +725,7 @@ The single most recent prediction, or `null`.
 Response `200`:
 
 ```json
-{ "prediction": { "id": 42, "…": "…" } }
+{ "prediction": { "made_at": 1735689600000, "…": "…" } }
 ```
 
 ### GET /v1/notes
@@ -454,7 +735,7 @@ Query: `from`, `to` (inclusive bounds on `ts`). Newest first.
 Response `200`:
 
 ```json
-{ "notes": [ { "id": 7, "ts": 1735689600000, "tz_offset": 0, "text": "…", "created_at": 1735689601000 } ] }
+{ "notes": [ { "id": 7, "client_id": "018f6b2e-6200-7b44-a1d3-0f5e3c8b2a71", "ts": 1735689600000, "tz_offset": 0, "text": "…", "updated_at": 1735689605000, "created_at": 1735689601000 } ] }
 ```
 
 ### GET /v1/alerts
@@ -464,7 +745,7 @@ Query: `from`, `to`. Newest first.
 Response `200`:
 
 ```json
-{ "alerts": [ { "id": 11, "ts": 1735689600000, "kind": "low", "payload": { "bg": 58 }, "origin_token": 2, "created_at": 1735689601000 } ] }
+{ "alerts": [ { "id": 11, "client_id": "018f6b2e-7300-7c55-b2e4-1a6f4d9c3b82", "ts": 1735689600000, "kind": "low", "payload": { "bg": 58 }, "origin_token": 2, "created_at": 1735689601000 } ] }
 ```
 
 ### GET /v1/photos
@@ -513,17 +794,15 @@ Query parameters:
 | Param | Type | Meaning |
 | --- | --- | --- |
 | `window` | enum | `7d` \| `30d` \| `90d` (default `7d`). An unrecognized window is `400`. |
-| `refresh` | bool | When truthy (`1`/`true`), bypass the cache and compute fresh. |
 
-Stats are **daily-cached**: each window is recomputed at most once per day (on a
-server background task and lazily on first read past the TTL), and the cached
-block is served on request. Pass `?refresh=1` to force a fresh compute,
-bypassing the cache.
+Returns the most recent **client-pushed** block for `window` (see
+[PUT /v1/stats](#put-v1stats)), or an all-zero block when none has been pushed.
+The server never computes statistics itself; it serves the stored block verbatim.
 
 Response `200`:
 
 ```json
-{ "stats": { "window": "7d", "tir": 0.72, "…": "…" } }
+{ "stats": { "window": "7d", "updated_at": 1735689605000, "tir": 0.72, "…": "…" } }
 ```
 
 See the [Stats](#stats) schema for the full field set.
@@ -552,30 +831,52 @@ subscribe. Sessions — and thus the record of a connected viewer — persist ac
 reconnects.
 
 Each event is a JSON object with a `"type"` discriminant and the event's fields
-inlined alongside it. The five event types carry, respectively, the
+inlined alongside it. The nine event types carry, respectively, the
 [Sample row](#sample-row), [Prediction](#prediction), [Note](#note),
-[Photo](#photo-metadata), and [Alert](#alert) schemas.
+[Photo](#photo-metadata), [Alert](#alert), [Meal event](#meal-event),
+[Dose event](#dose-event), [Basal schedule](#basal-schedule), and
+[Stats](#stats) schemas — tagged `sample`, `prediction`, `note`, `photo`,
+`alert`, `meal`, `dose`, `basal_schedule`, and `stats`.
 
 ```json
-{ "type": "sample",     "ts": 1735689600000, "tz_offset": 0, "bg": 112.0, "carbs": null, "bolus": null, "basal": 0.8, "hr": 68.0, "steps": null, "sleep": null, "exercise": null, "mood": null, "updated_at": 1735689605000 }
+{ "type": "sample", "ts": 1735689600000, "tz_offset": 0, "bg": 112.0, "hr": 68.0, "steps": null, "sleep": null, "exercise": null, "mood": null, "updated_at": 1735689605000 }
 ```
 
 ```json
-{ "type": "prediction", "id": 42, "made_at": 1735689600000, "model_id": "lstm-v3", "horizon_steps": 24, "line": [112.0], "fan": [[…]], "tod": [0,0,0,0,0,0,0,0,0,0,0,0], "tod_conf": 0.71, "created_at": 1735689601000 }
+{ "type": "prediction", "made_at": 1735689600000, "model_id": "lstm-v3", "horizon_steps": 24, "line": [112.0], "fan": [[…]], "circadian": null, "updated_at": 1735689605000 }
 ```
 
 ```json
-{ "type": "note",       "id": 7, "ts": 1735689600000, "tz_offset": 0, "text": "felt low before lunch", "created_at": 1735689601000 }
+{ "type": "note", "id": 7, "client_id": "018f…", "ts": 1735689600000, "tz_offset": 0, "text": "felt low before lunch", "updated_at": 1735689605000, "created_at": 1735689601000 }
 ```
 
 ```json
-{ "type": "photo",      "id": 3, "ts": 1735689600000, "path": "photos/…jpg", "sha256": "…", "width": 1024, "height": 768, "bytes": 184320, "created_at": 1735689601000 }
+{ "type": "photo", "id": 3, "ts": 1735689600000, "path": "photos/…jpg", "sha256": "…", "width": 1024, "height": 768, "bytes": 184320, "created_at": 1735689601000 }
 ```
 
 ```json
-{ "type": "alert",      "id": 11, "ts": 1735689600000, "kind": "low", "payload": { "bg": 58 }, "origin_token": 2, "created_at": 1735689601000 }
+{ "type": "alert", "id": 11, "client_id": "018f…", "ts": 1735689600000, "kind": "low", "payload": { "bg": 58 }, "origin_token": 2, "created_at": 1735689601000 }
 ```
 
-**Alert fan-out.** An alert posted via `POST /v1/alerts` is delivered to every
-connected session **except** those belonging to the token that posted it, so a
-client never receives an echo of its own alert.
+```json
+{ "type": "meal", "client_id": "018f…", "ts": 1735689600000, "tz_offset": 0, "updated_at": 1735689605000, "grams": 40.0, "duration_min": 180.0, "gi": 52.0, "k": 2.0, "theta": 24.0, "custom_curve": null, "note": "lunch" }
+```
+
+```json
+{ "type": "dose", "client_id": "018f…", "ts": 1735689600000, "tz_offset": 0, "updated_at": 1735689605000, "kind": "bolus", "units": 4.0, "duration_min": 300.0, "k": 2.0, "theta": 40.0, "ka_per_hour": null, "ke_per_hour": null, "custom_curve": null, "note": null }
+```
+
+```json
+{ "type": "basal_schedule", "schedule_id": "sched-2026-07", "active": true, "slots": [ { "client_id": "018f…", "label": "overnight", "time_of_day_min": 0, "dose_u": 0.8, "duration_min": 1440.0, "ka_per_hour": 0.5, "ke_per_hour": 0.7, "tz_offset": 0, "updated_at": 1735689605000 } ] }
+```
+
+```json
+{ "type": "stats", "window": "7d", "updated_at": 1735689605000, "tir": 0.72, "…": "…" }
+```
+
+**Fan-out is except-origin.** Every write — ingest, meal, dose, basal-schedule,
+prediction, stats, note, photo, and alert — is delivered to every connected
+session **except** those belonging to the token that made the write. A client
+therefore never receives an echo of its own write, and reconciles any history it
+missed while disconnected over REST catch-up (`GET /v1/series`, `/v1/meals`,
+`/v1/doses`, and the other read endpoints), not from the stream.

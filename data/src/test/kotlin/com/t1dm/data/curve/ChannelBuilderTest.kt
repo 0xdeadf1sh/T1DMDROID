@@ -4,13 +4,16 @@ import com.t1dm.core.common.DefaultT1dmDispatchers
 import com.t1dm.core.model.BasalDoseSpec
 import com.t1dm.core.model.BasalSchedule
 import com.t1dm.core.model.CurveEvent
+import com.t1dm.core.model.CurveKind
 import com.t1dm.core.nativecore.StubNativeCore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.runTest
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.math.abs
 
 /**
  * Host JVM tests for the Kotlin curve/channel layer over [StubNativeCore] (the faithful Kotlin
@@ -30,15 +33,19 @@ class ChannelBuilderTest {
 
     private val engine = CurveEngine(StubNativeCore(), dispatchers)
 
-    /** A fake store with hand-placed events, so the builder logic is tested in isolation. */
+    /** A fake store with hand-placed events, so the builder logic is tested in isolation.
+     *  [insulin] is BOLUS-only (issue #6); [basalInjections] are the discrete long-acting BASAL
+     *  events the builder falls back to ONLY when no [schedule] is active (schedule XOR injections). */
     private class FakeStore(
         val carbs: List<CurveEvent> = emptyList(),
         val insulin: List<CurveEvent> = emptyList(),
         val schedule: BasalSchedule? = null,
+        val basalInjections: List<CurveEvent> = emptyList(),
     ) : DoseStore {
         override suspend fun carbEvents(fromMs: Long, toMs: Long) = carbs
         override suspend fun insulinEvents(fromMs: Long, toMs: Long) = insulin
         override suspend fun activeBasalSchedule() = schedule
+        override suspend fun basalInjectionEvents(fromMs: Long, toMs: Long) = basalInjections
     }
 
     @Test
@@ -119,6 +126,60 @@ class ChannelBuilderTest {
         // The auto-extended basal puts a positive insulin background at every horizon step.
         assertTrue(fc.insulin.all { it > 0.0 })
         assertTrue(fc.iobAtStart > 0.0)
+    }
+
+    @Test
+    fun basalSchedule_xor_injection_isIntegratedExactlyOnce() = runTest {
+        // Issue #6: with an active schedule AND a discrete BASAL injection both present, the basal
+        // background must be counted ONCE (schedule-primary XOR), never summed — a double-count would
+        // deflate the forecast and admit a larger dose (fail-open). Schedule 24 U/day vs a single 12 U
+        // injection so the two representations are distinguishable over the window.
+        val g0 = 3_000_000_000_000L // on the 5-min grid, so the injection's bucket offset is exact
+        val n = 72                  // 6 h
+        val sched = BasalSchedule(
+            tzOffsetMin = 0,
+            doses = listOf(
+                BasalDoseSpec(
+                    timeOfDayMin = 8 * 60,
+                    doseU = 24.0,
+                    durationMin = CurveEngine.Presets.TRESIBA_DIA_MIN,
+                    kaPerHour = CurveEngine.Presets.BASAL_KA_PER_HOUR,
+                    kePerHour = CurveEngine.Presets.BASAL_KE_PER_HOUR,
+                ),
+            ),
+        )
+        val injection = CurveEvent(
+            g0, CurveEngine.STEP_MS, CurveKind.INSULIN, 12.0,
+            engine.bateman(12.0, CurveEngine.Presets.TRESIBA_DIA_MIN, CurveEngine.Presets.BASAL_KA_PER_HOUR, CurveEngine.Presets.BASAL_KE_PER_HOUR).toList(),
+        )
+        val inj = listOf(injection)
+
+        // No boluses in any store, so contextChannels.insulin isolates the single basal representation.
+        val both = ChannelBuilder(engine, FakeStore(schedule = sched, basalInjections = inj))
+        val schedOnly = ChannelBuilder(engine, FakeStore(schedule = sched))
+        val injOnly = ChannelBuilder(engine, FakeStore(basalInjections = inj)) // schedule == null
+
+        val bothInsulin = both.contextChannels(g0, n).insulin
+        val schedInsulin = schedOnly.contextChannels(g0, n).insulin
+        val injInsulin = injOnly.contextChannels(g0, n).insulin
+
+        // Precondition: both representations genuinely contribute and differ, so the XOR is observable.
+        assertTrue("schedule must contribute basal area", schedInsulin.sum() > 0.0)
+        assertTrue("injection must contribute basal area", injInsulin.sum() > 0.0)
+        assertTrue("the two representations must be distinguishable", abs(schedInsulin.sum() - injInsulin.sum()) > 1e-3)
+
+        // With BOTH present the schedule wins and the injection is NOT added (integrated once).
+        assertArrayEquals(schedInsulin, bothInsulin, 0.0)
+        // A double-count would have summed the two:
+        assertTrue(bothInsulin.sum() < schedInsulin.sum() + injInsulin.sum() - 1e-6)
+
+        // With NO schedule the discrete injection is the single basal representation.
+        val directInj = engine.bucketize(inj, g0, n, CurveKind.INSULIN)
+        assertArrayEquals(directInj, injInsulin, 0.0)
+
+        // Mirror the XOR on the dashboard's separate basalChannel overlay.
+        assertArrayEquals(schedOnly.basalChannel(g0, n), both.basalChannel(g0, n), 0.0)
+        assertArrayEquals(directInj, injOnly.basalChannel(g0, n), 0.0)
     }
 
     @Test
