@@ -15,6 +15,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -242,23 +243,33 @@ private fun AodDashboard(container: AppContainer) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        // Mode + status … battery.
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = "${if (d.death) "DEATH" else "NORMAL"}   ·   ${d.glyText}",
-                color = if (d.death) INK else INK_MID,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Medium,
-            )
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        // Mode + status … battery. Inset to span exactly the two clocks below rather than the full
+        // padded width (which read as too spread out): the clocks sit in a SpaceEvenly row of two
+        // DIAL_SIZE dials, so their outer edges are one SpaceEvenly gap — (width − 2·dial) / 3 — in
+        // from the padding; pad this row by that same gap and its ends line up with the clocks'.
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            val gap = ((maxWidth - DIAL_SIZE * 2) / 3).coerceAtLeast(0.dp)
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = gap),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 Text(
-                    text = d.batteryPct?.let { "$it%" } ?: "",
-                    color = INK_MID,
+                    text = "${if (d.death) "DEATH" else "NORMAL"}   ·   ${d.glyText}",
+                    color = if (d.death) INK else INK_MID,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Medium,
                 )
-                // A drawn (monochrome) charging bolt — never an emoji, which would render in colour.
-                if (d.charging && d.batteryPct != null) ChargingBolt(Modifier.size(width = 8.dp, height = 13.dp))
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        text = d.batteryPct?.let { "$it%" } ?: "",
+                        color = INK_MID,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                    )
+                    // A drawn (monochrome) charging bolt — never an emoji, which would render in colour.
+                    if (d.charging && d.batteryPct != null) ChargingBolt(Modifier.size(width = 8.dp, height = 13.dp))
+                }
             }
         }
 
@@ -266,10 +277,10 @@ private fun AodDashboard(container: AppContainer) {
 
         // The two clocks — real (analog) and the model's circadian belief (circular histogram).
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-            LabeledDial("TIME") { AnalogClock(Modifier.size(112.dp)) }
+            LabeledDial("TIME") { AnalogClock(Modifier.size(DIAL_SIZE)) }
             LabeledDial(
                 d.pt?.let { "CIRCADIAN · R %.2f".format(it.resultantR) } ?: "CIRCADIAN",
-            ) { CircadianDial(d.pt, Modifier.size(112.dp)) }
+            ) { CircadianDial(d.pt, Modifier.size(DIAL_SIZE)) }
         }
 
         Spacer(Modifier.size(20.dp))
@@ -483,3 +494,6 @@ private fun localHourOfDay(ms: Long): Double {
 private const val DRIFT_DP = 12f
 private const val DRIFT_PERIOD_MS = 120_000
 private const val REFRESH_MS = 10_000L
+// The clock/circadian dial edge length; the mode+battery header insets itself by the SpaceEvenly gap
+// this implies so its ends line up with the two dials.
+private val DIAL_SIZE = 112.dp
