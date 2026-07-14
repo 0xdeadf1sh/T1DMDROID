@@ -25,6 +25,8 @@ internal data class WidgetSnapshot(
     val glance: BgGlance,
     val unit: UnitSpace,
     val animationsEnabled: Boolean,
+    /** Settings → Display → Background opacity (%), applied to the rasterised theme motif behind the tile. */
+    val bgAlphaPct: Int,
     val iobU: Double?,
     val cobG: Double?,
     val rssi: Int?,
@@ -49,6 +51,8 @@ internal suspend fun currentWidgetSnapshot(context: Context): WidgetSnapshot {
     val latest = src?.let { container.repository.recentReadings(it, 1).firstOrNull() }
     val unit = runCatching { container.statsRepository.currentUnitSpace() }.getOrDefault(UnitSpace.MgDl)
     val animationsEnabled = runCatching { container.settingsStore.animationsEnabled.first() }.getOrDefault(true)
+    val bgAlphaPct = runCatching { container.settingsStore.currentBackgroundAlphaPct() }
+        .getOrDefault(com.t1dm.app.settings.SettingsStore.DEFAULT_BG_ALPHA_PCT)
     val state = container.inferenceState.value
     val onBoard = runCatching { container.iobCobNow() }.getOrNull()
     val clock = state.selectedPredictedTime
@@ -67,6 +71,7 @@ internal suspend fun currentWidgetSnapshot(context: Context): WidgetSnapshot {
         glance = glance,
         unit = unit,
         animationsEnabled = animationsEnabled,
+        bgAlphaPct = bgAlphaPct,
         iobU = onBoard?.iobU,
         cobG = onBoard?.cobG,
         rssi = latest?.rssi,

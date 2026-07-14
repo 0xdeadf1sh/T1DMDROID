@@ -25,6 +25,7 @@ import androidx.glance.background
 import androidx.glance.layout.Alignment
 import androidx.glance.layout.Box
 import androidx.glance.layout.Column
+import androidx.glance.layout.ContentScale
 import androidx.glance.layout.Row
 import androidx.glance.layout.Spacer
 import androidx.glance.layout.fillMaxSize
@@ -95,10 +96,22 @@ private val StableGreen = Color(0xFF3DD68C)
 private fun WidgetSurface(snap: WidgetSnapshot) {
     val p = T1dmActivePalette
     val size = LocalSize.current
+    // The same per-theme motif the app paints, rasterised to a bitmap (Glance/RemoteViews can't run the
+    // live Canvas painter) at the user's Background opacity; a flat p.background base when it's off.
+    val density = LocalContext.current.resources.displayMetrics.density
+    val backdrop = widgetBackdropBitmap(
+        p,
+        widthPx = (size.width.value * density).roundToInt(),
+        heightPx = (size.height.value * density).roundToInt(),
+        alphaPct = snap.bgAlphaPct,
+    )
     Box(
         modifier = GlanceModifier
             .fillMaxSize()
-            .background(ColorProvider(p.surface))
+            .let {
+                if (backdrop != null) it.background(ImageProvider(backdrop), contentScale = ContentScale.FillBounds)
+                else it.background(ColorProvider(p.background))
+            }
             .cornerRadius(24.dp)
             .padding(horizontal = 14.dp, vertical = 12.dp)
             .clickable(actionStartActivity(Intent(LocalContext.current, MainActivity::class.java))),
