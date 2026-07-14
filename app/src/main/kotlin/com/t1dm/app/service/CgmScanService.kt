@@ -1,5 +1,6 @@
 package com.t1dm.app.service
 
+import android.app.KeyguardManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -134,10 +135,13 @@ class CgmScanService : LifecycleService() {
     @Volatile private var screenOffReportDelayMs = 0L
 
     /** Aggressive background scanning: on screen-off (while engaged) raise the keep-screen-on
-     *  [AodScanActivity] after a short grace, so the display stays interactive and HyperOS does not
-     *  suspend the locked scan; a screen-on within the grace (the user waking to check the phone)
-     *  cancels it so their normal keyguard shows. Posted on the main looper (activity starts + the
-     *  handler must run there). */
+     *  [AodScanActivity] after a short grace, so the phone never deep-idles and the offloaded-batch
+     *  scan keeps flushing on schedule while locked. (Holding the display on does NOT rescue a
+     *  reportDelay-0 real-time scan — HyperOS suspends that the moment the phone locks, keyguard up
+     *  regardless of the screen; see the ACTION_SCREEN_ON handler — so under the AOD the scan stays in
+     *  BATCH mode, which is what survives.) A screen-on within the grace (the user waking to check the
+     *  phone) cancels it so their normal keyguard shows. Posted on the main looper (activity starts +
+     *  the handler must run there). */
     private val mainHandler = Handler(Looper.getMainLooper())
     private val reengageRunnable = Runnable { maybeEngageAod() }
     private val screenReceiver = object : BroadcastReceiver() {
@@ -151,10 +155,22 @@ class CgmScanService : LifecycleService() {
                     }
                 }
                 Intent.ACTION_SCREEN_ON -> {
-                    reportDelayFlow.value = 0L
+                    // Do NOT arm real-time here. At screen-on the phone is still on the keyguard — the
+                    // normal lock screen, or the keep-screen-on AOD showing over it — and HyperOS suspends
+                    // a reportDelay-0 filtered scan the whole time it is locked, display held on or not.
+                    // We can't even tell locked from unlocked at this edge: a showWhenLocked activity (the
+                    // AOD) OCCLUDES the keyguard, and KeyguardManager.isKeyguardLocked() then reports FALSE
+                    // though the phone is still locked. So leave the mode as screen-off left it (batch —
+                    // the one mode that survives a locked phone) and let ACTION_USER_PRESENT, a genuine
+                    // unlock that occlusion cannot forge, be the only thing that arms real-time.
                     mainHandler.removeCallbacks(reengageRunnable)
                     // The AOD is up (or the user woke the phone) — retire the FSI trigger notification.
                     runCatching { getSystemService(NotificationManager::class.java).cancel(NOTIF_ID_AOD) }
+                }
+                Intent.ACTION_USER_PRESENT -> {
+                    // Keyguard genuinely dismissed — the phone is unlocked and in active use, so the
+                    // reportDelay-0 real-time scan is delivered (HyperOS only suspends it while locked).
+                    reportDelayFlow.value = 0L
                 }
             }
         }
@@ -168,6 +184,12 @@ class CgmScanService : LifecycleService() {
 
     private fun isCharging(): Boolean =
         runCatching { getSystemService(BatteryManager::class.java)?.isCharging == true }.getOrDefault(false)
+
+    /** True while the keyguard is up — used ONLY for the initial mode at scan start. NB: this reports
+     *  FALSE while a showWhenLocked activity (the AOD) OCCLUDES the keyguard, so it must NOT be used to
+     *  decide the mode once the AOD can be up; ACTION_USER_PRESENT is the trustworthy "unlocked" signal. */
+    private fun isKeyguardLocked(): Boolean =
+        runCatching { getSystemService(KeyguardManager::class.java)?.isKeyguardLocked == true }.getOrDefault(false)
 
     /** Raise the keep-screen-on AOD surface, unless the user has meanwhile woken the phone (screen
      *  already interactive) or disengaged. A plain background `startActivity` is refused on Android 14+
@@ -513,13 +535,19 @@ class CgmScanService : LifecycleService() {
             }
         val interactive = runCatching { getSystemService(PowerManager::class.java)?.isInteractive == true }
             .getOrDefault(true)
-        reportDelayFlow.value = if (interactive) 0L else screenOffReportDelayMs
+        // Best-effort initial mode: real-time (0) only if we start up on-screen and unlocked — the usual
+        // case, a user-launched foreground start whose ACTION_USER_PRESENT the receiver was not yet
+        // registered to catch. Batch otherwise (screen off, or locked). isKeyguardLocked() is reliable
+        // here because a normal start is not behind the AOD; once running, ACTION_USER_PRESENT re-arms
+        // real-time on every genuine unlock and screen-off falls back to batch.
+        reportDelayFlow.value = if (interactive && !isKeyguardLocked()) 0L else screenOffReportDelayMs
         runCatching {
             registerReceiver(
                 screenReceiver,
                 IntentFilter().apply {
                     addAction(Intent.ACTION_SCREEN_ON)
                     addAction(Intent.ACTION_SCREEN_OFF)
+                    addAction(Intent.ACTION_USER_PRESENT)
                 },
                 Context.RECEIVER_NOT_EXPORTED,
             )
