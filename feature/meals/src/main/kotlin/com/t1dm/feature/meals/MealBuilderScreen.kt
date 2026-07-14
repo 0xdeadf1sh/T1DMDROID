@@ -27,6 +27,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -102,8 +103,20 @@ private fun BuilderSummary(
         value = if (snapshot.isEmpty()) ResolvedMealCurve.EMPTY else onResolve(snapshot)
     }
     var mealName by remember { mutableStateOf("") }
+    // Carbs logged by the last "Log meal" press, so the builder can confirm the action once it
+    // clears itself. Reset as soon as a new meal is started (a component is added).
+    var justLoggedCarbs by remember { mutableStateOf<Double?>(null) }
+    val isEmpty = components.isEmpty()
+    LaunchedEffect(isEmpty) { if (!isEmpty) justLoggedCarbs = null }
 
-    if (components.isEmpty()) {
+    if (isEmpty) {
+        justLoggedCarbs?.let {
+            Text(
+                "✓ Logged ${"%.0f".format(it)} g carbs — it's now shaping the forecast.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
         Text(
             "Search a food below to start building a meal.",
             style = MaterialTheme.typography.bodyMedium,
@@ -131,7 +144,18 @@ private fun BuilderSummary(
     CurvePreview(values = resolved.values)
 
     Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Button(onClick = { onLogMeal(components.toList()) }, enabled = resolved.totalCarbs > 0.0) {
+        // Log then clear the builder (mirroring the simple carb screen's clear-on-log): the collapse
+        // to the confirmation line is the feedback that the press took effect, and it also stops the
+        // no-feedback button from being mashed into duplicate logged_meal rows.
+        Button(
+            onClick = {
+                val total = resolved.totalCarbs
+                onLogMeal(components.toList())
+                components.clear()
+                justLoggedCarbs = total
+            },
+            enabled = resolved.totalCarbs > 0.0,
+        ) {
             Text("Log meal")
         }
         OutlinedButton(onClick = { components.clear() }) { Text("Clear") }
