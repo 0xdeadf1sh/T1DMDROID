@@ -1,3 +1,14 @@
 <resources>
     <style name="Theme.T1dm" parent="android:Theme.Material.NoActionBar" />
+
+    <!-- The keep-screen-on "AOD" scan surface: a pitch-black, full-screen, no-action-bar activity
+         held over the keyguard so the display stays genuinely ON (is_screen_on=1) and the locked BLE
+         scan is never suspended. Its own brightness is pinned near-zero in code. -->
+    <style name="Theme.T1dm.Aod" parent="Theme.T1dm">
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowShowWallpaper">false</item>
+        <item name="android:backgroundDimEnabled">false</item>
+        <item name="android:windowAnimationStyle">@null</item>
+    </style>
 </resources>

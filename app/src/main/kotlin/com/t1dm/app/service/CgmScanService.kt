@@ -10,7 +10,11 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ServiceInfo
+import android.os.BatteryManager
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
+import com.t1dm.app.aod.AodScanActivity
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import com.t1dm.alerts.AlarmController
@@ -128,10 +132,71 @@ class CgmScanService : LifecycleService() {
      *  Emitting a new value restarts the scan in that mode (see [AidexXSourceRegistry.start]). */
     private val reportDelayFlow = MutableStateFlow(0L)
     @Volatile private var screenOffReportDelayMs = 0L
+
+    /** Aggressive background scanning: on screen-off (while engaged) raise the keep-screen-on
+     *  [AodScanActivity] after a short grace, so the display stays interactive and HyperOS does not
+     *  suspend the locked scan; a screen-on within the grace (the user waking to check the phone)
+     *  cancels it so their normal keyguard shows. Posted on the main looper (activity starts + the
+     *  handler must run there). */
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val reengageRunnable = Runnable { maybeEngageAod() }
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
-            reportDelayFlow.value = if (intent.action == Intent.ACTION_SCREEN_OFF) screenOffReportDelayMs else 0L
+            when (intent.action) {
+                Intent.ACTION_SCREEN_OFF -> {
+                    reportDelayFlow.value = screenOffReportDelayMs
+                    if (aggressiveEngaged()) {
+                        mainHandler.removeCallbacks(reengageRunnable)
+                        mainHandler.postDelayed(reengageRunnable, AOD_REENGAGE_GRACE_MS)
+                    }
+                }
+                Intent.ACTION_SCREEN_ON -> {
+                    reportDelayFlow.value = 0L
+                    mainHandler.removeCallbacks(reengageRunnable)
+                    // The AOD is up (or the user woke the phone) — retire the FSI trigger notification.
+                    runCatching { getSystemService(NotificationManager::class.java).cancel(NOTIF_ID_AOD) }
+                }
+            }
         }
+    }
+
+    /** Aggressive scan is engaged iff the user enabled it AND (it isn't charging-gated, or we are on
+     *  the charger). Read off the container's @Volatile snapshots + a live battery query. */
+    private fun aggressiveEngaged(): Boolean =
+        container.aggressiveScanSnapshot &&
+            (!container.aggressiveOnlyChargingSnapshot || isCharging())
+
+    private fun isCharging(): Boolean =
+        runCatching { getSystemService(BatteryManager::class.java)?.isCharging == true }.getOrDefault(false)
+
+    /** Raise the keep-screen-on AOD surface, unless the user has meanwhile woken the phone (screen
+     *  already interactive) or disengaged. A plain background `startActivity` is refused on Android 14+
+     *  when the app has no visible window (BAL). The sanctioned wake-from-background mechanism — the
+     *  same one the urgent alarm uses — is a **full-screen-intent** notification: with the screen off
+     *  the system launches the FSI activity directly over the keyguard instead of merely posting. */
+    private fun maybeEngageAod() {
+        if (!aggressiveEngaged()) return
+        val interactive = runCatching { getSystemService(PowerManager::class.java)?.isInteractive == true }
+            .getOrDefault(true)
+        if (interactive) return
+        val pi = PendingIntent.getActivity(
+            this, 5,
+            Intent(this, AodScanActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val notif = Notification.Builder(this, CH_AOD)
+            .setSmallIcon(NotificationIcons.res(NotificationIcons.Glyph.MONITOR, container.iconStyle))
+            .setColor(container.notificationAccentArgb)
+            .setContentTitle("Keeping the CGM scan alive")
+            .setContentText("The screen is held dark while the phone is locked.")
+            .setCategory(Notification.CATEGORY_SERVICE)
+            .setOnlyAlertOnce(true)
+            .setAutoCancel(true)
+            .setTimeoutAfter(AOD_REENGAGE_GRACE_MS)
+            .setFullScreenIntent(pi, true)
+            .build()
+        runCatching { getSystemService(NotificationManager::class.java).notify(NOTIF_ID_AOD, notif) }
+            .onFailure { Timber.tag(TAG).w(it, "AOD full-screen-intent post failed") }
     }
 
     override fun onCreate() {
@@ -466,6 +531,9 @@ class CgmScanService : LifecycleService() {
         runCatching {
             container.registry.start(reportDelayFlow) { d -> BleAdvertScanner(scanner, container.dispatchers, d) }
         }.onFailure { Timber.tag(TAG).w(it, "Failed to start BLE scan") }
+        // If we (re)started while already locked — a watchdog or boot restart mid-sleep — engage the
+        // keep-screen-on surface now rather than waiting for the next screen-off edge.
+        if (!interactive && aggressiveEngaged()) mainHandler.postDelayed(reengageRunnable, AOD_REENGAGE_GRACE_MS)
     }
 
     private fun startSteps() {
@@ -497,6 +565,14 @@ class CgmScanService : LifecycleService() {
                 trendTenths = 0,
             )
             ACTION_INJECT_STEPS -> injectStepCounter(intent.getLongExtra(EXTRA_CUMULATIVE, 0L))
+            // Debug: flip the aggressive-scan knobs through the REAL settings path (kv → flow →
+            // snapshot), so the keep-screen-on AOD can be exercised from adb without the CGM in range.
+            ACTION_SET_AGGRESSIVE -> lifecycleScope.launch {
+                container.setAggressiveScanEnabled(intent.getIntExtra("on", 1) != 0)
+                if (intent.hasExtra("showBg")) container.setAggressiveShowGlucose(intent.getIntExtra("showBg", 1) != 0)
+                if (intent.hasExtra("onlyCharging")) container.setAggressiveOnlyCharging(intent.getIntExtra("onlyCharging", 0) != 0)
+                Timber.tag(TAG).i("SET_AGGRESSIVE on=%d", intent.getIntExtra("on", 1))
+            }
             ACTION_RUN_CYCLE -> runSyntheticCycle()
             ACTION_FORCE_DEGENERATE -> lifecycleScope.launch {
                 container.inferenceController.refreshModels()
@@ -799,6 +875,7 @@ class CgmScanService : LifecycleService() {
 
     override fun onDestroy() {
         container.serviceRunning.value = false
+        mainHandler.removeCallbacks(reengageRunnable)
         runCatching { unregisterReceiver(screenReceiver) }
         wakeLock?.let { if (it.isHeld) it.release() }
         super.onDestroy()
@@ -832,6 +909,17 @@ class CgmScanService : LifecycleService() {
         // now surfaces on the keyguard on its own once "show silent notifications on lock screen" is on,
         // so the second channel is redundant. Harmless no-op once already deleted.
         runCatching { nm.deleteNotificationChannel("t1dm.glance.bg") }
+        // The aggressive-scan AOD trigger: a HIGH-importance channel (required for a full-screen intent
+        // to launch rather than merely post) kept SILENT — no sound, no vibration, no badge — since its
+        // only job is to raise the keep-screen-on surface, not to alert.
+        nm.createNotificationChannel(
+            NotificationChannel(CH_AOD, "Background scan wake", NotificationManager.IMPORTANCE_HIGH).apply {
+                description = "Raises the dark keep-screen-on view that keeps the CGM scan alive while locked."
+                setSound(null, null)
+                enableVibration(false)
+                setShowBadge(false)
+            },
+        )
     }
 
     @Suppress("WakelockTimeout") // Advisory monitor must stay awake across Doze; released in onDestroy.
@@ -877,11 +965,16 @@ class CgmScanService : LifecycleService() {
     companion object {
         private const val TAG = "CgmScan"
         private const val CH_SERVICE = "t1dm.service.cgm"
+        private const val CH_AOD = "t1dm.aod.scan"
         private const val NOTIF_ID = 4100
+        private const val NOTIF_ID_AOD = 4104
         /** Batch-scan flush cadence when awake; HyperOS overrides this to ~5 min while locked. Any
          *  non-zero value engages offloaded batching, which is what survives screen-off. */
         private const val BATCH_REPORT_DELAY_MS = 10_000L
         private const val HEARTBEAT_MS = 60_000L
+        /** Grace after screen-off before raising the keep-screen-on AOD: long enough that a
+         *  double-press to check the phone (off → on) cancels it and shows the normal keyguard. */
+        private const val AOD_REENGAGE_GRACE_MS = 2_500L
         /** How often the always-on notification re-renders so its "updated N ago" age stays honest. */
         private const val NOTIF_TICK_MS = 30_000L
         const val KV_LAST_ALIVE = "last_alive_ts"
@@ -891,6 +984,7 @@ class CgmScanService : LifecycleService() {
         const val ACTION_INJECT_READING = "com.t1dm.app.INJECT_READING"
         const val ACTION_FORCE_SIGNAL_LOSS = "com.t1dm.app.FORCE_SIGNAL_LOSS"
         const val ACTION_INJECT_STEPS = "com.t1dm.app.INJECT_STEPS"
+        const val ACTION_SET_AGGRESSIVE = "com.t1dm.app.SET_AGGRESSIVE"
         const val ACTION_RUN_CYCLE = "com.t1dm.app.RUN_CYCLE"
         const val ACTION_FORCE_DEGENERATE = "com.t1dm.app.FORCE_DEGENERATE"
         const val ACTION_FORCE_PREDICT = "com.t1dm.app.FORCE_PREDICT"

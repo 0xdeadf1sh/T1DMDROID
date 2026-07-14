@@ -42,6 +42,14 @@ fun CgmSettingsScreen(
     sensorExpiryMs: Long? = null,
     onSetSensorLifetime: (days: Int, hours: Int, minutes: Int) -> Unit = { _, _, _ -> },
     onClearSensorLifetime: () -> Unit = {},
+    aggressiveEnabled: Boolean = false,
+    aggressiveShowGlucose: Boolean = true,
+    aggressiveOnlyCharging: Boolean = false,
+    hasOverlayPermission: Boolean = true,
+    onSetAggressiveEnabled: (Boolean) -> Unit = {},
+    onSetAggressiveShowGlucose: (Boolean) -> Unit = {},
+    onSetAggressiveOnlyCharging: (Boolean) -> Unit = {},
+    onRequestOverlay: () -> Unit = {},
 ) {
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
@@ -66,6 +74,74 @@ fun CgmSettingsScreen(
         }
 
         SensorLifetimeSection(sensorExpiryMs, onSetSensorLifetime, onClearSensorLifetime)
+
+        AggressiveScanSection(
+            enabled = aggressiveEnabled,
+            showGlucose = aggressiveShowGlucose,
+            onlyCharging = aggressiveOnlyCharging,
+            hasOverlayPermission = hasOverlayPermission,
+            onSetEnabled = onSetAggressiveEnabled,
+            onSetShowGlucose = onSetAggressiveShowGlucose,
+            onSetOnlyCharging = onSetAggressiveOnlyCharging,
+            onRequestOverlay = onRequestOverlay,
+        )
+    }
+}
+
+/**
+ * Aggressive background scanning (build-gotchas). HyperOS suspends a backgrounded BLE scan the moment
+ * the screen turns off; the only app-side defeat is to hold the display genuinely on behind a
+ * black/dim surface, so this is a heavy, opt-in mode. Off-charger it is a real battery cost (the SoC
+ * never deep-idles), hence the candid caption and the charging-only escape hatch.
+ */
+@Composable
+private fun AggressiveScanSection(
+    enabled: Boolean,
+    showGlucose: Boolean,
+    onlyCharging: Boolean,
+    hasOverlayPermission: Boolean,
+    onSetEnabled: (Boolean) -> Unit,
+    onSetShowGlucose: (Boolean) -> Unit,
+    onSetOnlyCharging: (Boolean) -> Unit,
+    onRequestOverlay: () -> Unit,
+) {
+    Text("Aggressive background scanning", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 28.dp))
+    Text(
+        "When the screen turns off, HyperOS suspends the CGM scan. This mode keeps the display on but " +
+            "dark while the phone is locked so readings keep flowing. Cost: the phone can't fully sleep — " +
+            "real battery drain off the charger — and you press power twice to wake to your lock screen.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+    )
+
+    LabeledSwitch("Keep scanning while locked", enabled, onSetEnabled)
+
+    if (enabled) {
+        if (!hasOverlayPermission) {
+            Text(
+                "Needs the “Display over other apps” permission to raise the dark screen while locked.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(top = 8.dp),
+            )
+            Button(onClick = onRequestOverlay, modifier = Modifier.padding(top = 4.dp)) {
+                Text("Grant “Display over other apps”")
+            }
+        }
+        LabeledSwitch("Show glucose on the dark screen", showGlucose, onSetShowGlucose)
+        LabeledSwitch("Only while charging", onlyCharging, onSetOnlyCharging)
+    }
+}
+
+@Composable
+private fun LabeledSwitch(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().padding(top = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+        androidx.compose.material3.Switch(checked = checked, onCheckedChange = onChange)
     }
 }
 

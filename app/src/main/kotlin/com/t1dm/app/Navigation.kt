@@ -1,5 +1,8 @@
 package com.t1dm.app
 
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -1387,11 +1390,19 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
             )
         }
         composable("settings/cgm") {
+            val ctx = LocalContext.current
             val scope = rememberCoroutineScope()
             val active by container.activeSource.collectAsState(null)
             val sources by container.allSources.collectAsState(emptyList())
             val signals by container.bgSignals.collectAsState(null)
             val expiry by container.sensorExpiryMs.collectAsState(null)
+            val aggEnabled by container.aggressiveScanEnabled.collectAsState(false)
+            val aggShowBg by container.aggressiveShowGlucose.collectAsState(true)
+            val aggOnlyCharging by container.aggressiveOnlyCharging.collectAsState(false)
+            var canOverlay by remember { mutableStateOf(Settings.canDrawOverlays(ctx)) }
+            val overlayLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.StartActivityForResult(),
+            ) { canOverlay = Settings.canDrawOverlays(ctx) }
             CgmSettingsScreen(
                 activeSourceName = active?.displayName,
                 activeStatus = active?.let { "active" },
@@ -1400,6 +1411,18 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 sensorExpiryMs = expiry,
                 onSetSensorLifetime = { d, h, m -> scope.launch { container.setSensorLifetime(d, h, m) } },
                 onClearSensorLifetime = { scope.launch { container.clearSensorLifetime() } },
+                aggressiveEnabled = aggEnabled,
+                aggressiveShowGlucose = aggShowBg,
+                aggressiveOnlyCharging = aggOnlyCharging,
+                hasOverlayPermission = canOverlay,
+                onSetAggressiveEnabled = { on -> scope.launch { container.setAggressiveScanEnabled(on) } },
+                onSetAggressiveShowGlucose = { on -> scope.launch { container.setAggressiveShowGlucose(on) } },
+                onSetAggressiveOnlyCharging = { on -> scope.launch { container.setAggressiveOnlyCharging(on) } },
+                onRequestOverlay = {
+                    overlayLauncher.launch(
+                        Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${ctx.packageName}")),
+                    )
+                },
             )
         }
         composable("journal") {

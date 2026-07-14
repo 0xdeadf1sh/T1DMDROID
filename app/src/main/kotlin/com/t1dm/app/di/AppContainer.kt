@@ -295,6 +295,29 @@ class AppContainer(context: Context) {
     /** The TIMED-mode forecast period (whole minutes), read fresh per timed tick by the FGS driver. */
     suspend fun forecastPeriodMin(): Int = settingsStore.currentForecastPeriodMin()
 
+    // ─── Aggressive-scan snapshots (mirror forecastModeSnapshot) — the FGS's screen-off receiver reads
+    // these synchronously off @Volatiles to decide whether to raise the keep-screen-on AOD surface,
+    // kept current by collectors on the persisted flags. The activity reads `aggressiveShowGlucose`
+    // (live flow) for its content and this snapshot for its window brightness at onCreate. ──────────
+    @Volatile
+    var aggressiveScanSnapshot: Boolean = false
+        private set
+
+    @Volatile
+    var aggressiveOnlyChargingSnapshot: Boolean = false
+        private set
+
+    @Volatile
+    var aggressiveShowGlucoseSnapshot: Boolean = true
+        private set
+
+    val aggressiveScanEnabled: Flow<Boolean> get() = settingsStore.aggressiveScanEnabled
+    val aggressiveShowGlucose: Flow<Boolean> get() = settingsStore.aggressiveShowGlucose
+    val aggressiveOnlyCharging: Flow<Boolean> get() = settingsStore.aggressiveOnlyCharging
+    suspend fun setAggressiveScanEnabled(on: Boolean) = settingsStore.setAggressiveScanEnabled(on)
+    suspend fun setAggressiveShowGlucose(on: Boolean) = settingsStore.setAggressiveShowGlucose(on)
+    suspend fun setAggressiveOnlyCharging(on: Boolean) = settingsStore.setAggressiveOnlyCharging(on)
+
     // ─── Alert actuators (Phase 7B — per-band sound + K90 vibration; kv-backed via SettingsStore) ──
 
     /**
@@ -595,6 +618,9 @@ class AppContainer(context: Context) {
         appScope.launch { settingsStore.customThemeJson.collect { customThemeJsonSnapshot = it } }
         appScope.launch { settingsStore.deathMode.collect { deathModeSnapshot = it } }
         appScope.launch { settingsStore.forecastMode.collect { forecastModeSnapshot = it } }
+        appScope.launch { settingsStore.aggressiveScanEnabled.collect { aggressiveScanSnapshot = it } }
+        appScope.launch { settingsStore.aggressiveOnlyCharging.collect { aggressiveOnlyChargingSnapshot = it } }
+        appScope.launch { settingsStore.aggressiveShowGlucose.collect { aggressiveShowGlucoseSnapshot = it } }
         // GMI is slow-moving; recompute the 30-day estimate every 30 min (once at startup) so the widget
         // reads a cheap cached value instead of a 30-day recompute on every 30 s refresh.
         appScope.launch(dispatchers.default) {

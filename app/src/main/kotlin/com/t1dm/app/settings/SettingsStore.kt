@@ -374,6 +374,21 @@ class SettingsStore(
     suspend fun setSensorExpiryMs(ms: Long) = put(K_CGM_SENSOR_EXPIRY, ms.toString())
     suspend fun clearSensorExpiry() = put(K_CGM_SENSOR_EXPIRY, "")
 
+    // ── Aggressive background scanning (the keep-screen-on "AOD" that keeps the locked BLE scan
+    // alive; cgm-ingestion / build-gotchas). HyperOS/powerkeeper SUSPENDS a backgrounded scan the
+    // instant the screen turns off — the only app-side defeat is to hold the display genuinely ON
+    // (is_screen_on=1) behind a black/dim surface. This is a HEAVY, opt-in mode (the SoC never
+    // deep-idles), so it defaults OFF. Device-specific (the `cgm.` prefix keeps it out of the
+    // exportable config set). `show_glucose` renders a dim glucose read-out instead of pure black;
+    // `only_charging` restricts the mode to the charger to bound the battery cost.
+    val aggressiveScanEnabled: Flow<Boolean> = boolFlow(K_AGG_SCAN, false)
+    val aggressiveShowGlucose: Flow<Boolean> = boolFlow(K_AGG_SHOW_BG, true)
+    val aggressiveOnlyCharging: Flow<Boolean> = boolFlow(K_AGG_ONLY_CHARGING, false)
+
+    suspend fun setAggressiveScanEnabled(on: Boolean) = put(K_AGG_SCAN, if (on) "1" else "0")
+    suspend fun setAggressiveShowGlucose(on: Boolean) = put(K_AGG_SHOW_BG, if (on) "1" else "0")
+    suspend fun setAggressiveOnlyCharging(on: Boolean) = put(K_AGG_ONLY_CHARGING, if (on) "1" else "0")
+
     val selectedRapidPreset: Flow<String> =
         repository.observeKv(K_CURVE_RAPID_PRESET).map { it ?: DEFAULT_RAPID_PRESET_LABEL }
     val selectedBasalPreset: Flow<String> =
@@ -554,6 +569,9 @@ class SettingsStore(
         private const val K_CURVE_CARB_BEZIER = "graph.curve_carb_bezier"
         private const val K_CURVE_INSULIN_BEZIER = "graph.curve_insulin_bezier"
         private const val K_CGM_SENSOR_EXPIRY = "cgm.sensor_expiry_ms"
+        private const val K_AGG_SCAN = "cgm.aggressive_scan"
+        private const val K_AGG_SHOW_BG = "cgm.aggressive_show_glucose"
+        private const val K_AGG_ONLY_CHARGING = "cgm.aggressive_only_charging"
         private const val K_CURVE_RAPID_PRESET = "graph.curve_rapid_preset"
         private const val K_CURVE_BASAL_PRESET = "graph.curve_basal_preset"
         /** The clinical defaults — NovoRapid rapid / Lantus basal (must equal the labels in `insulin_preset_catalog`). */

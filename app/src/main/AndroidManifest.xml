@@ -33,6 +33,12 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
+    <!-- Aggressive background scanning: the FGS raises AodScanActivity from a screen-off broadcast to
+         hold the display genuinely ON so HyperOS/powerkeeper does not suspend the locked BLE scan. A
+         background activity launch is refused on 12+ unless the app holds this permission — the
+         standard "keep-alive overlay" exemption (granted once via a Settings special-access screen). -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
     <!-- QR token scan (Phase 7C item 12): the ZXing CaptureActivity uses the camera to read a
          server-token / {baseUrl,token} QR. Optional feature — the token can always be typed. -->
     <uses-permission android:name="android.permission.CAMERA" />
@@ -146,6 +152,23 @@
             android:name=".service.DoseCalcService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- The keep-screen-on "AOD" scan surface (aggressive background scanning). Its own task +
+             excludeFromRecents so it never appears in Recents or the MainActivity back-stack;
+             singleTask + noHistory so re-raising it never stacks; show/turn-screen-on so it can wake
+             a dark display over the keyguard. app-internal (exported=false). -->
+        <activity
+            android:name=".aod.AodScanActivity"
+            android:exported="false"
+            android:theme="@style/Theme.T1dm.Aod"
+            android:taskAffinity=".AodTask"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:launchMode="singleTask"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
+            android:screenOrientation="portrait"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode|density" />
 
         <!-- Issue 7 — share camera-capture temp files (meal photos) with the camera app via a
              content:// Uri; also grants read to the bytes we re-open for the multipart upload. -->
