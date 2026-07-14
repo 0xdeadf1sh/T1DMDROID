@@ -15,7 +15,6 @@ import androidx.glance.ImageProvider
 import androidx.glance.LocalContext
 import androidx.glance.LocalSize
 import androidx.glance.action.clickable
-import androidx.glance.appwidget.CircularProgressIndicator
 import androidx.glance.appwidget.GlanceAppWidget
 import androidx.glance.appwidget.GlanceAppWidgetReceiver
 import androidx.glance.appwidget.SizeMode
@@ -55,10 +54,9 @@ import kotlin.math.roundToInt
  *   Large    — + a metrics row (IOB · COB · GMI · steps);
  *   XLarge   — + a second metrics row (signal · circadian clock).
  * It reads the live [T1dmActivePalette] so every element follows the active theme across all five
- * palettes + a custom one. Motion is state-driven and free (no polling loop): a launcher-animated
- * [CircularProgressIndicator] while warming up / on signal loss, and a per-reading "freshness" accent
- * the FGS settles with ONE delayed re-render ([FRESH_WINDOW_MS]); all gated by the global animations
- * toggle via [WidgetSnapshot.animationsEnabled].
+ * palettes + a custom one. Motion is state-driven and free (no polling loop): a per-reading
+ * "freshness" accent the FGS settles with ONE delayed re-render ([FRESH_WINDOW_MS]); gated by the
+ * global animations toggle via [WidgetSnapshot.animationsEnabled].
  */
 class GlucoseWidget : GlanceAppWidget() {
     override val sizeMode = SizeMode.Responsive(setOf(Compact, Medium, Large, XLarge))
@@ -193,8 +191,8 @@ private fun StatusIcon(death: Boolean) {
     }
 }
 
-/** The BG value + trend arrow, value tinted by glycemic band, arrow flipped to the accent while fresh;
- *  a launcher-driven spinner trails it during warmup / signal loss. */
+/** The BG value + trend arrow, value tinted by glycemic band, arrow flipped to the accent while fresh.
+ *  Warmup / signal loss are carried by the forecast line, not a spinner. */
 @Composable
 private fun BgRow(snap: WidgetSnapshot, p: T1dmPalette, numberSp: Int, arrowSp: Int) {
     val g = snap.glance
@@ -207,10 +205,6 @@ private fun BgRow(snap: WidgetSnapshot, p: T1dmPalette, numberSp: Int, arrowSp: 
             " ${BgFormat.arrow(g.trend)}",
             style = TextStyle(fontSize = arrowSp.sp, color = ColorProvider(if (isFresh(snap)) p.primary else p.ink)),
         )
-        if (isBusy(snap)) {
-            Spacer(GlanceModifier.width(8.dp))
-            CircularProgressIndicator(modifier = GlanceModifier.size(16.dp), color = ColorProvider(p.primary))
-        }
     }
 }
 
@@ -331,9 +325,6 @@ private fun oneDp(v: Double): String = "%.1f".format(v)
 private fun isFresh(snap: WidgetSnapshot): Boolean =
     snap.animationsEnabled && snap.glance.hasReading &&
         snap.glance.readingAgeMs in 0 until GlucoseWidget.FRESH_WINDOW_MS
-
-private fun isBusy(snap: WidgetSnapshot): Boolean =
-    snap.animationsEnabled && (snap.glance.warmup || snap.glance.signalLoss)
 
 /** Readable ink for text laid over a saturated band colour, by perceived luminance. */
 private fun onColor(c: Color): Color {
