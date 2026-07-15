@@ -4,6 +4,9 @@ A personal Android app for Type 1 Diabetes that passively reads a Microtech/Otta
 
 Designed by a T1DM patient, informed by lived experience.
 
+> [!IMPORTANT]
+> **This is a personal project, not a product — and it is not meant for public consumption.** I built T1DMDROID to solve my own niche problem: one Type 1 diabetic, one specific sensor, one specific phone. It is open-sourced in the same spirit as similar hobby projects — for transparency and reference — **not** as software for anyone else to install, use, or depend on. There is no support, no release schedule, and no intent that anyone but me run it. If you found your way here, read it as one person's notebook, not as a tool for you.
+
 > [!CAUTION]
 > **Research and educational use only.** T1DMDROID is a personal, experimental project — not a medical device, not clinically validated, and not approved by any regulatory body. It displays experimental machine-learning forecasts and includes calculators whose thresholds are user-configurable and unbounded; its output may be wrong or misleading and **must not** be used to make medical, diagnostic, or treatment decisions, to calculate or adjust insulin doses, or to guide diabetes management in any way. It does not replace a real continuous glucose monitor, its official app, or professional medical care. Always rely on your approved medical devices and consult a qualified healthcare professional. The software is provided "as is", without warranty of any kind, and the authors accept no liability for any use.
 
