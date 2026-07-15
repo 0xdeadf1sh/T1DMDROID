@@ -40,6 +40,9 @@ models/*.bin
 # generated .pte + descriptor.json (regenerate via T1DMAI/exporters)
 models/exported/
 
+# ── Claude Code ─────────────────────────────────────────────────────────────
+.claude/
+
 # ── Misc ────────────────────────────────────────────────────────────────────
 .DS_Store
 *.log
