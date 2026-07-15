@@ -36,6 +36,9 @@ fun SettingsScreen(
     onOpenThermal: () -> Unit = {},
     onOpenDeviceTemp: () -> Unit = {},
     onOpenDeathClock: () -> Unit = {},
+    // False in the public flavor: the fail-open DEATH-mode override is compiled out, so its entry row
+    // is withheld rather than shown inert (the death-clock projection row above it stays).
+    deathModeSupported: Boolean = true,
 ) {
     SettingsScaffold("Settings") {
         SettingsSectionHeader("Display & units")
@@ -74,10 +77,12 @@ fun SettingsScreen(
             "Tune the insulin-exhaustion projection — hours from IOB-zero to DK, coma, and death",
             onClick = onOpenDeathClock,
         )
-        SettingsNavRow(
-            "DEATH mode",
-            "Silence every alarm, disable every safety rail, and still the warnings — irrevocably, until you rescind it",
-            onClick = onOpenDeath,
-        )
+        if (deathModeSupported) {
+            SettingsNavRow(
+                "DEATH mode",
+                "Silence every alarm, disable every safety rail, and still the warnings — irrevocably, until you rescind it",
+                onClick = onOpenDeath,
+            )
+        }
     }
 }

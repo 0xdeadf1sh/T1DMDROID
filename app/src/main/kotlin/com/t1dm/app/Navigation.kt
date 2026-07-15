@@ -978,6 +978,7 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 onOpenThermal = { navController.navigate("settings/thermal") },
                 onOpenDeviceTemp = { navController.navigate("settings/temperature") },
                 onOpenDeathClock = { navController.navigate("settings/deathclock") },
+                deathModeSupported = DeathFlavor.SUPPORTED,
             )
         }
         composable("settings/death") {

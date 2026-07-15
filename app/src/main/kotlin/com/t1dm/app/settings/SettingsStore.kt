@@ -3,6 +3,7 @@ package com.t1dm.app.settings
 import com.t1dm.alerts.AlarmConfig
 import com.t1dm.alerts.AlarmSeverity
 import com.t1dm.alerts.VibrationPreset
+import com.t1dm.app.DeathFlavor
 import com.t1dm.calc.Asymmetry
 import com.t1dm.calc.CalcConfig
 import com.t1dm.calc.GridSpec
@@ -12,6 +13,7 @@ import com.t1dm.calc.TargetRange as CalcTargetRange
 import com.t1dm.core.model.AlertThresholds
 import com.t1dm.data.T1dmRepository
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import org.json.JSONObject
 
@@ -327,9 +329,15 @@ class SettingsStore(
     // (it must never travel with a shared config). Reading it flips the calculator to the §3.6 override
     // below and silences the active alarm surfaces (the FGS gate reads it via AppContainer). ─────────
 
-    val deathMode: Flow<Boolean> = boolFlow(K_DEATH, false)
-    suspend fun currentDeathMode(): Boolean = getBool(K_DEATH, false)
-    suspend fun setDeathMode(on: Boolean) = put(K_DEATH, if (on) "1" else "0")
+    // Flavor-gated at the origin: in the public flavor DeathFlavor.SUPPORTED is false, so the override
+    // is pinned off (the key is never read or written) and every downstream reader — the §3.6 config
+    // rail/degeneracy-gate bypass, the FGS alarm-silence gate, the theme — sees a hard false.
+    val deathMode: Flow<Boolean> =
+        if (DeathFlavor.SUPPORTED) boolFlow(K_DEATH, false) else flowOf(false)
+    suspend fun currentDeathMode(): Boolean = DeathFlavor.SUPPORTED && getBool(K_DEATH, false)
+    suspend fun setDeathMode(on: Boolean) {
+        if (DeathFlavor.SUPPORTED) put(K_DEATH, if (on) "1" else "0")
+    }
 
     // ── UI (ux-decisions.md — a global "disable all animations" toggle) ────────────────────────
 
