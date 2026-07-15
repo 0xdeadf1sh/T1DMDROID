@@ -22,7 +22,7 @@ import kotlinx.coroutines.launch
 class AlarmController(
     private val engine: AlarmEngine,
     private val notifier: AlarmNotifier,
-    private val config: AlarmConfig = AlarmConfig.DEFAULT,
+    initialConfig: AlarmConfig = AlarmConfig.DEFAULT,
     private val clock: () -> Long = System::currentTimeMillis,
     /** The current battery-sensor °C (locked decision D1), read live on each tick so the
      *  over-temperature alarm tracks the device without a settings/service dependency here. Null when
@@ -30,6 +30,17 @@ class AlarmController(
     private val temperatureC: () -> Double? = { null },
 ) {
     val state: StateFlow<AlarmState> get() = engine.state
+
+    /** Read live in [onTick] so a Settings edit to the repeat cadence reaches a currently-firing alarm's
+     *  in-process re-alert without a restart (the engine's thresholds go live via [AlarmEngine.updateConfig]). */
+    @Volatile
+    private var config: AlarmConfig = initialConfig
+
+    /** Live-apply a new cadence/tunables to the running controller. Additive to
+     *  [AlarmEngine.updateConfig]; presentation timing only, never changes WHEN the engine fires. */
+    fun updateConfig(newConfig: AlarmConfig) {
+        config = newConfig
+    }
 
     @Volatile
     private var lastReAlertMs = Long.MIN_VALUE

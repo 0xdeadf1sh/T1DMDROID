@@ -77,6 +77,10 @@ class SettingsStore(
     val repeatCadenceMin: Flow<Int> = intFlow(K_REPEAT_CADENCE, DEF.repeatCadenceMin)
     val minActuationMin: Flow<Int> = intFlow(K_MIN_ACTUATION, DEF.minActuationIntervalMin)
 
+    /** How long a "Snooze" on a firing alarm silences presentation before it auto-expires (§3.6 C1 —
+     *  a snooze is always TIME-BOUNDED; permanent silence stays DEATH's job). Floored at 1 minute. */
+    val snoozeMin: Flow<Int> = intFlow(K_SNOOZE_MIN, DEFAULT_SNOOZE_MIN)
+
     suspend fun setLossWindows(lossMin: Int, lossEscalatedMin: Int) {
         put(K_LOSS_MIN, lossMin.coerceAtLeast(1).toString())
         put(K_LOSS_ESCALATED_MIN, lossEscalatedMin.coerceAtLeast(1).toString())
@@ -84,6 +88,8 @@ class SettingsStore(
 
     suspend fun setRepeatCadence(min: Int) = put(K_REPEAT_CADENCE, min.coerceAtLeast(1).toString())
     suspend fun setMinActuationMin(min: Int) = put(K_MIN_ACTUATION, min.coerceAtLeast(0).toString())
+    suspend fun currentSnoozeMin(): Int = decodeSnoozeMin(repository.getKv(K_SNOOZE_MIN))
+    suspend fun setSnoozeMin(min: Int) = put(K_SNOOZE_MIN, encodeSnoozeMin(min))
 
     /** Assemble the deterministic-alarm policy from the persisted knobs (defaults where unset). */
     suspend fun currentAlarmConfig(): AlarmConfig = AlarmConfig(
@@ -528,6 +534,14 @@ class SettingsStore(
         private const val K_LOSS_ESCALATED_MIN = "alarm.loss_escalated_min"
         private const val K_REPEAT_CADENCE = "alarm.repeat_cadence_min"
         private const val K_MIN_ACTUATION = "alarm.min_actuation_min"
+        private const val K_SNOOZE_MIN = "alarm.snooze_min"
+        const val DEFAULT_SNOOZE_MIN = 15
+
+        /** The snooze-duration persistence contract, extracted so the round-trip is host-testable
+         *  without Room: writes floor the value at 1 min (a snooze is always TIME-BOUNDED, §3.6 C1);
+         *  reads fall back to [DEFAULT_SNOOZE_MIN] when unset/garbage. */
+        internal fun encodeSnoozeMin(min: Int): String = min.coerceAtLeast(1).toString()
+        internal fun decodeSnoozeMin(raw: String?): Int = raw?.toIntOrNull() ?: DEFAULT_SNOOZE_MIN
 
         private const val K_VIB_WARN = "alerts.vib.warning"
         private const val K_VIB_CRIT = "alerts.vib.critical"

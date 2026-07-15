@@ -4,7 +4,11 @@ import android.content.Context
 import android.net.NetworkCapabilities
 import android.content.Intent
 import android.media.RingtoneManager
+import com.t1dm.alerts.ActiveAlarm
 import com.t1dm.alerts.AlarmConfig
+import com.t1dm.alerts.AlarmEngine
+import com.t1dm.alerts.AlarmState
+import com.t1dm.alerts.SnoozeState
 import com.t1dm.alerts.AlertActuatorConfig
 import com.t1dm.app.cgm.AppCgmRepository
 import com.t1dm.app.hardware.HardwareProbe
@@ -227,17 +231,34 @@ class AppContainer(context: Context) {
      * The deterministic-alarm policy (§3.6-A). Conservative boot defaults until [refreshAlarmConfig]
      * hydrates the user's persisted thresholds. A `@Volatile var` (not a `val`) so a Settings edit —
      * after re-persisting — is picked up by the live property readers (dashboard band colouring,
-     * glance surfaces, reachability lights); the already-running deterministic [AlarmEngine] captured
-     * its snapshot at FGS start, so a threshold change fully applies to that path on the next service
-     * start (a reopen), which the Settings screen states plainly.
+     * glance surfaces, reachability lights). The already-running deterministic [AlarmEngine] now ALSO
+     * adopts the change live: [refreshAlarmConfig] pushes the new config through [liveAlarmConfigSink]
+     * into the running engine (see [CgmScanService]) — a threshold/timing/cadence edit applies to a
+     * currently-firing alarm immediately, without a service restart.
      */
     @Volatile
     var alarmConfig: AlarmConfig = AlarmConfig.DEFAULT
         private set
 
-    /** Reload [alarmConfig] from the persisted knobs (called at startup + after a Settings save). */
+    /**
+     * The running [AlarmEngine]'s live-config seam. The FGS registers a sink on start ([setAlarmConfigSink])
+     * that pushes a new [AlarmConfig] into the already-running engine on the engine's own single-thread
+     * dispatcher; [refreshAlarmConfig] invokes it after every persist. Null while the FGS is down — the
+     * next start reads [alarmConfig] fresh. Presentation/threshold params only; it never re-arms or clears
+     * an active breach/latch (§3.6-A — the engine re-classifies on the next reading).
+     */
+    @Volatile
+    private var liveAlarmConfigSink: ((AlarmConfig) -> Unit)? = null
+
+    fun setAlarmConfigSink(sink: ((AlarmConfig) -> Unit)?) {
+        liveAlarmConfigSink = sink
+    }
+
+    /** Reload [alarmConfig] from the persisted knobs (called at startup + after a Settings save) and push
+     *  it into the live engine if the FGS is up. */
     suspend fun refreshAlarmConfig() {
         alarmConfig = runCatching { settingsStore.currentAlarmConfig() }.getOrDefault(AlarmConfig.DEFAULT)
+        liveAlarmConfigSink?.invoke(alarmConfig)
     }
 
     // ─── Theme snapshot (issue I1 — per-theme notification icon geometry + accent) ─────────────────
@@ -269,6 +290,45 @@ class AppContainer(context: Context) {
 
     val deathMode: Flow<Boolean> get() = settingsStore.deathMode
     suspend fun setDeathMode(on: Boolean) = settingsStore.setDeathMode(on)
+
+    // ─── Snooze / dismiss (the TIME-BOUNDED presentation-layer alarm silence — §3.6 C1–C5). Mirrors
+    // deathModeSnapshot: the FGS notifier reads this synchronously at every emit/reAlert to decide
+    // whether to ANNOUNCE a still-active breach. It NEVER touches the engine (the pure AlarmEngine keeps
+    // firing). Process-scoped (deliberately NOT persisted): a restart safely forgets snoozes and the
+    // engine re-fires, and startPipeline clears it on a fresh service instance. Distinct from DEATH —
+    // DEATH is the permanent fail-OPEN override; this is a bounded, per-episode silence. ───────────────
+    @Volatile
+    var snoozeSnapshot: SnoozeState = SnoozeState.NONE
+        private set
+
+    /** Snooze (timed, until [untilMs]) or dismiss (until the breach clears) the given live alarm. */
+    @Synchronized
+    fun snoozeAlarm(alarm: ActiveAlarm, untilMs: Long, dismiss: Boolean) {
+        snoozeSnapshot = if (dismiss) snoozeSnapshot.dismiss(alarm) else snoozeSnapshot.snooze(alarm, untilMs)
+    }
+
+    /** Prune snooze/dismiss entries whose kind has cleared, and expired timed snoozes (§3.6 C1/C3).
+     *  Called by the FGS on every engine-state change. */
+    @Synchronized
+    fun pruneSnooze(state: AlarmState) {
+        val pruned = snoozeSnapshot.pruned(state, System.currentTimeMillis())
+        if (pruned !== snoozeSnapshot) snoozeSnapshot = pruned
+    }
+
+    /** Forget all snoozes (a fresh FGS instance — no stale silence may outlive the alarm it covered). */
+    @Synchronized
+    fun clearSnooze() {
+        snoozeSnapshot = SnoozeState.NONE
+    }
+
+    /** The snooze window (whole minutes), kept current by a collector for the notification action label. */
+    @Volatile
+    var snoozeMinSnapshot: Int = SettingsStore.DEFAULT_SNOOZE_MIN
+        private set
+
+    val snoozeMin: Flow<Int> get() = settingsStore.snoozeMin
+    suspend fun currentSnoozeMin(): Int = settingsStore.currentSnoozeMin()
+    suspend fun setSnoozeMin(min: Int) = settingsStore.setSnoozeMin(min)
 
     /** GMI (estimated HbA1c, %) over the 30-day window, recomputed on a slow cadence (it moves slowly
      *  and a 30-day recompute is too heavy for the widget's 30 s refresh). Null until first computed or
@@ -617,6 +677,7 @@ class AppContainer(context: Context) {
         appScope.launch { settingsStore.themeId.collect { themeIdSnapshot = it } }
         appScope.launch { settingsStore.customThemeJson.collect { customThemeJsonSnapshot = it } }
         appScope.launch { settingsStore.deathMode.collect { deathModeSnapshot = it } }
+        appScope.launch { settingsStore.snoozeMin.collect { snoozeMinSnapshot = it } }
         appScope.launch { settingsStore.forecastMode.collect { forecastModeSnapshot = it } }
         appScope.launch { settingsStore.aggressiveScanEnabled.collect { aggressiveScanSnapshot = it } }
         appScope.launch { settingsStore.aggressiveOnlyCharging.collect { aggressiveOnlyChargingSnapshot = it } }

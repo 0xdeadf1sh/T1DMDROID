@@ -21,6 +21,7 @@ fun AlertsSettingsScreen(
     bypassDnd: Boolean,
     repeatCadenceMin: Int,
     minActuationMin: Int,
+    snoozeMin: Int,
     onSetWarningVibration: (String) -> Unit,
     onSetCriticalVibration: (String) -> Unit,
     onSetWarningSoundOn: (Boolean) -> Unit,
@@ -28,6 +29,7 @@ fun AlertsSettingsScreen(
     onSetBypassDnd: (Boolean) -> Unit,
     onSetRepeatCadence: (Int) -> Unit,
     onSetMinActuation: (Int) -> Unit,
+    onSetSnoozeMin: (Int) -> Unit,
     /** Issue 8 — play the tapped preset immediately so the user can feel it before committing. */
     onPreviewVibration: (String) -> Unit = {},
 ) {
@@ -55,6 +57,14 @@ fun AlertsSettingsScreen(
                 "once. 0 = no limit.",
         )
         IntStepper("Minimum time between alerts", minActuationMin, "min", step = 1, min = 0) { onSetMinActuation(it) }
+
+        SettingsSectionHeader("Snooze")
+        SettingsNote(
+            "How long the Snooze button silences a firing alarm before it auto-expires and re-alerts. " +
+                "Snooze is always time-bounded — an urgent alarm can be snoozed but never dismissed for " +
+                "good. A worse reading pierces the snooze immediately.",
+        )
+        IntStepper("Snooze duration", snoozeMin, "min", step = 1, min = 1, max = 60) { onSetSnoozeMin(it) }
 
         SettingsNote(
             "A changed sound or vibration migrates to a fresh notification channel — you may briefly " +

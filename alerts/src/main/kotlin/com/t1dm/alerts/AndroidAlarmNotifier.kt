@@ -39,6 +39,21 @@ class AndroidAlarmNotifier(
      */
     private val suppressed: () -> Boolean = { false },
     /**
+     * Advisory snooze/dismiss gate (§3.6-A safety guards C1–C5), read LIVE at every emit/reAlert exactly
+     * like [suppressed]. When it [SnoozeState.silences] the glucose/signal alarm the notifier PRESENTS
+     * nothing for it — the pure [AlarmEngine] still fires. TIME-BOUNDED and escalation-pierced; over-temp
+     * is never silenced. Defaults to never-snoozed for tests / headless contexts.
+     */
+    private val snoozeState: () -> SnoozeState = { SnoozeState.NONE },
+    /** Builds the "Snooze" action's PendingIntent for a glucose/signal alarm (injected by `:app`;
+     *  the module cannot reach the receiver). Null ⇒ no snooze button (tests / headless). */
+    private val snoozeIntent: (ActiveAlarm) -> PendingIntent? = { null },
+    /** Builds the "Dismiss" action's PendingIntent for a glucose/signal alarm (injected by `:app`).
+     *  Null ⇒ no dismiss button. */
+    private val dismissIntent: (ActiveAlarm) -> PendingIntent? = { null },
+    /** The snooze window in whole minutes, read live for the "Snooze Nm" action label. */
+    private val snoozeMinutes: () -> Int = { 15 },
+    /**
      * Minimum interval (ms) between an alarm's SOUND+VIBRATION actuations while it stays in the same
      * band — so a once-a-minute reading stream that keeps re-emitting the same alarm re-announces at
      * most this often. A NEW band/severity always actuates at once; the notification text still updates
@@ -59,26 +74,22 @@ class AndroidAlarmNotifier(
     @Volatile private var lastEpisodeKey: String? = null
 
     override fun emit(state: AlarmState) {
-        // D4: DEATH mode suppresses the glucose/signal alarms but the over-temperature alert is
-        // EXEMPT — a phone cooking itself must still say so. So when suppressed we present ONLY the
-        // over-temp alarm (and cancel the glucose/signal ids), and drive the throttle off it alone.
-        val sup = suppressed()
-        val presentable = if (sup) state.overTemperature else state.primary
-        val key = presentable?.let { episodeKey(it) }
         val now = clock()
+        // The single §3.6 presentation gate: DEATH suppression (D4 — glucose/signal only; over-temp is
+        // exempt) AND the snooze/dismiss silence (C1–C5 — over-temp is never snoozed). The pure engine
+        // still fired; `visible` is only what we may ANNOUNCE. Its `.primary` drives the throttle/vibrate.
+        val visible = state.visibleAfterGates(suppressed(), snoozeState(), now)
+        val presentable = visible.primary
+        val key = presentable?.let { episodeKey(it) }
         // A new band/severity actuates immediately; otherwise honour the min-interval throttle so an
         // every-minute reading stream does not re-sound/re-buzz each tick.
         val actuate = presentable != null &&
             (key != lastEpisodeKey || now - lastActuateMs >= minActuationIntervalMs().coerceAtLeast(0L))
         // `alertOnce = !actuate` turns a throttled re-post into a SILENT content update (no sound/heads-up).
-        if (sup) {
-            nm.cancel("glucose", ID_THRESHOLD)
-            nm.cancel("signal", ID_LOSS)
-        } else {
-            state.threshold?.let { post(ID_THRESHOLD, "glucose", it, !actuate) } ?: nm.cancel("glucose", ID_THRESHOLD)
-            state.signalLoss?.let { post(ID_LOSS, "signal", it, !actuate) } ?: nm.cancel("signal", ID_LOSS)
-        }
-        state.overTemperature?.let { post(ID_OVERTEMP, "device", it, !actuate) } ?: nm.cancel("device", ID_OVERTEMP)
+        // A silenced (DEATH/snooze/dismiss) sub-alarm is cancelled precisely — presentation only.
+        visible.threshold?.let { post(ID_THRESHOLD, "glucose", it, !actuate) } ?: nm.cancel("glucose", ID_THRESHOLD)
+        visible.signalLoss?.let { post(ID_LOSS, "signal", it, !actuate) } ?: nm.cancel("signal", ID_LOSS)
+        visible.overTemperature?.let { post(ID_OVERTEMP, "device", it, !actuate) } ?: nm.cancel("device", ID_OVERTEMP)
         if (actuate) {
             presentable?.let { vibrate(it) }
             lastActuateMs = now
@@ -87,9 +98,10 @@ class AndroidAlarmNotifier(
     }
 
     override fun reAlert(state: AlarmState) {
-        // Same D4 exemption: in DEATH only the over-temp alarm may re-announce.
-        val target = if (suppressed()) state.overTemperature else state.primary
-        target?.takeIf { it.severity == AlarmSeverity.CRITICAL }?.let {
+        // Same gates as emit: in DEATH only over-temp may re-announce; a snoozed/dismissed alarm does
+        // not re-vibrate until its window lapses or it escalates (C1/C2).
+        val visible = state.visibleAfterGates(suppressed(), snoozeState(), clock())
+        visible.primary?.takeIf { it.severity == AlarmSeverity.CRITICAL }?.let {
             vibrate(it)
             lastActuateMs = clock()
         }
@@ -131,6 +143,27 @@ class AndroidAlarmNotifier(
         val icon = smallIcon(critical)
         if (icon != null) builder.setSmallIcon(icon) else builder.setSmallIcon(android.R.drawable.stat_sys_warning)
         accentColor()?.let { builder.setColor(it) }
+        // Snooze / Dismiss affordances for the glucose + signal alarms (live snooze/dismiss). The
+        // over-temperature alarm gets none — it is never snoozable (§3.6 C5). "Snooze Nm" rides EVERY
+        // glucose/signal tier (it is TIME-BOUNDED, C1); "Dismiss" rides ONLY the WARNING tier
+        // ([isDismissable]) — a CRITICAL/urgent alarm is Snooze-only, so it can never be quieted
+        // permanently (Dexcom-style). Both are presentation-only levers gated live in [emit]; neither
+        // changes WHEN the pure engine fires. `:app` supplies the receiver PendingIntents (this module
+        // cannot reach them); null ⇒ no button (tests / headless).
+        if (alarm !is OverTemperature) {
+            snoozeIntent(alarm)?.let { pi ->
+                builder.addAction(
+                    Notification.Action.Builder(null as android.graphics.drawable.Icon?, "Snooze ${snoozeMinutes()}m", pi).build(),
+                )
+            }
+            if (alarm.isDismissable()) {
+                dismissIntent(alarm)?.let { pi ->
+                    builder.addAction(
+                        Notification.Action.Builder(null as android.graphics.drawable.Icon?, "Dismiss", pi).build(),
+                    )
+                }
+            }
+        }
         if (critical) {
             // Full-screen over the lock screen for urgent tiers (item 2 / risk S11). Android falls
             // back to a heads-up banner when the screen is on or the special access is ungranted.

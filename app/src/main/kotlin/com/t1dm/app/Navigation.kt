@@ -1103,6 +1103,7 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
             val bypass by container.settingsStore.bypassDnd.collectAsState(true)
             val cadence by container.settingsStore.repeatCadenceMin.collectAsState(5)
             val minActuation by container.settingsStore.minActuationMin.collectAsState(5)
+            val snoozeMin by container.snoozeMin.collectAsState(SettingsStore.DEFAULT_SNOOZE_MIN)
             AlertsSettingsScreen(
                 vibrationOptions = VibrationPreset.entries.map { it.name },
                 warningVibration = warnVib,
@@ -1112,6 +1113,7 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 bypassDnd = bypass,
                 repeatCadenceMin = cadence,
                 minActuationMin = minActuation,
+                snoozeMin = snoozeMin,
                 onSetWarningVibration = { n -> scope.launch { container.settingsStore.setWarningVibration(VibrationPreset.valueOf(n)) } },
                 onSetCriticalVibration = { n -> scope.launch { container.settingsStore.setCriticalVibration(VibrationPreset.valueOf(n)) } },
                 onSetWarningSoundOn = { on -> scope.launch { container.settingsStore.setWarningSoundOn(on) } },
@@ -1119,6 +1121,7 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 onSetBypassDnd = { on -> scope.launch { container.settingsStore.setBypassDnd(on) } },
                 onSetRepeatCadence = { m -> scope.launch { container.saveRepeatCadence(m) } },
                 onSetMinActuation = { m -> scope.launch { container.saveMinActuationMin(m) } },
+                onSetSnoozeMin = { m -> scope.launch { container.setSnoozeMin(m) } },
                 onPreviewVibration = { n -> container.previewVibration(n) },
             )
         }

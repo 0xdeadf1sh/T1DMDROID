@@ -9,8 +9,9 @@ import androidx.compose.runtime.Composable
  * compiled ceiling). The screen only warns when the values are out of the expected
  * `urgentLow ≤ low ≤ high ≤ urgentHigh` order so a slip is visible; it never blocks it.
  *
- * Pure/stateless. Changing a threshold re-persists it immediately; the note states that the running
- * model-free alarm adopts new thresholds when the monitoring service next starts (reopening the app).
+ * Pure/stateless. Changing a threshold re-persists it immediately and the running model-free alarm
+ * adopts the new thresholds live — a currently-firing alarm re-classifies on its next reading, without
+ * a restart. A raised threshold never silences a standing low on the spot (§3.6-A).
  */
 @Composable
 fun AlarmThresholdsScreen(

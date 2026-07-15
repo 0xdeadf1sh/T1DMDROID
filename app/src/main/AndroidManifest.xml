@@ -197,6 +197,11 @@
             android:name=".notify.AlertRepeatReceiver"
             android:exported="false" />
 
+        <!-- Snooze / Dismiss actions on the deterministic-alarm notification (§3.6 C1–C5). App-internal. -->
+        <receiver
+            android:name=".notify.AlarmActionReceiver"
+            android:exported="false" />
+
         <!-- The single adaptive Glance widget (home + lock). It refreshes from the ingest cycle via
              updateAll — no Activity required.
              exported=true: HyperOS's com.miui.home renders the pin-dialog / picker preview from its own

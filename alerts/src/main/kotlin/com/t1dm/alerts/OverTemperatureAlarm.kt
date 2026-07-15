@@ -14,10 +14,17 @@ package com.t1dm.alerts
  * it keeps the SAME [OverTemperature] object across ticks while the severity is unchanged, so the UI
  * and notifier see a stable episode rather than a fresh object every second.
  */
-class OverTemperatureAlarm(private val config: AlarmConfig) {
+class OverTemperatureAlarm(private var config: AlarmConfig) {
 
     var state: OverTemperature? = null
         private set
+
+    /** Live-swap the enable flag / hysteresis band / severity WITHOUT touching [state] (§3.6-A). The
+     *  next [evaluate] re-decides against the new band; a config edit alone never fabricates a clear of
+     *  a standing over-temperature latch. Disabling still clears on the next evaluate (as before). */
+    fun updateConfig(config: AlarmConfig) {
+        this.config = config
+    }
 
     fun evaluate(tempC: Double?, nowMs: Long): OverTemperature? {
         if (!config.overTempEnabled) {

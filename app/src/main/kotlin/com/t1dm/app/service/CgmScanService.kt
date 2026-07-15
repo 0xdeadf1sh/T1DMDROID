@@ -18,14 +18,19 @@ import android.os.PowerManager
 import com.t1dm.app.aod.AodScanActivity
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
+import com.t1dm.alerts.ActiveAlarm
 import com.t1dm.alerts.AlarmController
 import com.t1dm.alerts.AlarmEngine
+import com.t1dm.alerts.AlarmKind
 import com.t1dm.alerts.AlarmSeverity
 import com.t1dm.alerts.AlertActuatorConfig
 import com.t1dm.alerts.AndroidAlarmNotifier
+import com.t1dm.alerts.isDismissable
+import com.t1dm.alerts.kind
 import com.t1dm.app.MainActivity
 import com.t1dm.app.T1dmApplication
 import com.t1dm.app.di.AppContainer
+import com.t1dm.app.notify.AlarmActionReceiver
 import com.t1dm.app.notify.AlertRepeatScheduler
 import com.t1dm.app.notify.BgGlance
 import com.t1dm.app.notify.BgGlanceComputer
@@ -110,6 +115,9 @@ class CgmScanService : LifecycleService() {
     private lateinit var alarmEngine: AlarmEngine
     private lateinit var alarmController: AlarmController
     private var alarmNotifier: AndroidAlarmNotifier? = null
+    /** The single-thread dispatcher slice the engine + its collectors run on; snooze/config updates are
+     *  posted here so they serialise with the reading/tick collectors (§2.3). Set in [startPipeline]. */
+    private var alarmScope: CoroutineScope? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var started = false
 
@@ -264,6 +272,10 @@ class CgmScanService : LifecycleService() {
         val alarmScope = CoroutineScope(
             lifecycleScope.coroutineContext + container.dispatchers.default.limitedParallelism(1),
         )
+        this.alarmScope = alarmScope
+        // A fresh service instance forgets any stale snooze (§3.6 C1 — no silence outlives the alarm it
+        // covered; a restart re-fires from a clean gate).
+        container.clearSnooze()
         alarmScope.launch {
             val cfg = runCatching { container.alertActuatorConfig() }.getOrDefault(AlertActuatorConfig.SILENT)
             alertActuatorCfg = cfg
@@ -285,6 +297,12 @@ class CgmScanService : LifecycleService() {
                 accentColor = { container.notificationAccentArgb },
                 // DEATH mode: the pure engine keeps firing (§3.6-A), the notifier presents nothing.
                 suppressed = { container.deathModeSnapshot },
+                // Snooze/dismiss: the TIME-BOUNDED presentation silence (§3.6 C1–C5), read live at every
+                // emit/reAlert exactly like DEATH. The engine still fires; the notifier just stays quiet.
+                snoozeState = { container.snoozeSnapshot },
+                snoozeIntent = { alarm -> alarmActionIntent(alarm, AlarmActionReceiver.ACTION_ALARM_SNOOZE) },
+                dismissIntent = { alarm -> alarmActionIntent(alarm, AlarmActionReceiver.ACTION_ALARM_DISMISS) },
+                snoozeMinutes = { container.snoozeMinSnapshot },
                 // Rate-limit sound+vibration to at most once per configured interval while an alarm
                 // holds the same band, read live so a Settings change applies without a rebuild.
                 minActuationIntervalMs = { container.alarmConfig.minActuationIntervalMin * 60_000L },
@@ -297,7 +315,19 @@ class CgmScanService : LifecycleService() {
                 temperatureC = { container.readDeviceTempC() },
             )
             alarmController.launchIn(alarmScope, readingBus)
+            // LIVE CONFIG APPLY: a Settings save re-hydrates container.alarmConfig and invokes this sink,
+            // which pushes the new thresholds/loss-windows/over-temp params + cadence into the ALREADY-
+            // running engine + controller on this same single-thread slice — no service restart. It never
+            // clears an active breach; the engine re-classifies against the new bounds on the next reading.
+            container.setAlarmConfigSink { cfg ->
+                alarmScope.launch {
+                    alarmEngine.updateConfig(cfg)
+                    if (::alarmController.isInitialized) alarmController.updateConfig(cfg)
+                }
+            }
             alarmController.state.collect { st ->
+                // Prune snoozes whose kind cleared / whose window lapsed (§3.6 C1/C3) on every state change.
+                container.pruneSnooze(st)
                 Timber.tag(TAG).i(
                     "ALARM active=%b threshold=%s loss=%s primarySeverity=%s",
                     st.isActive, st.threshold?.band, st.signalLoss?.windowMin, st.primary?.severity,
@@ -512,6 +542,54 @@ class CgmScanService : LifecycleService() {
         )
     }
 
+    /** The Snooze/Dismiss action PendingIntent for one alarm KIND, targeting [AlarmActionReceiver].
+     *  Distinct request codes per (action, kind) so threshold vs signal buttons never collide. */
+    private fun alarmActionIntent(alarm: ActiveAlarm, action: String): PendingIntent {
+        val kind = alarm.kind()
+        val intent = Intent(this, AlarmActionReceiver::class.java)
+            .setAction(action)
+            .putExtra(AlarmActionReceiver.EXTRA_ALARM_KIND, kind.name)
+        val requestCode = 20 + action.hashCode() * 3 + kind.ordinal
+        return PendingIntent.getBroadcast(
+            this, requestCode, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+    }
+
+    /**
+     * Apply a Snooze (timed) or Dismiss (until-clear) to the current live breach of the tapped KIND
+     * (§3.6 C1–C5). Reads the LIVE engine state — the snooze records the band/severity actually firing
+     * now, so escalation still pierces (C2). Sets the container gate then re-emits so presentation goes
+     * silent immediately; the exact-alarm/in-process re-alert paths already honour the same gate.
+     */
+    private fun handleAlarmAction(intent: Intent, dismiss: Boolean) {
+        val kindName = intent.getStringExtra(AlarmActionReceiver.EXTRA_ALARM_KIND) ?: return
+        val kind = runCatching { AlarmKind.valueOf(kindName) }.getOrNull() ?: return
+        if (!::alarmController.isInitialized) return
+        val st = alarmController.state.value
+        val alarm: ActiveAlarm? = when (kind) {
+            AlarmKind.THRESHOLD -> st.threshold
+            AlarmKind.SIGNAL_LOSS -> st.signalLoss
+            AlarmKind.OVER_TEMPERATURE -> null // over-temperature is never snoozable (C5)
+        }
+        if (alarm == null) return
+        // DEFENSE-IN-DEPTH (Option 2): a Dismiss targeting a CRITICAL/urgent breach is a no-op — urgent
+        // tiers are Snooze-only, so no forged intent can win an unbounded silence of an urgent condition.
+        // (`SnoozeState.dismiss` also refuses it; this bails before touching the gate at all.)
+        if (dismiss && !alarm.isDismissable()) {
+            Timber.tag(TAG).i("ALARM_ACTION DISMISS ignored — %s is not dismissable (urgent tier)", kind)
+            return
+        }
+        val scope = alarmScope ?: lifecycleScope
+        scope.launch {
+            val until = System.currentTimeMillis() + container.currentSnoozeMin().coerceAtLeast(1) * 60_000L
+            container.snoozeAlarm(alarm, until, dismiss)
+            // Re-emit against the current state so the just-silenced alarm is cancelled at once.
+            alarmNotifier?.emit(alarmController.state.value)
+            Timber.tag(TAG).i("ALARM_ACTION %s kind=%s untilMs=%d", if (dismiss) "DISMISS" else "SNOOZE", kind, until)
+        }
+    }
+
     private fun startScan() {
         val adapter = runCatching {
             getSystemService(BluetoothManager::class.java)?.adapter
@@ -620,6 +698,11 @@ class CgmScanService : LifecycleService() {
                     )
                 }
             }
+            // Snooze / Dismiss tap on the deterministic-alarm notification (§3.6 C1–C5). Presentation
+            // only — the pure engine is untouched; we set the live gate + re-emit so the alarm goes
+            // silent at once.
+            AlarmActionReceiver.ACTION_ALARM_SNOOZE -> handleAlarmAction(intent, dismiss = false)
+            AlarmActionReceiver.ACTION_ALARM_DISMISS -> handleAlarmAction(intent, dismiss = true)
             // Exact-alarm repeat tick: re-announce a still-active CRITICAL alarm and re-arm.
             ACTION_ALERT_REPEAT -> {
                 val st = if (::alarmController.isInitialized) alarmController.state.value else null
@@ -903,6 +986,8 @@ class CgmScanService : LifecycleService() {
 
     override fun onDestroy() {
         container.serviceRunning.value = false
+        // Drop the live-config seam so a post-teardown Settings save doesn't touch a dead engine.
+        runCatching { container.setAlarmConfigSink(null) }
         mainHandler.removeCallbacks(reengageRunnable)
         runCatching { unregisterReceiver(screenReceiver) }
         wakeLock?.let { if (it.isHeld) it.release() }

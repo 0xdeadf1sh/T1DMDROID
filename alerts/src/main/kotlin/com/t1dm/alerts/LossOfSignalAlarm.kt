@@ -14,12 +14,19 @@ import com.t1dm.core.model.CgmReading
  *
  * Deterministic: the wall clock is always passed in via [evaluate], never read internally.
  */
-class LossOfSignalAlarm(private val config: AlarmConfig) {
+class LossOfSignalAlarm(private var config: AlarmConfig) {
 
     private var lastMeasured: CgmReading? = null
 
     var loss: SignalLoss? = null
         private set
+
+    /** Live-swap the loss windows / fall-rate / thresholds WITHOUT touching [loss] or the freshness
+     *  clock (§3.6-A). A widened window never clears a standing loss episode on the spot; the next
+     *  [evaluate] re-decides against the new window. */
+    fun updateConfig(config: AlarmConfig) {
+        this.config = config
+    }
 
     /** Refreshes the freshness clock on an eligible MEASURED reading (which also clears any loss).
      *  INTERPOLATED / WARMUP / INVALID readings are ignored. */

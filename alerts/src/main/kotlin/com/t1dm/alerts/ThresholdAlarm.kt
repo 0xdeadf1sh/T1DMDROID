@@ -15,10 +15,18 @@ import com.t1dm.core.model.CgmReading
  *
  * Deterministic and clock-free: callers feed readings; there is nothing time-dependent here.
  */
-class ThresholdAlarm(private val thresholds: AlertThresholds) {
+class ThresholdAlarm(private var thresholds: AlertThresholds) {
 
     var breach: ThresholdBreach? = null
         private set
+
+    /** Live-swap the classification bounds WITHOUT touching [breach] (§3.6-A). A raised threshold must
+     *  NOT instantly clear a genuine active low: the current breach is retained and the NEXT eligible
+     *  MEASURED reading re-classifies it against the new bounds. A config edit alone never silences a
+     *  standing excursion. */
+    fun updateThresholds(thresholds: AlertThresholds) {
+        this.thresholds = thresholds
+    }
 
     fun onReading(reading: CgmReading): ThresholdBreach? {
         if (!reading.isEligibleMeasured()) return breach
