@@ -53,6 +53,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
@@ -82,6 +83,7 @@ import com.t1dm.ui.graph.CurveOverlayFrame
 import com.t1dm.ui.graph.CurveOverlayToggles
 import com.t1dm.ui.graph.GlucoseGraph
 import com.t1dm.ui.graph.GraphFrame
+import com.t1dm.ui.graph.GraphInsets
 import com.t1dm.ui.graph.PaintControls
 import com.t1dm.ui.graph.PaintFrame
 import com.t1dm.ui.graph.PredSeries
@@ -185,7 +187,7 @@ fun DashboardScreen(
     // it is on the panel renders [gameSlot] in the graph's place and everything else on the dashboard
     // — read-outs, IOB line, nav — stays exactly where it was. null ⇒ not offered at all, the same
     // availability rule every other affordance here follows.
-    gameSlot: (@Composable (Modifier, trackFromMs: Long, dropAtMs: Long, spanMinutes: Float, onReady: () -> Unit, exit: () -> Unit) -> Unit)? = null,
+    gameSlot: (@Composable (Modifier, trackFromMs: Long, dropAtMs: Long, spanMinutes: Float, predictedClock: PredictedClock?, onReady: () -> Unit, exit: () -> Unit) -> Unit)? = null,
 ) {
     var gameOn by remember { mutableStateOf(false) }
     // The chart's LIVE viewport, which pinch-zoom and pan move independently of the window chips.
@@ -424,7 +426,7 @@ fun DashboardScreen(
             // the running world and built a fresh one — reloading the track and re-placing the car.
             // That was the flash, and the car jumping back to the left.
             if (gameOn && slot != null && dropAt != null) {
-                slot(Modifier.fillMaxSize(), viewStartMs.toLong(), dropAt, spanMin, { gameReady = true }) {
+                slot(Modifier.fillMaxSize(), viewStartMs.toLong(), dropAt, spanMin, predictedClock, { gameReady = true }) {
                     gameOn = false
                 }
             }
@@ -470,7 +472,7 @@ fun DashboardScreen(
                 )
                 // Only before the car is placed: once dropped, a stray tap must not re-place it.
                 if (gameOn && slot != null && dropAt == null) {
-                    TapToPlace(viewStartMs, viewSpanMs) { gameStartMs = it }
+                    TapToPlace(viewStartMs, viewSpanMs, GraphInsets.top(predictedClock != null)) { gameStartMs = it }
                 }
                 }
             }
@@ -1229,17 +1231,21 @@ private fun trendArrow(tenths: Int?): String = when {
  * placing the car is one gesture on the thing being described rather than a dialog about it. The
  * x→time map is the graph's own — inset for the value axis — so the car lands where it was pointed at
  * whatever the pan or zoom.
+ *
+ * [topInset] is the panel's own top strip, not a constant: the hint hangs below it because that strip
+ * is where the model's predicted-clock labels are drawn, and a fixed pad put the hint over them.
  */
 @Composable
 private fun BoxScope.TapToPlace(
     viewStartMs: Double,
     viewSpanMs: Double,
+    topInset: Dp,
     onPlace: (Long) -> Unit,
 ) {
     val haptics = rememberT1dmHaptics()
     val density = LocalDensity.current
-    val leftInset = with(density) { 46.dp.toPx() }
-    val rightInset = with(density) { 12.dp.toPx() }
+    val leftInset = with(density) { GraphInsets.Left.toPx() }
+    val rightInset = with(density) { GraphInsets.Right.toPx() }
     Box(
         Modifier
             .matchParentSize()
@@ -1257,7 +1263,7 @@ private fun BoxScope.TapToPlace(
             "Tap to drop the car",
             style = MaterialTheme.typography.labelLarge,
             color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.align(Alignment.TopCenter).padding(top = 8.dp),
+            modifier = Modifier.align(Alignment.TopCenter).padding(top = topInset + 2.dp),
         )
     }
 }

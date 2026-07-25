@@ -72,6 +72,8 @@ import com.t1dm.core.model.RunState
 import com.t1dm.core.model.TerrainSpec
 import com.t1dm.core.model.UnitSpace
 import com.t1dm.ui.graph.ChalkPens
+import com.t1dm.ui.graph.GraphInsets
+import com.t1dm.ui.graph.PredictedClock
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -113,8 +115,8 @@ private val CAR_DRAW_DP = 120.dp
  */
 private const val TRACK_LEAD_SPANS = 1f
 
-/** Progress-bar thickness. It lives in the 10 dp top inset, so it has to be slim enough to sit there
- *  without touching the plot's edge. */
+/** Progress-bar thickness. It lives in the top inset's base 10 dp band, so it has to be slim enough to
+ *  sit there without touching the plot's edge or the clock axis below it. */
 private val PROGRESS_H = 5.dp
 
 /** Dial radius. Small enough that the pair sits between the pedals without crowding the track. */
@@ -174,6 +176,9 @@ fun GameScreen(
     dropAtMs: Long,
     /** The panel's threshold bands, so the hypo/hyper tints survive into drive mode. */
     thresholds: AlertThresholds?,
+    /** The chart's model-time axis, so it survives into drive mode rather than the panel dropping to
+     *  "model time n/a" the moment the car is dropped. */
+    predictedClock: PredictedClock?,
     /** Fired once the track is built and the first frame is drawable. Until then the caller keeps the
      *  chart on screen: swapping earlier shows this composable's loading state, which is the "flash"
      *  between chart and game. */
@@ -218,6 +223,7 @@ fun GameScreen(
                     seatAtMs = trackFromMs,
                     dropAtMs = dropAtMs,
                     thresholds = thresholds,
+                    predictedClock = predictedClock,
                     spanMinutes = spanMinutes,
                     tuning = carTuning,
                     latestReadingMs = latestReadingMs,
@@ -245,6 +251,7 @@ private fun GameStage(
     seatAtMs: Long,
     dropAtMs: Long,
     thresholds: AlertThresholds?,
+    predictedClock: PredictedClock?,
     spanMinutes: Float,
     tuning: CarTuning,
     latestReadingMs: Long?,
@@ -273,6 +280,11 @@ private fun GameStage(
     val hud = remember { HudState() }
     val liveRef = remember { LiveReadingRef() }
     val zone = remember { ZoneId.systemDefault() }
+    // Pinned for the run, as [GameScene] pins the unit and the zone: the panel must not re-label under
+    // a moving car, and a forecast landing mid-run would re-lay the top inset and compress the scene by
+    // 14 dp in one frame. The labels still advance — the hour comes off this anchor and the elapsed
+    // time — so only the model's revision of its own belief waits for the exit.
+    val runClock = remember { predictedClock }
     val haptics = rememberT1dmHaptics()
     // Read through rememberUpdatedState: the loop outlives any recomposition that swaps the lambda.
     val firstFrame by rememberUpdatedState(onFirstFrame)
@@ -396,14 +408,18 @@ private fun GameStage(
 
     BackHandler { requestExit() }
 
-    // The graph's own insets, so game mode frames the plot identically. Resolved in composition: a
-    // density lookup inside the draw lambda would run sixty times a second for a constant.
+    // Resolved in composition, never in the draw lambda: a density lookup there would run sixty times a
+    // second for a constant.
     val density = LocalDensity.current
-    val leftInsetPx = with(density) { 46.dp.toPx() }
-    val rightInsetPx = with(density) { 12.dp.toPx() }
-    val topInsetPx = with(density) { 10.dp.toPx() }
-    val bottomInsetPx = with(density) { 20.dp.toPx() }
-    val measurer = rememberTextMeasurer()
+    val leftInsetPx = with(density) { GraphInsets.Left.toPx() }
+    val rightInsetPx = with(density) { GraphInsets.Right.toPx() }
+    val topInsetPx = with(density) { GraphInsets.top(runClock != null).toPx() }
+    val bottomInsetPx = with(density) { GraphInsets.Bottom.toPx() }
+    val modelAxisPx = with(density) { if (runClock != null) GraphInsets.ModelAxis.toPx() else 0f }
+    // Sized past the furniture's per-frame working set — two axes of tick labels, the value labels and
+    // the captions, better than twenty distinct strings. The chart could live with the default eight
+    // because it lays them out on recomposition; here every miss is a text layout at sixty hertz.
+    val measurer = rememberTextMeasurer(cacheSize = 32)
     val gaugeRadiusPx = with(density) { GAUGE_RADIUS.toPx() }
     // Pixels per CAR-LOCAL metre, from the tune's own overall length so a retune cannot silently
     // change the drawn size.
@@ -501,7 +517,7 @@ private fun GameStage(
                 yMin = map.valueAt(camBottomM),
                 yMax = map.valueAt(camBottomM + f.camHeight),
                 thresholds = thresholds,
-                predictedClock = null,
+                predictedClock = runClock,
                 measurer = measurer,
                 cs = furnitureColors,
             )
@@ -532,12 +548,14 @@ private fun GameStage(
 
             // The run's progress, in the panel's TOP INSET rather than inside the plot: the plot's own top
             // is where the trace's peaks live and where the value axis puts its highest label, and a bar
-            // laid over either would be covering the data it is describing.
+            // laid over either would be covering the data it is describing. That inset is shared with the
+            // model's clock axis, which hangs off the plot's edge, so the bar centres in the band ABOVE
+            // that strip and lands on the same 2.5 dp whether or not a clock is up.
             drawProgress(
                 progress = f.progress,
                 left = plotLeft,
                 right = plotRight,
-                top = ((plotTop - progressThicknessPx) * 0.5f).coerceAtLeast(1f),
+                top = ((plotTop - modelAxisPx - progressThicknessPx) * 0.5f).coerceAtLeast(1f),
                 thickness = progressThicknessPx,
                 ink = furnitureColors.onSurface,
                 accent = furnitureColors.primary,

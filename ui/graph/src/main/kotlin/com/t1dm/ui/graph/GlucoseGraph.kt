@@ -198,11 +198,11 @@ fun GlucoseGraph(
     val measurer = rememberTextMeasurer()
     val haptics = LocalT1dmHaptics.current
 
-    val leftPx = with(density) { 46.dp.toPx() }
-    val rightPx = with(density) { 12.dp.toPx() }
-    // Reserve a top strip for the model's predicted-clock axis (item 21) when it is available.
-    val topPx = with(density) { (if (predictedClock != null) 24.dp else 10.dp).toPx() }
-    val bottomPx = with(density) { 20.dp.toPx() }
+    val leftPx = with(density) { GraphInsets.Left.toPx() }
+    val rightPx = with(density) { GraphInsets.Right.toPx() }
+    // Widens to reserve the model's predicted-clock axis (item 21) when the clock is available.
+    val topPx = with(density) { GraphInsets.top(predictedClock != null).toPx() }
+    val bottomPx = with(density) { GraphInsets.Bottom.toPx() }
 
     // The annotation layer's draw-phase scratch: a memoised corridor mask and one reusable path, so
     // painting hundreds of strokes allocates nothing per frame. Held here (never conditionally) so the
@@ -1223,6 +1223,10 @@ fun DrawScope.drawGraphFurniture(
         val endMs = viewStartMs + viewSpanMs
         val modelLabelColor = cs.tertiary.copy(alpha = 0.8f)
         val modelStyle = TextStyle(color = modelLabelColor, fontSize = 10.sp)
+        // The ceiling of the strip reserved for this axis. The labels are sp-scaled and the reservation
+        // is not, so past roughly a 1.15 font scale a label is taller than its own strip; without this it
+        // climbs out of the top of the panel, and in drive mode straight through the progress bar.
+        val modelTopPx = plotTop - GraphInsets.ModelAxis.toPx()
         while (tick <= endMs) {
             val px = (plotLeft + (tick - viewStartMs) * ppm).toFloat()
             drawLine(gridColor, Offset(px, plotTop), Offset(px, plotBottom), 1f)
@@ -1234,7 +1238,7 @@ fun DrawScope.drawGraphFurniture(
                 val mlbl = measurer.measure(predictedClockLabel(tick.toLong(), predictedClock), modelStyle)
                 var mlx = px - mlbl.size.width / 2f
                 mlx = mlx.coerceIn(plotLeft, plotRight - mlbl.size.width)
-                drawText(mlbl, topLeft = Offset(mlx, plotTop - mlbl.size.height - 2f))
+                drawText(mlbl, topLeft = Offset(mlx, (plotTop - mlbl.size.height - 2f).coerceAtLeast(modelTopPx)))
             }
             tick += tStepMs
         }

@@ -129,6 +129,10 @@ dependencies {
     implementation(project(":feature:settings"))
     implementation(project(":feature:journal"))
     implementation(project(":feature:game"))
+    // Not for drawing: the composition root names PredictedClock to hand the panel's own axis
+    // clock from the dashboard to drive mode, and :feature:dashboard exposes :ui:graph via
+    // `implementation`, so the type is off this classpath otherwise.
+    implementation(project(":ui:graph"))
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)

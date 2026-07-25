@@ -141,6 +141,7 @@ import com.t1dm.feature.settings.SignalSafetyScreen
 import com.t1dm.feature.settings.ThermalSettingsScreen
 import com.t1dm.feature.settings.WarmupSettingsScreen
 import com.t1dm.feature.settings.WatchSettingsScreen
+import com.t1dm.ui.graph.PredictedClock
 import com.t1dm.alerts.AlarmSeverity
 import com.t1dm.alerts.VibrationPreset
 import com.t1dm.app.settings.SettingsStore
@@ -929,8 +930,8 @@ private fun T1dmNavHost(
                 paintStrokes = paintStrokes,
                 onAddPaintStroke = container::addPaintStroke,
                 onDeletePaintStroke = container::deletePaintStroke,
-                gameSlot = { m, fromMs, dropMs, spanMin, ready, exit ->
-                    DashboardGamePanel(container, m, fromMs, dropMs, spanMin, ready, exit)
+                gameSlot = { m, fromMs, dropMs, spanMin, clock, ready, exit ->
+                    DashboardGamePanel(container, m, fromMs, dropMs, spanMin, clock, ready, exit)
                 },
             )
         }
@@ -1914,6 +1915,10 @@ private fun DashboardGamePanel(
     trackFromMs: Long,
     dropAtMs: Long,
     spanMinutes: Float,
+    // The panel's OWN clock, handed down rather than derived again here: the dashboard's value
+    // carries the warmup-surviving circadian fallback, and a second derivation would drift from
+    // the axis the chart just drew.
+    predictedClock: PredictedClock?,
     onReady: () -> Unit,
     onExit: () -> Unit,
 ) {
@@ -1938,6 +1943,7 @@ private fun DashboardGamePanel(
         thresholds = container.alarmConfig.thresholds,
         onReady = onReady,
         spanMinutes = spanMinutes,
+        predictedClock = predictedClock,
         latestReadingMs = latest?.tsMs,
         unit = glucoseUnit,
         kovatchevF = container.nativeCore::kovatchevF,
