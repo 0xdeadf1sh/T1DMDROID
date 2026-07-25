@@ -264,8 +264,9 @@ fun T1dmApp(container: AppContainer) {
                     .consumeWindowInsets(padding)
                     .imePadding(),
             ) {
-                // Flavor-specific: real text in the public build, no-op in the personal build.
-                Disclaimer()
+                // Flavor-specific: a first-run modal in the public build, no-op in the personal one.
+                // It emits no layout node once acknowledged, so the column is the bare chrome after.
+                Disclaimer(container)
                 Breadcrumb(navController, container)
                 T1dmNavHost(navController, container) { handle ->
                     receiptScope.launch { snackbars.postLogReceipt(container, handle, haptics) }

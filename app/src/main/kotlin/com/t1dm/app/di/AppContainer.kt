@@ -2006,6 +2006,11 @@ class AppContainer(context: Context) {
         }
     }
 
+    /** Whether the public build's first-run disclaimer has been acknowledged (false on a fresh
+     *  install and after a full reset). Read only by the public flavor's `Disclaimer`. */
+    val disclaimerAcknowledged: Flow<Boolean> get() = settingsStore.disclaimerAcknowledged
+    suspend fun acknowledgeDisclaimer() = settingsStore.acknowledgeDisclaimer()
+
     /** I11 — the user-entered CGM sensor-lifetime expiry instant (epoch-ms), or null when unset. */
     val sensorExpiryMs: Flow<Long?> get() = settingsStore.sensorExpiryMs
 

@@ -450,6 +450,13 @@ class SettingsStore(
     // curves). Persisted by the preset's stable label; the default is the in-distribution simulator
     // shape, so a fresh install (and every unchanged install) keeps forecasts in-distribution. The
     // apply-at-log path (AppContainer.logBolus/logBasal) resolves the selected label to its spec.
+    // ── The public build's first-run medical disclaimer. Deliberately OUTSIDE the exportable config
+    // set (no `ui.` prefix, not an exact key): an acknowledgement is a statement about the person
+    // holding the phone, not a setting, and importing someone else's backup must not answer it for
+    // them. `wipeAllData` clears it, so a full reset genuinely returns to first-run.
+    val disclaimerAcknowledged: Flow<Boolean> = boolFlow(K_DISCLAIMER_ACK, false)
+    suspend fun acknowledgeDisclaimer() = put(K_DISCLAIMER_ACK, "1")
+
     // ── CGM sensor lifetime (I11) — a USER-ENTERED absolute expiry instant (epoch-ms). Because the
     // passive-advertisement sensor exposes no true age, the user enters remaining life and we store the
     // resulting expiry; the BG panel + CGM settings count it down. Device/sensor-specific, so it is
@@ -747,6 +754,7 @@ class SettingsStore(
         const val DEFAULT_TEMP_UNIT = "C"
         private const val K_CURVE_CARB_BEZIER = "graph.curve_carb_bezier"
         private const val K_CURVE_INSULIN_BEZIER = "graph.curve_insulin_bezier"
+        private const val K_DISCLAIMER_ACK = "disclaimer.acknowledged"
         private const val K_CGM_SENSOR_EXPIRY = "cgm.sensor_expiry_ms"
         private const val K_AGG_SCAN = "cgm.aggressive_scan"
         private const val K_AGG_SHOW_BG = "cgm.aggressive_show_glucose"
