@@ -4,16 +4,14 @@ A personal Android app for Type 1 Diabetes that passively reads a Microtech/Otta
 
 Designed by a T1DM patient, informed by lived experience.
 
-> [!IMPORTANT]
-> **This is a personal project, not a product — and it is not meant for public consumption.** I built T1DMDROID to solve my own niche problem: one Type 1 diabetic, one specific sensor, one specific phone. It is open-sourced in the same spirit as similar hobby projects — for transparency and reference — **not** as software for anyone else to install, use, or depend on. There is no support, no release schedule, and no intent that anyone but me run it. If you found your way here, read it as one person's notebook, not as a tool for you.
-
 > [!CAUTION]
-> **Research and educational use only.** T1DMDROID is a personal, experimental project — not a medical device, not clinically validated, and not approved by any regulatory body. It displays experimental machine-learning forecasts and includes calculators whose thresholds are user-configurable and unbounded; its output may be wrong or misleading and **must not** be used to make medical, diagnostic, or treatment decisions, to calculate or adjust insulin doses, or to guide diabetes management in any way. It does not replace a real continuous glucose monitor, its official app, or professional medical care. Always rely on your approved medical devices and consult a qualified healthcare professional. The software is provided "as is", without warranty of any kind, and the authors accept no liability for any use.
+> **Personal project, research use only.** T1DMDROID solves one patient's niche problem — one sensor, one phone — and is published for reference, not for anyone else to install or depend on. It is not a medical device, not clinically validated, and unsupported. Its forecasts and calculators may be wrong and **must not** be used for medical, diagnostic, or dosing decisions, nor to replace a real CGM, its official app, or professional care. Provided "as is", without warranty; the authors accept no liability.
 
 
 ## Table of contents
 
 - [What it is](#what-it-is)
+- [Features](#features)
 - [Architecture](#architecture)
 - [Module map](#module-map)
 - [Building](#building)
@@ -30,6 +28,19 @@ T1DMDROID reads glucose the way a beacon scanner reads a beacon: the AiDEX X bro
 On top of that live feed it runs a small transformer forecasting model entirely on the device, surfaces the current value with a trend and a glanceable forecast, logs meals/insulin/notes, computes advisory statistics, and drives a deterministic, model-free alarm path for out-of-range and loss-of-signal conditions. Optional integrations add a self-hosted sync server and an encrypted BLE watch accessory.
 
 The Bluetooth, inference, and watch protocols are documented under [`docs/`](docs): [`CGM.md`](docs/CGM.md), [`INFERENCE.md`](docs/INFERENCE.md), [`WATCH_BLE.md`](docs/WATCH_BLE.md), and [`T1DMSERVER_API.md`](docs/T1DMSERVER_API.md).
+
+
+## Features
+
+- **Passive CGM feed** — advertisements read without pairing, snapped to a 5-minute grid with gaps reconstructed.
+- **On-device forecasting** — a small transformer under ExecuTorch, CPU reference plus NPU shadow, gated so a degenerate forecast is withheld rather than shown.
+- **Model-free alarms** — deterministic out-of-range, loss-of-signal, weak-signal, and device-temperature tiers, independent of the model.
+- **Glucose panel** — a custom Compose chart with threshold bands, selectable smoothing, a freehand annotation layer, and a drive-mode minigame over the trace.
+- **Logging** — meals, insulin, and journal notes, each confirmed in a dialog and undoable from its receipt; saved meals, custom foods, editable curves.
+- **Advisory calculators** — bolus and correction suggestions, insulin- and carbs-on-board, time in range, GMI, AGP, Kovatchev risk.
+- **Glanceable surfaces** — home-screen widget, live notification, and predictive alerts ahead of a projected crossing.
+- **Settings** — a search index over every knob, three themes, configurable haptics, portable configuration backup.
+- **Optional peripherals** — a self-hosted sync server and an encrypted BLE watch.
 
 
 ## Architecture
@@ -118,9 +129,9 @@ The build targets a single phone: a **Redmi K90 Max** (MediaTek Dimensity 9500 /
 
 ## Related projects
 
-- **[T1DMSIM](https://github.com/0xdeadf1sh/T1DMSIM)** — a seed-driven simulator that generates synthetic Type 1 Diabetes behavior data used to pretrain the forecasting model.
-- **[T1DMAI](https://github.com/0xdeadf1sh/T1DMAI)** — model training and the ExecuTorch exporter that produces the on-device artifact and its descriptor.
-- **[T1DMSERVER](https://github.com/0xdeadf1sh/T1DMSERVER)** — the optional self-hosted, phone-authoritative sync backend (protocol in [`docs/T1DMSERVER_API.md`](docs/T1DMSERVER_API.md)).
+- **[T1DMSIM](https://github.com/0xdeadf1sh/T1DMSIM)** — the behavioral simulator whose synthetic traces pretrain the model this app runs.
+- **[T1DMAI](https://github.com/0xdeadf1sh/T1DMAI)** — the training and ExecuTorch export pipeline that produces the artifact and descriptor loaded here.
+- **[T1DMSERVER](https://github.com/0xdeadf1sh/T1DMSERVER)** — the optional sync backend this app pushes to, phone-authoritative (protocol in [`docs/T1DMSERVER_API.md`](docs/T1DMSERVER_API.md)).
 
 
 ## License
