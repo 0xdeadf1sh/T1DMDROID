@@ -32,15 +32,49 @@ The Bluetooth, inference, and watch protocols are documented under [`docs/`](doc
 
 ## Features
 
-- **Passive CGM feed** — advertisements read without pairing, snapped to a 5-minute grid with gaps reconstructed.
-- **On-device forecasting** — a small transformer under ExecuTorch, CPU reference plus NPU shadow, gated so a degenerate forecast is withheld rather than shown.
-- **Model-free alarms** — deterministic out-of-range, loss-of-signal, weak-signal, and device-temperature tiers, independent of the model.
-- **Glucose panel** — a custom Compose chart with threshold bands, selectable smoothing, a freehand annotation layer, and a drive-mode minigame over the trace.
-- **Logging** — meals, insulin, and journal notes, each confirmed in a dialog and undoable from its receipt; saved meals, custom foods, editable curves.
-- **Advisory calculators** — bolus and correction suggestions, insulin- and carbs-on-board, time in range, GMI, AGP, Kovatchev risk.
-- **Glanceable surfaces** — home-screen widget, live notification, and predictive alerts ahead of a projected crossing.
-- **Settings** — a search index over every knob, three themes, configurable haptics, portable configuration backup.
-- **Optional peripherals** — a self-hosted sync server and an encrypted BLE watch.
+### Blood Glucose Graph
+
+<img width="400" height="auto" alt="photo_2026-07-25_18-53-18" src="https://github.com/user-attachments/assets/c2ba5931-586a-41c9-adcd-f05e913a3899" />
+
+### Autoregressive Rolling
+
+https://github.com/user-attachments/assets/e808ddd5-ca75-431e-9789-bdbe94ceeabf
+
+### Paint Inside The BG Graph
+
+https://github.com/user-attachments/assets/334f76ef-a84a-4fc8-a1f8-9040f8f336c3
+
+### Circadian Rhythm & Remaining Time
+
+https://github.com/user-attachments/assets/e185384e-b671-4c99-8f8a-807c9d805a21
+
+### ADA Professional Publications Feed
+
+https://github.com/user-attachments/assets/965587fb-25f4-41ec-a54d-8c45f806bb47
+
+### Advanced Statistics
+
+https://github.com/user-attachments/assets/7742f1ac-be4e-490f-9903-e3bced23e9ea
+
+### Real-Time Model Inference
+
+https://github.com/user-attachments/assets/a8c8d0d1-829c-4df6-b147-50ef2424a656
+
+### Logging Meals
+
+https://github.com/user-attachments/assets/7173971f-fe94-4b10-ab7e-935e4f1adfe1
+
+### Logging Insulin
+
+https://github.com/user-attachments/assets/5a84df1a-5db9-49cd-94a9-a4a4c17546d5
+
+### Advanced Searchable Settings Panel
+
+https://github.com/user-attachments/assets/13ade4ea-f50f-4c91-bf23-62ef8dae1c96
+
+### Theming
+
+https://github.com/user-attachments/assets/319401e4-09ff-4e8f-964f-0eb8a0808fca
 
 
 ## Architecture
