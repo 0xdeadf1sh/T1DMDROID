@@ -188,7 +188,7 @@ class RollingForecaster(
                 return Rolled(series.anchorTsMs, outSteps.toList(), ForecastStatus.OK, ForecastEligibility.MISSING, "forecast forward failed: ${t.message}", r)
             }
 
-            val status = withContext(dispatchers.default) { native.forecastDegeneracyCheck(forecast) }
+            val status = withContext(dispatchers.default) { native.forecastDegeneracyCheck(desc, forecast) }
             if (status != ForecastStatus.OK) {
                 // §3.6-B: a degenerate roll makes the WHOLE rolled forecast ineligible; keep the valid
                 // prefix (rolls 0..r-1) so display can show what was sound, but never re-feed r.

@@ -42,13 +42,19 @@ pub use accuracy::*;
 mod game;
 pub use game::*;
 
-// ── Kovatchev risk transform constants (INFERENCE.md §5, §11) ──────────────────────
-const KOV_SCALE: f64 = 1.509;
-const KOV_POWER: f64 = 1.084;
-const KOV_OFFSET: f64 = 5.381;
-/// Physical BG bounds; the only two numbers borrowed from the simulator (INFERENCE.md §5).
-const BG_CLAMP_MIN: f64 = 20.0;
-const BG_CLAMP_MAX: f64 = 500.0;
+// ── CLINICAL Kovatchev risk constants (INFERENCE.md §5, §11) ───────────────────────
+// The PUBLISHED parameterization (Kovatchev 1997), fixed on purpose so LBGI/HBGI/ADRR stay
+// comparable to the diabetes literature. This is NOT the risk space the model forecasts in:
+// a checkpoint carries its OWN re-anchored constants, which arrive in the descriptor's
+// `kovatchev` block and are read from there (see `preproc::KovatchevParams`). The two
+// deliberately differ — do not "unify" them, and never decode a model output with these.
+const KOV_CLINICAL_SCALE: f64 = 1.509;
+const KOV_CLINICAL_POWER: f64 = 1.084;
+const KOV_CLINICAL_OFFSET: f64 = 5.381;
+/// Physical BG bounds of the CLINICAL scale (INFERENCE.md §5). The model's own bounds ride
+/// the descriptor (`KovatchevParams::bg_clamp_min` / `_max`) and need not equal these.
+const CLINICAL_BG_CLAMP_MIN: f64 = 20.0;
+const CLINICAL_BG_CLAMP_MAX: f64 = 500.0;
 
 // ── AiDEX advertisement layout (CGM.md §3.1) ───────────────────────────────────────
 /// The 20-byte 0x0059 glucose payload: 16 data bytes + a trailing LE u32 CRC.
@@ -223,28 +229,36 @@ pub fn advert_crc32(payload: Vec<u8>) -> Result<i64, CoreError> {
 
 // ── Kovatchev risk transform (INFERENCE.md §5) ─────────────────────────────────────
 
-/// `f(g) = SCALE·(ln(g)^POWER − OFFSET)`, mg/dL → risk. Total: BG is clamped to the
-/// physical `[20, 500]` first (guaranteeing a positive `ln` base and a finite result),
-/// matching the model, which only ever applies `f` to causal-smoothed, clamped BG
-/// (INFERENCE.md §5). A NaN input is treated as the low bound rather than propagated.
+/// `f(g) = SCALE·(ln(g)^POWER − OFFSET)`, mg/dL → risk, on the **clinical** (published)
+/// parameterization. Total: BG is clamped to the physical `[20, 500]` first (guaranteeing a
+/// positive `ln` base and a finite result); a NaN input is treated as the low bound rather
+/// than propagated.
+///
+/// This drives the glycemic indices (LBGI/HBGI/ADRR) and the risk-warped display axis, where
+/// literature comparability is the point. **Model outputs do not live on this scale** — decode
+/// those through the descriptor's own [`ModelDescriptor::kovatchev`], which a re-anchored
+/// checkpoint ships with different constants and different physical bounds.
 #[uniffi::export]
 pub fn kovatchev_f(mgdl: f64) -> f64 {
     let g = if mgdl.is_nan() {
-        BG_CLAMP_MIN
+        CLINICAL_BG_CLAMP_MIN
     } else {
-        mgdl.clamp(BG_CLAMP_MIN, BG_CLAMP_MAX)
+        mgdl.clamp(CLINICAL_BG_CLAMP_MIN, CLINICAL_BG_CLAMP_MAX)
     };
-    KOV_SCALE * (g.ln().powf(KOV_POWER) - KOV_OFFSET)
+    KOV_CLINICAL_SCALE * (g.ln().powf(KOV_CLINICAL_POWER) - KOV_CLINICAL_OFFSET)
 }
 
-/// `f_inv(r) = exp((r/SCALE + OFFSET)^(1/POWER))`, risk → mg/dL, with the guards of
-/// INFERENCE.md §5: non-finite risk is replaced (NaN/−inf → f(20), +inf → f(500)), the
-/// risk input is clamped to `[f(20), f(500)]` (keeping the base ≥ 0, so no complex/NaN
-/// and no fp `exp` overflow), and the output is clamped to `[20, 500]` mg/dL.
+/// `f_inv(r) = exp((r/SCALE + OFFSET)^(1/POWER))`, risk → mg/dL on the **clinical** scale,
+/// with the guards of INFERENCE.md §5: non-finite risk is replaced (NaN/−inf → f(20), +inf →
+/// f(500)), the risk input is clamped to `[f(20), f(500)]` (keeping the base ≥ 0, so no
+/// complex/NaN and no fp `exp` overflow), and the output is clamped to `[20, 500]` mg/dL.
+///
+/// The inverse of [`kovatchev_f`], and carries the same warning: this is not the transform
+/// that decodes a forecast.
 #[uniffi::export]
 pub fn kovatchev_f_inv(risk: f64) -> f64 {
-    let r_lo = kovatchev_f(BG_CLAMP_MIN); // f(20) ≈ −3.1629
-    let r_hi = kovatchev_f(BG_CLAMP_MAX); // f(500) ≈ +2.8133
+    let r_lo = kovatchev_f(CLINICAL_BG_CLAMP_MIN); // f(20) ≈ −3.1629
+    let r_hi = kovatchev_f(CLINICAL_BG_CLAMP_MAX); // f(500) ≈ +2.8133
     let r = if risk.is_nan() || risk == f64::NEG_INFINITY {
         r_lo
     } else if risk == f64::INFINITY {
@@ -253,9 +267,9 @@ pub fn kovatchev_f_inv(risk: f64) -> f64 {
         risk
     };
     let r = r.clamp(r_lo, r_hi);
-    let base = r / KOV_SCALE + KOV_OFFSET; // ≥ 0 by the clamp above
-    let mgdl = base.powf(1.0 / KOV_POWER).exp();
-    mgdl.clamp(BG_CLAMP_MIN, BG_CLAMP_MAX)
+    let base = r / KOV_CLINICAL_SCALE + KOV_CLINICAL_OFFSET; // ≥ 0 by the clamp above
+    let mgdl = base.powf(1.0 / KOV_CLINICAL_POWER).exp();
+    mgdl.clamp(CLINICAL_BG_CLAMP_MIN, CLINICAL_BG_CLAMP_MAX)
 }
 
 #[cfg(test)]
@@ -434,7 +448,10 @@ mod tests {
         // Non-finite and out-of-range inputs must clamp, never NaN/inf out.
         for r in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1e9, 1e9] {
             let g = kovatchev_f_inv(r);
-            assert!(g.is_finite() && (BG_CLAMP_MIN..=BG_CLAMP_MAX).contains(&g), "f_inv({r}) = {g}");
+            assert!(
+                g.is_finite() && (CLINICAL_BG_CLAMP_MIN..=CLINICAL_BG_CLAMP_MAX).contains(&g),
+                "f_inv({r}) = {g}"
+            );
         }
         for g in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -50.0, 1e9] {
             let r = kovatchev_f(g);

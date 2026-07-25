@@ -54,7 +54,7 @@ thing when reimplementing inference.
 The two bridges:
 
 - **(a) ↔ (b): `normalize` / `denormalize`** — [§6](#6-normalization-raw--z-score).
-- **(b) ↔ (c): `kovatchev_f` / `kovatchev_f_inv`** — [§5](#5-the-kovatchev-risk-transform-physical--risk).
+- **(b) ↔ (c): `f` / `f_inv`** on the descriptor's own constants — [§5](#5-the-kovatchev-risk-transform-physical--risk).
 
 The model **never sees raw mg/dL** for BG, and it **never emits mg/dL**. Inputs
 are risk-then-z; outputs are risk. Your code owns both bridges: build the input
@@ -245,27 +245,55 @@ The symmetrizing transform whose risk-distance equates the clinical danger of a
 low and a high excursion. It is the (b) ↔ (c) bridge.
 
 ```
-f(g)     = 1.509 · ( ln(g)^1.084 − 5.381 )                # mg/dL -> risk
-f_inv(r) = exp( ( r/1.509 + 5.381 )^(1/1.084) )           # risk  -> mg/dL
+f(g)     = SCALE · ( ln(g)^POWER − OFFSET )               # mg/dL -> risk
+f_inv(r) = exp( ( r/SCALE + OFFSET )^(1/POWER) )          # risk  -> mg/dL
 ```
 
-Constants: `SCALE = 1.509`, `POWER = 1.084`, `OFFSET = 5.381`. Reference values:
-`f(20) = −3.1629`, `f(70) = −0.8806`, `f(100) = −0.2196`, `f(180) = +0.8792`,
-`f(400) = +2.3884`, `f(500) = +2.8133`.
+### 5.1 Two parameterizations, and which is which
 
-**Clamp guards** (reproduce these to match the model at extremes):
+The constants are **not** one fixed set. Two independent parameterizations
+coexist, and using one where the other belongs fails silently — the output stays
+finite and plausible while being wrong by tens of mg/dL.
 
-- `f_inv`: first replace non-finite risk inputs (NaN/−inf → `f(20)`, +inf →
-  `f(500)`), then **clamp the risk input** to `[f(20), f(500)] ≈ [−3.1629,
-  +2.8133]` (this keeps the base `r/1.509 + 5.381 ≥ 0` — no complex/NaN — and
-  prevents fp32 `exp` overflow), compute `f_inv`, then **clamp the output** to
-  `[20, 500]` mg/dL.
+| | constants | bounds | governs |
+|---|---|---|---|
+| **model risk space** | the descriptor's `kovatchev` block | the same block | every (b)↔(c) crossing on the model path: the BG input transform, the `last_bg` anchor, and decoding `q_tau`/`median` back to mg/dL |
+| **clinical scale** | `1.509 / 1.084 / 5.381` (published) | `[20, 500]` | LBGI/HBGI/ADRR and the risk-warped display axis, where comparability with the literature is the point |
+
+A checkpoint re-anchored to a different physical BG range ships different
+constants. A `risk-v2` export carries `1.509 / 1.084 / 5.381` on `[20, 500]`
+(coinciding with the clinical set); a `risk-v3` export carries
+`2.2211457449985317 / 1.084 / 5.540076976170212` on `[40, 400]`, solved so
+`f(40) = −√10` and `f(400) = +√10`. Decoding a `risk-v3` forecast against the
+`risk-v2` constants reads a true 55 mg/dL as 32 and a true 300 as 394.
+
+The runtime therefore **reads the model transform from the descriptor** —
+`ModelDescriptor.kovatchev` (`KovatchevParams`) is the sole authority on the
+model path, and the crate's free `kovatchev_f` / `kovatchev_f_inv` are the
+clinical scale alone. A descriptor carrying no `kovatchev` block is **rejected**:
+there is no safe constant to fall back to.
+
+Reference values on the **clinical** scale: `f(20) = −3.1629`,
+`f(70) = −0.8806`, `f(100) = −0.2196`, `f(180) = +0.8792`, `f(400) = +2.3884`,
+`f(500) = +2.8133`.
+
+### 5.2 Clamp guards
+
+Reproduce these to match the model at extremes. `BG_CLAMP_MIN`/`BG_CLAMP_MAX`
+below mean *the acting parameterization's* bounds.
+
+- `f_inv`: first replace non-finite risk inputs (NaN/−inf → `f(BG_CLAMP_MIN)`,
+  +inf → `f(BG_CLAMP_MAX)`), then **clamp the risk input** to
+  `[f(BG_CLAMP_MIN), f(BG_CLAMP_MAX)]` (this keeps the base `r/SCALE + OFFSET ≥ 0`
+  — no complex/NaN — and prevents fp32 `exp` overflow), compute `f_inv`, then
+  **clamp the output** to `[BG_CLAMP_MIN, BG_CLAMP_MAX]` mg/dL.
 - `f` on BG is applied inside `normalize` on physically-clamped mg/dL, so it is
   always well-defined.
 
-`BG_CLAMP_MIN = 20.0` and `BG_CLAMP_MAX = 500.0` mg/dL are the physical BG
-bounds (these are the only two numbers borrowed from the simulator; they are
-plain constants — you do not need the simulator to run inference).
+The physical bounds are plain numbers travelling in the descriptor — you do not
+need the simulator to run inference. They also set the rails
+`forecast_degeneracy_check` tests a pinned-flat median against, which is why that
+check takes the descriptor: given the wrong range it cannot fire at all.
 
 ---
 
@@ -288,7 +316,7 @@ One timestep = 5 min; one patch = 6 steps = 30 min.
 **normalize (raw → z):**
 
 ```
-bg  (risk) :  z = ( f(clamp(x, 20, 500)) − mean_bg ) / (std_bg + 1e-8)
+bg  (risk) :  z = ( f(clamp(x, BG_CLAMP_MIN, BG_CLAMP_MAX)) − mean_bg ) / (std_bg + 1e-8)
 carb/ins   :  z = ( log1p(max(x, 0))     − mean_c  ) / (std_c  + 1e-8)
 ```
 
@@ -336,7 +364,8 @@ PATCH_DIM  = PATCH_SIZE · N_INPUT_FEATURES = 6 · 3 = 18
 
 The reference pipeline applies **no smoother**. Inputs, forecast target, loss and
 metrics all live in one raw post-noise space: the same raw BG is the model input,
-the forecast target and the `last_bg` anchor. BG is clamped to `[20, 500]`; carb
+the forecast target and the `last_bg` anchor. BG is clamped to the descriptor's
+`[BG_CLAMP_MIN, BG_CLAMP_MAX]`; carb
 and insulin are floored at `0` (the `log1p` transform does this in `normalize`).
 
 T1DMDROID additionally offers a **strictly-causal one-sided Savitzky-Golay**
@@ -358,7 +387,7 @@ denoising choice made by the application, not part of the model contract.
   analytic curves (gamma / Bateman / exponential action), already smooth by
   construction.
 - The physical guards are not part of the filter and hold at every window: BG is
-  clamped to `[20, 500]`, carb and insulin floored at `0`.
+  clamped to `[BG_CLAMP_MIN, BG_CLAMP_MAX]`, carb and insulin floored at `0`.
 - The filter moves the `last_bg` anchor of [§7.4](#74-the-last_bg-anchor), since
   that anchor is read off the last context BG cell. White-noise variance falls
   with `Σtap²` as `w` widens (`1.000, 0.762, 0.516, 0.386, 0.308` for the five
@@ -374,7 +403,7 @@ From a raw history:
 1. Take the trailing raw per-step series for BG (mg/dL), carb (g/step), and
    insulin (U/step, basal + bolus summed), length `n_ctx · PATCH_SIZE`, with
    `n_ctx ∈ [16, 48]`.
-2. Clamp BG to `[20, 500]`; floor carb/insulin at 0. Optionally pre-filter BG
+2. Clamp BG to `[BG_CLAMP_MIN, BG_CLAMP_MAX]`; floor carb/insulin at 0. Optionally pre-filter BG
    (§7.1); the reference applies no filter.
 3. `normalize` each channel (BG via risk-z, carb/insulin via log1p-z).
 4. Reshape to `(n_ctx, 6, 3)`.
@@ -397,7 +426,7 @@ The `P = PREDICTION_PATCHES` prediction patches are appended after the context:
 cell denormalized back to mg/dL:
 
 ```
-last_bg = f_inv( context[-1, -1, 0] · (std_bg + 1e-8) + mean_bg )    # clamp [20, 500]
+last_bg = f_inv( context[-1, -1, 0] · (std_bg + 1e-8) + mean_bg )  # clamp to the physical range
 ```
 
 The forward asserts `last_bg ≥ 20 − 1e-3` (a units tripwire that catches a
@@ -428,7 +457,7 @@ spreads (nearest→far, .75/.9/.95); columns 4..6 = the τ<.5 spreads
 (nearest→far, .25/.1/.05).
 
 ```
-anchor = f( clamp(last_bg, 20, 500) )                    # (B,), risk; broadcast over (P, S)
+anchor = f( clamp(last_bg, BG_CLAMP_MIN, BG_CLAMP_MAX) ) # (B,), risk; broadcast over (P, S)
 delta  = head_raw[..., 0]                                # (B, P, S)
 
 # --- median (mode = 'global', the released default) ---
@@ -476,7 +505,7 @@ bands     = f_inv(q_tau)                  # (P, S, 7) mg/dL band edges
 ```
 
 At the 2 h default, `P·S = 4 · 6 = 24` steps = 2 h at 5-min cadence. Both are
-clamped into `[20, 500]` by `f_inv`.
+clamped into `[BG_CLAMP_MIN, BG_CLAMP_MAX]` by `f_inv`.
 
 ### 8.4 Optional conformal recalibration
 
@@ -497,13 +526,13 @@ omitted. Skipping it is bit-identical to the raw bands.
 
 1. Gather the trailing raw history: BG (mg/dL), carb (g/step), insulin (U/step,
    basal + bolus summed), length `n_ctx · 6`, `n_ctx ∈ [16, 48]`.
-2. Clamp BG to `[20, 500]`; floor carb/insulin at 0 (no filtering — `normalize`
+2. Clamp BG to `[BG_CLAMP_MIN, BG_CLAMP_MAX]`; floor carb/insulin at 0 (no filtering — `normalize`
    floors the sparse channels through `log1p`).
 3. `normalize` each channel → `context (n_ctx, 6, 3)`.
 4. Build `patches (T, 18)`: context reshaped step-major, then `P` prediction
    patches with BG = 0 and carb/insulin = `normalize(0)` **or** announced doses.
 5. `attn_mask = create_attention_mask(n_ctx, P)` (§4).
-6. `last_bg = f_inv(denormalize(context[-1, -1, 0]))`, clamp `[20, 500]`.
+6. `last_bg = f_inv(denormalize(context[-1, -1, 0]))`, clamp to the physical range.
 7. `q_tau, median = model(patches[None], attn_mask, last_bg[None])`.
 8. `median_bg = f_inv(median)` (mg/dL); `bands = f_inv(q_tau)`; optionally
    conformal-recalibrate `bands`.
@@ -551,7 +580,7 @@ model.eval()
 #    Here: n_ctx patches of BG (mg/dL), carb (g/step), insulin (U/step).
 n_ctx = MIN_CONTEXT_PATCHES
 raw   = np.zeros((n_ctx * PATCH_SIZE, N_INPUT_FEATURES), dtype=np.float32)
-raw[:, 0] = 120.0        # BG mg/dL   (raw; clamp a real stream to [20, 500])
+raw[:, 0] = 120.0        # BG mg/dL   (raw; clamp a real stream to the physical range)
 raw[:, 1] = 0.0          # carb g/step
 raw[:, 2] = 0.02         # insulin U/step (basal)
 ctx_norm = normalize(raw, stats)                    # (n_ctx*6, 3) normalized
@@ -578,9 +607,10 @@ Everything a from-scratch reimplementation needs (none require the simulator):
 
 | constant | value |
 |---|---|
-| Kovatchev `SCALE / POWER / OFFSET` | `1.509 / 1.084 / 5.381` |
-| `BG_CLAMP_MIN / MAX` | `20.0 / 500.0` mg/dL |
-| risk clamp `[f(20), f(500)]` | `[−3.1629, +2.8133]` |
+| Kovatchev `SCALE / POWER / OFFSET` | **descriptor-carried** (§5.1) — `1.509 / 1.084 / 5.381` for `risk-v2`, `2.2211457449985317 / 1.084 / 5.540076976170212` for `risk-v3` |
+| `BG_CLAMP_MIN / MAX` | **descriptor-carried** — `20.0 / 500.0` for `risk-v2`, `40.0 / 400.0` for `risk-v3` |
+| risk clamp `[f(min), f(max)]` | derived: `[−3.1629, +2.8133]` for `risk-v2`, `[−√10, +√10]` for `risk-v3` |
+| CLINICAL `SCALE / POWER / OFFSET` on `[20, 500]` | `1.509 / 1.084 / 5.381` — fixed; LBGI/HBGI and the display axis only |
 | `PATCH_SIZE` | `6` (5-min steps; one patch = 30 min) |
 | `N_INPUT_FEATURES` / `PATCH_DIM` | `3` / `18` |
 | feature order | `[bg_absolute, carb, insulin]` |
@@ -596,7 +626,7 @@ Everything a from-scratch reimplementation needs (none require the simulator):
 | `ROPE_BASE` | `1000` |
 | RMSNorm `eps` | `1e-6` |
 | normalize `std` floor | `1e-8` |
-| input filter | none in the reference (raw signal; BG clamped to `[20, 500]`, carb/insulin floored at 0) |
+| input filter | none in the reference (raw signal; BG clamped to the descriptor's physical range, carb/insulin floored at 0) |
 | ALiBi slope | `−|i−j| · |slope_h|`, `slope_h = |stored|` (init `2^(−8(h+1)/N_HEADS)`) |
 | SDPA scaling | `1/sqrt(HEAD_DIM)` |
 

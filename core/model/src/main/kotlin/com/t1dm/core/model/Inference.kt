@@ -19,6 +19,22 @@ data class ChannelStat(val mean: Double, val std: Double)
 data class TimeHead(val outputIndex: Int, val nBins: Int, val binHours: Double)
 
 /**
+ * The Kovatchev risk parameterization the exported checkpoint was trained under (mirrors the
+ * Rust `KovatchevParams`), read from the descriptor's `kovatchev` block. A re-anchored
+ * checkpoint carries different constants and a different physical BG range, so this cannot be
+ * a runtime constant — decoding risk-space output against the wrong scale yields plausible,
+ * finite, wrong mg/dL. Distinct from `NativeCore.kovatchevF`, the fixed CLINICAL scale behind
+ * LBGI/HBGI and the risk-warped axis.
+ */
+data class KovatchevParams(
+    val scale: Double,
+    val power: Double,
+    val offset: Double,
+    val bgClampMin: Double,
+    val bgClampMax: Double,
+)
+
+/**
  * The pre/post contract parsed from a model `descriptor.json` (SPEC §2.4) — the sole
  * source of the normalization stats plus the checkpoint-absent decode constants.
  */
@@ -36,6 +52,9 @@ data class ModelDescriptor(
     val minContextPatches: Int,
     val patchSize: Int,
     val nInputFeatures: Int,
+    /** The risk transform THIS checkpoint was trained under — the sole authority for decoding
+     *  its output back to mg/dL. */
+    val kovatchev: KovatchevParams,
     val conformalEnabled: Boolean,
     /** The co-trained time-probe descriptor, or null when the graph is cut at `head_raw`. */
     val time: TimeHead? = null,

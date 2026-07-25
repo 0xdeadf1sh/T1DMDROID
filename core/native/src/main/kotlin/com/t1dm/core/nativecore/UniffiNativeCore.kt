@@ -29,6 +29,7 @@ import com.t1dm.core.model.InsulinPresetSpec
 import com.t1dm.core.model.DecodedAdvert
 import com.t1dm.core.model.Forecast
 import com.t1dm.core.model.ForecastStatus
+import com.t1dm.core.model.KovatchevParams
 import com.t1dm.core.model.ModelDescriptor
 import com.t1dm.core.model.PredictedTime
 import com.t1dm.core.model.PrevGlucose
@@ -78,6 +79,7 @@ import uniffi.t1dm_core.InsulinPresetSpec as UniffiInsulinPresetSpec
 import uniffi.t1dm_core.DecodedAdvert as UniffiDecodedAdvert
 import uniffi.t1dm_core.Forecast as UniffiForecast
 import uniffi.t1dm_core.ForecastStatus as UniffiForecastStatus
+import uniffi.t1dm_core.KovatchevParams as UniffiKovatchevParams
 import uniffi.t1dm_core.ModelDescriptor as UniffiModelDescriptor
 import uniffi.t1dm_core.MoodSummary as UniffiMoodSummary
 import uniffi.t1dm_core.EpisodeSummary as UniffiEpisodeSummary
@@ -155,8 +157,8 @@ class UniffiNativeCore : NativeCore {
     ): Forecast =
         uniffiAssembleDecode(desc.toUniffi(), headRaw, lastBg, carrySpread).toModel()
 
-    override fun forecastDegeneracyCheck(forecast: Forecast): ForecastStatus =
-        uniffiForecastDegeneracyCheck(forecast.toUniffi()).toModel()
+    override fun forecastDegeneracyCheck(desc: ModelDescriptor, forecast: Forecast): ForecastStatus =
+        uniffiForecastDegeneracyCheck(desc.toUniffi(), forecast.toUniffi()).toModel()
 
     /** Rust `decode_time` throws `CoreException` on a bad shape / non-finite logit; we map it to
      *  the fail-open `null` so a malformed time output can never crash a cycle (the BG forecast
@@ -507,6 +509,16 @@ private fun UniffiPredictedTime.toModel(): PredictedTime = PredictedTime(
     nBins = nBins, binHours = binHours,
 )
 
+private fun UniffiKovatchevParams.toModel(): KovatchevParams = KovatchevParams(
+    scale = scale, power = power, offset = offset,
+    bgClampMin = bgClampMin, bgClampMax = bgClampMax,
+)
+
+private fun KovatchevParams.toUniffi(): UniffiKovatchevParams = UniffiKovatchevParams(
+    scale = scale, power = power, offset = offset,
+    bgClampMin = bgClampMin, bgClampMax = bgClampMax,
+)
+
 private fun UniffiModelDescriptor.toModel(): ModelDescriptor = ModelDescriptor(
     bg = bg.toModel(),
     carb = carb.toModel(),
@@ -521,6 +533,7 @@ private fun UniffiModelDescriptor.toModel(): ModelDescriptor = ModelDescriptor(
     minContextPatches = minContextPatches,
     patchSize = patchSize,
     nInputFeatures = nInputFeatures,
+    kovatchev = kovatchev.toModel(),
     conformalEnabled = conformalEnabled,
     time = time?.toModel(),
 )
@@ -539,6 +552,7 @@ private fun ModelDescriptor.toUniffi(): UniffiModelDescriptor = UniffiModelDescr
     minContextPatches = minContextPatches,
     patchSize = patchSize,
     nInputFeatures = nInputFeatures,
+    kovatchev = kovatchev.toUniffi(),
     conformalEnabled = conformalEnabled,
     time = time?.toUniffi(),
 )

@@ -83,8 +83,10 @@ interface NativeCore {
     ): Forecast
 
     /** The safety guard every rail/alert gates on (§3.6-B): rejects non-finite, rail-pinned,
-     *  collapsed-band, and mis-ordered forecasts. */
-    fun forecastDegeneracyCheck(forecast: Forecast): ForecastStatus
+     *  collapsed-band, and mis-ordered forecasts. Takes the [desc] the forecast was decoded
+     *  with — the rails are descriptor-defined, and against the wrong physical range the
+     *  rail-pin test cannot fire at all. */
+    fun forecastDegeneracyCheck(desc: ModelDescriptor, forecast: Forecast): ForecastStatus
 
     /** Decode the time-probe's per-patch logits (flat `(P, nBins)`, the `.pte` slot-1 tensor)
      *  into a single hour-of-day belief via the `origin_patch` reduction (softmax patch 0 + mean

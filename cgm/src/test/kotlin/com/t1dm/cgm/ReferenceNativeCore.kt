@@ -69,7 +69,7 @@ class ReferenceNativeCore : NativeCore {
         carrySpread: Double,
     ): Forecast = TODO("not exercised by :cgm tests")
 
-    override fun forecastDegeneracyCheck(forecast: Forecast): ForecastStatus =
+    override fun forecastDegeneracyCheck(desc: ModelDescriptor, forecast: Forecast): ForecastStatus =
         TODO("not exercised by :cgm tests")
 
     override fun decodeTime(timeLogits: List<Double>, nBins: Int, binHours: Double): PredictedTime? = null

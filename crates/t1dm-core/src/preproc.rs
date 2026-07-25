@@ -20,7 +20,10 @@
 
 use serde::Deserialize;
 
-use crate::{kovatchev_f, kovatchev_f_inv, CoreError, BG_CLAMP_MAX, BG_CLAMP_MIN};
+// Deliberately does NOT import the crate's clinical `kovatchev_f`/`kovatchev_f_inv`: every
+// (b)↔(c) crossing on the model path goes through the descriptor's own `KovatchevParams`,
+// and having the clinical pair in scope here is how they get reached for by accident.
+use crate::CoreError;
 
 // ── Fixed architecture constants (INFERENCE.md §11; not descriptor-varying) ─────────
 /// Steps per patch (6 × 5 min = 30 min).
@@ -69,6 +72,64 @@ pub struct ChannelStat {
     pub std: f64,
 }
 
+/// The Kovatchev risk parameterization **the exported checkpoint was trained under**, read
+/// verbatim from the descriptor's `kovatchev` block (INFERENCE.md §5).
+///
+/// A checkpoint re-anchored to a different physical BG range ships different constants, so
+/// these cannot be baked into the runtime: decoding risk-space output with the wrong
+/// `scale`/`offset` yields plausible, finite, wrong mg/dL — silently, with no guard able to
+/// see it. The crate's free `kovatchev_f`/`kovatchev_f_inv` are the separate, deliberately
+/// fixed CLINICAL scale (LBGI/HBGI, display axis) and must never decode a forecast.
+#[derive(Debug, Clone, Copy, PartialEq, uniffi::Record, Deserialize)]
+pub struct KovatchevParams {
+    #[serde(rename = "SCALE")]
+    pub scale: f64,
+    #[serde(rename = "POWER")]
+    pub power: f64,
+    #[serde(rename = "OFFSET")]
+    pub offset: f64,
+    /// Lower physical BG bound (mg/dL); `f` clamps to it and `f_inv` cannot decode below it.
+    #[serde(rename = "BG_CLAMP_MIN")]
+    pub bg_clamp_min: f64,
+    /// Upper physical BG bound (mg/dL).
+    #[serde(rename = "BG_CLAMP_MAX")]
+    pub bg_clamp_max: f64,
+}
+
+impl KovatchevParams {
+    /// `f(g) = scale·(ln(g)^power − offset)`, mg/dL → risk. Total on hostile input with the
+    /// same guard order as the clinical [`crate::kovatchev_f`]: clamp to the physical range
+    /// first (so the `ln` base is positive), NaN treated as the low bound.
+    pub(crate) fn f(&self, mgdl: f64) -> f64 {
+        let g = if mgdl.is_nan() {
+            self.bg_clamp_min
+        } else {
+            mgdl.clamp(self.bg_clamp_min, self.bg_clamp_max)
+        };
+        self.scale * (g.ln().powf(self.power) - self.offset)
+    }
+
+    /// `f_inv(r) = exp((r/scale + offset)^(1/power))`, risk → mg/dL. Non-finite risk is
+    /// replaced (NaN/−inf → the low rail, +inf → the high rail), the risk input is clamped to
+    /// `[f(min), f(max)]` — keeping the base ≥ 0, so no complex/NaN and no `exp` overflow —
+    /// and the output is clamped to the physical range.
+    pub(crate) fn f_inv(&self, risk: f64) -> f64 {
+        let r_lo = self.f(self.bg_clamp_min);
+        let r_hi = self.f(self.bg_clamp_max);
+        let r = if risk.is_nan() || risk == f64::NEG_INFINITY {
+            r_lo
+        } else if risk == f64::INFINITY {
+            r_hi
+        } else {
+            risk
+        };
+        let r = r.clamp(r_lo, r_hi);
+        let base = r / self.scale + self.offset; // ≥ 0 by the clamp above
+        let mgdl = base.powf(1.0 / self.power).exp();
+        mgdl.clamp(self.bg_clamp_min, self.bg_clamp_max)
+    }
+}
+
 /// The co-trained hour-of-day TIME PROBE section of a descriptor (the second `.pte`
 /// output). Present iff the exported graph emits `time_logits`; a graph cut at `head_raw`
 /// leaves this `None` and the app surfaces no predicted-hour belief (fail-open, never
@@ -106,6 +167,9 @@ pub struct ModelDescriptor {
     pub min_context_patches: i32,
     pub patch_size: i32,
     pub n_input_features: i32,
+    /// The risk transform THIS checkpoint was trained under — the sole authority for every
+    /// (b)↔(c) crossing on the model path (INFERENCE.md §5).
+    pub kovatchev: KovatchevParams,
     /// Split-conformal band recalibration flag. **Default false** for real-CGM
     /// deployment (INFERENCE.md §8.4 — a simulator-fit delta must never silently
     /// narrow the safety bands).
@@ -168,6 +232,9 @@ struct DescriptorDto {
     min_context_patches: i32,
     patch_size: i32,
     n_input_features: i32,
+    /// REQUIRED. Absent ⇒ the descriptor is rejected rather than decoded against a guessed
+    /// scale: there is no safe default, and a wrong one is invisible downstream.
+    kovatchev: KovatchevParams,
     conformal_enabled: bool,
     #[serde(default)]
     time: Option<TimeDto>,
@@ -226,6 +293,7 @@ pub fn parse_descriptor(json: String) -> Result<ModelDescriptor, CoreError> {
         min_context_patches: d.min_context_patches,
         patch_size: d.patch_size,
         n_input_features: d.n_input_features,
+        kovatchev: d.kovatchev,
         conformal_enabled: d.conformal_enabled,
         time,
     };
@@ -279,6 +347,43 @@ pub fn parse_descriptor(json: String) -> Result<ModelDescriptor, CoreError> {
     if desc.rope_base <= 0 {
         return Err(CoreError::Decode {
             reason: format!("rope_base {} must be > 0", desc.rope_base),
+        });
+    }
+    // The risk transform decodes every forecast, so a malformed one is rejected outright.
+    // `bg_clamp_min > 1` keeps `ln(g) > 0`, without which `ln(g)^power` is NaN for a
+    // fractional power; `scale > 0` keeps `f` increasing (so `f(min) < f(max)` bracket the
+    // f_inv clamp the right way round); `power > 0` keeps `1/power` finite.
+    let k = desc.kovatchev;
+    if ![k.scale, k.power, k.offset, k.bg_clamp_min, k.bg_clamp_max]
+        .iter()
+        .all(|v| v.is_finite())
+    {
+        return Err(CoreError::Decode {
+            reason: format!("kovatchev block has a non-finite constant: {k:?}"),
+        });
+    }
+    if k.scale <= 0.0 || k.power <= 0.0 {
+        return Err(CoreError::Decode {
+            reason: format!("kovatchev scale {} and power {} must be > 0", k.scale, k.power),
+        });
+    }
+    if !(k.bg_clamp_min > 1.0 && k.bg_clamp_min < k.bg_clamp_max) {
+        return Err(CoreError::Decode {
+            reason: format!(
+                "kovatchev bounds invalid: require 1 < bg_clamp_min ({}) < bg_clamp_max ({})",
+                k.bg_clamp_min, k.bg_clamp_max
+            ),
+        });
+    }
+    // Defense in depth: prove the round trip is total at both rails before any forecast rides
+    // it (an offset that drives the f_inv base negative would otherwise surface as NaN mg/dL).
+    let (r_lo, r_hi) = (k.f(k.bg_clamp_min), k.f(k.bg_clamp_max));
+    if !(r_lo.is_finite() && r_hi.is_finite() && r_lo < r_hi)
+        || !k.f_inv(r_lo).is_finite()
+        || !k.f_inv(r_hi).is_finite()
+    {
+        return Err(CoreError::Decode {
+            reason: format!("kovatchev transform is not total on [{}, {}]", k.bg_clamp_min, k.bg_clamp_max),
         });
     }
     // Reject a patch_size/horizon that does not tile the prediction hour (defense in depth
@@ -418,7 +523,7 @@ fn causal_smooth_w(
 fn normalize_feat(d: &ModelDescriptor, feat: usize, x: f64) -> f64 {
     let s = d.stat(feat);
     let pre = if feat == 0 {
-        kovatchev_f(x) // clamps to [20,500] and scrubs NaN internally
+        d.kovatchev.f(x) // clamps to the descriptor's range and scrubs NaN internally
     } else {
         x.max(0.0).ln_1p()
     };
@@ -430,7 +535,7 @@ fn denormalize_feat(d: &ModelDescriptor, feat: usize, z: f64) -> f64 {
     let s = d.stat(feat);
     let v = z * (s.std + STD_FLOOR) + s.mean;
     if feat == 0 {
-        kovatchev_f_inv(v) // risk → mg/dL, clamped to [20,500]
+        d.kovatchev.f_inv(v) // risk → mg/dL, clamped to the descriptor's range
     } else {
         v.exp_m1().max(0.0)
     }
@@ -553,7 +658,12 @@ fn build_context_windows(
 
     // Pre-filter BG at the requested window; the dose channels ride `dose_window` (1 in
     // production ⇒ identity, so only their unconditional floor survives).
-    let sm_bg = causal_smooth_w(&bg, Some(BG_CLAMP_MIN), Some(BG_CLAMP_MAX), bg_window);
+    let sm_bg = causal_smooth_w(
+        &bg,
+        Some(desc.kovatchev.bg_clamp_min),
+        Some(desc.kovatchev.bg_clamp_max),
+        bg_window,
+    );
     let sm_carb = causal_smooth_w(&carb, Some(0.0), None, dose_window);
     let sm_ins = causal_smooth_w(&insulin, Some(0.0), None, dose_window);
 
@@ -690,7 +800,8 @@ pub fn assemble_decode(
     let n = p * PATCH_SIZE; // horizon steps
 
     // Anchor f(last_bg), broadcast flat across the horizon (§8.1).
-    let anchor = kovatchev_f(last_bg.clamp(BG_CLAMP_MIN, BG_CLAMP_MAX));
+    let kov = desc.kovatchev;
+    let anchor = kov.f(last_bg.clamp(kov.bg_clamp_min, kov.bg_clamp_max));
 
     // Median: global low-frequency DCT projection of the per-step delta (patch-major).
     let delta: Vec<f64> = (0..n).map(|i| head_raw[i * N_QUANTILES]).collect();
@@ -743,9 +854,9 @@ pub fn assemble_decode(
         q_tau_risk[row + 5] = up[1];
         q_tau_risk[row + 6] = up[2];
         median_risk[i] = mi;
-        median_bg[i] = kovatchev_f_inv(mi);
+        median_bg[i] = kov.f_inv(mi);
         for k in 0..N_QUANTILES {
-            bands_mgdl[row + k] = kovatchev_f_inv(q_tau_risk[row + k]);
+            bands_mgdl[row + k] = kov.f_inv(q_tau_risk[row + k]);
         }
     }
 
@@ -760,15 +871,16 @@ pub fn assemble_decode(
 // ── Forecast degeneracy guard (§3.6-B) ──────────────────────────────────────────────
 
 /// Why a forecast is unfit to drive a rail, alert, or calculator score. Because `f_inv`
-/// clamps to `[20,500]`, a collapsed or runaway model reads as a *confident flat rail*,
-/// not an obvious NaN — hence the explicit rail / collapse / mis-order checks.
+/// clamps to the descriptor's physical range, a collapsed or runaway model reads as a
+/// *confident flat rail*, not an obvious NaN — hence the explicit rail / collapse /
+/// mis-order checks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum ForecastStatus {
     /// Passed every check; eligible to drive rails/alerts.
     Ok,
     /// A NaN or infinity in the median or the fan.
     NonFinite,
-    /// The whole median is pinned flat at 20 or 500 mg/dL.
+    /// The whole median is pinned flat at the descriptor's low or high physical rail.
     RailPinned,
     /// The band has (near-)zero width at every step.
     CollapsedBand,
@@ -780,8 +892,13 @@ pub enum ForecastStatus {
 /// a rail-pinned flat median, a collapsed (zero-width) band, and a mis-ordered quantile
 /// fan. A forecast that fails is `DEGENERATE` — ineligible for a predictive alert and it
 /// forces the fail-closed rails to block.
+///
+/// Takes the `desc` the forecast was decoded with because the rails ARE descriptor-defined:
+/// checked against the wrong physical range the rail test cannot fire at all (a median
+/// pinned flat at 40 mg/dL clears a `<= 20` test), and the guard silently passes exactly the
+/// forecast it exists to reject.
 #[uniffi::export]
-pub fn forecast_degeneracy_check(f: &Forecast) -> ForecastStatus {
+pub fn forecast_degeneracy_check(desc: &ModelDescriptor, f: &Forecast) -> ForecastStatus {
     let n = f.median_bg.len();
     if n == 0
         || f.median_risk.len() != n
@@ -811,9 +928,10 @@ pub fn forecast_degeneracy_check(f: &Forecast) -> ForecastStatus {
         }
     }
 
-    // (3) Rail-pinned flat median.
-    let all_low = f.median_bg.iter().all(|&v| v <= BG_CLAMP_MIN + RAIL_EPS_MGDL);
-    let all_high = f.median_bg.iter().all(|&v| v >= BG_CLAMP_MAX - RAIL_EPS_MGDL);
+    // (3) Rail-pinned flat median, against THIS model's physical rails.
+    let (lo, hi) = (desc.kovatchev.bg_clamp_min, desc.kovatchev.bg_clamp_max);
+    let all_low = f.median_bg.iter().all(|&v| v <= lo + RAIL_EPS_MGDL);
+    let all_high = f.median_bg.iter().all(|&v| v >= hi - RAIL_EPS_MGDL);
     if all_low || all_high {
         return ForecastStatus::RailPinned;
     }
@@ -956,6 +1074,28 @@ mod tests {
         v.as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect()
     }
 
+    /// The risk parameterization `golden.json` was generated under (a `risk-v2` T1DMAI
+    /// checkpoint, whose model scale then coincided with the published clinical one). The
+    /// goldens pin THIS transform, so it is stated here rather than borrowed from the crate's
+    /// clinical constants — the two are independent and only happen to agree for `risk-v2`.
+    const GOLDEN_KOVATCHEV: KovatchevParams = KovatchevParams {
+        scale: 1.509,
+        power: 1.084,
+        offset: 5.381,
+        bg_clamp_min: 20.0,
+        bg_clamp_max: 500.0,
+    };
+
+    /// The re-anchored `risk-v3` parameterization: a genuinely different scale AND a
+    /// different physical range, used to prove the pipeline follows the descriptor.
+    const RISK_V3_KOVATCHEV: KovatchevParams = KovatchevParams {
+        scale: 2.2211457449985317,
+        power: 1.084,
+        offset: 5.540076976170212,
+        bg_clamp_min: 40.0,
+        bg_clamp_max: 400.0,
+    };
+
     fn test_descriptor() -> ModelDescriptor {
         let g = golden();
         let s = &g["stats"];
@@ -977,6 +1117,7 @@ mod tests {
             min_context_patches: 16,
             patch_size: 6,
             n_input_features: 3,
+            kovatchev: GOLDEN_KOVATCHEV,
             conformal_enabled: false,
             time: None,
         }
@@ -1051,6 +1192,119 @@ mod tests {
         assert!(is_decode(bad("rope_base", serde_json::json!(0))));
     }
 
+    // ── the risk transform is the DESCRIPTOR's, never a baked-in one ─────────────────
+
+    #[test]
+    fn parse_descriptor_requires_the_kovatchev_block() {
+        // A descriptor that does not declare its risk transform is REJECTED. Defaulting to
+        // any particular scale is what silently mis-decoded a re-anchored checkpoint: the
+        // output stays finite and plausible, so nothing downstream can notice.
+        let base = include_str!("../../../models/descriptor.json");
+        let mut v: Value = serde_json::from_str(base).unwrap();
+        v.as_object_mut().unwrap().remove("kovatchev");
+        assert!(matches!(parse_descriptor(v.to_string()), Err(CoreError::Decode { .. })));
+    }
+
+    #[test]
+    fn parse_descriptor_rejects_a_malformed_kovatchev_block() {
+        let base = include_str!("../../../models/descriptor.json");
+        let bad = |k: &str, val: Value| {
+            let mut v: Value = serde_json::from_str(base).unwrap();
+            v["kovatchev"][k] = val;
+            parse_descriptor(v.to_string())
+        };
+        let is_decode = |r: Result<ModelDescriptor, CoreError>| {
+            matches!(r, Err(CoreError::Decode { .. }))
+        };
+
+        assert!(is_decode(bad("SCALE", serde_json::json!(0.0))), "scale 0 ⇒ f_inv divides by 0");
+        assert!(is_decode(bad("SCALE", serde_json::json!(-1.509))), "negative scale inverts f");
+        assert!(is_decode(bad("POWER", serde_json::json!(0.0))));
+        assert!(is_decode(bad("SCALE", serde_json::json!(f64::NAN))), "NaN → JSON null");
+        // ln(g) <= 0 makes ln(g)^power NaN for a fractional power.
+        assert!(is_decode(bad("BG_CLAMP_MIN", serde_json::json!(1.0))));
+        assert!(is_decode(bad("BG_CLAMP_MIN", serde_json::json!(0.0))));
+        // Inverted / empty physical range.
+        assert!(is_decode(bad("BG_CLAMP_MAX", serde_json::json!(10.0))));
+    }
+
+    #[test]
+    fn decode_follows_the_descriptor_not_a_baked_constant() {
+        // THE regression. Risk-space output means nothing without the scale that produced
+        // it: decoding a risk-v3 forecast against risk-v2 constants yields finite, plausible,
+        // WRONG mg/dL (true 120 reads ~102, true 300 reads ~394). Same risk value in, the two
+        // parameterizations must disagree, and each must invert its own f exactly.
+        for mgdl in [55.0, 70.0, 120.0, 180.0, 300.0] {
+            let r_v3 = RISK_V3_KOVATCHEV.f(mgdl);
+            let own = RISK_V3_KOVATCHEV.f_inv(r_v3);
+            let wrong = GOLDEN_KOVATCHEV.f_inv(r_v3);
+            assert!((own - mgdl).abs() < 1e-9, "f_inv(f({mgdl})) = {own} under its own params");
+            assert!(
+                (wrong - mgdl).abs() > 5.0,
+                "decoding {mgdl} mg/dL under the wrong scale gave {wrong} — if this ever \
+                 stops differing, the two parameterizations have been unified by accident"
+            );
+        }
+
+        // And the full assemble_decode path rides the descriptor: a flat (all-zero) head_raw
+        // anchors the median at last_bg, recovered exactly through each descriptor's own f/f_inv.
+        let flat = vec![0.0f64; 4 * PATCH_SIZE * N_QUANTILES];
+        for kov in [GOLDEN_KOVATCHEV, RISK_V3_KOVATCHEV] {
+            let d = ModelDescriptor { kovatchev: kov, ..test_descriptor() };
+            let f = assemble_decode(&d, flat.clone(), 120.0, 0.0).unwrap();
+            for v in &f.median_bg {
+                assert!((v - 120.0).abs() < 1e-6, "anchor round trip under {kov:?} gave {v}");
+            }
+            // f_inv can never leave the descriptor's own physical range.
+            for v in &f.bands_mgdl {
+                assert!(
+                    *v >= kov.bg_clamp_min - 1e-9 && *v <= kov.bg_clamp_max + 1e-9,
+                    "band {v} escaped [{}, {}]",
+                    kov.bg_clamp_min,
+                    kov.bg_clamp_max
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rail_pinned_is_detected_at_the_descriptors_own_rails() {
+        // A median flat at 40 mg/dL is rail-pinned for risk-v3 but an ordinary low forecast
+        // for risk-v2 — the check is meaningless without the descriptor. Before the guard took
+        // one, a risk-v3 rail-pin sailed through: nothing can reach the old 20 mg/dL rail.
+        let n = 4 * PATCH_SIZE;
+        let pinned = |bg: f64| Forecast {
+            median_risk: vec![0.0; n],
+            q_tau_risk: (0..n * N_QUANTILES).map(|k| (k % N_QUANTILES) as f64).collect(),
+            median_bg: vec![bg; n],
+            bands_mgdl: (0..n * N_QUANTILES).map(|k| bg + (k % N_QUANTILES) as f64).collect(),
+        };
+        let v3 = ModelDescriptor { kovatchev: RISK_V3_KOVATCHEV, ..test_descriptor() };
+        let v2 = ModelDescriptor { kovatchev: GOLDEN_KOVATCHEV, ..test_descriptor() };
+
+        assert_eq!(forecast_degeneracy_check(&v3, &pinned(40.0)), ForecastStatus::RailPinned);
+        assert_eq!(forecast_degeneracy_check(&v3, &pinned(400.0)), ForecastStatus::RailPinned);
+        assert_eq!(forecast_degeneracy_check(&v2, &pinned(40.0)), ForecastStatus::Ok);
+        assert_eq!(forecast_degeneracy_check(&v2, &pinned(20.0)), ForecastStatus::RailPinned);
+    }
+
+    #[test]
+    fn descriptor_kovatchev_guards_are_total() {
+        // The same hostile-input totality the clinical pair guarantees (INFERENCE.md §5).
+        for kov in [GOLDEN_KOVATCHEV, RISK_V3_KOVATCHEV] {
+            for r in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1e9, 1e9] {
+                let g = kov.f_inv(r);
+                assert!(
+                    g.is_finite() && (kov.bg_clamp_min..=kov.bg_clamp_max).contains(&g),
+                    "f_inv({r}) = {g} under {kov:?}"
+                );
+            }
+            for g in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -50.0, 1e9] {
+                assert!(kov.f(g).is_finite(), "f({g}) not finite under {kov:?}");
+            }
+        }
+    }
+
     // ── SAVGOL taps == scipy.savgol_coeffs(7,2,pos=6,use='dot') ──────────────────────
     #[test]
     fn savgol_coeffs_match_scipy() {
@@ -1100,7 +1354,7 @@ mod tests {
         assert_eq!(causal_smooth(x.clone(), None, None, 1), x);
         // The physical clamps are not part of the filter — they hold at w=1 too.
         assert_eq!(
-            causal_smooth(x, Some(BG_CLAMP_MIN), Some(BG_CLAMP_MAX), 1),
+            causal_smooth(x, Some(GOLDEN_KOVATCHEV.bg_clamp_min), Some(GOLDEN_KOVATCHEV.bg_clamp_max), 1),
             vec![120.0, 20.0, 500.0, 20.0, 77.5]
         );
     }
@@ -1349,7 +1603,7 @@ mod tests {
         assert_close(&f.median_bg, &f64s(&g["median_bg"]), 1e-8, "median_bg");
         assert_close(&f.bands_mgdl, &f64s(&g["bands_mgdl"]), 1e-8, "bands_mgdl");
         // fan is ascending and passes the guard.
-        assert_eq!(forecast_degeneracy_check(&f), ForecastStatus::Ok);
+        assert_eq!(forecast_degeneracy_check(&test_descriptor(), &f), ForecastStatus::Ok);
     }
 
     #[test]
@@ -1376,10 +1630,10 @@ mod tests {
         let g = golden();
         let mut f = assemble_decode(&d, f64s(&g["head_raw"]), g["last_bg"].as_f64().unwrap(), 0.0).unwrap();
         f.median_bg[3] = f64::NAN;
-        assert_eq!(forecast_degeneracy_check(&f), ForecastStatus::NonFinite);
+        assert_eq!(forecast_degeneracy_check(&test_descriptor(), &f), ForecastStatus::NonFinite);
         let mut f2 = assemble_decode(&d, f64s(&g["head_raw"]), g["last_bg"].as_f64().unwrap(), 0.0).unwrap();
         f2.q_tau_risk[0] = f64::INFINITY;
-        assert_eq!(forecast_degeneracy_check(&f2), ForecastStatus::NonFinite);
+        assert_eq!(forecast_degeneracy_check(&test_descriptor(), &f2), ForecastStatus::NonFinite);
     }
 
     #[test]
@@ -1392,7 +1646,7 @@ mod tests {
         }
         let f = assemble_decode(&d, head, 120.0, 0.0).unwrap();
         assert!(f.median_bg.iter().all(|&v| (v - 500.0).abs() < 1e-6));
-        assert_eq!(forecast_degeneracy_check(&f), ForecastStatus::RailPinned);
+        assert_eq!(forecast_degeneracy_check(&test_descriptor(), &f), ForecastStatus::RailPinned);
     }
 
     #[test]
@@ -1410,7 +1664,7 @@ mod tests {
             }
         }
         let f = Forecast { median_risk, q_tau_risk: q, median_bg, bands_mgdl: b };
-        assert_eq!(forecast_degeneracy_check(&f), ForecastStatus::CollapsedBand);
+        assert_eq!(forecast_degeneracy_check(&test_descriptor(), &f), ForecastStatus::CollapsedBand);
     }
 
     #[test]
@@ -1420,7 +1674,7 @@ mod tests {
         let mut f = assemble_decode(&d, f64s(&g["head_raw"]), g["last_bg"].as_f64().unwrap(), 0.0).unwrap();
         // Swap two fan entries at step 0 to break monotonicity.
         f.q_tau_risk.swap(0, 6);
-        assert_eq!(forecast_degeneracy_check(&f), ForecastStatus::MisorderedQuantiles);
+        assert_eq!(forecast_degeneracy_check(&test_descriptor(), &f), ForecastStatus::MisorderedQuantiles);
     }
 
     #[test]
@@ -1428,7 +1682,7 @@ mod tests {
         let d = test_descriptor();
         let g = golden();
         let f = assemble_decode(&d, f64s(&g["head_raw"]), g["last_bg"].as_f64().unwrap(), 0.0).unwrap();
-        assert_eq!(forecast_degeneracy_check(&f), ForecastStatus::Ok);
+        assert_eq!(forecast_degeneracy_check(&test_descriptor(), &f), ForecastStatus::Ok);
     }
 
     // ── Time-probe decode goldens (testdata/time_head_golden.json) ───────────────────

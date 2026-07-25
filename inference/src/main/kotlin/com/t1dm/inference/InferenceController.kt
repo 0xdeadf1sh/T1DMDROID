@@ -894,7 +894,7 @@ class InferenceController(
             native.assembleDecode(desc, out.headRaw.map { it.toDouble() }, ctx.lastBg, CARRY_SPREAD)
         }
         val status: ForecastStatus =
-            withContext(dispatchers.default) { native.forecastDegeneracyCheck(forecast) }
+            withContext(dispatchers.default) { native.forecastDegeneracyCheck(desc, forecast) }
 
         // Circadian-phase belief (Phase 7A): the co-trained time probe's second `.pte` output,
         // reduced to a predicted hour-of-day in the Rust core. Purely additive — fail-OPEN to null

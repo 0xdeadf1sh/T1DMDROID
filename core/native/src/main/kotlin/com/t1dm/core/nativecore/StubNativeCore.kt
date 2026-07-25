@@ -78,7 +78,7 @@ class StubNativeCore : NativeCore {
         carrySpread: Double,
     ): Forecast = TODO("Phase 2: native assemble_decode")
 
-    override fun forecastDegeneracyCheck(forecast: Forecast): ForecastStatus =
+    override fun forecastDegeneracyCheck(desc: ModelDescriptor, forecast: Forecast): ForecastStatus =
         TODO("Phase 2: native forecast_degeneracy_check")
 
     // The time-probe decode lives in Rust (golden-gated); the host stub has no .so, so it

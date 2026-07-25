@@ -185,9 +185,10 @@ class ModelStore(
      * Normalize a descriptor into the flat schema `t1dm-core::parse_descriptor` consumes. A flat
      * descriptor (top-level `rope_base`) passes through unchanged; the exporter's nested descriptor
      * (`geometry` / `constants` / `conformal`, §2.4) is projected onto the flat keys.
-     * `normalization_stats` is top-level in both.
+     * `normalization_stats` is top-level in both. `internal` so the projection can be pinned
+     * directly — a key silently dropped here is invisible until a forecast decodes wrong.
      */
-    private fun flattenDescriptor(o: JSONObject): JSONObject {
+    internal fun flattenDescriptor(o: JSONObject): JSONObject {
         if (o.has("rope_base") && !o.has("constants")) return o // already flat
         val geometry = o.optJSONObject("geometry") ?: JSONObject()
         val constants = o.optJSONObject("constants") ?: JSONObject()
@@ -204,6 +205,11 @@ class ModelStore(
             put("min_context_patches", geometry.optInt("MIN_CONTEXT_PATCHES", 16))
             put("patch_size", geometry.optInt("PATCH_SIZE", 6))
             put("n_input_features", geometry.optInt("N_INPUT_FEATURES", 3))
+            // The checkpoint's OWN risk transform, passed through verbatim and with no default:
+            // a re-anchored model ships different constants, and decoding its output against a
+            // guessed scale yields plausible, finite, wrong mg/dL. Absent ⇒ no key ⇒ the Rust
+            // parse rejects the descriptor and the model is skipped, which is the intent.
+            o.optJSONObject("kovatchev")?.let { put("kovatchev", it) }
             put("conformal_enabled", conformal.optBoolean("enabled", false))
             // Optional co-trained time-probe section (a `head_raw`-only export omits it). Project the
             // exporter's nested `time` block onto the flat schema `parse_descriptor` reads; absent ⇒

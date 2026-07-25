@@ -18,5 +18,12 @@
   "min_context_patches": 16,
   "patch_size": 6,
   "n_input_features": 3,
+  "kovatchev": {
+    "SCALE": 1.509,
+    "POWER": 1.084,
+    "OFFSET": 5.381,
+    "BG_CLAMP_MIN": 20.0,
+    "BG_CLAMP_MAX": 500.0
+  },
   "conformal_enabled": false
 }

@@ -62,6 +62,13 @@ class RollingForecasterAlignmentTest {
         minContextPatches = 4,        // minSteps = 24
         patchSize = 6,
         nInputFeatures = 3,
+        kovatchev = KovatchevParams(
+            scale = 2.2211457449985317,
+            power = 1.084,
+            offset = 5.540076976170212,
+            bgClampMin = 40.0,
+            bgClampMax = 400.0,
+        ),
         conformalEnabled = false,
     )
 
@@ -260,7 +267,7 @@ class RollingForecasterAlignmentTest {
             )
         }
 
-        override fun forecastDegeneracyCheck(forecast: Forecast): ForecastStatus = ForecastStatus.OK
+        override fun forecastDegeneracyCheck(desc: ModelDescriptor, forecast: Forecast): ForecastStatus = ForecastStatus.OK
 
         // ── unused on the RollingForecaster roll path ───────────────────────────────────────────
         private fun unused(): Nothing = error("unused by RollingForecasterAlignmentTest")
