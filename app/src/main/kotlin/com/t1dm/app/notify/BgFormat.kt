@@ -5,7 +5,7 @@ import com.t1dm.core.model.UnitSpace
 
 /**
  * BG / trend / age formatting shared by the breadcrumb, the ongoing notification and the widgets, in
- * the app's active unit space (ux-decisions.md — mg/dL default, mmol/L, Kovatchev risk). Mirrors the
+ * the app's active unit space (mg/dL default, mmol/L, Kovatchev risk). Mirrors the
  * dashboard's `formatBg`: mg/dL shows the integer, mmol/L divides by 18.0182, Kovatchev applies the
  * risk transform `f` (INFERENCE.md §5).
  *

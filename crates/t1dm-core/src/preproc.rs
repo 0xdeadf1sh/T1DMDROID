@@ -2,7 +2,7 @@
 //!
 //! The ExecuTorch graph is cut at `head_raw` (B,4,6,7) in risk space; everything on
 //! either side of that cut lives here, in fp64 Rust, as the numerical authority
-//! (SPEC.private.md §2.4/§3.2). The descriptor JSON is the SOLE source of the
+//! (§2.4/§3.2). The descriptor JSON is the SOLE source of the
 //! normalization stats and the checkpoint-absent decode constants — the app never
 //! parses the `.pt` pickle.
 //!

@@ -4,7 +4,7 @@ import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.ReadingProvenance
 
 /**
- * The weak-signal alarm (SPEC.private.md §3.6-A). Fires when the connected sensor link's RSSI has
+ * The weak-signal alarm (§3.6-A). Fires when the connected sensor link's RSSI has
  * stayed at or below [AlarmConfig.weakSignalDbm] for [AlarmConfig.weakSignalSustainMin] minutes — a
  * signal-QUALITY warning, complementary to [LossOfSignalAlarm] (which fires on the ABSENCE of readings,
  * not their strength). It only considers MEASURED readings carrying an RSSI (interpolated gap-fill

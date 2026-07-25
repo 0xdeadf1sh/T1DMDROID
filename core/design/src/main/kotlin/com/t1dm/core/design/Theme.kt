@@ -16,7 +16,7 @@ import androidx.compose.runtime.staticCompositionLocalOf
  */
 val LocalT1dmSemantics = staticCompositionLocalOf { TronPalette }
 
-/** Whether motion is enabled app-wide (ux-decisions.md — the global "disable all animations" toggle,
+/** Whether motion is enabled app-wide (the global "disable all animations" toggle,
  *  surfaced here so any animated surface can honour it without re-plumbing the setting). */
 val LocalAnimationsEnabled = staticCompositionLocalOf { true }
 
@@ -60,7 +60,7 @@ fun applyWidgetPalette(palette: T1dmPalette) {
 }
 
 /**
- * The app theme (SPEC.private.md §3.4 / Phase 7D). Resolves the [palette] to a Material [ColorScheme]
+ * The app theme (§3.4 / Phase 7D). Resolves the [palette] to a Material [ColorScheme]
  * + the chosen [font] to a [androidx.compose.material3.Typography], and provides the glucose-band
  * semantics, the animation flag and the UI haptics engine (Haptics.kt — a sibling of the animation
  * flag, never a dependent of it). All parameters default so the pre-selector call sites (previews)

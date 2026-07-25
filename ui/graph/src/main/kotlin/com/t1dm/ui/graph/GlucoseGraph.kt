@@ -142,7 +142,7 @@ private class PlotBox(val left: Float, val top: Float, val right: Float, val bot
 }
 
 /**
- * The Phase-1 live BG graph (Phase 1 / ux-decisions "Graph = the centrepiece"):
+ * The Phase-1 live BG graph (Phase 1 — "Graph = the centrepiece"):
  * a background grid, time (x) and glucose (y) axes, the BG polyline with INTERPOLATED and WARMUP
  * points rendered visually distinct, pan / pinch-zoom / long-press-scrub gestures, and an auto-fit
  * Y computed over the visible window. It draws a pre-built immutable [GraphFrame] only — never a

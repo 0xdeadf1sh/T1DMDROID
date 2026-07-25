@@ -53,7 +53,7 @@ import kotlin.math.sin
  * The geometry mirrors T1DMAI `clock_face.py` / `utils.clock_wedge_geometry`: hour 0 at the top,
  * increasing clockwise, `resultantR` already computed in the Rust `decode_time`. When the belief is
  * absent (the descriptor has no time section, or the STUB backend serves the forecast) it states so
- * plainly — every empty state says WHY (ux-decisions.md).
+ * plainly — every empty state says WHY.
  */
 @Composable
 fun CircadianScreen(
@@ -133,7 +133,7 @@ fun CircadianScreen(
  * A deliberately morbid, DISPLAY-ONLY countdown (F5): from the instant IOB is projected to reach
  * zero, chain the user-tunable forward offsets DKA → coma → death and count each landmark down live,
  * on a seven-segment LCD, above a road running from that instant to the grave. No §3.6 rail reads
- * this — it is an estimate, not a clinical alarm (safety-posture.md). When no zero-crossing is known
+ * this — it is an estimate, not a clinical alarm. When no zero-crossing is known
  * ([iobZeroMs] null) we anchor at *now*, which is the harshest reading.
  */
 @Composable

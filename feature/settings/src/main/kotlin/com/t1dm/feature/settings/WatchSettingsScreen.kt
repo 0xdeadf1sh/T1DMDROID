@@ -8,9 +8,9 @@ import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.rememberT1dmHaptics
 
 /**
- * Settings → Watch (SPEC.private.md § Settings — CGM / Server / Watch are the three primary
+ * Settings → Watch (§ Settings — CGM / Server / Watch are the three primary
  * sub-screens; the Watch one first surfaces in Phase 5). The optional ESP32-C3 accessory: the app
- * fully works without it (watch-link.md). Pairing, the SAS comparison, key rotation, and unpair all
+ * fully works without it. Pairing, the SAS comparison, key rotation, and unpair all
  * live in the dedicated Security/Crypto panel; this screen states the link status in plain language
  * and routes there. Pure/stateless.
  */

@@ -13,7 +13,7 @@ import com.t1dm.core.model.TempUnit
 import com.t1dm.core.model.UnitSpace
 
 /**
- * Settings → Display (Phase 7C item 14 + 7D item 25; ux-decisions.md). The GLOBAL
+ * Settings → Display (Phase 7C item 14 + 7D item 25). The GLOBAL
  * glucose unit space, the single GLOBAL stats target range, the "disable all animations" toggle, and
  * — new in 7D — the THEME + FONT switcher, the custom-theme JSON import, and the haptics intensity.
  * Pure/stateless: theme / font / haptic ids are opaque strings the caller (`:app` Navigation, which

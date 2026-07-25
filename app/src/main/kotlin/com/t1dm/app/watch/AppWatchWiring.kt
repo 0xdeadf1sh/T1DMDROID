@@ -35,7 +35,7 @@ import kotlinx.coroutines.flow.StateFlow
 private const val GRID_MS = 300_000L
 
 /**
- * Builds the 5-min glance (watch-link.md, locked contract): current BG + trend + a one-line forecast
+ * Builds the 5-min glance (locked contract): current BG + trend + a one-line forecast
  * summary from the selected model + the alert band + status bits. Derives the staleness/signal-loss
  * bits from the last MEASURED reading's age (the freshness/loss windows) since the deterministic
  * alarm engine lives in the FGS, not here; the [WatchStatus.lowPowerSuspending] bit is set later by
@@ -103,7 +103,7 @@ class AppWatchGlanceSource(
 }
 
 /**
- * Battery-saver / low-power detection (progress.md Q9 — default entry 20 %, configurable). Two
+ * Battery-saver / low-power detection (Q9 — default entry 20 %, configurable). Two
  * independent triggers, both settings-gated (Phase 7C item 14): the OS power-save signal AND a
  * user-set battery-percentage floor. When the whole feature is disabled it never suspends the watch
  * push. Every input is read fresh per call so a Settings change takes effect on the next 5-min tick;
@@ -152,7 +152,7 @@ class RoomNonceStore(private val repository: T1dmRepository) : NonceStore {
  * AndroidKeyStore-backed envelope for the watch durable blob: a hardware-bound AES-256-GCM key wraps
  * the material and the on-disk form is `base64(iv):base64(ct)`. Mirrors [com.t1dm.sync.KeystoreTokenStore]
  * (stock GCM, non-exportable key) with a distinct alias, but PREFERS StrongBox (the K90's Dimensity
- * 9500 exposes it; progress.md Q6), degrading to a TEE key if StrongBox is unavailable. Kept in `:app`
+ * 9500 exposes it; Q6), degrading to a TEE key if StrongBox is unavailable. Kept in `:app`
  * because only the composition root has the Keystore; `:watch` stays pure-JVM.
  */
 internal class WatchKeyCipher(context: Context) {

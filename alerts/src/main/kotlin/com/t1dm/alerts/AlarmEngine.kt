@@ -7,7 +7,7 @@ import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * Combines the four deterministic evaluators ([ThresholdAlarm], [LossOfSignalAlarm], [WeakSignalAlarm],
- * [OverTemperatureAlarm]) and publishes the merged [AlarmState] as a Flow (SPEC.private.md §3.6-A).
+ * [OverTemperatureAlarm]) and publishes the merged [AlarmState] as a Flow (§3.6-A).
  * This is the testable heart of the
  * model-free path: it has no `:inference` dependency, no Android dependency, and reads no clock —
  * time enters only through [onReading]/[onTick].
@@ -38,7 +38,7 @@ class AlarmEngine(config: AlarmConfig = AlarmConfig.DEFAULT) {
 
     /**
      * Live-apply a new [AlarmConfig] to the EXISTING sub-evaluators (a Settings edit reaching the
-     * already-running engine, SPEC.private.md §3.6-A). Swaps thresholds / loss windows / over-temp
+     * already-running engine, §3.6-A). Swaps thresholds / loss windows / over-temp
      * params only; it deliberately does NOT clear any active breach or latch and does NOT re-publish.
      *
      * SAFETY: a raised threshold must NOT instantly clear a genuine active low. The current breach is

@@ -1,6 +1,6 @@
 package com.t1dm.core.model
 
-/** Lifecycle state of a single CGM source (SPEC.private.md §3.1). */
+/** Lifecycle state of a single CGM source (§3.1). */
 enum class CgmSourceStatus {
     /** Not scanning; no recent adverts. */
     Idle,
@@ -19,7 +19,7 @@ enum class CgmSourceStatus {
 }
 
 /**
- * Stable, persisted identity + matching metadata for a CGM source (SPEC.private.md §3.1).
+ * Stable, persisted identity + matching metadata for a CGM source (§3.1).
  * Matching is by name / serial suffix, NEVER by BLE address (resolvable-random rotates).
  */
 data class CgmSourceDescriptor(

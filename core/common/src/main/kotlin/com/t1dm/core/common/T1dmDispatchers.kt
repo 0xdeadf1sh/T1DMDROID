@@ -6,7 +6,7 @@ import kotlinx.coroutines.asCoroutineDispatcher
 import java.util.concurrent.Executors
 
 /**
- * The single injected dispatcher holder (SPEC.private.md §2.3). Nothing constructs
+ * The single injected dispatcher holder (§2.3). Nothing constructs
  * dispatchers ad hoc; heavy work never lands on [main].
  */
 interface T1dmDispatchers {

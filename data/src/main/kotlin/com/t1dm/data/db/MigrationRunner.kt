@@ -52,7 +52,7 @@ object MigrationRunner {
     }
 
     /**
-     * v2 → v3 (SPEC.private.md §3.3, Phase 4): additive only — the curve-engine event stores
+     * v2 → v3 (§3.3, Phase 4): additive only — the curve-engine event stores
      * `logged_dose` (self-describing bolus/basal curve params), `logged_meal` (grams + GI +
      * optional custom appearance curve), and `basal_schedule` (daily MDI schedule / search
      * space). No existing table is touched. DDL transcribed verbatim from the generated

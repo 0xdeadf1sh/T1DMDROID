@@ -7,7 +7,7 @@ import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 
 /**
- * The provenance rule, in one predicate (SPEC.private.md §3.6-A): only a MEASURED, out-of-warm-up
+ * The provenance rule, in one predicate (§3.6-A): only a MEASURED, out-of-warm-up
  * reading with a defined value participates in alarm evaluation. INTERPOLATED gap-fill and WARMUP
  * values are structurally barred from ever raising OR clearing an alarm — a fabricated line inside
  * a gap can therefore never silence a real excursion.

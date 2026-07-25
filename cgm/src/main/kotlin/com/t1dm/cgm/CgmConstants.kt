@@ -1,8 +1,7 @@
 package com.t1dm.cgm
 
 /**
- * Frozen passive-AiDEX pipeline constants (SPEC.private.md §3.1, CGM.md §1/§3, cgm-ingestion
- * memory). Pure-JVM only — no `android.*` types live here, so every pipeline stage that reads
+ * Frozen passive-AiDEX pipeline constants (§3.1, CGM.md §1/§3). Pure-JVM only — no `android.*` types live here, so every pipeline stage that reads
  * these constants stays unit-testable without Robolectric. Android-typed handles (the service
  * ParcelUuid) live inside [BleAdvertScanner].
  */
@@ -24,7 +23,7 @@ object CgmConstants {
     const val GLUCOSE_PAYLOAD_MIN_LEN: Int = 20
 
     /**
-     * Passive WARMUP heuristic window (SPEC.private.md §3.1). The passive advert carries no
+     * Passive WARMUP heuristic window (§3.1). The passive advert carries no
      * warmup bit, so `minFromStart < WARMUP_WINDOW_MIN ⇒ WARMUP`. AiDEX X warm-up ≈ 60 min; the
      * official app owns real warm-up, this is a belt-and-suspenders default.
      */

@@ -1,6 +1,6 @@
 package com.t1dm.core.model
 
-/** Where a grid-stamped reading came from (SPEC.private.md §3.1 / §3.6-A). */
+/** Where a grid-stamped reading came from (§3.1 / §3.6-A). */
 enum class ReadingProvenance {
     /** A real, CRC-validated sensor reading snapped onto the 5-min grid. */
     MEASURED,
@@ -9,7 +9,7 @@ enum class ReadingProvenance {
     INTERPOLATED,
 }
 
-/** Presentation/gating classification of a reading (SPEC.private.md §3.1). */
+/** Presentation/gating classification of a reading (§3.1). */
 enum class ReadingFlag {
     /** Passed the validity gate; eligible for inference and alarm evaluation. */
     NORMAL,
@@ -23,7 +23,7 @@ enum class ReadingFlag {
 }
 
 /**
- * One 5-minute grid sample from a CGM source (SPEC.private.md §3.1). `tsMs` is phone-receive
+ * One 5-minute grid sample from a CGM source (§3.1). `tsMs` is phone-receive
  * time snapped to the grid (`tsMs % 300_000 == 0`); the sensor's own clock is never trusted in
  * passive mode. Nullable value fields let a row exist (e.g. INTERPOLATED, WARMUP) without a
  * defined measurement.

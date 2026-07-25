@@ -5,7 +5,7 @@ import com.t1dm.core.model.AlertThresholds
 import com.t1dm.core.model.CgmReading
 
 /**
- * The model-free threshold alarm (SPEC.private.md §3.6-A). It classifies each MEASURED reading
+ * The model-free threshold alarm (§3.6-A). It classifies each MEASURED reading
  * directly against [AlertThresholds] — no forecast, backend, or Rust decode can suppress it.
  *
  * State transitions obey the provenance rule strictly:

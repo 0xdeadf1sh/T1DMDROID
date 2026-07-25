@@ -6,7 +6,7 @@ package com.t1dm.core.model
  * dependency on the ExecuTorch / native binding. The Kotlin data layer pairs each matured
  * `prediction` row with the realized `cgm_reading` at `made_at + h`; the Rust core does only the
  * arithmetic (RMSE/MAE/MARD + central-90 coverage). This is an accuracy statement about a
- * FORECAST — advisory only, never a dosing claim (safety-posture.md).
+ * FORECAST — advisory only, never a dosing claim.
  */
 
 /** One matured forecast↔realization pair at a single horizon (τ.05/τ.95 fan edges optional). */

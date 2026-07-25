@@ -6,7 +6,7 @@ import android.content.Context
 import com.t1dm.core.model.AlertBand
 
 /**
- * Android emission for the deterministic alarm (SPEC.private.md §3.6-A + Phase-7 alert polish). Two
+ * Android emission for the deterministic alarm (§3.6-A + Phase-7 alert polish). Two
  * severity channels (shared with the model-driven predictive presenter via [AlertChannels]) separate
  * the urgent tier — heads-up, DND-bypass, a full-screen intent over the lock screen, a per-band
  * configurable alarm sound, and an insistent K90 vibration primitive — from the plain tier.

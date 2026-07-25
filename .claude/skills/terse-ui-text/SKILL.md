@@ -65,7 +65,7 @@ IN: `Text("…")` literals, string resources, notification / alarm / predictive-
 snackbar text, labels, subtitles, section headers, `SettingsNote`.
 
 OUT — leave these in the codebase's own dense, literate voice; do **not** terse-ify them:
-comments, KDoc, `Timber`/log messages, identifiers, kv keys, test names, `SPEC.private.md`, `docs/`,
+comments, KDoc, `Timber`/log messages, identifiers, kv keys, test names, the design docs, `docs/`,
 `README`. Their audience is a developer, not the app's user.
 
 ## Before you commit a string

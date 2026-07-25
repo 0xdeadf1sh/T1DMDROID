@@ -7,7 +7,7 @@ import androidx.compose.ui.graphics.Color
 import org.json.JSONObject
 
 /**
- * The app's semantic colour token set (SPEC.private.md §3.4 / ux-decisions.md — "3 themes via
+ * The app's semantic colour token set (§3.4 / "3 themes via
  * semantic colour tokens"). Every surface that must repaint per theme — the graph bands, the stats
  * risk bands, the alert tiers, the widgets, the Circadian dial — reads these *roles*, not raw
  * literals, so a theme swap recolours the whole app coherently.
@@ -66,7 +66,7 @@ data class T1dmPalette(
     }
 }
 
-/** The stable ids the selection persists as (ux-decisions.md). */
+/** The stable ids the selection persists as. */
 object ThemeIds {
     const val TRON = "tron"
     const val UMBRELLA = "umbrella"
@@ -190,7 +190,7 @@ fun resolvePalette(themeId: String?, customThemeJson: String?): T1dmPalette =
  * }
  * ```
  * `surfaceVariant`, `inkMuted`, `grid`, `onPrimary`, `onSecondary` are optional and derived from the
- * required roles when absent. Parsing is fail-closed with a plain-language message (ux-decisions.md).
+ * required roles when absent. Parsing is fail-closed with a plain-language message.
  */
 fun parseThemeJson(text: String): T1dmPalette {
     val root = runCatching { JSONObject(text) }

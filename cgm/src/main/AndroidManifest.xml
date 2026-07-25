@@ -1,7 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!--
-      Passive advertisement-only scanning (PLAN.private.md Phase 1, cgm-ingestion memory):
+      Passive advertisement-only scanning (Phase 1):
       BLUETOOTH_SCAN with neverForLocation, no location, no BLUETOOTH_CONNECT. Declared by the
       module that owns the scan so the seam is self-describing; it merges into the app manifest.
     -->

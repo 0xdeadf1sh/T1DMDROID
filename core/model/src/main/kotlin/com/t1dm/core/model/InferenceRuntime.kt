@@ -1,7 +1,7 @@
 package com.t1dm.core.model
 
 /**
- * The UI- and persistence-facing inference-runtime domain types (Phase 2, SPEC.private.md §3.2 /
+ * The UI- and persistence-facing inference-runtime domain types (Phase 2, §3.2 /
  * §2.4). They live in `:core:model` — not `:inference` — so the graph overlay (`:ui:graph`) and the
  * Hardware / Models panels can render a forecast and per-model telemetry without depending on the
  * ExecuTorch backend module. The `InferenceBackend` seam itself (GraphInput/GraphOutput/backends)
@@ -12,7 +12,7 @@ package com.t1dm.core.model
 enum class Precision { FP32, FP16 }
 
 /**
- * Which runtime executed a model this cycle (SPEC.private.md §3.2). `STUB` is the fixed-output
+ * Which runtime executed a model this cycle (§3.2). `STUB` is the fixed-output
  * fallback used when no real `.pte` is present, so the whole pipeline still builds and runs.
  *
  * [EXECUTORCH_XNNPACK_FP32] is the authoritative CPU path (the only one that executes today).
@@ -92,7 +92,7 @@ data class BackendComparison(
     val loadRssGrowthKb: Long? = null,
 )
 
-/** One model in the running set (≤5; SPEC.private.md §2.3), tagged by the descriptor's `model_id`. */
+/** One model in the running set (≤5; §2.3), tagged by the descriptor's `model_id`. */
 data class RunningModel(
     val modelId: String,
     val backend: BackendId,
@@ -261,7 +261,7 @@ data class WarmupProgress(val measuredHours: Double, val requiredHours: Double) 
  * The immutable snapshot the UI observes as a `StateFlow` (Phase 2). Carries the
  * running set, this cycle's per-model predictions (selected first), rolling latencies, and a
  * plain-language [note] for the "collecting context" / "forecast unavailable" states — every
- * refusal states WHY (progress.md Q10).
+ * refusal states WHY (Q10).
  */
 data class InferenceState(
     val running: List<RunningModel> = emptyList(),

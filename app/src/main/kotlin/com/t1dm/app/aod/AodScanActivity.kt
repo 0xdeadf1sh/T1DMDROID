@@ -65,7 +65,7 @@ import kotlin.math.min
 import kotlin.math.sin
 
 /**
- * The keep-screen-on "always-on display" scan surface (build-gotchas: HyperOS/powerkeeper suspends a
+ * The keep-screen-on "always-on display" scan surface (HyperOS/powerkeeper suspends a
  * backgrounded BLE scan the moment the screen turns off, gating on the physical `is_screen_on`). By
  * holding a genuinely-ON display over the keyguard — `setShowWhenLocked` + `setTurnScreenOn` +
  * `FLAG_KEEP_SCREEN_ON` at near-zero brightness — the device stays interactive (`isInteractive()==true`),

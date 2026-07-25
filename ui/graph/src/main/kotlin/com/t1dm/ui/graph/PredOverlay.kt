@@ -39,7 +39,7 @@ class PredSeries internal constructor(
     val isEmpty: Boolean get() = tsMs.isEmpty()
 }
 
-/** Build the overlay off-thread from the cycle's predictions (SPEC.private.md §2.3). */
+/** Build the overlay off-thread from the cycle's predictions (§2.3). */
 suspend fun predOverlayOf(
     predictions: List<ModelPrediction>,
     unit: UnitSpace = UnitSpace.MgDl,

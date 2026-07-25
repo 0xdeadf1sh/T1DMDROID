@@ -9,7 +9,7 @@ import org.pytorch.executorch.Tensor
 import java.io.File
 
 /**
- * The CPU fp32 XNNPACK reference/authority (SPEC.private.md §3.2), on the ExecuTorch Android
+ * The CPU fp32 XNNPACK reference/authority (§3.2), on the ExecuTorch Android
  * runtime pinned to the exporter's **1.3.1** (`org.pytorch:executorch-android:1.3.1`). It loads a
  * `.pte` traced from the modified `head_raw` forward and runs `(patches, struct) → head_raw`.
  *

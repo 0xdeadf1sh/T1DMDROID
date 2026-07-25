@@ -184,7 +184,7 @@ class ModelStore(
     /**
      * Normalize a descriptor into the flat schema `t1dm-core::parse_descriptor` consumes. A flat
      * descriptor (top-level `rope_base`) passes through unchanged; the exporter's nested descriptor
-     * (`geometry` / `constants` / `conformal`, SPEC.private.md §2.4) is projected onto the flat keys.
+     * (`geometry` / `constants` / `conformal`, §2.4) is projected onto the flat keys.
      * `normalization_stats` is top-level in both.
      */
     private fun flattenDescriptor(o: JSONObject): JSONObject {

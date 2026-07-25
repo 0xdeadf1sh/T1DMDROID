@@ -27,7 +27,7 @@ import timber.log.Timber
  * The Android BLE-central implementation of [WatchCentral] (task deliverable 1). The phone dials the
  * watch: scan-by-name → `connectGatt` → `requestMtu` → `discoverServices` → subscribe CONTROL. This
  * is a CONNECTED session and needs BLUETOOTH_CONNECT (declared in this module's manifest), distinct
- * from the CGM's passive neverForLocation BLUETOOTH_SCAN (build-gotchas.md). Discovery still uses the
+ * from the CGM's passive neverForLocation BLUETOOTH_SCAN. Discovery still uses the
  * scanner (BLUETOOTH_SCAN, already held for the CGM). Every GATT callback hops onto the injected
  * dispatchers so nothing lands on the main thread (§2.3 — the UI must never block).
  *

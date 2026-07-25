@@ -28,9 +28,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
 /**
- * The Security/Crypto panel (ux-decisions.md — a dedicated section showing BOTH low- and high-level
+ * The Security/Crypto panel (a dedicated section showing BOTH low- and high-level
  * crypto state). Pure/stateless: it renders the mapped [SecurityPanelState] and surfaces the manual
- * pair / confirm-SAS / rotate / unpair actions (watch-link.md — manual key rotation + session reset
+ * pair / confirm-SAS / rotate / unpair actions (manual key rotation + session reset
  * MUST be exposed). The state carries NO raw key bytes — only a truncated fingerprint, counters, and
  * the SAS to compare on both screens.
  */

@@ -5,7 +5,7 @@
       The watch link is a CONNECTED GATT session (the phone is the central that dials the
       peripheral), which is a DIFFERENT permission from the CGM's passive advertisement scan:
       BLUETOOTH_CONNECT for the connect/discover/MTU/write path, NOT the neverForLocation
-      BLUETOOTH_SCAN the CGM uses (build-gotchas.md / task note). Discovery-by-name of the watch
+      BLUETOOTH_SCAN the CGM uses. Discovery-by-name of the watch
       still needs BLUETOOTH_SCAN, which :app already declares for the CGM; it is not re-declared
       here so the seam removes cleanly.
     -->

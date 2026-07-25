@@ -32,7 +32,7 @@ import timber.log.Timber
  * and exposes a [StateFlow] the Security panel observes. It owns:
  *
  *  - the pairing handshake ([WatchHandshake]) up to AWAIT_SAS, then CONFIRM on the user's tap;
- *  - manual ROTATE / RESET / UNPAIR (watch-link.md — must be exposed);
+ * - manual ROTATE / RESET / UNPAIR (must be exposed);
  *  - the 5-min sealed PUSH ([pushNow], hooked to the FGS grid tick), off the main thread;
  *  - LOW-POWER suspend (one final flagged frame, then the scheduler idles) and resume;
  *  - reconnect with exponential backoff, and bond-loss / epoch-desync (ERR_* control frames) →

@@ -151,7 +151,7 @@ private val DAY_LABEL: DateTimeFormatter = DateTimeFormatter.ofPattern("EEE d MM
  * `:alerts` announces on that same actuator and a game holding a sustained effect could supersede the
  * buzz meant to wake the user. It does NOT pause. An earlier build froze the world on any raised
  * alarm, which left the game unplayable for the hours a routine high stays up; and confiscating the
- * controls is not this app's posture (safety-posture.md: advisory only, never actuating). The alarm
+ * controls is not this app's posture (advisory only, never actuating). The alarm
  * keeps its own loud, DND-piercing surface; the game simply gets out of its way.
  *
  * IT IS NOT SURFACED, and that is a known gap rather than a decision: the sensory layer just stops, so a
@@ -332,7 +332,7 @@ private fun GameStage(
      *
      * It does NOT pause. An earlier build froze the world on any raised alarm, which made the game
      * unplayable for the hours a routine high stays up — and confiscating the controls is not this
-     * app's posture anyway (safety-posture.md: advisory only). The alarm keeps its own loud,
+     * app's posture anyway (advisory only). The alarm keeps its own loud,
      * DND-piercing surface; the game gets out of its way and says so in the HUD.
      */
     LaunchedEffect(alarmRaised) {

@@ -1,10 +1,10 @@
 package com.t1dm.calc
 
 /**
- * The user-configurable policy for the dose calculators (SPEC.private.md §3.6, Phase 4
+ * The user-configurable policy for the dose calculators (§3.6, Phase 4
  * deliverable 5/6). Every numeric threshold here is **user-set and deliberately UNBOUNDED** —
  * the user overrode the compiled ceiling, and the advisory-only + manual-administration model is
- * the terminal safety net (safety-posture.md). The *rails* still exist and still fail closed; a
+ * the terminal safety net. The *rails* still exist and still fail closed; a
  * threshold merely tunes where an enabled rail trips.
  *
  * Nothing in this module actuates insulin. A [CalcConfig] only shapes which candidate dose the
@@ -52,7 +52,7 @@ data class Asymmetry(
 )
 
 /**
- * Per-rail enable switches (safety-posture.md — "guard-rail toggles exist"). A disabled rail is a
+ * Per-rail enable switches ("guard-rail toggles exist"). A disabled rail is a
  * no-op; an **enabled** rail always fails closed on missing / degenerate / stale / collapsed input
  * (SPEC §3.6-C). The baseline-degeneracy rail ([Rails.baselineDegeneracy]) is deliberately NOT one of
  * these toggles — scoring a degenerate fan is meaningless — so it is enforced structurally and can

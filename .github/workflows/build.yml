@@ -5,7 +5,6 @@ name: build
 # t1dm.android.rust convention plugin is still a stub (no ndkVersion, no cargo-ndk),
 # so assembleDebug builds without a cross-compiled .so.
 on:
-  push:
   pull_request:
 
 jobs:

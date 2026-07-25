@@ -5,7 +5,7 @@ import kotlinx.coroutines.flow.flowOn
 import java.util.TimeZone
 
 /**
- * Drives the step pipeline (SPEC.private.md §3.5 / Phase 1): collects [StepSource.buckets] and
+ * Drives the step pipeline (§3.5 / Phase 1): collects [StepSource.buckets] and
  * persists each bucket to `sample.steps` via a [StepSampleWriter]. Meant to run inside the
  * `CgmScanService` foreground scope alongside the scan, tick, and alarm.
  *

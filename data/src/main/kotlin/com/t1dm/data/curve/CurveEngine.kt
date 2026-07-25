@@ -8,7 +8,7 @@ import com.t1dm.core.model.CurveKind
 import kotlinx.coroutines.withContext
 
 /**
- * The shared curve/PK engine (SPEC.private.md §3.3) — a **thin JNI bridge** over the Rust
+ * The shared curve/PK engine (§3.3) — a **thin JNI bridge** over the Rust
  * `t1dm-core::curve` functions, with every call dispatched on [T1dmDispatchers.default]. It
  * is the ONE transform that serves all three consumers: historical context channels,
  * announced-future what-if conditioning, and IOB/COB display (remaining tail area).

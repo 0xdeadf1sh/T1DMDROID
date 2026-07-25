@@ -18,7 +18,7 @@ fun interface WatchGlanceSource {
 }
 
 /** Whether the phone is in low-power / battery-saver mode (default entry 20 %, configurable —
- *  progress.md Q9). When true, [WatchLink] sends one final flagged frame then suspends the pusher. */
+ * Q9). When true, [WatchLink] sends one final flagged frame then suspends the pusher. */
 fun interface LowPowerProvider {
     suspend fun isLowPower(): Boolean
 }

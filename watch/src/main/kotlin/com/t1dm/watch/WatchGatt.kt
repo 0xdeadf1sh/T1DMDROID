@@ -13,7 +13,7 @@ import java.util.UUID
  * central reads once on discovery to detect a reflash / epoch desync before trusting the session.
  *
  * Everything of substance is AES-128-GCM sealed at the app layer ([com.t1dm.watch.crypto.WatchSession]);
- * the LESC bond underneath is defence-in-depth only (watch-link.md).
+ * the LESC bond underneath is defence-in-depth only.
  */
 object WatchGatt {
 

@@ -1,4 +1,4 @@
-//! Watch-link cryptography (SPEC §3, [[watch-link]]) — the security source of truth for
+//! Watch-link cryptography (SPEC §3) — the security source of truth for
 //! the phone → ESP32-C3 push. Kotlin owns the GATT plumbing and the at-rest key wrap
 //! (Keystore/StrongBox); *this* module owns every byte that crosses the air.
 //!

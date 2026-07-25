@@ -30,7 +30,7 @@ data class SamplePatch(
 
 /**
  * No-server-over-local reconciliation of a server [SamplePatch] against the local `sample` row
- * (SPEC.private.md §3.3). The phone is the sole read-write author, so a catch-up/WS row is only the
+ * (§3.3). The phone is the sole read-write author, so a catch-up/WS row is only the
  * phone's own earlier push reflected back; presence gap-fill fills ONLY fields the local row lacks
  * (`existing.x ?: patch.x`) and NEVER overwrites a present local value. Unlike the retired LWW merge
  * this has no clock dependency — it compares no `updated_at`, so a cross-clock skew can never let a

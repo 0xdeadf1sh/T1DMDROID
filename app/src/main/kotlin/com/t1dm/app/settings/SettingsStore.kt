@@ -23,7 +23,7 @@ import org.json.JSONObject
 /**
  * The complete, kv-backed configuration surface for the Settings hub (Phase 7C —
  * items 14 & 17, "expose EVERY knob"). Every user-tunable knob that the rest of the app boots with a
- * hard-coded default for is persisted here so a restart restores it, and — per safety-posture.md —
+ * hard-coded default for is persisted here so a restart restores it, and — per —
  * the thresholds are **user-set and deliberately UNBOUNDED**: this store only coerces values to a
  * non-negative sanity floor and never imposes a clinical ceiling.
  *
@@ -60,7 +60,7 @@ class SettingsStore(
 
     private suspend fun put(key: String, value: String) = repository.putKv(key, value, clock())
 
-    // ── Deterministic alarm thresholds + loss-of-signal (safety-posture §3.6-A) ────────────────
+    // ── Deterministic alarm thresholds + loss-of-signal (§3.6-A) ────────────────
     // UNBOUNDED user values; only floored at 0. Ordering (urgentLow < low <= high < urgentHigh) is
     // NOT enforced — the user's override is honoured — but the Settings screen surfaces a warning
     // when the values are out of order so a mistake is visible.
@@ -154,7 +154,7 @@ class SettingsStore(
     suspend fun setCriticalSoundOn(on: Boolean) = put(K_CRIT_SOUND_ON, if (on) "1" else "0")
     suspend fun setWarningSoundOn(on: Boolean) = put(K_WARN_SOUND_ON, if (on) "1" else "0")
 
-    // ── Low-power / battery-saver (progress.md Q9 — default 20 %, configurable) ─────────────────
+    // ── Low-power / battery-saver (Q9 — default 20 %, configurable) ─────────────────
 
     val lowPowerEnabled: Flow<Boolean> = boolFlow(K_POWER_ENABLED, true)
     val lowPowerPercent: Flow<Int> = intFlow(K_POWER_PCT, DEFAULT_LOW_POWER_PCT)
@@ -375,7 +375,7 @@ class SettingsStore(
         if (DeathFlavor.SUPPORTED) put(K_DEATH, if (on) "1" else "0")
     }
 
-    // ── UI (ux-decisions.md — a global "disable all animations" toggle) ────────────────────────
+    // ── UI (a global "disable all animations" toggle) ────────────────────────
 
     val animationsEnabled: Flow<Boolean> = boolFlow(K_UI_ANIMATIONS, true)
     /** The one-shot mirror of [animationsEnabled], for the headless surfaces (the glucose widget's
@@ -466,7 +466,7 @@ class SettingsStore(
     suspend fun clearSensorExpiry() = put(K_CGM_SENSOR_EXPIRY, "")
 
     // ── Aggressive background scanning (the keep-screen-on "AOD" that keeps the locked BLE scan
-    // alive; cgm-ingestion / build-gotchas). HyperOS/powerkeeper SUSPENDS a backgrounded scan the
+    // alive). HyperOS/powerkeeper SUSPENDS a backgrounded scan the
     // instant the screen turns off — the only app-side defeat is to hold the display genuinely ON
     // (is_screen_on=1) behind a black/dim surface. This is a HEAVY, opt-in mode (the SoC never
     // deep-idles), so it defaults OFF. Device-specific (the `cgm.` prefix keeps it out of the

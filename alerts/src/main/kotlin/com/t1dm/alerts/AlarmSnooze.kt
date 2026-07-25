@@ -3,7 +3,7 @@ package com.t1dm.alerts
 import com.t1dm.core.model.AlertBand
 
 /**
- * The presentation-layer silence for the deterministic alarm (SPEC.private.md §3.6-A). It mirrors
+ * The presentation-layer silence for the deterministic alarm (§3.6-A). It mirrors
  * DEATH mode's suppression but is TIME-BOUNDED and per-episode: a snooze/dismiss NEVER touches the
  * pure [AlarmEngine] — the engine keeps firing internally — it only gates whether the notifier
  * ANNOUNCES a still-active breach. Every rule here is a §3.6 safety guard and is test-pinned:

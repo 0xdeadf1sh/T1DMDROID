@@ -8,7 +8,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 
 /**
- * A single CGM source (SPEC.private.md §3.1). The AiDEX X impl is the only one built now, but
+ * A single CGM source (§3.1). The AiDEX X impl is the only one built now, but
  * the seam is frozen for extensibility. Many sources may be recorded at once; exactly one is
  * active = authoritative (see [CgmSourceRegistry]), and inference runs only on it.
  *
@@ -42,7 +42,7 @@ interface CgmVendorPlugin {
 
 /**
  * The persisted set of known CGM sources and the single manually-chosen active one
- * (SPEC.private.md §3.1). Auto-discovery may add sources and set the first active; the user
+ * (§3.1). Auto-discovery may add sources and set the first active; the user
  * can override. The active source is authoritative for inference and alarms.
  */
 interface CgmSourceRegistry {

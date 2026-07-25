@@ -11,7 +11,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 
 /**
- * The hardware edge of the step pipeline (SPEC.private.md §3.5 / Phase 1). Registers a
+ * The hardware edge of the step pipeline (§3.5 / Phase 1). Registers a
  * `TYPE_STEP_COUNTER` [SensorEventListener], stamps each cumulative reading with phone wall time
  * (passive phone-time stamping, mirroring the CGM path), and folds it through a per-subscription
  * [StepBucketer] into a [Flow] of grid-aligned [StepBucket]s.
@@ -30,7 +30,7 @@ class StepSource(
      * Cold flow of per-5-min step buckets. Each subscription owns a fresh [StepBucketer], so its
      * first sample primes the baseline. Sensor callbacks are delivered on a dedicated background
      * [HandlerThread] — never the main thread — since bucketing plus the downstream Room write must
-     * stay off the UI (SPEC.private.md §2.3). Closes empty on a device with no step counter.
+     * stay off the UI (§2.3). Closes empty on a device with no step counter.
      */
     fun buckets(): Flow<StepBucket> = callbackFlow {
         val sensor = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)

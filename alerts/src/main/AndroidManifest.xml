@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- The deterministic alarm path notifies + vibrates (PLAN.private.md §3.6-A). -->
+    <!-- The deterministic alarm path notifies + vibrates (§3.6-A). -->
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 

@@ -6,7 +6,7 @@ import com.t1dm.core.model.Precision
 import java.io.File
 
 /**
- * The NPU routing targets behind the [InferenceBackend] seam (SPEC.private.md §3.2). fp32 CPU XNNPACK
+ * The NPU routing targets behind the [InferenceBackend] seam (§3.2). fp32 CPU XNNPACK
  * ([ExecuTorchXnnpackBackend]) REMAINS THE AUTHORITY; each NPU path here is an alternative backend
  * that is cross-checked against the fp32 goldens and NEVER silently promoted.
  *

@@ -29,7 +29,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * The locked low-power rule (watch-link.md): battery-saver SUSPENDS the 5-min push — the link seals
+ * The locked low-power rule: battery-saver SUSPENDS the 5-min push — the link seals
  * ONE final frame with the LOW_POWER status bit set, flips to SUSPENDED_LOW_POWER, then idles (a
  * later tick writes nothing). Drives the REAL [WatchLink.pushNow] against a fake central that plays
  * the ESP32-C3 side of the handshake and decrypts the captured pushes.

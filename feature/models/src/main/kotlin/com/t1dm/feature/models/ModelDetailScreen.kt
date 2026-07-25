@@ -52,7 +52,7 @@ import com.t1dm.core.model.displayName
  *  4. REFERENCE (held-out validation) — the model's own train.py validation metrics from the
  *     descriptor `model_card`, clearly labelled as reference, NOT the on-device realized numbers.
  *
- * Everything is advisory: the accuracy of a FORECAST, never a dosing claim (safety-posture.md).
+ * Everything is advisory: the accuracy of a FORECAST, never a dosing claim.
  */
 @Composable
 fun ModelDetailScreen(

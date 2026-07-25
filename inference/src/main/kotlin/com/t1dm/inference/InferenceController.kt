@@ -36,7 +36,7 @@ import timber.log.Timber
 import kotlin.math.max
 
 /**
- * The Phase-2 inference orchestrator (SPEC.private.md §3.2, Phase 2 deliverable 4). It owns the
+ * The Phase-2 inference orchestrator (§3.2, Phase 2 deliverable 4). It owns the
  * running set (every discovered model up to a user-configurable cap, default 5), the loaded backend
  * handles, and the observable [state]. A cycle —
  * fired by the 5-min `GridTick` in `CgmScanService`, or manually/synthetically — builds one shared
@@ -58,7 +58,7 @@ class InferenceController(
     private val predictionStore: PredictionStore,
     /** §3.6-D freshness gate default (Q10): last MEASURED older than this ⇒ forecast STALE. */
     private val freshnessThresholdMs: Long = 15 * 60_000L,
-    /** The user's running-set cap (SPEC.private.md §2.3), read FRESH each discovery (kv-backed;
+    /** The user's running-set cap (§2.3), read FRESH each discovery (kv-backed;
      *  mirrors [warmupHoursProvider]). Every discovered model up to this cap runs each cycle;
      *  coerced to ≥1. null/throw ⇒ [DEFAULT_MAX_RUNNING]. */
     private val maxRunningProvider: suspend () -> Int = { DEFAULT_MAX_RUNNING },

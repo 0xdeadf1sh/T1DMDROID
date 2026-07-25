@@ -3,7 +3,7 @@ package com.t1dm.feature.settings
 import androidx.compose.runtime.Composable
 
 /**
- * Settings → Alarm thresholds (Phase 7C item 14; safety-posture.md §3.6-A). The four
+ * Settings → Alarm thresholds (Phase 7C item 14; §3.6-A). The four
  * deterministic model-free bands — urgent-low / low / high / urgent-high — in mg/dL. Every value is
  * **user-set and deliberately UNBOUNDED**: there is no clinical clamp (the user explicitly overrode a
  * compiled ceiling). The screen only warns when the values are out of the expected

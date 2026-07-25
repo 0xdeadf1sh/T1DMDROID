@@ -6,7 +6,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 
 /**
- * The bundled global fonts (progress.md Q8 / ux-decisions.md — "≥3 bundled, terminal-ish but
+ * The bundled global fonts (Q8 / "≥3 bundled, terminal-ish but
  * readable, tabular numerals, OFL"). Three OFL monos live in `res/font/`; their licences ship in
  * `res/raw/ofl_*` (GPL-3.0-compatible). "System" restores the platform default. The choice is global
  * and persists (kv); the active [Typography] is rebuilt from it in `T1dmTheme`.

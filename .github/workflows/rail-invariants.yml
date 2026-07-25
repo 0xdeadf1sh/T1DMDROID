@@ -1,12 +1,11 @@
 name: rail-invariants
 
-# BLOCKING safety gate (PLAN.private.md §3.6, Phase 4 §7). Runs the :calc host JVM property tests
+# BLOCKING safety gate (§3.6, Phase 4 §7). Runs the :calc host JVM property tests
 # that pin the fail-closed dose-calculator invariants: every enabled rail BLOCKS on missing /
 # degenerate / stale / collapsed input, "all-rails-off = identity", the predicted-low veto, the IOB
 # ceiling, mandatory confirmation, the hypo carb-rescue path, and the structural no-actuator guard.
 # The suite runs against a deterministic fake ForecastPort — no model / .pte needed on the runner.
 on:
-  push:
   pull_request:
 
 jobs:

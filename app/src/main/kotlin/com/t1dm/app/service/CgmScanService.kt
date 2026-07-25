@@ -96,7 +96,7 @@ private data class GlanceInputs(
 )
 
 /**
- * The always-on Phase-1 foreground service (SPEC.private.md §2.3, Phase 1). It hosts, in one place
+ * The always-on Phase-1 foreground service (§2.3, Phase 1). It hosts, in one place
  * and with **no `:inference` dependency**: the passive BLE scan, the step counter, the 5-min grid
  * heartbeat, and the deterministic model-free alarm path (§3.6-A). Typed **`connectedDevice`**
  * (NOT `dataSync` — that carries an Android-15+ 6 h/24 h cap and a `BOOT_COMPLETED`-start ban that

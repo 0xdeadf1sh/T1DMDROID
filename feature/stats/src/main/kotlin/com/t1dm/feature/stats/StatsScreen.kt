@@ -47,7 +47,7 @@ import com.t1dm.core.model.UnitSpace
  * a 7/30/90-day window switcher, the AGP percentile ribbon, the TIR/TBR/TAR stacked bar with the
  * clinical sub-bands, the metric cards (GMI/CV/SD/mean/LBGI/HBGI/MAGE), the per-channel summaries
  * (shown only where data exists), a Kovatchev/unit toggle, and a manual Recompute. Every empty state
- * says WHY in plain language (ux-decisions.md). No compute here — the composable only paints.
+ * says WHY in plain language. No compute here — the composable only paints.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable

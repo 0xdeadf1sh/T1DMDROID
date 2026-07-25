@@ -137,7 +137,7 @@ data class AdvancedStats(
 }
 
 /**
- * The global, user-configurable stats target range (SPEC §3.4 / ux-decisions.md). Drives
+ * The global, user-configurable stats target range (SPEC §3.4 /). Drives
  * TIR/TBR/TAR and is DISTINCT from the alarm thresholds. Default 70-180 mg/dL (the ADA/consensus
  * time-in-range window).
  */

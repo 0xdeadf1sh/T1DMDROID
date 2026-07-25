@@ -4,7 +4,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * The **structural no-actuator** invariant (Phase 4 §7 / safety-posture.md — "advisory-only,
+ * The **structural no-actuator** invariant (Phase 4 §7 / — "advisory-only,
  * NEVER actuates insulin"). The app is advisory-only: no code path may reach an insulin actuator. We
  * cannot prove that over arbitrary code, but we can pin the terminal seam: the public surface of the
  * calculator's result and orchestrator types must expose no member that *delivers* a dose — only ones

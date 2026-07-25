@@ -8,7 +8,7 @@ package com.t1dm.watch.crypto
  * `startHandshake / acceptPeer / sas / confirm / seal / open / rotate / reset`; should a signature
  * drift, the integrate phase reconciles here (task note).
  *
- * Security model (watch-link.md, locked): X25519 ECDH on first pair → HKDF-SHA256 → **per-direction**
+ * Security model (locked): X25519 ECDH on first pair → HKDF-SHA256 → **per-direction**
  * AES-128-GCM keys (k_p2w for phone→watch, k_w2p for the optional ACK path); the derivation is
  * confirmed out-of-band by a Short Authentication String ([sas]) the user compares on both screens.
  * The nonce is a **monotonic windowed counter** namespaced by direction + epoch, so no `(key,nonce)`
@@ -71,7 +71,7 @@ interface WatchSession {
     fun open(frame: ByteArray): ByteArray
 
     /**
-     * Manual key ROTATION (watch-link.md — "manual key rotation must be exposed"): in the shipped
+     * Manual key ROTATION ("manual key rotation must be exposed"): in the shipped
      * adapter this is a full fresh-key RE-HANDSHAKE at epoch 0 — the [epoch] is NOT incremented —
      * generating a fresh ephemeral and returning the new HELLO public key. The peer must re-handshake
      * ([acceptPeer]/[confirm]) before the new keys are LIVE; the old keys are retired immediately.

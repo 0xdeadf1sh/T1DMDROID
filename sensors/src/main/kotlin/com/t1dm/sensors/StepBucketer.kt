@@ -8,7 +8,7 @@ package com.t1dm.sensors
 data class StepBucket(val bucketStartMs: Long, val steps: Int)
 
 /**
- * Pure, framework-free core of `:sensors` StepSource (SPEC.private.md §3.5 / Phase 1): folds the
+ * Pure, framework-free core of `:sensors` StepSource (§3.5 / Phase 1): folds the
  * cumulative `TYPE_STEP_COUNTER` reading — which is monotone since the last reboot and resets to
  * 0 across one — into per-5-min-bucket deltas on the app's grid.
  *

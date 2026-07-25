@@ -2,7 +2,7 @@ package com.t1dm.core.model
 
 /**
  * The shared curve/PK engine types crossing the Rust `t1dm-core` seam (Phase 4,
- * SPEC.private.md §3.3). These mirror the uniffi records one-to-one; `:core:native`
+ * §3.3). These mirror the uniffi records one-to-one; `:core:native`
  * projects the generated `uniffi.t1dm_core.*` types onto these so downstream consumers
  * (`:data` CurveEngine/ChannelBuilder, `:calc`, `:inference`) never depend on the binding
  * directly.

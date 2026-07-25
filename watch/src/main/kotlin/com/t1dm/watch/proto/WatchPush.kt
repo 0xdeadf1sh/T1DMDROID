@@ -4,7 +4,7 @@ import com.t1dm.core.model.AlertBand
 import com.t1dm.core.model.ForecastStatus
 
 /**
- * The 5-min glance pushed phone → watch (watch-link.md, locked): current BG + trend + a one-line
+ * The 5-min glance pushed phone → watch (locked): current BG + trend + a one-line
  * forecast summary from the **selected** model + the alert band + status bits. **No images.** This
  * is the plaintext that [WatchPushCodec.encode] serialises and the crypto layer seals; the byte
  * layout is frozen in docs/WATCH_BLE.md and golden-tested.
@@ -45,8 +45,8 @@ enum class WatchTrend { FLAT, RISING, FALLING, RISING_FAST, FALLING_FAST }
 
 /**
  * The status bitfield the watch reads to colour/annotate the glance and to know the phone's own
- * health. Every bit is a plain-language condition (ux-decisions.md — human-readable everywhere);
- * [lowPowerSuspending] tells the watch the phone has SUSPENDED the 5-min scheduler (watch-link.md)
+ * health. Every bit is a plain-language condition (human-readable everywhere);
+ * [lowPowerSuspending] tells the watch the phone has SUSPENDED the 5-min scheduler
  * so a subsequently-frozen glance is expected, not a fault.
  */
 data class WatchStatus(

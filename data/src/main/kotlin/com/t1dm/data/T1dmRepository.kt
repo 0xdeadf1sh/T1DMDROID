@@ -46,7 +46,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
 
 /**
- * The single write/read gateway over [AppDatabase] (SPEC.private.md §3.5). Every mutation runs on
+ * The single write/read gateway over [AppDatabase] (§3.5). Every mutation runs on
  * [T1dmDispatchers.io]; contributing-event writes atomically re-project the wide `sample` row and
  * thinly enqueue an `INGEST` outbox item (drained in Phase 3). Reads surface [Flow]s.
  *

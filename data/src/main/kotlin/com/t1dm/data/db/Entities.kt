@@ -12,7 +12,7 @@ import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 
 /**
- * Room v1 frozen schema (SPEC.private.md §3.5 / Phase 1). Entities + DAOs only; the @Database
+ * Room v1 frozen schema (§3.5 / Phase 1). Entities + DAOs only; the @Database
  * wiring, the ALTER-only migration runner, repositories, and tests belong to the Data
  * implementer. Keep-forever storage FORBIDS destructive migration — every later change is
  * additive (nullable columns, new tables), never a drop.
@@ -36,7 +36,7 @@ enum class OutboxKind { ALERT, DOSE, MEAL, NOTE, INGEST, STATS, PREDICTIONS, SER
 /** Lifecycle of an outbox row across drain attempts. */
 enum class OutboxState { PENDING, INFLIGHT, FAILED }
 
-/** One recorded CGM source; exactly one row has `active = true` (SPEC.private.md §3.1). */
+/** One recorded CGM source; exactly one row has `active = true` (§3.1). */
 @Entity(tableName = "cgm_source")
 data class CgmSourceEntity(
     @PrimaryKey val sourceId: String,
@@ -51,7 +51,7 @@ data class CgmSourceEntity(
 
 /**
  * Authoritative per-source reading store, grid-keyed on `(sourceId, tsMs)` so the GridStamper
- * upserts in place (SPEC.private.md §3.1). `tsMs % 300_000 == 0` for every row.
+ * upserts in place (§3.1). `tsMs % 300_000 == 0` for every row.
  */
 @Entity(
     tableName = "cgm_reading",
@@ -74,7 +74,7 @@ data class CgmReadingEntity(
 )
 
 /**
- * The materialized wide scalar projection (SPEC.private.md §3.5): six nullable series —
+ * The materialized wide scalar projection (§3.5): six nullable series —
  * `bg`, `hr`, `steps`, `sleep`, `exercise`, `mood`. `hr/sleep/exercise` stay null until a source
  * exists (adding one is data-only, no migration). Carbs/bolus/basal are no longer projected here:
  * they are self-describing curve events (`logged_meal`/`logged_dose`/`basal_schedule`).
@@ -109,7 +109,7 @@ data class DoseEventEntity(
 )
 
 /**
- * A logged insulin dose with its full curve/PK parameters (Room v3, SPEC.private.md §3.3/§3.5,
+ * A logged insulin dose with its full curve/PK parameters (Room v3, §3.3/§3.5,
  * Phase 4). Unlike the Phase-1 [DoseEventEntity] (units only), this row is **self-describing**:
  * it carries the exact gamma (bolus) or Bateman (basal) parameters used to reconstruct the
  * insulin-action curve, so the reconstructed `insulin_combined` channel is stable even if the
@@ -391,7 +391,7 @@ data class NoteEntity(
     val updatedAt: Long,
 )
 
-/** Hardware / inference telemetry; Phase 2 tags rows by `modelId` (SPEC.private.md §2.4). */
+/** Hardware / inference telemetry; Phase 2 tags rows by `modelId` (§2.4). */
 @Entity(tableName = "hw_telemetry", indices = [Index("tsMs"), Index("modelId")])
 data class HwTelemetryEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,

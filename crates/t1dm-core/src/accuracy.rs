@@ -15,7 +15,7 @@
 //!   - coverage90(h) = mean(band_lo <= real <= band_hi)  over pairs carrying a band
 //!     (the τ.05 / τ.95 fan edges — matching train.py's `coverage90@h`).
 //!
-//! This is an accuracy statement about a *forecast*, never a dosing claim (safety-posture.md):
+//! This is an accuracy statement about a *forecast*, never a dosing claim:
 //! it is displayed advisory-only. Everything is total — an empty horizon or a bad
 //! `horizon_min` never panics; a horizon with fewer than `min_samples` matured pairs is
 //! still emitted (with its true `n`) and flagged `sufficient = false` so the UI can say

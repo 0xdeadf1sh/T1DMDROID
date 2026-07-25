@@ -2,7 +2,7 @@
 //! trace*: the car drives LEFT→RIGHT, i.e. forward in time toward now, and a jagged
 //! excursion is a jagged hill. Purely cosmetic: nothing here touches the §3.6 fail-closed
 //! path, no reading, dose or alarm depends on it, and the module is deliberately isolated
-//! from every safety seam (SPEC.private.md §3.6 is untouched by this file).
+//! from every safety seam (§3.6 is untouched by this file).
 //!
 //! WHY IT LIVES IN RUST. A frame loop is the one place the JNA/uniffi call cost actually
 //! bites, so the whole world is a **uniffi Object**: the heightfield is marshalled ONCE per

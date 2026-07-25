@@ -19,7 +19,7 @@ import java.util.concurrent.ConcurrentHashMap
 
 /**
  * The persisted set of AiDEX X sources and the single manually-chosen active one
- * (SPEC.private.md §3.1). It owns the one shared [BleAdvertScanner]: [start] collects raw adverts,
+ * (§3.1). It owns the one shared [BleAdvertScanner]: [start] collects raw adverts,
  * recognizes them via [AidexXPlugin], auto-adopts new sources (setting the first-ever one active),
  * and routes every recognized advert to its [AidexXSource]. Many sources may be recorded at once
  * but exactly one is active = authoritative; inference and alarms consume only [activeSource].

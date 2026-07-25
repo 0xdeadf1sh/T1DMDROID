@@ -1,4 +1,4 @@
-//! The shared curve / PK engine (SPEC.private.md §3.3) — the ONE transform that feeds
+//! The shared curve / PK engine (§3.3) — the ONE transform that feeds
 //! historical context channels, announced-future what-if conditioning, and IOB/COB
 //! display. Every function here is **bit-for-bit faithful to `T1DMSIM/simulator.py` at
 //! FIXED, noise-free presets**: `gamma_curve` (Ra carbs) and `basal_curve`

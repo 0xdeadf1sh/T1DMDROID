@@ -80,7 +80,7 @@ val cargoNdkBuild = tasks.register<Exec>("cargoNdkBuild") {
     workingDir = rootProject.projectDir
     // Track the crate sources as inputs so a Rust change actually re-runs the cross-build.
     // Without this, Gradle marked the task up-to-date and repackaged a STALE .so; the Kotlin
-    // bindings then referenced symbols the packaged library lacked (see build-gotchas memory).
+    // bindings then referenced symbols the packaged library lacked (see).
     inputs.dir(crateDir)
     inputs.file(rootProject.layout.projectDirectory.file("Cargo.lock"))
     outputs.dir(generatedJniLibsDir)

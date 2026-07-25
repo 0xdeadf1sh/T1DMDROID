@@ -1,4 +1,4 @@
-//! Advanced glycemic statistics (Phase 6, SPEC.private.md §"Phase 6 — Stats").
+//! Advanced glycemic statistics (Phase 6, §"Phase 6 — Stats").
 //!
 //! A pure, golden-gated engine that reduces a time-ordered sample series to the
 //! `AdvancedStats` block the phone renders against the user's *configurable* target

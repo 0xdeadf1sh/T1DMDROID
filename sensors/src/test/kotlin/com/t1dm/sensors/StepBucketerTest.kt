@@ -6,7 +6,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Exercises the cumulative -> per-5-min-delta bucketing (SPEC.private.md §3.5 / Phase 1),
+ * Exercises the cumulative -> per-5-min-delta bucketing (§3.5 / Phase 1),
  * including a mid-stream counter reset (reboot -> 0). Framework-free: [StepBucketer] is pure.
  */
 class StepBucketerTest {

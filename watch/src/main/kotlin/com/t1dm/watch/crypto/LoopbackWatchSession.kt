@@ -83,7 +83,7 @@ class LoopbackWatchSession internal constructor(
     // ── Emulator counterpart (the desktop BLE-peripheral / a test plays the WATCH side) ─────────
     // These mirror what the ESP32-C3 firmware does: OPEN a phone→watch push (kP2W/DIR_P2W) and SEAL
     // a watch→phone ACK (kW2P/DIR_W2P). Exposed so the phone-side push + optional ACK path can be
-    // validated end-to-end against the emulator before real hardware exists (watch-link.md).
+    // validated end-to-end against the emulator before real hardware exists.
 
     private var watchSendSeq: Long = 0L
 

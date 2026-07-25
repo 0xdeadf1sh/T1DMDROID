@@ -12,7 +12,7 @@ import androidx.compose.ui.unit.dp
  * The Settings root — the complete configuration hub (Phase 7C, items 14 & 17). Every
  * user-tunable knob in the app is reachable from here, grouped into sub-sections; the safety-critical,
  * deliberately-UNBOUNDED knobs (alarm thresholds, calculator rails/thresholds, loss-of-signal windows)
- * are grouped under "Alarms & safety" and flagged inside their own screens (safety-posture.md). The
+ * are grouped under "Alarms & safety" and flagged inside their own screens. The
  * bottom-nav overflow is deliberately left for Phase 7D — this pass only fleshes out the hub.
  *
  * Above the rows sits the search field: twenty-odd sub-screens hold something over eighty separate

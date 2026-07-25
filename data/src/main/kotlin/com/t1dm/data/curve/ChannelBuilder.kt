@@ -6,7 +6,7 @@ import com.t1dm.core.model.CurveKind
 
 /**
  * Source of the logged carb/insulin/basal events the [ChannelBuilder] reconstructs channels
- * from (SPEC.private.md §3.3). Kept as an interface so `:calc`/tests can substitute a fake and
+ * from (§3.3). Kept as an interface so `:calc`/tests can substitute a fake and
  * so the builder never reaches into Room directly. The default implementation
  * ([com.t1dm.data.curve.RoomDoseStore]) reads `logged_dose` / `logged_meal` / `basal_schedule`
  * and resolves each row into a [CurveEvent] via the [CurveEngine].

@@ -1,7 +1,7 @@
 package com.t1dm.feature.hardware
 
 /**
- * A snapshot of the detected device hardware for the Hardware panel's top readout (SPEC.private.md
+ * A snapshot of the detected device hardware for the Hardware panel's top readout (
  * Phase 7C — item 8). Built by the `:app` `HardwareProbe` off Build/os APIs, /proc, /sys,
  * ActivityManager, Display, and the thermal/battery services; every field degrades to a plain "n/a"
  * (null here) rather than crashing when a source is unavailable. Pure data so `:feature:hardware`

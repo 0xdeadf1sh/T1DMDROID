@@ -46,7 +46,7 @@ interface CgmSourceDao {
 
 @Dao
 interface CgmReadingDao {
-    /** Grid-stamp upsert on `(sourceId, tsMs)` (SPEC.private.md §3.1). */
+    /** Grid-stamp upsert on `(sourceId, tsMs)` (§3.1). */
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(reading: CgmReadingEntity)
 

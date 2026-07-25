@@ -160,7 +160,7 @@ fun SettingsNavRow(label: String, subtitle: String? = null, enabled: Boolean = t
 }
 
 /**
- * A prominent DANGER banner for the unbounded/safety-critical knobs (safety-posture.md).
+ * A prominent DANGER banner for the unbounded/safety-critical knobs.
  *
  * Deliberately SILENT. A [HapticEvent.Warn] belongs to a warning that *arises* — a refused
  * recommendation, a curve that would normalise to nothing, an erase being armed — and every one of

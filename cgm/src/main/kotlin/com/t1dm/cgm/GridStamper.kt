@@ -8,7 +8,7 @@ import com.t1dm.core.model.ReadingProvenance
 
 /**
  * Snaps each accepted advert to the 5-minute grid in *phone-receive* time and reconstructs a
- * gap-free series (SPEC.private.md §3.1, cgm-ingestion memory). Passive mode has no trustworthy
+ * gap-free series (§3.1). Passive mode has no trustworthy
  * sensor epoch, so the wall-clock receive time — not `minFromStart` — defines `tsMs`.
  *
  *  - A `NORMAL` advert produces a `MEASURED` reading at `round(rxWallMs / GRID_MS) * GRID_MS`,

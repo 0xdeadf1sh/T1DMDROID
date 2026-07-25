@@ -3,7 +3,7 @@ package com.t1dm.feature.settings
 import androidx.compose.runtime.Composable
 
 /**
- * Settings → Dose calculator (Phase 7C item 14; safety-posture.md, §3.6). The full
+ * Settings → Dose calculator (Phase 7C item 14; §3.6). The full
  * advisory policy: the scoring objective, the hypo/hyper asymmetry, the candidate-dose grid, the
  * per-rail enable switches, and the rail thresholds. Every numeric threshold is **user-set and
  * deliberately UNBOUNDED** — a disabled rail is a no-op, an enabled rail still fails closed on

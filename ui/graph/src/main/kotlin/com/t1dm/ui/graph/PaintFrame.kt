@@ -117,7 +117,7 @@ class PaintFrame internal constructor(
 private const val MIN_STEP_MS = 200L
 private const val MIN_STEP_FRAC = 5e-4f
 
-/** Build the paint layer off the main thread (SPEC.private.md §2.3, GraphFrame row). */
+/** Build the paint layer off the main thread (§2.3, GraphFrame row). */
 suspend fun paintFrameOf(
     strokes: List<PaintStroke>,
     maxPointsPerStroke: Int = 4096,

@@ -4,7 +4,7 @@ import com.t1dm.watch.crypto.SasCode
 import com.t1dm.watch.crypto.WatchSessionState
 
 /**
- * The data model the Security/Crypto panel renders (ux-decisions.md — a dedicated section showing
+ * The data model the Security/Crypto panel renders (a dedicated section showing
  * BOTH low- and high-level crypto state). :app maps this to a feature-local UI state so nothing in
  * `:feature:security` depends on `:watch` (the removable seam). Everything here is safe to display:
  * a truncated key fingerprint, counters, the SAS, and plain-language status — never raw key bytes.

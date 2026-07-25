@@ -39,7 +39,7 @@ data class AlertActuatorConfig(
 }
 
 /**
- * K90 vibration presets (ux-decisions.md — "many presets, no editor, rich use of K90 actuators").
+ * K90 vibration presets ("many presets, no editor, rich use of K90 actuators").
  * Rendered with hardware primitives ([VibrationEffect.Composition]) when the device exposes them
  * (the Dimensity-9500 K90 does), degrading to a plain waveform otherwise.
  */

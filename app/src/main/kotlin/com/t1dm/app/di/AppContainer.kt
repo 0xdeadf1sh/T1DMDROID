@@ -195,7 +195,7 @@ private const val REMIRROR_BATCH = 500
 private const val REMIRROR_MAX_PACE_WAITS = 120
 
 /**
- * The manual composition root (SPEC.private.md — "DI/wiring: manual is fine"). Built once in
+ * The manual composition root ("DI/wiring: manual is fine"). Built once in
  * [com.t1dm.app.T1dmApplication] and reached via `(application as T1dmApplication).container`.
  * Everything long-lived that the UI, the [com.t1dm.app.service.CgmScanService], and the debug
  * hooks share is constructed here exactly once; nothing constructs its own database, dispatchers,
@@ -756,7 +756,7 @@ class AppContainer(context: Context) {
         repository.putKv(KV_WARMUP_HOURS, clamped.toString(), System.currentTimeMillis())
     }
 
-    // ── Running-set cap (SPEC.private.md §2.3) — how many discovered models run each cycle; every
+    // ── Running-set cap (§2.3) — how many discovered models run each cycle; every
     // running model forecasts + pushes to the server, the SELECTED one draws the BG panel. kv-backed
     // via SettingsStore (mirrors the warmup knob); the controller re-reads it fresh each discovery. ──
 
