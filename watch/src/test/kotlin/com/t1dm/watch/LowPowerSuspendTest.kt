@@ -41,6 +41,7 @@ class LowPowerSuspendTest {
         override val default = Dispatchers.Default
         override val io = Dispatchers.Default
         override val inference = Dispatchers.Default
+        override val game = Dispatchers.Default
     }
 
     private class FakeCentral : WatchCentral {

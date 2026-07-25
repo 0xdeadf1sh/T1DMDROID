@@ -1,11 +1,8 @@
 package com.t1dm.feature.settings
 
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -16,6 +13,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.t1dm.core.design.HapticEvent
+import com.t1dm.core.design.rememberT1dmHaptics
 
 /**
  * Settings → Inference warmup (inference-runtime.md — the WARMUP gate). Human-readable control over
@@ -30,47 +29,46 @@ fun WarmupSettingsScreen(
     maxHours: Int = 72,
     onChange: (Int) -> Unit,
 ) {
-    Column(Modifier.fillMaxSize().padding(16.dp)) {
-        Text(
-            "Before showing a forecast, the model waits for this much real (measured) BG history. " +
-                "Interpolated fill and sensor warm-up readings do not count.",
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.padding(top = 12.dp),
-        )
+    val haptics = rememberT1dmHaptics()
+    SettingsScaffold(SettingsScreenKey.WARMUP) {
+        SettingsNote("Measured BG the forecast waits for; fill doesn't count")
 
-        Row(
-            Modifier.fillMaxWidth().padding(top = 24.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            OutlinedButton(
-                onClick = { onChange((hours - 1).coerceAtLeast(minHours)) },
-                enabled = hours > minHours,
-            ) { Text("−1 h") }
+        SettingsAnchor(warmupHours) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OutlinedButton(
+                    onClick = {
+                        haptics.perform(HapticEvent.SegmentTick)
+                        onChange((hours - 1).coerceAtLeast(minHours))
+                    },
+                    enabled = hours > minHours,
+                ) { Text("−1 h") }
 
-            // I13 — the ±1 h buttons keep their intrinsic size; the value field flexes (weight) and
-            // centres, so a wide value like "1 day (24 h)" can never balloon the steppers.
-            Text(
-                text = formatHours(hours),
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Bold,
-                maxLines = 1,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.weight(1f),
-            )
+                // I13 — the ±1 h buttons keep their intrinsic size; the value field flexes (weight) and
+                // centres, so a wide value like "1 day (24 h)" can never balloon the steppers.
+                Text(
+                    text = formatHours(hours),
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.weight(1f),
+                )
 
-            Button(
-                onClick = { onChange((hours + 1).coerceAtMost(maxHours)) },
-                enabled = hours < maxHours,
-            ) { Text("+1 h") }
+                Button(
+                    onClick = {
+                        haptics.perform(HapticEvent.SegmentTick)
+                        onChange((hours + 1).coerceAtMost(maxHours))
+                    },
+                    enabled = hours < maxHours,
+                ) { Text("+1 h") }
+            }
         }
 
-        Text(
-            "Minimum ${formatHours(minHours)} (the model's context floor) · maximum ${formatHours(maxHours)}.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-            modifier = Modifier.padding(top = 20.dp),
-        )
+        SettingsNote("Min ${formatHours(minHours)} (the model's context floor) · max ${formatHours(maxHours)}.")
     }
 }
 
@@ -78,3 +76,19 @@ private fun formatHours(h: Int): String = when {
     h % 24 == 0 && h >= 24 -> "${h / 24} day${if (h == 24) "" else "s"} (${h} h)"
     else -> "$h hours"
 }
+
+// ── search index (see SettingsIndex.kt) ───────────────────────────────────────────────────────────
+
+private val warmupHours = SettingsKnob(
+    id = "warmup.hours",
+    screen = SettingsScreenKey.WARMUP,
+    section = "Forecast warmup",
+    label = "Forecast warmup",
+    subtitle = "How much real, measured BG history must accrue before a forecast is shown",
+    synonyms = listOf(
+        "warmup", "warm up", "warm-up", "history", "context", "hours", "before forecasting",
+        "startup", "settle", "min context", "no forecast", "waiting", "first run", "delay",
+    ),
+)
+
+internal val settingsWarmupKnobs = listOf(warmupHours)

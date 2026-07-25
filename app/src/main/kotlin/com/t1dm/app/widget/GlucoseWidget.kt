@@ -7,6 +7,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.datastore.preferences.core.Preferences
 import androidx.glance.GlanceId
 import androidx.glance.GlanceModifier
 import androidx.glance.GlanceTheme
@@ -21,6 +22,8 @@ import androidx.glance.appwidget.SizeMode
 import androidx.glance.appwidget.action.actionStartActivity
 import androidx.glance.appwidget.cornerRadius
 import androidx.glance.appwidget.provideContent
+import androidx.glance.appwidget.state.getAppWidgetState
+import androidx.glance.appwidget.state.updateAppWidgetState
 import androidx.glance.background
 import androidx.glance.layout.Alignment
 import androidx.glance.layout.Box
@@ -34,6 +37,7 @@ import androidx.glance.layout.height
 import androidx.glance.layout.padding
 import androidx.glance.layout.size
 import androidx.glance.layout.width
+import androidx.glance.state.PreferencesGlanceStateDefinition
 import androidx.glance.text.FontWeight
 import androidx.glance.text.Text
 import androidx.glance.text.TextStyle
@@ -44,7 +48,10 @@ import com.t1dm.app.notify.BgFormat
 import com.t1dm.app.notify.BgGlance
 import com.t1dm.core.design.T1dmActivePalette
 import com.t1dm.core.design.T1dmPalette
+import com.t1dm.core.design.applyWidgetPalette
+import com.t1dm.core.design.resolvePalette
 import com.t1dm.core.model.AlertBand
+import timber.log.Timber
 import kotlin.math.roundToInt
 
 /**
@@ -52,8 +59,8 @@ import kotlin.math.roundToInt
  * lets ONE provider paint four densities — the launcher picks the largest that fits:
  *   Compact  — number + trend arrow;
  *   Medium   — + DEATH/NORMAL status, zone pill, forecast, age;
- *   Large    — + a metrics row (IOB · COB · GMI · steps);
- *   XLarge   — + a second metrics row (signal · circadian clock).
+ *   Large    — + a metrics row (IOB · COB · GMI · steps · signal);
+ *   XLarge   — + a second metrics row (circadian clock).
  * It reads the live [T1dmActivePalette] so every element follows the active theme across all five
  * palettes + a custom one. Motion is state-driven and free (no polling loop): a per-reading
  * "freshness" accent the FGS settles with ONE delayed re-render ([FRESH_WINDOW_MS]); gated by the
@@ -62,22 +69,98 @@ import kotlin.math.roundToInt
 class GlucoseWidget : GlanceAppWidget() {
     override val sizeMode = SizeMode.Responsive(setOf(Compact, Medium, Large, XLarge))
 
+    /**
+     * Renders in three tiers of decreasing knowledge, and never blank: the live pull, else the
+     * last-known snapshot [WidgetStateStore] persisted in this widget's own Glance state, else the
+     * honest "nothing known yet" floor.
+     *
+     * The guard is not defensive habit. A throw here does not leave the previous tile standing — Glance
+     * catches it and pushes `errorUiLayout` ("Can't show content") in its place — and the pull reaches
+     * through the container into Room, which a cold or still-locked process cannot open. But the graver
+     * failure is not a throw at all: a read that suspends and NEVER resumes (a cold, widget-only process
+     * forcing the Room InvalidationTracker's first subscribe; a starved reader-pool acquire) is not an
+     * exception and no `runCatching` can catch it — it would park this function short of `provideContent`
+     * forever, leaving the host inflating its loading layout (the perpetual white-tile spinner). So the
+     * pull runs under a hard [SNAPSHOT_BUDGET_MS] wall clock ([boundedWidgetPull]): a timeout is folded
+     * into the SAME `live == null` fallback a throw is, and `provideContent` is therefore always reached.
+     *
+     * The palette is seeded from the SAME snapshot rather than from whatever the FGS last wrote, so a
+     * render that did not originate in the service (boot, [WidgetRefreshWorker], a resize) still paints
+     * the persisted theme instead of the process-default Tron.
+     */
     override suspend fun provideGlance(context: Context, id: GlanceId) {
-        val snap = currentWidgetSnapshot(context)
+        val nowMs = System.currentTimeMillis()
+        val live = boundedWidgetPull(
+            SNAPSHOT_BUDGET_MS,
+            onTimeout = { Timber.tag(TAG).w("live snapshot exceeded ${SNAPSHOT_BUDGET_MS}ms — falling back to last known") },
+            onError = { Timber.tag(TAG).w(it, "live snapshot pull threw — falling back to last known") },
+        ) { currentWidgetSnapshot(context) }
+        val cached = if (live != null) null else runCatching { lastKnown(context, id) }.getOrNull()
+
+        // Before composing, not after: T1dmGlanceColors and WidgetSurface both read the process-global
+        // holders at composition time (core/design Theme.kt). Nothing known ⇒ nothing written, so a
+        // render that cannot establish the theme leaves whatever authority last did rather than
+        // clobbering it back to the default. Guarded so a malformed persisted theme cannot throw on the
+        // one path that runs BEFORE provideContent — the same spinner-forever failure the pull bound closes.
+        themeOf(live, cached)?.let { (themeId, customThemeJson) ->
+            runCatching { applyWidgetPalette(resolvePalette(themeId, customThemeJson)) }
+                .onFailure { Timber.tag(TAG).w(it, "widget palette seed failed — keeping the current palette") }
+        }
+
+        if (live != null) {
+            runCatching { updateAppWidgetState(context, id) { WidgetStateStore.write(it, live, nowMs) } }
+                .onFailure { Timber.tag(TAG).w(it, "last-known snapshot write failed") }
+        }
+
+        val snap = live ?: cached?.let { WidgetStateStore.read(it, nowMs) } ?: WidgetStateStore.unknown(nowMs)
         provideContent {
             GlanceTheme(colors = T1dmGlanceColors) { WidgetSurface(snap) }
         }
     }
 
+    /**
+     * Leave the last successfully-pushed RemoteViews on the host instead of replacing them with
+     * Glance's "Can't show content" layout (the default does exactly that, then rethrows). A stale but
+     * readable number is strictly more useful than an error card, and the composition itself is pure —
+     * anything that can fail has already failed in [provideGlance] and been absorbed there.
+     */
+    override fun onCompositionError(context: Context, glanceId: GlanceId, appWidgetId: Int, throwable: Throwable) {
+        Timber.tag(TAG).w(throwable, "widget composition failed — leaving the previous tile in place")
+    }
+
+    private suspend fun lastKnown(context: Context, id: GlanceId): Preferences =
+        getAppWidgetState(context, PreferencesGlanceStateDefinition, id)
+
+    private fun themeOf(live: WidgetSnapshot?, cached: Preferences?): Pair<String, String?>? = when {
+        live != null -> live.themeId to live.customThemeJson
+        cached != null -> WidgetStateStore.themeOf(cached)
+        else -> null
+    }
+
     companion object {
+        private const val TAG = "GlucoseWidget"
+
         /** A reading younger than this renders the "fresh" accent; the FGS schedules one delayed
          *  re-render just past it so a new value reads as a brief pulse rather than a static jump. */
         const val FRESH_WINDOW_MS = 2000L
+
+        /** The hard wall-clock ceiling on the live snapshot pull. A healthy pull is a few bounded Room
+         *  reads plus a curve eval — tens of milliseconds — so this is generous headroom for a warm
+         *  process, yet short enough that a widget woken onto a cold/locked one recovers to its cached
+         *  (or floor) tile within a couple of seconds instead of holding the loading spinner open. */
+        const val SNAPSHOT_BUDGET_MS = 2500L
     }
 }
 
 class GlucoseWidgetReceiver : GlanceAppWidgetReceiver() {
     override val glanceAppWidget: GlanceAppWidget = GlucoseWidget()
+
+    /** The first tile has just been pinned: arm the periodic refresh here as well as at boot, so a
+     *  widget added to an install that has not rebooted since is covered from the moment it appears. */
+    override fun onEnabled(context: Context) {
+        super.onEnabled(context)
+        WidgetRefreshWorker.enqueue(context)
+    }
 }
 
 // Responsive breakpoints (min size at which each layout applies); the launcher renders the largest fit.
@@ -145,7 +228,7 @@ private fun MediumContent(snap: WidgetSnapshot, p: T1dmPalette) {
         Header(snap, p, numberSp = 30, arrowSp = 22)
         Spacer(GlanceModifier.height(6.dp))
         Text(forecastText(g), maxLines = 1, style = TextStyle(fontSize = 13.sp, color = ColorProvider(p.ink)))
-        Text(BgFormat.age(g.readingAgeMs), style = TextStyle(fontSize = 11.sp, color = ColorProvider(p.inkMuted)))
+        Text(ageText(g), style = TextStyle(fontSize = 11.sp, color = ColorProvider(p.inkMuted)))
     }
 }
 
@@ -158,7 +241,7 @@ private fun LargeContent(snap: WidgetSnapshot, p: T1dmPalette) {
         PrimaryMetrics(snap, p)
         Spacer(GlanceModifier.height(8.dp))
         Text(forecastText(g), maxLines = 1, style = TextStyle(fontSize = 13.sp, color = ColorProvider(p.ink)))
-        Text(BgFormat.age(g.readingAgeMs), style = TextStyle(fontSize = 11.sp, color = ColorProvider(p.inkMuted)))
+        Text(ageText(g), style = TextStyle(fontSize = 11.sp, color = ColorProvider(p.inkMuted)))
     }
 }
 
@@ -173,7 +256,7 @@ private fun XLargeContent(snap: WidgetSnapshot, p: T1dmPalette) {
         SecondaryMetrics(snap, p)
         Spacer(GlanceModifier.height(10.dp))
         Text(forecastText(g), maxLines = 1, style = TextStyle(fontSize = 14.sp, color = ColorProvider(p.ink)))
-        Text(BgFormat.age(g.readingAgeMs), style = TextStyle(fontSize = 11.sp, color = ColorProvider(p.inkMuted)))
+        Text(ageText(g), style = TextStyle(fontSize = 11.sp, color = ColorProvider(p.inkMuted)))
     }
 }
 
@@ -196,7 +279,7 @@ private fun StatusIcon(death: Boolean) {
     if (death) {
         Image(
             provider = ImageProvider(R.drawable.ic_widget_skull),
-            contentDescription = "DEATH mode",
+            contentDescription = "Death mode",
             modifier = GlanceModifier.size(18.dp),
         )
     } else {
@@ -239,7 +322,8 @@ private fun GlyBadge(snap: WidgetSnapshot, p: T1dmPalette) {
     }
 }
 
-/** IOB · COB · GMI · steps, spread across the width. Cells with no data read "—". */
+/** IOB · COB · GMI · steps · signal, spread across the width. Cells with no data read "—". The signal
+ *  meter sits right of STEPS (bars, per the user request); the RSSI is the connected link's live poll. */
 @Composable
 private fun PrimaryMetrics(snap: WidgetSnapshot, p: T1dmPalette) {
     Row(modifier = GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -250,15 +334,15 @@ private fun PrimaryMetrics(snap: WidgetSnapshot, p: T1dmPalette) {
         Metric("GMI", snap.gmi?.let { "${oneDp(it)}%" } ?: "—", p)
         Spacer(GlanceModifier.defaultWeight())
         Metric("STEPS", snap.steps?.let { humanSteps(it) } ?: "—", p)
+        Spacer(GlanceModifier.defaultWeight())
+        SignalMetric(snap.rssi, p)
     }
 }
 
-/** CGM signal · circadian clock (XLarge only). */
+/** Circadian clock (XLarge second row; the signal meter now lives next to STEPS in [PrimaryMetrics]). */
 @Composable
 private fun SecondaryMetrics(snap: WidgetSnapshot, p: T1dmPalette) {
     Row(modifier = GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        SignalMetric(snap.rssi, p)
-        Spacer(GlanceModifier.defaultWeight())
         Metric("CLOCK", snap.clockHour?.let { formatClock(it) } ?: "—", p)
     }
 }
@@ -299,6 +383,10 @@ private fun bandColor(band: AlertBand?, p: T1dmPalette): Color = when (band) {
     AlertBand.URGENT_HIGH -> p.urgentHigh
     null -> p.inkMuted
 }
+
+/** The reading's age, or an explicit "no reading". [BgGlance.readingAgeMs] is 0 when there is nothing
+ *  to age, which `BgFormat.age` would otherwise render as a confident "now" under a "--" value. */
+private fun ageText(g: BgGlance): String = if (g.hasReading) BgFormat.age(g.readingAgeMs) else "no reading"
 
 private fun forecastText(g: BgGlance): String = when {
     g.approaching != null -> BgFormat.crossingLine(g.approaching)

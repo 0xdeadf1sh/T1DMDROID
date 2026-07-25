@@ -1,6 +1,7 @@
 package com.t1dm.calc
 
 import com.t1dm.core.common.DefaultT1dmDispatchers
+import com.t1dm.core.common.GameWorld
 import com.t1dm.core.common.NativeCore
 import com.t1dm.core.model.*
 import com.t1dm.data.curve.ChannelBuilder
@@ -142,6 +143,56 @@ class RollingForecasterAlignmentTest {
     }
 
     /**
+     * The DOSING path must build its context at the user's BG smoothing window, not the default: the
+     * window shifts `last_bg`, so a calculator left on 7 while the display cycle ran at another would
+     * anchor its whole recommendation on a different number from the forecast drawn beside it. Also
+     * pins the snap-to-detent — an even/garbage persisted value would be rejected outright by the
+     * Rust model-input guard mid-roll.
+     */
+    @Test
+    fun rollBuildsContextAtTheUserSmoothingWindow() = runTest {
+        for ((persisted, expected) in listOf(25 to 25, 1 to 1, 12 to 13, 0 to 1, -4 to 1)) {
+            val native = RecordingNativeCore()
+            val store = object : DoseStore {
+                override suspend fun carbEvents(fromMs: Long, toMs: Long): List<CurveEvent> = emptyList()
+                override suspend fun insulinEvents(fromMs: Long, toMs: Long): List<CurveEvent> = emptyList()
+                override suspend fun activeBasalSchedule(): BasalSchedule? = null
+            }
+            val history = object : BgHistoryProvider {
+                override suspend fun recentBgSeries(maxSteps: Int, minSteps: Int): BgSeries =
+                    BgSeries(DoubleArray(nCtx) { 120.0 }, anchorTsMs = g + (nCtx - 1) * STEP_MS, gridStartMs = g)
+            }
+            val model = object : SelectedModelHandle {
+                override val descriptor = this@RollingForecasterAlignmentTest.descriptor
+                override val backendInfo = fp32Backend()
+                override suspend fun run(input: GraphInput): GraphOutput = GraphOutput(FloatArray(4 * 6 * 7))
+            }
+            val forecaster = RollingForecaster(
+                native,
+                dispatchers,
+                ChannelBuilder(CurveEngine(native, dispatchers), store),
+                history,
+                SelectedModelProvider { model },
+                smoothingWindowProvider = { persisted },
+            )
+            forecaster.roll(
+                ForecastRequest(
+                    rollStartMs = nowMs,
+                    fullRollSteps = 24,
+                    validatedSteps = 24,
+                    announced = emptyList(),
+                    candidate = null,
+                    candidateU = 0.0,
+                ),
+            )
+            assertTrue("buildContext must have been invoked", native.buildContextCalls.isNotEmpty())
+            native.buildContextCalls.forEach {
+                assertEquals("persisted $persisted must reach buildContext as $expected", expected, it.smoothingWindow)
+            }
+        }
+    }
+
+    /**
      * A [NativeCore] that records the `bucketize` grid origins and the `buildContext` channels the roll
      * builds, while giving `bucketize`/`buildContext`/`assembleDecode`/`forecastDegeneracyCheck` just
      * enough real behaviour for one clean roll. `bucketize` mirrors the Rust rule the fix depends on:
@@ -155,6 +206,7 @@ class RollingForecasterAlignmentTest {
             val insulin: List<Double>,
             val announcedCarb: List<Double>?,
             val announcedInsulin: List<Double>?,
+            val smoothingWindow: Int,
         )
 
         val bucketizeCalls = mutableListOf<BucketizeCall>()
@@ -183,8 +235,9 @@ class RollingForecasterAlignmentTest {
             insulin: List<Double>,
             announcedCarb: List<Double>?,
             announcedInsulin: List<Double>?,
+            smoothingWindow: Int,
         ): BuiltContext {
-            buildContextCalls += BuildContextCall(bg, carb, insulin, announcedCarb, announcedInsulin)
+            buildContextCalls += BuildContextCall(bg, carb, insulin, announcedCarb, announcedInsulin, smoothingWindow)
             val patches = bg.size / desc.patchSize
             val predPatches = desc.predictionHorizonHours * 12 / desc.patchSize
             return BuiltContext(
@@ -217,7 +270,7 @@ class RollingForecasterAlignmentTest {
         override fun kovatchevF(mgdl: Double): Double = unused()
         override fun kovatchevFInv(risk: Double): Double = unused()
         override fun parseDescriptor(json: String): ModelDescriptor? = unused()
-        override fun causalSmooth(series: List<Double>, clampMin: Double?, clampMax: Double?): List<Double> = unused()
+        override fun causalSmooth(series: List<Double>, clampMin: Double?, clampMax: Double?, window: Int): List<Double> = unused()
         override fun normalizeSample(desc: ModelDescriptor, bg: Double, carb: Double, insulin: Double): List<Double> = unused()
         override fun denormalizeSample(desc: ModelDescriptor, z: List<Double>): List<Double> = unused()
         override fun decodeTime(timeLogits: List<Double>, nBins: Int, binHours: Double): PredictedTime? = unused()
@@ -228,5 +281,7 @@ class RollingForecasterAlignmentTest {
         override fun extendBasal(schedule: BasalSchedule, fromMs: Long, toMs: Long): List<CurveEvent> = unused()
         override fun advancedStats(samples: List<StatSample>, targetLow: Int, targetHigh: Int, agpBins: Int): AdvancedStats = unused()
         override fun accuracyAtHorizons(pairs: List<AccuracyPair>, minSamples: Int): AccuracyReport = unused()
+        override fun defaultCarTuning(): CarTuning = unused()
+        override fun createGameWorld(terrain: TerrainSpec, tuning: CarTuning): GameWorld = unused()
     }
 }

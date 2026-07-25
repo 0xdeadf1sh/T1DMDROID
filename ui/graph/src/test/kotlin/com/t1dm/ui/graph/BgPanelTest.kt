@@ -236,6 +236,19 @@ class BgPanelTest {
         assertFalse("contiguous after point 1", trace.breakAfter[1])
     }
 
+    @Test fun smoothedTrace_offWindowDrawsTheRawSignal() {
+        // "Off" (window 1) makes the native smoother the identity. The overlay must then LIE ON the
+        // raw trace rather than fail closed to EMPTY — the identity is still length-preserving, and
+        // drawing nothing would misreport the model input as unavailable.
+        val t0 = 1_700_000_000_000L
+        val readings = listOf(reading(t0, 96), reading(t0 + STEP, 131), reading(t0 + 2 * STEP, 118))
+        val trace = buildSmoothedTrace(readings, UnitSpace.MgDl, smoothMgdl = { it.copyOf() })
+        assertEquals(3, trace.size)
+        assertEquals(96f, trace.ys[0], 1e-4f)
+        assertEquals(131f, trace.ys[1], 1e-4f)
+        assertEquals(118f, trace.ys[2], 1e-4f)
+    }
+
     @Test fun smoothedTrace_lengthMismatchFailsClosed() {
         val t0 = 1_700_000_000_000L
         val readings = listOf(reading(t0, 100), reading(t0 + STEP, 120))

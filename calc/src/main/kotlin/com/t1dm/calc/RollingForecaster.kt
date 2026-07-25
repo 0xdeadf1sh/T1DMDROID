@@ -8,6 +8,7 @@ import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.RolledForecast
 import com.t1dm.data.curve.ChannelBuilder
 import com.t1dm.inference.BgHistoryProvider
+import com.t1dm.inference.InferenceControllerDefaults
 import com.t1dm.inference.backend.GraphIo
 import kotlinx.coroutines.withContext
 import timber.log.Timber
@@ -31,6 +32,11 @@ class RollingForecaster(
     private val channels: ChannelBuilder,
     private val history: BgHistoryProvider,
     private val selected: SelectedModelProvider,
+    /** The user's BG causal-SavGol window (INFERENCE.md §7.1), read FRESH for a roll that does not
+     *  carry one ([ForecastRequest.smoothingWindow]) and snapped to an offered detent. It MUST track
+     *  the display cycle's window: left at the default while the cycle used another, the on-demand
+     *  display roll would anchor on a different `last_bg` than the forecast drawn beside it (§3.6-D). */
+    private val smoothingWindowProvider: suspend () -> Int = { InferenceControllerDefaults.SAVGOL_WINDOW },
 ) : ForecastPort {
 
     override suspend fun roll(request: ForecastRequest): PredFan {
@@ -155,6 +161,15 @@ class RollingForecaster(
         val outSteps = ArrayList<FanStep>(request.fullRollSteps)
         var carrySpread = 0.0
         val nRolls = (request.fullRollSteps + predSteps - 1) / predSteps
+        // Resolved ONCE for the whole roll: a Settings edit mid-roll must not smooth roll r+1
+        // differently from roll r, or the re-fed median would cross a filter discontinuity. A dose
+        // request arrives with the window its whole recommendation was pinned to (§3.6-F), so the
+        // fresh read here is only ever the display roll's.
+        val smoothingWindow = InferenceControllerDefaults.nearestSmoothingStop(
+            request.smoothingWindow
+                ?: runCatching { smoothingWindowProvider() }.getOrNull()
+                ?: InferenceControllerDefaults.SAVGOL_WINDOW,
+        )
 
         for (r in 0 until nRolls) {
             val base = r * predSteps
@@ -163,7 +178,7 @@ class RollingForecaster(
 
             val forecast: Forecast = try {
                 withContext(dispatchers.default) {
-                    val built = native.buildContext(desc, bg.toList(), carb.toList(), insulin.toList(), predCarb, predInsulin)
+                    val built = native.buildContext(desc, bg.toList(), carb.toList(), insulin.toList(), predCarb, predInsulin, smoothingWindow)
                     val input = GraphIo.graphInput(built, desc.negFill)
                     val out = withContext(dispatchers.inference) { model.run(input) }
                     native.assembleDecode(desc, out.headRaw.map { it.toDouble() }, built.lastBg, carrySpread)

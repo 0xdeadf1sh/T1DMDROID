@@ -9,12 +9,12 @@ import androidx.sqlite.execSQL
  * virtual table is not a Room entity; it is an **external-content** FTS5 table (`content='food'`)
  * kept in lockstep with `food` by insert/update/delete triggers. Because it is Room-invisible, the
  * exact same DDL must run on BOTH code paths so a fresh install and a migrated install converge:
- *  - a fresh v4 DB: the [AppDatabase] `onCreate` callback (Room's `createAllTables` only builds
+ *  - a fresh install: the [AppDatabase] `onCreate` callback (Room's `createAllTables` only builds
  *    entity tables);
- *  - an upgrade: [MigrationRunner.MIGRATION_3_4].
+ *  - an upgrade: [MigrationRunner.MIGRATION_4_5], which is where `food` itself arrives.
  *
  * The shadow tables (`food_fts_data`, `_idx`, `_docsize`, `_config`) are auto-created by SQLite and
- * are not tracked by Room — hence the v4 migration test relaxes `validateDroppedTables`.
+ * are not tracked by Room — hence the v5 migration test relaxes `validateDroppedTables`.
  */
 internal object FoodFts {
 

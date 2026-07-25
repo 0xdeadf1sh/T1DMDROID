@@ -36,6 +36,12 @@ pub use stats::*;
 mod accuracy;
 pub use accuracy::*;
 
+/// 2D arcade car physics for the in-app hill-climb minigame, whose terrain IS the glucose
+/// trace. Cosmetic only — no §3.6 path, no reading, dose or alarm depends on it. A uniffi
+/// Object so a 60 Hz frame loop costs one FFI call per frame.
+mod game;
+pub use game::*;
+
 // ── Kovatchev risk transform constants (INFERENCE.md §5, §11) ──────────────────────
 const KOV_SCALE: f64 = 1.509;
 const KOV_POWER: f64 = 1.084;

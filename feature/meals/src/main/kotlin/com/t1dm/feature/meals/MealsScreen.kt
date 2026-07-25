@@ -6,9 +6,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -37,6 +39,12 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.t1dm.core.design.ConfirmLogDialog
+import com.t1dm.core.design.HapticEvent
+import com.t1dm.core.design.PendingLog
+import com.t1dm.core.design.rememberHapticDetent
+import com.t1dm.core.design.rememberT1dmHaptics
+import com.t1dm.core.design.verticalScrollbar
 import com.t1dm.core.model.GiChip
 import com.t1dm.core.model.IobCobReadout
 import com.t1dm.core.model.RecentMeal
@@ -56,7 +64,16 @@ private const val CARB_STEPS = 22
  *
  * Stateless + callback-driven, dependency-light (only `:core:*`) like the Phase-1 dashboard. The
  * live [previewCurve] sparkline shows the exact Ra the model will see. A "pick a saved meal / food
- * from the dictionary" affordance is a documented seam for the meal-builder work (deliverable 3).
+ * from the dictionary" affordance is a documented seam for the meal-builder work (deliverable 3),
+ * reached through the [footer] slot.
+ *
+ * N10 — the screen owns EXACTLY ONE vertical scroll container, and everything it shows (including
+ * [footer]) lives inside it. A caller must never wrap it in a bare `Column` with siblings after it:
+ * `verticalScroll` reports the full incoming `maxHeight` once its content overflows, and a Column
+ * measures unweighted children against the *remaining* main axis, so any sibling placed after this
+ * screen is measured with `maxHeight = 0` — zero-height, undrawn and unhittable, with no clipping
+ * warning to say so. That is precisely how the meal-builder link went missing. Wrapping it in a
+ * scrollable Column is not an escape either: nesting two vertical scrolls throws at measure time.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -65,17 +82,39 @@ fun MealsScreen(
     recentMeals: List<RecentMeal> = emptyList(),
     previewCurve: (suspend (grams: Double, gi: Double) -> DoubleArray)? = null,
     photoThumbnail: ImageBitmap? = null,
+    /**
+     * Whether a photo will actually be uploaded with this meal.
+     *
+     * Distinct from [photoThumbnail], which is only what the preview can DRAW: the two cells are set
+     * independently, so a decode that failed left a meal whose photo the §3.6-G dialog denied while
+     * the POST still went out — to a server with no delete endpoint — and a cancelled re-take
+     * promised an upload that never fired. This must be the same cell that gates the POST.
+     */
+    photoAttached: Boolean = photoThumbnail != null,
     onTakePhoto: () -> Unit = {},
     onChoosePhoto: () -> Unit = {},
     onClearPhoto: () -> Unit = {},
     uploadStatus: String? = null,
     onLogMeal: (grams: Double, gi: Double) -> Unit = { _, _ -> },
+    footer: @Composable ColumnScope.() -> Unit = {},
 ) {
     var gramsText by remember { mutableStateOf("") }
     var gi by remember { mutableFloatStateOf(GiChip.MIXED.gi.toFloat()) }
     val grams = gramsText.toDoubleOrNull()
+    val scroll = rememberScrollState()
+    // The meal the Log press proposes, held until the confirmation resolves. Nullable-payload state,
+    // the same shape the model-removal confirm uses. Nothing is written and nothing is cleared while
+    // it is non-null — see the deferred field clear on the Button below.
+    var pending by remember { mutableStateOf<PendingLog.Meal?>(null) }
+    val haptics = rememberT1dmHaptics()
+    // The carb slider is two-way bound to the text field above it — dragging rewrites the text and
+    // TYPING repositions the thumb — so the detent is driven from `onValueChange`, which only the drag
+    // calls, and keyed on the 5 g stop rather than the raw Float. Keying it on `grams` instead would
+    // buzz once per keystroke.
+    val gramsDetent = rememberHapticDetent()
+    val giDetent = rememberHapticDetent(HapticEvent.ScrubTick)
 
-    Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp)) {
+    Column(Modifier.fillMaxSize().verticalScrollbar(scroll).verticalScroll(scroll).padding(16.dp)) {
         iobCob?.let { CobLine(it) }
 
         OutlinedTextField(
@@ -91,7 +130,7 @@ fun MealsScreen(
         // simply parks the thumb at the low end without overwriting what the user typed.
         Slider(
             value = (grams ?: CARB_MIN).coerceIn(CARB_MIN, CARB_MAX).toFloat(),
-            onValueChange = { gramsText = it.roundToInt().toString() },
+            onValueChange = { gramsDetent.at(it.roundToInt()); gramsText = it.roundToInt().toString() },
             valueRange = CARB_MIN.toFloat()..CARB_MAX.toFloat(),
             steps = CARB_STEPS,
         )
@@ -105,7 +144,11 @@ fun MealsScreen(
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 recentMeals.forEach { m ->
                     AssistChip(
-                        onClick = { gramsText = m.grams.toInt().toString(); gi = m.gi.toFloat() },
+                        onClick = {
+                            haptics.perform(HapticEvent.Tap)
+                            gramsText = m.grams.toInt().toString()
+                            gi = m.gi.toFloat()
+                        },
                         label = { Text(m.label) },
                         leadingIcon = { Text("↺", style = MaterialTheme.typography.labelLarge) },
                         colors = AssistChipDefaults.assistChipColors(),
@@ -115,7 +158,7 @@ fun MealsScreen(
         }
 
         Text(
-            "Glycemic index: ${gi.toInt()}",
+            "GI ${gi.toInt()}",
             style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier.padding(top = 16.dp),
         )
@@ -123,12 +166,18 @@ fun MealsScreen(
             GiChip.entries.forEach { chip ->
                 FilterChip(
                     selected = gi.toInt() == chip.gi.toInt(),
-                    onClick = { gi = chip.gi.toFloat() },
+                    onClick = { haptics.perform(HapticEvent.SegmentTick); gi = chip.gi.toFloat() },
                     label = { Text(chip.label) },
                 )
             }
         }
-        Slider(value = gi, onValueChange = { gi = it }, valueRange = 0f..100f)
+        // GI is continuous, so its grain is imposed here: one tick per whole 5 GI points, which is
+        // about the resolution the number below it is read at.
+        Slider(
+            value = gi,
+            onValueChange = { giDetent.at((it / 5f).roundToInt()); gi = it },
+            valueRange = 0f..100f,
+        )
 
         if (previewCurve != null && grams != null && grams > 0.0) {
             Text(
@@ -148,21 +197,34 @@ fun MealsScreen(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             modifier = Modifier.padding(top = 16.dp),
         ) {
-            OutlinedButton(onClick = onTakePhoto) { Text("Take photo") }
-            OutlinedButton(onClick = onChoosePhoto) { Text("Choose photo") }
+            OutlinedButton(
+                onClick = { haptics.perform(HapticEvent.Tap); onTakePhoto() },
+            ) { Text("Take photo") }
+            OutlinedButton(
+                onClick = { haptics.perform(HapticEvent.Tap); onChoosePhoto() },
+            ) { Text("Choose photo") }
         }
-        if (photoThumbnail != null) {
+        // Gated on the ATTACHMENT, not the thumbnail: a photo whose preview would not decode is still
+        // going to be uploaded, so Remove has to stay reachable — it was the only way to call it off,
+        // and it used to vanish with the preview.
+        if (photoAttached) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.padding(top = 8.dp),
             ) {
-                Image(
-                    bitmap = photoThumbnail,
-                    contentDescription = "Attached meal photo",
-                    modifier = Modifier.size(64.dp),
-                )
-                OutlinedButton(onClick = onClearPhoto) { Text("Remove") }
+                if (photoThumbnail != null) {
+                    Image(
+                        bitmap = photoThumbnail,
+                        contentDescription = "Attached meal photo",
+                        modifier = Modifier.size(64.dp),
+                    )
+                } else {
+                    Text("Photo attached", style = MaterialTheme.typography.bodySmall)
+                }
+                OutlinedButton(
+                    onClick = { haptics.perform(HapticEvent.Reject); onClearPhoto() },
+                ) { Text("Remove") }
             }
         }
         uploadStatus?.let {
@@ -174,11 +236,39 @@ fun MealsScreen(
             )
         }
 
+        // The press only PROPOSES the meal; `gramsText` survives until the dialog is confirmed, so a
+        // Cancel does not silently wipe what was typed (it used to clear synchronously, here).
+        // The press only PROPOSES: it raises ConfirmLogDialog, which owns the Warn/Confirm/Reject beat,
+        // and `:app`'s receipt owns the Commit once a row actually exists. A Tap here and nothing more,
+        // or the same act would speak three times.
         Button(
-            onClick = { grams?.let { onLogMeal(it, gi.toDouble()) }; gramsText = "" },
+            onClick = {
+                haptics.perform(HapticEvent.Tap)
+                grams?.let {
+                    pending = PendingLog.Meal(
+                        grams = it,
+                        gi = gi.toDouble(),
+                        photoAttached = photoAttached,
+                    )
+                }
+            },
             enabled = grams != null && grams > 0.0,
             modifier = Modifier.padding(top = 16.dp),
         ) { Text("Log meal") }
+
+        footer()
+    }
+
+    pending?.let { p ->
+        ConfirmLogDialog(
+            pending = p,
+            onConfirm = {
+                onLogMeal(p.grams, p.gi ?: GiChip.MIXED.gi)
+                gramsText = ""
+                pending = null
+            },
+            onDismiss = { pending = null },
+        )
     }
 }
 

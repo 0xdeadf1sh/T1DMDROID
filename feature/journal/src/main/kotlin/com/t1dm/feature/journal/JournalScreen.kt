@@ -23,6 +23,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.t1dm.core.design.HapticEvent
+import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.model.JournalNote
 import java.time.Instant
 import java.time.ZoneOffset
@@ -55,7 +57,7 @@ fun JournalScreen(
         )
         if (notes.isEmpty()) {
             Text(
-                "No notes yet — jot how you feel, what you ate, anything worth remembering.",
+                "No notes yet",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
             )
@@ -72,16 +74,20 @@ private val MOODS = listOf(1 to "😞", 2 to "🙁", 3 to "😐", 4 to "🙂", 5
 
 @Composable
 private fun MoodPicker(current: Int?, onPick: (Int) -> Unit) {
+    val haptics = rememberT1dmHaptics()
     Text("Mood", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(bottom = 8.dp))
     Row(
         Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        // A five-stop scale, not five buttons — a detent, like any other single-choice picker. The
+        // write it triggers is silent: `sample.mood` is an overwrite of today's value, not an appended
+        // clinical row, so it earns no Commit.
         MOODS.forEach { (value, glyph) ->
             FilterChip(
                 selected = current == value,
-                onClick = { onPick(value) },
+                onClick = { haptics.perform(HapticEvent.SegmentTick); onPick(value) },
                 label = { Text(glyph, style = MaterialTheme.typography.titleLarge) },
                 shape = CircleShape,
             )
@@ -92,20 +98,29 @@ private fun MoodPicker(current: Int?, onPick: (Int) -> Unit) {
 @Composable
 private fun NoteComposer(onSave: (String) -> Unit) {
     var text by remember { mutableStateOf("") }
+    val haptics = rememberT1dmHaptics()
     Column(Modifier.fillMaxWidth().padding(top = 20.dp)) {
         OutlinedTextField(
             value = text,
             onValueChange = { text = it },
             modifier = Modifier.fillMaxWidth(),
-            label = { Text("What's on your mind?") },
+            label = { Text("Note") },
             minLines = 3,
         )
         Row(
             Modifier.fillMaxWidth().padding(top = 8.dp),
             horizontalArrangement = Arrangement.End,
         ) {
+            // A note is written and the field empties in the same frame; Confirm is the only thing
+            // that says the emptying was the save rather than a stray clear.
             Button(
-                onClick = { if (text.isNotBlank()) { onSave(text.trim()); text = "" } },
+                onClick = {
+                    if (text.isNotBlank()) {
+                        haptics.perform(HapticEvent.Confirm)
+                        onSave(text.trim())
+                        text = ""
+                    }
+                },
                 enabled = text.isNotBlank(),
             ) { Text("Save note") }
         }

@@ -7,7 +7,7 @@
 //! parses the `.pt` pickle.
 //!
 //! Pipeline (INFERENCE.md §§6-8):
-//!   raw channels ──savgol──> ──normalize──> context (z) ──graph──> head_raw
+//!   raw channels ──savgol (BG)──> ──normalize──> context (z) ──graph──> head_raw
 //!                                                │                     │
 //!                                          last_bg anchor        assemble_decode
 //!                                                                (softplus+floor,
@@ -42,7 +42,12 @@ const SOFTPLUS_THRESHOLD: f64 = 20.0;
 /// the largest weight (32/42), so the endpoint estimate does not lag (utils.py §causal).
 const SAVGOL_TAPS: [f64; 7] = [5.0, -3.0, -6.0, -4.0, 3.0, 15.0, 32.0];
 const SAVGOL_DENOM: f64 = 42.0;
+/// The default window — what every build applied unconditionally before the filter became
+/// configurable, and the value the goldens and the fp16-agreement probe are pinned to.
 const SAVGOL_WINDOW: usize = 7;
+/// Largest accepted window. Well past the widest offered detent (25) yet small enough that a
+/// hostile value can never provoke a giant tap allocation before the odd/positive guards bite.
+const SAVGOL_WINDOW_MAX: i32 = 99;
 
 // ── Degeneracy thresholds (§3.6-B) ──────────────────────────────────────────────────
 /// mg/dL tolerance for "pinned to a rail" (flat 20 or flat 500).
@@ -292,29 +297,105 @@ pub fn parse_descriptor(json: String) -> Result<ModelDescriptor, CoreError> {
 
 // ── Causal Savitzky-Golay smoother (INFERENCE.md §7.1) ──────────────────────────────
 
-/// Strictly-causal one-sided Savitzky-Golay smooth of a 1-D signal (`window=7`,
+/// Accept a caller-supplied window: odd, in `[1, SAVGOL_WINDOW_MAX]`. Anything else is a
+/// programming error or a corrupt persisted setting and fails closed — an even window has no
+/// endpoint-centred abscissa and `w < 1` would index a tap set that does not exist.
+fn validate_window(window: i32) -> Result<usize, CoreError> {
+    if window < 1 || window > SAVGOL_WINDOW_MAX || window % 2 == 0 {
+        return Err(CoreError::Internal {
+            reason: format!(
+                "savgol window {window} must be odd and in [1, {SAVGOL_WINDOW_MAX}]"
+            ),
+        });
+    }
+    Ok(window as usize)
+}
+
+/// Endpoint taps for `(window, polyorder = 2)` derived at runtime, oldest→newest, as
+/// `(taps, denom)` — the caller divides ONCE after accumulating, so the shipped default keeps
+/// its exact integer rationals over 42 and stays bit-identical to the pre-configurable filter
+/// (the CPU-unchanged proof compares `head_raw` byte-for-byte across the stock and custom AAR,
+/// and `savgol_solver_reproduces_reference_taps` is what pins the `w = 7` fast path to those
+/// rationals; the §3.6-E agreement probe is a mg/dL-tolerance GPU-vs-CPU check in ONE process
+/// and could not see the difference, since both backends consume the same taps).
+///
+/// The general branch is the least-squares quadratic fit to `x[t-(w-1) ..= t]` evaluated at the
+/// newest sample — `scipy.signal.savgol_coeffs(w, 2, pos=w-1, use='dot')` — solved in closed
+/// form rather than by a pseudo-inverse. Centring the abscissa at `m = (w-1)/2` (`u = i - m`)
+/// kills the odd power sums, leaving `S0 = w`, `S2 = Σu²`, `S4 = Σu⁴` and a 2×2 solve; the
+/// endpoint sits at `u = m`. `w = 1` is the identity (`m = 0` ⇒ `S2 = 0`; scipy likewise
+/// rejects `polyorder >= window_length`), i.e. an unfiltered pass-through.
+fn savgol_endpoint_taps(window: usize) -> (Vec<f64>, f64) {
+    match window {
+        1 => (vec![1.0], 1.0),
+        SAVGOL_WINDOW => (SAVGOL_TAPS.to_vec(), SAVGOL_DENOM),
+        w => (savgol_endpoint_taps_general(w), 1.0),
+    }
+}
+
+/// The closed-form solver behind [`savgol_endpoint_taps`], already normalized (sums to 1).
+/// Callers must not hand it `window < 3` — the `S2` division is singular at `m = 0`.
+fn savgol_endpoint_taps_general(window: usize) -> Vec<f64> {
+    let m = ((window - 1) / 2) as f64;
+    let s0 = window as f64;
+    let s2 = m * (m + 1.0) * (2.0 * m + 1.0) / 3.0;
+    let s4 = m * (m + 1.0) * (2.0 * m + 1.0) * (3.0 * m * m + 3.0 * m - 1.0) / 15.0;
+    let det = s0 * s4 - s2 * s2;
+    (0..window)
+        .map(|i| {
+            let u = i as f64 - m;
+            (s4 - s2 * u * u) / det + m * (u / s2) + m * m * (s0 * u * u - s2) / det
+        })
+        .collect()
+}
+
+/// Strictly-causal one-sided Savitzky-Golay smooth of a 1-D signal ([`window`] odd,
 /// `polyorder=2`, evaluated at the endpoint). `out[t]` is the degree-2 fit to
-/// `x[t-6 ..= t]` read at `t`, so it uses only `x[≤t]` and never leaks the future; the
-/// left edge is causally replicated with `x[0]`. Optional physical clamps are applied
-/// to the output (BG → `[20,500]`; carb/insulin → `min = 0`). Mirrors
-/// `utils.causal_smooth` (fp64 matmul; T1DMAI casts to fp32 at the end, which we skip —
-/// this is the authority).
+/// `x[t-(window-1) ..= t]` read at `t`, so it uses only `x[≤t]` and never leaks the future; the
+/// left edge is causally replicated with `x[0]`. `window = 1` is the identity — the raw signal,
+/// clamped. Optional physical clamps are applied to the output (BG → `[20,500]`;
+/// carb/insulin → `min = 0`); they are NOT part of the filter and hold at every window.
+///
+/// A wider window suppresses more sensor noise (white-noise variance falls as `Σtap²`) but the
+/// endpoint estimator EXTRAPOLATES its quadratic to the edge of its own support, so it settles
+/// more slowly after a turn and overshoots a spike further — wider is not unconditionally safer.
+///
+/// An out-of-contract window (even, `< 1`, or above the accepted ceiling) falls back to the
+/// default `SAVGOL_WINDOW` instead of panicking (the crate is `panic = "abort"`); the model
+/// input path — [`build_context`] — rejects it outright rather than silently substituting.
 #[uniffi::export]
-pub fn causal_smooth(series: Vec<f64>, clamp_min: Option<f64>, clamp_max: Option<f64>) -> Vec<f64> {
+pub fn causal_smooth(
+    series: Vec<f64>,
+    clamp_min: Option<f64>,
+    clamp_max: Option<f64>,
+    window: i32,
+) -> Vec<f64> {
+    let w = validate_window(window).unwrap_or(SAVGOL_WINDOW);
+    causal_smooth_w(&series, clamp_min, clamp_max, w)
+}
+
+/// The validated-window kernel behind [`causal_smooth`].
+fn causal_smooth_w(
+    series: &[f64],
+    clamp_min: Option<f64>,
+    clamp_max: Option<f64>,
+    window: usize,
+) -> Vec<f64> {
     let n = series.len();
     let mut out = vec![0.0f64; n];
     if n == 0 {
         return out;
     }
+    let (taps, denom) = savgol_endpoint_taps(window);
     for t in 0..n {
         let mut acc = 0.0f64;
-        for (j, &tap) in SAVGOL_TAPS.iter().enumerate() {
+        for (j, &tap) in taps.iter().enumerate() {
             // window sample = x[t - (W-1) + j], replicated with x[0] on the left edge.
-            let idx = t as isize - (SAVGOL_WINDOW as isize - 1) + j as isize;
+            let idx = t as isize - (window as isize - 1) + j as isize;
             let xv = if idx < 0 { series[0] } else { series[idx as usize] };
             acc += tap * xv;
         }
-        let mut v = acc / SAVGOL_DENOM;
+        let mut v = acc / denom;
         if let Some(lo) = clamp_min {
             if v < lo {
                 v = lo;
@@ -400,10 +481,20 @@ pub struct BuiltContext {
 /// Build the normalized context + prediction-zone patches + `last_bg` anchor from raw
 /// per-step history (INFERENCE.md §7.2-7.4). `bg`/`carb`/`insulin` are equal-length
 /// trailing series of `n_ctx·PATCH_SIZE` steps, `n_ctx ∈ [min,max]_context_patches`.
-/// Each channel is causal-smoothed (BG clamp `[20,500]`; carb/insulin floor 0) then
-/// normalized. `announced_carb`/`announced_insulin`, if present, are raw future doses
-/// (length `P·PATCH_SIZE`) written into the prediction zone; absent slots take the
-/// `normalize(0)` no-dose baseline (NOT z=0 — §7.3).
+/// `announced_carb`/`announced_insulin`, if present, are raw future doses (length
+/// `P·PATCH_SIZE`) written into the prediction zone; absent slots take the `normalize(0)`
+/// no-dose baseline (NOT z=0 — §7.3).
+///
+/// `smoothing_window` selects the causal Savitzky-Golay window applied to the **BG channel
+/// only** (odd, `1` = unfiltered); it fails closed on anything else rather than substituting a
+/// default, because this is the model-input path. The carb and insulin channels are passed
+/// unfiltered at every window: they are analytic reconstructions (gamma / Bateman /
+/// exponential action curves), already smooth by construction, and filtering them only blunts
+/// the onset of a meal or a dose. Both keep their physical guards — BG is clamped to
+/// `[20,500]`, carb/insulin floored at 0 by `normalize_feat`'s `log1p` — at every window.
+///
+/// The window MOVES the `last_bg` anchor (§3.6-D), since the anchor is read off the smoothed
+/// last BG cell, so it is decision-relevant and not a display preference.
 #[uniffi::export]
 pub fn build_context(
     desc: &ModelDescriptor,
@@ -412,6 +503,26 @@ pub fn build_context(
     insulin: Vec<f64>,
     announced_carb: Option<Vec<f64>>,
     announced_insulin: Option<Vec<f64>>,
+    smoothing_window: i32,
+) -> Result<BuiltContext, CoreError> {
+    let bg_window = validate_window(smoothing_window)?;
+    build_context_windows(desc, bg, carb, insulin, announced_carb, announced_insulin, bg_window, 1)
+}
+
+/// [`build_context`] with an explicit per-channel window pair: `bg_window` for the BG channel,
+/// `dose_window` for BOTH dose channels (`1` = the unfiltered production shape). The T1DMAI
+/// reference the golden vectors were generated from smoothed all three channels at window 7,
+/// so `(7, 7)` reproduces that fixture bit-for-bit and the goldens keep pinning it.
+#[allow(clippy::too_many_arguments)]
+fn build_context_windows(
+    desc: &ModelDescriptor,
+    bg: Vec<f64>,
+    carb: Vec<f64>,
+    insulin: Vec<f64>,
+    announced_carb: Option<Vec<f64>>,
+    announced_insulin: Option<Vec<f64>>,
+    bg_window: usize,
+    dose_window: usize,
 ) -> Result<BuiltContext, CoreError> {
     let n = bg.len();
     if n == 0 || carb.len() != n || insulin.len() != n {
@@ -440,10 +551,11 @@ pub fn build_context(
     }
     let p = desc.prediction_patches()?;
 
-    // Causal-smooth each channel in the same space the model was trained on.
-    let sm_bg = causal_smooth(bg, Some(BG_CLAMP_MIN), Some(BG_CLAMP_MAX));
-    let sm_carb = causal_smooth(carb, Some(0.0), None);
-    let sm_ins = causal_smooth(insulin, Some(0.0), None);
+    // Pre-filter BG at the requested window; the dose channels ride `dose_window` (1 in
+    // production ⇒ identity, so only their unconditional floor survives).
+    let sm_bg = causal_smooth_w(&bg, Some(BG_CLAMP_MIN), Some(BG_CLAMP_MAX), bg_window);
+    let sm_carb = causal_smooth_w(&carb, Some(0.0), None, dose_window);
+    let sm_ins = causal_smooth_w(&insulin, Some(0.0), None, dose_window);
 
     // Normalize + step-major interleave: context[gs*3 + feat].
     let mut context = vec![0.0f64; n * N_FEAT];
@@ -948,13 +1060,84 @@ mod tests {
         assert_close(&got, &want, 1e-12, "savgol_coeffs");
     }
 
+    /// The five detents the app offers (Off / Standard / Moderate / Strong / Heavy).
+    const STOPS: [i32; 5] = [1, 7, 13, 19, 25];
+
+    // ── the runtime solver reproduces the pinned reference taps ──────────────────────
+    #[test]
+    fn savgol_solver_reproduces_reference_taps() {
+        // The general closed form must land on the exact rationals over 42 that the golden
+        // fixture (and every pre-configurable build) pins, to fp64 round-off.
+        let want: Vec<f64> = SAVGOL_TAPS.iter().map(|t| t / SAVGOL_DENOM).collect();
+        assert_close(&savgol_endpoint_taps_general(7), &want, 1e-15, "solver taps w=7");
+        assert_close(&savgol_endpoint_taps_general(7), &f64s(&golden()["savgol_coeffs"]), 1e-12, "solver vs scipy");
+        // ...and the w=7 fast path is the exact rationals, so the default smooth is bit-identical.
+        let (taps, denom) = savgol_endpoint_taps(7);
+        assert_eq!(taps, SAVGOL_TAPS.to_vec());
+        assert_eq!(denom, SAVGOL_DENOM);
+    }
+
+    #[test]
+    fn savgol_taps_preserve_dc_at_every_stop() {
+        for w in STOPS {
+            let (taps, denom) = savgol_endpoint_taps(w as usize);
+            assert_eq!(taps.len(), w as usize, "w={w}: tap count");
+            let sum: f64 = taps.iter().sum::<f64>() / denom;
+            assert!((sum - 1.0).abs() < 1e-12, "w={w}: taps sum to {sum}, not 1");
+            // use='dot' ordering: the NEWEST sample carries the largest weight, so the
+            // endpoint estimate does not lag.
+            let newest = taps[w as usize - 1] / denom;
+            assert!(
+                taps.iter().all(|t| t / denom <= newest + 1e-12),
+                "w={w}: newest tap {newest} is not the largest"
+            );
+        }
+    }
+
+    #[test]
+    fn savgol_window_one_is_the_identity() {
+        let x = vec![120.0, 4.0, 900.0, -30.0, 77.5];
+        assert_eq!(causal_smooth(x.clone(), None, None, 1), x);
+        // The physical clamps are not part of the filter — they hold at w=1 too.
+        assert_eq!(
+            causal_smooth(x, Some(BG_CLAMP_MIN), Some(BG_CLAMP_MAX), 1),
+            vec![120.0, 20.0, 500.0, 20.0, 77.5]
+        );
+    }
+
+    #[test]
+    fn causal_smooth_never_leaks_the_future() {
+        let base: Vec<f64> = (0..64).map(|i| 100.0 + (i as f64 * 0.7).sin() * 30.0).collect();
+        for w in STOPS {
+            let a = causal_smooth(base.clone(), None, None, w);
+            let mut perturbed = base.clone();
+            perturbed[40] += 250.0;
+            let b = causal_smooth(perturbed, None, None, w);
+            for t in 0..40 {
+                assert!((a[t] - b[t]).abs() < 1e-12, "w={w}: sample 40 leaked backwards into t={t}");
+            }
+        }
+    }
+
+    #[test]
+    fn causal_smooth_falls_back_on_an_out_of_contract_window() {
+        // Display-path totality: an even / non-positive / oversized window must never panic
+        // (the crate is `panic = "abort"`); it degrades to the default instead.
+        let x: Vec<f64> = (0..32).map(|i| 90.0 + i as f64).collect();
+        let want = causal_smooth(x.clone(), None, None, SAVGOL_WINDOW as i32);
+        for bad in [0, -7, 8, SAVGOL_WINDOW_MAX + 2, i32::MIN] {
+            assert_eq!(causal_smooth(x.clone(), None, None, bad), want, "window {bad}");
+        }
+    }
+
     // ── causal_smooth matches utils.causal_smooth (f32-cast production output) ────────
     #[test]
     fn causal_smooth_matches_production() {
         let g = golden();
-        let bg = causal_smooth(f64s(&g["raw_bg"]), Some(20.0), Some(500.0));
-        let carb = causal_smooth(f64s(&g["raw_carb"]), Some(0.0), None);
-        let ins = causal_smooth(f64s(&g["raw_insulin"]), Some(0.0), None);
+        let w = SAVGOL_WINDOW as i32;
+        let bg = causal_smooth(f64s(&g["raw_bg"]), Some(20.0), Some(500.0), w);
+        let carb = causal_smooth(f64s(&g["raw_carb"]), Some(0.0), None, w);
+        let ins = causal_smooth(f64s(&g["raw_insulin"]), Some(0.0), None, w);
         // Production casts to fp32 at the end; we stay fp64 → agree to ~fp32 eps.
         assert_close(&bg, &f64s(&g["smoothed_bg"]), 1e-3, "smoothed_bg");
         assert_close(&carb, &f64s(&g["smoothed_carb"]), 1e-5, "smoothed_carb");
@@ -983,17 +1166,22 @@ mod tests {
     }
 
     // ── build_context: normalized context + last_bg anchor ───────────────────────────
+    // The fixture was generated from the T1DMAI reference that smoothed ALL THREE channels at
+    // window 7, so it is pinned through the (7,7) shape. Production smooths BG only — covered
+    // by `build_context_leaves_dose_channels_unfiltered` below, never by weakening this gate.
     #[test]
     fn build_context_matches_production() {
         let d = test_descriptor();
         let g = golden();
-        let bc = build_context(
+        let bc = build_context_windows(
             &d,
             f64s(&g["raw_bg"]),
             f64s(&g["raw_carb"]),
             f64s(&g["raw_insulin"]),
             None,
             None,
+            SAVGOL_WINDOW,
+            SAVGOL_WINDOW,
         )
         .expect("build_context");
         assert_eq!(bc.n_ctx, 16);
@@ -1029,13 +1217,15 @@ mod tests {
         let g = golden();
         let ann_carb: Vec<f64> = (0..24).map(|i| i as f64 * 0.5).collect();
         let ann_ins: Vec<f64> = (0..24).map(|_| 0.3).collect();
-        let bc = build_context(
+        let bc = build_context_windows(
             &d,
             f64s(&g["raw_bg"]),
             f64s(&g["raw_carb"]),
             f64s(&g["raw_insulin"]),
             Some(ann_carb.clone()),
             Some(ann_ins.clone()),
+            SAVGOL_WINDOW,
+            SAVGOL_WINDOW,
         )
         .unwrap();
         for j in 0..24 {
@@ -1044,15 +1234,71 @@ mod tests {
         }
     }
 
+    // ── production shape: the dose channels reach the model UNFILTERED ────────────────
+    #[test]
+    fn build_context_leaves_dose_channels_unfiltered() {
+        let d = test_descriptor();
+        let g = golden();
+        let carb = f64s(&g["raw_carb"]);
+        let ins = f64s(&g["raw_insulin"]);
+        for w in STOPS {
+            let bc = build_context(&d, f64s(&g["raw_bg"]), carb.clone(), ins.clone(), None, None, w)
+                .expect("build_context");
+            for gs in 0..carb.len() {
+                assert_eq!(bc.context[gs * N_FEAT + 1], normalize_feat(&d, 1, carb[gs]), "w={w} carb[{gs}]");
+                assert_eq!(bc.context[gs * N_FEAT + 2], normalize_feat(&d, 2, ins[gs]), "w={w} insulin[{gs}]");
+            }
+        }
+        // ...and that is a REAL divergence from the reference, not a no-op: the (7,7) fixture
+        // shape moves the same cells well past the golden's own 1e-4 context tolerance.
+        let legacy = build_context_windows(
+            &d, f64s(&g["raw_bg"]), carb.clone(), ins.clone(), None, None, SAVGOL_WINDOW, SAVGOL_WINDOW,
+        )
+        .unwrap();
+        let raw = build_context(&d, f64s(&g["raw_bg"]), carb, ins, None, None, SAVGOL_WINDOW as i32).unwrap();
+        let worst = (0..legacy.context.len())
+            .map(|i| (legacy.context[i] - raw.context[i]).abs())
+            .fold(0.0f64, f64::max);
+        assert!(worst > 1e-4, "dose smoothing must actually move the context (worst Δ={worst:.3e})");
+    }
+
+    // ── the window moves the §3.6-D last_bg anchor ───────────────────────────────────
+    #[test]
+    fn build_context_window_moves_the_anchor() {
+        let d = test_descriptor();
+        let g = golden();
+        let anchor = |w: i32| {
+            build_context(&d, f64s(&g["raw_bg"]), f64s(&g["raw_carb"]), f64s(&g["raw_insulin"]), None, None, w)
+                .unwrap()
+                .last_bg
+        };
+        // w=1 is unfiltered, so the anchor is just the last raw sample through the
+        // normalize/denormalize round trip.
+        let raw_last = f64s(&g["raw_bg"]).last().copied().unwrap();
+        assert!((anchor(1) - raw_last).abs() < 1e-6, "w=1 anchor {} vs raw {raw_last}", anchor(1));
+        // The default still lands on the golden anchor (the goldens smooth BG at 7 as well).
+        assert!((anchor(7) - g["last_bg"].as_f64().unwrap()).abs() < 1e-3);
+        // Widening pulls the anchor further off the last sample — this is a dosing-relevant
+        // shift, not a cosmetic one, which is why the card surfaces a non-default window.
+        let mut prev = 0.0;
+        for w in STOPS {
+            let drift = (anchor(w) - raw_last).abs();
+            assert!(drift >= prev - 1e-9, "w={w}: anchor drift {drift} shrank below {prev}");
+            prev = drift;
+        }
+        assert!(prev > 1.0, "the widest window must move the anchor by more than 1 mg/dL, got {prev}");
+    }
+
     #[test]
     fn build_context_rejects_bad_shapes() {
         let d = test_descriptor();
+        let w = SAVGOL_WINDOW as i32;
         // too few patches (n_ctx = 4 < 16)
-        assert!(build_context(&d, vec![100.0; 24], vec![0.0; 24], vec![0.0; 24], None, None).is_err());
+        assert!(build_context(&d, vec![100.0; 24], vec![0.0; 24], vec![0.0; 24], None, None, w).is_err());
         // non-multiple of PATCH_SIZE
-        assert!(build_context(&d, vec![100.0; 97], vec![0.0; 97], vec![0.0; 97], None, None).is_err());
+        assert!(build_context(&d, vec![100.0; 97], vec![0.0; 97], vec![0.0; 97], None, None, w).is_err());
         // mismatched channels
-        assert!(build_context(&d, vec![100.0; 96], vec![0.0; 90], vec![0.0; 96], None, None).is_err());
+        assert!(build_context(&d, vec![100.0; 96], vec![0.0; 90], vec![0.0; 96], None, None, w).is_err());
         // wrong announced length
         assert!(build_context(
             &d,
@@ -1060,9 +1306,26 @@ mod tests {
             vec![0.0; 96],
             vec![0.0; 96],
             Some(vec![0.0; 10]),
-            None
+            None,
+            w
         )
         .is_err());
+        // an out-of-contract window fails CLOSED on the model-input path (no silent default):
+        // an even window has no endpoint abscissa, and a corrupt 0 would otherwise flatten the
+        // whole BG channel onto the [20,500] floor — a confident lie the degeneracy guard
+        // (§3.6-B, which watches the FORECAST) would not catch.
+        for bad in [0, -1, 2, 8, SAVGOL_WINDOW_MAX + 2] {
+            assert!(
+                matches!(
+                    build_context(&d, vec![100.0; 96], vec![0.0; 96], vec![0.0; 96], None, None, bad),
+                    Err(CoreError::Internal { .. })
+                ),
+                "window {bad} must be rejected"
+            );
+        }
+        for good in STOPS {
+            assert!(build_context(&d, vec![100.0; 96], vec![0.0; 96], vec![0.0; 96], None, None, good).is_ok());
+        }
     }
 
     // ── global-median DCT basis == utils.get_global_median_basis ─────────────────────

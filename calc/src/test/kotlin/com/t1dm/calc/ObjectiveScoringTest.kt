@@ -66,6 +66,24 @@ class ObjectiveScoringTest {
     }
 
     @Test
+    fun hit_target_bg_penalises_a_hypo_lower_band_even_with_the_median_on_target() {
+        // The Bolus advisor forces HitTargetBg; its hypo guard must be intrinsic, not resting on the
+        // user-disableable predicted-low veto rail. Both fans sit ON target at the median, so the
+        // median-hit term is identical (zero); only the τ=.05 lower band differs — the wider band dips
+        // below the 70 floor and MUST score worse. Scoring never consults the rails, so this holds
+        // regardless of RailToggles.predictedLowVeto.
+        val config = CalcConfig(
+            objective = Objective.HitTargetBg(targetMgdl = 110.0),
+            asymmetry = Asymmetry(hypoWeight = 5.0, hyperWeight = 1.0),
+        )
+        val safeBand = fan(List(24) { 110.0 }, half = 5.0)   // lower ~105, above the 70 floor
+        val hypoBand = fan(List(24) { 110.0 }, half = 50.0)  // lower ~60, into hypo
+        assertTrue(Scoring.scoreFan(hypoBand, config) > Scoring.scoreFan(safeBand, config))
+        // Dead-on target with no hypo tail scores to the floor of zero.
+        assertEquals(0.0, Scoring.scoreFan(safeBand, config), 0.0)
+    }
+
+    @Test
     fun hit_target_at_time_penalises_deviation_at_the_requested_step() {
         val config = CalcConfig(objective = Objective.HitTargetAtTime(atMsFromNow = 60 * 60_000L)) // step 12
         val target = config.target.targetMgdl

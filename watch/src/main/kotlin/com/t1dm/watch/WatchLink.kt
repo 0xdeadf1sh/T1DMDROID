@@ -103,21 +103,45 @@ class WatchLink(
     fun setConfig(newConfig: WatchLinkConfig) { config = newConfig }
 
     /**
-     * Synchronous teardown for a FULL APP RESET (issue 5). Disables the link and drops the in-memory
-     * session so no subsequent 5-min push can re-persist key material or a nonce ceiling into the
-     * `kv` store while it is being wiped — otherwise a late push could resurrect the very pairing the
-     * reset is erasing. Does NOT touch the stores (the reset wipes them); leaves the link UNPAIRED so
-     * a re-pair starts from a fresh X25519 handshake (a new key ⇒ no (key, nonce) reuse). Idempotent.
+     * Undo [stopForReset]'s teardown once the wipe it was guarding has finished.
+     *
+     * `enabled = false` is teardown state, not a user preference — the link is constructed enabled and
+     * PAIRING is what actually gates it — but nothing in the process ever set it back. Since the reset
+     * stopped killing the process, a reset left the link disabled and the RSSI sampler cancelled for
+     * the rest of the process's life, so a subsequent re-pair completed its handshake and then pushed
+     * nothing, while the panel went on reporting the link live.
+     *
+     * Deliberately does NOT re-pair: the reset erased the key material, and a fresh X25519 handshake
+     * is exactly what should follow.
      */
-    fun stopForReset() {
-        config = config.copy(enabled = false)
-        rssiJob?.cancel()
-        eventJob?.cancel()
-        reconnectJob?.cancel()
-        runCatching { central?.disconnect() }
-        central = null
-        session = null
-        _state.value = WatchSecurityState()
+    suspend fun resumeAfterReset() {
+        linkMutex.withLock {
+            config = config.copy(enabled = true)
+            scope?.let { startRssiPoll(it) }
+        }
+    }
+
+    /**
+     * Teardown for a FULL APP RESET (issue 5). Takes [linkMutex] so it SERIALISES with an in-flight
+     * [pushNow] critical section: a push that already began completes first (and the reset wipes the
+     * stores after it), while a push that starts afterwards finds the link disabled and returns before
+     * persisting. Disables the link and drops the in-memory session so no subsequent 5-min push can
+     * re-persist key material or a nonce ceiling into the `kv` store while it is being wiped —
+     * otherwise a late push could resurrect the very pairing the reset is erasing. Does NOT touch the
+     * stores (the reset wipes them); leaves the link UNPAIRED so a re-pair starts from a fresh X25519
+     * handshake (a new key ⇒ no (key, nonce) reuse). Idempotent.
+     */
+    suspend fun stopForReset() {
+        linkMutex.withLock {
+            config = config.copy(enabled = false)
+            rssiJob?.cancel()
+            eventJob?.cancel()
+            reconnectJob?.cancel()
+            runCatching { central?.disconnect() }
+            central = null
+            session = null
+            _state.value = WatchSecurityState()
+        }
     }
 
     // ── Pairing ──────────────────────────────────────────────────────────────────────────────
@@ -239,6 +263,11 @@ class WatchLink(
             val glance = runCatching { glanceSource.currentGlance(nowMs) }.getOrNull() ?: return@withLock
             val push = glance.copy(status = glance.status.copy(lowPowerSuspending = lp))
             val sealed = session.seal(WatchPushCodec.encode(push))
+            // The link may have been disabled (full reset / a config flip) while we were suspended in
+            // the currentGlance() Room read; do NOT re-persist key material or a nonce ceiling into kv
+            // rows a reset is wiping — that would resurrect the erased pairing (issue 5). The already
+            // burnMargin-guarded resume floor covers this un-checkpointed seq, so aborting is safe.
+            if (!config.enabled) return@withLock
             // Checkpoint the nonce ceiling + re-reserve/persist the durable window BEFORE the radio
             // write (fail-forward, never reuse): a crash mid-write resumes strictly past this seq.
             nonceStore.recordCeiling(session.epoch, sealed.seq)
@@ -264,12 +293,15 @@ class WatchLink(
         val ceiling = nonceStore.loadCeiling(pairing.epoch)
         val session = sessionFactory.resume(pairing.material, ceiling).also { this.session = it }
         _state.update { it.copy(bonded = true, epoch = pairing.epoch) }
+        // The restore BURNED the send window (no headroom); reserve+persist a fresh one past the
+        // burned ceiling NOW — INDEPENDENTLY of transport success — so the first push can seal without
+        // reusing a (key,nonce) (§5.5) even when connectTransport() throws (watch out of range at boot)
+        // and we fall through to scheduleReconnect(), which does not persist. Exactly one reservation:
+        // this is the sole persistSession on the resume path.
+        if (session.state == WatchSessionState.LIVE) persistSession(session)
         runCatching {
             connectTransport()
             if (session.state == WatchSessionState.LIVE) {
-                // The restore BURNED the send window (no headroom); reserve+persist a fresh one past
-                // the burned ceiling so the first push can seal without reusing a (key,nonce) (§5.5).
-                persistSession(session)
                 _state.update { it.copy(phase = WatchLinkPhase.LIVE) }
                 syncCrypto()
             } else {

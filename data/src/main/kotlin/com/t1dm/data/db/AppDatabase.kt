@@ -26,6 +26,8 @@ import kotlinx.coroutines.Dispatchers
  * (+ UNIQUE index) to `logged_meal`/`logged_dose` — the stable phone-minted id the server keys
  * meal/dose upserts on and the app re-hydrates by — and leaves the retired
  * `sample.carbsG/bolusU/basalU` dose projections dead in place; see [MigrationRunner.MIGRATION_6_7].
+ * v8 (graph annotation layer) adds `bg_paint_stroke`, the freehand drawings the user paints over the
+ * BG panel — one new table, no existing table touched; see [MigrationRunner.MIGRATION_7_8].
  */
 @Database(
     entities = [
@@ -47,8 +49,9 @@ import kotlinx.coroutines.Dispatchers
         SavedMealEntity::class,
         SavedMealItemEntity::class,
         InsulinTypeEntity::class,
+        PaintStrokeEntity::class,
     ],
-    version = 7,
+    version = 8,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -70,13 +73,14 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun foodDao(): FoodDao
     abstract fun savedMealDao(): SavedMealDao
     abstract fun insulinTypeDao(): InsulinTypeDao
+    abstract fun paintStrokeDao(): PaintStrokeDao
 
     companion object {
         const val NAME = "t1dm.db"
 
         /** The current keep-forever schema version (must equal the `@Database(version = …)` above).
          *  A full app reset ([T1dmRepository.wipeAllData]) row-wipes at THIS version — never a drop. */
-        const val SCHEMA_VERSION = 7
+        const val SCHEMA_VERSION = 8
 
         /**
          * Build the on-disk database. Migrations come exclusively from [MigrationRunner];

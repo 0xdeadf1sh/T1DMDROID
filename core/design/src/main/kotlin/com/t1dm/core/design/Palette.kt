@@ -71,8 +71,6 @@ object ThemeIds {
     const val TRON = "tron"
     const val UMBRELLA = "umbrella"
     const val HELLO_KITTY = "hello_kitty"
-    const val WINDOWS_XP = "windows_xp"
-    const val TETO = "teto"
     const val CUSTOM = "custom"
 }
 
@@ -142,60 +140,26 @@ val HelloKittyPalette = T1dmPalette(
     urgentHigh = Color(0xFFFF2D6E),
 )
 
-/** Windows XP — light "Luna": a pale-sky background, white/silver surfaces, the Luna-blue primary and
- *  the Bliss/Start green secondary. */
-val WindowsXpPalette = T1dmPalette(
-    id = ThemeIds.WINDOWS_XP,
-    displayName = "Windows XP",
-    dark = false,
-    background = Color(0xFFEAF2FB),
-    surface = Color(0xFFFFFFFF),
-    surfaceVariant = Color(0xFFDCE6F2),
-    primary = Color(0xFF1A5FD8),
-    onPrimary = Color(0xFFFFFFFF),
-    secondary = Color(0xFF4E9A2C),
-    onSecondary = Color(0xFFFFFFFF),
-    ink = Color(0xFF16263B),
-    inkMuted = Color(0xFF5B7088),
-    grid = Color(0xFFC3D4E8),
-    urgentLow = Color(0xFFE53935),
-    low = Color(0xFFEF9A1E),
-    inRange = Color(0xFF2E9E52),
-    high = Color(0xFFF07A1E),
-    urgentHigh = Color(0xFFC62828),
-)
-
-/** Teto Kasane — dark crimson-on-near-black: the scarlet Teto-red primary, a bright territory-pink
- *  secondary, a warm-black ground with a faint red cast. */
-val TetoPalette = T1dmPalette(
-    id = ThemeIds.TETO,
-    displayName = "Teto Kasane",
-    dark = true,
-    background = Color(0xFF0D0609),
-    surface = Color(0xFF1A0B0F),
-    surfaceVariant = Color(0xFF281218),
-    primary = Color(0xFFE23B4E),
-    onPrimary = Color(0xFF1E0206),
-    secondary = Color(0xFFFF6F91),
-    onSecondary = Color(0xFF2C0512),
-    ink = Color(0xFFF4E3E7),
-    inkMuted = Color(0xFFB58D97),
-    grid = Color(0xFF3B1822),
-    urgentLow = Color(0xFFFF3B5F),
-    low = Color(0xFFFFA23D),
-    inRange = Color(0xFF46D17F),
-    high = Color(0xFFFF8A2C),
-    urgentHigh = Color(0xFFC90A2E),
-)
-
 /** The bundled palettes, in selector order (Tron first = default). */
-val BundledPalettes: List<T1dmPalette> =
-    listOf(TronPalette, UmbrellaPalette, HelloKittyPalette, WindowsXpPalette, TetoPalette)
+val BundledPalettes: List<T1dmPalette> = listOf(TronPalette, UmbrellaPalette, HelloKittyPalette)
 
 /** Resolve a persisted id to a bundled palette, falling back to [TronPalette]. Custom themes are
  *  reconstructed from their JSON separately via [parseThemeJson]. */
 fun paletteForId(id: String?): T1dmPalette =
     BundledPalettes.firstOrNull { it.id == id } ?: TronPalette
+
+/** Whether [id] still names something this build can render — a bundled palette, or the custom slot. */
+fun isKnownThemeId(id: String?): Boolean = id == ThemeIds.CUSTOM || BundledPalettes.any { it.id == id }
+
+/**
+ * Coerce a persisted theme id onto one this build still carries. An id can outlive the palette it
+ * named — `"windows_xp"` and `"teto"` were bundled themes once, and both survive in the `ui.theme` kv
+ * row, in any exported config, and in the launcher-alias override PackageManager keeps across an
+ * upgrade. Every id→palette seam already fails soft onto [TronPalette]; this is the seam that lets a
+ * *caller* notice the coercion and write the corrected id back, so the Settings chip row does not sit
+ * with nothing selected while the app renders Tron.
+ */
+fun normalizeThemeId(id: String?): String = if (isKnownThemeId(id)) id!! else ThemeIds.TRON
 
 /** Resolve the persisted (themeId, customThemeJson) pair to the active palette — the ONE place that
  *  decodes a custom theme, so the Activity, the FGS notification, and the widget all agree. A blank or
@@ -230,16 +194,16 @@ fun resolvePalette(themeId: String?, customThemeJson: String?): T1dmPalette =
  */
 fun parseThemeJson(text: String): T1dmPalette {
     val root = runCatching { JSONObject(text) }
-        .getOrElse { throw IllegalArgumentException("Not a valid theme file (could not parse JSON).") }
+        .getOrElse { throw IllegalArgumentException("Not a theme file — invalid JSON") }
     if (root.optString("format") != "t1dm.theme") {
-        throw IllegalArgumentException("Not a T1DM theme file (missing or wrong \"format\" tag — expected \"t1dm.theme\").")
+        throw IllegalArgumentException("Wrong \"format\" tag — expected \"t1dm.theme\"")
     }
     val colors = root.optJSONObject("colors")
-        ?: throw IllegalArgumentException("Theme file has no \"colors\" block.")
+        ?: throw IllegalArgumentException("No \"colors\" block")
     val dark = root.optBoolean("dark", true)
 
     fun req(role: String): Color {
-        if (!colors.has(role)) throw IllegalArgumentException("Theme is missing the required colour \"$role\".")
+        if (!colors.has(role)) throw IllegalArgumentException("Missing required colour \"$role\"")
         return parseHexColor(colors.getString(role), role)
     }
     fun opt(role: String, fallback: Color): Color =
@@ -277,9 +241,9 @@ private fun parseHexColor(raw: String, role: String): Color {
     val hex = when (s.length) {
         6 -> "FF$s"
         8 -> s
-        else -> throw IllegalArgumentException("Colour \"$role\" must be #RRGGBB or #AARRGGBB (got \"$raw\").")
+        else -> throw IllegalArgumentException("\"$role\" must be #RRGGBB or #AARRGGBB (got \"$raw\")")
     }
     val v = hex.toLongOrNull(16)
-        ?: throw IllegalArgumentException("Colour \"$role\" is not a valid hex colour (got \"$raw\").")
+        ?: throw IllegalArgumentException("\"$role\" is not a valid hex (got \"$raw\")")
     return Color(v.toInt())
 }

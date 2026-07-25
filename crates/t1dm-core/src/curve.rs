@@ -34,6 +34,12 @@ const DT_MINUTES: f64 = 5.0;
 /// the Room `sample` grid is keyed at the same cadence, so bucketize is a pure index map.
 pub const STEP_MS: i64 = 300_000;
 
+/// Upper bound on a [`bucketize`] grid: a few hundred thousand 5-min steps (~2.85 years) —
+/// far beyond any real forecast/history horizon. A larger `n_steps` is a caller bug; capping
+/// it keeps the `vec![0.0; n]` allocation bounded so a hostile size returns the documented
+/// `Err` rather than aborting the process (`panic = "abort"`) on a failed allocation.
+const MAX_GRID_STEPS: i32 = 300_000;
+
 // ── Canonical NOISE-FREE presets, transcribed from simulator.py (SPEC §3.3) ─────────────
 // These are the simulator's *central* values with all per-patient / per-event RNG noise
 // switched off. They are the app's quick-preset defaults; the user may override k/θ/DIA in
@@ -422,6 +428,11 @@ pub fn bucketize(
             reason: format!("bucketize n_steps must be >= 0, got {n_steps}"),
         });
     }
+    if n_steps > MAX_GRID_STEPS {
+        return Err(CoreError::Internal {
+            reason: format!("bucketize n_steps {n_steps} exceeds cap {MAX_GRID_STEPS}"),
+        });
+    }
     let n = n_steps as usize;
     let mut grid = vec![0.0f64; n];
     for ev in &events {
@@ -678,6 +689,16 @@ mod tests {
     #[test]
     fn bucketize_rejects_negative_n() {
         assert!(bucketize(vec![], 0, -1, CurveKind::Carb).is_err());
+    }
+
+    #[test]
+    fn bucketize_rejects_oversized_n() {
+        // A wildly large n_steps must fail-closed with Err, not attempt a giant allocation that
+        // would abort the process (panic = "abort") across the FFI boundary (matches the KDoc).
+        assert!(bucketize(vec![], 0, i32::MAX, CurveKind::Carb).is_err());
+        assert!(bucketize(vec![], 0, MAX_GRID_STEPS + 1, CurveKind::Carb).is_err());
+        // The cap itself is still accepted (bounded allocation).
+        assert!(bucketize(vec![], 0, MAX_GRID_STEPS, CurveKind::Carb).is_ok());
     }
 
     // ── on_board: remaining tail area, monotone non-increasing in time ───────────────────

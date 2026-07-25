@@ -21,25 +21,76 @@ fun AlarmThresholdsScreen(
     urgentHigh: Int,
     onChange: (urgentLow: Int, low: Int, high: Int, urgentHigh: Int) -> Unit,
 ) {
-    SettingsScaffold("Alarm thresholds") {
+    SettingsScaffold(SettingsScreenKey.ALARM_THRESHOLDS) {
         DangerBanner(
-            "These bounds are unbounded on purpose — there is no safety clamp. The model-free alarm " +
-                "fires strictly on a measured reading crossing them, independent of the forecast. Set " +
-                "them to values you trust; a mistake here weakens your safety net.",
+            "No safety clamp — a wrong value weakens your safety net",
         )
-        SettingsNote("All values in mg/dL. Urgent-low and urgent-high bypass Do-Not-Disturb.")
+        SettingsNote("mg/dL · urgent bands bypass DND")
 
-        IntStepper("Urgent low", urgentLow, "mg/dL", step = 5, min = 0) { onChange(it, low, high, urgentHigh) }
-        IntStepper("Low", low, "mg/dL", step = 5, min = 0) { onChange(urgentLow, it, high, urgentHigh) }
-        IntStepper("High", high, "mg/dL", step = 5, min = 0) { onChange(urgentLow, low, it, urgentHigh) }
-        IntStepper("Urgent high", urgentHigh, "mg/dL", step = 5, min = 0) { onChange(urgentLow, low, high, it) }
+        IntStepper(alarmUrgentLow, urgentLow, "mg/dL", step = 5, min = 0) { onChange(it, low, high, urgentHigh) }
+        IntStepper(alarmLow, low, "mg/dL", step = 5, min = 0) { onChange(urgentLow, it, high, urgentHigh) }
+        IntStepper(alarmHigh, high, "mg/dL", step = 5, min = 0) { onChange(urgentLow, low, it, urgentHigh) }
+        IntStepper(alarmUrgentHigh, urgentHigh, "mg/dL", step = 5, min = 0) { onChange(urgentLow, low, high, it) }
 
         val ordered = urgentLow <= low && low <= high && high <= urgentHigh
         if (!ordered) {
             DangerBanner(
-                "Thresholds are out of order (expected urgent-low ≤ low ≤ high ≤ urgent-high). " +
-                    "This is allowed, but the bands will classify oddly — double-check the values.",
+                "Out of order — bands will classify oddly",
             )
         }
     }
 }
+
+// ── search index (see SettingsIndex.kt) ───────────────────────────────────────────────────────────
+
+private const val ALARM_SECTION = "Alarm thresholds"
+
+private val alarmUrgentLow = SettingsKnob(
+    id = "alarm.urgent_low",
+    screen = SettingsScreenKey.ALARM_THRESHOLDS,
+    section = ALARM_SECTION,
+    label = "Urgent low",
+    subtitle = "The critical hypo band, in mg/dL — bypasses Do-Not-Disturb",
+    synonyms = listOf(
+        "urgent low", "critical low", "severe low", "hypo", "hypoglycemia", "hypoglycaemia",
+        "alarm", "threshold", "band", "danger", "55", "emergency",
+    ),
+)
+
+private val alarmLow = SettingsKnob(
+    id = "alarm.low",
+    screen = SettingsScreenKey.ALARM_THRESHOLDS,
+    section = ALARM_SECTION,
+    label = "Low",
+    subtitle = "The warning-tier low band, in mg/dL",
+    synonyms = listOf(
+        "low", "low alarm", "hypo", "hypoglycemia", "hypoglycaemia", "warning", "alarm",
+        "threshold", "band", "70",
+    ),
+)
+
+private val alarmHigh = SettingsKnob(
+    id = "alarm.high",
+    screen = SettingsScreenKey.ALARM_THRESHOLDS,
+    section = ALARM_SECTION,
+    label = "High",
+    subtitle = "The warning-tier high band, in mg/dL",
+    synonyms = listOf(
+        "high", "high alarm", "hyper", "hyperglycemia", "hyperglycaemia", "warning", "alarm",
+        "threshold", "band", "180",
+    ),
+)
+
+private val alarmUrgentHigh = SettingsKnob(
+    id = "alarm.urgent_high",
+    screen = SettingsScreenKey.ALARM_THRESHOLDS,
+    section = ALARM_SECTION,
+    label = "Urgent high",
+    subtitle = "The critical hyper band, in mg/dL — bypasses Do-Not-Disturb",
+    synonyms = listOf(
+        "urgent high", "critical high", "severe high", "hyper", "hyperglycemia", "hyperglycaemia",
+        "alarm", "threshold", "band", "danger", "250", "dka",
+    ),
+)
+
+internal val settingsAlarmThresholdKnobs = listOf(alarmUrgentLow, alarmLow, alarmHigh, alarmUrgentHigh)

@@ -30,3 +30,7 @@ sha2 = "0.10"
 aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 zeroize = "1"
+# Rigid-body solver behind the in-app hill-climb minigame (`game`): oriented-polyline
+# terrain, ball wheels on pin-slot suspension joints. Pinned exactly — the 0.34/0.29 line
+# has only just moved its public math API from nalgebra to glam.
+rapier2d = "=0.34.0"

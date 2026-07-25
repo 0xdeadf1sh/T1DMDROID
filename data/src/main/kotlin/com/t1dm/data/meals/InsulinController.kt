@@ -79,7 +79,10 @@ class InsulinController(
      */
     suspend fun logDose(type: InsulinType, units: Double, tsMs: Long = now()): LoggedDoseEntity =
         withContext(dispatchers.io) {
-            val gridTs = Math.floorDiv(tsMs, CurveEngine.STEP_MS) * CurveEngine.STEP_MS
+            // Round-to-nearest (not floor) so this dose lands in the SAME grid slot the round-to-nearest
+            // CGM/single-dose writers use (repository.snapToGrid, GridStamper.snap) — a floor snap
+            // misaligned the insulin-action channel vs BG by up to one 5-min step (§4-#1 grid invariant).
+            val gridTs = Math.floorDiv(tsMs + CurveEngine.STEP_MS / 2, CurveEngine.STEP_MS) * CurveEngine.STEP_MS
             val curve = pkCurve(type, units)
             val tz = TimeZone.getDefault().getOffset(gridTs) / 60_000
             repository.logLoggedDose(

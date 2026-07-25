@@ -6,6 +6,7 @@ import android.os.StrictMode
 import com.t1dm.app.di.AppContainer
 import com.t1dm.app.service.CgmWatchdog
 import com.t1dm.app.sync.SyncDrainWorker
+import com.t1dm.app.widget.WidgetRefreshWorker
 import timber.log.Timber
 
 class T1dmApplication : Application() {
@@ -24,10 +25,15 @@ class T1dmApplication : Application() {
         }
 
         container = AppContainer(this)
+        // Before any UI: a build can retire a theme, and both the persisted id and the launcher alias
+        // it selected outlive that. Every wake-up path lands here, which is the point — the launcher
+        // repair cannot presuppose the user could still launch us.
+        RetiredThemeMigration.run(this)
         container.startInference()
         container.startBuilders() // seed the bundled glycemic dictionary + insulin presets (off-main, idempotent)
         CgmWatchdog.enqueue(this)
         SyncDrainWorker.enqueue(this) // deferrable outbox drain fallback (FGS drains opportunistically)
+        WidgetRefreshWorker.enqueue(this) // widget repaint fallback (the FGS is the only live driver)
     }
 
     private fun installStrictMode() {

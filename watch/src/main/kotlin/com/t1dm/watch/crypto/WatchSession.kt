@@ -20,7 +20,10 @@ interface WatchSession {
     /** Current session lifecycle, mirrored into the Security panel. */
     val state: WatchSessionState
 
-    /** The current key epoch (0 = first pairing; incremented by [rotate]). */
+    /**
+     * The current key epoch (0 = first pairing). In the shipped adapter this stays 0: manual [rotate]
+     * routes through a full fresh-key re-handshake at epoch 0 rather than advancing the epoch.
+     */
     val epoch: Int
 
     /**
@@ -68,9 +71,10 @@ interface WatchSession {
     fun open(frame: ByteArray): ByteArray
 
     /**
-     * Manual key ROTATION (watch-link.md — "manual key rotation must be exposed"): bump [epoch],
-     * generate a fresh ephemeral, and return the new HELLO public key. The peer must re-handshake
-     * ([acceptPeer]/[confirm]) before the new epoch is LIVE; the old epoch is retired immediately.
+     * Manual key ROTATION (watch-link.md — "manual key rotation must be exposed"): in the shipped
+     * adapter this is a full fresh-key RE-HANDSHAKE at epoch 0 — the [epoch] is NOT incremented —
+     * generating a fresh ephemeral and returning the new HELLO public key. The peer must re-handshake
+     * ([acceptPeer]/[confirm]) before the new keys are LIVE; the old keys are retired immediately.
      */
     fun rotate(): ByteArray
 

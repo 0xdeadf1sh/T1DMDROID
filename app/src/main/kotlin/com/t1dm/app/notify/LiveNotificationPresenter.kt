@@ -57,7 +57,7 @@ class LiveNotificationPresenter(
     }
 
     private fun titleLine(glance: BgGlance, unit: UnitSpace): String {
-        if (!glance.hasReading) return "No CGM reading yet"
+        if (!glance.hasReading) return "No reading yet"
         val v = BgFormat.value(glance.bgMgdl, unit)
         val arrow = BgFormat.arrow(glance.trend)
         return "${statusToken(glance)} · $v $arrow ${BgFormat.unitLabel(unit)}"
@@ -75,8 +75,8 @@ class LiveNotificationPresenter(
 
     private fun bodyLine(glance: BgGlance, predictedTime: PredictedTime?): String {
         val age = when {
-            glance.signalLoss -> "Signal lost — last reading ${BgFormat.ageShort(glance.readingAgeMs)}"
-            !glance.hasReading -> "Scanning for CGM"
+            glance.signalLoss -> "Signal lost ${BgFormat.ageShort(glance.readingAgeMs)}"
+            !glance.hasReading -> "Scanning"
             else -> "Updated ${BgFormat.ageShort(glance.readingAgeMs)}"
         }
         val forecast = when {

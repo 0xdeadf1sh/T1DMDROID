@@ -61,7 +61,7 @@ class AlarmControllerTest {
     }
 
     @Test
-    fun `a persisting critical alarm re-alerts on the repeat cadence`() = runTest {
+    fun `a persisting critical alarm re-emits on each tick without a second reAlert path`() = runTest {
         val notifier = FakeNotifier()
         var now = 0L
         val controller = AlarmController(AlarmEngine(config), notifier, config, clock = { now })
@@ -72,12 +72,46 @@ class AlarmControllerTest {
 
         readings.emit(reading(50, rxWallMs = 0)) // urgent low, CRITICAL
         runCurrent()
-        assertEquals(0, notifier.reAlertCount)
+        assertEquals(AlertBand.URGENT_LOW, notifier.lastEmit?.threshold?.band)
+        val emitsAfterFire = notifier.emitCount
 
-        now = 6 * MIN // beyond the 5-min repeat cadence
+        // A later tick with the breach still standing re-presents it — the controller drives ONE emit
+        // path (the notifier's own throttle bounds re-actuation), never a second reAlert that would
+        // double-buzz the CRITICAL primary.
+        now = 6 * MIN
         ticks.emit(Unit)
         runCurrent()
-        assertTrue(notifier.reAlertCount >= 1)
+        assertTrue(notifier.emitCount > emitsAfterFire)
+        assertEquals(0, notifier.reAlertCount)
+
+        job.cancel()
+    }
+
+    @Test
+    fun `a stable warning alarm re-emits on each tick`() = runTest {
+        val notifier = FakeNotifier()
+        var now = 0L
+        val controller = AlarmController(AlarmEngine(config), notifier, config, clock = { now })
+        val readings = MutableSharedFlow<com.t1dm.core.model.CgmReading>(extraBufferCapacity = 64)
+        val ticks = MutableSharedFlow<Unit>(extraBufferCapacity = 64)
+        val job = controller.launchIn(this, readings, ticks)
+        runCurrent()
+
+        readings.emit(reading(200, rxWallMs = 0)) // HIGH band → WARNING threshold breach
+        runCurrent()
+        assertEquals(AlertBand.HIGH, notifier.lastEmit?.threshold?.band)
+        val emitsAfterFire = notifier.emitCount
+
+        // Regression (§3.6 C1): a stable WARNING breach reuses the same object, so the engine's
+        // StateFlow deduplicates and the state collector never re-fires. onTick must still re-present it
+        // so the notifier can re-apply its gate (an expired snooze re-surfaces) and re-announce on its
+        // own throttle — otherwise a snoozed WARNING would be silenced permanently once snoozed.
+        now = MIN
+        ticks.emit(Unit)
+        runCurrent()
+        assertTrue(notifier.emitCount > emitsAfterFire)
+        assertEquals(AlertBand.HIGH, notifier.lastEmit?.threshold?.band)
+        assertEquals(0, notifier.reAlertCount)
 
         job.cancel()
     }

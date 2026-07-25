@@ -34,8 +34,9 @@ sealed interface Objective {
      * scalar-target analogue of [MinTimeOutOfRange], scoring the median's distance from one point
      * rather than an in-range band. [targetMgdl] is user-set and UNBOUNDED (§3.6); the app sources it
      * from a slider bounded by the calculator's own low/high target so no extra clamp is required. The
-     * lower-band hypo tail stays guarded structurally by the predicted-low VETO rail, so the objective
-     * may read the median as its whole signal.
+     * scorer carries its OWN intrinsic lower-band hypo term (`scoreHitTargetBg`), so hypo protection
+     * on this — the objective the Bolus advisor forces — does NOT rest on the user-disableable
+     * predicted-low VETO rail.
      */
     data class HitTargetBg(val targetMgdl: Double) : Objective
 }
@@ -53,8 +54,9 @@ data class Asymmetry(
 /**
  * Per-rail enable switches (safety-posture.md — "guard-rail toggles exist"). A disabled rail is a
  * no-op; an **enabled** rail always fails closed on missing / degenerate / stale / collapsed input
- * (SPEC §3.6-C). [degeneracyGate] is intentionally not disableable through the normal path — scoring
- * a degenerate fan is meaningless — and is enforced structurally regardless of this flag.
+ * (SPEC §3.6-C). The baseline-degeneracy rail ([Rails.baselineDegeneracy]) is deliberately NOT one of
+ * these toggles — scoring a degenerate fan is meaningless — so it is enforced structurally and can
+ * only be lifted via the DoseAdvisor.recommendBolus `bypassDegeneracyGate` (DEATH) parameter.
  */
 data class RailToggles(
     val freshnessGate: Boolean = true,

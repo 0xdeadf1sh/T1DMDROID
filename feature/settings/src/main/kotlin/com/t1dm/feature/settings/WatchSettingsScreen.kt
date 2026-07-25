@@ -1,15 +1,11 @@
 package com.t1dm.feature.settings
 
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
+import com.t1dm.core.design.HapticEvent
+import com.t1dm.core.design.rememberT1dmHaptics
 
 /**
  * Settings → Watch (SPEC.private.md § Settings — CGM / Server / Watch are the three primary
@@ -24,19 +20,36 @@ fun WatchSettingsScreen(
     deviceName: String?,
     onOpenSecurity: () -> Unit = {},
 ) {
-    Column(
-        Modifier.fillMaxSize().padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
+    SettingsScaffold(SettingsScreenKey.WATCH) {
         Text(
-            "An optional ESP32-C3 wrist glance. Every 5 minutes the phone pushes your current BG, " +
-                "trend, a one-line forecast, the alert band, and status — encrypted end-to-end. " +
-                "The app works fully without it, and the push pauses in battery-saver mode.",
+            "Optional ESP32-C3 glance, pushed every 5 min, encrypted",
             style = MaterialTheme.typography.bodyMedium,
         )
         Text("Status: $linkStatus", style = MaterialTheme.typography.bodyLarge)
         deviceName?.let { Text("Paired to: $it", style = MaterialTheme.typography.bodyMedium) }
 
-        Button(onClick = onOpenSecurity) { Text("Pairing & keys (Security panel) →") }
+        val haptics = rememberT1dmHaptics()
+        SettingsAnchor(watchPairing) {
+            Button(
+                onClick = { haptics.perform(HapticEvent.NavSwitch); onOpenSecurity() },
+            ) { Text("Pairing & keys (Security panel) →") }
+        }
     }
 }
+
+// ── search index (see SettingsIndex.kt) ───────────────────────────────────────────────────────────
+
+private val watchPairing = SettingsKnob(
+    id = "watch.pairing",
+    screen = SettingsScreenKey.WATCH,
+    section = "Watch",
+    label = "Pairing & keys",
+    subtitle = "The ESP32-C3 wrist glance: pair, compare the SAS, rotate keys, unpair (Security panel)",
+    synonyms = listOf(
+        "watch", "wrist", "esp32", "esp32-c3", "accessory", "pair", "pairing", "unpair", "bond",
+        "keys", "key rotation", "sas", "encryption", "x25519", "aes", "glance", "wearable",
+        "security", "crypto",
+    ),
+)
+
+internal val settingsWatchKnobs = listOf(watchPairing)

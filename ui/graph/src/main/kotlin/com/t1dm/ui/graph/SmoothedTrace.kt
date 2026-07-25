@@ -8,10 +8,14 @@ import kotlinx.coroutines.withContext
 
 /**
  * The SMOOTHED trace the model actually consumes (issue 13): the strictly-causal Savitzky-Golay
- * filtered BG series in mg/dL — i.e. the signal AFTER `t1dm-core::causal_smooth` (window 7, order 2,
- * clamps `[20,500]`) but BEFORE any Kovatchev risk transform. This is precisely the channel that is
- * then normalized and fed to the graph; overlaying it lets the raw sensor trace and the model's own
- * de-noised view of it be compared directly.
+ * filtered BG series in mg/dL — i.e. the signal AFTER `t1dm-core::causal_smooth` (order 2, clamps
+ * `[20,500]`, at the window the caller's smoother was built with) but BEFORE any Kovatchev risk
+ * transform. This is precisely the channel that is then normalized and fed to the graph; overlaying
+ * it lets the raw sensor trace and the model's own de-noised view of it be compared directly.
+ *
+ * The window is NOT a parameter here: it is baked into [smoothMgdl] by the caller, which reads the
+ * one persisted setting the forecast cycle and the dose calculator also read — the drawn line and
+ * the model input are the same signal, never two independently-configured smooths.
  *
  * Same immutable-primitive-array discipline as [GraphFrame]/[PredSeries]: the smooth is computed ONCE
  * off-thread (the native call is supplied as a lambda so `:ui:graph` keeps no JNI dependency), the
@@ -37,9 +41,9 @@ class SmoothedTrace internal constructor(
 
 /**
  * Build the smoothed overlay off the main thread. [smoothMgdl] is the causal SavGol smoother in
- * mg/dL (the `:core` native `causalSmooth` with clamps `[20,500]`); it is passed in so this module
- * never links the JNI seam. [kovatchevF] is only used to project into risk space when that unit is
- * active — the smooth itself is always computed in mg/dL.
+ * mg/dL (the `:core` native `causalSmooth` with clamps `[20,500]`, at the user's window); it is
+ * passed in so this module never links the JNI seam. [kovatchevF] is only used to project into risk
+ * space when that unit is active — the smooth itself is always computed in mg/dL.
  */
 suspend fun smoothedTraceOf(
     readings: List<CgmReading>,

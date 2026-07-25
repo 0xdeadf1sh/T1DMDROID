@@ -401,3 +401,32 @@ data class HwTelemetryEntity(
     val valueReal: Double?,
     val valueText: String?,
 )
+
+/**
+ * One freehand stroke drawn over the BG graph panel (Room v8) — the persisted half of
+ * [com.t1dm.core.model.PaintStroke]. Pure user annotation: no channel, calculator or §3.6 rail ever
+ * reads it, so it is display-only and is wiped whole by the issue-5 reset.
+ *
+ * [points] is the (absolute epoch-ms, plot-height fraction) polyline in the versioned LE encoding of
+ * [PaintStrokeBlob] — never pixels, so the drawing scrolls with the data and survives the Y auto-fit.
+ * [minTsMs]/[maxTsMs] are that polyline's time bounds hoisted OUT of the blob and indexed, because
+ * viewport culling ("which strokes touch the window on screen?") is the only query this table has and
+ * it cannot reach inside a BLOB. They are derived, never authored — the mapper computes them by
+ * scanning every point, since a stroke that doubles back in X has no sorted first/last to shortcut to.
+ *
+ * There is no `updatedAt`: a stroke is immutable once lifted — the only mutations are insert and
+ * delete — so [createdAtMs] is the whole story, and it doubles as the stacking order (later strokes
+ * paint over earlier ones). [tool] is TEXT rather than an enum-with-converter so a row written by a
+ * later build never fails `valueOf` on an older one.
+ */
+@Entity(tableName = "bg_paint_stroke", indices = [Index("minTsMs"), Index("maxTsMs")])
+data class PaintStrokeEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val createdAtMs: Long,
+    val tool: String,
+    val colorArgb: Int,
+    val widthDp: Float,
+    val minTsMs: Long,
+    val maxTsMs: Long,
+    @ColumnInfo(typeAffinity = ColumnInfo.BLOB) val points: ByteArray,
+)

@@ -1,7 +1,12 @@
 package com.t1dm.core.nativecore
 
+import com.t1dm.core.common.GameWorld
 import com.t1dm.core.common.NativeCore
 import com.t1dm.core.model.AccuracyPair
+import com.t1dm.core.model.CarState
+import com.t1dm.core.model.CarTuning
+import com.t1dm.core.model.RunState
+import com.t1dm.core.model.TerrainSpec
 import com.t1dm.core.model.AccuracyReport
 import com.t1dm.core.model.HorizonAccuracy
 import com.t1dm.core.model.AdvancedStats
@@ -50,7 +55,13 @@ import uniffi.t1dm_core.kovatchevFInv as uniffiKovatchevFInv
 import uniffi.t1dm_core.normalizeSample as uniffiNormalizeSample
 import uniffi.t1dm_core.onBoard as uniffiOnBoard
 import uniffi.t1dm_core.parseDescriptor as uniffiParseDescriptor
+import uniffi.t1dm_core.defaultCarTuning as uniffiDefaultCarTuning
 import uniffi.t1dm_core.roundtrip as uniffiRoundtrip
+import uniffi.t1dm_core.CarState as UniffiCarState
+import uniffi.t1dm_core.CarTuning as UniffiCarTuning
+import uniffi.t1dm_core.GameWorld as UniffiGameWorldObject
+import uniffi.t1dm_core.RunState as UniffiRunState
+import uniffi.t1dm_core.TerrainSpec as UniffiTerrainSpec
 import uniffi.t1dm_core.AccuracyPair as UniffiAccuracyPair
 import uniffi.t1dm_core.AccuracyReport as UniffiAccuracyReport
 import uniffi.t1dm_core.HorizonAccuracy as UniffiHorizonAccuracy
@@ -116,8 +127,8 @@ class UniffiNativeCore : NativeCore {
             null
         }
 
-    override fun causalSmooth(series: List<Double>, clampMin: Double?, clampMax: Double?): List<Double> =
-        uniffiCausalSmooth(series, clampMin, clampMax)
+    override fun causalSmooth(series: List<Double>, clampMin: Double?, clampMax: Double?, window: Int): List<Double> =
+        uniffiCausalSmooth(series, clampMin, clampMax, window)
 
     override fun normalizeSample(desc: ModelDescriptor, bg: Double, carb: Double, insulin: Double): List<Double> =
         uniffiNormalizeSample(desc.toUniffi(), bg, carb, insulin)
@@ -132,8 +143,9 @@ class UniffiNativeCore : NativeCore {
         insulin: List<Double>,
         announcedCarb: List<Double>?,
         announcedInsulin: List<Double>?,
+        smoothingWindow: Int,
     ): BuiltContext =
-        uniffiBuildContext(desc.toUniffi(), bg, carb, insulin, announcedCarb, announcedInsulin).toModel()
+        uniffiBuildContext(desc.toUniffi(), bg, carb, insulin, announcedCarb, announcedInsulin, smoothingWindow).toModel()
 
     override fun assembleDecode(
         desc: ModelDescriptor,
@@ -220,7 +232,105 @@ class UniffiNativeCore : NativeCore {
         } catch (_: CoreException) {
             AccuracyReport.EMPTY
         }
+
+    // ── Hill-climb minigame physics (t1dm-core::game) ───────────────────────────────
+
+    override fun defaultCarTuning(): CarTuning = uniffiDefaultCarTuning().toModel()
+
+    /**
+     * Unlike every fail-open/fail-closed mapping above, a `CoreException` here is NOT swallowed:
+     * the constructor only rejects a degenerate terrain or tuning, which is a caller bug on this
+     * side of the seam, and silently handing back a stub world would hide it behind a frozen car.
+     */
+    override fun createGameWorld(terrain: TerrainSpec, tuning: CarTuning): GameWorld =
+        UniffiGameWorld(UniffiGameWorldObject(terrain.toUniffi(), tuning.toUniffi()))
 }
+
+/**
+ * The uniffi object behind the pure-JVM [GameWorld] port. Holds `trackLength` locally because it
+ * is fixed at construction and a per-frame FFI round trip for a constant is exactly the cost the
+ * Rust solver exists to avoid.
+ */
+private class UniffiGameWorld(private val rust: UniffiGameWorldObject) : GameWorld {
+    override val trackLength: Float = rust.trackLength()
+
+    override fun step(dtMs: Float, throttle: Float, brake: Float): CarState =
+        rust.step(dtMs, throttle, brake).toModel()
+
+    override fun state(): CarState = rust.state().toModel()
+
+    override fun reset(): CarState = rust.reset().toModel()
+
+    override fun resetAt(x: Float): CarState = rust.resetAt(x).toModel()
+
+    /** Frees the Rust world now rather than at the next GC — see [GameWorld]. */
+    override fun close() = rust.close()
+}
+
+private fun TerrainSpec.toUniffi(): UniffiTerrainSpec = UniffiTerrainSpec(
+    heights = heights,
+    dx = dx,
+    worldHeight = worldHeight,
+)
+
+private fun CarTuning.toUniffi(): UniffiCarTuning = UniffiCarTuning(
+    chassisMass = chassisMass,
+    chassisHalfLen = chassisHalfLen,
+    chassisHalfHeight = chassisHalfHeight,
+    wheelRadius = wheelRadius,
+    wheelMass = wheelMass,
+    suspensionRest = suspensionRest,
+    suspensionTravel = suspensionTravel,
+    suspensionStiffness = suspensionStiffness,
+    suspensionDamping = suspensionDamping,
+    motorTorque = motorTorque,
+    brakeTorque = brakeTorque,
+    maxWheelOmega = maxWheelOmega,
+    grip = grip,
+    tractionRelax = tractionRelax,
+    gravity = gravity,
+    crashTiltRad = crashTiltRad,
+)
+
+private fun UniffiCarTuning.toModel(): CarTuning = CarTuning(
+    chassisMass = chassisMass,
+    chassisHalfLen = chassisHalfLen,
+    chassisHalfHeight = chassisHalfHeight,
+    wheelRadius = wheelRadius,
+    wheelMass = wheelMass,
+    suspensionRest = suspensionRest,
+    suspensionTravel = suspensionTravel,
+    suspensionStiffness = suspensionStiffness,
+    suspensionDamping = suspensionDamping,
+    motorTorque = motorTorque,
+    brakeTorque = brakeTorque,
+    maxWheelOmega = maxWheelOmega,
+    grip = grip,
+    tractionRelax = tractionRelax,
+    gravity = gravity,
+    crashTiltRad = crashTiltRad,
+)
+
+private fun UniffiRunState.toModel(): RunState = when (this) {
+    UniffiRunState.RUNNING -> RunState.Running
+    UniffiRunState.CRASHED -> RunState.Crashed
+    UniffiRunState.FINISHED -> RunState.Finished
+}
+
+private fun UniffiCarState.toModel(): CarState = CarState(
+    x = x, y = y, angle = angle,
+    vx = vx, vy = vy, angularVelocity = angularVelocity,
+    rearX = rearX, rearY = rearY, rearAngle = rearAngle, rearOmega = rearOmega, rearContact = rearContact,
+    frontX = frontX, frontY = frontY, frontAngle = frontAngle, frontOmega = frontOmega, frontContact = frontContact,
+    rpm = rpm,
+    throttleApplied = throttleApplied,
+    impactImpulse = impactImpulse,
+    roughness = roughness,
+    airborne = airborne,
+    distanceM = distanceM,
+    run = run.toModel(),
+    elapsedS = elapsedS,
+)
 
 private fun AccuracyPair.toUniffi(): UniffiAccuracyPair = UniffiAccuracyPair(
     horizonMin = horizonMin.toUInt(),

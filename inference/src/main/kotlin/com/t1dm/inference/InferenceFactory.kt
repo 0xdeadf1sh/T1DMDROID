@@ -30,6 +30,7 @@ fun buildInferenceController(
     backendPrefProvider: suspend (modelId: String) -> BackendId? = { null },
     telemetryStore: TelemetryStore? = null,
     thermalProvider: suspend () -> ThermalStatus? = { null },
+    smoothingWindowProvider: suspend () -> Int = { InferenceControllerDefaults.SAVGOL_WINDOW },
 ): InferenceController {
     val store = ModelStore(modelsDir, native)
     val controller = InferenceController(
@@ -45,6 +46,7 @@ fun buildInferenceController(
         backendPrefProvider = backendPrefProvider,
         telemetryStore = telemetryStore,
         thermalProvider = thermalProvider,
+        smoothingWindowProvider = smoothingWindowProvider,
     )
     controller.registerBackend(ExecuTorchXnnpackBackend())
     controller.registerBackend(ExecuTorchNeuronBackend())
@@ -63,4 +65,22 @@ object InferenceControllerDefaults {
 
     /** Model MIN_CONTEXT floor for the warmup setting: 16 patches · 6 steps · 5 min = 8 h. */
     const val MIN_WARMUP_HOURS = 8
+
+    /** The causal SavGol window applied to the BG channel before normalization (INFERENCE.md §7.1).
+     *  7 taps ≙ the trailing 30 min — the shipped default and the value the fp16-agreement probe is
+     *  pinned to, so its input stays build-invariant whatever the user selects. */
+    const val SAVGOL_WINDOW = 7
+
+    /** The offered detents, in samples (× 5 min each). `1` is unfiltered. Not a continuous range:
+     *  the filter needs an ODD window, and a corrupt even/zero value would otherwise reach the Rust
+     *  model-input guard as a hard failure. */
+    val SAVGOL_STOPS = listOf(1, 7, 13, 19, 25)
+
+    /** Snap any persisted/garbage value onto the nearest offered detent — the single coercion both
+     *  `:app`'s store and the controller apply, so a hand-edited kv row can never widen the filter
+     *  to something the Rust guard rejects mid-cycle. */
+    fun nearestSmoothingStop(window: Int): Int =
+        // Long arithmetic deliberately: `abs(1 - Int.MIN_VALUE)` overflows back into a *small*
+        // distance and would snap the most hostile value to the WIDEST filter.
+        SAVGOL_STOPS.minByOrNull { kotlin.math.abs(it.toLong() - window.toLong()) } ?: SAVGOL_WINDOW
 }

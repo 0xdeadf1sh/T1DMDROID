@@ -74,10 +74,26 @@ class MealsController(
     suspend fun saveCustomFood(food: Food) =
         repository.upsertFood(food.toCustomEntity(now()))
 
+    /**
+     * Edit a custom food in place — same id, same FTS row (the `food_au` trigger reindexes it).
+     * False when the row vanished or is a bundled seed row; see [T1dmRepository.updateCustomFood] for
+     * why an ungated upsert would be dangerous, and for why saved meals are left alone.
+     */
+    suspend fun updateCustomFood(food: Food): Boolean =
+        repository.updateCustomFood(food.toCustomEntity(now()))
+
     suspend fun deleteCustomFood(id: Long) = repository.deleteCustomFood(id)
 
     suspend fun saveMeal(name: String, components: List<MealComponent>): Long =
         repository.saveMeal(name, components.map { it.toItemEntity(0) }, now())
+
+    /**
+     * Edit a saved meal in place — same id, portion snapshots replaced. False when the meal was
+     * deleted while it was being edited (nothing is written in that case; see
+     * [T1dmRepository.updateSavedMeal]).
+     */
+    suspend fun updateMeal(id: Long, name: String, components: List<MealComponent>): Boolean =
+        repository.updateSavedMeal(id, name, components.map { it.toItemEntity(id) }, now())
 
     suspend fun deleteSavedMeal(id: Long) = repository.deleteSavedMeal(id)
 
@@ -88,7 +104,10 @@ class MealsController(
      */
     suspend fun logMeal(components: List<MealComponent>, tsMs: Long = now()): LoggedMealEntity =
         withContext(dispatchers.io) {
-            val gridTs = Math.floorDiv(tsMs, CurveEngine.STEP_MS) * CurveEngine.STEP_MS
+            // Round-to-nearest (not floor) so the builder meal lands in the SAME grid slot the round-to-
+            // nearest CGM/single-food/dose writers use (repository.snapToGrid, GridStamper.snap); a floor
+            // snap misaligned the carb channel vs BG by up to one 5-min step (§4-#1 grid invariant).
+            val gridTs = Math.floorDiv(tsMs + CurveEngine.STEP_MS / 2, CurveEngine.STEP_MS) * CurveEngine.STEP_MS
             val resolved = resolver.resolveCombined(components, gridTs)
             val tz = TimeZone.getDefault().getOffset(gridTs) / 60_000
             repository.logMeal(

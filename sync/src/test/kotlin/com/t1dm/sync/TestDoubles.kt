@@ -15,6 +15,7 @@ class TestDispatchers : T1dmDispatchers {
     override val default = Dispatchers.Unconfined
     override val io = Dispatchers.Unconfined
     override val inference = Dispatchers.Unconfined
+    override val game = Dispatchers.Unconfined
 }
 
 /**
@@ -50,6 +51,8 @@ class FakeOutboxDao : OutboxDao {
         rows.values.sortedWith(compareBy({ it.createdAtMs }, { it.id }))
             .map { OutboxEvictRow(it.id, it.kind, it.createdAtMs) }
 
+    override suspend fun byId(id: Long): OutboxEntity? = rows[id]
+
     override suspend fun delete(id: Long) { rows.remove(id); depth.value = rows.size }
 
     override suspend fun deleteAll(ids: List<Long>): Int {
@@ -75,6 +78,13 @@ class FakeOutboxDao : OutboxDao {
 
     override suspend fun reschedule(id: Long, state: OutboxState, attempts: Int, nextAttemptMs: Long) {
         rows[id]?.let { rows[id] = it.copy(state = state, attempts = attempts, nextAttemptMs = nextAttemptMs) }
+    }
+
+    override suspend fun claim(id: Long, from: OutboxState, to: OutboxState): Int {
+        val r = rows[id] ?: return 0
+        if (r.state != from) return 0
+        rows[id] = r.copy(state = to)
+        return 1
     }
 
     fun snapshot(): List<OutboxEntity> = rows.values.toList()

@@ -27,6 +27,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.t1dm.core.design.HapticEvent
+import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.model.AccuracyReport
 import com.t1dm.core.model.BackendAvailability
 import com.t1dm.core.model.BackendComparison
@@ -68,6 +70,7 @@ fun ModelDetailScreen(
     val meta = state.metaOf(modelId)
     val telemetry = state.telemetryOf(modelId)
     val running = state.runningOf(modelId)
+    val haptics = rememberT1dmHaptics()
 
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         item {
@@ -84,10 +87,10 @@ fun ModelDetailScreen(
         // ── 1. Meta ──
         section("Model") {
             if (meta == null) {
-                Note("No descriptor metadata for this model.")
+                Note("No descriptor metadata")
             } else {
                 KeyVal("parameters", meta.paramCount?.let { "${fmtParams(it)}  (${"%,d".format(it)})" } ?: "n/a")
-                KeyVal("artifact size", meta.diskBytes?.let { fmtBytes(it) } ?: "n/a (StubBackend — no .pte on disk)")
+                KeyVal("artifact size", meta.diskBytes?.let { fmtBytes(it) } ?: "n/a (no .pte on disk)")
                 KeyVal("d_model / layers / heads", listOfNotNull(meta.dModel, meta.nLayers, meta.nHeads).joinToStringOrNa())
                 KeyVal("patch dim", meta.patchDim?.toString() ?: "n/a")
                 KeyVal("context patches", rangeOrNa(meta.minContextPatches, meta.maxContextPatches))
@@ -99,7 +102,7 @@ fun ModelDetailScreen(
         // ── 2. Cumulative telemetry ──
         section("Inference telemetry (this install)") {
             if (telemetry == null || telemetry.predictions == 0L) {
-                Note("No forecasts recorded yet — the counter fills once a cycle runs.")
+                Note("No forecasts recorded yet")
             } else {
                 KeyVal("predictions made", "%,d".format(telemetry.predictions))
                 KeyVal("avg exec time", fmtMs(telemetry.avgInferenceMs))
@@ -129,9 +132,7 @@ fun ModelDetailScreen(
                     )
                 } else {
                     Note(
-                        "Compute-backend switching and the agreement probe apply to the SELECTED model. " +
-                            "This model runs on ${running.backend.displayName()} · ${running.precision.name}; " +
-                            "select it on the Models screen (the radio) to view and change its backend.",
+                        "Applies to the selected model — pick it on Models",
                     )
                 }
             }
@@ -139,7 +140,7 @@ fun ModelDetailScreen(
 
         // ── 3. On-device realized accuracy ──
         section("On-device realized accuracy") {
-            Note("Forecast median vs the realized sensor BG at each horizon (advisory — a forecast-accuracy statement, not a dosing claim).")
+            Note("Forecast median vs realized BG per horizon (advisory — not a dosing claim)")
             // Keep the prior horizon rows on screen through a recompute (issue 6): only collapse to the
             // one-line "Computing…" when there is NO prior accuracy; otherwise the rows stay put and a
             // subtle inline hint (in the button row, so section height is unchanged) marks the refresh.
@@ -147,10 +148,12 @@ fun ModelDetailScreen(
             when {
                 horizons.isNotEmpty() -> horizons.forEach { HorizonRow(it) }
                 accuracyLoading -> Note("Computing…")
-                else -> Note("Insufficient history — no matured forecasts have been paired with a realized reading yet.")
+                else -> Note("Insufficient history — no matured forecast paired with a reading yet")
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = onRecomputeAccuracy) { Text("Recompute") }
+                TextButton(
+                    onClick = { haptics.perform(HapticEvent.Tap); onRecomputeAccuracy() },
+                ) { Text("Recompute") }
                 if (accuracyLoading && horizons.isNotEmpty()) {
                     Note("Recomputing…")
                 }
@@ -160,7 +163,7 @@ fun ModelDetailScreen(
         // ── 4. Reference (held-out validation) ──
         meta?.reference?.let { ref ->
             section("Reference — held-out validation (train.py)") {
-                Note("The model's own validation metrics at export${meta.valStep?.let { " (step ${"%,d".format(it)})" } ?: ""} — reference only, not on-device.")
+                Note("Validation metrics at export${meta.valStep?.let { " (step ${"%,d".format(it)})" } ?: ""} — reference only, not on-device")
                 ReferenceRows(ref)
                 ref.clarkeAbPct?.let { KeyVal("Clarke A+B", "%.1f%%".format(it)) }
                 if (ref.todMaeH != null) {
@@ -176,7 +179,7 @@ private fun HorizonRow(h: HorizonAccuracy) {
     Column(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
         Text("${h.horizonMin} min", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
         if (!h.sufficient) {
-            Note("insufficient history (${h.n} matured — need more)")
+            Note("insufficient history (${h.n} matured)")
         } else {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 Metric("RMSE", "%.1f".format(h.rmse))
@@ -228,10 +231,10 @@ private fun ComputeBackendControls(
     onRunComparison: () -> Unit,
 ) {
     var refusal by remember { mutableStateOf<String?>(null) }
+    val haptics = rememberT1dmHaptics()
 
     Note(
-        "Choose which compute unit runs this model's display forecast — dose advice always stays on the " +
-            "fp32 XNNPACK CPU authority unless another backend passes the agreement probe below.",
+        "Display forecast only; dose advice stays on CPU unless probed",
     )
 
     // Live truth: what is ACTUALLY executing (may differ from the request on a load failure).
@@ -247,10 +250,10 @@ private fun ComputeBackendControls(
     // Auto row (auto = the fp32 CPU authority).
     BackendChoiceRow(
         title = "Auto (fp32 CPU authority)",
-        subtitle = "Always the authoritative XNNPACK CPU path — trusted for dose advice.",
+        subtitle = "Authoritative XNNPACK CPU path — trusted for dose advice",
         available = true,
         selected = requestedBackend == null,
-        onClick = { refusal = null; onSelectBackend(null) },
+        onClick = { haptics.perform(HapticEvent.SegmentTick); refusal = null; onSelectBackend(null) },
     )
     // This build ships exactly two real compute paths: the XNNPACK CPU authority and the Vulkan GPU
     // delegate. The Play-delivered NeuroPilot NPU / legacy LiteRT rows are not reachable here.
@@ -269,9 +272,18 @@ private fun ComputeBackendControls(
             },
             available = b.available,
             selected = requestedBackend == b.backend,
+            // An unavailable backend is a REAL refusal — the row stays enabled deliberately so it can
+            // explain itself in [refusal] rather than going dead, which is exactly the case the
+            // vocabulary's Reject exists for (a disabled control could say nothing at all).
             onClick = {
-                if (b.available) { refusal = null; onSelectBackend(b.backend) }
-                else refusal = "${b.backend.displayName()} is unavailable: ${b.reason ?: "no artifact on device"}"
+                if (b.available) {
+                    haptics.perform(HapticEvent.SegmentTick)
+                    refusal = null
+                    onSelectBackend(b.backend)
+                } else {
+                    haptics.perform(HapticEvent.Reject)
+                    refusal = "${b.backend.displayName()} unavailable — ${b.reason ?: "no artifact on device"}"
+                }
             },
         )
     }
@@ -285,10 +297,11 @@ private fun ComputeBackendControls(
     }
 
     Note(
-        "Runs the selected backend and the CPU authority on the same fixed input and compares speed and " +
-            "numerics — a PASS on the decoded-mg/dL agreement is what lets that backend feed dose advice.",
+        "Backend vs CPU on one input — a PASS unlocks dose advice",
     )
-    Button(onClick = { refusal = null; onRunComparison() }) { Text("Run agreement probe & measure") }
+    Button(
+        onClick = { haptics.perform(HapticEvent.Tap); refusal = null; onRunComparison() },
+    ) { Text("Run agreement probe") }
     comparison?.let { BackendComparisonCard(it) }
 }
 
@@ -346,7 +359,7 @@ private fun BackendComparisonCard(c: BackendComparison) {
             Mono("max|Δ| mg/dL       ${"%.4f".format(c.maxAbsDecodedMgdlDelta)}  (tol ${"%.1f".format(c.toleranceMgdl)})")
             c.loadRssGrowthKb?.let { Mono("load RSS growth    $it KB (unified memory)") }
             Text(
-                if (pass) "AGREEMENT: PASS — this backend may feed dose advice."
+                if (pass) "AGREEMENT: PASS — may feed dose advice."
                 else "AGREEMENT: FAIL — forecast only; dose advice stays on the CPU authority.",
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.Bold,

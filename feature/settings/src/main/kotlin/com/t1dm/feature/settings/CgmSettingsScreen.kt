@@ -1,13 +1,9 @@
 package com.t1dm.feature.settings
 
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -25,8 +21,8 @@ import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.SignalBars
 
 /**
- * Settings → CGM source (Phase 1 stub, extended). Surfaces the auto-adopted active source and every
- * recorded source (manual re-selection lands with the multi-source work). Phase-7 polish:
+ * Settings → CGM source. Surfaces the auto-adopted active source and every recorded source (manual
+ * re-selection lands with the multi-source work).
  *  - I10: the ACTIVE source's live BLE signal strength (RSSI dBm + bars), reusing the BG-panel meter.
  *  - I11: a USER-ENTERED sensor lifetime. Because the AiDEX X is a passive advertisement listener we
  *    cannot read the sensor's true age, so the user enters the remaining life (days + hours + minutes);
@@ -51,97 +47,47 @@ fun CgmSettingsScreen(
     onSetAggressiveOnlyCharging: (Boolean) -> Unit = {},
     onRequestOverlay: () -> Unit = {},
 ) {
-    Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        Text("Active source", style = MaterialTheme.typography.labelMedium)
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text(
-                text = activeSourceName?.let { "$it${activeStatus?.let { s -> " • $s" } ?: ""}" }
-                    ?: "none yet — scanning",
-                style = MaterialTheme.typography.bodyLarge,
-            )
-            // I10 — the active source's live signal strength, the same meter shown in the BG panel.
-            activeRssi?.let { SignalBars(it) }
-        }
-
-        Text("Recorded sources", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 24.dp))
-        if (allSourceNames.isEmpty()) {
-            Text("none", style = MaterialTheme.typography.bodyMedium)
-        } else {
-            allSourceNames.forEach { Text(it, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(vertical = 4.dp)) }
-        }
-
-        SensorLifetimeSection(sensorExpiryMs, onSetSensorLifetime, onClearSensorLifetime)
-
-        AggressiveScanSection(
-            enabled = aggressiveEnabled,
-            showGlucose = aggressiveShowGlucose,
-            onlyCharging = aggressiveOnlyCharging,
-            hasOverlayPermission = hasOverlayPermission,
-            onSetEnabled = onSetAggressiveEnabled,
-            onSetShowGlucose = onSetAggressiveShowGlucose,
-            onSetOnlyCharging = onSetAggressiveOnlyCharging,
-            onRequestOverlay = onRequestOverlay,
-        )
-    }
-}
-
-/**
- * Aggressive background scanning (build-gotchas). HyperOS suspends a backgrounded BLE scan the moment
- * the screen turns off; the only app-side defeat is to hold the display genuinely on behind a
- * black/dim surface, so this is a heavy, opt-in mode. Off-charger it is a real battery cost (the SoC
- * never deep-idles), hence the candid caption and the charging-only escape hatch.
- */
-@Composable
-private fun AggressiveScanSection(
-    enabled: Boolean,
-    showGlucose: Boolean,
-    onlyCharging: Boolean,
-    hasOverlayPermission: Boolean,
-    onSetEnabled: (Boolean) -> Unit,
-    onSetShowGlucose: (Boolean) -> Unit,
-    onSetOnlyCharging: (Boolean) -> Unit,
-    onRequestOverlay: () -> Unit,
-) {
-    Text("Aggressive background scanning", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 28.dp))
-    Text(
-        "When the screen turns off, HyperOS suspends the CGM scan. This mode keeps the display on but " +
-            "dark while the phone is locked so readings keep flowing. Cost: the phone can't fully sleep — " +
-            "real battery drain off the charger — and you press power twice to wake to your lock screen.",
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-    )
-
-    LabeledSwitch("Keep scanning while locked", enabled, onSetEnabled)
-
-    if (enabled) {
-        if (!hasOverlayPermission) {
-            Text(
-                "Needs the “Display over other apps” permission to raise the dark screen while locked.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error,
-                modifier = Modifier.padding(top = 8.dp),
-            )
-            Button(onClick = onRequestOverlay, modifier = Modifier.padding(top = 4.dp)) {
-                Text("Grant “Display over other apps”")
+    SettingsScaffold(SettingsScreenKey.CGM) {
+        SettingsAnchor(cgmSource) {
+            SettingsSectionHeader(SOURCE_SECTION)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = activeSourceName?.let { "$it${activeStatus?.let { s -> " • $s" } ?: ""}" }
+                        ?: "none yet — scanning",
+                    style = MaterialTheme.typography.bodyLarge,
+                )
+                // I10 — the active source's live signal strength, the same meter shown in the BG panel.
+                activeRssi?.let { SignalBars(it) }
+            }
+            Text("Recorded", style = MaterialTheme.typography.labelMedium)
+            if (allSourceNames.isEmpty()) {
+                Text("none", style = MaterialTheme.typography.bodyMedium)
+            } else {
+                allSourceNames.forEach { Text(it, style = MaterialTheme.typography.bodyMedium) }
             }
         }
-        LabeledSwitch("Show glucose on the dark screen", showGlucose, onSetShowGlucose)
-        LabeledSwitch("Only while charging", onlyCharging, onSetOnlyCharging)
-    }
-}
 
-@Composable
-private fun LabeledSwitch(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().padding(top = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-        androidx.compose.material3.Switch(checked = checked, onCheckedChange = onChange)
+        SettingsAnchor(cgmLifetime) {
+            SettingsSectionHeader(LIFETIME_SECTION)
+            SettingsNote("A passive listener can't read the sensor's age — this is your estimate")
+            SensorLifetimeSection(sensorExpiryMs, onSetSensorLifetime, onClearSensorLifetime)
+        }
+
+        SettingsSectionHeader(AGGRESSIVE_SECTION)
+        SettingsNote("HyperOS suspends the scan when the screen sleeps; this holds the display dark but on")
+        ToggleRow(cgmAggressive, aggressiveEnabled, onSetAggressiveEnabled)
+        if (aggressiveEnabled) {
+            if (!hasOverlayPermission) {
+                Text(
+                    "Needs “Display over other apps” to raise the dark screen while locked",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                Button(onClick = onRequestOverlay) { Text("Grant") }
+            }
+            ToggleRow(cgmAggressiveShowBg, aggressiveShowGlucose, onSetAggressiveShowGlucose)
+            ToggleRow(cgmAggressiveCharging, aggressiveOnlyCharging, onSetAggressiveOnlyCharging)
+        }
     }
 }
 
@@ -151,14 +97,6 @@ private fun SensorLifetimeSection(
     onSet: (Int, Int, Int) -> Unit,
     onClear: () -> Unit,
 ) {
-    Text("Sensor lifetime", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 28.dp))
-    Text(
-        "A passive listener cannot read the sensor's true age, so enter the remaining life yourself. " +
-            "This is a user estimate, not read from the sensor.",
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-    )
-
     if (expiryMs != null) {
         val now by produceState(System.currentTimeMillis(), expiryMs) {
             while (true) {
@@ -169,12 +107,10 @@ private fun SensorLifetimeSection(
         }
         val remainingMs = expiryMs - now
         Text(
-            if (remainingMs <= 0L) "Estimated lifetime elapsed — renew for a new sensor."
-            else "Estimated remaining: ${fullRemaining(remainingMs)}.",
+            if (remainingMs <= 0L) "Elapsed — renew for a new sensor" else "Remaining: ${fullRemaining(remainingMs)}",
             style = MaterialTheme.typography.bodyLarge,
             fontWeight = FontWeight.SemiBold,
             color = if (remainingMs <= 0L) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.padding(top = 8.dp),
         )
     }
 
@@ -187,14 +123,14 @@ private fun SensorLifetimeSection(
     DurationStepper("Minutes", minutes, max = 59, step = 5) { minutes = it }
 
     Row(
-        Modifier.fillMaxWidth().padding(top = 12.dp),
+        Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Button(
             onClick = { onSet(days, hours, minutes) },
             enabled = days > 0 || hours > 0 || minutes > 0,
-        ) { Text(if (expiryMs == null) "Set lifetime" else "Renew (new sensor)") }
+        ) { Text(if (expiryMs == null) "Set" else "Renew") }
         if (expiryMs != null) {
             OutlinedButton(onClick = onClear) { Text("Clear") }
         }
@@ -204,7 +140,7 @@ private fun SensorLifetimeSection(
 @Composable
 private fun DurationStepper(label: String, value: Int, min: Int = 0, max: Int, step: Int = 1, onChange: (Int) -> Unit) {
     Row(
-        Modifier.fillMaxWidth().padding(top = 8.dp),
+        Modifier.fillMaxWidth().padding(vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -234,3 +170,66 @@ private fun fullRemaining(ms: Long): String {
         if (m > 0 || isEmpty()) add("${m} m")
     }.joinToString(" ")
 }
+
+// ── search index (see SettingsIndex.kt) ───────────────────────────────────────────────────────────
+
+private const val SOURCE_SECTION = "Source"
+private const val LIFETIME_SECTION = "Sensor lifetime"
+private const val AGGRESSIVE_SECTION = "Aggressive background scanning"
+
+private val cgmSource = SettingsKnob(
+    id = "cgm.source",
+    screen = SettingsScreenKey.CGM,
+    section = SOURCE_SECTION,
+    label = "Active CGM source",
+    subtitle = "The sensor being listened to, its signal, and every source seen before",
+    synonyms = listOf(
+        "cgm", "sensor", "aidex", "linx", "glucose sensor", "transmitter", "source", "device",
+        "signal", "rssi", "bluetooth", "ble", "scan",
+    ),
+)
+
+private val cgmLifetime = SettingsKnob(
+    id = "cgm.sensor_lifetime",
+    screen = SettingsScreenKey.CGM,
+    section = LIFETIME_SECTION,
+    label = "Sensor lifetime",
+    subtitle = "Remaining life you enter yourself; counted down here and in the BG panel",
+    synonyms = listOf(
+        "lifetime", "life", "expiry", "expires", "remaining", "age", "days left", "renew",
+        "new sensor", "replace", "countdown", "wear time",
+    ),
+)
+
+private val cgmAggressive = SettingsKnob(
+    id = "cgm.aggressive_scan",
+    screen = SettingsScreenKey.CGM,
+    section = AGGRESSIVE_SECTION,
+    label = "Keep scanning while locked",
+    subtitle = "Holds the display on but dark so the scan survives screen-off; heavy on battery",
+    synonyms = listOf(
+        "aggressive", "background", "screen off", "locked", "always on", "aod", "keep alive",
+        "hyperos", "suspend", "doze", "overlay", "battery",
+    ),
+)
+
+private val cgmAggressiveShowBg = SettingsKnob(
+    id = "cgm.aggressive_show_glucose",
+    screen = SettingsScreenKey.CGM,
+    section = AGGRESSIVE_SECTION,
+    label = "Show glucose on the dark screen",
+    subtitle = "Render a dim read-out instead of pure black",
+    synonyms = listOf("glucose", "show", "dark screen", "aod", "display", "readout", "dim"),
+)
+
+private val cgmAggressiveCharging = SettingsKnob(
+    id = "cgm.aggressive_only_charging",
+    screen = SettingsScreenKey.CGM,
+    section = AGGRESSIVE_SECTION,
+    label = "Only while charging",
+    subtitle = "Restrict the mode to the charger to bound its battery cost",
+    synonyms = listOf("charging", "charger", "plugged in", "battery", "power", "only"),
+)
+
+internal val settingsCgmKnobs =
+    listOf(cgmSource, cgmLifetime, cgmAggressive, cgmAggressiveShowBg, cgmAggressiveCharging)

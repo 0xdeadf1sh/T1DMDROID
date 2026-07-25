@@ -23,7 +23,7 @@ interface NonceStore {
     /**
      * The safety margin added on top of the persisted ceiling when burning the window at cold start,
      * so a checkpoint that lagged the last few in-flight seals can never collide. Generous: the
-     * counter is 32 bits and we send ~once per 5 min.
+     * seq counter is 64 bits and we send ~once per 5 min.
      */
     val burnMargin: Long get() = 256L
 }

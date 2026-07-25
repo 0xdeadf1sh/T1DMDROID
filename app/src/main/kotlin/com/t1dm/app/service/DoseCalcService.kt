@@ -57,7 +57,10 @@ class DoseCalcService : LifecycleService() {
                 searchJob = lifecycleScope.launch {
                     runCatching { container.runBolusAdvice(grams, gi, manualTargetMgdl = target) }
                         .onFailure { Timber.tag(TAG).w(it, "bolus advice failed") }
-                    stopSelf()
+                    // runCatching swallows the CancellationException a superseded job raises, so only stop
+                    // the service if THIS job is still the current search — otherwise a fresh RECOMMEND that
+                    // cancelled us would have its own new search torn down by our stopSelf → onDestroy.
+                    if (coroutineContext[Job] === searchJob) stopSelf(startId)
                 }
             }
             ACTION_CANCEL -> {
@@ -83,7 +86,7 @@ class DoseCalcService : LifecycleService() {
             )
             .setColor(container.notificationAccentArgb)
             .setContentTitle("Bolus advisor")
-            .setContentText("Rolling the forecast over candidate doses…")
+            .setContentText("Rolling candidate doses…")
             .setOngoing(true)
             .setCategory(Notification.CATEGORY_SERVICE)
             .build()
@@ -93,7 +96,7 @@ class DoseCalcService : LifecycleService() {
     private fun createChannel() {
         getSystemService(NotificationManager::class.java).createNotificationChannel(
             NotificationChannel(CH_CALC, "Bolus advisor", NotificationManager.IMPORTANCE_LOW).apply {
-                description = "Runs the fail-closed bolus dose search off the UI thread."
+                description = "Off-thread bolus dose search"
                 setShowBadge(false)
             },
         )

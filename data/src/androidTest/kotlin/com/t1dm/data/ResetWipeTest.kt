@@ -10,6 +10,7 @@ import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.CgmSourceDescriptor
 import com.t1dm.core.model.CgmSourceId
 import com.t1dm.core.model.ForecastStatus
+import com.t1dm.core.model.PaintStroke
 import com.t1dm.core.model.Precision
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
@@ -147,6 +148,14 @@ class ResetWipeTest {
         db.insulinTypeDao().insert(InsulinTypeEntity(name = "Novorapid", kind = DoseKind.BOLUS, durationMin = 300.0, k = 2.0, theta = 30.0, kaPerHour = null, kePerHour = null, customCurve = null, builtin = true, updatedAt = now))
         db.insulinTypeDao().insert(InsulinTypeEntity(name = "MyInsulin", kind = DoseKind.BOLUS, durationMin = 300.0, k = 2.0, theta = 30.0, kaPerHour = null, kePerHour = null, customCurve = null, builtin = false, updatedAt = now))
 
+        // A freehand graph annotation (Room v8) — display-only user data, wiped whole (no seed rows).
+        repo.addPaintStroke(
+            PaintStroke(
+                id = 0, createdAtMs = now, tool = "brush", colorArgb = -1, widthDp = 3f,
+                tsMs = longArrayOf(now, now + 1_000), yFrac = floatArrayOf(0.25f, 0.75f),
+            ),
+        )
+
         // kv: a setting, and the watch pairing + nonce-ceiling rows the wipe must burn.
         repo.putKv("ui.theme", "umbrella", now)
         repo.putKv("watch.paired", "1", now)
@@ -186,7 +195,7 @@ class ResetWipeTest {
         val WIPED_EMPTY = listOf(
             "cgm_source", "cgm_reading", "sample", "dose_event", "logged_dose", "logged_meal",
             "basal_schedule", "cgm_advert_raw", "outbox", "prediction", "server_profile", "note",
-            "hw_telemetry", "saved_meal", "saved_meal_item", "kv",
+            "hw_telemetry", "saved_meal", "saved_meal_item", "bg_paint_stroke", "kv",
         )
     }
 }

@@ -1,4 +1,4 @@
 <resources>
     <string name="app_name">T1DM</string>
-    <string name="widget_glucose_desc">Glucose, trend and forecast — resizes for more detail</string>
+    <string name="widget_glucose_desc">Glucose, trend, and forecast</string>
 </resources>

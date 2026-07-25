@@ -17,17 +17,48 @@ fun PowerSettingsScreen(
     onSetPercent: (Int) -> Unit,
     onSetUseOsSaver: (Boolean) -> Unit,
 ) {
-    SettingsScaffold("Low-power mode") {
-        SettingsNote(
-            "Low-power mode only affects the optional watch push — it pauses to save battery. Passive " +
-                "CGM scanning, the model-free alarm, and forecasting are never suspended.",
-        )
-        ToggleRow("Enable low-power suspension", enabled) { onSetEnabled(it) }
-        IntStepper("Suspend at battery level", percent, "%", step = 5, min = 0, max = 100) { onSetPercent(it) }
-        ToggleRow(
-            "Also follow OS battery-saver",
-            useOsSaver,
-            "Suspend whenever the system battery-saver is on, regardless of level",
-        ) { onSetUseOsSaver(it) }
+    SettingsScaffold(SettingsScreenKey.POWER) {
+        SettingsNote("Pauses only the watch push")
+        ToggleRow(powerEnabled, enabled) { onSetEnabled(it) }
+        IntStepper(powerPercent, percent, "%", step = 5, min = 0, max = 100) { onSetPercent(it) }
+        ToggleRow(powerOsSaver, useOsSaver) { onSetUseOsSaver(it) }
     }
 }
+
+// ── search index (see SettingsIndex.kt) ───────────────────────────────────────────────────────────
+
+private const val POWER_SECTION = "Low-power mode"
+
+private val powerEnabled = SettingsKnob(
+    id = "power.enabled",
+    screen = SettingsScreenKey.POWER,
+    section = POWER_SECTION,
+    label = "Enable low-power suspension",
+    subtitle = "Pause the watch push on low battery",
+    synonyms = listOf(
+        "low power", "battery", "battery saver", "power saving", "suspend", "conserve", "economy",
+        "watch push", "energy", "drain",
+    ),
+)
+
+private val powerPercent = SettingsKnob(
+    id = "power.percent",
+    screen = SettingsScreenKey.POWER,
+    section = POWER_SECTION,
+    label = "Suspend at battery level",
+    subtitle = "The battery percentage at which the watch push pauses",
+    synonyms = listOf("battery", "percent", "percentage", "level", "threshold", "charge", "20%", "low battery"),
+)
+
+private val powerOsSaver = SettingsKnob(
+    id = "power.os_saver",
+    screen = SettingsScreenKey.POWER,
+    section = POWER_SECTION,
+    label = "Also follow OS battery-saver",
+    subtitle = "Also suspend when the system battery-saver is on, regardless of level",
+    synonyms = listOf(
+        "os", "system", "android", "battery saver", "power saver", "follow", "doze", "adaptive battery",
+    ),
+)
+
+internal val settingsPowerKnobs = listOf(powerEnabled, powerPercent, powerOsSaver)

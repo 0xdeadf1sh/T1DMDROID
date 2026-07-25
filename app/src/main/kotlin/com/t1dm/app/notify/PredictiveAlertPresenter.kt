@@ -33,18 +33,20 @@ class PredictiveAlertPresenter(
     /** The crossing signature last announced, so an unchanged prediction does not re-buzz each cycle. */
     private var lastKey: String? = null
 
+    /** True while an alert is SHOWING — the same gated decision that buzzes, republished so a consumer
+     *  cannot mistake "a crossing is predicted" for "the actuator is about to be seized". */
     fun update(
         glance: BgGlance,
         config: AlertActuatorConfig,
         alarmCriticalActive: Boolean,
         style: IconStyle,
         accentArgb: Int,
-    ) {
+    ): Boolean {
         val urgent = glance.urgent
         if (urgent == null || alarmCriticalActive || !nm.areNotificationsEnabled()) {
             nm.cancel(TAG, ID)
             lastKey = null
-            return
+            return false
         }
         val key = "${urgent.kind}:${urgent.thresholdMgdl}"
         val channels = AlertChannels.ensure(app, config)
@@ -54,8 +56,7 @@ class PredictiveAlertPresenter(
             "Predicted urgent high"
         }
         val eta = if (urgent.etaMin <= 5) "~5 min" else "~${urgent.etaMin} min"
-        val body = "${BgFormat.crossingLine(urgent)} — forecast ${urgent.projectedMgdl} mg/dL " +
-            "(crossing ${urgent.thresholdMgdl}) in $eta. Model prediction; verify."
+        val body = "${urgent.projectedMgdl} mg/dL in $eta (crosses ${urgent.thresholdMgdl}). Predicted — verify."
         val builder = Notification.Builder(app, channels.critical)
             .setSmallIcon(NotificationIcons.res(NotificationIcons.Glyph.WARNING, style))
             .setColor(accentArgb)
@@ -76,6 +77,7 @@ class PredictiveAlertPresenter(
             vibrations.buzz(config.criticalVibration)
             lastKey = key
         }
+        return true
     }
 
     /** Withdraw any showing predictive alert (DEATH mode); the next eligible [update] re-announces. */

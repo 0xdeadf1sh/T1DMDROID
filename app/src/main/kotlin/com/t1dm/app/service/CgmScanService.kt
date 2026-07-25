@@ -130,7 +130,6 @@ class CgmScanService : LifecycleService() {
         PredictiveAlertPresenter(this, ::fullScreenIntent, ::contentIntent)
     }
     private val repeatScheduler by lazy { AlertRepeatScheduler(this) }
-    @Volatile private var alertActuatorCfg = AlertActuatorConfig.SILENT
     @Volatile private var repeatArmed = false
 
     /** Debug step folding so injected TYPE_STEP_COUNTER cumulatives bucket exactly as the sensor's. */
@@ -277,12 +276,13 @@ class CgmScanService : LifecycleService() {
         // covered; a restart re-fires from a clean gate).
         container.clearSnooze()
         alarmScope.launch {
-            val cfg = runCatching { container.alertActuatorConfig() }.getOrDefault(AlertActuatorConfig.SILENT)
-            alertActuatorCfg = cfg
+            container.refreshAlertActuatorConfig()
             alarmEngine = AlarmEngine(container.alarmConfig)
             val notifier = AndroidAlarmNotifier(
                 context = this@CgmScanService,
-                actuatorConfig = cfg,
+                // Live, like `suppressed` and `snoozeState`: a snapshot taken here would freeze the
+                // sound / vibration / DND choice for the whole life of the service.
+                actuatorConfig = { container.alertActuatorSnapshot },
                 fullScreenIntent = ::fullScreenIntent,
                 contentIntent = ::contentIntent,
                 // Per-theme alarm glyph (issue I1): urgent tiers get the DISTINCT bell (ALARM); the
@@ -328,6 +328,9 @@ class CgmScanService : LifecycleService() {
             alarmController.state.collect { st ->
                 // Prune snoozes whose kind cleared / whose window lapsed (§3.6 C1/C3) on every state change.
                 container.pruneSnooze(st)
+                // Republish for the UI. ADDITIVE and downstream of the engine — a consumer of this can
+                // never change WHEN an alarm fires (§3.6-A), only what a screen does about it.
+                container.alarmState.value = st
                 Timber.tag(TAG).i(
                     "ALARM active=%b threshold=%s loss=%s primarySeverity=%s",
                     st.isActive, st.threshold?.band, st.signalLoss?.windowMin, st.primary?.severity,
@@ -502,8 +505,17 @@ class CgmScanService : LifecycleService() {
 
         val deterministicCriticalActive = ::alarmController.isInitialized &&
             alarmController.state.value.threshold?.severity == AlarmSeverity.CRITICAL
-        if (container.deathModeSnapshot) predictiveAlerts.clear()
-        else predictiveAlerts.update(glance, alertActuatorCfg, deterministicCriticalActive, style, accent)
+        // Mirrored for the minigame's interlock (see AppContainer.predictiveAlertRaised): a predicted
+        // urgent crossing buzzes the SAME actuator the deterministic alarm does, so a cosmetic surface
+        // holding a continuous effect has to yield to it exactly as it yields to a measured breach.
+        container.predictiveAlertRaised.value = if (container.deathModeSnapshot) {
+            predictiveAlerts.clear()
+            false
+        } else {
+            predictiveAlerts.update(
+                glance, container.alertActuatorSnapshot, deterministicCriticalActive, style, accent,
+            )
+        }
 
         // Seed the palette globals the widget reads headlessly BEFORE pushing it, so it renders the
         // persisted theme deterministically (independent of whether an Activity composition has run) and
@@ -514,7 +526,7 @@ class CgmScanService : LifecycleService() {
         // settle it a beat later with ONE delayed re-render so a new value reads as a brief pulse rather
         // than a static jump. Gated by the global animations toggle and fired only for a fresh reading —
         // two updates per reading, never a loop.
-        val animate = runCatching { container.settingsStore.animationsEnabled.first() }.getOrDefault(true)
+        val animate = runCatching { container.settingsStore.currentAnimationsEnabled() }.getOrDefault(true)
         val ageMs = latest?.let { System.currentTimeMillis() - it.rxWallMs } ?: Long.MAX_VALUE
         if (animate && ageMs in 0 until GlucoseWidget.FRESH_WINDOW_MS) {
             lifecycleScope.launch(container.dispatchers.default) {
@@ -570,6 +582,7 @@ class CgmScanService : LifecycleService() {
         val alarm: ActiveAlarm? = when (kind) {
             AlarmKind.THRESHOLD -> st.threshold
             AlarmKind.SIGNAL_LOSS -> st.signalLoss
+            AlarmKind.WEAK_SIGNAL -> st.weakSignal
             AlarmKind.OVER_TEMPERATURE -> null // over-temperature is never snoozable (C5)
         }
         if (alarm == null) return
@@ -1000,8 +1013,8 @@ class CgmScanService : LifecycleService() {
         val notif: Notification = Notification.Builder(this, CH_SERVICE)
             .setSmallIcon(NotificationIcons.res(NotificationIcons.Glyph.MONITOR, container.iconStyle))
             .setColor(container.notificationAccentArgb)
-            .setContentTitle("T1DM monitoring active")
-            .setContentText("Scanning for CGM, counting steps, watching alarms.")
+            .setContentTitle("Monitoring active")
+            .setContentText("Watching CGM, steps, and alarms")
             .setOngoing(true)
             .setCategory(Notification.CATEGORY_SERVICE)
             .build()
@@ -1014,7 +1027,7 @@ class CgmScanService : LifecycleService() {
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(
             NotificationChannel(CH_SERVICE, "CGM monitoring", NotificationManager.IMPORTANCE_LOW).apply {
-                description = "Ongoing passive CGM scan, steps, and the model-free alarm."
+                description = "Ongoing CGM scan, steps, and alarm"
                 setShowBadge(false)
             },
         )

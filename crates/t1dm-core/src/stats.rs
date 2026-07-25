@@ -63,9 +63,11 @@ pub struct StatSample {
     pub mood: Option<i32>,
 }
 
-/// Time-weighted fraction of the record spent in each clinical band (sums to 1 over a
-/// non-empty series). `in_range` uses the *configurable* target edges; `very_low`/
-/// `very_high` are the fixed 54/250 clinical cuts.
+/// Time-weighted fraction of the record spent in each clinical band (partitions the record:
+/// sums to 1 over a non-empty series). `in_range` uses the *configurable* target edges;
+/// `very_low`/`very_high` are the 54/250 clinical cuts, each clamped to the nearer target
+/// edge so an unbounded target (`target_low` < 54 or `target_high` > 250) still yields five
+/// disjoint bands.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct SubBands {
     pub very_low: f64,
@@ -602,20 +604,27 @@ pub fn advanced_stats(
     let wsum: f64 = weights.iter().sum();
 
     // ── band fractions (time-weighted) ───────────────────────────────────────
+    // The fixed 54/250 clinical cuts are clamped to the (unbounded) target edges so the five
+    // bands always PARTITION: a target dipping below 54 pulls the very-low cut down to `tlo`
+    // (and one climbing above 250 pushes the very-high cut up to `thi`). Without this, a
+    // reading in the overlap would land in both a level-2 band AND in_range — inflating the
+    // fractions past 1 (they'd stop summing to wsum). A single if/else chain keeps them disjoint.
+    let vlo_cut = VERY_LOW.min(tlo);
+    let vhi_cut = VERY_HIGH.max(thi);
     let (mut w_vlow, mut w_low, mut w_in, mut w_high, mut w_vhigh) = (0.0, 0.0, 0.0, 0.0, 0.0);
     for (i, &bg) in bgs.iter().enumerate() {
         let w = weights[i];
-        if bg < VERY_LOW {
-            w_vlow += w;
-        } else if bg < tlo {
-            w_low += w;
-        }
-        if bg >= tlo && bg <= thi {
+        if bg < tlo {
+            if bg < vlo_cut {
+                w_vlow += w;
+            } else {
+                w_low += w;
+            }
+        } else if bg <= thi {
             w_in += w;
-        }
-        if bg > thi && bg <= VERY_HIGH {
+        } else if bg <= vhi_cut {
             w_high += w;
-        } else if bg > VERY_HIGH {
+        } else {
             w_vhigh += w;
         }
     }
@@ -1185,5 +1194,36 @@ mod tests {
         assert!(advanced_stats(one.clone(), 70, 180, 7).is_err(), "7 ∤ 1440");
         assert!(advanced_stats(one.clone(), 70, 180, 5000).is_err(), "too many bins");
         assert!(advanced_stats(one, 70, 180, 48).is_ok(), "48 | 1440");
+    }
+
+    #[test]
+    fn unbounded_target_bands_still_partition() {
+        // The target edges are unbounded by design: target_low may sit BELOW the fixed 54
+        // very-low cut and target_high ABOVE the fixed 250 very-high cut. A reading in the
+        // overlap ([tlo,54) or (250,thi]) is IN RANGE, and must land in exactly one band — the
+        // fixed cuts are clamped to the target edges so the five weighted bands still sum to 1
+        // (before the fix such a reading double-counted into a level-2 band AND in_range).
+        let g = 300_000i64; // 5-min grid → equal weights, so each of 5 samples is 0.2.
+        let out = advanced_stats(
+            vec![
+                s(0, 45.0),        // < tlo(50) and < 54 → very_low
+                s(g, 52.0),        // in [tlo,54): now in_range, NOT very_low
+                s(2 * g, 120.0),   // in_range
+                s(3 * g, 270.0),   // in (250,thi]: now in_range, NOT very_high
+                s(4 * g, 320.0),   // > thi(300) and > 250 → very_high
+            ],
+            50,
+            300,
+            24,
+        )
+        .unwrap();
+        let sb = &out.sub_bands;
+        close(sb.very_low, 0.2, 1e-12, "very_low");
+        close(sb.low, 0.0, 1e-12, "low");
+        close(sb.in_range, 0.6, 1e-12, "in_range (52 and 270 fall inside the widened target)");
+        close(sb.high, 0.0, 1e-12, "high");
+        close(sb.very_high, 0.2, 1e-12, "very_high");
+        close(sb.very_low + sb.low + sb.in_range + sb.high + sb.very_high, 1.0, 1e-12, "bands partition");
+        close(out.tir + out.tbr + out.tar, 1.0, 1e-12, "tir/tbr/tar partition");
     }
 }

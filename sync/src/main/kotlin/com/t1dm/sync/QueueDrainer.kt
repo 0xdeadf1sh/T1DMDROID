@@ -83,9 +83,17 @@ class QueueDrainer(
             var standDown: DrainResult.StandDown? = null
 
             loop@ for (row in batch) {
+                // Claim BEFORE anything reaches the wire. `batch` is a snapshot of up to `batchLimit`
+                // rows and this loop then spends one HTTP round trip apiece working through it, so a
+                // row near the tail stays PENDING on disk for as long as the whole pass takes —
+                // minutes over a slow link, and comfortably inside the undo window. An undo landing in
+                // that interval deletes the row and reports WITHDRAWN ("nothing about this event left
+                // the phone", `T1dmRepository.withdrawPush`); the conditional claim is what makes that
+                // receipt true, since an unconditional UPDATE on a deleted row is indistinguishable
+                // from a successful one.
+                if (dao.claim(row.id, OutboxState.PENDING, OutboxState.INFLIGHT) == 0) continue@loop
                 val request = resolve(row)
                 if (request == null) { dao.delete(row.id); dropped++; continue } // INGEST slot vanished
-                dao.reschedule(row.id, OutboxState.INFLIGHT, row.attempts, row.nextAttemptMs)
                 val response = try {
                     http.execute(request)
                 } catch (e: NoActiveProfileException) {

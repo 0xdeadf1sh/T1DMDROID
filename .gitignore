@@ -41,7 +41,9 @@ models/*.bin
 models/exported/
 
 # ── Claude Code ─────────────────────────────────────────────────────────────
-.claude/
+# Per-user Claude state stays local; share the project skills with contributors.
+.claude/*
+!.claude/skills/
 
 # ── Misc ────────────────────────────────────────────────────────────────────
 .DS_Store

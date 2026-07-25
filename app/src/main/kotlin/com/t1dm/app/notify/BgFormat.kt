@@ -1,18 +1,34 @@
 package com.t1dm.app.notify
 
+import com.t1dm.core.common.KovatchevScale
 import com.t1dm.core.model.UnitSpace
 
 /**
- * BG / trend / age formatting shared by the notification and the widgets, in the app's active unit
- * space (ux-decisions.md — mg/dL default, mmol/L, Kovatchev raw). Mirrors the dashboard's
- * `formatBg`: mg/dL and Kovatchev show the integer mg/dL; mmol/L divides by 18.0182.
+ * BG / trend / age formatting shared by the breadcrumb, the ongoing notification and the widgets, in
+ * the app's active unit space (ux-decisions.md — mg/dL default, mmol/L, Kovatchev risk). Mirrors the
+ * dashboard's `formatBg`: mg/dL shows the integer, mmol/L divides by 18.0182, Kovatchev applies the
+ * risk transform `f` (INFERENCE.md §5).
+ *
+ * Kovatchev goes through [KovatchevScale], the pure-Kotlin mirror, rather than the native `f` the
+ * dashboard and the graph axis thread in: these surfaces render headless — the Glance tile's cached
+ * and floor renders run exactly when the container pull has already failed, and no seam here can
+ * carry a lambda (a [com.t1dm.app.widget.WidgetSnapshot] is persisted field-by-field into Glance
+ * Preferences).
  */
 object BgFormat {
 
-    fun value(bgMgdl: Int?, unit: UnitSpace): String = when {
-        bgMgdl == null -> "--"
-        unit == UnitSpace.MmolL -> String.format("%.1f", bgMgdl / 18.0182)
-        else -> bgMgdl.toString()
+    /** Exhaustive on [UnitSpace] by construction: the arm that was missing here rendered risk space
+     *  as a raw mg/dL integer under the "risk" label of [unitLabel]. */
+    fun value(bgMgdl: Int?, unit: UnitSpace): String {
+        if (bgMgdl == null) return "--"
+        return when (unit) {
+            UnitSpace.MgDl -> bgMgdl.toString()
+            UnitSpace.MmolL -> String.format("%.1f", bgMgdl / 18.0182)
+            // 2 dp matches the graph's risk axis (GlucoseGraph.formatValue), and the sign is carried
+            // explicitly: the scale is symmetrised about ~112.5 mg/dL, so on a lone chrome read-out —
+            // no axis, no neighbouring ticks — the side is the reading's whole meaning.
+            UnitSpace.Kovatchev -> String.format("%+.2f", KovatchevScale.f(bgMgdl.toDouble()))
+        }
     }
 
     fun unitLabel(unit: UnitSpace): String = when (unit) {
@@ -52,10 +68,10 @@ object BgFormat {
         }
     }
 
-    /** The one-line predictive warning, e.g. "Approaching hypoglycemia in ~20 min". */
+    /** The one-line predictive warning, e.g. "Low in ~20 min". */
     fun crossingLine(c: PredictiveCrossing): String {
-        val what = if (c.kind == PredictiveCrossing.Kind.HYPO) "hypoglycemia" else "hyperglycemia"
+        val what = if (c.kind == PredictiveCrossing.Kind.HYPO) "Low" else "High"
         val eta = if (c.etaMin <= 5) "~5 min" else "~${c.etaMin} min"
-        return "Approaching $what in $eta"
+        return "$what in $eta"
     }
 }

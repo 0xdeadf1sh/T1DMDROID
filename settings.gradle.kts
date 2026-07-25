@@ -41,10 +41,11 @@ include(
     ":feature:security",
     ":feature:settings",
     ":feature:journal",
+    ":feature:game",
 )
 
 include(":cgm", ":sensors", ":inference", ":calc", ":sync", ":watch", ":alerts")
 
 include(":data", ":core:design", ":core:native", ":core:model", ":core:common")
 
-include(":ui:graph")
+include(":ui:graph", ":ui:game")

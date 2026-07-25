@@ -11,8 +11,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
+import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.drawEsp32Watch
+import com.t1dm.core.design.rememberT1dmHaptics
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
@@ -71,6 +74,13 @@ fun SecurityScreen(
             }
         }
 
+        val haptics = rememberT1dmHaptics()
+        // The SAS appearing is the one moment on this page that DEMANDS the user look: the short
+        // authentication string is the whole defence against a man-in-the-middle, and it arrives
+        // asynchronously, mid-handshake, while they are looking at the watch rather than the phone.
+        LaunchedEffect(state.sas) { if (state.sas != null) haptics.perform(HapticEvent.Warn) }
+        LaunchedEffect(state.lastError) { if (state.lastError != null) haptics.perform(HapticEvent.Warn) }
+
         // The SAS to compare on BOTH screens during pairing/rotation.
         if (state.sas != null) {
             Card(
@@ -78,7 +88,7 @@ fun SecurityScreen(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
             ) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("Compare this code on your watch", style = MaterialTheme.typography.labelLarge)
+                    Text("Compare on your watch", style = MaterialTheme.typography.labelLarge)
                     Text(
                         state.sas,
                         style = MaterialTheme.typography.displaySmall,
@@ -95,10 +105,28 @@ fun SecurityScreen(
         }
 
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (state.canPair) Button(onClick = onPair) { Text("Pair watch") }
-            if (state.canConfirmSas) Button(onClick = onConfirmSas) { Text("Codes match — confirm") }
-            if (state.canRotate) OutlinedButton(onClick = onRotate) { Text("Rotate keys") }
-            if (state.canReset) OutlinedButton(onClick = onUnpair) { Text("Unpair") }
+            if (state.canPair) {
+                Button(onClick = { haptics.perform(HapticEvent.Tap); onPair() }) { Text("Pair watch") }
+            }
+            // Confirming the SAS is the human ASSERTING that two screens agree — the act the whole
+            // key exchange is authenticated by. Commit, not Confirm: it cannot be walked back without
+            // a rotation.
+            if (state.canConfirmSas) {
+                Button(
+                    onClick = { haptics.perform(HapticEvent.Commit); onConfirmSas() },
+                ) { Text("Codes match — confirm") }
+            }
+            if (state.canRotate) {
+                OutlinedButton(
+                    onClick = { haptics.perform(HapticEvent.Confirm); onRotate() },
+                ) { Text("Rotate keys") }
+            }
+            // Unpairing throws away the keys — a teardown, hence Reject rather than a neutral Tap.
+            if (state.canReset) {
+                OutlinedButton(
+                    onClick = { haptics.perform(HapticEvent.Reject); onUnpair() },
+                ) { Text("Unpair") }
+            }
         }
     }
 }

@@ -10,6 +10,7 @@ import com.t1dm.core.model.JournalNote
 import com.t1dm.core.model.AccuracyPair
 import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.ModelPrediction
+import com.t1dm.core.model.PaintStroke
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.core.model.RecentMeal
@@ -29,13 +30,19 @@ import com.t1dm.data.db.KvEntity
 import com.t1dm.data.db.OutboxEntity
 import com.t1dm.data.db.OutboxKind
 import com.t1dm.data.db.OutboxState
+import com.t1dm.data.db.PaintStrokeDao
 import com.t1dm.data.db.PredictionEntity
 import com.t1dm.data.db.SampleEntity
 import com.t1dm.data.db.SavedMealEntity
 import com.t1dm.data.db.SavedMealItemEntity
 import com.t1dm.data.db.ServerProfileEntity
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
 
 /**
@@ -50,11 +57,50 @@ import kotlinx.coroutines.withContext
  *  - projection provenance: INVALID readings never reach `sample`; the sample carries the bg
  *    provenance/flag so downstream (alarm, graph) can honour §3.6-A.
  */
+/**
+ * What became of the queued server push when a logged meal/dose was undone — the one part of an undo
+ * the phone does not control, and therefore the one part the receipt must not overstate.
+ *
+ * The outbox has no SENT state ([OutboxState] is `{PENDING, INFLIGHT, FAILED}` and `QueueDrainer`
+ * DELETEs a row on HTTP success), so "already sent" and "size-evicted" are the same observation: the
+ * row is gone. MEAL/DOSE are never age-evictable, so absence overwhelmingly means sent.
+ */
+enum class PushWithdrawal {
+    /** No push was ever enqueued for this write — the undo is total. */
+    NEVER_QUEUED,
+
+    /** The push was still PENDING and has been withdrawn: nothing about this event left the phone. */
+    WITHDRAWN,
+
+    /** The push was INFLIGHT — a send was in progress. The queue row is gone either way, but the PUT
+     *  may already have landed, so the server copy is unknown rather than absent. */
+    RACED,
+
+    /** The queue row was already gone: the event is on the server and cannot be recalled (no DELETE
+     *  in the server API), and `CatchUpCoordinator` re-hydrates it by `clientId` on the next WS
+     *  (re)connect — deleting the newest event even moves `newestEventTs()` backward, widening the
+     *  pull window that resurrects it. */
+    ALREADY_SENT,
+}
+
+/** How far a source's stored record actually reaches, both ends inclusive. */
+data class ReadingExtent(val oldestMs: Long, val newestMs: Long)
+
 class T1dmRepository(
     private val db: AppDatabase,
     private val dispatchers: T1dmDispatchers,
 ) : OutboxSink {
     private val io get() = dispatchers.io
+
+    /**
+     * A monotonically-advancing tick bumped on every logged-meal / logged-dose write. Meal/dose events
+     * no longer project onto the wide `sample` row (the carb/bolus/basal scalar columns were retired,
+     * §3.1), so `observeSamples` no longer fires on a log — this is the trigger the IOB/COB read-out
+     * subscribes to so a just-logged dose refreshes it immediately instead of waiting for the next CGM
+     * reading (fixes the fresh-log staleness the sample-projection used to cover).
+     */
+    private val _logEvents = MutableStateFlow(0L)
+    val logEvents: StateFlow<Long> = _logEvents.asStateFlow()
 
     private val sources get() = db.cgmSourceDao()
     private val readings get() = db.cgmReadingDao()
@@ -69,6 +115,7 @@ class T1dmRepository(
     private val telemetry get() = db.hwTelemetryDao()
     private val predictions get() = db.predictionDao()
     private val profiles get() = db.serverProfileDao()
+    private val paintStrokes get() = db.paintStrokeDao()
 
     /**
      * Room 2.7 driver-compatible write transaction. The KTX [androidx.room.withTransaction] uses the
@@ -148,6 +195,14 @@ class T1dmRepository(
     suspend fun recentReadings(sourceId: CgmSourceId, limit: Int): List<CgmReading> =
         withContext(io) { readings.recent(sourceId.value, limit).map { it.toModel() } }
 
+    /** How far back [sourceId]'s record goes, or null when it holds nothing. */
+    suspend fun readingExtent(sourceId: CgmSourceId): ReadingExtent? = withContext(io) {
+        val oldest = readings.oldestTs(sourceId.value) ?: return@withContext null
+        val newest = readings.newestTs(sourceId.value) ?: return@withContext null
+        ReadingExtent(oldest, newest)
+    }
+
+
     /**
      * Grid-stamp upsert-in-place; if the reading is on the active source and not INVALID, project
      * its bg into `sample` (LWW on `rxWallMs`) and enqueue one INGEST item for that grid slot.
@@ -222,7 +277,7 @@ class T1dmRepository(
      */
     suspend fun logLoggedDose(dose: LoggedDoseEntity): LoggedDoseEntity = withContext(io) {
         val row = dose.copy(clientId = dose.clientId.ifBlank { newClientId() }, tsMs = snapToGrid(dose.tsMs))
-        row.copy(id = loggedDoses.insert(row))
+        row.copy(id = loggedDoses.insert(row)).also { _logEvents.update { t -> t + 1 } }
     }
 
     /**
@@ -237,7 +292,77 @@ class T1dmRepository(
      */
     suspend fun logMeal(meal: LoggedMealEntity): LoggedMealEntity = withContext(io) {
         val row = meal.copy(clientId = meal.clientId.ifBlank { newClientId() }, tsMs = snapToGrid(meal.tsMs))
-        row.copy(id = loggedMeals.insert(row))
+        row.copy(id = loggedMeals.insert(row)).also { _logEvents.update { t -> t + 1 } }
+    }
+
+    /**
+     * Undo a just-logged meal: drop the `logged_meal` row and, in the SAME transaction, withdraw the
+     * `PUT /v1/meals` push still sitting in the outbox. See [undoLoggedDose] for why the two deletes
+     * must be atomic and what the returned [PushWithdrawal] can and cannot promise.
+     */
+    suspend fun undoLoggedMeal(rowId: Long, outboxId: Long?, dedupKey: String?): PushWithdrawal =
+        withContext(io) {
+            inWriteTx {
+                loggedMeals.delete(rowId)
+                withdrawPush(outboxId, dedupKey)
+            }
+        }.also { _logEvents.update { t -> t + 1 } }
+
+    /**
+     * Undo a just-logged dose: drop the `logged_dose` row and, in the SAME transaction, withdraw the
+     * `PUT /v1/doses` push still sitting in the outbox.
+     *
+     * **Atomicity is a §3.6-G requirement, not a nicety.** IOB is computed from logged doses only
+     * (§3.6-F), and two rails read the store this write moved: `Rails.iobCeiling` (§3.6-C), which
+     * fail-closed BLOCKS a nonzero dose when IOB is unknown, and `Rails.mandatoryConfirmation`, which
+     * triggers off `latestLoggedInsulinTs()`. Removing the newest dose lowers assumed IOB (relaxing
+     * the ceiling) and moves the last-logged mark backward (tightening the confirmation trigger) —
+     * both are fail-closed-consistent, because a removed log means *less* insulin may be assumed
+     * active, never more. A HALF unwind is the unsafe state: the phone forgetting a dose the server
+     * still holds leaves phone IOB understated against the record it mirrors, so both deletes ride one
+     * `inWriteTx`. The §3.6-A model-free alarm path is untouched either way — it evaluates the
+     * classified MEASURED reading off the live `readingBus`, never the event store.
+     *
+     * The returned [PushWithdrawal] is the honest state of the *server* copy, which no local delete
+     * can revoke: there is no DELETE in the server API, and `CatchUpCoordinator.catchUpEvents`
+     * re-hydrates by `clientId` on every WS (re)connect, so an already-drained event comes back.
+     *
+     * Bumps [logEvents] exactly once, after the transaction commits — the sole trigger that repaints
+     * IOB/COB, the curve channels and the dashboard overlay, since an event delete touches neither
+     * `cgm_reading` nor `sample` (§3.1: the carb/bolus/basal scalars are retired).
+     */
+    suspend fun undoLoggedDose(rowId: Long, outboxId: Long?, dedupKey: String?): PushWithdrawal =
+        withContext(io) {
+            inWriteTx {
+                loggedDoses.delete(rowId)
+                withdrawPush(outboxId, dedupKey)
+            }
+        }.also { _logEvents.update { t -> t + 1 } }
+
+    /**
+     * Delete the queued push behind [outboxId] if it is still ours to delete, and report what the
+     * server therefore holds. Runs inside the caller's transaction so the read and the delete cannot
+     * be split by a concurrent drain.
+     *
+     * [dedupKey] is a guard, not a lookup key: `outbox.id` is an ordinary autoincrement rowid, which
+     * SQLite recycles once the row is deleted, so a naked delete-by-id could nuke an unrelated push
+     * that inherited the number after ours drained. A mismatch reads as ALREADY_SENT, which is what a
+     * recycled rowid actually implies. `outboxId <= 0` means the caller's `enqueue` returned -1 (the
+     * unique-dedupKey conflict path) — unreachable for a genuine log, whose `clientId` is freshly
+     * minted — and null means no push was ever enqueued for this write.
+     */
+    private suspend fun withdrawPush(outboxId: Long?, dedupKey: String?): PushWithdrawal {
+        if (outboxId == null || outboxId <= 0L || dedupKey == null) return PushWithdrawal.NEVER_QUEUED
+        val row = outbox.byId(outboxId) ?: return PushWithdrawal.ALREADY_SENT
+        if (row.dedupKey != dedupKey) return PushWithdrawal.ALREADY_SENT
+        outbox.delete(outboxId)
+        // PENDING is not evidence that nothing was transmitted. `QueueDrainer.reschedule` returns a row
+        // to PENDING after an attempt whose response was lost — the server may well have applied it —
+        // and `drainOnce` opens by reclaiming crash-wedged INFLIGHT rows the same way. `attempts` is
+        // what distinguishes the two: `revert` (auth / no-profile, where nothing was accepted) leaves
+        // it alone, every real wire attempt advances it. WITHDRAWN has to mean PROVABLY never sent.
+        val everAttempted = row.state == OutboxState.INFLIGHT || row.attempts > 0
+        return if (everAttempted) PushWithdrawal.RACED else PushWithdrawal.WITHDRAWN
     }
 
     /** Window reads for curve/channel reconstruction (feed [com.t1dm.data.curve.RoomDoseStore]). */
@@ -308,6 +433,36 @@ class T1dmRepository(
     /** The most recent non-null mood across the wide sample (journal picker "current mood"). */
     fun observeLatestMood(): Flow<Int?> = samples.observeLatestMood()
 
+    // ─── Graph paint layer (Room v8) ────────────────────────────────────────────────────
+
+    /**
+     * Every stroke intersecting `[fromMs, toMs]`, oldest-authored first (the order they must be
+     * painted in). Intersection rather than containment, so a stroke wider than the window or half
+     * scrolled off it still arrives — see [PaintStrokeDao.observeOverlapping] for the exact predicate.
+     */
+    fun observePaintStrokes(fromMs: Long, toMs: Long): Flow<List<PaintStroke>> =
+        paintStrokes.observeOverlapping(fromMs, toMs)
+            .map { list -> list.map { it.toModel() } }
+            // `toModel` is `PaintStrokeBlob.decode` per row, and the collectors are `collectAsState`:
+            // without this the whole selected window's geometry was deserialised on the Compose main
+            // dispatcher every time the keep-forever table changed.
+            .flowOn(io)
+
+    /**
+     * Persist one lifted stroke; returns the minted row id. A zero-point stroke is refused rather
+     * than stored: it has no time bounds to index by, so it could never be selected back out, and a
+     * gesture that produces none is a bug upstream rather than an empty drawing.
+     */
+    suspend fun addPaintStroke(stroke: PaintStroke): Long = withContext(io) {
+        require(!stroke.isEmpty) { "a paint stroke must carry at least one point" }
+        paintStrokes.insert(stroke.toEntity())
+    }
+
+    suspend fun deletePaintStroke(id: Long) = withContext(io) { paintStrokes.delete(id) }
+
+    /** Clear the whole annotation layer (a user-initiated "erase all", distinct from the issue-5 reset). */
+    suspend fun deleteAllPaintStrokes() = withContext(io) { paintStrokes.deleteAll() }
+
     // ─── Glycemic dictionary / saved meals / insulin types (Room v5, Phase 4) ───────────
 
     suspend fun foodCount(): Int = withContext(io) { db.foodDao().count() }
@@ -332,6 +487,32 @@ class T1dmRepository(
 
     suspend fun upsertFood(food: FoodEntity) = withContext(io) { db.foodDao().upsert(food) }
 
+    /**
+     * In-place edit of a USER food, under its existing [FoodEntity.id]. Returns false having written
+     * nothing when the row no longer exists or is a bundled seed row.
+     *
+     * The guard is the whole point: unlike `FoodDao.deleteCustom`, `@Upsert` is NOT gated on `custom`,
+     * and `Food.toCustomEntity` hard-sets `custom = true` / `source = "user"`. An unguarded write would
+     * therefore either RESURRECT a deleted id (Room's upsert inserts with the explicit primary key when
+     * nothing conflicts) or silently convert a shipped dictionary row into a user food. Read and write
+     * share one write transaction so the check cannot be overtaken by a concurrent delete.
+     *
+     * `food_fts` needs no manual reindex: the `food_au` trigger delete-and-reinserts the external-content
+     * row (see `FoodFts.DDL`), so a renamed food is searchable under its new name and not its old one.
+     *
+     * Saved and logged meals are deliberately NOT re-resolved. Their components snapshot carbs/GI/curve
+     * at add time ([com.t1dm.core.model.MealComponent]) and `saved_meal_item` carries no foreign key
+     * back here — that is what lets a stored meal survive this edit, and the food's deletion.
+     */
+    suspend fun updateCustomFood(food: FoodEntity): Boolean = withContext(io) {
+        inWriteTx {
+            val existing = db.foodDao().byId(food.id)
+            if (existing == null || !existing.custom) return@inWriteTx false
+            db.foodDao().upsert(food)
+            true
+        }
+    }
+
     suspend fun deleteCustomFood(id: Long) = withContext(io) { db.foodDao().deleteCustom(id) }
 
     fun observeCustomFoods(): Flow<List<FoodEntity>> = db.foodDao().observeCustom()
@@ -343,6 +524,26 @@ class T1dmRepository(
                 val mealId = db.savedMealDao().insertMeal(SavedMealEntity(name = name, updatedAt = nowMs))
                 if (items.isNotEmpty()) db.savedMealDao().insertItems(items.map { it.copy(mealId = mealId) })
                 mealId
+            }
+        }
+
+    /**
+     * Edit a saved meal in place: the header is rewritten and its portion snapshots are REPLACED
+     * wholesale, atomically, under the meal's existing [id] (an edit is never a fork).
+     *
+     * Returns false having written nothing when the header no longer exists — the meal was deleted
+     * while it was being edited. That check is the reason the header write comes first: `saved_meal_item`
+     * carries no foreign key, so items inserted against a vanished header are invisible orphans no
+     * query reaches and only a full wipe reaps. The delete-then-reinsert of the items likewise has no
+     * meaning outside the transaction: a throw between them would leave a named, empty meal.
+     */
+    suspend fun updateSavedMeal(id: Long, name: String, items: List<SavedMealItemEntity>, nowMs: Long): Boolean =
+        withContext(io) {
+            inWriteTx {
+                if (db.savedMealDao().updateMeal(id, name, nowMs) == 0) return@inWriteTx false
+                db.savedMealDao().deleteItems(id)
+                if (items.isNotEmpty()) db.savedMealDao().insertItems(items.map { it.copy(mealId = id) })
+                true
             }
         }
 
@@ -712,13 +913,20 @@ class T1dmRepository(
      * the watch pairing bits, epoch, and the burned nonce ceilings, so a later re-pair with fresh
      * X25519 keys can never reuse a (key, nonce) pair. The model `.pte`/`.tflite` artifacts live on
      * the filesystem, not in Room, so they are untouched. Secrets that live outside Room (the
-     * Keystore-wrapped server token) are burned by the caller. Off-main.
+     * Keystore-wrapped server token) are burned by the caller. The graph's freehand annotation layer
+     * (`bg_paint_stroke`) is user data like any other and goes whole — it ships with no seed rows, so
+     * "first-run contents" for it means empty. Off-main.
+     *
+     * [preserveCgmSources] keeps the `cgm_source` rows (the discovered set + the exactly-one-active
+     * flag): the connected-GATT session that holds the live sensor is process-scoped, so a reset that
+     * leaves the process (and that session) alive must not drop the active-source binding — the sensor
+     * stays connected and its new readings repopulate the just-wiped `cgm_reading` table.
      */
-    suspend fun wipeAllData() = withContext(io) {
+    suspend fun wipeAllData(preserveCgmSources: Boolean = false) = withContext(io) {
         inWriteTx {
             readings.deleteAll()
             samples.deleteAll()
-            sources.deleteAll()
+            if (!preserveCgmSources) sources.deleteAll()
             doses.deleteAll()
             loggedDoses.deleteAll()
             loggedMeals.deleteAll()
@@ -733,6 +941,7 @@ class T1dmRepository(
             db.savedMealDao().deleteAllMeals()
             db.foodDao().deleteAllCustom()
             db.insulinTypeDao().deleteAllCustom()
+            paintStrokes.deleteAll()
             // kv LAST: it holds the watch nonce ceilings + pairing bits + every setting.
             kv.deleteAll()
         }

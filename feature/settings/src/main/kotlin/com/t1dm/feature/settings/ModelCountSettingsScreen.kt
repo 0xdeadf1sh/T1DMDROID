@@ -1,11 +1,8 @@
 package com.t1dm.feature.settings
 
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -16,6 +13,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.t1dm.core.design.HapticEvent
+import com.t1dm.core.design.rememberT1dmHaptics
 
 /**
  * Settings → Models run at once (issues 1/2 — the running-set cap). Human-readable control over how
@@ -31,45 +30,59 @@ fun ModelCountSettingsScreen(
     maxCount: Int = 8,
     onChange: (Int) -> Unit,
 ) {
-    Column(Modifier.fillMaxSize().padding(16.dp)) {
-        Text(
-            "How many forecasting models run at the same time. Every running model makes a forecast " +
-                "each cycle and sends it to the server tagged by its model id; the model you pick on the " +
-                "Models screen is the one whose forecast this dashboard shows.",
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.padding(top = 12.dp),
-        )
+    val haptics = rememberT1dmHaptics()
+    SettingsScaffold(SettingsScreenKey.MODEL_COUNT) {
+        SettingsNote("Models run per cycle")
 
-        Row(
-            Modifier.fillMaxWidth().padding(top = 24.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            OutlinedButton(
-                onClick = { onChange((count - 1).coerceAtLeast(minCount)) },
-                enabled = count > minCount,
-            ) { Text("−1") }
+        SettingsAnchor(modelCountRunning) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OutlinedButton(
+                    onClick = {
+                        haptics.perform(HapticEvent.SegmentTick)
+                        onChange((count - 1).coerceAtLeast(minCount))
+                    },
+                    enabled = count > minCount,
+                ) { Text("−1") }
 
-            Text(
-                text = count.toString(),
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Bold,
-                maxLines = 1,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.weight(1f),
-            )
+                Text(
+                    text = count.toString(),
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.weight(1f),
+                )
 
-            Button(
-                onClick = { onChange((count + 1).coerceAtMost(maxCount)) },
-                enabled = count < maxCount,
-            ) { Text("+1") }
+                Button(
+                    onClick = {
+                        haptics.perform(HapticEvent.SegmentTick)
+                        onChange((count + 1).coerceAtMost(maxCount))
+                    },
+                    enabled = count < maxCount,
+                ) { Text("+1") }
+            }
         }
 
-        Text(
-            "Minimum 1 · maximum 8. More models = more CPU each cycle.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-            modifier = Modifier.padding(top = 20.dp),
-        )
+        SettingsNote("1–8 · more models, more CPU")
     }
 }
+
+// ── search index (see SettingsIndex.kt) ───────────────────────────────────────────────────────────
+
+private val modelCountRunning = SettingsKnob(
+    id = "model_count.running",
+    screen = SettingsScreenKey.MODEL_COUNT,
+    section = "Models run at once",
+    label = "Models run at once",
+    subtitle = "How many discovered models forecast each cycle — more models cost more CPU",
+    synonyms = listOf(
+        "models", "how many models", "running set", "ensemble", "concurrent", "parallel",
+        "simultaneous", "cap", "limit", "cpu", "battery", "load", "count",
+    ),
+)
+
+internal val settingsModelCountKnobs = listOf(modelCountRunning)

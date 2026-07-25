@@ -2,6 +2,7 @@ package com.t1dm.calc
 
 import com.t1dm.core.model.CurveEvent
 import com.t1dm.core.model.displayName
+import com.t1dm.inference.InferenceControllerDefaults
 import kotlin.math.max
 
 /** Fail-closed source of the selected model's backend/precision/agreement provenance; null ⇒ no model. */
@@ -31,6 +32,11 @@ class DoseAdvisor(
     private val anchorSource: AnchorInfoSource,
     private val iobSource: IobSource,
     private val backendSource: BackendInfoSource,
+    /** The BG causal-SavGol window the fan is built at, for the §3.6-F card. Read ONCE per
+     *  recommendation and pinned onto every roll of the grid search, so the card's disclosure is true
+     *  by construction; a throw degrades to the default rather than refusing (this is provenance the
+     *  card DISCLOSES, not a gate it enforces). */
+    private val smoothingWindowSource: suspend () -> Int = { InferenceControllerDefaults.SAVGOL_WINDOW },
 ) {
 
     suspend fun recommendBolus(
@@ -70,8 +76,14 @@ class DoseAdvisor(
         val fresh = Rails.freshness(anchor, nowMs, config)
         if (fresh is RailVerdict.Block) return AdviceResult.Refused(listOf(fresh.reason))
 
-        // (3) grid search.
-        val result = bolus.search(rollStartMs = nowMs, announced = announced, config = config)
+        // (3) grid search. The BG input filter is resolved HERE, not at card-construction time: the
+        // search is a cancellable foreground job the user can navigate away from, and a Settings edit
+        // landing mid-search would otherwise rank fans anchored on two different `last_bg` values and
+        // let the §3.6-F card assert a window its fan never saw.
+        val smoothing = InferenceControllerDefaults.nearestSmoothingStop(
+            runCatching { smoothingWindowSource() }.getOrNull() ?: InferenceControllerDefaults.SAVGOL_WINDOW,
+        )
+        val result = bolus.search(rollStartMs = nowMs, announced = announced, config = config, smoothingWindow = smoothing)
 
         // (4) baseline degeneracy gate.
         val degen = Rails.baselineDegeneracy(result.baseline)
@@ -98,7 +110,7 @@ class DoseAdvisor(
             return AdviceResult.Recommended(
                 best = zero,
                 ranked = result.ranked,
-                card = buildCard(anchor, iob, backend, zero, nowMs, false, emptyList(), config),
+                card = buildCard(anchor, iob, backend, zero, nowMs, false, emptyList(), config, smoothing),
                 railNotes = notes,
                 requiresConfirmation = true, // any hypo recommendation must be acknowledged
                 rescueCarbsG = grams,
@@ -129,7 +141,7 @@ class DoseAdvisor(
         if (confirm is RailVerdict.RequireConfirm) { confirmReasons.add(confirm.reason); notes.add(confirm.reason) }
         val requiresConfirmation = confirmReasons.isNotEmpty()
 
-        val card = buildCard(anchor, iob, backend, chosen, nowMs, requiresConfirmation, confirmReasons, config)
+        val card = buildCard(anchor, iob, backend, chosen, nowMs, requiresConfirmation, confirmReasons, config, smoothing)
         return AdviceResult.Recommended(
             best = chosen,
             ranked = result.ranked,
@@ -164,6 +176,7 @@ class DoseAdvisor(
         requiresConfirmation: Boolean,
         confirmReasons: List<String>,
         config: CalcConfig,
+        smoothing: Int,
     ): DecisionCard {
         val bandWidth = chosen.fan.steps.getOrNull(config.horizon.validatedSteps - 1)?.bandWidth
             ?: chosen.fan.steps.lastOrNull()?.bandWidth
@@ -177,6 +190,7 @@ class DoseAdvisor(
             assumedIobU = iob?.iobU,
             minSinceLastLoggedDose = iob?.minSinceLastDose(nowMs),
             bandWidthMgdl = bandWidth,
+            smoothingWindow = smoothing,
             requiresConfirmation = requiresConfirmation,
             confirmationReasons = confirmReasons,
         )

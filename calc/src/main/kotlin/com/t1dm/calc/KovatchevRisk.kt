@@ -1,29 +1,22 @@
 package com.t1dm.calc
 
-import kotlin.math.ln
-import kotlin.math.pow
+import com.t1dm.core.common.KovatchevScale
 
 /**
- * The Kovatchev blood-glucose risk transform (INFERENCE.md §5/§11), reimplemented here as a **pure
- * scalar** so the objective can score a forecast fan without a model round-trip. The Rust
- * `kovatchev_f` remains the numeric authority for the graph's unit space and the stats axis; this
- * mirror only weights mg/dL for dose selection and never feeds a tensor.
+ * The Kovatchev risk INDEX, built on the scalar transform so the objective can score a forecast fan
+ * without a model round-trip. The Rust `kovatchev_f` remains the numeric authority; `f` here is the
+ * single pure-Kotlin mirror [KovatchevScale] (INFERENCE.md §5/§11), which is golden-gated against the
+ * crate — this file adds only the index on top of it and never feeds a tensor.
  *
- * `f(bg) = SCALE · (ln(bg)^POWER − OFFSET)`, clamped to `[20, 500]`. Risk `r = 10 · f²`, split into
- * a low-BG branch (`f < 0` ⇒ LBGI) and a high-BG branch (`f > 0` ⇒ HBGI) — the standard Kovatchev
- * decomposition. Hypo risk is scored off the lower band, hyper off the median (SPEC § 5h-roll finding).
+ * Risk `r = 10 · f²`, split into a low-BG branch (`f < 0` ⇒ LBGI) and a high-BG branch (`f > 0` ⇒
+ * HBGI) — the standard Kovatchev decomposition. Hypo risk is scored off the lower band, hyper off the
+ * median (SPEC § 5h-roll finding).
  */
 object KovatchevRisk {
-    const val SCALE = 1.509
-    const val POWER = 1.084
-    const val OFFSET = 5.381
-    const val BG_MIN = 20.0
-    const val BG_MAX = 500.0
 
-    fun f(bgMgdl: Double): Double {
-        val bg = bgMgdl.coerceIn(BG_MIN, BG_MAX)
-        return SCALE * (ln(bg).pow(POWER) - OFFSET)
-    }
+    /** `f(bg)` clamped to `[20, 500]`; NaN scores as the low bound, so a garbage BG reads as maximal
+     *  hypo risk rather than as a risk-free `NaN < 0.0 == false`. */
+    fun f(bgMgdl: Double): Double = KovatchevScale.f(bgMgdl)
 
     /** Full risk `10·f²` (always ≥ 0). */
     fun risk(bgMgdl: Double): Double {

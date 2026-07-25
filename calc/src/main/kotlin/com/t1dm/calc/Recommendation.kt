@@ -2,6 +2,7 @@ package com.t1dm.calc
 
 import com.t1dm.core.model.BackendId
 import com.t1dm.core.model.Precision
+import com.t1dm.inference.InferenceControllerDefaults
 
 /**
  * One scored candidate in the ranked result (PLAN "ranked-candidate result"). [doseU] is the total
@@ -33,9 +34,19 @@ data class DecisionCard(
     val assumedIobU: Double?,
     val minSinceLastLoggedDose: Long?,
     val bandWidthMgdl: Double?,
+    /** The causal-SavGol window (samples) the model input was filtered at (INFERENCE.md §7.1).
+     *  It moves the `last_bg` anchor this whole card qualifies (§3.6-D), so a non-default value is
+     *  a decision-relevant fact; the UI renders it only when it differs from the default. */
+    val smoothingWindow: Int,
     val requiresConfirmation: Boolean,
     val confirmationReasons: List<String>,
-)
+) {
+    companion object {
+        /** Re-exported so the card's renderer can tell "default" from "the user widened the filter"
+         *  without `:feature:insulin` taking a dependency on `:inference`. */
+        const val DEFAULT_SMOOTHING_WINDOW = InferenceControllerDefaults.SAVGOL_WINDOW
+    }
+}
 
 /**
  * The outcome of a calculator run. Either the whole recommendation is [Refused] (a global rail

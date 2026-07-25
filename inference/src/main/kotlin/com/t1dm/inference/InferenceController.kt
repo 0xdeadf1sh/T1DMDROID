@@ -84,6 +84,11 @@ class InferenceController(
      *  cycle. This gate has NO death-mode check — it stays active in DEATH (the one §3.6 rail DEATH does
      *  not defeat), since running the APU into a thermal fault is a hardware risk, not a glucose alarm. */
     private val thermalProvider: suspend () -> ThermalStatus? = { null },
+    /** The user's causal-SavGol window for the BG channel (INFERENCE.md §7.1), read FRESH each cycle
+     *  (kv-backed; mirrors [warmupHoursProvider]). Snapped to an offered detent and defaulted on a
+     *  throw, so a corrupt setting can never reach the Rust guard. It MOVES the §3.6-D `last_bg`
+     *  anchor, hence its exclusion from the agreement probe below. */
+    private val smoothingWindowProvider: suspend () -> Int = { InferenceControllerDefaults.SAVGOL_WINDOW },
 ) {
     private val _state = MutableStateFlow(InferenceState())
     val state: StateFlow<InferenceState> = _state.asStateFlow()
@@ -116,6 +121,10 @@ class InferenceController(
     private var lastComparison: BackendComparison? = null
     /** Process RSS growth (KB) attributed to the non-authority backend's load (best-effort). */
     private var vulkanLoadRssKb: Long? = null
+    /** Written under [cycleMutex] on the inference thread (selectModel / refreshModelsLocked) but read
+     *  unlocked off the default dispatcher in the runFromHistory preamble — @Volatile so that read sees
+     *  the latest write instead of a stale cached value (FIX #10). */
+    @Volatile
     private var selectedId: String? = null
     private val latencySamples = HashMap<String, ArrayDeque<Double>>()
     /** Cumulative per-model telemetry (durable via [telemetryStore]); loaded once, then in-memory. */
@@ -136,6 +145,11 @@ class InferenceController(
 
     /** Register the backends the controller may route to (real XNNPACK + documented NPU stubs). */
     fun registerBackend(backend: InferenceBackend) { backends[backend.id] = backend }
+
+    /** Reset the monotonic warmup latch — after an IN-PLACE data wipe (issue 5, which preserves the
+     *  process so the sensor stays connected) the app must re-earn warmup from the now-empty history;
+     *  the latch cannot be allowed to survive the reset, or the forecast would run on empty context. */
+    suspend fun resetWarmupLatch() = cycleMutex.withLock { warmupSatisfiedUpTo = 0 }
 
     /** Rehydrate the last persisted predictions so the overlay is populated before the first tick. */
     suspend fun restoreLast() {
@@ -519,18 +533,24 @@ class InferenceController(
      * model (and its dual-backend catalog is (re)loaded). Suspends — callers launch it in a scope.
      */
     suspend fun selectModel(id: String) {
-        if (id !in loaded.keys) return
-        selectedId = id
-        val sel = _state.value.predictions.firstOrNull { it.modelId == id }
-        _state.value = _state.value.copy(
-            running = runningModels(),
-            predictions = _state.value.predictions
-                .map { it.copy(selected = it.modelId == id) }
-                .sortedByDescending { it.selected },
-            circadianTime = sel?.predictedTime ?: _state.value.circadianTime,
-            circadianAnchorMs = sel?.predictedTime?.let { sel.anchorTsMs } ?: _state.value.circadianAnchorMs,
-            selectedHasTimeSection = loaded[id]?.bundle?.descriptor?.time != null,
-        )
+        // Guard the selectedId write + the immediate prediction re-flag under cycleMutex (FIX #10): they
+        // read and mutate the same loaded/selectedId that refreshModelsLocked() clears+reloads on the
+        // inference thread and that runFromHistory's preamble snapshots. Release BEFORE refreshModels() —
+        // it re-acquires the non-reentrant cycleMutex and would otherwise self-deadlock.
+        cycleMutex.withLock {
+            if (id !in loaded.keys) return
+            selectedId = id
+            val sel = _state.value.predictions.firstOrNull { it.modelId == id }
+            _state.value = _state.value.copy(
+                running = runningModels(),
+                predictions = _state.value.predictions
+                    .map { it.copy(selected = it.modelId == id) }
+                    .sortedByDescending { it.selected },
+                circadianTime = sel?.predictedTime ?: _state.value.circadianTime,
+                circadianAnchorMs = sel?.predictedTime?.let { sel.anchorTsMs } ?: _state.value.circadianAnchorMs,
+                selectedHasTimeSection = loaded[id]?.bundle?.descriptor?.time != null,
+            )
+        }
         refreshModels()
     }
 
@@ -649,12 +669,21 @@ class InferenceController(
         withContext(dispatchers.inference) { e.backend.run(e.handle, input) }.headRaw
     }
 
-    /** Build the FIXED, time-independent, dose-free probe input (deterministic across runs/builds). */
+    /** Build the FIXED, time-independent, dose-free probe input (deterministic across runs/builds).
+     *  The smoothing window is PINNED to [InferenceControllerDefaults.SAVGOL_WINDOW], never the user
+     *  setting: this input feeds the §3.6-E fp16-agreement verdict and the byte-for-byte
+     *  CPU-unchanged proof, both of which must stay invariant under a Settings knob. */
     private suspend fun probeInput(desc: ModelDescriptor): GraphInput {
         val steps = desc.maxContextPatches * GraphIo.PATCH_DIM / 3
         val series = SyntheticContext.plausible24h(steps, anchorTsMs = PROBE_ANCHOR_MS)
         val n = series.mgdl.size
-        val ctx = buildContext(desc, series.mgdl, DoseChannels(DoubleArray(n), DoubleArray(n)), null)
+        val ctx = buildContext(
+            desc,
+            series.mgdl,
+            DoseChannels(DoubleArray(n), DoubleArray(n)),
+            null,
+            InferenceControllerDefaults.SAVGOL_WINDOW,
+        )
         return GraphIo.graphInput(ctx, desc.negFill)
     }
 
@@ -678,7 +707,16 @@ class InferenceController(
         // Anchor context-window sizing + the warmup gate to the SELECTED model's descriptor (mirrors
         // buildFutureChannels) — with N running models `loaded.values.first()` is the first-discovered,
         // NOT necessarily the selected/displayed model whose forecast + warmup these bounds govern.
-        val descAny = (loaded[selectedId] ?: loaded.values.firstOrNull())?.bundle?.descriptor
+        // Snapshot the descriptor + the selected entry's provenance ONCE under cycleMutex (FIX #10): the
+        // whole preamble below runs off the default dispatcher and must not read the live loaded/selectedId
+        // while refreshModelsLocked() clears+reloads them on the inference thread. Release the lock at once —
+        // refreshModels(), circadianDuringWarmup(), and runCycle() below each re-acquire the non-reentrant
+        // cycleMutex, so holding it across them (or across the forward) would deadlock/serialise.
+        val (descAny, selReal, selHasTime) = cycleMutex.withLock {
+            val selEntry = loaded[selectedId]
+            val desc = (selEntry ?: loaded.values.firstOrNull())?.bundle?.descriptor
+            Triple(desc, selEntry?.real ?: false, selEntry?.bundle?.descriptor?.time != null)
+        }
         if (descAny == null) { refreshModels(); return }
         // Thermal gate BEFORE the warmup gate: while blocked, publish a clean over-temp banner (empty
         // predictions, PRESERVING circadianTime so the clock stays lit) instead of a warmup/forecast
@@ -715,7 +753,6 @@ class InferenceController(
             // low-context belief. It survives warmup via [circadianTime], never re-entering the forecast
             // path. Fail-OPEN to null when there is not yet enough raw history to run a single forward.
             val warmupBelief = runCatching { circadianDuringWarmup() }.getOrNull()
-            val selEntry = loaded[selectedId]
             _state.value = _state.value.copy(
                 predictions = emptyList(), // clear the overlay while warming
                 lastCause = InferenceCause.COLLECTING_CONTEXT,
@@ -723,8 +760,8 @@ class InferenceController(
                 circadianTime = warmupBelief?.first,
                 circadianAnchorMs = warmupBelief?.second,
                 circadianLowContext = warmupBelief != null,
-                realBackendAvailable = selEntry?.real ?: false,
-                selectedHasTimeSection = selEntry?.bundle?.descriptor?.time != null,
+                realBackendAvailable = selReal,
+                selectedHasTimeSection = selHasTime,
                 note = "collecting context — %.1f / %.0f h of measured data".format(measuredHours, requiredHours),
             )
             Timber.tag(TAG).i(
@@ -737,15 +774,14 @@ class InferenceController(
 
         val series = history.recentBgSeries(maxSteps, minSteps)
         if (series == null) {
-            val selEntry = loaded[selectedId]
             _state.value = _state.value.copy(
                 predictions = emptyList(),
                 lastCause = InferenceCause.COLLECTING_CONTEXT,
                 circadianTime = null,
                 circadianAnchorMs = null,
                 circadianLowContext = false,
-                realBackendAvailable = selEntry?.real ?: false,
-                selectedHasTimeSection = selEntry?.bundle?.descriptor?.time != null,
+                realBackendAvailable = selReal,
+                selectedHasTimeSection = selHasTime,
                 note = "collecting context — the model needs ≥${descAny.minContextPatches} patches (8 h) of BG",
             )
             Timber.tag(TAG).i("cycle skipped: still collecting context")
@@ -845,7 +881,7 @@ class InferenceController(
         stale: Boolean,
     ): ModelPrediction {
         val desc = entry.bundle.descriptor
-        val ctx = buildContext(desc, series.mgdl, doseChannels, futureChannels)
+        val ctx = buildContext(desc, series.mgdl, doseChannels, futureChannels, smoothingWindow())
         val input = GraphIo.graphInput(ctx, desc.negFill)
 
         val t0 = System.nanoTime()
@@ -928,7 +964,7 @@ class InferenceController(
             runCatching {
                 val doseChannels = buildDoseChannels(series)
                 val futureChannels = buildFutureChannels(series, desc)
-                val ctx = buildContext(desc, series.mgdl, doseChannels, futureChannels)
+                val ctx = buildContext(desc, series.mgdl, doseChannels, futureChannels, smoothingWindow())
                 val input = GraphIo.graphInput(ctx, desc.negFill)
                 val out = withContext(dispatchers.inference) { entry.backend.run(entry.handle, input) }
                 decodeTimeSafely(desc, out.timeLogits)?.let { it to series.anchorTsMs }
@@ -999,13 +1035,23 @@ class InferenceController(
         mgdl: DoubleArray,
         ch: DoseChannels,
         future: DoseChannels?,
+        smoothingWindow: Int,
     ): BuiltContext =
         withContext(dispatchers.default) {
             val predSteps = predSteps(desc)
             val annCarb = future?.let { f -> List(predSteps) { f.carb.getOrElse(it) { 0.0 } } }
             val annInsulin = future?.let { f -> List(predSteps) { f.insulin.getOrElse(it) { 0.0 } } }
-            native.buildContext(desc, mgdl.toList(), ch.carb.toList(), ch.insulin.toList(), annCarb, annInsulin)
+            native.buildContext(
+                desc, mgdl.toList(), ch.carb.toList(), ch.insulin.toList(), annCarb, annInsulin, smoothingWindow,
+            )
         }
+
+    /** The user's BG smoothing window, snapped to an offered detent; a missing/throwing provider
+     *  yields the default. Read fresh per cycle so a Settings edit takes on the next tick. */
+    private suspend fun smoothingWindow(): Int =
+        InferenceControllerDefaults.nearestSmoothingStop(
+            runCatching { smoothingWindowProvider() }.getOrNull() ?: InferenceControllerDefaults.SAVGOL_WINDOW,
+        )
 
     private fun runningModels(): List<RunningModel> = loaded.map { (id, e) ->
         RunningModel(id, e.effectiveBackend, e.precision, id == selectedId)

@@ -1,6 +1,5 @@
 package com.t1dm.feature.models
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,6 +19,7 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -29,6 +29,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.t1dm.core.design.HapticEvent
+import com.t1dm.core.design.hapticClickable
+import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.InferenceState
 import com.t1dm.core.model.ModelMeta
@@ -55,12 +58,13 @@ fun ModelsScreen(
     // The delete confirmation is hoisted to the screen (not per-row) so a row recycling out of the
     // LazyColumn viewport can't drop the pending confirmation mid-gesture.
     var confirmDelete by remember { mutableStateOf<String?>(null) }
+    val haptics = rememberT1dmHaptics()
     Box(Modifier.fillMaxSize()) {
         LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             item {
                 // N1 — the "Models" title lives in the breadcrumb; no duplicate in-view header.
                 Text(
-                    "${state.running.size} loaded · tap a row for performance · tap the radio to select",
+                    "${state.running.size} loaded · tap a row for detail",
                     style = MaterialTheme.typography.bodySmall,
                 )
                 state.note?.let {
@@ -72,7 +76,7 @@ fun ModelsScreen(
             if (state.running.isEmpty()) {
                 item {
                     Text(
-                        "No models loaded. Add a server and Sync models (Settings → Server).",
+                        "No models loaded — sync from Settings → Server",
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 }
@@ -93,22 +97,29 @@ fun ModelsScreen(
             }
         }
         confirmDelete?.let { id ->
+            // The three-beat every dialog in the app keeps: Warn on raise, Commit on the destructive
+            // accept (a deleted artifact is not recoverable, and losing the SELECTED model stops
+            // forecasting and dose advice outright), Reject on either way out.
+            LaunchedEffect(id) { haptics.perform(HapticEvent.Warn) }
             AlertDialog(
-                onDismissRequest = { confirmDelete = null },
+                onDismissRequest = { haptics.perform(HapticEvent.Reject); confirmDelete = null },
                 title = { Text("Remove model?") },
                 text = {
                     Text(
-                        "Delete \"$id\" and its artifact from this device? Removing the selected model " +
-                            "stops forecast and dose advice until another model is selected.",
+                        "Delete \"$id\" and its artifact? Removing the selected model stops forecast and dose advice.",
                     )
                 },
                 confirmButton = {
-                    TextButton(onClick = { onDelete(id); confirmDelete = null }) {
+                    TextButton(
+                        onClick = { haptics.perform(HapticEvent.Commit); onDelete(id); confirmDelete = null },
+                    ) {
                         Text("Remove", color = MaterialTheme.colorScheme.error)
                     }
                 },
                 dismissButton = {
-                    TextButton(onClick = { confirmDelete = null }) { Text("Cancel") }
+                    TextButton(
+                        onClick = { haptics.perform(HapticEvent.Reject); confirmDelete = null },
+                    ) { Text("Cancel") }
                 },
             )
         }
@@ -129,13 +140,20 @@ private fun ModelRow(
     // N3 — tapping ANYWHERE on the row (name included) opens the detail; "select this model" is now an
     // explicit RadioButton, never an invisible tap target on the title. Previously the name carried its
     // own `onSelect` clickable that consumed the tap, so only the description below opened the detail.
+    val haptics = rememberT1dmHaptics()
     Column(
-        Modifier.fillMaxWidth().clickable { onOpen(model.modelId) }.padding(vertical = 8.dp),
+        Modifier
+            .fillMaxWidth()
+            .hapticClickable(HapticEvent.NavSwitch) { onOpen(model.modelId) }
+            .padding(vertical = 8.dp),
     ) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            // The radio is the DOSING model picker (§3.6-E), not a nav affordance — it changes which
+            // forecast the dashboard and the calculator read. A detent, and audibly not the NavSwitch
+            // the row around it plays.
             RadioButton(
                 selected = model.selected,
-                onClick = { onSelect(model.modelId) },
+                onClick = { haptics.perform(HapticEvent.SegmentTick); onSelect(model.modelId) },
                 modifier = Modifier.size(28.dp),
             )
             Text(
@@ -146,7 +164,10 @@ private fun ModelRow(
                 modifier = Modifier.weight(1f).padding(start = 8.dp),
             )
             Text(statusLabel(prediction), style = MaterialTheme.typography.labelMedium, color = statusColor(prediction))
-            IconButton(onClick = { onRequestDelete(model.modelId) }, modifier = Modifier.size(40.dp)) {
+            IconButton(
+                onClick = { haptics.perform(HapticEvent.Tap); onRequestDelete(model.modelId) },
+                modifier = Modifier.size(40.dp),
+            ) {
                 Text("✕", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.error)
             }
         }
@@ -169,12 +190,16 @@ private fun ModelRow(
         // staged from the server. Applying it swaps + re-selects — never done silently for the dosing model.
         if (updateAvailable) {
             Text(
-                "Update downloaded — not applied to the running model.",
+                "Update downloaded — not applied",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.padding(top = 4.dp),
             )
-            OutlinedButton(onClick = { onApplyUpdate(model.modelId) }) { Text("Apply update") }
+            // Swapping the artifact under a running (possibly dosing) model — never done silently, and
+            // never felt as an ordinary tap.
+            OutlinedButton(
+                onClick = { haptics.perform(HapticEvent.Commit); onApplyUpdate(model.modelId) },
+            ) { Text("Apply update") }
         }
     }
 }

@@ -34,7 +34,10 @@ import kotlin.math.roundToInt
  */
 private const val MAX_DIM = 480
 
-private data class BackdropKey(val themeId: String, val w: Int, val h: Int, val alphaPct: Int)
+// Keyed on the palette's full content hash (T1dmPalette is a data class, so hashCode covers every
+// colour role), NOT just p.id — every custom theme shares id "custom", so an id-only key served a stale
+// backdrop after the user edited the custom palette.
+private data class BackdropKey(val paletteHash: Int, val w: Int, val h: Int, val alphaPct: Int)
 
 /** Process-level cache: widget refreshes are frequent (the 30 s ticker) but theme/size/alpha rarely
  *  change, and Glance's per-update composition would otherwise re-rasterise every push. Tiny bitmaps
@@ -56,7 +59,7 @@ internal fun widgetBackdropBitmap(p: T1dmPalette, widthPx: Int, heightPx: Int, a
     val w = (widthPx * scale).roundToInt().coerceAtLeast(1)
     val h = (heightPx * scale).roundToInt().coerceAtLeast(1)
 
-    val key = BackdropKey(p.id, w, h, alphaPct)
+    val key = BackdropKey(p.hashCode(), w, h, alphaPct)
     synchronized(cache) { cache[key]?.let { return it } }
 
     val bmp = runCatching {

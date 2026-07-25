@@ -96,12 +96,12 @@ object AlertChannels {
             .build()
 
         val warning = NotificationChannel(ids.warning, "Glucose alerts", NotificationManager.IMPORTANCE_DEFAULT).apply {
-            description = "Low / high glucose, approaching excursions, and lost-signal warnings."
+            description = "Low/high, approaching, and lost-signal warnings"
             configureVibration(config.warningVibration)
             setSound(config.warningSound, if (config.warningSound != null) alarmAttrs else null)
         }
         val critical = NotificationChannel(ids.critical, "Urgent glucose alerts", NotificationManager.IMPORTANCE_HIGH).apply {
-            description = "Urgent-low / urgent-high and escalated / predicted-urgent alarms."
+            description = "Urgent and predicted-urgent alarms"
             configureVibration(config.criticalVibration)
             setBypassDnd(config.bypassDnd)
             lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
@@ -111,12 +111,12 @@ object AlertChannels {
         // settings and — unlike the urgent glucose tier — NEVER bypasses Do-Not-Disturb: a thermal
         // notice is device-health, not a glucose emergency, and must not punch through DND.
         val device = NotificationChannel(ids.device, "Device temperature", NotificationManager.IMPORTANCE_DEFAULT).apply {
-            description = "Device (battery-sensor) temperature is high — forecasting is paused until it cools."
+            description = "Temperature high — forecasting paused"
             configureVibration(config.warningVibration)
             setSound(config.warningSound, if (config.warningSound != null) alarmAttrs else null)
         }
         val deviceCritical = NotificationChannel(ids.deviceCritical, "Urgent device temperature", NotificationManager.IMPORTANCE_HIGH).apply {
-            description = "Device temperature critically high."
+            description = "Temperature critically high"
             configureVibration(config.criticalVibration)
             lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
             setSound(config.criticalSound, if (config.criticalSound != null) alarmAttrs else null)

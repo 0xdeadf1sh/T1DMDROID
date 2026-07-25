@@ -26,8 +26,8 @@ android {
 
     defaultConfig {
         applicationId = "com.t1dm.app"
-        versionCode = 24
-        versionName = "0.11.3"
+        versionCode = 54
+        versionName = "0.21.2"
 
         // arm64-v8a only (single target device). Harmless until native .so libs ship.
         ndk {
@@ -128,6 +128,7 @@ dependencies {
     implementation(project(":feature:security"))
     implementation(project(":feature:settings"))
     implementation(project(":feature:journal"))
+    implementation(project(":feature:game"))
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
@@ -136,6 +137,11 @@ dependencies {
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.navigation.compose)
     implementation(libs.kotlinx.coroutines.android)
+    // JsonElement only (no @Serializable codegen, so no compiler plugin): the config-backup envelope
+    // is parsed with the SAME implementation on device and on the host JVM, which `org.json` — an
+    // Android reimplementation whose unit-test stand-in differs — cannot offer. Already in the APK
+    // via :sync and :feature:pubs.
+    implementation(libs.kotlinx.serialization.json)
     implementation(libs.timber)
 
     implementation(platform(libs.androidx.compose.bom))

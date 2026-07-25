@@ -1,6 +1,12 @@
 package com.t1dm.feature.settings
 
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 
 /**
  * The Settings root — the complete configuration hub (Phase 7C, items 14 & 17). Every
@@ -9,8 +15,13 @@ import androidx.compose.runtime.Composable
  * are grouped under "Alarms & safety" and flagged inside their own screens (safety-posture.md). The
  * bottom-nav overflow is deliberately left for Phase 7D — this pass only fleshes out the hub.
  *
+ * Above the rows sits the search field: twenty-odd sub-screens hold something over eighty separate
+ * knobs, and a hub that lists only the screens cannot answer "where is the DND bypass". It is pinned
+ * OUTSIDE the scrolling scaffold so it stays reachable while the rows move under it.
+ *
  * Pure/stateless: it holds no state, only routes. Each row navigates to a dedicated sub-screen that
- * the caller ([com.t1dm.app] Navigation) wires to the persisted value + its setter.
+ * the caller ([com.t1dm.app] Navigation) wires to the persisted value + its setter; [onOpenKnob] is
+ * that same navigation for a search hit, plus the request to reveal the matched row.
  */
 @Composable
 fun SettingsScreen(
@@ -36,53 +47,103 @@ fun SettingsScreen(
     onOpenThermal: () -> Unit = {},
     onOpenDeviceTemp: () -> Unit = {},
     onOpenDeathClock: () -> Unit = {},
+    /** The three most recent committed searches, newest first (persisted in kv by `:app`). */
+    recentSearches: List<String> = emptyList(),
+    onOpenKnob: (SettingsKnob) -> Unit = {},
+    onRecordSearch: (String) -> Unit = {},
+    onClearRecentSearches: () -> Unit = {},
     // False in the public flavor: the fail-open DEATH-mode override is compiled out, so its entry row
     // is withheld rather than shown inert (the death-clock projection row above it stays).
     deathModeSupported: Boolean = true,
 ) {
-    SettingsScaffold("Settings") {
-        SettingsSectionHeader("Display & units")
-        SettingsNavRow("Theme, font, units & targets", "3 themes + JSON import, bundled OFL fonts, unit space, BG target, animations", onClick = onOpenDisplay)
-        SettingsNavRow("BG graph range & window", "Y-axis floor/ceiling and the default time window", onClick = onOpenGraph)
-
-        SettingsSectionHeader("Alarms & safety")
-        SettingsNavRow("Alarm thresholds", "Urgent-low / low / high / urgent-high — unbounded", onClick = onOpenAlarmThresholds)
-        SettingsNavRow("Signal & freshness", "Loss-of-signal windows and dosing staleness gate", onClick = onOpenSignalSafety)
-        SettingsNavRow("Alert sound & vibration", "Per-tier tone, K90 vibration, DND bypass, repeat", onClick = onOpenAlerts)
-        SettingsNavRow("Device temperature alert", "Warn when the phone runs hot enough to pause forecasting — fires even in DEATH mode", onClick = onOpenDeviceTemp)
-
-        SettingsSectionHeader("Forecast & models")
-        SettingsNavRow("Forecast warmup", "How much real history the forecast waits for", onClick = onOpenWarmup)
-        SettingsNavRow("Models run at once", "How many models forecast simultaneously (all push to the server; the selected one shows on the dashboard)", onClick = onOpenModelCount)
-        SettingsNavRow("Forecast cadence", "Re-forecast on every reading (adaptive) or on a fixed clock period", onClick = onOpenForecastCadence)
-        SettingsNavRow("Thermal gate", "Pause inference when the phone runs too hot — threshold and warning margin", onClick = onOpenThermal)
-        SettingsNavRow("Compute backend (CPU / GPU)", "Run the forecast on the CPU authority or the Vulkan GPU; measure & agreement-gate", onClick = onOpenComputeBackend)
-        SettingsNavRow("Dose calculator", "Objective, asymmetry, rails, and rail thresholds — unbounded", onClick = onOpenCalculator)
-        SettingsNavRow("Curve & PK parameters", "Carb-appearance and insulin-action presets + Bézier custom-curve designers", onClick = onOpenCurveParams)
-        SettingsNavRow("Models & backend", "Select the running model; inference backend/precision", onClick = onOpenModels)
-
-        SettingsSectionHeader("Devices & sync")
-        SettingsNavRow("CGM source", "Active sensor and recorded sources", onClick = onOpenCgm)
-        SettingsNavRow("Server profile", "Base URL + rw token (QR scan), health check", onClick = onOpenServer)
-        SettingsNavRow("Watch", "ESP32-C3 glance pairing and status", onClick = onOpenWatch)
-        SettingsNavRow("Low-power mode", "Battery-saver entry percentage and behaviour", onClick = onOpenPower)
-
-        SettingsSectionHeader("Data")
-        SettingsNavRow("Backup & reset", "Export/import settings as JSON, or erase all data", onClick = onOpenData)
-        SettingsNavRow("About", "Version, build, licence, model provenance", onClick = onOpenAbout)
-
-        SettingsSectionHeader("The end")
-        SettingsNavRow(
-            "Death clock",
-            "Tune the insulin-exhaustion projection — hours from IOB-zero to DK, coma, and death",
-            onClick = onOpenDeathClock,
+    Column(Modifier.fillMaxSize()) {
+        SettingsSearchBar(
+            // The same withholding the DEATH row gets below: an unfiltered index would let the public
+            // build reach a screen its own hub deliberately hides.
+            index = SettingsIndex.visible(deathModeSupported),
+            recent = recentSearches,
+            onOpen = onOpenKnob,
+            onRecordSearch = onRecordSearch,
+            onClearRecentSearches = onClearRecentSearches,
+            modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 4.dp),
         )
-        if (deathModeSupported) {
-            SettingsNavRow(
-                "DEATH mode",
-                "Silence every alarm, disable every safety rail, and still the warnings — irrevocably, until you rescind it",
-                onClick = onOpenDeath,
-            )
+        Box(Modifier.weight(1f)) {
+            SettingsScaffold(SettingsScreenKey.ROOT) {
+                SettingsSectionHeader("Display & units")
+                SettingsNavRow("Theme, font, units & targets", "3 themes, custom JSON, fonts, animations", onClick = onOpenDisplay)
+                SettingsNavRow("BG graph range & window", "Floor, ceiling, default window", onClick = onOpenGraph)
+
+                SettingsSectionHeader("Alarms & safety")
+                SettingsNavRow("Alarm thresholds", "Urgent-low / low / high / urgent-high — unbounded", onClick = onOpenAlarmThresholds)
+                SettingsNavRow("Signal & freshness", "Loss-of-signal windows, dosing staleness gate", onClick = onOpenSignalSafety)
+                SettingsNavRow("Alert sound & vibration", "Per-tier tone, K90 vibration, DND bypass, repeat", onClick = onOpenAlerts)
+                SettingsNavRow("Device temperature alert", "Warn when the phone runs hot — fires even in Death mode", onClick = onOpenDeviceTemp)
+
+                SettingsSectionHeader("Forecast & models")
+                SettingsNavRow("Forecast warmup", "Real history the forecast waits for", onClick = onOpenWarmup)
+                SettingsNavRow("Models run at once", "How many forecast at once — all pushed, selected one shown", onClick = onOpenModelCount)
+                SettingsNavRow("Forecast cadence", "Adaptive (every reading) or timed (fixed period)", onClick = onOpenForecastCadence)
+                SettingsNavRow("Thermal gate", "Pause inference when too hot", onClick = onOpenThermal)
+                SettingsNavRow("Compute backend (CPU / GPU)", "CPU authority or Vulkan GPU; measured & agreement-gated", onClick = onOpenComputeBackend)
+                SettingsNavRow("Dose calculator", "Objective, asymmetry, rails, thresholds — unbounded", onClick = onOpenCalculator)
+                SettingsNavRow("Curve & PK parameters", "Carb & insulin presets, Bézier designers", onClick = onOpenCurveParams)
+                SettingsNavRow("Models & backend", "Running model; backend, precision", onClick = onOpenModels)
+
+                SettingsSectionHeader("Devices & sync")
+                SettingsNavRow("CGM source", "Active sensor, recorded sources", onClick = onOpenCgm)
+                SettingsNavRow("Server profile", "Base URL, rw token (QR), health check", onClick = onOpenServer)
+                SettingsNavRow("Watch", "ESP32-C3 glance: pair, status", onClick = onOpenWatch)
+                SettingsNavRow("Low-power mode", "Battery-saver entry % and behaviour", onClick = onOpenPower)
+
+                SettingsSectionHeader("Data")
+                SettingsNavRow("Backup & reset", "Export/import JSON, or erase everything", onClick = onOpenData)
+                SettingsNavRow("About", "Version, build, licence, model provenance", onClick = onOpenAbout)
+
+                SettingsSectionHeader("The end")
+                SettingsNavRow(
+                    "Death clock",
+                    "Hours from IOB-zero to DKA, coma, death",
+                    onClick = onOpenDeathClock,
+                )
+                if (deathModeSupported) {
+                    SettingsNavRow(
+                        "Death mode",
+                        "Silence every alarm, drop every rail — irrevocable until rescinded",
+                        onClick = onOpenDeath,
+                    )
+                }
+            }
         }
     }
 }
+
+/**
+ * The two rows that leave `:feature:settings` entirely (for `:feature:models`). There is nothing of
+ * theirs to anchor here, so they are whole-screen entries — a search hit navigates and stops.
+ */
+internal val settingsModelsKnobs = listOf(
+    SettingsKnob(
+        id = "models.select",
+        screen = SettingsScreenKey.MODELS,
+        section = "Forecast & models",
+        label = "Models & backend",
+        subtitle = "Running model; backend, precision",
+        synonyms = listOf(
+            "model", "models", "checkpoint", "weights", "network", "executorch", "pte",
+            "inference", "backend", "precision", "fp16", "fp32", "select model", "running model",
+        ),
+        anchored = false,
+    ),
+    SettingsKnob(
+        id = "models.compute_backend",
+        screen = SettingsScreenKey.MODELS,
+        section = "Forecast & models",
+        label = "Compute backend (CPU / GPU)",
+        subtitle = "CPU authority or Vulkan GPU; measured & agreement-gated",
+        synonyms = listOf(
+            "cpu", "gpu", "vulkan", "npu", "apu", "xnnpack", "neuropilot", "accelerator",
+            "hardware", "compute", "backend", "agreement gate", "benchmark", "measure", "speed",
+        ),
+        anchored = false,
+    ),
+)

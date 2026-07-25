@@ -1,6 +1,11 @@
 package com.t1dm.ui.graph
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Box
@@ -12,22 +17,30 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.isSpecified
+import androidx.compose.ui.graphics.ClipOp
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.material3.ColorScheme
+import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontFamily
@@ -36,12 +49,19 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.t1dm.core.design.HapticEvent
+import com.t1dm.core.design.LocalT1dmHaptics
 import com.t1dm.core.design.T1dmTheme
+import com.t1dm.core.design.rememberHapticDetent
 import com.t1dm.core.model.AlertThresholds
 import com.t1dm.core.model.CgmReading
+import com.t1dm.core.model.PaintStroke
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.core.model.UnitSpace
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
@@ -96,6 +116,32 @@ data class ExcursionMarker(
 )
 
 /**
+ * What the panel is holding while PAINT MODE is on: which implement, in what colour and width, or
+ * whether the finger is an [eraser] instead. A null `paintControls` on [GlucoseGraph] means paint mode
+ * is OFF, and every gesture then behaves exactly as it did before the layer existed.
+ *
+ * [tool] is a [com.t1dm.core.model.PaintTool] key rather than the enum so `:ui:graph` keeps resolving
+ * the open text vocabulary in exactly one place ([PaintFrame.toolIdOf]) — for a live stroke and for a
+ * decoded one alike.
+ */
+data class PaintControls(
+    val tool: String,
+    val colorArgb: Int,
+    val widthDp: Float,
+    val eraser: Boolean = false,
+)
+
+/** Which of the three things a pointer is doing while paint mode is on. */
+private enum class PaintGesture { DRAW, ERASE, TRANSFORM }
+
+/** The plot rectangle in canvas pixels — the box EVERY paint coordinate is anchored to (never the
+ *  composable, whose top moves by 14 dp when the model's predicted-clock axis appears). */
+private class PlotBox(val left: Float, val top: Float, val right: Float, val bottom: Float) {
+    val width: Double get() = (right - left).toDouble().coerceAtLeast(1.0)
+    val height: Float get() = (bottom - top).coerceAtLeast(1f)
+}
+
+/**
  * The Phase-1 live BG graph (Phase 1 / ux-decisions "Graph = the centrepiece"):
  * a background grid, time (x) and glucose (y) axes, the BG polyline with INTERPOLATED and WARMUP
  * points rendered visually distinct, pan / pinch-zoom / long-press-scrub gestures, and an auto-fit
@@ -127,11 +173,30 @@ fun GlucoseGraph(
     // I3 — extend the pannable right edge this far past now so the committed dose curves in the empty
     // future are reachable (up to 24 h), WITHOUT auto-following into that empty region.
     futureExtentMs: Long = 0L,
+    // The freehand ANNOTATION layer, already built off-thread ([paintFrameOf]). Drawn under every
+    // trace and overlay, and clipped out of a corridor around the live BG line so the glucose trace
+    // stays legible under any amount of drawing. In-app BG panel only.
+    paint: PaintFrame? = null,
+    // PAINT MODE. Non-null ⇒ one finger draws (or erases) and two or more pan/zoom; null ⇒ the panel's
+    // gestures are exactly what they were before the layer existed. Painting is DECORATIVE: a stroke is
+    // never read by a calculator, a model channel, an alarm, or any §3.6 rail — the only thing it can
+    // affect is this Canvas, and even here the corridor keeps it off the glucose trace.
+    paintControls: PaintControls? = null,
+    /** Fired ONCE on lift-off with the finished stroke (`id = 0`; the store mints the row id). */
+    onPaintStroke: ((PaintStroke) -> Unit)? = null,
+    /** Fired with the row id of a stroke the eraser hit. Whole strokes only, so undo stays a stack. */
+    onErasePaintStroke: ((Long) -> Unit)? = null,
     onScrub: ((GraphScrub?) -> Unit)? = null,
+    /** Reports the visible window — start instant and span, both in ms — whenever the user pans or
+     *  pinches. Hoisted for DRIVE MODE, which adopts the chart's own viewport rather than a zoom of
+     *  its own, and which maps a tap on the panel back to an instant through it. Both otherwise live
+     *  and die inside this composable. */
+    onViewportChange: ((startMs: Double, spanMs: Double) -> Unit)? = null,
 ) {
     val cs = MaterialTheme.colorScheme
     val density = LocalDensity.current
     val measurer = rememberTextMeasurer()
+    val haptics = LocalT1dmHaptics.current
 
     val leftPx = with(density) { 46.dp.toPx() }
     val rightPx = with(density) { 12.dp.toPx() }
@@ -139,9 +204,30 @@ fun GlucoseGraph(
     val topPx = with(density) { (if (predictedClock != null) 24.dp else 10.dp).toPx() }
     val bottomPx = with(density) { 20.dp.toPx() }
 
+    // The annotation layer's draw-phase scratch: a memoised corridor mask and one reusable path, so
+    // painting hundreds of strokes allocates nothing per frame. Held here (never conditionally) so the
+    // early empty-frame return below cannot skip a `remember`.
+    val corridor = remember { PaintCorridor() }
+    val paintPath = remember { Path() }
+    val dpPx = density.density
+    val corridorPx = corridorWidthPx(dpPx)
+    val chalkPens = remember(dpPx) { ChalkPens(dpPx) }
+
+    // The stroke under the finger. The buffer is PLAIN memory (mutated from the pointer handler); the
+    // Canvas is driven by [liveCount], which is snapshot state, so a new sample invalidates the DRAW
+    // phase only — never a recomposition. [liveHeld] keeps a just-finished stroke on screen until its
+    // persisted twin arrives through [paint], so lift-off does not blink.
+    val live = remember { StrokeCapture() }
+    var liveCount by remember { mutableIntStateOf(0) }
+    var liveHeld by remember { mutableStateOf(false) }
+
     // Viewport in ABSOLUTE epoch-ms (stable across frame rebuilds whose t0 may shift).
     var viewStartMs by remember { mutableStateOf(Double.NaN) }
     var viewSpanMs by remember { mutableStateOf(initialWindowMin.toDouble() * 60_000.0) }
+    val reportViewport by rememberUpdatedState(onViewportChange)
+    LaunchedEffect(viewStartMs, viewSpanMs) {
+        if (!viewStartMs.isNaN()) reportViewport?.invoke(viewStartMs, viewSpanMs)
+    }
     var followLatest by remember { mutableStateOf(true) }
     // TIME-anchored scrub cursor (absolute epoch-ms; NaN = inactive) so it can land in the forecast
     // zone past the last reading (item 3), not only on a BG sample.
@@ -183,6 +269,101 @@ fun GlucoseGraph(
         else viewStartMs.coerceIn(ds, de - viewSpanMs)
     }
 
+    // ── What the ONE pointer handler reads ─────────────────────────────────────────────────────
+    // The handler is keyed on paint mode ALONE, so a landing reading or a publishing forecast can no
+    // longer cancel a gesture in flight (the scrub handler used to be keyed on five changing values —
+    // tolerable for a sub-second scrub, fatal for a long freehand line, which would be truncated
+    // mid-draw). Everything it needs that DOES change is therefore read through `rememberUpdatedState`,
+    // so the coroutine always calls the CURRENT composition's closure over the current frame,
+    // predictions and plot insets rather than the ones it captured when it was launched.
+    val paintOn = paintControls != null
+    val controls by rememberUpdatedState(paintControls)
+    val paintNow by rememberUpdatedState(paint)
+    val emitStroke by rememberUpdatedState(onPaintStroke)
+    val eraseStroke by rememberUpdatedState(onErasePaintStroke)
+    val plotBox by rememberUpdatedState(
+        PlotBox(leftPx, topPx, canvasSize.width - rightPx, canvasSize.height - bottomPx),
+    )
+
+    // Edge-triggered so a pan HELD against the clamp buzzes once on arrival rather than droning at
+    // every pointer sample; it re-arms only once the viewport has moved off the wall. A plain holder
+    // rather than snapshot state: this is felt, never drawn, so it must not invalidate the Canvas.
+    val atEdge = remember { booleanArrayOf(false) }
+
+    /** Pan + pinch-zoom: the ONE implementation of the viewport math, shared by both modes. */
+    val applyTransform by rememberUpdatedState<(Float, Float, Float) -> Unit>({ centroidX, panX, zoom ->
+        val ppm = plotW() / viewSpanMs // px per ms
+        if (zoom != 1f) {
+            val focusMs = viewStartMs + (centroidX - leftPx) / ppm
+            val (minSpan, maxSpan) = spanBounds()
+            val newSpan = (viewSpanMs / zoom).coerceIn(minSpan, maxSpan)
+            val frac = ((centroidX - leftPx) / plotW()).coerceIn(0.0, 1.0)
+            viewSpanMs = newSpan
+            viewStartMs = focusMs - frac * newSpan
+        }
+        viewStartMs -= panX / ppm
+        val de = followEndMs()
+        // What the gesture ASKED for, before clamp() pins it to the data bounds. Comparing the two is
+        // the only honest way to know a wall was met: `clamp` silently rewrites both fields, so after
+        // it runs there is nothing left to test against.
+        val wantedStart = viewStartMs
+        val wantedSpan = viewSpanMs
+        clamp()
+        // `isFinite` guards the one frame between the first non-empty frame arriving and the
+        // LaunchedEffect that seeds `viewStartMs`: NaN compares unequal to itself, which would read as
+        // a wall that was never met.
+        val pinned = wantedStart.isFinite() &&
+            (viewStartMs != wantedStart || viewSpanMs != wantedSpan)
+        if (pinned && !atEdge[0]) haptics.perform(HapticEvent.EdgeStop)
+        atEdge[0] = pinned
+        followLatest = (viewStartMs + viewSpanMs) >= de - viewSpanMs * 0.02
+    })
+
+    // The scrub's detent. The graph's grain is the SAMPLE, not the pixel: `scrubAt` runs on every
+    // pointer-move, so keying the tick on the raw position would saturate the LRA into a flat buzz.
+    // Fed the nearest sample index (or, out past the last reading, the 5-min forecast bucket the
+    // cursor sits in) it instead ticks once per reading crossed — a texture that tracks the data, so
+    // a slow drag over a sparse stretch is quiet and a fast one over dense history is dense.
+    val scrubDetent = rememberHapticDetent(HapticEvent.ScrubTick)
+
+    /** Move the TIME-anchored scrub cursor to a canvas x and publish the read-out. */
+    val scrubAt by rememberUpdatedState<(Float) -> Unit>({ x ->
+        val ppm = plotW() / viewSpanMs
+        val lastMs = if (frame.isEmpty) Double.NaN else frame.absMs(frame.size - 1)
+        val ms = (viewStartMs + (x - leftPx) / ppm).coerceIn(frame.absMs(0), panEndMs())
+        scrubDetent.at(
+            if (!lastMs.isNaN() && ms > lastMs) "f" + ((ms - lastMs) / 300_000.0).toLong()
+            else frame.nearestIndex(ms),
+        )
+        scrubMs = ms
+        onScrub?.invoke(buildScrub(frame, predictions, curveOverlay, predictedClock, rolled, ms))
+    })
+    val scrubEnd by rememberUpdatedState<() -> Unit>({
+        haptics.perform(HapticEvent.DragEnd)
+        scrubMs = Double.NaN
+        onScrub?.invoke(null)
+    })
+
+    // The held stroke is released the moment the layer that now contains it arrives. If nothing is
+    // listening for strokes at all there is no twin to wait for, so nothing is ever held.
+    LaunchedEffect(paint) {
+        if (liveHeld) {
+            liveHeld = false
+            liveCount = 0
+        }
+    }
+
+    // Leaving paint mode cancels the pointer handler wherever it happens to be, so a stroke in flight
+    // is dropped without ever being emitted; clear its pixels too, or the abandoned line would linger
+    // as a ghost that no persisted stroke will ever replace.
+    LaunchedEffect(paintOn) {
+        if (!paintOn) {
+            live.abandon()
+            liveCount = 0
+            liveHeld = false
+        }
+    }
+
     // Initialise on the first frame; keep tracking the latest point until the user scrolls back.
     LaunchedEffect(frame, predictions) {
         if (frame.isEmpty) return@LaunchedEffect
@@ -222,38 +403,181 @@ fun GlucoseGraph(
         modifier
             .height(220.dp)
             .onSizeChanged { canvasSize = it }
-            // Pan + pinch-zoom.
-            .pointerInput(Unit) {
-                detectTransformGestures { centroid, pan, zoom, _ ->
-                    val ppm = plotW() / viewSpanMs // px per ms
-                    if (zoom != 1f) {
-                        val focusMs = viewStartMs + (centroid.x - leftPx) / ppm
-                        val (minSpan, maxSpan) = spanBounds()
-                        val newSpan = (viewSpanMs / zoom).coerceIn(minSpan, maxSpan)
-                        val frac = ((centroid.x - leftPx) / plotW()).coerceIn(0.0, 1.0)
-                        viewSpanMs = newSpan
-                        viewStartMs = focusMs - frac * newSpan
+            // ── ONE pointer handler for the whole panel ────────────────────────────────────────
+            //
+            // PAINT OFF: the two stock detectors, with the same lambdas they have always had, now
+            // co-resident in this single node. Their relative priority — which is load-bearing, since
+            // `detectTransformGestures` aborts the moment it sees a consumed change, and the scrub
+            // consumes — survives the move because a node dispatches the MAIN pass to its handlers in
+            // REVERSE registration order (verified against compose-ui 1.7.6's
+            // `SuspendingPointerInputModifierNodeImpl.forEachCurrentPointerHandler`, where Initial and
+            // Final walk forward and Main walks back). Registration order is the launch order, and
+            // `awaitEachGesture` only ever re-registers after ALL pointers are up — on the FINAL pass,
+            // which is dispatched forward — so the two re-arm in the same order they first armed. That
+            // is exactly the ordering the old stacked modifiers got structurally.
+            //
+            // UNDISPATCHED is not a nicety. The node starts `pointerInputJob` lazily from the FIRST
+            // `onPointerEvent`, itself undispatched, and dispatches that very DOWN the instant the body
+            // suspends; a plain `launch` would only append to `AndroidUiDispatcher`'s trampoline, so the
+            // DOWN would meet an EMPTY handler vector and both detectors — which open on
+            // `awaitFirstDown`, matched by `!previousPressed && pressed` — would sit out the whole first
+            // gesture rather than merely truncating it.
+            //
+            // PAINT ON: one finger draws (or erases) and TWO OR MORE pan/zoom, so reaching fresh
+            // canvas costs nothing but a second finger; long-press-scrub is suspended entirely, because
+            // a long press is how one starts a deliberate stroke. A second finger landing mid-stroke
+            // abandons the in-flight stroke CLEANLY — nothing is emitted and nothing is persisted —
+            // rather than smearing it across the pan.
+            .pointerInput(paintOn) {
+                if (!paintOn) {
+                    coroutineScope {
+                        launch(start = CoroutineStart.UNDISPATCHED) {
+                            this@pointerInput.detectTransformGestures { centroid, pan, zoom, _ ->
+                                applyTransform(centroid.x, pan.x, zoom)
+                            }
+                        }
+                        launch(start = CoroutineStart.UNDISPATCHED) {
+                            // Long-press then drag = scrub. Time-anchored, so it works in the forecast zone.
+                            // The entry pop is the single most valuable haptic in the app: the scrub is
+                            // otherwise invisible until the finger has already moved, so without it the
+                            // long press is a blind wait. The detent is reset first so the sample the
+                            // cursor LANDS on seeds silently — the ticks then count crossings, not the
+                            // arrival, which the LongPress has already announced far more loudly.
+                            this@pointerInput.detectDragGesturesAfterLongPress(
+                                onDragStart = { pos ->
+                                    haptics.perform(HapticEvent.LongPress)
+                                    scrubDetent.reset()
+                                    scrubAt(pos.x)
+                                },
+                                onDrag = { change, _ -> scrubAt(change.position.x) },
+                                onDragEnd = { scrubEnd() },
+                                onDragCancel = { scrubEnd() },
+                            )
+                        }
                     }
-                    viewStartMs -= pan.x / ppm
-                    val de = followEndMs()
-                    clamp()
-                    followLatest = (viewStartMs + viewSpanMs) >= de - viewSpanMs * 0.02
+                    return@pointerInput
                 }
-            }
-            // Long-press then drag = scrub. Time-anchored so the cursor works in the forecast zone.
-            .pointerInput(frame, predictions, curveOverlay, predictedClock, rolled) {
-                fun at(x: Float) {
-                    val ppm = plotW() / viewSpanMs
-                    val ms = (viewStartMs + (x - leftPx) / ppm).coerceIn(frame.absMs(0), panEndMs())
-                    scrubMs = ms
-                    onScrub?.invoke(buildScrub(frame, predictions, curveOverlay, predictedClock, rolled, ms))
+
+                // The eraser's reach is a constant fingertip and can be hoisted; the decimation gate is
+                // not — it scales with the pen and so belongs with the palette read below.
+                val erasePx = PAINT_ERASE_RADIUS_DP * dpPx
+
+                // The projection is recomputed per sample rather than captured at pen-down: while a
+                // stroke is being drawn the viewport can still slide under it (auto-follow shifts on a
+                // landing reading) and the plot's top inset can move (the predicted-clock axis
+                // appearing), and a captured transform would silently shear the stroke.
+                fun sampleTs(x: Float): Long {
+                    val box = plotBox
+                    return (viewStartMs + (x - box.left) / (box.width / viewSpanMs)).toLong()
                 }
-                detectDragGesturesAfterLongPress(
-                    onDragStart = { pos -> at(pos.x) },
-                    onDrag = { change, _ -> at(change.position.x) },
-                    onDragEnd = { scrubMs = Double.NaN; onScrub?.invoke(null) },
-                    onDragCancel = { scrubMs = Double.NaN; onScrub?.invoke(null) },
-                )
+                fun sampleY(y: Float): Float {
+                    val box = plotBox
+                    return (y - box.top) / box.height
+                }
+
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    // Read the palette AFTER the down, never before it. `awaitEachGesture` re-invokes
+                    // its block on the FINAL pass of the previous lift-off and then parks in
+                    // `awaitFirstDown`, so a value latched at the top of the block is the palette as it
+                    // stood at the END of the last stroke — and the handler is deliberately keyed on
+                    // `paintOn` alone, so a chip tap never restarts it to refresh that value. The live
+                    // overlay reads `paintControls` straight from the composition at draw time, so a
+                    // stale latch would commit a row that disagrees with the line the user just watched
+                    // themselves draw (the mismatch `drawLiveStroke` promises cannot happen), and would
+                    // put the eraser latch a whole gesture behind the chip the user is looking at.
+                    val ctl = controls ?: return@awaitEachGesture
+                    down.consume()
+
+                    // …and derived from it here for the same reason. A gate hoisted out of the gesture
+                    // would be the width of whatever pen the LAST stroke used, which under the flood pen
+                    // is the difference between a few dozen samples and a few thousand.
+                    val minStepPx = paintMinStepPx(ctl.widthDp, dpPx)
+
+                    var mode = if (ctl.eraser) PaintGesture.ERASE else PaintGesture.DRAW
+                    val erased = HashSet<Long>() // one callback per stroke, however long the finger lingers
+                    var lastPos = down.position
+
+                    fun eraseAt(pos: Offset) {
+                        val pf = paintNow ?: return
+                        if (pf.isEmpty) return
+                        val box = plotBox
+                        val id = hitTestPaint(
+                            pf, pos.x, pos.y, erasePx,
+                            viewStartMs, box.width / viewSpanMs, box.left, box.top, box.height, dpPx,
+                        )
+                        if (id != NO_STROKE && erased.add(id)) {
+                            haptics.perform(HapticEvent.Reject)
+                            eraseStroke?.invoke(id)
+                        }
+                    }
+
+                    if (mode == PaintGesture.DRAW) {
+                        live.begin(System.currentTimeMillis())
+                        liveHeld = false
+                        live.add(down.position.x, down.position.y, sampleTs(down.position.x), sampleY(down.position.y), 0f)
+                        liveCount = live.size
+                        haptics.perform(HapticEvent.StrokeStart)
+                    } else {
+                        eraseAt(down.position)
+                    }
+
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val pressed = event.changes.count { it.pressed }
+                        if (pressed == 0) break
+                        if (pressed >= 2 && mode != PaintGesture.TRANSFORM) {
+                            if (mode == PaintGesture.DRAW) {
+                                live.abandon()
+                                liveCount = 0
+                            }
+                            mode = PaintGesture.TRANSFORM
+                        }
+                        when (mode) {
+                            PaintGesture.TRANSFORM -> {
+                                // No slop gate: the user has already declared intent by putting a second
+                                // finger down, and a pan that has to be earned would fight the drawing.
+                                val zoom = event.calculateZoom()
+                                val pan = event.calculatePan()
+                                val centroid = event.calculateCentroid(useCurrent = false)
+                                if ((zoom != 1f || pan != Offset.Zero) && centroid.isSpecified) {
+                                    applyTransform(centroid.x, pan.x, zoom)
+                                }
+                                event.changes.forEach { if (it.positionChanged()) it.consume() }
+                            }
+                            PaintGesture.DRAW -> {
+                                val ch = event.changes.firstOrNull { it.pressed } ?: break
+                                lastPos = ch.position
+                                if (live.add(ch.position.x, ch.position.y, sampleTs(ch.position.x), sampleY(ch.position.y), minStepPx)) {
+                                    liveCount = live.size
+                                }
+                                event.changes.forEach { if (it.pressed) it.consume() }
+                            }
+                            PaintGesture.ERASE -> {
+                                val ch = event.changes.firstOrNull { it.pressed } ?: break
+                                eraseAt(ch.position)
+                                event.changes.forEach { if (it.pressed) it.consume() }
+                            }
+                        }
+                    }
+
+                    if (mode == PaintGesture.DRAW) {
+                        // The stroke ends where the finger left the glass, not at the last sample that
+                        // happened to clear the min-distance gate.
+                        if (live.addFinal(lastPos.x, lastPos.y, sampleTs(lastPos.x), sampleY(lastPos.y))) {
+                            liveCount = live.size
+                        }
+                        val stroke = live.toStroke(ctl.tool, ctl.colorArgb, ctl.widthDp)
+                        val sink = emitStroke
+                        if (stroke != null && sink != null) {
+                            haptics.perform(HapticEvent.StrokeEnd)
+                            liveHeld = true // keep it on screen until its persisted twin lands
+                            sink(stroke)
+                        } else {
+                            liveCount = 0
+                        }
+                    }
+                }
             },
     ) {
         Canvas(Modifier.fillMaxSize()) {
@@ -346,65 +670,92 @@ fun GlucoseGraph(
             // polyline is REPLACED by the model-input smoothed trace, so exactly one trace is on screen.
             val swapToSmoothed = showSmoothed && smoothed != null && !smoothed.isEmpty
 
-            // (1) Threshold band tints, if supplied.
-            thresholds?.let { drawBands(it, frame.unit, plotLeft, plotRight, ::yToPx, yMin, yMax, cs.error, cs.secondary) }
-
-            // (2) Horizontal value grid + left-axis labels.
-            val vStep = niceStep((yMax - yMin).toDouble() / 5.0)
-            var vy = floor(yMin / vStep) * vStep
-            while (vy <= yMax + 1e-6) {
-                val py = yToPx(vy.toFloat())
-                if (vy >= yMin && py in plotTop..plotBottom) {
-                    drawLine(gridColor, Offset(plotLeft, py), Offset(plotRight, py), 1f)
-                    val label = measurer.measure(formatValue(vy.toFloat(), frame.unit), labelStyle)
-                    drawText(label, topLeft = Offset(plotLeft - 6f - label.size.width, py - label.size.height / 2f))
-                }
-                vy += vStep
-            }
-
-            // (3) Vertical time grid + bottom-axis labels (ACTUAL local time, item 21). The TOP axis
-            //     carries the model's PREDICTED clock when the circadian probe is present, else a quiet
-            //     "model time n/a" — never a fabricated axis.
-            val tStepMs = niceTimeStepMs(viewSpanMs)
-            val tzMs = frame.tzOffsetMin * 60_000L
-            var tick = floor((viewStartMs + tzMs) / tStepMs) * tStepMs - tzMs
-            if (tick < viewStartMs) tick += tStepMs
-            val endMs = viewStartMs + viewSpanMs
-            val modelLabelColor = cs.tertiary.copy(alpha = 0.8f)
-            val modelStyle = TextStyle(color = modelLabelColor, fontSize = 10.sp)
-            while (tick <= endMs) {
-                val px = (plotLeft + (tick - viewStartMs) * ppm).toFloat()
-                drawLine(gridColor, Offset(px, plotTop), Offset(px, plotBottom), 1f)
-                val label = measurer.measure(formatTime(tick.toLong(), frame.tzOffsetMin, tStepMs), labelStyle)
-                var lx = px - label.size.width / 2f
-                lx = lx.coerceIn(plotLeft, plotRight - label.size.width)
-                drawText(label, topLeft = Offset(lx, plotBottom + 3f))
-                if (predictedClock != null) {
-                    val mlbl = measurer.measure(predictedClockLabel(tick.toLong(), predictedClock), modelStyle)
-                    var mlx = px - mlbl.size.width / 2f
-                    mlx = mlx.coerceIn(plotLeft, plotRight - mlbl.size.width)
-                    drawText(mlbl, topLeft = Offset(mlx, plotTop - mlbl.size.height - 2f))
-                }
-                tick += tStepMs
-            }
-            // Timezone caption on the local axis, and the model-axis tag / n/a note.
-            val tzCap = measurer.measure(tzLabel(frame.tzOffsetMin), TextStyle(color = axisColor, fontSize = 8.sp))
-            drawText(tzCap, topLeft = Offset(2f, plotBottom + 3f))
-            if (predictedClock != null) {
-                val tag = measurer.measure("model", TextStyle(color = modelLabelColor, fontSize = 8.sp))
-                drawText(tag, topLeft = Offset(2f, (plotTop - tag.size.height - 2f).coerceAtLeast(0f)))
-            } else {
-                val na = measurer.measure("model time n/a", TextStyle(color = axisColor, fontSize = 9.sp))
-                drawText(na, topLeft = Offset(plotLeft + 4f, plotTop + 2f))
-            }
-
-            // (4) Axes.
-            drawLine(axisColor, Offset(plotLeft, plotTop), Offset(plotLeft, plotBottom), 1.5f)
-            drawLine(axisColor, Offset(plotLeft, plotBottom), Offset(plotRight, plotBottom), 1.5f)
+            // (1)–(4) Grid, axes and their labels. Extracted so GAME MODE can render the very same
+            // furniture around its own viewport — the panel keeps its background, its left value axis
+            // and both time axes while the car drives, instead of becoming a bare canvas.
+            drawGraphFurniture(
+                unit = frame.unit,
+                tzOffsetMin = frame.tzOffsetMin,
+                plotLeft = plotLeft, plotTop = plotTop, plotRight = plotRight, plotBottom = plotBottom,
+                viewStartMs = viewStartMs, viewSpanMs = viewSpanMs,
+                yMin = yMin, yMax = yMax,
+                thresholds = thresholds,
+                predictedClock = predictedClock,
+                measurer = measurer,
+                cs = cs,
+            )
 
             // Clip data-drawing sections to the plot rectangle so no trace spills over the y-axis
             // labels or off the plot edges; grid, axes, and margin captions above stay OUTSIDE it.
             clipRect(left = plotLeft, top = plotTop, right = plotRight, bottom = plotBottom) {
+                // (4.4) The freehand ANNOTATION layer — first inside the plot clip, so it sits under the
+                //       curve overlay, both BG traces, the markers, the forecast fans and the scrub
+                //       read-out — so no measurement, forecast or read-out is ever hidden behind the
+                //       user's marginalia.
+                //
+                //       THE CORRIDOR: the paint is then clipped OUT of a [PAINT_CORRIDOR_DP] band centred
+                //       on the BG line, so a scribble laid straight across the trace leaves a clean halo
+                //       instead of a smear. The band follows whichever trace is ACTUALLY on screen — I5
+                //       makes "Smoothed" a SWAP rather than an overlay, so exactly one exists at a time,
+                //       and masking around a trace that is not being drawn would carve an unexplained
+                //       blank channel through the art. The mask is derived from the same runs the polyline
+                //       is drawn from ([forEachTraceRun]), so it breaks at genuine dropouts too.
+                //
+                //       The stroke UNDER THE FINGER is drawn here too, through the same projection, the
+                //       same per-tool renderer and the same mask — so the line being drawn looks exactly
+                //       like the line that will have been drawn, and the panel never appears to edit the
+                //       user's work on lift-off.
+                val livePoints = liveCount // a DRAW-phase snapshot read: a new sample redraws, never recomposes
+                val committed = paint != null && !paint.isEmpty
+                if (committed || livePoints > 0) {
+                    fun strokes() {
+                        if (committed) {
+                            drawPaintFrame(
+                                paint!!, viewStartMs, viewSpanMs, ppm, plotLeft, plotTop, plotHeight, dpPx,
+                                paintPath, chalkPens,
+                            )
+                        }
+                        val ctl = paintControls
+                        if (livePoints > 0 && ctl != null) {
+                            drawLiveStroke(
+                                live, livePoints, PaintFrame.toolIdOf(ctl.tool), ctl.colorArgb, ctl.widthDp,
+                                viewStartMs, ppm, plotLeft, plotTop, plotHeight, dpPx, paintPath, chalkPens,
+                            )
+                        }
+                    }
+                    val traceId = System.identityHashCode(if (swapToSmoothed) smoothed else frame)
+                    if (
+                        corridor.stale(
+                            traceId, swapToSmoothed, viewStartMs, viewSpanMs, yMin, yMax,
+                            plotLeft, plotTop, plotRight, plotBottom, corridorPx,
+                        )
+                    ) {
+                        corridor.begin()
+                        if (swapToSmoothed) {
+                            val sm = smoothed!!
+                            // The smoothed trace's own draw loop culls to ± one full span (three viewports'
+                            // worth); the corridor only ever masks what is on screen, so narrow it.
+                            var sLo = lowerBoundLong(sm.tsMs, viewStartMs.toLong()) - 1
+                            var sHi = lowerBoundLong(sm.tsMs, (viewStartMs + viewSpanMs).toLong())
+                            if (sLo < 0) sLo = 0
+                            if (sHi > sm.size - 1) sHi = sm.size - 1
+                            corridor.append(
+                                sLo, sHi,
+                                { sm.breakAfter[it] },
+                                { (plotLeft + (sm.tsMs[it].toDouble() - viewStartMs) * ppm).toFloat() },
+                                { yToPx(sm.ys[it]) },
+                            )
+                        } else {
+                            corridor.append(
+                                iLo, iHi, { frame.breakAfter[it] }, { xToPx(frame.xs[it]) }, { yToPx(frame.ys[it]) },
+                            )
+                        }
+                        corridor.commit(corridorPx)
+                    }
+                    val mask = corridor.mask
+                    if (mask == null) strokes() else clipPath(mask, ClipOp.Difference) { strokes() }
+                }
+
                 // (4.5) Curve overlay (carb Ra + insulin action) in the bottom band, UNDER the BG line
                 //       so it never occludes the glucose trace (Phase 4 — toggleable).
                 if (curveOverlay != null && curveToggles.any) {
@@ -706,6 +1057,17 @@ private fun DrawScope.drawBands(
 }
 
 /** First index whose value is >= [target] (binary search on the ascending [xs]). */
+private fun lowerBoundLong(xs: LongArray, target: Long): Int {
+    var lo = 0
+    var hi = xs.size
+    while (lo < hi) {
+        val mid = (lo + hi) ushr 1
+        if (xs[mid] < target) lo = mid + 1 else hi = mid
+    }
+    return lo
+}
+
+/** First index whose value is >= [target] (binary search on the ascending [xs]). */
 private fun lowerBound(xs: FloatArray, target: Float): Int {
     var lo = 0
     var hi = xs.size
@@ -797,4 +1159,98 @@ private fun syntheticReadings(): List<CgmReading> {
         )
     }
     return out
+}
+
+/**
+ * The panel's furniture: threshold bands, the value grid + left axis, the time grid + the local-time
+ * and model-time axes, and the two axis lines. Everything that frames the plot without being data.
+ *
+ * Extracted from [GlucoseGraph] so the hill-climb mode can draw the SAME frame around its own
+ * viewport. That is the whole point of it being a mode rather than a separate screen: while the car
+ * drives, the background, the BG scale on the left and both time axes stay exactly where they were, so
+ * the player can still read what they are driving over. The game passes the viewport its camera is
+ * looking at; every tick and label then follows the car by construction.
+ */
+fun DrawScope.drawGraphFurniture(
+    unit: UnitSpace,
+    tzOffsetMin: Int,
+    plotLeft: Float,
+    plotTop: Float,
+    plotRight: Float,
+    plotBottom: Float,
+    viewStartMs: Double,
+    viewSpanMs: Double,
+    yMin: Float,
+    yMax: Float,
+    thresholds: AlertThresholds?,
+    predictedClock: PredictedClock?,
+    measurer: TextMeasurer,
+    cs: ColorScheme,
+) {
+    val plotHeight = (plotBottom - plotTop).coerceAtLeast(1f)
+    val ppm = (plotRight - plotLeft).toDouble().coerceAtLeast(1.0) / viewSpanMs
+    val ppv = plotHeight / (yMax - yMin)
+    fun yToPx(v: Float): Float = plotBottom - (v - yMin) * ppv
+
+    val gridColor = cs.onSurface.copy(alpha = 0.10f)
+    val axisColor = cs.onSurface.copy(alpha = 0.30f)
+    val labelColor = cs.onSurface.copy(alpha = 0.65f)
+    val labelStyle = TextStyle(color = labelColor, fontSize = 10.sp)
+
+        // (1) Threshold band tints, if supplied.
+        thresholds?.let { drawBands(it, unit, plotLeft, plotRight, ::yToPx, yMin, yMax, cs.error, cs.secondary) }
+
+        // (2) Horizontal value grid + left-axis labels.
+        val vStep = niceStep((yMax - yMin).toDouble() / 5.0)
+        var vy = floor(yMin / vStep) * vStep
+        while (vy <= yMax + 1e-6) {
+            val py = yToPx(vy.toFloat())
+            if (vy >= yMin && py in plotTop..plotBottom) {
+                drawLine(gridColor, Offset(plotLeft, py), Offset(plotRight, py), 1f)
+                val label = measurer.measure(formatValue(vy.toFloat(), unit), labelStyle)
+                drawText(label, topLeft = Offset(plotLeft - 6f - label.size.width, py - label.size.height / 2f))
+            }
+            vy += vStep
+        }
+
+        // (3) Vertical time grid + bottom-axis labels (ACTUAL local time, item 21). The TOP axis
+        //     carries the model's PREDICTED clock when the circadian probe is present, else a quiet
+        //     "model time n/a" — never a fabricated axis.
+        val tStepMs = niceTimeStepMs(viewSpanMs)
+        val tzMs = tzOffsetMin * 60_000L
+        var tick = floor((viewStartMs + tzMs) / tStepMs) * tStepMs - tzMs
+        if (tick < viewStartMs) tick += tStepMs
+        val endMs = viewStartMs + viewSpanMs
+        val modelLabelColor = cs.tertiary.copy(alpha = 0.8f)
+        val modelStyle = TextStyle(color = modelLabelColor, fontSize = 10.sp)
+        while (tick <= endMs) {
+            val px = (plotLeft + (tick - viewStartMs) * ppm).toFloat()
+            drawLine(gridColor, Offset(px, plotTop), Offset(px, plotBottom), 1f)
+            val label = measurer.measure(formatTime(tick.toLong(), tzOffsetMin, tStepMs), labelStyle)
+            var lx = px - label.size.width / 2f
+            lx = lx.coerceIn(plotLeft, plotRight - label.size.width)
+            drawText(label, topLeft = Offset(lx, plotBottom + 3f))
+            if (predictedClock != null) {
+                val mlbl = measurer.measure(predictedClockLabel(tick.toLong(), predictedClock), modelStyle)
+                var mlx = px - mlbl.size.width / 2f
+                mlx = mlx.coerceIn(plotLeft, plotRight - mlbl.size.width)
+                drawText(mlbl, topLeft = Offset(mlx, plotTop - mlbl.size.height - 2f))
+            }
+            tick += tStepMs
+        }
+        // Timezone caption on the local axis, and the model-axis tag / n/a note.
+        val tzCap = measurer.measure(tzLabel(tzOffsetMin), TextStyle(color = axisColor, fontSize = 8.sp))
+        drawText(tzCap, topLeft = Offset(2f, plotBottom + 3f))
+        if (predictedClock != null) {
+            val tag = measurer.measure("model", TextStyle(color = modelLabelColor, fontSize = 8.sp))
+            drawText(tag, topLeft = Offset(2f, (plotTop - tag.size.height - 2f).coerceAtLeast(0f)))
+        } else {
+            val na = measurer.measure("model time n/a", TextStyle(color = axisColor, fontSize = 9.sp))
+            drawText(na, topLeft = Offset(plotLeft + 4f, plotTop + 2f))
+        }
+
+        // (4) Axes.
+        drawLine(axisColor, Offset(plotLeft, plotTop), Offset(plotLeft, plotBottom), 1.5f)
+        drawLine(axisColor, Offset(plotLeft, plotBottom), Offset(plotRight, plotBottom), 1.5f)
+
 }

@@ -92,9 +92,9 @@ fun NetworkScreen(state: NetworkPanelState = NetworkPanelState()) {
             Field("frequency", net.wifiFreqMhz?.let { "$it MHz" } ?: "—")
             Field("SSID", net.wifiSsid ?: "— (needs location)")
 
-            Section("Interfaces & addresses")
+            Section("Interfaces")
             if (net.interfaces.isEmpty()) {
-                Field("—", "no active interfaces")
+                Field("—", "none")
             } else {
                 net.interfaces.forEach { iface ->
                     Field(iface.name, iface.addresses.joinToString(", ").ifBlank { "—" })
@@ -104,7 +104,7 @@ fun NetworkScreen(state: NetworkPanelState = NetworkPanelState()) {
 
         Section("Server")
         if (!state.hasProfile) {
-            Field("profile", "none — configure in Settings → Server")
+            Field("profile", "none — Settings → Server")
         } else {
             Field("profile", state.profileLabel ?: "—")
             Field("base URL", state.baseUrl ?: "—")
@@ -120,9 +120,9 @@ fun NetworkScreen(state: NetworkPanelState = NetworkPanelState()) {
         Field("state", state.wsState)
         Field("catch-up cursor", state.wsCursor?.toString() ?: "—")
 
-        Section("Predictions pushed (per model)")
+        Section("Predictions pushed")
         if (state.modelPushes.isEmpty()) {
-            Field("—", "no prediction batch pushed yet")
+            Field("—", "none pushed yet")
         } else {
             state.modelPushes.forEach { m ->
                 Field(m.modelId, "${m.count} push(es) • ${bytes(m.bytes)}")

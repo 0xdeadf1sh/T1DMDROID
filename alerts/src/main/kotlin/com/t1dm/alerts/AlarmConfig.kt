@@ -22,6 +22,12 @@ import com.t1dm.core.model.AlertThresholds
  * @param overTempClearC battery-sensor °C at or below which it clears; the gap to [overTempAlertC] is
  *   deliberate hysteresis so a temperature hovering near the limit does not chatter.
  * @param overTempSeverity the tier the over-temp alarm announces at (WARNING vs the loud CRITICAL).
+ * @param weakSignalEnabled whether the weak-signal (low-RSSI) alarm participates at all.
+ * @param weakSignalDbm the connection RSSI (dBm) at or below which the link counts as weak; more
+ *   negative is weaker (e.g. −90 is weaker than −70). A WARNING-tier signal-quality alert, distinct
+ *   from the age-based loss-of-signal alarm.
+ * @param weakSignalSustainMin how long (minutes) the RSSI must stay at/below [weakSignalDbm] before
+ *   the alarm fires, so a momentary dip does not chatter.
  */
 data class AlarmConfig(
     val thresholds: AlertThresholds,
@@ -35,6 +41,9 @@ data class AlarmConfig(
     val overTempAlertC: Double = 44.0,
     val overTempClearC: Double = 41.0,
     val overTempSeverity: AlarmSeverity = AlarmSeverity.WARNING,
+    val weakSignalEnabled: Boolean = true,
+    val weakSignalDbm: Int = -90,
+    val weakSignalSustainMin: Int = 3,
 ) {
     companion object {
         val DEFAULT = AlarmConfig(

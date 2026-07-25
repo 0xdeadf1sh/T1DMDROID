@@ -53,10 +53,13 @@ pulling the app database during verification.
    ```
 
    - `--device` is the serial from `adb devices`; optional when exactly one device is attached.
-   - `--activity` is **required here**: the app declares one `MainActivity` plus five per-theme
+   - `--activity` is **required here**: the app declares one `MainActivity` plus three per-theme
      `<activity-alias>` LAUNCHER entries, so `android run` reports *"Multiple candidates for type
      ACTIVITY"* and refuses to guess. Pass **`com.t1dm.app.LauncherTron`** (the default-enabled alias,
      which mirrors the real home-screen launch) or `com.t1dm.app.MainActivity`.
+   - If an alias fails to resolve, the device is carrying a stale per-component enabled state from an
+     older build (it outranks the manifest and survives reinstalls). `adb shell am start -n
+     com.t1dm.app/.MainActivity` always works; one launch runs `RetiredThemeMigration` and repairs it.
    - `android run` reinstalls each call, so it is the iterate-loop primitive — rebuild, `android run`,
      re-observe.
 

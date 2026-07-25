@@ -66,8 +66,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.LocalAnimationsEnabled
 import com.t1dm.core.design.LocalT1dmSemantics
+import com.t1dm.core.design.rememberT1dmHaptics
 import kotlinx.coroutines.launch
 import kotlin.math.PI
 
@@ -185,6 +187,7 @@ private enum class DeathView { WARNING, TOLLING, CONTRACT, SEALED, TEARING }
 @Composable
 private fun WarningStanza(onBegin: () -> Unit) {
     val cs = MaterialTheme.colorScheme
+    val haptics = rememberT1dmHaptics()
     val phase = idlePhase(5000, "skull")
     Spacer(Modifier.height(8.dp))
     Canvas(
@@ -204,7 +207,9 @@ private fun WarningStanza(onBegin: () -> Unit) {
         accent = cs.error,
     )
     Spacer(Modifier.height(4.dp))
-    GraveButton("Begin", onClick = onBegin)
+    // Crossing from the warning into the rite is the one genuine Warn on this page: the stanza itself
+    // is standing furniture, the press is the threshold.
+    GraveButton("Begin", onClick = { haptics.perform(HapticEvent.Warn); onBegin() })
 }
 
 // ── (b) the tolling ────────────────────────────────────────────────────────────────────────────
@@ -215,6 +220,7 @@ private const val MIN_TOLL_INTERVAL_MS = 1200L
 private fun TollingRite(toll: FuneralToll, onComplete: () -> Unit) {
     val cs = MaterialTheme.colorScheme
     val scope = rememberCoroutineScope()
+    val haptics = rememberT1dmHaptics()
     var count by remember { mutableIntStateOf(0) }
     var lastTollMs by remember { mutableLongStateOf(0L) }
     val swing = remember { androidx.compose.animation.core.Animatable(0f) }
@@ -242,10 +248,18 @@ private fun TollingRite(toll: FuneralToll, onComplete: () -> Unit) {
             .pointerInput(Unit) {
                 detectTapGestures {
                     val now = System.currentTimeMillis()
-                    // Soft-reject hurried taps so the rite stays slow and solemn.
-                    if (count >= 3 || now - lastTollMs < MIN_TOLL_INTERVAL_MS) return@detectTapGestures
+                    // Soft-reject hurried taps so the rite stays slow and solemn. The refusal was
+                    // wholly silent before — the bell simply did not answer — which read as a dead
+                    // canvas rather than as the rite insisting on its own pace.
+                    if (count >= 3 || now - lastTollMs < MIN_TOLL_INTERVAL_MS) {
+                        haptics.perform(HapticEvent.Reject)
+                        return@detectTapGestures
+                    }
                     lastTollMs = now
                     count += 1
+                    // Each toll is a vow that cannot be unsaid: the heaviest pattern in the vocabulary,
+                    // under the bell's own strike.
+                    haptics.perform(HapticEvent.Commit)
                     toll.toll()
                     val dir = if (count % 2 == 0) -1f else 1f
                     scope.launch {
@@ -284,6 +298,7 @@ private fun tollNumeral(count: Int): String = when (count) {
 @Composable
 private fun CovenantRite(onSign: () -> Unit) {
     val cs = MaterialTheme.colorScheme
+    val haptics = rememberT1dmHaptics()
     Text(
         "Release of Liability",
         style = MaterialTheme.typography.headlineSmall,
@@ -328,8 +343,11 @@ private fun CovenantRite(onSign: () -> Unit) {
             .height(160.dp)
             .background(cs.surface)
             .pointerInput(Unit) {
+                // The same pen-down / pen-up pair the BG panel's paint layer speaks, so signing here
+                // feels like drawing there: barely-there contact, a lighter lift.
                 detectDragGestures(
                     onDragStart = { off ->
+                        haptics.perform(HapticEvent.StrokeStart)
                         current = Path().apply { moveTo(off.x, off.y) }
                         inkVersion += 1
                     },
@@ -338,6 +356,7 @@ private fun CovenantRite(onSign: () -> Unit) {
                         inkVersion += 1
                     },
                     onDragEnd = {
+                        haptics.perform(HapticEvent.StrokeEnd)
                         current?.let { strokes.add(it) }
                         current = null
                     },
@@ -365,6 +384,7 @@ private fun CovenantRite(onSign: () -> Unit) {
     ) {
         TextButton(
             onClick = {
+                haptics.perform(HapticEvent.Reject)
                 strokes.clear()
                 current = null
                 inkVersion = 0
@@ -372,7 +392,13 @@ private fun CovenantRite(onSign: () -> Unit) {
         ) {
             Text("Clear", color = cs.onSurface.copy(alpha = 0.6f))
         }
-        GraveButton("Sign the covenant", enabled = hasInk, onClick = onSign)
+        // Signing is the act that defeats §3.6 wholesale — irreversible in the only sense that matters,
+        // and so it lands with the same Commit a written dose does.
+        GraveButton(
+            "Sign the covenant",
+            enabled = hasInk,
+            onClick = { haptics.perform(HapticEvent.Commit); onSign() },
+        )
     }
 }
 
@@ -381,6 +407,7 @@ private fun CovenantRite(onSign: () -> Unit) {
 @Composable
 private fun SealedRite(onRescind: () -> Unit) {
     val cs = MaterialTheme.colorScheme
+    val haptics = rememberT1dmHaptics()
     val phase = idlePhase(6000, "reaper")
 
     Spacer(Modifier.height(4.dp))
@@ -410,7 +437,9 @@ private fun SealedRite(onRescind: () -> Unit) {
     )
     Spacer(Modifier.height(8.dp))
     OutlinedButton(
-        onClick = onRescind,
+        // Tearing the covenant restores every rail — a refusal of the pact, and the one press on this
+        // page that makes the app safer.
+        onClick = { haptics.perform(HapticEvent.Reject); onRescind() },
         colors = ButtonDefaults.outlinedButtonColors(contentColor = cs.error),
     ) {
         Text("Rescind the covenant")
@@ -568,3 +597,25 @@ private fun idlePhase(durationMs: Int, label: String): Float =
             label = "${label}Phase",
         ).value
     } else 0f
+
+// ── search index (see SettingsIndex.kt) ───────────────────────────────────────────────────────────
+//
+// The rite is one thing, not a page of knobs — five panes of a single covenant, with nothing inside
+// to scroll to. Withheld from the index in the public flavor exactly as the hub withholds its row
+// (SettingsIndex.visible), since the override itself is compiled out there.
+
+private val deathModeRite = SettingsKnob(
+    id = "death_mode.rite",
+    screen = SettingsScreenKey.DEATH_MODE,
+    section = "The end",
+    label = "Death mode",
+    subtitle = "Silence every alarm, drop every safety rail, and still the warnings — until rescinded",
+    synonyms = listOf(
+        "death", "death mode", "fail open", "silence", "mute all", "disable alarms",
+        "disable safety", "rails off", "override", "covenant", "rite", "reaper", "danger",
+        "no warnings", "suppress",
+    ),
+    anchored = false,
+)
+
+internal val settingsDeathModeKnobs = listOf(deathModeRite)

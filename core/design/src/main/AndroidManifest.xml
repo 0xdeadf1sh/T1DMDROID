@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- UI interaction haptics (Haptics.kt) drive the vibrator directly, so the module declares the
+         permission itself rather than relying on :app's manifest — same as :alerts does for the
+         §3.6-A alarm path. Normal permission, no runtime prompt. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
+</manifest>

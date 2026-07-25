@@ -19,20 +19,46 @@ fun ThermalSettingsScreen(
     onSetMaxTempC: (Double) -> Unit,
     onSetWarnMarginC: (Double) -> Unit,
 ) {
-    SettingsScaffold("Thermal gate") {
-        SettingsNote(
-            "Pauses forecasting when the phone's battery-sensor temperature reaches the threshold, and " +
-                "resumes once it cools. Protects the device on sustained NPU load; it stays active even " +
-                "in DEATH mode.",
-        )
-        ToggleRow("Enable thermal gate", enabled) { onSetEnabled(it) }
-        DoubleStepper("Pause inference at", maxTempC, "°C", step = 0.5, min = 0.0) { onSetMaxTempC(it) }
-        DoubleStepper(
-            "Warn within",
-            warnMarginC,
-            "°C of threshold",
-            step = 0.5,
-            min = 0.0,
-        ) { onSetWarnMarginC(it) }
+    SettingsScaffold(SettingsScreenKey.THERMAL) {
+        SettingsNote("Pauses forecasting when hot; active even in Death mode")
+        ToggleRow(thermalEnabled, enabled) { onSetEnabled(it) }
+        DoubleStepper(thermalPauseAt, maxTempC, "°C", step = 0.5, min = 0.0) { onSetMaxTempC(it) }
+        DoubleStepper(thermalWarnWithin, warnMarginC, "°C of threshold", step = 0.5, min = 0.0) { onSetWarnMarginC(it) }
     }
 }
+
+// ── search index (see SettingsIndex.kt) ───────────────────────────────────────────────────────────
+
+private const val THERMAL_SECTION = "Thermal gate"
+
+private val thermalEnabled = SettingsKnob(
+    id = "thermal.enabled",
+    screen = SettingsScreenKey.THERMAL,
+    section = THERMAL_SECTION,
+    label = "Enable thermal gate",
+    subtitle = "Pause inference while too hot — active even in Death mode",
+    synonyms = listOf(
+        "thermal", "thermal gate", "throttle", "overheat", "hot", "heat", "pause inference",
+        "npu", "cpu load", "protection", "temperature", "cooling",
+    ),
+)
+
+private val thermalPauseAt = SettingsKnob(
+    id = "thermal.pause_at",
+    screen = SettingsScreenKey.THERMAL,
+    section = THERMAL_SECTION,
+    label = "Pause inference at",
+    subtitle = "The battery-sensor temperature at which forecasting stops, in °C",
+    synonyms = listOf("pause", "stop", "threshold", "trip", "max temperature", "celsius", "degrees", "hot", "cutoff"),
+)
+
+private val thermalWarnWithin = SettingsKnob(
+    id = "thermal.warn_within",
+    screen = SettingsScreenKey.THERMAL,
+    section = THERMAL_SECTION,
+    label = "Warn within",
+    subtitle = "How close to the pause threshold a warning is raised, in °C",
+    synonyms = listOf("warn", "warning", "margin", "headroom", "approaching", "nearly", "buffer", "hysteresis", "degrees"),
+)
+
+internal val settingsThermalKnobs = listOf(thermalEnabled, thermalPauseAt, thermalWarnWithin)

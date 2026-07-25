@@ -20,7 +20,12 @@ import com.t1dm.core.model.AlertBand
  */
 class AndroidAlarmNotifier(
     context: Context,
-    private val actuatorConfig: AlertActuatorConfig = AlertActuatorConfig.SILENT,
+    /**
+     * Sound / vibration / DND-bypass, read LIVE like [suppressed] and [snoozeState] rather than
+     * snapshotted at construction: the notifier outlives the foreground service's startup, so a
+     * config captured once meant a Settings edit had no effect until the service was restarted.
+     */
+    private val actuatorConfig: () -> AlertActuatorConfig = { AlertActuatorConfig.SILENT },
     private val fullScreenIntent: () -> PendingIntent? = { null },
     private val contentIntent: () -> PendingIntent? = { null },
     /**
@@ -67,7 +72,17 @@ class AndroidAlarmNotifier(
     private val app = context.applicationContext
     private val nm = app.getSystemService(android.app.NotificationManager::class.java)
     private val vibrations = VibrationActuator(app)
-    private val channels = AlertChannels.ensure(app, actuatorConfig)
+    // A channel's sound, importance and DND-bypass are frozen at creation, so `ensure` mints a fresh
+    // id whenever the config version changes. Resolving it per notify — memoized on that version — is
+    // what lets an edit reach an already-running notifier; the steady state is a string compare.
+    @Volatile private var channelsFor: Pair<String, AlertChannels.Ids>? = null
+
+    private fun channels(): AlertChannels.Ids {
+        val cfg = actuatorConfig()
+        val version = cfg.version()
+        channelsFor?.let { (cached, ids) -> if (cached == version) return ids }
+        return AlertChannels.ensure(app, cfg).also { channelsFor = version to it }
+    }
 
     // Throttle state: when the primary alarm last actuated (sound+buzz) and for which episode.
     @Volatile private var lastActuateMs = Long.MIN_VALUE
@@ -89,6 +104,7 @@ class AndroidAlarmNotifier(
         // A silenced (DEATH/snooze/dismiss) sub-alarm is cancelled precisely — presentation only.
         visible.threshold?.let { post(ID_THRESHOLD, "glucose", it, !actuate) } ?: nm.cancel("glucose", ID_THRESHOLD)
         visible.signalLoss?.let { post(ID_LOSS, "signal", it, !actuate) } ?: nm.cancel("signal", ID_LOSS)
+        visible.weakSignal?.let { post(ID_WEAK, "weaksignal", it, !actuate) } ?: nm.cancel("weaksignal", ID_WEAK)
         visible.overTemperature?.let { post(ID_OVERTEMP, "device", it, !actuate) } ?: nm.cancel("device", ID_OVERTEMP)
         if (actuate) {
             presentable?.let { vibrate(it) }
@@ -110,6 +126,7 @@ class AndroidAlarmNotifier(
     override fun clear() {
         nm.cancel("glucose", ID_THRESHOLD)
         nm.cancel("signal", ID_LOSS)
+        nm.cancel("weaksignal", ID_WEAK)
         nm.cancel("device", ID_OVERTEMP)
         lastEpisodeKey = null
     }
@@ -118,6 +135,7 @@ class AndroidAlarmNotifier(
     private fun episodeKey(alarm: ActiveAlarm): String = when (alarm) {
         is ThresholdBreach -> "t:${alarm.band}:${alarm.severity}"
         is SignalLoss -> "s:${alarm.severity}"
+        is WeakSignal -> "w:${alarm.severity}"
         is OverTemperature -> "d:${alarm.severity}"
     }
 
@@ -127,8 +145,8 @@ class AndroidAlarmNotifier(
         // Over-temp rides its own device channels (never DND-bypass); glucose/signal share the two
         // glucose-tier channels.
         val channel = when (alarm) {
-            is OverTemperature -> if (critical) channels.deviceCritical else channels.device
-            else -> if (critical) channels.critical else channels.warning
+            is OverTemperature -> channels().let { if (critical) it.deviceCritical else it.device }
+            else -> channels().let { if (critical) it.critical else it.warning }
         }
         val builder = Notification.Builder(app, channel)
             .setContentTitle(titleOf(alarm))
@@ -173,10 +191,11 @@ class AndroidAlarmNotifier(
     }
 
     private fun vibrate(alarm: ActiveAlarm) {
+        val cfg = actuatorConfig()
         val preset = if (alarm.severity == AlarmSeverity.CRITICAL) {
-            actuatorConfig.criticalVibration
+            cfg.criticalVibration
         } else {
-            actuatorConfig.warningVibration
+            cfg.warningVibration
         }
         vibrations.buzz(preset)
     }
@@ -189,13 +208,15 @@ class AndroidAlarmNotifier(
             AlertBand.URGENT_HIGH -> "Urgent high glucose"
             AlertBand.IN_RANGE -> "Glucose in range"
         }
-        is SignalLoss -> "Sensor signal lost"
-        is OverTemperature -> "Device temperature high"
+        is SignalLoss -> "Signal lost"
+        is WeakSignal -> "Weak signal"
+        is OverTemperature -> "Device too hot"
     }
 
     private companion object {
         const val ID_THRESHOLD = 4101
         const val ID_LOSS = 4102
         const val ID_OVERTEMP = 4103
+        const val ID_WEAK = 4104
     }
 }

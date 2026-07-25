@@ -25,8 +25,6 @@ object LauncherIconManager {
         ThemeIds.TRON to "$NS.LauncherTron",
         ThemeIds.UMBRELLA to "$NS.LauncherUmbrella",
         ThemeIds.HELLO_KITTY to "$NS.LauncherKitty",
-        ThemeIds.WINDOWS_XP to "$NS.LauncherXp",
-        ThemeIds.TETO to "$NS.LauncherTeto",
     )
 
     /** A custom theme borrows the Tron launcher geometry (matches [iconStyleForTheme]). */
@@ -65,5 +63,48 @@ object LauncherIconManager {
                 )
             }
         }.onFailure { Timber.w(it, "launcher-icon swap to %s failed", wanted) }
+    }
+
+    /**
+     * Guarantee the package still owns a LAUNCHER entry, and re-enable the default one when it does not.
+     *
+     * The per-component state [apply] writes is not a manifest fact: PackageManager persists it per user
+     * in `package-restrictions.xml`, where it SURVIVES a reinstall and OVERRIDES `android:enabled`. So a
+     * build that retires the alias a device happened to be sitting on (the Windows XP and Teto themes
+     * were removed with theirs) leaves that alias unresolvable while the survivors keep an explicit
+     * DISABLED override — zero components match `category.LAUNCHER`, and since [MainActivity] carries no
+     * LAUNCHER filter of its own the app drops off the home screen and out of the drawer entirely, with
+     * only `am start` left to reach it. Called from [T1dmApplication.onCreate], which every wake-up path
+     * runs through (Activity, BOOT_COMPLETED, a widget broadcast, the CgmWatchdog job), precisely because
+     * recovery must not presuppose the user can still launch the app.
+     *
+     * Idempotent, and one binder round-trip on the settled path. DEFAULT on the Tron alias means the
+     * manifest's `android:enabled="true"` is in force (a fresh install, or a state we reset); the others
+     * ship disabled, so for them only an explicit ENABLED counts.
+     */
+    fun ensureLauncherEntry(context: Context) {
+        val pm = context.packageManager
+        val pkg = context.packageName
+        val fallback = ComponentName(pkg, aliasForTheme.getValue(ThemeIds.TRON))
+        runCatching {
+            val tron = pm.getComponentEnabledSetting(fallback)
+            if (tron == PackageManager.COMPONENT_ENABLED_STATE_DEFAULT ||
+                tron == PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+            ) {
+                return@runCatching
+            }
+            val anyEnabled = aliasForTheme.values.any { alias ->
+                pm.getComponentEnabledSetting(ComponentName(pkg, alias)) ==
+                    PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+            }
+            if (!anyEnabled) {
+                Timber.w("no launcher alias enabled — restoring %s", fallback.className)
+                pm.setComponentEnabledSetting(
+                    fallback,
+                    PackageManager.COMPONENT_ENABLED_STATE_ENABLED,
+                    PackageManager.DONT_KILL_APP,
+                )
+            }
+        }.onFailure { Timber.w(it, "launcher-entry recovery failed") }
     }
 }

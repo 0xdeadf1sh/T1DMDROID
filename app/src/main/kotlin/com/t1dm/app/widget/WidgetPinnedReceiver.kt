@@ -12,6 +12,6 @@ import android.widget.Toast
  */
 class WidgetPinnedReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        Toast.makeText(context, "Widget added to your home screen", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, "Widget added", Toast.LENGTH_SHORT).show()
     }
 }

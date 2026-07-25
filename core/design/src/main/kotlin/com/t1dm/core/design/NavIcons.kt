@@ -19,21 +19,17 @@ import androidx.compose.ui.unit.dp
  *    caps/joins, giving heavy, stamped, corporate marks.
  *  - **Hello Kitty** — rounded, soft, cute: the silhouette is *stroked* with a thicker line and fully
  *    rounded caps/joins, so every corner softens.
- *  - **Windows XP** — glossy Luna beveling: a medium *stroke* with rounded joins but clean butt caps.
- *  - **Teto Kasane** — chunky and brash: a heavy *stroke* with square caps and hard mitred corners.
  *
  * Fill-vs-stroke + sharp-vs-round is a real geometric transform of the same path, coherent across the
  * whole set, and legible small in both light and dark palettes (the [ImageVector] is drawn white and
  * tinted by the caller's `LocalContentColor`, so contrast is the theme's job).
  */
-enum class IconStyle { TRON, UMBRELLA, KITTY, XP, TETO }
+enum class IconStyle { TRON, UMBRELLA, KITTY }
 
 fun iconStyleForTheme(themeId: String?): IconStyle = when (themeId) {
     ThemeIds.UMBRELLA -> IconStyle.UMBRELLA
     ThemeIds.HELLO_KITTY -> IconStyle.KITTY
-    ThemeIds.WINDOWS_XP -> IconStyle.XP
-    ThemeIds.TETO -> IconStyle.TETO
-    else -> IconStyle.TRON // Tron default; a custom theme borrows the Tron geometry.
+    else -> IconStyle.TRON // Tron default; a custom (or retired) theme borrows the Tron geometry.
 }
 
 private data class Geo(
@@ -47,10 +43,6 @@ private fun geo(style: IconStyle): Geo = when (style) {
     IconStyle.TRON -> Geo(stroke = true, strokeWidth = 1.5f, cap = StrokeCap.Butt, join = StrokeJoin.Miter)
     IconStyle.UMBRELLA -> Geo(stroke = false, strokeWidth = 0f, cap = StrokeCap.Square, join = StrokeJoin.Miter)
     IconStyle.KITTY -> Geo(stroke = true, strokeWidth = 2.3f, cap = StrokeCap.Round, join = StrokeJoin.Round)
-    // Windows XP — glossy Luna beveling: a medium stroke, rounded joins, clean butt caps.
-    IconStyle.XP -> Geo(stroke = true, strokeWidth = 1.9f, cap = StrokeCap.Butt, join = StrokeJoin.Round)
-    // Teto Kasane — chunky, brash, stamped: a heavy stroke with square caps and hard mitred corners.
-    IconStyle.TETO -> Geo(stroke = true, strokeWidth = 2.8f, cap = StrokeCap.Square, join = StrokeJoin.Miter)
 }
 
 /** Build a 24dp icon from a closed silhouette, rendered fill-or-stroke per [style]. Every glyph is a
@@ -77,7 +69,7 @@ private fun glyph(name: String, style: IconStyle, body: PathBuilder.() -> Unit):
     }.build()
 }
 
-// ── The twelve destination silhouettes ───────────────────────────────────────────────────────────
+// ── The destination silhouettes ───────────────────────────────────────────────────────────────────
 
 private fun dashboard(s: IconStyle) = glyph("bg", s) { // a droplet
     moveTo(12f, 3f); curveTo(16f, 9f, 18f, 12f, 18f, 15f)

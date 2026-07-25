@@ -144,6 +144,31 @@ class QueueDrainerTest {
     }
 
     @Test
+    fun rowWithdrawnAfterTheBatchSnapshotIsNeverSent() = runTest {
+        // `dueBatch` snapshots the whole pass up front, so a tail row stays PENDING on disk for as
+        // long as the rows ahead of it take to send — the window in which an undo can withdraw it and
+        // report WITHDRAWN ("nothing about this event left the phone"). Claiming PENDING→INFLIGHT
+        // conditionally is what keeps that receipt honest.
+        val dao = FakeOutboxDao()
+        dao.enqueue(OutboxEntity(kind = OutboxKind.ALERT, dedupKey = "a", payload = envelope("/a"), createdAtMs = 10, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
+        val doseId = dao.enqueue(OutboxEntity(kind = OutboxKind.DOSE, dedupKey = "dose:x", payload = envelope("/v1/doses"), createdAtMs = 20, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
+        val http = object : NoopSyncHttpClient() {
+            val paths = mutableListOf<String>()
+            override suspend fun execute(request: SyncRequest): SyncResponse {
+                paths += request.path
+                dao.delete(doseId) // the undo lands while the row ahead is still on the wire
+                return ok()
+            }
+        }
+
+        val r = drainer(dao, http).drainOnce()
+
+        assertEquals(listOf("/a"), http.paths)
+        assertEquals(1, r.sent)
+        assertEquals(0, dao.count())
+    }
+
+    @Test
     fun dedupKeyRejectsDuplicateEnqueue() = runTest {
         val dao = FakeOutboxDao()
         val a = dao.enqueue(OutboxEntity(kind = OutboxKind.INGEST, dedupKey = "${INGEST_DEDUP_PREFIX}300000", payload = ByteArray(0), createdAtMs = 1, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))

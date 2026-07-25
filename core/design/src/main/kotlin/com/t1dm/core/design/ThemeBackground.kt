@@ -22,17 +22,12 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.lerp
-import kotlin.math.PI
-import kotlin.math.abs
-import kotlin.math.cos
-import kotlin.math.min
-import kotlin.math.sin
 
 /**
  * The per-theme full-screen BACKDROP (Phase 7D). Each theme paints its own signature motif behind the
- * whole app — the Windows flag, Kasane Teto, the Tron light-grid, the Umbrella mark, the Hello Kitty
- * face — all in pure Compose Canvas (no raster assets), so each tints and scales with the theme exactly
- * like the rest of the app's iconography ([WatchArt], [NavIcons]).
+ * whole app — the Tron light-grid, the Umbrella mark, the Hello Kitty face — all in pure Compose Canvas
+ * (no raster assets), so each tints and scales with the theme exactly like the rest of the app's
+ * iconography ([WatchArt], [NavIcons]).
  *
  * [ThemeBackdrop] draws it at a user-set opacity (Settings -> Display -> Background), so it reads as a
  * faint wash by default and can be dialled to 0 (off) or all the way up. The painters themselves paint
@@ -43,8 +38,8 @@ fun ThemeBackdrop(alphaPct: Int, modifier: Modifier = Modifier) {
     if (alphaPct <= 0) return
     val palette = LocalT1dmSemantics.current
     val a = (alphaPct / 100f).coerceIn(0f, 1f)
-    // Drop-in override: if a raster `@drawable/theme_bg_<themeId>` (e.g. theme_bg_teto.png,
-    // theme_bg_windows_xp.png) has been placed in the app, use it as the backdrop, scaled to fill;
+    // Drop-in override: if a raster `@drawable/theme_bg_<themeId>` (e.g. theme_bg_umbrella.png,
+    // theme_bg_hello_kitty.png) has been placed in the app, use it as the backdrop, scaled to fill;
     // otherwise fall back to the pure-Canvas painter below. This lets the user supply their own
     // per-theme wallpaper/logo without touching code — it is drawn at the same user-set opacity.
     val ctx = LocalContext.current
@@ -77,8 +72,6 @@ fun DrawScope.drawThemeBackground(p: T1dmPalette) {
         ThemeIds.TRON -> drawTronBackground(p)
         ThemeIds.UMBRELLA -> drawUmbrellaBackground(p)
         ThemeIds.HELLO_KITTY -> drawHelloKittyBackground(p)
-        ThemeIds.WINDOWS_XP -> drawWindowsXpBackground(p)
-        ThemeIds.TETO -> drawTetoBackground(p)
         else -> drawRect(p.background)
     }
 }
@@ -364,220 +357,4 @@ private fun DrawScope.drawHelloKittyBackground(p: T1dmPalette) {
     }
     drawCircle(lerp(bow, Color.Black, 0.12f), radius = rF * 0.11f, center = Offset(bx, by))
     drawCircle(lerp(bow, Color.White, 0.30f).copy(alpha = 0.7f), radius = rF * 0.11f, center = Offset(bx, by), style = Stroke(width = w * 0.005f))
-}
-
-private fun DrawScope.drawWindowsXpBackground(p: T1dmPalette) {
-    val w = size.width
-    val h = size.height
-
-    // Opaque base so the caller's global alpha has something solid beneath it.
-    drawRect(p.background, size = Size(w, h))
-
-    // A gentle Luna sky: pale near-white above, a soft Bliss blue swelling toward the horizon.
-    drawRect(
-        Brush.verticalGradient(
-            0f to p.background,
-            0.42f to lerp(p.background, Color(0xFF6FA8DC), 0.34f),
-            1f to lerp(p.background, Color(0xFF3B7BC8), 0.52f),
-            startY = 0f, endY = h,
-        ),
-        size = Size(w, h),
-    )
-
-    // Two soft clouds drifting the upper sky.
-    val cloud = Color.White.copy(alpha = 0.55f)
-    run {
-        val cx = w * 0.24f; val cy = h * 0.15f; val r = w * 0.05f
-        drawCircle(cloud, r * 0.9f, Offset(cx, cy))
-        drawCircle(cloud, r * 1.3f, Offset(cx + r * 1.1f, cy + r * 0.15f))
-        drawCircle(cloud, r * 0.85f, Offset(cx + r * 2.2f, cy))
-    }
-    run {
-        val cx = w * 0.79f; val cy = h * 0.10f; val r = w * 0.038f
-        drawCircle(cloud, r * 0.85f, Offset(cx, cy))
-        drawCircle(cloud, r * 1.2f, Offset(cx + r * 1.0f, cy + r * 0.12f))
-        drawCircle(cloud, r * 0.8f, Offset(cx + r * 2.0f, cy))
-    }
-
-    // The iconic Bliss hill silhouette along the foot — one smooth grassy crest.
-    val hill = Path().apply {
-        moveTo(0f, h * 0.86f)
-        cubicTo(w * 0.28f, h * 0.74f, w * 0.62f, h * 0.83f, w, h * 0.78f)
-        lineTo(w, h); lineTo(0f, h); close()
-    }
-    drawPath(
-        hill,
-        Brush.verticalGradient(
-            0f to lerp(p.inRange, Color(0xFF7CB342), 0.6f).copy(alpha = 0.55f),
-            1f to lerp(p.inRange, Color(0xFF33691E), 0.7f).copy(alpha = 0.6f),
-            startY = h * 0.72f, endY = h,
-        ),
-    )
-
-    // ── The waving four-pane Windows flag, centred and large ─────────────────────────────────────
-    val cx = w / 2f
-    val cy = h * 0.44f
-    val s = kotlin.math.min(w, h) * 0.34f
-    fun fx(x: Float): Float = cx + (x - 54f) / 28f * s
-    fun fy(y: Float): Float = cy + (y - 55f) / 28f * s
-
-    // A soft glossy glow cradling the flag.
-    drawCircle(
-        Brush.radialGradient(
-            0f to Color.White.copy(alpha = 0.30f),
-            1f to Color.White.copy(alpha = 0f),
-            center = Offset(cx, cy), radius = s * 1.5f,
-        ),
-        radius = s * 1.5f, center = Offset(cx, cy),
-    )
-
-    fun pane(fill: Color, build: Path.() -> Unit) {
-        val path = Path().apply(build)
-        drawPath(path, fill.copy(alpha = 0.92f))
-        drawPath(path, Color.White.copy(alpha = 0.22f), style = Stroke(width = s * 0.02f, join = StrokeJoin.Round))
-    }
-
-    pane(Color(0xFFE8402A)) { // red — top-left
-        moveTo(fx(27f), fy(35f))
-        cubicTo(fx(34f), fy(32f), fx(41f), fy(32f), fx(50f), fy(34f))
-        lineTo(fx(51f), fy(53f))
-        cubicTo(fx(42f), fy(51f), fx(35f), fy(51f), fx(28f), fy(54f))
-        close()
-    }
-    pane(Color(0xFF7CB518)) { // green — top-right
-        moveTo(fx(55f), fy(34f))
-        cubicTo(fx(63f), fy(32f), fx(71f), fy(31f), fx(80f), fy(32f))
-        lineTo(fx(81f), fy(51f))
-        cubicTo(fx(72f), fy(50f), fx(64f), fy(51f), fx(56f), fy(53f))
-        close()
-    }
-    pane(Color(0xFF1287D8)) { // blue — bottom-left
-        moveTo(fx(28f), fy(58f))
-        cubicTo(fx(35f), fy(55f), fx(42f), fy(55f), fx(51f), fy(57f))
-        lineTo(fx(52f), fy(76f))
-        cubicTo(fx(43f), fy(74f), fx(36f), fy(74f), fx(29f), fy(77f))
-        close()
-    }
-    pane(Color(0xFFFCB915)) { // yellow — bottom-right
-        moveTo(fx(56f), fy(57f))
-        cubicTo(fx(64f), fy(55f), fx(72f), fy(54f), fx(81f), fy(55f))
-        lineTo(fx(82f), fy(74f))
-        cubicTo(fx(73f), fy(73f), fx(65f), fy(74f), fx(57f), fy(76f))
-        close()
-    }
-}
-
-private fun DrawScope.drawTetoBackground(p: T1dmPalette) {
-    val w = size.width
-    val h = size.height
-
-    // Opaque base so the backdrop stays solid beneath the caller's alpha layer.
-    drawRect(p.background)
-
-    // A warm, near-black vertical wash — a crimson breath up top, a deeper foot below.
-    drawRect(
-        Brush.verticalGradient(
-            0f to lerp(p.background, p.primary, 0.12f),
-            0.4f to p.background,
-            1f to lerp(p.background, Color.Black, 0.4f),
-        ),
-    )
-    // A soft votive glow cradling the face.
-    drawCircle(
-        Brush.radialGradient(
-            colors = listOf(p.primary.copy(alpha = 0.16f), p.primary.copy(alpha = 0f)),
-            center = Offset(w * 0.5f, h * 0.34f),
-            radius = w * 0.62f,
-        ),
-        radius = w * 0.62f,
-        center = Offset(w * 0.5f, h * 0.34f),
-    )
-
-    // The crimson key: a lit pink crest, a mid scarlet body, a black-sunk groove.
-    val deepRed = lerp(p.primary, Color.Black, 0.55f)
-    val midRed = p.primary
-    val litRed = lerp(p.primary, Color(0xFFFF9FB2), 0.55f)
-    val rim = lerp(p.secondary, Color.White, 0.35f)
-    val faceTone = lerp(p.background, p.ink, 0.10f)
-
-    val crimsonV = Brush.verticalGradient(
-        colors = listOf(litRed, midRed, deepRed),
-        startY = h * 0.02f, endY = h * 0.9f,
-    )
-
-    // The hair crown — a crimson mass arcing across the top, parting at the centre.
-    val crown = Path().apply {
-        moveTo(w * 0.15f, h * 0.36f)
-        cubicTo(w * 0.10f, h * 0.09f, w * 0.32f, h * 0.01f, w * 0.5f, h * 0.02f)
-        cubicTo(w * 0.68f, h * 0.01f, w * 0.90f, h * 0.09f, w * 0.85f, h * 0.36f)
-        cubicTo(w * 0.74f, h * 0.19f, w * 0.62f, h * 0.17f, w * 0.5f, h * 0.19f)
-        cubicTo(w * 0.38f, h * 0.17f, w * 0.26f, h * 0.19f, w * 0.15f, h * 0.36f)
-        close()
-    }
-    drawPath(crown, crimsonV)
-
-    // The suggested face between the curls.
-    drawOval(
-        faceTone,
-        topLeft = Offset(w * 0.5f - w * 0.135f, h * 0.20f),
-        size = Size(w * 0.27f, h * 0.23f),
-    )
-
-    // The bangs — a fringe with a soft centre part over the brow.
-    val bangs = Path().apply {
-        moveTo(w * 0.35f, h * 0.31f)
-        cubicTo(w * 0.35f, h * 0.15f, w * 0.44f, h * 0.11f, w * 0.5f, h * 0.11f)
-        cubicTo(w * 0.56f, h * 0.11f, w * 0.65f, h * 0.15f, w * 0.65f, h * 0.31f)
-        cubicTo(w * 0.59f, h * 0.22f, w * 0.55f, h * 0.22f, w * 0.5f, h * 0.26f)
-        cubicTo(w * 0.45f, h * 0.22f, w * 0.41f, h * 0.22f, w * 0.35f, h * 0.31f)
-        close()
-    }
-    drawPath(bangs, crimsonV)
-
-    // Two eye glints — a warm halo under a bright core.
-    for (side in intArrayOf(-1, 1)) {
-        val ex = w * 0.5f + side * w * 0.062f
-        val ey = h * 0.305f
-        drawCircle(p.primary.copy(alpha = 0.35f), radius = w * 0.022f, center = Offset(ex, ey))
-        drawOval(
-            lerp(p.secondary, Color.White, 0.25f),
-            topLeft = Offset(ex - w * 0.013f, ey - h * 0.017f),
-            size = Size(w * 0.026f, h * 0.034f),
-        )
-    }
-
-    // The twin drill-curls, coiling down each flank as a stack of shaded, tapering spheres.
-    for (side in intArrayOf(-1, 1)) {
-        val coils = 8
-        for (i in 0 until coils) {
-            val t = i / (coils - 1f)
-            val cy = h * (0.15f + 0.74f * t)
-            val rad = w * (0.16f - 0.118f * t)
-            val drift = sin(t.toDouble() * PI * 2.2).toFloat() * w * 0.045f * (1f - 0.5f * t)
-            val cx = w * 0.5f + side * (w * 0.31f + drift)
-            drawOval(
-                Brush.radialGradient(
-                    colors = listOf(litRed, midRed, deepRed),
-                    center = Offset(cx - rad * 0.35f, cy - rad * 0.42f),
-                    radius = rad * 1.7f,
-                ),
-                topLeft = Offset(cx - rad, cy - rad * 0.9f),
-                size = Size(rad * 2f, rad * 1.8f),
-            )
-            drawArc(
-                deepRed.copy(alpha = 0.55f),
-                20f, 140f, false,
-                topLeft = Offset(cx - rad * 0.96f, cy - rad * 0.8f),
-                size = Size(rad * 1.92f, rad * 1.7f),
-                style = Stroke(width = rad * 0.14f, cap = StrokeCap.Round),
-            )
-            drawArc(
-                rim.copy(alpha = 0.3f),
-                190f, 120f, false,
-                topLeft = Offset(cx - rad * 0.9f, cy - rad * 0.85f),
-                size = Size(rad * 1.8f, rad * 1.7f),
-                style = Stroke(width = rad * 0.09f, cap = StrokeCap.Round),
-            )
-        }
-    }
 }

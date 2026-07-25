@@ -148,6 +148,31 @@ class MigrationTest {
         )
     }
 
+    @Test
+    fun migrate7To8_paintStrokeTableMatchesSchema() {
+        // v8 (graph annotation layer): one additive table + its two time-bound indices, nothing else
+        // touched — the drawings the user paints over the BG panel.
+        helper.createDatabase(7).close()
+        helper.runMigrationsAndValidate(8, listOf(MigrationRunner.MIGRATION_7_8))
+    }
+
+    @Test
+    fun migrate1To8_fullChain() {
+        helper.createDatabase(1).close()
+        helper.runMigrationsAndValidate(
+            8,
+            listOf(
+                MigrationRunner.MIGRATION_1_2,
+                MigrationRunner.MIGRATION_2_3,
+                MigrationRunner.MIGRATION_3_4,
+                MigrationRunner.MIGRATION_4_5,
+                MigrationRunner.MIGRATION_5_6,
+                MigrationRunner.MIGRATION_6_7,
+                MigrationRunner.MIGRATION_7_8,
+            ),
+        )
+    }
+
     private companion object {
         const val TEST_DB = "migration-test.db"
     }

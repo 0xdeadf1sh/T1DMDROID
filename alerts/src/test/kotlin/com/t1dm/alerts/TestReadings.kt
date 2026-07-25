@@ -16,6 +16,7 @@ internal fun reading(
     flag: ReadingFlag = ReadingFlag.NORMAL,
     trendTenthsPerMin: Int? = 0,
     tsMs: Long = (rxWallMs / 300_000L) * 300_000L,
+    rssi: Int? = -60,
 ): CgmReading = CgmReading(
     sourceId = CgmSourceId("aidexx:test"),
     tsMs = tsMs,
@@ -27,7 +28,7 @@ internal fun reading(
     flag = flag,
     tzOffsetMin = 0,
     rxWallMs = rxWallMs,
-    rssi = -60,
+    rssi = rssi,
 )
 
 /** Records the sink calls the [AlarmController] makes, for deterministic wiring assertions. */

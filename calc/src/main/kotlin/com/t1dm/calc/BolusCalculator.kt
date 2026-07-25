@@ -33,12 +33,15 @@ class BolusCalculator(
         rollStartMs: Long,
         announced: List<CurveEvent>,
         config: CalcConfig,
+        /** Pinned by the [DoseAdvisor] so every candidate of one search is rolled through the SAME BG
+         *  input filter; null leaves the port to resolve its own per roll. */
+        smoothingWindow: Int? = null,
     ): SearchResult {
         val validated = config.horizon.validatedSteps
         val full = config.horizon.fullRollSteps
 
         val baseline = port.roll(
-            ForecastRequest(rollStartMs, full, validated, announced, candidate = null, candidateU = 0.0),
+            ForecastRequest(rollStartMs, full, validated, announced, candidate = null, candidateU = 0.0, smoothingWindow = smoothingWindow),
         )
 
         val ranked = ArrayList<Candidate>()
@@ -48,7 +51,9 @@ class BolusCalculator(
                 baseline
             } else {
                 val events = resolver.resolve(doseU, rollStartMs)
-                port.roll(ForecastRequest(rollStartMs, full, validated, announced, candidate = events, candidateU = doseU))
+                port.roll(
+                    ForecastRequest(rollStartMs, full, validated, announced, candidate = events, candidateU = doseU, smoothingWindow = smoothingWindow),
+                )
             }
             ranked.add(Candidate(doseU = doseU, score = Scoring.scoreFan(fan, config), fan = fan))
         }

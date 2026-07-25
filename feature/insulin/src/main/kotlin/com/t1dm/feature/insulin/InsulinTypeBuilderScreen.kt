@@ -3,6 +3,7 @@ package com.t1dm.feature.insulin
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -17,6 +18,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -26,6 +28,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.t1dm.core.design.ConfirmLogDialog
+import com.t1dm.core.design.HapticEvent
+import com.t1dm.core.design.PendingLog
+import com.t1dm.core.design.rememberT1dmHaptics
+import com.t1dm.core.design.verticalScrollbar
 import com.t1dm.core.model.InsulinKind
 import com.t1dm.core.model.InsulinType
 import com.t1dm.core.model.BezierCurve
@@ -53,16 +60,21 @@ fun InsulinTypeBuilderScreen(
     val selected = types.firstOrNull { it.id == selectedId } ?: types.firstOrNull()
     var unitsText by remember { mutableStateOf("") }
     val units = unitsText.toDoubleOrNull()
+    val scroll = rememberScrollState()
+    // Which (type, units) pair the Log press proposes — the button is rendered per selected type, so
+    // the confirmation has to carry the type with it rather than re-read the selection.
+    var pending by remember { mutableStateOf<Pair<InsulinType, PendingLog.Dose>?>(null) }
+    val haptics = rememberT1dmHaptics()
 
     Column(
-        Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp),
+        Modifier.fillMaxSize().verticalScrollbar(scroll).verticalScroll(scroll).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             types.forEach { t ->
                 FilterChip(
                     selected = selected?.id == t.id,
-                    onClick = { selectedId = t.id },
+                    onClick = { haptics.perform(HapticEvent.SegmentTick); selectedId = t.id },
                     label = { Text(if (t.builtin) t.name else "${t.name}*") },
                 )
             }
@@ -89,15 +101,31 @@ fun InsulinTypeBuilderScreen(
                     value = runCatching { onResolve(type, units) }.getOrDefault(emptyList())
                 }
                 CurvePreview(values = curve)
-                Button(onClick = { onLogDose(type, units); unitsText = "" }) { Text("Log dose") }
+                // Propose only; the dialog and the receipt carry the rest of the beat.
+                Button(
+                    onClick = {
+                        haptics.perform(HapticEvent.Tap)
+                        pending = type to PendingLog.Dose(units, type.kind, type.name)
+                    },
+                ) { Text("Log dose") }
             }
             if (!type.builtin) {
-                TextButton(onClick = { onDeleteType(type.id) }) { Text("Delete this type") }
+                TextButton(
+                    onClick = { haptics.perform(HapticEvent.Reject); onDeleteType(type.id) },
+                ) { Text("Delete type") }
             }
         }
 
         HorizontalDivider()
         CustomTypeBuilder(onSaveType)
+    }
+
+    pending?.let { (type, p) ->
+        ConfirmLogDialog(
+            pending = p,
+            onConfirm = { onLogDose(type, p.units); unitsText = ""; pending = null },
+            onDismiss = { pending = null },
+        )
     }
 }
 
@@ -110,6 +138,7 @@ private fun CustomTypeBuilder(onSaveType: (InsulinType) -> Unit) {
     var p2Text by remember { mutableStateOf("") } // theta (bolus) or ke (basal)
     var drawCurve by remember { mutableStateOf(false) }
     var curve by remember { mutableStateOf(BezierCurve.default(300.0)) }
+    val haptics = rememberT1dmHaptics()
 
     Text("Add a custom insulin type", style = MaterialTheme.typography.titleMedium)
     OutlinedTextField(
@@ -117,8 +146,16 @@ private fun CustomTypeBuilder(onSaveType: (InsulinType) -> Unit) {
         singleLine = true, modifier = Modifier.fillMaxWidth(),
     )
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        FilterChip(selected = kind == InsulinKind.BOLUS, onClick = { kind = InsulinKind.BOLUS }, label = { Text("Bolus (gamma)") })
-        FilterChip(selected = kind == InsulinKind.BASAL, onClick = { kind = InsulinKind.BASAL }, label = { Text("Basal (Bateman)") })
+        FilterChip(
+            selected = kind == InsulinKind.BOLUS,
+            onClick = { haptics.perform(HapticEvent.SegmentTick); kind = InsulinKind.BOLUS },
+            label = { Text("Bolus (gamma)") },
+        )
+        FilterChip(
+            selected = kind == InsulinKind.BASAL,
+            onClick = { haptics.perform(HapticEvent.SegmentTick); kind = InsulinKind.BASAL },
+            label = { Text("Basal (Bateman)") },
+        )
     }
     OutlinedTextField(
         value = durText,
@@ -128,7 +165,7 @@ private fun CustomTypeBuilder(onSaveType: (InsulinType) -> Unit) {
         singleLine = true, modifier = Modifier.fillMaxWidth(),
     )
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Switch(checked = drawCurve, onCheckedChange = { drawCurve = it })
+        Switch(checked = drawCurve, onCheckedChange = { on -> haptics.toggled(on); drawCurve = on })
         Text(
             "Draw a custom action curve (overrides parameters)",
             style = MaterialTheme.typography.bodySmall,
@@ -136,12 +173,15 @@ private fun CustomTypeBuilder(onSaveType: (InsulinType) -> Unit) {
         )
     }
     val curveDegenerate = drawCurve && curve.isDegenerate()
+    // Felt at the drag that flattens the curve, not at the dead Save button noticed afterwards.
+    LaunchedEffect(curveDegenerate) {
+        if (curveDegenerate) haptics.perform(HapticEvent.Warn)
+    }
     if (drawCurve) {
         CurveEditor(curve = curve, onChange = { curve = it }, resetKey = durText)
         if (curveDegenerate) {
             Text(
-                "The custom action curve is flat — it would encode no insulin. Draw a hump, or turn the " +
-                    "custom curve off to use the PK parameters.",
+                "Flat curve encodes no insulin — draw a hump or turn it off",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.error,
             )
@@ -166,7 +206,11 @@ private fun CustomTypeBuilder(onSaveType: (InsulinType) -> Unit) {
     }
     Button(
         onClick = {
-            val dur = durText.toDoubleOrNull() ?: return@Button
+            val dur = durText.toDoubleOrNull() ?: run {
+                haptics.perform(HapticEvent.Reject)
+                return@Button
+            }
+            haptics.perform(HapticEvent.Confirm)
             val p1 = p1Text.toDoubleOrNull()
             val p2 = p2Text.toDoubleOrNull()
             val type = InsulinType(

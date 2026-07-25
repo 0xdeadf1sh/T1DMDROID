@@ -47,7 +47,9 @@ import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
 import coil3.request.crossfade
+import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.LocalAnimationsEnabled
+import com.t1dm.core.design.rememberT1dmHaptics
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -70,6 +72,7 @@ fun PubsScreen(repository: PubsRepository) {
     var error by remember { mutableStateOf<String?>(null) }
     var refreshing by remember { mutableStateOf(false) }
     var job by remember { mutableStateOf<Job?>(null) }
+    val haptics = rememberT1dmHaptics()
 
     fun load(userInitiated: Boolean) {
         if (userInitiated) refreshing = true
@@ -91,10 +94,15 @@ fun PubsScreen(repository: PubsRepository) {
 
     LaunchedEffect(Unit) { load(userInitiated = false) }
 
+    // A pull-to-refresh has no button to press, so the release-into-refresh is the only place the
+    // gesture can be acknowledged; the outcome is announced separately when the error lands, because
+    // a network failure arrives seconds later with nothing on screen having visibly moved.
+    LaunchedEffect(error) { if (error != null) haptics.perform(HapticEvent.Warn) }
+
     val pullState = rememberPullToRefreshState()
     PullToRefreshBox(
         isRefreshing = refreshing,
-        onRefresh = { load(userInitiated = true) },
+        onRefresh = { haptics.perform(HapticEvent.DragEnd); load(userInitiated = true) },
         state = pullState,
         modifier = Modifier.fillMaxSize(),
     ) {
@@ -102,7 +110,7 @@ fun PubsScreen(repository: PubsRepository) {
         when {
             current != null && current.isEmpty() && error == null -> CenteredMessage {
                 Text(
-                    "No posts yet — check back soon.",
+                    "No posts yet",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center,
@@ -117,7 +125,9 @@ fun PubsScreen(repository: PubsRepository) {
                     textAlign = TextAlign.Center,
                 )
                 Spacer(Modifier.height(16.dp))
-                Button(onClick = { load(userInitiated = true) }) { Text("Try again") }
+                Button(
+                    onClick = { haptics.perform(HapticEvent.Tap); load(userInitiated = true) },
+                ) { Text("Try again") }
             }
             else -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
@@ -143,8 +153,11 @@ private fun Feed(posts: List<PubPost>, refreshError: String?, onRetry: () -> Uni
 @Composable
 private fun PostCard(post: PubPost) {
     val context = LocalContext.current
+    val haptics = rememberT1dmHaptics()
     Card(
-        onClick = { openUrl(context, post.postUrl) },
+        // NavSwitch, not Tap: the press leaves T1DM entirely for the browser, and a departure ought
+        // to feel like the destination changes it shares a vocabulary with.
+        onClick = { haptics.perform(HapticEvent.NavSwitch); openUrl(context, post.postUrl) },
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         modifier = Modifier.fillMaxWidth(),
     ) {
@@ -210,8 +223,9 @@ private fun AuthorRow(post: PubPost) {
 @Composable
 private fun LinkCard(link: PubLink) {
     val context = LocalContext.current
+    val haptics = rememberT1dmHaptics()
     Surface(
-        onClick = { openUrl(context, link.uri) },
+        onClick = { haptics.perform(HapticEvent.NavSwitch); openUrl(context, link.uri) },
         shape = MaterialTheme.shapes.medium,
         color = MaterialTheme.colorScheme.surfaceVariant,
         modifier = Modifier.fillMaxWidth(),
@@ -310,8 +324,9 @@ private fun CountsRow(post: PubPost) {
 
 @Composable
 private fun RefreshErrorBanner(message: String, onRetry: () -> Unit) {
+    val haptics = rememberT1dmHaptics()
     Surface(
-        onClick = onRetry,
+        onClick = { haptics.perform(HapticEvent.Tap); onRetry() },
         shape = MaterialTheme.shapes.medium,
         color = MaterialTheme.colorScheme.errorContainer,
         modifier = Modifier.fillMaxWidth(),
@@ -366,7 +381,7 @@ private fun openUrl(context: Context, url: String) {
 
 private fun friendlyError(t: Throwable): String =
     t.message?.takeIf { it.isNotBlank() }
-        ?: "Couldn't load the feed. Check your connection and pull down to try again."
+        ?: "Couldn't load the feed"
 
 private fun plural(n: Int, one: String, many: String): String = "$n ${if (n == 1) one else many}"
 

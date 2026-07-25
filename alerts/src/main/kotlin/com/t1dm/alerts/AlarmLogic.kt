@@ -40,24 +40,28 @@ internal fun isLowOrFalling(reading: CgmReading, config: AlarmConfig): Boolean {
 /** Plain-language threshold message; wording matches [AlertThresholds.bandFor]'s boundary semantics
  *  (low bands are strict `<`, high bands are `>=`). */
 internal fun thresholdMessage(band: AlertBand, bgMgdl: Int, t: AlertThresholds): String = when (band) {
-    AlertBand.URGENT_LOW -> "Urgent low: $bgMgdl mg/dL (below ${t.urgentLowMgdl}). Treat now."
-    AlertBand.LOW -> "Low: $bgMgdl mg/dL (below ${t.lowMgdl})."
-    AlertBand.HIGH -> "High: $bgMgdl mg/dL (at or above ${t.highMgdl})."
-    AlertBand.URGENT_HIGH -> "Urgent high: $bgMgdl mg/dL (at or above ${t.urgentHighMgdl})."
-    AlertBand.IN_RANGE -> "In range: $bgMgdl mg/dL."
+    AlertBand.URGENT_LOW -> "$bgMgdl mg/dL, below ${t.urgentLowMgdl}"
+    AlertBand.LOW -> "$bgMgdl mg/dL, below ${t.lowMgdl}"
+    AlertBand.HIGH -> "$bgMgdl mg/dL, at/above ${t.highMgdl}"
+    AlertBand.URGENT_HIGH -> "$bgMgdl mg/dL, at/above ${t.urgentHighMgdl}"
+    AlertBand.IN_RANGE -> "$bgMgdl mg/dL"
 }
 
 /** Plain-language over-temperature message; states the reading and the cool-below hysteresis point,
  *  since that (not the fire threshold) is what the user must reach to resume forecasting. */
 internal fun overTempMessage(tempC: Double, clearC: Double): String =
-    "Device too hot: %.1f°C — forecasting paused until it cools below %.0f°C.".format(tempC, clearC)
+    "%.1f°C, paused until below %.0f°C".format(tempC, clearC)
+
+/** Plain-language weak-signal message: the measured RSSI vs the threshold, and what it risks. */
+internal fun weakSignalMessage(rssiDbm: Int, thresholdDbm: Int): String =
+    "$rssiDbm dBm (≤ $thresholdDbm) — readings may drop"
 
 /** Plain-language loss-of-signal message stating the window that lapsed and the last known value. */
 internal fun signalLossMessage(windowMin: Int, escalated: Boolean, lastBgMgdl: Int?): String {
-    val last = lastBgMgdl?.let { " Last reading $it mg/dL." } ?: ""
+    val last = lastBgMgdl?.let { " Last $it mg/dL." } ?: ""
     return if (escalated) {
-        "Signal lost: no sensor reading for over $windowMin min — last reading was low or falling.$last Check the sensor."
+        "No reading for over $windowMin min — last was low/falling.$last"
     } else {
-        "Signal lost: no sensor reading for over $windowMin min.$last Check the sensor."
+        "No reading for over $windowMin min.$last"
     }
 }

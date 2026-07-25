@@ -25,6 +25,8 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.material3.MaterialTheme
+import com.t1dm.core.design.HapticEvent
+import com.t1dm.core.design.LocalT1dmHaptics
 import com.t1dm.core.model.BezierCurve
 import com.t1dm.core.model.BezierPoint
 import kotlin.math.hypot
@@ -53,6 +55,7 @@ fun CurveEditor(
 ) {
     val cs = MaterialTheme.colorScheme
     val density = LocalDensity.current
+    val haptics = LocalT1dmHaptics.current
     val padPx = with(density) { 14.dp.toPx() }
     val hitPx = with(density) { 22.dp.toPx() }
 
@@ -86,11 +89,18 @@ fun CurveEditor(
             .fillMaxWidth()
             .height(height)
             .onSizeChanged { sizePx = Offset(it.width.toFloat(), it.height.toFloat()) }
+            // Every branch here answers, because on a bare Canvas there is nothing else to tell the
+            // finger whether it hit a control point: a tap on empty space ADDS one (Tap), a long press
+            // on one REMOVES it (LongPress), and a long press that found nothing to remove — no point
+            // under the finger, or the last two, which the shape cannot lose — is refused (Reject)
+            // rather than swallowed. The drag itself is silent between its ends: a control point moves
+            // continuously with no detents to cross, so a tick per sample would be pure noise.
             .pointerInput(resetKey) {
                 detectTapGestures(
                     onTap = { pos ->
                         val w = sizePx.x; val h = sizePx.y
                         if (w > 0f && nearest(pos) < 0) {
+                            haptics.perform(HapticEvent.Tap)
                             pts.add(BezierPoint(toDomX(pos.x, w), toDomY(pos.y, h)))
                             pts.sortBy { it.xMin }
                             emit()
@@ -98,14 +108,30 @@ fun CurveEditor(
                     },
                     onLongPress = { pos ->
                         val i = nearest(pos)
-                        if (i >= 0 && pts.size > 2) { pts.removeAt(i); emit() }
+                        if (i >= 0 && pts.size > 2) {
+                            haptics.perform(HapticEvent.LongPress)
+                            pts.removeAt(i)
+                            emit()
+                        } else {
+                            haptics.perform(HapticEvent.Reject)
+                        }
                     },
                 )
             }
             .pointerInput(resetKey) {
                 detectDragGestures(
-                    onDragStart = { pos -> dragIdx = nearest(pos) },
-                    onDragEnd = { if (dragIdx >= 0) { pts.sortBy { it.xMin }; dragIdx = -1; emit() } },
+                    onDragStart = { pos ->
+                        dragIdx = nearest(pos)
+                        if (dragIdx >= 0) haptics.perform(HapticEvent.DragStart)
+                    },
+                    onDragEnd = {
+                        if (dragIdx >= 0) {
+                            haptics.perform(HapticEvent.DragEnd)
+                            pts.sortBy { it.xMin }
+                            dragIdx = -1
+                            emit()
+                        }
+                    },
                     onDragCancel = { dragIdx = -1 },
                     onDrag = { change, _ ->
                         val i = dragIdx

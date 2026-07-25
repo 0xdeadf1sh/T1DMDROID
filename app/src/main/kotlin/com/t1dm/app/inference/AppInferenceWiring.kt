@@ -26,8 +26,10 @@ private const val GRID_MS = 300_000L
  * Projects the active source's grid-aligned readings into the trailing per-5-min-step mg/dL series
  * the model conditions on. WARMUP/INVALID readings are excluded (§3.1 — suppressed from inference);
  * gaps within the covered window are carried forward. Returns `null` when fewer than `minSteps` real
- * readings exist (the "collecting context" state — the model needs ≥16 patches / 8 h). Carb/insulin
- * are the `normalize(0)` baseline downstream this phase; the real curve engine is Phase 4.
+ * readings exist (the "collecting context" state — the model needs ≥16 patches / 8 h). This provider
+ * supplies only the BG series; the carb-appearance / insulin-action context is supplied SEPARATELY by
+ * the `ContextChannelSource` / `FutureOverrideSource` wired to the real `ChannelBuilder` curve engine
+ * (see `AppContainer`), NOT a `normalize(0)` baseline.
  */
 class RoomBgHistoryProvider(
     private val repository: T1dmRepository,

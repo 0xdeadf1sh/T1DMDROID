@@ -68,7 +68,9 @@
         <!-- Per-theme launcher icons (issues 2/6). Exactly one alias is enabled at a time; the app
              swaps them at runtime (LauncherIconManager) when the theme changes, so the home-screen
              icon's GEOMETRY matches the active theme. Tron is the default-enabled entry. All three
-             target the single MainActivity. -->
+             target the single MainActivity. Deleting an alias here is NOT a manifest-only change: the
+             enabled state PackageManager persists for it outranks android:enabled and survives an
+             upgrade — see LauncherIconManager.ensureLauncherEntry. -->
         <activity-alias
             android:name=".LauncherTron"
             android:targetActivity=".MainActivity"
@@ -104,34 +106,6 @@
             android:enabled="false"
             android:icon="@mipmap/ic_launcher_kitty"
             android:roundIcon="@mipmap/ic_launcher_kitty"
-            android:label="@string/app_name">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity-alias>
-
-        <activity-alias
-            android:name=".LauncherXp"
-            android:targetActivity=".MainActivity"
-            android:exported="true"
-            android:enabled="false"
-            android:icon="@mipmap/ic_launcher_xp"
-            android:roundIcon="@mipmap/ic_launcher_xp"
-            android:label="@string/app_name">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity-alias>
-
-        <activity-alias
-            android:name=".LauncherTeto"
-            android:targetActivity=".MainActivity"
-            android:exported="true"
-            android:enabled="false"
-            android:icon="@mipmap/ic_launcher_teto"
-            android:roundIcon="@mipmap/ic_launcher_teto"
             android:label="@string/app_name">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -182,6 +156,10 @@
                 android:resource="@xml/file_paths" />
         </provider>
 
+        <!-- Deliberately NOT directBootAware: AppContainer opens credential-encrypted Room and touches
+             external storage while constructing, so a process started in the direct-boot window would
+             fail before BootReceiver ran. LOCKED_BOOT_COMPLETED is therefore never delivered here today
+             and the receiver's handling of it only hands off to ACTION_USER_UNLOCKED. -->
         <receiver
             android:name=".service.BootReceiver"
             android:exported="true"

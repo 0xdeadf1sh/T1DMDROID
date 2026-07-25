@@ -4,9 +4,11 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -27,7 +29,11 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.t1dm.core.design.JourneyPath
 import com.t1dm.core.design.LocalT1dmSemantics
+import com.t1dm.core.design.SevenSegmentClock
+import com.t1dm.core.design.JourneyMarks
+import com.t1dm.core.design.journeyProgress
 import com.t1dm.core.model.DkaTimeline
 import com.t1dm.core.model.PredictedTime
 import java.util.Calendar
@@ -76,8 +82,7 @@ fun CircadianScreen(
     ) {
         // N1 — the "Circadian clock" title lives in the breadcrumb; no duplicate in-view header.
         Text(
-            "The model's belief about what hour-of-day the current physiology resembles — a circular " +
-                "histogram over 12 two-hour bins with a hand at its resultant hour.",
+            "The model's belief about which hour-of-day the current physiology resembles",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -105,13 +110,13 @@ fun CircadianScreen(
             }
 
             ReadoutRow("Model hour", formatHour(predictedTime.predictedHour))
-            ReadoutRow("Confidence (resultant R)", "%.2f".format(predictedTime.resultantR))
+            ReadoutRow("Confidence (R)", "%.2f".format(predictedTime.resultantR))
             ReadoutRow("Local time", formatHour(localHour))
             ReadoutRow("Model − local offset", formatOffset(predictedTime.predictedHour - localHour))
             ReadoutRow("Bins", "${predictedTime.nBins} × ${"%.0f".format(predictedTime.binHours)} h")
             if (predictedTime.resultantR < 0.05) {
                 Text(
-                    "The belief is nearly uniform (R ≈ 0) — the model has no strong circadian preference this cycle.",
+                    "Nearly uniform (R ≈ 0) — no strong circadian preference this cycle",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -126,57 +131,76 @@ fun CircadianScreen(
 
 /**
  * A deliberately morbid, DISPLAY-ONLY countdown (F5): from the instant IOB is projected to reach
- * zero, chain the user-tunable forward offsets DKA → coma → death and count each landmark down live.
- * No §3.6 rail reads this — it is an estimate, not a clinical alarm (safety-posture.md). When no
- * zero-crossing is known ([iobZeroMs] null) we anchor at *now*, which is the harshest reading.
+ * zero, chain the user-tunable forward offsets DKA → coma → death and count each landmark down live,
+ * on a seven-segment LCD, above a road running from that instant to the grave. No §3.6 rail reads
+ * this — it is an estimate, not a clinical alarm (safety-posture.md). When no zero-crossing is known
+ * ([iobZeroMs] null) we anchor at *now*, which is the harshest reading.
  */
 @Composable
 private fun DeathCountdownSection(iobU: Double?, iobZeroMs: Long?, tl: DkaTimeline) {
     // A 1-second cadence keeps the seconds column alive; this panel is a stopwatch, not a slow gauge.
-    val nowMs by produceState(System.currentTimeMillis()) {
+    // The State is deliberately NOT unwrapped here: every reader below is a lambda the Canvas invokes
+    // in its DRAW phase, so a tick repaints the four figures and nothing recomposes or relayouts.
+    val nowMs = produceState(System.currentTimeMillis()) {
         while (true) {
             value = System.currentTimeMillis()
             kotlinx.coroutines.delay(1_000L)
         }
     }
     // Anchor is captured ONCE (not the live nowMs), else landmark − nowMs cancels to a constant and the
-    // clock freezes. With insulin on board it is the projected IOB-zero instant; with none, it is the
-    // moment this section first composed — either way a fixed instant the 1 s ticker counts down against.
-    val anchor = remember(iobZeroMs) { iobZeroMs ?: System.currentTimeMillis() }
+    // clock freezes. It is the PROJECTED IOB-zero instant and nothing else: substituting `now` when the
+    // crossing is unknown renders an invented full-length countdown in the typography of a real
+    // projection, which is the one thing this panel must never do.
+    val anchor = iobZeroMs
     fun h(x: Double) = (x * 3_600_000.0).toLong()
-    val tDka = anchor + h(tl.iobZeroToDkaHours)
-    val tComa = tDka + h(tl.dkaToComaHours)
-    val tDeath = tComa + h(tl.comaToDeathHours)
+    val marks = JourneyMarks.EVEN
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text("Insulin-exhaustion projection", style = MaterialTheme.typography.labelLarge)
-        CountdownRow("Time until DK", tDka - nowMs)
-        CountdownRow("Time until Coma", tComa - nowMs)
-        CountdownRow("Time until Death", tDeath - nowMs)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text("Insulin-exhaustion projection", style = MaterialTheme.typography.labelLarge)
+            // The quantity being exhausted — the one fact that makes the anchor legible.
+            if (iobU != null) {
+                Text(
+                    "%.1f U".format(iobU),
+                    style = MaterialTheme.typography.labelLarge,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        if (anchor == null) {
+            Text(
+                if (iobU != null && iobU > 0.0) "Exhaustion time unknown" else "No insulin on board",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            val tDka = anchor + h(tl.iobZeroToDkaHours)
+            val tComa = tDka + h(tl.dkaToComaHours)
+            val tDeath = tComa + h(tl.comaToDeathHours)
+            CountdownRow("DKA") { tDka - nowMs.value }
+            CountdownRow("Coma") { tComa - nowMs.value }
+            CountdownRow("Death") { tDeath - nowMs.value }
+            JourneyPath(
+                progress = { journeyProgress(nowMs.value, anchor, tl) },
+                marks = marks,
+                modifier = Modifier.fillMaxWidth().height(96.dp).padding(top = 6.dp),
+            )
+        }
     }
 }
 
-/** Reuses [ReadoutRow]'s label/value layout; the countdown flips to the error tint once it lapses. */
+/** [ReadoutRow]'s label/value layout with the value on an LCD; a lapsed landmark reads it in error. */
 @Composable
-private fun CountdownRow(label: String, remainingMs: Long) {
-    androidx.compose.foundation.layout.Row(
-        Modifier.fillMaxWidth().padding(vertical = 2.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
+private fun CountdownRow(label: String, remainingMs: () -> Long) {
+    Row(
+        // Against a 28 dp digit block, 2 dp left the three clocks all but touching; this is a gap of
+        // roughly half a glyph, which is what makes them read as three figures rather than a slab.
+        Modifier.fillMaxWidth().padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(label, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(
-            formatDdHhMmSs(remainingMs),
-            style = MaterialTheme.typography.titleMedium,
-            fontFamily = FontFamily.Monospace,
-            fontWeight = FontWeight.Bold,
-            color = if (remainingMs <= 0) MaterialTheme.colorScheme.error else Color.Unspecified,
-        )
+        SevenSegmentClock(remainingMs, Modifier.weight(1f).height(28.dp).padding(start = 12.dp))
     }
-}
-
-/** dd:hh:mm:ss, clamped at zero so a lapsed landmark reads "00:00:00:00" rather than a negative wrap. */
-private fun formatDdHhMmSs(ms: Long): String {
-    val s = (ms / 1000).coerceAtLeast(0)
-    return "%02d:%02d:%02d:%02d".format(s / 86_400, (s % 86_400) / 3_600, (s % 3_600) / 60, s % 60)
 }
 
 /**
@@ -189,18 +213,13 @@ private fun formatDdHhMmSs(ms: Long): String {
 private fun EmptyCircadian(realBackendAvailable: Boolean, hasTimeSection: Boolean, warmingUp: Boolean) {
     val msg = when {
         !realBackendAvailable ->
-            "Model time unavailable — the forecast is currently served by the fallback stub backend, " +
-                "which carries no circadian probe."
+            "Model time unavailable — stub backend has no circadian probe"
         !hasTimeSection ->
-            "Model time unavailable — the selected model's descriptor has no time section, so there is " +
-                "no hour-of-day belief to render."
+            "Model time unavailable — this model has no time section"
         warmingUp ->
-            "Model time not available yet — still collecting context (warmup). The circadian probe " +
-                "needs at least the model's minimum history (≈8 h of BG) before it can form a belief; " +
-                "it will appear here, low-confidence at first, once enough real BG has accrued."
+            "Model time unavailable — warming up; needs ≈8 h BG"
         else ->
-            "Model time unavailable — the time probe ran this cycle but its output could not be decoded " +
-                "into an hour-of-day belief."
+            "Model time unavailable — probe output couldn't be decoded this cycle"
     }
     Text(msg, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
@@ -209,8 +228,7 @@ private fun EmptyCircadian(realBackendAvailable: Boolean, hasTimeSection: Boolea
 @Composable
 private fun LowContextCaveat() {
     Text(
-        "Low-confidence — formed during warmup on limited history while the BG forecast is withheld. " +
-            "This is a circadian-phase belief, not a glucose forecast; it firms up as more real BG accrues.",
+        "Low-confidence — a circadian belief, not a forecast",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.secondary,
     )

@@ -5,6 +5,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.keyframes
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
@@ -33,28 +34,42 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
+import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.LocalAnimationsEnabled
 import com.t1dm.core.design.LocalT1dmSemantics
 import com.t1dm.core.design.SignalBars
+import com.t1dm.core.design.argbWithAlpha
 import com.t1dm.core.design.iconStyleForTheme
+import com.t1dm.core.design.rememberHapticDetent
+import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.model.AlertThresholds
 import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.IobCobReadout
 import com.t1dm.core.model.ModelPrediction
+import com.t1dm.core.model.PaintStroke
+import com.t1dm.core.model.PaintTool
 import com.t1dm.core.model.PredictedTime
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.RolledForecast
@@ -67,10 +82,13 @@ import com.t1dm.ui.graph.CurveOverlayFrame
 import com.t1dm.ui.graph.CurveOverlayToggles
 import com.t1dm.ui.graph.GlucoseGraph
 import com.t1dm.ui.graph.GraphFrame
+import com.t1dm.ui.graph.PaintControls
+import com.t1dm.ui.graph.PaintFrame
 import com.t1dm.ui.graph.PredSeries
 import com.t1dm.ui.graph.PredictedClock
 import com.t1dm.ui.graph.RolledSeries
 import com.t1dm.ui.graph.SmoothedTrace
+import com.t1dm.ui.graph.paintFrameOf
 import com.t1dm.ui.graph.rolledSeriesOf
 import com.t1dm.ui.graph.smoothedTraceOf
 import com.t1dm.ui.graph.curveOverlayOf
@@ -121,9 +139,9 @@ fun DashboardScreen(
     deviceTempC: Double? = null,
     temperatureUnit: TempUnit = TempUnit.CELSIUS,
     stepsToday: Int? = null,
-    // I11 — the user-entered sensor-lifetime expiry instant (absolute epoch-ms), counted down live to
-    // the right of the TEMP readout. Null ⇒ nothing shown (no estimate entered). It is a user estimate,
-    // NOT read from the passive-advertisement sensor.
+    // The sensor time-left expiry instant (absolute epoch-ms), counted down live to the right of the
+    // TEMP readout. Sensor-derived: the connected session reports the sensor's age (minFromStart), and
+    // the app adds the configurable total service life. Null ⇒ nothing shown (no sensor age yet).
     sensorExpiryMs: Long? = null,
     // Issues 7 & 9 — the warmup-surviving circadian belief, so the TOP axis renders the predicted
     // clock even while the BG forecast is (correctly) suppressed. Falls back to the selected
@@ -132,8 +150,11 @@ fun DashboardScreen(
     circadianAnchorMs: Long? = null,
     // Issue 13 — the causal SavGol smoother (mg/dL, clamps [20,500]) the model consumes; when wired, a
     // toggle overlays the smoothed model-input trace. Native call is passed as a lambda so this module
-    // keeps no JNI dependency.
+    // keeps no JNI dependency. [smoothingWindow] is the window that lambda was built with: it is not
+    // used to smooth anything here, only to invalidate the cached trace when the setting changes (the
+    // lambda itself is memoized by Compose and is NOT a reliable key).
     smoothMgdl: ((DoubleArray) -> DoubleArray)? = null,
+    smoothingWindow: Int = 7,
     // I2 — the ephemeral, DISPLAY-ONLY rolled forecast (never drives an alert/dose). [onRoll] runs one
     // on-demand roll to the requested horizon (hours) on the fp32 CPU authority; [rollComputing] gates
     // the progress UI; [onClearRoll] dismisses the ephemeral overlay.
@@ -150,7 +171,36 @@ fun DashboardScreen(
     // device nears/crosses it. Null when the gate is disabled ⇒ the chip stays its neutral colour.
     thermalThresholdC: Double? = null,
     thermalWarnMarginC: Double = 3.0,
+    // The BG panel's freehand annotation layer (Room v8), collected by `:app` — this module keeps no
+    // storage dependency, exactly as it does for the readings and the curve channels. The render model
+    // is built here off-thread like every other overlay. In-app panel only: it never reaches the
+    // widget, the notification, or the watch.
+    paintStrokes: List<PaintStroke> = emptyList(),
+    // Persisting a stroke and removing one: the ONLY seam the annotation layer needs. Both are
+    // `suspend` because the insert must hand back the row id it mints — that id is what makes undo, and
+    // the eraser, addressable. Null on either ⇒ the paint toggle is not offered at all.
+    onAddPaintStroke: (suspend (PaintStroke) -> Long)? = null,
+    onDeletePaintStroke: (suspend (Long) -> Unit)? = null,
+    // The hill-climb minigame, whose terrain IS this panel's trace. A MODE, not a destination: while
+    // it is on the panel renders [gameSlot] in the graph's place and everything else on the dashboard
+    // — read-outs, IOB line, nav — stays exactly where it was. null ⇒ not offered at all, the same
+    // availability rule every other affordance here follows.
+    gameSlot: (@Composable (Modifier, trackFromMs: Long, dropAtMs: Long, spanMinutes: Float, onReady: () -> Unit, exit: () -> Unit) -> Unit)? = null,
 ) {
+    var gameOn by remember { mutableStateOf(false) }
+    // The chart's LIVE viewport, which pinch-zoom and pan move independently of the window chips.
+    // Held here because drive mode adopts it wholesale — the panel must not zoom or re-span when the
+    // game starts — and because a tap on the panel is turned into an instant through it.
+    var viewStartMs by remember { mutableStateOf(0.0) }
+    var viewSpanMs by remember { mutableStateOf(0.0) }
+    // Where the car is to be dropped: the instant under the finger. Null until the user picks.
+    var gameStartMs by remember { mutableStateOf<Long?>(null) }
+    // The chart stays on top until the game has a drawable first frame. Both render the same
+    // furniture and the same curve, so when it finally swaps there is nothing to see — which is the
+    // whole point: dropping the car must not flash through a loading state.
+    var gameReady by remember { mutableStateOf(false) }
+    LaunchedEffect(gameOn) { if (!gameOn) { gameStartMs = null; gameReady = false } }
+    LaunchedEffect(gameStartMs) { if (gameStartMs == null) gameReady = false }
     val frame by produceState(GraphFrame.EMPTY, readings, unit) {
         value = graphFrameOf(readings, unit, kovatchevF = kovatchevF)
     }
@@ -217,12 +267,83 @@ fun DashboardScreen(
     }
 
     // Issue 13: the smoothed model-input trace (built off-thread; null unless the smoother is wired).
-    val smoothed by produceState<SmoothedTrace?>(null, readings, unit, smoothMgdl) {
+    val smoothed by produceState<SmoothedTrace?>(null, readings, unit, smoothMgdl, smoothingWindow) {
         val f = smoothMgdl
         value = if (f == null || readings.isEmpty()) null
         else smoothedTraceOf(readings, unit, f, kovatchevF)
     }
     var showSmoothed by remember { mutableStateOf(false) }
+
+    // The annotation layer's render model: decoded, ordered and thinned once off-thread, then culled
+    // per-viewport by the Canvas — a pan or a zoom never rebuilds it.
+    val paint by produceState<PaintFrame?>(null, paintStrokes) {
+        value = if (paintStrokes.isEmpty()) null else paintFrameOf(paintStrokes)
+    }
+
+    // ── Paint mode: palette selection + the session's undo history ───────────────────────────────
+    // All of it is local, like [showSmoothed] and [toggles]: paint mode is a transient way of looking
+    // at the panel, not a persisted preference, and the STROKES — the only durable part — live in Room
+    // behind the two callbacks above. Nothing here is read by anything but this Canvas.
+    val paintHaptics = rememberT1dmHaptics()
+    val paintScope = rememberCoroutineScope()
+    val paintAvailable = onAddPaintStroke != null && onDeletePaintStroke != null
+    var paintOn by remember { mutableStateOf(false) }
+    var paintTool by remember { mutableStateOf(PaintTool.DEFAULT) }
+    var paintErasing by remember { mutableStateOf(false) }
+    var paintWidthDp by remember { mutableStateOf(PaintTool.DEFAULT.defaultWidthDp) }
+    var showPaintStyle by remember { mutableStateOf(false) }
+    val defaultInk = LocalT1dmSemantics.current.inRange.toArgb()
+    var paintColor by remember(defaultInk) {
+        mutableStateOf(argbWithAlpha(defaultInk, PaintTool.DEFAULT.defaultAlpha))
+    }
+    // The session's history. An op is remembered with the stroke ITSELF, not merely its id, because a
+    // re-insert mints a new row id — so undoing an erase, or redoing an undone stroke, has to carry the
+    // geometry back to the store and then adopt the id it is given.
+    val paintUndo = remember { mutableStateListOf<PaintUndoOp>() }
+    val paintRedo = remember { mutableStateListOf<PaintUndoOp>() }
+
+    fun commitStroke(stroke: PaintStroke) {
+        val add = onAddPaintStroke ?: return
+        paintScope.launch {
+            val op = PaintUndoOp(stroke.withId(add(stroke)), added = true)
+            paintUndo.add(op)
+            paintRedo.clear()
+        }
+    }
+
+    fun eraseStroke(id: Long) {
+        val del = onDeletePaintStroke ?: return
+        // Captured BEFORE the delete: once the row is gone the flow no longer carries the geometry, and
+        // undo would have nothing to put back.
+        val victim = paintStrokes.firstOrNull { it.id == id } ?: return
+        paintScope.launch {
+            del(id)
+            paintUndo.add(PaintUndoOp(victim, added = false))
+            paintRedo.clear()
+        }
+    }
+
+    fun undoPaint() {
+        if (paintUndo.isEmpty()) return
+        val op = paintUndo.removeAt(paintUndo.lastIndex)
+        paintHaptics.perform(HapticEvent.Tap)
+        paintScope.launch {
+            if (op.added) onDeletePaintStroke?.invoke(op.stroke.id)
+            else onAddPaintStroke?.invoke(op.stroke)?.let { op.stroke = op.stroke.withId(it) }
+            paintRedo.add(op)
+        }
+    }
+
+    fun redoPaint() {
+        if (paintRedo.isEmpty()) return
+        val op = paintRedo.removeAt(paintRedo.lastIndex)
+        paintHaptics.perform(HapticEvent.Tap)
+        paintScope.launch {
+            if (op.added) onAddPaintStroke?.invoke(op.stroke)?.let { op.stroke = op.stroke.withId(it) }
+            else onDeletePaintStroke?.invoke(op.stroke.id)
+            paintUndo.add(op)
+        }
+    }
 
     // The selected model's circadian-phase clock (item 21) + its approaching excursions (item 16).
     // Issues 7 & 9: prefer the in-cycle prediction's belief, but fall back to the warmup-surviving
@@ -239,7 +360,9 @@ fun DashboardScreen(
         DashboardHeader(latest, activeSourceName, unit, signals?.cgmRssi ?: latest?.rssi, kovatchevF)
         warmup?.let { WarmupBanner(it) }
         if (noFutureInsulin) NoFutureInsulinBanner()
-        if (iobCob != null || curveChannels != null || smoothMgdl != null || onRoll != null) {
+        if (iobCob != null || curveChannels != null || smoothMgdl != null || onRoll != null ||
+            paintAvailable || gameSlot != null
+        ) {
             OverlayControls(
                 iobCob = iobCob,
                 showNextForecast = warmup == null && !lowPowerActive,
@@ -251,13 +374,39 @@ fun DashboardScreen(
                 showSmoothed = showSmoothed,
                 rollAvailable = onRoll != null,
                 rollComputing = rollComputing,
+                paintAvailable = paintAvailable,
+                paintOn = paintOn,
+                gameAvailable = gameSlot != null,
+                gameOn = gameOn,
+                onToggleGame = { gameOn = it },
                 onRollClick = { showRollDialog = true },
                 onToggle = { toggles = it },
                 onToggleSmoothed = { showSmoothed = it },
+                onTogglePaint = { on -> paintOn = on },
                 onWindow = { h ->
                     windowHours = h
                     onSetWindowHours?.invoke(h)
                 },
+            )
+        }
+        if (paintOn && paintAvailable) {
+            PaintPalette(
+                tool = paintTool,
+                erasing = paintErasing,
+                colorArgb = paintColor,
+                canUndo = paintUndo.isNotEmpty(),
+                canRedo = paintRedo.isNotEmpty(),
+                onSelectTool = { t ->
+                    paintErasing = false
+                    paintTool = t
+                    // Picking a tool SEEDS its width and alpha; both stay overridable in the dialog.
+                    paintWidthDp = t.defaultWidthDp
+                    paintColor = seedInk(t, paintColor)
+                },
+                onSelectEraser = { paintErasing = !paintErasing },
+                onOpenStyle = { showPaintStyle = true },
+                onUndo = { undoPaint() },
+                onRedo = { redoPaint() },
             )
         }
         // I2 — the ephemeral rolled-forecast status line: a plain reason when it is degenerate/absent,
@@ -265,9 +414,40 @@ fun DashboardScreen(
         rolledForecast?.takeIf { !it.isEmpty || it.reason != null }?.let { rf ->
             RolledStatusBanner(rf, onClear = onClearRoll)
         }
-        GlucoseGraph(
-            frame = frame,
-            modifier = Modifier.fillMaxWidth().weight(1f),
+        val panelModifier = Modifier.fillMaxWidth().weight(1f)
+        val slot = gameSlot
+        val spanMin = if (viewSpanMs > 0.0) (viewSpanMs / 60_000.0).toFloat() else windowHours * 60f
+        val dropAt = gameStartMs
+        Box(panelModifier) {
+            // ONE call site for the game, always. Calling it from two branches (loading vs ready) put
+            // it at two different positions in the composition tree, so flipping between them DISPOSED
+            // the running world and built a fresh one — reloading the track and re-placing the car.
+            // That was the flash, and the car jumping back to the left.
+            if (gameOn && slot != null && dropAt != null) {
+                slot(Modifier.fillMaxSize(), viewStartMs.toLong(), dropAt, spanMin, { gameReady = true }) {
+                    gameOn = false
+                }
+            }
+            // The chart stays ON TOP until the game can draw, then CROSS-FADES out over it.
+            //
+            // Both render the same furniture and the same curve, but not the same everything — the
+            // chart also carries the forecast fan, the curve overlays and its own point styling, and
+            // dropping all of that in a single frame reads as a flash however well the two agree
+            // underneath. A short fade turns any residual difference into a blend. It is emitted until
+            // the fade completes, not merely until the game is ready.
+            // Respects the app-wide animations flag: with motion off the hand-off is instant.
+            val motionOn = LocalAnimationsEnabled.current
+            val handOff = gameOn && dropAt != null && gameReady
+            val chartAlpha by animateFloatAsState(
+                targetValue = if (handOff) 0f else 1f,
+                animationSpec = tween(if (motionOn) 220 else 0),
+                label = "chartHandOff",
+            )
+            if (chartAlpha > 0.001f) {
+                Box(Modifier.fillMaxSize().graphicsLayer { alpha = chartAlpha }) {
+                GlucoseGraph(
+                frame = frame,
+                modifier = Modifier.fillMaxSize(),
             thresholds = thresholds,
             initialWindowMin = windowHours * 60f,
             predictions = overlay,
@@ -280,6 +460,30 @@ fun DashboardScreen(
             showSmoothed = showSmoothed,
             rolled = rolledSeries,
             futureExtentMs = FUTURE_VIEW_MS,
+            onViewportChange = { st, sp -> viewStartMs = st; viewSpanMs = sp },
+            paint = paint,
+            paintControls = if (paintOn && paintAvailable) {
+                PaintControls(paintTool.key, paintColor, paintWidthDp, paintErasing)
+            } else null,
+                    onPaintStroke = { stroke -> commitStroke(stroke) },
+                    onErasePaintStroke = { id -> eraseStroke(id) },
+                )
+                // Only before the car is placed: once dropped, a stray tap must not re-place it.
+                if (gameOn && slot != null && dropAt == null) {
+                    TapToPlace(viewStartMs, viewSpanMs) { gameStartMs = it }
+                }
+                }
+            }
+        }
+    }
+
+    if (showPaintStyle) {
+        PaintStyleDialog(
+            colorArgb = paintColor,
+            widthDp = paintWidthDp,
+            onColorChange = { paintColor = it },
+            onWidthChange = { paintWidthDp = it.coerceIn(PAINT_WIDTH_MIN_DP, PAINT_WIDTH_MAX_DP) },
+            onDismiss = { showPaintStyle = false },
         )
     }
 
@@ -293,6 +497,18 @@ fun DashboardScreen(
         )
     }
 }
+
+/**
+ * One reversible edit to the annotation layer. [added] says which direction undoing it runs in — delete
+ * the stroke, or put it back. [stroke] is `var` because a re-insert mints a NEW row id, and the op has
+ * to adopt it or the next undo/redo would address a row that no longer exists.
+ */
+private class PaintUndoOp(var stroke: PaintStroke, val added: Boolean)
+
+/** The same stroke under the row id the store just minted. [PaintStroke] is not a data class — array
+ *  fields would give it an identity `equals` that lies — so the copy is spelled out. */
+private fun PaintStroke.withId(newId: Long): PaintStroke =
+    PaintStroke(newId, createdAtMs, tool, colorArgb, widthDp, tsMs, yFrac)
 
 /** Honest units for the roll horizon: whole hours or "N h 30 min", and "30 min" below one hour. */
 private fun rollHoursLabel(hours: Double): String {
@@ -317,30 +533,42 @@ private fun RollConfirmDialog(onDismiss: () -> Unit, onConfirm: (Double) -> Unit
     var stepIdx by remember { mutableStateOf(4f) }
     val hours = (stepIdx.roundToInt().coerceIn(1, 24)) * 0.5
     val rolls = Math.ceil(hours / 2.0).toInt()
+    val haptics = rememberT1dmHaptics()
+    // The same three-beat every dialog in the app speaks (see ConfirmLogDialog): Warn on raise —
+    // this one is asking the user to accept an unvalidated extrapolation — Confirm on accept, Reject
+    // on cancel or a scrim/back dismissal.
+    LaunchedEffect(Unit) { haptics.perform(HapticEvent.Warn) }
+    // The stops are 30-min detents, so the tick is keyed on the ROUNDED index, never the raw Float:
+    // Material's Slider reports a continuous value between stops and would tick on every pixel.
+    val stopDetent = rememberHapticDetent()
     AlertDialog(
-        onDismissRequest = onDismiss,
-        confirmButton = { TextButton(onClick = { onConfirm(hours) }) { Text("Roll ${rollHoursLabel(hours)}") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-        title = { Text("Roll the forecast forward") },
+        onDismissRequest = { haptics.perform(HapticEvent.Reject); onDismiss() },
+        confirmButton = {
+            TextButton(
+                onClick = { haptics.perform(HapticEvent.Confirm); onConfirm(hours) },
+            ) { Text("Roll ${rollHoursLabel(hours)}") }
+        },
+        dismissButton = {
+            TextButton(onClick = { haptics.perform(HapticEvent.Reject); onDismiss() }) { Text("Cancel") }
+        },
+        title = { Text("Roll the forecast") },
         text = {
             Column {
                 Text(
-                    "Rolling re-feeds the model's own 2-hour forecast back into its context $rolls " +
-                        "time${if (rolls == 1) "" else "s"}. Beyond 2 hours the result is EXTRAPOLATED and " +
-                        "unvalidated — error compounds with each roll. It is shown for inspection only and " +
-                        "will not raise alerts.",
+                    "Re-feeds the forecast $rolls time${if (rolls == 1) "" else "s"} — " +
+                        "extrapolated, never alerts",
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Spacer(Modifier.height(16.dp))
                 Text("Horizon: ${rollHoursLabel(hours)}", style = MaterialTheme.typography.labelLarge)
                 Slider(
                     value = stepIdx,
-                    onValueChange = { stepIdx = it },
+                    onValueChange = { stepIdx = it; stopDetent.at(it.roundToInt()) },
                     valueRange = 1f..24f,
                     steps = 22, // 24 discrete stops (endpoints + 22 interior)
                 )
                 Text(
-                    "30 min – 12 h · $rolls forward${if (rolls == 1) "" else "s"} on the CPU authority",
+                    "30 min–12 h · $rolls forward${if (rolls == 1) "" else "s"}",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
                 )
@@ -354,9 +582,14 @@ private fun RollConfirmDialog(onDismiss: () -> Unit, onConfirm: (Double) -> Unit
 private fun RolledStatusBanner(rf: RolledForecast, onClear: (() -> Unit)?) {
     val msg = when {
         rf.reason != null -> rf.reason!!
-        rf.isEmpty -> "No rolled forecast to show."
-        else -> "Rolled to ${rollHoursLabel(rf.requestedHours)} — the region past 2 h is extrapolated and display-only."
+        rf.isEmpty -> "No rolled forecast"
+        else -> "Rolled to ${rollHoursLabel(rf.requestedHours)} — past 2 h extrapolated, display-only"
     }
+    val haptics = rememberT1dmHaptics()
+    // A roll that came back DEGENERATE is a result the user asked for and did not get; it lands while
+    // they are watching the graph rather than the banner, so it says so in the hand. Keyed on the
+    // flag, so a redraw of the same banner is silent.
+    LaunchedEffect(rf.degenerate) { if (rf.degenerate) haptics.perform(HapticEvent.Warn) }
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -370,7 +603,7 @@ private fun RolledStatusBanner(rf: RolledForecast, onClear: (() -> Unit)?) {
             modifier = Modifier.weight(1f),
         )
         onClear?.let {
-            TextButton(onClick = it) { Text("Clear") }
+            TextButton(onClick = { haptics.perform(HapticEvent.Reject); it() }) { Text("Clear") }
         }
     }
 }
@@ -397,7 +630,7 @@ private const val MIN_CLOCK_R: Double = 0.05
 private fun WarmupBanner(warmup: WarmupProgress) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
         Text(
-            "Collecting context — %.1f / %.0f h of measured BG".format(warmup.measuredHours, warmup.requiredHours),
+            "Collecting context — %.1f / %.0f h BG".format(warmup.measuredHours, warmup.requiredHours),
             style = MaterialTheme.typography.labelLarge,
             color = MaterialTheme.colorScheme.primary,
         )
@@ -417,7 +650,7 @@ private fun WarmupBanner(warmup: WarmupProgress) {
 private fun NoFutureInsulinBanner() {
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
         Text(
-            "No insulin on board over the forecast window",
+            "No insulin on board over the forecast",
             style = MaterialTheme.typography.labelLarge,
             color = MaterialTheme.colorScheme.secondary,
         )
@@ -438,11 +671,18 @@ private fun OverlayControls(
     showSmoothed: Boolean,
     rollAvailable: Boolean,
     rollComputing: Boolean,
+    paintAvailable: Boolean,
+    paintOn: Boolean,
+    gameAvailable: Boolean,
+    gameOn: Boolean,
+    onToggleGame: (Boolean) -> Unit,
     onRollClick: () -> Unit,
     onToggle: (CurveOverlayToggles) -> Unit,
     onToggleSmoothed: (Boolean) -> Unit,
+    onTogglePaint: (Boolean) -> Unit,
     onWindow: (Int) -> Unit,
 ) {
+    val haptics = rememberT1dmHaptics()
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
         // N2 — the Roll / Carbs / Insulin / Smoothed / 6h / 12h / 24h chips no longer fit across a phone
         // width, so they live in a HORIZONTALLY-SCROLLABLE row (mirroring the nav) — nothing clips.
@@ -454,7 +694,7 @@ private fun OverlayControls(
             // I2 — the Roll button, to the LEFT of the Carbs chip. Shows a spinner while computing.
             if (rollAvailable) {
                 AssistChip(
-                    onClick = { if (!rollComputing) onRollClick() },
+                    onClick = { if (!rollComputing) { haptics.perform(HapticEvent.Tap); onRollClick() } },
                     enabled = !rollComputing,
                     label = { Text(if (rollComputing) "Rolling…" else "Roll") },
                     leadingIcon = if (rollComputing) {
@@ -462,27 +702,55 @@ private fun OverlayControls(
                     } else null,
                 )
             }
+            // Carbs / Insulin / Smoothed / Paint are LATCHES, not a single-choice group, so each speaks
+            // the mirrored ToggleOn/ToggleOff pair rather than a chip picker's detent — the hand can
+            // tell "I turned the overlay on" from "I switched to the 12 h window" without looking.
             FilterChip(
                 selected = toggles.carbs,
-                onClick = { onToggle(toggles.copy(carbs = !toggles.carbs)) },
+                onClick = {
+                    haptics.toggled(!toggles.carbs)
+                    onToggle(toggles.copy(carbs = !toggles.carbs))
+                },
                 label = { Text("Carbs") },
             )
             FilterChip(
                 selected = toggles.insulin,
-                onClick = { onToggle(toggles.copy(insulin = !toggles.insulin)) },
+                onClick = {
+                    haptics.toggled(!toggles.insulin)
+                    onToggle(toggles.copy(insulin = !toggles.insulin))
+                },
                 label = { Text("Insulin") },
             )
             if (smoothAvailable) {
                 FilterChip(
                     selected = showSmoothed,
-                    onClick = { onToggleSmoothed(!showSmoothed) },
+                    onClick = { haptics.toggled(!showSmoothed); onToggleSmoothed(!showSmoothed) },
                     label = { Text("Smoothed") },
                 )
             }
+            // Paint mode. While it is on, one finger draws on the panel and two or more pan/zoom it;
+            // the long-press scrub is suspended, because a long press is how a stroke begins.
+            if (paintAvailable) {
+                FilterChip(
+                    selected = paintOn,
+                    onClick = { haptics.toggled(!paintOn); onTogglePaint(!paintOn) },
+                    label = { Text("Paint") },
+                )
+            }
+            // Game mode swaps what the PANEL renders — the dashboard around it is untouched, so the
+            // read-outs, the IOB line and the nav all stay put. A mode, not a destination.
+            if (gameAvailable) {
+                FilterChip(
+                    selected = gameOn,
+                    onClick = { haptics.toggled(!gameOn); onToggleGame(!gameOn) },
+                    label = { Text("Drive") },
+                )
+            }
+            // The window buttons ARE a single-choice group — a detent, not a latch.
             listOf(6, 12, 24).forEach { h ->
                 FilterChip(
                     selected = windowHours == h,
-                    onClick = { onWindow(h) },
+                    onClick = { haptics.perform(HapticEvent.SegmentTick); onWindow(h) },
                     label = { Text("${h}h") },
                 )
             }
@@ -527,7 +795,7 @@ private fun OverlayControls(
 private fun NextForecastCountdown(adaptive: Boolean, periodMin: Int) {
     if (adaptive) {
         Text(
-            "Adaptive forecast enabled",
+            "Adaptive forecast",
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
         )
@@ -543,7 +811,7 @@ private fun NextForecastCountdown(adaptive: Boolean, periodMin: Int) {
     val totalSec = (remainingMs / 1000).coerceAtLeast(0)
     val mins = totalSec / 60
     val secs = totalSec % 60
-    val text = if (mins >= 1) "Next forecast in ${mins}m ${secs}s" else "Next forecast in ${secs}s"
+    val text = if (mins >= 1) "Next forecast ${mins}m ${secs}s" else "Next forecast ${secs}s"
     Text(
         text,
         style = MaterialTheme.typography.labelMedium,
@@ -609,16 +877,15 @@ private fun ReachabilityBar(
         stepsToday?.let { StepsChip(it) }
         // A fixed-60-bpm liveness heartbeat, just past the steps count (never a real heart-rate reading).
         HeartbeatChip()
-        // I11 — the user-entered sensor lifetime, counted down live, immediately right of the TEMP chip.
+        // The sensor time-left (sensor age + configurable service life), counted down live, right of TEMP.
         sensorExpiryMs?.let { SensorLifeChip(it) }
     }
 }
 
-/** I11 — the sensor-lifetime countdown chip. Because the AiDEX X is a passive advertisement listener
- *  we cannot read the sensor's true age, so this counts down a USER-ENTERED expiry instant, showing the
- *  largest meaningful unit (`10d` / `5h` / `10m` / `35s` · "rem."). It re-reads the wall clock on a
- *  cadence matched to the displayed granularity so it stays honest without a busy loop. It is plainly a
- *  user estimate, not a reading from the sensor (see Settings → CGM source). */
+/** The sensor time-left chip. Now sensor-DERIVED: the sensor reports its own age (minFromStart), and
+ *  the app adds the configurable total service life (CGM panel), so this counts down the derived expiry
+ *  instant, showing the largest meaningful unit (`10d` / `5h` / `10m` / `35s`). It re-reads the wall
+ *  clock on a cadence matched to the displayed granularity so it stays honest without a busy loop. */
 @Composable
 private fun SensorLifeChip(expiryMs: Long) {
     val now by produceState(System.currentTimeMillis(), expiryMs) {
@@ -630,7 +897,7 @@ private fun SensorLifeChip(expiryMs: Long) {
         }
     }
     val remainingMs = expiryMs - now
-    val text = if (remainingMs <= 0L) "sensor expired" else "${formatRemaining(remainingMs)} rem."
+    val text = if (remainingMs <= 0L) "sensor expired" else formatRemaining(remainingMs)
     Text(
         text,
         style = MaterialTheme.typography.labelSmall,
@@ -953,4 +1220,44 @@ private fun trendArrow(tenths: Int?): String = when {
     tenths <= -30 -> "⇊"
     tenths <= -10 -> "↘"
     else -> "→"
+}
+
+/**
+ * The car's start line: a tap on the panel, mapped back through the viewport the graph just reported.
+ *
+ * This replaces a day-picker modal. The instant under the finger IS the instant the run begins, so
+ * placing the car is one gesture on the thing being described rather than a dialog about it. The
+ * x→time map is the graph's own — inset for the value axis — so the car lands where it was pointed at
+ * whatever the pan or zoom.
+ */
+@Composable
+private fun BoxScope.TapToPlace(
+    viewStartMs: Double,
+    viewSpanMs: Double,
+    onPlace: (Long) -> Unit,
+) {
+    val haptics = rememberT1dmHaptics()
+    val density = LocalDensity.current
+    val leftInset = with(density) { 46.dp.toPx() }
+    val rightInset = with(density) { 12.dp.toPx() }
+    Box(
+        Modifier
+            .matchParentSize()
+            .pointerInput(viewStartMs, viewSpanMs) {
+                detectTapGestures { pos ->
+                    if (viewSpanMs <= 0.0) return@detectTapGestures
+                    val w = (size.width - leftInset - rightInset).coerceAtLeast(1f)
+                    val frac = ((pos.x - leftInset) / w).coerceIn(0f, 1f)
+                    haptics.perform(HapticEvent.Confirm)
+                    onPlace((viewStartMs + frac * viewSpanMs).toLong())
+                }
+            },
+    ) {
+        Text(
+            "Tap to drop the car",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.align(Alignment.TopCenter).padding(top = 8.dp),
+        )
+    }
 }

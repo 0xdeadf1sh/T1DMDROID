@@ -23,6 +23,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.t1dm.core.design.HapticEvent
+import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.model.BezierCurve
 import com.t1dm.core.model.InsulinFamily
 import com.t1dm.core.model.InsulinPresetSpec
@@ -63,12 +65,8 @@ fun CurveParamsScreen(
     onSelectBasal: (String) -> Unit = {},
     previewPreset: (suspend (InsulinPresetSpec) -> DoubleArray)? = null,
 ) {
-    SettingsScaffold("Curve & PK parameters") {
-        SettingsNote(
-            "How the app turns a logged meal or dose into the absorption / action curve the model and " +
-                "calculator use (model-io-curves.md). The parametric presets below are the defaults; the " +
-                "Bézier designers let you author a custom shape that normalises to the dose total.",
-        )
+    SettingsScaffold(SettingsScreenKey.CURVES) {
+        SettingsNote("How a dose becomes its curve")
 
         if (presetCatalog.isNotEmpty()) {
             InsulinPresetSection(
@@ -82,12 +80,16 @@ fun CurveParamsScreen(
         }
 
         SettingsSectionHeader("Custom carb-appearance curve (Bézier)")
-        SettingsNote("Drag the control points; tap empty space to add one, long-press to remove. Grams-per-5-min, area = the meal total.")
-        BezierDesigner(carbCurve, defaultDurationMin = 180.0, onSave = onSaveCarbCurve)
+        SettingsNote("Drag to shape; area = meal total")
+        SettingsAnchor(curveCarbBezier) {
+            BezierDesigner(carbCurve, defaultDurationMin = 180.0, onSave = onSaveCarbCurve)
+        }
 
         SettingsSectionHeader("Custom insulin-action curve (Bézier)")
-        SettingsNote("The PK action shape (not delivery) — units-per-5-min, area = the delivered dose.")
-        BezierDesigner(insulinCurve, defaultDurationMin = 300.0, onSave = onSaveInsulinCurve)
+        SettingsNote("PK action shape (not delivery) — units-per-5-min, area = the dose.")
+        SettingsAnchor(curveInsulinBezier) {
+            BezierDesigner(insulinCurve, defaultDurationMin = 300.0, onSave = onSaveInsulinCurve)
+        }
 
         SettingsSectionHeader("Long-acting basal preset (Bateman)")
         Kv("Absorption kₐ", "%.2f /h".format(params.basalKaPerHour))
@@ -96,7 +98,7 @@ fun CurveParamsScreen(
         Kv("Tresiba duration", "%.0f h".format(params.tresibaDiaHours))
 
         SettingsSectionHeader("Carb appearance preset (GI → gamma)")
-        SettingsNote("High-GI carbs peak early and sharp; low-GI carbs spread out.")
+        SettingsNote("High-GI carbs peak early and sharp; low-GI spread out.")
         Kv("High GI k / θ", "%.1f / %.0f".format(params.carbHighGiK, params.carbHighGiTheta))
         Kv("Low GI k / θ", "%.1f / %.0f".format(params.carbLowGiK, params.carbLowGiTheta))
     }
@@ -124,13 +126,14 @@ private fun InsulinPresetSection(
     val basals = catalog.filter { it.family == InsulinFamily.BasalBateman }
 
     SettingsSectionHeader("Insulin action preset (clinical, selectable)")
-    SettingsNote(
-        "Every preset encodes published population PK for a specific insulin — the shape used for IOB and " +
-            "the dosing calculator. Each shows its peak/DIA and citation below.",
-    )
+    SettingsNote("Population PK per insulin — peak/DIA and citation")
 
-    PresetGroup("Rapid-acting (bolus)", rapids, selectedRapidLabel, onSelectRapid, previewPreset)
-    PresetGroup("Long-acting (basal)", basals, selectedBasalLabel, onSelectBasal, previewPreset)
+    SettingsAnchor(curveRapidPreset) {
+        PresetGroup(curveRapidPreset.label, rapids, selectedRapidLabel, onSelectRapid, previewPreset)
+    }
+    SettingsAnchor(curveBasalPreset) {
+        PresetGroup(curveBasalPreset.label, basals, selectedBasalLabel, onSelectBasal, previewPreset)
+    }
 }
 
 @Composable
@@ -142,6 +145,7 @@ private fun PresetGroup(
     previewPreset: (suspend (InsulinPresetSpec) -> DoubleArray)?,
 ) {
     if (presets.isEmpty()) return
+    val haptics = rememberT1dmHaptics()
     val selected = presets.firstOrNull { it.label == selectedLabel } ?: presets.first()
     Text(
         title,
@@ -150,13 +154,16 @@ private fun PresetGroup(
         modifier = Modifier.padding(top = 8.dp, bottom = 2.dp),
     )
     presets.forEach { spec ->
+        // The row and its radio are two entries into the same single-choice detent, so both speak the
+        // one SegmentTick — never a Tap on the row and a tick on the dot.
+        val pick = { haptics.perform(HapticEvent.SegmentTick); onSelect(spec.label) }
         Row(
             Modifier.fillMaxWidth()
-                .selectable(selected = spec.label == selected.label, onClick = { onSelect(spec.label) })
+                .selectable(selected = spec.label == selected.label, onClick = pick)
                 .padding(vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            RadioButton(selected = spec.label == selected.label, onClick = { onSelect(spec.label) })
+            RadioButton(selected = spec.label == selected.label, onClick = pick)
             Column(Modifier.padding(start = 4.dp).weight(1f)) {
                 Text(spec.label, style = MaterialTheme.typography.bodyMedium)
                 val peakTxt = if (spec.peakMin > 0.0) "peak ${"%.0f".format(spec.peakMin)} min · " else ""
@@ -185,6 +192,7 @@ private fun PresetGroup(
 private fun BezierDesigner(initial: BezierCurve, defaultDurationMin: Double, onSave: (BezierCurve) -> Unit) {
     var resetKey by remember { mutableIntStateOf(0) }
     var draft by remember(resetKey) { mutableStateOf(initial) }
+    val haptics = rememberT1dmHaptics()
     CurveEditor(curve = draft, onChange = { draft = it }, resetKey = resetKey)
     val sampled = draft.sampleNormalized(1.0)
     val degenerate = sampled.all { it <= 0.0 }
@@ -196,17 +204,31 @@ private fun BezierDesigner(initial: BezierCurve, defaultDurationMin: Double, onS
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         fontFamily = FontFamily.Monospace,
     )
+    // The drag that flattens the curve is the moment the shape stops being savable, and the finger is
+    // still on the glass — so the warning is felt exactly when it becomes true, and only then.
+    androidx.compose.runtime.LaunchedEffect(degenerate) {
+        if (degenerate) haptics.perform(HapticEvent.Warn)
+    }
     if (degenerate) {
         Text(
-            "This shape has no positive area — it would normalise to nothing. Drag a control point above " +
-                "the baseline before saving.",
+            "No positive area — raise a point above baseline",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.error,
         )
     }
     Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Button(onClick = { onSave(draft) }, enabled = !degenerate) { Text("Save custom curve") }
-        OutlinedButton(onClick = { draft = BezierCurve.default(defaultDurationMin); resetKey++ }) { Text("Reset to hump") }
+        Button(
+            onClick = { haptics.perform(HapticEvent.Confirm); onSave(draft) },
+            enabled = !degenerate,
+        ) { Text("Save custom curve") }
+        OutlinedButton(
+            // Discarding the drawing is a refusal of what was drawn, not a confirmation of anything.
+            onClick = {
+                haptics.perform(HapticEvent.Reject)
+                draft = BezierCurve.default(defaultDurationMin)
+                resetKey++
+            },
+        ) { Text("Reset to hump") }
     }
 }
 
@@ -217,3 +239,67 @@ private fun Kv(k: String, v: String) {
         Text(v, style = MaterialTheme.typography.bodyMedium, fontFamily = FontFamily.Monospace)
     }
 }
+
+// ── search index (see SettingsIndex.kt) ───────────────────────────────────────────────────────────
+//
+// The Bateman / gamma read-outs below the designers are derived facts, not knobs — they are not
+// indexed, and their vocabulary is folded into the two preset entries instead.
+
+private const val PRESET_SECTION = "Insulin action preset (clinical, selectable)"
+
+private val curveRapidPreset = SettingsKnob(
+    id = "curves.rapid_preset",
+    screen = SettingsScreenKey.CURVES,
+    section = PRESET_SECTION,
+    label = "Rapid-acting (bolus)",
+    subtitle = "The published-PK action shape used for IOB and dosing on newly-logged bolus insulin",
+    synonyms = listOf(
+        "rapid", "bolus", "fast acting", "insulin", "preset", "pk", "action curve", "iob",
+        "humalog", "novorapid", "novolog", "apidra", "fiasp", "lyumjev", "aspart", "lispro",
+        "peak", "dia", "duration of action",
+    ),
+)
+
+private val curveBasalPreset = SettingsKnob(
+    id = "curves.basal_preset",
+    screen = SettingsScreenKey.CURVES,
+    section = PRESET_SECTION,
+    label = "Long-acting (basal)",
+    subtitle = "The Bateman action shape used for newly-logged basal insulin",
+    synonyms = listOf(
+        "basal", "long acting", "background", "insulin", "preset", "bateman", "pk", "iob",
+        "lantus", "tresiba", "levemir", "toujeo", "glargine", "degludec", "detemir",
+        "absorption", "elimination", "dia", "duration",
+    ),
+)
+
+private val curveCarbBezier = SettingsKnob(
+    id = "curves.carb_bezier",
+    screen = SettingsScreenKey.CURVES,
+    section = "Custom carb-appearance curve (Bézier)",
+    label = "Custom carb-appearance curve (Bézier)",
+    subtitle = "Draw the grams-per-5-min appearance shape; its area is the meal total",
+    synonyms = listOf(
+        "carb", "carbs", "carbohydrate", "meal", "appearance", "ra", "absorption", "bezier",
+        "curve", "designer", "custom curve", "gi", "glycemic index", "gamma", "draw", "shape",
+    ),
+)
+
+private val curveInsulinBezier = SettingsKnob(
+    id = "curves.insulin_bezier",
+    screen = SettingsScreenKey.CURVES,
+    section = "Custom insulin-action curve (Bézier)",
+    label = "Custom insulin-action curve (Bézier)",
+    subtitle = "Draw the units-per-5-min PK action shape (not delivery); its area is the dose",
+    synonyms = listOf(
+        "insulin", "action", "pk", "bezier", "curve", "designer", "custom curve", "iob",
+        "pharmacokinetics", "draw", "shape", "duration", "peak",
+    ),
+)
+
+internal val settingsCurveKnobs = listOf(
+    curveRapidPreset,
+    curveBasalPreset,
+    curveCarbBezier,
+    curveInsulinBezier,
+)

@@ -61,18 +61,27 @@ object Scoring {
      * (Objective.HitTargetBg). It is the point-target analogue of [scoreTimeOutOfRange]: every step
      * contributes the absolute median-to-target distance, discounted beyond the validated window and
      * scaled asymmetrically — an under-target median leans on [Asymmetry.hypoWeight], an over-target
-     * one on [Asymmetry.hyperWeight]. The hypo tail off the lower band is not re-penalised here because
-     * the predicted-low VETO rail already blocks any candidate whose lower band dips below the floor
-     * (Rails.predictedLowVeto), so this objective safely reads the median as its whole signal.
+     * one on [Asymmetry.hyperWeight].
+     *
+     * On top of that median-hit term it carries its OWN intrinsic hypo penalty off the τ=.05 lower
+     * band — the same horizon-weighted [KovatchevRisk.lbgi] term as [scoreTimeOutOfRange] /
+     * [scoreKovatchev] — so a candidate whose lower tail dips below [TargetRange.lowMgdl] is
+     * penalised here directly. Hypo protection must NOT rest solely on the predicted-low VETO rail
+     * (Rails.predictedLowVeto): that rail is user-disableable, and HitTargetBg is the objective the
+     * Bolus advisor forces, so with the rail off this term is what keeps the primary advisor path
+     * from recommending a dose predicted to cause hypoglycaemia. Every other objective is likewise
+     * self-protecting off the lower band (object invariant 2).
      */
     private fun scoreHitTargetBg(fan: PredFan, config: CalcConfig, obj: Objective.HitTargetBg): Double {
         val a = config.asymmetry
         val target = obj.targetMgdl
+        val hypoFloor = config.target.lowMgdl
         var acc = 0.0
         fan.steps.forEachIndexed { i, s ->
             val w = weightAt(i, fan, config)
             val dev = s.medianBg - target
             acc += (if (dev < 0.0) a.hypoWeight else a.hyperWeight) * w * abs(dev)
+            if (s.lowerBg < hypoFloor) acc += a.hypoWeight * w * KovatchevRisk.lbgi(s.lowerBg)
         }
         return acc
     }

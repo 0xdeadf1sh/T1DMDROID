@@ -84,9 +84,24 @@ interface CgmReadingDao {
     @Query("SELECT * FROM cgm_reading WHERE tsMs BETWEEN :fromMs AND :toMs ORDER BY tsMs")
     suspend fun readingsInRange(fromMs: Long, toMs: Long): List<CgmReadingEntity>
 
+    /**
+     * Oldest / newest stamp this source holds; null when it holds nothing. The extent the start-day
+     * picker bounds itself by — how far back there is anything to drive over.
+     *
+     * Two queries rather than one returning both columns: SQLite's MIN/MAX optimisation applies only
+     * to a lone aggregate, and either one alone is a single seek down
+     * `sqlite_autoindex_cgm_reading_1 (sourceId, tsMs)`. Asking for both at once forfeits it and scans.
+     */
+    @Query("SELECT MIN(tsMs) FROM cgm_reading WHERE sourceId = :sourceId")
+    suspend fun oldestTs(sourceId: String): Long?
+
+    @Query("SELECT MAX(tsMs) FROM cgm_reading WHERE sourceId = :sourceId")
+    suspend fun newestTs(sourceId: String): Long?
+
     @Query("DELETE FROM cgm_reading")
     suspend fun deleteAll()
 }
+
 
 @Dao
 interface SampleDao {
@@ -304,6 +319,15 @@ interface OutboxDao {
     @Query("SELECT id, kind, createdAtMs FROM outbox ORDER BY createdAtMs, id")
     suspend fun evictionRows(): List<OutboxEvictRow>
 
+    /** The row behind a rowid handed out by [enqueue], or null once it has drained. There is no SENT
+     *  state — `QueueDrainer` DELETEs on HTTP success — so *absent* is the only "already sent" signal
+     *  there is, and it is indistinguishable from evicted. Read before an undo withdraws the push, so
+     *  the receipt can say which of the two happened instead of guessing (see
+     *  `T1dmRepository.withdrawPush`). Rowids are recycled by SQLite, hence the dedupKey cross-check
+     *  there — this returns the whole row rather than just the state so that check is possible. */
+    @Query("SELECT * FROM outbox WHERE id = :id")
+    suspend fun byId(id: Long): OutboxEntity?
+
     @Query("DELETE FROM outbox WHERE id = :id")
     suspend fun delete(id: Long)
 
@@ -316,6 +340,15 @@ interface OutboxDao {
 
     @Query("UPDATE outbox SET state = :state, attempts = :attempts, nextAttemptMs = :nextAttemptMs WHERE id = :id")
     suspend fun reschedule(id: Long, state: OutboxState, attempts: Int, nextAttemptMs: Long)
+
+    /** CONDITIONAL state change; returns the rows actually updated (0 or 1). `QueueDrainer` takes a
+     *  whole batch of PENDING rows in one snapshot and then spends an HTTP round trip per row, so a
+     *  row can sit in that snapshot for minutes while still PENDING on disk — long enough for an undo
+     *  to withdraw it. Claiming through this rather than the unconditional [reschedule] is what makes
+     *  INFLIGHT the mutual-exclusion token `T1dmRepository.withdrawPush` already assumes it is: a zero
+     *  return means the row was deleted (or claimed) underneath the snapshot and must not be sent. */
+    @Query("UPDATE outbox SET state = :to WHERE id = :id AND state = :from")
+    suspend fun claim(id: Long, from: OutboxState, to: OutboxState): Int
 
     /** Full-erase (issue 5): drop the entire queue (distinct from the id-list [deleteAll]). */
     @Query("DELETE FROM outbox")
@@ -434,7 +467,7 @@ interface FoodDao {
      * Full-text search over `food_fts` (external-content FTS5 on `food`), ranked by relevance.
      * [match] is a raw FTS5 MATCH expression (the repository appends `*` for prefix search).
      * `@SkipQueryVerification` because `food_fts` is a hand-rolled virtual table Room does not
-     * model as an entity (created in [MigrationRunner.MIGRATION_3_4] + the DB `onCreate` callback).
+     * model as an entity (created in [MigrationRunner.MIGRATION_4_5] + the DB `onCreate` callback).
      */
     @SkipQueryVerification
     @Query(
@@ -465,6 +498,18 @@ interface SavedMealDao {
     @Insert suspend fun insertMeal(meal: SavedMealEntity): Long
 
     @Insert suspend fun insertItems(items: List<SavedMealItemEntity>)
+
+    /**
+     * In-place edit of a saved-meal header; returns rows affected, which is 0 exactly when the meal
+     * was deleted out from under the editor (the repository refuses to write item rows then — with no
+     * foreign key on `saved_meal_item` they would be permanent orphans).
+     *
+     * The caller issues this even when [name] is unchanged: [observeMeals] selects from `saved_meal`
+     * alone, so Room's invalidation tracker never sees an edit confined to the item rows and the
+     * saved-meals list would stay stale until something else touched the header.
+     */
+    @Query("UPDATE saved_meal SET name = :name, updatedAt = :nowMs WHERE id = :id")
+    suspend fun updateMeal(id: Long, name: String, nowMs: Long): Int
 
     @Query("SELECT * FROM saved_meal ORDER BY updatedAt DESC")
     fun observeMeals(): Flow<List<SavedMealEntity>>
@@ -510,4 +555,30 @@ interface InsulinTypeDao {
     /** Full-erase (issue 5): drop every USER-added type; the builtin presets are kept (first-run). */
     @Query("DELETE FROM insulin_type WHERE builtin = 0")
     suspend fun deleteAllCustom()
+}
+
+@Dao
+interface PaintStrokeDao {
+    @Insert suspend fun insert(stroke: PaintStrokeEntity): Long
+
+    /**
+     * Every stroke whose time span intersects the visible window — the sole read this table has, and
+     * the reason `minTsMs`/`maxTsMs` are hoisted out of the points BLOB and indexed. Intersection, not
+     * containment: a stroke drawn wider than the current window (or scrolled half off it) must still
+     * be drawn, so the test is `maxTsMs >= from AND minTsMs <= to`, inclusive at both ends (a stroke
+     * touching the window by a single instant counts). Ordered by authoring time so later strokes
+     * paint over earlier ones; `id` breaks ties within a millisecond.
+     */
+    @Query(
+        "SELECT * FROM bg_paint_stroke WHERE maxTsMs >= :fromMs AND minTsMs <= :toMs " +
+            "ORDER BY createdAtMs, id",
+    )
+    fun observeOverlapping(fromMs: Long, toMs: Long): Flow<List<PaintStrokeEntity>>
+
+    @Query("DELETE FROM bg_paint_stroke WHERE id = :id")
+    suspend fun delete(id: Long)
+
+    /** Full-erase (issue 5, app reset). Row-only DELETE — the schema/table is untouched. */
+    @Query("DELETE FROM bg_paint_stroke")
+    suspend fun deleteAll()
 }

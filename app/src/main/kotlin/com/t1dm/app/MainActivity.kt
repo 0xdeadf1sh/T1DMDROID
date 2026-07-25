@@ -13,6 +13,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import com.t1dm.app.di.AppContainer
 import com.t1dm.app.service.CgmScanService
+import com.t1dm.core.design.HapticStrength
 import com.t1dm.core.design.T1dmFontId
 import com.t1dm.core.design.T1dmTheme
 import com.t1dm.core.design.resolvePalette
@@ -41,9 +42,16 @@ class MainActivity : ComponentActivity() {
             val fontKey by ss.fontId.collectAsState("system")
             val animations by ss.animationsEnabled.collectAsState(true)
             val death by ss.deathMode.collectAsState(false)
+            val hapticsKey by ss.hapticsLevel.collectAsState(HapticStrength.DEFAULT.name)
             val customJson by ss.customThemeJson.collectAsState(null)
             val palette = remember(themeId, customJson) { resolvePalette(themeId, customJson) }
-            T1dmTheme(palette = palette, font = T1dmFontId.forKey(fontKey), animationsEnabled = animations, deathMode = death) {
+            T1dmTheme(
+                palette = palette,
+                font = T1dmFontId.forKey(fontKey),
+                animationsEnabled = animations,
+                deathMode = death,
+                hapticStrength = HapticStrength.forKey(hapticsKey),
+            ) {
                 T1dmApp(container)
             }
         }
@@ -77,6 +85,10 @@ class MainActivity : ComponentActivity() {
     private fun requestRuntimePermissions() {
         val wanted = buildList {
             add(Manifest.permission.BLUETOOTH_SCAN)
+            // The watch link holds a GATT session, and on Android 12+ BLUETOOTH_CONNECT is granted
+            // independently of BLUETOOTH_SCAN — so it must be requested explicitly or connectGatt()
+            // fails with a permission error even after the user allows "Nearby devices".
+            add(Manifest.permission.BLUETOOTH_CONNECT)
             add(Manifest.permission.ACTIVITY_RECOGNITION)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 add(Manifest.permission.POST_NOTIFICATIONS)

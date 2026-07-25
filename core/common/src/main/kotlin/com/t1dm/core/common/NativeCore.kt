@@ -5,6 +5,7 @@ import com.t1dm.core.model.AccuracyReport
 import com.t1dm.core.model.AdvancedStats
 import com.t1dm.core.model.BasalSchedule
 import com.t1dm.core.model.BuiltContext
+import com.t1dm.core.model.CarTuning
 import com.t1dm.core.model.CurveEvent
 import com.t1dm.core.model.CurveKind
 import com.t1dm.core.model.DecodedAdvert
@@ -13,6 +14,7 @@ import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.ModelDescriptor
 import com.t1dm.core.model.PredictedTime
 import com.t1dm.core.model.StatSample
+import com.t1dm.core.model.TerrainSpec
 
 /**
  * Kotlin-facing surface of the Rust `t1dm-core` crate. :app (and every consumer) depends on
@@ -43,9 +45,11 @@ interface NativeCore {
     /** Parse a model `descriptor.json` (SPEC §2.4); `null` on malformed JSON / a missing field. */
     fun parseDescriptor(json: String): ModelDescriptor?
 
-    /** Strictly-causal one-sided Savitzky-Golay smooth (INFERENCE.md §7.1); optional output
-     *  clamps (BG → [20,500]; carb/insulin → min 0). */
-    fun causalSmooth(series: List<Double>, clampMin: Double?, clampMax: Double?): List<Double>
+    /** Strictly-causal one-sided Savitzky-Golay smooth (INFERENCE.md §7.1) over an ODD [window]
+     *  (1 = unfiltered pass-through); optional output clamps (BG → [20,500]; carb/insulin → min 0)
+     *  hold at every window. An out-of-contract window degrades to the default rather than throwing —
+     *  [buildContext], the model-input path, rejects it instead. */
+    fun causalSmooth(series: List<Double>, clampMin: Double?, clampMax: Double?, window: Int): List<Double>
 
     /** z-score a raw `[bg, carb, insulin]` sample (bg risk-z, carb/insulin log1p-z). */
     fun normalizeSample(desc: ModelDescriptor, bg: Double, carb: Double, insulin: Double): List<Double>
@@ -55,7 +59,10 @@ interface NativeCore {
 
     /** Build the normalized context + prediction zone + `last_bg` anchor from a raw
      *  per-step history (INFERENCE.md §7.2-7.4). Announced future doses are raw values or
-     *  `null` (→ the `normalize(0)` no-dose baseline). Throws on a malformed shape. */
+     *  `null` (→ the `normalize(0)` no-dose baseline). [smoothingWindow] is the odd causal SavGol
+     *  window applied to the **BG channel only** (1 = unfiltered); carb/insulin are analytic
+     *  reconstructions and reach the model raw. Throws on a malformed shape OR an out-of-contract
+     *  window — the window moves the §3.6-D `last_bg` anchor, so it fails closed here. */
     fun buildContext(
         desc: ModelDescriptor,
         bg: List<Double>,
@@ -63,6 +70,7 @@ interface NativeCore {
         insulin: List<Double>,
         announcedCarb: List<Double>?,
         announcedInsulin: List<Double>?,
+        smoothingWindow: Int,
     ): BuiltContext
 
     /** Assemble `head_raw` (P·S·7, risk) into an ascending quantile fan and decode to mg/dL
@@ -134,4 +142,16 @@ interface NativeCore {
      *  returned with its true `n` and `sufficient = false` so the UI can say "insufficient
      *  history" plainly. Total on any input; a bad argument yields [AccuracyReport.EMPTY]. */
     fun accuracyAtHorizons(pairs: List<AccuracyPair>, minSamples: Int): AccuracyReport
+
+    // ── Hill-climb minigame physics (t1dm-core::game) ───────────────────────────────
+
+    /** The offroad car tune the game ships (large wheels, long travel, high torque, strong
+     *  grip). Rust owns these numbers; nothing on this side transcribes them. */
+    fun defaultCarTuning(): CarTuning
+
+    /** Open a live physics world over [terrain]. The heightfield crosses the FFI exactly
+     *  here — every later frame is one [GameWorld.step]. The caller OWNS the result and must
+     *  [GameWorld.close] it. Throws on a degenerate terrain or tuning (a caller bug: the
+     *  solver validates once here so the per-frame path can be total). */
+    fun createGameWorld(terrain: TerrainSpec, tuning: CarTuning): GameWorld
 }

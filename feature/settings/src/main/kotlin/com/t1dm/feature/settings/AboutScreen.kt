@@ -1,6 +1,5 @@
 package com.t1dm.feature.settings
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -19,6 +18,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
+import com.t1dm.core.design.HapticEvent
+import com.t1dm.core.design.hapticClickable
 
 /**
  * Read-only "About" panel (Phase 7C — item 18): app identity, version/build, the
@@ -69,7 +70,9 @@ fun AboutScreen(info: AboutInfo) {
             textDecoration = TextDecoration.Underline,
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable { uriHandler.openUri(repoUrl) }
+                // NavSwitch: the press hands off to the browser, which is a destination change even
+                // though the destination is not ours.
+                .hapticClickable(HapticEvent.NavSwitch) { uriHandler.openUri(repoUrl) }
                 .padding(vertical = 4.dp),
         )
 
@@ -99,3 +102,24 @@ private fun Section(title: String) {
 private fun Kv(k: String, v: String) {
     com.t1dm.core.design.KeyValueRow(k, v, numeric = false)
 }
+
+// ── search index (see SettingsIndex.kt) ───────────────────────────────────────────────────────────
+//
+// Read-only throughout, so one whole-screen entry rather than a row apiece: every fact on the page
+// answers the same question, and there is nothing here to scroll to or tune.
+
+private val aboutPage = SettingsKnob(
+    id = "about.page",
+    screen = SettingsScreenKey.ABOUT,
+    section = "Data",
+    label = "About",
+    subtitle = "Version, build, git SHA, licence, model provenance, native-core status",
+    synonyms = listOf(
+        "about", "version", "build", "build number", "git", "sha", "commit", "licence", "license",
+        "gpl", "open source", "source", "repo", "github", "credits", "model id", "executorch",
+        "parameters", "native core", "provenance", "package", "flavor",
+    ),
+    anchored = false,
+)
+
+internal val settingsAboutKnobs = listOf(aboutPage)

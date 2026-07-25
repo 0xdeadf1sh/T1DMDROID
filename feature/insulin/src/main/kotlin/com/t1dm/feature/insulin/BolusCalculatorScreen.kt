@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -19,6 +20,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -30,6 +32,13 @@ import androidx.compose.ui.unit.dp
 import com.t1dm.calc.AdviceResult
 import com.t1dm.calc.Candidate
 import com.t1dm.calc.DecisionCard
+import com.t1dm.core.design.ConfirmLogDialog
+import com.t1dm.core.design.HapticEvent
+import com.t1dm.core.design.PendingLog
+import com.t1dm.core.design.rememberHapticDetent
+import com.t1dm.core.design.rememberT1dmHaptics
+import com.t1dm.core.design.verticalScrollbar
+import com.t1dm.core.model.InsulinKind
 import kotlin.math.roundToInt
 
 /**
@@ -45,7 +54,8 @@ import kotlin.math.roundToInt
  *    the §3.6-F decision card. **Accept is gated behind acknowledging the card**, and behind a second
  *    mandatory confirmation whenever [AdviceResult.Recommended.requiresConfirmation] is set (a long gap
  *    since the last logged dose + a nonzero dose). Accept only ever *records the human's decision* —
- *    it does not, and cannot, actuate insulin.
+ *    it does not, and cannot, actuate insulin. A confirm-then-commit dialog then restates the
+ *    `logged_dose` about to be written; it is a third, additive gate and replaces neither checkbox.
  *
  * The calculator scores every candidate toward a SINGLE target BG the user picks on the [TargetBgSlider]
  * (§3.6, advisory only). Its bounds are the calculator's own low/high target thresholds — the same band
@@ -59,6 +69,10 @@ fun BolusCalculatorScreen(
     targetHighMgdl: Double,
     initialTargetMgdl: Double,
     isComputing: Boolean = false,
+    insulinLabel: String? = null,
+    /** True once the recommendation has outlived the anchor it was computed from; Accept goes dead and
+     *  the card is greyed, because every freshness figure on it describes a BG that has since aged. */
+    adviceExpired: Boolean = false,
     onAccept: (Candidate) -> Unit = {},
     onRecompute: (targetMgdl: Double) -> Unit = {},
 ) {
@@ -70,19 +84,24 @@ fun BolusCalculatorScreen(
     var targetMgdl by remember(lo, hi, initialTargetMgdl) {
         mutableStateOf(initialTargetMgdl.coerceIn(lo, hi))
     }
+    val scroll = rememberScrollState()
+    val haptics = rememberT1dmHaptics()
 
+    // N10 — the 16 dp frame sits INSIDE the scroll (as on every other panel) so the scrollbar, which
+    // must precede `verticalScroll`, tracks the true viewport and rides flush against its edge rather
+    // than floating 16 dp in from it.
     Column(
-        Modifier.fillMaxWidth().padding(16.dp).verticalScroll(rememberScrollState()),
+        Modifier.fillMaxSize().verticalScrollbar(scroll).verticalScroll(scroll).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         TargetBgSlider(targetMgdl, lo, hi) { targetMgdl = it }
         when (result) {
-            null -> Text("No recommendation yet — tap Recompute.", style = MaterialTheme.typography.bodyMedium)
+            null -> Text("No recommendation yet", style = MaterialTheme.typography.bodyMedium)
             is AdviceResult.Refused -> RefusedCard(result)
-            is AdviceResult.Recommended -> RecommendedBody(result, onAccept)
+            is AdviceResult.Recommended -> RecommendedBody(result, insulinLabel, adviceExpired, onAccept)
         }
         Button(
-            onClick = { onRecompute(targetMgdl) },
+            onClick = { haptics.perform(HapticEvent.Tap); onRecompute(targetMgdl) },
             enabled = !isComputing,
             modifier = Modifier.padding(top = 4.dp),
         ) {
@@ -108,6 +127,9 @@ fun BolusCalculatorScreen(
  */
 @Composable
 private fun TargetBgSlider(target: Double, low: Double, high: Double, onChange: (Double) -> Unit) {
+    // Continuous, so the grain is imposed here: one tick per whole mg/dL — exactly the number the
+    // read-out above the slider shows, so the texture and the digits agree.
+    val targetDetent = rememberHapticDetent(HapticEvent.ScrubTick)
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -116,7 +138,7 @@ private fun TargetBgSlider(target: Double, low: Double, high: Double, onChange: 
             }
             Slider(
                 value = target.toFloat(),
-                onValueChange = { onChange(it.toDouble()) },
+                onValueChange = { targetDetent.at(it.roundToInt()); onChange(it.toDouble()) },
                 valueRange = low.toFloat()..high.toFloat(),
             )
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -124,8 +146,7 @@ private fun TargetBgSlider(target: Double, low: Double, high: Double, onChange: 
                 Text("${high.roundToInt()}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
             }
             Text(
-                "The grid search scores every candidate so the forecast median lands here. Bounds are your " +
-                    "calculator low/high target. Advisory only — the app never actuates insulin.",
+                "Aims the forecast median here · advisory only",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
             )
@@ -135,6 +156,12 @@ private fun TargetBgSlider(target: Double, low: Double, high: Double, onChange: 
 
 @Composable
 private fun RefusedCard(refused: AdviceResult.Refused) {
+    val haptics = rememberT1dmHaptics()
+    // §3.6 fail-closed: the calculator declined to recommend anything at all. It lands asynchronously,
+    // seconds after Recompute, replacing a card the user may not be looking at — so the refusal is
+    // announced. Keyed on the reasons, so a re-render of the same refusal is silent while a NEW one
+    // (a different rail tripping) speaks again.
+    LaunchedEffect(refused.reasons) { haptics.perform(HapticEvent.Warn) }
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text("No dose recommended", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
@@ -144,16 +171,26 @@ private fun RefusedCard(refused: AdviceResult.Refused) {
 }
 
 @Composable
-private fun RecommendedBody(rec: AdviceResult.Recommended, onAccept: (Candidate) -> Unit) {
+private fun RecommendedBody(
+    rec: AdviceResult.Recommended,
+    insulinLabel: String?,
+    adviceExpired: Boolean,
+    onAccept: (Candidate) -> Unit,
+) {
     var acknowledged by remember(rec) { mutableStateOf(false) }
     var confirmed by remember(rec) { mutableStateOf(false) }
     val confirmSatisfied = !rec.requiresConfirmation || confirmed
+    // The confirm-then-commit dialog is a THIRD gate, strictly additive to the two §3.6-F checkboxes
+    // above — those still gate the button's `enabled`; this only gates what the press does. A
+    // carb-rescue accept writes no dose at all, so it has nothing to restate and raises no dialog.
+    var pendingAccept by remember(rec) { mutableStateOf<Candidate?>(null) }
+    val haptics = rememberT1dmHaptics()
 
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             if (rec.rescueCarbsG != null) {
                 Text("Treat the low first", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Text("~${rec.rescueCarbsG!!.toInt()} g fast carbs — insulin withheld.", style = MaterialTheme.typography.headlineSmall)
+                Text("~${rec.rescueCarbsG!!.toInt()} g fast carbs — insulin withheld", style = MaterialTheme.typography.headlineSmall)
             } else {
                 Text("Recommended", style = MaterialTheme.typography.titleMedium)
                 Text("${fmt(rec.best.doseU)} U", style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold)
@@ -170,18 +207,24 @@ private fun RecommendedBody(rec: AdviceResult.Recommended, onAccept: (Candidate)
         }
     }
 
-    DecisionCardView(rec.card)
+    DecisionCardView(rec.card, adviceExpired)
 
     RankedList(rec.ranked)
 
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Checkbox(checked = acknowledged, onCheckedChange = { acknowledged = it })
-        Text("I have read the decision card above.", style = MaterialTheme.typography.bodyMedium)
+        Checkbox(
+            checked = acknowledged,
+            onCheckedChange = { on -> haptics.toggled(on); acknowledged = on },
+        )
+        Text("I have read the decision card.", style = MaterialTheme.typography.bodyMedium)
     }
     if (rec.requiresConfirmation) {
         Column {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Checkbox(checked = confirmed, onCheckedChange = { confirmed = it })
+                Checkbox(
+                    checked = confirmed,
+                    onCheckedChange = { on -> haptics.toggled(on); confirmed = on },
+                )
                 Text("Mandatory confirmation", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
             }
             rec.card.confirmationReasons.forEach {
@@ -189,24 +232,70 @@ private fun RecommendedBody(rec: AdviceResult.Recommended, onAccept: (Candidate)
             }
         }
     }
+    // The §3.6-F terminal accept — the only press in the app that records a dosing decision. The two
+    // branches deliberately differ: a carb-rescue or 0 U acceptance writes NO dose and raises no
+    // dialog, so this press is the whole act and carries the Commit itself; a real dose only proposes,
+    // and its Commit is owned by the receipt once the `logged_dose` row exists.
     Button(
-        onClick = { onAccept(rec.best) },
-        enabled = acknowledged && confirmSatisfied,
+        onClick = {
+            if (rec.rescueCarbsG != null || rec.best.doseU <= 0.0) {
+                haptics.perform(HapticEvent.Commit)
+                onAccept(rec.best)
+            } else {
+                haptics.perform(HapticEvent.Tap)
+                pendingAccept = rec.best
+            }
+        },
+        enabled = acknowledged && confirmSatisfied && !adviceExpired,
         modifier = Modifier.fillMaxWidth(),
-    ) { Text(if (rec.rescueCarbsG != null) "Accept — treat low" else "Accept ${fmt(rec.best.doseU)} U") }
+    ) {
+        Text(
+            when {
+                adviceExpired -> "Expired — recompute"
+                rec.rescueCarbsG != null -> "Accept — treat low"
+                else -> "Accept ${fmt(rec.best.doseU)} U"
+            },
+        )
+    }
+
+    pendingAccept?.let { c ->
+        ConfirmLogDialog(
+            pending = PendingLog.Dose(c.doseU, InsulinKind.BOLUS, insulinLabel ?: "rapid-acting (from Settings)"),
+            onConfirm = { onAccept(c); pendingAccept = null },
+            onDismiss = { pendingAccept = null },
+        )
+    }
 }
 
 @Composable
-private fun DecisionCardView(card: DecisionCard) {
+private fun DecisionCardView(card: DecisionCard, expired: Boolean = false) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text("Decision card", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+            // Every figure below was measured when the search ran. Once that has lapsed they are a
+            // record, not a description, and the card says so rather than reading present-tense.
+            if (expired) {
+                Text(
+                    "As measured at the time of the search",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
             fieldRow("Last real reading", card.ageOfLastRealReadingMin?.let { "$it min ago" } ?: "none")
             fieldRow("Interpolated/warm-up", "${(card.interpolatedFraction * 100).toInt()}%" + if (card.warmup) " · WARM-UP" else "")
             fieldRow("Backend", "${card.backend} · ${card.precision}" + agreementSuffix(card.agreementOk))
             fieldRow("Assumed IOB", card.assumedIobU?.let { "${fmt(it)} U (logged only)" } ?: "unknown")
             fieldRow("Last logged dose", card.minSinceLastLoggedDose?.let { "$it min ago" } ?: "never")
             fieldRow("Forecast band width", card.bandWidthMgdl?.let { "±${(it / 2).toInt()} mg/dL" } ?: "—")
+            // §3.6-F: the input filter is disclosed only when it is NOT the default, since it shifts
+            // the last_bg anchor every other row on this card is qualifying.
+            if (card.smoothingWindow != DecisionCard.DEFAULT_SMOOTHING_WINDOW) {
+                fieldRow(
+                    "BG input filter",
+                    if (card.smoothingWindow <= 1) "off (raw)"
+                    else "${card.smoothingWindow} samples · ${card.smoothingWindow * 5} min",
+                )
+            }
         }
     }
 }

@@ -44,8 +44,12 @@ private const val GRID_MS = 300_000L
 class AppWatchGlanceSource(
     private val repository: T1dmRepository,
     private val inferenceState: StateFlow<InferenceState>,
-    private val thresholds: AlertThresholds,
-    private val lossMin: Int,
+    // Providers (not values) so each glance reads the CURRENT alarm config — the thresholds/loss window
+    // are a live @Volatile that Settings edits re-hydrate; capturing them once at construction froze the
+    // watch's band/signal-loss classification to boot-time values (a later threshold edit never reached
+    // the 5-min push). Mirrors the AlarmEngine's live-config seam.
+    private val thresholdsProvider: () -> AlertThresholds,
+    private val lossMinProvider: () -> Int,
     private val staleMin: Int = 15,
 ) : WatchGlanceSource {
 
@@ -59,8 +63,8 @@ class AppWatchGlanceSource(
         val g = com.t1dm.app.notify.BgGlanceComputer.compute(
             latest = latest,
             state = inferenceState.value,
-            thresholds = thresholds,
-            lossMin = lossMin,
+            thresholds = thresholdsProvider(),
+            lossMin = lossMinProvider(),
             staleMin = staleMin,
             nowMs = nowMs,
         )

@@ -82,8 +82,7 @@ fun HardwareScreen(
                 else -> Column(Modifier.padding(top = 4.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     vk.rows.forEach { (label, value) -> HwRow(label, value) }
                     Text(
-                        "This describes the GPU itself; the model runs on Vulkan only when a Vulkan-delegate " +
-                            "ExecuTorch backend is selected (fp32 CPU XNNPACK stays authoritative).",
+                        "GPU capability only — the model uses Vulkan only when a Vulkan-delegate backend is selected",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 4.dp),
@@ -111,7 +110,7 @@ fun HardwareScreen(
             val cause = state.lastCause?.name ?: "—"
             Text(
                 "last cycle: $cadence · cause $cause" +
-                    (if (!state.realBackendAvailable) " · real forecast path blocked (no .pte)" else ""),
+                    (if (!state.realBackendAvailable) " · forecast blocked (no .pte)" else ""),
                 style = MaterialTheme.typography.bodySmall,
             )
             state.note?.let {
@@ -125,9 +124,7 @@ fun HardwareScreen(
         // is kept so a user knows where to change/inspect it.
         item {
             Text(
-                "Choose the active compute backend, and see each backend's availability + reasons and " +
-                    "the last GPU-vs-CPU agreement measurement, in Settings → Forecast & models → " +
-                    "Compute backend.",
+                "Choose the compute backend in Settings → Forecast & models → Compute backend",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -135,7 +132,7 @@ fun HardwareScreen(
         }
 
         if (state.running.isEmpty()) {
-            item { Text("No models loaded.", style = MaterialTheme.typography.bodyMedium) }
+            item { Text("No models loaded", style = MaterialTheme.typography.bodyMedium) }
         } else {
             items(state.running, key = { it.modelId }) { model ->
                 ModelRow(model, state.latencyOf(model.modelId))

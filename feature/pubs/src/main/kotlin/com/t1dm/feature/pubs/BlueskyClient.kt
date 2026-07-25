@@ -66,7 +66,7 @@ class BlueskyClient(
             try {
                 BlueskyJson.decodeFromString<AuthorFeedResponse>(raw)
             } catch (e: SerializationException) {
-                throw IOException("Bluesky sent a response we couldn't read. Please try again.", e)
+                throw IOException("Couldn't read Bluesky's response", e)
             }
         }
     }
@@ -84,7 +84,7 @@ class BlueskyClient(
             call.enqueue(object : Callback {
                 override fun onFailure(call: Call, e: IOException) {
                     cont.resumeWithException(
-                        IOException("Couldn't reach Bluesky. Check your connection and try again.", e),
+                        IOException("Couldn't reach Bluesky — check your connection", e),
                     )
                 }
 
@@ -93,7 +93,7 @@ class BlueskyClient(
                         .onSuccess { cont.resume(it) }
                         .onFailure { e ->
                             cont.resumeWithException(
-                                IOException("Couldn't reach Bluesky. Check your connection and try again.", e),
+                                IOException("Couldn't reach Bluesky — check your connection", e),
                             )
                         }
                 }
@@ -103,7 +103,7 @@ class BlueskyClient(
 
 private fun statusMessage(code: Int): String = when {
     code == 404 -> "Couldn't find that Bluesky feed — the account may have moved or been removed."
-    code == 429 -> "Bluesky is rate-limiting requests right now. Please wait a moment and try again."
-    code in 500..599 -> "Bluesky is having trouble right now. Please try again shortly."
+    code == 429 -> "Bluesky is rate-limiting — wait a moment"
+    code in 500..599 -> "Bluesky is having trouble"
     else -> "Couldn't load the feed from Bluesky (it returned status $code)."
 }

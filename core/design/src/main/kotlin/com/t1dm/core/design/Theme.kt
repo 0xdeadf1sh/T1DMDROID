@@ -26,9 +26,12 @@ val LocalDeathMode = staticCompositionLocalOf { false }
 
 /**
  * The currently-active palette + Material [ColorScheme], mirrored into plain holders so the non-Compose
- * Glance widgets (refreshed headlessly from the FGS) snapshot the app theme — widget == app theme
- * (Phase 7B/7D). Written by exactly ONE authority, [applyWidgetPalette], which the FGS calls
- * synchronously right before it pushes the widgets; the widgets read the value it set at render time.
+ * Glance widgets (refreshed headlessly) snapshot the app theme — widget == app theme (Phase 7B/7D).
+ * Written only through [applyWidgetPalette], and only from the widget-render path: the FGS calls it
+ * synchronously right before it pushes the tiles, and `provideGlance` calls it again from the theme its
+ * own snapshot carries. Both derive from the same persisted `ui.theme` kv, so they cannot disagree; the
+ * second call is what lets a render that did NOT originate in the service (boot, the periodic refresh
+ * worker, a resize) paint the persisted theme instead of the process-default Tron.
  *
  * The Activity does NOT write these — its own Compose tree reads the palette directly (MaterialTheme +
  * [LocalT1dmSemantics]), never these holders. A second, foreground writer used to race the FGS: while
@@ -47,8 +50,9 @@ var T1dmActivePalette: T1dmPalette = TronPalette
 /**
  * Seed the process-global palette holders the Glance widgets read, WITHOUT a composition — the SOLE
  * writer of [T1dmActivePalette]/[T1dmColorScheme]. The FGS calls this from its headless glance refresh
- * (once per reading/tick/theme-change) right before `updateAll`, so the widget renders the persisted
- * theme even when no Activity has run (boot / FGS-only start) and the instant the theme changes.
+ * (once per reading/tick/theme-change) right before `updateAll` so the theme change lands on the tile
+ * immediately rather than on the next reading; the widget's own `provideGlance` calls it again from the
+ * theme it just read, so no render depends on the service having run first.
  */
 fun applyWidgetPalette(palette: T1dmPalette) {
     T1dmActivePalette = palette
@@ -58,7 +62,8 @@ fun applyWidgetPalette(palette: T1dmPalette) {
 /**
  * The app theme (SPEC.private.md §3.4 / Phase 7D). Resolves the [palette] to a Material [ColorScheme]
  * + the chosen [font] to a [androidx.compose.material3.Typography], and provides the glucose-band
- * semantics and the animation flag. All parameters default so the pre-selector call sites (previews)
+ * semantics, the animation flag and the UI haptics engine (Haptics.kt — a sibling of the animation
+ * flag, never a dependent of it). All parameters default so the pre-selector call sites (previews)
  * still compile. It deliberately does NOT touch the widget holders ([T1dmActivePalette]); those are the
  * FGS's alone (see [applyWidgetPalette]) to keep the foreground recompose from racing the widget render.
  */
@@ -69,9 +74,15 @@ fun T1dmTheme(
     font: T1dmFontId = T1dmFontId.SYSTEM,
     animationsEnabled: Boolean = true,
     deathMode: Boolean = false,
+    hapticStrength: HapticStrength = HapticStrength.DEFAULT,
     content: @Composable () -> Unit,
 ) {
     val scheme = palette.toColorScheme()
+    // The one place the process haptics engine is built (Haptics.kt). It is provided here rather than
+    // in T1dmApp because this is where every other cross-cutting interaction local already lives, and
+    // because defaulting the parameter keeps the preview call sites compiling — they get a real engine
+    // bound to the preview context, which has no vibrator, so a preview stays mute.
+    val haptics = rememberHapticsEngine(hapticStrength)
     // U3 — the red-rectangle touch flash. Material's default ripple tints from the local content
     // colour; on a surface whose content resolves to `error` (= [urgentLow] = red) a bounded ripple on
     // an unclipped clickable painted a red rectangle on every tap. A prior fix pinned the ripple to
@@ -85,6 +96,7 @@ fun T1dmTheme(
         LocalT1dmSemantics provides palette,
         LocalAnimationsEnabled provides animationsEnabled,
         LocalDeathMode provides deathMode,
+        LocalT1dmHaptics provides haptics,
         LocalRippleConfiguration provides ripple,
     ) {
         MaterialTheme(

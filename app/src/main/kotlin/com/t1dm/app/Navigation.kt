@@ -10,14 +10,15 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -27,14 +28,21 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
+import com.t1dm.app.widget.STALE_MIN
+import kotlinx.coroutines.delay
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -52,15 +60,23 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.font.FontFamily
+import com.t1dm.core.design.HapticEvent
+import com.t1dm.core.design.HapticStrength
 import com.t1dm.core.design.LocalAnimationsEnabled
 import com.t1dm.core.design.LocalDeathMode
+import com.t1dm.core.design.LocalT1dmHaptics
+import com.t1dm.core.design.T1dmHaptics
 import com.t1dm.core.design.LocalT1dmSemantics
+import com.t1dm.core.design.hapticClickable
 import com.t1dm.core.design.ThemeBackdrop
 import com.t1dm.core.design.iconStyleForTheme
 import com.t1dm.core.design.navEnter
 import com.t1dm.core.design.navExit
 import com.t1dm.core.design.navIcon
 import com.t1dm.app.di.AppContainer.BolusAdviceUi
+import com.t1dm.app.di.LogHandle
+import com.t1dm.app.di.logReceipt
+import com.t1dm.app.di.undoReceipt
 import com.t1dm.app.service.DoseCalcService
 import com.t1dm.feature.insulin.BolusCalculatorScreen
 import com.t1dm.core.model.InferenceCause
@@ -83,12 +99,18 @@ import com.t1dm.core.model.UnitSpace
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.t1dm.feature.dashboard.DashboardScreen
+import com.t1dm.feature.game.GameScreen
+import com.t1dm.core.model.CarTuning
 import com.t1dm.feature.hardware.HardwareScreen
 import com.t1dm.feature.insulin.InsulinScreen
 import com.t1dm.feature.insulin.InsulinTypeBuilderScreen
+import com.t1dm.feature.meals.FoodEditorScreen
 import com.t1dm.feature.meals.MealBuilderScreen
+import com.t1dm.feature.meals.MealEditorScreen
 import com.t1dm.feature.journal.JournalScreen
 import com.t1dm.feature.meals.MealsScreen
+import com.t1dm.core.model.Food
+import com.t1dm.core.model.SavedMeal
 import com.t1dm.feature.pubs.PubsScreen
 import com.t1dm.feature.models.ModelDetailScreen
 import com.t1dm.feature.models.ModelsScreen
@@ -108,6 +130,9 @@ import com.t1dm.feature.settings.DeathClockSettingsScreen
 import com.t1dm.feature.settings.DeviceTempAlertScreen
 import com.t1dm.feature.settings.DisplaySettingsScreen
 import com.t1dm.feature.settings.ForecastCadenceSettingsScreen
+import com.t1dm.feature.settings.LocalSettingsFocus
+import com.t1dm.feature.settings.SettingsFocusController
+import com.t1dm.feature.settings.SettingsScreenKey
 import com.t1dm.feature.settings.GraphSettingsScreen
 import com.t1dm.feature.settings.ModelCountSettingsScreen
 import com.t1dm.feature.settings.PowerSettingsScreen
@@ -116,6 +141,7 @@ import com.t1dm.feature.settings.SignalSafetyScreen
 import com.t1dm.feature.settings.ThermalSettingsScreen
 import com.t1dm.feature.settings.WarmupSettingsScreen
 import com.t1dm.feature.settings.WatchSettingsScreen
+import com.t1dm.alerts.AlarmSeverity
 import com.t1dm.alerts.VibrationPreset
 import com.t1dm.app.settings.SettingsStore
 import com.t1dm.data.curve.CurveEngine
@@ -194,10 +220,31 @@ fun T1dmApp(container: AppContainer) {
     // no-op on the flat regions and only the motif is dimmed).
     val bgAlphaPct by container.settingsStore.backgroundAlphaPct
         .collectAsState(com.t1dm.app.settings.SettingsStore.DEFAULT_BG_ALPHA_PCT)
+    // The commit receipt for every logged meal/dose. It is hosted (and its coroutine scoped) HERE
+    // rather than per-route so the undo window survives navigating away from the screen that wrote
+    // the row — a route-scoped `rememberCoroutineScope` is cancelled on exit, which would silently
+    // take the Undo with it. Feature modules never see any of this: they emit a callback and `:app`
+    // turns the returned LogHandle into a receipt.
+    //
+    // The WRITES have the same hazard and are launched on `container.appScope` for the same reason:
+    // hoisting only the snackbar left the row itself, its outbox enqueue and this `onLogged` call on
+    // the cancellable route scope, so leaving the screen between the press and the commit dropped the
+    // dose — silently, since the field is cleared before the write resolves.
+    val snackbars = remember { SnackbarHostState() }
+    val receiptScope = rememberCoroutineScope()
+    val haptics = LocalT1dmHaptics.current
     Box(Modifier.fillMaxSize().background(LocalT1dmSemantics.current.background)) {
         ThemeBackdrop(bgAlphaPct)
         Scaffold(
             containerColor = Color.Transparent,
+            // imePadding on the host, not the content: Scaffold parks the snackbar above the bottom
+            // bar but knows nothing of the IME, and targetSdk 36 never resizes the window — so a
+            // receipt posted straight after typing carbs/units would sit under a raised keyboard with
+            // its UNDO unreachable. With the keyboard up it now rides one bottom-bar height higher
+            // than strictly needed (that inset is measured from the window edge); that is the cheap
+            // side of the trade. §3.7's "insets applied in exactly one place" governs the content
+            // column and the feature screens, which this slot is not.
+            snackbarHost = { SnackbarHost(snackbars, Modifier.imePadding()) },
             // A transparent container makes Scaffold derive contentColor from contentColorFor(Transparent),
             // which is Unspecified and collapses to LocalContentColor (= black) — blacking out every
             // surface that inherits its colour (e.g. the big BG read-out + trend arrow). Pin it back to
@@ -205,22 +252,73 @@ fun T1dmApp(container: AppContainer) {
             contentColor = MaterialTheme.colorScheme.onBackground,
             bottomBar = { T1dmBottomBar(navController) },
         ) { padding ->
-            Column(Modifier.fillMaxSize().padding(padding)) {
+            // The ONE place the Scaffold insets are applied — feature screens must never re-apply them
+            // or the gap above the bottom bar doubles. N10 — plus the IME: targetSdk 36 forces
+            // edge-to-edge, so the window is never resized for the keyboard and a raised keyboard simply
+            // covered the bottom of every text-entry panel (the "Log bolus"/"Log basal" buttons were
+            // unreachable). `consumeWindowInsets(padding)` first, so `imePadding` only contributes what
+            // the bottom bar has not already accounted for instead of stacking a second full inset.
+            Column(
+                Modifier.fillMaxSize()
+                    .padding(padding)
+                    .consumeWindowInsets(padding)
+                    .imePadding(),
+            ) {
                 // Flavor-specific: real text in the public build, no-op in the personal build.
                 Disclaimer()
                 Breadcrumb(navController, container)
-                T1dmNavHost(navController, container)
+                T1dmNavHost(navController, container) { handle ->
+                    receiptScope.launch { snackbars.postLogReceipt(container, handle, haptics) }
+                }
             }
         }
     }
 }
 
-/** One node in the location trail (issue 14). [route] non-null ⇒ tappable to ascend to it. */
-private data class Crumb(val label: String, val route: String?)
+/**
+ * Show what was just written and offer to take it back.
+ *
+ * [HapticEvent.Commit] fires here rather than at the dialog's Accept: Commit is the vocabulary's
+ * heaviest pattern and is reserved for a row that actually exists, so it lands when the write has
+ * returned its [LogHandle], not when the intent was expressed.
+ *
+ * The undo is genuinely partial in one direction only, and the second snackbar says which: the local
+ * row and its still-queued push are gone unconditionally, but a push that already drained is on the
+ * server for good (no DELETE in the API, and the WS catch-up re-hydrates it by `clientId`).
+ */
+private suspend fun SnackbarHostState.postLogReceipt(
+    container: AppContainer,
+    handle: LogHandle,
+    haptics: T1dmHaptics,
+) {
+    haptics.perform(HapticEvent.Commit)
+    // A second log while the first receipt is up must not queue behind it — the undo window belongs
+    // to the newest write, and `showSnackbar` suspends until the current one is dismissed.
+    currentSnackbarData?.dismiss()
+    val result = showSnackbar(
+        message = logReceipt(handle),
+        actionLabel = "UNDO",
+        withDismissAction = true,
+        duration = SnackbarDuration.Long,
+    )
+    if (result == SnackbarResult.ActionPerformed) {
+        val outcome = container.undoLog(handle)
+        showSnackbar(undoReceipt(handle, outcome), duration = SnackbarDuration.Long)
+    }
+}
 
-/** The path from a top-level section down to the current sub-screen, most-recent last. The final
- *  crumb is the current screen (never tappable). Intermediate crumbs ascend to their route. */
-private fun crumbsFor(route: String?, modelId: String?): List<Crumb> {
+/** One node in the location trail (issue 14). [route] non-null ⇒ tappable to ascend to it. */
+internal data class Crumb(val label: String, val route: String?)
+
+/**
+ * The path from a top-level section down to the current sub-screen, most-recent last. The final
+ * crumb is the current screen (never tappable). Intermediate crumbs ascend to their route.
+ *
+ * [editLabel] names the row an editor route is open on. A route argument carries an id, never a name,
+ * so the lookup cannot happen here (this is a pure function of the route); [Breadcrumb] resolves it
+ * and the tail falls back to a static label when it cannot.
+ */
+internal fun crumbsFor(route: String?, modelId: String?, editLabel: String? = null): List<Crumb> {
     fun settings(vararg tail: Crumb) = listOf(Crumb("Settings", "settings"), *tail)
     return when (route) {
         null, "dashboard" -> listOf(Crumb("BG", null))
@@ -233,6 +331,16 @@ private fun crumbsFor(route: String?, modelId: String?): List<Crumb> {
         "network" -> listOf(Crumb("Network", null))
         "meals" -> listOf(Crumb("Meals", null))
         "meals/builder" -> listOf(Crumb("Meals", "meals"), Crumb("Meal builder", null))
+        "meals/builder/meal/{mealId}" -> listOf(
+            Crumb("Meals", "meals"),
+            Crumb("Meal builder", "meals/builder"),
+            Crumb(editLabel?.let { "Edit “$it”" } ?: "Edit meal", null),
+        )
+        "meals/builder/food/{foodId}" -> listOf(
+            Crumb("Meals", "meals"),
+            Crumb("Meal builder", "meals/builder"),
+            Crumb(editLabel?.let { "Edit “$it”" } ?: "Edit food", null),
+        )
         "insulin" -> listOf(Crumb("Insulin", null))
         "insulin/types" -> listOf(Crumb("Insulin", "insulin"), Crumb("Types & curves", null))
         "insulin/bolusCalc" -> listOf(Crumb("Insulin", "insulin"), Crumb("Bolus advisor", null))
@@ -258,9 +366,94 @@ private fun crumbsFor(route: String?, modelId: String?): List<Crumb> {
         "settings/watch" -> settings(Crumb("Watch", null))
         "settings/power" -> settings(Crumb("Low power", null))
         "settings/data" -> settings(Crumb("Backup & reset", null))
-        "settings/death" -> settings(Crumb("DEATH", null))
+        "settings/death" -> settings(Crumb("Death mode", null))
         else -> listOf(Crumb(route, null))
     }
+}
+
+/**
+ * Where each settings destination lives, as `:app`'s half of the search index.
+ *
+ * `:feature:settings` names a screen by an opaque [SettingsScreenKey] and never sees a route — the
+ * same seam every other cross-module id crosses (theme ids, font ids, haptic names, vibration presets,
+ * calculator objectives). Keeping the mapping here, beside [crumbsFor], is what lets a host test
+ * assert that every index entry resolves to a registered route AND that the breadcrumb a search result
+ * advertises is the one the trail will actually render on arrival.
+ *
+ * [SettingsScreenKey.MODELS] leaves the module for `:feature:models`; the hub's "Compute backend" row
+ * drills further into `models/{id}`, but that id is only known at press time, so a search hit lands on
+ * the model list.
+ */
+internal fun settingsRouteFor(screen: SettingsScreenKey): String = when (screen) {
+    SettingsScreenKey.ROOT -> "settings"
+    SettingsScreenKey.DISPLAY -> "settings/display"
+    SettingsScreenKey.GRAPH -> "settings/graph"
+    SettingsScreenKey.ALARM_THRESHOLDS -> "settings/alarms"
+    SettingsScreenKey.SIGNAL -> "settings/signal"
+    SettingsScreenKey.ALERTS -> "settings/alerts"
+    SettingsScreenKey.DEVICE_TEMP -> "settings/temperature"
+    SettingsScreenKey.WARMUP -> "settings/warmup"
+    SettingsScreenKey.MODEL_COUNT -> "settings/models_running"
+    SettingsScreenKey.FORECAST_CADENCE -> "settings/forecast"
+    SettingsScreenKey.THERMAL -> "settings/thermal"
+    SettingsScreenKey.CALCULATOR -> "settings/calculator"
+    SettingsScreenKey.CURVES -> "settings/curves"
+    SettingsScreenKey.MODELS -> "models"
+    SettingsScreenKey.CGM -> "settings/cgm"
+    SettingsScreenKey.SERVER -> "settings/server"
+    SettingsScreenKey.WATCH -> "settings/watch"
+    SettingsScreenKey.POWER -> "settings/power"
+    SettingsScreenKey.DATA -> "settings/data"
+    SettingsScreenKey.ABOUT -> "about"
+    SettingsScreenKey.DEATH_CLOCK -> "settings/deathclock"
+    SettingsScreenKey.DEATH_MODE -> "settings/death"
+}
+
+/**
+ * A pop that fires at most once for this composition.
+ *
+ * The editor routes ascend from two directions — the user pressing Save/Cancel/Delete, and the
+ * observed list reporting the row gone — and the write that triggers the second is the same press
+ * that fires the first. `popBackStack()` returns before the composition is torn down, so an
+ * unguarded pair would land the user TWO screens up, back on the Meals hub.
+ */
+@Composable
+private fun rememberSingleAscent(navController: NavHostController): () -> Unit {
+    var spent by remember { mutableStateOf(false) }
+    return remember(navController) {
+        {
+            if (!spent) {
+                spent = true
+                if (!navController.popBackStack()) navController.navigate("meals/builder")
+            }
+        }
+    }
+}
+
+/**
+ * The name of the row a meal/food editor route is open on, for the trail's tail crumb.
+ *
+ * The collection is scoped to those two routes on purpose: `savedMeals` costs one item query per meal
+ * on every emission, and the breadcrumb bar is composed on every screen in the app. Null while the
+ * Flow has yet to emit (or after the row is gone), which the caller renders as a static label rather
+ * than a flicker.
+ */
+@Composable
+private fun editedRowName(
+    container: AppContainer,
+    route: String?,
+    mealId: Long?,
+    foodId: Long?,
+): String? = when {
+    route == "meals/builder/meal/{mealId}" && mealId != null -> {
+        val meals by container.savedMeals.collectAsState(emptyList())
+        meals.firstOrNull { it.id == mealId }?.name
+    }
+    route == "meals/builder/food/{foodId}" && foodId != null -> {
+        val foods by container.customFoods.collectAsState(emptyList())
+        foods.firstOrNull { it.id == foodId }?.name
+    }
+    else -> null
 }
 
 /**
@@ -273,7 +466,13 @@ private fun Breadcrumb(navController: NavHostController, container: AppContainer
     val backStackEntry by navController.currentBackStackEntryAsState()
     val route = backStackEntry?.destination?.route
     val modelId = backStackEntry?.arguments?.getString("modelId")
-    val crumbs = remember(route, modelId) { crumbsFor(route, modelId) }
+    val editLabel = editedRowName(
+        container = container,
+        route = route,
+        mealId = backStackEntry?.arguments?.getString("mealId")?.toLongOrNull(),
+        foodId = backStackEntry?.arguments?.getString("foodId")?.toLongOrNull(),
+    )
+    val crumbs = remember(route, modelId, editLabel) { crumbsFor(route, modelId, editLabel) }
     val cs = MaterialTheme.colorScheme
     // The current BG number + trend arrow on the right (no unit label — chrome, not a read-out).
     val reading by container.latestReading.collectAsState(null)
@@ -281,7 +480,24 @@ private fun Breadcrumb(navController: NavHostController, container: AppContainer
     val death = LocalDeathMode.current
     // U1 — the app-wide glycemic status, recomputed as the forecast state changes.
     val inference by container.inferenceState.collectAsState(InferenceState())
-    val status = remember(inference) { glycemicStatusOf(inference, container.alarmConfig.thresholds) }
+    // Thresholds as a FLOW, not the @Volatile snapshot: a Settings edit has to invalidate this
+    // composition, or the badge keeps judging against bounds the user has already replaced.
+    val alarmCfg by container.alarmConfigFlow.collectAsState()
+    // Both the badge and the number below are freshness verdicts, and freshness is a function of the
+    // CLOCK — but in the default ADAPTIVE cadence the only thing that republishes InferenceState is a
+    // reading arriving. Exactly when readings stop, therefore, nothing re-evaluates, and a memo keyed
+    // on the forecast alone pins a green STABLE over every screen for as long as the app stays up.
+    // This tick is what makes "no longer true" reachable without new data.
+    val nowMs by produceState(System.currentTimeMillis()) {
+        while (true) {
+            value = System.currentTimeMillis()
+            delay(CHROME_TICK_MS)
+        }
+    }
+    val readingAgeMs = reading?.rxWallMs?.let { (nowMs - it).coerceAtLeast(0L) }
+    val status = remember(inference, alarmCfg, readingAgeMs) {
+        glycemicStatusOf(inference, alarmCfg.thresholds, nowMs, readingAgeMs)
+    }
     // I6 — when animations are on the trail MARQUEES (scrolls itself) so a long path is eventually
     // readable in full; with motion disabled it falls back to a manual horizontal scroll (never a moving
     // marquee). Either way weight(1f) keeps it from ever overlapping the status badge / version.
@@ -327,7 +543,7 @@ private fun Breadcrumb(navController: NavHostController, container: AppContainer
                     modifier = if (!isLast && crumb.route != null) {
                         Modifier
                             .clip(RoundedCornerShape(6.dp))
-                            .clickable {
+                            .hapticClickable(HapticEvent.NavSwitch) {
                                 // Ascend: pop the stack back to the already-present ancestor (dropping the
                                 // child sub-view). If it isn't on the stack, navigate to it fresh.
                                 if (!navController.popBackStack(crumb.route, inclusive = false)) {
@@ -345,15 +561,23 @@ private fun Breadcrumb(navController: NavHostController, container: AppContainer
         // neutral tappable "VOID" when the forecast is ineligible (never green off a stale/degenerate
         // /warmup forecast — that is the false-reassurance §3.6 exists to prevent).
         GlycemicStatusBadge(status)
+        // A number with no age beside it reads as NOW. Past the staleness cutoff the trend arrow is
+        // dropped (a direction measured minutes ago is not a current one) and the age is shown in its
+        // place, so the one BG surface present above every screen cannot pass off an old reading.
+        val stale = readingAgeMs != null && readingAgeMs > STALE_MIN * 60_000L
         val bgNumber = BgFormat.value(reading?.bgMgdl, unit)
-        val bgArrow = BgFormat.arrow(
-            BgGlanceComputer.classifyTrend(reading?.trendTenthsPerMin, reading?.bgMgdl, null),
-        )
+        val bgSuffix = if (stale) {
+            BgFormat.ageShort(readingAgeMs!!)
+        } else {
+            BgFormat.arrow(
+                BgGlanceComputer.classifyTrend(reading?.trendTenthsPerMin, reading?.bgMgdl, null),
+            )
+        }
         Text(
-            "$bgNumber $bgArrow",
+            "$bgNumber $bgSuffix",
             style = MaterialTheme.typography.labelMedium,
             fontWeight = FontWeight.Medium,
-            color = cs.onSurfaceVariant,
+            color = if (stale) cs.error else cs.onSurfaceVariant,
             maxLines = 1,
             modifier = Modifier.padding(start = 8.dp),
         )
@@ -371,6 +595,14 @@ private fun Breadcrumb(navController: NavHostController, container: AppContainer
     }
 }
 
+/** How often the breadcrumb re-judges freshness. Fast enough that a stale badge is not stale ADVICE,
+ *  slow enough to be free: one recomposition of the chrome row, no layout, no work off it. */
+private const val CHROME_TICK_MS = 20_000L
+
+/** Ceiling on a restored backup. Generous next to any real document — the paint layer is the only
+ *  thing here that grows — and finite, which reading the picker's whole stream into a String was not. */
+private const val MAX_BACKUP_BYTES = 32 * 1024 * 1024
+
 /** The app-wide glycemic status (U1). It is a strict function of the CURRENT forecast eligibility:
  *  a green STABLE is a positive claim and is emitted ONLY for a §3.6-eligible forecast with no
  *  predicted crossing; every ineligible state is VOID with a plain-language reason. */
@@ -385,23 +617,37 @@ private sealed interface GlyStatus {
 
 /** Derive the status from the selected model's forecast + the alarm thresholds. Fail-closed: any
  *  ineligibility (warmup / no forecast / stale / degenerate) yields VOID, never STABLE. */
-private fun glycemicStatusOf(inf: InferenceState, thr: com.t1dm.core.model.AlertThresholds?): GlyStatus {
+private fun glycemicStatusOf(
+    inf: InferenceState,
+    thr: com.t1dm.core.model.AlertThresholds?,
+    nowMs: Long,
+    readingAgeMs: Long?,
+): GlyStatus {
     inf.warmup?.let {
         return GlyStatus.Void(
-            "Collecting context — %.1f / %.0f h of measured glucose so far. No stable-or-excursion call is made until enough real history exists to forecast on."
-                .format(it.measuredHours, it.requiredHours),
+            "Collecting context — %.1f / %.0f h BG".format(it.measuredHours, it.requiredHours),
         )
     }
+    // No reading at all, or one past the staleness cutoff: the forecast under it describes a world
+    // that has since stopped reporting, whatever the cycle concluded at the time.
+    if (readingAgeMs == null || readingAgeMs > STALE_MIN * 60_000L) {
+        return GlyStatus.Void(if (readingAgeMs == null) "No reading" else "Reading stale")
+    }
     val p = inf.selectedPrediction
-        ?: return GlyStatus.Void("No forecast yet — waiting for the first model cycle on live glucose.")
+        ?: return GlyStatus.Void("No forecast yet")
     if (p.stale) {
-        return GlyStatus.Void("The forecast's anchor reading is stale (older than the freshness gate). No status is claimed off an aged reading.")
+        return GlyStatus.Void("Anchor reading stale")
+    }
+    // `p.stale` was stamped INSIDE a forecast cycle, and in the default ADAPTIVE cadence a cycle only
+    // runs when a reading lands — so it can never become true on its own once the link drops. Judge
+    // the anchor against the clock as well, which is the only term that keeps moving.
+    if (nowMs - p.anchorTsMs > STALE_MIN * 60_000L) {
+        return GlyStatus.Void("Anchor reading stale")
     }
     if (p.status != com.t1dm.core.model.ForecastStatus.OK) {
-        return GlyStatus.Void("The forecast is degenerate (collapsed or rail-pinned) and is ineligible, so no glycemic status is claimed.")
+        return GlyStatus.Void("Forecast degenerate (collapsed or rail-pinned)")
     }
-    thr ?: return GlyStatus.Void("No glucose thresholds are configured to judge a crossing against.")
-    val nowMs = System.currentTimeMillis()
+    thr ?: return GlyStatus.Void("No thresholds set")
     for (i in p.medianBg.indices) {
         val v = p.medianBg[i]
         val ts = p.anchorTsMs + (i + 1L) * p.stepMs
@@ -442,7 +688,12 @@ private fun GlycemicStatusBadge(status: GlyStatus) {
     val mod = if (status is GlyStatus.Void) {
         Modifier
             .clip(RoundedCornerShape(6.dp))
-            .clickable { android.widget.Toast.makeText(ctx, status.reason, android.widget.Toast.LENGTH_LONG).show() }
+            // VOID is the §3.6 fail-closed verdict: the app declining to claim a glycemic status at
+            // all. Tapping it asks WHY, and the answer is always a refusal — so the badge warns rather
+            // than taps, and is the one chrome element in the app that does.
+            .hapticClickable(HapticEvent.Warn) {
+                android.widget.Toast.makeText(ctx, status.reason, android.widget.Toast.LENGTH_LONG).show()
+            }
             .padding(horizontal = 8.dp, vertical = 4.dp)
     } else {
         Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
@@ -459,7 +710,7 @@ private fun GlycemicStatusBadge(status: GlyStatus) {
 
 /**
  * The bottom navigation (item 13): a horizontally-scrollable row of large-icon tiles, one per
- * destination, so all ~11 tabs are reachable by scrolling instead of cramming into a fixed bar. The
+ * destination, so all 13 tabs are reachable by scrolling instead of cramming into a fixed bar. The
  * selected tile is marked with a themed pill + a coloured label; on selection it is scrolled into
  * view so the current destination always stays visible.
  */
@@ -536,7 +787,9 @@ private fun NavTile(destination: Destination, selected: Boolean, onEdges: (Int, 
             }
             .clip(RoundedCornerShape(16.dp))
             .background(bg)
-            .clickable(onClick = onClick)
+            // Unconditional: `launchSingleTop` makes re-tapping the selected tab a no-op navigation,
+            // and a selected tab that answers nothing under the thumb reads as broken.
+            .hapticClickable(HapticEvent.NavSwitch, onClick = onClick)
             .widthIn(min = 64.dp)
             .padding(horizontal = 10.dp, vertical = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -558,10 +811,25 @@ private fun NavTile(destination: Destination, selected: Boolean, onEdges: (Int, 
     }
 }
 
+/** [onLogged] posts the commit receipt for a meal/dose write; see [postLogReceipt]. */
 @Composable
-private fun T1dmNavHost(navController: NavHostController, container: AppContainer) {
+private fun T1dmNavHost(
+    navController: NavHostController,
+    container: AppContainer,
+    onLogged: (LogHandle) -> Unit,
+) {
     // Issue 17 — the "disable all animations" flag must collapse the screen crossfade to a snap.
     val animationsOn = LocalAnimationsEnabled.current
+    // The three "→" drill-down links a feature screen renders through its `footer` slot are `:app`'s
+    // own navigation, not the screen's, so they speak the NavSwitch here rather than reaching for the
+    // engine from inside a module that knows nothing of where the press leads.
+    val navHaptics = LocalT1dmHaptics.current
+    // The Settings-search landing request, hoisted ABOVE the graph so it outlives the navigation it
+    // triggers: the hub sets it, the destination scaffold consumes it. It is deliberately not a route
+    // argument — `crumbsFor` matches route literals exactly, and an argument would replay the pulse on
+    // every Back-navigation into the screen (SettingsAnchors.kt).
+    val settingsFocus = remember { SettingsFocusController() }
+    CompositionLocalProvider(LocalSettingsFocus provides settingsFocus) {
     NavHost(
         navController = navController,
         startDestination = "dashboard",
@@ -600,7 +868,7 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
             // I2 — the ephemeral, display-only rolled forecast (never reaches alerts/dosing).
             val rolled by container.rolledForecast.collectAsState()
             val rollComputing by container.rollComputing.collectAsState()
-            // I11/I12 — per-channel data-movement pulses + the user-entered sensor-lifetime countdown.
+            // I12 — per-channel data-movement pulses + the sensor-derived time-left countdown.
             val pulses by container.bgPulses.collectAsState(null)
             val sensorExpiry by container.sensorExpiryMs.collectAsState(null)
             // Issue 1 — battery-saver / low-power indicator (polled off-main).
@@ -615,6 +883,12 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
             val thermalWarn by container.thermalWarnMarginC.collectAsState(SettingsStore.DEFAULT_WARN_MARGIN_C)
             // Issue 3 — the Display glucose unit (mg/dL | mmol/L | Kovatchev) the BG panel + header honour.
             val glucoseUnit by container.statsRepository.unitSpace.collectAsState(UnitSpace.MgDl)
+            // The BG input filter the MODEL consumes (INFERENCE.md §7.1). Passed through as a value as
+            // well as captured in the smoother below: a Compose-memoized lambda would otherwise leave a
+            // stale trace on screen after a Settings change.
+            val savgolWindow by container.savgolWindow.collectAsState(SettingsStore.DEFAULT_SAVGOL_WINDOW)
+            // The BG panel's freehand annotation layer; `:feature:dashboard` and `:ui:graph` see no store.
+            val paintStrokes by container.paintStrokes.collectAsState(emptyList())
             DashboardScreen(
                 readings = readings,
                 latest = latest,
@@ -640,7 +914,8 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 sensorExpiryMs = sensorExpiry,
                 circadianTime = inference.circadianTime,
                 circadianAnchorMs = inference.circadianAnchorMs,
-                smoothMgdl = { arr -> container.nativeCore.causalSmooth(arr.toList(), 20.0, 500.0).toDoubleArray() },
+                smoothMgdl = { arr -> container.nativeCore.causalSmooth(arr.toList(), 20.0, 500.0, savgolWindow).toDoubleArray() },
+                smoothingWindow = savgolWindow,
                 rolledForecast = rolled,
                 rollComputing = rollComputing,
                 onRoll = { hours -> container.requestRollForDisplay(hours) },
@@ -650,6 +925,12 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 forecastPeriodMin = forecastPeriod,
                 thermalThresholdC = if (thermalGateOn) thermalMaxC else null,
                 thermalWarnMarginC = thermalWarn,
+                paintStrokes = paintStrokes,
+                onAddPaintStroke = container::addPaintStroke,
+                onDeletePaintStroke = container::deletePaintStroke,
+                gameSlot = { m, fromMs, dropMs, spanMin, ready, exit ->
+                    DashboardGamePanel(container, m, fromMs, dropMs, spanMin, ready, exit)
+                },
             )
         }
         composable("pubs") {
@@ -684,22 +965,22 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 ActivityResultContracts.CreateDocument("application/pdf"),
             ) { uri ->
                 val composite = container.statsViewModel.state.value.composite
-                if (uri == null) { exportStatus = "PDF export cancelled." }
-                else if (composite == null) { exportStatus = "No statistics to export yet." }
+                if (uri == null) { exportStatus = "Export cancelled" }
+                else if (composite == null) { exportStatus = "No stats to export" }
                 else scope.launch {
                     exportStatus = runCatching {
                         ctx.contentResolver.openOutputStream(uri)?.use {
                             com.t1dm.app.stats.StatsPdf.write(it, composite)
-                        } ?: error("could not open the chosen file for writing")
-                        "Exported the statistics report to the chosen file."
-                    }.getOrElse { "PDF export failed — ${it.message ?: it::class.simpleName}." }
+                        } ?: error("could not open file")
+                        "Report exported"
+                    }.getOrElse { "Export failed — ${it.message ?: it::class.simpleName}" }
                 }
             }
             StatsScreen(
                 state = statsState,
                 kovatchevF = container.nativeCore::kovatchevF,
                 onSelectWindow = container.statsViewModel::selectWindow,
-                onSetUnitSpace = container.statsViewModel::setUnitSpace,
+                onSetUnitSpace = container::setUnitSpace,
                 onSetTargetRange = container.statsViewModel::setTargetRange,
                 onRecompute = container.statsViewModel::recompute,
                 onExportPdf = { exportStatus = null; pdfLauncher.launch("t1dm-stats-${statsState.window.wire}.pdf") },
@@ -812,62 +1093,78 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 }
             }
 
-            Column {
-                MealsScreen(
-                    iobCob = iobCob,
-                    recentMeals = recent,
-                    previewCurve = container.previewCarbCurve,
-                    photoThumbnail = photoThumbnail,
-                    uploadStatus = uploadStatus,
-                    onTakePhoto = {
-                        val uri = runCatching {
-                            val dir = java.io.File(ctx.cacheDir, "meal_photos").apply { mkdirs() }
-                            val file = java.io.File(dir, "meal_${System.currentTimeMillis()}.jpg")
-                            androidx.core.content.FileProvider.getUriForFile(
-                                ctx, "${ctx.packageName}.fileprovider", file,
-                            )
-                        }.getOrNull()
-                        if (uri != null) {
-                            pendingPhotoUri = uri
-                            uploadStatus = null
-                            runCatching { cameraLauncher.launch(uri) }
-                        }
-                    },
-                    onChoosePhoto = {
-                        galleryLauncher.launch(
-                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+            MealsScreen(
+                iobCob = iobCob,
+                recentMeals = recent,
+                previewCurve = container.previewCarbCurve,
+                photoThumbnail = photoThumbnail,
+                // The Uri is what gates the POST below, so it is also what the dialog and the Remove
+                // affordance must be told about — the thumbnail is only what the preview can draw.
+                photoAttached = pendingPhotoUri != null,
+                uploadStatus = uploadStatus,
+                onTakePhoto = {
+                    val uri = runCatching {
+                        val dir = java.io.File(ctx.cacheDir, "meal_photos").apply { mkdirs() }
+                        val file = java.io.File(dir, "meal_${System.currentTimeMillis()}.jpg")
+                        androidx.core.content.FileProvider.getUriForFile(
+                            ctx, "${ctx.packageName}.fileprovider", file,
                         )
-                    },
-                    onClearPhoto = {
-                        pendingPhotoUri = null
-                        photoThumbnail = null
+                    }.getOrNull()
+                    if (uri != null) {
+                        pendingPhotoUri = uri
                         uploadStatus = null
-                    },
-                    onLogMeal = { grams, gi ->
-                        scope.launch {
-                            container.logCarb(grams, gi)
-                            val uri = pendingPhotoUri
-                            if (uri != null) {
-                                val now = System.currentTimeMillis()
-                                val bytes = withContext(container.dispatchers.io) {
-                                    runCatching { ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
-                                }
-                                uploadStatus = if (bytes == null) {
-                                    "Meal logged, but the photo could not be read."
-                                } else {
-                                    container.uploadMealPhoto(now, bytes, photoExtFor(ctx, uri)).fold(
-                                        onSuccess = { "Meal logged and photo uploaded." },
-                                        onFailure = { "Meal logged; photo upload failed — ${it.message ?: it::class.simpleName}." },
-                                    )
-                                }
-                                pendingPhotoUri = null
-                                photoThumbnail = null
+                        runCatching { cameraLauncher.launch(uri) }
+                    }
+                },
+                onChoosePhoto = {
+                    galleryLauncher.launch(
+                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                    )
+                },
+                onClearPhoto = {
+                    pendingPhotoUri = null
+                    photoThumbnail = null
+                    uploadStatus = null
+                },
+                onLogMeal = { grams, gi ->
+                    container.appScope.launch {
+                        val uri = pendingPhotoUri
+                        // Issue 7 — the photo rides a direct POST, not the outbox, and the server has
+                        // no delete endpoint, so an undone meal leaves its photo behind. Say so on the
+                        // receipt rather than implying a clean unwind. CONDITIONAL, because the receipt
+                        // is posted before the upload is even attempted (it must be: the undo window
+                        // belongs to the write, not to a network round trip) and the POST may never
+                        // happen — an unreadable stream and a failed upload both land below.
+                        onLogged(
+                            container.logCarb(grams, gi).let { h ->
+                                if (uri == null) h
+                                else h.copy(caveats = h.caveats + "Any uploaded photo stays on the server")
+                            },
+                        )
+                        if (uri != null) {
+                            val now = System.currentTimeMillis()
+                            val bytes = withContext(container.dispatchers.io) {
+                                runCatching { ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
                             }
+                            uploadStatus = if (bytes == null) {
+                                "Logged; photo unreadable"
+                            } else {
+                                container.uploadMealPhoto(now, bytes, photoExtFor(ctx, uri)).fold(
+                                    onSuccess = { "Logged, photo uploaded" },
+                                    onFailure = { "Logged; photo upload failed — ${it.message ?: it::class.simpleName}" },
+                                )
+                            }
+                            pendingPhotoUri = null
+                            photoThumbnail = null
                         }
-                    },
-                )
-                TextButton(onClick = { navController.navigate("meals/builder") }) {
-                    Text("Open meal builder →")
+                    }
+                },
+            ) {
+                // N10 — the sub-screen links are passed as the screen's own footer, INSIDE its single
+                // scroll column. Wrapped in a Column around the screen (as they were), they sat after a
+                // child that had already claimed the whole main axis and were measured at zero height.
+                TextButton(onClick = { navHaptics.perform(HapticEvent.NavSwitch); navController.navigate("meals/builder") }) {
+                    Text("Meal builder →")
                 }
             }
         }
@@ -880,29 +1177,93 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 customFoods = custom,
                 onSearch = { q -> container.mealsController.searchFoods(q) },
                 onResolve = { comps -> container.mealsController.resolvePreview(comps) },
-                onLogMeal = { comps -> scope.launch { container.logBuilderMeal(comps) } },
+                onLogMeal = { comps -> container.appScope.launch { onLogged(container.logBuilderMeal(comps)) } },
                 onSaveMeal = { name, comps -> scope.launch { container.mealsController.saveMeal(name, comps) } },
                 onSaveFood = { food -> scope.launch { container.mealsController.saveCustomFood(food) } },
-                onDeleteFood = { id -> scope.launch { container.mealsController.deleteCustomFood(id) } },
+                onEditMeal = { id ->
+                    navHaptics.perform(HapticEvent.NavSwitch)
+                    navController.navigate("meals/builder/meal/$id")
+                },
+                onEditFood = { id ->
+                    navHaptics.perform(HapticEvent.NavSwitch)
+                    navController.navigate("meals/builder/food/$id")
+                },
                 onDeleteMeal = { id -> scope.launch { container.mealsController.deleteSavedMeal(id) } },
+                onDeleteFood = { id -> scope.launch { container.mealsController.deleteCustomFood(id) } },
+            )
+        }
+        composable("meals/builder/meal/{mealId}") { entry ->
+            val mealId = entry.arguments?.getString("mealId")?.toLongOrNull() ?: return@composable
+            // Null until the observed list has emitted at least once: an ABSENT meal is only conclusive
+            // after that, and popping on the initial empty value would make the route unreachable.
+            val saved: List<SavedMeal>? by container.savedMeals.collectAsState(null)
+            val meal = saved?.firstOrNull { it.id == mealId }
+            val ascend = rememberSingleAscent(navController)
+            // Deleted out from under the editor (the 🗑 sits in the row the ✎ does). Leave rather than
+            // hold a Save aimed at a header that is gone — the repository refuses that write anyway.
+            LaunchedEffect(saved, meal) { if (saved != null && meal == null) ascend() }
+            if (meal == null) return@composable
+            MealEditorScreen(
+                meal = meal,
+                onSearch = { q -> container.mealsController.searchFoods(q) },
+                onResolve = { comps -> container.mealsController.resolvePreview(comps) },
+                // Deliberately the container's scope, not this composition's: the ascent is immediate,
+                // and `rememberCoroutineScope()` is cancelled by the very pop that follows the launch.
+                onSave = { name, comps ->
+                    container.appScope.launch { container.mealsController.updateMeal(mealId, name, comps) }
+                    ascend()
+                },
+                onSaveAsNew = { name, comps ->
+                    container.appScope.launch { container.mealsController.saveMeal(name, comps) }
+                    ascend()
+                },
+                onCancel = ascend,
+            )
+        }
+        composable("meals/builder/food/{foodId}") { entry ->
+            val foodId = entry.arguments?.getString("foodId")?.toLongOrNull() ?: return@composable
+            // Only USER foods are listed here, so a miss means deleted — the store refuses a seed row
+            // regardless (`updateCustomFood`), but the view must never be opened on one either.
+            val custom: List<Food>? by container.customFoods.collectAsState(null)
+            val food = custom?.firstOrNull { it.id == foodId }
+            val ascend = rememberSingleAscent(navController)
+            LaunchedEffect(custom, food) { if (custom != null && food == null) ascend() }
+            if (food == null) return@composable
+            FoodEditorScreen(
+                food = food,
+                onSave = { edited ->
+                    container.appScope.launch { container.mealsController.updateCustomFood(edited) }
+                    ascend()
+                },
+                onDelete = {
+                    container.appScope.launch { container.mealsController.deleteCustomFood(foodId) }
+                    ascend()
+                },
+                onCancel = ascend,
             )
         }
         composable("insulin") {
             val scope = rememberCoroutineScope()
             val iobCob by container.iobCob.collectAsState()
-            Column {
-                InsulinScreen(
-                    iobCob = iobCob,
-                    previewBolus = container.previewBolusCurve,
-                    previewBasal = container.previewBasalCurve,
-                    onLogBolus = { units, preset -> scope.launch { container.logBolus(units, preset) } },
-                    onLogBasal = { units, preset -> scope.launch { container.logBasal(units, preset) } },
-                )
-                TextButton(onClick = { navController.navigate("insulin/types") }) {
-                    Text("Insulin types & custom curves →")
+            // The clinical presets the WRITER resolves from Settings (issue 19) — not the quick-preset
+            // enums the screen hands back, which `logBolus`/`logBasal` ignore. The confirm dialog
+            // restates these so the row it describes is the row that gets written.
+            val rapidLabel by produceState<String?>(null) { value = container.resolvedRapidLabel() }
+            val basalLabel by produceState<String?>(null) { value = container.resolvedBasalLabel() }
+            InsulinScreen(
+                iobCob = iobCob,
+                previewBolus = container.previewBolusCurve,
+                previewBasal = container.previewBasalCurve,
+                rapidLabel = rapidLabel,
+                basalLabel = basalLabel,
+                onLogBolus = { units, preset -> container.appScope.launch { onLogged(container.logBolus(units, preset)) } },
+                onLogBasal = { units, preset -> container.appScope.launch { onLogged(container.logBasal(units, preset)) } },
+            ) {
+                TextButton(onClick = { navHaptics.perform(HapticEvent.NavSwitch); navController.navigate("insulin/types") }) {
+                    Text("Insulin types & curves →")
                 }
-                TextButton(onClick = { navController.navigate("insulin/bolusCalc") }) {
-                    Text("Bolus advisor (model-driven) →")
+                TextButton(onClick = { navHaptics.perform(HapticEvent.NavSwitch); navController.navigate("insulin/bolusCalc") }) {
+                    Text("Bolus advisor →")
                 }
             }
         }
@@ -916,14 +1277,46 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
             val targetLow by ss.calcTargetLow.collectAsState(70.0)
             val targetHigh by ss.calcTargetHigh.collectAsState(180.0)
             val targetMid by ss.calcTargetMid.collectAsState(110.0)
+            val insulinLabel by produceState<String?>(null) { value = container.resolvedRapidLabel() }
+            // The advice carries its own expiry, but nothing republishes the flow once the search
+            // ends — so without a tick the screen would sit on a live Accept indefinitely. Ticking
+            // only while a Ready result is on screen keeps this off every other route.
+            val ready = ui as? BolusAdviceUi.Ready
+            val adviceExpired by produceState(false, ready) {
+                val r = ready
+                if (r == null) {
+                    value = false
+                    return@produceState
+                }
+                while (true) {
+                    value = System.currentTimeMillis() - r.computedAtMs > r.staleAfterMs
+                    if (value) return@produceState
+                    delay(CHROME_TICK_MS)
+                }
+            }
             BolusCalculatorScreen(
-                result = (ui as? BolusAdviceUi.Ready)?.result,
+                result = ready?.result,
                 targetLowMgdl = targetLow,
                 targetHighMgdl = targetHigh,
                 initialTargetMgdl = targetMid,
                 isComputing = ui is BolusAdviceUi.Running,
+                insulinLabel = insulinLabel,
+                adviceExpired = adviceExpired,
                 onAccept = { c ->
-                    scope.launch { container.acceptAdvisedBolus(c.doseU) }
+                    scope.launch {
+                        // A 0 U / carb-rescue acceptance writes no dose, so there is no handle and no
+                        // receipt — an Undo there would dangle on a row that never existed.
+                        container.acceptAdvisedBolus(c.doseU)?.let { h ->
+                            onLogged(
+                                h.copy(
+                                    caveats = h.caveats +
+                                        "Recommendation cleared — recompute to see it again",
+                                ),
+                            )
+                        }
+                    }
+                    // Clears `bolusAdvice` back to Idle: an Undo cannot bring the card back, hence the
+                    // caveat above rather than reordering the cancel behind the undo window.
                     DoseCalcService.cancel(ctx)
                 },
                 onRecompute = { target -> DoseCalcService.recommend(ctx, targetMgdl = target) },
@@ -937,7 +1330,7 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 onResolve = { type, units -> container.insulinController.resolvePreview(type, units) },
                 onSaveType = { type -> scope.launch { container.insulinController.saveCustomType(type) } },
                 onDeleteType = { id -> scope.launch { container.insulinController.deleteCustomType(id) } },
-                onLogDose = { type, units -> scope.launch { container.insulinController.logDose(type, units) } },
+                onLogDose = { type, units -> container.appScope.launch { onLogged(container.logTypedDose(type, units)) } },
             )
         }
         composable("security") {
@@ -952,6 +1345,8 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
         }
         composable("settings") {
             val inf by container.inferenceState.collectAsState(InferenceState())
+            val scope = rememberCoroutineScope()
+            val recentSearches by container.settingsStore.recentSearches.collectAsState(emptyList())
             SettingsScreen(
                 onOpenDisplay = { navController.navigate("settings/display") },
                 onOpenGraph = { navController.navigate("settings/graph") },
@@ -978,6 +1373,15 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 onOpenThermal = { navController.navigate("settings/thermal") },
                 onOpenDeviceTemp = { navController.navigate("settings/temperature") },
                 onOpenDeathClock = { navController.navigate("settings/deathclock") },
+                recentSearches = recentSearches,
+                onOpenKnob = { knob ->
+                    // Request BEFORE navigating: the destination scaffold reads the pending anchor on
+                    // its first composition, so setting it afterwards would miss the frame.
+                    settingsFocus.request(knob.id.takeIf { knob.anchored })
+                    navController.navigate(settingsRouteFor(knob.screen))
+                },
+                onRecordSearch = { q -> scope.launch { container.settingsStore.pushRecentSearch(q) } },
+                onClearRecentSearches = { scope.launch { container.settingsStore.clearRecentSearches() } },
                 deathModeSupported = DeathFlavor.SUPPORTED,
             )
         }
@@ -999,6 +1403,10 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
             val scope = rememberCoroutineScope()
             val range by container.graphRange.collectAsState(com.t1dm.data.settings.BgRange.DEFAULT)
             val windowHours by container.graphWindowHours.collectAsState(GraphSettingsStore.DEFAULT_WINDOW_HOURS)
+            val savgolWindow by container.savgolWindow.collectAsState(SettingsStore.DEFAULT_SAVGOL_WINDOW)
+            // The miniature runs on the user's OWN recent trace, so the effect of a detent is judged
+            // against real sensor noise rather than a synthetic curve.
+            val smoothingPreview by container.smoothingPreviewMgdl.collectAsState(DoubleArray(0))
             GraphSettingsScreen(
                 minMgdl = range.minMgdl,
                 maxMgdl = range.maxMgdl,
@@ -1006,6 +1414,11 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 windowPresets = GraphSettingsStore.WINDOW_PRESETS,
                 onChange = { min, max -> scope.launch { container.setGraphRange(min, max) } },
                 onSetWindow = { h -> scope.launch { container.setGraphWindowHours(h) } },
+                smoothingWindow = savgolWindow,
+                smoothingStops = SettingsStore.SAVGOL_STOPS,
+                onSetSmoothing = { w -> scope.launch { container.setSmoothingWindow(w) } },
+                smoothingPreviewMgdl = smoothingPreview,
+                smoothMgdl = { arr, w -> container.nativeCore.causalSmooth(arr.toList(), 20.0, 500.0, w).toDoubleArray() },
             )
         }
         composable("settings/display") {
@@ -1019,6 +1432,11 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
             val tempUnit by container.temperatureUnit.collectAsState(com.t1dm.core.model.TempUnit.CELSIUS)
             val customJson by ss.customThemeJson.collectAsState(null)
             val bgAlphaPct by ss.backgroundAlphaPct.collectAsState(com.t1dm.app.settings.SettingsStore.DEFAULT_BG_ALPHA_PCT)
+            val hapticsKey by ss.hapticsLevel.collectAsState(SettingsStore.DEFAULT_HAPTICS)
+            // Preview through the ambient engine (not an AppContainer-scoped one as the alarm preview
+            // needs): `preview` takes the strength explicitly, so the tapped chip is felt at its own
+            // level before the kv write has round-tripped back through the flow above.
+            val haptics = LocalT1dmHaptics.current
             var importStatus by remember { mutableStateOf<String?>(null) }
             // Parse the loaded custom-theme JSON only for its display name; failures degrade quietly.
             val customName = remember(customJson) {
@@ -1030,18 +1448,19 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 BundledPalettes.map { it.id to it.displayName } + (ThemeIds.CUSTOM to "Custom")
             }
             val fontOptions = remember { T1dmFontId.entries.map { it.storageKey to it.displayName } }
+            val hapticOptions = remember { HapticStrength.entries.map { it.name to it.displayName } }
             val importLauncher = rememberLauncherForActivityResult(
                 ActivityResultContracts.OpenDocument(),
             ) { uri ->
-                if (uri == null) { importStatus = "Theme import cancelled." } else scope.launch {
+                if (uri == null) { importStatus = "Import cancelled" } else scope.launch {
                     importStatus = runCatching {
                         val text = ctx.contentResolver.openInputStream(uri)?.use { it.readBytes().decodeToString() }
-                            ?: error("could not open the chosen file for reading")
+                            ?: error("could not open file")
                         val palette = parseThemeJson(text) // validates + throws a plain-language message
                         ss.setCustomThemeJson(text)
                         ss.setThemeId(ThemeIds.CUSTOM)
-                        "Loaded custom theme \"${palette.displayName}\"."
-                    }.getOrElse { it.message ?: "Theme import failed." }
+                        "Loaded theme \"${palette.displayName}\""
+                    }.getOrElse { it.message ?: "Import failed" }
                 }
             }
             DisplaySettingsScreen(
@@ -1057,7 +1476,9 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 customThemeName = customName,
                 importStatus = importStatus,
                 temperatureUnit = tempUnit,
-                onSetUnitSpace = { container.statsViewModel.setUnitSpace(it) },
+                hapticOptions = hapticOptions,
+                selectedHaptic = hapticsKey,
+                onSetUnitSpace = { container.setUnitSpace(it) },
                 onSetTargetRange = { lo, hi -> container.statsViewModel.setTargetRange(lo, hi) },
                 onSetAnimationsEnabled = { on -> scope.launch { ss.setAnimationsEnabled(on) } },
                 onSetBackgroundAlpha = { pct -> scope.launch { ss.setBackgroundAlphaPct(pct) } },
@@ -1065,6 +1486,8 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 onSelectFont = { id -> scope.launch { ss.setFontId(id) } },
                 onImportCustomTheme = { importStatus = null; importLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
                 onSetTemperatureUnit = { u -> scope.launch { container.setTemperatureUnit(u) } },
+                onSelectHaptic = { n -> scope.launch { ss.setHapticsLevel(HapticStrength.forKey(n)) } },
+                onPreviewHaptic = { n -> haptics.preview(HapticStrength.forKey(n), HapticEvent.Confirm) },
                 widgetPinSupported = com.t1dm.app.widget.WidgetPinner.isSupported(ctx),
                 widgetPinActions = com.t1dm.app.widget.WidgetPinner.Widget.entries.map { w ->
                     w.label to { com.t1dm.app.widget.WidgetPinner.request(ctx, w); Unit }
@@ -1087,12 +1510,19 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
             val lossMin by container.settingsStore.lossMin.collectAsState(20)
             val lossEsc by container.settingsStore.lossEscalatedMin.collectAsState(12)
             val staleMin by container.settingsStore.calcFreshnessMin.collectAsState(15)
+            val weakOn by container.settingsStore.weakSignalEnabled.collectAsState(true)
+            val weakDbm by container.settingsStore.weakSignalDbm.collectAsState(-90)
+            val weakSustain by container.settingsStore.weakSignalSustainMin.collectAsState(3)
             SignalSafetyScreen(
                 lossMin = lossMin,
                 lossEscalatedMin = lossEsc,
                 dosingStaleMin = staleMin,
+                weakSignalEnabled = weakOn,
+                weakSignalDbm = weakDbm,
+                weakSignalSustainMin = weakSustain,
                 onSetLoss = { a, b -> scope.launch { container.saveLossWindows(a, b) } },
                 onSetDosingStale = { m -> scope.launch { container.settingsStore.setCalcFreshnessMin(m) } },
+                onSetWeakSignal = { e, d, s -> scope.launch { container.saveWeakSignal(e, d, s) } },
             )
         }
         composable("settings/alerts") {
@@ -1115,11 +1545,11 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                 repeatCadenceMin = cadence,
                 minActuationMin = minActuation,
                 snoozeMin = snoozeMin,
-                onSetWarningVibration = { n -> scope.launch { container.settingsStore.setWarningVibration(VibrationPreset.valueOf(n)) } },
-                onSetCriticalVibration = { n -> scope.launch { container.settingsStore.setCriticalVibration(VibrationPreset.valueOf(n)) } },
-                onSetWarningSoundOn = { on -> scope.launch { container.settingsStore.setWarningSoundOn(on) } },
-                onSetCriticalSoundOn = { on -> scope.launch { container.settingsStore.setCriticalSoundOn(on) } },
-                onSetBypassDnd = { on -> scope.launch { container.settingsStore.setBypassDnd(on) } },
+                onSetWarningVibration = { n -> scope.launch { container.saveWarningVibration(VibrationPreset.valueOf(n)) } },
+                onSetCriticalVibration = { n -> scope.launch { container.saveCriticalVibration(VibrationPreset.valueOf(n)) } },
+                onSetWarningSoundOn = { on -> scope.launch { container.saveWarningSoundOn(on) } },
+                onSetCriticalSoundOn = { on -> scope.launch { container.saveCriticalSoundOn(on) } },
+                onSetBypassDnd = { on -> scope.launch { container.saveBypassDnd(on) } },
                 onSetRepeatCadence = { m -> scope.launch { container.saveRepeatCadence(m) } },
                 onSetMinActuation = { m -> scope.launch { container.saveMinActuationMin(m) } },
                 onSetSnoozeMin = { m -> scope.launch { container.setSnoozeMin(m) } },
@@ -1223,39 +1653,62 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
             val exportLauncher = rememberLauncherForActivityResult(
                 ActivityResultContracts.CreateDocument("application/json"),
             ) { uri ->
-                if (uri == null) { status = "Export cancelled." } else scope.launch {
-                    status = runCatching {
-                        val json = container.exportConfigJson()
-                        ctx.contentResolver.openOutputStream(uri)?.use { it.write(json.toByteArray()) }
-                            ?: error("could not open the chosen file for writing")
-                        "Exported settings to the chosen file."
-                    }.getOrElse { "Export failed — ${it.message ?: it::class.simpleName}." }
+                if (uri == null) { status = "Export cancelled" } else scope.launch {
+                    // Off-main: the document now carries the paint strokes and runs to megabytes, and
+                    // a SAF write is a binder round trip to another process either way.
+                    status = withContext(container.dispatchers.io) {
+                        runCatching {
+                            val doc = container.exportConfigJson()
+                            ctx.contentResolver.openOutputStream(uri)?.use { it.write(doc.json.toByteArray()) }
+                                ?: error("could not open file")
+                            "Settings and drawings exported" + (doc.note?.let { " — $it" } ?: "")
+                        }.getOrElse { "Export failed — ${it.message ?: it::class.simpleName}" }
+                    }
                 }
             }
             val importLauncher = rememberLauncherForActivityResult(
                 ActivityResultContracts.OpenDocument(),
             ) { uri ->
-                if (uri == null) { status = "Import cancelled." } else scope.launch {
-                    status = runCatching {
-                        val text = ctx.contentResolver.openInputStream(uri)?.use { it.readBytes().decodeToString() }
-                            ?: error("could not open the chosen file for reading")
-                        val n = container.importConfigJson(text)
-                        "Imported $n settings. Reopen the app for alarm-threshold changes to fully apply."
-                    }.getOrElse { "Import failed — ${it.message ?: it::class.simpleName}." }
+                if (uri == null) { status = "Import cancelled" } else scope.launch {
+                    // Off-main, and bounded: the picker will hand us whatever the user chose, and a
+                    // whole file was being read into a String on the UI thread with no size limit.
+                    status = withContext(container.dispatchers.io) {
+                        runCatching {
+                            val bytes = ctx.contentResolver.openInputStream(uri)?.use {
+                                it.readNBytes(MAX_BACKUP_BYTES + 1)
+                            } ?: error("could not open file")
+                            if (bytes.size > MAX_BACKUP_BYTES) error("file is too large to be a backup")
+                            val r = container.importConfigJson(bytes.decodeToString())
+                            buildString {
+                                if (r.settingsError != null) {
+                                    // The drawings now land even when the settings half fails, so the
+                                    // status has to say which half did what.
+                                    append("Settings not restored — ${r.settingsError}")
+                                } else {
+                                    append("Imported ${r.keys} setting${if (r.keys == 1) "" else "s"}")
+                                }
+                                if (r.paintingsAdded > 0) append(" · ${r.paintingsAdded} drawing${if (r.paintingsAdded == 1) "" else "s"}")
+                                if (r.paintingsSkipped > 0) append(" · ${r.paintingsSkipped} unreadable")
+                                // A drawings-only backup applies no settings at all, so the restart hint
+                                // would be advice to reopen for nothing.
+                                if (r.keys > 0) append(" — reopen to apply alarm thresholds")
+                            }
+                        }.getOrElse { "Import failed — ${it.message ?: it::class.simpleName}" }
+                    }
                 }
             }
             var resetting by remember { mutableStateOf(false) }
             DataSettingsScreen(
                 status = status,
                 resetting = resetting,
-                onExport = { status = null; exportLauncher.launch("t1dm-config.json") },
+                onExport = { status = null; exportLauncher.launch("t1dm-backup.json") },
                 onImport = { status = null; importLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
                 onReset = {
                     if (!resetting) {
                         resetting = true
                         scope.launch {
                             container.resetAllData()
-                            container.restartApp() // fresh process ⇒ first-run state; never returns
+                            container.restartApp() // in-place first-run relaunch; keeps the sensor connected
                         }
                     }
                 },
@@ -1375,7 +1828,7 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
                     scope.launch {
                         busy = true
                         container.saveServerProfile(label, baseUrl, token)
-                        health = "saved — running health check…"
+                        health = "Checking health…"
                         health = container.checkServerHealth()
                         // Re-download the historical series (Phase-3 REST catch-up). This is what
                         // refills an empty store after a reset → re-add-profile round-trip.
@@ -1441,4 +1894,89 @@ private fun T1dmNavHost(navController: NavHostController, container: AppContaine
             )
         }
     }
+    }
 }
+
+/**
+ * The hill-climb minigame. Cosmetic end to end: it READS the record (readings, the annotation
+ * layer, the panel's unit + axis) and writes nothing at all, and its solver runs on the
+ * dedicated `t1dm-game` thread — never `t1dm-inference`, never a `default` worker the alarm
+ * engine and the decode path share.
+ *
+ * Hosted INSIDE the BG panel as a mode, not as a destination: the dashboard swaps this in where the
+ * graph was and keeps every other read-out, so leaving the game is a chip, not a back-stack pop.
+ */
+@Composable
+private fun DashboardGamePanel(
+    container: AppContainer,
+    modifier: Modifier,
+    trackFromMs: Long,
+    dropAtMs: Long,
+    spanMinutes: Float,
+    onReady: () -> Unit,
+    onExit: () -> Unit,
+) {
+    val glucoseUnit by container.statsRepository.unitSpace.collectAsState(UnitSpace.MgDl)
+    val range by container.graphRange.collectAsState(com.t1dm.data.settings.BgRange.DEFAULT)
+    val paintStrokes by container.paintStrokes.collectAsState(emptyList())
+    val latest by container.latestReading.collectAsState(null)
+    val alarm by container.alarmState.collectAsState()
+    val predicted by container.predictiveAlertRaised.collectAsState()
+    val death by container.deathMode.collectAsState(false)
+    // The Rust car tune, fetched once off-main: it is an FFI call, and the art needs the same
+    // numbers the solver was built with rather than a transcription of them.
+    val tuning by produceState<CarTuning?>(null) {
+        value = withContext(container.dispatchers.default) {
+            runCatching { container.nativeCore.defaultCarTuning() }.getOrNull()
+        }
+    }
+    GameScreen(
+        modifier = modifier,
+        trackFromMs = trackFromMs,
+        dropAtMs = dropAtMs,
+        thresholds = container.alarmConfig.thresholds,
+        onReady = onReady,
+        spanMinutes = spanMinutes,
+        latestReadingMs = latest?.tsMs,
+        unit = glucoseUnit,
+        kovatchevF = container.nativeCore::kovatchevF,
+        rangeMinMgdl = range.minMgdl,
+        rangeMaxMgdl = range.maxMgdl,
+        paintStrokes = paintStrokes,
+        carTuning = tuning,
+        readingsFrom = container::gameReadings,
+        openWorld = { terrain, t -> container.nativeCore.createGameWorld(terrain, t) },
+        gameDispatcher = container.dispatchers.game,
+        // BOTH in-process alarm writers, because the game yields the ACTUATOR and there are two
+        // things that can seize it: the deterministic engine through `AndroidAlarmNotifier`,
+        // and the predictive presenter, which owns a second `VibrationActuator` of its own and
+        // is not routed through the notifier at all.
+        //
+        // DEATH mode is a deliberate fail-OPEN override of §3.6's PRESENTATION: the engine goes
+        // on firing, but the user has said they want none of it announced. A game that froze
+        // itself while every alarm was silenced would contradict exactly that, so the interlock
+        // is reported clear here — and only here, never in the engine.
+        //
+        // The over-temperature alarm is the exception, because it is not one of the announcements
+        // DEATH overrides: it is about the phone, not the glucose, and the user consented to
+        // silencing the latter. It keeps the interlock whatever DEATH says.
+        // CRITICAL TIERS ONLY, by explicit choice. `alarm.isActive` here meant that ANY active alarm
+        // took the actuator off the game, so an ordinary hypo or hyper — a WARNING tier, which on a
+        // normal day is up for hours — left the game mute with nothing to say why, and read as a fault.
+        // The user asked for sound and touch through those, and they are advisory announcements rather
+        // than ones meant to wake anybody.
+        //
+        // What still yields: the urgent tiers (URGENT_LOW / URGENT_HIGH are `AlarmSeverity.CRITICAL`),
+        // the predictive urgent alert, and the over-temperature notice. Those are the announcements that
+        // must not be masked — `:alerts` buzzes the SAME actuator, and a game holding a sustained bed
+        // could supersede exactly the alarm intended to wake a sleeping user. That is the property worth
+        // keeping, and narrowing the tier keeps it while costing nothing on a routine excursion.
+        alarmRaised = (
+            alarm.alarms.any { it.severity == AlarmSeverity.CRITICAL } ||
+                alarm.overTemperature != null ||
+                predicted
+            ) && (!death || alarm.overTemperature != null),
+        onExit = onExit,
+    )
+}
+

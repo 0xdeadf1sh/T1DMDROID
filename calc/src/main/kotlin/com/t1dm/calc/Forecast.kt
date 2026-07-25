@@ -15,7 +15,12 @@ enum class ForecastEligibility {
     /** The Rust `forecast_degeneracy_check` rejected the fan (NaN / rail-pinned / collapsed / mis-ordered). */
     DEGENERATE,
 
-    /** The anchor is older than the freshness gate (§3.6-D). */
+    /**
+     * The anchor is older than the freshness gate (§3.6-D). **Dead in production**: the real
+     * [RollingForecaster] never emits STALE — it yields only [MISSING] / [DEGENERATE] / [ELIGIBLE].
+     * Staleness is enforced solely by the DoseAdvisor freshness gate (§3.6-D), never by the fan; this
+     * value survives only for fakes and defence in depth.
+     */
     STALE,
 
     /** No selected model / no `.pte` / no context — the forecast could not be produced at all. */
@@ -72,6 +77,12 @@ data class ForecastRequest(
     val announced: List<CurveEvent>,
     val candidate: List<CurveEvent>?,
     val candidateU: Double,
+    /** The BG causal-SavGol window (INFERENCE.md §7.1) this roll MUST be built at. The [DoseAdvisor]
+     *  pins one resolved value onto every candidate of a recommendation, so the ranking cannot compare
+     *  fans anchored on two different `last_bg` values and the §3.6-F card can state the window its fan
+     *  was actually built at. `null` lets the port resolve its own — the display roll, which follows
+     *  the live setting rather than a decision's snapshot. */
+    val smoothingWindow: Int? = null,
 )
 
 /**
@@ -83,8 +94,10 @@ data class ForecastRequest(
  */
 interface ForecastPort {
     /**
-     * Roll one candidate to the full window. **Fail-closed**: on a missing model, a degenerate roll,
-     * or a stale anchor, return a non-eligible [PredFan] — never throw, never fabricate a band.
+     * Roll one candidate to the full window. **Fail-closed**: on a missing model or a degenerate roll,
+     * return a non-eligible [PredFan] — never throw, never fabricate a band. Staleness is NOT the fan's
+     * concern: the production [RollingForecaster] never emits [ForecastEligibility.STALE]; freshness is
+     * enforced solely by the DoseAdvisor freshness gate (§3.6-D).
      */
     suspend fun roll(request: ForecastRequest): PredFan
 }

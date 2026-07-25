@@ -12,8 +12,11 @@ import kotlinx.coroutines.launch
 /**
  * Wires the deterministic alarm path together for the foreground service (SPEC.private.md §2.3,
  * §3.6-A): a stream of grid-stamped readings and a wall-clock ticker drive the [AlarmEngine], whose
- * state changes are pushed to an [AlarmNotifier]. A persisting CRITICAL alarm is re-vibrated on the
- * repeat cadence even when its state has not changed.
+ * state changes are pushed to an [AlarmNotifier]. Each tick ALSO re-presents the current active state
+ * to the notifier, so an expired snooze re-surfaces (§3.6 C1) and a persisting alarm re-announces even
+ * when its structurally-equal [AlarmState] was deduplicated by the StateFlow (so the state collector
+ * never re-fired). The notifier's own (episode, minActuationInterval) throttle bounds how often that
+ * re-actuates sound + vibration — presentation only; nothing here changes WHEN the pure engine fires.
  *
  * The engine's [state] is re-exposed for the UI to observe. Nothing here touches `:inference`.
  *
@@ -31,8 +34,8 @@ class AlarmController(
 ) {
     val state: StateFlow<AlarmState> get() = engine.state
 
-    /** Read live in [onTick] so a Settings edit to the repeat cadence reaches a currently-firing alarm's
-     *  in-process re-alert without a restart (the engine's thresholds go live via [AlarmEngine.updateConfig]). */
+    /** Snapshot of the current tunables, live-applied via [updateConfig]; used here for the default
+     *  ticker cadence (the engine's thresholds/windows go live via [AlarmEngine.updateConfig]). */
     @Volatile
     private var config: AlarmConfig = initialConfig
 
@@ -41,9 +44,6 @@ class AlarmController(
     fun updateConfig(newConfig: AlarmConfig) {
         config = newConfig
     }
-
-    @Volatile
-    private var lastReAlertMs = Long.MIN_VALUE
 
     fun launchIn(
         scope: CoroutineScope,
@@ -54,27 +54,22 @@ class AlarmController(
         launch { ticks.collect { onTick() } }
         launch {
             engine.state.collect { state ->
-                if (state.isActive) {
-                    notifier.emit(state)
-                    lastReAlertMs = clock()
-                } else {
-                    notifier.clear()
-                }
+                if (state.isActive) notifier.emit(state) else notifier.clear()
             }
         }
     }
 
     private fun onTick() {
         engine.onTick(clock(), temperatureC())
+        // Re-present the current active state each tick (presentation only — this never changes WHEN
+        // the pure engine fires, §3.6-A). The notifier re-applies its visibleAfterGates gate, so an
+        // expired snooze re-surfaces (§3.6 C1); and a persisting alarm re-announces even though its
+        // structurally-equal AlarmState was deduplicated by the StateFlow (so the state collector never
+        // re-fired). The notifier throttles sound + vibration by (episode, minActuationInterval), so
+        // re-emitting every tick actuates AT MOST once per interval — and the app-level CRITICAL
+        // exact-alarm repeat, which also calls emit, is deduped by that same throttle.
         val current = engine.state.value
-        val primary = current.primary ?: return
-        val now = clock()
-        if (primary.severity == AlarmSeverity.CRITICAL &&
-            now - lastReAlertMs >= config.repeatCadenceMin * 60_000L
-        ) {
-            notifier.reAlert(current)
-            lastReAlertMs = now
-        }
+        if (current.isActive) notifier.emit(current)
     }
 
     companion object {

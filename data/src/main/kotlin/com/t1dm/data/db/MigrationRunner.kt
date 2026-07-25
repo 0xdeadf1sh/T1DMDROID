@@ -267,8 +267,40 @@ object MigrationRunner {
         }
     }
 
-    val ALL: Array<Migration> =
-        arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
+    /**
+     * v7 → v8 (graph annotation layer): additive only — the single new `bg_paint_stroke` table
+     * holding the freehand drawings painted over the BG panel, plus the two time-bound indices the
+     * viewport cull selects on. No existing table is touched and nothing else reads the rows, so the
+     * migration cannot perturb any channel, calculator or §3.6 rail. DDL transcribed verbatim from
+     * the generated `schemas/<db>/8.json` (its `${TABLE_NAME}` placeholder resolved) so the migrated
+     * DB is byte-identical to a fresh `createAllTables`.
+     */
+    val MIGRATION_7_8 = object : Migration(7, 8) {
+        override fun migrate(connection: SQLiteConnection) {
+            connection.execSQL(
+                "CREATE TABLE IF NOT EXISTS `bg_paint_stroke` (" +
+                    "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `createdAtMs` INTEGER NOT NULL, " +
+                    "`tool` TEXT NOT NULL, `colorArgb` INTEGER NOT NULL, `widthDp` REAL NOT NULL, " +
+                    "`minTsMs` INTEGER NOT NULL, `maxTsMs` INTEGER NOT NULL, `points` BLOB NOT NULL)",
+            )
+            connection.execSQL(
+                "CREATE INDEX IF NOT EXISTS `index_bg_paint_stroke_minTsMs` ON `bg_paint_stroke` (`minTsMs`)",
+            )
+            connection.execSQL(
+                "CREATE INDEX IF NOT EXISTS `index_bg_paint_stroke_maxTsMs` ON `bg_paint_stroke` (`maxTsMs`)",
+            )
+        }
+    }
+
+    val ALL: Array<Migration> = arrayOf(
+        MIGRATION_1_2,
+        MIGRATION_2_3,
+        MIGRATION_3_4,
+        MIGRATION_4_5,
+        MIGRATION_5_6,
+        MIGRATION_6_7,
+        MIGRATION_7_8,
+    )
 
     /** Apply every registered migration to a builder; the sole path that wires migrations. */
     fun <T : RoomDatabase> configure(builder: RoomDatabase.Builder<T>): RoomDatabase.Builder<T> =

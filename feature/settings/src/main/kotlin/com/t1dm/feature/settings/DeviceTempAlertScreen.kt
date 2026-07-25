@@ -21,20 +21,61 @@ fun DeviceTempAlertScreen(
     onSetClearC: (Double) -> Unit,
     onSetCritical: (Boolean) -> Unit,
 ) {
-    SettingsScaffold("Device temperature") {
-        SettingsNote(
-            "Watches the phone's battery-sensor temperature — not blood glucose, and never a replacement " +
-                "for the glucose alarm. It fires at the alert level and clears once the phone cools to the " +
-                "clear-below level; keep clear-below under the alert level for hysteresis. A change takes " +
-                "effect the next time the monitoring service starts.",
-        )
-        ToggleRow("Enable device-temperature alarm", enabled) { onSetEnabled(it) }
-        DoubleStepper("Alert above", alertC, "°C", step = 0.5, min = 0.0) { onSetAlertC(it) }
-        DoubleStepper("Clear below", clearC, "°C", step = 0.5, min = 0.0) { onSetClearC(it) }
-        ToggleRow(
-            "Raise as critical",
-            critical,
-            "Route to the high-priority alarm channel rather than a warning",
-        ) { onSetCritical(it) }
+    SettingsScaffold(SettingsScreenKey.DEVICE_TEMP) {
+        SettingsNote("Battery sensor, not glucose; keep clear-below under alert")
+        ToggleRow(deviceTempEnabled, enabled) { onSetEnabled(it) }
+        DoubleStepper(deviceTempAlertAbove, alertC, "°C", step = 0.5, min = 0.0) { onSetAlertC(it) }
+        DoubleStepper(deviceTempClearBelow, clearC, "°C", step = 0.5, min = 0.0) { onSetClearC(it) }
+        ToggleRow(deviceTempCritical, critical) { onSetCritical(it) }
     }
 }
+
+// ── search index (see SettingsIndex.kt) ───────────────────────────────────────────────────────────
+
+private const val TEMP_SECTION = "Device temperature alert"
+
+private val deviceTempEnabled = SettingsKnob(
+    id = "device_temp.enabled",
+    screen = SettingsScreenKey.DEVICE_TEMP,
+    section = TEMP_SECTION,
+    label = "Enable device-temperature alarm",
+    subtitle = "Warn when the phone runs hot — exempt from Death mode",
+    synonyms = listOf(
+        "overheat", "overheating", "hot", "heat", "temperature", "phone temperature", "battery temperature",
+        "thermal alarm", "device temp", "warm", "burning",
+    ),
+)
+
+private val deviceTempAlertAbove = SettingsKnob(
+    id = "device_temp.alert_above",
+    screen = SettingsScreenKey.DEVICE_TEMP,
+    section = TEMP_SECTION,
+    label = "Alert above",
+    subtitle = "The battery-sensor temperature at which the alarm fires, in °C",
+    synonyms = listOf("alert above", "trip", "fire at", "threshold", "hot", "overheat", "celsius", "degrees", "temperature"),
+)
+
+private val deviceTempClearBelow = SettingsKnob(
+    id = "device_temp.clear_below",
+    screen = SettingsScreenKey.DEVICE_TEMP,
+    section = TEMP_SECTION,
+    label = "Clear below",
+    subtitle = "The cooled-down temperature at which the alarm clears (hysteresis)",
+    synonyms = listOf("clear below", "reset", "cool", "cooled", "hysteresis", "chatter", "recover", "celsius", "degrees"),
+)
+
+private val deviceTempCritical = SettingsKnob(
+    id = "device_temp.critical",
+    screen = SettingsScreenKey.DEVICE_TEMP,
+    section = TEMP_SECTION,
+    label = "Raise as critical",
+    subtitle = "Use the high-priority alarm channel, not a warning",
+    synonyms = listOf("critical", "urgent", "priority", "channel", "severity", "loud", "escalate"),
+)
+
+internal val settingsDeviceTempKnobs = listOf(
+    deviceTempEnabled,
+    deviceTempAlertAbove,
+    deviceTempClearBelow,
+    deviceTempCritical,
+)

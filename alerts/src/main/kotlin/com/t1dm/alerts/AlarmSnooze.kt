@@ -81,12 +81,13 @@ data class SnoozeEntry(
     val dismiss: Boolean,
 )
 
-/** The three orthogonal deterministic sub-alarms, used to key the snooze store. */
-enum class AlarmKind { THRESHOLD, SIGNAL_LOSS, OVER_TEMPERATURE }
+/** The orthogonal deterministic sub-alarms, used to key the snooze store. */
+enum class AlarmKind { THRESHOLD, SIGNAL_LOSS, WEAK_SIGNAL, OVER_TEMPERATURE }
 
 fun ActiveAlarm.kind(): AlarmKind = when (this) {
     is ThresholdBreach -> AlarmKind.THRESHOLD
     is SignalLoss -> AlarmKind.SIGNAL_LOSS
+    is WeakSignal -> AlarmKind.WEAK_SIGNAL
     is OverTemperature -> AlarmKind.OVER_TEMPERATURE
 }
 
@@ -121,4 +122,5 @@ fun AlarmState.visibleAfterGates(suppressed: Boolean, snooze: SnoozeState, nowMs
         threshold = threshold?.takeUnless { suppressed || snooze.silences(it, nowMs) },
         signalLoss = signalLoss?.takeUnless { suppressed || snooze.silences(it, nowMs) },
         overTemperature = overTemperature,
+        weakSignal = weakSignal?.takeUnless { suppressed || snooze.silences(it, nowMs) },
     )

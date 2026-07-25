@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -18,30 +17,93 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import androidx.compose.foundation.text.KeyboardOptions
+import com.t1dm.core.design.HapticEvent
+import com.t1dm.core.design.PULSE_HIGHLIGHT_MS
+import com.t1dm.core.design.animationsOn
+import com.t1dm.core.design.rememberT1dmHaptics
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
+
+/** How long to wait for a requested anchor to report a position before giving up on revealing it. */
+private const val ANCHOR_WAIT_MS = 2_000L
 
 /**
  * A scrollable settings page with consistent padding/spacing. U4 — the page name is carried by the
- * breadcrumb bar, so no in-view headline is rendered here (the [title] is retained for call-site
- * documentation and any future accessibility label, not drawn).
+ * breadcrumb bar, so no in-view headline is rendered here; [screen] instead names the page to the
+ * search index, and is what lets a scaffold recognise an anchor request as its own.
+ *
+ * It also owns the search-result landing: it holds the [androidx.compose.foundation.ScrollState], so
+ * when [LocalSettingsFocus] carries an anchor belonging to [screen] the scaffold waits for that row to
+ * report a position, scrolls it under the top edge, pulses it, and then releases the request. The
+ * scroll branches on the global motion flag exactly as the bottom-nav auto-centre does — animated when
+ * motion is on, an instant `scrollTo` when it is off.
  */
 @Composable
-fun SettingsScaffold(@Suppress("UNUSED_PARAMETER") title: String, content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit) {
-    Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        content()
+fun SettingsScaffold(
+    screen: SettingsScreenKey,
+    content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
+) {
+    val scroll = rememberScrollState()
+    val registry = remember { SettingsAnchorRegistry() }
+    val focus = LocalSettingsFocus.current
+    val motion = animationsOn()
+    val padPx = with(LocalDensity.current) { 28.dp.roundToPx() }
+    // Anchor ids are globally unique, so a request naturally fires on exactly one screen.
+    val target = focus.pending?.takeIf { SettingsIndex.byId(it)?.screen == screen }
+    // Keyed on the request ALONE: the scroll moves the anchor, so keying on its position too would
+    // re-trigger the effect off its own effect.
+    LaunchedEffect(target) {
+        val id = target
+        if (id == null) {
+            registry.wanted = null
+            return@LaunchedEffect
+        }
+        registry.wantedRootY = null
+        registry.wanted = id
+        val y = withTimeoutOrNull(ANCHOR_WAIT_MS) {
+            snapshotFlow { registry.wantedRootY }.filterNotNull().first()
+        }
+        if (y != null) {
+            val to = (y - registry.originY + scroll.value - padPx).coerceIn(0, scroll.maxValue)
+            if (motion) scroll.animateScrollTo(to) else scroll.scrollTo(to)
+            registry.focused = id
+            delay(PULSE_HIGHLIGHT_MS)
+            registry.focused = null
+        }
+        registry.wanted = null
+        // Released whether or not the row was found: a conditionally-composed knob (the timed-cadence
+        // period, the widget-pin buttons) may simply not be on the page right now, and a request that
+        // never cleared would re-fire on the next visit.
+        focus.request(null)
+    }
+    CompositionLocalProvider(LocalSettingsAnchors provides registry) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .onGloballyPositioned { registry.originY = it.positionInRoot().y.toInt() }
+                .verticalScroll(scroll)
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            content()
+        }
     }
 }
 
@@ -57,13 +119,28 @@ fun SettingsSectionHeader(text: String) {
     )
 }
 
-/** A clickable navigation row that drills into a sub-screen. */
+/**
+ * A clickable navigation row that drills into a sub-screen.
+ *
+ * This and the four controls below are where the app's haptics vocabulary reaches nearly all of
+ * Settings: instrumenting these five covers every one of the ~20 sub-screens without a per-screen
+ * edit, and — more importantly — guarantees that two knobs on two different pages feel identical.
+ * A `disabled` ("soon") row stays silent: it is not refusing the press, it is not a control yet.
+ *
+ * The four controls below take a [SettingsKnob] rather than a bare label, and read their label and
+ * subtitle out of it: that is what makes an unindexed knob a compile error (SettingsIndex.kt), and
+ * what lets each carry a search anchor without growing a `modifier` parameter. This row is the
+ * exception — it navigates rather than tunes, and the hub's rows are not index entries.
+ */
 @Composable
 fun SettingsNavRow(label: String, subtitle: String? = null, enabled: Boolean = true, onClick: () -> Unit = {}) {
+    val haptics = rememberT1dmHaptics()
     Row(
         Modifier
             .fillMaxWidth()
-            .let { if (enabled) it.clickable(onClick = onClick) else it }
+            .let {
+                if (enabled) it.clickable { haptics.perform(HapticEvent.NavSwitch); onClick() } else it
+            }
             .padding(vertical = 12.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
@@ -82,7 +159,15 @@ fun SettingsNavRow(label: String, subtitle: String? = null, enabled: Boolean = t
     }
 }
 
-/** A prominent DANGER banner for the unbounded/safety-critical knobs (safety-posture.md). */
+/**
+ * A prominent DANGER banner for the unbounded/safety-critical knobs (safety-posture.md).
+ *
+ * Deliberately SILENT. A [HapticEvent.Warn] belongs to a warning that *arises* — a refused
+ * recommendation, a curve that would normalise to nothing, an erase being armed — and every one of
+ * those fires at the interaction that produced it. This banner is page furniture: Alarms & safety
+ * carries two of them permanently, so warning here would rumble twice on every visit, immediately
+ * behind the NavSwitch that got you there, and teach the hand to ignore the one pattern it must not.
+ */
 @Composable
 fun DangerBanner(text: String) {
     // While DEATH mode is engaged every safety warning across Settings is stilled.
@@ -107,10 +192,10 @@ fun SettingsNote(text: String) {
     )
 }
 
-/** A labelled +/- integer stepper with an explicit unit; unbounded above [min] unless [max] set. */
+/** A +/- integer stepper with an explicit unit; unbounded above [min] unless [max] set. */
 @Composable
 fun IntStepper(
-    label: String,
+    knob: SettingsKnob,
     value: Int,
     unit: String = "",
     step: Int = 5,
@@ -118,24 +203,42 @@ fun IntStepper(
     max: Int? = null,
     onChange: (Int) -> Unit,
 ) {
+    // A stepper press IS a detent crossing, so it speaks the same SegmentTick a chip or a slider stop
+    // does; the event's own rate-limit floor is what keeps a held-down ± from machine-gunning. At the
+    // ends the button goes `enabled = false` and Compose swallows the press entirely — no lambda runs,
+    // so a bound is silent rather than a reject. That is consistent app-wide (see the note on the
+    // Accept button in the bolus calculator).
+    val haptics = rememberT1dmHaptics()
     Row(
-        Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        Modifier.settingsAnchor(knob.id).fillMaxWidth().padding(vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
-            Text(label, style = MaterialTheme.typography.bodyMedium)
+            Text(knob.label, style = MaterialTheme.typography.bodyMedium)
             Text("$value $unit".trim(), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
         }
-        OutlinedButton(onClick = { onChange((value - step).coerceAtLeast(min)) }, enabled = value > min) { Text("−$step") }
-        Button(onClick = { onChange(max?.let { (value + step).coerceAtMost(it) } ?: (value + step)) }, enabled = max == null || value < max) { Text("+$step") }
+        OutlinedButton(
+            onClick = {
+                haptics.perform(HapticEvent.SegmentTick)
+                onChange((value - step).coerceAtLeast(min))
+            },
+            enabled = value > min,
+        ) { Text("−$step") }
+        Button(
+            onClick = {
+                haptics.perform(HapticEvent.SegmentTick)
+                onChange(max?.let { (value + step).coerceAtMost(it) } ?: (value + step))
+            },
+            enabled = max == null || value < max,
+        ) { Text("+$step") }
     }
 }
 
-/** A labelled +/- decimal stepper with an explicit unit; unbounded above [min] unless [max] set. */
+/** A +/- decimal stepper with an explicit unit; unbounded above [min] unless [max] set. */
 @Composable
 fun DoubleStepper(
-    label: String,
+    knob: SettingsKnob,
     value: Double,
     unit: String = "",
     step: Double = 0.5,
@@ -144,59 +247,84 @@ fun DoubleStepper(
     onChange: (Double) -> Unit,
 ) {
     fun fmt(v: Double): String = if (v == v.toLong().toDouble()) v.toLong().toString() else "%.2f".format(v)
+    val haptics = rememberT1dmHaptics()
     Row(
-        Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        Modifier.settingsAnchor(knob.id).fillMaxWidth().padding(vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
-            Text(label, style = MaterialTheme.typography.bodyMedium)
+            Text(knob.label, style = MaterialTheme.typography.bodyMedium)
             Text("${fmt(value)} $unit".trim(), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
         }
-        OutlinedButton(onClick = { onChange((value - step).coerceAtLeast(min)) }, enabled = value > min) { Text("−${fmt(step)}") }
-        Button(onClick = { onChange(max?.let { (value + step).coerceAtMost(it) } ?: (value + step)) }, enabled = max == null || value < max) { Text("+${fmt(step)}") }
+        OutlinedButton(
+            onClick = {
+                haptics.perform(HapticEvent.SegmentTick)
+                onChange((value - step).coerceAtLeast(min))
+            },
+            enabled = value > min,
+        ) { Text("−${fmt(step)}") }
+        Button(
+            onClick = {
+                haptics.perform(HapticEvent.SegmentTick)
+                onChange(max?.let { (value + step).coerceAtMost(it) } ?: (value + step))
+            },
+            enabled = max == null || value < max,
+        ) { Text("+${fmt(step)}") }
     }
 }
 
-/** A labelled switch row with an optional subtitle. */
+/** A labelled switch row; its subtitle is the index entry's, so the two cannot disagree. */
 @Composable
-fun ToggleRow(label: String, checked: Boolean, subtitle: String? = null, onCheckedChange: (Boolean) -> Unit) {
+fun ToggleRow(knob: SettingsKnob, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+    val haptics = rememberT1dmHaptics()
     Row(
-        Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        Modifier.settingsAnchor(knob.id).fillMaxWidth().padding(vertical = 4.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f).padding(end = 12.dp)) {
-            Text(label, style = MaterialTheme.typography.bodyLarge)
-            if (subtitle != null) Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(knob.label, style = MaterialTheme.typography.bodyLarge)
+            if (knob.subtitle.isNotEmpty()) {
+                Text(knob.subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
+        // `on` is the value being ADOPTED, which is what the mirrored ToggleOn/ToggleOff pair must
+        // describe — `checked` still holds the old one at this point.
+        Switch(checked = checked, onCheckedChange = { on -> haptics.toggled(on); onCheckedChange(on) })
     }
 }
 
-/** A row of single-select chips (an enum picker). */
+/**
+ * A row of single-select chips (an enum picker).
+ *
+ * [tickOnSelect] exists for exactly one caller: the haptics-intensity picker itself, which answers a
+ * tap by PLAYING the level just chosen. Its own detent would be a second buzz at the OLD intensity,
+ * immediately superseded on the actuator — so it opts out and lets the preview be the whole feedback.
+ */
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
-fun <T> ChipPicker(label: String, options: List<Pair<T, String>>, selected: T, onSelect: (T) -> Unit) {
-    Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-        Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(bottom = 4.dp))
+fun <T> ChipPicker(
+    knob: SettingsKnob,
+    options: List<Pair<T, String>>,
+    selected: T,
+    tickOnSelect: Boolean = true,
+    onSelect: (T) -> Unit,
+) {
+    val haptics = rememberT1dmHaptics()
+    Column(Modifier.settingsAnchor(knob.id).fillMaxWidth().padding(vertical = 4.dp)) {
+        Text(knob.label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(bottom = 4.dp))
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             options.forEach { (value, text) ->
-                FilterChip(selected = value == selected, onClick = { onSelect(value) }, label = { Text(text) })
+                FilterChip(
+                    selected = value == selected,
+                    onClick = {
+                        if (tickOnSelect) haptics.perform(HapticEvent.SegmentTick)
+                        onSelect(value)
+                    },
+                    label = { Text(text) },
+                )
             }
         }
     }
-}
-
-/** A numeric OutlinedTextField bound to a string draft; [onCommit] parses on change. */
-@Composable
-fun NumberField(label: String, text: String, onTextChange: (String) -> Unit, decimal: Boolean = false) {
-    OutlinedTextField(
-        value = text,
-        onValueChange = onTextChange,
-        label = { Text(label) },
-        singleLine = true,
-        keyboardOptions = KeyboardOptions(keyboardType = if (decimal) KeyboardType.Decimal else KeyboardType.Number),
-        modifier = Modifier.width(180.dp),
-    )
 }

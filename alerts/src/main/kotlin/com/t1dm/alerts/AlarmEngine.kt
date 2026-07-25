@@ -6,8 +6,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
- * Combines the two deterministic evaluators ([ThresholdAlarm], [LossOfSignalAlarm]) and publishes
- * the merged [AlarmState] as a Flow (SPEC.private.md §3.6-A). This is the testable heart of the
+ * Combines the four deterministic evaluators ([ThresholdAlarm], [LossOfSignalAlarm], [WeakSignalAlarm],
+ * [OverTemperatureAlarm]) and publishes the merged [AlarmState] as a Flow (SPEC.private.md §3.6-A).
+ * This is the testable heart of the
  * model-free path: it has no `:inference` dependency, no Android dependency, and reads no clock —
  * time enters only through [onReading]/[onTick].
  *
@@ -18,6 +19,7 @@ class AlarmEngine(config: AlarmConfig = AlarmConfig.DEFAULT) {
 
     private val threshold = ThresholdAlarm(config.thresholds)
     private val lossOfSignal = LossOfSignalAlarm(config)
+    private val weakSignal = WeakSignalAlarm(config)
     private val overTemp = OverTemperatureAlarm(config)
 
     private val _state = MutableStateFlow(AlarmState.CLEAR)
@@ -29,6 +31,8 @@ class AlarmEngine(config: AlarmConfig = AlarmConfig.DEFAULT) {
         threshold.onReading(reading)
         lossOfSignal.onReading(reading)
         lossOfSignal.evaluate(nowMs)
+        weakSignal.onReading(reading)
+        weakSignal.evaluate(nowMs)
         publish()
     }
 
@@ -46,6 +50,7 @@ class AlarmEngine(config: AlarmConfig = AlarmConfig.DEFAULT) {
     fun updateConfig(config: AlarmConfig) {
         threshold.updateThresholds(config.thresholds)
         lossOfSignal.updateConfig(config)
+        weakSignal.updateConfig(config)
         overTemp.updateConfig(config)
     }
 
@@ -54,11 +59,17 @@ class AlarmEngine(config: AlarmConfig = AlarmConfig.DEFAULT) {
     @Synchronized
     fun onTick(nowMs: Long, tempC: Double? = null) {
         lossOfSignal.evaluate(nowMs)
+        weakSignal.evaluate(nowMs)
         overTemp.evaluate(tempC, nowMs)
         publish()
     }
 
     private fun publish() {
-        _state.value = AlarmState(threshold.breach, lossOfSignal.loss, overTemp.state)
+        _state.value = AlarmState(
+            threshold = threshold.breach,
+            signalLoss = lossOfSignal.loss,
+            overTemperature = overTemp.state,
+            weakSignal = weakSignal.weak,
+        )
     }
 }

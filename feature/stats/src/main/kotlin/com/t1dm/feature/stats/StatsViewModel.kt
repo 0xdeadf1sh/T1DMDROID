@@ -98,8 +98,7 @@ class StatsViewModel(
                     recomputing = false,
                     composite = composite,
                     emptyReason = if (bothEmpty) {
-                        "Not enough history for ${window.wire} yet — still collecting readings. " +
-                            "Come back once the sensor (or server) has logged more BG data."
+                        "Not enough history for ${window.wire} yet — still collecting readings"
                     } else {
                         null
                     },

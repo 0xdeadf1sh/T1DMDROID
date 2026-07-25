@@ -35,6 +35,7 @@ class BlueskyClientTest {
         override val default = Dispatchers.Unconfined
         override val io = Dispatchers.Unconfined
         override val inference = Dispatchers.Unconfined
+        override val game = Dispatchers.Unconfined
     }
 
     private val dispatchers = ImmediateDispatchers()

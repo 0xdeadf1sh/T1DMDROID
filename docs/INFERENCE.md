@@ -14,10 +14,13 @@ runtime. Everything below is verified against the source in this repository
 > insulin doses, or to manage diabetes in any way. No regulatory clearance.
 
 The model is plain **fp32 PyTorch** — no autocast, no custom CUDA. The parts a
-non-PyTorch runtime must reimplement are the pre/post-processing: a causal
-smoother, per-channel normalization, the Kovatchev risk transform, and the
-quantile assembly. All of them are pure numeric, and every constant they need is
-tabulated in [§11](#11-reference-constants).
+non-PyTorch runtime must reimplement are the pre/post-processing: per-channel
+normalization, the Kovatchev risk transform, and the quantile assembly. All of
+them are pure numeric, and every constant they need is tabulated in
+[§11](#11-reference-constants). There is **no input smoother** in the reference
+pipeline — the model consumes the raw signal directly (BG only clamped to
+`[BG_CLAMP_MIN, BG_CLAMP_MAX]`, carb/insulin floored at 0). T1DMDROID applies an
+optional pre-filter of its own on the BG channel; see [§7.1](#71-the-optional-bg-pre-filter-before-normalization).
 
 ## Table of contents
 
@@ -257,8 +260,8 @@ Constants: `SCALE = 1.509`, `POWER = 1.084`, `OFFSET = 5.381`. Reference values:
   +2.8133]` (this keeps the base `r/1.509 + 5.381 ≥ 0` — no complex/NaN — and
   prevents fp32 `exp` overflow), compute `f_inv`, then **clamp the output** to
   `[20, 500]` mg/dL.
-- `f` on BG is applied inside `normalize` on causal-smoothed, physically-clamped
-  mg/dL, so it is always well-defined.
+- `f` on BG is applied inside `normalize` on physically-clamped mg/dL, so it is
+  always well-defined.
 
 `BG_CLAMP_MIN = 20.0` and `BG_CLAMP_MAX = 500.0` mg/dL are the physical BG
 bounds (these are the only two numbers borrowed from the simulator; they are
@@ -329,19 +332,39 @@ flat_index = t · N_INPUT_FEATURES + feat        # t in [0, 6), feat in [0, 3)
 PATCH_DIM  = PATCH_SIZE · N_INPUT_FEATURES = 6 · 3 = 18
 ```
 
-### 7.1 The causal smoother (every channel, before normalization)
+### 7.1 The optional BG pre-filter (before normalization)
 
-`causal_smooth` is a strictly-causal **one-sided Savitzky-Golay** filter,
-`window = 7`, `polyorder = 2`, evaluated at the window endpoint. `smooth[t]` is
-the degree-2 polynomial fit to `x[t−6 : t+1]` read at `t` — it uses **only**
-`x[≤ t]`, so it is online-computable (the live CGM stream is smoothed
-identically) and never leaks the future. The left edge is causally replicated
-with `x[0]`.
+The reference pipeline applies **no smoother**. Inputs, forecast target, loss and
+metrics all live in one raw post-noise space: the same raw BG is the model input,
+the forecast target and the `last_bg` anchor. BG is clamped to `[20, 500]`; carb
+and insulin are floored at `0` (the `log1p` transform does this in `normalize`).
 
-- BG is clamped to `[20, 500]`; carb and insulin are floored at `0`.
-- The 7-tap endpoint coefficients for `(window=7, polyorder=2)` are fixed; a
-  non-scipy runtime can precompute them once as a FIR. This same smoothed BG was
-  the model's training input **and** target.
+T1DMDROID additionally offers a **strictly-causal one-sided Savitzky-Golay**
+pre-filter on the **BG channel only**, applied before normalization. It is a
+denoising choice made by the application, not part of the model contract.
+
+- `smooth[t]` is the degree-2 polynomial fit to `x[t−(w−1) : t+1]` read at `t` —
+  it uses **only** `x[≤ t]`, so it is online-computable (the live CGM stream is
+  filtered identically) and never leaks the future. The left edge is causally
+  replicated with `x[0]`.
+- The window `w` is odd and user-selected from `1, 7, 13, 19, 25` samples (× 5
+  min per step); `w = 1` is the identity, i.e. the raw reference signal. The
+  default is `7`.
+- The endpoint coefficients are the least-squares quadratic fit evaluated at
+  `pos = w−1` — `scipy.signal.savgol_coeffs(w, 2, pos=w-1, use='dot')` — so the
+  newest sample carries the largest weight and the estimate does not lag. For
+  `w = 7` they are the exact rationals `[5, −3, −6, −4, 3, 15, 32] / 42`.
+- The carb and insulin channels are never filtered: they are reconstructed from
+  analytic curves (gamma / Bateman / exponential action), already smooth by
+  construction.
+- The physical guards are not part of the filter and hold at every window: BG is
+  clamped to `[20, 500]`, carb and insulin floored at `0`.
+- The filter moves the `last_bg` anchor of [§7.4](#74-the-last_bg-anchor), since
+  that anchor is read off the last context BG cell. White-noise variance falls
+  with `Σtap²` as `w` widens (`1.000, 0.762, 0.516, 0.386, 0.308` for the five
+  windows), while the endpoint estimator extrapolates its quadratic to the edge
+  of its own support, so a turn takes longer to settle and a spike is overshot
+  further.
 
 ### 7.2 Building the context tensor
 
@@ -351,7 +374,8 @@ From a raw history:
 1. Take the trailing raw per-step series for BG (mg/dL), carb (g/step), and
    insulin (U/step, basal + bolus summed), length `n_ctx · PATCH_SIZE`, with
    `n_ctx ∈ [16, 48]`.
-2. `causal_smooth` each channel (BG clamp `[20, 500]`; carb/insulin floor 0).
+2. Clamp BG to `[20, 500]`; floor carb/insulin at 0. Optionally pre-filter BG
+   (§7.1); the reference applies no filter.
 3. `normalize` each channel (BG via risk-z, carb/insulin via log1p-z).
 4. Reshape to `(n_ctx, 6, 3)`.
 
@@ -378,7 +402,7 @@ last_bg = f_inv( context[-1, -1, 0] · (std_bg + 1e-8) + mean_bg )    # clamp [2
 
 The forward asserts `last_bg ≥ 20 − 1e-3` (a units tripwire that catches a
 z-scored value routed in by mistake) and forms the risk anchor `f(last_bg)`
-internally. The context is already smoothed, so it is not re-smoothed.
+internally. No further filtering is applied to the context here.
 
 ---
 
@@ -473,7 +497,8 @@ omitted. Skipping it is bit-identical to the raw bands.
 
 1. Gather the trailing raw history: BG (mg/dL), carb (g/step), insulin (U/step,
    basal + bolus summed), length `n_ctx · 6`, `n_ctx ∈ [16, 48]`.
-2. `causal_smooth` each channel (BG clamp `[20, 500]`; carb/insulin floor 0).
+2. Clamp BG to `[20, 500]`; floor carb/insulin at 0 (no filtering — `normalize`
+   floors the sparse channels through `log1p`).
 3. `normalize` each channel → `context (n_ctx, 6, 3)`.
 4. Build `patches (T, 18)`: context reshaped step-major, then `P` prediction
    patches with BG = 0 and carb/insulin = `normalize(0)` **or** announced doses.
@@ -526,7 +551,7 @@ model.eval()
 #    Here: n_ctx patches of BG (mg/dL), carb (g/step), insulin (U/step).
 n_ctx = MIN_CONTEXT_PATCHES
 raw   = np.zeros((n_ctx * PATCH_SIZE, N_INPUT_FEATURES), dtype=np.float32)
-raw[:, 0] = 120.0        # BG mg/dL   (apply causal_smooth to a real stream first)
+raw[:, 0] = 120.0        # BG mg/dL   (raw; clamp a real stream to [20, 500])
 raw[:, 1] = 0.0          # carb g/step
 raw[:, 2] = 0.02         # insulin U/step (basal)
 ctx_norm = normalize(raw, stats)                    # (n_ctx*6, 3) normalized
@@ -571,7 +596,7 @@ Everything a from-scratch reimplementation needs (none require the simulator):
 | `ROPE_BASE` | `1000` |
 | RMSNorm `eps` | `1e-6` |
 | normalize `std` floor | `1e-8` |
-| causal smoother | Savitzky-Golay `window = 7`, `polyorder = 2`, endpoint |
+| input filter | none in the reference (raw signal; BG clamped to `[20, 500]`, carb/insulin floored at 0) |
 | ALiBi slope | `−|i−j| · |slope_h|`, `slope_h = |stored|` (init `2^(−8(h+1)/N_HEADS)`) |
 | SDPA scaling | `1/sqrt(HEAD_DIM)` |
 
@@ -590,11 +615,11 @@ risk space, carb/insulin in log1p space).
   `softmax(QKᵀ/sqrt(HEAD_DIM) + mask) @ V`. RoPE, RMSNorm, SwiGLU, and ALiBi are
   all elementwise or matmul.
 - **What a non-PyTorch runtime reimplements outside the exported graph** (all
-  pure numeric): the causal Savitzky-Golay smoother (a fixed 7-tap FIR);
-  per-channel `normalize` / `denormalize`; `kovatchev_f` / `kovatchev_f_inv` with
-  their clamp guards; the `last_bg` anchor; the step-major patch flatten; the
-  prediction-zone `normalize(0)` fill; `assemble_quantiles` (softplus, cumsum,
-  DCT projection); and the optional conformal apply.
+  pure numeric): per-channel `normalize` / `denormalize`; `kovatchev_f` /
+  `kovatchev_f_inv` with their clamp guards; the `last_bg` anchor; the
+  step-major patch flatten; the prediction-zone `normalize(0)` fill;
+  `assemble_quantiles` (softplus, cumsum, DCT projection); and the optional
+  conformal apply.
 - **Watch the ALiBi sign.** The stored slopes are trained and can be negative;
   the forward takes `.abs()`. Using the raw sign silently inverts the temporal
   bias — this is the single easiest porting mistake.

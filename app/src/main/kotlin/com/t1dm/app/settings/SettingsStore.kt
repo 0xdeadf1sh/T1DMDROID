@@ -10,8 +10,11 @@ import com.t1dm.calc.GridSpec
 import com.t1dm.calc.Objective
 import com.t1dm.calc.RailToggles
 import com.t1dm.calc.TargetRange as CalcTargetRange
+import com.t1dm.core.design.HapticStrength
+import com.t1dm.core.design.normalizeThemeId
 import com.t1dm.core.model.AlertThresholds
 import com.t1dm.data.T1dmRepository
+import com.t1dm.inference.InferenceControllerDefaults
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
@@ -93,6 +96,19 @@ class SettingsStore(
     suspend fun currentSnoozeMin(): Int = decodeSnoozeMin(repository.getKv(K_SNOOZE_MIN))
     suspend fun setSnoozeMin(min: Int) = put(K_SNOOZE_MIN, encodeSnoozeMin(min))
 
+    // ── Weak-signal alarm — the connection RSSI (dBm) below which the sensor link is "weak", sustained
+    // for a window. A signal-QUALITY alert, distinct from the age-based loss-of-signal alarm; folded into
+    // currentAlarmConfig() so it rides the same snapshot the engine is built from. dBm is UNBOUNDED.
+    val weakSignalEnabled: Flow<Boolean> = boolFlow(K_WEAK_SIGNAL_ON, DEF.weakSignalEnabled)
+    val weakSignalDbm: Flow<Int> = intFlow(K_WEAK_SIGNAL_DBM, DEF.weakSignalDbm)
+    val weakSignalSustainMin: Flow<Int> = intFlow(K_WEAK_SIGNAL_SUSTAIN, DEF.weakSignalSustainMin)
+
+    suspend fun setWeakSignal(enabled: Boolean, dbm: Int, sustainMin: Int) {
+        put(K_WEAK_SIGNAL_ON, if (enabled) "1" else "0")
+        put(K_WEAK_SIGNAL_DBM, dbm.toString())
+        put(K_WEAK_SIGNAL_SUSTAIN, sustainMin.coerceAtLeast(0).toString())
+    }
+
     /** Assemble the deterministic-alarm policy from the persisted knobs (defaults where unset). */
     suspend fun currentAlarmConfig(): AlarmConfig = AlarmConfig(
         thresholds = AlertThresholds(
@@ -110,6 +126,9 @@ class SettingsStore(
         overTempClearC = getDouble(K_OVERTEMP_CLEAR_C, DEFAULT_OVERTEMP_CLEAR_C),
         overTempSeverity = if (getBool(K_OVERTEMP_CRITICAL, DEFAULT_OVERTEMP_CRITICAL))
             AlarmSeverity.CRITICAL else AlarmSeverity.WARNING,
+        weakSignalEnabled = getBool(K_WEAK_SIGNAL_ON, DEF.weakSignalEnabled),
+        weakSignalDbm = getInt(K_WEAK_SIGNAL_DBM, DEF.weakSignalDbm),
+        weakSignalSustainMin = getInt(K_WEAK_SIGNAL_SUSTAIN, DEF.weakSignalSustainMin),
     )
 
     // ── Alert actuators (per-band vibration + DND bypass; sounds handled with Uri in AppContainer) ──
@@ -191,6 +210,23 @@ class SettingsStore(
 
     suspend fun setInferenceMaxModels(n: Int) =
         put(K_INF_MAX_MODELS, n.coerceIn(INF_MAX_MODELS_MIN, INF_MAX_MODELS_MAX).toString())
+
+    // ── BG input filter (INFERENCE.md §7.1) — the causal Savitzky-Golay window the BG channel is
+    // pre-filtered at before normalization. It governs the MODEL INPUT, not the drawing: it shifts
+    // the `last_bg` anchor the §3.6-D freshness gate, the rails and the countdown all rest on, so it
+    // is an `inference.` key (hand-listed in CONFIG_EXACT_KEYS) rather than a cosmetic `graph.` one.
+    // Snapped to an offered detent on EVERY read: the window must be odd, and the Rust model-input
+    // guard rejects anything else outright rather than substituting a default.
+
+    val savgolWindow: Flow<Int> = repository.observeKv(K_INF_SAVGOL_WINDOW)
+        .map { InferenceControllerDefaults.nearestSmoothingStop(it?.toIntOrNull() ?: DEFAULT_SAVGOL_WINDOW) }
+
+    suspend fun currentSavgolWindow(): Int = InferenceControllerDefaults.nearestSmoothingStop(
+        repository.getKv(K_INF_SAVGOL_WINDOW)?.toIntOrNull() ?: DEFAULT_SAVGOL_WINDOW,
+    )
+
+    suspend fun setSavgolWindow(window: Int) =
+        put(K_INF_SAVGOL_WINDOW, InferenceControllerDefaults.nearestSmoothingStop(window).toString())
 
     // ── Death-clock offsets (F5 — the morbid IOB-exhaustion projection). DISPLAY-ONLY forward offsets
     // (hours) from each prior landmark; no §3.6 gate reads these. Tunable per D2, floored at 0.
@@ -342,7 +378,22 @@ class SettingsStore(
     // ── UI (ux-decisions.md — a global "disable all animations" toggle) ────────────────────────
 
     val animationsEnabled: Flow<Boolean> = boolFlow(K_UI_ANIMATIONS, true)
+    /** The one-shot mirror of [animationsEnabled], for the headless surfaces (the glucose widget's
+     *  live pull, the FGS's freshness-blink gate) that must read this ONCE without subscribing. A
+     *  `Flow.first()` there collects a live Room query, whose first emission drives the
+     *  InvalidationTracker's subscribe/refresh path — on a cold, widget-only process that can park where
+     *  a bounded `getKv` SELECT cannot, holding the tile on its loading spinner. */
+    suspend fun currentAnimationsEnabled(): Boolean = getBool(K_UI_ANIMATIONS, true)
     suspend fun setAnimationsEnabled(on: Boolean) = put(K_UI_ANIMATIONS, if (on) "1" else "0")
+
+    // ── UI haptics intensity (core/design Haptics.kt) ─────────────────────────────────────────
+    // A SIBLING of the animation flag, not a dependent: a static UI and a mute one are different
+    // wants. Deliberately NOT the same knob as the `alerts.vib.*` presets above — those are §3.6-A
+    // alarm actuation and may never be attenuated by a UI comfort preference. Exposed as an opaque
+    // name string for the Settings chip row (the screen never sees a :core:design type).
+    val hapticsLevel: Flow<String> = repository.observeKv(K_UI_HAPTICS).map { it ?: DEFAULT_HAPTICS }
+    suspend fun currentHapticsLevel(): HapticStrength = HapticStrength.forKey(repository.getKv(K_UI_HAPTICS))
+    suspend fun setHapticsLevel(level: HapticStrength) = put(K_UI_HAPTICS, level.name)
 
     // ── Themed background image opacity (0–100 %; 0 = off). The per-theme Canvas backdrop is drawn at
     // this alpha behind the whole app. Exportable (ui.* prefix) so it travels with a shared config.
@@ -356,13 +407,32 @@ class SettingsStore(
 
     // ── Theme + font (item 25 — three themes + JSON import + a bundled font; persisted, exportable) ──
     // The custom-theme JSON is stored verbatim so a re-selection of "custom" reconstructs the palette.
-    val themeId: Flow<String> = repository.observeKv(K_UI_THEME).map { it ?: DEFAULT_THEME }
+    // Both read seams normalise: `ui.theme` is exportable, and importJson writes any allowlisted key
+    // through unvalidated, so an old backup can re-inject the id of a since-retired palette. Every
+    // id→palette resolver already falls back to Tron, but the Settings chip row selects on string
+    // equality — without this it would show NOTHING selected while the app rendered the default.
+    val themeId: Flow<String> =
+        repository.observeKv(K_UI_THEME).map { normalizeThemeId(it ?: DEFAULT_THEME) }
     val fontId: Flow<String> = repository.observeKv(K_UI_FONT).map { it ?: DEFAULT_FONT }
     val customThemeJson: Flow<String?> = repository.observeKv(K_UI_CUSTOM_THEME)
 
-    suspend fun currentThemeId(): String = repository.getKv(K_UI_THEME) ?: DEFAULT_THEME
+    suspend fun currentThemeId(): String = normalizeThemeId(repository.getKv(K_UI_THEME) ?: DEFAULT_THEME)
     suspend fun currentFontId(): String = repository.getKv(K_UI_FONT) ?: DEFAULT_FONT
     suspend fun currentCustomThemeJson(): String? = repository.getKv(K_UI_CUSTOM_THEME)
+
+    /**
+     * Rewrite a persisted `ui.theme` that no longer names a palette this build carries, returning the id
+     * it was coerced to — or null when the row already resolved and nothing was written. Run once at
+     * startup (see [com.t1dm.app.RetiredThemeMigration]) so the stale id does not survive to be exported
+     * again; a mid-session config import is covered by the normalisation on the read seams above.
+     */
+    suspend fun coerceRetiredThemeId(): String? {
+        val raw = repository.getKv(K_UI_THEME) ?: return null
+        val id = normalizeThemeId(raw)
+        if (id == raw) return null
+        put(K_UI_THEME, id)
+        return id
+    }
 
     suspend fun setThemeId(id: String) = put(K_UI_THEME, id)
     suspend fun setFontId(id: String) = put(K_UI_FONT, id)
@@ -412,6 +482,25 @@ class SettingsStore(
     suspend fun setRapidPreset(label: String) = put(K_CURVE_RAPID_PRESET, label)
     suspend fun setBasalPreset(label: String) = put(K_CURVE_BASAL_PRESET, label)
 
+    // ── Settings-search history — the three most recent COMMITTED queries, newest first ─────────
+    // One kv row holding the whole list, the compound-value idiom the Bézier curves and the custom
+    // theme already use. The key sits deliberately OUTSIDE the exportable set (no `search.` prefix
+    // in CONFIG_PREFIXES, and not an exact key): a `ui.` key would ship the user's typed queries
+    // inside every configuration backup they hand to someone, the same reasoning that keeps
+    // `cgm.sensor_expiry_ms` and `death.enabled` out. `wipeAllData` clears it for free.
+    val recentSearches: Flow<List<String>> =
+        repository.observeKv(K_SEARCH_RECENT).map { decodeRecentSearches(it) }
+
+    suspend fun pushRecentSearch(query: String) {
+        val q = query.trim()
+        if (q.isEmpty()) return
+        val kept = decodeRecentSearches(repository.getKv(K_SEARCH_RECENT))
+            .filterNot { it.equals(q, ignoreCase = true) }
+        put(K_SEARCH_RECENT, encodeRecentSearches(listOf(q) + kept))
+    }
+
+    suspend fun clearRecentSearches() = put(K_SEARCH_RECENT, encodeRecentSearches(emptyList()))
+
     // ── Config export / import (item 17 — versioned, via SAF) ──────────────────────────────────
     // Exports ONLY the config keys (the allowlisted prefixes) — never runtime state such as the
     // watch nonce ceilings (exporting/importing those across devices would risk (key,nonce) reuse)
@@ -444,18 +533,38 @@ class SettingsStore(
             ?: throw IllegalArgumentException("Config file has no settings block to import.")
         val pairs = mutableMapOf<String, String>()
         for (key in kv.keys()) {
-            if (isConfigKey(key)) pairs[key] = kv.getString(key)
+            if (!isConfigKey(key)) continue
+            val raw = kv.getString(key)
+            val coerce = CONFIG_COERCE[key]
+            val value = if (coerce == null) raw else coerce(raw)
+            if (value != null) pairs[key] = value
         }
         if (pairs.isEmpty()) throw IllegalArgumentException("Config file contained no recognised settings.")
         repository.putKvBatch(pairs, clock())
         return pairs.size
     }
 
-    private fun isConfigKey(key: String): Boolean =
-        CONFIG_PREFIXES.any { key.startsWith(it) } || key in CONFIG_EXACT_KEYS
-
     companion object {
         private val DEF = AlarmConfig.DEFAULT
+
+        /** The export/import allowlist predicate. A pure function of the constants below, lifted to
+         *  the companion so the placement of a new key is host-testable without Room. */
+        internal fun isConfigKey(key: String): Boolean =
+            CONFIG_PREFIXES.any { key.startsWith(it) } || key in CONFIG_EXACT_KEYS
+
+        /**
+         * Per-key validation applied to an imported value before it is written. A key absent from
+         * the table is copied verbatim — most config is free-form, and the alarm THRESHOLDS are
+         * user-set without an upper limit by design.
+         *
+         * A key present here carries a contract a rail depends on, and import is the one writer that
+         * can otherwise persist a value no stepper could produce: the file may be hand-edited, or
+         * written by a build whose bounds differed. Returning null rejects the key, leaving the
+         * setting at its default rather than importing a value the rail cannot honour.
+         */
+        internal val CONFIG_COERCE: Map<String, (String) -> String?> = mapOf(
+            K_SNOOZE_MIN to { raw -> raw.toIntOrNull()?.let(::encodeSnoozeMin) },
+        )
 
         const val DEFAULT_LOW_POWER_PCT = 20
 
@@ -487,6 +596,7 @@ class SettingsStore(
             K_INF_MAX_TEMP_C,
             K_INF_WARN_MARGIN_C,
             K_INF_MAX_MODELS,
+            K_INF_SAVGOL_WINDOW,
             K_DEATH_DKA_H,
             K_DEATH_COMA_H,
             K_DEATH_DEATH_H,
@@ -515,6 +625,11 @@ class SettingsStore(
         const val INF_MAX_MODELS_MIN = 1
         const val INF_MAX_MODELS_MAX = 8
 
+        // ── BG input filter (PUBLIC) ──────────────────────────────────────────────────────────────
+        const val K_INF_SAVGOL_WINDOW = "inference.savgol_window"
+        const val DEFAULT_SAVGOL_WINDOW = InferenceControllerDefaults.SAVGOL_WINDOW
+        val SAVGOL_STOPS: List<Int> = InferenceControllerDefaults.SAVGOL_STOPS
+
         // ── Death-clock offsets (PUBLIC) ──────────────────────────────────────────────────────────
         const val K_DEATH_DKA_H = "death.dka_after_iob_zero_h"
         const val K_DEATH_COMA_H = "death.coma_after_dka_h"
@@ -522,6 +637,11 @@ class SettingsStore(
         const val DEFAULT_DKA_AFTER_IOB_ZERO_H = 2.0
         const val DEFAULT_COMA_AFTER_DKA_H = 29.0
         const val DEFAULT_DEATH_AFTER_COMA_H = 59.0
+
+        // ── Weak-signal alarm ─────────────────────────────────────────────────────────────────────
+        private const val K_WEAK_SIGNAL_ON = "alarm.weak_signal_enabled"
+        private const val K_WEAK_SIGNAL_DBM = "alarm.weak_signal_dbm"
+        private const val K_WEAK_SIGNAL_SUSTAIN = "alarm.weak_signal_sustain_min"
 
         // ── Over-temperature alarm (PUBLIC) ───────────────────────────────────────────────────────
         const val K_OVERTEMP_ENABLED = "alarm.overtemp_enabled"
@@ -545,11 +665,46 @@ class SettingsStore(
         private const val K_SNOOZE_MIN = "alarm.snooze_min"
         const val DEFAULT_SNOOZE_MIN = 15
 
+        /** The ceiling §3.6 C1 rests on, and the stepper's own maximum. A snooze is time-bounded, so
+         *  no writer — not the UI, not [importJson] — may persist a silence longer than this. */
+        const val MAX_SNOOZE_MIN = 60
+
         /** The snooze-duration persistence contract, extracted so the round-trip is host-testable
-         *  without Room: writes floor the value at 1 min (a snooze is always TIME-BOUNDED, §3.6 C1);
-         *  reads fall back to [DEFAULT_SNOOZE_MIN] when unset/garbage. */
-        internal fun encodeSnoozeMin(min: Int): String = min.coerceAtLeast(1).toString()
-        internal fun decodeSnoozeMin(raw: String?): Int = raw?.toIntOrNull() ?: DEFAULT_SNOOZE_MIN
+         *  without Room: both directions clamp to 1..[MAX_SNOOZE_MIN] (a snooze is always
+         *  TIME-BOUNDED, §3.6 C1); reads fall back to [DEFAULT_SNOOZE_MIN] when unset/garbage.
+         *  The read clamps too, so a value persisted by an older build cannot outlive this one. */
+        internal fun encodeSnoozeMin(min: Int): String = min.coerceIn(1, MAX_SNOOZE_MIN).toString()
+        internal fun decodeSnoozeMin(raw: String?): Int =
+            raw?.toIntOrNull()?.coerceIn(1, MAX_SNOOZE_MIN) ?: DEFAULT_SNOOZE_MIN
+
+        /** Settings-search history: a kv row outside the export allowlist (see [recentSearches]). */
+        private const val K_SEARCH_RECENT = "search.recent_settings"
+        const val RECENT_SEARCH_LIMIT = 3
+
+        /**
+         * The persistence contract for [recentSearches], extracted for the same reason the snooze
+         * pair is: the round-trip and the fail-soft read are then host-testable without Room.
+         *
+         * A newline-separated list rather than the `JSONArray` the Bézier/theme rows would suggest —
+         * `org.json` is an Android class, stubbed on the host JVM, so a codec built on it cannot be
+         * unit-tested at all (see the note in ConfigBackupTest). The search field is single-line, so
+         * the separator cannot occur in a query; encoding folds one in anyway, since `importJson`
+         * writes allowlisted keys through unvalidated and a smuggled newline must not become a second
+         * entry. Reads are total for the same reason: garbage degrades to "no history", never a throw
+         * on a settings page.
+         */
+        internal fun encodeRecentSearches(queries: List<String>): String =
+            queries
+                .map { it.replace('\n', ' ').replace('\r', ' ').trim() }
+                .filter { it.isNotEmpty() }
+                .take(RECENT_SEARCH_LIMIT)
+                .joinToString("\n")
+
+        internal fun decodeRecentSearches(raw: String?): List<String> =
+            raw?.split('\n').orEmpty()
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+                .take(RECENT_SEARCH_LIMIT)
 
         private const val K_VIB_WARN = "alerts.vib.warning"
         private const val K_VIB_CRIT = "alerts.vib.critical"
@@ -581,6 +736,8 @@ class SettingsStore(
         private const val K_DEATH = "death.enabled"
 
         private const val K_UI_ANIMATIONS = "ui.animations"
+        private const val K_UI_HAPTICS = "ui.haptics"
+        val DEFAULT_HAPTICS: String = HapticStrength.DEFAULT.name
         private const val K_UI_BG_ALPHA = "ui.background_alpha"
         const val DEFAULT_BG_ALPHA_PCT = 15
         private const val K_UI_THEME = "ui.theme"

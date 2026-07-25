@@ -56,6 +56,17 @@ data class OutboxRequest(val method: String, val path: String, val body: String)
 internal const val INGEST_DEDUP_PREFIX = "ingest:sample:"
 
 /**
+ * The dedupKey a logged meal / dose push is filed under — deterministic in the event's phone-minted
+ * `client_id` (§3.2), so the row stays addressable after the enqueue rowid is forgotten (process
+ * death) and cross-checkable against a rowid SQLite may have recycled. Public because the undo path
+ * in `:app` must name the exact key [OutboxEnqueuer.enqueueMeal]/[OutboxEnqueuer.enqueueDose] wrote,
+ * and a second copy of the string here would be free to drift from the one that matters.
+ */
+fun mealDedupKey(clientId: String): String = "meal:$clientId"
+
+fun doseDedupKey(clientId: String): String = "dose:$clientId"
+
+/**
  * Enqueue-on-write producer API (Phase 3). The integrate agent calls these from the
  * CycleRunner / event writers; each serializes the wire body into an [OutboxRequest] envelope and
  * appends a deduped outbox row. Dedup is enforced by the unique `dedupKey` index — this is the
@@ -98,7 +109,7 @@ class OutboxEnqueuer(private val repo: OutboxSink) {
     /** A logged meal as a self-describing appearance curve — `PUT /v1/meals` (1-element batch). */
     suspend fun enqueueMeal(ev: MealEventDto, nowMs: Long): Long = repo.enqueue(
         kind = OutboxKind.MEAL,
-        dedupKey = "meal:${ev.client_id}",
+        dedupKey = mealDedupKey(ev.client_id),
         payload = OutboxRequest("PUT", "/v1/meals", SyncJson.encodeToString(listOf(ev))).encode(),
         nowMs = nowMs,
     )
@@ -106,7 +117,7 @@ class OutboxEnqueuer(private val repo: OutboxSink) {
     /** A logged dose (bolus gamma / basal Bateman) as a PK action curve — `PUT /v1/doses`. */
     suspend fun enqueueDose(ev: DoseEventDto, nowMs: Long): Long = repo.enqueue(
         kind = OutboxKind.DOSE,
-        dedupKey = "dose:${ev.client_id}",
+        dedupKey = doseDedupKey(ev.client_id),
         payload = OutboxRequest("PUT", "/v1/doses", SyncJson.encodeToString(listOf(ev))).encode(),
         nowMs = nowMs,
     )

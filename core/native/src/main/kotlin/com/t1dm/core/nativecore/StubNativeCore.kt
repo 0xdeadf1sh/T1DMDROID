@@ -1,7 +1,10 @@
 package com.t1dm.core.nativecore
 
+import com.t1dm.core.common.GameWorld
 import com.t1dm.core.common.NativeCore
 import com.t1dm.core.model.AccuracyPair
+import com.t1dm.core.model.CarTuning
+import com.t1dm.core.model.TerrainSpec
 import com.t1dm.core.model.AccuracyReport
 import com.t1dm.core.model.HorizonAccuracy
 import com.t1dm.core.model.AdvancedStats
@@ -49,7 +52,7 @@ class StubNativeCore : NativeCore {
     override fun parseDescriptor(json: String): ModelDescriptor? =
         TODO("Phase 2: native parse_descriptor")
 
-    override fun causalSmooth(series: List<Double>, clampMin: Double?, clampMax: Double?): List<Double> =
+    override fun causalSmooth(series: List<Double>, clampMin: Double?, clampMax: Double?, window: Int): List<Double> =
         TODO("Phase 2: native causal_smooth")
 
     override fun normalizeSample(desc: ModelDescriptor, bg: Double, carb: Double, insulin: Double): List<Double> =
@@ -65,6 +68,7 @@ class StubNativeCore : NativeCore {
         insulin: List<Double>,
         announcedCarb: List<Double>?,
         announcedInsulin: List<Double>?,
+        smoothingWindow: Int,
     ): BuiltContext = TODO("Phase 2: native build_context")
 
     override fun assembleDecode(
@@ -265,6 +269,17 @@ class StubNativeCore : NativeCore {
         }
         return AccuracyReport(horizons, byHorizon.values.sumOf { it.size }, minSamples)
     }
+
+    // ── Hill-climb minigame physics ─────────────────────────────────────────────────
+    // The solver is Rust-only by design (a per-frame path with zero allocation is the whole
+    // reason it is not Kotlin), and unlike the curve engine there is no host consumer that
+    // needs it — the minigame only ever runs on device. A stub car would be a second physics
+    // implementation to keep in sync for no benefit, so this stays unimplemented.
+
+    override fun defaultCarTuning(): CarTuning = TODO("game physics is Rust-only; use UniffiNativeCore")
+
+    override fun createGameWorld(terrain: TerrainSpec, tuning: CarTuning): GameWorld =
+        TODO("game physics is Rust-only; use UniffiNativeCore")
 
     private companion object {
         const val DT_MIN = 5.0

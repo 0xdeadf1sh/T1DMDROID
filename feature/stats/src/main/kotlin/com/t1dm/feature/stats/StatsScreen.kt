@@ -31,6 +31,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.t1dm.core.design.HapticEvent
+import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.model.AdvancedStats
 import com.t1dm.core.model.EpisodeSummary
 import com.t1dm.core.model.StatsComposite
@@ -62,6 +64,7 @@ fun StatsScreen(
     // Wrap in a Box so the busy indicator is a weightless overlay (issue 1/6): it never inserts or
     // removes a row, so switching window/unit or recomputing keeps every element exactly in place —
     // and, unlike the old reserved top slot, it costs no dead space above the window switcher.
+    val haptics = rememberT1dmHaptics()
     Box(Modifier.fillMaxSize()) {
         Column(
             Modifier
@@ -74,7 +77,10 @@ fun StatsScreen(
             UnitSwitcher(state.unitSpace, onSetUnitSpace)
 
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                OutlinedButton(onClick = onRecompute, enabled = !state.recomputing) {
+                OutlinedButton(
+                    onClick = { haptics.perform(HapticEvent.Tap); onRecompute() },
+                    enabled = !state.recomputing,
+                ) {
                     if (state.recomputing) {
                         CircularProgressIndicator(
                             Modifier.size(16.dp),
@@ -84,10 +90,13 @@ fun StatsScreen(
                         Spacer(Modifier.width(8.dp))
                         Text("Recomputing…")
                     } else {
-                        Text("Recompute locally")
+                        Text("Recompute")
                     }
                 }
-                OutlinedButton(onClick = onExportPdf, enabled = state.composite != null) {
+                OutlinedButton(
+                    onClick = { haptics.perform(HapticEvent.Tap); onExportPdf() },
+                    enabled = state.composite != null,
+                ) {
                     Text("Export PDF")
                 }
             }
@@ -97,7 +106,7 @@ fun StatsScreen(
 
             val composite = state.composite
             if (composite == null) {
-                Text("Loading statistics…", style = MaterialTheme.typography.bodyMedium)
+                Text("Loading…", style = MaterialTheme.typography.bodyMedium)
                 return@Column
             }
 
@@ -117,7 +126,7 @@ fun StatsScreen(
             if (local.agp.isNotEmpty()) {
                 SectionCard("Ambulatory glucose profile") {
                     Text(
-                        "Median (line) with the 25-75 % and 5-95 % percentile bands across the day.",
+                        "Median line, 25-75 % and 5-95 % bands across the day",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                         modifier = Modifier.padding(bottom = 8.dp),
@@ -131,7 +140,7 @@ fun StatsScreen(
                     )
                 }
             } else {
-                InfoCard("AGP needs local BG history — none in this window yet.")
+                InfoCard("No local BG history in this window")
             }
 
             // ── Time in range ────────────────────────────────────────────────────────────────────
@@ -181,7 +190,7 @@ fun StatsScreen(
                 }
                 Box(Modifier.height(6.dp))
                 Text(
-                    "GRADE attribution — hypo ${fmtPct(local.grade.hypo)} · euglycemic ${fmtPct(local.grade.eu)} · " +
+                    "GRADE — hypo ${fmtPct(local.grade.hypo)} · eu ${fmtPct(local.grade.eu)} · " +
                         "hyper ${fmtPct(local.grade.hyper)}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
@@ -199,7 +208,7 @@ fun StatsScreen(
             if (local.histogram.any { it.count > 0 }) {
                 SectionCard("Glucose distribution") {
                     Text(
-                        "Share of readings in each 20 mg/dL band.",
+                        "Share of readings per 20 mg/dL band",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                         modifier = Modifier.padding(bottom = 8.dp),
@@ -216,7 +225,7 @@ fun StatsScreen(
                 if (local.hypoEpisodes.count == 0 && local.hyperEpisodes.count == 0) {
                     Box(Modifier.height(4.dp))
                     Text(
-                        "No sustained excursions (≥2 consecutive readings) outside the target range in this window.",
+                        "No sustained excursions (≥2 readings) outside target",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                     )
@@ -242,7 +251,7 @@ fun StatsScreen(
                         style = MaterialTheme.typography.bodySmall,
                     )
                     Text(
-                        "Local recompute: mean ${fmtLevel(local.meanBg, unit, kovatchevF)} · GMI ${fmt(local.gmi, 1)}% · " +
+                        "Local: mean ${fmtLevel(local.meanBg, unit, kovatchevF)} · GMI ${fmt(local.gmi, 1)}% · " +
                             "CV ${fmt(local.cv, 1)}% · SD ${fmtSpread(local.sd, unit)}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
@@ -261,11 +270,12 @@ fun StatsScreen(
 
 @Composable
 private fun WindowSwitcher(current: StatsWindow, onSelect: (StatsWindow) -> Unit) {
+    val haptics = rememberT1dmHaptics()
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         StatsWindow.entries.forEach { w ->
             FilterChip(
                 selected = w == current,
-                onClick = { onSelect(w) },
+                onClick = { haptics.perform(HapticEvent.SegmentTick); onSelect(w) },
                 label = { Text(w.wire) },
             )
         }
@@ -274,11 +284,12 @@ private fun WindowSwitcher(current: StatsWindow, onSelect: (StatsWindow) -> Unit
 
 @Composable
 private fun UnitSwitcher(current: UnitSpace, onSelect: (UnitSpace) -> Unit) {
+    val haptics = rememberT1dmHaptics()
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         UnitSpace.entries.forEach { u ->
             FilterChip(
                 selected = u == current,
-                onClick = { onSelect(u) },
+                onClick = { haptics.perform(HapticEvent.SegmentTick); onSelect(u) },
                 label = { Text(unitLabel(u)) },
             )
         }
@@ -363,10 +374,17 @@ private fun TargetRangeEditor(low: Int, high: Int, onChange: (Int, Int) -> Unit)
 
 @Composable
 private fun Stepper(value: Int, onDelta: (Int) -> Unit) {
+    val haptics = rememberT1dmHaptics()
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-        OutlinedButton(onClick = { onDelta(-5) }, contentPadding = androidx.compose.foundation.layout.PaddingValues(6.dp)) { Text("−") }
+        OutlinedButton(
+            onClick = { haptics.perform(HapticEvent.SegmentTick); onDelta(-5) },
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(6.dp),
+        ) { Text("−") }
         Text("$value", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-        OutlinedButton(onClick = { onDelta(5) }, contentPadding = androidx.compose.foundation.layout.PaddingValues(6.dp)) { Text("+") }
+        OutlinedButton(
+            onClick = { haptics.perform(HapticEvent.SegmentTick); onDelta(5) },
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(6.dp),
+        ) { Text("+") }
     }
 }
 
