@@ -81,7 +81,7 @@ https://github.com/user-attachments/assets/319401e4-09ff-4e8f-964f-0eb8a0808fca
 
 - **UI:** Jetpack Compose, organized as a multi-module Gradle build so the CGM-source and model-backend seams stay pluggable.
 - **Rust core (`t1dm-core`, via JNI/NDK):** owns the correctness-critical, hot numerics — AiDEX frame decode and its CRCs, session crypto, the model pre/post pipeline (causal Savitzky-Golay smoothing, normalize/denormalize, the Kovatchev risk transform, quantile assembly), and the watch AES-128-GCM. Kotlin keeps the UI, BLE plumbing, storage, and orchestration. The core is tested bit-for-bit against golden vectors in CI.
-- **On-device inference:** [ExecuTorch](https://pytorch.org/executorch/). One exported artifact runs on two backends — CPU (XNNPACK, fp32) as the reference authority, and the NPU (MediaTek NeuroPilot / Neuron, fp16) as a measured shadow — behind a clean backend seam.
+- **On-device inference:** [ExecuTorch](https://pytorch.org/executorch/). One exported model runs on two backends — CPU (XNNPACK, fp32) as the reference authority, and the GPU (Vulkan compute delegate, fp16) as a measured shadow whose agreement with the CPU path is measured before it may inform anything — behind a clean backend seam. The Vulkan delegate comes from a custom ExecuTorch build vendored under `third_party/`; the stock runtime registers XNNPACK only.
 - **Storage & orchestration:** Room on the bundled SQLite driver; an always-on foreground service plus WorkManager run the passive scan, the 5-minute grid, inference, sync, and the alarm path off the main thread.
 
 Heavy compute never runs on the main thread; the UI observes results reactively.
@@ -158,7 +158,7 @@ This setting is **device-wide** (it affects every app's silent notifications), p
 
 ## Target device
 
-The build targets a single phone: a **Redmi K90 Max** (MediaTek Dimensity 9500 / MT6993, APU 990 NPU), running **Android 16 / HyperOS**, arm64-v8a. The NPU path uses the MediaTek NeuroPilot / Neuron stack. Other devices are untested and unsupported.
+The build targets a single phone: a **Redmi K90 Max** (MediaTek Dimensity 9500 / MT6993), running **Android 16 / HyperOS**, arm64-v8a. Accelerated inference runs on the GPU through Vulkan; the SoC's APU is not used, since the MediaTek NeuroPilot runtime ships through Play feature delivery and a sideloaded build cannot fetch it. Other devices are untested and unsupported.
 
 
 ## Related projects
