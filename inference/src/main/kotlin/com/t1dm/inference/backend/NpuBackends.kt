@@ -10,10 +10,12 @@ import java.io.File
  * ([ExecuTorchXnnpackBackend]) REMAINS THE AUTHORITY; each NPU path here is an alternative backend
  * that is cross-checked against the fp32 goldens and NEVER silently promoted.
  *
- * Every backend below currently FAILS its `load` with a plain-language, evidence-based reason — so a
+ * Every NPU backend below FAILS its `load` with a plain-language, evidence-based reason — so a
  * mis-routed model is refused loudly (the controller falls back to the [StubBackend]) rather than a
  * silent no-op, and the Hardware / Models panels can state UNAMBIGUOUSLY why each is unavailable
- * (issue 1 — end the "stub" ambiguity). The reasons are factual, not aspirational:
+ * (issue 1 — end the "stub" ambiguity). The reasons are factual, not aspirational. NOTHING RUNS ON
+ * THE APU; the one accelerated path that does execute is [ExecuTorchVulkanBackend] at the end of
+ * this file, on the GPU, which is why the file's name undersells it:
  *
  *  • [LiteRtNpuBackend] — the LiteRT-unified MediaTek NeuroPilot path (the user's chosen NPU route).
  *    The `.tflite` ARTIFACT is proven: `T1DMAI/exporters/litert_npu.py` converts the SAME modified
@@ -103,17 +105,17 @@ class LiteRtNeuronBackend : InferenceBackend {
  * attention-mask reduction + two RoPE inv-freq scalars fall back to the portable CPU kernels
  * (RoPE trig, SDPA, ALiBi, and the einsum step-basis all delegate).
  *
- * What blocks on-device execution TODAY is not the runtime but the ARTIFACT: a `.vulkan.pte`
- * cannot be serialized on host under the pinned ExecuTorch 1.3.1 with the installed torch 2.12.1.
- * The Vulkan preprocess pass pipeline (FuseBatchNorm → FuseClamp → …) trips
- * `AssertionError: fake mode … doesn't match mode … from fake tensor input 1` in
- * `exir/pass_base.py` (a `FakeTensorMode(allow_non_fake_inputs=True)` reconciliation the newer
- * torch rejects). The XNNPACK lowering path avoids it; the Vulkan path hits it on every
- * constant-folding fusion pass, so no `.vulkan.pte` exists to load. fp32 XNNPACK CPU stays the
- * AUTHORITY regardless (safety rule E); when a `.vulkan.pte` can be emitted (a torch matched to
- * ET 1.3.1, or the passes patched upstream), this load becomes the standard `Module.load` + dual
- * `head_raw`/`time_logits` read like [ExecuTorchXnnpackBackend], and its numerics must still pass
- * the fp32-agreement gate before it may feed any §3.6 dosing decision.
+ * The artifact exists. `T1DMAI/exporters/executorch_vulkan.py` serializes a `.vulkan.pte` after
+ * installing its own fix for the ExecuTorch-1.3.1 Vulkan preprocess pipeline, which used to trip
+ * `AssertionError: fake mode … doesn't match mode …` in `exir/pass_base.py` on every
+ * constant-folding fusion: a constant-only pass yields ZERO fake inputs, so the pass base spawned
+ * a fresh `FakeTensorMode` that then disagreed with the graph's own. The XNNPACK lowering path
+ * never hit it. With that cured, `load`/`run` below are the ordinary `Module.load` plus the dual
+ * `head_raw`/`time_logits` read, exactly as [ExecuTorchXnnpackBackend] performs them.
+ *
+ * fp32 XNNPACK CPU stays the AUTHORITY regardless (safety rule E). This backend may render a
+ * forecast, but its numerics must pass the fp32-agreement gate before they may feed any §3.6
+ * dosing decision.
  */
 class ExecuTorchVulkanBackend(
     override val id: BackendId = BackendId.EXECUTORCH_VULKAN_FP32,
