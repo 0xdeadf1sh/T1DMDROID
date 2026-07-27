@@ -1147,9 +1147,30 @@ mod tests {
         assert_eq!(d.prediction_horizon_hours, 2);
         assert_eq!(d.max_context_patches, 48);
         assert!(!d.conformal_enabled);
-        assert!((d.bg.mean - 0.44047466508264904).abs() < 1e-15);
-        assert!((d.insulin.std - 0.09111449226803763).abs() < 1e-15);
+        // The reference descriptor tracks the SHIPPED risk-v3 checkpoint, so its normalization
+        // stats are fit on f(bg) in the [40, 400] space — deliberately NOT golden.json's, which
+        // stays the risk-v2 fixture the pipeline goldens were generated under.
+        assert!((d.bg.mean - 0.42852539058481665).abs() < 1e-15);
+        assert!((d.insulin.std - 0.11808419374425043).abs() < 1e-15);
         assert_eq!(d.prediction_patches().unwrap(), 4);
+    }
+
+    /// The reference descriptor declares the risk space the model was TRAINED in — the
+    /// re-anchored `[40, 400]` of `risk-v3`, not the clinical `[20, 500]`. Pinned numerically
+    /// because a stale risk-v2 descriptor beside a risk-v3 `.pte` decodes finite, plausible,
+    /// wrong mg/dL (a true 55 reads 32), and nothing downstream can see it.
+    #[test]
+    fn reference_descriptor_is_anchored_on_the_trained_range() {
+        let json = include_str!("../../../models/descriptor.json");
+        let k = parse_descriptor(json.to_string()).expect("reference descriptor must parse").kovatchev;
+        assert_eq!(k.bg_clamp_min, 40.0, "model space is anchored at 40 mg/dL");
+        assert_eq!(k.bg_clamp_max, 400.0, "model space is anchored at 400 mg/dL");
+        assert_eq!(k, RISK_V3_KOVATCHEV, "reference descriptor must carry the risk-v3 constants");
+
+        // The anchoring property the constants were solved for: risk 100 at both rails.
+        let root_ten = 10.0f64.sqrt();
+        assert!((k.f(40.0) + root_ten).abs() < 1e-12, "f(40) = -sqrt(10), got {}", k.f(40.0));
+        assert!((k.f(400.0) - root_ten).abs() < 1e-12, "f(400) = +sqrt(10), got {}", k.f(400.0));
     }
 
     #[test]

@@ -1,11 +1,11 @@
 {
-  "arch_version": "risk-v2",
+  "arch_version": "risk-v3",
   "graph_cut": "head_raw",
   "input_seq_len": 52,
   "normalization_stats": {
-    "bg_absolute":      { "mean": 0.44047466508264904, "std": 0.850689863940899 },
-    "carb_intake":      { "mean": 0.3310011982005517,  "std": 0.45281299084561305 },
-    "insulin_combined": { "mean": 0.13433219518059492, "std": 0.09111449226803763 }
+    "bg_absolute":      { "mean": 0.42852539058481665, "std": 1.0598886067728255 },
+    "carb_intake":      { "mean": 0.3687493030822693,  "std": 0.4765036018691645 },
+    "insulin_combined": { "mean": 0.1471689756146423,  "std": 0.11808419374425043 }
   },
   "rope_base": 1000,
   "median_mode": "global",
@@ -19,11 +19,11 @@
   "patch_size": 6,
   "n_input_features": 3,
   "kovatchev": {
-    "SCALE": 1.509,
+    "SCALE": 2.2211457449985317,
     "POWER": 1.084,
-    "OFFSET": 5.381,
-    "BG_CLAMP_MIN": 20.0,
-    "BG_CLAMP_MAX": 500.0
+    "OFFSET": 5.540076976170212,
+    "BG_CLAMP_MIN": 40.0,
+    "BG_CLAMP_MAX": 400.0
   },
   "conformal_enabled": false
 }
