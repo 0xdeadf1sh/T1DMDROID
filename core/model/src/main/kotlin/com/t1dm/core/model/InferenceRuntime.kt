@@ -124,7 +124,14 @@ data class ModelMeta(
     val reference: ReferenceMetrics? = null,
 )
 
-/** The exported model's held-out validation reference metrics (from the descriptor `model_card`). */
+/**
+ * The exported model's held-out validation reference metrics (from the descriptor `model_card`).
+ *
+ * Parsed because the block is part of the descriptor, and **rendered nowhere**. These are another
+ * dataset's numbers: shown beside the on-device realized suite they read as a second opinion on this
+ * patient's forecasts, which is the one thing they cannot be. Whatever needs them next is not the
+ * Models drill-down.
+ */
 data class ReferenceMetrics(
     val horizonsMin: List<Int>,
     val rmseMgdl: List<Double?>,
@@ -217,8 +224,13 @@ data class PredictedTime(
     val binHours: Double,
 )
 
-/** What triggered a cycle, surfaced for the Hardware/Models panels and logs. */
-enum class InferenceCause { GRID_TICK, MANUAL, SYNTHETIC, COLLECTING_CONTEXT, OVER_TEMPERATURE }
+/**
+ * What triggered a cycle, surfaced for the Hardware/Models panels and logs. [LOG_WRITE] is a cycle a
+ * logged meal/dose (or its withdrawal) fired off the curve channels it moved, rather than one the
+ * cadence driver's tick fired; it runs the same controller path through the same gates, and is
+ * distinguished only so a panel can say which of the two published the forecast on screen.
+ */
+enum class InferenceCause { GRID_TICK, LOG_WRITE, MANUAL, SYNTHETIC, COLLECTING_CONTEXT, OVER_TEMPERATURE }
 
 /**
  * The device-temperature reading the inference gate reasons over (D1: the BATTERY-sensor °C — a true

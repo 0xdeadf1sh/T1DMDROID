@@ -56,12 +56,11 @@ import kotlinx.coroutines.flow.onStart
 import com.t1dm.cgm.BleAdvertScanner
 import com.t1dm.core.model.BackendComparison
 import com.t1dm.core.model.BackendId
-import com.t1dm.core.model.BasalPreset
-import com.t1dm.core.model.BolusPreset
 import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.CgmSourceDescriptor
 import com.t1dm.core.model.CgmSourceId
 import com.t1dm.core.model.InferenceCause
+import com.t1dm.core.model.InsulinFamily
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.data.curve.CurveEngine
@@ -790,9 +789,6 @@ class CgmScanService : LifecycleService() {
             ACTION_LOG_MOOD -> lifecycleScope.launch {
                 container.saveMood(intent.getIntExtra(EXTRA_MOOD, 3))
             }
-            ACTION_LOG_NOTE -> lifecycleScope.launch {
-                container.saveNote(intent.getStringExtra(EXTRA_TEXT) ?: "verify note")
-            }
             // ── Phase-5 watch verification hooks (drive the REAL WatchLink against the emulator) ──
             ACTION_WATCH_PAIR -> { container.pairWatch(); Timber.tag(TAG).i("WATCH_PAIR") }
             ACTION_WATCH_CONFIRM -> { container.confirmWatchSas(); Timber.tag(TAG).i("WATCH_CONFIRM") }
@@ -840,7 +836,9 @@ class CgmScanService : LifecycleService() {
     private fun logBolus(units: Double, ageMin: Int) {
         lifecycleScope.launch {
             if (ageMin <= 0) {
-                container.logBolus(units, BolusPreset.NOVORAPID)
+                // No preset named: this hook has no picker, so the write inherits the insulin last
+                // logged on the panel, exactly as an accepted advisory bolus does.
+                container.logBolus(units)
             } else {
                 val now = System.currentTimeMillis()
                 val ts = snapToGrid(now - ageMin * 60_000L)
@@ -861,12 +859,20 @@ class CgmScanService : LifecycleService() {
 
     /**
      * Debug: log a discrete long-acting basal injection (issue 18 verify), driving the REAL
-     * [AppContainer.logBasal] so any selected clinical basal preset (issue 19) applies too.
+     * [AppContainer.logBasal] so the chosen clinical basal preset's DIA + ka/ke apply too.
+     *
+     * The brand is matched against the catalogue's own labels rather than restated as a constant
+     * here, so a renamed or dropped preset degrades to the sticky last-logged basal instead of
+     * silently committing a curve this file invented.
      */
     private fun logBasalDebug(units: Double, tresiba: Boolean) {
         lifecycleScope.launch {
-            container.logBasal(units, if (tresiba) BasalPreset.TRESIBA else BasalPreset.LANTUS)
-            Timber.tag(TAG).i("LOG_BASAL units=%.1f tresiba=%b", units, tresiba)
+            val brand = if (tresiba) "Tresiba" else "Lantus"
+            val label = container.insulinPresetCatalog()
+                .firstOrNull { it.family == InsulinFamily.BasalBateman && it.label.contains(brand, ignoreCase = true) }
+                ?.label
+            container.logBasal(units, label)
+            Timber.tag(TAG).i("LOG_BASAL units=%.1f tresiba=%b preset=%s", units, tresiba, label ?: "(last logged)")
         }
     }
 
@@ -1125,7 +1131,6 @@ class CgmScanService : LifecycleService() {
         const val ACTION_LOG_BOLUS = "com.t1dm.app.LOG_BOLUS"
         const val ACTION_LOG_BASAL = "com.t1dm.app.LOG_BASAL"
         const val ACTION_LOG_MOOD = "com.t1dm.app.LOG_MOOD"
-        const val ACTION_LOG_NOTE = "com.t1dm.app.LOG_NOTE"
         const val ACTION_WATCH_PAIR = "com.t1dm.app.WATCH_PAIR"
         const val ACTION_WATCH_CONFIRM = "com.t1dm.app.WATCH_CONFIRM"
         const val ACTION_WATCH_ROTATE = "com.t1dm.app.WATCH_ROTATE"
@@ -1150,7 +1155,6 @@ class CgmScanService : LifecycleService() {
         const val EXTRA_GI = "gi"
         const val EXTRA_UNITS = "units"
         const val EXTRA_MOOD = "mood"
-        const val EXTRA_TEXT = "text"
         const val EXTRA_START_BG = "startBg"
         const val EXTRA_END_BG = "endBg"
 

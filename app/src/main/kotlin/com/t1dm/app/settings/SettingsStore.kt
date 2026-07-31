@@ -182,6 +182,19 @@ class SettingsStore(
     suspend fun setForecastPeriodMin(min: Int) =
         put(K_FORECAST_PERIOD_MIN, min.coerceIn(FORECAST_PERIOD_MIN_MIN, FORECAST_PERIOD_MIN_MAX).toString())
 
+    // ── Log-driven re-forecast debounce — how long a logged meal/dose waits before the model re-runs
+    // on the curve channels it just moved. A SIBLING of the cadence above, not a mode of it: the two
+    // tick sources fire on their own schedule regardless, and this only decides how promptly a WRITE
+    // gets its own cycle. The window exists to coalesce — a meal and then its bolus arrive seconds
+    // apart and are worth exactly one forward, not two — so it is short by default and clamped well
+    // under the grid so a re-run can never be deferred past the tick it was meant to pre-empt.
+    val logReforecastDebounceS: Flow<Int> =
+        repository.observeKv(K_INF_LOG_DEBOUNCE_S).map { decodeLogReforecastDebounceS(it) }
+    suspend fun currentLogReforecastDebounceS(): Int =
+        decodeLogReforecastDebounceS(repository.getKv(K_INF_LOG_DEBOUNCE_S))
+    suspend fun setLogReforecastDebounceS(seconds: Int) =
+        put(K_INF_LOG_DEBOUNCE_S, encodeLogReforecastDebounceS(seconds))
+
     // ── Thermal gate (D1/D3/D6 — pause inference on the BATTERY-sensor °C; a truer die temp is
     // unreadable here). Gate ENABLED by default; the threshold/warn-margin are user-set (floored at 0).
     // The gate reads the battery °C irrespective of DEATH (D4: it stays active in DEATH mode).
@@ -446,10 +459,6 @@ class SettingsStore(
     suspend fun setCarbBezier(encoded: String) = put(K_CURVE_CARB_BEZIER, encoded)
     suspend fun setInsulinBezier(encoded: String) = put(K_CURVE_INSULIN_BEZIER, encoded)
 
-    // ── Clinical insulin PRESET selection (issue 19 — the OPT-IN, off-distribution rapid/basal
-    // curves). Persisted by the preset's stable label; the default is the in-distribution simulator
-    // shape, so a fresh install (and every unchanged install) keeps forecasts in-distribution. The
-    // apply-at-log path (AppContainer.logBolus/logBasal) resolves the selected label to its spec.
     // ── The public build's first-run medical disclaimer. Deliberately OUTSIDE the exportable config
     // set (no `ui.` prefix, not an exact key): an acknowledgement is a statement about the person
     // holding the phone, not a setting, and importing someone else's backup must not answer it for
@@ -480,18 +489,28 @@ class SettingsStore(
     suspend fun setAggressiveShowGlucose(on: Boolean) = put(K_AGG_SHOW_BG, if (on) "1" else "0")
     suspend fun setAggressiveOnlyCharging(on: Boolean) = put(K_AGG_ONLY_CHARGING, if (on) "1" else "0")
 
-    val selectedRapidPreset: Flow<String> =
-        repository.observeKv(K_CURVE_RAPID_PRESET).map { it ?: DEFAULT_RAPID_PRESET_LABEL }
-    val selectedBasalPreset: Flow<String> =
-        repository.observeKv(K_CURVE_BASAL_PRESET).map { it ?: DEFAULT_BASAL_PRESET_LABEL }
-    suspend fun currentRapidPreset(): String = repository.getKv(K_CURVE_RAPID_PRESET) ?: DEFAULT_RAPID_PRESET_LABEL
-    suspend fun currentBasalPreset(): String = repository.getKv(K_CURVE_BASAL_PRESET) ?: DEFAULT_BASAL_PRESET_LABEL
-    suspend fun setRapidPreset(label: String) = put(K_CURVE_RAPID_PRESET, label)
-    suspend fun setBasalPreset(label: String) = put(K_CURVE_BASAL_PRESET, label)
+    // ── Last-logged insulin, per kind — STICKINESS, not a setting ───────────────────────────────
+    //
+    // The insulin panel picks its preset out of the shared clinical catalogue, and the writer commits
+    // what the panel picked. These two keys only remember which one that was, so the panel reopens on
+    // the insulin actually in use and the callers with no pick of their own (the accepted advisory
+    // bolus, a debug quick action) inherit it. There is deliberately no Settings row: a settings
+    // screen that also chose the insulin is exactly the arrangement that let the panel and the row
+    // disagree, and nothing outside `AppContainer.logBolus`/`logBasal` writes them.
+    //
+    // Stored as the preset's stable label, unvalidated: the catalogue is the authority on which
+    // labels exist and resolution falls through a stale one (see `resolveInsulinPreset`). The keys
+    // sit OUTSIDE the exportable set (no `insulin.` prefix in CONFIG_PREFIXES, and not exact keys) —
+    // this is per-device usage state like `cgm.sensor_expiry_ms`, not configuration, and importing
+    // someone else's last dose would silently change which curve the next unpicked dose commits.
+    suspend fun lastRapidPreset(): String? = repository.getKv(K_LAST_RAPID_PRESET)
+    suspend fun lastBasalPreset(): String? = repository.getKv(K_LAST_BASAL_PRESET)
+    suspend fun setLastRapidPreset(label: String) = put(K_LAST_RAPID_PRESET, label)
+    suspend fun setLastBasalPreset(label: String) = put(K_LAST_BASAL_PRESET, label)
 
     // ── Push hold — how long a freshly logged meal/dose sits in the outbox before its FIRST send
     // attempt, and therefore how long the Logs panel can still withdraw it. Only the MEAL/DOSE event
-    // pushes take it (never INGEST/PREDICTIONS/STATS/NOTE/ALERT/PHOTO, and never the basal template);
+    // pushes take it (never INGEST/PREDICTIONS/STATS/ALERT/PHOTO, and never the basal template);
     // it is stamped once, at enqueue, into `nextAttemptMs`. 0 = push at once, no withdrawal window.
     //
     // The hold cannot lose a record: MEAL/DOSE are exempt from age-eviction, so a held row waits
@@ -613,6 +632,7 @@ class SettingsStore(
             "inference.warmup_hours",
             K_FORECAST_MODE,
             K_FORECAST_PERIOD_MIN,
+            K_INF_LOG_DEBOUNCE_S,
             K_INF_THERMAL_ON,
             K_INF_MAX_TEMP_C,
             K_INF_WARN_MARGIN_C,
@@ -632,6 +652,25 @@ class SettingsStore(
         const val DEFAULT_FORECAST_PERIOD_MIN = 5
         const val FORECAST_PERIOD_MIN_MIN = 1
         const val FORECAST_PERIOD_MIN_MAX = 60
+
+        // ── Log-driven re-forecast debounce (PUBLIC — see [logReforecastDebounceS]) ───────────────
+        const val K_INF_LOG_DEBOUNCE_S = "inference.log_reforecast_debounce_s"
+        const val DEFAULT_LOG_REFORECAST_DEBOUNCE_S = 4
+
+        /** The stepper's maximum, and the ceiling no writer may exceed. Deliberately far below the
+         *  5-min grid: past it a "prompt" re-run would land after the tick it exists to anticipate,
+         *  which is the setting silently doing nothing rather than doing less. */
+        const val MAX_LOG_REFORECAST_DEBOUNCE_S = 60
+
+        /** The debounce persistence contract, extracted so the round-trip is host-testable without
+         *  Room, as the snooze and push-hold pairs are. Both directions clamp to
+         *  `0..`[MAX_LOG_REFORECAST_DEBOUNCE_S] — 0 being a legitimate "re-run at once" — and a
+         *  garbage or unset read falls back to the default, so a value written by a build with a
+         *  wider ceiling (or hand-edited into a config backup) cannot outlive this one. */
+        internal fun encodeLogReforecastDebounceS(seconds: Int): String =
+            seconds.coerceIn(0, MAX_LOG_REFORECAST_DEBOUNCE_S).toString()
+        internal fun decodeLogReforecastDebounceS(raw: String?): Int =
+            raw?.toIntOrNull()?.coerceIn(0, MAX_LOG_REFORECAST_DEBOUNCE_S) ?: DEFAULT_LOG_REFORECAST_DEBOUNCE_S
 
         // ── Thermal gate (PUBLIC) ─────────────────────────────────────────────────────────────────
         const val K_INF_THERMAL_ON = "inference.thermal_gate_enabled"
@@ -791,11 +830,11 @@ class SettingsStore(
         private const val K_AGG_SCAN = "cgm.aggressive_scan"
         private const val K_AGG_SHOW_BG = "cgm.aggressive_show_glucose"
         private const val K_AGG_ONLY_CHARGING = "cgm.aggressive_only_charging"
-        private const val K_CURVE_RAPID_PRESET = "graph.curve_rapid_preset"
-        private const val K_CURVE_BASAL_PRESET = "graph.curve_basal_preset"
-        /** The clinical defaults — NovoRapid rapid / Lantus basal (must equal the labels in `insulin_preset_catalog`). */
-        const val DEFAULT_RAPID_PRESET_LABEL = "Aspart · NovoRapid/Novolog"
-        const val DEFAULT_BASAL_PRESET_LABEL = "Glargine U100 · Lantus"
+        /** Usage state, not configuration — see the note on [lastRapidPreset] for why the prefix is
+         *  outside [CONFIG_PREFIXES]. No default label lives here: the catalogue's own first entry of
+         *  the family is the fallback, so this build cannot name an insulin the catalogue dropped. */
+        internal const val K_LAST_RAPID_PRESET = "insulin.last_rapid_preset"
+        internal const val K_LAST_BASAL_PRESET = "insulin.last_basal_preset"
         const val DEFAULT_THEME = "tron"
         const val DEFAULT_FONT = "system"
     }

@@ -8,13 +8,20 @@ import androidx.compose.runtime.Composable
  * push rhythm; in **timed** mode it fires on a fixed wall-clock grid regardless of when
  * readings land. Only the timed period is user-set — the adaptive branch has nothing to tune. The period
  * is clamped to [1, 60] min by the store. Pure/stateless.
+ *
+ * The third knob is orthogonal to that choice and applies in both modes: a logged meal or dose moves
+ * the carb/insulin channels the model conditions on, so it earns a cycle of its own rather than
+ * waiting out the tick, and [logDebounceSeconds] is how long that cycle waits for its neighbours —
+ * a meal and the bolus that follows it cost one forward, not two. Clamped to [0, 60] s by the store.
  */
 @Composable
 fun ForecastCadenceSettingsScreen(
     adaptive: Boolean,
     periodMinutes: Int,
+    logDebounceSeconds: Int,
     onSetAdaptive: (Boolean) -> Unit,
     onSetPeriodMinutes: (Int) -> Unit,
+    onSetLogDebounceSeconds: (Int) -> Unit,
 ) {
     SettingsScaffold(SettingsScreenKey.FORECAST_CADENCE) {
         SettingsNote("Adaptive re-forecasts on each reading; timed uses a fixed clock grid.")
@@ -28,6 +35,7 @@ fun ForecastCadenceSettingsScreen(
         if (!adaptive) {
             IntStepper(forecastCadencePeriod, periodMinutes, "min", step = 1, min = 1, max = 60) { onSetPeriodMinutes(it) }
         }
+        IntStepper(logReforecastDebounce, logDebounceSeconds, "s", step = 1, min = 0, max = 60) { onSetLogDebounceSeconds(it) }
     }
 }
 
@@ -57,4 +65,17 @@ private val forecastCadencePeriod = SettingsKnob(
     ),
 )
 
-internal val settingsForecastCadenceKnobs = listOf(forecastCadenceMode, forecastCadencePeriod)
+private val logReforecastDebounce = SettingsKnob(
+    id = "forecast_cadence.log_debounce",
+    screen = SettingsScreenKey.FORECAST_CADENCE,
+    section = "Forecast cadence",
+    label = "Re-forecast after a log",
+    subtitle = "How long a logged meal or dose waits before its own forecast; nearby logs share one run",
+    synonyms = listOf(
+        "debounce", "delay", "log", "logged", "meal", "carbs", "dose", "bolus", "basal", "insulin",
+        "immediate", "instant", "coalesce", "settle", "seconds", "after", "re-forecast", "reforecast",
+    ),
+)
+
+internal val settingsForecastCadenceKnobs =
+    listOf(forecastCadenceMode, forecastCadencePeriod, logReforecastDebounce)
