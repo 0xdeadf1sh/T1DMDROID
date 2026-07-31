@@ -41,11 +41,10 @@ import com.t1dm.core.model.ModelMeta
 import com.t1dm.core.model.ModelMetrics
 import com.t1dm.core.model.PointBlock
 import com.t1dm.core.model.ModelTelemetry
-import com.t1dm.core.model.ReferenceMetrics
 import com.t1dm.core.model.displayName
 
 /**
- * The per-model PERFORMANCE drill-down (Phase 7C — item 24). Four blocks:
+ * The per-model PERFORMANCE drill-down (Phase 7C — item 24). Three blocks:
  *
  *  1. META — parameter count, on-disk size, arch dims + geometry (item 7, size reasoning).
  *  2. TELEMETRY — this install's cumulative avg inference EXEC time, #predictions, and TOTAL time
@@ -72,10 +71,21 @@ import com.t1dm.core.model.displayName
  *     A horizon with too little matured history says so PLAINLY (never a noisy stat), and an empty
  *     panel states which of the two reasons it is: nothing matured yet, or matured forecasts whose
  *     realized trajectory had a CGM gap.
- *  4. REFERENCE (held-out validation) — the model's own train.py validation metrics from the
- *     descriptor `model_card`, clearly labelled as reference, NOT the on-device realized numbers.
+ *
+ *     Each table is paired with a Canvas figure (AccuracyFigures.kt) over the SAME rows — the table
+ *     is the exact number, the figure the shape: the error against the persistence baseline it is
+ *     scored against, the coverage against the target it claims, and the two zone partitions, which
+ *     are read as proportions rather than as four decimals apiece. A figure only ever receives
+ *     horizons that PASSED `sufficient`, so none of them draws an axis over a horizon the tables
+ *     have just declined to score.
  *
  * Everything is advisory: the accuracy of a FORECAST, never a dosing claim.
+ *
+ * **The descriptor's reference metrics are not shown, and must not be.** [ModelMeta.reference] is
+ * still parsed — the `model_card` block is part of the descriptor — so it remains one field access
+ * away, and it does not belong on this screen: it is a held-out validation table from another
+ * dataset, and beneath the realized suite it reads as a second opinion on THIS patient's forecasts,
+ * which is the one thing it cannot be. The realized numbers are the only accuracy claim made here.
  */
 @Composable
 fun ModelDetailScreen(
@@ -174,7 +184,12 @@ fun ModelDetailScreen(
         section("Realized accuracy — band τ.25–.75") {
             Note("Forecast vs realized BG (advisory — not a dosing claim)")
             when {
-                scored.isNotEmpty() -> BandTable(scored)
+                scored.isNotEmpty() -> {
+                    BandTable(scored)
+                    // Kept in this section deliberately: §6.2 forbids a band figure standing apart
+                    // from its coverage and width, and the table above carries both.
+                    ErrorByHorizonFigure(scored)
+                }
                 accuracyLoading -> Note("Computing…")
                 else -> Note(emptyWhy(accuracy))
             }
@@ -192,6 +207,13 @@ fun ModelDetailScreen(
         }
 
         if (scored.isNotEmpty()) {
+            // Both bands' realized coverage against what they claim (§6.2) — the figure that says
+            // whether the fan is honest, and the only reading under which a flawless error column
+            // can still be a bad forecast.
+            section("Calibration") { CalibrationFigure(scored) }
+            // The basis is part of a figure's identity (§6.2) and this one is off the band, like
+            // every other level metric — so the header carries it, exactly as the band table's does.
+            section("Clarke zones — band τ.25–.75") { ClarkeFigure(scored) }
             // §6.2 — the same block on the median line, kept a table apart from the band figures.
             section("Median line") { MedianTable(scored) }
             section("Outer band τ.05–.95 · persistence") { OuterTable(scored) }
@@ -204,24 +226,15 @@ fun ModelDetailScreen(
         // ── 3b. CG-EGA — whole window (§6.3), computed only on request ──
         section("CG-EGA") {
             when {
-                cgEga != null -> CgEgaTable(cgEga)
+                cgEga != null -> {
+                    CgEgaFigure(cgEga)
+                    CgEgaTable(cgEga)
+                }
                 cgEgaLoading -> Note("Computing…")
                 scored.isEmpty() -> Note("Needs scored windows")
                 else -> TextButton(
                     onClick = { haptics.perform(HapticEvent.Tap); onComputeCgEga() },
                 ) { Text("Compute") }
-            }
-        }
-
-        // ── 4. Reference (held-out validation) ──
-        meta?.reference?.let { ref ->
-            section("Reference — held-out validation (train.py)") {
-                Note("Validation metrics at export${meta.valStep?.let { " (step ${"%,d".format(it)})" } ?: ""} — reference only, not on-device")
-                ReferenceRows(ref)
-                ref.clarkeAbPct?.let { KeyVal("Clarke A+B", "%.1f%%".format(it)) }
-                if (ref.todMaeH != null) {
-                    KeyVal("time-head hour error", "${"%.2f".format(ref.todMaeH)} h" + (ref.todMaeHiconfH?.let { " (hi-conf ${"%.2f".format(it)} h)" } ?: ""))
-                }
             }
         }
     }
@@ -355,29 +368,6 @@ private fun emptyWhy(m: ModelMetrics?): String {
         m.suite.nWindows == 0 -> "Fan not scoreable — $built forecasts rejected"
         else -> "Insufficient history — ${m.suite.nWindows} scored windows"
     }
-}
-
-@Composable
-private fun ReferenceRows(ref: ReferenceMetrics) {
-    // Shared aligned grid (issues 10/11/15) — fixed-weight columns, right-aligned tabular numerics.
-    com.t1dm.core.design.DataTable(
-        columns = listOf(
-            com.t1dm.core.design.TableColumn("horizon", 0.9f),
-            com.t1dm.core.design.TableColumn("RMSE", 1f, numeric = true),
-            com.t1dm.core.design.TableColumn("MARD", 1f, numeric = true),
-            com.t1dm.core.design.TableColumn("Clarke-A", 1.1f, numeric = true),
-            com.t1dm.core.design.TableColumn("cov90", 1f, numeric = true),
-        ),
-        rows = ref.horizonsMin.mapIndexed { i, h ->
-            listOf(
-                "${h}m",
-                ref.rmseMgdl.getOrNull(i)?.let { "%.1f".format(it) } ?: "—",
-                ref.mardPct.getOrNull(i)?.let { "%.1f%%".format(it) } ?: "—",
-                ref.clarkeAPct.getOrNull(i)?.let { "%.0f%%".format(it) } ?: "—",
-                ref.coverage90.getOrNull(i)?.let { "%.0f%%".format(it * 100) } ?: "—",
-            )
-        },
-    )
 }
 
 /**

@@ -99,6 +99,18 @@ data class ExcursionAccuracy(
 )
 
 /**
+ * What a calibrated band is aiming at — the span of the levels its edges are drawn from, one per
+ * band [HorizonMetrics] carries (`SPEC/invariants.md` §6.2: the metric band's target is
+ * `METRIC_BAND_TAU_HI − METRIC_BAND_TAU_LO`, the outer envelope's the span between the fan's first
+ * and last levels). The levels themselves live in `t1dm-core::accuracy`, which owns every scored
+ * number; these are only what a DISPLAY compares a realized coverage against, and they are the same
+ * spans [HorizonMetrics.bandCov50] / [HorizonMetrics.bandCov90] already name. §6.1 is explicit that
+ * no descriptor ships these and that each consumer holds its own copy.
+ */
+const val BAND_COV50_TARGET: Double = 0.50
+const val BAND_COV90_TARGET: Double = 0.90
+
+/**
  * Everything scored at one horizon. [band] is the HEADLINE — the band projection of §6.2 — and
  * [medianLine] the same block on the median. Because a wider band can only lower the error, a band
  * figure must never be shown without [bandCov50] and [bandWidth50] beside it: a band widened until
