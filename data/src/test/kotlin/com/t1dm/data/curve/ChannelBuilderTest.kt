@@ -42,10 +42,24 @@ class ChannelBuilderTest {
         val schedule: BasalSchedule? = null,
         val basalInjections: List<CurveEvent> = emptyList(),
     ) : DoseStore {
+        /** How many times each window read was issued — so "one gather, not two" is asserted. */
+        var insulinReads = 0
+        var scheduleReads = 0
+        var basalInjectionReads = 0
+
+        /** How many BOTH-HALVES gathers the builder asked for. The default implementation delegates to
+         *  the two reads above, so this counts the builder's gathers, not the store's queries — the
+         *  Room store answers one gather with a single `logged_dose` window read. */
+        var combinedReads = 0
+
         override suspend fun carbEvents(fromMs: Long, toMs: Long) = carbs
-        override suspend fun insulinEvents(fromMs: Long, toMs: Long) = insulin
-        override suspend fun activeBasalSchedule() = schedule
-        override suspend fun basalInjectionEvents(fromMs: Long, toMs: Long) = basalInjections
+        override suspend fun insulinEvents(fromMs: Long, toMs: Long) = insulin.also { insulinReads++ }
+        override suspend fun activeBasalSchedule() = schedule.also { scheduleReads++ }
+        override suspend fun basalInjectionEvents(fromMs: Long, toMs: Long) =
+            basalInjections.also { basalInjectionReads++ }
+
+        override suspend fun insulinAndBasalInjectionEvents(fromMs: Long, toMs: Long) =
+            super.insulinAndBasalInjectionEvents(fromMs, toMs).also { combinedReads++ }
     }
 
     @Test
@@ -177,9 +191,83 @@ class ChannelBuilderTest {
         val directInj = engine.bucketize(inj, g0, n, CurveKind.INSULIN)
         assertArrayEquals(directInj, injInsulin, 0.0)
 
-        // Mirror the XOR on the dashboard's separate basalChannel overlay.
-        assertArrayEquals(schedOnly.basalChannel(g0, n), both.basalChannel(g0, n), 0.0)
-        assertArrayEquals(directInj, injOnly.basalChannel(g0, n), 0.0)
+        // Mirror the XOR on the dashboard overlay's separate basal series.
+        assertArrayEquals(schedOnly.overlayChannels(g0, n).basal, both.overlayChannels(g0, n).basal, 0.0)
+        assertArrayEquals(directInj, injOnly.overlayChannels(g0, n).basal, 0.0)
+    }
+
+    /** The overlay's three series must be exactly what the two calls it replaces produced: the same
+     *  carb and COMBINED insulin channels [contextChannels] builds, and the basal sub-series that used
+     *  to come from a second resolve of the same window. */
+    @Test
+    fun overlayChannels_matches_the_two_calls_it_replaces() = runTest {
+        val g0 = 3_000_000_000_000L
+        val n = 72
+        val meal = engine.carbEvent(grams = 35.0, startMs = g0, k = 3.0, theta = 20.0, durMin = 240.0)
+        val bolus = engine.rapidEvent(units = 5.0, startMs = g0, peakMin = 75.0, diaMin = 360.0)
+        val injection = CurveEvent(
+            g0, CurveEngine.STEP_MS, CurveKind.INSULIN, 14.0,
+            engine.bateman(14.0, CurveEngine.Presets.TRESIBA_DIA_MIN, CurveEngine.Presets.BASAL_KA_PER_HOUR, CurveEngine.Presets.BASAL_KE_PER_HOUR).toList(),
+        )
+        val builder = ChannelBuilder(
+            engine,
+            FakeStore(carbs = listOf(meal), insulin = listOf(bolus), basalInjections = listOf(injection)),
+        )
+
+        val overlay = builder.overlayChannels(g0, n)
+        val context = builder.contextChannels(g0, n)
+
+        assertArrayEquals(context.carb, overlay.carb, 0.0)
+        assertArrayEquals(context.insulin, overlay.insulin, 0.0)
+        // The basal series is the injection alone, and a COMPONENT of the combined channel — the two
+        // must not have been built from two different gathers of the same window.
+        assertArrayEquals(engine.bucketize(listOf(injection), g0, n, CurveKind.INSULIN), overlay.basal, 0.0)
+        assertTrue(overlay.insulin.sum() > overlay.basal.sum())
+    }
+
+    /** ...and it must gather ONCE. The overlay rebuilds on every reading, every logged dose/meal and
+     *  every forecast, over a window the panel caps at ~14 days of 5-min buckets. */
+    @Test
+    fun overlayChannels_gathers_the_window_once() = runTest {
+        val g0 = 3_500_000_000_000L
+        val store = FakeStore(insulin = listOf(engine.rapidEvent(units = 2.0, startMs = g0, peakMin = 75.0, diaMin = 360.0)))
+        val builder = ChannelBuilder(engine, store)
+
+        builder.overlayChannels(g0, 72)
+
+        // One schedule lookup and ONE both-halves gather for all three series — the basal one used to
+        // cost a second of each. (The fake's default splits that gather back into the two counted
+        // reads; the Room store answers it with a single `logged_dose` query.)
+        assertEquals(1, store.scheduleReads)
+        assertEquals(1, store.combinedReads)
+    }
+
+    /** With a schedule configured the discrete-injection read must not happen at all: the basal comes
+     *  from the auto-extended template, and asking the dose table for injections would be a query whose
+     *  result the XOR then discards. */
+    @Test
+    fun overlayChannels_with_a_schedule_never_reads_the_injections() = runTest {
+        val g0 = 3_600_000_000_000L
+        val sched = BasalSchedule(
+            tzOffsetMin = 0,
+            doses = listOf(
+                BasalDoseSpec(
+                    timeOfDayMin = 8 * 60,
+                    doseU = 20.0,
+                    durationMin = CurveEngine.Presets.TRESIBA_DIA_MIN,
+                    kaPerHour = CurveEngine.Presets.BASAL_KA_PER_HOUR,
+                    kePerHour = CurveEngine.Presets.BASAL_KE_PER_HOUR,
+                ),
+            ),
+        )
+        val store = FakeStore(schedule = sched)
+        val builder = ChannelBuilder(engine, store)
+
+        builder.overlayChannels(g0, 72)
+
+        assertEquals(1, store.insulinReads)
+        assertEquals(0, store.combinedReads)
+        assertEquals(0, store.basalInjectionReads)
     }
 
     @Test
@@ -223,6 +311,44 @@ class ChannelBuilderTest {
         val zero = builder.insulinZeroMs(atMs)!!
         assertTrue("bolus must have decayed before atMs", bolusZero < atMs)
         assertTrue("basal tail must win the max", zero > bolusZero)
+    }
+
+    /** [ChannelBuilder.insulinOnBoard] must answer exactly what the two separate calls answered — it is
+     *  the same window, and the whole point of merging them is that nothing about the result changes. */
+    @Test
+    fun insulinOnBoard_matches_the_two_calls_it_replaces() = runTest {
+        val g0 = 4_000_000_000_000L
+        val bolus = engine.rapidEvent(units = 4.5, startMs = g0, peakMin = 75.0, diaMin = 360.0)
+        val injection = CurveEvent(
+            g0 - 60 * 60_000L, CurveEngine.STEP_MS, CurveKind.INSULIN, 18.0,
+            engine.bateman(18.0, CurveEngine.Presets.TRESIBA_DIA_MIN, CurveEngine.Presets.BASAL_KA_PER_HOUR, CurveEngine.Presets.BASAL_KE_PER_HOUR).toList(),
+        )
+        val atMs = g0 + 2 * 60 * 60_000L
+        val builder = ChannelBuilder(engine, FakeStore(insulin = listOf(bolus), basalInjections = listOf(injection)))
+
+        val merged = builder.insulinOnBoard(atMs)
+
+        assertEquals(builder.onBoard(atMs, CurveKind.INSULIN), merged.iobU, 0.0)
+        assertEquals(builder.insulinZeroMs(atMs), merged.zeroMs)
+    }
+
+    /** ...and it must reach the store ONCE. The widget pulls IOB on every refresh, so a second gather
+     *  here is a second `logged_dose` read, a second schedule lookup and a second PK reconstruction of
+     *  every row, several times a minute. */
+    @Test
+    fun insulinOnBoard_reads_the_window_once() = runTest {
+        val g0 = 4_500_000_000_000L
+        val store = FakeStore(insulin = listOf(engine.rapidEvent(units = 3.0, startMs = g0, peakMin = 75.0, diaMin = 360.0)))
+        val builder = ChannelBuilder(engine, store)
+
+        builder.insulinOnBoard(g0 + 60 * 60_000L)
+
+        assertEquals(1, store.scheduleReads)
+        // No schedule ⇒ the discrete-injection fallback, and both halves come from ONE gather (which
+        // the fake's default splits back into its two counted reads; the Room store does not).
+        assertEquals(1, store.combinedReads)
+        assertEquals(1, store.insulinReads)
+        assertEquals(1, store.basalInjectionReads)
     }
 
     @Test

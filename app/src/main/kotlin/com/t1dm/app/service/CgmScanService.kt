@@ -40,6 +40,7 @@ import com.t1dm.app.notify.PredictiveAlertPresenter
 import com.t1dm.app.settings.SettingsStore
 import androidx.glance.appwidget.updateAll
 import com.t1dm.app.widget.GlucoseWidget
+import androidx.compose.ui.graphics.toArgb
 import com.t1dm.core.design.applyWidgetPalette
 import com.t1dm.core.design.iconStyleForTheme
 import com.t1dm.core.design.resolvePalette
@@ -494,9 +495,15 @@ class CgmScanService : LifecycleService() {
         // Derive the notification geometry/accent AND the widget palette from the SAME (id, json) that
         // drove this refresh — not the container's independently-collected snapshot — so a theme change
         // repaints both surfaces at once and can never race the snapshot.
+        //
+        // ONE resolution, both surfaces. The accent and the widget palette are the same decode of the
+        // same pair, and asking `NotificationIcons.accentArgb` for the first while `resolvePalette` did
+        // the second parsed an imported theme's JSON twice on every refresh — twice a minute from the
+        // ticker alone, for a value that changes when the user picks a theme.
         val (themeId, customJson) = themeSig
         val style = iconStyleForTheme(themeId)
-        val accent = NotificationIcons.accentArgb(themeId, customJson)
+        val palette = resolvePalette(themeId, customJson)
+        val accent = palette.primary.toArgb()
         val nm = getSystemService(NotificationManager::class.java)
         runCatching {
             nm.notify(NOTIF_ID, livePresenter.build(glance, unit, style, accent, state.selectedPredictedTime))
@@ -519,15 +526,20 @@ class CgmScanService : LifecycleService() {
         // Seed the palette globals the widget reads headlessly BEFORE pushing it, so it renders the
         // persisted theme deterministically (independent of whether an Activity composition has run) and
         // updates the instant the theme changes rather than on the next reading/ticker.
-        applyWidgetPalette(resolvePalette(themeId, customJson))
+        applyWidgetPalette(palette)
         runCatching { GlucoseWidget().updateAll(this) }
         // Freshness blink (tasteful, free motion): a just-arrived reading renders the accent bright;
         // settle it a beat later with ONE delayed re-render so a new value reads as a brief pulse rather
         // than a static jump. Gated by the global animations toggle and fired only for a fresh reading —
         // two updates per reading, never a loop.
-        val animate = runCatching { container.settingsStore.currentAnimationsEnabled() }.getOrDefault(true)
+        //
+        // Age first, toggle second. The toggle is a Room read and the age is a subtraction, and the age
+        // rules the blink out on all but the two refreshes that follow a reading — so asking Settings
+        // first spent a query per ticker tick to answer a question the next term had already closed.
         val ageMs = latest?.let { System.currentTimeMillis() - it.rxWallMs } ?: Long.MAX_VALUE
-        if (animate && ageMs in 0 until GlucoseWidget.FRESH_WINDOW_MS) {
+        val animate = ageMs in 0 until GlucoseWidget.FRESH_WINDOW_MS &&
+            runCatching { container.settingsStore.currentAnimationsEnabled() }.getOrDefault(true)
+        if (animate) {
             lifecycleScope.launch(container.dispatchers.default) {
                 delay(GlucoseWidget.FRESH_WINDOW_MS - ageMs + 150L)
                 runCatching { GlucoseWidget().updateAll(this@CgmScanService) }

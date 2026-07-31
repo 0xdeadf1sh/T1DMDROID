@@ -70,11 +70,6 @@ interface CgmReadingDao {
     @Query("SELECT * FROM cgm_reading WHERE sourceId = :sourceId AND tsMs = :ts LIMIT 1")
     suspend fun byTs(sourceId: String, ts: Long): CgmReadingEntity?
 
-    /** Every grid ts this source already has a reading for — the gap set the sample→reading reconcile
-     *  diffs against so it inserts only the slots that are missing. */
-    @Query("SELECT tsMs FROM cgm_reading WHERE sourceId = :sourceId")
-    suspend fun tsForSource(sourceId: String): List<Long>
-
     /** Batch gap-fill for the sample→reading reconcile (server history that predates this build). */
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAll(readings: List<CgmReadingEntity>)
@@ -113,9 +108,6 @@ interface CgmReadingDao {
 interface SampleDao {
     @Upsert suspend fun upsert(sample: SampleEntity)
 
-    @Query("SELECT * FROM sample WHERE ts BETWEEN :fromMs AND :toMs ORDER BY ts")
-    fun observeRange(fromMs: Long, toMs: Long): Flow<List<SampleEntity>>
-
     @Query("SELECT * FROM sample WHERE ts = :ts")
     suspend fun byTs(ts: Long): SampleEntity?
 
@@ -127,9 +119,34 @@ interface SampleDao {
     @Query("SELECT MAX(ts) FROM sample")
     suspend fun maxTs(): Long?
 
+    /** [maxTs] as a Flow — the scalar `sample`-write signal ([T1dmRepository.observeSampleWrites]).
+     *  Room's invalidation is per TABLE, so this emits on exactly the writes an `observeRange` over
+     *  the projection emits on, without materialising a row; `ts` is the primary key, so the
+     *  aggregate is one seek rather than a scan. */
+    @Query("SELECT MAX(ts) FROM sample")
+    fun observeMaxTs(): Flow<Long?>
+
+    /** The `sample` rows carrying a BG that [sourceId] has no `cgm_reading` for — the gap set the
+     *  sample→reading reconcile inserts, resolved in SQL instead of by diffing the whole projection
+     *  against the whole ts column of the source in the heap. `NOT EXISTS` seeks the
+     *  `(sourceId, tsMs)` primary key per candidate row, so a reconcile with nothing to do reads
+     *  nothing back. */
+    @Query(
+        "SELECT * FROM sample WHERE bgMgdl IS NOT NULL AND NOT EXISTS (" +
+            "SELECT 1 FROM cgm_reading WHERE cgm_reading.sourceId = :sourceId AND cgm_reading.tsMs = sample.ts" +
+            ") ORDER BY ts",
+    )
+    suspend fun bgSlotsMissingReading(sourceId: String): List<SampleEntity>
+
     /** One-shot windowed read (oldest-first) for the stats recompute (Phase 6). */
     @Query("SELECT * FROM sample WHERE ts BETWEEN :fromMs AND :toMs ORDER BY ts")
     suspend fun rangeList(fromMs: Long, toMs: Long): List<SampleEntity>
+
+    /** Steps summed over a window — the aggregate the widget and the BG panel actually asked for, in
+     *  place of [rangeList]'s whole rows summed in Kotlin. `SUM` skips NULL buckets exactly as the
+     *  Kotlin `?: 0` did, and `COALESCE` gives an empty window the 0 an empty list summed to. */
+    @Query("SELECT COALESCE(SUM(steps), 0) FROM sample WHERE ts BETWEEN :fromMs AND :toMs")
+    suspend fun stepsInRange(fromMs: Long, toMs: Long): Int
 
     /** The most recent non-null mood — what the Logs panel's picker shows as the current selection. */
     @Query("SELECT mood FROM sample WHERE mood IS NOT NULL ORDER BY ts DESC LIMIT 1")

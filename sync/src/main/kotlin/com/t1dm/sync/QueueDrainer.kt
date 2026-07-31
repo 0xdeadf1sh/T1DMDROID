@@ -58,7 +58,10 @@ class QueueDrainer(
         val rows = dao.evictionRows()
         val ageCut = nowMs - config.maxAgeMs
         val expired = rows.filter { it.kind.ageEvictable && it.createdAtMs < ageCut }.map { it.id }
-        val survivors = rows.filterNot { it.id in expired.toHashSet() }
+        // Built once, not once per row: `expired.toHashSet()` sitting inside the predicate rebuilt and
+        // rehashed the whole set for every element of `rows` — O(n·m) where the set is loop-invariant.
+        val expiredIds = expired.toHashSet()
+        val survivors = rows.filterNot { it.id in expiredIds }
         val overflow = survivors.size - config.maxQueueSize
         val trimmed = if (overflow > 0) {
             survivors.sortedWith(compareBy({ it.kind.priority }, { it.createdAtMs }, { it.id }))
@@ -73,6 +76,19 @@ class QueueDrainer(
 
     suspend fun drainOnce(): DrainResult = mutex.withLock {
         withContext(dispatchers.io) {
+            // An empty queue is the steady state, and the four table operations below all resolve to
+            // nothing over it: `resetState` updates no row, `evict` reads no eviction row and deletes
+            // none, `dueBatch` returns empty so the loop never runs, and `count()` is 0 — exactly the
+            // all-zero DrainResult returned here. One COUNT replaces the four. This is called once a
+            // minute by the SyncManager timer, again on every 5-min grid tick, and again on every WS
+            // (re)connect, so it is the pass that runs most and does least.
+            //
+            // A row enqueued between this count and the `dueBatch` below waits for the next pass. The
+            // unoptimised code has the same race one statement later — a row landing after `dueBatch`
+            // snapshots is equally deferred — so this widens an existing window by microseconds and
+            // changes no outcome: nothing drains on enqueue, the depth Flow already reports the row,
+            // and the timer/tick/reconnect triggers are unchanged.
+            if (dao.count() == 0) return@withContext DrainResult()
             dao.resetState(OutboxState.INFLIGHT, OutboxState.PENDING) // reclaim crash-wedged rows
             val evicted = evict(clock())
             val now = clock()

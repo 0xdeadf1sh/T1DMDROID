@@ -2,7 +2,9 @@ package com.t1dm.sync
 
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
+import com.t1dm.data.db.OutboxDao
 import com.t1dm.data.db.OutboxEntity
+import com.t1dm.data.db.OutboxEvictRow
 import com.t1dm.data.db.OutboxKind
 import com.t1dm.data.db.OutboxState
 import com.t1dm.data.db.SampleEntity
@@ -74,6 +76,66 @@ class QueueDrainerTest {
         val row2 = dao.snapshot().single()
         assertEquals(2, row2.attempts)
         assertEquals(now + 2_000L, row2.nextAttemptMs) // base·2^1
+    }
+
+    /**
+     * The empty queue — the steady state, and the one the timer, the grid tick and every WS reconnect
+     * all keep asking about — costs one COUNT and nothing else, and answers exactly what the full pass
+     * answered: an all-zero [DrainResult].
+     */
+    @Test
+    fun emptyQueueCostsOneCountAndNoTableWork() = runTest {
+        val dao = CountingOutboxDao(FakeOutboxDao())
+        val http = RecordingHttpClient { _, _ -> ok() }
+
+        val r = QueueDrainer(dao, http, { null }, dispatchers, DrainConfig(), { 10_000L }, { 0.0 }).drainOnce()
+
+        assertEquals(DrainResult(), r)
+        assertEquals(0, dao.resetStateCalls)
+        assertEquals(0, dao.evictionRowsCalls)
+        assertEquals(0, dao.dueBatchCalls)
+        assertTrue(http.requests.isEmpty())
+    }
+
+    /** A queue holding only a crash-wedged INFLIGHT row has nothing DUE, but it is not empty — the pass
+     *  must still run, or the row would never be reclaimed to PENDING and would never be sent again. */
+    @Test
+    fun inflightOnlyQueueStillRunsTheFullPass() = runTest {
+        val inner = FakeOutboxDao()
+        inner.enqueue(OutboxEntity(kind = OutboxKind.ALERT, dedupKey = "w", payload = envelope("/w"), createdAtMs = 1, attempts = 0, nextAttemptMs = 0, state = OutboxState.INFLIGHT))
+        val dao = CountingOutboxDao(inner)
+        val http = RecordingHttpClient { _, _ -> ok() }
+
+        val r = QueueDrainer(dao, http, { null }, dispatchers, DrainConfig(), { 10_000L }, { 0.0 }).drainOnce()
+
+        assertEquals(1, dao.resetStateCalls)
+        assertEquals(1, dao.evictionRowsCalls)
+        assertEquals(1, dao.dueBatchCalls)
+        assertEquals(1, r.sent)
+        assertEquals(0, inner.count())
+    }
+
+    /** Counts the table operations one pass issues, so "the empty pass touches nothing" is asserted
+     *  rather than assumed. Everything not counted delegates to the real fake. */
+    private class CountingOutboxDao(private val inner: FakeOutboxDao) : OutboxDao by inner {
+        var resetStateCalls = 0
+        var evictionRowsCalls = 0
+        var dueBatchCalls = 0
+
+        override suspend fun resetState(from: OutboxState, to: OutboxState): Int {
+            resetStateCalls++
+            return inner.resetState(from, to)
+        }
+
+        override suspend fun evictionRows(): List<OutboxEvictRow> {
+            evictionRowsCalls++
+            return inner.evictionRows()
+        }
+
+        override suspend fun dueBatch(state: OutboxState, nowMs: Long, limit: Int): List<OutboxEntity> {
+            dueBatchCalls++
+            return inner.dueBatch(state, nowMs, limit)
+        }
     }
 
     @Test

@@ -143,6 +143,15 @@ class InferenceController(
     @Volatile
     private var thermalBlocked = false
 
+    /** The thermal verdict already reached for the cycle stamped [nowMs], so the two gates a
+     *  history-fed cycle passes through consult one temperature sample rather than two. See
+     *  [overTempNote]. One immutable holder behind one volatile write, so the stamp and the note it
+     *  belongs to can never be read apart. */
+    private class ThermalVerdict(val nowMs: Long, val note: String?)
+
+    @Volatile
+    private var thermalVerdict: ThermalVerdict? = null
+
     /** Register the backends the controller may route to (real XNNPACK + documented NPU stubs). */
     fun registerBackend(backend: InferenceBackend) { backends[backend.id] = backend }
 
@@ -693,13 +702,41 @@ class InferenceController(
      * BLOCKED, else null (and clears the latch). A null status (gate disabled or temperature
      * unreadable) never gates. Latches at [ThermalStatus.thresholdC] and resumes only below
      * `thresholdC - resumeMarginC` so a temperature hovering on the threshold cannot flap the forecast.
+     *
+     * **Once per cycle, not once per gate.** A history-fed cycle passes this gate twice — [runFromHistory]
+     * sharpens the message before the warmup gate can claim the banner, then [runCycle] applies it again
+     * as the universal chokepoint every forecast funnels through. Both calls carry the SAME [cycleNowMs],
+     * which is what identifies them as one cycle, so the second reuses the first's verdict: one
+     * [thermalProvider] invocation (three settings reads and a battery-sensor binder round trip) instead
+     * of two, and — the part that was a latent defect rather than a cost — ONE advance of the hysteresis
+     * latch instead of two advances against two different temperature samples.
+     *
+     * This is a per-cycle share, deliberately NOT a wall-clock cache: a cycle with a fresh `nowMs` always
+     * re-reads, and [runCycle] driven directly (the synthetic/manual path) carries its own `nowMs` and so
+     * has its own read. And it is confined to the *inference* gate — the deterministic over-temperature
+     * ALARM runs on its own uncached read in `AlarmController`, so nothing here can move when that alarm
+     * fires.
+     *
+     * What the discarded second read actually offered is worth naming: the temperature behind
+     * [thermalProvider] is `ACTION_BATTERY_CHANGED`'s `EXTRA_TEMPERATURE`, a STICKY broadcast the system
+     * refreshes on battery events rather than on demand. Two reads separated by the warmup query and the
+     * history fetch that sit between these gates are overwhelmingly the same sticky Intent and hence the
+     * same number — which is why re-deciding on it could only ever re-affirm the first verdict, and why
+     * doing so twice against the hysteresis latch was the defect rather than the safeguard.
      */
-    private suspend fun overTempNote(): String? {
-        val t = thermalProvider() ?: run { thermalBlocked = false; return null }
+    private suspend fun overTempNote(cycleNowMs: Long): String? {
+        thermalVerdict?.takeIf { it.nowMs == cycleNowMs }?.let { return it.note }
+        val t = thermalProvider() ?: run {
+            thermalBlocked = false
+            thermalVerdict = ThermalVerdict(cycleNowMs, null)
+            return null
+        }
         val block = if (thermalBlocked) t.currentC > t.thresholdC - t.resumeMarginC
                     else t.currentC >= t.thresholdC
         thermalBlocked = block
-        return if (block) "inference paused — device at %.1f°C ≥ %.1f°C threshold".format(t.currentC, t.thresholdC) else null
+        val note = if (block) "inference paused — device at %.1f°C ≥ %.1f°C threshold".format(t.currentC, t.thresholdC) else null
+        thermalVerdict = ThermalVerdict(cycleNowMs, note)
+        return note
     }
 
     /** Fire a cycle off the shared BG history (the `GridTick` path). */
@@ -721,7 +758,7 @@ class InferenceController(
         // Thermal gate BEFORE the warmup gate: while blocked, publish a clean over-temp banner (empty
         // predictions, PRESERVING circadianTime so the clock stays lit) instead of a warmup/forecast
         // state. runCycle carries the universal chokepoint guard; this one only sharpens the message.
-        overTempNote()?.let { note ->
+        overTempNote(nowMs)?.let { note ->
             _state.value = _state.value.copy(
                 predictions = emptyList(), lastCause = InferenceCause.OVER_TEMPERATURE, note = note,
             )
@@ -799,7 +836,7 @@ class InferenceController(
         // Thermal gate — the UNIVERSAL chokepoint: every forecast (grid tick, manual, synthetic) funnels
         // through here, so blocking here blocks them all. Empty predictions + OVER_TEMPERATURE cause;
         // circadianTime is left untouched by copy() so the clock stays lit while inference is paused.
-        overTempNote()?.let { note ->
+        overTempNote(nowMs)?.let { note ->
             _state.value = _state.value.copy(
                 predictions = emptyList(), lastCause = InferenceCause.OVER_TEMPERATURE, note = note,
             )

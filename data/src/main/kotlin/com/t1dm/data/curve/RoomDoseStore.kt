@@ -37,6 +37,21 @@ class RoomDoseStore(
     override suspend fun basalInjectionEvents(fromMs: Long, toMs: Long): List<CurveEvent> =
         loggedDoses.inRange(fromMs, toMs).filter { it.kind == DoseKind.BASAL }.map { it.toCurveEvent() }
 
+    /**
+     * Both halves from ONE `logged_dose` window read. The two calls above are the same query over the
+     * same window differing only in the `kind` they keep, so a caller wanting both — every IOB gather
+     * and every channel build for a user with no basal schedule — issued the query twice. `filter`
+     * preserves order, so each half is the identical list the separate call returns.
+     */
+    override suspend fun insulinAndBasalInjectionEvents(
+        fromMs: Long,
+        toMs: Long,
+    ): Pair<List<CurveEvent>, List<CurveEvent>> {
+        val rows = loggedDoses.inRange(fromMs, toMs)
+        return rows.filter { it.kind == DoseKind.BOLUS }.map { it.toCurveEvent() } to
+            rows.filter { it.kind == DoseKind.BASAL }.map { it.toCurveEvent() }
+    }
+
     override suspend fun activeBasalSchedule(): BasalSchedule? {
         val rows = basalSchedules.activeDoses()
         if (rows.isEmpty()) return null

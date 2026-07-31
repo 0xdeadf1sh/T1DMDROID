@@ -6,8 +6,7 @@ import androidx.annotation.DrawableRes
 import androidx.compose.ui.graphics.toArgb
 import com.t1dm.app.R
 import com.t1dm.core.design.IconStyle
-import com.t1dm.core.design.paletteForId
-import com.t1dm.core.design.parseThemeJson
+import com.t1dm.core.design.resolvePalette
 
 /**
  * Resolves the per-theme notification SMALL icons (issue I1). The platform draws a notification small
@@ -58,16 +57,18 @@ object NotificationIcons {
     fun icon(context: Context, glyph: Glyph, style: IconStyle): Icon =
         Icon.createWithResource(context, res(glyph, style))
 
-    /** The active theme's accent (`primary`) as an ARGB int for `Notification.Builder.setColor`. Reads a
-     *  bundled palette by id, or the persisted custom-theme JSON; any failure falls back to the default. */
-    fun accentArgb(themeId: String?, customThemeJson: String?): Int {
-        val palette = runCatching {
-            if (themeId == com.t1dm.core.design.ThemeIds.CUSTOM && !customThemeJson.isNullOrBlank()) {
-                parseThemeJson(customThemeJson)
-            } else {
-                paletteForId(themeId)
-            }
-        }.getOrElse { paletteForId(null) }
-        return palette.primary.toArgb()
-    }
+    /**
+     * The active theme's accent (`primary`) as an ARGB int for `Notification.Builder.setColor`. Reads a
+     * bundled palette by id, or the persisted custom-theme JSON; any failure falls back to the default.
+     *
+     * The id→palette rule is [resolvePalette]'s and is no longer restated here: this was a verbatim
+     * second copy of its branch — down to the same Tron fallback, `paletteForId(null)` being
+     * `TronPalette` — in a codebase whose KDoc calls that function "the ONE place that decodes a custom
+     * theme, so the Activity, the FGS notification, and the widget all agree".
+     *
+     * A caller needing both the accent and the palette should resolve ONCE and take `.primary.toArgb()`
+     * itself rather than call this as well: behind a custom theme each resolution is a fresh JSON parse.
+     */
+    fun accentArgb(themeId: String?, customThemeJson: String?): Int =
+        resolvePalette(themeId, customThemeJson).primary.toArgb()
 }

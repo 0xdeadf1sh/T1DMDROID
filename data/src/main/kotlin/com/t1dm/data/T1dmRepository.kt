@@ -96,7 +96,7 @@ class T1dmRepository(
     /**
      * A monotonically-advancing tick bumped on every logged-meal / logged-dose write. Meal/dose events
      * no longer project onto the wide `sample` row (the carb/bolus/basal scalar columns were retired,
-     * §3.1), so `observeSamples` no longer fires on a log — this is the trigger the IOB/COB read-out
+     * §3.1), so [observeSampleWrites] no longer fires on a log — this is the trigger the IOB/COB read-out
      * subscribes to so a just-logged dose refreshes it immediately instead of waiting for the next CGM
      * reading (fixes the fresh-log staleness the sample-projection used to cover).
      */
@@ -247,8 +247,20 @@ class T1dmRepository(
 
     // ─── Samples ────────────────────────────────────────────────────────────────────────────
 
-    fun observeSamples(fromMs: Long, toMs: Long): Flow<List<SampleEntity>> =
-        samples.observeRange(fromMs, toMs)
+    /**
+     * A CHANGE SIGNAL for the wide projection — emits once on collect and again on every write to
+     * `sample`, carrying only the newest grid ts.
+     *
+     * Room invalidates per TABLE, so this fires on exactly the same events an `observeRange` over the
+     * table fires on; the difference is that it materialises one `Long` instead of every row. A
+     * consumer that only needs to know "something in `sample` moved" — the IOB/COB read-out being the
+     * only one that does — used to subscribe to an unbounded `observeRange` and discard the list,
+     * which loaded the whole never-pruned projection into the heap on every reading, forever. That
+     * whole-table observer is gone with its last caller rather than left as a trap. Deliberately
+     * NOT deduplicated: the emission, not the value, is the signal, and a mood rewritten into an
+     * existing slot leaves the maximum unchanged while still being a write the consumer wants.
+     */
+    fun observeSampleWrites(): Flow<Long?> = samples.observeMaxTs()
 
     suspend fun sampleAt(ts: Long): SampleEntity? = withContext(io) { samples.byTs(ts) }
 
@@ -258,6 +270,10 @@ class T1dmRepository(
     /** Windowed wide-sample read for the stats recompute (Phase 6); oldest-first. */
     suspend fun samplesInRange(fromMs: Long, toMs: Long): List<SampleEntity> =
         withContext(io) { samples.rangeList(fromMs, toMs) }
+
+    /** Steps summed over `[fromMs, toMs]` — for a caller that wants the total and not the buckets. */
+    suspend fun stepsInRange(fromMs: Long, toMs: Long): Int =
+        withContext(io) { samples.stepsInRange(fromMs, toMs) }
 
     /** Steps arrive already bucketed on the 5-min grid by :sensors (SPEC §3.5). */
     suspend fun recordSteps(gridTs: Long, tzOffsetMin: Int, steps: Int, nowMs: Long) =
@@ -945,13 +961,21 @@ class T1dmRepository(
      * lacks a reading for (never clobbers a live reading's provenance/flag); the §3.6 alarm path is
      * live-BLE-driven, not the DB, so this is inert to it. Returns the number of rows inserted; 0 when
      * there is no active source or nothing is missing. Off-main; one transaction.
+     *
+     * The gap set is resolved by the QUERY ([SampleDao.bgSlotsMissingReading]) rather than by pulling
+     * both tables into the heap and diffing them there. It ran on every WS (re)connect — a flapping
+     * link re-ran it per reconnect — and neither table is pruned, so the old form boxed every reading
+     * ts of the source into a HashSet and materialised the entire projection beside it, inside a WRITE
+     * transaction that blocks every other writer for its duration. The rows selected are identical:
+     * `bgMgdl IS NOT NULL` is the same predicate, `NOT EXISTS` over the `(sourceId, tsMs)` key is the
+     * same membership test, and `ORDER BY ts` is the same order. In the steady state — where
+     * [mergeServerSample] has already hydrated each catch-up row into `cgm_reading` itself — the
+     * query now returns nothing and the pass reads nothing back.
      */
     suspend fun reconcileReadingsFromSamples(): Int = withContext(io) {
         val active = sources.activeSourceId() ?: return@withContext 0
         inWriteTx {
-            val have = readings.tsForSource(active).toHashSet()
-            val fill = samples.rangeList(Long.MIN_VALUE, Long.MAX_VALUE).asSequence()
-                .filter { it.bgMgdl != null && it.ts !in have }
+            val fill = samples.bgSlotsMissingReading(active).asSequence()
                 .map { s ->
                     CgmReadingEntity(
                         sourceId = active,
@@ -1015,7 +1039,22 @@ class T1dmRepository(
 
     suspend fun getKv(key: String): String? = withContext(io) { kv.get(key) }
 
-    fun observeKv(key: String): Flow<String?> = kv.observe(key)
+    /**
+     * One kv key's value. `distinctUntilChanged` because Room invalidates per TABLE: a write to ANY
+     * key re-runs EVERY registered kv query, and the FGS liveness heartbeat (`last_alive_ts`, 1/min)
+     * plus the per-cycle inference telemetry blob write kv continuously with the UI closed. Every
+     * settings-backed Flow in the process therefore re-emitted an identical value about twice a
+     * minute — and through the glance combine that reached a widget push, which rebuilds a 48 h
+     * insulin curve, rescans the day's steps and crosses the RemoteViews boundary. Same hazard, and
+     * the same remedy, as [observeQueuedDedupKeys].
+     *
+     * Deduplicating on the RAW string is what keeps this safe for a liveness reader as well as a
+     * value reader. An emission here never identified WHICH key was written, so it could not carry
+     * an event about this one; and anything that genuinely means "still alive" is a stamp that
+     * differs on every write, so it is not suppressed. The first emission is always delivered, and
+     * each collector holds its own comparison state, so a late subscriber still gets the value.
+     */
+    fun observeKv(key: String): Flow<String?> = kv.observe(key).distinctUntilChanged()
 
     /** Every kv key→value pair (Phase 7C item 17 — config export). Off-main. */
     suspend fun allKv(): Map<String, String> =
