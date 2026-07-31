@@ -7,8 +7,9 @@ import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.CgmSourceDescriptor
 import com.t1dm.core.model.CgmSourceId
 import com.t1dm.core.model.JournalNote
-import com.t1dm.core.model.AccuracyPair
 import com.t1dm.core.model.ForecastStatus
+import com.t1dm.core.model.ForecastWindow
+import com.t1dm.core.model.ForecastWindowSet
 import com.t1dm.core.model.ModelPrediction
 import com.t1dm.core.model.PaintStroke
 import com.t1dm.core.model.ReadingFlag
@@ -32,6 +33,7 @@ import com.t1dm.data.db.OutboxKind
 import com.t1dm.data.db.OutboxState
 import com.t1dm.data.db.PaintStrokeDao
 import com.t1dm.data.db.PredictionEntity
+import com.t1dm.data.curve.CurveEngine
 import com.t1dm.data.db.SampleEntity
 import com.t1dm.data.db.SavedMealEntity
 import com.t1dm.data.db.SavedMealItemEntity
@@ -40,6 +42,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
@@ -181,6 +184,16 @@ class T1dmRepository(
 
     suspend fun activeSourceId(): CgmSourceId? = withContext(io) {
         sources.activeSourceId()?.let(::CgmSourceId)
+    }
+
+    /**
+     * Retune [id]'s warm-up window (minutes). Clamped to [CgmSourceDescriptor.WARMUP_WINDOW_RANGE] here
+     * rather than trusted from the caller: this is the one door into the column, and a nonsensical
+     * window would silently mis-flag every reading the source produces.
+     */
+    suspend fun setSourceWarmupWindowMin(id: CgmSourceId, minutes: Int) = withContext(io) {
+        val clamped = minutes.coerceIn(CgmSourceDescriptor.WARMUP_WINDOW_RANGE)
+        sources.setWarmupWindowMin(id.value, clamped)
     }
 
     // ─── Readings + wide-sample projection ──────────────────────────────────────────────────
@@ -365,12 +378,79 @@ class T1dmRepository(
         return if (everAttempted) PushWithdrawal.RACED else PushWithdrawal.WITHDRAWN
     }
 
+    /**
+     * Delete a logged meal the user has decided against, keyed by its push's [dedupKey] rather than by
+     * a remembered outbox rowid — the Logs panel meets a row long after the enqueue rowid was
+     * forgotten, whereas the dedupKey is a pure function of the event's `client_id`.
+     *
+     * **The refusal is the point.** With no queued push under that key the server has the event and no
+     * local delete can revoke it (the API has no DELETE, and `CatchUpCoordinator` re-hydrates by
+     * `clientId` on the next WS connect — deleting the newest event even moves `newestEventTs()`
+     * backward, widening the pull window that resurrects it). So this deletes NOTHING in that case and
+     * reports [PushWithdrawal.ALREADY_SENT]; the caller must not paper over it. A push that was still
+     * ours to withdraw takes the row with it, atomically, for the §3.6-G reason spelt out on
+     * [undoLoggedDose].
+     *
+     * The resolve and the withdraw share one transaction, so a drain cannot land between them; the
+     * dedupKey cross-check inside [withdrawPush] still guards the recycled-rowid case.
+     */
+    suspend fun deleteCommittedMeal(rowId: Long, dedupKey: String): PushWithdrawal =
+        withContext(io) {
+            inWriteTx { withdrawCommitted(dedupKey) { loggedMeals.delete(rowId) } }
+        }.also { if (it != PushWithdrawal.ALREADY_SENT) _logEvents.update { t -> t + 1 } }
+
+    /** The dose twin of [deleteCommittedMeal]; same refusal, same atomicity, same §3.6-G reasoning. */
+    suspend fun deleteCommittedDose(rowId: Long, dedupKey: String): PushWithdrawal =
+        withContext(io) {
+            inWriteTx { withdrawCommitted(dedupKey) { loggedDoses.delete(rowId) } }
+        }.also { if (it != PushWithdrawal.ALREADY_SENT) _logEvents.update { t -> t + 1 } }
+
+    /**
+     * Resolve the queued push behind [dedupKey], withdraw it through the one deletion path
+     * ([withdrawPush]), and delete the event row only if the withdrawal got there first. Runs inside
+     * the caller's transaction.
+     *
+     * An absent queue row means ALREADY_SENT here, NOT `NEVER_QUEUED`: on this path the enqueue is not
+     * in doubt (every meal/dose writer files one), so absence can only mean the row has left — which is
+     * exactly the state that must refuse.
+     */
+    private suspend fun withdrawCommitted(
+        dedupKey: String,
+        deleteRow: suspend () -> Unit,
+    ): PushWithdrawal {
+        val queued = outbox.byDedupKey(dedupKey) ?: return PushWithdrawal.ALREADY_SENT
+        val outcome = withdrawPush(queued.id, dedupKey)
+        if (outcome != PushWithdrawal.ALREADY_SENT) deleteRow()
+        return outcome
+    }
+
     /** Window reads for curve/channel reconstruction (feed [com.t1dm.data.curve.RoomDoseStore]). */
     suspend fun loggedDosesInRange(fromMs: Long, toMs: Long): List<LoggedDoseEntity> =
         withContext(io) { loggedDoses.inRange(fromMs, toMs) }
 
     suspend fun loggedMealsInRange(fromMs: Long, toMs: Long): List<LoggedMealEntity> =
         withContext(io) { loggedMeals.inRange(fromMs, toMs) }
+
+    /**
+     * The newest [limit] logged meals / doses, newest first — the two halves of the Logs panel's feed.
+     * Entities rather than a domain type on purpose: the committed-vs-delivered verdict is a join
+     * against the outbox by dedupKey, and that key's format is owned by `:sync` (`mealDedupKey` /
+     * `doseDedupKey`), which this module must not depend on and must not re-spell. `:app` sees both and
+     * does the join there.
+     */
+    fun observeRecentLoggedMeals(limit: Int): Flow<List<LoggedMealEntity>> =
+        loggedMeals.observeRecent(limit)
+
+    fun observeRecentLoggedDoses(limit: Int): Flow<List<LoggedDoseEntity>> =
+        loggedDoses.observeRecent(limit)
+
+    /**
+     * The dedupKeys of every queued push of the given [kinds] — the "not yet accepted by the server"
+     * set. `distinctUntilChanged` because Room invalidates per TABLE, so every INGEST enqueue would
+     * otherwise re-emit an identical set and re-run the join above it.
+     */
+    fun observeQueuedDedupKeys(kinds: List<OutboxKind>): Flow<Set<String>> =
+        outbox.observeDedupKeys(kinds).map { it.toSet() }.distinctUntilChanged()
 
     /** The last [limit] distinct GI-bearing meals as [RecentMeal] quick-picks (Phase 7C, item 9). */
     fun observeRecentMeals(limit: Int = 3): Flow<List<RecentMeal>> =
@@ -609,7 +689,8 @@ class T1dmRepository(
         dedupKey: String,
         payload: ByteArray,
         nowMs: Long,
-    ): Long = withContext(io) { enqueueRow(kind, dedupKey, payload, nowMs) }
+        notBeforeMs: Long,
+    ): Long = withContext(io) { enqueueRow(kind, dedupKey, payload, nowMs, notBeforeMs) }
 
     fun observeOutboxDepth(): Flow<Int> = outbox.observeDepth()
 
@@ -624,6 +705,7 @@ class T1dmRepository(
         dedupKey: String,
         payload: ByteArray,
         nowMs: Long,
+        notBeforeMs: Long = 0L,
     ): Long = outbox.enqueue(
         OutboxEntity(
             kind = kind,
@@ -631,7 +713,10 @@ class T1dmRepository(
             payload = payload,
             createdAtMs = nowMs,
             attempts = 0,
-            nextAttemptMs = 0,
+            // Not a backoff: `attempts` stays 0, so the row's first real failure still gets the first
+            // (shortest) delay. `createdAtMs` is untouched too, which is what keeps FIFO order and the
+            // age bound measured from the WRITE rather than from the end of the hold.
+            nextAttemptMs = notBeforeMs,
             state = OutboxState.PENDING,
         ),
     )
@@ -658,64 +743,80 @@ class T1dmRepository(
         predictions.observeLatest().map { it?.toModel() }
 
     /**
-     * Pair every MATURED forecast of [modelId] with the realized MEASURED BG at each of [horizonsMin]
-     * minutes past the forecast's `madeAt`, for the on-device accuracy aggregator (Phase 7C, Models
-     * drill-down). Walks the dedicated `prediction` table over `[sinceMs, nowMs]`, and for each finite
-     * (non-degenerate) row emits an [AccuracyPair] per horizon whose target time `madeAt + h` is (a)
-     * already in the past (matured) and (b) matched by a MEASURED/NORMAL reading within [toleranceMs]
-     * — the nearest such reading. `predicted` is the median line at the horizon step; `band_lo/hi` are
-     * the τ.05 / τ.95 fan edges there (for central-90 coverage). No match ⇒ that (row, horizon) is
-     * silently skipped, so a horizon simply accrues fewer pairs (surfaced as "insufficient history").
+     * Walk every MATURED forecast of [modelId] over `[sinceMs, nowMs]` into the whole-window record
+     * the on-device metric suite scores (Phase 7C, Models drill-down): the full quantile fan and
+     * median line as stored, the realized trajectory beside them, and the persistence anchor.
+     *
+     * A window runs from `madeAt + 1 step` to `madeAt + [horizonMaxMin]`, so every reported horizon
+     * must land inside it. Unlike the per-horizon pairing it replaces, the suite scores one
+     * rectangular `windows × steps` grid and CG-EGA reads every step of it, so a window is emitted
+     * only when the realized trajectory covers ALL of them — one CGM gap drops the whole forecast,
+     * counted in [ForecastWindowSet.nIncomplete] rather than quietly shortening the window.
+     *
+     * The truth is the same filter the pairing used: MEASURED, NORMAL-flagged readings, matched to
+     * each target time by the nearest within [toleranceMs]. The persistence anchor is that same
+     * series read at `madeAt` — `SPEC/invariants.md` §6.3's "measured BG at the forecast's
+     * `made_at`" — so the rate at `t = 0` differences two values off one basis.
+     *
+     * The fan width is whatever the stored rows carry: the first accepted row fixes it and rows
+     * disagreeing are dropped, which keeps the set rectangular without this layer restating how
+     * many levels §6 defines. A width the scorer does not recognise is its own to reject.
      */
-    suspend fun forecastAccuracyPairs(
+    suspend fun forecastWindows(
         modelId: String,
-        horizonsMin: List<Int>,
+        horizonMaxMin: Int,
         sinceMs: Long,
         nowMs: Long,
         toleranceMs: Long = 150_000L, // half a 5-min grid step
-    ): List<AccuracyPair> = withContext(io) {
-        val maxHorizonMs = (horizonsMin.maxOrNull() ?: 0).toLong() * 60_000L
-        // Realized truth: MEASURED, in-range-flagged readings from sinceMs out to the last maturable
-        // target. Sorted ascending for a binary-search nearest match.
-        val truth = readings.readingsInRange(sinceMs, nowMs + maxHorizonMs)
+    ): ForecastWindowSet = withContext(io) {
+        val stepMs = CurveEngine.STEP_MS
+        val horizonMs = horizonMaxMin.toLong() * 60_000L
+        if (horizonMaxMin <= 0 || horizonMs % stepMs != 0L) return@withContext ForecastWindowSet.EMPTY
+        val nSteps = (horizonMs / stepMs).toInt()
+
+        // Realized truth, sorted ascending for a binary-search nearest match. Reaches back one
+        // tolerance before the range so the earliest forecast's anchor is matchable.
+        val truth = readings.readingsInRange(sinceMs - toleranceMs, nowMs)
             .asSequence()
             .filter { it.bgMgdl != null && it.provenance == ReadingProvenance.MEASURED && it.flag == ReadingFlag.NORMAL }
             .map { it.tsMs to it.bgMgdl!! }
             .distinctBy { it.first }
             .sortedBy { it.first }
             .toList()
-        if (truth.isEmpty()) return@withContext emptyList()
+        if (truth.isEmpty()) return@withContext ForecastWindowSet.EMPTY
         val truthTs = LongArray(truth.size) { truth[it].first }
 
-        val rows = predictions.range(sinceMs, nowMs).map { it.toModel() }
+        val rows = predictions.range(sinceMs, nowMs - horizonMs).map { it.toModel() }
             .filter { it.modelId == modelId && it.status == ForecastStatus.OK }
-        val out = ArrayList<AccuracyPair>()
+
+        var nMatured = 0
+        var nIncomplete = 0
+        var nq = 0
+        val out = ArrayList<ForecastWindow>()
         for (p in rows) {
-            val h = p.medianBg.size
-            val nq = p.nQuantiles
-            if (h == 0 || nq <= 0 || p.stepMs <= 0) continue
-            for (hMin in horizonsMin) {
-                val stepIdx = ((hMin.toLong() * 60_000L) / p.stepMs).toInt() - 1
-                if (stepIdx < 0 || stepIdx >= h) continue
-                val targetTs = p.cycleTsMs + hMin.toLong() * 60_000L
-                if (targetTs > nowMs) continue // not yet matured
-                val realized = nearestWithin(truthTs, truth, targetTs, toleranceMs) ?: continue
-                val predicted = p.medianBg[stepIdx]
-                if (!predicted.isFinite()) continue
-                val lo = p.bandsMgdl.getOrNull(stepIdx * nq)
-                val hi = p.bandsMgdl.getOrNull(stepIdx * nq + (nq - 1))
-                val hasBand = lo != null && hi != null && lo.isFinite() && hi.isFinite()
-                out += AccuracyPair(
-                    horizonMin = hMin,
-                    predicted = predicted,
-                    realized = realized.toDouble(),
-                    bandLo = lo ?: 0.0,
-                    bandHi = hi ?: 0.0,
-                    hasBand = hasBand,
-                )
+            if (p.stepMs != stepMs || p.nQuantiles <= 0) continue
+            if (p.medianBg.size < nSteps || p.bandsMgdl.size < nSteps * p.nQuantiles) continue
+            if (p.cycleTsMs + horizonMs > nowMs) continue // window not fully matured
+            nMatured++
+            if (nq == 0) nq = p.nQuantiles else if (p.nQuantiles != nq) { nIncomplete++; continue }
+
+            val anchor = nearestWithin(truthTs, truth, p.cycleTsMs, toleranceMs)
+            if (anchor == null) { nIncomplete++; continue }
+            val realized = ArrayList<Double>(nSteps)
+            for (i in 1..nSteps) {
+                val v = nearestWithin(truthTs, truth, p.cycleTsMs + i * stepMs, toleranceMs) ?: break
+                realized += v.toDouble()
             }
+            if (realized.size != nSteps) { nIncomplete++; continue }
+
+            out += ForecastWindow(
+                bandsMgdl = p.bandsMgdl.subList(0, nSteps * nq).toList(),
+                medianBg = p.medianBg.subList(0, nSteps).toList(),
+                realizedBg = realized,
+                lastBg = anchor.toDouble(),
+            )
         }
-        out
+        ForecastWindowSet(out, nMatured, nIncomplete)
     }
 
     /** Nearest realized BG to [targetTs] within [toleranceMs], or null. Binary search on [truthTs]. */
@@ -869,10 +970,14 @@ class T1dmRepository(
      * INGEST is reconstruct-at-drain (`QueueDrainer` resolves the current `sample` by ts), so this
      * re-uploads scalars WITHOUT re-encoding them here, keeping `:data` free of any `:sync` type. It is
      * idempotent by construction: a still-pending INGEST row for a slot conflicts on its dedupKey
-     * (`ingest:sample:<ts>`) and is ignored; an already-drained slot re-enqueues and re-uploads. The
-     * caller paces the walk (drain between pages) so the outbox size cap is never blown in one shot, and
-     * re-mirrors the curve EVENTS + stats + basal schedule at the `:app`/`:sync` seam (those PUTs carry
-     * `:sync` DTO envelopes this module cannot build), recording `sync.mirrored_epoch` only on completion.
+     * (`ingest:sample:<ts>`) and is ignored; an already-drained slot re-enqueues and re-uploads.
+     *
+     * The caller drains each page and confirms the queue is empty of it before persisting the returned
+     * cursor, so the walk resumes across connects rather than restarting — a history of tens of
+     * thousands of rows does not clear in one pass. It also re-mirrors the curve EVENTS and the stats
+     * blocks at the `:app`/`:sync` seam (those PUTs carry `:sync` DTO envelopes this module cannot
+     * build), and records `sync.mirrored_epoch` only once the whole walk has been seen DELIVERED — never
+     * merely enqueued.
      */
     suspend fun reMirrorScalarsBatch(afterTs: Long, limit: Int, nowMs: Long): Long? = withContext(io) {
         val page = samples.page(afterTs, limit)

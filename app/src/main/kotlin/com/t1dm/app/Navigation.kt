@@ -75,6 +75,7 @@ import com.t1dm.core.design.navExit
 import com.t1dm.core.design.navIcon
 import com.t1dm.app.di.AppContainer.BolusAdviceUi
 import com.t1dm.app.di.LogHandle
+import com.t1dm.app.di.deleteReceipt
 import com.t1dm.app.di.logReceipt
 import com.t1dm.app.di.undoReceipt
 import com.t1dm.app.service.DoseCalcService
@@ -108,13 +109,15 @@ import com.t1dm.feature.meals.FoodEditorScreen
 import com.t1dm.feature.meals.MealBuilderScreen
 import com.t1dm.feature.meals.MealEditorScreen
 import com.t1dm.feature.journal.JournalScreen
+import com.t1dm.feature.logs.LogsScreen
 import com.t1dm.feature.meals.MealsScreen
 import com.t1dm.core.model.Food
 import com.t1dm.core.model.SavedMeal
 import com.t1dm.feature.pubs.PubsScreen
 import com.t1dm.feature.models.ModelDetailScreen
 import com.t1dm.feature.models.ModelsScreen
-import com.t1dm.core.model.AccuracyReport
+import com.t1dm.core.model.CgEga
+import com.t1dm.core.model.ModelMetrics
 import com.t1dm.feature.network.NetworkScreen
 import com.t1dm.feature.security.SecurityPanelState
 import com.t1dm.feature.security.SecurityScreen
@@ -208,6 +211,7 @@ private val destinations = listOf(
     Destination("insulin", "Insulin"),
     Destination("security", "Watch"),
     Destination("journal", "Journal"),
+    Destination("logs", "Logs"),
     Destination("settings", "Settings"),
 )
 
@@ -269,7 +273,16 @@ fun T1dmApp(container: AppContainer) {
                 // It emits no layout node once acknowledged, so the column is the bare chrome after.
                 Disclaimer(container)
                 Breadcrumb(navController, container)
-                T1dmNavHost(navController, container) { handle ->
+                T1dmNavHost(
+                    navController,
+                    container,
+                    onNotice = { message ->
+                        receiptScope.launch {
+                            snackbars.currentSnackbarData?.dismiss()
+                            snackbars.showSnackbar(message, duration = SnackbarDuration.Long)
+                        }
+                    },
+                ) { handle ->
                     receiptScope.launch { snackbars.postLogReceipt(container, handle, haptics) }
                 }
             }
@@ -348,6 +361,7 @@ internal fun crumbsFor(route: String?, modelId: String?, editLabel: String? = nu
         "insulin/bolusCalc" -> listOf(Crumb("Insulin", "insulin"), Crumb("Bolus advisor", null))
         "security" -> listOf(Crumb("Watch", null))
         "journal" -> listOf(Crumb("Journal", null))
+        "logs" -> listOf(Crumb("Logs", null))
         "settings" -> listOf(Crumb("Settings", null))
         "about" -> settings(Crumb("About", null))
         "settings/display" -> settings(Crumb("Display & theme", null))
@@ -712,7 +726,7 @@ private fun GlycemicStatusBadge(status: GlyStatus) {
 
 /**
  * The bottom navigation (item 13): a horizontally-scrollable row of large-icon tiles, one per
- * destination, so all 13 tabs are reachable by scrolling instead of cramming into a fixed bar. The
+ * destination, so every tab is reachable by scrolling instead of cramming into a fixed bar. The
  * selected tile is marked with a themed pill + a coloured label; on selection it is scrolled into
  * view so the current destination always stays visible.
  */
@@ -813,11 +827,17 @@ private fun NavTile(destination: Destination, selected: Boolean, onEdges: (Int, 
     }
 }
 
-/** [onLogged] posts the commit receipt for a meal/dose write; see [postLogReceipt]. */
+/**
+ * [onLogged] posts the commit receipt for a meal/dose write; see [postLogReceipt]. [onNotice] posts a
+ * bare line with no action — the outcome of a write that has no row left to offer an Undo on (a Logs
+ * deletion, and its refusal). Both are hoisted to [T1dmApp] for the same reason: the host owns the
+ * snackbar and a scope that survives leaving the route that spoke.
+ */
 @Composable
 private fun T1dmNavHost(
     navController: NavHostController,
     container: AppContainer,
+    onNotice: (String) -> Unit,
     onLogged: (LogHandle) -> Unit,
 ) {
     // Issue 17 — the "disable all animations" flag must collapse the screen crossfade to a snap.
@@ -873,6 +893,9 @@ private fun T1dmNavHost(
             // I12 — per-channel data-movement pulses + the sensor-derived time-left countdown.
             val pulses by container.bgPulses.collectAsState(null)
             val sensorExpiry by container.sensorExpiryMs.collectAsState(null)
+            // Non-null only while the active sensor is actually warming up; the chip then counts down to
+            // the end of warm-up instead of to expiry.
+            val sensorWarmupEnd by container.sensorWarmupEndMs.collectAsState(null)
             // Issue 1 — battery-saver / low-power indicator (polled off-main).
             val lowPowerActive by container.lowPowerActive.collectAsState(false)
             // F2 — the forecast cadence (adaptive vs a fixed period) drives the next-cycle countdown.
@@ -891,6 +914,10 @@ private fun T1dmNavHost(
             val savgolWindow by container.savgolWindow.collectAsState(SettingsStore.DEFAULT_SAVGOL_WINDOW)
             // The BG panel's freehand annotation layer; `:feature:dashboard` and `:ui:graph` see no store.
             val paintStrokes by container.paintStrokes.collectAsState(emptyList())
+            // The panel's foot markers. The SAME feed the Logs panel binds, reduced to when / which
+            // channel / still-withdrawable, so the graph and the list can never disagree about whether a
+            // row has reached the server.
+            val logMarkers by container.logMarkers.collectAsState(emptyList())
             DashboardScreen(
                 readings = readings,
                 latest = latest,
@@ -902,6 +929,7 @@ private fun T1dmNavHost(
                 iobCob = iobCob,
                 curveChannels = container::dashboardCurveChannels,
                 basalChannel = container::dashboardBasalChannel,
+                logMarkers = logMarkers,
                 warmup = inference.warmup,
                 rangeMinMgdl = range.minMgdl,
                 rangeMaxMgdl = range.maxMgdl,
@@ -914,6 +942,7 @@ private fun T1dmNavHost(
                 temperatureUnit = tempUnit,
                 stepsToday = stepsToday,
                 sensorExpiryMs = sensorExpiry,
+                sensorWarmupEndMs = sensorWarmupEnd,
                 circadianTime = inference.circadianTime,
                 circadianAnchorMs = inference.circadianAnchorMs,
                 smoothMgdl = { arr -> container.nativeCore.causalSmooth(arr.toList(), 20.0, 500.0, savgolWindow).toDoubleArray() },
@@ -1007,13 +1036,26 @@ private fun T1dmNavHost(
             val scope = rememberCoroutineScope()
             val inference by container.inferenceState.collectAsState(InferenceState())
             val requested by container.forecastBackendSetting(modelId).collectAsState(null)
-            var accuracy by remember(modelId) { mutableStateOf<AccuracyReport?>(null) }
+            var accuracy by remember(modelId) { mutableStateOf<ModelMetrics?>(null) }
             var loading by remember(modelId) { mutableStateOf(true) }
             var reloadTick by remember(modelId) { mutableStateOf(0) }
             LaunchedEffect(modelId, reloadTick) {
                 loading = true
-                accuracy = runCatching { container.modelAccuracy(modelId) }.getOrNull()
+                accuracy = runCatching { container.modelMetrics(modelId) }.getOrNull()
                 loading = false
+            }
+            // §6.3's CG-EGA walks every step of every window through the P-EGA × R-EGA grid, so it is
+            // computed only when the panel asks for it and dropped whenever the cheap suite reloads
+            // (it would otherwise outlive the window it was measured over).
+            var cgEga by remember(modelId) { mutableStateOf<CgEga?>(null) }
+            var cgEgaLoading by remember(modelId) { mutableStateOf(false) }
+            var cgEgaTick by remember(modelId) { mutableStateOf(0) }
+            LaunchedEffect(modelId, reloadTick) { cgEga = null; cgEgaLoading = false }
+            LaunchedEffect(modelId, cgEgaTick) {
+                if (cgEgaTick == 0) return@LaunchedEffect
+                cgEgaLoading = true
+                cgEga = runCatching { container.modelCgEga(modelId) }.getOrNull()
+                cgEgaLoading = false
             }
             ModelDetailScreen(
                 state = inference,
@@ -1021,6 +1063,9 @@ private fun T1dmNavHost(
                 accuracy = accuracy,
                 accuracyLoading = loading,
                 onRecomputeAccuracy = { reloadTick++ },
+                cgEga = cgEga,
+                cgEgaLoading = cgEgaLoading,
+                onComputeCgEga = { cgEgaTick++ },
                 catalog = inference.backendCatalog,
                 requestedBackend = requested,
                 comparison = inference.backendComparison,
@@ -1868,6 +1913,11 @@ private fun T1dmNavHost(
                 allSourceNames = sources.map { it.displayName },
                 activeRssi = signals?.cgmRssi,
                 sensorExpiryMs = expiry,
+                // Read back from STORAGE (the active source's persisted column), not off the registry's
+                // in-memory set: the knob writes the column, and Room's Flow is what makes the edit
+                // visible again, so the panel shows the value that will actually be classified against.
+                warmupWindowMin = active?.warmupWindowMin,
+                onSetWarmupMin = { m -> scope.launch { container.setSensorWarmupMin(m) } },
                 onSetSensorLifetime = { d, h, m -> scope.launch { container.setSensorLifetime(d, h, m) } },
                 onClearSensorLifetime = { scope.launch { container.clearSensorLifetime() } },
                 aggressiveEnabled = aggEnabled,
@@ -1893,6 +1943,25 @@ private fun T1dmNavHost(
                 currentMood = mood,
                 onSaveNote = { text -> scope.launch { container.saveNote(text) } },
                 onPickMood = { m -> scope.launch { container.saveMood(m) } },
+            )
+        }
+        composable("logs") {
+            val scope = rememberCoroutineScope()
+            val entries by container.loggedEntries.collectAsState(emptyList())
+            val holdMin by container.pushHoldMin.collectAsState(SettingsStore.DEFAULT_PUSH_HOLD_MIN)
+            LogsScreen(
+                entries = entries,
+                holdMin = holdMin,
+                holdMaxMin = SettingsStore.MAX_PUSH_HOLD_MIN,
+                onSetHoldMin = { m -> scope.launch { container.setPushHoldMin(m) } },
+                // The container's scope, not this composition's: a delete is a transaction plus a
+                // notice, and leaving the panel between the press and the commit must not cancel it —
+                // the same hazard the log writers are hoisted off the route scope for.
+                onDelete = { entry ->
+                    container.appScope.launch {
+                        deleteReceipt(container.deleteLoggedEntry(entry))?.let(onNotice)
+                    }
+                },
             )
         }
     }

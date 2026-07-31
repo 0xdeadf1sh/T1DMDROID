@@ -54,10 +54,15 @@ import com.t1dm.core.model.CurveEvent
 import com.t1dm.core.model.InferenceCause
 import com.t1dm.core.model.InsulinFamily
 import com.t1dm.core.model.InsulinPresetSpec
-import com.t1dm.core.model.AccuracyReport
+import com.t1dm.core.model.CgEga
+import com.t1dm.core.model.MetricsConfig
+import com.t1dm.core.model.ModelMetrics
 import com.t1dm.core.model.InferenceState
 import com.t1dm.core.model.IobCobReadout
 import com.t1dm.core.model.JournalNote
+import com.t1dm.core.model.LogMarker
+import com.t1dm.core.model.LogState
+import com.t1dm.core.model.LoggedEntry
 import com.t1dm.core.model.PaintStroke
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
@@ -116,6 +121,7 @@ import com.t1dm.data.db.LoggedDoseEntity
 import com.t1dm.data.db.toBlob
 import com.t1dm.data.db.LoggedMealEntity
 import com.t1dm.data.db.NoteEntity
+import com.t1dm.data.db.OutboxKind
 import com.t1dm.sync.EventStatDto
 import com.t1dm.sync.NoteWriteDto
 import com.t1dm.sync.StatsPushDto
@@ -130,11 +136,13 @@ import com.t1dm.inference.InferenceControllerDefaults
 import com.t1dm.inference.buildInferenceController
 import com.t1dm.sync.CatchUpCoordinator
 import com.t1dm.sync.DrainConfig
+import com.t1dm.sync.HistoryReMirror
 import com.t1dm.sync.ModelSyncCoordinator
 import com.t1dm.sync.NoActiveProfileException
 import com.t1dm.sync.OkHttpSyncClient
 import com.t1dm.sync.OutboxEnqueuer
 import com.t1dm.sync.QueueDrainer
+import com.t1dm.sync.ReMirrorLedger
 import com.t1dm.sync.ServerProfile
 import com.t1dm.sync.ServerProfileStore
 import com.t1dm.sync.SyncHttpClient
@@ -180,19 +188,43 @@ private const val SMOOTHING_PREVIEW_HOURS = 3L
  *  model id, or absent = auto (the fp32 XNNPACK authority). */
 private fun kvForecastBackend(modelId: String) = "inference.forecast_backend.$modelId"
 
-/** The clinical/published horizons the on-device accuracy aggregator reports (Phase 7C). */
+/** How many logged meals/doses the Logs feed carries. Bounded at the QUERY, per table, because both
+ *  stores are keep-forever: at a handful of entries a day this is months of scrolling, and the panel is
+ *  a review surface rather than an export. The interleaved list is trimmed to the same bound, so the
+ *  cut is by TIME rather than by whichever table happens to be busier. */
+private const val LOG_FEED_LIMIT = 400
+
+/** The clinical/published horizons the on-device accuracy aggregator reports (Phase 7C). The
+ *  longest also fixes the WINDOW the suite scores: `SPEC/invariants.md` §6.2's level metrics are
+ *  reported at each of these, and §6.3's CG-EGA over the whole span of the last. */
 private val ACCURACY_HORIZONS_MIN = listOf(30, 60, 120)
 
-/** §3.8 (H7) — kv key holding the last server `store_epoch` the phone has fully re-mirrored to. */
-private const val KV_MIRRORED_EPOCH = "sync.mirrored_epoch"
+/** mg/dL slack that forgives a near-boundary FALSE ALARM in the excursion precision — CGM noise at
+ *  a threshold should not deflate it; recall stays strict. Matches `T1DMAI`'s
+ *  `EXCURSION_PRECISION_TOLERANCE_MGDL`, without which the phone's precision figure and that
+ *  project's validation table would not be the same statistic. `SPEC/invariants.md` §6.1 leaves the
+ *  hypo/hyper THRESHOLD to the consumer (here the patient's own alarm bands) but says nothing of
+ *  this tolerance, so the two projects hold separate copies of it. */
+private const val EXCURSION_PRECISION_TOLERANCE_MGDL = 10.0
 
-/** H7 re-mirror: rows enqueued per drain-paced batch — small enough that one batch added right after
- *  pacing (which waits for depth ≤ cap/2) stays well under the outbox size cap (§3.7). */
-private const val REMIRROR_BATCH = 500
+// §3.8 (H7) — every kv key this handshake keeps its state under lives in `ReMirrorKeys`; the walk here
+// reaches them only through [ReMirrorLedger], and the epoch itself is written by the coordinator.
 
-/** H7 re-mirror: abort pacing after this many 1 s waits; a stalled drain then leaves the epoch
- *  unrecorded so the walk resumes on the next connect rather than hanging. */
-private const val REMIRROR_MAX_PACE_WAITS = 120
+/** H7 re-mirror: local `sample` rows enqueued per resumable scalar page. Each page is drained and
+ *  proved delivered before its cursor is banked, so this is a work-per-round-trip choice rather than a
+ *  safety bound — the queue is back at its live depth before the next page is raised. */
+private const val REMIRROR_SCALAR_PAGE = 500
+
+/** H7 re-mirror: drain passes spent getting one page (or the event/stats phase) out of the queue
+ *  before the pass gives up and resumes on the next connect. `DrainConfig.batchLimit` rows go per
+ *  pass, so this covers a page several times over and still leaves the queue's own retry backoff to
+ *  handle a server that is merely slow. */
+private const val REMIRROR_MAX_DRAIN_PASSES = 12
+
+/** H7 re-mirror: scalar pages banked per connect. It bounds one pass's work, nothing more — the
+ *  persisted cursor makes the next connect resume rather than restart, so a history of any size
+ *  converges over as many connects as it takes. */
+private const val REMIRROR_MAX_PAGES_PER_PASS = 20
 
 /**
  * The manual composition root ("DI/wiring: manual is fine"). Built once in
@@ -720,19 +752,52 @@ class AppContainer(context: Context) {
 
     /**
      * On-device realized forecast accuracy for [modelId] over the trailing [days] (Phase 7C — Models
-     * drill-down): pairs every matured `prediction` row with the realized MEASURED BG at 30/60/120 min
-     * and reduces to per-horizon RMSE/MAE/MARD + central-90 coverage in the golden-gated Rust core.
-     * A horizon with fewer than [minSamples] matured pairs is flagged insufficient. Off-main.
+     * drill-down): walks every matured `prediction` row into a whole-window record against the
+     * realized MEASURED BG and scores it in the golden-gated Rust core — per horizon on the band
+     * projection of `SPEC/invariants.md` §6.2, with the median line nested beneath. A horizon with
+     * fewer than [minSamples] scored windows is flagged insufficient. Off-main.
+     *
+     * CG-EGA is NOT computed here; it is the costly whole-window pass and the drill-down asks for it
+     * separately, through [modelCgEga].
      */
-    suspend fun modelAccuracy(
+    suspend fun modelMetrics(
         modelId: String,
         days: Int = 14,
         minSamples: Int = 6,
-    ): AccuracyReport {
+    ): ModelMetrics = modelMetrics(modelId, days, minSamples, includeCgEga = false)
+
+    /**
+     * The whole-window CG-EGA (§6.3) for [modelId] over the same trailing [days] — a separate call
+     * because it walks every step of every window through the P-EGA × R-EGA zone algebra, and the
+     * drill-down renders it only when asked. Null when nothing scoreable was found. Off-main.
+     */
+    suspend fun modelCgEga(modelId: String, days: Int = 14, minSamples: Int = 6): CgEga? =
+        modelMetrics(modelId, days, minSamples, includeCgEga = true).suite.cgega
+
+    private suspend fun modelMetrics(
+        modelId: String,
+        days: Int,
+        minSamples: Int,
+        includeCgEga: Boolean,
+    ): ModelMetrics {
         val now = System.currentTimeMillis()
         val since = now - days.toLong() * 86_400_000L
-        val pairs = repository.forecastAccuracyPairs(modelId, ACCURACY_HORIZONS_MIN, since, now)
-        return nativeCore.accuracyAtHorizons(pairs, minSamples)
+        val horizonMax = ACCURACY_HORIZONS_MIN.max()
+        val set = repository.forecastWindows(modelId, horizonMax, since, now)
+        // §6.1 fixes which band EDGE the excursion detectors read but leaves what it is compared
+        // against to the consumer: on the phone that is the patient's own alarm bands, never a
+        // clinical pair transcribed from the validation table.
+        val config = MetricsConfig(
+            hypoThresholdMgdl = settingsStore.alarmLow.first().toDouble(),
+            hyperThresholdMgdl = settingsStore.alarmHigh.first().toDouble(),
+            excursionPrecisionToleranceMgdl = EXCURSION_PRECISION_TOLERANCE_MGDL,
+            minSamples = minSamples,
+        )
+        // The reduction is pure CPU over the whole 14-day window — never on the caller's thread.
+        val suite = withContext(dispatchers.default) {
+            nativeCore.forecastMetricsSuite(set.windows, ACCURACY_HORIZONS_MIN, config, includeCgEga)
+        }
+        return ModelMetrics(suite, set.nMatured, set.nIncomplete, minSamples)
     }
 
     // ── WARMUP setting (inference-runtime.md) — kv-backed, floored at the model MIN_CONTEXT ──────
@@ -851,19 +916,11 @@ class AppContainer(context: Context) {
                 delay(30 * 60_000L)
             }
         }
-        // §3.8 (H7) — on each transition into a live WS connection, re-mirror the phone's authoritative
-        // history to the server IFF its store_epoch differs from the last fully-mirrored one (a wiped/new
-        // server, or first-ever sync). The epoch guard makes reconnecting to the same server a no-op.
-        appScope.launch {
-            var wasConnected = false
-            syncStatus.collect { st ->
-                val connected = st.wsState == WsConnState.CONNECTED
-                if (connected && !wasConnected) {
-                    runCatching { reMirrorIfNewServer() }.onFailure { Timber.w(it, "server re-mirror failed") }
-                }
-                wasConnected = connected
-            }
-        }
+        // §3.8 (H7) re-mirror is NOT launched here. It is the `reMirror` hook on [catchUpCoordinator],
+        // which already runs on every WS Connected/Reconnected and owns the epoch gate — including the
+        // rule that the epoch is recorded only once the walk has been delivered. A second driver on the
+        // `syncStatus` CONNECTED edge used to do the walk independently and record the epoch itself,
+        // which is precisely how a partial upload came to be marked complete.
     }
 
     // ─── Server sync (Phase 3) ────────────────────────────────────────────────────────────────
@@ -942,7 +999,35 @@ class AppContainer(context: Context) {
         // Share the SAME desync flag the StreamClient latches on a live-channel overflow, so a dropped
         // WS frame escalates the next catch-up to a full resync (both defaulted to their own instance,
         // so the overflow signal never reached the coordinator).
-        CatchUpCoordinator(stream = streamClient, http = syncHttpClient, repo = repository, desync = streamClient.desync)
+        //
+        // `reMirror` is the §3.8 walk. Left at its default no-op the whole gate is inert — which it was:
+        // a second, independent walk hung off the `syncStatus` CONNECTED edge did the real work and
+        // banked the epoch itself, so the coordinator's own gate (the one that records only on delivery)
+        // never fired. One implementation now, called from one place.
+        //
+        // `scope` is the process-lived appScope, NOT the foreground service scope that collects
+        // `events()`: the walk drains the outbox and waits on it, and the collector is where the drain
+        // it is waiting for gets kicked from.
+        CatchUpCoordinator(
+            stream = streamClient,
+            http = syncHttpClient,
+            repo = repository,
+            scope = appScope,
+            reMirror = HistoryReMirror { epoch -> reMirrorHistory(epoch) },
+            desync = streamClient.desync,
+        )
+    }
+
+    /** The §3.8 walk's persisted bookkeeping — the pending epoch, the store it targets, the walk stamp,
+     *  and the resumable scalar cursor. Deliberately given the repository's kv + outbox reads as plain
+     *  functions: every judgement it makes is then testable without Room. */
+    private val reMirrorLedger: ReMirrorLedger by lazy {
+        ReMirrorLedger(
+            getKv = repository::getKv,
+            putKv = repository::putKv,
+            oldestQueuedAtMs = repository::oldestOutboxCreatedAt,
+            maxQueueAgeMs = drainConfig.maxAgeMs,
+        )
     }
 
     /** The always-on sync orchestrator; the FGS calls [SyncManager.launch] in its lifecycle scope. */
@@ -1066,55 +1151,138 @@ class AppContainer(context: Context) {
     }
 
     /**
-     * §3.8 (H7) — re-mirror the phone's authoritative history to a freshly-wiped or brand-new server.
-     * The clean-break cutover (§6) wipes the server, and the outbox holds only *pending* writes, not
-     * history — so on connecting we compare the server's `store_epoch` (authed `GET /v1/health`) against
-     * the last fully-mirrored epoch (kv [KV_MIRRORED_EPOCH]). When they differ (a wiped/new server, or
-     * first-ever sync) we walk the local meals / doses / scalar-sample / stats history in `ts` order and
-     * enqueue each as its idempotent PUT, in bounded, drain-paced batches so the outbox size cap (§3.7)
-     * is never blown in one shot. The epoch is recorded only on FULL completion, so a partial re-mirror
-     * (or a stalled drain) simply resumes on the next connect; every write being idempotent, an overlap
-     * with surviving server rows is a no-op. This is the upload inverse of the [resyncFromServer]
-     * download. Off-main, fully guarded — never actuates, never blocks the alarm path.
+     * The store one §3.8 walk is being raised against, as a single opaque string, or null when there is
+     * no usable target. It carries the active profile's id, its base URL, and the wall clock of its last
+     * edit, because those are the three ways the destination can move under a walk in flight:
+     * [SyncHttpClient] resolves the endpoint per REQUEST, so an outbox row queued for one server drains
+     * to whatever server the profile names by the time the drainer reaches it. Folding the edit stamp in
+     * means any profile save at all — a repointed host, a fresh token, a switch away and back —
+     * invalidates the walk rather than letting it credit an epoch to a store that never received it.
      */
-    private suspend fun reMirrorIfNewServer() = withContext(dispatchers.io) {
-        if (serverProfileStore.activeEndpoint() == null) return@withContext
-        val epoch = syncHttpClient.health().store_epoch?.takeIf { it.isNotBlank() } ?: return@withContext
-        val mirrored = repository.getKv(KV_MIRRORED_EPOCH)
-        if (epoch == mirrored) return@withContext
-        Timber.i("re-mirroring history: server store_epoch %s ≠ mirrored %s", epoch, mirrored)
-        val now = System.currentTimeMillis()
-        // Meals + doses: irreplaceable clinical records (non-age-evictable, high outbox priority).
-        for (chunk in repository.loggedMealsInRange(0L, now).sortedBy { it.tsMs }.chunked(REMIRROR_BATCH)) {
-            pace(); for (m in chunk) outboxEnqueuer.enqueueMeal(m.toMealEventDto(), now)
-        }
-        for (chunk in repository.loggedDosesInRange(0L, now).sortedBy { it.tsMs }.chunked(REMIRROR_BATCH)) {
-            pace(); for (d in chunk) outboxEnqueuer.enqueueDose(d.toDoseEventDto(), now)
-        }
-        // Scalar sample history: one INGEST dirty-marker per bucket (the drainer resolves the current
-        // row and POSTs `/v1/ingest`). Age-evictable, so it is paced hardest against the drain.
-        for (chunk in repository.samplesInRange(0L, now).sortedBy { it.ts }.chunked(REMIRROR_BATCH)) {
-            pace(); for (s in chunk) outboxEnqueuer.enqueueIngest(s.ts, now)
-        }
-        // Latest-per-window stats blocks (deduped ≤1/window/day; a no-op if the slow loop already pushed).
-        pushStats(now)
-        // The whole walk enqueued without a stalled-drain abort ⇒ record this epoch as fully mirrored.
-        repository.putKv(KV_MIRRORED_EPOCH, epoch, now)
+    private suspend fun activeStoreIdentity(): String? {
+        if (serverProfileStore.activeEndpoint() == null) return null
+        val p = repository.activeProfile() ?: return null
+        return "${p.id}\u001f${p.baseUrl}\u001f${p.updatedAtMs}"
     }
 
     /**
-     * H7 back-pressure: suspend until the outbox drains below half its size cap before enqueuing the
-     * next re-mirror batch, so a bulk re-push never blows the cap (§3.7) and self-evicts the very
-     * (age-evictable) INGEST markers it just added. Bounded — a drain stalled past [REMIRROR_MAX_PACE_WAITS]
-     * throws, aborting the walk before the epoch is recorded, so it resumes cleanly on the next connect.
+     * §3.8 (H7) — re-mirror the phone's authoritative history to a freshly-wiped or brand-new server.
+     * The clean-break cutover (§6) wipes the server, and the outbox holds only *pending* writes, not
+     * history, so a changed `store_epoch` means the server retains nothing of what this phone authored.
+     * Wired as the [HistoryReMirror] the [catchUpCoordinator] gate calls; the gate owns the epoch
+     * comparison and the epoch WRITE, this owns the walk and the judgement of when it has landed, and
+     * [reMirrorLedger] owns the state that survives between the two.
+     *
+     * **A pass need not finish, but everything it does finish is banked.** A month of five-minute
+     * samples is some ten thousand rows and will not drain inside one connect. So the scalar history is
+     * a resumable page walk over [T1dmRepository.reMirrorScalarsBatch]: each page is enqueued, DRAINED,
+     * and only once the queue is provably empty of it is its `ts` written back as the cursor. Every
+     * bail-out below is a `return false`, never a throw, so the pass keeps the ground it proved and the
+     * next connect resumes from the cursor instead of starting again at the beginning of time — which is
+     * what a full-history walk with no cursor does, forever, on a history this size.
+     *
+     * The meal/dose/stats phase is not paged: those are bounded by hand-logging rather than by the grid,
+     * MEAL and DOSE are never age-evictable, and re-enqueuing is idempotent on the phone-minted
+     * `client_id`. It is raised whole whenever the ledger says the walk is new, and then drained through
+     * before the scalar walk begins so the queue is at its live depth when the first page lands.
+     *
+     * Off-main and fully guarded — never actuates, never blocks the alarm path. It does hold a coroutine
+     * for as long as the drains it drives take, which is why the coordinator kicks it into the process
+     * scope rather than awaiting it on the stream collector.
      */
-    private suspend fun pace() {
-        var waits = 0
-        while (syncStatus.value.outboxDepth > outboxMaxSize / 2) {
-            check(waits < REMIRROR_MAX_PACE_WAITS) { "re-mirror drain stalled at depth ${syncStatus.value.outboxDepth}" }
-            delay(1_000L)
-            waits++
+    private suspend fun reMirrorHistory(serverEpoch: String): Boolean = withContext(dispatchers.io) {
+        val identity = activeStoreIdentity() ?: return@withContext false
+        val walk = reMirrorLedger.resume(serverEpoch, identity, System.currentTimeMillis())
+
+        if (walk.raiseEvents) {
+            Timber.i(
+                "re-mirroring history to store_epoch %s (stamp %d, resuming scalars after ts %d)",
+                serverEpoch, walk.stampMs, walk.scalarCursor,
+            )
+            // Meals + doses: irreplaceable clinical records (never age-evictable, top outbox priority).
+            for (m in repository.loggedMealsInRange(0L, walk.stampMs).sortedBy { it.tsMs }) {
+                outboxEnqueuer.enqueueMeal(m.toMealEventDto(), walk.stampMs)
+            }
+            for (d in repository.loggedDosesInRange(0L, walk.stampMs).sortedBy { it.tsMs }) {
+                outboxEnqueuer.enqueueDose(d.toDoseEventDto(), walk.stampMs)
+            }
+            // Latest-per-window stats blocks (deduped ≤1/window/day; a no-op if the slow loop already pushed).
+            pushStats(walk.stampMs)
         }
+        // Prove the phase out of the queue before crediting it. A pass that bailed here — or died here —
+        // banks nothing, so the next connect raises the whole phase again under a fresh stamp rather than
+        // resuming atop a half-enqueued one. Unconditional, because a resumed pass must still see any
+        // straggler land: a scalar page's proof is "nothing older than me remains".
+        if (!drainThrough(walk.stampMs)) return@withContext false
+        reMirrorLedger.bankEvents(walk.stampMs, System.currentTimeMillis())
+
+        var cursor = walk.scalarCursor
+        var pages = 0
+        var scalarsComplete = false
+        while (pages < REMIRROR_MAX_PAGES_PER_PASS) {
+            val stamp = System.currentTimeMillis()
+            // One INGEST dirty-marker per bucket; the drainer resolves the current `sample` row at drain
+            // time and POSTs `/v1/ingest`. Null = no sample past the cursor, so the scalar walk is done.
+            val next = repository.reMirrorScalarsBatch(cursor, REMIRROR_SCALAR_PAGE, stamp)
+            if (next == null) { scalarsComplete = true; break }
+            if (!drainThrough(stamp)) return@withContext false
+            // Re-read the target before crediting the page. The endpoint is resolved per REQUEST, so a
+            // profile repointed while this page drained sent it to a store the epoch does not name, and a
+            // cursor banked over it would skip those rows for good — the one mistake in this walk that
+            // never gets a second attempt. Bail without banking; the ledger restarts the walk on its own.
+            if (activeStoreIdentity() != identity) return@withContext false
+            cursor = next
+            reMirrorLedger.bankScalarCursor(cursor, stamp)
+            pages++
+        }
+        if (!scalarsComplete) {
+            Timber.i("re-mirror banked %d scalar page(s) to ts %d; resumes on the next connect", pages, cursor)
+            return@withContext false
+        }
+        // Re-read the store identity rather than trusting the one this pass opened with: the profile may
+        // have been repointed while the walk was draining, in which case the history went somewhere this
+        // epoch does not name and the ledger must refuse to promote it.
+        val stillIdentity = activeStoreIdentity() ?: return@withContext false
+        reMirrorLedger.delivered(serverEpoch, stillIdentity, System.currentTimeMillis())
+    }
+
+    /**
+     * Drive the outbox until every row created at or before [throughMs] has left it, and say whether it
+     * did. This is what makes a banked scalar cursor honest: a page is credited only once it is provably
+     * gone, so an aborted pass loses nothing and a resumed pass never re-walks proved ground.
+     *
+     * It drains DIRECTLY rather than waiting for someone else to. The predecessor polled the outbox
+     * depth while the only thing that could lower it was a `drainNow()` sitting downstream of the very
+     * stream collector the pass was blocking — back-pressure against itself. [QueueDrainer] serialises
+     * passes on its own mutex and releases it between them, so pumping it here is safe and leaves the
+     * service's own drains room to interleave.
+     *
+     * Bounded three ways, each of them a plain `false`: a drain that stands down (no profile, or a token
+     * the server refuses), a drain that moves nothing at all (everything due has failed and is in
+     * backoff), and a hard ceiling on passes.
+     */
+    private suspend fun drainThrough(throughMs: Long): Boolean {
+        var passes = 0
+        while (!reMirrorLedger.drainedThrough(throughMs)) {
+            if (passes >= REMIRROR_MAX_DRAIN_PASSES) {
+                Timber.i("re-mirror: rows at or before %d still queued after %d drain pass(es)", throughMs, passes)
+                return false
+            }
+            val result = runCatching { queueDrainer.drainOnce() }
+                .onFailure { Timber.w(it, "re-mirror drain pass failed") }
+                .getOrNull() ?: return false
+            syncStatusStore.onDrain(result, repository.oldestOutboxCreatedAt())
+            if (result.standDown != null) {
+                Timber.i("re-mirror stood down: %s", result.standDown)
+                return false
+            }
+            if (result.sent == 0 && result.dropped == 0) {
+                Timber.i("re-mirror drain made no progress (retried %d, remaining %d)", result.retried, result.remaining)
+                return false
+            }
+            passes++
+        }
+        return true
     }
 
     // ─── Full app reset (issue 5 — DESTRUCTIVE, IRREVERSIBLE) ──────────────────────────────────
@@ -1625,6 +1793,20 @@ class AppContainer(context: Context) {
 
     // ── Entry writers: persist the self-describing event, project the wide sample, mirror the series.
 
+    /**
+     * How long a freshly logged meal/dose push is held back before its first send attempt — the window
+     * in which the Logs panel can still withdraw it whole. Read per write rather than cached, so an
+     * edit to the knob governs the very next log.
+     *
+     * It delays ONLY the outbox row. The forecast reads the local `logged_*` rows through
+     * `ChannelBuilder` (via [RoomDoseStore]) and never the queue, so a held push cannot change what the
+     * model is conditioned on — a log is in the carb/insulin channel the moment the row exists,
+     * whatever the queue is doing. Likewise IOB/COB, which [iobCob] recomputes off
+     * [T1dmRepository.logEvents].
+     */
+    private suspend fun pushHoldMs(): Long =
+        settingsStore.currentPushHoldMin().toLong() * 60_000L
+
     /** Log a single-food meal: persist the self-describing `logged_meal` (GI→gamma; the repository
      *  grid-snaps `ts` and mints the `client_id`) and push it as a `PUT /v1/meals` event built from the
      *  PERSISTED entity, so app + sample + wire agree on one grid ts and one id (§3.1/§3.2). */
@@ -1638,7 +1820,7 @@ class AppContainer(context: Context) {
                 durationMin = dur, customCurve = null, tzOffsetMin = tz, note = null, updatedAt = now,
             ),
         )
-        val outboxId = outboxEnqueuer.enqueueMeal(meal.toMealEventDto(), now)
+        val outboxId = outboxEnqueuer.enqueueMeal(meal.toMealEventDto(), now, holdMs = pushHoldMs())
         return meal.handle(outboxId, "${fmtAmount(grams)} g (GI ${fmtAmount(gi)})")
     }
 
@@ -1651,7 +1833,7 @@ class AppContainer(context: Context) {
     suspend fun logBuilderMeal(components: List<MealComponent>): LogHandle {
         val now = System.currentTimeMillis()
         val meal = mealsController.logMeal(components)
-        val outboxId = outboxEnqueuer.enqueueMeal(meal.toMealEventDto(), now)
+        val outboxId = outboxEnqueuer.enqueueMeal(meal.toMealEventDto(), now, holdMs = pushHoldMs())
         val foods = components.size
         return meal.handle(
             outboxId,
@@ -1721,7 +1903,7 @@ class AppContainer(context: Context) {
                 tzOffsetMin = tz, note = rapid.label, updatedAt = now,
             ),
         )
-        val outboxId = outboxEnqueuer.enqueueDose(dose.toDoseEventDto(), now)
+        val outboxId = outboxEnqueuer.enqueueDose(dose.toDoseEventDto(), now, holdMs = pushHoldMs())
         return dose.handle(outboxId, "${fmtAmount(units)} U bolus · ${rapid.label}")
     }
 
@@ -1740,31 +1922,31 @@ class AppContainer(context: Context) {
                 tzOffsetMin = tz, note = basal.label, updatedAt = now,
             ),
         )
-        val outboxId = outboxEnqueuer.enqueueDose(dose.toDoseEventDto(), now)
+        val outboxId = outboxEnqueuer.enqueueDose(dose.toDoseEventDto(), now, holdMs = pushHoldMs())
         return dose.handle(outboxId, "${fmtAmount(units)} U basal · ${basal.label}")
     }
 
     /**
-     * Log a dose against a picked/drawn insulin **type** (the `insulin/types` surface). It was the one
-     * write path that reached `InsulinController` straight from Navigation, with no `:app` entry point
-     * at all — so it never enqueued a `PUT /v1/doses` the way [logBolus]/[logBasal] do, and its rows
-     * reach the server only via a §3.8 re-mirror. That asymmetry is preserved here deliberately (this
-     * change is about confirmation and undo, not about the sync gap): the returned handle carries a
-     * null outbox id, which makes its Undo purely local and therefore always fully durable.
+     * Log a dose against a picked/drawn insulin **type** (the `insulin/types` surface). Persisted by
+     * [InsulinController] — which resolves the type's PK action curve, grid-snaps `ts` and mints the
+     * `client_id` — then pushed as a `PUT /v1/doses` built from the persisted entity, exactly as
+     * [logBolus] and [logBasal] are.
+     *
+     * That push is new here. This path reached `InsulinController` straight from Navigation with no
+     * `:app` entry point, so it enqueued nothing and its rows reached the server only via a §3.8
+     * re-mirror. The Logs panel is what closes the asymmetry: it reads committed-vs-delivered off the
+     * QUEUE, and a row that never enqueues is indistinguishable from one whose push has already
+     * drained — so leaving this path unpushed would have had the panel call a typed dose "delivered"
+     * the instant it was written, and refuse to delete it, which is the one claim the panel must never
+     * make.
      */
     suspend fun logTypedDose(type: InsulinType, units: Double): LogHandle {
         requireLoggableDose(units)
+        val now = System.currentTimeMillis()
         val dose = insulinController.logDose(type, units)
+        val outboxId = outboxEnqueuer.enqueueDose(dose.toDoseEventDto(), now, holdMs = pushHoldMs())
         val kind = if (type.kind == InsulinKind.BOLUS) "bolus" else "basal"
-        return LogHandle(
-            kind = LoggedEventKind.DOSE,
-            rowId = dose.id,
-            clientId = dose.clientId,
-            tsMs = dose.tsMs,
-            outboxId = null,
-            dedupKey = null,
-            label = "${fmtAmount(units)} U $kind · ${type.name}",
-        )
+        return dose.handle(outboxId, "${fmtAmount(units)} U $kind · ${type.name}")
     }
 
     /**
@@ -1800,6 +1982,94 @@ class AppContainer(context: Context) {
         dedupKey = doseDedupKey(clientId),
         label = label,
     )
+
+    // ─── The Logs panel's feed, and the marker feed the graph reads from it ────────────────────
+
+    /**
+     * The Logs panel's feed: the newest logged meals and doses interleaved newest-first, each carrying
+     * whether the server has accepted it yet.
+     *
+     * **The join happens HERE and nowhere else, on purpose.** The verdict is queue membership under the
+     * event's dedup key, and that key's format ([mealDedupKey] / [doseDedupKey]) is owned by `:sync`,
+     * which `:data` must not depend on and must not re-spell — so `:data` hands up the two event flows
+     * and the queued key set, and this is the one place that holds them against each other. There is no
+     * SENT state (`QueueDrainer` DELETEs on a 2xx), so presence in that set is the whole of "not
+     * delivered", and time alone can never promote a row: an offline phone keeps every log
+     * [LogState.COMMITTED] for as long as it stays offline.
+     *
+     * Absence is read as delivered, which is honest rather than proven — see [LogState].
+     */
+    val loggedEntries: Flow<List<LoggedEntry>> = combine(
+        repository.observeRecentLoggedMeals(LOG_FEED_LIMIT),
+        repository.observeRecentLoggedDoses(LOG_FEED_LIMIT),
+        repository.observeQueuedDedupKeys(listOf(OutboxKind.MEAL, OutboxKind.DOSE)),
+    ) { meals, doses, queued ->
+        val rows = meals.map { it.toLoggedEntry(queued) } + doses.map { it.toLoggedEntry(queued) }
+        rows
+            // Totally ordered, not merely sorted by time: two rows can share a grid slot (the event ts
+            // is snapped to the 5-min grid), and an unstable order would reshuffle the list under the
+            // reader on every unrelated emission.
+            .sortedWith(
+                compareByDescending<LoggedEntry> { it.tsMs }
+                    .thenBy { it.kind }
+                    .thenByDescending { it.rowId },
+            )
+            .take(LOG_FEED_LIMIT)
+    }
+
+    /**
+     * The graph's marker feed: one mark per logged event — when, which channel, still withdrawable.
+     * Derived from [loggedEntries] so the two surfaces cannot disagree about a row's state, and reduced
+     * to [LogMarker] so the drawing layer never receives the amounts or the row ids.
+     */
+    val logMarkers: Flow<List<LogMarker>> = loggedEntries.map { list -> list.map { it.marker } }
+
+    /**
+     * Remove a logged entry the user has decided against. Reuses the undo path's single deletion
+     * transaction, and inherits its refusal: with the push already drained the server holds the event,
+     * the API has no DELETE, and the next WS catch-up would re-hydrate it by `clientId` — so nothing is
+     * removed and [PushWithdrawal.ALREADY_SENT] comes back for the caller to say so.
+     */
+    suspend fun deleteLoggedEntry(entry: LoggedEntry): PushWithdrawal = when (entry.kind) {
+        CurveKind.CARB -> repository.deleteCommittedMeal(entry.rowId, mealDedupKey(entry.clientId))
+        CurveKind.INSULIN -> repository.deleteCommittedDose(entry.rowId, doseDedupKey(entry.clientId))
+    }
+
+    /** The withdrawal window, in minutes, and its writer — the Logs panel's own knob. */
+    val pushHoldMin: Flow<Int> get() = settingsStore.pushHoldMin
+
+    suspend fun setPushHoldMin(minutes: Int) = settingsStore.setPushHoldMin(minutes)
+
+    private fun LoggedMealEntity.toLoggedEntry(queued: Set<String>) = LoggedEntry(
+        rowId = id,
+        clientId = clientId,
+        kind = CurveKind.CARB,
+        insulin = null,
+        tsMs = tsMs,
+        tzOffsetMin = tzOffsetMin,
+        amount = grams,
+        // The GI when the row carries one; a builder meal carries a combined curve and no single index,
+        // and says so rather than showing a number it does not have.
+        detail = gi?.let { "GI ${fmtAmount(it)}" } ?: note,
+        state = stateFor(mealDedupKey(clientId), queued),
+    )
+
+    private fun LoggedDoseEntity.toLoggedEntry(queued: Set<String>) = LoggedEntry(
+        rowId = id,
+        clientId = clientId,
+        kind = CurveKind.INSULIN,
+        insulin = if (kind == DoseKind.BOLUS) InsulinKind.BOLUS else InsulinKind.BASAL,
+        tsMs = tsMs,
+        tzOffsetMin = tzOffsetMin,
+        amount = units,
+        // The resolved insulin the writer persisted — the clinical preset or the custom type, i.e. the
+        // curve this row actually reconstructs through, not whatever chip was on screen.
+        detail = note,
+        state = stateFor(doseDedupKey(clientId), queued),
+    )
+
+    private fun stateFor(dedupKey: String, queued: Set<String>): LogState =
+        if (dedupKey in queued) LogState.COMMITTED else LogState.DELIVERED
 
     /** Receipt/dialog numerals: integral amounts read as "45", a half unit still as "4.5". */
     private fun fmtAmount(v: Double): String =
@@ -2022,6 +2292,52 @@ class AppContainer(context: Context) {
     }
 
     suspend fun clearSensorLifetime() = settingsStore.clearSensorExpiry()
+
+    /**
+     * The instant the active sensor's warm-up ends (epoch-ms), or null whenever there is no such instant
+     * to state. Anchored on the latest reading's `minFromStart` — the sensor's own minutes-since-
+     * activation, the one age a passive advertisement carries — taken against that reading's RAW receive
+     * time, plus the ACTIVE source's persisted warm-up window.
+     *
+     * `rxWallMs`, not `tsMs`: the grid stamp is the same wall clock rounded to the nearest 5 minutes,
+     * while the chip counts this instant down against an unrounded `System.currentTimeMillis()`. Anchoring
+     * on it would carry ±2.5 min of error, and — because `tsMs` holds still across a slot while
+     * `minFromStart` ticks each minute — would walk the deadline backwards within a slot and jump it
+     * forwards at the boundary. The raw receive time advances in lockstep with the sensor's age, so the
+     * reconstructed activation instant stays put.
+     *
+     * Null unless warm-up is genuinely in progress: it requires a latest reading actually flagged
+     * `WARMUP` (the pipeline's own verdict — on this branch [com.t1dm.cgm.ReadingClassifier]'s, which is
+     * that same window applied to that same age), a sensor age to anchor on, and an active source whose
+     * window is known. Anything missing fails closed to null and the BG panel keeps its two-state expiry
+     * countdown rather than inventing an instant.
+     *
+     * Deliberately NOT derived from [sensorExpiryMs], which on this branch is a user-entered absolute
+     * instant with no sensor age behind it: the two countdowns answer different questions and only this
+     * one is sensor-sourced.
+     */
+    val sensorWarmupEndMs: Flow<Long?> by lazy {
+        combine(latestReading, activeSource) { latest, active ->
+            if (latest == null || latest.flag != ReadingFlag.WARMUP) return@combine null
+            val mfs = latest.minFromStart ?: return@combine null
+            val window = active?.warmupWindowMin ?: return@combine null
+            latest.rxWallMs - mfs.toLong() * 60_000L + window.toLong() * 60_000L
+        }
+    }
+
+    /**
+     * CGM panel: retune the ACTIVE source's sensor warm-up window (minutes). Routed through the registry
+     * rather than straight at the repository because the live [com.t1dm.cgm.AidexXSource] holds the
+     * classifier the next advert is judged against; a write that reached only the column would leave the
+     * pipeline applying the old window until the process restarted.
+     *
+     * Nothing to do with the INFERENCE warm-up (`setWarmupHours`): that is how much trailing history the
+     * forecast waits for, a wholly separate concept that happens to share a word.
+     */
+    suspend fun setSensorWarmupMin(minutes: Int) {
+        val id = repository.activeSourceId() ?: return
+        registry.setWarmupWindowMin(id, minutes)
+    }
 
     private fun serverLight(sync: SyncStatus, profile: ServerProfile?): ReachLight = when {
         profile == null -> ReachLight(LinkHealth.OFF, "no server profile configured")

@@ -489,6 +489,19 @@ class SettingsStore(
     suspend fun setRapidPreset(label: String) = put(K_CURVE_RAPID_PRESET, label)
     suspend fun setBasalPreset(label: String) = put(K_CURVE_BASAL_PRESET, label)
 
+    // ── Push hold — how long a freshly logged meal/dose sits in the outbox before its FIRST send
+    // attempt, and therefore how long the Logs panel can still withdraw it. Only the MEAL/DOSE event
+    // pushes take it (never INGEST/PREDICTIONS/STATS/NOTE/ALERT/PHOTO, and never the basal template);
+    // it is stamped once, at enqueue, into `nextAttemptMs`. 0 = push at once, no withdrawal window.
+    //
+    // The hold cannot lose a record: MEAL/DOSE are exempt from age-eviction, so a held row waits
+    // indefinitely rather than expiring, and the FORECAST never reads the queue at all — predictions
+    // are reconstructed from the local `logged_*` rows through ChannelBuilder, so a held push changes
+    // nothing about what the model sees.
+    val pushHoldMin: Flow<Int> = repository.observeKv(K_PUSH_HOLD_MIN).map { decodePushHoldMin(it) }
+    suspend fun currentPushHoldMin(): Int = decodePushHoldMin(repository.getKv(K_PUSH_HOLD_MIN))
+    suspend fun setPushHoldMin(min: Int) = put(K_PUSH_HOLD_MIN, encodePushHoldMin(min))
+
     // ── Settings-search history — the three most recent COMMITTED queries, newest first ─────────
     // One kv row holding the whole list, the compound-value idiom the Bézier curves and the custom
     // theme already use. The key sits deliberately OUTSIDE the exportable set (no `search.` prefix
@@ -571,6 +584,7 @@ class SettingsStore(
          */
         internal val CONFIG_COERCE: Map<String, (String) -> String?> = mapOf(
             K_SNOOZE_MIN to { raw -> raw.toIntOrNull()?.let(::encodeSnoozeMin) },
+            K_PUSH_HOLD_MIN to { raw -> raw.toIntOrNull()?.let(::encodePushHoldMin) },
         )
 
         const val DEFAULT_LOW_POWER_PCT = 20
@@ -607,6 +621,7 @@ class SettingsStore(
             K_DEATH_DKA_H,
             K_DEATH_COMA_H,
             K_DEATH_DEATH_H,
+            K_PUSH_HOLD_MIN,
         )
 
         // ── Forecast cadence (PUBLIC — CgmScanService reads the mode) ─────────────────────────────
@@ -683,6 +698,23 @@ class SettingsStore(
         internal fun encodeSnoozeMin(min: Int): String = min.coerceIn(1, MAX_SNOOZE_MIN).toString()
         internal fun decodeSnoozeMin(raw: String?): Int =
             raw?.toIntOrNull()?.coerceIn(1, MAX_SNOOZE_MIN) ?: DEFAULT_SNOOZE_MIN
+
+        // ── Push hold (see [pushHoldMin]) ─────────────────────────────────────────────────────────
+        const val K_PUSH_HOLD_MIN = "sync.push_hold_min"
+        const val DEFAULT_PUSH_HOLD_MIN = 15
+
+        /** The stepper's maximum, and the ceiling no writer may exceed. A hold is a withdrawal window,
+         *  not a sync policy: past a couple of hours the phone is simply not mirroring its own record,
+         *  and every reader of the server copy — the console, a second session — is that far behind. */
+        const val MAX_PUSH_HOLD_MIN = 120
+
+        /** The push-hold persistence contract, extracted so the round-trip is host-testable without
+         *  Room, as the snooze pair is. Both directions clamp to `0..`[MAX_PUSH_HOLD_MIN] — 0 being a
+         *  legitimate "send immediately" — and a garbage or unset read falls back to the default, so a
+         *  value written by a build with a wider ceiling cannot outlive this one. */
+        internal fun encodePushHoldMin(min: Int): String = min.coerceIn(0, MAX_PUSH_HOLD_MIN).toString()
+        internal fun decodePushHoldMin(raw: String?): Int =
+            raw?.toIntOrNull()?.coerceIn(0, MAX_PUSH_HOLD_MIN) ?: DEFAULT_PUSH_HOLD_MIN
 
         /** Settings-search history: a kv row outside the export allowlist (see [recentSearches]). */
         private const val K_SEARCH_RECENT = "search.recent_settings"
