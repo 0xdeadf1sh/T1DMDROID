@@ -58,7 +58,6 @@ import com.t1dm.core.design.LocalAnimationsEnabled
 import com.t1dm.core.design.LocalT1dmHaptics
 import com.t1dm.core.design.LocalT1dmSemantics
 import com.t1dm.core.design.T1dmTheme
-import com.t1dm.core.design.iconStyleForTheme
 import com.t1dm.core.design.logMarkerIcon
 import com.t1dm.core.design.rememberHapticDetent
 import com.t1dm.core.model.AlertThresholds
@@ -174,9 +173,10 @@ fun GlucoseGraph(
     predictions: List<PredSeries> = emptyList(),
     curveOverlay: CurveOverlayFrame? = null,
     curveToggles: CurveOverlayToggles = CurveOverlayToggles(),
-    // One mark at the foot of the plot per logged carb/insulin event (LogMarkerLayer.kt). Carries when /
-    // which channel / whether the server has taken it yet, and nothing else — no amount, no row id — so
-    // the panel can neither render a figure it has no business rendering nor reach back at the row.
+    // One icon per logged carb/insulin event, in two fixed lanes low in the plot (LogMarkerLayer.kt).
+    // Carries when / which channel / whether the server has taken it yet, and nothing else — no amount,
+    // no row id — so the panel can neither render a figure it has no business rendering nor reach back
+    // at the row.
     logMarkers: List<LogMarker> = emptyList(),
     rangeMinMgdl: Int? = null,
     rangeMaxMgdl: Int? = null,
@@ -232,20 +232,21 @@ fun GlucoseGraph(
     // Held here, unconditionally, for the same reason the paint scratch above is: the empty-frame return
     // below must not be able to skip a `remember`.
     //
-    // The glyphs come from the app-wide icon system, so the marks are Tron-angular / Umbrella-blocky /
-    // Kitty-rounded like every other silhouette; the painters are rasterised once per style rather than
-    // per mark. Sorting happens ONCE here — `clusterLogMarkers` is a linear pass that reads the
-    // projection as monotone, and re-sorting per frame would put an O(n log n) allocation in the draw
-    // phase of every pan.
-    val markerStyle = iconStyleForTheme(LocalT1dmSemantics.current.id)
-    val carbMarkPainter = rememberVectorPainter(
-        remember(markerStyle) { logMarkerIcon(CurveKind.CARB, markerStyle) },
-    )
-    val insulinMarkPainter = rememberVectorPainter(
-        remember(markerStyle) { logMarkerIcon(CurveKind.INSULIN, markerStyle) },
-    )
-    val marks = remember(logMarkers) { logMarkers.sortedBy { it.tsMs } }
-    val anyCommitted = remember(marks) { marks.any { it.state == LogState.COMMITTED } }
+    // ONE burger and ONE syringe, shape-fixed across every theme and rasterised once; the theme reaches
+    // them only as the tint applied below. Splitting the feed by channel happens ONCE here, and so does
+    // the sort — `clusterLogMarkers` takes a single lane and is a linear pass that reads the projection
+    // as monotone, so re-splitting or re-sorting per frame would put an O(n log n) allocation in the
+    // draw phase of every pan.
+    val semantics = LocalT1dmSemantics.current
+    val carbMarkPainter = rememberVectorPainter(logMarkerIcon(CurveKind.CARB))
+    val insulinMarkPainter = rememberVectorPainter(logMarkerIcon(CurveKind.INSULIN))
+    val carbMarks = remember(logMarkers) {
+        logMarkers.filter { it.kind == CurveKind.CARB }.sortedBy { it.tsMs }
+    }
+    val insulinMarks = remember(logMarkers) {
+        logMarkers.filter { it.kind == CurveKind.INSULIN }.sortedBy { it.tsMs }
+    }
+    val anyCommitted = remember(logMarkers) { logMarkers.any { it.state == LogState.COMMITTED } }
     // The committed pulse. ONE animation drives every committed mark — they say the same thing, so they
     // should say it in unison, and a per-mark animation would be a hundred animations on a busy day.
     val motionOn = LocalAnimationsEnabled.current
@@ -722,10 +723,12 @@ fun GlucoseGraph(
             val interpColor = cs.primary.copy(alpha = 0.45f)
             val warmupColor = cs.secondary
             // The two model channels' inks, decided ONCE: the curve overlay paints its carb and insulin
-            // areas in them, and the log markers paint their marks in them, so a mark is always the
-            // colour of the curve it stands for and the two cannot drift apart.
-            val carbInk = cs.secondary
-            val insulinInk = cs.tertiary
+            // areas in them, and the log markers tint their glyphs with them, so a mark is always the
+            // colour of the curve it stands for and the two cannot drift apart. Read from the SEMANTIC
+            // roles rather than the Material projection of them, because the marker glyphs are
+            // shape-fixed — the tint is the only thing the theme still says about a mark.
+            val carbInk = semantics.secondary
+            val insulinInk = semantics.inRange
             val dash = PathEffect.dashPathEffect(floatArrayOf(6f, 6f))
             val labelStyle = TextStyle(color = labelColor, fontSize = 10.sp)
             // I5 — "Smoothed" is a SWAP, not an overlay: when on (and a smooth exists) the raw sensor
@@ -829,6 +832,43 @@ fun GlucoseGraph(
                     )
                 }
 
+                // (4.6) LOG MARKERS — one icon per logged carb/insulin event, in two FIXED lanes in the
+                //       plot's lower region: insulin above, carbs below, whatever is in view.
+                //
+                //       Inside this clip on purpose: they belong to the data, so they pan and zoom with
+                //       it and can never spill over the local-time or model-time axes. Anchored to
+                //       `plotBottom`, which the furniture pass already computed — never to the
+                //       composable's own height, whose top moves by the model-axis strip. The lanes
+                //       OVERLAY that region: `plotBottom`, the y scale and the trace geometry above are
+                //       untouched, so turning logging on cannot move the glucose line.
+                //
+                //       Drawn after the curve overlay whose band shares this strip, so a mark is never
+                //       buried under it — and BEFORE the BG trace, so an icon can never sit on top of a
+                //       hypoglycaemic excursion, which drops into exactly these lanes.
+                //
+                //       The alpha is read HERE, in the draw lambda, so a running fade invalidates the
+                //       draw phase alone — a marker breathing must not recompose the panel.
+                if (carbMarks.isNotEmpty() || insulinMarks.isNotEmpty()) {
+                    val markSep = logMarkerSeparationPx(dpPx)
+                    val markSize = LOG_MARKER_DP * dpPx
+                    drawLogMarkers(
+                        clusterLogMarkers(insulinMarks, viewStartMs, viewSpanMs, plotLeft, plotRight, markSep),
+                        painter = insulinMarkPainter,
+                        ink = insulinInk,
+                        sizePx = markSize,
+                        laneTopY = logMarkerLaneTop(CurveKind.INSULIN, plotBottom, dpPx),
+                        committedAlpha = markerPulse.value,
+                    )
+                    drawLogMarkers(
+                        clusterLogMarkers(carbMarks, viewStartMs, viewSpanMs, plotLeft, plotRight, markSep),
+                        painter = carbMarkPainter,
+                        ink = carbInk,
+                        sizePx = markSize,
+                        laneTopY = logMarkerLaneTop(CurveKind.CARB, plotBottom, dpPx),
+                        committedAlpha = markerPulse.value,
+                    )
+                }
+
                 // (5) BG polyline, segment-styled by provenance; gaps broken. Suppressed when the smoothed
                 //     model-input trace has replaced it (I5).
                 if (!swapToSmoothed) for (i in iLo until iHi) {
@@ -917,36 +957,16 @@ fun GlucoseGraph(
                     val legendText = if (rs.degenerate) "extrapolated · degenerated · display-only"
                     else "extrapolated · unvalidated · display-only"
                     val leg = measurer.measure(legendText, TextStyle(color = cs.onSurface.copy(alpha = 0.7f), fontSize = 9.sp))
-                    drawText(leg, topLeft = Offset((plotRight - leg.size.width - 4f).coerceAtLeast(plotLeft), plotBottom - leg.size.height - 2f))
-                }
-
-                // (6.7) LOG MARKERS — one mark per logged carb/insulin event, at the FOOT of the plot.
-                //       Inside this clip on purpose: they belong to the data, so they pan and zoom with
-                //       it and can never spill over the local-time or model-time axes. Anchored to
-                //       `plotBottom`, which the furniture pass already computed — never to the
-                //       composable's own height, whose top moves by the model-axis strip.
-                //
-                //       Drawn LAST of the data layers so a mark is never buried under the curve overlay
-                //       whose band shares this strip, and before the scrub read-out, which outranks
-                //       everything while a finger is down.
-                //
-                //       The alpha is read HERE, in the draw lambda, so a running fade invalidates the
-                //       draw phase alone — a marker breathing must not recompose the panel.
-                if (marks.isNotEmpty()) {
-                    drawLogMarkers(
-                        clusterLogMarkers(
-                            marks, viewStartMs, viewSpanMs, plotLeft, plotRight,
-                            logMarkerSeparationPx(dpPx),
-                        ),
-                        carbPainter = carbMarkPainter,
-                        insulinPainter = insulinMarkPainter,
-                        carbInk = carbInk,
-                        insulinInk = insulinInk,
-                        sizePx = LOG_MARKER_DP * dpPx,
-                        bottomY = plotBottom - LOG_MARKER_FOOT_DP * dpPx,
-                        committedAlpha = markerPulse.value,
-                        measurer = measurer,
-                    )
+                    // Lifted clear of the marker band whenever the lanes claim it. Both this caption and
+                    // the lanes are measured up from `plotBottom` and the caption is drawn LAST, so left
+                    // where it was it prints straight over the carb lane — and it is the one thing keeping
+                    // the extrapolated tail from being read as a validated forecast, so neither layer may
+                    // be allowed to bury the other. Gated on exactly what section (4.6) gates the lanes on,
+                    // so the caption holds one height for as long as they exist rather than hopping as
+                    // marks pan in and out of view.
+                    val legFloor = plotBottom -
+                        if (carbMarks.isEmpty() && insulinMarks.isEmpty()) 0f else LOG_MARKER_BAND_DP * dpPx
+                    drawText(leg, topLeft = Offset((plotRight - leg.size.width - 4f).coerceAtLeast(plotLeft), legFloor - leg.size.height - 2f))
                 }
 
                 // (7) Scrub cursor — time-anchored, so it reads in the forecast zone too (item 3). U8 — the
@@ -1226,8 +1246,8 @@ private fun GlucoseGraphPreview() {
     }
 }
 
-/** A lone meal, a meal with its bolus beside it, and a pair of doses close enough to combine — enough
- *  to see both silhouettes, both states, and the count in one preview. */
+/** A lone meal, a meal with its bolus above it in the insulin lane, and a pair of doses close enough to
+ *  combine — enough to see both silhouettes, both lanes and both states in one preview. */
 private fun syntheticMarkers(): List<LogMarker> {
     val t0 = 1_720_000_000_000L
     val step = 300_000L

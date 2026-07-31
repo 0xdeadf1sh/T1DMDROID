@@ -157,36 +157,60 @@ private fun logs(s: IconStyle) = glyph("logs", s) { // a bulleted list: three ma
     moveTo(9.5f, 16f); lineTo(16f, 16f); lineTo(16f, 18f); lineTo(9.5f, 18f); close()
 }
 
-// ── Logged-event markers (the BG panel's time-axis marks) ─────────────────────────────────────────
+// ── Logged-event markers (the BG panel's lane marks) ──────────────────────────────────────────────
 //
-// Drawn at the FOOT of the glucose plot, one per logged carb/insulin event, so the trace says when the
-// user acted as well as what their glucose did. They are the same geometry family as everything above —
-// [glyph] re-derives fill-vs-stroke and sharp-vs-round from the style, so one closed silhouette per KIND
-// serves Tron, Umbrella and Kitty alike.
+// Drawn in the lower region of the glucose plot, one per logged carb/insulin event, so the trace says
+// when the user acted as well as what their glucose did.
 //
-// Two constraints that the nav set does not have, and that fix the shapes:
+// These are the ONE set that opts out of the per-theme geometry above: a single burger and a single
+// syringe, always FILLED, re-tinted per theme by the caller and never re-shaped. Two reasons, both
+// consequences of the size they render at — roughly a third of a nav icon, on top of the trace:
 //
-//  - They render at roughly a THIRD of a nav icon's size, on top of the trace rather than in a bar. Only
-//    the outer silhouette survives at that scale, so both are single convex polygons — no counters, no
-//    interior detail, nothing that would fill in and turn the mark into a blob.
-//  - They must not be mistaken for the plot's own furniture. The BG point markers are CIRCLES, so neither
-//    of these is round; the two kinds differ in silhouette (four-fold vs. three-fold) rather than in
-//    colour alone, because colour is also what separates committed from delivered.
+//  - At that scale only the silhouette survives. A stroked outline of a burger is a smudge and a
+//    stroked needle disappears altogether, so the fill-vs-stroke transform the nav set turns on has
+//    nothing left to express here.
+//  - What the mark must say is WHICH CHANNEL it belongs to, instantly, at a glance across a busy
+//    evening. A shape that changed with the theme would be one more thing to relearn, and there is no
+//    second reading of it to fall back on: the panel is not permitted the amount, and colour already
+//    carries the theme.
+//
+// So both are chunky, axis-aligned, mostly-rectangular silhouettes with generous internal gaps, drawn
+// large in the 24-unit viewport. The BG point markers are circles and neither of these is round, so a
+// mark cannot be mistaken for the plot's own furniture.
 
-private fun carbMark(s: IconStyle) = glyph("carbmark", s) { // a diamond
-    moveTo(12f, 2.5f); lineTo(21.5f, 12f); lineTo(12f, 21.5f); lineTo(2.5f, 12f); close()
+/** Build a 24dp icon from a closed silhouette, always filled and never re-derived per theme. */
+private fun filledGlyph(name: String, body: PathBuilder.() -> Unit): ImageVector =
+    ImageVector.Builder(
+        name = "t1dm_$name",
+        defaultWidth = 24.dp, defaultHeight = 24.dp,
+        viewportWidth = 24f, viewportHeight = 24f,
+    ).apply { path(fill = SolidColor(Color.White), pathBuilder = body) }.build()
+
+/** Carbohydrate: a burger — a domed bun over two bars. Three separate pieces, so the gaps between them
+ *  are what makes the stack legible once the whole glyph is ten dp tall. */
+private val CarbMark: ImageVector = filledGlyph("carbmark") {
+    moveTo(2.5f, 12f); arcTo(9.5f, 8.5f, 0f, false, true, 21.5f, 12f); close() // top bun
+    moveTo(1.5f, 13.5f); lineTo(22.5f, 13.5f); lineTo(22.5f, 16.5f); lineTo(1.5f, 16.5f); close() // patty
+    moveTo(2.5f, 18f); lineTo(21.5f, 18f); lineTo(20.5f, 21f); lineTo(3.5f, 21f); close() // bottom bun
 }
 
-private fun insulinMark(s: IconStyle) = glyph("insulinmark", s) { // a downward wedge — the delivery
-    moveTo(2.5f, 4f); lineTo(21.5f, 4f); lineTo(12f, 21.5f); close()
+/** Insulin: a syringe, upright and pointing DOWN at the axis — plunger, finger flange, barrel, needle,
+ *  as one closed polygon. Upright rather than the nav set's diagonal barrel because a 45° slab of this
+ *  width blurs into a stroke at marker size, where the vertical needle still reads. */
+private val InsulinMark: ImageVector = filledGlyph("insulinmark") {
+    moveTo(8f, 1f); lineTo(16f, 1f); lineTo(16f, 3.2f); lineTo(13.5f, 3.2f); lineTo(13.5f, 6f)
+    lineTo(17.5f, 6f); lineTo(17.5f, 8.2f); lineTo(15.5f, 8.2f); lineTo(15.5f, 16f)
+    lineTo(13f, 16f); lineTo(13f, 23.5f); lineTo(11f, 23.5f); lineTo(11f, 16f)
+    lineTo(8.5f, 16f); lineTo(8.5f, 8.2f); lineTo(6.5f, 8.2f); lineTo(6.5f, 6f)
+    lineTo(10.5f, 6f); lineTo(10.5f, 3.2f); lineTo(8f, 3.2f); close()
 }
 
-/** Resolve a logged event's channel to its themed marker glyph, in the same geometry family as
- *  [navIcon]. [CurveKind] is the model's own channel vocabulary, so a marker and the curve it stands
- *  for are labelled identically. */
-fun logMarkerIcon(kind: CurveKind, style: IconStyle): ImageVector = when (kind) {
-    CurveKind.CARB -> carbMark(style)
-    CurveKind.INSULIN -> insulinMark(style)
+/** Resolve a logged event's channel to its marker glyph. [CurveKind] is the model's own channel
+ *  vocabulary, so a marker and the curve it stands for are labelled identically. The caller tints it
+ *  from the active palette; the shape itself is the same on every theme. */
+fun logMarkerIcon(kind: CurveKind): ImageVector = when (kind) {
+    CurveKind.CARB -> CarbMark
+    CurveKind.INSULIN -> InsulinMark
 }
 
 // ── Time-of-day glyphs (issue N4a) — the same per-theme geometry system as the nav icons, so morning /
