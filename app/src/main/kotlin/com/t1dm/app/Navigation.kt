@@ -118,6 +118,7 @@ import com.t1dm.feature.pubs.PubsScreen
 import com.t1dm.feature.models.ModelDetailScreen
 import com.t1dm.feature.models.ModelsScreen
 import com.t1dm.core.model.CgEga
+import com.t1dm.core.model.ClarkeZoneGrid
 import com.t1dm.core.model.ModelMetrics
 import com.t1dm.feature.network.NetworkScreen
 import com.t1dm.feature.security.SecurityPanelState
@@ -913,10 +914,10 @@ private fun T1dmNavHost(
             val savgolWindow by container.savgolWindow.collectAsState(SettingsStore.DEFAULT_SAVGOL_WINDOW)
             // The BG panel's freehand annotation layer; `:feature:dashboard` and `:ui:graph` see no store.
             val paintStrokes by container.paintStrokes.collectAsState(emptyList())
-            // The panel's foot markers. The SAME feed the Logs panel binds, reduced to when / which
-            // channel / still-withdrawable, so the graph and the list can never disagree about whether a
-            // row has reached the server.
-            val logMarkers by container.logMarkers.collectAsState(emptyList())
+            // What the panel marks at its foot, and what a tap on one of those marks restates. The SAME
+            // feed the Logs panel binds, so the two can never disagree about whether a row has reached
+            // the server; the screen reduces it to markers for the graph, which still sees no amount.
+            val logEntries by container.loggedEntries.collectAsState(emptyList())
             DashboardScreen(
                 readings = readings,
                 latest = latest,
@@ -926,9 +927,8 @@ private fun T1dmNavHost(
                 predictions = inference.predictions,
                 kovatchevF = container.nativeCore::kovatchevF,
                 iobCob = iobCob,
-                curveChannels = container::dashboardCurveChannels,
-                basalChannel = container::dashboardBasalChannel,
-                logMarkers = logMarkers,
+                curveChannels = container::dashboardOverlayChannels,
+                logEntries = logEntries,
                 warmup = inference.warmup,
                 rangeMinMgdl = range.minMgdl,
                 rangeMaxMgdl = range.maxMgdl,
@@ -1043,6 +1043,12 @@ private fun T1dmNavHost(
                 accuracy = runCatching { container.modelMetrics(modelId) }.getOrNull()
                 loading = false
             }
+            // The zone lattice the error grid paints its regions from. Fetched rather than read as a
+            // plain argument because building it classifies 25 600 cells across the FFI seam, and this
+            // screen puts nothing that heavy on the frame that composes it. Null until it lands, which
+            // the figure states as "computing" rather than as regions it does not have.
+            var clarkeGrid by remember { mutableStateOf<ClarkeZoneGrid?>(null) }
+            LaunchedEffect(Unit) { clarkeGrid = container.clarkeZoneGrid() }
             // §6.3's CG-EGA walks every step of every window through the P-EGA × R-EGA grid, so it is
             // computed only when the panel asks for it and dropped whenever the cheap suite reloads
             // (it would otherwise outlive the window it was measured over). Clearing the RESULT is not
@@ -1074,6 +1080,9 @@ private fun T1dmNavHost(
                 // cancelled here rather than allowed to land on the reloaded window; the relaunch then
                 // returns early on the same guard a never-asked-for pass does.
                 onRecomputeAccuracy = { reloadTick++; cgEgaTick = 0 },
+                // A picture of the zone algebra, not of this patient: data-independent, so the
+                // container builds it once and every model's drill-down shares the one lattice.
+                clarkeGrid = clarkeGrid,
                 cgEga = cgEga,
                 cgEgaLoading = cgEgaLoading,
                 onComputeCgEga = { cgEgaTick++ },

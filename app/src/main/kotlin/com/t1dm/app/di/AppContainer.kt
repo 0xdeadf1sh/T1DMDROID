@@ -46,6 +46,7 @@ import com.t1dm.core.common.T1dmDispatchers
 import com.t1dm.core.model.BackendId
 import com.t1dm.core.model.StatsWindow
 import com.t1dm.core.model.CgmReading
+import com.t1dm.core.model.ClarkeZoneGrid
 import com.t1dm.core.model.CgmSourceDescriptor
 import com.t1dm.core.model.CurveKind
 import com.t1dm.core.model.CurveEvent
@@ -57,7 +58,6 @@ import com.t1dm.core.model.MetricsConfig
 import com.t1dm.core.model.ModelMetrics
 import com.t1dm.core.model.InferenceState
 import com.t1dm.core.model.IobCobReadout
-import com.t1dm.core.model.LogMarker
 import com.t1dm.core.model.LogState
 import com.t1dm.core.model.LoggedEntry
 import com.t1dm.core.model.PaintStroke
@@ -403,11 +403,13 @@ class AppContainer(context: Context) {
         private set
 
     /** Today's cumulative step count (local midnight → now), summed from the per-grid-bucket sample
-     *  steps. Cheap (≤ 288 buckets/day) — read directly by the widget and the BG panel. */
+     *  steps. Read directly by the widget and the BG panel — so it runs on every widget push, which is
+     *  why the sum is SQL's and not Kotlin's: the day's ≤ 288 buckets were being materialised as whole
+     *  entities, every column of them, to add up one nullable Int. */
     suspend fun stepsToday(): Int {
         val zone = java.time.ZoneId.systemDefault()
         val midnight = java.time.LocalDate.now(zone).atStartOfDay(zone).toInstant().toEpochMilli()
-        return repository.samplesInRange(midnight, System.currentTimeMillis()).sumOf { it.steps ?: 0 }
+        return repository.stepsInRange(midnight, System.currentTimeMillis())
     }
 
     // ─── Forecast-cadence snapshot (F2) — mirrors deathModeSnapshot: the FGS's single-consumer forecast
@@ -786,6 +788,26 @@ class AppContainer(context: Context) {
     suspend fun setThermalGateEnabled(on: Boolean) = settingsStore.setThermalGateEnabled(on)
     suspend fun setInferenceMaxTempC(c: Double) = settingsStore.setInferenceMaxTempC(c)
     suspend fun setThermalWarnMarginC(c: Double) = settingsStore.setThermalWarnMarginC(c)
+
+    /**
+     * The Clarke zone lattice the drill-down's error grid paints its five regions from, classified
+     * by the core. Data-independent — it is a picture of the zone algebra, not of this patient — so
+     * one instance serves every model and it is built once, on first open of the drill-down.
+     *
+     * It exists so no Kotlin has to know a zone boundary: the inequalities live in
+     * `t1dm-core::accuracy::clarke_zones` alone, and the figure paints cells it was handed rather
+     * than an outline it derived. Empty on a stub core, which the figure renders as no regions.
+     *
+     * **Suspending, and off-main, like every other native reduction this screen makes.** The build
+     * is a 160-square lattice: 25 600 classifications inside the core, the same number lifted across
+     * uniffi and re-mapped on this side, then three verification probes. Read as a plain property it
+     * ran inside the composition that opened the drill-down — the one expensive thing on that screen
+     * that was not moved off the frame — and the transition stuttered once per process. The `lazy`
+     * still does the once-only work; this only decides which thread pays for it.
+     */
+    private val clarkeZoneGridOnce: ClarkeZoneGrid by lazy { ClarkeZoneGrid.build(nativeCore::clarkeZoneGrid) }
+
+    suspend fun clarkeZoneGrid(): ClarkeZoneGrid = withContext(dispatchers.default) { clarkeZoneGridOnce }
 
     /**
      * On-device realized forecast accuracy for [modelId] over the trailing [days] (Phase 7C — Models
@@ -1563,16 +1585,25 @@ class AppContainer(context: Context) {
         presetCurve(units, spec)
     }
 
-    /** The dashboard overlay resolver: the two reconstructed channels over a grid window (off-main). */
+    /** The MODEL's two reconstructed channels over a grid window (feat 1 / feat 2), off-main. The
+     *  model consumes the COMBINED insulin channel and has no use for the basal series. */
     suspend fun dashboardCurveChannels(gridStartMs: Long, nSteps: Int): Pair<DoubleArray, DoubleArray> {
         val ch = channelBuilder.contextChannels(gridStartMs, nSteps)
         return ch.carb to ch.insulin
     }
 
-    /** The BASAL-only overlay sub-channel over the same grid (issue 18): auto-extended schedule +
-     *  logged long-acting injections, for the dashboard's separate basal series. Off-main. */
-    suspend fun dashboardBasalChannel(gridStartMs: Long, nSteps: Int): DoubleArray =
-        channelBuilder.basalChannel(gridStartMs, nSteps)
+    /** The dashboard overlay resolver: carbs, combined insulin, and the BASAL-only sub-channel
+     *  (issue 18 — auto-extended schedule XOR logged long-acting injections) over one grid window,
+     *  from ONE gather. The panel draws all three together and used to pull the basal series through
+     *  a second entry point, which resolved the same padded window and rebuilt the same basal
+     *  representation a second time on every overlay rebuild. Off-main. */
+    suspend fun dashboardOverlayChannels(
+        gridStartMs: Long,
+        nSteps: Int,
+    ): Triple<DoubleArray, DoubleArray, DoubleArray> {
+        val ch = channelBuilder.overlayChannels(gridStartMs, nSteps)
+        return Triple(ch.carb, ch.insulin, ch.basal)
+    }
 
     /**
      * The COMMITTED dose tails over the prediction horizon `[rollStartMs, +nFutureSteps·STEP)` — the
@@ -1589,20 +1620,25 @@ class AppContainer(context: Context) {
     /** IOB/COB now, with §3.6-F provenance (logged doses only; last-logged age; basal presence). */
     suspend fun iobCobNow(): IobCobReadout {
         val now = System.currentTimeMillis()
-        val iob = channelBuilder.onBoard(now, CurveKind.INSULIN)
+        // F5: the second half is the instant the last active insulin (logged doses + basal tails) decays
+        // to zero — the landmark the circadian panel's insulin-exhaustion countdown projects forward
+        // from. It used to be a separate call that re-read the same padded 48 h window, re-ran the same
+        // basal-schedule lookup and rebuilt the same PK curves the IOB had just been derived from; the
+        // widget pulls this on every refresh, so the whole reconstruction was running twice a push.
+        // Its `runCatching` went with it and is not missed: the only failing step it covered was the
+        // gather, which the IOB above needs first and does not guard, and the zero derivation itself is
+        // total arithmetic over events already in hand. Both callers guard this whole method anyway.
+        val insulin = channelBuilder.insulinOnBoard(now)
         val cob = channelBuilder.onBoard(now, CurveKind.CARB)
         val lastLogged = repository.latestLoggedInsulinTs()
         val hasBasal = repository.activeBasalDoses().isNotEmpty()
-        // F5: the instant the last active insulin (logged doses + basal tails) decays to zero — the
-        // landmark the circadian panel's insulin-exhaustion countdown projects forward from.
-        val iobZeroMs = runCatching { channelBuilder.insulinZeroMs(now) }.getOrNull()
         return IobCobReadout(
             atMs = now,
-            iobU = iob,
+            iobU = insulin.iobU,
             cobG = cob,
             minsSinceLastLoggedInsulin = lastLogged?.let { (now - it) / 60_000L },
             hasBasalSchedule = hasBasal,
-            iobZeroMs = iobZeroMs,
+            iobZeroMs = insulin.zeroMs,
         )
     }
 
@@ -2069,11 +2105,16 @@ class AppContainer(context: Context) {
         label = label,
     )
 
-    // ─── The Logs panel's feed, and the marker feed the graph reads from it ────────────────────
+    // ─── The logged-event feed both the Logs panel and the BG panel's marks are read from ─────
 
     /**
-     * The Logs panel's feed: the newest logged meals and doses interleaved newest-first, each carrying
+     * The logged-event feed: the newest logged meals and doses interleaved newest-first, each carrying
      * whether the server has accepted it yet.
+     *
+     * ONE feed for both surfaces that show these rows — the Logs panel's list, and the BG panel, which
+     * reduces it to [com.t1dm.core.model.LogMarker] at its own edge so the drawing layer receives no
+     * amount and no row id. Reducing it there rather than here is what makes a mark and the row behind
+     * it the same list position, and therefore what lets a tap on a mark name what it stands for.
      *
      * **The join happens HERE and nowhere else, on purpose.** The verdict is queue membership under the
      * event's dedup key, and that key's format ([mealDedupKey] / [doseDedupKey]) is owned by `:sync`,
@@ -2104,13 +2145,6 @@ class AppContainer(context: Context) {
     }
 
     /**
-     * The graph's marker feed: one mark per logged event — when, which channel, still withdrawable.
-     * Derived from [loggedEntries] so the two surfaces cannot disagree about a row's state, and reduced
-     * to [LogMarker] so the drawing layer never receives the amounts or the row ids.
-     */
-    val logMarkers: Flow<List<LogMarker>> = loggedEntries.map { list -> list.map { it.marker } }
-
-    /**
      * Remove a logged entry the user has decided against. Reuses the undo path's single deletion
      * transaction, and inherits its refusal: with the push already drained the server holds the event,
      * the API has no DELETE, and the next WS catch-up would re-hydrate it by `clientId` — so nothing is
@@ -2137,9 +2171,12 @@ class AppContainer(context: Context) {
         tsMs = tsMs,
         tzOffsetMin = tzOffsetMin,
         amount = grams,
-        // The GI when the row carries one; a builder meal carries a combined curve and no single index,
-        // and says so rather than showing a number it does not have.
-        detail = gi?.let { "GI ${fmtAmount(it)}" } ?: note,
+        // Both carried as they are STORED: the index when the row has one (a builder meal has a
+        // combined curve and no single index), and the note beside it rather than instead of it. How
+        // either reads is the reader's business — `:core:design` owns that wording for every surface
+        // at once — and a phrase rendered here would be the copy those surfaces later disagreed over.
+        gi = gi,
+        detail = note,
         state = stateFor(mealDedupKey(clientId), queued),
     )
 
@@ -2151,6 +2188,7 @@ class AppContainer(context: Context) {
         tsMs = tsMs,
         tzOffsetMin = tzOffsetMin,
         amount = units,
+        gi = null,
         // The resolved insulin the writer persisted — the clinical preset or the custom type, i.e. the
         // curve this row actually reconstructs through, not whatever chip was on screen.
         detail = note,
@@ -2237,13 +2275,22 @@ class AppContainer(context: Context) {
      * just-logged dose refreshes IOB/COB at once rather than 0 U/0 g until the next reading. `mapLatest`
      * cancels an in-flight compute on a newer trigger; collected on [appScope] (default dispatcher) and
      * the store reads hop to IO, so this never touches the main thread.
+     *
+     * All three arms are CHANGE SIGNALS — this flow reads nothing from them, it only recomputes. Two
+     * of them used to arrive as whole tables: [dashboardReadings] is every reading the active source
+     * has ever taken, and `observeSamples(0, MAX)` is the entire wide projection, both never pruned,
+     * both re-queried and re-materialised on every reading, and both discarded here by `.map { }`.
+     * [latestReading] and [T1dmRepository.observeSampleWrites] are the one-row and one-scalar
+     * observations of the very same two tables; because Room invalidates per TABLE, they emit at
+     * exactly the same instants the whole-table reads emitted at, so the recompute schedule — and
+     * therefore every value the card shows — is unchanged.
      */
     val iobCob: StateFlow<IobCobReadout?> =
         merge(
-            dashboardReadings.map { },
-            repository.observeSamples(0L, Long.MAX_VALUE).map { },
+            latestReading.map { },
+            repository.observeSampleWrites().map { },
             // Meal/dose logs no longer project onto `sample` (the carb/bolus/basal scalars are retired),
-            // so observeSamples no longer fires on a log — subscribe to the repository's log-write tick
+            // so the sample signal no longer fires on a log — subscribe to the repository's log-write tick
             // so a just-logged dose/meal refreshes IOB/COB at once instead of waiting for the next reading.
             repository.logEvents.map { },
         )
