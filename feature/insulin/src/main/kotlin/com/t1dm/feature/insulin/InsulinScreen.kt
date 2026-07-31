@@ -191,7 +191,7 @@ private fun BasalEntry(
     onLogBasal: (Double, BasalPreset) -> Unit,
 ) {
     var unitsText by remember { mutableStateOf("") }
-    var preset by remember { mutableStateOf(BasalPreset.TRESIBA) }
+    var preset by remember { mutableStateOf(BasalPreset.LANTUS) }
     val units = unitsText.toDoubleOrNull()
     val dose = units.loggableDose()
     var pending by remember { mutableStateOf<PendingLog.Dose?>(null) }

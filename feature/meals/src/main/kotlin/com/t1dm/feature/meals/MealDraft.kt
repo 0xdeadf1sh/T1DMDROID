@@ -27,10 +27,12 @@ import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.hapticClickable
@@ -197,16 +199,40 @@ internal fun resolvedCurve(
 internal fun ComponentRows(draft: MealDraft) {
     val haptics = rememberT1dmHaptics()
     draft.components.forEachIndexed { i, c ->
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text("${c.name} · ${c.grams.toInt()} g", style = MaterialTheme.typography.bodyMedium)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("${"%.0f".format(c.carbs)} g carb", style = MaterialTheme.typography.bodyMedium)
+        // The food name is the only elastic member of the row: it takes what the carb read-out and the
+        // two actions leave and ellipsizes there. Unweighted, it claimed its intrinsic width first and
+        // starved them, so a long name broke `remove` across two lines mid-word ("rem" / "ove").
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "${c.name} · ${c.grams.toInt()} g",
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false),
+            )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                // maxLines = 1 already forbids the wrap; the overflow must be Ellipsis rather than the
+                // default Clip, or an over-tight row truncates a label silently mid-word — "remo" reads
+                // as a shorter word, where "remo…" reads as a truncated one.
+                Text(
+                    "${"%.0f".format(c.carbs)} g carb",
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
                 TextButton(
                     onClick = { haptics.perform(HapticEvent.Tap); draft.toggleRegram(i) },
-                ) { Text("grams") }
+                ) { Text("grams", maxLines = 1, overflow = TextOverflow.Ellipsis) }
                 TextButton(
                     onClick = { haptics.perform(HapticEvent.Reject); draft.removeAt(i) },
-                ) { Text("remove") }
+                ) { Text("remove", maxLines = 1, overflow = TextOverflow.Ellipsis) }
             }
         }
         if (draft.regramIndex == i) {
