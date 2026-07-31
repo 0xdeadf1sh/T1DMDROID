@@ -82,6 +82,7 @@ import com.t1dm.app.service.DoseCalcService
 import com.t1dm.feature.insulin.BolusCalculatorScreen
 import com.t1dm.core.model.InferenceCause
 import com.t1dm.core.model.InferenceState
+import com.t1dm.core.model.InsulinPresetSpec
 import com.t1dm.core.model.BezierCurve
 import com.t1dm.core.model.DkaTimeline
 import androidx.navigation.NavHostController
@@ -97,6 +98,7 @@ import com.t1dm.feature.settings.DeathModeScreen
 import com.t1dm.app.notify.BgFormat
 import com.t1dm.app.notify.BgGlanceComputer
 import com.t1dm.core.model.UnitSpace
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.t1dm.feature.dashboard.DashboardScreen
@@ -108,7 +110,6 @@ import com.t1dm.feature.insulin.InsulinTypeBuilderScreen
 import com.t1dm.feature.meals.FoodEditorScreen
 import com.t1dm.feature.meals.MealBuilderScreen
 import com.t1dm.feature.meals.MealEditorScreen
-import com.t1dm.feature.journal.JournalScreen
 import com.t1dm.feature.logs.LogsScreen
 import com.t1dm.feature.meals.MealsScreen
 import com.t1dm.core.model.Food
@@ -210,7 +211,6 @@ private val destinations = listOf(
     Destination("meals", "Meals"),
     Destination("insulin", "Insulin"),
     Destination("security", "Watch"),
-    Destination("journal", "Journal"),
     Destination("logs", "Logs"),
     Destination("settings", "Settings"),
 )
@@ -360,7 +360,6 @@ internal fun crumbsFor(route: String?, modelId: String?, editLabel: String? = nu
         "insulin/types" -> listOf(Crumb("Insulin", "insulin"), Crumb("Types & curves", null))
         "insulin/bolusCalc" -> listOf(Crumb("Insulin", "insulin"), Crumb("Bolus advisor", null))
         "security" -> listOf(Crumb("Watch", null))
-        "journal" -> listOf(Crumb("Journal", null))
         "logs" -> listOf(Crumb("Logs", null))
         "settings" -> listOf(Crumb("Settings", null))
         "about" -> settings(Crumb("About", null))
@@ -1046,7 +1045,10 @@ private fun T1dmNavHost(
             }
             // §6.3's CG-EGA walks every step of every window through the P-EGA × R-EGA grid, so it is
             // computed only when the panel asks for it and dropped whenever the cheap suite reloads
-            // (it would otherwise outlive the window it was measured over).
+            // (it would otherwise outlive the window it was measured over). Clearing the RESULT is not
+            // enough to drop it: the pass is keyed on its own tick, so a reload left an in-flight walk
+            // running and it landed afterwards, repopulating the figure under freshly reloaded tables.
+            // Zeroing the tick on reload is what actually cancels it — see `onRecomputeAccuracy` below.
             var cgEga by remember(modelId) { mutableStateOf<CgEga?>(null) }
             var cgEgaLoading by remember(modelId) { mutableStateOf(false) }
             var cgEgaTick by remember(modelId) { mutableStateOf(0) }
@@ -1054,7 +1056,13 @@ private fun T1dmNavHost(
             LaunchedEffect(modelId, cgEgaTick) {
                 if (cgEgaTick == 0) return@LaunchedEffect
                 cgEgaLoading = true
-                cgEga = runCatching { container.modelCgEga(modelId) }.getOrNull()
+                val walked = runCatching { container.modelCgEga(modelId) }
+                // A superseded pass must not write back. `runCatching` swallows the cancellation, and
+                // the native walk is uninterruptible, so a cancelled job resumes here seconds later —
+                // by which time its successor may already be running and would have its result and its
+                // loading flag cleared out from under it.
+                if (!isActive) return@LaunchedEffect
+                cgEga = walked.getOrNull()
                 cgEgaLoading = false
             }
             ModelDetailScreen(
@@ -1062,7 +1070,10 @@ private fun T1dmNavHost(
                 modelId = modelId,
                 accuracy = accuracy,
                 accuracyLoading = loading,
-                onRecomputeAccuracy = { reloadTick++ },
+                // Zeroing the tick is a key change on the CG-EGA effect, so a walk still running is
+                // cancelled here rather than allowed to land on the reloaded window; the relaunch then
+                // returns early on the same guard a never-asked-for pass does.
+                onRecomputeAccuracy = { reloadTick++; cgEgaTick = 0 },
                 cgEga = cgEga,
                 cgEgaLoading = cgEgaLoading,
                 onComputeCgEga = { cgEgaTick++ },
@@ -1292,19 +1303,22 @@ private fun T1dmNavHost(
         composable("insulin") {
             val scope = rememberCoroutineScope()
             val iobCob by container.iobCob.collectAsState()
-            // The clinical presets the WRITER resolves from Settings (issue 19) — not the quick-preset
-            // enums the screen hands back, which `logBolus`/`logBasal` ignore. The confirm dialog
-            // restates these so the row it describes is the row that gets written.
+            // The panel's own chips, and the seeds for them. The catalogue is the single set of
+            // insulins a dose row can name; the two labels are the last one actually LOGGED per kind,
+            // resolved so an empty or stale memory still yields a real preset. Read once each — the
+            // panel owns the selection from here, and re-seeding it mid-entry would move the chip out
+            // from under the finger.
+            val presetCatalog by produceState(emptyList<InsulinPresetSpec>()) { value = container.insulinPresetCatalog() }
             val rapidLabel by produceState<String?>(null) { value = container.resolvedRapidLabel() }
             val basalLabel by produceState<String?>(null) { value = container.resolvedBasalLabel() }
             InsulinScreen(
                 iobCob = iobCob,
-                previewBolus = container.previewBolusCurve,
-                previewBasal = container.previewBasalCurve,
-                rapidLabel = rapidLabel,
-                basalLabel = basalLabel,
-                onLogBolus = { units, preset -> container.appScope.launch { onLogged(container.logBolus(units, preset)) } },
-                onLogBasal = { units, preset -> container.appScope.launch { onLogged(container.logBasal(units, preset)) } },
+                presetCatalog = presetCatalog,
+                initialRapidLabel = rapidLabel,
+                initialBasalLabel = basalLabel,
+                previewCurve = container.previewDoseCurve,
+                onLogBolus = { units, label -> container.appScope.launch { onLogged(container.logBolus(units, label)) } },
+                onLogBasal = { units, label -> container.appScope.launch { onLogged(container.logBasal(units, label)) } },
             ) {
                 TextButton(onClick = { navHaptics.perform(HapticEvent.NavSwitch); navController.navigate("insulin/types") }) {
                     Text("Insulin types & curves →")
@@ -1655,11 +1669,6 @@ private fun T1dmNavHost(
             val insEnc by container.settingsStore.insulinBezier.collectAsState(null)
             val carbCurve = remember(carbEnc) { BezierCurve.decode(carbEnc) ?: BezierCurve.default(180.0) }
             val insulinCurve = remember(insEnc) { BezierCurve.decode(insEnc) ?: BezierCurve.default(300.0) }
-            val presetCatalog by produceState(emptyList<com.t1dm.core.model.InsulinPresetSpec>()) {
-                value = container.insulinPresetCatalog()
-            }
-            val selRapid by container.settingsStore.selectedRapidPreset.collectAsState("")
-            val selBasal by container.settingsStore.selectedBasalPreset.collectAsState("")
             CurveParamsScreen(
                 params = CurveParams(
                     basalKaPerHour = CurveEngine.Presets.BASAL_KA_PER_HOUR,
@@ -1673,12 +1682,6 @@ private fun T1dmNavHost(
                 insulinCurve = insulinCurve,
                 onSaveCarbCurve = { c -> scope.launch { container.settingsStore.setCarbBezier(BezierCurve.encode(c)) } },
                 onSaveInsulinCurve = { c -> scope.launch { container.settingsStore.setInsulinBezier(BezierCurve.encode(c)) } },
-                presetCatalog = presetCatalog,
-                selectedRapidLabel = selRapid,
-                selectedBasalLabel = selBasal,
-                onSelectRapid = { l -> scope.launch { container.settingsStore.setRapidPreset(l) } },
-                onSelectBasal = { l -> scope.launch { container.settingsStore.setBasalPreset(l) } },
-                previewPreset = { spec -> container.previewPresetCurve(spec) },
             )
         }
         composable("settings/power") {
@@ -1790,15 +1793,19 @@ private fun T1dmNavHost(
             val ss = container.settingsStore
             val mode by ss.forecastMode.collectAsState(SettingsStore.FORECAST_MODE_ADAPTIVE)
             val period by ss.forecastPeriodMin.collectAsState(SettingsStore.DEFAULT_FORECAST_PERIOD_MIN)
+            val logDebounce by ss.logReforecastDebounceS
+                .collectAsState(SettingsStore.DEFAULT_LOG_REFORECAST_DEBOUNCE_S)
             ForecastCadenceSettingsScreen(
                 adaptive = mode == SettingsStore.FORECAST_MODE_ADAPTIVE,
                 periodMinutes = period,
+                logDebounceSeconds = logDebounce,
                 onSetAdaptive = { on ->
                     scope.launch {
                         ss.setForecastMode(if (on) SettingsStore.FORECAST_MODE_ADAPTIVE else SettingsStore.FORECAST_MODE_TIMED)
                     }
                 },
                 onSetPeriodMinutes = { m -> scope.launch { ss.setForecastPeriodMin(m) } },
+                onSetLogDebounceSeconds = { s -> scope.launch { ss.setLogReforecastDebounceS(s) } },
             )
         }
         composable("settings/thermal") {
@@ -1934,26 +1941,21 @@ private fun T1dmNavHost(
                 },
             )
         }
-        composable("journal") {
-            val scope = rememberCoroutineScope()
-            val notes by container.journalNotes.collectAsState(emptyList())
-            val mood by container.latestMood.collectAsState(null)
-            JournalScreen(
-                notes = notes,
-                currentMood = mood,
-                onSaveNote = { text -> scope.launch { container.saveNote(text) } },
-                onPickMood = { m -> scope.launch { container.saveMood(m) } },
-            )
-        }
         composable("logs") {
             val scope = rememberCoroutineScope()
             val entries by container.loggedEntries.collectAsState(emptyList())
             val holdMin by container.pushHoldMin.collectAsState(SettingsStore.DEFAULT_PUSH_HOLD_MIN)
+            val mood by container.latestMood.collectAsState(null)
             LogsScreen(
                 entries = entries,
                 holdMin = holdMin,
                 holdMaxMin = SettingsStore.MAX_PUSH_HOLD_MIN,
+                currentMood = mood,
                 onSetHoldMin = { m -> scope.launch { container.setPushHoldMin(m) } },
+                // The container's scope for the same reason the delete below uses it: the pick writes a
+                // row and enqueues its ingest push, and leaving the panel between the two must not
+                // cancel it.
+                onPickMood = { m -> container.appScope.launch { container.saveMood(m) } },
                 // The container's scope, not this composition's: a delete is a transaction plus a
                 // notice, and leaving the panel between the press and the commit must not cancel it —
                 // the same hazard the log writers are hoisted off the route scope for.

@@ -44,8 +44,6 @@ import com.t1dm.core.common.DefaultT1dmDispatchers
 import com.t1dm.core.common.NativeCore
 import com.t1dm.core.common.T1dmDispatchers
 import com.t1dm.core.model.BackendId
-import com.t1dm.core.model.BasalPreset
-import com.t1dm.core.model.BolusPreset
 import com.t1dm.core.model.StatsWindow
 import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.CgmSourceDescriptor
@@ -59,7 +57,6 @@ import com.t1dm.core.model.MetricsConfig
 import com.t1dm.core.model.ModelMetrics
 import com.t1dm.core.model.InferenceState
 import com.t1dm.core.model.IobCobReadout
-import com.t1dm.core.model.JournalNote
 import com.t1dm.core.model.LogMarker
 import com.t1dm.core.model.LogState
 import com.t1dm.core.model.LoggedEntry
@@ -120,10 +117,8 @@ import com.t1dm.data.db.DoseKind
 import com.t1dm.data.db.LoggedDoseEntity
 import com.t1dm.data.db.toBlob
 import com.t1dm.data.db.LoggedMealEntity
-import com.t1dm.data.db.NoteEntity
 import com.t1dm.data.db.OutboxKind
 import com.t1dm.sync.EventStatDto
-import com.t1dm.sync.NoteWriteDto
 import com.t1dm.sync.StatsPushDto
 import com.t1dm.sync.doseDedupKey
 import com.t1dm.sync.mealDedupKey
@@ -175,6 +170,7 @@ import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.plus
+import java.util.concurrent.atomic.AtomicBoolean
 
 /** kv key + bound for the WARMUP setting (inference-runtime.md). */
 private const val KV_WARMUP_HOURS = "inference.warmup_hours"
@@ -691,6 +687,47 @@ class AppContainer(context: Context) {
     fun reevaluateInferenceNow() {
         appScope.launch {
             runCatching { inferenceController.runFromHistory(InferenceCause.GRID_TICK, System.currentTimeMillis()) }
+        }
+    }
+
+    /** Set while a debounced curve-write cycle is already scheduled; see [reforecastAfterCurveWrite]. */
+    private val curveReforecastScheduled = AtomicBoolean(false)
+
+    /**
+     * Re-run inference because a write moved a channel the model conditions on — a logged meal or
+     * dose, or the withdrawal of one. Without this the curve answered nothing until the next cadence
+     * tick: the user logged 60 g, watched the forecast sit flat for up to five minutes, and had no way
+     * to tell a slow response from an ignored one.
+     *
+     * **Debounced, leading-edge, coalescing.** The first write schedules the cycle
+     * `inference.log_reforecast_debounce_s` ahead; every write inside that window sees the guard
+     * already set and folds into the run rather than queueing its own or pushing the deadline back —
+     * so a meal and the bolus that follows it cost ONE forward, and a burst of writes cannot postpone
+     * the response indefinitely the way a trailing-edge debounce would. The guard is released just
+     * BEFORE the forward, not after: a write landing while the cycle is in flight may well have missed
+     * the snapshot it read, and must earn a cycle of its own.
+     *
+     * **It bypasses nothing.** This is the same [InferenceController.runFromHistory] the cadence
+     * driver calls, so the thermal gate, the warmup latch, the freshness/staleness marking, the
+     * degeneracy classification and every §3.6 eligibility rule apply exactly as they do to a tick.
+     * The only thing that differs is [InferenceCause.LOG_WRITE], which is a label.
+     *
+     * The write itself does NOT wait on this: the caller has already committed its row, and the
+     * forecast reads Room rather than the queue, so nothing here can delay or fail a log.
+     */
+    fun reforecastAfterCurveWrite() {
+        if (!curveReforecastScheduled.compareAndSet(false, true)) return
+        appScope.launch {
+            try {
+                val debounceMs = runCatching { settingsStore.currentLogReforecastDebounceS() }
+                    .getOrDefault(SettingsStore.DEFAULT_LOG_REFORECAST_DEBOUNCE_S)
+                    .toLong() * 1_000L
+                if (debounceMs > 0L) delay(debounceMs)
+            } finally {
+                curveReforecastScheduled.set(false)
+            }
+            runCatching { inferenceController.runFromHistory(InferenceCause.LOG_WRITE, System.currentTimeMillis()) }
+                .onFailure { Timber.tag("InferenceController").w(it, "log-driven cycle failed (alarm path unaffected)") }
         }
     }
 
@@ -1459,7 +1496,7 @@ class AppContainer(context: Context) {
         }
     }
 
-    // ─── Curve engine + manual entry + journal (Phase 4) ──────────────────────────────────────
+    // ─── Curve engine + manual entry (Phase 4) ────────────────────────────────────────────────
 
     /** The shared curve/PK engine (thin JNI bridge; SPEC §3.3), reused for entry previews, the
      *  dashboard overlays, IOB/COB, and (downstream) `:inference`/`:calc` conditioning. */
@@ -1503,8 +1540,8 @@ class AppContainer(context: Context) {
         }
     }
 
-    // Journal read models.
-    val journalNotes: Flow<List<JournalNote>> = repository.observeNotes()
+    /** The mood last folded into the wide sample; seeds the Logs panel's picker, which is its only
+     *  user-facing writer (see [saveMood]). */
     val latestMood: Flow<Int?> = repository.observeLatestMood()
 
     /** Live preview of the exact carb appearance (Ra) curve the model will see for a GI. */
@@ -1513,18 +1550,17 @@ class AppContainer(context: Context) {
         curveEngine.gamma(grams, k, theta, dur)
     }
 
-    /** Live preview of the rapid-acting bolus PK-action curve (== `bolus_pk_for_dose`). */
-    val previewBolusCurve: suspend (Double) -> DoubleArray = { units ->
-        val rapid = resolveRapid()
-        curveEngine.expAction(units, rapid.peakMin, rapid.diaMin)
-    }
-
-    /** Live preview of the LONG-ACTING basal PK-action Bateman curve (issue N9): the same curve
-     *  [logBasal] commits — the opted-in clinical basal preset's DIA/ka/ke if selected, else the
-     *  in-distribution simulator Bateman for the chosen [BasalPreset]. Broad + near-flat by design. */
-    val previewBasalCurve: suspend (Double, BasalPreset) -> DoubleArray = { units, _ ->
-        val basal = resolveBasal()
-        curveEngine.bateman(units, basal.diaMin, basal.kaPerHour, basal.kePerHour)
+    /**
+     * Live preview of the PK-action curve a dose of [units] would commit for [spec] — bit-for-bit the
+     * curve [logBolus]/[logBasal] persist for that preset, since both go through [presetCurve]. The
+     * basal branch is the long-acting Bateman (issue N9): broad and near-flat by design.
+     *
+     * Taking the preset by value rather than resolving one is what lets the panel's sparkline redraw
+     * on a chip tap. It used to resolve the Settings selection, so the preview stood still while the
+     * user moved between presets — and stood for a curve the panel had not offered.
+     */
+    val previewDoseCurve: suspend (Double, InsulinPresetSpec) -> DoubleArray = { units, spec ->
+        presetCurve(units, spec)
     }
 
     /** The dashboard overlay resolver: the two reconstructed channels over a grid window (off-main). */
@@ -1625,9 +1661,10 @@ class AppContainer(context: Context) {
         )
     }
 
-    /** Resolves a candidate dose into its dose-scaled gamma PK announced-future events (§3.3). */
+    /** Resolves a candidate dose into its dose-scaled gamma PK announced-future events (§3.3). The
+     *  advisor has no pick of its own, so it searches against the insulin last actually logged. */
     private val bolusResolver = BolusResolver { doseU, atMs ->
-        val spec = resolveRapid()
+        val spec = resolveRapidPreset(null)
         listOf(curveEngine.rapidEvent(doseU, atMs, spec.peakMin, spec.diaMin))
     }
 
@@ -1763,7 +1800,7 @@ class AppContainer(context: Context) {
      *  therefore returns NO handle: a receipt offering to undo a row that was never written would
      *  dangle, and its Undo would silently delete whatever rowid 0 happens to be. */
     suspend fun acceptAdvisedBolus(units: Double): LogHandle? =
-        if (units.isFinite() && units > 0.0) logBolus(units, BolusPreset.NOVORAPID) else null
+        if (units.isFinite() && units > 0.0) logBolus(units) else null
 
     private suspend fun buildAnchorInfo(nowMs: Long): AnchorInfo? {
         val srcId = repository.activeSourceId() ?: return null
@@ -1821,6 +1858,7 @@ class AppContainer(context: Context) {
             ),
         )
         val outboxId = outboxEnqueuer.enqueueMeal(meal.toMealEventDto(), now, holdMs = pushHoldMs())
+        reforecastAfterCurveWrite()
         return meal.handle(outboxId, "${fmtAmount(grams)} g (GI ${fmtAmount(gi)})")
     }
 
@@ -1834,6 +1872,7 @@ class AppContainer(context: Context) {
         val now = System.currentTimeMillis()
         val meal = mealsController.logMeal(components)
         val outboxId = outboxEnqueuer.enqueueMeal(meal.toMealEventDto(), now, holdMs = pushHoldMs())
+        reforecastAfterCurveWrite()
         val foods = components.size
         return meal.handle(
             outboxId,
@@ -1841,39 +1880,50 @@ class AppContainer(context: Context) {
         )
     }
 
-    /** The clinical insulin preset catalogue (issue 19), for the Settings picker + apply-at-log. */
+    /** The clinical insulin preset catalogue (issue 19) — the insulin panel's chips, and the only
+     *  set of insulins a dose write can name. */
     suspend fun insulinPresetCatalog(): List<InsulinPresetSpec> = curveEngine.presetCatalog()
 
-    /** Resolve a preset's action curve for a 5 U reference (the Settings picker's live preview). */
-    suspend fun previewPresetCurve(spec: InsulinPresetSpec): DoubleArray = when (spec.family) {
-        InsulinFamily.RapidExp -> curveEngine.expAction(5.0, spec.peakMin, spec.diaMin)
-        InsulinFamily.BasalBateman -> curveEngine.bateman(5.0, spec.diaMin, spec.kaPerHour, spec.kePerHour)
-    }
-
-    /** The active rapid preset spec (issue 19): the selected label, else the default, else the first. */
-    private suspend fun resolveRapid(): InsulinPresetSpec {
-        val cat = insulinPresetCatalog().filter { it.family == InsulinFamily.RapidExp }
-        val label = settingsStore.currentRapidPreset()
-        return cat.firstOrNull { it.label == label } ?: cat.firstOrNull { it.label == SettingsStore.DEFAULT_RAPID_PRESET_LABEL } ?: cat.first()
-    }
-
-    /** The active basal preset spec (issue 19): the selected label, else the default, else the first. */
-    private suspend fun resolveBasal(): InsulinPresetSpec {
-        val cat = insulinPresetCatalog().filter { it.family == InsulinFamily.BasalBateman }
-        val label = settingsStore.currentBasalPreset()
-        return cat.firstOrNull { it.label == label } ?: cat.firstOrNull { it.label == SettingsStore.DEFAULT_BASAL_PRESET_LABEL } ?: cat.first()
+    /** [spec]'s action curve for [units]: the exponential activity model for rapid, the Bateman for
+     *  long-acting. The single place a preset becomes numbers, so preview and commit cannot diverge. */
+    private suspend fun presetCurve(units: Double, spec: InsulinPresetSpec): DoubleArray = when (spec.family) {
+        InsulinFamily.RapidExp -> curveEngine.expAction(units, spec.peakMin, spec.diaMin)
+        InsulinFamily.BasalBateman -> curveEngine.bateman(units, spec.diaMin, spec.kaPerHour, spec.kePerHour)
     }
 
     /**
-     * The labels of the clinical presets [logBolus]/[logBasal] will actually resolve and persist
-     * (issue 19). The dose screen's own quick-preset enums are NOT what gets written — both writers
-     * ignore the `preset` argument and resolve from Settings — so a confirmation dialog that restates
-     * "exactly what will be written" has to read the row's insulin type from here, not from the chip
-     * the user can see.
+     * The preset a write of [family] should commit given the caller's [requestedLabel] — see
+     * [resolveInsulinPreset] for the precedence and why the requested label wins.
+     *
+     * Throws on an empty catalogue rather than substituting a curve: that is a broken native build,
+     * and a dose row carrying an invented PK would be worse than no row at all.
      */
-    suspend fun resolvedRapidLabel(): String = resolveRapid().label
+    private suspend fun resolvePreset(family: InsulinFamily, requestedLabel: String?): InsulinPresetSpec =
+        requireNotNull(
+            resolveInsulinPreset(
+                catalog = insulinPresetCatalog(),
+                family = family,
+                requested = requestedLabel,
+                lastLogged = when (family) {
+                    InsulinFamily.RapidExp -> settingsStore.lastRapidPreset()
+                    InsulinFamily.BasalBateman -> settingsStore.lastBasalPreset()
+                },
+            ),
+        ) { "The insulin preset catalogue holds no $family entry." }
 
-    suspend fun resolvedBasalLabel(): String = resolveBasal().label
+    private suspend fun resolveRapidPreset(label: String?) = resolvePreset(InsulinFamily.RapidExp, label)
+
+    private suspend fun resolveBasalPreset(label: String?) = resolvePreset(InsulinFamily.BasalBateman, label)
+
+    /**
+     * The insulin a dose logged RIGHT NOW with no pick of its own would carry — the sticky memory of
+     * the last committed dose of that kind, falling back to the head of the catalogue. Read by the
+     * insulin panel to seed its chip row, and by the bolus advisor to name the insulin it searched
+     * against; both would otherwise have to guess, and a guess shown beside a dose is a claim.
+     */
+    suspend fun resolvedRapidLabel(): String = resolveRapidPreset(null).label
+
+    suspend fun resolvedBasalLabel(): String = resolveBasalPreset(null).label
 
     /**
      * The guard every dose write shares. `units > 0.0` is not it: that rejects NaN by accident but
@@ -1886,15 +1936,24 @@ class AppContainer(context: Context) {
         require(units.isFinite() && units > 0.0) { "Dose units must be positive and finite (was $units)." }
     }
 
-    /** Log a bolus: self-describing `logged_dose` (SELECTED clinical rapid preset's exponential action
-     *  model, default NovoRapid, resolved into `customCurve` so it reconstructs exactly) + a
-     *  `PUT /v1/doses` event built from the PERSISTED (grid-snapped, client_id-minted) entity (§3.1/§3.2). */
-    suspend fun logBolus(units: Double, preset: BolusPreset): LogHandle {
+    /**
+     * Log a bolus against [presetLabel] — the rapid preset the insulin panel showed and the
+     * confirmation dialog named. Writes the self-describing `logged_dose` (that preset's exponential
+     * action model resolved into `customCurve`, so the row reconstructs exactly) and a
+     * `PUT /v1/doses` event built from the PERSISTED (grid-snapped, client_id-minted) entity
+     * (§3.1/§3.2).
+     *
+     * A null [presetLabel] means the caller had no pick to offer — the accepted advisory bolus, a
+     * debug quick action — and falls back to the last insulin logged. Anything else is honoured, and
+     * that is the point: this writer used to take a preset argument and DISCARD it for a Settings
+     * selection, so the dialog restated one insulin while the row carried another.
+     */
+    suspend fun logBolus(units: Double, presetLabel: String? = null): LogHandle {
         requireLoggableDose(units)
         val now = System.currentTimeMillis()
         val tz = tzOffsetMin(now)
-        val rapid = resolveRapid()
-        val curve = curveEngine.expAction(units, rapid.peakMin, rapid.diaMin)
+        val rapid = resolveRapidPreset(presetLabel)
+        val curve = presetCurve(units, rapid)
         val dose = repository.logLoggedDose(
             LoggedDoseEntity(
                 clientId = "", tsMs = now, kind = DoseKind.BOLUS, units = units, durationMin = rapid.diaMin,
@@ -1903,18 +1962,23 @@ class AppContainer(context: Context) {
                 tzOffsetMin = tz, note = rapid.label, updatedAt = now,
             ),
         )
+        rememberLoggedPreset(rapid, presetLabel)
         val outboxId = outboxEnqueuer.enqueueDose(dose.toDoseEventDto(), now, holdMs = pushHoldMs())
+        reforecastAfterCurveWrite()
         return dose.handle(outboxId, "${fmtAmount(units)} U bolus · ${rapid.label}")
     }
 
-    /** Log a discrete long-acting basal injection: `logged_dose` (Bateman; SELECTED clinical basal
-     *  preset's DIA + ka/ke, default Lantus, so it reconstructs analytically) + a `PUT /v1/doses` event
-     *  built from the PERSISTED (grid-snapped, client_id-minted) entity (§3.1/§3.2). */
-    suspend fun logBasal(units: Double, preset: BasalPreset): LogHandle {
+    /**
+     * Log a discrete long-acting basal injection against [presetLabel]: `logged_dose` carrying that
+     * preset's DIA + ka/ke, so the Bateman reconstructs analytically, plus a `PUT /v1/doses` event
+     * built from the PERSISTED (grid-snapped, client_id-minted) entity (§3.1/§3.2). Null resolves as
+     * in [logBolus].
+     */
+    suspend fun logBasal(units: Double, presetLabel: String? = null): LogHandle {
         requireLoggableDose(units)
         val now = System.currentTimeMillis()
         val tz = tzOffsetMin(now)
-        val basal = resolveBasal()
+        val basal = resolveBasalPreset(presetLabel)
         val dose = repository.logLoggedDose(
             LoggedDoseEntity(
                 clientId = "", tsMs = now, kind = DoseKind.BASAL, units = units, durationMin = basal.diaMin,
@@ -1922,8 +1986,24 @@ class AppContainer(context: Context) {
                 tzOffsetMin = tz, note = basal.label, updatedAt = now,
             ),
         )
+        rememberLoggedPreset(basal, presetLabel)
         val outboxId = outboxEnqueuer.enqueueDose(dose.toDoseEventDto(), now, holdMs = pushHoldMs())
+        reforecastAfterCurveWrite()
         return dose.handle(outboxId, "${fmtAmount(units)} U basal · ${basal.label}")
+    }
+
+    /**
+     * Make [spec] the insulin the next unpicked dose of its family will use — stickiness, not a
+     * setting. Called only AFTER the row is persisted, so a failed write leaves the memory alone,
+     * and only when the caller actually named a preset ([requestedLabel] non-null): a fallback
+     * resolution has expressed no preference and must not overwrite one.
+     */
+    private suspend fun rememberLoggedPreset(spec: InsulinPresetSpec, requestedLabel: String?) {
+        if (requestedLabel == null) return
+        when (spec.family) {
+            InsulinFamily.RapidExp -> settingsStore.setLastRapidPreset(spec.label)
+            InsulinFamily.BasalBateman -> settingsStore.setLastBasalPreset(spec.label)
+        }
     }
 
     /**
@@ -1945,6 +2025,9 @@ class AppContainer(context: Context) {
         val now = System.currentTimeMillis()
         val dose = insulinController.logDose(type, units)
         val outboxId = outboxEnqueuer.enqueueDose(dose.toDoseEventDto(), now, holdMs = pushHoldMs())
+        // The re-run is owed to the ROW, not the push: the forecast reads the `logged_dose` through
+        // ChannelBuilder and never the queue, so this path would need it even if it enqueued nothing.
+        reforecastAfterCurveWrite()
         val kind = if (type.kind == InsulinKind.BOLUS) "bolus" else "basal"
         return dose.handle(outboxId, "${fmtAmount(units)} U $kind · ${type.name}")
     }
@@ -1957,11 +2040,14 @@ class AppContainer(context: Context) {
      *
      * The returned [PushWithdrawal] is what the receipt must be honest about: everything local is
      * gone unconditionally, but a push that already drained is on the server for good.
+     *
+     * The local row goes whatever the push's fate, so the carb/insulin channel has moved and the
+     * forecast is re-run — the withdrawal of a dose lowers assumed IOB exactly as logging it raised it.
      */
     suspend fun undoLog(handle: LogHandle): PushWithdrawal = when (handle.kind) {
         LoggedEventKind.MEAL -> repository.undoLoggedMeal(handle.rowId, handle.outboxId, handle.dedupKey)
         LoggedEventKind.DOSE -> repository.undoLoggedDose(handle.rowId, handle.outboxId, handle.dedupKey)
-    }
+    }.also { reforecastAfterCurveWrite() }
 
     private fun LoggedMealEntity.handle(outboxId: Long, label: String) = LogHandle(
         kind = LoggedEventKind.MEAL,
@@ -2029,11 +2115,14 @@ class AppContainer(context: Context) {
      * transaction, and inherits its refusal: with the push already drained the server holds the event,
      * the API has no DELETE, and the next WS catch-up would re-hydrate it by `clientId` — so nothing is
      * removed and [PushWithdrawal.ALREADY_SENT] comes back for the caller to say so.
+     *
+     * The re-run is conditional for the same reason: on the refusal NOTHING was deleted, so no channel
+     * moved and a cycle would only recompute the forecast it already published.
      */
     suspend fun deleteLoggedEntry(entry: LoggedEntry): PushWithdrawal = when (entry.kind) {
         CurveKind.CARB -> repository.deleteCommittedMeal(entry.rowId, mealDedupKey(entry.clientId))
         CurveKind.INSULIN -> repository.deleteCommittedDose(entry.rowId, doseDedupKey(entry.clientId))
-    }
+    }.also { if (it != PushWithdrawal.ALREADY_SENT) reforecastAfterCurveWrite() }
 
     /** The withdrawal window, in minutes, and its writer — the Logs panel's own knob. */
     val pushHoldMin: Flow<Int> get() = settingsStore.pushHoldMin
@@ -2082,20 +2171,6 @@ class AppContainer(context: Context) {
         val tz = tzOffsetMin(now)
         val gridTs = snapToGrid(now)
         repository.recordMood(gridTs, tz, mood, now)
-    }
-
-    /** Save a free-text note: local `note` table + `POST /v1/notes` (`NOTE` outbox). */
-    suspend fun saveNote(text: String) {
-        val now = System.currentTimeMillis()
-        val tz = tzOffsetMin(now)
-        repository.logNote(NoteEntity(tsMs = now, tzOffsetMin = tz, text = text, updatedAt = now))
-        outboxEnqueuer.enqueueNote(
-            NoteWriteDto(
-                client_id = java.util.UUID.randomUUID().toString(),
-                ts = now, tz_offset = tz, text = text, updated_at = now,
-            ),
-            now,
-        )
     }
 
     private fun tzOffsetMin(nowMs: Long): Int =
