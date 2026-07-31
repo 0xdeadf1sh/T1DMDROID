@@ -40,6 +40,25 @@ class SmoothedTrace internal constructor(
 }
 
 /**
+ * The contiguous index range the polyline is drawn over: the visible window widened by one full span on
+ * each side — three viewports' worth, the same cull the draw has always applied — but REACHED rather
+ * than walked. The predicate is monotone in `t`, so it selects a contiguous range; walking a
+ * never-pruned history end to end to discover that range is work no viewport can use.
+ *
+ * The bounds are exact, not approximate. A point is drawn iff `t ∈ [viewStart − span, viewStart +
+ * 2·span]`; [tsMs] is integral and ascending, so `ceil` and `floor` turn those Double bounds into the
+ * equivalent Long ones and the range admitted is the identical set of points.
+ *
+ * Empty (`first > last`) when nothing is in reach.
+ */
+internal fun SmoothedTrace.visibleRange(viewStartMs: Double, viewSpanMs: Double): IntRange {
+    if (isEmpty) return IntRange.EMPTY
+    val lo = lowerBoundLong(tsMs, kotlin.math.ceil(viewStartMs - viewSpanMs).toLong())
+    val hi = lowerBoundLong(tsMs, kotlin.math.floor(viewStartMs + 2.0 * viewSpanMs).toLong() + 1L) - 1
+    return lo..hi
+}
+
+/**
  * Build the smoothed overlay off the main thread. [smoothMgdl] is the causal SavGol smoother in
  * mg/dL (the `:core` native `causalSmooth` with clamps `[20,500]`, at the user's window); it is
  * passed in so this module never links the JNI seam. [kovatchevF] is only used to project into risk

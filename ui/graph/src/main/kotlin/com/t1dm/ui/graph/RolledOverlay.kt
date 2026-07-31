@@ -87,6 +87,12 @@ fun buildRolledSeries(
     )
 }
 
+// Raw-pixel dash constants, held rather than rebuilt inside the draw — see the same note in
+// PredOverlay.kt. Neither depends on the density, the theme or the roll, and a [PathEffect] is
+// immutable, so the two allocations they replace were pure per-frame waste.
+private val EXTRAPOLATED_MEDIAN_DASH: PathEffect = PathEffect.dashPathEffect(floatArrayOf(6f, 5f))
+private val VALIDATED_BOUNDARY_DASH: PathEffect = PathEffect.dashPathEffect(floatArrayOf(3f, 4f))
+
 /**
  * Draw the rolled forecast. The validated prefix (first [RolledSeries.validatedSteps]) is a thin,
  * dimmed median line — it duplicates the on-graph 2 h forecast, so it is kept faint. The EXTRAPOLATED
@@ -146,13 +152,12 @@ internal fun DrawScope.drawRolledSeries(
             }
         }
         // Dashed extrapolated median.
-        val dash = PathEffect.dashPathEffect(floatArrayOf(6f, 5f))
         for (i in from until s.size - 1) {
             drawLine(
                 lineColor.copy(alpha = if (s.degenerate) 0.5f else 0.85f),
                 Offset(px(i), valToPx(s.median[i])),
                 Offset(px(i + 1), valToPx(s.median[i + 1])),
-                strokeWidth = 2f, cap = StrokeCap.Round, pathEffect = dash,
+                strokeWidth = 2f, cap = StrokeCap.Round, pathEffect = EXTRAPOLATED_MEDIAN_DASH,
             )
         }
         // Dashed vertical boundary at the 2 h mark.
@@ -161,7 +166,7 @@ internal fun DrawScope.drawRolledSeries(
             drawLine(
                 hatchColor.copy(alpha = 0.6f),
                 Offset(bx, plotTop), Offset(bx, plotBottom),
-                strokeWidth = 1f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(3f, 4f)),
+                strokeWidth = 1f, pathEffect = VALIDATED_BOUNDARY_DASH,
             )
         }
     }

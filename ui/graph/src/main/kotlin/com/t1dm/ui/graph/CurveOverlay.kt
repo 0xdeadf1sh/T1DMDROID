@@ -1,9 +1,9 @@
 package com.t1dm.ui.graph
 
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
 import com.t1dm.core.model.ModelPrediction
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -54,6 +54,21 @@ class CurveOverlayFrame internal constructor(
         if (size == 0) return -1
         val i = ((ms - gridStartMs) / stepMs).toInt()
         return if (i in 0 until size) i else -1
+    }
+
+    /**
+     * The bucket [ms] falls in, CLAMPED into the array rather than answered as -1 — so a viewport that
+     * sits wholly before or wholly after the grid still yields a legal (degenerate) index range instead
+     * of a sentinel the draw would have to branch on. Used only to bound the draw's viewport cull.
+     */
+    internal fun clampedIndexAt(ms: Double): Int {
+        if (size == 0) return 0
+        val d = (ms - gridStartMs.toDouble()) / stepMs.toDouble()
+        return when {
+            d <= 0.0 -> 0
+            d >= (size - 1).toDouble() -> size - 1
+            else -> d.toInt()
+        }
     }
 
     /** Carb Ra (grams-per-step) at [ms]; 0 when outside the grid. */
@@ -149,6 +164,108 @@ data class CurveOverlayToggles(val carbs: Boolean = false, val insulin: Boolean 
 }
 
 /**
+ * Where one channel's path commands go.
+ *
+ * The FILL and the ROOF are the same command stream apart from one thing: each run's fill polygon is
+ * closed and the roof stays an open polyline. So a single emitter drives both — which is why this
+ * exists at all. It gives the geometry a seam a host test can record through, without the drawing
+ * itself ever being reachable from a unit test, and it costs nothing at runtime because the production
+ * implementation is a scratch object the composition holds across frames.
+ */
+internal interface CurvePathSink {
+    fun moveTo(x: Float, y: Float)
+    fun lineTo(x: Float, y: Float)
+    /** Ends the current run: closes the FILL polygon. The roof is left open. */
+    fun endRun()
+}
+
+/** The production sink: the two reusable [Path]s a channel is painted from. Held by the composition
+ *  (never allocated per frame) and [reset] before each channel. */
+internal class CurveChannelPaths : CurvePathSink {
+    val fill = Path()
+    val roof = Path()
+    fun reset() { fill.reset(); roof.reset() }
+    override fun moveTo(x: Float, y: Float) { fill.moveTo(x, y); roof.moveTo(x, y) }
+    override fun lineTo(x: Float, y: Float) { fill.lineTo(x, y); roof.lineTo(x, y) }
+    override fun endRun() { fill.close() }
+}
+
+/**
+ * One channel's path commands over the bucket range `[lo, hi]`, emitted into [sink].
+ *
+ * Anchoring (Phase 7A item 4): `values[i]` is the appearance/action integrated over
+ * `[tsAt(i), tsAt(i)+step)` — the gamma sample at `t = (i+1)·step` from the event (which starts at 0).
+ * Each bucket's value is plotted at its RIGHT edge, and a run of positive buckets opens from
+ * `(tsAt(firstBucket), floorY)` — the event instant — so the curve begins at (logTime, 0) and rises.
+ *
+ * **The range is a viewport cull, and it is exact.** `[lo, hi]` is the visible bucket window widened by
+ * a full viewport span on each side (see [drawCurveOverlay]); everything outside it projects at least
+ * one plot width beyond the clip rectangle the caller draws inside. Three things follow, and together
+ * they are why the culled path is pixel-identical to a full scan:
+ *
+ *  - A run lying wholly before `lo` ends no later than `x(tsAt(lo))`, and one wholly after `hi` begins
+ *    no earlier than `x(tsAt(hi)+step)`. Both are outside the clip, so dropping them changes nothing.
+ *  - A run still open at `hi` is closed to the floor at `x(tsAt(hi)+step)`, again outside the clip,
+ *    rather than being followed to its true end.
+ *  - A run still OPEN at `lo` is re-opened here rather than back-scanned to its true start — which
+ *    matters, because a channel can be positive across the ENTIRE window (an auto-extended basal
+ *    schedule makes that ordinary) and a back-scan would then reach index 0 and buy nothing. What is
+ *    re-opened is a wall from the floor at an off-screen x, so at the margin above it cannot be seen.
+ *    It is nonetheless entered at `(x(tsAt(lo)), y(values[lo-1]))` — precisely the vertex the full scan
+ *    draws at that x, since bucket `lo-1` is plotted at its RIGHT edge, which IS `tsAt(lo)` — so the
+ *    emitted polyline is right for any `[lo, hi]`, not merely for one padded generously enough to hide
+ *    a wrong one. Narrow the margin and the tests hold you to it.
+ */
+internal fun emitCurveChannel(
+    values: FloatArray,
+    peak: Float,
+    floorY: Float,
+    availH: Float,
+    gridStartMs: Long,
+    stepMs: Long,
+    absToPx: (Double) -> Float,
+    lo: Int,
+    hi: Int,
+    sink: CurvePathSink,
+) {
+    if (peak <= 0f || values.isEmpty()) return
+    val first = lo.coerceIn(0, values.size - 1)
+    val last = hi.coerceIn(first, values.size - 1)
+    fun tsAt(i: Int): Double = (gridStartMs + i.toLong() * stepMs).toDouble()
+    fun yOf(v: Float): Float = floorY - (v / peak) * availH * 0.92f
+
+    var open = false
+    for (i in first..last) {
+        val v = values[i]
+        val xRight = absToPx(tsAt(i) + stepMs) // right edge = t=(i+1)·step
+        if (v <= 0f) {
+            if (open) {
+                sink.lineTo(absToPx(tsAt(i)), floorY)
+                sink.endRun()
+                open = false
+            }
+            continue
+        }
+        val y = yOf(v)
+        if (!open) {
+            val xLeft = absToPx(tsAt(i)) // the event instant: curve is 0 here
+            sink.moveTo(xLeft, floorY)
+            // Entering mid-run (see the KDoc): rise to the previous bucket's own vertex rather than
+            // straight to this one, so the polyline keeps the segment the full scan would have drawn.
+            if (i == first && i > 0 && values[i - 1] > 0f) sink.lineTo(xLeft, yOf(values[i - 1]))
+            sink.lineTo(xRight, y)
+            open = true
+        } else {
+            sink.lineTo(xRight, y)
+        }
+    }
+    if (open) {
+        sink.lineTo(absToPx(tsAt(last) + stepMs), floorY)
+        sink.endRun()
+    }
+}
+
+/**
  * Draw the overlay into the bottom band of the plot. [absToPx] maps absolute epoch-ms to x (shared
  * with the BG line + [PredSeries]); the band occupies `[bandTop, plotBottom]`. Each enabled channel
  * is a translucent filled area rising from the floor, auto-scaled to its own peak so a 2 g Ra tick
@@ -156,6 +273,11 @@ data class CurveOverlayToggles(val carbs: Boolean = false, val insulin: Boolean 
  *
  * Only buckets with a strictly-positive value contribute a filled column, and runs are bridged, so a
  * long flat-zero stretch draws nothing rather than a baseline smear.
+ *
+ * The channel arrays span up to ~14 days of 5-min buckets while a default 6 h window shows 72 of them,
+ * so the draw is bounded to the visible window widened by a full span on each side — [emitCurveChannel]
+ * carries the argument that the remaining path is the same one, pixel for pixel. [paths] is the
+ * caller's scratch: two [Path]s built once and reused, not two allocations per channel per frame.
  */
 internal fun DrawScope.drawCurveOverlay(
     frame: CurveOverlayFrame,
@@ -165,55 +287,28 @@ internal fun DrawScope.drawCurveOverlay(
     plotBottom: Float,
     carbColor: Color,
     insulinColor: Color,
+    viewStartMs: Double,
+    viewSpanMs: Double,
+    paths: CurveChannelPaths,
 ) {
     if (frame.isEmpty || !toggles.any) return
     val bandH = (plotBottom - bandTop).coerceAtLeast(1f)
+    val lo = frame.clampedIndexAt(viewStartMs - viewSpanMs)
+    val hi = frame.clampedIndexAt(viewStartMs + 2.0 * viewSpanMs)
 
-    // Anchoring (Phase 7A item 4): `values[i]` is the appearance/action integrated
-    // over `[tsAt(i), tsAt(i)+step)` — the gamma sample at t = (i+1)·step from the event (which starts
-    // at 0). Each bucket's value is plotted at its RIGHT edge, and a run of positive buckets opens from
-    // `(tsAt(firstBucket), floorY)` — the event instant — so the curve begins at (logTime, 0) and rises.
-    fun drawChannel(values: FloatArray, peak: Float, color: Color, floorY: Float, availH: Float) {
+    fun drawChannel(values: FloatArray, peak: Float, color: Color) {
         if (peak <= 0f) return
-        val fill = Path()
-        val roof = Path()
-        var open = false
-        for (i in values.indices) {
-            val v = values[i]
-            val xRight = absToPx((frame.tsAt(i) + frame.stepMs).toDouble()) // right edge = t=(i+1)·step
-            if (v <= 0f) {
-                if (open) {
-                    val xZero = absToPx(frame.tsAt(i).toDouble())
-                    roof.lineTo(xZero, floorY)
-                    fill.lineTo(xZero, floorY); fill.close()
-                    open = false
-                }
-                continue
-            }
-            val y = floorY - (v / peak) * availH * 0.92f
-            if (!open) {
-                val xLeft = absToPx(frame.tsAt(i).toDouble()) // the event instant: curve is 0 here
-                fill.moveTo(xLeft, floorY); fill.lineTo(xRight, y)
-                roof.moveTo(xLeft, floorY); roof.lineTo(xRight, y)
-                open = true
-            } else {
-                fill.lineTo(xRight, y)
-                roof.lineTo(xRight, y)
-            }
-        }
-        if (open) {
-            val xEnd = absToPx((frame.tsAt(values.size - 1) + frame.stepMs).toDouble())
-            roof.lineTo(xEnd, floorY)
-            fill.lineTo(xEnd, floorY); fill.close()
-        }
-        drawPath(fill, color.copy(alpha = 0.16f))
-        drawPath(roof, color.copy(alpha = 0.7f), style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.6f))
+        paths.reset()
+        emitCurveChannel(
+            values, peak, plotBottom, bandH,
+            frame.gridStartMs, frame.stepMs, absToPx, lo, hi, paths,
+        )
+        drawPath(paths.fill, color.copy(alpha = 0.16f))
+        drawPath(paths.roof, color.copy(alpha = 0.7f), style = Stroke(width = 1.6f))
     }
 
-    // A faint baseline separating the overlay band from the BG plot.
-    drawLine(carbColor.copy(alpha = 0.0f), Offset(0f, bandTop), Offset(0f, bandTop), 0f)
-    if (toggles.carbs) drawChannel(frame.carb, frame.carbMax, carbColor, plotBottom, bandH)
+    if (toggles.carbs) drawChannel(frame.carb, frame.carbMax, carbColor)
     // The insulin channel is drawn as a SINGLE total-insulin curve (bolus + basal already COMBINED into
     // [frame.insulin], model-io-curves.md) — no separate basal floor-strip.
-    if (toggles.insulin) drawChannel(frame.insulin, frame.insulinMax, insulinColor, plotBottom, bandH)
+    if (toggles.insulin) drawChannel(frame.insulin, frame.insulinMax, insulinColor)
 }

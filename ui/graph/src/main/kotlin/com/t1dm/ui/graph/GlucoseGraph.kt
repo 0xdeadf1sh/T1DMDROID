@@ -31,6 +31,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.isSpecified
 import androidx.compose.ui.graphics.ClipOp
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
@@ -144,6 +145,10 @@ data class PaintControls(
 /** Which of the three things a pointer is doing while paint mode is on. */
 private enum class PaintGesture { DRAW, ERASE, TRANSFORM }
 
+/** The scrub read-out's fixed column geometry (I4). Derived from the constant label set and the constant
+ *  value template, so it depends on the theme and the density and on nothing the cursor does. */
+private class ScrubMetrics(val labelColW: Float, val valueColW: Float, val lineH: Float)
+
 /** The plot rectangle in canvas pixels — the box EVERY paint coordinate is anchored to (never the
  *  composable, whose top moves by 14 dp when the model's predicted-clock axis appears). */
 private class PlotBox(val left: Float, val top: Float, val right: Float, val bottom: Float) {
@@ -178,6 +183,12 @@ fun GlucoseGraph(
     // no row id — so the panel can neither render a figure it has no business rendering nor reach back
     // at the row.
     logMarkers: List<LogMarker> = emptyList(),
+    /** Fired when a tap lands on a mark, with the positions IN [logMarkers] of every log standing
+     *  behind it — a whole cluster, and both lanes when the column carries carbs and insulin at once.
+     *  Indices rather than markers because a marker is not an identity: two logs can share a 5-min
+     *  slot. The caller resolves them against the richer feed it reduced [logMarkers] from, so the
+     *  amounts never enter this panel. */
+    onMarkerTap: ((List<Int>) -> Unit)? = null,
     rangeMinMgdl: Int? = null,
     rangeMaxMgdl: Int? = null,
     predictedClock: PredictedClock? = null,
@@ -210,7 +221,14 @@ fun GlucoseGraph(
 ) {
     val cs = MaterialTheme.colorScheme
     val density = LocalDensity.current
-    val measurer = rememberTextMeasurer()
+    // The default cache holds EIGHT entries and one pass over this panel measures ~25 distinct strings
+    // (a value label per gridline, a local-time label per tick, a model-clock label beside each, the tz
+    // caption, the axis tag, a trace legend) and ~35 while scrubbing — so at the default every frame
+    // thrashed the LRU and every measure was a fresh layout. That multiplies against the draw phase,
+    // which the committed-marker pulse re-enters at the display's refresh rate on an unchanged viewport,
+    // where every one of those strings is byte-identical to the frame before. Sized past the worst case
+    // so a static viewport measures nothing twice; the entries are short single-line layouts.
+    val measurer = rememberTextMeasurer(cacheSize = 64)
     val haptics = LocalT1dmHaptics.current
 
     val leftPx = with(density) { GraphInsets.Left.toPx() }
@@ -228,6 +246,39 @@ fun GlucoseGraph(
     val corridorPx = corridorWidthPx(dpPx)
     val chalkPens = remember(dpPx) { ChalkPens(dpPx) }
 
+    // ── The draw phase's other scratch: everything immutable it would otherwise re-allocate per frame ──
+    // The same discipline as the annotation layer above, applied where the file had stopped applying it.
+    // None of these depends on anything the draw phase computes — a dash pattern is a constant, and each
+    // style is a pure function of the theme, which is read in composition already — so re-deriving them
+    // inside the Canvas bought a fresh object on every invalidation, and the committed-marker pulse
+    // invalidates at the display's refresh rate.
+    val tracePath = remember { Path() }
+    val overlayPaths = remember { CurveChannelPaths() }
+    val dash = remember { PathEffect.dashPathEffect(floatArrayOf(6f, 6f)) }
+    // Both trace legends are the primary ink at 9 sp — the same style, since exactly one of them is ever
+    // drawn (the toggle makes "smoothed" a SWAP for the raw trace, never an overlay of it).
+    val traceLegendStyle = remember(cs.primary) { TextStyle(color = cs.primary, fontSize = 9.sp) }
+    val rolledLegendStyle = remember(cs.onSurface) {
+        TextStyle(color = cs.onSurface.copy(alpha = 0.7f), fontSize = 9.sp)
+    }
+    val scrubLabelStyle = remember(cs.onPrimary) {
+        TextStyle(color = cs.onPrimary.copy(alpha = 0.72f), fontSize = 11.sp)
+    }
+    val scrubValueStyle = remember(cs.onPrimary) {
+        TextStyle(color = cs.onPrimary, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+    }
+    // The read-out box's FIXED geometry (I4): both column widths and the line height come from constant
+    // template strings, so they are decided once per theme rather than re-measured — seven measures a
+    // frame — for every pointer sample of a scrub.
+    val scrubMetrics = remember(measurer, scrubLabelStyle, scrubValueStyle) {
+        val template = measurer.measure(SCRUB_VALUE_TEMPLATE, scrubValueStyle)
+        ScrubMetrics(
+            labelColW = SCRUB_LABELS.maxOf { measurer.measure(it, scrubLabelStyle).size.width }.toFloat(),
+            valueColW = template.size.width.toFloat(),
+            lineH = template.size.height.toFloat(),
+        )
+    }
+
     // ── The log-marker layer's composition-time state ──────────────────────────────────────────────
     // Held here, unconditionally, for the same reason the paint scratch above is: the empty-frame return
     // below must not be able to skip a `remember`.
@@ -240,13 +291,22 @@ fun GlucoseGraph(
     val semantics = LocalT1dmSemantics.current
     val carbMarkPainter = rememberVectorPainter(logMarkerIcon(CurveKind.CARB))
     val insulinMarkPainter = rememberVectorPainter(logMarkerIcon(CurveKind.INSULIN))
-    val carbMarks = remember(logMarkers) {
-        logMarkers.filter { it.kind == CurveKind.CARB }.sortedBy { it.tsMs }
-    }
-    val insulinMarks = remember(logMarkers) {
-        logMarkers.filter { it.kind == CurveKind.INSULIN }.sortedBy { it.tsMs }
-    }
+    // The two model channels' inks, decided ONCE: the curve overlay paints its carb and insulin areas
+    // in them, and the log markers tint their glyphs with them, so a mark is always the colour of the
+    // curve it stands for and the two cannot drift apart. Read from the SEMANTIC roles rather than the
+    // Material projection of them, because the marker glyphs are shape-fixed — the tint is the only
+    // thing the theme still says about a mark. The two tints are built here rather than per draw: the
+    // committed pulse re-enters the draw lambda at the display's refresh rate, and a ColorFilter is a
+    // real allocation.
+    val carbInk = semantics.secondary
+    val insulinInk = semantics.inRange
+    val carbTint = remember(carbInk) { ColorFilter.tint(carbInk) }
+    val insulinTint = remember(insulinInk) { ColorFilter.tint(insulinInk) }
+    val carbLane = remember(logMarkers) { markerLane(logMarkers, CurveKind.CARB) }
+    val insulinLane = remember(logMarkers) { markerLane(logMarkers, CurveKind.INSULIN) }
     val anyCommitted = remember(logMarkers) { logMarkers.any { it.state == LogState.COMMITTED } }
+    val markSepPx = logMarkerSeparationPx(dpPx)
+    val markSizePx = LOG_MARKER_DP * dpPx
     // The committed pulse. ONE animation drives every committed mark — they say the same thing, so they
     // should say it in unison, and a per-mark animation would be a hundred animations on a busy day.
     val motionOn = LocalAnimationsEnabled.current
@@ -323,6 +383,38 @@ fun GlucoseGraph(
     val plotBox by rememberUpdatedState(
         PlotBox(leftPx, topPx, canvasSize.width - rightPx, canvasSize.height - bottomPx),
     )
+
+    // ── The marker lanes' clusters, hoisted OUT of the draw lambda ──────────────────────────────
+    // Collision is a pixel fact, so the clusters depend on the viewport — but the viewport changes
+    // once per pointer sample and the draw lambda re-runs at the display's refresh rate for as long as
+    // one committed mark is breathing. Memoised here they are rebuilt per PAN, not per FRAME, and the
+    // pulse costs nothing but the painting it exists for. No new invalidation is bought with it:
+    // `viewStartMs` and `canvasSize` are already read in composition (the LaunchedEffect below keys on
+    // the first, `plotBox` on the second), so this scope was recomposing on a pan regardless.
+    //
+    // They are also exactly what the tap hit-tests against, which is the point: the marks a tap
+    // resolves cannot be a different reduction from the marks the user is looking at.
+    val plotRightPx = canvasSize.width - rightPx
+    val insulinClusters = remember(insulinLane, viewStartMs, viewSpanMs, leftPx, plotRightPx, markSepPx) {
+        if (viewStartMs.isNaN()) emptyList()
+        else clusterLogMarkers(insulinLane.marks, viewStartMs, viewSpanMs, leftPx, plotRightPx, markSepPx)
+    }
+    val carbClusters = remember(carbLane, viewStartMs, viewSpanMs, leftPx, plotRightPx, markSepPx) {
+        if (viewStartMs.isNaN()) emptyList()
+        else clusterLogMarkers(carbLane.marks, viewStartMs, viewSpanMs, leftPx, plotRightPx, markSepPx)
+    }
+
+    // What a tap on the marker band resolves to: positions in the caller's OWN feed, for it to name.
+    // Rebuilt every composition and read through `rememberUpdatedState` like every other closure the
+    // pointer handler holds, so the handler — keyed on paint mode alone — always tests against the
+    // current viewport rather than the one it was launched under.
+    val markerTap by rememberUpdatedState(onMarkerTap)
+    val hitMarkers by rememberUpdatedState<(Offset) -> List<Int>>({ pos ->
+        hitTestLogMarkers(
+            pos.x, pos.y, plotBox.left, plotBox.right, plotBox.bottom, dpPx,
+            insulinLane, insulinClusters, carbLane, carbClusters,
+        )
+    })
 
     // Edge-triggered so a pan HELD against the clamp buzzes once on arrival rather than droning at
     // every pointer sample; it re-arms only once the viewport has moved off the wall. A plain holder
@@ -464,7 +556,12 @@ fun GlucoseGraph(
             // ── ONE pointer handler for the whole panel ────────────────────────────────────────
             //
             // PAINT OFF: the two stock detectors, with the same lambdas they have always had, now
-            // co-resident in this single node. Their relative priority — which is load-bearing, since
+            // co-resident in this single node — and, registered ahead of both so that it is dispatched
+            // behind both, the marker tap. That one consumes nothing whatever the outcome, so the two
+            // below cannot tell it is there and the question of what it might take from them does not
+            // arise; [detectLogMarkerTaps] carries the argument in full.
+            //
+            // Their relative priority — which is load-bearing, since
             // `detectTransformGestures` aborts the moment it sees a consumed change, and the scrub
             // consumes — survives the move because a node dispatches the MAIN pass to its handlers in
             // REVERSE registration order (verified against compose-ui 1.7.6's
@@ -489,6 +586,24 @@ fun GlucoseGraph(
             .pointerInput(paintOn) {
                 if (!paintOn) {
                     coroutineScope {
+                        launch(start = CoroutineStart.UNDISPATCHED) {
+                            // A tap on a log mark opens what it stands for. Registered FIRST, so on the
+                            // main pass — walked in reverse — it is dispatched LAST: whatever the pan or
+                            // the scrub means to claim, it has already claimed by the time this sees the
+                            // event, and the detector aborts on that consumption. It consumes NOTHING
+                            // itself, at any point, so the two below cannot tell it is here; all it does
+                            // is read a stationary short press that both of them were already discarding.
+                            // Not keyed on the marker feed: the handler is keyed on paint mode alone and
+                            // a re-key cancels a gesture in flight, so an empty feed is answered by the
+                            // hit test missing rather than by the detector not existing.
+                            this@pointerInput.detectLogMarkerTaps { pos ->
+                                val sink = markerTap ?: return@detectLogMarkerTaps
+                                val hit = hitMarkers(pos)
+                                if (hit.isEmpty()) return@detectLogMarkerTaps
+                                haptics.perform(HapticEvent.Tap)
+                                sink(hit)
+                            }
+                        }
                         launch(start = CoroutineStart.UNDISPATCHED) {
                             this@pointerInput.detectTransformGestures { centroid, pan, zoom, _ ->
                                 applyTransform(centroid.x, pan.x, zoom)
@@ -715,22 +830,12 @@ fun GlucoseGraph(
                 (plotLeft + (frame.t0Ms + min.toDouble() * 60_000.0 - viewStartMs) * ppm).toFloat()
             fun yToPx(v: Float): Float = plotBottom - (v - yMin) * ppv
 
-            // Theme-derived palette.
-            val gridColor = cs.onSurface.copy(alpha = 0.10f)
-            val axisColor = cs.onSurface.copy(alpha = 0.30f)
-            val labelColor = cs.onSurface.copy(alpha = 0.65f)
+            // Theme-derived palette. The grid/axis/label inks and their 10 sp style live where they are
+            // used — inside [drawGraphFurniture], which owns every mark that draws in them; the copies
+            // that lingered here after that extraction were read by nothing.
             val lineColor = cs.primary
             val interpColor = cs.primary.copy(alpha = 0.45f)
             val warmupColor = cs.secondary
-            // The two model channels' inks, decided ONCE: the curve overlay paints its carb and insulin
-            // areas in them, and the log markers tint their glyphs with them, so a mark is always the
-            // colour of the curve it stands for and the two cannot drift apart. Read from the SEMANTIC
-            // roles rather than the Material projection of them, because the marker glyphs are
-            // shape-fixed — the tint is the only thing the theme still says about a mark.
-            val carbInk = semantics.secondary
-            val insulinInk = semantics.inRange
-            val dash = PathEffect.dashPathEffect(floatArrayOf(6f, 6f))
-            val labelStyle = TextStyle(color = labelColor, fontSize = 10.sp)
             // I5 — "Smoothed" is a SWAP, not an overlay: when on (and a smooth exists) the raw sensor
             // polyline is REPLACED by the model-input smoothed trace, so exactly one trace is on screen.
             val swapToSmoothed = showSmoothed && smoothed != null && !smoothed.isEmpty
@@ -829,6 +934,10 @@ fun GlucoseGraph(
                     drawCurveOverlay(
                         curveOverlay, curveToggles, ::absToPx, bandTop, plotBottom,
                         carbColor = carbInk, insulinColor = insulinInk,
+                        // The viewport, so the draw can bound itself to it: the channels span up to ~14
+                        // days of buckets and a default window shows ~1.8% of them.
+                        viewStartMs = viewStartMs, viewSpanMs = viewSpanMs,
+                        paths = overlayPaths,
                     )
                 }
 
@@ -847,27 +956,25 @@ fun GlucoseGraph(
                 //       hypoglycaemic excursion, which drops into exactly these lanes.
                 //
                 //       The alpha is read HERE, in the draw lambda, so a running fade invalidates the
-                //       draw phase alone — a marker breathing must not recompose the panel.
-                if (carbMarks.isNotEmpty() || insulinMarks.isNotEmpty()) {
-                    val markSep = logMarkerSeparationPx(dpPx)
-                    val markSize = LOG_MARKER_DP * dpPx
-                    drawLogMarkers(
-                        clusterLogMarkers(insulinMarks, viewStartMs, viewSpanMs, plotLeft, plotRight, markSep),
-                        painter = insulinMarkPainter,
-                        ink = insulinInk,
-                        sizePx = markSize,
-                        laneTopY = logMarkerLaneTop(CurveKind.INSULIN, plotBottom, dpPx),
-                        committedAlpha = markerPulse.value,
-                    )
-                    drawLogMarkers(
-                        clusterLogMarkers(carbMarks, viewStartMs, viewSpanMs, plotLeft, plotRight, markSep),
-                        painter = carbMarkPainter,
-                        ink = carbInk,
-                        sizePx = markSize,
-                        laneTopY = logMarkerLaneTop(CurveKind.CARB, plotBottom, dpPx),
-                        committedAlpha = markerPulse.value,
-                    )
-                }
+                //       draw phase alone — a marker breathing must not recompose the panel. Everything
+                //       else the lanes need is decided in composition: at refresh rate, the whole of
+                //       this section is two translate-and-blit loops over lists already built.
+                drawLogMarkers(
+                    insulinClusters,
+                    painter = insulinMarkPainter,
+                    tint = insulinTint,
+                    sizePx = markSizePx,
+                    laneTopY = logMarkerLaneTop(CurveKind.INSULIN, plotBottom, dpPx),
+                    committedAlpha = markerPulse.value,
+                )
+                drawLogMarkers(
+                    carbClusters,
+                    painter = carbMarkPainter,
+                    tint = carbTint,
+                    sizePx = markSizePx,
+                    laneTopY = logMarkerLaneTop(CurveKind.CARB, plotBottom, dpPx),
+                    committedAlpha = markerPulse.value,
+                )
 
                 // (5) BG polyline, segment-styled by provenance; gaps broken. Suppressed when the smoothed
                 //     model-input trace has replaced it (I5).
@@ -909,27 +1016,29 @@ fun GlucoseGraph(
                 //       single trace is ever on screen; the legend states which one. Breaks are honoured so a
                 //       dropout is not bridged with a fictitious line.
                 if (swapToSmoothed) {
-                    val vLo = viewStartMs
-                    val vHi = viewStartMs + viewSpanMs
+                    val sm = smoothed!!
                     val smColor = lineColor // drawn AS the primary trace, since it stands in for the raw one
-                    val path = Path()
+                    // The cull is the same ± one span it always was, but REACHED rather than walked: the
+                    // old loop visited every point of a never-pruned history — years of it — to test a
+                    // predicate that admits one contiguous range ([visibleRange] carries the argument,
+                    // and the same binary search already narrows the corridor mask a hundred lines
+                    // above). The loop body is unchanged, so the polyline is identical, break for break.
+                    val path = tracePath
+                    path.reset()
                     var open = false
                     fun flush() { if (open) { drawPath(path, smColor, style = Stroke(width = 2.2f, cap = StrokeCap.Round)); path.reset(); open = false } }
-                    for (i in 0 until smoothed!!.size) {
-                        val t = smoothed.tsMs[i].toDouble()
-                        // Cull to the visible window (± one span) so a long history is cheap to paint.
-                        if (t < vLo - viewSpanMs || t > vHi + viewSpanMs) { flush(); continue }
-                        val x = (plotLeft + (t - viewStartMs) * ppm).toFloat()
-                        val y = yToPx(smoothed.ys[i])
+                    for (i in sm.visibleRange(viewStartMs, viewSpanMs)) {
+                        val x = (plotLeft + (sm.tsMs[i].toDouble() - viewStartMs) * ppm).toFloat()
+                        val y = yToPx(sm.ys[i])
                         if (!open) { path.moveTo(x, y); open = true } else path.lineTo(x, y)
-                        if (i < smoothed.size - 1 && smoothed.breakAfter[i]) flush()
+                        if (i < sm.size - 1 && sm.breakAfter[i]) flush()
                     }
                     flush()
-                    val leg = measurer.measure("model input — smoothed", TextStyle(color = smColor, fontSize = 9.sp))
+                    val leg = measurer.measure("model input — smoothed", traceLegendStyle)
                     drawText(leg, topLeft = Offset((plotRight - leg.size.width - 4f).coerceAtLeast(plotLeft), plotTop + 2f))
                 } else if (smoothed != null && !smoothed.isEmpty) {
                     // The raw sensor trace is showing (section 5); label it so the toggle's state is legible.
-                    val leg = measurer.measure("sensor — raw", TextStyle(color = lineColor, fontSize = 9.sp))
+                    val leg = measurer.measure("sensor — raw", traceLegendStyle)
                     drawText(leg, topLeft = Offset((plotRight - leg.size.width - 4f).coerceAtLeast(plotLeft), plotTop + 2f))
                 }
 
@@ -956,17 +1065,22 @@ fun GlucoseGraph(
                     drawRolledSeries(rs, ::absToPx, ::yToPx, plotTop, plotBottom, cs.tertiary, cs.onSurface)
                     val legendText = if (rs.degenerate) "extrapolated · degenerated · display-only"
                     else "extrapolated · unvalidated · display-only"
-                    val leg = measurer.measure(legendText, TextStyle(color = cs.onSurface.copy(alpha = 0.7f), fontSize = 9.sp))
+                    val leg = measurer.measure(legendText, rolledLegendStyle)
                     // Lifted clear of the marker band whenever the lanes claim it. Both this caption and
                     // the lanes are measured up from `plotBottom` and the caption is drawn LAST, so left
                     // where it was it prints straight over the carb lane — and it is the one thing keeping
                     // the extrapolated tail from being read as a validated forecast, so neither layer may
-                    // be allowed to bury the other. Gated on exactly what section (4.6) gates the lanes on,
-                    // so the caption holds one height for as long as they exist rather than hopping as
-                    // marks pan in and out of view.
-                    val legFloor = plotBottom -
-                        if (carbMarks.isEmpty() && insulinMarks.isEmpty()) 0f else LOG_MARKER_BAND_DP * dpPx
-                    drawText(leg, topLeft = Offset((plotRight - leg.size.width - 4f).coerceAtLeast(plotLeft), legFloor - leg.size.height - 2f))
+                    // be allowed to bury the other. Gated on exactly what the lanes are gated on — the
+                    // FEED, not the clusters — so the caption holds one height for as long as marks exist
+                    // rather than hopping as they pan in and out of view.
+                    //
+                    // The band is a third of a short plot's height, so the lift is clamped to the plot
+                    // top: overlapping a lane is bad, but being clipped away by the plot rectangle would
+                    // silence the caption altogether, which is the one outcome not tolerable here.
+                    val laneless = carbLane.marks.isEmpty() && insulinLane.marks.isEmpty()
+                    val legFloor = plotBottom - if (laneless) 0f else LOG_MARKER_BAND_DP * dpPx
+                    val legTop = (legFloor - leg.size.height - 2f).coerceAtLeast(plotTop)
+                    drawText(leg, topLeft = Offset((plotRight - leg.size.width - 4f).coerceAtLeast(plotLeft), legTop))
                 }
 
                 // (7) Scrub cursor — time-anchored, so it reads in the forecast zone too (item 3). U8 — the
@@ -983,13 +1097,15 @@ fun GlucoseGraph(
                         //      figures so digits align. Both columns are sized from FIXED widest templates
                         //      (the label set + the widest value), never the live content, so the box holds
                         //      its size and its value column's right edge as the thumb moves.
-                        val labelStyle = TextStyle(color = cs.onPrimary.copy(alpha = 0.72f), fontSize = 11.sp)
-                        val valueStyle = TextStyle(color = cs.onPrimary, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                        //      Both styles and all three template measurements are decided once per theme
+                        //      ([scrubMetrics]) rather than per pointer sample: they are functions of the
+                        //      FIXED templates alone, so re-measuring them as the thumb moved was seven
+                        //      text layouts a frame for three numbers that cannot change.
                         val rows = scrubRows(sc)
                         val padH = 9f; val padV = 8f; val colGap = 14f; val rowGap = 5f
-                        val labelColW = SCRUB_LABELS.maxOf { measurer.measure(it, labelStyle).size.width }.toFloat()
-                        val valueColW = measurer.measure(SCRUB_VALUE_TEMPLATE, valueStyle).size.width.toFloat()
-                        val lineH = measurer.measure(SCRUB_VALUE_TEMPLATE, valueStyle).size.height.toFloat()
+                        val labelColW = scrubMetrics.labelColW
+                        val valueColW = scrubMetrics.valueColW
+                        val lineH = scrubMetrics.lineH
                         val boxW = padH + labelColW + colGap + valueColW + padH
                         val boxH = padV * 2f + lineH * rows.size + rowGap * (rows.size - 1)
                         // Fixed at the right-hand middle of the plot.
@@ -1004,8 +1120,8 @@ fun GlucoseGraph(
                         val valueRight = bx + boxW - padH // the value column's shared right edge
                         rows.forEachIndexed { i, (label, value) ->
                             val rowTop = by + padV + i * (lineH + rowGap)
-                            val lbl = measurer.measure(label, labelStyle)
-                            val vm = measurer.measure(value, valueStyle)
+                            val lbl = measurer.measure(label, scrubLabelStyle)
+                            val vm = measurer.measure(value, scrubValueStyle)
                             drawText(lbl, topLeft = Offset(bx + padH, rowTop))
                             drawText(vm, topLeft = Offset(valueRight - vm.size.width, rowTop))
                         }
@@ -1168,7 +1284,7 @@ private fun DrawScope.drawBands(
 }
 
 /** First index whose value is >= [target] (binary search on the ascending [xs]). */
-private fun lowerBoundLong(xs: LongArray, target: Long): Int {
+internal fun lowerBoundLong(xs: LongArray, target: Long): Int {
     var lo = 0
     var hi = xs.size
     while (lo < hi) {

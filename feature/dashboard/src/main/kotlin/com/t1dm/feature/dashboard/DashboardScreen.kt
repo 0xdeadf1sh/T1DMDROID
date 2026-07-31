@@ -34,6 +34,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -62,6 +63,7 @@ import kotlin.math.roundToInt
 import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.LocalAnimationsEnabled
 import com.t1dm.core.design.LocalT1dmSemantics
+import com.t1dm.core.design.LoggedEntryDialog
 import com.t1dm.core.design.SignalBars
 import com.t1dm.core.design.argbWithAlpha
 import com.t1dm.core.design.iconStyleForTheme
@@ -70,7 +72,7 @@ import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.model.AlertThresholds
 import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.IobCobReadout
-import com.t1dm.core.model.LogMarker
+import com.t1dm.core.model.LoggedEntry
 import com.t1dm.core.model.ModelPrediction
 import com.t1dm.core.model.PaintStroke
 import com.t1dm.core.model.PaintTool
@@ -111,8 +113,10 @@ import com.t1dm.ui.graph.predOverlayOf
  * Phase 4 adds the toggleable curve overlays: the carb-appearance (Ra) and insulin-action curves
  * drawn UNDER the BG line, reconstructed from the logged events by `:app`'s `ChannelBuilder`
  * (off-thread), plus an IOB/COB read-out carrying its §3.6-F provenance. [curveChannels] resolves the
- * two per-5-min channels for a grid window; it is invoked off the main thread inside [produceState],
- * and the [CurveOverlayFrame] it yields is immutable primitive arrays the Canvas merely paints.
+ * three per-5-min series for a grid window — carbs, combined insulin, and basal — in ONE call, since
+ * the basal series is a component of the combined one and resolving it separately re-read the same
+ * window; it is invoked off the main thread inside [produceState], and the [CurveOverlayFrame] it
+ * yields is immutable primitive arrays the Canvas merely paints.
  */
 @Composable
 fun DashboardScreen(
@@ -124,12 +128,18 @@ fun DashboardScreen(
     predictions: List<ModelPrediction> = emptyList(),
     kovatchevF: ((Double) -> Double)? = null,
     iobCob: IobCobReadout? = null,
-    curveChannels: (suspend (gridStartMs: Long, nSteps: Int) -> Pair<DoubleArray, DoubleArray>)? = null,
-    basalChannel: (suspend (gridStartMs: Long, nSteps: Int) -> DoubleArray)? = null,
-    // The logged carb/insulin events the BG panel marks at its foot, as `:app` joined them against the
-    // upload queue. Passed straight through: this screen neither re-derives the committed/delivered
-    // verdict nor thins the list, and the panel receives no amount and no row id it could act on.
-    logMarkers: List<LogMarker> = emptyList(),
+    // (carb, combined insulin, basal-only) for one grid window, from ONE resolve. These were two
+    // lambdas, and the overlay called both on every rebuild — which resolved the same padded window
+    // twice and rebuilt the same basal representation twice, since the basal series is a component of
+    // the combined insulin one rather than an independent quantity.
+    curveChannels: (suspend (gridStartMs: Long, nSteps: Int) -> Triple<DoubleArray, DoubleArray, DoubleArray>)? = null,
+    // The logged carb/insulin events the BG panel marks at its foot — the SAME feed the Logs panel
+    // binds, as `:app` joined it against the upload queue. This screen neither re-derives the
+    // committed/delivered verdict nor thins the list; it reduces the feed to markers for the panel
+    // (which is given no amount and no row id it could act on) and keeps the rest for the modal a tap
+    // on a mark opens. The reduction happens HERE so a mark and the row it stands for are the same
+    // list position by construction, which is the whole of how a tap names what it hit.
+    logEntries: List<LoggedEntry> = emptyList(),
     warmup: WarmupProgress? = null,
     // Phase 7A — BG-panel overhaul.
     // Issue 1 — suppress the "next forecast" countdown when no forecast is actually being made: during
@@ -201,6 +211,12 @@ fun DashboardScreen(
     // availability rule every other affordance here follows.
     gameSlot: (@Composable (Modifier, trackFromMs: Long, dropAtMs: Long, spanMinutes: Float, predictedClock: PredictedClock?, onReady: () -> Unit, exit: () -> Unit) -> Unit)? = null,
 ) {
+    // What the panel draws at its foot, and the one place the marker↔row correspondence is made.
+    val logMarkers = remember(logEntries) { logEntries.map { it.marker } }
+    // The logs a tap on a mark named, held by VALUE: the feed re-sorts under a landing reading and a
+    // delete elsewhere can drop a row, and the dialog must go on restating what was tapped either way
+    // (the same reason the Logs panel hoists its delete confirmation to the screen).
+    var tappedLogs by remember { mutableStateOf<List<LoggedEntry>>(emptyList()) }
     var gameOn by remember { mutableStateOf(false) }
     // The chart's LIVE viewport, which pinch-zoom and pan move independently of the window chips.
     // Held here because drive mode adopts it wholesale — the panel must not zoom or re-span when the
@@ -245,7 +261,7 @@ fun DashboardScreen(
     // Keyed on iobCob too so a just-logged dose (which emits a new IOB/COB read-out) rebuilds the
     // overlay immediately, rather than waiting for the next CGM reading — this keeps the insulin/basal
     // overlay (issue 18) and the no-future-insulin advisory (issue 16) current the moment a dose lands.
-    val curveOverlay by produceState(CurveOverlayFrame.EMPTY, readings, predictions, curveChannels, basalChannel, iobCob, rolledForecast) {
+    val curveOverlay by produceState(CurveOverlayFrame.EMPTY, readings, predictions, curveChannels, iobCob, rolledForecast) {
         val resolver = curveChannels
         if (resolver == null || readings.isEmpty()) {
             value = CurveOverlayFrame.EMPTY
@@ -268,8 +284,7 @@ fun DashboardScreen(
         val earliestStart = ((end / STEP_MS) - (MAX_OVERLAY_STEPS - 1L)) * STEP_MS
         val gridStart = maxOf(oldestReading, earliestStart)
         val nSteps = (((end - gridStart) / STEP_MS).toInt() + 1).coerceIn(1, MAX_OVERLAY_STEPS)
-        val (carb, insulin) = resolver(gridStart, nSteps)
-        val basal = basalChannel?.invoke(gridStart, nSteps) ?: DoubleArray(0)
+        val (carb, insulin, basal) = resolver(gridStart, nSteps)
         value = curveOverlayOf(carb, insulin, gridStart, STEP_MS, basal)
     }
 
@@ -468,6 +483,7 @@ fun DashboardScreen(
             curveOverlay = curveOverlay,
             curveToggles = toggles,
             logMarkers = logMarkers,
+            onMarkerTap = { hits -> tappedLogs = hits.mapNotNull { logEntries.getOrNull(it) } },
             rangeMinMgdl = rangeMinMgdl,
             rangeMaxMgdl = rangeMaxMgdl,
             predictedClock = predictedClock,
@@ -490,6 +506,10 @@ fun DashboardScreen(
                 }
             }
         }
+    }
+
+    if (tappedLogs.isNotEmpty()) {
+        LoggedEntryDialog(tappedLogs) { tappedLogs = emptyList() }
     }
 
     if (showPaintStyle) {
@@ -1098,6 +1118,11 @@ private fun HeartbeatChip() {
     val color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
     // 60 bpm ⇒ a 1000 ms beat period. Keyframed as a lub-dub (two quick contractions, then rest) so it
     // reads as a pulse rather than a breath; the keyframe span equals the period, fixing the cadence.
+    //
+    // The State is HELD, never unwrapped here: `.value` is read inside the graphicsLayer block below, so
+    // a beat invalidates that layer's placement alone. Read in composition — as it was — every frame of
+    // an animation that never stops bought a recomposition and a relayout of this Row to move one glyph.
+    // Same rule, for the same reason, as `pulseHighlight` (core/design/Pulse.kt).
     val scale = if (animationsOn) {
         val transition = rememberInfiniteTransition(label = "heartbeat")
         transition.animateFloat(
@@ -1115,14 +1140,14 @@ private fun HeartbeatChip() {
                 },
             ),
             label = "heartbeatScale",
-        ).value
-    } else 1f
+        )
+    } else remember { mutableFloatStateOf(1f) }
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
         Icon(
             imageVector = icon,
             contentDescription = "Heartbeat 60 bpm",
             tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(14.dp).graphicsLayer { scaleX = scale; scaleY = scale },
+            modifier = Modifier.size(14.dp).graphicsLayer { scaleX = scale.value; scaleY = scale.value },
         )
         Text("60", style = MaterialTheme.typography.labelSmall, color = color)
     }
@@ -1143,15 +1168,19 @@ private fun PulsingDot(health: LinkHealth, pulseKey: Long = 0L) {
         LinkHealth.DOWN -> 600
         else -> 0
     }
-    val alpha = if (animationsOn && periodMs > 0) {
+    // Held as State, unwrapped in the layer blocks below (see [HeartbeatChip]). This one matters most of
+    // the three: it runs precisely when the link is DEGRADED or DOWN, i.e. when the phone is already
+    // struggling, and it drove BOTH a Modifier-chain rebuild and — through the flash below — an
+    // add/remove of a child node, so every frame recomposed and re-laid-out the dot.
+    val pulseAlpha = if (animationsOn && periodMs > 0) {
         val transition = rememberInfiniteTransition(label = "reach")
         transition.animateFloat(
             initialValue = 1f,
             targetValue = 0.25f,
             animationSpec = infiniteRepeatable(tween(periodMs), RepeatMode.Reverse),
             label = "reachAlpha",
-        ).value
-    } else 1f
+        )
+    } else remember { mutableFloatStateOf(1f) }
     // I12 — the one-shot data-movement flash. `snapTo(1)` then `animateTo(0)` gives an expanding,
     // fading ring; keyed on [pulseKey] so it re-fires on every channel move. Never animates on the
     // very first composition (pulseKey seeds from the current value in the caller) or when motion is off.
@@ -1165,20 +1194,32 @@ private fun PulsingDot(health: LinkHealth, pulseKey: Long = 0L) {
         }
     }
     Box(contentAlignment = Alignment.Center) {
-        val f = flash.value
-        if (f > 0f) {
-            Box(
-                Modifier
-                    .size(9.dp)
-                    .graphicsLayer {
-                        val s = 1f + f * 1.6f
-                        scaleX = s; scaleY = s; this.alpha = f * 0.7f
-                    }
-                    .clip(CircleShape)
-                    .background(color.copy(alpha = color.alpha)),
-            )
-        }
-        Box(Modifier.size(9.dp).clip(CircleShape).background(color.copy(alpha = color.alpha * alpha)))
+        // The halo is composed UNCONDITIONALLY and hidden by its own layer alpha, rather than gated on
+        // `flash.value > 0f` in composition: that test added a node when the ring bloomed and removed it
+        // when it died, so the 700 ms flash recomposed and re-measured this Box on every frame of it.
+        // At f = 0 the layer draws nothing (alpha 0, scale 1) and the node is the same 9.dp as its
+        // sibling, so neither the pixels nor the measured size move.
+        Box(
+            Modifier
+                .size(9.dp)
+                .graphicsLayer {
+                    val f = flash.value
+                    val s = 1f + f * 1.6f
+                    scaleX = s; scaleY = s; this.alpha = f * 0.7f
+                }
+                .clip(CircleShape)
+                .background(color),
+        )
+        // The severity pulse as a layer alpha rather than a per-frame `background(color.copy(…))`: a
+        // solid fill of alpha `A` composited at layer alpha `a` is the same source-over result as a fill
+        // of alpha `A·a`, which is exactly what the old copy computed — without rebuilding the chain.
+        Box(
+            Modifier
+                .size(9.dp)
+                .graphicsLayer { this.alpha = pulseAlpha.value }
+                .clip(CircleShape)
+                .background(color),
+        )
     }
 }
 
@@ -1197,6 +1238,8 @@ private fun TimeOfDayIcon() {
     val period = com.t1dm.core.design.dayPeriodFor(hour)
     val icon = remember(period, style) { com.t1dm.core.design.timeOfDayIcon(period, style) }
     // A subtle breathing scale; a static 1f when motion is disabled (N4c).
+    // Held as State and unwrapped inside the layer block — see [HeartbeatChip]: a 2.6 s breath that never
+    // ends must invalidate a layer property, not the composition that produced it.
     val scale = if (animationsOn) {
         val transition = rememberInfiniteTransition(label = "tod")
         transition.animateFloat(
@@ -1204,13 +1247,13 @@ private fun TimeOfDayIcon() {
             targetValue = 1.0f,
             animationSpec = infiniteRepeatable(tween(2600), RepeatMode.Reverse),
             label = "todScale",
-        ).value
-    } else 1f
+        )
+    } else remember { mutableFloatStateOf(1f) }
     Icon(
         imageVector = icon,
         contentDescription = "Time of day: ${period.name.lowercase()}",
         tint = MaterialTheme.colorScheme.primary,
-        modifier = Modifier.size(28.dp).graphicsLayer { scaleX = scale; scaleY = scale },
+        modifier = Modifier.size(28.dp).graphicsLayer { scaleX = scale.value; scaleY = scale.value },
     )
 }
 

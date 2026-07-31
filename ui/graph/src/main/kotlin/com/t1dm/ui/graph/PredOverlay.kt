@@ -87,6 +87,14 @@ fun buildPredSeries(
     )
 }
 
+// The two dash patterns, held rather than rebuilt. Both are raw-pixel constants — no density, no theme,
+// nothing of the series in them — so deriving them inside the draw allocated an effect and its float
+// array once per series per frame, and this panel's draw phase re-runs at the display's refresh rate for
+// as long as a committed log marker is breathing. A [PathEffect] is immutable; one instance serves every
+// draw of every series.
+private val NOT_ELIGIBLE_DASH: PathEffect = PathEffect.dashPathEffect(floatArrayOf(7f, 6f))
+private val FLAG_TICK_DASH: PathEffect = PathEffect.dashPathEffect(floatArrayOf(3f, 4f))
+
 /**
  * Draw one forecast series into the plot. [absToPx]/[valToPx] project absolute epoch-ms and a
  * unit-value onto the shared [GlucoseGraph] viewport; [clip] guards the pixel range. Non-selected
@@ -112,7 +120,7 @@ internal fun DrawScope.drawPredSeries(
         else -> 1f
     }
     val dashed = degenerate || s.stale
-    val effect = if (dashed) PathEffect.dashPathEffect(floatArrayOf(7f, 6f)) else null
+    val effect = if (dashed) NOT_ELIGIBLE_DASH else null
 
     fun px(i: Int) = absToPx(s.tsMs[i].toDouble())
 
@@ -152,7 +160,7 @@ internal fun DrawScope.drawPredSeries(
     // A small flag tick at the horizon start when the forecast is not eligible.
     if (degenerate || s.stale) {
         val x = px(0)
-        drawLine(flagColor.copy(alpha = 0.8f), androidx.compose.ui.geometry.Offset(x, plotTop), androidx.compose.ui.geometry.Offset(x, plotBottom), 1f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(3f, 4f)))
+        drawLine(flagColor.copy(alpha = 0.8f), androidx.compose.ui.geometry.Offset(x, plotTop), androidx.compose.ui.geometry.Offset(x, plotBottom), 1f, pathEffect = FLAG_TICK_DASH)
     }
 }
 
