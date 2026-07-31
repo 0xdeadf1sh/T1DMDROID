@@ -683,17 +683,13 @@ pub fn forecast_metrics_suite(
 
     // ── CG-EGA over the whole window (§6.3), on the band-projected forecast ────────────
     //
-    // DELIBERATE DIVERGENCE from `T1DMAI/realdata/metrics.py`. Its line 217 reads
-    // `cg_ega.cg_ega_counts(pred_eff, true, last_bg, ...)` against a signature declared
-    // `(y_true, y_pred, last_bg, ...)`, so the two trajectories arrive transposed: the
-    // glycaemic region is assigned by the FORECAST rather than the truth, and P-EGA's
-    // acceptance band is centred on the prediction with `mod` widened by the predicted
-    // rate. The resulting %AP/%BE/%EP is not the statistic either file documents —
-    // `cg_ega.py`'s own header says the region follows the true BG, and the comment above
-    // that very call says the rate term inherits the TRUTH's derivative. We call it the
-    // documented way round; the golden fixture's `cgega` block therefore comes from
-    // `cg_ega.py` directly, and carries what `compute_suite` currently returns beside it
-    // under `_swapped_reference` so the gap is visible rather than inferred.
+    // The truth goes FIRST, matching `cg_ega.py`'s declared `(y_true, y_pred, last_bg, ...)`
+    // and `T1DMAI/realdata/metrics.py`'s call. The order is load-bearing rather than
+    // conventional: the first trajectory is the reference on every axis — it assigns the
+    // glycaemic region, centres P-EGA's acceptance band, gates the zone-D excursions and
+    // supplies the rate that widens `mod` — so transposing the two re-buckets points between
+    // regions and moves every denominator, yielding a well-formed table of a different
+    // statistic that no assertion here would catch.
     let cgega = include_cgega.then(|| {
         let mut counts: CgEgaCounts = [[0; 3]; 3];
         for s in &scored {
@@ -850,11 +846,9 @@ mod tests {
     /// `cg_ega.py` over synthetic windows. This is the gate: bit-faithfulness to the
     /// reference is what makes an on-device figure comparable to the validation table.
     ///
-    /// For CG-EGA alone "the reference" is `cg_ega.py` rather than `compute_suite`, which
-    /// calls it with the trajectories transposed — see the divergence note above the
-    /// CG-EGA block. The fixture carries what `compute_suite` currently returns under
-    /// `_swapped_reference`, asserted nowhere, so the size of the gap stays visible to
-    /// whoever sets the two tables side by side.
+    /// The `cgega` block is taken from `cg_ega.py` called in its declared argument order,
+    /// which is the order `compute_suite` calls it in — see the note above the CG-EGA block
+    /// for why that order is load-bearing.
     #[test]
     fn metrics_suite_golden() {
         let g = suite_golden();

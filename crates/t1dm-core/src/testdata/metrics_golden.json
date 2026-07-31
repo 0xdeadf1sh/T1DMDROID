@@ -1,5 +1,5 @@
 {
- "_provenance": "Generated from T1DMAI/realdata/metrics.py::compute_suite (per-horizon blocks) and T1DMAI/cg_ega.py::cg_ega_counts (the cgega block, called with the documented (y_true, y_pred) order). Levels, band projection and CG-EGA anchoring are T1DMCOMMON SPEC/invariants.md 6.1-6.3. The cgega._swapped_reference block records what compute_suite currently returns, which transposes truth and forecast at metrics.py:217; it is carried for the record and is NOT what this crate reproduces.",
+ "_provenance": "Generated from T1DMAI/realdata/metrics.py::compute_suite (per-horizon blocks) and T1DMAI/cg_ega.py::cg_ega_counts (the cgega block), both called in the declared (y_true, y_pred, last_bg) order. Levels, band projection and CG-EGA anchoring are T1DMCOMMON SPEC/invariants.md 6.1-6.3.",
  "config": {
   "hypo_threshold_mgdl": 70.0,
   "hyper_threshold_mgdl": 180.0,
@@ -5584,17 +5584,6 @@
      "ap_hyper": 235,
      "be_hyper": 25,
      "ep_hyper": 17
-    },
-    "_swapped_reference": {
-     "ap_hypo": 88.23529411764706,
-     "be_hypo": 3.5294117647058822,
-     "ep_hypo": 8.235294117647058,
-     "ap_eu": 87.73946360153256,
-     "be_eu": 10.344827586206897,
-     "ep_eu": 1.9157088122605364,
-     "ap_hyper": 92.17391304347827,
-     "be_hyper": 6.956521739130435,
-     "ep_hyper": 0.8695652173913043
     }
    }
   },
@@ -8466,17 +8455,6 @@
      "ap_hyper": 51,
      "be_hyper": 26,
      "ep_hyper": 2
-    },
-    "_swapped_reference": {
-     "ap_hypo": 67.94871794871796,
-     "be_hypo": 16.666666666666664,
-     "ep_hypo": 15.384615384615385,
-     "ap_eu": 78.2312925170068,
-     "be_eu": 18.367346938775512,
-     "ep_eu": 3.4013605442176873,
-     "ap_hyper": 66.66666666666666,
-     "be_hyper": 30.158730158730158,
-     "ep_hyper": 3.1746031746031744
     }
    }
   }
