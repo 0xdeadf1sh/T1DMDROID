@@ -203,12 +203,95 @@ class RailInvariantsTest {
     @Test
     fun predicted_low_veto_pulls_the_dose_back_from_a_low_tail() = runTest {
         // Aggressive sensitivity + low-ish start ⇒ large doses drive a predicted low; the veto must
-        // choose a dose whose lower band never crosses the floor, or fall back to 0 U.
+        // choose a dose whose MEDIAN never crosses the floor inside the VALIDATED window, or fall
+        // back to 0 U. Both halves changed together: the rail reads the median, not the τ=.05 edge,
+        // and only the validated prefix, not the extrapolated tail.
         val port = FakeForecastPort(startBg = 130.0, mgdlPerU = 40.0)
         val advisor = advisorOf(port, anchor = fakeAnchor(now, currentBg = 130.0), iob = fakeIob(now, iobU = 0.0))
         val r = advisor.recommendBolus(now, emptyList(), CalcConfig()) as AdviceResult.Recommended
-        val safe = r.best.doseU == 0.0 || (r.best.fan.minLowerBg() ?: 0.0) >= CalcConfig().predictedLowThresholdMgdl
+        val safe = r.best.doseU == 0.0 || (r.best.fan.minMedianBg() ?: 0.0) >= CalcConfig().predictedLowThresholdMgdl
         assertTrue("veto must keep the recommended dose out of predicted-low territory", safe)
+    }
+
+    @Test
+    fun the_veto_ignores_a_low_that_lies_beyond_the_validated_window() = runTest {
+        // The regression that motivated the change: a fan whose median only dips under the floor in
+        // the EXTRAPOLATED tail must not block a dose. Previously any such dip — and, reading the
+        // band, almost every roll had one — vetoed every candidate including the do-nothing
+        // baseline, so the advisor could return nothing but 0 U.
+        val steps = List(48) { i -> FanStep(medianBg = if (i < 24) 140.0 else 50.0, lowerBg = 40.0, upperBg = 240.0) }
+        val fan = PredFan(
+            candidateU = 2.0,
+            steps = steps,
+            stepMs = 5 * 60_000L,
+            validatedSteps = 24,
+            worstStatus = ForecastStatus.OK,
+            eligibility = ForecastEligibility.ELIGIBLE,
+        )
+        assertEquals(RailVerdict.Pass, Rails.predictedLowVeto(fan, CalcConfig()))
+    }
+
+    @Test
+    fun the_veto_still_blocks_a_low_inside_the_validated_window() = runTest {
+        val steps = List(48) { i -> FanStep(medianBg = if (i < 12) 140.0 else 55.0, lowerBg = 40.0, upperBg = 240.0) }
+        val fan = PredFan(
+            candidateU = 2.0,
+            steps = steps,
+            stepMs = 5 * 60_000L,
+            validatedSteps = 24,
+            worstStatus = ForecastStatus.OK,
+            eligibility = ForecastEligibility.ELIGIBLE,
+        )
+        assertTrue("a median low inside the validated window must veto", Rails.predictedLowVeto(fan, CalcConfig()) is RailVerdict.Block)
+    }
+
+    @Test
+    fun a_wide_band_alone_no_longer_vetoes() = runTest {
+        // The mechanism that pinned the advisor at 0 U: a median comfortably in range with a band
+        // whose lower edge sits under the floor throughout. That must now pass.
+        val steps = List(48) { FanStep(medianBg = 150.0, lowerBg = 45.0, upperBg = 255.0) }
+        val fan = PredFan(
+            candidateU = 3.0,
+            steps = steps,
+            stepMs = 5 * 60_000L,
+            validatedSteps = 24,
+            worstStatus = ForecastStatus.OK,
+            eligibility = ForecastEligibility.ELIGIBLE,
+        )
+        assertEquals(RailVerdict.Pass, Rails.predictedLowVeto(fan, CalcConfig()))
+    }
+
+    @Test
+    fun a_wide_fan_still_yields_a_nonzero_dose_end_to_end() = runTest {
+        // THE regression this whole change exists for, and the one the gate was missing: a hyper
+        // start with a realistically WIDE fan. `FakeForecastPort`'s default band (base 5, growth
+        // 0.6) is far too narrow to have ever reproduced the bug, which is why :calc stayed green
+        // throughout the period the advisor could only return 0 U. At base 60 / growth 3.0 the
+        // lower edge sits under the 70 floor across the whole roll, so the old lower-band veto
+        // blocked every candidate — including the do-nothing baseline — and the loop fell through
+        // to zero. The median never approaches the floor, so the rail must now pass.
+        val port = FakeForecastPort(startBg = 260.0, mgdlPerU = 15.0, bandBase = 60.0, bandGrowthPerStep = 3.0)
+        val advisor = advisorOf(port, anchor = fakeAnchor(now, currentBg = 260.0), iob = fakeIob(now, iobU = 0.0))
+        val r = advisor.recommendBolus(now, emptyList(), CalcConfig()) as AdviceResult.Recommended
+        assertTrue(
+            "a wide band alone must not pin the advisor at 0 U (got ${r.best.doseU} U; notes=${r.railNotes})",
+            r.best.doseU > 0.0,
+        )
+        assertNull("a hyper start with an in-range median is not a rescue", r.rescueCarbsG)
+    }
+
+    @Test
+    fun an_empty_validated_window_fails_closed() = runTest {
+        val steps = List(48) { FanStep(medianBg = 150.0, lowerBg = 140.0, upperBg = 160.0) }
+        val fan = PredFan(
+            candidateU = 1.0,
+            steps = steps,
+            stepMs = 5 * 60_000L,
+            validatedSteps = 0,
+            worstStatus = ForecastStatus.OK,
+            eligibility = ForecastEligibility.ELIGIBLE,
+        )
+        assertTrue("no validated window means the low risk is unverifiable", Rails.predictedLowVeto(fan, CalcConfig()) is RailVerdict.Block)
     }
 
     @Test

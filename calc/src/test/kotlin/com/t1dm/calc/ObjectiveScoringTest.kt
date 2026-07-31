@@ -35,13 +35,25 @@ class ObjectiveScoringTest {
     }
 
     @Test
-    fun hypo_is_scored_off_the_lower_band_not_the_median() {
-        // Two fans with an identical, in-range median but different band widths: the wider band dips
-        // into hypo on its lower edge and MUST score worse under a hypo-weighted objective.
+    fun hypo_is_scored_off_the_median_and_band_width_is_inert() {
+        // Hypo is scored off the MEDIAN. Two fans with an identical in-range median and very
+        // different band widths must therefore score IDENTICALLY: widening a band can no longer, by
+        // itself, make a candidate look hypo-risky. That inertness is the point of the change — the
+        // old lower-band rule penalised every nonzero dose on a realistically wide fan.
         val config = CalcConfig(objective = Objective.MinKovatchevRisk, asymmetry = Asymmetry(hypoWeight = 5.0, hyperWeight = 1.0))
-        val tightMedian85 = fan(List(24) { 85.0 }, half = 5.0)   // lower ~80, above the 70 floor
-        val wideMedian85 = fan(List(24) { 85.0 }, half = 25.0)   // lower ~60, into hypo
-        assertTrue(Scoring.scoreFan(wideMedian85, config) > Scoring.scoreFan(tightMedian85, config))
+        val tightMedian85 = fan(List(24) { 85.0 }, half = 5.0)
+        val wideMedian85 = fan(List(24) { 85.0 }, half = 25.0)
+        assertEquals(Scoring.scoreFan(tightMedian85, config), Scoring.scoreFan(wideMedian85, config), 1e-9)
+    }
+
+    @Test
+    fun a_lower_median_still_scores_worse_under_a_hypo_weighted_objective() {
+        // The protection that must survive: a candidate whose MEDIAN sits lower is penalised more.
+        // Band width is now inert, but the direction of the hypo preference is not.
+        val config = CalcConfig(objective = Objective.MinKovatchevRisk, asymmetry = Asymmetry(hypoWeight = 5.0, hyperWeight = 1.0))
+        val inRange = fan(List(24) { 110.0 }, half = 10.0)
+        val lowMedian = fan(List(24) { 62.0 }, half = 10.0)
+        assertTrue(Scoring.scoreFan(lowMedian, config) > Scoring.scoreFan(inRange, config))
     }
 
     @Test
@@ -66,21 +78,42 @@ class ObjectiveScoringTest {
     }
 
     @Test
-    fun hit_target_bg_penalises_a_hypo_lower_band_even_with_the_median_on_target() {
+    fun hit_target_bg_carries_an_intrinsic_hypo_guard_off_the_median() {
         // The Bolus advisor forces HitTargetBg; its hypo guard must be intrinsic, not resting on the
-        // user-disableable predicted-low veto rail. Both fans sit ON target at the median, so the
-        // median-hit term is identical (zero); only the τ=.05 lower band differs — the wider band dips
-        // below the 70 floor and MUST score worse. Scoring never consults the rails, so this holds
-        // regardless of RailToggles.predictedLowVeto.
+        // user-disableable predicted-low veto rail. Scoring never consults the rails, so this holds
+        // regardless of RailToggles.predictedLowVeto. The guard now reads the MEDIAN: a fan whose
+        // median sits below the floor pays the lbgi term ON TOP of its median-to-target distance,
+        // so it scores worse than a fan the same distance ABOVE target.
         val config = CalcConfig(
             objective = Objective.HitTargetBg(targetMgdl = 110.0),
             asymmetry = Asymmetry(hypoWeight = 5.0, hyperWeight = 1.0),
         )
-        val safeBand = fan(List(24) { 110.0 }, half = 5.0)   // lower ~105, above the 70 floor
-        val hypoBand = fan(List(24) { 110.0 }, half = 50.0)  // lower ~60, into hypo
-        assertTrue(Scoring.scoreFan(hypoBand, config) > Scoring.scoreFan(safeBand, config))
-        // Dead-on target with no hypo tail scores to the floor of zero.
-        assertEquals(0.0, Scoring.scoreFan(safeBand, config), 0.0)
+        // The two fans sit the SAME absolute distance from target — 50 mg/dL below and above — under
+        // SYMMETRIC weights, so the median-to-target term contributes identically to both and cancels.
+        // The only thing that can separate them is the intrinsic hypo term. Delete that line from
+        // Scoring and this assertion fails; separating the fans by median alone would not, because
+        // the deviation term carries that unaided.
+        val symmetric = CalcConfig(
+            objective = Objective.HitTargetBg(targetMgdl = 110.0),
+            asymmetry = Asymmetry(hypoWeight = 1.0, hyperWeight = 1.0),
+        )
+        val belowFloor = fan(List(24) { 60.0 }, half = 5.0)   // 50 below target, and under the 70 floor
+        val aboveTarget = fan(List(24) { 160.0 }, half = 5.0) // 50 above target, no hypo term
+        assertTrue(
+            "the intrinsic hypo term must be what separates equal deviations",
+            Scoring.scoreFan(belowFloor, symmetric) > Scoring.scoreFan(aboveTarget, symmetric),
+        )
+        // The configured asymmetry is still applied on top, independently of that term.
+        assertTrue(Scoring.scoreFan(belowFloor, config) > Scoring.scoreFan(belowFloor, symmetric))
+        // Dead-on target scores to the floor of zero.
+        val onTarget = fan(List(24) { 110.0 }, half = 5.0)
+        assertEquals(0.0, Scoring.scoreFan(onTarget, config), 0.0)
+        // And band width alone changes nothing.
+        assertEquals(
+            Scoring.scoreFan(onTarget, config),
+            Scoring.scoreFan(fan(List(24) { 110.0 }, half = 50.0), config),
+            1e-9,
+        )
     }
 
     @Test

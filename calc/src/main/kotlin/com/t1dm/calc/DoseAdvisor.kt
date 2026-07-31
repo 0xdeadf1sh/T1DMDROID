@@ -154,8 +154,10 @@ class DoseAdvisor(
     private fun inHypoTerritory(anchor: AnchorInfo?, baseline: PredFan, config: CalcConfig): Boolean {
         val nowLow = anchor?.currentBgMgdl?.let { it < config.hypoNowThresholdMgdl } ?: false
         // Near-term = the validated window; a low predicted there is treated as present-tense hypo.
-        val nearLow = baseline.eligible && baseline.steps.take(baseline.validatedSteps)
-            .any { it.lowerBg < config.hypoNowThresholdMgdl }
+        // Off the MEDIAN, like every other dose-path read of the fan: a band edge dipping under the
+        // threshold means a low is possible, which diverted almost every session to carb rescue.
+        val nearLow = baseline.eligible && baseline.validatedWindow()
+            .any { it.medianBg < config.hypoNowThresholdMgdl }
         return nowLow || nearLow
     }
 

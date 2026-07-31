@@ -56,12 +56,32 @@ data class PredFan(
 ) {
     val eligible: Boolean get() = eligibility == ForecastEligibility.ELIGIBLE
 
-    /** The lowest lower-band value across the whole roll (the predicted-low veto reads this). */
-    fun minLowerBg(): Double? = steps.minOfOrNull { it.lowerBg }
+    /**
+     * The validated prefix of [steps] — the window dose selection is capped to. Clamped into
+     * `0..steps.size`, so a malformed [validatedSteps] yields an empty window rather than an
+     * exception or a silent read of the extrapolated tail.
+     *
+     * Dose decisions read THIS, never the whole roll. The tail past it is carried for context and
+     * for the display curve; it is extrapolated by re-feeding the median (INFERENCE.md §9), and a
+     * gate keyed on it would be decided by steps the app itself declines to call validated.
+     */
+    fun validatedWindow(): List<FanStep> = steps.subList(0, validatedSteps.coerceIn(0, steps.size))
 
-    /** The step index (0-based) at which the lower band first dips below [mgdl], or null. */
-    fun firstLowerBelow(mgdl: Double): Int? =
-        steps.indexOfFirst { it.lowerBg < mgdl }.takeIf { it >= 0 }
+    /** The lowest MEDIAN across the validated window, or null when that window is empty. */
+    fun minMedianBg(): Double? = validatedWindow().minOfOrNull { it.medianBg }
+
+    /**
+     * The step index (0-based) at which the MEDIAN first drops below [mgdl] within the validated
+     * window, or null. The predicted-low veto reads this.
+     *
+     * The median, not the lower band: a band edge answers "could this go low", which for a widening
+     * fan is true of nearly every roll and pinned the advisor at 0 U unconditionally. The median
+     * answers "is low the expected outcome". That is a deliberate reduction in caution — the
+     * compensating protections are the objective's own hypo term (see [Scoring]) and the
+     * degeneracy gate, which still refuses an unusable fan outright.
+     */
+    fun firstMedianBelow(mgdl: Double): Int? =
+        validatedWindow().indexOfFirst { it.medianBg < mgdl }.takeIf { it >= 0 }
 }
 
 /**

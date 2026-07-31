@@ -307,8 +307,10 @@ private fun RankedList(ranked: List<Candidate>) {
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Text("Alternatives", style = MaterialTheme.typography.titleSmall)
         top.forEach { c ->
-            val low = c.fan.minLowerBg()?.toInt()
-            fieldRow("${fmt(c.doseU)} U", "score ${"%.2f".format(c.score)}" + (low?.let { " · min low $it" } ?: ""))
+            // The MEDIAN minimum over the validated window — the quantity the veto and the objective
+            // now read. The band's minimum would explain a block that no longer keys on it.
+            val low = c.fan.minMedianBg()?.toInt()
+            fieldRow("${fmt(c.doseU)} U", "score ${"%.2f".format(c.score)}" + (low?.let { " · min $it" } ?: ""))
         }
     }
 }

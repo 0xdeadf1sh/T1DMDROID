@@ -26,7 +26,7 @@ data class BasalCandidate(
  * The day-long basal calculator (Phase 4 §6 — "a day-long Bateman-schedule search, run when the
  * user injects basal"). It grid-searches the daily basal total (optionally split across the
  * [template] injections), rolls each candidate over a long horizon, and scores the fasting fan under
- * the configured objective (hypo off the lower band). Fail-closed: a degenerate/stale/missing roll
+ * the configured objective (hypo off the median). Fail-closed: a degenerate/stale/missing roll
  * scores to +∞ and can never be recommended; if no candidate is eligible the caller refuses.
  */
 class BasalCalculator(private val port: BasalForecastPort) {

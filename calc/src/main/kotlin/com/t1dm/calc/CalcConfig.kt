@@ -23,7 +23,7 @@ sealed interface Objective {
     /** Minimise the horizon-weighted count of steps predicted out of [TargetRange]. */
     data object MinTimeOutOfRange : Objective
 
-    /** Minimise horizon-weighted Kovatchev blood-glucose risk (LBGI off the lower band + HBGI). */
+    /** Minimise horizon-weighted Kovatchev blood-glucose risk (LBGI + HBGI, both off the median). */
     data object MinKovatchevRisk : Objective
 
     /** Drive the median to [TargetRange.targetMgdl] at [atMsFromNow] ms past the roll start. */
@@ -34,7 +34,7 @@ sealed interface Objective {
      * scalar-target analogue of [MinTimeOutOfRange], scoring the median's distance from one point
      * rather than an in-range band. [targetMgdl] is user-set and UNBOUNDED (§3.6); the app sources it
      * from a slider bounded by the calculator's own low/high target so no extra clamp is required. The
-     * scorer carries its OWN intrinsic lower-band hypo term (`scoreHitTargetBg`), so hypo protection
+     * scorer carries its OWN intrinsic median hypo term (`scoreHitTargetBg`), so hypo protection
      * on this — the objective the Bolus advisor forces — does NOT rest on the user-disableable
      * predicted-low VETO rail.
      */
@@ -43,8 +43,12 @@ sealed interface Objective {
 
 /**
  * Relative penalties for the two failure directions (PLAN "configurable hypo/hyper asymmetry").
- * Unbounded and independent: the user may punish hypo far harder than hyper, or vice-versa. Hypo
- * is always scored off the **lower** quantile band, hyper off the median (§ 5h-roll finding).
+ * Unbounded and independent: the user may punish hypo far harder than hyper, or vice-versa.
+ *
+ * Both directions are scored off the **median**. Hypo was previously scored off the lower quantile
+ * band, hyper off the median; that asymmetry made every nonzero dose look hypo-risky on a widening
+ * fan, so these weights are now the only thing expressing the preference — which is what they were
+ * always meant to be. Widening the fan can no longer, by itself, push the advisor toward zero.
  */
 data class Asymmetry(
     val hypoWeight: Double = 3.0,
@@ -153,7 +157,7 @@ data class CalcConfig(
     val freshnessMaxAgeMs: Long = 15 * 60_000L,
     /** §3.6-D: refuse when more than this fraction of the recent anchor context is interpolated/warmup. */
     val maxInterpolatedFraction: Double = 0.34,
-    /** Predicted-low veto: block a dose whose lower band dips below this within the full roll. */
+    /** Predicted-low veto: block a dose whose MEDIAN drops below this within the VALIDATED window. */
     val predictedLowThresholdMgdl: Double = 70.0,
     /** IOB ceiling: block when assumed IOB + candidate dose exceeds this. */
     val iobCeilingU: Double = 12.0,

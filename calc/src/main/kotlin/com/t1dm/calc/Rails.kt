@@ -78,8 +78,20 @@ object Rails {
     }
 
     /**
-     * §3.6-C predicted-low veto. Blocks a candidate whose lower band dips below the threshold anywhere
-     * in the full roll. Fail-closed: an ineligible candidate fan is treated as a veto, not a pass.
+     * §3.6-C predicted-low veto. Blocks a candidate whose forecast MEDIAN drops below the threshold
+     * within the VALIDATED window. Fail-closed: an ineligible candidate fan, or one with no validated
+     * window to read, is a veto rather than a pass.
+     *
+     * Two deliberate narrowings from the band-and-full-roll form this replaces. Reading the median
+     * rather than the τ=.05 edge asks whether a low is the EXPECTED outcome rather than merely a
+     * possible one: the edge form was monotone in dose — insulin only lowers the forecast, so once
+     * the do-nothing baseline tripped it every candidate did — and the advisor could then only ever
+     * return 0 U. Reading the validated prefix rather than the whole roll stops the block being
+     * decided by extrapolated steps ([PredFan.validatedWindow]).
+     *
+     * This is less cautious than what it replaces, by intent. What still stands between a candidate
+     * and a hypo is the objective's own median hypo term ([Scoring]), which is not user-disableable,
+     * and the degeneracy gate, which refuses an unusable fan outright.
      */
     fun predictedLowVeto(fan: PredFan, config: CalcConfig): RailVerdict {
         val name = "predicted-low"
@@ -87,11 +99,15 @@ object Rails {
         if (!fan.eligible) {
             return RailVerdict.Block(name, "Cannot verify the low risk of this dose (forecast ${fan.eligibility}) — vetoing to fail safe.")
         }
-        val idx = fan.firstLowerBelow(config.predictedLowThresholdMgdl)
+        val window = fan.validatedWindow()
+        if (window.isEmpty()) {
+            return RailVerdict.Block(name, "Cannot verify the low risk of this dose (no validated forecast window) — vetoing to fail safe.")
+        }
+        val idx = fan.firstMedianBelow(config.predictedLowThresholdMgdl)
         if (idx != null) {
             val mins = (idx.toLong() * fan.stepMs) / 60_000L
-            val low = fan.steps[idx].lowerBg.toInt()
-            return RailVerdict.Block(name, "Predicted low: the lower band reaches ${low} mg/dL at +$mins min (floor ${config.predictedLowThresholdMgdl.toInt()}).")
+            val low = window[idx].medianBg.toInt()
+            return RailVerdict.Block(name, "Predicted low: the median reaches ${low} mg/dL at +$mins min (floor ${config.predictedLowThresholdMgdl.toInt()}).")
         }
         return RailVerdict.Pass
     }

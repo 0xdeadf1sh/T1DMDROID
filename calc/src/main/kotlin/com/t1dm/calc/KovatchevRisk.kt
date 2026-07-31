@@ -9,8 +9,8 @@ import com.t1dm.core.common.KovatchevScale
  * crate — this file adds only the index on top of it and never feeds a tensor.
  *
  * Risk `r = 10 · f²`, split into a low-BG branch (`f < 0` ⇒ LBGI) and a high-BG branch (`f > 0` ⇒
- * HBGI) — the standard Kovatchev decomposition. Hypo risk is scored off the lower band, hyper off the
- * median (SPEC § 5h-roll finding).
+ * HBGI) — the standard Kovatchev decomposition. Both branches are scored off the median (see
+ * [Scoring] invariant 2); the quantile band does not enter dose selection.
  */
 object KovatchevRisk {
 
