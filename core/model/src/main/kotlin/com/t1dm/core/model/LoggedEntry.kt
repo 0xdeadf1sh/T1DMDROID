@@ -22,6 +22,12 @@ enum class LogState { COMMITTED, DELIVERED }
  * still withdrawable. The graph draws markers; it must not be handed the amounts, the curve
  * parameters or the row ids it would then be free to render or mutate.
  *
+ * That holds even though a mark can now be tapped for what it stands for. The panel answers a tap with
+ * POSITIONS in the list it was given, and its caller — which reduced [LoggedEntry] to this in the first
+ * place — resolves them back; nothing that could be rendered or acted on crosses into the drawing
+ * layer. A marker is deliberately not an identity: two rows can share a 5-min slot and a channel, so
+ * one could not name a row even if it were asked to.
+ *
  * [kind] is the model's own channel vocabulary ([CurveKind.CARB] / [CurveKind.INSULIN]) rather than a
  * second carb-or-insulin enum, so a marker and the [CurveEvent] it stands for are labelled the same.
  */
@@ -43,6 +49,11 @@ data class LogMarker(
  * @param clientId the phone-minted event id (§3.2); unique across both tables, hence the list key.
  * @param insulin  BOLUS or BASAL for [CurveKind.INSULIN]; null for a carb entry.
  * @param amount   grams of carbohydrate, or units of insulin, per [kind].
+ * @param gi       the meal's glycemic index, or null — for a dose, and for a multi-food builder meal,
+ *                 whose appearance curve is the resolved combination of its components and which
+ *                 therefore has no single index. A NUMBER rather than a rendered phrase: a reader that
+ *                 has to say "not recorded" must be able to tell an absent index from a present one,
+ *                 and one that formats it must not have to parse a string back apart to do so.
  * @param detail   the row's own note — the resolved insulin type for a dose — or null.
  */
 data class LoggedEntry(
@@ -53,6 +64,7 @@ data class LoggedEntry(
     val tsMs: Long,
     val tzOffsetMin: Int,
     val amount: Double,
+    val gi: Double?,
     val detail: String?,
     val state: LogState,
 ) {

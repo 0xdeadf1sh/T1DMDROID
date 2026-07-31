@@ -127,6 +127,18 @@ class LogMarkerClusterTest {
         }
     }
 
+    @Test fun everythingTheLanesClaimIsDerivedFromTheGlyph() {
+        // The glyph size is the ONE knob. The band the lanes borrow, the distance at which two marks
+        // combine and the reach of a tap are all measured from it, so growing a mark cannot leave a
+        // caption printing over a lane, two glyphs overlapping, or a tap target the size of the old
+        // icon. Stated as relations rather than figures: the figures are the layer's own business.
+        val dpPx = 3f
+        assertTrue("both lanes fit inside the band", LOG_MARKER_BAND_DP > LOG_MARKER_DP * 2f)
+        assertTrue("marks combine only past a whole glyph", logMarkerSeparationPx(dpPx) > LOG_MARKER_DP * dpPx)
+        assertEquals(logMarkerSeparationPx(dpPx) / 2f, logMarkerTapReachPx(dpPx), 1e-4f)
+        assertTrue("a tap reaches past the glyph's edge", logMarkerTapReachPx(dpPx) > LOG_MARKER_DP * dpPx / 2f)
+    }
+
     @Test fun theWholeBandIsWhatTheTwoLanesBorrowFromThePlot() {
         // The band is an OVERLAY: the caller's plotBottom, y scale and trace geometry are unchanged, so
         // the only claim this layer makes on the plot is the strip from the upper lane's top down to the
@@ -138,6 +150,34 @@ class LogMarkerClusterTest {
             logMarkerLaneTop(CurveKind.INSULIN, plotBottom, dpPx),
             1e-3f,
         )
+    }
+
+    // ── which logs a mark stands for ─────────────────────────────────────────────────────────────
+
+    @Test fun aClusterNamesTheRunOfItsLaneItStandsFor() {
+        // A combined mark has to be able to list what it combined: a timestamp cannot do it (two rows
+        // can share a 5-min slot), so the run is carried.
+        val out = cluster(listOf(mark(0), mark(20_000), mark(500_000)))
+        assertEquals(2, out.size)
+        assertEquals(0, out[0].from)
+        assertEquals(2, out[0].to)
+        assertEquals(2, out[0].size)
+        assertEquals(2, out[1].from)
+        assertEquals(3, out[1].to)
+        assertEquals(1, out[1].size)
+    }
+
+    @Test fun theRunsSurviveTheCullAndPartitionWhatIsDrawn() {
+        // Culling drops a prefix and a suffix of an ascending list, which is what keeps every run
+        // contiguous — the property the tap resolves members through.
+        val markers = listOf(mark(-500_000), mark(400_000), mark(420_000), mark(900_000), mark(2_000_000))
+        val out = cluster(markers)
+        assertEquals(2, out.size)
+        assertEquals(1, out[0].from)
+        assertEquals(3, out[0].to)
+        assertEquals(3, out[1].from)
+        assertEquals(4, out[1].to)
+        out.zipWithNext { a, b -> assertTrue("runs overlap", a.to <= b.from) }
     }
 
     // ── the pulse verdict ────────────────────────────────────────────────────────────────────────

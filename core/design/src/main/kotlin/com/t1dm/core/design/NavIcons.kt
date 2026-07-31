@@ -164,19 +164,21 @@ private fun logs(s: IconStyle) = glyph("logs", s) { // a bulleted list: three ma
 //
 // These are the ONE set that opts out of the per-theme geometry above: a single burger and a single
 // syringe, always FILLED, re-tinted per theme by the caller and never re-shaped. Two reasons, both
-// consequences of the size they render at — roughly a third of a nav icon, on top of the trace:
+// consequences of WHERE they render — on top of the trace, over live data, at whatever zoom the user
+// has pinched to:
 //
-//  - At that scale only the silhouette survives. A stroked outline of a burger is a smudge and a
-//    stroked needle disappears altogether, so the fill-vs-stroke transform the nav set turns on has
-//    nothing left to express here.
+//  - The silhouette is the whole of the reading. A stroked outline competes with the grid, the curve
+//    overlay and the BG line it stands among, so the fill-vs-stroke transform the nav set turns on has
+//    nothing to express here that would not cost legibility.
 //  - What the mark must say is WHICH CHANNEL it belongs to, instantly, at a glance across a busy
 //    evening. A shape that changed with the theme would be one more thing to relearn, and there is no
 //    second reading of it to fall back on: the panel is not permitted the amount, and colour already
 //    carries the theme.
 //
 // So both are chunky, axis-aligned, mostly-rectangular silhouettes with generous internal gaps, drawn
-// large in the 24-unit viewport. The BG point markers are circles and neither of these is round, so a
-// mark cannot be mistaken for the plot's own furniture.
+// large in the 24-unit viewport — which is also what lets them scale to whatever `LOG_MARKER_DP` the
+// panel draws them at without a second artwork. The BG point markers are circles and neither of these
+// is round, so a mark cannot be mistaken for the plot's own furniture.
 
 /** Build a 24dp icon from a closed silhouette, always filled and never re-derived per theme. */
 private fun filledGlyph(name: String, body: PathBuilder.() -> Unit): ImageVector =
@@ -186,8 +188,8 @@ private fun filledGlyph(name: String, body: PathBuilder.() -> Unit): ImageVector
         viewportWidth = 24f, viewportHeight = 24f,
     ).apply { path(fill = SolidColor(Color.White), pathBuilder = body) }.build()
 
-/** Carbohydrate: a burger — a domed bun over two bars. Three separate pieces, so the gaps between them
- *  are what makes the stack legible once the whole glyph is ten dp tall. */
+/** Carbohydrate: a burger — a domed bun over two bars. Three separate pieces, so the stack survives
+ *  being read at a glance against a moving trace rather than resolving into one blob. */
 private val CarbMark: ImageVector = filledGlyph("carbmark") {
     moveTo(2.5f, 12f); arcTo(9.5f, 8.5f, 0f, false, true, 21.5f, 12f); close() // top bun
     moveTo(1.5f, 13.5f); lineTo(22.5f, 13.5f); lineTo(22.5f, 16.5f); lineTo(1.5f, 16.5f); close() // patty
@@ -195,8 +197,8 @@ private val CarbMark: ImageVector = filledGlyph("carbmark") {
 }
 
 /** Insulin: a syringe, upright and pointing DOWN at the axis — plunger, finger flange, barrel, needle,
- *  as one closed polygon. Upright rather than the nav set's diagonal barrel because a 45° slab of this
- *  width blurs into a stroke at marker size, where the vertical needle still reads. */
+ *  as one closed polygon. Upright rather than the nav set's diagonal barrel: a 45° slab reads as a
+ *  stroke of the trace it stands over, where the vertical needle pointing at the axis cannot. */
 private val InsulinMark: ImageVector = filledGlyph("insulinmark") {
     moveTo(8f, 1f); lineTo(16f, 1f); lineTo(16f, 3.2f); lineTo(13.5f, 3.2f); lineTo(13.5f, 6f)
     lineTo(17.5f, 6f); lineTo(17.5f, 8.2f); lineTo(15.5f, 8.2f); lineTo(15.5f, 16f)

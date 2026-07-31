@@ -28,15 +28,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.HapticEvent
+import com.t1dm.core.design.logAmountLabel
+import com.t1dm.core.design.logDetailLabel
+import com.t1dm.core.design.logTimeLabel
 import com.t1dm.core.design.rememberHapticDetent
 import com.t1dm.core.design.rememberT1dmHaptics
-import com.t1dm.core.model.CurveKind
-import com.t1dm.core.model.InsulinKind
 import com.t1dm.core.model.LogState
 import com.t1dm.core.model.LoggedEntry
-import java.time.Instant
-import java.time.ZoneOffset
-import java.time.format.DateTimeFormatter
 import kotlin.math.roundToInt
 
 /**
@@ -191,18 +189,18 @@ private fun EntryRow(entry: LoggedEntry, onDelete: () -> Unit) {
         ) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    formatTs(entry.tsMs, entry.tzOffsetMin),
+                    logTimeLabel(entry.tsMs, entry.tzOffsetMin),
                     style = MaterialTheme.typography.labelSmall,
                     color = cs.onSurface.copy(alpha = 0.6f),
                 )
                 Text(
-                    amountLabel(entry),
+                    logAmountLabel(entry),
                     style = MaterialTheme.typography.bodyLarge,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                entry.detail?.takeIf { it.isNotBlank() }?.let {
+                logDetailLabel(entry)?.let {
                     Text(
                         it,
                         style = MaterialTheme.typography.bodySmall,
@@ -242,7 +240,7 @@ private fun DeleteConfirmDialog(entry: LoggedEntry, onConfirm: () -> Unit, onDis
         onDismissRequest = { haptics.perform(HapticEvent.Reject); onDismiss() },
         title = { Text("Delete this entry?") },
         text = {
-            Text("${amountLabel(entry)} · ${formatTs(entry.tsMs, entry.tzOffsetMin)}")
+            Text("${logAmountLabel(entry)} · ${logTimeLabel(entry.tsMs, entry.tzOffsetMin)}")
         },
         confirmButton = {
             TextButton(onClick = { haptics.perform(HapticEvent.Commit); onConfirm() }) { Text("Delete") }
@@ -253,31 +251,7 @@ private fun DeleteConfirmDialog(entry: LoggedEntry, onConfirm: () -> Unit, onDis
     )
 }
 
-/** The row's headline: grams of carbohydrate, or units of insulin with the shape it acts through. */
-private fun amountLabel(entry: LoggedEntry): String = when (entry.kind) {
-    CurveKind.CARB -> "${fmtAmount(entry.amount)} g carbs"
-    CurveKind.INSULIN -> {
-        val shape = when (entry.insulin) {
-            InsulinKind.BOLUS -> " bolus"
-            InsulinKind.BASAL -> " basal"
-            null -> ""
-        }
-        "${fmtAmount(entry.amount)} U$shape"
-    }
-}
-
 private fun stateLabel(state: LogState): String = when (state) {
     LogState.COMMITTED -> "committed"
     LogState.DELIVERED -> "delivered"
 }
-
-/** Integral amounts read as "45", a half unit still as "4.5" (matching the commit receipts). */
-private fun fmtAmount(v: Double): String =
-    if (v == Math.rint(v) && !v.isInfinite()) v.toLong().toString() else "%.1f".format(v)
-
-private val TS_FMT: DateTimeFormatter = DateTimeFormatter.ofPattern("MMM d · HH:mm")
-
-/** Rendered in the offset the row was WRITTEN at, not the reader's current one: a dose taken abroad
- *  keeps the wall-clock time the user took it at. */
-private fun formatTs(ms: Long, tzOffsetMin: Int): String =
-    Instant.ofEpochMilli(ms).atOffset(ZoneOffset.ofTotalSeconds(tzOffsetMin * 60)).format(TS_FMT)
