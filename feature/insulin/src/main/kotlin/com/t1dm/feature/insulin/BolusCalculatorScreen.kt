@@ -69,6 +69,9 @@ fun BolusCalculatorScreen(
     targetHighMgdl: Double,
     initialTargetMgdl: Double,
     isComputing: Boolean = false,
+    /** The resolved rapid insulin the search ran against and the write will carry — read asynchronously,
+     *  so null means "not yet known", and an Accept that would write a dose stays closed until it lands
+     *  rather than confirming a row whose insulin it cannot name. */
     insulinLabel: String? = null,
     /** True once the recommendation has outlived the anchor it was computed from; Accept goes dead and
      *  the card is greyed, because every freshness figure on it describes a BG that has since aged. */
@@ -232,13 +235,20 @@ private fun RecommendedBody(
             }
         }
     }
+    // A carb-rescue or a 0 U acceptance writes no `logged_dose` at all, so it names no insulin; every
+    // other acceptance does, and that is what makes [insulinLabel] a precondition below.
+    val writesDose = rec.rescueCarbsG == null && rec.best.doseU > 0.0
     // The §3.6-F terminal accept — the only press in the app that records a dosing decision. The two
     // branches deliberately differ: a carb-rescue or 0 U acceptance writes NO dose and raises no
     // dialog, so this press is the whole act and carries the Commit itself; a real dose only proposes,
     // and its Commit is owned by the receipt once the `logged_dose` row exists.
+    //
+    // Held closed until the resolved insulin has landed, for the reason the insulin panel's log button
+    // is: the catalogue is read asynchronously, and a press before it arrives would leave the
+    // confirmation with no insulin to restate but the dose still about to be written.
     Button(
         onClick = {
-            if (rec.rescueCarbsG != null || rec.best.doseU <= 0.0) {
+            if (!writesDose) {
                 haptics.perform(HapticEvent.Commit)
                 onAccept(rec.best)
             } else {
@@ -246,7 +256,7 @@ private fun RecommendedBody(
                 pendingAccept = rec.best
             }
         },
-        enabled = acknowledged && confirmSatisfied && !adviceExpired,
+        enabled = acknowledged && confirmSatisfied && !adviceExpired && (!writesDose || insulinLabel != null),
         modifier = Modifier.fillMaxWidth(),
     ) {
         Text(
@@ -258,9 +268,12 @@ private fun RecommendedBody(
         )
     }
 
-    pendingAccept?.let { c ->
+    // Non-null by the gate above — the dialog restates the insulin the writer will resolve, never a
+    // placeholder standing in for one it has not read yet.
+    val label = insulinLabel
+    if (label != null) pendingAccept?.let { c ->
         ConfirmLogDialog(
-            pending = PendingLog.Dose(c.doseU, InsulinKind.BOLUS, insulinLabel ?: "rapid-acting (from Settings)"),
+            pending = PendingLog.Dose(c.doseU, InsulinKind.BOLUS, label),
             onConfirm = { onAccept(c); pendingAccept = null },
             onDismiss = { pendingAccept = null },
         )

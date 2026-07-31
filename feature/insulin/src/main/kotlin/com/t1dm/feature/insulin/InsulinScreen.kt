@@ -1,6 +1,7 @@
 package com.t1dm.feature.insulin
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -38,9 +39,9 @@ import com.t1dm.core.design.PendingLog
 import com.t1dm.core.design.rememberHapticDetent
 import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.design.verticalScrollbar
-import com.t1dm.core.model.BasalPreset
-import com.t1dm.core.model.BolusPreset
+import com.t1dm.core.model.InsulinFamily
 import com.t1dm.core.model.InsulinKind
+import com.t1dm.core.model.InsulinPresetSpec
 import com.t1dm.core.model.IobCobReadout
 import kotlin.math.roundToInt
 
@@ -65,11 +66,11 @@ private fun Double?.loggableDose(): Double? = this?.takeIf { it.isFinite() && it
 
 /**
  * The Phase-4 insulin entry surface (deliverable 1 — "manual bolus/basal entry").
- * Both channels feed the model as a **PK action** rate (model-io-curves.md): a bolus is a gamma
- * peaking ~50 min ([BolusPreset]); a basal is a broad, near-flat Bateman ([BasalPreset]). `:app`
- * writes the self-describing `logged_dose` row (exponential action for rapid / Bateman rates for
- * basal), folds units into the wide `sample` (bolusU / basalU), and
- * enqueues `PUT /v1/series/{bolus,basal}`.
+ * Both channels feed the model as a **PK action** rate (model-io-curves.md): a rapid bolus is the
+ * Loop/OpenAPS exponential activity curve; a long-acting basal is a broad, near-flat Bateman. `:app`
+ * writes the self-describing `logged_dose` row (the chosen preset's peak/DIA for rapid, its DIA +
+ * ka/ke for basal), folds units into the wide `sample` (bolusU / basalU), and enqueues
+ * `PUT /v1/series/{bolus,basal}`.
  *
  * Stateless + callback-driven, dependency-light. IOB is surfaced at the top with its §3.6-F
  * provenance ("from logged doses only; last logged N min ago") so a nonzero dose taken after a long
@@ -77,34 +78,42 @@ private fun Double?.loggableDose(): Double? = this?.takeIf { it.isFinite() && it
  * A "pick a saved insulin type / draw a custom curve" affordance is a seam for the curve-editor work
  * (deliverable 4), reached through the [footer] slot.
  *
- * Every dose passes a confirm-then-commit dialog before the callback fires. [rapidLabel]/[basalLabel]
- * are the clinical presets `:app` will actually resolve and persist (issue 19) — the writer resolves
- * them from Settings and ignores the [BolusPreset]/[BasalPreset] this screen passes back, so the
- * on-screen quick presets are not what ends up in `logged_dose`. The confirmation restates the
- * resolved label precisely so that gap cannot be confirmed blind; both fall back to the enum label
- * when the caller supplies nothing (previews, tests).
+ * **The panel picks the insulin, and the pick governs.** [presetCatalog] is the shared clinical
+ * catalogue (`insulin_preset_catalog`) partitioned here by family; the label the user selects is what
+ * [onLogBolus]/[onLogBasal] hand the writer, and the writer commits that preset's curve. It did not
+ * always: the screen once offered a one-variant rapid enum and a two-variant basal enum, and the
+ * writer discarded both to resolve a Settings selection instead — so the row named an insulin the
+ * panel had never shown. Every dose still passes a confirm-then-commit dialog, and the dialog names
+ * the selected preset precisely so a disagreement of that kind cannot be confirmed blind.
  *
- * N10 — this screen had no scroll container at all, so the BASAL tab (units field + slider + two
- * full-width preset chips + labelled sparkline + advisory + button) simply ran off the bottom, and
- * the on-screen keyboard raised by the units field buried "Log bolus"/"Log basal" with no way to
- * reach them. It now owns EXACTLY ONE vertical scroll, and [footer] renders inside it: see the
- * matching note on `MealsScreen` for why a caller must never place siblings after this screen in a
- * plain Column (they are measured with `maxHeight = 0`).
+ * [initialRapidLabel]/[initialBasalLabel] seed each tab from the insulin LAST LOGGED of that kind.
+ * That stickiness follows the dose, never the tap: selecting a chip and walking away changes nothing,
+ * and the caller writes the memory only when a row is actually committed.
+ *
+ * N10 — this screen had no scroll container at all, so the BASAL tab (units field + slider + preset
+ * chips + labelled sparkline + advisory + button) simply ran off the bottom, and the on-screen
+ * keyboard raised by the units field buried "Log bolus"/"Log basal" with no way to reach them. It now
+ * owns EXACTLY ONE vertical scroll, and [footer] renders inside it: see the matching note on
+ * `MealsScreen` for why a caller must never place siblings after this screen in a plain Column (they
+ * are measured with `maxHeight = 0`). The preset rows scroll HORIZONTALLY inside it — seven labels as
+ * long as "Ultra-rapid lispro · Lyumjev" would otherwise take the whole panel to stack.
  */
 @Composable
 fun InsulinScreen(
     iobCob: IobCobReadout? = null,
-    previewBolus: (suspend (units: Double) -> DoubleArray)? = null,
-    previewBasal: (suspend (units: Double, preset: BasalPreset) -> DoubleArray)? = null,
-    rapidLabel: String? = null,
-    basalLabel: String? = null,
-    onLogBolus: (units: Double, preset: BolusPreset) -> Unit = { _, _ -> },
-    onLogBasal: (units: Double, preset: BasalPreset) -> Unit = { _, _ -> },
+    presetCatalog: List<InsulinPresetSpec> = emptyList(),
+    initialRapidLabel: String? = null,
+    initialBasalLabel: String? = null,
+    previewCurve: (suspend (units: Double, preset: InsulinPresetSpec) -> DoubleArray)? = null,
+    onLogBolus: (units: Double, presetLabel: String) -> Unit = { _, _ -> },
+    onLogBasal: (units: Double, presetLabel: String) -> Unit = { _, _ -> },
     footer: @Composable ColumnScope.() -> Unit = {},
 ) {
     var tab by remember { mutableStateOf(Tab.BOLUS) }
     val scroll = rememberScrollState()
     val haptics = rememberT1dmHaptics()
+    val rapids = remember(presetCatalog) { presetCatalog.filter { it.family == InsulinFamily.RapidExp } }
+    val basals = remember(presetCatalog) { presetCatalog.filter { it.family == InsulinFamily.BasalBateman } }
 
     Column(Modifier.fillMaxSize().verticalScrollbar(scroll).verticalScroll(scroll).padding(16.dp)) {
         iobCob?.let { IobLine(it) }
@@ -120,143 +129,124 @@ fun InsulinScreen(
         }
 
         when (tab) {
-            Tab.BOLUS -> BolusEntry(previewBolus, rapidLabel, onLogBolus)
-            Tab.BASAL -> BasalEntry(previewBasal, basalLabel, onLogBasal)
+            Tab.BOLUS -> DoseEntry(InsulinKind.BOLUS, rapids, initialRapidLabel, previewCurve, onLogBolus)
+            Tab.BASAL -> DoseEntry(InsulinKind.BASAL, basals, initialBasalLabel, previewCurve, onLogBasal)
         }
 
         footer()
     }
 }
 
+/**
+ * One tab. The two kinds differ only in which slice of the catalogue they offer, the sparkline's
+ * accent, and the basal's signpost to the schedule search — everything else (the dose field, the
+ * preset row, the preview, the confirm-then-commit beat) is the same surface, so they share it.
+ *
+ * The log button is disabled until BOTH a finite positive dose and a preset exist. The second half
+ * matters: the catalogue arrives asynchronously, and a press before it lands would otherwise have to
+ * invent an insulin to name in the confirmation.
+ */
 @Composable
-private fun BolusEntry(
-    previewBolus: (suspend (units: Double) -> DoubleArray)?,
-    rapidLabel: String?,
-    onLogBolus: (Double, BolusPreset) -> Unit,
+private fun DoseEntry(
+    kind: InsulinKind,
+    presets: List<InsulinPresetSpec>,
+    initialLabel: String?,
+    previewCurve: (suspend (Double, InsulinPresetSpec) -> DoubleArray)?,
+    onLog: (Double, String) -> Unit,
 ) {
     var unitsText by remember { mutableStateOf("") }
-    val preset = BolusPreset.NOVORAPID
-    val units = unitsText.toDoubleOrNull()
-    val dose = units.loggableDose()
+    // Re-seeded when the catalogue or the last-logged label arrives (both are read asynchronously),
+    // and never afterwards — a tap moves the selection, and only a committed dose moves the seed.
+    var selectedLabel by remember(presets, initialLabel) {
+        mutableStateOf(presets.firstOrNull { it.label == initialLabel }?.label ?: presets.firstOrNull()?.label)
+    }
+    val preset = presets.firstOrNull { it.label == selectedLabel } ?: presets.firstOrNull()
+    val dose = unitsText.toDoubleOrNull().loggableDose()
     var pending by remember { mutableStateOf<PendingLog.Dose?>(null) }
     val haptics = rememberT1dmHaptics()
+    val presetScroll = rememberScrollState()
 
     Column(Modifier.fillMaxWidth().padding(top = 12.dp)) {
         UnitsField(unitsText) { unitsText = it }
-        Text(preset.label, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 8.dp))
 
-        if (previewBolus != null && dose != null) {
+        Row(
+            Modifier.fillMaxWidth().padding(top = 8.dp).horizontalScroll(presetScroll),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            presets.forEach { p ->
+                FilterChip(
+                    selected = p.label == preset?.label,
+                    onClick = { haptics.perform(HapticEvent.SegmentTick); selectedLabel = p.label },
+                    label = { Text(p.label, maxLines = 1) },
+                )
+            }
+        }
+        // The selected preset's own provenance, verbatim from the catalogue — it carries the peak,
+        // the DIA and where they come from. This is the only place that survives: it used to sit
+        // under the Settings picker, and dropping the picker without it would have left a clinical
+        // PK choice on a dose path with nothing behind it. Rendered for the SELECTION alone; seven
+        // citations at once would bury the chips.
+        preset?.let {
             Text(
-                "PK action — units per 5 min",
+                it.citation,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 8.dp),
+            )
+        }
+
+        // N9 — the basal PK-action curve is previewed like the bolus but normalized to its OWN peak so
+        // its deliberately broad, near-flat plateau is visible (a 24–42 h Bateman spreads a dose so
+        // thinly it would otherwise vanish on any shared scale). Labelled so the flatness reads as
+        // intended, not as a bug.
+        if (previewCurve != null && dose != null && preset != null) {
+            Text(
+                if (kind == InsulinKind.BOLUS) {
+                    "PK action — units per 5 min"
+                } else {
+                    "PK action — units per 5 min (broad + near-flat by design)"
+                },
                 style = MaterialTheme.typography.labelMedium,
                 modifier = Modifier.padding(top = 8.dp),
             )
-            val curve by produceState(DoubleArray(0), dose) {
-                value = runCatching { previewBolus(dose) }.getOrDefault(DoubleArray(0))
+            val curve by produceState(DoubleArray(0), dose, preset) {
+                value = runCatching { previewCurve(dose, preset) }.getOrDefault(DoubleArray(0))
             }
-            CurveSparkline(curve, MaterialTheme.colorScheme.primary)
+            CurveSparkline(
+                curve,
+                if (kind == InsulinKind.BOLUS) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary,
+            )
         }
 
-        // Propose only — `unitsText` is cleared on confirm, never on the press, so a Cancel keeps
-        // what was typed. The dialog names [rapidLabel] (the Settings-resolved clinical preset the
-        // writer will actually persist), not the quick-preset enum shown above it.
-        // Propose only: ConfirmLogDialog owns the Warn/Confirm/Reject beat and the commit receipt
+        if (kind == InsulinKind.BASAL) {
+            Text(
+                "Logs a one-off injection — schedule + basal-rate search in Settings → Basal",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                modifier = Modifier.padding(top = 8.dp),
+            )
+        }
+
+        // Propose only. `unitsText` is cleared on confirm, never on the press, so a Cancel keeps what
+        // was typed; and ConfirmLogDialog owns the Warn/Confirm/Reject beat while the commit receipt
         // owns the Commit, so this press is a plain Tap. Anything heavier would announce a dose that
         // has not been written yet.
         Button(
             onClick = {
                 haptics.perform(HapticEvent.Tap)
-                dose?.let {
-                    pending = PendingLog.Dose(it, InsulinKind.BOLUS, rapidLabel ?: preset.label)
-                }
+                if (dose != null && preset != null) pending = PendingLog.Dose(dose, kind, preset.label)
             },
-            enabled = dose != null,
+            enabled = dose != null && preset != null,
             modifier = Modifier.padding(top = 16.dp),
-        ) { Text("Log bolus") }
+        ) { Text(if (kind == InsulinKind.BOLUS) "Log bolus" else "Log basal") }
     }
 
     pending?.let { p ->
         ConfirmLogDialog(
             pending = p,
-            onConfirm = { onLogBolus(p.units, preset); unitsText = ""; pending = null },
-            onDismiss = { pending = null },
-        )
-    }
-}
-
-@Composable
-private fun BasalEntry(
-    previewBasal: (suspend (units: Double, preset: BasalPreset) -> DoubleArray)?,
-    basalLabel: String?,
-    onLogBasal: (Double, BasalPreset) -> Unit,
-) {
-    var unitsText by remember { mutableStateOf("") }
-    var preset by remember { mutableStateOf(BasalPreset.LANTUS) }
-    val units = unitsText.toDoubleOrNull()
-    val dose = units.loggableDose()
-    var pending by remember { mutableStateOf<PendingLog.Dose?>(null) }
-    val haptics = rememberT1dmHaptics()
-
-    Column(Modifier.fillMaxWidth().padding(top = 12.dp)) {
-        UnitsField(unitsText) { unitsText = it }
-        // I14 — the basal presets render identically regardless of their (uneven-length) labels: each is
-        // a full-width row with a leading selection dot and a single-line label, so "Lantus · glargine ·
-        // ~24 h" and "Tresiba · degludec · ~42 h" line up instead of one stretching while the other wraps.
-        Column(Modifier.fillMaxWidth().padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            BasalPreset.entries.forEach { p ->
-                FilterChip(
-                    selected = preset == p,
-                    onClick = { haptics.perform(HapticEvent.SegmentTick); preset = p },
-                    label = {
-                        Text(
-                            p.label,
-                            maxLines = 1,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-        }
-
-        // N9 — the basal PK-action curve, previewed like the bolus but normalized to its OWN peak so
-        // its deliberately broad, near-flat plateau is visible (a 24–42 h Bateman spreads a dose so
-        // thinly it would otherwise vanish on any shared scale). Labelled so the flatness reads as
-        // intended, not as a bug.
-        if (previewBasal != null && dose != null) {
-            Text(
-                "PK action — units per 5 min (broad + near-flat by design)",
-                style = MaterialTheme.typography.labelMedium,
-                modifier = Modifier.padding(top = 8.dp),
-            )
-            val curve by produceState(DoubleArray(0), dose, preset) {
-                value = runCatching { previewBasal(dose, preset) }.getOrDefault(DoubleArray(0))
-            }
-            CurveSparkline(curve, MaterialTheme.colorScheme.tertiary)
-        }
-
-        Text(
-            "Logs a one-off injection — schedule + basal-rate search in Settings → Basal",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
-            modifier = Modifier.padding(top = 8.dp),
-        )
-        Button(
-            onClick = {
-                haptics.perform(HapticEvent.Tap)
-                dose?.let {
-                    pending = PendingLog.Dose(it, InsulinKind.BASAL, basalLabel ?: preset.label)
-                }
-            },
-            enabled = dose != null,
-            modifier = Modifier.padding(top = 16.dp),
-        ) { Text("Log basal") }
-    }
-
-    pending?.let { p ->
-        ConfirmLogDialog(
-            pending = p,
-            onConfirm = { onLogBasal(p.units, preset); unitsText = ""; pending = null },
+            // The dialog restated `p.typeLabel`, so that is the label the write must carry — not
+            // whatever the chip row holds by the time Log is pressed.
+            onConfirm = { onLog(p.units, p.typeLabel); unitsText = ""; pending = null },
             onDismiss = { pending = null },
         )
     }

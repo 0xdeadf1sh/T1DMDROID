@@ -143,12 +143,27 @@ class SettingsIndexTest {
         assertTop("wallpaper", "display.background_opacity")
         assertTop("hypoglycaemia", "alarm.urgent_low")
         assertTop("ketoacidosis", "death_clock.dka")
-        assertTop("humalog", "curves.rapid_preset")
         assertTop("stacking", "calc.rail_iob_ceiling")
         assertTop("vulkan", "models.compute_backend")
         assertTop("rssi", "signal.weak_enabled")
         assertTop("tailscale", "server.base_url")
         assertTop("factory reset", "data.reset")
+    }
+
+    /**
+     * The clinical insulin preset is not a setting. It is picked per dose on the insulin panel, and
+     * the writer commits what the panel picked; a Settings row that also chose it is precisely how
+     * the panel's presets came to be decorative while the row carried something else. An index entry
+     * would advertise a screen that cannot change it, so there must be none — by id, and by the
+     * brand names a user would actually search for.
+     */
+    @Test
+    fun `the insulin preset is picked per dose, so Settings does not index it`() {
+        assertEquals(null, SettingsIndex.byId("curves.rapid_preset"))
+        assertEquals(null, SettingsIndex.byId("curves.basal_preset"))
+        for (brand in listOf("humalog", "novorapid", "fiasp", "lyumjev", "tresiba", "toujeo")) {
+            assertTrue("$brand -> ${searchSettings(brand).map { it.id }}", searchSettings(brand).isEmpty())
+        }
     }
 
     @Test

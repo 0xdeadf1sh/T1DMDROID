@@ -59,13 +59,18 @@ data class BasalSchedule(
 enum class InsulinFamily { RapidExp, BasalBateman }
 
 /**
- * One resolved clinical insulin preset (mirror of the Rust `InsulinPresetSpec`, issue 19). These
- * are the OPT-IN, clinically-grounded alternatives to the simulator-matched default curves.
- * Selecting one moves the model's insulin-action channel OFF its training distribution — the
- * calculator/IOB become more clinically faithful while the FORECAST becomes less trustworthy —
- * hence [offDistribution] drives the prominent warning at the picker. [label] is the stable,
- * user-facing identity the app persists a selection by; [peakMin]/[diaMin] (and, for basals,
- * [kaPerHour]/[kePerHour]) parameterise the actual curve. [citation] is public-safe provenance.
+ * One resolved clinical insulin preset (mirror of the Rust `InsulinPresetSpec`, issue 19) — the
+ * clinically-grounded, published-PK curves the insulin panel offers as chips and the dose writers
+ * commit. A preset moves the model's insulin-action channel OFF its training distribution (the
+ * calculator/IOB become more clinically faithful while the FORECAST becomes less trustworthy), which
+ * is what [offDistribution] records; per the user's explicit call the app raises no warning for it,
+ * so nothing currently reads the flag.
+ *
+ * [label] is the stable identity everything keys a preset by — the panel's chip, the confirmation
+ * dialog's restatement, the `logged_dose.note`, and the last-used memory — because the Rust `preset`
+ * enum is deliberately not projected across the uniffi seam. [peakMin]/[diaMin] (and, for basals,
+ * [kaPerHour]/[kePerHour]) parameterise the actual curve. [citation] is public-safe provenance,
+ * rendered verbatim beneath the panel's selected chip.
  */
 data class InsulinPresetSpec(
     val family: InsulinFamily,

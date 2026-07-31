@@ -39,7 +39,8 @@ class CurveEngine(
     suspend fun expAction(total: Double, peakMin: Double, diaMin: Double): DoubleArray =
         withContext(dispatchers.default) { native.expActionCurve(total, peakMin, diaMin).toDoubleArray() }
 
-    /** The clinical insulin preset catalogue (issue 19), for the Settings picker + apply-at-log. */
+    /** The clinical insulin preset catalogue (issue 19): the insulin panel's chips, and the set the
+     *  dose writers resolve a logged row's curve out of. */
     suspend fun presetCatalog(): List<com.t1dm.core.model.InsulinPresetSpec> =
         withContext(dispatchers.default) { native.insulinPresetCatalog() }
 

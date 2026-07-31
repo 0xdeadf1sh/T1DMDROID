@@ -1,33 +1,25 @@
 package com.t1dm.feature.settings
 
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.selection.selectable
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.model.BezierCurve
-import com.t1dm.core.model.InsulinFamily
-import com.t1dm.core.model.InsulinPresetSpec
 import com.t1dm.ui.graph.CurveEditor
 import com.t1dm.ui.graph.CurvePreview
 
@@ -38,6 +30,11 @@ import com.t1dm.ui.graph.CurvePreview
  * the control points to author a smooth carb-appearance or insulin-action template that is
  * area-normalised to the dose total exactly like the presets, then saved. Fresh custom foods /
  * insulin types in the builders start from these templates.
+ *
+ * The clinical insulin preset library is NOT chosen here. It is chosen on the insulin panel, at the
+ * moment of the dose, and the writer commits what the panel picked. A picker on this screen was the
+ * previous arrangement and it made the panel's own presets decorative: the two surfaces named
+ * different insulins and only the confirmation dialog could see the disagreement.
  */
 data class CurveParams(
     val basalKaPerHour: Double,
@@ -57,27 +54,9 @@ fun CurveParamsScreen(
     insulinCurve: BezierCurve,
     onSaveCarbCurve: (BezierCurve) -> Unit,
     onSaveInsulinCurve: (BezierCurve) -> Unit,
-    // Issue 19 — the selectable clinical insulin preset library.
-    presetCatalog: List<InsulinPresetSpec> = emptyList(),
-    selectedRapidLabel: String = "",
-    selectedBasalLabel: String = "",
-    onSelectRapid: (String) -> Unit = {},
-    onSelectBasal: (String) -> Unit = {},
-    previewPreset: (suspend (InsulinPresetSpec) -> DoubleArray)? = null,
 ) {
     SettingsScaffold(SettingsScreenKey.CURVES) {
         SettingsNote("How a dose becomes its curve")
-
-        if (presetCatalog.isNotEmpty()) {
-            InsulinPresetSection(
-                catalog = presetCatalog,
-                selectedRapidLabel = selectedRapidLabel,
-                selectedBasalLabel = selectedBasalLabel,
-                onSelectRapid = onSelectRapid,
-                onSelectBasal = onSelectBasal,
-                previewPreset = previewPreset,
-            )
-        }
 
         SettingsSectionHeader("Custom carb-appearance curve (Bézier)")
         SettingsNote("Drag to shape; area = meal total")
@@ -101,90 +80,6 @@ fun CurveParamsScreen(
         SettingsNote("High-GI carbs peak early and sharp; low-GI spread out.")
         Kv("High GI k / θ", "%.1f / %.0f".format(params.carbHighGiK, params.carbHighGiTheta))
         Kv("Low GI k / θ", "%.1f / %.0f".format(params.carbLowGiK, params.carbLowGiTheta))
-    }
-}
-
-/**
- * The issue-19 clinical insulin preset picker. Every preset is a clinically-grounded, published-PK
- * shape; the default is now the first clinical preset of each family (rapid/basal) rather than a
- * simulator curve. Each preset shows its published peak/DIA + a one-line citation; selecting one is
- * silent and immediate and applies to NEWLY-logged doses only (past logs are self-describing and keep
- * their original curve). Per the user's decision there is NO off-distribution warning — only the
- * neutral factual labels below.
- */
-@Composable
-private fun InsulinPresetSection(
-    catalog: List<InsulinPresetSpec>,
-    selectedRapidLabel: String,
-    selectedBasalLabel: String,
-    onSelectRapid: (String) -> Unit,
-    onSelectBasal: (String) -> Unit,
-    previewPreset: (suspend (InsulinPresetSpec) -> DoubleArray)?,
-) {
-    // Partition by family.
-    val rapids = catalog.filter { it.family == InsulinFamily.RapidExp }
-    val basals = catalog.filter { it.family == InsulinFamily.BasalBateman }
-
-    SettingsSectionHeader("Insulin action preset (clinical, selectable)")
-    SettingsNote("Population PK per insulin — peak/DIA and citation")
-
-    SettingsAnchor(curveRapidPreset) {
-        PresetGroup(curveRapidPreset.label, rapids, selectedRapidLabel, onSelectRapid, previewPreset)
-    }
-    SettingsAnchor(curveBasalPreset) {
-        PresetGroup(curveBasalPreset.label, basals, selectedBasalLabel, onSelectBasal, previewPreset)
-    }
-}
-
-@Composable
-private fun PresetGroup(
-    title: String,
-    presets: List<InsulinPresetSpec>,
-    selectedLabel: String,
-    onSelect: (String) -> Unit,
-    previewPreset: (suspend (InsulinPresetSpec) -> DoubleArray)?,
-) {
-    if (presets.isEmpty()) return
-    val haptics = rememberT1dmHaptics()
-    val selected = presets.firstOrNull { it.label == selectedLabel } ?: presets.first()
-    Text(
-        title,
-        style = MaterialTheme.typography.titleSmall,
-        fontWeight = FontWeight.SemiBold,
-        modifier = Modifier.padding(top = 8.dp, bottom = 2.dp),
-    )
-    presets.forEach { spec ->
-        // The row and its radio are two entries into the same single-choice detent, so both speak the
-        // one SegmentTick — never a Tap on the row and a tick on the dot.
-        val pick = { haptics.perform(HapticEvent.SegmentTick); onSelect(spec.label) }
-        Row(
-            Modifier.fillMaxWidth()
-                .selectable(selected = spec.label == selected.label, onClick = pick)
-                .padding(vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            RadioButton(selected = spec.label == selected.label, onClick = pick)
-            Column(Modifier.padding(start = 4.dp).weight(1f)) {
-                Text(spec.label, style = MaterialTheme.typography.bodyMedium)
-                val peakTxt = if (spec.peakMin > 0.0) "peak ${"%.0f".format(spec.peakMin)} min · " else ""
-                Text(
-                    "${peakTxt}DIA ${"%.1f".format(spec.diaMin / 60.0)} h — ${spec.citation}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-    }
-    // Live preview of the selected preset's resolved action curve (5 U reference).
-    if (previewPreset != null) {
-        val curve by produceState(DoubleArray(0), selected) { value = previewPreset(selected) }
-        if (curve.isNotEmpty()) {
-            CurvePreview(
-                values = curve.asList(),
-                height = 90.dp,
-                modifier = Modifier.padding(top = 4.dp),
-            )
-        }
     }
 }
 
@@ -243,35 +138,9 @@ private fun Kv(k: String, v: String) {
 // ── search index (see SettingsIndex.kt) ───────────────────────────────────────────────────────────
 //
 // The Bateman / gamma read-outs below the designers are derived facts, not knobs — they are not
-// indexed, and their vocabulary is folded into the two preset entries instead.
-
-private const val PRESET_SECTION = "Insulin action preset (clinical, selectable)"
-
-private val curveRapidPreset = SettingsKnob(
-    id = "curves.rapid_preset",
-    screen = SettingsScreenKey.CURVES,
-    section = PRESET_SECTION,
-    label = "Rapid-acting (bolus)",
-    subtitle = "The published-PK action shape used for IOB and dosing on newly-logged bolus insulin",
-    synonyms = listOf(
-        "rapid", "bolus", "fast acting", "insulin", "preset", "pk", "action curve", "iob",
-        "humalog", "novorapid", "novolog", "apidra", "fiasp", "lyumjev", "aspart", "lispro",
-        "peak", "dia", "duration of action",
-    ),
-)
-
-private val curveBasalPreset = SettingsKnob(
-    id = "curves.basal_preset",
-    screen = SettingsScreenKey.CURVES,
-    section = PRESET_SECTION,
-    label = "Long-acting (basal)",
-    subtitle = "The Bateman action shape used for newly-logged basal insulin",
-    synonyms = listOf(
-        "basal", "long acting", "background", "insulin", "preset", "bateman", "pk", "iob",
-        "lantus", "tresiba", "levemir", "toujeo", "glargine", "degludec", "detemir",
-        "absorption", "elimination", "dia", "duration",
-    ),
-)
+// indexed. Neither is the clinical insulin preset: it is not a setting at all, it is picked per dose
+// on the insulin panel, and an index entry pointing here would send someone looking for "humalog" to
+// a screen that cannot change it.
 
 private val curveCarbBezier = SettingsKnob(
     id = "curves.carb_bezier",
@@ -298,8 +167,6 @@ private val curveInsulinBezier = SettingsKnob(
 )
 
 internal val settingsCurveKnobs = listOf(
-    curveRapidPreset,
-    curveBasalPreset,
     curveCarbBezier,
     curveInsulinBezier,
 )

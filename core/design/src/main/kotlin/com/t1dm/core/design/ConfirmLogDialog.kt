@@ -72,9 +72,10 @@ sealed interface PendingLog {
 
     /**
      * An insulin entry. [typeLabel] must be the **resolved** curve the writer will persist — the
-     * clinical preset selected in Settings (issue 19) or the custom type picked in the builder — not
-     * whatever quick-preset enum the screen happens to hold, or the dialog would restate a row that
-     * is not the one written.
+     * catalogue preset chosen on the insulin panel, or the custom type picked in the builder — and
+     * the writer must honour it, or the dialog restates a row that is not the one written. That gap
+     * was real once: the panel offered a preset the writer discarded in favour of a Settings
+     * selection, and this line was the only place the two could be seen to disagree.
      */
     data class Dose(
         val units: Double,

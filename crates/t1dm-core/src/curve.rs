@@ -295,8 +295,8 @@ pub enum InsulinFamily {
 
 /// A resolved preset: its family, the citeable peak/DIA, the Bateman rates (basal only), a display
 /// label, and a one-line source citation. `peak_min` is 0 for a flat basal profile (no pronounced
-/// peak). Consumed by the Kotlin `CurveEngine`/`SettingsStore` to build the ACTUAL logged curve and
-/// to render the picker with its citation + off-distribution warning.
+/// peak). Consumed by the Kotlin `CurveEngine` to render the insulin panel's preset chips and to
+/// build the ACTUAL curve of the row a logged dose writes.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct InsulinPresetSpec {
     pub preset: InsulinPreset,
@@ -309,10 +309,11 @@ pub struct InsulinPresetSpec {
     /// Bateman absorption/elimination (1/h) — meaningful only for `BasalBateman`.
     pub ka_per_hour: f64,
     pub ke_per_hour: f64,
-    /// Whether this is an OFF-training-distribution clinical preset (false only for the two
-    /// `Simulator*` defaults). Drives the plain-language warning at the picker.
+    /// Whether this is an OFF-training-distribution clinical preset. Every catalogue entry is, and
+    /// the app raises no warning for it (the user's explicit call), so nothing reads this today.
     pub off_distribution: bool,
-    /// One-line provenance for the peak/DIA (shown verbatim in the picker; keep plain + public-safe).
+    /// One-line provenance for the peak/DIA, rendered verbatim beneath the insulin panel's selected
+    /// chip — keep it plain and public-safe.
     pub citation: String,
 }
 

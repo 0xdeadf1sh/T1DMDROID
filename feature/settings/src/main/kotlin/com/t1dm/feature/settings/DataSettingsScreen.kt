@@ -96,7 +96,7 @@ private fun ResetSection(resetting: Boolean, onReset: () -> Unit) {
 
     DangerBanner(
         "This ERASES EVERYTHING, irreversibly:\n" +
-            "• all glucose readings, the wide series, carb/bolus/basal logs, meals, journal, forecasts\n" +
+            "• all glucose readings, the wide series, carb/bolus/basal logs, meals, forecasts\n" +
             "• every drawing on the glucose graph\n" +
             "• model performance and accuracy history (the model files themselves are kept)\n" +
             "• every setting, threshold, target, curve, theme and font — back to defaults\n" +
