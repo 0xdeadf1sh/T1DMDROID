@@ -30,6 +30,13 @@ interface CgmRepository {
     suspend fun activeSourceId(): CgmSourceId?
 
     /**
+     * Retune one source's warm-up window (minutes) in place, leaving the rest of its row alone — the
+     * window is per-source and persisted, so the user's choice outlives the process. The implementation
+     * clamps to [CgmSourceDescriptor.WARMUP_WINDOW_RANGE].
+     */
+    suspend fun setWarmupWindowMin(id: CgmSourceId, minutes: Int)
+
+    /**
      * Persist one grid-stamped reading to `cgm_reading` (upsert on `(sourceId, tsMs)`) and project
      * its BG onto the wide `sample` row for `tsMs` (§3.5, LWW on `updatedAt`).
      */

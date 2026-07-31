@@ -1,5 +1,6 @@
 package com.t1dm.cgm
 
+import com.t1dm.core.model.CgmSourceDescriptor
 import com.t1dm.core.model.DecodedAdvert
 import com.t1dm.core.model.ReadingFlag
 
@@ -26,10 +27,32 @@ import com.t1dm.core.model.ReadingFlag
  * "0 = normal" semantics were documented against) should a later phase want it.
  */
 class ReadingClassifier(
-    private val warmupWindowMin: Int = CgmConstants.WARMUP_WINDOW_MIN,
+    warmupWindowMin: Int = CgmConstants.WARMUP_WINDOW_MIN,
     private val validBgRange: IntRange = CgmConstants.VALID_BG_RANGE,
     private val rejectNonNormalStatus: Boolean = false,
 ) {
+    /**
+     * The per-source warm-up window in minutes, and on this branch the WHOLE of the warm-up evidence:
+     * a passive advertisement carries no warm-up bit, so `minFromStart < this` is the entire verdict
+     * and the CONFIGURED duration is what governs. [CgmConstants.WARMUP_WINDOW_MIN] is only the seed a
+     * newly discovered source starts at; the user's own value rides
+     * [CgmSourceDescriptor.warmupWindowMin] and is edited from the CGM panel.
+     *
+     * The comparison is EXCLUSIVE, which is what keeps it aligned with the BG panel's countdown:
+     * warm-up ends at `sensorStart + warmupWindowMin`, so the reading stamped at exactly that minute is
+     * already `NORMAL` and the chip reaches zero on the same reading. `0` therefore disables warm-up
+     * outright — no `minFromStart` is below zero — with no boundary case of its own.
+     *
+     * Retunable in place rather than rebuilt: the [CgmPipeline] holding this classifier is STATEFUL (a
+     * dedup ring and the grid stamper's interpolation anchor), so constructing a fresh one to carry a
+     * new window would drop that state and re-admit a minute already recorded. `@Volatile` because the
+     * write comes off the UI's coroutine and the read happens on the scan thread. Clamped on every
+     * write, so no caller can install a window the panel could not have produced.
+     */
+    @Volatile
+    var warmupWindowMin: Int = warmupWindowMin.coerceIn(CgmSourceDescriptor.WARMUP_WINDOW_RANGE)
+        set(value) { field = value.coerceIn(CgmSourceDescriptor.WARMUP_WINDOW_RANGE) }
+
     fun classify(d: DecodedAdvert): ReadingFlag = when {
         !d.valid -> ReadingFlag.INVALID
         d.glucoseMgdl !in validBgRange -> ReadingFlag.INVALID

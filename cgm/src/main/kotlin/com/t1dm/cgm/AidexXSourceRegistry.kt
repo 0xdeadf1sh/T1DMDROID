@@ -82,7 +82,10 @@ class AidexXSourceRegistry(
     private suspend fun hydrate() {
         val persisted = repository.loadSources()
         persisted.forEach { d ->
-            val source = live.getOrPut(d.id.value) { plugin.createSource(d.id) }
+            // The PERSISTED descriptor, not a fresh seed from the id: `createSource(id)` rebuilds the
+            // vendor default, which would silently revert the user's tuned warm-up window on every
+            // process start — the window would then only ever hold until the next launch.
+            val source = live.getOrPut(d.id.value) { plugin.createSource(d) }
             source.onScanning()
         }
         if (persisted.isNotEmpty()) _sources.value = persisted
@@ -103,6 +106,28 @@ class AidexXSourceRegistry(
     override fun setActive(id: CgmSourceId) {
         _active.value = id
         scope.launch { repository.setActive(id) }
+    }
+
+    /**
+     * CGM panel: retune one source's warm-up window (minutes). All three copies move together: the live
+     * [AidexXSource] is what classifies the next advert, the column is what the panel and `:app` read
+     * back and what survives the process (and what [hydrate] rebuilds the live source from), and
+     * [_sources] keeps this registry's own [sources] view consistent with both.
+     *
+     * On this branch the configured window is the ONLY warm-up evidence there is — a passive
+     * advertisement carries no warm-up bit — so an edit that did not reach the live source would leave
+     * the panel showing one duration while the pipeline applied another.
+     *
+     * [AidexXSource.setWarmupWindowMin] owns the clamp; this repeats it only so the value written to
+     * [_sources] and to storage is the same one that was installed.
+     */
+    fun setWarmupWindowMin(id: CgmSourceId, minutes: Int) {
+        val clamped = minutes.coerceIn(CgmSourceDescriptor.WARMUP_WINDOW_RANGE)
+        live[id.value]?.setWarmupWindowMin(clamped)
+        _sources.update { current ->
+            current.map { if (it.id == id) it.copy(warmupWindowMin = clamped) else it }
+        }
+        scope.launch { repository.setWarmupWindowMin(id, clamped) }
     }
 
     override fun activeSource(): AidexXSource? = _active.value?.let { live[it.value] }

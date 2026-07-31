@@ -19,6 +19,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.SignalBars
+import com.t1dm.core.model.CgmSourceDescriptor
 
 /**
  * Settings → CGM source. Surfaces the auto-adopted active source and every recorded source (manual
@@ -28,6 +29,10 @@ import com.t1dm.core.design.SignalBars
  *    cannot read the sensor's true age, so the user enters the remaining life (days + hours + minutes);
  *    we store an absolute expiry instant and count it down live here and in the BG panel. It is plainly
  *    a user estimate, not read from the sensor, with a renew/reset for a new sensor.
+ *  - The ACTIVE source's warm-up window. Unlike the lifetime this one IS anchored on something the
+ *    sensor reports — `minFromStart`, its own minutes-since-activation — but the advert carries no
+ *    warm-up flag, so the configured duration is the entire warm-up rule and the BG panel's warm-up
+ *    countdown is derived from it.
  */
 @Composable
 fun CgmSettingsScreen(
@@ -36,6 +41,10 @@ fun CgmSettingsScreen(
     allSourceNames: List<String>,
     activeRssi: Int? = null,
     sensorExpiryMs: Long? = null,
+    /** The ACTIVE source's configured warm-up window (minutes), or null when no source is on record —
+     *  the window is per-source, so with nothing active there is nothing to edit. */
+    warmupWindowMin: Int? = null,
+    onSetWarmupMin: (Int) -> Unit = {},
     onSetSensorLifetime: (days: Int, hours: Int, minutes: Int) -> Unit = { _, _, _ -> },
     onClearSensorLifetime: () -> Unit = {},
     aggressiveEnabled: Boolean = false,
@@ -71,6 +80,23 @@ fun CgmSettingsScreen(
             SettingsSectionHeader(LIFETIME_SECTION)
             SettingsNote("A passive listener can't read the sensor's age — this is your estimate")
             SensorLifetimeSection(sensorExpiryMs, onSetSensorLifetime, onClearSensorLifetime)
+        }
+
+        SettingsSectionHeader(WARMUP_SECTION)
+        SettingsNote("No warm-up flag in the advert — this alone decides it; 0 = off")
+        // The window belongs to the ACTIVE source, so with none on record there is nothing to edit and
+        // the stepper is absent rather than showing an invented default.
+        warmupWindowMin?.let {
+            IntStepper(
+                knob = cgmWarmup,
+                value = it,
+                unit = "min",
+                // The 5-minute CGM grid quantum: every stop is a slot the pipeline can distinguish.
+                step = WARMUP_STEP_MIN,
+                min = CgmSourceDescriptor.WARMUP_WINDOW_RANGE.first,
+                max = CgmSourceDescriptor.WARMUP_WINDOW_RANGE.last,
+                onChange = onSetWarmupMin,
+            )
         }
 
         SettingsSectionHeader(AGGRESSIVE_SECTION)
@@ -175,7 +201,11 @@ private fun fullRemaining(ms: Long): String {
 
 private const val SOURCE_SECTION = "Source"
 private const val LIFETIME_SECTION = "Sensor lifetime"
+private const val WARMUP_SECTION = "Sensor warm-up"
 private const val AGGRESSIVE_SECTION = "Aggressive background scanning"
+
+/** Stepper grain for the warm-up window: the 5-minute CGM grid quantum. */
+private const val WARMUP_STEP_MIN = 5
 
 private val cgmSource = SettingsKnob(
     id = "cgm.source",
@@ -198,6 +228,18 @@ private val cgmLifetime = SettingsKnob(
     synonyms = listOf(
         "lifetime", "life", "expiry", "expires", "remaining", "age", "days left", "renew",
         "new sensor", "replace", "countdown", "wear time",
+    ),
+)
+
+private val cgmWarmup = SettingsKnob(
+    id = "cgm.warmup_window",
+    screen = SettingsScreenKey.CGM,
+    section = WARMUP_SECTION,
+    label = "Warm-up window",
+    subtitle = "How long after activation readings are flagged warm-up and kept out of forecasts and alarms",
+    synonyms = listOf(
+        "warmup", "warm up", "warm-up", "settling", "new sensor", "first hour", "startup",
+        "suppress", "minutes", "window", "grace", "insertion",
     ),
 )
 
@@ -232,4 +274,4 @@ private val cgmAggressiveCharging = SettingsKnob(
 )
 
 internal val settingsCgmKnobs =
-    listOf(cgmSource, cgmLifetime, cgmAggressive, cgmAggressiveShowBg, cgmAggressiveCharging)
+    listOf(cgmSource, cgmLifetime, cgmWarmup, cgmAggressive, cgmAggressiveShowBg, cgmAggressiveCharging)

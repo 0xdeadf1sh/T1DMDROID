@@ -36,8 +36,13 @@ interface CgmVendorPlugin {
      */
     fun recognize(name: String?, manufacturerId: Int, manufacturerData: ByteArray): CgmSourceId?
 
-    /** Build (or rebuild) the source object for a recognised id. */
+    /** Build (or rebuild) the source object for a recognised id, seeded from this vendor's own
+     *  defaults. For a source already on record use [createSource] with its persisted descriptor —
+     *  the seed would otherwise overwrite the warm-up window the user tuned. */
     fun createSource(id: CgmSourceId): CgmSource
+
+    /** Build the source object for a descriptor already on record, adopting it verbatim. */
+    fun createSource(descriptor: CgmSourceDescriptor): CgmSource
 }
 
 /**

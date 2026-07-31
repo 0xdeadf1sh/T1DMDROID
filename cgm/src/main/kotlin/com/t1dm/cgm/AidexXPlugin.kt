@@ -29,6 +29,9 @@ class AidexXPlugin(
         return CgmSourceId("$VENDOR_ID:$serial")
     }
 
+    /** Seed a source the app has never met. [CgmConstants.WARMUP_WINDOW_MIN] here is only that seed;
+     *  a source already on record carries the user's own window and arrives through the descriptor
+     *  overload instead. */
     override fun createSource(id: CgmSourceId): AidexXSource {
         val serial = id.value.substringAfter(':')
         val descriptor = CgmSourceDescriptor(
@@ -39,8 +42,11 @@ class AidexXPlugin(
             warmupWindowMin = CgmConstants.WARMUP_WINDOW_MIN,
             passiveOnly = true,
         )
-        return AidexXSource(descriptor, nativeCore, repository)
+        return createSource(descriptor)
     }
+
+    override fun createSource(descriptor: CgmSourceDescriptor): AidexXSource =
+        AidexXSource(descriptor, nativeCore, repository)
 
     private companion object {
         const val VENDOR_ID = "aidexx"

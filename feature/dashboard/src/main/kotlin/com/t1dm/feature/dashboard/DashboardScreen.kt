@@ -47,6 +47,8 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -68,6 +70,7 @@ import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.model.AlertThresholds
 import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.IobCobReadout
+import com.t1dm.core.model.LogMarker
 import com.t1dm.core.model.ModelPrediction
 import com.t1dm.core.model.PaintStroke
 import com.t1dm.core.model.PaintTool
@@ -123,6 +126,10 @@ fun DashboardScreen(
     iobCob: IobCobReadout? = null,
     curveChannels: (suspend (gridStartMs: Long, nSteps: Int) -> Pair<DoubleArray, DoubleArray>)? = null,
     basalChannel: (suspend (gridStartMs: Long, nSteps: Int) -> DoubleArray)? = null,
+    // The logged carb/insulin events the BG panel marks at its foot, as `:app` joined them against the
+    // upload queue. Passed straight through: this screen neither re-derives the committed/delivered
+    // verdict nor thins the list, and the panel receives no amount and no row id it could act on.
+    logMarkers: List<LogMarker> = emptyList(),
     warmup: WarmupProgress? = null,
     // Phase 7A — BG-panel overhaul.
     // Issue 1 — suppress the "next forecast" countdown when no forecast is actually being made: during
@@ -142,9 +149,14 @@ fun DashboardScreen(
     temperatureUnit: TempUnit = TempUnit.CELSIUS,
     stepsToday: Int? = null,
     // The sensor time-left expiry instant (absolute epoch-ms), counted down live to the right of the
-    // TEMP readout. Sensor-derived: the connected session reports the sensor's age (minFromStart), and
-    // the app adds the configurable total service life. Null ⇒ nothing shown (no sensor age yet).
+    // TEMP readout. USER-ENTERED: a passive advertisement carries no service-life fact, so Settings →
+    // CGM collects the remaining life and stores an absolute instant. Null ⇒ no expiry countdown.
     sensorExpiryMs: Long? = null,
+    // The instant the active sensor's warm-up ends (absolute epoch-ms), non-null ONLY while it is
+    // genuinely warming up — the nullity IS the warm-up state, independent of [sensorExpiryMs] and of
+    // whether the instant has already passed. While both are null the chip is not shown at all. This
+    // is CGM sensor warm-up, not the inference context warm-up [warmup] carries.
+    sensorWarmupEndMs: Long? = null,
     // Issues 7 & 9 — the warmup-surviving circadian belief, so the TOP axis renders the predicted
     // clock even while the BG forecast is (correctly) suppressed. Falls back to the selected
     // prediction's copy once a full cycle publishes.
@@ -357,7 +369,7 @@ fun DashboardScreen(
 
     Column(Modifier.fillMaxSize()) {
         reachability?.let {
-            ReachabilityBar(it, signals, pulses, deviceTempC, temperatureUnit, sensorExpiryMs, thermalThresholdC, thermalWarnMarginC, stepsToday)
+            ReachabilityBar(it, signals, pulses, deviceTempC, temperatureUnit, sensorExpiryMs, sensorWarmupEndMs, thermalThresholdC, thermalWarnMarginC, stepsToday)
         }
         DashboardHeader(latest, activeSourceName, unit, signals?.cgmRssi ?: latest?.rssi, kovatchevF)
         warmup?.let { WarmupBanner(it) }
@@ -455,6 +467,7 @@ fun DashboardScreen(
             predictions = overlay,
             curveOverlay = curveOverlay,
             curveToggles = toggles,
+            logMarkers = logMarkers,
             rangeMinMgdl = rangeMinMgdl,
             rangeMaxMgdl = rangeMaxMgdl,
             predictedClock = predictedClock,
@@ -861,6 +874,7 @@ private fun ReachabilityBar(
     deviceTempC: Double?,
     tempUnit: TempUnit,
     sensorExpiryMs: Long?,
+    sensorWarmupEndMs: Long?,
     thermalThresholdC: Double?,
     thermalWarnMarginC: Double,
     stepsToday: Int?,
@@ -879,32 +893,85 @@ private fun ReachabilityBar(
         stepsToday?.let { StepsChip(it) }
         // A fixed-60-bpm liveness heartbeat, just past the steps count (never a real heart-rate reading).
         HeartbeatChip()
-        // The sensor time-left (sensor age + configurable service life), counted down live, right of TEMP.
-        sensorExpiryMs?.let { SensorLifeChip(it) }
+        // The sensor time-left, counted down live, right of TEMP: to the end of warm-up while the sensor
+        // is warming up, otherwise to the user-entered expiry instant. Either instant alone is enough to
+        // show it — the two are independent, and gating the whole chip on the expiry would suppress the
+        // warm-up state whenever no expiry is known.
+        if (sensorExpiryMs != null || sensorWarmupEndMs != null) {
+            SensorLifeChip(sensorExpiryMs, sensorWarmupEndMs)
+        }
     }
 }
 
-/** The sensor time-left chip. Now sensor-DERIVED: the sensor reports its own age (minFromStart), and
- *  the app adds the configurable total service life (CGM panel), so this counts down the derived expiry
- *  instant, showing the largest meaningful unit (`10d` / `5h` / `10m` / `35s`). It re-reads the wall
- *  clock on a cadence matched to the displayed granularity so it stays honest without a busy loop. */
+/**
+ * The sensor time-left chip, in three states. Its two instants have DIFFERENT provenance: [expiryMs] is
+ * the user-entered sensor lifetime (Settings → CGM), because a passive advertisement listener cannot read
+ * the sensor's true age; [warmupEndMs] alone is sensor-anchored — the sensor's own age (`minFromStart`)
+ * plus the active source's configured warm-up window (also on the CGM panel).
+ *
+ *  - **warming up** ([warmupEndMs] non-null) — counts down to the END OF WARM-UP.
+ *  - **live** — counts down to [expiryMs].
+ *  - **expired** — `EXP`.
+ *
+ * The first two are deliberately indistinguishable as text: both are a BARE countdown in the largest
+ * meaningful unit (`10d` / `5h` / `10m` / `35s`), because this chip sits in a row of terse abbreviations
+ * and a prefix overflowed its width, wrapping mid-word. Colour is what separates them — which is exactly
+ * the sort of distinction a screen reader cannot see, so each state also carries a `contentDescription`
+ * naming what its number counts down to. Sighted ambiguity was chosen; inaccessibility was not.
+ *
+ * **The warm-up STATE is [warmupEndMs]'s nullity, not its ordering against the clock.** The flow supplies
+ * an instant only while the pipeline flags the sensor `WARMUP`, and this chip does not re-derive that
+ * verdict from the deadline — the two are computed off the same window and the same sensor age, but the
+ * flag is what the trace, the header suffix and the CGM light all already agree with. So a warm-up
+ * deadline that has slipped into the past while the flag still stands means the sensor is still warming
+ * and the app cannot say for how much longer — not that warm-up ended. The chip keeps the warm-up colour
+ * and prints `WARM` in place of a countdown: it will not fabricate an instant it has not been given, and
+ * it will not fall back to a live countdown that contradicts everything else on the panel at once.
+ *
+ * Both instants are optional and independent; the caller composes this whenever either exists. `EXP` is
+ * reachable only with an [expiryMs] to have passed.
+ */
 @Composable
-private fun SensorLifeChip(expiryMs: Long) {
-    val now by produceState(System.currentTimeMillis(), expiryMs) {
+private fun SensorLifeChip(expiryMs: Long?, warmupEndMs: Long?) {
+    val now by produceState(System.currentTimeMillis(), expiryMs, warmupEndMs) {
         while (true) {
-            value = System.currentTimeMillis()
-            val remaining = expiryMs - value
+            val wall = System.currentTimeMillis()
+            value = wall
+            // Count down whichever instant is in play; crossing the end of warm-up shortens the cadence
+            // on its own, because the target then becomes expiry.
+            val remaining = ((warmupEndMs?.takeIf { it > wall } ?: expiryMs) ?: wall) - wall
             // Tick every second under a minute, else once a minute — enough to keep the largest unit fresh.
             kotlinx.coroutines.delay(if (remaining in 1..60_000L) 1_000L else 60_000L)
         }
     }
-    val remainingMs = expiryMs - now
-    val text = if (remainingMs <= 0L) "sensor expired" else formatRemaining(remainingMs)
+    val warmingUp = warmupEndMs != null
+    val remainingMs = (warmupEndMs ?: expiryMs ?: now) - now
+    val expired = !warmingUp && remainingMs <= 0L
+    // Warming with the deadline behind us: state known, duration not.
+    val openEnded = warmingUp && remainingMs <= 0L
+    val text = when {
+        expired -> "EXP"
+        openEnded -> "WARM"
+        else -> formatRemaining(remainingMs)
+    }
+    val spoken = when {
+        expired -> "Sensor expired"
+        openEnded -> "Sensor warming up"
+        warmingUp -> "Warm-up ends in $text"
+        else -> "Sensor $text left"
+    }
     Text(
         text,
         style = MaterialTheme.typography.labelSmall,
-        color = if (remainingMs <= 0L) MaterialTheme.colorScheme.error
-        else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f),
+        maxLines = 1,
+        // Warm-up borrows the colour the graph already paints WARMUP readings in (`secondary`), so the
+        // chip and the trace say the same thing at the same moment.
+        color = when {
+            expired -> MaterialTheme.colorScheme.error
+            warmingUp -> MaterialTheme.colorScheme.secondary
+            else -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
+        },
+        modifier = Modifier.semantics { contentDescription = spoken },
     )
 }
 

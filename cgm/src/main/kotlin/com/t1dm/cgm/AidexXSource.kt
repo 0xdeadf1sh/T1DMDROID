@@ -20,10 +20,16 @@ import kotlinx.coroutines.flow.asStateFlow
  * [CgmRepository], and re-emitted on [readings].
  */
 class AidexXSource(
-    override val descriptor: CgmSourceDescriptor,
+    descriptor: CgmSourceDescriptor,
     nativeCore: NativeCore,
     private val repository: CgmRepository,
 ) : CgmSource {
+
+    /** The descriptor on record for this source. A `var` for exactly one field — the warm-up window,
+     *  which the user tunes at runtime ([setWarmupWindowMin]) — so a reader of `descriptor` sees the
+     *  window the pipeline is actually classifying against rather than the one it was built with. */
+    override var descriptor: CgmSourceDescriptor = descriptor
+        private set
 
     private val _status = MutableStateFlow(CgmSourceStatus.Idle)
     override val status: StateFlow<CgmSourceStatus> = _status.asStateFlow()
@@ -31,11 +37,24 @@ class AidexXSource(
     private val _readings = MutableSharedFlow<CgmReading>(replay = 0, extraBufferCapacity = 64)
     override fun readings(): Flow<CgmReading> = _readings.asSharedFlow()
 
+    private val classifier = ReadingClassifier(descriptor.warmupWindowMin)
+
     private val pipeline = CgmPipeline(
         sourceId = descriptor.id,
         nativeCore = nativeCore,
-        classifier = ReadingClassifier(descriptor.warmupWindowMin),
+        classifier = classifier,
     )
+
+    /**
+     * Retune the warm-up window this source classifies against, in place and effective from the very
+     * next advert. The classifier is mutated rather than the pipeline rebuilt — see
+     * [ReadingClassifier.warmupWindowMin] for why that state must survive the edit — and the clamp
+     * lives there, so [descriptor] is updated from the value that was actually installed.
+     */
+    fun setWarmupWindowMin(minutes: Int) {
+        classifier.warmupWindowMin = minutes
+        descriptor = descriptor.copy(warmupWindowMin = classifier.warmupWindowMin)
+    }
 
     /** Called when scanning begins, before any advert lands. */
     fun onScanning() {
