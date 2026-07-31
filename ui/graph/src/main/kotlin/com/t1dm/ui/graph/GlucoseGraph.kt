@@ -1,5 +1,8 @@
 package com.t1dm.ui.graph
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -35,6 +38,7 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.onSizeChanged
@@ -50,11 +54,18 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.t1dm.core.design.HapticEvent
+import com.t1dm.core.design.LocalAnimationsEnabled
 import com.t1dm.core.design.LocalT1dmHaptics
+import com.t1dm.core.design.LocalT1dmSemantics
 import com.t1dm.core.design.T1dmTheme
+import com.t1dm.core.design.iconStyleForTheme
+import com.t1dm.core.design.logMarkerIcon
 import com.t1dm.core.design.rememberHapticDetent
 import com.t1dm.core.model.AlertThresholds
 import com.t1dm.core.model.CgmReading
+import com.t1dm.core.model.CurveKind
+import com.t1dm.core.model.LogMarker
+import com.t1dm.core.model.LogState
 import com.t1dm.core.model.PaintStroke
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
@@ -163,6 +174,10 @@ fun GlucoseGraph(
     predictions: List<PredSeries> = emptyList(),
     curveOverlay: CurveOverlayFrame? = null,
     curveToggles: CurveOverlayToggles = CurveOverlayToggles(),
+    // One mark at the foot of the plot per logged carb/insulin event (LogMarkerLayer.kt). Carries when /
+    // which channel / whether the server has taken it yet, and nothing else — no amount, no row id — so
+    // the panel can neither render a figure it has no business rendering nor reach back at the row.
+    logMarkers: List<LogMarker> = emptyList(),
     rangeMinMgdl: Int? = null,
     rangeMaxMgdl: Int? = null,
     predictedClock: PredictedClock? = null,
@@ -212,6 +227,29 @@ fun GlucoseGraph(
     val dpPx = density.density
     val corridorPx = corridorWidthPx(dpPx)
     val chalkPens = remember(dpPx) { ChalkPens(dpPx) }
+
+    // ── The log-marker layer's composition-time state ──────────────────────────────────────────────
+    // Held here, unconditionally, for the same reason the paint scratch above is: the empty-frame return
+    // below must not be able to skip a `remember`.
+    //
+    // The glyphs come from the app-wide icon system, so the marks are Tron-angular / Umbrella-blocky /
+    // Kitty-rounded like every other silhouette; the painters are rasterised once per style rather than
+    // per mark. Sorting happens ONCE here — `clusterLogMarkers` is a linear pass that reads the
+    // projection as monotone, and re-sorting per frame would put an O(n log n) allocation in the draw
+    // phase of every pan.
+    val markerStyle = iconStyleForTheme(LocalT1dmSemantics.current.id)
+    val carbMarkPainter = rememberVectorPainter(
+        remember(markerStyle) { logMarkerIcon(CurveKind.CARB, markerStyle) },
+    )
+    val insulinMarkPainter = rememberVectorPainter(
+        remember(markerStyle) { logMarkerIcon(CurveKind.INSULIN, markerStyle) },
+    )
+    val marks = remember(logMarkers) { logMarkers.sortedBy { it.tsMs } }
+    val anyCommitted = remember(marks) { marks.any { it.state == LogState.COMMITTED } }
+    // The committed pulse. ONE animation drives every committed mark — they say the same thing, so they
+    // should say it in unison, and a per-mark animation would be a hundred animations on a busy day.
+    val motionOn = LocalAnimationsEnabled.current
+    val markerPulse = remember { Animatable(LOG_MARKER_STATIC_ALPHA) }
 
     // The stroke under the finger. The buffer is PLAIN memory (mutated from the pointer handler); the
     // Canvas is driven by [liveCount], which is snapshot state, so a new sample invalidates the DRAW
@@ -390,6 +428,25 @@ fun GlucoseGraph(
         viewSpanMs = initialWindowMin.toDouble() * 60_000.0
         followLatest = true
         if (!frame.isEmpty) { viewStartMs = followEndMs() - viewSpanMs; clamp() }
+    }
+
+    // The committed marks' endless fade. Two things it deliberately is not:
+    //
+    //  - It is not built from `motionSpec`. That returns `snap()` with motion off, and a snapped fade to
+    //    invisible would silently stop distinguishing committed from delivered exactly when the user has
+    //    asked for a static UI. The disabled branch is therefore a HELD alpha, not an animation at all —
+    //    the same choice, for the same reason, as `pulseHighlight`.
+    //  - It is not started when nothing is waiting on the server. An always-running animation would keep
+    //    the panel invalidating its draw phase forever for a mark that has nothing left to say.
+    LaunchedEffect(motionOn, anyCommitted) {
+        if (!motionOn || !anyCommitted) {
+            markerPulse.snapTo(LOG_MARKER_STATIC_ALPHA)
+            return@LaunchedEffect
+        }
+        while (true) {
+            markerPulse.animateTo(LOG_MARKER_PULSE_MIN_ALPHA, tween(LOG_MARKER_PULSE_MS, easing = LinearEasing))
+            markerPulse.animateTo(LOG_MARKER_PULSE_MAX_ALPHA, tween(LOG_MARKER_PULSE_MS, easing = LinearEasing))
+        }
     }
 
     if (frame.isEmpty) {
@@ -664,6 +721,11 @@ fun GlucoseGraph(
             val lineColor = cs.primary
             val interpColor = cs.primary.copy(alpha = 0.45f)
             val warmupColor = cs.secondary
+            // The two model channels' inks, decided ONCE: the curve overlay paints its carb and insulin
+            // areas in them, and the log markers paint their marks in them, so a mark is always the
+            // colour of the curve it stands for and the two cannot drift apart.
+            val carbInk = cs.secondary
+            val insulinInk = cs.tertiary
             val dash = PathEffect.dashPathEffect(floatArrayOf(6f, 6f))
             val labelStyle = TextStyle(color = labelColor, fontSize = 10.sp)
             // I5 — "Smoothed" is a SWAP, not an overlay: when on (and a smooth exists) the raw sensor
@@ -763,7 +825,7 @@ fun GlucoseGraph(
                     val bandTop = plotBottom - plotHeight * 0.30f
                     drawCurveOverlay(
                         curveOverlay, curveToggles, ::absToPx, bandTop, plotBottom,
-                        carbColor = cs.secondary, insulinColor = cs.tertiary,
+                        carbColor = carbInk, insulinColor = insulinInk,
                     )
                 }
 
@@ -856,6 +918,35 @@ fun GlucoseGraph(
                     else "extrapolated · unvalidated · display-only"
                     val leg = measurer.measure(legendText, TextStyle(color = cs.onSurface.copy(alpha = 0.7f), fontSize = 9.sp))
                     drawText(leg, topLeft = Offset((plotRight - leg.size.width - 4f).coerceAtLeast(plotLeft), plotBottom - leg.size.height - 2f))
+                }
+
+                // (6.7) LOG MARKERS — one mark per logged carb/insulin event, at the FOOT of the plot.
+                //       Inside this clip on purpose: they belong to the data, so they pan and zoom with
+                //       it and can never spill over the local-time or model-time axes. Anchored to
+                //       `plotBottom`, which the furniture pass already computed — never to the
+                //       composable's own height, whose top moves by the model-axis strip.
+                //
+                //       Drawn LAST of the data layers so a mark is never buried under the curve overlay
+                //       whose band shares this strip, and before the scrub read-out, which outranks
+                //       everything while a finger is down.
+                //
+                //       The alpha is read HERE, in the draw lambda, so a running fade invalidates the
+                //       draw phase alone — a marker breathing must not recompose the panel.
+                if (marks.isNotEmpty()) {
+                    drawLogMarkers(
+                        clusterLogMarkers(
+                            marks, viewStartMs, viewSpanMs, plotLeft, plotRight,
+                            logMarkerSeparationPx(dpPx),
+                        ),
+                        carbPainter = carbMarkPainter,
+                        insulinPainter = insulinMarkPainter,
+                        carbInk = carbInk,
+                        insulinInk = insulinInk,
+                        sizePx = LOG_MARKER_DP * dpPx,
+                        bottomY = plotBottom - LOG_MARKER_FOOT_DP * dpPx,
+                        committedAlpha = markerPulse.value,
+                        measurer = measurer,
+                    )
                 }
 
                 // (7) Scrub cursor — time-anchored, so it reads in the forecast zone too (item 3). U8 — the
@@ -1130,8 +1221,23 @@ private fun GlucoseGraphPreview() {
             modifier = Modifier.fillMaxSize().padding(4.dp),
             thresholds = AlertThresholds(urgentLowMgdl = 55, lowMgdl = 80, highMgdl = 180, urgentHighMgdl = 250),
             initialWindowMin = 240f,
+            logMarkers = syntheticMarkers(),
         )
     }
+}
+
+/** A lone meal, a meal with its bolus beside it, and a pair of doses close enough to combine — enough
+ *  to see both silhouettes, both states, and the count in one preview. */
+private fun syntheticMarkers(): List<LogMarker> {
+    val t0 = 1_720_000_000_000L
+    val step = 300_000L
+    return listOf(
+        LogMarker(t0 + 20 * step, CurveKind.CARB, LogState.DELIVERED),
+        LogMarker(t0 + 62 * step, CurveKind.CARB, LogState.DELIVERED),
+        LogMarker(t0 + 62 * step, CurveKind.INSULIN, LogState.DELIVERED),
+        LogMarker(t0 + 100 * step, CurveKind.INSULIN, LogState.COMMITTED),
+        LogMarker(t0 + 101 * step, CurveKind.INSULIN, LogState.DELIVERED),
+    )
 }
 
 /** Deterministic synthetic day-ish trace with a warm-up head and one interpolated gap-fill run. */

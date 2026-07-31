@@ -8,6 +8,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.PathBuilder
 import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.unit.dp
+import com.t1dm.core.model.CurveKind
 
 /**
  * The per-theme nav + launcher icon system (issues 2 + 6). One glyph silhouette per destination, but
@@ -147,6 +148,52 @@ private fun pubs(s: IconStyle) = glyph("pubs", s) { // a page with text lines
     moveTo(8f, 15f); lineTo(8f, 16f); lineTo(13f, 16f); lineTo(13f, 15f); close()
 }
 
+private fun logs(s: IconStyle) = glyph("logs", s) { // a bulleted list: three marker + rule pairs
+    // Deliberately unlike `journal` (a bound book) and `pubs` (lines INSIDE a page outline): no
+    // enclosing shape at all, so the three surfaces stay distinguishable at 28 dp in every geometry.
+    // Each marker and each rule is its own closed rectangle, so it reads as ink when filled
+    // (Umbrella) and as an outline when stroked (Tron / Kitty); the last rule is short, which is what
+    // stops the set reading as a grid.
+    moveTo(4f, 5.5f); lineTo(7f, 5.5f); lineTo(7f, 8.5f); lineTo(4f, 8.5f); close()
+    moveTo(9.5f, 6f); lineTo(20f, 6f); lineTo(20f, 8f); lineTo(9.5f, 8f); close()
+    moveTo(4f, 10.5f); lineTo(7f, 10.5f); lineTo(7f, 13.5f); lineTo(4f, 13.5f); close()
+    moveTo(9.5f, 11f); lineTo(20f, 11f); lineTo(20f, 13f); lineTo(9.5f, 13f); close()
+    moveTo(4f, 15.5f); lineTo(7f, 15.5f); lineTo(7f, 18.5f); lineTo(4f, 18.5f); close()
+    moveTo(9.5f, 16f); lineTo(16f, 16f); lineTo(16f, 18f); lineTo(9.5f, 18f); close()
+}
+
+// ── Logged-event markers (the BG panel's time-axis marks) ─────────────────────────────────────────
+//
+// Drawn at the FOOT of the glucose plot, one per logged carb/insulin event, so the trace says when the
+// user acted as well as what their glucose did. They are the same geometry family as everything above —
+// [glyph] re-derives fill-vs-stroke and sharp-vs-round from the style, so one closed silhouette per KIND
+// serves Tron, Umbrella and Kitty alike.
+//
+// Two constraints that the nav set does not have, and that fix the shapes:
+//
+//  - They render at roughly a THIRD of a nav icon's size, on top of the trace rather than in a bar. Only
+//    the outer silhouette survives at that scale, so both are single convex polygons — no counters, no
+//    interior detail, nothing that would fill in and turn the mark into a blob.
+//  - They must not be mistaken for the plot's own furniture. The BG point markers are CIRCLES, so neither
+//    of these is round; the two kinds differ in silhouette (four-fold vs. three-fold) rather than in
+//    colour alone, because colour is also what separates committed from delivered.
+
+private fun carbMark(s: IconStyle) = glyph("carbmark", s) { // a diamond
+    moveTo(12f, 2.5f); lineTo(21.5f, 12f); lineTo(12f, 21.5f); lineTo(2.5f, 12f); close()
+}
+
+private fun insulinMark(s: IconStyle) = glyph("insulinmark", s) { // a downward wedge — the delivery
+    moveTo(2.5f, 4f); lineTo(21.5f, 4f); lineTo(12f, 21.5f); close()
+}
+
+/** Resolve a logged event's channel to its themed marker glyph, in the same geometry family as
+ *  [navIcon]. [CurveKind] is the model's own channel vocabulary, so a marker and the curve it stands
+ *  for are labelled identically. */
+fun logMarkerIcon(kind: CurveKind, style: IconStyle): ImageVector = when (kind) {
+    CurveKind.CARB -> carbMark(style)
+    CurveKind.INSULIN -> insulinMark(style)
+}
+
 // ── Time-of-day glyphs (issue N4a) — the same per-theme geometry system as the nav icons, so morning /
 //    noon / evening / night read as Tron-angular · Umbrella-blocky · Kitty-rounded like everything else.
 
@@ -218,6 +265,7 @@ fun navIcon(route: String, style: IconStyle): ImageVector = when (route) {
     "insulin" -> insulin(style)
     "security" -> security(style)
     "journal" -> journal(style)
+    "logs" -> logs(style)
     "settings" -> settings(style)
     else -> settings(style)
 }

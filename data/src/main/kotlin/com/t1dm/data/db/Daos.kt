@@ -39,6 +39,12 @@ interface CgmSourceDao {
     @Query("UPDATE cgm_source SET active = 1 WHERE sourceId = :sourceId")
     suspend fun setActive(sourceId: String)
 
+    /** Retune one source's warm-up window in place. A column-scoped UPDATE, not an upsert: the row's
+     *  identity, `addedAtMs` and `active` flag are untouched, so the edit cannot disturb the
+     *  exactly-one-active invariant. */
+    @Query("UPDATE cgm_source SET warmupWindowMin = :minutes WHERE sourceId = :sourceId")
+    suspend fun setWarmupWindowMin(sourceId: String, minutes: Int)
+
     /** Full-erase (issue 5, app reset). Row-only DELETE — the schema/table is untouched. */
     @Query("DELETE FROM cgm_source")
     suspend fun deleteAll()
@@ -176,6 +182,11 @@ interface LoggedDoseDao {
     @Insert
     suspend fun insertAll(doses: List<LoggedDoseEntity>)
 
+    /** The newest [limit] doses, newest first — the insulin half of the Logs panel's feed. Bounded at
+     *  the QUERY rather than by tailing a whole-store observer: the store is keep-forever. */
+    @Query("SELECT * FROM logged_dose ORDER BY tsMs DESC, id DESC LIMIT :limit")
+    fun observeRecent(limit: Int): Flow<List<LoggedDoseEntity>>
+
     @Query("DELETE FROM logged_dose WHERE id = :id")
     suspend fun delete(id: Long)
 
@@ -211,6 +222,10 @@ interface LoggedMealDao {
     /** Batch gap-fill for the sample→meal reconcile (server carb history that predates this build). */
     @Insert
     suspend fun insertAll(meals: List<LoggedMealEntity>)
+
+    /** The newest [limit] meals, newest first — the carb half of the Logs panel's feed. */
+    @Query("SELECT * FROM logged_meal ORDER BY tsMs DESC, id DESC LIMIT :limit")
+    fun observeRecent(limit: Int): Flow<List<LoggedMealEntity>>
 
     @Query("DELETE FROM logged_meal WHERE id = :id")
     suspend fun delete(id: Long)
@@ -327,6 +342,21 @@ interface OutboxDao {
      *  there — this returns the whole row rather than just the state so that check is possible. */
     @Query("SELECT * FROM outbox WHERE id = :id")
     suspend fun byId(id: Long): OutboxEntity?
+
+    /** The row filed under [dedupKey] (the index is unique), or null once it has drained. The Logs
+     *  panel's delete path resolves a push this way rather than by rowid: the enqueue rowid was handed
+     *  to a snackbar minutes-to-days ago and is long forgotten, whereas the dedupKey is a pure function
+     *  of the event's `client_id`. Read INSIDE the deleting transaction — see
+     *  `T1dmRepository.deleteCommittedMeal` — so a concurrent drain cannot land between the two. */
+    @Query("SELECT * FROM outbox WHERE dedupKey = :dedupKey")
+    suspend fun byDedupKey(dedupKey: String): OutboxEntity?
+
+    /** Every queued dedupKey of the given [kinds]. There is no SENT state (this queue DELETEs on a
+     *  2xx), so membership of this set is the whole of "the server has not accepted it yet" — which is
+     *  what the Logs panel's committed/delivered split is read from. Table-scoped Room invalidation
+     *  means this re-emits on any outbox write, so callers should collapse equal emissions. */
+    @Query("SELECT dedupKey FROM outbox WHERE kind IN (:kinds)")
+    fun observeDedupKeys(kinds: List<OutboxKind>): Flow<List<String>>
 
     @Query("DELETE FROM outbox WHERE id = :id")
     suspend fun delete(id: Long)

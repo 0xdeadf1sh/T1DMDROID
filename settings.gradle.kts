@@ -41,6 +41,7 @@ include(
     ":feature:security",
     ":feature:settings",
     ":feature:journal",
+    ":feature:logs",
     ":feature:game",
 )
 

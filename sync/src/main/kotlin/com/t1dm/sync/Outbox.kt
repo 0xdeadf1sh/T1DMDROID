@@ -106,20 +106,34 @@ class OutboxEnqueuer(private val repo: OutboxSink) {
         nowMs = nowMs,
     )
 
-    /** A logged meal as a self-describing appearance curve — `PUT /v1/meals` (1-element batch). */
-    suspend fun enqueueMeal(ev: MealEventDto, nowMs: Long): Long = repo.enqueue(
+    /**
+     * A logged meal as a self-describing appearance curve — `PUT /v1/meals` (1-element batch).
+     *
+     * [holdMs] postpones the FIRST send attempt by that much, so the row stays withdrawable from the
+     * Logs panel for a window the user chooses. It is a persisted floor on `nextAttemptMs`, not a timer:
+     * nothing in the app counts it down, it survives process death, and an offline phone simply keeps
+     * the row past the hold as it would any other undrained push.
+     *
+     * `0` — the default, and what the §3.8 re-mirror walk must use — means eligible at once. A replay of
+     * last year's meals has nothing left to reconsider, and dating a hold from `nowMs` there would stall
+     * the walk behind a delay that buys nobody anything.
+     */
+    suspend fun enqueueMeal(ev: MealEventDto, nowMs: Long, holdMs: Long = 0L): Long = repo.enqueue(
         kind = OutboxKind.MEAL,
         dedupKey = mealDedupKey(ev.client_id),
         payload = OutboxRequest("PUT", "/v1/meals", SyncJson.encodeToString(listOf(ev))).encode(),
         nowMs = nowMs,
+        notBeforeMs = if (holdMs > 0L) nowMs + holdMs else 0L,
     )
 
-    /** A logged dose (bolus gamma / basal Bateman) as a PK action curve — `PUT /v1/doses`. */
-    suspend fun enqueueDose(ev: DoseEventDto, nowMs: Long): Long = repo.enqueue(
+    /** A logged dose (bolus gamma / basal Bateman) as a PK action curve — `PUT /v1/doses`. [holdMs] is
+     *  the withdrawal window, exactly as on [enqueueMeal]. */
+    suspend fun enqueueDose(ev: DoseEventDto, nowMs: Long, holdMs: Long = 0L): Long = repo.enqueue(
         kind = OutboxKind.DOSE,
         dedupKey = doseDedupKey(ev.client_id),
         payload = OutboxRequest("PUT", "/v1/doses", SyncJson.encodeToString(listOf(ev))).encode(),
         nowMs = nowMs,
+        notBeforeMs = if (holdMs > 0L) nowMs + holdMs else 0L,
     )
 
     /**
@@ -128,6 +142,10 @@ class OutboxEnqueuer(private val repo: OutboxSink) {
      * never-age-evict guarantee (a schedule is an irreplaceable clinical record); routing is by the
      * envelope path, not the kind. Deduped on the schedule's version — the newest slot `updated_at`
      * — so a genuine edit re-enqueues while an exact retry coalesces to a single no-op push.
+     *
+     * Takes NO hold, despite riding the DOSE kind: the hold exists to keep a row withdrawable, and a
+     * template is not a journal entry — the Logs panel lists `logged_meal`/`logged_dose` and has no
+     * affordance that could withdraw this. A later edit supersedes it by version instead.
      */
     suspend fun enqueueBasalSchedule(schedule: BasalScheduleDto, nowMs: Long): Long {
         val version = schedule.slots.maxOfOrNull { it.updated_at } ?: nowMs

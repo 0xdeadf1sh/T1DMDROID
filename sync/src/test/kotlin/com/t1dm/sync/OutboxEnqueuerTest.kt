@@ -14,13 +14,24 @@ import org.junit.Test
  * (method/path/body) captured at write time, with no Room in the loop.
  */
 private class RecordingSink : OutboxSink {
-    data class Row(val kind: OutboxKind, val dedupKey: String, val request: OutboxRequest)
+    data class Row(
+        val kind: OutboxKind,
+        val dedupKey: String,
+        val request: OutboxRequest,
+        val notBeforeMs: Long,
+    )
 
     val rows = mutableListOf<Row>()
 
-    override suspend fun enqueue(kind: OutboxKind, dedupKey: String, payload: ByteArray, nowMs: Long): Long {
+    override suspend fun enqueue(
+        kind: OutboxKind,
+        dedupKey: String,
+        payload: ByteArray,
+        nowMs: Long,
+        notBeforeMs: Long,
+    ): Long {
         val request = SyncJson.decodeFromString<OutboxRequest>(payload.toString(Charsets.UTF_8))
-        rows += Row(kind, dedupKey, request)
+        rows += Row(kind, dedupKey, request, notBeforeMs)
         return rows.size.toLong()
     }
 }
@@ -112,6 +123,40 @@ class OutboxEnqueuerTest {
         val block = SyncJson.decodeFromString<StatsPushDto>(byPath.getValue("/v1/stats").request.body)
         assertEquals("7d", block.window)
         assertEquals(72.0, block.tir, 0.0)
+    }
+
+    /**
+     * The withdrawal hold reaches `nextAttemptMs` and nothing else: only MEAL/DOSE take one, and only
+     * when asked. A stats or note push must never be delayed by it, and a re-mirror replay (which
+     * passes no hold) must stay immediately due or the walk stalls.
+     */
+    @Test
+    fun `only a held meal or dose is postponed, and only by the hold`() = runTest {
+        val sink = RecordingSink()
+        val enqueuer = OutboxEnqueuer(sink)
+        val hold = 15 * 60_000L
+
+        enqueuer.enqueueMeal(meal(), now, holdMs = hold)
+        enqueuer.enqueueDose(dose(), now, holdMs = hold)
+        enqueuer.enqueueStats(stats(), now)
+        enqueuer.enqueueNote(note(), now)
+        val byPath = sink.rows.associateBy { it.request.path }
+
+        assertEquals(now + hold, byPath.getValue("/v1/meals").notBeforeMs)
+        assertEquals(now + hold, byPath.getValue("/v1/doses").notBeforeMs)
+        assertEquals("stats must not be held", 0L, byPath.getValue("/v1/stats").notBeforeMs)
+        assertEquals("notes must not be held", 0L, byPath.getValue("/v1/notes").notBeforeMs)
+    }
+
+    @Test
+    fun `an unheld meal or dose is due immediately`() = runTest {
+        val sink = RecordingSink()
+        val enqueuer = OutboxEnqueuer(sink)
+
+        enqueuer.enqueueMeal(meal(), now)
+        enqueuer.enqueueDose(dose(), now)
+
+        assertTrue("a re-mirrored event must be due at once", sink.rows.all { it.notBeforeMs == 0L })
     }
 
     @Test

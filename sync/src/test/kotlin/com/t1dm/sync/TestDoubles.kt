@@ -4,10 +4,12 @@ import com.t1dm.core.common.T1dmDispatchers
 import com.t1dm.data.db.OutboxDao
 import com.t1dm.data.db.OutboxEntity
 import com.t1dm.data.db.OutboxEvictRow
+import com.t1dm.data.db.OutboxKind
 import com.t1dm.data.db.OutboxState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.map
 
 /** All work on Unconfined — the drainer has no delays, so virtual time is unnecessary. */
 class TestDispatchers : T1dmDispatchers {
@@ -52,6 +54,15 @@ class FakeOutboxDao : OutboxDao {
             .map { OutboxEvictRow(it.id, it.kind, it.createdAtMs) }
 
     override suspend fun byId(id: Long): OutboxEntity? = rows[id]
+
+    /** The `dedupKey` index is UNIQUE in Room, so at most one row can ever match. */
+    override suspend fun byDedupKey(dedupKey: String): OutboxEntity? =
+        rows.values.firstOrNull { it.dedupKey == dedupKey }
+
+    /** Re-emitted off the depth signal, which is the only invalidation this fake has; Room's own
+     *  invalidation is per-table and just as coarse. */
+    override fun observeDedupKeys(kinds: List<OutboxKind>): Flow<List<String>> =
+        depth.map { rows.values.filter { r -> r.kind in kinds }.map { r -> r.dedupKey } }
 
     override suspend fun delete(id: Long) { rows.remove(id); depth.value = rows.size }
 
