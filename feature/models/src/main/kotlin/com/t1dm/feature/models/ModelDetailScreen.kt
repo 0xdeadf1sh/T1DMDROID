@@ -29,13 +29,17 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.rememberT1dmHaptics
-import com.t1dm.core.model.AccuracyReport
 import com.t1dm.core.model.BackendAvailability
 import com.t1dm.core.model.BackendComparison
 import com.t1dm.core.model.BackendId
-import com.t1dm.core.model.HorizonAccuracy
+import com.t1dm.core.model.CgEga
+import com.t1dm.core.model.CgEgaRegion
+import com.t1dm.core.model.ExcursionAccuracy
+import com.t1dm.core.model.HorizonMetrics
 import com.t1dm.core.model.InferenceState
 import com.t1dm.core.model.ModelMeta
+import com.t1dm.core.model.ModelMetrics
+import com.t1dm.core.model.PointBlock
 import com.t1dm.core.model.ModelTelemetry
 import com.t1dm.core.model.ReferenceMetrics
 import com.t1dm.core.model.displayName
@@ -46,9 +50,28 @@ import com.t1dm.core.model.displayName
  *  1. META — parameter count, on-disk size, arch dims + geometry (item 7, size reasoning).
  *  2. TELEMETRY — this install's cumulative avg inference EXEC time, #predictions, and TOTAL time
  *     spent in the backend forward (the [ModelTelemetry] the CycleRunner updates + persists).
- *  3. ON-DEVICE REALIZED ACCURACY — RMSE/MAE/MARD (+ central-90 coverage) at 30/60/120 min, computed
- *     by the golden-gated Rust aggregator over stored `prediction` rows vs the realized `cgm_reading`
- *     at each horizon. A horizon with too little matured history says so PLAINLY (never a noisy stat).
+ *  3. ON-DEVICE REALIZED ACCURACY — the full metric suite of `SPEC/invariants.md` §6.1-6.3,
+ *     computed by the golden-gated Rust core over stored `prediction` rows vs the realized
+ *     `cgm_reading` trajectory. It reproduces `T1DMAI/realdata/metrics.py::compute_suite`, so these
+ *     figures are directly comparable to that project's validation table — every block except
+ *     CG-EGA, which is not: that project passes the truth and the forecast to `cg_ega_counts`
+ *     transposed, so the %AP/%BE/%EP it publishes assigns the glycaemic region by the forecast and
+ *     is a different statistic from the one shown here (see the divergence note above the CG-EGA
+ *     block in `t1dm-core::accuracy`). A gap between the two is not evidence about the export.
+ *
+ *     Two identity rules govern how it may be shown, both from the spec:
+ *
+ *       - The BASIS is part of every figure (§6.2). The band projection is the headline and the
+ *         median line is a separate table beneath it — never one column carrying both. And because
+ *         a wider band can only lower the error, no band figure appears without `band_cov50` and
+ *         `band_width50` in the same row: a band widened until it swallows every truth scores a
+ *         flawless zero, and those two are the only things that expose it.
+ *       - CG-EGA is a WHOLE-WINDOW statistic (§6.3), so it carries no horizon label. It is also the
+ *         costly pass, and is computed only on a tap.
+ *
+ *     A horizon with too little matured history says so PLAINLY (never a noisy stat), and an empty
+ *     panel states which of the two reasons it is: nothing matured yet, or matured forecasts whose
+ *     realized trajectory had a CGM gap.
  *  4. REFERENCE (held-out validation) — the model's own train.py validation metrics from the
  *     descriptor `model_card`, clearly labelled as reference, NOT the on-device realized numbers.
  *
@@ -58,9 +81,12 @@ import com.t1dm.core.model.displayName
 fun ModelDetailScreen(
     state: InferenceState,
     modelId: String,
-    accuracy: AccuracyReport?,
+    accuracy: ModelMetrics?,
     accuracyLoading: Boolean,
     onRecomputeAccuracy: () -> Unit,
+    cgEga: CgEga?,
+    cgEgaLoading: Boolean,
+    onComputeCgEga: () -> Unit,
     catalog: List<BackendAvailability>,
     requestedBackend: BackendId?,
     comparison: BackendComparison?,
@@ -139,24 +165,51 @@ fun ModelDetailScreen(
         }
 
         // ── 3. On-device realized accuracy ──
-        section("On-device realized accuracy") {
-            Note("Forecast median vs realized BG per horizon (advisory — not a dosing claim)")
-            // Keep the prior horizon rows on screen through a recompute (issue 6): only collapse to the
-            // one-line "Computing…" when there is NO prior accuracy; otherwise the rows stay put and a
-            // subtle inline hint (in the button row, so section height is unchanged) marks the refresh.
-            val horizons = accuracy?.horizons.orEmpty()
+        // Keep the prior rows on screen through a recompute (issue 6): only collapse to the one-line
+        // "Computing…" when there is NO prior suite; otherwise the tables stay put and a subtle
+        // inline hint (in the button row, so section height is unchanged) marks the refresh.
+        val suite = accuracy?.suite
+        val scored = suite?.horizons.orEmpty().filter { it.sufficient }
+
+        section("Realized accuracy — band τ.25–.75") {
+            Note("Forecast vs realized BG (advisory — not a dosing claim)")
             when {
-                horizons.isNotEmpty() -> horizons.forEach { HorizonRow(it) }
+                scored.isNotEmpty() -> BandTable(scored)
                 accuracyLoading -> Note("Computing…")
-                else -> Note("Insufficient history — no matured forecast paired with a reading yet")
+                else -> Note(emptyWhy(accuracy))
+            }
+            suite?.horizons.orEmpty().filterNot { it.sufficient }.forEach {
+                Note("${it.horizonMin} min: n=${it.n}, need ${accuracy?.minSamples ?: 0}")
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 TextButton(
                     onClick = { haptics.perform(HapticEvent.Tap); onRecomputeAccuracy() },
                 ) { Text("Recompute") }
-                if (accuracyLoading && horizons.isNotEmpty()) {
+                if (accuracyLoading && scored.isNotEmpty()) {
                     Note("Recomputing…")
                 }
+            }
+        }
+
+        if (scored.isNotEmpty()) {
+            // §6.2 — the same block on the median line, kept a table apart from the band figures.
+            section("Median line") { MedianTable(scored) }
+            section("Outer band τ.05–.95 · persistence") { OuterTable(scored) }
+            section("Excursions vs alarm bands") {
+                Note("Hypo off the τ.25 edge, hyper off τ.75")
+                ExcursionTable(scored)
+            }
+        }
+
+        // ── 3b. CG-EGA — whole window (§6.3), computed only on request ──
+        section("CG-EGA") {
+            when {
+                cgEga != null -> CgEgaTable(cgEga)
+                cgEgaLoading -> Note("Computing…")
+                scored.isEmpty() -> Note("Needs scored windows")
+                else -> TextButton(
+                    onClick = { haptics.perform(HapticEvent.Tap); onComputeCgEga() },
+                ) { Text("Compute") }
             }
         }
 
@@ -174,21 +227,133 @@ fun ModelDetailScreen(
     }
 }
 
+// ── The realized-accuracy tables ───────────────────────────────────────────────────────────────
+//
+// Column order follows `T1DMAI/realdata/report.py::_suite_table` so a figure here lines up with the
+// same figure there. Every table scrolls sideways (DataTable) rather than crushing its columns.
+
+private fun col(header: String, weight: Float) =
+    com.t1dm.core.design.TableColumn(header, weight, numeric = true)
+
+private const val WIDE = 980
+
+/** §6.2 headline. `cov50`/`w50` are in the SAME row as the band errors, deliberately: they are what
+ *  keeps a band widened until it swallows every truth from reading as a flawless score. */
 @Composable
-private fun HorizonRow(h: HorizonAccuracy) {
-    Column(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
-        Text("${h.horizonMin} min", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
-        if (!h.sufficient) {
-            Note("insufficient history (${h.n} matured)")
-        } else {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                Metric("RMSE", "%.1f".format(h.rmse))
-                Metric("MAE", "%.1f".format(h.mae))
-                Metric("MARD", "%.1f%%".format(h.mard))
-                h.coverage90?.let { Metric("cov90", "%.0f%%".format(it * 100)) }
-                Metric("n", h.n.toString())
-            }
-        }
+private fun BandTable(hs: List<HorizonMetrics>) {
+    com.t1dm.core.design.DataTable(
+        columns = listOf(
+            com.t1dm.core.design.TableColumn("h", 0.7f),
+            col("RMSE pt", 1f), col("RMSE wm", 1f), col("MAE pt", 1f), col("MAE wm", 1f),
+            col("MARD %", 1f), col("A %", 0.9f), col("A+B %", 1f), col("E %", 0.9f),
+            col("cov50 %", 1f), col("w50", 0.9f), col("skill", 0.9f), col("n", 0.7f),
+        ),
+        rows = hs.map { h ->
+            pointCells(h, h.band) + listOf(
+                pct(h.bandCov50), f1(h.bandWidth50), skill(h.band), h.n.toString(),
+            )
+        },
+        minWidth = WIDE,
+    )
+}
+
+/** The same block on the median line — a different quantity on one forecast (§6.2), so a separate
+ *  table rather than extra columns. No coverage: the median is a line and has none. */
+@Composable
+private fun MedianTable(hs: List<HorizonMetrics>) {
+    com.t1dm.core.design.DataTable(
+        columns = listOf(
+            com.t1dm.core.design.TableColumn("h", 0.7f),
+            col("RMSE pt", 1f), col("RMSE wm", 1f), col("MAE pt", 1f), col("MAE wm", 1f),
+            col("MARD %", 1f), col("A %", 0.9f), col("A+B %", 1f), col("E %", 0.9f),
+            col("skill", 0.9f), col("n", 0.7f),
+        ),
+        rows = hs.map { h ->
+            pointCells(h, h.medianLine) + listOf(skill(h.medianLine), h.n.toString())
+        },
+        minWidth = WIDE,
+    )
+}
+
+/** The outer envelope and the persistence baseline both bases' skill is measured against. */
+@Composable
+private fun OuterTable(hs: List<HorizonMetrics>) {
+    com.t1dm.core.design.DataTable(
+        columns = listOf(
+            com.t1dm.core.design.TableColumn("h", 0.8f),
+            col("cov90 %", 1f), col("w90", 1f), col("persist pt", 1.2f), col("persist wm", 1.2f),
+        ),
+        rows = hs.map { h ->
+            listOf(
+                "${h.horizonMin}m", pct(h.bandCov90), f1(h.bandWidth90),
+                f1(h.rmsePersistPoint), f1(h.rmsePersistWinmean),
+            )
+        },
+    )
+}
+
+/** §6.1 band-edge recall/precision, with the denominators beside them — a recall of 1.00 over one
+ *  true crossing is not the same claim as one over forty. */
+@Composable
+private fun ExcursionTable(hs: List<HorizonMetrics>) {
+    com.t1dm.core.design.DataTable(
+        columns = listOf(
+            com.t1dm.core.design.TableColumn("h", 0.7f),
+            col("hypo rec", 1.1f), col("hypo prec", 1.2f), col("hypo t/p", 1.1f),
+            col("hyper rec", 1.2f), col("hyper prec", 1.3f), col("hyper t/p", 1.2f),
+        ),
+        rows = hs.map { h ->
+            listOf("${h.horizonMin}m") + excursionCells(h.hypo) + excursionCells(h.hyper)
+        },
+        minWidth = 620,
+    )
+}
+
+/** §6.3 — the whole window, so no horizon column and no horizon in any label. */
+@Composable
+private fun CgEgaTable(cg: CgEga) {
+    com.t1dm.core.design.DataTable(
+        columns = listOf(
+            com.t1dm.core.design.TableColumn("region", 1f),
+            col("AP %", 1f), col("BE %", 1f), col("EP %", 1f), col("n", 0.8f),
+        ),
+        rows = listOf(
+            cgEgaCells("hypo", cg.hypo),
+            cgEgaCells("eu", cg.eu),
+            cgEgaCells("hyper", cg.hyper),
+        ),
+    )
+}
+
+private fun pointCells(h: HorizonMetrics, b: PointBlock): List<String> = listOf(
+    "${h.horizonMin}m",
+    f1(b.rmsePoint), f1(b.rmseWinmean), f1(b.maePoint), f1(b.maeWinmean),
+    f1(b.mard), f1(b.clarkeA), f1(b.clarkeAb), "%.2f".format(b.clarkeE),
+)
+
+private fun excursionCells(e: ExcursionAccuracy): List<String> =
+    listOf(f2(e.recall), f2(e.precision), "${e.nTrue}/${e.nPred}")
+
+private fun cgEgaCells(name: String, r: CgEgaRegion): List<String> =
+    listOf(name, f1(r.apPct), f1(r.bePct), f1(r.epPct), r.n.toString())
+
+private fun f1(v: Double?): String = if (v == null || !v.isFinite()) "—" else "%.1f".format(v)
+
+private fun f2(v: Double?): String = if (v == null || !v.isFinite()) "—" else "%.2f".format(v)
+
+private fun pct(v: Double): String = if (!v.isFinite()) "—" else "%.1f".format(v * 100)
+
+private fun skill(b: PointBlock): String = f2(b.skillPoint)
+
+/** Why the panel is empty — never merely THAT it is. */
+private fun emptyWhy(m: ModelMetrics?): String {
+    if (m == null) return "Insufficient history — nothing scored yet"
+    val built = m.nMatured - m.nIncomplete
+    return when {
+        m.nMatured == 0 -> "Insufficient history — no matured forecast yet"
+        built == 0 -> "CGM gaps — ${m.nIncomplete} of ${m.nMatured} forecasts dropped"
+        m.suite.nWindows == 0 -> "Fan not scoreable — $built forecasts rejected"
+        else -> "Insufficient history — ${m.suite.nWindows} scored windows"
     }
 }
 
@@ -386,14 +551,6 @@ private inline fun androidx.compose.foundation.lazy.LazyListScope.section(
 @Composable
 private fun KeyVal(k: String, v: String) {
     com.t1dm.core.design.KeyValueRow(k, v, numeric = false)
-}
-
-@Composable
-private fun Metric(label: String, value: String) {
-    Column {
-        Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(value, style = MaterialTheme.typography.bodyMedium, fontFamily = FontFamily.Monospace)
-    }
 }
 
 @Composable

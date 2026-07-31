@@ -287,7 +287,12 @@ class RollingForecasterAlignmentTest {
         override fun insulinPresetCatalog(): List<InsulinPresetSpec> = unused()
         override fun extendBasal(schedule: BasalSchedule, fromMs: Long, toMs: Long): List<CurveEvent> = unused()
         override fun advancedStats(samples: List<StatSample>, targetLow: Int, targetHigh: Int, agpBins: Int): AdvancedStats = unused()
-        override fun accuracyAtHorizons(pairs: List<AccuracyPair>, minSamples: Int): AccuracyReport = unused()
+        override fun forecastMetricsSuite(
+            windows: List<ForecastWindow>,
+            horizonsMin: List<Int>,
+            config: MetricsConfig,
+            includeCgEga: Boolean,
+        ): MetricsSuite = unused()
         override fun defaultCarTuning(): CarTuning = unused()
         override fun createGameWorld(terrain: TerrainSpec, tuning: CarTuning): GameWorld = unused()
     }

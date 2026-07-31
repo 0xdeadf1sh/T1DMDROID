@@ -32,9 +32,15 @@ mod stats;
 pub use stats::*;
 
 /// On-device forecast-accuracy aggregator (per-horizon RMSE/MAE/MARD + central-90
-/// coverage) over matured prediction↔realization pairs. Phase 7C, §"Phase 7".
+/// coverage) over matured prediction↔realization pairs, and the full band-projected metric
+/// suite of `SPEC/invariants.md` §6.1-6.3. Phase 7C, §"Phase 7".
 mod accuracy;
 pub use accuracy::*;
+
+/// Continuous Glucose-Error Grid Analysis (Kovatchev 2004) — the P-EGA × R-EGA zone algebra
+/// the metric suite's %AP/%BE/%EP is reduced from. Crate-internal; reached through
+/// `accuracy::forecast_metrics_suite`.
+mod cg_ega;
 
 /// 2D arcade car physics for the in-app hill-climb minigame, whose terrain IS the glucose
 /// trace. Cosmetic only — no §3.6 path, no reading, dose or alarm depends on it. A uniffi

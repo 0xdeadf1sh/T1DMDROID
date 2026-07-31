@@ -28,8 +28,10 @@
 use crate::CoreError;
 
 // ── Time grid (simulator.py DT_MINUTES; app sample grid is the same 5-min cadence) ──────
-/// Minutes per curve step. `simulator.DT_MINUTES`.
-const DT_MINUTES: f64 = 5.0;
+/// Minutes per curve step. `simulator.DT_MINUTES`, and `SPEC/invariants.md` §1's grid — the
+/// one copy in this crate, so the metric suite's horizon→step map and CG-EGA's rate
+/// denominator read it here rather than re-hardcoding a five.
+pub const DT_MINUTES: f64 = 5.0;
 /// Milliseconds per curve/grid step (5 min). Curve `values[]` are amount-per-this-step;
 /// the Room `sample` grid is keyed at the same cadence, so bucketize is a pure index map.
 pub const STEP_MS: i64 = 300_000;

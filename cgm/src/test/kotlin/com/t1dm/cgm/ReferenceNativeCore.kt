@@ -2,8 +2,6 @@ package com.t1dm.cgm
 
 import com.t1dm.core.common.GameWorld
 import com.t1dm.core.common.NativeCore
-import com.t1dm.core.model.AccuracyPair
-import com.t1dm.core.model.AccuracyReport
 import com.t1dm.core.model.AdvancedStats
 import com.t1dm.core.model.BasalSchedule
 import com.t1dm.core.model.BuiltContext
@@ -13,7 +11,10 @@ import com.t1dm.core.model.CurveKind
 import com.t1dm.core.model.DecodedAdvert
 import com.t1dm.core.model.Forecast
 import com.t1dm.core.model.ForecastStatus
+import com.t1dm.core.model.ForecastWindow
 import com.t1dm.core.model.InsulinPresetSpec
+import com.t1dm.core.model.MetricsConfig
+import com.t1dm.core.model.MetricsSuite
 import com.t1dm.core.model.ModelDescriptor
 import com.t1dm.core.model.PredictedTime
 import com.t1dm.core.model.StatSample
@@ -105,8 +106,12 @@ class ReferenceNativeCore : NativeCore {
         agpBins: Int,
     ): AdvancedStats = AdvancedStats.EMPTY
 
-    override fun accuracyAtHorizons(pairs: List<AccuracyPair>, minSamples: Int): AccuracyReport =
-        AccuracyReport.EMPTY
+    override fun forecastMetricsSuite(
+        windows: List<ForecastWindow>,
+        horizonsMin: List<Int>,
+        config: MetricsConfig,
+        includeCgEga: Boolean,
+    ): MetricsSuite = MetricsSuite.EMPTY
 
     override fun defaultCarTuning(): CarTuning = TODO("not exercised by :cgm tests")
 

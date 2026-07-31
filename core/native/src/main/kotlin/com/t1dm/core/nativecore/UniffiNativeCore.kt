@@ -2,13 +2,10 @@ package com.t1dm.core.nativecore
 
 import com.t1dm.core.common.GameWorld
 import com.t1dm.core.common.NativeCore
-import com.t1dm.core.model.AccuracyPair
 import com.t1dm.core.model.CarState
 import com.t1dm.core.model.CarTuning
 import com.t1dm.core.model.RunState
 import com.t1dm.core.model.TerrainSpec
-import com.t1dm.core.model.AccuracyReport
-import com.t1dm.core.model.HorizonAccuracy
 import com.t1dm.core.model.AdvancedStats
 import com.t1dm.core.model.AgpBin
 import com.t1dm.core.model.BasalDoseSpec
@@ -27,15 +24,23 @@ import com.t1dm.core.model.CurveKind
 import com.t1dm.core.model.InsulinFamily
 import com.t1dm.core.model.InsulinPresetSpec
 import com.t1dm.core.model.DecodedAdvert
+import com.t1dm.core.model.CgEga
+import com.t1dm.core.model.CgEgaRegion
+import com.t1dm.core.model.ExcursionAccuracy
 import com.t1dm.core.model.Forecast
 import com.t1dm.core.model.ForecastStatus
+import com.t1dm.core.model.ForecastWindow
+import com.t1dm.core.model.HorizonMetrics
+import com.t1dm.core.model.MetricsConfig
+import com.t1dm.core.model.MetricsSuite
+import com.t1dm.core.model.PointBlock
 import com.t1dm.core.model.KovatchevParams
 import com.t1dm.core.model.ModelDescriptor
 import com.t1dm.core.model.PredictedTime
 import com.t1dm.core.model.PrevGlucose
 import com.t1dm.core.model.TimeHead
 import uniffi.t1dm_core.CoreException
-import uniffi.t1dm_core.accuracyAtHorizons as uniffiAccuracyAtHorizons
+import uniffi.t1dm_core.forecastMetricsSuite as uniffiForecastMetricsSuite
 import uniffi.t1dm_core.advancedStats as uniffiAdvancedStats
 import uniffi.t1dm_core.advertCrc32 as uniffiAdvertCrc32
 import uniffi.t1dm_core.assembleDecode as uniffiAssembleDecode
@@ -63,9 +68,14 @@ import uniffi.t1dm_core.CarTuning as UniffiCarTuning
 import uniffi.t1dm_core.GameWorld as UniffiGameWorldObject
 import uniffi.t1dm_core.RunState as UniffiRunState
 import uniffi.t1dm_core.TerrainSpec as UniffiTerrainSpec
-import uniffi.t1dm_core.AccuracyPair as UniffiAccuracyPair
-import uniffi.t1dm_core.AccuracyReport as UniffiAccuracyReport
-import uniffi.t1dm_core.HorizonAccuracy as UniffiHorizonAccuracy
+import uniffi.t1dm_core.CgEga as UniffiCgEga
+import uniffi.t1dm_core.CgEgaRegion as UniffiCgEgaRegion
+import uniffi.t1dm_core.ExcursionAccuracy as UniffiExcursionAccuracy
+import uniffi.t1dm_core.ForecastWindow as UniffiForecastWindow
+import uniffi.t1dm_core.HorizonMetrics as UniffiHorizonMetrics
+import uniffi.t1dm_core.MetricsConfig as UniffiMetricsConfig
+import uniffi.t1dm_core.MetricsSuite as UniffiMetricsSuite
+import uniffi.t1dm_core.PointBlock as UniffiPointBlock
 import uniffi.t1dm_core.AdvancedStats as UniffiAdvancedStats
 import uniffi.t1dm_core.AgpBin as UniffiAgpBin
 import uniffi.t1dm_core.BasalDoseSpec as UniffiBasalDoseSpec
@@ -224,15 +234,27 @@ class UniffiNativeCore : NativeCore {
         }
 
     /**
-     * Rust `accuracy_at_horizons` is total (empty/non-finite pairs handled internally) and only
-     * `Err`s on an impossible argument; we map any `CoreException` to [AccuracyReport.EMPTY] so the
-     * drill-down can never crash on a malformed pair set — the safety posture is fail-closed.
+     * Rust `forecast_metrics_suite` is total (empty input, non-finite values and mis-ordered fans
+     * are handled internally) and only `Err`s on a structurally impossible argument — a horizon off
+     * the five-minute grid, a ragged window set, a non-finite threshold. We map any `CoreException`
+     * to [MetricsSuite.EMPTY] so the drill-down can never crash on a malformed window set; the
+     * safety posture is fail-closed, and an empty suite renders as "insufficient history".
      */
-    override fun accuracyAtHorizons(pairs: List<AccuracyPair>, minSamples: Int): AccuracyReport =
+    override fun forecastMetricsSuite(
+        windows: List<ForecastWindow>,
+        horizonsMin: List<Int>,
+        config: MetricsConfig,
+        includeCgEga: Boolean,
+    ): MetricsSuite =
         try {
-            uniffiAccuracyAtHorizons(pairs.map { it.toUniffi() }, minSamples.toUInt()).toModel()
+            uniffiForecastMetricsSuite(
+                windows.map { it.toUniffi() },
+                horizonsMin.map { it.toUInt() },
+                config.toUniffi(),
+                includeCgEga,
+            ).toModel()
         } catch (_: CoreException) {
-            AccuracyReport.EMPTY
+            MetricsSuite.EMPTY
         }
 
     // ── Hill-climb minigame physics (t1dm-core::game) ───────────────────────────────
@@ -334,27 +356,77 @@ private fun UniffiCarState.toModel(): CarState = CarState(
     elapsedS = elapsedS,
 )
 
-private fun AccuracyPair.toUniffi(): UniffiAccuracyPair = UniffiAccuracyPair(
-    horizonMin = horizonMin.toUInt(),
-    predicted = predicted,
-    realized = realized,
-    bandLo = bandLo,
-    bandHi = bandHi,
-    hasBand = hasBand,
+private fun ForecastWindow.toUniffi(): UniffiForecastWindow = UniffiForecastWindow(
+    bandsMgdl = bandsMgdl,
+    medianBg = medianBg,
+    realizedBg = realizedBg,
+    lastBg = lastBg,
 )
 
-private fun UniffiHorizonAccuracy.toModel(): HorizonAccuracy = HorizonAccuracy(
+private fun MetricsConfig.toUniffi(): UniffiMetricsConfig = UniffiMetricsConfig(
+    hypoThresholdMgdl = hypoThresholdMgdl,
+    hyperThresholdMgdl = hyperThresholdMgdl,
+    excursionPrecisionToleranceMgdl = excursionPrecisionToleranceMgdl,
+    minSamples = minSamples.toUInt(),
+)
+
+private fun UniffiPointBlock.toModel(): PointBlock = PointBlock(
+    rmsePoint = rmsePoint,
+    maePoint = maePoint,
+    rmseWinmean = rmseWinmean,
+    maeWinmean = maeWinmean,
+    mard = mard,
+    clarkeA = clarkeA,
+    clarkeAb = clarkeAb,
+    clarkeD = clarkeD,
+    clarkeE = clarkeE,
+    skillPoint = skillPoint,
+)
+
+private fun UniffiExcursionAccuracy.toModel(): ExcursionAccuracy = ExcursionAccuracy(
+    recall = recall,
+    precision = precision,
+    nTrue = nTrue.toInt(),
+    nPred = nPred.toInt(),
+)
+
+private fun UniffiHorizonMetrics.toModel(): HorizonMetrics = HorizonMetrics(
     horizonMin = horizonMin.toInt(),
     n = n.toInt(),
-    rmse = rmse, mae = mae, mard = mard,
-    coverage90 = coverage90,
     sufficient = sufficient,
+    band = band.toModel(),
+    medianLine = medianLine.toModel(),
+    rmsePersistPoint = rmsePersistPoint,
+    rmsePersistWinmean = rmsePersistWinmean,
+    bandCov50 = bandCov50,
+    bandWidth50 = bandWidth50,
+    bandCov90 = bandCov90,
+    bandWidth90 = bandWidth90,
+    hypo = hypo.toModel(),
+    hyper = hyper.toModel(),
 )
 
-private fun UniffiAccuracyReport.toModel(): AccuracyReport = AccuracyReport(
+private fun UniffiCgEgaRegion.toModel(): CgEgaRegion = CgEgaRegion(
+    apPct = apPct,
+    bePct = bePct,
+    epPct = epPct,
+    nAp = nAp.toInt(),
+    nBe = nBe.toInt(),
+    nEp = nEp.toInt(),
+)
+
+private fun UniffiCgEga.toModel(): CgEga = CgEga(
+    hypo = hypo.toModel(),
+    eu = eu.toModel(),
+    hyper = hyper.toModel(),
+)
+
+private fun UniffiMetricsSuite.toModel(): MetricsSuite = MetricsSuite(
     horizons = horizons.map { it.toModel() },
-    nPairs = nPairs.toInt(),
-    minSamples = minSamples.toInt(),
+    cgega = cgega?.toModel(),
+    nWindows = nWindows.toInt(),
+    nRejected = nRejected.toInt(),
+    nSteps = nSteps.toInt(),
 )
 
 private fun StatSample.toUniffi(): UniffiStatSample = UniffiStatSample(

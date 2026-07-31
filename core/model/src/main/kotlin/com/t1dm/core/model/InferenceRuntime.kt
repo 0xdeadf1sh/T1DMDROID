@@ -105,7 +105,7 @@ data class RunningModel(
  * arch dims + [paramCount] come from the descriptor (`geometry` + the display-only `model_card`
  * block the exporter stamps); [diskBytes] is the `stat`'d artifact size (null when the `.pte` is
  * absent and the StubBackend stands in). [reference] carries the model's own held-out validation
- * metrics (train.py) as a REFERENCE — distinct from the on-device realized [AccuracyReport].
+ * metrics (train.py) as a REFERENCE — distinct from the on-device realized [MetricsSuite].
  */
 data class ModelMeta(
     val modelId: String,

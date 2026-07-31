@@ -1,7 +1,5 @@
 package com.t1dm.core.common
 
-import com.t1dm.core.model.AccuracyPair
-import com.t1dm.core.model.AccuracyReport
 import com.t1dm.core.model.AdvancedStats
 import com.t1dm.core.model.BasalSchedule
 import com.t1dm.core.model.BuiltContext
@@ -9,6 +7,9 @@ import com.t1dm.core.model.CarTuning
 import com.t1dm.core.model.CurveEvent
 import com.t1dm.core.model.CurveKind
 import com.t1dm.core.model.DecodedAdvert
+import com.t1dm.core.model.ForecastWindow
+import com.t1dm.core.model.MetricsConfig
+import com.t1dm.core.model.MetricsSuite
 import com.t1dm.core.model.Forecast
 import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.ModelDescriptor
@@ -139,11 +140,24 @@ interface NativeCore {
 
     // ── Forecast accuracy (Phase 7C, t1dm-core::accuracy) ───────────────────────────
 
-    /** Reduce matured `(predicted median, realized BG)` [pairs] to per-horizon RMSE/MAE/MARD
-     *  (+ central-90 coverage). A horizon with fewer than [minSamples] matured pairs is still
-     *  returned with its true `n` and `sufficient = false` so the UI can say "insufficient
-     *  history" plainly. Total on any input; a bad argument yields [AccuracyReport.EMPTY]. */
-    fun accuracyAtHorizons(pairs: List<AccuracyPair>, minSamples: Int): AccuracyReport
+    /**
+     * Score matured forecast [windows] the way `T1DMAI/realdata/metrics.py::compute_suite` does —
+     * per horizon on the band projection of `SPEC/invariants.md` §6.2 with the median line nested
+     * beneath, plus CG-EGA (§6.3) over the whole window. A horizon with fewer than
+     * [MetricsConfig.minSamples] scored windows is still returned with its true `n` and
+     * `sufficient = false`, so the UI can say "insufficient history" plainly.
+     *
+     * [includeCgEga] gates the CG-EGA pass alone: it walks every step of every window through the
+     * P-EGA × R-EGA zone algebra, so a caller wanting only the level metrics passes `false` and
+     * gets [MetricsSuite.cgega] `= null`. Total on any input; a bad argument yields
+     * [MetricsSuite.EMPTY].
+     */
+    fun forecastMetricsSuite(
+        windows: List<ForecastWindow>,
+        horizonsMin: List<Int>,
+        config: MetricsConfig,
+        includeCgEga: Boolean,
+    ): MetricsSuite
 
     // ── Hill-climb minigame physics (t1dm-core::game) ───────────────────────────────
 

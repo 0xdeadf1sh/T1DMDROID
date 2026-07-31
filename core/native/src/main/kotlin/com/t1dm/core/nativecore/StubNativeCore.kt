@@ -2,11 +2,8 @@ package com.t1dm.core.nativecore
 
 import com.t1dm.core.common.GameWorld
 import com.t1dm.core.common.NativeCore
-import com.t1dm.core.model.AccuracyPair
 import com.t1dm.core.model.CarTuning
 import com.t1dm.core.model.TerrainSpec
-import com.t1dm.core.model.AccuracyReport
-import com.t1dm.core.model.HorizonAccuracy
 import com.t1dm.core.model.AdvancedStats
 import com.t1dm.core.model.BasalSchedule
 import com.t1dm.core.model.BuiltContext
@@ -14,6 +11,9 @@ import com.t1dm.core.model.StatSample
 import com.t1dm.core.model.CurveEvent
 import com.t1dm.core.model.CurveKind
 import com.t1dm.core.model.DecodedAdvert
+import com.t1dm.core.model.ForecastWindow
+import com.t1dm.core.model.MetricsConfig
+import com.t1dm.core.model.MetricsSuite
 import com.t1dm.core.model.InsulinFamily
 import com.t1dm.core.model.InsulinPresetSpec
 import kotlin.math.ln
@@ -240,35 +240,18 @@ class StubNativeCore : NativeCore {
     ): AdvancedStats = AdvancedStats.EMPTY
 
     // ── Forecast accuracy (Phase 7C) ────────────────────────────────────────────────
-    // Unlike the stats block, the accuracy reduction is trivial arithmetic (no golden-gated
-    // Rust numerics), so the host stub reproduces it faithfully — this keeps the data-layer
-    // pairing + the drill-down host-testable without the .so. Bit-identical to
-    // `t1dm-core::accuracy::accuracy_at_horizons`.
-    override fun accuracyAtHorizons(pairs: List<AccuracyPair>, minSamples: Int): AccuracyReport {
-        val byHorizon = pairs
-            .filter { it.predicted.isFinite() && it.realized.isFinite() }
-            .groupBy { it.horizonMin }
-        val horizons = byHorizon.toSortedMap().map { (h, rows) ->
-            val n = rows.size
-            var sq = 0.0; var abs = 0.0; var ard = 0.0; var covHits = 0.0; var covN = 0
-            for (r in rows) {
-                val e = r.predicted - r.realized
-                sq += e * e; abs += kotlin.math.abs(e)
-                ard += kotlin.math.abs(e) / kotlin.math.max(r.realized, 1.0)
-                if (r.hasBand) { covN++; if (r.realized in r.bandLo..r.bandHi) covHits += 1.0 }
-            }
-            HorizonAccuracy(
-                horizonMin = h,
-                n = n,
-                rmse = kotlin.math.sqrt(sq / n),
-                mae = abs / n,
-                mard = 100.0 * ard / n,
-                coverage90 = if (covN > 0) covHits / covN else null,
-                sufficient = n >= minSamples,
-            )
-        }
-        return AccuracyReport(horizons, byHorizon.values.sumOf { it.size }, minSamples)
-    }
+    // The metric suite is golden-gated Rust numerics — the band projection, the Clarke zone
+    // algebra and the CG-EGA grid, all pinned bit-for-bit to `T1DMAI`'s reference. A Kotlin
+    // reproduction here would be a SECOND COPY of that definition, free to drift from the one
+    // the device actually renders, so the host stub yields the fail-closed empty suite instead.
+    // The real path is [UniffiNativeCore]; a host test wanting real numbers drives the crate
+    // directly (cargo) or feeds the drill-down a canned [MetricsSuite].
+    override fun forecastMetricsSuite(
+        windows: List<ForecastWindow>,
+        horizonsMin: List<Int>,
+        config: MetricsConfig,
+        includeCgEga: Boolean,
+    ): MetricsSuite = MetricsSuite.EMPTY
 
     // ── Hill-climb minigame physics ─────────────────────────────────────────────────
     // The solver is Rust-only by design (a per-frame path with zero allocation is the whole
