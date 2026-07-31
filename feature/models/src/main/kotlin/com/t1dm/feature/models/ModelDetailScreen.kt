@@ -34,6 +34,7 @@ import com.t1dm.core.model.BackendComparison
 import com.t1dm.core.model.BackendId
 import com.t1dm.core.model.CgEga
 import com.t1dm.core.model.CgEgaRegion
+import com.t1dm.core.model.ClarkeZoneGrid
 import com.t1dm.core.model.ExcursionAccuracy
 import com.t1dm.core.model.HorizonMetrics
 import com.t1dm.core.model.InferenceState
@@ -79,6 +80,11 @@ import com.t1dm.core.model.displayName
  *     horizons that PASSED `sufficient`, so none of them draws an axis over a horizon the tables
  *     have just declined to score.
  *
+ *     One figure has no table: the Clarke error grid, a scatter of one horizon's pairs over the five
+ *     lettered zones. Its regions come from a lattice the core classified ([clarkeGrid]) rather than
+ *     from boundaries restated here, and it is drawn on the MEDIAN LINE — the one basis of the two
+ *     that a scatter can carry honestly (see `ClarkeGridFigure`).
+ *
  * Everything is advisory: the accuracy of a FORECAST, never a dosing claim.
  *
  * **The descriptor's reference metrics are not shown, and must not be.** [ModelMeta.reference] is
@@ -94,6 +100,8 @@ fun ModelDetailScreen(
     accuracy: ModelMetrics?,
     accuracyLoading: Boolean,
     onRecomputeAccuracy: () -> Unit,
+    /** Null while the lattice is still being classified off-main; empty when the core had none. */
+    clarkeGrid: ClarkeZoneGrid?,
     cgEga: CgEga?,
     cgEgaLoading: Boolean,
     onComputeCgEga: () -> Unit,
@@ -220,6 +228,27 @@ fun ModelDetailScreen(
             section("Excursions vs alarm bands") {
                 Note("Hypo off the τ.25 edge, hyper off τ.75")
                 ExcursionTable(scored)
+            }
+        }
+
+        // ── 3a. Clarke error grid — one horizon's scatter over the zone regions ──
+        //
+        // Outside the `scored` gate deliberately, as CG-EGA is: a figure that declines to draw must
+        // say why, and a section that simply vanishes says nothing at all.
+        //
+        // ONE horizon, and the longest: it is where a forecast's failures actually show, and the
+        // other two keep their zone shares in the stacked figure above. The basis is the MEDIAN LINE
+        // and the header carries it (§6.2) — see the figure's own note for why the band projection,
+        // normative everywhere else, is the one basis this picture may not be drawn on.
+        val gridHorizon = scored.maxByOrNull { it.horizonMin }
+        section("Clarke error grid — median line") {
+            Note("Band projection clips to the truth; its grid reads as coverage")
+            when {
+                gridHorizon == null -> Note(emptyWhy(accuracy))
+                clarkeGrid == null -> Note("Computing…")
+                clarkeGrid.isEmpty -> Note("Zone regions unavailable")
+                gridHorizon.medianLine.clarkePoints.isEmpty() -> Note("No scored pairs")
+                else -> ClarkeGridFigure(gridHorizon.horizonMin, gridHorizon.medianLine.clarkePoints, clarkeGrid)
             }
         }
 

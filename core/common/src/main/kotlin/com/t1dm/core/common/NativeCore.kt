@@ -4,6 +4,7 @@ import com.t1dm.core.model.AdvancedStats
 import com.t1dm.core.model.BasalSchedule
 import com.t1dm.core.model.BuiltContext
 import com.t1dm.core.model.CarTuning
+import com.t1dm.core.model.ClarkeZone
 import com.t1dm.core.model.CurveEvent
 import com.t1dm.core.model.CurveKind
 import com.t1dm.core.model.DecodedAdvert
@@ -158,6 +159,21 @@ interface NativeCore {
         config: MetricsConfig,
         includeCgEga: Boolean,
     ): MetricsSuite
+
+    /**
+     * Classify a lattice of `(truth, pred)` mg/dL coordinates into Clarke zones, row-major and
+     * TRUTH-MAJOR: cell `(i, j)` is `truthAxisMgdl[i]` against `predAxisMgdl[j]`, at index
+     * `i * predAxisMgdl.size + j`.
+     *
+     * The reason this crosses the seam at all: the zone boundaries are inequalities inside the
+     * core, and a figure drawing the five regions would otherwise transcribe them. It samples this
+     * instead and paints what comes back, so an outline is the classifier's own verdict rasterised
+     * rather than a second copy free to drift from the points it encloses.
+     *
+     * Fail-closed: an axis carrying a non-finite coordinate, or a lattice past the core's cell
+     * ceiling, yields an empty list — no regions rather than wrong ones.
+     */
+    fun clarkeZoneGrid(truthAxisMgdl: List<Double>, predAxisMgdl: List<Double>): List<ClarkeZone>
 
     // ── Hill-climb minigame physics (t1dm-core::game) ───────────────────────────────
 

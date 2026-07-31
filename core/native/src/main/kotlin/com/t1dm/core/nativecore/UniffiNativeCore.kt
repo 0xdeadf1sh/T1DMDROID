@@ -26,6 +26,8 @@ import com.t1dm.core.model.InsulinPresetSpec
 import com.t1dm.core.model.DecodedAdvert
 import com.t1dm.core.model.CgEga
 import com.t1dm.core.model.CgEgaRegion
+import com.t1dm.core.model.ClarkePoint
+import com.t1dm.core.model.ClarkeZone
 import com.t1dm.core.model.ExcursionAccuracy
 import com.t1dm.core.model.Forecast
 import com.t1dm.core.model.ForecastStatus
@@ -41,6 +43,7 @@ import com.t1dm.core.model.PrevGlucose
 import com.t1dm.core.model.TimeHead
 import uniffi.t1dm_core.CoreException
 import uniffi.t1dm_core.forecastMetricsSuite as uniffiForecastMetricsSuite
+import uniffi.t1dm_core.clarkeZoneGrid as uniffiClarkeZoneGrid
 import uniffi.t1dm_core.advancedStats as uniffiAdvancedStats
 import uniffi.t1dm_core.advertCrc32 as uniffiAdvertCrc32
 import uniffi.t1dm_core.assembleDecode as uniffiAssembleDecode
@@ -70,6 +73,8 @@ import uniffi.t1dm_core.RunState as UniffiRunState
 import uniffi.t1dm_core.TerrainSpec as UniffiTerrainSpec
 import uniffi.t1dm_core.CgEga as UniffiCgEga
 import uniffi.t1dm_core.CgEgaRegion as UniffiCgEgaRegion
+import uniffi.t1dm_core.ClarkePoint as UniffiClarkePoint
+import uniffi.t1dm_core.ClarkeZone as UniffiClarkeZone
 import uniffi.t1dm_core.ExcursionAccuracy as UniffiExcursionAccuracy
 import uniffi.t1dm_core.ForecastWindow as UniffiForecastWindow
 import uniffi.t1dm_core.HorizonMetrics as UniffiHorizonMetrics
@@ -257,6 +262,21 @@ class UniffiNativeCore : NativeCore {
             MetricsSuite.EMPTY
         }
 
+    /**
+     * Rust `clarke_zone_grid` only `Err`s on an axis it cannot classify or a lattice past its cell
+     * ceiling. Fail-closed to no lattice at all: the figure that consumes this paints the five
+     * regions from it, and a partial lattice would paint regions that are wrong rather than absent.
+     */
+    override fun clarkeZoneGrid(
+        truthAxisMgdl: List<Double>,
+        predAxisMgdl: List<Double>,
+    ): List<ClarkeZone> =
+        try {
+            uniffiClarkeZoneGrid(truthAxisMgdl, predAxisMgdl).map { it.toModel() }
+        } catch (_: CoreException) {
+            emptyList()
+        }
+
     // ── Hill-climb minigame physics (t1dm-core::game) ───────────────────────────────
 
     override fun defaultCarTuning(): CarTuning = uniffiDefaultCarTuning().toModel()
@@ -370,6 +390,20 @@ private fun MetricsConfig.toUniffi(): UniffiMetricsConfig = UniffiMetricsConfig(
     minSamples = minSamples.toUInt(),
 )
 
+private fun UniffiClarkeZone.toModel(): ClarkeZone = when (this) {
+    UniffiClarkeZone.A -> ClarkeZone.A
+    UniffiClarkeZone.B -> ClarkeZone.B
+    UniffiClarkeZone.C -> ClarkeZone.C
+    UniffiClarkeZone.D -> ClarkeZone.D
+    UniffiClarkeZone.E -> ClarkeZone.E
+}
+
+private fun UniffiClarkePoint.toModel(): ClarkePoint = ClarkePoint(
+    pred = pred,
+    truth = truth,
+    zone = zone.toModel(),
+)
+
 private fun UniffiPointBlock.toModel(): PointBlock = PointBlock(
     rmsePoint = rmsePoint,
     maePoint = maePoint,
@@ -381,6 +415,7 @@ private fun UniffiPointBlock.toModel(): PointBlock = PointBlock(
     clarkeD = clarkeD,
     clarkeE = clarkeE,
     skillPoint = skillPoint,
+    clarkePoints = clarkePoints.map { it.toModel() },
 )
 
 private fun UniffiExcursionAccuracy.toModel(): ExcursionAccuracy = ExcursionAccuracy(

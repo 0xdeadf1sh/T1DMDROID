@@ -293,6 +293,7 @@ class RollingForecasterAlignmentTest {
             config: MetricsConfig,
             includeCgEga: Boolean,
         ): MetricsSuite = unused()
+        override fun clarkeZoneGrid(truthAxisMgdl: List<Double>, predAxisMgdl: List<Double>): List<ClarkeZone> = unused()
         override fun defaultCarTuning(): CarTuning = unused()
         override fun createGameWorld(terrain: TerrainSpec, tuning: CarTuning): GameWorld = unused()
     }

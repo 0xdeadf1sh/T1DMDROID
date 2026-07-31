@@ -69,10 +69,37 @@ data class MetricsConfig(
 )
 
 /**
+ * The Clarke Error Grid zone of one scored pair. The core's `clarke_zones` sets exactly one of its
+ * five flags for any pair, so this is that partition named rather than a second reading of it.
+ */
+enum class ClarkeZone { A, B, C, D, E }
+
+/**
+ * One scored `(prediction, truth)` pair in mg/dL with the zone the core put it in — the per-point
+ * series behind [PointBlock]'s four aggregate shares.
+ *
+ * [pred] is the BASIS's own prediction at the horizon step (band-projected in [HorizonMetrics.band],
+ * the median line in [HorizonMetrics.medianLine]); [truth] the realized BG at that step. Plot the
+ * truth on the reference axis: the grid is not symmetric, and a transposed one is a well-formed
+ * picture of a different statistic.
+ */
+data class ClarkePoint(val pred: Double, val truth: Double, val zone: ClarkeZone)
+
+/**
  * The per-horizon point-error block for ONE forecast basis (§6.2). `*Point` is the strict value at
  * the horizon step; `*Winmean` pools every step from 0 to that horizon. [clarkeAb] is the A∪B
  * share, not B alone. [skillPoint] is the fraction of the persistence baseline's RMSE removed, and
  * is null where persistence itself was perfect (an undefined ratio, never an infinity).
+ *
+ * [clarkePoints] is the per-point series the four shares were counted from, one entry per scored
+ * window. The core classifies each pair ONCE and derives both from that single call, so a scatter
+ * drawn from this series cannot disagree with the percentages printed beside it.
+ *
+ * **Carried on the MEDIAN LINE only; empty on the band**, by the core's contract. The band
+ * projection is `clip(truth, lo, hi)`, so every pair whose truth fell inside the band lands on the
+ * identity diagonal in zone A — a scatter of it would picture band coverage as a flawless forecast.
+ * The band's Clarke performance is its four shares. Never fall back to the band's series for a
+ * scatter: it is empty because nothing may draw it, not because nothing computed it.
  */
 data class PointBlock(
     val rmsePoint: Double,
@@ -85,6 +112,7 @@ data class PointBlock(
     val clarkeD: Double,
     val clarkeE: Double,
     val skillPoint: Double?,
+    val clarkePoints: List<ClarkePoint>,
 )
 
 /**
@@ -170,6 +198,88 @@ data class MetricsSuite(
 ) {
     companion object {
         val EMPTY = MetricsSuite(emptyList(), null, 0, 0, 0)
+    }
+}
+
+/**
+ * A square lattice of Clarke zones over `[0, axisMaxMgdl]` on both axes, classified by the core.
+ *
+ * This is how a Clarke Error Grid gets its REGIONS without a second copy of the zone algebra. The
+ * boundaries exist only as inequalities inside `t1dm-core::accuracy::clarke_zones`; a renderer
+ * samples this lattice and paints the cells it is handed, so the outline it draws is the
+ * classifier's own output rasterised — it cannot disagree with where the points land, and the only
+ * thing separating the painted edge from the true one is [CELLS].
+ *
+ * Row-major and TRUTH-MAJOR: [zoneAt] takes the truth index first, matching the core's declared
+ * layout and the axis a Clarke grid puts the reference on.
+ */
+class ClarkeZoneGrid private constructor(
+    val axisMaxMgdl: Double,
+    val cells: Int,
+    // Ordinals, not references: a 160-square lattice is 25 600 cells, and a whole instance is
+    // long-lived (one serves every model). Identity equality is deliberate too — this is a
+    // process-wide singleton, so a `remember` keyed on it must not walk 25 600 elements per
+    // recomposition to conclude it is the same lattice it was.
+    private val ordinals: ByteArray,
+) {
+    val isEmpty: Boolean get() = cells <= 0 || ordinals.size != cells * cells
+
+    /** mg/dL at the centre of lattice index [i], on either axis. */
+    fun coordAt(i: Int): Double = (i + 0.5) * axisMaxMgdl / cells
+
+    /** Lattice index holding [mgdl], or null where it falls off the axis. */
+    fun indexOf(mgdl: Double): Int? =
+        ((mgdl / axisMaxMgdl) * cells).toInt().takeIf { mgdl >= 0.0 && it in 0 until cells }
+
+    /** The zone at truth index [ti] against prediction index [pi]. */
+    fun zoneAt(ti: Int, pi: Int): ClarkeZone = ZONES[ordinals[ti * cells + pi].toInt()]
+
+    companion object {
+        private val ZONES = ClarkeZone.values()
+
+        val EMPTY = ClarkeZoneGrid(0.0, 0, ByteArray(0))
+
+        /** The conventional Clarke extent, and the sensor's own ceiling. */
+        const val AXIS_MAX_MGDL: Double = 400.0
+
+        /** Cells per side — 2.5 mg/dL, under two pixels on any plot this app draws. */
+        const val CELLS: Int = 160
+
+        /** Wrap an already-classified lattice; a result that does not fill the square is refused
+         *  whole, because a partial lattice paints regions that are wrong rather than absent. */
+        fun of(axisMaxMgdl: Double, cells: Int, zones: List<ClarkeZone>): ClarkeZoneGrid =
+            if (cells <= 0 || zones.size != cells * cells) {
+                EMPTY
+            } else {
+                ClarkeZoneGrid(axisMaxMgdl, cells, ByteArray(zones.size) { zones[it].ordinal.toByte() })
+            }
+
+        /**
+         * Build the lattice by asking [classify] — `(truthAxis, predAxis) -> zones`, the core's
+         * `clarke_zone_grid`. Nothing here knows a boundary; every zone in the result came back
+         * across the seam.
+         *
+         * Fail-closed on anything unexpected: a short result, or a handful of ASYMMETRIC probes
+         * whose transpose lands in a different zone disagreeing with the cells at their own
+         * coordinates. The probes carry no expected answer — the classifier supplies it — so they
+         * catch a swapped index here without restating a single inequality.
+         */
+        fun build(classify: (List<Double>, List<Double>) -> List<ClarkeZone>): ClarkeZoneGrid {
+            val axis = List(CELLS) { (it + 0.5) * AXIS_MAX_MGDL / CELLS }
+            val grid = of(AXIS_MAX_MGDL, CELLS, classify(axis, axis))
+            if (grid.isEmpty) return EMPTY
+            val probes = listOf(30.0 to 125.0, 210.0 to 60.0, 100.0 to 300.0).mapNotNull { (t, p) ->
+                val ti = grid.indexOf(t) ?: return@mapNotNull null
+                val pi = grid.indexOf(p) ?: return@mapNotNull null
+                ti to pi
+            }
+            if (probes.size != 3) return EMPTY
+            val direct = probes.map { (ti, pi) ->
+                classify(listOf(grid.coordAt(ti)), listOf(grid.coordAt(pi))).singleOrNull()
+            }
+            val sampled = probes.map { (ti, pi) -> grid.zoneAt(ti, pi) }
+            return if (direct == sampled) grid else EMPTY
+        }
     }
 }
 

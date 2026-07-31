@@ -6,6 +6,7 @@ import com.t1dm.core.model.AdvancedStats
 import com.t1dm.core.model.BasalSchedule
 import com.t1dm.core.model.BuiltContext
 import com.t1dm.core.model.CarTuning
+import com.t1dm.core.model.ClarkeZone
 import com.t1dm.core.model.CurveEvent
 import com.t1dm.core.model.CurveKind
 import com.t1dm.core.model.DecodedAdvert
@@ -112,6 +113,14 @@ class ReferenceNativeCore : NativeCore {
         config: MetricsConfig,
         includeCgEga: Boolean,
     ): MetricsSuite = MetricsSuite.EMPTY
+
+    // Empty is the contract's own fail-closed answer, not a shortfall of this stand-in: the lattice
+    // exists so the zone inequalities stay in the core alone, and classifying one here would put a
+    // second copy of them in a test double. `ClarkeZoneGrid.build` reads empty as no lattice.
+    override fun clarkeZoneGrid(
+        truthAxisMgdl: List<Double>,
+        predAxisMgdl: List<Double>,
+    ): List<ClarkeZone> = emptyList()
 
     override fun defaultCarTuning(): CarTuning = TODO("not exercised by :cgm tests")
 

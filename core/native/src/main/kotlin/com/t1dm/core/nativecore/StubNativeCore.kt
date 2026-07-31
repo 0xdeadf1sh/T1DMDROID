@@ -3,6 +3,7 @@ package com.t1dm.core.nativecore
 import com.t1dm.core.common.GameWorld
 import com.t1dm.core.common.NativeCore
 import com.t1dm.core.model.CarTuning
+import com.t1dm.core.model.ClarkeZone
 import com.t1dm.core.model.TerrainSpec
 import com.t1dm.core.model.AdvancedStats
 import com.t1dm.core.model.BasalSchedule
@@ -252,6 +253,14 @@ class StubNativeCore : NativeCore {
         config: MetricsConfig,
         includeCgEga: Boolean,
     ): MetricsSuite = MetricsSuite.EMPTY
+
+    // The lattice exists precisely so the zone boundaries stay in one place; classifying it here
+    // would put a second copy of them in the module whose whole purpose is to have none.
+    // [ClarkeZoneGrid.build] treats an empty result as no lattice, and the figure draws nothing.
+    override fun clarkeZoneGrid(
+        truthAxisMgdl: List<Double>,
+        predAxisMgdl: List<Double>,
+    ): List<ClarkeZone> = emptyList()
 
     // ── Hill-climb minigame physics ─────────────────────────────────────────────────
     // The solver is Rust-only by design (a per-frame path with zero allocation is the whole

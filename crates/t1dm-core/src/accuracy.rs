@@ -217,6 +217,35 @@ pub struct MetricsConfig {
     pub min_samples: u32,
 }
 
+/// The Clarke Error Grid zone of one scored pair.
+///
+/// [`clarke_zones`] returns five flags of which exactly one is ever set (see the proof in its
+/// doc comment), so this enum is a lossless collapse of that tuple rather than a second
+/// reading of the algebra.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, uniffi::Enum)]
+pub enum ClarkeZone {
+    A,
+    B,
+    C,
+    D,
+    E,
+}
+
+/// One scored `(prediction, truth)` pair in mg/dL with the zone the classifier put it in —
+/// the per-point series behind the four aggregate shares of [`PointBlock`].
+///
+/// `pred` is the basis's own prediction at the horizon step (band-projected in
+/// [`HorizonMetrics::band`], the median line in [`HorizonMetrics::median_line`]) and `truth`
+/// the realized BG at that step. The order is the one [`clarke_zones`] declares — pred, then
+/// truth — and it is load-bearing: the grid is not symmetric, and transposing it yields a
+/// well-formed picture of a different statistic.
+#[derive(Debug, Clone, Copy, PartialEq, uniffi::Record)]
+pub struct ClarkePoint {
+    pub pred: f64,
+    pub truth: f64,
+    pub zone: ClarkeZone,
+}
+
 /// The per-horizon point-error block for ONE forecast basis.
 ///
 /// The basis is part of every figure's identity (§6.2): the same struct filled from the
@@ -228,6 +257,20 @@ pub struct MetricsConfig {
 /// to that horizon (the basis published transformer baselines use). `clarke_ab` is the
 /// A∪B share, not B alone. `skill_point` is `(rmse_persist − rmse) / rmse_persist` against
 /// the persistence baseline, `None` where persistence itself was perfect.
+///
+/// `clarke_points` is the per-point series those four shares were counted from — one entry
+/// per scored window, in window order. It is not an extra reduction: `point_block` classifies
+/// each pair ONCE and derives both the enum and the four percentages from that one call, so a
+/// scatter drawn from this series cannot disagree with the percentages printed beside it.
+///
+/// **It is carried on the MEDIAN LINE only, and is empty on the band.** Not an omission. The
+/// band projection is `clip(truth, lo, hi)`, a function OF the truth, so every pair whose
+/// truth fell inside the band lands exactly on the identity diagonal and unconditionally in
+/// zone A — around half of them at a calibrated `band_cov50`. A scatter of that series would
+/// be a picture of band coverage wearing the look of a flawless forecast, so no consumer may
+/// draw one; the band's Clarke performance is read off its four SHARES above, where it cannot
+/// mislead that way. A series nothing may plot is not worth building, and is certainly not
+/// worth marshalling across a foreign-function boundary once per horizon.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct PointBlock {
     pub rmse_point: f64,
@@ -240,6 +283,7 @@ pub struct PointBlock {
     pub clarke_d: f64,
     pub clarke_e: f64,
     pub skill_point: Option<f64>,
+    pub clarke_points: Vec<ClarkePoint>,
 }
 
 /// Band-edge recall / precision for one threshold crossing. `recall` is `None` when the
@@ -331,8 +375,16 @@ fn band_project(truth: f64, lo: f64, hi: f64) -> f64 {
 }
 
 /// Clarke Error Grid zone of one `(pred, true)` pair, as `(A, B, C, D, E)` flags — the
-/// zone algebra of `metrics.py::_clarke`, whose sole caller wants the A, A∪B, D and E
-/// shares.
+/// zone algebra of `metrics.py::_clarke`.
+///
+/// **The five flags are a partition: exactly one is ever set.** `c`, `d` and `b` are written
+/// `!a && !e && …` and `b` is the complement of `c ∪ d` inside that guard, so at most one of
+/// the three can fire and one always does; what remains is that `a` and `e` are themselves
+/// exclusive, which the inequalities give: `pb ≤ 70 ∧ tb ≥ 180` forces
+/// `rel = (tb − pb)/tb ≥ 1 − 70/180 > 0.20` and denies `pb ≤ 70 ∧ tb ≤ 70`, while
+/// `pb ≥ 180 ∧ tb ≤ 70` forces `rel ≥ 110/70 > 0.20` and denies `pb ≤ 70`. Either E clause
+/// therefore excludes both A clauses. [`clarke_zone`] collapses the tuple on that basis and
+/// [`clarke_zones_are_a_partition`] holds it over a dense lattice.
 fn clarke_zones(pred: f64, truth: f64) -> (bool, bool, bool, bool, bool) {
     let pb = pred.max(1.0);
     let tb = truth.max(1.0);
@@ -345,6 +397,69 @@ fn clarke_zones(pred: f64, truth: f64) -> (bool, bool, bool, bool, bool) {
     let d = !a && !e && !c && (tb <= 70.0 || tb >= 240.0) && pb >= 70.0 && pb <= 180.0;
     let b = !a && !e && !c && !d;
     (a, b, c, d, e)
+}
+
+/// The single zone of a `(pred, true)` pair — [`clarke_zones`]'s partition, collapsed.
+///
+/// Deliberately not a second reading of the inequalities: it calls the one classifier and
+/// picks the flag that is set. Nothing outside this file may restate the boundaries.
+fn clarke_zone(pred: f64, truth: f64) -> ClarkeZone {
+    let (a, b, c, d, e) = clarke_zones(pred, truth);
+    debug_assert_eq!(
+        u8::from(a) + u8::from(b) + u8::from(c) + u8::from(d) + u8::from(e),
+        1,
+        "clarke_zones({pred}, {truth}) is not a partition"
+    );
+    match (a, b, c, d, e) {
+        (true, ..) => ClarkeZone::A,
+        (_, true, ..) => ClarkeZone::B,
+        (_, _, true, ..) => ClarkeZone::C,
+        (_, _, _, true, _) => ClarkeZone::D,
+        _ => ClarkeZone::E,
+    }
+}
+
+/// Cell ceiling on [`clarke_zone_grid`] — a lattice this large already resolves the grid far
+/// past any display, and the bound is what keeps a caller's arithmetic slip from asking for
+/// an allocation the device cannot serve.
+const CLARKE_GRID_MAX_CELLS: usize = 4_000_000;
+
+/// Classify a caller-chosen lattice of `(truth, pred)` mg/dL coordinates, row-major and
+/// TRUTH-MAJOR: cell `(i, j)` is `truth_axis[i]` against `pred_axis[j]`, at index
+/// `i * pred_axis.len() + j`.
+///
+/// This exists so a figure can DRAW the Clarke regions without transcribing a single
+/// inequality. The zone boundaries live only inside [`clarke_zones`]; a renderer samples this
+/// lattice and paints the cells it gets back, so an outline it draws is the classifier's own
+/// output rasterised rather than a second copy of the algebra free to drift from it. The
+/// resolution is the caller's to choose, and it is the only thing that separates the painted
+/// edge from the true one.
+///
+/// Total: an empty axis yields an empty lattice. A non-finite coordinate or a lattice past
+/// [`CLARKE_GRID_MAX_CELLS`] is an `Err` — a classification of NaN is a well-formed answer to
+/// a question nobody asked, and painting it would look exactly like a real region.
+#[uniffi::export]
+pub fn clarke_zone_grid(
+    truth_axis: Vec<f64>,
+    pred_axis: Vec<f64>,
+) -> Result<Vec<ClarkeZone>, CoreError> {
+    let bad = |reason: String| CoreError::Internal { reason };
+    if truth_axis.iter().chain(pred_axis.iter()).any(|v| !v.is_finite()) {
+        return Err(bad("clarke lattice axis carries a non-finite coordinate".into()));
+    }
+    let cells = truth_axis.len().saturating_mul(pred_axis.len());
+    if cells > CLARKE_GRID_MAX_CELLS {
+        return Err(bad(format!(
+            "clarke lattice of {cells} cells exceeds the {CLARKE_GRID_MAX_CELLS}-cell ceiling"
+        )));
+    }
+    let mut out = Vec::with_capacity(cells);
+    for &t in &truth_axis {
+        for &p in &pred_axis {
+            out.push(clarke_zone(p, t));
+        }
+    }
+    Ok(out)
 }
 
 /// Root mean square of a slice; `NaN` on an empty one, which the callers never pass.
@@ -377,14 +492,21 @@ struct Scored {
 ///
 /// Persistence has no band, so `rmse_persist` is computed once per horizon by the caller
 /// and fed to both bases; `skill_point` then differs only through the model side.
+///
+/// `keep_points` decides whether the per-pair series is RETAINED, never whether it is
+/// derived: every pair is classified either way and the four shares are counted off those
+/// very enums, so the two bases' percentages are produced by identical arithmetic. See
+/// [`PointBlock`] for why only the median line keeps its series.
 fn point_block(
     pred_k: &[f64],
     true_k: &[f64],
     err_winmean: &[f64],
     rmse_persist: f64,
+    keep_points: bool,
 ) -> PointBlock {
     let n = pred_k.len() as f64;
     let mut errs = Vec::with_capacity(pred_k.len());
+    let mut points = Vec::with_capacity(if keep_points { pred_k.len() } else { 0 });
     let mut abs_sum = 0.0f64;
     let mut ard_sum = 0.0f64;
     let (mut n_a, mut n_ab, mut n_d, mut n_e) = (0u32, 0u32, 0u32, 0u32);
@@ -394,11 +516,17 @@ fn point_block(
         abs_sum += e.abs();
         // MARD's denominator clamps the truth at 1 mg/dL (numpy `clip(true, 1, None)`).
         ard_sum += e.abs() / t.max(1.0);
-        let (a, b, _c, d, ee) = clarke_zones(p, t);
-        n_a += a as u32;
-        n_ab += (a || b) as u32;
-        n_d += d as u32;
-        n_e += ee as u32;
+        // ONE classification per pair, feeding both the published shares and the series a
+        // figure scatters. They cannot disagree because there is nothing to disagree with:
+        // the percentages below are counted off these very enums.
+        let zone = clarke_zone(p, t);
+        if keep_points {
+            points.push(ClarkePoint { pred: p, truth: t, zone });
+        }
+        n_a += u32::from(zone == ClarkeZone::A);
+        n_ab += u32::from(matches!(zone, ClarkeZone::A | ClarkeZone::B));
+        n_d += u32::from(zone == ClarkeZone::D);
+        n_e += u32::from(zone == ClarkeZone::E);
     }
     let rmse_point = rmse(&errs);
     PointBlock {
@@ -418,6 +546,7 @@ fn point_block(
             // Reporting 0 (or −inf) would read as a real skill figure; `None` cannot.
             None
         },
+        clarke_points: points,
     }
 }
 
@@ -656,8 +785,8 @@ pub fn forecast_metrics_suite(
             horizon_min: h,
             n: n as u32,
             sufficient: n as u32 >= config.min_samples,
-            band: point_block(&pred_eff_k, &true_k, &err_band, rmse_persist_point),
-            median_line: point_block(&median_k, &true_k, &err_med, rmse_persist_point),
+            band: point_block(&pred_eff_k, &true_k, &err_band, rmse_persist_point, false),
+            median_line: point_block(&median_k, &true_k, &err_med, rmse_persist_point, true),
             rmse_persist_point,
             rmse_persist_winmean: rmse(&err_persist),
             band_cov50: cov50 / n as f64,
@@ -813,7 +942,42 @@ mod tests {
         }
     }
 
-    fn assert_point_block(got: &PointBlock, want: &Value, what: &str) {
+    /// The per-point zone series must re-aggregate to the four percentages just checked
+    /// against `metrics.py`. That is what pins the SERIES to the reference: the reference
+    /// publishes no per-point zones, but it does publish those four shares to 1e-9, and a
+    /// series that reproduces all four (over the same `n`, in the same window order) is
+    /// pinned through them. It also pins zone C, which nothing publishes at all.
+    fn assert_clarke_points(got: &PointBlock, what: &str) {
+        let pts = &got.clarke_points;
+        let n = pts.len();
+        assert!(n > 0, "{what}: no clarke_points behind published shares");
+        let pct = |f: fn(ClarkeZone) -> bool| {
+            100.0 * pts.iter().filter(|p| f(p.zone)).count() as f64 / n as f64
+        };
+        close(pct(|z| z == ClarkeZone::A), got.clarke_a, &format!("{what}.points→A"));
+        close(
+            pct(|z| matches!(z, ClarkeZone::A | ClarkeZone::B)),
+            got.clarke_ab,
+            &format!("{what}.points→AB"),
+        );
+        close(pct(|z| z == ClarkeZone::D), got.clarke_d, &format!("{what}.points→D"));
+        close(pct(|z| z == ClarkeZone::E), got.clarke_e, &format!("{what}.points→E"));
+        // Five disjoint counts that exhaust `n` — a figure that partitions a bar by these
+        // shares is drawing a whole, not four slices and a gap.
+        let counted: usize = [ClarkeZone::A, ClarkeZone::B, ClarkeZone::C, ClarkeZone::D, ClarkeZone::E]
+            .iter()
+            .map(|z| pts.iter().filter(|p| p.zone == *z).count())
+            .sum();
+        assert_eq!(counted, n, "{what}: zones do not exhaust the window");
+        // Each point must still classify to its own recorded zone — the pair travels with
+        // its verdict, and a scatter drawn at (truth, pred) must land in the region the
+        // lattice paints there.
+        for p in pts {
+            assert_eq!(clarke_zone(p.pred, p.truth), p.zone, "{what}: point disagrees with itself");
+        }
+    }
+
+    fn assert_point_block(got: &PointBlock, want: &Value, what: &str, keeps_points: bool) {
         close(got.rmse_point, want["rmse_point"].as_f64().unwrap(), &format!("{what}.rmse_point"));
         close(got.mae_point, want["mae_point"].as_f64().unwrap(), &format!("{what}.mae_point"));
         close(got.rmse_winmean, want["rmse_winmean"].as_f64().unwrap(), &format!("{what}.rmse_winmean"));
@@ -824,6 +988,14 @@ mod tests {
         close(got.clarke_d, want["clarke_D"].as_f64().unwrap(), &format!("{what}.clarke_D"));
         close(got.clarke_e, want["clarke_E"].as_f64().unwrap(), &format!("{what}.clarke_E"));
         close_opt(got.skill_point, &want["skill_point"], &format!("{what}.skill_point"));
+        if keeps_points {
+            assert_clarke_points(got, what);
+        } else {
+            // The band basis carries no series, and that is a contract rather than an
+            // accident: nothing may scatter it, so a non-empty one here is a regression
+            // towards the misleading figure `PointBlock`'s note forbids.
+            assert!(got.clarke_points.is_empty(), "{what}: band must carry no clarke_points");
+        }
     }
 
     fn assert_excursion(got: &ExcursionAccuracy, want: &Value, what: &str) {
@@ -908,8 +1080,12 @@ mod tests {
                 let e = &case["expected"][h.horizon_min.to_string()];
                 let tag = format!("[{name}]@{}", h.horizon_min);
                 assert_eq!(h.n, e["n"].as_u64().unwrap() as u32, "{tag}.n");
-                assert_point_block(&h.band, &e["band"], &format!("{tag}.band"));
-                assert_point_block(&h.median_line, &e["median_line"], &format!("{tag}.median_line"));
+                // One point per scored window on the basis that keeps them — a scatter's `n`
+                // is the table's — and none at all on the band, which nothing may scatter.
+                assert!(h.band.clarke_points.is_empty(), "{tag}.band points");
+                assert_eq!(h.median_line.clarke_points.len() as u32, h.n, "{tag}.median points");
+                assert_point_block(&h.band, &e["band"], &format!("{tag}.band"), false);
+                assert_point_block(&h.median_line, &e["median_line"], &format!("{tag}.median_line"), true);
                 close(h.rmse_persist_point, e["rmse_persist_point"].as_f64().unwrap(), &format!("{tag}.rmse_persist_point"));
                 close(h.rmse_persist_winmean, e["rmse_persist_winmean"].as_f64().unwrap(), &format!("{tag}.rmse_persist_winmean"));
                 close(h.band_cov50, e["band_cov50"].as_f64().unwrap(), &format!("{tag}.band_cov50"));
@@ -920,9 +1096,15 @@ mod tests {
                 assert_excursion(&h.hyper, &e["hyper"], &format!("{tag}.hyper"));
 
                 // §6.2: a degenerate fan's projection IS the median line, so the two bases
-                // must come back identical — not merely close.
+                // must come back identical — not merely close. Every measured quantity,
+                // that is: the series is the one asymmetry, carried by the median line and
+                // withheld from the band by contract rather than by arithmetic.
                 if case["collapsed_band"].as_bool().unwrap() {
-                    assert_eq!(h.band, h.median_line, "{tag}: collapsed band must reduce to the median line");
+                    assert_eq!(
+                        PointBlock { clarke_points: h.median_line.clarke_points.clone(), ..h.band.clone() },
+                        h.median_line,
+                        "{tag}: collapsed band must reduce to the median line",
+                    );
                 }
             }
 
@@ -934,6 +1116,91 @@ mod tests {
             assert_region(&got.hyper, cg, counts, "hyper");
         }
     }
+
+    // ── The Clarke zone partition and the lattice a figure paints from it ──────────────
+
+    /// [`clarke_zone`] collapses five flags on the promise that exactly one is ever set.
+    /// The proof is in `clarke_zones`' doc comment; this holds it over a dense lattice —
+    /// including the clamped corner, where `pb`/`tb` are floored at 1 mg/dL.
+    #[test]
+    fn clarke_zones_are_a_partition() {
+        let mut seen = [false; 5];
+        for ti in 0..=400u32 {
+            for pi in 0..=400u32 {
+                let (t, p) = (f64::from(ti), f64::from(pi));
+                let (a, b, c, d, e) = clarke_zones(p, t);
+                let set = u8::from(a) + u8::from(b) + u8::from(c) + u8::from(d) + u8::from(e);
+                assert_eq!(set, 1, "({p}, {t}) set {set} flags");
+                seen[match clarke_zone(p, t) {
+                    ClarkeZone::A => 0,
+                    ClarkeZone::B => 1,
+                    ClarkeZone::C => 2,
+                    ClarkeZone::D => 3,
+                    ClarkeZone::E => 4,
+                }] = true;
+            }
+        }
+        // All five reachable inside 0–400 mg/dL: a figure that samples that square paints
+        // five regions, not four and an absence.
+        assert!(seen.iter().all(|&s| s), "a zone is unreachable on 0–400 mg/dL: {seen:?}");
+    }
+
+    /// The lattice a renderer paints must be the classifier's own verdicts, in the declared
+    /// TRUTH-MAJOR order. Deliberately unequal axis lengths: a transposed index survives a
+    /// square lattice silently, and a transposed Clarke grid is a well-formed picture of a
+    /// different statistic (the same defect that corrupted the reference's CG-EGA).
+    #[test]
+    fn clarke_zone_grid_is_truth_major_and_is_the_classifier() {
+        let truth: Vec<f64> = (0..37).map(|i| f64::from(i) * 11.0).collect();
+        let pred: Vec<f64> = (0..29).map(|j| f64::from(j) * 14.0).collect();
+        assert_ne!(truth.len(), pred.len());
+        let grid = clarke_zone_grid(truth.clone(), pred.clone()).unwrap();
+        assert_eq!(grid.len(), truth.len() * pred.len());
+        for (i, &t) in truth.iter().enumerate() {
+            for (j, &p) in pred.iter().enumerate() {
+                assert_eq!(grid[i * pred.len() + j], clarke_zone(p, t), "cell ({i}, {j})");
+            }
+        }
+
+        // Total on the edges, loud on what it cannot answer.
+        assert!(clarke_zone_grid(vec![], vec![1.0]).unwrap().is_empty());
+        assert!(clarke_zone_grid(vec![f64::NAN], vec![100.0]).is_err());
+        assert!(clarke_zone_grid(vec![0.0; 2048], vec![0.0; 2048]).is_err());
+    }
+
+    /// Pairs sitting ON each boundary of `metrics.py::_clarke`, and their neighbours just
+    /// across it. A `<=` flipped to `<`, a constant nudged, or a clause dropped fails here
+    /// by name rather than as a percentage that moved.
+    #[test]
+    fn clarke_zone_boundaries_are_where_the_reference_puts_them() {
+        for (pred, truth, want) in [
+            (120.0, 100.0, ClarkeZone::A),  // rel exactly 0.20, above
+            (121.0, 100.0, ClarkeZone::B),
+            (80.0, 100.0, ClarkeZone::A),   // rel exactly 0.20, below
+            (79.0, 100.0, ClarkeZone::B),
+            (70.0, 40.0, ClarkeZone::A),    // both edges of the hypo square
+            (70.1, 40.0, ClarkeZone::D),
+            (20.0, 70.0, ClarkeZone::A),
+            (20.0, 70.1, ClarkeZone::B),
+            (180.0, 70.0, ClarkeZone::E),   // the two E corners
+            (179.9, 70.0, ClarkeZone::D),
+            (70.0, 180.0, ClarkeZone::E),
+            (70.0, 179.9, ClarkeZone::B),
+            (210.0, 100.0, ClarkeZone::C),  // pb = tb + 110, the upper C edge
+            (209.0, 100.0, ClarkeZone::B),
+            (400.0, 290.0, ClarkeZone::C),  // its truth ceiling
+            (401.0, 291.0, ClarkeZone::B),
+            (55.0, 170.0, ClarkeZone::C),   // under pb = 7/5·tb − 182, the lower C edge
+            (57.0, 170.0, ClarkeZone::B),
+            (180.0, 240.0, ClarkeZone::D),  // the zone-D truth floor and pred ceiling
+            (180.0, 239.0, ClarkeZone::B),
+            (179.0, 60.0, ClarkeZone::D),
+            (0.0, 0.0, ClarkeZone::A),      // the max(·, 1 mg/dL) clamp
+        ] {
+            assert_eq!(clarke_zone(pred, truth), want, "pred {pred}, truth {truth}");
+        }
+    }
+
 
     // ── Degenerate inputs: total, never a panic ────────────────────────────────────────
 
@@ -1023,7 +1290,15 @@ mod tests {
         let w = window(&[100.0, 105.0, 110.0], &[104.0, 99.0, 130.0], 98.0, 0.0);
         let s = forecast_metrics_suite(vec![w], vec![5, 10, 15], cfg(), true).unwrap();
         for h in &s.horizons {
-            assert_eq!(h.band, h.median_line, "collapsed fan @{}", h.horizon_min);
+            // Every measured quantity identical; the per-pair series is the one asymmetry,
+            // withheld from the band by contract rather than produced differently.
+            assert_eq!(
+                PointBlock { clarke_points: h.median_line.clarke_points.clone(), ..h.band.clone() },
+                h.median_line,
+                "collapsed fan @{}",
+                h.horizon_min,
+            );
+            assert!(h.band.clarke_points.is_empty(), "collapsed fan @{}", h.horizon_min);
             assert_eq!(h.band_width50, 0.0);
             assert_eq!(h.band_cov50, 0.0);
         }
