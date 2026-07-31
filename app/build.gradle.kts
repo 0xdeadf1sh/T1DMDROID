@@ -26,8 +26,8 @@ android {
 
     defaultConfig {
         applicationId = "com.t1dm.app"
-        versionCode = 55
-        versionName = "0.21.3"
+        versionCode = 56
+        versionName = "0.21.4"
 
         // arm64-v8a only (single target device). Harmless until native .so libs ship.
         ndk {
@@ -128,6 +128,7 @@ dependencies {
     implementation(project(":feature:security"))
     implementation(project(":feature:settings"))
     implementation(project(":feature:journal"))
+    implementation(project(":feature:logs"))
     implementation(project(":feature:game"))
     // Not for drawing: the composition root names PredictedClock to hand the panel's own axis
     // clock from the dashboard to drive mode, and :feature:dashboard exposes :ui:graph via
