@@ -40,7 +40,6 @@ include(
     ":feature:insulin",
     ":feature:security",
     ":feature:settings",
-    ":feature:journal",
     ":feature:logs",
     ":feature:game",
 )

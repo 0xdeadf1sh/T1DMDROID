@@ -19,10 +19,10 @@ fell a version behind the server's while both sides carried on working.
 | Model download and staging | `sync/src/main/kotlin/com/t1dm/sync/ModelSyncCoordinator.kt` |
 
 Two client-side conventions are worth holding in view while reading the
-contract. The serializer omits absent optionals rather than nulling them, which
-is what keeps the notes endpoint's `tz_offset` legal. And unknown keys are
-ignored on read, so a server that gains a field cannot break a build of this app
-that predates it.
+contract. The serializer omits absent optionals rather than nulling them, and
+the contract accepts either form on a write, so the two agree. And unknown keys
+are ignored on read, so a server that gains a field cannot break a build of this
+app that predates it.
 
 ## Changing it
 

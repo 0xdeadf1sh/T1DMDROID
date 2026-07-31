@@ -8,18 +8,18 @@ import kotlinx.serialization.encodeToString
 
 /**
  * Eviction priority: irreplaceable clinical records outrank regenerable forecasts —
- * `ALERT > DOSE > MEAL > NOTE > INGEST > STATS > PREDICTIONS > SERIES > PHOTO`. Higher rank survives;
+ * `ALERT > DOSE > MEAL > INGEST > STATS > PREDICTIONS > SERIES > PHOTO`. Higher rank survives;
  * when the queue is over its size bound the lowest-rank, oldest rows are dropped first. An ALERT (a
  * safety signal) is the last thing ever evicted; a stale display PREDICTION or a PHOTO is the first.
  * SERIES is a retired tombstone (the app DB is not wiped, so a pending pre-upgrade row must still
- * decode and drain to completion).
+ * decode and drain to completion). Only the ORDER is load-bearing — nothing persists a rank, so the
+ * numbers are free to close up when a kind leaves.
  */
 internal val OutboxKind.priority: Int
     get() = when (this) {
-        OutboxKind.ALERT -> 8
-        OutboxKind.DOSE -> 7
-        OutboxKind.MEAL -> 6
-        OutboxKind.NOTE -> 5
+        OutboxKind.ALERT -> 7
+        OutboxKind.DOSE -> 6
+        OutboxKind.MEAL -> 5
         OutboxKind.INGEST -> 4
         OutboxKind.STATS -> 3
         OutboxKind.PREDICTIONS -> 2
@@ -29,18 +29,18 @@ internal val OutboxKind.priority: Int
 
 /**
  * Whether an over-age outbox row may be dropped by the age-eviction sweep (gated in [QueueDrainer]).
- * Irreplaceable clinical kinds (ALERT/DOSE/MEAL/NOTE) never age out — only the hard size cap can
+ * Irreplaceable clinical kinds (ALERT/DOSE/MEAL) never age out — only the hard size cap can
  * ever evict them; regenerable kinds (INGEST/STATS/PREDICTIONS/SERIES/PHOTO) do.
  */
 internal val OutboxKind.ageEvictable: Boolean
     get() = when (this) {
-        OutboxKind.ALERT, OutboxKind.DOSE, OutboxKind.MEAL, OutboxKind.NOTE -> false
+        OutboxKind.ALERT, OutboxKind.DOSE, OutboxKind.MEAL -> false
         else -> true
     }
 
 /**
  * The self-describing envelope stored in an outbox row's `payload` for **event** kinds
- * (PREDICTIONS/MEAL/DOSE/STATS/NOTE/ALERT/PHOTO, plus the retired SERIES tombstone): the exact `/v1`
+ * (PREDICTIONS/MEAL/DOSE/STATS/ALERT/PHOTO, plus the retired SERIES tombstone): the exact `/v1`
  * [method]/[path] and JSON [body] captured at enqueue time, so the drainer replays it verbatim.
  * INGEST is the one exception — it stores an EMPTY
  * payload as a dirty-marker keyed `ingest:sample:<ts>`, and the drainer resolves the *current*
@@ -75,10 +75,21 @@ fun doseDedupKey(clientId: String): String = "dose:$clientId"
  */
 class OutboxEnqueuer(private val repo: OutboxSink) {
 
-    /** All running models' forecasts for one cycle, as a single `PUT /v1/predictions` batch. */
+    /**
+     * All running models' forecasts for one cycle, as a single `PUT /v1/predictions` batch.
+     *
+     * The ONE producer that REPLACES rather than appends. `pred:<cycleTsMs>` keys a cycle, not a
+     * body, and a cycle can be run more than once inside its own 5-min slot — the grid tick fires
+     * one, and a logged meal or dose fires another off the same slot with the carb/insulin channels
+     * it just changed. Under the plain append the second batch collided with the unique key and was
+     * IGNORED, silently: the phone drew the post-log forecast while the server kept the pre-log one
+     * until the next slot. [com.t1dm.data.OutboxSink.enqueueReplacingPending] drops the superseded
+     * row first, so the queue still holds at most one prediction push per cycle and it is always the
+     * newest. Returns -1 when a drain already owns the key — see that method for the race.
+     */
     suspend fun enqueuePredictions(cycleTsMs: Long, preds: List<ModelPrediction>, nowMs: Long): Long {
         val body = SyncJson.encodeToString(preds.map { it.toWrite(cycleTsMs, nowMs) })
-        return repo.enqueue(
+        return repo.enqueueReplacingPending(
             kind = OutboxKind.PREDICTIONS,
             dedupKey = "pred:$cycleTsMs",
             payload = OutboxRequest("PUT", "/v1/predictions", body).encode(),
@@ -144,7 +155,7 @@ class OutboxEnqueuer(private val repo: OutboxSink) {
      * — so a genuine edit re-enqueues while an exact retry coalesces to a single no-op push.
      *
      * Takes NO hold, despite riding the DOSE kind: the hold exists to keep a row withdrawable, and a
-     * template is not a journal entry — the Logs panel lists `logged_meal`/`logged_dose` and has no
+     * template is not a logged event — the Logs panel lists `logged_meal`/`logged_dose` and has no
      * affordance that could withdraw this. A later edit supersedes it by version instead.
      */
     suspend fun enqueueBasalSchedule(schedule: BasalScheduleDto, nowMs: Long): Long {
@@ -164,16 +175,6 @@ class OutboxEnqueuer(private val repo: OutboxSink) {
         payload = OutboxRequest("PUT", "/v1/stats", SyncJson.encodeToString(stats)).encode(),
         nowMs = nowMs,
     )
-
-    suspend fun enqueueNote(note: NoteWriteDto, nowMs: Long): Long {
-        val body = SyncJson.encodeToString(note)
-        return repo.enqueue(
-            kind = OutboxKind.NOTE,
-            dedupKey = "note:${note.ts}:${note.text.hashCode()}",
-            payload = OutboxRequest("POST", "/v1/notes", body).encode(),
-            nowMs = nowMs,
-        )
-    }
 
     suspend fun enqueueAlert(alert: AlertWriteDto, nowMs: Long): Long {
         val body = SyncJson.encodeToString(alert)

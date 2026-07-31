@@ -25,7 +25,7 @@ Designed by a T1DM patient, informed by lived experience.
 
 T1DMDROID reads glucose the way a beacon scanner reads a beacon: the AiDEX X broadcasts its current reading roughly once per minute, and the app listens for those advertisements passively — no pairing, no bond, no GATT connection. Sensor activation, calibration, and warmup remain the job of the sensor's official app on a separate phone; T1DMDROID is a pure, indefinite passive reader. Each reading is stamped with the phone's receive time snapped to a 5-minute grid.
 
-On top of that live feed it runs a small transformer forecasting model entirely on the device, surfaces the current value with a trend and a glanceable forecast, logs meals/insulin/notes, computes advisory statistics, and drives a deterministic, model-free alarm path for out-of-range and loss-of-signal conditions. Optional integrations add a self-hosted sync server and an encrypted BLE watch accessory.
+On top of that live feed it runs a small transformer forecasting model entirely on the device, surfaces the current value with a trend and a glanceable forecast, logs meals and insulin, computes advisory statistics, and drives a deterministic, model-free alarm path for out-of-range and loss-of-signal conditions. Optional integrations add a self-hosted sync server and an encrypted BLE watch accessory.
 
 The Bluetooth, inference, and watch protocols are documented under [`docs/`](docs): [`CGM.md`](docs/CGM.md), [`INFERENCE.md`](docs/INFERENCE.md), [`WATCH_BLE.md`](docs/WATCH_BLE.md), and [`T1DMSERVER_API.md`](docs/T1DMSERVER_API.md).
 
@@ -102,7 +102,7 @@ Heavy compute never runs on the main thread; the UI observes results reactively.
 | `:data` | Room database, repositories, curve reconstruction |
 | `:core:common`, `:core:model`, `:core:design`, `:core:native` | Shared dispatchers, domain types, theming, and the Rust-core JNI bindings |
 | `:ui:graph` | The custom Compose blood-glucose graph |
-| `:feature:*` | Screen features — dashboard, stats, models, hardware, network, meals, insulin, security, settings, journal |
+| `:feature:*` | Screen features — dashboard, stats, models, hardware, network, meals, insulin, security, settings, logs |
 
 
 ## Building

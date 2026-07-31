@@ -131,7 +131,7 @@ interface SampleDao {
     @Query("SELECT * FROM sample WHERE ts BETWEEN :fromMs AND :toMs ORDER BY ts")
     suspend fun rangeList(fromMs: Long, toMs: Long): List<SampleEntity>
 
-    /** The most recent non-null mood, for the journal picker's "current mood" read (Phase 4). */
+    /** The most recent non-null mood — what the Logs panel's picker shows as the current selection. */
     @Query("SELECT mood FROM sample WHERE mood IS NOT NULL ORDER BY ts DESC LIMIT 1")
     fun observeLatestMood(): Flow<Int?>
 
@@ -279,22 +279,6 @@ interface BasalScheduleDao {
 }
 
 @Dao
-interface NoteDao {
-    @Insert suspend fun insert(note: NoteEntity): Long
-
-    /** Newest-first journal feed (Phase 4). */
-    @Query("SELECT * FROM note ORDER BY tsMs DESC LIMIT :limit")
-    fun observeRecent(limit: Int): Flow<List<NoteEntity>>
-
-    /** The latest logged-note timestamp, if any (glanceable "last journalled" read). */
-    @Query("SELECT MAX(tsMs) FROM note")
-    suspend fun latestTs(): Long?
-
-    @Query("DELETE FROM note")
-    suspend fun deleteAll()
-}
-
-@Dao
 interface CgmAdvertRawDao {
     @Insert suspend fun insert(advert: CgmAdvertRawEntity): Long
 
@@ -338,8 +322,8 @@ interface OutboxDao {
      *  state — `QueueDrainer` DELETEs on HTTP success — so *absent* is the only "already sent" signal
      *  there is, and it is indistinguishable from evicted. Read before an undo withdraws the push, so
      *  the receipt can say which of the two happened instead of guessing (see
-     *  `T1dmRepository.withdrawPush`). Rowids are recycled by SQLite, hence the dedupKey cross-check
-     *  there — this returns the whole row rather than just the state so that check is possible. */
+     *  `T1dmRepository.withdrawPush`). This returns the whole row rather than just the state so that
+     *  the dedupKey cross-check there is possible. */
     @Query("SELECT * FROM outbox WHERE id = :id")
     suspend fun byId(id: Long): OutboxEntity?
 
@@ -360,6 +344,15 @@ interface OutboxDao {
 
     @Query("DELETE FROM outbox WHERE id = :id")
     suspend fun delete(id: Long)
+
+    /**
+     * Delete the row filed under [dedupKey] ONLY while it is still in [state]; returns the rows
+     * removed (0 or 1, the index being unique). The replace-the-pending-push half of
+     * `T1dmRepository.enqueueReplacingPending` — see there for why a row already claimed INFLIGHT is
+     * deliberately left alone rather than swept with it.
+     */
+    @Query("DELETE FROM outbox WHERE dedupKey = :dedupKey AND state = :state")
+    suspend fun deleteByDedupKeyInState(dedupKey: String, state: OutboxState): Int
 
     @Query("DELETE FROM outbox WHERE id IN (:ids)")
     suspend fun deleteAll(ids: List<Long>): Int

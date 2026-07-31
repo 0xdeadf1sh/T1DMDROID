@@ -17,8 +17,8 @@ import kotlinx.coroutines.Dispatchers
  *
  * v2 is a purely **additive** migration: two new tables, no column change to any Phase-1 table.
  * v3 (Phase 4) is likewise additive: the curve-engine event stores `logged_dose`, `logged_meal`
- * and `basal_schedule`, no change to any existing table. v4 (Phase 4, journal) adds the `note`
- * table — the durable producer for the outbox's reserved `NOTE` class. v5 (Phase 4, meal builder)
+ * and `basal_schedule`, no change to any existing table. v4 added a free-text `note` table, which
+ * v9 removes again with the surface that wrote it. v5 (Phase 4, meal builder)
  * adds the glycemic dictionary (`food` + the FTS5 `food_fts` shadow), `saved_meal`/
  * `saved_meal_item`, and `insulin_type` — all additive. v6 (Phase 7C) is a **data-only** re-seed
  * (no schema change) folding the grown `FoodSeed` catalogue into an already-seeded install; see
@@ -28,6 +28,8 @@ import kotlinx.coroutines.Dispatchers
  * `sample.carbsG/bolusU/basalU` dose projections dead in place; see [MigrationRunner.MIGRATION_6_7].
  * v8 (graph annotation layer) adds `bg_paint_stroke`, the freehand drawings the user paints over the
  * BG panel — one new table, no existing table touched; see [MigrationRunner.MIGRATION_7_8].
+ * v9 is the sole **subtractive** revision: the free-text note surface is withdrawn, so its `note`
+ * table and every queued `NOTE` outbox row go with it; see [MigrationRunner.MIGRATION_8_9].
  */
 @Database(
     entities = [
@@ -44,14 +46,13 @@ import kotlinx.coroutines.Dispatchers
         LoggedDoseEntity::class,
         LoggedMealEntity::class,
         BasalScheduleEntity::class,
-        NoteEntity::class,
         FoodEntity::class,
         SavedMealEntity::class,
         SavedMealItemEntity::class,
         InsulinTypeEntity::class,
         PaintStrokeEntity::class,
     ],
-    version = 8,
+    version = 9,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -69,7 +70,6 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun loggedDoseDao(): LoggedDoseDao
     abstract fun loggedMealDao(): LoggedMealDao
     abstract fun basalScheduleDao(): BasalScheduleDao
-    abstract fun noteDao(): NoteDao
     abstract fun foodDao(): FoodDao
     abstract fun savedMealDao(): SavedMealDao
     abstract fun insulinTypeDao(): InsulinTypeDao
@@ -80,7 +80,7 @@ abstract class AppDatabase : RoomDatabase() {
 
         /** The current keep-forever schema version (must equal the `@Database(version = …)` above).
          *  A full app reset ([T1dmRepository.wipeAllData]) row-wipes at THIS version — never a drop. */
-        const val SCHEMA_VERSION = 8
+        const val SCHEMA_VERSION = 9
 
         /**
          * Build the on-disk database. Migrations come exclusively from [MigrationRunner];

@@ -50,12 +50,13 @@ class OkHttpStreamClientTest {
         server.enqueue(
             upgrade(
                 """{"type":"sample","ts":111,"bg":120.0,"updated_at":111}""",
-                """{"type":"note","ts":500}""", // decoded-and-ignored
+                """{"type":"photo","ts":500}""",     // a known frame this client does not surface
+                """{"type":"parsnip","ts":501}""",   // a discriminant no build of this client knows
                 """{"type":"alert","ts":222,"kind":"low"}""",
             ),
         )
 
-        // Connected, Sample, Alert, Disconnected — the note is dropped, so four events.
+        // Connected, Sample, Alert, Disconnected — both middle frames are dropped, so four events.
         val events = withTimeout(5_000) {
             streamClient(StreamConfig(baseReconnectMs = 60_000)).events().take(4).toList()
         }

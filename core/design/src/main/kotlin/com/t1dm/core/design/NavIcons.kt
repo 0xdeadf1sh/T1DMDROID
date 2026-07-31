@@ -125,11 +125,6 @@ private fun security(s: IconStyle) = glyph("watch", s) { // a wristwatch (the co
     moveTo(17.4f, 10.7f); lineTo(19.2f, 10.7f); lineTo(19.2f, 13.3f); lineTo(17.4f, 13.3f); close() // crown
 }
 
-private fun journal(s: IconStyle) = glyph("journal", s) { // book with spine
-    moveTo(5f, 4f); lineTo(19f, 4f); lineTo(19f, 20f); lineTo(5f, 20f); close()
-    moveTo(8f, 4f); lineTo(9f, 4f); lineTo(9f, 20f); lineTo(8f, 20f); close()
-}
-
 private fun settings(s: IconStyle) = glyph("settings", s) { // gear (octagon + bore)
     moveTo(12f, 3f); lineTo(15f, 5f); lineTo(19f, 5f); lineTo(19f, 9f); lineTo(21f, 12f)
     lineTo(19f, 15f); lineTo(19f, 19f); lineTo(15f, 19f); lineTo(12f, 21f); lineTo(9f, 19f)
@@ -149,8 +144,8 @@ private fun pubs(s: IconStyle) = glyph("pubs", s) { // a page with text lines
 }
 
 private fun logs(s: IconStyle) = glyph("logs", s) { // a bulleted list: three marker + rule pairs
-    // Deliberately unlike `journal` (a bound book) and `pubs` (lines INSIDE a page outline): no
-    // enclosing shape at all, so the three surfaces stay distinguishable at 28 dp in every geometry.
+    // Deliberately unlike `pubs` (lines INSIDE a page outline): no enclosing shape at all, so the
+    // two surfaces stay distinguishable at 28 dp in every geometry.
     // Each marker and each rule is its own closed rectangle, so it reads as ink when filled
     // (Umbrella) and as an outline when stroked (Tron / Kitty); the last rule is short, which is what
     // stops the set reading as a grid.
@@ -264,7 +259,6 @@ fun navIcon(route: String, style: IconStyle): ImageVector = when (route) {
     "meals" -> meals(style)
     "insulin" -> insulin(style)
     "security" -> security(style)
-    "journal" -> journal(style)
     "logs" -> logs(style)
     "settings" -> settings(style)
     else -> settings(style)

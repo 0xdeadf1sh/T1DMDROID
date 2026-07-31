@@ -6,7 +6,6 @@ import com.t1dm.core.common.T1dmDispatchers
 import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.CgmSourceDescriptor
 import com.t1dm.core.model.CgmSourceId
-import com.t1dm.core.model.JournalNote
 import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.ForecastWindow
 import com.t1dm.core.model.ForecastWindowSet
@@ -25,7 +24,6 @@ import com.t1dm.data.db.FoodEntity
 import com.t1dm.data.db.InsulinTypeEntity
 import com.t1dm.data.db.LoggedDoseEntity
 import com.t1dm.data.db.LoggedMealEntity
-import com.t1dm.data.db.NoteEntity
 import com.t1dm.data.db.HwTelemetryEntity
 import com.t1dm.data.db.KvEntity
 import com.t1dm.data.db.OutboxEntity
@@ -357,10 +355,12 @@ class T1dmRepository(
      * server therefore holds. Runs inside the caller's transaction so the read and the delete cannot
      * be split by a concurrent drain.
      *
-     * [dedupKey] is a guard, not a lookup key: `outbox.id` is an ordinary autoincrement rowid, which
-     * SQLite recycles once the row is deleted, so a naked delete-by-id could nuke an unrelated push
-     * that inherited the number after ours drained. A mismatch reads as ALREADY_SENT, which is what a
-     * recycled rowid actually implies. `outboxId <= 0` means the caller's `enqueue` returned -1 (the
+     * [dedupKey] is a guard, not a lookup key. The column is `AUTOINCREMENT`, so an id is never
+     * reused and cannot address a row other than the one it was handed out for — but the id travels
+     * on an `:app` log handle that outlives the row, the process, and (via an undo receipt) any
+     * assumption about which store minted it, and the check costs one column comparison. A mismatch is
+     * treated as ALREADY_SENT: the conservative reading, since it refuses to delete a queued push this
+     * caller cannot prove is theirs. `outboxId <= 0` means the caller's `enqueue` returned -1 (the
      * unique-dedupKey conflict path) — unreachable for a genuine log, whose `clientId` is freshly
      * minted — and null means no push was ever enqueued for this write.
      */
@@ -498,19 +498,7 @@ class T1dmRepository(
         }
     }
 
-    // ─── Journal notes (Room v4, Phase 4 deliverable 2) ────────────────────────────────
-
-    /**
-     * Persist a free-text journal note. Unlike a dose/meal/mood, a note is NOT projected into the
-     * wide `sample` (it annotates an instant, not a 5-min bucket) — the `NOTE` outbox push is
-     * enqueued by the caller (`:app`), keeping this store free of any `:sync` dependency.
-     */
-    suspend fun logNote(note: NoteEntity): Long = withContext(io) { db.noteDao().insert(note) }
-
-    fun observeNotes(limit: Int = 100): Flow<List<JournalNote>> =
-        db.noteDao().observeRecent(limit).map { list -> list.map { it.toJournalNote() } }
-
-    /** The most recent non-null mood across the wide sample (journal picker "current mood"). */
+    /** The most recent non-null mood across the wide sample. */
     fun observeLatestMood(): Flow<Int?> = samples.observeLatestMood()
 
     // ─── Graph paint layer (Room v8) ────────────────────────────────────────────────────
@@ -691,6 +679,40 @@ class T1dmRepository(
         nowMs: Long,
         notBeforeMs: Long,
     ): Long = withContext(io) { enqueueRow(kind, dedupKey, payload, nowMs, notBeforeMs) }
+
+    /**
+     * Enqueue under [dedupKey], displacing a still-PENDING row already filed there. Returns the new
+     * row id, or -1 when the key is held by a row the drainer has already claimed.
+     *
+     * **The drain race, and why only PENDING is swept.** `QueueDrainer` takes a snapshot batch of
+     * PENDING rows and then spends one HTTP round trip apiece, so a row can sit in that snapshot for
+     * minutes; INFLIGHT is the mutual-exclusion token that separates "still ours" from "on the wire",
+     * and `OutboxDao.claim` is where a row crosses. Deleting only PENDING rows therefore lands cleanly
+     * on either side of it:
+     *
+     *  - We win the race: the row is gone before the claim, `claim` returns 0, and the drainer skips
+     *    it — exactly the path an undo already relies on. Our replacement, a distinct row, is sent.
+     *  - The drainer wins: the row is INFLIGHT, we delete nothing, the insert loses to the unique
+     *    index and returns -1. The body already on the wire is delivered and the fresher one is not
+     *    queued; the next cycle re-enqueues under a new key seconds later, and the server's
+     *    `updated_at` ordering means neither delivery can un-do a newer one.
+     *
+     * The delete and the insert share one transaction so a claim cannot land between them, and
+     * `outbox.id` is `AUTOINCREMENT` — rowids are never reused — so the drainer's snapshot of the
+     * displaced row can never resolve onto the replacement that took its place.
+     */
+    override suspend fun enqueueReplacingPending(
+        kind: OutboxKind,
+        dedupKey: String,
+        payload: ByteArray,
+        nowMs: Long,
+        notBeforeMs: Long,
+    ): Long = withContext(io) {
+        inWriteTx {
+            outbox.deleteByDedupKeyInState(dedupKey, OutboxState.PENDING)
+            enqueueRow(kind, dedupKey, payload, nowMs, notBeforeMs)
+        }
+    }
 
     fun observeOutboxDepth(): Flow<Int> = outbox.observeDepth()
 
@@ -1041,7 +1063,6 @@ class T1dmRepository(
             predictions.deleteAll()
             profiles.deleteAll()
             telemetry.deleteAll()
-            db.noteDao().deleteAll()
             db.savedMealDao().deleteAllItems()
             db.savedMealDao().deleteAllMeals()
             db.foodDao().deleteAllCustom()

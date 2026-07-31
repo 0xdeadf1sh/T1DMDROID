@@ -24,7 +24,6 @@ import com.t1dm.data.db.HwTelemetryEntity
 import com.t1dm.data.db.InsulinTypeEntity
 import com.t1dm.data.db.LoggedDoseEntity
 import com.t1dm.data.db.LoggedMealEntity
-import com.t1dm.data.db.NoteEntity
 import com.t1dm.data.db.PredictionEntity
 import com.t1dm.data.db.SavedMealEntity
 import com.t1dm.data.db.SavedMealItemEntity
@@ -123,7 +122,6 @@ class ResetWipeTest {
             ),
             makeActive = true,
         )
-        repo.logNote(NoteEntity(tsMs = now, tzOffsetMin = 0, text = "note", updatedAt = now))
         repo.recordRawAdvert(CgmAdvertRawEntity(sourceId = sourceId.value, rxWallMs = now, rssi = -60, payload = ByteArray(4), crcValid = true, minFromStart = 1))
         repo.recordTelemetry(HwTelemetryEntity(tsMs = now, metric = "exec_ms", modelId = "m", valueReal = 9.0, valueText = null))
         repo.upsertProfile(
@@ -194,7 +192,7 @@ class ResetWipeTest {
         /** Every table the reset must leave empty (food + insulin_type keep their seed rows). */
         val WIPED_EMPTY = listOf(
             "cgm_source", "cgm_reading", "sample", "dose_event", "logged_dose", "logged_meal",
-            "basal_schedule", "cgm_advert_raw", "outbox", "prediction", "server_profile", "note",
+            "basal_schedule", "cgm_advert_raw", "outbox", "prediction", "server_profile",
             "hw_telemetry", "saved_meal", "saved_meal_item", "bg_paint_stroke", "kv",
         )
     }

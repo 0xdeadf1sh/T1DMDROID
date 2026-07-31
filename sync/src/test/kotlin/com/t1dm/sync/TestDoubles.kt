@@ -23,7 +23,9 @@ class TestDispatchers : T1dmDispatchers {
 /**
  * In-memory [OutboxDao] faithful to the Room contract that matters for the drainer: `enqueue`
  * honours the unique `dedupKey` (IGNORE on conflict), `dueBatch` filters by state + due time and
- * orders FIFO (`createdAtMs, id`), and `evictionRows` is oldest-first.
+ * orders FIFO (`createdAtMs, id`), and `evictionRows` is oldest-first. Ids are handed out strictly
+ * increasing and never reused, as the table's `AUTOINCREMENT` primary key does — which is what lets a
+ * displaced row's id stay unresolvable after `deleteByDedupKeyInState` replaces it.
  */
 class FakeOutboxDao : OutboxDao {
     private val rows = LinkedHashMap<Long, OutboxEntity>()
@@ -65,6 +67,13 @@ class FakeOutboxDao : OutboxDao {
         depth.map { rows.values.filter { r -> r.kind in kinds }.map { r -> r.dedupKey } }
 
     override suspend fun delete(id: Long) { rows.remove(id); depth.value = rows.size }
+
+    override suspend fun deleteByDedupKeyInState(dedupKey: String, state: OutboxState): Int {
+        val doomed = rows.values.filter { it.dedupKey == dedupKey && it.state == state }.map { it.id }
+        doomed.forEach { rows.remove(it) }
+        depth.value = rows.size
+        return doomed.size
+    }
 
     override suspend fun deleteAll(ids: List<Long>): Int {
         val before = rows.size
@@ -112,7 +121,6 @@ open class NoopSyncHttpClient : SyncHttpClient {
     override suspend fun putDoses(doses: List<DoseEventDto>): EventBatchAck = nope()
     override suspend fun putBasalSchedule(body: BasalScheduleDto): EventBatchAck = nope()
     override suspend fun putStats(body: StatsPushDto): EventBatchAck = nope()
-    override suspend fun postNote(body: NoteWriteDto): IdAck = nope()
     override suspend fun postAlert(body: AlertWriteDto): IdAck = nope()
     override suspend fun getSeries(from: Long?, to: Long?, cursor: Long?, limit: Int?, fields: String?): SeriesPageDto = nope()
     override suspend fun getMeals(from: Long?, to: Long?): MealsPageDto = nope()

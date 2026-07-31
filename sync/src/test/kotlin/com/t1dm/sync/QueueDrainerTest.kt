@@ -54,7 +54,7 @@ class QueueDrainerTest {
     @Test
     fun transientFailureReschedulesWithExponentialBackoff() = runTest {
         val dao = FakeOutboxDao()
-        dao.enqueue(OutboxEntity(kind = OutboxKind.NOTE, dedupKey = "n", payload = envelope("/v1/notes"), createdAtMs = 1, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
+        dao.enqueue(OutboxEntity(kind = OutboxKind.ALERT, dedupKey = "n", payload = envelope("/v1/alerts"), createdAtMs = 1, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
         val http = RecordingHttpClient { _, _ -> status(500) }
         var now = 10_000L
         val d = drainer(dao, http, clock = { now })
@@ -182,19 +182,19 @@ class QueueDrainerTest {
     @Test
     fun sizeEvictionDropsLowestPriorityOldestFirst() = runTest {
         val dao = FakeOutboxDao()
-        // 4 rows, cap 2 → drop 2. Priority ALERT(5) > NOTE(4) > INGEST(3) > PREDICTIONS(2) > SERIES(1) > PHOTO(0).
+        // 4 rows, cap 2 → drop 2. Priority ALERT(7) > MEAL(5) > INGEST(4) > PREDICTIONS(2) > SERIES(1) > PHOTO(0).
         dao.enqueue(OutboxEntity(kind = OutboxKind.ALERT, dedupKey = "1", payload = ByteArray(0), createdAtMs = 10, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
         dao.enqueue(OutboxEntity(kind = OutboxKind.PHOTO, dedupKey = "2", payload = ByteArray(0), createdAtMs = 20, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
         dao.enqueue(OutboxEntity(kind = OutboxKind.SERIES, dedupKey = "3", payload = ByteArray(0), createdAtMs = 30, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
-        dao.enqueue(OutboxEntity(kind = OutboxKind.NOTE, dedupKey = "4", payload = ByteArray(0), createdAtMs = 40, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
+        dao.enqueue(OutboxEntity(kind = OutboxKind.MEAL, dedupKey = "4", payload = ByteArray(0), createdAtMs = 40, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
         val d = drainer(dao, RecordingHttpClient { _, _ -> ok() }, config = DrainConfig(maxQueueSize = 2, maxAgeMs = Long.MAX_VALUE))
 
         val evicted = d.evict(nowMs = 100)
 
         assertEquals(2, evicted)
-        // PHOTO(0) then SERIES(1) go first; ALERT + NOTE survive.
+        // PHOTO(0) then SERIES(1) go first; ALERT + MEAL survive.
         val kinds = dao.snapshot().map { it.kind }.toSet()
-        assertEquals(setOf(OutboxKind.ALERT, OutboxKind.NOTE), kinds)
+        assertEquals(setOf(OutboxKind.ALERT, OutboxKind.MEAL), kinds)
     }
 
     @Test

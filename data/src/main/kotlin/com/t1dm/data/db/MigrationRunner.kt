@@ -9,9 +9,14 @@ import java.util.UUID
 
 /**
  * The single registry of schema migrations (Phase 1). Keep-forever storage
- * FORBIDS destructive migration: every future change is a new [Migration] whose body is
- * append-only DDL — `ALTER TABLE … ADD COLUMN`, `CREATE TABLE`, `CREATE INDEX` — never a
- * `DROP`/`RENAME`-that-loses-data and never `fallbackToDestructiveMigration`.
+ * FORBIDS destructive migration: every change is a new [Migration] whose body is append-only DDL —
+ * `ALTER TABLE … ADD COLUMN`, `CREATE TABLE`, `CREATE INDEX` — and never
+ * `fallbackToDestructiveMigration`.
+ *
+ * A withdrawn feature is the one exception, and [MIGRATION_8_9] is its only instance: when a
+ * surface is removed whole, the table nothing will ever read again is dropped with it. That is
+ * bounded by what the removal already decided — it may only drop a store no surviving code reads,
+ * never trim a table another feature still keys off.
  *
  * Each version appends exactly one `Migration(n-1, n)` here and its exported `schemas/<db>/n.json`
  * gates it in CI. The DDL below is transcribed verbatim from the generated schema so the migrated
@@ -93,10 +98,12 @@ object MigrationRunner {
     }
 
     /**
-     * v3 → v4 (Phase 4, journal): additive only — the free-text `note` table
-     * (the durable `NOTE`-outbox producer). No existing table is touched. DDL transcribed verbatim
-     * from the generated `schemas/<db>/4.json` so the migrated DB is byte-identical to a fresh
-     * `createAllTables`.
+     * v3 → v4: additive only — the free-text `note` table (the durable `NOTE`-outbox producer). No
+     * existing table is touched. DDL transcribed verbatim from the generated `schemas/<db>/4.json`
+     * so the migrated DB is byte-identical to a fresh `createAllTables`.
+     *
+     * The table it creates is dropped again by [MIGRATION_8_9]; this step stays because the chain
+     * from v3 must still reach v4 before it can reach v9.
      */
     val MIGRATION_3_4 = object : Migration(3, 4) {
         override fun migrate(connection: SQLiteConnection) {
@@ -292,6 +299,29 @@ object MigrationRunner {
         }
     }
 
+    /**
+     * v8 → v9 (the free-text note surface is withdrawn): the sole **subtractive** migration. The
+     * `note` table and its `tsMs` index are dropped, because the screen, the domain type, the DAO
+     * and the `POST /v1/notes` push are all gone and nothing left in the app can read a row.
+     * Dropping the index explicitly is redundant under SQLite (`DROP TABLE` takes its indices with
+     * it) and kept so the intent survives a reader who does not know that.
+     *
+     * The second statement is the one that must not be forgotten. `OutboxEntity.kind` persists as
+     * the enum's `name`, and `Converters.stringToOutboxKind` resolves it with `valueOf` — so a
+     * `NOTE` row left queued from a pre-upgrade build would throw the moment the drainer read it,
+     * and keep throwing on every drain thereafter. Its endpoint no longer exists on the server
+     * either (the wire contract dropped `POST /v1/notes`), so the row could never be delivered:
+     * purging it here is the only outcome available, and it must happen in the same transaction
+     * that removes the enum constant's last legal source.
+     */
+    val MIGRATION_8_9 = object : Migration(8, 9) {
+        override fun migrate(connection: SQLiteConnection) {
+            connection.execSQL("DROP INDEX IF EXISTS `index_note_tsMs`")
+            connection.execSQL("DROP TABLE IF EXISTS `note`")
+            connection.execSQL("DELETE FROM `outbox` WHERE `kind` = 'NOTE'")
+        }
+    }
+
     val ALL: Array<Migration> = arrayOf(
         MIGRATION_1_2,
         MIGRATION_2_3,
@@ -300,6 +330,7 @@ object MigrationRunner {
         MIGRATION_5_6,
         MIGRATION_6_7,
         MIGRATION_7_8,
+        MIGRATION_8_9,
     )
 
     /** Apply every registered migration to a builder; the sole path that wires migrations. */

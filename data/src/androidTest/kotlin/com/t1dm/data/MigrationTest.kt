@@ -1,18 +1,21 @@
 package com.t1dm.data
 
 import androidx.room.testing.MigrationTestHelper
+import androidx.sqlite.SQLiteConnection
 import androidx.sqlite.driver.bundled.BundledSQLiteDriver
+import androidx.sqlite.execSQL
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.t1dm.data.db.AppDatabase
 import com.t1dm.data.db.MigrationRunner
+import org.junit.Assert.assertEquals
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * Validates the keep-forever ALTER-only migration (Phase 1: destructive migration is
+ * Validates the keep-forever hand-written migration chain (Phase 1: destructive migration is
  * FORBIDDEN). Creates the schema at version N, applies the hand-written migration(s), and lets
  * [MigrationTestHelper] assert the migrated DB matches the exported N+1 schema exactly — catching any
  * DDL drift (index names, AUTOINCREMENT, nullability) between the migration and Room.
@@ -157,10 +160,35 @@ class MigrationTest {
     }
 
     @Test
-    fun migrate1To8_fullChain() {
+    fun migrate8To9_noteTableIsGoneAndQueuedNoteRowsArePurged() {
+        // v9 (the free-text note surface is withdrawn): the sole subtractive step. Seed the v8 DB with
+        // a note row and a queued NOTE outbox row, then assert both are gone — the outbox purge is the
+        // load-bearing half, since `OutboxKind.valueOf("NOTE")` would throw on every later drain.
+        helper.createDatabase(8).use { db ->
+            db.execSQL("INSERT INTO `note` (`tsMs`,`tzOffsetMin`,`text`,`updatedAt`) VALUES (1,0,'x',1)")
+            db.execSQL(
+                "INSERT INTO `outbox` (`kind`,`dedupKey`,`payload`,`createdAtMs`,`attempts`,`nextAttemptMs`,`state`) " +
+                    "VALUES ('NOTE','note:1:2',X'00',1,0,0,'PENDING')",
+            )
+            db.execSQL(
+                "INSERT INTO `outbox` (`kind`,`dedupKey`,`payload`,`createdAtMs`,`attempts`,`nextAttemptMs`,`state`) " +
+                    "VALUES ('ALERT','alert:1:low',X'00',1,0,0,'PENDING')",
+            )
+        }
+
+        val db = helper.runMigrationsAndValidate(9, listOf(MigrationRunner.MIGRATION_8_9))
+
+        assertEquals(0, countTables(db, "note"))
+        assertEquals(0, countRows(db, "SELECT COUNT(*) FROM `outbox` WHERE `kind` = 'NOTE'"))
+        assertEquals(1, countRows(db, "SELECT COUNT(*) FROM `outbox`"))
+        db.close()
+    }
+
+    @Test
+    fun migrate1To9_fullChain() {
         helper.createDatabase(1).close()
         helper.runMigrationsAndValidate(
-            8,
+            9,
             listOf(
                 MigrationRunner.MIGRATION_1_2,
                 MigrationRunner.MIGRATION_2_3,
@@ -169,8 +197,22 @@ class MigrationTest {
                 MigrationRunner.MIGRATION_5_6,
                 MigrationRunner.MIGRATION_6_7,
                 MigrationRunner.MIGRATION_7_8,
+                MigrationRunner.MIGRATION_8_9,
             ),
         )
+    }
+
+    private fun countTables(db: SQLiteConnection, name: String): Int =
+        countRows(db, "SELECT COUNT(*) FROM `sqlite_master` WHERE `type` = 'table' AND `name` = '$name'")
+
+    private fun countRows(db: SQLiteConnection, sql: String): Int {
+        val stmt = db.prepare(sql)
+        try {
+            stmt.step()
+            return stmt.getLong(0).toInt()
+        } finally {
+            stmt.close()
+        }
     }
 
     private companion object {

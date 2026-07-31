@@ -65,7 +65,6 @@ interface SyncHttpClient {
     suspend fun putBasalSchedule(body: BasalScheduleDto): EventBatchAck
     /** `PUT /v1/stats` — push one phone-computed window block, idempotent by `window`. */
     suspend fun putStats(body: StatsPushDto): EventBatchAck
-    suspend fun postNote(body: NoteWriteDto): IdAck
     suspend fun postAlert(body: AlertWriteDto): IdAck
     suspend fun getSeries(from: Long?, to: Long?, cursor: Long?, limit: Int?, fields: String?): SeriesPageDto
     /** `GET /v1/meals?from&to` — meal curve events in the window (both bounds optional; `null` ⇒ unbounded). */
@@ -158,8 +157,6 @@ class OkHttpSyncClient(
 
     override suspend fun putStats(body: StatsPushDto): EventBatchAck =
         send("PUT", "/v1/stats", body)
-
-    override suspend fun postNote(body: NoteWriteDto): IdAck = send("POST", "/v1/notes", body)
 
     override suspend fun postAlert(body: AlertWriteDto): IdAck = send("POST", "/v1/alerts", body)
 

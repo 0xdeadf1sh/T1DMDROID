@@ -1,22 +1,11 @@
 package com.t1dm.core.model
 
 /**
- * Phase-4 manual-entry + journal domain types (Phase 4, deliverables 1–2).
- * These cross the `:feature:{journal,meals,insulin}` ⇄ `:app` seam as pure value types so the
+ * Phase-4 manual-entry domain types (Phase 4, deliverable 1).
+ * These cross the `:feature:{meals,insulin}` ⇄ `:app` seam as pure value types so the
  * feature screens stay dependency-light (only `:core:*`) — the Room/`:data`/`:sync` wiring lives
  * in `:app`, exactly as the Phase-1 `DashboardScreen` is fed state + callbacks from the container.
  */
-
-/**
- * One free-text journal note (the locked "mood + free-text journal now" scope). Persisted in the
- * local `note` table and mirrored via `POST /v1/notes`; [tsMs] is wall-clock (NOT grid-snapped —
- * a note is an instant, not a 5-min bucket).
- */
-data class JournalNote(
-    val tsMs: Long,
-    val tzOffsetMin: Int,
-    val text: String,
-)
 
 /**
  * The IOB/COB read-out with its §3.6-F provenance metadata. IOB/COB are computed from **logged
@@ -39,23 +28,10 @@ data class IobCobReadout(
     val iobZeroMs: Long? = null,
 )
 
-/**
- * A long-acting basal quick-preset for the insulin entry surface. The label is presentation-only;
- * `:app` maps the preset onto the canonical Bateman DIA + rate constants (`CurveEngine.Presets`),
- * keeping the numeric authority in one place (SPEC §3.3).
- */
-enum class BasalPreset(val label: String) {
-    LANTUS("Lantus · glargine · ~24 h"),
-    TRESIBA("Tresiba · degludec · ~42 h"),
-}
-
-/**
- * A rapid-acting bolus quick-preset. Only the Novorapid/aspart gamma neighbourhood is canonical
- * (`simulator.bolus_pk_for_dose`); a custom curve is the food/insulin-builder's later job.
- */
-enum class BolusPreset(val label: String) {
-    NOVORAPID("Novorapid · aspart · gamma ~50 min peak"),
-}
+// The insulin entry surface names its insulin with an [InsulinPresetSpec] out of the shared
+// catalogue (`insulin_preset_catalog`, mirrored in `Curve.kt`), not with a local enum. Two enums
+// once stood here — one rapid variant and two basal — and neither could express the catalogue the
+// writer actually resolves against, so the panel and the row it wrote named different insulins.
 
 /**
  * A carb glycemic-index quick-chip for the meal entry surface. [gi] parameterizes the appearance

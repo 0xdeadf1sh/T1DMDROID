@@ -3,11 +3,9 @@ package com.t1dm.data
 import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.CgmSourceDescriptor
 import com.t1dm.core.model.CgmSourceId
-import com.t1dm.core.model.JournalNote
 import com.t1dm.core.model.PaintStroke
 import com.t1dm.data.db.CgmReadingEntity
 import com.t1dm.data.db.CgmSourceEntity
-import com.t1dm.data.db.NoteEntity
 import com.t1dm.data.db.PaintStrokeBlob
 import com.t1dm.data.db.PaintStrokeEntity
 
@@ -46,12 +44,6 @@ internal fun CgmReading.toEntity(): CgmReadingEntity = CgmReadingEntity(
  * source and now uses a CONNECTED GATT session as the sole read path), so it is reconstructed as
  * `false`. It is informational only — nothing branches on it.
  */
-internal fun NoteEntity.toJournalNote(): JournalNote = JournalNote(
-    tsMs = tsMs,
-    tzOffsetMin = tzOffsetMin,
-    text = text,
-)
-
 internal fun CgmSourceEntity.toDescriptor(): CgmSourceDescriptor = CgmSourceDescriptor(
     id = CgmSourceId(sourceId),
     vendorId = vendorId,

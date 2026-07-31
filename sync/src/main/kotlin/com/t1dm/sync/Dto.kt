@@ -155,16 +155,7 @@ data class IngestDto(
 @Serializable
 data class IngestAck(val ok: Boolean = false, val ts: Long = 0)
 
-// ── Notes / Alerts (write) — client_id keyed ──────────────────────────────────────────────────
-
-@Serializable
-data class NoteWriteDto(
-    val client_id: String,
-    val ts: Long,
-    val tz_offset: Int = 0,
-    val text: String,
-    val updated_at: Long,
-)
+// ── Alerts (write) — client_id keyed ──────────────────────────────────────────────────────────
 
 @Serializable
 data class AlertWriteDto(
@@ -299,8 +290,6 @@ sealed interface WsEvent {
     ) : WsEvent
 
     @Serializable @SerialName("prediction") data class Prediction(val id: Long = 0, val made_at: Long = 0) : WsEvent
-
-    @Serializable @SerialName("note") data class Note(val id: Long = 0, val ts: Long = 0) : WsEvent
 
     @Serializable @SerialName("photo") data class Photo(val id: Long = 0, val ts: Long = 0) : WsEvent
 

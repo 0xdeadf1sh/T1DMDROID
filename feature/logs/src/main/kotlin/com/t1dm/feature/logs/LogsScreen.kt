@@ -9,8 +9,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
@@ -41,15 +43,18 @@ import kotlin.math.roundToInt
  * The Logs panel: every insulin dose and every carbohydrate entry the user has logged, newest first,
  * each labelled with how far it has got towards the server.
  *
- * A sibling of the journal, not a replacement for it — that surface owns free-text notes and mood, this
- * one owns the two clinical event stores (`logged_dose` / `logged_meal`) the model reconstructs its
- * carb and insulin channels from.
+ * It owns the two clinical event stores (`logged_dose` / `logged_meal`) the model reconstructs its
+ * carb and insulin channels from, and nothing else.
  *
  * The two states are an ACKNOWLEDGEMENT, never an elapsed duration (see [LogState]), and that is what
  * makes the delete affordance safe to gate on them: a [LogState.COMMITTED] row still has its push in the
  * queue and can be withdrawn whole, while a [LogState.DELIVERED] one is on a server with no DELETE
  * endpoint and would be re-hydrated by the next catch-up anyway. So a delivered row simply has no
  * Delete, rather than one that fails.
+ *
+ * It also carries the MOOD picker, the sole author of `sample.mood` — a scalar of the six-series
+ * ingest row rather than a clinical event, which is why it sits above the list instead of in it and
+ * writes an overwrite of the current 5-minute bucket rather than a row that could be withdrawn.
  *
  * Pure and stateless in the house mould: it renders the [entries] `:app` joined against the queue and
  * hoists both actions. No `:data`, no `:sync`, no knowledge that an outbox exists.
@@ -59,7 +64,10 @@ fun LogsScreen(
     entries: List<LoggedEntry> = emptyList(),
     holdMin: Int = 0,
     holdMaxMin: Int = 0,
+    /** The most recent mood written, 1..5, or null when none has been. */
+    currentMood: Int? = null,
     onSetHoldMin: (Int) -> Unit = {},
+    onPickMood: (Int) -> Unit = {},
     onDelete: (LoggedEntry) -> Unit = {},
 ) {
     // The row a delete has been asked for, held here rather than per-row: the confirmation outlives the
@@ -71,6 +79,7 @@ fun LogsScreen(
         verticalArrangement = Arrangement.spacedBy(8.dp),
         contentPadding = PaddingValues(vertical = 16.dp),
     ) {
+        item(key = "mood") { MoodPicker(currentMood, onPickMood) }
         item(key = "hold") { HoldSection(holdMin, holdMaxMin, onSetHoldMin) }
         if (entries.isEmpty()) {
             item(key = "empty") {
@@ -95,6 +104,39 @@ fun LogsScreen(
             onConfirm = { pending = null; onDelete(entry) },
             onDismiss = { pending = null },
         )
+    }
+}
+
+/** Mood 1..5 (worst→best); the value is the integer written to `sample.mood` and pushed on the
+ *  six-scalar ingest row. The glyphs ARE the scale, so nothing is labelled but the section itself. */
+private val MOODS = listOf(1 to "😞", 2 to "🙁", 3 to "😐", 4 to "🙂", 5 to "😀")
+
+/**
+ * The one user-facing writer of `sample.mood`.
+ *
+ * A five-stop scale, not five buttons — a detent, like any other single-choice picker. The write it
+ * triggers is silent: mood is an overwrite of the current bucket's value rather than an appended
+ * clinical row, so it earns no Commit and appears in no list below.
+ */
+@Composable
+private fun MoodPicker(current: Int?, onPick: (Int) -> Unit) {
+    val haptics = rememberT1dmHaptics()
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text("Mood", style = MaterialTheme.typography.labelMedium)
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            MOODS.forEach { (value, glyph) ->
+                FilterChip(
+                    selected = current == value,
+                    onClick = { haptics.perform(HapticEvent.SegmentTick); onPick(value) },
+                    label = { Text(glyph, style = MaterialTheme.typography.titleLarge) },
+                    shape = CircleShape,
+                )
+            }
+        }
     }
 }
 

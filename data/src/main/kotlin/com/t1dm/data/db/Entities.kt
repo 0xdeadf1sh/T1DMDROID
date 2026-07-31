@@ -30,8 +30,14 @@ enum class DoseKind { BOLUS, BASAL }
  * defined in `:sync` (`Outbox.kt`, consumed by `QueueDrainer`), not here. `SERIES` is kept only as
  * a tombstone: the app DB is never wiped, so a `SERIES` row enqueued before this upgrade must still
  * decode even though nothing enqueues it anymore.
+ *
+ * REMOVING a constant is the dangerous direction, and only two things make it safe: the endpoint it
+ * pushed to must be gone from the wire contract (so no queued row could ever be delivered anyway),
+ * and the same schema migration must purge every surviving row of that kind — `valueOf` throws on a
+ * name it does not know, and one undecodable row poisons every later drain. `NOTE` left this way in
+ * v9; see `MigrationRunner.MIGRATION_8_9`.
  */
-enum class OutboxKind { ALERT, DOSE, MEAL, NOTE, INGEST, STATS, PREDICTIONS, SERIES, PHOTO }
+enum class OutboxKind { ALERT, DOSE, MEAL, INGEST, STATS, PREDICTIONS, SERIES, PHOTO }
 
 /** Lifecycle of an outbox row across drain attempts. */
 enum class OutboxState { PENDING, INFLIGHT, FAILED }
@@ -88,7 +94,7 @@ data class SampleEntity(
     val bgProvenance: ReadingProvenance?,
     val bgFlag: ReadingFlag?,
     val steps: Int?,                   // from :sensors StepSource
-    val mood: Int?,                    // from journal mood picker
+    val mood: Int?,                    // from the Logs panel's mood picker
     val hr: Int?,                      // wired-but-null until a source exists
     val sleep: Int?,
     val exercise: Int?,
@@ -373,22 +379,6 @@ data class ServerProfileEntity(
     val active: Boolean,
     val createdAtMs: Long,
     val updatedAtMs: Long,
-)
-
-/**
- * A free-text journal note (Room v4, Phase 4 deliverable 2 — the locked "mood +
- * free-text journal now" scope). This is the durable producer the outbox's reserved `NOTE` class
- * was awaiting: each row is mirrored via `POST /v1/notes`. Unlike the wide `sample`, [tsMs] is the
- * wall-clock instant the note was written (NOT grid-snapped) — a note annotates a moment, not a
- * 5-min bucket — so it is its own event store, never projected into `sample`.
- */
-@Entity(tableName = "note", indices = [Index("tsMs")])
-data class NoteEntity(
-    @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    val tsMs: Long,
-    val tzOffsetMin: Int,
-    val text: String,
-    val updatedAt: Long,
 )
 
 /** Hardware / inference telemetry; Phase 2 tags rows by `modelId` (§2.4). */

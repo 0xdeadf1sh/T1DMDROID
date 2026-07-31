@@ -51,7 +51,7 @@ class QueueDrainer(
     /**
      * Enforce the size AND age bounds; returns the number of rows evicted. Public for the panel.
      * Age-eviction is gated on [OutboxKind]'s `ageEvictable` — irreplaceable clinical kinds
-     * (ALERT/DOSE/MEAL/NOTE) never expire by age, and yield only to the hard size cap below, after
+     * (ALERT/DOSE/MEAL) never expire by age, and yield only to the hard size cap below, after
      * every regenerable kind by priority. Regenerable kinds still expire past `maxAgeMs`.
      */
     suspend fun evict(nowMs: Long = clock()): Int = withContext(dispatchers.io) {
