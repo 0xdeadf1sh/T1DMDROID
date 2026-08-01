@@ -147,8 +147,18 @@ class T1dmRepository(
     fun observeSources(): Flow<List<CgmSourceDescriptor>> =
         sources.observeAll().map { list -> list.map { it.toDescriptor() } }
 
+    /**
+     * Deduplicated on the DESCRIPTOR, which is what consumers actually read.
+     *
+     * Room invalidates per TABLE, so any write to `cgm_source` re-runs this query — and [toDescriptor]
+     * drops `lastSeenMs`, so a liveness touch yields a descriptor equal to the previous one. Undeduped,
+     * that identical value propagated; and because the hot consumers reach it through `flatMapLatest`
+     * (the glance combine, `dashboardReadings`), every emission tore down and restarted a downstream
+     * query which then emitted again on subscription. One touch became two rebuilds, at whatever rate
+     * the write path happened to run.
+     */
     fun observeActiveSource(): Flow<CgmSourceDescriptor?> =
-        sources.observeActive().map { it?.toDescriptor() }
+        sources.observeActive().map { it?.toDescriptor() }.distinctUntilChanged()
 
     /** Register or update a source, preserving its original `addedAtMs` across updates. */
     suspend fun upsertSource(
@@ -204,8 +214,11 @@ class T1dmRepository(
     fun observeReadings(sourceId: CgmSourceId, fromMs: Long, toMs: Long): Flow<List<CgmReading>> =
         readings.observeRange(sourceId.value, fromMs, toMs).map { list -> list.map { it.toModel() } }
 
+    /** Deduplicated for the reason [observeActiveSource] is: `cgm_reading` is written more often than
+     *  its newest row changes, and every one of those writes otherwise reached the glance combine and
+     *  the dashboard. */
     fun observeLatestReading(sourceId: CgmSourceId): Flow<CgmReading?> =
-        readings.observeLatest(sourceId.value).map { it?.toModel() }
+        readings.observeLatest(sourceId.value).map { it?.toModel() }.distinctUntilChanged()
 
     /** The most recent [limit] readings for [sourceId], newest first (Phase-2 inference context). */
     suspend fun recentReadings(sourceId: CgmSourceId, limit: Int): List<CgmReading> =
@@ -735,7 +748,12 @@ class T1dmRepository(
         }
     }
 
-    fun observeOutboxDepth(): Flow<Int> = outbox.observeDepth()
+    /** Deduplicated: the queue table is written far more often than its DEPTH moves — a row going
+     *  INFLIGHT, being rescheduled under backoff or having its attempt count bumped all invalidate the
+     *  table without changing the count. Each such emission previously cost `SyncManager` an extra
+     *  `oldestOutboxCreatedAt()` query and a fresh `SyncStatus`, which two dashboard collectors combine
+     *  — so a row churning cost a DB read and two recompositions to report an unchanged number. */
+    fun observeOutboxDepth(): Flow<Int> = outbox.observeDepth().distinctUntilChanged()
 
     /** Oldest enqueue timestamp across the queue (null = empty); Network panel age-vs-bound read. */
     suspend fun oldestOutboxCreatedAt(): Long? = withContext(io) { outbox.oldestCreatedAt() }

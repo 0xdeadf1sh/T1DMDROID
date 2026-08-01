@@ -121,6 +121,11 @@ class CgmScanService : LifecycleService() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var started = false
 
+    /** Everything the notification and the widget rendered on the last push, so an emission that moves
+     *  none of it can be skipped. Touched only from `refreshGlanceSurfaces`, which the combine collects
+     *  on one coroutine, so it needs no synchronization. */
+    private var lastGlancePushSig: List<Any?>? = null
+
     /** The merged reading bus feeding the alarm engine: real active-source readings + injected. */
     private val readingBus = MutableSharedFlow<CgmReading>(replay = 0, extraBufferCapacity = 128)
 
@@ -504,9 +509,26 @@ class CgmScanService : LifecycleService() {
         val style = iconStyleForTheme(themeId)
         val palette = resolvePalette(themeId, customJson)
         val accent = palette.primary.toArgb()
+        // Push only what CHANGED. Everything the two surfaces render is in this signature, so an
+        // upstream that emits without moving any of it renders identically — and re-posting that is
+        // pure cost. It is not small cost: `SessionWorker` composes Glance on the MAIN thread, and
+        // `SizeMode.Responsive` builds a backdrop per tier, so one widget push parcels ~2 MB per
+        // instance. Unguarded, this ran at whatever rate `cgm_source`/`cgm_reading` were written,
+        // which starved the frame loop of the thread it shares.
+        //
+        // The signature is a list rather than a class so adding a rendered input here cannot silently
+        // fall out of the comparison. `nowMs`-derived staleness lives inside `glance`, so the 30 s
+        // ticker still gets through and the notification's countdown keeps ticking.
+        val pushSig: List<Any?> =
+            listOf(glance, unit, style, accent, state.selectedPredictedTime, themeId, customJson)
+        val surfacesChanged = pushSig != lastGlancePushSig
+        if (surfacesChanged) lastGlancePushSig = pushSig
+
         val nm = getSystemService(NotificationManager::class.java)
-        runCatching {
-            nm.notify(NOTIF_ID, livePresenter.build(glance, unit, style, accent, state.selectedPredictedTime))
+        if (surfacesChanged) {
+            runCatching {
+                nm.notify(NOTIF_ID, livePresenter.build(glance, unit, style, accent, state.selectedPredictedTime))
+            }
         }
 
         val deterministicCriticalActive = ::alarmController.isInitialized &&
@@ -526,8 +548,10 @@ class CgmScanService : LifecycleService() {
         // Seed the palette globals the widget reads headlessly BEFORE pushing it, so it renders the
         // persisted theme deterministically (independent of whether an Activity composition has run) and
         // updates the instant the theme changes rather than on the next reading/ticker.
-        applyWidgetPalette(palette)
-        runCatching { GlucoseWidget().updateAll(this) }
+        if (surfacesChanged) {
+            applyWidgetPalette(palette)
+            runCatching { GlucoseWidget().updateAll(this) }
+        }
         // Freshness blink (tasteful, free motion): a just-arrived reading renders the accent bright;
         // settle it a beat later with ONE delayed re-render so a new value reads as a brief pulse rather
         // than a static jump. Gated by the global animations toggle and fired only for a fresh reading —
