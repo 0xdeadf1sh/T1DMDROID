@@ -13,7 +13,7 @@ import androidx.compose.runtime.ReadOnlyComposable
 /**
  * The single lever that makes the "disable all animations" setting real (issue 17). Motion in the app
  * flows through three doors, and each reads [LocalAnimationsEnabled] via a helper here so the flag
- * genuinely collapses everything to a snap:
+ * genuinely collapses everything to a snap. A fourth door is not motion at all — see below:
  *
  *  1. **Screen transitions** — the `NavHost` enter/exit/pop specs (the crossfade the user sees on
  *     every tab change) come from [navEnter]/[navExit], which return [EnterTransition.None] /
@@ -22,6 +22,12 @@ import androidx.compose.runtime.ReadOnlyComposable
  *     [motionSpec], which returns [snap] when motion is off.
  *  3. **Imperative scrolls** — call sites branch on [LocalAnimationsEnabled] to `scrollTo` instead of
  *     `animateScrollTo` (the bottom-nav auto-centre).
+ *  4. **Static GPU decoration** — the bottom bar's [ThemeBackdropBlur]. Nothing about it moves and
+ *     its filtered layer is cached rather than re-rasterised each frame, so it is a deliberate
+ *     widening rather than a case of the three
+ *     above: the toggle is presented as "reduce motion", carries "accessibility" among its search
+ *     synonyms, and promises "a static UI", and a user who asks for the plainest surface the app can
+ *     draw should get one. It falls back to the opaque bar, not to a cheaper effect.
  *
  * Decorative/looping motion is simply not started when the flag is off.
  */

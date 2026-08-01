@@ -127,6 +127,12 @@ fun DashboardScreen(
     unit: UnitSpace = UnitSpace.MgDl,
     predictions: List<ModelPrediction> = emptyList(),
     kovatchevF: ((Double) -> Double)? = null,
+    // `SPEC/inference.md` §8.4's band recalibration, fitted on device and applied by `:app` — the
+    // calibrated fan for a prediction, or null for the raw one. DISPLAY ONLY, and this panel's
+    // forecast overlay is the whole of its reach: [predictions] themselves stay raw, so the alarm
+    // engine, the calculator rails and everything stored or pushed read the fan the model produced.
+    // §8.4 pins the median, so the forecast line is the same either way.
+    calibrateBands: ((ModelPrediction) -> List<Double>?)? = null,
     iobCob: IobCobReadout? = null,
     // (carb, combined insulin, basal-only) for one grid window, from ONE resolve. These were two
     // lambdas, and the overlay called both on every rebuild — which resolved the same padded window
@@ -236,8 +242,15 @@ fun DashboardScreen(
     }
     // Only the SELECTED model's fan is painted; the other running models forecast for
     // telemetry/sync but must not stipple faint secondary fans over the BG panel.
-    val overlay by produceState(emptyList<PredSeries>(), predictions, unit) {
-        value = predOverlayOf(predictions.filter { it.selected }, unit, kovatchevF = kovatchevF)
+    // Keyed on [calibrateBands] too: `:app` re-remembers that lambda exactly when the stored §8.4
+    // correction changes, so a fresh fit repaints the fan without waiting for the next cycle.
+    val overlay by produceState(emptyList<PredSeries>(), predictions, unit, calibrateBands) {
+        value = predOverlayOf(
+            predictions.filter { it.selected },
+            unit,
+            kovatchevF = kovatchevF,
+            calibrateBands = calibrateBands,
+        )
     }
 
     var toggles by remember { mutableStateOf(CurveOverlayToggles()) }

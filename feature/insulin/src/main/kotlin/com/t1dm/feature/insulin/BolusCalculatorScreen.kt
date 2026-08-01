@@ -35,6 +35,7 @@ import com.t1dm.calc.DecisionCard
 import com.t1dm.core.design.ConfirmLogDialog
 import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.PendingLog
+import com.t1dm.core.design.panelCardColors
 import com.t1dm.core.design.rememberHapticDetent
 import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.design.verticalScrollbar
@@ -133,7 +134,7 @@ private fun TargetBgSlider(target: Double, low: Double, high: Double, onChange: 
     // Continuous, so the grain is imposed here: one tick per whole mg/dL — exactly the number the
     // read-out above the slider shows, so the texture and the digits agree.
     val targetDetent = rememberHapticDetent(HapticEvent.ScrubTick)
-    Card(Modifier.fillMaxWidth()) {
+    Card(Modifier.fillMaxWidth(), colors = panelCardColors()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Text("Target BG", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
@@ -145,13 +146,13 @@ private fun TargetBgSlider(target: Double, low: Double, high: Double, onChange: 
                 valueRange = low.toFloat()..high.toFloat(),
             )
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("${low.roundToInt()}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
-                Text("${high.roundToInt()}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                Text("${low.roundToInt()}", style = MaterialTheme.typography.labelSmall, color = LocalContentColor.current.copy(alpha = 0.6f))
+                Text("${high.roundToInt()}", style = MaterialTheme.typography.labelSmall, color = LocalContentColor.current.copy(alpha = 0.6f))
             }
             Text(
                 "Aims the forecast median here · advisory only",
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                color = LocalContentColor.current.copy(alpha = 0.6f),
             )
         }
     }
@@ -165,7 +166,7 @@ private fun RefusedCard(refused: AdviceResult.Refused) {
     // announced. Keyed on the reasons, so a re-render of the same refusal is silent while a NEW one
     // (a different rail tripping) speaks again.
     LaunchedEffect(refused.reasons) { haptics.perform(HapticEvent.Warn) }
-    Card(Modifier.fillMaxWidth()) {
+    Card(Modifier.fillMaxWidth(), colors = panelCardColors()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text("No dose recommended", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             refused.reasons.forEach { Text("• $it", style = MaterialTheme.typography.bodyMedium) }
@@ -189,7 +190,7 @@ private fun RecommendedBody(
     var pendingAccept by remember(rec) { mutableStateOf<Candidate?>(null) }
     val haptics = rememberT1dmHaptics()
 
-    Card(Modifier.fillMaxWidth()) {
+    Card(Modifier.fillMaxWidth(), colors = panelCardColors()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             if (rec.rescueCarbsG != null) {
                 Text("Treat the low first", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
@@ -206,7 +207,7 @@ private fun RecommendedBody(
 
     if (rec.railNotes.isNotEmpty()) {
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            rec.railNotes.forEach { Text("• $it", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)) }
+            rec.railNotes.forEach { Text("• $it", style = MaterialTheme.typography.labelMedium, color = LocalContentColor.current.copy(alpha = 0.7f)) }
         }
     }
 
@@ -282,7 +283,7 @@ private fun RecommendedBody(
 
 @Composable
 private fun DecisionCardView(card: DecisionCard, expired: Boolean = false) {
-    Card(Modifier.fillMaxWidth()) {
+    Card(Modifier.fillMaxWidth(), colors = panelCardColors()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text("Decision card", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
             // Every figure below was measured when the search ran. Once that has lapsed they are a
@@ -328,10 +329,17 @@ private fun RankedList(ranked: List<Candidate>) {
     }
 }
 
+/**
+ * Used both inside a panel (the decision card) and on the bare page (the alternatives list), so its
+ * dimmed label derives from the content colour IN FORCE rather than from
+ * `MaterialTheme.colorScheme.onSurface`. Inside a panel the two differ: `panelCardColors` may have had
+ * to reject the palette role, and a label computed from the rejected one would sit at the opposite
+ * polarity to the value beside it.
+ */
 @Composable
 private fun fieldRow(label: String, value: String) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+        Text(label, style = MaterialTheme.typography.bodySmall, color = LocalContentColor.current.copy(alpha = 0.6f))
         Text(value, style = MaterialTheme.typography.bodySmall)
     }
 }

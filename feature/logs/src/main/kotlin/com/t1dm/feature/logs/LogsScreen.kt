@@ -13,6 +13,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
@@ -31,6 +32,7 @@ import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.logAmountLabel
 import com.t1dm.core.design.logDetailLabel
 import com.t1dm.core.design.logTimeLabel
+import com.t1dm.core.design.panelCardColors
 import com.t1dm.core.design.rememberHapticDetent
 import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.model.LogState
@@ -181,7 +183,12 @@ private fun HoldSection(holdMin: Int, maxMin: Int, onSet: (Int) -> Unit) {
 @Composable
 private fun EntryRow(entry: LoggedEntry, onDelete: () -> Unit) {
     val cs = MaterialTheme.colorScheme
-    Card(Modifier.fillMaxWidth()) {
+    Card(Modifier.fillMaxWidth(), colors = panelCardColors()) {
+        // The panel's OWN ink, read inside the card so it is the card's. `panelCardColors` guarantees
+        // this one clears AA against the container; `cs.onSurface` is the unguarded role it may have
+        // had to reject, and a row deriving its secondary lines from that would be guarded on one line
+        // and unguarded on the next — at opposite polarities.
+        val ink = LocalContentColor.current
         Row(
             Modifier.fillMaxWidth().padding(12.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -191,7 +198,7 @@ private fun EntryRow(entry: LoggedEntry, onDelete: () -> Unit) {
                 Text(
                     logTimeLabel(entry.tsMs, entry.tzOffsetMin),
                     style = MaterialTheme.typography.labelSmall,
-                    color = cs.onSurface.copy(alpha = 0.6f),
+                    color = ink.copy(alpha = 0.6f),
                 )
                 Text(
                     logAmountLabel(entry),
@@ -204,7 +211,7 @@ private fun EntryRow(entry: LoggedEntry, onDelete: () -> Unit) {
                     Text(
                         it,
                         style = MaterialTheme.typography.bodySmall,
-                        color = cs.onSurface.copy(alpha = 0.7f),
+                        color = ink.copy(alpha = 0.7f),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -215,7 +222,7 @@ private fun EntryRow(entry: LoggedEntry, onDelete: () -> Unit) {
                 style = MaterialTheme.typography.labelSmall,
                 // Committed is the state that still has an obligation outstanding, so it is the one
                 // that is coloured; delivered is done and reads as quiet.
-                color = if (entry.committed) cs.primary else cs.onSurface.copy(alpha = 0.6f),
+                color = if (entry.committed) cs.primary else ink.copy(alpha = 0.6f),
                 maxLines = 1,
             )
             if (entry.committed) {

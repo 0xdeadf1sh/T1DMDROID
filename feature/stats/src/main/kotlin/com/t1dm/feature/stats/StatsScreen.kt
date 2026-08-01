@@ -18,7 +18,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.LocalContentColor
@@ -32,6 +31,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.HapticEvent
+import com.t1dm.core.design.panelCardColors
 import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.model.AdvancedStats
 import com.t1dm.core.model.EpisodeSummary
@@ -101,7 +101,7 @@ fun StatsScreen(
                 }
             }
             exportStatus?.let {
-                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
+                Text(it, style = MaterialTheme.typography.bodySmall, color = LocalContentColor.current.copy(alpha = 0.7f))
             }
 
             val composite = state.composite
@@ -128,7 +128,7 @@ fun StatsScreen(
                     Text(
                         "Median line, 25-75 % and 5-95 % bands across the day",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                        color = LocalContentColor.current.copy(alpha = 0.7f),
                         modifier = Modifier.padding(bottom = 8.dp),
                     )
                     AgpChart(
@@ -193,7 +193,7 @@ fun StatsScreen(
                     "GRADE — hypo ${fmtPct(local.grade.hypo)} · eu ${fmtPct(local.grade.eu)} · " +
                         "hyper ${fmtPct(local.grade.hyper)}",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                    color = LocalContentColor.current.copy(alpha = 0.7f),
                 )
             }
 
@@ -210,7 +210,7 @@ fun StatsScreen(
                     Text(
                         "Share of readings per 20 mg/dL band",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                        color = LocalContentColor.current.copy(alpha = 0.7f),
                         modifier = Modifier.padding(bottom = 8.dp),
                     )
                     HistogramChart(local, composite.targetRange)
@@ -227,7 +227,7 @@ fun StatsScreen(
                     Text(
                         "No sustained excursions (≥2 readings) outside target",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                        color = LocalContentColor.current.copy(alpha = 0.7f),
                     )
                 }
             }
@@ -254,7 +254,7 @@ fun StatsScreen(
                         "Local: mean ${fmtLevel(local.meanBg, unit, kovatchevF)} · GMI ${fmt(local.gmi, 1)}% · " +
                             "CV ${fmt(local.cv, 1)}% · SD ${fmtSpread(local.sd, unit)}",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                        color = LocalContentColor.current.copy(alpha = 0.7f),
                         modifier = Modifier.padding(top = 4.dp),
                     )
                 }
@@ -297,16 +297,17 @@ private fun UnitSwitcher(current: UnitSpace, onSelect: (UnitSpace) -> Unit) {
 }
 
 // ── Building blocks ─────────────────────────────────────────────────────────────────────────
-
-/** I15 — the Stats containers use the theme's `surfaceVariant` role (defined per-theme, light and dark)
- *  instead of Material's default card grey, so they read as part of the active palette. */
-@Composable
-private fun statsCardColors() =
-    CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+//
+// Every dimmed line below derives from `LocalContentColor.current`, never from
+// `MaterialTheme.colorScheme.onSurface`. Inside a panel those are two different colours: the first is
+// the ink `panelCardColors` has PROVED clears AA against the card, the second is the raw palette role
+// it may have had to reject. A card whose heading took the guarded ink and whose label took the
+// rejected one would carry two inks at opposite polarities. Outside a panel the two coincide — the
+// Scaffold pins its content colour to the same role — so the rule costs nothing to apply everywhere.
 
 @Composable
 private fun SectionCard(title: String, content: @Composable () -> Unit) {
-    Card(Modifier.fillMaxWidth(), colors = statsCardColors()) {
+    Card(Modifier.fillMaxWidth(), colors = panelCardColors()) {
         Column(Modifier.padding(14.dp)) {
             Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Box(Modifier.height(8.dp))
@@ -317,18 +318,18 @@ private fun SectionCard(title: String, content: @Composable () -> Unit) {
 
 @Composable
 private fun InfoCard(text: String) {
-    Card(Modifier.fillMaxWidth(), colors = statsCardColors()) {
+    Card(Modifier.fillMaxWidth(), colors = panelCardColors()) {
         Text(text, Modifier.padding(14.dp), style = MaterialTheme.typography.bodyMedium)
     }
 }
 
 @Composable
 private fun Metric(label: String, value: String, unit: String) {
-    Card(Modifier.width(104.dp), colors = statsCardColors()) {
+    Card(Modifier.width(104.dp), colors = panelCardColors()) {
         Column(Modifier.padding(10.dp)) {
-            Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
+            Text(label, style = MaterialTheme.typography.labelMedium, color = LocalContentColor.current.copy(alpha = 0.7f))
             Text(value, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            if (unit.isNotEmpty()) Text(unit, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+            if (unit.isNotEmpty()) Text(unit, style = MaterialTheme.typography.labelSmall, color = LocalContentColor.current.copy(alpha = 0.6f))
         }
     }
 }
@@ -350,7 +351,7 @@ private fun TirBar(bands: SubBands) {
     ) {
         if (!anyData) {
             // I15 — the empty-state fill tracks the theme (was a hardcoded translucent white).
-            Box(Modifier.weight(1f).fillMaxHeight().background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)))
+            Box(Modifier.weight(1f).fillMaxHeight().background(LocalContentColor.current.copy(alpha = 0.12f)))
             return@Row
         }
         segs.forEach { (frac, color) ->
@@ -364,11 +365,11 @@ private fun TirBar(bands: SubBands) {
 @Composable
 private fun TargetRangeEditor(low: Int, high: Int, onChange: (Int, Int) -> Unit) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text("Target", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
+        Text("Target", style = MaterialTheme.typography.labelMedium, color = LocalContentColor.current.copy(alpha = 0.7f))
         Stepper(low) { onChange((low + it).coerceIn(40, high - 5), high) }
         Text("–", style = MaterialTheme.typography.bodyMedium)
         Stepper(high) { onChange(low, (high + it).coerceIn(low + 5, 400)) }
-        Text("mg/dL", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+        Text("mg/dL", style = MaterialTheme.typography.labelSmall, color = LocalContentColor.current.copy(alpha = 0.6f))
     }
 }
 
@@ -411,13 +412,13 @@ private fun DiurnalRow(b: TodBucket) {
             Text(
                 if (b.n > 0) "in range ${fmtPct(b.tir)} · n=${b.n}" else "no readings",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                color = LocalContentColor.current.copy(alpha = 0.7f),
             )
         }
         Box(Modifier.height(4.dp))
         Row(Modifier.fillMaxWidth().height(14.dp)) {
             if (b.n == 0) {
-                Box(Modifier.weight(1f).fillMaxHeight().background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)))
+                Box(Modifier.weight(1f).fillMaxHeight().background(LocalContentColor.current.copy(alpha = 0.08f)))
             } else {
                 listOf(b.tbr to BAND_LOW, b.tir to BAND_IN, b.tar to BAND_HIGH).forEach { (frac, c) ->
                     if (frac > 0.0) Box(Modifier.weight(frac.toFloat()).fillMaxHeight().background(c))
@@ -455,9 +456,9 @@ private fun HistogramChart(s: AdvancedStats, target: TargetRange) {
         }
     }
     Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text("40", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
-        Text("mg/dL", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
-        Text("400", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+        Text("40", style = MaterialTheme.typography.labelSmall, color = LocalContentColor.current.copy(alpha = 0.6f))
+        Text("mg/dL", style = MaterialTheme.typography.labelSmall, color = LocalContentColor.current.copy(alpha = 0.6f))
+        Text("400", style = MaterialTheme.typography.labelSmall, color = LocalContentColor.current.copy(alpha = 0.6f))
     }
 }
 
@@ -473,10 +474,10 @@ private fun EpisodeRow(label: String, e: EpisodeSummary, isHypo: Boolean, unit: 
                         "${if (isHypo) "nadir" else "peak"} ${fmtLevel(e.meanExtreme, unit, kovatchevF)} " +
                         "(worst ${fmtLevel(e.worstExtreme, unit, kovatchevF)}) ${unitLabel(unit)}",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                    color = LocalContentColor.current.copy(alpha = 0.7f),
                 )
             } else {
-                Text("none", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
+                Text("none", style = MaterialTheme.typography.bodySmall, color = LocalContentColor.current.copy(alpha = 0.7f))
             }
         }
         Text(

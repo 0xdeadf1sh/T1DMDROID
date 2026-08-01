@@ -42,11 +42,7 @@ fun ThemeBackdrop(alphaPct: Int, modifier: Modifier = Modifier) {
     // theme_bg_hello_kitty.png) has been placed in the app, use it as the backdrop, scaled to fill;
     // otherwise fall back to the pure-Canvas painter below. This lets the user supply their own
     // per-theme wallpaper/logo without touching code — it is drawn at the same user-set opacity.
-    val ctx = LocalContext.current
-    val resId = remember(palette.id) {
-        runCatching { ctx.resources.getIdentifier("theme_bg_${palette.id}", "drawable", ctx.packageName) }
-            .getOrDefault(0)
-    }
+    val resId = rememberBackdropRasterId(palette.id)
     if (resId != 0) {
         // Draw the supplied image as a CENTRED motif at half the screen size (not a full-bleed crop),
         // over the app-background base, at the user's opacity. Fit (not Crop) keeps the whole motif
@@ -66,14 +62,47 @@ fun ThemeBackdrop(alphaPct: Int, modifier: Modifier = Modifier) {
     }
 }
 
+/** The drop-in raster id for [themeId] (`@drawable/theme_bg_<themeId>`), or 0 when none ships. Held
+ *  here so [ThemeBackdrop] and [themeBackdropHasMotif] ask the resource table the same question. */
+@Composable
+private fun rememberBackdropRasterId(themeId: String): Int {
+    val ctx = LocalContext.current
+    return remember(themeId) {
+        runCatching { ctx.resources.getIdentifier("theme_bg_$themeId", "drawable", ctx.packageName) }
+            .getOrDefault(0)
+    }
+}
+
+/**
+ * Whether the backdrop behind [themeId] carries anything a filter could act on.
+ *
+ * False means [ThemeBackdrop] takes [drawThemeBackground]'s `else` arm and paints a FLAT wash of
+ * `background` — over which a gaussian is provably the identity, since every sampled pixel is the
+ * same one. A caller that would otherwise pay an offscreen render target for that asks here first.
+ * The custom theme is the live case: no `theme_bg_custom` ships, and no imported palette can add a
+ * painter.
+ */
+@Composable
+fun themeBackdropHasMotif(themeId: String): Boolean =
+    rememberBackdropRasterId(themeId) != 0 || MOTIF_PAINTERS.containsKey(themeId)
+
+/**
+ * The themes with a signature motif, and the painter each is drawn by.
+ *
+ * One list, read two ways: [drawThemeBackground] dispatches through it, and [themeBackdropHasMotif]
+ * asks it whether there is a motif at all. Keeping them apart would let a theme gain a painter and
+ * keep being told its backdrop was flat.
+ */
+private val MOTIF_PAINTERS: Map<String, DrawScope.(T1dmPalette) -> Unit> = mapOf(
+    ThemeIds.TRON to { p -> drawTronBackground(p) },
+    ThemeIds.UMBRELLA to { p -> drawUmbrellaBackground(p) },
+    ThemeIds.HELLO_KITTY to { p -> drawHelloKittyBackground(p) },
+)
+
 /** Dispatch to the active theme's painter; a custom/unknown theme gets a plain background wash. */
 fun DrawScope.drawThemeBackground(p: T1dmPalette) {
-    when (p.id) {
-        ThemeIds.TRON -> drawTronBackground(p)
-        ThemeIds.UMBRELLA -> drawUmbrellaBackground(p)
-        ThemeIds.HELLO_KITTY -> drawHelloKittyBackground(p)
-        else -> drawRect(p.background)
-    }
+    val painter = MOTIF_PAINTERS[p.id]
+    if (painter != null) painter(p) else drawRect(p.background)
 }
 
 // ── Per-theme painters (designed in the 7D theme pass; pure shape APIs only) ──────────────────────────
