@@ -119,6 +119,28 @@ data class BandCalibration(
 
     /** True once [expiresAtMs] has passed — the one predicate both the apply and the panel read. */
     fun expiredAt(nowMs: Long): Boolean = nowMs >= expiresAtMs
+
+    /**
+     * Compared by the IDENTITY OF THE FIT, not by walking [delta].
+     *
+     * A calibration is uniquely identified by the model it was fitted for and the instant it was
+     * fitted at: exactly one fit per model can be in flight, and `fittedAtMs` is stamped when that
+     * fit completes. So `(modelId, fittedAtMs)` decides equality exactly, and the 168 boxed `Double`s
+     * behind `delta` never need comparing — which they were, on every `remember` keyed on this and on
+     * every emission the upstream `distinctUntilChanged` filtered.
+     *
+     * This keeps STRUCTURAL semantics rather than swapping to reference equality: two instances read
+     * from the store describing the same fit still compare equal, which is what both that dedup and
+     * the memo downstream rely on. Its sibling `ClarkeZoneGrid` went all the way to identity equality
+     * for a related reason, but it could afford to — it is a process-wide singleton and this is not.
+     */
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        val o = other as? BandCalibration ?: return false
+        return modelId == o.modelId && fittedAtMs == o.fittedAtMs
+    }
+
+    override fun hashCode(): Int = 31 * modelId.hashCode() + fittedAtMs.hashCode()
 }
 
 /**
