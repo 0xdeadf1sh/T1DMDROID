@@ -69,9 +69,6 @@ import com.t1dm.core.design.T1dmHaptics
 import com.t1dm.core.design.LocalT1dmSemantics
 import com.t1dm.core.design.hapticClickable
 import com.t1dm.core.design.ThemeBackdrop
-import com.t1dm.core.design.ThemeBackdropBlur
-import com.t1dm.core.design.backdropBlurScrim
-import com.t1dm.core.design.themeBackdropHasMotif
 import com.t1dm.core.design.iconStyleForTheme
 import com.t1dm.core.design.navEnter
 import com.t1dm.core.design.navExit
@@ -736,11 +733,8 @@ private fun GlycemicStatusBadge(status: GlyStatus) {
  * selected tile is marked with a themed pill + a coloured label; on selection it is scrolled into
  * view so the current destination always stays visible.
  *
- * The bar stands on a blurred slice of the app backdrop rather than an opaque slab, where that can
- * be shown without costing the tiles their contrast — [backdropBlurScrim] decides, and returns the
- * flat surface when it cannot. [backgroundAlphaPct] is the same Display → Background setting
- * [ThemeBackdrop] paints at, hoisted in [T1dmApp] and passed down rather than collected a second
- * time here.
+ * [backgroundAlphaPct] is the same Display → Background setting [ThemeBackdrop] paints at, hoisted
+ * in [T1dmApp] and passed down rather than collected a second time here.
  */
 @Composable
 private fun T1dmBottomBar(navController: NavHostController, backgroundAlphaPct: Int) {
@@ -773,64 +767,42 @@ private fun T1dmBottomBar(navController: NavHostController, backgroundAlphaPct: 
         }
     }
 
-    val palette = LocalT1dmSemantics.current
     val cs = MaterialTheme.colorScheme
-    // Asked before the scrim is solved: a theme with no motif paints a flat wash, over which the
-    // filter is an identity, so there is nothing to hold a scrim against and nothing to buy an
-    // offscreen render target for. Every imported theme is in that case, at every opacity.
-    val hasMotif = themeBackdropHasMotif(palette.id)
-    val solvedScrim = remember(palette, backgroundAlphaPct, hasMotif) {
-        backdropBlurScrim(palette.surface, palette.background, backgroundAlphaPct, hasMotif)
-    }
-    // The Motion gate takes this door too. A cached blur is not motion by Motion.kt's own three
-    // doors, and its filter re-runs only when its own layer is invalidated — but the toggle is
-    // surfaced as "reduce motion", lists "accessibility" among its synonyms and promises "a static
-    // UI", and a decorative depth effect is the kind of thing a user asking for the plainest possible
-    // surface means. The fallback is not a degraded blur, it is exactly the bar that shipped before
-    // this existed.
-    val scrim = if (animationsOn) solvedScrim else 1f
-    val blurred = scrim < 1f
 
-    Box {
-        if (blurred) ThemeBackdropBlur(backgroundAlphaPct, Modifier.matchParentSize())
-        Surface(
-            color = if (blurred) cs.surface.copy(alpha = scrim) else cs.surface,
-            // Pinned for the reason the Scaffold's is (see T1dmApp): contentColorFor() resolves by
-            // colour EQUALITY, so a surface carrying alpha matches no arm, collapses to Unspecified
-            // and falls through to LocalContentColor.
-            contentColor = cs.onSurface,
-            // Tonal elevation composites `surfaceTint`, a role toColorScheme() leaves at Material's
-            // baseline lavender. Invisible under an opaque bar; not invisible under a translucent
-            // one, where it would tint the blur a colour belonging to no theme. The blurred bar takes
-            // its separation from the blur.
-            tonalElevation = if (blurred) 0.dp else 3.dp,
+    Surface(
+        color = cs.surface,
+        // Pinned for the reason the Scaffold's is (see T1dmApp): contentColorFor() resolves by
+        // colour EQUALITY, so a surface carrying alpha matches no arm, collapses to Unspecified
+        // and falls through to LocalContentColor.
+        contentColor = cs.onSurface,
+        tonalElevation = 3.dp,
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .onSizeChanged { viewportW = it.width }
+                .horizontalScroll(scrollState)
+                .navigationBarsPadding()
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .onSizeChanged { viewportW = it.width }
-                    .horizontalScroll(scrollState)
-                    .navigationBarsPadding()
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                destinations.forEachIndexed { index, d ->
-                    NavTile(
-                        destination = d,
-                        selected = current == d.route,
-                        onEdges = { l, r -> tileEdges[index] = l to r },
-                        onClick = {
-                            navController.navigate(d.route) {
-                                launchSingleTop = true
-                                restoreState = true
-                                popUpTo("dashboard") { saveState = true }
-                            }
-                        },
-                    )
-                }
+            destinations.forEachIndexed { index, d ->
+                NavTile(
+                    destination = d,
+                    selected = current == d.route,
+                    onEdges = { l, r -> tileEdges[index] = l to r },
+                    onClick = {
+                        navController.navigate(d.route) {
+                            launchSingleTop = true
+                            restoreState = true
+                            popUpTo("dashboard") { saveState = true }
+                        }
+                    },
+                )
             }
         }
     }
+
 }
 
 @Composable

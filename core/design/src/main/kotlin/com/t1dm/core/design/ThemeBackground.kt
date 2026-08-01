@@ -63,7 +63,7 @@ fun ThemeBackdrop(alphaPct: Int, modifier: Modifier = Modifier) {
 }
 
 /** The drop-in raster id for [themeId] (`@drawable/theme_bg_<themeId>`), or 0 when none ships. Held
- *  here so [ThemeBackdrop] and [themeBackdropHasMotif] ask the resource table the same question. */
+ *  here so [ThemeBackdrop] resolves it once per theme rather than on every draw. */
 @Composable
 private fun rememberBackdropRasterId(themeId: String): Int {
     val ctx = LocalContext.current
@@ -74,24 +74,9 @@ private fun rememberBackdropRasterId(themeId: String): Int {
 }
 
 /**
- * Whether the backdrop behind [themeId] carries anything a filter could act on.
- *
- * False means [ThemeBackdrop] takes [drawThemeBackground]'s `else` arm and paints a FLAT wash of
- * `background` — over which a gaussian is provably the identity, since every sampled pixel is the
- * same one. A caller that would otherwise pay an offscreen render target for that asks here first.
- * The custom theme is the live case: no `theme_bg_custom` ships, and no imported palette can add a
- * painter.
- */
-@Composable
-fun themeBackdropHasMotif(themeId: String): Boolean =
-    rememberBackdropRasterId(themeId) != 0 || MOTIF_PAINTERS.containsKey(themeId)
-
-/**
  * The themes with a signature motif, and the painter each is drawn by.
  *
- * One list, read two ways: [drawThemeBackground] dispatches through it, and [themeBackdropHasMotif]
- * asks it whether there is a motif at all. Keeping them apart would let a theme gain a painter and
- * keep being told its backdrop was flat.
+ * [drawThemeBackground] dispatches through it; a theme absent from it paints a flat wash.
  */
 private val MOTIF_PAINTERS: Map<String, DrawScope.(T1dmPalette) -> Unit> = mapOf(
     ThemeIds.TRON to { p -> drawTronBackground(p) },

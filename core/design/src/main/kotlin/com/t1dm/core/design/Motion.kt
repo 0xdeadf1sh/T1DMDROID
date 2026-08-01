@@ -22,12 +22,6 @@ import androidx.compose.runtime.ReadOnlyComposable
  *     [motionSpec], which returns [snap] when motion is off.
  *  3. **Imperative scrolls** — call sites branch on [LocalAnimationsEnabled] to `scrollTo` instead of
  *     `animateScrollTo` (the bottom-nav auto-centre).
- *  4. **Static GPU decoration** — the bottom bar's [ThemeBackdropBlur]. Nothing about it moves and
- *     its filtered layer is cached rather than re-rasterised each frame, so it is a deliberate
- *     widening rather than a case of the three
- *     above: the toggle is presented as "reduce motion", carries "accessibility" among its search
- *     synonyms, and promises "a static UI", and a user who asks for the plainest surface the app can
- *     draw should get one. It falls back to the opaque bar, not to a cheaper effect.
  *
  * Decorative/looping motion is simply not started when the flag is off.
  */
