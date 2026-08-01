@@ -87,14 +87,33 @@ class OutboxEnqueuer(private val repo: OutboxSink) {
      * row first, so the queue still holds at most one prediction push per cycle and it is always the
      * newest. Returns -1 when a drain already owns the key — see that method for the race.
      */
-    suspend fun enqueuePredictions(cycleTsMs: Long, preds: List<ModelPrediction>, nowMs: Long): Long {
-        val body = SyncJson.encodeToString(preds.map { it.toWrite(cycleTsMs, nowMs) })
-        return repo.enqueueReplacingPending(
+    suspend fun enqueuePredictions(cycleTsMs: Long, preds: List<ModelPrediction>, nowMs: Long): Long =
+        enqueuePredictionsWithSizes(cycleTsMs, preds, nowMs).first
+
+    /**
+     * Enqueue the batch AND report each model's wire size, from ONE encode per prediction.
+     *
+     * The caller wants both, and asking for them separately serialised every running model's
+     * 192-double forecast twice per inference cycle — once for the payload, once purely to count its
+     * bytes for the Network panel's accounting. `SyncJson` does not pretty-print, so a JSON array is
+     * exactly its elements joined by commas inside brackets: the body built here is byte-for-byte the
+     * one `encodeToString(list)` produced, and each element's own length is the size it contributes.
+     * [toWrite] is likewise called once per prediction rather than twice.
+     */
+    suspend fun enqueuePredictionsWithSizes(
+        cycleTsMs: Long,
+        preds: List<ModelPrediction>,
+        nowMs: Long,
+    ): Pair<Long, Map<String, Int>> {
+        val encoded = preds.map { it.modelId to SyncJson.encodeToString(it.toWrite(cycleTsMs, nowMs)) }
+        val body = encoded.joinToString(separator = ",", prefix = "[", postfix = "]") { it.second }
+        val id = repo.enqueueReplacingPending(
             kind = OutboxKind.PREDICTIONS,
             dedupKey = "pred:$cycleTsMs",
             payload = OutboxRequest("PUT", "/v1/predictions", body).encode(),
             nowMs = nowMs,
         )
+        return id to encoded.associate { (modelId, json) -> modelId to json.toByteArray(Charsets.UTF_8).size }
     }
 
     /**

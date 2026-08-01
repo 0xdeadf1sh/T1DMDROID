@@ -31,8 +31,10 @@ class RoomPredictionStore(
         }
         if (finite.isEmpty()) return
         runCatching {
-            outbox.enqueuePredictions(cycleTsMs, finite, now)
-            status.onPredictionPush(outbox.predictionWireSizes(finite, cycleTsMs, now))
+            // One encode per prediction serves both the payload and the accounting; asking for them
+            // separately serialised every running model's 192-double forecast twice per cycle.
+            val (_, sizes) = outbox.enqueuePredictionsWithSizes(cycleTsMs, finite, now)
+            status.onPredictionPush(sizes)
         }.onFailure { Timber.tag(TAG).w(it, "predictions enqueue failed (table already updated)") }
     }
 
