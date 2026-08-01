@@ -7,6 +7,7 @@ import com.t1dm.core.model.BasalSchedule
 import com.t1dm.core.model.BuiltContext
 import com.t1dm.core.model.CarTuning
 import com.t1dm.core.model.ClarkeZone
+import com.t1dm.core.model.ConformalFit
 import com.t1dm.core.model.CurveEvent
 import com.t1dm.core.model.CurveKind
 import com.t1dm.core.model.DecodedAdvert
@@ -121,6 +122,23 @@ class ReferenceNativeCore : NativeCore {
         truthAxisMgdl: List<Double>,
         predAxisMgdl: List<Double>,
     ): List<ClarkeZone> = emptyList()
+
+    // Refused for the same reason the lattice above is: §8.4's side-aware order statistic and its
+    // median-fixed monotone apply live in the crate and nowhere else, and re-expressing either in a
+    // test double would be the second copy of a formula whose two versions could then disagree about
+    // the hypo edge. No correction fitted, and the raw fan returned — which is what every caller
+    // already falls back to.
+    override fun conformalMinCalWindows(): Int = 0
+
+    override fun fitQuantileConformal(
+        windows: List<ForecastWindow>,
+        minCalWindows: Int,
+    ): ConformalFit = ConformalFit.NONE
+
+    override fun applyQuantileConformal(
+        bandsMgdl: List<Double>,
+        delta: List<Double>,
+    ): List<Double>? = null
 
     override fun defaultCarTuning(): CarTuning = TODO("not exercised by :cgm tests")
 

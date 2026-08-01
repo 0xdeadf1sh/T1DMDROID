@@ -3,6 +3,7 @@ package com.t1dm.data
 import androidx.room.immediateTransaction
 import androidx.room.useWriterConnection
 import com.t1dm.core.common.T1dmDispatchers
+import com.t1dm.core.model.BandCalibration
 import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.CgmSourceDescriptor
 import com.t1dm.core.model.CgmSourceId
@@ -31,6 +32,9 @@ import com.t1dm.data.db.OutboxKind
 import com.t1dm.data.db.OutboxState
 import com.t1dm.data.db.PaintStrokeDao
 import com.t1dm.data.db.PredictionEntity
+import com.t1dm.data.db.ConformalDeltaEntity
+import com.t1dm.data.db.toBlob
+import com.t1dm.data.db.toDoubleList
 import com.t1dm.data.curve.CurveEngine
 import com.t1dm.data.db.SampleEntity
 import com.t1dm.data.db.SavedMealEntity
@@ -117,6 +121,7 @@ class T1dmRepository(
     private val predictions get() = db.predictionDao()
     private val profiles get() = db.serverProfileDao()
     private val paintStrokes get() = db.paintStrokeDao()
+    private val conformalDeltas get() = db.conformalDeltaDao()
 
     /**
      * Room 2.7 driver-compatible write transaction. The KTX [androidx.room.withTransaction] uses the
@@ -1064,6 +1069,76 @@ class T1dmRepository(
     suspend fun putKvBatch(pairs: Map<String, String>, nowMs: Long) =
         withContext(io) { kv.putAll(pairs.map { (k, v) -> KvEntity(k, v, nowMs) }) }
 
+    // ── Band recalibration (`SPEC/inference.md` §8.4) ────────────────────────────────────────────
+
+    /**
+     * Persist a fitted band correction for one model, replacing whatever was there.
+     *
+     * The caller writes ONLY a sufficient fit. A refusal must not reach here: it has established
+     * that too little history matured to fit on, which says nothing about whether the correction
+     * already stored is wrong, and overwriting it would drop the user back to the raw fan on the
+     * strength of a walk that scored nothing.
+     */
+    suspend fun putBandCalibration(cal: BandCalibration) = withContext(io) {
+        conformalDeltas.upsert(
+            ConformalDeltaEntity(
+                modelId = cal.modelId,
+                steps = cal.steps,
+                nQuantiles = cal.nQuantiles,
+                deltaBlob = cal.delta.toBlob(),
+                nCal = cal.nCal,
+                nEval = cal.nEval,
+                maxAbsDeltaMgdl = cal.maxAbsDeltaMgdl,
+                cov90Raw = cal.cov90Raw,
+                cov90Cal = cal.cov90Cal,
+                meanWidth90Raw = cal.meanWidth90Raw,
+                meanWidth90Cal = cal.meanWidth90Cal,
+                windowDays = cal.windowDays,
+                fittedAtMs = cal.fittedAtMs,
+            ),
+        )
+    }
+
+    /** One model's stored correction, or null when it has never been fitted. Off-main. */
+    suspend fun bandCalibration(modelId: String): BandCalibration? =
+        withContext(io) { conformalDeltas.get(modelId)?.toModel() }
+
+    /**
+     * Every stored correction, keyed by model — the map the BG panel's overlay reads. Observed
+     * rather than fetched so a fit lands on the graph without the panel being reopened; a row whose
+     * blob length disagrees with its own `steps · nQuantiles` is dropped rather than reshaped, and
+     * that model simply draws the raw fan.
+     */
+    fun observeBandCalibrations(): Flow<Map<String, BandCalibration>> =
+        conformalDeltas.observeAll()
+            .map { rows -> rows.mapNotNull { it.toModel() }.associateBy { it.modelId } }
+            .distinctUntilChanged()
+            .flowOn(io)
+
+    /** Drop a removed model's correction alongside its forecasts. Off-main. */
+    suspend fun deleteBandCalibration(modelId: String) =
+        withContext(io) { conformalDeltas.deleteByModel(modelId) }
+
+    private fun ConformalDeltaEntity.toModel(): BandCalibration? {
+        val delta = deltaBlob.toDoubleList()
+        if (steps <= 0 || nQuantiles <= 0 || delta.size != steps * nQuantiles) return null
+        return BandCalibration(
+            modelId = modelId,
+            delta = delta,
+            steps = steps,
+            nQuantiles = nQuantiles,
+            nCal = nCal,
+            nEval = nEval,
+            maxAbsDeltaMgdl = maxAbsDeltaMgdl,
+            cov90Raw = cov90Raw,
+            cov90Cal = cov90Cal,
+            meanWidth90Raw = meanWidth90Raw,
+            meanWidth90Cal = meanWidth90Cal,
+            windowDays = windowDays,
+            fittedAtMs = fittedAtMs,
+        )
+    }
+
     suspend fun recordTelemetry(row: HwTelemetryEntity): Long =
         withContext(io) { telemetry.insert(row) }
 
@@ -1107,6 +1182,7 @@ class T1dmRepository(
             db.foodDao().deleteAllCustom()
             db.insulinTypeDao().deleteAllCustom()
             paintStrokes.deleteAll()
+            conformalDeltas.deleteAll()
             // kv LAST: it holds the watch nonce ceilings + pairing bits + every setting.
             kv.deleteAll()
         }

@@ -37,6 +37,12 @@ pub use stats::*;
 mod accuracy;
 pub use accuracy::*;
 
+/// Split-conformal quantile recalibration of the band fan (`SPEC/inference.md` §8.4) — the fit,
+/// from the patient's own matured windows, and the median-fixed monotone apply. Display-side
+/// only: nothing that classifies a category reads a calibrated fan.
+mod conformal;
+pub use conformal::*;
+
 /// Continuous Glucose-Error Grid Analysis (Kovatchev 2004) — the P-EGA × R-EGA zone algebra
 /// the metric suite's %AP/%BE/%EP is reduced from. Crate-internal; reached through
 /// `accuracy::forecast_metrics_suite`.

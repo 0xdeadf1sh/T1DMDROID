@@ -55,6 +55,17 @@ data class ModelDescriptor(
     /** The risk transform THIS checkpoint was trained under — the sole authority for decoding
      *  its output back to mg/dL. */
     val kovatchev: KovatchevParams,
+    /**
+     * The exporter's `conformal.enabled` flag, carried because it is part of the descriptor — and
+     * READ BY NOTHING. It governs no branch here and no branch in the core: a descriptor shipping
+     * `true` parses and changes precisely nothing, because the export path emits no
+     * `conformal_delta` for it to switch on.
+     *
+     * The on-device recalibration of `SPEC/inference.md` §8.4 does NOT consult it. That correction
+     * is fitted from the patient's own matured forecasts and is governed entirely by whether a
+     * `conformal_delta` row exists for the model — see [BandCalibration]. The two are separate
+     * mechanisms and neither can enable or disable the other.
+     */
     val conformalEnabled: Boolean,
     /** The co-trained time-probe descriptor, or null when the graph is cut at `head_raw`. */
     val time: TimeHead? = null,

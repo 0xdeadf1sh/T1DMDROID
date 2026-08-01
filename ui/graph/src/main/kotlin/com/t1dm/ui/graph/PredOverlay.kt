@@ -39,24 +39,44 @@ class PredSeries internal constructor(
     val isEmpty: Boolean get() = tsMs.isEmpty()
 }
 
-/** Build the overlay off-thread from the cycle's predictions (§2.3). */
+/**
+ * Build the overlay off-thread from the cycle's predictions (§2.3).
+ *
+ * [calibrateBands] is the `SPEC/inference.md` §8.4 band recalibration, injected exactly as
+ * [kovatchevF] is: the apply lives in the Rust core and this module keeps no copy of it. It yields
+ * the calibrated fan for a prediction, or null for the raw one. It is applied HERE, at the last
+ * point before pixels, and nowhere else — the stored row, the pushed row, the alarm engine, the
+ * calculator rails and the accuracy suite all read the raw fan the model produced. Because §8.4
+ * pins the median, the forecast LINE is identical either way; only the fan moves.
+ */
 suspend fun predOverlayOf(
     predictions: List<ModelPrediction>,
     unit: UnitSpace = UnitSpace.MgDl,
     kovatchevF: ((Double) -> Double)? = null,
+    calibrateBands: ((ModelPrediction) -> List<Double>?)? = null,
 ): List<PredSeries> = withContext(Dispatchers.Default) {
-    predictions.mapNotNull { buildPredSeries(it, unit, kovatchevF) }
+    predictions.mapNotNull { buildPredSeries(it, unit, kovatchevF, calibrateBands?.invoke(it)) }
 }
 
-/** Pure transform (no coroutines) — safe from a `@Preview`/test. */
+/**
+ * Pure transform (no coroutines) — safe from a `@Preview`/test.
+ *
+ * [calibratedBandsMgdl] is an already-applied §8.4 fan in [ModelPrediction.bandsMgdl]'s own
+ * step-major layout. A length disagreeing with this forecast's is IGNORED rather than reshaped: a
+ * delta fitted at another horizon is not this forecast's correction, and the raw fan is the honest
+ * fallback. The median line is read from [ModelPrediction.medianBg] either way — §8.4 holds it
+ * fixed, so there is no calibrated median to draw.
+ */
 fun buildPredSeries(
     p: ModelPrediction,
     unit: UnitSpace,
     kovatchevF: ((Double) -> Double)?,
+    calibratedBandsMgdl: List<Double>? = null,
 ): PredSeries? {
     val n = p.horizonSteps
     if (n == 0 || p.bandsMgdl.size != n * p.nQuantiles) return null
     val q = p.nQuantiles
+    val bands = calibratedBandsMgdl?.takeIf { it.size == n * q } ?: p.bandsMgdl
     fun conv(mgdl: Double): Float = when (unit) {
         UnitSpace.MgDl -> mgdl
         UnitSpace.MmolL -> mgdl / 18.0182
@@ -73,8 +93,8 @@ fun buildPredSeries(
     // Ascending-τ columns: 0=.05 1=.10 2=.25 3=.50 4=.75 5=.90 6=.95. Fan pairs (outer→inner).
     val loCols = intArrayOf(0, 1, 2)
     val hiCols = intArrayOf(q - 1, q - 2, q - 3)
-    val lo = Array(3) { b -> FloatArray(n + 1) { i -> if (i == 0) anchorVal else conv(p.bandsMgdl[(i - 1) * q + loCols[b]]) } }
-    val hi = Array(3) { b -> FloatArray(n + 1) { i -> if (i == 0) anchorVal else conv(p.bandsMgdl[(i - 1) * q + hiCols[b]]) } }
+    val lo = Array(3) { b -> FloatArray(n + 1) { i -> if (i == 0) anchorVal else conv(bands[(i - 1) * q + loCols[b]]) } }
+    val hi = Array(3) { b -> FloatArray(n + 1) { i -> if (i == 0) anchorVal else conv(bands[(i - 1) * q + hiCols[b]]) } }
     return PredSeries(
         modelId = p.modelId,
         selected = p.selected,

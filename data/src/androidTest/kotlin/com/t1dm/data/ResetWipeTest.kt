@@ -6,6 +6,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.t1dm.core.common.DefaultT1dmDispatchers
 import com.t1dm.core.model.BackendId
+import com.t1dm.core.model.BandCalibration
 import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.CgmSourceDescriptor
 import com.t1dm.core.model.CgmSourceId
@@ -154,6 +155,16 @@ class ResetWipeTest {
             ),
         )
 
+        // A fitted band correction (Room v10) — derived from the forecasts the wipe removes, so it
+        // cannot outlive them.
+        repo.putBandCalibration(
+            BandCalibration(
+                modelId = "m", delta = List(7) { 0.5 }, steps = 1, nQuantiles = 7, nCal = 30, nEval = 12,
+                maxAbsDeltaMgdl = 0.5, cov90Raw = 0.8, cov90Cal = 0.9, meanWidth90Raw = 40.0,
+                meanWidth90Cal = 55.0, windowDays = 14, fittedAtMs = now,
+            ),
+        )
+
         // kv: a setting, and the watch pairing + nonce-ceiling rows the wipe must burn.
         repo.putKv("ui.theme", "umbrella", now)
         repo.putKv("watch.paired", "1", now)
@@ -193,7 +204,8 @@ class ResetWipeTest {
         val WIPED_EMPTY = listOf(
             "cgm_source", "cgm_reading", "sample", "dose_event", "logged_dose", "logged_meal",
             "basal_schedule", "cgm_advert_raw", "outbox", "prediction", "server_profile",
-            "hw_telemetry", "saved_meal", "saved_meal_item", "bg_paint_stroke", "kv",
+            "hw_telemetry", "saved_meal", "saved_meal_item", "bg_paint_stroke", "conformal_delta",
+            "kv",
         )
     }
 }

@@ -28,6 +28,7 @@ import com.t1dm.core.model.CgEga
 import com.t1dm.core.model.CgEgaRegion
 import com.t1dm.core.model.ClarkePoint
 import com.t1dm.core.model.ClarkeZone
+import com.t1dm.core.model.ConformalFit
 import com.t1dm.core.model.ExcursionAccuracy
 import com.t1dm.core.model.Forecast
 import com.t1dm.core.model.ForecastStatus
@@ -44,6 +45,10 @@ import com.t1dm.core.model.TimeHead
 import uniffi.t1dm_core.CoreException
 import uniffi.t1dm_core.forecastMetricsSuite as uniffiForecastMetricsSuite
 import uniffi.t1dm_core.clarkeZoneGrid as uniffiClarkeZoneGrid
+import uniffi.t1dm_core.ConformalFit as UniffiConformalFit
+import uniffi.t1dm_core.conformalMinCalWindows as uniffiConformalMinCalWindows
+import uniffi.t1dm_core.fitQuantileConformal as uniffiFitQuantileConformal
+import uniffi.t1dm_core.applyQuantileConformal as uniffiApplyQuantileConformal
 import uniffi.t1dm_core.advancedStats as uniffiAdvancedStats
 import uniffi.t1dm_core.advertCrc32 as uniffiAdvertCrc32
 import uniffi.t1dm_core.assembleDecode as uniffiAssembleDecode
@@ -277,6 +282,42 @@ class UniffiNativeCore : NativeCore {
             emptyList()
         }
 
+    // ── Split-conformal band recalibration (t1dm-core::conformal, INFERENCE.md §8.4) ─
+
+    override fun conformalMinCalWindows(): Int = uniffiConformalMinCalWindows().toInt()
+
+    /**
+     * Rust `fit_quantile_conformal` is total — an empty, ragged or non-finite window set comes back
+     * as a refusal with its counts, not an error — and only `Err`s on a structurally impossible
+     * argument. A `CoreException` maps to [ConformalFit.NONE], which is the same fail-closed answer
+     * the refusal path gives: no correction, and a panel that says the fit did not run.
+     */
+    override fun fitQuantileConformal(
+        windows: List<ForecastWindow>,
+        minCalWindows: Int,
+    ): ConformalFit =
+        try {
+            uniffiFitQuantileConformal(windows.map { it.toUniffi() }, minCalWindows.toUInt()).toModel()
+        } catch (_: CoreException) {
+            ConformalFit.NONE
+        }
+
+    /**
+     * Fail-closed to the RAW fan. Every rejection the core makes here is a caller-side shape or
+     * invariant breach — a delta of the wrong length, a non-finite value, a delta that would move
+     * the median — and in each case the honest fallback is the fan the model actually produced,
+     * which is what `null` means to the one display surface that calls this.
+     */
+    override fun applyQuantileConformal(
+        bandsMgdl: List<Double>,
+        delta: List<Double>,
+    ): List<Double>? =
+        try {
+            uniffiApplyQuantileConformal(bandsMgdl, delta)
+        } catch (_: CoreException) {
+            null
+        }
+
     // ── Hill-climb minigame physics (t1dm-core::game) ───────────────────────────────
 
     override fun defaultCarTuning(): CarTuning = uniffiDefaultCarTuning().toModel()
@@ -374,6 +415,23 @@ private fun UniffiCarState.toModel(): CarState = CarState(
     distanceM = distanceM,
     run = run.toModel(),
     elapsedS = elapsedS,
+)
+
+private fun UniffiConformalFit.toModel(): ConformalFit = ConformalFit(
+    delta = delta,
+    steps = steps.toInt(),
+    nQuantiles = nQuantiles.toInt(),
+    nWindows = nWindows.toInt(),
+    nCal = nCal.toInt(),
+    nEval = nEval.toInt(),
+    nRejected = nRejected.toInt(),
+    minCalWindows = minCalWindows.toInt(),
+    sufficient = sufficient,
+    maxAbsDeltaMgdl = maxAbsDeltaMgdl,
+    cov90Raw = cov90Raw,
+    cov90Cal = cov90Cal,
+    meanWidth90Raw = meanWidth90Raw,
+    meanWidth90Cal = meanWidth90Cal,
 )
 
 private fun ForecastWindow.toUniffi(): UniffiForecastWindow = UniffiForecastWindow(

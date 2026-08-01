@@ -322,6 +322,32 @@ object MigrationRunner {
         }
     }
 
+    /**
+     * v9 → v10 (on-device band recalibration): additive only — the single `conformal_delta` table
+     * holding one fitted `SPEC/inference.md` §8.4 correction per model. No existing table is
+     * touched, and nothing already stored changes meaning: the `prediction` fan stays the raw fan
+     * the model produced, because the correction is a display quantity that never travels and never
+     * classifies. DDL transcribed verbatim from the generated `schemas/<db>/10.json` so the migrated
+     * DB is byte-identical to a fresh `createAllTables`.
+     *
+     * No index accompanies it. `modelId` IS the primary key, and the two queries the table has —
+     * one model's correction, and all of them — are covered by that alone.
+     */
+    val MIGRATION_9_10 = object : Migration(9, 10) {
+        override fun migrate(connection: SQLiteConnection) {
+            connection.execSQL(
+                "CREATE TABLE IF NOT EXISTS `conformal_delta` (" +
+                    "`modelId` TEXT NOT NULL, `steps` INTEGER NOT NULL, " +
+                    "`nQuantiles` INTEGER NOT NULL, `deltaBlob` BLOB NOT NULL, " +
+                    "`nCal` INTEGER NOT NULL, `nEval` INTEGER NOT NULL, " +
+                    "`maxAbsDeltaMgdl` REAL NOT NULL, `cov90Raw` REAL, `cov90Cal` REAL, " +
+                    "`meanWidth90Raw` REAL, `meanWidth90Cal` REAL, " +
+                    "`windowDays` INTEGER NOT NULL, `fittedAtMs` INTEGER NOT NULL, " +
+                    "PRIMARY KEY(`modelId`))",
+            )
+        }
+    }
+
     val ALL: Array<Migration> = arrayOf(
         MIGRATION_1_2,
         MIGRATION_2_3,
@@ -331,6 +357,7 @@ object MigrationRunner {
         MIGRATION_6_7,
         MIGRATION_7_8,
         MIGRATION_8_9,
+        MIGRATION_9_10,
     )
 
     /** Apply every registered migration to a builder; the sole path that wires migrations. */

@@ -30,6 +30,9 @@ import kotlinx.coroutines.Dispatchers
  * BG panel — one new table, no existing table touched; see [MigrationRunner.MIGRATION_7_8].
  * v9 is the sole **subtractive** revision: the free-text note surface is withdrawn, so its `note`
  * table and every queued `NOTE` outbox row go with it; see [MigrationRunner.MIGRATION_8_9].
+ * v10 (on-device band recalibration) adds `conformal_delta`, one fitted `SPEC/inference.md` §8.4
+ * correction per model — additive, and it changes the meaning of nothing already stored: the
+ * `prediction` fan remains the raw fan the model produced; see [MigrationRunner.MIGRATION_9_10].
  */
 @Database(
     entities = [
@@ -51,8 +54,9 @@ import kotlinx.coroutines.Dispatchers
         SavedMealItemEntity::class,
         InsulinTypeEntity::class,
         PaintStrokeEntity::class,
+        ConformalDeltaEntity::class,
     ],
-    version = 9,
+    version = 10,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -74,13 +78,14 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun savedMealDao(): SavedMealDao
     abstract fun insulinTypeDao(): InsulinTypeDao
     abstract fun paintStrokeDao(): PaintStrokeDao
+    abstract fun conformalDeltaDao(): ConformalDeltaDao
 
     companion object {
         const val NAME = "t1dm.db"
 
         /** The current keep-forever schema version (must equal the `@Database(version = …)` above).
          *  A full app reset ([T1dmRepository.wipeAllData]) row-wipes at THIS version — never a drop. */
-        const val SCHEMA_VERSION = 9
+        const val SCHEMA_VERSION = 10
 
         /**
          * Build the on-disk database. Migrations come exclusively from [MigrationRunner];

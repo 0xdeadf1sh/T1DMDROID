@@ -4,6 +4,7 @@ import com.t1dm.core.common.GameWorld
 import com.t1dm.core.common.NativeCore
 import com.t1dm.core.model.CarTuning
 import com.t1dm.core.model.ClarkeZone
+import com.t1dm.core.model.ConformalFit
 import com.t1dm.core.model.TerrainSpec
 import com.t1dm.core.model.AdvancedStats
 import com.t1dm.core.model.BasalSchedule
@@ -261,6 +262,24 @@ class StubNativeCore : NativeCore {
         truthAxisMgdl: List<Double>,
         predAxisMgdl: List<Double>,
     ): List<ClarkeZone> = emptyList()
+
+    // ── Split-conformal band recalibration (INFERENCE.md §8.4) ──────────────────────
+    // The side-aware order statistic and the median-fixed monotone apply live in the crate and
+    // nowhere else; re-expressing either here would be the second copy of a formula whose two
+    // versions would then be free to disagree about the hypo edge. The stub refuses instead: no
+    // correction fitted, and the raw fan returned for any apply — which is what every caller
+    // already falls back to.
+    override fun conformalMinCalWindows(): Int = 0
+
+    override fun fitQuantileConformal(
+        windows: List<ForecastWindow>,
+        minCalWindows: Int,
+    ): ConformalFit = ConformalFit.NONE
+
+    override fun applyQuantileConformal(
+        bandsMgdl: List<Double>,
+        delta: List<Double>,
+    ): List<Double>? = null
 
     // ── Hill-climb minigame physics ─────────────────────────────────────────────────
     // The solver is Rust-only by design (a per-frame path with zero allocation is the whole

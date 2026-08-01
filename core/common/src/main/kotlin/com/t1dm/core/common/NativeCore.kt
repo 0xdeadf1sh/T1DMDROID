@@ -5,6 +5,7 @@ import com.t1dm.core.model.BasalSchedule
 import com.t1dm.core.model.BuiltContext
 import com.t1dm.core.model.CarTuning
 import com.t1dm.core.model.ClarkeZone
+import com.t1dm.core.model.ConformalFit
 import com.t1dm.core.model.CurveEvent
 import com.t1dm.core.model.CurveKind
 import com.t1dm.core.model.DecodedAdvert
@@ -76,7 +77,11 @@ interface NativeCore {
     ): BuiltContext
 
     /** Assemble `head_raw` (P·S·7, risk) into an ascending quantile fan and decode to mg/dL
-     *  (INFERENCE.md §8; conformal OFF). `headRaw` is fp64-upcast by the backend. */
+     *  (INFERENCE.md §8). `headRaw` is fp64-upcast by the backend.
+     *
+     *  The fan this returns is the RAW one: no conformal correction is applied here, and none is
+     *  applied to anything stored, pushed or classified. §8.4's recalibration is a display quantity
+     *  fitted on device and applied downstream by [applyQuantileConformal]. */
     fun assembleDecode(
         desc: ModelDescriptor,
         headRaw: List<Double>,
@@ -174,6 +179,40 @@ interface NativeCore {
      * ceiling, yields an empty list — no regions rather than wrong ones.
      */
     fun clarkeZoneGrid(truthAxisMgdl: List<Double>, predAxisMgdl: List<Double>): List<ClarkeZone>
+
+    // ── Split-conformal band recalibration (t1dm-core::conformal, INFERENCE.md §8.4) ─
+
+    /**
+     * The smallest calibration count at which no quantile level's conformal order statistic is
+     * clamped — derived from the level tuple of `SPEC/invariants.md` §6, not chosen. Below it the
+     * extreme levels' offsets ARE the minimum and the maximum of the residual sample, so the
+     * nominal coverage they claim is arithmetic that never ran. A caller's own threshold is raised
+     * to this.
+     */
+    fun conformalMinCalWindows(): Int
+
+    /**
+     * Fit a per-`(step, τ)` additive band correction (§8.4) from matured forecast [windows], which
+     * must be in the order they were made: the split is CHRONOLOGICAL, the older part fitted on and
+     * the newer part held out and scored. A random split would read better and mean less — the
+     * question a delta has to answer is whether a correction fitted on the past holds on the future.
+     *
+     * [minCalWindows] is the threshold on the CALIBRATION split, raised to [conformalMinCalWindows]
+     * when it is below the point the arithmetic degenerates. Under it the result is
+     * [ConformalFit.sufficient] `= false` with an all-zero delta. Total on any input; a core error
+     * yields [ConformalFit.NONE], which is the same fail-closed answer.
+     */
+    fun fitQuantileConformal(windows: List<ForecastWindow>, minCalWindows: Int): ConformalFit
+
+    /**
+     * Apply a fitted delta to a band fan (§8.4): add, restore the median EXACTLY, then clamp
+     * outward so the fan cannot cross. Both arrays are `steps · nQuantiles` step-major, ascending τ.
+     *
+     * Fail-closed to the RAW fan (`null`) on anything the core rejects — a length disagreement, a
+     * non-finite value, or a delta whose median column is not zero. Never a partially corrected
+     * fan, and never a fan drawn around a moved point forecast.
+     */
+    fun applyQuantileConformal(bandsMgdl: List<Double>, delta: List<Double>): List<Double>?
 
     // ── Hill-climb minigame physics (t1dm-core::game) ───────────────────────────────
 

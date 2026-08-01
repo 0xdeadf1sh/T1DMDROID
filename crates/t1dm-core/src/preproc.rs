@@ -775,7 +775,10 @@ pub struct Forecast {
 }
 
 /// Assemble `head_raw` (P·S·7, risk space) into an ascending quantile fan and decode to
-/// mg/dL (INFERENCE.md §8.1, `BG_HEAD_MEDIAN_MODE='global'`, conformal OFF). `head_raw`
+/// mg/dL (INFERENCE.md §8.1, `BG_HEAD_MEDIAN_MODE='global'`). The fan returned is the RAW one:
+/// §8.4's conformal recalibration is not applied here and is applied to nothing this function
+/// feeds — it is a display correction, fitted on device and applied by
+/// [`crate::apply_quantile_conformal`] at the last point before pixels. `head_raw`
 /// column 0 is the median delta; columns 1..=3 the τ>.5 spreads (nearest→far); 4..=6
 /// the τ<.5 spreads. The median is `anchor + proj_DCT(delta)` (a low-frequency L2
 /// contraction that cannot drift); the fan is `m ± carry_spread ± cumsum(softplus+floor)`.

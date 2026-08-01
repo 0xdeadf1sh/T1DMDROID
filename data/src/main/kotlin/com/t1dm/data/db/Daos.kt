@@ -622,3 +622,25 @@ interface PaintStrokeDao {
     @Query("DELETE FROM bg_paint_stroke")
     suspend fun deleteAll()
 }
+
+@Dao
+interface ConformalDeltaDao {
+    /** One row per model; a later fit REPLACEs it whole. */
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(delta: ConformalDeltaEntity)
+
+    @Query("SELECT * FROM conformal_delta WHERE modelId = :modelId")
+    suspend fun get(modelId: String): ConformalDeltaEntity?
+
+    /** Every stored correction, for the in-memory map the display path reads per frame. */
+    @Query("SELECT * FROM conformal_delta")
+    fun observeAll(): Flow<List<ConformalDeltaEntity>>
+
+    /** Drop a removed model's correction with the model (mirrors `PredictionDao.deleteByModel`). */
+    @Query("DELETE FROM conformal_delta WHERE modelId = :modelId")
+    suspend fun deleteByModel(modelId: String)
+
+    /** Full-erase (issue 5, app reset). Row-only DELETE — the schema/table is untouched. */
+    @Query("DELETE FROM conformal_delta")
+    suspend fun deleteAll()
+}

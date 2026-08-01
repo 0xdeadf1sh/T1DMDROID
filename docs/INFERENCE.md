@@ -50,6 +50,54 @@ live CGM feed, not part of the model contract.
 - The physical guards sit outside the filter and hold at every window: BG
   clamped to the descriptor's range, carb and insulin floored at `0`.
 
+## Band recalibration, fitted on device
+
+`SPEC/inference.md` §8.4 describes an optional conformal correction the checkpoint
+may carry, fit on the simulator distribution, and states that for real-world CGM
+it must be re-fit per cohort or omitted. The exporter ships none, so the fan the
+model produces here is the raw fan.
+
+This app fits its own, from the patient's own matured forecasts. It is the same
+object §8.4 defines — per `(step, τ)`, additive, in mg/dL, downstream of `f_inv`
+— fitted and applied in `crates/t1dm-core/src/conformal.rs` and stored one row
+per model in the `conformal_delta` table.
+
+- **Split-conformal.** The trailing 14 days of matured windows are ordered by the
+  time they were made and split chronologically: the older 70 % is the
+  calibration set, the newer 30 % is held out and scored. The stored coverage
+  and mean band width therefore describe windows the correction never saw.
+- **Fitted at the model's own horizon**, read from its descriptor's
+  `PREDICTION_HORIZON_HOURS`, not at the accuracy suite's longest horizon. The
+  correction's step count is therefore the length of the fan it will be applied
+  to; a model whose horizon cannot be established is not fitted at all.
+- **It lapses.** A correction applies for one fitting window past the moment it
+  was made, and the raw fan is drawn from then on. Validity rests on
+  exchangeability between the calibration set and the forecasts the delta later
+  reaches; a change in the patient's own behaviour breaks that and is not
+  detectable here, so the correction is trusted for no longer than the history it
+  was fitted on. The drill-down keeps the figures and marks them expired.
+- **It belongs to the artifact.** Applying a staged model update renames the
+  `.pte` and descriptor in place under an unchanged id, so the correction and the
+  stored forecasts it was fitted on are dropped along with the artifact they
+  describe.
+- **Fail-closed.** Below 144 calibration windows the correction is zero, not an
+  extrapolated one, and the panel names both counts. The crate additionally
+  raises any threshold below the point at which the extreme levels' order
+  statistics would clamp — 19 for the seven levels of `invariants.md` §6.
+- **The median does not move.** §8.4 pins it and the crate rejects a delta that
+  does not, so the forecast line, and every dose scored off it, is identical
+  before and after a fit.
+- **Classify raw, calibrate for display.** The alarm engine, the calculator
+  rails, the excursion detectors and the realized-accuracy suite all read the
+  stored fan, which is the raw one. The correction reaches the BG panel's
+  forecast overlay and nothing else.
+- **The wire carries the raw fan.** `SPEC/http-api.md`'s Prediction has no
+  calibrated/raw discriminator, and a calibrated fan would satisfy its "row index
+  3 equals `line`" and travel indistinguishably. Nothing calibrated is written to
+  the `prediction` table or pushed.
+- The descriptor's `conformal.enabled` flag is unrelated to this and is read by
+  nothing.
+
 ## Backends
 
 One exported model, two implemented backends: fp32 CPU via XNNPACK as the

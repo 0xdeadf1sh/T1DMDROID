@@ -140,7 +140,7 @@ pub fn accuracy_at_horizons(
 /// The seven forecast quantile levels, ascending — `SPEC/invariants.md` §6. The one copy
 /// in this crate; `preproc::assemble_decode` lays `Forecast::bands_mgdl` out in exactly
 /// this order, and [`ForecastWindow::bands_mgdl`] inherits that layout unchanged.
-const QUANTILE_LEVELS: [f64; 7] = [0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95];
+pub(crate) const QUANTILE_LEVELS: [f64; 7] = [0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95];
 
 // ── The four metric levels (`SPEC/invariants.md` §6.1) ─────────────────────────────────
 // Each is a LEVEL, resolved to a fan position by `tau_index` lookup — never a literal
@@ -177,7 +177,7 @@ const PERSIST_RMSE_EPS: f64 = 1e-9;
 /// Position of a quantile level in the fan, or `None` if that level is not one of the
 /// seven. §6.1: a level absent from the tuple has no position and cannot announce its own
 /// absence, so the lookup — not an assumed index — is what makes the absence loud.
-fn tau_index(tau: f64) -> Option<usize> {
+pub(crate) fn tau_index(tau: f64) -> Option<usize> {
     QUANTILE_LEVELS.iter().position(|&t| t == tau)
 }
 

@@ -185,10 +185,17 @@ class MigrationTest {
     }
 
     @Test
-    fun migrate1To9_fullChain() {
+    fun migrate9To10_conformalDeltaTableMatchesSchema() {
+        // v10 (on-device band recalibration): one additive table, no index, nothing else touched.
+        helper.createDatabase(9).close()
+        helper.runMigrationsAndValidate(10, listOf(MigrationRunner.MIGRATION_9_10))
+    }
+
+    @Test
+    fun migrate1To10_fullChain() {
         helper.createDatabase(1).close()
         helper.runMigrationsAndValidate(
-            9,
+            10,
             listOf(
                 MigrationRunner.MIGRATION_1_2,
                 MigrationRunner.MIGRATION_2_3,
@@ -198,6 +205,7 @@ class MigrationTest {
                 MigrationRunner.MIGRATION_6_7,
                 MigrationRunner.MIGRATION_7_8,
                 MigrationRunner.MIGRATION_8_9,
+                MigrationRunner.MIGRATION_9_10,
             ),
         )
     }

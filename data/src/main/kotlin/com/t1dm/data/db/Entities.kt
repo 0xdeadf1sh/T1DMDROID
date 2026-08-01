@@ -420,3 +420,41 @@ data class PaintStrokeEntity(
     val maxTsMs: Long,
     @ColumnInfo(typeAffinity = ColumnInfo.BLOB) val points: ByteArray,
 )
+
+/**
+ * One model's fitted split-conformal band correction (Room v10) — the persisted half of
+ * [com.t1dm.core.model.BandCalibration], `SPEC/inference.md` §8.4.
+ *
+ * It is here rather than in `kv` for three reasons: the payload is `steps · nQuantiles` f64 and
+ * `kv.value` is TEXT, so it would have to be re-encoded; the provenance columns beside it
+ * ([nCal]/[nEval]/[cov90Raw]/[cov90Cal]/[fittedAtMs]) are what lets the drill-down say what the
+ * correction is worth rather than merely that one exists; and the row is per-model, which a keyed
+ * table expresses and a flat namespace fakes. [deltaBlob] rides in the same little-endian f64
+ * encoding as the `prediction` fan/line ([Blobs]) — one codec for every numeric series in this
+ * database.
+ *
+ * [deltaBlob] is **step-major, τ-minor** (`i = s·nQuantiles + q`), matching
+ * [com.t1dm.core.model.ModelPrediction.bandsMgdl] and the core's `Forecast::bands_mgdl` — NOT the
+ * quantile-major layout [PredictionEntity.fanBlob] uses for the wire. The correction is applied to
+ * a fan in core layout and never travels, so it is stored in the layout it is used in.
+ *
+ * `modelId` is the primary key: one correction per model, replaced whole by a later fit. Only a
+ * SUFFICIENT fit is ever written — a refusal leaves the previous row intact, since a fit that
+ * declined to run has learnt nothing about whether the previous one was wrong.
+ */
+@Entity(tableName = "conformal_delta")
+data class ConformalDeltaEntity(
+    @PrimaryKey val modelId: String,
+    val steps: Int,
+    val nQuantiles: Int,
+    @ColumnInfo(typeAffinity = ColumnInfo.BLOB) val deltaBlob: ByteArray,  // steps·nQuantiles f64, step-major
+    val nCal: Int,
+    val nEval: Int,
+    val maxAbsDeltaMgdl: Double,
+    val cov90Raw: Double?,
+    val cov90Cal: Double?,
+    val meanWidth90Raw: Double?,
+    val meanWidth90Cal: Double?,
+    val windowDays: Int,
+    val fittedAtMs: Long,
+)
