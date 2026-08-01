@@ -46,6 +46,9 @@ import com.t1dm.core.common.T1dmDispatchers
 import com.t1dm.core.model.BackendId
 import com.t1dm.core.model.StatsWindow
 import com.t1dm.core.model.CgmReading
+import com.t1dm.core.model.BandCalibration
+import com.t1dm.core.model.BandCalibrationOutcome
+import com.t1dm.core.model.BandFitRefusal
 import com.t1dm.core.model.ClarkeZoneGrid
 import com.t1dm.core.model.CgmSourceDescriptor
 import com.t1dm.core.model.CurveKind
@@ -194,6 +197,26 @@ private const val LOG_FEED_LIMIT = 400
  *  longest also fixes the WINDOW the suite scores: `SPEC/invariants.md` §6.2's level metrics are
  *  reported at each of these, and §6.3's CG-EGA over the whole span of the last. */
 private val ACCURACY_HORIZONS_MIN = listOf(30, 60, 120)
+
+/** The trailing window the realized-accuracy suite scores, and the same window a band
+ *  recalibration fits over. One number: a correction fitted on a longer history than the figures
+ *  beside it are scored on would be evidence about a different fortnight. */
+private const val ACCURACY_WINDOW_DAYS = 14
+
+/**
+ * How many matured windows a band recalibration's CALIBRATION split must carry before the fit is
+ * allowed to produce a correction (`SPEC/inference.md` §8.4). 144 is half a day of five-minute
+ * cycles, and it is far above the point the arithmetic degenerates — `NativeCore
+ * .conformalMinCalWindows()` derives that floor (19 for the seven levels of §6) and the core
+ * raises anything below it.
+ *
+ * It is deliberately unrelated to `MetricsConfig.minSamples`, the display gate the drill-down's
+ * tables use. That one asks whether an RMSE is worth printing; this one asks whether 24 × 6 = 144
+ * one-sided order statistics can each be resolved from their own residuals. At six windows every
+ * extreme level's offset would be the minimum or the maximum of a six-element sample — a
+ * correction made entirely of the two worst things that happened.
+ */
+private const val CONFORMAL_MIN_CAL_WINDOWS = 144
 
 /** mg/dL slack that forgives a near-boundary FALSE ALARM in the excursion precision — CGM noise at
  *  a threshold should not deflate it; recall stays strict. Matches `T1DMAI`'s
@@ -821,7 +844,7 @@ class AppContainer(context: Context) {
      */
     suspend fun modelMetrics(
         modelId: String,
-        days: Int = 14,
+        days: Int = ACCURACY_WINDOW_DAYS,
         minSamples: Int = 6,
     ): ModelMetrics = modelMetrics(modelId, days, minSamples, includeCgEga = false)
 
@@ -830,7 +853,7 @@ class AppContainer(context: Context) {
      * because it walks every step of every window through the P-EGA × R-EGA zone algebra, and the
      * drill-down renders it only when asked. Null when nothing scoreable was found. Off-main.
      */
-    suspend fun modelCgEga(modelId: String, days: Int = 14, minSamples: Int = 6): CgEga? =
+    suspend fun modelCgEga(modelId: String, days: Int = ACCURACY_WINDOW_DAYS, minSamples: Int = 6): CgEga? =
         modelMetrics(modelId, days, minSamples, includeCgEga = true).suite.cgega
 
     private suspend fun modelMetrics(
@@ -857,6 +880,168 @@ class AppContainer(context: Context) {
             nativeCore.forecastMetricsSuite(set.windows, ACCURACY_HORIZONS_MIN, config, includeCgEga)
         }
         return ModelMetrics(suite, set.nMatured, set.nIncomplete, minSamples)
+    }
+
+    // ── Band recalibration (`SPEC/inference.md` §8.4), fitted on device ──────────────────────────
+    //
+    // The scope of this feature, stated once so no later reader has to reconstruct it:
+    //
+    //   * the MEDIAN never moves — §8.4 pins it and the core rejects a delta that does not, which
+    //     is what keeps the dose calculator's score identical before and after a fit;
+    //   * every classifier reads the RAW fan — the alarm engine, the rolling forecaster's rails,
+    //     the excursion detectors and the accuracy suite all read `ModelPrediction.bandsMgdl` as
+    //     stored, and this correction never touches it;
+    //   * the WIRE carries the raw fan — `SPEC/http-api.md`'s Prediction has no calibrated/raw
+    //     discriminator and, because the median is pinned, a calibrated fan would satisfy its
+    //     "row index 3 equals `line`" and travel indistinguishably. Nothing calibrated is written
+    //     to `prediction` or pushed. Marking the distinction on the wire would be a contract
+    //     change across three repositories.
+    //
+    // So the correction reaches exactly one surface: the BG panel's forecast overlay, through
+    // [calibratedBands].
+
+    /** One fit at a time, process-wide. The panel disables its own button while a fit runs; this is
+     *  the guard that holds when it cannot — a second entry is refused, never queued. */
+    private val bandCalibrationRunning = AtomicBoolean(false)
+
+    /**
+     * Every model's stored band correction, keyed by model id — the map the BG panel reads.
+     *
+     * Observed from Room rather than fetched, so a fit lands on the graph without the panel being
+     * reopened, and so the correction survives process death by construction: there is no in-memory
+     * authority to rebuild, only a table to re-observe.
+     */
+    val bandCalibrations: StateFlow<Map<String, BandCalibration>> =
+        repository.observeBandCalibrations()
+            .stateIn(appScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
+
+    /**
+     * The §8.4 apply, for the one display surface entitled to it: add the model's stored delta to a
+     * raw fan, hold the median exactly, keep the fan monotone. Returns null — meaning "draw the raw
+     * fan" — when there is no correction for [modelId], when it has aged past
+     * [BandCalibration.expiresAtMs], when its shape disagrees with the fan's, or when the core
+     * rejects the pair.
+     *
+     * Synchronous and allocation-light on purpose: the caller is `predOverlayOf`, already off the
+     * composing frame, and this is one pass over 168 doubles across the FFI. The map is passed in
+     * rather than read from [bandCalibrations] — so the overlay's `produceState` can key on the map
+     * and rebuild exactly when the correction changes. The one thing it does not take as an argument
+     * is the clock: an expiry evaluated here takes effect on the next rebuild, which is at worst one
+     * five-minute cycle after the correction lapses.
+     */
+    fun calibratedBands(
+        calibrations: Map<String, BandCalibration>,
+        modelId: String,
+        bandsMgdl: List<Double>,
+        horizonSteps: Int,
+        nQuantiles: Int,
+    ): List<Double>? {
+        val cal = calibrations[modelId] ?: return null
+        // A delta fitted at a different horizon or fan width is not this forecast's correction. The
+        // core would reject the length mismatch anyway; refusing here says why without an FFI hop.
+        if (cal.steps != horizonSteps || cal.nQuantiles != nQuantiles) return null
+        // Nor is a delta whose evidence has gone stale. The row is kept rather than deleted — the
+        // drill-down still has to be able to say what lapsed and when — but it stops being drawn.
+        if (cal.expiredAt(System.currentTimeMillis())) return null
+        return nativeCore.applyQuantileConformal(bandsMgdl, cal.delta)
+    }
+
+    /**
+     * [modelId]'s OWN forecast horizon in minutes, or null when it cannot be established.
+     *
+     * This is the number a band correction must be fitted at, because it is the number
+     * [calibratedBands] compares the stored `steps` against: `ModelPrediction.horizonSteps` is
+     * `medianBg.size`, which the core sizes from the descriptor's `PREDICTION_HORIZON_HOURS`. Fitting
+     * at the accuracy suite's longest horizon instead would tie every model's correction to 120 min
+     * and leave anything else structurally inapplicable — stored, reported, and never once drawn.
+     *
+     * The descriptor is asked first because it is available from discovery onward; the live forecast
+     * is the fallback for a model whose descriptor omits the constant, and it is the same quantity.
+     */
+    private fun modelHorizonMin(modelId: String): Int? {
+        val state = inferenceState.value
+        val fromDescriptor = state.metas.firstOrNull { it.modelId == modelId }?.predictionHorizonHours
+        if (fromDescriptor != null && fromDescriptor > 0) return fromDescriptor * 60
+        val p = state.predictions.firstOrNull { it.modelId == modelId } ?: return null
+        if (p.horizonSteps <= 0 || p.stepMs <= 0L) return null
+        return (p.horizonSteps.toLong() * p.stepMs / 60_000L).toInt()
+    }
+
+    /**
+     * Fit a split-conformal band correction for [modelId] from its own matured forecasts, and
+     * persist it if it is real (Models drill-down — "Recalibrate").
+     *
+     * Off-main throughout: the window walk is a Room read on IO and the fit is pure CPU on the
+     * default pool, so nothing here touches the frame that composed the button.
+     *
+     * **Atomic in effect.** The correction is written once, at the end, and only when the fit was
+     * sufficient. A cancelled or failed fit therefore leaves the previous correction exactly as it
+     * was — there is no partial state to half-write. A REFUSAL is likewise non-destructive: it has
+     * established that too little history matured to fit on, which is not evidence that what is
+     * already stored is wrong.
+     *
+     * Fitted at the MODEL's own horizon, never the accuracy suite's — see [modelHorizonMin] — so the
+     * correction's `steps` is by construction the length [calibratedBands] will require of it.
+     *
+     * Returns what happened, so the panel can say it rather than merely re-render. A refusal that
+     * never reached the window walk carries a [BandFitRefusal] rather than a zeroed count, because
+     * "no fit ran" and "nothing matured to fit on" are different facts about the patient's history
+     * and only one of them is about the patient.
+     */
+    suspend fun fitBandCalibration(
+        modelId: String,
+        days: Int = ACCURACY_WINDOW_DAYS,
+        minCalWindows: Int = CONFORMAL_MIN_CAL_WINDOWS,
+    ): BandCalibrationOutcome {
+        if (!bandCalibrationRunning.compareAndSet(false, true)) {
+            return BandCalibrationOutcome(null, false, 0, 0, BandFitRefusal.BUSY)
+        }
+        try {
+            val horizonMin = modelHorizonMin(modelId)
+                ?: return BandCalibrationOutcome(null, false, 0, 0, BandFitRefusal.HORIZON_UNKNOWN)
+            val now = System.currentTimeMillis()
+            val since = now - days.toLong() * 86_400_000L
+            val set = repository.forecastWindows(modelId, horizonMin, since, now)
+            if (set.windows.isEmpty()) {
+                return BandCalibrationOutcome(null, false, set.nMatured, set.nIncomplete)
+            }
+            // `forecastWindows` walks `PredictionDao.range`, which is newest-first. The conformal
+            // split is CHRONOLOGICAL — older fitted on, newer held out and scored — so the order
+            // is load-bearing here in a way it never is for the order-free metric suite.
+            val chronological = set.windows.asReversed()
+            val fit = withContext(dispatchers.default) {
+                nativeCore.fitQuantileConformal(chronological, minCalWindows)
+            }
+            // `steps == 0` is the core's "nothing here was scoreable" — an empty or degenerate
+            // window set, or a `CoreException` mapped to `ConformalFit.NONE`. It carries no counts
+            // worth printing, so it reads as no result rather than as a refusal with n = 0.
+            if (fit.steps == 0) {
+                return BandCalibrationOutcome(null, false, set.nMatured, set.nIncomplete)
+            }
+            if (!fit.sufficient) {
+                return BandCalibrationOutcome(fit, false, set.nMatured, set.nIncomplete)
+            }
+            repository.putBandCalibration(
+                BandCalibration(
+                    modelId = modelId,
+                    delta = fit.delta,
+                    steps = fit.steps,
+                    nQuantiles = fit.nQuantiles,
+                    nCal = fit.nCal,
+                    nEval = fit.nEval,
+                    maxAbsDeltaMgdl = fit.maxAbsDeltaMgdl,
+                    cov90Raw = fit.cov90Raw,
+                    cov90Cal = fit.cov90Cal,
+                    meanWidth90Raw = fit.meanWidth90Raw,
+                    meanWidth90Cal = fit.meanWidth90Cal,
+                    windowDays = days,
+                    fittedAtMs = now,
+                ),
+            )
+            return BandCalibrationOutcome(fit, true, set.nMatured, set.nIncomplete)
+        } finally {
+            bandCalibrationRunning.set(false)
+        }
     }
 
     // ── WARMUP setting (inference-runtime.md) — kv-backed, floored at the model MIN_CONTEXT ──────
@@ -1448,10 +1633,23 @@ class AppContainer(context: Context) {
      * new artifact is loaded and re-selected — the manual half of auto-download / manual-apply (product
      * decision 2), mirroring the running-set selection flow. Returns false if no complete staged pair
      * exists. Off-main.
+     *
+     * **The promotion is a substitution, and everything keyed to the old artifact goes with it.**
+     * `applyPending` renames the staged pair in place under an UNCHANGED local id, so nothing
+     * downstream can tell one checkpoint from the next: the stored forecasts, the realized-accuracy
+     * figures computed from them, and any band correction fitted on them would all survive the swap
+     * and be re-attributed to a network that never produced them. Worse, the correction would go on
+     * being drawn, and the next recalibration would fit across a calibration set mixing two models'
+     * error distributions — the exchangeability the whole method rests on. So this drops them, for
+     * the reason [removeModel] drops them: they are evidence about an artifact that is gone.
      */
     suspend fun applyModelUpdate(modelId: String): Boolean = withContext(dispatchers.io) {
         val applied = runCatching { modelSyncCoordinator.applyPending(modelId) }.getOrDefault(false)
-        if (applied) inferenceController.refreshModels()
+        if (applied) {
+            runCatching { repository.deletePredictionsForModel(modelId) }
+            runCatching { repository.deleteBandCalibration(modelId) }
+            inferenceController.refreshModels()
+        }
         refreshPendingModelUpdates()
         applied
     }
@@ -1467,6 +1665,8 @@ class AppContainer(context: Context) {
         runCatching { inferenceController.deleteModel(modelId) }
         withContext(dispatchers.io) {
             runCatching { repository.deletePredictionsForModel(modelId) }
+            // The correction was fitted on THIS model's forecasts and means nothing without them.
+            runCatching { repository.deleteBandCalibration(modelId) }
             runCatching { repository.putKv(kvForecastBackend(modelId), "", System.currentTimeMillis()) }
         }
         refreshPendingModelUpdates()

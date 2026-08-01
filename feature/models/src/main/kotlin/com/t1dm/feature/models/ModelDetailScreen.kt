@@ -8,19 +8,25 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -29,6 +35,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.rememberT1dmHaptics
+import com.t1dm.core.model.BandCalibration
+import com.t1dm.core.model.BandCalibrationOutcome
+import com.t1dm.core.model.BandFitRefusal
 import com.t1dm.core.model.BackendAvailability
 import com.t1dm.core.model.BackendComparison
 import com.t1dm.core.model.BackendId
@@ -43,6 +52,7 @@ import com.t1dm.core.model.ModelMetrics
 import com.t1dm.core.model.PointBlock
 import com.t1dm.core.model.ModelTelemetry
 import com.t1dm.core.model.displayName
+import kotlin.math.abs
 
 /**
  * The per-model PERFORMANCE drill-down (Phase 7C — item 24). Three blocks:
@@ -80,10 +90,12 @@ import com.t1dm.core.model.displayName
  *     horizons that PASSED `sufficient`, so none of them draws an axis over a horizon the tables
  *     have just declined to score.
  *
- *     One figure has no table: the Clarke error grid, a scatter of one horizon's pairs over the five
- *     lettered zones. Its regions come from a lattice the core classified ([clarkeGrid]) rather than
- *     from boundaries restated here, and it is drawn on the MEDIAN LINE — the one basis of the two
- *     that a scatter can carry honestly (see `ClarkeGridFigure`).
+ *     One figure has no table: the Clarke error grid, a scatter of ONE horizon's pairs over the five
+ *     lettered zones — the reader's chosen horizon, defaulting to [CLARKE_GRID_DEFAULT_MIN]. Its
+ *     regions come from a lattice the core classified ([clarkeGrid]) rather than from boundaries
+ *     restated here, and it is drawn on the MEDIAN LINE — the one basis of the two that a scatter
+ *     can carry honestly (see `ClarkeGridFigure`). Choosing a horizon the suite declined to score
+ *     draws nothing and says so by name; it never quietly plots a neighbouring one.
  *
  * Everything is advisory: the accuracy of a FORECAST, never a dosing claim.
  *
@@ -110,11 +122,26 @@ fun ModelDetailScreen(
     comparison: BackendComparison?,
     onSelectBackend: (BackendId?) -> Unit,
     onRunComparison: () -> Unit,
+    /** The stored §8.4 band correction for this model, or null when it has never been fitted. */
+    bandCalibration: BandCalibration? = null,
+    bandCalibrationFitting: Boolean = false,
+    /** What the last fit STARTED FROM THIS SCREEN did; null on a fresh open, so a reopen shows the
+     *  correction without re-announcing a result the user has already read. */
+    bandCalibrationOutcome: BandCalibrationOutcome? = null,
+    onFitBandCalibration: () -> Unit = {},
 ) {
     val meta = state.metaOf(modelId)
     val telemetry = state.telemetryOf(modelId)
     val running = state.runningOf(modelId)
     val haptics = rememberT1dmHaptics()
+
+    // The error grid's horizon, hoisted ABOVE the LazyColumn deliberately: `section` is a lazy
+    // `item {}`, so a `remember` placed inside the grid's own section is discarded the moment that
+    // item scrolls out of the viewport and the choice would snap silently back to the default.
+    // Saveable so a rotation keeps it; keyed on the model and stored nowhere, so a fresh open of any
+    // drill-down starts at the default — the same lifetime the suite, the CG-EGA walk and the fit
+    // outcome already have here. It is a reading posture, not a preference, so it gets no setting.
+    var gridHorizonMin by rememberSaveable(modelId) { mutableStateOf(CLARKE_GRID_DEFAULT_MIN) }
 
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         item {
@@ -236,15 +263,34 @@ fun ModelDetailScreen(
         // Outside the `scored` gate deliberately, as CG-EGA is: a figure that declines to draw must
         // say why, and a section that simply vanishes says nothing at all.
         //
-        // ONE horizon, and the longest: it is where a forecast's failures actually show, and the
-        // other two keep their zone shares in the stacked figure above. The basis is the MEDIAN LINE
-        // and the header carries it (§6.2) — see the figure's own note for why the band projection,
-        // normative everywhere else, is the one basis this picture may not be drawn on.
-        val gridHorizon = scored.maxByOrNull { it.horizonMin }
+        // ONE horizon still, but the reader chooses which, opening on [CLARKE_GRID_DEFAULT_MIN] rather
+        // than on the longest the suite scored. Every other horizon is a tap away, and each keeps its
+        // zone shares in the stacked figure above regardless. The basis is the MEDIAN LINE and the
+        // header carries it (§6.2) — see the figure's own note for why the band projection, normative
+        // everywhere else, is the one basis this picture may not be drawn on.
+        //
+        // Two things keep the picker honest. The options are the suite's OWN horizons rather than a
+        // list restated here (`ACCURACY_HORIZONS_MIN` belongs to the app container, and a copy of it
+        // in this module would go stale in silence), and [clarkeGridPick] returns the chosen
+        // [HorizonMetrics] itself rather than an index — so the caption's horizon, its `n` and the
+        // pairs it plots are three readings of one object and cannot come apart. A horizon the tables
+        // declined is REFUSED by name ahead of every other empty state, never redrawn as its
+        // neighbour, and its tab stays live so the reader can move to one that scored.
+        val pick = clarkeGridPick(suite?.horizons.orEmpty(), gridHorizonMin)
+        val gridHorizon = pick.selected
+        val gridRefusal = pick.refusal(accuracy?.minSamples ?: 0)
         section("Clarke error grid — median line") {
             Note("Band projection clips to the truth; its grid reads as coverage")
+            if (pick.options.size > 1) {
+                ClarkeHorizonPicker(
+                    options = pick.options,
+                    selected = gridHorizon?.horizonMin,
+                    onSelect = { gridHorizonMin = it },
+                )
+            }
             when {
                 gridHorizon == null -> Note(emptyWhy(accuracy))
+                gridRefusal != null -> Note(gridRefusal)
                 clarkeGrid == null -> Note("Computing…")
                 clarkeGrid.isEmpty -> Note("Zone regions unavailable")
                 gridHorizon.medianLine.clarkePoints.isEmpty() -> Note("No scored pairs")
@@ -264,6 +310,70 @@ fun ModelDetailScreen(
                 else -> TextButton(
                     onClick = { haptics.perform(HapticEvent.Tap); onComputeCgEga() },
                 ) { Text("Compute") }
+            }
+        }
+
+        // ── 3c. Band recalibration (§8.4) — the one action here that changes what is DRAWN ──
+        //
+        // Outside the `scored` gate, like CG-EGA and the error grid: an action that declines to run
+        // must say why, and a section that simply vanishes says nothing at all.
+        //
+        // The rows are the whole statement of what the correction is worth, and they are chosen so
+        // that none of them can be read alone. `fit / held out` says how much history each half saw;
+        // the coverage pair says what the correction bought on windows it never fitted; and the
+        // WIDTH pair beside it is what §6.2 requires of any band figure, because a band widened
+        // until it swallows every truth covers perfectly and forecasts nothing. `max shift` is how a
+        // reader tells a real correction from one that rounds to the raw fan.
+        section("Band recalibration") {
+            Note("Display only — alarms and doses read the raw band")
+            if (bandCalibration == null) {
+                Note("Not fitted — raw bands")
+            } else {
+                // A lapsed correction stops being drawn (the apply reads the same predicate), so the
+                // rows below become a record of what it once bought rather than a description of the
+                // fan on screen. Saying so is the whole point: the figures are unchanged and true,
+                // and without this line they read as present tense.
+                if (bandCalibration.expiredAt(System.currentTimeMillis())) {
+                    Note("Expired after ${bandCalibration.windowDays} d — raw bands")
+                }
+                KeyVal("fitted", "%tF %<tR".format(bandCalibration.fittedAtMs))
+                KeyVal("fit / held out", "${bandCalibration.nCal} / ${bandCalibration.nEval}")
+                KeyVal(
+                    "cov τ.05–.95",
+                    "${f2(bandCalibration.cov90Raw)} → ${f2(bandCalibration.cov90Cal)}",
+                )
+                KeyVal(
+                    "band width",
+                    "${f1(bandCalibration.meanWidth90Raw)} → ${f1(bandCalibration.meanWidth90Cal)} mg/dL",
+                )
+                KeyVal("max shift", "${f1(bandCalibration.maxAbsDeltaMgdl)} mg/dL")
+            }
+            // The fail-closed outcomes. A refusal names both numbers — the same shape the
+            // insufficient-horizon notes above use — so the user learns how far short they are
+            // rather than merely that the fit declined.
+            //
+            // The two BandFitRefusal arms come first and are worded as conditions of the app,
+            // because they are: neither reached the window walk, so neither has grounds to say
+            // anything about how much of this patient's history matured. Falling through to
+            // `emptyWhy` would tell them their data was inadequate on evidence nobody gathered.
+            bandCalibrationOutcome?.let { o ->
+                val fit = o.fit
+                when {
+                    o.refusal == BandFitRefusal.BUSY -> Note("Fit already running")
+                    o.refusal == BandFitRefusal.HORIZON_UNKNOWN -> Note("No forecast yet — horizon unknown")
+                    fit == null -> Note(emptyWhy(accuracy))
+                    !fit.sufficient -> Note("${fit.nCal} fit windows, need ${fit.minCalWindows}")
+                    else -> Unit // The rows above already changed, and they say it exactly.
+                }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(
+                    enabled = !bandCalibrationFitting,
+                    onClick = { haptics.perform(HapticEvent.Tap); onFitBandCalibration() },
+                ) { Text("Recalibrate") }
+                if (bandCalibrationFitting) {
+                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                }
             }
         }
     }
@@ -386,6 +496,82 @@ private fun f2(v: Double?): String = if (v == null || !v.isFinite()) "—" else 
 private fun pct(v: Double): String = if (!v.isFinite()) "—" else "%.1f".format(v * 100)
 
 private fun skill(b: PointBlock): String = f2(b.skillPoint)
+
+// ── The Clarke error grid's horizon choice ─────────────────────────────────────────────────────
+
+/**
+ * The horizon the error grid opens on, in minutes.
+ *
+ * Not the longest the suite scored, which is what this section used to plot. 60 min is the horizon
+ * a forecast is read at — long enough for the model's own error to separate from persistence, short
+ * enough that the scatter is still about the forecast rather than about the drift of the day — and
+ * the other horizons are one tap away rather than one recompute.
+ *
+ * A default, not a member of the option list: the options are the suite's own horizons, and this
+ * resolves against them ([clarkeGridPick]) rather than adding to them.
+ */
+internal const val CLARKE_GRID_DEFAULT_MIN = 60
+
+/**
+ * What the error grid's picker offers, and which of it the current choice resolves to.
+ *
+ * [options] is EVERY horizon the suite scored, ascending — including one that failed `sufficient`,
+ * so a reader who lands on it has somewhere to go. [selected] is the chosen horizon's own metrics
+ * record, deliberately the object rather than its index or its number: the figure's caption, its
+ * `n` and its scatter are all read off this one value, so a picture labelled 60 min cannot be
+ * plotting 120's pairs. Null only where the suite scored no horizon at all.
+ */
+internal data class ClarkeGridPick(
+    val options: List<Int>,
+    val selected: HorizonMetrics?,
+) {
+    /**
+     * Why the chosen horizon may not be drawn, or null where it may.
+     *
+     * The same shape as the insufficient rows the accuracy section prints above, deliberately: "too
+     * few windows" is one fact and reads the same wherever this screen states it. A refusal never
+     * substitutes another horizon — the picker is what moves the reader, not the figure.
+     */
+    fun refusal(minSamples: Int): String? =
+        selected?.takeUnless { it.sufficient }?.let { "${it.horizonMin} min: n=${it.n}, need $minSamples" }
+}
+
+/**
+ * Resolve the standing choice [wantedMin] against the horizons the suite actually scored.
+ *
+ * The choice is held as a NUMBER of minutes rather than an index or a position, so it survives a
+ * recompute that adds or drops a horizon. Where the suite does not carry it — a stale choice, or
+ * the default against a horizon set that has none — the nearest offered horizon is taken, ties to
+ * the shorter. That is not a silent fallback: the picker shows the resolution as its selection, so
+ * what is drawn and what is highlighted are the same horizon, and neither is one the reader is
+ * still being told they chose.
+ */
+internal fun clarkeGridPick(horizons: List<HorizonMetrics>, wantedMin: Int): ClarkeGridPick {
+    val ordered = horizons.sortedBy { it.horizonMin }
+    val chosen = ordered.firstOrNull { it.horizonMin == wantedMin }
+        ?: ordered.minByOrNull { abs(it.horizonMin - wantedMin) }
+    return ClarkeGridPick(ordered.map { it.horizonMin }, chosen)
+}
+
+/**
+ * The grid's horizon row — this screen's second single-choice control, and a segmented row rather
+ * than [BackendChoiceRow] because three numbers need no subtitle apiece and the section is a figure,
+ * not a form. Material3 1.3.1 performs no haptic of its own, so the tick is fired here, as at every
+ * other choice site in the app.
+ */
+@Composable
+private fun ClarkeHorizonPicker(options: List<Int>, selected: Int?, onSelect: (Int) -> Unit) {
+    val haptics = rememberT1dmHaptics()
+    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(top = 4.dp)) {
+        options.forEachIndexed { i, h ->
+            SegmentedButton(
+                selected = h == selected,
+                onClick = { haptics.perform(HapticEvent.SegmentTick); onSelect(h) },
+                shape = SegmentedButtonDefaults.itemShape(i, options.size),
+            ) { Text("${h}m") }
+        }
+    }
+}
 
 /** Why the panel is empty — never merely THAT it is. */
 private fun emptyWhy(m: ModelMetrics?): String {

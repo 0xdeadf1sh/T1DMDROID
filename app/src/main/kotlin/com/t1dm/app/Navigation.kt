@@ -69,6 +69,9 @@ import com.t1dm.core.design.T1dmHaptics
 import com.t1dm.core.design.LocalT1dmSemantics
 import com.t1dm.core.design.hapticClickable
 import com.t1dm.core.design.ThemeBackdrop
+import com.t1dm.core.design.ThemeBackdropBlur
+import com.t1dm.core.design.backdropBlurScrim
+import com.t1dm.core.design.themeBackdropHasMotif
 import com.t1dm.core.design.iconStyleForTheme
 import com.t1dm.core.design.navEnter
 import com.t1dm.core.design.navExit
@@ -118,8 +121,11 @@ import com.t1dm.feature.pubs.PubsScreen
 import com.t1dm.feature.models.ModelDetailScreen
 import com.t1dm.feature.models.ModelsScreen
 import com.t1dm.core.model.CgEga
+import com.t1dm.core.model.BandCalibration
+import com.t1dm.core.model.BandCalibrationOutcome
 import com.t1dm.core.model.ClarkeZoneGrid
 import com.t1dm.core.model.ModelMetrics
+import com.t1dm.core.model.ModelPrediction
 import com.t1dm.feature.network.NetworkScreen
 import com.t1dm.feature.security.SecurityPanelState
 import com.t1dm.feature.security.SecurityScreen
@@ -256,7 +262,7 @@ fun T1dmApp(container: AppContainer) {
             // surface that inherits its colour (e.g. the big BG read-out + trend arrow). Pin it back to
             // the theme's on-background ink so inherited-colour content stays legible.
             contentColor = MaterialTheme.colorScheme.onBackground,
-            bottomBar = { T1dmBottomBar(navController) },
+            bottomBar = { T1dmBottomBar(navController, bgAlphaPct) },
         ) { padding ->
             // The ONE place the Scaffold insets are applied — feature screens must never re-apply them
             // or the gap above the bottom bar doubles. N10 — plus the IME: targetSdk 36 forces
@@ -729,9 +735,15 @@ private fun GlycemicStatusBadge(status: GlyStatus) {
  * destination, so every tab is reachable by scrolling instead of cramming into a fixed bar. The
  * selected tile is marked with a themed pill + a coloured label; on selection it is scrolled into
  * view so the current destination always stays visible.
+ *
+ * The bar stands on a blurred slice of the app backdrop rather than an opaque slab, where that can
+ * be shown without costing the tiles their contrast — [backdropBlurScrim] decides, and returns the
+ * flat surface when it cannot. [backgroundAlphaPct] is the same Display → Background setting
+ * [ThemeBackdrop] paints at, hoisted in [T1dmApp] and passed down rather than collected a second
+ * time here.
  */
 @Composable
-private fun T1dmBottomBar(navController: NavHostController) {
+private fun T1dmBottomBar(navController: NavHostController, backgroundAlphaPct: Int) {
     val backStackEntry by navController.currentBackStackEntryAsState()
     val current = backStackEntry?.destination?.route
     val scrollState = rememberScrollState()
@@ -761,29 +773,61 @@ private fun T1dmBottomBar(navController: NavHostController) {
         }
     }
 
-    Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 3.dp) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .onSizeChanged { viewportW = it.width }
-                .horizontalScroll(scrollState)
-                .navigationBarsPadding()
-                .padding(horizontal = 8.dp, vertical = 6.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
+    val palette = LocalT1dmSemantics.current
+    val cs = MaterialTheme.colorScheme
+    // Asked before the scrim is solved: a theme with no motif paints a flat wash, over which the
+    // filter is an identity, so there is nothing to hold a scrim against and nothing to buy an
+    // offscreen render target for. Every imported theme is in that case, at every opacity.
+    val hasMotif = themeBackdropHasMotif(palette.id)
+    val solvedScrim = remember(palette, backgroundAlphaPct, hasMotif) {
+        backdropBlurScrim(palette.surface, palette.background, backgroundAlphaPct, hasMotif)
+    }
+    // The Motion gate takes this door too. A cached blur is not motion by Motion.kt's own three
+    // doors, and its filter re-runs only when its own layer is invalidated — but the toggle is
+    // surfaced as "reduce motion", lists "accessibility" among its synonyms and promises "a static
+    // UI", and a decorative depth effect is the kind of thing a user asking for the plainest possible
+    // surface means. The fallback is not a degraded blur, it is exactly the bar that shipped before
+    // this existed.
+    val scrim = if (animationsOn) solvedScrim else 1f
+    val blurred = scrim < 1f
+
+    Box {
+        if (blurred) ThemeBackdropBlur(backgroundAlphaPct, Modifier.matchParentSize())
+        Surface(
+            color = if (blurred) cs.surface.copy(alpha = scrim) else cs.surface,
+            // Pinned for the reason the Scaffold's is (see T1dmApp): contentColorFor() resolves by
+            // colour EQUALITY, so a surface carrying alpha matches no arm, collapses to Unspecified
+            // and falls through to LocalContentColor.
+            contentColor = cs.onSurface,
+            // Tonal elevation composites `surfaceTint`, a role toColorScheme() leaves at Material's
+            // baseline lavender. Invisible under an opaque bar; not invisible under a translucent
+            // one, where it would tint the blur a colour belonging to no theme. The blurred bar takes
+            // its separation from the blur.
+            tonalElevation = if (blurred) 0.dp else 3.dp,
         ) {
-            destinations.forEachIndexed { index, d ->
-                NavTile(
-                    destination = d,
-                    selected = current == d.route,
-                    onEdges = { l, r -> tileEdges[index] = l to r },
-                    onClick = {
-                        navController.navigate(d.route) {
-                            launchSingleTop = true
-                            restoreState = true
-                            popUpTo("dashboard") { saveState = true }
-                        }
-                    },
-                )
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .onSizeChanged { viewportW = it.width }
+                    .horizontalScroll(scrollState)
+                    .navigationBarsPadding()
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                destinations.forEachIndexed { index, d ->
+                    NavTile(
+                        destination = d,
+                        selected = current == d.route,
+                        onEdges = { l, r -> tileEdges[index] = l to r },
+                        onClick = {
+                            navController.navigate(d.route) {
+                                launchSingleTop = true
+                                restoreState = true
+                                popUpTo("dashboard") { saveState = true }
+                            }
+                        },
+                    )
+                }
             }
         }
     }
@@ -918,6 +962,21 @@ private fun T1dmNavHost(
             // feed the Logs panel binds, so the two can never disagree about whether a row has reached
             // the server; the screen reduces it to markers for the graph, which still sees no amount.
             val logEntries by container.loggedEntries.collectAsState(emptyList())
+            // §8.4's on-device band recalibration. Remembered against the calibration map so the
+            // lambda's identity changes exactly when a fit lands — which is what makes the panel's
+            // overlay `produceState` rebuild then, and not on every recomposition.
+            val bandCalibrations by container.bandCalibrations.collectAsState()
+            val calibrateBands: (ModelPrediction) -> List<Double>? = remember(bandCalibrations) {
+                { p ->
+                    container.calibratedBands(
+                        bandCalibrations,
+                        p.modelId,
+                        p.bandsMgdl,
+                        p.horizonSteps,
+                        p.nQuantiles,
+                    )
+                }
+            }
             DashboardScreen(
                 readings = readings,
                 latest = latest,
@@ -926,6 +985,7 @@ private fun T1dmNavHost(
                 thresholds = container.alarmConfig.thresholds,
                 predictions = inference.predictions,
                 kovatchevF = container.nativeCore::kovatchevF,
+                calibrateBands = calibrateBands,
                 iobCob = iobCob,
                 curveChannels = container::dashboardOverlayChannels,
                 logEntries = logEntries,
@@ -1071,6 +1131,29 @@ private fun T1dmNavHost(
                 cgEga = walked.getOrNull()
                 cgEgaLoading = false
             }
+            // §8.4's band recalibration. The stored correction is observed (it survives process
+            // death in Room, and a fit on another surface would land here too); the outcome of THIS
+            // screen's last tap is local, so a reopen shows the correction without re-announcing a
+            // fit the user has already read. The fit is keyed on its own tick, like CG-EGA's walk,
+            // and `fitTick == 0` is the never-asked-for guard rather than a fit of nothing.
+            val bandCalibrations by container.bandCalibrations.collectAsState()
+            val bandCalibration: BandCalibration? = bandCalibrations[modelId]
+            var fitOutcome by remember(modelId) { mutableStateOf<BandCalibrationOutcome?>(null) }
+            var fitting by remember(modelId) { mutableStateOf(false) }
+            var fitTick by remember(modelId) { mutableStateOf(0) }
+            LaunchedEffect(modelId, fitTick) {
+                if (fitTick == 0) return@LaunchedEffect
+                fitting = true
+                val outcome = runCatching { container.fitBandCalibration(modelId) }
+                // A cancelled fit must not write its verdict back over its successor's. The window
+                // walk and the native fit are both uninterruptible, so this resumes long after the
+                // job was cancelled — the same trap the CG-EGA walk above documents. The CORRECTION
+                // is safe either way: `fitBandCalibration` persists once, at the end, and only a
+                // sufficient fit, so a cancellation leaves the previous one exactly as it was.
+                if (!isActive) return@LaunchedEffect
+                fitOutcome = outcome.getOrNull()
+                fitting = false
+            }
             ModelDetailScreen(
                 state = inference,
                 modelId = modelId,
@@ -1091,6 +1174,14 @@ private fun T1dmNavHost(
                 comparison = inference.backendComparison,
                 onSelectBackend = { b -> scope.launch { container.setForecastBackend(modelId, b) } },
                 onRunComparison = { scope.launch { container.runBackendComparison() } },
+                bandCalibration = bandCalibration,
+                bandCalibrationFitting = fitting,
+                bandCalibrationOutcome = fitOutcome,
+                // A second tap while one is running must not start a second fit. The button is
+                // disabled meanwhile, this drops the tick bump if it somehow arrives, and the
+                // container refuses a re-entrant call outright — three, because only the last of
+                // them holds when the fit is started from somewhere this screen cannot see.
+                onFitBandCalibration = { if (!fitting) fitTick++ },
             )
         }
         composable("hardware") {
