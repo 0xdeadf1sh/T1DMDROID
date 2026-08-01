@@ -38,21 +38,15 @@ class RolledSeries internal constructor(
     val extrapolatedSteps: Int get() = (size - validatedSteps).coerceAtLeast(0)
     val maxTsMs: Long? get() = if (isEmpty) null else tsMs.last()
 
-    /** The rolled median (already in the frame's unit) at the step nearest absolute [ms], or null when
-     *  the cursor is outside the drawn span — so the scrub read-out reports the predicted BG exactly
-     *  where the rolled line is, and nothing beyond it. */
-    fun medianAt(ms: Double): Float? {
-        if (isEmpty) return null
-        val half = if (size >= 2) kotlin.math.abs(tsMs[1] - tsMs[0]) / 2.0 else 0.0
-        if (ms < tsMs.first() - half || ms > tsMs.last() + half) return null
-        var best = 0
-        var bestD = Double.MAX_VALUE
-        for (i in 0 until size) {
-            val d = kotlin.math.abs(tsMs[i].toDouble() - ms)
-            if (d < bestD) { bestD = d; best = i }
-        }
-        return median[best]
-    }
+    /** The rolled step nearest absolute [ms], or -1 when the cursor is outside the drawn span — so the
+     *  scrub read-out reports the predicted BG exactly where the rolled line is, and nothing beyond it.
+     *  The INDEX rather than the value, because the caller needs [extrapolatedAt] for the same step:
+     *  a number taken from past [validatedSteps] must be labelled, never printed like a validated one. */
+    fun nearestIndex(ms: Double): Int = nearestWithinHalfStep(tsMs, ms)
+
+    /** True when step [i] lies in the EXTRAPOLATED tail rather than the validated prefix — the same
+     *  boundary the overlay draws its hatch, its dashed median and its dashed marker at. */
+    fun extrapolatedAt(i: Int): Boolean = i >= validatedSteps
 }
 
 /** Build the rolled overlay off-thread, unit-converting the mg/dL fan once (mirrors [predOverlayOf]). */
@@ -87,6 +81,42 @@ fun buildRolledSeries(
     )
 }
 
+/**
+ * The forecast fan's terminal outer edge, for the ONE instant the rolled band shares with it.
+ *
+ * The hatched band opens at the validated boundary so it abuts the forecast, and the forecast's fan
+ * ENDS at that same boundary — so at that x two renderings state an uncertainty for one instant. It
+ * is the same quantity (τ.05/.95 of the same model at the same step) but not necessarily the same
+ * number: the fan carries the `SPEC/inference.md` §8.4 band correction, applied at the last point
+ * before pixels, and the roll — built by `:calc` for the dose search and never entitled to a display
+ * correction — does not. The visible result is a step in the drawn uncertainty exactly where the
+ * dashed boundary rule tells the reader the two series join.
+ *
+ * Drawing the shared vertex once, from the fan, closes it whether or not a correction is in force,
+ * and does so without extrapolating a correction into the tail, where none is fitted and none may be
+ * invented. [tsMs] is checked rather than assumed: a model whose horizon differs from the roll's
+ * validated prefix does not meet it there, and the roll then draws its own edge.
+ */
+class RolledSeam(val tsMs: Long, val lo: Float, val hi: Float)
+
+/** The index at which the hatched band opens — one step before the validated boundary, so the tail
+ *  abuts the prefix rather than starting a step late. */
+internal fun RolledSeries.bandFromIndex(): Int =
+    (validatedSteps.coerceIn(0, size) - 1).coerceAtLeast(0)
+
+/** The band's opening lower edge: the fan's, when [seam] falls on that same instant; else the
+ *  roll's own. Split from [bandOpenHi] rather than returned as a pair — this runs inside the draw. */
+internal fun RolledSeries.bandOpenLo(seam: RolledSeam?): Float {
+    val i = bandFromIndex()
+    return if (seam != null && seam.tsMs == tsMs[i]) seam.lo else lo[i]
+}
+
+/** The band's opening upper edge — see [bandOpenLo]. */
+internal fun RolledSeries.bandOpenHi(seam: RolledSeam?): Float {
+    val i = bandFromIndex()
+    return if (seam != null && seam.tsMs == tsMs[i]) seam.hi else hi[i]
+}
+
 // Raw-pixel dash constants, held rather than rebuilt inside the draw — see the same note in
 // PredOverlay.kt. Neither depends on the density, the theme or the roll, and a [PathEffect] is
 // immutable, so the two allocations they replace were pure per-frame waste.
@@ -99,6 +129,8 @@ private val VALIDATED_BOUNDARY_DASH: PathEffect = PathEffect.dashPathEffect(floa
  * tail is drawn distinctly: a hatched translucent band between the .05/.95 edges, a dashed median, a
  * dashed vertical boundary at the 2 h mark, and a small "extrapolated" legend. A degenerate roll ends
  * at its valid prefix with a plain flag.
+ *
+ * [seam], when it lands on the boundary instant, supplies the band's opening edge — see [RolledSeam].
  */
 internal fun DrawScope.drawRolledSeries(
     s: RolledSeries,
@@ -108,6 +140,7 @@ internal fun DrawScope.drawRolledSeries(
     plotBottom: Float,
     lineColor: Color,
     hatchColor: Color,
+    seam: RolledSeam? = null,
 ) {
     if (s.isEmpty) return
     fun px(i: Int) = absToPx(s.tsMs[i].toDouble())
@@ -128,13 +161,20 @@ internal fun DrawScope.drawRolledSeries(
     // (2) Extrapolated tail — a hatched band + dashed median, starting from the validated boundary so
     //     the tail visually continues the forecast.
     if (s.size - vStart >= 1) {
-        val from = (vStart - 1).coerceAtLeast(0) // start one step early so the band abuts the prefix
+        val from = s.bandFromIndex() // start one step early so the band abuts the prefix
+        // The opening vertex is the forecast fan's, when the fan reaches this same instant: that x is
+        // where the two series meet, and it may carry exactly one uncertainty. Everything past it is
+        // the roll's own — no correction is fitted out there and none may be invented.
+        val openLo = s.bandOpenLo(seam)
+        val openHi = s.bandOpenHi(seam)
+        fun lo(i: Int) = if (i == from) openLo else s.lo[i]
+        fun hi(i: Int) = if (i == from) openHi else s.hi[i]
         val band = Path()
         for (i in from until s.size) {
-            val x = px(i); val y = valToPx(s.hi[i])
+            val x = px(i); val y = valToPx(hi(i))
             if (i == from) band.moveTo(x, y) else band.lineTo(x, y)
         }
-        for (i in s.size - 1 downTo from) band.lineTo(px(i), valToPx(s.lo[i]))
+        for (i in s.size - 1 downTo from) band.lineTo(px(i), valToPx(lo(i)))
         band.close()
         // Translucent fill + diagonal hatch clipped to the band = the "unvalidated" texture.
         drawPath(band, hatchColor.copy(alpha = 0.08f))

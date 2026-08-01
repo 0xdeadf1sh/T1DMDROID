@@ -91,9 +91,15 @@ data class GraphScrub(
     val tsMs: Long,
     val tzOffsetMin: Int,
     /** BG in the active unit at the cursor: a measured/interpolated reading in the past, the selected
-     *  model's median in the prediction zone, or null when neither is available. */
+     *  model's median in the prediction zone, the DISPLAY-ONLY rolled forecast where no validated one
+     *  reaches, or null when none of the three is available. */
     val bgValue: Float?,
     val inPredZone: Boolean,
+    /** True when [bgValue] was taken from the rolled forecast's EXTRAPOLATED tail rather than a reading
+     *  or a validated forecast. The read-out must mark it: every other surface of that region is
+     *  hatched, dashed, bounded and captioned, and this row would otherwise be the one place a
+     *  compounding self-fed number is presented exactly like a validated one. */
+    val bgExtrapolated: Boolean,
     /** Raw carb appearance (grams per 5-min) at the cursor, or null when no overlay is present. */
     val carbRate: Float?,
     /** Raw insulin action (units per 5-min) at the cursor, or null when no overlay is present. */
@@ -260,6 +266,17 @@ fun GlucoseGraph(
     val traceLegendStyle = remember(cs.primary) { TextStyle(color = cs.primary, fontSize = 9.sp) }
     val rolledLegendStyle = remember(cs.onSurface) {
         TextStyle(color = cs.onSurface.copy(alpha = 0.7f), fontSize = 9.sp)
+    }
+    // Where the selected model's fan ends is where the roll's hatched band begins, and the two must
+    // state one uncertainty there — see [RolledSeam]. Resolved here rather than inside the draw: it
+    // changes only when the forecast set does, and the draw phase re-runs at the display's refresh
+    // rate. Taken only from a series whose fan is actually painted — a degenerate forecast paints
+    // none, so there is nothing on screen for the hatch to meet.
+    val rolledSeam = remember(predictions) {
+        predictions.lastOrNull { it.selected && !it.degenerate && !it.isEmpty }?.let { p ->
+            val last = p.size - 1
+            RolledSeam(p.tsMs[last], p.lo[0][last], p.hi[0][last])
+        }
     }
     val scrubLabelStyle = remember(cs.onPrimary) {
         TextStyle(color = cs.onPrimary.copy(alpha = 0.72f), fontSize = 11.sp)
@@ -1062,7 +1079,7 @@ fun GlucoseGraph(
                 //       mistaken for a validated forecast (and it never drives an alert or a dose).
                 rolled?.let { rs ->
                     fun absToPx(ms: Double): Float = (plotLeft + (ms - viewStartMs) * ppm).toFloat()
-                    drawRolledSeries(rs, ::absToPx, ::yToPx, plotTop, plotBottom, cs.tertiary, cs.onSurface)
+                    drawRolledSeries(rs, ::absToPx, ::yToPx, plotTop, plotBottom, cs.tertiary, cs.onSurface, rolledSeam)
                     val legendText = if (rs.degenerate) "extrapolated · degenerated · display-only"
                     else "extrapolated · unvalidated · display-only"
                     val leg = measurer.measure(legendText, rolledLegendStyle)
@@ -1133,9 +1150,10 @@ fun GlucoseGraph(
 }
 
 /** Sample the graph at absolute [ms] for the scrub read-out (item 3). BG comes from the reading
- *  series in the past and the selected model's median in the prediction zone; carb/insulin rates from
- *  the overlay; the model clock from the circadian probe. */
-private fun buildScrub(
+ *  series in the past, the selected model's median in the prediction zone, and the rolled forecast
+ *  wherever no validated one reaches; carb/insulin rates from the overlay; the model clock from the
+ *  circadian probe. */
+internal fun buildScrub(
     frame: GraphFrame,
     predictions: List<PredSeries>,
     overlay: CurveOverlayFrame?,
@@ -1145,12 +1163,26 @@ private fun buildScrub(
 ): GraphScrub {
     val lastFrameMs = if (frame.isEmpty) Long.MIN_VALUE else frame.absMs(frame.size - 1).toLong()
     val inPred = ms > lastFrameMs
-    // In the forecast zone the read-out reports the selected model's median; when no validated forecast
-    // exists there (e.g. warmup) it falls back to the DISPLAY-ONLY rolled forecast so scrubbing over the
-    // extrapolated tail still reports its predicted BG rather than "--".
-    val bg: Float? = when {
-        !inPred && !frame.isEmpty -> frame.nearestIndex(ms).let { if (it < 0) null else frame.ys[it] }
-        else -> selectedMedianAt(predictions, ms) ?: rolled?.medianAt(ms)
+    // The BG, and where it came from, as one cascade so the provenance travels out with the number: a
+    // measured reading in the past; else the selected model's validated median; else — past that 2 h
+    // horizon, or during warmup, where no validated forecast reaches — the DISPLAY-ONLY rolled
+    // forecast, whose extrapolated tail is marked rather than printed like a validated value. A step
+    // inside the roll's validated prefix is NOT marked: it coincides with the 2 h forecast, and the
+    // overlay draws it as the plain line it is.
+    var bg: Float? = null
+    var extrapolated = false
+    if (!inPred && !frame.isEmpty) {
+        val i = frame.nearestIndex(ms)
+        if (i >= 0) bg = frame.ys[i]
+    } else {
+        bg = selectedMedianAt(predictions, ms)
+        if (bg == null && rolled != null) {
+            val i = rolled.nearestIndex(ms)
+            if (i >= 0) {
+                bg = rolled.median[i]
+                extrapolated = rolled.extrapolatedAt(i)
+            }
+        }
     }
     val carb = overlay?.carbAt(ms.toLong())?.takeIf { overlay.carbMax > 0f }
     val insulin = overlay?.insulinAt(ms.toLong())?.takeIf { overlay.insulinMax > 0f }
@@ -1160,6 +1192,7 @@ private fun buildScrub(
         tzOffsetMin = frame.tzOffsetMin,
         bgValue = bg,
         inPredZone = inPred,
+        bgExtrapolated = extrapolated,
         carbRate = carb,
         insulinRate = insulin,
         modelHour = modelHour,
@@ -1167,17 +1200,13 @@ private fun buildScrub(
     )
 }
 
-/** The selected model's median (in the frame's unit) at the step nearest absolute [ms], or null. */
+/** The selected model's median (in the frame's unit) at the step nearest absolute [ms], or null when
+ *  no eligible forecast reaches [ms] — BOUNDED by [nearestWithinHalfStep], exactly as the rolled
+ *  series' lookup is, so past the validated horizon this yields and the fallback below it is reached. */
 private fun selectedMedianAt(predictions: List<PredSeries>, ms: Double): Float? {
     val s = predictions.firstOrNull { it.selected && !it.degenerate && !it.stale } ?: return null
-    if (s.isEmpty) return null
-    var best = 0
-    var bestD = Double.MAX_VALUE
-    for (i in 0 until s.size) {
-        val d = kotlin.math.abs(s.tsMs[i].toDouble() - ms)
-        if (d < bestD) { bestD = d; best = i }
-    }
-    return s.median[best]
+    val i = nearestWithinHalfStep(s.tsMs, ms)
+    return if (i < 0) null else s.median[i]
 }
 
 private fun predictedHourAt(ms: Long, clock: PredictedClock): Double {
@@ -1199,16 +1228,27 @@ private fun predictedClockLabel(ms: Long, clock: PredictedClock): String {
 private val SCRUB_LABELS = listOf("BG", "Carb", "Ins", "Local", "Model")
 
 /** The widest VALUE the right column can ever hold (a carb rate / insulin rate reads "199.9 g" / "99.99 U",
- *  both wider than any BG or clock value); the value column — and thus the box — is sized from this fixed
- *  template so its right edge holds still as the tabular figures under the cursor change. */
+ *  both wider than any BG or clock value — including the widest BG there is, a Kovatchev "-1.23" carrying
+ *  its one-glyph prediction/extrapolation marker); the value column — and thus the box — is sized from this
+ *  fixed template so its right edge holds still as the tabular figures under the cursor change. */
 private const val SCRUB_VALUE_TEMPLATE = "199.9 g"
 
 /** The scrub read-out as (label, value) pairs for the two-column table: BG, carb + insulin rates, and the
  *  clock (local always; model in the prediction zone). Only the rows that exist are emitted — carb, insulin
  *  and model may be absent. Values carry their unit so the right column reads on its own. */
-private fun scrubRows(sc: GraphScrub): List<Pair<String, String>> {
+internal fun scrubRows(sc: GraphScrub): List<Pair<String, String>> {
     val out = ArrayList<Pair<String, String>>(5)
-    val bgStr = sc.bgValue?.let { formatValue(it, sc.unit) + (if (sc.inPredZone) "*" else "") } ?: "--"
+    // "*" marks the prediction zone; "~" SUPERSEDES it past the rolled forecast's validated prefix,
+    // where the number is extrapolated and unvalidated (an extrapolated value is necessarily in the
+    // prediction zone, so the two never both apply). One glyph rather than a word: the value column is
+    // sized from a fixed template, and the panel already carries the hatch, the boundary rule and the
+    // "extrapolated · unvalidated · display-only" caption that say it at length.
+    val mark = when {
+        sc.bgExtrapolated -> "~"
+        sc.inPredZone -> "*"
+        else -> ""
+    }
+    val bgStr = sc.bgValue?.let { formatValue(it, sc.unit) + mark } ?: "--"
     out.add("BG" to bgStr)
     sc.carbRate?.let { out.add("Carb" to "%.1f g".format(it)) }
     sc.insulinRate?.let { out.add("Ins" to "%.2f U".format(it)) }
@@ -1292,6 +1332,29 @@ internal fun lowerBoundLong(xs: LongArray, target: Long): Int {
         if (xs[mid] < target) lo = mid + 1 else hi = mid
     }
     return lo
+}
+
+/**
+ * Index of the entry of the ascending [tsMs] nearest absolute [ms], or -1 when the cursor lies more
+ * than half a step outside the series. THE one nearest-step rule, shared by every timestamped overlay
+ * the scrub samples.
+ *
+ * It is shared deliberately. Half a step past either end is the tolerance a nearest-neighbour lookup
+ * already grants between two samples, so the bound merely carries that rule over the ends instead of
+ * inventing a second one for them — and an unbounded scan is not a laxer version of this, it is a
+ * different answer: it returns the last step of the series for every time after it, forever. Written
+ * twice, the two copies disagreed exactly there, and the read-out froze at the forecast horizon while
+ * the rolled median walked away underneath it.
+ */
+internal fun nearestWithinHalfStep(tsMs: LongArray, ms: Double): Int {
+    val n = tsMs.size
+    if (n == 0) return -1
+    val half = if (n >= 2) kotlin.math.abs(tsMs[1] - tsMs[0]) / 2.0 else 0.0
+    if (ms < tsMs[0] - half || ms > tsMs[n - 1] + half) return -1
+    // The two candidates straddling `ms` (`ceil` so the upper one is never below it), then the nearer.
+    val hi = lowerBoundLong(tsMs, kotlin.math.ceil(ms).toLong()).coerceIn(0, n - 1)
+    val lo = (hi - 1).coerceAtLeast(0)
+    return if (kotlin.math.abs(tsMs[lo] - ms) <= kotlin.math.abs(tsMs[hi] - ms)) lo else hi
 }
 
 /** First index whose value is >= [target] (binary search on the ascending [xs]). */
