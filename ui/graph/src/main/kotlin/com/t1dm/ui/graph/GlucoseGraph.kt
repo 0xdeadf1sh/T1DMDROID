@@ -261,6 +261,17 @@ fun GlucoseGraph(
     val tracePath = remember { Path() }
     val overlayPaths = remember { CurveChannelPaths() }
     val dash = remember { PathEffect.dashPathEffect(floatArrayOf(6f, 6f)) }
+    // Draw styles are immutable value objects with no per-frame content, so they are hoisted beside the
+    // paths rather than rebuilt inside the loops that use them: the interpolated-point ring allocated
+    // one per POINT (up to 241 a frame), the smoothed trace one per flush, the scrub dot one per frame.
+    val interpRingStroke = remember { Stroke(width = 1.4f) }
+    val smoothedStroke = remember { Stroke(width = 2.2f, cap = StrokeCap.Round) }
+    val scrubDotStroke = remember { Stroke(width = 2f) }
+    // Reused by the fan (three bands) and the rolled band, which allocated a native Path each, per
+    // frame. `reset()` retains capacity, so after the first frame these grow no further.
+    val fanPath = remember { Path() }
+    val rolledPath = remember { Path() }
+    val labelCache = remember { GraphLabelCache() }
     // Both trace legends are the primary ink at 9 sp — the same style, since exactly one of them is ever
     // drawn (the toggle makes "smoothed" a SWAP for the raw trace, never an overlay of it).
     val traceLegendStyle = remember(cs.primary) { TextStyle(color = cs.primary, fontSize = 9.sp) }
@@ -888,6 +899,7 @@ fun GlucoseGraph(
                 predictedClock = predictedClock,
                 measurer = measurer,
                 cs = cs,
+                labels = labelCache,
             )
 
             // Clip data-drawing sections to the plot rectangle so no trace spills over the y-axis
@@ -967,7 +979,7 @@ fun GlucoseGraph(
                     fun absToPx(ms: Double): Float = (plotLeft + (ms - viewStartMs) * ppm).toFloat()
                     val bandTop = plotBottom - plotHeight * 0.30f
                     drawCurveOverlay(
-                        curveOverlay, curveToggles, ::absToPx, bandTop, plotBottom,
+                        curveOverlay, curveToggles, AbsToPx(::absToPx), bandTop, plotBottom,
                         carbColor = carbInk, insulinColor = insulinInk,
                         // The viewport, so the draw can bound itself to it: the channels span up to ~14
                         // days of buckets and a default window shows ~1.8% of them.
@@ -1017,11 +1029,17 @@ fun GlucoseGraph(
                     if (frame.breakAfter[i]) continue
                     val fa = frame.flags[i]
                     val fb = frame.flags[i + 1]
-                    val (col, effect) = when {
-                        fa == GraphFrame.FLAG_WARMUP || fb == GraphFrame.FLAG_WARMUP -> warmupColor to dash
-                        fa == GraphFrame.FLAG_INTERPOLATED || fb == GraphFrame.FLAG_INTERPOLATED -> interpColor to dash
-                        else -> lineColor to null
+                    // Two selections, not one `to`. Destructuring a `Pair` here allocated the pair AND
+                    // boxed the `Color` (a value class, unboxed everywhere else) once per SEGMENT — 71
+                    // at a 6 h window and up to `GraphFrame.maxPoints` fully zoomed out, every frame.
+                    val warm = fa == GraphFrame.FLAG_WARMUP || fb == GraphFrame.FLAG_WARMUP
+                    val interp = fa == GraphFrame.FLAG_INTERPOLATED || fb == GraphFrame.FLAG_INTERPOLATED
+                    val col = when {
+                        warm -> warmupColor
+                        interp -> interpColor
+                        else -> lineColor
                     }
+                    val effect = if (warm || interp) dash else null
                     drawLine(
                         col,
                         Offset(xToPx(frame.xs[i]), yToPx(frame.ys[i])),
@@ -1039,7 +1057,7 @@ fun GlucoseGraph(
                         when (frame.flags[i]) {
                             GraphFrame.FLAG_WARMUP -> drawCircle(warmupColor, r, c)
                             GraphFrame.FLAG_INTERPOLATED ->
-                                drawCircle(interpColor, r, c, style = Stroke(width = 1.4f))
+                                drawCircle(interpColor, r, c, style = interpRingStroke)
                             else -> drawCircle(lineColor, r, c)
                         }
                     }
@@ -1061,7 +1079,7 @@ fun GlucoseGraph(
                     val path = tracePath
                     path.reset()
                     var open = false
-                    fun flush() { if (open) { drawPath(path, smColor, style = Stroke(width = 2.2f, cap = StrokeCap.Round)); path.reset(); open = false } }
+                    fun flush() { if (open) { drawPath(path, smColor, style = smoothedStroke); path.reset(); open = false } }
                     for (i in sm.visibleRange(viewStartMs, viewSpanMs)) {
                         val x = (plotLeft + (sm.tsMs[i].toDouble() - viewStartMs) * ppm).toFloat()
                         val y = yToPx(sm.ys[i])
@@ -1085,10 +1103,10 @@ fun GlucoseGraph(
                     val fan = cs.tertiary
                     val flag = cs.error
                     for (s in predictions) if (!s.selected) {
-                        drawPredSeries(s, ::absToPx, ::yToPx, plotTop, plotBottom, predLine, fan, flag)
+                        drawPredSeries(s, AbsToPx(::absToPx), ValToPx(::yToPx), plotTop, plotBottom, predLine, fan, flag, fanPath)
                     }
                     for (s in predictions) if (s.selected) {
-                        drawPredSeries(s, ::absToPx, ::yToPx, plotTop, plotBottom, predLine, fan, flag)
+                        drawPredSeries(s, AbsToPx(::absToPx), ValToPx(::yToPx), plotTop, plotBottom, predLine, fan, flag, fanPath)
                     }
                 }
 
@@ -1097,7 +1115,7 @@ fun GlucoseGraph(
                 //       mistaken for a validated forecast (and it never drives an alert or a dose).
                 rolled?.let { rs ->
                     fun absToPx(ms: Double): Float = (plotLeft + (ms - viewStartMs) * ppm).toFloat()
-                    drawRolledSeries(rs, ::absToPx, ::yToPx, plotTop, plotBottom, cs.tertiary, cs.onSurface, rolledSeam)
+                    drawRolledSeries(rs, AbsToPx(::absToPx), ValToPx(::yToPx), plotTop, plotBottom, cs.tertiary, cs.onSurface, rolledSeam, rolledPath)
                     val legendText = if (rs.degenerate) "extrapolated · degenerated · display-only"
                     else "extrapolated · unvalidated · display-only"
                     val leg = measurer.measure(legendText, rolledLegendStyle)
@@ -1126,7 +1144,7 @@ fun GlucoseGraph(
                     if (cx in plotLeft..plotRight) {
                         val sc = buildScrub(frame, predictions, curveOverlay, predictedClock, rolled, scrubMs)
                         drawLine(cs.onSurface.copy(alpha = 0.5f), Offset(cx, plotTop), Offset(cx, plotBottom), 1f)
-                        sc.bgValue?.let { drawCircle(cs.onSurface, 4f, Offset(cx, yToPx(it)), style = Stroke(width = 2f)) }
+                        sc.bgValue?.let { drawCircle(cs.onSurface, 4f, Offset(cx, yToPx(it)), style = scrubDotStroke) }
                         // I4 — a STABLE, TABULATED read-out: a two-column table (short label ⟶ right-aligned
                         //      value) inside the box. Labels are normal-weight; VALUES use tabular monospace
                         //      figures so digits align. Both columns are sized from FIXED widest templates
@@ -1509,6 +1527,7 @@ fun DrawScope.drawGraphFurniture(
     predictedClock: PredictedClock?,
     measurer: TextMeasurer,
     cs: ColorScheme,
+    labels: GraphLabelCache,
 ) {
     val plotHeight = (plotBottom - plotTop).coerceAtLeast(1f)
     val ppm = (plotRight - plotLeft).toDouble().coerceAtLeast(1.0) / viewSpanMs
@@ -1530,7 +1549,8 @@ fun DrawScope.drawGraphFurniture(
             val py = yToPx(vy.toFloat())
             if (vy >= yMin && py in plotTop..plotBottom) {
                 drawLine(gridColor, Offset(plotLeft, py), Offset(plotRight, py), 1f)
-                val label = measurer.measure(formatValue(vy.toFloat(), unit), labelStyle)
+                val vf = vy.toFloat()
+                val label = measurer.measure(labels.value(vf, unit.ordinal) { formatValue(vf, unit) }, labelStyle)
                 drawText(label, topLeft = Offset(plotLeft - 6f - label.size.width, py - label.size.height / 2f))
             }
             vy += vStep
@@ -1553,12 +1573,14 @@ fun DrawScope.drawGraphFurniture(
         while (tick <= endMs) {
             val px = (plotLeft + (tick - viewStartMs) * ppm).toFloat()
             drawLine(gridColor, Offset(px, plotTop), Offset(px, plotBottom), 1f)
-            val label = measurer.measure(formatTime(tick.toLong(), tzOffsetMin, tStepMs), labelStyle)
+            val tms = tick.toLong()
+            val label = measurer.measure(labels.time(tms, tzOffsetMin, tStepMs) { formatTime(tms, tzOffsetMin, tStepMs) }, labelStyle)
             var lx = px - label.size.width / 2f
             lx = lx.coerceIn(plotLeft, plotRight - label.size.width)
             drawText(label, topLeft = Offset(lx, plotBottom + 3f))
             if (predictedClock != null) {
-                val mlbl = measurer.measure(predictedClockLabel(tick.toLong(), predictedClock), modelStyle)
+                val cms = tick.toLong()
+                val mlbl = measurer.measure(labels.clock(cms, predictedClock) { predictedClockLabel(cms, predictedClock) }, modelStyle)
                 var mlx = px - mlbl.size.width / 2f
                 mlx = mlx.coerceIn(plotLeft, plotRight - mlbl.size.width)
                 drawText(mlbl, topLeft = Offset(mlx, (plotTop - mlbl.size.height - 2f).coerceAtLeast(modelTopPx)))

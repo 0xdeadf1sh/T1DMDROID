@@ -122,13 +122,14 @@ private val FLAG_TICK_DASH: PathEffect = PathEffect.dashPathEffect(floatArrayOf(
  */
 internal fun DrawScope.drawPredSeries(
     s: PredSeries,
-    absToPx: (Double) -> Float,
-    valToPx: (Float) -> Float,
+    absToPx: AbsToPx,
+    valToPx: ValToPx,
     plotTop: Float,
     plotBottom: Float,
     lineColor: Color,
     fanColor: Color,
     flagColor: Color,
+    scratch: Path,
 ) {
     if (s.isEmpty) return
     val degenerate = s.degenerate
@@ -142,7 +143,7 @@ internal fun DrawScope.drawPredSeries(
     val dashed = degenerate || s.stale
     val effect = if (dashed) NOT_ELIGIBLE_DASH else null
 
-    fun px(i: Int) = absToPx(s.tsMs[i].toDouble())
+    fun px(i: Int) = absToPx.of(s.tsMs[i].toDouble())
 
     // Quantile fan (skip entirely when degenerate — a collapsed/misordered band must not read as
     // confidence). Only the selected model shows the full fan; others get a single faint band.
@@ -150,12 +151,15 @@ internal fun DrawScope.drawPredSeries(
         val bands = if (s.selected) 3 else 1
         for (b in bands - 1 downTo 0) {
             val a = (if (s.selected) 0.06f + 0.05f * (2 - b) else 0.05f) * if (s.stale) 0.6f else 1f
-            val path = Path()
+            // One scratch path for all three bands and every frame — `reset()` keeps its capacity,
+            // so the vertex arrays are allocated once for the life of the composition instead of
+            // three native `Path`s (each with a NativeAllocationRegistry finalizer) per frame.
+            val path = scratch.also { it.reset() }
             for (i in 0 until s.size) {
-                val x = px(i); val y = valToPx(s.hi[b][i])
+                val x = px(i); val y = valToPx.of(s.hi[b][i])
                 if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
             }
-            for (i in s.size - 1 downTo 0) path.lineTo(px(i), valToPx(s.lo[b][i]))
+            for (i in s.size - 1 downTo 0) path.lineTo(px(i), valToPx.of(s.lo[b][i]))
             path.close()
             drawPath(path, fanColor.copy(alpha = a))
         }
@@ -165,8 +169,8 @@ internal fun DrawScope.drawPredSeries(
     for (i in 0 until s.size - 1) {
         drawLine(
             lineColor.copy(alpha = medAlpha),
-            androidx.compose.ui.geometry.Offset(px(i), valToPx(s.median[i])),
-            androidx.compose.ui.geometry.Offset(px(i + 1), valToPx(s.median[i + 1])),
+            androidx.compose.ui.geometry.Offset(px(i), valToPx.of(s.median[i])),
+            androidx.compose.ui.geometry.Offset(px(i + 1), valToPx.of(s.median[i + 1])),
             strokeWidth = if (s.selected) 2.4f else 1.6f,
             cap = StrokeCap.Round,
             pathEffect = effect,
@@ -175,7 +179,7 @@ internal fun DrawScope.drawPredSeries(
     // Endpoint marker for the selected model so the 2 h horizon is legible.
     if (s.selected && !degenerate) {
         val li = s.size - 1
-        drawCircle(lineColor.copy(alpha = medAlpha), 3.2f, androidx.compose.ui.geometry.Offset(px(li), valToPx(s.median[li])), style = Stroke(width = 1.6f))
+        drawCircle(lineColor.copy(alpha = medAlpha), 3.2f, androidx.compose.ui.geometry.Offset(px(li), valToPx.of(s.median[li])), style = Stroke(width = 1.6f))
     }
     // A small flag tick at the horizon start when the forecast is not eligible.
     if (degenerate || s.stale) {

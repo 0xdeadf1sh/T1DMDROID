@@ -134,16 +134,17 @@ private val VALIDATED_BOUNDARY_DASH: PathEffect = PathEffect.dashPathEffect(floa
  */
 internal fun DrawScope.drawRolledSeries(
     s: RolledSeries,
-    absToPx: (Double) -> Float,
-    valToPx: (Float) -> Float,
+    absToPx: AbsToPx,
+    valToPx: ValToPx,
     plotTop: Float,
     plotBottom: Float,
     lineColor: Color,
     hatchColor: Color,
     seam: RolledSeam? = null,
+    scratch: Path,
 ) {
     if (s.isEmpty) return
-    fun px(i: Int) = absToPx(s.tsMs[i].toDouble())
+    fun px(i: Int) = absToPx.of(s.tsMs[i].toDouble())
     val vStart = s.validatedSteps.coerceIn(0, s.size)
 
     // (1) Validated prefix — faint solid median (the on-graph forecast already carries the full fan).
@@ -151,8 +152,8 @@ internal fun DrawScope.drawRolledSeries(
         for (i in 0 until vStart - 1) {
             drawLine(
                 lineColor.copy(alpha = 0.30f),
-                Offset(px(i), valToPx(s.median[i])),
-                Offset(px(i + 1), valToPx(s.median[i + 1])),
+                Offset(px(i), valToPx.of(s.median[i])),
+                Offset(px(i + 1), valToPx.of(s.median[i + 1])),
                 strokeWidth = 1.4f, cap = StrokeCap.Round,
             )
         }
@@ -169,12 +170,13 @@ internal fun DrawScope.drawRolledSeries(
         val openHi = s.bandOpenHi(seam)
         fun lo(i: Int) = if (i == from) openLo else s.lo[i]
         fun hi(i: Int) = if (i == from) openHi else s.hi[i]
-        val band = Path()
+        // Reused across frames; see the note in `drawPredSeries`.
+        val band = scratch.also { it.reset() }
         for (i in from until s.size) {
-            val x = px(i); val y = valToPx(hi(i))
+            val x = px(i); val y = valToPx.of(hi(i))
             if (i == from) band.moveTo(x, y) else band.lineTo(x, y)
         }
-        for (i in s.size - 1 downTo from) band.lineTo(px(i), valToPx(lo(i)))
+        for (i in s.size - 1 downTo from) band.lineTo(px(i), valToPx.of(lo(i)))
         band.close()
         // Translucent fill + diagonal hatch clipped to the band = the "unvalidated" texture.
         drawPath(band, hatchColor.copy(alpha = 0.08f))
@@ -195,8 +197,8 @@ internal fun DrawScope.drawRolledSeries(
         for (i in from until s.size - 1) {
             drawLine(
                 lineColor.copy(alpha = if (s.degenerate) 0.5f else 0.85f),
-                Offset(px(i), valToPx(s.median[i])),
-                Offset(px(i + 1), valToPx(s.median[i + 1])),
+                Offset(px(i), valToPx.of(s.median[i])),
+                Offset(px(i + 1), valToPx.of(s.median[i + 1])),
                 strokeWidth = 2f, cap = StrokeCap.Round, pathEffect = EXTRAPOLATED_MEDIAN_DASH,
             )
         }

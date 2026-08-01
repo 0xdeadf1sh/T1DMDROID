@@ -47,6 +47,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.text.rememberTextMeasurer
+import com.t1dm.ui.graph.GraphLabelCache
 import com.t1dm.ui.graph.drawGraphFurniture
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.graphicsLayer
@@ -420,6 +421,9 @@ private fun GameStage(
     // the captions, better than twenty distinct strings. The chart could live with the default eight
     // because it lays them out on recomposition; here every miss is a text layout at sixty hertz.
     val measurer = rememberTextMeasurer(cacheSize = 32)
+    // The furniture's axis labels are memoised across frames; game mode redraws them every frame the
+    // car moves, so it wants this at least as much as the panel does.
+    val labelCache = remember { GraphLabelCache() }
     val gaugeRadiusPx = with(density) { GAUGE_RADIUS.toPx() }
     // Pixels per CAR-LOCAL metre, from the tune's own overall length so a retune cannot silently
     // change the drawn size.
@@ -520,6 +524,7 @@ private fun GameStage(
                 predictedClock = runClock,
                 measurer = measurer,
                 cs = furnitureColors,
+                labels = labelCache,
             )
 
             // The world is clipped INTO the plot rect, so the car can never drive over the axis

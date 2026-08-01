@@ -223,7 +223,7 @@ internal fun emitCurveChannel(
     availH: Float,
     gridStartMs: Long,
     stepMs: Long,
-    absToPx: (Double) -> Float,
+    absToPx: AbsToPx,
     lo: Int,
     hi: Int,
     sink: CurvePathSink,
@@ -237,10 +237,10 @@ internal fun emitCurveChannel(
     var open = false
     for (i in first..last) {
         val v = values[i]
-        val xRight = absToPx(tsAt(i) + stepMs) // right edge = t=(i+1)·step
+        val xRight = absToPx.of(tsAt(i) + stepMs) // right edge = t=(i+1)·step
         if (v <= 0f) {
             if (open) {
-                sink.lineTo(absToPx(tsAt(i)), floorY)
+                sink.lineTo(absToPx.of(tsAt(i)), floorY)
                 sink.endRun()
                 open = false
             }
@@ -248,7 +248,7 @@ internal fun emitCurveChannel(
         }
         val y = yOf(v)
         if (!open) {
-            val xLeft = absToPx(tsAt(i)) // the event instant: curve is 0 here
+            val xLeft = absToPx.of(tsAt(i)) // the event instant: curve is 0 here
             sink.moveTo(xLeft, floorY)
             // Entering mid-run (see the KDoc): rise to the previous bucket's own vertex rather than
             // straight to this one, so the polyline keeps the segment the full scan would have drawn.
@@ -260,7 +260,7 @@ internal fun emitCurveChannel(
         }
     }
     if (open) {
-        sink.lineTo(absToPx(tsAt(last) + stepMs), floorY)
+        sink.lineTo(absToPx.of(tsAt(last) + stepMs), floorY)
         sink.endRun()
     }
 }
@@ -282,7 +282,7 @@ internal fun emitCurveChannel(
 internal fun DrawScope.drawCurveOverlay(
     frame: CurveOverlayFrame,
     toggles: CurveOverlayToggles,
-    absToPx: (Double) -> Float,
+    absToPx: AbsToPx,
     bandTop: Float,
     plotBottom: Float,
     carbColor: Color,
