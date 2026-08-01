@@ -321,7 +321,6 @@ fun GlucoseGraph(
     val insulinTint = remember(insulinInk) { ColorFilter.tint(insulinInk) }
     val carbLane = remember(logMarkers) { markerLane(logMarkers, CurveKind.CARB) }
     val insulinLane = remember(logMarkers) { markerLane(logMarkers, CurveKind.INSULIN) }
-    val anyCommitted = remember(logMarkers) { logMarkers.any { it.state == LogState.COMMITTED } }
     val markSepPx = logMarkerSeparationPx(dpPx)
     val markSizePx = LOG_MARKER_DP * dpPx
     // The committed pulse. ONE animation drives every committed mark — they say the same thing, so they
@@ -344,6 +343,7 @@ fun GlucoseGraph(
     LaunchedEffect(viewStartMs, viewSpanMs) {
         if (!viewStartMs.isNaN()) reportViewport?.invoke(viewStartMs, viewSpanMs)
     }
+
     var followLatest by remember { mutableStateOf(true) }
     // TIME-anchored scrub cursor (absolute epoch-ms; NaN = inactive) so it can land in the forecast
     // zone past the last reading (item 3), not only on a BG sample.
@@ -420,6 +420,24 @@ fun GlucoseGraph(
         if (viewStartMs.isNaN()) emptyList()
         else clusterLogMarkers(carbLane.marks, viewStartMs, viewSpanMs, leftPx, plotRightPx, markSepPx)
     }
+
+    /**
+     * Whether a committed mark is actually DRAWN — read off the cluster lists rather than tested
+     * against the viewport by hand.
+     *
+     * The pulse is the only thing keeping this panel's frame loop alive when nothing else moves, so a
+     * mark the user cannot see must not start it; unbounded over the feed, one log from days ago held
+     * the UI thread at the display's refresh rate indefinitely, because `LogState.COMMITTED` has no
+     * timeout by design (see [LoggedEntry]) and never resolves while the server is unreachable.
+     *
+     * But "visible" has to mean exactly what the marker layer means by it. [clusterLogMarkers] culls
+     * to the plot WIDENED by one glyph on each side, so a mark straddling an edge is still drawn and
+     * must still breathe; an independent `tsMs in viewStart..viewEnd` test was narrower than that and
+     * would have frozen a drawn mark. Deriving the answer from the clusters removes the second
+     * definition instead of trying to keep two in step — and the lists are already memoised on the
+     * viewport, so this costs a scan of what is on screen, not of the feed.
+     */
+    val anyCommitted = insulinClusters.any { it.committed } || carbClusters.any { it.committed }
 
     // What a tap on the marker band resolves to: positions in the caller's OWN feed, for it to name.
     // Rebuilt every composition and read through `rememberUpdatedState` like every other closure the

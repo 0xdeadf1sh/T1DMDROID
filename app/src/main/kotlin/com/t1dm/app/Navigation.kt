@@ -55,6 +55,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -695,15 +696,20 @@ private fun GlycemicStatusBadge(status: GlyStatus) {
         is GlyStatus.Void -> 0
     }
     val floor = if (status is GlyStatus.Excursion) 0.35f else 0.8f
-    val alpha = if (animationsOn && periodMs > 0) {
+    // The State is HELD, not unwrapped. Reading `.value` here would put a never-ending animation in the
+    // COMPOSITION phase, so this scope — which sits in the app chrome, on every screen — would
+    // recompose and relayout every frame for as long as the status is anything but Void. Read inside
+    // `graphicsLayer` below it is a layer property: the RenderNode's alpha changes and nothing
+    // re-composes, re-measures or re-records. This is the rule `core/design/Pulse.kt` states.
+    val alphaState = if (animationsOn && periodMs > 0) {
         val transition = rememberInfiniteTransition(label = "status")
         transition.animateFloat(
             initialValue = 1f,
             targetValue = floor,
             animationSpec = infiniteRepeatable(tween(periodMs), RepeatMode.Reverse),
             label = "statusAlpha",
-        ).value
-    } else 1f
+        )
+    } else null
     val mod = if (status is GlyStatus.Void) {
         Modifier
             .clip(RoundedCornerShape(6.dp))
@@ -721,9 +727,15 @@ private fun GlycemicStatusBadge(status: GlyStatus) {
         status.text,
         style = MaterialTheme.typography.titleSmall,
         fontWeight = FontWeight.Bold,
-        color = color.copy(alpha = color.alpha * alpha),
+        // The colour keeps its OWN alpha; the pulse multiplies it at the layer. One leaf Text, so the
+        // composite is the same one `color.copy(alpha = color.alpha * pulse)` produced.
+        color = color,
         maxLines = 1,
-        modifier = mod,
+        modifier = if (alphaState != null) {
+            mod.graphicsLayer { alpha = alphaState.value }
+        } else {
+            mod
+        },
     )
 }
 
@@ -928,6 +940,17 @@ private fun T1dmNavHost(
             // well as captured in the smoother below: a Compose-memoized lambda would otherwise leave a
             // stale trace on screen after a Settings change.
             val savgolWindow by container.savgolWindow.collectAsState(SettingsStore.DEFAULT_SAVGOL_WINDOW)
+            // Memoised on the only thing it closes over that varies. Written inline it was a fresh
+            // lambda per recomposition capturing `container`, which is Compose-UNSTABLE (it carries
+            // public `var`s) — so it could never compare equal, and as a `produceState` key downstream
+            // it re-ran a full-history smoothing pass across the FFI on every recomposition of this
+            // route. `container` and `nativeCore` are singletons for the process, so the window is the
+            // whole of the key.
+            val smoothMgdl = remember(savgolWindow) {
+                { arr: DoubleArray ->
+                    container.nativeCore.causalSmooth(arr.toList(), 20.0, 500.0, savgolWindow).toDoubleArray()
+                }
+            }
             // The BG panel's freehand annotation layer; `:feature:dashboard` and `:ui:graph` see no store.
             val paintStrokes by container.paintStrokes.collectAsState(emptyList())
             // What the panel marks at its foot, and what a tap on one of those marks restates. The SAME
@@ -976,7 +999,7 @@ private fun T1dmNavHost(
                 sensorWarmupEndMs = sensorWarmupEnd,
                 circadianTime = inference.circadianTime,
                 circadianAnchorMs = inference.circadianAnchorMs,
-                smoothMgdl = { arr -> container.nativeCore.causalSmooth(arr.toList(), 20.0, 500.0, savgolWindow).toDoubleArray() },
+                smoothMgdl = smoothMgdl,
                 smoothingWindow = savgolWindow,
                 rolledForecast = rolled,
                 rollComputing = rollComputing,

@@ -280,8 +280,12 @@ fun DashboardScreen(
             value = CurveOverlayFrame.EMPTY
             return@produceState
         }
-        val oldestReading = readings.minOf { it.tsMs } / STEP_MS * STEP_MS
-        val lastReading = readings.maxOf { it.tsMs }
+        // Ends, not scans. `observeReadings` is `ORDER BY tsMs` ascending, so the bounds ARE the two
+        // ends of the list. This block runs before the producer's first suspension point — i.e. on the
+        // main thread — so as a `minOf`/`maxOf` pair it was two O(n) passes over the whole never-pruned
+        // history every time this producer restarted, and its cost grew with every day of use.
+        val oldestReading = readings.first().tsMs / STEP_MS * STEP_MS
+        val lastReading = readings.last().tsMs
         val lastForecast = predictions.maxOfOrNull { it.anchorTsMs + it.horizonSteps.toLong() * it.stepMs } ?: lastReading
         val rolledEnd = rolledForecast?.takeUnless { it.isEmpty }?.horizonEndMs ?: lastReading
         // Always reach at least OVERLAY_FUTURE_MS past now so a just-logged dose shows its rising tail
