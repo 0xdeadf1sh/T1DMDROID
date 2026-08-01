@@ -310,8 +310,14 @@ private val DOT_ALPHA = listOf(0.35f, 0.55f, 0.75f, 0.90f, 1.00f)
  * SHARES are the stacked figure above, where they cannot mislead that way.
  *
  * Fails closed on everything. A horizon that did not pass `sufficient` never reaches here — the
- * caller filters, and says plainly which horizons it declined and against what `n` — and no lattice
- * or no pairs draws nothing at all rather than a grid with a region or a scatter missing.
+ * caller refuses it by name, against its own `n`, and leaves the choice open rather than drawing a
+ * neighbouring horizon under the refused one's label — and no lattice or no pairs draws nothing at
+ * all rather than a grid with a region or a scatter missing.
+ *
+ * [horizonMin] and [points] MUST come off one `HorizonMetrics`. The caption states the horizon and
+ * `points.size`, which is the very `n` the tables print for it (the core keeps one pair per scored
+ * window), so a caller that resolved the two separately would publish a count against a horizon it
+ * was not counted at. `clarkeGridPick` hands over the record for that reason.
  */
 @Composable
 internal fun ClarkeGridFigure(horizonMin: Int, points: List<ClarkePoint>, grid: ClarkeZoneGrid) {
