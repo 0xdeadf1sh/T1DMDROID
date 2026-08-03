@@ -157,6 +157,19 @@ private fun logs(s: IconStyle) = glyph("logs", s) { // a bulleted list: three ma
     moveTo(9.5f, 16f); lineTo(16f, 16f); lineTo(16f, 18f); lineTo(9.5f, 18f); close()
 }
 
+private fun backup(s: IconStyle) = glyph("backup", s) { // an archive box: lid, body, and a grip slot
+    // Deliberately unlike `logs` (rules and markers) and `pubs` (a page): a closed container with a
+    // separate lid, so the three read apart at 28 dp in every geometry. The grip is wound opposite
+    // the lid so NonZero fill (Umbrella) knocks it out as a hole rather than swallowing it.
+    moveTo(3f, 4f); lineTo(21f, 4f); lineTo(21f, 9f); lineTo(3f, 9f); close() // lid
+    moveTo(10f, 6f); lineTo(10f, 7f); lineTo(14f, 7f); lineTo(14f, 6f); close() // grip slot
+    moveTo(5f, 10.5f); lineTo(19f, 10f); lineTo(19f, 20f); lineTo(5f, 20f); close() // body
+    // A downward arrow inside the body: the direction the data goes, which is what distinguishes a
+    // BACKUP box from a plain container at a glance.
+    moveTo(11f, 12f); lineTo(13f, 12f); lineTo(13f, 15.5f); lineTo(11f, 15.5f); close()
+    moveTo(8.5f, 15f); lineTo(15.5f, 15f); lineTo(12f, 18.5f); close()
+}
+
 // ── Logged-event markers (the BG panel's lane marks) ──────────────────────────────────────────────
 //
 // Drawn in the lower region of the glucose plot, one per logged carb/insulin event, so the trace says
@@ -285,6 +298,7 @@ fun navIcon(route: String, style: IconStyle): ImageVector = when (route) {
     "meals" -> meals(style)
     "insulin" -> insulin(style)
     "security" -> security(style)
+    "backup" -> backup(style)
     "logs" -> logs(style)
     "settings" -> settings(style)
     else -> settings(style)

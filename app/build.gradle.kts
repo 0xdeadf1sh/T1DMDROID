@@ -129,6 +129,7 @@ dependencies {
     implementation(project(":feature:settings"))
     implementation(project(":feature:logs"))
     implementation(project(":feature:game"))
+    implementation(project(":feature:backup"))
     // Not for drawing: the composition root names PredictedClock to hand the panel's own axis
     // clock from the dashboard to drive mode, and :feature:dashboard exposes :ui:graph via
     // `implementation`, so the type is off this classpath otherwise.

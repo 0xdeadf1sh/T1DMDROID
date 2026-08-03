@@ -76,6 +76,12 @@ https://github.com/user-attachments/assets/13ade4ea-f50f-4c91-bf23-62ef8dae1c96
 
 https://github.com/user-attachments/assets/319401e4-09ff-4e8f-964f-0eb8a0808fca
 
+### Backup and Restore
+
+The Backup panel writes the whole local record — every glucose reading, the wide sensor series, logged meals and doses, basal schedules, custom foods, saved meals, insulin types, the graph's freehand drawings, and every setting — to one gzipped, line-delimited JSON file. Automatic backups run on a chosen cadence into a folder outside app storage, so they survive an uninstall, with a configurable number of older archives retained.
+
+Restoring merges: a record already present on the device is kept, so importing the same file twice changes nothing and an older archive can never roll back newer data. The server token is never written to a backup — it lives in the Android Keystore rather than in the database.
+
 
 ## Architecture
 
@@ -99,10 +105,10 @@ Heavy compute never runs on the main thread; the UI observes results reactively.
 | `:alerts` | The deterministic, model-free alarm engine (out-of-range, loss-of-signal, device temperature) |
 | `:sync` | Durable-outbox sync with the self-hosted server |
 | `:watch` | Encrypted BLE link to the optional ESP32-C3 watch |
-| `:data` | Room database, repositories, curve reconstruction |
+| `:data` | Room database, repositories, curve reconstruction, the backup archive codec |
 | `:core:common`, `:core:model`, `:core:design`, `:core:native` | Shared dispatchers, domain types, theming, and the Rust-core JNI bindings |
 | `:ui:graph` | The custom Compose blood-glucose graph |
-| `:feature:*` | Screen features — dashboard, stats, models, hardware, network, meals, insulin, security, settings, logs |
+| `:feature:*` | Screen features — dashboard, stats, models, hardware, network, meals, insulin, security, settings, logs, backup |
 
 
 ## Building

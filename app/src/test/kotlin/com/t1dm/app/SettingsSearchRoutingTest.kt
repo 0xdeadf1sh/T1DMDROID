@@ -61,7 +61,7 @@ class SettingsSearchRoutingTest {
 
     @Test
     fun `every mapped route is registered`() {
-        val registered = registeredSettingsRoutes() + "models"
+        val registered = registeredSettingsRoutes() + OFF_MODULE_ROUTES
         SettingsScreenKey.entries.forEach { screen ->
             val route = settingsRouteFor(screen)
             assertTrue("$screen maps to \"$route\", which no composable() registers", route in registered)
@@ -72,6 +72,19 @@ class SettingsSearchRoutingTest {
     fun `screen keys map to distinct routes`() {
         val routes = SettingsScreenKey.entries.map { settingsRouteFor(it) }
         assertEquals("two screen keys share a route", routes.size, routes.distinct().size)
+    }
+
+    private companion object {
+        /**
+         * Settings destinations that live OUTSIDE `:feature:settings`, and so are not matched by
+         * [registeredSettingsRoutes]' prefix filter. Both are top-level panels in their own right
+         * that the settings search can nonetheless land on: the model list, and the backup panel,
+         * which took the export/import surface with it when it left Settings → Data.
+         *
+         * Listed explicitly rather than by loosening the filter — a filter wide enough to admit
+         * these would admit a typo just as readily, which is the whole of what this test is for.
+         */
+        val OFF_MODULE_ROUTES = setOf("models", "backup")
     }
 
     /** The routes the NavHost actually registers, read from the source rather than assumed. */

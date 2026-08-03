@@ -65,7 +65,11 @@ enum class SettingsScreenKey(val breadcrumb: String, internal val indexed: Boole
     SERVER("Server"),
     WATCH("Watch"),
     POWER("Low power"),
-    DATA("Backup & reset"),
+    DATA("Reset"),
+
+    /** Leaves this module entirely, as [MODELS] does: backup is its own top-level panel now. It
+     *  stays in the index so a search for "export" or "backup" still finds it and lands there. */
+    BACKUP("Backup"),
     ABOUT("About"),
     DEATH_CLOCK("Death clock"),
     DEATH_MODE("Death mode"),
@@ -92,6 +96,7 @@ object SettingsIndex {
         addAll(settingsWatchKnobs)
         addAll(settingsPowerKnobs)
         addAll(settingsDataKnobs)
+        addAll(settingsBackupKnobs)
         addAll(settingsAboutKnobs)
         addAll(settingsDeathClockKnobs)
         addAll(settingsDeathModeKnobs)

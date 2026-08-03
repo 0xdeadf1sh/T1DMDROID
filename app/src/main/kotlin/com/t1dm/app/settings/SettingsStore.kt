@@ -20,6 +20,13 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import org.json.JSONObject
 
+/** The last automatic backup that succeeded. */
+class BackupRunOk(val atMs: Long, val bytes: Long, val rows: Int)
+
+/** The last automatic backup that failed, and why. Kept beside [BackupRunOk] rather than replacing
+ *  it, so the panel can show that a destination which once worked has since stopped. */
+class BackupRunError(val atMs: Long, val message: String)
+
 /**
  * The complete, kv-backed configuration surface for the Settings hub (Phase 7C —
  * items 14 & 17, "expose EVERY knob"). Every user-tunable knob that the rest of the app boots with a
@@ -540,6 +547,58 @@ class SettingsStore(
 
     suspend fun clearRecentSearches() = put(K_SEARCH_RECENT, encodeRecentSearches(emptyList()))
 
+    // ── Automatic backup (see `com.t1dm.app.backup`) ────────────────────────────────────────────
+    //
+    // Every key here sits deliberately OUTSIDE the exportable set below — the same call as
+    // `search.recent_settings` and `death.enabled`, and for a sharper reason than either. The folder
+    // is a persisted SAF grant belonging to THIS install; carried into a backup it would arrive on a
+    // fresh phone as a URI that install holds no permission for, and the panel would report a
+    // configured destination it cannot write one byte to. The last-run fields are likewise state
+    // rather than configuration: restoring them would have a phone that has never run a backup
+    // claim one. `wipeAllData` clears the lot for free.
+
+    val backupCadenceHours: Flow<Int> = repository.observeKv(K_BACKUP_CADENCE_H).map(::decodeBackupCadence)
+    val backupKeep: Flow<Int> = repository.observeKv(K_BACKUP_KEEP).map(::decodeBackupKeep)
+
+    /** The persisted tree URI, or null when no folder has been granted. Blank reads as null, so
+     *  revoking the grant is a write rather than a row deletion. */
+    val backupFolderUri: Flow<String?> = repository.observeKv(K_BACKUP_TREE).map { it?.ifBlank { null } }
+
+    /** The chosen folder's display name, captured once at grant time. Resolving it from the URI
+     *  instead would put a `ContentResolver` query in the composition of a screen that recomposes. */
+    val backupFolderLabel: Flow<String?> = repository.observeKv(K_BACKUP_LABEL).map { it?.ifBlank { null } }
+
+    val backupLastOk: Flow<BackupRunOk?> = repository.observeKv(K_BACKUP_LAST_OK).map(::decodeBackupOk)
+    val backupLastError: Flow<BackupRunError?> = repository.observeKv(K_BACKUP_LAST_ERR).map(::decodeBackupError)
+
+    suspend fun currentBackupCadenceHours(): Int = decodeBackupCadence(repository.getKv(K_BACKUP_CADENCE_H))
+    suspend fun currentBackupKeep(): Int = decodeBackupKeep(repository.getKv(K_BACKUP_KEEP))
+    suspend fun currentBackupFolder(): String? = repository.getKv(K_BACKUP_TREE)?.ifBlank { null }
+
+    suspend fun currentBackupFolderLabel(): String? = repository.getKv(K_BACKUP_LABEL)?.ifBlank { null }
+
+    suspend fun setBackupCadenceHours(hours: Int) = put(K_BACKUP_CADENCE_H, encodeBackupCadence(hours))
+    suspend fun setBackupKeep(keep: Int) = put(K_BACKUP_KEEP, encodeBackupKeep(keep))
+
+    suspend fun setBackupFolder(treeUri: String, label: String) {
+        put(K_BACKUP_TREE, treeUri)
+        put(K_BACKUP_LABEL, label)
+    }
+
+    /**
+     * Recording a success does NOT clear the last failure, and a failure does not clear the last
+     * success. Both are kept and both are shown: "it worked on Tuesday and has failed every night
+     * since" is precisely the state a single overwritten status field hides, and it is the one worth
+     * knowing — a backup that fails silently is worse than no backup, because it is trusted.
+     */
+    suspend fun recordBackupOk(atMs: Long, bytes: Long, rows: Int) =
+        put(K_BACKUP_LAST_OK, encodeBackupOk(atMs, bytes, rows))
+
+    suspend fun recordBackupError(atMs: Long, message: String) =
+        put(K_BACKUP_LAST_ERR, encodeBackupError(atMs, message))
+
+    suspend fun clearBackupError() = put(K_BACKUP_LAST_ERR, "")
+
     // ── Config export / import (item 17 — versioned, via SAF) ──────────────────────────────────
     // Exports ONLY the config keys (the allowlisted prefixes) — never runtime state such as the
     // watch nonce ceilings (exporting/importing those across devices would risk (key,nonce) reuse)
@@ -754,6 +813,76 @@ class SettingsStore(
         internal fun encodePushHoldMin(min: Int): String = min.coerceIn(0, MAX_PUSH_HOLD_MIN).toString()
         internal fun decodePushHoldMin(raw: String?): Int =
             raw?.toIntOrNull()?.coerceIn(0, MAX_PUSH_HOLD_MIN) ?: DEFAULT_PUSH_HOLD_MIN
+
+        // ── Automatic backup — kv rows outside the export allowlist (see the flows above) ─────────
+
+        const val K_BACKUP_CADENCE_H = "backup.cadence_h"
+        const val K_BACKUP_KEEP = "backup.keep"
+        const val K_BACKUP_TREE = "backup.tree_uri"
+        const val K_BACKUP_LABEL = "backup.tree_label"
+        const val K_BACKUP_LAST_OK = "backup.last_ok"
+        const val K_BACKUP_LAST_ERR = "backup.last_err"
+
+        /** 0 is OFF and is the default: automatic backup writes to a folder outside the app's own
+         *  storage, so it may not begin until the user has chosen one. */
+        const val BACKUP_CADENCE_OFF = 0
+        val BACKUP_CADENCE_STOPS: List<Int> = listOf(BACKUP_CADENCE_OFF, 6, 24, 24 * 7)
+        const val DEFAULT_BACKUP_CADENCE_H = BACKUP_CADENCE_OFF
+
+        val BACKUP_KEEP_STOPS: List<Int> = listOf(3, 7, 14, 30)
+        const val DEFAULT_BACKUP_KEEP = 7
+
+        /**
+         * Both directions snap to a declared stop rather than clamping to a range. A cadence between
+         * stops is not a finer setting — it is a value no stepper produced, and honouring it would
+         * schedule a job at a period the panel cannot then display. An unset or unrecognised read
+         * falls back to the default, so a hand-edited row degrades to OFF rather than to a period
+         * WorkManager would silently round up to its own floor anyway.
+         */
+        internal fun encodeBackupCadence(hours: Int): String = nearestStop(hours, BACKUP_CADENCE_STOPS).toString()
+        internal fun decodeBackupCadence(raw: String?): Int =
+            raw?.toIntOrNull()?.takeIf { it in BACKUP_CADENCE_STOPS } ?: DEFAULT_BACKUP_CADENCE_H
+
+        internal fun encodeBackupKeep(keep: Int): String = nearestStop(keep, BACKUP_KEEP_STOPS).toString()
+        internal fun decodeBackupKeep(raw: String?): Int =
+            raw?.toIntOrNull()?.takeIf { it in BACKUP_KEEP_STOPS } ?: DEFAULT_BACKUP_KEEP
+
+        private fun nearestStop(value: Int, stops: List<Int>): Int =
+            stops.minByOrNull { kotlin.math.abs(it - value) } ?: stops.first()
+
+        /**
+         * The last-run rows, pipe-separated so the round-trip is host-testable without Room and
+         * without `org.json` (an Android class, stubbed on the host JVM — see [encodeRecentSearches]
+         * for the same constraint). The message is the only free-text field and any pipe or newline
+         * in it is folded to a space on the way in, so a driver's error string can never forge a
+         * field boundary. Reads are total: garbage degrades to "no run recorded", never a throw on
+         * a panel that exists to report status.
+         */
+        internal fun encodeBackupOk(atMs: Long, bytes: Long, rows: Int): String = "$atMs|$bytes|$rows"
+
+        internal fun decodeBackupOk(raw: String?): BackupRunOk? {
+            val parts = raw?.split('|') ?: return null
+            if (parts.size != 3) return null
+            val at = parts[0].toLongOrNull() ?: return null
+            val bytes = parts[1].toLongOrNull() ?: return null
+            val rows = parts[2].toIntOrNull() ?: return null
+            return BackupRunOk(at, bytes, rows)
+        }
+
+        internal fun encodeBackupError(atMs: Long, message: String): String {
+            val flat = message.replace('|', ' ').replace('\n', ' ').replace('\r', ' ').trim()
+            return "$atMs|${flat.take(MAX_BACKUP_ERROR_CHARS)}"
+        }
+
+        internal fun decodeBackupError(raw: String?): BackupRunError? {
+            val at = raw?.substringBefore('|')?.toLongOrNull() ?: return null
+            val message = raw.substringAfter('|', "")
+            if (message.isBlank()) return null
+            return BackupRunError(at, message)
+        }
+
+        /** Enough to name the cause; short enough that a driver stack trace cannot fill the row. */
+        private const val MAX_BACKUP_ERROR_CHARS = 160
 
         /** Settings-search history: a kv row outside the export allowlist (see [recentSearches]). */
         private const val K_SEARCH_RECENT = "search.recent_settings"

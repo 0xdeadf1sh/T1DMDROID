@@ -3,10 +3,12 @@ package com.t1dm.app
 import android.app.Application
 import android.content.pm.ApplicationInfo
 import android.os.StrictMode
+import com.t1dm.app.backup.AutoBackupWorker
 import com.t1dm.app.di.AppContainer
 import com.t1dm.app.service.CgmWatchdog
 import com.t1dm.app.sync.SyncDrainWorker
 import com.t1dm.app.widget.WidgetRefreshWorker
+import kotlinx.coroutines.launch
 import timber.log.Timber
 
 class T1dmApplication : Application() {
@@ -34,6 +36,13 @@ class T1dmApplication : Application() {
         CgmWatchdog.enqueue(this)
         SyncDrainWorker.enqueue(this) // deferrable outbox drain fallback (FGS drains opportunistically)
         WidgetRefreshWorker.enqueue(this) // widget repaint fallback (the FGS is the only live driver)
+        // The automatic-backup schedule is reconciled with its setting on every start, not only when
+        // the setting is edited: an app upgrade or a "force stop" cancels pending work, and a backup
+        // schedule that has quietly stopped is precisely the silence this feature must not have.
+        // Off-main — reading the cadence is a kv hit.
+        container.appScope.launch {
+            AutoBackupWorker.sync(this@T1dmApplication, container.settingsStore.currentBackupCadenceHours())
+        }
     }
 
     private fun installStrictMode() {

@@ -92,6 +92,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.t1dm.app.di.AppContainer
+import com.t1dm.app.backup.BackupRoute
 import com.t1dm.app.sync.SyncStatus
 import com.t1dm.app.sync.toPanelState
 import com.t1dm.feature.settings.ServerSettingsScreen
@@ -216,6 +217,7 @@ private val destinations = listOf(
     Destination("meals", "Meals"),
     Destination("insulin", "Insulin"),
     Destination("security", "Watch"),
+    Destination("backup", "Backup"),
     Destination("logs", "Logs"),
     Destination("settings", "Settings"),
 )
@@ -365,6 +367,7 @@ internal fun crumbsFor(route: String?, modelId: String?, editLabel: String? = nu
         "insulin/types" -> listOf(Crumb("Insulin", "insulin"), Crumb("Types & curves", null))
         "insulin/bolusCalc" -> listOf(Crumb("Insulin", "insulin"), Crumb("Bolus advisor", null))
         "security" -> listOf(Crumb("Watch", null))
+        "backup" -> listOf(Crumb("Backup", null))
         "logs" -> listOf(Crumb("Logs", null))
         "settings" -> listOf(Crumb("Settings", null))
         "about" -> settings(Crumb("About", null))
@@ -385,7 +388,7 @@ internal fun crumbsFor(route: String?, modelId: String?, editLabel: String? = nu
         "settings/server" -> settings(Crumb("Server", null))
         "settings/watch" -> settings(Crumb("Watch", null))
         "settings/power" -> settings(Crumb("Low power", null))
-        "settings/data" -> settings(Crumb("Backup & reset", null))
+        "settings/data" -> settings(Crumb("Reset", null))
         "settings/death" -> settings(Crumb("Death mode", null))
         else -> listOf(Crumb(route, null))
     }
@@ -424,6 +427,9 @@ internal fun settingsRouteFor(screen: SettingsScreenKey): String = when (screen)
     SettingsScreenKey.WATCH -> "settings/watch"
     SettingsScreenKey.POWER -> "settings/power"
     SettingsScreenKey.DATA -> "settings/data"
+    // Leaves `:feature:settings` entirely, the way MODELS does: backup is its own top-level panel,
+    // and a search hit for "export" should land there rather than on the reset screen it left.
+    SettingsScreenKey.BACKUP -> "backup"
     SettingsScreenKey.ABOUT -> "about"
     SettingsScreenKey.DEATH_CLOCK -> "settings/deathclock"
     SettingsScreenKey.DEATH_MODE -> "settings/death"
@@ -618,10 +624,6 @@ private fun Breadcrumb(navController: NavHostController, container: AppContainer
 /** How often the breadcrumb re-judges freshness. Fast enough that a stale badge is not stale ADVICE,
  *  slow enough to be free: one recomposition of the chrome row, no layout, no work off it. */
 private const val CHROME_TICK_MS = 20_000L
-
-/** Ceiling on a restored backup. Generous next to any real document — the paint layer is the only
- *  thing here that grows — and finite, which reading the picker's whole stream into a String was not. */
-private const val MAX_BACKUP_BYTES = 32 * 1024 * 1024
 
 /** The app-wide glycemic status (U1). It is a strict function of the CURRENT forecast eligibility:
  *  a green STABLE is a positive claim and is emitted ONLY for a §3.6-eligible forecast with no
@@ -1793,61 +1795,10 @@ private fun T1dmNavHost(
         }
         composable("settings/data") {
             val scope = rememberCoroutineScope()
-            val ctx = LocalContext.current
-            var status by remember { mutableStateOf<String?>(null) }
-            val exportLauncher = rememberLauncherForActivityResult(
-                ActivityResultContracts.CreateDocument("application/json"),
-            ) { uri ->
-                if (uri == null) { status = "Export cancelled" } else scope.launch {
-                    // Off-main: the document now carries the paint strokes and runs to megabytes, and
-                    // a SAF write is a binder round trip to another process either way.
-                    status = withContext(container.dispatchers.io) {
-                        runCatching {
-                            val doc = container.exportConfigJson()
-                            ctx.contentResolver.openOutputStream(uri)?.use { it.write(doc.json.toByteArray()) }
-                                ?: error("could not open file")
-                            "Settings and drawings exported" + (doc.note?.let { " — $it" } ?: "")
-                        }.getOrElse { "Export failed — ${it.message ?: it::class.simpleName}" }
-                    }
-                }
-            }
-            val importLauncher = rememberLauncherForActivityResult(
-                ActivityResultContracts.OpenDocument(),
-            ) { uri ->
-                if (uri == null) { status = "Import cancelled" } else scope.launch {
-                    // Off-main, and bounded: the picker will hand us whatever the user chose, and a
-                    // whole file was being read into a String on the UI thread with no size limit.
-                    status = withContext(container.dispatchers.io) {
-                        runCatching {
-                            val bytes = ctx.contentResolver.openInputStream(uri)?.use {
-                                it.readNBytes(MAX_BACKUP_BYTES + 1)
-                            } ?: error("could not open file")
-                            if (bytes.size > MAX_BACKUP_BYTES) error("file is too large to be a backup")
-                            val r = container.importConfigJson(bytes.decodeToString())
-                            buildString {
-                                if (r.settingsError != null) {
-                                    // The drawings now land even when the settings half fails, so the
-                                    // status has to say which half did what.
-                                    append("Settings not restored — ${r.settingsError}")
-                                } else {
-                                    append("Imported ${r.keys} setting${if (r.keys == 1) "" else "s"}")
-                                }
-                                if (r.paintingsAdded > 0) append(" · ${r.paintingsAdded} drawing${if (r.paintingsAdded == 1) "" else "s"}")
-                                if (r.paintingsSkipped > 0) append(" · ${r.paintingsSkipped} unreadable")
-                                // A drawings-only backup applies no settings at all, so the restart hint
-                                // would be advice to reopen for nothing.
-                                if (r.keys > 0) append(" — reopen to apply alarm thresholds")
-                            }
-                        }.getOrElse { "Import failed — ${it.message ?: it::class.simpleName}" }
-                    }
-                }
-            }
             var resetting by remember { mutableStateOf(false) }
             DataSettingsScreen(
-                status = status,
                 resetting = resetting,
-                onExport = { status = null; exportLauncher.launch("t1dm-backup.json") },
-                onImport = { status = null; importLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
+                onOpenBackup = { navController.navigate("backup") { launchSingleTop = true } },
                 onReset = {
                     if (!resetting) {
                         resetting = true
@@ -1858,6 +1809,12 @@ private fun T1dmNavHost(
                     }
                 },
             )
+        }
+        composable("backup") {
+            BackupRoute(container, onNotice)
+        }
+        composable("backup") {
+            BackupRoute(container, onNotice)
         }
         composable("settings/watch") {
             val watch by container.watchSecurity.collectAsState()

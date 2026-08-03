@@ -19,8 +19,16 @@ import kotlinx.serialization.json.put
 import java.util.Base64
 
 /**
- * The backup ENVELOPE: the file Settings → Data writes and reads, which now carries two things — the
- * settings document [SettingsStore] has always produced, and the BG panel's drawings.
+ * The LEGACY backup envelope: settings plus the BG panel's drawings, as one uncompressed JSON
+ * document.
+ *
+ * **Nothing writes this format any more.** The Backup panel supersedes it with
+ * `com.t1dm.data.backup.Archive`, which carries the whole record rather than configuration alone.
+ * [parse] stays live and load-bearing — it is what lets every file already on the user's disk still
+ * restore, reached from `AppContainer.restoreArchive` when the chosen file turns out not to be an
+ * archive. [wrap] survives only to build the fixtures its own compatibility tests parse: the
+ * guarantee under test is about documents written by past builds, so the test needs a way to
+ * produce one.
  *
  * ```json
  * { "format": "t1dm.backup", "version": 1,

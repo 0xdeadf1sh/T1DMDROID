@@ -42,6 +42,7 @@ include(
     ":feature:settings",
     ":feature:logs",
     ":feature:game",
+    ":feature:backup",
 )
 
 include(":cgm", ":sensors", ":inference", ":calc", ":sync", ":watch", ":alerts")

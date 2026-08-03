@@ -16,6 +16,7 @@ import com.t1dm.app.cgm.AppCgmRepository
 import com.t1dm.app.hardware.HardwareProbe
 import com.t1dm.app.inference.KvTelemetryStore
 import com.t1dm.app.inference.RoomBgHistoryProvider
+import com.t1dm.app.backup.BackupManager
 import com.t1dm.app.settings.ConfigBackup
 import com.t1dm.app.settings.SettingsStore
 import com.t1dm.app.BuildConfig
@@ -89,6 +90,9 @@ import com.t1dm.core.nativecore.UniffiNativeCore
 import com.t1dm.app.stats.AppStatsSource
 import com.t1dm.data.PushWithdrawal
 import com.t1dm.data.T1dmRepository
+import com.t1dm.data.backup.ArchiveCounts
+import com.t1dm.data.backup.ArchiveResult
+import com.t1dm.data.backup.NotAnArchiveException
 import com.t1dm.data.settings.BgRange
 import com.t1dm.data.settings.GraphSettingsStore
 import com.t1dm.feature.dashboard.BgPulses
@@ -270,6 +274,11 @@ class AppContainer(context: Context) {
     val database: AppDatabase by lazy { AppDatabase.build(appContext) }
 
     val repository: T1dmRepository by lazy { T1dmRepository(database, dispatchers) }
+
+    /** The automatic-backup destination, run and retention sweep (`com.t1dm.app.backup`). */
+    val backupManager: BackupManager by lazy {
+        BackupManager(appContext, repository, settingsStore, dispatchers, BuildConfig.VERSION_NAME)
+    }
 
     /** The read-only Bluesky feed for `adapubs.bsky.social` (`:feature:pubs`). */
     val pubsRepository: PubsRepository by lazy { PubsRepository(BlueskyClient(dispatchers), dispatchers) }
@@ -583,15 +592,6 @@ class AppContainer(context: Context) {
     }
 
     /**
-     * Export the full backup as pretty JSON (for a SAF write): the settings document plus the BG
-     * panel's drawings, wrapped by [ConfigBackup]. Assembled HERE because this is the only place that
-     * sees both the settings store and the repository. Off-main.
-     */
-    suspend fun exportConfigJson(): ConfigBackup.Document = withContext(dispatchers.io) {
-        ConfigBackup.wrap(settingsStore.exportJson(), repository.observePaintStrokes(0L, Long.MAX_VALUE).first())
-    }
-
-    /**
      * Import a backup (from a SAF read); re-hydrates [alarmConfig]. Accepts the wrapped shape AND the
      * legacy flat settings-only file, so every backup already on disk still restores. Throws with a
      * plain-language message on a malformed/foreign file. Off-main.
@@ -643,6 +643,78 @@ class AppContainer(context: Context) {
         val paintingsSkipped: Int,
         val settingsError: String? = null,
     )
+
+    // ─── Full-record archive (the Backup panel) ────────────────────────────────────────────────
+
+    /** What restoring a `t1dm.archive` did — the row tallies from the archive itself, plus the
+     *  settings half, which is applied here because only the composition root can re-hydrate the
+     *  alarm and actuator policies afterwards. */
+    class RestoreResult(
+        val archive: ArchiveResult,
+        val settingsKeys: Int,
+        val settingsError: String?,
+    )
+
+    /**
+     * Restore from an archive, falling back to the legacy settings-and-drawings reader when the file
+     * turns out not to be one.
+     *
+     * [open] is a FACTORY rather than a stream because that fallback needs to read the same file
+     * from the beginning a second time, and the archive attempt has already consumed its header. A
+     * content URI can be reopened; a half-consumed stream cannot be rewound.
+     */
+    suspend fun restoreArchive(open: suspend () -> java.io.InputStream): RestoreResult =
+        withContext(dispatchers.io) {
+            val result = try {
+                open().use { repository.readArchive(it) }
+            } catch (e: NotAnArchiveException) {
+                // Not an archive at all. Read it as the older settings-and-drawings document, whose
+                // own format tag decides whether it is ours — so a foreign JSON the user mis-picked
+                // is still refused there rather than reported as an empty success.
+                val bytes = open().use { it.readNBytes(MAX_LEGACY_BACKUP_BYTES + 1) }
+                if (bytes.size > MAX_LEGACY_BACKUP_BYTES) {
+                    throw IllegalArgumentException("file is too large to be a backup")
+                }
+                val legacy = importConfigJson(bytes.decodeToString())
+                return@withContext RestoreResult(
+                    archive = ArchiveResult(
+                        configJson = null,
+                        applied = ArchiveCounts(strokes = legacy.paintingsAdded),
+                        duplicates = 0,
+                        skipped = legacy.paintingsSkipped,
+                        truncated = false,
+                        schemaVersion = null,
+                        createdAtMs = null,
+                    ),
+                    settingsKeys = legacy.keys,
+                    settingsError = legacy.settingsError,
+                )
+            }
+
+            // The archive's rows are already in. Apply its settings document separately so a
+            // configuration that will not import cannot cost the user the history that already did
+            // — the same split the settings-and-drawings importer arrived at.
+            var settingsError: String? = null
+            val configJson = result.configJson
+            val keys = if (configJson != null) {
+                runCatching {
+                    settingsStore.importJson(configJson).also {
+                        refreshAlarmConfig()
+                        refreshAlertActuatorConfig()
+                    }
+                }.getOrElse {
+                    settingsError = it.message ?: "Settings could not be restored"
+                    0
+                }
+            } else {
+                0
+            }
+            RestoreResult(result, keys, settingsError)
+        }
+
+    /** Ceiling on a LEGACY (uncompressed, settings-and-drawings) restore read wholly into memory.
+     *  The archive path is streamed and needs no such bound — which is most of why it exists. */
+    private val MAX_LEGACY_BACKUP_BYTES = 32 * 1024 * 1024
 
     // ─── Inference runtime (Phase 2) ──────────────────────────────────────────────────────────
 

@@ -22,48 +22,34 @@ import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.rememberT1dmHaptics
 
 /**
- * Settings → Data: backup/restore of the CONFIG and the BG panel's DRAWINGS (one SAF JSON file) plus
- * the DESTRUCTIVE full app reset (Phase 7C item 17 + issue 5). The backup writes only configuration
- * keys and the freehand annotation layer — never secrets (the rw token lives in the Keystore) and never
- * runtime state such as the watch nonce ceilings — so a restore cannot cause a security regression. The
- * drawings qualify for the same reason they qualify for nothing else: they are inert decoration that no
- * calculator, model channel, alarm or §3.6 rail reads. The file dialogs are owned by the caller.
+ * Settings → Reset: the DESTRUCTIVE full app reset (issue 5), and a way across to the Backup panel.
  *
- * The reset is IRREVERSIBLE, so it sits behind an explicit two-step, typed confirmation that spells out
- * exactly what is destroyed. Pure/stateless apart from the confirm-flow's local UI state.
+ * Backup and restore used to live here as well, writing configuration and the BG panel's drawings to
+ * a JSON file. That surface has moved WHOLE to `:feature:backup`, which archives the entire record —
+ * every reading, every logged event, the catalogues — rather than settings alone. It is not
+ * duplicated here: two backup surfaces would be two things to keep in step, and the one left behind
+ * would be the one the user found first.
+ *
+ * The reset is IRREVERSIBLE, so it sits behind an explicit two-step, typed confirmation that spells
+ * out exactly what is destroyed. Pure/stateless apart from the confirm-flow's local UI state.
  */
 @Composable
 fun DataSettingsScreen(
-    status: String?,
     resetting: Boolean,
-    onExport: () -> Unit,
-    onImport: () -> Unit,
+    onOpenBackup: () -> Unit,
     onReset: () -> Unit,
 ) {
     val haptics = rememberT1dmHaptics()
     SettingsScaffold(SettingsScreenKey.DATA) {
-        SettingsSectionHeader("Backup & restore")
-        SettingsNote("Settings and drawings to JSON; tokens never written")
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            // A Tap, not a Commit: both merely raise the system file picker — the write happens later,
-            // in `:app`, and lands as the `status` line below.
-            SettingsAnchor(dataExport, modifier = Modifier) {
-                Button(
-                    onClick = { haptics.perform(HapticEvent.Tap); onExport() },
-                    enabled = !resetting,
-                ) { Text("Export…") }
-            }
-            SettingsAnchor(dataImport, modifier = Modifier) {
-                OutlinedButton(
-                    onClick = { haptics.perform(HapticEvent.Tap); onImport() },
-                    enabled = !resetting,
-                ) { Text("Import…") }
-            }
+        SettingsSectionHeader("Backup")
+        SettingsAnchor(dataBackup, modifier = Modifier) {
+            Button(
+                onClick = { haptics.perform(HapticEvent.Tap); onOpenBackup() },
+            ) { Text("Open Backup") }
         }
-        if (status != null) {
-            SettingsSectionHeader("Result")
-            Text(status, style = MaterialTheme.typography.bodyMedium)
-        }
+        // Worth stating once, here: this screen erases, and the thing that would have saved the user
+        // from it is one panel away.
+        SettingsNote("Back up before resetting — this screen cannot undo")
 
         SettingsSectionHeader("Danger zone")
         // A search hit always lands this section DISARMED — the confirm flow's state is local and
@@ -143,25 +129,47 @@ private const val CONFIRM_WORD = "ERASE"
 
 // ── search index (see SettingsIndex.kt) ───────────────────────────────────────────────────────────
 
-private val dataExport = SettingsKnob(
-    id = "data.export",
+private val dataBackup = SettingsKnob(
+    id = "data.backup",
     screen = SettingsScreenKey.DATA,
-    section = "Backup & restore",
+    section = "Backup",
+    label = "Open Backup",
+    subtitle = "The backup panel — archive, restore, and automatic backups",
+    synonyms = listOf("backup", "restore", "archive", "save", "copy"),
+)
+
+// The export/import knobs now name the BACKUP screen, so a search for either lands on the panel
+// that owns them rather than on the reset screen they used to sit beside.
+
+private val backupExport = SettingsKnob(
+    id = "backup.export",
+    screen = SettingsScreenKey.BACKUP,
+    section = "Manual",
     label = "Export…",
-    subtitle = "Write every setting and the graph's drawings to a JSON file (never secrets)",
+    subtitle = "Write the whole record — readings, meals, doses, drawings, settings — to one file",
     synonyms = listOf(
-        "export", "backup", "save", "json", "file", "copy", "transfer", "dump", "download",
-        "settings backup", "share",
+        "export", "backup", "save", "file", "copy", "transfer", "dump", "download", "archive", "share",
     ),
 )
 
-private val dataImport = SettingsKnob(
-    id = "data.import",
-    screen = SettingsScreenKey.DATA,
-    section = "Backup & restore",
+private val backupImport = SettingsKnob(
+    id = "backup.import",
+    screen = SettingsScreenKey.BACKUP,
+    section = "Manual",
     label = "Import…",
-    subtitle = "Restore settings and drawings from a previously exported JSON file",
-    synonyms = listOf("import", "restore", "load", "json", "file", "recover", "migrate", "transfer", "settings restore"),
+    subtitle = "Merge a backup file back in; never overwrites what is already here",
+    synonyms = listOf("import", "restore", "load", "file", "recover", "migrate", "transfer", "merge"),
+)
+
+private val backupAuto = SettingsKnob(
+    id = "backup.auto",
+    screen = SettingsScreenKey.BACKUP,
+    section = "Automatic",
+    label = "Automatic backup",
+    subtitle = "Cadence, retention, and the folder they are written to",
+    synonyms = listOf(
+        "automatic", "auto", "schedule", "daily", "weekly", "periodic", "folder", "retention", "keep",
+    ),
 )
 
 private val dataReset = SettingsKnob(
@@ -176,4 +184,8 @@ private val dataReset = SettingsKnob(
     ),
 )
 
-internal val settingsDataKnobs = listOf(dataExport, dataImport, dataReset)
+internal val settingsDataKnobs = listOf(dataBackup, dataReset)
+
+/** The Backup panel's entries. They are declared here rather than in `:feature:backup` because the
+ *  index is this module's, and a search hit resolves to a route in `:app` either way. */
+internal val settingsBackupKnobs = listOf(backupExport, backupImport, backupAuto)

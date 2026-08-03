@@ -15,6 +15,10 @@ import com.t1dm.core.model.PaintStroke
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.core.model.RecentMeal
+import com.t1dm.data.backup.ArchiveCounts
+import com.t1dm.data.backup.ArchiveReader
+import com.t1dm.data.backup.ArchiveResult
+import com.t1dm.data.backup.ArchiveWriter
 import com.t1dm.data.db.AppDatabase
 import com.t1dm.data.db.BasalScheduleEntity
 import com.t1dm.data.db.CgmAdvertRawEntity
@@ -49,6 +53,8 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
+import java.io.InputStream
+import java.io.OutputStream
 
 /**
  * The single write/read gateway over [AppDatabase] (§3.5). Every mutation runs on
@@ -1159,6 +1165,34 @@ class T1dmRepository(
 
     suspend fun recordTelemetry(row: HwTelemetryEntity): Long =
         withContext(io) { telemetry.insert(row) }
+
+    // ─── Full-record archive (backup / restore) ─────────────────────────────────────────────────
+
+    /**
+     * Stream the whole local record — readings, the wide projection, logged events, the
+     * user-authored catalogues, the drawings, and [configJson] — to [out] as a gzipped
+     * `t1dm.archive`. [out] is NOT closed here; the caller owns the SAF stream and closes it.
+     *
+     * Routed through this gateway rather than letting callers reach for [AppDatabase] directly, so
+     * the archive inherits the same dispatcher discipline as every other read here: it walks the
+     * entire keep-forever store and must never touch the main thread.
+     */
+    suspend fun writeArchive(
+        out: OutputStream,
+        configJson: String?,
+        appVersion: String,
+        nowMs: Long,
+    ): ArchiveCounts = withContext(io) { ArchiveWriter(db).write(out, configJson, appVersion, nowMs) }
+
+    /**
+     * Merge an archive back in. The local row always wins, so this can only ever add what is
+     * missing, and re-importing the same file is a no-op. Throws
+     * [com.t1dm.data.backup.NotAnArchiveException] when the stream is some other kind of file —
+     * which the caller uses to fall back to the older settings-and-drawings reader rather than
+     * reporting a failure on a file that never claimed to be an archive.
+     */
+    suspend fun readArchive(input: InputStream): ArchiveResult =
+        withContext(io) { ArchiveReader(db).read(input) }
 
     // ─── Full app reset (issue 5 — DESTRUCTIVE) ───────────────────────────────────────────────
 
