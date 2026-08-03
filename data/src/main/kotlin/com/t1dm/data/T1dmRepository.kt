@@ -803,6 +803,11 @@ class T1dmRepository(
     suspend fun predictionsInRange(fromMs: Long, toMs: Long): List<ModelPrediction> =
         withContext(io) { predictions.range(fromMs, toMs).map { it.toModel() } }
 
+    /** One model's stored forecasts over a window, ascending — what the BG panel sweeps in hindsight.
+     *  Read-only and display-only: these are the rows as they were written, never a re-forecast. */
+    suspend fun predictionsForModelInRange(modelId: String, fromMs: Long, toMs: Long): List<ModelPrediction> =
+        withContext(io) { predictions.rangeForModel(modelId, fromMs, toMs).map { it.toModel() } }
+
     /** Purge every stored forecast of a removed model (Phase 7C model deletion). */
     suspend fun deletePredictionsForModel(modelId: String) = withContext(io) { predictions.deleteByModel(modelId) }
 

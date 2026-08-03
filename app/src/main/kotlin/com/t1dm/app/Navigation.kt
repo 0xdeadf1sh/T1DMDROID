@@ -1015,6 +1015,7 @@ private fun T1dmNavHost(
                 paintStrokes = paintStrokes,
                 onAddPaintStroke = container::addPaintStroke,
                 onDeletePaintStroke = container::deletePaintStroke,
+                hindsightIn = container.repository::predictionsForModelInRange,
                 gameSlot = { m, fromMs, dropMs, spanMin, clock, ready, exit ->
                     DashboardGamePanel(container, m, fromMs, dropMs, spanMin, clock, ready, exit)
                 },

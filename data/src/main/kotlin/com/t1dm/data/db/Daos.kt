@@ -496,6 +496,13 @@ interface PredictionDao {
     @Query("SELECT * FROM prediction WHERE madeAtMs BETWEEN :fromMs AND :toMs ORDER BY madeAtMs DESC, modelId")
     suspend fun range(fromMs: Long, toMs: Long): List<PredictionEntity>
 
+    /** One model's forecasts over a window, ASCENDING — the BG panel's hindsight sweep. Distinct from
+     *  [range] in both respects on purpose: that one is newest-first and every-model, so serving this
+     *  from it would read every other model's fan off disk and then re-sort a day of cycles to
+     *  rediscover an order the index already has. */
+    @Query("SELECT * FROM prediction WHERE modelId = :modelId AND madeAtMs BETWEEN :fromMs AND :toMs ORDER BY madeAtMs")
+    suspend fun rangeForModel(modelId: String, fromMs: Long, toMs: Long): List<PredictionEntity>
+
     /** The single newest prediction row, for a glanceable "latest forecast" observer. */
     @Query("SELECT * FROM prediction ORDER BY madeAtMs DESC, selected DESC LIMIT 1")
     fun observeLatest(): Flow<PredictionEntity?>

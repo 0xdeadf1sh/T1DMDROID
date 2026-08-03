@@ -92,9 +92,11 @@ import com.t1dm.ui.graph.GraphInsets
 import com.t1dm.ui.graph.PaintControls
 import com.t1dm.ui.graph.PaintFrame
 import com.t1dm.ui.graph.PredSeries
+import com.t1dm.ui.graph.HindsightFrame
 import com.t1dm.ui.graph.PredictedClock
 import com.t1dm.ui.graph.RolledSeries
 import com.t1dm.ui.graph.SmoothedTrace
+import com.t1dm.ui.graph.hindsightFrameOf
 import com.t1dm.ui.graph.paintFrameOf
 import com.t1dm.ui.graph.rolledSeriesOf
 import com.t1dm.ui.graph.smoothedTraceOf
@@ -211,6 +213,12 @@ fun DashboardScreen(
     // the eraser, addressable. Null on either ⇒ the paint toggle is not offered at all.
     onAddPaintStroke: (suspend (PaintStroke) -> Long)? = null,
     onDeletePaintStroke: (suspend (Long) -> Unit)? = null,
+    // HINDSIGHT — the selected model's STORED forecasts over a window, so a long-press sweep can drag
+    // the fan issued at each past cycle across the trace that actually followed it. A resolver rather
+    // than a list because the window follows the viewport: it is called off the main thread with a
+    // bucketed span whenever the pan crosses one, and never at all while the chip is off. Null ⇒ the
+    // chip is not offered. Display-only, read-only — these are the rows as written.
+    hindsightIn: (suspend (modelId: String, fromMs: Long, toMs: Long) -> List<ModelPrediction>)? = null,
     // The hill-climb minigame, whose terrain IS this panel's trace. A MODE, not a destination: while
     // it is on the panel renders [gameSlot] in the graph's place and everything else on the dashboard
     // — read-outs, IOB line, nav — stays exactly where it was. null ⇒ not offered at all, the same
@@ -326,6 +334,34 @@ fun DashboardScreen(
         value = if (paintStrokes.isEmpty()) null else paintFrameOf(paintStrokes)
     }
 
+    // ── Hindsight: the past forecasts the scrub sweeps ───────────────────────────────────────────
+    var showHindsight by remember { mutableStateOf(false) }
+    // The load window, BUCKETED to the hour. The raw viewport moves on every frame of a pan, so
+    // keying the producer on it would restart a database read per frame and cancel it a frame later;
+    // rounded outward to an hour it re-reads only when the pan crosses a bucket, and the extra hour
+    // at each end is already loaded when it does. Reaches HINDSIGHT_LEAD_MS further back than the
+    // window starts because a cycle just off the left edge still forecasts INTO it.
+    val hindsightBucket = remember(viewStartMs, viewSpanMs, showHindsight) {
+        // viewStartMs is 0.0 until the panel has laid out and reported its viewport once.
+        if (!showHindsight || viewSpanMs <= 0.0 || viewStartMs <= 0.0) null
+        else {
+            val from = ((viewStartMs - HINDSIGHT_LEAD_MS) / HINDSIGHT_BUCKET_MS).toLong() * HINDSIGHT_BUCKET_MS
+            val to = ((viewStartMs + viewSpanMs) / HINDSIGHT_BUCKET_MS).toLong() * HINDSIGHT_BUCKET_MS + HINDSIGHT_BUCKET_MS
+            // A pinch can zoom out far past the window chips; cap what one sweep may hold resident.
+            from.coerceAtLeast(to - HINDSIGHT_MAX_SPAN_MS) to to
+        }
+    }
+    // Which model's history: the one whose fan is live on the panel, so both fans are the same model
+    // and the comparison is a comparison. Nothing is swept when no model is selected.
+    val hindsightModelId = predictions.firstOrNull { it.selected }?.modelId
+    val hindsight by produceState<HindsightFrame?>(null, hindsightBucket, hindsightModelId, unit, kovatchevF, hindsightIn) {
+        val resolve = hindsightIn
+        val bucket = hindsightBucket
+        val modelId = hindsightModelId
+        value = if (resolve == null || bucket == null || modelId == null) null
+        else hindsightFrameOf(resolve(modelId, bucket.first, bucket.second), unit, kovatchevF)
+    }
+
     // ── Paint mode: palette selection + the session's undo history ───────────────────────────────
     // All of it is local, like [showSmoothed] and [toggles]: paint mode is a transient way of looking
     // at the panel, not a persisted preference, and the STROKES — the only durable part — live in Room
@@ -407,7 +443,7 @@ fun DashboardScreen(
         warmup?.let { WarmupBanner(it) }
         if (noFutureInsulin) NoFutureInsulinBanner()
         if (iobCob != null || curveChannels != null || smoothMgdl != null || onRoll != null ||
-            paintAvailable || gameSlot != null
+            paintAvailable || gameSlot != null || hindsightIn != null
         ) {
             OverlayControls(
                 iobCob = iobCob,
@@ -418,6 +454,8 @@ fun DashboardScreen(
                 windowHours = windowHours,
                 smoothAvailable = smoothMgdl != null,
                 showSmoothed = showSmoothed,
+                hindsightAvailable = hindsightIn != null,
+                showHindsight = showHindsight,
                 rollAvailable = onRoll != null,
                 rollComputing = rollComputing,
                 paintAvailable = paintAvailable,
@@ -428,6 +466,7 @@ fun DashboardScreen(
                 onRollClick = { showRollDialog = true },
                 onToggle = { toggles = it },
                 onToggleSmoothed = { showSmoothed = it },
+                onToggleHindsight = { showHindsight = it },
                 onTogglePaint = { on -> paintOn = on },
                 onWindow = { h ->
                     windowHours = h
@@ -507,6 +546,7 @@ fun DashboardScreen(
             smoothed = smoothed,
             showSmoothed = showSmoothed,
             rolled = rolledSeries,
+            hindsight = hindsight,
             futureExtentMs = FUTURE_VIEW_MS,
             onViewportChange = { st, sp -> viewStartMs = st; viewSpanMs = sp },
             paint = paint,
@@ -670,6 +710,14 @@ private const val STEP_MS: Long = 300_000L
 private const val MAX_OVERLAY_STEPS: Int = 4032 // ~14 days of 5-min buckets
 private const val OVERLAY_FUTURE_MS: Long = 6L * 3_600_000L // show ~6 h of future dose tails
 private const val FUTURE_VIEW_MS: Long = 24L * 3_600_000L // I3 — +24 h future-view extent
+
+// Hindsight's load window. Bucketed to the hour so a pan re-reads on bucket crossings rather than on
+// frames; reaching one validated horizon before the viewport start, because a cycle just off the left
+// edge still forecasts into what is on screen. Capped so a wide pinch cannot make one sweep resident
+// over weeks — at 5-min cycles the cap is ~576 fans, a few hundred KB of floats.
+private const val HINDSIGHT_BUCKET_MS: Long = 3_600_000L
+private const val HINDSIGHT_LEAD_MS: Long = 2L * 3_600_000L
+private const val HINDSIGHT_MAX_SPAN_MS: Long = 48L * 3_600_000L
 /** Below this resultant length the circadian belief is too diffuse to anchor a clock axis on. */
 private const val MIN_CLOCK_R: Double = 0.05
 
@@ -721,6 +769,8 @@ private fun OverlayControls(
     windowHours: Int,
     smoothAvailable: Boolean,
     showSmoothed: Boolean,
+    hindsightAvailable: Boolean,
+    showHindsight: Boolean,
     rollAvailable: Boolean,
     rollComputing: Boolean,
     paintAvailable: Boolean,
@@ -731,6 +781,7 @@ private fun OverlayControls(
     onRollClick: () -> Unit,
     onToggle: (CurveOverlayToggles) -> Unit,
     onToggleSmoothed: (Boolean) -> Unit,
+    onToggleHindsight: (Boolean) -> Unit,
     onTogglePaint: (Boolean) -> Unit,
     onWindow: (Int) -> Unit,
 ) {
@@ -778,6 +829,15 @@ private fun OverlayControls(
                     selected = showSmoothed,
                     onClick = { haptics.toggled(!showSmoothed); onToggleSmoothed(!showSmoothed) },
                     label = { Text("Smoothed") },
+                )
+            }
+            // Hindsight arms the sweep; it draws nothing until a long-press scrub is under way, since
+            // the cursor is what picks the cycle.
+            if (hindsightAvailable) {
+                FilterChip(
+                    selected = showHindsight,
+                    onClick = { haptics.toggled(!showHindsight); onToggleHindsight(!showHindsight) },
+                    label = { Text("Hindsight") },
                 )
             }
             // Paint mode. While it is on, one finger draws on the panel and two or more pan/zoom it;

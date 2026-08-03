@@ -205,6 +205,11 @@ fun GlucoseGraph(
     // I3 — extend the pannable right edge this far past now so the committed dose curves in the empty
     // future are reachable (up to 24 h), WITHOUT auto-following into that empty region.
     futureExtentMs: Long = 0L,
+    // HINDSIGHT — every forecast the selected model issued over the visible window, swept by the
+    // scrub: the fan issued at the cursor's own cycle, drawn forward over the trace that actually
+    // followed it. Null ⇒ the sweep is off and nothing is drawn. DISPLAY-ONLY, like the rolled
+    // forecast: these are stored rows read back, and no alarm, rail or calculator sees them.
+    hindsight: HindsightFrame? = null,
     // The freehand ANNOTATION layer, already built off-thread ([paintFrameOf]). Drawn under every
     // trace and overlay, and clipped out of a corridor around the live BG line so the glucose trace
     // stays legible under any amount of drawing. In-app BG panel only.
@@ -853,6 +858,12 @@ fun GlucoseGraph(
                     if (rs.hi[i] > yMax) yMax = rs.hi[i]
                 }
             }
+            // The HINDSIGHT fan is deliberately NOT folded in, unlike the two above. Those are
+            // forecasts still standing, and clipping one would hide something the panel is asserting;
+            // a swept one has already been answered by the trace beside it, and it is that trace whose
+            // scale carries the comparison. A forecast that went badly wrong would otherwise rescale
+            // the axis until the truth it is being judged against was a flat line — and the plot clip
+            // says "it left the chart" perfectly well on its own.
             if (!yMin.isFinite() || !yMax.isFinite()) { yMin = 0f; yMax = 1f }
             // Fixed axis span (item 1): always cover the configured [MIN, MAX] and GROW above MAX to
             // never clip a high reading (and below MIN to never clip a low). The range is mg/dL-defined,
@@ -1093,6 +1104,28 @@ fun GlucoseGraph(
                     // The raw sensor trace is showing (section 5); label it so the toggle's state is legible.
                     val leg = measurer.measure("sensor — raw", traceLegendStyle)
                     drawText(leg, topLeft = Offset((plotRight - leg.size.width - 4f).coerceAtLeast(plotLeft), plotTop + 2f))
+                }
+
+                // (6.4) HINDSIGHT — the forecast issued at the cursor's own cycle, swept as the thumb
+                //       moves, so a day of past forecasts can be dragged across the trace that
+                //       actually happened. Drawn BEFORE the live overlay so the forecast in force now
+                //       stays on top of the ones that have already been answered, and in the SECOND
+                //       accent (`secondary`) against the live fan's `tertiary`: the two are read
+                //       together by construction here, so they must not share a hue.
+                //
+                //       The lookup is one bounded binary search per frame over the resident frame —
+                //       no query, no allocation — which is what lets it re-anchor at pointer rate.
+                hindsight?.let { hf ->
+                    if (!scrubMs.isNaN() && !hf.isEmpty) {
+                        val c = hf.cycleAt(scrubMs)
+                        if (c >= 0) {
+                            fun absToPx(ms: Double): Float = (plotLeft + (ms - viewStartMs) * ppm).toFloat()
+                            drawHindsightFan(
+                                hf, c, AbsToPx(::absToPx), ValToPx(::yToPx),
+                                cs.secondary, cs.secondary, fanPath,
+                            )
+                        }
+                    }
                 }
 
                 // (6.5) Prediction overlay: quantile fan + median for each running model. Non-selected
