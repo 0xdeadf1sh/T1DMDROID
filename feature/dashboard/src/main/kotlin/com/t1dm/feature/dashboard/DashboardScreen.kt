@@ -353,8 +353,17 @@ fun DashboardScreen(
     }
     // Which model's history: the one whose fan is live on the panel, so both fans are the same model
     // and the comparison is a comparison. Nothing is swept when no model is selected.
-    val hindsightModelId = predictions.firstOrNull { it.selected }?.modelId
-    val hindsight by produceState<HindsightFrame?>(null, hindsightBucket, hindsightModelId, unit, kovatchevF, hindsightIn) {
+    val hindsightSelected = predictions.firstOrNull { it.selected }
+    val hindsightModelId = hindsightSelected?.modelId
+    // ...and WHEN it last forecast. This is a key rather than a value the producer reads: the bucket
+    // only moves when the pan crosses an hour, so without it the frame would be re-read at most once
+    // an hour and every cycle issued since would be missing from the sweep — the most recent stretch,
+    // which is the one most worth looking at, silently blank. Keyed on the cycle instant it rebuilds
+    // once per cycle instead, which is one indexed query per forecast and only while the chip is on.
+    val hindsightLatestCycleMs = hindsightSelected?.cycleTsMs
+    val hindsight by produceState<HindsightFrame?>(
+        null, hindsightBucket, hindsightModelId, hindsightLatestCycleMs, unit, kovatchevF, hindsightIn,
+    ) {
         val resolve = hindsightIn
         val bucket = hindsightBucket
         val modelId = hindsightModelId

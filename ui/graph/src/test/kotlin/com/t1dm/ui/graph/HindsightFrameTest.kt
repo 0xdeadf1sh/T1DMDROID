@@ -38,6 +38,9 @@ class HindsightFrameTest {
         nq: Int = NQ,
         status: ForecastStatus = ForecastStatus.OK,
         stepMs: Long = STEP,
+        /** The anchor, when it has come apart from the issue instant (a CGM dropout). */
+        anchorC: Int = c,
+        stale: Boolean = false,
     ): ModelPrediction {
         val level = 200.0 + c
         val median = List(steps) { level }
@@ -47,10 +50,10 @@ class HindsightFrameTest {
             for (k in 0 until nq) bands += level + (k - nq / 2) * 5.0
         }
         return ModelPrediction(
-            modelId = "m", cycleTsMs = T0 + c * STEP, anchorTsMs = T0 + c * STEP, stepMs = stepMs,
+            modelId = "m", cycleTsMs = T0 + c * STEP, anchorTsMs = T0 + anchorC * STEP, stepMs = stepMs,
             medianBg = median, bandsMgdl = bands, nQuantiles = nq, lastBg = level,
             status = status, backend = BackendId.EXECUTORCH_XNNPACK_FP32, precision = Precision.FP32,
-            selected = true, stale = false, latencyMs = null,
+            selected = true, stale = stale, latencyMs = null,
         )
     }
 
@@ -144,6 +147,58 @@ class HindsightFrameTest {
         assertNull(frameOf(emptyList()))
         assertNull(frameOf(listOf(pred(0, steps = 0))))
         assertNull(frameOf(listOf(pred(0, nq = 3))))
+    }
+
+    /**
+     * The defect this whole pair of keys exists for. Across a CGM dropout the anchor freezes at the
+     * last measured reading while cycles keep firing, so many rows share one `anchorTsMs`. Keyed on
+     * the anchor, those cycles are mutually unreachable AND their zero gaps drag the median cadence
+     * to zero — which, clamped to 1 ms, gives a half-millisecond catchment and blanks the sweep over
+     * the ENTIRE window, healthy stretches included, looking exactly like "no forecasts stored here".
+     */
+    @Test fun aDropoutDoesNotCollapseTheCadenceOrHideItsCycles() {
+        // 6 healthy cycles, then 12 whose anchor is pinned at the last measured reading (cycle 5).
+        val rows = (0 until 6).map { pred(it) } + (6 until 18).map { pred(it, anchorC = 5, stale = true) }
+        val f = frameOf(rows)!!
+        assertEquals(18, f.cycles)
+        // The cadence is the ISSUE cadence, untouched by the repeated anchors.
+        assertEquals(STEP, f.cadenceMs)
+        // Every dropout cycle is individually reachable at its own issue instant — they tile the
+        // dropout rather than stacking on the instant it began.
+        for (c in 6 until 18) assertEquals(c, f.cycleAt((T0 + c * STEP).toDouble()))
+        // And the healthy stretch still works, which is what the cadence collapse also destroyed.
+        for (c in 0 until 6) assertEquals(c, f.cycleAt((T0 + c * STEP).toDouble()))
+    }
+
+    @Test fun theFanIsDrawnFromTheAnchorWhileTheCursorMatchesTheIssueInstant() {
+        // Six ordinary cycles, then one issued at +9 off the reading at +3.
+        val f = frameOf((0 until 6).map { pred(it) } + listOf(pred(9, anchorC = 3)))!!
+        assertEquals(STEP, f.cadenceMs)
+        // Found by when it was ISSUED...
+        assertEquals(6, f.cycleAt((T0 + 9 * STEP).toDouble()))
+        // ...and its ANCHOR instant is not a key: the cursor there finds the cycle actually issued
+        // then, not the later one that merely grew from that reading.
+        assertEquals(3, f.cycleAt((T0 + 3 * STEP).toDouble()))
+        // ...while the fan is drawn from that reading, half an hour to the cursor's left.
+        assertEquals(T0 + 9 * STEP, f.madeMs[6])
+        assertEquals(T0 + 3 * STEP, f.anchorMs[6])
+    }
+
+    @Test fun aStaleCycleIsCarriedSoItCanBeDrawnAsIneligible() {
+        val f = frameOf(listOf(pred(0), pred(1, stale = true)))!!
+        assertTrue(!f.stale[0])
+        assertTrue(f.stale[1])
+        // Stale is not degeneracy: the fan is kept, it is the eligibility that is flagged.
+        assertTrue(!f.degenerate[1])
+    }
+
+    @Test fun aZeroMedianGapFallsBackToTheGridStepRatherThanToAMillisecond() {
+        // Pathological but silent if unguarded: keys that do not tell cycles apart must not yield a
+        // catchment no finger can hit.
+        val rows = (0 until 5).map { pred(0) }
+        val f = frameOf(rows)!!
+        assertEquals(STEP, f.cadenceMs)
+        assertTrue(f.cycleAt(T0.toDouble()) >= 0)
     }
 
     @Test fun theCatchmentFollowsTheOBSERVEDCadenceNotTheGridStep() {

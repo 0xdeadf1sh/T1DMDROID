@@ -31,29 +31,45 @@ import kotlinx.coroutines.withContext
  * The block is RECTANGULAR: [span] and [stepMs] are fixed by the first accepted row and any row
  * disagreeing is dropped rather than reshaped, since a forecast at another horizon is not a shorter
  * version of this one. Step 0 of every cycle is the ANCHOR — the measured BG the forecast grew out
- * of, with a zero-width fan — mirroring what [buildPredSeries] prepends, so a hindsight fan sprouts
- * from the trace at its issue instant instead of floating one step clear of it.
+ * of, with a zero-width fan — mirroring what [buildPredSeries] prepends.
+ *
+ * **A cycle has TWO instants and they are not interchangeable.** [madeMs] is when the forecast was
+ * issued; [anchorMs] is the measured reading it was issued FROM. They coincide while the CGM is
+ * delivering, and they come apart exactly when it is not: the anchor is the newest MEASURED reading,
+ * so through a dropout it freezes while cycles keep firing. The cursor is therefore matched against
+ * [madeMs] — "the forecast issued at the instant under my thumb" is what the sweep means — and the
+ * fan is DRAWN from [anchorMs], because that is where its step 0 sits. Keying both on the anchor
+ * collapses every cycle of a dropout onto one instant: they become mutually unreachable, and their
+ * zero gaps drag the measured cadence to zero with them.
  */
 class HindsightFrame internal constructor(
-    /** Ascending cycle instants (`ModelPrediction.anchorTsMs`); the binary-search key. */
+    /** Ascending, strictly increasing ISSUE instants (`ModelPrediction.cycleTsMs`, the stored
+     *  `made_at`); the binary-search key, and the only array the cursor is matched against. */
+    val madeMs: LongArray,
+    /** Per cycle: the measured reading the forecast grew out of, and so the x of its step 0. Equal to
+     *  [madeMs] while the CGM is live; behind it, and repeating, across a dropout. */
     val anchorMs: LongArray,
     val stepMs: Long,
     /** Steps per cycle INCLUDING the prepended anchor point, i.e. `horizonSteps + 1`. */
     val span: Int,
-    /** The MEDIAN gap between consecutive cycles — the cadence inference actually ran at over this
-     *  window, measured rather than assumed. Half of it is the cursor's catchment. */
+    /** The MEDIAN gap between consecutive ISSUE instants — the cadence inference actually ran at over
+     *  this window, measured rather than assumed. Half of it is the cursor's catchment. */
     val cadenceMs: Long,
     val median: FloatArray,
     val lo: FloatArray,
     val hi: FloatArray,
     /** Per cycle: the forecast was not `OK` when it was made, so it is drawn fan-less. */
     val degenerate: BooleanArray,
+    /** Per cycle: its anchor was already past the freshness gate when it was issued (§3.6-D), so it
+     *  was never eligible to drive anything and must not be redrawn as though it had been. */
+    val stale: BooleanArray,
 ) {
-    val cycles: Int get() = anchorMs.size
-    val isEmpty: Boolean get() = anchorMs.isEmpty()
+    val cycles: Int get() = madeMs.size
+    val isEmpty: Boolean get() = madeMs.isEmpty()
 
     /**
-     * The cycle nearest [ms] within half [cadenceMs], or −1 when the cursor falls between cycles.
+     * The cycle ISSUED nearest [ms], within half [cadenceMs], or −1 when the cursor falls between
+     * cycles.
      *
      * The bound is the whole of what makes a sweep honest, and it is measured rather than fixed
      * because the cadence is not: adaptive mode forecasts on every reading and timed mode on a
@@ -64,14 +80,14 @@ class HindsightFrame internal constructor(
      * would look exactly like a forecast that had been issued there.
      */
     fun cycleAt(ms: Double): Int {
-        val n = anchorMs.size
+        val n = madeMs.size
         if (n == 0) return -1
         val half = cadenceMs / 2.0
-        if (ms < anchorMs[0] - half || ms > anchorMs[n - 1] + half) return -1
-        val hi = lowerBoundLong(anchorMs, kotlin.math.ceil(ms).toLong()).coerceIn(0, n - 1)
+        if (ms < madeMs[0] - half || ms > madeMs[n - 1] + half) return -1
+        val hi = lowerBoundLong(madeMs, kotlin.math.ceil(ms).toLong()).coerceIn(0, n - 1)
         val lo = (hi - 1).coerceAtLeast(0)
-        val dLo = kotlin.math.abs(anchorMs[lo] - ms)
-        val dHi = kotlin.math.abs(anchorMs[hi] - ms)
+        val dLo = kotlin.math.abs(madeMs[lo] - ms)
+        val dHi = kotlin.math.abs(madeMs[hi] - ms)
         val best = if (dLo <= dHi) lo else hi
         return if (kotlin.math.min(dLo, dHi) <= half) best else -1
     }
@@ -90,8 +106,8 @@ private const val BANDS = 3
  * series are garbage the moment they are copied out, which is why this runs once per window rather
  * than per frame.
  *
- * [rows] must be ascending by `anchorTsMs`; the DAO orders them so, and re-sorting a day of cycles
- * to re-discover that is work the query already did.
+ * [rows] must be ascending by `cycleTsMs` (the stored `made_at`); the DAO orders them so, and
+ * re-sorting a day of cycles to re-discover that is work the query already did.
  */
 suspend fun hindsightFrameOf(
     rows: List<ModelPrediction>,
@@ -123,19 +139,23 @@ suspend fun hindsightFrameOf(
             n + 1 == span && p.stepMs == stepMs
     }
 
+    val madeMs = LongArray(kept)
     val anchorMs = LongArray(kept)
     val median = FloatArray(kept * span)
     val lo = FloatArray(BANDS * kept * span)
     val hi = FloatArray(BANDS * kept * span)
     val degenerate = BooleanArray(kept)
+    val stale = BooleanArray(kept)
 
     var c = 0
     for (p in rows) {
         if (!admits(p)) continue
         val s = buildPredSeries(p, unit, kovatchevF) ?: continue
         if (s.size != span) continue
+        madeMs[c] = p.cycleTsMs
         anchorMs[c] = p.anchorTsMs
         degenerate[c] = s.degenerate
+        stale[c] = s.stale
         System.arraycopy(s.median, 0, median, c * span, span)
         for (b in 0 until BANDS) {
             val base = (b * kept + c) * span
@@ -148,7 +168,10 @@ suspend fun hindsightFrameOf(
     // trim rather than draw a cycle of zeroes at epoch 0.
     if (c == 0) return@withContext null
     if (c == kept) {
-        HindsightFrame(anchorMs, stepMs, span, cadenceOf(anchorMs, stepMs), median, lo, hi, degenerate)
+        HindsightFrame(
+            madeMs, anchorMs, stepMs, span, cadenceOf(madeMs, stepMs),
+            median, lo, hi, degenerate, stale,
+        )
     } else {
         val lo2 = FloatArray(BANDS * c * span)
         val hi2 = FloatArray(BANDS * c * span)
@@ -156,27 +179,34 @@ suspend fun hindsightFrameOf(
             System.arraycopy(lo, (b * kept) * span, lo2, (b * c) * span, c * span)
             System.arraycopy(hi, (b * kept) * span, hi2, (b * c) * span, c * span)
         }
-        val trimmed = anchorMs.copyOf(c)
+        val trimmedMade = madeMs.copyOf(c)
         HindsightFrame(
-            trimmed, stepMs, span, cadenceOf(trimmed, stepMs),
-            median.copyOf(c * span), lo2, hi2, degenerate.copyOf(c),
+            trimmedMade, anchorMs.copyOf(c), stepMs, span, cadenceOf(trimmedMade, stepMs),
+            median.copyOf(c * span), lo2, hi2, degenerate.copyOf(c), stale.copyOf(c),
         )
     }
 }
 
 /**
- * The MEDIAN gap between consecutive cycles, falling back to [stepMs] for a single cycle.
+ * The MEDIAN gap between consecutive ISSUE instants, falling back to [stepMs].
  *
  * The median rather than the mean or the minimum: a window almost always contains a few holes where
  * inference paused, and a mean would be dragged up by them until the catchment swallowed the holes
  * themselves, while a minimum would be pulled down by one tight pair until the sweep blinked between
  * every cycle. The median is whichever cadence actually prevailed.
+ *
+ * The fallback is [stepMs] and NOT a clamp to some small positive number. A non-positive median means
+ * the keys are not telling cycles apart, and a 1 ms cadence would give a half-millisecond catchment —
+ * which no finger can hit, so the whole sweep would go blank while looking exactly like "no forecasts
+ * stored here". Measured on `made_at` this should be unreachable, since the store admits one row per
+ * model per grid slot; it is guarded anyway, because the failure is silent and total.
  */
-private fun cadenceOf(anchorMs: LongArray, stepMs: Long): Long {
-    if (anchorMs.size < 2) return stepMs
-    val gaps = LongArray(anchorMs.size - 1) { anchorMs[it + 1] - anchorMs[it] }
+private fun cadenceOf(madeMs: LongArray, stepMs: Long): Long {
+    if (madeMs.size < 2) return stepMs
+    val gaps = LongArray(madeMs.size - 1) { madeMs[it + 1] - madeMs[it] }
     gaps.sort()
-    return gaps[gaps.size / 2].coerceAtLeast(1L)
+    val med = gaps[gaps.size / 2]
+    return if (med > 0L) med else stepMs
 }
 
 /**
@@ -205,14 +235,22 @@ internal fun DrawScope.drawHindsightFan(
 ) {
     val span = f.span
     if (span < 2) return
+    // The fan is drawn from the ANCHOR, not from the cursor: step 0 is the measured reading the
+    // forecast grew out of, so this is what makes the ghost sprout from the trace. Across a dropout
+    // the anchor sits behind the issue instant, and the gap between the two is itself the picture —
+    // a forecast made at 14:00 off a 12:00 reading should visibly start at 12:00.
     val t0 = f.anchorMs[c]
     val step = f.stepMs
     val mBase = c * span
+    val degenerate = f.degenerate[c]
+    val stale = f.stale[c]
 
     // The fan, outer band first so the inner ones stack over it. Skipped whole when the forecast was
     // degenerate the day it was made: a collapsed or misordered band must not read as confidence in
-    // hindsight any more than it may live.
-    if (!f.degenerate[c]) {
+    // hindsight any more than it may live. A stale one keeps its fan but wears it thinner, mirroring
+    // what the live overlay does with the same flag.
+    if (!degenerate) {
+        val dim = if (stale) 0.6f else 1f
         for (b in BANDS - 1 downTo 0) {
             val base = (b * f.cycles + c) * span
             val path = scratch.also { it.reset() }
@@ -225,32 +263,36 @@ internal fun DrawScope.drawHindsightFan(
                 path.lineTo(absToPx.of((t0 + i.toLong() * step).toDouble()), valToPx.of(f.lo[base + i]))
             }
             path.close()
-            drawPath(path, fanColor.copy(alpha = 0.07f + 0.05f * (BANDS - 1 - b)))
+            drawPath(path, fanColor.copy(alpha = (0.07f + 0.05f * (BANDS - 1 - b)) * dim))
         }
     }
 
-    // The median. Solid and full-width: this is a forecast that was actually issued, so it is drawn
-    // as an assertion the model once made rather than as the tentative thing a dash would suggest.
+    // The median. Solid and full-width for a forecast that was actually in force — it is an assertion
+    // the model once made, not the tentative thing a dash would suggest. Dashed and dimmed for one
+    // that was NOT: a §3.6-D stale forecast was already past its freshness gate when it was issued
+    // and was never eligible to drive anything, and hindsight is precisely where that would otherwise
+    // be invisible — the live overlay flags it while it is current, and nothing else ever would.
+    val notEligible = degenerate || stale
     var px = absToPx.of(t0.toDouble())
     var py = valToPx.of(f.median[mBase])
     for (i in 1 until span) {
         val nx = absToPx.of((t0 + i.toLong() * step).toDouble())
         val ny = valToPx.of(f.median[mBase + i])
         drawLine(
-            lineColor.copy(alpha = if (f.degenerate[c]) 0.5f else 0.95f),
+            lineColor.copy(alpha = if (notEligible) 0.5f else 0.95f),
             androidx.compose.ui.geometry.Offset(px, py),
             androidx.compose.ui.geometry.Offset(nx, ny),
             strokeWidth = 2.2f,
             cap = StrokeCap.Round,
-            pathEffect = if (f.degenerate[c]) HINDSIGHT_DEGENERATE_DASH else null,
+            pathEffect = if (notEligible) HINDSIGHT_DEGENERATE_DASH else null,
         )
         px = nx; py = ny
     }
     // A ring at the horizon end, so how far forward the swept forecast reached stays legible when it
-    // runs alongside the live fan. Withheld from a degenerate cycle for the same reason its fan is:
-    // the live overlay marks no endpoint on one either, and a ring reads as a claim about where the
-    // forecast arrived.
-    if (!f.degenerate[c]) {
+    // runs alongside the live fan. Withheld from a forecast that was not eligible, for the same reason
+    // its line is dashed: the live overlay marks no endpoint on one either, and a ring reads as a
+    // claim about where the forecast arrived.
+    if (!notEligible) {
         drawCircle(lineColor.copy(alpha = 0.9f), 3.2f, androidx.compose.ui.geometry.Offset(px, py), style = HINDSIGHT_END_RING)
     }
 }
