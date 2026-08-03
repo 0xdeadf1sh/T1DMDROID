@@ -148,7 +148,11 @@ fun buildGraphFrame(
         // indices (breakPrefix delta > 0), never merely because decimation spaced the points out.
         for (k in 0 until m - 1) breakAfter[k] = breakPrefix[srcIdx[k + 1]] - breakPrefix[srcIdx[k]] > 0
     }
-    return GraphFrame(t0, kept.first().tzOffsetMin, unit, xs, ys, flags, breakAfter, minY, maxY)
+    // The NEWEST reading's offset, not the oldest. The dashboard observes the whole store, so `first()`
+    // froze the axis on whatever offset was in force when the record began: after a DST transition or a
+    // move, every tick and the date row under it sat an hour off wall-clock for the life of the history.
+    // The last reading is the one whose offset the phone is actually keeping now.
+    return GraphFrame(t0, kept.last().tzOffsetMin, unit, xs, ys, flags, breakAfter, minY, maxY)
 }
 
 private fun convert(mgdl: Double, unit: UnitSpace, kovatchevF: ((Double) -> Double)?): Double =

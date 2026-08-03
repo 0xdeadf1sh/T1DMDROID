@@ -19,11 +19,23 @@ class GraphFrameTest {
     private val GRID = 300_000L                         // 5-min grid, epoch-ms
     private val T0 = 1_700_000_000_000L
 
-    private fun reading(ts: Long, bg: Int, flag: ReadingFlag = ReadingFlag.NORMAL) = CgmReading(
+    private fun reading(ts: Long, bg: Int, flag: ReadingFlag = ReadingFlag.NORMAL, tz: Int = 0) = CgmReading(
         sourceId = CgmSourceId("t"), tsMs = ts, bgMgdl = bg, trendTenthsPerMin = 0,
         minFromStart = 5, quality = 100, provenance = ReadingProvenance.MEASURED, flag = flag,
-        tzOffsetMin = 0, rxWallMs = ts, rssi = -60,
+        tzOffsetMin = tz, rxWallMs = ts, rssi = -60,
     )
+
+    @Test fun frameCarriesTheNewestOffset_notTheOldest() {
+        // The dashboard observes the WHOLE store, so a history begun at +120 and continuing past a DST
+        // transition at +60 must render on +60 — the offset the phone keeps now. Taking the first
+        // reading's froze the axis an hour off wall-clock for the life of the record, which the date row
+        // states outright as the wrong weekday either side of local midnight.
+        val summer = (0 until 10).map { reading(T0 + it * GRID, 120, tz = 120) }
+        val winter = (0 until 10).map { reading(T0 + (10 + it) * GRID, 120, tz = 60) }
+        assertEquals(60, buildGraphFrame(summer + winter).tzOffsetMin)
+        // Order of the input must not matter: the frame sorts by time, and the offset follows that sort.
+        assertEquals(60, buildGraphFrame(winter + summer).tzOffsetMin)
+    }
 
     @Test fun denseContinuousSeriesHasNoFabricatedBreaks() {
         // A 90-day series on the exact 5-min grid — the reported "chopped up" scenario. It far exceeds
