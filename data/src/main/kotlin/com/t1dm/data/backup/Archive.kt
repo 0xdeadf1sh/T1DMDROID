@@ -504,6 +504,14 @@ object Archive {
         )
     }
 
+    /**
+     * `ac` records WHICH source was live, and is read back only as a preference — never applied
+     * directly. Omitting it entirely (as this first did) left the restore with no way to tell the
+     * worn sensor from a retired one, so it activated whichever row happened to come first, which is
+     * the OLDEST the phone ever saw: the export walks `cgm_source` by `addedAtMs` ascending. On the
+     * fresh install this whole feature exists for, that pointed the reading path at a sensor that
+     * will never advertise again.
+     */
     fun write(w: RecordWriter, r: CgmSourceEntity) {
         w.open(T_SOURCE)
         w.put("sid", r.sourceId)
@@ -513,6 +521,7 @@ object Archive {
         w.put("wm", r.warmupWindowMin)
         w.put("aa", r.addedAtMs)
         w.putOrSkip("ls", r.lastSeenMs)
+        w.put("ac", r.active)
         w.close()
     }
 
@@ -532,6 +541,7 @@ object Archive {
         lastSeenMs = o.long("ls"),
     )
 
+    /** `ac` is a preference, exactly as on [write] for a source. */
     fun write(w: RecordWriter, r: ServerProfileEntity) {
         w.open(T_PROFILE)
         w.put("id", r.id)
@@ -539,6 +549,7 @@ object Archive {
         w.put("url", r.baseUrl)
         w.put("ca", r.createdAtMs)
         w.put("ua", r.updatedAtMs)
+        w.put("ac", r.active)
         w.close()
     }
 

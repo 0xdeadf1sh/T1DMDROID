@@ -18,6 +18,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import java.io.BufferedInputStream
 import java.io.BufferedReader
+import java.io.IOException
 import java.io.InputStream
 import java.io.InputStreamReader
 import java.util.zip.GZIPInputStream
@@ -74,19 +75,39 @@ class ArchiveReader(private val db: AppDatabase) {
 
         val state = MergeState()
         var truncated = true
-        var line = reader.readLine()
-        while (line != null) {
-            if (line.isNotEmpty()) {
-                val record = runCatching { Archive.json.parseToJsonElement(line).jsonObject }.getOrNull()
-                if (record == null) {
-                    state.skipped++
-                } else if (record.tag() == Archive.T_END) {
-                    truncated = false
-                } else {
-                    consume(record, state)
-                }
-            }
+        // A damaged archive stops the READ, never the restore.
+        //
+        // This catch is the whole of what makes the `end`-record design work, because the failure it
+        // handles is the ordinary one. Every archive is gzip, and a gzip member whose deflate stream
+        // or 8-byte trailer was cut short raises EOFException from deep inside the inflater on
+        // `readLine` — not a clean end-of-stream. Without this, the exception escaped `read()`
+        // entirely: the flush below never ran, the partial restore was never committed or counted,
+        // and the caller reported "Restore failed — Unexpected end of ZLIB input stream" for a file
+        // most of which was perfectly good. Losing a single trailing byte was enough to do it, even
+        // with every record including the terminator already read.
+        //
+        // `truncated` is left to say what it always said: whether the terminator was seen. A file
+        // that lost only its gzip trailer still carries a complete record set and is reported whole.
+        var line: String? = null
+        try {
             line = reader.readLine()
+            while (line != null) {
+                if (line.isNotEmpty()) {
+                    val record = runCatching { Archive.json.parseToJsonElement(line).jsonObject }.getOrNull()
+                    if (record == null) {
+                        state.skipped++
+                    } else if (record.tag() == Archive.T_END) {
+                        truncated = false
+                    } else {
+                        consume(record, state)
+                    }
+                }
+                line = reader.readLine()
+            }
+        } catch (_: IOException) {
+            // Swallowed deliberately, and reported through the result rather than a log: `truncated`
+            // and the applied/skipped tallies are what the panel shows the user, and they are a
+            // better account of what happened than a message they will never see.
         }
 
         flushStreamed(state)
@@ -302,30 +323,30 @@ class ArchiveReader(private val db: AppDatabase) {
         }
 
         if (s.foods.isNotEmpty()) {
-            val present = db.foodDao().customKeys().mapTo(HashSet()) { it.name to it.brand }
-            val fresh = s.foods.filter { present.add(it.name to it.brand) }
+            val budget = Multiset(db.foodDao().customKeys().map { it.name to it.brand })
+            val fresh = s.foods.filter { budget.claim(it.name to it.brand) }
             if (fresh.isNotEmpty()) db.foodDao().insertAll(fresh)
             s.applied = s.applied.copy(foods = fresh.size)
             s.duplicates += s.foods.size - fresh.size
         }
 
         if (s.insulinTypes.isNotEmpty()) {
-            val present = db.insulinTypeDao().customNames().toHashSet()
-            val fresh = s.insulinTypes.filter { present.add(it.name) }
+            val budget = Multiset(db.insulinTypeDao().customNames())
+            val fresh = s.insulinTypes.filter { budget.claim(it.name) }
             if (fresh.isNotEmpty()) db.insulinTypeDao().insertAll(fresh)
             s.applied = s.applied.copy(insulinTypes = fresh.size)
             s.duplicates += s.insulinTypes.size - fresh.size
         }
 
         if (s.savedMeals.isNotEmpty()) {
-            val present = db.savedMealDao().names().toHashSet()
+            val budget = Multiset(db.savedMealDao().names())
             // Archive index → the local row id the insert minted. Items whose meal was skipped as a
             // duplicate find no entry here and are dropped with it, rather than being orphaned onto
             // a meal that already has its own portions.
             val idByIndex = HashMap<Int, Long>(s.savedMeals.size)
             var mealsAdded = 0
             for ((ix, meal) in s.savedMeals) {
-                if (!present.add(meal.name)) continue
+                if (!budget.claim(meal.name)) continue
                 idByIndex[ix] = db.savedMealDao().insertMeal(meal)
                 mealsAdded++
             }
@@ -345,19 +366,21 @@ class ArchiveReader(private val db: AppDatabase) {
         // reading from — or syncing to — something the user never selected. When the table is empty
         // the FIRST restored row may take it, which is what makes a fresh install usable at once.
         if (s.sources.isNotEmpty()) {
-            var free = db.cgmSourceDao().activeCount() == 0
+            val free = db.cgmSourceDao().activeCount() == 0
             val rows = s.sources.mapNotNull { o ->
                 runCatching { Archive.readSource(o, active = false) }.getOrNull()
             }
-            val ids = db.cgmSourceDao().insertIgnoreAll(rows)
-            var added = 0
-            for ((i, id) in ids.withIndex()) {
-                if (id == -1L) continue
-                added++
-                if (free) {
-                    db.cgmSourceDao().setActive(rows[i].sourceId)
-                    free = false
-                }
+            val added = db.cgmSourceDao().insertIgnoreAll(rows).count { it != -1L }
+            if (free) {
+                // Every row landed inactive; exactly one is then chosen. The archive's own flag first
+                // — it names the sensor that was actually being worn — and the most recently HEARD
+                // source as the fallback for an archive written before the flag was carried. Never
+                // the first row: `cgm_source` accumulates every sensor the phone has ever seen and
+                // the export walks it oldest-first, so "first" means the one longest retired.
+                val claimed = s.sources.firstOrNull { it.bool("ac") == true }?.str("sid")
+                val target = claimed?.takeIf { id -> rows.any { it.sourceId == id } }
+                    ?: rows.maxByOrNull { it.lastSeenMs ?: Long.MIN_VALUE }?.sourceId
+                if (target != null) db.cgmSourceDao().setActive(target)
             }
             s.applied = s.applied.copy(sources = added)
             s.duplicates += rows.size - added
@@ -365,19 +388,18 @@ class ArchiveReader(private val db: AppDatabase) {
         }
 
         if (s.profiles.isNotEmpty()) {
-            var free = db.serverProfileDao().activeCount() == 0
+            val free = db.serverProfileDao().activeCount() == 0
             val rows = s.profiles.mapNotNull { o ->
                 runCatching { Archive.readProfile(o, active = false) }.getOrNull()
             }
-            val ids = db.serverProfileDao().insertIgnoreAll(rows)
-            var added = 0
-            for ((i, id) in ids.withIndex()) {
-                if (id == -1L) continue
-                added++
-                if (free) {
-                    db.serverProfileDao().setActive(rows[i].id)
-                    free = false
-                }
+            val added = db.serverProfileDao().insertIgnoreAll(rows).count { it != -1L }
+            if (free) {
+                // Same rule as the sources above; the fallback here is the most recently updated
+                // profile, there being no "last seen" for a server.
+                val claimed = s.profiles.firstOrNull { it.bool("ac") == true }?.str("id")
+                val target = claimed?.takeIf { id -> rows.any { it.id == id } }
+                    ?: rows.maxByOrNull { it.updatedAtMs }?.id
+                if (target != null) db.serverProfileDao().setActive(target)
             }
             s.applied = s.applied.copy(profiles = added)
             s.duplicates += rows.size - added
@@ -393,6 +415,37 @@ class ArchiveReader(private val db: AppDatabase) {
 
     private suspend fun <R> tx(body: suspend () -> R): R =
         db.useWriterConnection { transactor -> transactor.immediateTransaction { body() } }
+
+    /**
+     * How many rows the store already holds under each natural key, spent down as archived rows are
+     * matched against it.
+     *
+     * A plain "seen" set was wrong here, and quietly so. `saved_meal.name`, `food.(name, brand)` and
+     * `insulin_type.name` carry no unique index and nothing on the write path enforces one — a user
+     * may legitimately keep two saved meals called "Breakfast". Adding each archived row's key to a
+     * set as it was accepted made the SECOND such row look like a duplicate of the first, so it was
+     * dropped, its portions were dropped with it, and both were reported as rows the phone already
+     * held. On an empty device, a restore lost data and said it had skipped nothing.
+     *
+     * Counting fixes it while keeping the idempotence that matters: N archived rows sharing a key
+     * against M local ones insert exactly `max(0, N - M)`, so re-importing the same file still
+     * changes nothing the second time.
+     */
+    private class Multiset<K>(present: Collection<K>) {
+        private val counts = HashMap<K, Int>()
+
+        init {
+            for (k in present) counts[k] = (counts[k] ?: 0) + 1
+        }
+
+        /** True when this key has no local row left to account for it — i.e. insert it. */
+        fun claim(key: K): Boolean {
+            val remaining = counts[key] ?: 0
+            if (remaining == 0) return true
+            counts[key] = remaining - 1
+            return false
+        }
+    }
 
     /** Everything in flight across the read: the pending batches, the lazily-loaded key sets, and
      *  the running tallies. One object so a flush needs no six-parameter signature. */

@@ -175,18 +175,34 @@ class ArchiveCodecTest {
 
     @Test
     fun `a source and a profile take their active flag from the caller, never from the file`() {
-        val srcLine = render {
-            Archive.write(
-                it,
-                com.t1dm.data.db.CgmSourceEntity(
-                    sourceId = "s", vendorId = "v", displayName = "d", serialSuffix = null,
-                    active = true, warmupWindowMin = 60, addedAtMs = 1L, lastSeenMs = 2L,
-                ),
-            )
-        }
+        val srcLine = render { Archive.write(it, source(active = true)) }
         assertFalse("the archive dictated the active flag", Archive.readSource(parse(srcLine), active = false).active)
         assertTrue(Archive.readSource(parse(srcLine), active = true).active)
     }
+
+    @Test
+    fun `the archive records WHICH source was active, as a preference the reader may consult`() {
+        // The flag is not applied directly — the restore decides, because the exactly-one-active
+        // invariant is the local table's to keep. But it must be RECORDED: without it the restore
+        // had no way to tell the worn sensor from a retired one and fell back to file order, which
+        // is oldest-first.
+        assertEquals(true, parse(render { Archive.write(it, source(active = true)) }).bool("ac"))
+        assertEquals(false, parse(render { Archive.write(it, source(active = false)) }).bool("ac"))
+    }
+
+    @Test
+    fun `a source record written before the active flag existed still decodes`() {
+        // Additive field: an archive from the first build carries no `ac`, and must not fail here —
+        // the reader falls back to the most recently seen source instead.
+        val old = """{"t":"source","sid":"s","vid":"v","dn":"d","wm":60,"aa":1,"ls":2}"""
+        assertEquals("s", Archive.readSource(parse(old), active = false).sourceId)
+        assertNull(parse(old).bool("ac"))
+    }
+
+    private fun source(active: Boolean) = com.t1dm.data.db.CgmSourceEntity(
+        sourceId = "s", vendorId = "v", displayName = "d", serialSuffix = null,
+        active = active, warmupWindowMin = 60, addedAtMs = 1L, lastSeenMs = 2L,
+    )
 
     // ── the wide projection ───────────────────────────────────────────────────────────────────
 
