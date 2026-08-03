@@ -12,7 +12,9 @@ import androidx.compose.ui.unit.dp
 object GraphInsets {
     val Left: Dp = 46.dp
     val Right: Dp = 12.dp
-    val Bottom: Dp = 20.dp
+
+    /** Two stacked label rows below the plot: the local-time ticks, and the date row under them. */
+    val Bottom: Dp = 32.dp
 
     /** The strip the model's predicted-clock axis occupies above the plot. */
     val ModelAxis: Dp = 14.dp

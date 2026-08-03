@@ -76,6 +76,7 @@ import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
+import java.util.Locale
 import kotlin.math.floor
 import kotlin.math.log10
 import kotlin.math.pow
@@ -1468,10 +1469,32 @@ private fun formatValue(v: Float, unit: UnitSpace): String = when (unit) {
 private fun zoneOf(tzOffsetMin: Int) = ZoneOffset.ofTotalSeconds(tzOffsetMin * 60)
 private val HHMM: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
 private val MMDD: DateTimeFormatter = DateTimeFormatter.ofPattern("MM-dd")
+private val MONTH: DateTimeFormatter = DateTimeFormatter.ofPattern("MMMM", Locale.ENGLISH)
+private val WEEKDAY: DateTimeFormatter = DateTimeFormatter.ofPattern("EEEE", Locale.ENGLISH)
 
 private fun formatTime(ms: Long, tzOffsetMin: Int, stepMs: Long): String {
     val odt = Instant.ofEpochMilli(ms).atOffset(zoneOf(tzOffsetMin))
     return if (stepMs >= 720L * 60_000L) odt.format(MMDD) else odt.format(HHMM)
+}
+
+/**
+ * The date row's label — `January 7th, Wednesday` — for the local day [ms] falls in.
+ *
+ * English rather than the device locale, deliberately: the ordinal suffix has no analogue outside it,
+ * so a translated month and weekday wrapped around an English `th` would read as half a translation.
+ */
+internal fun formatAxisDate(ms: Long, tzOffsetMin: Int): String {
+    val d = Instant.ofEpochMilli(ms).atOffset(zoneOf(tzOffsetMin))
+    return "${d.format(MONTH)} ${d.dayOfMonth}${ordinalSuffix(d.dayOfMonth)}, ${d.format(WEEKDAY)}"
+}
+
+/** The teens take `th` whatever their last digit would otherwise claim — 11th, 12th, 13th. */
+private fun ordinalSuffix(day: Int): String = when {
+    day / 10 == 1 -> "th"
+    day % 10 == 1 -> "st"
+    day % 10 == 2 -> "nd"
+    day % 10 == 3 -> "rd"
+    else -> "th"
 }
 
 private fun formatClock(ms: Long, tzOffsetMin: Int): String =
@@ -1620,6 +1643,42 @@ fun DrawScope.drawGraphFurniture(
             }
             tick += tStepMs
         }
+        // (3b) The date row, under the local-time labels: one label per calendar day in view, centred on
+        //      that day's VISIBLE span. A day is named only where its span is wide enough to hold the
+        //      whole label, which both keeps a sliver of a day either side of midnight from claiming a
+        //      caption it cannot support and makes two labels colliding impossible — each sits inside
+        //      its own stretch of axis, so the stretches being disjoint is the whole argument.
+        //
+        //      Suppressed once the ticks are THEMSELVES dates (`formatTime` turns to `MM-dd` at a 12 h
+        //      step), where the row would only restate the label above it in a second format. That is
+        //      also what bounds this loop: the step reaches 12 h by a 42 h span, so at most three days
+        //      are ever walked — where the zoom ceiling is the whole stored history, and an unbounded
+        //      walk would measure a label per day, on the UI thread, to draw none of them.
+        if (tStepMs < 720L * 60_000L) {
+            val dateStyle = TextStyle(color = labelColor, fontSize = 9.sp)
+            val dateTop = plotBottom + 3f + measurer.measure("00:00", labelStyle).size.height + 1f
+            // The strip below the plot is dp and the labels in it are sp, so past roughly a 1.4 font
+            // scale the two rows outgrow it. Pin the date row to the strip's floor rather than let it
+            // draw off the bottom of the panel — the trade the model axis already makes at its ceiling.
+            val stripFloor = plotBottom + GraphInsets.Bottom.toPx()
+            val dayMs = 86_400_000L
+            var dayStart = floor((viewStartMs + tzMs) / dayMs) * dayMs - tzMs
+            while (dayStart < endMs) {
+                val visFrom = dayStart.coerceAtLeast(viewStartMs)
+                val visTo = (dayStart + dayMs).coerceAtMost(endMs)
+                // Any instant inside the day names it; local noon is the one no offset can push out of it.
+                val dms = (dayStart + dayMs / 2).toLong()
+                val lbl = measurer.measure(labels.date(dms, tzOffsetMin) { formatAxisDate(dms, tzOffsetMin) }, dateStyle)
+                val spanPx = ((visTo - visFrom) * ppm).toFloat()
+                if (spanPx >= lbl.size.width) {
+                    val cx = (plotLeft + ((visFrom + visTo) / 2.0 - viewStartMs) * ppm).toFloat()
+                    val y = dateTop.coerceAtMost(stripFloor - lbl.size.height)
+                    drawText(lbl, topLeft = Offset(cx - lbl.size.width / 2f, y))
+                }
+                dayStart += dayMs
+            }
+        }
+
         // Timezone caption on the local axis, and the model-axis tag / n/a note.
         val tzCap = measurer.measure(tzLabel(tzOffsetMin), TextStyle(color = axisColor, fontSize = 8.sp))
         drawText(tzCap, topLeft = Offset(2f, plotBottom + 3f))

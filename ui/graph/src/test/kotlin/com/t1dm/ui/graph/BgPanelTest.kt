@@ -321,4 +321,33 @@ class BgPanelTest {
         // overload of excursionsOf that accepts a RolledForecast/RolledSeries — the seam is the type gap.
         assertTrue(excursionsOf(emptyList(), lowMgdl = 70, highMgdl = 180, nowMs = anchor).isEmpty())
     }
+
+    // ── the date row beneath the time axis ───────────────────────────────────────────────────────
+
+    /** 2026-01-07T00:00Z — a Wednesday. */
+    private val WED_JAN_7 = 1_767_744_000_000L
+
+    @Test fun axisDate_readsAsMonthOrdinalWeekday() {
+        assertEquals("January 7th, Wednesday", formatAxisDate(WED_JAN_7, 0))
+    }
+
+    @Test fun axisDate_namesTheLocalDay_notTheUtcOne() {
+        // 23:00 UTC on the 6th is already the 7th an hour east; the axis is local end to end.
+        val late = WED_JAN_7 - 3_600_000L
+        assertEquals("January 7th, Wednesday", formatAxisDate(late, 60))
+        assertEquals("January 6th, Tuesday", formatAxisDate(late, 0))
+    }
+
+    @Test fun axisDate_ordinalSuffixes() {
+        val jan1 = 1_767_225_600_000L // 2026-01-01T00:00Z
+        val expected = mapOf(
+            1 to "1st", 2 to "2nd", 3 to "3rd", 4 to "4th", 10 to "10th",
+            11 to "11th", 12 to "12th", 13 to "13th", 20 to "20th",
+            21 to "21st", 22 to "22nd", 23 to "23rd", 31 to "31st",
+        )
+        for ((day, token) in expected) {
+            val s = formatAxisDate(jan1 + (day - 1) * 86_400_000L, 0)
+            assertTrue("day $day rendered as \"$s\"", s.startsWith("January $token, "))
+        }
+    }
 }

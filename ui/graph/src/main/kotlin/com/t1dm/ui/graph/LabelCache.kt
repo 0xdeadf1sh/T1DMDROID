@@ -24,11 +24,13 @@ package com.t1dm.ui.graph
 class GraphLabelCache {
     private val values = HashMap<Int, String>()
     private val times = HashMap<Long, String>()
+    private val dates = HashMap<Long, String>()
     private val clocks = HashMap<Long, String>()
 
     private var valuesTag = Int.MIN_VALUE
     private var timesTag = Int.MIN_VALUE
     private var timesStep = Long.MIN_VALUE
+    private var datesTag = Int.MIN_VALUE
     private var clocksTag: Any? = Unit
 
     /** [tag] is everything the formatter depends on besides [v] — here, the unit space. */
@@ -53,6 +55,19 @@ class GraphLabelCache {
         }
         if (times.size > MAX) times.clear()
         return times.getOrPut(ms, compute)
+    }
+
+    /**
+     * The date row beneath the time axis, keyed on an instant inside the day it names.
+     *
+     * It gets its own map rather than sharing [times]: at or above a 12 h tick step the ticks are
+     * themselves dates, so one instant is a key in both rows and would have to answer `01-07` there
+     * and `January 7th, Wednesday` here.
+     */
+    fun date(ms: Long, tzOffsetMin: Int, compute: () -> String): String {
+        if (tzOffsetMin != datesTag) { dates.clear(); datesTag = tzOffsetMin }
+        if (dates.size > MAX) dates.clear()
+        return dates.getOrPut(ms, compute)
     }
 
     /**

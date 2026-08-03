@@ -156,8 +156,8 @@ internal fun PaintStyleDialog(
 internal const val PAINT_WIDTH_MIN_DP = 1f
 
 /**
- * Set by the panel the pen has to fit rather than by taste. The plot box is 176–190 dp tall (220 dp
- * less the 10 dp top inset — 24 dp once the model's predicted-clock axis is up — and the 20 dp bottom
+ * Set by the panel the pen has to fit rather than by taste. The plot box is 164–178 dp tall (220 dp
+ * less the 10 dp top inset — 24 dp once the model's predicted-clock axis is up — and the 32 dp bottom
  * one), so 120 dp floods it in two passes; past that the round cap's radius exceeds the box's
  * half-height and every tap lands as a full-panel dab, which is a worse implement, not a bigger one.
  *
