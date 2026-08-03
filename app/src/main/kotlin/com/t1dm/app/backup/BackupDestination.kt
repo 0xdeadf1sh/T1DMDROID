@@ -4,7 +4,8 @@ import java.io.InputStream
 import java.io.OutputStream
 
 /** One stored backup, as the panel lists it and the retention sweep ranks it. [id] is opaque and
- *  belongs to the destination that issued it — a document URI here, a file id elsewhere. */
+ *  belongs to the destination that issued it — a stringified document URI, which only
+ *  [SafFolderDestination] may interpret. */
 class StoredBackup(
     val id: String,
     val name: String,
@@ -15,10 +16,10 @@ class StoredBackup(
 /**
  * Where backups are written, listed and pruned.
  *
- * The seam exists for one reason: a second destination — Google Drive over its REST API — is a
- * plausible next step, and it must not require reopening the worker, the retention sweep or the
- * panel to add. Everything above this interface is written in terms of it and knows nothing of SAF,
- * tree grants or content resolvers.
+ * It buys one thing today: the worker, the retention sweep and the panel are all written in terms of
+ * this interface and know nothing of SAF — no tree grants, no content resolvers, no
+ * `DocumentsContract`. That keeps the scheduling and retention logic testable as ordinary code and
+ * confines the platform surface to [SafFolderDestination], which is the only implementation.
  *
  * It is a thin seam on purpose. [write] takes a body that is handed the stream rather than returning
  * bytes, so a multi-megabyte archive is never materialised to hand across the boundary — the
@@ -26,7 +27,7 @@ class StoredBackup(
  */
 interface BackupDestination {
 
-    /** What the panel calls this destination — the folder's name here, an account elsewhere. */
+    /** What the panel calls this destination — the granted folder's display name. */
     val label: String
 
     /**
