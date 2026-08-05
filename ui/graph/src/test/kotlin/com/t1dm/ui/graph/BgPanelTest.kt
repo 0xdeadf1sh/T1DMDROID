@@ -25,6 +25,23 @@ class BgPanelTest {
 
     private val STEP = 300_000L
 
+    @Test fun curveOverlayIndexAtRejectsThePreGridWindow() {
+        // Integer division truncates toward zero, so the five minutes BEFORE the grid start used to
+        // resolve to bucket 0 and hand the scrub read-out the first bucket's rates as though they
+        // were the rates under the cursor. Reachable whenever history outruns the overlay's cap.
+        val g = 1_700_000_000_000L / STEP * STEP
+        val f = buildCurveOverlay(doubleArrayOf(9.0, 1.0, 2.0), doubleArrayOf(0.5, 0.1, 0.2), g, STEP)
+        assertEquals(-1, f.indexAt(g - 1))
+        assertEquals(-1, f.indexAt(g - STEP))
+        assertEquals(0f, f.carbAt(g - 1), 0f)
+        assertEquals(0f, f.insulinAt(g - 1), 0f)
+        // The grid itself is unaffected.
+        assertEquals(0, f.indexAt(g))
+        assertEquals(9f, f.carbAt(g), 1e-6f)
+        assertEquals(2, f.indexAt(g + 2 * STEP))
+        assertEquals(-1, f.indexAt(g + 3 * STEP))
+    }
+
     // ── item 1: fixed Y-axis span ────────────────────────────────────────────────────────────────
 
     @Test fun fixedRange_alwaysCoversConfiguredWindow() {

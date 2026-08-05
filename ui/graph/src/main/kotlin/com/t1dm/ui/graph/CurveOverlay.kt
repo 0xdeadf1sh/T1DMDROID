@@ -49,10 +49,18 @@ class CurveOverlayFrame internal constructor(
     /** Absolute epoch-ms at the LEFT edge of bucket [i]. */
     fun tsAt(i: Int): Long = gridStartMs + i.toLong() * stepMs
 
-    /** Bucket index containing absolute epoch-ms [ms], or -1 when outside the grid. */
+    /**
+     * Bucket index containing absolute epoch-ms [ms], or -1 when outside the grid.
+     *
+     * `floorDiv`, not `/`: integer division truncates TOWARD ZERO, so any instant in the five minutes
+     * BEFORE `gridStartMs` divides to 0 and would resolve to bucket 0. The window is capped at a
+     * fortnight of buckets and anchored on its recent end, so with more history than that the panel
+     * is scrubbable to the left of the grid — and there [carbAt]/[insulinAt] would report the first
+     * bucket's rates as though they were the rates under the cursor.
+     */
     fun indexAt(ms: Long): Int {
         if (size == 0) return -1
-        val i = ((ms - gridStartMs) / stepMs).toInt()
+        val i = Math.floorDiv(ms - gridStartMs, stepMs).toInt()
         return if (i in 0 until size) i else -1
     }
 
