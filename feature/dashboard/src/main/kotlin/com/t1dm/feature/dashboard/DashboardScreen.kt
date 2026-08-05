@@ -351,13 +351,25 @@ fun DashboardScreen(
     // [showSmoothed] rather than a third field on [toggles]: that type is the pair of model-input
     // channels one resolve yields, and steps are neither reconstructed nor a model input.
     //
-    // Built only while the overlay is ON, unlike [curveOverlay] — nothing else reads it. The curve
-    // frame is built regardless because the scrub read-out reports its rates with the overlay hidden,
-    // and there is no such second reader here, so an untouched chip costs one Room query at most.
+    // Built whenever a loader is wired, NOT gated on the chip — the same rule [curveOverlay] follows,
+    // and for the same reason: the scrub read-out reports the steps at the cursor whether or not the
+    // band is painting them, so a chip governs what is DRAWN and never what the panel knows. The cost
+    // is one sparse indexed query per readings emit (about one per five minutes), off the main thread.
     var showSteps by remember { mutableStateOf(false) }
-    val stepsFrame by produceState<StepsFrame?>(null, readings, stepSeries, showSteps) {
+    // A coarse tick on the 5-min grid. The steps window's right edge comes from the CLOCK, not from
+    // the reading stream — steps keep accruing while the CGM is out of range — but a producer keyed
+    // only on `readings` would never re-run during exactly that outage, and the widened window would
+    // be inert. This changes value once per bucket, so it re-keys the producer at most every five
+    // minutes however often it is polled.
+    val stepGridTick by produceState(0L) {
+        while (true) {
+            value = System.currentTimeMillis() / STEP_MS
+            kotlinx.coroutines.delay(30_000)
+        }
+    }
+    val stepsFrame by produceState<StepsFrame?>(null, readings, stepSeries, stepGridTick) {
         val load = stepSeries
-        if (load == null || !showSteps || readings.isEmpty()) {
+        if (load == null || readings.isEmpty()) {
             value = null
             return@produceState
         }

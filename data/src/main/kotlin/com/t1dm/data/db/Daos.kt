@@ -196,12 +196,16 @@ interface SampleDao {
     suspend fun stepsInRange(fromMs: Long, toMs: Long): Int
 
     /** The per-bucket step series the BG panel's Steps overlay draws, oldest-first — the buckets
-     *  [stepsInRange] sums away, as two columns rather than [rangeList]'s whole rows. NULL and zero
-     *  buckets are dropped in SQL: neither draws a bar, and on a sleeping night they are most of the
-     *  window, so the densify upstream walks a short list into a bounded array. */
+     *  [stepsInRange] sums away, as two columns rather than [rangeList]'s whole rows.
+     *
+     *  Only NULL is dropped; a recorded ZERO is deliberately kept. The two are not the same fact.
+     *  `:sensors` finalizes a still five minutes as a genuine `0` (`StepBucketer`), whereas a bucket
+     *  with no row was never measured at all — no step sensor, no permission, or the service was
+     *  down. The scrub read-out reports the first and must stay silent about the second, so the
+     *  distinction has to survive this query instead of being flattened into it. */
     @Query(
         "SELECT ts, steps FROM sample WHERE ts BETWEEN :fromMs AND :toMs " +
-            "AND steps IS NOT NULL AND steps > 0 ORDER BY ts",
+            "AND steps IS NOT NULL ORDER BY ts",
     )
     suspend fun stepSeriesInRange(fromMs: Long, toMs: Long): List<StepBucketRow>
 

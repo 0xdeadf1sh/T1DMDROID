@@ -105,6 +105,10 @@ data class GraphScrub(
     val carbRate: Float?,
     /** Raw insulin action (units per 5-min) at the cursor, or null when no overlay is present. */
     val insulinRate: Float?,
+    /** Steps recorded in the 5-min bucket at the cursor, or null when the cursor is off the pedometer
+     *  grid entirely. A genuine 0 is reported as 0 — "they were still" is an answer; "no bucket" is
+     *  not, and that is the case this is null for. */
+    val steps: Int?,
     /** The model's predicted clock hour in `[0,24)` at the cursor, or null when the probe is absent. */
     val modelHour: Double?,
     val unit: UnitSpace,
@@ -536,7 +540,7 @@ fun GlucoseGraph(
             else frame.nearestIndex(ms),
         )
         scrubMs = ms
-        onScrub?.invoke(buildScrub(frame, predictions, curveOverlay, predictedClock, rolled, ms))
+        onScrub?.invoke(buildScrub(frame, predictions, curveOverlay, stepsFrame, predictedClock, rolled, ms))
     })
     val scrubEnd by rememberUpdatedState<() -> Unit>({
         haptics.perform(HapticEvent.DragEnd)
@@ -1207,7 +1211,7 @@ fun GlucoseGraph(
                 if (!scrubMs.isNaN()) {
                     val cx = (plotLeft + (scrubMs - viewStartMs) * ppm).toFloat()
                     if (cx in plotLeft..plotRight) {
-                        val sc = buildScrub(frame, predictions, curveOverlay, predictedClock, rolled, scrubMs)
+                        val sc = buildScrub(frame, predictions, curveOverlay, stepsFrame, predictedClock, rolled, scrubMs)
                         drawLine(cs.onSurface.copy(alpha = 0.5f), Offset(cx, plotTop), Offset(cx, plotBottom), 1f)
                         sc.bgValue?.let { drawCircle(cs.onSurface, 4f, Offset(cx, yToPx(it)), style = scrubDotStroke) }
                         // I4 — a STABLE, TABULATED read-out: a two-column table (short label ⟶ right-aligned
@@ -1228,7 +1232,14 @@ fun GlucoseGraph(
                         val boxH = padV * 2f + lineH * rows.size + rowGap * (rows.size - 1)
                         // Fixed at the right-hand middle of the plot.
                         val bx = (plotRight - boxW - 6f).coerceAtLeast(plotLeft)
-                        val by = ((plotTop + plotBottom) / 2f - boxH / 2f).coerceIn(plotTop, plotBottom - boxH)
+                        // The maximum is floored at `plotTop` before use, because `coerceIn` THROWS
+                        // when its maximum is below its minimum — and `plotBottom - boxH` drops below
+                        // `plotTop` the moment the box is taller than the plot. `boxH` is a function
+                        // of the ROW COUNT, so every row added to this read-out raises the plot height
+                        // below which a scrub would crash rather than overflow. Pinned to the top
+                        // instead, and the plot clip takes the overhang.
+                        val by = ((plotTop + plotBottom) / 2f - boxH / 2f)
+                            .coerceIn(plotTop, (plotBottom - boxH).coerceAtLeast(plotTop))
                         drawRoundRect(
                             cs.primary,
                             topLeft = Offset(bx, by),
@@ -1258,6 +1269,7 @@ internal fun buildScrub(
     frame: GraphFrame,
     predictions: List<PredSeries>,
     overlay: CurveOverlayFrame?,
+    stepsFrame: StepsFrame?,
     clock: PredictedClock?,
     rolled: RolledSeries?,
     ms: Double,
@@ -1296,6 +1308,10 @@ internal fun buildScrub(
         bgExtrapolated = extrapolated,
         carbRate = carb,
         insulinRate = insulin,
+        // Read from the frame regardless of whether the Steps overlay is being DRAWN, exactly as the
+        // carb/insulin rates above are: the read-out reports what was measured at the cursor, and a
+        // chip governs what the band paints, not what the panel knows.
+        steps = stepsFrame?.stepsAt(ms.toLong()),
         modelHour = modelHour,
         unit = frame.unit,
     )
@@ -1326,7 +1342,7 @@ private fun predictedClockLabel(ms: Long, clock: PredictedClock): String {
 
 /** Every label the read-out's left column can show; the label column is sized from the widest of these
  *  fixed strings (I4) so the box never resizes as rows appear or vanish under the cursor. */
-private val SCRUB_LABELS = listOf("BG", "Carb", "Ins", "Local", "Model")
+private val SCRUB_LABELS = listOf("BG", "Carb", "Ins", "Steps", "Local", "Model")
 
 /** The widest VALUE the right column can ever hold (a carb rate / insulin rate reads "199.9 g" / "99.99 U",
  *  both wider than any BG or clock value — including the widest BG there is, a Kovatchev "-1.23" carrying
@@ -1353,6 +1369,8 @@ internal fun scrubRows(sc: GraphScrub): List<Pair<String, String>> {
     out.add("BG" to bgStr)
     sc.carbRate?.let { out.add("Carb" to "%.1f g".format(it)) }
     sc.insulinRate?.let { out.add("Ins" to "%.2f U".format(it)) }
+    // Steps sits with the other measured channels, above the two clock rows.
+    sc.steps?.let { out.add("Steps" to it.toString()) }
     out.add("Local" to formatClock(sc.tsMs, sc.tzOffsetMin))
     sc.modelHour?.let {
         val hh = floor(it).toInt(); val mm = ((it - hh) * 60.0).roundToInt().coerceIn(0, 59)

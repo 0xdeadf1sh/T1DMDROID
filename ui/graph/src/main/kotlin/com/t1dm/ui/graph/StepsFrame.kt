@@ -14,7 +14,8 @@ import kotlin.math.max
  *
  * Same off-thread, immutable-primitive-array discipline as [CurveOverlayFrame]: `:app` reads the
  * sparse `sample.steps` buckets out of Room and densifies them into one [IntArray] before this is
- * built, so the Canvas never touches a Room row, a boxed `Int?`, or a list.
+ * built, so the Canvas never touches a Room row, a boxed `Int?`, or a list. A bucket the pedometer
+ * never measured holds [NO_DATA], which is NOT the same as a measured zero — see that constant.
  *
  * Coordinates are grid-absolute exactly as [CurveOverlayFrame]'s are — bucket `i` spans
  * `[gridStartMs + i·stepMs, +stepMs)` — so the bars line up with the BG viewport's projection and a
@@ -37,6 +38,25 @@ class StepsFrame internal constructor(
     fun tsAt(i: Int): Long = gridStartMs + i.toLong() * stepMs
 
     /**
+     * Steps measured in the bucket containing [ms], or null when there is no measurement to report —
+     * either because [ms] is outside the grid, or because that bucket is [NO_DATA].
+     *
+     * Null rather than `0` on a miss, unlike [CurveOverlayFrame.carbAt]. The read-out must be able to
+     * say nothing: a bucket nothing was watching has no pedometer fact, and printing `0` for it would
+     * assert the patient was still through hours the sensor was off. A measured `0` is a different
+     * answer — they WERE still — and that one does return 0 and does show the row.
+     */
+    fun stepsAt(ms: Long): Int? {
+        if (steps.isEmpty()) return null
+        // floorDiv, not `/`: integer division truncates TOWARD ZERO, so an instant one millisecond
+        // before the grid starts divides to 0 and would read bucket 0 — reporting the first bucket's
+        // steps for a cursor that is outside the grid altogether.
+        val i = Math.floorDiv(ms - gridStartMs, stepMs).toInt()
+        if (i !in steps.indices) return null
+        return steps[i].takeIf { it != NO_DATA }
+    }
+
+    /**
      * The bucket [ms] falls in, CLAMPED into the array rather than answered as a sentinel — so a
      * viewport wholly before or after the grid still yields a legal (degenerate) range. Used only to
      * bound the draw's viewport cull, exactly as [CurveOverlayFrame.clampedIndexAt] is.
@@ -52,6 +72,20 @@ class StepsFrame internal constructor(
     }
 
     companion object {
+        /**
+         * The value a bucket holds when the pedometer never measured it — no step sensor, no
+         * permission, or the foreground service was down for that stretch.
+         *
+         * Distinct from `0`, which is a MEASUREMENT: `:sensors` finalizes a still five minutes as a
+         * genuine zero. Collapsing the two would have the read-out assert that the patient took no
+         * steps during hours nothing was watching, which is the fail-closed rule inverted — so the
+         * densify in `:app` pre-fills with this and overwrites only the buckets a row came back for.
+         *
+         * Negative on purpose: every scan here starts its running maximum at 0, so an unmeasured
+         * bucket can never become the frame's peak and never scales a bar.
+         */
+        const val NO_DATA: Int = -1
+
         val EMPTY = StepsFrame(0L, 300_000L, IntArray(0), 0)
     }
 }
@@ -63,7 +97,8 @@ suspend fun stepsFrameOf(
     stepMs: Long = 300_000L,
 ): StepsFrame = withContext(Dispatchers.Default) { buildStepsFrame(steps, gridStartMs, stepMs) }
 
-/** Pure transform (no coroutines) — safe from a `@Preview`/test. */
+/** Pure transform (no coroutines) — safe from a `@Preview`/test. Unmeasured buckets carry
+ *  [StepsFrame.NO_DATA]; the peak scan starts at 0, so they cannot become the frame's maximum. */
 fun buildStepsFrame(
     steps: IntArray,
     gridStartMs: Long,

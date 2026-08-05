@@ -1,6 +1,7 @@
 package com.t1dm.ui.graph
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -65,6 +66,47 @@ class StepsBarTest {
         assertEquals(0, f.clampedIndexAt(T0 - 10 * STEP.toDouble()))
         assertEquals(2, f.clampedIndexAt(T0 + 99 * STEP.toDouble()))
         assertEquals(1, f.clampedIndexAt((T0 + STEP).toDouble()))
+    }
+
+    // ── stepsAt: what the scrub read-out reads ───────────────────────────────────────────────────
+
+    @Test fun stepsAtReadsTheBucketAndDistinguishesStillFromUnmeasured() {
+        // Bucket 2 was never measured; bucket 0 was measured as a genuine still five minutes.
+        val f = buildStepsFrame(intArrayOf(0, 30, StepsFrame.NO_DATA, 90), T0)
+        // A MEASURED zero is an answer — they were still — so the row appears saying 0.
+        assertEquals(0, f.stepsAt(T0)!!.toInt())
+        assertEquals(30, f.stepsAt(T0 + STEP)!!.toInt())
+        // Anywhere inside a bucket reads that bucket, not the nearest edge.
+        assertEquals(30, f.stepsAt(T0 + STEP + 299_999L)!!.toInt())
+        assertEquals(90, f.stepsAt(T0 + 3 * STEP)!!.toInt())
+        // An UNMEASURED bucket is not a zero. Reporting 0 here would assert the patient was still
+        // through a stretch nothing was watching — the fail-closed rule inverted.
+        assertNull(f.stepsAt(T0 + 2 * STEP))
+        // Outside the grid there is likewise nothing to report.
+        assertNull(f.stepsAt(T0 - 1))
+        assertNull(f.stepsAt(T0 + 4 * STEP))
+        assertNull(StepsFrame.EMPTY.stepsAt(T0))
+    }
+
+    @Test fun anEntirelyUnmeasuredWindowDrawsNothingAndReportsNothing() {
+        // The device with no step sensor, or without the permission: every bucket is the sentinel.
+        // The frame must read as empty (no bars, no divide by a zero peak) AND the read-out must
+        // stay silent at every cursor rather than printing a column of zeros across the window.
+        val f = buildStepsFrame(IntArray(64) { StepsFrame.NO_DATA }, T0)
+        assertTrue("an unmeasured window is empty", f.isEmpty)
+        assertEquals(0, emit(f).bars.size)
+        for (i in 0 until 64) assertNull(f.stepsAt(T0 + i * STEP))
+    }
+
+    @Test fun theSentinelNeverScalesABar() {
+        // NO_DATA is negative so it can never become the peak; the bars must be scaled by the real
+        // maximum, and an unmeasured bucket must emit nothing at all.
+        val f = buildStepsFrame(intArrayOf(StepsFrame.NO_DATA, 50, StepsFrame.NO_DATA, 100), T0)
+        assertEquals(100, f.max)
+        val bars = emit(f).bars
+        assertEquals(2, bars.size)
+        assertEquals(92f, bars[1].height, 1e-3f)
+        assertEquals(46f, bars[0].height, 1e-3f)
     }
 
     // ── bar geometry ─────────────────────────────────────────────────────────────────────────────

@@ -93,6 +93,7 @@ import com.t1dm.core.nativecore.UniffiNativeCore
 import com.t1dm.app.stats.AppStatsSource
 import com.t1dm.data.PushWithdrawal
 import com.t1dm.data.T1dmRepository
+import com.t1dm.ui.graph.StepsFrame
 import com.t1dm.data.backup.ArchiveCounts
 import com.t1dm.data.backup.ArchiveResult
 import com.t1dm.data.backup.NotAnArchiveException
@@ -1890,14 +1891,18 @@ class AppContainer(context: Context) {
      *
      * The DENSIFY happens here, on the IO hop, for two reasons. It keeps `:feature:dashboard` free of
      * any `:data` type — the panel is handed a primitive array and never a Room row, as it is for the
-     * curve channels. And the read itself is sparse: a sleeping night stores no rows for its buckets
-     * at all, so walking a short result into a zeroed array costs less than making SQL emit the
-     * zeroes, and the panel gets the dense array its frame builder wants either way.
+     * curve channels. And the read is sparse: only buckets the pedometer actually recorded have rows
+     * at all, so scattering a short result into a pre-filled array costs less than making SQL emit a
+     * value per bucket, and the panel gets the dense array its frame builder wants either way.
      */
     suspend fun dashboardStepSeries(gridStartMs: Long, nSteps: Int): IntArray {
         if (nSteps <= 0) return IntArray(0)
         val step = T1dmRepository.GRID_MS
-        val out = IntArray(nSteps)
+        // Pre-filled with the NOT-MEASURED sentinel rather than with zeros. A bucket the query
+        // returns no row for was never watched — no step sensor, no permission, or the service was
+        // down — and zero-filling it would have the read-out report that the patient was still
+        // through it. Only buckets a row came back for are overwritten, so a recorded 0 stays one.
+        val out = IntArray(nSteps) { StepsFrame.NO_DATA }
         val endMs = gridStartMs + (nSteps - 1).toLong() * step
         for (row in repository.stepSeriesInRange(gridStartMs, endMs)) {
             val i = ((row.ts - gridStartMs) / step).toInt()

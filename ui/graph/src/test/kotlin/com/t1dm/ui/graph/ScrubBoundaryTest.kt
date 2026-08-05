@@ -79,7 +79,7 @@ class ScrubBoundaryTest {
     )!!
 
     private fun scrubAt(steps: Double, predictions: List<PredSeries> = listOf(validated)) =
-        buildScrub(frame, predictions, null, null, roll, T0 + steps * STEP)
+        buildScrub(frame, predictions, null, null, null, roll, T0 + steps * STEP)
 
     private fun bgRow(sc: GraphScrub) = scrubRows(sc).first()
 
@@ -148,12 +148,12 @@ class ScrubBoundaryTest {
         assertEquals("BG" to "--", bgRow(beyond))
 
         // Same past the validated horizon when no roll has been requested.
-        val noRoll = buildScrub(frame, listOf(validated), null, null, null, T0 + 40.0 * STEP)
+        val noRoll = buildScrub(frame, listOf(validated), null, null, null, null, T0 + 40.0 * STEP)
         assertNull(noRoll.bgValue)
     }
 
     @Test fun thePastSideIsUnchanged() {
-        val past = buildScrub(frame, listOf(validated), null, null, roll, T0 - 3.0 * STEP)
+        val past = buildScrub(frame, listOf(validated), null, null, null, roll, T0 - 3.0 * STEP)
         assertEquals(100f, past.bgValue!!, 1e-3f)
         assertFalse(past.inPredZone)
         assertFalse(past.bgExtrapolated)
