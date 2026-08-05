@@ -30,6 +30,25 @@ data class CgmSourceDescriptor(
     val warmupWindowMin: Int,      // seeded per vendor, then user-tunable; drives the WARMUP heuristic
     val passiveOnly: Boolean,      // AiDEX X: true (advertisement-only, no GATT session)
 ) {
+    /**
+     * [displayName] with the serial the vendor plugin folded into it removed — "AiDEX X" rather than
+     * "AiDEX X 22222C74D9".
+     *
+     * For the surfaces that name the source by its role rather than by unit: the BG panel says which
+     * source a reading came from, exactly one is ever active, and there the serial is noise. The CGM
+     * panel and CGM settings exist to tell one sensor from another and keep [displayName] and
+     * [serialSuffix].
+     *
+     * Falls back to the full name when stripping would leave nothing, or when the vendor did not build
+     * the name out of the serial at all.
+     */
+    val shortName: String
+        get() {
+            val serial = serialSuffix ?: return displayName
+            val stripped = displayName.removeSuffix(serial).trimEnd()
+            return stripped.ifEmpty { displayName }
+        }
+
     companion object {
         /**
          * The bounds the user may tune [warmupWindowMin] to (minutes), per source. The *seed* for a

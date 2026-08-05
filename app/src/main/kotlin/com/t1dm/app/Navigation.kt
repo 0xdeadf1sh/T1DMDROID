@@ -1066,7 +1066,9 @@ private fun T1dmNavHost(
             DashboardScreen(
                 readings = readings,
                 latest = latest,
-                activeSourceName = active?.displayName,
+                // The name alone — the panel identifies the source, not the unit, so the serial the
+                // vendor folded into `displayName` is dropped here. Settings → CGM keeps it.
+                activeSourceName = active?.shortName,
                 unit = glucoseUnit,
                 thresholds = container.alarmConfig.thresholds,
                 predictions = inference.predictions,
