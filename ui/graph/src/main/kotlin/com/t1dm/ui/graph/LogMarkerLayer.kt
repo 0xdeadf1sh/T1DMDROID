@@ -44,11 +44,11 @@ import kotlin.math.abs
  * viewport and is worth pinning in a test.
  */
 
-/** The marker glyph's edge, in dp. Larger than a nav icon on purpose: the mark is read at a glance
- *  across a busy evening and is also the panel's only TAP TARGET, and a glyph small enough to be
- *  elegant was too small to be either. The clustering below is what keeps a dense day a row of marks
- *  rather than a wall — it scales with this constant, so the two cannot disagree. */
-internal const val LOG_MARKER_DP = 30f
+/** The marker glyph's edge, in dp. Small enough that the marks read as annotation on the trace rather
+ *  than furniture over it — at the cost of the panel's only TAP TARGET, whose reach derives from this
+ *  and is now well under the platform's 48 dp guideline. The clustering below is what keeps a dense day
+ *  a row of marks rather than a wall — it scales with this constant, so the two cannot disagree. */
+internal const val LOG_MARKER_DP = 15f
 
 /** Clear space between two marks that did NOT combine, in dp. Added to [LOG_MARKER_DP] it gives the
  *  clustering distance, so two drawn marks can never touch: single-linkage guarantees the gap between

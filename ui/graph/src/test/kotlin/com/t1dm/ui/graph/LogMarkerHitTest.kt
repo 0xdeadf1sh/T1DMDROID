@@ -19,8 +19,12 @@ import org.junit.Test
  *
  * The geometry is deliberately trivial: `dpPx = 1`, so a dp IS a pixel and every constant can be read
  * off the source; and a 1000 px plot over a 1 000 000 ms window, so **1 px == 1000 ms** and every mark
- * stands at the x its timestamp spells. At that density the glyph is 30 px, two marks combine within
- * 33 px, a tap reaches 16.5 px, and the band is the 65 px above the plot floor.
+ * stands at the x its timestamp spells.
+ *
+ * Spacings that must land on one side or the other of the clustering distance are DERIVED from it
+ * ([STEP], [STRADDLE]) rather than written as figures. The glyph is one constant and everything follows
+ * it, so a fixture that spelled out a pixel count would fix this file to one glyph size and fail the
+ * next time that constant moves — which is exactly what it did.
  */
 class LogMarkerHitTest {
 
@@ -35,6 +39,15 @@ class LogMarkerHitTest {
     // The middle of each glyph, taken from the production geometry rather than restated from it.
     private val insulinLaneY = logMarkerLaneTop(CurveKind.INSULIN, BOTTOM, DP) + LOG_MARKER_DP * DP / 2f
     private val carbLaneY = logMarkerLaneTop(CurveKind.CARB, BOTTOM, DP) + LOG_MARKER_DP * DP / 2f
+
+    /** A gap two marks always combine across: half the clustering distance, so a whole run of them
+     *  chains into one mark however long it is. In px, which at this projection is also in ms/1000. */
+    private val STEP = logMarkerSeparationPx(DP) / 2f
+
+    /** How far outside the plot a STRADDLING mark's centroid sits — a third of a glyph, so a sixth of
+     *  it still shows inside the clip and clustering still emits it (the cull reaches a whole
+     *  separation past the edge). */
+    private val STRADDLE = LOG_MARKER_DP * DP / 3f
 
     private fun carb(offsetMs: Long, state: LogState = LogState.DELIVERED) =
         LogMarker(T0 + offsetMs, CurveKind.CARB, state)
@@ -81,7 +94,7 @@ class LogMarkerHitTest {
         // The reach is derived from the clustering distance precisely so this cannot happen: two marks
         // that stayed apart are more than a separation apart, and the reach is half of it. Swept across
         // the whole gap, no tap ever names more than the one lane's nearest mark.
-        val feed = listOf(carb(0), carb(40_000)) // 40 px apart: past the 33 px separation ⇒ two marks
+        val feed = listOf(carb(0), carb(40_000)) // 40 px apart: past the separation ⇒ two marks
         var hits0 = 0
         var hits1 = 0
         var x = -20f
@@ -126,14 +139,17 @@ class LogMarkerHitTest {
         // has erased most of it. The reach alone would answer a tap on the axis labels; the plot
         // bound is what refuses it, while the glyph's visible half stays tappable from inside.
         val feed = listOf(carb(0))
-        val straddling = T0.toDouble() + 10_000.0 // the mark projects to x = −10: 5 px of it shows
+        val straddling = T0.toDouble() + STRADDLE * 1000.0 // the mark projects to x = −STRADDLE
         var x = LEFT - logMarkerTapReachPx(DP)
         while (x < LEFT) {
             assertTrue("a tap at $x reached into the gutter", tap(feed, x, carbLaneY, straddling).isEmpty())
             x += 0.5f
         }
         assertEquals(listOf(0), tap(feed, LEFT, carbLaneY, straddling))
-        assertEquals(listOf(0), tap(feed, LEFT + 6f, carbLaneY, straddling))
+        // The far end of the reach, from the inside: the last x that is still within a reach of a
+        // centroid sitting STRADDLE px out.
+        val lastInReach = LEFT + (logMarkerTapReachPx(DP) - STRADDLE) - 0.5f
+        assertEquals(listOf(0), tap(feed, lastInReach, carbLaneY, straddling))
     }
 
     @Test fun aMarkTheClipErasedCannotBeTappedAtAll() {
@@ -162,10 +178,10 @@ class LogMarkerHitTest {
         // As soon as one lane's mark absorbs a neighbour its centroid moves off the other's, so the two
         // glyphs are no longer vertically aligned. The column is still one column: hit-testing each lane
         // independently at the same x is what keeps it so, and a single lane-picking hit test could not.
-        val feed = listOf(insulin(250_000), insulin(270_000), carb(250_000))
-        // The insulin mark now stands at 260 px, the carb at 250 — 10 px apart, both within reach of a
-        // tap between them.
-        val out = tap(feed, 255f, carbLaneY)
+        val feed = listOf(insulin(250_000), insulin(250_000 + (STEP * 1000).toLong()), carb(250_000))
+        // The two insulins combined, so their mark stands half a STEP right of the carb's. A tap on the
+        // insulin centroid is still within reach of the carb, and must name all three.
+        val out = tap(feed, 250f + STEP / 2f, carbLaneY)
         assertEquals(listOf(0, 1, 2), out)
     }
 
@@ -178,13 +194,14 @@ class LogMarkerHitTest {
     // ── the clustered glyph names every log behind it ────────────────────────────────────────────
 
     @Test fun aCombinedMarkNamesEveryLogItStandsFor() {
-        val feed = listOf(carb(0), carb(20_000), carb(40_000)) // chained: 0 → 20 → 40 px, each ≤ 33
-        assertEquals(listOf(0, 1, 2), tap(feed, 20f, carbLaneY))
+        val step = (STEP * 1000).toLong()
+        val feed = listOf(carb(0), carb(step), carb(2 * step)) // chained, single-linkage, at their mean
+        assertEquals(listOf(0, 1, 2), tap(feed, STEP, carbLaneY))
     }
 
     @Test fun aCombinedMarkNamesOnlyItsOwnMembers() {
-        val feed = listOf(carb(0), carb(20_000), carb(500_000))
-        assertEquals(listOf(0, 1), tap(feed, 10f, carbLaneY))
+        val feed = listOf(carb(0), carb((STEP * 1000).toLong()), carb(500_000))
+        assertEquals(listOf(0, 1), tap(feed, STEP / 2f, carbLaneY))
         assertEquals(listOf(2), tap(feed, 500f, carbLaneY))
     }
 
