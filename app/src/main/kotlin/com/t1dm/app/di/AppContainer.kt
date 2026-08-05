@@ -1991,7 +1991,9 @@ class AppContainer(context: Context) {
     }
 
     private val sensitivityProbe by lazy {
-        SensitivityProbe(rollingForecaster, bolusResolver, probeCarbResolver, anchorSource)
+        SensitivityProbe(rollingForecaster, bolusResolver, probeCarbResolver, anchorSource) {
+            inferenceController.authorityModelInfo()?.takeIf { it.real }?.id
+        }
     }
 
     /** §3.6-D anchor facts from the active source's recent grid readings (fail-closed: null ⇒ no signal). */
@@ -2145,7 +2147,25 @@ class AppContainer(context: Context) {
      */
     fun refreshSensitivityIfStale() {
         val now = System.currentTimeMillis()
-        val held = sensitivity.value
+        var held = sensitivity.value
+
+        // A selection change invalidates the figure OUTRIGHT — it describes the artifact it was
+        // probed on, and the whole point of switching models is to compare them. Age has nothing to
+        // say about it: a two-minute-old estimate from the model you just replaced is exactly as
+        // wrong as a two-hour-old one, and waiting out the TTL to find that out is the behaviour
+        // this branch exists to remove.
+        //
+        // Read from the controller rather than taken as a parameter: `selectedId` is set under
+        // `cycleMutex` by `selectModel` and is true the instant the user taps, whereas the UI's view
+        // of the selection comes from `predictions`, which carries no entry for a model that has not
+        // forecast yet — precisely the case here, since the model was just switched to.
+        val selectedModelId = runCatching { inferenceController.authorityModelInfo()?.id }.getOrNull()
+        if (held != null && held.modelId != selectedModelId) {
+            sensitivity.value = null
+            lastProbeAtMs = null   // the retry/TTL clock belongs to the old model too
+            held = null
+        }
+
         // Age is absolute, not elapsed: a backwards clock correction must expire a held estimate
         // rather than freeze it. This runs BEFORE every other branch, so the lapse is enforced on
         // each call even when nothing below decides to re-probe.

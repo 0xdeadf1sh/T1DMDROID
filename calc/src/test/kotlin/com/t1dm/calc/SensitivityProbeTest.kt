@@ -23,14 +23,18 @@ class SensitivityProbeTest {
 
     private val now = 1_900_000_000_000L
     private val config = CalcConfig()
+    private val MODEL = "t1dm-ft-2026-08"
 
     private class FakeCarbResolver : CarbResolver {
         override suspend fun resolve(grams: Double, atMs: Long): List<CurveEvent> =
             listOf(CurveEvent(atMs, STEP_MS, CurveKind.CARB, grams, listOf(grams)))
     }
 
-    private fun probeOf(port: ForecastPort, anchor: AnchorInfo? = fakeAnchor(now)) =
-        SensitivityProbe(port, FakeBolusResolver(), FakeCarbResolver(), { anchor })
+    private fun probeOf(
+        port: ForecastPort,
+        anchor: AnchorInfo? = fakeAnchor(now),
+        modelIds: () -> String? = { MODEL },
+    ) = SensitivityProbe(port, FakeBolusResolver(), FakeCarbResolver(), { anchor }, { modelIds() })
 
     @Test
     fun isf_and_icr_are_the_terminal_median_displacements() = runTest {
@@ -43,6 +47,23 @@ class SensitivityProbeTest {
         assertEquals("ICR is the grams one unit cancels", 5.0, est.icrGPerU, 1e-9)
         assertEquals("stamped at the probe instant", now, est.atMs)
         assertEquals("horizon is the validated window", 24L * STEP_MS, est.horizonMs)
+        assertEquals("stamped with the artifact it describes", MODEL, est.modelId)
+    }
+
+    // ── the estimate belongs to one model ─────────────────────────────────────────────────────────
+
+    @Test
+    fun no_selected_model_yields_no_figure() = runTest {
+        assertNull(probeOf(FakeForecastPort(), modelIds = { null }).probe(now, config))
+    }
+
+    @Test
+    fun a_selection_changed_mid_probe_yields_no_figure() = runTest {
+        // Three rolls are comparable only if one artifact produced all of them; a switch between the
+        // first and last would otherwise be reported as the new model's sensitivity.
+        val ids = ArrayDeque(listOf("model-a", "model-b"))
+        val probe = probeOf(FakeForecastPort(), modelIds = { ids.removeFirstOrNull() ?: "model-b" })
+        assertNull(probe.probe(now, config))
     }
 
     @Test
@@ -67,31 +88,41 @@ class SensitivityProbeTest {
         }
     }
 
+    // ── a response that was obtained is REPORTED, whatever it says ────────────────────────────────
+    // This is the read-out's remaining job. A model whose marginal insulin response is wrong-signed
+    // is a fact about the artifact, and it was invisible while the probe filtered it out: the panel
+    // showed nothing, which is indistinguishable from the feature being broken. That is how a real
+    // model defect stayed hidden until the probe was instrumented by hand.
+
     @Test
-    fun an_insulin_response_in_the_wrong_direction_withholds_the_estimate() = runTest {
-        // A model whose forecast RISES on insulin cannot yield a sensitivity, at any magnitude.
-        val port = FakeForecastPort(mgdlPerU = -15.0, mgdlPerG = 3.0)
-        assertNull(probeOf(port).probe(now, config))
+    fun an_insulin_response_in_the_wrong_direction_is_reported_not_hidden() = runTest {
+        val est = probeOf(FakeForecastPort(mgdlPerU = -15.0, mgdlPerG = 3.0)).probe(now, config)!!
+        assertEquals("a model that RAISES BG on insulin says so", -15.0, est.isfMgdlPerU, 1e-9)
+        assertEquals(-5.0, est.icrGPerU, 1e-9)
     }
 
     @Test
-    fun a_carb_response_in_the_wrong_direction_withholds_the_estimate() = runTest {
-        val port = FakeForecastPort(mgdlPerU = 15.0, mgdlPerG = -3.0)
-        assertNull(probeOf(port).probe(now, config))
+    fun a_carb_response_in_the_wrong_direction_is_reported_not_hidden() = runTest {
+        val est = probeOf(FakeForecastPort(mgdlPerU = 15.0, mgdlPerG = -3.0)).probe(now, config)!!
+        assertEquals(15.0, est.isfMgdlPerU, 1e-9)
+        assertEquals("a negative carb response inverts the ratio", -5.0, est.icrGPerU, 1e-9)
     }
 
     @Test
-    fun a_response_under_the_noise_floor_withholds_the_estimate() = runTest {
-        // 0.5 mg/dL per unit and per 10 g are both under MIN_RESPONSE_MGDL — a flat model, not a
-        // sensitive one, and dividing by the carb term here is what would print an absurd ICR.
-        assertNull(
-            "insulin term too small",
-            probeOf(FakeForecastPort(mgdlPerU = 0.5, mgdlPerG = 3.0)).probe(now, config),
-        )
-        assertNull(
-            "carb term too small",
-            probeOf(FakeForecastPort(mgdlPerU = 15.0, mgdlPerG = 0.05)).probe(now, config),
-        )
+    fun a_tiny_response_is_reported_not_hidden() = runTest {
+        val flat = probeOf(FakeForecastPort(mgdlPerU = 0.5, mgdlPerG = 3.0)).probe(now, config)!!
+        assertEquals(0.5, flat.isfMgdlPerU, 1e-9)
+
+        // A barely-responsive carb roll divides to a large ratio. Reported, not filtered.
+        val wide = probeOf(FakeForecastPort(mgdlPerU = 15.0, mgdlPerG = 0.05)).probe(now, config)!!
+        assertEquals(300.0, wide.icrGPerU, 1e-6)
+    }
+
+    @Test
+    fun a_zero_carb_response_yields_no_figure_at_all() = runTest {
+        // The one arithmetic that produces no number rather than a bad one: ISF/0 is an infinity,
+        // which is an absence of a figure, not a figure. The panel renders this as N/A.
+        assertNull(probeOf(FakeForecastPort(mgdlPerU = 15.0, mgdlPerG = 0.0)).probe(now, config))
     }
 
     @Test
@@ -176,20 +207,14 @@ class SensitivityProbeTest {
         assertNull(probeOf(FakeForecastPort(), fabricated).probe(now, config))
     }
 
-    // ── no magnitude band ─────────────────────────────────────────────────────────────────────────
-    // A correctly-signed figure is reported whatever its size; the panel names the horizon so it is
-    // read as the marginal response it is. Only direction and the noise floor refuse.
-
     @Test
-    fun a_correctly_signed_figure_is_reported_at_any_magnitude() = runTest {
-        // carbRise 1.05 clears the noise floor against a normal insulinDrop of 40 ⇒ 381 g/U. The
-        // accepted cost of dropping the band: the divisor is floored, the quotient is not.
+    fun a_figure_is_reported_at_any_magnitude() = runTest {
         val wide = probeOf(FakeForecastPort(mgdlPerU = 40.0, mgdlPerG = 0.105)).probe(now, config)!!
         assertEquals(40.0, wide.isfMgdlPerU, 1e-9)
         assertEquals(381.0, wide.icrGPerU, 1.0)
 
-        // isf 5 against carbRise 100 ⇒ 0.5 g/U, which the panel renders with a decimal rather than
-        // rounding it to the "0g/U" a whole-gram format would print.
+        // 0.5 g/U, which the panel renders with a decimal rather than rounding it to the "0g/U" a
+        // whole-gram format would print.
         val tiny = probeOf(FakeForecastPort(mgdlPerU = 5.0, mgdlPerG = 10.0)).probe(now, config)!!
         assertEquals(0.5, tiny.icrGPerU, 1e-9)
 

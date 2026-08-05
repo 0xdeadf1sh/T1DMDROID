@@ -23,4 +23,11 @@ data class SensitivityEstimate(
     val horizonMs: Long,
     val isfMgdlPerU: Double,
     val icrGPerU: Double,
+    /**
+     * The selected model this was probed on. These figures are a property of one artifact, not of the
+     * patient — comparing two models is much of what the read-out is for — so an estimate that cannot
+     * name its model could be read against the wrong one. A selection change makes the held figure
+     * stale immediately, whatever its age says.
+     */
+    val modelId: String,
 )

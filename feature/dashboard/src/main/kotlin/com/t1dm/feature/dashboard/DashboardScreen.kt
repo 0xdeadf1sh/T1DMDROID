@@ -54,8 +54,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
@@ -894,22 +898,49 @@ private fun OverlayControls(
         // on-board-now then per-unit-response then how old the insulin fact is. Assembled as parts
         // rather than concatenated fragments: the estimate is independently absent from the IOB/COB
         // pair, and either missing half must not leave a stray separator behind.
-        val readout = remember(iobCob, sensitivity, unit) {
-            buildList {
+        //
+        // Unlike every other segment here, the ICR/ISF pair is shown even when there is nothing to
+        // show — as "N/A". A blank where a figure belongs cannot be told apart from a feature that
+        // never shipped, and the pair's whole remaining purpose is to report what the model does.
+        val ink = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+        val suspectInk = MaterialTheme.colorScheme.error
+        val readout = remember(iobCob, sensitivity, unit, ink, suspectInk) {
+            buildAnnotatedString {
+                val parts = ArrayList<AnnotatedString.Builder.() -> Unit>()
                 iobCob?.let {
-                    add("IOB ${"%.1f".format(it.iobU)}U")
-                    add("COB ${"%.0f".format(it.cobG)}g")
+                    parts += { append("IOB ${"%.1f".format(it.iobU)}U") }
+                    parts += { append("COB ${"%.0f".format(it.cobG)}g") }
                 }
-                sensitivity?.let {
-                    add("ICR ${gramsPerU(it.icrGPerU)}")
-                    // The horizon rides the ISF rather than each figure: it qualifies both, and the
-                    // pair is always shown together. Without it these wear two clinical names whose
-                    // textbook meaning is the WHOLE action of a dose, while what is measured is the
-                    // marginal response at the validated window — reliably the smaller number.
-                    add("ISF ${isfLabel(it.isfMgdlPerU, unit)} @${horizonLabel(it.horizonMs)}")
+                parts += {
+                    if (sensitivity == null) {
+                        append("ICR/ISF N/A")
+                    } else {
+                        // Wrong-signed is objectively wrong — insulin does not raise BG and carbs do
+                        // not lower it — so it is coloured rather than silently normal. Magnitude is
+                        // NOT judged here: no band survives, and inventing one in the renderer would
+                        // put back the filter that was deliberately removed.
+                        val suspect = sensitivity.isfMgdlPerU <= 0.0 || sensitivity.icrGPerU <= 0.0
+                        withStyle(SpanStyle(color = if (suspect) suspectInk else ink)) {
+                            append("ICR ${gramsPerU(sensitivity.icrGPerU)}")
+                            append(" · ")
+                            // The horizon rides the ISF rather than each figure: it qualifies both,
+                            // and the pair is always shown together. Without it these wear two
+                            // clinical names whose textbook meaning is the WHOLE action of a dose,
+                            // while what is measured is the marginal response at the validated
+                            // window — reliably the smaller number.
+                            append("ISF ${isfLabel(sensitivity.isfMgdlPerU, unit)} @${horizonLabel(sensitivity.horizonMs)}")
+                        }
+                    }
                 }
-                iobCob?.minsSinceLastLoggedInsulin?.let { add("logged ${it}m ago") }
-            }.joinToString(" · ")
+                iobCob?.minsSinceLastLoggedInsulin?.let { m -> parts += { append("logged ${m}m ago") } }
+
+                withStyle(SpanStyle(color = ink)) {
+                    parts.forEachIndexed { i, part ->
+                        if (i > 0) append(" · ")
+                        part()
+                    }
+                }
+            }
         }
         if (readout.isNotEmpty() || showNextForecast) {
             Row(
@@ -920,7 +951,7 @@ private fun OverlayControls(
                     Text(
                         readout,
                         style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                        color = ink,
                     )
                 }
                 if (showNextForecast) {
@@ -952,9 +983,10 @@ private fun isfLabel(isfMgdlPerU: Double, unit: UnitSpace): String = when (unit)
 }
 
 /** Grams per unit, with a decimal only where whole grams would lose the figure: nothing bounds the
- *  ratio below any more, and "%.0f" renders anything under 0.5 as a flat "0g/U". */
+ *  ratio any more, and "%.0f" renders anything under 0.5 — including a negative near zero — as a
+ *  flat "0g/U", which is the one rendering that would hide the sign the reader needs. */
 private fun gramsPerU(g: Double): String =
-    if (g < 10.0) "%.1fg/U".format(g) else "%.0fg/U".format(g)
+    if (Math.abs(g) < 10.0) "%.1fg/U".format(g) else "%.0fg/U".format(g)
 
 /** The probe's window, as the shortest true thing: "2h", or "90m" when it is not whole hours. */
 private fun horizonLabel(horizonMs: Long): String {

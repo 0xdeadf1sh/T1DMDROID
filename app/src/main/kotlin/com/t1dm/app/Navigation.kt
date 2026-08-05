@@ -1158,7 +1158,15 @@ private fun T1dmNavHost(
             val scope = rememberCoroutineScope()
             ModelsScreen(
                 state = inference,
-                onSelect = { id -> scope.launch { container.inferenceController.selectModel(id) } },
+                onSelect = { id ->
+                    scope.launch {
+                        container.inferenceController.selectModel(id)
+                        // Re-probe ISF/ICR here rather than leaving it to the BG panel's tick: the
+                        // figures belong to the model, so switching is exactly when they are wrong,
+                        // and the panel is not composed to notice.
+                        container.refreshSensitivityIfStale()
+                    }
+                },
                 onOpen = { id -> navController.navigate("models/$id") },
                 pendingUpdates = pendingUpdates,
                 onApplyUpdate = { id -> scope.launch { container.applyModelUpdate(id) } },

@@ -59,11 +59,18 @@ fun interface CarbResolver {
  * however much of the meal has appeared by then. Reading the full ~5 h action window instead would
  * match the textbook definitions but would rest the number on the re-fed extrapolated tail.
  *
- * **Fail-closed.** Returns null — the panel then shows nothing at all, not a dash — whenever the
- * estimate cannot be justified: a stale, warm-up, absent or mostly-fabricated anchor, a non-eligible
- * fan, an empty or ragged validated window, a response in the wrong direction, a response too small
- * to separate from decode noise, or a figure outside the band a patient parameter can occupy. It
- * never throws and never fabricates a figure. Nothing here can reach a dose: the result is a
+ * **What it refuses, and what it reports.** Null means *no model response was obtained* — a stale,
+ * warm-up, absent or mostly-fabricated anchor, no selected model, a non-eligible fan, an empty or
+ * ragged validated window, or arithmetic that yields no finite number. The panel renders that as
+ * `N/A`, so an absent figure is legible as an absence rather than as a feature that failed to appear.
+ *
+ * A response that WAS obtained is reported whatever it says, including a negative ISF, and the panel
+ * marks it. This is deliberate and is not the fail-closed stance relaxing: fail-closed governs
+ * numbers that could be acted on, and nothing downstream can act on this one. What it buys is the
+ * only view of a model's marginal behaviour available outside a debug build — a wrong-signed ISF is
+ * a fact about the artifact, and filtering it out hid a real model defect behind a blank line.
+ *
+ * It never throws and never fabricates a figure. Nothing here can reach a dose: the result is a
  * [SensitivityEstimate], a type no rail, no advisor and no store accepts.
  */
 class SensitivityProbe(
@@ -75,6 +82,9 @@ class SensitivityProbe(
      *  language of refusing to dose. Whether a displayed figure was derived from a current reading is
      *  not a preference, so this gate has no toggle. */
     private val anchorSource: AnchorInfoSource,
+    /** The selected model's id, read fresh. Sampled either side of the three rolls so a selection
+     *  changed mid-probe yields no figure rather than one stamped with the wrong artifact. */
+    private val selectedModelId: suspend () -> String?,
 ) {
 
     suspend fun probe(
@@ -114,11 +124,17 @@ class SensitivityProbe(
                 smoothingWindow = smoothingWindow,
             )
 
+        val modelBefore = selectedModelId() ?: return withhold("no selected model")
+
         val baseline = port.roll(request(null, 0.0))
         val withInsulin = port.roll(request(insulin.resolve(PROBE_DOSE_U, nowMs), PROBE_DOSE_U))
         // candidateU stays 0: it is the candidate's INSULIN total, which the IOB rail and the
         // decision card read. A meal contributes none of it.
         val withCarb = port.roll(request(carb.resolve(PROBE_CARB_G, nowMs), 0.0))
+
+        // The three rolls are only comparable to each other if one artifact produced all three.
+        val modelAfter = selectedModelId()
+        if (modelAfter != modelBefore) return withhold("model changed mid-probe: $modelBefore -> $modelAfter")
 
         val fans = listOf(baseline, withInsulin, withCarb)
         if (fans.any { !it.eligible }) return withhold("fans ${fans.map { it.eligibility }}")
@@ -133,22 +149,29 @@ class SensitivityProbe(
 
         val insulinDrop = terminal[0] - terminal[1]
         val carbRise = terminal[2] - terminal[0]
-        // Direction AND magnitude. Insulin must lower and carbohydrate must raise, by more than the
-        // decode's own grain — below which the difference is noise, and dividing by it is worse.
-        if (insulinDrop < MIN_RESPONSE_MGDL || carbRise < MIN_RESPONSE_MGDL) {
-            return withhold("response too small: dI=%.2f dC=%.2f (floor %.2f)".format(insulinDrop, carbRise, MIN_RESPONSE_MGDL))
-        }
 
+        // NO direction or magnitude filter. A wrong-signed or implausible response is what the model
+        // actually said, and saying it is the point: this read-out doubles as the one place a model's
+        // marginal behaviour is visible without a debug build. Only arithmetic that produces no
+        // number at all refuses below — a zero carb response divides to an infinity, which is not a
+        // figure to display but an absence of one.
+        //
+        // The panel marks a wrong-signed figure rather than hiding it. The §3.6-D gates above are a
+        // different matter and still refuse: those are about the INPUT not being current, where there
+        // is no model response to report honestly in the first place.
         val isf = insulinDrop / PROBE_DOSE_U
         val icr = isf * PROBE_CARB_G / carbRise
-        if (!isf.isFinite() || !icr.isFinite()) return withhold("non-finite isf=$isf icr=$icr")
-        Timber.tag(TAG).i("probe ok: ISF %.1f mg/dL/U, ICR %.1f g/U (dI=%.2f dC=%.2f)", isf, icr, insulinDrop, carbRise)
+        if (!isf.isFinite() || !icr.isFinite()) {
+            return withhold("non-finite: dI=%.2f dC=%.2f isf=%s icr=%s".format(insulinDrop, carbRise, isf, icr))
+        }
+        Timber.tag(TAG).i("probe: ISF %.1f mg/dL/U, ICR %.1f g/U (dI=%.2f dC=%.2f)", isf, icr, insulinDrop, carbRise)
 
         return SensitivityEstimate(
             atMs = nowMs,
             horizonMs = steps.toLong() * baseline.stepMs,
             isfMgdlPerU = isf,
             icrGPerU = icr,
+            modelId = modelBefore,
         )
     }
 
@@ -165,25 +188,16 @@ class SensitivityProbe(
         /** The probe dose. One unit, so the drop IS the ISF without a scaling step to get wrong. */
         const val PROBE_DOSE_U = 1.0
 
-        /** The probe meal. Ten grams rather than one: a single gram's predicted rise sits inside the
-         *  noise floor below, and the response is not assumed linear, so the divisor must be a
-         *  quantity the model can actually resolve. */
+        /** The probe meal. Ten grams rather than one: a single gram's predicted rise is small enough
+         *  to sit inside the decode's own grain, and the response is not assumed linear, so the
+         *  divisor must be a quantity the model can actually resolve. */
         const val PROBE_CARB_G = 10.0
 
-        /** The smallest median displacement the probe will treat as a response, in mg/dL. Under this
-         *  the two fans are the same forecast to within what the decode can express, and their
-         *  difference carries no sensitivity information. */
-        const val MIN_RESPONSE_MGDL = 1.0
-
-        // There is deliberately NO magnitude band on the two outputs — the author's call, made after
-        // seeing what the probe actually reports on real data. The direction and noise-floor checks
-        // above stay, because insulin that raises BG is not a small sensitivity but a wrong one; what
-        // is gone is any judgement about whether a correctly-signed figure is too large or too small
-        // to be worth showing. The read-out names its horizon instead, so a number the model believes
-        // is presented as what it is rather than filtered against an assumption about the patient.
-        //
-        // The known cost, accepted: flooring the divisor at MIN_RESPONSE_MGDL bounds the divisor
-        // without bounding the quotient, so a barely-responsive carb roll against a normal insulin
-        // roll (carbRise 1.05, insulinDrop 40) still yields 381 g/U. That renders as "ICR 381g/U @2h".
+        // No direction filter, no noise floor, no magnitude band — all three were removed
+        // deliberately, in that order, as it became clear the read-out's real job is to say what the
+        // model believes rather than to vouch for it. A model whose marginal insulin response is
+        // wrong-signed is exactly what an author needs to see, and it was invisible while the probe
+        // filtered it out: the app showed nothing, which is indistinguishable from the feature being
+        // broken. The panel marks such a figure and names the horizon it was measured at.
     }
 }
