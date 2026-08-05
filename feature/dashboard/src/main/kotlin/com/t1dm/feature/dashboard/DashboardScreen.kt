@@ -67,6 +67,7 @@ import kotlin.math.roundToInt
 import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.LocalAnimationsEnabled
 import com.t1dm.core.design.LocalT1dmSemantics
+import com.t1dm.core.design.OnBoardReadout
 import com.t1dm.core.design.LoggedEntryDialog
 import com.t1dm.core.design.SignalBars
 import com.t1dm.core.design.argbWithAlpha
@@ -904,39 +905,30 @@ private fun OverlayControls(
         // never shipped, and the pair's whole remaining purpose is to report what the model does.
         val ink = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
         val suspectInk = MaterialTheme.colorScheme.error
+        // Wording and ORDER come from `:core:design` OnBoardReadout, the one definition the Meals and
+        // Insulin panels also render — they carry the same two numbers and had drifted into showing
+        // them in opposite orders. Only the density is local: this line is packed and shares a
+        // scrollable row with the forecast countdown.
+        val sep = OnBoardReadout.separator(compact = true)
         val readout = remember(iobCob, sensitivity, unit, ink, suspectInk) {
             buildAnnotatedString {
                 val parts = ArrayList<AnnotatedString.Builder.() -> Unit>()
                 iobCob?.let {
-                    parts += { append("IOB ${"%.1f".format(it.iobU)}U") }
-                    parts += { append("COB ${"%.0f".format(it.cobG)}g") }
+                    parts += { append(OnBoardReadout.iob(it.iobU, compact = true)) }
+                    parts += { append(OnBoardReadout.cob(it.cobG, compact = true)) }
                 }
+                val sensParts = OnBoardReadout.sensitivityParts(sensitivity, unit, compact = true)
+                val marked = sensitivity != null && OnBoardReadout.suspect(sensitivity)
                 parts += {
-                    if (sensitivity == null) {
-                        append("ICR/ISF N/A")
-                    } else {
-                        // Wrong-signed is objectively wrong — insulin does not raise BG and carbs do
-                        // not lower it — so it is coloured rather than silently normal. Magnitude is
-                        // NOT judged here: no band survives, and inventing one in the renderer would
-                        // put back the filter that was deliberately removed.
-                        val suspect = sensitivity.isfMgdlPerU <= 0.0 || sensitivity.icrGPerU <= 0.0
-                        withStyle(SpanStyle(color = if (suspect) suspectInk else ink)) {
-                            append("ICR ${gramsPerU(sensitivity.icrGPerU)}")
-                            append(" · ")
-                            // The horizon rides the ISF rather than each figure: it qualifies both,
-                            // and the pair is always shown together. Without it these wear two
-                            // clinical names whose textbook meaning is the WHOLE action of a dose,
-                            // while what is measured is the marginal response at the validated
-                            // window — reliably the smaller number.
-                            append("ISF ${isfLabel(sensitivity.isfMgdlPerU, unit)} @${horizonLabel(sensitivity.horizonMs)}")
-                        }
+                    withStyle(SpanStyle(color = if (marked) suspectInk else ink)) {
+                        sensParts.forEachIndexed { i, p -> if (i > 0) append(sep); append(p) }
                     }
                 }
                 iobCob?.minsSinceLastLoggedInsulin?.let { m -> parts += { append("logged ${m}m ago") } }
 
                 withStyle(SpanStyle(color = ink)) {
                     parts.forEachIndexed { i, part ->
-                        if (i > 0) append(" · ")
+                        if (i > 0) append(sep)
                         part()
                     }
                 }
@@ -967,31 +959,6 @@ private fun OverlayControls(
             }
         }
     }
-}
-
-/**
- * The ISF in the display unit. mg/dL and mmol/L are the same quantity in two scales (§3 —
- * 18.0182, not 18.0), so both are shown per unit of insulin.
- *
- * Kovatchev falls back to mg/dL rather than converting. The risk transform is non-linear and
- * dimensionless, so "risk per unit" is not a constant of the patient and a number carrying that
- * label would mean nothing at a second BG — the one place the axis unit is deliberately not followed.
- */
-private fun isfLabel(isfMgdlPerU: Double, unit: UnitSpace): String = when (unit) {
-    UnitSpace.MmolL -> "%.1f".format(isfMgdlPerU / 18.0182) + "mmol/L/U"
-    else -> "%.0f".format(isfMgdlPerU) + "mg/dL/U"
-}
-
-/** Grams per unit, with a decimal only where whole grams would lose the figure: nothing bounds the
- *  ratio any more, and "%.0f" renders anything under 0.5 — including a negative near zero — as a
- *  flat "0g/U", which is the one rendering that would hide the sign the reader needs. */
-private fun gramsPerU(g: Double): String =
-    if (Math.abs(g) < 10.0) "%.1fg/U".format(g) else "%.0fg/U".format(g)
-
-/** The probe's window, as the shortest true thing: "2h", or "90m" when it is not whole hours. */
-private fun horizonLabel(horizonMs: Long): String {
-    val minutes = horizonMs / 60_000L
-    return if (minutes % 60L == 0L) "${minutes / 60L}h" else "${minutes}m"
 }
 
 /** Issue 2 — a live "Next forecast in Xm Ys" readout. In TIMED mode the driver fires one cycle on each

@@ -2124,11 +2124,13 @@ class AppContainer(context: Context) {
     //
     // Structurally isolated exactly as the rolled forecast above: a [SensitivityEstimate] is a type
     // neither [doseAdvisor], [inferenceState], the store, nor the outbox accepts, so a probe can
-    // never raise an alert, move a rail, or be mistaken for a logged fact. The BG panel is its only
-    // reader.
+    // never raise an alert, move a rail, or be mistaken for a logged fact. Its readers are the three
+    // panels that display it — BG, Meals and Insulin — each through `:core:design` OnBoardReadout,
+    // and nothing else. Isolation is the type's, not the reader count's: adding a fourth display
+    // costs nothing here, and no reader can make it act.
 
-    /** The current ISF/ICR estimate, or null when none can be justified (the panel then shows
-     *  nothing at all — see [SensitivityProbe]'s fail-closed contract). */
+    /** The current ISF/ICR estimate, or null when no model response was obtained — which the panels
+     *  render as "N/A" rather than hiding, so an absence reads as one. See [SensitivityProbe]. */
     val sensitivity = MutableStateFlow<SensitivityEstimate?>(null)
 
     private var sensitivityJob: Job? = null
@@ -2140,10 +2142,16 @@ class AppContainer(context: Context) {
      * Re-probe ISF/ICR if the held estimate has aged past [SENSITIVITY_TTL_MS], and drop it outright
      * once it is older than [SENSITIVITY_LAPSE_MS].
      *
-     * Called from the BG panel on each inference cycle, so three model forwards are spent only while
-     * the read-out is actually on screen. Insulin sensitivity moves with the circadian phase, so a
-     * held figure is a claim about a past hour: the lapse is what stops a probe taken before the
-     * phone was pocketed from being read as current after it comes back out.
+     * Called on a coarse ticker by each panel that displays the figures (`:app` Navigation's
+     * `rememberSensitivity`), so three model forwards are spent only while the read-out is actually
+     * on screen, and the rate limits below — not the caller — decide how often a probe really runs.
+     * Deliberately NOT driven off the inference cycle: `lastCycleTsMs` stops advancing on the
+     * thermal, warm-up and no-context paths, which are exactly the states where a held figure is most
+     * likely to be out of date, so the lapse would never fire in them.
+     *
+     * Insulin sensitivity moves with the circadian phase, so a held figure is a claim about a past
+     * hour: the lapse is what stops a probe taken before the phone was pocketed from being read as
+     * current after it comes back out.
      */
     fun refreshSensitivityIfStale() {
         val now = System.currentTimeMillis()
@@ -2982,7 +2990,7 @@ class AppContainer(context: Context) {
          *  the bolus advisor also falls back to. */
         const val PROBE_GI = 55.0
 
-        /** How long a probed ISF/ICR estimate stands before the BG panel re-probes. */
+        /** How long a probed ISF/ICR estimate stands before a displaying panel re-probes. */
         const val SENSITIVITY_TTL_MS = 30 * 60_000L
 
         /** How long a probe that WITHHELD a figure waits before trying again — one inference

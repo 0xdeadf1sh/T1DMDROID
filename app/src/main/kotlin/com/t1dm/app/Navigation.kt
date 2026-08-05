@@ -102,6 +102,7 @@ import com.t1dm.feature.settings.ServerSettingsScreen
 import com.t1dm.feature.settings.DeathModeScreen
 import com.t1dm.app.notify.BgFormat
 import com.t1dm.app.notify.BgGlanceComputer
+import com.t1dm.core.model.SensitivityEstimate
 import com.t1dm.core.model.UnitSpace
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -824,6 +825,30 @@ private fun T1dmBottomBar(navController: NavHostController, backgroundAlphaPct: 
 }
 
 /**
+ * The ISF/ICR estimate, plus the tick that keeps it current, for any panel that shows it.
+ *
+ * A TICKER, not a key on the inference cycle: `lastCycleTsMs` stops advancing on exactly the gated
+ * paths — thermal, warm-up, no context — that stop forecasts, so keying on it meant the container's
+ * lapse check never ran in the states where a held figure is most likely to be out of date. The
+ * container decides whether to re-probe, to drop, or to do nothing; this only has to ask it often
+ * enough that the lapse is honoured, so the tick is cheap and coarse.
+ *
+ * It lives here, called from each route that renders the figures, so a panel cannot show them
+ * without also keeping them fresh — and so the loop exists once rather than once per panel.
+ */
+@Composable
+private fun rememberSensitivity(container: AppContainer): SensitivityEstimate? {
+    val sensitivity by container.sensitivity.collectAsState()
+    LaunchedEffect(Unit) {
+        while (isActive) {
+            container.refreshSensitivityIfStale()
+            kotlinx.coroutines.delay(60_000)
+        }
+    }
+    return sensitivity
+}
+
+/**
  * Volume up ⇒ Meals, volume down ⇒ Insulin. Registered on the Activity, which is where the key
  * arrives; the decision stays here, where the NavController and the state it depends on live.
  *
@@ -1034,22 +1059,10 @@ private fun T1dmNavHost(
                 }
             }
             // The model-probed ISF/ICR beside the IOB/COB read-out. A probe costs three forwards on
-            // the fp32 authority, so it is driven from HERE rather than from the container's own
-            // cycle: this effect exists only while the BG panel is composed, and the container's TTL
-            // keeps a burst of cycles from re-probing. Off-screen the read-out costs nothing at all.
-            val sensitivity by container.sensitivity.collectAsState()
-            // A TICKER, not the cycle key it was first written as. `lastCycleTsMs` stops advancing on
-            // exactly the gated paths — thermal, warm-up, no context — that stop forecasts, so keying
-            // on it meant the container's lapse check never ran in the states where a held figure is
-            // most likely to be out of date, and an expired estimate sat beside live IOB until the
-            // model recovered. The container decides whether to re-probe or to drop; this only has to
-            // ask it often enough that the lapse is honoured, so the tick is cheap and coarse.
-            LaunchedEffect(Unit) {
-                while (isActive) {
-                    container.refreshSensitivityIfStale()
-                    kotlinx.coroutines.delay(60_000)
-                }
-            }
+            // the fp32 authority, so it is driven from the panels that show it: off-screen the
+            // read-out costs nothing at all, and the container's TTL keeps a burst of ticks from
+            // re-probing.
+            val sensitivity = rememberSensitivity(container)
             DashboardScreen(
                 readings = readings,
                 latest = latest,
@@ -1294,6 +1307,8 @@ private fun T1dmNavHost(
             val scope = rememberCoroutineScope()
             val ctx = LocalContext.current
             val iobCob by container.iobCob.collectAsState()
+            val sensitivity = rememberSensitivity(container)
+            val glucoseUnit by container.statsRepository.unitSpace.collectAsState(UnitSpace.MgDl)
             val recent by container.recentMeals.collectAsState(emptyList())
             // Issue 7 — the pending photo (a content:// Uri from the camera or the gallery), its decoded
             // thumbnail, and the last upload status. Every Uri/IO touch is wrapped so nothing can crash.
@@ -1336,6 +1351,8 @@ private fun T1dmNavHost(
 
             MealsScreen(
                 iobCob = iobCob,
+                sensitivity = sensitivity,
+                unit = glucoseUnit,
                 recentMeals = recent,
                 previewCurve = container.previewCarbCurve,
                 photoThumbnail = photoThumbnail,
@@ -1486,6 +1503,8 @@ private fun T1dmNavHost(
         composable("insulin") {
             val scope = rememberCoroutineScope()
             val iobCob by container.iobCob.collectAsState()
+            val sensitivity = rememberSensitivity(container)
+            val glucoseUnit by container.statsRepository.unitSpace.collectAsState(UnitSpace.MgDl)
             // The panel's own chips, and the seeds for them. The catalogue is the single set of
             // insulins a dose row can name; the two labels are the last one actually LOGGED per kind,
             // resolved so an empty or stale memory still yields a real preset. Read once each — the
@@ -1496,6 +1515,8 @@ private fun T1dmNavHost(
             val basalLabel by produceState<String?>(null) { value = container.resolvedBasalLabel() }
             InsulinScreen(
                 iobCob = iobCob,
+                sensitivity = sensitivity,
+                unit = glucoseUnit,
                 presetCatalog = presetCatalog,
                 initialRapidLabel = rapidLabel,
                 initialBasalLabel = basalLabel,

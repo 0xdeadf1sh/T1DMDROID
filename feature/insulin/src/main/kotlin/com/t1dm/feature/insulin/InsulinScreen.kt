@@ -35,6 +35,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.ConfirmLogDialog
 import com.t1dm.core.design.HapticEvent
+import com.t1dm.core.design.IobCobLine
 import com.t1dm.core.design.PendingLog
 import com.t1dm.core.design.rememberHapticDetent
 import com.t1dm.core.design.rememberT1dmHaptics
@@ -43,6 +44,8 @@ import com.t1dm.core.model.InsulinFamily
 import com.t1dm.core.model.InsulinKind
 import com.t1dm.core.model.InsulinPresetSpec
 import com.t1dm.core.model.IobCobReadout
+import com.t1dm.core.model.SensitivityEstimate
+import com.t1dm.core.model.UnitSpace
 import kotlin.math.roundToInt
 
 private enum class Tab { BOLUS, BASAL }
@@ -101,6 +104,12 @@ private fun Double?.loggableDose(): Double? = this?.takeIf { it.isFinite() && it
 @Composable
 fun InsulinScreen(
     iobCob: IobCobReadout? = null,
+    // The model-probed ISF/ICR, shown beside IOB/COB exactly as the BG and Meals panels show it —
+    // see `:core:design` OnBoardReadout for why all three read from one definition. Null renders as
+    // "N/A" rather than vanishing. DISPLAY-ONLY: the dose calculator on this screen searches the
+    // model directly and neither reads nor is influenced by these figures.
+    sensitivity: SensitivityEstimate? = null,
+    unit: UnitSpace = UnitSpace.MgDl,
     presetCatalog: List<InsulinPresetSpec> = emptyList(),
     initialRapidLabel: String? = null,
     initialBasalLabel: String? = null,
@@ -116,7 +125,7 @@ fun InsulinScreen(
     val basals = remember(presetCatalog) { presetCatalog.filter { it.family == InsulinFamily.BasalBateman } }
 
     Column(Modifier.fillMaxSize().verticalScrollbar(scroll).verticalScroll(scroll).padding(16.dp)) {
-        iobCob?.let { IobLine(it) }
+        iobCob?.let { IobCobLine(it, sensitivity, unit, provenance = iobProvenance(it)) }
 
         SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(top = 12.dp)) {
             Tab.entries.forEachIndexed { i, t ->
@@ -281,26 +290,13 @@ private fun UnitsField(value: String, onChange: (String) -> Unit) {
     }
 }
 
-@Composable
-private fun IobLine(r: IobCobReadout) {
-    val gap = r.minsSinceLastLoggedInsulin
-    val provenance = when {
-        gap == null -> "no insulin logged yet"
-        else -> "logged doses only · last logged ${gap} min ago"
-    }
-    Column(Modifier.padding(top = 4.dp)) {
-        Text(
-            "IOB ${"%.2f".format(r.iobU)} U   ·   COB ${"%.0f".format(r.cobG)} g",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
-        )
-        Text(
-            provenance,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
-        )
-    }
-}
+/** §3.6-F: IOB is computed from LOGGED doses only, so a long silence since the last one is the fact
+ *  the reader needs beside the number. Insulin is the screen that owns that caveat; Meals does not
+ *  restate it. */
+private fun iobProvenance(r: IobCobReadout): String =
+    r.minsSinceLastLoggedInsulin
+        ?.let { "logged doses only · last logged $it min ago" }
+        ?: "no insulin logged yet"
 
 /** A tiny filled sparkline of a per-5-min PK curve (preview only). N7 — the curve is 0 at t=0 with the
  *  first sample at t=+5 min: `values[i]` is the appearance/action over `[i·5, (i+1)·5)` min, so it is

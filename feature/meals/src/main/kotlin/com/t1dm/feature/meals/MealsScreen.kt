@@ -41,6 +41,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.ConfirmLogDialog
 import com.t1dm.core.design.HapticEvent
+import com.t1dm.core.design.IobCobLine
 import com.t1dm.core.design.PendingLog
 import com.t1dm.core.design.rememberHapticDetent
 import com.t1dm.core.design.rememberT1dmHaptics
@@ -48,6 +49,8 @@ import com.t1dm.core.design.verticalScrollbar
 import com.t1dm.core.model.GiChip
 import com.t1dm.core.model.IobCobReadout
 import com.t1dm.core.model.RecentMeal
+import com.t1dm.core.model.SensitivityEstimate
+import com.t1dm.core.model.UnitSpace
 import kotlin.math.roundToInt
 
 // Carb slider bounds (Phase 7C, item 9): 5–120 g in 5 g steps ⇒ 24 stops ⇒ 22 interior Slider steps.
@@ -79,6 +82,11 @@ private const val CARB_STEPS = 22
 @Composable
 fun MealsScreen(
     iobCob: IobCobReadout? = null,
+    // The model-probed ISF/ICR, shown beside IOB/COB exactly as the BG and Insulin panels show it —
+    // see `:core:design` OnBoardReadout for why all three read from one definition. Null renders as
+    // "N/A" rather than vanishing; DISPLAY-ONLY, and nothing on this screen may act on it.
+    sensitivity: SensitivityEstimate? = null,
+    unit: UnitSpace = UnitSpace.MgDl,
     recentMeals: List<RecentMeal> = emptyList(),
     previewCurve: (suspend (grams: Double, gi: Double) -> DoubleArray)? = null,
     photoThumbnail: ImageBitmap? = null,
@@ -115,7 +123,7 @@ fun MealsScreen(
     val giDetent = rememberHapticDetent(HapticEvent.ScrubTick)
 
     Column(Modifier.fillMaxSize().verticalScrollbar(scroll).verticalScroll(scroll).padding(16.dp)) {
-        iobCob?.let { CobLine(it) }
+        iobCob?.let { IobCobLine(it, sensitivity, unit) }
 
         OutlinedTextField(
             value = gramsText,
@@ -270,16 +278,6 @@ fun MealsScreen(
             onDismiss = { pending = null },
         )
     }
-}
-
-@Composable
-private fun CobLine(r: IobCobReadout) {
-    Text(
-        "COB ${"%.0f".format(r.cobG)} g   ·   IOB ${"%.2f".format(r.iobU)} U",
-        style = MaterialTheme.typography.bodyMedium,
-        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
-        modifier = Modifier.padding(top = 4.dp),
-    )
 }
 
 /** A tiny filled sparkline of a per-5-min curve — a preview only, not the dashboard overlay. N7 — the
