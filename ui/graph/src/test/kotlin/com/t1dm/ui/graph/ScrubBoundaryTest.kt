@@ -83,6 +83,36 @@ class ScrubBoundaryTest {
 
     private fun bgRow(sc: GraphScrub) = scrubRows(sc).first()
 
+    private fun stepsRow(sc: GraphScrub) = scrubRows(sc).firstOrNull { it.first == "Steps" }
+
+    // ── the Steps row's presence rules ───────────────────────────────────────────────────────────
+
+    @Test fun aWiredStepsFeedAlwaysYieldsARow() {
+        // The box must keep a fixed shape as the thumb travels: a line that appeared and vanished
+        // with the data would read as a glitch. So with a feed present every cursor gets a Steps row,
+        // and an unmeasured bucket or a cursor off the grid reads 0 rather than dropping it.
+        val f = buildStepsFrame(intArrayOf(0, 40, StepsFrame.NO_DATA), T0 - 11 * STEP)
+        fun at(ms: Double) = buildScrub(frame, listOf(validated), null, f, null, roll, ms)
+
+        assertEquals("Steps" to "40", stepsRow(at((T0 - 10 * STEP).toDouble())))
+        // Measured still.
+        assertEquals("Steps" to "0", stepsRow(at((T0 - 11 * STEP).toDouble())))
+        // Never measured — shown as 0 by the read-out's own choice, not by the frame's.
+        assertEquals("Steps" to "0", stepsRow(at((T0 - 9 * STEP).toDouble())))
+        // Off the grid entirely, including out in the forecast zone where no step can exist.
+        assertEquals("Steps" to "0", stepsRow(at((T0 - 40 * STEP).toDouble())))
+        assertEquals("Steps" to "0", stepsRow(at(T0 + 30.0 * STEP)))
+        // The frame itself still knows the difference; only the read-out coerces.
+        assertNull(f.stepsAt(T0 - 9 * STEP))
+        assertEquals(0, f.stepsAt(T0 - 11 * STEP)!!.toInt())
+    }
+
+    @Test fun noStepsFeedOmitsTheRowEntirely() {
+        // No pedometer wired at all is a different statement from "no steps then", and the panel
+        // should not invent a row for a feature it does not have.
+        assertNull(stepsRow(scrubAt(0.0)))
+    }
+
     @Test fun scrubbingAcrossTheBoundaryReportsContinuously() {
         val before = scrubAt(23.0) // inside the validated forecast
         val seam = scrubAt(24.0) // exactly the last validated step, where the roll's prefix ends

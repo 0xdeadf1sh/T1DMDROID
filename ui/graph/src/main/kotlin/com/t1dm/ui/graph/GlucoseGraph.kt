@@ -105,9 +105,17 @@ data class GraphScrub(
     val carbRate: Float?,
     /** Raw insulin action (units per 5-min) at the cursor, or null when no overlay is present. */
     val insulinRate: Float?,
-    /** Steps recorded in the 5-min bucket at the cursor, or null when the cursor is off the pedometer
-     *  grid entirely. A genuine 0 is reported as 0 — "they were still" is an answer; "no bucket" is
-     *  not, and that is the case this is null for. */
+    /**
+     * Steps at the cursor, or null when this panel has no pedometer feed wired at all — the only case
+     * that omits the row.
+     *
+     * A bucket the pedometer never measured reads `0` here rather than null. That is a DISPLAY choice
+     * and not a claim about the patient: the read-out keeps a fixed set of rows, so a line cannot
+     * appear and vanish as the thumb travels and a reader scanning the box never has to notice an
+     * absent one. [StepsFrame.stepsAt] still tells unmeasured from measured-zero, and the bars still
+     * draw nothing across an unmeasured stretch — the coercion happens at this read-out and nowhere
+     * upstream of it.
+     */
     val steps: Int?,
     /** The model's predicted clock hour in `[0,24)` at the cursor, or null when the probe is absent. */
     val modelHour: Double?,
@@ -1309,9 +1317,13 @@ internal fun buildScrub(
         carbRate = carb,
         insulinRate = insulin,
         // Read from the frame regardless of whether the Steps overlay is being DRAWN, exactly as the
-        // carb/insulin rates above are: the read-out reports what was measured at the cursor, and a
-        // chip governs what the band paints, not what the panel knows.
-        steps = stepsFrame?.stepsAt(ms.toLong()),
+        // carb/insulin rates above are: the read-out reports what is known at the cursor, and a chip
+        // governs what the band paints, not what the panel knows.
+        //
+        // A wired feed ALWAYS yields a row — an unmeasured bucket and a cursor off the grid both read
+        // 0 rather than dropping the line, so the box keeps a fixed shape as the thumb travels. Only
+        // the absence of a feed entirely omits it.
+        steps = stepsFrame?.let { it.stepsAt(ms.toLong()) ?: 0 },
         modelHour = modelHour,
         unit = frame.unit,
     )
