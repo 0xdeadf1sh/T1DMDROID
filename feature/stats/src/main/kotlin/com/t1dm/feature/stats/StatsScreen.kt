@@ -215,12 +215,11 @@ fun StatsScreen(
             }
 
             // ── Weekday × hour glucose heatmap ──────────────────────────────────────────────────────
-            // Placed under the diurnal card because it is the finer cut of the day — but NOT the same
-            // question, and the two must not be read against each other: this grid keys on the
-            // patient's LOCAL clock (each sample's own tz_offset) while the card above keys on UTC,
-            // so at a non-zero offset their columns are out of phase by exactly that offset. Hence the
-            // explicit "local time" in this card's subtitle. See the day-boundary block on
-            // `advanced_stats` in crates/t1dm-core/src/stats.rs for why the other one has not moved.
+            // The finer cut of the card above it, and on the SAME clock: every day-keyed reduction in
+            // the core now keys on the patient's local day, resolved per sample from that sample's own
+            // tz_offset. So this grid's columns and the diurnal card's buckets are in phase and can be
+            // read against each other. See the day-boundary block on `advanced_stats` in
+            // crates/t1dm-core/src/stats.rs.
             if (local.heatmap.isNotEmpty() && cuts.isUsable) {
                 // Which summary the cells show. Local to the card and not hoisted into the ViewModel:
                 // the core computes both in one pass, so this changes nothing but the paint — there

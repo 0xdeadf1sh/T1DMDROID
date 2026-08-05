@@ -392,6 +392,18 @@ fn minute_of_day(ts_ms: i64) -> i64 {
     ts_ms.rem_euclid(DAY_MS as i64) / 60_000
 }
 
+/// A sample's LOCAL wall-clock instant: its UTC timestamp shifted by its own `tz_offset_min`
+/// (`SPEC/invariants.md` §2).
+///
+/// Every day-keyed reduction in this module goes through here, and `ts_ms` itself is never
+/// modified — the shift exists only to answer "which day, and what time of day, was this for the
+/// patient". Per SAMPLE rather than per window because a 90-day window can straddle a DST change or
+/// a flight, and one offset applied to all of them would move readings the patient never moved.
+#[inline]
+fn local_ms(s: &StatSample) -> i64 {
+    s.ts_ms + s.tz_offset_min as i64 * 60_000
+}
+
 /// MODD — Mean Of Daily Differences (Molnar et al. 1972): the mean |ΔBG| between readings
 /// exactly 24 h apart, matched on identical minute-of-day across consecutive days. 0 when no
 /// matched pair exists. A `BTreeMap` keeps the summation order deterministic.
@@ -399,7 +411,7 @@ fn modd(valid: &[&StatSample]) -> f64 {
     use std::collections::BTreeMap;
     let mut by_key: BTreeMap<(i64, i64), f64> = BTreeMap::new();
     for s in valid {
-        by_key.insert((day_of(s.ts_ms), minute_of_day(s.ts_ms)), s.bg_mgdl);
+        by_key.insert((day_of(local_ms(s)), minute_of_day(local_ms(s))), s.bg_mgdl);
     }
     let mut sum = 0.0;
     let mut count = 0u32;
@@ -458,7 +470,7 @@ fn adrr(valid: &[&StatSample]) -> f64 {
         let f = kovatchev_f(s.bg_mgdl);
         let r = 10.0 * f * f;
         let (lr, hr) = if f < 0.0 { (r, 0.0) } else if f > 0.0 { (0.0, r) } else { (0.0, 0.0) };
-        let e = per_day.entry(day_of(s.ts_ms)).or_insert((0.0, 0.0));
+        let e = per_day.entry(day_of(local_ms(s))).or_insert((0.0, 0.0));
         e.0 = e.0.max(lr);
         e.1 = e.1.max(hr);
     }
@@ -474,7 +486,7 @@ fn dtd_sd(valid: &[&StatSample]) -> f64 {
     use std::collections::BTreeMap;
     let mut per_day: BTreeMap<i64, (f64, u32)> = BTreeMap::new();
     for s in valid {
-        let e = per_day.entry(day_of(s.ts_ms)).or_insert((0.0, 0));
+        let e = per_day.entry(day_of(local_ms(s))).or_insert((0.0, 0));
         e.0 += s.bg_mgdl;
         e.1 += 1;
     }
@@ -509,7 +521,7 @@ fn heatmap(valid: &[&StatSample]) -> Vec<HeatCell> {
     // already resident — and each cell sorts on its own ~150 entries.
     let mut cells: Vec<Vec<f64>> = vec![Vec::new(); 7 * 24];
     for s in valid {
-        let local = s.ts_ms + s.tz_offset_min as i64 * 60_000;
+        let local = local_ms(s);
         let dow = (local.div_euclid(DAY_MS as i64) + EPOCH_DOW_SHIFT).rem_euclid(7) as usize;
         let hour = (local.rem_euclid(DAY_MS as i64) / 3_600_000) as usize;
         cells[dow * 24 + hour].push(s.bg_mgdl);
@@ -543,7 +555,7 @@ fn heatmap(valid: &[&StatSample]) -> Vec<HeatCell> {
 fn tod_buckets(valid: &[&StatSample], tlo: f64, thi: f64) -> Vec<TodBucket> {
     let mut cnt = [[0u32; 3]; 4]; // [bucket][below, in, above]
     for s in valid {
-        let b = (minute_of_day(s.ts_ms) / 360) as usize;
+        let b = (minute_of_day(local_ms(s)) / 360) as usize;
         let idx = if s.bg_mgdl < tlo { 0 } else if s.bg_mgdl <= thi { 1 } else { 2 };
         cnt[b][idx] += 1;
     }
@@ -652,16 +664,17 @@ fn episodes(valid: &[&StatSample], edge: f64, below: bool) -> EpisodeSummary {
 ///
 /// # Day boundaries
 ///
-/// `SPEC/invariants.md` §2 requires any aggregation keyed on a day to say which day it means, so:
+/// `SPEC/invariants.md` §2 requires any aggregation keyed on a day to say which day it means. Every
+/// one here is keyed on the patient's **local** day, resolved per sample through [`local_ms`] from
+/// that sample's own `tz_offset_min` — so a window spanning a DST change or a flight keys each
+/// reading to the day it was actually lived. That covers `heatmap`, `agp`, `tod`, `modd`, `adrr` and
+/// `dtd_sd`.
 ///
-/// * `heatmap` is **local**. Each sample's own `tz_offset_min` resolves its weekday and hour, which
-///   is the only reading of a day-by-hour grid that means anything to the patient.
-/// * `agp`, `tod`, `modd`, `conga*`, `adrr` and `dtd_sd` are **UTC**. Their day and minute-of-day
-///   come from the raw timestamp. For a patient at a fixed non-zero offset this rotates every one of
-///   them by that offset — an AGP whose "03:00" is the patient's 06:00 — and across a DST change the
-///   rotation moves. That is a defect rather than a decision, recorded here because the timestamps
-///   now carry what would fix it; fixing it moves numbers already on screen and re-cuts this module's
-///   golden vectors, so it is deliberately not bundled with the grid that needed the offset.
+/// `conga*` is the exception that needs no boundary at all: it compares each reading with the one a
+/// fixed lag earlier, so shifting every timestamp by the same offset cancels and it is invariant
+/// under the choice. It is listed here only so a reader does not go looking for the omission.
+///
+/// Nothing here shifts `ts_ms` itself, which is always UTC (§2).
 #[uniffi::export]
 pub fn advanced_stats(
     samples: Vec<StatSample>,
@@ -815,7 +828,7 @@ pub fn advanced_stats(
     let bin_width = DAY_MIN / agp_bins; // minutes per bin (exact — divides 1440)
     let mut buckets: Vec<Vec<f64>> = vec![Vec::new(); agp_bins as usize];
     for s in &valid {
-        let minute_of_day = ((s.ts_ms.rem_euclid(DAY_MS as i64)) / 60_000) as u32;
+        let minute_of_day = minute_of_day(local_ms(s)) as u32;
         let b = (minute_of_day / bin_width) as usize;
         buckets[b].push(s.bg_mgdl);
     }
@@ -1426,6 +1439,67 @@ mod tests {
         let one = advanced_stats(vec![tzs(0, 0, 123.0)], 70, 180, 24).unwrap();
         close(one.heatmap[0].median_bg, 123.0, 1e-12, "n=1 median");
         close(one.heatmap[0].mean_bg, 123.0, 1e-12, "n=1 mean");
+    }
+
+    #[test]
+    fn every_day_keyed_metric_reads_the_offset() {
+        let hr = 3_600_000i64;
+        // 02:00 and 04:00 UTC on one day. At UTC they are both in the 00:00-06:00 diurnal bucket; at
+        // UTC+05:30 they are 07:30 and 09:30 local, which is the 06:00-12:00 bucket. Same readings,
+        // same instants — only the patient's clock differs, and the bucketing must follow it.
+        fn at(tz: i32) -> AdvancedStats {
+            advanced_stats(
+                vec![tzs(2 * 3_600_000, tz, 100.0), tzs(4 * 3_600_000, tz, 120.0)],
+                70,
+                180,
+                24,
+            )
+            .unwrap()
+        }
+        let utc = at(0);
+        let ist = at(330);
+        assert_eq!(utc.tod[0].n, 2, "at UTC both readings are in 00:00-06:00");
+        assert_eq!(ist.tod[0].n, 0, "at +05:30 neither is");
+        assert_eq!(ist.tod[1].n, 2, "they are in 06:00-12:00 instead");
+        // The AGP ribbon bins on the same clock.
+        assert_eq!(utc.agp[0].minute_of_day, 120, "02:00 UTC");
+        assert_eq!(ist.agp[0].minute_of_day, 420, "07:30 local falls in the 07:00 hourly bin");
+
+        // Day-to-day SD groups by the LOCAL day. Two readings four hours apart across UTC midnight
+        // are one local day at UTC-05:00 and two distinct days at UTC — so a between-day spread
+        // exists in one framing and not in the other.
+        let across = |tz: i32| {
+            advanced_stats(
+                vec![tzs(22 * hr, tz, 100.0), tzs(26 * hr, tz, 200.0)],
+                70,
+                180,
+                24,
+            )
+            .unwrap()
+            .dtd_sd
+        };
+        assert!(across(0) > 0.0, "at UTC the two readings straddle midnight, so two days");
+        close(across(-300), 0.0, 1e-12, "at UTC-5 both are the same local day, so no spread");
+
+        // MODD and CONGA are invariant under a UNIFORM offset — both members of every matched pair
+        // shift together — which is why the golden could not have caught this and this test exists.
+        let uniform = |tz: i32| {
+            let day = DAY_MS as i64;
+            advanced_stats(
+                vec![
+                    tzs(0, tz, 100.0),
+                    tzs(day, tz, 130.0),
+                    tzs(2 * hr, tz, 110.0),
+                    tzs(day + 2 * hr, tz, 150.0),
+                ],
+                70,
+                180,
+                24,
+            )
+            .unwrap()
+        };
+        close(uniform(0).modd, uniform(330).modd, 1e-12, "modd is offset-invariant when uniform");
+        close(uniform(0).conga1, uniform(330).conga1, 1e-12, "conga is offset-invariant");
     }
 
     #[test]

@@ -157,9 +157,10 @@ data class AdvancedStats(
     val histogram: List<HistBin>,
     val hypoEpisodes: EpisodeSummary,
     val hyperEpisodes: EpisodeSummary,
-    /** Mean and median glucose per (day-of-week, hour) cell in LOCAL time — populated cells only, ascending by
-     *  `(dow, hour)`. The one aggregation in this block keyed on the patient's calendar; [agp] and
-     *  [tod] are keyed on UTC. */
+    /** Mean and median glucose per (day-of-week, hour) cell in LOCAL time — populated cells only,
+     *  ascending by `(dow, hour)`. Every day-keyed reduction in this block reads the patient's own
+     *  calendar, resolved per sample from its `tz_offset`, so this grid, [agp] and [tod] are all on
+     *  the same clock. */
     val heatmap: List<HeatCell>,
 ) {
     val isEmpty: Boolean get() = nSamples == 0
