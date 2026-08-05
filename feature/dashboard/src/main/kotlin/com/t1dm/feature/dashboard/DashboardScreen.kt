@@ -80,6 +80,7 @@ import com.t1dm.core.model.PredictedTime
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.RolledForecast
 import com.t1dm.core.model.ReadingProvenance
+import com.t1dm.core.model.SensitivityEstimate
 import com.t1dm.core.model.TempUnit
 import com.t1dm.core.model.ThermalLevel
 import com.t1dm.core.model.UnitSpace
@@ -136,6 +137,11 @@ fun DashboardScreen(
     // §8.4 pins the median, so the forecast line is the same either way.
     calibrateBands: ((ModelPrediction) -> List<Double>?)? = null,
     iobCob: IobCobReadout? = null,
+    // The model-probed ISF/ICR beside the IOB/COB read-out. DISPLAY-ONLY and, like the rolled
+    // forecast, a type nothing downstream accepts: `:app` probes it off three counterfactual rolls of
+    // the fp32 authority, and no rail, alarm or stored row can read it. Null ⇒ the probe could not
+    // justify a figure, and the line simply does not carry one — never a dash or a zero.
+    sensitivity: SensitivityEstimate? = null,
     // (carb, combined insulin, basal-only) for one grid window, from ONE resolve. These were two
     // lambdas, and the overlay called both on every rebuild — which resolved the same padded window
     // twice and rebuilt the same basal representation twice, since the basal series is a component of
@@ -451,11 +457,13 @@ fun DashboardScreen(
         DashboardHeader(latest, activeSourceName, unit, signals?.cgmRssi ?: latest?.rssi, kovatchevF)
         warmup?.let { WarmupBanner(it) }
         if (noFutureInsulin) NoFutureInsulinBanner()
-        if (iobCob != null || curveChannels != null || smoothMgdl != null || onRoll != null ||
-            paintAvailable || gameSlot != null || hindsightIn != null
+        if (iobCob != null || sensitivity != null || curveChannels != null || smoothMgdl != null ||
+            onRoll != null || paintAvailable || gameSlot != null || hindsightIn != null
         ) {
             OverlayControls(
                 iobCob = iobCob,
+                sensitivity = sensitivity,
+                unit = unit,
                 showNextForecast = warmup == null && !lowPowerActive,
                 forecastAdaptive = forecastAdaptive,
                 forecastPeriodMin = forecastPeriodMin,
@@ -771,6 +779,8 @@ private fun NoFutureInsulinBanner() {
 @Composable
 private fun OverlayControls(
     iobCob: IobCobReadout?,
+    sensitivity: SensitivityEstimate?,
+    unit: UnitSpace,
     showNextForecast: Boolean,
     forecastAdaptive: Boolean,
     forecastPeriodMin: Int,
@@ -880,21 +890,41 @@ private fun OverlayControls(
         // horizontally scrollable so neither clips. The countdown stays a separate composable so its
         // per-second tick never re-renders the static IOB/COB text. It is shown only when a forecast is
         // actually being made ([showNextForecast] = not in warmup and not low-power).
-        if (iobCob != null || showNextForecast) {
+        // The ICR/ISF estimate sits between COB and the provenance tail, so the line reads
+        // on-board-now then per-unit-response then how old the insulin fact is. Assembled as parts
+        // rather than concatenated fragments: the estimate is independently absent from the IOB/COB
+        // pair, and either missing half must not leave a stray separator behind.
+        val readout = remember(iobCob, sensitivity, unit) {
+            buildList {
+                iobCob?.let {
+                    add("IOB ${"%.1f".format(it.iobU)}U")
+                    add("COB ${"%.0f".format(it.cobG)}g")
+                }
+                sensitivity?.let {
+                    add("ICR ${gramsPerU(it.icrGPerU)}")
+                    // The horizon rides the ISF rather than each figure: it qualifies both, and the
+                    // pair is always shown together. Without it these wear two clinical names whose
+                    // textbook meaning is the WHOLE action of a dose, while what is measured is the
+                    // marginal response at the validated window — reliably the smaller number.
+                    add("ISF ${isfLabel(it.isfMgdlPerU, unit)} @${horizonLabel(it.horizonMs)}")
+                }
+                iobCob?.minsSinceLastLoggedInsulin?.let { add("logged ${it}m ago") }
+            }.joinToString(" · ")
+        }
+        if (readout.isNotEmpty() || showNextForecast) {
             Row(
                 Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = 2.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                iobCob?.let {
+                if (readout.isNotEmpty()) {
                     Text(
-                        "IOB ${"%.1f".format(it.iobU)}U · COB ${"%.0f".format(it.cobG)}g" +
-                            (it.minsSinceLastLoggedInsulin?.let { m -> " · logged ${m}m ago" } ?: ""),
+                        readout,
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                     )
                 }
                 if (showNextForecast) {
-                    if (iobCob != null) {
+                    if (readout.isNotEmpty()) {
                         Text(
                             " · ",
                             style = MaterialTheme.typography.labelMedium,
@@ -906,6 +936,30 @@ private fun OverlayControls(
             }
         }
     }
+}
+
+/**
+ * The ISF in the display unit. mg/dL and mmol/L are the same quantity in two scales (§3 —
+ * 18.0182, not 18.0), so both are shown per unit of insulin.
+ *
+ * Kovatchev falls back to mg/dL rather than converting. The risk transform is non-linear and
+ * dimensionless, so "risk per unit" is not a constant of the patient and a number carrying that
+ * label would mean nothing at a second BG — the one place the axis unit is deliberately not followed.
+ */
+private fun isfLabel(isfMgdlPerU: Double, unit: UnitSpace): String = when (unit) {
+    UnitSpace.MmolL -> "%.1f".format(isfMgdlPerU / 18.0182) + "mmol/L/U"
+    else -> "%.0f".format(isfMgdlPerU) + "mg/dL/U"
+}
+
+/** Grams per unit, with a decimal only where whole grams would lose the figure: nothing bounds the
+ *  ratio below any more, and "%.0f" renders anything under 0.5 as a flat "0g/U". */
+private fun gramsPerU(g: Double): String =
+    if (g < 10.0) "%.1fg/U".format(g) else "%.0fg/U".format(g)
+
+/** The probe's window, as the shortest true thing: "2h", or "90m" when it is not whole hours. */
+private fun horizonLabel(horizonMs: Long): String {
+    val minutes = horizonMs / 60_000L
+    return if (minutes % 60L == 0L) "${minutes / 60L}h" else "${minutes}m"
 }
 
 /** Issue 2 — a live "Next forecast in Xm Ys" readout. In TIMED mode the driver fires one cycle on each

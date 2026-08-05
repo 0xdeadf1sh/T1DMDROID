@@ -406,6 +406,13 @@ class SettingsStore(
     suspend fun currentAnimationsEnabled(): Boolean = getBool(K_UI_ANIMATIONS, true)
     suspend fun setAnimationsEnabled(on: Boolean) = put(K_UI_ANIMATIONS, if (on) "1" else "0")
 
+    // ── Volume-key panel shortcuts (volume up ⇒ Meals, volume down ⇒ Insulin) ─────────────────────
+    // Off hands the keys back to the system volume they normally are. The shortcut ALSO stands down
+    // while any alarm condition is active, regardless of this setting — that gate lives at the
+    // dispatch site in MainActivity, not here, because it is not the user's to switch off.
+    val volumeNavEnabled: Flow<Boolean> = boolFlow(K_UI_VOLUME_NAV, true)
+    suspend fun setVolumeNavEnabled(on: Boolean) = put(K_UI_VOLUME_NAV, if (on) "1" else "0")
+
     // ── UI haptics intensity (core/design Haptics.kt) ─────────────────────────────────────────
     // A SIBLING of the animation flag, not a dependent: a static UI and a mute one are different
     // wants. Deliberately NOT the same knob as the `alerts.vib.*` presets above — those are §3.6-A
@@ -943,6 +950,7 @@ class SettingsStore(
         private const val K_DEATH = "death.enabled"
 
         private const val K_UI_ANIMATIONS = "ui.animations"
+        private const val K_UI_VOLUME_NAV = "ui.volume_nav"
         private const val K_UI_HAPTICS = "ui.haptics"
         val DEFAULT_HAPTICS: String = HapticStrength.DEFAULT.name
         private const val K_UI_BG_ALPHA = "ui.background_alpha"

@@ -37,6 +37,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import android.content.Context
+import android.content.ContextWrapper
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -245,6 +248,7 @@ fun T1dmApp(container: AppContainer) {
     val snackbars = remember { SnackbarHostState() }
     val receiptScope = rememberCoroutineScope()
     val haptics = LocalT1dmHaptics.current
+    VolumeKeyShortcuts(navController, container, haptics)
     Box(Modifier.fillMaxSize().background(LocalT1dmSemantics.current.background)) {
         ThemeBackdrop(bgAlphaPct)
         Scaffold(
@@ -819,6 +823,61 @@ private fun T1dmBottomBar(navController: NavHostController, backgroundAlphaPct: 
 
 }
 
+/**
+ * Volume up ⇒ Meals, volume down ⇒ Insulin. Registered on the Activity, which is where the key
+ * arrives; the decision stays here, where the NavController and the state it depends on live.
+ *
+ * Two gates, and only one of them is the user's. With the setting off the keys are the volume they
+ * always were. And **while an alarm is announcing the shortcut stands down regardless of the
+ * setting** — an alarm is precisely when the hardware keys must do the obvious thing, and this app
+ * has no business holding the volume down at that moment. That gate is deliberately keyed on an
+ * alarm being active rather than on it currently sounding: a snoozed low is still a low.
+ *
+ * **Both actuators, not just the deterministic one.** `alarmState` carries the §3.6-A engine's
+ * conditions only. The model-predictive urgent alert is a second, independently published actuator
+ * (`predictiveAlertRaised`) that posts on the critical channel with a full-screen intent and buzzes
+ * the same vibrator — and it suppresses itself when a deterministic CRITICAL breach is up, so its
+ * whole working life is spent while `alarmState` reads CLEAR. Gating on `alarmState` alone left the
+ * keys hijacked through exactly the DND-bypassing announcement this gate exists for. The minigame's
+ * interlock reads the same pair, for the same reason.
+ *
+ * The navigation matches the bottom bar's exactly, tile for tile, so arriving by key and arriving by
+ * thumb leave the same back stack.
+ */
+@Composable
+private fun VolumeKeyShortcuts(
+    navController: NavHostController,
+    container: AppContainer,
+    haptics: T1dmHaptics,
+) {
+    val activity = LocalContext.current.findMainActivity() ?: return
+    val enabled by container.settingsStore.volumeNavEnabled.collectAsState(true)
+    val alarm by container.alarmState.collectAsState()
+    val predictive by container.predictiveAlertRaised.collectAsState()
+    val announcing = alarm.isActive || predictive
+    DisposableEffect(activity, navController, haptics, enabled, announcing) {
+        activity.volumeShortcut = shortcut@{ up ->
+            if (!enabled || announcing) return@shortcut false
+            haptics.perform(HapticEvent.NavSwitch)
+            navController.navigate(if (up) "meals" else "insulin") {
+                launchSingleTop = true
+                restoreState = true
+                popUpTo("dashboard") { saveState = true }
+            }
+            true
+        }
+        onDispose { activity.volumeShortcut = null }
+    }
+}
+
+/** The hosting [MainActivity], through however many ContextWrappers the composition sits behind.
+ *  Not `LocalActivity`: activity-compose is pinned at 1.9.3 here. */
+private tailrec fun Context.findMainActivity(): MainActivity? = when (this) {
+    is MainActivity -> this
+    is ContextWrapper -> baseContext.findMainActivity()
+    else -> null
+}
+
 @Composable
 private fun NavTile(destination: Destination, selected: Boolean, onEdges: (Int, Int) -> Unit, onClick: () -> Unit) {
     val cs = MaterialTheme.colorScheme
@@ -974,6 +1033,23 @@ private fun T1dmNavHost(
                     )
                 }
             }
+            // The model-probed ISF/ICR beside the IOB/COB read-out. A probe costs three forwards on
+            // the fp32 authority, so it is driven from HERE rather than from the container's own
+            // cycle: this effect exists only while the BG panel is composed, and the container's TTL
+            // keeps a burst of cycles from re-probing. Off-screen the read-out costs nothing at all.
+            val sensitivity by container.sensitivity.collectAsState()
+            // A TICKER, not the cycle key it was first written as. `lastCycleTsMs` stops advancing on
+            // exactly the gated paths — thermal, warm-up, no context — that stop forecasts, so keying
+            // on it meant the container's lapse check never ran in the states where a held figure is
+            // most likely to be out of date, and an expired estimate sat beside live IOB until the
+            // model recovered. The container decides whether to re-probe or to drop; this only has to
+            // ask it often enough that the lapse is honoured, so the tick is cheap and coarse.
+            LaunchedEffect(Unit) {
+                while (isActive) {
+                    container.refreshSensitivityIfStale()
+                    kotlinx.coroutines.delay(60_000)
+                }
+            }
             DashboardScreen(
                 readings = readings,
                 latest = latest,
@@ -984,6 +1060,7 @@ private fun T1dmNavHost(
                 kovatchevF = container.nativeCore::kovatchevF,
                 calibrateBands = calibrateBands,
                 iobCob = iobCob,
+                sensitivity = sensitivity,
                 curveChannels = container::dashboardOverlayChannels,
                 logEntries = logEntries,
                 warmup = inference.warmup,
@@ -1586,6 +1663,7 @@ private fun T1dmNavHost(
             val statsState by container.statsViewModel.state.collectAsState()
             val ss = container.settingsStore
             val animations by ss.animationsEnabled.collectAsState(true)
+            val volumeNav by ss.volumeNavEnabled.collectAsState(true)
             val themeId by ss.themeId.collectAsState(SettingsStore.DEFAULT_THEME)
             val fontId by ss.fontId.collectAsState(SettingsStore.DEFAULT_FONT)
             val tempUnit by container.temperatureUnit.collectAsState(com.t1dm.core.model.TempUnit.CELSIUS)
@@ -1627,6 +1705,7 @@ private fun T1dmNavHost(
                 targetLow = statsState.targetRange.lowMgdl,
                 targetHigh = statsState.targetRange.highMgdl,
                 animationsEnabled = animations,
+                volumeNavEnabled = volumeNav,
                 backgroundAlphaPct = bgAlphaPct,
                 themeOptions = themeOptions,
                 selectedThemeId = themeId,
@@ -1640,6 +1719,7 @@ private fun T1dmNavHost(
                 onSetUnitSpace = { container.setUnitSpace(it) },
                 onSetTargetRange = { lo, hi -> container.statsViewModel.setTargetRange(lo, hi) },
                 onSetAnimationsEnabled = { on -> scope.launch { ss.setAnimationsEnabled(on) } },
+                onSetVolumeNavEnabled = { on -> scope.launch { ss.setVolumeNavEnabled(on) } },
                 onSetBackgroundAlpha = { pct -> scope.launch { ss.setBackgroundAlphaPct(pct) } },
                 onSelectTheme = { id -> scope.launch { ss.setThemeId(id) } },
                 onSelectFont = { id -> scope.launch { ss.setFontId(id) } },

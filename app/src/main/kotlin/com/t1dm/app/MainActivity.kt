@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -22,6 +23,20 @@ import timber.log.Timber
 class MainActivity : ComponentActivity() {
 
     private val container: AppContainer get() = (application as T1dmApplication).container
+
+    /**
+     * The volume-key panel shortcut, registered by the composition (which owns the NavController and
+     * reads both the setting and the alarm state). Returns true when it navigated; false hands the
+     * key back to the system volume it normally is — which is what happens with the setting off,
+     * while any alarm condition stands, and before the composition has attached.
+     */
+    internal var volumeShortcut: ((up: Boolean) -> Boolean)? = null
+
+    /** Which volume key the shortcut claimed on ACTION_DOWN, so the matching ACTION_UP is consumed
+     *  by that same decision. Deciding twice is not equivalent: the setting can be toggled and an
+     *  alarm can fire between the two events, and a DOWN we swallowed followed by an UP we passed on
+     *  still raises the system volume panel over the panel we just navigated to. */
+    private var claimedKeyCode: Int? = null
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
@@ -55,6 +70,31 @@ class MainActivity : ComponentActivity() {
                 T1dmApp(container)
             }
         }
+    }
+
+    /**
+     * Volume up ⇒ Meals, volume down ⇒ Insulin, while this Activity is foregrounded. Long-press
+     * repeats are swallowed rather than re-navigated: holding a key is how the volume is normally
+     * run up, and repeating the navigation would fight `launchSingleTop` for no gain.
+     */
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val code = event.keyCode
+        if (code != KeyEvent.KEYCODE_VOLUME_UP && code != KeyEvent.KEYCODE_VOLUME_DOWN) {
+            return super.dispatchKeyEvent(event)
+        }
+        when (event.action) {
+            KeyEvent.ACTION_DOWN -> {
+                if (event.repeatCount > 0) return claimedKeyCode == code
+                val claimed = volumeShortcut?.invoke(code == KeyEvent.KEYCODE_VOLUME_UP) ?: false
+                claimedKeyCode = if (claimed) code else null
+                if (claimed) return true
+            }
+            KeyEvent.ACTION_UP -> if (claimedKeyCode == code) {
+                claimedKeyCode = null
+                return true
+            }
+        }
+        return super.dispatchKeyEvent(event)
     }
 
     override fun onResume() {

@@ -28,6 +28,7 @@ fun DisplaySettingsScreen(
     targetLow: Int,
     targetHigh: Int,
     animationsEnabled: Boolean,
+    volumeNavEnabled: Boolean,
     backgroundAlphaPct: Int,
     themeOptions: List<Pair<String, String>>,
     selectedThemeId: String,
@@ -41,6 +42,7 @@ fun DisplaySettingsScreen(
     onSetUnitSpace: (UnitSpace) -> Unit,
     onSetTargetRange: (low: Int, high: Int) -> Unit,
     onSetAnimationsEnabled: (Boolean) -> Unit,
+    onSetVolumeNavEnabled: (Boolean) -> Unit,
     onSetBackgroundAlpha: (Int) -> Unit,
     onSelectTheme: (String) -> Unit,
     onSelectFont: (String) -> Unit,
@@ -130,6 +132,10 @@ fun DisplaySettingsScreen(
 
         SettingsSectionHeader("Motion")
         ToggleRow(displayAnimations, animationsEnabled) { onSetAnimationsEnabled(it) }
+
+        SettingsSectionHeader("Hardware keys")
+        SettingsNote("Off returns the keys to the volume. They stay the volume during an alarm either way.")
+        ToggleRow(displayVolumeNav, volumeNavEnabled) { onSetVolumeNavEnabled(it) }
 
         SettingsSectionHeader("Haptics")
         SettingsNote("Independent of Animations; alarm vibration is set separately under Alerts.")
@@ -258,6 +264,19 @@ private val displayAnimations = SettingsKnob(
     ),
 )
 
+private val displayVolumeNav = SettingsKnob(
+    id = "display.volume_nav",
+    screen = SettingsScreenKey.DISPLAY,
+    section = "Hardware keys",
+    label = "Volume keys jump to a panel",
+    subtitle = "Volume up opens Meals, volume down opens Insulin",
+    synonyms = listOf(
+        "volume", "volume key", "volume keys", "volume button", "volume buttons", "hardware key",
+        "hardware keys", "button", "buttons", "shortcut", "shortcuts", "jump", "navigate",
+        "navigation", "meals", "insulin", "up", "down", "physical",
+    ),
+)
+
 private val displayHaptics = SettingsKnob(
     id = "display.haptics",
     screen = SettingsScreenKey.DISPLAY,
@@ -281,5 +300,6 @@ internal val settingsDisplayKnobs = listOf(
     displayTemperatureUnit,
     displayWidgets,
     displayAnimations,
+    displayVolumeNav,
     displayHaptics,
 )

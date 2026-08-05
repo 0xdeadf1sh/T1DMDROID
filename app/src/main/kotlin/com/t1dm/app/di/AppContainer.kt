@@ -83,8 +83,11 @@ import com.t1dm.calc.IobSnapshot
 import com.t1dm.calc.IobSource
 import com.t1dm.calc.Objective
 import com.t1dm.calc.RollingForecaster
+import com.t1dm.calc.CarbResolver
 import com.t1dm.calc.SelectedModelHandle
 import com.t1dm.calc.SelectedModelProvider
+import com.t1dm.calc.SensitivityProbe
+import com.t1dm.core.model.SensitivityEstimate
 import com.t1dm.inference.backend.GraphInput
 import com.t1dm.core.nativecore.UniffiNativeCore
 import com.t1dm.app.stats.AppStatsSource
@@ -1978,6 +1981,19 @@ class AppContainer(context: Context) {
 
     private val bolusCalculator by lazy { BolusCalculator(rollingForecaster, bolusResolver) }
 
+    /** Resolves the sensitivity probe's announced meal into its appearance (Ra) gamma, at the
+     *  mixed-meal GI the bolus advisor also defaults to. The GI is pinned rather than followed from a
+     *  setting because it shapes how much of the meal has appeared by the probe's horizon: a GI that
+     *  moved between probes would surface as the patient's ratio changing. */
+    private val probeCarbResolver = CarbResolver { grams, atMs ->
+        val (k, theta, dur) = CurveEngine.Presets.carbGammaForGi(PROBE_GI)
+        listOf(curveEngine.carbEvent(grams, atMs, k, theta, dur))
+    }
+
+    private val sensitivityProbe by lazy {
+        SensitivityProbe(rollingForecaster, bolusResolver, probeCarbResolver, anchorSource)
+    }
+
     /** §3.6-D anchor facts from the active source's recent grid readings (fail-closed: null ⇒ no signal). */
     private val anchorSource = AnchorInfoSource { nowMs -> buildAnchorInfo(nowMs) }
 
@@ -2100,6 +2116,70 @@ class AppContainer(context: Context) {
         rollJob?.cancel()
         rollComputing.value = false
         rolledForecast.value = null
+    }
+
+    // ── The model-probed ISF / ICR read-out ───────────────────────────────────────────────────────
+    //
+    // Structurally isolated exactly as the rolled forecast above: a [SensitivityEstimate] is a type
+    // neither [doseAdvisor], [inferenceState], the store, nor the outbox accepts, so a probe can
+    // never raise an alert, move a rail, or be mistaken for a logged fact. The BG panel is its only
+    // reader.
+
+    /** The current ISF/ICR estimate, or null when none can be justified (the panel then shows
+     *  nothing at all — see [SensitivityProbe]'s fail-closed contract). */
+    val sensitivity = MutableStateFlow<SensitivityEstimate?>(null)
+
+    private var sensitivityJob: Job? = null
+
+    /** When a probe was last STARTED, whatever it returned — the attempt rate limiter's clock. */
+    private var lastProbeAtMs: Long? = null
+
+    /**
+     * Re-probe ISF/ICR if the held estimate has aged past [SENSITIVITY_TTL_MS], and drop it outright
+     * once it is older than [SENSITIVITY_LAPSE_MS].
+     *
+     * Called from the BG panel on each inference cycle, so three model forwards are spent only while
+     * the read-out is actually on screen. Insulin sensitivity moves with the circadian phase, so a
+     * held figure is a claim about a past hour: the lapse is what stops a probe taken before the
+     * phone was pocketed from being read as current after it comes back out.
+     */
+    fun refreshSensitivityIfStale() {
+        val now = System.currentTimeMillis()
+        val held = sensitivity.value
+        // Age is absolute, not elapsed: a backwards clock correction must expire a held estimate
+        // rather than freeze it. This runs BEFORE every other branch, so the lapse is enforced on
+        // each call even when nothing below decides to re-probe.
+        val age = held?.let { Math.abs(now - it.atMs) }
+        if (age != null && age >= SENSITIVITY_LAPSE_MS) sensitivity.value = null
+
+        // While the app is collecting context it publishes no forecast at all, and a figure
+        // differenced off three rolls it declines to draw would be the only model-derived number on
+        // screen. Drop what is held rather than merely skipping the re-probe: warm-up can begin
+        // (a sensor change, a wipe) with an estimate already up.
+        if (inferenceState.value.warmup != null) {
+            sensitivity.value = null
+            return
+        }
+        if (age != null && age < SENSITIVITY_TTL_MS) return
+        // Rate-limit ATTEMPTS, not just successes. A probe that withholds leaves nothing to age, so
+        // gating on the held estimate alone would re-run three fp32 forwards on every tick for as
+        // long as the model cannot justify a figure — which is precisely when the phone is already
+        // busy or hot. A withheld probe retries on the shorter interval so a recovering signal is
+        // picked up without waiting out the full TTL.
+        val sinceAttempt = lastProbeAtMs?.let { Math.abs(now - it) }
+        if (sinceAttempt != null && sinceAttempt < (if (held != null) SENSITIVITY_TTL_MS else SENSITIVITY_RETRY_MS)) return
+        if (sensitivityJob?.isActive == true) return
+        lastProbeAtMs = now
+        sensitivityJob = appScope.launch {
+            val cfg = runCatching { settingsStore.currentCalcConfig() }.getOrDefault(CalcConfig())
+            val pinned = runCatching { smoothingWindow() }.getOrNull()
+            sensitivity.value = runCatching {
+                sensitivityProbe.probe(System.currentTimeMillis(), cfg, pinned)
+            }.getOrElse {
+                Timber.tag("Sensitivity").w(it, "probe failed")
+                null
+            }
+        }
     }
 
     /** Record the human's acceptance of an advised bolus — logs it exactly like a manual bolus (the
@@ -2877,5 +2957,22 @@ class AppContainer(context: Context) {
          *  to `thresholdC - THERMAL_RESUME_MARGIN_C`, so a reading hovering at the threshold cannot flap
          *  the forecast on and off cycle-to-cycle. */
         const val THERMAL_RESUME_MARGIN_C = 2.0
+
+        /** The glycaemic index the ISF/ICR probe announces its 10 g meal at — the mixed-meal default
+         *  the bolus advisor also falls back to. */
+        const val PROBE_GI = 55.0
+
+        /** How long a probed ISF/ICR estimate stands before the BG panel re-probes. */
+        const val SENSITIVITY_TTL_MS = 30 * 60_000L
+
+        /** How long a probe that WITHHELD a figure waits before trying again — one inference
+         *  cycle's worth, so a recovering anchor is picked up promptly without the retry costing
+         *  more than the cycle running beside it. */
+        const val SENSITIVITY_RETRY_MS = 5 * 60_000L
+
+        /** How old a probed estimate may get before it is dropped rather than shown. Past this the
+         *  figures describe a context — circadian phase, insulin on board, meal state — that is no
+         *  longer the patient's. */
+        const val SENSITIVITY_LAPSE_MS = 2 * 60 * 60_000L
     }
 }
