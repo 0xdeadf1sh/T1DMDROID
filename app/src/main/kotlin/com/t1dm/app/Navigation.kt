@@ -1077,6 +1077,7 @@ private fun T1dmNavHost(
                 iobCob = iobCob,
                 sensitivity = sensitivity,
                 curveChannels = container::dashboardOverlayChannels,
+                stepSeries = container::dashboardStepSeries,
                 logEntries = logEntries,
                 warmup = inference.warmup,
                 rangeMinMgdl = range.minMgdl,

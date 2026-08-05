@@ -102,10 +102,12 @@ import com.t1dm.ui.graph.HindsightFrame
 import com.t1dm.ui.graph.PredictedClock
 import com.t1dm.ui.graph.RolledSeries
 import com.t1dm.ui.graph.SmoothedTrace
+import com.t1dm.ui.graph.StepsFrame
 import com.t1dm.ui.graph.hindsightFrameOf
 import com.t1dm.ui.graph.paintFrameOf
 import com.t1dm.ui.graph.rolledSeriesOf
 import com.t1dm.ui.graph.smoothedTraceOf
+import com.t1dm.ui.graph.stepsFrameOf
 import com.t1dm.ui.graph.curveOverlayOf
 import com.t1dm.ui.graph.graphFrameOf
 import com.t1dm.ui.graph.noFutureInsulinOverForecast
@@ -152,6 +154,11 @@ fun DashboardScreen(
     // twice and rebuilt the same basal representation twice, since the basal series is a component of
     // the combined insulin one rather than an independent quantity.
     curveChannels: (suspend (gridStartMs: Long, nSteps: Int) -> Triple<DoubleArray, DoubleArray, DoubleArray>)? = null,
+    // The pedometer's per-bucket counts over one grid window, densified by `:app` off the sparse
+    // `sample.steps` read. A lambda over an IntArray for the same reason [curveChannels] is one over
+    // DoubleArrays: this module holds no `:data` dependency and must never see a Room row. Null ⇒ no
+    // step source is wired, and the Steps chip is not offered.
+    stepSeries: (suspend (gridStartMs: Long, nSteps: Int) -> IntArray)? = null,
     // The logged carb/insulin events the BG panel marks at its foot — the SAME feed the Logs panel
     // binds, as `:app` joined it against the upload queue. This screen neither re-derives the
     // committed/delivered verdict nor thins the list; it reduces the feed to markers for the panel
@@ -339,6 +346,37 @@ fun DashboardScreen(
     }
     var showSmoothed by remember { mutableStateOf(false) }
 
+    // The STEPS overlay's render model, built off-thread over the SAME grid window the curve overlay
+    // uses so the two band layers cannot disagree about where a bucket is. Kept a sibling of
+    // [showSmoothed] rather than a third field on [toggles]: that type is the pair of model-input
+    // channels one resolve yields, and steps are neither reconstructed nor a model input.
+    //
+    // Built only while the overlay is ON, unlike [curveOverlay] — nothing else reads it. The curve
+    // frame is built regardless because the scrub read-out reports its rates with the overlay hidden,
+    // and there is no such second reader here, so an untouched chip costs one Room query at most.
+    var showSteps by remember { mutableStateOf(false) }
+    val stepsFrame by produceState<StepsFrame?>(null, readings, stepSeries, showSteps) {
+        val load = stepSeries
+        if (load == null || !showSteps || readings.isEmpty()) {
+            value = null
+            return@produceState
+        }
+        // The window the bars may span: the readings' own extent, capped to the same fortnight of
+        // buckets the curve overlay caps to, and anchored on the RECENT end for the reason that one is
+        // — a server re-sync can push `readings` back weeks, and a window stranded in the far past
+        // would carry no bar the viewport could reach. No future half: a pedometer cannot report one.
+        val oldest = readings.first().tsMs / STEP_MS * STEP_MS
+        // The end bound comes from the CLOCK, not from the reading stream. The two sources are
+        // independent: the pedometer keeps bucketing while the CGM is out of range, warming up or
+        // simply not being heard, and a window ending at the last reading would silently drop every
+        // step taken since — exactly the stretch a reader looking at a gap wants explained.
+        val newest = maxOf(readings.last().tsMs, System.currentTimeMillis()) / STEP_MS * STEP_MS
+        val earliest = ((newest / STEP_MS) - (MAX_OVERLAY_STEPS - 1L)) * STEP_MS
+        val gridStart = maxOf(oldest, earliest)
+        val nSteps = (((newest - gridStart) / STEP_MS).toInt() + 1).coerceIn(1, MAX_OVERLAY_STEPS)
+        value = stepsFrameOf(load(gridStart, nSteps), gridStart, STEP_MS)
+    }
+
     // The annotation layer's render model: decoded, ordered and thinned once off-thread, then culled
     // per-viewport by the Canvas — a pan or a zoom never rebuilds it.
     val paint by produceState<PaintFrame?>(null, paintStrokes) {
@@ -463,7 +501,8 @@ fun DashboardScreen(
         warmup?.let { WarmupBanner(it) }
         if (noFutureInsulin) NoFutureInsulinBanner()
         if (iobCob != null || sensitivity != null || curveChannels != null || smoothMgdl != null ||
-            onRoll != null || paintAvailable || gameSlot != null || hindsightIn != null
+            onRoll != null || paintAvailable || gameSlot != null || hindsightIn != null ||
+            stepSeries != null
         ) {
             OverlayControls(
                 iobCob = iobCob,
@@ -474,6 +513,8 @@ fun DashboardScreen(
                 forecastPeriodMin = forecastPeriodMin,
                 toggles = toggles,
                 windowHours = windowHours,
+                stepsAvailable = stepSeries != null,
+                showSteps = showSteps,
                 smoothAvailable = smoothMgdl != null,
                 showSmoothed = showSmoothed,
                 hindsightAvailable = hindsightIn != null,
@@ -487,6 +528,7 @@ fun DashboardScreen(
                 onToggleGame = { gameOn = it },
                 onRollClick = { showRollDialog = true },
                 onToggle = { toggles = it },
+                onToggleSteps = { showSteps = it },
                 onToggleSmoothed = { showSmoothed = it },
                 onToggleHindsight = { showHindsight = it },
                 onTogglePaint = { on -> paintOn = on },
@@ -560,6 +602,8 @@ fun DashboardScreen(
             predictions = overlay,
             curveOverlay = curveOverlay,
             curveToggles = toggles,
+            stepsFrame = stepsFrame,
+            showSteps = showSteps,
             logMarkers = logMarkers,
             onMarkerTap = { hits -> tappedLogs = hits.mapNotNull { logEntries.getOrNull(it) } },
             rangeMinMgdl = rangeMinMgdl,
@@ -791,6 +835,8 @@ private fun OverlayControls(
     forecastPeriodMin: Int,
     toggles: CurveOverlayToggles,
     windowHours: Int,
+    stepsAvailable: Boolean,
+    showSteps: Boolean,
     smoothAvailable: Boolean,
     showSmoothed: Boolean,
     hindsightAvailable: Boolean,
@@ -804,6 +850,7 @@ private fun OverlayControls(
     onToggleGame: (Boolean) -> Unit,
     onRollClick: () -> Unit,
     onToggle: (CurveOverlayToggles) -> Unit,
+    onToggleSteps: (Boolean) -> Unit,
     onToggleSmoothed: (Boolean) -> Unit,
     onToggleHindsight: (Boolean) -> Unit,
     onTogglePaint: (Boolean) -> Unit,
@@ -811,8 +858,8 @@ private fun OverlayControls(
 ) {
     val haptics = rememberT1dmHaptics()
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-        // N2 — the Roll / Carbs / Insulin / Smoothed / 6h / 12h / 24h chips no longer fit across a phone
-        // width, so they live in a HORIZONTALLY-SCROLLABLE row (mirroring the nav) — nothing clips.
+        // N2 — the Roll / Carbs / Insulin / Steps / Smoothed / 6h / 12h / 24h chips no longer fit across
+        // a phone width, so they live in a HORIZONTALLY-SCROLLABLE row (mirroring the nav) — nothing clips.
         Row(
             Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -829,7 +876,7 @@ private fun OverlayControls(
                     } else null,
                 )
             }
-            // Carbs / Insulin / Smoothed / Paint are LATCHES, not a single-choice group, so each speaks
+            // Carbs / Insulin / Steps / Smoothed / Paint are LATCHES, not a single-choice group, so each speaks
             // the mirrored ToggleOn/ToggleOff pair rather than a chip picker's detent — the hand can
             // tell "I turned the overlay on" from "I switched to the 12 h window" without looking.
             FilterChip(
@@ -848,6 +895,15 @@ private fun OverlayControls(
                 },
                 label = { Text("Insulin") },
             )
+            // Steps shares the band with Carbs and Insulin, so it sits with them rather than with the
+            // chips that change what the panel IS (Smoothed swaps the trace, Drive swaps the panel).
+            if (stepsAvailable) {
+                FilterChip(
+                    selected = showSteps,
+                    onClick = { haptics.toggled(!showSteps); onToggleSteps(!showSteps) },
+                    label = { Text("Steps") },
+                )
+            }
             if (smoothAvailable) {
                 FilterChip(
                     selected = showSmoothed,

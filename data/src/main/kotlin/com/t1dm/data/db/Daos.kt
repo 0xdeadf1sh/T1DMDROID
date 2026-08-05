@@ -186,6 +186,16 @@ interface SampleDao {
     @Query("SELECT COALESCE(SUM(steps), 0) FROM sample WHERE ts BETWEEN :fromMs AND :toMs")
     suspend fun stepsInRange(fromMs: Long, toMs: Long): Int
 
+    /** The per-bucket step series the BG panel's Steps overlay draws, oldest-first — the buckets
+     *  [stepsInRange] sums away, as two columns rather than [rangeList]'s whole rows. NULL and zero
+     *  buckets are dropped in SQL: neither draws a bar, and on a sleeping night they are most of the
+     *  window, so the densify upstream walks a short list into a bounded array. */
+    @Query(
+        "SELECT ts, steps FROM sample WHERE ts BETWEEN :fromMs AND :toMs " +
+            "AND steps IS NOT NULL AND steps > 0 ORDER BY ts",
+    )
+    suspend fun stepSeriesInRange(fromMs: Long, toMs: Long): List<StepBucketRow>
+
     /** The most recent non-null mood — what the Logs panel's picker shows as the current selection. */
     @Query("SELECT mood FROM sample WHERE mood IS NOT NULL ORDER BY ts DESC LIMIT 1")
     fun observeLatestMood(): Flow<Int?>

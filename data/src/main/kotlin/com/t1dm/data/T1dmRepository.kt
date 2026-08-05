@@ -44,6 +44,7 @@ import com.t1dm.data.db.SampleEntity
 import com.t1dm.data.db.SavedMealEntity
 import com.t1dm.data.db.SavedMealItemEntity
 import com.t1dm.data.db.ServerProfileEntity
+import com.t1dm.data.db.StepBucketRow
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -298,6 +299,11 @@ class T1dmRepository(
     /** Steps summed over `[fromMs, toMs]` — for a caller that wants the total and not the buckets. */
     suspend fun stepsInRange(fromMs: Long, toMs: Long): Int =
         withContext(io) { samples.stepsInRange(fromMs, toMs) }
+
+    /** The per-bucket step series over `[fromMs, toMs]`, oldest-first, with the empty buckets already
+     *  dropped — for the caller that wants the buckets and not the total. */
+    suspend fun stepSeriesInRange(fromMs: Long, toMs: Long): List<StepBucketRow> =
+        withContext(io) { samples.stepSeriesInRange(fromMs, toMs) }
 
     /** Steps arrive already bucketed on the 5-min grid by :sensors (SPEC §3.5). */
     suspend fun recordSteps(gridTs: Long, tzOffsetMin: Int, steps: Int, nowMs: Long) =

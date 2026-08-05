@@ -185,6 +185,13 @@ fun GlucoseGraph(
     predictions: List<PredSeries> = emptyList(),
     curveOverlay: CurveOverlayFrame? = null,
     curveToggles: CurveOverlayToggles = CurveOverlayToggles(),
+    // The pedometer's per-bucket counts, drawn as bars in the same bottom band as the curve overlay.
+    // A separate frame rather than a third channel on [curveOverlay]: that frame carries the two
+    // MODEL-INPUT curves, reconstructed from logged events by the same resolve, and steps are neither
+    // a model input nor reconstructed from anything — they are measured, and they are read from a
+    // different table by a different query.
+    stepsFrame: StepsFrame? = null,
+    showSteps: Boolean = false,
     // One icon per logged carb/insulin event, in two fixed lanes low in the plot (LogMarkerLayer.kt).
     // Carries when / which channel / whether the server has taken it yet, and nothing else — no amount,
     // no row id — so the panel can neither render a figure it has no business rendering nor reach back
@@ -266,6 +273,10 @@ fun GlucoseGraph(
     // invalidates at the display's refresh rate.
     val tracePath = remember { Path() }
     val overlayPaths = remember { CurveChannelPaths() }
+    // The steps band is one path holding every visible bar, so it costs one `drawPath` per frame and
+    // not one `drawRect` per bucket; `reset()` retains its capacity, so after the first frame it grows
+    // no further.
+    val stepBars = remember { StepBarPath() }
     val dash = remember { PathEffect.dashPathEffect(floatArrayOf(6f, 6f)) }
     // Draw styles are immutable value objects with no per-frame content, so they are hoisted beside the
     // paths rather than rebuilt inside the loops that use them: the interpolated-point ring allocated
@@ -334,6 +345,12 @@ fun GlucoseGraph(
     // real allocation.
     val carbInk = semantics.secondary
     val insulinInk = semantics.inRange
+    // Steps are ACTIVITY, not a glucose band and not a model channel, so they are deliberately NOT
+    // given a semantic role: every one of those is spoken for — the five band roles say where the
+    // glucose is, and `secondary`/`inRange` are already carbs and insulin above. Borrowing one would
+    // make a busy hour read as a glucose statement. A muted neutral says "context" instead, and is
+    // resolved here rather than per draw for the reason the tints above are.
+    val stepsInk = remember(cs.onSurfaceVariant) { cs.onSurfaceVariant.copy(alpha = 0.38f) }
     val carbTint = remember(carbInk) { ColorFilter.tint(carbInk) }
     val insulinTint = remember(insulinInk) { ColorFilter.tint(insulinInk) }
     val carbLane = remember(logMarkers) { markerLane(logMarkers, CurveKind.CARB) }
@@ -983,6 +1000,20 @@ fun GlucoseGraph(
                     }
                     val mask = corridor.mask
                     if (mask == null) strokes() else clipPath(mask, ClipOp.Difference) { strokes() }
+                }
+
+                // (4.45) STEP BARS in the same bottom band, drawn FIRST of the band's three layers so
+                //        the two translucent curve fills read over them rather than under: a step bar
+                //        is opaque measured context, and the curves are what the model made of it.
+                if (stepsFrame != null && showSteps && !stepsFrame.isEmpty) {
+                    fun absToPx(ms: Double): Float = (plotLeft + (ms - viewStartMs) * ppm).toFloat()
+                    drawStepsBars(
+                        stepsFrame, AbsToPx(::absToPx),
+                        bandTop = plotBottom - plotHeight * 0.30f, plotBottom = plotBottom,
+                        color = stepsInk,
+                        viewStartMs = viewStartMs, viewSpanMs = viewSpanMs,
+                        dpPx = dpPx, bars = stepBars,
+                    )
                 }
 
                 // (4.5) Curve overlay (carb Ra + insulin action) in the bottom band, UNDER the BG line

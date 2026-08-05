@@ -101,6 +101,14 @@ data class SampleEntity(
     val updatedAt: Long,
 )
 
+/**
+ * Two-column projection of `sample` for the BG panel's Steps overlay: the bucket and its count, and
+ * nothing else. Not an entity — a query result. The overlay needs the buckets [SampleDao.stepsInRange]
+ * sums away, but reading whole [SampleEntity] rows for two of their eleven columns is what that query's
+ * own KDoc was written to stop.
+ */
+data class StepBucketRow(val ts: Long, val steps: Int)
+
 /** Minimal discrete dose event (Phase 1). The full curve/PK expansion lands in Phase 4. */
 @Entity(tableName = "dose_event", indices = [Index("tsMs")])
 @TypeConverters(Converters::class)

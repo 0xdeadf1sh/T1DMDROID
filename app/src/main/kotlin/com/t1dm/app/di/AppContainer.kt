@@ -1881,6 +1881,29 @@ class AppContainer(context: Context) {
     }
 
     /**
+     * The BG panel's STEPS overlay: the pedometer count per 5-min bucket over the same kind of grid
+     * window [dashboardOverlayChannels] answers for, as `out[i]` = steps in
+     * `[gridStartMs + i·GRID_MS, +GRID_MS)`.
+     *
+     * The DENSIFY happens here, on the IO hop, for two reasons. It keeps `:feature:dashboard` free of
+     * any `:data` type — the panel is handed a primitive array and never a Room row, as it is for the
+     * curve channels. And the read itself is sparse: a sleeping night stores no rows for its buckets
+     * at all, so walking a short result into a zeroed array costs less than making SQL emit the
+     * zeroes, and the panel gets the dense array its frame builder wants either way.
+     */
+    suspend fun dashboardStepSeries(gridStartMs: Long, nSteps: Int): IntArray {
+        if (nSteps <= 0) return IntArray(0)
+        val step = T1dmRepository.GRID_MS
+        val out = IntArray(nSteps)
+        val endMs = gridStartMs + (nSteps - 1).toLong() * step
+        for (row in repository.stepSeriesInRange(gridStartMs, endMs)) {
+            val i = ((row.ts - gridStartMs) / step).toInt()
+            if (i in 0 until nSteps) out[i] = row.steps
+        }
+        return out
+    }
+
+    /**
      * The COMMITTED dose tails over the prediction horizon `[rollStartMs, +nFutureSteps·STEP)` — the
      * already-logged meals/doses (+ auto-extended basal) still absorbing past the now-boundary (PLAN
      * §3.3). `announced`/`candidate` are empty here: those are the calculator's what-if injections, and
