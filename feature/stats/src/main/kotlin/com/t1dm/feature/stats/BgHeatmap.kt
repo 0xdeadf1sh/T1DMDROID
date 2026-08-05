@@ -17,20 +17,25 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.model.ClinicalCuts
 import com.t1dm.core.model.HeatCell
+import com.t1dm.core.model.HeatStat
 import com.t1dm.core.model.TargetRange
 import com.t1dm.core.model.UnitSpace
 import kotlin.math.max
 import kotlin.math.min
 
-private const val DAYS = 7
-private const val HOURS = 24
+const val HEATMAP_DAYS = 7
+const val HEATMAP_HOURS = 24
 
-/** Row labels, index 0 = Monday — the ISO order `HeatCell.dow` is emitted in. */
-private val DAY_LABELS = arrayOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+/** Row labels, index 0 = Monday — the ISO order `HeatCell.dow` is emitted in. Public because the
+ *  PDF export renders the same grid and must not restate them. */
+val DAY_LABELS = arrayOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
 /**
- * Mean glucose by weekday and hour of day: 7 rows × 24 columns, each cell coloured on a continuous
- * blue → green → red scale.
+ * Glucose by weekday and hour of day: 7 rows × 24 columns, each cell coloured on a continuous
+ * blue → green → red scale, summarised by [stat].
+ *
+ * Both summaries come out of one core pass, so [stat] is a repaint and never a recompute — which is
+ * what makes flipping the chip above this chart free.
  *
  * **The scale is diverging and anchored on real numbers, not on the data's own extremes.** Green
  * covers the whole of [target]; below it the colour runs to blue by the level-2 hypo cut and above
@@ -51,6 +56,7 @@ private val DAY_LABELS = arrayOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"
 @Composable
 fun BgHeatmap(
     heatmap: List<HeatCell>,
+    stat: HeatStat,
     target: TargetRange,
     cuts: ClinicalCuts,
     unit: UnitSpace,
@@ -61,11 +67,11 @@ fun BgHeatmap(
 ) {
     // Scatter the sparse cells into the dense lattice once, off the draw. NaN marks "no reading",
     // which no glucose value can collide with.
-    val grid = remember(heatmap) {
-        FloatArray(DAYS * HOURS) { Float.NaN }.also { g ->
+    val grid = remember(heatmap, stat) {
+        FloatArray(HEATMAP_DAYS * HEATMAP_HOURS) { Float.NaN }.also { g ->
             for (c in heatmap) {
-                if (c.dow in 0 until DAYS && c.hour in 0 until HOURS) {
-                    g[c.dow * HOURS + c.hour] = c.meanBg.toFloat()
+                if (c.dow in 0 until HEATMAP_DAYS && c.hour in 0 until HEATMAP_HOURS) {
+                    g[c.dow * HEATMAP_HOURS + c.hour] = c.value(stat).toFloat()
                 }
             }
         }
@@ -95,18 +101,18 @@ fun BgHeatmap(
             val plotW = size.width - leftPad
             val plotH = size.height - bottomPad
             if (plotW <= 0f || plotH <= 0f) return@Canvas
-            val cellW = plotW / HOURS
-            val cellH = plotH / DAYS
+            val cellW = plotW / HEATMAP_HOURS
+            val cellH = plotH / HEATMAP_DAYS
             // A hairline of card between cells, so a run of same-valued hours reads as hours and not
             // as one block — but never wider than a third of the cell, which a narrow phone would
             // otherwise erase the fill entirely at.
             val gap = min(1.dp.toPx(), min(cellW, cellH) / 3f)
 
-            for (d in 0 until DAYS) {
+            for (d in 0 until HEATMAP_DAYS) {
                 val top = d * cellH
-                for (h in 0 until HOURS) {
+                for (h in 0 until HEATMAP_HOURS) {
                     val left = leftPad + h * cellW
-                    val c = colors[d * HOURS + h]
+                    val c = colors[d * HEATMAP_HOURS + h]
                     if (c == null) {
                         // No reading in this hour: an outline, not a fill.
                         drawRect(
@@ -128,7 +134,7 @@ fun BgHeatmap(
                 )
             }
             // Hour ticks every three hours; every hour would collide on a phone width.
-            for (h in 0..HOURS step 3) {
+            for (h in 0..HEATMAP_HOURS step 3) {
                 val x = leftPad + h * cellW
                 drawContext.canvas.nativeCanvas.drawText(
                     h.toString(), x - 6f, size.height - 8f, textPaint,
@@ -187,7 +193,7 @@ private fun HeatLegend(
 }
 
 /**
- * Mean glucose (mg/dL) → its cell colour.
+ * A cell's glucose summary (mg/dL) → its colour.
  *
  * Pure, and deliberately takes both anchors: [target] is the user's own range and [cuts] the fixed
  * clinical ones, so this holds no glucose constant of its own. Green spans the whole target; each
@@ -197,16 +203,16 @@ private fun HeatLegend(
  * the sub-bands: the target range is unbounded by design, so a target wider than `[54, 250]` would
  * otherwise leave an arm with zero or negative span.
  */
-internal fun heatColor(meanMgdl: Double, target: TargetRange, cuts: ClinicalCuts): Color {
+fun heatColor(mgdl: Double, target: TargetRange, cuts: ClinicalCuts): Color {
     val lo = target.lowMgdl.toDouble()
     val hi = target.highMgdl.toDouble()
     val floor = min(cuts.veryLowMgdl, lo)
     val ceil = max(cuts.veryHighMgdl, hi)
     return when {
-        meanMgdl <= floor -> HEAT_LOW
-        meanMgdl < lo -> lerp(HEAT_LOW, HEAT_IN, ((meanMgdl - floor) / (lo - floor)).toFloat())
-        meanMgdl <= hi -> HEAT_IN
-        meanMgdl < ceil -> lerp(HEAT_IN, HEAT_HIGH, ((meanMgdl - hi) / (ceil - hi)).toFloat())
+        mgdl <= floor -> HEAT_LOW
+        mgdl < lo -> lerp(HEAT_LOW, HEAT_IN, ((mgdl - floor) / (lo - floor)).toFloat())
+        mgdl <= hi -> HEAT_IN
+        mgdl < ceil -> lerp(HEAT_IN, HEAT_HIGH, ((mgdl - hi) / (ceil - hi)).toFloat())
         else -> HEAT_HIGH
     }
 }
@@ -227,6 +233,6 @@ private fun fmtHeatAxis(v: Double, unit: UnitSpace): String = when (unit) {
 // dark card. The margin is narrow and the surface is deceptive: lifting HEAT_IN by two steps, to a
 // green that looks barely different, collapses the red-green pair to ΔE 4.0. Re-derive with the
 // validator before changing any of them, and do not adjust one by eye.
-internal val HEAT_LOW = Color(0xFF57ACEE)
-internal val HEAT_IN = Color(0xFF24794A)
-internal val HEAT_HIGH = Color(0xFFFF7062)
+val HEAT_LOW = Color(0xFF57ACEE)
+val HEAT_IN = Color(0xFF24794A)
+val HEAT_HIGH = Color(0xFFFF7062)

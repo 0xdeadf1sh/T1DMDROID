@@ -1,6 +1,8 @@
 package com.t1dm.feature.stats
 
 import com.t1dm.core.model.ClinicalCuts
+import com.t1dm.core.model.HeatCell
+import com.t1dm.core.model.HeatStat
 import com.t1dm.core.model.TargetRange
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
@@ -82,6 +84,19 @@ class BgHeatmapTest {
         }
         assertEquals(HEAT_IN, heatColor(45.0, wide, cuts))
         assertEquals(HEAT_IN, heatColor(390.0, wide, cuts))
+    }
+
+    @Test fun theChipSelectsWhichSummaryColoursTheCell() {
+        // One cell whose mean is dragged out of range by a spike its median resists — the case the
+        // median exists for. The two must colour differently, and the mean must be the one that reads
+        // as high, or the chip is decorative.
+        // {100, 102, 400}: mean 200.67 is above the 180 target edge, median 102 is comfortably inside.
+        val mean = (100.0 + 102.0 + 400.0) / 3.0
+        val cell = HeatCell(dow = 0, hour = 8, n = 3, meanBg = mean, medianBg = 102.0)
+        assertEquals(102.0, cell.value(HeatStat.Median), 0.0)
+        assertEquals(mean, cell.value(HeatStat.Mean), 0.0)
+        assertEquals(HEAT_IN, heatColor(cell.value(HeatStat.Median), target, cuts))
+        assertNotEquals(HEAT_IN, heatColor(cell.value(HeatStat.Mean), target, cuts))
     }
 
     @Test fun theThreeAnchorsAreDistinct() {

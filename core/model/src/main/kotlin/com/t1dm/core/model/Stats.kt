@@ -63,16 +63,26 @@ data class ClinicalCuts(val veryLowMgdl: Double, val veryHighMgdl: Double) {
 }
 
 /**
- * One populated cell of the day-of-week × hour-of-day mean-glucose grid.
+ * One populated cell of the day-of-week × hour-of-day glucose grid.
  *
  * [dow] is 0 = Monday … 6 = Sunday and [hour] is 0..23, both in the patient's LOCAL time, resolved
- * per sample from that sample's own [StatSample.tzOffsetMin]. [meanBg] is a plain sample-count mean
- * over the cell's valid-BG samples.
+ * per sample from that sample's own [StatSample.tzOffsetMin]. [meanBg] and [medianBg] are plain
+ * sample-count reductions over the cell's valid-BG samples; [medianBg] is the same type-7 percentile
+ * the AGP ribbon's `p50` is. Both arrive from one pass, so choosing between them is a repaint.
  *
  * Only POPULATED cells exist. An absent `(dow, hour)` means no reading was taken then, and must
  * render as absent — never as a value, and in particular never as an in-range one.
  */
-data class HeatCell(val dow: Int, val hour: Int, val n: Int, val meanBg: Double)
+data class HeatCell(val dow: Int, val hour: Int, val n: Int, val meanBg: Double, val medianBg: Double) {
+    /** The cell's value under [stat] — the single place the choice is resolved. */
+    fun value(stat: HeatStat): Double = when (stat) {
+        HeatStat.Median -> medianBg
+        HeatStat.Mean -> meanBg
+    }
+}
+
+/** Which summary a [HeatCell] is rendered by. Display-only: both are always computed. */
+enum class HeatStat { Median, Mean }
 
 /** Mood summary over the samples that carried a mood score. */
 data class MoodSummary(val mean: Double, val n: Int, val min: Int, val max: Int)
@@ -147,7 +157,7 @@ data class AdvancedStats(
     val histogram: List<HistBin>,
     val hypoEpisodes: EpisodeSummary,
     val hyperEpisodes: EpisodeSummary,
-    /** Mean glucose per (day-of-week, hour) cell in LOCAL time — populated cells only, ascending by
+    /** Mean and median glucose per (day-of-week, hour) cell in LOCAL time — populated cells only, ascending by
      *  `(dow, hour)`. The one aggregation in this block keyed on the patient's calendar; [agp] and
      *  [tod] are keyed on UTC. */
     val heatmap: List<HeatCell>,

@@ -25,6 +25,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -36,6 +40,7 @@ import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.model.AdvancedStats
 import com.t1dm.core.model.ClinicalCuts
 import com.t1dm.core.model.EpisodeSummary
+import com.t1dm.core.model.HeatStat
 import com.t1dm.core.model.StatsComposite
 import com.t1dm.core.model.StatsWindow
 import com.t1dm.core.model.SubBands
@@ -209,7 +214,7 @@ fun StatsScreen(
                 }
             }
 
-            // ── Weekday × hour mean-glucose heatmap ─────────────────────────────────────────────────
+            // ── Weekday × hour glucose heatmap ──────────────────────────────────────────────────────
             // Placed under the diurnal card because it is the finer cut of the day — but NOT the same
             // question, and the two must not be read against each other: this grid keys on the
             // patient's LOCAL clock (each sample's own tz_offset) while the card above keys on UTC,
@@ -217,15 +222,32 @@ fun StatsScreen(
             // explicit "local time" in this card's subtitle. See the day-boundary block on
             // `advanced_stats` in crates/t1dm-core/src/stats.rs for why the other one has not moved.
             if (local.heatmap.isNotEmpty() && cuts.isUsable) {
+                // Which summary the cells show. Local to the card and not hoisted into the ViewModel:
+                // the core computes both in one pass, so this changes nothing but the paint — there
+                // is no reload to coordinate and nothing to persist.
+                var heatStat by remember { mutableStateOf(HeatStat.Median) }
                 SectionCard("Glucose by day and hour") {
                     Text(
-                        "Mean glucose per weekday and hour, local time",
+                        "${statLabel(heatStat)} glucose per weekday and hour, local time",
                         style = MaterialTheme.typography.bodySmall,
                         color = LocalContentColor.current.copy(alpha = 0.7f),
                         modifier = Modifier.padding(bottom = 8.dp),
                     )
+                    Row(
+                        Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        HeatStat.entries.forEach { s ->
+                            FilterChip(
+                                selected = heatStat == s,
+                                onClick = { haptics.perform(HapticEvent.SegmentTick); heatStat = s },
+                                label = { Text(statLabel(s)) },
+                            )
+                        }
+                    }
                     BgHeatmap(
                         heatmap = local.heatmap,
+                        stat = heatStat,
                         target = composite.targetRange,
                         cuts = cuts,
                         unit = composite.unitSpace,
@@ -532,6 +554,12 @@ private fun perChannelMetrics(s: AdvancedStats): List<Triple<String, String, Str
     if (s.totalBasal > 0.0) add(Triple("Bolus:basal", fmt(s.bolusBasalRatio, 2), ""))
     s.meanSteps?.let { add(Triple("Steps", fmt(it, 0), "/5min")) }
     s.mood?.let { add(Triple("Mood", fmt(it.mean, 1), "n=${it.n}")) }
+}
+
+/** The chip caption and the subtitle's leading word — one definition so they cannot disagree. */
+private fun statLabel(stat: HeatStat): String = when (stat) {
+    HeatStat.Median -> "Median"
+    HeatStat.Mean -> "Mean"
 }
 
 internal fun unitLabel(unit: UnitSpace): String = when (unit) {

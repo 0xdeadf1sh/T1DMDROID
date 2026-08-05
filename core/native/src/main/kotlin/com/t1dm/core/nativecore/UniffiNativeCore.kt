@@ -580,7 +580,7 @@ private fun UniffiGradeSplit.toModel(): GradeSplit = GradeSplit(
 )
 
 private fun UniffiHeatCell.toModel(): HeatCell = HeatCell(
-    dow = dow.toInt(), hour = hour.toInt(), n = n.toInt(), meanBg = meanBg,
+    dow = dow.toInt(), hour = hour.toInt(), n = n.toInt(), meanBg = meanBg, medianBg = medianBg,
 )
 
 private fun UniffiAdvancedStats.toModel(): AdvancedStats = AdvancedStats(

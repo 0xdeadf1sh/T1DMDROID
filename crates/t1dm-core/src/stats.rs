@@ -94,15 +94,21 @@ pub struct AgpBin {
     pub p95: f64,
 }
 
-/// One populated cell of the day-of-week × hour-of-day mean-glucose grid.
+/// One populated cell of the day-of-week × hour-of-day glucose grid.
 ///
 /// `dow` is 0 = Monday … 6 = Sunday; `hour` is 0..24. Both are resolved in the patient's LOCAL
 /// time, from each sample's own `tz_offset_min` — so a week reads as the week that was lived, and a
 /// DST shift moves the samples it actually moved rather than the whole column.
 ///
-/// `mean_bg` is a plain sample-count mean over the cell's valid-BG samples, NOT time-weighted: a
-/// cell is one hour of one weekday repeated across the window, and the gaps that time-weighting
-/// exists to handle fall between cells rather than inside them.
+/// Both summaries are plain sample-count reductions over the cell's valid-BG samples, NOT
+/// time-weighted: a cell is one hour of one weekday repeated across the window, and the gaps that
+/// time-weighting exists to handle fall between cells rather than inside them.
+///
+/// `median_bg` is the same type-7 percentile the AGP ribbon's `p50` is (`percentile_sorted`), so the
+/// two agree on what a median is. It is carried ALONGSIDE `mean_bg` rather than instead of it: both
+/// come out of one pass, the caller's choice between them is a repaint, and a cell whose mean and
+/// median disagree sharply is itself the interesting case — one compression low or one rebound high
+/// in an hour-of-week cell drags the mean well off what that hour usually looks like.
 ///
 /// Only populated cells are emitted, ascending by `(dow, hour)`. An absent cell means no reading,
 /// which the chart must render as absent — never as a value.
@@ -112,6 +118,7 @@ pub struct HeatCell {
     pub hour: u32,
     pub n: u32,
     pub mean_bg: f64,
+    pub median_bg: f64,
 }
 
 /// The fixed clinical level-2 cuts, in mg/dL: below `very_low_mgdl` is level-2 hypoglycaemia and
@@ -265,7 +272,7 @@ pub struct AdvancedStats {
     pub hypo_episodes: EpisodeSummary,
     /// Hyper (> target_high) excursion-episode aggregate.
     pub hyper_episodes: EpisodeSummary,
-    /// Mean glucose per (day-of-week, hour-of-day) cell, in LOCAL time — populated cells only,
+    /// Mean AND median glucose per (day-of-week, hour-of-day) cell, in LOCAL time — populated cells only,
     /// ascending by `(dow, hour)`. The one aggregation in this block keyed on the patient's own
     /// calendar; see `HeatCell`, and see `advanced_stats` on why the others are not.
     pub heatmap: Vec<HeatCell>,
@@ -485,7 +492,7 @@ fn dtd_sd(valid: &[&StatSample]) -> f64 {
 /// a calendar fact and reads as a magic number everywhere else.
 const EPOCH_DOW_SHIFT: i64 = 3;
 
-/// The `(dow, hour)` mean-glucose grid, in LOCAL time.
+/// The `(dow, hour)` glucose grid — mean and median per cell — in LOCAL time.
 ///
 /// Each sample carries its own `tz_offset_min` (`SPEC/invariants.md` §2), applied here and nowhere
 /// else in this module: the offset is added to the timestamp to get a local wall-clock instant, and
@@ -493,30 +500,38 @@ const EPOCH_DOW_SHIFT: i64 = 3;
 /// because the window spans up to 90 days and can straddle a DST boundary or a flight — using one
 /// offset for all of them would shift every reading by the last one's.
 ///
-/// Fixed 7×24 accumulators, walked once and emitted sparse; a cell no sample landed in is left out
-/// entirely rather than emitted as zero, which the renderer needs to tell "no data" from "in range".
+/// A fixed 7×24 lattice of per-cell value vectors — the median needs the values kept, not just a
+/// running sum — walked once and emitted sparse; a cell no sample landed in is left out entirely
+/// rather than emitted as zero, which the renderer needs to tell "no data" from "in range".
 fn heatmap(valid: &[&StatSample]) -> Vec<HeatCell> {
-    let mut sum = [[0.0f64; 24]; 7];
-    let mut cnt = [[0u32; 24]; 7];
+    // The cells are collected as values rather than as running sums because the median needs them
+    // all. 168 buckets over at most a 90-day window is ~26 000 f64 in total — the same series
+    // already resident — and each cell sorts on its own ~150 entries.
+    let mut cells: Vec<Vec<f64>> = vec![Vec::new(); 7 * 24];
     for s in valid {
         let local = s.ts_ms + s.tz_offset_min as i64 * 60_000;
         let dow = (local.div_euclid(DAY_MS as i64) + EPOCH_DOW_SHIFT).rem_euclid(7) as usize;
         let hour = (local.rem_euclid(DAY_MS as i64) / 3_600_000) as usize;
-        sum[dow][hour] += s.bg_mgdl;
-        cnt[dow][hour] += 1;
+        cells[dow * 24 + hour].push(s.bg_mgdl);
     }
     let mut out = Vec::new();
     for d in 0..7 {
         for h in 0..24 {
-            let n = cnt[d][h];
-            if n == 0 {
+            let vals = &mut cells[d * 24 + h];
+            if vals.is_empty() {
                 continue;
             }
+            let n = vals.len();
+            let sum: f64 = vals.iter().sum();
+            // Sorted in place; `percentile_sorted` is the AGP ribbon's own, so a cell median and an
+            // AGP p50 over the same values are the same number by construction.
+            vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
             out.push(HeatCell {
                 dow: d as u32,
                 hour: h as u32,
-                n,
-                mean_bg: sum[d][h] / n as f64,
+                n: n as u32,
+                mean_bg: sum / n as f64,
+                median_bg: percentile_sorted(vals, 50.0),
             });
         }
     }
@@ -1062,8 +1077,17 @@ mod tests {
             assert_eq!(got.hour, want["hour"].as_u64().unwrap() as u32, "heat.hour");
             assert_eq!(got.n, want["n"].as_u64().unwrap() as u32, "heat.n");
             close(got.mean_bg, want["mean_bg"].as_f64().unwrap(), 1e-9, "heat.mean_bg");
+            close(got.median_bg, want["median_bg"].as_f64().unwrap(), 1e-9, "heat.median_bg");
             heat_total += got.n;
         }
+        // This series is a 30-minute grid, so no (weekday, hour) cell holds more than two samples
+        // and the two summaries coincide in every one of them. The golden therefore cannot tell a
+        // median from a mean — `heatmap_summarises_each_cell_by_mean_and_median` is what does.
+        assert!(
+            out.heatmap.iter().all(|c| c.n <= 2 && (c.mean_bg - c.median_bg).abs() < 1e-12),
+            "golden cells are n<=2; if this fires the fixture changed and the median needs its own \
+             expectations here",
+        );
         assert_eq!(heat_total, out.n_samples, "the grid partitions the valid samples");
         // Emitted ascending by (dow, hour), and every index in range: the renderer scatters these
         // into a fixed 7×24 lattice and would silently drop or mis-place anything outside it.
@@ -1365,6 +1389,43 @@ mod tests {
         assert_eq!(out.heatmap.len(), 1, "three samples, one hour, one cell");
         assert_eq!(out.heatmap[0].n, 2, "the non-positive BG is excluded");
         close(out.heatmap[0].mean_bg, 150.0, 1e-12, "cell mean");
+    }
+
+    #[test]
+    fn heatmap_summarises_each_cell_by_mean_and_median() {
+        // The case the golden cannot reach: one cell, an odd sample count, and an outlier far enough
+        // out to separate the two summaries. This is the whole reason the median is carried — a
+        // single rebound high in an hour-of-week cell drags the mean off what that hour usually is.
+        let min = 60_000i64;
+        let quiet = [100.0, 104.0, 96.0, 102.0];
+        let mut s: Vec<StatSample> =
+            quiet.iter().enumerate().map(|(i, &bg)| tzs(i as i64 * min, 0, bg)).collect();
+        s.push(tzs(4 * min, 0, 400.0)); // the spike
+        let out = advanced_stats(s, 70, 180, 24).unwrap();
+
+        assert_eq!(out.heatmap.len(), 1, "all five minutes are one (weekday, hour) cell");
+        let c = &out.heatmap[0];
+        assert_eq!(c.n, 5);
+        // mean = (100+104+96+102+400)/5 = 160.4 — out of range, on four in-range readings.
+        close(c.mean_bg, 160.4, 1e-9, "cell mean is dragged by the spike");
+        // median of {96,100,102,104,400} = 102 — what that hour actually looks like.
+        close(c.median_bg, 102.0, 1e-9, "cell median resists the spike");
+
+        // Even n takes the midpoint of the two central values (type-7 at 50, the AGP p50's rule).
+        let even = advanced_stats(
+            vec![tzs(0, 0, 90.0), tzs(min, 0, 110.0), tzs(2 * min, 0, 130.0), tzs(3 * min, 0, 170.0)],
+            70,
+            180,
+            24,
+        )
+        .unwrap();
+        close(even.heatmap[0].median_bg, 120.0, 1e-9, "even-n median is the midpoint");
+        close(even.heatmap[0].mean_bg, 125.0, 1e-9, "even-n mean");
+
+        // A single-sample cell has both equal to that sample; neither may be NaN.
+        let one = advanced_stats(vec![tzs(0, 0, 123.0)], 70, 180, 24).unwrap();
+        close(one.heatmap[0].median_bg, 123.0, 1e-12, "n=1 median");
+        close(one.heatmap[0].mean_bg, 123.0, 1e-12, "n=1 mean");
     }
 
     #[test]
