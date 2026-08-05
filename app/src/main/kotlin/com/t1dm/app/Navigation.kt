@@ -1151,7 +1151,7 @@ private fun T1dmNavHost(
                 else scope.launch {
                     exportStatus = runCatching {
                         ctx.contentResolver.openOutputStream(uri)?.use {
-                            com.t1dm.app.stats.StatsPdf.write(it, composite)
+                            com.t1dm.app.stats.StatsPdf.write(it, composite, container.nativeCore.clinicalCuts())
                         } ?: error("could not open file")
                         "Report exported"
                     }.getOrElse { "Export failed — ${it.message ?: it::class.simpleName}" }

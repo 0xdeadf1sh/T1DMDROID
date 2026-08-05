@@ -7,11 +7,21 @@ import android.graphics.Path
 import android.graphics.pdf.PdfDocument
 import com.t1dm.core.model.AdvancedStats
 import com.t1dm.core.model.AgpBin
+import com.t1dm.core.model.ClinicalCuts
+import com.t1dm.core.model.HeatCell
+import com.t1dm.core.model.HeatStat
 import com.t1dm.core.model.EpisodeSummary
 import com.t1dm.core.model.StatsComposite
 import com.t1dm.core.model.SubBands
 import com.t1dm.core.model.TargetRange
 import com.t1dm.core.model.UnitSpace
+import androidx.compose.ui.graphics.toArgb
+import com.t1dm.feature.stats.DAY_LABELS
+import com.t1dm.feature.stats.HEATMAP_HOURS
+import com.t1dm.feature.stats.HEAT_HIGH
+import com.t1dm.feature.stats.HEAT_IN
+import com.t1dm.feature.stats.HEAT_LOW
+import com.t1dm.feature.stats.heatColor
 import java.io.OutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -31,7 +41,11 @@ object StatsPdf {
     private const val M = 40f
     private const val FOOT = 34f
 
-    fun write(out: OutputStream, c: StatsComposite) {
+    /**
+     * [cuts] anchors the heatmap's colour ramp. [ClinicalCuts.UNAVAILABLE] omits the heatmap sections
+     * rather than printing a grid cut in the wrong place — the same refusal the screen makes.
+     */
+    fun write(out: OutputStream, c: StatsComposite, cuts: ClinicalCuts) {
         val doc = PdfDocument()
         val p = Pager(doc)
         val s = c.local
@@ -84,6 +98,20 @@ object StatsPdf {
                 if (b.n > 0) {
                     p.kv(todLabel(b.startMin), "in ${pct(b.tir)} · below ${pct(b.tbr)} · above ${pct(b.tar)}  (n=${b.n})")
                 }
+            }
+        }
+
+        // ── Weekday × hour heatmaps ──
+        // Both summaries, because the export is read away from the app where the chip cannot be
+        // flipped: the median is what that hour usually looks like, the mean is what it averages to,
+        // and a pair of cells that disagree is itself the finding. Median first, matching the screen's
+        // default. LOCAL time, unlike the diurnal card above it — see stats.rs's day-boundary block.
+        if (s.heatmap.isNotEmpty() && cuts.isUsable) {
+            p.section("Glucose by day and hour")
+            p.caption("Local time. Colour runs blue (low) → green (in range) → red (high); an outlined cell has no reading.")
+            p.heatLegend(c.targetRange, cuts)
+            HeatStat.entries.forEach { stat ->
+                p.heatGrid(s.heatmap, stat, c.targetRange, cuts)
             }
         }
 
@@ -203,6 +231,83 @@ object StatsPdf {
                 if (sw > 0) { fill.color = col; cv.drawRect(x, y, x + sw, y + bh, fill); x += sw }
             }
             y += bh + 2f
+        }
+
+        /**
+         * The 7×24 grid for one summary. Cells are sized off the page width, so the whole week fits
+         * a single A4 column without a second page break mid-grid; an unmeasured cell is outlined
+         * rather than filled, exactly as on screen, so a gap can never read as a glucose value.
+         */
+        fun heatGrid(cells: List<HeatCell>, stat: HeatStat, target: TargetRange, cuts: ClinicalCuts) {
+            val labelW = 26f
+            val gridW = W - 2 * M - labelW
+            val cw = gridW / HEATMAP_HOURS
+            val rh = 13f
+            val gh = rh * DAY_LABELS.size
+            // The caption is claimed by the SAME need() as the grid, so a page break can never land
+            // between them and strand a heading at the foot of a page.
+            need(gh + 40f)
+            cv.drawText(
+                if (stat == HeatStat.Median) "Median per weekday and hour" else "Mean per weekday and hour",
+                M, y + 10f, capP,
+            )
+            y += 17f
+            val top = y
+            // Scattered into the dense lattice once; the same NaN sentinel the screen uses for absent.
+            val grid = FloatArray(DAY_LABELS.size * HEATMAP_HOURS) { Float.NaN }
+            for (cell in cells) {
+                if (cell.dow in DAY_LABELS.indices && cell.hour in 0 until HEATMAP_HOURS) {
+                    grid[cell.dow * HEATMAP_HOURS + cell.hour] = cell.value(stat).toFloat()
+                }
+            }
+            val fill = Paint().apply { isAntiAlias = true }
+            val outline = Paint().apply { style = Paint.Style.STROKE; color = Color.LTGRAY; isAntiAlias = true }
+            for (dRow in DAY_LABELS.indices) {
+                val ry = top + dRow * rh
+                cv.drawText(DAY_LABELS[dRow], M, ry + rh - 3f, axisP)
+                for (h in 0 until HEATMAP_HOURS) {
+                    val cx = M + labelW + h * cw
+                    val v = grid[dRow * HEATMAP_HOURS + h]
+                    if (v.isNaN()) {
+                        cv.drawRect(cx + 0.5f, ry + 0.5f, cx + cw - 0.5f, ry + rh - 0.5f, outline)
+                    } else {
+                        fill.color = heatColor(v.toDouble(), target, cuts).toArgb()
+                        cv.drawRect(cx + 0.5f, ry + 0.5f, cx + cw - 0.5f, ry + rh - 0.5f, fill)
+                    }
+                }
+            }
+            for (h in 0..HEATMAP_HOURS step 3) {
+                cv.drawText(h.toString(), M + labelW + h * cw - 4f, top + gh + 9f, axisP)
+            }
+            y = top + gh + 14f
+        }
+
+        /** The ramp with its four anchors named, so the grids are readable without the app. */
+        fun heatLegend(target: TargetRange, cuts: ClinicalCuts) {
+            need(26f)
+            y += 4f
+            val lo = target.lowMgdl.toDouble()
+            val hi = target.highMgdl.toDouble()
+            val floor = minOf(cuts.veryLowMgdl, lo)
+            val ceil = maxOf(cuts.veryHighMgdl, hi)
+            val span = (ceil - floor).takeIf { it > 0.0 } ?: 1.0
+            val x0 = M + 26f
+            val w = W - 2 * M - 26f
+            val bh = 7f
+            // Sampled per pixel column through the SAME `heatColor` the screen and the grids use, so
+            // the key cannot drift from what it is a key to.
+            val fill = Paint().apply { isAntiAlias = false }
+            var px = 0
+            while (px < w.toInt()) {
+                fill.color = heatColor(floor + (px / w) * span, target, cuts).toArgb()
+                cv.drawRect(x0 + px, y, x0 + px + 1f, y + bh, fill)
+                px++
+            }
+            listOf(floor, lo, hi, ceil).forEach { v ->
+                val x = x0 + ((v - floor) / span * w).toFloat()
+                cv.drawText(d(v, 0), (x - 6f).coerceIn(M, W - M - 18f), y + bh + 9f, axisP)
+            }
+            y += bh + 14f
         }
 
         fun agpChart(agp: List<AgpBin>, target: TargetRange) {
