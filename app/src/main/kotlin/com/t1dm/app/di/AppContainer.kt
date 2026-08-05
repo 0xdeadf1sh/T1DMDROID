@@ -1647,6 +1647,9 @@ class AppContainer(context: Context) {
         runCatching { clearBolusAdvice() }
         runCatching { clearRoll() }
         gmiSnapshot = null
+        // The memoized stats blocks are derived patient data on an app-lifetime object; a
+        // process-preserving reset must not leave them resident.
+        runCatching { statsRepository.invalidateCache() }
         // The inference warmup latch is monotonic + in-memory, so it would survive the process-preserving
         // reset and let the forecast run on the now-empty history; drop it so warmup is re-earned.
         runCatching { inferenceController.resetWarmupLatch() }

@@ -78,7 +78,7 @@ class StatsViewModel(
         loadJob = scope.launch {
             _state.update { it.copy(window = window, loading = true, recomputing = refresh) }
             val server = source.serverStats(window, refresh)
-            val local = source.localStats(window)
+            val local = source.localStats(window, refresh)
             val unit = _state.value.unitSpace
             val target = _state.value.targetRange
             val serverStats = (server as? ServerStatsResult.Ok)?.stats

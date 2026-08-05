@@ -36,7 +36,7 @@ class StatsViewModelTest {
         override suspend fun setTargetRange(lowMgdl: Int, highMgdl: Int) { targetRange.value = TargetRange(lowMgdl, highMgdl) }
         override fun kovatchevF(mgdl: Double): Double = 0.0
         override suspend fun serverStats(window: StatsWindow, refresh: Boolean) = server
-        override suspend fun localStats(window: StatsWindow) = local
+        override suspend fun localStats(window: StatsWindow, refresh: Boolean) = local
     }
 
     @Test

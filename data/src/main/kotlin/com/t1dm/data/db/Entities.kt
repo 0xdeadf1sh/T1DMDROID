@@ -109,6 +109,36 @@ data class SampleEntity(
  */
 data class StepBucketRow(val ts: Long, val steps: Int)
 
+/**
+ * A window of `sample` reduced to the numbers that move whenever anything the stats reduction reads
+ * changes: the row count, the newest `updatedAt`, and the count of each column that actually reaches
+ * a `StatSample`.
+ *
+ * The staleness fingerprint the stats cache validates against, and each part earns its place:
+ *
+ *  - `n` catches an insert; without it a new bucket would be invisible.
+ *  - `maxUpdatedAt` catches an ordinary in-place merge — a steps or mood write into a bucket that
+ *    already existed — which moves no count. Together with `n` it also catches a DELETE.
+ *  - the three per-column counts catch the one writer that moves NEITHER: `SampleGapFill.fill`
+ *    merges a server catch-up into an existing row and deliberately preserves the local `updatedAt`
+ *    (it is the phone-authored stamp, stored verbatim per `SPEC/invariants.md` §7, and moving it
+ *    would change ordering semantics). That merge only ever turns a NULL into a value, never the
+ *    reverse, so a fill of any stats-bearing column raises its count.
+ *
+ * `bgMgdl`/`steps`/`mood` are exactly the columns `toStatSample` projects — `hr`/`sleep`/`exercise`
+ * reach no metric, so a gap-fill touching only those SHOULD hit the cache rather than invalidate it.
+ *
+ * Resolved in SQL over the `ts` primary-key range, so a check costs one aggregate scan rather than
+ * materialising the ~26 000 whole rows a 90-day window holds.
+ */
+data class SampleWindowFingerprint(
+    val n: Int,
+    val maxUpdatedAt: Long,
+    val nBg: Int,
+    val nSteps: Int,
+    val nMood: Int,
+)
+
 /** Minimal discrete dose event (Phase 1). The full curve/PK expansion lands in Phase 4. */
 @Entity(tableName = "dose_event", indices = [Index("tsMs")])
 @TypeConverters(Converters::class)

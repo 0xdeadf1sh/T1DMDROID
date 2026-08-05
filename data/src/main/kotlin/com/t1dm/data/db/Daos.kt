@@ -180,6 +180,15 @@ interface SampleDao {
     @Query("SELECT * FROM sample WHERE ts BETWEEN :fromMs AND :toMs ORDER BY ts")
     suspend fun rangeList(fromMs: Long, toMs: Long): List<SampleEntity>
 
+    /** The window's staleness fingerprint — see [SampleWindowFingerprint]. `COALESCE` gives an empty
+     *  window a defined `maxUpdatedAt` rather than a null the caller would have to branch on. */
+    @Query(
+        "SELECT COUNT(*) AS n, COALESCE(MAX(updatedAt), 0) AS maxUpdatedAt, " +
+            "COUNT(bgMgdl) AS nBg, COUNT(steps) AS nSteps, COUNT(mood) AS nMood FROM sample " +
+            "WHERE ts BETWEEN :fromMs AND :toMs",
+    )
+    suspend fun windowFingerprint(fromMs: Long, toMs: Long): SampleWindowFingerprint
+
     /** Steps summed over a window — the aggregate the widget and the BG panel actually asked for, in
      *  place of [rangeList]'s whole rows summed in Kotlin. `SUM` skips NULL buckets exactly as the
      *  Kotlin `?: 0` did, and `COALESCE` gives an empty window the 0 an empty list summed to. */

@@ -31,8 +31,11 @@ interface StatsSource {
      *  [refresh] forces the server to recompute fresh rather than serve its ≤24 h cache. */
     suspend fun serverStats(window: StatsWindow, refresh: Boolean): ServerStatsResult
 
-    /** The local Rust recompute over the Room `sample` series for [window] (off the main thread). */
-    suspend fun localStats(window: StatsWindow): AdvancedStats
+    /** The local Rust reduction over the Room `sample` series for [window] (off the main thread).
+     *  Memoized per window behind this port: re-entering the screen, or re-selecting a window already
+     *  shown, re-reads the memo rather than the ~26 000 rows a 90-day window holds. [refresh] forces
+     *  the reduction anyway — what the screen's own Recompute button means. */
+    suspend fun localStats(window: StatsWindow, refresh: Boolean = false): AdvancedStats
 }
 
 /** Server-block outcome: the shared stats, or why they could not be fetched (offline/no profile). */

@@ -48,7 +48,8 @@ class AppStatsSource(
     override suspend fun serverStats(window: StatsWindow, refresh: Boolean): ServerStatsResult =
         ServerStatsResult.Unavailable("local (authoritative)")
 
-    override suspend fun localStats(window: StatsWindow): AdvancedStats = stats.localStats(window)
+    override suspend fun localStats(window: StatsWindow, refresh: Boolean): AdvancedStats =
+        stats.localStats(window, force = refresh)
 }
 
 /**

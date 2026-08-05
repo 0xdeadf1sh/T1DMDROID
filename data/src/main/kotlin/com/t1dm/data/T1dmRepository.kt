@@ -41,6 +41,7 @@ import com.t1dm.data.db.toBlob
 import com.t1dm.data.db.toDoubleList
 import com.t1dm.data.curve.CurveEngine
 import com.t1dm.data.db.SampleEntity
+import com.t1dm.data.db.SampleWindowFingerprint
 import com.t1dm.data.db.SavedMealEntity
 import com.t1dm.data.db.SavedMealItemEntity
 import com.t1dm.data.db.ServerProfileEntity
@@ -295,6 +296,10 @@ class T1dmRepository(
     /** Windowed wide-sample read for the stats recompute (Phase 6); oldest-first. */
     suspend fun samplesInRange(fromMs: Long, toMs: Long): List<SampleEntity> =
         withContext(io) { samples.rangeList(fromMs, toMs) }
+
+    /** The `[fromMs, toMs]` window's staleness fingerprint — see [SampleWindowFingerprint]. */
+    suspend fun sampleWindowFingerprint(fromMs: Long, toMs: Long): SampleWindowFingerprint =
+        withContext(io) { samples.windowFingerprint(fromMs, toMs) }
 
     /** Steps summed over `[fromMs, toMs]` — for a caller that wants the total and not the buckets. */
     suspend fun stepsInRange(fromMs: Long, toMs: Long): Int =
