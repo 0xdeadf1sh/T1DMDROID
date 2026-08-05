@@ -7,6 +7,7 @@ import com.t1dm.core.model.ClarkeZone
 import com.t1dm.core.model.ConformalFit
 import com.t1dm.core.model.TerrainSpec
 import com.t1dm.core.model.AdvancedStats
+import com.t1dm.core.model.ClinicalCuts
 import com.t1dm.core.model.BasalSchedule
 import com.t1dm.core.model.BuiltContext
 import com.t1dm.core.model.StatSample
@@ -240,6 +241,11 @@ class StubNativeCore : NativeCore {
         targetHigh: Int,
         agpBins: Int,
     ): AdvancedStats = AdvancedStats.EMPTY
+
+    // The two clinical cuts are crate constants. Repeating their VALUES here would be exactly the
+    // second copy [NativeCore.clinicalCuts] exists to prevent, so the stub refuses instead — and a
+    // caller that cannot anchor a scale renders nothing rather than a scale cut in the wrong place.
+    override fun clinicalCuts(): ClinicalCuts = ClinicalCuts.UNAVAILABLE
 
     // ── Forecast accuracy (Phase 7C) ────────────────────────────────────────────────
     // The metric suite is golden-gated Rust numerics — the band projection, the Clarke zone

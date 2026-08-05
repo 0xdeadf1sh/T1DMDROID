@@ -1,6 +1,7 @@
 package com.t1dm.core.common
 
 import com.t1dm.core.model.AdvancedStats
+import com.t1dm.core.model.ClinicalCuts
 import com.t1dm.core.model.BasalSchedule
 import com.t1dm.core.model.BuiltContext
 import com.t1dm.core.model.CarTuning
@@ -143,6 +144,13 @@ interface NativeCore {
         targetHigh: Int,
         agpBins: Int,
     ): AdvancedStats
+
+    /** The fixed clinical level-2 cuts (mg/dL) that [AdvancedStats.subBands] partitions on — the two
+     *  numbers a glucose COLOUR SCALE anchors its extremes at. Read from the crate rather than
+     *  restated on this side, so a scale cannot come to disagree with the fractions it is colouring.
+     *  Fail-closed: a host stub with no library yields [ClinicalCuts.UNAVAILABLE], and a caller that
+     *  cannot anchor must render nothing rather than a wrong scale. */
+    fun clinicalCuts(): ClinicalCuts
 
     // ── Forecast accuracy (Phase 7C, t1dm-core::accuracy) ───────────────────────────
 

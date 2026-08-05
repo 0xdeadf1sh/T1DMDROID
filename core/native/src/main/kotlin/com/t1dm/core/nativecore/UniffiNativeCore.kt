@@ -14,6 +14,8 @@ import com.t1dm.core.model.BuiltContext
 import com.t1dm.core.model.MoodSummary
 import com.t1dm.core.model.EpisodeSummary
 import com.t1dm.core.model.GradeSplit
+import com.t1dm.core.model.ClinicalCuts
+import com.t1dm.core.model.HeatCell
 import com.t1dm.core.model.HistBin
 import com.t1dm.core.model.StatSample
 import com.t1dm.core.model.SubBands
@@ -50,6 +52,7 @@ import uniffi.t1dm_core.conformalMinCalWindows as uniffiConformalMinCalWindows
 import uniffi.t1dm_core.fitQuantileConformal as uniffiFitQuantileConformal
 import uniffi.t1dm_core.applyQuantileConformal as uniffiApplyQuantileConformal
 import uniffi.t1dm_core.advancedStats as uniffiAdvancedStats
+import uniffi.t1dm_core.clinicalCuts as uniffiClinicalCuts
 import uniffi.t1dm_core.advertCrc32 as uniffiAdvertCrc32
 import uniffi.t1dm_core.assembleDecode as uniffiAssembleDecode
 import uniffi.t1dm_core.bateman as uniffiBateman
@@ -104,6 +107,7 @@ import uniffi.t1dm_core.ModelDescriptor as UniffiModelDescriptor
 import uniffi.t1dm_core.MoodSummary as UniffiMoodSummary
 import uniffi.t1dm_core.EpisodeSummary as UniffiEpisodeSummary
 import uniffi.t1dm_core.GradeSplit as UniffiGradeSplit
+import uniffi.t1dm_core.HeatCell as UniffiHeatCell
 import uniffi.t1dm_core.HistBin as UniffiHistBin
 import uniffi.t1dm_core.TodBucket as UniffiTodBucket
 import uniffi.t1dm_core.PredictedTime as UniffiPredictedTime
@@ -241,6 +245,15 @@ class UniffiNativeCore : NativeCore {
             ).toModel()
         } catch (_: CoreException) {
             AdvancedStats.EMPTY
+        }
+
+    /** A pair of crate constants; it cannot fail, but the fail-closed map is kept for the reason
+     *  every other call here keeps one — a scale anchored on a guess is worse than no scale. */
+    override fun clinicalCuts(): ClinicalCuts =
+        try {
+            uniffiClinicalCuts().let { ClinicalCuts(it.veryLowMgdl, it.veryHighMgdl) }
+        } catch (_: CoreException) {
+            ClinicalCuts.UNAVAILABLE
         }
 
     /**
@@ -524,6 +537,7 @@ private fun UniffiMetricsSuite.toModel(): MetricsSuite = MetricsSuite(
 
 private fun StatSample.toUniffi(): UniffiStatSample = UniffiStatSample(
     tsMs = tsMs,
+    tzOffsetMin = tzOffsetMin,
     bgMgdl = bgMgdl,
     carbsG = carbsG,
     bolusU = bolusU,
@@ -565,6 +579,10 @@ private fun UniffiGradeSplit.toModel(): GradeSplit = GradeSplit(
     grade = grade, hypo = hypo, eu = eu, hyper = hyper,
 )
 
+private fun UniffiHeatCell.toModel(): HeatCell = HeatCell(
+    dow = dow.toInt(), hour = hour.toInt(), n = n.toInt(), meanBg = meanBg,
+)
+
 private fun UniffiAdvancedStats.toModel(): AdvancedStats = AdvancedStats(
     nSamples = nSamples.toInt(),
     spanMs = spanMs,
@@ -585,6 +603,7 @@ private fun UniffiAdvancedStats.toModel(): AdvancedStats = AdvancedStats(
     histogram = histogram.map { it.toModel() },
     hypoEpisodes = hypoEpisodes.toModel(),
     hyperEpisodes = hyperEpisodes.toModel(),
+    heatmap = heatmap.map { it.toModel() },
 )
 
 private fun UniffiCurveKind.toModel(): CurveKind = when (this) {

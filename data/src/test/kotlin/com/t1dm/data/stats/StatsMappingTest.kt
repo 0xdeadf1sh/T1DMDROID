@@ -57,14 +57,24 @@ class StatsMappingTest {
         assertNull(s.steps)
     }
 
+    @Test
+    fun toStatSample_carries_the_rows_own_tz_offset() {
+        // The heatmap keys on this, per row. A row written at UTC+05:30 must reach the Rust as +330
+        // whatever the phone's offset is when the recompute runs — the two differ after any travel or
+        // DST change inside the window, and the whole point of the field is to survive that.
+        assertEquals(330, sample(ts = 0L, bg = 100, steps = null, mood = null, tz = 330).toStatSample().tzOffsetMin)
+        assertEquals(-300, sample(ts = 0L, bg = 100, steps = null, mood = null, tz = -300).toStatSample().tzOffsetMin)
+    }
+
     private fun sample(
         ts: Long,
         bg: Int?,
         steps: Int?,
         mood: Int?,
+        tz: Int = 0,
     ) = SampleEntity(
         ts = ts,
-        tzOffsetMin = 0,
+        tzOffsetMin = tz,
         bgMgdl = bg,
         bgProvenance = null,
         bgFlag = null,

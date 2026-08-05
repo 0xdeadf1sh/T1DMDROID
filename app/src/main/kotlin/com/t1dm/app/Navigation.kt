@@ -1160,6 +1160,9 @@ private fun T1dmNavHost(
             StatsScreen(
                 state = statsState,
                 kovatchevF = container.nativeCore::kovatchevF,
+                // Two crate constants; cheap enough to read per composition, and reading them here
+                // keeps the screen free of a NativeCore dependency.
+                cuts = remember { container.nativeCore.clinicalCuts() },
                 onSelectWindow = container.statsViewModel::selectWindow,
                 onSetUnitSpace = container::setUnitSpace,
                 onSetTargetRange = container.statsViewModel::setTargetRange,

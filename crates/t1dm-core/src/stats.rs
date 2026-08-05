@@ -9,8 +9,9 @@
 //! TIR/TBR/TAR, the clinical sub-bands, LBGI/HBGI, MAGE, and the AGP percentile ribbon.
 //!
 //! Everything here is total: an empty or degenerate series yields a well-defined empty
-//! `AdvancedStats` (`n_samples == 0`), never a panic or a NaN. Every `#[uniffi::export]`
-//! returns `Result`; release builds are `panic = "abort"`.
+//! `AdvancedStats` (`n_samples == 0`), never a panic or a NaN. Every FALLIBLE
+//! `#[uniffi::export]` returns `Result` (`clinical_cuts` returns a pair of constants and cannot
+//! fail); release builds are `panic = "abort"`.
 //!
 //! Formula provenance:
 //!   - LBGI/HBGI: Kovatchev et al., "Symmetrization of the Blood Glucose Measurement
@@ -55,6 +56,10 @@ const EPISODE_MIN_SAMPLES: usize = 2;
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct StatSample {
     pub ts_ms: i64,
+    /// The client's UTC offset in MINUTES, east-positive, at `ts_ms` (`SPEC/invariants.md` §2).
+    /// `UTC−5` is `-300`. It never shifts `ts_ms`, which is always UTC; it exists so an aggregation
+    /// keyed on the patient's own calendar — `heatmap`, and only `heatmap` — can resolve one.
+    pub tz_offset_min: i32,
     pub bg_mgdl: f64,
     pub carbs_g: Option<f64>,
     pub bolus_u: Option<f64>,
@@ -87,6 +92,42 @@ pub struct AgpBin {
     pub p50: f64,
     pub p75: f64,
     pub p95: f64,
+}
+
+/// One populated cell of the day-of-week × hour-of-day mean-glucose grid.
+///
+/// `dow` is 0 = Monday … 6 = Sunday; `hour` is 0..24. Both are resolved in the patient's LOCAL
+/// time, from each sample's own `tz_offset_min` — so a week reads as the week that was lived, and a
+/// DST shift moves the samples it actually moved rather than the whole column.
+///
+/// `mean_bg` is a plain sample-count mean over the cell's valid-BG samples, NOT time-weighted: a
+/// cell is one hour of one weekday repeated across the window, and the gaps that time-weighting
+/// exists to handle fall between cells rather than inside them.
+///
+/// Only populated cells are emitted, ascending by `(dow, hour)`. An absent cell means no reading,
+/// which the chart must render as absent — never as a value.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct HeatCell {
+    pub dow: u32,
+    pub hour: u32,
+    pub n: u32,
+    pub mean_bg: f64,
+}
+
+/// The fixed clinical level-2 cuts, in mg/dL: below `very_low_mgdl` is level-2 hypoglycaemia and
+/// above `very_high_mgdl` level-2 hyperglycaemia. Unlike the target range they are not configurable.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct ClinicalCuts {
+    pub very_low_mgdl: f64,
+    pub very_high_mgdl: f64,
+}
+
+/// The cuts `sub_bands` partitions on, exposed because a renderer of a glucose COLOUR SCALE needs
+/// the same two numbers to anchor its extremes. Re-stating them on the Kotlin side would be a second
+/// copy of a definition the band fractions are actually cut at, free to drift from it silently.
+#[uniffi::export]
+pub fn clinical_cuts() -> ClinicalCuts {
+    ClinicalCuts { very_low_mgdl: VERY_LOW, very_high_mgdl: VERY_HIGH }
 }
 
 /// Optional mood summary over samples that carry a mood score.
@@ -224,6 +265,10 @@ pub struct AdvancedStats {
     pub hypo_episodes: EpisodeSummary,
     /// Hyper (> target_high) excursion-episode aggregate.
     pub hyper_episodes: EpisodeSummary,
+    /// Mean glucose per (day-of-week, hour-of-day) cell, in LOCAL time — populated cells only,
+    /// ascending by `(dow, hour)`. The one aggregation in this block keyed on the patient's own
+    /// calendar; see `HeatCell`, and see `advanced_stats` on why the others are not.
+    pub heatmap: Vec<HeatCell>,
 }
 
 impl AdvancedStats {
@@ -266,6 +311,7 @@ impl AdvancedStats {
             histogram: Vec::new(),
             hypo_episodes: EpisodeSummary::empty(),
             hyper_episodes: EpisodeSummary::empty(),
+            heatmap: Vec::new(),
         }
     }
 }
@@ -434,6 +480,49 @@ fn dtd_sd(valid: &[&StatSample]) -> f64 {
     var.sqrt()
 }
 
+/// Epoch day 0 (1970-01-01) was a **Thursday**, so a local-day index maps to an ISO weekday
+/// (0 = Monday) by adding 3 before the modulus. Named rather than inlined because the constant is
+/// a calendar fact and reads as a magic number everywhere else.
+const EPOCH_DOW_SHIFT: i64 = 3;
+
+/// The `(dow, hour)` mean-glucose grid, in LOCAL time.
+///
+/// Each sample carries its own `tz_offset_min` (`SPEC/invariants.md` §2), applied here and nowhere
+/// else in this module: the offset is added to the timestamp to get a local wall-clock instant, and
+/// that instant is decomposed into an ISO weekday and an hour. Per-sample rather than per-window
+/// because the window spans up to 90 days and can straddle a DST boundary or a flight — using one
+/// offset for all of them would shift every reading by the last one's.
+///
+/// Fixed 7×24 accumulators, walked once and emitted sparse; a cell no sample landed in is left out
+/// entirely rather than emitted as zero, which the renderer needs to tell "no data" from "in range".
+fn heatmap(valid: &[&StatSample]) -> Vec<HeatCell> {
+    let mut sum = [[0.0f64; 24]; 7];
+    let mut cnt = [[0u32; 24]; 7];
+    for s in valid {
+        let local = s.ts_ms + s.tz_offset_min as i64 * 60_000;
+        let dow = (local.div_euclid(DAY_MS as i64) + EPOCH_DOW_SHIFT).rem_euclid(7) as usize;
+        let hour = (local.rem_euclid(DAY_MS as i64) / 3_600_000) as usize;
+        sum[dow][hour] += s.bg_mgdl;
+        cnt[dow][hour] += 1;
+    }
+    let mut out = Vec::new();
+    for d in 0..7 {
+        for h in 0..24 {
+            let n = cnt[d][h];
+            if n == 0 {
+                continue;
+            }
+            out.push(HeatCell {
+                dow: d as u32,
+                hour: h as u32,
+                n,
+                mean_bg: sum[d][h] / n as f64,
+            });
+        }
+    }
+    out
+}
+
 /// Four fixed 6-hour diurnal buckets (00-06/06-12/12-18/18-24), each carrying its
 /// sample-count TBR/TIR/TAR vs the target edges. Always four entries.
 fn tod_buckets(valid: &[&StatSample], tlo: f64, thi: f64) -> Vec<TodBucket> {
@@ -545,6 +634,19 @@ fn episodes(valid: &[&StatSample], edge: f64, below: bool) -> EpisodeSummary {
 ///
 /// Fail-closed: an empty series, or one with no finite positive BG, returns
 /// `AdvancedStats::empty()`. Bad range / bin count returns `Err`.
+///
+/// # Day boundaries
+///
+/// `SPEC/invariants.md` §2 requires any aggregation keyed on a day to say which day it means, so:
+///
+/// * `heatmap` is **local**. Each sample's own `tz_offset_min` resolves its weekday and hour, which
+///   is the only reading of a day-by-hour grid that means anything to the patient.
+/// * `agp`, `tod`, `modd`, `conga*`, `adrr` and `dtd_sd` are **UTC**. Their day and minute-of-day
+///   come from the raw timestamp. For a patient at a fixed non-zero offset this rotates every one of
+///   them by that offset — an AGP whose "03:00" is the patient's 06:00 — and across a DST change the
+///   rotation moves. That is a defect rather than a decision, recorded here because the timestamps
+///   now carry what would fix it; fixing it moves numbers already on screen and re-cuts this module's
+///   golden vectors, so it is deliberately not bundled with the grid that needed the offset.
 #[uniffi::export]
 pub fn advanced_stats(
     samples: Vec<StatSample>,
@@ -754,6 +856,7 @@ pub fn advanced_stats(
     let histogram = histogram(&bgs);
     let hypo_episodes = episodes(&valid, tlo, true);
     let hyper_episodes = episodes(&valid, thi, false);
+    let heatmap = heatmap(&valid);
 
     Ok(AdvancedStats {
         n_samples: n as u32,
@@ -791,6 +894,7 @@ pub fn advanced_stats(
         histogram,
         hypo_episodes,
         hyper_episodes,
+        heatmap,
     })
 }
 
@@ -814,6 +918,9 @@ mod tests {
             .iter()
             .map(|s| StatSample {
                 ts_ms: s["ts_ms"].as_i64().unwrap(),
+                // Absent ⇒ UTC. The golden series predates the field and is anchored at epoch 0, so
+                // reading it as 0 leaves every pre-existing expectation in the file untouched.
+                tz_offset_min: s["tz_offset_min"].as_i64().unwrap_or(0) as i32,
                 bg_mgdl: s["bg_mgdl"].as_f64().unwrap(),
                 carbs_g: opt_f(&s["carbs_g"]),
                 bolus_u: opt_f(&s["bolus_u"]),
@@ -945,12 +1052,37 @@ mod tests {
             close(got.mean_extreme, w["mean_extreme"].as_f64().unwrap(), 1e-9, "ep.mean_extreme");
             close(got.worst_extreme, w["worst_extreme"].as_f64().unwrap(), 1e-9, "ep.worst");
         }
+
+        // ── (dow, hour) heatmap, LOCAL time (the golden's samples carry UTC+05:30) ──
+        let ehm = e["heatmap"].as_array().unwrap();
+        assert_eq!(out.heatmap.len(), ehm.len(), "heatmap cell count");
+        let mut heat_total = 0u32;
+        for (got, want) in out.heatmap.iter().zip(ehm) {
+            assert_eq!(got.dow, want["dow"].as_u64().unwrap() as u32, "heat.dow");
+            assert_eq!(got.hour, want["hour"].as_u64().unwrap() as u32, "heat.hour");
+            assert_eq!(got.n, want["n"].as_u64().unwrap() as u32, "heat.n");
+            close(got.mean_bg, want["mean_bg"].as_f64().unwrap(), 1e-9, "heat.mean_bg");
+            heat_total += got.n;
+        }
+        assert_eq!(heat_total, out.n_samples, "the grid partitions the valid samples");
+        // Emitted ascending by (dow, hour), and every index in range: the renderer scatters these
+        // into a fixed 7×24 lattice and would silently drop or mis-place anything outside it.
+        assert!(
+            out.heatmap.windows(2).all(|w| (w[0].dow, w[0].hour) < (w[1].dow, w[1].hour)),
+            "heatmap cells ascend by (dow, hour)",
+        );
+        assert!(out.heatmap.iter().all(|c| c.dow < 7 && c.hour < 24), "heatmap indices in range");
+        // The offset must survive as MINUTES: the first sample is epoch 0 — Thursday 00:00 UTC —
+        // which at +05:30 is Thursday 05:30 local, so dow 3 (Mon = 0) and hour 5. Truncating the
+        // offset to whole hours, or dropping it, moves this cell.
+        let first = &out.heatmap[0];
+        assert_eq!((first.dow, first.hour), (3, 5), "epoch 0 at +05:30 is Thu 05:00-06:00 local");
     }
 
     // ── hand-computed anchors for the extensions the periodic golden leaves degenerate ──
 
     fn s(ts_ms: i64, bg: f64) -> StatSample {
-        StatSample { ts_ms, bg_mgdl: bg, carbs_g: None, bolus_u: None, basal_u: None, steps: None, mood: None }
+        StatSample { ts_ms, tz_offset_min: 0, bg_mgdl: bg, carbs_g: None, bolus_u: None, basal_u: None, steps: None, mood: None }
     }
 
     #[test]
@@ -1037,6 +1169,7 @@ mod tests {
         let lows: Vec<StatSample> = (0..12)
             .map(|i| StatSample {
                 ts_ms: i * 300_000,
+                tz_offset_min: 0,
                 bg_mgdl: 70.0,
                 carbs_g: None,
                 bolus_u: None,
@@ -1054,6 +1187,7 @@ mod tests {
         let highs: Vec<StatSample> = (0..12)
             .map(|i| StatSample {
                 ts_ms: i * 300_000,
+                tz_offset_min: 0,
                 bg_mgdl: 250.0,
                 carbs_g: None,
                 bolus_u: None,
@@ -1097,6 +1231,7 @@ mod tests {
             .enumerate()
             .map(|(d, &bg)| StatSample {
                 ts_ms: d as i64 * day + 60 * 60_000, // 01:00 → bin 0
+                tz_offset_min: 0,
                 bg_mgdl: bg,
                 carbs_g: None,
                 bolus_u: None,
@@ -1124,9 +1259,9 @@ mod tests {
         // forward gap at MAX_GAP_MS (30 min).
         let s = advanced_stats(
             vec![
-                StatSample { ts_ms: 0, bg_mgdl: 100.0, carbs_g: None, bolus_u: None, basal_u: None, steps: None, mood: None },
-                StatSample { ts_ms: 300_000, bg_mgdl: 100.0, carbs_g: None, bolus_u: None, basal_u: None, steps: None, mood: None },
-                StatSample { ts_ms: 300_000 + 6 * 3_600_000, bg_mgdl: 300.0, carbs_g: None, bolus_u: None, basal_u: None, steps: None, mood: None },
+                StatSample { ts_ms: 0, tz_offset_min: 0, bg_mgdl: 100.0, carbs_g: None, bolus_u: None, basal_u: None, steps: None, mood: None },
+                StatSample { ts_ms: 300_000, tz_offset_min: 0, bg_mgdl: 100.0, carbs_g: None, bolus_u: None, basal_u: None, steps: None, mood: None },
+                StatSample { ts_ms: 300_000 + 6 * 3_600_000, tz_offset_min: 0, bg_mgdl: 300.0, carbs_g: None, bolus_u: None, basal_u: None, steps: None, mood: None },
             ],
             70,
             180,
@@ -1152,8 +1287,8 @@ mod tests {
         assert!(s.agp.is_empty() && s.mean_steps.is_none() && s.mood.is_none());
         // All-invalid BG (NaN / non-positive) → still empty, no NaN leak.
         let bad = vec![
-            StatSample { ts_ms: 0, bg_mgdl: f64::NAN, carbs_g: Some(1.0), bolus_u: None, basal_u: None, steps: None, mood: None },
-            StatSample { ts_ms: 1, bg_mgdl: -5.0, carbs_g: None, bolus_u: None, basal_u: None, steps: None, mood: None },
+            StatSample { ts_ms: 0, tz_offset_min: 0, bg_mgdl: f64::NAN, carbs_g: Some(1.0), bolus_u: None, basal_u: None, steps: None, mood: None },
+            StatSample { ts_ms: 1, tz_offset_min: 0, bg_mgdl: -5.0, carbs_g: None, bolus_u: None, basal_u: None, steps: None, mood: None },
         ];
         let s = advanced_stats(bad, 70, 180, 24).unwrap();
         assert_eq!(s.n_samples, 0);
@@ -1163,6 +1298,7 @@ mod tests {
         // Single valid sample: no panic, finite, one AGP bin.
         let one = vec![StatSample {
             ts_ms: 500_000,
+            tz_offset_min: 0,
             bg_mgdl: 120.0,
             carbs_g: None,
             bolus_u: None,
@@ -1177,10 +1313,65 @@ mod tests {
         assert!(s.mean_daily_carbs == 0.0 && s.tdd == 0.0, "zero-span daily rates are 0");
     }
 
+    /// A sample at `ts_ms` whose local wall clock is offset by `tz`, carrying `bg`.
+    fn tzs(ts_ms: i64, tz: i32, bg: f64) -> StatSample {
+        StatSample {
+            ts_ms,
+            tz_offset_min: tz,
+            bg_mgdl: bg,
+            carbs_g: None,
+            bolus_u: None,
+            basal_u: None,
+            steps: None,
+            mood: None,
+        }
+    }
+
+    #[test]
+    fn heatmap_keys_on_local_time_per_sample() {
+        let hour = 3_600_000i64;
+        // Epoch 0 is Thursday 00:00 UTC. Two samples at the SAME instant, in two time zones: one
+        // reads it as Thursday 00:00 (dow 3, hour 0), the other — 5 hours behind — as Wednesday
+        // 19:00 (dow 2, hour 19). A window-wide offset, or a UTC key, would collapse them into one
+        // cell; only a per-sample one splits them, which is what a 90-day window across a flight or
+        // a DST change actually contains.
+        let out = advanced_stats(vec![tzs(0, 0, 100.0), tzs(0, -300, 140.0)], 70, 180, 24).unwrap();
+        assert_eq!(out.heatmap.len(), 2, "same instant, two zones, two cells");
+        assert_eq!((out.heatmap[0].dow, out.heatmap[0].hour), (2, 19), "UTC-5 → Wed 19:00");
+        close(out.heatmap[0].mean_bg, 140.0, 1e-12, "the UTC-5 cell carries its own sample");
+        assert_eq!((out.heatmap[1].dow, out.heatmap[1].hour), (3, 0), "UTC → Thu 00:00");
+        close(out.heatmap[1].mean_bg, 100.0, 1e-12, "the UTC cell carries its own sample");
+
+        // The full ISO week, walked from a known Monday: epoch day 4 is 1970-01-05, a Monday.
+        let monday = 4 * DAY_MS as i64;
+        for d in 0..7i64 {
+            let out = advanced_stats(vec![tzs(monday + d * DAY_MS as i64, 0, 100.0)], 70, 180, 24).unwrap();
+            assert_eq!(out.heatmap[0].dow, d as u32, "day {d} after a Monday is dow {d}");
+        }
+
+        // A NEGATIVE local instant (pre-epoch once the offset is applied) must still key correctly —
+        // `rem_euclid`/`div_euclid`, not `%` and `/`, which would give hour -1 and the wrong day.
+        let out = advanced_stats(vec![tzs(0, -60, 100.0)], 70, 180, 24).unwrap();
+        assert_eq!((out.heatmap[0].dow, out.heatmap[0].hour), (2, 23), "UTC-1 at epoch 0 → Wed 23:00");
+
+        // Cells are means, not sums, and only valid BG counts toward them.
+        let out = advanced_stats(
+            vec![tzs(0, 0, 100.0), tzs(hour / 2, 0, 200.0), tzs(hour / 3, 0, -1.0)],
+            70,
+            180,
+            24,
+        )
+        .unwrap();
+        assert_eq!(out.heatmap.len(), 1, "three samples, one hour, one cell");
+        assert_eq!(out.heatmap[0].n, 2, "the non-positive BG is excluded");
+        close(out.heatmap[0].mean_bg, 150.0, 1e-12, "cell mean");
+    }
+
     #[test]
     fn rejects_bad_range_and_bins() {
         let one = vec![StatSample {
             ts_ms: 0,
+            tz_offset_min: 0,
             bg_mgdl: 120.0,
             carbs_g: None,
             bolus_u: None,

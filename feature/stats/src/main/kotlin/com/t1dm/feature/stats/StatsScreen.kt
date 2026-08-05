@@ -34,6 +34,7 @@ import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.panelCardColors
 import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.model.AdvancedStats
+import com.t1dm.core.model.ClinicalCuts
 import com.t1dm.core.model.EpisodeSummary
 import com.t1dm.core.model.StatsComposite
 import com.t1dm.core.model.StatsWindow
@@ -54,6 +55,10 @@ import com.t1dm.core.model.UnitSpace
 fun StatsScreen(
     state: StatsViewModel.UiState,
     kovatchevF: (Double) -> Double,
+    // The fixed clinical cuts the heatmap's ramp anchors its extremes at, read from the Rust crate.
+    // [ClinicalCuts.UNAVAILABLE] (no native library) suppresses the heatmap rather than colouring it
+    // on a scale cut in the wrong place.
+    cuts: ClinicalCuts,
     onSelectWindow: (StatsWindow) -> Unit,
     onSetUnitSpace: (UnitSpace) -> Unit,
     onSetTargetRange: (Int, Int) -> Unit,
@@ -201,6 +206,31 @@ fun StatsScreen(
             if (local.tod.any { it.n > 0 }) {
                 SectionCard("Time in range by time of day") {
                     local.tod.forEach { b -> DiurnalRow(b) }
+                }
+            }
+
+            // ── Weekday × hour mean-glucose heatmap ─────────────────────────────────────────────────
+            // Placed under the diurnal card because it is the finer cut of the day — but NOT the same
+            // question, and the two must not be read against each other: this grid keys on the
+            // patient's LOCAL clock (each sample's own tz_offset) while the card above keys on UTC,
+            // so at a non-zero offset their columns are out of phase by exactly that offset. Hence the
+            // explicit "local time" in this card's subtitle. See the day-boundary block on
+            // `advanced_stats` in crates/t1dm-core/src/stats.rs for why the other one has not moved.
+            if (local.heatmap.isNotEmpty() && cuts.isUsable) {
+                SectionCard("Glucose by day and hour") {
+                    Text(
+                        "Mean glucose per weekday and hour, local time",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = LocalContentColor.current.copy(alpha = 0.7f),
+                        modifier = Modifier.padding(bottom = 8.dp),
+                    )
+                    BgHeatmap(
+                        heatmap = local.heatmap,
+                        target = composite.targetRange,
+                        cuts = cuts,
+                        unit = composite.unitSpace,
+                        kovatchevF = kovatchevF,
+                    )
                 }
             }
 

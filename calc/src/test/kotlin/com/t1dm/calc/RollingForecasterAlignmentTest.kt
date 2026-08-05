@@ -3,6 +3,7 @@ package com.t1dm.calc
 import com.t1dm.core.common.DefaultT1dmDispatchers
 import com.t1dm.core.common.GameWorld
 import com.t1dm.core.common.NativeCore
+import com.t1dm.core.model.ClinicalCuts
 import com.t1dm.core.model.*
 import com.t1dm.data.curve.ChannelBuilder
 import com.t1dm.data.curve.CurveEngine
@@ -287,6 +288,7 @@ class RollingForecasterAlignmentTest {
         override fun insulinPresetCatalog(): List<InsulinPresetSpec> = unused()
         override fun extendBasal(schedule: BasalSchedule, fromMs: Long, toMs: Long): List<CurveEvent> = unused()
         override fun advancedStats(samples: List<StatSample>, targetLow: Int, targetHigh: Int, agpBins: Int): AdvancedStats = unused()
+        override fun clinicalCuts(): ClinicalCuts = unused()
         override fun forecastMetricsSuite(
             windows: List<ForecastWindow>,
             horizonsMin: List<Int>,

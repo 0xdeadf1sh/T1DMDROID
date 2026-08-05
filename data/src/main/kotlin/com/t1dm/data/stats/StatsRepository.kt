@@ -96,6 +96,10 @@ internal fun parseUnitSpace(raw: String?): UnitSpace =
  */
 internal fun SampleEntity.toStatSample(): StatSample = StatSample(
     tsMs = ts,
+    // The offset stamped on the ROW when it was written, never the phone's offset now: the window
+    // runs up to 90 days and may straddle a DST change or a flight, and reading today's offset onto
+    // an old row would key it to a day the patient did not live.
+    tzOffsetMin = tzOffsetMin,
     bgMgdl = bgMgdl?.toDouble() ?: 0.0,
     carbsG = null,
     bolusU = null,

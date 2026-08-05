@@ -13,6 +13,10 @@ package com.t1dm.core.model
  *  BG-derived metric by the Rust but its treatment/activity channels still count toward the totals. */
 data class StatSample(
     val tsMs: Long,
+    /** The client's UTC offset in MINUTES, east-positive, at [tsMs] (`SPEC/invariants.md` §2). It never
+     *  shifts [tsMs], which is always UTC — it is what lets [AdvancedStats.heatmap] key on the
+     *  patient's own calendar, and it is the only field of this record that reads it. */
+    val tzOffsetMin: Int,
     val bgMgdl: Double,
     val carbsG: Double?,
     val bolusU: Double?,
@@ -40,6 +44,35 @@ data class AgpBin(
     val p75: Double,
     val p95: Double,
 )
+
+/**
+ * The fixed clinical level-2 cuts, in mg/dL: below [veryLowMgdl] is level-2 hypoglycaemia, above
+ * [veryHighMgdl] level-2 hyperglycaemia. Unlike [TargetRange] they are not configurable, and unlike
+ * it they are not defined here — the Rust crate owns them, because that is where the band fractions
+ * they partition are actually cut.
+ */
+data class ClinicalCuts(val veryLowMgdl: Double, val veryHighMgdl: Double) {
+    /** Both cuts positive and ordered — the only state in which a scale may be anchored on them. */
+    val isUsable: Boolean get() = veryLowMgdl > 0.0 && veryHighMgdl > veryLowMgdl
+
+    companion object {
+        /** The fail-closed answer when no native library backs the call. Deliberately NOT the real
+         *  numbers: a stub that guessed them would be the second copy this type exists to prevent. */
+        val UNAVAILABLE = ClinicalCuts(0.0, 0.0)
+    }
+}
+
+/**
+ * One populated cell of the day-of-week × hour-of-day mean-glucose grid.
+ *
+ * [dow] is 0 = Monday … 6 = Sunday and [hour] is 0..23, both in the patient's LOCAL time, resolved
+ * per sample from that sample's own [StatSample.tzOffsetMin]. [meanBg] is a plain sample-count mean
+ * over the cell's valid-BG samples.
+ *
+ * Only POPULATED cells exist. An absent `(dow, hour)` means no reading was taken then, and must
+ * render as absent — never as a value, and in particular never as an in-range one.
+ */
+data class HeatCell(val dow: Int, val hour: Int, val n: Int, val meanBg: Double)
 
 /** Mood summary over the samples that carried a mood score. */
 data class MoodSummary(val mean: Double, val n: Int, val min: Int, val max: Int)
@@ -114,6 +147,10 @@ data class AdvancedStats(
     val histogram: List<HistBin>,
     val hypoEpisodes: EpisodeSummary,
     val hyperEpisodes: EpisodeSummary,
+    /** Mean glucose per (day-of-week, hour) cell in LOCAL time — populated cells only, ascending by
+     *  `(dow, hour)`. The one aggregation in this block keyed on the patient's calendar; [agp] and
+     *  [tod] are keyed on UTC. */
+    val heatmap: List<HeatCell>,
 ) {
     val isEmpty: Boolean get() = nSamples == 0
 
@@ -132,6 +169,7 @@ data class AdvancedStats(
             jIndex = 0.0, mValue = 0.0, adrr = 0.0, dtdSd = 0.0,
             grade = GradeSplit.EMPTY, tod = emptyList(), histogram = emptyList(),
             hypoEpisodes = EpisodeSummary.EMPTY, hyperEpisodes = EpisodeSummary.EMPTY,
+            heatmap = emptyList(),
         )
     }
 }
