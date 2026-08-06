@@ -22,17 +22,15 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
-import androidx.compose.material3.Surface
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -46,12 +44,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import com.t1dm.app.widget.STALE_MIN
 import kotlinx.coroutines.delay
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.layout.positionInParent
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -71,12 +65,12 @@ import com.t1dm.core.design.LocalDeathMode
 import com.t1dm.core.design.LocalT1dmHaptics
 import com.t1dm.core.design.T1dmHaptics
 import com.t1dm.core.design.LocalT1dmSemantics
+import com.t1dm.core.design.SignalBars
+import com.t1dm.core.design.TimeOfDayIcon
 import com.t1dm.core.design.hapticClickable
 import com.t1dm.core.design.ThemeBackdrop
-import com.t1dm.core.design.iconStyleForTheme
 import com.t1dm.core.design.navEnter
 import com.t1dm.core.design.navExit
-import com.t1dm.core.design.navIcon
 import com.t1dm.app.di.AppContainer.BolusAdviceUi
 import com.t1dm.app.di.LogHandle
 import com.t1dm.app.di.deleteReceipt
@@ -84,8 +78,11 @@ import com.t1dm.app.di.logReceipt
 import com.t1dm.app.di.undoReceipt
 import com.t1dm.app.service.DoseCalcService
 import com.t1dm.feature.insulin.BolusCalculatorScreen
+import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.InferenceCause
 import com.t1dm.core.model.InferenceState
+import com.t1dm.core.model.ReadingFlag
+import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.core.model.InsulinPresetSpec
 import com.t1dm.core.model.BezierCurve
 import com.t1dm.core.model.DkaTimeline
@@ -205,12 +202,12 @@ private fun photoExtFor(ctx: android.content.Context, uri: android.net.Uri): Str
         else -> "jpg"
     }
 
-private data class Destination(val route: String, val label: String)
+internal data class Destination(val route: String, val label: String)
 
-// Item 13 — a LARGE-ICON, HORIZONTALLY-SCROLLABLE row (no fixed-bar overflow). Each tile draws the
-// per-theme vector glyph (issues 2/6 — geometry re-derived from the active theme via [navIcon]); no
-// icon dependency is on the classpath, so these are authored Compose ImageVectors.
-private val destinations = listOf(
+// The ring the nav wheel turns through, in wheel order. Each slot draws the per-theme vector glyph
+// (issues 2/6 — geometry re-derived from the active theme via [navIcon]); no icon dependency is on
+// the classpath, so these are authored Compose ImageVectors.
+internal val destinations = listOf(
     Destination("dashboard", "BG"),
     Destination("pubs", "Pubs"),
     Destination("circadian", "Clock"),
@@ -250,6 +247,23 @@ fun T1dmApp(container: AppContainer) {
     val receiptScope = rememberCoroutineScope()
     val haptics = LocalT1dmHaptics.current
     VolumeKeyShortcuts(navController, container, haptics)
+    // The wheel's gesture state is hoisted here because its two halves live on opposite sides of the
+    // Scaffold: the hub is in the `bottomBar` slot, and the arc must draw OVER the content, which a
+    // Scaffold draws its slots before its content and measures the bar to fit. See NavWheel.kt.
+    val wheel = rememberNavWheelState(destinations.size)
+    // Shared by the bar's hub and the overlay's, which draw the same dial at opposite ends of the
+    // reveal. Created here and never read here — every field is unwrapped in a draw lambda.
+    val wheelMotion = rememberNavWheelMotion()
+    val onWheelSelect: (Int) -> Unit = remember(navController, haptics) {
+        { index ->
+            haptics.perform(HapticEvent.NavSwitch)
+            navController.navigate(destinations[index].route) {
+                launchSingleTop = true
+                restoreState = true
+                popUpTo("dashboard") { saveState = true }
+            }
+        }
+    }
     Box(Modifier.fillMaxSize().background(LocalT1dmSemantics.current.background)) {
         ThemeBackdrop(bgAlphaPct)
         Scaffold(
@@ -267,7 +281,7 @@ fun T1dmApp(container: AppContainer) {
             // surface that inherits its colour (e.g. the big BG read-out + trend arrow). Pin it back to
             // the theme's on-background ink so inherited-colour content stays legible.
             contentColor = MaterialTheme.colorScheme.onBackground,
-            bottomBar = { T1dmBottomBar(navController, bgAlphaPct) },
+            bottomBar = { T1dmBottomBar(navController, container, wheel, wheelMotion, onWheelSelect) },
         ) { padding ->
             // The ONE place the Scaffold insets are applied — feature screens must never re-apply them
             // or the gap above the bottom bar doubles. N10 — plus the IME: targetSdk 36 forces
@@ -299,6 +313,10 @@ fun T1dmApp(container: AppContainer) {
                 }
             }
         }
+        // Outside the Scaffold on purpose: the arc opens upward out of the bar and has to paint over
+        // the graph, the breadcrumb and the disclaimer. It is inert and draws nothing until the hub
+        // is touched.
+        NavWheelArc(wheel, wheelMotion, destinations, onWheelSelect)
     }
 }
 
@@ -505,9 +523,9 @@ private fun Breadcrumb(navController: NavHostController, container: AppContainer
     )
     val crumbs = remember(route, modelId, editLabel) { crumbsFor(route, modelId, editLabel) }
     val cs = MaterialTheme.colorScheme
-    // The current BG number + trend arrow on the right (no unit label — chrome, not a read-out).
+    // The reading is read for its AGE only — the badge's freshness verdict below. The value, trend and
+    // link now live in [T1dmBottomBar], present on every screen this trail is.
     val reading by container.latestReading.collectAsState(null)
-    val unit by container.statsRepository.unitSpace.collectAsState(UnitSpace.MgDl)
     val death = LocalDeathMode.current
     // U1 — the app-wide glycemic status, recomputed as the forecast state changes.
     val inference by container.inferenceState.collectAsState(InferenceState())
@@ -592,26 +610,6 @@ private fun Breadcrumb(navController: NavHostController, container: AppContainer
         // neutral tappable "VOID" when the forecast is ineligible (never green off a stale/degenerate
         // /warmup forecast — that is the false-reassurance §3.6 exists to prevent).
         GlycemicStatusBadge(status)
-        // A number with no age beside it reads as NOW. Past the staleness cutoff the trend arrow is
-        // dropped (a direction measured minutes ago is not a current one) and the age is shown in its
-        // place, so the one BG surface present above every screen cannot pass off an old reading.
-        val stale = readingAgeMs != null && readingAgeMs > STALE_MIN * 60_000L
-        val bgNumber = BgFormat.value(reading?.bgMgdl, unit)
-        val bgSuffix = if (stale) {
-            BgFormat.ageShort(readingAgeMs!!)
-        } else {
-            BgFormat.arrow(
-                BgGlanceComputer.classifyTrend(reading?.trendTenthsPerMin, reading?.bgMgdl, null),
-            )
-        }
-        Text(
-            "$bgNumber $bgSuffix",
-            style = MaterialTheme.typography.labelMedium,
-            fontWeight = FontWeight.Medium,
-            color = if (stale) cs.error else cs.onSurfaceVariant,
-            maxLines = 1,
-            modifier = Modifier.padding(start = 8.dp),
-        )
         // DEATH mode: a themed skull pinned to the far end of the trail.
         if (death) {
             Text(
@@ -747,81 +745,159 @@ private fun GlycemicStatusBadge(status: GlyStatus) {
 }
 
 /**
- * The bottom navigation (item 13): a horizontally-scrollable row of large-icon tiles, one per
- * destination, so every tab is reachable by scrolling instead of cramming into a fixed bar. The
- * selected tile is marked with a themed pill + a coloured label; on selection it is scrolled into
- * view so the current destination always stays visible.
+ * The bottom bar: the BG read-out with the nav wheel's hub filling the gap that used to sit empty
+ * between its two halves.
  *
- * [backgroundAlphaPct] is the same Display → Background setting [ThemeBackdrop] paints at, hoisted
- * in [T1dmApp] and passed down rather than collected a second time here.
+ * It is the dashboard's old header, promoted. Promoting it is what lets the hub be GLOBAL — the wheel
+ * has to be reachable from every screen, and the read-out is the one piece of chrome worth carrying
+ * everywhere in a CGM app. Layout mirrors the panel it replaced: value + time-of-day on the left,
+ * trend + link + age on the right, and the hub between them.
+ *
+ * The figures come from [BgFormat] rather than the dashboard's native Kovatchev `f`: this is chrome,
+ * drawn on screens where the graph's transform is not in scope. [BgFormat] goes through the
+ * pure-Kotlin `KovatchevScale` mirror for the same reason the notification and the widgets do.
+ *
+ * **Past [STALE_MIN] this bar stops asserting a direction.** It is the app's only always-on BG
+ * surface, and a bold value beside a live-looking arrow is a claim about NOW; the trend was measured
+ * whenever the last reading arrived. So the arrow is dropped, the value turns [ColorScheme.error],
+ * and the age carries the message instead — the rule the Breadcrumb's chip used to hold, moved here
+ * with the read-out. A missing reading is stale by the same argument: `classifyTrend(null, …)` is
+ * FLAT, which would draw a steady arrow beside "--".
  */
 @Composable
-private fun T1dmBottomBar(navController: NavHostController, backgroundAlphaPct: Int) {
+private fun T1dmBottomBar(
+    navController: NavHostController,
+    container: AppContainer,
+    wheel: NavWheelState,
+    motion: NavWheelMotion,
+    onWheelSelect: (Int) -> Unit,
+) {
     val backStackEntry by navController.currentBackStackEntryAsState()
     val current = backStackEntry?.destination?.route
-    val scrollState = rememberScrollState()
-    val selectedIndex = destinations.indexOfFirst { it.route == current }
-    val animationsOn = LocalAnimationsEnabled.current
+    val cs = MaterialTheme.colorScheme
+    val reading by container.latestReading.collectAsState(null)
+    val unit by container.statsRepository.unitSpace.collectAsState(UnitSpace.MgDl)
+    val source by container.activeSource.collectAsState(null)
 
-    // U7 — scroll so the SELECTED tile is always FULLY visible, first and last tiles included. The
-    // prior heuristic (an averaged tile width times the index) overshot for edge tiles because tiles
-    // aren't equal-width (the selected one is wider). Instead we record each tile's real content-space
-    // edges + the viewport width and nudge the scroll only as far as needed to reveal the selected one.
-    val tileEdges = remember { mutableStateMapOf<Int, Pair<Int, Int>>() }
-    var viewportW by remember { mutableStateOf(0) }
-    val selectedEdges = tileEdges[selectedIndex]
-    LaunchedEffect(selectedIndex, selectedEdges, viewportW, scrollState.maxValue, animationsOn) {
-        val edges = selectedEdges ?: return@LaunchedEffect
-        if (viewportW <= 0) return@LaunchedEffect
-        val (l, r) = edges
-        val pad = 12
-        val cur = scrollState.value
-        val target = when {
-            l - pad < cur -> l - pad
-            r + pad > cur + viewportW -> r + pad - viewportW
-            else -> cur
-        }.coerceIn(0, scrollState.maxValue)
-        if (target != cur) {
-            if (animationsOn) scrollState.animateScrollTo(target) else scrollState.scrollTo(target)
+    // ONE clock for both the age chip and the staleness verdict. Fast while the reading is young so
+    // the chip counts seconds honestly, coarse afterwards — the verdict only has to be right to within
+    // a fraction of STALE_MIN, and this composition sits on every screen in the app.
+    val rxWallMs = reading?.rxWallMs
+    val nowMs by produceState(System.currentTimeMillis(), rxWallMs) {
+        while (true) {
+            value = System.currentTimeMillis()
+            delay(if (rxWallMs != null && (value - rxWallMs) in 0..60_000L) 1_000L else CHROME_TICK_MS)
         }
     }
+    val ageMs = rxWallMs?.let { (nowMs - it).coerceAtLeast(0L) }
+    val stale = ageMs == null || ageMs > STALE_MIN * 60_000L
 
-    val cs = MaterialTheme.colorScheme
-
-    Surface(
-        color = cs.surface,
-        // Pinned for the reason the Scaffold's is (see T1dmApp): contentColorFor() resolves by
-        // colour EQUALITY, so a surface carrying alpha matches no arm, collapses to Unspecified
-        // and falls through to LocalContentColor.
-        contentColor = cs.onSurface,
-        tonalElevation = 3.dp,
-    ) {
+    // NO Surface. The read-out, the hub and the link figures are chrome over the app's own canvas,
+    // not a panel laid on it — a filled surface drew a lighter slab across the bottom of every screen.
+    // But a TRANSPARENT Surface is not enough either: `Surface` clips to its shape, and the hub's glow
+    // and its pointer both reach past the bar's bounds by design. Clipped, the glow ended in a hard
+    // horizontal edge and the pointer vanished entirely. A bare Row does not clip.
+    //
+    // Losing the Surface means losing what it provided for content colour, so that is provided here:
+    // an unset `Text` colour resolves through LocalContentColor, and nothing else in this slot sets it.
+    CompositionLocalProvider(LocalContentColor provides cs.onSurface) {
         Row(
             Modifier
                 .fillMaxWidth()
-                .onSizeChanged { viewportW = it.width }
-                .horizontalScroll(scrollState)
                 .navigationBarsPadding()
-                .padding(horizontal = 8.dp, vertical = 6.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                // The hub is the tallest thing in the row and sets the bar's height; the padding is
+                // what keeps it off the window edge and off the read-out beside it.
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            destinations.forEachIndexed { index, d ->
-                NavTile(
-                    destination = d,
-                    selected = current == d.route,
-                    onEdges = { l, r -> tileEdges[index] = l to r },
-                    onClick = {
-                        navController.navigate(d.route) {
-                            launchSingleTop = true
-                            restoreState = true
-                            popUpTo("dashboard") { saveState = true }
-                        }
-                    },
+            Column(Modifier.weight(1f)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        text = BgFormat.value(reading?.bgMgdl, unit),
+                        style = MaterialTheme.typography.displaySmall,
+                        fontWeight = FontWeight.Bold,
+                        color = if (stale) cs.error else Color.Unspecified,
+                        maxLines = 1,
+                    )
+                    TimeOfDayIcon()
+                }
+                Text(
+                    text = BgFormat.unitLabel(unit) + (reading?.let { readingSuffix(it) } ?: ""),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (stale) cs.error else cs.onSurfaceVariant,
+                    maxLines = 1,
                 )
+            }
+            NavWheelPuck(wheel, motion, destinations, current, onWheelSelect)
+            Column(Modifier.weight(1f), horizontalAlignment = Alignment.End) {
+                // A direction measured minutes ago is not a current one.
+                if (!stale) {
+                    Text(
+                        text = BgFormat.arrow(
+                            BgGlanceComputer.classifyTrend(reading?.trendTenthsPerMin, reading?.bgMgdl, null),
+                        ),
+                        style = MaterialTheme.typography.headlineSmall,
+                    )
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text(
+                        text = source?.shortName ?: "no source",
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1,
+                    )
+                    // Identical to `bgSignals.cgmRssi`, which is defined as exactly this — and taking it
+                    // from the reading keeps a second always-on combine off every screen in the app.
+                    reading?.rssi?.let { SignalBars(it) }
+                }
+                ageMs?.let { LastReadingChip(it, stale) }
             }
         }
     }
 
+}
+
+/** Warm-up / interpolated provenance, appended to the unit label the way the BG panel's header did. */
+private fun readingSuffix(r: CgmReading): String = when {
+    r.flag == ReadingFlag.WARMUP -> "  • warmup"
+    r.provenance == ReadingProvenance.INTERPOLATED -> "  • interpolated"
+    else -> ""
+}
+
+/** How long ago the CGM actually delivered the reading ([CgmReading.rxWallMs], before the grid snap),
+ *  so the freshness of the link is legible at a glance. [stale] reddens it: past the cutoff this line
+ *  is carrying the whole freshness message, because the trend arrow above it has been withdrawn. */
+@Composable
+private fun LastReadingChip(ageMs: Long, stale: Boolean) {
+    Text(
+        "received ${formatReadingAge(ageMs)}",
+        style = MaterialTheme.typography.labelSmall,
+        // Tabular monospace so the per-second reflow (proportional digits) no longer shifts the chip.
+        fontFamily = FontFamily.Monospace,
+        color = if (stale) {
+            MaterialTheme.colorScheme.error
+        } else {
+            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+        },
+    )
+}
+
+/** Elapsed-time phrasing for [LastReadingChip]. The numeric fields are space-padded to a fixed width
+ *  so — under the chip's monospace font — the string keeps a constant width as it ticks (a leading
+ *  space is one digit cell), and the End-anchored chip never shifts when 9s rolls over to 10s. */
+private fun formatReadingAge(ms: Long): String {
+    val s = ms / 1000
+    return when {
+        s < 60 -> "%2ds ago".format(s)
+        s < 3600 -> "%2dm ago".format(s / 60)
+        s < 86_400 -> "%2dh %2dm ago".format(s / 3600, (s % 3600) / 60)
+        else -> "%2dd ago".format(s / 86_400)
+    }
 }
 
 /**
@@ -866,8 +942,8 @@ private fun rememberSensitivity(container: AppContainer): SensitivityEstimate? {
  * keys hijacked through exactly the DND-bypassing announcement this gate exists for. The minigame's
  * interlock reads the same pair, for the same reason.
  *
- * The navigation matches the bottom bar's exactly, tile for tile, so arriving by key and arriving by
- * thumb leave the same back stack.
+ * The navigation options match the nav wheel's exactly, so arriving by key and arriving by thumb
+ * leave the same back stack.
  */
 @Composable
 private fun VolumeKeyShortcuts(
@@ -901,44 +977,6 @@ private tailrec fun Context.findMainActivity(): MainActivity? = when (this) {
     is MainActivity -> this
     is ContextWrapper -> baseContext.findMainActivity()
     else -> null
-}
-
-@Composable
-private fun NavTile(destination: Destination, selected: Boolean, onEdges: (Int, Int) -> Unit, onClick: () -> Unit) {
-    val cs = MaterialTheme.colorScheme
-    val bg = if (selected) cs.primary.copy(alpha = 0.16f) else Color.Transparent
-    val style = iconStyleForTheme(LocalT1dmSemantics.current.id)
-    val icon = remember(destination.route, style) { navIcon(destination.route, style) }
-    Column(
-        Modifier
-            .onGloballyPositioned {
-                val left = it.positionInParent().x.toInt()
-                onEdges(left, left + it.size.width)
-            }
-            .clip(RoundedCornerShape(16.dp))
-            .background(bg)
-            // Unconditional: `launchSingleTop` makes re-tapping the selected tab a no-op navigation,
-            // and a selected tab that answers nothing under the thumb reads as broken.
-            .hapticClickable(HapticEvent.NavSwitch, onClick = onClick)
-            .widthIn(min = 64.dp)
-            .padding(horizontal = 10.dp, vertical = 8.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(3.dp),
-    ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = destination.label,
-            tint = if (selected) cs.primary else cs.onSurfaceVariant,
-            modifier = Modifier.size(28.dp),
-        )
-        Text(
-            destination.label,
-            style = MaterialTheme.typography.labelMedium,
-            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-            color = if (selected) cs.primary else cs.onSurfaceVariant,
-            maxLines = 1,
-        )
-    }
 }
 
 /**
@@ -977,8 +1015,6 @@ private fun T1dmNavHost(
         composable("dashboard") {
             val scope = rememberCoroutineScope()
             val readings by container.dashboardReadings.collectAsState(emptyList())
-            val latest by container.latestReading.collectAsState(null)
-            val active by container.activeSource.collectAsState(null)
             val inference by container.inferenceState.collectAsState(InferenceState())
             // IOB/COB recomputed off-main on any reading emit OR dose/meal write (shared StateFlow).
             val iobCob by container.iobCob.collectAsState()
@@ -1020,7 +1056,7 @@ private fun T1dmNavHost(
             val thermalGateOn by container.thermalGateEnabled.collectAsState(SettingsStore.DEFAULT_THERMAL_ON)
             val thermalMaxC by container.inferenceMaxTempC.collectAsState(SettingsStore.DEFAULT_MAX_TEMP_C)
             val thermalWarn by container.thermalWarnMarginC.collectAsState(SettingsStore.DEFAULT_WARN_MARGIN_C)
-            // Issue 3 — the Display glucose unit (mg/dL | mmol/L | Kovatchev) the BG panel + header honour.
+            // Issue 3 — the Display glucose unit (mg/dL | mmol/L | Kovatchev) the BG panel honours.
             val glucoseUnit by container.statsRepository.unitSpace.collectAsState(UnitSpace.MgDl)
             // The BG input filter the MODEL consumes (INFERENCE.md §7.1). Passed through as a value as
             // well as captured in the smoother below: a Compose-memoized lambda would otherwise leave a
@@ -1065,10 +1101,6 @@ private fun T1dmNavHost(
             val sensitivity = rememberSensitivity(container)
             DashboardScreen(
                 readings = readings,
-                latest = latest,
-                // The name alone — the panel identifies the source, not the unit, so the serial the
-                // vendor folded into `displayName` is dropped here. Settings → CGM keeps it.
-                activeSourceName = active?.shortName,
                 unit = glucoseUnit,
                 thresholds = container.alarmConfig.thresholds,
                 predictions = inference.predictions,

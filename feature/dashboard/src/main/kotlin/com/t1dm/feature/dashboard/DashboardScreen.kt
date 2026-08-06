@@ -57,8 +57,6 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -82,9 +80,7 @@ import com.t1dm.core.model.ModelPrediction
 import com.t1dm.core.model.PaintStroke
 import com.t1dm.core.model.PaintTool
 import com.t1dm.core.model.PredictedTime
-import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.RolledForecast
-import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.core.model.SensitivityEstimate
 import com.t1dm.core.model.TempUnit
 import com.t1dm.core.model.ThermalLevel
@@ -116,9 +112,12 @@ import com.t1dm.ui.graph.predOverlayOf
 /**
  * The live BG dashboard (Phase 1 — "Dashboard shows the live graph + current
  * BG/trend from the Repository Flow"). It is a pure function of the state `:app` collects from the
- * repository: a header with the latest measurement + trend + active source, and the reusable
- * [GlucoseGraph] over a [GraphFrame] built off-thread by [graphFrameOf]. No storage, no service,
- * no `:inference` — just the observed truth.
+ * repository: the reachability chips, the reusable [GlucoseGraph] over a [GraphFrame] built
+ * off-thread by [graphFrameOf], and the overlay controls under it. No storage, no service, no
+ * `:inference` — just the observed truth.
+ *
+ * The current value, trend, source and link age are NOT here: they are `:app`'s bottom bar, which
+ * carries them on every screen.
  *
  * Phase 4 adds the toggleable curve overlays: the carb-appearance (Ra) and insulin-action curves
  * drawn UNDER the BG line, reconstructed from the logged events by `:app`'s `ChannelBuilder`
@@ -131,8 +130,6 @@ import com.t1dm.ui.graph.predOverlayOf
 @Composable
 fun DashboardScreen(
     readings: List<CgmReading>,
-    latest: CgmReading?,
-    activeSourceName: String?,
     thresholds: AlertThresholds? = null,
     unit: UnitSpace = UnitSpace.MgDl,
     predictions: List<ModelPrediction> = emptyList(),
@@ -509,47 +506,8 @@ fun DashboardScreen(
         reachability?.let {
             ReachabilityBar(it, signals, pulses, deviceTempC, temperatureUnit, sensorExpiryMs, sensorWarmupEndMs, thermalThresholdC, thermalWarnMarginC, stepsToday)
         }
-        DashboardHeader(latest, activeSourceName, unit, signals?.cgmRssi ?: latest?.rssi, kovatchevF)
         warmup?.let { WarmupBanner(it) }
         if (noFutureInsulin) NoFutureInsulinBanner()
-        if (iobCob != null || sensitivity != null || curveChannels != null || smoothMgdl != null ||
-            onRoll != null || paintAvailable || gameSlot != null || hindsightIn != null ||
-            stepSeries != null
-        ) {
-            OverlayControls(
-                iobCob = iobCob,
-                sensitivity = sensitivity,
-                unit = unit,
-                showNextForecast = warmup == null && !lowPowerActive,
-                forecastAdaptive = forecastAdaptive,
-                forecastPeriodMin = forecastPeriodMin,
-                toggles = toggles,
-                windowHours = windowHours,
-                stepsAvailable = stepSeries != null,
-                showSteps = showSteps,
-                smoothAvailable = smoothMgdl != null,
-                showSmoothed = showSmoothed,
-                hindsightAvailable = hindsightIn != null,
-                showHindsight = showHindsight,
-                rollAvailable = onRoll != null,
-                rollComputing = rollComputing,
-                paintAvailable = paintAvailable,
-                paintOn = paintOn,
-                gameAvailable = gameSlot != null,
-                gameOn = gameOn,
-                onToggleGame = { gameOn = it },
-                onRollClick = { showRollDialog = true },
-                onToggle = { toggles = it },
-                onToggleSteps = { showSteps = it },
-                onToggleSmoothed = { showSmoothed = it },
-                onToggleHindsight = { showHindsight = it },
-                onTogglePaint = { on -> paintOn = on },
-                onWindow = { h ->
-                    windowHours = h
-                    onSetWindowHours?.invoke(h)
-                },
-            )
-        }
         if (paintOn && paintAvailable) {
             PaintPalette(
                 tool = paintTool,
@@ -640,6 +598,47 @@ fun DashboardScreen(
                 }
                 }
             }
+        }
+        // Under the graph, directly above the app's bottom bar: the chips are what the thumb reaches
+        // for, so they sit where the thumb is. The read-out that used to head this panel moved into
+        // that bar, where the nav wheel's hub fills the gap it left.
+        if (iobCob != null || sensitivity != null || curveChannels != null || smoothMgdl != null ||
+            onRoll != null || paintAvailable || gameSlot != null || hindsightIn != null ||
+            stepSeries != null
+        ) {
+            OverlayControls(
+                iobCob = iobCob,
+                sensitivity = sensitivity,
+                unit = unit,
+                showNextForecast = warmup == null && !lowPowerActive,
+                forecastAdaptive = forecastAdaptive,
+                forecastPeriodMin = forecastPeriodMin,
+                toggles = toggles,
+                windowHours = windowHours,
+                stepsAvailable = stepSeries != null,
+                showSteps = showSteps,
+                smoothAvailable = smoothMgdl != null,
+                showSmoothed = showSmoothed,
+                hindsightAvailable = hindsightIn != null,
+                showHindsight = showHindsight,
+                rollAvailable = onRoll != null,
+                rollComputing = rollComputing,
+                paintAvailable = paintAvailable,
+                paintOn = paintOn,
+                gameAvailable = gameSlot != null,
+                gameOn = gameOn,
+                onToggleGame = { gameOn = it },
+                onRollClick = { showRollDialog = true },
+                onToggle = { toggles = it },
+                onToggleSteps = { showSteps = it },
+                onToggleSmoothed = { showSmoothed = it },
+                onToggleHindsight = { showHindsight = it },
+                onTogglePaint = { on -> paintOn = on },
+                onWindow = { h ->
+                    windowHours = h
+                    onSetWindowHours?.invoke(h)
+                },
+            )
         }
     }
 
@@ -1202,41 +1201,6 @@ private fun SensorLifeChip(expiryMs: Long?, warmupEndMs: Long?) {
     )
 }
 
-/** F1 — a live "received Ns ago" chip under the source name, driven off the raw phone-receive wall time
- *  ([CgmReading.rxWallMs], before the grid snap) so the freshness of the CGM link is legible at a glance.
- *  It ticks each second while the reading is under a minute old, then falls back to a per-minute cadence
- *  so it stays honest without a busy loop. */
-@Composable
-private fun LastReadingChip(rxWallMs: Long) {
-    val now by produceState(System.currentTimeMillis(), rxWallMs) {
-        while (true) {
-            value = System.currentTimeMillis()
-            kotlinx.coroutines.delay(if ((value - rxWallMs) in 0..60_000L) 1_000L else 60_000L)
-        }
-    }
-    Text(
-        "received ${formatAge((now - rxWallMs).coerceAtLeast(0))}",
-        style = MaterialTheme.typography.labelSmall,
-        // Tabular monospace so the per-second reflow (proportional digits) no longer shifts the chip.
-        fontFamily = FontFamily.Monospace,
-        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-    )
-}
-
-/** Elapsed-time phrasing for the last-reading chip: seconds, minutes, hours (h + m), then days. The
- *  numeric fields are space-padded to a fixed width so — under the chip's monospace font — the string
- *  keeps a constant width as it ticks (a leading space is one digit cell), and the End-anchored chip
- *  never shifts when a single digit rolls over to two (9s → 10s). */
-private fun formatAge(ms: Long): String {
-    val s = ms / 1000
-    return when {
-        s < 60 -> "%2ds ago".format(s)
-        s < 3600 -> "%2dm ago".format(s / 60)
-        s < 86_400 -> "%2dh %2dm ago".format(s / 3600, (s % 3600) / 60)
-        else -> "%2dd ago".format(s / 86_400)
-    }
-}
-
 /** Largest meaningful unit of a positive remaining duration: days, else hours, else minutes, else
  *  seconds. */
 private fun formatRemaining(ms: Long): String {
@@ -1430,115 +1394,12 @@ private fun PulsingDot(health: LinkHealth, pulseKey: Long = 0L) {
     }
 }
 
-/** N4a — the animated per-theme time-of-day icon, right of the current BG value. */
-@Composable
-private fun TimeOfDayIcon() {
-    val animationsOn = LocalAnimationsEnabled.current
-    // Re-evaluate the period once a minute so it stays honest without a busy loop.
-    val hour by produceState(java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)) {
-        while (true) {
-            value = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
-            kotlinx.coroutines.delay(60_000)
-        }
-    }
-    val style = iconStyleForTheme(LocalT1dmSemantics.current.id)
-    val period = com.t1dm.core.design.dayPeriodFor(hour)
-    val icon = remember(period, style) { com.t1dm.core.design.timeOfDayIcon(period, style) }
-    // A subtle breathing scale; a static 1f when motion is disabled (N4c).
-    // Held as State and unwrapped inside the layer block — see [HeartbeatChip]: a 2.6 s breath that never
-    // ends must invalidate a layer property, not the composition that produced it.
-    val scale = if (animationsOn) {
-        val transition = rememberInfiniteTransition(label = "tod")
-        transition.animateFloat(
-            initialValue = 0.9f,
-            targetValue = 1.0f,
-            animationSpec = infiniteRepeatable(tween(2600), RepeatMode.Reverse),
-            label = "todScale",
-        )
-    } else remember { mutableFloatStateOf(1f) }
-    Icon(
-        imageVector = icon,
-        contentDescription = "Time of day: ${period.name.lowercase()}",
-        tint = MaterialTheme.colorScheme.primary,
-        modifier = Modifier.size(28.dp).graphicsLayer { scaleX = scale.value; scaleY = scale.value },
-    )
-}
-
 @Composable
 private fun LinkHealth.color(): Color = when (this) {
     LinkHealth.OK -> Color(0xFF3DD68C)
     LinkHealth.DEGRADED -> MaterialTheme.colorScheme.secondary
     LinkHealth.DOWN -> MaterialTheme.colorScheme.error
     LinkHealth.OFF -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.30f)
-}
-
-@Composable
-private fun DashboardHeader(latest: CgmReading?, activeSourceName: String?, unit: UnitSpace, cgmRssi: Int?, kovatchevF: ((Double) -> Double)?) {
-    Row(
-        Modifier.fillMaxWidth().padding(16.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(
-                    text = formatBg(latest?.bgMgdl, unit, kovatchevF),
-                    style = MaterialTheme.typography.displaySmall,
-                    fontWeight = FontWeight.Bold,
-                )
-                // N4a — a per-theme morning/noon/evening/night icon derived from the ACTUAL local time,
-                // in the same geometry system as the nav icons, subtly animated (honouring the
-                // "disable all animations" toggle via LocalAnimationsEnabled).
-                TimeOfDayIcon()
-            }
-            Text(
-                text = unitLabel(unit) + (latest?.let { statusSuffix(it) } ?: ""),
-                style = MaterialTheme.typography.bodyMedium,
-            )
-        }
-        Column(horizontalAlignment = Alignment.End) {
-            Text(text = trendArrow(latest?.trendTenthsPerMin), style = MaterialTheme.typography.headlineMedium)
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(text = activeSourceName ?: "no source", style = MaterialTheme.typography.bodySmall)
-                cgmRssi?.let { SignalBars(it) }
-            }
-            latest?.rxWallMs?.let { LastReadingChip(it) }
-        }
-    }
-}
-
-private fun statusSuffix(r: CgmReading): String = when {
-    r.flag == ReadingFlag.WARMUP -> "  • warmup"
-    r.provenance == ReadingProvenance.INTERPOLATED -> "  • interpolated"
-    else -> ""
-}
-
-private fun unitLabel(unit: UnitSpace): String = when (unit) {
-    UnitSpace.MgDl -> "mg/dL"
-    UnitSpace.MmolL -> "mmol/L"
-    UnitSpace.Kovatchev -> "risk"
-}
-
-/** The big header value in the chosen unit. Kovatchev risk needs its transform threaded in so the
- *  header agrees with the graph axis (which already applies [kovatchevF]); without it the header would
- *  fall back to the raw mg/dL integer. */
-private fun formatBg(bgMgdl: Int?, unit: UnitSpace, kovatchevF: ((Double) -> Double)? = null): String {
-    if (bgMgdl == null) return "--"
-    return when (unit) {
-        UnitSpace.MgDl -> bgMgdl.toString()
-        UnitSpace.MmolL -> String.format("%.1f", bgMgdl / 18.0182)
-        UnitSpace.Kovatchev -> kovatchevF?.let { String.format("%.1f", it(bgMgdl.toDouble())) } ?: bgMgdl.toString()
-    }
-}
-
-/** Coarse trend glyph from the 0.1 mg/dL/min rate (real arrows are Phase 7 polish). */
-private fun trendArrow(tenths: Int?): String = when {
-    tenths == null -> "→"
-    tenths >= 30 -> "⇈"
-    tenths >= 10 -> "↗"
-    tenths <= -30 -> "⇊"
-    tenths <= -10 -> "↘"
-    else -> "→"
 }
 
 /**
