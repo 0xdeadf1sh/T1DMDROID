@@ -1961,9 +1961,6 @@ private fun T1dmNavHost(
         composable("backup") {
             BackupRoute(container, onNotice)
         }
-        composable("backup") {
-            BackupRoute(container, onNotice)
-        }
         composable("settings/watch") {
             val watch by container.watchSecurity.collectAsState()
             WatchSettingsScreen(
