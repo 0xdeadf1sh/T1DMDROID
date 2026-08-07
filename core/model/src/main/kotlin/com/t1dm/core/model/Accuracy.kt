@@ -75,15 +75,34 @@ data class MetricsConfig(
 enum class ClarkeZone { A, B, C, D, E }
 
 /**
- * One scored `(prediction, truth)` pair in mg/dL with the zone the core put it in — the per-point
- * series behind [PointBlock]'s four aggregate shares.
+ * The DTS Error Grid zone of one scored pair — Klonoff et al. 2024 (J Diabetes Sci Technol
+ * 18(6):1346), the grid that supersedes the 2014 Surveillance Error Grid.
+ *
+ * A banding of the continuous risk the core computes, not a stack of inequalities like Clarke's.
+ * [ScoredPoint.dtsRisk] is the underlying quantity; this is where it fell.
+ */
+enum class DtsZone { A, B, C, D, E }
+
+/**
+ * One scored `(prediction, truth)` pair in mg/dL carrying every zone verdict passed on it — the
+ * per-point series behind [PointBlock]'s aggregate shares.
  *
  * [pred] is the BASIS's own prediction at the horizon step (band-projected in [HorizonMetrics.band],
  * the median line in [HorizonMetrics.medianLine]); [truth] the realized BG at that step. Plot the
- * truth on the reference axis: the grid is not symmetric, and a transposed one is a well-formed
+ * truth on the reference axis: neither grid is symmetric, and a transposed one is a well-formed
  * picture of a different statistic.
+ *
+ * **One series, two grids.** The core classifies the same pair on both and returns it once, so two
+ * scatters drawn on one screen are guaranteed to be plotting the same pairs — and half the marshalling.
  */
-data class ClarkePoint(val pred: Double, val truth: Double, val zone: ClarkeZone)
+data class ScoredPoint(
+    val pred: Double,
+    val truth: Double,
+    val clarke: ClarkeZone,
+    val dts: DtsZone,
+    /** Signed: positive where the forecast read HIGH of the truth, which the grid penalises harder. */
+    val dtsRisk: Double,
+)
 
 /**
  * The per-horizon point-error block for ONE forecast basis (§6.2). `*Point` is the strict value at
@@ -91,15 +110,22 @@ data class ClarkePoint(val pred: Double, val truth: Double, val zone: ClarkeZone
  * share, not B alone. [skillPoint] is the fraction of the persistence baseline's RMSE removed, and
  * is null where persistence itself was perfect (an undefined ratio, never an infinity).
  *
- * [clarkePoints] is the per-point series the four shares were counted from, one entry per scored
- * window. The core classifies each pair ONCE and derives both from that single call, so a scatter
- * drawn from this series cannot disagree with the percentages printed beside it.
+ * The `dts*` shares are the same window on the 2024 DTS grid. [dtsA] is the paper's headline `pZA`,
+ * and all five are published individually — **never combine [dtsA] and [dtsB]**: the paper's panel
+ * explicitly declines to report a combined A+B and names `pZA` alone as the metric, which is the one
+ * place this grid's presentation departs from Clarke's. [dtsMeanAbsRisk] is the mean `|risk|` the
+ * zones band, the continuous reading that does not round a near-miss up into a whole zone.
+ *
+ * [points] is the per-point series every share was counted from, one entry per scored window. The
+ * core classifies each pair ONCE on both grids and derives all of it from that single call, so a
+ * scatter drawn from this series cannot disagree with the percentages printed beside it.
  *
  * **Carried on the MEDIAN LINE only; empty on the band**, by the core's contract. The band
  * projection is `clip(truth, lo, hi)`, so every pair whose truth fell inside the band lands on the
- * identity diagonal in zone A — a scatter of it would picture band coverage as a flawless forecast.
- * The band's Clarke performance is its four shares. Never fall back to the band's series for a
- * scatter: it is empty because nothing may draw it, not because nothing computed it.
+ * identity diagonal — Clarke zone A, and DTS risk exactly zero, which is zone A there too. A scatter
+ * of it would picture band coverage as a flawless forecast. The band's grid performance is its
+ * shares. Never fall back to the band's series for a scatter: it is empty because nothing may draw
+ * it, not because nothing computed it.
  */
 data class PointBlock(
     val rmsePoint: Double,
@@ -111,9 +137,60 @@ data class PointBlock(
     val clarkeAb: Double,
     val clarkeD: Double,
     val clarkeE: Double,
+    val dtsA: Double,
+    val dtsB: Double,
+    val dtsC: Double,
+    val dtsD: Double,
+    val dtsE: Double,
+    val dtsMeanAbsRisk: Double,
     val skillPoint: Double?,
-    val clarkePoints: List<ClarkePoint>,
+    val points: List<ScoredPoint>,
 )
+
+/**
+ * The Trend Accuracy Matrix of one horizon — Klonoff et al. 2024, the same paper as the DTS grid.
+ *
+ * [counts] is the `5 × 5` contingency table over the core's rate bins, TRUTH-MAJOR: cell `(t, p)` is
+ * truth bin `t` against forecast bin `p`, at index `t * TREND_BINS + p`. Use [countAt]; a transposed
+ * read is well-formed and describes the opposite failure.
+ *
+ * [categoryPct] holds the paper's five risk categories at indices 0–4: no risk, underestimate,
+ * overestimate, extreme underestimate, extreme overestimate. It is EMPTY when no pair scored — a
+ * matrix of five zeroes would render as a partition of nothing, which is a different fact.
+ *
+ * `categoryPct[0]` is also the diagonal share: category 1 occupies exactly the diagonal in all three
+ * of the paper's stratified tables, so exact bin agreement and "no risk" are one number here, not two.
+ *
+ * **Median line only.** There is no band counterpart, deliberately — §6.2's own consequence is that
+ * the band projection equals the truth wherever the band covered, so a rate differenced from it
+ * inherits the truth's derivative and would sit on the diagonal by construction.
+ */
+data class TrendMatrix(
+    val counts: List<Int>,
+    val categoryN: List<Int>,
+    val categoryPct: List<Double>,
+    val n: Int,
+) {
+    /** The count at truth bin [tb] against forecast bin [pb], or 0 off the table. */
+    fun countAt(tb: Int, pb: Int): Int = counts.getOrElse(tb * TREND_BINS + pb) { 0 }
+
+    /** The largest cell, for scaling a heatmap. 0 for an empty matrix. */
+    val peak: Int get() = counts.maxOrNull() ?: 0
+
+    val isEmpty: Boolean get() = n <= 0 || counts.size != TREND_BINS * TREND_BINS
+
+    companion object {
+        val EMPTY = TrendMatrix(List(TREND_BINS * TREND_BINS) { 0 }, List(TREND_CATEGORIES) { 0 }, emptyList(), 0)
+    }
+}
+
+/**
+ * Rate bins and risk categories in the Trend Accuracy Matrix. Structural counts only — the bin EDGES
+ * live in the core and reach this side through `NativeCore.trendBinEdges()`, so no label drawn here
+ * can come to disagree with the binning it captions.
+ */
+const val TREND_BINS: Int = 5
+const val TREND_CATEGORIES: Int = 5
 
 /**
  * Band-edge recall / precision for one threshold crossing. [recall] is null when the truth never
@@ -158,6 +235,7 @@ data class HorizonMetrics(
     val bandWidth90: Double,
     val hypo: ExcursionAccuracy,
     val hyper: ExcursionAccuracy,
+    val trend: TrendMatrix,
 )
 
 /** CG-EGA for one glycaemic region: accurate / benign / erroneous share, null where the region
@@ -202,20 +280,36 @@ data class MetricsSuite(
 }
 
 /**
- * A square lattice of Clarke zones over `[0, axisMaxMgdl]` on both axes, classified by the core.
+ * A square lattice of error-grid zones over `[0, axisMaxMgdl]` on both axes, classified by the core.
  *
- * This is how a Clarke Error Grid gets its REGIONS without a second copy of the zone algebra. The
- * boundaries exist only as inequalities inside `t1dm-core::accuracy::clarke_zones`; a renderer
- * samples this lattice and paints the cells it is handed, so the outline it draws is the
- * classifier's own output rasterised — it cannot disagree with where the points land, and the only
- * thing separating the painted edge from the true one is [CELLS].
+ * This is how an error grid gets its REGIONS without a second copy of the zone algebra. The
+ * boundaries exist only inside the core — as inequalities for Clarke, as a log-ratio for the DTS
+ * grid — and a renderer samples this lattice and paints the cells it is handed, so the outline it
+ * draws is the classifier's own output rasterised. It cannot disagree with where the points land,
+ * and the only thing separating the painted edge from the true one is [CELLS]. For the DTS grid the
+ * argument is stronger still: its borders are level sets of a logarithm, so a renderer that wanted
+ * to outline them would have to reimplement the function rather than copy four inequalities.
  *
- * Row-major and TRUTH-MAJOR: [zoneAt] takes the truth index first, matching the core's declared
- * layout and the axis a Clarke grid puts the reference on.
+ * **One class, both grids.** Zones are held as ORDINALS, so nothing here needs to know which grid it
+ * came from; the figure that paints it supplies the letters and the colours. That is what lets the
+ * run-length encoder and the letter placement be written once rather than per grid.
+ *
+ * Row-major and TRUTH-MAJOR: [ordinalAt] takes the truth index first, matching the core's declared
+ * layout and the axis an error grid puts the reference on.
  */
-class ClarkeZoneGrid private constructor(
+class ZoneLattice private constructor(
     val axisMaxMgdl: Double,
     val cells: Int,
+    /**
+     * How many distinct zones this lattice actually contains — one past the largest ordinal in it.
+     *
+     * DERIVED from the classified cells, never taken from the caller. A consumer sizes per-zone
+     * arrays from this and then indexes them with the very ordinals stored here ([zoneAnchors] does
+     * exactly that), so a caller-supplied count that undershot would throw inside composition rather
+     * than fail closed to [EMPTY] the way every other malformed input here does. Deriving it removes
+     * the possibility instead of checking for it.
+     */
+    val zoneCount: Int,
     // Ordinals, not references: a 160-square lattice is 25 600 cells, and a whole instance is
     // long-lived (one serves every model). Identity equality is deliberate too — this is a
     // process-wide singleton, so a `remember` keyed on it must not walk 25 600 elements per
@@ -231,42 +325,39 @@ class ClarkeZoneGrid private constructor(
     fun indexOf(mgdl: Double): Int? =
         ((mgdl / axisMaxMgdl) * cells).toInt().takeIf { mgdl >= 0.0 && it in 0 until cells }
 
-    /** The zone at truth index [ti] against prediction index [pi]. */
-    fun zoneAt(ti: Int, pi: Int): ClarkeZone = ZONES[ordinals[ti * cells + pi].toInt()]
+    /** The zone ordinal at truth index [ti] against prediction index [pi]. */
+    fun ordinalAt(ti: Int, pi: Int): Int = ordinals[ti * cells + pi].toInt()
 
     companion object {
-        private val ZONES = ClarkeZone.values()
+        val EMPTY = ZoneLattice(0.0, 0, 0, ByteArray(0))
 
-        val EMPTY = ClarkeZoneGrid(0.0, 0, ByteArray(0))
-
-        /** The conventional Clarke extent, and the sensor's own ceiling. */
+        /**
+         * The extent both grids are drawn over, and the sensor's own ceiling.
+         *
+         * Clarke's conventional extent is exactly this. The DTS paper defines its grid to 600 mg/dL,
+         * and cropping the view to 400 changes no classification — the classifier is unbounded and
+         * the regions inside 400 are a true subset of the published ones. The two grids share the
+         * extent so their scatters can be read against each other without rescaling.
+         */
         const val AXIS_MAX_MGDL: Double = 400.0
 
         /** Cells per side — 2.5 mg/dL, under two pixels on any plot this app draws. */
         const val CELLS: Int = 160
 
-        /** Wrap an already-classified lattice; a result that does not fill the square is refused
-         *  whole, because a partial lattice paints regions that are wrong rather than absent. */
-        fun of(axisMaxMgdl: Double, cells: Int, zones: List<ClarkeZone>): ClarkeZoneGrid =
-            if (cells <= 0 || zones.size != cells * cells) {
-                EMPTY
-            } else {
-                ClarkeZoneGrid(axisMaxMgdl, cells, ByteArray(zones.size) { zones[it].ordinal.toByte() })
-            }
-
         /**
-         * Build the lattice by asking [classify] — `(truthAxis, predAxis) -> zones`, the core's
-         * `clarke_zone_grid`. Nothing here knows a boundary; every zone in the result came back
-         * across the seam.
+         * Build the lattice by asking [classify] — `(truthAxis, predAxis) -> zones`, one of the
+         * core's `*_zone_grid` exports. Nothing here knows a boundary; every zone in the result came
+         * back across the seam.
          *
          * Fail-closed on anything unexpected: a short result, or a handful of ASYMMETRIC probes
          * whose transpose lands in a different zone disagreeing with the cells at their own
          * coordinates. The probes carry no expected answer — the classifier supplies it — so they
          * catch a swapped index here without restating a single inequality.
          */
-        fun build(classify: (List<Double>, List<Double>) -> List<ClarkeZone>): ClarkeZoneGrid {
+        fun <Z : Enum<Z>> build(classify: (List<Double>, List<Double>) -> List<Z>): ZoneLattice {
             val axis = List(CELLS) { (it + 0.5) * AXIS_MAX_MGDL / CELLS }
-            val grid = of(AXIS_MAX_MGDL, CELLS, classify(axis, axis))
+            val zones = classify(axis, axis)
+            val grid = of(AXIS_MAX_MGDL, CELLS, zones)
             if (grid.isEmpty) return EMPTY
             val probes = listOf(30.0 to 125.0, 210.0 to 60.0, 100.0 to 300.0).mapNotNull { (t, p) ->
                 val ti = grid.indexOf(t) ?: return@mapNotNull null
@@ -275,11 +366,29 @@ class ClarkeZoneGrid private constructor(
             }
             if (probes.size != 3) return EMPTY
             val direct = probes.map { (ti, pi) ->
-                classify(listOf(grid.coordAt(ti)), listOf(grid.coordAt(pi))).singleOrNull()
+                classify(listOf(grid.coordAt(ti)), listOf(grid.coordAt(pi))).singleOrNull()?.ordinal
             }
-            val sampled = probes.map { (ti, pi) -> grid.zoneAt(ti, pi) }
+            val sampled = probes.map { (ti, pi) -> grid.ordinalAt(ti, pi) }
             return if (direct == sampled) grid else EMPTY
         }
+
+        /** Wrap an already-classified lattice; a result that does not fill the square is refused
+         *  whole, because a partial lattice paints regions that are wrong rather than absent. */
+        fun <Z : Enum<Z>> of(axisMaxMgdl: Double, cells: Int, zones: List<Z>): ZoneLattice {
+            if (cells <= 0 || zones.size != cells * cells) return EMPTY
+            val ordinals = ByteArray(zones.size) { zones[it].ordinal.toByte() }
+            // One pass over the bytes we just wrote, rather than a second over the boxed enums.
+            var max = 0
+            for (b in ordinals) if (b > max) max = b.toInt()
+            return ZoneLattice(axisMaxMgdl, cells, max + 1, ordinals)
+        }
+    }
+}
+
+/** Both error-grid lattices, built once and shared by every model's drill-down. */
+data class ErrorGridLattices(val clarke: ZoneLattice, val dts: ZoneLattice) {
+    companion object {
+        val EMPTY = ErrorGridLattices(ZoneLattice.EMPTY, ZoneLattice.EMPTY)
     }
 }
 

@@ -10,6 +10,7 @@ import com.t1dm.core.model.BasalSchedule
 import com.t1dm.core.model.BuiltContext
 import com.t1dm.core.model.CarTuning
 import com.t1dm.core.model.ClarkeZone
+import com.t1dm.core.model.DtsZone
 import com.t1dm.core.model.ConformalFit
 import com.t1dm.core.model.CurveEvent
 import com.t1dm.core.model.CurveKind
@@ -191,6 +192,27 @@ interface NativeCore {
      * ceiling, yields an empty list — no regions rather than wrong ones.
      */
     fun clarkeZoneGrid(truthAxisMgdl: List<Double>, predAxisMgdl: List<Double>): List<ClarkeZone>
+
+    /**
+     * The same lattice on the DTS Error Grid (Klonoff et al. 2024) — TRUTH-MAJOR, identical layout
+     * and identical fail-closed contract to [clarkeZoneGrid].
+     *
+     * It crosses the seam for a stronger reason than Clarke's does: the DTS borders are level sets of
+     * a log-ratio of prediction to truth, asymmetric about the identity, so a renderer outlining them
+     * would have to reimplement the function rather than restate four inequalities. The coefficients
+     * are `t1dm-core::accuracy::dts_risk`'s and are deliberately not repeated on this side.
+     */
+    fun dtsZoneGrid(truthAxisMgdl: List<Double>, predAxisMgdl: List<Double>): List<DtsZone>
+
+    /**
+     * The interior rate-bin edges of the Trend Accuracy Matrix, mg/dL per minute, ascending — always
+     * `TREND_BINS - 1` of them.
+     *
+     * Read from the crate rather than restated here for the reason [clinicalCuts] is: the figure has
+     * to LABEL five bins, and a label is the edge written out. Fail-closed to an empty list, which a
+     * caller renders as unlabelled axes rather than as edges it guessed.
+     */
+    fun trendBinEdges(): List<Double>
 
     // ── Split-conformal band recalibration (t1dm-core::conformal, INFERENCE.md §8.4) ─
 

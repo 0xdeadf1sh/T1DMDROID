@@ -32,8 +32,10 @@ import com.t1dm.core.model.InsulinPresetSpec
 import com.t1dm.core.model.DecodedAdvert
 import com.t1dm.core.model.CgEga
 import com.t1dm.core.model.CgEgaRegion
-import com.t1dm.core.model.ClarkePoint
+import com.t1dm.core.model.ScoredPoint
 import com.t1dm.core.model.ClarkeZone
+import com.t1dm.core.model.DtsZone
+import com.t1dm.core.model.TrendMatrix
 import com.t1dm.core.model.ConformalFit
 import com.t1dm.core.model.ExcursionAccuracy
 import com.t1dm.core.model.Forecast
@@ -51,6 +53,8 @@ import com.t1dm.core.model.TimeHead
 import uniffi.t1dm_core.CoreException
 import uniffi.t1dm_core.forecastMetricsSuite as uniffiForecastMetricsSuite
 import uniffi.t1dm_core.clarkeZoneGrid as uniffiClarkeZoneGrid
+import uniffi.t1dm_core.dtsZoneGrid as uniffiDtsZoneGrid
+import uniffi.t1dm_core.trendBinEdges as uniffiTrendBinEdges
 import uniffi.t1dm_core.ConformalFit as UniffiConformalFit
 import uniffi.t1dm_core.conformalMinCalWindows as uniffiConformalMinCalWindows
 import uniffi.t1dm_core.fitQuantileConformal as uniffiFitQuantileConformal
@@ -85,8 +89,10 @@ import uniffi.t1dm_core.RunState as UniffiRunState
 import uniffi.t1dm_core.TerrainSpec as UniffiTerrainSpec
 import uniffi.t1dm_core.CgEga as UniffiCgEga
 import uniffi.t1dm_core.CgEgaRegion as UniffiCgEgaRegion
-import uniffi.t1dm_core.ClarkePoint as UniffiClarkePoint
+import uniffi.t1dm_core.ScoredPoint as UniffiScoredPoint
 import uniffi.t1dm_core.ClarkeZone as UniffiClarkeZone
+import uniffi.t1dm_core.DtsZone as UniffiDtsZone
+import uniffi.t1dm_core.TrendMatrix as UniffiTrendMatrix
 import uniffi.t1dm_core.ExcursionAccuracy as UniffiExcursionAccuracy
 import uniffi.t1dm_core.ForecastWindow as UniffiForecastWindow
 import uniffi.t1dm_core.HorizonMetrics as UniffiHorizonMetrics
@@ -304,6 +310,26 @@ class UniffiNativeCore : NativeCore {
     ): List<ClarkeZone> =
         try {
             uniffiClarkeZoneGrid(truthAxisMgdl, predAxisMgdl).map { it.toModel() }
+        } catch (_: CoreException) {
+            emptyList()
+        }
+
+    /** Same contract as [clarkeZoneGrid]: no lattice at all rather than a partial one. */
+    override fun dtsZoneGrid(
+        truthAxisMgdl: List<Double>,
+        predAxisMgdl: List<Double>,
+    ): List<DtsZone> =
+        try {
+            uniffiDtsZoneGrid(truthAxisMgdl, predAxisMgdl).map { it.toModel() }
+        } catch (_: CoreException) {
+            emptyList()
+        }
+
+    /** A crate constant; it cannot fail, but the fail-closed map is kept for the reason every other
+     *  call here keeps one — an axis labelled from a guessed edge is worse than an unlabelled one. */
+    override fun trendBinEdges(): List<Double> =
+        try {
+            uniffiTrendBinEdges()
         } catch (_: CoreException) {
             emptyList()
         }
@@ -599,10 +625,27 @@ private fun UniffiClarkeZone.toModel(): ClarkeZone = when (this) {
     UniffiClarkeZone.E -> ClarkeZone.E
 }
 
-private fun UniffiClarkePoint.toModel(): ClarkePoint = ClarkePoint(
+private fun UniffiDtsZone.toModel(): DtsZone = when (this) {
+    UniffiDtsZone.A -> DtsZone.A
+    UniffiDtsZone.B -> DtsZone.B
+    UniffiDtsZone.C -> DtsZone.C
+    UniffiDtsZone.D -> DtsZone.D
+    UniffiDtsZone.E -> DtsZone.E
+}
+
+private fun UniffiScoredPoint.toModel(): ScoredPoint = ScoredPoint(
     pred = pred,
     truth = truth,
-    zone = zone.toModel(),
+    clarke = clarke.toModel(),
+    dts = dts.toModel(),
+    dtsRisk = dtsRisk,
+)
+
+private fun UniffiTrendMatrix.toModel(): TrendMatrix = TrendMatrix(
+    counts = counts.map { it.toInt() },
+    categoryN = categoryN.map { it.toInt() },
+    categoryPct = categoryPct,
+    n = n.toInt(),
 )
 
 private fun UniffiPointBlock.toModel(): PointBlock = PointBlock(
@@ -615,8 +658,14 @@ private fun UniffiPointBlock.toModel(): PointBlock = PointBlock(
     clarkeAb = clarkeAb,
     clarkeD = clarkeD,
     clarkeE = clarkeE,
+    dtsA = dtsA,
+    dtsB = dtsB,
+    dtsC = dtsC,
+    dtsD = dtsD,
+    dtsE = dtsE,
+    dtsMeanAbsRisk = dtsMeanAbsRisk,
     skillPoint = skillPoint,
-    clarkePoints = clarkePoints.map { it.toModel() },
+    points = points.map { it.toModel() },
 )
 
 private fun UniffiExcursionAccuracy.toModel(): ExcursionAccuracy = ExcursionAccuracy(
@@ -640,6 +689,7 @@ private fun UniffiHorizonMetrics.toModel(): HorizonMetrics = HorizonMetrics(
     bandWidth90 = bandWidth90,
     hypo = hypo.toModel(),
     hyper = hyper.toModel(),
+    trend = trend.toModel(),
 )
 
 private fun UniffiCgEgaRegion.toModel(): CgEgaRegion = CgEgaRegion(

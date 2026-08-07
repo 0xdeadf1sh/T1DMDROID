@@ -29,9 +29,11 @@ import com.t1dm.core.model.BAND_COV50_TARGET
 import com.t1dm.core.model.BAND_COV90_TARGET
 import com.t1dm.core.model.CgEga
 import com.t1dm.core.model.CgEgaRegion
-import com.t1dm.core.model.ClarkePoint
-import com.t1dm.core.model.ClarkeZone
-import com.t1dm.core.model.ClarkeZoneGrid
+import com.t1dm.core.model.ScoredPoint
+import com.t1dm.core.model.TrendMatrix
+import com.t1dm.core.model.TREND_BINS
+import com.t1dm.core.model.TREND_CATEGORIES
+import com.t1dm.core.model.ZoneLattice
 import com.t1dm.core.model.HorizonMetrics
 import com.t1dm.core.model.PointBlock
 import kotlin.math.floor
@@ -48,7 +50,7 @@ import kotlin.math.roundToInt
  *
  * Every number rendered here is the golden-gated core's. Nothing is recomputed: the only quantities
  * assembled on this side are [clarkeShares], which re-partitions figures the core already published,
- * and the CG-EGA triple, which is already a partition. These are accuracy statements about a
+ * and the CG-EGA and DTS triples/partitions, which the core already publishes whole. These are accuracy statements about a
  * FORECAST — advisory, never a dosing claim.
  *
  * **A figure is only ever handed horizons that passed `sufficient`.** The caller filters and states
@@ -219,15 +221,54 @@ internal fun cgEgaRow(name: String, r: CgEgaRegion): StackRow = StackRow(
 /** The band-projected Clarke Error Grid, A through E, per horizon. */
 @Composable
 internal fun ClarkeFigure(hs: List<HorizonMetrics>) {
-    val p = LocalT1dmSemantics.current
     StackedFigure(
         rows = hs.map { StackRow("${it.horizonMin}m", "n=${it.n}", clarkeShares(it.band)) },
-        // A severity ramp, not five arbitrary hues: A and B are the same in-range ink (B the paler),
-        // then amber, orange, red. The zone letters carry the exact meaning; the colour carries only
-        // "further from safe", which is the one thing a glance should take from a stacked bar.
-        colors = listOf(p.inRange, p.inRange.copy(alpha = 0.45f), p.low, p.high, p.urgentLow),
-        legend = listOf("A", "B", "C", "D", "E"),
+        colors = zoneRamp(),
+        legend = ZONE_LETTERS,
     )
+}
+
+/**
+ * The band-projected DTS Error Grid, A through E, per horizon.
+ *
+ * All five shares come off the core individually, so unlike [clarkeShares] this needs no remainder
+ * — which is what makes the paper's instruction implementable: its panel declines to report a
+ * combined A+B and names `pZA` alone as the metric, and there is no A∪B quantity anywhere here to
+ * be tempted by.
+ */
+@Composable
+internal fun DtsFigure(hs: List<HorizonMetrics>) {
+    StackedFigure(
+        rows = hs.map { StackRow("${it.horizonMin}m", "n=${it.n}", dtsShares(it.band)) },
+        colors = zoneRamp(),
+        legend = ZONE_LETTERS,
+    )
+}
+
+/**
+ * The five zone shares, in percent, from the five the core publishes.
+ *
+ * Returns empty where any input is non-finite, on the same reasoning [clarkeShares] states: a
+ * partial partition renders as a plausible shape rather than as missing data.
+ */
+internal fun dtsShares(b: PointBlock): List<Float> {
+    val s = listOf(b.dtsA, b.dtsB, b.dtsC, b.dtsD, b.dtsE).map { it.finite() ?: return emptyList() }
+    return s.map { it.coerceAtLeast(0f) }
+}
+
+/**
+ * The severity ramp both error grids' stacked bars use — A and B the same in-range ink (B paler),
+ * then amber, orange, red.
+ *
+ * Not five arbitrary hues: the semantic palette cannot supply five separable ones (see
+ * [REGION_ALPHA] for why), so hue carries only ordinal severity and the zone LETTER beside each
+ * swatch carries the exact meaning. One ramp for both grids because the two are read against each
+ * other — a zone-D share that moved between them should look like the same kind of thing.
+ */
+@Composable
+private fun zoneRamp(): List<Color> {
+    val p = LocalT1dmSemantics.current
+    return listOf(p.inRange, p.inRange.copy(alpha = 0.45f), p.low, p.high, p.urgentLow)
 }
 
 /**
@@ -281,21 +322,29 @@ private val REGION_ALPHA = listOf(0.06f, 0.13f, 0.22f, 0.34f, 0.48f)
 private val DOT_ALPHA = listOf(0.35f, 0.55f, 0.75f, 0.90f, 1.00f)
 
 /**
- * The Clarke Error Grid proper: one horizon's `(truth, prediction)` pairs scattered over the five
- * lettered zones, each point coloured by the zone the core put it in.
+ * An error grid proper: one horizon's `(truth, prediction)` pairs scattered over the five lettered
+ * zones, each point coloured by the zone the core put it in.
+ *
+ * **One figure, both grids.** Clarke and the DTS grid differ only in which lattice classifies the
+ * plane and which column of [ScoredPoint] names each dot's zone; everything below — the run-length
+ * painting, the letter placement, the axes, the off-scale accounting — is identical, and writing it
+ * once is what keeps the two pictures literally comparable rather than merely similar. [zoneOf]
+ * selects the column and [lattice] the regions; passing one grid's lattice with the other's selector
+ * would paint dots outside their own regions, which is why the two always travel together from the
+ * call site.
  *
  * **How the drawn regions are guaranteed to agree with the classifier.** They are not drawn from
- * boundaries at all. `t1dm-core::accuracy::clarke_zone_grid` classifies a lattice of `(truth, pred)`
+ * boundaries at all. the core's `clarke_zone_grid` / `dts_zone_grid` classify a lattice of `(truth, pred)`
  * coordinates and this paints the cells it gets back, run-length encoded down each truth column
  * ([zoneRuns]); the outline a reader sees is therefore the classifier's own output rasterised, and
- * the only thing separating the painted edge from the true one is [ClarkeZoneGrid.CELLS]. Not one
+ * the only thing separating the painted edge from the true one is [ZoneLattice.CELLS]. Not one
  * inequality of `metrics.py::_clarke` is transcribed on this side, so no boundary drawn here can be
  * a boundary the core does not hold. The letters follow the same rule ([zoneAnchors]): each is
  * printed at a coordinate the classifier itself put in that zone, never at a remembered position.
  *
  * **What that guarantee is not.** It is agreement about the ALGEBRA, not about every pixel. The
  * regions are classified at cell CENTRES and the dots are placed at their exact coordinates, so a
- * pair within half a cell — [ClarkeZoneGrid.CELLS] over 400 mg/dL, i.e. 1.25 mg/dL — of a boundary
+ * pair within half a cell — [ZoneLattice.CELLS] over 400 mg/dL, i.e. 1.25 mg/dL — of a boundary
  * can be inked for one zone over a cell tinted for its neighbour. Around 1 % of a realistic
  * population sits that close, mostly along the A/B line the forecast crowds. The displacement is
  * bounded by that half-cell (about two pixels, against an eleven-pixel dot), and the dot's OWN
@@ -320,11 +369,16 @@ private val DOT_ALPHA = listOf(0.35f, 0.55f, 0.75f, 0.90f, 1.00f)
  * was not counted at. `clarkeGridPick` hands over the record for that reason.
  */
 @Composable
-internal fun ClarkeGridFigure(horizonMin: Int, points: List<ClarkePoint>, grid: ClarkeZoneGrid) {
+internal fun ErrorGridFigure(
+    horizonMin: Int,
+    points: List<ScoredPoint>,
+    zoneOf: (ScoredPoint) -> Int,
+    grid: ZoneLattice,
+) {
     val cs = MaterialTheme.colorScheme
     val p = LocalT1dmSemantics.current
     val measurer = rememberTextMeasurer()
-    val shares = remember(points) { zoneShares(points) }
+    val shares = remember(points, zoneOf) { zoneShares(points, zoneOf) }
     val runs = remember(grid) { zoneRuns(grid) }
     val anchors = remember(grid) { zoneAnchors(grid) }
     val ramp = listOf(p.inRange, p.inRange, p.low, p.high, p.urgentLow)
@@ -377,7 +431,7 @@ internal fun ClarkeGridFigure(horizonMin: Int, points: List<ClarkePoint>, grid: 
             val y0 = snap(bottom - r.predUntil * side / grid.cells)
             val y1 = snap(bottom - r.predFrom * side / grid.cells)
             if (x1 <= x0 || y1 <= y0) return@forEach
-            drawRect(fills[r.zone.ordinal], Offset(x0, y0), Size(x1 - x0, y1 - y0))
+            drawRect(fills[r.zone], Offset(x0, y0), Size(x1 - x0, y1 - y0))
         }
 
         // (b) Frame, ticks and the identity diagonal. No interior gridlines: over five tinted
@@ -405,12 +459,12 @@ internal fun ClarkeGridFigure(horizonMin: Int, points: List<ClarkePoint>, grid: 
                 offScale++
                 return@forEach
             }
-            drawCircle(inks[pt.zone.ordinal], r, Offset(px(t.toFloat()), py(q.toFloat())))
+            drawCircle(inks[zoneOf(pt)], r, Offset(px(t.toFloat()), py(q.toFloat())))
         }
 
         // (d) The letters, last, so a dense scatter cannot bury the only exact naming of a region.
         anchors.forEach { a ->
-            centredLabel(measurer, ZONE_LETTERS[a.zone.ordinal], letterStyle, px(a.truthMgdl.toFloat()), py(a.predMgdl.toFloat()))
+            centredLabel(measurer, ZONE_LETTERS[a.zone], letterStyle, px(a.truthMgdl.toFloat()), py(a.predMgdl.toFloat()))
         }
 
         val caption = buildString {
@@ -429,19 +483,20 @@ internal fun ClarkeGridFigure(horizonMin: Int, points: List<ClarkePoint>, grid: 
  * remainder for C and cannot round into a negative slice. Empty for an empty series: no bar rather
  * than a partition of nothing.
  */
-internal fun zoneShares(points: List<ClarkePoint>): List<Float> {
+internal fun zoneShares(points: List<ScoredPoint>, zoneOf: (ScoredPoint) -> Int): List<Float> {
     if (points.isEmpty()) return emptyList()
     val counts = IntArray(ZONE_LETTERS.size)
-    points.forEach { counts[it.zone.ordinal]++ }
+    points.forEach { counts[zoneOf(it)]++ }
     return counts.map { 100f * it / points.size }
 }
 
-/** One painted cell run: truth column [truthIndex], prediction rows `[predFrom, predUntil)`. */
+/** One painted cell run: truth column [truthIndex], prediction rows `[predFrom, predUntil)`.
+ *  [zone] is an ORDINAL — this encoder is shared by both grids and names neither. */
 internal class ZoneRun(
     val truthIndex: Int,
     val predFrom: Int,
     val predUntil: Int,
-    val zone: ClarkeZone,
+    val zone: Int,
 )
 
 /**
@@ -452,14 +507,14 @@ internal class ZoneRun(
  * zone outline. The encoding is lossless: the runs of one column partition it exactly, so nothing
  * here can invent an edge the classifier did not draw.
  */
-internal fun zoneRuns(grid: ClarkeZoneGrid): List<ZoneRun> {
+internal fun zoneRuns(grid: ZoneLattice): List<ZoneRun> {
     if (grid.isEmpty) return emptyList()
     val out = ArrayList<ZoneRun>(grid.cells * 6)
     for (ti in 0 until grid.cells) {
         var start = 0
-        var zone = grid.zoneAt(ti, 0)
+        var zone = grid.ordinalAt(ti, 0)
         for (pi in 1 until grid.cells) {
-            val z = grid.zoneAt(ti, pi)
+            val z = grid.ordinalAt(ti, pi)
             if (z != zone) {
                 out += ZoneRun(ti, start, pi, zone)
                 start = pi
@@ -471,8 +526,8 @@ internal fun zoneRuns(grid: ClarkeZoneGrid): List<ZoneRun> {
     return out
 }
 
-/** Where one zone letter may be printed, in mg/dL on both axes. */
-internal class ZoneAnchor(val zone: ClarkeZone, val truthMgdl: Double, val predMgdl: Double)
+/** Where one zone letter may be printed, in mg/dL on both axes. [zone] is an ordinal. */
+internal class ZoneAnchor(val zone: Int, val truthMgdl: Double, val predMgdl: Double)
 
 /** A lobe smaller than this share of the lattice gets no letter — it could not hold one legibly. */
 private const val ANCHOR_MIN_SHARE = 0.005
@@ -487,7 +542,7 @@ private const val ANCHOR_MIN_SEPARATION = 0.22
  * fixed size: the square side is around 213 dp over 400 mg/dL, and an 11 sp capital's ink reaches
  * some 4 dp from its centre — under 8 mg/dL, which 0.03 of the axis (12 mg/dL) covers with room for
  * the measured box's padding. Stated this way the guarantee survives a change to
- * [ClarkeZoneGrid.CELLS], which would otherwise silently shrink or inflate it.
+ * [ZoneLattice.CELLS], which would otherwise silently shrink or inflate it.
  */
 private const val ANCHOR_CLEARANCE = 0.03
 
@@ -515,12 +570,12 @@ internal fun anchorClearanceCells(cells: Int): Int = (ANCHOR_CLEARANCE * cells).
  * group with no clear cell at all keeps the nearest one regardless: a thin lobe named imprecisely
  * still tells the reader more than a region with no letter on it.
  */
-internal fun zoneAnchors(grid: ClarkeZoneGrid): List<ZoneAnchor> {
+internal fun zoneAnchors(grid: ZoneLattice): List<ZoneAnchor> {
     if (grid.isEmpty) return emptyList()
     val n = grid.cells
-    val zones = ClarkeZone.values()
-    val groups = zones.size * 2
-    fun groupOf(ti: Int, pi: Int) = grid.zoneAt(ti, pi).ordinal * 2 + if (pi >= ti) 0 else 1
+    val zoneCount = grid.zoneCount
+    val groups = zoneCount * 2
+    fun groupOf(ti: Int, pi: Int) = grid.ordinalAt(ti, pi) * 2 + if (pi >= ti) 0 else 1
 
     val count = IntArray(groups)
     val sumT = LongArray(groups)
@@ -536,10 +591,10 @@ internal fun zoneAnchors(grid: ClarkeZoneGrid): List<ZoneAnchor> {
     val clear = anchorClearanceCells(n)
     fun isClear(ti: Int, pi: Int): Boolean {
         if (clear <= 0) return true
-        val z = grid.zoneAt(ti, pi)
+        val z = grid.ordinalAt(ti, pi)
         if (ti < clear || pi < clear || ti + clear >= n || pi + clear >= n) return false
         for (dt in -clear..clear) for (dp in -clear..clear) {
-            if (grid.zoneAt(ti + dt, pi + dp) != z) return false
+            if (grid.ordinalAt(ti + dt, pi + dp) != z) return false
         }
         return true
     }
@@ -577,10 +632,10 @@ internal fun zoneAnchors(grid: ClarkeZoneGrid): List<ZoneAnchor> {
 
     val total = n.toDouble() * n
     val sep = ANCHOR_MIN_SEPARATION * n
-    val out = ArrayList<ZoneAnchor>(zones.size * 2)
-    zones.forEach { z ->
+    val out = ArrayList<ZoneAnchor>(groups)
+    for (z in 0 until zoneCount) {
         val kept = ArrayList<Int>(2)
-        (0..1).map { z.ordinal * 2 + it }
+        (0..1).map { z * 2 + it }
             .filter { count[it] > 0 && count[it] / total >= ANCHOR_MIN_SHARE }
             .sortedByDescending { count[it] }
             .forEach { g ->
@@ -595,6 +650,132 @@ internal fun zoneAnchors(grid: ClarkeZoneGrid): List<ZoneAnchor> {
     }
     return out
 }
+
+// ── 6. Trend Accuracy Matrix ───────────────────────────────────────────────────────────────────
+
+private val MatrixHeight = 190.dp
+private val CellSp = 9.sp
+
+/** Opacity of the fullest cell; an empty cell keeps only the frame. A ramp rather than a solid so a
+ *  count still reads through it, and capped short of 1 so the printed figure stays legible. */
+private const val CELL_ALPHA_MAX = 0.62f
+
+/**
+ * The Trend Accuracy Matrix's `5 × 5` contingency table, as a heatmap — truth's rate bin on x,
+ * the forecast's on y, so the diagonal runs bottom-left to top-right exactly as the identity line
+ * does on the error grids above it and the whole screen reads with the truth on one axis.
+ *
+ * **Shaded by COUNT, never by risk category.** A cell holds points from every glycaemic region, and
+ * the paper scores a cell's category from the point's own true BG through three different tables —
+ * so a cell has no single category to be coloured by. Tinting one would invent a verdict the
+ * statistic does not have. The category breakdown is the stacked bar beside this, where it is
+ * counted per point and cannot be wrong.
+ *
+ * The diagonal is outlined because it means something exact: category 1 occupies precisely those
+ * five cells in all three tables, so the outlined run IS the no-risk share, and a reader can see
+ * what fraction of the mass sits on it without reading a number.
+ *
+ * [binLabels] come from the core's own bin edges. With none — a stub core — the axes go unlabelled
+ * rather than captioned with edges this side guessed.
+ */
+@Composable
+internal fun TrendMatrixFigure(m: TrendMatrix, binLabels: List<String>) {
+    val cs = MaterialTheme.colorScheme
+    val p = LocalT1dmSemantics.current
+    val measurer = rememberTextMeasurer()
+    val ink = p.inRange
+
+    Legend(listOf(LegendItem(ink.copy(alpha = CELL_ALPHA_MAX), "pairs")), trailing = "x truth · y forecast · mg/dL/min")
+    Canvas(Modifier.fillMaxWidth().height(MatrixHeight)) {
+        if (m.isEmpty) return@Canvas
+        val axisStyle = TextStyle(color = cs.onSurfaceVariant, fontSize = LabelSp)
+        val cellStyle = TextStyle(color = cs.onSurface, fontSize = CellSp)
+        val labels = binLabels.takeIf { it.size == TREND_BINS }.orEmpty()
+        val laid = labels.map { measurer.measure(it, axisStyle) }
+        val gutter = (laid.maxOfOrNull { it.size.width } ?: 0).toFloat() + 4.dp.toPx()
+        val lineH = (laid.maxOfOrNull { it.size.height } ?: measurer.measure("0", axisStyle).size.height).toFloat()
+        val bottom = size.height - lineH - 3.dp.toPx()
+        val side = min(size.width - gutter, bottom)
+        if (side <= 0f) return@Canvas
+        val left = gutter + (size.width - gutter - side) / 2f
+        val cell = side / TREND_BINS
+        val peak = m.peak.toFloat().takeIf { it > 0f } ?: return@Canvas
+
+        for (tb in 0 until TREND_BINS) {
+            for (pb in 0 until TREND_BINS) {
+                val x = left + tb * cell
+                val y = bottom - (pb + 1) * cell
+                val n = m.countAt(tb, pb)
+                if (n > 0) {
+                    drawRect(ink.copy(alpha = CELL_ALPHA_MAX * n / peak), Offset(x, y), Size(cell, cell))
+                }
+                // The diagonal is category 1 in every one of the paper's three tables, so this
+                // outline is the no-risk run made visible rather than a decoration.
+                val stroke = if (tb == pb) 1.6.dp.toPx() else 1f
+                val edge = if (tb == pb) cs.onSurface.copy(alpha = 0.55f) else cs.outlineVariant
+                drawRect(edge, Offset(x, y), Size(cell, cell), style = Stroke(stroke))
+                if (n > 0) {
+                    centredLabel(measurer, n.toString(), cellStyle, x + cell / 2f, y + cell / 2f)
+                }
+            }
+        }
+        labels.forEachIndexed { i, text ->
+            // x: the truth's bin, under its column. y: the forecast's, beside its row.
+            label(measurer, text, axisStyle, left + (i + 0.5f) * cell, bottom + 3.dp.toPx(), centreX = true)
+            label(measurer, text, axisStyle, left - 3.dp.toPx(), bottom - (i + 0.5f) * cell, alignEnd = true)
+        }
+    }
+}
+
+/** The paper's five risk categories per horizon, stacked. */
+@Composable
+internal fun TrendCategoryFigure(hs: List<HorizonMetrics>) {
+    val p = LocalT1dmSemantics.current
+    StackedFigure(
+        rows = hs.map { StackRow("${it.horizonMin}m", "n=${it.trend.n}", trendCategoryShares(it.trend)) },
+        // Ordinal severity, as everywhere else on this screen: no risk, then the two ordinary
+        // errors, then the two extreme ones. The legend numbers carry the exact meaning.
+        colors = listOf(p.inRange, p.low, p.high, p.urgentLow, p.urgentLow.copy(alpha = 0.7f))
+            .take(TREND_CATEGORIES),
+        legend = List(TREND_CATEGORIES) { "${it + 1}" },
+    )
+}
+
+/**
+ * The five category shares of one matrix, in percent.
+ *
+ * Empty for an empty matrix — the core already returns no shares where no pair scored, and this
+ * keeps that distinction rather than drawing a partition of nothing.
+ */
+internal fun trendCategoryShares(m: TrendMatrix): List<Float> {
+    // The gate is also what keeps `StackedFigure`'s `colors[k]` in bounds, so it reads the SHARED
+    // count rather than a local literal: a core that grew a sixth category would otherwise be
+    // coloured from a five-entry ramp.
+    if (m.categoryPct.size != TREND_CATEGORIES) return emptyList()
+    return m.categoryPct.map { it.finite() ?: return emptyList() }
+}
+
+/**
+ * Label each rate bin from the core's own interior [edges] — `< e0`, `e0..e1`, …, `> eLast`.
+ *
+ * Derived rather than written out, so a change to the binning in the crate relabels the axis
+ * instead of leaving it captioning the old one. An edge list of the wrong length yields no labels
+ * at all: an axis labelled from a guess is worse than one with no labels.
+ */
+internal fun trendBinLabels(edges: List<Double>): List<String> {
+    if (edges.size != TREND_BINS - 1) return emptyList()
+    val n = edges.map { fmtRate(it) }
+    return List(TREND_BINS) { i ->
+        when (i) {
+            0 -> "<${n.first()}"
+            TREND_BINS - 1 -> ">${n.last()}"
+            else -> "${n[i - 1]}..${n[i]}"
+        }
+    }
+}
+
+private fun fmtRate(v: Double): String =
+    if (v == round(v)) v.toInt().toString() else "%.1f".format(v)
 
 // ── shared drawing ─────────────────────────────────────────────────────────────────────────────
 

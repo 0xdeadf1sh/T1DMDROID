@@ -8,6 +8,7 @@ import com.t1dm.core.model.BaselineModel
 import com.t1dm.core.model.BaselineSpec
 import com.t1dm.core.model.CarTuning
 import com.t1dm.core.model.ClarkeZone
+import com.t1dm.core.model.DtsZone
 import com.t1dm.core.model.ConformalFit
 import com.t1dm.core.model.TerrainSpec
 import com.t1dm.core.model.AdvancedStats
@@ -267,11 +268,20 @@ class StubNativeCore : NativeCore {
 
     // The lattice exists precisely so the zone boundaries stay in one place; classifying it here
     // would put a second copy of them in the module whose whole purpose is to have none.
-    // [ClarkeZoneGrid.build] treats an empty result as no lattice, and the figure draws nothing.
+    // [ZoneLattice.build] treats an empty result as no lattice, and the figure draws nothing.
     override fun clarkeZoneGrid(
         truthAxisMgdl: List<Double>,
         predAxisMgdl: List<Double>,
     ): List<ClarkeZone> = emptyList()
+
+    override fun dtsZoneGrid(
+        truthAxisMgdl: List<Double>,
+        predAxisMgdl: List<Double>,
+    ): List<DtsZone> = emptyList()
+
+    // The bin edges are the crate's, for the same reason the clinical cuts are: an axis labelled
+    // from a guessed edge would caption a binning nothing here performed. No edges, no labels.
+    override fun trendBinEdges(): List<Double> = emptyList()
 
     // ── Split-conformal band recalibration (INFERENCE.md §8.4) ──────────────────────
     // The side-aware order statistic and the median-fixed monotone apply live in the crate and

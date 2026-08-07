@@ -46,13 +46,15 @@ import com.t1dm.core.model.BackendComparison
 import com.t1dm.core.model.BackendId
 import com.t1dm.core.model.CgEga
 import com.t1dm.core.model.CgEgaRegion
-import com.t1dm.core.model.ClarkeZoneGrid
+import com.t1dm.core.model.ErrorGridLattices
 import com.t1dm.core.model.ExcursionAccuracy
 import com.t1dm.core.model.HorizonMetrics
 import com.t1dm.core.model.InferenceState
 import com.t1dm.core.model.ModelMeta
 import com.t1dm.core.model.ModelMetrics
 import com.t1dm.core.model.PointBlock
+import com.t1dm.core.model.TrendMatrix
+import com.t1dm.core.model.TREND_CATEGORIES
 import com.t1dm.core.model.ModelTelemetry
 import com.t1dm.core.model.displayName
 import kotlin.math.abs
@@ -93,12 +95,23 @@ import kotlin.math.abs
  *     horizons that PASSED `sufficient`, so none of them draws an axis over a horizon the tables
  *     have just declined to score.
  *
- *     One figure has no table: the Clarke error grid, a scatter of ONE horizon's pairs over the five
- *     lettered zones — the reader's chosen horizon, defaulting to [CLARKE_GRID_DEFAULT_MIN]. Its
- *     regions come from a lattice the core classified ([clarkeGrid]) rather than from boundaries
- *     restated here, and it is drawn on the MEDIAN LINE — the one basis of the two that a scatter
- *     can carry honestly (see `ClarkeGridFigure`). Choosing a horizon the suite declined to score
- *     draws nothing and says so by name; it never quietly plots a neighbouring one.
+ *     Three figures share ONE horizon — the reader's, defaulting to [CLARKE_GRID_DEFAULT_MIN]: the
+ *     Clarke error grid, the DTS error grid, and the Trend Accuracy Matrix. Each is a scatter or a
+ *     table of that horizon's pairs; the two grids' regions come from lattices the core classified
+ *     ([lattices]) rather than from boundaries restated here, and all three are drawn on the MEDIAN
+ *     LINE — the one basis a scatter can carry honestly (see `ErrorGridFigure`). Choosing a horizon
+ *     the suite declined to score draws nothing and says so by name; it never quietly plots a
+ *     neighbouring one, and the picker stays live underneath so the reader can move.
+ *
+ *  4. THE TWO 2024 METRICS. The DTS Error Grid and the Trend Accuracy Matrix are Klonoff et al.
+ *     2024 (J Diabetes Sci Technol 18(6):1346). Unlike everything above them they have NO
+ *     counterpart in `T1DMAI/realdata/metrics.py`, so they are pinned to the paper rather than to
+ *     that project and no figure here may be read against its validation table. They are also
+ *     device metrics by origin — a monitor against a reference — applied here to a forecast against
+ *     the realized trajectory, which is the same repurposing this screen already makes of Clarke
+ *     and CG-EGA and carries the same caveat: never quote one against a published CGM accuracy
+ *     figure. The DTS grid's `pZA` is reported ALONE, never as an A+B, because its panel declined
+ *     to publish a combined zone.
  *
  * Everything is advisory: the accuracy of a FORECAST, never a dosing claim.
  *
@@ -115,8 +128,10 @@ fun ModelDetailScreen(
     accuracy: ModelMetrics?,
     accuracyLoading: Boolean,
     onRecomputeAccuracy: () -> Unit,
-    /** Null while the lattice is still being classified off-main; empty when the core had none. */
-    clarkeGrid: ClarkeZoneGrid?,
+    /** Null while the lattices are still being classified off-main; empty when the core had none. */
+    lattices: ErrorGridLattices?,
+    /** The core's own trend rate-bin edges; empty on a stub core, which leaves the axes unlabelled. */
+    trendBinEdges: List<Double> = emptyList(),
     cgEga: CgEga?,
     cgEgaLoading: Boolean,
     onComputeCgEga: () -> Unit,
@@ -317,6 +332,20 @@ fun ModelDetailScreen(
             // The basis is part of a figure's identity (§6.2) and this one is off the band, like
             // every other level metric — so the header carries it, exactly as the band table's does.
             section("Clarke zones — band τ.25–.75") { ClarkeFigure(scored) }
+            // The same window on the 2024 DTS grid. `pZA` is its headline and the table prints all
+            // five shares individually — never an A+B, which the paper's panel explicitly declines
+            // to report and which this screen must therefore not offer either.
+            section("DTS zones — band τ.25–.75") {
+                DtsFigure(scored)
+                DtsTable(scored)
+            }
+            // Per horizon, like the level metrics and unlike CG-EGA: trend agreement decays with
+            // horizon, and pooling the whole window would hide exactly that.
+            section("Trend risk categories — median line") {
+                Note("1 no risk · 2 under · 3 over · 4/5 extreme")
+                TrendCategoryFigure(scored)
+                TrendTable(scored)
+            }
             // §6.2 — the same block on the median line, kept a table apart from the band figures.
             section("Median line") { MedianTable(scored) }
             section("Outer band τ.05–.95 · persistence") { OuterTable(scored) }
@@ -345,25 +374,56 @@ fun ModelDetailScreen(
         // declined is REFUSED by name ahead of every other empty state, never redrawn as its
         // neighbour, and its tab stays live so the reader can move to one that scored.
         val pick = clarkeGridPick(suite?.horizons.orEmpty(), gridHorizonMin)
-        val gridHorizon = pick.selected
         val gridRefusal = pick.refusal(accuracy?.minSamples ?: 0)
-        section("Clarke error grid — median line") {
-            Note("Band projection clips to the truth; its grid reads as coverage")
-            if (pick.options.size > 1) {
-                ClarkeHorizonPicker(
-                    options = pick.options,
-                    selected = gridHorizon?.horizonMin,
-                    onSelect = { gridHorizonMin = it },
-                )
-            }
+
+        // Both error grids and the trend matrix read the SAME horizon, and each section carries the
+        // picker so a reader who has scrolled to one can move without going back. One piece of state
+        // behind all three: the three are three readings of one horizon's pairs, and letting them
+        // drift apart would invite comparing a 30-minute Clarke share against a 120-minute DTS one.
+        gridSection(
+            "Clarke error grid — median line",
+            "Band projection clips to the truth; its grid reads as coverage",
+            pick, gridRefusal, accuracy, { gridHorizonMin = it },
+        ) { h ->
             when {
-                gridHorizon == null -> Note(emptyWhy(accuracy))
-                gridRefusal != null -> Note(gridRefusal)
-                clarkeGrid == null -> Note("Computing…")
-                clarkeGrid.isEmpty -> Note("Zone regions unavailable")
-                gridHorizon.medianLine.clarkePoints.isEmpty() -> Note("No scored pairs")
-                else -> ClarkeGridFigure(gridHorizon.horizonMin, gridHorizon.medianLine.clarkePoints, clarkeGrid)
+                lattices == null -> Note("Computing…")
+                lattices.clarke.isEmpty -> Note("Zone regions unavailable")
+                h.medianLine.points.isEmpty() -> Note("No scored pairs")
+                else -> ErrorGridFigure(h.horizonMin, h.medianLine.points, { it.clarke.ordinal }, lattices.clarke)
             }
+        }
+
+        // ── 3a-ii. The DTS error grid (Klonoff 2024) ──
+        //
+        // The same pairs on the grid that supersedes the Surveillance Error Grid. It sits beside
+        // Clarke rather than replacing it because the two disagree in ways worth seeing: the DTS
+        // zone A is a shade under Clarke's flat ±20 % and is not symmetric about it, and the whole
+        // plane is asymmetric — reading high is penalised harder than reading low by the same ratio,
+        // which Clarke does not do at all. The exact edges are `dts_risk`'s, in the crate.
+        gridSection(
+            "DTS error grid — median line",
+            "Klonoff 2024 · reading high scores worse than reading low",
+            pick, gridRefusal, accuracy, { gridHorizonMin = it },
+        ) { h ->
+            when {
+                lattices == null -> Note("Computing…")
+                lattices.dts.isEmpty -> Note("Zone regions unavailable")
+                h.medianLine.points.isEmpty() -> Note("No scored pairs")
+                else -> ErrorGridFigure(h.horizonMin, h.medianLine.points, { it.dts.ordinal }, lattices.dts)
+            }
+        }
+
+        // ── 3a-iii. The Trend Accuracy Matrix ──
+        //
+        // Median line only, and the section header says so. §6.2's own consequence is why: the band
+        // projection equals the truth wherever the band covered, so a rate differenced from it
+        // inherits the truth's derivative and the matrix would sit on its diagonal by construction.
+        gridSection(
+            "Trend accuracy — median line",
+            "Rate over 15 min vs realized",
+            pick, gridRefusal, accuracy, { gridHorizonMin = it },
+        ) { h ->
+            if (h.trend.isEmpty) Note("No scored pairs") else TrendMatrixFigure(h.trend, trendBinLabels(trendBinEdges))
         }
 
         // ── 3b. CG-EGA — whole window (§6.3), computed only on request ──
@@ -533,6 +593,57 @@ private fun ExcursionTable(hs: List<HorizonMetrics>) {
     )
 }
 
+/**
+ * The DTS Error Grid's five shares, per horizon (Klonoff 2024).
+ *
+ * `A` alone is the paper's metric — `pZA` — and there is deliberately no A+B column: the panel that
+ * published this grid declined to report one, so offering it here would be this screen inventing a
+ * figure the statistic does not have. `|risk|` is the mean absolute risk the zones band, carried
+ * beside them because it does not round a near-miss up into a whole zone the way a share does.
+ *
+ * `cov50` and `w50` sit in the SAME row, exactly as [BandTable]'s do, and for a sharper reason. The
+ * band projection is `clip(truth, lo, hi)`, so a pair whose truth fell inside the band has
+ * `pred == truth` and scores a DTS risk of `ln(1) = 0` — unconditionally zone A. `pZA` is therefore
+ * bounded below by the realized coverage, and a band widened until it swallows every truth prints a
+ * flawless `A 100.0 · |risk| 0.000`. These two columns are the only things in the row that move when
+ * that happens, which is what §6.2 requires of any band figure.
+ */
+@Composable
+private fun DtsTable(hs: List<HorizonMetrics>) {
+    com.t1dm.core.design.DataTable(
+        columns = listOf(
+            com.t1dm.core.design.TableColumn("h", 0.8f),
+            col("A %", 1f), col("B %", 1f), col("C %", 1f), col("D %", 1f), col("E %", 1f),
+            col("|risk|", 1.1f), col("cov50 %", 1.1f), col("w50", 0.9f), col("n", 0.8f),
+        ),
+        rows = hs.map { h ->
+            val b = h.band
+            listOf(
+                "${h.horizonMin}m",
+                f1(b.dtsA), f1(b.dtsB), f1(b.dtsC), f1(b.dtsD), f1(b.dtsE),
+                f3(b.dtsMeanAbsRisk), pct(h.bandCov50), f1(h.bandWidth50), h.n.toString(),
+            )
+        },
+        minWidth = 760,
+    )
+}
+
+/** The Trend Accuracy Matrix's five risk categories, per horizon. `n` is the matrix's own count,
+ *  which is below the horizon's `n` wherever a window's 15-minute lookback did not reach. */
+@Composable
+private fun TrendTable(hs: List<HorizonMetrics>) {
+    com.t1dm.core.design.DataTable(
+        columns = listOf(
+            com.t1dm.core.design.TableColumn("h", 0.8f),
+        ) + List(TREND_CATEGORIES) { col("${it + 1} %", 1f) } + listOf(col("n", 0.8f)),
+        rows = hs.map { h -> listOf("${h.horizonMin}m") + trendCells(h.trend) },
+        minWidth = 560,
+    )
+}
+
+private fun trendCells(m: TrendMatrix): List<String> =
+    List(TREND_CATEGORIES) { f1(m.categoryPct.getOrNull(it)) } + m.n.toString()
+
 /** §6.3 — the whole window, so no horizon column and no horizon in any label. */
 @Composable
 private fun CgEgaTable(cg: CgEga) {
@@ -564,6 +675,8 @@ private fun cgEgaCells(name: String, r: CgEgaRegion): List<String> =
 private fun f1(v: Double?): String = if (v == null || !v.isFinite()) "—" else "%.1f".format(v)
 
 private fun f2(v: Double?): String = if (v == null || !v.isFinite()) "—" else "%.2f".format(v)
+
+private fun f3(v: Double?): String = if (v == null || !v.isFinite()) "—" else "%.3f".format(v)
 
 private fun pct(v: Double): String = if (!v.isFinite()) "—" else "%.1f".format(v * 100)
 
@@ -813,6 +926,45 @@ private fun BackendComparisonCard(c: BackendComparison) {
 }
 
 // ── small building blocks ──
+
+/**
+ * One figure section keyed on the error grids' shared horizon: the note, the picker, and either the
+ * figure or the single reason it may not be drawn.
+ *
+ * A `LazyListScope` extension rather than a composable because [section] is a lazy `item {}` — the
+ * body is composed later, inside that item, and a `@Composable` helper called from the list builder
+ * would be invoked in the builder's own non-composable scope.
+ *
+ * The refusal is passed in already resolved so all three sections state it identically: "too few
+ * windows" is one fact and reads the same wherever this screen says it. A refusal never substitutes
+ * another horizon — the picker is what moves the reader, and it stays live underneath.
+ */
+private inline fun androidx.compose.foundation.lazy.LazyListScope.gridSection(
+    title: String,
+    note: String,
+    pick: ClarkeGridPick,
+    refusal: String?,
+    accuracy: ModelMetrics?,
+    crossinline onSelect: (Int) -> Unit,
+    crossinline body: @Composable (HorizonMetrics) -> Unit,
+) {
+    section(title) {
+        Note(note)
+        if (pick.options.size > 1) {
+            ClarkeHorizonPicker(
+                options = pick.options,
+                selected = pick.selected?.horizonMin,
+                onSelect = { onSelect(it) },
+            )
+        }
+        val h = pick.selected
+        when {
+            h == null -> Note(emptyWhy(accuracy))
+            refusal != null -> Note(refusal)
+            else -> body(h)
+        }
+    }
+}
 
 private inline fun androidx.compose.foundation.lazy.LazyListScope.section(
     title: String,

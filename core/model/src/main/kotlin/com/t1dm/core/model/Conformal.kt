@@ -131,7 +131,7 @@ data class BandCalibration(
      *
      * This keeps STRUCTURAL semantics rather than swapping to reference equality: two instances read
      * from the store describing the same fit still compare equal, which is what both that dedup and
-     * the memo downstream rely on. Its sibling `ClarkeZoneGrid` went all the way to identity equality
+     * the memo downstream rely on. Its sibling `ZoneLattice` went all the way to identity equality
      * for a related reason, but it could afford to — it is a process-wide singleton and this is not.
      */
     override fun equals(other: Any?): Boolean {

@@ -300,6 +300,8 @@ class RollingForecasterAlignmentTest {
             includeCgEga: Boolean,
         ): MetricsSuite = unused()
         override fun clarkeZoneGrid(truthAxisMgdl: List<Double>, predAxisMgdl: List<Double>): List<ClarkeZone> = unused()
+        override fun dtsZoneGrid(truthAxisMgdl: List<Double>, predAxisMgdl: List<Double>): List<DtsZone> = unused()
+        override fun trendBinEdges(): List<Double> = unused()
         override fun conformalMinCalWindows(): Int = unused()
         override fun fitQuantileConformal(windows: List<ForecastWindow>, minCalWindows: Int): ConformalFit = unused()
         override fun baselineDefaultSpec(): BaselineSpec = unused()

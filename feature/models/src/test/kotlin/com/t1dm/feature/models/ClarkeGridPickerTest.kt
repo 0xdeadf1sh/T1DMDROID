@@ -1,6 +1,8 @@
 package com.t1dm.feature.models
 
-import com.t1dm.core.model.ClarkePoint
+import com.t1dm.core.model.ScoredPoint
+import com.t1dm.core.model.DtsZone
+import com.t1dm.core.model.TrendMatrix
 import com.t1dm.core.model.ClarkeZone
 import com.t1dm.core.model.ExcursionAccuracy
 import com.t1dm.core.model.HorizonMetrics
@@ -25,13 +27,21 @@ import org.junit.Test
  */
 class ClarkeGridPickerTest {
 
-    private fun points(n: Int): List<ClarkePoint> =
-        List(n) { ClarkePoint(pred = 120.0 + it, truth = 118.0 + it, zone = ClarkeZone.A) }
+    private fun points(n: Int): List<ScoredPoint> = List(n) {
+        ScoredPoint(
+            pred = 120.0 + it,
+            truth = 118.0 + it,
+            clarke = ClarkeZone.A,
+            dts = DtsZone.A,
+            dtsRisk = 0.05,
+        )
+    }
 
     private fun block(nPoints: Int) = PointBlock(
         rmsePoint = 20.0, maePoint = 15.0, rmseWinmean = 18.0, maeWinmean = 13.0, mard = 9.0,
-        clarkeA = 82.0, clarkeAb = 96.0, clarkeD = 3.0, clarkeE = 1.0, skillPoint = 0.3,
-        clarkePoints = points(nPoints),
+        clarkeA = 82.0, clarkeAb = 96.0, clarkeD = 3.0, clarkeE = 1.0,
+        dtsA = 93.0, dtsB = 5.0, dtsC = 1.0, dtsD = 0.7, dtsE = 0.3, dtsMeanAbsRisk = 0.18,
+        skillPoint = 0.3, points = points(nPoints),
     )
 
     private val excursion = ExcursionAccuracy(recall = 0.8, precision = 0.7, nTrue = 5, nPred = 6)
@@ -51,6 +61,7 @@ class ClarkeGridPickerTest {
         bandWidth90 = 90.0,
         hypo = excursion,
         hyper = excursion,
+        trend = TrendMatrix.EMPTY,
     )
 
     private fun suite(vararg hs: HorizonMetrics) = hs.toList()
@@ -99,8 +110,8 @@ class ClarkeGridPickerTest {
             val sel = clarkeGridPick(hs, h.horizonMin).selected
             assertSame(h, sel)
             assertEquals(h.horizonMin, sel?.horizonMin)
-            // What ClarkeGridFigure prints as `n=` against what the tables print in the `n` column.
-            assertEquals(sel?.n, sel?.medianLine?.clarkePoints?.size)
+            // What ErrorGridFigure prints as `n=` against what the tables print in the `n` column.
+            assertEquals(sel?.n, sel?.medianLine?.points?.size)
         }
     }
 

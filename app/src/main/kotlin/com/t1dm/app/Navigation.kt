@@ -125,7 +125,7 @@ import com.t1dm.core.model.BASELINE_MODEL_ID
 import com.t1dm.core.model.BandCalibration
 import com.t1dm.core.model.BandCalibrationOutcome
 import com.t1dm.core.model.BaselineFit
-import com.t1dm.core.model.ClarkeZoneGrid
+import com.t1dm.core.model.ErrorGridLattices
 import com.t1dm.core.model.ModelMetrics
 import com.t1dm.core.model.ModelPrediction
 import com.t1dm.feature.network.NetworkScreen
@@ -1245,8 +1245,8 @@ private fun T1dmNavHost(
             // plain argument because building it classifies 25 600 cells across the FFI seam, and this
             // screen puts nothing that heavy on the frame that composes it. Null until it lands, which
             // the figure states as "computing" rather than as regions it does not have.
-            var clarkeGrid by remember { mutableStateOf<ClarkeZoneGrid?>(null) }
-            LaunchedEffect(Unit) { clarkeGrid = container.clarkeZoneGrid() }
+            var lattices by remember { mutableStateOf<ErrorGridLattices?>(null) }
+            LaunchedEffect(Unit) { lattices = container.errorGridLattices() }
             // §6.3's CG-EGA walks every step of every window through the P-EGA × R-EGA grid, so it is
             // computed only when the panel asks for it and dropped whenever the cheap suite reloads
             // (it would otherwise outlive the window it was measured over). Clearing the RESULT is not
@@ -1302,8 +1302,9 @@ private fun T1dmNavHost(
                 // returns early on the same guard a never-asked-for pass does.
                 onRecomputeAccuracy = { reloadTick++; cgEgaTick = 0 },
                 // A picture of the zone algebra, not of this patient: data-independent, so the
-                // container builds it once and every model's drill-down shares the one lattice.
-                clarkeGrid = clarkeGrid,
+                // container builds both once and every model's drill-down shares the one pair.
+                lattices = lattices,
+                trendBinEdges = container.trendBinEdges,
                 cgEga = cgEga,
                 cgEgaLoading = cgEgaLoading,
                 onComputeCgEga = { cgEgaTick++ },

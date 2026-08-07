@@ -51,7 +51,8 @@ import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.BandCalibration
 import com.t1dm.core.model.BandCalibrationOutcome
 import com.t1dm.core.model.BandFitRefusal
-import com.t1dm.core.model.ClarkeZoneGrid
+import com.t1dm.core.model.ErrorGridLattices
+import com.t1dm.core.model.ZoneLattice
 import com.t1dm.core.model.CgmSourceDescriptor
 import com.t1dm.core.model.CurveKind
 import com.t1dm.core.model.CurveEvent
@@ -897,24 +898,41 @@ class AppContainer(context: Context) {
     suspend fun setThermalWarnMarginC(c: Double) = settingsStore.setThermalWarnMarginC(c)
 
     /**
-     * The Clarke zone lattice the drill-down's error grid paints its five regions from, classified
-     * by the core. Data-independent — it is a picture of the zone algebra, not of this patient — so
-     * one instance serves every model and it is built once, on first open of the drill-down.
+     * The TWO zone lattices the drill-down's error grids paint their regions from — Clarke's and the
+     * DTS grid's — both classified by the core. Data-independent: each is a picture of a zone
+     * algebra, not of this patient, so one pair serves every model and it is built once, on first
+     * open of the drill-down.
      *
-     * It exists so no Kotlin has to know a zone boundary: the inequalities live in
-     * `t1dm-core::accuracy::clarke_zones` alone, and the figure paints cells it was handed rather
-     * than an outline it derived. Empty on a stub core, which the figure renders as no regions.
+     * They exist so no Kotlin has to know a zone boundary, and the two grids make that case
+     * differently. Clarke's boundaries are a stack of inequalities in `t1dm-core::accuracy`; the DTS
+     * grid's are level sets of a log-ratio, so a renderer outlining them would have to reimplement
+     * the function rather than copy four comparisons. Either way the figure paints cells it was
+     * handed rather than an outline it derived. Empty on a stub core, which the figures render as no
+     * regions rather than as wrong ones.
      *
-     * **Suspending, and off-main, like every other native reduction this screen makes.** The build
-     * is a 160-square lattice: 25 600 classifications inside the core, the same number lifted across
-     * uniffi and re-mapped on this side, then three verification probes. Read as a plain property it
-     * ran inside the composition that opened the drill-down — the one expensive thing on that screen
-     * that was not moved off the frame — and the transition stuttered once per process. The `lazy`
-     * still does the once-only work; this only decides which thread pays for it.
+     * **Suspending, and off-main, like every other native reduction this screen makes.** Each build
+     * is a 160-square lattice — 25 600 classifications inside the core, the same number lifted across
+     * uniffi and re-mapped on this side, then three verification probes — so the pair is 51 200.
+     * Read as a plain property it ran inside the composition that opened the drill-down, the one
+     * expensive thing on that screen not moved off the frame, and the transition stuttered once per
+     * process. The `lazy` still does the once-only work; this only decides which thread pays for it.
      */
-    private val clarkeZoneGridOnce: ClarkeZoneGrid by lazy { ClarkeZoneGrid.build(nativeCore::clarkeZoneGrid) }
+    private val errorGridLatticesOnce: ErrorGridLattices by lazy {
+        ErrorGridLattices(
+            clarke = ZoneLattice.build(nativeCore::clarkeZoneGrid),
+            dts = ZoneLattice.build(nativeCore::dtsZoneGrid),
+        )
+    }
 
-    suspend fun clarkeZoneGrid(): ClarkeZoneGrid = withContext(dispatchers.default) { clarkeZoneGridOnce }
+    suspend fun errorGridLattices(): ErrorGridLattices =
+        withContext(dispatchers.default) { errorGridLatticesOnce }
+
+    /**
+     * The Trend Accuracy Matrix's rate-bin edges, mg/dL per minute — the crate's, so an axis label
+     * cannot come to disagree with the binning it captions. One read per process; empty on a stub
+     * core, which the figure renders as unlabelled bins rather than as edges it invented.
+     */
+    val trendBinEdges: List<Double> by lazy { nativeCore.trendBinEdges() }
 
     /**
      * On-device realized forecast accuracy for [modelId] over the trailing [days] (Phase 7C — Models
