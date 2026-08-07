@@ -5,10 +5,12 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -17,6 +19,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -140,6 +143,11 @@ fun ModelDetailScreen(
     comparison: BackendComparison?,
     onSelectBackend: (BackendId?) -> Unit,
     onRunComparison: () -> Unit,
+    probeRunning: Boolean = false,
+    /** Why the last probe produced no comparison; null when it produced one. The probe refuses on a
+     *  backend that is not loaded, and its note is rendered on the Models list, not here — so without
+     *  this the button ran and the screen said nothing. */
+    probeRefusal: String? = null,
     /** The stored §8.4 band correction for this model, or null when it has never been fitted. */
     bandCalibration: BandCalibration? = null,
     bandCalibrationFitting: Boolean = false,
@@ -283,6 +291,8 @@ fun ModelDetailScreen(
                         comparison = comparison,
                         onSelectBackend = onSelectBackend,
                         onRunComparison = onRunComparison,
+                        probeRunning = probeRunning,
+                        probeRefusal = probeRefusal,
                     )
                 } else {
                     Note(
@@ -784,6 +794,8 @@ private fun ComputeBackendControls(
     comparison: BackendComparison?,
     onSelectBackend: (BackendId?) -> Unit,
     onRunComparison: () -> Unit,
+    probeRunning: Boolean,
+    probeRefusal: String?,
 ) {
     var refusal by remember { mutableStateOf<String?>(null) }
     val haptics = rememberT1dmHaptics()
@@ -842,7 +854,9 @@ private fun ComputeBackendControls(
             },
         )
     }
-    refusal?.let {
+    // A row refusal is the fresher of the two — tapping a row clears the probe's, and tapping the
+    // probe clears the row's — so whichever is set is the one the last tap produced.
+    (refusal ?: probeRefusal)?.let {
         Text(
             it,
             style = MaterialTheme.typography.bodySmall,
@@ -855,8 +869,21 @@ private fun ComputeBackendControls(
         "Backend vs CPU on one input — a PASS unlocks dose advice",
     )
     Button(
+        enabled = !probeRunning,
         onClick = { haptics.perform(HapticEvent.Tap); refusal = null; onRunComparison() },
-    ) { Text("Run agreement probe") }
+    ) {
+        if (probeRunning) {
+            // LocalContentColor, not the indicator's default primary: inside a DISABLED filled button
+            // the content is drawn at 38 % onSurface, and a primary-coloured spinner reads as live.
+            CircularProgressIndicator(
+                Modifier.size(16.dp),
+                strokeWidth = 2.dp,
+                color = LocalContentColor.current,
+            )
+            Spacer(Modifier.width(8.dp))
+        }
+        Text(if (probeRunning) "Probing…" else "Run agreement probe")
+    }
     comparison?.let { BackendComparisonCard(it) }
 }
 

@@ -129,6 +129,13 @@ class InferenceController(
     private val agreementByBackend = HashMap<BackendId, Boolean>()
     /** The last on-device GPU-vs-CPU comparison (timings + numerics + agreement). */
     private var lastComparison: BackendComparison? = null
+    /** Why the last [runBackendComparison] returned null, or null when it produced a comparison. The
+     *  same string [runBackendComparison] puts in the note, kept reachable here because a caller that
+     *  does not render [state]'s note (the model drill-down) would otherwise see only the null and be
+     *  unable to say anything at all. */
+    @Volatile
+    var lastProbeRefusal: String? = null
+        private set
     /** Process RSS growth (KB) attributed to the non-authority backend's load (best-effort). */
     private var vulkanLoadRssKb: Long? = null
     /** Written under [cycleMutex] on the inference thread (selectModel / refreshModelsLocked) but read
@@ -659,16 +666,20 @@ class InferenceController(
      * null (with a note) when there is no non-authority backend loaded to compare.
      */
     suspend fun runBackendComparison(runs: Int = 20): BackendComparison? = cycleMutex.withLock {
-        val id = selectedId ?: return@withLock null
-        val vmap = loadedVariants[id] ?: return@withLock null
-        val authority = vmap[BackendId.EXECUTORCH_XNNPACK_FP32] ?: run {
-            _state.value = _state.value.copy(note = "agreement probe needs the fp32 XNNPACK authority loaded")
-            return@withLock null
+        // Every refusal below states itself, in the note AND in [lastProbeRefusal]. Returning a bare
+        // null told the drill-down nothing, so its button ran the probe and the screen said nothing.
+        fun refuse(why: String): BackendComparison? {
+            lastProbeRefusal = why
+            _state.value = _state.value.copy(note = why)
+            return null
         }
-        val other = vmap.entries.firstOrNull { it.key != BackendId.EXECUTORCH_XNNPACK_FP32 }?.value ?: run {
-            _state.value = _state.value.copy(note = "no non-authoritative backend loaded to compare against CPU")
-            return@withLock null
-        }
+        val id = selectedId ?: return@withLock refuse("no model selected")
+        val vmap = loadedVariants[id] ?: return@withLock refuse("selected model not loaded")
+        val authority = vmap[BackendId.EXECUTORCH_XNNPACK_FP32]
+            ?: return@withLock refuse("fp32 XNNPACK authority not loaded")
+        val other = vmap.entries.firstOrNull { it.key != BackendId.EXECUTORCH_XNNPACK_FP32 }?.value
+            ?: return@withLock refuse("no non-authoritative backend loaded to compare")
+        lastProbeRefusal = null
         val desc = authority.bundle.descriptor
 
         suspend fun timeOne(e: Entry): Double {

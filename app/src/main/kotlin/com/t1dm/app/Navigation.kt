@@ -1279,6 +1279,28 @@ private fun T1dmNavHost(
             var fitOutcome by remember(modelId) { mutableStateOf<BandCalibrationOutcome?>(null) }
             var fitting by remember(modelId) { mutableStateOf(false) }
             var fitTick by remember(modelId) { mutableStateOf(0) }
+            // The §3.6-E agreement probe: ~44 native forwards, and it first waits on the cycle mutex,
+            // so it can run for seconds with nothing to show for it. Keyed on its own tick like the
+            // walks above; the probe REFUSES on a backend that is not loaded and its note is rendered
+            // on the Models list rather than here, so the refusal is carried back for the button to
+            // state instead of vanishing.
+            var probing by remember(modelId) { mutableStateOf(false) }
+            var probeRefusal by remember(modelId) { mutableStateOf<String?>(null) }
+            var probeTick by remember(modelId) { mutableStateOf(0) }
+            LaunchedEffect(modelId, probeTick) {
+                if (probeTick == 0) return@LaunchedEffect
+                probing = true
+                probeRefusal = null
+                val outcome = runCatching { container.runBackendComparison() }
+                if (!isActive) return@LaunchedEffect
+                probeRefusal = outcome.fold(
+                    onSuccess = { cmp ->
+                        if (cmp == null) container.inferenceController.lastProbeRefusal else null
+                    },
+                    onFailure = { "Probe failed" },
+                )
+                probing = false
+            }
             LaunchedEffect(modelId, fitTick) {
                 if (fitTick == 0) return@LaunchedEffect
                 fitting = true
@@ -1312,7 +1334,11 @@ private fun T1dmNavHost(
                 requestedBackend = requested,
                 comparison = inference.backendComparison,
                 onSelectBackend = { b -> scope.launch { container.setForecastBackend(modelId, b) } },
-                onRunComparison = { scope.launch { container.runBackendComparison() } },
+                // A second tap while one is running must not start a second probe: the button is
+                // disabled meanwhile, and this drops the tick bump if it arrives anyway.
+                onRunComparison = { if (!probing) probeTick++ },
+                probeRunning = probing,
+                probeRefusal = probeRefusal,
                 bandCalibration = bandCalibration,
                 bandCalibrationFitting = fitting,
                 bandCalibrationOutcome = fitOutcome,
