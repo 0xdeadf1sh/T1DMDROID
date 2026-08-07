@@ -215,6 +215,23 @@ class ChannelBuilder(
         return FutureChannels(carbCh, insulinCh, iob, cob)
     }
 
+    /**
+     * Every carb and insulin curve whose action overlaps `[fromMs, toMs)` — carbs, the logged
+     * boluses, and the SINGLE basal representation, resolved through [insulinEventsIn] so the
+     * schedule-XOR-discrete rule stays stated in exactly one place.
+     *
+     * The look-back padding is applied HERE rather than by the caller: [PAD_MS] is this file's own
+     * knowledge of the longest plausible action tail, and a caller guessing its own pad would be a
+     * second copy of it, free to be shorter than a degludec tail without anything noticing.
+     *
+     * The classical baseline's fit builds its strictly-causal IOB/COB columns from these. It wants
+     * the raw events rather than the bucketized channels because on-board is the remaining FORWARD
+     * area of each event, and computing that causally needs to know which event contributed what and
+     * when it started — information a summed channel has already discarded.
+     */
+    suspend fun eventsIn(fromMs: Long, toMs: Long): List<CurveEvent> =
+        store.carbEvents(fromMs - PAD_MS, toMs) + insulinEventsIn(fromMs - PAD_MS, toMs).combined
+
     /** IOB/COB at [atMs] from the logged store doses only (the value the decision card shows). */
     suspend fun onBoard(atMs: Long, kind: CurveKind): Double {
         val events = when (kind) {

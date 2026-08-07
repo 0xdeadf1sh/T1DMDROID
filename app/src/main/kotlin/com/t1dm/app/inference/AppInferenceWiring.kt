@@ -1,13 +1,17 @@
 package com.t1dm.app.inference
 
 import com.t1dm.cgm.AidexXSourceRegistry
+import com.t1dm.core.model.BaselineModel
+import com.t1dm.core.model.BaselineSpec
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
+import com.t1dm.inference.BaselineStore
 import com.t1dm.inference.BgHistoryProvider
 import com.t1dm.inference.BgSeries
 import com.t1dm.inference.CumulativeTelemetry
 import com.t1dm.inference.TelemetryStore
 import com.t1dm.data.T1dmRepository
+import org.json.JSONArray
 import org.json.JSONObject
 import timber.log.Timber
 import java.util.TreeMap
@@ -65,6 +69,42 @@ class RoomBgHistoryProvider(
         // anchor (⇒ perpetual STALE + a fan anchored into the far past, off-screen).
         val lastMeasured = readings.firstOrNull { it.provenance == ReadingProvenance.MEASURED }?.tsMs ?: anchor
         return BgSeries(out, anchorTsMs = lastMeasured, gridStartMs = start)
+    }
+
+    /**
+     * The series a model is FITTED on: MEASURED readings only, with every uncovered grid slot left
+     * as `NaN` rather than carried forward.
+     *
+     * [recentBgSeries] fills gaps because a model must be CONDITIONED on a dense context. A fit is
+     * the opposite case: a carried-forward run is a flat stretch that never happened, and a
+     * least-squares fit handed enough of them learns persistence from artifacts. `SPEC/invariants.md`
+     * §1 makes a filled value a presentation step and never something treated as measured, so the
+     * gaps travel and the core drops the rows that span them.
+     *
+     * Two further departures from [recentBgSeries], both deliberate: interpolated rows are excluded
+     * outright (only real sensor signal is a fit target), and the length is not rounded down to whole
+     * patches — that is a neural-input constraint and costs the fit usable rows for nothing.
+     */
+    override suspend fun fitBgSeries(maxSteps: Int, minSteps: Int): BgSeries? {
+        val srcId = registry.active.value ?: repository.activeSourceId() ?: return null
+        val readings = repository.recentReadings(srcId, maxSteps + 12)
+            .filter {
+                it.bgMgdl != null &&
+                    it.flag == ReadingFlag.NORMAL &&
+                    it.provenance == ReadingProvenance.MEASURED
+            }
+        if (readings.size < minSteps) return null
+
+        val byTs = TreeMap<Long, Double>()
+        for (r in readings) byTs[r.tsMs] = r.bgMgdl!!.toDouble()
+        val anchor = byTs.lastKey()
+        val nSteps = ((anchor - byTs.firstKey()) / GRID_MS + 1L).toInt().coerceAtMost(maxSteps)
+        if (nSteps < minSteps) return null
+
+        val start = anchor - (nSteps - 1L) * GRID_MS
+        val out = DoubleArray(nSteps) { Double.NaN }
+        for (i in 0 until nSteps) byTs[start + i * GRID_MS]?.let { out[i] = it }
+        return BgSeries(out, anchorTsMs = anchor, gridStartMs = start)
     }
 
     /**
@@ -128,5 +168,98 @@ class KvTelemetryStore(private val repository: T1dmRepository) : TelemetryStore 
 
     private companion object {
         const val KV_KEY = "inference.telemetry.cumulative"
+    }
+}
+
+/**
+ * `:app` implementation of the `:inference` [BaselineStore]: the fitted classical baseline as one
+ * JSON blob in the Room `kv` store. Kept off the schema for the same reason [KvTelemetryStore] is —
+ * `:inference` needs no Room dependency, and this is one row read once at startup and written once
+ * per manual fit.
+ *
+ * The weights and the band estimator are stored TOGETHER because they are one model
+ * ([BaselineModel]); a load that recovered one without the other would produce forecasts whose
+ * fan came from a different fit than the median.
+ *
+ * Fail-closed on anything unreadable: a corrupt, truncated, or shape-inconsistent blob loads as
+ * `null` (no model, and the panel offers a fit) rather than as a model whose weights do not match
+ * its declared feature count.
+ */
+class KvBaselineStore(private val repository: T1dmRepository) : BaselineStore {
+
+    override suspend fun load(): BaselineModel? {
+        val raw = repository.getKv(KV_KEY)?.takeIf { it.isNotBlank() } ?: return null
+        return runCatching {
+            val o = JSONObject(raw)
+            if (o.optInt("v") != BLOB_VERSION) return null
+            val s = o.getJSONObject("spec")
+            val spec = BaselineSpec(
+                nLags = s.getInt("nLags"),
+                horizonSteps = s.getInt("horizonSteps"),
+                ridgeLambda = s.getDouble("ridgeLambda"),
+                useIob = s.getBoolean("useIob"),
+                useCob = s.getBoolean("useCob"),
+            )
+            val nFeatures = o.getInt("nFeatures")
+            val weights = o.getJSONArray("weights").toDoubleList()
+            val bandDelta = o.getJSONArray("bandDelta").toDoubleList()
+            // The shape checks are the point of the version field's company: a blob whose weight
+            // count disagrees with its own spec cannot be run, and running it would decode a
+            // forecast off whichever features happened to line up.
+            if (weights.size != spec.horizonSteps * (1 + nFeatures)) return null
+            if (bandDelta.isNotEmpty() && bandDelta.size != spec.horizonSteps * N_QUANTILES) return null
+            if (weights.any { !it.isFinite() } || bandDelta.any { !it.isFinite() }) return null
+            BaselineModel(
+                spec = spec,
+                nFeatures = nFeatures,
+                weights = weights,
+                bandDelta = bandDelta,
+                nTrainRows = o.getInt("nTrainRows"),
+                fittedAtMs = o.getLong("fittedAtMs"),
+                trainFromMs = o.getLong("trainFromMs"),
+                trainToMs = o.getLong("trainToMs"),
+            )
+        }.getOrElse {
+            Timber.tag("Baseline").w(it, "unreadable baseline blob; the model is treated as unfitted")
+            null
+        }
+    }
+
+    override suspend fun save(model: BaselineModel) {
+        val obj = JSONObject()
+            .put("v", BLOB_VERSION)
+            .put(
+                "spec",
+                JSONObject()
+                    .put("nLags", model.spec.nLags)
+                    .put("horizonSteps", model.spec.horizonSteps)
+                    .put("ridgeLambda", model.spec.ridgeLambda)
+                    .put("useIob", model.spec.useIob)
+                    .put("useCob", model.spec.useCob),
+            )
+            .put("nFeatures", model.nFeatures)
+            .put("weights", JSONArray(model.weights))
+            .put("bandDelta", JSONArray(model.bandDelta))
+            .put("nTrainRows", model.nTrainRows)
+            .put("fittedAtMs", model.fittedAtMs)
+            .put("trainFromMs", model.trainFromMs)
+            .put("trainToMs", model.trainToMs)
+        repository.putKv(KV_KEY, obj.toString(), System.currentTimeMillis())
+    }
+
+    override suspend fun clear() {
+        repository.putKv(KV_KEY, "", System.currentTimeMillis())
+    }
+
+    private fun JSONArray.toDoubleList(): List<Double> = List(length()) { getDouble(it) }
+
+    private companion object {
+        const val KV_KEY = "inference.baseline.model"
+
+        /** Bumped when the blob's SHAPE changes. An older blob is dropped rather than migrated:
+         *  a refit costs one button press and is exact, where a migration would be a guess. */
+        const val BLOB_VERSION = 1
+
+        const val N_QUANTILES = 7
     }
 }

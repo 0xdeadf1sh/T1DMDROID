@@ -43,6 +43,12 @@ pub use accuracy::*;
 mod conformal;
 pub use conformal::*;
 
+/// The classical forecast baseline the neural model is compared against: direct multi-step ridge
+/// regression on lagged CGM plus causal IOB/COB, fitted on the patient's own history, its band fan
+/// supplied by the same §8.4 split conformal the neural fan uses. Advisory and comparative only.
+mod baseline;
+pub use baseline::*;
+
 /// Continuous Glucose-Error Grid Analysis (Kovatchev 2004) — the P-EGA × R-EGA zone algebra
 /// the metric suite's %AP/%BE/%EP is reduced from. Crate-internal; reached through
 /// `accuracy::forecast_metrics_suite`.
@@ -65,8 +71,8 @@ const KOV_CLINICAL_POWER: f64 = 1.084;
 const KOV_CLINICAL_OFFSET: f64 = 5.381;
 /// Physical BG bounds of the CLINICAL scale (INFERENCE.md §5). The model's own bounds ride
 /// the descriptor (`KovatchevParams::bg_clamp_min` / `_max`) and need not equal these.
-const CLINICAL_BG_CLAMP_MIN: f64 = 20.0;
-const CLINICAL_BG_CLAMP_MAX: f64 = 500.0;
+pub(crate) const CLINICAL_BG_CLAMP_MIN: f64 = 20.0;
+pub(crate) const CLINICAL_BG_CLAMP_MAX: f64 = 500.0;
 
 // ── AiDEX advertisement layout (CGM.md §3.1) ───────────────────────────────────────
 /// The 20-byte 0x0059 glucose payload: 16 data bytes + a trailing LE u32 CRC.

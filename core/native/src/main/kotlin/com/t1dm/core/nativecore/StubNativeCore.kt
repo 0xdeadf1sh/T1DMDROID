@@ -2,6 +2,10 @@ package com.t1dm.core.nativecore
 
 import com.t1dm.core.common.GameWorld
 import com.t1dm.core.common.NativeCore
+import com.t1dm.core.model.BaselineFit
+import com.t1dm.core.model.BaselineForecast
+import com.t1dm.core.model.BaselineModel
+import com.t1dm.core.model.BaselineSpec
 import com.t1dm.core.model.CarTuning
 import com.t1dm.core.model.ClarkeZone
 import com.t1dm.core.model.ConformalFit
@@ -286,6 +290,36 @@ class StubNativeCore : NativeCore {
         bandsMgdl: List<Double>,
         delta: List<Double>,
     ): List<Double>? = null
+
+    // ── The classical baseline ──────────────────────────────────────────────────────
+    // The ridge solve, the causal on-board scatter and the residual-quantile band all live in the
+    // crate. A Kotlin reproduction would be a second numeric authority for the model the neural one
+    // is MEASURED against, which is the one place a quiet disagreement would corrupt the comparison
+    // rather than a single reading. The stub refuses: no default spec to fit against, no fit, no
+    // forecast — and a degeneracy verdict of NonFinite, which is the fail-closed verdict.
+    override fun baselineDefaultSpec(): BaselineSpec =
+        TODO("the baseline is Rust-only; use UniffiNativeCore")
+
+    override fun fitBaselineRidge(
+        bgMgdl: List<Double>,
+        gridStartMs: Long,
+        events: List<CurveEvent>,
+        spec: BaselineSpec,
+        nowMs: Long,
+        minCalWindows: Int,
+    ): BaselineFit? = null
+
+    override fun baselinePredict(
+        model: BaselineModel,
+        bgTail: List<Double>,
+        iob: Double,
+        cob: Double,
+    ): BaselineForecast? = null
+
+    override fun baselineOnBoardAt(events: List<CurveEvent>, atMs: Long, kind: CurveKind): Double = 0.0
+
+    override fun baselineDegeneracyCheck(forecast: BaselineForecast): ForecastStatus =
+        ForecastStatus.NON_FINITE
 
     // ── Hill-climb minigame physics ─────────────────────────────────────────────────
     // The solver is Rust-only by design (a per-frame path with zero allocation is the whole

@@ -1,6 +1,10 @@
 package com.t1dm.core.common
 
 import com.t1dm.core.model.AdvancedStats
+import com.t1dm.core.model.BaselineFit
+import com.t1dm.core.model.BaselineForecast
+import com.t1dm.core.model.BaselineModel
+import com.t1dm.core.model.BaselineSpec
 import com.t1dm.core.model.ClinicalCuts
 import com.t1dm.core.model.BasalSchedule
 import com.t1dm.core.model.BuiltContext
@@ -221,6 +225,73 @@ interface NativeCore {
      * fan, and never a fan drawn around a moved point forecast.
      */
     fun applyQuantileConformal(bandsMgdl: List<Double>, delta: List<Double>): List<Double>?
+
+    // ── The classical baseline (t1dm-core::baseline) ────────────────────────────────
+
+    /** The baseline's shipped shape and shrinkage — 12 lags, 24 steps, λ = 1.0, IOB and COB on.
+     *  Read from the core rather than restated here so a retune moves one number, not two. */
+    fun baselineDefaultSpec(): BaselineSpec
+
+    /**
+     * Fit the baseline and calibrate its band fan in one pass over the patient's own history.
+     *
+     * [bgMgdl] is a grid-aligned trailing series starting at [gridStartMs], newest last, with a
+     * non-finite entry marking a gap — gaps DROP the affected design rows rather than being
+     * filled, since `SPEC/invariants.md` §1 makes gap-filling a presentation step and never a
+     * fitted value. [events] are the resolved carb and insulin curves spanning the same window,
+     * including the tails of anything still acting when it opens, from which the core derives
+     * strictly-causal IOB and COB.
+     *
+     * The window is split chronologically: the older part fits the weights, the newer part becomes
+     * the conformal window set, and the conformal fit splits again inside itself — so the coverage
+     * it reports was measured on windows neither the weights nor the delta ever saw.
+     *
+     * Total on any input in the sense that matters: `null` on anything the core rejects, which is
+     * a window too short, a design with no complete rows, or a spec it cannot solve. A fit that
+     * RAN but found too little held-out history returns non-null with
+     * [com.t1dm.core.model.ConformalFit.sufficient] `= false` and an all-zero delta — a model that
+     * predicts a median and has its forecasts withheld for want of an honest band.
+     */
+    fun fitBaselineRidge(
+        bgMgdl: List<Double>,
+        gridStartMs: Long,
+        events: List<CurveEvent>,
+        spec: BaselineSpec,
+        nowMs: Long,
+        minCalWindows: Int,
+    ): BaselineFit?
+
+    /**
+     * Run a fitted baseline for one cycle. [bgTail] is the trailing `nLags` mg/dL values
+     * OLDEST-FIRST; [iob]/[cob] are the causal on-board amounts at the anchor.
+     *
+     * The band estimator travels inside [model], so there is no uncalibrated fan a caller could
+     * accidentally publish. `null` on anything the core rejects — a gap in the tail, a tail of the
+     * wrong length, a model whose weights disagree with its spec — which the controller treats as
+     * "no forecast this cycle" rather than substituting one.
+     */
+    fun baselinePredict(model: BaselineModel, bgTail: List<Double>, iob: Double, cob: Double): BaselineForecast?
+
+    /**
+     * The strictly-causal on-board amount at one instant — the IOB/COB feature
+     * [baselinePredict] consumes, counting only events that had already STARTED at [atMs].
+     *
+     * Deliberately not [onBoard], which counts every matching event's remaining tail including an
+     * announced future dose. That is the right reading for "insulin still to act" on the calculator,
+     * and the wrong one for a design column: the fit builds its IOB/COB from started events only, so
+     * a live cycle using the other definition would infer on a feature it never trained on.
+     */
+    fun baselineOnBoardAt(events: List<CurveEvent>, atMs: Long, kind: CurveKind): Double
+
+    /**
+     * The §3.6-B degeneracy guard for a forecast with no risk space: fan order judged on the
+     * mg/dL bands, rails on the clinical physical domain. Shares its predicates and epsilons with
+     * [forecastDegeneracyCheck] inside the core rather than restating them.
+     *
+     * An uncalibrated baseline lands on [ForecastStatus.CollapsedBand] here, which is the intended
+     * withholding and not an error.
+     */
+    fun baselineDegeneracyCheck(forecast: BaselineForecast): ForecastStatus
 
     // ── Hill-climb minigame physics (t1dm-core::game) ───────────────────────────────
 

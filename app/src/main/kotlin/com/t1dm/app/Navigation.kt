@@ -1222,6 +1222,10 @@ private fun T1dmNavHost(
                 pendingUpdates = pendingUpdates,
                 onApplyUpdate = { id -> scope.launch { container.applyModelUpdate(id) } },
                 onDelete = { id -> scope.launch { container.removeModel(id) } },
+                onFitBaseline = {
+                    container.inferenceController.fitBaseline(System.currentTimeMillis())
+                        .also { container.reevaluateInferenceNow() }
+                },
             )
         }
         composable("models/{modelId}") { entry ->

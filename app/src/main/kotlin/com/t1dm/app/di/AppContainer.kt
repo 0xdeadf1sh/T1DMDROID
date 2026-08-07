@@ -14,6 +14,7 @@ import com.t1dm.alerts.VibrationPreset
 import androidx.glance.appwidget.updateAll
 import com.t1dm.app.cgm.AppCgmRepository
 import com.t1dm.app.hardware.HardwareProbe
+import com.t1dm.app.inference.KvBaselineStore
 import com.t1dm.app.inference.KvTelemetryStore
 import com.t1dm.app.inference.RoomBgHistoryProvider
 import com.t1dm.app.backup.BackupManager
@@ -136,6 +137,7 @@ import com.t1dm.sync.mealDedupKey
 import com.t1dm.sync.toDoseEventDto
 import com.t1dm.sync.toMealEventDto
 import com.t1dm.inference.ContextChannelSource
+import com.t1dm.inference.CurveEventSource
 import com.t1dm.inference.FutureOverrideSource
 import com.t1dm.inference.InferenceController
 import com.t1dm.inference.InferenceControllerDefaults
@@ -760,6 +762,12 @@ class AppContainer(context: Context) {
             backendPrefProvider = { id -> forecastBackendPref(id) },
             // Phase 7C: durable cumulative per-model inference telemetry for the Models drill-down.
             telemetryStore = KvTelemetryStore(repository),
+            // The classical baseline the neural models are measured against: its fitted weights and
+            // band estimator as one kv blob, and the raw curve events it derives causal IOB/COB from
+            // (the SAME ChannelBuilder the context channels come from, so both views of the patient's
+            // logged doses are built from one set of records).
+            baselineStore = KvBaselineStore(repository),
+            curveEvents = CurveEventSource { fromMs, toMs -> channelBuilder.eventsIn(fromMs, toMs) },
             // F6 THERMAL GATE (D1: battery-sensor °C): re-read the enable flag + thresholds fresh per
             // cycle. Disabled ⇒ null ⇒ no gate. Deliberately NO death-mode check (D4: the over-temp
             // inference gate stays ACTIVE in DEATH — the die does not care about the alarm override).

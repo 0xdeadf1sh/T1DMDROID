@@ -31,6 +31,7 @@ enum class BackendId {
     LITERT_NPU,
     EXECUTORCH_VULKAN_FP32,
     EXECUTORCH_VULKAN_FP16,
+    NATIVE_RIDGE_FP64,
     STUB,
 }
 
@@ -47,6 +48,7 @@ fun BackendId.displayName(): String = when (this) {
     BackendId.LITERT_NPU -> "LiteRT NPU · fp32"
     BackendId.EXECUTORCH_VULKAN_FP32 -> "Vulkan GPU · fp32"
     BackendId.EXECUTORCH_VULKAN_FP16 -> "Vulkan GPU · fp16"
+    BackendId.NATIVE_RIDGE_FP64 -> "Ridge CPU · fp64"
     BackendId.STUB -> "Stub · no .pte"
 }
 

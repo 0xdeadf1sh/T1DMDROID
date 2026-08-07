@@ -3,6 +3,10 @@ package com.t1dm.calc
 import com.t1dm.core.common.DefaultT1dmDispatchers
 import com.t1dm.core.common.GameWorld
 import com.t1dm.core.common.NativeCore
+import com.t1dm.core.model.BaselineFit
+import com.t1dm.core.model.BaselineForecast
+import com.t1dm.core.model.BaselineModel
+import com.t1dm.core.model.BaselineSpec
 import com.t1dm.core.model.ClinicalCuts
 import com.t1dm.core.model.*
 import com.t1dm.data.curve.ChannelBuilder
@@ -298,6 +302,23 @@ class RollingForecasterAlignmentTest {
         override fun clarkeZoneGrid(truthAxisMgdl: List<Double>, predAxisMgdl: List<Double>): List<ClarkeZone> = unused()
         override fun conformalMinCalWindows(): Int = unused()
         override fun fitQuantileConformal(windows: List<ForecastWindow>, minCalWindows: Int): ConformalFit = unused()
+        override fun baselineDefaultSpec(): BaselineSpec = unused()
+        override fun fitBaselineRidge(
+            bgMgdl: List<Double>,
+            gridStartMs: Long,
+            events: List<CurveEvent>,
+            spec: BaselineSpec,
+            nowMs: Long,
+            minCalWindows: Int,
+        ): BaselineFit? = unused()
+        override fun baselinePredict(
+            model: BaselineModel,
+            bgTail: List<Double>,
+            iob: Double,
+            cob: Double,
+        ): BaselineForecast? = unused()
+        override fun baselineOnBoardAt(events: List<CurveEvent>, atMs: Long, kind: CurveKind): Double = unused()
+        override fun baselineDegeneracyCheck(forecast: BaselineForecast): ForecastStatus = unused()
         // Not `unused()`: the rolling forecaster reads the RAW fan by construction, and the day one
         // of its rails reaches for a calibrated one this must FAIL the alignment rather than throw
         // somewhere unrelated. `null` is what every caller falls back to — the raw fan.

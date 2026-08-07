@@ -922,35 +922,61 @@ pub fn forecast_degeneracy_check(desc: &ModelDescriptor, f: &Forecast) -> Foreca
     }
 
     // (2) Mis-ordered fan (risk space, the rawer signal before the f_inv clamp).
-    for i in 0..n {
-        let row = i * N_QUANTILES;
-        for k in 1..N_QUANTILES {
-            if f.q_tau_risk[row + k] < f.q_tau_risk[row + k - 1] - MONOTONE_TOL {
-                return ForecastStatus::MisorderedQuantiles;
-            }
-        }
+    if !fan_is_ascending(&f.q_tau_risk, n, N_QUANTILES) {
+        return ForecastStatus::MisorderedQuantiles;
     }
 
     // (3) Rail-pinned flat median, against THIS model's physical rails.
     let (lo, hi) = (desc.kovatchev.bg_clamp_min, desc.kovatchev.bg_clamp_max);
-    let all_low = f.median_bg.iter().all(|&v| v <= lo + RAIL_EPS_MGDL);
-    let all_high = f.median_bg.iter().all(|&v| v >= hi - RAIL_EPS_MGDL);
-    if all_low || all_high {
+    if median_is_rail_pinned(&f.median_bg, lo, hi) {
         return ForecastStatus::RailPinned;
     }
 
     // (4) Collapsed band: the widest step is still near-zero width.
-    let max_width = (0..n)
-        .map(|i| {
-            let row = i * N_QUANTILES;
-            f.bands_mgdl[row + N_QUANTILES - 1] - f.bands_mgdl[row]
-        })
-        .fold(0.0f64, f64::max);
-    if max_width < COLLAPSE_EPS_MGDL {
+    if fan_is_collapsed(&f.bands_mgdl, n, N_QUANTILES) {
         return ForecastStatus::CollapsedBand;
     }
 
     ForecastStatus::Ok
+}
+
+// ── The degeneracy predicates, shared with the classical baseline ───────────────────
+//
+// `crate::baseline` runs the same three tests on a forecast that has no risk space and no
+// descriptor: it judges fan order on the mg/dL bands and rails on the clinical physical domain.
+// Only the inputs differ, so only the inputs are passed — the epsilons and the comparisons
+// themselves stay here, in one copy. Two guards that agreed on the day they were written and
+// drifted afterwards is precisely the failure the suite's no-second-copy rule exists to prevent.
+
+/// True when every step's fan ascends across `nq` levels, within [`MONOTONE_TOL`].
+pub(crate) fn fan_is_ascending(fan: &[f64], n: usize, nq: usize) -> bool {
+    for i in 0..n {
+        let row = i * nq;
+        for k in 1..nq {
+            if fan[row + k] < fan[row + k - 1] - MONOTONE_TOL {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// True when the whole median sits on one physical rail — the shape a collapsed or runaway
+/// model takes after an output clamp, which reads as a confident flat line rather than a NaN.
+pub(crate) fn median_is_rail_pinned(median_bg: &[f64], lo: f64, hi: f64) -> bool {
+    median_bg.iter().all(|&v| v <= lo + RAIL_EPS_MGDL)
+        || median_bg.iter().all(|&v| v >= hi - RAIL_EPS_MGDL)
+}
+
+/// True when even the widest step's outer band is narrower than [`COLLAPSE_EPS_MGDL`].
+pub(crate) fn fan_is_collapsed(bands_mgdl: &[f64], n: usize, nq: usize) -> bool {
+    let max_width = (0..n)
+        .map(|i| {
+            let row = i * nq;
+            bands_mgdl[row + nq - 1] - bands_mgdl[row]
+        })
+        .fold(0.0f64, f64::max);
+    max_width < COLLAPSE_EPS_MGDL
 }
 
 // ── Time-probe decode (circadian-phase belief) ──────────────────────────────────────

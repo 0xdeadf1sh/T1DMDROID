@@ -31,6 +31,8 @@ fun buildInferenceController(
     telemetryStore: TelemetryStore? = null,
     thermalProvider: suspend () -> ThermalStatus? = { null },
     smoothingWindowProvider: suspend () -> Int = { InferenceControllerDefaults.SAVGOL_WINDOW },
+    baselineStore: BaselineStore? = null,
+    curveEvents: CurveEventSource? = null,
 ): InferenceController {
     val store = ModelStore(modelsDir, native)
     val controller = InferenceController(
@@ -47,6 +49,7 @@ fun buildInferenceController(
         telemetryStore = telemetryStore,
         thermalProvider = thermalProvider,
         smoothingWindowProvider = smoothingWindowProvider,
+        baseline = BaselineRunner(native, dispatchers, baselineStore, curveEvents),
     )
     controller.registerBackend(ExecuTorchXnnpackBackend())
     controller.registerBackend(ExecuTorchNeuronBackend())

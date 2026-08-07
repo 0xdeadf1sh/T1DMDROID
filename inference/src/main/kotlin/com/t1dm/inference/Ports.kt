@@ -1,5 +1,7 @@
 package com.t1dm.inference
 
+import com.t1dm.core.model.BaselineModel
+import com.t1dm.core.model.CurveEvent
 import com.t1dm.core.model.ModelPrediction
 
 /**
@@ -34,6 +36,50 @@ interface BgHistoryProvider {
     /** Count of MEASURED (non-interpolated, NORMAL) readings within the trailing [windowSteps]
      *  grid slots — the WARMUP gate's numerator. Default 0 keeps non-Room fakes total. */
     suspend fun measuredStepsInWindow(windowSteps: Int): Int = 0
+
+    /**
+     * The same trailing series, but with **gaps left as `NaN` instead of carried forward** — the
+     * input a model is FITTED on rather than conditioned on.
+     *
+     * [recentBgSeries] carries the last value across a gap, which is right for inference (the model
+     * needs a dense context and the freshness anchor tracks the real reading) and wrong for a fit:
+     * a long carry-forward run is a flat stretch that never happened, and a least-squares fit would
+     * happily learn persistence from it. `SPEC/invariants.md` §1 makes a filled value a presentation
+     * step and never something to be treated as measured, so the fit sees the gaps and drops the
+     * rows that span them.
+     *
+     * Default `null` — a provider that cannot distinguish measured from carried-forward must not
+     * pretend it can, and the baseline fit then declines rather than fitting on filled data.
+     */
+    suspend fun fitBgSeries(maxSteps: Int, minSteps: Int): BgSeries? = null
+}
+
+/**
+ * The resolved carb and insulin curves overlapping a window — the events the baseline derives its
+ * strictly-causal IOB/COB columns from.
+ *
+ * Distinct from [ContextChannelSource], which returns per-step channel AMOUNTS already summed onto
+ * the grid. On-board is the remaining forward area of each event, and computing it causally needs
+ * to know which event contributed what and when it started, which a summed channel has thrown away.
+ * `:app` binds this to the same `ChannelBuilder` the channels come from, so both views are built
+ * from one set of logged records.
+ */
+fun interface CurveEventSource {
+    /** Every carb and insulin curve whose action overlaps `[fromMs, toMs)`, including the tails of
+     *  events that started before it. */
+    suspend fun events(fromMs: Long, toMs: Long): List<CurveEvent>
+}
+
+/**
+ * Persists the fitted classical baseline — weights and band estimator as one unit, because they are
+ * one model (see [com.t1dm.core.model.BaselineModel]). Implemented in `:app` over the Room `kv`
+ * store to keep `:inference` free of a schema dependency; a `null` store keeps the fit in memory
+ * for the session.
+ */
+interface BaselineStore {
+    suspend fun load(): BaselineModel?
+    suspend fun save(model: BaselineModel)
+    suspend fun clear()
 }
 
 /**

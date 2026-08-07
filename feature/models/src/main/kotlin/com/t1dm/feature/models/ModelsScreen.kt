@@ -24,6 +24,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -34,12 +35,15 @@ import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.fadingEdges
 import com.t1dm.core.design.hapticClickable
 import com.t1dm.core.design.rememberT1dmHaptics
+import com.t1dm.core.model.BASELINE_MODEL_ID
+import com.t1dm.core.model.BaselineFit
 import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.InferenceState
 import com.t1dm.core.model.ModelMeta
 import com.t1dm.core.model.ModelPrediction
 import com.t1dm.core.model.RunningModel
 import com.t1dm.core.model.displayName
+import kotlinx.coroutines.launch
 
 /**
  * The Models panel (Phase 7C — item 7): the loaded running set, each row now carrying
@@ -56,6 +60,9 @@ fun ModelsScreen(
     pendingUpdates: Set<String> = emptySet(),
     onApplyUpdate: (String) -> Unit = {},
     onDelete: (String) -> Unit = {},
+    /** Fits the classical baseline from the patient's own history. Null ⇒ no baseline wired, and
+     *  the control is absent rather than disabled. */
+    onFitBaseline: (suspend () -> Result<BaselineFit>)? = null,
 ) {
     // The delete confirmation is hoisted to the screen (not per-row) so a row recycling out of the
     // LazyColumn viewport can't drop the pending confirmation mid-gesture.
@@ -102,6 +109,10 @@ fun ModelsScreen(
                     HorizontalDivider()
                 }
             }
+
+            if (onFitBaseline != null) {
+                item { BaselineFitControl(state, onFitBaseline) }
+            }
         }
         confirmDelete?.let { id ->
             // The three-beat every dialog in the app keeps: Warn on raise, Commit on the destructive
@@ -128,6 +139,66 @@ fun ModelsScreen(
                         onClick = { haptics.perform(HapticEvent.Reject); confirmDelete = null },
                     ) { Text("Cancel") }
                 },
+            )
+        }
+    }
+}
+
+/**
+ * The manual fit for the classical baseline, and the one line of evidence it produces.
+ *
+ * The button is the ONLY entry point to the first fit: the baseline is not in `state.running` until
+ * a fit exists, so it has no row to hang an action off yet. Afterwards it is a refit.
+ *
+ * The result line quotes the 30-minute held-out RMSE against zero-order hold, because that pair is
+ * the entire reason the baseline exists — a model that cannot beat persistence has not earned its
+ * place, and neither has the neural one it is there to measure.
+ */
+@Composable
+private fun BaselineFitControl(
+    state: InferenceState,
+    onFitBaseline: suspend () -> Result<BaselineFit>,
+) {
+    val haptics = rememberT1dmHaptics()
+    val scope = rememberCoroutineScope()
+    var fitting by remember { mutableStateOf(false) }
+    var note by remember { mutableStateOf<String?>(null) }
+    val exists = state.running.any { it.modelId == BASELINE_MODEL_ID }
+
+    Column(Modifier.fillMaxWidth().padding(top = 8.dp)) {
+        OutlinedButton(
+            enabled = !fitting,
+            onClick = {
+                haptics.perform(HapticEvent.Commit)
+                fitting = true
+                scope.launch {
+                    val r = onFitBaseline()
+                    note = r.fold(
+                        onSuccess = { fit ->
+                            // Index 5 is the 6th step = 30 min on the five-minute grid.
+                            val rmse = fit.holdoutRmseMgdl.getOrNull(5)
+                            val zoh = fit.persistenceRmseMgdl.getOrNull(5)
+                            when {
+                                !fit.model.calibrated -> "Fitted — band needs more history"
+                                rmse != null && zoh != null && rmse.isFinite() && zoh.isFinite() ->
+                                    "RMSE %.1f vs ZOH %.1f @30 min".format(rmse, zoh)
+                                else -> "Fitted"
+                            }
+                        },
+                        onFailure = { "Not enough history" },
+                    )
+                    fitting = false
+                }
+            },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(if (fitting) "Fitting…" else if (exists) "Refit baseline" else "Fit baseline")
+        }
+        note?.let {
+            Text(
+                it,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(top = 4.dp),
             )
         }
     }

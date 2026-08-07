@@ -2,9 +2,11 @@ package com.t1dm.inference
 
 import com.t1dm.core.common.NativeCore
 import com.t1dm.core.common.T1dmDispatchers
+import com.t1dm.core.model.BASELINE_MODEL_ID
 import com.t1dm.core.model.BackendAvailability
 import com.t1dm.core.model.BackendComparison
 import com.t1dm.core.model.BackendId
+import com.t1dm.core.model.BaselineFit
 import com.t1dm.core.model.displayName
 import com.t1dm.core.model.BuiltContext
 import com.t1dm.core.model.Forecast
@@ -89,6 +91,12 @@ class InferenceController(
      *  throw, so a corrupt setting can never reach the Rust guard. It MOVES the §3.6-D `last_bg`
      *  anchor, hence its exclusion from the agreement probe below. */
     private val smoothingWindowProvider: suspend () -> Int = { InferenceControllerDefaults.SAVGOL_WINDOW },
+    /** The classical baseline the neural models are compared against. It runs beside the loaded set
+     *  every cycle and publishes an ordinary [ModelPrediction], so from the app's side it is simply
+     *  another model. It is not part of [loaded] only because it has no descriptor and no artifact —
+     *  it is fitted on device rather than exported — and `SPEC/invariants.md` §4 rule 5 makes a
+     *  descriptor and an artifact one unit, so there is no honest bundle to give it. Null ⇒ absent. */
+    private val baseline: BaselineRunner? = null,
 ) {
     private val _state = MutableStateFlow(InferenceState())
     val state: StateFlow<InferenceState> = _state.asStateFlow()
@@ -160,8 +168,30 @@ class InferenceController(
      *  the latch cannot be allowed to survive the reset, or the forecast would run on empty context. */
     suspend fun resetWarmupLatch() = cycleMutex.withLock { warmupSatisfiedUpTo = 0 }
 
+    /**
+     * Fit the classical baseline from the patient's own history — the manual action behind the
+     * Models panel's button. Returns the fit (with its held-out evidence) or a failure naming the
+     * refusal. Not serialised on [cycleMutex]: the fit reads history and touches no loaded handle,
+     * and it takes long enough that blocking the cycle for its duration would stall the forecast.
+     * [BaselineRunner] serialises fits against each other.
+     */
+    suspend fun fitBaseline(nowMs: Long): Result<BaselineFit> {
+        val b = baseline ?: return Result.failure(IllegalStateException("no baseline runner"))
+        val result = b.fit(history, nowMs)
+        if (result.isSuccess) {
+            // A first successful fit adds a row to the running set, so republish it immediately
+            // rather than leaving the panel empty until the next tick.
+            _state.value = _state.value.copy(running = runningModels())
+        }
+        return result
+    }
+
     /** Rehydrate the last persisted predictions so the overlay is populated before the first tick. */
     suspend fun restoreLast() {
+        runCatching { baseline?.restore() }.onFailure { Timber.tag(TAG).w(it, "baseline restore failed") }
+        // A restored baseline is a running model before any cycle has ticked, and the panel should
+        // say so rather than showing an empty set until the first forecast lands.
+        if (baseline?.fitted != null) _state.value = _state.value.copy(running = runningModels())
         val last = runCatching { predictionStore.loadLast() }.getOrNull() ?: return
         if (last.isNotEmpty()) {
             // Rehydrate the circadian belief from the restored selected forecast too (the graph's clock
@@ -226,7 +256,13 @@ class InferenceController(
         // is still in the running set; else fall back to the first running id. selectModel() can only
         // ever pick a loaded (running) model, so a valid selection stays valid unless the cap shrank
         // below its position, in which case falling back to the first running model is correct.
-        selectedId = selectedId?.takeIf { it in runningIds } ?: runningIds.firstOrNull()
+        // A fitted baseline is a valid selection that is not in `runningIds` (it has no bundle to
+        // discover), so it must survive a refresh; and when no neural model is installed at all it
+        // is the only thing left to select.
+        selectedId = selectedId
+            ?.takeIf { it in runningIds || (it == BASELINE_MODEL_ID && baseline?.fitted != null) }
+            ?: runningIds.firstOrNull()
+            ?: BASELINE_MODEL_ID.takeIf { baseline?.fitted != null }
         // Full dual-backend catalog + agreement probe for the SELECTED model only (it feeds dosing);
         // this loads its variants into loadedVariants[selectedId].
         catalog = buildCatalog(selectedId)
@@ -547,7 +583,8 @@ class InferenceController(
         // inference thread and that runFromHistory's preamble snapshots. Release BEFORE refreshModels() —
         // it re-acquires the non-reentrant cycleMutex and would otherwise self-deadlock.
         cycleMutex.withLock {
-            if (id !in loaded.keys) return
+            val isFittedBaseline = id == BASELINE_MODEL_ID && baseline?.fitted != null
+            if (id !in loaded.keys && !isFittedBaseline) return
             selectedId = id
             val sel = _state.value.predictions.firstOrNull { it.modelId == id }
             _state.value = _state.value.copy(
@@ -574,6 +611,19 @@ class InferenceController(
      * whether a matching artifact was actually removed from disk.
      */
     suspend fun deleteModel(id: String): Boolean = cycleMutex.withLock {
+        // The baseline has no artifact to unlink; discarding the fitted weights is the same act, and
+        // the row carries the same ✕, so removing it must mean the same thing.
+        if (id == BASELINE_MODEL_ID) {
+            val had = baseline?.fitted != null
+            baseline?.clear()
+            if (selectedId == BASELINE_MODEL_ID) selectedId = null
+            refreshModelsLocked()
+            _state.value = _state.value.copy(
+                running = runningModels(),
+                predictions = _state.value.predictions.filterNot { it.modelId == id },
+            )
+            return@withLock had
+        }
         val removed = withContext(dispatchers.inference) { runCatching { store.delete(id) }.getOrDefault(false) }
         cumulative.remove(id); latencySamples.remove(id); forecastBackendPrefs.remove(id)
         runCatching { telemetryStore?.save(HashMap(cumulative)) }
@@ -832,7 +882,12 @@ class InferenceController(
      * (cold-start verification with a plausible 24 h series — the sensor is not needed).
      */
     suspend fun runCycle(cause: InferenceCause, series: BgSeries, nowMs: Long) = cycleMutex.withLock {
-        if (loaded.isEmpty()) { refreshOrNote(); if (loaded.isEmpty()) return@withLock }
+        // A fitted baseline is a running model in its own right, so a device with no `.pte` pushed
+        // still has something to publish and must not bail out of the cycle here.
+        if (loaded.isEmpty() && baseline?.fitted == null) {
+            refreshOrNote()
+            if (loaded.isEmpty() && baseline?.fitted == null) return@withLock
+        }
         // Thermal gate — the UNIVERSAL chokepoint: every forecast (grid tick, manual, synthetic) funnels
         // through here, so blocking here blocks them all. Empty predictions + OVER_TEMPERATURE cause;
         // circadianTime is left untouched by copy() so the clock stays lit while inference is paused.
@@ -861,7 +916,8 @@ class InferenceController(
         // of appearing in the past then vanishing at the boundary (an impossible drop-off ⇒ wrong dip).
         // Model-independent (rollStartMs is the grid boundary; predSteps is the fixed pred zone) but
         // anchored to the SELECTED model's descriptor for a stable, deterministic pred-zone length.
-        val futureChannels = buildFutureChannels(series, (loaded[selectedId] ?: loaded.values.first()).bundle.descriptor)
+        val anchorDesc = (loaded[selectedId] ?: loaded.values.firstOrNull())?.bundle?.descriptor
+        val futureChannels = anchorDesc?.let { buildFutureChannels(series, it) }
 
         // Serial fan-out over the running set (never concurrent on the one command queue).
         for ((id, entry) in loaded) {
@@ -870,6 +926,17 @@ class InferenceController(
                     Timber.tag(TAG).w(it, "model %s cycle failed", id); null
                 }
             if (pred != null) preds.add(pred)
+        }
+
+        // The baseline runs on the same anchor and the same grid, but off the RAW series and its own
+        // causal IOB/COB — see [BaselineRunner] for why it does not share the neural input transform.
+        baseline?.let { b ->
+            val pred = runCatching { b.predict(series, cycleTs, selectedId == BASELINE_MODEL_ID, stale) }
+                .getOrElse { Timber.tag(TAG).w(it, "baseline cycle failed"); null }
+            if (pred != null) {
+                preds.add(pred)
+                pred.latencyMs?.let { recordLatency(BASELINE_MODEL_ID, it); recordCumulative(BASELINE_MODEL_ID, it) }
+            }
         }
         preds.sortByDescending { it.selected }
 
@@ -884,7 +951,11 @@ class InferenceController(
             lastCycleTsMs = cycleTs,
             lastCause = cause,
             lastCycleDurationMs = durationMs,
-            realBackendAvailable = loaded[selectedId]?.real ?: false,
+            realBackendAvailable = if (selectedId == BASELINE_MODEL_ID) {
+                baseline?.fitted != null
+            } else {
+                loaded[selectedId]?.real ?: false
+            },
             // A full cycle republishes the circadian belief from the selected prediction (full context,
             // not low-context) so the clock/dial track the live forecast the moment warmup clears. When
             // THIS cycle's forecast carries no decoded time, keep the last known belief rather than
@@ -1090,8 +1161,17 @@ class InferenceController(
             runCatching { smoothingWindowProvider() }.getOrNull() ?: InferenceControllerDefaults.SAVGOL_WINDOW,
         )
 
-    private fun runningModels(): List<RunningModel> = loaded.map { (id, e) ->
-        RunningModel(id, e.effectiveBackend, e.precision, id == selectedId)
+    private fun runningModels(): List<RunningModel> {
+        val neural = loaded.map { (id, e) ->
+            RunningModel(id, e.effectiveBackend, e.precision, id == selectedId)
+        }
+        if (baseline?.fitted == null) return neural
+        return neural + RunningModel(
+            modelId = BASELINE_MODEL_ID,
+            backend = BackendId.NATIVE_RIDGE_FP64,
+            precision = Precision.FP32,
+            selected = selectedId == BASELINE_MODEL_ID,
+        )
     }
 
     /**
