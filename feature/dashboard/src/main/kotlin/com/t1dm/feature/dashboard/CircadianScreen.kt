@@ -33,6 +33,7 @@ import com.t1dm.core.design.JourneyPath
 import com.t1dm.core.design.LocalT1dmSemantics
 import com.t1dm.core.design.SevenSegmentClock
 import com.t1dm.core.design.JourneyMarks
+import com.t1dm.core.design.fadingEdges
 import com.t1dm.core.design.journeyProgress
 import com.t1dm.core.model.DkaTimeline
 import com.t1dm.core.model.PredictedTime
@@ -73,10 +74,12 @@ fun CircadianScreen(
     dkaTimeline: DkaTimeline = DkaTimeline.DEFAULT,
     modifier: Modifier = Modifier,
 ) {
+    val scroll = rememberScrollState()
     Column(
         modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
+            .fadingEdges(scroll)
+            .verticalScroll(scroll)
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {

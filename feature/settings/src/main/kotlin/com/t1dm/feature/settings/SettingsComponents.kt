@@ -32,9 +32,11 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.t1dm.core.design.FADE_EDGE_DEPTH
 import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.PULSE_HIGHLIGHT_MS
 import com.t1dm.core.design.animationsOn
+import com.t1dm.core.design.fadingEdges
 import com.t1dm.core.design.rememberT1dmHaptics
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.filterNotNull
@@ -64,7 +66,10 @@ fun SettingsScaffold(
     val registry = remember { SettingsAnchorRegistry() }
     val focus = LocalSettingsFocus.current
     val motion = animationsOn()
-    val padPx = with(LocalDensity.current) { 28.dp.roundToPx() }
+    // Clear of the top fade band, not merely clear of the edge: parked any shallower, the row the
+    // search just jumped to lands under the mask and stays dimmed there — hardest on the pulse that
+    // exists solely to say "this one".
+    val padPx = with(LocalDensity.current) { (FADE_EDGE_DEPTH + 8.dp).roundToPx() }
     // Anchor ids are globally unique, so a request naturally fires on exactly one screen.
     val target = focus.pending?.takeIf { SettingsIndex.byId(it)?.screen == screen }
     // Keyed on the request ALONE: the scroll moves the anchor, so keying on its position too would
@@ -98,6 +103,7 @@ fun SettingsScaffold(
             Modifier
                 .fillMaxSize()
                 .onGloballyPositioned { registry.originY = it.positionInRoot().y.toInt() }
+                .fadingEdges(scroll)
                 .verticalScroll(scroll)
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),

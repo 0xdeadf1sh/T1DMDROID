@@ -69,6 +69,7 @@ import androidx.compose.ui.unit.sp
 import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.LocalAnimationsEnabled
 import com.t1dm.core.design.LocalT1dmSemantics
+import com.t1dm.core.design.fadingEdges
 import com.t1dm.core.design.rememberT1dmHaptics
 import kotlinx.coroutines.launch
 import kotlin.math.PI
@@ -139,10 +140,12 @@ fun DeathModeScreen(active: Boolean, onActivate: () -> Unit, onDeactivate: () ->
             modifier = Modifier.fillMaxSize(),
             label = "rite",
         ) { pane ->
+            val scroll = rememberScrollState()
             Column(
                 Modifier
                     .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
+                    .fadingEdges(scroll)
+                    .verticalScroll(scroll)
                     .padding(20.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(18.dp),

@@ -19,6 +19,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.HapticEvent
+import com.t1dm.core.design.fadingEdges
 import com.t1dm.core.design.hapticClickable
 
 /**
@@ -44,8 +45,9 @@ data class AboutInfo(
 
 @Composable
 fun AboutScreen(info: AboutInfo) {
+    val scroll = rememberScrollState()
     Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+        Modifier.fillMaxSize().fadingEdges(scroll).verticalScroll(scroll).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         Text(info.appName, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)

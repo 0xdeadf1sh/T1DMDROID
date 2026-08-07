@@ -35,6 +35,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.HapticEvent
+import com.t1dm.core.design.fadingEdges
 import com.t1dm.core.design.panelCardColors
 import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.model.AdvancedStats
@@ -75,11 +76,13 @@ fun StatsScreen(
     // removes a row, so switching window/unit or recomputing keeps every element exactly in place —
     // and, unlike the old reserved top slot, it costs no dead space above the window switcher.
     val haptics = rememberT1dmHaptics()
+    val scroll = rememberScrollState()
     Box(Modifier.fillMaxSize()) {
         Column(
             Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
+                .fadingEdges(scroll)
+                .verticalScroll(scroll)
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {

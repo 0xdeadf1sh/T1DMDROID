@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
@@ -30,6 +31,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.HapticEvent
+import com.t1dm.core.design.fadingEdges
 import com.t1dm.core.design.hapticClickable
 import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.model.ForecastStatus
@@ -59,8 +61,13 @@ fun ModelsScreen(
     // LazyColumn viewport can't drop the pending confirmation mid-gesture.
     var confirmDelete by remember { mutableStateOf<String?>(null) }
     val haptics = rememberT1dmHaptics()
+    val listState = rememberLazyListState()
     Box(Modifier.fillMaxSize()) {
-        LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        LazyColumn(
+            Modifier.fillMaxSize().padding(16.dp).fadingEdges(listState),
+            state = listState,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
             item {
                 // N1 — the "Models" title lives in the breadcrumb; no duplicate in-view header.
                 Text(

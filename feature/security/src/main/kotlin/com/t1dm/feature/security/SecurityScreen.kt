@@ -15,6 +15,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.drawEsp32Watch
+import com.t1dm.core.design.fadingEdges
 import com.t1dm.core.design.panelCardColors
 import com.t1dm.core.design.rememberT1dmHaptics
 import androidx.compose.material3.Card
@@ -42,8 +43,9 @@ fun SecurityScreen(
     onRotate: () -> Unit = {},
     onUnpair: () -> Unit = {},
 ) {
+    val scroll = rememberScrollState()
     Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+        Modifier.fillMaxSize().fadingEdges(scroll).verticalScroll(scroll).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         // The panel leads with a large, still ESP32 wrist device — the accessory this whole screen

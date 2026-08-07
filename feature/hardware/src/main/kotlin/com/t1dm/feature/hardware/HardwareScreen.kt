@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -16,6 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.t1dm.core.design.fadingEdges
 import com.t1dm.core.model.InferenceState
 import com.t1dm.core.model.ModelLatency
 import com.t1dm.core.model.RunningModel
@@ -34,7 +36,14 @@ fun HardwareScreen(
     hardware: HardwareInfo = HardwareInfo.UNKNOWN,
     temperatureUnit: TempUnit = TempUnit.CELSIUS,
 ) {
-    LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    val listState = rememberLazyListState()
+    LazyColumn(
+        // padding BEFORE fadingEdges: it insets the lazy layout's viewport, so applied after it the
+        // band would be measured against a box 16dp taller than the list actually clips at.
+        Modifier.fillMaxSize().padding(16.dp).fadingEdges(listState),
+        state = listState,
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
         // ── Detected hardware readout (item 8) ──
         item {
             Text("Device hardware", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)

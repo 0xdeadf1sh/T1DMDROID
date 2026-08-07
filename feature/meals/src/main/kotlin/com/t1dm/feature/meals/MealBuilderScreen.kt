@@ -31,6 +31,7 @@ import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.ConfirmLogDialog
 import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.PendingLog
+import com.t1dm.core.design.fadingEdges
 import com.t1dm.core.design.hapticClickable
 import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.design.verticalScrollbar
@@ -74,7 +75,8 @@ fun MealBuilderScreen(
     val scroll = rememberScrollState()
 
     Column(
-        Modifier.fillMaxSize().verticalScrollbar(scroll).verticalScroll(scroll).padding(16.dp),
+        Modifier.fillMaxSize().verticalScrollbar(scroll).fadingEdges(scroll).verticalScroll(scroll)
+            .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         BuilderSummary(

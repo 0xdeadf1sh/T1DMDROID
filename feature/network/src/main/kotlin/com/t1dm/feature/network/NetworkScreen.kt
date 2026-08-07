@@ -14,6 +14,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.t1dm.core.design.fadingEdges
 
 /** One `model_id`'s cumulative `PUT /v1/predictions` push accounting (this process lifetime). */
 data class ModelPushRow(val modelId: String, val count: Long, val bytes: Long)
@@ -64,10 +65,12 @@ data class NetworkPanelState(
 
 @Composable
 fun NetworkScreen(state: NetworkPanelState = NetworkPanelState()) {
+    val scroll = rememberScrollState()
     Column(
         Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
+            .fadingEdges(scroll)
+            .verticalScroll(scroll)
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {

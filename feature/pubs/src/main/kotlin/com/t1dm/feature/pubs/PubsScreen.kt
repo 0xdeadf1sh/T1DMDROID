@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -49,6 +50,7 @@ import coil3.request.ImageRequest
 import coil3.request.crossfade
 import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.LocalAnimationsEnabled
+import com.t1dm.core.design.fadingEdges
 import com.t1dm.core.design.rememberT1dmHaptics
 import java.time.Instant
 import java.time.ZoneId
@@ -138,8 +140,10 @@ fun PubsScreen(repository: PubsRepository) {
 
 @Composable
 private fun Feed(posts: List<PubPost>, refreshError: String?, onRetry: () -> Unit) {
+    val listState = rememberLazyListState()
     LazyColumn(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier.fillMaxSize().fadingEdges(listState),
+        state = listState,
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {

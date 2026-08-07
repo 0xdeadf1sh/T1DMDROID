@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -34,6 +35,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.HapticEvent
+import com.t1dm.core.design.fadingEdges
 import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.model.BandCalibration
 import com.t1dm.core.model.BandCalibrationOutcome
@@ -143,7 +145,12 @@ fun ModelDetailScreen(
     // outcome already have here. It is a reading posture, not a preference, so it gets no setting.
     var gridHorizonMin by rememberSaveable(modelId) { mutableStateOf(CLARKE_GRID_DEFAULT_MIN) }
 
-    LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    val listState = rememberLazyListState()
+    LazyColumn(
+        Modifier.fillMaxSize().padding(16.dp).fadingEdges(listState),
+        state = listState,
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
         item {
             Text(modelId, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
             running?.let {

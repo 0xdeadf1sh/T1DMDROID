@@ -37,6 +37,7 @@ import com.t1dm.core.design.ConfirmLogDialog
 import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.IobCobLine
 import com.t1dm.core.design.PendingLog
+import com.t1dm.core.design.fadingEdges
 import com.t1dm.core.design.rememberHapticDetent
 import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.design.verticalScrollbar
@@ -124,7 +125,10 @@ fun InsulinScreen(
     val rapids = remember(presetCatalog) { presetCatalog.filter { it.family == InsulinFamily.RapidExp } }
     val basals = remember(presetCatalog) { presetCatalog.filter { it.family == InsulinFamily.BasalBateman } }
 
-    Column(Modifier.fillMaxSize().verticalScrollbar(scroll).verticalScroll(scroll).padding(16.dp)) {
+    Column(
+        Modifier.fillMaxSize().verticalScrollbar(scroll).fadingEdges(scroll).verticalScroll(scroll)
+            .padding(16.dp),
+    ) {
         iobCob?.let { IobCobLine(it, sensitivity, unit, provenance = iobProvenance(it)) }
 
         SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(top = 12.dp)) {
