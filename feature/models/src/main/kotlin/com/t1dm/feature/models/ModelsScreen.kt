@@ -194,7 +194,10 @@ private fun ModelRow(
             }
         }
         Text(
-            "${model.backend.displayName()} · ${model.precision.name}" +
+            // displayName() already ends in the precision ("XNNPACK CPU · fp32"), so appending the
+            // enum repeated it — harmless-looking on the neural rows and outright confusing on the
+            // baseline, which read "Ridge CPU · fp64 · FP32" before the enum gained an FP64 member.
+            model.backend.displayName() +
                 (prediction?.let { " · anchor ${it.lastBg.toInt()} mg/dL" } ?: ""),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,

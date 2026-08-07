@@ -164,7 +164,13 @@ fun ModelDetailScreen(
             Text(modelId, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
             running?.let {
                 Text(
-                    "${it.backend.displayName()} · ${it.precision.name}" + (if (it.selected) " · SELECTED (fp32-authoritative)" else ""),
+                    // displayName() already carries the precision; and only a graph model can be the
+                    // fp32 dosing authority, so the baseline must not claim to be one.
+                    it.backend.displayName() + when {
+                        it.selected && isBaseline -> " · SELECTED"
+                        it.selected -> " · SELECTED (fp32-authoritative)"
+                        else -> ""
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -198,6 +204,10 @@ fun ModelDetailScreen(
                     // it is why nothing is being forecast, and the §3.6-B guard withholds every cycle.
                     if (!b.calibrated) Note("Band uncalibrated — forecasts withheld")
                 }
+                // The one asymmetry with a graph model, and the user meets it the moment they select
+                // this one and open the calculator. Say it here rather than let the refusal there
+                // read as a fault.
+                Note("No dose advice — the calculator needs a graph model")
                 baselineFitNote?.let { Note(it) }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     TextButton(
@@ -673,7 +683,7 @@ private fun ComputeBackendControls(
     Row(Modifier.fillMaxWidth().padding(top = 4.dp)) {
         Text("Executing on ", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(
-            "${running.backend.displayName()} · ${running.precision.name}",
+            running.backend.displayName(), // already ends in the precision
             style = MaterialTheme.typography.bodySmall,
             fontWeight = FontWeight.Bold,
         )
