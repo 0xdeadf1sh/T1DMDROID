@@ -158,10 +158,24 @@ private const val LATCHED_SWIPE_FRAC = 0.16f
  *  graph, short of hiding what is underneath. */
 private const val SCRIM_ALPHA = 0.90f
 
-/** The scrim's clear centre, as a multiple of the hub radius, and the fraction of it that stays fully
- *  clear before the dimming ramps in. Wide enough to hold the swollen hub, its pointer and its glow. */
-private const val SCRIM_FADE_R = 3.2f
-private const val SCRIM_CLEAR = 0.55f
+/**
+ * The scrim's clear centre, as a multiple of the hub radius, and the fraction of it that stays fully
+ * clear before the dimming ramps in.
+ *
+ * **Both terms have to land inside the icon ring, which sits at about 2.7r.** The dimming is what the
+ * icons are read against, so a clear centre that ramps out past them leaves the app brightest exactly
+ * where they are drawn and dimmest at the edges of the screen — and a radial falloff centred on the
+ * hub does not read as "the menu cleared a hole", it reads as a POINT LIGHT under the thumb, washing
+ * out the slots nearest it. Reaching full scrim at 2r puts the whole falloff inside the ring, where
+ * the only thing it has to clear is the hub itself.
+ *
+ * The clear radius holds the hub at its pressed swell and the pointer above it (1.02r out, 0.2r long,
+ * both scaled by [PRESS_SWELL]); the remaining half-radius is the feather. It stays a fade rather than
+ * a punched circle because a hard edge cropped whatever reached past it — which is how the pointer
+ * went missing exactly when the wheel came up.
+ */
+private const val SCRIM_FADE_R = 2.0f
+private const val SCRIM_CLEAR = 0.75f
 
 private val PUCK_DP = 104.dp
 
