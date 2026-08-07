@@ -590,15 +590,23 @@ class InferenceController(
             val isFittedBaseline = id == BASELINE_MODEL_ID && baseline?.fitted != null
             if (id !in loaded.keys && !isFittedBaseline) return
             selectedId = id
+            val hasTime = loaded[id]?.bundle?.descriptor?.time != null
             val sel = _state.value.predictions.firstOrNull { it.modelId == id }
             _state.value = _state.value.copy(
                 running = runningModels(),
                 predictions = _state.value.predictions
                     .map { it.copy(selected = it.modelId == id) }
                     .sortedByDescending { it.selected },
-                circadianTime = sel?.predictedTime ?: _state.value.circadianTime,
-                circadianAnchorMs = sel?.predictedTime?.let { sel.anchorTsMs } ?: _state.value.circadianAnchorMs,
-                selectedHasTimeSection = loaded[id]?.bundle?.descriptor?.time != null,
+                // Switching to a model with no time head clears the belief outright rather than
+                // leaving the previous model's on screen, frozen at the instant of the switch.
+                circadianTime = if (hasTime) sel?.predictedTime ?: _state.value.circadianTime else null,
+                circadianAnchorMs = if (hasTime) {
+                    sel?.predictedTime?.let { sel.anchorTsMs } ?: _state.value.circadianAnchorMs
+                } else {
+                    null
+                },
+                circadianLowContext = hasTime && _state.value.circadianLowContext,
+                selectedHasTimeSection = hasTime,
             )
         }
         refreshModels()
@@ -855,7 +863,14 @@ class InferenceController(
             // degrades gracefully with little context, so we still publish it (issues 7 & 9) as a
             // low-context belief. It survives warmup via [circadianTime], never re-entering the forecast
             // path. Fail-OPEN to null when there is not yet enough raw history to run a single forward.
-            val warmupBelief = runCatching { circadianDuringWarmup() }.getOrNull()
+            // Only when the SELECTED model has a time head. `circadianDuringWarmup` runs a forward on
+            // whatever descriptor it can find, so with the baseline selected it would publish another
+            // model's belief under the selection — and pay for a forward pass to do it.
+            val warmupBelief = if (selHasTime) {
+                runCatching { circadianDuringWarmup() }.getOrNull()
+            } else {
+                null
+            }
             _state.value = _state.value.copy(
                 predictions = emptyList(), // clear the overlay while warming
                 lastCause = InferenceCause.COLLECTING_CONTEXT,
@@ -958,6 +973,10 @@ class InferenceController(
 
         val durationMs = ((System.nanoTime() - t0) / 1_000_000.0).toLong()
         val selPred = preds.firstOrNull { it.selected }
+        // Whether the SELECTED model can produce an hour-of-day belief at all. False for the
+        // classical baseline, which carries no time head — and false, correctly, for any neural
+        // export cut without one.
+        val selHasTime = loaded[selectedId]?.bundle?.descriptor?.time != null
         _state.value = _state.value.copy(
             running = runningModels(),
             predictions = preds,
@@ -976,10 +995,19 @@ class InferenceController(
             // not low-context) so the clock/dial track the live forecast the moment warmup clears. When
             // THIS cycle's forecast carries no decoded time, keep the last known belief rather than
             // blinking the clock OFF while a forecast is showing (a slow circadian phase, not a dosing signal).
-            circadianTime = selPred?.predictedTime ?: _state.value.circadianTime,
-            circadianAnchorMs = selPred?.predictedTime?.let { selPred.anchorTsMs } ?: _state.value.circadianAnchorMs,
-            circadianLowContext = if (selPred?.predictedTime != null) false else _state.value.circadianLowContext,
-            selectedHasTimeSection = loaded[selectedId]?.bundle?.descriptor?.time != null,
+            //
+            // That carry-over holds a belief across a TRANSIENT decode failure of a model that HAS a
+            // time head. It must not survive a switch to a model that has none: the belief on screen
+            // would then belong to a different model, frozen at the instant of the switch, with the
+            // panel's own "no time section" state unreachable because a stale value is not null.
+            circadianTime = if (selHasTime) selPred?.predictedTime ?: _state.value.circadianTime else null,
+            circadianAnchorMs = if (selHasTime) {
+                selPred?.predictedTime?.let { selPred.anchorTsMs } ?: _state.value.circadianAnchorMs
+            } else {
+                null
+            },
+            circadianLowContext = selHasTime && selPred?.predictedTime == null && _state.value.circadianLowContext,
+            selectedHasTimeSection = selHasTime,
             baselineModel = baseline?.fitted,
             warmup = null, // a published cycle clears the warmup banner
             note = if (stale) "forecast STALE — last real BG is ${(nowMs - series.anchorTsMs) / 60_000} min old" else null,
