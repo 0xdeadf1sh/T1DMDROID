@@ -316,6 +316,8 @@ class RollingForecasterAlignmentTest {
             bgTail: List<Double>,
             iob: Double,
             cob: Double,
+            futureCarb: List<Double>,
+            futureInsulin: List<Double>,
         ): BaselineForecast? = unused()
         override fun baselineOnBoardAt(events: List<CurveEvent>, atMs: Long, kind: CurveKind): Double = unused()
         override fun baselineDegeneracyCheck(forecast: BaselineForecast): ForecastStatus = unused()

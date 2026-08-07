@@ -49,7 +49,7 @@ fun buildInferenceController(
         telemetryStore = telemetryStore,
         thermalProvider = thermalProvider,
         smoothingWindowProvider = smoothingWindowProvider,
-        baseline = BaselineRunner(native, dispatchers, baselineStore, curveEvents),
+        baseline = BaselineRunner(native, dispatchers, baselineStore, curveEvents, futureOverrides),
     )
     controller.registerBackend(ExecuTorchXnnpackBackend())
     controller.registerBackend(ExecuTorchNeuronBackend())

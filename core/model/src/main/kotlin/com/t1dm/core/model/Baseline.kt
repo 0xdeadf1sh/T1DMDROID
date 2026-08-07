@@ -3,6 +3,9 @@ package com.t1dm.core.model
 /**
  * The classical forecast baseline — the domain types mirroring `t1dm-core::baseline` one-to-one.
  *
+ * Features: twelve lagged CGM values, causal IOB/COB at the anchor, and the committed carb
+ * appearance and insulin action summed over the next 30 / 60 / 120 minutes.
+ *
  * It exists so the neural model can be measured against something rather than against nothing.
  * The published comparisons are unflattering to both sides: on OhioT1DM the entire state of the
  * art spans under 2 mg/dL RMSE at 30 minutes, and beats zero-order hold by about five — so a
@@ -44,6 +47,11 @@ data class BaselineSpec(
     val ridgeLambda: Double,
     val useIob: Boolean,
     val useCob: Boolean,
+    /** Sums of committed carb appearance and insulin action over the next 30 / 60 / 120 min.
+     *  Without these the model's only exogenous inputs are two scalars at the anchor, and a dose
+     *  snapping to a later grid slot moves nothing until the next CGM sample advances the anchor —
+     *  so logging a meal appeared to do nothing at all. */
+    val useForward: Boolean,
 )
 
 /**

@@ -388,9 +388,11 @@ class UniffiNativeCore : NativeCore {
         bgTail: List<Double>,
         iob: Double,
         cob: Double,
+        futureCarb: List<Double>,
+        futureInsulin: List<Double>,
     ): BaselineForecast? =
         try {
-            uniffiBaselinePredict(model.toUniffi(), bgTail, iob, cob).toModel()
+            uniffiBaselinePredict(model.toUniffi(), bgTail, iob, cob, futureCarb, futureInsulin).toModel()
         } catch (_: CoreException) {
             null
         }
@@ -530,6 +532,7 @@ private fun UniffiBaselineSpec.toModel(): BaselineSpec = BaselineSpec(
     ridgeLambda = ridgeLambda,
     useIob = useIob,
     useCob = useCob,
+    useForward = useForward,
 )
 
 private fun BaselineSpec.toUniffi(): UniffiBaselineSpec = UniffiBaselineSpec(
@@ -538,6 +541,7 @@ private fun BaselineSpec.toUniffi(): UniffiBaselineSpec = UniffiBaselineSpec(
     ridgeLambda = ridgeLambda,
     useIob = useIob,
     useCob = useCob,
+    useForward = useForward,
 )
 
 private fun UniffiBaselineModel.toModel(): BaselineModel = BaselineModel(

@@ -199,6 +199,7 @@ class KvBaselineStore(private val repository: T1dmRepository) : BaselineStore {
                 ridgeLambda = s.getDouble("ridgeLambda"),
                 useIob = s.getBoolean("useIob"),
                 useCob = s.getBoolean("useCob"),
+                useForward = s.getBoolean("useForward"),
             )
             val nFeatures = o.getInt("nFeatures")
             val weights = o.getJSONArray("weights").toDoubleList()
@@ -235,7 +236,8 @@ class KvBaselineStore(private val repository: T1dmRepository) : BaselineStore {
                     .put("horizonSteps", model.spec.horizonSteps)
                     .put("ridgeLambda", model.spec.ridgeLambda)
                     .put("useIob", model.spec.useIob)
-                    .put("useCob", model.spec.useCob),
+                    .put("useCob", model.spec.useCob)
+                    .put("useForward", model.spec.useForward),
             )
             .put("nFeatures", model.nFeatures)
             .put("weights", JSONArray(model.weights))
@@ -257,8 +259,10 @@ class KvBaselineStore(private val repository: T1dmRepository) : BaselineStore {
         const val KV_KEY = "inference.baseline.model"
 
         /** Bumped when the blob's SHAPE changes. An older blob is dropped rather than migrated:
-         *  a refit costs one button press and is exact, where a migration would be a guess. */
-        const val BLOB_VERSION = 1
+         *  a refit costs one button press and is exact, where a migration would be a guess.
+         *  2: the forward carb/insulin blocks joined the feature set, so v1 weights index a
+         *  different design row and would decode a plausible, finite, wrong forecast. */
+        const val BLOB_VERSION = 2
 
         const val N_QUANTILES = 7
     }

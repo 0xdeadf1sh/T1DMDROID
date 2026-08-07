@@ -270,7 +270,25 @@ interface NativeCore {
      * wrong length, a model whose weights disagree with its spec — which the controller treats as
      * "no forecast this cycle" rather than substituting one.
      */
-    fun baselinePredict(model: BaselineModel, bgTail: List<Double>, iob: Double, cob: Double): BaselineForecast?
+    /**
+     * [futureCarb] / [futureInsulin] are the COMMITTED per-5-min carb appearance and insulin action
+     * over the prediction zone, index 0 being the step after the anchor — the same channels the
+     * neural cycle carries into its prediction patches. They are what let a just-logged dose move
+     * this forecast at all: on-board alone is a scalar at the anchor, and a dose snapping to a later
+     * grid slot contributes nothing to it until the next CGM sample arrives.
+     *
+     * Both must be at least `horizonSteps` long. A short array yields `null` rather than being
+     * zero-padded, because a zero-padded future is not a missing input — it is the claim that no
+     * dose is coming.
+     */
+    fun baselinePredict(
+        model: BaselineModel,
+        bgTail: List<Double>,
+        iob: Double,
+        cob: Double,
+        futureCarb: List<Double>,
+        futureInsulin: List<Double>,
+    ): BaselineForecast?
 
     /**
      * The strictly-causal on-board amount at one instant — the IOB/COB feature

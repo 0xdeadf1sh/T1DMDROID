@@ -314,6 +314,8 @@ class StubNativeCore : NativeCore {
         bgTail: List<Double>,
         iob: Double,
         cob: Double,
+        futureCarb: List<Double>,
+        futureInsulin: List<Double>,
     ): BaselineForecast? = null
 
     override fun baselineOnBoardAt(events: List<CurveEvent>, atMs: Long, kind: CurveKind): Double = 0.0

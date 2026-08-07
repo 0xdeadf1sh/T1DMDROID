@@ -60,6 +60,23 @@ const MAX_HORIZON: u32 = 72;
 /// patient whose COB is identically zero.
 const MIN_LAMBDA: f64 = 1e-6;
 
+/// Forward windows, in five-minute steps, over which committed carbohydrate appearance and insulin
+/// action are summed into features: 30, 60 and 120 minutes.
+///
+/// These are what let a logged dose move the forecast at all. On-board alone is a scalar at the
+/// anchor, so a dose snapping to a LATER grid slot than the anchor contributes exactly nothing
+/// until the anchor catches up — which is why the model appeared to react only to CGM samples.
+/// Blocks rather than one total because the ridge can then bend the near steps differently from the
+/// far ones; per-step features would be almost perfectly collinear between neighbours and the
+/// shrinkage would fight that instead of fitting signal.
+///
+/// **These count every committed curve overlapping the window, including one that starts after the
+/// anchor.** That is the same information the neural model's prediction-zone channels carry, and
+/// matching it is what keeps the two comparable. The cost is that a backtest row uses a dose the
+/// anchor may not literally have known about yet, so `holdout_rmse_mgdl` is mildly optimistic;
+/// nothing downstream may quote it against a strictly-causal figure without saying so.
+const FORWARD_BLOCKS: [usize; 3] = [6, 12, 24];
+
 /// The baseline's shape and shrinkage. Defaults come from [`baseline_default_spec`].
 #[derive(Debug, Clone, Copy, PartialEq, uniffi::Record)]
 pub struct BaselineSpec {
@@ -73,9 +90,11 @@ pub struct BaselineSpec {
     pub use_iob: bool,
     /// Include causal carbohydrate-on-board as a feature.
     pub use_cob: bool,
+    /// Include the [`FORWARD_BLOCKS`] sums of committed carb appearance and insulin action.
+    pub use_forward: bool,
 }
 
-/// The shipped defaults: 12 lags (1 h), 24 steps (2 h), λ = 1.0, both on-board channels on.
+/// The shipped defaults: 12 lags (1 h), 24 steps (2 h), λ = 1.0, on-board and forward blocks on.
 #[uniffi::export]
 pub fn baseline_default_spec() -> BaselineSpec {
     BaselineSpec {
@@ -84,6 +103,7 @@ pub fn baseline_default_spec() -> BaselineSpec {
         ridge_lambda: 1.0,
         use_iob: true,
         use_cob: true,
+        use_forward: true,
     }
 }
 
@@ -271,18 +291,51 @@ fn checked_shape(spec: &BaselineSpec) -> Result<(usize, usize, usize), CoreError
     }
     let p = spec.n_lags as usize;
     let h = spec.horizon_steps as usize;
-    let d = p + spec.use_iob as usize + spec.use_cob as usize;
+    if spec.use_forward && h < FORWARD_BLOCKS[FORWARD_BLOCKS.len() - 1] {
+        return Err(bad(format!(
+            "baseline horizon_steps {h} is shorter than the widest forward block {}",
+            FORWARD_BLOCKS[FORWARD_BLOCKS.len() - 1]
+        )));
+    }
+    let fwd = if spec.use_forward { 2 * FORWARD_BLOCKS.len() } else { 0 };
+    let d = p + spec.use_iob as usize + spec.use_cob as usize + fwd;
     Ok((p, h, d))
+}
+
+/// Write the forward-block features for one anchor into `row[at..]`, from the carb and insulin rate
+/// series covering `(anchor, anchor + max_block]`.
+///
+/// `carb`/`ins` are per-step rates whose index 0 is the step immediately AFTER the anchor — the
+/// same alignment at fit time (a slice of the window's own channels) and at inference (the
+/// committed-tail channels over the prediction zone), which is what keeps the two comparable.
+#[inline]
+fn forward_row(carb: &[f64], ins: &[f64], row: &mut [f64], at: usize) -> bool {
+    for (b, &block) in FORWARD_BLOCKS.iter().enumerate() {
+        if carb.len() < block || ins.len() < block {
+            return false;
+        }
+        let c: f64 = carb[..block].iter().sum();
+        let i: f64 = ins[..block].iter().sum();
+        if !c.is_finite() || !i.is_finite() {
+            return false;
+        }
+        row[at + b] = c;
+        row[at + FORWARD_BLOCKS.len() + b] = i;
+    }
+    true
 }
 
 /// Fill one design row for the step at grid index `t`. Returns false if any component is
 /// non-finite (a CGM gap in the lag span), which drops the row rather than imputing it —
 /// `SPEC/invariants.md` §1 makes gap-filling a presentation step, never a stored or fitted value.
+#[allow(clippy::too_many_arguments)]
 #[inline]
 fn design_row(
     bg: &[f64],
     iob: &[f64],
     cob: &[f64],
+    carb_rate: &[f64],
+    ins_rate: &[f64],
     spec: &BaselineSpec,
     p: usize,
     t: usize,
@@ -310,6 +363,18 @@ fn design_row(
             return false;
         }
         row[k] = v;
+        k += 1;
+    }
+    if spec.use_forward {
+        // The forward window opens at the step AFTER the anchor, matching what a live cycle is
+        // handed for the prediction zone.
+        let from = t + 1;
+        if from > carb_rate.len() || from > ins_rate.len() {
+            return false;
+        }
+        if !forward_row(&carb_rate[from..], &ins_rate[from..], row, k) {
+            return false;
+        }
     }
     true
 }
@@ -360,6 +425,14 @@ pub fn fit_baseline_ridge(
     if spec.use_cob {
         on_board_series(&events, CurveKind::Carb, grid_start_ms, n, &mut cob, &mut suffix);
     }
+    // The per-step appearance/action rates the forward blocks are summed from — the same channels
+    // `bucketize` lays down for the neural model's context, through the same routine.
+    let mut carb_rate = vec![0.0f64; n];
+    let mut ins_rate = vec![0.0f64; n];
+    if spec.use_forward {
+        crate::curve::bucketize_into(&events, grid_start_ms, CurveKind::Carb, &mut carb_rate);
+        crate::curve::bucketize_into(&events, grid_start_ms, CurveKind::Insulin, &mut ins_rate);
+    }
 
     // Usable anchor steps: `t` has a full lag span behind and a full horizon ahead.
     let t_lo = p - 1;
@@ -380,7 +453,7 @@ pub fn fit_baseline_ridge(
     let mut m2 = vec![0.0f64; d];
     let mut n_rows = 0usize;
     for t in t_lo..split_t {
-        if !design_row(&bg_mgdl, &iob, &cob, &spec, p, t, &mut row) {
+        if !design_row(&bg_mgdl, &iob, &cob, &carb_rate, &ins_rate, &spec, p, t, &mut row) {
             continue;
         }
         n_rows += 1;
@@ -418,7 +491,7 @@ pub fn fit_baseline_ridge(
     let mut z = vec![0.0f64; d];
 
     for t in t_lo..split_t {
-        if !design_row(&bg_mgdl, &iob, &cob, &spec, p, t, &mut row) {
+        if !design_row(&bg_mgdl, &iob, &cob, &carb_rate, &ins_rate, &spec, p, t, &mut row) {
             continue;
         }
         for j in 0..d {
@@ -518,7 +591,7 @@ pub fn fit_baseline_ridge(
     let mut se_persist = vec![0.0f64; h];
     let mut se_n = vec![0.0f64; h];
     for t in split_t..t_hi {
-        if !design_row(&bg_mgdl, &iob, &cob, &spec, p, t, &mut row) {
+        if !design_row(&bg_mgdl, &iob, &cob, &carb_rate, &ins_rate, &spec, p, t, &mut row) {
             continue;
         }
         let mut realized = Vec::with_capacity(h);
@@ -609,6 +682,8 @@ pub fn baseline_predict(
     bg_tail: Vec<f64>,
     iob: f64,
     cob: f64,
+    future_carb: Vec<f64>,
+    future_insulin: Vec<f64>,
 ) -> Result<BaselineForecast, CoreError> {
     let bad = |reason: String| CoreError::Internal { reason };
     let (p, h, d) = checked_shape(&model.spec)?;
@@ -652,6 +727,23 @@ pub fn baseline_predict(
     }
     if model.spec.use_cob {
         row[k] = cob;
+        k += 1;
+    }
+    if model.spec.use_forward {
+        // The committed carb appearance and insulin action over the prediction zone, index 0 being
+        // the step after the anchor — the same alignment the fit slices out of its own window. A
+        // short or non-finite array is a caller error, and withholding beats forecasting off a
+        // silently zero-padded future that would read as "no dose is coming".
+        if future_carb.len() < h || future_insulin.len() < h {
+            return Err(bad(format!(
+                "baseline future channels are {} / {} steps, need {h}",
+                future_carb.len(),
+                future_insulin.len()
+            )));
+        }
+        if !forward_row(&future_carb, &future_insulin, &mut row, k) {
+            return Err(bad("baseline future channels are not finite".into()));
+        }
     }
 
     let median = predict_median(model, &row, d, h);
@@ -725,6 +817,7 @@ mod tests {
             ridge_lambda: 1.0,
             use_iob: false,
             use_cob: false,
+            use_forward: false,
         }
     }
 
@@ -782,14 +875,14 @@ mod tests {
             band_delta: Vec::new(),
             ..fit.model.clone()
         };
-        let raw = baseline_predict(&unfitted, tail.clone(), 0.0, 0.0).expect("raw");
+        let raw = baseline_predict(&unfitted, tail.clone(), 0.0, 0.0, vec![], vec![]).expect("raw");
         assert_eq!(
             baseline_degeneracy_check(&raw),
             ForecastStatus::CollapsedBand,
             "an uncalibrated baseline must be withheld, not shown as a confident line"
         );
 
-        let cal = baseline_predict(&fit.model, tail, 0.0, 0.0).expect("calibrated");
+        let cal = baseline_predict(&fit.model, tail, 0.0, 0.0, vec![], vec![]).expect("calibrated");
         assert_eq!(baseline_degeneracy_check(&cal), ForecastStatus::Ok);
         assert_eq!(cal.median_bg, raw.median_bg, "the delta may not move the median");
     }
@@ -875,9 +968,9 @@ mod tests {
         let fit = fit_baseline_ridge(bg, 0, vec![], spec(12, 24), 0, 19).expect("fit");
         let mut tail = vec![120.0; 12];
         tail[3] = f64::NAN;
-        assert!(baseline_predict(&fit.model, tail, 0.0, 0.0).is_err());
+        assert!(baseline_predict(&fit.model, tail, 0.0, 0.0, vec![], vec![]).is_err());
         // Wrong tail length is a caller bug, not a silent pad.
-        assert!(baseline_predict(&fit.model, vec![120.0; 11], 0.0, 0.0).is_err());
+        assert!(baseline_predict(&fit.model, vec![120.0; 11], 0.0, 0.0, vec![], vec![]).is_err());
     }
 
     #[test]
@@ -902,7 +995,7 @@ mod tests {
                 }
             })
             .collect();
-        let out = baseline_predict(&hostile, bg[bg.len() - 12..].to_vec(), 0.0, 0.0).expect("predict");
+        let out = baseline_predict(&hostile, bg[bg.len() - 12..].to_vec(), 0.0, 0.0, vec![], vec![]).expect("predict");
         for (i, &v) in out.bands_mgdl.iter().enumerate() {
             assert!(
                 (CLINICAL_BG_CLAMP_MIN..=CLINICAL_BG_CLAMP_MAX).contains(&v),
@@ -928,12 +1021,66 @@ mod tests {
     }
 
     #[test]
+    fn a_committed_meal_moves_the_forecast_without_a_new_bg_sample() {
+        // The defect this feature set exists to fix: with only on-board features, a dose snapping to
+        // a grid slot AFTER the anchor changed nothing until the next CGM sample advanced the
+        // anchor, so logging a meal appeared to do nothing at all.
+        let bg = synthetic_bg(3000);
+        let events: Vec<CurveEvent> = (0..20)
+            .map(|i| CurveEvent {
+                start_ms: (i as i64 * 144 + 30) * STEP_MS,
+                step_ms: STEP_MS,
+                kind: CurveKind::Carb,
+                total: 45.0,
+                values: crate::curve::gamma(45.0, 3.25, 22.5, 120.0),
+            })
+            .collect();
+        let s = BaselineSpec {
+            use_iob: true,
+            use_cob: true,
+            use_forward: true,
+            ..spec(12, 24)
+        };
+        let fit = fit_baseline_ridge(bg.clone(), 0, events, s, 0, 19).expect("fit");
+        assert_eq!(fit.model.n_features, 12 + 2 + 2 * FORWARD_BLOCKS.len() as u32);
+
+        let tail: Vec<f64> = bg[bg.len() - 12..].to_vec();
+        let none = vec![0.0f64; 24];
+        let quiet = baseline_predict(&fit.model, tail.clone(), 0.0, 0.0, none.clone(), none.clone())
+            .expect("no committed dose");
+        // A 60 g meal whose appearance lands entirely inside the prediction zone — identical BG
+        // history, identical on-board at the anchor, only the forward channels differ.
+        let meal = crate::curve::gamma(60.0, 3.25, 22.5, 120.0);
+        let mut future_carb = vec![0.0f64; 24];
+        for (i, slot) in future_carb.iter_mut().enumerate() {
+            *slot = meal.get(i).copied().unwrap_or(0.0);
+        }
+        let fed = baseline_predict(&fit.model, tail, 0.0, 0.0, future_carb, none)
+            .expect("committed meal");
+        assert_ne!(
+            quiet.median_bg, fed.median_bg,
+            "a committed meal must move the forecast with no new BG sample"
+        );
+    }
+
+    #[test]
+    fn predict_refuses_a_short_future_window() {
+        let bg = synthetic_bg(3000);
+        let s = BaselineSpec { use_forward: true, ..spec(12, 24) };
+        let fit = fit_baseline_ridge(bg.clone(), 0, vec![], s, 0, 19).expect("fit");
+        let tail: Vec<f64> = bg[bg.len() - 12..].to_vec();
+        // Zero-padding a short future would read as "no dose is coming", which is a claim rather
+        // than a gap; the forecast is withheld instead.
+        assert!(baseline_predict(&fit.model, tail, 0.0, 0.0, vec![0.0; 12], vec![0.0; 24]).is_err());
+    }
+
+    #[test]
     fn a_flat_trace_predicts_itself() {
         // A constant series has zero variance in every lag column; the standardization guard must
         // keep the solve well-posed and the forecast must sit on the constant.
         let fit = fit_baseline_ridge(vec![120.0; 3000], 0, vec![], spec(12, 24), 0, 19)
             .expect("flat fit");
-        let out = baseline_predict(&fit.model, vec![120.0; 12], 0.0, 0.0).expect("predict");
+        let out = baseline_predict(&fit.model, vec![120.0; 12], 0.0, 0.0, vec![], vec![]).expect("predict");
         for v in &out.median_bg {
             assert!((v - 120.0).abs() < 1e-6, "flat forecast drifted to {v}");
         }

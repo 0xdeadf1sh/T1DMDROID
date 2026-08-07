@@ -438,7 +438,23 @@ pub fn bucketize(
     }
     let n = n_steps as usize;
     let mut grid = vec![0.0f64; n];
-    for ev in &events {
+    bucketize_into(&events, grid_start_ms, kind, &mut grid);
+    Ok(grid)
+}
+
+/// The body of [`bucketize`], writing into a caller-owned slice.
+///
+/// Split out so `crate::baseline` can lay the same channels onto its fit window without cloning the
+/// event list per call, and — the part that matters — without a second transcription of the grid
+/// alignment rule. `out` is ADDED to, not cleared, so a caller may accumulate several kinds.
+pub(crate) fn bucketize_into(
+    events: &[CurveEvent],
+    grid_start_ms: i64,
+    kind: CurveKind,
+    out: &mut [f64],
+) {
+    let n = out.len();
+    for ev in events {
         if ev.kind != kind {
             continue;
         }
@@ -447,11 +463,10 @@ pub fn bucketize(
         for (j, &val) in ev.values.iter().enumerate() {
             let idx = offset + j as i64;
             if idx >= 0 && (idx as usize) < n {
-                grid[idx as usize] += val;
+                out[idx as usize] += val;
             }
         }
     }
-    Ok(grid)
 }
 
 // ── on_board — IOB / COB as remaining tail area (model-io-curves.md) ─────────────────────

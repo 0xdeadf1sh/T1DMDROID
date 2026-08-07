@@ -37,6 +37,10 @@ class BaselineRunner(
     private val dispatchers: T1dmDispatchers,
     private val store: BaselineStore?,
     private val events: CurveEventSource?,
+    /** The COMMITTED dose tails over the prediction zone — the same source the neural cycle carries
+     *  into its prediction patches. This is what makes a just-logged meal or bolus move the forecast
+     *  immediately, instead of waiting for the next CGM sample to advance the anchor past it. */
+    private val futureOverrides: FutureOverrideSource?,
 ) {
     private val fitMutex = Mutex()
 
@@ -151,6 +155,16 @@ class BaselineRunner(
             emptyList()
         }
 
+        // The prediction zone opens at the step AFTER the anchor, which is the alignment the fit
+        // slices out of its own window. Unwired (or a source that returns short) ⇒ no forward
+        // features are available, and a model fitted WITH them must not be run against a fabricated
+        // zero future — the core rejects the short array and this cycle publishes nothing.
+        val future = if (m.spec.useForward) {
+            futureOverrides?.overrides(anchorMs + GRID_MS, m.spec.horizonSteps)
+        } else {
+            null
+        }
+
         val forecast = withContext(dispatchers.default) {
             val iob = if (m.spec.useIob) native.baselineOnBoardAt(ev, anchorMs, CurveKind.INSULIN) else 0.0
             val cob = if (m.spec.useCob) native.baselineOnBoardAt(ev, anchorMs, CurveKind.CARB) else 0.0
@@ -159,6 +173,8 @@ class BaselineRunner(
                 bgTail = series.mgdl.copyOfRange(series.mgdl.size - p, series.mgdl.size).toList(),
                 iob = iob,
                 cob = cob,
+                futureCarb = future?.first?.toList().orEmpty(),
+                futureInsulin = future?.second?.toList().orEmpty(),
             )
         } ?: return null
 
