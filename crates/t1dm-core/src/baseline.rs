@@ -161,6 +161,13 @@ fn on_board_series(
         if ev.kind != kind || ev.values.is_empty() {
             continue;
         }
+        // The scatter below indexes `values` by GRID steps, so an event sampled at any other
+        // cadence would be laid down at the wrong times. Every producer in the crate emits
+        // `step_ms == STEP_MS`; one that did not is skipped rather than silently misplaced, which
+        // is also where `crate::on_board` and this function would otherwise disagree.
+        if ev.step_ms != STEP_MS {
+            continue;
+        }
         let offset = (((ev.start_ms - grid_start_ms) as f64) / STEP_MS as f64).round() as i64;
         let len = ev.values.len();
         // Nothing to scatter if the event's action ends before the grid or starts after it.
@@ -659,11 +666,19 @@ pub fn baseline_predict(
     // The degenerate fan is the identity input to §8.4's apply: with an all-zero delta it comes
     // back unchanged, and with a fitted one it opens into the residual quantiles around a median
     // the correction is forbidden to move.
-    let bands_mgdl = if model.band_delta.is_empty() {
+    let mut bands_mgdl = if model.band_delta.is_empty() {
         bands
     } else {
         apply_quantile_conformal(bands, model.band_delta.clone())?
     };
+    // The delta is added downstream of the median's own clamp, so an edge can land outside the
+    // physical domain even though the median cannot. The neural path never has this problem — its
+    // `f_inv` clamps every band edge on the way out — so clamp here to keep both models' fans
+    // inside the same rails. Order is preserved: clamping a monotone sequence to an interval
+    // leaves it monotone.
+    for v in bands_mgdl.iter_mut() {
+        *v = v.clamp(CLINICAL_BG_CLAMP_MIN, CLINICAL_BG_CLAMP_MAX);
+    }
 
     Ok(BaselineForecast {
         median_bg: median,
@@ -863,6 +878,53 @@ mod tests {
         assert!(baseline_predict(&fit.model, tail, 0.0, 0.0).is_err());
         // Wrong tail length is a caller bug, not a silent pad.
         assert!(baseline_predict(&fit.model, vec![120.0; 11], 0.0, 0.0).is_err());
+    }
+
+    #[test]
+    fn band_edges_stay_inside_the_physical_domain() {
+        // The conformal delta is added downstream of the median's clamp, so a wide correction near
+        // a rail could otherwise push an edge outside the domain the rest of the app renders on.
+        let bg = synthetic_bg(3000);
+        let fit = fit_baseline_ridge(bg.clone(), 0, vec![], spec(12, 24), 0, 19).expect("fit");
+        let mut hostile = fit.model.clone();
+        // A delta far larger than anything a real fit produces, still median-fixed and monotone.
+        let nq = QUANTILE_LEVELS.len();
+        let median_idx = 3;
+        hostile.band_delta = (0..24 * nq)
+            .map(|i| {
+                let k = i % nq;
+                if k == median_idx {
+                    0.0
+                } else if k < median_idx {
+                    -5000.0
+                } else {
+                    5000.0
+                }
+            })
+            .collect();
+        let out = baseline_predict(&hostile, bg[bg.len() - 12..].to_vec(), 0.0, 0.0).expect("predict");
+        for (i, &v) in out.bands_mgdl.iter().enumerate() {
+            assert!(
+                (CLINICAL_BG_CLAMP_MIN..=CLINICAL_BG_CLAMP_MAX).contains(&v),
+                "band edge {i} = {v} escaped the physical domain"
+            );
+        }
+        assert_eq!(baseline_degeneracy_check(&out), ForecastStatus::Ok);
+    }
+
+    #[test]
+    fn an_event_off_the_grid_cadence_is_skipped_not_misplaced() {
+        let ev = CurveEvent {
+            start_ms: 0,
+            step_ms: STEP_MS / 2, // not the five-minute grid
+            kind: CurveKind::Carb,
+            total: 60.0,
+            values: crate::curve::gamma(60.0, 3.25, 22.5, 120.0),
+        };
+        let mut out = vec![0.0; 40];
+        let mut scratch = Vec::new();
+        on_board_series(&[ev], CurveKind::Carb, 0, 40, &mut out, &mut scratch);
+        assert!(out.iter().all(|&v| v == 0.0), "off-cadence event was laid onto the grid");
     }
 
     #[test]

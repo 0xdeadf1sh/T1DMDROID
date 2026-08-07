@@ -9,14 +9,22 @@ package com.t1dm.core.model
  * baseline is only worth shipping if it is a fair opponent, which means fitted on this patient,
  * direct multi-step rather than rolled recursively, and carrying an honest interval.
  *
- * **From the app's perspective this is an ordinary model.** It joins the running set, selecting it
- * means what selecting any model means — the graph, the predictive alert, the widget and the dose
- * calculator's rails all read the selected fan — and it is scored by the same suite through the
- * same gates. The only place it is unavoidably distinct is discovery: it has no descriptor and no
- * `.pte`, because it is fitted on device rather than exported, and `SPEC/invariants.md` §4 rule 5
- * makes a descriptor and an artifact one unit — so there is no honest descriptor to give it. It
- * therefore sits beside the discovered set rather than inside it, and outside the running cap,
- * which governs how many exported graphs are loaded.
+ * **From the app's perspective this is an ordinary model** everywhere the model abstraction is a
+ * FAN: it joins the running set, selecting it gives the graph overlay, the predictive alert and the
+ * widget its fan exactly as selecting any model does, it is scored by the same suite through the
+ * same §3.6 gates, and it syncs under its own id. It has no descriptor and no `.pte`, because it is
+ * fitted on device rather than exported and `SPEC/invariants.md` §4 rule 5 makes a descriptor and an
+ * artifact one unit, so it sits beside the discovered set rather than inside it and outside the
+ * running cap.
+ *
+ * **What it cannot drive is the dose calculator.** `:calc`'s rolled search is graph-shaped: it sizes
+ * its context from a descriptor's patch geometry and runs a `GraphInput` forward per roll with the
+ * candidate dose written into the prediction zone. A model with neither a descriptor nor a graph
+ * cannot answer that, so with the baseline selected `authorityModelInfo()` finds no loaded fp32
+ * authority and the calculator, the ISF/ICR probe and the rolled display overlay all fail closed.
+ * That is the safe direction and it is not silent to the code — but the refusal currently reads
+ * "no selected model", which is the wrong reason. Giving the baseline a real rolling path is a
+ * `:calc` change behind the dose-rail invariants, not something to infer from this file.
  */
 
 /** The stable `model_id` the baseline publishes under — on the graph, in the `prediction` table,

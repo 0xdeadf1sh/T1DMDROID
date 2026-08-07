@@ -75,7 +75,7 @@ class BaselineRunner(
      * later fit calibrates it. The alternative — discarding it — would hide from the user that the
      * fit ran at all.
      */
-    suspend fun fit(history: BgHistoryProvider, nowMs: Long): Result<BaselineFit> {
+    suspend fun fit(history: BgHistoryProvider, nowMs: Long, minCalWindows: Int): Result<BaselineFit> {
         if (!fitMutex.tryLock()) return Result.failure(BaselineFitException(BaselineFitRefusal.BUSY))
         try {
             val spec = withContext(dispatchers.default) { native.baselineDefaultSpec() }
@@ -93,7 +93,14 @@ class BaselineRunner(
                     events = ev,
                     spec = spec,
                     nowMs = nowMs,
-                    minCalWindows = native.conformalMinCalWindows(),
+                    // The caller's policy threshold, not the core's arithmetic floor. The floor
+                    // (`conformalMinCalWindows`, 19) is only the count below which a level's order
+                    // statistic clamps — the core raises anything smaller to it, and its own note says
+                    // a caller should ask for far more. Asking for the floor would hold this band to a
+                    // weaker standard than the neural model's display-only correction is held to,
+                    // which is backwards: this delta IS the interval, and it is what decides whether
+                    // the forecast escapes the collapsed-band guard at all.
+                    minCalWindows = minCalWindows,
                 )
             } ?: return Result.failure(BaselineFitException(BaselineFitRefusal.CORE_REFUSED))
 

@@ -1969,6 +1969,15 @@ class AppContainer(context: Context) {
 
     /** The selected fp32-authoritative model handle for `:calc`; null (⇒ fail-closed refusal) when
      *  nothing is loaded/selected OR the [StubBackend] stood in for a missing `.pte` (`real == false`). */
+    /**
+     * Fit the classical baseline, held to the SAME calibration threshold as the neural §8.4
+     * correction — one policy constant, not two. If anything, this band deserves the stricter of the
+     * two: the neural delta only tints the graph, while this one IS the baseline's interval and
+     * decides whether its forecast clears the collapsed-band guard at all.
+     */
+    suspend fun fitBaseline() =
+        inferenceController.fitBaseline(System.currentTimeMillis(), CONFORMAL_MIN_CAL_WINDOWS)
+
     private val selectedModelProvider = SelectedModelProvider {
         val info = inferenceController.authorityModelInfo()
         if (info == null || !info.real) null

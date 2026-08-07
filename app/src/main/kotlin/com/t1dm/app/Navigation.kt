@@ -1223,8 +1223,7 @@ private fun T1dmNavHost(
                 onApplyUpdate = { id -> scope.launch { container.applyModelUpdate(id) } },
                 onDelete = { id -> scope.launch { container.removeModel(id) } },
                 onFitBaseline = {
-                    container.inferenceController.fitBaseline(System.currentTimeMillis())
-                        .also { container.reevaluateInferenceNow() }
+                    container.fitBaseline().also { container.reevaluateInferenceNow() }
                 },
             )
         }

@@ -92,10 +92,12 @@ class InferenceController(
      *  anchor, hence its exclusion from the agreement probe below. */
     private val smoothingWindowProvider: suspend () -> Int = { InferenceControllerDefaults.SAVGOL_WINDOW },
     /** The classical baseline the neural models are compared against. It runs beside the loaded set
-     *  every cycle and publishes an ordinary [ModelPrediction], so from the app's side it is simply
-     *  another model. It is not part of [loaded] only because it has no descriptor and no artifact —
-     *  it is fitted on device rather than exported — and `SPEC/invariants.md` §4 rule 5 makes a
-     *  descriptor and an artifact one unit, so there is no honest bundle to give it. Null ⇒ absent. */
+     *  every cycle and publishes an ordinary [ModelPrediction], so every consumer that reads a FAN
+     *  treats it as another model. It is not part of [loaded] because it has no descriptor and no
+     *  artifact — it is fitted on device rather than exported — and `SPEC/invariants.md` §4 rule 5
+     *  makes a descriptor and an artifact one unit, so there is no honest bundle to give it. The
+     *  consequence is that [authorityModelInfo] cannot resolve it and the dose path fails closed
+     *  while it is selected; see [com.t1dm.core.model.BaselineModel]. Null ⇒ absent. */
     private val baseline: BaselineRunner? = null,
 ) {
     private val _state = MutableStateFlow(InferenceState())
@@ -175,9 +177,9 @@ class InferenceController(
      * and it takes long enough that blocking the cycle for its duration would stall the forecast.
      * [BaselineRunner] serialises fits against each other.
      */
-    suspend fun fitBaseline(nowMs: Long): Result<BaselineFit> {
+    suspend fun fitBaseline(nowMs: Long, minCalWindows: Int): Result<BaselineFit> {
         val b = baseline ?: return Result.failure(IllegalStateException("no baseline runner"))
-        val result = b.fit(history, nowMs)
+        val result = b.fit(history, nowMs, minCalWindows)
         if (result.isSuccess) {
             // A first successful fit adds a row to the running set, so republish it immediately
             // rather than leaving the panel empty until the next tick.
@@ -617,6 +619,10 @@ class InferenceController(
             val had = baseline?.fitted != null
             baseline?.clear()
             if (selectedId == BASELINE_MODEL_ID) selectedId = null
+            // The same purge the neural branch performs: stale counters for a model that no longer
+            // exists would otherwise be attributed to the next fit under the same id.
+            cumulative.remove(id); latencySamples.remove(id)
+            runCatching { telemetryStore?.save(HashMap(cumulative)) }
             refreshModelsLocked()
             _state.value = _state.value.copy(
                 running = runningModels(),
@@ -804,7 +810,12 @@ class InferenceController(
             val desc = (selEntry ?: loaded.values.firstOrNull())?.bundle?.descriptor
             Triple(desc, selEntry?.real ?: false, selEntry?.bundle?.descriptor?.time != null)
         }
-        if (descAny == null) { refreshModels(); return }
+        // A fitted baseline is a running model with no descriptor, so the descriptor-derived context
+        // bounds below fall back to the exported models' own window. Without this the grid tick
+        // returns here on a device carrying only the baseline, the relaxed guard in runCycle is never
+        // reached, and the Models panel lists a running model that silently never forecasts.
+        val baselineOnly = descAny == null && baseline?.fitted != null
+        if (descAny == null && !baselineOnly) { refreshModels(); return }
         // Thermal gate BEFORE the warmup gate: while blocked, publish a clean over-temp banner (empty
         // predictions, PRESERVING circadianTime so the clock stays lit) instead of a warmup/forecast
         // state. runCycle carries the universal chokepoint guard; this one only sharpens the message.
@@ -815,8 +826,10 @@ class InferenceController(
             Timber.tag(TAG).i(note)
             return
         }
-        val minSteps = descAny.minContextPatches * GraphIo.PATCH_DIM / 3      // 16·6 = 96 steps (8 h)
-        val maxSteps = descAny.maxContextPatches * GraphIo.PATCH_DIM / 3      // 48·6 = 288 steps (24 h)
+        val minSteps = descAny?.let { it.minContextPatches * GraphIo.PATCH_DIM / 3 } // 16·6 = 96 steps (8 h)
+            ?: NO_DESCRIPTOR_MIN_STEPS
+        val maxSteps = descAny?.let { it.maxContextPatches * GraphIo.PATCH_DIM / 3 } // 48·6 = 288 steps (24 h)
+            ?: NO_DESCRIPTOR_MAX_STEPS
 
         // ── WARMUP gate (inference-runtime.md): withhold forecasts until at least `warmupHours` of
         //    MEASURED (non-interpolated) context has accrued, floored at the model's MIN_CONTEXT.
@@ -869,7 +882,7 @@ class InferenceController(
                 circadianLowContext = false,
                 realBackendAvailable = selReal,
                 selectedHasTimeSection = selHasTime,
-                note = "collecting context — the model needs ≥${descAny.minContextPatches} patches (8 h) of BG",
+                note = "collecting context — needs ≥${minSteps / 12} h of BG",
             )
             Timber.tag(TAG).i("cycle skipped: still collecting context")
             return
@@ -1280,6 +1293,14 @@ class InferenceController(
         const val N_QUANTILES = 7
         const val CARRY_SPREAD = 0.0 // single-window (≤2 h) this phase; rolling widening is Phase 4
         const val LATENCY_WINDOW = 60
+
+        /** Context window for a cycle with NO descriptor to size it from — a device whose only
+         *  running model is the fitted classical baseline. Deliberately the exported models' own
+         *  bounds (16 and 48 patches of 6 steps), so the warmup floor and the amount of history a
+         *  cycle asks for do not shift with what happens to be installed. The baseline itself needs
+         *  only `nLags` steps; the floor here is the WARMUP gate's, not the model's. */
+        const val NO_DESCRIPTOR_MIN_STEPS = 96
+        const val NO_DESCRIPTOR_MAX_STEPS = 288
 
         fun snapToGrid(ts: Long): Long = Math.floorDiv(ts + GRID_MS / 2, GRID_MS) * GRID_MS
 

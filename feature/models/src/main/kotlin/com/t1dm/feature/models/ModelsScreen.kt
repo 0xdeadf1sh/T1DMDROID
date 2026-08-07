@@ -172,7 +172,16 @@ private fun BaselineFitControl(
                 haptics.perform(HapticEvent.Commit)
                 fitting = true
                 scope.launch {
-                    val r = onFitBaseline()
+                    // `fitting` must be cleared on EVERY exit. The lambda is typed Result, but it
+                    // still reaches suspending IO that can throw, and a throw here would otherwise
+                    // leave the button disabled for the life of the screen with no way back.
+                    val r = try {
+                        onFitBaseline()
+                    } catch (t: Throwable) {
+                        fitting = false
+                        note = "Fit failed"
+                        throw t
+                    }
                     note = r.fold(
                         onSuccess = { fit ->
                             // Index 5 is the 6th step = 30 min on the five-minute grid.
