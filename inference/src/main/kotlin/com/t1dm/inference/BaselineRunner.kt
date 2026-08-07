@@ -177,7 +177,7 @@ class BaselineRunner(
             lastBg = series.mgdl[series.mgdl.size - 1],
             status = status,
             backend = BackendId.NATIVE_RIDGE_FP64,
-            precision = Precision.FP32,
+            precision = Precision.FP64,
             selected = selected,
             stale = stale,
             latencyMs = latMs,

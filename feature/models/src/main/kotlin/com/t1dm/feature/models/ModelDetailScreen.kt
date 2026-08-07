@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.fadingEdges
 import com.t1dm.core.design.rememberT1dmHaptics
+import com.t1dm.core.model.BASELINE_MODEL_ID
 import com.t1dm.core.model.BandCalibration
 import com.t1dm.core.model.BandCalibrationOutcome
 import com.t1dm.core.model.BandFitRefusal
@@ -131,7 +132,15 @@ fun ModelDetailScreen(
      *  correction without re-announcing a result the user has already read. */
     bandCalibrationOutcome: BandCalibrationOutcome? = null,
     onFitBandCalibration: () -> Unit = {},
+    /** Runs the classical baseline's fit. Non-null only when this drill-down IS the baseline's, so
+     *  its own model is the one place its fit lives — a neural model's screen never shows it. */
+    onFitBaseline: (() -> Unit)? = null,
+    baselineFitting: Boolean = false,
+    /** What the last fit started from this screen produced; null on a fresh open, so reopening does
+     *  not re-announce a result the user has already read. */
+    baselineFitNote: String? = null,
 ) {
+    val isBaseline = modelId == BASELINE_MODEL_ID
     val meta = state.metaOf(modelId)
     val telemetry = state.telemetryOf(modelId)
     val running = state.runningOf(modelId)
@@ -162,8 +171,50 @@ fun ModelDetailScreen(
             }
         }
 
+        // ── 0. The classical baseline's own fit ──
+        //
+        // This lives on the model's own screen rather than on the Models list because it belongs to
+        // one model, and because the row is listed before the first fit there is always somewhere to
+        // put it. The figures below are the fit's OWN held-out evidence; the realized-accuracy
+        // sections further down score it the same way they score a neural model.
+        if (isBaseline && onFitBaseline != null) {
+            section("Baseline") {
+                val b = state.baselineModel
+                if (b == null) {
+                    Note("Not fitted — no forecast")
+                } else {
+                    KeyVal("fitted", "%tF %<tR".format(b.fittedAtMs))
+                    KeyVal("trained on", "${b.nTrainRows} rows")
+                    KeyVal(
+                        "features",
+                        listOfNotNull(
+                            "${b.spec.nLags} BG lags",
+                            "IOB".takeIf { b.spec.useIob },
+                            "COB".takeIf { b.spec.useCob },
+                        ).joinToString(" · "),
+                    )
+                    KeyVal("horizon", "${b.spec.horizonSteps * 5 / 60} h")
+                    // The band IS the model here, so an uncalibrated one is not a missing garnish —
+                    // it is why nothing is being forecast, and the §3.6-B guard withholds every cycle.
+                    if (!b.calibrated) Note("Band uncalibrated — forecasts withheld")
+                }
+                baselineFitNote?.let { Note(it) }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(
+                        enabled = !baselineFitting,
+                        onClick = { haptics.perform(HapticEvent.Commit); onFitBaseline() },
+                    ) { Text(if (b == null) "Fit" else "Refit") }
+                    if (baselineFitting) {
+                        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                    }
+                }
+            }
+        }
+
         // ── 1. Meta ──
-        section("Model") {
+        // Skipped for the baseline: every field here is descriptor- or artifact-derived, and it has
+        // neither, so the section could only ever say "n/a" six times.
+        if (!isBaseline) section("Model") {
             if (meta == null) {
                 Note("No descriptor metadata")
             } else {
@@ -331,7 +382,11 @@ fun ModelDetailScreen(
         // WIDTH pair beside it is what §6.2 requires of any band figure, because a band widened
         // until it swallows every truth covers perfectly and forecasts nothing. `max shift` is how a
         // reader tells a real correction from one that rounds to the raw fan.
-        section("Band recalibration") {
+        // Skipped for the baseline: §8.4's correction recalibrates a fan a model already produced,
+        // and the baseline's band is not that — it IS its interval, fitted with the weights and
+        // shown in the Baseline section above. Offering a second, display-only correction on top
+        // would stack two estimators of the same thing.
+        if (!isBaseline) section("Band recalibration") {
             Note("Display only — alarms and doses read the raw band")
             if (bandCalibration == null) {
                 Note("Not fitted — raw bands")

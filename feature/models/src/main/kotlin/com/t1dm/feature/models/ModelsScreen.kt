@@ -36,7 +36,6 @@ import com.t1dm.core.design.fadingEdges
 import com.t1dm.core.design.hapticClickable
 import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.model.BASELINE_MODEL_ID
-import com.t1dm.core.model.BaselineFit
 import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.InferenceState
 import com.t1dm.core.model.ModelMeta
@@ -60,9 +59,6 @@ fun ModelsScreen(
     pendingUpdates: Set<String> = emptySet(),
     onApplyUpdate: (String) -> Unit = {},
     onDelete: (String) -> Unit = {},
-    /** Fits the classical baseline from the patient's own history. Null ⇒ no baseline wired, and
-     *  the control is absent rather than disabled. */
-    onFitBaseline: (suspend () -> Result<BaselineFit>)? = null,
 ) {
     // The delete confirmation is hoisted to the screen (not per-row) so a row recycling out of the
     // LazyColumn viewport can't drop the pending confirmation mid-gesture.
@@ -105,13 +101,13 @@ fun ModelsScreen(
                         onOpen = onOpen,
                         onApplyUpdate = onApplyUpdate,
                         onRequestDelete = { confirmDelete = it },
+                        // The baseline's row is listed before it has ever been fitted, so its radio
+                        // stays inert until there is a model behind it to select. Tapping the row
+                        // still opens the drill-down, which is where the fit lives.
+                        selectable = model.modelId != BASELINE_MODEL_ID || state.baselineModel != null,
                     )
                     HorizontalDivider()
                 }
-            }
-
-            if (onFitBaseline != null) {
-                item { BaselineFitControl(state, onFitBaseline) }
             }
         }
         confirmDelete?.let { id ->
@@ -123,8 +119,14 @@ fun ModelsScreen(
                 onDismissRequest = { haptics.perform(HapticEvent.Reject); confirmDelete = null },
                 title = { Text("Remove model?") },
                 text = {
+                    // The baseline has no artifact to unlink — removing it discards the fitted
+                    // weights, and the row stays because the model is always available to refit.
                     Text(
-                        "Delete \"$id\" and its artifact? Removing the selected model stops forecast and dose advice.",
+                        if (id == BASELINE_MODEL_ID) {
+                            "Discard the fitted baseline? Its forecasts stop until you fit again."
+                        } else {
+                            "Delete \"$id\" and its artifact? Removing the selected model stops forecast and dose advice."
+                        },
                     )
                 },
                 confirmButton = {
@@ -144,75 +146,6 @@ fun ModelsScreen(
     }
 }
 
-/**
- * The manual fit for the classical baseline, and the one line of evidence it produces.
- *
- * The button is the ONLY entry point to the first fit: the baseline is not in `state.running` until
- * a fit exists, so it has no row to hang an action off yet. Afterwards it is a refit.
- *
- * The result line quotes the 30-minute held-out RMSE against zero-order hold, because that pair is
- * the entire reason the baseline exists — a model that cannot beat persistence has not earned its
- * place, and neither has the neural one it is there to measure.
- */
-@Composable
-private fun BaselineFitControl(
-    state: InferenceState,
-    onFitBaseline: suspend () -> Result<BaselineFit>,
-) {
-    val haptics = rememberT1dmHaptics()
-    val scope = rememberCoroutineScope()
-    var fitting by remember { mutableStateOf(false) }
-    var note by remember { mutableStateOf<String?>(null) }
-    val exists = state.running.any { it.modelId == BASELINE_MODEL_ID }
-
-    Column(Modifier.fillMaxWidth().padding(top = 8.dp)) {
-        OutlinedButton(
-            enabled = !fitting,
-            onClick = {
-                haptics.perform(HapticEvent.Commit)
-                fitting = true
-                scope.launch {
-                    // `fitting` must be cleared on EVERY exit. The lambda is typed Result, but it
-                    // still reaches suspending IO that can throw, and a throw here would otherwise
-                    // leave the button disabled for the life of the screen with no way back.
-                    val r = try {
-                        onFitBaseline()
-                    } catch (t: Throwable) {
-                        fitting = false
-                        note = "Fit failed"
-                        throw t
-                    }
-                    note = r.fold(
-                        onSuccess = { fit ->
-                            // Index 5 is the 6th step = 30 min on the five-minute grid.
-                            val rmse = fit.holdoutRmseMgdl.getOrNull(5)
-                            val zoh = fit.persistenceRmseMgdl.getOrNull(5)
-                            when {
-                                !fit.model.calibrated -> "Fitted — band needs more history"
-                                rmse != null && zoh != null && rmse.isFinite() && zoh.isFinite() ->
-                                    "RMSE %.1f vs ZOH %.1f @30 min".format(rmse, zoh)
-                                else -> "Fitted"
-                            }
-                        },
-                        onFailure = { "Not enough history" },
-                    )
-                    fitting = false
-                }
-            },
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Text(if (fitting) "Fitting…" else if (exists) "Refit baseline" else "Fit baseline")
-        }
-        note?.let {
-            Text(
-                it,
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.padding(top = 4.dp),
-            )
-        }
-    }
-}
-
 @Composable
 private fun ModelRow(
     model: RunningModel,
@@ -223,6 +156,7 @@ private fun ModelRow(
     onOpen: (String) -> Unit,
     onApplyUpdate: (String) -> Unit,
     onRequestDelete: (String) -> Unit,
+    selectable: Boolean = true,
 ) {
     // N3 — tapping ANYWHERE on the row (name included) opens the detail; "select this model" is now an
     // explicit RadioButton, never an invisible tap target on the title. Previously the name carried its
@@ -240,6 +174,7 @@ private fun ModelRow(
             // the row around it plays.
             RadioButton(
                 selected = model.selected,
+                enabled = selectable,
                 onClick = { haptics.perform(HapticEvent.SegmentTick); onSelect(model.modelId) },
                 modifier = Modifier.size(28.dp),
             )

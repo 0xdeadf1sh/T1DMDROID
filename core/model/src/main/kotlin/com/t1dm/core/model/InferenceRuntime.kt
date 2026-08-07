@@ -8,8 +8,10 @@ package com.t1dm.core.model
  * stays in `:inference`; only the *results* cross into shared model space here.
  */
 
-/** Numeric precision a backend runs at. fp32 XNNPACK is the Phase-2 authority; fp16 is deferred. */
-enum class Precision { FP32, FP16 }
+/** Numeric precision a backend runs at. fp32 XNNPACK is the Phase-2 authority; fp16 is deferred.
+ *  [FP64] is not an ExecuTorch path at all — it is the Rust core's own `f64`, which is what the
+ *  classical baseline's solve and forecast run in end to end. */
+enum class Precision { FP64, FP32, FP16 }
 
 /**
  * Which runtime executed a model this cycle (§3.2). `STUB` is the fixed-output
@@ -319,6 +321,11 @@ data class InferenceState(
     /** The last on-device GPU-vs-CPU comparison (timings + numerics + agreement verdict), or null
      *  until one has been run (the switcher/Hardware panel trigger it when a GPU backend is active). */
     val backendComparison: BackendComparison? = null,
+    /** The fitted classical baseline, or null when it has never been fitted. The baseline's row is
+     *  listed in [running] either way — it is a model that exists on every device, unlike an exported
+     *  one — so this is what distinguishes "not fitted yet" from "fitted and running", and it is the
+     *  only provenance its drill-down has (it carries no descriptor and no [ModelMeta]). */
+    val baselineModel: BaselineModel? = null,
     val note: String? = null,
 ) {
     val selectedPrediction: ModelPrediction? get() = predictions.firstOrNull { it.selected }

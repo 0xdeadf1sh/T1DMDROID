@@ -181,9 +181,9 @@ class InferenceController(
         val b = baseline ?: return Result.failure(IllegalStateException("no baseline runner"))
         val result = b.fit(history, nowMs, minCalWindows)
         if (result.isSuccess) {
-            // A first successful fit adds a row to the running set, so republish it immediately
-            // rather than leaving the panel empty until the next tick.
-            _state.value = _state.value.copy(running = runningModels())
+            // The row already exists; what changes is that it now has a model behind it. Republish
+            // immediately so the drill-down shows the new provenance without waiting for a tick.
+            _state.value = _state.value.copy(running = runningModels(), baselineModel = b.fitted)
         }
         return result
     }
@@ -191,9 +191,11 @@ class InferenceController(
     /** Rehydrate the last persisted predictions so the overlay is populated before the first tick. */
     suspend fun restoreLast() {
         runCatching { baseline?.restore() }.onFailure { Timber.tag(TAG).w(it, "baseline restore failed") }
-        // A restored baseline is a running model before any cycle has ticked, and the panel should
-        // say so rather than showing an empty set until the first forecast lands.
-        if (baseline?.fitted != null) _state.value = _state.value.copy(running = runningModels())
+        // The baseline's row exists before any cycle has ticked — and before any fit — so publish it
+        // here rather than leaving the panel empty until the first forecast lands.
+        if (baseline != null) {
+            _state.value = _state.value.copy(running = runningModels(), baselineModel = baseline.fitted)
+        }
         val last = runCatching { predictionStore.loadLast() }.getOrNull() ?: return
         if (last.isNotEmpty()) {
             // Rehydrate the circadian belief from the restored selected forecast too (the graph's clock
@@ -626,6 +628,7 @@ class InferenceController(
             refreshModelsLocked()
             _state.value = _state.value.copy(
                 running = runningModels(),
+                baselineModel = null,
                 predictions = _state.value.predictions.filterNot { it.modelId == id },
             )
             return@withLock had
@@ -977,6 +980,7 @@ class InferenceController(
             circadianAnchorMs = selPred?.predictedTime?.let { selPred.anchorTsMs } ?: _state.value.circadianAnchorMs,
             circadianLowContext = if (selPred?.predictedTime != null) false else _state.value.circadianLowContext,
             selectedHasTimeSection = loaded[selectedId]?.bundle?.descriptor?.time != null,
+            baselineModel = baseline?.fitted,
             warmup = null, // a published cycle clears the warmup banner
             note = if (stale) "forecast STALE — last real BG is ${(nowMs - series.anchorTsMs) / 60_000} min old" else null,
         )
@@ -1174,15 +1178,23 @@ class InferenceController(
             runCatching { smoothingWindowProvider() }.getOrNull() ?: InferenceControllerDefaults.SAVGOL_WINDOW,
         )
 
+    /**
+     * The running set as the panels see it: the loaded exported models, then the classical baseline.
+     *
+     * The baseline is listed whether or not it has been fitted. It is not discovered from disk — it
+     * is a model this app always has — so hiding it until a fit would leave its own Fit action with
+     * nowhere to live, and the first fit would need an entry point outside the model it belongs to.
+     * [InferenceState.baselineModel] is what says which of the two states it is in.
+     */
     private fun runningModels(): List<RunningModel> {
         val neural = loaded.map { (id, e) ->
             RunningModel(id, e.effectiveBackend, e.precision, id == selectedId)
         }
-        if (baseline?.fitted == null) return neural
+        if (baseline == null) return neural
         return neural + RunningModel(
             modelId = BASELINE_MODEL_ID,
             backend = BackendId.NATIVE_RIDGE_FP64,
-            precision = Precision.FP32,
+            precision = Precision.FP64,
             selected = selectedId == BASELINE_MODEL_ID,
         )
     }

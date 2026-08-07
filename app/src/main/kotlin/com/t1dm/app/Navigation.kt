@@ -121,8 +121,10 @@ import com.t1dm.feature.pubs.PubsScreen
 import com.t1dm.feature.models.ModelDetailScreen
 import com.t1dm.feature.models.ModelsScreen
 import com.t1dm.core.model.CgEga
+import com.t1dm.core.model.BASELINE_MODEL_ID
 import com.t1dm.core.model.BandCalibration
 import com.t1dm.core.model.BandCalibrationOutcome
+import com.t1dm.core.model.BaselineFit
 import com.t1dm.core.model.ClarkeZoneGrid
 import com.t1dm.core.model.ModelMetrics
 import com.t1dm.core.model.ModelPrediction
@@ -1222,9 +1224,6 @@ private fun T1dmNavHost(
                 pendingUpdates = pendingUpdates,
                 onApplyUpdate = { id -> scope.launch { container.applyModelUpdate(id) } },
                 onDelete = { id -> scope.launch { container.removeModel(id) } },
-                onFitBaseline = {
-                    container.fitBaseline().also { container.reevaluateInferenceNow() }
-                },
             )
         }
         composable("models/{modelId}") { entry ->
@@ -1235,6 +1234,8 @@ private fun T1dmNavHost(
             var accuracy by remember(modelId) { mutableStateOf<ModelMetrics?>(null) }
             var loading by remember(modelId) { mutableStateOf(true) }
             var reloadTick by remember(modelId) { mutableStateOf(0) }
+            var baselineFitting by remember(modelId) { mutableStateOf(false) }
+            var baselineFitNote by remember(modelId) { mutableStateOf<String?>(null) }
             LaunchedEffect(modelId, reloadTick) {
                 loading = true
                 accuracy = runCatching { container.modelMetrics(modelId) }.getOrNull()
@@ -1314,6 +1315,25 @@ private fun T1dmNavHost(
                 bandCalibration = bandCalibration,
                 bandCalibrationFitting = fitting,
                 bandCalibrationOutcome = fitOutcome,
+                // Only the baseline's own drill-down offers its fit. `fitting` is cleared on every
+                // exit, including a throw, or the button would stay dead for the life of the screen.
+                onFitBaseline = if (modelId == BASELINE_MODEL_ID) {
+                    {
+                        baselineFitting = true
+                        scope.launch {
+                            baselineFitNote = runCatching { container.fitBaseline() }.fold(
+                                onSuccess = { r -> r.fold(::baselineFitSummary) { "Not enough history" } },
+                                onFailure = { "Fit failed" },
+                            )
+                            baselineFitting = false
+                            container.reevaluateInferenceNow()
+                        }
+                    }
+                } else {
+                    null
+                },
+                baselineFitting = baselineFitting,
+                baselineFitNote = baselineFitNote,
                 // A second tap while one is running must not start a second fit. The button is
                 // disabled meanwhile, this drops the tick bump if it somehow arrives, and the
                 // container refuses a re-entrant call outright — three, because only the last of
@@ -2258,3 +2278,22 @@ private fun DashboardGamePanel(
     )
 }
 
+
+/**
+ * The one line a baseline fit reports.
+ *
+ * It quotes the 30-minute held-out RMSE against zero-order hold because that pair is the whole
+ * reason the baseline exists: a model that cannot beat persistence has not earned its place, and
+ * neither has the neural one it is there to measure. Index 5 is the sixth step — 30 min on the
+ * five-minute grid.
+ */
+private fun baselineFitSummary(fit: BaselineFit): String {
+    if (!fit.model.calibrated) return "Fitted — band needs more history"
+    val rmse = fit.holdoutRmseMgdl.getOrNull(5)
+    val zoh = fit.persistenceRmseMgdl.getOrNull(5)
+    return if (rmse != null && zoh != null && rmse.isFinite() && zoh.isFinite()) {
+        "RMSE %.1f vs ZOH %.1f @30 min".format(rmse, zoh)
+    } else {
+        "Fitted"
+    }
+}
