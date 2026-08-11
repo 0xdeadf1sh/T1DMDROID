@@ -53,8 +53,8 @@ enum class OutboxState { PENDING, INFLIGHT, FAILED }
  * [hidden] is a display flag and only that: the user has removed a retired sensor from the lists,
  * which never shrink on their own. The row survives, so [sensorModelId] still selects its readings
  * into the panel's history — deleting it instead would leave that stretch of the trace unreachable
- * and its `cgm_reading` rows unreclaimable. Not indexed: the two readers that filter on it hold one
- * row per sensor the phone has ever met.
+ * and its `cgm_reading` rows unreclaimable. Not indexed: the one list that filters on it holds a row
+ * per sensor the phone has ever met, and scanning that is free.
  */
 @Entity(tableName = "cgm_source", indices = [Index("sensorModelId")])
 data class CgmSourceEntity(

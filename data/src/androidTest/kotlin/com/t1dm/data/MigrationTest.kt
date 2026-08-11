@@ -268,10 +268,32 @@ class MigrationTest {
     }
 
     @Test
-    fun migrate1To12_fullChain() {
+    fun migrate12To13_hiddenIsAddedAndEveryExistingSourceStaysListed() {
+        // v13 (a retired sensor can be taken off the lists): one column, defaulted to 0. The default
+        // is the point — removal is a decision the user has not made for any sensor already on record,
+        // and a row that came back hidden would vanish from the list without being asked for.
+        helper.createDatabase(12).use { db ->
+            db.execSQL(
+                "INSERT INTO `cgm_source` " +
+                    "(`sourceId`,`vendorId`,`sensorModelId`,`advertName`,`displayName`,`serialSuffix`," +
+                    "`active`,`warmupWindowMin`,`addedAtMs`,`lastSeenMs`) " +
+                    "VALUES ('aidexx:OLD','aidexx','aidexx:x',NULL,'n','s',1,60,1,1)",
+            )
+        }
+
+        val db = helper.runMigrationsAndValidate(13, listOf(MigrationRunner.MIGRATION_12_13))
+
+        assertEquals(1, countRows(db, "SELECT COUNT(*) FROM `cgm_source` WHERE `hidden` = 0"))
+        // Additive: the migration adds a column and touches nothing else, the active flag included.
+        assertEquals(1, countRows(db, "SELECT COUNT(*) FROM `cgm_source` WHERE `active` = 1"))
+        db.close()
+    }
+
+    @Test
+    fun migrate1To13_fullChain() {
         helper.createDatabase(1).close()
         helper.runMigrationsAndValidate(
-            12,
+            13,
             listOf(
                 MigrationRunner.MIGRATION_1_2,
                 MigrationRunner.MIGRATION_2_3,
@@ -284,6 +306,7 @@ class MigrationTest {
                 MigrationRunner.MIGRATION_9_10,
                 MigrationRunner.MIGRATION_10_11,
                 MigrationRunner.MIGRATION_11_12,
+                MigrationRunner.MIGRATION_12_13,
             ),
         )
     }

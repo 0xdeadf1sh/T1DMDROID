@@ -141,6 +141,42 @@ class TransactionTest {
         assertEquals("exactly one active source after concurrent activation", 1, active.size)
     }
 
+    /**
+     * A removal survives the sensor being seen again. `upsertSource` runs on every sighting from a
+     * descriptor the registry has held since before the removal, so it must take `hidden` from the
+     * STORED row — taking it from the argument would put a removed sensor back on the list within one
+     * scan, and nothing else in the suite would notice.
+     */
+    @Test
+    fun upsertSource_preservesHiddenAcrossReSighting() = runBlocking {
+        repo.upsertSource(descriptor("aidexx:A"), active = true, nowMs = 1L)
+        repo.upsertSource(descriptor("aidexx:B"), active = false, nowMs = 1L)
+        repo.hideSource(CgmSourceId("aidexx:B"))
+
+        repo.upsertSource(descriptor("aidexx:B"), active = false, nowMs = 2L)
+
+        val b = db.cgmSourceDao().byId("aidexx:B")!!
+        assertEquals("a re-sighting un-hid a removed source", true, b.hidden)
+        assertEquals(2L, b.lastSeenMs)
+    }
+
+    /**
+     * The active source is never hidden, from either direction: [T1dmRepository.hideSource] refuses it
+     * outright, and adopting a hidden source as active clears the flag. A sensor authoritative for
+     * every value on screen must not be missing from the list that names it.
+     */
+    @Test
+    fun theActiveSourceIsNeverHidden() = runBlocking {
+        repo.upsertSource(descriptor("aidexx:A"), active = true, nowMs = 1L)
+        repo.hideSource(CgmSourceId("aidexx:A"))
+        assertEquals("the active source was hidden", false, db.cgmSourceDao().byId("aidexx:A")!!.hidden)
+
+        repo.upsertSource(descriptor("aidexx:B"), active = false, nowMs = 1L)
+        repo.hideSource(CgmSourceId("aidexx:B"))
+        repo.setActiveSource(CgmSourceId("aidexx:B"))
+        assertEquals("becoming active left the source hidden", false, db.cgmSourceDao().byId("aidexx:B")!!.hidden)
+    }
+
     private fun sourceEntity(id: String) = CgmSourceEntity(
         sourceId = id,
         vendorId = "aidexx",

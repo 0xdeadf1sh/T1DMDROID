@@ -21,6 +21,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.HapticEvent
@@ -162,7 +164,9 @@ private fun RecordedSourceRow(src: RecordedSource, onRequestRemove: (RecordedSou
         if (!src.active) {
             IconButton(
                 onClick = { haptics.perform(HapticEvent.Tap); onRequestRemove(src) },
-                modifier = Modifier.size(40.dp),
+                // The glyph is the whole label otherwise, and no TTS voice speaks U+2715 — the button
+                // announces as unlabelled, with neither the action nor which sensor it acts on.
+                modifier = Modifier.size(40.dp).semantics { contentDescription = "Remove ${src.name}" },
             ) {
                 Text("✕", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.error)
             }

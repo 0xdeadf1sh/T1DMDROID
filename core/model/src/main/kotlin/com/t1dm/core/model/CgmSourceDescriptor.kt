@@ -67,9 +67,10 @@ data class CgmSourceDescriptor(
      * in the sensor-model history the BG panel draws (the id set comes from `cgm_source`, and
      * dropping the row would take that stretch of the trace with it).
      *
-     * Carried on the descriptor rather than read per-list because the registry holds its own
-     * in-memory set of them — a copy without the flag would put a removed sensor back on the list
-     * the moment anything rewrote its row.
+     * Carried on the descriptor because the descriptor is what the sensor lists are built from, and a
+     * list cannot filter on a field it cannot see. Storage is not at risk either way: the one writer
+     * that could undo a removal — the re-upsert on every sighting — reads the flag from the stored row
+     * and never from the descriptor handed to it.
      */
     val hidden: Boolean = false,
 ) {

@@ -131,9 +131,10 @@ class AidexXSourceRegistry(
     }
 
     /**
-     * Settings → CGM source "Remove": take a retired sensor off the list. Both copies move together
-     * for the reason [setWarmupWindowMin] moves three — [_sources] is this registry's own view, and a
-     * copy that still called the sensor listed would show it again the moment anything rewrote the row.
+     * Settings → CGM source "Remove": take a retired sensor off the list. The column is what the list
+     * is drawn from on this branch — it reads `cgm_source` through Room, not [sources] — so the write
+     * that matters is the persisted one. [_sources] is marked alongside it to keep this registry's own
+     * view honest and the two branches' registries the same shape, not because anything reads it here.
      *
      * The live [AidexXSource] is deliberately left in place: removal is a display flag, so a sensor
      * still advertising keeps being decoded and stored exactly as before. It is simply not the active

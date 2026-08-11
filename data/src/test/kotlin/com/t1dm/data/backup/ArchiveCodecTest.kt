@@ -222,9 +222,30 @@ class ArchiveCodecTest {
         assertEquals(CgmSensorModelId.AIDEX_DEBUG, Archive.readSource(parse(debug), active = false).sensorModelId)
     }
 
-    private fun source(active: Boolean) = com.t1dm.data.db.CgmSourceEntity(
+    /**
+     * A removal is durable across an export/restore. Unlike `ac` this IS read back from the file: it
+     * records what the user did and carries no invariant across the table, so dropping it would put
+     * every sensor they had removed back on the list of whatever phone the archive lands on.
+     */
+    @Test
+    fun `a removed source survives the round trip as removed`() {
+        val line = render { Archive.write(it, source(active = false, hidden = true)) }
+        assertEquals(true, parse(line).bool("hd"))
+        assertEquals(true, Archive.readSource(parse(line), active = false).hidden)
+        assertEquals(false, Archive.readSource(parse(render { Archive.write(it, source(active = false)) }), active = false).hidden)
+    }
+
+    @Test
+    fun `a source record written before removal existed decodes as listed`() {
+        // Additive field: an archive from an older build carries no `hd`, and false is the state every
+        // such row was exported in — the alternative would hide a sensor the user never removed.
+        val old = """{"t":"source","sid":"s","vid":"v","dn":"d","wm":60,"aa":1,"ls":2}"""
+        assertEquals(false, Archive.readSource(parse(old), active = false).hidden)
+    }
+
+    private fun source(active: Boolean, hidden: Boolean = false) = com.t1dm.data.db.CgmSourceEntity(
         sourceId = "s", vendorId = "v", sensorModelId = "v:model", advertName = null, displayName = "d", serialSuffix = null,
-        active = active, warmupWindowMin = 60, addedAtMs = 1L, lastSeenMs = 2L, hidden = false,
+        active = active, warmupWindowMin = 60, addedAtMs = 1L, lastSeenMs = 2L, hidden = hidden,
     )
 
     // ── the wide projection ───────────────────────────────────────────────────────────────────
