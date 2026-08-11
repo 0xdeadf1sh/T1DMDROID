@@ -19,12 +19,44 @@ enum class CgmSourceStatus {
 }
 
 /**
+ * The sensor MODEL a source is an instance of — the scope over which displayed history is
+ * continuous (§3.1).
+ *
+ * A `sourceId` names one physical sensor and dies with it; a model id names the family, and every
+ * sensor of one family shares a single trace on the BG panel. Without this, replacing an expired
+ * sensor emptied the panel: the graph is scoped to the active source, so a new serial meant a new
+ * (empty) history, and the pannable domain — floored at the first reading of that history — put
+ * every earlier logged meal and dose out of reach.
+ *
+ * **A display scope, never an authority scope.** Exactly one source is still active and still the
+ * sole authority for the live value, the alarm engine, and the `sample` projection the model reads.
+ * Widening what is *drawn* must never widen what is *believed*.
+ */
+object CgmSensorModelId {
+    /** The only real sensor family the app reads today, and the class every pre-v11 row belongs to. */
+    const val AIDEX_X = "aidexx:x"
+
+    /**
+     * The debug-injection source's own class, rather than an [AIDEX_X] instance.
+     *
+     * It matters in one case only, and a narrow one: `CgmScanService.ensureActiveSource` mints this
+     * source purely to give injected readings somewhere to land when NO source exists yet, so on a
+     * phone that has met a real sensor an injection is attributed to that real sensor and this class
+     * never comes up. Where it does — a fresh install driven entirely by injection — it keeps the
+     * synthetic history from grafting onto the first real sensor discovered afterwards.
+     */
+    const val AIDEX_DEBUG = "aidexx:debug"
+}
+
+/**
  * Stable, persisted identity + matching metadata for a CGM source (§3.1).
  * Matching is by name / serial suffix, NEVER by BLE address (resolvable-random rotates).
  */
 data class CgmSourceDescriptor(
     val id: CgmSourceId,
     val vendorId: String,          // owning plugin, e.g. "aidexx"
+    val sensorModelId: String,     // sensor family; the scope displayed history spans ([CgmSensorModelId])
+    val advertName: String?,       // what the sensor announced, verbatim; null = never recorded
     val displayName: String,       // e.g. "AiDEX X 22222C74D9"
     val serialSuffix: String?,     // the name/serial suffix used to match adverts
     val warmupWindowMin: Int,      // seeded per vendor, then user-tunable; drives the WARMUP heuristic

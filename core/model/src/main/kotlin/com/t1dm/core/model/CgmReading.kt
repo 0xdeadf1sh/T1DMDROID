@@ -41,3 +41,18 @@ data class CgmReading(
     val rxWallMs: Long,                // raw phone-receive wall time before grid snap
     val rssi: Int?,
 )
+
+/**
+ * Whether a reading is the sensor's own measurement rather than fabricated or suppressed (§3.6-A).
+ *
+ * Spelled once, over the two enums rather than over a row type, because the callers hold different
+ * ones: `:alerts` an eligibility check on a domain [CgmReading], `:data` a display-ranking check on a
+ * stored entity. Both mean the same thing, and a second spelling of it is how one of them ends up
+ * quietly disagreeing about what counts as real.
+ *
+ * Deliberately NOT part of it: `bgMgdl != null`. Presence of a value is a separate question — the
+ * alarm path needs both and says so at its own call site, while ranking two readings for the graph
+ * does not care. Folding it in here would make every caller pay for a check only some of them want.
+ */
+fun isRealMeasurement(provenance: ReadingProvenance, flag: ReadingFlag): Boolean =
+    provenance == ReadingProvenance.MEASURED && flag == ReadingFlag.NORMAL

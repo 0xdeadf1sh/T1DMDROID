@@ -32,6 +32,23 @@ interface CgmSourceDao {
     @Query("SELECT sourceId FROM cgm_source WHERE active = 1 LIMIT 1")
     suspend fun activeSourceId(): String?
 
+    /**
+     * Every source belonging to one sensor model, oldest-registered first — the id set the BG panel's
+     * history spans (§3.1).
+     *
+     * Deliberately ids rather than a join from `cgm_reading` to `cgm_source`. Room invalidates per
+     * TABLE, so a joined history query would re-run on every `cgm_source` write — and `lastSeenMs` is
+     * touched on each re-sighting of a sensor, which would re-materialise the entire never-pruned
+     * reading history at scan rate. This projection changes only when the class's membership does, so
+     * the caller can dedupe it and leave the readings query watching `cgm_reading` alone.
+     */
+    @Query("SELECT sourceId FROM cgm_source WHERE sensorModelId = :sensorModelId ORDER BY addedAtMs, sourceId")
+    fun observeIdsForSensorModel(sensorModelId: String): Flow<List<String>>
+
+    /** [observeIdsForSensorModel] as a one-shot, for the callers already inside a transaction. */
+    @Query("SELECT sourceId FROM cgm_source WHERE sensorModelId = :sensorModelId ORDER BY addedAtMs, sourceId")
+    suspend fun idsForSensorModel(sensorModelId: String): List<String>
+
     /** Exactly-one-active invariant: clear all, then set the chosen row. Run in a @Transaction. */
     @Query("UPDATE cgm_source SET active = 0")
     suspend fun clearActive()
@@ -75,6 +92,33 @@ interface CgmReadingDao {
     )
     fun observeRange(sourceId: String, fromMs: Long, toMs: Long): Flow<List<CgmReadingEntity>>
 
+    /**
+     * The same window across SEVERAL sources — the BG panel's class-wide history (§3.1), where one
+     * expired sensor and its replacement are one continuous trace.
+     *
+     * Ordered by `tsMs` alone, so two sources reporting the same grid slot arrive adjacent and the
+     * caller can collapse the run without a second sort; which of them survives is
+     * [com.t1dm.data.collapseByGridSlot]'s decision, not this query's.
+     *
+     * **SQLite sorts this; the index does not deliver it in order.** With `sourceId IN (…)` the plan
+     * seeks the `(sourceId, tsMs)` primary key once per source, which yields each source's rows
+     * ordered but the union unordered, so `ORDER BY tsMs` is satisfied by a temp B-tree. That is
+     * affordable only because the caller bounds `[fromMs, toMs]` to the panel's loaded window rather
+     * than the whole store — sorting a window is cheap, sorting a lifetime is not.
+     *
+     * [sourceIds] must be non-empty — SQLite rejects `IN ()`, and Room emits exactly that for an
+     * empty list. [com.t1dm.data.T1dmRepository.observeReadingsForSensorModel] short-circuits instead.
+     */
+    @Query(
+        "SELECT * FROM cgm_reading WHERE sourceId IN (:sourceIds) " +
+            "AND tsMs BETWEEN :fromMs AND :toMs ORDER BY tsMs",
+    )
+    fun observeRangeForSources(
+        sourceIds: List<String>,
+        fromMs: Long,
+        toMs: Long,
+    ): Flow<List<CgmReadingEntity>>
+
     @Query("SELECT * FROM cgm_reading WHERE sourceId = :sourceId ORDER BY tsMs DESC LIMIT 1")
     fun observeLatest(sourceId: String): Flow<CgmReadingEntity?>
 
@@ -108,6 +152,20 @@ interface CgmReadingDao {
      */
     @Query("SELECT MIN(tsMs) FROM cgm_reading WHERE sourceId = :sourceId")
     suspend fun oldestTs(sourceId: String): Long?
+
+    /**
+     * The oldest stamp held by ANY of [sourceIds] — how far back the BG panel may be panned, which is
+     * NOT how far back it has loaded.
+     *
+     * This is what lets the trace be windowed without walling the user off from their own history:
+     * the panel loads a recent window, and this says where the record actually begins, so the graph's
+     * domain still reaches the meals and doses logged before the sensor was replaced. One aggregate
+     * over a seek per source down `sqlite_autoindex_cgm_reading_1 (sourceId, tsMs)` — cheap enough to
+     * re-run whenever `cgm_reading` changes, which is what keeps it right after a server catch-up
+     * inserts something older than anything held before.
+     */
+    @Query("SELECT MIN(tsMs) FROM cgm_reading WHERE sourceId IN (:sourceIds)")
+    fun observeOldestTsForSources(sourceIds: List<String>): Flow<Long?>
 
     @Query("SELECT MAX(tsMs) FROM cgm_reading WHERE sourceId = :sourceId")
     suspend fun newestTs(sourceId: String): Long?
@@ -164,17 +222,26 @@ interface SampleDao {
     @Query("SELECT MAX(ts) FROM sample")
     fun observeMaxTs(): Flow<Long?>
 
-    /** The `sample` rows carrying a BG that [sourceId] has no `cgm_reading` for — the gap set the
-     *  sample→reading reconcile inserts, resolved in SQL instead of by diffing the whole projection
-     *  against the whole ts column of the source in the heap. `NOT EXISTS` seeks the
-     *  `(sourceId, tsMs)` primary key per candidate row, so a reconcile with nothing to do reads
-     *  nothing back. */
+    /**
+     * The `sample` rows carrying a BG that NO source in [sourceIds] has a `cgm_reading` for — the gap
+     * set the sample→reading reconcile inserts, resolved in SQL instead of by diffing the whole
+     * projection against the whole ts column in the heap. `NOT EXISTS` seeks the `(sourceId, tsMs)`
+     * primary key per candidate row per source, so a reconcile with nothing to do reads nothing back.
+     *
+     * **The membership test spans the model class, not one source, and that is load-bearing.** It was
+     * per-source, and `sample` is not source-scoped — so every sensor replacement produced a source
+     * with no readings at any slot, matched the entire projection, and was back-filled with a complete
+     * duplicate of all history. A year of fortnightly swaps took `cgm_reading` from ~105 k rows to
+     * ~1.5 M and the database from 17 MB to 184 MB, and the BG panel — which reads the whole class —
+     * then had to materialise and collapse away every copy. A slot already covered by a sibling
+     * sensor is a slot this one does not need.
+     */
     @Query(
         "SELECT * FROM sample WHERE bgMgdl IS NOT NULL AND NOT EXISTS (" +
-            "SELECT 1 FROM cgm_reading WHERE cgm_reading.sourceId = :sourceId AND cgm_reading.tsMs = sample.ts" +
+            "SELECT 1 FROM cgm_reading WHERE cgm_reading.sourceId IN (:sourceIds) AND cgm_reading.tsMs = sample.ts" +
             ") ORDER BY ts",
     )
-    suspend fun bgSlotsMissingReading(sourceId: String): List<SampleEntity>
+    suspend fun bgSlotsMissingReading(sourceIds: List<String>): List<SampleEntity>
 
     /** One-shot windowed read (oldest-first) for the stats recompute (Phase 6). */
     @Query("SELECT * FROM sample WHERE ts BETWEEN :fromMs AND :toMs ORDER BY ts")

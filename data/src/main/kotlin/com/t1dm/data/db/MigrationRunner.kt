@@ -348,6 +348,70 @@ object MigrationRunner {
         }
     }
 
+    /**
+     * The two v10 → v11 backfill statements, named so `MigrationConstantsTest` can assert on the SQL
+     * [MIGRATION_10_11] actually runs rather than on a transcription of it.
+     *
+     * **The literals are frozen on purpose.** A migration describes what the schema became at a
+     * point in history, so it may never read a constant that a later edit could move underneath it —
+     * a rename of `CgmSensorModelId.AIDEX_X` must not retroactively change what every already-upgraded
+     * device was given. That test is what holds these strings and `CgmSensorModelId` together instead.
+     */
+    internal const val SQL_10_11_BACKFILL_DEBUG =
+        "UPDATE `cgm_source` SET `sensorModelId` = 'aidexx:debug' " +
+            "WHERE `sensorModelId` = '' AND `sourceId` = 'aidexx:DEBUG'"
+
+    internal const val SQL_10_11_BACKFILL_REAL =
+        "UPDATE `cgm_source` SET `sensorModelId` = 'aidexx:x' WHERE `sensorModelId` = ''"
+
+    /**
+     * v10 → v11 (displayed history spans a sensor MODEL, not one physical sensor): additive only —
+     * `cgm_source` gains `sensorModelId` plus its index. No reading moves and no row is deleted; what
+     * changes is only the scope the BG panel's query selects over.
+     *
+     * **Why the backfill can be exact.** Every row that can exist at v10 was written by the AiDEX X
+     * plugin — it is the only vendor plugin there has ever been — so every real sensor belongs to
+     * [com.t1dm.core.model.CgmSensorModelId.AIDEX_X]. The one exception is the debug-injection source,
+     * which keeps its own class so injected readings stay out of the real trace exactly as they were
+     * before this column existed.
+     */
+    val MIGRATION_10_11 = object : Migration(10, 11) {
+        override fun migrate(connection: SQLiteConnection) {
+            connection.execSQL(
+                "ALTER TABLE `cgm_source` ADD COLUMN `sensorModelId` TEXT NOT NULL DEFAULT ''",
+            )
+            // Debug first: the second statement claims every remaining unclassified row, so ordering
+            // them the other way would sweep the debug source into the real sensor's class.
+            connection.execSQL(SQL_10_11_BACKFILL_DEBUG)
+            connection.execSQL(SQL_10_11_BACKFILL_REAL)
+            connection.execSQL(
+                "CREATE INDEX IF NOT EXISTS `index_cgm_source_sensorModelId` ON `cgm_source` (`sensorModelId`)",
+            )
+        }
+    }
+
+    /**
+     * v11 → v12 (a source records what it advertised): additive only — `cgm_source` gains a nullable
+     * `advertName`. No index: nothing queries by it, and the table holds one row per sensor the phone
+     * has ever met.
+     *
+     * **Deliberately left null for every existing row.** The advertised name was matched, used to
+     * strip the serial, and then discarded, so for a sensor already on record the app genuinely does
+     * not know which brand it announced — a backfill could only invent one, and an invented value is
+     * indistinguishable from an observed one precisely where the difference matters. Null means "never
+     * recorded", and that is the honest answer.
+     *
+     * What it is FOR: [com.t1dm.core.model.CgmSourceDescriptor.sensorModelId] is assigned once, at
+     * first sighting, from the vendor's prefix table. If that table ever splits one class into
+     * several, this column is the only thing that could reclassify sensors already filed — sensors
+     * met after this migration, at least. Those met before keep whatever class they were given.
+     */
+    val MIGRATION_11_12 = object : Migration(11, 12) {
+        override fun migrate(connection: SQLiteConnection) {
+            connection.execSQL("ALTER TABLE `cgm_source` ADD COLUMN `advertName` TEXT")
+        }
+    }
+
     val ALL: Array<Migration> = arrayOf(
         MIGRATION_1_2,
         MIGRATION_2_3,
@@ -358,6 +422,8 @@ object MigrationRunner {
         MIGRATION_7_8,
         MIGRATION_8_9,
         MIGRATION_9_10,
+        MIGRATION_10_11,
+        MIGRATION_11_12,
     )
 
     /** Apply every registered migration to a builder; the sole path that wires migrations. */

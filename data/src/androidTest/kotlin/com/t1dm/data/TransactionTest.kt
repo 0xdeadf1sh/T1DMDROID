@@ -7,6 +7,7 @@ import androidx.sqlite.driver.bundled.BundledSQLiteDriver
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.t1dm.core.common.DefaultT1dmDispatchers
+import com.t1dm.core.model.CgmSensorModelId
 import com.t1dm.core.model.CgmSourceDescriptor
 import com.t1dm.core.model.CgmSourceId
 import com.t1dm.data.db.AppDatabase
@@ -143,6 +144,7 @@ class TransactionTest {
     private fun sourceEntity(id: String) = CgmSourceEntity(
         sourceId = id,
         vendorId = "aidexx",
+        sensorModelId = CgmSensorModelId.AIDEX_X, advertName = null,
         displayName = "AiDEX X $id",
         serialSuffix = id.substringAfterLast(':'),
         active = false,
@@ -154,6 +156,7 @@ class TransactionTest {
     private fun descriptor(id: String) = CgmSourceDescriptor(
         id = CgmSourceId(id),
         vendorId = "aidexx",
+        sensorModelId = CgmSensorModelId.AIDEX_X, advertName = null,
         displayName = "AiDEX X $id",
         serialSuffix = id.substringAfterLast(':'),
         warmupWindowMin = 60,

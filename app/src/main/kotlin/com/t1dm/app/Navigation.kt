@@ -1017,6 +1017,7 @@ private fun T1dmNavHost(
         composable("dashboard") {
             val scope = rememberCoroutineScope()
             val readings by container.dashboardReadings.collectAsState(emptyList())
+            val historyFloorMs by container.historyFloorMs.collectAsState(null)
             val inference by container.inferenceState.collectAsState(InferenceState())
             // IOB/COB recomputed off-main on any reading emit OR dose/meal write (shared StateFlow).
             val iobCob by container.iobCob.collectAsState()
@@ -1113,6 +1114,8 @@ private fun T1dmNavHost(
                 curveChannels = container::dashboardOverlayChannels,
                 stepSeries = container::dashboardStepSeries,
                 logEntries = logEntries,
+                historyFloorMs = historyFloorMs,
+                onExtendHistory = container::extendHistoryBackTo,
                 warmup = inference.warmup,
                 rangeMinMgdl = range.minMgdl,
                 rangeMaxMgdl = range.maxMgdl,

@@ -126,6 +126,7 @@ class PredictionDaoTest {
         repo.upsertSource(
             com.t1dm.core.model.CgmSourceDescriptor(
                 id = com.t1dm.core.model.CgmSourceId("aidexx:X"), vendorId = "aidexx",
+                sensorModelId = com.t1dm.core.model.CgmSensorModelId.AIDEX_X, advertName = null,
                 displayName = "X", serialSuffix = "X", warmupWindowMin = 60, passiveOnly = true,
             ),
             active = true, nowMs = 1_000,

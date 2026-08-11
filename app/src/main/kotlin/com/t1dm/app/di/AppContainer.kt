@@ -45,6 +45,7 @@ import com.t1dm.cgm.AidexXSourceRegistry
 import com.t1dm.core.common.DefaultT1dmDispatchers
 import com.t1dm.core.common.NativeCore
 import com.t1dm.core.common.T1dmDispatchers
+import com.t1dm.core.model.isRealMeasurement
 import com.t1dm.core.model.BackendId
 import com.t1dm.core.model.StatsWindow
 import com.t1dm.core.model.CgmReading
@@ -158,6 +159,7 @@ import com.t1dm.sync.SyncHttpClient
 import com.t1dm.sync.KeystoreTokenStore
 import com.t1dm.sync.TokenStore
 import com.t1dm.sync.WebSocketStreamClient
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -193,6 +195,13 @@ private const val WARMUP_HOURS_MAX = 72
 /** How much recent trace the Graph-settings smoothing miniature draws — long enough to contain a
  *  real excursion, short enough that widening the filter to 25 samples still fits inside it. */
 private const val SMOOTHING_PREVIEW_HOURS = 3L
+
+/**
+ * How much history the BG panel loads before the user pans for more. Thirty days covers every window
+ * the panel offers and a long scroll back through two or three sensors, while keeping a re-query to a
+ * few thousand rows instead of a lifetime.
+ */
+private const val INITIAL_HISTORY_WINDOW_MS = 30L * 24 * 3_600_000L
 
 /** Per-model kv key for the forecast-backend switcher (issue 20 STEP 4): the BackendId enum name per
  *  model id, or absent = auto (the fp32 XNNPACK authority). */
@@ -2289,7 +2298,7 @@ class AppContainer(context: Context) {
         val recent = repository.recentReadings(srcId, 36) // ~3 h of 5-min grid context
         if (recent.isEmpty()) return null
         val lastMeasured = recent
-            .filter { it.provenance == ReadingProvenance.MEASURED && it.flag == ReadingFlag.NORMAL && it.bgMgdl != null }
+            .filter { isRealMeasurement(it.provenance, it.flag) && it.bgMgdl != null }
             .maxByOrNull { it.tsMs }
         val newest = recent.maxByOrNull { it.tsMs }!!
         val fabricated = recent.count { it.provenance == ReadingProvenance.INTERPOLATED || it.flag == ReadingFlag.WARMUP }
@@ -2668,11 +2677,64 @@ class AppContainer(context: Context) {
 
     val allSources: Flow<List<CgmSourceDescriptor>> = repository.observeSources()
 
-    /** Every reading of the active source (widest window; Phase-1 volumes are tiny). Server-synced
-     *  history is gap-filled into `cgm_reading` by the catch-up merge (T1dmRepository.mergeServerSample),
-     *  so it flows through here to the graph — and through recentBgSeries to the model — automatically. */
-    val dashboardReadings: Flow<List<CgmReading>> = activeSource.flatMapLatest { d ->
-        if (d == null) flowOf(emptyList()) else repository.observeReadings(d.id, 0L, Long.MAX_VALUE)
+    /**
+     * How far back the BG panel has loaded, as an absolute instant. Moves BACKWARDS only, and only
+     * when the user pans near the edge of what is loaded ([extendHistoryBackTo]).
+     *
+     * The trace is windowed and the pannable floor is read separately ([historyFloorMs]) because the
+     * two have wildly different costs. This flow re-runs on every `cgm_reading` write — once a minute
+     * while a sensor is live — and a class accumulates every sensor ever worn over a store that is
+     * never pruned, so loading all of it cost 114 ms of query and ~20 MB of transient allocation per
+     * emission at one year and twenty-four retired sensors, growing without bound. A window costs the
+     * same on day one as on day four hundred.
+     */
+    private val historyLoadedFromMs = MutableStateFlow(
+        System.currentTimeMillis() - INITIAL_HISTORY_WINDOW_MS,
+    )
+
+    /**
+     * Load further back, because the viewport has approached what is loaded. Clamped forward to now
+     * so a wild value cannot widen the window to the whole store, and monotone backwards so panning
+     * out and back does not re-query.
+     */
+    fun extendHistoryBackTo(fromMs: Long) {
+        val target = fromMs.coerceAtMost(System.currentTimeMillis())
+        historyLoadedFromMs.update { current -> if (target < current) target else current }
+    }
+
+    /**
+     * The panel's window over the active source's MODEL CLASS — one continuous history across every
+     * sensor of that model, collapsed to one reading per grid slot, a real measurement outranking a
+     * warm-up or interpolated one and the active source breaking the tie. Server-synced history is
+     * gap-filled into `cgm_reading` by the catch-up merge (T1dmRepository.mergeServerSample), so it
+     * flows through here to the graph — and through recentBgSeries to the model — automatically.
+     *
+     * **Class-scoped, where everything downstream of a reading is still source-scoped.** A
+     * `sourceId` names one physical sensor and retires with it, so while this was source-scoped a
+     * sensor change emptied the panel: no earlier readings, and — because the pannable domain was
+     * floored at the first reading on screen — no earlier logged meal or dose reachable either,
+     * though neither had ever been stored per source. Widening the DRAWN history fixes both without
+     * touching what is believed: [latestReading], the alarm engine, the `sample` projection and the
+     * model's own context all still read the one active source (§3.1).
+     */
+    val dashboardReadings: Flow<List<CgmReading>> =
+        combine(activeSource, historyLoadedFromMs) { d, from -> d to from }
+            .flatMapLatest { (d, from) ->
+                if (d == null) flowOf(emptyList())
+                else repository.observeReadingsForSensorModel(d.sensorModelId, d.id, from, Long.MAX_VALUE)
+            }
+
+    /**
+     * Where the record actually begins for the active source's class, or null while it holds nothing
+     * — the floor the graph's pannable domain uses, INSTEAD of the first reading it happens to hold.
+     *
+     * Without this the window above would re-create the defect it was written to fix: the domain
+     * would be floored at the newest loaded reading, and a meal logged before that would be
+     * unreachable again — for a different reason, but just as unreachable. One aggregate, so knowing
+     * the record goes back a year costs nothing like carrying a year.
+     */
+    val historyFloorMs: Flow<Long?> = activeSource.flatMapLatest { d ->
+        if (d == null) flowOf(null) else repository.observeOldestTsForSensorModel(d.sensorModelId)
     }
 
     /** The active source's trailing [SMOOTHING_PREVIEW_HOURS] of mg/dL, oldest→newest — the sample the
@@ -2773,11 +2835,13 @@ class AppContainer(context: Context) {
 
 
     /** The chosen run's window: [fromMs] through to the newest reading. A one-shot read of the same
-     *  source-scoped range query the panel observes — the game never subscribes to it, because a track
-     *  is cut once and a reading arriving mid-run must not rebuild the ground under the car. */
+     *  CLASS-scoped range query the panel observes — the terrain IS the panel's trace, so a track cut
+     *  across a sensor change must not fall through the hole the old scoping left. The game never
+     *  subscribes, because a track is cut once and a reading arriving mid-run must not rebuild the
+     *  ground under the car. */
     suspend fun gameReadings(fromMs: Long): List<CgmReading> {
-        val source = repository.activeSourceId() ?: return emptyList()
-        return repository.observeReadings(source, fromMs, Long.MAX_VALUE).first()
+        val source = repository.observeActiveSource().first() ?: return emptyList()
+        return repository.observeReadingsForSensorModel(source.sensorModelId, source.id, fromMs, Long.MAX_VALUE).first()
     }
 
     // ─── BG-panel display settings + chrome (Phase 7A) ────────────────────────────────────────

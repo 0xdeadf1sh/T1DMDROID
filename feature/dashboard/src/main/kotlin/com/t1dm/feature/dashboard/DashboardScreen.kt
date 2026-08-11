@@ -163,6 +163,13 @@ fun DashboardScreen(
     // on a mark opens. The reduction happens HERE so a mark and the row it stands for are the same
     // list position by construction, which is the whole of how a tap names what it hit.
     logEntries: List<LoggedEntry> = emptyList(),
+    // Where the record begins, against where [readings] begins. They differ because the panel loads a
+    // window rather than the whole store — a class accumulates every sensor ever worn, over a table
+    // that is never pruned, so loading all of it grew without bound. The graph floors its pannable
+    // domain here, and [onExtendHistory] fetches the next chunk when a pan approaches the loaded edge;
+    // null ⇒ everything is loaded and the oldest reading is the floor.
+    historyFloorMs: Long? = null,
+    onExtendHistory: (Long) -> Unit = {},
     warmup: WarmupProgress? = null,
     // Phase 7A — BG-panel overhaul.
     // Issue 1 — suppress the "next forecast" countdown when no forecast is actually being made: during
@@ -584,7 +591,20 @@ fun DashboardScreen(
             rolled = rolledSeries,
             hindsight = hindsight,
             futureExtentMs = FUTURE_VIEW_MS,
-            onViewportChange = { st, sp -> viewStartMs = st; viewSpanMs = sp },
+            domainFloorMs = historyFloorMs,
+            onViewportChange = { st, sp ->
+                viewStartMs = st
+                viewSpanMs = sp
+                // Panning towards the edge of what is loaded asks for more. The panel loads a window,
+                // not the whole store, so without this a pan past the oldest loaded reading would run
+                // into empty graph with the data sitting on disk. One span of slack means the next
+                // chunk is already in by the time the user reaches it.
+                val oldestHeld = readings.firstOrNull()?.tsMs
+                val floor = historyFloorMs
+                if (oldestHeld != null && floor != null && floor < oldestHeld && st - sp <= oldestHeld) {
+                    onExtendHistory((st - sp).toLong().coerceAtLeast(floor))
+                }
+            },
             paint = paint,
             paintControls = if (paintOn && paintAvailable) {
                 PaintControls(paintTool.key, paintColor, paintWidthDp, paintErasing)

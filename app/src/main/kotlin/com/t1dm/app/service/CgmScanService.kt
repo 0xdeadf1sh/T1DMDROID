@@ -58,6 +58,7 @@ import com.t1dm.cgm.BleAdvertScanner
 import com.t1dm.core.model.BackendComparison
 import com.t1dm.core.model.BackendId
 import com.t1dm.core.model.CgmReading
+import com.t1dm.core.model.CgmSensorModelId
 import com.t1dm.core.model.CgmSourceDescriptor
 import com.t1dm.core.model.CgmSourceId
 import com.t1dm.core.model.InferenceCause
@@ -1020,6 +1021,11 @@ class CgmScanService : LifecycleService() {
             CgmSourceDescriptor(
                 id = DEBUG_SOURCE,
                 vendorId = "aidexx",
+                // Its OWN class, not the real AiDEX X one: injected readings appear only while this
+                // source is selected, exactly as they did before history spanned a model class.
+                sensorModelId = CgmSensorModelId.AIDEX_DEBUG,
+                // Nothing advertised this source into existence, so there is no name to record.
+                advertName = null,
                 displayName = "AiDEX X DEBUG",
                 serialSuffix = "DEBUG",
                 warmupWindowMin = 60,
@@ -1147,7 +1153,9 @@ class CgmScanService : LifecycleService() {
         private const val NOTIF_TICK_MS = 30_000L
         const val KV_LAST_ALIVE = "last_alive_ts"
 
-        private val DEBUG_SOURCE = CgmSourceId("aidexx:DEBUG")
+        /** Spelled once, in `:core:model`: the archive restore and `MIGRATION_10_11` both have to
+         *  recognise this id to put it in the debug model class rather than the real one. */
+        private val DEBUG_SOURCE = CgmSourceId.DEBUG
 
         const val ACTION_INJECT_READING = "com.t1dm.app.INJECT_READING"
         const val ACTION_FORCE_SIGNAL_LOSS = "com.t1dm.app.FORCE_SIGNAL_LOSS"

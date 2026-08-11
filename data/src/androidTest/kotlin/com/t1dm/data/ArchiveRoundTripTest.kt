@@ -4,6 +4,7 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.t1dm.core.common.DefaultT1dmDispatchers
+import com.t1dm.core.model.CgmSensorModelId
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.data.backup.Archive
@@ -219,7 +220,8 @@ class ArchiveRoundTripTest {
         // at a serial that will never advertise again: no BG, no stats, nothing to diagnose.
         source.cgmSourceDao().upsert(
             CgmSourceEntity(
-                sourceId = "aidex-OLD", vendorId = "aidex", displayName = "last year's sensor",
+                sourceId = "aidex-OLD", vendorId = "aidex", sensorModelId = CgmSensorModelId.AIDEX_X, advertName = null,
+                displayName = "last year's sensor",
                 serialSuffix = "0001", active = false, warmupWindowMin = 60,
                 addedAtMs = 1_600_000_000_000L, lastSeenMs = 1_600_100_000_000L,
             ),
@@ -520,7 +522,7 @@ class ArchiveRoundTripTest {
     }
 
     private fun cgmSource() = CgmSourceEntity(
-        sourceId = SOURCE_ID, vendorId = "aidex", displayName = "AiDEX X",
+        sourceId = SOURCE_ID, vendorId = "aidex", sensorModelId = CgmSensorModelId.AIDEX_X, advertName = null, displayName = "AiDEX X",
         serialSuffix = "4321", active = true, warmupWindowMin = 60,
         addedAtMs = 1_700_000_000_000L, lastSeenMs = 1_700_000_600_000L,
     )

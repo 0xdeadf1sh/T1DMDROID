@@ -1,6 +1,7 @@
 package com.t1dm.cgm
 
 import com.t1dm.core.common.NativeCore
+import com.t1dm.core.model.CgmSensorModelId
 import com.t1dm.core.model.CgmSourceDescriptor
 import com.t1dm.core.model.CgmSourceId
 
@@ -23,32 +24,42 @@ class AidexXPlugin(
     ): CgmSourceId? {
         if (manufacturerId != CgmConstants.MANUFACTURER_ID) return null
         val n = name ?: return null
-        val prefix = CgmConstants.NAME_PREFIXES.firstOrNull { n.startsWith(it) } ?: return null
-        val serial = n.removePrefix(prefix)
-        if (serial.isEmpty()) return null
-        return CgmSourceId("$VENDOR_ID:$serial")
+        val match = CgmConstants.matchAdvertName(n) ?: return null
+        return CgmSourceId("$VENDOR_ID:${match.serial}")
     }
 
     /** Seed a source the app has never met. [CgmConstants.WARMUP_WINDOW_MIN] here is only that seed;
      *  a source already on record carries the user's own window and arrives through the descriptor
      *  overload instead. */
-    override fun createSource(id: CgmSourceId): AidexXSource {
-        val serial = id.value.substringAfter(':')
-        val descriptor = CgmSourceDescriptor(
-            id = id,
-            vendorId = VENDOR_ID,
-            displayName = "AiDEX X $serial",
-            serialSuffix = serial,
-            warmupWindowMin = CgmConstants.WARMUP_WINDOW_MIN,
-            passiveOnly = true,
-        )
-        return createSource(descriptor)
-    }
+    override fun createSource(id: CgmSourceId): AidexXSource = createSource(descriptorFor(id.value.substringAfter(':')))
 
     override fun createSource(descriptor: CgmSourceDescriptor): AidexXSource =
         AidexXSource(descriptor, nativeCore, repository)
 
-    private companion object {
-        const val VENDOR_ID = "aidexx"
+    companion object {
+        internal const val VENDOR_ID = "aidexx"
+
+        /**
+         * Seed a descriptor for a sensor the app has never met.
+         *
+         * Matched ONCE — the model and the brand come from the same resolution, so they cannot disagree
+         * about which prefix won. The advert name is kept verbatim so a later model split can reclassify
+         * a source already on record; before it was matched, used to strip the serial, and dropped, which
+         * is why every source called itself "AiDEX X". A name that matched nothing cannot have come
+         * through the scanner, and falls back to the only model this plugin has.
+         */
+        fun descriptorFor(serial: String, advertName: String? = null): CgmSourceDescriptor {
+            val match = advertName?.let(CgmConstants::matchAdvertName)
+            return CgmSourceDescriptor(
+                id = CgmSourceId("$VENDOR_ID:$serial"),
+                vendorId = VENDOR_ID,
+                sensorModelId = match?.sensorModelId ?: CgmSensorModelId.AIDEX_X,
+                advertName = advertName,
+                displayName = "${match?.brand ?: "AiDEX X"} $serial",
+                serialSuffix = serial,
+                warmupWindowMin = CgmConstants.WARMUP_WINDOW_MIN,
+                passiveOnly = true,
+            )
+        }
     }
 }

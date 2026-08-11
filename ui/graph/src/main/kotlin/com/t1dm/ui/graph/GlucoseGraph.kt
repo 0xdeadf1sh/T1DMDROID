@@ -249,6 +249,11 @@ fun GlucoseGraph(
      *  its own, and which maps a tap on the panel back to an instant through it. Both otherwise live
      *  and die inside this composable. */
     onViewportChange: ((startMs: Double, spanMs: Double) -> Unit)? = null,
+    /** Where the RECORD begins, which is older than the first reading in [frame] whenever the caller
+     *  has windowed what it loaded. The pannable domain is floored here rather than at the oldest
+     *  reading held, so a windowed load cannot wall the user off from their own history; null ⇒ the
+     *  caller loads everything and the first reading is the floor. */
+    domainFloorMs: Long? = null,
 ) {
     val cs = MaterialTheme.colorScheme
     val density = LocalDensity.current
@@ -413,8 +418,20 @@ fun GlucoseGraph(
     fun panEndMs(): Double =
         maxOf(followEndMs(), (System.currentTimeMillis() + futureExtentMs).toDouble())
 
+    /**
+     * The oldest instant the viewport may reach. [domainFloorMs] is where the RECORD begins, which is
+     * older than the first reading held whenever the panel has windowed its load — take it, so the
+     * user can still pan back to a meal logged before the sensor was replaced and let the loaded
+     * window follow. Falls back to the first reading on screen when no floor is supplied.
+     */
+    fun domainStartMs(): Double {
+        val firstHeld = frame.absMs(0)
+        val floor = domainFloorMs?.toDouble() ?: return firstHeld
+        return minOf(floor, firstHeld)
+    }
+
     fun spanBounds(): Pair<Double, Double> {
-        val range = if (frame.isEmpty) 0.0 else panEndMs() - frame.absMs(0)
+        val range = if (frame.isEmpty) 0.0 else panEndMs() - domainStartMs()
         val minSpan = 15.0 * 60_000.0
         val maxSpan = maxOf(range, initialWindowMin.toDouble() * 60_000.0) * 1.2
         return minSpan to maxSpan.coerceAtLeast(minSpan)
@@ -424,7 +441,7 @@ fun GlucoseGraph(
         if (frame.isEmpty) return
         val (minSpan, maxSpan) = spanBounds()
         viewSpanMs = viewSpanMs.coerceIn(minSpan, maxSpan)
-        val ds = frame.absMs(0)
+        val ds = domainStartMs()
         val de = panEndMs()
         val range = de - ds
         viewStartMs = if (viewSpanMs >= range) ds - (viewSpanMs - range) / 2.0

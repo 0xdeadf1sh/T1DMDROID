@@ -42,11 +42,20 @@ enum class OutboxKind { ALERT, DOSE, MEAL, INGEST, STATS, PREDICTIONS, SERIES, P
 /** Lifecycle of an outbox row across drain attempts. */
 enum class OutboxState { PENDING, INFLIGHT, FAILED }
 
-/** One recorded CGM source; exactly one row has `active = true` (§3.1). */
-@Entity(tableName = "cgm_source")
+/**
+ * One recorded CGM source; exactly one row has `active = true` (§3.1).
+ *
+ * [sensorModelId] is the sensor FAMILY (`com.t1dm.core.model.CgmSensorModelId`) and is indexed because the BG
+ * panel's history query joins through it: displayed history spans the class, so replacing a sensor
+ * with another of the same model keeps one continuous trace. `active` still picks the single
+ * authoritative source — the class widens what is drawn, never what is believed.
+ */
+@Entity(tableName = "cgm_source", indices = [Index("sensorModelId")])
 data class CgmSourceEntity(
     @PrimaryKey val sourceId: String,
     val vendorId: String,
+    val sensorModelId: String,
+    val advertName: String?,
     val displayName: String,
     val serialSuffix: String?,
     val active: Boolean,

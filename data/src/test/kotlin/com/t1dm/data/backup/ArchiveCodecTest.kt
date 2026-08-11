@@ -1,5 +1,7 @@
 package com.t1dm.data.backup
 
+import com.t1dm.core.model.CgmSensorModelId
+import com.t1dm.core.model.CgmSourceId
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.data.db.CgmReadingEntity
@@ -199,8 +201,29 @@ class ArchiveCodecTest {
         assertNull(parse(old).bool("ac"))
     }
 
+    @Test
+    fun `a source's sensor model survives the round trip`() {
+        val line = render { Archive.write(it, source(active = true)) }
+        assertEquals("v:model", parse(line).str("mid"))
+        assertEquals("v:model", Archive.readSource(parse(line), active = true).sensorModelId)
+    }
+
+    /**
+     * An archive written before the column existed carries no `mid`, and must land the sensor in the
+     * SAME class `MIGRATION_10_11` would give it. Were the two to disagree, restoring a backup and
+     * upgrading in place would file one sensor two different ways and split its history on the panel.
+     */
+    @Test
+    fun `a source record written before the sensor model existed is classified as the migration would`() {
+        val real = """{"t":"source","sid":"aidexx:ABC","vid":"aidexx","dn":"d","wm":60,"aa":1,"ls":2}"""
+        assertEquals(CgmSensorModelId.AIDEX_X, Archive.readSource(parse(real), active = false).sensorModelId)
+
+        val debug = """{"t":"source","sid":"${CgmSourceId.DEBUG.value}","vid":"aidexx","dn":"d","wm":60,"aa":1,"ls":2}"""
+        assertEquals(CgmSensorModelId.AIDEX_DEBUG, Archive.readSource(parse(debug), active = false).sensorModelId)
+    }
+
     private fun source(active: Boolean) = com.t1dm.data.db.CgmSourceEntity(
-        sourceId = "s", vendorId = "v", displayName = "d", serialSuffix = null,
+        sourceId = "s", vendorId = "v", sensorModelId = "v:model", advertName = null, displayName = "d", serialSuffix = null,
         active = active, warmupWindowMin = 60, addedAtMs = 1L, lastSeenMs = 2L,
     )
 

@@ -1,5 +1,6 @@
 package com.t1dm.alerts
 
+import com.t1dm.core.model.isRealMeasurement
 import com.t1dm.core.model.AlertBand
 import com.t1dm.core.model.AlertThresholds
 import com.t1dm.core.model.CgmReading
@@ -13,7 +14,7 @@ import com.t1dm.core.model.ReadingProvenance
  * a gap can therefore never silence a real excursion.
  */
 internal fun CgmReading.isEligibleMeasured(): Boolean =
-    provenance == ReadingProvenance.MEASURED && flag == ReadingFlag.NORMAL && bgMgdl != null
+    isRealMeasurement(provenance, flag) && bgMgdl != null
 
 /** Severity a band maps to; the urgent tiers are CRITICAL (DND-bypass from Phase 7). */
 internal fun AlertBand.severity(): AlarmSeverity = when (this) {

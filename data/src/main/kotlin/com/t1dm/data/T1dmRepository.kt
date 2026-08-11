@@ -7,6 +7,7 @@ import com.t1dm.core.model.BandCalibration
 import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.CgmSourceDescriptor
 import com.t1dm.core.model.CgmSourceId
+import com.t1dm.core.model.isRealMeasurement
 import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.ForecastWindow
 import com.t1dm.core.model.ForecastWindowSet
@@ -46,11 +47,14 @@ import com.t1dm.data.db.SavedMealEntity
 import com.t1dm.data.db.SavedMealItemEntity
 import com.t1dm.data.db.ServerProfileEntity
 import com.t1dm.data.db.StepBucketRow
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
@@ -180,6 +184,8 @@ class T1dmRepository(
                 CgmSourceEntity(
                     sourceId = descriptor.id.value,
                     vendorId = descriptor.vendorId,
+                    sensorModelId = descriptor.sensorModelId,
+                    advertName = descriptor.advertName,
                     displayName = descriptor.displayName,
                     serialSuffix = descriptor.serialSuffix,
                     active = active,
@@ -221,6 +227,66 @@ class T1dmRepository(
 
     fun observeReadings(sourceId: CgmSourceId, fromMs: Long, toMs: Long): Flow<List<CgmReading>> =
         readings.observeRange(sourceId.value, fromMs, toMs).map { list -> list.map { it.toModel() } }
+
+    /**
+     * The same window over every source of one sensor MODEL, collapsed to one reading per grid slot
+     * (§3.1) — what the BG panel draws.
+     *
+     * A `sourceId` dies with the sensor it names, so a source-scoped panel emptied itself every time a
+     * sensor was replaced; [sensorModelId] is the family, and history is continuous across it.
+     * [selectedSourceId] resolves a contested slot only — it does not filter, and passing null merely
+     * falls through to the newest reception. Nothing here widens AUTHORITY: the live value, the alarm
+     * engine and the `sample` projection all remain scoped to the one active source.
+     *
+     * Two queries rather than a join, and the id list deduplicated between them. Room invalidates per
+     * TABLE, so a joined query would re-run on every `cgm_source` write — including the `lastSeenMs`
+     * touch each re-sighting performs — and re-materialise the whole never-pruned history at scan
+     * rate. Deduplicating the projection means the readings query is torn down and restarted only when
+     * the class's membership genuinely changes, which is when a sensor is first met.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun observeReadingsForSensorModel(
+        sensorModelId: String,
+        selectedSourceId: CgmSourceId?,
+        fromMs: Long,
+        toMs: Long,
+    ): Flow<List<CgmReading>> =
+        sources.observeIdsForSensorModel(sensorModelId)
+            .distinctUntilChanged()
+            .flatMapLatest { ids ->
+                // SQLite rejects `IN ()`, which is what Room emits for an empty list — and a class with
+                // no source has no history to draw anyway.
+                if (ids.isEmpty()) {
+                    flowOf(emptyList())
+                } else {
+                    readings.observeRangeForSources(ids, fromMs, toMs).map { rows ->
+                        collapseByGridSlot(rows, selectedSourceId?.value).map { it.toModel() }
+                    }
+                }
+            }
+            // The collapse and the entity→domain pass walk every row of the window, and the sole
+            // consumer collects this in composition — without this they would run on the main thread.
+            // Room already emits its query off-main; it is the operators above that need it.
+            .flowOn(io)
+
+    /**
+     * How far back this sensor model's record actually goes, or null while it holds nothing.
+     *
+     * The companion to [observeReadingsForSensorModel]'s window. The panel loads a recent slice —
+     * loading a lifetime re-materialises every reading of every sensor ever worn on each new reading,
+     * which grows without bound — but the graph's pannable domain has to reach the whole record, or
+     * a meal logged before the sensor was replaced becomes unreachable again. So the trace is
+     * windowed and the FLOOR is read separately, one aggregate rather than a hundred thousand rows.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun observeOldestTsForSensorModel(sensorModelId: String): Flow<Long?> =
+        sources.observeIdsForSensorModel(sensorModelId)
+            .distinctUntilChanged()
+            .flatMapLatest { ids ->
+                if (ids.isEmpty()) flowOf(null) else readings.observeOldestTsForSources(ids)
+            }
+            .distinctUntilChanged()
+            .flowOn(io)
 
     /** Deduplicated for the reason [observeActiveSource] is: `cgm_reading` is written more often than
      *  its newest row changes, and every one of those writes otherwise reached the glance combine and
@@ -861,7 +927,7 @@ class T1dmRepository(
         // tolerance before the range so the earliest forecast's anchor is matchable.
         val truth = readings.readingsInRange(sinceMs - toleranceMs, nowMs)
             .asSequence()
-            .filter { it.bgMgdl != null && it.provenance == ReadingProvenance.MEASURED && it.flag == ReadingFlag.NORMAL }
+            .filter { it.bgMgdl != null && isRealMeasurement(it.provenance, it.flag) }
             .map { it.tsMs to it.bgMgdl!! }
             .distinctBy { it.first }
             .sortedBy { it.first }
@@ -1019,8 +1085,12 @@ class T1dmRepository(
      */
     suspend fun reconcileReadingsFromSamples(): Int = withContext(io) {
         val active = sources.activeSourceId() ?: return@withContext 0
+        // The gap set spans the active source's whole MODEL CLASS. Asking it per source made every
+        // sensor replacement inherit a full duplicate of the record — see [SampleDao.bgSlotsMissingReading].
+        val klass = sources.byId(active)?.sensorModelId
+        val siblings = if (klass == null) listOf(active) else sources.idsForSensorModel(klass)
         inWriteTx {
-            val fill = samples.bgSlotsMissingReading(active).asSequence()
+            val fill = samples.bgSlotsMissingReading(siblings).asSequence()
                 .map { s ->
                     CgmReadingEntity(
                         sourceId = active,

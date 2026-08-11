@@ -17,6 +17,7 @@ import com.t1dm.data.db.SampleEntity
 import com.t1dm.data.db.SavedMealEntity
 import com.t1dm.data.db.SavedMealItemEntity
 import com.t1dm.data.db.ServerProfileEntity
+import com.t1dm.data.legacySensorModelIdFor
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -516,6 +517,8 @@ object Archive {
         w.open(T_SOURCE)
         w.put("sid", r.sourceId)
         w.put("vid", r.vendorId)
+        w.put("mid", r.sensorModelId)
+        w.putOrSkip("an", r.advertName)
         w.put("dn", r.displayName)
         w.putOrSkip("ss", r.serialSuffix)
         w.put("wm", r.warmupWindowMin)
@@ -530,16 +533,31 @@ object Archive {
      * exactly-one-active invariant (§3.1) and a restore onto a phone that already has a live sensor
      * must not land a second claimant on it.
      */
-    fun readSource(o: JsonObject, active: Boolean) = CgmSourceEntity(
-        sourceId = o.str("sid") ?: err("source", "sid"),
-        vendorId = o.str("vid") ?: err("source", "vid"),
-        displayName = o.str("dn") ?: err("source", "dn"),
-        serialSuffix = o.str("ss"),
-        active = active,
-        warmupWindowMin = o.int("wm") ?: err("source", "wm"),
-        addedAtMs = o.long("aa") ?: err("source", "aa"),
-        lastSeenMs = o.long("ls"),
-    )
+    fun readSource(o: JsonObject, active: Boolean): CgmSourceEntity {
+        // Bound before the constructor call because the class fallback below needs it. A named
+        // argument is not in scope for the arguments after it, so reading `sid` twice was the only
+        // alternative — and the second read would then have to invent a value for the absent case
+        // that the first read has already refused to continue past.
+        val sourceId = o.str("sid") ?: err("source", "sid")
+        return CgmSourceEntity(
+            sourceId = sourceId,
+            vendorId = o.str("vid") ?: err("source", "vid"),
+            // `mid` postdates the archive format, so a file written before the column existed carries
+            // none. It falls back to exactly what MIGRATION_10_11 backfills a stored row with — the two
+            // must agree, or the same sensor would land in one class by upgrade and another by restore,
+            // and its history would split in the panel.
+            sensorModelId = o.str("mid") ?: legacySensorModelIdFor(sourceId),
+            // Null rather than invented: a source recorded before the column existed genuinely has
+            // no record of what it advertised, and a guess would be indistinguishable from one.
+            advertName = o.str("an"),
+            displayName = o.str("dn") ?: err("source", "dn"),
+            serialSuffix = o.str("ss"),
+            active = active,
+            warmupWindowMin = o.int("wm") ?: err("source", "wm"),
+            addedAtMs = o.long("aa") ?: err("source", "aa"),
+            lastSeenMs = o.long("ls"),
+        )
+    }
 
     /** `ac` is a preference, exactly as on [write] for a source. */
     fun write(w: RecordWriter, r: ServerProfileEntity) {

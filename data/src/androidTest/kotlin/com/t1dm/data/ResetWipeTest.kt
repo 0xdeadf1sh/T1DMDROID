@@ -5,6 +5,7 @@ import androidx.room.useReaderConnection
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.t1dm.core.common.DefaultT1dmDispatchers
+import com.t1dm.core.model.CgmSensorModelId
 import com.t1dm.core.model.BackendId
 import com.t1dm.core.model.BandCalibration
 import com.t1dm.core.model.CgmReading
@@ -58,6 +59,7 @@ class ResetWipeTest {
     private val descriptor = CgmSourceDescriptor(
         id = sourceId,
         vendorId = "aidexx",
+        sensorModelId = CgmSensorModelId.AIDEX_X, advertName = null,
         displayName = "AiDEX X RESET",
         serialSuffix = "RESET",
         warmupWindowMin = 60,

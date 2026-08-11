@@ -4,6 +4,7 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.t1dm.core.common.DefaultT1dmDispatchers
+import com.t1dm.core.model.CgmSensorModelId
 import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.CgmSourceDescriptor
 import com.t1dm.core.model.CgmSourceId
@@ -38,6 +39,7 @@ class RoomTest {
     private val descriptor = CgmSourceDescriptor(
         id = sourceId,
         vendorId = "aidexx",
+        sensorModelId = CgmSensorModelId.AIDEX_X, advertName = null,
         displayName = "AiDEX X TEST",
         serialSuffix = "TESTSOURCE",
         warmupWindowMin = 60,

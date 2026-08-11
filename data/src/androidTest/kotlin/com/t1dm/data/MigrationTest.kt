@@ -192,10 +192,86 @@ class MigrationTest {
     }
 
     @Test
-    fun migrate1To10_fullChain() {
+    fun migrate10To11_everyStoredSourceIsClassifiedAndNoReadingMoves() {
+        // v11 (displayed history spans a sensor MODEL, not one physical sensor): `cgm_source` gains
+        // `sensorModelId` + its index. Seed two real sensors and the debug source, each holding a reading,
+        // then assert the backfill is exact and additive — this is the step that decides whether a
+        // year of history stays reachable on the BG panel after a sensor change.
+        helper.createDatabase(10).use { db ->
+            fun source(id: String, added: Long, active: Int) = db.execSQL(
+                "INSERT INTO `cgm_source` " +
+                    "(`sourceId`,`vendorId`,`displayName`,`serialSuffix`,`active`,`warmupWindowMin`," +
+                    "`addedAtMs`,`lastSeenMs`) VALUES ('$id','aidexx','n','s',$active,60,$added,$added)",
+            )
+            fun reading(id: String, ts: Long) = db.execSQL(
+                "INSERT INTO `cgm_reading` " +
+                    "(`sourceId`,`tsMs`,`bgMgdl`,`trendTenthsPerMin`,`minFromStart`,`quality`," +
+                    "`provenance`,`flag`,`tzOffsetMin`,`rxWallMs`,`rssi`) " +
+                    "VALUES ('$id',$ts,120,NULL,120,NULL,'MEASURED','NORMAL',0,$ts,NULL)",
+            )
+            source("aidexx:EXPIRED", 1_000, 0)
+            source("aidexx:FRESH", 2_000, 1)
+            source("aidexx:DEBUG", 3_000, 0)
+            reading("aidexx:EXPIRED", 300_000L)
+            reading("aidexx:FRESH", 600_000L)
+            reading("aidexx:DEBUG", 900_000L)
+        }
+
+        val db = helper.runMigrationsAndValidate(11, listOf(MigrationRunner.MIGRATION_10_11))
+
+        // Both real sensors land in one class — the whole point: they now share a trace.
+        assertEquals(
+            2,
+            countRows(db, "SELECT COUNT(*) FROM `cgm_source` WHERE `sensorModelId` = 'aidexx:x'"),
+        )
+        // The debug source keeps its own, so injected readings do not graft onto the real history.
+        assertEquals(
+            1,
+            countRows(
+                db,
+                "SELECT COUNT(*) FROM `cgm_source` " +
+                    "WHERE `sensorModelId` = 'aidexx:debug' AND `sourceId` = 'aidexx:DEBUG'",
+            ),
+        )
+        // No row may be left unclassified: '' would be a class of its own and would strand a sensor.
+        assertEquals(0, countRows(db, "SELECT COUNT(*) FROM `cgm_source` WHERE `sensorModelId` = ''"))
+        // Additive: the migration classifies sources and touches nothing else.
+        assertEquals(3, countRows(db, "SELECT COUNT(*) FROM `cgm_source`"))
+        assertEquals(3, countRows(db, "SELECT COUNT(*) FROM `cgm_reading`"))
+        assertEquals(1, countRows(db, "SELECT COUNT(*) FROM `cgm_source` WHERE `active` = 1"))
+        db.close()
+    }
+
+    @Test
+    fun migrate11To12_advertNameIsAddedAndLeftNull() {
+        // v12 (a source records what it advertised): one nullable column, nothing backfilled. The
+        // null is the point — the advertised name was discarded at match time, so for a sensor
+        // already on record the app genuinely does not know it, and inventing one here would be
+        // indistinguishable from having observed it.
+        helper.createDatabase(11).use { db ->
+            db.execSQL(
+                "INSERT INTO `cgm_source` " +
+                    "(`sourceId`,`vendorId`,`sensorModelId`,`displayName`,`serialSuffix`,`active`," +
+                    "`warmupWindowMin`,`addedAtMs`,`lastSeenMs`) " +
+                    "VALUES ('aidexx:OLD','aidexx','aidexx:x','n','s',1,60,1,1)",
+            )
+        }
+
+        val db = helper.runMigrationsAndValidate(12, listOf(MigrationRunner.MIGRATION_11_12))
+
+        assertEquals(1, countRows(db, "SELECT COUNT(*) FROM `cgm_source` WHERE `advertName` IS NULL"))
+        assertEquals(
+            1,
+            countRows(db, "SELECT COUNT(*) FROM `cgm_source` WHERE `sensorModelId` = 'aidexx:x'"),
+        )
+        db.close()
+    }
+
+    @Test
+    fun migrate1To12_fullChain() {
         helper.createDatabase(1).close()
         helper.runMigrationsAndValidate(
-            10,
+            12,
             listOf(
                 MigrationRunner.MIGRATION_1_2,
                 MigrationRunner.MIGRATION_2_3,
@@ -206,6 +282,8 @@ class MigrationTest {
                 MigrationRunner.MIGRATION_7_8,
                 MigrationRunner.MIGRATION_8_9,
                 MigrationRunner.MIGRATION_9_10,
+                MigrationRunner.MIGRATION_10_11,
+                MigrationRunner.MIGRATION_11_12,
             ),
         )
     }
