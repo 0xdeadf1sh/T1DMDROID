@@ -4,11 +4,16 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -18,12 +23,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.SignalBars
+import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.model.CgmSourceDescriptor
 
 /**
  * Settings → CGM source. Surfaces the auto-adopted active source and every recorded source (manual
- * re-selection lands with the multi-source work).
+ * re-selection lands with the multi-source work), each of the inactive ones removable from the list.
  *  - I10: the ACTIVE source's live BLE signal strength (RSSI dBm + bars), reusing the BG-panel meter.
  *  - I11: a USER-ENTERED sensor lifetime. Because the AiDEX X is a passive advertisement listener we
  *    cannot read the sensor's true age, so the user enters the remaining life (days + hours + minutes);
@@ -38,7 +45,8 @@ import com.t1dm.core.model.CgmSourceDescriptor
 fun CgmSettingsScreen(
     activeSourceName: String?,
     activeStatus: String?,
-    allSourceNames: List<String>,
+    recordedSources: List<RecordedSource>,
+    onRemoveSource: (String) -> Unit = {},
     activeRssi: Int? = null,
     sensorExpiryMs: Long? = null,
     /** The ACTIVE source's configured warm-up window (minutes), or null when no source is on record —
@@ -69,10 +77,22 @@ fun CgmSettingsScreen(
                 activeRssi?.let { SignalBars(it) }
             }
             Text("Recorded", style = MaterialTheme.typography.labelMedium)
-            if (allSourceNames.isEmpty()) {
+            if (recordedSources.isEmpty()) {
                 Text("none", style = MaterialTheme.typography.bodyMedium)
             } else {
-                allSourceNames.forEach { Text(it, style = MaterialTheme.typography.bodyMedium) }
+                // Hoisted above the rows so the ask survives the list being rebuilt underneath it — a
+                // re-sighting rewrites this list, and a confirmation held inside a row would go with it.
+                var confirming by remember { mutableStateOf<RecordedSource?>(null) }
+                recordedSources.forEach { src ->
+                    RecordedSourceRow(src, onRequestRemove = { confirming = it })
+                }
+                confirming?.let { src ->
+                    RemoveSourceDialog(
+                        name = src.name,
+                        onConfirm = { confirming = null; onRemoveSource(src.id) },
+                        onDismiss = { confirming = null },
+                    )
+                }
             }
         }
 
@@ -115,6 +135,65 @@ fun CgmSettingsScreen(
             ToggleRow(cgmAggressiveCharging, aggressiveOnlyCharging, onSetAggressiveOnlyCharging)
         }
     }
+}
+
+/** One row of the recorded list. [active] is the source every value on screen comes from. */
+data class RecordedSource(val id: String, val name: String, val active: Boolean)
+
+/**
+ * A recorded sensor, with a ✕ on the ones that are not being read from — the list only ever grows,
+ * and a sensor thrown away months ago has no reason to stay on it. The ACTIVE source has no ✕: it is
+ * where every value on screen comes from, and taking it off its own list is not an offer worth making.
+ */
+@Composable
+private fun RecordedSourceRow(src: RecordedSource, onRequestRemove: (RecordedSource) -> Unit) {
+    val haptics = rememberT1dmHaptics()
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            src.name,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = if (src.active) FontWeight.SemiBold else FontWeight.Normal,
+            modifier = Modifier.weight(1f),
+        )
+        if (!src.active) {
+            IconButton(
+                onClick = { haptics.perform(HapticEvent.Tap); onRequestRemove(src) },
+                modifier = Modifier.size(40.dp),
+            ) {
+                Text("✕", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.error)
+            }
+        }
+    }
+}
+
+/**
+ * The ask before a removal, in the app's house shape (bare M3 [AlertDialog], sentence-case `?` title,
+ * verb-named accept, "Cancel", and the Warn-on-raise / Commit-on-accept / Reject-on-either-exit haptic
+ * three-beat).
+ *
+ * The body line states the one fact the title cannot: this sounds like a deletion and is not one. The
+ * source stays on record and its readings stay in the BG panel's history — which is the whole reason
+ * the list hides rather than deletes.
+ */
+@Composable
+private fun RemoveSourceDialog(name: String, onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    val haptics = rememberT1dmHaptics()
+    LaunchedEffect(name) { haptics.perform(HapticEvent.Warn) }
+    AlertDialog(
+        onDismissRequest = { haptics.perform(HapticEvent.Reject); onDismiss() },
+        title = { Text("Remove $name?") },
+        text = { Text("Readings are kept") },
+        confirmButton = {
+            TextButton(onClick = { haptics.perform(HapticEvent.Commit); onConfirm() }) { Text("Remove") }
+        },
+        dismissButton = {
+            TextButton(onClick = { haptics.perform(HapticEvent.Reject); onDismiss() }) { Text("Cancel") }
+        },
+    )
 }
 
 @Composable

@@ -223,7 +223,7 @@ class ArchiveRoundTripTest {
                 sourceId = "aidex-OLD", vendorId = "aidex", sensorModelId = CgmSensorModelId.AIDEX_X, advertName = null,
                 displayName = "last year's sensor",
                 serialSuffix = "0001", active = false, warmupWindowMin = 60,
-                addedAtMs = 1_600_000_000_000L, lastSeenMs = 1_600_100_000_000L,
+                addedAtMs = 1_600_000_000_000L, lastSeenMs = 1_600_100_000_000L, hidden = false,
             ),
         )
         populate(source) // adds SOURCE_ID with a much later addedAtMs, and active = true
@@ -524,7 +524,7 @@ class ArchiveRoundTripTest {
     private fun cgmSource() = CgmSourceEntity(
         sourceId = SOURCE_ID, vendorId = "aidex", sensorModelId = CgmSensorModelId.AIDEX_X, advertName = null, displayName = "AiDEX X",
         serialSuffix = "4321", active = true, warmupWindowMin = 60,
-        addedAtMs = 1_700_000_000_000L, lastSeenMs = 1_700_000_600_000L,
+        addedAtMs = 1_700_000_000_000L, lastSeenMs = 1_700_000_600_000L, hidden = false,
     )
 
     private fun reading(i: Int) = CgmReadingEntity(

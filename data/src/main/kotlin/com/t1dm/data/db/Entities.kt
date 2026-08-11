@@ -49,6 +49,12 @@ enum class OutboxState { PENDING, INFLIGHT, FAILED }
  * panel's history query joins through it: displayed history spans the class, so replacing a sensor
  * with another of the same model keeps one continuous trace. `active` still picks the single
  * authoritative source — the class widens what is drawn, never what is believed.
+ *
+ * [hidden] is a display flag and only that: the user has removed a retired sensor from the lists,
+ * which never shrink on their own. The row survives, so [sensorModelId] still selects its readings
+ * into the panel's history — deleting it instead would leave that stretch of the trace unreachable
+ * and its `cgm_reading` rows unreclaimable. Not indexed: the two readers that filter on it hold one
+ * row per sensor the phone has ever met.
  */
 @Entity(tableName = "cgm_source", indices = [Index("sensorModelId")])
 data class CgmSourceEntity(
@@ -62,6 +68,7 @@ data class CgmSourceEntity(
     val warmupWindowMin: Int,
     val addedAtMs: Long,
     val lastSeenMs: Long?,
+    val hidden: Boolean,
 )
 
 /**

@@ -172,7 +172,16 @@ class T1dmRepository(
     fun observeActiveSource(): Flow<CgmSourceDescriptor?> =
         sources.observeActive().map { it?.toDescriptor() }.distinctUntilChanged()
 
-    /** Register or update a source, preserving its original `addedAtMs` across updates. */
+    /**
+     * Register or update a source, preserving its original `addedAtMs` across updates.
+     *
+     * `hidden` is preserved from the STORED row for the same reason and with more force: this runs on
+     * every re-sighting, from a descriptor the caller has held in memory since before the removal, so
+     * taking the flag from the argument would write a removed sensor back onto the list within one
+     * scan. An [active] source is un-hidden here rather than merely left alone — the same invariant
+     * [CgmSourceDao.setActive] holds, applied on the path that adopts a source without going through
+     * it.
+     */
     suspend fun upsertSource(
         descriptor: CgmSourceDescriptor,
         active: Boolean,
@@ -192,6 +201,7 @@ class T1dmRepository(
                     warmupWindowMin = descriptor.warmupWindowMin,
                     addedAtMs = existing?.addedAtMs ?: nowMs,
                     lastSeenMs = nowMs,
+                    hidden = !active && (existing?.hidden ?: false),
                 ),
             )
             if (active) {
@@ -222,6 +232,10 @@ class T1dmRepository(
         val clamped = minutes.coerceIn(CgmSourceDescriptor.WARMUP_WINDOW_RANGE)
         sources.setWarmupWindowMin(id.value, clamped)
     }
+
+    /** Take a retired sensor off the sensor lists. Its readings stay: the row remains, so the BG
+     *  panel's model-wide history still selects them ([CgmSourceDao.hide] refuses the active source). */
+    suspend fun hideSource(id: CgmSourceId) = withContext(io) { sources.hide(id.value) }
 
     // ─── Readings + wide-sample projection ──────────────────────────────────────────────────
 

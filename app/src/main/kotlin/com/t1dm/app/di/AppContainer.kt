@@ -2971,6 +2971,10 @@ class AppContainer(context: Context) {
         registry.setWarmupWindowMin(id, minutes)
     }
 
+    /** Settings → CGM source "Remove" — take a retired sensor off the recorded list. A display flag:
+     *  the source stays on record, so its readings stay in the BG panel's model-wide history. */
+    fun hideCgm(id: String) = registry.hide(com.t1dm.core.model.CgmSourceId(id))
+
     private fun serverLight(sync: SyncStatus, profile: ServerProfile?): ReachLight = when {
         profile == null -> ReachLight(LinkHealth.OFF, "no server profile configured")
         sync.lastDrain?.standDown == com.t1dm.sync.DrainResult.StandDown.AUTH ->

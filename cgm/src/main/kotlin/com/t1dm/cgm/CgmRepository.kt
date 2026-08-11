@@ -37,6 +37,14 @@ interface CgmRepository {
     suspend fun setWarmupWindowMin(id: CgmSourceId, minutes: Int)
 
     /**
+     * Take a retired sensor off the sensor lists — a display flag on the row, never a delete: the
+     * source stays on record so its readings stay in the history the BG panel draws. The
+     * implementation refuses the ACTIVE source, which is the invariant the caller relies on rather
+     * than re-checks.
+     */
+    suspend fun hide(id: CgmSourceId)
+
+    /**
      * Persist one grid-stamped reading to `cgm_reading` (upsert on `(sourceId, tsMs)`) and project
      * its BG onto the wide `sample` row for `tsMs` (§3.5, LWW on `updatedAt`).
      */

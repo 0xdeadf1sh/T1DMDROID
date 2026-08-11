@@ -525,6 +525,7 @@ object Archive {
         w.put("aa", r.addedAtMs)
         w.putOrSkip("ls", r.lastSeenMs)
         w.put("ac", r.active)
+        w.put("hd", r.hidden)
         w.close()
     }
 
@@ -556,6 +557,11 @@ object Archive {
             warmupWindowMin = o.int("wm") ?: err("source", "wm"),
             addedAtMs = o.long("aa") ?: err("source", "aa"),
             lastSeenMs = o.long("ls"),
+            // Absent in a file written before the column existed, and false is the state every such
+            // row was exported in. Unlike `active` this IS read from the file: it says what the user
+            // did, carries no invariant across the whole table, and dropping it would re-list every
+            // sensor they had removed.
+            hidden = o.bool("hd") ?: false,
         )
     }
 

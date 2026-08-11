@@ -31,6 +31,8 @@ class AppCgmRepository(private val repository: T1dmRepository) : CgmRepository {
     override suspend fun setWarmupWindowMin(id: CgmSourceId, minutes: Int) =
         repository.setSourceWarmupWindowMin(id, minutes)
 
+    override suspend fun hide(id: CgmSourceId) = repository.hideSource(id)
+
     override suspend fun upsertReading(reading: CgmReading) = repository.upsertReading(reading)
 
     override suspend fun insertRawAdvert(

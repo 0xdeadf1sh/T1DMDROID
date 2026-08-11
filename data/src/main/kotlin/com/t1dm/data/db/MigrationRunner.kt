@@ -412,6 +412,21 @@ object MigrationRunner {
         }
     }
 
+    /**
+     * v12 → v13 (a retired sensor can be taken off the lists): additive only — `cgm_source` gains
+     * `hidden`, defaulting to 0 so every sensor already on record stays listed exactly as it was.
+     *
+     * **A display flag, deliberately not a delete.** The BG panel's history spans a sensor MODEL and
+     * takes its id set from this table ([CgmSourceDao.observeIdsForSensorModel]), so dropping the row
+     * would erase that sensor's stretch of the trace while leaving its `cgm_reading` rows behind,
+     * unreachable and unreclaimable. Hiding costs one column and loses nothing.
+     */
+    val MIGRATION_12_13 = object : Migration(12, 13) {
+        override fun migrate(connection: SQLiteConnection) {
+            connection.execSQL("ALTER TABLE `cgm_source` ADD COLUMN `hidden` INTEGER NOT NULL DEFAULT 0")
+        }
+    }
+
     val ALL: Array<Migration> = arrayOf(
         MIGRATION_1_2,
         MIGRATION_2_3,
@@ -424,6 +439,7 @@ object MigrationRunner {
         MIGRATION_9_10,
         MIGRATION_10_11,
         MIGRATION_11_12,
+        MIGRATION_12_13,
     )
 
     /** Apply every registered migration to a builder; the sole path that wires migrations. */

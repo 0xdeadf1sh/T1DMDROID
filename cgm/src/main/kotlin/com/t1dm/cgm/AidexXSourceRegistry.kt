@@ -130,6 +130,26 @@ class AidexXSourceRegistry(
         scope.launch { repository.setWarmupWindowMin(id, clamped) }
     }
 
+    /**
+     * Settings → CGM source "Remove": take a retired sensor off the list. Both copies move together
+     * for the reason [setWarmupWindowMin] moves three — [_sources] is this registry's own view, and a
+     * copy that still called the sensor listed would show it again the moment anything rewrote the row.
+     *
+     * The live [AidexXSource] is deliberately left in place: removal is a display flag, so a sensor
+     * still advertising keeps being decoded and stored exactly as before. It is simply not the active
+     * source, and never was authoritative.
+     *
+     * The ACTIVE source is refused. The ✕ is drawn only on the other rows, but the first-ever advert
+     * adopts a source on its own, so the id the user pressed may be the active one by the time this runs.
+     */
+    fun hide(id: CgmSourceId) {
+        if (id == _active.value) return
+        _sources.update { current ->
+            current.map { if (it.id == id) it.copy(hidden = true) else it }
+        }
+        scope.launch { repository.hide(id) }
+    }
+
     override fun activeSource(): AidexXSource? = _active.value?.let { live[it.value] }
 
     private suspend fun adopt(id: CgmSourceId): AidexXSource {

@@ -151,6 +151,7 @@ class TransactionTest {
         warmupWindowMin = 60,
         addedAtMs = 0L,
         lastSeenMs = null,
+        hidden = false,
     )
 
     private fun descriptor(id: String) = CgmSourceDescriptor(

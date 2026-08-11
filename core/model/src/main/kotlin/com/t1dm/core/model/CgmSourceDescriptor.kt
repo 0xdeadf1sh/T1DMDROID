@@ -61,6 +61,17 @@ data class CgmSourceDescriptor(
     val serialSuffix: String?,     // the name/serial suffix used to match adverts
     val warmupWindowMin: Int,      // seeded per vendor, then user-tunable; drives the WARMUP heuristic
     val passiveOnly: Boolean,      // AiDEX X: true (advertisement-only, no GATT session)
+    /**
+     * Removed from the sensor lists by the user — a retired sensor kept off a list that only ever
+     * grows. It is a DISPLAY flag and nothing more: the source stays on record, so its readings stay
+     * in the sensor-model history the BG panel draws (the id set comes from `cgm_source`, and
+     * dropping the row would take that stretch of the trace with it).
+     *
+     * Carried on the descriptor rather than read per-list because the registry holds its own
+     * in-memory set of them — a copy without the flag would put a removed sensor back on the list
+     * the moment anything rewrote its row.
+     */
+    val hidden: Boolean = false,
 ) {
     /**
      * [displayName] with the serial the vendor plugin folded into it removed — "AiDEX X" rather than

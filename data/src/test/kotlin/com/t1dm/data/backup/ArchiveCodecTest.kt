@@ -224,7 +224,7 @@ class ArchiveCodecTest {
 
     private fun source(active: Boolean) = com.t1dm.data.db.CgmSourceEntity(
         sourceId = "s", vendorId = "v", sensorModelId = "v:model", advertName = null, displayName = "d", serialSuffix = null,
-        active = active, warmupWindowMin = 60, addedAtMs = 1L, lastSeenMs = 2L,
+        active = active, warmupWindowMin = 60, addedAtMs = 1L, lastSeenMs = 2L, hidden = false,
     )
 
     // ── the wide projection ───────────────────────────────────────────────────────────────────

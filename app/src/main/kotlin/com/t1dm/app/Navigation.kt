@@ -149,6 +149,7 @@ import com.t1dm.feature.settings.SettingsScreenKey
 import com.t1dm.feature.settings.GraphSettingsScreen
 import com.t1dm.feature.settings.ModelCountSettingsScreen
 import com.t1dm.feature.settings.PowerSettingsScreen
+import com.t1dm.feature.settings.RecordedSource
 import com.t1dm.feature.settings.SettingsScreen
 import com.t1dm.feature.settings.SignalSafetyScreen
 import com.t1dm.feature.settings.ThermalSettingsScreen
@@ -2167,7 +2168,15 @@ private fun T1dmNavHost(
             CgmSettingsScreen(
                 activeSourceName = active?.displayName,
                 activeStatus = active?.let { "active" },
-                allSourceNames = sources.map { it.displayName },
+                // Removed sensors drop out here rather than at the source: the registry keeps its whole
+                // set, and the active one is listed whatever its flag says — a sensor authoritative for
+                // every value on screen must not be absent from the list naming it.
+                recordedSources = sources.mapNotNull {
+                    val isActive = it.id == active?.id
+                    if (it.hidden && !isActive) null
+                    else RecordedSource(it.id.value, it.displayName, isActive)
+                },
+                onRemoveSource = { id -> container.hideCgm(id) },
                 activeRssi = signals?.cgmRssi,
                 sensorExpiryMs = expiry,
                 // Read back from STORAGE (the active source's persisted column), not off the registry's

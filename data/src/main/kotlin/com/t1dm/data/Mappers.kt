@@ -55,6 +55,7 @@ internal fun CgmSourceEntity.toDescriptor(): CgmSourceDescriptor = CgmSourceDesc
     // The AiDEX X impl is now the CONNECTED (GATT) read path, not passive advertisement. The flag is a
     // vendor constant (not a persisted column) and is informational only — nothing branches on it.
     passiveOnly = false,
+    hidden = hidden,
 )
 
 internal fun PaintStrokeEntity.toModel(): PaintStroke {

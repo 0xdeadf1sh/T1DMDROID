@@ -53,8 +53,20 @@ interface CgmSourceDao {
     @Query("UPDATE cgm_source SET active = 0")
     suspend fun clearActive()
 
-    @Query("UPDATE cgm_source SET active = 1 WHERE sourceId = :sourceId")
+    /** Clears `hidden` in the same statement, so the source the app is reading from is always one the
+     *  user can see. Nothing else re-lists a hidden source, and a sensor authoritative for every value
+     *  on screen while absent from the sensor list is the one state this must not reach. */
+    @Query("UPDATE cgm_source SET active = 1, hidden = 0 WHERE sourceId = :sourceId")
     suspend fun setActive(sourceId: String)
+
+    /**
+     * Take a retired sensor off the lists. `active = 0` is part of the WHERE rather than a caller's
+     * precondition: this is the one door into the column, and it is what makes "the active source is
+     * never hidden" hold whatever the UI does — a stale row tapped as the active source changes
+     * underneath it updates nothing.
+     */
+    @Query("UPDATE cgm_source SET hidden = 1 WHERE sourceId = :sourceId AND active = 0")
+    suspend fun hide(sourceId: String)
 
     /** Retune one source's warm-up window in place. A column-scoped UPDATE, not an upsert: the row's
      *  identity, `addedAtMs` and `active` flag are untouched, so the edit cannot disturb the
