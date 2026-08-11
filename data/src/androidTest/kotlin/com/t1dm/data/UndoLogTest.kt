@@ -44,7 +44,9 @@ class UndoLogTest {
 
     private val dispatchers = DefaultT1dmDispatchers(io = Dispatchers.Default)
 
-    private val nowMs = 1_700_000_000_000L
+    /** On the five-minute grid, because `logLoggedDose`/`logMeal` are the snap authority and store
+     *  what they snapped — an off-grid instant here is not the ts the row comes back with. */
+    private val nowMs = 1_700_000_100_000L
 
     @Before
     fun setUp() {
