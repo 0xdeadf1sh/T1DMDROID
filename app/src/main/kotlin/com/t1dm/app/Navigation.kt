@@ -2212,6 +2212,7 @@ private fun T1dmNavHost(
                 onRemoveSource = { id -> container.hideCgm(id) },
                 onMakeAuthoritative = { id -> container.makeAuthoritativeCgm(id) },
                 onStartReading = { id -> container.activateCgm(id) },
+                onStopReading = { id -> container.deactivateCgm(id) },
                 activeRssi = signals?.cgmRssi,
                 sensorExpiryMs = expiry,
                 // Read back from STORAGE (the authoritative source's persisted column), not off the registry's

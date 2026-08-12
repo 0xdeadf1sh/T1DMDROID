@@ -55,6 +55,8 @@ fun CgmSettingsScreen(
     onMakeAuthoritative: (String) -> Unit = {},
     /** Start reading this sensor, without believing it. */
     onStartReading: (String) -> Unit = {},
+    /** Stop reading this sensor, keeping it on the list. The reversible half of ✕. */
+    onStopReading: (String) -> Unit = {},
     activeRssi: Int? = null,
     sensorExpiryMs: Long? = null,
     /** The AUTHORITATIVE source's configured warm-up window (minutes), or null when no source is on
@@ -96,6 +98,7 @@ fun CgmSettingsScreen(
                         src = src,
                         onMakeAuthoritative = onMakeAuthoritative,
                         onStartReading = onStartReading,
+                        onStopReading = onStopReading,
                         onRequestRemove = { confirming = it },
                     )
                 }
@@ -177,6 +180,7 @@ private fun RecordedSourceRow(
     src: RecordedSource,
     onMakeAuthoritative: (String) -> Unit,
     onStartReading: (String) -> Unit,
+    onStopReading: (String) -> Unit,
     onRequestRemove: (RecordedSource) -> Unit,
 ) {
     val haptics = rememberT1dmHaptics()
@@ -205,14 +209,28 @@ private fun RecordedSourceRow(
             color = if (src.authoritative) MaterialTheme.colorScheme.primary
             else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
         )
+        // ✕ is two-stage, reversible half first. On a sensor being READ it stops reading and nothing
+        // else — no confirmation, because it undoes with one press. Only once a sensor is already
+        // stopped does ✕ delist it, and that one asks, because it cannot be undone.
         if (!src.authoritative) {
+            val stops = src.active
             IconButton(
-                onClick = { haptics.perform(HapticEvent.Tap); onRequestRemove(src) },
+                onClick = {
+                    haptics.perform(HapticEvent.Tap)
+                    if (stops) onStopReading(src.id) else onRequestRemove(src)
+                },
                 // The glyph is the whole label otherwise, and no TTS voice speaks U+2715 — the button
                 // announces as unlabelled, with neither the action nor which sensor it acts on.
-                modifier = Modifier.size(40.dp).semantics { contentDescription = "Remove ${src.name}" },
+                modifier = Modifier.size(40.dp).semantics {
+                    contentDescription = if (stops) "Stop reading ${src.name}" else "Remove ${src.name}"
+                },
             ) {
-                Text("✕", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.error)
+                Text(
+                    "✕",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = if (stops) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    else MaterialTheme.colorScheme.error,
+                )
             }
         }
     }
