@@ -23,6 +23,9 @@ data class SampleDto(
     val ts: Long,
     val tz_offset: Int = 0,
     val bg: Double? = null,
+    /** Which CGM sensor [bg] came from. Read as well as written, so a slot the phone learns about
+     *  only from the server keeps the label the phone itself gave it. */
+    val bg_source: String? = null,
     val hr: Double? = null,
     val steps: Double? = null,
     val sleep: Double? = null,

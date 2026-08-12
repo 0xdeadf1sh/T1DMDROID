@@ -66,6 +66,7 @@ fun SampleEntity.toIngest(): IngestDto = IngestDto(
  */
 fun SampleDto.toPatch(): SamplePatch = SamplePatch(
     ts = ts,
+    bgSource = bg_source,
     tzOffsetMin = tz_offset,
     updatedAt = updated_at,
     bgMgdl = bg?.let { Math.round(it).toInt() },

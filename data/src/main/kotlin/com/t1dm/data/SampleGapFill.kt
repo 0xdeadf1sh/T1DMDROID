@@ -19,6 +19,7 @@ data class SamplePatch(
     val tzOffsetMin: Int,
     val updatedAt: Long,
     val bgMgdl: Int? = null,
+    val bgSource: String? = null,
     val bgProvenance: ReadingProvenance? = null,
     val bgFlag: ReadingFlag? = null,
     val steps: Int? = null,
@@ -43,6 +44,7 @@ object SampleGapFill {
         if (existing == null) return materialize(patch)
         val merged = existing.copy(
             bgMgdl = existing.bgMgdl ?: patch.bgMgdl,
+            bgSource = existing.bgSource ?: patch.bgSource,
             bgProvenance = existing.bgProvenance ?: patch.bgProvenance,
             bgFlag = existing.bgFlag ?: patch.bgFlag,
             steps = existing.steps ?: patch.steps,
@@ -59,11 +61,12 @@ object SampleGapFill {
         ts = p.ts,
         tzOffsetMin = p.tzOffsetMin,
         bgMgdl = p.bgMgdl,
-        // A server catch-up carries no sensor identity: the wire's `bg_source` names the sensor the
-        // PHONE recorded, and a row arriving back has been through the server's storage where it is a
-        // label and nothing else. Null rather than the current sensor's — attributing a reading to a
-        // sensor that may not have produced it is the one thing this column must never do.
-        bgSource = null,
+        // The SERVER's label, which is the phone's own from when it first pushed this slot. Never the
+        // currently authoritative sensor's: attributing a reading to a sensor that may not have
+        // produced it is the one thing this column must never do. Nulling it was worse still — a
+        // gap-fill re-enqueues the slot, and the re-push then cleared the label the server held for a
+        // reading the phone had never changed.
+        bgSource = p.bgSource,
         bgProvenance = p.bgProvenance,
         bgFlag = p.bgFlag,
         steps = p.steps,
