@@ -23,6 +23,14 @@ class WeakSignalAlarm(private var config: AlarmConfig) {
     /** When the RSSI first dropped to/below the threshold (null while the link is healthy). */
     private var weakSinceMs: Long? = null
 
+    /** Forget the sensor this was tracking (a promotion). RSSI belongs to a radio link, so the old
+     *  sensor's is not weak evidence about the new one — it is no evidence at all. */
+    fun onSourceChanged() {
+        lastRssiDbm = null
+        lastRssiMs = 0L
+        weakSinceMs = null
+    }
+
     var weak: WeakSignal? = null
         private set
 

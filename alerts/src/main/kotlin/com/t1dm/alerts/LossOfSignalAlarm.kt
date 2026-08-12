@@ -18,6 +18,19 @@ class LossOfSignalAlarm(private var config: AlarmConfig) {
 
     private var lastMeasured: CgmReading? = null
 
+    /**
+     * Forget the sensor this was tracking (a promotion — a different sensor is now believed).
+     *
+     * The staleness clock is seeded from the LAST MEASURED reading, so carrying it across a sensor
+     * change ages the new sensor by however long the old one had been quiet, and can fire
+     * loss-of-signal against a sensor that has been reporting perfectly. Clearing re-arms it: the
+     * alarm cannot fire again until the new sensor has produced a real reading, which is the same
+     * state a cold start is in and the same one this class already treats as "nothing to say yet".
+     */
+    fun onSourceChanged() {
+        lastMeasured = null
+    }
+
     var loss: SignalLoss? = null
         private set
 

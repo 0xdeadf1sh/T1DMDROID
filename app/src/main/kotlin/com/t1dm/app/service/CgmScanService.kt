@@ -49,6 +49,8 @@ import com.t1dm.core.model.UnitSpace
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
@@ -370,6 +372,19 @@ class CgmScanService : LifecycleService() {
             container.registry.authoritative.collectLatest {
                 val src = container.registry.authoritativeSource() ?: return@collectLatest
                 src.readings().collect { readingBus.emit(it) }
+            }
+        }
+
+        // 2b) Tell the alarm engine when authority MOVES, so it stops holding the outgoing sensor's
+        //     link state against the incoming one. Only the link — a standing glucose breach is a fact
+        //     about the patient and survives (AlarmEngine.onSourceChanged). Also drops the forecast:
+        //     it was conditioned on the old sensor's history, so pairing it with the new sensor's BG
+        //     on the widget, the watch and the ongoing notification would state something untrue.
+        //     `drop(1)` because the first emission is the id already in force at subscribe time.
+        lifecycleScope.launch {
+            container.registry.authoritative.drop(1).distinctUntilChanged().collect {
+                alarmScope?.launch { alarmEngine.onSourceChanged() }
+                container.invalidateInferenceOnSourceChange()
             }
         }
 

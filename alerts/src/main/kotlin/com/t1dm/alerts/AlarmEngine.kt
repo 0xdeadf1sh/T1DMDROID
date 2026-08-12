@@ -37,6 +37,27 @@ class AlarmEngine(config: AlarmConfig = AlarmConfig.DEFAULT) {
     }
 
     /**
+     * The authoritative sensor changed: forget what the previous one established about the LINK,
+     * and keep everything it established about the PATIENT.
+     *
+     * [LossOfSignalAlarm] and [WeakSignalAlarm] both describe a radio link, and the old sensor's link
+     * says nothing about the new one — carried across, a stale staleness clock fires loss-of-signal
+     * against a sensor that is reporting perfectly.
+     *
+     * SAFETY: [ThresholdAlarm] is deliberately NOT reset, for the reason [updateConfig] does not
+     * clear a standing breach. A low is a fact about the patient, not about the sensor that saw it,
+     * and clearing the latch here would silence a genuine excursion at exactly the moment the user
+     * was fiddling with sensors. The next eligible MEASURED reading from the new sensor
+     * re-classifies it. Fail closed: keep alarming, never go quiet on a state change.
+     */
+    @Synchronized
+    fun onSourceChanged() {
+        lossOfSignal.onSourceChanged()
+        weakSignal.onSourceChanged()
+        publish()
+    }
+
+    /**
      * Live-apply a new [AlarmConfig] to the EXISTING sub-evaluators (a Settings edit reaching the
      * already-running engine, §3.6-A). Swaps thresholds / loss windows / over-temp
      * params only; it deliberately does NOT clear any active breach or latch and does NOT re-publish.

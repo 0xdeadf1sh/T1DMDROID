@@ -103,6 +103,26 @@ class InferenceController(
     private val _state = MutableStateFlow(InferenceState())
     val state: StateFlow<InferenceState> = _state.asStateFlow()
 
+    /**
+     * Drop the standing forecast because the authoritative CGM sensor changed.
+     *
+     * Every published prediction was conditioned on the OUTGOING sensor's history, so beside the new
+     * sensor's glucose it describes nothing — and the widget, the watch glance and the ongoing
+     * notification all pair the two. Clearing them puts the panel back into its "collecting context"
+     * state, which is the truth: the model has no history for this sensor yet.
+     *
+     * The running model set, the metadata and the telemetry survive — none of them is about a sensor.
+     * The next cycle republishes as soon as the new sensor has enough context (`recentBgSeries`
+     * returns null below `minSteps`, so nothing is emitted from a short series).
+     */
+    fun onCgmSourceChanged() {
+        _state.value = _state.value.copy(
+            predictions = emptyList(),
+            lastCycleTsMs = null,
+            lastCause = null,
+        )
+    }
+
     private val stub = StubBackend()
     private val backends = HashMap<BackendId, InferenceBackend>()
 
