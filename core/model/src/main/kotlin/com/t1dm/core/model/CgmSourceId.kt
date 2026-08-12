@@ -19,12 +19,17 @@ value class CgmSourceId(val value: String) {
      *
      * [value] is `vendor:serial`, and the serial is the number printed on the sensor: everything
      * else about the sensor is derived from it. Hashing means a sensor change stays visible in the
-     * server's history without a real device identifier reaching its storage, its backups, or the
-     * operator console. Same input, same label, on every install and after any restore.
+     * server's history without the serial itself reaching its storage, its backups, or the operator
+     * console. Same input, same label, on every install and after any restore.
+     *
+     * **16 bytes, not 4.** A serial has a known alphabet and a known length, so the whole input space
+     * is small enough to enumerate: a 32-bit digest of it is recovered by brute force in seconds, and
+     * a label that can be inverted is the serial with extra steps. This is not a secret — anyone who
+     * can read the label can also read the readings — but it should not be a serial in disguise.
      */
     val opaque: String
         get() {
             val digest = java.security.MessageDigest.getInstance("SHA-256").digest(value.toByteArray())
-            return "s_" + digest.take(4).joinToString("") { "%02x".format(it) }
+            return "s_" + digest.take(16).joinToString("") { "%02x".format(it) }
         }
 }
