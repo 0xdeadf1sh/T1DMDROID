@@ -103,7 +103,7 @@ internal suspend fun currentWidgetSnapshot(context: Context): WidgetSnapshot {
     val container = (context.applicationContext as T1dmApplication).container
     return withContext(container.dispatchers.default) {
         val nowMs = System.currentTimeMillis()
-        val src = container.repository.activeSourceId()
+        val src = container.repository.authoritativeSourceId()
         val latest = src?.let { container.repository.recentReadings(it, 1).firstOrNull() }
         val unit = runCatching { container.statsRepository.currentUnitSpace() }.getOrDefault(UnitSpace.MgDl)
         val animationsEnabled = runCatching { container.settingsStore.currentAnimationsEnabled() }.getOrDefault(true)

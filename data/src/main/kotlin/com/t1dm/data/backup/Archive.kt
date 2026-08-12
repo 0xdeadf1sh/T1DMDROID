@@ -524,17 +524,21 @@ object Archive {
         w.put("wm", r.warmupWindowMin)
         w.put("aa", r.addedAtMs)
         w.putOrSkip("ls", r.lastSeenMs)
-        w.put("ac", r.active)
+        // `ac` keeps the key and the meaning it has always had — the one sensor being believed — which
+        // is what the column called `active` meant before v14 split the name off the claim. `av` is
+        // the new, weaker flag beside it: the app was reading this sensor.
+        w.put("ac", r.authoritative)
+        w.put("av", r.active)
         w.put("hd", r.hidden)
         w.close()
     }
 
     /**
-     * [active] is decided by the CALLER, never by the file: `cgm_source` carries an
-     * exactly-one-active invariant (§3.1) and a restore onto a phone that already has a live sensor
-     * must not land a second claimant on it.
+     * [authoritative] is decided by the CALLER, never by the file: `cgm_source` carries an
+     * exactly-one-authoritative invariant (§3.1) and a restore onto a phone that already has a live
+     * sensor must not land a second claimant on it.
      */
-    fun readSource(o: JsonObject, active: Boolean): CgmSourceEntity {
+    fun readSource(o: JsonObject, authoritative: Boolean): CgmSourceEntity {
         // Bound before the constructor call because the class fallback below needs it. A named
         // argument is not in scope for the arguments after it, so reading `sid` twice was the only
         // alternative — and the second read would then have to invent a value for the absent case
@@ -553,14 +557,20 @@ object Archive {
             advertName = o.str("an"),
             displayName = o.str("dn") ?: err("source", "dn"),
             serialSuffix = o.str("ss"),
-            active = active,
+            authoritative = authoritative,
+            // Read from the file, unlike [authoritative]: which sensors the app was reading is the
+            // user's standing decision and carries no invariant across the table. A file written
+            // before v14 split the flags carries only `ac`, and falls back to it — the same seeding
+            // `MigrationRunner.MIGRATION_13_14` applies to a stored row, so the same archive restored
+            // and the same phone upgraded land on the same state.
+            active = o.bool("av") ?: o.bool("ac") ?: false,
             warmupWindowMin = o.int("wm") ?: err("source", "wm"),
             addedAtMs = o.long("aa") ?: err("source", "aa"),
             lastSeenMs = o.long("ls"),
             // Absent in a file written before the column existed, and false is the state every such
-            // row was exported in. Unlike `active` this IS read from the file: it says what the user
-            // did, carries no invariant across the whole table, and dropping it would re-list every
-            // sensor they had removed.
+            // row was exported in. Unlike [authoritative] this IS read from the file: it says what the
+            // user did, carries no invariant across the whole table, and dropping it would re-list
+            // every sensor they had removed.
             hidden = o.bool("hd") ?: false,
         )
     }

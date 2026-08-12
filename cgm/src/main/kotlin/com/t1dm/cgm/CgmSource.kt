@@ -9,8 +9,8 @@ import kotlinx.coroutines.flow.StateFlow
 
 /**
  * A single CGM source (§3.1). The AiDEX X impl is the only one built now, but
- * the seam is frozen for extensibility. Many sources may be recorded at once; exactly one is
- * active = authoritative (see [CgmSourceRegistry]), and inference runs only on it.
+ * the seam is frozen for extensibility. Several sources may be READ at once; exactly one of them is
+ * authoritative (see [CgmSourceRegistry]), and inference runs only on that one.
  *
  * [readings] emits CRC-validated, deduped, grid-stamped readings; the implementation does that
  * work on the Default dispatcher.
@@ -46,20 +46,42 @@ interface CgmVendorPlugin {
 }
 
 /**
- * The persisted set of known CGM sources and the single manually-chosen active one
- * (§3.1). Auto-discovery may add sources and set the first active; the user
- * can override. The active source is authoritative for inference and alarms.
+ * The persisted set of known CGM sources, the set the app is currently READING, and the single
+ * authoritative one among them (§3.1).
+ *
+ * Two distinct decisions, and keeping them apart is the whole of this interface:
+ *
+ *  - [activeIds] — the app holds these sensors open and stores their readings. The BG panel may be
+ *    switched between them. Auto-discovery may add to this set.
+ *  - [authoritative] — the one source that feeds inference, the statistics, the alarm engine and the
+ *    wire. Always a member of [activeIds]. Auto-discovery may set the FIRST one; after that it is
+ *    the user's, and nothing takes it from them implicitly.
+ *
+ * Widening what is read never widens what is believed.
  */
 interface CgmSourceRegistry {
     /** Every recorded source descriptor. */
     val sources: StateFlow<List<CgmSourceDescriptor>>
 
-    /** The active source id, or `null` before any source is adopted. */
-    val active: StateFlow<CgmSourceId?>
+    /** The sources being read right now. Empty before any source is adopted. */
+    val activeIds: StateFlow<Set<CgmSourceId>>
 
-    /** Make [id] the single active source (persisted). */
-    fun setActive(id: CgmSourceId)
+    /** The authoritative source id, or `null` before any source is adopted. Always in [activeIds]. */
+    val authoritative: StateFlow<CgmSourceId?>
 
-    /** The live [CgmSource] for the active id, or `null` if none is active. */
-    fun activeSource(): CgmSource?
+    /** Make [id] the single authoritative source (persisted). Activates it if it was not active; the
+     *  source it replaces keeps being read. */
+    fun setAuthoritative(id: CgmSourceId)
+
+    /** Begin reading [id] (persisted). Additive — nothing else stops. */
+    fun activate(id: CgmSourceId)
+
+    /** Stop reading [id] (persisted). Refuses the authoritative source. */
+    fun deactivate(id: CgmSourceId)
+
+    /** The live [CgmSource] for the authoritative id, or `null` if none is live. */
+    fun authoritativeSource(): CgmSource?
+
+    /** The live [CgmSource] for [id], or `null` if that source is not currently live. */
+    fun liveSource(id: CgmSourceId): CgmSource?
 }

@@ -82,11 +82,11 @@ class ClassScopedHistoryTest {
     /** The reported symptom, as a test: yesterday's sensor expired, today's is active. */
     @Test
     fun replacingASensorKeepsTheExpiredOnesHistoryOnThePanel() = runTest {
-        repo.upsertSource(descriptor(expired, CgmSensorModelId.AIDEX_X), active = true, nowMs = 1_000)
+        repo.upsertSource(descriptor(expired, CgmSensorModelId.AIDEX_X), authoritative = true, nowMs = 1_000)
         repo.upsertReading(reading(expired, 300_000L, bg = 100))
         repo.upsertReading(reading(expired, 600_000L, bg = 110))
 
-        repo.upsertSource(descriptor(fresh, CgmSensorModelId.AIDEX_X), active = true, nowMs = 2_000)
+        repo.upsertSource(descriptor(fresh, CgmSensorModelId.AIDEX_X), authoritative = true, nowMs = 2_000)
         repo.upsertReading(reading(fresh, 1_200_000L, bg = 120))
 
         val history = repo.observeReadingsForSensorModel(CgmSensorModelId.AIDEX_X, fresh, 0, Long.MAX_VALUE).first()
@@ -101,8 +101,8 @@ class ClassScopedHistoryTest {
 
     @Test
     fun aSensorOfAnotherModelStaysOutOfTheClass() = runTest {
-        repo.upsertSource(descriptor(fresh, CgmSensorModelId.AIDEX_X), active = true, nowMs = 1_000)
-        repo.upsertSource(descriptor(otherModel, "aidexx:2"), active = false, nowMs = 1_000)
+        repo.upsertSource(descriptor(fresh, CgmSensorModelId.AIDEX_X), authoritative = true, nowMs = 1_000)
+        repo.upsertSource(descriptor(otherModel, "aidexx:2"), authoritative = false, nowMs = 1_000)
         repo.upsertReading(reading(fresh, 300_000L, bg = 100))
         repo.upsertReading(reading(otherModel, 600_000L, bg = 200))
 
@@ -115,8 +115,8 @@ class ClassScopedHistoryTest {
     /** Both sensors worn at once — the replacement warming up while the old one still reports. */
     @Test
     fun aContestedGridSlotResolvesToTheSelectedSource() = runTest {
-        repo.upsertSource(descriptor(expired, CgmSensorModelId.AIDEX_X), active = false, nowMs = 1_000)
-        repo.upsertSource(descriptor(fresh, CgmSensorModelId.AIDEX_X), active = true, nowMs = 2_000)
+        repo.upsertSource(descriptor(expired, CgmSensorModelId.AIDEX_X), authoritative = false, nowMs = 1_000)
+        repo.upsertSource(descriptor(fresh, CgmSensorModelId.AIDEX_X), authoritative = true, nowMs = 2_000)
         // The retiring sensor received LATER, so newest-wins alone would have picked it.
         repo.upsertReading(reading(expired, 300_000L, bg = 137, rxWallMs = 9_000L))
         repo.upsertReading(reading(fresh, 300_000L, bg = 142, rxWallMs = 1_000L))
@@ -144,8 +144,8 @@ class ClassScopedHistoryTest {
      */
     @Test
     fun theClassFloorIsTheRecordsBeginningNotTheLoadedWindows() = runTest {
-        repo.upsertSource(descriptor(expired, CgmSensorModelId.AIDEX_X), active = false, nowMs = 1_000)
-        repo.upsertSource(descriptor(fresh, CgmSensorModelId.AIDEX_X), active = true, nowMs = 2_000)
+        repo.upsertSource(descriptor(expired, CgmSensorModelId.AIDEX_X), authoritative = false, nowMs = 1_000)
+        repo.upsertSource(descriptor(fresh, CgmSensorModelId.AIDEX_X), authoritative = true, nowMs = 2_000)
         repo.upsertReading(reading(expired, 300_000L, bg = 100))
         repo.upsertReading(reading(fresh, 900_000L, bg = 120))
 
@@ -162,7 +162,7 @@ class ClassScopedHistoryTest {
     @Test
     fun aClassHoldingNothingHasNoFloor() = runTest {
         assertTrue(repo.observeOldestTsForSensorModel("aidexx:nothing").first() == null)
-        repo.upsertSource(descriptor(fresh, CgmSensorModelId.AIDEX_X), active = true, nowMs = 1_000)
+        repo.upsertSource(descriptor(fresh, CgmSensorModelId.AIDEX_X), authoritative = true, nowMs = 1_000)
         assertTrue(repo.observeOldestTsForSensorModel(CgmSensorModelId.AIDEX_X).first() == null)
     }
 
@@ -173,13 +173,13 @@ class ClassScopedHistoryTest {
      */
     @Test
     fun reconcileDoesNotDuplicateHistoryOntoAReplacementSensor() = runTest {
-        repo.upsertSource(descriptor(expired, CgmSensorModelId.AIDEX_X), active = true, nowMs = 1_000)
+        repo.upsertSource(descriptor(expired, CgmSensorModelId.AIDEX_X), authoritative = true, nowMs = 1_000)
         repo.upsertReading(reading(expired, 300_000L, bg = 100))
         repo.upsertReading(reading(expired, 600_000L, bg = 110))
         // Both readings projected into `sample`, which is not source-scoped.
         assertEquals(0, repo.reconcileReadingsFromSamples())
 
-        repo.upsertSource(descriptor(fresh, CgmSensorModelId.AIDEX_X), active = true, nowMs = 2_000)
+        repo.upsertSource(descriptor(fresh, CgmSensorModelId.AIDEX_X), authoritative = true, nowMs = 2_000)
 
         assertEquals("the replacement inherited a copy of the record", 0, repo.reconcileReadingsFromSamples())
         assertEquals(0, repo.observeReadings(fresh, 0, Long.MAX_VALUE).first().size)
@@ -188,8 +188,8 @@ class ClassScopedHistoryTest {
 
     @Test
     fun theWindowBoundsStillApplyAcrossTheWholeClass() = runTest {
-        repo.upsertSource(descriptor(expired, CgmSensorModelId.AIDEX_X), active = false, nowMs = 1_000)
-        repo.upsertSource(descriptor(fresh, CgmSensorModelId.AIDEX_X), active = true, nowMs = 2_000)
+        repo.upsertSource(descriptor(expired, CgmSensorModelId.AIDEX_X), authoritative = false, nowMs = 1_000)
+        repo.upsertSource(descriptor(fresh, CgmSensorModelId.AIDEX_X), authoritative = true, nowMs = 2_000)
         repo.upsertReading(reading(expired, 300_000L, bg = 100))
         repo.upsertReading(reading(fresh, 900_000L, bg = 120))
 

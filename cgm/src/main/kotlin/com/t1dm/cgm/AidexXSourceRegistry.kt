@@ -18,11 +18,17 @@ import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * The persisted set of AiDEX X sources and the single manually-chosen active one
- * (§3.1). It owns the one shared [BleAdvertScanner]: [start] collects raw adverts,
- * recognizes them via [AidexXPlugin], auto-adopts new sources (setting the first-ever one active),
- * and routes every recognized advert to its [AidexXSource]. Many sources may be recorded at once
- * but exactly one is active = authoritative; inference and alarms consume only [activeSource].
+ * The persisted set of AiDEX X sources, the set the app is READING, and the single authoritative one
+ * among them (§3.1). It owns the one shared [BleAdvertScanner]: [start] collects raw adverts,
+ * recognizes them via [AidexXPlugin], auto-adopts new sources (setting the first-ever one
+ * authoritative), and routes every recognized advert to its own [AidexXSource].
+ *
+ * **Several sensors at once comes free here.** One passive scan hears every sensor in range, so every
+ * recognised advert has always been decoded and stored by its own source with its own dedup ring and
+ * grid stamper. What v14 adds is not concurrency but the vocabulary for it: [activeIds] names the
+ * sensors the BG panel may be switched between, and [authoritative] names the one that feeds the
+ * model, the statistics, the alarms and the wire. Widening what is drawn never widens what is
+ * believed — the narrowing itself lives at the `sample` projection and at the reading bus, not here.
  */
 class AidexXSourceRegistry(
     private val plugin: AidexXPlugin,
@@ -34,8 +40,11 @@ class AidexXSourceRegistry(
     private val _sources = MutableStateFlow<List<CgmSourceDescriptor>>(emptyList())
     override val sources: StateFlow<List<CgmSourceDescriptor>> = _sources.asStateFlow()
 
-    private val _active = MutableStateFlow<CgmSourceId?>(null)
-    override val active: StateFlow<CgmSourceId?> = _active.asStateFlow()
+    private val _authoritative = MutableStateFlow<CgmSourceId?>(null)
+    override val authoritative: StateFlow<CgmSourceId?> = _authoritative.asStateFlow()
+
+    private val _activeIds = MutableStateFlow<Set<CgmSourceId>>(emptySet())
+    override val activeIds: StateFlow<Set<CgmSourceId>> = _activeIds.asStateFlow()
 
     private val live = ConcurrentHashMap<String, AidexXSource>()
 
@@ -76,7 +85,7 @@ class AidexXSourceRegistry(
 
     /**
      * Rehydrate the persisted sources and the chosen active id before the first advert. Without
-     * this, `_active` starts null and the first advert seen would seize `active` (§3.1), silently
+     * this, `_authoritative` starts null and the first advert seen would seize authority (§3.1), silently
      * overriding the user's authoritative choice across a process restart.
      */
     private suspend fun hydrate() {
@@ -89,10 +98,19 @@ class AidexXSourceRegistry(
             source.onScanning()
         }
         if (persisted.isNotEmpty()) _sources.value = persisted
-        repository.activeSourceId()?.let { _active.value = it }
+        _activeIds.value = repository.activeSourceIds().toSet()
+        repository.authoritativeSourceId()?.let { _authoritative.value = it }
     }
 
-    /** Visible for the service and for tests: process one captured advert end-to-end. */
+    /**
+     * Visible for the service and for tests: process one captured advert end-to-end.
+     *
+     * A recognised sensor that is NOT active is adopted — so it appears in the list the user picks
+     * from — and then dropped without being decoded or stored. One passive scan hears every sensor in
+     * range whatever the user asked for, so this is the only place the passive path can honour
+     * `active` at all, and without it §7.1's "an active source's readings are retained" would be true
+     * on the connected branch and false here. Adoption itself is cheap and idempotent.
+     */
     suspend fun onRawAdvert(raw: RawAdvert) {
         val payload = AdStructureParser.manufacturerPayload(raw.adBytes)
         val id = plugin.recognize(
@@ -100,12 +118,16 @@ class AidexXSourceRegistry(
             manufacturerId = CgmConstants.MANUFACTURER_ID,
             manufacturerData = payload ?: ByteArray(0),
         ) ?: return
-        adopt(id).ingest(raw)
+        val source = adopt(id)
+        if (id !in _activeIds.value) return
+        source.ingest(raw)
     }
 
-    override fun setActive(id: CgmSourceId) {
-        _active.value = id
-        scope.launch { repository.setActive(id) }
+    override fun setAuthoritative(id: CgmSourceId) {
+        _authoritative.value = id
+        // Authority implies the app is reading it, so the two move together here as they do in storage.
+        _activeIds.update { it + id }
+        scope.launch { repository.setAuthoritative(id) }
     }
 
     /**
@@ -136,22 +158,43 @@ class AidexXSourceRegistry(
      * that matters is the persisted one. [_sources] is marked alongside it to keep this registry's own
      * view honest and the two branches' registries the same shape, not because anything reads it here.
      *
-     * The live [AidexXSource] is deliberately left in place: removal is a display flag, so a sensor
-     * still advertising keeps being decoded and stored exactly as before. It is simply not the active
-     * source, and never was authoritative.
+     * The live [AidexXSource] is deliberately left in place — it costs nothing idle and is what a
+     * later re-activation would rebuild — but the source stops being READ: [onRawAdvert] drops its
+     * adverts once it is out of [activeIds], so nothing further is decoded or stored for it.
      *
-     * The ACTIVE source is refused. The ✕ is drawn only on the other rows, but the first-ever advert
-     * adopts a source on its own, so the id the user pressed may be the active one by the time this runs.
+     * The AUTHORITATIVE source is refused. The ✕ is drawn only on the other rows, but the first-ever
+     * advert adopts a source on its own, so the id the user pressed may be it by the time this runs.
      */
     fun hide(id: CgmSourceId) {
-        if (id == _active.value) return
+        if (id == _authoritative.value) return
         _sources.update { current ->
             current.map { if (it.id == id) it.copy(hidden = true) else it }
         }
+        _activeIds.update { it - id }
         scope.launch { repository.hide(id) }
     }
 
-    override fun activeSource(): AidexXSource? = _active.value?.let { live[it.value] }
+    override fun authoritativeSource(): AidexXSource? = _authoritative.value?.let { live[it.value] }
+
+    override fun liveSource(id: CgmSourceId): AidexXSource? = live[id.value]
+
+    /**
+     * Start reading [id]. On this branch a recognised sensor in range is decoded whatever its flag —
+     * one scan hears them all and dropping a frame would cost more than keeping it — so this widens
+     * what the BG panel may be switched to and what the CGM list calls live, and costs no radio.
+     */
+    override fun activate(id: CgmSourceId) {
+        _activeIds.update { it + id }
+        scope.launch { repository.activate(id) }
+    }
+
+    /** Stop reading [id]. The authoritative source is refused: it cannot be reached from the list,
+     *  but authority moves on its own, so the id the user pressed may have become it by now. */
+    override fun deactivate(id: CgmSourceId) {
+        if (id == _authoritative.value) return
+        _activeIds.update { it - id }
+        scope.launch { repository.deactivate(id) }
+    }
 
     private suspend fun adopt(id: CgmSourceId): AidexXSource {
         live[id.value]?.let { return it }
@@ -163,11 +206,12 @@ class AidexXSourceRegistry(
             if (current.any { it.id == id }) current else current + source.descriptor
         }
 
-        val firstEver = _active.value == null
-        repository.upsertSource(source.descriptor, active = firstEver, lastSeenMs = nowMs())
+        val firstEver = _authoritative.value == null
+        repository.upsertSource(source.descriptor, authoritative = firstEver, lastSeenMs = nowMs())
         if (firstEver) {
-            _active.value = id
-            repository.setActive(id)
+            _authoritative.value = id
+            _activeIds.update { it + id }
+            repository.setAuthoritative(id)
         }
         return source
     }

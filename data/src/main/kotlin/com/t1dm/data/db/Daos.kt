@@ -21,16 +21,30 @@ interface CgmSourceDao {
     @Query("SELECT * FROM cgm_source ORDER BY addedAtMs")
     fun observeAll(): Flow<List<CgmSourceEntity>>
 
-    @Query("SELECT * FROM cgm_source WHERE active = 1 LIMIT 1")
-    fun observeActive(): Flow<CgmSourceEntity?>
+    @Query("SELECT * FROM cgm_source WHERE authoritative = 1 LIMIT 1")
+    fun observeAuthoritative(): Flow<CgmSourceEntity?>
 
     @Query("SELECT * FROM cgm_source WHERE sourceId = :sourceId")
     suspend fun byId(sourceId: String): CgmSourceEntity?
 
-    /** One-shot active-source lookup for the in-transaction sample projection (additive to the
-     *  frozen [observeActive] Flow). */
-    @Query("SELECT sourceId FROM cgm_source WHERE active = 1 LIMIT 1")
-    suspend fun activeSourceId(): String?
+    /** One-shot authoritative-source lookup for the in-transaction sample projection (additive to the
+     *  frozen [observeAuthoritative] Flow). */
+    @Query("SELECT sourceId FROM cgm_source WHERE authoritative = 1 LIMIT 1")
+    suspend fun authoritativeSourceId(): String?
+
+    /**
+     * Every source the app is currently reading, oldest-registered first — the set the BG panel may
+     * be switched between, and on the connected branch the set a session is held open for.
+     *
+     * Ordered so the panel's cycle is stable: the sensors advance in the order the phone met them,
+     * whatever order the rows happen to sit in.
+     */
+    @Query("SELECT * FROM cgm_source WHERE active = 1 ORDER BY addedAtMs, sourceId")
+    fun observeActiveSources(): Flow<List<CgmSourceEntity>>
+
+    /** [observeActiveSources] as a one-shot, for the callers already inside a transaction. */
+    @Query("SELECT sourceId FROM cgm_source WHERE active = 1 ORDER BY addedAtMs, sourceId")
+    suspend fun activeSourceIds(): List<String>
 
     /**
      * Every source belonging to one sensor model, oldest-registered first — the id set the BG panel's
@@ -49,28 +63,50 @@ interface CgmSourceDao {
     @Query("SELECT sourceId FROM cgm_source WHERE sensorModelId = :sensorModelId ORDER BY addedAtMs, sourceId")
     suspend fun idsForSensorModel(sensorModelId: String): List<String>
 
-    /** Exactly-one-active invariant: clear all, then set the chosen row. Run in a @Transaction. */
-    @Query("UPDATE cgm_source SET active = 0")
-    suspend fun clearActive()
-
-    /** Clears `hidden` in the same statement, so the source the app is reading from is always one the
-     *  user can see. Nothing else re-lists a hidden source, and a sensor authoritative for every value
-     *  on screen while absent from the sensor list is the one state this must not reach. */
-    @Query("UPDATE cgm_source SET active = 1, hidden = 0 WHERE sourceId = :sourceId")
-    suspend fun setActive(sourceId: String)
+    /** Exactly-one-authoritative invariant: clear all, then set the chosen row. Run in a @Transaction. */
+    @Query("UPDATE cgm_source SET authoritative = 0")
+    suspend fun clearAuthoritative()
 
     /**
-     * Take a retired sensor off the lists. `active = 0` is part of the WHERE rather than a caller's
-     * precondition: this is the one door into the column, and it is what makes "the active source is
-     * never hidden" hold whatever the UI does — a stale row tapped as the active source changes
-     * underneath it updates nothing.
+     * Promote one source. `active = 1` and `hidden = 0` ride in the same statement because both are
+     * invariants of being authoritative rather than separate decisions: the source every value on
+     * screen is derived from cannot be one the app has stopped reading, nor one absent from the list
+     * the user picks sensors from. Nothing else re-lists a hidden source or re-activates a stopped
+     * one, so this is where both are guaranteed.
      */
-    @Query("UPDATE cgm_source SET hidden = 1 WHERE sourceId = :sourceId AND active = 0")
+    @Query("UPDATE cgm_source SET authoritative = 1, active = 1, hidden = 0 WHERE sourceId = :sourceId")
+    suspend fun setAuthoritative(sourceId: String)
+
+    /** Start reading a source. Un-hides for the reason [setAuthoritative] does — a sensor the app is
+     *  reading belongs on the list the user picks sensors from. */
+    @Query("UPDATE cgm_source SET active = 1, hidden = 0 WHERE sourceId = :sourceId")
+    suspend fun activate(sourceId: String)
+
+    /**
+     * Stop reading a source. `authoritative = 0` is part of the WHERE rather than a caller's
+     * precondition, for the reason [hide] carries the same guard: this is the one door into the
+     * column, and it is what makes "the authoritative source is always active" hold whatever the UI
+     * does — a stale row tapped as the promotion lands underneath it updates nothing.
+     */
+    @Query("UPDATE cgm_source SET active = 0 WHERE sourceId = :sourceId AND authoritative = 0")
+    suspend fun deactivate(sourceId: String)
+
+    /**
+     * Take a retired sensor off the lists, and stop reading it: a sensor the user has removed is one
+     * they have finished with, and holding a link open to it afterwards costs battery for a reading
+     * nothing can show.
+     *
+     * `authoritative = 0` is part of the WHERE rather than a caller's precondition: this is the one
+     * door into the column, and it is what makes "the authoritative source is never hidden" hold
+     * whatever the UI does — a stale row tapped as the authoritative source changes underneath it
+     * updates nothing.
+     */
+    @Query("UPDATE cgm_source SET hidden = 1, active = 0 WHERE sourceId = :sourceId AND authoritative = 0")
     suspend fun hide(sourceId: String)
 
     /** Retune one source's warm-up window in place. A column-scoped UPDATE, not an upsert: the row's
-     *  identity, `addedAtMs` and `active` flag are untouched, so the edit cannot disturb the
-     *  exactly-one-active invariant. */
+     *  identity, `addedAtMs` and both flags are untouched, so the edit cannot disturb the
+     *  exactly-one-authoritative invariant. */
     @Query("UPDATE cgm_source SET warmupWindowMin = :minutes WHERE sourceId = :sourceId")
     suspend fun setWarmupWindowMin(sourceId: String, minutes: Int)
 
@@ -82,10 +118,11 @@ interface CgmSourceDao {
     @Query("SELECT * FROM cgm_source ORDER BY addedAtMs")
     suspend fun all(): List<CgmSourceEntity>
 
-    /** How many rows claim the exactly-one-active flag. Read before an archive restore so imported
-     *  sources can be forced inactive rather than landing a SECOND active row and breaking §3.1. */
-    @Query("SELECT COUNT(*) FROM cgm_source WHERE active = 1")
-    suspend fun activeCount(): Int
+    /** How many rows claim the exactly-one-authoritative flag. Read before an archive restore so
+     *  imported sources can be forced non-authoritative rather than landing a SECOND one and breaking
+     *  §3.1. Their `active` flag is unconstrained and rides in as stored — many may be active. */
+    @Query("SELECT COUNT(*) FROM cgm_source WHERE authoritative = 1")
+    suspend fun authoritativeCount(): Int
 
     /** Merge insert (archive restore): a `sourceId` the phone already knows wins. */
     @Insert(onConflict = OnConflictStrategy.IGNORE)
@@ -149,10 +186,21 @@ interface CgmReadingDao {
     )
     suspend fun recent(sourceId: String, limit: Int): List<CgmReadingEntity>
 
-    /** Every reading (any source) in `[fromMs, toMs]` — the realized-BG series the accuracy
-     *  aggregator pairs matured forecasts against (Phase 7C). Filtered/matched in Kotlin. */
-    @Query("SELECT * FROM cgm_reading WHERE tsMs BETWEEN :fromMs AND :toMs ORDER BY tsMs")
-    suspend fun readingsInRange(fromMs: Long, toMs: Long): List<CgmReadingEntity>
+    /**
+     * ONE source's readings in `[fromMs, toMs]` — the realized-BG series the accuracy aggregator pairs
+     * matured forecasts against (Phase 7C), and the same series the §8.4 band fit is built from.
+     * Filtered/matched in Kotlin.
+     *
+     * Source-scoped rather than table-wide, because the table holds a row per `(source, slot)`: an
+     * unscoped read returns one row per sensor for the same instant, and the caller's de-duplication
+     * would keep whichever the query ordered first. Scoring a forecast against a slot a DIFFERENT
+     * sensor supplied measures the disagreement between two sensors and reports it as model error.
+     */
+    @Query(
+        "SELECT * FROM cgm_reading WHERE sourceId = :sourceId AND tsMs BETWEEN :fromMs AND :toMs " +
+            "ORDER BY tsMs",
+    )
+    suspend fun rangeForSource(sourceId: String, fromMs: Long, toMs: Long): List<CgmReadingEntity>
 
     /**
      * Oldest / newest stamp this source holds; null when it holds nothing. The extent the start-day
@@ -651,7 +699,7 @@ interface ServerProfileDao {
     @Query("SELECT * FROM server_profile ORDER BY createdAtMs")
     suspend fun all(): List<ServerProfileEntity>
 
-    /** See [CgmSourceDao.activeCount] — the same exactly-one-active guard on the restore path. */
+    /** See [CgmSourceDao.authoritativeCount] — the same exactly-one guard on the restore path. */
     @Query("SELECT COUNT(*) FROM server_profile WHERE active = 1")
     suspend fun activeCount(): Int
 

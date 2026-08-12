@@ -169,8 +169,21 @@ class T1dmRepository(
      * query which then emitted again on subscription. One touch became two rebuilds, at whatever rate
      * the write path happened to run.
      */
-    fun observeActiveSource(): Flow<CgmSourceDescriptor?> =
-        sources.observeActive().map { it?.toDescriptor() }.distinctUntilChanged()
+    fun observeAuthoritativeSource(): Flow<CgmSourceDescriptor?> =
+        sources.observeAuthoritative().map { it?.toDescriptor() }.distinctUntilChanged()
+
+    /**
+     * Every source the app is currently reading, oldest-registered first — what the BG panel may be
+     * switched between and what the CGM panel lists as live.
+     *
+     * Deduplicated on the descriptors for the reason [observeAuthoritativeSource] is: a `lastSeenMs`
+     * touch is a write to `cgm_source`, so it re-runs this query and yields a list equal to the last
+     * one, at whatever rate sensors are re-sighted.
+     */
+    fun observeActiveSources(): Flow<List<CgmSourceDescriptor>> =
+        sources.observeActiveSources()
+            .map { list -> list.map { it.toDescriptor() } }
+            .distinctUntilChanged()
 
     /**
      * Register or update a source, preserving its original `addedAtMs` across updates.
@@ -178,13 +191,13 @@ class T1dmRepository(
      * `hidden` is preserved from the STORED row for the same reason and with more force: this runs on
      * every re-sighting, from a descriptor the caller has held in memory since before the removal, so
      * taking the flag from the argument would write a removed sensor back onto the list within one
-     * scan. An [active] source is un-hidden here rather than merely left alone — the same invariant
-     * [CgmSourceDao.setActive] holds, applied on the path that adopts a source without going through
-     * it.
+     * scan. An [authoritative] source is un-hidden and activated here rather than merely left alone —
+     * the same invariants [CgmSourceDao.setAuthoritative] holds, applied on the path that adopts a
+     * source without going through it.
      */
     suspend fun upsertSource(
         descriptor: CgmSourceDescriptor,
-        active: Boolean,
+        authoritative: Boolean,
         nowMs: Long,
     ) = withContext(io) {
         inWriteTx {
@@ -197,30 +210,54 @@ class T1dmRepository(
                     advertName = descriptor.advertName,
                     displayName = descriptor.displayName,
                     serialSuffix = descriptor.serialSuffix,
-                    active = active,
+                    // Preserved from the STORED row unless the caller is promoting. [authoritative]
+                    // means "adopt this one", never "this one is not it": a re-sighting passing false
+                    // for a source that IS authoritative used to clear the flag and re-set it inside
+                    // the same transaction, which raced every concurrent promotion and could leave the
+                    // table with no authoritative row at all.
+                    authoritative = authoritative || (existing?.authoritative ?: false),
+                    // Preserved for a related reason: whether the app is reading a sensor is the user's
+                    // standing decision, and a re-sighting must not restart a source they stopped. A
+                    // source being promoted is activated below.
+                    active = authoritative || (existing?.active ?: false),
                     warmupWindowMin = descriptor.warmupWindowMin,
                     addedAtMs = existing?.addedAtMs ?: nowMs,
                     lastSeenMs = nowMs,
-                    hidden = !active && (existing?.hidden ?: false),
+                    hidden = !authoritative && (existing?.hidden ?: false),
                 ),
             )
-            if (active) {
-                sources.clearActive()
-                sources.setActive(descriptor.id.value)
+            if (authoritative) {
+                sources.clearAuthoritative()
+                sources.setAuthoritative(descriptor.id.value)
             }
         }
     }
 
-    /** Enforce exactly-one-active atomically (SPEC §3.1). */
-    suspend fun setActiveSource(id: CgmSourceId) = withContext(io) {
+    /** Enforce exactly-one-authoritative atomically (SPEC §3.1). The promoted source is activated and
+     *  un-hidden by [CgmSourceDao.setAuthoritative]; the one it replaces stays active, so demotion is
+     *  not a disconnection. */
+    suspend fun setAuthoritativeSource(id: CgmSourceId) = withContext(io) {
         inWriteTx {
-            sources.clearActive()
-            sources.setActive(id.value)
+            sources.clearAuthoritative()
+            sources.setAuthoritative(id.value)
         }
     }
 
-    suspend fun activeSourceId(): CgmSourceId? = withContext(io) {
-        sources.activeSourceId()?.let(::CgmSourceId)
+    suspend fun authoritativeSourceId(): CgmSourceId? = withContext(io) {
+        sources.authoritativeSourceId()?.let(::CgmSourceId)
+    }
+
+    /** Start reading [id]. Additive — nothing else stops. */
+    suspend fun activateSource(id: CgmSourceId) = withContext(io) { sources.activate(id.value) }
+
+    /** Stop reading [id]. Refuses the authoritative source ([CgmSourceDao.deactivate]), which is the
+     *  invariant the caller relies on rather than re-checks. */
+    suspend fun deactivateSource(id: CgmSourceId) = withContext(io) { sources.deactivate(id.value) }
+
+    /** Every source the app is currently reading, for the callers that need it once rather than
+     *  observed — the connected coordinator deciding which sessions to hold. */
+    suspend fun activeSourceIds(): List<CgmSourceId> = withContext(io) {
+        sources.activeSourceIds().map(::CgmSourceId)
     }
 
     /**
@@ -234,7 +271,7 @@ class T1dmRepository(
     }
 
     /** Take a retired sensor off the sensor lists. Its readings stay: the row remains, so the BG
-     *  panel's model-wide history still selects them ([CgmSourceDao.hide] refuses the active source). */
+     *  panel's model-wide history still selects them ([CgmSourceDao.hide] refuses the authoritative source). */
     suspend fun hideSource(id: CgmSourceId) = withContext(io) { sources.hide(id.value) }
 
     // ─── Readings + wide-sample projection ──────────────────────────────────────────────────
@@ -250,7 +287,7 @@ class T1dmRepository(
      * sensor was replaced; [sensorModelId] is the family, and history is continuous across it.
      * [selectedSourceId] resolves a contested slot only — it does not filter, and passing null merely
      * falls through to the newest reception. Nothing here widens AUTHORITY: the live value, the alarm
-     * engine and the `sample` projection all remain scoped to the one active source.
+     * engine and the `sample` projection all remain scoped to the one authoritative source.
      *
      * Two queries rather than a join, and the id list deduplicated between them. Room invalidates per
      * TABLE, so a joined query would re-run on every `cgm_source` write — including the `lastSeenMs`
@@ -302,7 +339,7 @@ class T1dmRepository(
             .distinctUntilChanged()
             .flowOn(io)
 
-    /** Deduplicated for the reason [observeActiveSource] is: `cgm_reading` is written more often than
+    /** Deduplicated for the reason [observeAuthoritativeSource] is: `cgm_reading` is written more often than
      *  its newest row changes, and every one of those writes otherwise reached the glance combine and
      *  the dashboard. */
     fun observeLatestReading(sourceId: CgmSourceId): Flow<CgmReading?> =
@@ -321,15 +358,15 @@ class T1dmRepository(
 
 
     /**
-     * Grid-stamp upsert-in-place; if the reading is on the active source and not INVALID, project
+     * Grid-stamp upsert-in-place; if the reading is on the authoritative source and not INVALID, project
      * its bg into `sample` (LWW on `rxWallMs`) and enqueue one INGEST item for that grid slot.
      */
     suspend fun upsertReading(reading: CgmReading) = withContext(io) {
         requireGrid(reading.tsMs)
         inWriteTx {
             readings.upsert(reading.toEntity())
-            val active = sources.activeSourceId()
-            if (active == reading.sourceId.value && reading.flag != ReadingFlag.INVALID) {
+            val authoritative = sources.authoritativeSourceId()
+            if (authoritative == reading.sourceId.value && reading.flag != ReadingFlag.INVALID) {
                 projectBg(reading)
                 enqueueIngest(reading.tsMs, reading.rxWallMs)
             }
@@ -939,7 +976,16 @@ class T1dmRepository(
 
         // Realized truth, sorted ascending for a binary-search nearest match. Reaches back one
         // tolerance before the range so the earliest forecast's anchor is matchable.
-        val truth = readings.readingsInRange(sinceMs - toleranceMs, nowMs)
+        //
+        // Scoped to the AUTHORITATIVE source, and that scoping is the whole correctness of the figure:
+        // `cgm_reading` holds a row per (source, slot), so an unscoped read returns one row per sensor
+        // for the same instant and `distinctBy` keeps whichever the query happened to order first. The
+        // forecast was conditioned on one sensor's history, so scoring it against a slot that another
+        // sensor supplied measures the disagreement between two sensors and calls it model error — and
+        // the §8.4 fit, which is built from these same windows, would push that disagreement into the
+        // band the patient is shown. With no authoritative source there is nothing to score against.
+        val authoritative = sources.authoritativeSourceId() ?: return@withContext ForecastWindowSet.EMPTY
+        val truth = readings.rangeForSource(authoritative, sinceMs - toleranceMs, nowMs)
             .asSequence()
             .filter { it.bgMgdl != null && isRealMeasurement(it.provenance, it.flag) }
             .map { it.tsMs to it.bgMgdl!! }
@@ -1046,17 +1092,17 @@ class T1dmRepository(
     suspend fun mergeServerSample(patch: SamplePatch): Boolean = withContext(io) {
         requireGrid(patch.ts)
         inWriteTx {
-            // Hydrate the authoritative cgm_reading store (active source) so server-synced history
+            // Hydrate the authoritative source's cgm_reading rows so server-synced history
             // reaches BOTH the graph (observeReadings) and the model (recentBgSeries) — sample is a
             // dead-end for display/inference (SPEC §3.5). GAP-FILL ONLY: never overwrite a local
             // reading (its provenance/flag is authoritative), and enqueue NO ingest (this data
             // originated from the phone; re-pushing would echo-loop). The §3.6 alarm/loss-of-signal
             // path is readingBus-driven (live BLE), never the DB, so a DB write cannot perturb it.
-            val active = sources.activeSourceId()
-            if (active != null && patch.bgMgdl != null && readings.byTs(active, patch.ts) == null) {
+            val authoritative = sources.authoritativeSourceId()
+            if (authoritative != null && patch.bgMgdl != null && readings.byTs(authoritative, patch.ts) == null) {
                 readings.upsert(
                     CgmReadingEntity(
-                        sourceId = active,
+                        sourceId = authoritative,
                         tsMs = patch.ts,
                         bgMgdl = patch.bgMgdl,
                         trendTenthsPerMin = null,
@@ -1080,12 +1126,12 @@ class T1dmRepository(
     }
 
     /**
-     * One-shot reconcile that gap-fills the active source's `cgm_reading` from the wide `sample`
+     * One-shot reconcile that gap-fills the authoritative source's `cgm_reading` from the wide `sample`
      * projection — the migration path for server history synced into `sample` BEFORE the reading
      * hydration existed (and a belt-and-braces self-heal thereafter). Inserts only slots the source
      * lacks a reading for (never clobbers a live reading's provenance/flag); the §3.6 alarm path is
      * live-BLE-driven, not the DB, so this is inert to it. Returns the number of rows inserted; 0 when
-     * there is no active source or nothing is missing. Off-main; one transaction.
+     * there is no authoritative source or nothing is missing. Off-main; one transaction.
      *
      * The gap set is resolved by the QUERY ([SampleDao.bgSlotsMissingReading]) rather than by pulling
      * both tables into the heap and diffing them there. It ran on every WS (re)connect — a flapping
@@ -1098,16 +1144,16 @@ class T1dmRepository(
      * query now returns nothing and the pass reads nothing back.
      */
     suspend fun reconcileReadingsFromSamples(): Int = withContext(io) {
-        val active = sources.activeSourceId() ?: return@withContext 0
-        // The gap set spans the active source's whole MODEL CLASS. Asking it per source made every
+        val authoritative = sources.authoritativeSourceId() ?: return@withContext 0
+        // The gap set spans the authoritative source's whole MODEL CLASS. Asking it per source made every
         // sensor replacement inherit a full duplicate of the record — see [SampleDao.bgSlotsMissingReading].
-        val klass = sources.byId(active)?.sensorModelId
-        val siblings = if (klass == null) listOf(active) else sources.idsForSensorModel(klass)
+        val klass = sources.byId(authoritative)?.sensorModelId
+        val siblings = if (klass == null) listOf(authoritative) else sources.idsForSensorModel(klass)
         inWriteTx {
             val fill = samples.bgSlotsMissingReading(siblings).asSequence()
                 .map { s ->
                     CgmReadingEntity(
-                        sourceId = active,
+                        sourceId = authoritative,
                         tsMs = s.ts,
                         bgMgdl = s.bgMgdl,
                         trendTenthsPerMin = null,

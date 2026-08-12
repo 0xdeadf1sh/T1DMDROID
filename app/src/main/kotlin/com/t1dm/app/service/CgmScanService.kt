@@ -356,10 +356,19 @@ class CgmScanService : LifecycleService() {
             }
         }
 
-        // 2) Route the active source's readings onto the bus (they are persisted by the source).
+        // 2) Route the AUTHORITATIVE source's readings onto the bus (they are persisted by the source).
+        //    One passive scan hears every sensor in range and each has always been decoded and stored
+        //    by its own source; this is the narrowing to the one that is believed. It is load-bearing
+        //    rather than tidy: the alarm engine downstream is a single state machine over an
+        //    undifferentiated stream (§3.6-A), so two sensors reaching it would interleave threshold
+        //    hysteresis and staleness between sensors that disagree, and the §3.6 model-free floor
+        //    would misfire silently.
+        //
+        //    Re-collected on promotion (collectLatest) so the bus follows authority within a frame,
+        //    and a sensor that is merely active never stands in for the one that is believed.
         lifecycleScope.launch {
-            container.registry.active.collectLatest {
-                val src = container.registry.activeSource() ?: return@collectLatest
+            container.registry.authoritative.collectLatest {
+                val src = container.registry.authoritativeSource() ?: return@collectLatest
                 src.readings().collect { readingBus.emit(it) }
             }
         }
@@ -1015,7 +1024,7 @@ class CgmScanService : LifecycleService() {
 
     /** Guarantee an active source exists so injected readings project into `sample` and render. */
     private suspend fun ensureActiveSource(): CgmSourceId {
-        container.repository.activeSourceId()?.let { return it }
+        container.repository.authoritativeSourceId()?.let { return it }
         val now = System.currentTimeMillis()
         container.repository.upsertSource(
             CgmSourceDescriptor(
@@ -1031,7 +1040,7 @@ class CgmScanService : LifecycleService() {
                 warmupWindowMin = 60,
                 passiveOnly = true,
             ),
-            active = true,
+            authoritative = true,
             nowMs = now,
         )
         return DEBUG_SOURCE

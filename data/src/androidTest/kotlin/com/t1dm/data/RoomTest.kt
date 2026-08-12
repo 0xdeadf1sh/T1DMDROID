@@ -95,7 +95,7 @@ class RoomTest {
 
     @Test
     fun projectsSampleFromActiveSourceReading() = runTest {
-        repo.upsertSource(descriptor, active = true, nowMs = 1_000L)
+        repo.upsertSource(descriptor, authoritative = true, nowMs = 1_000L)
         val ts = 600_000L
         repo.upsertReading(reading(ts, bg = 140, provenance = ReadingProvenance.MEASURED, rxWallMs = ts))
 
@@ -118,7 +118,7 @@ class RoomTest {
 
     @Test
     fun enqueuesOneDedupedIngestPerGridSlot() = runTest {
-        repo.upsertSource(descriptor, active = true, nowMs = 1_000L)
+        repo.upsertSource(descriptor, authoritative = true, nowMs = 1_000L)
         val ts = 900_000L
         repo.upsertReading(reading(ts, bg = 110, provenance = ReadingProvenance.INTERPOLATED, rxWallMs = ts))
         repo.upsertReading(reading(ts, bg = 115, provenance = ReadingProvenance.MEASURED, rxWallMs = ts + 1))

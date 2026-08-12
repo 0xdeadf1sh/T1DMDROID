@@ -92,7 +92,7 @@ class ResetWipeTest {
     private suspend fun seedEveryTable() {
         val now = 1_700_000_000_000L
         // source → reading (projects a sample + enqueues an INGEST outbox row).
-        repo.upsertSource(descriptor, active = true, nowMs = now)
+        repo.upsertSource(descriptor, authoritative = true, nowMs = now)
         repo.upsertReading(
             CgmReading(
                 sourceId = sourceId, tsMs = 300_000L, bgMgdl = 120, trendTenthsPerMin = 0,

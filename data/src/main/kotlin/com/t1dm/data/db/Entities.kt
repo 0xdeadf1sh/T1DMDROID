@@ -43,18 +43,31 @@ enum class OutboxKind { ALERT, DOSE, MEAL, INGEST, STATS, PREDICTIONS, SERIES, P
 enum class OutboxState { PENDING, INFLIGHT, FAILED }
 
 /**
- * One recorded CGM source; exactly one row has `active = true` (§3.1).
+ * One recorded CGM source. Two flags, and the difference between them is the whole of what the app
+ * believes about a sensor (§3.1):
+ *
+ *  - [authoritative] — the ONE source that feeds the model, the statistics, the alarm engine, the
+ *    `sample` projection and everything pushed over the wire. Exactly one row carries it.
+ *  - [active] — the app is reading this sensor, and the BG panel may be switched to look at it.
+ *    Many rows may carry it at once.
+ *
+ * [authoritative] implies [active]: the source every value on screen is derived from cannot be one
+ * the app is not reading. The reverse does not hold, and that asymmetry is the point — a second
+ * sensor can be worn, read and drawn without being believed, which is what makes an overlap between
+ * a retiring sensor and its replacement visible rather than a choice.
  *
  * [sensorModelId] is the sensor FAMILY (`com.t1dm.core.model.CgmSensorModelId`) and is indexed because the BG
  * panel's history query joins through it: displayed history spans the class, so replacing a sensor
- * with another of the same model keeps one continuous trace. `active` still picks the single
- * authoritative source — the class widens what is drawn, never what is believed.
+ * with another of the same model keeps one continuous trace. Widening what is DRAWN — across the
+ * class, and now across the active set — never widens what is believed.
  *
  * [hidden] is a display flag and only that: the user has removed a retired sensor from the lists,
  * which never shrink on their own. The row survives, so [sensorModelId] still selects its readings
  * into the panel's history — deleting it instead would leave that stretch of the trace unreachable
- * and its `cgm_reading` rows unreclaimable. Not indexed: the one list that filters on it holds a row
- * per sensor the phone has ever met, and scanning that is free.
+ * and its `cgm_reading` rows unreclaimable. Hiding clears [active]: a sensor off the lists is one
+ * the user has finished with, and holding a link to it afterwards would cost battery for a reading
+ * nothing can show. Not indexed: the one list that filters on it holds a row per sensor the phone
+ * has ever met, and scanning that is free.
  */
 @Entity(tableName = "cgm_source", indices = [Index("sensorModelId")])
 data class CgmSourceEntity(
@@ -64,6 +77,7 @@ data class CgmSourceEntity(
     val advertName: String?,
     val displayName: String,
     val serialSuffix: String?,
+    val authoritative: Boolean,
     val active: Boolean,
     val warmupWindowMin: Int,
     val addedAtMs: Long,

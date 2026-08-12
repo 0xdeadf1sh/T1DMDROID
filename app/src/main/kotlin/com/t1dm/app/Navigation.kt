@@ -780,7 +780,11 @@ private fun T1dmBottomBar(
     val cs = MaterialTheme.colorScheme
     val reading by container.latestReading.collectAsState(null)
     val unit by container.statsRepository.unitSpace.collectAsState(UnitSpace.MgDl)
-    val source by container.activeSource.collectAsState(null)
+    // The VIEWED source, not the authoritative one: this chip names whichever sensor the BG panel is
+    // drawing, and tapping it steps to the next active sensor. Off the authoritative one it is the
+    // only thing on screen saying so, which is why it carries the marker rather than just the name.
+    val source by container.viewedSource.collectAsState(null)
+    val viewingOther by container.viewingNonAuthoritative.collectAsState(false)
 
     // ONE clock for both the age chip and the staleness verdict. Fast while the reading is young so
     // the chip counts seconds honestly, coarse afterwards — the verdict only has to be right to within
@@ -848,10 +852,14 @@ private fun T1dmBottomBar(
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    modifier = Modifier.hapticClickable(HapticEvent.NavSwitch) { container.cycleViewedSource() },
                 ) {
                     Text(
-                        text = source?.shortName ?: "no source",
+                        // Marked while the panel is off the believed sensor. Terse because it sits in
+                        // the chrome on every screen: the graph itself carries the fuller statement.
+                        text = (source?.shortName ?: "no source") + if (viewingOther) " • view" else "",
                         style = MaterialTheme.typography.bodySmall,
+                        color = if (viewingOther) cs.tertiary else Color.Unspecified,
                         maxLines = 1,
                     )
                     // Identical to `bgSignals.cgmRssi`, which is defined as exactly this — and taking it
@@ -1098,18 +1106,33 @@ private fun T1dmNavHost(
                     )
                 }
             }
+            // The same correction for the hindsight sweep, batched — remembered against the same map
+            // and for the same reason.
+            val calibrateFans: (String, () -> List<Double>, Int, Int) -> List<Double>? =
+                remember(bandCalibrations) {
+                    { modelId, fans, steps, nq ->
+                        container.calibratedFanBatch(bandCalibrations, modelId, fans, steps, nq)
+                    }
+                }
             // The model-probed ISF/ICR beside the IOB/COB read-out. A probe costs three forwards on
             // the fp32 authority, so it is driven from the panels that show it: off-screen the
             // read-out costs nothing at all, and the container's TTL keeps a burst of ticks from
             // re-probing.
             val sensitivity = rememberSensitivity(container)
+            val viewingOtherSource by container.viewingNonAuthoritative.collectAsState(false)
             DashboardScreen(
                 readings = readings,
                 unit = glucoseUnit,
                 thresholds = container.alarmConfig.thresholds,
-                predictions = inference.predictions,
+                // Every forecast on this panel — the fan, the hindsight sweep, the rolled overlay — was
+                // computed from the AUTHORITATIVE sensor's history, so none of it describes the sensor
+                // being looked at once the bottom bar has stepped off it. Emptying the list withholds all
+                // three at their single source rather than gating each surface. The bottom-bar chip
+                // carries the marker saying why.
+                predictions = if (viewingOtherSource) emptyList() else inference.predictions,
                 kovatchevF = container.nativeCore::kovatchevF,
                 calibrateBands = calibrateBands,
+                calibrateFans = calibrateFans,
                 iobCob = iobCob,
                 sensitivity = sensitivity,
                 curveChannels = container::dashboardOverlayChannels,
@@ -1134,9 +1157,13 @@ private fun T1dmNavHost(
                 circadianAnchorMs = inference.circadianAnchorMs,
                 smoothMgdl = smoothMgdl,
                 smoothingWindow = savgolWindow,
-                rolledForecast = rolled,
-                rollComputing = rollComputing,
-                onRoll = { hours -> container.requestRollForDisplay(hours) },
+                // Withheld on the same condition as the fan, and for the same reason: a roll is run off
+                // the AUTHORITATIVE sensor's history, so it does not describe the sensor on screen.
+                // The control goes with it — offering a roll whose result cannot be drawn is worse than
+                // not offering one.
+                rolledForecast = if (viewingOtherSource) null else rolled,
+                rollComputing = if (viewingOtherSource) false else rollComputing,
+                onRoll = if (viewingOtherSource) null else ({ hours: Double -> container.requestRollForDisplay(hours) }),
                 onClearRoll = { container.clearRoll() },
                 lowPowerActive = lowPowerActive,
                 forecastAdaptive = forecastMode == SettingsStore.FORECAST_MODE_ADAPTIVE,
@@ -2154,7 +2181,7 @@ private fun T1dmNavHost(
         composable("settings/cgm") {
             val ctx = LocalContext.current
             val scope = rememberCoroutineScope()
-            val active by container.activeSource.collectAsState(null)
+            val active by container.authoritativeSource.collectAsState(null)
             val sources by container.allSources.collectAsState(emptyList())
             val signals by container.bgSignals.collectAsState(null)
             val expiry by container.sensorExpiryMs.collectAsState(null)
@@ -2165,6 +2192,7 @@ private fun T1dmNavHost(
             val overlayLauncher = rememberLauncherForActivityResult(
                 ActivityResultContracts.StartActivityForResult(),
             ) { canOverlay = Settings.canDrawOverlays(ctx) }
+            val activeCgmIds by container.registry.activeIds.collectAsState()
             CgmSettingsScreen(
                 activeSourceName = active?.displayName,
                 activeStatus = active?.let { "active" },
@@ -2172,14 +2200,21 @@ private fun T1dmNavHost(
                 // set, and the active one is listed whatever its flag says — a sensor authoritative for
                 // every value on screen must not be absent from the list naming it.
                 recordedSources = sources.mapNotNull {
-                    val isActive = it.id == active?.id
-                    if (it.hidden && !isActive) null
-                    else RecordedSource(it.id.value, it.displayName, isActive)
+                    val isAuthoritative = it.id == active?.id
+                    if (it.hidden && !isAuthoritative) null
+                    else RecordedSource(
+                        id = it.id.value,
+                        name = it.displayName,
+                        active = isAuthoritative || it.id in activeCgmIds,
+                        authoritative = isAuthoritative,
+                    )
                 },
                 onRemoveSource = { id -> container.hideCgm(id) },
+                onMakeAuthoritative = { id -> container.makeAuthoritativeCgm(id) },
+                onStartReading = { id -> container.activateCgm(id) },
                 activeRssi = signals?.cgmRssi,
                 sensorExpiryMs = expiry,
-                // Read back from STORAGE (the active source's persisted column), not off the registry's
+                // Read back from STORAGE (the authoritative source's persisted column), not off the registry's
                 // in-memory set: the knob writes the column, and Room's Flow is what makes the edit
                 // visible again, so the panel shows the value that will actually be classified against.
                 warmupWindowMin = active?.warmupWindowMin,

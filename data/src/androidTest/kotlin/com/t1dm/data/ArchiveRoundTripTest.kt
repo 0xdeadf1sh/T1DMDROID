@@ -196,10 +196,10 @@ class ArchiveRoundTripTest {
     fun anArchivedSourceCannotStealTheActiveFlag() = runTest {
         populate(source)
         val bytes = archiveOf(source)
-        target.cgmSourceDao().upsert(cgmSource().copy(sourceId = "local-sensor", active = true))
+        target.cgmSourceDao().upsert(cgmSource().copy(sourceId = "local-sensor", authoritative = true, active = true))
         restoreInto(target, bytes)
-        assertEquals("the exactly-one-active invariant broke", 1, target.cgmSourceDao().activeCount())
-        assertEquals("local-sensor", target.cgmSourceDao().activeSourceId())
+        assertEquals("the exactly-one-active invariant broke", 1, target.cgmSourceDao().authoritativeCount())
+        assertEquals("local-sensor", target.cgmSourceDao().authoritativeSourceId())
     }
 
     @Test
@@ -208,8 +208,8 @@ class ArchiveRoundTripTest {
         restoreInto(target, archiveOf(source))
         // The fresh-install case: nothing holds the flag, so the restored source becomes usable at
         // once rather than leaving the phone with a sensor it knows about but is not reading.
-        assertEquals(1, target.cgmSourceDao().activeCount())
-        assertEquals(SOURCE_ID, target.cgmSourceDao().activeSourceId())
+        assertEquals(1, target.cgmSourceDao().authoritativeCount())
+        assertEquals(SOURCE_ID, target.cgmSourceDao().authoritativeSourceId())
     }
 
     @Test
@@ -222,7 +222,7 @@ class ArchiveRoundTripTest {
             CgmSourceEntity(
                 sourceId = "aidex-OLD", vendorId = "aidex", sensorModelId = CgmSensorModelId.AIDEX_X, advertName = null,
                 displayName = "last year's sensor",
-                serialSuffix = "0001", active = false, warmupWindowMin = 60,
+                serialSuffix = "0001", authoritative = false, active = false, warmupWindowMin = 60,
                 addedAtMs = 1_600_000_000_000L, lastSeenMs = 1_600_100_000_000L, hidden = false,
             ),
         )
@@ -230,11 +230,11 @@ class ArchiveRoundTripTest {
 
         restoreInto(target, archiveOf(source))
 
-        assertEquals("the exactly-one-active invariant broke", 1, target.cgmSourceDao().activeCount())
+        assertEquals("the exactly-one-active invariant broke", 1, target.cgmSourceDao().authoritativeCount())
         assertEquals(
             "the restore activated a retired sensor",
             SOURCE_ID,
-            target.cgmSourceDao().activeSourceId(),
+            target.cgmSourceDao().authoritativeSourceId(),
         )
     }
 
@@ -523,7 +523,7 @@ class ArchiveRoundTripTest {
 
     private fun cgmSource() = CgmSourceEntity(
         sourceId = SOURCE_ID, vendorId = "aidex", sensorModelId = CgmSensorModelId.AIDEX_X, advertName = null, displayName = "AiDEX X",
-        serialSuffix = "4321", active = true, warmupWindowMin = 60,
+        serialSuffix = "4321", authoritative = true, active = true, warmupWindowMin = 60,
         addedAtMs = 1_700_000_000_000L, lastSeenMs = 1_700_000_600_000L, hidden = false,
     )
 

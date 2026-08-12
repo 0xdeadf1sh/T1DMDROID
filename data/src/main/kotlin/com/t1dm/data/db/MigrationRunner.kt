@@ -427,6 +427,34 @@ object MigrationRunner {
         }
     }
 
+    /**
+     * v13 → v14 (several sensors may be read at once): `cgm_source.active` is RENAMED to
+     * `authoritative`, and a new `active` takes the name.
+     *
+     * The column never meant "the app is reading this sensor" — it meant "this is the one sensor
+     * every value on screen is derived from", which is a far narrower claim and the only one the app
+     * could make while it read one sensor at a time. Splitting the two lets a second sensor be read
+     * and drawn without being believed. The old rows carry the narrow meaning, so the rename moves
+     * the data and the new column is seeded from it: the sensor that was authoritative is also, and
+     * still, the one being read.
+     *
+     * A rename rather than add-and-backfill because the old column IS the new `authoritative`, row
+     * for row — copying it into a fresh column and dropping the original would do the same work while
+     * leaving a window where a crash lost which source was believed. `ALTER TABLE … RENAME COLUMN`
+     * needs SQLite 3.25+, which is not a question here: the database ships its own
+     * `BundledSQLiteDriver` precisely so the OEM build cannot decide what SQL is available
+     * ([AppDatabase.build]).
+     */
+    val MIGRATION_13_14 = object : Migration(13, 14) {
+        override fun migrate(connection: SQLiteConnection) {
+            connection.execSQL("ALTER TABLE `cgm_source` RENAME COLUMN `active` TO `authoritative`")
+            connection.execSQL("ALTER TABLE `cgm_source` ADD COLUMN `active` INTEGER NOT NULL DEFAULT 0")
+            // authoritative ⇒ active. Seeding the other way — every known sensor active — would have
+            // the app open a link to every sensor it has ever met on the next start.
+            connection.execSQL("UPDATE `cgm_source` SET `active` = `authoritative`")
+        }
+    }
+
     val ALL: Array<Migration> = arrayOf(
         MIGRATION_1_2,
         MIGRATION_2_3,
@@ -440,6 +468,7 @@ object MigrationRunner {
         MIGRATION_10_11,
         MIGRATION_11_12,
         MIGRATION_12_13,
+        MIGRATION_13_14,
     )
 
     /** Apply every registered migration to a builder; the sole path that wires migrations. */

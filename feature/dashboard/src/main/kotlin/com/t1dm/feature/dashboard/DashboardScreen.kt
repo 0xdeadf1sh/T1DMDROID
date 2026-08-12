@@ -140,6 +140,11 @@ fun DashboardScreen(
     // engine, the calculator rails and everything stored or pushed read the fan the model produced.
     // §8.4 pins the median, so the forecast line is the same either way.
     calibrateBands: ((ModelPrediction) -> List<Double>?)? = null,
+    // The same correction for the hindsight sweep, batched: one model's fans laid end to end, one
+    // apply. Separate from [calibrateBands] because a sweep is ~288 fans of one shape and one model
+    // id, which is a batch the core takes whole rather than 288 crossings — and because the sweep is
+    // calibrated all-or-nothing, so it never draws a different basis from the fan beside it.
+    calibrateFans: ((modelId: String, fansMgdl: () -> List<Double>, steps: Int, nQuantiles: Int) -> List<Double>?)? = null,
     iobCob: IobCobReadout? = null,
     // The model-probed ISF/ICR beside the IOB/COB read-out. DISPLAY-ONLY and, like the rolled
     // forecast, a type nothing downstream accepts: `:app` probes it off three counterfactual rolls of
@@ -426,14 +431,24 @@ fun DashboardScreen(
     // which is the one most worth looking at, silently blank. Keyed on the cycle instant it rebuilds
     // once per cycle instead, which is one indexed query per forecast and only while the chip is on.
     val hindsightLatestCycleMs = hindsightSelected?.cycleTsMs
+    // Keyed on [calibrateFans] for the reason the forecast overlay keys on [calibrateBands]: `:app`
+    // re-remembers that lambda exactly when the stored §8.4 correction changes, so a fresh fit
+    // redraws the sweep instead of leaving it on the basis it was built with.
     val hindsight by produceState<HindsightFrame?>(
         null, hindsightBucket, hindsightModelId, hindsightLatestCycleMs, unit, kovatchevF, hindsightIn,
+        calibrateFans,
     ) {
         val resolve = hindsightIn
         val bucket = hindsightBucket
         val modelId = hindsightModelId
+        val calibrate = calibrateFans
         value = if (resolve == null || bucket == null || modelId == null) null
-        else hindsightFrameOf(resolve(modelId, bucket.first, bucket.second), unit, kovatchevF)
+        else hindsightFrameOf(
+            resolve(modelId, bucket.first, bucket.second),
+            unit,
+            kovatchevF,
+            calibrate?.let { cf -> { fans, steps, nq -> cf(modelId, fans, steps, nq) } },
+        )
     }
 
     // ── Paint mode: palette selection + the session's undo history ───────────────────────────────

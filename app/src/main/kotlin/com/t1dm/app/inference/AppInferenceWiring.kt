@@ -27,7 +27,7 @@ import java.util.TreeMap
 private const val GRID_MS = 300_000L
 
 /**
- * Projects the active source's grid-aligned readings into the trailing per-5-min-step mg/dL series
+ * Projects the authoritative source's grid-aligned readings into the trailing per-5-min-step mg/dL series
  * the model conditions on. WARMUP/INVALID readings are excluded (§3.1 — suppressed from inference);
  * gaps within the covered window are carried forward. Returns `null` when fewer than `minSteps` real
  * readings exist (the "collecting context" state — the model needs ≥16 patches / 8 h). This provider
@@ -41,7 +41,7 @@ class RoomBgHistoryProvider(
 ) : BgHistoryProvider {
 
     override suspend fun recentBgSeries(maxSteps: Int, minSteps: Int): BgSeries? {
-        val srcId = registry.active.value ?: repository.activeSourceId() ?: return null
+        val srcId = registry.authoritative.value ?: repository.authoritativeSourceId() ?: return null
         val readings = repository.recentReadings(srcId, maxSteps + 12)
             .filter { it.bgMgdl != null && it.flag == ReadingFlag.NORMAL } // excludes warmup + invalid
         if (readings.size < minSteps) return null
@@ -86,7 +86,7 @@ class RoomBgHistoryProvider(
      * patches — that is a neural-input constraint and costs the fit usable rows for nothing.
      */
     override suspend fun fitBgSeries(maxSteps: Int, minSteps: Int): BgSeries? {
-        val srcId = registry.active.value ?: repository.activeSourceId() ?: return null
+        val srcId = registry.authoritative.value ?: repository.authoritativeSourceId() ?: return null
         val readings = repository.recentReadings(srcId, maxSteps + 12)
             .filter {
                 it.bgMgdl != null &&
@@ -114,7 +114,7 @@ class RoomBgHistoryProvider(
      */
     override suspend fun measuredStepsInWindow(windowSteps: Int): Int {
         if (windowSteps <= 0) return 0
-        val srcId = registry.active.value ?: repository.activeSourceId() ?: return 0
+        val srcId = registry.authoritative.value ?: repository.authoritativeSourceId() ?: return 0
         val readings = repository.recentReadings(srcId, windowSteps + 12)
             .filter {
                 it.bgMgdl != null &&

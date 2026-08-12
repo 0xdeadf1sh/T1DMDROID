@@ -54,7 +54,7 @@ class AppWatchGlanceSource(
 ) : WatchGlanceSource {
 
     override suspend fun currentGlance(nowMs: Long): WatchPush? {
-        val src = repository.activeSourceId() ?: return null
+        val src = repository.authoritativeSourceId() ?: return null
         val latest = repository.recentReadings(src, 1).firstOrNull() ?: return null
 
         // Lift the ONE shared computation (BgGlanceComputer) so the watch, the always-on

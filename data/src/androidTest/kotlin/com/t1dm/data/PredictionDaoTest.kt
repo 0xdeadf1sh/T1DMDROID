@@ -129,7 +129,7 @@ class PredictionDaoTest {
                 sensorModelId = com.t1dm.core.model.CgmSensorModelId.AIDEX_X, advertName = null,
                 displayName = "X", serialSuffix = "X", warmupWindowMin = 60, passiveOnly = true,
             ),
-            active = true, nowMs = 1_000,
+            authoritative = true, nowMs = 1_000,
         )
         val ts = 300_000L
         repo.upsertReading(

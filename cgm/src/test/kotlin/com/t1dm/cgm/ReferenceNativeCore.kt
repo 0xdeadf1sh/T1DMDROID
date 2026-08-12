@@ -4,13 +4,19 @@ import com.t1dm.core.common.GameWorld
 import com.t1dm.core.common.NativeCore
 import com.t1dm.core.model.AdvancedStats
 import com.t1dm.core.model.BasalSchedule
+import com.t1dm.core.model.BaselineFit
+import com.t1dm.core.model.BaselineForecast
+import com.t1dm.core.model.BaselineModel
+import com.t1dm.core.model.BaselineSpec
 import com.t1dm.core.model.BuiltContext
 import com.t1dm.core.model.CarTuning
 import com.t1dm.core.model.ClarkeZone
+import com.t1dm.core.model.ClinicalCuts
 import com.t1dm.core.model.ConformalFit
 import com.t1dm.core.model.CurveEvent
 import com.t1dm.core.model.CurveKind
 import com.t1dm.core.model.DecodedAdvert
+import com.t1dm.core.model.DtsZone
 import com.t1dm.core.model.Forecast
 import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.ForecastWindow
@@ -139,6 +145,54 @@ class ReferenceNativeCore : NativeCore {
         bandsMgdl: List<Double>,
         delta: List<Double>,
     ): List<Double>? = null
+
+    override fun applyQuantileConformalBatch(
+        fansMgdl: List<Double>,
+        delta: List<Double>,
+    ): List<Double>? = null
+
+    // Three members :cgm's own tests never reach — the metric suite's clinical cuts, the DTS zone
+    // grid and the trend bins all belong to surfaces above this module. They are declared on the port,
+    // so the double has to answer them; refusing is the honest answer, and matches StubNativeCore.
+    override fun clinicalCuts(): ClinicalCuts = ClinicalCuts.UNAVAILABLE
+
+    override fun dtsZoneGrid(
+        truthAxisMgdl: List<Double>,
+        predAxisMgdl: List<Double>,
+    ): List<DtsZone> = emptyList()
+
+    override fun trendBinEdges(): List<Double> = emptyList()
+
+    // The classical baseline, likewise out of this module's reach: the ridge solve, its causal
+    // on-board scatter and its degeneracy verdict all live in the crate, and a Kotlin reproduction
+    // here would be a second numeric authority for the model the neural one is MEASURED against.
+    // `TODO()` rather than a plausible zero, mirroring StubNativeCore — a :cgm test that reached one
+    // of these is a test asking the wrong object, and should fail loudly saying so.
+    override fun baselineDefaultSpec(): BaselineSpec = TODO("the baseline is Rust-only")
+
+    override fun fitBaselineRidge(
+        bgMgdl: List<Double>,
+        gridStartMs: Long,
+        events: List<CurveEvent>,
+        spec: BaselineSpec,
+        nowMs: Long,
+        minCalWindows: Int,
+    ): BaselineFit? = TODO("the baseline is Rust-only")
+
+    override fun baselinePredict(
+        model: BaselineModel,
+        bgTail: List<Double>,
+        iob: Double,
+        cob: Double,
+        futureCarb: List<Double>,
+        futureInsulin: List<Double>,
+    ): BaselineForecast? = TODO("the baseline is Rust-only")
+
+    override fun baselineOnBoardAt(events: List<CurveEvent>, atMs: Long, kind: CurveKind): Double =
+        TODO("the baseline is Rust-only")
+
+    override fun baselineDegeneracyCheck(forecast: BaselineForecast): ForecastStatus =
+        TODO("the baseline is Rust-only")
 
     override fun defaultCarTuning(): CarTuning = TODO("not exercised by :cgm tests")
 

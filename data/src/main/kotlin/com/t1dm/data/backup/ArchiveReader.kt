@@ -361,26 +361,30 @@ class ArchiveReader(private val db: AppDatabase) {
             s.duplicates += (s.savedMeals.size - mealsAdded) + (s.savedItems.size - items.size)
         }
 
-        // A restored source or profile must never claim the active flag while a local one holds it:
-        // both tables carry an exactly-one-active invariant, and breaking it would leave the phone
+        // A restored source or profile must never claim the authoritative flag while a local one holds
+        // it: both tables carry an exactly-one invariant, and breaking it would leave the phone
         // reading from — or syncing to — something the user never selected. When the table is empty
         // the FIRST restored row may take it, which is what makes a fresh install usable at once.
+        //
+        // A source's `active` flag carries no such invariant and rides in from the file as stored:
+        // restoring a backup restores which sensors were being read, and several of them may be.
         if (s.sources.isNotEmpty()) {
-            val free = db.cgmSourceDao().activeCount() == 0
+            val free = db.cgmSourceDao().authoritativeCount() == 0
             val rows = s.sources.mapNotNull { o ->
-                runCatching { Archive.readSource(o, active = false) }.getOrNull()
+                runCatching { Archive.readSource(o, authoritative = false) }.getOrNull()
             }
             val added = db.cgmSourceDao().insertIgnoreAll(rows).count { it != -1L }
             if (free) {
-                // Every row landed inactive; exactly one is then chosen. The archive's own flag first
-                // — it names the sensor that was actually being worn — and the most recently HEARD
-                // source as the fallback for an archive written before the flag was carried. Never
-                // the first row: `cgm_source` accumulates every sensor the phone has ever seen and
-                // the export walks it oldest-first, so "first" means the one longest retired.
+                // Every row landed non-authoritative; exactly one is then chosen. The archive's own
+                // flag first — it names the sensor that was actually being believed — and the most
+                // recently HEARD source as the fallback for an archive written before the flag was
+                // carried. Never the first row: `cgm_source` accumulates every sensor the phone has
+                // ever seen and the export walks it oldest-first, so "first" means the one longest
+                // retired.
                 val claimed = s.sources.firstOrNull { it.bool("ac") == true }?.str("sid")
                 val target = claimed?.takeIf { id -> rows.any { it.sourceId == id } }
                     ?: rows.maxByOrNull { it.lastSeenMs ?: Long.MIN_VALUE }?.sourceId
-                if (target != null) db.cgmSourceDao().setActive(target)
+                if (target != null) db.cgmSourceDao().setAuthoritative(target)
             }
             s.applied = s.applied.copy(sources = added)
             s.duplicates += rows.size - added

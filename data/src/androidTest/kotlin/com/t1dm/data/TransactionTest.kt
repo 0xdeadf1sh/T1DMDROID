@@ -110,35 +110,93 @@ class TransactionTest {
     }
 
     /**
-     * upsertSource's clear-all-then-set is atomic: two active upserts leave exactly one active row —
-     * the later one — never two and never zero.
+     * upsertSource's clear-all-then-set is atomic: two adopting upserts leave exactly one authoritative
+     * row — the later one — never two and never zero. Both stay ACTIVE: promotion moves what is
+     * believed, and never stops the app reading the sensor it replaced.
      */
     @Test
-    fun upsertSource_lastActiveWins() = runBlocking {
-        repo.upsertSource(descriptor("aidexx:A"), active = true, nowMs = 1L)
-        repo.upsertSource(descriptor("aidexx:B"), active = true, nowMs = 2L)
-        val active = db.cgmSourceDao().observeAll().first().filter { it.active }
-        assertEquals(1, active.size)
-        assertEquals("aidexx:B", active.single().sourceId)
+    fun upsertSource_lastAdoptionWins() = runBlocking {
+        repo.upsertSource(descriptor("aidexx:A"), authoritative = true, nowMs = 1L)
+        repo.upsertSource(descriptor("aidexx:B"), authoritative = true, nowMs = 2L)
+        val rows = db.cgmSourceDao().observeAll().first()
+        val authoritative = rows.filter { it.authoritative }
+        assertEquals(1, authoritative.size)
+        assertEquals("aidexx:B", authoritative.single().sourceId)
+        assertEquals("both stay active", 2, rows.count { it.active })
     }
 
     /**
-     * Concurrency/ordering: many overlapping setActiveSource calls serialize on the single writer
-     * connection, and because each is one atomic clear-all-then-set, the terminal state has EXACTLY
-     * one active source. A non-atomic rewrite (clear and set on separate transactions) could momentarily
-     * — or, if interleaved, terminally — leave zero active.
+     * A re-sighting NEVER clears the authoritative flag. `upsertSource` runs on every enumeration, from
+     * a descriptor the coordinator has held in memory, and it used to write the flag it was handed —
+     * so a pass that raced a promotion could leave the table with no authoritative row at all and
+     * silently stop the model, the alarms and the wire.
      */
     @Test
-    fun concurrentSetActive_leavesExactlyOneActive() = runBlocking {
+    fun upsertSource_reSightingPreservesAuthority() = runBlocking {
+        repo.upsertSource(descriptor("aidexx:A"), authoritative = true, nowMs = 1L)
+        repo.upsertSource(descriptor("aidexx:A"), authoritative = false, nowMs = 2L)
+        val rows = db.cgmSourceDao().observeAll().first()
+        assertEquals(1, rows.count { it.authoritative })
+        assertEquals("aidexx:A", rows.single { it.authoritative }.sourceId)
+    }
+
+    /** Authority implies activity: promoting a source the app had stopped reading starts reading it. */
+    @Test
+    fun setAuthoritative_activatesAndUnhides() = runBlocking {
+        repo.upsertSource(descriptor("aidexx:A"), authoritative = true, nowMs = 1L)
+        repo.upsertSource(descriptor("aidexx:B"), authoritative = false, nowMs = 1L)
+        repo.hideSource(CgmSourceId("aidexx:B"))
+        assertEquals(false, db.cgmSourceDao().observeAll().first().single { it.sourceId == "aidexx:B" }.active)
+        repo.setAuthoritativeSource(CgmSourceId("aidexx:B"))
+        val b = db.cgmSourceDao().observeAll().first().single { it.sourceId == "aidexx:B" }
+        assertEquals(true, b.authoritative)
+        assertEquals(true, b.active)
+        assertEquals(false, b.hidden)
+    }
+
+    /** Deactivating and hiding both REFUSE the authoritative source — the guard is in the SQL, so it
+     *  holds whatever the caller does. */
+    @Test
+    fun theAuthoritativeSourceCannotBeStoppedOrHidden() = runBlocking {
+        repo.upsertSource(descriptor("aidexx:A"), authoritative = true, nowMs = 1L)
+        repo.deactivateSource(CgmSourceId("aidexx:A"))
+        repo.hideSource(CgmSourceId("aidexx:A"))
+        val a = db.cgmSourceDao().observeAll().first().single()
+        assertEquals(true, a.authoritative)
+        assertEquals(true, a.active)
+        assertEquals(false, a.hidden)
+    }
+
+    /** Several sources may be active at once; exactly one of them is authoritative. */
+    @Test
+    fun manyActiveOneAuthoritative() = runBlocking {
+        val ids = (0 until 4).map { "aidexx:S$it" }
+        ids.forEach { repo.upsertSource(descriptor(it), authoritative = false, nowMs = 1L) }
+        repo.setAuthoritativeSource(CgmSourceId(ids[0]))
+        ids.drop(1).forEach { repo.activateSource(CgmSourceId(it)) }
+        val rows = db.cgmSourceDao().observeAll().first()
+        assertEquals(4, rows.count { it.active })
+        assertEquals(1, rows.count { it.authoritative })
+        assertEquals(ids[0], rows.single { it.authoritative }.sourceId)
+    }
+
+    /**
+     * Concurrency/ordering: many overlapping setAuthoritativeSource calls serialize on the single writer
+     * connection, and because each is one atomic clear-all-then-set, the terminal state has EXACTLY
+     * one authoritative source. A non-atomic rewrite (clear and set on separate transactions) could
+     * momentarily — or, if interleaved, terminally — leave zero.
+     */
+    @Test
+    fun concurrentSetAuthoritative_leavesExactlyOne() = runBlocking {
         val ids = (0 until 8).map { "aidexx:S$it" }
-        ids.forEach { repo.upsertSource(descriptor(it), active = false, nowMs = 1L) }
+        ids.forEach { repo.upsertSource(descriptor(it), authoritative = false, nowMs = 1L) }
         coroutineScope {
             ids.flatMap { id ->
-                (0 until 4).map { async(Dispatchers.Default) { repo.setActiveSource(CgmSourceId(id)) } }
+                (0 until 4).map { async(Dispatchers.Default) { repo.setAuthoritativeSource(CgmSourceId(id)) } }
             }.awaitAll()
         }
-        val active = db.cgmSourceDao().observeAll().first().filter { it.active }
-        assertEquals("exactly one active source after concurrent activation", 1, active.size)
+        val authoritative = db.cgmSourceDao().observeAll().first().filter { it.authoritative }
+        assertEquals("exactly one authoritative source after concurrent promotion", 1, authoritative.size)
     }
 
     /**
@@ -149,11 +207,11 @@ class TransactionTest {
      */
     @Test
     fun upsertSource_preservesHiddenAcrossReSighting() = runBlocking {
-        repo.upsertSource(descriptor("aidexx:A"), active = true, nowMs = 1L)
-        repo.upsertSource(descriptor("aidexx:B"), active = false, nowMs = 1L)
+        repo.upsertSource(descriptor("aidexx:A"), authoritative = true, nowMs = 1L)
+        repo.upsertSource(descriptor("aidexx:B"), authoritative = false, nowMs = 1L)
         repo.hideSource(CgmSourceId("aidexx:B"))
 
-        repo.upsertSource(descriptor("aidexx:B"), active = false, nowMs = 2L)
+        repo.upsertSource(descriptor("aidexx:B"), authoritative = false, nowMs = 2L)
 
         val b = db.cgmSourceDao().byId("aidexx:B")!!
         assertEquals("a re-sighting un-hid a removed source", true, b.hidden)
@@ -167,13 +225,13 @@ class TransactionTest {
      */
     @Test
     fun theActiveSourceIsNeverHidden() = runBlocking {
-        repo.upsertSource(descriptor("aidexx:A"), active = true, nowMs = 1L)
+        repo.upsertSource(descriptor("aidexx:A"), authoritative = true, nowMs = 1L)
         repo.hideSource(CgmSourceId("aidexx:A"))
         assertEquals("the active source was hidden", false, db.cgmSourceDao().byId("aidexx:A")!!.hidden)
 
-        repo.upsertSource(descriptor("aidexx:B"), active = false, nowMs = 1L)
+        repo.upsertSource(descriptor("aidexx:B"), authoritative = false, nowMs = 1L)
         repo.hideSource(CgmSourceId("aidexx:B"))
-        repo.setActiveSource(CgmSourceId("aidexx:B"))
+        repo.setAuthoritativeSource(CgmSourceId("aidexx:B"))
         assertEquals("becoming active left the source hidden", false, db.cgmSourceDao().byId("aidexx:B")!!.hidden)
     }
 
@@ -183,7 +241,7 @@ class TransactionTest {
         sensorModelId = CgmSensorModelId.AIDEX_X, advertName = null,
         displayName = "AiDEX X $id",
         serialSuffix = id.substringAfterLast(':'),
-        active = false,
+        authoritative = false, active = false,
         warmupWindowMin = 60,
         addedAtMs = 0L,
         lastSeenMs = null,

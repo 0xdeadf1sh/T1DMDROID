@@ -176,36 +176,36 @@ class ArchiveCodecTest {
     }
 
     @Test
-    fun `a source and a profile take their active flag from the caller, never from the file`() {
-        val srcLine = render { Archive.write(it, source(active = true)) }
-        assertFalse("the archive dictated the active flag", Archive.readSource(parse(srcLine), active = false).active)
-        assertTrue(Archive.readSource(parse(srcLine), active = true).active)
+    fun `a source and a profile take their authority flag from the caller, never from the file`() {
+        val srcLine = render { Archive.write(it, source(authoritative = true)) }
+        assertFalse("the archive dictated the authority flag", Archive.readSource(parse(srcLine), authoritative = false).authoritative)
+        assertTrue(Archive.readSource(parse(srcLine), authoritative = true).authoritative)
     }
 
     @Test
-    fun `the archive records WHICH source was active, as a preference the reader may consult`() {
-        // The flag is not applied directly — the restore decides, because the exactly-one-active
+    fun `the archive records WHICH source was authoritative, as a preference the reader may consult`() {
+        // The flag is not applied directly — the restore decides, because the exactly-one-authoritative
         // invariant is the local table's to keep. But it must be RECORDED: without it the restore
         // had no way to tell the worn sensor from a retired one and fell back to file order, which
         // is oldest-first.
-        assertEquals(true, parse(render { Archive.write(it, source(active = true)) }).bool("ac"))
-        assertEquals(false, parse(render { Archive.write(it, source(active = false)) }).bool("ac"))
+        assertEquals(true, parse(render { Archive.write(it, source(authoritative = true)) }).bool("ac"))
+        assertEquals(false, parse(render { Archive.write(it, source(authoritative = false)) }).bool("ac"))
     }
 
     @Test
-    fun `a source record written before the active flag existed still decodes`() {
+    fun `a source record written before the authority flag existed still decodes`() {
         // Additive field: an archive from the first build carries no `ac`, and must not fail here —
         // the reader falls back to the most recently seen source instead.
         val old = """{"t":"source","sid":"s","vid":"v","dn":"d","wm":60,"aa":1,"ls":2}"""
-        assertEquals("s", Archive.readSource(parse(old), active = false).sourceId)
+        assertEquals("s", Archive.readSource(parse(old), authoritative = false).sourceId)
         assertNull(parse(old).bool("ac"))
     }
 
     @Test
     fun `a source's sensor model survives the round trip`() {
-        val line = render { Archive.write(it, source(active = true)) }
+        val line = render { Archive.write(it, source(authoritative = true)) }
         assertEquals("v:model", parse(line).str("mid"))
-        assertEquals("v:model", Archive.readSource(parse(line), active = true).sensorModelId)
+        assertEquals("v:model", Archive.readSource(parse(line), authoritative = true).sensorModelId)
     }
 
     /**
@@ -216,10 +216,10 @@ class ArchiveCodecTest {
     @Test
     fun `a source record written before the sensor model existed is classified as the migration would`() {
         val real = """{"t":"source","sid":"aidexx:ABC","vid":"aidexx","dn":"d","wm":60,"aa":1,"ls":2}"""
-        assertEquals(CgmSensorModelId.AIDEX_X, Archive.readSource(parse(real), active = false).sensorModelId)
+        assertEquals(CgmSensorModelId.AIDEX_X, Archive.readSource(parse(real), authoritative = false).sensorModelId)
 
         val debug = """{"t":"source","sid":"${CgmSourceId.DEBUG.value}","vid":"aidexx","dn":"d","wm":60,"aa":1,"ls":2}"""
-        assertEquals(CgmSensorModelId.AIDEX_DEBUG, Archive.readSource(parse(debug), active = false).sensorModelId)
+        assertEquals(CgmSensorModelId.AIDEX_DEBUG, Archive.readSource(parse(debug), authoritative = false).sensorModelId)
     }
 
     /**
@@ -229,10 +229,10 @@ class ArchiveCodecTest {
      */
     @Test
     fun `a removed source survives the round trip as removed`() {
-        val line = render { Archive.write(it, source(active = false, hidden = true)) }
+        val line = render { Archive.write(it, source(authoritative = false, hidden = true)) }
         assertEquals(true, parse(line).bool("hd"))
-        assertEquals(true, Archive.readSource(parse(line), active = false).hidden)
-        assertEquals(false, Archive.readSource(parse(render { Archive.write(it, source(active = false)) }), active = false).hidden)
+        assertEquals(true, Archive.readSource(parse(line), authoritative = false).hidden)
+        assertEquals(false, Archive.readSource(parse(render { Archive.write(it, source(authoritative = false)) }), authoritative = false).hidden)
     }
 
     @Test
@@ -240,12 +240,13 @@ class ArchiveCodecTest {
         // Additive field: an archive from an older build carries no `hd`, and false is the state every
         // such row was exported in — the alternative would hide a sensor the user never removed.
         val old = """{"t":"source","sid":"s","vid":"v","dn":"d","wm":60,"aa":1,"ls":2}"""
-        assertEquals(false, Archive.readSource(parse(old), active = false).hidden)
+        assertEquals(false, Archive.readSource(parse(old), authoritative = false).hidden)
     }
 
-    private fun source(active: Boolean, hidden: Boolean = false) = com.t1dm.data.db.CgmSourceEntity(
+    private fun source(authoritative: Boolean, hidden: Boolean = false) = com.t1dm.data.db.CgmSourceEntity(
         sourceId = "s", vendorId = "v", sensorModelId = "v:model", advertName = null, displayName = "d", serialSuffix = null,
-        active = active, warmupWindowMin = 60, addedAtMs = 1L, lastSeenMs = 2L, hidden = hidden,
+        authoritative = authoritative, active = authoritative,
+        warmupWindowMin = 60, addedAtMs = 1L, lastSeenMs = 2L, hidden = hidden,
     )
 
     // ── the wide projection ───────────────────────────────────────────────────────────────────

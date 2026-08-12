@@ -26,13 +26,15 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.HapticEvent
+import com.t1dm.core.design.hapticClickable
 import com.t1dm.core.design.SignalBars
 import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.model.CgmSourceDescriptor
 
 /**
- * Settings → CGM source. Surfaces the auto-adopted active source and every recorded source (manual
- * re-selection lands with the multi-source work), each of the inactive ones removable from the list.
+ * Settings → CGM source. Surfaces the authoritative source and every recorded source: several may be
+ * read at once, exactly one is authoritative, and a row press promotes one or starts reading one.
+ * Each of the non-authoritative ones is removable from the list.
  *  - I10: the ACTIVE source's live BLE signal strength (RSSI dBm + bars), reusing the BG-panel meter.
  *  - I11: a USER-ENTERED sensor lifetime. Because the AiDEX X is a passive advertisement listener we
  *    cannot read the sensor's true age, so the user enters the remaining life (days + hours + minutes);
@@ -49,10 +51,14 @@ fun CgmSettingsScreen(
     activeStatus: String?,
     recordedSources: List<RecordedSource>,
     onRemoveSource: (String) -> Unit = {},
+    /** Make this sensor the one every value on screen is derived from. */
+    onMakeAuthoritative: (String) -> Unit = {},
+    /** Start reading this sensor, without believing it. */
+    onStartReading: (String) -> Unit = {},
     activeRssi: Int? = null,
     sensorExpiryMs: Long? = null,
-    /** The ACTIVE source's configured warm-up window (minutes), or null when no source is on record —
-     *  the window is per-source, so with nothing active there is nothing to edit. */
+    /** The AUTHORITATIVE source's configured warm-up window (minutes), or null when no source is on
+     *  record — the window is per-source, so with nothing on record there is nothing to edit. */
     warmupWindowMin: Int? = null,
     onSetWarmupMin: (Int) -> Unit = {},
     onSetSensorLifetime: (days: Int, hours: Int, minutes: Int) -> Unit = { _, _, _ -> },
@@ -86,7 +92,12 @@ fun CgmSettingsScreen(
                 // re-sighting rewrites this list, and a confirmation held inside a row would go with it.
                 var confirming by remember { mutableStateOf<RecordedSource?>(null) }
                 recordedSources.forEach { src ->
-                    RecordedSourceRow(src, onRequestRemove = { confirming = it })
+                    RecordedSourceRow(
+                        src = src,
+                        onMakeAuthoritative = onMakeAuthoritative,
+                        onStartReading = onStartReading,
+                        onRequestRemove = { confirming = it },
+                    )
                 }
                 confirming?.let { src ->
                     RemoveSourceDialog(
@@ -139,29 +150,62 @@ fun CgmSettingsScreen(
     }
 }
 
-/** One row of the recorded list. [active] is the source every value on screen comes from. */
-data class RecordedSource(val id: String, val name: String, val active: Boolean)
+/**
+ * One row of the recorded list.
+ *
+ * [active] — the app is reading this sensor and the BG panel may be switched to it; several may be.
+ * [authoritative] — it is the one every value on screen comes from; exactly one is, and it is always
+ * also active.
+ */
+data class RecordedSource(
+    val id: String,
+    val name: String,
+    val active: Boolean,
+    val authoritative: Boolean,
+)
 
 /**
- * A recorded sensor, with a ✕ on the ones that are not being read from — the list only ever grows,
- * and a sensor thrown away months ago has no reason to stay on it. The ACTIVE source has no ✕: it is
- * where every value on screen comes from, and taking it off its own list is not an offer worth making.
+ * A recorded sensor in one of three states, each with the single action it affords: **main** (the
+ * authoritative one — no action, and no ✕, because taking the source of every value on screen off its
+ * own list is not an offer worth making), **use** (being read but not believed — press to promote),
+ * and **read** (known but not being read — press to start).
+ *
+ * The list only ever grows, so a sensor thrown away months ago keeps its ✕.
  */
 @Composable
-private fun RecordedSourceRow(src: RecordedSource, onRequestRemove: (RecordedSource) -> Unit) {
+private fun RecordedSourceRow(
+    src: RecordedSource,
+    onMakeAuthoritative: (String) -> Unit,
+    onStartReading: (String) -> Unit,
+    onRequestRemove: (RecordedSource) -> Unit,
+) {
     val haptics = rememberT1dmHaptics()
     Row(
-        Modifier.fillMaxWidth(),
+        Modifier
+            .fillMaxWidth()
+            .hapticClickable(HapticEvent.Confirm, enabled = !src.authoritative) {
+                if (src.active) onMakeAuthoritative(src.id) else onStartReading(src.id)
+            },
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             src.name,
             style = MaterialTheme.typography.bodyMedium,
-            fontWeight = if (src.active) FontWeight.SemiBold else FontWeight.Normal,
+            fontWeight = if (src.authoritative) FontWeight.SemiBold else FontWeight.Normal,
             modifier = Modifier.weight(1f),
         )
-        if (!src.active) {
+        Text(
+            when {
+                src.authoritative -> "main"
+                src.active -> "use"
+                else -> "read"
+            },
+            style = MaterialTheme.typography.labelMedium,
+            color = if (src.authoritative) MaterialTheme.colorScheme.primary
+            else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+        )
+        if (!src.authoritative) {
             IconButton(
                 onClick = { haptics.perform(HapticEvent.Tap); onRequestRemove(src) },
                 // The glyph is the whole label otherwise, and no TTS voice speaks U+2715 — the button

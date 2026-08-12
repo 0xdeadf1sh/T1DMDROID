@@ -18,15 +18,21 @@ class AppCgmRepository(private val repository: T1dmRepository) : CgmRepository {
 
     override suspend fun upsertSource(
         descriptor: CgmSourceDescriptor,
-        active: Boolean,
+        authoritative: Boolean,
         lastSeenMs: Long,
-    ) = repository.upsertSource(descriptor, active, lastSeenMs)
+    ) = repository.upsertSource(descriptor, authoritative, lastSeenMs)
 
-    override suspend fun setActive(id: CgmSourceId) = repository.setActiveSource(id)
+    override suspend fun setAuthoritative(id: CgmSourceId) = repository.setAuthoritativeSource(id)
+
+    override suspend fun activate(id: CgmSourceId) = repository.activateSource(id)
+
+    override suspend fun deactivate(id: CgmSourceId) = repository.deactivateSource(id)
 
     override suspend fun loadSources(): List<CgmSourceDescriptor> = repository.observeSources().first()
 
-    override suspend fun activeSourceId(): CgmSourceId? = repository.activeSourceId()
+    override suspend fun authoritativeSourceId(): CgmSourceId? = repository.authoritativeSourceId()
+
+    override suspend fun activeSourceIds(): List<CgmSourceId> = repository.activeSourceIds()
 
     override suspend fun setWarmupWindowMin(id: CgmSourceId, minutes: Int) =
         repository.setSourceWarmupWindowMin(id, minutes)

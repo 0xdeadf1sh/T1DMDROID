@@ -290,10 +290,52 @@ class MigrationTest {
     }
 
     @Test
-    fun migrate1To13_fullChain() {
+    fun migrate13To14_authorityIsRenamedAndActivitySeededFromIt() {
+        // v14 (several sensors may be read at once): `active` is RENAMED to `authoritative` and a new
+        // `active` takes the name, seeded from it. The seeding is the whole of the migration's
+        // judgement — the sensor that was believed is also, and still, the one being read — and the
+        // direction matters: seeding every known sensor active instead would have the app open a link
+        // to every sensor it has ever met on the next start.
+        helper.createDatabase(13).use { db ->
+            db.execSQL(
+                "INSERT INTO `cgm_source` " +
+                    "(`sourceId`,`vendorId`,`sensorModelId`,`advertName`,`displayName`,`serialSuffix`," +
+                    "`active`,`warmupWindowMin`,`addedAtMs`,`lastSeenMs`,`hidden`) " +
+                    "VALUES ('aidexx:BELIEVED','aidexx','aidexx:x',NULL,'n','s',1,60,1,1,0)",
+            )
+            db.execSQL(
+                "INSERT INTO `cgm_source` " +
+                    "(`sourceId`,`vendorId`,`sensorModelId`,`advertName`,`displayName`,`serialSuffix`," +
+                    "`active`,`warmupWindowMin`,`addedAtMs`,`lastSeenMs`,`hidden`) " +
+                    "VALUES ('aidexx:RETIRED','aidexx','aidexx:x',NULL,'n2','s2',0,60,2,2,1)",
+            )
+        }
+
+        val db = helper.runMigrationsAndValidate(14, listOf(MigrationRunner.MIGRATION_13_14))
+
+        // The old flag's meaning travelled to the new name, row for row.
+        assertEquals(1, countRows(db, "SELECT COUNT(*) FROM `cgm_source` WHERE `authoritative` = 1"))
+        assertEquals(
+            1,
+            countRows(db, "SELECT COUNT(*) FROM `cgm_source` WHERE `authoritative` = 1 AND `sourceId` = 'aidexx:BELIEVED'"),
+        )
+        // authoritative ⇒ active, and only that row.
+        assertEquals(1, countRows(db, "SELECT COUNT(*) FROM `cgm_source` WHERE `active` = 1"))
+        assertEquals(
+            1,
+            countRows(db, "SELECT COUNT(*) FROM `cgm_source` WHERE `active` = 1 AND `sourceId` = 'aidexx:BELIEVED'"),
+        )
+        // Everything else on both rows is untouched — a rename must not disturb a retired sensor.
+        assertEquals(1, countRows(db, "SELECT COUNT(*) FROM `cgm_source` WHERE `hidden` = 1 AND `sourceId` = 'aidexx:RETIRED'"))
+        assertEquals(2, countRows(db, "SELECT COUNT(*) FROM `cgm_source`"))
+        db.close()
+    }
+
+    @Test
+    fun migrate1To14_fullChain() {
         helper.createDatabase(1).close()
         helper.runMigrationsAndValidate(
-            13,
+            14,
             listOf(
                 MigrationRunner.MIGRATION_1_2,
                 MigrationRunner.MIGRATION_2_3,
@@ -307,6 +349,7 @@ class MigrationTest {
                 MigrationRunner.MIGRATION_10_11,
                 MigrationRunner.MIGRATION_11_12,
                 MigrationRunner.MIGRATION_12_13,
+                MigrationRunner.MIGRATION_13_14,
             ),
         )
     }

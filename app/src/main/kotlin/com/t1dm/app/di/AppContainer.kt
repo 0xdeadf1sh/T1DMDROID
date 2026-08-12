@@ -176,6 +176,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
@@ -1047,6 +1048,42 @@ class AppContainer(context: Context) {
         horizonSteps: Int,
         nQuantiles: Int,
     ): List<Double>? {
+        val delta = eligibleDelta(calibrations, modelId, horizonSteps, nQuantiles) ?: return null
+        return nativeCore.applyQuantileConformal(bandsMgdl, delta)
+    }
+
+    /**
+     * [calibratedBands] for a whole sweep of ONE model's fans at once — the BG panel's hindsight
+     * surface, which draws a day of stored forecasts and would otherwise cross the FFI ~288 times per
+     * rebuild. [fansMgdl] is fan-major, `nFans · horizonSteps · nQuantiles`.
+     *
+     * Eligibility is decided once for the batch, on the same three rules [calibratedBands] applies —
+     * so the sweep and the live fan beside it are drawn on the same basis, or neither is.
+     */
+    fun calibratedFanBatch(
+        calibrations: Map<String, BandCalibration>,
+        modelId: String,
+        fansMgdl: () -> List<Double>,
+        horizonSteps: Int,
+        nQuantiles: Int,
+    ): List<Double>? {
+        // Eligibility BEFORE the batch is built: [fansMgdl] flattens a day of stored fans, and on a
+        // model with no fitted correction — the common case — that work would be discarded.
+        val delta = eligibleDelta(calibrations, modelId, horizonSteps, nQuantiles) ?: return null
+        return nativeCore.applyQuantileConformalBatch(fansMgdl(), delta)
+    }
+
+    /**
+     * [modelId]'s stored delta when it is entitled to be drawn, else null — the eligibility half of
+     * the §8.4 apply, held in one place because both applies must answer it identically. A fan
+     * corrected on one surface and raw on another is the defect this is factored to prevent.
+     */
+    private fun eligibleDelta(
+        calibrations: Map<String, BandCalibration>,
+        modelId: String,
+        horizonSteps: Int,
+        nQuantiles: Int,
+    ): List<Double>? {
         val cal = calibrations[modelId] ?: return null
         // A delta fitted at a different horizon or fan width is not this forecast's correction. The
         // core would reject the length mismatch anyway; refusing here says why without an FFI hop.
@@ -1054,8 +1091,9 @@ class AppContainer(context: Context) {
         // Nor is a delta whose evidence has gone stale. The row is kept rather than deleted — the
         // drill-down still has to be able to say what lapsed and when — but it stops being drawn.
         if (cal.expiredAt(System.currentTimeMillis())) return null
-        return nativeCore.applyQuantileConformal(bandsMgdl, cal.delta)
+        return cal.delta
     }
+
 
     /**
      * [modelId]'s OWN forecast horizon in minutes, or null when it cannot be established.
@@ -2071,7 +2109,7 @@ class AppContainer(context: Context) {
         }
     }
 
-    /** §3.6-D anchor facts from the active source's recent grid readings (fail-closed: null ⇒ no signal). */
+    /** §3.6-D anchor facts from the authoritative source's recent grid readings (fail-closed: null ⇒ no signal). */
     private val anchorSource = AnchorInfoSource { nowMs -> buildAnchorInfo(nowMs) }
 
     /** §3.6-F logged-doses-only IOB/COB snapshot (fail-closed: null ⇒ store failure). */
@@ -2294,7 +2332,7 @@ class AppContainer(context: Context) {
         if (units.isFinite() && units > 0.0) logBolus(units) else null
 
     private suspend fun buildAnchorInfo(nowMs: Long): AnchorInfo? {
-        val srcId = repository.activeSourceId() ?: return null
+        val srcId = repository.authoritativeSourceId() ?: return null
         val recent = repository.recentReadings(srcId, 36) // ~3 h of 5-min grid context
         if (recent.isEmpty()) return null
         val lastMeasured = recent
@@ -2673,9 +2711,73 @@ class AppContainer(context: Context) {
 
     // ─── Dashboard read models (DB-backed so they survive process death) ──────────────────────
 
-    val activeSource: Flow<CgmSourceDescriptor?> = repository.observeActiveSource()
+    val authoritativeSource: Flow<CgmSourceDescriptor?> = repository.observeAuthoritativeSource()
 
     val allSources: Flow<List<CgmSourceDescriptor>> = repository.observeSources()
+
+    /**
+     * The sensor the BG panel is LOOKING at, when the user has stepped off the authoritative one.
+     * Null means "whichever is authoritative", which is why the cycle passes through it rather than
+     * around it.
+     *
+     * In memory and deliberately not persisted: looking at a non-authoritative sensor withholds the
+     * forecast and marks the panel view-only, and a mode that withholds the forecast must not survive
+     * a restart silently. A cold start always looks at the sensor being believed.
+     */
+    private val viewedSourceId = MutableStateFlow<com.t1dm.core.model.CgmSourceId?>(null)
+
+    /**
+     * The descriptor the BG panel draws: the viewed source when one is chosen and still active, else
+     * the authoritative one.
+     *
+     * The `active` re-check is what makes a stale choice self-correcting — a sensor deactivated or
+     * removed while being looked at falls back to the authoritative one on the next emission rather
+     * than leaving the panel on a source nothing is reading.
+     */
+    val viewedSource: Flow<CgmSourceDescriptor?> =
+        combine(viewedSourceId, authoritativeSource, repository.observeActiveSources()) { viewed, auth, active ->
+            viewed?.let { id -> active.firstOrNull { it.id == id } } ?: auth
+        }.distinctUntilChanged()
+
+    /**
+     * True while the panel is looking at a sensor that is not the one being believed. The forecast
+     * overlay, the hindsight sweep and the rolled fan are all withheld then — none of them describes
+     * this sensor, because none of them was computed from it.
+     *
+     * Derived from [viewedSource] rather than from [viewedSourceId], so it inherits that flow's
+     * fall-back to the authoritative source. Read off the raw id it would stay true forever once the
+     * viewed sensor was deactivated or removed: the id lingers, the panel correctly falls back to
+     * drawing the authoritative trace, and the forecast would be withheld from it with nothing on
+     * screen explaining why and no way to clear it short of restarting the app.
+     */
+    val viewingNonAuthoritative: Flow<Boolean> =
+        combine(viewedSource, authoritativeSource) { viewed, auth ->
+            viewed != null && auth != null && viewed.id != auth.id
+        }.distinctUntilChanged()
+
+    /**
+     * Bottom-bar tap: step to the next ACTIVE sensor, in the order the phone met them, wrapping
+     * through the authoritative one.
+     *
+     * Read straight off the registry's own StateFlows rather than collected: this runs on a tap, needs
+     * the set as it is at that instant, and a suspend point here would put a frame between the tap and
+     * the trace changing. Fewer than two active sensors means there is nothing to step to, and the
+     * view resets rather than no-ops — that is the state where a stale choice would otherwise strand
+     * the panel off the authoritative source with no way back.
+     */
+    fun cycleViewedSource() {
+        val order = registry.sources.value.map { it.id }.filter { it in registry.activeIds.value }
+        if (order.size < 2) {
+            viewedSourceId.value = null
+            return
+        }
+        val authoritativeId = registry.authoritative.value
+        val current = viewedSourceId.value ?: authoritativeId
+        val next = order[(order.indexOf(current) + 1).mod(order.size)]
+        // Null rather than the id itself when the step lands back on the believed sensor, so the two
+        // ways of saying "looking at the authoritative one" never both exist.
+        viewedSourceId.value = if (next == authoritativeId) null else next
+    }
 
     /**
      * How far back the BG panel has loaded, as an absolute instant. Moves BACKWARDS only, and only
@@ -2703,9 +2805,9 @@ class AppContainer(context: Context) {
     }
 
     /**
-     * The panel's window over the active source's MODEL CLASS — one continuous history across every
+     * The panel's window over the VIEWED source's MODEL CLASS — one continuous history across every
      * sensor of that model, collapsed to one reading per grid slot, a real measurement outranking a
-     * warm-up or interpolated one and the active source breaking the tie. Server-synced history is
+     * warm-up or interpolated one and the viewed source breaking the tie. Server-synced history is
      * gap-filled into `cgm_reading` by the catch-up merge (T1dmRepository.mergeServerSample), so it
      * flows through here to the graph — and through recentBgSeries to the model — automatically.
      *
@@ -2715,17 +2817,17 @@ class AppContainer(context: Context) {
      * floored at the first reading on screen — no earlier logged meal or dose reachable either,
      * though neither had ever been stored per source. Widening the DRAWN history fixes both without
      * touching what is believed: [latestReading], the alarm engine, the `sample` projection and the
-     * model's own context all still read the one active source (§3.1).
+     * model's own context all still read the one authoritative source (§3.1).
      */
     val dashboardReadings: Flow<List<CgmReading>> =
-        combine(activeSource, historyLoadedFromMs) { d, from -> d to from }
+        combine(viewedSource, historyLoadedFromMs) { d, from -> d to from }
             .flatMapLatest { (d, from) ->
                 if (d == null) flowOf(emptyList())
                 else repository.observeReadingsForSensorModel(d.sensorModelId, d.id, from, Long.MAX_VALUE)
             }
 
     /**
-     * Where the record actually begins for the active source's class, or null while it holds nothing
+     * Where the record actually begins for the viewed source's class, or null while it holds nothing
      * — the floor the graph's pannable domain uses, INSTEAD of the first reading it happens to hold.
      *
      * Without this the window above would re-create the defect it was written to fix: the domain
@@ -2733,14 +2835,14 @@ class AppContainer(context: Context) {
      * unreachable again — for a different reason, but just as unreachable. One aggregate, so knowing
      * the record goes back a year costs nothing like carrying a year.
      */
-    val historyFloorMs: Flow<Long?> = activeSource.flatMapLatest { d ->
+    val historyFloorMs: Flow<Long?> = viewedSource.flatMapLatest { d ->
         if (d == null) flowOf(null) else repository.observeOldestTsForSensorModel(d.sensorModelId)
     }
 
     /** The active source's trailing [SMOOTHING_PREVIEW_HOURS] of mg/dL, oldest→newest — the sample the
      *  Graph-settings BG-input-filter miniature redraws at each detent. Bounded at the QUERY rather
      *  than by tailing [dashboardReadings]: a settings screen has no business scanning the whole store. */
-    val smoothingPreviewMgdl: Flow<DoubleArray> = activeSource.flatMapLatest { d ->
+    val smoothingPreviewMgdl: Flow<DoubleArray> = authoritativeSource.flatMapLatest { d ->
         if (d == null) flowOf(emptyList()) else {
             val from = System.currentTimeMillis() - SMOOTHING_PREVIEW_HOURS * 3_600_000L
             repository.observeReadings(d.id, from, Long.MAX_VALUE)
@@ -2770,7 +2872,7 @@ class AppContainer(context: Context) {
     /** Remove one stroke, whole: the eraser and undo both work in units of a stroke, never of geometry. */
     suspend fun deletePaintStroke(id: Long) = repository.deletePaintStroke(id)
 
-    val latestReading: Flow<CgmReading?> = activeSource.flatMapLatest { d ->
+    val latestReading: Flow<CgmReading?> = authoritativeSource.flatMapLatest { d ->
         if (d == null) flowOf(null) else repository.observeLatestReading(d.id)
     }
 
@@ -2785,7 +2887,7 @@ class AppContainer(context: Context) {
      * the store reads hop to IO, so this never touches the main thread.
      *
      * All three arms are CHANGE SIGNALS — this flow reads nothing from them, it only recomputes. Two
-     * of them used to arrive as whole tables: [dashboardReadings] is every reading the active source
+     * of them used to arrive as whole tables: [dashboardReadings] is every reading the viewed source
      * has ever taken, and `observeSamples(0, MAX)` is the entire wide projection, both never pruned,
      * both re-queried and re-materialised on every reading, and both discarded here by `.map { }`.
      * [latestReading] and [T1dmRepository.observeSampleWrites] are the one-row and one-scalar
@@ -2840,7 +2942,7 @@ class AppContainer(context: Context) {
      *  subscribes, because a track is cut once and a reading arriving mid-run must not rebuild the
      *  ground under the car. */
     suspend fun gameReadings(fromMs: Long): List<CgmReading> {
-        val source = repository.observeActiveSource().first() ?: return emptyList()
+        val source = repository.observeAuthoritativeSource().first() ?: return emptyList()
         return repository.observeReadingsForSensorModel(source.sensorModelId, source.id, fromMs, Long.MAX_VALUE).first()
     }
 
@@ -2883,7 +2985,7 @@ class AppContainer(context: Context) {
         }
     }
 
-    /** BLE signal strengths (item 20): CGM RSSI from the active source's last advert, and the watch
+    /** BLE signal strengths (item 20): CGM RSSI from the authoritative source's last advert, and the watch
      *  RSSI now sourced from the `:watch` periodic `readRemoteRssi` poll (Phase 7C — fills the null the
      *  7A BG panel left). Null on either side ⇒ "no signal" in the WCH/CGM lights. */
     val bgSignals: Flow<BgSignals> by lazy {
@@ -2949,7 +3051,7 @@ class AppContainer(context: Context) {
      * one is sensor-sourced.
      */
     val sensorWarmupEndMs: Flow<Long?> by lazy {
-        combine(latestReading, activeSource) { latest, active ->
+        combine(latestReading, authoritativeSource) { latest, active ->
             if (latest == null || latest.flag != ReadingFlag.WARMUP) return@combine null
             val mfs = latest.minFromStart ?: return@combine null
             val window = active?.warmupWindowMin ?: return@combine null
@@ -2967,13 +3069,25 @@ class AppContainer(context: Context) {
      * forecast waits for, a wholly separate concept that happens to share a word.
      */
     suspend fun setSensorWarmupMin(minutes: Int) {
-        val id = repository.activeSourceId() ?: return
+        val id = repository.authoritativeSourceId() ?: return
         registry.setWarmupWindowMin(id, minutes)
     }
 
     /** Settings → CGM source "Remove" — take a retired sensor off the recorded list. A display flag:
      *  the source stays on record, so its readings stay in the BG panel's model-wide history. */
     fun hideCgm(id: String) = registry.hide(com.t1dm.core.model.CgmSourceId(id))
+
+    /** Settings → CGM source: make a sensor the one every value on screen is derived from. It starts
+     *  being read if it was not; the sensor it replaces keeps being read, so promoting is not a
+     *  disconnection. */
+    fun makeAuthoritativeCgm(id: String) =
+        registry.setAuthoritative(com.t1dm.core.model.CgmSourceId(id))
+
+    /** Settings → CGM source: start reading a sensor. Additive — nothing else stops. */
+    fun activateCgm(id: String) = registry.activate(com.t1dm.core.model.CgmSourceId(id))
+
+    /** Settings → CGM source: stop reading a sensor. Refused for the authoritative one. */
+    fun deactivateCgm(id: String) = registry.deactivate(com.t1dm.core.model.CgmSourceId(id))
 
     private fun serverLight(sync: SyncStatus, profile: ServerProfile?): ReachLight = when {
         profile == null -> ReachLight(LinkHealth.OFF, "no server profile configured")
