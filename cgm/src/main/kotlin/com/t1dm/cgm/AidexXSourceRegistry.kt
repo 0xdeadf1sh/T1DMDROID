@@ -105,11 +105,17 @@ class AidexXSourceRegistry(
     /**
      * Visible for the service and for tests: process one captured advert end-to-end.
      *
-     * A recognised sensor that is NOT active is adopted — so it appears in the list the user picks
-     * from — and then dropped without being decoded or stored. One passive scan hears every sensor in
-     * range whatever the user asked for, so this is the only place the passive path can honour
-     * `active` at all, and without it §7.1's "an active source's readings are retained" would be true
-     * on the connected branch and false here. Adoption itself is cheap and idempotent.
+     * **Every recognised advert is decoded and stored, whatever the source's `active` flag says.**
+     * That is a deliberate difference from the connected branch, not drift. There, `active` gates a
+     * held GATT link and costs battery; here one passive scan hears every sensor in range and the
+     * marginal cost of keeping what it already received is a row. Dropping it instead would throw
+     * away the only copy of a reading nothing else in the system heard — and on an upgrade, where
+     * `MIGRATION_13_14` seeds `active` from the single pre-v14 authoritative flag, it would silently
+     * end the recording of a second sensor a user was already wearing.
+     *
+     * So on this branch `active` means what the BG panel can be switched to and what the list calls
+     * live, and `authoritative` alone decides what is believed. §7.1 still holds: an active source's
+     * readings are retained. This branch simply also retains the others'.
      */
     suspend fun onRawAdvert(raw: RawAdvert) {
         val payload = AdStructureParser.manufacturerPayload(raw.adBytes)
@@ -118,9 +124,7 @@ class AidexXSourceRegistry(
             manufacturerId = CgmConstants.MANUFACTURER_ID,
             manufacturerData = payload ?: ByteArray(0),
         ) ?: return
-        val source = adopt(id)
-        if (id !in _activeIds.value) return
-        source.ingest(raw)
+        adopt(id).ingest(raw)
     }
 
     override fun setAuthoritative(id: CgmSourceId) {
@@ -158,9 +162,11 @@ class AidexXSourceRegistry(
      * that matters is the persisted one. [_sources] is marked alongside it to keep this registry's own
      * view honest and the two branches' registries the same shape, not because anything reads it here.
      *
-     * The live [AidexXSource] is deliberately left in place — it costs nothing idle and is what a
-     * later re-activation would rebuild — but the source stops being READ: [onRawAdvert] drops its
-     * adverts once it is out of [activeIds], so nothing further is decoded or stored for it.
+     * The live [AidexXSource] is deliberately left in place: on this branch a removed sensor still
+     * advertising keeps being decoded and stored exactly as before ([onRawAdvert]). It is off the
+     * lists, no longer among the sensors the BG panel may be switched to, and never was
+     * authoritative — but its readings are not thrown away, because this scan is the only thing that
+     * heard them.
      *
      * The AUTHORITATIVE source is refused. The ✕ is drawn only on the other rows, but the first-ever
      * advert adopts a source on its own, so the id the user pressed may be it by the time this runs.
