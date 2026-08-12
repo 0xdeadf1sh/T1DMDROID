@@ -176,6 +176,20 @@ interface CgmReadingDao {
     @Query("SELECT * FROM cgm_reading WHERE sourceId = :sourceId AND tsMs = :ts LIMIT 1")
     suspend fun byTs(sourceId: String, ts: Long): CgmReadingEntity?
 
+    /**
+     * Does ANY source in [sourceIds] already hold a reading for [ts]?
+     *
+     * The membership test a server catch-up must use, and it spans the sensor MODEL CLASS rather than
+     * one source for the same reason [SampleDao.bgSlotsMissingReading] does: `sample` was authored by
+     * whichever source held authority at the time, so asking per source makes every sensor
+     * replacement re-import the whole record under the new sensor's id. `EXISTS` rather than a row —
+     * this runs once per catch-up slot and the row itself is never read.
+     */
+    @Query(
+        "SELECT EXISTS(SELECT 1 FROM cgm_reading WHERE sourceId IN (:sourceIds) AND tsMs = :ts)",
+    )
+    suspend fun existsForSources(sourceIds: List<String>, ts: Long): Boolean
+
     /** Batch gap-fill for the sample→reading reconcile (server history that predates this build). */
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAll(readings: List<CgmReadingEntity>)

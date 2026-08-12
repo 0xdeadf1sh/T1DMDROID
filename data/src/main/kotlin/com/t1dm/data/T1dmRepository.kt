@@ -1102,8 +1102,22 @@ class T1dmRepository(
             // reading (its provenance/flag is authoritative), and enqueue NO ingest (this data
             // originated from the phone; re-pushing would echo-loop). The §3.6 alarm/loss-of-signal
             // path is readingBus-driven (live BLE), never the DB, so a DB write cannot perturb it.
+            // The "already have it" test spans the authoritative source's whole MODEL CLASS, matching
+            // [reconcileReadingsFromSamples]. Asked per source it disagreed with that sibling pass, and
+            // the disagreement was the bug: `sample` was authored by whichever sensor held authority at
+            // the time, so after a sensor change every historical slot looked missing to the NEW source
+            // and a full resync re-imported the entire record under its id — a second copy of the whole
+            // history, from an ordinary Settings → Save.
             val authoritative = sources.authoritativeSourceId()
-            if (authoritative != null && patch.bgMgdl != null && readings.byTs(authoritative, patch.ts) == null) {
+            val klass = authoritative?.let { sources.byId(it)?.sensorModelId }
+            val siblings = when {
+                authoritative == null -> emptyList()
+                klass == null -> listOf(authoritative)
+                else -> sources.idsForSensorModel(klass)
+            }
+            if (authoritative != null && patch.bgMgdl != null &&
+                !readings.existsForSources(siblings, patch.ts)
+            ) {
                 readings.upsert(
                     CgmReadingEntity(
                         sourceId = authoritative,
