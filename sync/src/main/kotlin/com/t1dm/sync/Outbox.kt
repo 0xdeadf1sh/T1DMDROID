@@ -20,6 +20,10 @@ internal val OutboxKind.priority: Int
         OutboxKind.ALERT -> 7
         OutboxKind.DOSE -> 6
         OutboxKind.MEAL -> 5
+        // Below INGEST: a descriptor only names a label the readings already carry, so a reading
+        // must never wait behind it. The server accepts a label for a source it has not been told
+        // about, which is what makes arriving late harmless.
+        OutboxKind.CGM_SOURCE -> 7
         OutboxKind.INGEST -> 4
         OutboxKind.STATS -> 3
         OutboxKind.PREDICTIONS -> 2
@@ -65,6 +69,8 @@ internal const val INGEST_DEDUP_PREFIX = "ingest:sample:"
 fun mealDedupKey(clientId: String): String = "meal:$clientId"
 
 fun doseDedupKey(clientId: String): String = "dose:$clientId"
+
+fun cgmSourceDedupKey(id: String): String = "cgmsrc:$id"
 
 /**
  * Enqueue-on-write producer API (Phase 3). The integrate agent calls these from the
@@ -154,6 +160,22 @@ class OutboxEnqueuer(private val repo: OutboxSink) {
         payload = OutboxRequest("PUT", "/v1/meals", SyncJson.encodeToString(listOf(ev))).encode(),
         nowMs = nowMs,
         notBeforeMs = if (holdMs > 0L) nowMs + holdMs else 0L,
+    )
+
+    /**
+     * A CGM sensor descriptor — `PUT /v1/cgm-sources` (contract 0.4.0), so the server can resolve the
+     * opaque `bg_source` its samples carry to a family, a model and a serial.
+     *
+     * Deduped on the source id, not on a body: a descriptor is a description of one physical object,
+     * and the newest one the phone has is the only one worth sending. `REPLACE` semantics are not
+     * needed — a pending row for this id is already going to carry whatever is current at drain time
+     * for the fields that matter, and the id itself never changes.
+     */
+    suspend fun enqueueCgmSource(src: CgmSourceDto, nowMs: Long): Long = repo.enqueue(
+        kind = OutboxKind.CGM_SOURCE,
+        dedupKey = cgmSourceDedupKey(src.id),
+        payload = OutboxRequest("PUT", "/v1/cgm-sources", SyncJson.encodeToString(listOf(src))).encode(),
+        nowMs = nowMs,
     )
 
     /** A logged dose (bolus gamma / basal Bateman) as a PK action curve — `PUT /v1/doses`. [holdMs] is

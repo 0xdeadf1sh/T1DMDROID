@@ -37,7 +37,7 @@ enum class DoseKind { BOLUS, BASAL }
  * name it does not know, and one undecodable row poisons every later drain. `NOTE` left this way in
  * v9; see `MigrationRunner.MIGRATION_8_9`.
  */
-enum class OutboxKind { ALERT, DOSE, MEAL, INGEST, STATS, PREDICTIONS, SERIES, PHOTO }
+enum class OutboxKind { ALERT, DOSE, MEAL, INGEST, STATS, PREDICTIONS, SERIES, PHOTO, CGM_SOURCE }
 
 /** Lifecycle of an outbox row across drain attempts. */
 enum class OutboxState { PENDING, INFLIGHT, FAILED }

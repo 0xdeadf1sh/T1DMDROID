@@ -301,7 +301,7 @@ class AppContainer(context: Context) {
     val pubsRepository: PubsRepository by lazy { PubsRepository(BlueskyClient(dispatchers), dispatchers) }
 
     /** The `:cgm` persistence port bound onto the Room-backed [T1dmRepository]. */
-    private val cgmRepository by lazy { AppCgmRepository(repository) }
+    private val cgmRepository by lazy { AppCgmRepository(repository, outboxEnqueuer) }
 
     val plugin: AidexXPlugin by lazy { AidexXPlugin(nativeCore, cgmRepository) }
 
@@ -3080,6 +3080,10 @@ class AppContainer(context: Context) {
     /** Settings → CGM source: make a sensor the one every value on screen is derived from. It starts
      *  being read if it was not; the sensor it replaces keeps being read, so promoting is not a
      *  disconnection. */
+    /** The authoritative sensor changed: drop the forecast, which was conditioned on the outgoing
+     *  sensor's history and describes nothing beside the incoming sensor's glucose. */
+    fun invalidateInferenceOnSourceChange() = inferenceController.onCgmSourceChanged()
+
     fun makeAuthoritativeCgm(id: String) =
         registry.setAuthoritative(com.t1dm.core.model.CgmSourceId(id))
 

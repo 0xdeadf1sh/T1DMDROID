@@ -157,6 +157,17 @@ data class IngestDto(
     val updated_at: Long,
 )
 
+/** A CGM sensor descriptor — `PUT /v1/cgm-sources` (contract 0.4.0). [id] is the opaque label the
+ *  samples carry; the rest is descriptive and each field may be absent. */
+@Serializable
+data class CgmSourceDto(
+    val id: String,
+    val family: String? = null,
+    val model: String? = null,
+    val serial: String? = null,
+    val updated_at: Long = 0,
+)
+
 @Serializable
 data class IngestAck(val ok: Boolean = false, val ts: Long = 0)
 
