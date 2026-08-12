@@ -301,6 +301,11 @@ class StubNativeCore : NativeCore {
         delta: List<Double>,
     ): List<Double>? = null
 
+    override fun applyQuantileConformalBatch(
+        fansMgdl: List<Double>,
+        delta: List<Double>,
+    ): List<Double>? = null
+
     // ── The classical baseline ──────────────────────────────────────────────────────
     // The ridge solve, the causal on-board scatter and the residual-quantile band all live in the
     // crate. A Kotlin reproduction would be a second numeric authority for the model the neural one

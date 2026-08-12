@@ -327,6 +327,7 @@ class RollingForecasterAlignmentTest {
         // of its rails reaches for a calibrated one this must FAIL the alignment rather than throw
         // somewhere unrelated. `null` is what every caller falls back to — the raw fan.
         override fun applyQuantileConformal(bandsMgdl: List<Double>, delta: List<Double>): List<Double>? = null
+        override fun applyQuantileConformalBatch(fansMgdl: List<Double>, delta: List<Double>): List<Double>? = null
         override fun defaultCarTuning(): CarTuning = unused()
         override fun createGameWorld(terrain: TerrainSpec, tuning: CarTuning): GameWorld = unused()
     }

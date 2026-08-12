@@ -346,20 +346,87 @@ pub fn apply_quantile_conformal(
             bands_mgdl.len()
         )));
     }
-    if !delta.iter().all(|v| v.is_finite()) || !bands_mgdl.iter().all(|v| v.is_finite()) {
-        return Err(bad("fan or delta carries a non-finite value".into()));
+    if !bands_mgdl.iter().all(|v| v.is_finite()) {
+        return Err(bad("fan carries a non-finite value".into()));
     }
-    let steps = bands_mgdl.len() / nq;
-    // The one invariant a caller cannot be trusted with: a non-zero median column would move the
-    // point forecast the dose calculator scores off, and every band drawn around it would still
-    // look well-formed.
-    if (0..steps).any(|s| delta[s * nq + median_idx] != 0.0) {
-        return Err(bad("delta moves the median column".into()));
-    }
-    if delta.iter().all(|&d| d == 0.0) {
+    let (steps, identity) = check_delta(&delta, median_idx, nq)?;
+    if identity {
         return Ok(bands_mgdl); // §8.4: an all-zero delta is the identity.
     }
     Ok(apply_delta(&bands_mgdl, &delta, steps, nq, median_idx))
+}
+
+/// [`apply_quantile_conformal`] for many fans of one shape in a single call (§8.4).
+///
+/// `fans_mgdl` is `n_fans · steps · nq`, fan-major: fan `i` occupies `[i·steps·nq, (i+1)·steps·nq)`,
+/// each in the step-major ascending-τ layout the single-fan apply takes. One `delta` corrects every
+/// fan, which is the only shape a caller wants — a delta is fitted per model id, so a batch is one
+/// model's forecasts.
+///
+/// It exists for the BG panel's hindsight sweep, which recalibrates a day of stored fans at once:
+/// ~288 of them, at one FFI crossing per sweep instead of one per fan. The delta's own invariants
+/// are checked once for the batch rather than re-checked against every fan.
+///
+/// Fail-closed on the same rules as the single-fan apply, and for the WHOLE batch: a shape that does
+/// not divide, a non-finite value anywhere, or a delta that moves the median yields `Err`. A partial
+/// result would leave the caller drawing some fans corrected and some raw — two uncertainties under
+/// one name, which is exactly what the caller called this to avoid.
+#[uniffi::export]
+pub fn apply_quantile_conformal_batch(
+    fans_mgdl: Vec<f64>,
+    delta: Vec<f64>,
+) -> Result<Vec<f64>, CoreError> {
+    let nq = QUANTILE_LEVELS.len();
+    let bad = |reason: String| CoreError::Internal { reason };
+    let median_idx = tau_index(MEDIAN_TAU)
+        .ok_or_else(|| bad(format!("MEDIAN_TAU {MEDIAN_TAU} is not a fan level")))?;
+    let (steps, identity) = check_delta(&delta, median_idx, nq)?;
+    let fan_len = delta.len();
+    if fans_mgdl.is_empty() || fans_mgdl.len() % fan_len != 0 {
+        return Err(bad(format!(
+            "batch length {} is not a whole number of {fan_len}-value fans",
+            fans_mgdl.len()
+        )));
+    }
+    if !fans_mgdl.iter().all(|v| v.is_finite()) {
+        return Err(bad("batch carries a non-finite value".into()));
+    }
+    if identity {
+        return Ok(fans_mgdl); // §8.4: an all-zero delta is the identity.
+    }
+    let mut out = vec![0.0f64; fans_mgdl.len()];
+    for (fan, dst) in fans_mgdl
+        .chunks_exact(fan_len)
+        .zip(out.chunks_exact_mut(fan_len))
+    {
+        apply_delta_into(dst, fan, &delta, steps, nq, median_idx);
+    }
+    Ok(out)
+}
+
+/// The `delta`-side invariants of §8.4, checked once and shared by both applies: a length that is a
+/// whole number of `nq`-wide rows, every value finite, and a median column that is exactly zero.
+/// Returns the row count and whether the delta is the identity.
+///
+/// The median check is the one invariant a caller cannot be trusted with: a non-zero median column
+/// would move the point forecast the dose calculator scores off, and every band drawn around it
+/// would still look well-formed.
+fn check_delta(delta: &[f64], median_idx: usize, nq: usize) -> Result<(usize, bool), CoreError> {
+    let bad = |reason: String| CoreError::Internal { reason };
+    if delta.is_empty() || delta.len() % nq != 0 {
+        return Err(bad(format!(
+            "delta length {} is not a multiple of {nq}",
+            delta.len()
+        )));
+    }
+    if !delta.iter().all(|v| v.is_finite()) {
+        return Err(bad("delta carries a non-finite value".into()));
+    }
+    let steps = delta.len() / nq;
+    if (0..steps).any(|s| delta[s * nq + median_idx] != 0.0) {
+        return Err(bad("delta moves the median column".into()));
+    }
+    Ok((steps, delta.iter().all(|&d| d == 0.0)))
 }
 
 /// The apply itself, once both arrays are known well-formed. Kept separate so the fit can score
@@ -372,6 +439,20 @@ fn apply_delta(
     median_idx: usize,
 ) -> Vec<f64> {
     let mut out = vec![0.0f64; bands.len()];
+    apply_delta_into(&mut out, bands, delta, steps, nq, median_idx);
+    out
+}
+
+/// [`apply_delta`] writing into a caller-owned slice, so a batch can fill one output buffer instead
+/// of allocating a `Vec` per fan. `out` and `bands` are both `steps · nq`.
+fn apply_delta_into(
+    out: &mut [f64],
+    bands: &[f64],
+    delta: &[f64],
+    steps: usize,
+    nq: usize,
+    median_idx: usize,
+) {
     for s in 0..steps {
         let row = s * nq;
         for k in 0..nq {
@@ -385,7 +466,6 @@ fn apply_delta(
             out[row + k] = out[row + k].max(out[row + k - 1]);
         }
     }
-    out
 }
 
 #[cfg(test)]
@@ -633,6 +713,59 @@ mod tests {
         let mut delta = vec![0.0f64; bands.len()];
         delta[0] = f64::NAN;
         assert!(apply_quantile_conformal(bands, delta).is_err());
+    }
+
+    #[test]
+    fn batch_agrees_fan_for_fan_with_the_single_apply() {
+        // The property the batch exists to preserve: one FFI crossing, identical numbers. Anything
+        // else and the hindsight sweep would draw a different fan from the live overlay beside it.
+        let fans: Vec<Vec<f64>> = vec![
+            [fan1(100.0, [5.0, 10.0, 15.0]), fan1(110.0, [6.0, 12.0, 20.0])].concat(),
+            [fan1(70.0, [4.0, 9.0, 14.0]), fan1(180.0, [8.0, 16.0, 25.0])].concat(),
+            [fan1(250.0, [9.0, 18.0, 30.0]), fan1(55.0, [3.0, 7.0, 11.0])].concat(),
+        ];
+        let fan_len = fans[0].len();
+        // Asymmetric and crossing on the low edge, so the clamp is exercised rather than skipped.
+        let delta = vec![
+            -30.0, -12.0, -4.0, 0.0, 6.0, 14.0, 33.0, // step 0
+            -18.0, -9.0, 40.0, 0.0, 3.0, 11.0, 27.0, // step 1: .25 pushed past the median
+        ];
+        let batched = apply_quantile_conformal_batch(fans.concat(), delta.clone()).unwrap();
+        assert_eq!(batched.len(), fans.len() * fan_len);
+        for (i, fan) in fans.iter().enumerate() {
+            let one = apply_quantile_conformal(fan.clone(), delta.clone()).unwrap();
+            assert_eq!(&batched[i * fan_len..(i + 1) * fan_len], &one[..], "fan {i}");
+        }
+    }
+
+    #[test]
+    fn batch_of_a_zero_delta_is_the_identity() {
+        let fans = [
+            fan1(100.0, [5.0, 10.0, 15.0]),
+            fan1(110.0, [6.0, 12.0, 20.0]),
+            fan1(120.0, [7.0, 14.0, 22.0]),
+        ]
+        .concat();
+        let out = apply_quantile_conformal_batch(fans.clone(), vec![0.0; QUANTILE_LEVELS.len()]);
+        assert_eq!(out.unwrap(), fans);
+    }
+
+    #[test]
+    fn batch_refuses_the_whole_batch_rather_than_correcting_part_of_it() {
+        let fan = fan1(100.0, [5.0, 10.0, 15.0]);
+        let delta = vec![-10.0, -5.0, -2.0, 0.0, 2.0, 5.0, 10.0];
+        // A batch that is not a whole number of fans: the last one is short.
+        let ragged = [fan.clone(), fan[..3].to_vec()].concat();
+        assert!(apply_quantile_conformal_batch(ragged, delta.clone()).is_err());
+        // One non-finite value anywhere refuses every fan, not just the one holding it.
+        let mut poisoned = [fan.clone(), fan.clone(), fan.clone()].concat();
+        poisoned[QUANTILE_LEVELS.len() + 1] = f64::INFINITY;
+        assert!(apply_quantile_conformal_batch(poisoned, delta.clone()).is_err());
+        assert!(apply_quantile_conformal_batch(Vec::new(), delta).is_err());
+        // And the delta's own invariants still bind.
+        let mut moves_median = vec![0.0f64; QUANTILE_LEVELS.len()];
+        moves_median[tau_index(MEDIAN_TAU).unwrap()] = 0.5;
+        assert!(apply_quantile_conformal_batch(fan, moves_median).is_err());
     }
 
     #[test]

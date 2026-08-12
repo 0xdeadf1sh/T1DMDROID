@@ -114,6 +114,87 @@ class HindsightFrameTest {
         assertEquals(204f + 15f, f.hi[outer + 1], 1e-3f)
     }
 
+    /** A stand-in for §8.4's apply: push every non-median column [by] mg/dL outward, hold the
+     *  median. Enough to tell a calibrated fan from a raw one by its width alone. */
+    private fun widenBy(by: Double): (() -> List<Double>, Int, Int) -> List<Double>? = { fans, _, nq ->
+        fans().mapIndexed { i, v ->
+            val k = i % nq
+            if (k == nq / 2) v else if (k < nq / 2) v - by else v + by
+        }
+    }
+
+    @Test fun theSweepDrawsTheCalibratedFanRatherThanTheRawOne() {
+        // The defect this exists to stop: the live overlay draws the §8.4-corrected fan, so a sweep
+        // drawn from the raw stored fan states a second, narrower uncertainty on the same axes.
+        var sawSteps = -1
+        var sawNq = -1
+        var sawLen = -1
+        val rows = (0 until 3).map { pred(it) }
+        val f = runBlocking {
+            hindsightFrameOf(rows, UnitSpace.MgDl, null) { fans, steps, nq ->
+                // Built once, here, so the recorded length is the batch the implementation would send.
+                val built = fans()
+                sawSteps = steps; sawNq = nq; sawLen = built.size
+                widenBy(20.0)({ built }, steps, nq)
+            }
+        }!!
+        // Handed the batch whole, in the layout the core's batch apply reads.
+        assertEquals(H, sawSteps)
+        assertEquals(NQ, sawNq)
+        assertEquals(3 * H * NQ, sawLen)
+        assertEquals(3, f.cycles)
+        for (c in 0 until 3) {
+            val level = 200f + c
+            val outer = (0 * f.cycles + c) * f.span
+            val inner = (2 * f.cycles + c) * f.span
+            for (i in 1..H) {
+                assertEquals("outer lo c=$c i=$i", level - 35f, f.lo[outer + i], 1e-3f)
+                assertEquals("outer hi c=$c i=$i", level + 35f, f.hi[outer + i], 1e-3f)
+                assertEquals("inner lo c=$c i=$i", level - 25f, f.lo[inner + i], 1e-3f)
+                assertEquals("inner hi c=$c i=$i", level + 25f, f.hi[inner + i], 1e-3f)
+            }
+            // §8.4 holds the median, and the anchor is a measurement — neither moves.
+            assertEquals(level, f.median[c * f.span + 1], 1e-3f)
+            assertEquals(level, f.lo[outer], 1e-3f)
+        }
+    }
+
+    @Test fun aCalibrationTheSweepCannotTrustLeavesEveryFanRaw() {
+        // All of them or none: half a sweep corrected beside half of it raw would put two
+        // uncertainties in one picture, which is the thing being fixed rather than a smaller version
+        // of it. A null (no fit, or one lapsed) and a size that disagrees are both refusals.
+        val rows = (0 until 3).map { pred(it) }
+        for (bad in listOf<(() -> List<Double>, Int, Int) -> List<Double>?>(
+            // The first never calls the builder at all — the ineligible path, which must not pay for
+            // a batch it will not use.
+            { _, _, _ -> null },
+            { fans, _, _ -> fans().let { it.take(it.size - 1) } },
+            { fans, _, _ -> fans() + 0.0 },
+        )) {
+            val f = runBlocking { hindsightFrameOf(rows, UnitSpace.MgDl, null, bad) }!!
+            assertEquals(3, f.cycles)
+            for (c in 0 until 3) {
+                val outer = (0 * f.cycles + c) * f.span
+                assertEquals(200f + c - 15f, f.lo[outer + 1], 1e-3f)
+                assertEquals(200f + c + 15f, f.hi[outer + 1], 1e-3f)
+            }
+        }
+    }
+
+    @Test fun aFanOfADifferentWidthIsDroppedRatherThanCalibratedAgainstTheWrongDelta() {
+        // `nq` is pinned across the sweep like the horizon and the step are: one delta corrects the
+        // whole batch, so a row of another width has no correction here and cannot share the block.
+        val rows = listOf(pred(0), pred(1, nq = 9), pred(2))
+        val f = runBlocking { hindsightFrameOf(rows, UnitSpace.MgDl, null, widenBy(20.0)) }!!
+        assertEquals(2, f.cycles)
+        assertEquals(T0 + 0 * STEP, f.anchorMs[0])
+        assertEquals(T0 + 2 * STEP, f.anchorMs[1])
+        // The kept rows are still calibrated, and against their own levels rather than the dropped
+        // row's — a misaligned slice would read 201's fan under 202's median.
+        assertEquals(200f - 35f, f.lo[(0 * f.cycles + 0) * f.span + 1], 1e-3f)
+        assertEquals(202f - 35f, f.lo[(0 * f.cycles + 1) * f.span + 1], 1e-3f)
+    }
+
     @Test fun aDegenerateCycleIsCarriedAndFlagged() {
         val f = frameOf(listOf(pred(0), pred(1, status = ForecastStatus.COLLAPSED_BAND)))!!
         assertEquals(2, f.cycles)

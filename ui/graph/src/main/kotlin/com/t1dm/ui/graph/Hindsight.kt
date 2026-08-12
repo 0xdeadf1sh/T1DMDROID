@@ -108,11 +108,27 @@ private const val BANDS = 3
  *
  * [rows] must be ascending by `cycleTsMs` (the stored `made_at`); the DAO orders them so, and
  * re-sorting a day of cycles to re-discover that is work the query already did.
+ *
+ * [calibrateFans] applies the patient's §8.4 band correction to the whole sweep at once. Its first
+ * argument BUILDS the fan-major batch on demand rather than being it: deciding eligibility is free
+ * and flattening a day of cycles is not, so an implementation with no correction to apply should
+ * return null without calling it. The same
+ * correction the live overlay draws, so the two fans on these axes state one uncertainty rather than
+ * two. Stored rows are the RAW fan as the model produced it, and the live fan has been calibrated
+ * since; without this the sweep drew visibly narrower bands beside it and nothing said why. Null
+ * (the default, and every test that does not care) keeps the raw fan.
+ *
+ * The caveat that comes with it, since it is not repairable here: a delta fitted on this patient's
+ * matured windows is applied in-sample to the sweep rows that were part of its own calibration set.
+ * §8.4's validity rests on exchangeability between that set and the forecasts the delta later
+ * reaches, which in-sample rows do not have. The sweep is a display surface — nothing it draws feeds
+ * a classifier, a rail or the wire — and drawing one basis beside another was the worse of the two.
  */
 suspend fun hindsightFrameOf(
     rows: List<ModelPrediction>,
     unit: UnitSpace = UnitSpace.MgDl,
     kovatchevF: ((Double) -> Double)? = null,
+    calibrateFans: ((fansMgdl: () -> List<Double>, steps: Int, nQuantiles: Int) -> List<Double>?)? = null,
 ): HindsightFrame? = withContext(Dispatchers.Default) {
     if (rows.isEmpty()) return@withContext null
 
@@ -121,12 +137,13 @@ suspend fun hindsightFrameOf(
     // ~288 rows of ~175 floats, and growing six arrays through that is six reallocation chains.
     var span = 0
     var stepMs = 0L
+    var nq = 0
     var kept = 0
     for (p in rows) {
         val n = p.horizonSteps
         if (n == 0 || p.nQuantiles < BANDS * 2 + 1 || p.bandsMgdl.size != n * p.nQuantiles) continue
-        if (span == 0) { span = n + 1; stepMs = p.stepMs }
-        if (n + 1 != span || p.stepMs != stepMs) continue
+        if (span == 0) { span = n + 1; stepMs = p.stepMs; nq = p.nQuantiles }
+        if (n + 1 != span || p.stepMs != stepMs || p.nQuantiles != nq) continue
         kept++
     }
     if (kept == 0) return@withContext null
@@ -136,7 +153,29 @@ suspend fun hindsightFrameOf(
     fun admits(p: ModelPrediction): Boolean {
         val n = p.horizonSteps
         return n != 0 && p.nQuantiles >= BANDS * 2 + 1 && p.bandsMgdl.size == n * p.nQuantiles &&
-            n + 1 == span && p.stepMs == stepMs
+            n + 1 == span && p.stepMs == stepMs && p.nQuantiles == nq
+    }
+
+    // §8.4 for the whole sweep in ONE crossing: the admitted rows share a shape (the pass above pins
+    // it) and a model id (the sweep is one model's history), so they share a delta, and the batch
+    // apply takes them together. Per-row it would be ~288 FFI hops per rebuild.
+    //
+    // All of them or none of them. A `null` here — no fit stored, one lapsed, a shape the delta was
+    // not fitted at — leaves every fan raw, and a size that disagrees is discarded whole rather than
+    // used for the rows it happens to cover. Half a sweep corrected beside half of it raw would put
+    // two uncertainties in one picture under one name (`SPEC/invariants.md` §6.2).
+    val fanLen = (span - 1) * nq
+    val calibrated: List<Double>? = calibrateFans?.let { calibrate ->
+        // The batch is built LAZILY. Flattening copies `kept · fanLen` references — ~24 000 for a day
+        // of cycles — and on the common path there is no stored correction for this model at all, so
+        // the implementation decides eligibility first and never asks for the data it would throw
+        // away. Invoked at most once; the result is not memoised because nothing invokes it twice.
+        val build = {
+            val flat = ArrayList<Double>(kept * fanLen)
+            for (p in rows) if (admits(p)) flat.addAll(p.bandsMgdl)
+            flat as List<Double>
+        }
+        calibrate(build, span - 1, nq)?.takeIf { it.size == kept * fanLen }
     }
 
     val madeMs = LongArray(kept)
@@ -148,9 +187,13 @@ suspend fun hindsightFrameOf(
     val stale = BooleanArray(kept)
 
     var c = 0
+    var a = 0 // index among ADMITTED rows — what `calibrated` is laid out by, where `c` skips refusals
     for (p in rows) {
         if (!admits(p)) continue
-        val s = buildPredSeries(p, unit, kovatchevF) ?: continue
+        // A view, not a copy: `buildPredSeries` only indexes into it.
+        val fan = calibrated?.subList(a * fanLen, (a + 1) * fanLen)
+        a++
+        val s = buildPredSeries(p, unit, kovatchevF, fan) ?: continue
         if (s.size != span) continue
         madeMs[c] = p.cycleTsMs
         anchorMs[c] = p.anchorTsMs

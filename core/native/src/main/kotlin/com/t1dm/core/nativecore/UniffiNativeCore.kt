@@ -59,6 +59,7 @@ import uniffi.t1dm_core.ConformalFit as UniffiConformalFit
 import uniffi.t1dm_core.conformalMinCalWindows as uniffiConformalMinCalWindows
 import uniffi.t1dm_core.fitQuantileConformal as uniffiFitQuantileConformal
 import uniffi.t1dm_core.applyQuantileConformal as uniffiApplyQuantileConformal
+import uniffi.t1dm_core.applyQuantileConformalBatch as uniffiApplyQuantileConformalBatch
 import uniffi.t1dm_core.advancedStats as uniffiAdvancedStats
 import uniffi.t1dm_core.clinicalCuts as uniffiClinicalCuts
 import uniffi.t1dm_core.advertCrc32 as uniffiAdvertCrc32
@@ -366,6 +367,18 @@ class UniffiNativeCore : NativeCore {
     ): List<Double>? =
         try {
             uniffiApplyQuantileConformal(bandsMgdl, delta)
+        } catch (_: CoreException) {
+            null
+        }
+
+    /** Fail-closed to the RAW fans, for the reason [applyQuantileConformal] is — and for the whole
+     *  batch, since the core refuses one rather than correcting part of it. */
+    override fun applyQuantileConformalBatch(
+        fansMgdl: List<Double>,
+        delta: List<Double>,
+    ): List<Double>? =
+        try {
+            uniffiApplyQuantileConformalBatch(fansMgdl, delta)
         } catch (_: CoreException) {
             null
         }

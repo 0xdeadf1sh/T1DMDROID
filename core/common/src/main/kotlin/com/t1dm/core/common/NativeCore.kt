@@ -248,6 +248,23 @@ interface NativeCore {
      */
     fun applyQuantileConformal(bandsMgdl: List<Double>, delta: List<Double>): List<Double>?
 
+    /**
+     * [applyQuantileConformal] for many fans of ONE shape in a single crossing (§8.4).
+     *
+     * [fansMgdl] is `nFans · steps · nQuantiles`, fan-major: fan `i` occupies
+     * `[i · fanLen, (i + 1) · fanLen)` where `fanLen == delta.size`, each in the same step-major
+     * ascending-τ layout the single-fan apply takes. One [delta] corrects every fan, which is the
+     * only shape a caller wants — a delta is fitted per model id, so a batch is one model's forecasts.
+     *
+     * For the BG panel's hindsight sweep, which recalibrates a day of stored fans at once: ~288 of
+     * them, at one FFI crossing per sweep rather than one per fan.
+     *
+     * Fail-closed to the RAW fans (`null`) for the WHOLE batch on anything the core rejects. Never a
+     * partially corrected batch: half a sweep corrected and half of it raw would state two
+     * uncertainties in one picture, which is what a caller reaches for this to avoid.
+     */
+    fun applyQuantileConformalBatch(fansMgdl: List<Double>, delta: List<Double>): List<Double>?
+
     // ── The classical baseline (t1dm-core::baseline) ────────────────────────────────
 
     /** The baseline's shipped shape and shrinkage — 12 lags, 24 steps, λ = 1.0, IOB and COB on.
