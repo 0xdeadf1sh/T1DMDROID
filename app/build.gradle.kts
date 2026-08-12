@@ -26,8 +26,8 @@ android {
 
     defaultConfig {
         applicationId = "com.t1dm.app"
-        versionCode = 91
-        versionName = "0.35.0"
+        versionCode = 92
+        versionName = "0.36.0"
 
         // arm64-v8a only (single target device). Harmless until native .so libs ship.
         ndk {
