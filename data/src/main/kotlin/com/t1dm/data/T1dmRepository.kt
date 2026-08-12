@@ -381,6 +381,10 @@ class T1dmRepository(
             base.copy(
                 tzOffsetMin = reading.tzOffsetMin,
                 bgMgdl = reading.bgMgdl,
+                // Stamped with the reading's own source rather than looked up: only the authoritative
+                // source reaches here, and taking it from the reading means the label can never name a
+                // sensor other than the one that produced the number beside it.
+                bgSource = reading.sourceId.opaque,
                 bgProvenance = reading.provenance,
                 bgFlag = reading.flag,
                 updatedAt = maxOf(base.updatedAt, reading.rxWallMs),
@@ -1403,6 +1407,7 @@ class T1dmRepository(
             ts = ts,
             tzOffsetMin = tzOffsetMin,
             bgMgdl = null,
+            bgSource = null,
             bgProvenance = null,
             bgFlag = null,
             steps = null,

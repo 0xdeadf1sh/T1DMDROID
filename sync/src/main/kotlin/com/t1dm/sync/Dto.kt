@@ -144,6 +144,8 @@ data class IngestDto(
     val ts: Long,
     val tz_offset: Int,
     val bg: Double? = null,
+    /** Which CGM sensor [bg] came from (contract 0.4.0) — opaque, never the serial. */
+    val bg_source: String? = null,
     val hr: Double? = null,
     val steps: Double? = null,
     val sleep: Double? = null,

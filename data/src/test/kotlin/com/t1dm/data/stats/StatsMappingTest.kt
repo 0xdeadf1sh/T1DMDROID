@@ -75,7 +75,7 @@ class StatsMappingTest {
     ) = SampleEntity(
         ts = ts,
         tzOffsetMin = tz,
-        bgMgdl = bg,
+        bgMgdl = bg, bgSource = null,
         bgProvenance = null,
         bgFlag = null,
         steps = steps,

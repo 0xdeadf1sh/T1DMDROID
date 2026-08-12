@@ -39,6 +39,7 @@ class RoomStepSampleWriter(
                     ts = bucketStartMs,
                     tzOffsetMin = tzOffsetMin,
                     bgMgdl = null,
+                    bgSource = null,
                     bgProvenance = null,
                     bgFlag = null,
                     steps = steps,

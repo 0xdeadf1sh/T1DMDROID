@@ -120,7 +120,11 @@ data class CgmReadingEntity(
 data class SampleEntity(
     @PrimaryKey val ts: Long,          // ts % 300_000 == 0
     val tzOffsetMin: Int,
-    val bgMgdl: Int?,                  // projected from cgm_reading (active source)
+    val bgMgdl: Int?,                  // projected from cgm_reading (authoritative source)
+    // Which sensor produced [bgMgdl] — the authoritative source at the instant the row was written.
+    // Opaque and stable per sensor (`CgmSourceId.opaque`), so it can cross the wire as `bg_source`
+    // without carrying the serial. Null for a row written before v15, and for a slot with no bg.
+    val bgSource: String?,
     val bgProvenance: ReadingProvenance?,
     val bgFlag: ReadingFlag?,
     val steps: Int?,                   // from :sensors StepSource

@@ -59,6 +59,11 @@ object SampleGapFill {
         ts = p.ts,
         tzOffsetMin = p.tzOffsetMin,
         bgMgdl = p.bgMgdl,
+        // A server catch-up carries no sensor identity: the wire's `bg_source` names the sensor the
+        // PHONE recorded, and a row arriving back has been through the server's storage where it is a
+        // label and nothing else. Null rather than the current sensor's — attributing a reading to a
+        // sensor that may not have produced it is the one thing this column must never do.
+        bgSource = null,
         bgProvenance = p.bgProvenance,
         bgFlag = p.bgFlag,
         steps = p.steps,

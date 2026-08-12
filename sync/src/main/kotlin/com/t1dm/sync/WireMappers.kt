@@ -51,6 +51,7 @@ fun SampleEntity.toIngest(): IngestDto = IngestDto(
     tz_offset = tzOffsetMin,
     updated_at = updatedAt,
     bg = bgMgdl?.toDouble(),
+    bg_source = bgSource,
     hr = hr?.toDouble(),
     steps = steps?.toDouble(),
     sleep = sleep?.toDouble(),

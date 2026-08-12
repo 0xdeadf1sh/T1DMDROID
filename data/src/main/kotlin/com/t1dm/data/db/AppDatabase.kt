@@ -56,7 +56,7 @@ import kotlinx.coroutines.Dispatchers
         PaintStrokeEntity::class,
         ConformalDeltaEntity::class,
     ],
-    version = 14,
+    version = 15,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -85,7 +85,7 @@ abstract class AppDatabase : RoomDatabase() {
 
         /** The current keep-forever schema version (must equal the `@Database(version = …)` above).
          *  A full app reset ([T1dmRepository.wipeAllData]) row-wipes at THIS version — never a drop. */
-        const val SCHEMA_VERSION = 14
+        const val SCHEMA_VERSION = 15
 
         /**
          * Build the on-disk database. Migrations come exclusively from [MigrationRunner];

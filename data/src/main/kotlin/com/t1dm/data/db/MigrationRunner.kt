@@ -455,6 +455,20 @@ object MigrationRunner {
         }
     }
 
+    /**
+     * v14 → v15 (contract 0.4.0): `sample` records WHICH sensor its `bg` came from.
+     *
+     * Additive and null-defaulted. A row written before this genuinely has no record of the sensor
+     * behind it — every sensor the phone had met was authoritative in turn, and the projection kept
+     * no trace of which — so backfilling the current one would be indistinguishable from having
+     * known. Null means "not recorded", which is the honest answer and what the wire sends.
+     */
+    val MIGRATION_14_15 = object : Migration(14, 15) {
+        override fun migrate(connection: SQLiteConnection) {
+            connection.execSQL("ALTER TABLE `sample` ADD COLUMN `bgSource` TEXT")
+        }
+    }
+
     val ALL: Array<Migration> = arrayOf(
         MIGRATION_1_2,
         MIGRATION_2_3,
@@ -469,6 +483,7 @@ object MigrationRunner {
         MIGRATION_11_12,
         MIGRATION_12_13,
         MIGRATION_13_14,
+        MIGRATION_14_15,
     )
 
     /** Apply every registered migration to a builder; the sole path that wires migrations. */

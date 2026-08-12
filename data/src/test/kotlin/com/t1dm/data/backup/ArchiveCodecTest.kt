@@ -254,7 +254,7 @@ class ArchiveCodecTest {
     @Test
     fun `a sample round-trips including its nullable series`() {
         val s = SampleEntity(
-            ts = 600_000L, tzOffsetMin = -120, bgMgdl = 98,
+            ts = 600_000L, tzOffsetMin = -120, bgMgdl = 98, bgSource = null,
             bgProvenance = ReadingProvenance.MEASURED, bgFlag = ReadingFlag.NORMAL,
             steps = 4210, mood = 4, hr = null, sleep = null, exercise = null, updatedAt = 9L,
         )

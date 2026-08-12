@@ -271,6 +271,7 @@ object Archive {
         w.putOrSkip("hr", r.hr)
         w.putOrSkip("sl", r.sleep)
         w.putOrSkip("ex", r.exercise)
+        w.putOrSkip("bs", r.bgSource)
         w.put("ua", r.updatedAt)
         w.close()
     }
@@ -279,6 +280,9 @@ object Archive {
         ts = o.long("ts") ?: err("sample", "ts"),
         tzOffsetMin = o.int("tz") ?: err("sample", "tz"),
         bgMgdl = o.int("bg"),
+        // Absent in a file written before the column existed, which is the honest answer: that
+        // archive genuinely has no record of which sensor produced the reading.
+        bgSource = o.str("bs"),
         bgProvenance = o.str("pv")?.let(ReadingProvenance::valueOf),
         bgFlag = o.str("fl")?.let(ReadingFlag::valueOf),
         steps = o.int("st"),
