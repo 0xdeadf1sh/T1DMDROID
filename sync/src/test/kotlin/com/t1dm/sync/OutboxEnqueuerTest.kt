@@ -293,19 +293,24 @@ class OutboxEnqueuerTest {
 
     @Test
     fun `eviction priority ranks irreplaceable clinical records above regenerable forecasts`() {
-        assertEquals(7, OutboxKind.ALERT.priority)
-        assertEquals(6, OutboxKind.DOSE.priority)
-        assertEquals(5, OutboxKind.MEAL.priority)
-        assertEquals(4, OutboxKind.INGEST.priority)
+        assertEquals(8, OutboxKind.ALERT.priority)
+        assertEquals(7, OutboxKind.DOSE.priority)
+        assertEquals(6, OutboxKind.MEAL.priority)
+        assertEquals(5, OutboxKind.INGEST.priority)
+        assertEquals(4, OutboxKind.CGM_SOURCE.priority)  // below INGEST: a label, not a reading
         assertEquals(3, OutboxKind.STATS.priority)
         assertEquals(2, OutboxKind.PREDICTIONS.priority)
         assertEquals(1, OutboxKind.SERIES.priority)      // retired tombstone
         assertEquals(0, OutboxKind.PHOTO.priority)
 
+        // Every kind appears, so adding one without ranking it fails here rather than silently
+        // landing at whatever its ordinal happens to be.
         val ranked = listOf(
             OutboxKind.ALERT, OutboxKind.DOSE, OutboxKind.MEAL, OutboxKind.INGEST,
-            OutboxKind.STATS, OutboxKind.PREDICTIONS, OutboxKind.SERIES, OutboxKind.PHOTO,
+            OutboxKind.CGM_SOURCE, OutboxKind.STATS, OutboxKind.PREDICTIONS, OutboxKind.SERIES,
+            OutboxKind.PHOTO,
         )
+        assertEquals("every OutboxKind is ranked", OutboxKind.entries.size, ranked.size)
         assertEquals("priority is strictly descending in this order", ranked, ranked.sortedByDescending { it.priority })
     }
 
