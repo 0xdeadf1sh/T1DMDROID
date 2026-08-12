@@ -17,14 +17,14 @@ import kotlinx.serialization.encodeToString
  */
 internal val OutboxKind.priority: Int
     get() = when (this) {
-        OutboxKind.ALERT -> 7
-        OutboxKind.DOSE -> 6
-        OutboxKind.MEAL -> 5
-        // Below INGEST: a descriptor only names a label the readings already carry, so a reading
-        // must never wait behind it. The server accepts a label for a source it has not been told
-        // about, which is what makes arriving late harmless.
-        OutboxKind.CGM_SOURCE -> 7
-        OutboxKind.INGEST -> 4
+        OutboxKind.ALERT -> 8
+        OutboxKind.DOSE -> 7
+        OutboxKind.MEAL -> 6
+        OutboxKind.INGEST -> 5
+        // Below INGEST: a descriptor only names a label the readings already carry, so a reading must
+        // never wait behind it. The server accepts a label for a source it has not been told about,
+        // which is what makes arriving late harmless.
+        OutboxKind.CGM_SOURCE -> 4
         OutboxKind.STATS -> 3
         OutboxKind.PREDICTIONS -> 2
         OutboxKind.SERIES -> 1

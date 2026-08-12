@@ -18,17 +18,27 @@ class LossOfSignalAlarm(private var config: AlarmConfig) {
 
     private var lastMeasured: CgmReading? = null
 
+    /** When the believed sensor last changed. The clock runs from whichever is later, this or the
+     *  last measured reading — see [onSourceChanged]. */
+    private var armedAtMs: Long? = null
+
     /**
-     * Forget the sensor this was tracking (a promotion — a different sensor is now believed).
+     * The believed sensor changed at [nowMs]: RESTART the staleness clock from here.
      *
-     * The staleness clock is seeded from the LAST MEASURED reading, so carrying it across a sensor
-     * change ages the new sensor by however long the old one had been quiet, and can fire
-     * loss-of-signal against a sensor that has been reporting perfectly. Clearing re-arms it: the
-     * alarm cannot fire again until the new sensor has produced a real reading, which is the same
-     * state a cold start is in and the same one this class already treats as "nothing to say yet".
+     * The clock is otherwise seeded from the last MEASURED reading, so carrying it across a promotion
+     * ages the new sensor by however long the old one had been quiet and fires loss-of-signal against
+     * a sensor reporting perfectly. Restarting fixes that without disarming anything: the predicate
+     * stays "no measured reading for N minutes", and a new sensor that never reports still trips it N
+     * minutes after the promotion.
+     *
+     * Clearing [lastMeasured] instead would have been a §3.6-A regression, and a silent one: this
+     * alarm returns null while it has no reading, so a promotion onto a dead or warming-up sensor
+     * would have raised NOTHING, with no bound on how long. [lastMeasured] is deliberately kept for a
+     * second reason too — it is the escalation basis, so a patient last seen low keeps the CRITICAL
+     * tier across a sensor change instead of dropping to the ordinary one.
      */
-    fun onSourceChanged() {
-        lastMeasured = null
+    fun onSourceChanged(nowMs: Long) {
+        armedAtMs = nowMs
     }
 
     var loss: SignalLoss? = null
@@ -61,7 +71,10 @@ class LossOfSignalAlarm(private var config: AlarmConfig) {
         }
         val escalate = isLowOrFalling(last, config)
         val windowMin = if (escalate) config.lossEscalatedMin else config.lossMin
-        val overdue = nowMs - last.rxWallMs >= windowMin * 60_000L
+        // The later of the last reading and the last promotion: a fresh sensor gets its full window,
+        // and a sensor that never reports still trips the alarm one window after being believed.
+        val since = maxOf(last.rxWallMs, armedAtMs ?: Long.MIN_VALUE)
+        val overdue = nowMs - since >= windowMin * 60_000L
         loss = when {
             !overdue -> null
             loss.let { it != null && it.escalated == escalate } -> loss

@@ -50,8 +50,6 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.drop
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
@@ -375,15 +373,30 @@ class CgmScanService : LifecycleService() {
             }
         }
 
-        // 2b) Tell the alarm engine when authority MOVES, so it stops holding the outgoing sensor's
-        //     link state against the incoming one. Only the link — a standing glucose breach is a fact
-        //     about the patient and survives (AlarmEngine.onSourceChanged). Also drops the forecast:
-        //     it was conditioned on the old sensor's history, so pairing it with the new sensor's BG
-        //     on the widget, the watch and the ongoing notification would state something untrue.
-        //     `drop(1)` because the first emission is the id already in force at subscribe time.
+        // 2b) Tell the alarm engine and the model when authority MOVES between sensors.
+        //
+        //     A PROMOTION is a transition between two non-null ids. Hydration is not one: the registry's
+        //     flow starts null and publishes the persisted id once storage is read, and treating that as
+        //     a promotion would reset the alarms and drop the forecast on every cold start. `drop(1)`
+        //     was not enough — it eats the initial null and lets the hydrated id straight through — so
+        //     the previous value is tracked explicitly.
+        //
+        //     The alarm engine keeps only what the outgoing sensor established about the LINK; a
+        //     standing glucose breach is a fact about the patient and survives (AlarmEngine). The
+        //     forecast is dropped because it was conditioned on the old sensor's history, and the
+        //     widget, watch and ongoing notification all pair a forecast with a glucose number.
+        //
+        //     `isInitialized` for the same reason every other touch of `alarmEngine` in this file is
+        //     guarded or installed after it: the alarm init coroutine suspends on Room reads before
+        //     assigning it, and this collector shares its dispatcher slice.
         lifecycleScope.launch {
-            container.registry.authoritative.drop(1).distinctUntilChanged().collect {
-                alarmScope?.launch { alarmEngine.onSourceChanged() }
+            var previous: CgmSourceId? = null
+            container.registry.authoritative.collect { id ->
+                val promoted = previous != null && id != null && id != previous
+                previous = id
+                if (!promoted) return@collect
+                val now = System.currentTimeMillis()
+                if (::alarmEngine.isInitialized) alarmScope?.launch { alarmEngine.onSourceChanged(now) }
                 container.invalidateInferenceOnSourceChange()
             }
         }

@@ -29,6 +29,7 @@ import com.t1dm.inference.backend.InferenceBackend
 import com.t1dm.inference.backend.LoadedModel
 import com.t1dm.inference.backend.StubBackend
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
@@ -116,11 +117,10 @@ class InferenceController(
      * returns null below `minSteps`, so nothing is emitted from a short series).
      */
     fun onCgmSourceChanged() {
-        _state.value = _state.value.copy(
-            predictions = emptyList(),
-            lastCycleTsMs = null,
-            lastCause = null,
-        )
+        // `update`, not `value = value.copy(...)`: this is called from the service's own coroutine,
+        // outside the cycle mutex, so a read-modify-write here races a cycle publishing its results
+        // and could restore the predictions it is trying to drop.
+        _state.update { it.copy(predictions = emptyList(), lastCycleTsMs = null, lastCause = null) }
     }
 
     private val stub = StubBackend()

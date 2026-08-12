@@ -40,9 +40,9 @@ class AlarmEngine(config: AlarmConfig = AlarmConfig.DEFAULT) {
      * The authoritative sensor changed: forget what the previous one established about the LINK,
      * and keep everything it established about the PATIENT.
      *
-     * [LossOfSignalAlarm] and [WeakSignalAlarm] both describe a radio link, and the old sensor's link
-     * says nothing about the new one — carried across, a stale staleness clock fires loss-of-signal
-     * against a sensor that is reporting perfectly.
+     * [LossOfSignalAlarm] RESTARTS its clock rather than forgetting the reading behind it, so the new
+     * sensor gets a full window and a sensor that never reports still trips the alarm. [WeakSignalAlarm]
+     * genuinely forgets: RSSI belongs to a radio link, and the old link is no evidence about the new.
      *
      * SAFETY: [ThresholdAlarm] is deliberately NOT reset, for the reason [updateConfig] does not
      * clear a standing breach. A low is a fact about the patient, not about the sensor that saw it,
@@ -51,8 +51,8 @@ class AlarmEngine(config: AlarmConfig = AlarmConfig.DEFAULT) {
      * re-classifies it. Fail closed: keep alarming, never go quiet on a state change.
      */
     @Synchronized
-    fun onSourceChanged() {
-        lossOfSignal.onSourceChanged()
+    fun onSourceChanged(nowMs: Long) {
+        lossOfSignal.onSourceChanged(nowMs)
         weakSignal.onSourceChanged()
         publish()
     }
