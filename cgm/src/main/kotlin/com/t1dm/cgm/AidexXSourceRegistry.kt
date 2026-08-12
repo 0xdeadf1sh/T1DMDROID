@@ -100,6 +100,16 @@ class AidexXSourceRegistry(
         if (persisted.isNotEmpty()) _sources.value = persisted
         _activeIds.value = repository.activeSourceIds().toSet()
         repository.authoritativeSourceId()?.let { _authoritative.value = it }
+
+        // Re-record every persisted source once per process start, so its descriptor reaches the
+        // server. `adopt` is the only other caller and it returns early for a source already live, so
+        // without this a sensor the phone met before the descriptor push existed would never be
+        // described — the server would hold its readings' labels and nothing to resolve them to. The
+        // upsert is idempotent and the outbox row deduplicates on the source id, so this costs one
+        // write per known sensor per launch.
+        persisted.forEach { d ->
+            repository.upsertSource(d, authoritative = d.id == _authoritative.value, lastSeenMs = nowMs())
+        }
     }
 
     /**
