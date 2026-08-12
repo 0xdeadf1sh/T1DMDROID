@@ -23,7 +23,7 @@ class QueueDrainerTest {
         SyncJson.encodeToString(OutboxRequest("POST", path, body)).toByteArray()
 
     private fun sample(ts: Long, bg: Int) = SampleEntity(
-        ts = ts, tzOffsetMin = 0, bgMgdl = bg,
+        ts = ts, tzOffsetMin = 0, bgMgdl = bg, bgSource = null,
         bgProvenance = ReadingProvenance.MEASURED, bgFlag = ReadingFlag.NORMAL,
         steps = null, mood = null,
         hr = null, sleep = null, exercise = null, updatedAt = ts,
