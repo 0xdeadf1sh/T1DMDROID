@@ -28,10 +28,13 @@ data class ArchiveCounts(
     val sources: Int = 0,
     val profiles: Int = 0,
     val conformal: Int = 0,
+    val exerciseSessions: Int = 0,
+    val exerciseFixes: Int = 0,
 ) {
     val total: Int
         get() = readings + samples + doses + meals + basal + foods + savedMeals +
-            savedItems + insulinTypes + strokes + sources + profiles + conformal
+            savedItems + insulinTypes + strokes + sources + profiles + conformal +
+            exerciseSessions + exerciseFixes
 }
 
 /**
@@ -47,6 +50,21 @@ data class ArchiveCounts(
  * heard it), `prediction` and `hw_telemetry` (recomputed from the readings this archive does carry),
  * and the legacy `dose_event` table, superseded by `logged_dose`. The `rw` server token is absent by
  * construction: it lives in the Keystore and has never been a column.
+ *
+ * `cgm_sample_raw` is out too, and for a reason the others do not have: it is the one table with a
+ * RETENTION BOUND (`T1dmRepository.RAW_SAMPLE_RETENTION_MS`). Carrying it would put rows in the file
+ * that the phone deletes on a timer, and the restore merges rather than replaces — so an archive
+ * taken today and restored next month would re-add samples the retention had already dropped, and do
+ * it again on every restore. A bounded store and a keep-forever document cannot both be right about
+ * the same row. Nothing is lost by the omission that the archive does not already carry: the grid
+ * series every reader consumes is in here in full, and these rows derive nothing.
+ *
+ * **This file carries the user's LOCATION.** `exercise_fix` is in it because the archive is the local
+ * full-fidelity restore path and a table left out of it is silently lost on a wipe-and-restore — but
+ * the consequence is that a `t1dm.archive` holds the GPS tracks of every walk and run recorded, and
+ * so of the user's home, their workplace and the routes between. It never crosses the wire and it is
+ * exported only where the user sends it, which is what makes carrying it a decision rather than a
+ * leak. Nothing here may be relaxed into an automatic upload.
  */
 class ArchiveWriter(private val db: AppDatabase) {
 
@@ -191,6 +209,39 @@ class ArchiveWriter(private val db: AppDatabase) {
         }
         counts = counts.copy(strokes = strokes)
 
+        // ── exercise bouts, each followed by its own track ──
+        //
+        // Interleaved rather than written as two independent walks: a fix names its bout by the
+        // bout's `clientId`, and emitting the parent first is what lets the restore resolve that
+        // link without buffering a whole file's fixes to wait for it.
+        var exerciseSessions = 0
+        var exerciseFixes = 0
+        var sessionStart = Long.MIN_VALUE
+        var sessionId = Long.MIN_VALUE
+        while (true) {
+            val page = db.exerciseSessionDao().pageFrom(sessionStart, sessionId, Archive.BATCH)
+            if (page.isEmpty()) break
+            for (s in page) {
+                Archive.write(rw, s)
+                var fixTs = Long.MIN_VALUE
+                var fixId = Long.MIN_VALUE
+                while (true) {
+                    val fixes = db.exerciseFixDao().pageFrom(s.id, fixTs, fixId, Archive.BATCH)
+                    if (fixes.isEmpty()) break
+                    for (f in fixes) Archive.write(rw, f, s.clientId)
+                    exerciseFixes += fixes.size
+                    fixTs = fixes.last().tsMs
+                    fixId = fixes.last().id
+                    if (fixes.size < Archive.BATCH) break
+                }
+            }
+            exerciseSessions += page.size
+            sessionStart = page.last().startMs
+            sessionId = page.last().id
+            if (page.size < Archive.BATCH) break
+        }
+        counts = counts.copy(exerciseSessions = exerciseSessions, exerciseFixes = exerciseFixes)
+
         // ── the bounded tables: a schedule's day of injections, a catalogue, a handful of rows ──
         val basal = db.basalScheduleDao().all()
         for (r in basal) Archive.write(rw, r)
@@ -254,6 +305,8 @@ class ArchiveWriter(private val db: AppDatabase) {
         rw.put(Archive.T_SOURCE, c.sources)
         rw.put(Archive.T_PROFILE, c.profiles)
         rw.put(Archive.T_CONFORMAL, c.conformal)
+        rw.put(Archive.T_EXERCISE, c.exerciseSessions)
+        rw.put(Archive.T_EXERCISE_FIX, c.exerciseFixes)
         rw.close()
     }
 

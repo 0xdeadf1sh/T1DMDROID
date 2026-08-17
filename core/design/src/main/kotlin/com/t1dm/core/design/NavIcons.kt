@@ -125,6 +125,17 @@ private fun security(s: IconStyle) = glyph("watch", s) { // a wristwatch (the co
     moveTo(17.4f, 10.7f); lineTo(19.2f, 10.7f); lineTo(19.2f, 13.3f); lineTo(17.4f, 13.3f); close() // crown
 }
 
+private fun exercise(s: IconStyle) = glyph("exercise", s) { // a runner: head disc + a striding body
+    moveTo(14.5f, 2.5f); arcTo(2.5f, 2.5f, 0f, true, true, 14.49f, 2.5f); close() // head
+    // Torso, forward arm, and both legs as ONE closed, non-self-intersecting polygon, so the shape
+    // reads as a figure when filled (Umbrella) and as an outline when stroked (Tron / Kitty). The
+    // stride is what tells it apart from `heart` and `security` at 28 dp.
+    moveTo(13f, 8f); lineTo(17.5f, 10.5f); lineTo(16.5f, 12.5f); lineTo(13.5f, 11f)
+    lineTo(12.5f, 14f); lineTo(15f, 16.5f); lineTo(15f, 21.5f); lineTo(12.8f, 21.5f)
+    lineTo(12.8f, 17.5f); lineTo(9f, 14.5f); lineTo(6.5f, 20.5f); lineTo(4.5f, 19.5f)
+    lineTo(8f, 11.5f); close()
+}
+
 private fun settings(s: IconStyle) = glyph("settings", s) { // gear (octagon + bore)
     moveTo(12f, 3f); lineTo(15f, 5f); lineTo(19f, 5f); lineTo(19f, 9f); lineTo(21f, 12f)
     lineTo(19f, 15f); lineTo(19f, 19f); lineTo(15f, 19f); lineTo(12f, 21f); lineTo(9f, 19f)
@@ -297,6 +308,7 @@ fun navIcon(route: String, style: IconStyle): ImageVector = when (route) {
     "network" -> network(style)
     "meals" -> meals(style)
     "insulin" -> insulin(style)
+    "exercise" -> exercise(style)
     "security" -> security(style)
     "backup" -> backup(style)
     "logs" -> logs(style)

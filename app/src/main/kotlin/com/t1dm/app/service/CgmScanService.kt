@@ -416,11 +416,12 @@ class CgmScanService : LifecycleService() {
             }
         }
 
-        // 6a) 5-min housekeeping — the sync drain + watch push, kept on the exact grid boundary they
-        //     have always ridden. A SIBLING scope, structurally independent of the model-free alarm
-        //     path above (§2.3, §3.6-A): a failed drain or push never touches the alarm. Inference no
-        //     longer rides this loop — it has moved to its own forecast-cadence driver (6b) — but the
-        //     sync+watch cadence is deliberately UNCHANGED (still one drain + one push per 5-min tick).
+        // 6a) 5-min housekeeping — the sync drain, the watch push and the sub-grid sample sweep, kept
+        //     on the exact grid boundary they have always ridden. A SIBLING scope, structurally
+        //     independent of the model-free alarm path above (§2.3, §3.6-A): a failed drain, push or
+        //     sweep never touches the alarm. Inference no longer rides this loop — it has moved to its
+        //     own forecast-cadence driver (6b) — but the sync+watch cadence is deliberately UNCHANGED
+        //     (still one drain + one push per 5-min tick).
         lifecycleScope.launch {
             while (isActive) {
                 val now = System.currentTimeMillis()
@@ -434,6 +435,11 @@ class CgmScanService : LifecycleService() {
                 // path, and it self-suspends in low-power mode. Off-main inside pushNow.
                 runCatching { container.pushToWatch(System.currentTimeMillis()) }
                     .onFailure { Timber.tag(TAG).w(it, "watch push failed (independent of alarm/inference)") }
+                // Sub-grid sample retention. This loop runs exactly while samples are arriving, which
+                // is what makes it the sweep's home; the outbox eviction rides the drain above for the
+                // same reason. A sweep with nothing to drop is one index seek and writes nothing.
+                runCatching { container.repository.pruneRawSamples(System.currentTimeMillis()) }
+                    .onFailure { Timber.tag(TAG).w(it, "raw sample prune failed (independent of alarm/inference)") }
             }
         }
 
@@ -1011,6 +1017,12 @@ class CgmScanService : LifecycleService() {
 
     // ─── Debug injection (sensor-free exit-criteria verification) ─────────────────────────────
 
+    /**
+     * NOTE: an injected reading contests its grid slot like any other (`data/GridSlotSelection.kt`),
+     * so a second inject into a slot already holding a sample received NEARER the slot instant is stored
+     * as a sub-grid sample and does not change the grid row. It still reaches `readingBus`, so the
+     * alarm path sees it either way. Vary `ageMin` (or wait a tick) to land a new slot.
+     */
     private fun injectReading(bgMgdl: Int, ageMin: Int, warmup: Boolean, trendTenths: Int) {
         lifecycleScope.launch {
             val src = ensureActiveSource()

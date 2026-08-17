@@ -21,7 +21,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  *     from the last delivered epoch (a freshly-wiped/new server, or first-ever sync) run the bounded,
  *     idempotent [reMirror] upload of local history, recording the epoch only once it has been
  *     delivered. This one is *kicked* into [scope] and not awaited — see [kickReMirror].
- *  2. §3.5 download catch-up from the LOCAL high-water marks [T1dmRepository.newestSampleTs] (scalar
+ *  2. §3.5 download catch-up from the LOCAL high-water marks
+ *     [T1dmRepository.newestSampleTsAtOrBefore] (scalar
  *     samples via `GET /v1/series`) and [T1dmRepository.newestEventTs] (meal/dose curve events via
  *     `GET /v1/meals` + `GET /v1/doses`), IGNORING the WS cursor entirely. A live-channel overflow
  *     latched in [desync] escalates the whole pass to a full resync (`from = null`).
@@ -84,7 +85,7 @@ class CatchUpCoordinator(
         val fullResync = desync.getAndSet(false)
         if (fullResync) Timber.tag(TAG).i("live-channel overflow latched → full resync")
 
-        catchUp(if (fullResync) null else repo.newestSampleTs())
+        catchUp(if (fullResync) null else repo.newestSampleTsAtOrBefore(nowMs()))
         val events = catchUpEvents(if (fullResync) null else repo.newestEventTs())
         val filled = repo.reconcileReadingsFromSamples()
 

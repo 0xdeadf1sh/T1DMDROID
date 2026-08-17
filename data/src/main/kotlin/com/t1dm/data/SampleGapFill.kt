@@ -26,7 +26,9 @@ data class SamplePatch(
     val mood: Int? = null,
     val hr: Int? = null,
     val sleep: Int? = null,
-    val exercise: Int? = null,
+    /** Grams of carbohydrate equivalent per bucket — the one scalar here that is not an integer
+     *  series (`SPEC/invariants.md` §3). */
+    val exercise: Double? = null,
 )
 
 /**

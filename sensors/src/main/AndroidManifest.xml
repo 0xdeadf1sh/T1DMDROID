@@ -1,0 +1,16 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      GPS track recording for a logged exercise bout: the module that owns the LocationManager
+      declares its own permissions, as :cgm does for BLUETOOTH_SCAN, so the seam is self-describing;
+      AGP merges them into :app. Both are runtime permissions requested by the exercise panel at the
+      moment a bout starts — never at launch, and never as part of the CGM monitor's bootstrap.
+    -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
+    <uses-feature
+        android:name="android.hardware.location.gps"
+        android:required="false" />
+
+</manifest>

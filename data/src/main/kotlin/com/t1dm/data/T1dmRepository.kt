@@ -4,6 +4,7 @@ import androidx.room.immediateTransaction
 import androidx.room.useWriterConnection
 import com.t1dm.core.common.T1dmDispatchers
 import com.t1dm.core.model.BandCalibration
+import com.t1dm.core.model.CgmRawSample
 import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.CgmSourceDescriptor
 import com.t1dm.core.model.CgmSourceId
@@ -26,6 +27,8 @@ import com.t1dm.data.db.CgmAdvertRawEntity
 import com.t1dm.data.db.CgmReadingEntity
 import com.t1dm.data.db.CgmSourceEntity
 import com.t1dm.data.db.DoseEventEntity
+import com.t1dm.data.db.ExerciseFixEntity
+import com.t1dm.data.db.ExerciseSessionEntity
 import com.t1dm.data.db.FoodEntity
 import com.t1dm.data.db.InsulinTypeEntity
 import com.t1dm.data.db.LoggedDoseEntity
@@ -121,6 +124,7 @@ class T1dmRepository(
 
     private val sources get() = db.cgmSourceDao()
     private val readings get() = db.cgmReadingDao()
+    private val rawSamples get() = db.cgmRawSampleDao()
     private val samples get() = db.sampleDao()
     private val doses get() = db.doseEventDao()
     private val loggedDoses get() = db.loggedDoseDao()
@@ -134,6 +138,8 @@ class T1dmRepository(
     private val profiles get() = db.serverProfileDao()
     private val paintStrokes get() = db.paintStrokeDao()
     private val conformalDeltas get() = db.conformalDeltaDao()
+    private val exerciseSessions get() = db.exerciseSessionDao()
+    private val exerciseFixes get() = db.exerciseFixDao()
 
     /**
      * Room 2.7 driver-compatible write transaction. The KTX [androidx.room.withTransaction] uses the
@@ -358,13 +364,34 @@ class T1dmRepository(
 
 
     /**
-     * Grid-stamp upsert-in-place; if the reading is on the authoritative source and not INVALID, project
-     * its bg into `sample` (LWW on `rxWallMs`) and enqueue one INGEST item for that grid slot.
+     * File one accepted reading: keep it verbatim in the sub-grid record, then let it contest its
+     * five-minute slot; if it takes the slot and is on the authoritative source and not INVALID,
+     * project its bg into `sample` (LWW on `rxWallMs`) and enqueue one INGEST item for that slot.
+     *
+     * Both writes ride the one transaction, so the sub-grid record and the grid series can never
+     * disagree about whether a sample was received.
+     *
+     * **The raw row first, and unconditionally.** It is filed under the receive instant, so it has no
+     * contest to lose: a sample that gives up the slot is exactly the sample this store exists to
+     * keep. Only a `MEASURED` reading reaches it — a gap-fill is fabricated by the stamper and was
+     * never received, so it has no receive instant to be filed under.
+     *
+     * **Then the slot.** [supersedesGridSlot] decides, and where it says no this returns having
+     * changed nothing but the raw store: not the reading, not `sample`, not the outbox. Skipping the
+     * projection is what keeps `sample.bgMgdl` equal to the reading that won — its own LWW guard
+     * compares receive instants and would otherwise hand the slot to the later arrival while
+     * `cgm_reading` held the nearer one. The extra read this costs is one primary-key seek.
      */
     suspend fun upsertReading(reading: CgmReading) = withContext(io) {
         requireGrid(reading.tsMs)
         inWriteTx {
-            readings.upsert(reading.toEntity())
+            if (reading.provenance == ReadingProvenance.MEASURED) {
+                rawSamples.insertIgnore(reading.toRawEntity())
+            }
+            val entity = reading.toEntity()
+            val stored = readings.byTs(entity.sourceId, entity.tsMs)
+            if (!supersedesGridSlot(stored, entity)) return@inWriteTx
+            readings.upsert(entity)
             val authoritative = sources.authoritativeSourceId()
             if (authoritative == reading.sourceId.value && reading.flag != ReadingFlag.INVALID) {
                 projectBg(reading)
@@ -411,8 +438,16 @@ class T1dmRepository(
 
     suspend fun sampleAt(ts: Long): SampleEntity? = withContext(io) { samples.byTs(ts) }
 
-    /** Newest grid ts in the wide projection, or null when empty (the WS-connect catch-up cursor). */
-    suspend fun newestSampleTs(): Long? = withContext(io) { samples.maxTs() }
+    /**
+     * Newest grid ts at or before [atMs] — the WS-connect catch-up cursor.
+     *
+     * Bounded, and not a bare `MAX(ts)`, because [recordExerciseCurve] writes a bout's ninety-minute
+     * tail into slots ahead of the clock. Taking the raw maximum as the cursor would ask the server
+     * for rows newer than a timestamp that has not happened yet, and the catch-up would fetch nothing
+     * at all until wall time caught up with the tail.
+     */
+    suspend fun newestSampleTsAtOrBefore(atMs: Long): Long? =
+        withContext(io) { samples.maxTsAtOrBefore(atMs) }
 
     /** Windowed wide-sample read for the stats recompute (Phase 6); oldest-first. */
     suspend fun samplesInRange(fromMs: Long, toMs: Long): List<SampleEntity> =
@@ -437,6 +472,47 @@ class T1dmRepository(
 
     suspend fun recordMood(gridTs: Long, tzOffsetMin: Int, mood: Int, nowMs: Long) =
         mergeSample(gridTs, tzOffsetMin, nowMs) { it.copy(mood = mood) }
+
+    /**
+     * Fold a bout's glucose-disposal curve into the wide sample, one grid slot per [buckets] entry.
+     *
+     * **The unit is grams of carbohydrate equivalent per five-minute bucket** — the carbohydrate the
+     * disposal offsets — per `../T1DMCOMMON/SPEC/invariants.md` §3, and the series is §5's exercise
+     * gamma: shape resolved by [com.t1dm.data.curve.ExerciseDisposal], curve built by the one
+     * `CurveEngine.gamma` the carbohydrate channel goes through. It is never a duration, an
+     * intensity or an energy. Seconds live on in `exercise_session.activeSec`, which is phone-local
+     * and crosses no wire; the ACSM kcal figure stays display-only.
+     *
+     * **The whole curve is ONE transaction, and that is the point of taking a list.** A bout's curve
+     * is rewritten from scratch whenever its duration grows — magnitude scales with duration, so
+     * every bucket moves at once — and a bucket-at-a-time writer would fire Room's per-table
+     * invalidation, and the dashboard recompositions behind it, once per bucket instead of once per
+     * rewrite. It also means a partially-rewritten curve is never visible: the buckets sum to the
+     * event total or none of them changed (§5).
+     *
+     * **The curve runs past `now`, by up to the ninety minutes of §5's tail.** That is inherent to
+     * the definition — a curve sums to its event's total, and the total is only complete once the
+     * tail is written — and it makes this the one writer that mints `sample` rows ahead of the
+     * clock. [newestSampleTsAtOrBefore] exists because of it.
+     *
+     * **Within one bout a bucket is SET; across bouts it ADDS.** [recordSteps] can set outright
+     * because the step recorder reads one continuous hardware total, but a bout is recorded from
+     * zero, so a bout beginning in a slot an earlier bout already wrote would otherwise overwrite
+     * it — stop at 09:07, restart at 09:08, and the 09:05 slot would end up holding the second
+     * bout's grams instead of both. Carrying what this bout last wrote makes the write idempotent
+     * (a rewrite replaces its own contribution) while leaving anything another bout put there
+     * intact. See [mergedExerciseGrams].
+     */
+    suspend fun recordExerciseCurve(buckets: List<ExerciseCurveBucket>, nowMs: Long) = withContext(io) {
+        if (buckets.isEmpty()) return@withContext
+        inWriteTx {
+            for (b in buckets) {
+                mergeSampleInTx(b.gridTs, b.tzOffsetMin, nowMs) {
+                    it.copy(exercise = mergedExerciseGrams(it.exercise, b.priorGrams, b.grams))
+                }
+            }
+        }
+    }
 
     /**
      * Log a Phase-1 discrete dose (`dose_event`). This legacy minimal store is superseded by
@@ -658,7 +734,7 @@ class T1dmRepository(
     /**
      * Newest event ts held locally — `MAX(ts)` over `logged_meal ∪ logged_dose` — the event
      * high-water mark the WS-connect catch-up pulls meal/dose history forward from (§3.5), the
-     * event-side twin of [newestSampleTs]. Null when neither store holds a row.
+     * event-side twin of [newestSampleTsAtOrBefore]. Null when neither store holds a row.
      */
     suspend fun newestEventTs(): Long? = withContext(io) {
         val meal = loggedMeals.latestTs()
@@ -702,6 +778,73 @@ class T1dmRepository(
 
     /** Clear the whole annotation layer (a user-initiated "erase all", distinct from the issue-5 reset). */
     suspend fun deleteAllPaintStrokes() = withContext(io) { paintStrokes.deleteAll() }
+
+    // ─── Exercise bouts + their tracks (Room v16) ───────────────────────────────────────
+    //
+    // Phone-local, both tables. What syncs is the disposal curve [recordExerciseCurve] lays into the
+    // wide sample, and nothing here.
+
+    /**
+     * Open a bout and return the PERSISTED row — minted `clientId`, DB rowid — so the service that
+     * records it and the panel that draws it address one bout, the contract [logMeal] has.
+     *
+     * `startMs` is NOT grid-snapped, unlike [logMeal]/[logLoggedDose]: a bout boundary is a
+     * wall-clock instant the user chose, and snapping it would move the moment they pressed the
+     * button. Only the per-bucket sample write is on the grid, and [mergeSample] is what enforces
+     * that.
+     */
+    suspend fun startExerciseSession(row: ExerciseSessionEntity): ExerciseSessionEntity =
+        withContext(io) {
+            val minted = row.copy(clientId = row.clientId.ifBlank { newClientId() })
+            minted.copy(id = exerciseSessions.insert(minted))
+        }
+
+    /** Close a bout with what was actually recorded; see [ExerciseSessionDao.close] on why the
+     *  bout's identity columns are not in the statement. */
+    suspend fun endExerciseSession(
+        id: Long,
+        endMs: Long,
+        activeSec: Int,
+        distanceM: Double?,
+        kcal: Int?,
+        interrupted: Boolean,
+        nowMs: Long,
+    ) = withContext(io) {
+        exerciseSessions.close(id, endMs, activeSec, distanceM, kcal, interrupted, nowMs)
+    }
+
+    /** Append accepted fixes to a bout's track. Batched by the caller — a run is not a write a
+     *  second. */
+    suspend fun appendExerciseFixes(rows: List<ExerciseFixEntity>) = withContext(io) {
+        if (rows.isNotEmpty()) exerciseFixes.insertAll(rows)
+    }
+
+    fun observeExerciseSessions(): Flow<List<ExerciseSessionEntity>> = exerciseSessions.observeAll()
+
+    suspend fun exerciseSession(id: Long): ExerciseSessionEntity? =
+        withContext(io) { exerciseSessions.byId(id) }
+
+    suspend fun exerciseTrack(sessionId: Long): List<ExerciseFixEntity> =
+        withContext(io) { exerciseFixes.forSession(sessionId) }
+
+    /** Bouts left open by a process that died mid-recording (plus the one running now). */
+    suspend fun openExerciseSessions(): List<ExerciseSessionEntity> =
+        withContext(io) { exerciseSessions.open() }
+
+    /** The newest fix a bout recorded, or null when it recorded none — where an interrupted bout is
+     *  closed. */
+    suspend fun newestExerciseFixTs(sessionId: Long): Long? =
+        withContext(io) { exerciseFixes.newestTs(sessionId) }
+
+    /** Delete a bout and its track together. One transaction because there is no foreign key to do
+     *  it for us: a half-applied delete leaves fixes keyed to a bout that no longer exists, and
+     *  nothing would ever select them again to notice. */
+    suspend fun deleteExerciseSession(id: Long) = withContext(io) {
+        inWriteTx {
+            exerciseFixes.deleteForSession(id)
+            exerciseSessions.delete(id)
+        }
+    }
 
     // ─── Glycemic dictionary / saved meals / insulin types (Room v5, Phase 4) ───────────
 
@@ -833,11 +976,56 @@ class T1dmRepository(
         enqueueIngest(gridTs, nowMs)
     }
 
+    // ─── Raw sub-grid samples ───────────────────────────────────────────────────────────────
+
+    /**
+     * The samples received into one grid slot, oldest first — including the ones that lost the slot.
+     *
+     * The window comes from [rawSampleWindowFor], which is where it is spelled.
+     *
+     * A slot can legitimately answer with nothing: a five-minute sensor puts exactly one sample in a
+     * slot, a gap-filled slot never had one, and the retention bound below eventually takes them all.
+     */
+    suspend fun rawSamplesForSlot(sourceId: CgmSourceId, gridTs: Long): List<CgmRawSample> =
+        withContext(io) {
+            requireGrid(gridTs)
+            val window = rawSampleWindowFor(gridTs)
+            rawSamples
+                .rangeForSource(sourceId.value, window.first, window.last)
+                .map { it.toModel() }
+        }
+
+    /** Every sample this source was heard to send in `[fromMs, toMs]` of RECEIVE time, oldest first. */
+    suspend fun rawSamplesInRange(sourceId: CgmSourceId, fromMs: Long, toMs: Long): List<CgmRawSample> =
+        withContext(io) { rawSamples.rangeForSource(sourceId.value, fromMs, toMs).map { it.toModel() } }
+
+    /** How many sub-grid samples are held — a diagnostic read-out, so the retention bound is visible
+     *  rather than merely asserted. */
+    suspend fun rawSampleCount(): Int = withContext(io) { rawSamples.count() }
+
+    /**
+     * Drop every sub-grid sample older than [RAW_SAMPLE_RETENTION_MS]; returns how many went.
+     *
+     * Driven from the foreground service's five-minute housekeeping pass — the same tick the outbox
+     * eviction rides — because that is where the pressure is created and it is the one loop that runs
+     * exactly while samples are arriving. A sweep that finds nothing costs one index seek and writes
+     * nothing, so it does not invalidate the table and is free in the steady state.
+     *
+     * An AGE bound with no size bound, unlike the outbox's: samples arrive at the sensor's cadence
+     * and cannot burst, so bounding the age bounds the row count too. Nothing derives from these rows
+     * — no forecast, no statistic, no alarm, and they never cross the wire — so nothing observes the
+     * horizon except a display asking for a window older than the phone still holds.
+     */
+    suspend fun pruneRawSamples(nowMs: Long): Int =
+        withContext(io) { rawSamples.pruneBefore(rawSampleCutoff(nowMs)) }
+
     // ─── Raw adverts (forensics/replay) ─────────────────────────────────────────────────────
 
     suspend fun recordRawAdvert(advert: CgmAdvertRawEntity): Long =
         withContext(io) { advertsRaw.insert(advert) }
 
+    /** NOTE: nothing drives this. `cgm_advert_raw` therefore grows without bound; the retention is a
+     *  shape, not a policy. [pruneRawSamples] is the one that is actually swept. */
     suspend fun pruneRawAdvertsBefore(beforeMs: Long): Int =
         withContext(io) { advertsRaw.pruneBefore(beforeMs) }
 
@@ -1372,7 +1560,9 @@ class T1dmRepository(
      * the filesystem, not in Room, so they are untouched. Secrets that live outside Room (the
      * Keystore-wrapped server token) are burned by the caller. The graph's freehand annotation layer
      * (`bg_paint_stroke`) is user data like any other and goes whole — it ships with no seed rows, so
-     * "first-run contents" for it means empty. Off-main.
+     * "first-run contents" for it means empty. So do the exercise bouts and, with them, the GPS
+     * tracks: this is the one path that erases the stored location, and a reset that left it behind
+     * would not be one. Off-main.
      *
      * [preserveCgmSources] keeps the `cgm_source` rows (the discovered set + the exactly-one-active
      * flag): the connected-GATT session that holds the live sensor is process-scoped, so a reset that
@@ -1382,6 +1572,7 @@ class T1dmRepository(
     suspend fun wipeAllData(preserveCgmSources: Boolean = false) = withContext(io) {
         inWriteTx {
             readings.deleteAll()
+            rawSamples.deleteAll()
             samples.deleteAll()
             if (!preserveCgmSources) sources.deleteAll()
             doses.deleteAll()
@@ -1399,6 +1590,8 @@ class T1dmRepository(
             db.insulinTypeDao().deleteAllCustom()
             paintStrokes.deleteAll()
             conformalDeltas.deleteAll()
+            exerciseFixes.deleteAll()
+            exerciseSessions.deleteAll()
             // kv LAST: it holds the watch nonce ceilings + pairing bits + every setting.
             kv.deleteAll()
         }
@@ -1407,10 +1600,71 @@ class T1dmRepository(
     companion object {
         const val GRID_MS: Long = 300_000L
 
+        /**
+         * How long a sub-grid sample is kept — seven days, the same age bound the outbox uses
+         * (`sync/Backoff.kt`, `DrainConfig.maxAgeMs`), because both answer the same question: how far
+         * back is a row still worth holding when nothing derives from it.
+         *
+         * These rows exist for display and diagnosis, which is a question asked about the last few
+         * days at most; the grid series they were snapped into is keep-forever and is what any
+         * long-range reader wants. Seven days of a three-minute sensor is about 3 400 rows.
+         */
+        const val RAW_SAMPLE_RETENTION_MS: Long = 7L * 24 * 60 * 60 * 1000
+
+        /** The receive instant below which a sub-grid sample has expired at [nowMs]. */
+        internal fun rawSampleCutoff(nowMs: Long): Long = nowMs - RAW_SAMPLE_RETENTION_MS
+
+        /**
+         * The receive instants that [snapToGrid] files into [gridTs] — the inverse of the snap, and
+         * the only place it is written down.
+         *
+         * Round-to-nearest makes it `[gridTs − GRID_MS/2, gridTs + GRID_MS/2 − 1]`: the lower bound
+         * rounds up into this slot, and one millisecond past the upper bound rounds up into the next.
+         * Half-open on the late side rather than the early one, because that is which way the snap
+         * rounds a tie — spelling it here rather than at the call site keeps the asymmetry from
+         * becoming a second, subtly different copy of §1's rule.
+         */
+        internal fun rawSampleWindowFor(gridTs: Long): LongRange =
+            (gridTs - GRID_MS / 2)..(gridTs + GRID_MS / 2 - 1)
+
+        /**
+         * What `sample.exercise` becomes when a bout that has already written [priorGrams] into a
+         * bucket now claims [grams] there — [recordExerciseCurve]'s whole arithmetic, lifted out so
+         * it is testable without a database.
+         *
+         * `stored − prior` is what every OTHER bout (and any earlier life of this one, across a
+         * process death) put in the slot, and it is kept. The subtraction floors at zero rather than
+         * trusting the difference: the slot can be re-materialised under a running bout — an archive
+         * restore, or a server row [SampleGapFill] materialised for a bucket the phone had none for
+         * — and crediting a negative would take that back out again.
+         *
+         * **No ceiling, unlike the seconds this replaced.** A bucket could not hold more than five
+         * minutes of time, so a seconds figure had a natural bound; grams of carbohydrate equivalent
+         * have none, and clamping one would silently truncate the peak of a long bout's curve —
+         * which is to say break §5's invariant that a curve sums to its event's total. A non-finite
+         * input reads as nothing rather than poisoning the column: a hand-edited kv row can produce
+         * one, and a NaN here would reach the wire.
+         */
+        internal fun mergedExerciseGrams(storedGrams: Double?, priorGrams: Double, grams: Double): Double {
+            fun sane(v: Double) = if (v.isFinite()) v.coerceAtLeast(0.0) else 0.0
+            val others = (sane(storedGrams ?: 0.0) - sane(priorGrams)).coerceAtLeast(0.0)
+            return others + sane(grams)
+        }
+
         private fun requireGrid(ts: Long) =
             require(ts % GRID_MS == 0L) { "timestamp not on the 5-min grid: $ts" }
 
-        private fun snapToGrid(ts: Long): Long =
+        /**
+         * Round-to-nearest onto the five-minute grid — the repository seam's one snap, and the rule
+         * `../T1DMCOMMON/SPEC/invariants.md` §1 makes part of the contract rather than an
+         * implementation detail: floor and round both land on the grid and both pass every
+         * validation while filing the same event in different buckets.
+         *
+         * Public because callers outside `:data` need it — the exercise recorder aligns a bout's
+         * disposal curve with it — and a second copy in another module is exactly the divergence §1
+         * warns about.
+         */
+        fun snapToGrid(ts: Long): Long =
             Math.floorDiv(ts + GRID_MS / 2, GRID_MS) * GRID_MS
 
         /** A fresh phone-minted event id (§3.2). v4 UUID — acceptable per §8.6 (v7 preferred for

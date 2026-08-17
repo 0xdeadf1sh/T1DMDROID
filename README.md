@@ -76,9 +76,15 @@ https://github.com/user-attachments/assets/13ade4ea-f50f-4c91-bf23-62ef8dae1c96
 
 https://github.com/user-attachments/assets/319401e4-09ff-4e8f-964f-0eb8a0808fca
 
+### Exercise
+
+The Exercise panel records a bout from a manual start to a manual stop, following GPS position during walks and runs and drawing the route on OpenStreetMap tiles. Distance and pace are measured between accepted fixes; energy expenditure comes from the ACSM walking and running metabolic equations at zero grade and appears only once a body mass has been entered, since nothing else on the device can supply one. Each bout's per-five-minute magnitude — the whole seconds of it recorded in that slot — is folded into the same wide sensor series that already carries glucose, heart rate, steps, sleep and mood, and syncs on the row that already exists.
+
+Every recorded bout opens its own review: the route, the glucose trace over the half hour before the bout and the two hours after it, and a slider that sweeps the forecast the model issued at any instant in that window across the trace that followed it. Where no forecast was issued — warm-up, a thermal pause, a phone that was off — the slider shows nothing rather than the nearest one. The track itself is never uploaded; drawing it fetches map tiles for the surrounding area from the OpenStreetMap servers, cached on the device.
+
 ### Backup and Restore
 
-The Backup panel writes the whole local record — every glucose reading, the wide sensor series, logged meals and doses, basal schedules, custom foods, saved meals, insulin types, the graph's freehand drawings, and every setting — to one gzipped, line-delimited JSON file. Automatic backups run on a chosen cadence into a folder outside app storage, so they survive an uninstall, with a configurable number of older archives retained.
+The Backup panel writes the whole local record — every glucose reading, the wide sensor series, logged meals and doses, basal schedules, custom foods, saved meals, insulin types, recorded exercise bouts and their GPS tracks, the graph's freehand drawings, and every setting — to one gzipped, line-delimited JSON file. Automatic backups run on a chosen cadence into a folder outside app storage, so they survive an uninstall, with a configurable number of older archives retained.
 
 Restoring merges: a record already present on the device is kept, so importing the same file twice changes nothing and an older archive can never roll back newer data. The server token is never written to a backup — it lives in the Android Keystore rather than in the database.
 
@@ -100,7 +106,7 @@ Heavy compute never runs on the main thread; the UI observes results reactively.
 | `:app` | Composition root, the always-on foreground service, notifications, widgets, navigation |
 | `:cgm` | Passive AiDEX X advertisement scan, recognition, and the CGM-source registry |
 | `:inference` | The forecasting cycle: context build, backend dispatch, decode, degeneracy gating |
-| `:sensors` | Step counter and other phone sensors |
+| `:sensors` | Step counter, GPS track recording, and other phone sensors |
 | `:calc` | Advisory bolus/basal and statistics calculators |
 | `:alerts` | The deterministic, model-free alarm engine (out-of-range, loss-of-signal, device temperature) |
 | `:sync` | Durable-outbox sync with the self-hosted server |

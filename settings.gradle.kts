@@ -38,6 +38,7 @@ include(
     ":feature:network",
     ":feature:meals",
     ":feature:insulin",
+    ":feature:exercise",
     ":feature:security",
     ":feature:settings",
     ":feature:logs",

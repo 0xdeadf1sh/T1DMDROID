@@ -93,6 +93,9 @@ import com.t1dm.calc.SensitivityProbe
 import com.t1dm.core.model.SensitivityEstimate
 import com.t1dm.inference.backend.GraphInput
 import com.t1dm.core.nativecore.UniffiNativeCore
+import com.t1dm.app.exercise.AppExerciseSource
+import com.t1dm.app.service.ExerciseService
+import com.t1dm.core.model.ActiveExercise
 import com.t1dm.app.stats.AppStatsSource
 import com.t1dm.data.PushWithdrawal
 import com.t1dm.data.T1dmRepository
@@ -114,9 +117,11 @@ import com.t1dm.data.curve.CurveEngine
 import com.t1dm.data.curve.DoseStore
 import com.t1dm.data.curve.MealCurveResolver
 import com.t1dm.data.curve.RoomDoseStore
+import com.t1dm.data.exercise.ExerciseController
 import com.t1dm.data.meals.InsulinController
 import com.t1dm.data.meals.MealsController
 import com.t1dm.data.stats.StatsRepository
+import com.t1dm.feature.exercise.ExerciseSource
 import com.t1dm.feature.stats.StatsViewModel
 import com.t1dm.core.model.AdvancedStats
 import com.t1dm.core.model.Food
@@ -1906,13 +1911,61 @@ class AppContainer(context: Context) {
     val recentMeals: Flow<List<RecentMeal>> get() = repository.observeRecentMeals(3)
     val insulinTypes: Flow<List<InsulinType>> get() = insulinController.types
 
-    /** Seed the bundled glycemic dictionary + the three insulin presets once, off-main (idempotent). */
+    /** Seed the bundled glycemic dictionary + the three insulin presets once, off-main (idempotent),
+     *  and settle any exercise bout the last process died in the middle of. */
     fun startBuilders() {
         appScope.launch {
             mealsController.seedIfEmpty()
             insulinController.seedBuiltinsIfEmpty()
+            exerciseController.reconcileOpenSessions(System.currentTimeMillis())
         }
     }
+
+    // ─── Exercise ─────────────────────────────────────────────────────────────────────────────
+    //
+    // A logged bout is not a new physiologic concept: its per-5-minute magnitude belongs in the wide
+    // sample's existing `exercise` scalar, beside bg/hr/steps/sleep/mood, on the ingest row that
+    // already syncs. The bout row and its GPS track are phone-local and cross no wire.
+
+    /** The bout store: the sessions Flow, the start/stop writers, the track, and the launch-time
+     *  reconcile that closes a bout the process died inside. */
+    val exerciseController: ExerciseController by lazy { ExerciseController(repository, dispatchers) }
+
+    /** The bout being recorded now, published by [com.t1dm.sensors.ExerciseRecorder] inside
+     *  [com.t1dm.app.service.ExerciseService] and read by the panel. Null whenever none is running. */
+    val activeExercise = MutableStateFlow<ActiveExercise?>(null)
+
+    /** Why no bout could START — a location permission the user declined. Set by the service on the
+     *  path where it stops itself, so the panel can say why nothing happened; a bout that IS running
+     *  carries its own reason on [ActiveExercise.degraded] instead. */
+    val exerciseRefusal = MutableStateFlow<String?>(null)
+
+    /**
+     * The one degraded-exercise reason to render, whichever half produced it: a bout's own
+     * [ActiveExercise.degraded] while one is recording, the refusal that stopped the service
+     * otherwise. Derived rather than stored, so the two can never disagree about which is current.
+     *
+     * `container.serviceRunning` has no consumer and `MainActivity`'s permission callback writes only
+     * a Timber line — copying that silence here would give this feature its worst failure mode: a
+     * bout that records nothing and reads as a walk that went nowhere.
+     */
+    val exerciseDegraded: StateFlow<String?> =
+        combine(activeExercise, exerciseRefusal) { active, refusal -> active?.degraded ?: refusal }
+            .stateIn(appScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    private val exerciseSource by lazy {
+        AppExerciseSource(
+            controller = exerciseController,
+            settings = settingsStore,
+            active = activeExercise,
+            onStart = { kind -> ExerciseService.start(appContext, kind) },
+            onStop = { ExerciseService.stop(appContext) },
+        )
+    }
+
+    /** The `:feature:exercise` port: recorded bouts, the running one, and the body mass its energy
+     *  figure cannot be computed without. */
+    val exercise: ExerciseSource get() = exerciseSource
 
     /** The mood last folded into the wide sample; seeds the Logs panel's picker, which is its only
      *  user-facing writer (see [saveMood]). */
@@ -2944,6 +2997,14 @@ class AppContainer(context: Context) {
     suspend fun gameReadings(fromMs: Long): List<CgmReading> {
         val source = repository.observeAuthoritativeSource().first() ?: return emptyList()
         return repository.observeReadingsForSensorModel(source.sensorModelId, source.id, fromMs, Long.MAX_VALUE).first()
+    }
+
+    /** An exercise bout's review window, `[fromMs, toMs]`. [gameReadings]'s shape, and bounded at BOTH
+     *  ends because a review is a fixed picture of a finished bout: one shot, class-scoped, and never
+     *  subscribed, so a reading landing mid-scrub cannot rebuild the chart under the thumb. */
+    suspend fun sessionReadings(fromMs: Long, toMs: Long): List<CgmReading> {
+        val source = repository.observeAuthoritativeSource().first() ?: return emptyList()
+        return repository.observeReadingsForSensorModel(source.sensorModelId, source.id, fromMs, toMs).first()
     }
 
     // ─── BG-panel display settings + chrome (Phase 7A) ────────────────────────────────────────

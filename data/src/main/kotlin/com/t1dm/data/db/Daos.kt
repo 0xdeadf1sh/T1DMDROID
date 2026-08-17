@@ -273,6 +273,52 @@ interface CgmReadingDao {
     suspend fun insertIgnoreAll(rows: List<CgmReadingEntity>): List<Long>
 }
 
+/**
+ * The sub-grid record beside `cgm_reading` — every accepted sample at its true receive instant.
+ *
+ * Deliberately NO `Flow`. Room invalidates per TABLE, so an observer here would re-run on every
+ * incoming sample AND on every retention sweep, and this table is written more often than the grid
+ * it sits beside — which is the exact defect `CgmReadingDao`'s own KDoc records for the reading
+ * observers. These rows are read on demand, for display and diagnosis, and nothing waits on them.
+ */
+@Dao
+interface CgmRawSampleDao {
+    /**
+     * IGNORE, not REPLACE: the row filed under a receive instant is what arrived at that instant, and
+     * nothing later knows better. This makes the write idempotent, so a retried persist cannot
+     * double-file a sample — and it is what lets `upsertReading` insert unconditionally, before the
+     * slot has been contested, without a read to check.
+     */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertIgnore(row: CgmRawSampleEntity): Long
+
+    /**
+     * One source's samples received in `[fromMs, toMs]`, oldest first — one seek down the
+     * `(sourceId, rxWallMs)` primary key.
+     *
+     * The window is a RECEIVE-time window, not a grid window: the caller that wants the samples
+     * behind one slot asks [com.t1dm.data.T1dmRepository.rawSamplesForSlot], which owns the
+     * conversion so the half-open slot boundary is spelled once.
+     */
+    @Query(
+        "SELECT * FROM cgm_sample_raw WHERE sourceId = :sourceId " +
+            "AND rxWallMs BETWEEN :fromMs AND :toMs ORDER BY rxWallMs",
+    )
+    suspend fun rangeForSource(sourceId: String, fromMs: Long, toMs: Long): List<CgmRawSampleEntity>
+
+    /** How many samples the store currently holds — the diagnostic read-out for the retention bound. */
+    @Query("SELECT COUNT(*) FROM cgm_sample_raw")
+    suspend fun count(): Int
+
+    /** The retention sweep. Returns the number of rows dropped, so a caller can log a sweep that did
+     *  something without a second query. */
+    @Query("DELETE FROM cgm_sample_raw WHERE rxWallMs < :beforeMs")
+    suspend fun pruneBefore(beforeMs: Long): Int
+
+    @Query("DELETE FROM cgm_sample_raw")
+    suspend fun deleteAll()
+}
+
 
 @Dao
 interface SampleDao {
@@ -284,10 +330,16 @@ interface SampleDao {
     @Query("SELECT * FROM sample WHERE ts > :cursor ORDER BY ts LIMIT :limit")
     suspend fun page(cursor: Long, limit: Int): List<SampleEntity>
 
-    /** Newest grid ts held locally, or null when the projection is empty — the forward cursor a
-     *  fresh WS connect catches up from (only pull rows the phone is missing). */
+    /** Newest grid ts held locally, or null when the projection is empty. */
     @Query("SELECT MAX(ts) FROM sample")
     suspend fun maxTs(): Long?
+
+    /** Newest grid ts at or before [atMs] — the forward cursor a fresh WS connect catches up from
+     *  (only pull rows the phone is missing). Bounded rather than [maxTs] because the exercise
+     *  disposal curve writes its tail into slots ahead of the clock; see
+     *  [T1dmRepository.newestSampleTsAtOrBefore]. */
+    @Query("SELECT MAX(ts) FROM sample WHERE ts <= :atMs")
+    suspend fun maxTsAtOrBefore(atMs: Long): Long?
 
     /** [maxTs] as a Flow — the scalar `sample`-write signal ([T1dmRepository.observeSampleWrites]).
      *  Room's invalidation is per TABLE, so this emits on exactly the writes an `observeRange` over
@@ -969,4 +1021,97 @@ interface ConformalDeltaDao {
      */
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertIgnoreAll(rows: List<ConformalDeltaEntity>): List<Long>
+}
+
+@Dao
+interface ExerciseSessionDao {
+    /** Returns the minted rowid, so the writer, the service and the panel all address ONE bout —
+     *  the contract [LoggedMealDao.insert] has for the same reason. */
+    @Insert suspend fun insert(row: ExerciseSessionEntity): Long
+
+    /**
+     * Close an open bout with what was actually recorded.
+     *
+     * Column-scoped rather than an upsert: `clientId`, `startMs` and `kind` are the bout's identity,
+     * and the stop path has no business rewriting them. A stop that lands after the row was deleted
+     * updates nothing, which is the outcome wanted.
+     */
+    @Query(
+        "UPDATE exercise_session SET endMs = :endMs, activeSec = :activeSec, distanceM = :distanceM, " +
+            "kcal = :kcal, interrupted = :interrupted, updatedAt = :nowMs WHERE id = :id",
+    )
+    suspend fun close(
+        id: Long,
+        endMs: Long,
+        activeSec: Int,
+        distanceM: Double?,
+        kcal: Int?,
+        interrupted: Boolean,
+        nowMs: Long,
+    )
+
+    /** Every bout, newest first — the panel's list. Unbounded, and bounded in practice by what it
+     *  counts: one row per bout the user started, not one per reading. */
+    @Query("SELECT * FROM exercise_session ORDER BY startMs DESC, id DESC")
+    fun observeAll(): Flow<List<ExerciseSessionEntity>>
+
+    @Query("SELECT * FROM exercise_session WHERE id = :id")
+    suspend fun byId(id: Long): ExerciseSessionEntity?
+
+    /** Bouts with no end — the set reconciled at launch. A live recording is in here too, which is
+     *  why the reconcile runs once at start-up rather than on a timer. */
+    @Query("SELECT * FROM exercise_session WHERE endMs IS NULL ORDER BY startMs")
+    suspend fun open(): List<ExerciseSessionEntity>
+
+    @Query("DELETE FROM exercise_session WHERE id = :id")
+    suspend fun delete(id: Long)
+
+    /** Full-erase (issue 5, app reset). Row-only DELETE — the schema/table is untouched. */
+    @Query("DELETE FROM exercise_session")
+    suspend fun deleteAll()
+
+    /** One keyset page for the archive export, oldest-first; see [LoggedDoseDao.pageFrom] on why the
+     *  cursor is the `(startMs, id)` pair rather than the timestamp alone. */
+    @Query(
+        "SELECT * FROM exercise_session WHERE startMs > :afterStartMs OR (startMs = :afterStartMs AND id > :afterId) " +
+            "ORDER BY startMs, id LIMIT :limit",
+    )
+    suspend fun pageFrom(afterStartMs: Long, afterId: Long, limit: Int): List<ExerciseSessionEntity>
+
+    /** Merge insert (archive restore) on the unique `clientId`. The -1 a conflict returns is also
+     *  what tells the restore which bouts it actually added — the only ones whose archived fixes may
+     *  be applied, since a bout the phone already holds already has its own track. */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertIgnoreAll(rows: List<ExerciseSessionEntity>): List<Long>
+}
+
+@Dao
+interface ExerciseFixDao {
+    @Insert suspend fun insertAll(rows: List<ExerciseFixEntity>)
+
+    /** One bout's whole track, oldest-first — what the map draws. Bounded by the bout's own length. */
+    @Query("SELECT * FROM exercise_fix WHERE sessionId = :sessionId ORDER BY tsMs, id")
+    suspend fun forSession(sessionId: Long): List<ExerciseFixEntity>
+
+    /** The newest fix a bout recorded, or null when it recorded none. This is where an interrupted
+     *  bout is closed: the last instant the app can prove it was still running. */
+    @Query("SELECT MAX(tsMs) FROM exercise_fix WHERE sessionId = :sessionId")
+    suspend fun newestTs(sessionId: Long): Long?
+
+    @Query("DELETE FROM exercise_fix WHERE sessionId = :sessionId")
+    suspend fun deleteForSession(sessionId: Long)
+
+    /** Full-erase (issue 5, app reset). Row-only DELETE — the schema/table is untouched. */
+    @Query("DELETE FROM exercise_fix")
+    suspend fun deleteAll()
+
+    /** One keyset page of ONE bout's track for the archive export, oldest-first — a seek down the
+     *  `(sessionId, tsMs)` index per page, the shape [CgmReadingDao.pageFrom] walks per source. The
+     *  `id` rides in the cursor because two fixes could share a millisecond in a hand-edited file,
+     *  and a `tsMs`-only cursor would then drop one from the export without saying so. */
+    @Query(
+        "SELECT * FROM exercise_fix WHERE sessionId = :sessionId AND " +
+            "(tsMs > :afterTs OR (tsMs = :afterTs AND id > :afterId)) ORDER BY tsMs, id LIMIT :limit",
+    )
+    suspend fun pageFrom(sessionId: Long, afterTs: Long, afterId: Long, limit: Int): List<ExerciseFixEntity>
 }

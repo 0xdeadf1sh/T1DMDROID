@@ -18,6 +18,10 @@ import java.util.UUID
  * bounded by what the removal already decided — it may only drop a store no surviving code reads,
  * never trim a table another feature still keys off.
  *
+ * Two migrations REBUILD a table rather than alter it, both `sample`, because SQLite offers no way
+ * to do what they need: [MIGRATION_6_7] dropped three dead columns Room compares exactly, and
+ * [MIGRATION_16_17] changed a column's declared type. Each states what it discarded and why.
+ *
  * Each version appends exactly one `Migration(n-1, n)` here and its exported `schemas/<db>/n.json`
  * gates it in CI. The DDL below is transcribed verbatim from the generated schema so the migrated
  * DB is byte-identical to a fresh `createAllTables`.
@@ -469,6 +473,134 @@ object MigrationRunner {
         }
     }
 
+    /**
+     * v15 → v16 (logged exercise): additive only — `exercise_session`, one row per start-to-stop
+     * bout, and `exercise_fix`, one row per accepted GPS fix on its track.
+     *
+     * No existing table is touched, and nothing already stored changes meaning. In particular the
+     * `sample.exercise` column is untouched and is not backfilled: it has existed and been null since
+     * v1, and null there means the magnitude was never recorded, which for every bucket predating
+     * this is exactly true.
+     *
+     * No foreign key ties the two tables, by the decision recorded on [ExerciseFixEntity]. DDL
+     * transcribed verbatim from the generated `schemas/<db>/16.json` (its `${TABLE_NAME}` placeholders
+     * resolved) so the migrated DB is byte-identical to a fresh `createAllTables`.
+     */
+    val MIGRATION_15_16 = object : Migration(15, 16) {
+        override fun migrate(connection: SQLiteConnection) {
+            connection.execSQL(
+                "CREATE TABLE IF NOT EXISTS `exercise_session` (" +
+                    "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `clientId` TEXT NOT NULL, " +
+                    "`startMs` INTEGER NOT NULL, `endMs` INTEGER, `tzOffsetMin` INTEGER NOT NULL, " +
+                    "`kind` TEXT NOT NULL, `activeSec` INTEGER NOT NULL, `distanceM` REAL, " +
+                    "`kcal` INTEGER, `interrupted` INTEGER NOT NULL, `note` TEXT, " +
+                    "`updatedAt` INTEGER NOT NULL)",
+            )
+            connection.execSQL(
+                "CREATE UNIQUE INDEX IF NOT EXISTS `index_exercise_session_clientId` " +
+                    "ON `exercise_session` (`clientId`)",
+            )
+            connection.execSQL(
+                "CREATE INDEX IF NOT EXISTS `index_exercise_session_startMs` ON `exercise_session` (`startMs`)",
+            )
+            connection.execSQL(
+                "CREATE TABLE IF NOT EXISTS `exercise_fix` (" +
+                    "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `sessionId` INTEGER NOT NULL, " +
+                    "`tsMs` INTEGER NOT NULL, `lat` REAL NOT NULL, `lon` REAL NOT NULL, " +
+                    "`accuracyM` REAL NOT NULL, `speedMps` REAL)",
+            )
+            connection.execSQL(
+                "CREATE INDEX IF NOT EXISTS `index_exercise_fix_sessionId_tsMs` " +
+                    "ON `exercise_fix` (`sessionId`, `tsMs`)",
+            )
+        }
+    }
+
+    /**
+     * v16 → v17 (the exercise scalar changes unit): `sample.exercise` becomes REAL and every stored
+     * value is dropped.
+     *
+     * The column carried whole active SECONDS per five-minute bucket, `0..300`. `invariants.md` §3
+     * now fixes the quantity as grams of carbohydrate equivalent — glucose disposal expressed as the
+     * carbohydrate it offsets — which §5's exercise gamma lays on the grid at an order of a couple of
+     * grams per bucket. The two are two orders of magnitude apart and the column syncs, so a stored
+     * `300` read as grams is not a rounding error but a hundredfold one, on a channel the model is
+     * meant to consume.
+     *
+     * **The old values are not converted, because they cannot be.** A bucket's seconds say how long
+     * the bout was open inside that five minutes; the disposal curve spreads a bout's whole magnitude
+     * across its length and the ninety minutes after it, so no per-bucket function of the seconds
+     * recovers the grams. NULL is the honest answer — "never recorded in this unit" — and it is what
+     * the bouts still on record in `exercise_session` will produce again if anything ever backfills
+     * them from their own durations.
+     *
+     * A table rebuild, following [MIGRATION_6_7]: SQLite cannot change a column's declared type, and
+     * Room compares `TableInfo` exactly, so an INTEGER `exercise` under a `Double?` field is refused
+     * at open. The new DDL is transcribed from the generated `schemas/<db>/17.json` (its
+     * `${TABLE_NAME}` placeholder resolved) so the migrated table is byte-identical to a fresh
+     * `createAllTables`. No index and no foreign key references `sample`, so the rebuild has nothing
+     * else to restore.
+     */
+    val MIGRATION_16_17 = object : Migration(16, 17) {
+        override fun migrate(connection: SQLiteConnection) {
+            connection.execSQL(
+                "CREATE TABLE IF NOT EXISTS `sample_new` (`ts` INTEGER NOT NULL, " +
+                    "`tzOffsetMin` INTEGER NOT NULL, `bgMgdl` INTEGER, `bgSource` TEXT, " +
+                    "`bgProvenance` TEXT, `bgFlag` TEXT, `steps` INTEGER, `mood` INTEGER, " +
+                    "`hr` INTEGER, `sleep` INTEGER, `exercise` REAL, " +
+                    "`updatedAt` INTEGER NOT NULL, PRIMARY KEY(`ts`))",
+            )
+            // `exercise` is deliberately absent from both column lists: it defaults to NULL.
+            connection.execSQL(
+                "INSERT INTO `sample_new` " +
+                    "(`ts`,`tzOffsetMin`,`bgMgdl`,`bgSource`,`bgProvenance`,`bgFlag`,`steps`,`mood`," +
+                    "`hr`,`sleep`,`updatedAt`) " +
+                    "SELECT `ts`,`tzOffsetMin`,`bgMgdl`,`bgSource`,`bgProvenance`,`bgFlag`,`steps`," +
+                    "`mood`,`hr`,`sleep`,`updatedAt` FROM `sample`",
+            )
+            connection.execSQL("DROP TABLE `sample`")
+            connection.execSQL("ALTER TABLE `sample_new` RENAME TO `sample`")
+        }
+    }
+
+    /**
+     * The `cgm_sample_raw` DDL, frozen. Held as constants rather than inline so
+     * `MigrationConstantsTest` can hold them against [CgmRawSampleEntity]'s own field list: the
+     * migration is the one description of this table that Room does not check, so a column added to
+     * the entity and forgotten here upgrades an existing install into a schema Room rejects at open
+     * — on a store with no destructive fallback, which is a launch crash rather than a lost row.
+     */
+    internal const val SQL_17_18_CREATE_TABLE =
+        "CREATE TABLE IF NOT EXISTS `cgm_sample_raw` (" +
+            "`sourceId` TEXT NOT NULL, `rxWallMs` INTEGER NOT NULL, `bgMgdl` INTEGER, " +
+            "`trendTenthsPerMin` INTEGER, `minFromStart` INTEGER, `quality` INTEGER, " +
+            "`flag` TEXT NOT NULL, `tzOffsetMin` INTEGER NOT NULL, `rssi` INTEGER, " +
+            "PRIMARY KEY(`sourceId`, `rxWallMs`))"
+
+    internal const val SQL_17_18_CREATE_INDEX =
+        "CREATE INDEX IF NOT EXISTS `index_cgm_sample_raw_rxWallMs` ON `cgm_sample_raw` (`rxWallMs`)"
+
+    /**
+     * v17 → v18 (the sub-grid sample record): additive only — `cgm_sample_raw`, one row per accepted
+     * sample at its true receive instant.
+     *
+     * Nothing existing is touched and nothing is backfilled. A backfill is not merely unnecessary
+     * here but impossible: `cgm_reading` holds the sample that WON each slot and has never held the
+     * ones it displaced, so the history this table would want has already been discarded. The store
+     * therefore begins empty and fills forward, and every reader of it must treat an absent row as
+     * normal — which it also has to do anyway, because these rows expire (see
+     * `T1dmRepository.RAW_SAMPLE_RETENTION_MS`).
+     *
+     * DDL transcribed verbatim from the generated `schemas/<db>/18.json` (its `${TABLE_NAME}`
+     * placeholders resolved) so the migrated DB is byte-identical to a fresh `createAllTables`.
+     */
+    val MIGRATION_17_18 = object : Migration(17, 18) {
+        override fun migrate(connection: SQLiteConnection) {
+            connection.execSQL(SQL_17_18_CREATE_TABLE)
+            connection.execSQL(SQL_17_18_CREATE_INDEX)
+        }
+    }
+
     val ALL: Array<Migration> = arrayOf(
         MIGRATION_1_2,
         MIGRATION_2_3,
@@ -484,6 +616,9 @@ object MigrationRunner {
         MIGRATION_12_13,
         MIGRATION_13_14,
         MIGRATION_14_15,
+        MIGRATION_15_16,
+        MIGRATION_16_17,
+        MIGRATION_17_18,
     )
 
     /** Apply every registered migration to a builder; the sole path that wires migrations. */

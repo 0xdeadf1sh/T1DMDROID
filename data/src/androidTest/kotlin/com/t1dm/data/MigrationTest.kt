@@ -9,6 +9,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.t1dm.data.db.AppDatabase
 import com.t1dm.data.db.MigrationRunner
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -332,10 +333,174 @@ class MigrationTest {
     }
 
     @Test
-    fun migrate1To14_fullChain() {
+    fun migrate14To15_bgSourceIsAddedAndLeftNull() {
+        // v15 (contract 0.4.0): `sample` records which sensor its bg came from. One nullable column,
+        // nothing backfilled — a row written before it genuinely has no record of the sensor behind
+        // it, every sensor the phone had met having been authoritative in turn, so stamping the
+        // current one would be indistinguishable from having known.
+        helper.createDatabase(14).use { db ->
+            db.execSQL(
+                "INSERT INTO `sample` (`ts`,`tzOffsetMin`,`bgMgdl`,`bgProvenance`,`bgFlag`," +
+                    "`steps`,`mood`,`hr`,`sleep`,`exercise`,`updatedAt`) " +
+                    "VALUES (300000,0,120,'MEASURED','NORMAL',NULL,NULL,NULL,NULL,NULL,1)",
+            )
+        }
+
+        val db = helper.runMigrationsAndValidate(15, listOf(MigrationRunner.MIGRATION_14_15))
+
+        assertEquals(1, countRows(db, "SELECT COUNT(*) FROM `sample` WHERE `bgSource` IS NULL"))
+        assertEquals(1, countRows(db, "SELECT COUNT(*) FROM `sample` WHERE `bgMgdl` = 120"))
+        db.close()
+    }
+
+    @Test
+    fun migrate15To16_exerciseTablesMatchSchemaAndNoSampleIsBackfilled() {
+        // v16 (logged exercise): two additive tables, nothing else touched. The `sample.exercise`
+        // column has existed and been null since v1, and null there means the magnitude was never
+        // recorded — which for every bucket predating this feature is exactly true, so a backfill
+        // would invent a bout that was never walked.
+        helper.createDatabase(15).use { db ->
+            db.execSQL(
+                "INSERT INTO `sample` (`ts`,`tzOffsetMin`,`bgMgdl`,`bgSource`,`bgProvenance`,`bgFlag`," +
+                    "`steps`,`mood`,`hr`,`sleep`,`exercise`,`updatedAt`) " +
+                    "VALUES (300000,0,120,NULL,'MEASURED','NORMAL',400,NULL,NULL,NULL,NULL,1)",
+            )
+        }
+
+        val db = helper.runMigrationsAndValidate(16, listOf(MigrationRunner.MIGRATION_15_16))
+
+        assertEquals(1, countTables(db, "exercise_session"))
+        assertEquals(1, countTables(db, "exercise_fix"))
+        assertEquals(0, countRows(db, "SELECT COUNT(*) FROM `exercise_session`"))
+        assertEquals(0, countRows(db, "SELECT COUNT(*) FROM `exercise_fix`"))
+        assertEquals(1, countRows(db, "SELECT COUNT(*) FROM `sample` WHERE `exercise` IS NULL"))
+        assertEquals(1, countRows(db, "SELECT COUNT(*) FROM `sample` WHERE `steps` = 400"))
+        db.close()
+    }
+
+    @Test
+    fun migrate15To16_theBoutClientIdIsUnique() {
+        // The unique index is what makes an archive restore a merge rather than a duplication: a bout
+        // the phone already holds must lose to itself, not land twice with two tracks.
+        helper.createDatabase(15).close()
+        val db = helper.runMigrationsAndValidate(16, listOf(MigrationRunner.MIGRATION_15_16))
+
+        fun insertBout() = db.execSQL(
+            "INSERT INTO `exercise_session` " +
+                "(`clientId`,`startMs`,`endMs`,`tzOffsetMin`,`kind`,`activeSec`,`distanceM`,`kcal`," +
+                "`interrupted`,`note`,`updatedAt`) " +
+                "VALUES ('bout-1',1000,2000,0,'WALK',900,1500.0,120,0,NULL,2000)",
+        )
+        insertBout()
+        assertTrue(
+            "a second bout under the same clientId was accepted",
+            runCatching { insertBout() }.isFailure,
+        )
+        assertEquals(1, countRows(db, "SELECT COUNT(*) FROM `exercise_session`"))
+        db.close()
+    }
+
+    @Test
+    fun migrate16To17_exerciseBecomesGramsAndTheSecondsAreDropped() {
+        // v17 changes what the column MEANS, not just its type: whole active seconds per bucket
+        // (0..300) become grams of carbohydrate equivalent (order 2.5). No per-bucket function of the
+        // seconds recovers the grams — the disposal curve spreads a bout's magnitude over its length
+        // plus ninety minutes — so the old values are dropped rather than converted, and everything
+        // else in the row must survive the rebuild untouched.
+        helper.createDatabase(16).use { db ->
+            db.execSQL(
+                "INSERT INTO `sample` (`ts`,`tzOffsetMin`,`bgMgdl`,`bgSource`,`bgProvenance`,`bgFlag`," +
+                    "`steps`,`mood`,`hr`,`sleep`,`exercise`,`updatedAt`) " +
+                    "VALUES (300000,60,120,'src-a','MEASURED','NORMAL',400,3,72,1,300,1700)",
+            )
+            db.execSQL(
+                "INSERT INTO `sample` (`ts`,`tzOffsetMin`,`bgMgdl`,`bgSource`,`bgProvenance`,`bgFlag`," +
+                    "`steps`,`mood`,`hr`,`sleep`,`exercise`,`updatedAt`) " +
+                    "VALUES (600000,60,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,1800)",
+            )
+        }
+
+        val db = helper.runMigrationsAndValidate(17, listOf(MigrationRunner.MIGRATION_16_17))
+
+        assertEquals(2, countRows(db, "SELECT COUNT(*) FROM `sample`"))
+        assertEquals(2, countRows(db, "SELECT COUNT(*) FROM `sample` WHERE `exercise` IS NULL"))
+        // Every other column of the rebuilt row is the one that went in.
+        assertEquals(
+            1,
+            countRows(
+                db,
+                "SELECT COUNT(*) FROM `sample` WHERE `ts` = 300000 AND `tzOffsetMin` = 60 AND " +
+                    "`bgMgdl` = 120 AND `bgSource` = 'src-a' AND `bgProvenance` = 'MEASURED' AND " +
+                    "`bgFlag` = 'NORMAL' AND `steps` = 400 AND `mood` = 3 AND `hr` = 72 AND " +
+                    "`sleep` = 1 AND `updatedAt` = 1700",
+            ),
+        )
+        // REAL affinity, so a fractional gram survives where the old column would have rounded it.
+        db.execSQL(
+            "INSERT INTO `sample` (`ts`,`tzOffsetMin`,`exercise`,`updatedAt`) VALUES (900000,60,2.5,1900)",
+        )
+        assertEquals(1, countRows(db, "SELECT COUNT(*) FROM `sample` WHERE `exercise` = 2.5"))
+        db.close()
+    }
+
+    @Test
+    fun migrate17To18_rawSampleTableIsAddedEmptyAndNothingElseMoves() {
+        // v18 (the sub-grid sample record): one additive table, nothing else touched. No backfill is
+        // possible even in principle — `cgm_reading` has only ever held the sample that won each
+        // slot, so the samples this table exists to keep were discarded before it existed.
+        helper.createDatabase(17).use { db ->
+            db.execSQL(
+                "INSERT INTO `cgm_reading` (`sourceId`,`tsMs`,`bgMgdl`,`trendTenthsPerMin`," +
+                    "`minFromStart`,`quality`,`provenance`,`flag`,`tzOffsetMin`,`rxWallMs`,`rssi`) " +
+                    "VALUES ('src-a',300000,120,3,400,1,'MEASURED','NORMAL',60,299000,-70)",
+            )
+        }
+
+        val db = helper.runMigrationsAndValidate(18, listOf(MigrationRunner.MIGRATION_17_18))
+
+        assertEquals(1, countTables(db, "cgm_sample_raw"))
+        assertEquals(0, countRows(db, "SELECT COUNT(*) FROM `cgm_sample_raw`"))
+        assertEquals("the grid series was touched", 1, countRows(db, "SELECT COUNT(*) FROM `cgm_reading`"))
+        assertEquals(
+            1,
+            countRows(
+                db,
+                "SELECT COUNT(*) FROM `cgm_reading` WHERE `tsMs` = 300000 AND `rxWallMs` = 299000 " +
+                    "AND `bgMgdl` = 120 AND `provenance` = 'MEASURED'",
+            ),
+        )
+        // Off-grid receive instants are the point of the table; the key is (sourceId, rxWallMs), so
+        // two samples of one source inside one slot both survive and a repeat of an instant does not.
+        db.execSQL(
+            "INSERT INTO `cgm_sample_raw` " +
+                "(`sourceId`,`rxWallMs`,`bgMgdl`,`trendTenthsPerMin`,`minFromStart`,`quality`," +
+                "`flag`,`tzOffsetMin`,`rssi`) VALUES ('src-a',299000,120,3,400,1,'NORMAL',60,-70)",
+        )
+        db.execSQL(
+            "INSERT INTO `cgm_sample_raw` " +
+                "(`sourceId`,`rxWallMs`,`bgMgdl`,`trendTenthsPerMin`,`minFromStart`,`quality`," +
+                "`flag`,`tzOffsetMin`,`rssi`) VALUES ('src-a',419000,124,3,402,1,'NORMAL',60,-72)",
+        )
+        assertEquals(2, countRows(db, "SELECT COUNT(*) FROM `cgm_sample_raw`"))
+        assertTrue(
+            "a second sample was accepted under an instant already held",
+            runCatching {
+                db.execSQL(
+                    "INSERT INTO `cgm_sample_raw` " +
+                        "(`sourceId`,`rxWallMs`,`bgMgdl`,`trendTenthsPerMin`,`minFromStart`," +
+                        "`quality`,`flag`,`tzOffsetMin`,`rssi`) " +
+                        "VALUES ('src-a',299000,999,3,400,1,'NORMAL',60,-70)",
+                )
+            }.isFailure,
+        )
+        db.close()
+    }
+
+    @Test
+    fun migrate1To18_fullChain() {
         helper.createDatabase(1).close()
         helper.runMigrationsAndValidate(
-            14,
+            18,
             listOf(
                 MigrationRunner.MIGRATION_1_2,
                 MigrationRunner.MIGRATION_2_3,
@@ -350,6 +515,10 @@ class MigrationTest {
                 MigrationRunner.MIGRATION_11_12,
                 MigrationRunner.MIGRATION_12_13,
                 MigrationRunner.MIGRATION_13_14,
+                MigrationRunner.MIGRATION_14_15,
+                MigrationRunner.MIGRATION_15_16,
+                MigrationRunner.MIGRATION_16_17,
+                MigrationRunner.MIGRATION_17_18,
             ),
         )
     }

@@ -91,6 +91,50 @@ class HindsightFrame internal constructor(
         val best = if (dLo <= dHi) lo else hi
         return if (kotlin.math.min(dLo, dHi) <= half) best else -1
     }
+
+    /** Whether cycle [cycle]'s forecast was refused by the §3.6 degeneracy guard the day it was made
+     *  — NaN, rail-pinned, a collapsed band, misordered quantiles. Out-of-range answers false. */
+    fun degenerateAt(cycle: Int): Boolean = cycle in 0 until cycles && degenerate[cycle]
+
+    /** Whether cycle [cycle] was issued off an anchor already past the freshness gate (§3.6-D). */
+    fun staleAt(cycle: Int): Boolean = cycle in 0 until cycles && stale[cycle]
+
+    /**
+     * Whether cycle [cycle] was a forecast the app itself would have acted on — neither degenerate
+     * nor stale.
+     *
+     * ONE rule, read by everything that quotes or draws a cycle: [drawHindsightFan] dashes the median
+     * and withholds the fan on exactly this predicate, and [medianAt] refuses a number on it.
+     */
+    fun eligible(cycle: Int): Boolean =
+        cycle in 0 until cycles && !degenerate[cycle] && !stale[cycle]
+
+    /**
+     * What cycle [cycle] said glucose would be at wall-clock [atMs], or null when there is no number
+     * that may be quoted for it.
+     *
+     * Measured from [anchorMs], not from [madeMs] — step 0 of a cycle sits at the reading it grew out
+     * of, which across a dropout is behind the instant it was issued. The step is the nearest one, so
+     * a cursor between two of them reads the closer; past the horizon (or before the anchor by more
+     * than half a step) there is nothing to read and the answer is null rather than the end of the
+     * block.
+     *
+     * **It refuses an ineligible cycle**, on the same [eligible] predicate the drawer dashes one with.
+     * A caller quoting a number has no dash and no dimming to mark it with, so a degenerate or stale
+     * forecast printed here would state flatly what the chart beside it is disowning — and a
+     * `NON_FINITE` cycle's stored NaN would print as `0`, since `Math.round(NaN)` is 0. The store
+     * keeps those rows (only the wire push drops them), so they reach a sweep. Which cycle it was and
+     * why is [degenerateAt]/[staleAt]'s to say; this only declines to answer.
+     *
+     * It lives here because this file is the one place that knows the flat layout; indexing [median]
+     * from a feature module would be a second copy of the striding.
+     */
+    fun medianAt(cycle: Int, atMs: Long): Float? {
+        if (!eligible(cycle) || span < 1 || stepMs <= 0L) return null
+        val i = Math.round((atMs - anchorMs[cycle]).toDouble() / stepMs)
+        if (i < 0L || i >= span) return null
+        return median[cycle * span + i.toInt()].takeIf { it.isFinite() }
+    }
 }
 
 /** How many bands [HindsightFrame] carries per cycle — the same three nested pairs the live overlay
@@ -315,7 +359,7 @@ internal fun DrawScope.drawHindsightFan(
     // that was NOT: a §3.6-D stale forecast was already past its freshness gate when it was issued
     // and was never eligible to drive anything, and hindsight is precisely where that would otherwise
     // be invisible — the live overlay flags it while it is current, and nothing else ever would.
-    val notEligible = degenerate || stale
+    val notEligible = !f.eligible(c)
     var px = absToPx.of(t0.toDouble())
     var py = valToPx.of(f.median[mBase])
     for (i in 1 until span) {

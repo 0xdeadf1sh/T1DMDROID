@@ -1444,7 +1444,7 @@ private fun tzLabel(tzOffsetMin: Int): String {
 }
 
 /** Smallest visible-value span so a near-flat trace still fills the plot instead of a single pixel. */
-private fun minValueSpan(unit: UnitSpace): Float = when (unit) {
+internal fun minValueSpan(unit: UnitSpace): Float = when (unit) {
     UnitSpace.MgDl -> 40f
     UnitSpace.MmolL -> 2.2f
     UnitSpace.Kovatchev -> 0.6f
@@ -1538,7 +1538,7 @@ private fun niceTimeStepMs(spanMs: Double): Long {
     return TIME_STEPS_MIN.last() * 60_000L
 }
 
-private fun formatValue(v: Float, unit: UnitSpace): String = when (unit) {
+internal fun formatValue(v: Float, unit: UnitSpace): String = when (unit) {
     UnitSpace.MgDl -> v.roundToInt().toString()
     UnitSpace.MmolL -> "%.1f".format(v)
     UnitSpace.Kovatchev -> "%.2f".format(v)
@@ -1575,7 +1575,7 @@ private fun ordinalSuffix(day: Int): String = when {
     else -> "th"
 }
 
-private fun formatClock(ms: Long, tzOffsetMin: Int): String =
+internal fun formatClock(ms: Long, tzOffsetMin: Int): String =
     Instant.ofEpochMilli(ms).atOffset(zoneOf(tzOffsetMin)).format(HHMM)
 
 // ---------------------------------------------------------------------------------------------

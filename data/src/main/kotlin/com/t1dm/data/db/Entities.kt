@@ -88,6 +88,10 @@ data class CgmSourceEntity(
 /**
  * Authoritative per-source reading store, grid-keyed on `(sourceId, tsMs)` so the GridStamper
  * upserts in place (§3.1). `tsMs % 300_000 == 0` for every row.
+ *
+ * One row per slot is the point of it, so a sensor sampling faster than the grid has to lose
+ * samples here. Which one survives is [com.t1dm.data.supersedesGridSlot]'s decision, and the ones it
+ * discards are kept in [CgmRawSampleEntity] rather than dropped.
  */
 @Entity(
     tableName = "cgm_reading",
@@ -110,10 +114,45 @@ data class CgmReadingEntity(
 )
 
 /**
+ * Every accepted sample at its true receive instant, off the grid — the sub-grid record
+ * [CgmReadingEntity] cannot hold (see [com.t1dm.core.model.CgmRawSample] for what a row means).
+ *
+ * Keyed on `(sourceId, rxWallMs)` rather than a slot, which is the whole difference: a three-minute
+ * sensor puts five samples into three slots, and only here do all five survive. Insert is IGNORE, so
+ * a re-delivery of an instant already held keeps the first row and the write is idempotent.
+ *
+ * `index_cgm_sample_raw_rxWallMs` exists for the retention sweep alone
+ * ([com.t1dm.data.T1dmRepository.pruneRawSamples]) — the primary key already serves every per-source
+ * read, but it leads on `sourceId`, so an age sweep across all sources would scan without this.
+ *
+ * DELIBERATELY not in the archive; the reason is on `ArchiveWriter`, with the rest of the exclusions.
+ */
+@Entity(
+    tableName = "cgm_sample_raw",
+    primaryKeys = ["sourceId", "rxWallMs"],
+    indices = [Index("rxWallMs")],
+)
+@TypeConverters(Converters::class)
+data class CgmRawSampleEntity(
+    val sourceId: String,
+    val rxWallMs: Long,
+    val bgMgdl: Int?,
+    val trendTenthsPerMin: Int?,
+    val minFromStart: Int?,
+    val quality: Int?,
+    val flag: ReadingFlag,
+    val tzOffsetMin: Int,
+    val rssi: Int?,
+)
+
+/**
  * The materialized wide scalar projection (§3.5): six nullable series —
- * `bg`, `hr`, `steps`, `sleep`, `exercise`, `mood`. `hr/sleep/exercise` stay null until a source
- * exists (adding one is data-only, no migration). Carbs/bolus/basal are no longer projected here:
- * they are self-describing curve events (`logged_meal`/`logged_dose`/`basal_schedule`).
+ * `bg`, `hr`, `steps`, `sleep`, `exercise`, `mood`. `hr`/`sleep` stay null until a source exists
+ * (adding one is data-only, no migration). Carbs/bolus/basal are no longer projected here: they are
+ * self-describing curve events (`logged_meal`/`logged_dose`/`basal_schedule`).
+ *
+ * Five of the six are integral; `exercise` is the one that is not, so a reader must not assume the
+ * row is a bundle of counts.
  */
 @Entity(tableName = "sample")
 @TypeConverters(Converters::class)
@@ -131,7 +170,11 @@ data class SampleEntity(
     val mood: Int?,                    // from the Logs panel's mood picker
     val hr: Int?,                      // wired-but-null until a source exists
     val sleep: Int?,
-    val exercise: Int?,
+    // Grams of carbohydrate equivalent disposed in this bucket (invariants.md §3), the exercise
+    // gamma of §5 laid on the grid. Fractional, hence REAL and not the seconds column it replaced:
+    // an ordinary bout's peak bucket is a couple of grams, and rounding one to an integer would lose
+    // most of the curve. Written only by [com.t1dm.data.T1dmRepository.recordExerciseCurve].
+    val exercise: Double?,
     val updatedAt: Long,
 )
 
@@ -161,6 +204,10 @@ data class StepBucketRow(val ts: Long, val steps: Int)
  *
  * `bgMgdl`/`steps`/`mood` are exactly the columns `toStatSample` projects — `hr`/`sleep`/`exercise`
  * reach no metric, so a gap-fill touching only those SHOULD hit the cache rather than invalidate it.
+ * `exercise` has a real writer now ([com.t1dm.data.T1dmRepository.recordExerciseCurve]), so that
+ * claim is the only thing keeping this fingerprint sufficient: the first statistic to read it must
+ * add an `nExercise` count here in the same change, or the cache will serve a window it has already
+ * missed.
  *
  * Resolved in SQL over the `ts` primary-key range, so a check costs one aggregate scan rather than
  * materialising the ~26 000 whole rows a 90-day window holds.
@@ -529,4 +576,82 @@ data class ConformalDeltaEntity(
     val meanWidth90Cal: Double?,
     val windowDays: Int,
     val fittedAtMs: Long,
+)
+
+/**
+ * One start-to-stop exercise bout (Room v16) — the phone-local record of a logged session.
+ *
+ * **This row is not what exercise means to the model or to the server.** The bout's glucose-disposal
+ * curve goes into the wide sample's `exercise` scalar through
+ * [com.t1dm.data.T1dmRepository.recordExerciseCurve], and that is the whole of what syncs. This row
+ * and its [ExerciseFixEntity] track record how those seconds were spent; they cross no wire, there
+ * being no route, track or session object on it.
+ *
+ * [activeSec] therefore stays SECONDS while the scalar it feeds is grams: this is the bout as the
+ * patient lived it, and the curve is derived from its duration rather than stored beside it.
+ *
+ * [startMs]/[endMs] are wall-clock instants and are deliberately NOT grid-snapped — a bout begins
+ * when the user says so, and only the derived per-bucket `sample` write is on the five-minute grid.
+ * A null [endMs] is a bout still open, or one the app never saw stopped;
+ * [com.t1dm.data.exercise.ExerciseController.reconcileOpenSessions] settles the second case at the
+ * next launch by closing it at what was actually recorded and setting [interrupted].
+ *
+ * [clientId] and [updatedAt] are the §7 authority columns [LoggedMealEntity] and [LoggedDoseEntity]
+ * carry, minted here even though nothing syncs this table: a bout is a user-authored log event, and
+ * the insert is the one moment its id can be minted honestly. Retro-fitting an idempotency key onto
+ * rows written without one cannot be done.
+ *
+ * [kind] is raw TEXT with no [Converters] entry, following [PaintStrokeEntity.tool]: a row written by
+ * a later build must never fail `valueOf` on an older one. It is mapped at the repository edge, where
+ * a name this build does not know becomes [com.t1dm.core.model.ExerciseKind.OTHER].
+ *
+ * [kcal] is what could be justified on the day and nothing recomputes it — a later change of body
+ * mass must not silently rewrite the energy of a bout already walked. Null where no figure could be
+ * justified at all.
+ */
+@Entity(
+    tableName = "exercise_session",
+    indices = [Index(value = ["clientId"], unique = true), Index("startMs")],
+)
+data class ExerciseSessionEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val clientId: String,
+    val startMs: Long,
+    val endMs: Long?,
+    val tzOffsetMin: Int,
+    val kind: String,
+    val activeSec: Int,
+    val distanceM: Double?,
+    val kcal: Int?,
+    val interrupted: Boolean,
+    val note: String?,
+    val updatedAt: Long,
+)
+
+/**
+ * One accepted GPS fix on a bout's track (Room v16).
+ *
+ * A row per fix rather than one polyline BLOB per bout, unlike [PaintStrokeEntity]: a stroke is
+ * written once when the finger lifts, whereas a recording appends for as long as it runs, and the
+ * blob shape would rewrite the whole track on every fix. At a fix every four seconds an hour costs
+ * ~900 rows, which is nothing beside `cgm_reading`.
+ *
+ * **No foreign key onto `exercise_session`.** The cascade is an explicit delete in the same
+ * transaction ([com.t1dm.data.T1dmRepository.deleteExerciseSession]). Whether SQLite enforces one
+ * under [androidx.sqlite.driver.bundled.BundledSQLiteDriver] rests on a `PRAGMA foreign_keys` state
+ * nothing here sets, and a constraint silently not enforced is worse than none — it reads as a
+ * guarantee.
+ *
+ * [accuracyM] is the receiver's own horizontal accuracy. Which fixes are accepted at all is decided
+ * in `:sensors`, so a row here has already passed that filter.
+ */
+@Entity(tableName = "exercise_fix", indices = [Index(value = ["sessionId", "tsMs"])])
+data class ExerciseFixEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val sessionId: Long,
+    val tsMs: Long,
+    val lat: Double,
+    val lon: Double,
+    val accuracyM: Float,
+    val speedMps: Float?,
 )

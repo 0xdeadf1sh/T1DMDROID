@@ -6,6 +6,8 @@ import com.t1dm.data.db.AppDatabase
 import com.t1dm.data.db.BasalScheduleEntity
 import com.t1dm.data.db.CgmReadingEntity
 import com.t1dm.data.db.ConformalDeltaEntity
+import com.t1dm.data.db.ExerciseFixEntity
+import com.t1dm.data.db.ExerciseSessionEntity
 import com.t1dm.data.db.FoodEntity
 import com.t1dm.data.db.InsulinTypeEntity
 import com.t1dm.data.db.LoggedDoseEntity
@@ -181,6 +183,16 @@ class ArchiveReader(private val db: AppDatabase) {
                 s.strokes.add(r)
                 if (s.strokes.size >= Archive.BATCH) flushStrokes(s)
             }
+            Archive.T_EXERCISE -> {
+                val r = runCatching { Archive.readExercise(o) }.getOrNull() ?: return s.skip()
+                s.exerciseSessions.add(r)
+                if (s.exerciseSessions.size >= Archive.BATCH) flushExerciseSessions(s)
+            }
+            Archive.T_EXERCISE_FIX -> {
+                val r = runCatching { Archive.readExerciseFix(o) }.getOrNull() ?: return s.skip()
+                s.exerciseFixes.add(r)
+                if (s.exerciseFixes.size >= Archive.BATCH) flushExerciseFixes(s)
+            }
             // The bounded tables are buffered whole: they are small, and two of them (saved meals,
             // basal schedules) can only be merged once the entire set is known.
             Archive.T_BASAL -> {
@@ -252,6 +264,7 @@ class ArchiveReader(private val db: AppDatabase) {
         flushDoses(s)
         flushMeals(s)
         flushStrokes(s)
+        flushExerciseFixes(s)
     }
 
     private suspend fun flushReadings(s: MergeState) {
@@ -304,6 +317,50 @@ class ArchiveReader(private val db: AppDatabase) {
         for (r in rows) if (seen.add(r.createdAtMs)) fresh.add(r)
         if (fresh.isNotEmpty()) tx { db.paintStrokeDao().insertAll(fresh) }
         s.applied = s.applied.copy(strokes = s.applied.strokes + fresh.size)
+        s.duplicates += rows.size - fresh.size
+    }
+
+    /**
+     * Bouts merge on their unique `clientId`, and the rowids the insert hands back are kept: they are
+     * the only way an archived fix can find the local bout its parent became.
+     */
+    private suspend fun flushExerciseSessions(s: MergeState) {
+        if (s.exerciseSessions.isEmpty()) return
+        val rows = s.exerciseSessions.toList()
+        s.exerciseSessions.clear()
+        val ids = tx { db.exerciseSessionDao().insertIgnoreAll(rows) }
+        var added = 0
+        for ((i, row) in rows.withIndex()) {
+            val id = ids.getOrElse(i) { -1L }
+            if (id != -1L) {
+                s.exerciseSessionIds[row.clientId] = id
+                added++
+            }
+        }
+        s.applied = s.applied.copy(exerciseSessions = s.applied.exerciseSessions + added)
+        s.duplicates += rows.size - added
+    }
+
+    /**
+     * A fix is applied only when its bout was inserted by THIS restore.
+     *
+     * The pending bouts are flushed first, so every parent the file has emitted so far is on disk and
+     * in the id map — the writer emits a bout before its own track, which is what makes that
+     * sufficient. A fix whose bout is missing from the map belongs to one the phone already holds,
+     * and that bout already has its own track: appending an archived copy would double the polyline
+     * rather than restore anything. It is a duplicate, not a fault, which is the same call
+     * `applyBounded` makes for a saved meal's portions.
+     */
+    private suspend fun flushExerciseFixes(s: MergeState) {
+        flushExerciseSessions(s)
+        if (s.exerciseFixes.isEmpty()) return
+        val rows = s.exerciseFixes.toList()
+        s.exerciseFixes.clear()
+        val fresh = rows.mapNotNull { (cid, fix) ->
+            s.exerciseSessionIds[cid]?.let { fix.copy(sessionId = it) }
+        }
+        if (fresh.isNotEmpty()) tx { db.exerciseFixDao().insertAll(fresh) }
+        s.applied = s.applied.copy(exerciseFixes = s.applied.exerciseFixes + fresh.size)
         s.duplicates += rows.size - fresh.size
     }
 
@@ -459,6 +516,12 @@ class ArchiveReader(private val db: AppDatabase) {
         val doses = ArrayList<LoggedDoseEntity>(Archive.BATCH)
         val meals = ArrayList<LoggedMealEntity>(Archive.BATCH)
         val strokes = ArrayList<PaintStrokeEntity>(Archive.BATCH)
+        val exerciseSessions = ArrayList<ExerciseSessionEntity>(Archive.BATCH)
+        val exerciseFixes = ArrayList<Pair<String, ExerciseFixEntity>>(Archive.BATCH)
+
+        /** Archived bout `clientId` → the local rowid this restore minted for it. Only bouts actually
+         *  inserted are in here; see [flushExerciseFixes]. One entry per bout, not per fix. */
+        val exerciseSessionIds = HashMap<String, Long>()
 
         val basal = ArrayList<BasalScheduleEntity>()
         val foods = ArrayList<FoodEntity>()

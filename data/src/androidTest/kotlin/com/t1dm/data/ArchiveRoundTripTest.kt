@@ -17,6 +17,8 @@ import com.t1dm.data.db.CgmReadingEntity
 import com.t1dm.data.db.CgmSourceEntity
 import com.t1dm.data.db.ConformalDeltaEntity
 import com.t1dm.data.db.DoseKind
+import com.t1dm.data.db.ExerciseFixEntity
+import com.t1dm.data.db.ExerciseSessionEntity
 import com.t1dm.data.db.FoodEntity
 import com.t1dm.data.db.LoggedDoseEntity
 import com.t1dm.data.db.LoggedMealEntity
@@ -110,6 +112,8 @@ class ArchiveRoundTripTest {
         assertEquals(1, target.savedMealDao().allMeals().size)
         assertEquals(2, target.savedMealDao().allItems().size)
         assertEquals(1, target.conformalDeltaDao().all().size)
+        assertEquals(2, target.exerciseSessionDao().pageFrom(Long.MIN_VALUE, Long.MIN_VALUE, 100).size)
+        assertEquals(FIXES, result.applied.exerciseFixes)
     }
 
     @Test
@@ -150,7 +154,54 @@ class ArchiveRoundTripTest {
         assertTrue("a stale food link was carried across", items.all { it.foodId == null })
     }
 
+    @Test
+    fun anExerciseBoutKeepsItsTrack() = runTest {
+        populate(source)
+        restoreInto(target, archiveOf(source))
+        val bouts = target.exerciseSessionDao().pageFrom(Long.MIN_VALUE, Long.MIN_VALUE, 100)
+        assertEquals(2, bouts.size)
+
+        val run = bouts.single { it.clientId == BOUT_RUN }
+        assertEquals("RUN", run.kind)
+        assertEquals(3_300, run.activeSec)
+        assertEquals(8_412.5, run.distanceM!!, 0.0)
+        assertEquals(611, run.kcal)
+
+        // The track followed its bout's NEW local id, not the one it was exported under.
+        val track = target.exerciseFixDao().forSession(run.id)
+        assertEquals(FIXES, track.size)
+        assertEquals(41.015137, track.first().lat, 0.0)
+        assertEquals(28.979530, track.first().lon, 0.0)
+        assertTrue("the track came back out of order", track.zipWithNext().all { (a, b) -> a.tsMs < b.tsMs })
+
+        // A bout recorded with no location at all still restores — as a bout with no track, which is
+        // what it was.
+        val indoor = bouts.single { it.clientId == BOUT_INDOOR }
+        assertTrue(target.exerciseFixDao().forSession(indoor.id).isEmpty())
+        assertNull(indoor.distanceM)
+        assertNull(indoor.kcal)
+    }
+
     // ── merging: the local row always wins ────────────────────────────────────────────────────
+
+    @Test
+    fun anArchivedTrackIsNotAppendedToABoutThePhoneAlreadyHolds() = runTest {
+        populate(source)
+        val bytes = archiveOf(source)
+        // The same bout by `clientId`, already here with its own track — a reinstall that restored
+        // once and is being restored again. Appending the archived fixes would double the polyline
+        // and draw the route twice over itself.
+        val local = target.exerciseSessionDao().insert(
+            source.exerciseSessionDao().pageFrom(Long.MIN_VALUE, Long.MIN_VALUE, 100)
+                .single { it.clientId == BOUT_RUN }.copy(id = 0),
+        )
+        target.exerciseFixDao().insertAll(listOf(fix(local, 0)))
+
+        restoreInto(target, bytes)
+
+        assertEquals(1, target.exerciseFixDao().forSession(local).size)
+        assertEquals(2, target.exerciseSessionDao().pageFrom(Long.MIN_VALUE, Long.MIN_VALUE, 100).size)
+    }
 
     @Test
     fun restoringTheSameFileTwiceChangesNothing() = runTest {
@@ -506,6 +557,12 @@ class ArchiveRoundTripTest {
                 active = true, createdAtMs = 1L, updatedAtMs = 2L,
             ),
         )
+        val runId = db.exerciseSessionDao().insert(boutRow(BOUT_RUN, "RUN"))
+        db.exerciseFixDao().insertAll(List(FIXES) { fix(runId, it) })
+        // A bout with no track at all — indoors, or with location denied. It must restore as one.
+        db.exerciseSessionDao().insert(
+            boutRow(BOUT_INDOOR, "OTHER").copy(distanceM = null, kcal = null),
+        )
         val mealId = db.savedMealDao().insertMeal(SavedMealEntity(name = "Porridge", updatedAt = 5L))
         db.savedMealDao().insertItems(
             listOf(
@@ -577,6 +634,21 @@ class ArchiveRoundTripTest {
         windowDays = 14, fittedAtMs = 7L,
     )
 
+    private fun boutRow(clientId: String, kind: String) = ExerciseSessionEntity(
+        clientId = clientId, startMs = T0, endMs = T0 + 3_600_000L, tzOffsetMin = 180,
+        kind = kind, activeSec = 3_300, distanceM = 8_412.5, kcal = 611,
+        interrupted = false, note = null, updatedAt = T0 + 3_600_000L,
+    )
+
+    private fun fix(sessionId: Long, i: Int) = ExerciseFixEntity(
+        sessionId = sessionId,
+        tsMs = T0 + i * 4_000L,
+        lat = 41.015137 + i * 0.000_02,
+        lon = 28.979530 + i * 0.000_03,
+        accuracyM = 6.5f + (i % 5),
+        speedMps = if (i % 4 == 0) null else 1.4f + (i % 3),
+    )
+
     private fun strokeRow() = PaintStrokeEntity(
         createdAtMs = 1_700_000_500_000L, tool = "marker", colorArgb = -0x10000, widthDp = 4.2f,
         minTsMs = T0, maxTsMs = T0 + 600_000L,
@@ -592,10 +664,16 @@ class ArchiveRoundTripTest {
         const val SCHEDULE_B = "schedule-b"
         const val T0 = 1_700_000_000_000L - 1_700_000_000_000L % 300_000L
         const val NOW = 1_712_345_400_000L
+        const val BOUT_RUN = "bout-run"
+        const val BOUT_INDOOR = "bout-indoor"
 
         /** Past `Archive.BATCH`, so the export's keyset paging and the restore's batched inserts are
          *  both exercised across a page boundary rather than completing in one. */
         const val READINGS = 1_200
+
+        /** Likewise past `Archive.BATCH`: a track has to cross a flush boundary, because that is
+         *  where a fix could be flushed before the bout it belongs to. */
+        const val FIXES = 700
 
         val CONFIG = """{"format":"t1dm.config","version":1,"exportedAtMs":1,"kv":{"alarm.low_mgdl":"75"}}"""
 

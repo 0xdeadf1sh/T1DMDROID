@@ -21,6 +21,8 @@ import com.t1dm.data.db.BasalScheduleEntity
 import com.t1dm.data.db.CgmAdvertRawEntity
 import com.t1dm.data.db.DoseEventEntity
 import com.t1dm.data.db.DoseKind
+import com.t1dm.data.db.ExerciseFixEntity
+import com.t1dm.data.db.ExerciseSessionEntity
 import com.t1dm.data.db.FoodEntity
 import com.t1dm.data.db.HwTelemetryEntity
 import com.t1dm.data.db.InsulinTypeEntity
@@ -167,6 +169,24 @@ class ResetWipeTest {
             ),
         )
 
+        // An exercise bout and its GPS track — the one stored location there is, so this is the row
+        // the reset most has to take with it.
+        val bout = repo.startExerciseSession(
+            ExerciseSessionEntity(
+                clientId = "", startMs = now, endMs = null, tzOffsetMin = 0, kind = "WALK",
+                activeSec = 0, distanceM = null, kcal = null, interrupted = false, note = null,
+                updatedAt = now,
+            ),
+        )
+        repo.appendExerciseFixes(
+            listOf(
+                ExerciseFixEntity(
+                    sessionId = bout.id, tsMs = now + 4_000L, lat = 41.015137, lon = 28.979530,
+                    accuracyM = 6.5f, speedMps = 1.4f,
+                ),
+            ),
+        )
+
         // kv: a setting, and the watch pairing + nonce-ceiling rows the wipe must burn.
         repo.putKv("ui.theme", "umbrella", now)
         repo.putKv("watch.paired", "1", now)
@@ -183,6 +203,9 @@ class ResetWipeTest {
         assertEquals(2L, count("insulin_type"))
         assert(count("kv") >= 4L)
         assertEquals(1L, count("prediction"))
+        // Without these the location assertions below would pass on an empty table.
+        assertEquals(1L, count("exercise_session"))
+        assertEquals(1L, count("exercise_fix"))
 
         repo.wipeAllData()
 
@@ -204,10 +227,10 @@ class ResetWipeTest {
     private companion object {
         /** Every table the reset must leave empty (food + insulin_type keep their seed rows). */
         val WIPED_EMPTY = listOf(
-            "cgm_source", "cgm_reading", "sample", "dose_event", "logged_dose", "logged_meal",
-            "basal_schedule", "cgm_advert_raw", "outbox", "prediction", "server_profile",
+            "cgm_source", "cgm_reading", "cgm_sample_raw", "sample", "dose_event", "logged_dose",
+            "logged_meal", "basal_schedule", "cgm_advert_raw", "outbox", "prediction", "server_profile",
             "hw_telemetry", "saved_meal", "saved_meal_item", "bg_paint_stroke", "conformal_delta",
-            "kv",
+            "exercise_session", "exercise_fix", "kv",
         )
     }
 }

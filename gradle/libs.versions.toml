@@ -36,6 +36,12 @@ zxingEmbedded = "4.3.0"
 # Image loader for :feature:pubs (Bluesky avatars / embed thumbnails). Coil 3; the
 # coil-network-okhttp fetcher auto-registers via ServiceLoader and pins okhttp 4.12.0.
 coil = "3.3.0"
+# Raster OSM map tiles for the exercise track (:feature:exercise). Apache-2.0; fetches tiles straight
+# from the OSM servers with NO API key and NO Google Play Services, which is what makes it usable in a
+# sideload-only build. Its AAR manifest declares no permissions and its tile cache is a plain
+# directory the caller names, so it adds neither a prompt nor a storage dependency. 6.1.20 is the
+# newest published 6.1.x.
+osmdroid = "6.1.20"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -70,6 +76,7 @@ jna = { group = "net.java.dev.jna", name = "jna", version.ref = "jna" }
 androidx-glance-appwidget = { group = "androidx.glance", name = "glance-appwidget", version.ref = "glance" }
 androidx-glance-material3 = { group = "androidx.glance", name = "glance-material3", version.ref = "glance" }
 zxing-android-embedded = { group = "com.journeyapps", name = "zxing-android-embedded", version.ref = "zxingEmbedded" }
+osmdroid-android = { group = "org.osmdroid", name = "osmdroid-android", version.ref = "osmdroid" }
 coil-compose = { group = "io.coil-kt.coil3", name = "coil-compose", version.ref = "coil" }
 coil-network-okhttp = { group = "io.coil-kt.coil3", name = "coil-network-okhttp", version.ref = "coil" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }

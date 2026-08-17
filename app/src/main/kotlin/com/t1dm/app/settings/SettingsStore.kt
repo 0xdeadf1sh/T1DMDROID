@@ -14,6 +14,7 @@ import com.t1dm.core.design.HapticStrength
 import com.t1dm.core.design.normalizeThemeId
 import com.t1dm.core.model.AlertThresholds
 import com.t1dm.data.T1dmRepository
+import com.t1dm.data.curve.ExerciseDisposal
 import com.t1dm.inference.InferenceControllerDefaults
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
@@ -522,6 +523,47 @@ class SettingsStore(
     suspend fun setLastRapidPreset(label: String) = put(K_LAST_RAPID_PRESET, label)
     suspend fun setLastBasalPreset(label: String) = put(K_LAST_BASAL_PRESET, label)
 
+    // ── Body mass — the one input the exercise energy figure cannot derive ──────────────────────
+    //
+    // GPS gives the speed and the ACSM equations are mass-free in VO2 terms, so this is the single
+    // number standing between a logged bout and a kcal figure; without it none is shown. Edited in
+    // the exercise panel, with no Settings row, and deliberately OUTSIDE the exportable set (no
+    // `exercise.` prefix in CONFIG_PREFIXES, not an exact key) — the same call as
+    // `cgm.sensor_life_days`, and for a plainer reason: a body mass is the user's own, not
+    // configuration to be carried into a file they hand to someone else.
+    //
+    // Floored for sanity and NOT capped, per the store's own contract; a blank row reads as "not
+    // supplied", so clearing it is a write rather than a row deletion.
+    val bodyMassKg: Flow<Double?> = repository.observeKv(K_EXERCISE_BODY_MASS_KG).map(::decodeBodyMassKg)
+
+    suspend fun currentBodyMassKg(): Double? = decodeBodyMassKg(repository.getKv(K_EXERCISE_BODY_MASS_KG))
+
+    suspend fun setBodyMassKg(kg: Double?) = put(K_EXERCISE_BODY_MASS_KG, encodeBodyMassKg(kg))
+
+    // ── Carbohydrate equivalent per minute of exercise — the ONE per-patient number in §5's
+    // glucose-disposal gamma ──────────────────────────────────────────────────────────────────────
+    //
+    // The magnitude of a bout's disposal curve is `duration_min · carb_equiv_per_min` grams, and this
+    // is that rate. Nothing else about the curve is tunable: the shape is fixed and the magnitude
+    // scales with duration alone, so a slider that took pace or heart rate into it would put the
+    // channel off-distribution against every model pretrained on T1DMSIM.
+    //
+    // EXPORTABLE, unlike the body mass above, and by an exact key rather than an `exercise.` prefix
+    // that would sweep the body mass in behind it: this one is configuration — a per-patient constant
+    // like the calculator's ratios — and it belongs in a file the user carries to a new phone.
+    // Import is coerced, because a hand-edited file is the one writer no slider bounds.
+    //
+    // It applies from the moment it changes and never backwards: a stored curve is what could be
+    // justified on the day it was written, the same rule the ACSM kcal figure follows for body mass.
+    val carbEquivPerMin: Flow<Double> =
+        repository.observeKv(K_EXERCISE_CARB_EQUIV).map(::decodeCarbEquivPerMin)
+
+    suspend fun currentCarbEquivPerMin(): Double =
+        decodeCarbEquivPerMin(repository.getKv(K_EXERCISE_CARB_EQUIV))
+
+    suspend fun setCarbEquivPerMin(gPerMin: Double) =
+        put(K_EXERCISE_CARB_EQUIV, encodeCarbEquivPerMin(gPerMin))
+
     // ── Push hold — how long a freshly logged meal/dose sits in the outbox before its FIRST send
     // attempt, and therefore how long the Logs panel can still withdraw it. Only the MEAL/DOSE event
     // pushes take it (never INGEST/PREDICTIONS/STATS/ALERT/PHOTO, and never the basal template);
@@ -670,6 +712,7 @@ class SettingsStore(
         internal val CONFIG_COERCE: Map<String, (String) -> String?> = mapOf(
             K_SNOOZE_MIN to { raw -> raw.toIntOrNull()?.let(::encodeSnoozeMin) },
             K_PUSH_HOLD_MIN to { raw -> raw.toIntOrNull()?.let(::encodePushHoldMin) },
+            K_EXERCISE_CARB_EQUIV to { raw -> raw.toDoubleOrNull()?.let(::encodeCarbEquivPerMin) },
         )
 
         const val DEFAULT_LOW_POWER_PCT = 20
@@ -708,6 +751,9 @@ class SettingsStore(
             K_DEATH_COMA_H,
             K_DEATH_DEATH_H,
             K_PUSH_HOLD_MIN,
+            // By exact key, never an `exercise.` prefix: `exercise.body_mass_kg` sits beside it and
+            // is deliberately not exportable.
+            K_EXERCISE_CARB_EQUIV,
         )
 
         // ── Forecast cadence (PUBLIC — CgmScanService reads the mode) ─────────────────────────────
@@ -967,6 +1013,46 @@ class SettingsStore(
         private const val K_AGG_SCAN = "cgm.aggressive_scan"
         private const val K_AGG_SHOW_BG = "cgm.aggressive_show_glucose"
         private const val K_AGG_ONLY_CHARGING = "cgm.aggressive_only_charging"
+
+        /** Panel-owned per-device state outside [CONFIG_PREFIXES] — see [bodyMassKg]. */
+        internal const val K_EXERCISE_BODY_MASS_KG = "exercise.body_mass_kg"
+
+        /** A sanity floor only. There is no ceiling here, by the same rule that leaves the alarm
+         *  thresholds unbounded: the value is the user's to state. */
+        const val MIN_BODY_MASS_KG = 20.0
+
+        internal fun decodeBodyMassKg(raw: String?): Double? =
+            raw?.toDoubleOrNull()?.takeIf { it.isFinite() && it >= MIN_BODY_MASS_KG }
+
+        internal fun encodeBodyMassKg(kg: Double?): String =
+            kg?.takeIf { it.isFinite() && it >= MIN_BODY_MASS_KG }?.toString().orEmpty()
+
+        /** Grams of carbohydrate equivalent disposed per minute of exercise — see [carbEquivPerMin]. */
+        const val K_EXERCISE_CARB_EQUIV = "exercise.carb_equiv_per_min"
+
+        /**
+         * The rate's persistence contract, extracted so the round trip is host-testable without Room.
+         *
+         * The default and the rails are `ExerciseDisposal`'s, not a second copy: the default is the
+         * population constant `../T1DMCOMMON/SPEC/invariants.md` §5 fixes and the rails are the ones
+         * the resolver clamps to, so a value this store accepted and the resolver then clamped would
+         * be a slider that silently lies. Both directions clamp, and a garbled or unset row falls
+         * back to the default rather than to zero — zero would mean a bout disposes of nothing, which
+         * is not a setting anybody chose.
+         */
+        internal fun encodeCarbEquivPerMin(gPerMin: Double): String =
+            (if (gPerMin.isFinite()) clampCarbEquiv(gPerMin) else ExerciseDisposal.DEFAULT_CARB_EQUIV_PER_MIN)
+                .toString()
+
+        internal fun decodeCarbEquivPerMin(raw: String?): Double =
+            raw?.toDoubleOrNull()?.takeIf { it.isFinite() }?.let(::clampCarbEquiv)
+                ?: ExerciseDisposal.DEFAULT_CARB_EQUIV_PER_MIN
+
+        private fun clampCarbEquiv(v: Double): Double = v.coerceIn(
+            ExerciseDisposal.MIN_CARB_EQUIV_PER_MIN,
+            ExerciseDisposal.MAX_CARB_EQUIV_PER_MIN,
+        )
+
         /** Usage state, not configuration — see the note on [lastRapidPreset] for why the prefix is
          *  outside [CONFIG_PREFIXES]. No default label lives here: the catalogue's own first entry of
          *  the family is the fallback, so this build cannot name an insulin the catalogue dropped. */

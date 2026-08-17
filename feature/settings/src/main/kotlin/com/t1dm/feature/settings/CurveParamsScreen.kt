@@ -1,15 +1,18 @@
 package com.t1dm.feature.settings
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -18,10 +21,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.HapticEvent
+import com.t1dm.core.design.rememberHapticDetent
 import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.model.BezierCurve
 import com.t1dm.ui.graph.CurveEditor
 import com.t1dm.ui.graph.CurvePreview
+import kotlin.math.roundToInt
 
 /**
  * Read-only view of the carb-appearance / insulin-action curve PRESET defaults (the parametric
@@ -45,6 +50,10 @@ data class CurveParams(
     val carbHighGiTheta: Double,
     val carbLowGiK: Double,
     val carbLowGiTheta: Double,
+    /** The exercise disposal gamma's shape. Fixed by SPEC §5 and shown for exactly that reason — it
+     *  is the half of that curve the patient does not get to move. */
+    val exerciseK: Double,
+    val exerciseTheta: Double,
 )
 
 @Composable
@@ -54,6 +63,9 @@ fun CurveParamsScreen(
     insulinCurve: BezierCurve,
     onSaveCarbCurve: (BezierCurve) -> Unit,
     onSaveInsulinCurve: (BezierCurve) -> Unit,
+    exerciseCarbEquivPerMin: Double,
+    exerciseCarbEquivRange: ClosedFloatingPointRange<Double>,
+    onSetExerciseCarbEquivPerMin: (Double) -> Unit,
 ) {
     SettingsScaffold(SettingsScreenKey.CURVES) {
         SettingsNote("How a dose becomes its curve")
@@ -80,8 +92,63 @@ fun CurveParamsScreen(
         SettingsNote("High-GI carbs peak early and sharp; low-GI spread out.")
         Kv("High GI k / θ", "%.1f / %.0f".format(params.carbHighGiK, params.carbHighGiTheta))
         Kv("Low GI k / θ", "%.1f / %.0f".format(params.carbLowGiK, params.carbLowGiTheta))
+
+        SettingsSectionHeader("Exercise disposal (gamma)")
+        SettingsAnchor(curveExerciseCarbEquiv) {
+            CarbEquivSlider(exerciseCarbEquivPerMin, exerciseCarbEquivRange, onSetExerciseCarbEquivPerMin)
+        }
+        Kv("Shape k / θ", "%.1f / %.0f".format(params.exerciseK, params.exerciseTheta))
     }
 }
+
+/**
+ * The one per-patient number in the exercise disposal curve: grams of carbohydrate equivalent per
+ * minute of exercise. Everything else about the curve is fixed — the shape by §5, the magnitude by
+ * duration alone.
+ *
+ * Committed on release rather than per drag sample, as the body-mass slider is: the value is
+ * kv-backed and a write per pointer move is a database round trip per pixel. [range] is the store's,
+ * not a second copy, so the thumb cannot reach a value the writer would clamp.
+ */
+@Composable
+private fun CarbEquivSlider(
+    value: Double,
+    range: ClosedFloatingPointRange<Double>,
+    onSet: (Double) -> Unit,
+) {
+    // Keyed on `value`: it arrives from a cold flow, so the first composition sees a placeholder and
+    // an unkeyed remember would strand the thumb there — the trap the smoothing slider records.
+    var draft by remember(value) { mutableFloatStateOf(value.toFloat()) }
+    val steps = ((range.endInclusive - range.start) / GRAIN).roundToInt()
+    val detent = rememberHapticDetent()
+    Column(Modifier.fillMaxWidth()) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text("Carb equivalent", style = MaterialTheme.typography.bodyMedium)
+            Text(
+                "%.1f g/min".format(draft),
+                style = MaterialTheme.typography.bodyMedium,
+                fontFamily = FontFamily.Monospace,
+            )
+        }
+        Slider(
+            value = draft,
+            onValueChange = { raw ->
+                // Snap to the printed grain, so the thumb and the read-out cannot disagree, and tick
+                // as the snapped stop crosses rather than on every drag frame.
+                val stop = (raw / GRAIN).roundToInt()
+                detent.at(stop)
+                draft = stop * GRAIN
+            },
+            onValueChangeFinished = { onSet(draft.toDouble()) },
+            valueRange = range.start.toFloat()..range.endInclusive.toFloat(),
+            steps = (steps - 1).coerceAtLeast(0),
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
+}
+
+/** Slider grain — the resolution the read-out prints at, so no stop is invisible. */
+private const val GRAIN = 0.1f
 
 @Composable
 private fun BezierDesigner(initial: BezierCurve, defaultDurationMin: Double, onSave: (BezierCurve) -> Unit) {
@@ -166,7 +233,24 @@ private val curveInsulinBezier = SettingsKnob(
     ),
 )
 
+private val curveExerciseCarbEquiv = SettingsKnob(
+    id = "curves.exercise_carb_equiv",
+    screen = SettingsScreenKey.CURVES,
+    section = "Exercise disposal (gamma)",
+    label = "Carb equivalent",
+    subtitle = "Grams a minute of exercise disposes of; the bout's duration is what scales it",
+    synonyms = listOf(
+        "exercise", "workout", "walk", "run", "activity", "disposal", "glucose disposal",
+        "carb equivalent", "carbohydrate equivalent", "g/min", "grams per minute", "gamma", "curve",
+        "bout",
+    ),
+    // Deliberately NOT "sensitivity": §5 makes the post-exercise insulin-sensitivity boost a separate
+    // mechanism this curve never carries, and a synonym that sent someone here to look for it would
+    // advertise a knob that does not exist.
+)
+
 internal val settingsCurveKnobs = listOf(
     curveCarbBezier,
     curveInsulinBezier,
+    curveExerciseCarbEquiv,
 )

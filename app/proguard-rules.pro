@@ -31,6 +31,12 @@
 -dontwarn org.pytorch.**
 -dontwarn com.facebook.**
 
+# ── osmdroid (the exercise track's map). Tile sources, overlays and its configuration are resolved
+#    by NAME through reflection and a preferences file, so a shrunk or renamed class fails only in the
+#    minified release — the variant that goes on the phone. ──
+-keep class org.osmdroid.** { *; }
+-dontwarn org.osmdroid.**
+
 # ── Any remaining JNI entry points. ──
 -keepclasseswithmembernames,includedescriptorclasses class * {
     native <methods>;

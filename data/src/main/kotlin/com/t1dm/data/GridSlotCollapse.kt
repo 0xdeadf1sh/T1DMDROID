@@ -22,8 +22,11 @@ import com.t1dm.data.db.CgmReadingEntity
  *  2. **Then the selected source.** Among readings of equal standing it is the authoritative one
  *     (§3.1) — the one the headline number, the alarm engine and the model already read — so the
  *     trace agrees with the number printed above it.
- *  3. **Then the newest reception** (`rxWallMs`), matching how `sample` resolves a contested slot:
- *     last writer wins.
+ *  3. **Then the newest reception** (`rxWallMs`) — the fresher sensor's view of the slot. Note this
+ *     is NOT [supersedesGridSlot]'s rule, and deliberately so: that one settles which of ONE
+ *     sensor's samples claims a slot, where nearest-to-the-instant is what the slot claims to be;
+ *     this settles which of TWO SENSORS to believe, where the later reception is the better answer
+ *     and distance-to-instant says nothing about it.
  *  4. **Then the lower `sourceId`.** A pure tie-break, present so the output is a function of the
  *     input alone: without it two readings received in the same millisecond would resolve by row
  *     order, and the trace could change under a reader for no reason.

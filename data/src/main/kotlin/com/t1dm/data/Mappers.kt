@@ -1,9 +1,11 @@
 package com.t1dm.data
 
+import com.t1dm.core.model.CgmRawSample
 import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.CgmSourceDescriptor
 import com.t1dm.core.model.CgmSourceId
 import com.t1dm.core.model.PaintStroke
+import com.t1dm.data.db.CgmRawSampleEntity
 import com.t1dm.data.db.CgmReadingEntity
 import com.t1dm.data.db.CgmSourceEntity
 import com.t1dm.data.db.PaintStrokeBlob
@@ -36,6 +38,38 @@ internal fun CgmReading.toEntity(): CgmReadingEntity = CgmReadingEntity(
     flag = flag,
     tzOffsetMin = tzOffsetMin,
     rxWallMs = rxWallMs,
+    rssi = rssi,
+)
+
+/**
+ * The same reception, filed under the instant it arrived rather than the slot it was snapped into.
+ *
+ * `provenance` does not cross: only a `MEASURED` reading has a receive instant to be filed under, so
+ * the caller ([T1dmRepository.upsertReading]) keeps the gap-fills out and every row here is real by
+ * construction. `tsMs` does not cross either — which slot this sample was filed under is
+ * [T1dmRepository.snapToGrid]'s answer, and storing it beside the sample would be a second copy of it.
+ */
+internal fun CgmReading.toRawEntity(): CgmRawSampleEntity = CgmRawSampleEntity(
+    sourceId = sourceId.value,
+    rxWallMs = rxWallMs,
+    bgMgdl = bgMgdl,
+    trendTenthsPerMin = trendTenthsPerMin,
+    minFromStart = minFromStart,
+    quality = quality,
+    flag = flag,
+    tzOffsetMin = tzOffsetMin,
+    rssi = rssi,
+)
+
+internal fun CgmRawSampleEntity.toModel(): CgmRawSample = CgmRawSample(
+    sourceId = CgmSourceId(sourceId),
+    rxWallMs = rxWallMs,
+    bgMgdl = bgMgdl,
+    trendTenthsPerMin = trendTenthsPerMin,
+    minFromStart = minFromStart,
+    quality = quality,
+    flag = flag,
+    tzOffsetMin = tzOffsetMin,
     rssi = rssi,
 )
 

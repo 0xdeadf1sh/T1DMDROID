@@ -8,7 +8,18 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Holds `MIGRATION_10_11`'s frozen SQL against the constants the running app uses.
+ * Holds the migrations' frozen SQL against the Kotlin the running app uses.
+ *
+ * Two things are pinned here, for the same reason in two shapes: a migration describes what the
+ * schema became at a fixed point, so it cannot read a constant a later edit could move underneath
+ * it, and nothing else notices when the two drift.
+ *
+ *  - `MIGRATION_10_11`'s sensor-model literals against [CgmSensorModelId] / [CgmSourceId].
+ *  - `MIGRATION_17_18`'s `cgm_sample_raw` DDL against [CgmRawSampleEntity]'s own field list. Room
+ *    checks the entity against the schema it generates, and it checks the migrated database against
+ *    that schema at open — but nothing checks the migration's hand-written DDL until an upgrade runs
+ *    on a real install, where a mismatch is a launch crash rather than a lost row (there is no
+ *    destructive fallback).
  *
  * A migration may not read [CgmSensorModelId] — it describes what the schema became at a fixed point, and
  * a later rename there would silently rewrite history for every device that upgrades afterwards. So
@@ -76,5 +87,59 @@ class MigrationConstantsTest {
             MigrationRunner.SQL_10_11_BACKFILL_REAL
                 .contains("'${legacySensorModelIdFor("aidexx:22222C74D9")}'"),
         )
+    }
+
+    /**
+     * The upgrade path and the fresh-install path must build the same `cgm_sample_raw`. Room builds
+     * one from [CgmRawSampleEntity]; the migration builds the other by hand. Add a field to the
+     * entity without amending the DDL and a fresh install gets the column while an upgrade does not
+     * — and Room refuses to open the upgraded database at all.
+     */
+    @Test
+    fun `the raw-sample DDL declares exactly the entity's columns`() {
+        val declared = BACKTICKED.findAll(MigrationRunner.SQL_17_18_CREATE_TABLE)
+            .map { it.groupValues[1] }
+            .toSet() - RAW_TABLE
+        val fields = CgmRawSampleEntity::class.java.declaredFields
+            .filterNot { it.isSynthetic || it.name.startsWith('$') }
+            .map { it.name }
+            .toSet()
+        assertEquals(
+            "MIGRATION_17_18's DDL and CgmRawSampleEntity disagree about the columns: " +
+                MigrationRunner.SQL_17_18_CREATE_TABLE,
+            fields,
+            declared,
+        )
+    }
+
+    /** The table both statements name, and the index name Room derives from `@Index("rxWallMs")`. */
+    @Test
+    fun `the raw-sample DDL names the table and index Room will look for`() {
+        assertTrue(
+            "the migration builds a table Room is not looking for: " +
+                MigrationRunner.SQL_17_18_CREATE_TABLE,
+            MigrationRunner.SQL_17_18_CREATE_TABLE.contains("`$RAW_TABLE`"),
+        )
+        assertTrue(
+            "Room derives the index name from the entity; the migration must use the same one: " +
+                MigrationRunner.SQL_17_18_CREATE_INDEX,
+            MigrationRunner.SQL_17_18_CREATE_INDEX.contains("`index_${RAW_TABLE}_rxWallMs`"),
+        )
+        assertTrue(
+            "the index must be built on the column the retention sweep filters by",
+            MigrationRunner.SQL_17_18_CREATE_INDEX.contains("ON `$RAW_TABLE` (`rxWallMs`)"),
+        )
+    }
+
+    /** Re-running a migration must not fail on an object that already exists. */
+    @Test
+    fun `the raw-sample DDL is idempotent`() {
+        assertTrue(MigrationRunner.SQL_17_18_CREATE_TABLE.startsWith("CREATE TABLE IF NOT EXISTS "))
+        assertTrue(MigrationRunner.SQL_17_18_CREATE_INDEX.startsWith("CREATE INDEX IF NOT EXISTS "))
+    }
+
+    private companion object {
+        const val RAW_TABLE = "cgm_sample_raw"
+        val BACKTICKED = Regex("`([A-Za-z_][A-Za-z0-9_]*)`")
     }
 }

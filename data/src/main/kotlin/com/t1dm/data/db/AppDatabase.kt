@@ -10,34 +10,24 @@ import androidx.sqlite.driver.bundled.BundledSQLiteDriver
 import kotlinx.coroutines.Dispatchers
 
 /**
- * Room v2 (Phase 1 / §3.5; Phase 3 adds `prediction` + `server_profile`). Single
- * keep-forever database; every later revision is ALTER-only (see [MigrationRunner]) — the store is
- * never dropped, so `exportSchema` stays on and the generated `schemas/<db>/N.json` back the
- * migration validation.
+ * The single keep-forever store (Phase 1 / §3.5).
  *
- * v2 is a purely **additive** migration: two new tables, no column change to any Phase-1 table.
- * v3 (Phase 4) is likewise additive: the curve-engine event stores `logged_dose`, `logged_meal`
- * and `basal_schedule`, no change to any existing table. v4 added a free-text `note` table, which
- * v9 removes again with the surface that wrote it. v5 (Phase 4, meal builder)
- * adds the glycemic dictionary (`food` + the FTS5 `food_fts` shadow), `saved_meal`/
- * `saved_meal_item`, and `insulin_type` — all additive. v6 (Phase 7C) is a **data-only** re-seed
- * (no schema change) folding the grown `FoodSeed` catalogue into an already-seeded install; see
- * [MigrationRunner.MIGRATION_5_6]. v7 (app-authoritative redesign) adds a `clientId` column
- * (+ UNIQUE index) to `logged_meal`/`logged_dose` — the stable phone-minted id the server keys
- * meal/dose upserts on and the app re-hydrates by — and leaves the retired
- * `sample.carbsG/bolusU/basalU` dose projections dead in place; see [MigrationRunner.MIGRATION_6_7].
- * v8 (graph annotation layer) adds `bg_paint_stroke`, the freehand drawings the user paints over the
- * BG panel — one new table, no existing table touched; see [MigrationRunner.MIGRATION_7_8].
- * v9 is the sole **subtractive** revision: the free-text note surface is withdrawn, so its `note`
- * table and every queued `NOTE` outbox row go with it; see [MigrationRunner.MIGRATION_8_9].
- * v10 (on-device band recalibration) adds `conformal_delta`, one fitted `SPEC/inference.md` §8.4
- * correction per model — additive, and it changes the meaning of nothing already stored: the
- * `prediction` fan remains the raw fan the model produced; see [MigrationRunner.MIGRATION_9_10].
+ * Every revision past v1 is a hand-written migration in [MigrationRunner], and
+ * `fallbackToDestructiveMigration` is never invoked — the database is migrated, never dropped, so
+ * `exportSchema` stays on and the generated `schemas/<db>/N.json` back the migration validation.
+ *
+ * Revisions are additive in principle: new tables and nullable columns, never a drop. The
+ * departures are recorded where they happened, on the migrations themselves — the one subtractive
+ * step, which took a withdrawn surface's table and its undecodable outbox rows together, and the two
+ * `sample` rebuilds, one shedding columns Room compares exactly and one changing a column's declared
+ * type. What each version did and why belongs there; a second list here is a list that falls out of
+ * step.
  */
 @Database(
     entities = [
         CgmSourceEntity::class,
         CgmReadingEntity::class,
+        CgmRawSampleEntity::class,
         SampleEntity::class,
         DoseEventEntity::class,
         CgmAdvertRawEntity::class,
@@ -55,14 +45,17 @@ import kotlinx.coroutines.Dispatchers
         InsulinTypeEntity::class,
         PaintStrokeEntity::class,
         ConformalDeltaEntity::class,
+        ExerciseSessionEntity::class,
+        ExerciseFixEntity::class,
     ],
-    version = 15,
+    version = 18,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun cgmSourceDao(): CgmSourceDao
     abstract fun cgmReadingDao(): CgmReadingDao
+    abstract fun cgmRawSampleDao(): CgmRawSampleDao
     abstract fun sampleDao(): SampleDao
     abstract fun doseEventDao(): DoseEventDao
     abstract fun cgmAdvertRawDao(): CgmAdvertRawDao
@@ -79,13 +72,15 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun insulinTypeDao(): InsulinTypeDao
     abstract fun paintStrokeDao(): PaintStrokeDao
     abstract fun conformalDeltaDao(): ConformalDeltaDao
+    abstract fun exerciseSessionDao(): ExerciseSessionDao
+    abstract fun exerciseFixDao(): ExerciseFixDao
 
     companion object {
         const val NAME = "t1dm.db"
 
         /** The current keep-forever schema version (must equal the `@Database(version = …)` above).
          *  A full app reset ([T1dmRepository.wipeAllData]) row-wipes at THIS version — never a drop. */
-        const val SCHEMA_VERSION = 15
+        const val SCHEMA_VERSION = 18
 
         /**
          * Build the on-disk database. Migrations come exclusively from [MigrationRunner];

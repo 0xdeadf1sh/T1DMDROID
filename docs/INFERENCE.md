@@ -89,8 +89,14 @@ per model in the `conformal_delta` table.
   before and after a fit.
 - **Classify raw, calibrate for display.** The alarm engine, the calculator
   rails, the excursion detectors and the realized-accuracy suite all read the
-  stored fan, which is the raw one. The correction reaches the BG panel's
-  forecast overlay and nothing else.
+  stored fan, which is the raw one. The correction reaches three **display** fans
+  and nothing else: the BG panel's forecast overlay, the hindsight sweep beside
+  it, and the exercise review's swept fan. All three, because a fan drawn raw
+  beside a calibrated one — on the same axes or a screen away — states a second
+  and narrower uncertainty with nothing saying why. The two swept fans apply the
+  correction in-sample, to rows it was fitted on, which §8.4's exchangeability
+  argument does not cover; accepted because nothing either sweep draws is read by
+  anything.
 - **The wire carries the raw fan.** `SPEC/http-api.md`'s Prediction has no
   calibrated/raw discriminator, and a calibrated fan would satisfy its "row index
   3 equals `line`" and travel indistinguishably. Nothing calibrated is written to

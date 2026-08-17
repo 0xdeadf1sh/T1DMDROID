@@ -47,6 +47,7 @@ import kotlinx.coroutines.delay
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -77,6 +78,7 @@ import com.t1dm.app.di.deleteReceipt
 import com.t1dm.app.di.logReceipt
 import com.t1dm.app.di.undoReceipt
 import com.t1dm.app.service.DoseCalcService
+import com.t1dm.app.service.ExerciseService
 import com.t1dm.feature.insulin.BolusCalculatorScreen
 import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.InferenceCause
@@ -105,6 +107,12 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.t1dm.feature.dashboard.DashboardScreen
+import com.t1dm.feature.exercise.ExerciseScreen
+import com.t1dm.feature.exercise.ExerciseSessionScreen
+import com.t1dm.feature.exercise.reviewWindow
+import com.t1dm.core.model.ExerciseKind
+import com.t1dm.core.model.ExerciseSession
+import com.t1dm.core.model.TrackPoint
 import com.t1dm.feature.game.GameScreen
 import com.t1dm.core.model.CarTuning
 import com.t1dm.feature.hardware.HardwareScreen
@@ -155,11 +163,17 @@ import com.t1dm.feature.settings.SignalSafetyScreen
 import com.t1dm.feature.settings.ThermalSettingsScreen
 import com.t1dm.feature.settings.WarmupSettingsScreen
 import com.t1dm.feature.settings.WatchSettingsScreen
+import com.t1dm.ui.graph.GraphFrame
+import com.t1dm.ui.graph.HindsightFrame
 import com.t1dm.ui.graph.PredictedClock
+import com.t1dm.ui.graph.graphFrameOf
+import com.t1dm.ui.graph.hindsightFrameOf
 import com.t1dm.alerts.AlarmSeverity
 import com.t1dm.alerts.VibrationPreset
 import com.t1dm.app.settings.SettingsStore
+import com.t1dm.data.T1dmRepository
 import com.t1dm.data.curve.CurveEngine
+import com.t1dm.data.curve.ExerciseDisposal
 import com.t1dm.data.settings.GraphSettingsStore
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -220,6 +234,7 @@ internal val destinations = listOf(
     Destination("network", "Network"),
     Destination("meals", "Meals"),
     Destination("insulin", "Insulin"),
+    Destination("exercise", "Exercise"),
     Destination("security", "Watch"),
     Destination("backup", "Backup"),
     Destination("logs", "Logs"),
@@ -392,6 +407,8 @@ internal fun crumbsFor(route: String?, modelId: String?, editLabel: String? = nu
         "insulin" -> listOf(Crumb("Insulin", null))
         "insulin/types" -> listOf(Crumb("Insulin", "insulin"), Crumb("Types & curves", null))
         "insulin/bolusCalc" -> listOf(Crumb("Insulin", "insulin"), Crumb("Bolus advisor", null))
+        "exercise" -> listOf(Crumb("Exercise", null))
+        "exercise/{sessionId}" -> listOf(Crumb("Exercise", "exercise"), Crumb("Session", null))
         "security" -> listOf(Crumb("Watch", null))
         "backup" -> listOf(Crumb("Backup", null))
         "logs" -> listOf(Crumb("Logs", null))
@@ -1717,6 +1734,126 @@ private fun T1dmNavHost(
                 onLogDose = { type, units -> container.appScope.launch { onLogged(container.logTypedDose(type, units)) } },
             )
         }
+        composable("exercise") {
+            val ctx = LocalContext.current
+            val sessions by container.exercise.sessions.collectAsState(emptyList())
+            val active by container.exercise.active.collectAsState()
+            val bodyMassKg by container.exercise.bodyMassKg.collectAsState(null)
+            // The one degraded reason, whichever half produced it — a bout's own while one records, the
+            // refusal that stopped the service otherwise.
+            val degraded by container.exerciseDegraded.collectAsState()
+            // The kind held across the permission round trip. The service fails CLOSED in `onCreate`, so
+            // the grant has to land before Start reaches it; MainActivity's single batch request stays
+            // untouched, because location is this feature's and not the monitor's bootstrap.
+            //
+            // SAVEABLE, because the round trip can outlive the Activity: the permission dialog is where
+            // a low-memory kill lands, and MainActivity declares no `configChanges`, so a theme, font
+            // scale or locale change recreates it too. The registry re-delivers the grant to the new
+            // instance either way, and a plain `remember` would meet it holding null — the branch below
+            // that shows nothing at all.
+            var pendingKind by rememberSaveable { mutableStateOf<ExerciseKind?>(null) }
+            val locationLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.RequestMultiplePermissions(),
+            ) { grants ->
+                val kind = pendingKind
+                pendingKind = null
+                when {
+                    kind == null -> Unit
+                    // Either grant opens a bout — the seconds are recorded whatever the receiver
+                    // does — and a coarse-only one says so on the card instead of drawing a track.
+                    grants.values.any { it } ->
+                        container.appScope.launch { container.exercise.start(kind) }
+                    // A permanent denial lands here with no system dialog ever shown, so this is the
+                    // ONLY feedback there is: without it Start visibly does nothing at all.
+                    else -> container.exerciseRefusal.value = ExerciseService.NO_PERMISSION
+                }
+            }
+            ExerciseScreen(
+                sessions = sessions,
+                active = active,
+                degraded = degraded,
+                bodyMassKg = bodyMassKg,
+                onSetBodyMassKg = { kg -> container.appScope.launch { container.exercise.setBodyMassKg(kg) } },
+                onStart = { kind ->
+                    // A refusal must not outlive the attempt that produced it.
+                    container.exerciseRefusal.value = null
+                    // FINE specifically, not either permission: a coarse-only grant opens the bout
+                    // legally but its fixes are fuzzed to ~2 km and the bucketer refuses every one,
+                    // so ask for the upgrade before starting rather than running the receiver blind.
+                    if (ExerciseService.hasPreciseLocation(ctx)) {
+                        container.appScope.launch { container.exercise.start(kind) }
+                    } else {
+                        pendingKind = kind
+                        locationLauncher.launch(ExerciseService.LOCATION_PERMISSIONS)
+                    }
+                },
+                onStop = { container.appScope.launch { container.exercise.stop() } },
+                onOpen = { id ->
+                    navHaptics.perform(HapticEvent.NavSwitch)
+                    navController.navigate("exercise/$id")
+                },
+            )
+        }
+        composable("exercise/{sessionId}") { entry ->
+            val id = entry.arguments?.getString("sessionId")?.toLongOrNull() ?: return@composable
+            val inference by container.inferenceState.collectAsState(InferenceState())
+            val unit by container.statsRepository.unitSpace.collectAsState(UnitSpace.MgDl)
+            val range by container.graphRange.collectAsState(com.t1dm.data.settings.BgRange.DEFAULT)
+            val bandCalibrations by container.bandCalibrations.collectAsState()
+            // Keyed on the id, not on Unit: the review is reached from a list that re-sorts under it,
+            // and a lookup that did not re-run would show the previous row's bout under the new title.
+            val session by produceState<ExerciseSession?>(null, id) {
+                value = container.exercise.session(id)
+            }
+            val track by produceState(emptyList<TrackPoint>(), id) {
+                value = container.exercise.track(id)
+            }
+            // The window the SCREEN draws, resolved once so the load and the viewport cannot disagree.
+            val window = session?.let { reviewWindow(it) }
+            val frame by produceState(GraphFrame.EMPTY, window, unit) {
+                val w = window
+                value = if (w == null) GraphFrame.EMPTY
+                else graphFrameOf(
+                    container.sessionReadings(w.first, w.last),
+                    unit,
+                    kovatchevF = container.nativeCore::kovatchevF,
+                )
+            }
+            // Whichever model's fan the panel is showing, so the sweep here and the overlay there are
+            // one model's history rather than two models' mixed.
+            val modelId = inference.selectedPrediction?.modelId
+                ?: inference.running.firstOrNull { it.selected }?.modelId
+            // The SAME §8.4 correction the BG panel's two display fans wear, remembered against the
+            // same map for the same reason: a fresh fit redraws the sweep instead of leaving it on the
+            // basis it was built with. Drawn raw beside two calibrated fans it would state a second,
+            // narrower uncertainty with nothing saying why.
+            val calibrateSessionFans: (String, () -> List<Double>, Int, Int) -> List<Double>? =
+                remember(bandCalibrations) {
+                    { m, fans, steps, nq -> container.calibratedFanBatch(bandCalibrations, m, fans, steps, nq) }
+                }
+            val hindsight by produceState<HindsightFrame?>(null, window, unit, modelId, calibrateSessionFans) {
+                val w = window
+                val m = modelId
+                value = if (w == null || m == null) null
+                else hindsightFrameOf(
+                    container.repository.predictionsForModelInRange(m, w.first, w.last),
+                    unit,
+                    container.nativeCore::kovatchevF,
+                    { fans, steps, nq -> calibrateSessionFans(m, fans, steps, nq) },
+                )
+            }
+            ExerciseSessionScreen(
+                session = session,
+                gridMs = T1dmRepository.GRID_MS,
+                track = track,
+                frame = frame,
+                hindsight = hindsight,
+                unit = unit,
+                thresholds = container.alarmConfig.thresholds,
+                rangeMinMgdl = range.minMgdl,
+                rangeMaxMgdl = range.maxMgdl,
+            )
+        }
         composable("security") {
             val watch by container.watchSecurity.collectAsState()
             SecurityScreen(
@@ -1995,6 +2132,8 @@ private fun T1dmNavHost(
             val insEnc by container.settingsStore.insulinBezier.collectAsState(null)
             val carbCurve = remember(carbEnc) { BezierCurve.decode(carbEnc) ?: BezierCurve.default(180.0) }
             val insulinCurve = remember(insEnc) { BezierCurve.decode(insEnc) ?: BezierCurve.default(300.0) }
+            val carbEquiv by container.settingsStore.carbEquivPerMin
+                .collectAsState(ExerciseDisposal.DEFAULT_CARB_EQUIV_PER_MIN)
             CurveParamsScreen(
                 params = CurveParams(
                     basalKaPerHour = CurveEngine.Presets.BASAL_KA_PER_HOUR,
@@ -2003,11 +2142,18 @@ private fun T1dmNavHost(
                     tresibaDiaHours = CurveEngine.Presets.TRESIBA_DIA_MIN / 60.0,
                     carbHighGiK = hi.first, carbHighGiTheta = hi.second,
                     carbLowGiK = lo.first, carbLowGiTheta = lo.second,
+                    exerciseK = ExerciseDisposal.K, exerciseTheta = ExerciseDisposal.THETA,
                 ),
                 carbCurve = carbCurve,
                 insulinCurve = insulinCurve,
                 onSaveCarbCurve = { c -> scope.launch { container.settingsStore.setCarbBezier(BezierCurve.encode(c)) } },
                 onSaveInsulinCurve = { c -> scope.launch { container.settingsStore.setInsulinBezier(BezierCurve.encode(c)) } },
+                exerciseCarbEquivPerMin = carbEquiv,
+                exerciseCarbEquivRange =
+                    ExerciseDisposal.MIN_CARB_EQUIV_PER_MIN..ExerciseDisposal.MAX_CARB_EQUIV_PER_MIN,
+                onSetExerciseCarbEquivPerMin = { g ->
+                    scope.launch { container.settingsStore.setCarbEquivPerMin(g) }
+                },
             )
         }
         composable("settings/power") {

@@ -26,8 +26,8 @@ android {
 
     defaultConfig {
         applicationId = "com.t1dm.app"
-        versionCode = 92
-        versionName = "0.36.0"
+        versionCode = 93
+        versionName = "0.37.0"
 
         // arm64-v8a only (single target device). Harmless until native .so libs ship.
         ndk {
@@ -125,6 +125,7 @@ dependencies {
     implementation(project(":feature:network"))
     implementation(project(":feature:meals"))
     implementation(project(":feature:insulin"))
+    implementation(project(":feature:exercise"))
     implementation(project(":feature:security"))
     implementation(project(":feature:settings"))
     implementation(project(":feature:logs"))

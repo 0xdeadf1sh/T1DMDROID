@@ -45,6 +45,11 @@ fun ModelPrediction.toWrite(cycleTsMs: Long, nowMs: Long): PredictionWriteDto {
  * longer sample columns — a meal/dose is a self-describing curve event pushed separately via
  * `PUT /v1/meals` / `PUT /v1/doses`. `updated_at` is the phone clock, carried verbatim so the
  * server's COALESCE upsert applies a genuine edit and no-ops a byte-identical redelivery.
+ *
+ * `exercise` is the exception to "integer series widened": it is grams of carbohydrate equivalent
+ * per bucket (`SPEC/invariants.md` §3, `SPEC/http-api.md`), already an `f64` on both sides, and it
+ * must cross unrounded in both directions — an ordinary bucket holds a couple of grams, so rounding
+ * would quantise the disposal curve away entirely.
  */
 fun SampleEntity.toIngest(): IngestDto = IngestDto(
     ts = ts,
@@ -55,14 +60,14 @@ fun SampleEntity.toIngest(): IngestDto = IngestDto(
     hr = hr?.toDouble(),
     steps = steps?.toDouble(),
     sleep = sleep?.toDouble(),
-    exercise = exercise?.toDouble(),
+    exercise = exercise,
     mood = mood,
 )
 
 /**
  * A server row → catch-up [SamplePatch]. The server schema carries no BG provenance/flag, so a
  * present `bg` is reconstructed as MEASURED/NORMAL (documented on [SamplePatch]); floats snap back
- * to the local integer series.
+ * to the local integer series, `exercise` excepted — it is grams and stays a float.
  */
 fun SampleDto.toPatch(): SamplePatch = SamplePatch(
     ts = ts,
@@ -76,7 +81,7 @@ fun SampleDto.toPatch(): SamplePatch = SamplePatch(
     mood = mood,
     hr = hr?.let { Math.round(it).toInt() },
     sleep = sleep?.let { Math.round(it).toInt() },
-    exercise = exercise?.let { Math.round(it).toInt() },
+    exercise = exercise,
 )
 
 fun WsEvent.Sample.toPatch(): SamplePatch = SamplePatch(
@@ -90,7 +95,7 @@ fun WsEvent.Sample.toPatch(): SamplePatch = SamplePatch(
     mood = mood,
     hr = hr?.let { Math.round(it).toInt() },
     sleep = sleep?.let { Math.round(it).toInt() },
-    exercise = exercise?.let { Math.round(it).toInt() },
+    exercise = exercise,
 )
 
 /**
