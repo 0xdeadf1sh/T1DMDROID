@@ -37,6 +37,9 @@ dependencies {
     implementation(libs.timber)
 
     testImplementation(libs.junit)
+    // `restoreLast` and the state it publishes are suspending, so the source-change tests need a
+    // test scope to reach them.
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:${libs.versions.coroutines.get()}")
     // Android's JVM unit-test android.jar stubs org.json to throw "not mocked"; ModelStore parses
     // descriptor JSON with org.json, so the real implementation must shadow the stub on the test path.
     testImplementation("org.json:json:20240303")
