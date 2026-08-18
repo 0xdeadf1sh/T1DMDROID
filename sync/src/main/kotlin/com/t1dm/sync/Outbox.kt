@@ -17,24 +17,32 @@ import kotlinx.serialization.encodeToString
  */
 internal val OutboxKind.priority: Int
     get() = when (this) {
-        OutboxKind.ALERT -> 8
-        OutboxKind.DOSE -> 7
-        OutboxKind.MEAL -> 6
-        OutboxKind.INGEST -> 5
+        OutboxKind.ALERT -> 9
+        OutboxKind.DOSE -> 8
+        OutboxKind.MEAL -> 7
+        OutboxKind.INGEST -> 6
         // Below INGEST: a descriptor only names a label the readings already carry, so a reading must
         // never wait behind it. The server accepts a label for a source it has not been told about,
         // which is what makes arriving late harmless.
-        OutboxKind.CGM_SOURCE -> 4
-        OutboxKind.STATS -> 3
-        OutboxKind.PREDICTIONS -> 2
-        OutboxKind.SERIES -> 1
+        OutboxKind.CGM_SOURCE -> 5
+        OutboxKind.STATS -> 4
+        OutboxKind.PREDICTIONS -> 3
+        OutboxKind.SERIES -> 2
+        // Near the bottom on purpose: a bridged row MIRRORS a record the phone already holds and has
+        // already queued for its own server. Dropping one loses a third party's copy of an event, not
+        // the event — so it must yield to every row that carries the record itself.
+        OutboxKind.NIGHTSCOUT -> 1
         OutboxKind.PHOTO -> 0
     }
 
 /**
  * Whether an over-age outbox row may be dropped by the age-eviction sweep (gated in [QueueDrainer]).
  * Irreplaceable clinical kinds (ALERT/DOSE/MEAL) never age out — only the hard size cap can
- * ever evict them; regenerable kinds (INGEST/STATS/PREDICTIONS/SERIES/PHOTO) do.
+ * ever evict them; regenerable kinds (INGEST/STATS/PREDICTIONS/SERIES/PHOTO/NIGHTSCOUT) do.
+ *
+ * NIGHTSCOUT ages out despite mirroring a clinical event, because what it carries is a COPY: the
+ * event itself is in `logged_meal`/`logged_dose` and on the phone's own server either way. A bridged
+ * row that has sat undeliverable for the full age bound is a stale duplicate, not a lost record.
  */
 internal val OutboxKind.ageEvictable: Boolean
     get() = when (this) {

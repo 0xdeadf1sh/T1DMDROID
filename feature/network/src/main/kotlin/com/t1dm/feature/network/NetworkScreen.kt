@@ -61,6 +61,11 @@ data class NetworkPanelState(
     val alertCount: Long = 0,
     val modelPushes: List<ModelPushRow> = emptyList(),
     val net: NetworkDiagnostics? = null,
+    val nightscoutEnabled: Boolean = false,
+    val nightscoutUrl: String? = null,
+    /** Last bridge failure, or null. The bridge never stands the queue down, so this is the only
+     *  place a rejected secret or an unreachable host becomes visible. */
+    val nightscoutError: String? = null,
 )
 
 @Composable
@@ -111,6 +116,13 @@ fun NetworkScreen(state: NetworkPanelState = NetworkPanelState()) {
         } else {
             Field("profile", state.profileLabel ?: "—")
             Field("base URL", state.baseUrl ?: "—")
+        }
+
+        Section("Nightscout")
+        Field("bridge", if (state.nightscoutEnabled) "on" else "off")
+        if (state.nightscoutEnabled) {
+            Field("URL", state.nightscoutUrl ?: "—")
+            Field("last error", state.nightscoutError ?: "none")
         }
 
         Section("Outbox")

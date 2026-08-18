@@ -37,7 +37,17 @@ enum class DoseKind { BOLUS, BASAL }
  * name it does not know, and one undecodable row poisons every later drain. `NOTE` left this way in
  * v9; see `MigrationRunner.MIGRATION_8_9`.
  */
-enum class OutboxKind { ALERT, DOSE, MEAL, INGEST, STATS, PREDICTIONS, SERIES, PHOTO, CGM_SOURCE }
+enum class OutboxKind { ALERT, DOSE, MEAL, INGEST, STATS, PREDICTIONS, SERIES, PHOTO, CGM_SOURCE, NIGHTSCOUT }
+
+/**
+ * The dedupKey prefix marking a `NIGHTSCOUT` row as a BG slot rather than a treatment.
+ *
+ * It lives here, beside the enum, because BOTH sides need it and they sit on opposite sides of the
+ * module boundary: this module WRITES the row (a reading landing, inside the projection transaction)
+ * and `:sync` READS it back to decide what to upload. Spelled in each, the two would be free to drift
+ * and the only symptom would be bridged readings that silently never send.
+ */
+const val NS_ENTRY_DEDUP_PREFIX = "ns:entry:"
 
 /** Lifecycle of an outbox row across drain attempts. */
 enum class OutboxState { PENDING, INFLIGHT, FAILED }

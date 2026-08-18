@@ -37,6 +37,7 @@ fun SettingsScreen(
     onOpenModels: () -> Unit = {},
     onOpenCgm: () -> Unit = {},
     onOpenServer: () -> Unit = {},
+    onOpenNightscout: () -> Unit = {},
     onOpenWatch: () -> Unit = {},
     onOpenPower: () -> Unit = {},
     onOpenData: () -> Unit = {},
@@ -86,6 +87,7 @@ fun SettingsScreen(
                 SettingsSectionHeader("Devices")
                 SettingsNavRow("CGM source", "Active sensor, recorded sources", onClick = onOpenCgm)
                 SettingsNavRow("Server profile", "Base URL, rw token (QR), health check", onClick = onOpenServer)
+                SettingsNavRow("Nightscout bridge", "Mirror BG, carbs & bolus to a Nightscout host", onClick = onOpenNightscout)
                 SettingsNavRow("Watch", "ESP32-C3 glance: pair, status", onClick = onOpenWatch)
                 SettingsNavRow("Low-power mode", "Battery-saver entry % and behaviour", onClick = onOpenPower)
 

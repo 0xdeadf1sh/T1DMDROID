@@ -628,6 +628,17 @@ interface OutboxDao {
     @Query("SELECT MIN(createdAtMs) FROM outbox")
     suspend fun oldestCreatedAt(): Long?
 
+    /**
+     * [oldestCreatedAt] over rows bound for the phone's own server only.
+     *
+     * The §3.8 re-mirror walk infers "delivered" from the absence of any row as old as its stamp. A
+     * Nightscout-bridge row is bound elsewhere and proves nothing about that walk, so counting one
+     * would let an unreachable third party hold the walk open forever — re-enqueuing the entire
+     * meal/dose history on every reconnect and never banking the epoch.
+     */
+    @Query("SELECT MIN(createdAtMs) FROM outbox WHERE kind != :excluded")
+    suspend fun oldestCreatedAtExcluding(excluded: OutboxKind): Long?
+
     /** Oldest-first over the whole queue (bounded by the configured max size); priority-ranked and
      *  trimmed in Kotlin because Android SQLite lacks `DELETE … ORDER BY … LIMIT`. */
     @Query("SELECT id, kind, createdAtMs FROM outbox ORDER BY createdAtMs, id")
@@ -671,6 +682,19 @@ interface OutboxDao {
 
     @Query("DELETE FROM outbox WHERE id IN (:ids)")
     suspend fun deleteAll(ids: List<Long>): Int
+
+    /**
+     * The ids currently in [state] — read immediately before [resetState] so the drainer knows WHICH
+     * rows the reclaim moved.
+     *
+     * `attempts` does not survive the reclaim (the UPDATE below leaves it alone), so after a crash a
+     * row that was mid-send is indistinguishable from one that never reached the wire. That is
+     * harmless for an idempotent destination and NOT harmless for the Nightscout bridge, whose host
+     * has no idempotency key: replaying such a row unasked duplicates a dose. `T1dmRepository.withdrawPush`
+     * already treats INFLIGHT as evidence of a wire attempt for the same reason.
+     */
+    @Query("SELECT id FROM outbox WHERE state = :state")
+    suspend fun idsInState(state: OutboxState): List<Long>
 
     /** Reclaim rows wedged in INFLIGHT by a crash mid-send, back to PENDING for the next drain. */
     @Query("UPDATE outbox SET state = :to WHERE state = :from")

@@ -35,6 +35,7 @@ import com.t1dm.data.db.LoggedDoseEntity
 import com.t1dm.data.db.LoggedMealEntity
 import com.t1dm.data.db.HwTelemetryEntity
 import com.t1dm.data.db.KvEntity
+import com.t1dm.data.db.NS_ENTRY_DEDUP_PREFIX
 import com.t1dm.data.db.OutboxEntity
 import com.t1dm.data.db.OutboxKind
 import com.t1dm.data.db.OutboxState
@@ -121,6 +122,18 @@ class T1dmRepository(
      */
     private val _logEvents = MutableStateFlow(0L)
     val logEvents: StateFlow<Long> = _logEvents.asStateFlow()
+
+    /**
+     * Whether an authoritative reading should also queue a Nightscout-bridge row.
+     *
+     * A plain volatile flag rather than a kv read, because the check sits inside the reading-projection
+     * TRANSACTION on the CGM hot path — once per reading, forever — and the answer changes only when the
+     * user edits a settings screen. `:app` owns it: it is set at composition from the persisted config
+     * and re-set whenever the bridge is saved. Defaulting to false is what keeps a bridge nobody has
+     * configured from queueing rows that could only ever be dropped.
+     */
+    @Volatile
+    var nightscoutBridgeEnabled: Boolean = false
 
     private val sources get() = db.cgmSourceDao()
     private val readings get() = db.cgmReadingDao()
@@ -396,6 +409,23 @@ class T1dmRepository(
             if (authoritative == reading.sourceId.value && reading.flag != ReadingFlag.INVALID) {
                 projectBg(reading)
                 enqueueIngest(reading.tsMs, reading.rxWallMs)
+                // The bridge is fed HERE and not from `enqueueIngest`, which the scalar merge path also
+                // calls: a steps or mood write would otherwise re-queue a slot whose BG has not changed,
+                // and the receiver has no idempotency key to absorb the re-upload with.
+                if (nightscoutBridgeEnabled) {
+                    enqueueRow(
+                        OutboxKind.NIGHTSCOUT,
+                        "$NS_ENTRY_DEDUP_PREFIX${reading.tsMs}",
+                        ByteArray(0),
+                        reading.rxWallMs,
+                        // Held until the slot closes. The marker only coalesces while it is still
+                        // QUEUED, and drains run far more often than every five minutes — so without
+                        // this a sub-grid sensor whose later sample supersedes the slot re-queues a key
+                        // that has already drained and uploads the same `date` twice, which the
+                        // receiver has no idempotency key to absorb.
+                        notBeforeMs = reading.tsMs + GRID_MS,
+                    )
+                }
             }
         }
     }
@@ -437,6 +467,19 @@ class T1dmRepository(
     fun observeSampleWrites(): Flow<Long?> = samples.observeMaxTs()
 
     suspend fun sampleAt(ts: Long): SampleEntity? = withContext(io) { samples.byTs(ts) }
+
+    /**
+     * The AUTHORITATIVE source's trend at one grid slot, in tenths of mg/dL per minute, or null.
+     *
+     * The `sample` projection carries BG but not trend, and the Nightscout bridge needs the arrow.
+     * Authoritative rather than active on purpose: a second worn sensor may be read and drawn without
+     * being believed (see `CgmSourceEntity`), and the arrow must come from the same source as the
+     * number beside it or the two would disagree on screen for no visible reason.
+     */
+    suspend fun authoritativeTrendAt(ts: Long): Int? = withContext(io) {
+        val sourceId = sources.authoritativeSourceId() ?: return@withContext null
+        readings.byTs(sourceId, ts)?.trendTenthsPerMin
+    }
 
     /**
      * Newest grid ts at or before [atMs] — the WS-connect catch-up cursor.
@@ -559,10 +602,16 @@ class T1dmRepository(
      * `PUT /v1/meals` push still sitting in the outbox. See [undoLoggedDose] for why the two deletes
      * must be atomic and what the returned [PushWithdrawal] can and cannot promise.
      */
-    suspend fun undoLoggedMeal(rowId: Long, outboxId: Long?, dedupKey: String?): PushWithdrawal =
+    suspend fun undoLoggedMeal(
+        rowId: Long,
+        outboxId: Long?,
+        dedupKey: String?,
+        mirrorDedupKey: String? = null,
+    ): PushWithdrawal =
         withContext(io) {
             inWriteTx {
                 loggedMeals.delete(rowId)
+                mirrorDedupKey?.let { outbox.deleteByDedupKeyInState(it, OutboxState.PENDING) }
                 withdrawPush(outboxId, dedupKey)
             }
         }.also { _logEvents.update { t -> t + 1 } }
@@ -589,11 +638,25 @@ class T1dmRepository(
      * Bumps [logEvents] exactly once, after the transaction commits — the sole trigger that repaints
      * IOB/COB, the curve channels and the dashboard overlay, since an event delete touches neither
      * `cgm_reading` nor `sample` (§3.1: the carb/bolus/basal scalars are retired).
+     *
+     * [mirrorDedupKey], when given, names the Nightscout-bridge row for the SAME event, withdrawn in
+     * this transaction too. Both pushes are held for the same withdrawal window, so an undo inside it
+     * takes back both; leaving the mirror behind would have the third party keep a dose the phone and
+     * its own server had both forgotten — the one copy nobody would ever see contradicted.
+     *
+     * PENDING-only, deliberately: a mirror row already claimed INFLIGHT is mid-POST to a host that has
+     * no delete, so removing it locally would erase the record of a request that still lands.
      */
-    suspend fun undoLoggedDose(rowId: Long, outboxId: Long?, dedupKey: String?): PushWithdrawal =
+    suspend fun undoLoggedDose(
+        rowId: Long,
+        outboxId: Long?,
+        dedupKey: String?,
+        mirrorDedupKey: String? = null,
+    ): PushWithdrawal =
         withContext(io) {
             inWriteTx {
                 loggedDoses.delete(rowId)
+                mirrorDedupKey?.let { outbox.deleteByDedupKeyInState(it, OutboxState.PENDING) }
                 withdrawPush(outboxId, dedupKey)
             }
         }.also { _logEvents.update { t -> t + 1 } }
@@ -642,15 +705,23 @@ class T1dmRepository(
      * The resolve and the withdraw share one transaction, so a drain cannot land between them; the
      * dedupKey cross-check inside [withdrawPush] still guards the recycled-rowid case.
      */
-    suspend fun deleteCommittedMeal(rowId: Long, dedupKey: String): PushWithdrawal =
+    suspend fun deleteCommittedMeal(
+        rowId: Long,
+        dedupKey: String,
+        mirrorDedupKey: String? = null,
+    ): PushWithdrawal =
         withContext(io) {
-            inWriteTx { withdrawCommitted(dedupKey) { loggedMeals.delete(rowId) } }
+            inWriteTx { withdrawCommitted(dedupKey, mirrorDedupKey) { loggedMeals.delete(rowId) } }
         }.also { if (it != PushWithdrawal.ALREADY_SENT) _logEvents.update { t -> t + 1 } }
 
     /** The dose twin of [deleteCommittedMeal]; same refusal, same atomicity, same §3.6-G reasoning. */
-    suspend fun deleteCommittedDose(rowId: Long, dedupKey: String): PushWithdrawal =
+    suspend fun deleteCommittedDose(
+        rowId: Long,
+        dedupKey: String,
+        mirrorDedupKey: String? = null,
+    ): PushWithdrawal =
         withContext(io) {
-            inWriteTx { withdrawCommitted(dedupKey) { loggedDoses.delete(rowId) } }
+            inWriteTx { withdrawCommitted(dedupKey, mirrorDedupKey) { loggedDoses.delete(rowId) } }
         }.also { if (it != PushWithdrawal.ALREADY_SENT) _logEvents.update { t -> t + 1 } }
 
     /**
@@ -664,11 +735,18 @@ class T1dmRepository(
      */
     private suspend fun withdrawCommitted(
         dedupKey: String,
+        mirrorDedupKey: String? = null,
         deleteRow: suspend () -> Unit,
     ): PushWithdrawal {
         val queued = outbox.byDedupKey(dedupKey) ?: return PushWithdrawal.ALREADY_SENT
         val outcome = withdrawPush(queued.id, dedupKey)
-        if (outcome != PushWithdrawal.ALREADY_SENT) deleteRow()
+        if (outcome != PushWithdrawal.ALREADY_SENT) {
+            // Withdrawn together, or not at all. The refusal above means the event stays, so the mirror
+            // must stay queued with it; past it, an event being deleted must not still reach a third
+            // party that offers no way to take it back.
+            mirrorDedupKey?.let { outbox.deleteByDedupKeyInState(it, OutboxState.PENDING) }
+            deleteRow()
+        }
         return outcome
     }
 
@@ -1083,6 +1161,11 @@ class T1dmRepository(
 
     /** Oldest enqueue timestamp across the queue (null = empty); Network panel age-vs-bound read. */
     suspend fun oldestOutboxCreatedAt(): Long? = withContext(io) { outbox.oldestCreatedAt() }
+
+    /** [oldestOutboxCreatedAt] counting only rows bound for T1DMSERVER — the re-mirror walk's
+     *  delivery proof, which a stuck bridge row must not be able to falsify. */
+    suspend fun oldestServerBoundOutboxCreatedAt(): Long? =
+        withContext(io) { outbox.oldestCreatedAtExcluding(OutboxKind.NIGHTSCOUT) }
 
     private suspend fun enqueueIngest(gridTs: Long, nowMs: Long) =
         enqueueRow(OutboxKind.INGEST, "ingest:sample:$gridTs", ByteArray(0), nowMs)

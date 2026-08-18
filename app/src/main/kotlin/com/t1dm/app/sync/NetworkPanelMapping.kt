@@ -15,6 +15,8 @@ fun SyncStatus.toPanelState(
     maxSize: Int,
     maxAgeMs: Long,
     nowMs: Long = System.currentTimeMillis(),
+    nightscoutEnabled: Boolean = false,
+    nightscoutUrl: String? = null,
 ): NetworkPanelState = NetworkPanelState(
     hasProfile = active != null,
     profileLabel = active?.label,
@@ -32,6 +34,9 @@ fun SyncStatus.toPanelState(
     modelPushes = modelPushes.entries
         .sortedBy { it.key }
         .map { (id, s) -> ModelPushRow(id, s.count, s.bytes) },
+    nightscoutEnabled = nightscoutEnabled,
+    nightscoutUrl = nightscoutUrl,
+    nightscoutError = lastDrain?.nightscoutError,
 )
 
 private fun SyncStatus.wsLabel(active: ServerProfile?): String = when {

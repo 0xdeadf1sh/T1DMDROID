@@ -82,6 +82,12 @@ class FakeOutboxDao : OutboxDao {
         return before - rows.size
     }
 
+    override suspend fun idsInState(state: OutboxState): List<Long> =
+        rows.values.filter { it.state == state }.map { it.id }
+
+    override suspend fun oldestCreatedAtExcluding(excluded: OutboxKind): Long? =
+        rows.values.filter { it.kind != excluded }.minOfOrNull { it.createdAtMs }
+
     override suspend fun deleteAllRows() {
         rows.clear()
         depth.value = 0

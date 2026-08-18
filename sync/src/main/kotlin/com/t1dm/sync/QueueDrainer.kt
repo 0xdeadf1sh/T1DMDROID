@@ -5,7 +5,12 @@ import com.t1dm.data.db.OutboxDao
 import com.t1dm.data.db.OutboxEntity
 import com.t1dm.data.db.OutboxKind
 import com.t1dm.data.db.OutboxState
+import com.t1dm.data.db.NS_ENTRY_DEDUP_PREFIX
 import com.t1dm.data.db.SampleEntity
+import com.t1dm.sync.nightscout.NightscoutClient
+import com.t1dm.sync.nightscout.NightscoutDisabledException
+import com.t1dm.sync.nightscout.NsJson
+import com.t1dm.sync.nightscout.toNsEntry
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -21,6 +26,9 @@ data class DrainResult(
     val evicted: Int = 0,
     val standDown: StandDown? = null,
     val remaining: Int = 0,
+    /** Last Nightscout-bridge failure this pass, for the Network panel. The bridge never stands the
+     *  queue down, so without this its failures would be invisible outside the log. */
+    val nightscoutError: String? = null,
 ) {
     enum class StandDown { NO_PROFILE, AUTH }
 }
@@ -36,6 +44,14 @@ data class DrainResult(
  * INGEST rows are dirty-markers — the current `sample` is resolved via [sampleAt] at drain time so
  * repeated writes to a grid slot coalesce into one up-to-date push; a slot whose row has since
  * vanished is simply dropped. Every other kind carries a self-describing [OutboxRequest] payload.
+ *
+ * **Two destinations, one queue.** A `NIGHTSCOUT` row is a mirror bound for a third-party
+ * Nightscout-compatible host and goes out through [nightscout] instead of [http]; everything else —
+ * ordering, eviction, backoff, the withdrawal hold, crash recovery — is shared, deliberately, so the
+ * bridge inherits behaviour that is already tested rather than restating it. The one asymmetry is
+ * failure: a bridge that is off, unreachable, or rejecting the secret must NEVER stand the queue
+ * down, because that would let a misconfigured third party stall the patient's own sync. See the
+ * classification below.
  */
 class QueueDrainer(
     private val dao: OutboxDao,
@@ -45,6 +61,11 @@ class QueueDrainer(
     private val config: DrainConfig = DrainConfig(),
     private val clock: () -> Long = System::currentTimeMillis,
     private val random: () -> Double = Math::random,
+    /** The bridge destination; null (the default) means no bridge is compiled into this drainer and a
+     *  `NIGHTSCOUT` row is dropped rather than retried. */
+    private val nightscout: NightscoutClient? = null,
+    /** Trend at a grid slot, in tenths of mg/dL per minute — the bridge's `direction` arrow. */
+    private val trendAt: suspend (Long) -> Int? = { null },
 ) {
     private val mutex = Mutex()
 
@@ -89,6 +110,12 @@ class QueueDrainer(
             // changes no outcome: nothing drains on enqueue, the depth Flow already reports the row,
             // and the timer/tick/reconnect triggers are unchanged.
             if (dao.count() == 0) return@withContext DrainResult()
+            // WHICH rows the reclaim moves, captured before it moves them. `resetState` does not
+            // advance `attempts`, so afterwards a row that was mid-POST when the process died looks
+            // exactly like one that never reached the wire — and for the bridge, whose host has no
+            // idempotency key, replaying it unasked duplicates a dose. This is precisely the case the
+            // `alreadyPosted` guard exists for, so it must not be the case that skips it.
+            val reclaimed = dao.idsInState(OutboxState.INFLIGHT).toHashSet()
             dao.resetState(OutboxState.INFLIGHT, OutboxState.PENDING) // reclaim crash-wedged rows
             val evicted = evict(clock())
             val now = clock()
@@ -97,6 +124,11 @@ class QueueDrainer(
             var dropped = 0
             var retried = 0
             var standDown: DrainResult.StandDown? = null
+            var nightscoutError: String? = null
+            // One unreachable bridge must not cost the pass one connect timeout PER bridged row. The
+            // batch is FIFO and interleaved, so without this a third party's outage delays the
+            // patient's own ingest and dose pushes behind it for as long as the mutex is held.
+            var bridgeUnreachable = false
 
             loop@ for (row in batch) {
                 // Claim BEFORE anything reaches the wire. `batch` is a snapshot of up to `batchLimit`
@@ -110,24 +142,62 @@ class QueueDrainer(
                 if (dao.claim(row.id, OutboxState.PENDING, OutboxState.INFLIGHT) == 0) continue@loop
                 val request = resolve(row)
                 if (request == null) { dao.delete(row.id); dropped++; continue } // INGEST slot vanished
+                val bridged = row.kind == OutboxKind.NIGHTSCOUT
+                if (bridged && bridgeUnreachable) { reschedule(row, now); retried++; continue@loop }
+
+                // A REPLAY of a bridged treatment, not a first attempt — either it has failed before
+                // (`attempts`) or it was in flight when the process died (`reclaimed`). `/api/v1` has no
+                // idempotency key and the host serves no `/api/v3`, so a POST whose ack was lost has
+                // already been committed and would commit again here — a double-counted bolus in the
+                // logbook. Ask first. A false covers "never arrived" AND "not recognisable", and
+                // re-posts on both.
+                if (bridged && (row.attempts > 0 || row.id in reclaimed) && nightscout != null) {
+                    val already = runCatching { nightscout.alreadyPosted(request) }.getOrDefault(false)
+                    if (already) {
+                        Timber.tag(TAG).i("bridge row %d already present; not re-posting", row.id)
+                        dao.delete(row.id); sent++; continue@loop
+                    }
+                }
+
                 val response = try {
-                    http.execute(request)
+                    if (bridged) {
+                        nightscout?.execute(request) ?: throw NightscoutDisabledException()
+                    } else {
+                        http.execute(request)
+                    }
+                } catch (e: NightscoutDisabledException) {
+                    // The bridge was switched off (or never configured) while this row sat queued.
+                    // Nothing will ever send it, so it is dropped rather than retried forever.
+                    dao.delete(row.id); dropped++; continue@loop
                 } catch (e: NoActiveProfileException) {
                     revert(row); standDown = DrainResult.StandDown.NO_PROFILE; break@loop
                 } catch (e: Exception) {
-                    reschedule(row, now); retried++; continue@loop
+                    reschedule(row, now); retried++
+                    if (bridged) { nightscoutError = e.javaClass.simpleName; bridgeUnreachable = true }
+                    continue@loop
                 }
                 when {
                     response.ok -> { dao.delete(row.id); sent++ }
+                    // A bridge credential the third party rejects is THEIR problem, not a reason to
+                    // stop syncing the patient's own record. It backs the one row off and is reported;
+                    // only the T1DMSERVER destination may stand the whole queue down.
+                    response.authError && bridged -> {
+                        reschedule(row, now); retried++
+                        nightscoutError = "HTTP ${response.code} — secret rejected"
+                    }
                     response.authError -> { revert(row); standDown = DrainResult.StandDown.AUTH; break@loop }
                     response.permanentClientError -> {
                         Timber.tag(TAG).w("dropping %s row %d: HTTP %d", row.kind, row.id, response.code)
                         dao.delete(row.id); dropped++
+                        if (bridged) nightscoutError = "HTTP ${response.code}"
                     }
-                    else -> { reschedule(row, now); retried++ }
+                    else -> {
+                        reschedule(row, now); retried++
+                        if (bridged) nightscoutError = "HTTP ${response.code}"
+                    }
                 }
             }
-            DrainResult(sent, dropped, retried, evicted, standDown, remaining = dao.count())
+            DrainResult(sent, dropped, retried, evicted, standDown, remaining = dao.count(), nightscoutError = nightscoutError)
         }
     }
 
@@ -140,11 +210,21 @@ class QueueDrainer(
         dao.reschedule(row.id, OutboxState.PENDING, row.attempts + 1, next)
     }
 
-    private suspend fun resolve(row: OutboxEntity): SyncRequest? = when (row.kind) {
-        OutboxKind.INGEST -> {
+    private suspend fun resolve(row: OutboxEntity): SyncRequest? = when {
+        row.kind == OutboxKind.INGEST -> {
             val ts = row.dedupKey.removePrefix(INGEST_DEDUP_PREFIX).toLongOrNull()
             val sample = ts?.let { sampleAt(it) }
             sample?.let { SyncRequest("POST", "/v1/ingest", SyncJson.encodeToString(it.toIngest()).toByteArray()) }
+        }
+        // A bridged BG row is a dirty-marker like INGEST — resolved now, so a slot rewritten while the
+        // row waited uploads once, current. A slot that never held a BG (or has since lost it) yields
+        // null and the row is dropped: there is nothing to mirror.
+        row.kind == OutboxKind.NIGHTSCOUT && row.dedupKey.startsWith(NS_ENTRY_DEDUP_PREFIX) -> {
+            val ts = row.dedupKey.removePrefix(NS_ENTRY_DEDUP_PREFIX).toLongOrNull()
+            val entry = ts?.let { sampleAt(it)?.toNsEntry(trendAt(it)) }
+            entry?.let {
+                SyncRequest("POST", "/api/v1/entries", NsJson.encodeToString(listOf(it)).toByteArray())
+            }
         }
         else -> runCatching {
             SyncJson.decodeFromString<OutboxRequest>(String(row.payload, Charsets.UTF_8)).toSyncRequest()

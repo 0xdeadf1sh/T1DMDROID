@@ -163,6 +163,11 @@ import com.t1dm.sync.ServerProfileStore
 import com.t1dm.sync.SyncHttpClient
 import com.t1dm.sync.KeystoreTokenStore
 import com.t1dm.sync.TokenStore
+import com.t1dm.sync.nightscout.NightscoutClient
+import com.t1dm.sync.nightscout.NightscoutConfigStore
+import com.t1dm.sync.nightscout.NightscoutEnqueuer
+import com.t1dm.sync.nightscout.OkHttpNightscoutClient
+import com.t1dm.sync.nightscout.nsTreatmentDedupKey
 import com.t1dm.sync.WebSocketStreamClient
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.StateFlow
@@ -1292,6 +1297,10 @@ class AppContainer(context: Context) {
             // install adopts a newly-fetched model. A slow/failed network is swallowed inside autoSyncModels.
             autoSyncModels("startup")
         }
+        // The bridge's on/off state is read on the CGM hot path from a plain field, so it has to be
+        // published once at startup — otherwise mirroring stays off until the settings screen is
+        // opened, and a configured bridge would silently skip every reading until then.
+        appScope.launch { refreshNightscoutEnabled() }
         // Keep the notification-icon theme snapshot current (issue I1).
         appScope.launch { settingsStore.themeId.collect { themeIdSnapshot = it } }
         appScope.launch { settingsStore.customThemeJson.collect { customThemeJsonSnapshot = it } }
@@ -1371,6 +1380,52 @@ class AppContainer(context: Context) {
 
     val outboxEnqueuer: OutboxEnqueuer by lazy { OutboxEnqueuer(repository) }
 
+    // ─── Nightscout bridge ────────────────────────────────────────────────────────────────────
+    //
+    // A SECOND, one-way destination for BG, carbohydrate and bolus, for a third-party logbook that
+    // speaks the Nightscout `/api/v1` subset. It shares the durable outbox with T1DMSERVER sync and
+    // nothing else: its own base URL, its own `api-secret` credential in the Keystore, and its own
+    // failure handling — a bridge that is off, unreachable or rejecting its secret must never stall
+    // the patient's own sync. Neither direction of that arrangement is a shared contract, so nothing
+    // here belongs in `SPEC/`.
+
+    /** URL + on/off in `kv`, the api-secret in the Keystore beside the `rw` token. */
+    val nightscoutConfigStore: NightscoutConfigStore by lazy {
+        NightscoutConfigStore(
+            getKv = repository::getKv,
+            putKv = repository::putKv,
+            tokens = tokenStore,
+        )
+    }
+
+    val nightscoutClient: NightscoutClient by lazy {
+        OkHttpNightscoutClient(
+            config = { nightscoutConfigStore.current() },
+            dispatchers = dispatchers,
+        )
+    }
+
+    val nightscoutEnqueuer: NightscoutEnqueuer by lazy { NightscoutEnqueuer(repository) }
+
+    /**
+     * Publish the bridge's on/off state to the repository, which consults it on the CGM hot path to
+     * decide whether an authoritative reading also queues a bridged row. Called at composition and
+     * again after every save, so switching the bridge on starts mirroring at the next reading rather
+     * than at the next launch.
+     */
+    suspend fun refreshNightscoutEnabled() {
+        repository.nightscoutBridgeEnabled = nightscoutConfigStore.current() != null
+    }
+
+    /** Save the bridge configuration and report what the host said to a probe. */
+    suspend fun saveNightscoutBridge(url: String, secret: String, enabled: Boolean): String {
+        nightscoutConfigStore.save(url, secret, enabled, System.currentTimeMillis())
+        refreshNightscoutEnabled()
+        return if (enabled) nightscoutClient.probe() else "off"
+    }
+
+    suspend fun probeNightscout(): String = nightscoutClient.probe()
+
     /** Live Network-panel telemetry (process-scoped; the durable outbox itself is persisted). */
     val syncStatusStore: SyncStatusStore = SyncStatusStore()
 
@@ -1383,6 +1438,8 @@ class AppContainer(context: Context) {
             sampleAt = repository::sampleAt,
             dispatchers = dispatchers,
             config = drainConfig,
+            nightscout = nightscoutClient,
+            trendAt = repository::authoritativeTrendAt,
         )
     }
 
@@ -1423,7 +1480,11 @@ class AppContainer(context: Context) {
         ReMirrorLedger(
             getKv = repository::getKv,
             putKv = repository::putKv,
-            oldestQueuedAtMs = repository::oldestOutboxCreatedAt,
+            // Server-bound rows ONLY. The walk infers delivery from the absence of a row as old as
+            // its stamp, and a bridge row proves nothing about it — counting one would let an
+            // unreachable third party hold the walk open forever, re-enqueuing the whole meal/dose
+            // history on every reconnect and never banking the epoch.
+            oldestQueuedAtMs = repository::oldestServerBoundOutboxCreatedAt,
             maxQueueAgeMs = drainConfig.maxAgeMs,
         )
     }
@@ -1726,6 +1787,10 @@ class AppContainer(context: Context) {
         runCatching { clearBolusAdvice() }
         runCatching { clearRoll() }
         gmiSnapshot = null
+        // The bridge flag is read on the CGM hot path from a plain field, and the reset deliberately
+        // keeps the process alive — so without this it stays true after its kv rows and its Keystore
+        // secret are gone, and every reading queues a row that can only ever be dropped.
+        runCatching { refreshNightscoutEnabled() }
         // The memoized stats blocks are derived patient data on an app-lifetime object; a
         // process-preserving reset must not leave them resident.
         runCatching { statsRepository.invalidateCache() }
@@ -2440,6 +2505,7 @@ class AppContainer(context: Context) {
             ),
         )
         val outboxId = outboxEnqueuer.enqueueMeal(meal.toMealEventDto(), now, holdMs = pushHoldMs())
+        mirrorToNightscout { nightscoutEnqueuer.enqueueMeal(meal, now, holdMs = pushHoldMs()) }
         reforecastAfterCurveWrite()
         return meal.handle(outboxId, "${fmtAmount(grams)} g (GI ${fmtAmount(gi)})")
     }
@@ -2454,6 +2520,7 @@ class AppContainer(context: Context) {
         val now = System.currentTimeMillis()
         val meal = mealsController.logMeal(components)
         val outboxId = outboxEnqueuer.enqueueMeal(meal.toMealEventDto(), now, holdMs = pushHoldMs())
+        mirrorToNightscout { nightscoutEnqueuer.enqueueMeal(meal, now, holdMs = pushHoldMs()) }
         reforecastAfterCurveWrite()
         val foods = components.size
         return meal.handle(
@@ -2546,6 +2613,7 @@ class AppContainer(context: Context) {
         )
         rememberLoggedPreset(rapid, presetLabel)
         val outboxId = outboxEnqueuer.enqueueDose(dose.toDoseEventDto(), now, holdMs = pushHoldMs())
+        mirrorToNightscout { nightscoutEnqueuer.enqueueDose(dose, now, holdMs = pushHoldMs()) }
         reforecastAfterCurveWrite()
         return dose.handle(outboxId, "${fmtAmount(units)} U bolus · ${rapid.label}")
     }
@@ -2570,6 +2638,7 @@ class AppContainer(context: Context) {
         )
         rememberLoggedPreset(basal, presetLabel)
         val outboxId = outboxEnqueuer.enqueueDose(dose.toDoseEventDto(), now, holdMs = pushHoldMs())
+        mirrorToNightscout { nightscoutEnqueuer.enqueueDose(dose, now, holdMs = pushHoldMs()) }
         reforecastAfterCurveWrite()
         return dose.handle(outboxId, "${fmtAmount(units)} U basal · ${basal.label}")
     }
@@ -2607,6 +2676,7 @@ class AppContainer(context: Context) {
         val now = System.currentTimeMillis()
         val dose = insulinController.logDose(type, units)
         val outboxId = outboxEnqueuer.enqueueDose(dose.toDoseEventDto(), now, holdMs = pushHoldMs())
+        mirrorToNightscout { nightscoutEnqueuer.enqueueDose(dose, now, holdMs = pushHoldMs()) }
         // The re-run is owed to the ROW, not the push: the forecast reads the `logged_dose` through
         // ChannelBuilder and never the queue, so this path would need it even if it enqueued nothing.
         reforecastAfterCurveWrite()
@@ -2627,9 +2697,29 @@ class AppContainer(context: Context) {
      * forecast is re-run — the withdrawal of a dose lowers assumed IOB exactly as logging it raised it.
      */
     suspend fun undoLog(handle: LogHandle): PushWithdrawal = when (handle.kind) {
-        LoggedEventKind.MEAL -> repository.undoLoggedMeal(handle.rowId, handle.outboxId, handle.dedupKey)
-        LoggedEventKind.DOSE -> repository.undoLoggedDose(handle.rowId, handle.outboxId, handle.dedupKey)
+        // The bridged mirror is withdrawn in the same transaction. Both pushes were queued under the
+        // same hold, so an undo inside it takes back both; leaving the mirror would have a third party
+        // keep an event the phone and its own server had both forgotten.
+        LoggedEventKind.MEAL -> repository.undoLoggedMeal(
+            handle.rowId, handle.outboxId, handle.dedupKey, nsTreatmentDedupKey(handle.clientId),
+        )
+        LoggedEventKind.DOSE -> repository.undoLoggedDose(
+            handle.rowId, handle.outboxId, handle.dedupKey, nsTreatmentDedupKey(handle.clientId),
+        )
     }.also { reforecastAfterCurveWrite() }
+
+    /**
+     * Queue a bridged mirror of an event just logged, if the bridge is on.
+     *
+     * Gated and swallowing, deliberately. By the time this runs the clinical record is committed and
+     * its own push is queued; a third-party mirror is the least important thing in the sequence, and
+     * nothing about it may propagate into the receipt the caller is about to hand the user.
+     */
+    private suspend fun mirrorToNightscout(enqueue: suspend () -> Long) {
+        if (!repository.nightscoutBridgeEnabled) return
+        runCatching { enqueue() }
+            .onFailure { Timber.tag("Nightscout").w(it, "mirror enqueue failed") }
+    }
 
     private fun LoggedMealEntity.handle(outboxId: Long, label: String) = LogHandle(
         kind = LoggedEventKind.MEAL,
@@ -2700,8 +2790,12 @@ class AppContainer(context: Context) {
      * moved and a cycle would only recompute the forecast it already published.
      */
     suspend fun deleteLoggedEntry(entry: LoggedEntry): PushWithdrawal = when (entry.kind) {
-        CurveKind.CARB -> repository.deleteCommittedMeal(entry.rowId, mealDedupKey(entry.clientId))
-        CurveKind.INSULIN -> repository.deleteCommittedDose(entry.rowId, doseDedupKey(entry.clientId))
+        CurveKind.CARB -> repository.deleteCommittedMeal(
+            entry.rowId, mealDedupKey(entry.clientId), nsTreatmentDedupKey(entry.clientId),
+        )
+        CurveKind.INSULIN -> repository.deleteCommittedDose(
+            entry.rowId, doseDedupKey(entry.clientId), nsTreatmentDedupKey(entry.clientId),
+        )
     }.also { if (it != PushWithdrawal.ALREADY_SENT) reforecastAfterCurveWrite() }
 
     /** The withdrawal window, in minutes, and its writer — the Logs panel's own knob. */

@@ -97,6 +97,7 @@ import com.t1dm.app.di.AppContainer
 import com.t1dm.app.backup.BackupRoute
 import com.t1dm.app.sync.SyncStatus
 import com.t1dm.app.sync.toPanelState
+import com.t1dm.feature.settings.NightscoutSettingsScreen
 import com.t1dm.feature.settings.ServerSettingsScreen
 import com.t1dm.feature.settings.DeathModeScreen
 import com.t1dm.app.notify.BgFormat
@@ -458,6 +459,7 @@ internal fun settingsRouteFor(screen: SettingsScreenKey): String = when (screen)
     SettingsScreenKey.MODELS -> "models"
     SettingsScreenKey.CGM -> "settings/cgm"
     SettingsScreenKey.SERVER -> "settings/server"
+    SettingsScreenKey.NIGHTSCOUT -> "settings/nightscout"
     SettingsScreenKey.WATCH -> "settings/watch"
     SettingsScreenKey.POWER -> "settings/power"
     SettingsScreenKey.DATA -> "settings/data"
@@ -1433,9 +1435,18 @@ private fun T1dmNavHost(
                     kotlinx.coroutines.delay(4000)
                 }
             }
+            val ns by produceState<Pair<Boolean, String?>>(false to null) {
+                val store = container.nightscoutConfigStore
+                value = (store.current() != null) to store.url()
+            }
             NetworkScreen(
-                state = status.toPanelState(active, container.outboxMaxSize, container.outboxMaxAgeMs)
-                    .copy(net = net),
+                state = status.toPanelState(
+                    active,
+                    container.outboxMaxSize,
+                    container.outboxMaxAgeMs,
+                    nightscoutEnabled = ns.first,
+                    nightscoutUrl = ns.second,
+                ).copy(net = net),
             )
         }
         composable("meals") {
@@ -1884,6 +1895,7 @@ private fun T1dmNavHost(
                 onOpenModels = { navController.navigate("models") },
                 onOpenCgm = { navController.navigate("settings/cgm") },
                 onOpenServer = { navController.navigate("settings/server") },
+                onOpenNightscout = { navController.navigate("settings/nightscout") },
                 onOpenWatch = { navController.navigate("settings/watch") },
                 onOpenPower = { navController.navigate("settings/power") },
                 onOpenData = { navController.navigate("settings/data") },
@@ -2305,6 +2317,46 @@ private fun T1dmNavHost(
                     }
                 },
             )
+        }
+        composable("settings/nightscout") {
+            val scope = rememberCoroutineScope()
+            var busy by remember { mutableStateOf(false) }
+            var status by remember { mutableStateOf<String?>(null) }
+            // Read once on entry: the URL and the has-a-secret flag are edit-time facts, not a live
+            // feed, and the field below is uncontrolled after first composition anyway.
+            var initial by remember { mutableStateOf<Triple<String, Boolean, Boolean>?>(null) }
+            LaunchedEffect(Unit) {
+                initial = Triple(
+                    container.nightscoutConfigStore.url() ?: "",
+                    container.nightscoutConfigStore.hasSecret(),
+                    container.nightscoutConfigStore.enabled(),
+                )
+            }
+            val loaded = initial
+            if (loaded != null) {
+                NightscoutSettingsScreen(
+                    initialUrl = loaded.first,
+                    hasSecret = loaded.second,
+                    initialEnabled = loaded.third,
+                    busy = busy,
+                    status = status,
+                    onSave = { url, secret, enabled ->
+                        scope.launch {
+                            busy = true
+                            status = container.saveNightscoutBridge(url, secret, enabled)
+                            initial = Triple(url, loaded.second || secret.isNotBlank(), enabled)
+                            busy = false
+                        }
+                    },
+                    onTest = {
+                        scope.launch {
+                            busy = true
+                            status = container.probeNightscout()
+                            busy = false
+                        }
+                    },
+                )
+            }
         }
         composable("settings/cgm") {
             val ctx = LocalContext.current
