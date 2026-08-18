@@ -180,6 +180,11 @@ fun DashboardScreen(
     // null ⇒ everything is loaded and the oldest reading is the floor.
     historyFloorMs: Long? = null,
     onExtendHistory: (Long) -> Unit = {},
+    // Where the SELECTED model's forecast horizon reaches, supplied whether or not the fan is being
+    // drawn. The panel reserves that room either way, so stepping to a sensor whose forecast is
+    // withheld anchors on the same instant instead of sliding the whole trace right by the horizon.
+    // Layout only — nothing is drawn there, and no forecast is implied for the sensor on screen.
+    forecastEndMs: Long? = null,
     warmup: WarmupProgress? = null,
     // Phase 7A — BG-panel overhaul.
     // Issue 1 — suppress the "next forecast" countdown when no forecast is actually being made: during
@@ -619,6 +624,7 @@ fun DashboardScreen(
             rolled = rolledSeries,
             hindsight = hindsight,
             futureExtentMs = FUTURE_VIEW_MS,
+            reservedEndMs = forecastEndMs,
             domainFloorMs = historyFloorMs,
             onViewportChange = { st, sp ->
                 viewStartMs = st

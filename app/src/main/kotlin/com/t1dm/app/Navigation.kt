@@ -1129,6 +1129,11 @@ private fun T1dmNavHost(
             val sensitivity = rememberSensitivity(container)
             val viewingOtherSource by container.viewingNonAuthoritative.collectAsState(false)
             val viewedSourceKey by container.viewedSourceKey.collectAsState(null)
+            // Read off the UNWITHHELD predictions, so the panel reserves the forecast's room even on the
+            // step where it refuses to draw it. Withholding the fan must not move the trace.
+            val forecastEndMs = inference.predictions.firstOrNull { it.selected }
+                ?.takeIf { it.horizonSteps > 0 }
+                ?.let { it.anchorTsMs + it.horizonSteps * it.stepMs }
             DashboardScreen(
                 readings = readings,
                 sourceKey = viewedSourceKey,
@@ -1150,6 +1155,7 @@ private fun T1dmNavHost(
                 logEntries = logEntries,
                 historyFloorMs = historyFloorMs,
                 onExtendHistory = container::extendHistoryBackTo,
+                forecastEndMs = forecastEndMs,
                 warmup = inference.warmup,
                 rangeMinMgdl = range.minMgdl,
                 rangeMaxMgdl = range.maxMgdl,

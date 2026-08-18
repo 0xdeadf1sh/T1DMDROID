@@ -225,6 +225,11 @@ fun GlucoseGraph(
     // I3 — extend the pannable right edge this far past now so the committed dose curves in the empty
     // future are reachable (up to 24 h), WITHOUT auto-following into that empty region.
     futureExtentMs: Long = 0L,
+    // Hold the auto-follow edge out to this instant even where nothing is DRAWN there. Layout only: it
+    // reserves the room a forecast would occupy, so a panel whose fan is withheld anchors on the same
+    // instant as one whose fan is drawn instead of sliding the trace right by the horizon. Null ⇒ the
+    // edge is whatever the drawn content reaches.
+    reservedEndMs: Long? = null,
     // HINDSIGHT — every forecast the selected model issued over the visible window, swept by the
     // scrub: the fan issued at the cursor's own cycle, drawn forward over the trace that actually
     // followed it. Null ⇒ the sweep is off and nothing is drawn. DISPLAY-ONLY, like the rolled
@@ -406,11 +411,16 @@ fun GlucoseGraph(
     // Where the AUTO-FOLLOW settles: the last reading OR the furthest forecast/rolled step, so the
     // forecast horizon (in the future, past the last reading) stays on-screen — but NOT the empty
     // future-view region, which the user reaches only by panning.
+    //
+    // [reservedEndMs] holds that edge where a forecast EXISTS but is not being drawn. Without it the
+    // edge fell back to the last reading the moment the fan was withheld, and stepping between sensors
+    // slid the whole trace sideways by the horizon.
     fun followEndMs(): Double {
         val fe = if (frame.isEmpty) 0.0 else frame.absMs(frame.size - 1)
         val pe = predictions.maxTsMs()?.toDouble() ?: fe
         val re = rolled?.maxTsMs?.toDouble() ?: fe
-        return maxOf(fe, pe, re)
+        val se = reservedEndMs?.toDouble() ?: fe
+        return maxOf(fe, pe, re, se)
     }
 
     // The furthest the viewport may be PANNED to (I3): the data/forecast end, extended into the empty
