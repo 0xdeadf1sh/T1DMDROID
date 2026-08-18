@@ -2793,6 +2793,17 @@ class AppContainer(context: Context) {
         }.distinctUntilChanged()
 
     /**
+     * The viewed sensor's id, bare — the key the BG panel's chart dissolves across when the bottom bar
+     * steps to another sensor.
+     *
+     * The id rather than the descriptor: a descriptor re-emits whenever any of its fields is rewritten
+     * (a retuned warm-up window, a hide), and each of those would dissolve a chart that is still
+     * drawing the same sensor.
+     */
+    val viewedSourceKey: Flow<String?> =
+        viewedSource.map { it?.id?.value }.distinctUntilChanged()
+
+    /**
      * True while the panel is looking at a sensor that is not the one being believed. The forecast
      * overlay, the hindsight sweep and the rolled fan are all withheld then — none of them describes
      * this sensor, because none of them was computed from it.

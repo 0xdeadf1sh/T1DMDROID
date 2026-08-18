@@ -70,6 +70,7 @@ import com.t1dm.core.design.LoggedEntryDialog
 import com.t1dm.core.design.SignalBars
 import com.t1dm.core.design.argbWithAlpha
 import com.t1dm.core.design.iconStyleForTheme
+import com.t1dm.core.design.crossfadeOnSwap
 import com.t1dm.core.design.rememberHapticDetent
 import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.model.AlertThresholds
@@ -130,6 +131,10 @@ import com.t1dm.ui.graph.predOverlayOf
 @Composable
 fun DashboardScreen(
     readings: List<CgmReading>,
+    // Which sensor [readings] were drawn for. Identity only — the panel neither queries nor filters on
+    // it; it is what the chart dissolves across when the bottom bar steps to another sensor, so that
+    // the trace is replaced through a blend rather than swapped in one frame.
+    sourceKey: String? = null,
     thresholds: AlertThresholds? = null,
     unit: UnitSpace = UnitSpace.MgDl,
     predictions: List<ModelPrediction> = emptyList(),
@@ -585,7 +590,15 @@ fun DashboardScreen(
                 label = "chartHandOff",
             )
             if (chartAlpha > 0.001f) {
-                Box(Modifier.fillMaxSize().graphicsLayer { alpha = chartAlpha }) {
+                // The hand-off keeps its OWN layer, outside the dissolve: an alpha change there stays a
+                // RenderNode property update and never invalidates the draw below it, where it would
+                // re-record the whole chart on every frame of the hand-off.
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .graphicsLayer { alpha = chartAlpha }
+                        .crossfadeOnSwap(sourceKey),
+                ) {
                 GlucoseGraph(
                 frame = frame,
                 modifier = Modifier.fillMaxSize(),

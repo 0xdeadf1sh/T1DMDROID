@@ -1128,8 +1128,10 @@ private fun T1dmNavHost(
             // re-probing.
             val sensitivity = rememberSensitivity(container)
             val viewingOtherSource by container.viewingNonAuthoritative.collectAsState(false)
+            val viewedSourceKey by container.viewedSourceKey.collectAsState(null)
             DashboardScreen(
                 readings = readings,
+                sourceKey = viewedSourceKey,
                 unit = glucoseUnit,
                 thresholds = container.alarmConfig.thresholds,
                 // Every forecast on this panel — the fan, the hindsight sweep, the rolled overlay — was
