@@ -902,8 +902,20 @@ class InferenceController(
             } else {
                 null
             }
+            // The BASELINE is not gated by this window, and should not be. The gate exists because a
+            // neural export conditions on 96–288 steps and says nothing trustworthy with less; the ridge
+            // reads `nLags` trailing values and its own IOB/COB, so 24 h of accrual is a requirement it
+            // does not have. Withholding it bought a blank panel for a day per install and no safety:
+            // it cannot reach the dose calculator, the ISF/ICR probe or the rolled overlay, all of which
+            // fail closed on a model with no descriptor and no graph.
+            //
+            // Its OWN guards still decide. It must be fitted, the series must cover `nLags`, and the
+            // §3.6 degeneracy classification applies to its fan exactly as to any other.
+            val warmupBaseline = runCatching { baselineDuringWarmup(nowMs) }
+                .getOrElse { Timber.tag(TAG).w(it, "baseline cycle failed during warmup"); null }
             _state.value = _state.value.copy(
-                predictions = emptyList(), // clear the overlay while warming
+                // Only the baseline's. The neural fan stays suppressed, which is what this gate is for.
+                predictions = listOfNotNull(warmupBaseline),
                 lastCause = InferenceCause.COLLECTING_CONTEXT,
                 warmup = com.t1dm.core.model.WarmupProgress(measuredHours, requiredHours),
                 circadianTime = warmupBelief?.first,
@@ -914,8 +926,9 @@ class InferenceController(
                 note = "collecting context — %.1f / %.0f h of measured data".format(measuredHours, requiredHours),
             )
             Timber.tag(TAG).i(
-                "warmup: %.1f/%.0f h measured — forecasts suppressed; circadian=%s",
+                "warmup: %.1f/%.0f h measured — neural suppressed, baseline=%s; circadian=%s",
                 measuredHours, requiredHours,
+                if (warmupBaseline != null) "published" else "n/a",
                 warmupBelief?.let { "%.2fh R=%.3f".format(it.first.predictedHour, it.first.resultantR) } ?: "n/a",
             )
             return
@@ -1135,6 +1148,29 @@ class InferenceController(
      * never overlaps a calculator `runSelected` on the one command queue. Never throws (the caller
      * wraps it too); a time-probe hiccup must not perturb the warmup gate.
      */
+    /**
+     * One baseline forecast while the WARMUP gate is withholding the neural fan.
+     *
+     * The series is asked for at the BASELINE's own floor — `nLags` trailing steps — not the neural
+     * minimum, because that floor is the whole reason this runs at all. [BaselineRunner.predict] rejects
+     * anything shorter, so the two agree and a short history simply yields null.
+     *
+     * Never marked `selected`: selection drives the calculator, the ISF/ICR probe and the rolled overlay,
+     * and all three fail closed on a model with no graph. During warmup this fan is the panel's, and
+     * nothing else's.
+     */
+    private suspend fun baselineDuringWarmup(nowMs: Long): ModelPrediction? {
+        val b = baseline ?: return null
+        val lags = b.fitted?.spec?.nLags ?: return null
+        val series = history.recentBgSeries(NO_DESCRIPTOR_MAX_STEPS, lags) ?: return null
+        return b.predict(
+            series,
+            snapToGrid(nowMs),
+            selected = false,
+            stale = (nowMs - series.anchorTsMs) > freshnessThresholdMs,
+        )
+    }
+
     private suspend fun circadianDuringWarmup(): Pair<PredictedTime, Long>? {
         val id = selectedId ?: return null
         val entry = loaded[id] ?: return null
