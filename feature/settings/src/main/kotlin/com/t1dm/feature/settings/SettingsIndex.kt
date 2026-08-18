@@ -48,16 +48,15 @@ data class SettingsKnob(
 enum class SettingsScreenKey(val breadcrumb: String, internal val indexed: Boolean = true) {
     /** The hub itself. Its rows are navigation, not knobs, so it carries no entries. */
     ROOT("Settings", indexed = false),
-    DISPLAY("Display & theme"),
+    DISPLAY("Display"),
     GRAPH("Graph"),
-    ALARM_THRESHOLDS("Alarms & safety › Thresholds"),
-    SIGNAL("Alarms & safety › Signal safety"),
-    ALERTS("Sound & vibration"),
-    DEVICE_TEMP("Alarms & safety › Device temperature"),
-    WARMUP("Warmup"),
-    MODEL_COUNT("Models run at once"),
-    FORECAST_CADENCE("Forecast cadence"),
-    THERMAL("Thermal gate"),
+    ALARM_THRESHOLDS("Alarms › Thresholds"),
+    SIGNAL("Alarms › Signal"),
+    ALERTS("Sound"),
+    DEVICE_TEMP("Alarms › Device heat"),
+    /** Warm-up, cadence, the running-set cap and the thermal gate — everything that decides whether a
+     *  cycle happens. Four separate destinations until they were merged; see [ForecastSettingsScreen]. */
+    FORECAST("Forecast"),
     CALCULATOR("Bolus calculator"),
     CURVES("Curve & PK"),
     MODELS("Models"),
@@ -84,10 +83,7 @@ object SettingsIndex {
         addAll(settingsSignalKnobs)
         addAll(settingsAlertKnobs)
         addAll(settingsDeviceTempKnobs)
-        addAll(settingsWarmupKnobs)
-        addAll(settingsModelCountKnobs)
-        addAll(settingsForecastCadenceKnobs)
-        addAll(settingsThermalKnobs)
+        addAll(settingsForecastKnobs)
         addAll(settingsCalculatorKnobs)
         addAll(settingsCurveKnobs)
         addAll(settingsModelsKnobs)

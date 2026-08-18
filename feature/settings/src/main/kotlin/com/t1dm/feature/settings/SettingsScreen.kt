@@ -30,8 +30,7 @@ fun SettingsScreen(
     onOpenAlarmThresholds: () -> Unit = {},
     onOpenSignalSafety: () -> Unit = {},
     onOpenAlerts: () -> Unit = {},
-    onOpenWarmup: () -> Unit = {},
-    onOpenModelCount: () -> Unit = {},
+    onOpenForecast: () -> Unit = {},
     onOpenComputeBackend: () -> Unit = {},
     onOpenCalculator: () -> Unit = {},
     onOpenCurveParams: () -> Unit = {},
@@ -43,8 +42,6 @@ fun SettingsScreen(
     onOpenData: () -> Unit = {},
     onOpenAbout: () -> Unit = {},
     onOpenDeath: () -> Unit = {},
-    onOpenForecastCadence: () -> Unit = {},
-    onOpenThermal: () -> Unit = {},
     onOpenDeviceTemp: () -> Unit = {},
     onOpenDeathClock: () -> Unit = {},
     /** The three most recent committed searches, newest first (persisted in kv by `:app`). */
@@ -69,27 +66,24 @@ fun SettingsScreen(
         )
         Box(Modifier.weight(1f)) {
             SettingsScaffold(SettingsScreenKey.ROOT) {
-                SettingsSectionHeader("Display & units")
+                SettingsSectionHeader("Display")
                 SettingsNavRow("Theme, font, units & targets", "3 themes, custom JSON, fonts, animations", onClick = onOpenDisplay)
                 SettingsNavRow("BG graph range & window", "Floor, ceiling, default window", onClick = onOpenGraph)
 
-                SettingsSectionHeader("Alarms & safety")
+                SettingsSectionHeader("Alarms")
                 SettingsNavRow("Alarm thresholds", "Urgent-low / low / high / urgent-high — unbounded", onClick = onOpenAlarmThresholds)
                 SettingsNavRow("Signal & freshness", "Loss-of-signal windows, dosing staleness gate", onClick = onOpenSignalSafety)
                 SettingsNavRow("Alert sound & vibration", "Per-tier tone, K90 vibration, DND bypass, repeat", onClick = onOpenAlerts)
                 SettingsNavRow("Device temperature alert", "Warn when the phone runs hot — fires even in Death mode", onClick = onOpenDeviceTemp)
 
-                SettingsSectionHeader("Forecast & models")
-                SettingsNavRow("Forecast warmup", "Real history the forecast waits for", onClick = onOpenWarmup)
-                SettingsNavRow("Models run at once", "How many forecast at once — all pushed, selected one shown", onClick = onOpenModelCount)
-                SettingsNavRow("Forecast cadence", "Adaptive (every reading) or timed (fixed period)", onClick = onOpenForecastCadence)
-                SettingsNavRow("Thermal gate", "Pause inference when too hot", onClick = onOpenThermal)
+                SettingsSectionHeader("Forecast")
+                SettingsNavRow("Forecast", "Warmup, cadence, models at once, thermal gate", onClick = onOpenForecast)
                 SettingsNavRow("Compute backend (CPU / GPU)", "CPU authority or Vulkan GPU; measured & agreement-gated", onClick = onOpenComputeBackend)
                 SettingsNavRow("Dose calculator", "Objective, asymmetry, rails, thresholds — unbounded", onClick = onOpenCalculator)
                 SettingsNavRow("Curve & PK parameters", "Carb & insulin presets, Bézier designers", onClick = onOpenCurveParams)
                 SettingsNavRow("Models & backend", "Running model; backend, precision", onClick = onOpenModels)
 
-                SettingsSectionHeader("Devices & sync")
+                SettingsSectionHeader("Devices")
                 SettingsNavRow("CGM source", "Active sensor, recorded sources", onClick = onOpenCgm)
                 SettingsNavRow("Server profile", "Base URL, rw token (QR), health check", onClick = onOpenServer)
                 SettingsNavRow("Watch", "ESP32-C3 glance: pair, status", onClick = onOpenWatch)

@@ -150,18 +150,15 @@ import com.t1dm.feature.settings.DataSettingsScreen
 import com.t1dm.feature.settings.DeathClockSettingsScreen
 import com.t1dm.feature.settings.DeviceTempAlertScreen
 import com.t1dm.feature.settings.DisplaySettingsScreen
-import com.t1dm.feature.settings.ForecastCadenceSettingsScreen
 import com.t1dm.feature.settings.LocalSettingsFocus
 import com.t1dm.feature.settings.SettingsFocusController
 import com.t1dm.feature.settings.SettingsScreenKey
+import com.t1dm.feature.settings.ForecastSettingsScreen
 import com.t1dm.feature.settings.GraphSettingsScreen
-import com.t1dm.feature.settings.ModelCountSettingsScreen
 import com.t1dm.feature.settings.PowerSettingsScreen
 import com.t1dm.feature.settings.RecordedSource
 import com.t1dm.feature.settings.SettingsScreen
 import com.t1dm.feature.settings.SignalSafetyScreen
-import com.t1dm.feature.settings.ThermalSettingsScreen
-import com.t1dm.feature.settings.WarmupSettingsScreen
 import com.t1dm.feature.settings.WatchSettingsScreen
 import com.t1dm.ui.graph.GraphFrame
 import com.t1dm.ui.graph.HindsightFrame
@@ -414,16 +411,13 @@ internal fun crumbsFor(route: String?, modelId: String?, editLabel: String? = nu
         "logs" -> listOf(Crumb("Logs", null))
         "settings" -> listOf(Crumb("Settings", null))
         "about" -> settings(Crumb("About", null))
-        "settings/display" -> settings(Crumb("Display & theme", null))
+        "settings/display" -> settings(Crumb("Display", null))
         "settings/graph" -> settings(Crumb("Graph", null))
-        "settings/alarms" -> settings(Crumb("Alarms & safety", "settings"), Crumb("Thresholds", null))
-        "settings/signal" -> settings(Crumb("Alarms & safety", "settings"), Crumb("Signal safety", null))
-        "settings/alerts" -> settings(Crumb("Sound & vibration", null))
-        "settings/warmup" -> settings(Crumb("Warmup", null))
-        "settings/models_running" -> settings(Crumb("Models run at once", null))
-        "settings/forecast" -> settings(Crumb("Forecast cadence", null))
-        "settings/thermal" -> settings(Crumb("Thermal gate", null))
-        "settings/temperature" -> settings(Crumb("Alarms & safety", "settings"), Crumb("Device temperature", null))
+        "settings/alarms" -> settings(Crumb("Alarms", "settings"), Crumb("Thresholds", null))
+        "settings/signal" -> settings(Crumb("Alarms", "settings"), Crumb("Signal", null))
+        "settings/alerts" -> settings(Crumb("Sound", null))
+        "settings/forecast" -> settings(Crumb("Forecast", null))
+        "settings/temperature" -> settings(Crumb("Alarms", "settings"), Crumb("Device heat", null))
         "settings/deathclock" -> settings(Crumb("Death clock", null))
         "settings/calculator" -> settings(Crumb("Bolus calculator", null))
         "settings/curves" -> settings(Crumb("Curve & PK", null))
@@ -458,10 +452,7 @@ internal fun settingsRouteFor(screen: SettingsScreenKey): String = when (screen)
     SettingsScreenKey.SIGNAL -> "settings/signal"
     SettingsScreenKey.ALERTS -> "settings/alerts"
     SettingsScreenKey.DEVICE_TEMP -> "settings/temperature"
-    SettingsScreenKey.WARMUP -> "settings/warmup"
-    SettingsScreenKey.MODEL_COUNT -> "settings/models_running"
-    SettingsScreenKey.FORECAST_CADENCE -> "settings/forecast"
-    SettingsScreenKey.THERMAL -> "settings/thermal"
+    SettingsScreenKey.FORECAST -> "settings/forecast"
     SettingsScreenKey.CALCULATOR -> "settings/calculator"
     SettingsScreenKey.CURVES -> "settings/curves"
     SettingsScreenKey.MODELS -> "models"
@@ -1875,8 +1866,7 @@ private fun T1dmNavHost(
                 onOpenAlarmThresholds = { navController.navigate("settings/alarms") },
                 onOpenSignalSafety = { navController.navigate("settings/signal") },
                 onOpenAlerts = { navController.navigate("settings/alerts") },
-                onOpenWarmup = { navController.navigate("settings/warmup") },
-                onOpenModelCount = { navController.navigate("settings/models_running") },
+                onOpenForecast = { navController.navigate("settings/forecast") },
                 onOpenComputeBackend = {
                     val id = inf.running.firstOrNull { it.selected }?.modelId ?: inf.running.firstOrNull()?.modelId
                     navController.navigate(if (id != null) "models/$id" else "models")
@@ -1891,8 +1881,6 @@ private fun T1dmNavHost(
                 onOpenData = { navController.navigate("settings/data") },
                 onOpenAbout = { navController.navigate("about") },
                 onOpenDeath = { navController.navigate("settings/death") },
-                onOpenForecastCadence = { navController.navigate("settings/forecast") },
-                onOpenThermal = { navController.navigate("settings/thermal") },
                 onOpenDeviceTemp = { navController.navigate("settings/temperature") },
                 onOpenDeathClock = { navController.navigate("settings/deathclock") },
                 recentSearches = recentSearches,
@@ -2197,30 +2185,23 @@ private fun T1dmNavHost(
                 onOpenSecurity = { navController.navigate("security") },
             )
         }
-        composable("settings/warmup") {
-            val scope = rememberCoroutineScope()
-            val hours by container.warmupHoursSetting.collectAsState(24)
-            WarmupSettingsScreen(
-                hours = hours,
-                onChange = { h -> scope.launch { container.setWarmupHours(h) } },
-            )
-        }
-        composable("settings/models_running") {
-            val scope = rememberCoroutineScope()
-            val count by container.maxModelsSetting.collectAsState(5)
-            ModelCountSettingsScreen(
-                count = count,
-                onChange = { n -> scope.launch { container.setMaxModels(n) } },
-            )
-        }
         composable("settings/forecast") {
             val scope = rememberCoroutineScope()
             val ss = container.settingsStore
+            val hours by container.warmupHoursSetting.collectAsState(24)
+            val count by container.maxModelsSetting.collectAsState(5)
             val mode by ss.forecastMode.collectAsState(SettingsStore.FORECAST_MODE_ADAPTIVE)
             val period by ss.forecastPeriodMin.collectAsState(SettingsStore.DEFAULT_FORECAST_PERIOD_MIN)
             val logDebounce by ss.logReforecastDebounceS
                 .collectAsState(SettingsStore.DEFAULT_LOG_REFORECAST_DEBOUNCE_S)
-            ForecastCadenceSettingsScreen(
+            val thermalOn by container.thermalGateEnabled.collectAsState(SettingsStore.DEFAULT_THERMAL_ON)
+            val maxC by container.inferenceMaxTempC.collectAsState(SettingsStore.DEFAULT_MAX_TEMP_C)
+            val warn by container.thermalWarnMarginC.collectAsState(SettingsStore.DEFAULT_WARN_MARGIN_C)
+            ForecastSettingsScreen(
+                warmupHoursValue = hours,
+                onSetWarmupHours = { h -> scope.launch { container.setWarmupHours(h) } },
+                modelCount = count,
+                onSetModelCount = { n -> scope.launch { container.setMaxModels(n) } },
                 adaptive = mode == SettingsStore.FORECAST_MODE_ADAPTIVE,
                 periodMinutes = period,
                 logDebounceSeconds = logDebounce,
@@ -2230,19 +2211,11 @@ private fun T1dmNavHost(
                     }
                 },
                 onSetPeriodMinutes = { m -> scope.launch { ss.setForecastPeriodMin(m) } },
-                onSetLogDebounceSeconds = { s -> scope.launch { ss.setLogReforecastDebounceS(s) } },
-            )
-        }
-        composable("settings/thermal") {
-            val scope = rememberCoroutineScope()
-            val enabled by container.thermalGateEnabled.collectAsState(SettingsStore.DEFAULT_THERMAL_ON)
-            val maxC by container.inferenceMaxTempC.collectAsState(SettingsStore.DEFAULT_MAX_TEMP_C)
-            val warn by container.thermalWarnMarginC.collectAsState(SettingsStore.DEFAULT_WARN_MARGIN_C)
-            ThermalSettingsScreen(
-                enabled = enabled,
+                onSetLogDebounceSeconds = { sec -> scope.launch { ss.setLogReforecastDebounceS(sec) } },
+                thermalOn = thermalOn,
                 maxTempC = maxC,
                 warnMarginC = warn,
-                onSetEnabled = { on -> scope.launch { container.setThermalGateEnabled(on) } },
+                onSetThermalEnabled = { on -> scope.launch { container.setThermalGateEnabled(on) } },
                 onSetMaxTempC = { c -> scope.launch { container.setInferenceMaxTempC(c) } },
                 onSetWarnMarginC = { c -> scope.launch { container.setThermalWarnMarginC(c) } },
             )

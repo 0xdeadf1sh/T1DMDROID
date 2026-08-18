@@ -24,7 +24,7 @@ import com.t1dm.core.design.hapticClickable
 
 /**
  * Read-only "About" panel (Phase 7C — item 18): app identity, version/build, the
- * GPL-3.0 licence, the loaded model's provenance (id + descriptor arch + ExecuTorch version), the git
+ * MIT licence, the loaded model's provenance (id + descriptor arch + ExecuTorch version), the git
  * SHA, and internal build info. All copy is PUBLIC-SAFE — no tokens, no keys, no host-internal paths.
  */
 data class AboutInfo(
