@@ -10,13 +10,16 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -25,6 +28,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.fadingEdges
@@ -58,9 +63,13 @@ fun ExerciseScreen(
     onStart: (ExerciseKind) -> Unit = {},
     onStop: () -> Unit = {},
     onOpen: (Long) -> Unit = {},
+    onDelete: (Long) -> Unit = {},
     footer: @Composable () -> Unit = {},
 ) {
     val listState = rememberLazyListState()
+    // Held by the SCREEN and carrying the whole session, not its index: the list is rebuilt from the
+    // store under an open dialog, so an index would name a different bout by the time it is accepted.
+    var confirming by remember { mutableStateOf<ExerciseSession?>(null) }
     LazyColumn(
         Modifier.fillMaxSize().padding(horizontal = 16.dp).fadingEdges(listState),
         state = listState,
@@ -81,9 +90,32 @@ fun ExerciseScreen(
                 )
             }
         } else {
-            items(sessions, key = { it.id }) { session -> SessionRow(session, onOpen) }
+            items(sessions, key = { it.id }) { session ->
+                SessionRow(session, onOpen, onDeleteRequest = { confirming = session })
+            }
         }
         item(key = "footer") { footer() }
+    }
+
+    confirming?.let { session ->
+        val haptics = rememberT1dmHaptics()
+        AlertDialog(
+            onDismissRequest = { confirming = null },
+            title = { Text("Delete this bout?") },
+            // The one fact not inferable from the title: the route goes with it, and unlike the glucose
+            // either side of the bout it cannot be reconstructed.
+            text = { Text("Track is lost") },
+            confirmButton = {
+                TextButton(onClick = {
+                    haptics.perform(HapticEvent.Warn)
+                    confirming = null
+                    onDelete(session.id)
+                }) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirming = null }) { Text("Keep") }
+            },
+        )
     }
 }
 
@@ -171,7 +203,7 @@ private fun BodyMassRow(bodyMassKg: Double?, onSet: (Double) -> Unit) {
 }
 
 @Composable
-private fun SessionRow(session: ExerciseSession, onOpen: (Long) -> Unit) {
+private fun SessionRow(session: ExerciseSession, onOpen: (Long) -> Unit, onDeleteRequest: () -> Unit) {
     val haptics = rememberT1dmHaptics()
     Card(
         onClick = { haptics.perform(HapticEvent.NavSwitch); onOpen(session.id) },
@@ -193,7 +225,26 @@ private fun SessionRow(session: ExerciseSession, onOpen: (Long) -> Unit) {
                     color = LocalContentColor.current.copy(alpha = 0.7f),
                 )
             }
-            Text(durationLabel(session.activeSec), style = MaterialTheme.typography.bodyMedium)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(durationLabel(session.activeSec), style = MaterialTheme.typography.bodyMedium)
+                // NOT on the bout being recorded. `observeAll` has no `endMs` filter, so the open row is
+                // in this list beside the live card — and deleting it would delete the row and its fixes
+                // while the recorder carried on: the service keeps its GNSS receiver and its notification,
+                // and every fix it goes on writing names a session that no longer exists. Those rows are
+                // reachable from no query and skipped by the archive, so they accumulate unreadably; and
+                // the bout would end by closing a row that is gone, leaving no record at all while its
+                // disposal is already in the model's channel and on the wire. Stop it first, then delete.
+                if (session.endMs != null) {
+                    IconButton(
+                        onClick = { haptics.perform(HapticEvent.Tap); onDeleteRequest() },
+                        // No TTS voice speaks U+2715, so the glyph alone announces as an unlabelled button
+                        // with neither the action nor which bout it acts on.
+                        modifier = Modifier.semantics {
+                            contentDescription = "Delete ${kindLabel(session.kind)} bout"
+                        },
+                    ) { Text("\u2715", style = MaterialTheme.typography.bodyMedium) }
+                }
+            }
         }
     }
 }

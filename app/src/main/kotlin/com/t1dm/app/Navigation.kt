@@ -1792,6 +1792,7 @@ private fun T1dmNavHost(
                     navHaptics.perform(HapticEvent.NavSwitch)
                     navController.navigate("exercise/$id")
                 },
+                onDelete = { id -> container.appScope.launch { container.exercise.delete(id) } },
             )
         }
         composable("exercise/{sessionId}") { entry ->
