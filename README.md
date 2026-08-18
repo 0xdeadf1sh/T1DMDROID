@@ -182,4 +182,4 @@ The build targets a single phone: a **Redmi K90 Max** (MediaTek Dimensity 9500 /
 
 ## License
 
-GPL-3.0.
+MIT — see [LICENSE](LICENSE).

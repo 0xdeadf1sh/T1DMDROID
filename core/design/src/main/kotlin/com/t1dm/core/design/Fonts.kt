@@ -8,7 +8,7 @@ import androidx.compose.ui.text.font.FontWeight
 /**
  * The bundled global fonts (Q8 / "≥3 bundled, terminal-ish but
  * readable, tabular numerals, OFL"). Three OFL monos live in `res/font/`; their licences ship in
- * `res/raw/ofl_*` (GPL-3.0-compatible). "System" restores the platform default. The choice is global
+ * `res/raw/ofl_*` (SIL Open Font License). "System" restores the platform default. The choice is global
  * and persists (kv); the active [Typography] is rebuilt from it in `T1dmTheme`.
  */
 enum class T1dmFontId(val storageKey: String, val displayName: String) {

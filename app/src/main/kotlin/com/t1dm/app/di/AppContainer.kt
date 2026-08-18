@@ -870,10 +870,10 @@ class AppContainer(context: Context) {
             flavor = BuildConfig.FLAVOR,
             buildType = BuildConfig.BUILD_TYPE,
             gitSha = BuildConfig.GIT_SHA,
-            license = "GNU General Public License v3.0 (GPL-3.0). This program is free software: you may " +
-                "redistribute it and/or modify it under the terms of the GPL as published by the Free " +
-                "Software Foundation, either version 3, or (at your option) any later version. Distributed " +
-                "WITHOUT ANY WARRANTY. Advisory only — this software never actuates insulin.",
+            license = "MIT. Permission is granted, free of charge, to use, copy, modify, merge, publish, " +
+                "distribute, sublicense and/or sell copies of this software, provided the copyright " +
+                "notice and this permission notice are included. Provided \"as is\", without warranty " +
+                "of any kind. Advisory only — this software never actuates insulin.",
             modelId = meta?.modelId,
             modelArchVersion = meta?.archVersion,
             modelParamCount = meta?.paramCount,
