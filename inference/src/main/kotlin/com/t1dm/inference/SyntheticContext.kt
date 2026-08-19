@@ -10,7 +10,8 @@ import kotlin.math.sin
  * guard → overlay path with no CGM present. It is deterministic (seeded) so a run is reproducible.
  */
 object SyntheticContext {
-    /** 288 steps = 48 patches = 24 h. Gentle diurnal wave in a physiological mg/dL band. */
+    /** [steps] 5-minute samples, the caller's length — the agreement probe asks for the model's
+     *  own full context. Gentle diurnal wave in a physiological mg/dL band. */
     fun plausible24h(steps: Int = 288, anchorTsMs: Long = System.currentTimeMillis()): BgSeries {
         val mgdl = DoubleArray(steps)
         var bg = 120.0

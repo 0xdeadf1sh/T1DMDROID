@@ -21,6 +21,8 @@ data class ModelBundle(
     val id: String,
     val descriptor: ModelDescriptor,
     val pte: File,
+    /** The head side file on disk, or null when the export shipped none or it is missing. */
+    val head: File? = null,
     val backendId: BackendId,
     val precision: Precision,
     val descriptorJson: String,
@@ -71,18 +73,19 @@ class ModelStore(
         val obj = runCatching { JSONObject(json) }.getOrElse {
             Timber.tag(TAG).w(it, "descriptor %s is not valid JSON", descriptorFile.name); return null
         }
-        // The Rust `parse_descriptor` (golden-gated) expects the FLAT descriptor schema; the exporter
-        // emits a RICHER NESTED one (geometry/constants/conformal). Flatten the nested form here so
-        // the app consumes the real exported artifact without touching the exporter or the parser.
-        // A malformed descriptor (e.g. a server-served one missing `normalization_stats`) must SKIP
-        // ITSELF, not throw out of `discover()`'s mapNotNull and disable discovery of every other model.
-        val flat = runCatching { flattenDescriptor(obj).toString() }.getOrElse {
-            Timber.tag(TAG).w(it, "descriptor %s is malformed (%s); skipping", descriptorFile.name, it.message)
-            return null
-        }
-        val desc = native.parseDescriptor(flat)
+        // The crate parses the descriptor exactly as the exporter writes it. There is no
+        // projection step here on purpose: a projection is a second transcription of the schema,
+        // and a key silently dropped by one is invisible until a forecast decodes wrong.
+        // A malformed descriptor (e.g. a server-served one missing `normalization_stats`, or one
+        // from before the exercise channel) must SKIP ITSELF, not throw out of `discover()`'s
+        // mapNotNull and disable discovery of every other model.
+        val desc = native.parseDescriptor(json)
         if (desc == null) {
-            Timber.tag(TAG).w("descriptor %s failed the §2.4 pre/post parse; skipping", descriptorFile.name)
+            Timber.tag(TAG).w(
+                "descriptor %s failed the pre/post parse (a pre-exercise-channel model is refused " +
+                    "here rather than run against an input it never saw); skipping",
+                descriptorFile.name,
+            )
             return null
         }
         val id = resolveId(descriptorFile, obj)
@@ -95,11 +98,18 @@ class ModelStore(
         if (!pte.exists()) {
             Timber.tag(TAG).w("artifact %s for model %s absent; StubBackend will stand in", artifact, id)
         }
+        // The head side file is the adapter seam. Absent, the model still forecasts — the graph
+        // emits its own head_raw — and simply takes no adapter.
+        val head = desc.head?.let { File(dir, it.file) }?.takeIf { it.exists() }
+        if (desc.head != null && head == null) {
+            Timber.tag(TAG).w("head file %s for model %s absent; no adapter can attach", desc.head?.file, id)
+        }
         val engine = obj.optString("engine", "executorch_xnnpack_fp32")
         return ModelBundle(
             id = id,
             descriptor = desc,
             pte = pte,
+            head = head,
             backendId = backendOf(engine),
             precision = precisionOf(obj.optString("precision", "fp32")),
             descriptorJson = json,
@@ -137,6 +147,12 @@ class ModelStore(
             if (resolveId(descriptorFile, obj) != modelId) continue
             val artifact = obj.optString("artifact").ifBlank { "$modelId.xnnpack.pte" }
             if (File(dir, artifact).takeIf { it.exists() }?.delete() == true) removed = true
+            // The head file belongs to the artifact and goes with it; an orphaned head would
+            // otherwise be paired with whatever next takes the id.
+            val headName = runCatching { obj.getJSONObject("head").optString("file") }.getOrNull()
+            if (!headName.isNullOrBlank() && File(dir, headName).takeIf { it.exists() }?.delete() == true) {
+                removed = true
+            }
             if (descriptorFile.delete()) removed = true
         }
         return removed
@@ -179,49 +195,6 @@ class ModelStore(
                 )
             },
         )
-    }
-
-    /**
-     * Normalize a descriptor into the flat schema `t1dm-core::parse_descriptor` consumes. A flat
-     * descriptor (top-level `rope_base`) passes through unchanged; the exporter's nested descriptor
-     * (`geometry` / `constants` / `conformal`, §2.4) is projected onto the flat keys.
-     * `normalization_stats` is top-level in both. `internal` so the projection can be pinned
-     * directly — a key silently dropped here is invisible until a forecast decodes wrong.
-     */
-    internal fun flattenDescriptor(o: JSONObject): JSONObject {
-        if (o.has("rope_base") && !o.has("constants")) return o // already flat
-        val geometry = o.optJSONObject("geometry") ?: JSONObject()
-        val constants = o.optJSONObject("constants") ?: JSONObject()
-        val conformal = o.optJSONObject("conformal") ?: JSONObject()
-        return JSONObject().apply {
-            put("normalization_stats", o.getJSONObject("normalization_stats"))
-            put("rope_base", constants.optInt("ROPE_BASE", 1000))
-            put("median_global_dim", constants.optInt("BG_HEAD_MEDIAN_GLOBAL_DIM", 6))
-            put("step_basis_type", constants.optString("BG_HEAD_STEP_BASIS_TYPE", "dct"))
-            put("quantile_spread_min", constants.optDouble("BG_QUANTILE_SPREAD_MIN", 1e-3))
-            put("neg_fill", constants.optDouble("neg_fill", -30000.0))
-            put("prediction_horizon_hours", constants.optInt("PREDICTION_HORIZON_HOURS", 2))
-            put("max_context_patches", geometry.optInt("MAX_CONTEXT_PATCHES", 48))
-            put("min_context_patches", geometry.optInt("MIN_CONTEXT_PATCHES", 16))
-            put("patch_size", geometry.optInt("PATCH_SIZE", 6))
-            put("n_input_features", geometry.optInt("N_INPUT_FEATURES", 3))
-            // The checkpoint's OWN risk transform, passed through verbatim and with no default:
-            // a re-anchored model ships different constants, and decoding its output against a
-            // guessed scale yields plausible, finite, wrong mg/dL. Absent ⇒ no key ⇒ the Rust
-            // parse rejects the descriptor and the model is skipped, which is the intent.
-            o.optJSONObject("kovatchev")?.let { put("kovatchev", it) }
-            put("conformal_enabled", conformal.optBoolean("enabled", false))
-            // Optional co-trained time-probe section (a `head_raw`-only export omits it). Project the
-            // exporter's nested `time` block onto the flat schema `parse_descriptor` reads; absent ⇒
-            // no key ⇒ the Rust parse leaves `ModelDescriptor.time` null (no predicted hour surfaced).
-            o.optJSONObject("time")?.let { t ->
-                put("time", JSONObject().apply {
-                    put("output_index", t.optInt("output_index", 1))
-                    put("n_bins", t.optInt("n_bins", 12))
-                    put("bin_hours", t.optDouble("bin_hours", 2.0))
-                })
-            }
-        }
     }
 
     private fun backendOf(engine: String): BackendId = when (engine.lowercase()) {

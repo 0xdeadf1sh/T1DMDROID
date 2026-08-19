@@ -45,10 +45,12 @@ import kotlinx.coroutines.Dispatchers
         InsulinTypeEntity::class,
         PaintStrokeEntity::class,
         ConformalDeltaEntity::class,
+        LoraEntity::class,
+        BgInfillEntity::class,
         ExerciseSessionEntity::class,
         ExerciseFixEntity::class,
     ],
-    version = 18,
+    version = 20,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -72,15 +74,29 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun insulinTypeDao(): InsulinTypeDao
     abstract fun paintStrokeDao(): PaintStrokeDao
     abstract fun conformalDeltaDao(): ConformalDeltaDao
+    abstract fun loraDao(): LoraDao
+    abstract fun bgInfillDao(): BgInfillDao
     abstract fun exerciseSessionDao(): ExerciseSessionDao
     abstract fun exerciseFixDao(): ExerciseFixDao
 
     companion object {
         const val NAME = "t1dm.db"
 
-        /** The current keep-forever schema version (must equal the `@Database(version = …)` above).
-         *  A full app reset ([T1dmRepository.wipeAllData]) row-wipes at THIS version — never a drop. */
-        const val SCHEMA_VERSION = 18
+        /**
+         * The current keep-forever schema version (must equal the `@Database(version = …)` above).
+         * A full app reset ([T1dmRepository.wipeAllData]) row-wipes at THIS version — never a drop.
+         *
+         * **A version bump lands on EVERY branch, whichever branch's work motivated it.** Nothing in
+         * the schema names a sensor family, so a bump can look like it belongs to the driver that
+         * needed it — but the two branches build against one database file on one phone, there is no
+         * destructive fallback (see the builder below), and a build whose `@Database(version =)` is
+         * behind the file it opens throws on launch.
+         *
+         * Version 19 is such a bump, and on this branch it adds nothing: the storage it introduces
+         * belongs to a path only the local-only branch carries. It is still counted, so that version
+         * 20 (`lora`, `bg_infill`) means the same thing on both — see [MigrationRunner.MIGRATION_18_19].
+         */
+        const val SCHEMA_VERSION = 20
 
         /**
          * Build the on-disk database. Migrations come exclusively from [MigrationRunner];

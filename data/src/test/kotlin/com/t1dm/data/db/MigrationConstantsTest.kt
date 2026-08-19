@@ -6,6 +6,7 @@ import com.t1dm.data.legacySensorModelIdFor
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
 
 /**
  * Holds the migrations' frozen SQL against the Kotlin the running app uses.
@@ -35,6 +36,46 @@ import org.junit.Test
  * Run it after touching either side.
  */
 class MigrationConstantsTest {
+
+    /**
+     * The v19→v20 DDL against the schema Room itself generated for those entities.
+     *
+     * Room checks the ENTITY against its generated schema, and it checks a MIGRATED database
+     * against that schema at open — but nothing checks the hand-written migration SQL until an
+     * upgrade runs on a real install, where a one-column drift is a launch crash rather than a lost
+     * row (there is no destructive fallback). The exported schema JSON is tracked, so that check
+     * can happen here, on every build, instead of on the phone.
+     */
+    @Test
+    fun `the v20 migration DDL is exactly what Room generates`() {
+        val schema = File("schemas/com.t1dm.data.db.AppDatabase/20.json")
+            .takeIf { it.exists() }
+            ?: File("data/schemas/com.t1dm.data.db.AppDatabase/20.json")
+        assertTrue("exported schema 20.json is missing: ${schema.absolutePath}", schema.exists())
+        val text = schema.readText()
+
+        fun createSql(table: String): String {
+            // The entity's own `createSql`, with Room's placeholder resolved.
+            val at = text.indexOf("\"tableName\": \"$table\"")
+            assertTrue("entity $table is absent from the exported schema", at > 0)
+            val key = "\"createSql\": \""
+            val from = text.indexOf(key, at) + key.length
+            val to = text.indexOf("\",", from)
+            return text.substring(from, to)
+                .replace("\\\"", "\"")
+                .replace("\${TABLE_NAME}", table)
+        }
+
+        assertEquals(createSql("lora"), MigrationRunner.SQL_19_20_CREATE_LORA)
+        assertEquals(createSql("bg_infill"), MigrationRunner.SQL_19_20_CREATE_INFILL)
+        // The index carries its own name into the schema, so a rename here is a mismatch there.
+        // Room stores it with the table placeholder unresolved, so put the placeholder back rather
+        // than resolving the schema's copy.
+        val index = MigrationRunner.SQL_19_20_CREATE_LORA_INDEX
+            .replace("`lora`", "`\${TABLE_NAME}`")
+            .replace("\"", "\\\"")
+        assertTrue("the lora index DDL is not the one Room expects: $index", text.contains(index))
+    }
 
     @Test
     fun `the real-sensor backfill writes exactly CgmSensorModelId AIDEX_X`() {

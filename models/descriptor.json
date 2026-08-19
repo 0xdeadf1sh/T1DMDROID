@@ -1,29 +1,324 @@
 {
-  "arch_version": "risk-v3",
-  "graph_cut": "head_raw",
-  "input_seq_len": 52,
-  "normalization_stats": {
-    "bg_absolute":      { "mean": 0.42852539058481665, "std": 1.0598886067728255 },
-    "carb_intake":      { "mean": 0.3687493030822693,  "std": 0.4765036018691645 },
-    "insulin_combined": { "mean": 0.1471689756146423,  "std": 0.11808419374425043 }
+  "schema_version": 1,
+  "id": "medium-sim",
+  "engine": "executorch_xnnpack_fp32",
+  "executorch_version": "1.3.1",
+  "artifact": "medium-sim.xnnpack.pte",
+  "precision": "fp32",
+  "arch_version": "risk-v4",
+  "io": {
+    "input_patches": {
+      "name": "patches",
+      "shape": [
+        1,
+        340,
+        30
+      ],
+      "dtype": "fp32",
+      "layout": "step-major: flat = t*N_INPUT_FEATURES + feat",
+      "note": "already-normalized; graph starts from z-space patches"
+    },
+    "input_mask": {
+      "name": "attn_mask",
+      "shape": [
+        340,
+        340
+      ],
+      "dtype": "fp32",
+      "kind": "additive-float struct",
+      "attend": 0.0,
+      "block": -30000.0,
+      "note": "the sole additive term on the attention logits; position enters through RoPE alone, so nothing is pre-combined here"
+    },
+    "input_slot_sel": {
+      "name": "slot_sel",
+      "shape": [
+        12,
+        340
+      ],
+      "dtype": "fp32",
+      "kind": "one-hot selection",
+      "note": "row j is one-hot at the patch head slot j reads, in ascending patch order; surplus slots repeat patch 0 and their outputs are discarded. A selection matmul, not a gather, so no int64 tensor crosses the runtime boundary."
+    },
+    "output_head_raw": {
+      "name": "head_raw",
+      "output_index": 0,
+      "shape": [
+        1,
+        12,
+        6,
+        7
+      ],
+      "dtype": "fp32",
+      "space": "kovatchev-risk",
+      "note": "(B, M, S, 1+2*N_SPREADS): col0 median delta; 1..3 tau>.5 spreads .75/.9/.95; 4..6 tau<.5 spreads .25/.1/.05. One row per head slot, in slot_sel order."
+    },
+    "output_time_logits": {
+      "name": "time_logits",
+      "output_index": 1,
+      "shape": [
+        1,
+        12,
+        12
+      ],
+      "dtype": "fp32",
+      "space": "raw-logits",
+      "note": "(B, M, N_BINS): per-slot hour-of-day bin logits from the co-trained time probe; softmax over the N_BINS hour-of-day circle downstream (Rust). Present iff the time section below is present."
+    },
+    "output_slot_hidden": {
+      "name": "slot_hidden",
+      "output_index": 2,
+      "shape": [
+        1,
+        12,
+        128
+      ],
+      "dtype": "fp32",
+      "space": "trunk-hidden",
+      "note": "(B, M, D_MODEL) final-normed hidden state per slot \u2014 the adapter seam. Feed it to the head block's weights to reproduce head_raw, with or without a low-rank adapter."
+    }
   },
-  "rope_base": 1000,
-  "median_mode": "global",
-  "median_global_dim": 6,
-  "step_basis_type": "dct",
-  "quantile_spread_min": 0.001,
-  "neg_fill": -30000.0,
-  "prediction_horizon_hours": 2,
-  "max_context_patches": 48,
-  "min_context_patches": 16,
-  "patch_size": 6,
-  "n_input_features": 3,
+  "time": {
+    "output_index": 1,
+    "output_name": "time_logits",
+    "shape": [
+      1,
+      12,
+      12
+    ],
+    "n_bins": 12,
+    "bin_hours": 2.0,
+    "layout": "per head slot: row j = the hour-of-day bin logits of the patch slot_sel row j selected",
+    "value_kind": "raw logits (softmax over the N_BINS-bin hour-of-day circle)",
+    "bin_centers_hours": [
+      1.0,
+      3.0,
+      5.0,
+      7.0,
+      9.0,
+      11.0,
+      13.0,
+      15.0,
+      17.0,
+      19.0,
+      21.0,
+      23.0
+    ],
+    "circle": "bin k center angle th_k = 2*pi*center_hour_k/24; hour 0 at angle 0, increasing with hour",
+    "reduction": "origin_slot",
+    "reduction_detail": {
+      "slot_index": "the slot holding the FIRST forecast patch \u2014 with an infill span in the masked set that is no longer slot 0",
+      "steps": [
+        "probs = softmax(time_logits[0, origin_slot, :])",
+        "res = sum_k probs[k] * (cos th_k, sin th_k)   # th_k = 2*pi*center_hour_k/24",
+        "hour = (atan2(res.sin, res.cos) mod 2*pi) * 24/(2*pi)",
+        "R = hypot(res.cos, res.sin)   # in [0,1], concentration/confidence"
+      ],
+      "note": "R in [0,1]: R->1 a concentrated (confident) phase belief, R->0 diffuse/ambiguous."
+    },
+    "alt_reduction": {
+      "name": "aggregate_origin_belief",
+      "advance_hours_per_patch": 0.5
+    },
+    "detach": false,
+    "co_trains_trunk": true
+  },
+  "geometry": {
+    "T": 340,
+    "PATCH_SIZE": 6,
+    "N_INPUT_FEATURES": 5,
+    "PATCH_DIM": 30,
+    "PREDICTION_PATCHES": 4,
+    "MIN_CONTEXT_PATCHES": 168,
+    "MAX_CONTEXT_PATCHES": 336,
+    "ARCH_MAX_CONTEXT_PATCHES": 336,
+    "MAX_MASKED_PATCHES": 12,
+    "MASK_MAX_SPANS": 3,
+    "MASK_SPAN_LENGTHS": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8
+    ],
+    "D_MODEL": 128,
+    "N_LAYERS": 8,
+    "N_HEADS": 8,
+    "HEAD_DIM": 16,
+    "CHANNEL_NAMES": [
+      "bg_absolute",
+      "carb_intake",
+      "insulin_combined",
+      "exercise_equiv"
+    ],
+    "CHANNEL_TO_FEAT": {
+      "0": 1,
+      "1": 2,
+      "2": 3
+    },
+    "NON_MASKABLE_FEATS": [
+      0
+    ],
+    "MASKABLE_FEATS": [
+      1,
+      2,
+      3
+    ]
+  },
+  "normalization_stats": {
+    "bg_absolute": {
+      "mean": 0.2866641556165267,
+      "std": 1.139516247121388
+    },
+    "carb_intake": {
+      "mean": 0.3761275783623586,
+      "std": 0.44933730436397956
+    },
+    "insulin_combined": {
+      "mean": 0.13767375003168303,
+      "std": 0.1049115188318763
+    },
+    "exercise_equiv": {
+      "mean": 0.025454530988451768,
+      "std": 0.18077422733814857
+    }
+  },
+  "constants": {
+    "ROPE_BASE": 1000,
+    "RMSNORM_EPS": 1e-06,
+    "NORMALIZE_STD_FLOOR": 1e-08,
+    "BG_HEAD_MEDIAN_MODE": "global",
+    "BG_HEAD_MEDIAN_GLOBAL_DIM": 12,
+    "BG_HEAD_STEP_BASIS_TYPE": "dct",
+    "BG_HEAD_STEP_BASIS_DIM": 6,
+    "BG_QUANTILE_SPREAD_MIN": 0.001,
+    "N_SPREADS": 3,
+    "N_QUANTILES": 7,
+    "QUANTILE_LEVELS": [
+      0.05,
+      0.1,
+      0.25,
+      0.5,
+      0.75,
+      0.9,
+      0.95
+    ],
+    "MEDIAN_IDX": 3,
+    "neg_fill": -30000.0,
+    "PREDICTION_HORIZON_HOURS": 2
+  },
   "kovatchev": {
     "SCALE": 2.2211457449985317,
     "POWER": 1.084,
     "OFFSET": 5.540076976170212,
-    "BG_CLAMP_MIN": 40.0,
-    "BG_CLAMP_MAX": 400.0
+    "BG_CLAMP_MIN": 10.0,
+    "BG_CLAMP_MAX": 400.0,
+    "RISK_CLAMP_MIN": -6.819785009645866,
+    "RISK_CLAMP_MAX": 3.1622776601683804
   },
-  "conformal_enabled": false
+  "conformal": {
+    "enabled": false,
+    "note": "simulator-fit delta omitted for real CGM; raw bands are bit-identical (INFERENCE.md \u00a78.4)"
+  },
+  "head": {
+    "file": "medium-sim.head.bin",
+    "dtype": "fp32",
+    "byte_order": "little",
+    "layout": "flat C-contiguous tensors concatenated in the order listed below",
+    "activation": "silu",
+    "sha256": "8605aaa5fcaa36591d05ad0107c42ccf54d5ad66a0a7409cf89f2f7f5d7464cd",
+    "bytes": 153912,
+    "d_model": 128,
+    "hidden": 128,
+    "step_basis_dim": 6,
+    "out_dim": 42,
+    "tensors": [
+      {
+        "name": "step_basis",
+        "shape": [
+          6,
+          6
+        ]
+      },
+      {
+        "name": "l0.weight",
+        "shape": [
+          128,
+          128
+        ]
+      },
+      {
+        "name": "l0.bias",
+        "shape": [
+          128
+        ]
+      },
+      {
+        "name": "l1.weight",
+        "shape": [
+          128,
+          128
+        ]
+      },
+      {
+        "name": "l1.bias",
+        "shape": [
+          128
+        ]
+      },
+      {
+        "name": "l2.weight",
+        "shape": [
+          42,
+          128
+        ]
+      },
+      {
+        "name": "l2.bias",
+        "shape": [
+          42
+        ]
+      }
+    ],
+    "note": "head_raw[b,m,s,c] = sum_k step_basis[s,k] * l2(silu(l1(silu(l0(h)))))[b,m,k*(1+2*N_SPREADS)+c], h = slot_hidden[b,m]"
+  },
+  "model_card": {
+    "param_count": 2160054,
+    "val_step": 91000,
+    "reference_metrics": {
+      "source": "sim-validation",
+      "note": "held-out simulator validation at the exported checkpoint (T1DMAI train.py); reference only, not on-device realized accuracy",
+      "horizons_min": [
+        30,
+        60,
+        120
+      ],
+      "rmse_mgdl": [
+        10.337,
+        14.4525,
+        22.7114
+      ],
+      "mard_pct": [
+        5.2118,
+        7.4578,
+        12.0167
+      ],
+      "clarke_a_pct": [
+        99.87,
+        96.3589,
+        82.9649
+      ],
+      "coverage90": [
+        0.8908,
+        0.9077,
+        0.8947
+      ],
+      "clarke_ab_pct": 99.5178,
+      "tod_mae_h": 0.3339,
+      "tod_mae_hiconf_h": 0.2496
+    }
+  }
 }

@@ -91,7 +91,7 @@ import com.t1dm.calc.SelectedModelHandle
 import com.t1dm.calc.SelectedModelProvider
 import com.t1dm.calc.SensitivityProbe
 import com.t1dm.core.model.SensitivityEstimate
-import com.t1dm.inference.backend.GraphInput
+import com.t1dm.inference.backend.GraphTensors
 import com.t1dm.core.nativecore.UniffiNativeCore
 import com.t1dm.app.exercise.AppExerciseSource
 import com.t1dm.app.service.ExerciseService
@@ -114,6 +114,7 @@ import com.t1dm.app.sync.WsConnState
 import com.t1dm.watch.WatchLinkPhase
 import com.t1dm.data.curve.ChannelBuilder
 import com.t1dm.data.curve.CurveEngine
+import com.t1dm.data.curve.ExerciseChannelSource
 import com.t1dm.data.curve.DoseStore
 import com.t1dm.data.curve.MealCurveResolver
 import com.t1dm.data.curve.RoomDoseStore
@@ -143,7 +144,15 @@ import com.t1dm.sync.doseDedupKey
 import com.t1dm.sync.mealDedupKey
 import com.t1dm.sync.toDoseEventDto
 import com.t1dm.sync.toMealEventDto
+import com.t1dm.app.lab.LabController
+import com.t1dm.feature.models.LabGap
+import com.t1dm.feature.models.LoraFitSpec
+import com.t1dm.feature.models.LoraFitProgress
+import com.t1dm.feature.models.LoraPanelState
+import com.t1dm.inference.HeadCache
 import com.t1dm.inference.ContextChannelSource
+import com.t1dm.inference.LoraStore
+import com.t1dm.inference.ModelChannels
 import com.t1dm.inference.CurveEventSource
 import com.t1dm.inference.FutureOverrideSource
 import com.t1dm.inference.InferenceController
@@ -180,6 +189,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.delay
@@ -783,6 +795,15 @@ class AppContainer(context: Context) {
             backendPrefProvider = { id -> forecastBackendPref(id) },
             // Phase 7C: durable cumulative per-model inference telemetry for the Models drill-down.
             telemetryStore = KvTelemetryStore(repository),
+            // A fitted adapter reaches the LIVE forecast through here, re-read every cycle so
+            // attaching or detaching one takes on the next tick. Deserialization failure ⇒ null ⇒
+            // the frozen model, never a half-applied adapter.
+            loraStore = LoraStore { modelId ->
+                repository.attachedLora(modelId)?.let { row ->
+                    nativeCore.loraDeserialize(row.blob)
+                        ?: null.also { Timber.w("adapter %d for %s failed to load; running frozen", row.id, modelId) }
+                }
+            },
             // The classical baseline the neural models are measured against: its fitted weights and
             // band estimator as one kv blob, and the raw curve events it derives causal IOB/COB from
             // (the SAME ChannelBuilder the context channels come from, so both views of the patient's
@@ -1870,6 +1891,14 @@ class AppContainer(context: Context) {
         if (applied) {
             runCatching { repository.deletePredictionsForModel(modelId) }
             runCatching { repository.deleteBandCalibration(modelId) }
+            // The id is unchanged but the model is not. Everything fitted against the previous
+            // artifact goes with it: the adapters (fitted on a head that no longer exists), the
+            // fills (that model's own reconstruction), and the cached head itself — a head kept
+            // across a replace would be served against the new graph, and the parity check that
+            // exists to catch exactly that is memoized per model id.
+            runCatching { repository.deleteLorasForModel(modelId) }
+            runCatching { repository.clearInfillForModel(modelId) }
+            inferenceController.evictHead(modelId)
             inferenceController.refreshModels()
         }
         refreshPendingModelUpdates()
@@ -1883,12 +1912,167 @@ class AppContainer(context: Context) {
      * partial failure never crashes the UI; a re-evaluation follows so the panels drop the gone model's
      * forecast promptly (the selected model deleted ⇒ fail-closed "no model" until another is selected).
      */
+    // ── The Lab: experiments, adapters, gap repair ──────────────────────────────────
+
+    /** Where an exported adapter lands: beside the models, so `adb pull` reaches it. */
+    private val adaptersDir: File
+        get() = File(appContext.getExternalFilesDir(null), "adapters")
+
+    /** One holder for the three surfaces that share a window of history and a loaded model. */
+    val labController: LabController by lazy {
+        LabController(
+            native = nativeCore,
+            controller = inferenceController,
+            repository = repository,
+            history = RoomBgHistoryProvider(repository, registry),
+            channels = { gridStartMs, nSteps -> dashboardCurveChannels(gridStartMs, nSteps) },
+            adaptersDir = { adaptersDir },
+        )
+    }
+
+    private val _labGaps = MutableStateFlow<List<LabGap>>(emptyList())
+    val labGaps: StateFlow<List<LabGap>> = _labGaps.asStateFlow()
+
+    private val _loraPanel = MutableStateFlow(LoraPanelState(modelId = ""))
+    val loraPanel: StateFlow<LoraPanelState> = _loraPanel.asStateFlow()
+
+    /** The gaps in the trailing fortnight, marked with whether a fill already stands. */
+    suspend fun refreshLabGaps() {
+        val gaps = runCatching { labController.gaps() }.getOrElse { emptyList() }
+        val fmt = SimpleDateFormat("d MMM HH:mm", Locale.getDefault())
+        _labGaps.value = gaps.map { g ->
+            val filled = runCatching { repository.infillInRange(g.startMs, g.endMs - 1).isNotEmpty() }
+                .getOrDefault(false)
+            LabGap(
+                startMs = g.startMs,
+                endMs = g.endMs,
+                steps = g.steps,
+                label = fmt.format(Date(g.startMs)),
+                filled = filled,
+            )
+        }
+    }
+
+    /**
+     * Fill one gap. Also in [appScope], and its outcome REACHES the screen: a repair refuses for
+     * several ordinary reasons — a gap longer than the head's slots, one sitting at the window
+     * edge, one the model declined — and the longest gaps, which the list shows first, are the
+     * likeliest to refuse. A silent refusal reads as a button that does nothing.
+     */
+    fun repairGap(gap: LabGap) {
+        val modelId = labController.state.value.modelId ?: return
+        appScope.launch {
+            _labGapNote.value = "Filling ${gap.label}…"
+            val note = runCatching {
+                labController.repair(modelId, LabController.Gap(gap.startMs, gap.endMs, gap.steps))
+            }.getOrElse { it.message ?: "Fill failed" }
+            Timber.i("gap fill %s: %s", gap.label, note)
+            _labGapNote.value = note
+            refreshLabGaps()
+        }
+    }
+
+    private val _labGapNote = MutableStateFlow<String?>(null)
+
+    /** What the last fill did or why it refused. */
+    val labGapNote: StateFlow<String?> = _labGapNote.asStateFlow()
+
+    suspend fun refreshLoraPanel(modelId: String) {
+        val desc = inferenceController.descriptorOf(modelId)
+        val unavailable = when {
+            desc == null -> "Model not loaded"
+            desc.head == null -> "This model ships no head file — nothing to adapt"
+            else -> (inferenceController.headState(modelId) as? HeadCache.State.Unusable)?.why
+        }
+        // The panel lists THIS model's adapters, read here rather than borrowed from the Lab: the
+        // Lab holds whichever model it has picked, and opening the panel for another one would
+        // otherwise show an empty list.
+        val adapters = runCatching { labController.adaptersOf(modelId) }.getOrElse { emptyList() }
+        _loraPanel.value = LoraPanelState(modelId = modelId, unavailable = unavailable, adapters = adapters)
+    }
+
+    /**
+     * Fit an adapter. Runs in [appScope], NOT the caller's: a fit is a few hundred forwards plus
+     * the training loop, and hanging it off a screen's own scope cancels it the moment the user
+     * navigates away — half-way through, with nothing stored and nothing said.
+     */
+    fun fitAdapter(modelId: String, spec: LoraFitSpec) {
+        if (_loraPanel.value.busy) return
+        // The progress lives in the panel's own StateFlow, not in the screen: the fit runs in
+        // appScope and survives navigation, so leaving and coming back re-attaches to the running
+        // fit instead of showing an idle panel.
+        _loraPanel.update {
+            it.copy(
+                progress = LoraFitProgress(LoraFitProgress.Phase.Replay, 0, 0),
+                error = null,
+                lastReport = null,
+            )
+        }
+        appScope.launch {
+            val note = runCatching {
+                labController.fit(
+                    modelId,
+                    spec,
+                    onReplay = { done, total ->
+                        _loraPanel.update {
+                            it.copy(progress = LoraFitProgress(LoraFitProgress.Phase.Replay, done, total))
+                        }
+                    },
+                    onEpoch = { epoch, epochs ->
+                        _loraPanel.update {
+                            it.copy(progress = LoraFitProgress(LoraFitProgress.Phase.Train, epoch, epochs))
+                        }
+                    },
+                )
+            }.getOrElse {
+                Timber.w(it, "adapter fit failed for %s", modelId)
+                _loraPanel.update { s -> s.copy(progress = null, error = it.message ?: "Fit failed") }
+                return@launch
+            }
+            val adapters = runCatching { labController.adaptersOf(modelId) }.getOrElse { emptyList() }
+            _loraPanel.update { it.copy(progress = null, lastReport = note, adapters = adapters) }
+        }
+    }
+
+    /**
+     * Attaching or detaching an adapter changes what the model IS, so the correction and the stored
+     * forecasts fitted against the previous one go with it, and the next cycle runs immediately —
+     * the standing forecast on screen was made by the forecaster that just stopped existing.
+     */
+    suspend fun attachAdapter(modelId: String, adapterId: Long) {
+        runCatching { labController.attach(modelId, adapterId) }
+            .onFailure { _loraPanel.update { s -> s.copy(error = it.message ?: "Attach failed") } }
+        refreshLoraPanel(modelId)
+        reevaluateInferenceNow()
+    }
+
+    suspend fun detachAdapter(modelId: String) {
+        runCatching { labController.detach(modelId) }
+            .onFailure { _loraPanel.update { s -> s.copy(error = it.message ?: "Detach failed") } }
+        refreshLoraPanel(modelId)
+        reevaluateInferenceNow()
+    }
+
+    suspend fun exportAdapter(adapterId: Long) {
+        val note = runCatching { labController.export(adapterId) }.getOrElse { it.message ?: "Export failed" }
+        _loraPanel.update { it.copy(lastReport = note) }
+    }
+
+    suspend fun importAdapters(modelId: String) {
+        val note = runCatching { labController.import(modelId) }.getOrElse { it.message ?: "Import failed" }
+        val adapters = runCatching { labController.adaptersOf(modelId) }.getOrElse { emptyList() }
+        _loraPanel.update { it.copy(lastReport = note, adapters = adapters) }
+    }
+
     suspend fun removeModel(modelId: String) {
         runCatching { inferenceController.deleteModel(modelId) }
         withContext(dispatchers.io) {
             runCatching { repository.deletePredictionsForModel(modelId) }
             // The correction was fitted on THIS model's forecasts and means nothing without them.
             runCatching { repository.deleteBandCalibration(modelId) }
+            // An adapter outlives nothing it was fitted on, and a fill is that model's own guess.
+            runCatching { repository.deleteLorasForModel(modelId) }
+            runCatching { repository.clearInfillForModel(modelId) }
             runCatching { repository.putKv(kvForecastBackend(modelId), "", System.currentTimeMillis()) }
         }
         refreshPendingModelUpdates()
@@ -1956,7 +2140,9 @@ class AppContainer(context: Context) {
     }
 
     /** Reconstructs the carb-appearance / insulin-action channels from the logged events (SPEC §3.3). */
-    val channelBuilder: ChannelBuilder by lazy { ChannelBuilder(curveEngine, doseStore) }
+    val channelBuilder: ChannelBuilder by lazy {
+        ChannelBuilder(curveEngine, doseStore, ExerciseChannelSource(::exerciseChannel))
+    }
 
     // ── Meal builder + insulin-type builder (Phase 4 deliverables 3/4) ─────────────────────────
 
@@ -2057,9 +2243,36 @@ class AppContainer(context: Context) {
 
     /** The MODEL's two reconstructed channels over a grid window (feat 1 / feat 2), off-main. The
      *  model consumes the COMBINED insulin channel and has no use for the basal series. */
-    suspend fun dashboardCurveChannels(gridStartMs: Long, nSteps: Int): Pair<DoubleArray, DoubleArray> {
+    suspend fun dashboardCurveChannels(gridStartMs: Long, nSteps: Int): ModelChannels {
         val ch = channelBuilder.contextChannels(gridStartMs, nSteps)
-        return ch.carb to ch.insulin
+        return ModelChannels(ch.carb, ch.insulin, ch.exercise)
+    }
+
+    /**
+     * The model's exercise channel over a grid window: grams of carbohydrate equivalent disposed
+     * per bucket, read straight from the `sample` table's own column. Bound into the
+     * [ChannelBuilder] so every consumer of the model's channels gets it from one place.
+     *
+     * It is NOT reconstructed from the bout records here, and must not be. The disposal curve was
+     * resolved once when the bout was recorded — against the patient's carbohydrate-equivalent rate
+     * AS IT THEN STOOD (Settings → Curves) — and laid on the grid from that moment forward. Rebuilding
+     * it now would silently re-rate every past bout at today's setting, so what the model reads for
+     * last week would change every time the slider moved.
+     */
+    suspend fun exerciseChannel(gridStartMs: Long, nSteps: Int): DoubleArray {
+        val out = DoubleArray(nSteps)
+        if (nSteps <= 0) return out
+        val endMs = gridStartMs + (nSteps - 1).toLong() * CurveEngine.STEP_MS
+        val rows = runCatching { repository.samplesInRange(gridStartMs, endMs) }.getOrElse {
+            Timber.w(it, "exercise channel read failed; the model sees no disposal")
+            return out
+        }
+        for (r in rows) {
+            val g = r.exercise ?: continue
+            val i = ((r.ts - gridStartMs) / CurveEngine.STEP_MS).toInt()
+            if (i in 0 until nSteps && g.isFinite() && g > 0.0) out[i] = g
+        }
+        return out
     }
 
     /** The dashboard overlay resolver: carbs, combined insulin, and the BASAL-only sub-channel
@@ -2109,9 +2322,12 @@ class AppContainer(context: Context) {
      * the committed logged doses are carried by `futureOverrides`' OWN store reads (passing them again
      * as `announced` would double-count). This is exactly the `RollingForecaster` baseline-roll input,
      * so the dashboard's directional response to a logged dose matches the calculator's. Off-main. */
-    suspend fun dashboardFutureChannels(rollStartMs: Long, nFutureSteps: Int): Pair<DoubleArray, DoubleArray> {
+    suspend fun dashboardFutureChannels(rollStartMs: Long, nFutureSteps: Int): ModelChannels {
         val fc = channelBuilder.futureOverrides(rollStartMs, nFutureSteps, announced = emptyList(), candidate = null)
-        return fc.carb to fc.insulin
+        // A bout that ended minutes ago is still disposing glucose across the horizon, and the
+        // writer already laid those slots down when it recorded the curve — so the committed
+        // future is a read of the same column, not a projection.
+        return ModelChannels(fc.carb, fc.insulin, fc.exercise)
     }
 
     /** IOB/COB now, with §3.6-F provenance (logged doses only; last-logged age; basal presence). */
@@ -2167,8 +2383,13 @@ class AppContainer(context: Context) {
         else object : SelectedModelHandle {
             override val descriptor = info.descriptor
             override val backendInfo = calcBackendInfo(info)
-            override suspend fun run(input: GraphInput): com.t1dm.inference.backend.GraphOutput =
+            override suspend fun run(input: GraphTensors): com.t1dm.inference.backend.GraphOutput =
                 inferenceController.runSelectedAuthority(input)
+
+            override suspend fun adapt(
+                out: com.t1dm.inference.backend.GraphOutput,
+                mSlots: Int,
+            ): List<Double>? = inferenceController.adaptedHeadRawFor(info.id, out, mSlots)
         }
     }
 

@@ -601,6 +601,64 @@ object MigrationRunner {
         }
     }
 
+    /**
+     * v18 → v19: nothing, deliberately.
+     *
+     * **A reserved version, not an oversight.** Schema 19 exists on the local-only branch, where it
+     * adds a sealed per-sensor secret store and a per-sensor ordinal for the connected-sensor path
+     * that only that branch has. Neither has any reader here, and creating them would put storage on
+     * this branch for a feature it does not carry.
+     *
+     * Numbering it anyway is what keeps the two schemas commensurable: version 20 then means the
+     * same thing on both — `lora` and `bg_infill` present — so every migration after this one is
+     * written once, and a backup archive's recorded version resolves to one schema rather than two.
+     * Skipping to 19 here and calling it the adapter migration would have made two different
+     * databases share a number, which the next migration would then have had to guess between.
+     *
+     * Room requires a registered path for every step, so this is a real Migration that executes no
+     * statement, rather than a gap.
+     */
+    val MIGRATION_18_19 = object : Migration(18, 19) {
+        override fun migrate(connection: SQLiteConnection) = Unit
+    }
+
+    /**
+     * The `lora` and `bg_infill` DDL, frozen, for the reason every other migration constant here is
+     * frozen: the migration is the one description of these tables Room does not check, and on a
+     * store with no destructive fallback a forgotten column is a launch crash rather than a lost row.
+     */
+    internal const val SQL_19_20_CREATE_LORA =
+        "CREATE TABLE IF NOT EXISTS `lora` (" +
+            "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `modelId` TEXT NOT NULL, " +
+            "`name` TEXT NOT NULL, `blob` BLOB NOT NULL, `rank` INTEGER NOT NULL, " +
+            "`alpha` REAL NOT NULL, `targets` INTEGER NOT NULL, `nParams` INTEGER NOT NULL, " +
+            "`nTrain` INTEGER NOT NULL, `nHoldout` INTEGER NOT NULL, `epochs` INTEGER NOT NULL, " +
+            "`holdoutBefore` REAL NOT NULL, `holdoutAfter` REAL NOT NULL, " +
+            "`improved` INTEGER NOT NULL, `attached` INTEGER NOT NULL, " +
+            "`createdAtMs` INTEGER NOT NULL, `updatedAtMs` INTEGER NOT NULL)"
+
+    internal const val SQL_19_20_CREATE_LORA_INDEX =
+        "CREATE INDEX IF NOT EXISTS `index_lora_modelId` ON `lora` (`modelId`)"
+
+    internal const val SQL_19_20_CREATE_INFILL =
+        "CREATE TABLE IF NOT EXISTS `bg_infill` (" +
+            "`ts` INTEGER NOT NULL, `mgdl` REAL NOT NULL, `lo90` REAL NOT NULL, " +
+            "`hi90` REAL NOT NULL, `modelId` TEXT NOT NULL, `createdAtMs` INTEGER NOT NULL, " +
+            "PRIMARY KEY(`ts`))"
+
+    /**
+     * v19 → v20 (the adapter and the reconstructed sample): additive only. `lora` holds one fitted
+     * personalisation per row; `bg_infill` holds what a model reconstructed over a sensor gap, in
+     * its own table so nothing that reads glucose can mistake it for one.
+     */
+    val MIGRATION_19_20 = object : Migration(19, 20) {
+        override fun migrate(connection: SQLiteConnection) {
+            connection.execSQL(SQL_19_20_CREATE_LORA)
+            connection.execSQL(SQL_19_20_CREATE_LORA_INDEX)
+            connection.execSQL(SQL_19_20_CREATE_INFILL)
+        }
+    }
+
     val ALL: Array<Migration> = arrayOf(
         MIGRATION_1_2,
         MIGRATION_2_3,
@@ -619,6 +677,8 @@ object MigrationRunner {
         MIGRATION_15_16,
         MIGRATION_16_17,
         MIGRATION_17_18,
+        MIGRATION_18_19,
+        MIGRATION_19_20,
     )
 
     /** Apply every registered migration to a builder; the sole path that wires migrations. */

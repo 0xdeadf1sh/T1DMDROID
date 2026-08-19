@@ -41,7 +41,9 @@ import com.t1dm.data.db.OutboxKind
 import com.t1dm.data.db.OutboxState
 import com.t1dm.data.db.PaintStrokeDao
 import com.t1dm.data.db.PredictionEntity
+import com.t1dm.data.db.BgInfillEntity
 import com.t1dm.data.db.ConformalDeltaEntity
+import com.t1dm.data.db.LoraEntity
 import com.t1dm.data.db.toBlob
 import com.t1dm.data.db.toDoubleList
 import com.t1dm.data.curve.CurveEngine
@@ -161,6 +163,8 @@ class T1dmRepository(
     private val profiles get() = db.serverProfileDao()
     private val paintStrokes get() = db.paintStrokeDao()
     private val conformalDeltas get() = db.conformalDeltaDao()
+    private val loras get() = db.loraDao()
+    private val infills get() = db.bgInfillDao()
     private val exerciseSessions get() = db.exerciseSessionDao()
     private val exerciseFixes get() = db.exerciseFixDao()
 
@@ -1592,6 +1596,19 @@ class T1dmRepository(
     suspend fun deleteBandCalibration(modelId: String) =
         withContext(io) { conformalDeltas.deleteByModel(modelId) }
 
+    /**
+     * Drop everything fitted against a model's own forecasts — its band correction and the stored
+     * predictions the realised-accuracy suite reads.
+     *
+     * Called when what the model IS changes under a fixed id: a replaced artifact, or an adapter
+     * attached or detached. Both describe a forecaster that no longer exists, and keeping either
+     * would report one model's calibration on another's fan.
+     */
+    suspend fun clearForecastDerived(modelId: String) = withContext(io) {
+        conformalDeltas.deleteByModel(modelId)
+        predictions.deleteByModel(modelId)
+    }
+
     private fun ConformalDeltaEntity.toModel(): BandCalibration? {
         val delta = deltaBlob.toDoubleList()
         if (steps <= 0 || nQuantiles <= 0 || delta.size != steps * nQuantiles) return null
@@ -1666,6 +1683,57 @@ class T1dmRepository(
      * leaves the process (and that session) alive must not drop the active-source binding — the sensor
      * stays connected and its new readings repopulate the just-wiped `cgm_reading` table.
      */
+    // ── Adapters (LoRA) ─────────────────────────────────────────────────────────────
+
+    /** Every stored adapter, model-major — what the adapter panel lists. */
+    fun observeLoras(): Flow<List<LoraEntity>> = loras.observeAll()
+
+    suspend fun lorasFor(modelId: String): List<LoraEntity> = withContext(io) { loras.byModel(modelId) }
+
+    suspend fun loraById(id: Long): LoraEntity? = withContext(io) { loras.byId(id) }
+
+    /** The adapter the forecast path must run for [modelId], or null when none is attached. */
+    suspend fun attachedLora(modelId: String): LoraEntity? = withContext(io) { loras.attachedFor(modelId) }
+
+    suspend fun saveLora(row: LoraEntity): Long = withContext(io) { loras.upsert(row) }
+
+    suspend fun renameLora(id: Long, name: String, nowMs: Long) =
+        withContext(io) { loras.rename(id, name, nowMs) }
+
+    /**
+     * Attach [id] and detach every other adapter of the same model, in one transaction. At most
+     * one adapter per model may be attached: two would be a fan nobody could name, and the
+     * forecast path reads exactly one row.
+     */
+    suspend fun attachLora(id: Long, modelId: String, nowMs: Long) = inWriteTx {
+        loras.detachAll(modelId, nowMs)
+        loras.attach(id, nowMs)
+    }
+
+    suspend fun detachLoras(modelId: String, nowMs: Long) = withContext(io) { loras.detachAll(modelId, nowMs) }
+
+    suspend fun deleteLora(id: Long) = withContext(io) { loras.delete(id) }
+
+    /** Drop a removed model's adapters with the model. */
+    suspend fun deleteLorasForModel(modelId: String) = withContext(io) { loras.deleteByModel(modelId) }
+
+    // ── Reconstructed samples over a sensor gap ─────────────────────────────────────
+
+    /** Store what a model reconstructed over a gap. Never a reading: see [BgInfillEntity]. */
+    suspend fun saveInfill(rows: List<BgInfillEntity>) = withContext(io) { infills.upsert(rows) }
+
+    suspend fun infillInRange(fromMs: Long, toMs: Long): List<BgInfillEntity> =
+        withContext(io) { infills.inRange(fromMs, toMs) }
+
+    fun observeInfill(fromMs: Long, toMs: Long): Flow<List<BgInfillEntity>> =
+        infills.observeRange(fromMs, toMs)
+
+    suspend fun clearInfill(fromMs: Long, toMs: Long) = withContext(io) { infills.deleteRange(fromMs, toMs) }
+
+    suspend fun clearInfillForModel(modelId: String) = withContext(io) { infills.deleteByModel(modelId) }
+
+    suspend fun infillCount(): Int = withContext(io) { infills.count() }
+
     suspend fun wipeAllData(preserveCgmSources: Boolean = false) = withContext(io) {
         inWriteTx {
             readings.deleteAll()
@@ -1687,6 +1755,8 @@ class T1dmRepository(
             db.insulinTypeDao().deleteAllCustom()
             paintStrokes.deleteAll()
             conformalDeltas.deleteAll()
+            loras.deleteAll()
+            infills.deleteAll()
             exerciseFixes.deleteAll()
             exerciseSessions.deleteAll()
             // kv LAST: it holds the watch nonce ceilings + pairing bits + every setting.

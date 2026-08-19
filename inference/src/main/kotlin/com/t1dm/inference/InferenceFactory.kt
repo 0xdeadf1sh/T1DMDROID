@@ -33,6 +33,7 @@ fun buildInferenceController(
     smoothingWindowProvider: suspend () -> Int = { InferenceControllerDefaults.SAVGOL_WINDOW },
     baselineStore: BaselineStore? = null,
     curveEvents: CurveEventSource? = null,
+    loraStore: LoraStore? = null,
 ): InferenceController {
     val store = ModelStore(modelsDir, native)
     val controller = InferenceController(
@@ -50,6 +51,7 @@ fun buildInferenceController(
         thermalProvider = thermalProvider,
         smoothingWindowProvider = smoothingWindowProvider,
         baseline = BaselineRunner(native, dispatchers, baselineStore, curveEvents, futureOverrides),
+        loraStore = loraStore,
     )
     controller.registerBackend(ExecuTorchXnnpackBackend())
     controller.registerBackend(ExecuTorchNeuronBackend())
@@ -66,7 +68,9 @@ fun buildInferenceController(
 object InferenceControllerDefaults {
     const val WARMUP_HOURS = 24.0
 
-    /** Model MIN_CONTEXT floor for the warmup setting: 16 patches · 6 steps · 5 min = 8 h. */
+    /** Floor for the warmup setting. The models' own MIN_CONTEXT is what actually gates a
+     *  forecast, and it is read from each descriptor; this is only the lowest value the setting
+     *  offers, kept well under it so the setting is never the binding constraint. */
     const val MIN_WARMUP_HOURS = 8
 
     /** The causal SavGol window applied to the BG channel before normalization (INFERENCE.md §7.1).

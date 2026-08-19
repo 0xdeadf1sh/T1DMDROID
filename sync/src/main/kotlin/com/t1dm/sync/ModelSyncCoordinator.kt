@@ -92,9 +92,13 @@ class ModelSyncCoordinator(
         val engine = (meta["engine"] as? JsonPrimitive)?.contentOrNull ?: DEFAULT_ENGINE
         if (engine.lowercase() !in SUPPORTED_ENGINES) return skip(row.id, "unsupported engine $engine")
 
-        // Reject a descriptor ModelStore could not consume BEFORE placing it: its flatten hard-requires a
-        // `normalization_stats` object, and a missing one throws there — which (unguarded) would abort
-        // discovery of the WHOLE dir, so a bad served descriptor must never be written as discoverable.
+        // Reject a descriptor the core could not parse BEFORE placing it. `normalization_stats` is
+        // required and its absence is refused there; catching it here keeps an unusable descriptor
+        // from ever being written as discoverable in the first place.
+        //
+        // This is a cheap PRE-check, not the contract: the parse also requires the exercise channel,
+        // the geometry block and the risk transform, and a served model that fails any of those is
+        // skipped at discovery with a logged reason rather than run.
         if (meta["normalization_stats"] !is JsonObject) return skip(row.id, "descriptor missing normalization_stats")
 
         // The local descriptor id we normalize to; the `.pte` filename is derived from it and (since the

@@ -132,7 +132,7 @@ class RollingForecaster(
 
         val minSteps = desc.minContextPatches * desc.patchSize
         val maxSteps = desc.maxContextPatches * desc.patchSize
-        val series = history.recentBgSeries(maxSteps, minSteps)
+        val series = history.dosingBgSeries(maxSteps, minSteps)
             ?: return Rolled(null, emptyList(), ForecastStatus.OK, ForecastEligibility.MISSING, "still collecting context (< $minSteps steps)", 0)
 
         val nCtx = series.mgdl.size
@@ -157,6 +157,7 @@ class RollingForecaster(
         val bg = ArrayDeque<Double>(series.mgdl.toList())
         val carb = ArrayDeque<Double>(ctx0.carb.toList())
         val insulin = ArrayDeque<Double>(ctx0.insulin.toList())
+        val exercise = ArrayDeque<Double>(ctx0.exercise.toList())
 
         val outSteps = ArrayList<FanStep>(request.fullRollSteps)
         var carrySpread = 0.0
@@ -175,13 +176,24 @@ class RollingForecaster(
             val base = r * predSteps
             val predCarb = sliceOrPad(future.carb, base, predSteps)
             val predInsulin = sliceOrPad(future.insulin, base, predSteps)
+            val predExercise = sliceOrPad(future.exercise, base, predSteps)
 
             val forecast: Forecast = try {
                 withContext(dispatchers.default) {
-                    val built = native.buildContext(desc, bg.toList(), carb.toList(), insulin.toList(), predCarb, predInsulin, smoothingWindow)
-                    val input = GraphIo.graphInput(built, desc.negFill)
-                    val out = withContext(dispatchers.inference) { model.run(input) }
-                    native.assembleDecode(desc, out.headRaw.map { it.toDouble() }, built.lastBg, carrySpread)
+                    val built = native.buildGraphInput(
+                        desc, bg.toList(), carb.toList(), insulin.toList(), exercise.toList(),
+                        predCarb, predInsulin, predExercise,
+                        emptyList(), true, smoothingWindow,
+                    )
+                    val out = withContext(dispatchers.inference) { model.run(GraphIo.tensors(built)) }
+                    // The adapter the panel is showing, applied here too — or the frozen head_raw
+                    // when none is attached. Never a silent fallback: `adapt` throws if an attached
+                    // adapter cannot be applied, and this roll fails closed with the rest.
+                    val head = model.adapt(out, built.mSlots) ?: out.headRaw.map { it.toDouble() }
+                    val all = native.assembleDecode(
+                        desc, head, built.anchors, built.slotPatch, built.nMasked, carrySpread,
+                    )
+                    native.forecastSlice(all, built.firstForecastPatch, built.t)
                 }
             } catch (t: Throwable) {
                 Timber.tag(TAG).w(t, "roll %d failed for candidate %s U", r, request.candidateU)
@@ -199,12 +211,20 @@ class RollingForecaster(
 
             // Re-feed: the median (mg/dL) + this roll's announced doses become the next context tail.
             repeat(predSteps) { i ->
-                if (bg.isNotEmpty()) { bg.removeFirst(); carb.removeFirst(); insulin.removeFirst() }
+                if (bg.isNotEmpty()) {
+                    bg.removeFirst(); carb.removeFirst(); insulin.removeFirst(); exercise.removeFirst()
+                }
                 bg.addLast(forecast.medianBg.getOrElse(i) { forecast.medianBg.lastOrNull() ?: 120.0 })
                 carb.addLast(predCarb.getOrElse(i) { 0.0 })
                 insulin.addLast(predInsulin.getOrElse(i) { 0.0 })
+                exercise.addLast(predExercise.getOrElse(i) { 0.0 })
             }
-            carrySpread += terminalHalfWidth(forecast)
+            // `terminalHalfWidth` reads the fan the roll just produced, and that fan ALREADY
+            // carries `carrySpread` on both sides — so adding it back compounds the carry
+            // geometrically and the envelope balloons over a long roll. What the next roll must
+            // start from is this one's carry PLUS the half-width the model itself emitted, and
+            // that sum is exactly the terminal half-width just measured (SPEC/inference.md §9).
+            carrySpread = terminalHalfWidth(forecast)
         }
 
         val trimmed = if (outSteps.size > request.fullRollSteps) outSteps.subList(0, request.fullRollSteps).toList() else outSteps.toList()

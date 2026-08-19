@@ -497,10 +497,49 @@ class MigrationTest {
     }
 
     @Test
-    fun migrate1To18_fullChain() {
+    fun migrate18To19_isTheReservedNoOpAndLeavesTheSchemaExactlyAsItWas() {
+        // Schema 19 is reserved on this branch: the storage it introduces belongs to a path only the
+        // local-only branch carries, so the migration executes no statement. It is still registered and
+        // still validated, because Room needs a path for every step and because "this step changes
+        // nothing here" is a claim worth holding to the schema rather than assuming.
+        helper.createDatabase(18).use { db ->
+            db.execSQL(
+                "INSERT INTO `cgm_source` " +
+                    "(`sourceId`,`vendorId`,`sensorModelId`,`advertName`,`displayName`,`serialSuffix`," +
+                    "`authoritative`,`active`,`warmupWindowMin`,`addedAtMs`,`lastSeenMs`,`hidden`) " +
+                    "VALUES ('aidexx:A','aidexx','aidexx:x',NULL,'n','s',1,1,60,1,1,0)",
+            )
+        }
+
+        val db = helper.runMigrationsAndValidate(19, listOf(MigrationRunner.MIGRATION_18_19))
+
+        // The row is untouched, and nothing was created beside it.
+        assertEquals(1, countRows(db, "SELECT COUNT(*) FROM `cgm_source`"))
+        assertEquals(1, countRows(db, "SELECT COUNT(*) FROM `cgm_source` WHERE `warmupWindowMin` = 60"))
+        db.close()
+    }
+
+    @Test
+    fun migrate19To20_theAdapterAndInfillTablesAreAdded() {
+        // v20 (the adapter and the reconstructed sample): two additive tables, both hand-written
+        // DDL. `runMigrationsAndValidate` is what compares them against what Room expects — and
+        // there is no destructive fallback, so a one-column drift is a launch crash on the phone.
+        helper.createDatabase(19).close()
+
+        val db = helper.runMigrationsAndValidate(20, listOf(MigrationRunner.MIGRATION_19_20))
+
+        assertEquals(1, countTables(db, "lora"))
+        assertEquals(1, countTables(db, "bg_infill"))
+        assertEquals(0, countRows(db, "SELECT COUNT(*) FROM `lora`"))
+        assertEquals(0, countRows(db, "SELECT COUNT(*) FROM `bg_infill`"))
+        db.close()
+    }
+
+    @Test
+    fun migrate1To20_fullChain() {
         helper.createDatabase(1).close()
         helper.runMigrationsAndValidate(
-            18,
+            20,
             listOf(
                 MigrationRunner.MIGRATION_1_2,
                 MigrationRunner.MIGRATION_2_3,
@@ -519,6 +558,8 @@ class MigrationTest {
                 MigrationRunner.MIGRATION_15_16,
                 MigrationRunner.MIGRATION_16_17,
                 MigrationRunner.MIGRATION_17_18,
+                MigrationRunner.MIGRATION_18_19,
+                MigrationRunner.MIGRATION_19_20,
             ),
         )
     }

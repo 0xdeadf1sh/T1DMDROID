@@ -2,6 +2,21 @@ package com.t1dm.core.nativecore
 
 import com.t1dm.core.common.GameWorld
 import com.t1dm.core.common.NativeCore
+import com.t1dm.core.common.NativeHead
+import com.t1dm.core.model.GapRun
+import com.t1dm.core.model.GraphInput
+import com.t1dm.core.model.HeadSpec
+import com.t1dm.core.model.HeadTensorSpec
+import com.t1dm.core.model.LoraConfig
+import com.t1dm.core.model.LoraProgressSink
+import com.t1dm.core.model.LoraSample
+import com.t1dm.core.model.LoraTrainOpts
+import com.t1dm.core.model.LoraTrainReport
+import com.t1dm.core.model.LoraTrainResult
+import com.t1dm.core.model.LoraWeights
+import com.t1dm.core.model.MaskSpan
+import com.t1dm.core.model.SynthParams
+import com.t1dm.core.model.SynthSeries
 import com.t1dm.core.model.CarState
 import com.t1dm.core.model.CarTuning
 import com.t1dm.core.model.RunState
@@ -14,7 +29,6 @@ import com.t1dm.core.model.BaselineModel
 import com.t1dm.core.model.BaselineSpec
 import com.t1dm.core.model.BasalDoseSpec
 import com.t1dm.core.model.BasalSchedule
-import com.t1dm.core.model.BuiltContext
 import com.t1dm.core.model.MoodSummary
 import com.t1dm.core.model.EpisodeSummary
 import com.t1dm.core.model.GradeSplit
@@ -66,7 +80,32 @@ import uniffi.t1dm_core.advertCrc32 as uniffiAdvertCrc32
 import uniffi.t1dm_core.assembleDecode as uniffiAssembleDecode
 import uniffi.t1dm_core.bateman as uniffiBateman
 import uniffi.t1dm_core.bucketize as uniffiBucketize
-import uniffi.t1dm_core.buildContext as uniffiBuildContext
+import uniffi.t1dm_core.buildGraphInput as uniffiBuildGraphInput
+import uniffi.t1dm_core.forecastSlice as uniffiForecastSlice
+import uniffi.t1dm_core.bandLine as uniffiBandLine
+import uniffi.t1dm_core.loraNew as uniffiLoraNew
+import uniffi.t1dm_core.LoraProgress as UniffiLoraProgress
+import uniffi.t1dm_core.loraTrain as uniffiLoraTrain
+import uniffi.t1dm_core.loraSerialize as uniffiLoraSerialize
+import uniffi.t1dm_core.loraDeserialize as uniffiLoraDeserialize
+import uniffi.t1dm_core.synthDefaultParams as uniffiSynthDefaultParams
+import uniffi.t1dm_core.synthSeries as uniffiSynthSeries
+import uniffi.t1dm_core.synthFillGaps as uniffiSynthFillGaps
+import uniffi.t1dm_core.findGaps as uniffiFindGaps
+import uniffi.t1dm_core.HeadModel as UniffiHeadModel
+import uniffi.t1dm_core.HeadSpec as UniffiHeadSpec
+import uniffi.t1dm_core.HeadTensorSpec as UniffiHeadTensorSpec
+import uniffi.t1dm_core.GraphInput as UniffiGraphInput
+import uniffi.t1dm_core.MaskSpan as UniffiMaskSpan
+import uniffi.t1dm_core.LoraConfig as UniffiLoraConfig
+import uniffi.t1dm_core.LoraWeights as UniffiLoraWeights
+import uniffi.t1dm_core.LoraSample as UniffiLoraSample
+import uniffi.t1dm_core.LoraTrainOpts as UniffiLoraTrainOpts
+import uniffi.t1dm_core.LoraTrainReport as UniffiLoraTrainReport
+import uniffi.t1dm_core.LoraTrainResult as UniffiLoraTrainResult
+import uniffi.t1dm_core.SynthParams as UniffiSynthParams
+import uniffi.t1dm_core.SynthSeries as UniffiSynthSeries
+import uniffi.t1dm_core.GapRun as UniffiGapRun
 import uniffi.t1dm_core.causalSmooth as uniffiCausalSmooth
 import uniffi.t1dm_core.decodeAdvert as uniffiDecodeAdvert
 import uniffi.t1dm_core.decodeTime as uniffiDecodeTime
@@ -104,7 +143,6 @@ import uniffi.t1dm_core.AdvancedStats as UniffiAdvancedStats
 import uniffi.t1dm_core.AgpBin as UniffiAgpBin
 import uniffi.t1dm_core.BasalDoseSpec as UniffiBasalDoseSpec
 import uniffi.t1dm_core.BasalSchedule as UniffiBasalSchedule
-import uniffi.t1dm_core.BuiltContext as UniffiBuiltContext
 import uniffi.t1dm_core.ChannelStat as UniffiChannelStat
 import uniffi.t1dm_core.BaselineFit as UniffiBaselineFit
 import uniffi.t1dm_core.BaselineForecast as UniffiBaselineForecast
@@ -176,30 +214,128 @@ class UniffiNativeCore : NativeCore {
     override fun causalSmooth(series: List<Double>, clampMin: Double?, clampMax: Double?, window: Int): List<Double> =
         uniffiCausalSmooth(series, clampMin, clampMax, window)
 
-    override fun normalizeSample(desc: ModelDescriptor, bg: Double, carb: Double, insulin: Double): List<Double> =
-        uniffiNormalizeSample(desc.toUniffi(), bg, carb, insulin)
+    override fun normalizeSample(
+        desc: ModelDescriptor,
+        bg: Double,
+        carb: Double,
+        insulin: Double,
+        exercise: Double,
+    ): List<Double> = uniffiNormalizeSample(desc.toUniffi(), bg, carb, insulin, exercise)
 
     override fun denormalizeSample(desc: ModelDescriptor, z: List<Double>): List<Double> =
         uniffiDenormalizeSample(desc.toUniffi(), z)
 
-    override fun buildContext(
+    override fun buildGraphInput(
         desc: ModelDescriptor,
         bg: List<Double>,
         carb: List<Double>,
         insulin: List<Double>,
+        exercise: List<Double>,
         announcedCarb: List<Double>?,
         announcedInsulin: List<Double>?,
+        announcedExercise: List<Double>?,
+        maskSpans: List<MaskSpan>,
+        withForecast: Boolean,
         smoothingWindow: Int,
-    ): BuiltContext =
-        uniffiBuildContext(desc.toUniffi(), bg, carb, insulin, announcedCarb, announcedInsulin, smoothingWindow).toModel()
+    ): GraphInput = uniffiBuildGraphInput(
+        desc.toUniffi(), bg, carb, insulin, exercise,
+        announcedCarb, announcedInsulin, announcedExercise,
+        maskSpans.map { it.toUniffi() }, withForecast, smoothingWindow,
+    ).toModel()
 
     override fun assembleDecode(
         desc: ModelDescriptor,
         headRaw: List<Double>,
-        lastBg: Double,
+        anchors: List<Double>,
+        slotPatch: List<Int>,
+        nMasked: Int,
         carrySpread: Double,
     ): Forecast =
-        uniffiAssembleDecode(desc.toUniffi(), headRaw, lastBg, carrySpread).toModel()
+        uniffiAssembleDecode(desc.toUniffi(), headRaw, anchors, slotPatch, nMasked, carrySpread).toModel()
+
+    override fun forecastSlice(f: Forecast, fromPatch: Int, toPatch: Int): Forecast =
+        uniffiForecastSlice(f.toUniffi(), fromPatch, toPatch).toModel()
+
+    override fun bandLine(desc: ModelDescriptor, f: Forecast, tau: Double): List<Double> =
+        uniffiBandLine(desc.toUniffi(), f.toUniffi(), tau)
+
+    /** The Rust head object, wrapped so nothing outside this module holds a uniffi type. It
+     *  owns native memory; [close] releases it. */
+    private class UniffiHead(val inner: UniffiHeadModel) : NativeHead {
+        override fun setLora(w: LoraWeights?) = inner.setLora(w?.toUniffi())
+        override fun hasLora(): Boolean = inner.hasLora()
+        override fun forward(hidden: List<Double>, nSlots: Int): List<Double> =
+            inner.forward(hidden, nSlots)
+        override fun close() = inner.destroy()
+    }
+
+    override fun headOpen(bytes: ByteArray, spec: HeadSpec): NativeHead? =
+        try {
+            UniffiHead(UniffiHeadModel.parse(bytes, spec.toUniffi()))
+        } catch (_: CoreException) {
+            null
+        }
+
+    override fun loraTrain(
+        head: NativeHead,
+        desc: ModelDescriptor,
+        samples: List<LoraSample>,
+        config: LoraConfig,
+        opts: LoraTrainOpts,
+        progress: LoraProgressSink?,
+    ): LoraTrainResult = uniffiLoraTrain(
+        (head as UniffiHead).inner,
+        desc.toUniffi(),
+        samples.map { it.toUniffi() },
+        config.toUniffi(),
+        opts.toUniffi(),
+        progress?.let { sink ->
+            object : UniffiLoraProgress {
+                override fun onEpoch(epoch: Int, epochs: Int, trainLoss: Double, holdoutLoss: Double) =
+                    sink.onEpoch(epoch, epochs, trainLoss, holdoutLoss)
+            }
+        },
+    ).toModel()
+
+    override fun loraNew(
+        config: LoraConfig,
+        headSha256: String,
+        dModel: Int,
+        hidden: Int,
+        outDim: Int,
+        seed: Long,
+    ): LoraWeights =
+        uniffiLoraNew(config.toUniffi(), headSha256, dModel, hidden, outDim, seed).toModel()
+
+    override fun loraSerialize(w: LoraWeights): ByteArray = uniffiLoraSerialize(w.toUniffi())
+
+    override fun loraDeserialize(bytes: ByteArray): LoraWeights? =
+        try {
+            uniffiLoraDeserialize(bytes).toModel()
+        } catch (_: CoreException) {
+            null
+        }
+
+    override fun synthDefaultParams(): SynthParams = uniffiSynthDefaultParams().toModel()
+
+    override fun synthSeries(
+        nSteps: Int,
+        startHourOfDay: Double,
+        params: SynthParams,
+        seed: Long,
+    ): SynthSeries = uniffiSynthSeries(nSteps, startHourOfDay, params.toUniffi(), seed).toModel()
+
+    override fun synthFillGaps(
+        realBg: List<Double>,
+        realCarb: List<Double>,
+        realInsulin: List<Double>,
+        realExercise: List<Double>,
+        synth: SynthSeries,
+    ): SynthSeries =
+        uniffiSynthFillGaps(realBg, realCarb, realInsulin, realExercise, synth.toUniffi()).toModel()
+
+    override fun findGaps(bg: List<Double>, minSteps: Int): List<GapRun> =
+        uniffiFindGaps(bg, minSteps).map { it.toModel() }
 
     override fun forecastDegeneracyCheck(desc: ModelDescriptor, forecast: Forecast): ForecastStatus =
         uniffiForecastDegeneracyCheck(desc.toUniffi(), forecast.toUniffi()).toModel()
@@ -900,6 +1036,7 @@ private fun UniffiModelDescriptor.toModel(): ModelDescriptor = ModelDescriptor(
     bg = bg.toModel(),
     carb = carb.toModel(),
     insulin = insulin.toModel(),
+    exercise = exercise.toModel(),
     ropeBase = ropeBase,
     medianGlobalDim = medianGlobalDim,
     stepBasisType = stepBasisType,
@@ -910,15 +1047,23 @@ private fun UniffiModelDescriptor.toModel(): ModelDescriptor = ModelDescriptor(
     minContextPatches = minContextPatches,
     patchSize = patchSize,
     nInputFeatures = nInputFeatures,
+    seqLen = seqLen,
+    maxMaskedPatches = maxMaskedPatches,
+    maskMaxSpans = maskMaxSpans,
+    maskSpanMax = maskSpanMax,
+    dModel = dModel,
+    stepBasisDim = stepBasisDim,
     kovatchev = kovatchev.toModel(),
     conformalEnabled = conformalEnabled,
     time = time?.toModel(),
+    head = head?.toModel(),
 )
 
 private fun ModelDescriptor.toUniffi(): UniffiModelDescriptor = UniffiModelDescriptor(
     bg = bg.toUniffi(),
     carb = carb.toUniffi(),
     insulin = insulin.toUniffi(),
+    exercise = exercise.toUniffi(),
     ropeBase = ropeBase,
     medianGlobalDim = medianGlobalDim,
     stepBasisType = stepBasisType,
@@ -929,24 +1074,123 @@ private fun ModelDescriptor.toUniffi(): UniffiModelDescriptor = UniffiModelDescr
     minContextPatches = minContextPatches,
     patchSize = patchSize,
     nInputFeatures = nInputFeatures,
+    seqLen = seqLen,
+    maxMaskedPatches = maxMaskedPatches,
+    maskMaxSpans = maskMaxSpans,
+    maskSpanMax = maskSpanMax,
+    dModel = dModel,
+    stepBasisDim = stepBasisDim,
     kovatchev = kovatchev.toUniffi(),
     conformalEnabled = conformalEnabled,
     time = time?.toUniffi(),
+    head = head?.toUniffi(),
 )
 
-private fun UniffiBuiltContext.toModel(): BuiltContext = BuiltContext(
+private fun UniffiGraphInput.toModel(): GraphInput = GraphInput(
     nCtx = nCtx,
-    predictionPatches = predictionPatches,
-    context = context,
-    pred = pred,
-    lastBg = lastBg,
+    t = t,
+    patchDim = patchDim,
+    mSlots = mSlots,
+    nMasked = nMasked,
+    patches = patches.toFloatArray(),
+    attnMask = attnMask.toFloatArray(),
+    slotSel = slotSel.toFloatArray(),
+    anchors = anchors,
+    slotPatch = slotPatch,
+    firstForecastPatch = firstForecastPatch,
 )
+
+private fun MaskSpan.toUniffi(): UniffiMaskSpan = UniffiMaskSpan(startPatch, length)
+
+private fun HeadTensorSpec.toUniffi(): UniffiHeadTensorSpec = UniffiHeadTensorSpec(name, shape)
+
+private fun UniffiHeadTensorSpec.toModel(): HeadTensorSpec = HeadTensorSpec(name, shape)
+
+private fun HeadSpec.toUniffi(): UniffiHeadSpec = UniffiHeadSpec(
+    file = file,
+    dtype = dtype,
+    byteOrder = byteOrder,
+    activation = activation,
+    sha256 = sha256,
+    dModel = dModel,
+    hidden = hidden,
+    stepBasisDim = stepBasisDim,
+    outDim = outDim,
+    tensors = tensors.map { it.toUniffi() },
+)
+
+private fun UniffiHeadSpec.toModel(): HeadSpec = HeadSpec(
+    file = file,
+    dtype = dtype,
+    byteOrder = byteOrder,
+    activation = activation,
+    sha256 = sha256,
+    dModel = dModel,
+    hidden = hidden,
+    stepBasisDim = stepBasisDim,
+    outDim = outDim,
+    tensors = tensors.map { it.toModel() },
+)
+
+private fun LoraConfig.toUniffi(): UniffiLoraConfig =
+    UniffiLoraConfig(rank, alpha, targetHidden, targetL0, targetL1, targetL2)
+
+private fun UniffiLoraConfig.toModel(): LoraConfig =
+    LoraConfig(rank, alpha, targetHidden, targetL0, targetL1, targetL2)
+
+private fun LoraWeights.toUniffi(): UniffiLoraWeights =
+    UniffiLoraWeights(config.toUniffi(), headSha256, dModel, hidden, outDim, params)
+
+private fun UniffiLoraWeights.toModel(): LoraWeights =
+    LoraWeights(config.toModel(), headSha256, dModel, hidden, outDim, params)
+
+private fun LoraSample.toUniffi(): UniffiLoraSample =
+    UniffiLoraSample(hidden, anchors, targetBg, nSlots)
+
+private fun LoraTrainOpts.toUniffi(): UniffiLoraTrainOpts =
+    UniffiLoraTrainOpts(epochs, lr, holdoutFrac, weightDecay, seed)
+
+private fun UniffiLoraTrainReport.toModel(): LoraTrainReport = LoraTrainReport(
+    nTrain = nTrain,
+    nHoldout = nHoldout,
+    epochsRun = epochsRun,
+    trainLossFirst = trainLossFirst,
+    trainLossLast = trainLossLast,
+    holdoutLossBefore = holdoutLossBefore,
+    holdoutLossAfter = holdoutLossAfter,
+    improved = improved,
+    lossHistory = lossHistory,
+    holdoutHistory = holdoutHistory,
+    bestEpoch = bestEpoch,
+)
+
+private fun UniffiLoraTrainResult.toModel(): LoraTrainResult =
+    LoraTrainResult(weights.toModel(), report.toModel())
+
+private fun SynthParams.toUniffi(): UniffiSynthParams = UniffiSynthParams(
+    baselineBg, mealGrams, carbRatio, basalUPerHour,
+    exerciseProb, exerciseCarbEquivPerMin, cgmNoiseSd, missedBolusProb,
+)
+
+private fun UniffiSynthParams.toModel(): SynthParams = SynthParams(
+    baselineBg, mealGrams, carbRatio, basalUPerHour,
+    exerciseProb, exerciseCarbEquivPerMin, cgmNoiseSd, missedBolusProb,
+)
+
+private fun SynthSeries.toUniffi(): UniffiSynthSeries =
+    UniffiSynthSeries(bg, carb, insulin, exercise, nMeals, nBoluses, nBouts)
+
+private fun UniffiSynthSeries.toModel(): SynthSeries =
+    SynthSeries(bg, carb, insulin, exercise, nMeals, nBoluses, nBouts)
+
+private fun UniffiGapRun.toModel(): GapRun = GapRun(start, end)
 
 private fun UniffiForecast.toModel(): Forecast = Forecast(
     medianRisk = medianRisk,
     qTauRisk = qTauRisk,
     medianBg = medianBg,
     bandsMgdl = bandsMgdl,
+    slotPatch = slotPatch,
 )
 
 private fun Forecast.toUniffi(): UniffiForecast = UniffiForecast(
@@ -954,6 +1198,7 @@ private fun Forecast.toUniffi(): UniffiForecast = UniffiForecast(
     qTauRisk = qTauRisk,
     medianBg = medianBg,
     bandsMgdl = bandsMgdl,
+    slotPatch = slotPatch,
 )
 
 private fun UniffiForecastStatus.toModel(): ForecastStatus = when (this) {

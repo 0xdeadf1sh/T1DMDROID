@@ -28,8 +28,15 @@ use crate::CoreError;
 // ── Fixed architecture constants (INFERENCE.md §11; not descriptor-varying) ─────────
 /// Steps per patch (6 × 5 min = 30 min).
 const PATCH_SIZE: usize = 6;
-/// Input feature stack width `[bg_absolute, carb_intake, insulin_combined]`.
-const N_FEAT: usize = 3;
+/// Input feature stack width
+/// `[bg_absolute, carb_intake, insulin_combined, exercise_equiv, bg_masked]`.
+const N_FEAT: usize = 5;
+/// The normalized SIGNAL channels — feats 0..3. Feat 4 carries no statistics.
+const N_CHANNELS: usize = 4;
+/// Feature index of the per-patch masked-announcement bit. Nothing else writes it, and a
+/// builder that forgets it announces every masked patch as an observation with every shape
+/// still matching and every fan still monotone.
+const BG_MASKED_FEAT: usize = 4;
 /// Quantile spreads per side of the median.
 const N_SPREADS: usize = 3;
 /// Head raw width `= 1 + 2·N_SPREADS`, == number of quantiles.
@@ -142,6 +149,32 @@ pub struct TimeHead {
     pub bin_hours: f64,
 }
 
+/// One tensor in the head side file, named and shaped in FILE order.
+#[derive(Debug, Clone, PartialEq, uniffi::Record, Deserialize)]
+pub struct HeadTensorSpec {
+    pub name: String,
+    pub shape: Vec<i32>,
+}
+
+/// The BG head the export wrote beside the artifact — the seam an adapter attaches to.
+///
+/// Everything needed to read a flat fp32 dump back into layers, plus a digest over the exact
+/// bytes. The digest is checked on load rather than recorded: a head paired with the wrong
+/// graph reproduces a plausible, finite, wrong `head_raw`, and nothing downstream can see it.
+#[derive(Debug, Clone, PartialEq, uniffi::Record, Deserialize)]
+pub struct HeadSpec {
+    pub file: String,
+    pub dtype: String,
+    pub byte_order: String,
+    pub activation: String,
+    pub sha256: String,
+    pub d_model: i32,
+    pub hidden: i32,
+    pub step_basis_dim: i32,
+    pub out_dim: i32,
+    pub tensors: Vec<HeadTensorSpec>,
+}
+
 /// The full pre/post contract parsed from `descriptor.json` — the app's sole source of
 /// the normalization stats plus the decode-critical constants absent from the
 /// checkpoint (INFERENCE.md §3.1, SPEC §2.4). Downstream Rust reads every constant from
@@ -151,9 +184,13 @@ pub struct ModelDescriptor {
     pub bg: ChannelStat,
     pub carb: ChannelStat,
     pub insulin: ChannelStat,
-    /// RoPE base frequency (checkpoint-absent; released default 1000).
+    /// Carbohydrate-EQUIVALENT glucose disposal, g/step — a positive magnitude in its own
+    /// channel, never a negative carbohydrate value in the carb channel.
+    pub exercise: ChannelStat,
+    /// RoPE base frequency (checkpoint-absent; descriptor-carried).
     pub rope_base: i32,
-    /// Global-median DCT subspace dimension `G` (released default 6).
+    /// Global-median DCT subspace dimension at a span of `PREDICTION_PATCHES`; shorter spans scale
+    /// down from it (`global_median_dim`). Descriptor-carried — it is a training-time choice.
     pub median_global_dim: i32,
     /// Global-median basis kind (`"dct"`).
     pub step_basis_type: String,
@@ -167,6 +204,20 @@ pub struct ModelDescriptor {
     pub min_context_patches: i32,
     pub patch_size: i32,
     pub n_input_features: i32,
+    /// The exported graph's fixed sequence length `T`. The window is left-padded into it,
+    /// so the future patches always sit at the right edge and the absolute RoPE positions
+    /// match training.
+    pub seq_len: i32,
+    /// `M` — the head's slot count, and the cap on the masked set a caller may ask for.
+    pub max_masked_patches: i32,
+    /// Spans per masked set, and the longest span, that the training sampler ever drew.
+    /// Beyond either the model is being asked for something it never saw.
+    pub mask_max_spans: i32,
+    pub mask_span_max: i32,
+    /// Trunk width — the length of one slot's hidden state.
+    pub d_model: i32,
+    /// `K` — within-patch basis columns the head emits per (slot, channel).
+    pub step_basis_dim: i32,
     /// The risk transform THIS checkpoint was trained under — the sole authority for every
     /// (b)↔(c) crossing on the model path (INFERENCE.md §5).
     pub kovatchev: KovatchevParams,
@@ -178,6 +229,10 @@ pub struct ModelDescriptor {
     /// is cut at `head_raw` (BG fan only). Consumed by [`decode_time`] to surface a
     /// circadian-phase belief; its absence is graceful (no predicted-hour rendered).
     pub time: Option<TimeHead>,
+    /// The BG head shipped beside the artifact, or `None` when the export wrote none. Its
+    /// absence costs no forecast — the graph's own `head_raw` is the fast path — but it is
+    /// the only seam an adapter can attach to, so a model without it takes no LoRA.
+    pub head: Option<HeadSpec>,
 }
 
 impl ModelDescriptor {
@@ -186,12 +241,13 @@ impl ModelDescriptor {
             0 => self.bg,
             1 => self.carb,
             2 => self.insulin,
-            _ => self.bg, // unreachable: feat ∈ [0,3)
+            3 => self.exercise,
+            _ => self.bg, // unreachable: feat ∈ [0, N_CHANNELS)
         }
     }
 
     /// P = PREDICTION_PATCHES = horizon_hours · (60 / (patch_size · 5)).
-    fn prediction_patches(&self) -> Result<usize, CoreError> {
+    pub(crate) fn prediction_patches(&self) -> Result<usize, CoreError> {
         let step_min = self.patch_size as i64 * 5;
         if step_min <= 0 || 60 % step_min != 0 {
             return Err(CoreError::Internal {
@@ -210,6 +266,9 @@ struct NormStatsDto {
     bg_absolute: ChannelStat,
     carb_intake: ChannelStat,
     insulin_combined: ChannelStat,
+    /// REQUIRED. A descriptor without it predates the exercise channel, and running such a
+    /// model against a five-feature input builds a context it was never trained on.
+    exercise_equiv: ChannelStat,
 }
 
 #[derive(Deserialize)]
@@ -220,24 +279,74 @@ struct TimeDto {
 }
 
 #[derive(Deserialize)]
-struct DescriptorDto {
-    normalization_stats: NormStatsDto,
+struct ConformalDto {
+    #[serde(default)]
+    enabled: bool,
+}
+
+/// The exporter's `geometry` block, verbatim. The SCREAMING names are the exporter's, kept
+/// so the descriptor has ONE schema across the suite rather than a projected second one:
+/// every projection is a place a key can be silently dropped, and a dropped decode constant
+/// is invisible until a forecast decodes wrong.
+#[derive(Deserialize)]
+struct GeometryDto {
+    #[serde(rename = "T")]
+    t: i32,
+    #[serde(rename = "PATCH_SIZE")]
+    patch_size: i32,
+    #[serde(rename = "N_INPUT_FEATURES")]
+    n_input_features: i32,
+    #[serde(rename = "MIN_CONTEXT_PATCHES")]
+    min_context_patches: i32,
+    #[serde(rename = "MAX_CONTEXT_PATCHES")]
+    max_context_patches: i32,
+    #[serde(rename = "MAX_MASKED_PATCHES")]
+    max_masked_patches: i32,
+    #[serde(rename = "D_MODEL")]
+    d_model: i32,
+    #[serde(rename = "MASK_MAX_SPANS", default = "default_mask_max_spans")]
+    mask_max_spans: i32,
+    #[serde(rename = "MASK_SPAN_LENGTHS", default)]
+    mask_span_lengths: Vec<i32>,
+}
+
+#[derive(Deserialize)]
+struct ConstantsDto {
+    #[serde(rename = "ROPE_BASE")]
     rope_base: i32,
+    #[serde(rename = "BG_HEAD_MEDIAN_GLOBAL_DIM")]
     median_global_dim: i32,
+    #[serde(rename = "BG_HEAD_MEDIAN_MODE")]
+    median_mode: String,
+    #[serde(rename = "BG_HEAD_STEP_BASIS_TYPE")]
     step_basis_type: String,
+    #[serde(rename = "BG_HEAD_STEP_BASIS_DIM")]
+    step_basis_dim: i32,
+    #[serde(rename = "BG_QUANTILE_SPREAD_MIN")]
     quantile_spread_min: f64,
     neg_fill: f64,
+    #[serde(rename = "PREDICTION_HORIZON_HOURS")]
     prediction_horizon_hours: i32,
-    max_context_patches: i32,
-    min_context_patches: i32,
-    patch_size: i32,
-    n_input_features: i32,
+}
+
+#[derive(Deserialize)]
+struct DescriptorDto {
+    normalization_stats: NormStatsDto,
+    geometry: GeometryDto,
+    constants: ConstantsDto,
     /// REQUIRED. Absent ⇒ the descriptor is rejected rather than decoded against a guessed
     /// scale: there is no safe default, and a wrong one is invisible downstream.
     kovatchev: KovatchevParams,
-    conformal_enabled: bool,
+    #[serde(default)]
+    conformal: Option<ConformalDto>,
     #[serde(default)]
     time: Option<TimeDto>,
+    #[serde(default)]
+    head: Option<HeadSpec>,
+}
+
+fn default_mask_max_spans() -> i32 {
+    3
 }
 
 /// Parse a model `descriptor.json` (SPEC §2.4) into a [`ModelDescriptor`]. Returns
@@ -247,14 +356,32 @@ pub fn parse_descriptor(json: String) -> Result<ModelDescriptor, CoreError> {
     let d: DescriptorDto = serde_json::from_str(&json).map_err(|e| CoreError::Decode {
         reason: format!("descriptor parse: {e}"),
     })?;
-    if d.n_input_features as usize != N_FEAT {
+    if d.geometry.n_input_features as usize != N_FEAT {
         return Err(CoreError::Decode {
-            reason: format!("n_input_features {} != {N_FEAT}", d.n_input_features),
+            reason: format!(
+                "n_input_features {} != {N_FEAT}; this build reads the five-feature masked-BG \
+                 input and cannot run an earlier architecture",
+                d.geometry.n_input_features
+            ),
         });
     }
-    if d.step_basis_type != "dct" {
+    // Only the 'global' median is implemented here. A checkpoint trained under another mode
+    // decodes to a DIFFERENT median through this one — smooth, finite and wrong — so the
+    // descriptor's own declaration is checked rather than carried and ignored.
+    if d.constants.median_mode != "global" {
         return Err(CoreError::Decode {
-            reason: format!("unsupported step_basis_type {:?} (want \"dct\")", d.step_basis_type),
+            reason: format!(
+                "unsupported BG_HEAD_MEDIAN_MODE {:?} (this build assembles the 'global' median)",
+                d.constants.median_mode
+            ),
+        });
+    }
+    if d.constants.step_basis_type != "dct" {
+        return Err(CoreError::Decode {
+            reason: format!(
+                "unsupported step_basis_type {:?} (want \"dct\")",
+                d.constants.step_basis_type
+            ),
         });
     }
     // The time-probe section is OPTIONAL (a `head_raw`-only export omits it). When present it
@@ -279,23 +406,33 @@ pub fn parse_descriptor(json: String) -> Result<ModelDescriptor, CoreError> {
             })
         }
     };
+    let g = d.geometry;
+    let c = d.constants;
     let desc = ModelDescriptor {
         bg: d.normalization_stats.bg_absolute,
         carb: d.normalization_stats.carb_intake,
         insulin: d.normalization_stats.insulin_combined,
-        rope_base: d.rope_base,
-        median_global_dim: d.median_global_dim,
-        step_basis_type: d.step_basis_type,
-        quantile_spread_min: d.quantile_spread_min,
-        neg_fill: d.neg_fill,
-        prediction_horizon_hours: d.prediction_horizon_hours,
-        max_context_patches: d.max_context_patches,
-        min_context_patches: d.min_context_patches,
-        patch_size: d.patch_size,
-        n_input_features: d.n_input_features,
+        exercise: d.normalization_stats.exercise_equiv,
+        rope_base: c.rope_base,
+        median_global_dim: c.median_global_dim,
+        step_basis_type: c.step_basis_type,
+        quantile_spread_min: c.quantile_spread_min,
+        neg_fill: c.neg_fill,
+        prediction_horizon_hours: c.prediction_horizon_hours,
+        max_context_patches: g.max_context_patches,
+        min_context_patches: g.min_context_patches,
+        patch_size: g.patch_size,
+        n_input_features: g.n_input_features,
+        seq_len: g.t,
+        max_masked_patches: g.max_masked_patches,
+        mask_max_spans: g.mask_max_spans,
+        mask_span_max: g.mask_span_lengths.iter().copied().max().unwrap_or(8),
+        d_model: g.d_model,
+        step_basis_dim: c.step_basis_dim,
         kovatchev: d.kovatchev,
-        conformal_enabled: d.conformal_enabled,
+        conformal_enabled: d.conformal.map(|x| x.enabled).unwrap_or(false),
         time,
+        head: d.head,
     };
 
     // ── Fail-closed guards on decode-critical descriptor drift (§3.6-B, INFERENCE.md §11) ──
@@ -305,6 +442,31 @@ pub fn parse_descriptor(json: String) -> Result<ModelDescriptor, CoreError> {
     // `forecast_degeneracy_check` cannot catch (e.g. `median_global_dim=0` pins the median at
     // the anchor via an empty DCT basis; a negative value casts to `usize::MAX` and defeats
     // the low-frequency contraction).
+    for (name, v) in [
+        ("seq_len", desc.seq_len),
+        ("max_masked_patches", desc.max_masked_patches),
+        ("d_model", desc.d_model),
+        ("step_basis_dim", desc.step_basis_dim),
+        ("mask_max_spans", desc.mask_max_spans),
+        ("mask_span_max", desc.mask_span_max),
+    ] {
+        // A negative dimension casts to a colossal usize downstream and the allocation aborts the
+        // process (the crate is `panic = "abort"`), so it is refused here where a refusal is just a
+        // skipped model.
+        if v < 1 {
+            return Err(CoreError::Decode {
+                reason: format!("geometry {name} = {v} must be >= 1"),
+            });
+        }
+    }
+    if desc.seq_len < desc.max_context_patches {
+        return Err(CoreError::Decode {
+            reason: format!(
+                "seq_len {} cannot hold max_context_patches {}",
+                desc.seq_len, desc.max_context_patches
+            ),
+        });
+    }
     if desc.median_global_dim < 1 {
         return Err(CoreError::Decode {
             reason: format!("median_global_dim {} must be >= 1", desc.median_global_dim),
@@ -541,102 +703,193 @@ fn denormalize_feat(d: &ModelDescriptor, feat: usize, z: f64) -> f64 {
     }
 }
 
-/// Normalize a raw `[bg_mgdl, carb, insulin]` sample to z-space (INFERENCE.md §6).
+/// Normalize a raw `[bg_mgdl, carb, insulin, exercise]` sample to z-space (INFERENCE.md §6).
 #[uniffi::export]
-pub fn normalize_sample(desc: &ModelDescriptor, bg: f64, carb: f64, insulin: f64) -> Vec<f64> {
+pub fn normalize_sample(
+    desc: &ModelDescriptor,
+    bg: f64,
+    carb: f64,
+    insulin: f64,
+    exercise: f64,
+) -> Vec<f64> {
     vec![
         normalize_feat(desc, 0, bg),
         normalize_feat(desc, 1, carb),
         normalize_feat(desc, 2, insulin),
+        normalize_feat(desc, 3, exercise),
     ]
 }
 
-/// Denormalize a z-space `[bg, carb, insulin]` sample back to raw units.
+/// Denormalize a z-space `[bg, carb, insulin, exercise]` sample back to raw units.
 #[uniffi::export]
 pub fn denormalize_sample(desc: &ModelDescriptor, z: Vec<f64>) -> Result<Vec<f64>, CoreError> {
-    if z.len() != N_FEAT {
+    if z.len() != N_CHANNELS {
         return Err(CoreError::Internal {
-            reason: format!("denormalize_sample expects {N_FEAT} channels, got {}", z.len()),
+            reason: format!("denormalize_sample expects {N_CHANNELS} channels, got {}", z.len()),
         });
     }
-    Ok(vec![
-        denormalize_feat(desc, 0, z[0]),
-        denormalize_feat(desc, 1, z[1]),
-        denormalize_feat(desc, 2, z[2]),
-    ])
+    Ok((0..N_CHANNELS).map(|f| denormalize_feat(desc, f, z[f])).collect())
 }
 
 // ── Context construction (INFERENCE.md §7) ──────────────────────────────────────────
 
-/// The normalized model input built from a raw history, plus the mg/dL anchor.
-/// `context` is the `n_ctx·PATCH_SIZE·N_FEAT` step-major-flattened normalized context
-/// (`flat = global_step·3 + feat`); `pred` is the `P·PATCH_SIZE·N_FEAT` prediction zone
-/// (BG feat 0 = literal 0; dose feats = `normalize(0)` baseline or announced doses);
-/// `last_bg` is the mg/dL persistence anchor. The backend left-pads `context` to the
-/// fixed T=52 artifact and builds the struct mask (SPEC §2.4).
-#[derive(Debug, Clone, PartialEq, uniffi::Record)]
-pub struct BuiltContext {
-    pub n_ctx: i32,
-    pub prediction_patches: i32,
-    pub context: Vec<f64>,
-    pub pred: Vec<f64>,
-    pub last_bg: f64,
+/// One masked span over the window, in CONTEXT-relative patch coordinates: patch 0 is the
+/// oldest real context patch the caller supplied, whatever left-padding lands in front of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct MaskSpan {
+    pub start_patch: i32,
+    pub length: i32,
 }
 
-/// Build the normalized context + prediction-zone patches + `last_bg` anchor from raw
-/// per-step history (INFERENCE.md §7.2-7.4). `bg`/`carb`/`insulin` are equal-length
-/// trailing series of `n_ctx·PATCH_SIZE` steps, `n_ctx ∈ [min,max]_context_patches`.
-/// `announced_carb`/`announced_insulin`, if present, are raw future doses (length
-/// `P·PATCH_SIZE`) written into the prediction zone; absent slots take the `normalize(0)`
-/// no-dose baseline (NOT z=0 — §7.3).
+/// The complete fixed-shape graph input, built here so the mask rule, the left-pad and the
+/// masked-patch fill exist once. Kotlin copies the three float buffers into direct NIO
+/// buffers and hands them to the backend unchanged; nothing on that side reasons about
+/// geometry.
+///
+/// `patches` is `T·PATCH_SIZE·N_FEAT` step-major (`flat = (patch·PATCH_SIZE + step)·N_FEAT +
+/// feat`), `attn_mask` is `T·T` additive (`0` attend / `neg_fill` block), `slot_sel` is
+/// `M·T` one-hot rows. `anchors` and `slot_patch` describe all `M` slots; only the first
+/// `n_masked` are real, and `assemble_decode` decodes exactly those.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct GraphInput {
+    pub n_ctx: i32,
+    pub t: i32,
+    pub patch_dim: i32,
+    pub m_slots: i32,
+    pub n_masked: i32,
+    pub patches: Vec<f32>,
+    pub attn_mask: Vec<f32>,
+    pub slot_sel: Vec<f32>,
+    pub anchors: Vec<f64>,
+    pub slot_patch: Vec<i32>,
+    /// Absolute patch index of the first future patch, or `-1` when the window carries no
+    /// future zone (a pure infill or backcast, which forecasts nothing).
+    pub first_forecast_patch: i32,
+}
+
+/// Validate the masked set over a window of `n_real` real patches, `n_ctx` of them observed.
+///
+/// Four rules, each a correctness requirement:
+///
+/// * spans never abut — one visible patch must separate neighbours, and that separator is
+///   what makes the anchor, the per-span median basis and the span grouping well defined.
+///   Two spans with nothing between them ARE one longer span, and the sampler this mirrors
+///   never emitted that pair.
+/// * `sum(length) <= M` — the head has that many slots.
+/// * every future patch is masked. There is no observed BG there at all, so a future patch
+///   left visible announces a fabricated `z = 0` as an observation.
+/// * at least one patch stays visible, since every span anchors on a visible neighbour.
+fn resolve_mask_spans(
+    desc: &ModelDescriptor,
+    spans: &[MaskSpan],
+    n_ctx: usize,
+    n_real: usize,
+) -> Result<Vec<(usize, usize)>, CoreError> {
+    let mut out: Vec<(usize, usize)> = Vec::with_capacity(spans.len() + 1);
+    for sp in spans {
+        if sp.length < 1 {
+            return Err(CoreError::Internal {
+                reason: format!("mask span length {} must be >= 1", sp.length),
+            });
+        }
+        if sp.start_patch < 0 || (sp.start_patch as usize) + (sp.length as usize) > n_ctx {
+            return Err(CoreError::Internal {
+                reason: format!(
+                    "mask span ({}, {}) leaves the {n_ctx} observed context patches",
+                    sp.start_patch, sp.length
+                ),
+            });
+        }
+        out.push((sp.start_patch as usize, sp.length as usize));
+    }
+    out.sort_by_key(|(s, _)| *s);
+    if n_real > n_ctx {
+        out.push((n_ctx, n_real - n_ctx)); // the future zone, masked by construction
+    }
+    if out.is_empty() {
+        return Err(CoreError::Internal {
+            reason: "masked set is empty — the head must be given at least one masked patch"
+                .into(),
+        });
+    }
+    let mut prev_end: i64 = -2;
+    for (start, length) in &out {
+        if (*start as i64) <= prev_end + 1 {
+            return Err(CoreError::Internal {
+                reason: format!(
+                    "masked spans abut or overlap at patch {start}; one visible patch must \
+                     separate neighbours"
+                ),
+            });
+        }
+        prev_end = (*start + *length - 1) as i64;
+    }
+    let total: usize = out.iter().map(|(_, l)| *l).sum();
+    if total > desc.max_masked_patches as usize {
+        return Err(CoreError::Internal {
+            reason: format!(
+                "masked set of {total} patches exceeds the head's {} slots",
+                desc.max_masked_patches
+            ),
+        });
+    }
+    if total >= n_real {
+        return Err(CoreError::Internal {
+            reason: "every patch of the window is masked; nothing is left to anchor on".into(),
+        });
+    }
+    Ok(out)
+}
+
+/// Build the whole fixed-shape graph input from raw per-step history (INFERENCE.md §§7.2-7.4).
+///
+/// `bg`/`carb`/`insulin`/`exercise` are equal-length trailing series of `n_ctx·PATCH_SIZE`
+/// steps. `exercise` is a carbohydrate-EQUIVALENT disposal in g/step — a positive magnitude
+/// in its own channel, on the scale the model was trained at, never an intensity and never a
+/// negative carbohydrate.
+///
+/// `with_forecast` appends the `P` future patches at the right edge, masked, with the dose
+/// channels at the announced plan or the `normalize(0)` no-event baseline. Without it the
+/// window is pure history and forecasts nothing — which is what a gap repair wants, since the
+/// evidence on BOTH sides of the gap is then real.
+///
+/// `mask_spans` names the withheld context patches, empty for a plain forecast.
 ///
 /// `smoothing_window` selects the causal Savitzky-Golay window applied to the **BG channel
 /// only** (odd, `1` = unfiltered); it fails closed on anything else rather than substituting a
-/// default, because this is the model-input path. The carb and insulin channels are passed
-/// unfiltered at every window: they are analytic reconstructions (gamma / Bateman /
-/// exponential action curves), already smooth by construction, and filtering them only blunts
-/// the onset of a meal or a dose. Both keep their physical guards — BG is clamped to
-/// `[20,500]`, carb/insulin floored at 0 by `normalize_feat`'s `log1p` — at every window.
+/// default, because this is the model-input path. Carb, insulin and exercise are passed
+/// unfiltered: they are analytic reconstructions (gamma / Bateman / exponential action
+/// curves), already smooth by construction, and filtering them only blunts the onset of a
+/// meal, a dose or a bout. Both keep their physical guards — BG clamped to the descriptor's
+/// range, the other three floored at 0 by `normalize_feat`'s `log1p` — at every window.
 ///
-/// The window MOVES the `last_bg` anchor (§3.6-D), since the anchor is read off the smoothed
-/// last BG cell, so it is decision-relevant and not a display preference.
-#[uniffi::export]
-pub fn build_context(
-    desc: &ModelDescriptor,
-    bg: Vec<f64>,
-    carb: Vec<f64>,
-    insulin: Vec<f64>,
-    announced_carb: Option<Vec<f64>>,
-    announced_insulin: Option<Vec<f64>>,
-    smoothing_window: i32,
-) -> Result<BuiltContext, CoreError> {
-    let bg_window = validate_window(smoothing_window)?;
-    build_context_windows(desc, bg, carb, insulin, announced_carb, announced_insulin, bg_window, 1)
-}
-
-/// [`build_context`] with an explicit per-channel window pair: `bg_window` for the BG channel,
-/// `dose_window` for BOTH dose channels (`1` = the unfiltered production shape). The T1DMAI
-/// reference the golden vectors were generated from smoothed all three channels at window 7,
-/// so `(7, 7)` reproduces that fixture bit-for-bit and the goldens keep pinning it.
+/// The window MOVES every anchor, since each is read off a smoothed BG cell, so it is
+/// decision-relevant and not a display preference.
 #[allow(clippy::too_many_arguments)]
-fn build_context_windows(
+#[uniffi::export]
+pub fn build_graph_input(
     desc: &ModelDescriptor,
     bg: Vec<f64>,
     carb: Vec<f64>,
     insulin: Vec<f64>,
+    exercise: Vec<f64>,
     announced_carb: Option<Vec<f64>>,
     announced_insulin: Option<Vec<f64>>,
-    bg_window: usize,
-    dose_window: usize,
-) -> Result<BuiltContext, CoreError> {
+    announced_exercise: Option<Vec<f64>>,
+    mask_spans: Vec<MaskSpan>,
+    with_forecast: bool,
+    smoothing_window: i32,
+) -> Result<GraphInput, CoreError> {
+    let bg_window = validate_window(smoothing_window)?;
     let n = bg.len();
-    if n == 0 || carb.len() != n || insulin.len() != n {
+    if n == 0 || carb.len() != n || insulin.len() != n || exercise.len() != n {
         return Err(CoreError::Internal {
             reason: format!(
-                "channel lengths must match and be > 0: bg={} carb={} insulin={}",
+                "channel lengths must match and be > 0: bg={} carb={} insulin={} exercise={}",
                 n,
                 carb.len(),
-                insulin.len()
+                insulin.len(),
+                exercise.len()
             ),
         });
     }
@@ -654,68 +907,218 @@ fn build_context_windows(
             ),
         });
     }
+    let t = desc.seq_len as usize;
     let p = desc.prediction_patches()?;
-
-    // Pre-filter BG at the requested window; the dose channels ride `dose_window` (1 in
-    // production ⇒ identity, so only their unconditional floor survives).
-    let sm_bg = causal_smooth_w(
-        &bg,
-        Some(desc.kovatchev.bg_clamp_min),
-        Some(desc.kovatchev.bg_clamp_max),
-        bg_window,
-    );
-    let sm_carb = causal_smooth_w(&carb, Some(0.0), None, dose_window);
-    let sm_ins = causal_smooth_w(&insulin, Some(0.0), None, dose_window);
-
-    // Normalize + step-major interleave: context[gs*3 + feat].
-    let mut context = vec![0.0f64; n * N_FEAT];
-    for gs in 0..n {
-        context[gs * N_FEAT] = normalize_feat(desc, 0, sm_bg[gs]);
-        context[gs * N_FEAT + 1] = normalize_feat(desc, 1, sm_carb[gs]);
-        context[gs * N_FEAT + 2] = normalize_feat(desc, 2, sm_ins[gs]);
+    let n_real = if with_forecast { n_ctx + p } else { n_ctx };
+    if n_real > t {
+        return Err(CoreError::Internal {
+            reason: format!("window of {n_real} patches does not fit the graph's T={t}"),
+        });
     }
-
-    // last_bg anchor: last context BG cell, un-z-scored then f_inv to mg/dL (§7.4).
-    let last_z = context[(n - 1) * N_FEAT];
-    let last_bg = denormalize_feat(desc, 0, last_z);
-
-    // Prediction zone: BG feat 0 = literal 0; dose feats = normalize(0) or announced.
+    let m = desc.max_masked_patches as usize;
+    let spans = resolve_mask_spans(desc, &mask_spans, n_ctx, n_real)?;
     let pred_steps = p * PATCH_SIZE;
-    if let Some(a) = announced_carb.as_ref() {
-        if a.len() != pred_steps {
-            return Err(CoreError::Internal {
-                reason: format!("announced_carb length {} != P·S {pred_steps}", a.len()),
-            });
+    for (name, a) in [
+        ("announced_carb", &announced_carb),
+        ("announced_insulin", &announced_insulin),
+        ("announced_exercise", &announced_exercise),
+    ] {
+        if let Some(v) = a {
+            if !with_forecast {
+                return Err(CoreError::Internal {
+                    reason: format!("{name} supplied for a window with no future zone"),
+                });
+            }
+            if v.len() != pred_steps {
+                return Err(CoreError::Internal {
+                    reason: format!("{name} length {} != P·S {pred_steps}", v.len()),
+                });
+            }
         }
-    }
-    if let Some(a) = announced_insulin.as_ref() {
-        if a.len() != pred_steps {
-            return Err(CoreError::Internal {
-                reason: format!("announced_insulin length {} != P·S {pred_steps}", a.len()),
-            });
-        }
-    }
-    let zbase_carb = normalize_feat(desc, 1, 0.0);
-    let zbase_ins = normalize_feat(desc, 2, 0.0);
-    let mut pred = vec![0.0f64; pred_steps * N_FEAT];
-    for j in 0..pred_steps {
-        pred[j * N_FEAT] = 0.0; // BG: what the model predicts
-        pred[j * N_FEAT + 1] = match announced_carb.as_ref() {
-            Some(a) => normalize_feat(desc, 1, a[j]),
-            None => zbase_carb,
-        };
-        pred[j * N_FEAT + 2] = match announced_insulin.as_ref() {
-            Some(a) => normalize_feat(desc, 2, a[j]),
-            None => zbase_ins,
-        };
     }
 
-    Ok(BuiltContext {
+    // Pre-filter BG at the requested window — PER VISIBLE RUN, not across the whole series.
+    //
+    // The filter is causal, so a step's value is a weighted sum of the six before it. Run it over
+    // the raw series and the six steps after a masked span carry that span's own withheld BG into
+    // the model's input, and the anchor of a span with a right-side neighbour is read from a cell
+    // built out of the very values being withheld. Both are leaks from the answer into the
+    // question: an infill scored that way is scored against evidence it was supposed not to have.
+    // Restarting at each boundary is also what a causal filter would do if the data were simply
+    // absent, which is what a masked patch means.
+    let mut sm_bg = vec![0.0f64; n];
+    {
+        let mut masked_step = vec![false; n];
+        for (start, length) in &spans {
+            for q in *start..(*start + *length) {
+                if q < n_ctx {
+                    for step in 0..PATCH_SIZE {
+                        masked_step[q * PATCH_SIZE + step] = true;
+                    }
+                }
+            }
+        }
+        let mut i = 0usize;
+        while i < n {
+            if masked_step[i] {
+                sm_bg[i] = bg[i];
+                i += 1;
+                continue;
+            }
+            let start = i;
+            while i < n && !masked_step[i] {
+                i += 1;
+            }
+            let run = causal_smooth_w(
+                &bg[start..i],
+                Some(desc.kovatchev.bg_clamp_min),
+                Some(desc.kovatchev.bg_clamp_max),
+                bg_window,
+            );
+            sm_bg[start..i].copy_from_slice(&run);
+        }
+    }
+
+    // Normalize the observed context, step-major into the padded patch buffer.
+    let pad0 = t - n_real;
+    let mut patches = vec![0.0f32; t * PATCH_SIZE * N_FEAT];
+    let mut ctx_bg_z = vec![0.0f64; n]; // kept in f64 for the anchor read-back
+    for gs in 0..n {
+        let z = [
+            normalize_feat(desc, 0, sm_bg[gs]),
+            normalize_feat(desc, 1, carb[gs]),
+            normalize_feat(desc, 2, insulin[gs]),
+            normalize_feat(desc, 3, exercise[gs]),
+        ];
+        ctx_bg_z[gs] = z[0];
+        let base = ((pad0 + gs / PATCH_SIZE) * PATCH_SIZE + gs % PATCH_SIZE) * N_FEAT;
+        for (f, v) in z.iter().enumerate() {
+            patches[base + f] = *v as f32;
+        }
+    }
+
+    // The future zone: BG withheld, dose channels at the announced plan or the no-event
+    // baseline. A literal z = 0 there routes through the sparse log1p inverse and announces a
+    // phantom dose, which is why the baseline is normalize(0) and not zero.
+    if with_forecast {
+        let zbase: [f64; 3] = [
+            normalize_feat(desc, 1, 0.0),
+            normalize_feat(desc, 2, 0.0),
+            normalize_feat(desc, 3, 0.0),
+        ];
+        for j in 0..pred_steps {
+            let patch = pad0 + n_ctx + j / PATCH_SIZE;
+            let base = (patch * PATCH_SIZE + j % PATCH_SIZE) * N_FEAT;
+            patches[base] = 0.0; // BG: what the model predicts
+            for (k, announced) in [&announced_carb, &announced_insulin, &announced_exercise]
+                .iter()
+                .enumerate()
+            {
+                patches[base + 1 + k] = match announced {
+                    Some(a) => normalize_feat(desc, 1 + k, a[j]) as f32,
+                    None => zbase[k] as f32,
+                };
+            }
+        }
+    }
+
+    // Announce the masked set: feat 0 withheld, feat 4 set, on every masked patch.
+    let mut visible = vec![true; t];
+    for i in 0..pad0 {
+        visible[i] = false; // a pad row is neither visible nor masked; is_pad dominates
+    }
+    let mut slot_patch_real: Vec<i32> = Vec::with_capacity(m);
+    for (start, length) in &spans {
+        for q in *start..(*start + *length) {
+            let patch = pad0 + q;
+            visible[patch] = false;
+            slot_patch_real.push(patch as i32);
+            for step in 0..PATCH_SIZE {
+                let base = (patch * PATCH_SIZE + step) * N_FEAT;
+                patches[base] = 0.0;
+                patches[base + BG_MASKED_FEAT] = 1.0;
+            }
+        }
+    }
+    let n_masked = slot_patch_real.len();
+
+    // The attention rule (SPEC/inference.md §4), in the four load-bearing lines.
+    let mut attn = vec![desc.neg_fill as f32; t * t];
+    for row in 0..t {
+        let row_is_pad = row < pad0;
+        let row_is_masked = !row_is_pad && !visible[row];
+        for col in 0..t {
+            let col_is_pad = col < pad0;
+            let allow = if row_is_pad || col_is_pad {
+                row == col // a pad row reads nothing but itself; no all-False row
+            } else {
+                visible[col] || row_is_masked
+            };
+            if allow {
+                attn[row * t + col] = 0.0;
+            }
+        }
+    }
+
+    // Slot selection. Surplus slots repeat patch 0 and are discarded downstream.
+    let mut slot_sel = vec![0.0f32; m * t];
+    let mut slot_patch = vec![0i32; m];
+    for j in 0..m {
+        let patch = if j < n_masked { slot_patch_real[j] as usize } else { 0 };
+        slot_sel[j * t + patch] = 1.0;
+        slot_patch[j] = if j < n_masked { slot_patch_real[j] } else { -1 };
+    }
+
+    // Per-slot anchors: one-sided and left-preferring — the last step of the span's left
+    // neighbour, or the first step of the right neighbour when the left one is padding or
+    // does not exist. Only a VISIBLE cell may be named: feat 0 of a masked patch is a
+    // legal-looking z that decodes to an ordinary mg/dL, so a wrong index yields a plausible
+    // anchor rather than an error.
+    let mut anchors = vec![0.0f64; m];
+    for (start, length) in &spans {
+        let left = *start as i64 - 1;
+        let right = *start + *length;
+        let cell = if left >= 0 && visible[pad0 + left as usize] {
+            Some((left as usize, PATCH_SIZE - 1))
+        } else if right < n_ctx && visible[pad0 + right] {
+            Some((right, 0))
+        } else {
+            None
+        };
+        let (cp, cs) = cell.ok_or_else(|| CoreError::Internal {
+            reason: format!(
+                "masked span ({start}, {length}) has no visible neighbour to anchor on"
+            ),
+        })?;
+        let z = ctx_bg_z[cp * PATCH_SIZE + cs];
+        let a = denormalize_feat(desc, 0, z);
+        for j in 0..*length {
+            let slot = slot_patch_real
+                .iter()
+                .position(|&x| x as usize == pad0 + *start + j)
+                .expect("span slots were just pushed");
+            anchors[slot] = a;
+        }
+    }
+    // Padded slots still need a legal mg/dL anchor: the forward asserts every slot is above
+    // the physical floor, and a z-scored value routed in by mistake trips it.
+    let fill = anchors[0];
+    for a in anchors.iter_mut().skip(n_masked) {
+        *a = fill;
+    }
+
+    Ok(GraphInput {
         n_ctx: n_ctx as i32,
-        prediction_patches: p as i32,
-        context,
-        pred,
-        last_bg,
+        t: t as i32,
+        patch_dim: (PATCH_SIZE * N_FEAT) as i32,
+        m_slots: m as i32,
+        n_masked: n_masked as i32,
+        patches,
+        attn_mask: attn,
+        slot_sel,
+        anchors,
+        slot_patch,
+        first_forecast_patch: if with_forecast { (pad0 + n_ctx) as i32 } else { -1 },
     })
 }
 
@@ -726,7 +1129,7 @@ fn build_context_windows(
 /// (`.to(float32).to(dtype)`): the columns are normalized in fp64, then each entry is
 /// quantized through fp32 — load-bearing for bit-close agreement. Returned row-major
 /// `(n, g)`.
-fn global_median_basis(n: usize, g: usize) -> Vec<f64> {
+pub(crate) fn global_median_basis(n: usize, g: usize) -> Vec<f64> {
     let mut b = vec![0.0f64; n * g];
     // B[s,j] = cos(pi*(s+0.5)*j/n).
     for s in 0..n {
@@ -751,6 +1154,16 @@ fn global_median_basis(n: usize, g: usize) -> Vec<f64> {
     b
 }
 
+/// `G_L` — the smooth-basis dimension for a masked span of `L` patches, clamped to the
+/// span's own step count. A FIXED `G` is a defect rather than an approximation: at `L = 1`
+/// the projection would have a column per step, i.e. the identity, so the anti-drift
+/// contraction is ABSENT rather than weakened, and every fan assert still passes.
+pub(crate) fn global_median_dim(desc: &ModelDescriptor, span_patches: usize, p: usize) -> usize {
+    let num = desc.median_global_dim as usize * span_patches;
+    let g = num.div_ceil(p.max(1)).max(1);
+    g.min(span_patches * PATCH_SIZE)
+}
+
 /// Numerically-stable softplus matching PyTorch `F.softplus` (beta=1, threshold=20).
 fn softplus(x: f64) -> f64 {
     if x > SOFTPLUS_THRESHOLD {
@@ -760,34 +1173,62 @@ fn softplus(x: f64) -> f64 {
     }
 }
 
+/// Group `n_masked` slots into contiguous spans. Slot `j` continues slot `j-1`'s span iff
+/// their patch indices are adjacent — the masked set never lets two spans abut, so adjacency
+/// identifies a span exactly. Returns one `(start_slot, length)` per span.
+fn span_layout(slot_patch: &[i32], n_masked: usize) -> Vec<(usize, usize)> {
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    for j in 0..n_masked {
+        let continues = j > 0 && slot_patch[j] == slot_patch[j - 1] + 1;
+        if continues {
+            if let Some(last) = spans.last_mut() {
+                last.1 += 1;
+            }
+        } else {
+            spans.push((j, 1));
+        }
+    }
+    spans
+}
+
 // ── Quantile assembly + decode (INFERENCE.md §8.1-8.3) ──────────────────────────────
 
-/// The decoded forecast. All arrays are step-major over the P·S horizon
-/// (`i = p·S + s`). `median_risk` / `q_tau_risk` are risk space (the model's native
-/// output space); `median_bg` / `bands_mgdl` are the `f_inv` mg/dL projections consumed
-/// by rails, alerts and the GUI.
+/// The decoded forecast. All arrays are step-major over the decoded slots
+/// (`i = slot·PATCH_SIZE + step`). `median_risk` / `q_tau_risk` are risk space (the model's
+/// native output space); `median_bg` / `bands_mgdl` are the `f_inv` mg/dL projections
+/// consumed by rails, alerts and the GUI. `slot_patch` names the absolute patch each decoded
+/// slot came from, which is what locates a span on a chart — and, for a masked set holding
+/// more than the forecast, what tells an infill row from a forecast row.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct Forecast {
     pub median_risk: Vec<f64>,
     pub q_tau_risk: Vec<f64>,
     pub median_bg: Vec<f64>,
     pub bands_mgdl: Vec<f64>,
+    pub slot_patch: Vec<i32>,
 }
 
-/// Assemble `head_raw` (P·S·7, risk space) into an ascending quantile fan and decode to
-/// mg/dL (INFERENCE.md §8.1, `BG_HEAD_MEDIAN_MODE='global'`). The fan returned is the RAW one:
-/// §8.4's conformal recalibration is not applied here and is applied to nothing this function
-/// feeds — it is a display correction, fitted on device and applied by
-/// [`crate::apply_quantile_conformal`] at the last point before pixels. `head_raw`
-/// column 0 is the median delta; columns 1..=3 the τ>.5 spreads (nearest→far); 4..=6
-/// the τ<.5 spreads. The median is `anchor + proj_DCT(delta)` (a low-frequency L2
-/// contraction that cannot drift); the fan is `m ± carry_spread ± cumsum(softplus+floor)`.
-/// `head_raw` should already be upcast to fp64 by the backend (fp16 → fp64).
+/// Assemble `head_raw` (`M·PATCH_SIZE·7`, risk space) into an ascending quantile fan and
+/// decode to mg/dL (INFERENCE.md §8.1, `BG_HEAD_MEDIAN_MODE='global'`).
+///
+/// The `M` axis is a SET of masked patches, not a trailing horizon: `slot_patch` groups it
+/// into contiguous spans and the median runs per span, so nothing accumulates or low-passes
+/// across the visible patches between two spans. Each slot anchors on its own span's visible
+/// neighbour. Slots past `n_masked` are padding and are dropped.
+///
+/// The fan returned is the RAW one: §8.4's conformal recalibration is not applied here and is
+/// applied to nothing this function feeds — it is a display correction, fitted on device and
+/// applied by [`crate::apply_quantile_conformal`] at the last point before pixels. `head_raw`
+/// column 0 is the median delta; columns 1..=3 the τ>.5 spreads (nearest→far); 4..=6 the τ<.5
+/// spreads. The median is `anchor + proj_DCT(delta)` (a low-frequency L2 contraction that
+/// cannot drift); the fan is `m ± carry_spread ± cumsum(softplus+floor)`.
 #[uniffi::export]
 pub fn assemble_decode(
     desc: &ModelDescriptor,
     head_raw: Vec<f64>,
-    last_bg: f64,
+    anchors: Vec<f64>,
+    slot_patch: Vec<i32>,
+    n_masked: i32,
     carry_spread: f64,
 ) -> Result<Forecast, CoreError> {
     let stride = PATCH_SIZE * N_QUANTILES;
@@ -799,44 +1240,65 @@ pub fn assemble_decode(
             ),
         });
     }
-    let p = head_raw.len() / stride;
-    let n = p * PATCH_SIZE; // horizon steps
-
-    // Anchor f(last_bg), broadcast flat across the horizon (§8.1).
-    let kov = desc.kovatchev;
-    let anchor = kov.f(last_bg.clamp(kov.bg_clamp_min, kov.bg_clamp_max));
-
-    // Median: global low-frequency DCT projection of the per-step delta (patch-major).
-    let delta: Vec<f64> = (0..n).map(|i| head_raw[i * N_QUANTILES]).collect();
-    let g = (desc.median_global_dim as usize).min(n);
-    let basis = global_median_basis(n, g); // (n, g) row-major, fp32-quantized
-    // z = deltaᵀ · B  (g,) ; then delta_global = B · z  (n,).
-    let mut zc = vec![0.0f64; g];
-    for j in 0..g {
-        let mut acc = 0.0f64;
-        for i in 0..n {
-            acc += delta[i] * basis[i * g + j];
-        }
-        zc[j] = acc;
+    let m = head_raw.len() / stride;
+    let n_masked = n_masked as usize;
+    if n_masked == 0 || n_masked > m {
+        return Err(CoreError::Internal {
+            reason: format!("n_masked {n_masked} outside 1..={m} head slots"),
+        });
     }
-    let mut m = vec![0.0f64; n];
-    for i in 0..n {
-        let mut acc = 0.0f64;
-        for j in 0..g {
-            acc += zc[j] * basis[i * g + j];
+    if anchors.len() < n_masked || slot_patch.len() < n_masked {
+        return Err(CoreError::Internal {
+            reason: format!(
+                "need {n_masked} anchors and slot indices, got {} and {}",
+                anchors.len(),
+                slot_patch.len()
+            ),
+        });
+    }
+    let kov = desc.kovatchev;
+    let p = desc.prediction_patches()?;
+    let floor = desc.quantile_spread_min;
+    let n_steps = n_masked * PATCH_SIZE;
+
+    // Median, per span: project that span's per-step delta onto its own low-frequency
+    // DCT-II subspace over the span's own L·S steps, patch-major (flat = patch·S + step).
+    let mut median = vec![0.0f64; n_steps];
+    for (start_slot, length) in span_layout(&slot_patch, n_masked) {
+        let n = length * PATCH_SIZE;
+        let g = global_median_dim(desc, length, p);
+        let basis = global_median_basis(n, g); // (n, g) row-major, fp32-quantized
+        let delta: Vec<f64> = (0..n)
+            .map(|i| head_raw[(start_slot * PATCH_SIZE + i) * N_QUANTILES])
+            .collect();
+        let mut zc = vec![0.0f64; g];
+        for (j, zj) in zc.iter_mut().enumerate() {
+            let mut acc = 0.0f64;
+            for (i, d) in delta.iter().enumerate() {
+                acc += d * basis[i * g + j];
+            }
+            *zj = acc;
         }
-        m[i] = anchor + acc;
+        for i in 0..n {
+            let mut acc = 0.0f64;
+            for (j, zj) in zc.iter().enumerate() {
+                acc += zj * basis[i * g + j];
+            }
+            // The anchor is flat across the slot's own steps, and every slot of one span
+            // carries the same value.
+            let slot = start_slot + i / PATCH_SIZE;
+            let anchor = kov.f(anchors[slot].clamp(kov.bg_clamp_min, kov.bg_clamp_max));
+            median[start_slot * PATCH_SIZE + i] = anchor + acc;
+        }
     }
 
     // Spreads: softplus + floor, cumsum fan around the median (§8.1).
-    let floor = desc.quantile_spread_min;
-    let mut median_risk = vec![0.0f64; n];
-    let mut q_tau_risk = vec![0.0f64; n * N_QUANTILES];
-    let mut median_bg = vec![0.0f64; n];
-    let mut bands_mgdl = vec![0.0f64; n * N_QUANTILES];
-    for i in 0..n {
-        let mi = m[i];
-        // d_up = cols 1..=3, d_dn = cols 4..=6.
+    let mut median_risk = vec![0.0f64; n_steps];
+    let mut q_tau_risk = vec![0.0f64; n_steps * N_QUANTILES];
+    let mut median_bg = vec![0.0f64; n_steps];
+    let mut bands_mgdl = vec![0.0f64; n_steps * N_QUANTILES];
+    for i in 0..n_steps {
+        let mi = median[i];
         let mut up = [0.0f64; N_SPREADS];
         let mut dn = [0.0f64; N_SPREADS];
         let mut cs_up = 0.0f64;
@@ -868,8 +1330,98 @@ pub fn assemble_decode(
         q_tau_risk,
         median_bg,
         bands_mgdl,
+        slot_patch: slot_patch[..n_masked].to_vec(),
     })
 }
+
+/// The rows of `f` whose slot sits in `[from_patch, to_patch)`, as a Forecast of its own.
+///
+/// A masked set may hold an infill span and a forecast at once, and almost nothing
+/// downstream wants both: the alarm engine, the rails and the accuracy suite read the
+/// forecast, the chart draws each infill where it sits. Slicing by patch keeps that split in
+/// one place rather than in every caller's index arithmetic.
+#[uniffi::export]
+pub fn forecast_slice(f: &Forecast, from_patch: i32, to_patch: i32) -> Result<Forecast, CoreError> {
+    let keep: Vec<usize> = f
+        .slot_patch
+        .iter()
+        .enumerate()
+        .filter(|(_, &p)| p >= from_patch && p < to_patch)
+        .map(|(i, _)| i)
+        .collect();
+    if keep.is_empty() {
+        return Err(CoreError::Internal {
+            reason: format!("no decoded slot lies in patches [{from_patch}, {to_patch})"),
+        });
+    }
+    let mut out = Forecast {
+        median_risk: Vec::with_capacity(keep.len() * PATCH_SIZE),
+        q_tau_risk: Vec::with_capacity(keep.len() * PATCH_SIZE * N_QUANTILES),
+        median_bg: Vec::with_capacity(keep.len() * PATCH_SIZE),
+        bands_mgdl: Vec::with_capacity(keep.len() * PATCH_SIZE * N_QUANTILES),
+        slot_patch: keep.iter().map(|&i| f.slot_patch[i]).collect(),
+    };
+    for &slot in &keep {
+        for step in 0..PATCH_SIZE {
+            let i = slot * PATCH_SIZE + step;
+            out.median_risk.push(f.median_risk[i]);
+            out.median_bg.push(f.median_bg[i]);
+            for k in 0..N_QUANTILES {
+                out.q_tau_risk.push(f.q_tau_risk[i * N_QUANTILES + k]);
+                out.bands_mgdl.push(f.bands_mgdl[i * N_QUANTILES + k]);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The fan's own line at an arbitrary quantile level, in mg/dL.
+///
+/// The model emits seven levels; reading the fan at a τ between two of them is a linear
+/// interpolation in RISK space followed by `f_inv` — the space the fan was assembled in, and
+/// the only one where the interpolation is between neighbouring band edges rather than across
+/// a warp. τ at a published level returns that level's own edge, and `τ = 0.5` returns the
+/// median untouched, so the default line is the same line as ever.
+///
+/// This reads a fan the model already emitted. It moves no median, is stored nowhere, and
+/// nothing that classifies a category may consume it.
+#[uniffi::export]
+pub fn band_line(desc: &ModelDescriptor, f: &Forecast, tau: f64) -> Result<Vec<f64>, CoreError> {
+    if !tau.is_finite() {
+        return Err(CoreError::Internal {
+            reason: format!("tau {tau} must be finite"),
+        });
+    }
+    let levels = QUANTILE_LEVELS;
+    let tau = tau.clamp(levels[0], levels[N_QUANTILES - 1]);
+    let n_steps = f.median_risk.len();
+    if f.q_tau_risk.len() != n_steps * N_QUANTILES {
+        return Err(CoreError::Internal {
+            reason: format!(
+                "fan of {} values does not match {n_steps} steps × {N_QUANTILES} levels",
+                f.q_tau_risk.len()
+            ),
+        });
+    }
+    // The bracketing pair, and the weight of the upper one.
+    let mut hi = 1usize;
+    while hi < N_QUANTILES - 1 && levels[hi] < tau {
+        hi += 1;
+    }
+    let lo = hi - 1;
+    let span = levels[hi] - levels[lo];
+    let w = if span > 0.0 { (tau - levels[lo]) / span } else { 0.0 };
+    Ok((0..n_steps)
+        .map(|i| {
+            let a = f.q_tau_risk[i * N_QUANTILES + lo];
+            let b = f.q_tau_risk[i * N_QUANTILES + hi];
+            desc.kovatchev.f_inv(a + (b - a) * w)
+        })
+        .collect())
+}
+
+/// The seven levels the head emits, ascending — `invariants.md` §6.
+pub(crate) const QUANTILE_LEVELS: [f64; N_QUANTILES] = [0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95];
 
 // ── Forecast degeneracy guard (§3.6-B) ──────────────────────────────────────────────
 
@@ -1093,21 +1645,92 @@ mod tests {
     use super::*;
     use serde_json::Value;
 
-    const GOLDEN: &str = include_str!("testdata/golden.json");
+    /// The cross-implementation fixture: T1DMAI's own reference for the same inputs,
+    /// regenerated by `T1DMAI/exporters/rust_golden.py` whenever the contract moves.
+    const PIPELINE: &str = include_str!("testdata/pipeline_golden.json");
 
-    fn golden() -> Value {
-        serde_json::from_str(GOLDEN).unwrap()
+    fn pipeline() -> Value {
+        serde_json::from_str(PIPELINE).unwrap()
+    }
+
+    /// Every case the fixture carries. Named here so a case ADDED to the generator and not read
+    /// here fails the count check below rather than sitting unexercised.
+    const CASES: [&str; 5] = [
+        "forecast",
+        "infill",
+        "infill_no_forecast",
+        "span_ladder",
+        "span_ladder_long",
+    ];
+
+    #[test]
+    fn every_golden_case_is_exercised() {
+        let n = pipeline()["cases"].as_array().unwrap().len();
+        assert_eq!(n, CASES.len(), "the fixture carries {n} cases and the tests read {}", CASES.len());
+    }
+
+    fn case(name: &str) -> Value {
+        pipeline()["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == name)
+            .unwrap_or_else(|| panic!("golden case {name} is missing"))
+            .clone()
+    }
+
+    /// Build the graph input for a golden case, at the reference's own (unfiltered) window —
+    /// T1DMAI applies no smoother, so any other window compares two different pipelines.
+    fn built(c: &Value, d: &ModelDescriptor) -> GraphInput {
+        let spans: Vec<MaskSpan> = c["mask_spans"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| MaskSpan {
+                start_patch: s[0].as_i64().unwrap() as i32,
+                length: s[1].as_i64().unwrap() as i32,
+            })
+            .collect();
+        build_graph_input(
+            d,
+            f64s(&c["raw_bg"]),
+            f64s(&c["raw_carb"]),
+            f64s(&c["raw_insulin"]),
+            f64s(&c["raw_exercise"]),
+            None,
+            None,
+            None,
+            spans,
+            c["with_forecast"].as_bool().unwrap(),
+            1,
+        )
+        .expect("golden case must build")
+    }
+
+    /// The reference's own decode of a case: its head output, its anchors, its slot layout.
+    /// Feeding OUR anchors here would let two errors cancel.
+    fn decoded(c: &Value, d: &ModelDescriptor) -> Forecast {
+        let n_masked = c["n_masked"].as_i64().unwrap() as i32;
+        assemble_decode(
+            d,
+            f64s(&c["head_raw"]),
+            f64s(&c["anchors"]),
+            c["slot_patch"].as_array().unwrap().iter().map(|v| v.as_i64().unwrap() as i32).collect(),
+            n_masked,
+            0.0,
+        )
+        .expect("golden decode")
     }
 
     fn f64s(v: &Value) -> Vec<f64> {
         v.as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect()
     }
 
-    /// The risk parameterization `golden.json` was generated under (a `risk-v2` T1DMAI
-    /// checkpoint, whose model scale then coincided with the published clinical one). The
-    /// goldens pin THIS transform, so it is stated here rather than borrowed from the crate's
-    /// clinical constants — the two are independent and only happen to agree for `risk-v2`.
-    const GOLDEN_KOVATCHEV: KovatchevParams = KovatchevParams {
+    /// A DIFFERENT parameterization from the shipped one — a different scale and a different
+    /// physical range — used to prove the pipeline follows the descriptor rather than a baked
+    /// constant. It is not any released model's transform, and nothing decodes against it
+    /// outside these tests.
+    const OTHER_KOVATCHEV: KovatchevParams = KovatchevParams {
         scale: 1.509,
         power: 1.084,
         offset: 5.381,
@@ -1115,41 +1738,21 @@ mod tests {
         bg_clamp_max: 500.0,
     };
 
-    /// The re-anchored `risk-v3` parameterization: a genuinely different scale AND a
-    /// different physical range, used to prove the pipeline follows the descriptor.
-    const RISK_V3_KOVATCHEV: KovatchevParams = KovatchevParams {
+    /// The shipped parameterization, restated so a test can name it beside the other one.
+    const SHIPPED_KOVATCHEV: KovatchevParams = KovatchevParams {
         scale: 2.2211457449985317,
         power: 1.084,
         offset: 5.540076976170212,
-        bg_clamp_min: 40.0,
+        bg_clamp_min: 10.0,
         bg_clamp_max: 400.0,
     };
 
+    const REFERENCE_DESCRIPTOR: &str = include_str!("../../../models/descriptor.json");
+
+    /// The shipped descriptor, parsed. Tests that need a variant clone it with `..`, so a
+    /// fixture descriptor can never drift from the one the app actually reads.
     fn test_descriptor() -> ModelDescriptor {
-        let g = golden();
-        let s = &g["stats"];
-        let cs = |k: &str| ChannelStat {
-            mean: s[k]["mean"].as_f64().unwrap(),
-            std: s[k]["std"].as_f64().unwrap(),
-        };
-        ModelDescriptor {
-            bg: cs("bg_absolute"),
-            carb: cs("carb_intake"),
-            insulin: cs("insulin_combined"),
-            rope_base: 1000,
-            median_global_dim: 6,
-            step_basis_type: "dct".into(),
-            quantile_spread_min: 1e-3,
-            neg_fill: -30000.0,
-            prediction_horizon_hours: 2,
-            max_context_patches: 48,
-            min_context_patches: 16,
-            patch_size: 6,
-            n_input_features: 3,
-            kovatchev: GOLDEN_KOVATCHEV,
-            conformal_enabled: false,
-            time: None,
-        }
+        parse_descriptor(REFERENCE_DESCRIPTOR.to_string()).expect("reference descriptor")
     }
 
     fn assert_close(got: &[f64], want: &[f64], tol: f64, what: &str) {
@@ -1166,37 +1769,57 @@ mod tests {
     // ── descriptor.json parses to the pinned constants ──────────────────────────────
     #[test]
     fn parse_descriptor_reference() {
-        let json = include_str!("../../../models/descriptor.json");
-        let d = parse_descriptor(json.to_string()).expect("reference descriptor must parse");
+        let d = test_descriptor();
         assert_eq!(d.rope_base, 1000);
-        assert_eq!(d.median_global_dim, 6);
         assert_eq!(d.step_basis_type, "dct");
         assert_eq!(d.quantile_spread_min, 1e-3);
         assert_eq!(d.neg_fill, -30000.0);
         assert_eq!(d.prediction_horizon_hours, 2);
-        assert_eq!(d.max_context_patches, 48);
-        assert!(!d.conformal_enabled);
-        // The reference descriptor tracks the SHIPPED risk-v3 checkpoint, so its normalization
-        // stats are fit on f(bg) in the [40, 400] space — deliberately NOT golden.json's, which
-        // stays the risk-v2 fixture the pipeline goldens were generated under.
-        assert!((d.bg.mean - 0.42852539058481665).abs() < 1e-15);
-        assert!((d.insulin.std - 0.11808419374425043).abs() < 1e-15);
         assert_eq!(d.prediction_patches().unwrap(), 4);
+        assert!(!d.conformal_enabled);
+        // The five-feature input and the seven-day window the newer models read.
+        assert_eq!(d.n_input_features, N_FEAT as i32);
+        assert_eq!(d.seq_len, d.max_context_patches + 4);
+        assert!(d.max_context_patches >= d.min_context_patches);
+        assert!(d.max_masked_patches >= 4, "the head must hold at least a forecast");
+        assert!(d.d_model > 0 && d.step_basis_dim > 0);
+        // The exercise channel has statistics of its own; without them the fourth input
+        // feature would be normalized against another channel's scale.
+        assert!(d.exercise.std > 0.0);
+        // The head side file is what an adapter attaches to.
+        let head = d.head.as_ref().expect("the reference export ships a head file");
+        assert_eq!(head.out_dim, head.step_basis_dim * N_QUANTILES as i32);
+        assert_eq!(head.sha256.len(), 64);
     }
 
-    /// The reference descriptor declares the risk space the model was TRAINED in — the
-    /// re-anchored `[40, 400]` of `risk-v3`, not the clinical `[20, 500]`. Pinned numerically
-    /// because a stale risk-v2 descriptor beside a risk-v3 `.pte` decodes finite, plausible,
-    /// wrong mg/dL (a true 55 reads 32), and nothing downstream can see it.
+    #[test]
+    fn parse_descriptor_refuses_the_retired_three_feature_input() {
+        // The exercise channel and the masked-announcement bit are not optional: a descriptor
+        // from before them describes a model this build cannot construct an input for, and
+        // running one anyway would feed carbohydrate statistics to an insulin column.
+        let mut v: Value = serde_json::from_str(REFERENCE_DESCRIPTOR).unwrap();
+        v["geometry"]["N_INPUT_FEATURES"] = serde_json::json!(3);
+        assert!(matches!(parse_descriptor(v.to_string()), Err(CoreError::Decode { .. })));
+
+        let mut v: Value = serde_json::from_str(REFERENCE_DESCRIPTOR).unwrap();
+        v["normalization_stats"]
+            .as_object_mut()
+            .unwrap()
+            .remove("exercise_equiv");
+        assert!(matches!(parse_descriptor(v.to_string()), Err(CoreError::Decode { .. })));
+    }
+
+    /// The reference descriptor declares the risk space the model was TRAINED in, not the
+    /// clinical one. Pinned numerically because a stale descriptor beside a newer `.pte`
+    /// decodes finite, plausible, wrong mg/dL, and nothing downstream can see it.
     #[test]
     fn reference_descriptor_is_anchored_on_the_trained_range() {
-        let json = include_str!("../../../models/descriptor.json");
-        let k = parse_descriptor(json.to_string()).expect("reference descriptor must parse").kovatchev;
-        assert_eq!(k.bg_clamp_min, 40.0, "model space is anchored at 40 mg/dL");
-        assert_eq!(k.bg_clamp_max, 400.0, "model space is anchored at 400 mg/dL");
-        assert_eq!(k, RISK_V3_KOVATCHEV, "reference descriptor must carry the risk-v3 constants");
-
-        // The anchoring property the constants were solved for: risk 100 at both rails.
+        let k = test_descriptor().kovatchev;
+        assert_eq!(k, SHIPPED_KOVATCHEV, "reference descriptor must carry the shipped constants");
+        // The clamp is the physical range; the ANCHORS the constants were solved for sit
+        // inside it, and the two are not the same pair.
+        assert_eq!(k.bg_clamp_min, 10.0);
+        assert_eq!(k.bg_clamp_max, 400.0);
         let root_ten = 10.0f64.sqrt();
         assert!((k.f(40.0) + root_ten).abs() < 1e-12, "f(40) = -sqrt(10), got {}", k.f(40.0));
         assert!((k.f(400.0) - root_ten).abs() < 1e-12, "f(400) = +sqrt(10), got {}", k.f(400.0));
@@ -1211,35 +1834,36 @@ mod tests {
     // ── #16: parse_descriptor fails closed on decode-critical drift ──────────────────
     #[test]
     fn parse_descriptor_rejects_decode_critical_drift() {
-        let base = include_str!("../../../models/descriptor.json");
         // The unmodified reference descriptor passes every guard.
         assert!(
-            parse_descriptor(base.to_string()).is_ok(),
+            parse_descriptor(REFERENCE_DESCRIPTOR.to_string()).is_ok(),
             "reference descriptor must still parse"
         );
 
         // Splice one drifted field into the reference and assert a fail-closed Decode.
-        let bad = |key: &str, val: Value| -> Result<ModelDescriptor, CoreError> {
-            let mut v: Value = serde_json::from_str(base).unwrap();
-            v[key] = val;
+        let bad = |block: &str, key: &str, val: Value| -> Result<ModelDescriptor, CoreError> {
+            let mut v: Value = serde_json::from_str(REFERENCE_DESCRIPTOR).unwrap();
+            v[block][key] = val;
             parse_descriptor(v.to_string())
         };
         let is_decode =
             |r: Result<ModelDescriptor, CoreError>| matches!(r, Err(CoreError::Decode { .. }));
 
-        assert!(is_decode(bad("median_global_dim", serde_json::json!(0))));
-        assert!(is_decode(bad("median_global_dim", serde_json::json!(-1))));
-        assert!(is_decode(bad("patch_size", serde_json::json!(4))));
-        assert!(is_decode(bad("neg_fill", serde_json::json!(0.0))));
-        assert!(is_decode(bad("neg_fill", serde_json::json!(30000.0))));
-        assert!(is_decode(bad("quantile_spread_min", serde_json::json!(-1e-3))));
+        assert!(is_decode(bad("constants", "BG_HEAD_MEDIAN_GLOBAL_DIM", serde_json::json!(0))));
+        assert!(is_decode(bad("constants", "BG_HEAD_MEDIAN_GLOBAL_DIM", serde_json::json!(-1))));
+        assert!(is_decode(bad("geometry", "PATCH_SIZE", serde_json::json!(4))));
+        assert!(is_decode(bad("constants", "neg_fill", serde_json::json!(0.0))));
+        assert!(is_decode(bad("constants", "neg_fill", serde_json::json!(30000.0))));
+        assert!(is_decode(bad("constants", "BG_QUANTILE_SPREAD_MIN", serde_json::json!(-1e-3))));
         // NaN is not representable in JSON → serialized as null → Decode at the parse step.
-        assert!(is_decode(bad("quantile_spread_min", serde_json::json!(f64::NAN))));
-        assert!(is_decode(bad("min_context_patches", serde_json::json!(0))));
-        // max < min (reference min_context_patches == 16).
-        assert!(is_decode(bad("max_context_patches", serde_json::json!(8))));
-        assert!(is_decode(bad("prediction_horizon_hours", serde_json::json!(0))));
-        assert!(is_decode(bad("rope_base", serde_json::json!(0))));
+        assert!(is_decode(bad("constants", "BG_QUANTILE_SPREAD_MIN", serde_json::json!(f64::NAN))));
+        assert!(is_decode(bad("geometry", "MIN_CONTEXT_PATCHES", serde_json::json!(0))));
+        assert!(is_decode(bad("geometry", "MAX_CONTEXT_PATCHES", serde_json::json!(8))));
+        assert!(is_decode(bad("constants", "PREDICTION_HORIZON_HOURS", serde_json::json!(0))));
+        assert!(is_decode(bad("constants", "ROPE_BASE", serde_json::json!(0))));
+        // A median this build does not assemble decodes to a different — smooth, finite, wrong —
+        // line through the one it does.
+        assert!(is_decode(bad("constants", "BG_HEAD_MEDIAN_MODE", serde_json::json!("cumulative"))));
     }
 
     // ── the risk transform is the DESCRIPTOR's, never a baked-in one ─────────────────
@@ -1249,17 +1873,15 @@ mod tests {
         // A descriptor that does not declare its risk transform is REJECTED. Defaulting to
         // any particular scale is what silently mis-decoded a re-anchored checkpoint: the
         // output stays finite and plausible, so nothing downstream can notice.
-        let base = include_str!("../../../models/descriptor.json");
-        let mut v: Value = serde_json::from_str(base).unwrap();
+        let mut v: Value = serde_json::from_str(REFERENCE_DESCRIPTOR).unwrap();
         v.as_object_mut().unwrap().remove("kovatchev");
         assert!(matches!(parse_descriptor(v.to_string()), Err(CoreError::Decode { .. })));
     }
 
     #[test]
     fn parse_descriptor_rejects_a_malformed_kovatchev_block() {
-        let base = include_str!("../../../models/descriptor.json");
         let bad = |k: &str, val: Value| {
-            let mut v: Value = serde_json::from_str(base).unwrap();
+            let mut v: Value = serde_json::from_str(REFERENCE_DESCRIPTOR).unwrap();
             v["kovatchev"][k] = val;
             parse_descriptor(v.to_string())
         };
@@ -1275,7 +1897,7 @@ mod tests {
         assert!(is_decode(bad("BG_CLAMP_MIN", serde_json::json!(1.0))));
         assert!(is_decode(bad("BG_CLAMP_MIN", serde_json::json!(0.0))));
         // Inverted / empty physical range.
-        assert!(is_decode(bad("BG_CLAMP_MAX", serde_json::json!(10.0))));
+        assert!(is_decode(bad("BG_CLAMP_MAX", serde_json::json!(5.0))));
     }
 
     #[test]
@@ -1285,9 +1907,9 @@ mod tests {
         // WRONG mg/dL (true 120 reads ~102, true 300 reads ~394). Same risk value in, the two
         // parameterizations must disagree, and each must invert its own f exactly.
         for mgdl in [55.0, 70.0, 120.0, 180.0, 300.0] {
-            let r_v3 = RISK_V3_KOVATCHEV.f(mgdl);
-            let own = RISK_V3_KOVATCHEV.f_inv(r_v3);
-            let wrong = GOLDEN_KOVATCHEV.f_inv(r_v3);
+            let r_v3 = SHIPPED_KOVATCHEV.f(mgdl);
+            let own = SHIPPED_KOVATCHEV.f_inv(r_v3);
+            let wrong = OTHER_KOVATCHEV.f_inv(r_v3);
             assert!((own - mgdl).abs() < 1e-9, "f_inv(f({mgdl})) = {own} under its own params");
             assert!(
                 (wrong - mgdl).abs() > 5.0,
@@ -1299,9 +1921,11 @@ mod tests {
         // And the full assemble_decode path rides the descriptor: a flat (all-zero) head_raw
         // anchors the median at last_bg, recovered exactly through each descriptor's own f/f_inv.
         let flat = vec![0.0f64; 4 * PATCH_SIZE * N_QUANTILES];
-        for kov in [GOLDEN_KOVATCHEV, RISK_V3_KOVATCHEV] {
+        for kov in [OTHER_KOVATCHEV, SHIPPED_KOVATCHEV] {
             let d = ModelDescriptor { kovatchev: kov, ..test_descriptor() };
-            let f = assemble_decode(&d, flat.clone(), 120.0, 0.0).unwrap();
+            let f =
+                assemble_decode(&d, flat.clone(), vec![120.0; 4], vec![0, 1, 2, 3], 4, 0.0)
+                    .unwrap();
             for v in &f.median_bg {
                 assert!((v - 120.0).abs() < 1e-6, "anchor round trip under {kov:?} gave {v}");
             }
@@ -1328,20 +1952,25 @@ mod tests {
             q_tau_risk: (0..n * N_QUANTILES).map(|k| (k % N_QUANTILES) as f64).collect(),
             median_bg: vec![bg; n],
             bands_mgdl: (0..n * N_QUANTILES).map(|k| bg + (k % N_QUANTILES) as f64).collect(),
+            slot_patch: (0..(n / PATCH_SIZE) as i32).collect(),
         };
-        let v3 = ModelDescriptor { kovatchev: RISK_V3_KOVATCHEV, ..test_descriptor() };
-        let v2 = ModelDescriptor { kovatchev: GOLDEN_KOVATCHEV, ..test_descriptor() };
+        let shipped = ModelDescriptor { kovatchev: SHIPPED_KOVATCHEV, ..test_descriptor() };
+        let other = ModelDescriptor { kovatchev: OTHER_KOVATCHEV, ..test_descriptor() };
 
-        assert_eq!(forecast_degeneracy_check(&v3, &pinned(40.0)), ForecastStatus::RailPinned);
-        assert_eq!(forecast_degeneracy_check(&v3, &pinned(400.0)), ForecastStatus::RailPinned);
-        assert_eq!(forecast_degeneracy_check(&v2, &pinned(40.0)), ForecastStatus::Ok);
-        assert_eq!(forecast_degeneracy_check(&v2, &pinned(20.0)), ForecastStatus::RailPinned);
+        // 20 mg/dL is the OTHER parameterization's floor and an ordinary low forecast under
+        // the shipped one; 10 is the shipped floor. Each descriptor must call its own.
+        assert_eq!(forecast_degeneracy_check(&shipped, &pinned(10.0)), ForecastStatus::RailPinned);
+        assert_eq!(forecast_degeneracy_check(&shipped, &pinned(400.0)), ForecastStatus::RailPinned);
+        assert_eq!(forecast_degeneracy_check(&shipped, &pinned(20.0)), ForecastStatus::Ok);
+        assert_eq!(forecast_degeneracy_check(&other, &pinned(20.0)), ForecastStatus::RailPinned);
+        assert_eq!(forecast_degeneracy_check(&other, &pinned(500.0)), ForecastStatus::RailPinned);
+        assert_eq!(forecast_degeneracy_check(&other, &pinned(40.0)), ForecastStatus::Ok);
     }
 
     #[test]
     fn descriptor_kovatchev_guards_are_total() {
         // The same hostile-input totality the clinical pair guarantees (INFERENCE.md §5).
-        for kov in [GOLDEN_KOVATCHEV, RISK_V3_KOVATCHEV] {
+        for kov in [OTHER_KOVATCHEV, SHIPPED_KOVATCHEV] {
             for r in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1e9, 1e9] {
                 let g = kov.f_inv(r);
                 assert!(
@@ -1355,14 +1984,6 @@ mod tests {
         }
     }
 
-    // ── SAVGOL taps == scipy.savgol_coeffs(7,2,pos=6,use='dot') ──────────────────────
-    #[test]
-    fn savgol_coeffs_match_scipy() {
-        let want = f64s(&golden()["savgol_coeffs"]);
-        let got: Vec<f64> = SAVGOL_TAPS.iter().map(|t| t / SAVGOL_DENOM).collect();
-        // Our taps are the exact rationals over 42; scipy's lstsq carries ~1e-15 noise.
-        assert_close(&got, &want, 1e-12, "savgol_coeffs");
-    }
 
     /// The five detents the app offers (Off / Standard / Moderate / Strong / Heavy).
     const STOPS: [i32; 5] = [1, 7, 13, 19, 25];
@@ -1374,7 +1995,6 @@ mod tests {
         // fixture (and every pre-configurable build) pins, to fp64 round-off.
         let want: Vec<f64> = SAVGOL_TAPS.iter().map(|t| t / SAVGOL_DENOM).collect();
         assert_close(&savgol_endpoint_taps_general(7), &want, 1e-15, "solver taps w=7");
-        assert_close(&savgol_endpoint_taps_general(7), &f64s(&golden()["savgol_coeffs"]), 1e-12, "solver vs scipy");
         // ...and the w=7 fast path is the exact rationals, so the default smooth is bit-identical.
         let (taps, denom) = savgol_endpoint_taps(7);
         assert_eq!(taps, SAVGOL_TAPS.to_vec());
@@ -1404,7 +2024,7 @@ mod tests {
         assert_eq!(causal_smooth(x.clone(), None, None, 1), x);
         // The physical clamps are not part of the filter — they hold at w=1 too.
         assert_eq!(
-            causal_smooth(x, Some(GOLDEN_KOVATCHEV.bg_clamp_min), Some(GOLDEN_KOVATCHEV.bg_clamp_max), 1),
+            causal_smooth(x, Some(OTHER_KOVATCHEV.bg_clamp_min), Some(OTHER_KOVATCHEV.bg_clamp_max), 1),
             vec![120.0, 20.0, 500.0, 20.0, 77.5]
         );
     }
@@ -1434,254 +2054,41 @@ mod tests {
         }
     }
 
-    // ── causal_smooth matches utils.causal_smooth (f32-cast production output) ────────
-    #[test]
-    fn causal_smooth_matches_production() {
-        let g = golden();
-        let w = SAVGOL_WINDOW as i32;
-        let bg = causal_smooth(f64s(&g["raw_bg"]), Some(20.0), Some(500.0), w);
-        let carb = causal_smooth(f64s(&g["raw_carb"]), Some(0.0), None, w);
-        let ins = causal_smooth(f64s(&g["raw_insulin"]), Some(0.0), None, w);
-        // Production casts to fp32 at the end; we stay fp64 → agree to ~fp32 eps.
-        assert_close(&bg, &f64s(&g["smoothed_bg"]), 1e-3, "smoothed_bg");
-        assert_close(&carb, &f64s(&g["smoothed_carb"]), 1e-5, "smoothed_carb");
-        assert_close(&ins, &f64s(&g["smoothed_insulin"]), 1e-5, "smoothed_insulin");
-    }
 
-    // ── normalize matches normalization.normalize (per channel) ──────────────────────
-    #[test]
-    fn normalize_zero_baseline() {
-        let d = test_descriptor();
-        let want = f64s(&golden()["normalize_zero"]);
-        let got = normalize_sample(&d, 0.0, 0.0, 0.0);
-        assert_close(&got, &want, 1e-4, "normalize(0)");
-    }
 
     #[test]
     fn normalize_denormalize_round_trip() {
         let d = test_descriptor();
-        for (bg, carb, ins) in [(75.0, 0.0, 0.02), (180.0, 8.0, 0.5), (40.0, 3.0, 0.1)] {
-            let z = normalize_sample(&d, bg, carb, ins);
+        for (bg, carb, ins, ex) in
+            [(75.0, 0.0, 0.02, 0.0), (180.0, 8.0, 0.5, 1.2), (40.0, 3.0, 0.1, 0.4)]
+        {
+            let z = normalize_sample(&d, bg, carb, ins, ex);
             let back = denormalize_sample(&d, z).unwrap();
             assert!((back[0] - bg).abs() < 1e-6, "bg round-trip {bg} -> {}", back[0]);
             assert!((back[1] - carb).abs() < 1e-6, "carb round-trip");
             assert!((back[2] - ins).abs() < 1e-6, "insulin round-trip");
+            assert!((back[3] - ex).abs() < 1e-6, "exercise round-trip");
         }
     }
 
-    // ── build_context: normalized context + last_bg anchor ───────────────────────────
-    // The fixture was generated from the T1DMAI reference that smoothed ALL THREE channels at
-    // window 7, so it is pinned through the (7,7) shape. Production smooths BG only — covered
-    // by `build_context_leaves_dose_channels_unfiltered` below, never by weakening this gate.
-    #[test]
-    fn build_context_matches_production() {
-        let d = test_descriptor();
-        let g = golden();
-        let bc = build_context_windows(
-            &d,
-            f64s(&g["raw_bg"]),
-            f64s(&g["raw_carb"]),
-            f64s(&g["raw_insulin"]),
-            None,
-            None,
-            SAVGOL_WINDOW,
-            SAVGOL_WINDOW,
-        )
-        .expect("build_context");
-        assert_eq!(bc.n_ctx, 16);
-        assert_eq!(bc.prediction_patches, 4);
-        // context_norm golden is (N,3) row-major == our step-major flatten.
-        let want: Vec<f64> = golden()["context_norm"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .flat_map(|row| f64s(row))
-            .collect();
-        assert_close(&bc.context, &want, 1e-4, "context_norm");
-        // last_bg anchor (mg/dL).
-        let want_last = g["last_bg"].as_f64().unwrap();
-        assert!(
-            (bc.last_bg - want_last).abs() < 1e-3,
-            "last_bg: got {}, want {want_last}",
-            bc.last_bg
-        );
-        // pred zone: BG feat 0 literal 0, dose feats == normalize(0) baseline.
-        let z0 = normalize_sample(&d, 0.0, 0.0, 0.0);
-        assert_eq!(bc.pred.len(), 4 * 6 * 3);
-        for j in 0..(4 * 6) {
-            assert_eq!(bc.pred[j * 3], 0.0, "pred BG must be literal 0");
-            assert!((bc.pred[j * 3 + 1] - z0[1]).abs() < 1e-12);
-            assert!((bc.pred[j * 3 + 2] - z0[2]).abs() < 1e-12);
-        }
-    }
 
-    #[test]
-    fn build_context_announced_doses_override() {
-        let d = test_descriptor();
-        let g = golden();
-        let ann_carb: Vec<f64> = (0..24).map(|i| i as f64 * 0.5).collect();
-        let ann_ins: Vec<f64> = (0..24).map(|_| 0.3).collect();
-        let bc = build_context_windows(
-            &d,
-            f64s(&g["raw_bg"]),
-            f64s(&g["raw_carb"]),
-            f64s(&g["raw_insulin"]),
-            Some(ann_carb.clone()),
-            Some(ann_ins.clone()),
-            SAVGOL_WINDOW,
-            SAVGOL_WINDOW,
-        )
-        .unwrap();
-        for j in 0..24 {
-            assert!((bc.pred[j * 3 + 1] - normalize_feat(&d, 1, ann_carb[j])).abs() < 1e-12);
-            assert!((bc.pred[j * 3 + 2] - normalize_feat(&d, 2, ann_ins[j])).abs() < 1e-12);
-        }
-    }
 
-    // ── production shape: the dose channels reach the model UNFILTERED ────────────────
-    #[test]
-    fn build_context_leaves_dose_channels_unfiltered() {
-        let d = test_descriptor();
-        let g = golden();
-        let carb = f64s(&g["raw_carb"]);
-        let ins = f64s(&g["raw_insulin"]);
-        for w in STOPS {
-            let bc = build_context(&d, f64s(&g["raw_bg"]), carb.clone(), ins.clone(), None, None, w)
-                .expect("build_context");
-            for gs in 0..carb.len() {
-                assert_eq!(bc.context[gs * N_FEAT + 1], normalize_feat(&d, 1, carb[gs]), "w={w} carb[{gs}]");
-                assert_eq!(bc.context[gs * N_FEAT + 2], normalize_feat(&d, 2, ins[gs]), "w={w} insulin[{gs}]");
-            }
-        }
-        // ...and that is a REAL divergence from the reference, not a no-op: the (7,7) fixture
-        // shape moves the same cells well past the golden's own 1e-4 context tolerance.
-        let legacy = build_context_windows(
-            &d, f64s(&g["raw_bg"]), carb.clone(), ins.clone(), None, None, SAVGOL_WINDOW, SAVGOL_WINDOW,
-        )
-        .unwrap();
-        let raw = build_context(&d, f64s(&g["raw_bg"]), carb, ins, None, None, SAVGOL_WINDOW as i32).unwrap();
-        let worst = (0..legacy.context.len())
-            .map(|i| (legacy.context[i] - raw.context[i]).abs())
-            .fold(0.0f64, f64::max);
-        assert!(worst > 1e-4, "dose smoothing must actually move the context (worst Δ={worst:.3e})");
-    }
 
-    // ── the window moves the §3.6-D last_bg anchor ───────────────────────────────────
-    #[test]
-    fn build_context_window_moves_the_anchor() {
-        let d = test_descriptor();
-        let g = golden();
-        let anchor = |w: i32| {
-            build_context(&d, f64s(&g["raw_bg"]), f64s(&g["raw_carb"]), f64s(&g["raw_insulin"]), None, None, w)
-                .unwrap()
-                .last_bg
-        };
-        // w=1 is unfiltered, so the anchor is just the last raw sample through the
-        // normalize/denormalize round trip.
-        let raw_last = f64s(&g["raw_bg"]).last().copied().unwrap();
-        assert!((anchor(1) - raw_last).abs() < 1e-6, "w=1 anchor {} vs raw {raw_last}", anchor(1));
-        // The default still lands on the golden anchor (the goldens smooth BG at 7 as well).
-        assert!((anchor(7) - g["last_bg"].as_f64().unwrap()).abs() < 1e-3);
-        // Widening pulls the anchor further off the last sample — this is a dosing-relevant
-        // shift, not a cosmetic one, which is why the card surfaces a non-default window.
-        let mut prev = 0.0;
-        for w in STOPS {
-            let drift = (anchor(w) - raw_last).abs();
-            assert!(drift >= prev - 1e-9, "w={w}: anchor drift {drift} shrank below {prev}");
-            prev = drift;
-        }
-        assert!(prev > 1.0, "the widest window must move the anchor by more than 1 mg/dL, got {prev}");
-    }
 
-    #[test]
-    fn build_context_rejects_bad_shapes() {
-        let d = test_descriptor();
-        let w = SAVGOL_WINDOW as i32;
-        // too few patches (n_ctx = 4 < 16)
-        assert!(build_context(&d, vec![100.0; 24], vec![0.0; 24], vec![0.0; 24], None, None, w).is_err());
-        // non-multiple of PATCH_SIZE
-        assert!(build_context(&d, vec![100.0; 97], vec![0.0; 97], vec![0.0; 97], None, None, w).is_err());
-        // mismatched channels
-        assert!(build_context(&d, vec![100.0; 96], vec![0.0; 90], vec![0.0; 96], None, None, w).is_err());
-        // wrong announced length
-        assert!(build_context(
-            &d,
-            vec![100.0; 96],
-            vec![0.0; 96],
-            vec![0.0; 96],
-            Some(vec![0.0; 10]),
-            None,
-            w
-        )
-        .is_err());
-        // an out-of-contract window fails CLOSED on the model-input path (no silent default):
-        // an even window has no endpoint abscissa, and a corrupt 0 would otherwise flatten the
-        // whole BG channel onto the [20,500] floor — a confident lie the degeneracy guard
-        // (§3.6-B, which watches the FORECAST) would not catch.
-        for bad in [0, -1, 2, 8, SAVGOL_WINDOW_MAX + 2] {
-            assert!(
-                matches!(
-                    build_context(&d, vec![100.0; 96], vec![0.0; 96], vec![0.0; 96], None, None, bad),
-                    Err(CoreError::Internal { .. })
-                ),
-                "window {bad} must be rejected"
-            );
-        }
-        for good in STOPS {
-            assert!(build_context(&d, vec![100.0; 96], vec![0.0; 96], vec![0.0; 96], None, None, good).is_ok());
-        }
-    }
 
-    // ── global-median DCT basis == utils.get_global_median_basis ─────────────────────
-    #[test]
-    fn dct_basis_matches_production() {
-        let want = f64s(&golden()["dct_basis"]); // (24,6) row-major
-        let got = global_median_basis(24, 6);
-        assert_close(&got, &want, 1e-12, "dct_basis");
-    }
 
-    // ── assemble_decode == utils.assemble_quantiles + f_inv (the key golden) ─────────
-    #[test]
-    fn assemble_decode_matches_production() {
-        let d = test_descriptor();
-        let g = golden();
-        let head_raw = f64s(&g["head_raw"]);
-        let last_bg = g["last_bg"].as_f64().unwrap();
-        let f = assemble_decode(&d, head_raw, last_bg, 0.0).unwrap();
-        assert_close(&f.median_risk, &f64s(&g["median_risk"]), 1e-9, "median_risk");
-        assert_close(&f.q_tau_risk, &f64s(&g["q_tau_risk"]), 1e-9, "q_tau_risk");
-        assert_close(&f.median_bg, &f64s(&g["median_bg"]), 1e-8, "median_bg");
-        assert_close(&f.bands_mgdl, &f64s(&g["bands_mgdl"]), 1e-8, "bands_mgdl");
-        // fan is ascending and passes the guard.
-        assert_eq!(forecast_degeneracy_check(&test_descriptor(), &f), ForecastStatus::Ok);
-    }
 
-    #[test]
-    fn assemble_decode_carry_spread() {
-        let d = test_descriptor();
-        let g = golden();
-        let head_raw = f64s(&g["head_raw"]);
-        let last_bg = g["last_bg"].as_f64().unwrap();
-        let f = assemble_decode(&d, head_raw, last_bg, 0.1).unwrap();
-        assert_close(&f.q_tau_risk, &f64s(&g["q_tau_risk_carry0p1"]), 1e-9, "q_tau_carry");
-    }
 
-    #[test]
-    fn assemble_decode_rejects_bad_shape() {
-        let d = test_descriptor();
-        assert!(assemble_decode(&d, vec![], 100.0, 0.0).is_err());
-        assert!(assemble_decode(&d, vec![0.0; 41], 100.0, 0.0).is_err()); // not a multiple of 42
-    }
 
     // ── forecast_degeneracy_check (§3.6-B) ───────────────────────────────────────────
     #[test]
     fn degeneracy_non_finite() {
         let d = test_descriptor();
-        let g = golden();
-        let mut f = assemble_decode(&d, f64s(&g["head_raw"]), g["last_bg"].as_f64().unwrap(), 0.0).unwrap();
+        let c = case("forecast");
+        let mut f = decoded(&c, &d);
         f.median_bg[3] = f64::NAN;
         assert_eq!(forecast_degeneracy_check(&test_descriptor(), &f), ForecastStatus::NonFinite);
-        let mut f2 = assemble_decode(&d, f64s(&g["head_raw"]), g["last_bg"].as_f64().unwrap(), 0.0).unwrap();
+        let mut f2 = decoded(&c, &d);
         f2.q_tau_risk[0] = f64::INFINITY;
         assert_eq!(forecast_degeneracy_check(&test_descriptor(), &f2), ForecastStatus::NonFinite);
     }
@@ -1694,8 +2101,9 @@ mod tests {
         for i in 0..24 {
             head[i * 7] = 100.0; // huge risk delta
         }
-        let f = assemble_decode(&d, head, 120.0, 0.0).unwrap();
-        assert!(f.median_bg.iter().all(|&v| (v - 500.0).abs() < 1e-6));
+        let f = assemble_decode(&d, head, vec![120.0; 4], vec![0, 1, 2, 3], 4, 0.0).unwrap();
+        let hi = d.kovatchev.bg_clamp_max;
+        assert!(f.median_bg.iter().all(|&v| (v - hi).abs() < 1e-6));
         assert_eq!(forecast_degeneracy_check(&test_descriptor(), &f), ForecastStatus::RailPinned);
     }
 
@@ -1713,15 +2121,20 @@ mod tests {
                 b[i * 7 + k] = 100.0;
             }
         }
-        let f = Forecast { median_risk, q_tau_risk: q, median_bg, bands_mgdl: b };
+        let f = Forecast {
+            median_risk,
+            q_tau_risk: q,
+            median_bg,
+            bands_mgdl: b,
+            slot_patch: (0..(n / PATCH_SIZE) as i32).collect(),
+        };
         assert_eq!(forecast_degeneracy_check(&test_descriptor(), &f), ForecastStatus::CollapsedBand);
     }
 
     #[test]
     fn degeneracy_misordered() {
         let d = test_descriptor();
-        let g = golden();
-        let mut f = assemble_decode(&d, f64s(&g["head_raw"]), g["last_bg"].as_f64().unwrap(), 0.0).unwrap();
+        let mut f = decoded(&case("forecast"), &d);
         // Swap two fan entries at step 0 to break monotonicity.
         f.q_tau_risk.swap(0, 6);
         assert_eq!(forecast_degeneracy_check(&test_descriptor(), &f), ForecastStatus::MisorderedQuantiles);
@@ -1730,8 +2143,7 @@ mod tests {
     #[test]
     fn degeneracy_ok_on_healthy_fan() {
         let d = test_descriptor();
-        let g = golden();
-        let f = assemble_decode(&d, f64s(&g["head_raw"]), g["last_bg"].as_f64().unwrap(), 0.0).unwrap();
+        let f = decoded(&case("forecast"), &d);
         assert_eq!(forecast_degeneracy_check(&test_descriptor(), &f), ForecastStatus::Ok);
     }
 
@@ -1790,7 +2202,7 @@ mod tests {
     }
 
     /// `decode_time` reduces to the ORIGIN patch (index 0): a flat (P, n_bins) buffer built
-    /// from the four real model per-patch logit rows must decode to `model_patch0`'s belief.
+    /// from the four real model per-patch logit rows must decode to `model_slot0`'s belief.
     #[test]
     fn decode_time_origin_patch_reduction() {
         let g = time_golden();
@@ -1799,7 +2211,7 @@ mod tests {
         let rows = g["rows"].as_array().unwrap();
         let patch_rows: Vec<&Value> = rows
             .iter()
-            .filter(|r| r["name"].as_str().unwrap().starts_with("model_patch"))
+            .filter(|r| r["name"].as_str().unwrap().starts_with("model_slot"))
             .collect();
         assert_eq!(patch_rows.len(), 4, "expected 4 model patch rows");
 
@@ -1810,7 +2222,7 @@ mod tests {
         }
         let pt = decode_time(flat, n_bins, bin_hours).expect("decode_time must succeed");
 
-        let want = &patch_rows[0]; // origin = model_patch0
+        let want = &patch_rows[0]; // origin = model_slot0
         assert_eq!(pt.n_bins, n_bins);
         assert_eq!(pt.bin_hours, bin_hours);
         assert_close(&pt.probs, &f64s(&want["probs"]), 1e-4, "decode_time probs");
@@ -1834,21 +2246,402 @@ mod tests {
     /// The descriptor's optional time section parses when present and is `None` when absent.
     #[test]
     fn parse_descriptor_time_section() {
-        // Absent ⇒ None (the reference flat descriptor carries no time probe).
-        let base = include_str!("../../../models/descriptor.json");
-        assert!(parse_descriptor(base.to_string()).unwrap().time.is_none());
-
-        // Present ⇒ parsed. Splice a flat "time" object into the reference descriptor.
-        let mut v: Value = serde_json::from_str(base).unwrap();
-        v["time"] = serde_json::json!({ "output_index": 1, "n_bins": 12, "bin_hours": 2.0 });
-        let d = parse_descriptor(v.to_string()).unwrap();
-        let t = d.time.expect("time section must parse");
-        assert_eq!(t.output_index, 1);
+        // Present in the reference export, which emits the co-trained probe.
+        let t = test_descriptor().time.expect("time section must parse");
         assert_eq!(t.n_bins, 12);
         assert_eq!(t.bin_hours, 2.0);
+
+        // Absent ⇒ None, and no predicted hour is surfaced.
+        let mut v: Value = serde_json::from_str(REFERENCE_DESCRIPTOR).unwrap();
+        v.as_object_mut().unwrap().remove("time");
+        assert!(parse_descriptor(v.to_string()).unwrap().time.is_none());
 
         // A degenerate time section (n_bins ≤ 0) fails closed.
         v["time"] = serde_json::json!({ "output_index": 1, "n_bins": 0, "bin_hours": 2.0 });
         assert!(parse_descriptor(v.to_string()).is_err());
+    }
+
+    // ── the built graph input matches T1DMAI's own, case by case ─────────────────────
+
+    #[test]
+    fn graph_input_matches_the_reference_pipeline() {
+        use sha2::{Digest, Sha256};
+        let d = test_descriptor();
+        let tol = pipeline()["tolerances"]["patches"].as_f64().unwrap();
+        for name in CASES {
+            let c = case(name);
+            let gi = built(&c, &d);
+            assert_eq!(gi.t, c["t"].as_i64().unwrap() as i32, "{name}: T");
+            assert_eq!(gi.n_masked, c["n_masked"].as_i64().unwrap() as i32, "{name}: n_masked");
+
+            // The patch tensor, including the withheld BG and the announcement bit.
+            let want = f64s(&c["patches_f32"]);
+            let got: Vec<f64> = gi.patches.iter().map(|v| *v as f64).collect();
+            assert_close(&got, &want, tol, &format!("{name}: patches"));
+
+            // The attention pattern is boolean, so it is compared exactly. A digest catches a
+            // rule that is subtly wrong everywhere as readily as one wrong cell.
+            let bytes: Vec<u8> = gi.attn_mask.iter().map(|v| u8::from(*v == 0.0)).collect();
+            assert_eq!(
+                format!("{:x}", Sha256::digest(&bytes)),
+                c["attn_sha256"].as_str().unwrap(),
+                "{name}: attention pattern"
+            );
+
+            // The masked set and its anchors.
+            let want_slots: Vec<i32> = c["slot_patch"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_i64().unwrap() as i32)
+                .collect();
+            assert_eq!(&gi.slot_patch[..want_slots.len()], &want_slots[..], "{name}: slot_patch");
+            let n = want_slots.len();
+            assert_close(
+                &gi.anchors[..n],
+                &f64s(&c["anchors"]),
+                1e-3,
+                &format!("{name}: anchors"),
+            );
+
+            // Every slot_sel row is one-hot on the patch its slot names.
+            let t = gi.t as usize;
+            for (j, patch) in gi.slot_patch.iter().enumerate() {
+                let row = &gi.slot_sel[j * t..(j + 1) * t];
+                assert_eq!(row.iter().filter(|v| **v != 0.0).count(), 1, "{name}: slot {j}");
+                let want = if *patch < 0 { 0 } else { *patch as usize };
+                assert_eq!(row[want], 1.0, "{name}: slot {j} selects patch {want}");
+            }
+        }
+    }
+
+    #[test]
+    fn decode_matches_the_reference_pipeline() {
+        let d = test_descriptor();
+        for name in CASES {
+            let c = case(name);
+            let f = decoded(&c, &d);
+            assert_close(
+                &f.median_risk,
+                &f64s(&c["median_risk"]),
+                1e-8,
+                &format!("{name}: median_risk"),
+            );
+            assert_close(
+                &f.q_tau_risk,
+                &f64s(&c["q_tau_risk"]),
+                1e-8,
+                &format!("{name}: q_tau_risk"),
+            );
+        }
+    }
+
+    /// The span-scaled basis dimension is the whole reason a one-patch infill does not simply
+    /// reproduce its own noise. `span_ladder` holds spans of 1, 2, 3 and 4 patches at once,
+    /// which no single forecast reaches.
+    #[test]
+    fn median_projection_contracts_at_every_span_length() {
+        let d = test_descriptor();
+        let c = case("span_ladder");
+        let f = decoded(&c, &d);
+        let head = f64s(&c["head_raw"]);
+        let anchors = f64s(&c["anchors"]);
+        let slots: Vec<i32> = c["slot_patch"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_i64().unwrap() as i32)
+            .collect();
+        for (start, length) in span_layout(&slots, slots.len()) {
+            let n = length * PATCH_SIZE;
+            // A projection can only shrink: ||m − anchor|| <= ||delta|| over the span.
+            let mut proj = 0.0;
+            let mut raw = 0.0;
+            for i in 0..n {
+                let idx = start * PATCH_SIZE + i;
+                let anchor = d.kovatchev.f(anchors[start]);
+                proj += (f.median_risk[idx] - anchor).powi(2);
+                raw += head[idx * N_QUANTILES].powi(2);
+            }
+            assert!(
+                proj <= raw + 1e-9,
+                "span at slot {start} of {length} patches: projection grew ({proj} > {raw})"
+            );
+            assert!(
+                global_median_dim(&d, length, 4) <= n,
+                "span of {length} patches would take more basis columns than it has steps"
+            );
+        }
+    }
+
+    // ── masked-set rules ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn masked_patches_withhold_bg_and_announce_themselves() {
+        let d = test_descriptor();
+        let c = case("infill");
+        let gi = built(&c, &d);
+        let stride = PATCH_SIZE * N_FEAT;
+        let masked: std::collections::HashSet<i32> =
+            gi.slot_patch.iter().copied().filter(|p| *p >= 0).collect();
+        for patch in 0..gi.t {
+            let bit = gi.patches[patch as usize * stride + BG_MASKED_FEAT];
+            if masked.contains(&patch) {
+                assert_eq!(bit, 1.0, "masked patch {patch} does not announce itself");
+                for step in 0..PATCH_SIZE {
+                    let base = (patch as usize * PATCH_SIZE + step) * N_FEAT;
+                    assert_eq!(gi.patches[base], 0.0, "masked patch {patch} still carries BG");
+                    assert_eq!(gi.patches[base + BG_MASKED_FEAT], 1.0);
+                }
+            } else {
+                assert_eq!(bit, 0.0, "visible patch {patch} claims to be masked");
+            }
+        }
+    }
+
+    #[test]
+    fn attention_never_lets_evidence_read_a_prediction() {
+        let d = test_descriptor();
+        let c = case("infill");
+        let gi = built(&c, &d);
+        let t = gi.t as usize;
+        let masked: std::collections::HashSet<i32> =
+            gi.slot_patch.iter().copied().filter(|p| *p >= 0).collect();
+        let pad0 = t - (gi.n_ctx as usize) - if gi.first_forecast_patch >= 0 { 4 } else { 0 };
+        let mut checked = 0;
+        for row in pad0..t {
+            if masked.contains(&(row as i32)) {
+                continue; // a prediction may read everything real
+            }
+            for col in pad0..t {
+                if masked.contains(&(col as i32)) {
+                    assert_eq!(
+                        gi.attn_mask[row * t + col], d.neg_fill as f32,
+                        "visible row {row} can read masked column {col}"
+                    );
+                    checked += 1;
+                }
+            }
+            // Nothing may read a pad column.
+            for col in 0..pad0 {
+                assert_eq!(gi.attn_mask[row * t + col], d.neg_fill as f32);
+            }
+        }
+        assert!(checked > 0, "the case has no visible→masked pair to check");
+        // No row may be entirely blocked, or its softmax is NaN.
+        for row in 0..t {
+            assert!(
+                (0..t).any(|col| gi.attn_mask[row * t + col] == 0.0),
+                "row {row} attends to nothing"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_descriptor_rejects_a_geometry_that_would_abort_the_process() {
+        // A negative dimension casts to a colossal usize in the builder and the allocation tears
+        // the process down; the crate is `panic = "abort"`, so there is nothing to catch.
+        let bad = |block: &str, key: &str, val: Value| {
+            let mut v: Value = serde_json::from_str(REFERENCE_DESCRIPTOR).unwrap();
+            v[block][key] = val;
+            parse_descriptor(v.to_string())
+        };
+        for key in ["T", "MAX_MASKED_PATCHES", "D_MODEL"] {
+            assert!(bad("geometry", key, serde_json::json!(-1)).is_err(), "{key} = -1");
+            assert!(bad("geometry", key, serde_json::json!(0)).is_err(), "{key} = 0");
+        }
+        assert!(bad("constants", "BG_HEAD_STEP_BASIS_DIM", serde_json::json!(0)).is_err());
+        // A window the graph cannot hold is refused rather than truncated.
+        assert!(bad("geometry", "T", serde_json::json!(4)).is_err());
+    }
+
+    /// The masked set is the question; the withheld BG is the answer. The causal filter is a
+    /// weighted sum of the six preceding steps, so run over the whole series it would carry a
+    /// masked span's own glucose into the visible patch after it AND into the anchor of any span
+    /// that anchors on its right neighbour — an infill scored against evidence it was supposed not
+    /// to have.
+    #[test]
+    fn withheld_bg_never_reaches_a_visible_patch_through_the_filter() {
+        let d = test_descriptor();
+        let n_ctx = d.min_context_patches as usize;
+        let n = n_ctx * PATCH_SIZE;
+        let span = MaskSpan { start_patch: 40, length: 2 };
+        let masked_from = span.start_patch as usize * PATCH_SIZE;
+        let masked_to = masked_from + span.length as usize * PATCH_SIZE;
+
+        let build = |bg: Vec<f64>| {
+            build_graph_input(
+                &d, bg, vec![0.0; n], vec![0.0; n], vec![0.0; n], None, None, None,
+                vec![span], false, 7,
+            )
+            .expect("window builds")
+        };
+        let base: Vec<f64> = (0..n).map(|i| 120.0 + (i % 17) as f64).collect();
+        let mut perturbed = base.clone();
+        // Move ONLY the withheld steps, by a lot.
+        for v in perturbed[masked_from..masked_to].iter_mut() {
+            *v = 300.0;
+        }
+        let a = build(base);
+        let b = build(perturbed);
+
+        assert_eq!(a.anchors, b.anchors, "an anchor moved with the BG that was withheld");
+        for i in 0..a.patches.len() {
+            let patch = i / (PATCH_SIZE * N_FEAT);
+            let is_masked = a.slot_patch.iter().any(|p| *p == patch as i32);
+            if !is_masked {
+                assert_eq!(
+                    a.patches[i], b.patches[i],
+                    "visible cell {i} moved with the BG that was withheld",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn build_graph_input_rejects_an_impossible_masked_set() {
+        let d = test_descriptor();
+        let n = d.min_context_patches as usize * PATCH_SIZE;
+        let bg = vec![120.0; n];
+        let z = vec![0.0; n];
+        let call = |spans: Vec<MaskSpan>, with_forecast: bool| {
+            build_graph_input(
+                &d, bg.clone(), z.clone(), z.clone(), z.clone(), None, None, None, spans,
+                with_forecast, 1,
+            )
+        };
+        let sp = |s: i32, l: i32| MaskSpan { start_patch: s, length: l };
+        // Abutting spans are one longer span, which the sampler never drew and the anchor
+        // cannot describe.
+        assert!(call(vec![sp(10, 2), sp(12, 2)], false).is_err());
+        // A span abutting the future zone leaves the forecast with no visible neighbour.
+        assert!(call(vec![sp(d.min_context_patches - 2, 2)], true).is_err());
+        // More masked patches than the head has slots.
+        let too_many: Vec<MaskSpan> =
+            (0..d.max_masked_patches + 1).map(|i| sp(i * 2, 1)).collect();
+        assert!(call(too_many, false).is_err());
+        // Off the end of the observed context.
+        assert!(call(vec![sp(d.min_context_patches - 1, 4)], false).is_err());
+        // A window with nothing masked at all has nothing to predict.
+        assert!(call(vec![], false).is_err());
+        // …and the ordinary forecast is accepted.
+        assert!(call(vec![], true).is_ok());
+        assert!(call(vec![sp(20, 3)], true).is_ok());
+    }
+
+    #[test]
+    fn build_graph_input_rejects_a_context_outside_the_descriptors_bounds() {
+        let d = test_descriptor();
+        let short = (d.min_context_patches as usize - 1) * PATCH_SIZE;
+        let bg = vec![120.0; short];
+        let z = vec![0.0; short];
+        assert!(build_graph_input(
+            &d, bg, z.clone(), z.clone(), z, None, None, None, vec![], true, 1
+        )
+        .is_err());
+        // Ragged channels, and a history that does not tile the patch.
+        let n = d.min_context_patches as usize * PATCH_SIZE;
+        assert!(build_graph_input(
+            &d, vec![120.0; n], vec![0.0; n - 1], vec![0.0; n], vec![0.0; n],
+            None, None, None, vec![], true, 1
+        )
+        .is_err());
+        assert!(build_graph_input(
+            &d, vec![120.0; n + 1], vec![0.0; n + 1], vec![0.0; n + 1], vec![0.0; n + 1],
+            None, None, None, vec![], true, 1
+        )
+        .is_err());
+    }
+
+    /// An announced future dose reaches the prediction zone, and an unannounced one takes the
+    /// `normalize(0)` no-event baseline rather than a literal `z = 0` — which would announce a
+    /// phantom fraction of a gram through the sparse log1p inverse.
+    #[test]
+    fn announced_doses_reach_the_future_zone() {
+        let d = test_descriptor();
+        let n = d.min_context_patches as usize * PATCH_SIZE;
+        let pred_steps = 4 * PATCH_SIZE;
+        let carb: Vec<f64> = (0..pred_steps).map(|i| i as f64 * 0.5).collect();
+        let gi = build_graph_input(
+            &d, vec![120.0; n], vec![0.0; n], vec![0.0; n], vec![0.0; n],
+            Some(carb.clone()), None, None, vec![], true, 1,
+        )
+        .unwrap();
+        let t = gi.t as usize;
+        let first = gi.first_forecast_patch as usize;
+        assert_eq!(first, t - 4);
+        let zbase = normalize_sample(&d, 0.0, 0.0, 0.0, 0.0);
+        for j in 0..pred_steps {
+            let base = ((first + j / PATCH_SIZE) * PATCH_SIZE + j % PATCH_SIZE) * N_FEAT;
+            let want_carb = normalize_sample(&d, 0.0, carb[j], 0.0, 0.0)[1];
+            assert!((gi.patches[base + 1] as f64 - want_carb).abs() < 1e-6, "carb step {j}");
+            assert!((gi.patches[base + 2] as f64 - zbase[2]).abs() < 1e-6, "insulin step {j}");
+            assert!((gi.patches[base + 3] as f64 - zbase[3]).abs() < 1e-6, "exercise step {j}");
+            assert_eq!(gi.patches[base], 0.0, "future BG must stay withheld");
+        }
+        // An announced channel on a window with no future zone is a caller error, not a
+        // silently ignored argument.
+        assert!(build_graph_input(
+            &d, vec![120.0; n], vec![0.0; n], vec![0.0; n], vec![0.0; n],
+            Some(carb), None, None, vec![MaskSpan { start_patch: 10, length: 2 }], false, 1,
+        )
+        .is_err());
+    }
+
+    // ── reading the fan ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn band_line_at_the_median_is_the_median() {
+        let d = test_descriptor();
+        let f = decoded(&case("forecast"), &d);
+        let line = band_line(&d, &f, 0.5).unwrap();
+        assert_close(&line, &f.median_bg, 1e-12, "band_line(0.5)");
+        // Each published level returns its own edge.
+        for (k, tau) in QUANTILE_LEVELS.iter().enumerate() {
+            let line = band_line(&d, &f, *tau).unwrap();
+            let want: Vec<f64> = (0..f.median_bg.len())
+                .map(|i| f.bands_mgdl[i * N_QUANTILES + k])
+                .collect();
+            assert_close(&line, &want, 1e-12, &format!("band_line({tau})"));
+        }
+    }
+
+    #[test]
+    fn band_line_is_monotone_in_tau_and_clamped_to_the_fan() {
+        let d = test_descriptor();
+        let f = decoded(&case("forecast"), &d);
+        let mut prev = band_line(&d, &f, 0.05).unwrap();
+        for tau in [0.07, 0.2, 0.4, 0.5, 0.6, 0.8, 0.93, 0.95] {
+            let line = band_line(&d, &f, tau).unwrap();
+            for (i, (a, b)) in prev.iter().zip(&line).enumerate() {
+                assert!(*a <= *b + 1e-9, "tau {tau} step {i}: {a} > {b}");
+            }
+            prev = line;
+        }
+        // Outside the published levels the line is clamped to the outermost edge rather than
+        // extrapolated: the model said nothing about a level it never emitted.
+        let lo = band_line(&d, &f, 0.0).unwrap();
+        let hi = band_line(&d, &f, 1.0).unwrap();
+        assert_close(&lo, &band_line(&d, &f, 0.05).unwrap(), 1e-12, "tau below the fan");
+        assert_close(&hi, &band_line(&d, &f, 0.95).unwrap(), 1e-12, "tau above the fan");
+        assert!(band_line(&d, &f, f64::NAN).is_err());
+    }
+
+    #[test]
+    fn forecast_slice_separates_an_infill_from_the_forecast() {
+        let d = test_descriptor();
+        let c = case("infill");
+        let gi = built(&c, &d);
+        let f = decoded(&c, &d);
+        let first = gi.first_forecast_patch;
+        let fc = forecast_slice(&f, first, gi.t).unwrap();
+        assert_eq!(fc.slot_patch, (first..gi.t).collect::<Vec<i32>>());
+        assert_eq!(fc.median_bg.len(), 4 * PATCH_SIZE);
+        // The infill rows are the rest, and none of them sits in the forecast.
+        let infill = forecast_slice(&f, 0, first).unwrap();
+        assert!(infill.slot_patch.iter().all(|p| *p < first));
+        assert_eq!(infill.median_bg.len() + fc.median_bg.len(), f.median_bg.len());
+        // A range holding no slot is an error, not an empty forecast nothing checks.
+        assert!(forecast_slice(&f, first, first).is_err());
     }
 }

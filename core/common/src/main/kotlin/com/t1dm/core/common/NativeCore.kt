@@ -7,7 +7,18 @@ import com.t1dm.core.model.BaselineModel
 import com.t1dm.core.model.BaselineSpec
 import com.t1dm.core.model.ClinicalCuts
 import com.t1dm.core.model.BasalSchedule
-import com.t1dm.core.model.BuiltContext
+import com.t1dm.core.model.GapRun
+import com.t1dm.core.model.GraphInput
+import com.t1dm.core.model.HeadSpec
+import com.t1dm.core.model.LoraConfig
+import com.t1dm.core.model.LoraProgressSink
+import com.t1dm.core.model.LoraSample
+import com.t1dm.core.model.LoraTrainOpts
+import com.t1dm.core.model.LoraTrainResult
+import com.t1dm.core.model.LoraWeights
+import com.t1dm.core.model.MaskSpan
+import com.t1dm.core.model.SynthParams
+import com.t1dm.core.model.SynthSeries
 import com.t1dm.core.model.CarTuning
 import com.t1dm.core.model.ClarkeZone
 import com.t1dm.core.model.DtsZone
@@ -33,6 +44,19 @@ import com.t1dm.core.model.TerrainSpec
  * wiring land in :core:native in the next phase. Every function is total on garbage input
  * (`panic = "abort"` in the crate) — a short or CRC-failing advert is `null`, never a panic.
  */
+interface NativeHead : AutoCloseable {
+    /** Attach an adapter, or detach with `null`. The base weights are untouched, so detaching
+     *  restores the graph's own fan exactly. */
+    fun setLora(w: LoraWeights?)
+
+    fun hasLora(): Boolean
+
+    /** `head_raw` for [nSlots] hidden states, in the layout `assembleDecode` consumes. With no
+     *  adapter attached this must reproduce the graph's own `head_raw` — worth checking once
+     *  at load, since a mismatched head is a plausible forecast rather than an error. */
+    fun forward(hidden: List<Double>, nSlots: Int): List<Double>
+}
+
 interface NativeCore {
     fun roundtrip(msg: String): String
 
@@ -60,40 +84,147 @@ interface NativeCore {
      *  [buildContext], the model-input path, rejects it instead. */
     fun causalSmooth(series: List<Double>, clampMin: Double?, clampMax: Double?, window: Int): List<Double>
 
-    /** z-score a raw `[bg, carb, insulin]` sample (bg risk-z, carb/insulin log1p-z). */
-    fun normalizeSample(desc: ModelDescriptor, bg: Double, carb: Double, insulin: Double): List<Double>
+    /** z-score a raw `[bg, carb, insulin, exercise]` sample (bg risk-z, the rest log1p-z). */
+    fun normalizeSample(
+        desc: ModelDescriptor,
+        bg: Double,
+        carb: Double,
+        insulin: Double,
+        exercise: Double,
+    ): List<Double>
 
-    /** Inverse of [normalizeSample]; the 3-element `z` must carry all channels. */
+    /** Inverse of [normalizeSample]; the 4-element `z` must carry all channels. */
     fun denormalizeSample(desc: ModelDescriptor, z: List<Double>): List<Double>
 
-    /** Build the normalized context + prediction zone + `last_bg` anchor from a raw
-     *  per-step history (INFERENCE.md §7.2-7.4). Announced future doses are raw values or
-     *  `null` (→ the `normalize(0)` no-dose baseline). [smoothingWindow] is the odd causal SavGol
-     *  window applied to the **BG channel only** (1 = unfiltered); carb/insulin are analytic
-     *  reconstructions and reach the model raw. Throws on a malformed shape OR an out-of-contract
-     *  window — the window moves the §3.6-D `last_bg` anchor, so it fails closed here. */
-    fun buildContext(
+    /**
+     * Build the whole fixed-shape graph input from a raw per-step history (INFERENCE.md
+     * §§7.2-7.4): the left-padded patch tensor with its masked-patch fill and announcement
+     * bit, the additive attention mask, the one-hot slot selection, and the per-slot anchors.
+     *
+     * [exercise] is a carbohydrate-EQUIVALENT disposal in g/step — a positive magnitude in
+     * its own channel, on the scale the model was trained at.
+     *
+     * [withForecast] appends the future patches at the right edge, masked, with the dose
+     * channels at the announced plan or the `normalize(0)` no-event baseline. Without it the
+     * window is pure history and forecasts nothing, which is what a gap repair wants: the
+     * evidence on BOTH sides of the gap is then real.
+     *
+     * [maskSpans] names the withheld context patches — empty for a plain forecast.
+     *
+     * [smoothingWindow] is the odd causal SavGol window applied to the **BG channel only**
+     * (1 = unfiltered); the other three are analytic reconstructions and reach the model raw.
+     * Throws on a malformed shape, an impossible masked set, OR an out-of-contract window —
+     * the window moves every anchor, so it fails closed here.
+     */
+    fun buildGraphInput(
         desc: ModelDescriptor,
         bg: List<Double>,
         carb: List<Double>,
         insulin: List<Double>,
+        exercise: List<Double>,
         announcedCarb: List<Double>?,
         announcedInsulin: List<Double>?,
+        announcedExercise: List<Double>?,
+        maskSpans: List<MaskSpan>,
+        withForecast: Boolean,
         smoothingWindow: Int,
-    ): BuiltContext
+    ): GraphInput
 
-    /** Assemble `head_raw` (P·S·7, risk) into an ascending quantile fan and decode to mg/dL
-     *  (INFERENCE.md §8). `headRaw` is fp64-upcast by the backend.
+    /**
+     * Assemble `head_raw` (`M·S·7`, risk) into an ascending quantile fan and decode to mg/dL
+     * (INFERENCE.md §8). The `M` axis is a SET of masked patches: [slotPatch] groups it into
+     * contiguous spans and the median runs per span. `headRaw` is fp64-upcast by the backend.
      *
-     *  The fan this returns is the RAW one: no conformal correction is applied here, and none is
-     *  applied to anything stored, pushed or classified. §8.4's recalibration is a display quantity
-     *  fitted on device and applied downstream by [applyQuantileConformal]. */
+     * The fan this returns is the RAW one: no conformal correction is applied here, and none
+     * is applied to anything stored, pushed or classified. §8.4's recalibration is a display
+     * quantity fitted on device and applied downstream by [applyQuantileConformal].
+     */
     fun assembleDecode(
         desc: ModelDescriptor,
         headRaw: List<Double>,
-        lastBg: Double,
+        anchors: List<Double>,
+        slotPatch: List<Int>,
+        nMasked: Int,
         carrySpread: Double,
     ): Forecast
+
+    /** The rows of [f] whose slot sits in `[fromPatch, toPatch)`, as a Forecast of its own —
+     *  how an infill span and a forecast are separated after one decode. */
+    fun forecastSlice(f: Forecast, fromPatch: Int, toPatch: Int): Forecast
+
+    /**
+     * The fan's own line at an arbitrary quantile level, in mg/dL: a linear interpolation
+     * between the two published levels that bracket [tau], taken in RISK space and then
+     * inverted. `tau = 0.5` is the median untouched; outside the published levels the line is
+     * clamped rather than extrapolated.
+     *
+     * This reads a fan the model already emitted. It moves no median, is stored nowhere, and
+     * nothing that classifies a category may consume it.
+     */
+    fun bandLine(desc: ModelDescriptor, f: Forecast, tau: Double): List<Double>
+
+    // ── The head seam and its adapter (LoRA) ────────────────────────────────────────
+
+    /** Parse the head side file against the descriptor's `head` block, digest checked.
+     *  `null` when the bytes and the block disagree — which means the head and the graph are
+     *  not from the same export, and the adapter path must then be refused. */
+    fun headOpen(bytes: ByteArray, spec: HeadSpec): NativeHead?
+
+    /** Fit an adapter on the patient's own matured windows. Attaches nothing: the caller
+     *  decides, and a fit that fails to beat the frozen head is reported honestly.
+     *  [progress] is called once per epoch, on the calling thread. */
+    fun loraTrain(
+        head: NativeHead,
+        desc: ModelDescriptor,
+        samples: List<LoraSample>,
+        config: LoraConfig,
+        opts: LoraTrainOpts,
+        progress: LoraProgressSink? = null,
+    ): LoraTrainResult
+
+    /** A fresh adapter: `B = 0`, so it is exactly the identity until it has been trained.
+     *  [headSha256] binds it to the head it may attach to. */
+    fun loraNew(
+        config: LoraConfig,
+        headSha256: String,
+        dModel: Int,
+        hidden: Int,
+        outDim: Int,
+        seed: Long,
+    ): LoraWeights
+
+    /** Serialize an adapter for storage or backup (digest-protected). */
+    fun loraSerialize(w: LoraWeights): ByteArray
+
+    /** Inverse of [loraSerialize]; `null` on a truncated, corrupted or foreign blob. */
+    fun loraDeserialize(bytes: ByteArray): LoraWeights?
+
+    // ── The synthetic patient ───────────────────────────────────────────────────────
+
+    /** The generator's default parameters. */
+    fun synthDefaultParams(): SynthParams
+
+    /** Generate [nSteps] of synthetic history ending at the caller's "now",
+     *  [startHourOfDay] being the local clock hour at step 0. */
+    fun synthSeries(
+        nSteps: Int,
+        startHourOfDay: Double,
+        params: SynthParams,
+        seed: Long,
+    ): SynthSeries
+
+    /** Fill the `NaN` steps of a real history from a synthetic one, keeping every real
+     *  sample. The dose channels are filled on the SAME steps as the BG. */
+    fun synthFillGaps(
+        realBg: List<Double>,
+        realCarb: List<Double>,
+        realInsulin: List<Double>,
+        realExercise: List<Double>,
+        synth: SynthSeries,
+    ): SynthSeries
+
+    /** The absent-sample runs in a gridded BG series (`NaN` marks absent), longest first. */
+    fun findGaps(bg: List<Double>, minSteps: Int): List<GapRun>
 
     /** The safety guard every rail/alert gates on (§3.6-B): rejects non-finite, rail-pinned,
      *  collapsed-band, and mis-ordered forecasts. Takes the [desc] the forecast was decoded

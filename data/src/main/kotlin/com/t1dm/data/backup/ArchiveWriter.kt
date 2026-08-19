@@ -28,13 +28,14 @@ data class ArchiveCounts(
     val sources: Int = 0,
     val profiles: Int = 0,
     val conformal: Int = 0,
+    val loras: Int = 0,
     val exerciseSessions: Int = 0,
     val exerciseFixes: Int = 0,
 ) {
     val total: Int
         get() = readings + samples + doses + meals + basal + foods + savedMeals +
             savedItems + insulinTypes + strokes + sources + profiles + conformal +
-            exerciseSessions + exerciseFixes
+            loras + exerciseSessions + exerciseFixes
 }
 
 /**
@@ -48,8 +49,12 @@ data class ArchiveCounts(
  * **What is deliberately not here.** The outbox (a queue of pushes for a token the restoring install
  * will not have), the raw advert capture (forensics, unbounded, and meaningless off the device that
  * heard it), `prediction` and `hw_telemetry` (recomputed from the readings this archive does carry),
- * and the legacy `dose_event` table, superseded by `logged_dose`. The `rw` server token is absent by
- * construction: it lives in the Keystore and has never been a column.
+ * and the legacy `dose_event` table, superseded by `logged_dose`. `bg_infill` is out for a reason of
+ * its own: a fill is a model's reconstruction of a gap, not evidence, and the artifact that made it
+ * may not exist on the machine the archive is restored to — a restore would carry one model's guess
+ * into another model's history. The readings the gaps sit in ARE carried, so a fill can be made
+ * again. The `rw` server token is absent by construction: it lives in the Keystore and has never
+ * been a column.
  *
  * `cgm_sample_raw` is out too, and for a reason the others do not have: it is the one table with a
  * RETENTION BOUND (`T1dmRepository.RAW_SAMPLE_RETENTION_MS`). Carrying it would put rows in the file
@@ -275,6 +280,9 @@ class ArchiveWriter(private val db: AppDatabase) {
         val conformal = db.conformalDeltaDao().all()
         for (r in conformal) Archive.write(rw, r)
 
+        val loras = db.loraDao().all()
+        for (r in loras) Archive.write(rw, r)
+
         return counts.copy(
             basal = basal.size,
             foods = foods.size,
@@ -284,6 +292,7 @@ class ArchiveWriter(private val db: AppDatabase) {
             sources = sources.size,
             profiles = profiles.size,
             conformal = conformal.size,
+            loras = loras.size,
         )
     }
 
@@ -305,6 +314,7 @@ class ArchiveWriter(private val db: AppDatabase) {
         rw.put(Archive.T_SOURCE, c.sources)
         rw.put(Archive.T_PROFILE, c.profiles)
         rw.put(Archive.T_CONFORMAL, c.conformal)
+        rw.put(Archive.T_LORA, c.loras)
         rw.put(Archive.T_EXERCISE, c.exerciseSessions)
         rw.put(Archive.T_EXERCISE_FIX, c.exerciseFixes)
         rw.close()

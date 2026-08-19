@@ -54,11 +54,31 @@ interface DoseStore {
 }
 
 /** The two normalized-ready raw channels over a grid: carbs (Ra) and insulin (combined). */
-data class ContextChannels(val carb: DoubleArray, val insulin: DoubleArray) {
+data class ContextChannels(
+    val carb: DoubleArray,
+    val insulin: DoubleArray,
+    /** Grams of carbohydrate EQUIVALENT disposed per bucket — the model's fourth channel. It is
+     *  READ, never reconstructed: the curve was resolved when the bout was recorded, against the
+     *  patient's rate as it then stood, so rebuilding it now would re-rate every past bout at
+     *  today's setting. */
+    val exercise: DoubleArray,
+) {
     override fun equals(other: Any?): Boolean =
-        other is ContextChannels && carb.contentEquals(other.carb) && insulin.contentEquals(other.insulin)
+        other is ContextChannels && carb.contentEquals(other.carb) &&
+            insulin.contentEquals(other.insulin) && exercise.contentEquals(other.exercise)
 
-    override fun hashCode(): Int = 31 * carb.contentHashCode() + insulin.contentHashCode()
+    override fun hashCode(): Int =
+        31 * (31 * carb.contentHashCode() + insulin.contentHashCode()) + exercise.contentHashCode()
+}
+
+/**
+ * The recorded exercise-disposal channel over a grid window, in grams of carbohydrate equivalent
+ * per bucket. A port because it is a plain table read and `:data`'s curve engine must not reach
+ * into Room; `:app` binds it to the `sample` table's own column. Unwired ⇒ zeros, which is the
+ * honest answer for a build with no exercise record rather than a fabricated one.
+ */
+fun interface ExerciseChannelSource {
+    suspend fun exercise(gridStartMs: Long, nSteps: Int): DoubleArray
 }
 
 /**
@@ -72,16 +92,21 @@ data class ContextChannels(val carb: DoubleArray, val insulin: DoubleArray) {
 data class FutureChannels(
     val carb: DoubleArray,
     val insulin: DoubleArray,
+    /** The committed disposal tail: a bout that ended minutes ago is still working, and the
+     *  writer laid those slots down when it recorded the curve. */
+    val exercise: DoubleArray,
     val iobAtStart: Double,
     val cobAtStart: Double,
 ) {
     override fun equals(other: Any?): Boolean =
         other is FutureChannels && carb.contentEquals(other.carb) && insulin.contentEquals(other.insulin) &&
+            exercise.contentEquals(other.exercise) &&
             iobAtStart == other.iobAtStart && cobAtStart == other.cobAtStart
 
     override fun hashCode(): Int {
         var h = carb.contentHashCode()
         h = 31 * h + insulin.contentHashCode()
+        h = 31 * h + exercise.contentHashCode()
         h = 31 * h + iobAtStart.hashCode()
         h = 31 * h + cobAtStart.hashCode()
         return h
@@ -127,7 +152,12 @@ data class OverlayChannels(val carb: DoubleArray, val insulin: DoubleArray, val 
 class ChannelBuilder(
     private val engine: CurveEngine,
     private val store: DoseStore,
+    private val exerciseSource: ExerciseChannelSource? = null,
 ) {
+    /** The recorded disposal channel, or zeros when no source is wired. */
+    private suspend fun exerciseChannel(gridStartMs: Long, nSteps: Int): DoubleArray =
+        exerciseSource?.exercise(gridStartMs, nSteps) ?: DoubleArray(nSteps)
+
     /**
      * The historical context channels over `[gridStartMs, gridStartMs + nSteps·STEP_MS)`:
      * carb appearance (feat 1) and combined insulin action = bolus PK + basal background
@@ -142,7 +172,7 @@ class ChannelBuilder(
 
         val carbCh = engine.bucketize(carbs, gridStartMs, nSteps, CurveKind.CARB)
         val insulinCh = engine.bucketize(insulin.combined, gridStartMs, nSteps, CurveKind.INSULIN)
-        return ContextChannels(carbCh, insulinCh)
+        return ContextChannels(carbCh, insulinCh, exerciseChannel(gridStartMs, nSteps))
     }
 
     /**
@@ -212,7 +242,7 @@ class ChannelBuilder(
         // IOB/COB provenance: logged (store) doses only — NOT announced/candidate (SPEC §3.6-F).
         val iob = engine.onBoard(storeInsulin + basal, rollStartMs, CurveKind.INSULIN)
         val cob = engine.onBoard(storeCarbs, rollStartMs, CurveKind.CARB)
-        return FutureChannels(carbCh, insulinCh, iob, cob)
+        return FutureChannels(carbCh, insulinCh, exerciseChannel(rollStartMs, nSteps), iob, cob)
     }
 
     /**

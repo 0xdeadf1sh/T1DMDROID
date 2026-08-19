@@ -40,7 +40,13 @@ class RoomBgHistoryProvider(
     private val registry: AidexXSourceRegistry,
 ) : BgHistoryProvider {
 
-    override suspend fun recentBgSeries(maxSteps: Int, minSteps: Int): BgSeries? {
+    override suspend fun dosingBgSeries(maxSteps: Int, minSteps: Int): BgSeries? =
+        series(maxSteps, minSteps, withReconstructed = false)
+
+    override suspend fun recentBgSeries(maxSteps: Int, minSteps: Int): BgSeries? =
+        series(maxSteps, minSteps, withReconstructed = true)
+
+    private suspend fun series(maxSteps: Int, minSteps: Int, withReconstructed: Boolean): BgSeries? {
         val srcId = registry.authoritative.value ?: repository.authoritativeSourceId() ?: return null
         val readings = repository.recentReadings(srcId, maxSteps + 12)
             .filter { it.bgMgdl != null && it.flag == ReadingFlag.NORMAL } // excludes warmup + invalid
@@ -56,10 +62,21 @@ class RoomBgHistoryProvider(
         if (nSteps < minSteps) return null
 
         val start = anchor - (nSteps - 1L) * GRID_MS
+        // A reconstructed sample stands in for a slot the sensor never covered — better evidence
+        // than a carry-forward, which is a flat stretch that never happened. Real readings still
+        // win outright, and nothing here reaches `fitBgSeries`: a fill is never a fit target.
+        val filled = if (!withReconstructed) {
+            emptyMap()
+        } else {
+            runCatching {
+                repository.infillInRange(start, anchor).associate { it.ts to it.mgdl }
+            }.getOrElse { emptyMap() }
+        }
         val out = DoubleArray(nSteps)
         var last = byTs.ceilingEntry(start)?.value ?: byTs.firstEntry()?.value ?: out[0]
         for (i in 0 until nSteps) {
-            val v = byTs[start + i * GRID_MS]
+            val ts = start + i * GRID_MS
+            val v = byTs[ts] ?: filled[ts]
             if (v != null) last = v
             out[i] = last
         }

@@ -6,6 +6,7 @@ import com.t1dm.data.db.BasalScheduleEntity
 import com.t1dm.data.db.CgmReadingEntity
 import com.t1dm.data.db.CgmSourceEntity
 import com.t1dm.data.db.ConformalDeltaEntity
+import com.t1dm.data.db.LoraEntity
 import com.t1dm.data.db.DoseKind
 import com.t1dm.data.db.ExerciseFixEntity
 import com.t1dm.data.db.ExerciseSessionEntity
@@ -101,6 +102,7 @@ object Archive {
     const val T_SOURCE = "source"
     const val T_PROFILE = "profile"
     const val T_CONFORMAL = "conformal"
+    const val T_LORA = "lora"
     const val T_EXERCISE = "exercise"
     const val T_EXERCISE_FIX = "exerciseFix"
     const val T_END = "end"
@@ -653,6 +655,63 @@ object Archive {
             meanWidth90Cal = o.dbl("w9c"),
             windowDays = o.int("wd") ?: err("conformal", "wd"),
             fittedAtMs = o.long("fa") ?: err("conformal", "fa"),
+        )
+    }
+
+    /**
+     * A fitted adapter. The weight blob rides verbatim, digest and all — it is `t1dm-core`'s own
+     * serialized form and nothing here interprets it, so a restore either hands back the exact
+     * adapter that was fitted or (on a corrupted blob) is refused by the crate at load.
+     *
+     * `at` (attached) deliberately does NOT ride. Which adapter a model runs is a property of the
+     * phone the model is on, not of the file: restoring a backup must not silently re-attach an
+     * adapter to a live forecast, and the panel is where that choice is made.
+     */
+    fun write(w: RecordWriter, r: LoraEntity) {
+        w.open(T_LORA)
+        w.put("mid", r.modelId)
+        w.put("nm", r.name)
+        w.putBlobOrSkip("b", r.blob)
+        w.put("rk", r.rank)
+        w.put("al", r.alpha)
+        w.put("tg", r.targets)
+        w.put("np", r.nParams)
+        w.put("ntr", r.nTrain)
+        w.put("nho", r.nHoldout)
+        w.put("ep", r.epochs)
+        w.put("hb", r.holdoutBefore)
+        w.put("ha", r.holdoutAfter)
+        w.put("imp", r.improved)
+        w.put("ca", r.createdAtMs)
+        w.put("ua", r.updatedAtMs)
+        w.close()
+    }
+
+    fun readLora(o: JsonObject): LoraEntity {
+        val blob = o.blob("b") ?: err("lora", "b")
+        val nParams = o.int("np") ?: err("lora", "np")
+        // A blob too short to hold its own header and digest can never load, so it is refused at
+        // the door rather than stored to fail on every later read.
+        if (nParams <= 0 || blob.size < 32) {
+            throw IllegalArgumentException("adapter blob cannot hold $nParams parameters")
+        }
+        return LoraEntity(
+            modelId = o.str("mid") ?: err("lora", "mid"),
+            name = o.str("nm") ?: err("lora", "nm"),
+            blob = blob,
+            rank = o.int("rk") ?: err("lora", "rk"),
+            alpha = o.dbl("al") ?: err("lora", "al"),
+            targets = o.int("tg") ?: err("lora", "tg"),
+            nParams = nParams,
+            nTrain = o.int("ntr") ?: err("lora", "ntr"),
+            nHoldout = o.int("nho") ?: err("lora", "nho"),
+            epochs = o.int("ep") ?: err("lora", "ep"),
+            holdoutBefore = o.dbl("hb") ?: err("lora", "hb"),
+            holdoutAfter = o.dbl("ha") ?: err("lora", "ha"),
+            improved = o.bool("imp") ?: false,
+            attached = false,
+            createdAtMs = o.long("ca") ?: err("lora", "ca"),
+            updatedAtMs = o.long("ua") ?: err("lora", "ua"),
         )
     }
 

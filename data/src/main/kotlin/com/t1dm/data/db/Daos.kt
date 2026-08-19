@@ -1014,6 +1014,78 @@ interface PaintStrokeDao {
 }
 
 @Dao
+interface BgInfillDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(rows: List<BgInfillEntity>)
+
+    @Query("SELECT * FROM bg_infill WHERE ts BETWEEN :fromMs AND :toMs ORDER BY ts")
+    suspend fun inRange(fromMs: Long, toMs: Long): List<BgInfillEntity>
+
+    @Query("SELECT * FROM bg_infill WHERE ts BETWEEN :fromMs AND :toMs ORDER BY ts")
+    fun observeRange(fromMs: Long, toMs: Long): Flow<List<BgInfillEntity>>
+
+    @Query("DELETE FROM bg_infill WHERE ts BETWEEN :fromMs AND :toMs")
+    suspend fun deleteRange(fromMs: Long, toMs: Long)
+
+    /** Drop the fills a removed model made: they are that model's reconstruction, not evidence. */
+    @Query("DELETE FROM bg_infill WHERE modelId = :modelId")
+    suspend fun deleteByModel(modelId: String)
+
+    @Query("DELETE FROM bg_infill")
+    suspend fun deleteAll()
+
+    @Query("SELECT COUNT(*) FROM bg_infill")
+    suspend fun count(): Int
+}
+
+@Dao
+interface LoraDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(row: LoraEntity): Long
+
+    @Query("SELECT * FROM lora ORDER BY modelId, name")
+    fun observeAll(): Flow<List<LoraEntity>>
+
+    @Query("SELECT * FROM lora WHERE modelId = :modelId ORDER BY name")
+    suspend fun byModel(modelId: String): List<LoraEntity>
+
+    @Query("SELECT * FROM lora WHERE id = :id")
+    suspend fun byId(id: Long): LoraEntity?
+
+    /** The adapter the forecast path must run for [modelId], or null when none is attached. */
+    @Query("SELECT * FROM lora WHERE modelId = :modelId AND attached = 1 LIMIT 1")
+    suspend fun attachedFor(modelId: String): LoraEntity?
+
+    @Query("UPDATE lora SET attached = 0, updatedAtMs = :nowMs WHERE modelId = :modelId")
+    suspend fun detachAll(modelId: String, nowMs: Long)
+
+    @Query("UPDATE lora SET attached = 1, updatedAtMs = :nowMs WHERE id = :id")
+    suspend fun attach(id: Long, nowMs: Long)
+
+    @Query("UPDATE lora SET name = :name, updatedAtMs = :nowMs WHERE id = :id")
+    suspend fun rename(id: Long, name: String, nowMs: Long)
+
+    @Query("DELETE FROM lora WHERE id = :id")
+    suspend fun delete(id: Long)
+
+    /** Drop a removed model's adapters with the model: an adapter outlives nothing it was fitted on. */
+    @Query("DELETE FROM lora WHERE modelId = :modelId")
+    suspend fun deleteByModel(modelId: String)
+
+    /** Full-erase (app reset). Row-only DELETE — the schema/table is untouched. */
+    @Query("DELETE FROM lora")
+    suspend fun deleteAll()
+
+    /** One-shot read for the archive export; adapters are few and small. */
+    @Query("SELECT * FROM lora")
+    suspend fun all(): List<LoraEntity>
+
+    /** Merge insert (archive restore): an adapter already present is left as it stands. */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertIgnore(rows: List<LoraEntity>)
+}
+
+@Dao
 interface ConformalDeltaDao {
     /** One row per model; a later fit REPLACEs it whole. */
     @Insert(onConflict = OnConflictStrategy.REPLACE)

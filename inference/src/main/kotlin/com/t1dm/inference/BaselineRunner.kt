@@ -173,8 +173,8 @@ class BaselineRunner(
                 bgTail = series.mgdl.copyOfRange(series.mgdl.size - p, series.mgdl.size).toList(),
                 iob = iob,
                 cob = cob,
-                futureCarb = future?.first?.toList().orEmpty(),
-                futureInsulin = future?.second?.toList().orEmpty(),
+                futureCarb = future?.carb?.toList().orEmpty(),
+                futureInsulin = future?.insulin?.toList().orEmpty(),
             )
         } ?: return null
 

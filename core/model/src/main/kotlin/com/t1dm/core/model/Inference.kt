@@ -7,8 +7,28 @@ package com.t1dm.core.model
  * (`:inference`, `:calc`, `:alerts`) never depend on the binding directly.
  */
 
-/** Per-channel normalization statistics (bg in risk space; carb/insulin in log1p space). */
+/** Per-channel normalization statistics (bg in risk space; the other three in log1p space). */
 data class ChannelStat(val mean: Double, val std: Double)
+
+/** One tensor of the head side file, named and shaped in FILE order. */
+data class HeadTensorSpec(val name: String, val shape: List<Int>)
+
+/**
+ * The BG head the export wrote beside the artifact — the seam an adapter attaches to.
+ * Absent when the export shipped none, in which case the model runs but takes no adapter.
+ */
+data class HeadSpec(
+    val file: String,
+    val dtype: String,
+    val byteOrder: String,
+    val activation: String,
+    val sha256: String,
+    val dModel: Int,
+    val hidden: Int,
+    val stepBasisDim: Int,
+    val outDim: Int,
+    val tensors: List<HeadTensorSpec>,
+)
 
 /**
  * The co-trained hour-of-day TIME PROBE section of a descriptor (mirrors the Rust `TimeHead`).
@@ -42,6 +62,9 @@ data class ModelDescriptor(
     val bg: ChannelStat,
     val carb: ChannelStat,
     val insulin: ChannelStat,
+    /** Carbohydrate-EQUIVALENT glucose disposal, g/step — a positive magnitude in its own
+     *  channel, never a negative carbohydrate value in the carb channel. */
+    val exercise: ChannelStat,
     val ropeBase: Int,
     val medianGlobalDim: Int,
     val stepBasisType: String,
@@ -52,6 +75,18 @@ data class ModelDescriptor(
     val minContextPatches: Int,
     val patchSize: Int,
     val nInputFeatures: Int,
+    /** The exported graph's fixed sequence length `T`; the window is left-padded into it. */
+    val seqLen: Int,
+    /** `M` — the head's slot count, and the cap on the masked set a caller may ask for. */
+    val maxMaskedPatches: Int,
+    /** The span count and longest span the training sampler ever drew. Past either, the model
+     *  is being asked for something it has never seen. */
+    val maskMaxSpans: Int,
+    val maskSpanMax: Int,
+    /** Trunk width — the length of one slot's hidden state. */
+    val dModel: Int,
+    /** `K` — within-patch basis columns the head emits per (slot, channel). */
+    val stepBasisDim: Int,
     /** The risk transform THIS checkpoint was trained under — the sole authority for decoding
      *  its output back to mg/dL. */
     val kovatchev: KovatchevParams,
@@ -69,22 +104,50 @@ data class ModelDescriptor(
     val conformalEnabled: Boolean,
     /** The co-trained time-probe descriptor, or null when the graph is cut at `head_raw`. */
     val time: TimeHead? = null,
+    /** The head side file, or null when the export shipped none. Its absence costs no
+     *  forecast and forbids every adapter. */
+    val head: HeadSpec? = null,
 )
 
 /**
- * The normalized model input built from a raw history, plus the mg/dL anchor.
- * [context] is the `nCtx·6·3` step-major-flattened normalized context; [pred] the
- * `P·6·3` prediction zone (BG feat 0 = literal 0; dose feats = normalize(0) or announced);
- * [lastBg] the persistence anchor. The backend left-pads [context] to the fixed T=52
- * artifact and builds the struct mask.
+ * One masked span, in CONTEXT-relative patch coordinates: patch 0 is the oldest real context
+ * patch supplied, whatever left-padding lands in front of it.
  */
-data class BuiltContext(
+data class MaskSpan(val startPatch: Int, val length: Int)
+
+/**
+ * The complete fixed-shape graph input. Built entirely in the Rust core so the mask rule, the
+ * left-pad and the masked-patch fill exist once; this side copies the three float buffers into
+ * direct NIO buffers and reasons about no geometry at all.
+ *
+ * [patches] is `T·PATCH_SIZE·N_FEAT` step-major, [attnMask] `T·T` additive, [slotSel] `M·T`
+ * one-hot rows. [anchors]/[slotPatch] describe all `M` slots; only the first [nMasked] are
+ * real. [firstForecastPatch] is `-1` for a window with no future zone.
+ */
+data class GraphInput(
     val nCtx: Int,
-    val predictionPatches: Int,
-    val context: List<Double>,
-    val pred: List<Double>,
-    val lastBg: Double,
-)
+    val t: Int,
+    val patchDim: Int,
+    val mSlots: Int,
+    val nMasked: Int,
+    val patches: FloatArray,
+    val attnMask: FloatArray,
+    val slotSel: FloatArray,
+    val anchors: List<Double>,
+    val slotPatch: List<Int>,
+    val firstForecastPatch: Int,
+) {
+    override fun equals(other: Any?): Boolean =
+        other is GraphInput &&
+            nCtx == other.nCtx && t == other.t && patchDim == other.patchDim &&
+            mSlots == other.mSlots && nMasked == other.nMasked &&
+            patches.contentEquals(other.patches) && attnMask.contentEquals(other.attnMask) &&
+            slotSel.contentEquals(other.slotSel) && anchors == other.anchors &&
+            slotPatch == other.slotPatch && firstForecastPatch == other.firstForecastPatch
+
+    override fun hashCode(): Int =
+        (((nCtx * 31 + t) * 31 + nMasked) * 31 + patches.contentHashCode()) * 31 + slotPatch.hashCode()
+}
 
 /**
  * The decoded forecast, step-major over the P·S horizon (`i = p·S + s`). Risk-space
@@ -95,7 +158,111 @@ data class Forecast(
     val qTauRisk: List<Double>,
     val medianBg: List<Double>,
     val bandsMgdl: List<Double>,
+    /** The absolute patch each decoded slot came from — what locates a span on a chart, and
+     *  what tells an infill row from a forecast row. */
+    val slotPatch: List<Int> = emptyList(),
 )
 
 /** Why a forecast is unfit to drive a rail/alert (§3.6-B). [OK] ⇒ eligible. */
 enum class ForecastStatus { OK, NON_FINITE, RAIL_PINNED, COLLAPSED_BAND, MISORDERED_QUANTILES }
+
+// ── The adapter (SPEC/inference.md's head seam; T1DMDROID's own fit) ─────────────────
+
+/**
+ * Where an adapter attaches and how large it is. `alpha/rank` is the scale, so raising the
+ * rank does not silently raise the step size with it.
+ */
+data class LoraConfig(
+    val rank: Int,
+    val alpha: Double,
+    val targetHidden: Boolean,
+    val targetL0: Boolean,
+    val targetL1: Boolean,
+    val targetL2: Boolean,
+)
+
+/** A trained (or freshly initialised) adapter. A fresh one is exactly the identity. */
+data class LoraWeights(
+    val config: LoraConfig,
+    /** The digest of the head file it was fitted on. Geometry does not identify a head — two
+     *  checkpoints of one capacity share it — so this is what binds an adapter to its model. */
+    val headSha256: String,
+    val dModel: Int,
+    val hidden: Int,
+    val outDim: Int,
+    val params: List<Double>,
+)
+
+/**
+ * One training window: the trunk hidden states of a span's slots, that span's anchors, and the
+ * BG that actually happened. The slots must be ONE contiguous span.
+ */
+data class LoraSample(
+    val hidden: List<Double>,
+    val anchors: List<Double>,
+    val targetBg: List<Double>,
+    val nSlots: Int,
+)
+
+/** Optimiser settings for a fit. */
+data class LoraTrainOpts(
+    val epochs: Int,
+    val lr: Double,
+    val holdoutFrac: Double,
+    val weightDecay: Double,
+    val seed: Long,
+)
+
+/** What a fit did, in the terms the panel has to show before anyone attaches it. */
+data class LoraTrainReport(
+    val nTrain: Int,
+    val nHoldout: Int,
+    val epochsRun: Int,
+    val trainLossFirst: Double,
+    val trainLossLast: Double,
+    val holdoutLossBefore: Double,
+    val holdoutLossAfter: Double,
+    /** True only when the adapter beat the frozen head on windows it never trained on. */
+    val improved: Boolean,
+    val lossHistory: List<Double>,
+    /** Held-out loss at the end of each epoch — [lossHistory]'s held-out twin. */
+    val holdoutHistory: List<Double>,
+    /** The epoch whose weights the fit returned; `0` when no epoch beat the frozen head. */
+    val bestEpoch: Int,
+)
+
+/** Called once per epoch while a fit runs. Never per sample. */
+fun interface LoraProgressSink {
+    fun onEpoch(epoch: Int, epochs: Int, trainLoss: Double, holdoutLoss: Double)
+}
+
+/** An adapter and the account of how it was fitted, which travel together. */
+data class LoraTrainResult(val weights: LoraWeights, val report: LoraTrainReport)
+
+// ── The synthetic patient ───────────────────────────────────────────────────────────
+
+/** The knobs the synthetic generator takes; every default is a population figure. */
+data class SynthParams(
+    val baselineBg: Double,
+    val mealGrams: Double,
+    val carbRatio: Double,
+    val basalUPerHour: Double,
+    val exerciseProb: Double,
+    val exerciseCarbEquivPerMin: Double,
+    val cgmNoiseSd: Double,
+    val missedBolusProb: Double,
+)
+
+/** Four synthetic channels on the grid, in the units the model reads. */
+data class SynthSeries(
+    val bg: List<Double>,
+    val carb: List<Double>,
+    val insulin: List<Double>,
+    val exercise: List<Double>,
+    val nMeals: Int,
+    val nBoluses: Int,
+    val nBouts: Int,
+)
+
+/** An absent-sample run in a gridded BG series — a gap a repair can offer to fill. */
+data class GapRun(val start: Int, val end: Int)

@@ -589,6 +589,78 @@ data class ConformalDeltaEntity(
 )
 
 /**
+ * One model-reconstructed BG sample over a gap the sensor left (Room v20).
+ *
+ * **This is not a reading and must never be counted as one.** It lives in its own table for that
+ * reason: `SPEC/invariants.md` §1 makes a filled value a presentation step, and this one is not
+ * even a carry-forward — it is what a model thinks was there. What it does is condition a later
+ * forecast: a seven-day context with a hole in it is a context the model never saw. Nothing else
+ * reads it — not the alarm engine, not the dose calculator, not the statistics, not the accuracy
+ * suite, not the fit targets, not the wire — and the BG panel does not yet draw it either.
+ *
+ * [lo90]/[hi90] carry the fan the fill came with, because a reconstructed value without its
+ * uncertainty invites exactly the reading it must not be given.
+ */
+@Entity(tableName = "bg_infill")
+data class BgInfillEntity(
+    @PrimaryKey val ts: Long,
+    val mgdl: Double,
+    val lo90: Double,
+    val hi90: Double,
+    val modelId: String,
+    val createdAtMs: Long,
+)
+
+/**
+ * One low-rank adapter (Room v20) — a fitted personalisation of ONE model's BG head.
+ *
+ * The base weights live in the `.pte` and are never written; everything trainable is the few
+ * thousand numbers in [blob], serialized by `t1dm-core::lora_serialize` with its own digest. The
+ * blob is opaque here on purpose: this table stores and lists adapters, and the crate is the only
+ * thing that reads one.
+ *
+ * [modelId] is the model the adapter was fitted against and the ONLY one it may attach to — an
+ * adapter carries its own trunk geometry and the crate refuses a foreign one, but nothing should
+ * get that far. [attached] is what the forecast path reads; at most one adapter per model may
+ * carry it, which the repository enforces rather than the schema.
+ *
+ * The held-out numbers are stored beside the weights because they are the only basis anyone has
+ * for attaching it: a fit that did not beat the frozen head learnt the patient's past, not their
+ * physiology, and a row that lost its report would be a set of weights with nothing to judge.
+ */
+@Entity(tableName = "lora", indices = [Index(value = ["modelId"])])
+data class LoraEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val modelId: String,
+    val name: String,
+    @ColumnInfo(typeAffinity = ColumnInfo.BLOB) val blob: ByteArray,
+    val rank: Int,
+    val alpha: Double,
+    val targets: Int,
+    val nParams: Int,
+    val nTrain: Int,
+    val nHoldout: Int,
+    val epochs: Int,
+    val holdoutBefore: Double,
+    val holdoutAfter: Double,
+    val improved: Boolean,
+    val attached: Boolean,
+    val createdAtMs: Long,
+    val updatedAtMs: Long,
+) {
+    override fun equals(other: Any?): Boolean =
+        other is LoraEntity && id == other.id && modelId == other.modelId && name == other.name &&
+            blob.contentEquals(other.blob) && rank == other.rank && alpha == other.alpha &&
+            targets == other.targets && nParams == other.nParams && nTrain == other.nTrain &&
+            nHoldout == other.nHoldout && epochs == other.epochs &&
+            holdoutBefore == other.holdoutBefore && holdoutAfter == other.holdoutAfter &&
+            improved == other.improved && attached == other.attached &&
+            createdAtMs == other.createdAtMs && updatedAtMs == other.updatedAtMs
+
+    override fun hashCode(): Int = 31 * (31 * id.hashCode() + modelId.hashCode()) + blob.contentHashCode()
+}
+
+/**
  * One start-to-stop exercise bout (Room v16) — the phone-local record of a logged session.
  *
  * **This row is not what exercise means to the model or to the server.** The bout's glucose-disposal

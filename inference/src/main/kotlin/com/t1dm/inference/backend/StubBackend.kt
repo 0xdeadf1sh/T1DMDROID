@@ -21,9 +21,11 @@ class StubBackend : InferenceBackend {
 
     override fun load(desc: ModelDescriptor, pte: File): LoadedModel = StubModel("stub", caps)
 
-    override fun run(m: LoadedModel, x: GraphInput): GraphOutput {
-        val head = FloatArray(P * S * Q)
-        for (p in 0 until P) {
+    override fun run(m: LoadedModel, x: GraphTensors): GraphOutput {
+        // One row per head slot, whatever the masked set asked for — a stub that emitted a
+        // fixed four-patch horizon would fail every infill run on shape alone.
+        val head = FloatArray(x.mSlots * S * Q)
+        for (p in 0 until x.mSlots) {
             for (s in 0 until S) {
                 val i = (p * S + s) * Q
                 // col0: a gentle risk-space rise over the horizon (DCT-projected downstream).
@@ -39,7 +41,6 @@ class StubBackend : InferenceBackend {
     override fun close(m: LoadedModel) = Unit
 
     private companion object {
-        const val P = GraphIo.PRED          // 4 prediction patches
         const val S = 6                     // PATCH_SIZE steps
         const val Q = 7                     // 1 median + 2·N_SPREADS
     }

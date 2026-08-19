@@ -1,6 +1,7 @@
 package com.t1dm.inference
 
 import com.t1dm.core.model.BaselineModel
+import com.t1dm.core.model.LoraWeights
 import com.t1dm.core.model.CurveEvent
 import com.t1dm.core.model.ModelPrediction
 
@@ -24,14 +25,30 @@ data class BgSeries(val mgdl: DoubleArray, val anchorTsMs: Long, val gridStartMs
 }
 
 /**
- * Supplies the shared BG history a cycle conditions on (Phase 2 deliverable 4) plus
- * the measured-context coverage the WARMUP gate reads (inference-runtime.md). The `:app`
- * implementation projects the active source's grid-aligned readings; a shorter-than-`minSteps`
- * return means "still collecting context" (the model needs ≥16 patches = 8 h).
+ * Supplies the shared BG history a cycle conditions on plus the measured-context coverage the
+ * WARMUP gate reads (inference-runtime.md). The `:app` implementation projects the active source's
+ * grid-aligned readings; a shorter-than-`minSteps` return means "still collecting context". How
+ * much context that is comes from the model's own descriptor — `MIN_CONTEXT_PATCHES`, which the
+ * current models put at several days — and never from a constant here.
  */
 interface BgHistoryProvider {
-    /** Newest-last mg/dL series of at most [maxSteps] 5-min steps, or `null` if under [minSteps]. */
+    /** Newest-last mg/dL series of at most [maxSteps] 5-min steps, or `null` if under [minSteps].
+     *  May stand a model-reconstructed sample in for a slot the sensor never covered — see
+     *  [dosingBgSeries] for the series that may not. */
     suspend fun recentBgSeries(maxSteps: Int, minSteps: Int): BgSeries?
+
+    /**
+     * The series a DOSE may be scored on: the same window, with no reconstructed sample in it.
+     *
+     * A gap fill is what a model thinks was there. Conditioning a displayed forecast on one is the
+     * point of having it; conditioning a dose recommendation on one closes a loop between a model's
+     * own output and the advice derived from it, which is the one place this app does not let a
+     * derived number back in.
+     *
+     * Deliberately NOT defaulted: every provider states which series it hands the dose path, and a
+     * provider that cannot tell the two apart says so by returning its plain one explicitly.
+     */
+    suspend fun dosingBgSeries(maxSteps: Int, minSteps: Int): BgSeries?
 
     /** Count of MEASURED (non-interpolated, NORMAL) readings within the trailing [windowSteps]
      *  grid slots — the WARMUP gate's numerator. Default 0 keeps non-Room fakes total. */
@@ -90,8 +107,33 @@ interface BaselineStore {
  * baseline, preserving the Phase-2 behaviour.
  */
 fun interface ContextChannelSource {
-    /** `(carb, insulin)` per-5-min amounts over `[gridStartMs, gridStartMs + nSteps·STEP)`. */
-    suspend fun channels(gridStartMs: Long, nSteps: Int): Pair<DoubleArray, DoubleArray>
+    /** Per-5-min amounts over `[gridStartMs, gridStartMs + nSteps·STEP)`. */
+    suspend fun channels(gridStartMs: Long, nSteps: Int): ModelChannels
+}
+
+/**
+ * The three reconstructed input channels beside BG, index-aligned to one grid window.
+ *
+ * [exercise] is grams of carbohydrate EQUIVALENT disposed per bucket — a positive magnitude in
+ * its own channel, on the scale the model was trained at. It is never a negative carbohydrate
+ * value in [carb], and never an intensity, a duration or an energy.
+ */
+data class ModelChannels(
+    val carb: DoubleArray,
+    val insulin: DoubleArray,
+    val exercise: DoubleArray,
+) {
+    override fun equals(other: Any?): Boolean =
+        other is ModelChannels && carb.contentEquals(other.carb) &&
+            insulin.contentEquals(other.insulin) && exercise.contentEquals(other.exercise)
+
+    override fun hashCode(): Int =
+        (carb.contentHashCode() * 31 + insulin.contentHashCode()) * 31 + exercise.contentHashCode()
+
+    companion object {
+        /** The no-event baseline for a window of [n] steps. */
+        fun zero(n: Int) = ModelChannels(DoubleArray(n), DoubleArray(n), DoubleArray(n))
+    }
 }
 
 /**
@@ -106,8 +148,9 @@ fun interface ContextChannelSource {
  * (unwired) ⇒ the `normalize(0)` no-dose baseline, preserving the pre-Phase-4c behaviour.
  */
 fun interface FutureOverrideSource {
-    /** `(carb, insulin)` per-5-min committed amounts over `[rollStartMs, rollStartMs + nFutureSteps·STEP)`. */
-    suspend fun overrides(rollStartMs: Long, nFutureSteps: Int): Pair<DoubleArray, DoubleArray>
+    /** Per-5-min committed amounts over `[rollStartMs, rollStartMs + nFutureSteps·STEP)`. A bout
+     *  that has already ended is still disposing glucose, so its tail is committed too. */
+    suspend fun overrides(rollStartMs: Long, nFutureSteps: Int): ModelChannels
 }
 
 /**
@@ -133,4 +176,21 @@ data class CumulativeTelemetry(val predictions: Long, val totalInferenceMs: Doub
 interface TelemetryStore {
     suspend fun load(): Map<String, CumulativeTelemetry>
     suspend fun save(all: Map<String, CumulativeTelemetry>)
+}
+
+/**
+ * Supplies the adapter attached to a model, if any — the seam through which a fitted
+ * personalisation reaches the LIVE forecast.
+ *
+ * Read fresh every cycle, so attaching or detaching one takes effect on the next tick rather than
+ * at the next process start. `null` (unwired, or nothing attached) is the frozen model, which is
+ * what every model starts as.
+ *
+ * **An attached adapter changes the fan the app stores, alarms on and doses off.** That is the
+ * point of attaching one, and it is why attaching is an explicit act with the held-out numbers in
+ * front of the user, and why the model's own conformal correction and realised-accuracy history are
+ * dropped when it changes: both describe the forecaster that was there before.
+ */
+fun interface LoraStore {
+    suspend fun attached(modelId: String): LoraWeights?
 }

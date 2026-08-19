@@ -14,7 +14,19 @@ import com.t1dm.data.curve.CurveEngine
 import com.t1dm.data.curve.DoseStore
 import com.t1dm.inference.BgHistoryProvider
 import com.t1dm.inference.BgSeries
-import com.t1dm.inference.backend.GraphInput
+import com.t1dm.core.common.NativeHead
+import com.t1dm.core.model.GapRun
+import com.t1dm.core.model.GraphInput
+import com.t1dm.core.model.HeadSpec
+import com.t1dm.core.model.LoraConfig
+import com.t1dm.core.model.LoraSample
+import com.t1dm.core.model.LoraTrainOpts
+import com.t1dm.core.model.LoraTrainResult
+import com.t1dm.core.model.LoraWeights
+import com.t1dm.core.model.MaskSpan
+import com.t1dm.core.model.SynthParams
+import com.t1dm.core.model.SynthSeries
+import com.t1dm.inference.backend.GraphTensors
 import com.t1dm.inference.backend.GraphOutput
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.runTest
@@ -57,6 +69,7 @@ class RollingForecasterAlignmentTest {
         bg = ChannelStat(0.0, 1.0),
         carb = ChannelStat(0.0, 1.0),
         insulin = ChannelStat(0.0, 1.0),
+        exercise = ChannelStat(0.0, 1.0),
         ropeBase = 1000,
         medianGlobalDim = 6,
         stepBasisType = "dct",
@@ -66,7 +79,13 @@ class RollingForecasterAlignmentTest {
         maxContextPatches = 8,        // maxSteps = 48
         minContextPatches = 4,        // minSteps = 24
         patchSize = 6,
-        nInputFeatures = 3,
+        nInputFeatures = 5,
+        seqLen = 12,                  // maxContextPatches + predPatches
+        maxMaskedPatches = 12,
+        maskMaxSpans = 3,
+        maskSpanMax = 8,
+        dModel = 32,
+        stepBasisDim = 6,
         kovatchev = KovatchevParams(
             scale = 2.2211457449985317,
             power = 1.084,
@@ -105,11 +124,14 @@ class RollingForecasterAlignmentTest {
                 // last grid slot, so anchorTsMs != gridStartMs + (nCtx-1)·STEP and the pre-fix
                 // context origin (anchor - (nCtx-1)·STEP) would differ from gridStartMs.
                 BgSeries(DoubleArray(nCtx) { 120.0 }, anchorTsMs = g + (nCtx - 4) * STEP_MS, gridStartMs = g)
+
+            override suspend fun dosingBgSeries(maxSteps: Int, minSteps: Int): BgSeries =
+                recentBgSeries(maxSteps, minSteps)
         }
         val model = object : SelectedModelHandle {
             override val descriptor = this@RollingForecasterAlignmentTest.descriptor
             override val backendInfo = fp32Backend()
-            override suspend fun run(input: GraphInput): GraphOutput = GraphOutput(FloatArray(4 * 6 * 7))
+            override suspend fun run(input: GraphTensors): GraphOutput = GraphOutput(FloatArray(4 * 6 * 7))
         }
         val forecaster = RollingForecaster(native, dispatchers, channels, history, SelectedModelProvider { model })
 
@@ -173,11 +195,14 @@ class RollingForecasterAlignmentTest {
             val history = object : BgHistoryProvider {
                 override suspend fun recentBgSeries(maxSteps: Int, minSteps: Int): BgSeries =
                     BgSeries(DoubleArray(nCtx) { 120.0 }, anchorTsMs = g + (nCtx - 1) * STEP_MS, gridStartMs = g)
+
+                override suspend fun dosingBgSeries(maxSteps: Int, minSteps: Int): BgSeries =
+                    recentBgSeries(maxSteps, minSteps)
             }
             val model = object : SelectedModelHandle {
                 override val descriptor = this@RollingForecasterAlignmentTest.descriptor
                 override val backendInfo = fp32Backend()
-                override suspend fun run(input: GraphInput): GraphOutput = GraphOutput(FloatArray(4 * 6 * 7))
+                override suspend fun run(input: GraphTensors): GraphOutput = GraphOutput(FloatArray(4 * 6 * 7))
             }
             val forecaster = RollingForecaster(
                 native,
@@ -216,8 +241,10 @@ class RollingForecasterAlignmentTest {
             val bg: List<Double>,
             val carb: List<Double>,
             val insulin: List<Double>,
+            val exercise: List<Double>,
             val announcedCarb: List<Double>?,
             val announcedInsulin: List<Double>?,
+            val announcedExercise: List<Double>?,
             val smoothingWindow: Int,
         )
 
@@ -240,37 +267,65 @@ class RollingForecasterAlignmentTest {
 
         override fun onBoard(events: List<CurveEvent>, atMs: Long, kind: CurveKind): Double = 0.0
 
-        override fun buildContext(
+        override fun buildGraphInput(
             desc: ModelDescriptor,
             bg: List<Double>,
             carb: List<Double>,
             insulin: List<Double>,
+            exercise: List<Double>,
             announcedCarb: List<Double>?,
             announcedInsulin: List<Double>?,
+            announcedExercise: List<Double>?,
+            maskSpans: List<MaskSpan>,
+            withForecast: Boolean,
             smoothingWindow: Int,
-        ): BuiltContext {
-            buildContextCalls += BuildContextCall(bg, carb, insulin, announcedCarb, announcedInsulin, smoothingWindow)
+        ): GraphInput {
+            buildContextCalls += BuildContextCall(
+                bg, carb, insulin, exercise, announcedCarb, announcedInsulin, announcedExercise,
+                smoothingWindow,
+            )
             val patches = bg.size / desc.patchSize
             val predPatches = desc.predictionHorizonHours * 12 / desc.patchSize
-            return BuiltContext(
+            val t = patches + predPatches
+            val m = desc.maxMaskedPatches
+            // The masked set a roll asks for: the trailing forecast, and nothing else.
+            return GraphInput(
                 nCtx = patches,
-                predictionPatches = predPatches,
-                context = List(patches * desc.patchSize * desc.nInputFeatures) { 0.0 },
-                pred = List(predPatches * desc.patchSize * desc.nInputFeatures) { 0.0 },
-                lastBg = bg.lastOrNull() ?: 120.0,
+                t = t,
+                patchDim = desc.patchSize * desc.nInputFeatures,
+                mSlots = m,
+                nMasked = predPatches,
+                patches = FloatArray(t * desc.patchSize * desc.nInputFeatures),
+                attnMask = FloatArray(t * t),
+                slotSel = FloatArray(m * t),
+                anchors = List(m) { bg.lastOrNull() ?: 120.0 },
+                slotPatch = List(m) { if (it < predPatches) patches + it else -1 },
+                firstForecastPatch = patches,
             )
         }
 
-        override fun assembleDecode(desc: ModelDescriptor, headRaw: List<Double>, lastBg: Double, carrySpread: Double): Forecast {
-            val steps = 24
+        override fun assembleDecode(
+            desc: ModelDescriptor,
+            headRaw: List<Double>,
+            anchors: List<Double>,
+            slotPatch: List<Int>,
+            nMasked: Int,
+            carrySpread: Double,
+        ): Forecast {
+            val steps = nMasked * desc.patchSize
             val nq = 7
             return Forecast(
                 medianRisk = List(steps) { 0.0 },
                 qTauRisk = List(steps * nq) { (it % nq).toDouble() },
                 medianBg = List(steps) { 120.0 },
                 bandsMgdl = List(steps * nq) { 110.0 + (it % nq) * 2.0 },
+                slotPatch = slotPatch.take(nMasked),
             )
         }
+
+        override fun forecastSlice(f: Forecast, fromPatch: Int, toPatch: Int): Forecast = f
+
+        override fun bandLine(desc: ModelDescriptor, f: Forecast, tau: Double): List<Double> = f.medianBg
 
         override fun forecastDegeneracyCheck(desc: ModelDescriptor, forecast: Forecast): ForecastStatus = ForecastStatus.OK
 
@@ -283,7 +338,42 @@ class RollingForecasterAlignmentTest {
         override fun kovatchevFInv(risk: Double): Double = unused()
         override fun parseDescriptor(json: String): ModelDescriptor? = unused()
         override fun causalSmooth(series: List<Double>, clampMin: Double?, clampMax: Double?, window: Int): List<Double> = unused()
-        override fun normalizeSample(desc: ModelDescriptor, bg: Double, carb: Double, insulin: Double): List<Double> = unused()
+        override fun normalizeSample(
+            desc: ModelDescriptor,
+            bg: Double,
+            carb: Double,
+            insulin: Double,
+            exercise: Double,
+        ): List<Double> = unused()
+        override fun headOpen(bytes: ByteArray, spec: HeadSpec): NativeHead? = null
+        override fun loraTrain(
+            head: NativeHead,
+            desc: ModelDescriptor,
+            samples: List<LoraSample>,
+            config: LoraConfig,
+            opts: LoraTrainOpts,
+            progress: com.t1dm.core.model.LoraProgressSink?,
+        ): LoraTrainResult = unused()
+        override fun loraNew(
+            config: LoraConfig,
+            headSha256: String,
+            dModel: Int,
+            hidden: Int,
+            outDim: Int,
+            seed: Long,
+        ): LoraWeights = unused()
+        override fun loraSerialize(w: LoraWeights): ByteArray = unused()
+        override fun loraDeserialize(bytes: ByteArray): LoraWeights? = null
+        override fun synthDefaultParams(): SynthParams = unused()
+        override fun synthSeries(nSteps: Int, startHourOfDay: Double, params: SynthParams, seed: Long): SynthSeries = unused()
+        override fun synthFillGaps(
+            realBg: List<Double>,
+            realCarb: List<Double>,
+            realInsulin: List<Double>,
+            realExercise: List<Double>,
+            synth: SynthSeries,
+        ): SynthSeries = unused()
+        override fun findGaps(bg: List<Double>, minSteps: Int): List<GapRun> = emptyList()
         override fun denormalizeSample(desc: ModelDescriptor, z: List<Double>): List<Double> = unused()
         override fun decodeTime(timeLogits: List<Double>, nBins: Int, binHours: Double): PredictedTime? = unused()
         override fun gamma(total: Double, k: Double, theta: Double, durMin: Double): List<Double> = unused()

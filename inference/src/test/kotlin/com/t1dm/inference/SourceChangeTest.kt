@@ -113,6 +113,9 @@ class SourceChangeTest {
     }
 
     private object NoHistory : BgHistoryProvider {
+        override suspend fun dosingBgSeries(maxSteps: Int, minSteps: Int): BgSeries? =
+            recentBgSeries(maxSteps, minSteps)
+
         override suspend fun recentBgSeries(maxSteps: Int, minSteps: Int): BgSeries? = null
     }
 

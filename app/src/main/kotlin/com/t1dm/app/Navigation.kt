@@ -128,6 +128,8 @@ import com.t1dm.core.model.Food
 import com.t1dm.core.model.SavedMeal
 import com.t1dm.feature.pubs.PubsScreen
 import com.t1dm.feature.models.ModelDetailScreen
+import com.t1dm.feature.models.LabScreen
+import com.t1dm.feature.models.LoraPanel
 import com.t1dm.feature.models.ModelsScreen
 import com.t1dm.core.model.CgEga
 import com.t1dm.core.model.BASELINE_MODEL_ID
@@ -228,6 +230,7 @@ internal val destinations = listOf(
     Destination("circadian", "Clock"),
     Destination("stats", "Stats"),
     Destination("models", "Models"),
+    Destination("lab", "Lab"),
     Destination("hardware", "Hardware"),
     Destination("network", "Network"),
     Destination("meals", "Meals"),
@@ -387,6 +390,7 @@ internal fun crumbsFor(route: String?, modelId: String?, editLabel: String? = nu
         "circadian" -> listOf(Crumb("Circadian clock", null))
         "stats" -> listOf(Crumb("Stats", null))
         "models" -> listOf(Crumb("Models", null))
+        "models/{modelId}/lora" -> listOf(Crumb("Models", "models"), Crumb("Adapters", null))
         "models/{modelId}" -> listOf(Crumb("Models", "models"), Crumb(modelId ?: "model", null))
         "hardware" -> listOf(Crumb("Hardware", null))
         "network" -> listOf(Crumb("Network", null))
@@ -1254,6 +1258,59 @@ private fun T1dmNavHost(
                 exportStatus = exportStatus,
             )
         }
+        composable("lab") {
+            val inference by container.inferenceState.collectAsState(InferenceState())
+            val lab = container.labController
+            val labState by lab.state.collectAsState()
+            val gaps by container.labGaps.collectAsState()
+            val gapNote by container.labGapNote.collectAsState()
+            val scope = rememberCoroutineScope()
+            // The running set is what the Lab may reach, and it changes under it (a model can be
+            // deleted, an update applied), so the surface follows it rather than sampling it once.
+            LaunchedEffect(inference.running) {
+                lab.refresh(inference.running.map { it.modelId }.filter { it != BASELINE_MODEL_ID })
+            }
+            LabScreen(
+                state = labState,
+                gaps = gaps,
+                gapNote = gapNote,
+                onPickModel = { lab.pickModel(it); scope.launch { lab.refresh(labState.models) } },
+                onToggleSynthetic = lab::setSynthetic,
+                onSeed = lab::setSeed,
+                onSpans = lab::setSpans,
+                onToggleForecast = lab::setForecast,
+                onPickAdapter = lab::pickAdapter,
+                onTau = lab::setTau,
+                onRun = { scope.launch { lab.run() } },
+                onFindGaps = { scope.launch { container.refreshLabGaps() } },
+                // Fired directly, not through the screen's scope: the fill outlives this screen.
+                onRepair = { gap -> container.repairGap(gap) },
+                onOpenAdapters = { id -> navController.navigate("models/$id/lora") },
+            )
+        }
+
+        composable("models/{modelId}/lora") { backStackEntry ->
+            val id = backStackEntry.arguments?.getString("modelId").orEmpty()
+            val lab = container.labController
+            val panel by container.loraPanel.collectAsState()
+            val scope = rememberCoroutineScope()
+            LaunchedEffect(id) { container.refreshLoraPanel(id) }
+            LoraPanel(
+                state = panel,
+                onFit = { spec -> container.fitAdapter(id, spec) },
+                onAttach = { adapterId -> scope.launch { container.attachAdapter(id, adapterId) } },
+                onDetach = { scope.launch { container.detachAdapter(id) } },
+                onRename = { adapterId, name ->
+                    scope.launch { lab.rename(id, adapterId, name); container.refreshLoraPanel(id) }
+                },
+                onDelete = { adapterId ->
+                    scope.launch { lab.delete(id, adapterId); container.refreshLoraPanel(id) }
+                },
+                onExport = { adapterId -> scope.launch { container.exportAdapter(adapterId) } },
+                onImport = { scope.launch { container.importAdapters(id) } },
+            )
+        }
+
         composable("models") {
             val inference by container.inferenceState.collectAsState(InferenceState())
             val pendingUpdates by container.pendingModelUpdates.collectAsState(emptySet())
@@ -1270,6 +1327,7 @@ private fun T1dmNavHost(
                     }
                 },
                 onOpen = { id -> navController.navigate("models/$id") },
+                onOpenAdapters = { id -> navController.navigate("models/$id/lora") },
                 pendingUpdates = pendingUpdates,
                 onApplyUpdate = { id -> scope.launch { container.applyModelUpdate(id) } },
                 onDelete = { id -> scope.launch { container.removeModel(id) } },

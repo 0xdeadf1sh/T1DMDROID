@@ -1,14 +1,11 @@
 package com.t1dm.cgm
 
-import com.t1dm.core.common.GameWorld
-import com.t1dm.core.common.NativeCore
 import com.t1dm.core.model.AdvancedStats
 import com.t1dm.core.model.BasalSchedule
 import com.t1dm.core.model.BaselineFit
 import com.t1dm.core.model.BaselineForecast
 import com.t1dm.core.model.BaselineModel
 import com.t1dm.core.model.BaselineSpec
-import com.t1dm.core.model.BuiltContext
 import com.t1dm.core.model.CarTuning
 import com.t1dm.core.model.ClarkeZone
 import com.t1dm.core.model.ClinicalCuts
@@ -20,23 +17,38 @@ import com.t1dm.core.model.DtsZone
 import com.t1dm.core.model.Forecast
 import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.ForecastWindow
-import com.t1dm.core.model.InsulinPresetSpec
+import com.t1dm.core.model.GapRun
+import com.t1dm.core.model.GraphInput
+import com.t1dm.core.model.HeadSpec
+import com.t1dm.core.model.LoraConfig
+import com.t1dm.core.model.LoraProgressSink
+import com.t1dm.core.model.LoraSample
+import com.t1dm.core.model.LoraTrainOpts
+import com.t1dm.core.model.LoraTrainResult
+import com.t1dm.core.model.LoraWeights
+import com.t1dm.core.model.MaskSpan
 import com.t1dm.core.model.MetricsConfig
 import com.t1dm.core.model.MetricsSuite
 import com.t1dm.core.model.ModelDescriptor
 import com.t1dm.core.model.PredictedTime
 import com.t1dm.core.model.StatSample
+import com.t1dm.core.model.SynthParams
+import com.t1dm.core.model.SynthSeries
 import com.t1dm.core.model.TerrainSpec
+import com.t1dm.core.common.GameWorld
+import com.t1dm.core.common.NativeCore
+import com.t1dm.core.common.NativeHead
 
 /**
- * Test-only [NativeCore] backed by [AidexCodec] — a stand-in for the Rust `t1dm-core` whose advert
- * decode is wired in a later phase. Lets the :cgm pipeline be driven bit-faithfully against the
- * CGM.md golden vectors without the native library.
+ * Test-only [NativeCore] backed by [AidexCodec] — a stand-in for the Rust `t1dm-core`, so the :cgm
+ * pipeline can be driven bit-faithfully against the CGM.md golden vectors without the native library.
  *
- * Only the Phase-1 advert-decode surface ([decodeAdvert]/[advertCrc32]/[kovatchevF]/[kovatchevFInv])
- * is exercised by the :cgm tests; the model pre/post, curve, stats and accuracy members exist purely
- * to satisfy the (since-grown) [NativeCore] contract and are never called from here — they fail
- * closed (nullable → `null`, aggregate → `EMPTY`) or throw a clear `TODO` if a future test wires them.
+ * **Only the advert-decode surface is real.** [decodeAdvert], [advertCrc32] and the two risk-space
+ * conversions are what the :cgm tests exercise; every other member exists to satisfy the [NativeCore]
+ * contract and throws if a future test wires one. That contract grows with the model work, so the
+ * stubs below are mechanical and meant to be regenerated from the interface rather than maintained by
+ * hand — and they throw rather than answer, because a stub returning a plausible zero would let a
+ * test pass on an answer nothing computed.
  */
 class ReferenceNativeCore : NativeCore {
     override fun roundtrip(msg: String): String = msg
@@ -45,157 +57,48 @@ class ReferenceNativeCore : NativeCore {
     override fun kovatchevF(mgdl: Double): Double = 0.0
     override fun kovatchevFInv(risk: Double): Double = 0.0
 
-    // ── Not exercised by :cgm tests (contract-only) ─────────────────────────────────────
-    override fun parseDescriptor(json: String): ModelDescriptor? = null
-
-    override fun causalSmooth(
-        series: List<Double>,
-        clampMin: Double?,
-        clampMax: Double?,
-        window: Int,
-    ): List<Double> = TODO("not exercised by :cgm tests")
-
-    override fun normalizeSample(desc: ModelDescriptor, bg: Double, carb: Double, insulin: Double): List<Double> =
-        TODO("not exercised by :cgm tests")
-
-    override fun denormalizeSample(desc: ModelDescriptor, z: List<Double>): List<Double> =
-        TODO("not exercised by :cgm tests")
-
-    override fun buildContext(
-        desc: ModelDescriptor,
-        bg: List<Double>,
-        carb: List<Double>,
-        insulin: List<Double>,
-        announcedCarb: List<Double>?,
-        announcedInsulin: List<Double>?,
-        smoothingWindow: Int,
-    ): BuiltContext = TODO("not exercised by :cgm tests")
-
-    override fun assembleDecode(
-        desc: ModelDescriptor,
-        headRaw: List<Double>,
-        lastBg: Double,
-        carrySpread: Double,
-    ): Forecast = TODO("not exercised by :cgm tests")
-
-    override fun forecastDegeneracyCheck(desc: ModelDescriptor, forecast: Forecast): ForecastStatus =
-        TODO("not exercised by :cgm tests")
-
-    override fun decodeTime(timeLogits: List<Double>, nBins: Int, binHours: Double): PredictedTime? = null
-
-    override fun gamma(total: Double, k: Double, theta: Double, durMin: Double): List<Double> =
-        TODO("not exercised by :cgm tests")
-
-    override fun bateman(total: Double, durMin: Double, ka: Double, ke: Double): List<Double> =
-        TODO("not exercised by :cgm tests")
-
-    override fun expActionCurve(total: Double, peakMin: Double, diaMin: Double): List<Double> =
-        TODO("not exercised by :cgm tests")
-
-    override fun insulinPresetCatalog(): List<InsulinPresetSpec> = TODO("not exercised by :cgm tests")
-
-    override fun bucketize(
-        events: List<CurveEvent>,
-        gridStartMs: Long,
-        nSteps: Int,
-        kind: CurveKind,
-    ): List<Double> = TODO("not exercised by :cgm tests")
-
-    override fun onBoard(events: List<CurveEvent>, atMs: Long, kind: CurveKind): Double =
-        TODO("not exercised by :cgm tests")
-
-    override fun extendBasal(schedule: BasalSchedule, fromMs: Long, toMs: Long): List<CurveEvent> =
-        TODO("not exercised by :cgm tests")
-
-    override fun advancedStats(
-        samples: List<StatSample>,
-        targetLow: Int,
-        targetHigh: Int,
-        agpBins: Int,
-    ): AdvancedStats = AdvancedStats.EMPTY
-
-    override fun forecastMetricsSuite(
-        windows: List<ForecastWindow>,
-        horizonsMin: List<Int>,
-        config: MetricsConfig,
-        includeCgEga: Boolean,
-    ): MetricsSuite = MetricsSuite.EMPTY
-
-    // Empty is the contract's own fail-closed answer, not a shortfall of this stand-in: the lattice
-    // exists so the zone inequalities stay in the core alone, and classifying one here would put a
-    // second copy of them in a test double. `ClarkeZoneGrid.build` reads empty as no lattice.
-    override fun clarkeZoneGrid(
-        truthAxisMgdl: List<Double>,
-        predAxisMgdl: List<Double>,
-    ): List<ClarkeZone> = emptyList()
-
-    // Refused for the same reason the lattice above is: §8.4's side-aware order statistic and its
-    // median-fixed monotone apply live in the crate and nowhere else, and re-expressing either in a
-    // test double would be the second copy of a formula whose two versions could then disagree about
-    // the hypo edge. No correction fitted, and the raw fan returned — which is what every caller
-    // already falls back to.
-    override fun conformalMinCalWindows(): Int = 0
-
-    override fun fitQuantileConformal(
-        windows: List<ForecastWindow>,
-        minCalWindows: Int,
-    ): ConformalFit = ConformalFit.NONE
-
-    override fun applyQuantileConformal(
-        bandsMgdl: List<Double>,
-        delta: List<Double>,
-    ): List<Double>? = null
-
-    override fun applyQuantileConformalBatch(
-        fansMgdl: List<Double>,
-        delta: List<Double>,
-    ): List<Double>? = null
-
-    // Three members :cgm's own tests never reach — the metric suite's clinical cuts, the DTS zone
-    // grid and the trend bins all belong to surfaces above this module. They are declared on the port,
-    // so the double has to answer them; refusing is the honest answer, and matches StubNativeCore.
-    override fun clinicalCuts(): ClinicalCuts = ClinicalCuts.UNAVAILABLE
-
-    override fun dtsZoneGrid(
-        truthAxisMgdl: List<Double>,
-        predAxisMgdl: List<Double>,
-    ): List<DtsZone> = emptyList()
-
-    override fun trendBinEdges(): List<Double> = emptyList()
-
-    // The classical baseline, likewise out of this module's reach: the ridge solve, its causal
-    // on-board scatter and its degeneracy verdict all live in the crate, and a Kotlin reproduction
-    // here would be a second numeric authority for the model the neural one is MEASURED against.
-    // `TODO()` rather than a plausible zero, mirroring StubNativeCore — a :cgm test that reached one
-    // of these is a test asking the wrong object, and should fail loudly saying so.
-    override fun baselineDefaultSpec(): BaselineSpec = TODO("the baseline is Rust-only")
-
-    override fun fitBaselineRidge(
-        bgMgdl: List<Double>,
-        gridStartMs: Long,
-        events: List<CurveEvent>,
-        spec: BaselineSpec,
-        nowMs: Long,
-        minCalWindows: Int,
-    ): BaselineFit? = TODO("the baseline is Rust-only")
-
-    override fun baselinePredict(
-        model: BaselineModel,
-        bgTail: List<Double>,
-        iob: Double,
-        cob: Double,
-        futureCarb: List<Double>,
-        futureInsulin: List<Double>,
-    ): BaselineForecast? = TODO("the baseline is Rust-only")
-
-    override fun baselineOnBoardAt(events: List<CurveEvent>, atMs: Long, kind: CurveKind): Double =
-        TODO("the baseline is Rust-only")
-
-    override fun baselineDegeneracyCheck(forecast: BaselineForecast): ForecastStatus =
-        TODO("the baseline is Rust-only")
-
+    // ── Contract-only, never called from :cgm ───────────────────────────────────────────
+    override fun parseDescriptor(json: String): ModelDescriptor? = TODO("not exercised by :cgm tests")
+    override fun causalSmooth(series: List<Double>, clampMin: Double?, clampMax: Double?, window: Int): List<Double> = TODO("not exercised by :cgm tests")
+    override fun normalizeSample(desc: ModelDescriptor, bg: Double, carb: Double, insulin: Double, exercise: Double): List<Double> = TODO("not exercised by :cgm tests")
+    override fun denormalizeSample(desc: ModelDescriptor, z: List<Double>): List<Double> = TODO("not exercised by :cgm tests")
+    override fun buildGraphInput(desc: ModelDescriptor, bg: List<Double>, carb: List<Double>, insulin: List<Double>, exercise: List<Double>, announcedCarb: List<Double>?, announcedInsulin: List<Double>?, announcedExercise: List<Double>?, maskSpans: List<MaskSpan>, withForecast: Boolean, smoothingWindow: Int): GraphInput = TODO("not exercised by :cgm tests")
+    override fun assembleDecode(desc: ModelDescriptor, headRaw: List<Double>, anchors: List<Double>, slotPatch: List<Int>, nMasked: Int, carrySpread: Double): Forecast = TODO("not exercised by :cgm tests")
+    override fun forecastSlice(f: Forecast, fromPatch: Int, toPatch: Int): Forecast = TODO("not exercised by :cgm tests")
+    override fun bandLine(desc: ModelDescriptor, f: Forecast, tau: Double): List<Double> = TODO("not exercised by :cgm tests")
+    override fun headOpen(bytes: ByteArray, spec: HeadSpec): NativeHead? = TODO("not exercised by :cgm tests")
+    override fun loraTrain(head: NativeHead, desc: ModelDescriptor, samples: List<LoraSample>, config: LoraConfig, opts: LoraTrainOpts, progress: LoraProgressSink?): LoraTrainResult = TODO("not exercised by :cgm tests")
+    override fun loraNew(config: LoraConfig, headSha256: String, dModel: Int, hidden: Int, outDim: Int, seed: Long): LoraWeights = TODO("not exercised by :cgm tests")
+    override fun loraSerialize(w: LoraWeights): ByteArray = TODO("not exercised by :cgm tests")
+    override fun loraDeserialize(bytes: ByteArray): LoraWeights? = TODO("not exercised by :cgm tests")
+    override fun synthDefaultParams(): SynthParams = TODO("not exercised by :cgm tests")
+    override fun synthSeries(nSteps: Int, startHourOfDay: Double, params: SynthParams, seed: Long): SynthSeries = TODO("not exercised by :cgm tests")
+    override fun synthFillGaps(realBg: List<Double>, realCarb: List<Double>, realInsulin: List<Double>, realExercise: List<Double>, synth: SynthSeries): SynthSeries = TODO("not exercised by :cgm tests")
+    override fun findGaps(bg: List<Double>, minSteps: Int): List<GapRun> = TODO("not exercised by :cgm tests")
+    override fun forecastDegeneracyCheck(desc: ModelDescriptor, forecast: Forecast): ForecastStatus = TODO("not exercised by :cgm tests")
+    override fun decodeTime(timeLogits: List<Double>, nBins: Int, binHours: Double): PredictedTime? = TODO("not exercised by :cgm tests")
+    override fun gamma(total: Double, k: Double, theta: Double, durMin: Double): List<Double> = TODO("not exercised by :cgm tests")
+    override fun bateman(total: Double, durMin: Double, ka: Double, ke: Double): List<Double> = TODO("not exercised by :cgm tests")
+    override fun expActionCurve(total: Double, peakMin: Double, diaMin: Double): List<Double> = TODO("not exercised by :cgm tests")
+    override fun insulinPresetCatalog(): List<com.t1dm.core.model.InsulinPresetSpec> = TODO("not exercised by :cgm tests")
+    override fun bucketize(events: List<CurveEvent>, gridStartMs: Long, nSteps: Int, kind: CurveKind): List<Double> = TODO("not exercised by :cgm tests")
+    override fun onBoard(events: List<CurveEvent>, atMs: Long, kind: CurveKind): Double = TODO("not exercised by :cgm tests")
+    override fun extendBasal(schedule: BasalSchedule, fromMs: Long, toMs: Long): List<CurveEvent> = TODO("not exercised by :cgm tests")
+    override fun advancedStats(samples: List<StatSample>, targetLow: Int, targetHigh: Int, agpBins: Int): AdvancedStats = TODO("not exercised by :cgm tests")
+    override fun clinicalCuts(): ClinicalCuts = TODO("not exercised by :cgm tests")
+    override fun forecastMetricsSuite(windows: List<ForecastWindow>, horizonsMin: List<Int>, config: MetricsConfig, includeCgEga: Boolean): MetricsSuite = TODO("not exercised by :cgm tests")
+    override fun clarkeZoneGrid(truthAxisMgdl: List<Double>, predAxisMgdl: List<Double>): List<ClarkeZone> = TODO("not exercised by :cgm tests")
+    override fun dtsZoneGrid(truthAxisMgdl: List<Double>, predAxisMgdl: List<Double>): List<DtsZone> = TODO("not exercised by :cgm tests")
+    override fun trendBinEdges(): List<Double> = TODO("not exercised by :cgm tests")
+    override fun conformalMinCalWindows(): Int = TODO("not exercised by :cgm tests")
+    override fun fitQuantileConformal(windows: List<ForecastWindow>, minCalWindows: Int): ConformalFit = TODO("not exercised by :cgm tests")
+    override fun applyQuantileConformal(bandsMgdl: List<Double>, delta: List<Double>): List<Double>? = TODO("not exercised by :cgm tests")
+    override fun applyQuantileConformalBatch(fansMgdl: List<Double>, delta: List<Double>): List<Double>? = TODO("not exercised by :cgm tests")
+    override fun baselineDefaultSpec(): BaselineSpec = TODO("not exercised by :cgm tests")
+    override fun fitBaselineRidge(bgMgdl: List<Double>, gridStartMs: Long, events: List<CurveEvent>, spec: BaselineSpec, nowMs: Long, minCalWindows: Int): BaselineFit? = TODO("not exercised by :cgm tests")
+    override fun baselinePredict(model: BaselineModel, bgTail: List<Double>, iob: Double, cob: Double, futureCarb: List<Double>, futureInsulin: List<Double>): BaselineForecast? = TODO("not exercised by :cgm tests")
+    override fun baselineOnBoardAt(events: List<CurveEvent>, atMs: Long, kind: CurveKind): Double = TODO("not exercised by :cgm tests")
+    override fun baselineDegeneracyCheck(forecast: BaselineForecast): ForecastStatus = TODO("not exercised by :cgm tests")
     override fun defaultCarTuning(): CarTuning = TODO("not exercised by :cgm tests")
-
-    override fun createGameWorld(terrain: TerrainSpec, tuning: CarTuning): GameWorld =
-        TODO("not exercised by :cgm tests")
+    override fun createGameWorld(terrain: TerrainSpec, tuning: CarTuning): GameWorld = TODO("not exercised by :cgm tests")
 }

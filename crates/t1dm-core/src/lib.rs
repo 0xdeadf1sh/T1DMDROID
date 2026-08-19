@@ -16,6 +16,18 @@ uniffi::setup_scaffolding!();
 mod preproc;
 pub use preproc::*;
 
+/// The BG head re-run on device from the exported head weights, and the low-rank adapter
+/// that personalises it. The trunk stays frozen inside the `.pte`; everything trainable is a
+/// few thousand numbers here, fitted from the patient's own matured windows.
+mod head;
+pub use head::*;
+
+/// A seeded synthetic patient: BG, meal, insulin and exercise channels on the five-minute
+/// grid, for running a model over a context longer than the history on hand. Never stored,
+/// never synced, and never read by anything that classifies a category.
+mod synth;
+pub use synth::*;
+
 /// The shared curve/PK engine (gamma Ra + Bateman basal + bolus PK, bucketize, IOB/COB,
 /// basal tiling). Phase 4, §3.3; bit-faithful to `simulator.py`.
 mod curve;

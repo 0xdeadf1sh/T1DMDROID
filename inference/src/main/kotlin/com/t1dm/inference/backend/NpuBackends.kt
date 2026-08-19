@@ -55,7 +55,7 @@ class LiteRtNpuBackend : InferenceBackend {
                 "authoritative regardless.",
         )
 
-    override fun run(m: LoadedModel, x: GraphInput): GraphOutput = throw NotImplementedError(NOT_YET)
+    override fun run(m: LoadedModel, x: GraphTensors): GraphOutput = throw NotImplementedError(NOT_YET)
     override fun close(m: LoadedModel) = Unit
 }
 
@@ -72,7 +72,7 @@ class ExecuTorchNeuronBackend : InferenceBackend {
                 "ExecuTorchXnnpackBackend; use the LiteRT NPU path for the APU.",
         )
 
-    override fun run(m: LoadedModel, x: GraphInput): GraphOutput = throw NotImplementedError(NOT_YET)
+    override fun run(m: LoadedModel, x: GraphTensors): GraphOutput = throw NotImplementedError(NOT_YET)
     override fun close(m: LoadedModel) = Unit
 }
 
@@ -87,7 +87,7 @@ class LiteRtNeuronBackend : InferenceBackend {
                 "unified CompiledModel NPU path (BackendId.LITERT_NPU). Enumerated for routing only.",
         )
 
-    override fun run(m: LoadedModel, x: GraphInput): GraphOutput = throw NotImplementedError(NOT_YET)
+    override fun run(m: LoadedModel, x: GraphTensors): GraphOutput = throw NotImplementedError(NOT_YET)
     override fun close(m: LoadedModel) = Unit
 }
 
@@ -148,29 +148,35 @@ class ExecuTorchVulkanBackend(
     }
 
     /**
-     * One forward `(patches, struct-mask) → (head_raw, time_logits?)`, identical output contract to
-     * [ExecuTorchXnnpackBackend] — the same modified forward was lowered, only the partitioner
-     * differs, so slot 0 is `head_raw (1,4,6,7)` flattened to 168 and slot 1 the optional time
-     * probe. Blocking; the controller confines it to the single-thread `inference` dispatcher.
+     * One forward `(patches, struct-mask, slot_sel) → (head_raw, time_logits?, slot_hidden?)`,
+     * the same output contract as [ExecuTorchXnnpackBackend] — the same modified forward was
+     * lowered, only the partitioner differs. Blocking; the controller confines it to the
+     * single-thread `inference` dispatcher.
      */
-    override fun run(m: LoadedModel, x: GraphInput): GraphOutput {
+    override fun run(m: LoadedModel, x: GraphTensors): GraphOutput {
         val model = m as EtModel
         val patches = org.pytorch.executorch.Tensor.fromBlob(
-            x.patches, longArrayOf(1, GraphIo.T.toLong(), GraphIo.PATCH_DIM.toLong()),
+            x.patches, longArrayOf(1, x.t.toLong(), x.patchDim.toLong()),
         )
         val mask = org.pytorch.executorch.Tensor.fromBlob(
-            x.mask, longArrayOf(GraphIo.T.toLong(), GraphIo.T.toLong()),
+            x.mask, longArrayOf(x.t.toLong(), x.t.toLong()),
+        )
+        val slotSel = org.pytorch.executorch.Tensor.fromBlob(
+            x.slotSel, longArrayOf(x.mSlots.toLong(), x.t.toLong()),
         )
         val out = model.module.forward(
             org.pytorch.executorch.EValue.from(patches),
             org.pytorch.executorch.EValue.from(mask),
+            org.pytorch.executorch.EValue.from(slotSel),
         )
         require(out.isNotEmpty() && out[0].isTensor) { "vulkan backend returned no head_raw tensor" }
         val head = out[0].toTensor().dataAsFloatArray
-        require(head.size == PRED_STEPS * N_Q) { "head_raw size ${head.size} != ${PRED_STEPS * N_Q}" }
-        val timeLogits: FloatArray? =
-            if (out.size > 1 && out[1].isTensor) out[1].toTensor().dataAsFloatArray else null
-        return GraphOutput(head, timeLogits)
+        require(head.size == x.mSlots * PATCH_SIZE * N_Q) {
+            "head_raw size ${head.size} != M·S·7 ${x.mSlots * PATCH_SIZE * N_Q}"
+        }
+        fun optional(i: Int): FloatArray? =
+            if (out.size > i && out[i].isTensor) out[i].toTensor().dataAsFloatArray else null
+        return GraphOutput(head, optional(1), optional(2))
     }
 
     override fun close(m: LoadedModel) {
@@ -178,7 +184,7 @@ class ExecuTorchVulkanBackend(
     }
 
     private companion object {
-        const val PRED_STEPS = GraphIo.PRED * GraphIo.PATCH_DIM / 3 // 4·6 = 24 output steps
+        const val PATCH_SIZE = 6
         const val N_Q = 7
     }
 }

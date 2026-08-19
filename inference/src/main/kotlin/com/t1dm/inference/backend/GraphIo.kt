@@ -1,84 +1,46 @@
 package com.t1dm.inference.backend
 
-import com.t1dm.core.model.BuiltContext
+import com.t1dm.core.model.GraphInput
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
 
 /**
- * Assembles the fixed `T = 52` graph input from a Rust [BuiltContext] and builds the pad-aware
- * struct mask. This is the runtime half of the §2.4 contract, and it must reproduce the exporter's
- * construction bit-for-bit — the golden `.pte` was traced and verified against exactly this layout
- * (`T1DMAI/exporters/modified_forward.py::build_struct_mask` + the left-pad in
- * `executorch_xnnpack.py::build_representative_input`).
+ * Copies a Rust-built [GraphInput] into the direct NIO buffers the runtime requires.
  *
- * **Left-pad, load-bearing.** RoPE is absolute-position dependent, so the real context must occupy
- * the *last* `n_ctx` of the 48 context slots (prediction patches at the right edge, positions
- * 48..51); a shorter unpadded sequence would yield different RoPE phases than training (exporter
- * finding #1). The leading `48 − n_ctx` pad patches are zeros — the struct mask blocks every pad
- * COLUMN, so their values never reach a prediction token.
+ * There is no geometry here and there must not be. The left-pad, the masked-patch fill, the
+ * announcement bit, the attention rule and the slot selection are all built once in
+ * `t1dm-core::build_graph_input`, against the exporter's own construction; a second
+ * transcription on this side is exactly the copy that drifts, and it drifts silently — every
+ * shape still matches and every fan is still monotone.
  */
 object GraphIo {
-    const val T = 52
-    const val MAX_CTX = 48
-    const val PRED = 4
-    const val PATCH_DIM = 18
-    private const val ATTEND = 0.0f
-
-    /** Allocate a native-order direct [FloatBuffer] (ExecuTorch requires direct buffers). */
+    /** Allocate a native-order direct [FloatBuffer] (the runtime requires direct buffers). */
     fun directFloats(n: Int): FloatBuffer =
         ByteBuffer.allocateDirect(n * java.lang.Float.BYTES).order(ByteOrder.nativeOrder()).asFloatBuffer()
 
     /**
-     * Build the `(1,52,18)` patches + `(52,52)` struct mask for [ctx]. The buffers are single-use
-     * (consumed by `Tensor.fromBlob`), so call this once per model per cycle. [negFill] comes from
-     * the descriptor (`-30000.0`), never `-inf`, for fp16-safe softmax.
+     * The three graph tensors, freshly allocated. `Tensor.fromBlob` reads a direct buffer BY
+     * REFERENCE, so each run consumes its own [GraphTensors] — never a shared or rewound one.
      */
-    fun graphInput(ctx: BuiltContext, negFill: Double): GraphInput {
-        val nCtx = ctx.nCtx
-        require(nCtx in 1..MAX_CTX) { "n_ctx $nCtx outside [1,$MAX_CTX]" }
-        require(ctx.context.size == nCtx * PATCH_DIM) {
-            "context ${ctx.context.size} != n_ctx·PATCH_DIM ${nCtx * PATCH_DIM}"
+    fun tensors(gi: GraphInput): GraphTensors {
+        require(gi.patches.size == gi.t * gi.patchDim) {
+            "patches ${gi.patches.size} != T·PATCH_DIM ${gi.t * gi.patchDim}"
         }
-        require(ctx.pred.size == PRED * PATCH_DIM) {
-            "pred ${ctx.pred.size} != PRED·PATCH_DIM ${PRED * PATCH_DIM}"
+        require(gi.attnMask.size == gi.t * gi.t) {
+            "attn_mask ${gi.attnMask.size} != T² ${gi.t * gi.t}"
         }
-        val pad0 = MAX_CTX - nCtx
-        val patches = directFloats(T * PATCH_DIM)
-        // [pad0 zero patches] [n_ctx real context] [PRED prediction patches] — exporter layout.
-        repeat(pad0 * PATCH_DIM) { patches.put(0f) }
-        for (v in ctx.context) patches.put(v.toFloat())
-        for (v in ctx.pred) patches.put(v.toFloat())
-        patches.rewind()
-        return GraphInput(patches, buildStructMask(nCtx, negFill.toFloat()))
-    }
-
-    /**
-     * The pad-aware additive struct mask, row-major `(T,T)`, `0.0` attend / [negFill] block —
-     * an exact port of `modified_forward.build_struct_mask`. Allowed blocks mirror
-     * `create_attention_mask` on the real sub-window: ctx↔ctx bidirectional, pred→ctx full,
-     * pred↔pred bidirectional, ctx→pred blocked; every pad column blocked; pad rows may attend to
-     * the real context purely so their softmax is never fully-masked (their outputs are discarded,
-     * since the head reads only the last `P` tokens).
-     */
-    fun buildStructMask(nCtx: Int, negFill: Float): FloatBuffer {
-        require(nCtx in 1..MAX_CTX) { "n_ctx $nCtx outside [1,$MAX_CTX]" }
-        val c = MAX_CTX
-        val pad0 = c - nCtx
-        val arr = FloatArray(T * T) { negFill }
-        fun attend(rLo: Int, rHi: Int, cLo: Int, cHi: Int) {
-            for (r in rLo until rHi) {
-                val base = r * T
-                for (col in cLo until cHi) arr[base + col] = ATTEND
-            }
+        require(gi.slotSel.size == gi.mSlots * gi.t) {
+            "slot_sel ${gi.slotSel.size} != M·T ${gi.mSlots * gi.t}"
         }
-        attend(pad0, c, pad0, c)   // ctx <-> ctx (bidirectional)
-        attend(c, T, pad0, c)      // pred -> ctx (full)
-        attend(c, T, c, T)         // pred <-> pred (bidirectional)
-        if (pad0 > 0) attend(0, pad0, pad0, c) // pad rows -> ctx (anti-NaN; outputs discarded)
-        val buf = directFloats(T * T)
-        buf.put(arr)
-        buf.rewind()
-        return buf
+        fun buf(src: FloatArray): FloatBuffer = directFloats(src.size).apply { put(src); rewind() }
+        return GraphTensors(
+            patches = buf(gi.patches),
+            mask = buf(gi.attnMask),
+            slotSel = buf(gi.slotSel),
+            t = gi.t,
+            patchDim = gi.patchDim,
+            mSlots = gi.mSlots,
+        )
     }
 }

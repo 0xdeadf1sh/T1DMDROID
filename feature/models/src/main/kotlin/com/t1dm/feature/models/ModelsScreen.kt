@@ -59,6 +59,7 @@ fun ModelsScreen(
     pendingUpdates: Set<String> = emptySet(),
     onApplyUpdate: (String) -> Unit = {},
     onDelete: (String) -> Unit = {},
+    onOpenAdapters: (String) -> Unit = {},
 ) {
     // The delete confirmation is hoisted to the screen (not per-row) so a row recycling out of the
     // LazyColumn viewport can't drop the pending confirmation mid-gesture.
@@ -101,6 +102,7 @@ fun ModelsScreen(
                         onOpen = onOpen,
                         onApplyUpdate = onApplyUpdate,
                         onRequestDelete = { confirmDelete = it },
+                        onOpenAdapters = onOpenAdapters,
                         // The baseline's row is listed before it has ever been fitted, so its radio
                         // stays inert until there is a model behind it to select. Tapping the row
                         // still opens the drill-down, which is where the fit lives.
@@ -156,6 +158,7 @@ private fun ModelRow(
     onOpen: (String) -> Unit,
     onApplyUpdate: (String) -> Unit,
     onRequestDelete: (String) -> Unit,
+    onOpenAdapters: (String) -> Unit = {},
     selectable: Boolean = true,
 ) {
     // N3 — tapping ANYWHERE on the row (name included) opens the detail; "select this model" is now an
@@ -225,6 +228,13 @@ private fun ModelRow(
             OutlinedButton(
                 onClick = { haptics.perform(HapticEvent.Commit); onApplyUpdate(model.modelId) },
             ) { Text("Apply update") }
+        }
+        if (model.modelId != BASELINE_MODEL_ID) {
+            // The ridge baseline has no head to adapt: it is a fitted linear model, not a frozen
+            // graph with a seam.
+            OutlinedButton(
+                onClick = { haptics.perform(HapticEvent.Tap); onOpenAdapters(model.modelId) },
+            ) { Text("Adapters") }
         }
     }
 }
