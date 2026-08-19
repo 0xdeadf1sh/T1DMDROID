@@ -110,6 +110,16 @@ data class ReadingExtent(val oldestMs: Long, val newestMs: Long)
 class T1dmRepository(
     private val db: AppDatabase,
     private val dispatchers: T1dmDispatchers,
+    /**
+     * The wall clock, for the one thing in this class that is about NOW rather than about an event:
+     * an outbox row's `createdAtMs`, which is its write instant.
+     *
+     * Every other timestamp here is passed in by the caller and stays that way. This one must not be,
+     * because the queue reads `createdAtMs` as when the row was written — it is what the age bound is
+     * measured from and what drain order follows — and a reading's own instant is not that number
+     * except by coincidence. See [upsertReading].
+     */
+    private val nowMs: () -> Long = System::currentTimeMillis,
 ) : OutboxSink {
     private val io get() = dispatchers.io
 
@@ -408,7 +418,11 @@ class T1dmRepository(
             val authoritative = sources.authoritativeSourceId()
             if (authoritative == reading.sourceId.value && reading.flag != ReadingFlag.INVALID) {
                 projectBg(reading)
-                enqueueIngest(reading.tsMs, reading.rxWallMs)
+                // `createdAtMs` is the WRITE instant, never the event's — see [enqueueRow]. A reading
+                // whose own instant is older than the write would be age-evicted against a clock it
+                // never ran on, and would sort ahead of every alert queued afterwards.
+                val queuedAt = nowMs()
+                enqueueIngest(reading.tsMs, queuedAt)
                 // The bridge is fed HERE and not from `enqueueIngest`, which the scalar merge path also
                 // calls: a steps or mood write would otherwise re-queue a slot whose BG has not changed,
                 // and the receiver has no idempotency key to absorb the re-upload with.
@@ -417,7 +431,7 @@ class T1dmRepository(
                         OutboxKind.NIGHTSCOUT,
                         "$NS_ENTRY_DEDUP_PREFIX${reading.tsMs}",
                         ByteArray(0),
-                        reading.rxWallMs,
+                        queuedAt,
                         // Held until the slot closes. The marker only coalesces while it is still
                         // QUEUED, and drains run far more often than every five minutes — so without
                         // this a sub-grid sensor whose later sample supersedes the slot re-queues a key
