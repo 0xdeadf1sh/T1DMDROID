@@ -26,8 +26,10 @@ import kotlinx.coroutines.withContext
 class RolledSeries internal constructor(
     val tsMs: LongArray,
     val median: FloatArray,
-    val lo: FloatArray,
-    val hi: FloatArray,
+    /** The fan's nested lower edges, outer→inner — the same three pairs [PredSeries] carries. A roll
+     *  whose producer gave no interior levels has ONE pair, and draws as the single band it is. */
+    val lo: Array<FloatArray>,
+    val hi: Array<FloatArray>,
     /** The prefix length inside the validated 2 h horizon; steps past it are extrapolated. */
     val validatedSteps: Int,
     val degenerate: Boolean,
@@ -71,8 +73,20 @@ fun buildRolledSeries(
     }.toFloat()
     val ts = LongArray(n) { i -> rolled.anchorTsMs + (i + 1L) * rolled.stepMs }
     val median = FloatArray(n) { conv(rolled.medianBg[it]) }
-    val lo = FloatArray(n) { conv(rolled.lowerBg.getOrElse(it) { rolled.medianBg[it] }) }
-    val hi = FloatArray(n) { conv(rolled.upperBg.getOrElse(it) { rolled.medianBg[it] }) }
+    // Ascending-τ columns: 0=.05 1=.10 2=.25 3=.50 4=.75 5=.90 6=.95. Fan pairs outer→inner, the
+    // same three `buildPredSeries` takes — so the two fans on one panel are read the same way.
+    val q = if (n > 0 && rolled.bandsMgdl.size % n == 0) rolled.bandsMgdl.size / n else 0
+    val lo: Array<FloatArray>
+    val hi: Array<FloatArray>
+    if (q >= N_QUANTILES) {
+        val loCols = intArrayOf(0, 1, 2)
+        val hiCols = intArrayOf(q - 1, q - 2, q - 3)
+        lo = Array(3) { b -> FloatArray(n) { i -> conv(rolled.bandsMgdl[i * q + loCols[b]]) } }
+        hi = Array(3) { b -> FloatArray(n) { i -> conv(rolled.bandsMgdl[i * q + hiCols[b]]) } }
+    } else {
+        lo = arrayOf(FloatArray(n) { conv(rolled.lowerBg.getOrElse(it) { rolled.medianBg[it] }) })
+        hi = arrayOf(FloatArray(n) { conv(rolled.upperBg.getOrElse(it) { rolled.medianBg[it] }) })
+    }
     return RolledSeries(
         tsMs = ts, median = median, lo = lo, hi = hi,
         validatedSteps = rolled.validatedSteps.coerceIn(0, n),
@@ -106,110 +120,103 @@ internal fun RolledSeries.bandFromIndex(): Int =
 
 /** The band's opening lower edge: the fan's, when [seam] falls on that same instant; else the
  *  roll's own. Split from [bandOpenHi] rather than returned as a pair — this runs inside the draw. */
-internal fun RolledSeries.bandOpenLo(seam: RolledSeam?): Float {
+internal fun RolledSeries.bandOpenLo(seam: RolledSeam?, band: Int): Float {
     val i = bandFromIndex()
-    return if (seam != null && seam.tsMs == tsMs[i]) seam.lo else lo[i]
+    // Only the OUTERMOST pair meets the cycle fan's own outer edge; the inner ones open on their
+    // own, since the seam carries one uncertainty and not a fan.
+    return if (band == 0 && seam != null && seam.tsMs == tsMs[i]) seam.lo else lo[band][i]
 }
 
 /** The band's opening upper edge — see [bandOpenLo]. */
-internal fun RolledSeries.bandOpenHi(seam: RolledSeam?): Float {
+internal fun RolledSeries.bandOpenHi(seam: RolledSeam?, band: Int): Float {
     val i = bandFromIndex()
-    return if (seam != null && seam.tsMs == tsMs[i]) seam.hi else hi[i]
+    return if (band == 0 && seam != null && seam.tsMs == tsMs[i]) seam.hi else hi[band][i]
 }
 
 // Raw-pixel dash constants, held rather than rebuilt inside the draw — see the same note in
 // PredOverlay.kt. Neither depends on the density, the theme or the roll, and a [PathEffect] is
 // immutable, so the two allocations they replace were pure per-frame waste.
 private val EXTRAPOLATED_MEDIAN_DASH: PathEffect = PathEffect.dashPathEffect(floatArrayOf(6f, 5f))
-private val VALIDATED_BOUNDARY_DASH: PathEffect = PathEffect.dashPathEffect(floatArrayOf(3f, 4f))
 
 /**
- * Draw the rolled forecast. The validated prefix (first [RolledSeries.validatedSteps]) is a thin,
- * dimmed median line — it duplicates the on-graph 2 h forecast, so it is kept faint. The EXTRAPOLATED
- * tail is drawn distinctly: a hatched translucent band between the .05/.95 edges, a dashed median, a
- * dashed vertical boundary at the 2 h mark, and a small "extrapolated" legend. A degenerate roll ends
- * at its valid prefix with a plain flag.
+ * Draw the on-demand rolled forecast in the same hand the cycle forecast is drawn in.
  *
- * [seam], when it lands on the boundary instant, supplies the band's opening edge — see [RolledSeam].
+ * **The same appearance as a forecast, deliberately.** The roll runs the same artifact on the same
+ * fp32 path — it is the cycle's own forecast re-fed to itself — so hatching it, dashing it, ruling
+ * a boundary through it and captioning it claimed a difference in kind that does not exist. The
+ * band alpha, the stroke weight and the endpoint marker are all [drawPredSeries]'s.
+ *
+ * **A degenerate roll still loses its band**, exactly as a degenerate forecast does: a collapsed or
+ * misordered band must not read as confidence, and that is part of the forecast's style rather than
+ * an exception to it.
+ *
+ * The roll remains display-only, and structurally so: it is a [com.t1dm.core.model.RolledForecast],
+ * a type `:calc` cannot accept, so no alert, rail or dose recommendation can read one however it is
+ * painted.
+ *
+ * The same three nested pairs, from the same seven levels: [com.t1dm.calc.FanStep] now carries the
+ * whole slot rather than projecting it down to its outer edges. A roll whose producer gave no
+ * interior levels still draws as the single band it is, at the outermost pair's own weight.
  */
 internal fun DrawScope.drawRolledSeries(
     s: RolledSeries,
     absToPx: AbsToPx,
     valToPx: ValToPx,
-    plotTop: Float,
-    plotBottom: Float,
     lineColor: Color,
-    hatchColor: Color,
+    fanColor: Color,
     seam: RolledSeam? = null,
     scratch: Path,
 ) {
     if (s.isEmpty) return
     fun px(i: Int) = absToPx.of(s.tsMs[i].toDouble())
-    val vStart = s.validatedSteps.coerceIn(0, s.size)
 
-    // (1) Validated prefix — faint solid median (the on-graph forecast already carries the full fan).
-    if (vStart >= 2) {
-        for (i in 0 until vStart - 1) {
-            drawLine(
-                lineColor.copy(alpha = 0.30f),
-                Offset(px(i), valToPx.of(s.median[i])),
-                Offset(px(i + 1), valToPx.of(s.median[i + 1])),
-                strokeWidth = 1.4f, cap = StrokeCap.Round,
-            )
+    // The band starts where the cycle fan stops, opening from the fan's own edge when the two meet
+    // at that instant: that x is where the series join and it may carry exactly one uncertainty.
+    // Everything past it is the roll's own — no correction is fitted out there and none may be
+    // invented. Over the prefix the cycle forecast draws its own fan, and a second one on top of it
+    // would simply be twice the ink.
+    if (!s.degenerate && s.size - s.bandFromIndex() >= 2) {
+        val from = s.bandFromIndex()
+        // `drawPredSeries`'s own order and alphas: innermost first, outermost last and heaviest, so
+        // the composite darkens towards the centre exactly as the cycle fan beside it does.
+        for (b in s.lo.size - 1 downTo 0) {
+            val openLo = s.bandOpenLo(seam, b)
+            val openHi = s.bandOpenHi(seam, b)
+            fun lo(i: Int) = if (i == from) openLo else s.lo[b][i]
+            fun hi(i: Int) = if (i == from) openHi else s.hi[b][i]
+            // Reused across frames; see the note in `drawPredSeries`.
+            val band = scratch.also { it.reset() }
+            for (i in from until s.size) {
+                val x = px(i); val y = valToPx.of(hi(i))
+                if (i == from) band.moveTo(x, y) else band.lineTo(x, y)
+            }
+            for (i in s.size - 1 downTo from) band.lineTo(px(i), valToPx.of(lo(i)))
+            band.close()
+            // A roll with a single pair is the outermost one, so it takes the outermost weight.
+            val alpha = if (s.lo.size == 1) 0.16f else 0.06f + 0.05f * (2 - b)
+            drawPath(band, fanColor.copy(alpha = alpha))
         }
     }
 
-    // (2) Extrapolated tail — a hatched band + dashed median, starting from the validated boundary so
-    //     the tail visually continues the forecast.
-    if (s.size - vStart >= 1) {
-        val from = s.bandFromIndex() // start one step early so the band abuts the prefix
-        // The opening vertex is the forecast fan's, when the fan reaches this same instant: that x is
-        // where the two series meet, and it may carry exactly one uncertainty. Everything past it is
-        // the roll's own — no correction is fitted out there and none may be invented.
-        val openLo = s.bandOpenLo(seam)
-        val openHi = s.bandOpenHi(seam)
-        fun lo(i: Int) = if (i == from) openLo else s.lo[i]
-        fun hi(i: Int) = if (i == from) openHi else s.hi[i]
-        // Reused across frames; see the note in `drawPredSeries`.
-        val band = scratch.also { it.reset() }
-        for (i in from until s.size) {
-            val x = px(i); val y = valToPx.of(hi(i))
-            if (i == from) band.moveTo(x, y) else band.lineTo(x, y)
-        }
-        for (i in s.size - 1 downTo from) band.lineTo(px(i), valToPx.of(lo(i)))
-        band.close()
-        // Translucent fill + diagonal hatch clipped to the band = the "unvalidated" texture.
-        drawPath(band, hatchColor.copy(alpha = 0.08f))
-        clipPath(band) {
-            val x0 = px(from); val x1 = px(s.size - 1)
-            val step = 10f
-            var x = x0 - (plotBottom - plotTop)
-            while (x < x1 + (plotBottom - plotTop)) {
-                drawLine(
-                    hatchColor.copy(alpha = 0.22f),
-                    Offset(x, plotBottom), Offset(x + (plotBottom - plotTop), plotTop),
-                    strokeWidth = 1f,
-                )
-                x += step
-            }
-        }
-        // Dashed extrapolated median.
-        for (i in from until s.size - 1) {
-            drawLine(
-                lineColor.copy(alpha = if (s.degenerate) 0.5f else 0.85f),
-                Offset(px(i), valToPx.of(s.median[i])),
-                Offset(px(i + 1), valToPx.of(s.median[i + 1])),
-                strokeWidth = 2f, cap = StrokeCap.Round, pathEffect = EXTRAPOLATED_MEDIAN_DASH,
-            )
-        }
-        // Dashed vertical boundary at the 2 h mark.
-        if (vStart in 1 until s.size) {
-            val bx = px(vStart - 1)
-            drawLine(
-                hatchColor.copy(alpha = 0.6f),
-                Offset(bx, plotTop), Offset(bx, plotBottom),
-                strokeWidth = 1f, pathEffect = VALIDATED_BOUNDARY_DASH,
-            )
-        }
+    // One median across the whole roll. Drawn over the prefix too, so the line is continuous even
+    // where no cycle forecast reaches — during warm-up there is none, and a roll that began in
+    // mid-air would be unreadable.
+    val alpha = if (s.degenerate) 0.5f else 1f
+    val effect = if (s.degenerate) EXTRAPOLATED_MEDIAN_DASH else null
+    for (i in 0 until s.size - 1) {
+        drawLine(
+            lineColor.copy(alpha = alpha),
+            Offset(px(i), valToPx.of(s.median[i])),
+            Offset(px(i + 1), valToPx.of(s.median[i + 1])),
+            strokeWidth = 2.4f, cap = StrokeCap.Round, pathEffect = effect,
+        )
+    }
+    if (!s.degenerate) {
+        val li = s.size - 1
+        drawCircle(lineColor, 3.2f, Offset(px(li), valToPx.of(s.median[li])), style = Stroke(width = 1.6f))
     }
 }
+
+/** The levels the head emits (`SPEC/invariants.md` §6) — the width a slot's fan must have before
+ *  the outer→inner pairs can be taken from it. */
+private const val N_QUANTILES = 7

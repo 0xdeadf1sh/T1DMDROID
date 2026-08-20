@@ -51,7 +51,6 @@ class NightscoutDrainTest {
         }
         override suspend fun health() = throw UnsupportedOperationException()
         override suspend fun ingest(body: com.t1dm.sync.IngestDto) = throw UnsupportedOperationException()
-        override suspend fun putPredictions(preds: List<com.t1dm.sync.PredictionWriteDto>) = throw UnsupportedOperationException()
         override suspend fun putMeals(meals: List<com.t1dm.sync.MealEventDto>) = throw UnsupportedOperationException()
         override suspend fun putDoses(doses: List<com.t1dm.sync.DoseEventDto>) = throw UnsupportedOperationException()
         override suspend fun putBasalSchedule(body: com.t1dm.sync.BasalScheduleDto) = throw UnsupportedOperationException()

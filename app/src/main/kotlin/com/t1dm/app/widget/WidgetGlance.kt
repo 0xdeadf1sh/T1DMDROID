@@ -4,6 +4,7 @@ import android.content.Context
 import com.t1dm.app.T1dmApplication
 import com.t1dm.app.notify.BgGlance
 import com.t1dm.app.notify.BgGlanceComputer
+import com.t1dm.app.notify.GlanceReadings
 import com.t1dm.core.design.ThemeIds
 import com.t1dm.core.model.AlertThresholds
 import com.t1dm.core.model.ForecastStatus
@@ -104,7 +105,12 @@ internal suspend fun currentWidgetSnapshot(context: Context): WidgetSnapshot {
     return withContext(container.dispatchers.default) {
         val nowMs = System.currentTimeMillis()
         val src = container.repository.authoritativeSourceId()
-        val latest = src?.let { container.repository.recentReadings(it, 1).firstOrNull() }
+        // 36 rows for the same reason as the watch: the newest MEASUREMENT may sit behind a
+        // promoted reconstruction, and it is what every glucose figure on the widget reads.
+        val readings = GlanceReadings.create(
+            src?.let { container.repository.recentReadings(it, 36) } ?: emptyList(),
+        )
+        val latest = readings.latest
         val unit = runCatching { container.statsRepository.currentUnitSpace() }.getOrDefault(UnitSpace.MgDl)
         val animationsEnabled = runCatching { container.settingsStore.currentAnimationsEnabled() }.getOrDefault(true)
         val bgAlphaPct = runCatching { container.settingsStore.currentBackgroundAlphaPct() }
@@ -125,7 +131,7 @@ internal suspend fun currentWidgetSnapshot(context: Context): WidgetSnapshot {
         val (glyText, glyKind) = computeGlyStatus(state, cfg.thresholds, nowMs)
 
         val glance = BgGlanceComputer.compute(
-            latest = latest,
+            readings = readings,
             state = state,
             thresholds = cfg.thresholds,
             lossMin = cfg.lossMin,

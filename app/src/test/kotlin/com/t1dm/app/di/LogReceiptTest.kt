@@ -1,6 +1,6 @@
 package com.t1dm.app.di
 
-import com.t1dm.data.PushWithdrawal
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -38,42 +38,23 @@ class LogReceiptTest {
         assertEquals("Logged 45 g (GI 60) at 14:30", logReceipt(handle(), utc))
     }
 
+    /**
+     * One outcome, not four. A deletion is ordered against the create it removes, so it lands
+     * whatever the push had already done and there is nothing left to hedge about.
+     */
     @Test
-    fun `a withdrawn push is reported as never sent`() {
-        assertEquals(
-            "Removed 45 g (GI 60) — nothing was sent.",
-            undoReceipt(handle(), PushWithdrawal.WITHDRAWN),
-        )
-    }
-
-    /** A path that enqueues nothing (the insulin-types surface) is just as clean. */
-    @Test
-    fun `a never-queued write is reported as never sent`() {
-        assertEquals(
-            undoReceipt(handle(), PushWithdrawal.WITHDRAWN),
-            undoReceipt(handle(), PushWithdrawal.NEVER_QUEUED),
-        )
-    }
-
-    @Test
-    fun `a drained push is never claimed to have been recalled`() {
-        val msg = undoReceipt(handle(), PushWithdrawal.ALREADY_SENT)
-        assertTrue(msg, msg.contains("server copy was already sent"))
-        assertTrue("the local delete is still asserted", msg.startsWith("Removed"))
-    }
-
-    @Test
-    fun `an inflight push is reported as a genuine unknown`() {
-        val msg = undoReceipt(handle(), PushWithdrawal.RACED)
-        assertTrue(msg, msg.contains("may have landed"))
+    fun `the undo names what was removed and claims nothing about the server`() {
+        val msg = undoReceipt(handle())
+        assertEquals("Removed 45 g (GI 60).", msg)
+        for (hedge in listOf("may have landed", "already sent", "next sync")) {
+            assertFalse(msg, msg.contains(hedge, ignoreCase = true))
+        }
     }
 
     /** Photo uploads and a cleared recommendation are unwind-proof; the receipt carries them verbatim. */
     @Test
-    fun `caveats are appended to whatever the push outcome was`() {
+    fun `caveats are appended to the undo line`() {
         val h = handle(caveats = listOf("Any uploaded photo stays on the server"))
-        PushWithdrawal.entries.forEach { outcome ->
-            assertTrue(outcome.name, undoReceipt(h, outcome).endsWith("Any uploaded photo stays on the server"))
-        }
+        assertTrue(undoReceipt(h).endsWith("Any uploaded photo stays on the server"))
     }
 }

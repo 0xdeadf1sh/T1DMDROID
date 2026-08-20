@@ -60,7 +60,7 @@ data class CgmSourceDescriptor(
     val displayName: String,       // e.g. "AiDEX X 22222C74D9"
     val serialSuffix: String?,     // the name/serial suffix used to match adverts
     val warmupWindowMin: Int,      // seeded per vendor, then user-tunable; drives the WARMUP heuristic
-    val passiveOnly: Boolean,      // AiDEX X: true (advertisement-only, no GATT session)
+    val passiveOnly: Boolean,      // AiDEX X: false (connected GATT session is the sole read path)
     /**
      * Removed from the sensor lists by the user — a retired sensor kept off a list that only ever
      * grows. It is a DISPLAY flag and nothing more: the source stays on record, so its readings stay
@@ -73,6 +73,20 @@ data class CgmSourceDescriptor(
      * and never from the descriptor handed to it.
      */
     val hidden: Boolean = false,
+    /**
+     * A small stable number for this sensor, zero-based, or [UNASSIGNED_ORDINAL] before one is minted.
+     *
+     * Read by the surfaces that must name a sensor without printing what it advertises — see
+     * [ordinalLabel]. Persisted and minted once, in the write transaction that first records the row,
+     * so it is neither derived from the serial nor from list position; a positional index renumbers
+     * every later sensor when an earlier one is delisted, and the number a user has learned to read as
+     * one physical device would silently become another.
+     *
+     * Defaulted because a plugin that has just met a sensor genuinely cannot know it: the mint happens
+     * in storage, so a descriptor a family driver builds carries the sentinel until it has been through
+     * there.
+     */
+    val ordinal: Int = UNASSIGNED_ORDINAL,
 ) {
     /**
      * [displayName] with the serial the vendor plugin folded into it removed — "AiDEX X" rather than
@@ -93,7 +107,34 @@ data class CgmSourceDescriptor(
             return stripped.ifEmpty { displayName }
         }
 
+    /**
+     * What to call this sensor where it is named INCIDENTALLY — chrome that sits on every screen, a
+     * status read-out — as opposed to the CGM panel, where the user is deliberately telling one sensor
+     * from another and keeps [displayName].
+     *
+     * A vendor may build the advertised name out of the number printed on the sensor, in which case any
+     * photograph of a surface carrying it carries the serial too. This says the same thing with a
+     * counter: enough to tell two sensors apart, and derived from nothing.
+     *
+     * A sensor still carrying [UNASSIGNED_ORDINAL] has no number to print and is named by kind alone,
+     * rather than being given one here that storage would later disagree with.
+     */
+    fun ordinalLabel(): String = if (ordinal >= 0) "CGM #$ordinal" else "CGM"
+
+    /**
+     * This sensor's name for every surface that names it INCIDENTALLY, with the sensor-name privacy
+     * setting applied — the chrome that sits on every screen, and a settings read-out.
+     *
+     * One function for all of them, so no surface can be left behind when the rule changes, and so the
+     * `CGM #n` the user reads is the same string everywhere. The CGM panel does not call this: it shows
+     * [displayName] AND [ordinalLabel] together, which is what makes the number resolvable to a device.
+     */
+    fun incidentalName(showNames: Boolean): String = if (showNames) shortName else ordinalLabel()
+
     companion object {
+        /** [ordinal] before storage has minted one. Negative, so `>= 0` is the whole "is it numbered". */
+        const val UNASSIGNED_ORDINAL: Int = -1
+
         /**
          * The bounds the user may tune [warmupWindowMin] to (minutes), per source. The *seed* for a
          * newly discovered sensor is a vendor constant and lives with that vendor's plugin; this is

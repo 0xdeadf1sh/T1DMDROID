@@ -17,6 +17,7 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -78,6 +79,14 @@ fun BolusCalculatorScreen(
     /** True once the recommendation has outlived the anchor it was computed from; Accept goes dead and
      *  the card is greyed, because every freshness figure on it describes a BG that has since aged. */
     adviceExpired: Boolean = false,
+    /** Clear [AdviceResult.Recommended.doseHistoryEdited] — "I know the insulin log changed and I
+     *  have taken it into account" — and recompute at the given target. Null where the host has no
+     *  writer for it, which closes the control rather than offering one that does nothing.
+     *
+     *  One callback rather than an acknowledge beside [onRecompute], because the two must be
+     *  ORDERED: the block is re-evaluated by the search, so a recompute racing the stamp reads the
+     *  history it was just told about and lands back on 0 U. */
+    onAcknowledgeDoseEdit: ((targetMgdl: Double) -> Unit)? = null,
     onAccept: (Candidate) -> Unit = {},
     onRecompute: (targetMgdl: Double) -> Unit = {},
 ) {
@@ -104,7 +113,13 @@ fun BolusCalculatorScreen(
         when (result) {
             null -> Text("No recommendation yet", style = MaterialTheme.typography.bodyMedium)
             is AdviceResult.Refused -> RefusedCard(result)
-            is AdviceResult.Recommended -> RecommendedBody(result, insulinLabel, adviceExpired, onAccept)
+            is AdviceResult.Recommended -> RecommendedBody(
+                result,
+                insulinLabel,
+                adviceExpired,
+                onAcknowledgeDoseEdit?.let { ack -> { ack(targetMgdl) } },
+                onAccept,
+            )
         }
         Button(
             onClick = { haptics.perform(HapticEvent.Tap); onRecompute(targetMgdl) },
@@ -152,7 +167,7 @@ private fun TargetBgSlider(target: Double, low: Double, high: Double, onChange: 
                 Text("${high.roundToInt()}", style = MaterialTheme.typography.labelSmall, color = LocalContentColor.current.copy(alpha = 0.6f))
             }
             Text(
-                "Aims the forecast median here · advisory only",
+                "Aims the forecast median here",
                 style = MaterialTheme.typography.labelSmall,
                 color = LocalContentColor.current.copy(alpha = 0.6f),
             )
@@ -181,6 +196,7 @@ private fun RecommendedBody(
     rec: AdviceResult.Recommended,
     insulinLabel: String?,
     adviceExpired: Boolean,
+    onAcknowledgeDoseEdit: (() -> Unit)?,
     onAccept: (Candidate) -> Unit,
 ) {
     var acknowledged by remember(rec) { mutableStateOf(false) }
@@ -236,6 +252,19 @@ private fun RecommendedBody(
             rec.card.confirmationReasons.forEach {
                 Text("• $it", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error)
             }
+        }
+    }
+    // The one escape from [Rails.doseHistoryEdited], and deliberately its own press rather than a
+    // third checkbox in the column above: those two say the card was read, this one says the insulin
+    // log was corrected and the correction has been taken into account. Folding it in would make it
+    // a keystroke on the way to a dose.
+    if (rec.doseHistoryEdited && onAcknowledgeDoseEdit != null) {
+        OutlinedButton(
+            onClick = { haptics.perform(HapticEvent.Commit); onAcknowledgeDoseEdit() },
+            enabled = !adviceExpired,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("Dose log reviewed — recompute")
         }
     }
     // A carb-rescue or a 0 U acceptance writes no `logged_dose` at all, so it names no insulin; every

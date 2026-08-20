@@ -9,18 +9,21 @@ import com.t1dm.core.model.BackendId
 import com.t1dm.core.model.BaselineFit
 import com.t1dm.core.model.displayName
 import com.t1dm.core.model.LoraConfig
+import com.t1dm.core.model.LoraGuardReport
 import com.t1dm.core.model.LoraProgressSink
 import com.t1dm.core.model.LoraSample
 import com.t1dm.core.model.LoraTrainOpts
 import com.t1dm.core.model.LoraTrainResult
 import com.t1dm.core.model.LoraWeights
 import com.t1dm.core.model.GraphInput
+import com.t1dm.core.model.MaskGeometry
 import com.t1dm.core.model.MaskSpan
 import com.t1dm.core.model.Forecast
 import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.InferenceCause
 import com.t1dm.core.model.InferenceState
 import com.t1dm.core.model.ModelDescriptor
+import com.t1dm.core.model.PROBE_DOSE_U
 import com.t1dm.core.model.ModelLatency
 import com.t1dm.core.model.ModelMeta
 import com.t1dm.core.model.ModelPrediction
@@ -99,6 +102,9 @@ class InferenceController(
      *  throw, so a corrupt setting can never reach the Rust guard. It MOVES the §3.6-D `last_bg`
      *  anchor, hence its exclusion from the agreement probe below. */
     private val smoothingWindowProvider: suspend () -> Int = { InferenceControllerDefaults.SAVGOL_WINDOW },
+    /** The stimulus the adapter guard's counterfactual branch injects. Null ⇒ no branch is run at
+     *  all, so no window is paired, no verdict is reachable and every adapter stays `ABSENT`. */
+    private val probeInsulin: ProbeInsulinPort? = null,
     /** The classical baseline the neural models are compared against. It runs beside the loaded set
      *  every cycle and publishes an ordinary [ModelPrediction], so every consumer that reads a FAN
      *  treats it as another model. It is not part of [loaded] because it has no descriptor and no
@@ -758,6 +764,11 @@ class InferenceController(
             if (j in 0 until n) target[j] = measured.mgdl[i]
         }
         val ch = buildDoseChannels(dense)
+        // Which slots of `dense` are the model's OWN OUTPUT. `SPEC/invariants.md` §1 keeps a
+        // promoted reconstruction out of a fit window's context, and this is what says where one
+        // is: `target` is NaN at a sensor gap and at a reconstruction alike, so a test on it
+        // cannot tell the rule's subject from an ordinary dropout.
+        val reconstructed = runCatching { history.reconstructedSlots(want) }.getOrElse { emptySet() }
         val out = ArrayList<LoraSample>(maxWindows)
 
         var origin = n - predSteps
@@ -768,7 +779,11 @@ class InferenceController(
         }
         val total = origins.size
         var seen = 0
-        for (o in origins.asReversed()) {  // oldest first: the fit's split is chronological
+        // The masked run a non-forecast window carries, in patches: as long as the forecast horizon
+        // where the context has room, so the three geometries pose the model a comparable question.
+        val spanPatches = (predSteps / desc.patchSize).coerceIn(1, desc.maskSpanMax.coerceAtLeast(1))
+        val ctxPatches = desc.minContextPatches
+        for ((index, o) in origins.asReversed().withIndex()) {  // oldest first: chronological split
             onWindow?.invoke(seen++, total)
             val realized = target.copyOfRange(o, o + predSteps)
             if (realized.any { it.isNaN() }) continue
@@ -786,15 +801,57 @@ class InferenceController(
                 ch.insulin.copyOfRange(o, o + predSteps),
                 ch.exercise.copyOfRange(o, o + predSteps),
             )
+            // Which shape this window poses. A backcast or an infill masks a run INSIDE the
+            // context and has no future zone at all, so its target is that run's own realised
+            // glucose rather than the horizon's — and it carries no counterfactual, the guard
+            // being able to read a response only at a horizon's terminal step.
+            val geometry = LoraGeometryPlan.geometryAt(index)
+            val startPatch = LoraGeometryPlan.startPatch(geometry, ctxPatches, spanPatches)
+            val isForecastWindow = geometry == MaskGeometry.FORECAST || startPatch == null
+            // The window's ANCHOR must be a real measurement, and only the anchor.
+            //
+            // `build_graph_input` anchors a masked span on ONE step: the last step of the patch to
+            // its left, or the first step of the patch to its right when there is no left one. That
+            // step is what the pinball target, the baseline `d0` and both of the guard's terminal
+            // reads are measured from, so a promoted reconstruction sitting there has the model
+            // grading its own work.
+            //
+            // Testing the whole context instead rejected every window on any real record: `target`
+            // is the fit series — real sensor signal only, NaN everywhere else — and a multi-day
+            // context with no gap at all does not survive a single sensor change. The fit then
+            // reported "0 usable windows" on a phone with months of history.
+            val anchorStep = anchorStepOf(ctxFrom, o, startPatch, spanPatches, desc.patchSize)
+            if (anchorStep !in target.indices || target[anchorStep].isNaN()) continue
+            // And NO reconstruction anywhere in the context, which is the rule itself rather than a
+            // proxy for it. A carried-forward slot stays admissible: the model is CONDITIONED on a
+            // dense context by design, and refusing every gap — which is what testing `target` for
+            // NaN across the window did — left a record with one sensor change contributing no
+            // usable window at all.
+            if (reconstructed.isNotEmpty() &&
+                (ctxFrom until o).any { dense.gridStartMs + it.toLong() * GRID_MS in reconstructed }
+            ) {
+                continue
+            }
             val gi = buildGraphInput(
                 desc,
                 dense.mgdl.copyOfRange(ctxFrom, o),
                 window,
-                ahead,
-                emptyList(),
+                if (isForecastWindow) ahead else null,
+                if (isForecastWindow) emptyList() else listOf(MaskSpan(startPatch!!, spanPatches)),
                 smoothingWindow(),
-                withForecast = true,
+                withForecast = isForecastWindow,
             )
+            // The masked run's own realised glucose, measured — the context test above has already
+            // refused any window where one of these slots is not a real reading.
+            val spanTarget = if (isForecastWindow) {
+                realized
+            } else {
+                val from = ctxFrom + startPatch!! * desc.patchSize
+                target.copyOfRange(from, from + spanPatches * desc.patchSize)
+            }
+            // A masked run's own target is measured or the window is dropped. `realized` was
+            // already checked; this is the branch that reads from inside the context instead.
+            if (spanTarget.any { it.isNaN() }) continue
             // ONE forward per lock acquisition, not one lock for the whole replay: a few hundred
             // windows is minutes of forwards, and holding the cycle mutex across them would starve
             // the live 5-minute forecast for as long as a fit runs.
@@ -805,12 +862,62 @@ class InferenceController(
             heads.verify(entry.bundle, run.slotHidden, run.headRaw, gi.mSlots)
             val hidden = run.slotHidden ?: return out
             val d = desc.dModel
+
+            // ── the counterfactual branch ──
+            //
+            // The SAME window with one unit of insulin added to the horizon's dose channel, so the
+            // fit can see what the model does with it. A second trunk forward, and the only reason
+            // the replay costs more than it did — which is why it is spent on FORECAST windows
+            // only: the guard measures at the horizon, and the terminal step of an infill is not
+            // one. Everything else about the window is byte-identical, so the response is a
+            // property of the dose and not of the two forwards disagreeing.
+            // FORECAST windows only, and that is what keeps the pairing cost near half: the guard
+            // reads the response at the horizon's terminal step, which an infill does not have.
+            val stimulus = if (!isForecastWindow) {
+                null
+            } else {
+                probeInsulin?.action(PROBE_DOSE_U, ahead.insulin.size)
+            }
+            val probed = if (stimulus == null) null else ModelChannels(
+                ahead.carb,
+                DoubleArray(ahead.insulin.size) { i -> ahead.insulin[i] + stimulus.getOrElse(i) { 0.0 } },
+                ahead.exercise,
+            )
+            val hiddenPert = if (probed == null) {
+                null
+            } else {
+                val giPert = buildGraphInput(
+                    desc,
+                    dense.mgdl.copyOfRange(ctxFrom, o),
+                    window,
+                    probed,
+                    emptyList(),
+                    smoothingWindow(),
+                    withForecast = true,
+                )
+                val runPert = cycleMutex.withLock {
+                    if (loaded[modelId] !== entry) return out
+                    withContext(dispatchers.inference) {
+                        entry.backend.run(entry.handle, GraphIo.tensors(giPert))
+                    }
+                }
+                runPert.slotHidden
+            }
+
             out.add(
                 LoraSample(
                     hidden = hidden.take(gi.nMasked * d).map { it.toDouble() },
                     anchors = gi.anchors.take(gi.nMasked),
-                    targetBg = realized.toList(),
+                    targetBg = spanTarget.toList(),
                     nSlots = gi.nMasked,
+                    // Either the WHOLE window or nothing: a truncated pairing would have the fit
+                    // train one branch against a shorter other, and the crate refuses it by name.
+                    hiddenPert = if (hiddenPert != null && hiddenPert.size >= gi.nMasked * d) {
+                        hiddenPert.take(gi.nMasked * d).map { it.toDouble() }
+                    } else {
+                        emptyList()
+                    },
+                    isForecast = isForecastWindow,
                 ),
             )
         }
@@ -836,6 +943,40 @@ class InferenceController(
         // gradient loop, so a cycle running the same head with an attached adapter is unaffected.
         return withContext(dispatchers.default) {
             native.loraTrain(state.head, entry.bundle.descriptor, samples, config, opts, progress)
+        }
+    }
+
+    /**
+     * Measure what a STORED adapter does to the model's marginal response to insulin.
+     *
+     * The fit runs this on its own held-out windows and stores the verdict; this is the same
+     * measurement for an adapter that arrived some other way — imported, restored from an archive,
+     * or fitted before the guard existed — none of which carry one, and all of which are refused at
+     * attach until somebody looks.
+     *
+     * The bar comes from the crate ([NativeCore.loraGuardOptsFit]) rather than from a literal here,
+     * so a probe and a fit cannot reach different verdicts about the same adapter.
+     */
+    suspend fun guardAdapter(
+        modelId: String,
+        weights: LoraWeights,
+        samples: List<LoraSample>,
+    ): LoraGuardReport {
+        val entry = cycleMutex.withLock { loaded[modelId] } ?: error("model $modelId is not loaded")
+        val state = heads.stateOf(entry.bundle)
+        if (state !is HeadCache.State.Ready) {
+            error("model $modelId takes no adapter: ${(state as? HeadCache.State.Unusable)?.why ?: "no head file"}")
+        }
+        // Outside the cycle mutex for the reason the fit is: head-only arithmetic over already
+        // computed hidden states, touching no backend handle.
+        return withContext(dispatchers.default) {
+            native.loraGuard(
+                state.head,
+                entry.bundle.descriptor,
+                samples,
+                weights,
+                native.loraGuardOptsFit(),
+            )
         }
     }
 

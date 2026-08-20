@@ -16,8 +16,20 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.fadingEdges
 
-/** One `model_id`'s cumulative `PUT /v1/predictions` push accounting (this process lifetime). */
-data class ModelPushRow(val modelId: String, val count: Long, val bytes: Long)
+/**
+ * One `model_id`'s forecast-frame liveness (this process lifetime).
+ *
+ * A forecast rides the open stream and nothing stores it, so there is no queue to be accountable
+ * for and no retry to count. What can honestly be shown is whether the last frame left and when —
+ * hence an AGE rather than a cumulative total.
+ */
+data class ForecastStreamRow(
+    val modelId: String,
+    val sent: Long,
+    val dropped: Long,
+    val lastSentAgeMs: Long?,
+    val lastBytes: Int,
+)
 
 /** One up, non-loopback local interface and its (non-link-local) addresses. Plain read model — the
  *  `:app` layer gathers these from `java.net.NetworkInterface`; this module stays Android-free. */
@@ -59,7 +71,7 @@ data class NetworkPanelState(
     val backoff: String = "idle",
     val lastAlert: String? = null,
     val alertCount: Long = 0,
-    val modelPushes: List<ModelPushRow> = emptyList(),
+    val forecastStream: List<ForecastStreamRow> = emptyList(),
     val net: NetworkDiagnostics? = null,
     val nightscoutEnabled: Boolean = false,
     val nightscoutUrl: String? = null,
@@ -135,12 +147,13 @@ fun NetworkScreen(state: NetworkPanelState = NetworkPanelState()) {
         Field("state", state.wsState)
         Field("catch-up cursor", state.wsCursor?.toString() ?: "—")
 
-        Section("Predictions pushed")
-        if (state.modelPushes.isEmpty()) {
-            Field("—", "none pushed yet")
+        Section("Forecast stream")
+        if (state.forecastStream.isEmpty()) {
+            Field("—", "none sent yet")
         } else {
-            state.modelPushes.forEach { m ->
-                Field(m.modelId, "${m.count} push(es) • ${bytes(m.bytes)}")
+            state.forecastStream.forEach { m ->
+                val age = m.lastSentAgeMs?.let { "${it / 60_000L} min ago" } ?: "never"
+                Field(m.modelId, "$age • ${m.sent} sent, ${m.dropped} dropped • ${bytes(m.lastBytes.toLong())}")
             }
         }
 

@@ -8,6 +8,7 @@ import com.t1dm.core.model.RolledForecast
 import com.t1dm.core.model.UnitSpace
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Assert.assertNotEquals
 import org.junit.Test
 
@@ -118,9 +119,12 @@ class PredOverlayCalibrationTest {
 
     // ── the seam with the rolled overlay ────────────────────────────────────────────────────────
     //
-    // The roll's hatched band opens at the validated boundary and the fan ends there, so one instant
-    // is drawn twice. Only the fan carries the §8.4 correction, so without a shared vertex the panel
-    // states two uncertainties at exactly the x its own dashed rule says the two series join.
+    // The roll's band opens at the validated boundary and the fan ends there, so one instant is
+    // drawn twice. Only the fan carries the §8.4 correction, so without a shared vertex the panel
+    // states two uncertainties at exactly the x where the two series join.
+    //
+    // The OUTERMOST pair alone shares the vertex: the seam carries one uncertainty, not a fan, and
+    // the inner pairs have no edge of the fan's to borrow.
 
     /** A roll over the same anchor and grid: [steps] validated, then an extrapolated tail. */
     private fun roll(p: ModelPrediction, tail: Int): RolledForecast {
@@ -131,6 +135,13 @@ class PredOverlayCalibrationTest {
             medianBg = DoubleArray(n) { 100.0 + it },
             lowerBg = DoubleArray(n) { 85.0 + it },
             upperBg = DoubleArray(n) { 115.0 + it },
+            // Ascending τ: .05 .10 .25 .50 .75 .90 .95, nesting inwards around the median.
+            bandsMgdl = DoubleArray(n * 7) { i ->
+                val step = i / 7
+                when (i % 7) {
+                    0 -> 85.0; 1 -> 90.0; 2 -> 95.0; 3 -> 100.0; 4 -> 105.0; 5 -> 110.0; else -> 115.0
+                } + step
+            },
             validatedSteps = steps,
             requestedHours = 1.0,
             eligible = true,
@@ -139,6 +150,39 @@ class PredOverlayCalibrationTest {
             completedRolls = 1,
             requestedRolls = 1,
         )
+    }
+
+    /**
+     * The roll draws the same three nested pairs the cycle fan does, from the same seven levels.
+     *
+     * `FanStep` used to project the slot down to its outer edges, so the whole roll came back as one
+     * flat region — the same colour end to end, beside a fan that nests.
+     */
+    @Test
+    fun aRollWithAFanCarriesTheSameThreePairsTheForecastDoes() {
+        val p = prediction()
+        val rs = buildRolledSeries(roll(p, tail = 4), UnitSpace.MgDl, null)!!
+        assertEquals(3, rs.lo.size)
+        assertEquals(3, rs.hi.size)
+        // Outer→inner, so each pair sits inside the one before it.
+        for (i in 0 until rs.median.size) {
+            assertTrue(rs.lo[0][i] <= rs.lo[1][i] && rs.lo[1][i] <= rs.lo[2][i])
+            assertTrue(rs.hi[0][i] >= rs.hi[1][i] && rs.hi[1][i] >= rs.hi[2][i])
+        }
+        // The outermost pair is what `lowerBg`/`upperBg` always were.
+        assertEquals(85f, rs.lo[0][0], 0f)
+        assertEquals(115f, rs.hi[0][0], 0f)
+    }
+
+    /** A producer with no interior levels still draws — as the single band it actually is. */
+    @Test
+    fun aRollWithoutAFanKeepsItsOneOuterPair() {
+        val p = prediction()
+        val bare = roll(p, tail = 4).copy(bandsMgdl = DoubleArray(0))
+        val rs = buildRolledSeries(bare, UnitSpace.MgDl, null)!!
+        assertEquals(1, rs.lo.size)
+        assertEquals(85f, rs.lo[0][0], 0f)
+        assertEquals(115f, rs.hi[0][0], 0f)
     }
 
     @Test
@@ -161,11 +205,14 @@ class PredOverlayCalibrationTest {
         val seam = RolledSeam(cal.tsMs[last], cal.lo[0][last], cal.hi[0][last])
 
         // Without the seam the two disagree — the defect, restated as a test.
-        assertNotEquals(rs.lo[rs.bandFromIndex()], cal.lo[0][last])
+        assertNotEquals(rs.lo[0][rs.bandFromIndex()], cal.lo[0][last])
         // With it they are one number, and the tail past the boundary is left entirely alone.
-        assertEquals(cal.lo[0][last], rs.bandOpenLo(seam), 0f)
-        assertEquals(cal.hi[0][last], rs.bandOpenHi(seam), 0f)
-        assertEquals(85f + steps.toFloat(), rs.lo[rs.bandFromIndex() + 1], 0f)
+        assertEquals(cal.lo[0][last], rs.bandOpenLo(seam, 0), 0f)
+        assertEquals(cal.hi[0][last], rs.bandOpenHi(seam, 0), 0f)
+        assertEquals(85f + steps.toFloat(), rs.lo[0][rs.bandFromIndex() + 1], 0f)
+        // The inner pairs open on their own edge: the seam is one uncertainty, not a fan.
+        assertEquals(rs.lo[1][rs.bandFromIndex()], rs.bandOpenLo(seam, 1), 0f)
+        assertEquals(rs.hi[2][rs.bandFromIndex()], rs.bandOpenHi(seam, 2), 0f)
     }
 
     @Test
@@ -176,9 +223,9 @@ class PredOverlayCalibrationTest {
         val rs = buildRolledSeries(roll(p, tail = 4), UnitSpace.MgDl, null)!!
         val i = rs.bandFromIndex()
         val elsewhere = RolledSeam(rs.tsMs[i] + p.stepMs, -1f, -1f)
-        assertEquals(rs.lo[i], rs.bandOpenLo(elsewhere), 0f)
-        assertEquals(rs.hi[i], rs.bandOpenHi(elsewhere), 0f)
-        assertEquals(rs.lo[i], rs.bandOpenLo(null), 0f)
-        assertEquals(rs.hi[i], rs.bandOpenHi(null), 0f)
+        assertEquals(rs.lo[0][i], rs.bandOpenLo(elsewhere, 0), 0f)
+        assertEquals(rs.hi[0][i], rs.bandOpenHi(elsewhere, 0), 0f)
+        assertEquals(rs.lo[0][i], rs.bandOpenLo(null, 0), 0f)
+        assertEquals(rs.hi[0][i], rs.bandOpenHi(null, 0), 0f)
     }
 }

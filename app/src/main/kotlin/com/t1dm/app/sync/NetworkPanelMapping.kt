@@ -1,6 +1,6 @@
 package com.t1dm.app.sync
 
-import com.t1dm.feature.network.ModelPushRow
+import com.t1dm.feature.network.ForecastStreamRow
 import com.t1dm.feature.network.NetworkPanelState
 import com.t1dm.sync.DrainResult
 import com.t1dm.sync.ServerProfile
@@ -31,9 +31,17 @@ fun SyncStatus.toPanelState(
     backoff = backoffLabel(lastDrain),
     lastAlert = lastAlert,
     alertCount = alertCount,
-    modelPushes = modelPushes.entries
+    forecastStream = forecastStream.entries
         .sortedBy { it.key }
-        .map { (id, s) -> ModelPushRow(id, s.count, s.bytes) },
+        .map { (id, s) ->
+            ForecastStreamRow(
+                modelId = id,
+                sent = s.sent,
+                dropped = s.dropped,
+                lastSentAgeMs = s.lastSentMs?.let { (nowMs - it).coerceAtLeast(0L) },
+                lastBytes = s.lastBytes,
+            )
+        },
     nightscoutEnabled = nightscoutEnabled,
     nightscoutUrl = nightscoutUrl,
     nightscoutError = lastDrain?.nightscoutError,

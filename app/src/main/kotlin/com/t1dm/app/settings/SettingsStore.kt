@@ -297,6 +297,7 @@ class SettingsStore(
     val railIobCeiling: Flow<Boolean> = boolFlow(K_RAIL_IOB, calcDef.rails.iobCeiling)
     val railConfirm: Flow<Boolean> = boolFlow(K_RAIL_CONFIRM, calcDef.rails.mandatoryConfirmation)
     val railHypoTreatment: Flow<Boolean> = boolFlow(K_RAIL_HYPO, calcDef.rails.hypoTreatment)
+    val railDoseHistory: Flow<Boolean> = boolFlow(K_RAIL_DOSE_EDIT, calcDef.rails.doseHistoryEdited)
 
     suspend fun setCalcTarget(low: Double, high: Double, mid: Double) {
         put(K_CALC_TARGET_LOW, low.coerceAtLeast(0.0).toString())
@@ -325,6 +326,7 @@ class SettingsStore(
             RAIL_IOB -> K_RAIL_IOB
             RAIL_CONFIRM -> K_RAIL_CONFIRM
             RAIL_HYPO -> K_RAIL_HYPO
+            RAIL_DOSE_EDIT -> K_RAIL_DOSE_EDIT
             else -> return
         }
         put(key, if (on) "1" else "0")
@@ -354,6 +356,7 @@ class SettingsStore(
                 iobCeiling = getBool(K_RAIL_IOB, calcDef.rails.iobCeiling),
                 mandatoryConfirmation = getBool(K_RAIL_CONFIRM, calcDef.rails.mandatoryConfirmation),
                 hypoTreatment = getBool(K_RAIL_HYPO, calcDef.rails.hypoTreatment),
+                doseHistoryEdited = getBool(K_RAIL_DOSE_EDIT, calcDef.rails.doseHistoryEdited),
             ),
             grid = GridSpec(
                 minU = calcDef.grid.minU,
@@ -369,13 +372,10 @@ class SettingsStore(
         // so the advisor still emits a number off a stale/degenerate forecast. The structural
         // backend-agreement + baseline-degeneracy refusals in DoseAdvisor are untouched (not config-driven).
         return assembled.copy(
-            rails = RailToggles(
-                freshnessGate = false,
-                predictedLowVeto = false,
-                iobCeiling = false,
-                mandatoryConfirmation = false,
-                hypoTreatment = false,
-            ),
+            // ALL_OFF rather than a list written out again: a rail added to [RailToggles] and not
+            // added here keeps its `true` default, so the override that is meant to disable every
+            // optional rail would silently leave the newest one standing.
+            rails = RailToggles.ALL_OFF,
             freshnessMaxAgeMs = Long.MAX_VALUE,
             predictedLowThresholdMgdl = 0.0,
             iobCeilingU = Double.MAX_VALUE,
@@ -474,35 +474,36 @@ class SettingsStore(
     suspend fun setCarbBezier(encoded: String) = put(K_CURVE_CARB_BEZIER, encoded)
     suspend fun setInsulinBezier(encoded: String) = put(K_CURVE_INSULIN_BEZIER, encoded)
 
-    // ── The public build's first-run medical disclaimer. Deliberately OUTSIDE the exportable config
-    // set (no `ui.` prefix, not an exact key): an acknowledgement is a statement about the person
-    // holding the phone, not a setting, and importing someone else's backup must not answer it for
-    // them. `wipeAllData` clears it, so a full reset genuinely returns to first-run.
-    val disclaimerAcknowledged: Flow<Boolean> = boolFlow(K_DISCLAIMER_ACK, false)
-    suspend fun acknowledgeDisclaimer() = put(K_DISCLAIMER_ACK, "1")
+    // ── CGM sensor service life — the total lifetime (days) of the sensor model. The connected session
+    // reports the sensor's own ELAPSED age (minFromStart); this total lets "time left" be derived from
+    // it (AppContainer.sensorExpiryMs). A configurable slider (Settings → CGM), 3–30 days, default 15.
+    // Device/sensor-specific, so deliberately NOT part of the exportable config set (no `cgm.` prefix).
+    val sensorLifeDays: Flow<Int> = repository.observeKv(K_CGM_SENSOR_LIFE_DAYS)
+        .map { it?.toIntOrNull()?.coerceIn(SENSOR_LIFE_DAYS_MIN, SENSOR_LIFE_DAYS_MAX) ?: DEFAULT_SENSOR_LIFE_DAYS }
+    suspend fun currentSensorLifeDays(): Int =
+        repository.getKv(K_CGM_SENSOR_LIFE_DAYS)?.toIntOrNull()?.coerceIn(SENSOR_LIFE_DAYS_MIN, SENSOR_LIFE_DAYS_MAX) ?: DEFAULT_SENSOR_LIFE_DAYS
+    suspend fun setSensorLifeDays(days: Int) =
+        put(K_CGM_SENSOR_LIFE_DAYS, days.coerceIn(SENSOR_LIFE_DAYS_MIN, SENSOR_LIFE_DAYS_MAX).toString())
 
-    // ── CGM sensor lifetime (I11) — a USER-ENTERED absolute expiry instant (epoch-ms). Because the
-    // passive-advertisement sensor exposes no true age, the user enters remaining life and we store the
-    // resulting expiry; the BG panel + CGM settings count it down. Device/sensor-specific, so it is
-    // deliberately NOT part of the exportable config set. Empty/absent ⇒ null ⇒ no countdown shown.
-    val sensorExpiryMs: Flow<Long?> = repository.observeKv(K_CGM_SENSOR_EXPIRY).map { it?.toLongOrNull() }
-    suspend fun setSensorExpiryMs(ms: Long) = put(K_CGM_SENSOR_EXPIRY, ms.toString())
-    suspend fun clearSensorExpiry() = put(K_CGM_SENSOR_EXPIRY, "")
-
-    // ── Aggressive background scanning (the keep-screen-on "AOD" that keeps the locked BLE scan
-    // alive). HyperOS/powerkeeper SUSPENDS a backgrounded scan the
-    // instant the screen turns off — the only app-side defeat is to hold the display genuinely ON
-    // (is_screen_on=1) behind a black/dim surface. This is a HEAVY, opt-in mode (the SoC never
-    // deep-idles), so it defaults OFF. Device-specific (the `cgm.` prefix keeps it out of the
-    // exportable config set). `show_glucose` renders a dim glucose read-out instead of pure black;
-    // `only_charging` restricts the mode to the charger to bound the battery cost.
-    val aggressiveScanEnabled: Flow<Boolean> = boolFlow(K_AGG_SCAN, false)
-    val aggressiveShowGlucose: Flow<Boolean> = boolFlow(K_AGG_SHOW_BG, true)
-    val aggressiveOnlyCharging: Flow<Boolean> = boolFlow(K_AGG_ONLY_CHARGING, false)
-
-    suspend fun setAggressiveScanEnabled(on: Boolean) = put(K_AGG_SCAN, if (on) "1" else "0")
-    suspend fun setAggressiveShowGlucose(on: Boolean) = put(K_AGG_SHOW_BG, if (on) "1" else "0")
-    suspend fun setAggressiveOnlyCharging(on: Boolean) = put(K_AGG_ONLY_CHARGING, if (on) "1" else "0")
+    // ── Sensor names outside the CGM panel — a privacy switch, DEFAULT OFF (names hidden) ──────────
+    //
+    // A vendor may build its advertised name out of the number printed on the sensor, so any surface
+    // carrying that name carries a real device identifier, and a photograph of it carries one too. Off,
+    // every incidental surface says `CGM #0` instead — the sensor's own persisted counter, derived from
+    // nothing. The CGM panel keeps real identity: that is where the user manages sensors and has to tell
+    // one from another, and it shows both so the number is resolvable.
+    //
+    // Deliberately OUTSIDE the exportable set (no `cgm.` prefix in CONFIG_PREFIXES, not an exact key), for
+    // a stronger reason than `cgm.sensor_life_days` has: a privacy default that silently flipped because
+    // someone imported a shared config is the wrong outcome in one direction only.
+    //
+    // It governs what is DRAWN on this phone and nothing else. It gated the descriptor push once, which
+    // meant turning names on to read one locally began uploading the serial within a re-upsert — a switch
+    // labelled as a display choice moving data off the device. The serial is now withheld from the wire
+    // unconditionally (`AppCgmRepository.cgmSourceDto`), so the two are independent and this one is free
+    // to be flipped for a screenshot.
+    val showSensorNames: Flow<Boolean> = boolFlow(K_CGM_SHOW_SENSOR_NAMES, DEFAULT_SHOW_SENSOR_NAMES)
+    suspend fun setShowSensorNames(on: Boolean) = put(K_CGM_SHOW_SENSOR_NAMES, if (on) "1" else "0")
 
     // ── Last-logged insulin, per kind — STICKINESS, not a setting ───────────────────────────────
     //
@@ -516,7 +517,7 @@ class SettingsStore(
     // Stored as the preset's stable label, unvalidated: the catalogue is the authority on which
     // labels exist and resolution falls through a stale one (see `resolveInsulinPreset`). The keys
     // sit OUTSIDE the exportable set (no `insulin.` prefix in CONFIG_PREFIXES, and not exact keys) —
-    // this is per-device usage state like `cgm.sensor_expiry_ms`, not configuration, and importing
+    // this is per-device usage state like `cgm.sensor_life_days`, not configuration, and importing
     // someone else's last dose would silently change which curve the next unpicked dose commits.
     suspend fun lastRapidPreset(): String? = repository.getKv(K_LAST_RAPID_PRESET)
     suspend fun lastBasalPreset(): String? = repository.getKv(K_LAST_BASAL_PRESET)
@@ -582,7 +583,7 @@ class SettingsStore(
     // theme already use. The key sits deliberately OUTSIDE the exportable set (no `search.` prefix
     // in CONFIG_PREFIXES, and not an exact key): a `ui.` key would ship the user's typed queries
     // inside every configuration backup they hand to someone, the same reasoning that keeps
-    // `cgm.sensor_expiry_ms` and `death.enabled` out. `wipeAllData` clears it for free.
+    // `cgm.sensor_life_days` and `death.enabled` out. `wipeAllData` clears it for free.
     val recentSearches: Flow<List<String>> =
         repository.observeKv(K_SEARCH_RECENT).map { decodeRecentSearches(it) }
 
@@ -691,7 +692,64 @@ class SettingsStore(
         return pairs.size
     }
 
+
+    val aggressiveScanEnabled: Flow<Boolean> = boolFlow(K_AGG_SCAN, false)
+
+    val aggressiveShowGlucose: Flow<Boolean> = boolFlow(K_AGG_SHOW_BG, true)
+
+    val aggressiveOnlyCharging: Flow<Boolean> = boolFlow(K_AGG_ONLY_CHARGING, false)
+
+    suspend fun setAggressiveScanEnabled(on: Boolean) = put(K_AGG_SCAN, if (on) "1" else "0")
+
+    suspend fun setAggressiveShowGlucose(on: Boolean) = put(K_AGG_SHOW_BG, if (on) "1" else "0")
+
+    suspend fun setAggressiveOnlyCharging(on: Boolean) = put(K_AGG_ONLY_CHARGING, if (on) "1" else "0")
+
+    // ── Last-logged insulin, per kind — STICKINESS, not a setting ───────────────────────────────
+    //
+    // The insulin panel picks its preset out of the shared clinical catalogue, and the writer commits
+    // what the panel picked. These two keys only remember which one that was, so the panel reopens on
+    // the insulin actually in use and the callers with no pick of their own (the accepted advisory
+    // bolus, a debug quick action) inherit it. There is deliberately no Settings row: a settings
+    // screen that also chose the insulin is exactly the arrangement that let the panel and the row
+    // disagree, and nothing outside `AppContainer.logBolus`/`logBasal` writes them.
+    //
+    // Stored as the preset's stable label, unvalidated: the catalogue is the authority on which
+    // labels exist and resolution falls through a stale one (see `resolveInsulinPreset`). The keys
+    // sit OUTSIDE the exportable set (no `insulin.` prefix in CONFIG_PREFIXES, and not exact keys) —
+    // this is per-device usage state like `cgm.sensor_expiry_ms`, not configuration, and importing
+    // someone else's last dose would silently change which curve the next unpicked dose commits.
+
+    val sensorExpiryMs: Flow<Long?> = repository.observeKv(K_CGM_SENSOR_EXPIRY).map { it?.toLongOrNull() }
+
+    suspend fun setSensorExpiryMs(ms: Long) = put(K_CGM_SENSOR_EXPIRY, ms.toString())
+
+    suspend fun clearSensorExpiry() = put(K_CGM_SENSOR_EXPIRY, "")
+
+    // ── Aggressive background scanning (the keep-screen-on "AOD" that keeps the locked BLE scan
+    // alive). HyperOS/powerkeeper SUSPENDS a backgrounded scan the
+    // instant the screen turns off — the only app-side defeat is to hold the display genuinely ON
+    // (is_screen_on=1) behind a black/dim surface. This is a HEAVY, opt-in mode (the SoC never
+    // deep-idles), so it defaults OFF. Device-specific (the `cgm.` prefix keeps it out of the
+    // exportable config set). `show_glucose` renders a dim glucose read-out instead of pure black;
+    // `only_charging` restricts the mode to the charger to bound the battery cost.
+
+    val disclaimerAcknowledged: Flow<Boolean> = boolFlow(K_DISCLAIMER_ACK, false)
+
+    suspend fun acknowledgeDisclaimer() = put(K_DISCLAIMER_ACK, "1")
+
+    // ── CGM sensor lifetime (I11) — a USER-ENTERED absolute expiry instant (epoch-ms). Because the
+    // passive-advertisement sensor exposes no true age, the user enters remaining life and we store the
+    // resulting expiry; the BG panel + CGM settings count it down. Device/sensor-specific, so it is
+    // deliberately NOT part of the exportable config set. Empty/absent ⇒ null ⇒ no countdown shown.
+
     companion object {
+        private const val K_DISCLAIMER_ACK = "disclaimer.acknowledged"
+        private const val K_CGM_SENSOR_EXPIRY = "cgm.sensor_expiry_ms"
+        private const val K_AGG_SCAN = "cgm.aggressive_scan"
+        private const val K_AGG_SHOW_BG = "cgm.aggressive_show_glucose"
+        private const val K_AGG_ONLY_CHARGING = "cgm.aggressive_only_charging"
+
         private val DEF = AlarmConfig.DEFAULT
 
         /** The export/import allowlist predicate. A pure function of the constants below, lifted to
@@ -728,6 +786,7 @@ class SettingsStore(
         const val RAIL_IOB = "iob"
         const val RAIL_CONFIRM = "confirm"
         const val RAIL_HYPO = "hypo"
+        const val RAIL_DOSE_EDIT = "dose_edit"
 
         private const val CONFIG_FORMAT = "t1dm.config"
         private const val CONFIG_VERSION = 1
@@ -992,6 +1051,7 @@ class SettingsStore(
         private const val K_RAIL_IOB = "calc.rail_iob"
         private const val K_RAIL_CONFIRM = "calc.rail_confirm"
         private const val K_RAIL_HYPO = "calc.rail_hypo"
+        private const val K_RAIL_DOSE_EDIT = "calc.rail_dose_edit"
 
         private const val K_DEATH = "death.enabled"
 
@@ -1008,12 +1068,6 @@ class SettingsStore(
         const val DEFAULT_TEMP_UNIT = "C"
         private const val K_CURVE_CARB_BEZIER = "graph.curve_carb_bezier"
         private const val K_CURVE_INSULIN_BEZIER = "graph.curve_insulin_bezier"
-        private const val K_DISCLAIMER_ACK = "disclaimer.acknowledged"
-        private const val K_CGM_SENSOR_EXPIRY = "cgm.sensor_expiry_ms"
-        private const val K_AGG_SCAN = "cgm.aggressive_scan"
-        private const val K_AGG_SHOW_BG = "cgm.aggressive_show_glucose"
-        private const val K_AGG_ONLY_CHARGING = "cgm.aggressive_only_charging"
-
         /** Panel-owned per-device state outside [CONFIG_PREFIXES] — see [bodyMassKg]. */
         internal const val K_EXERCISE_BODY_MASS_KG = "exercise.body_mass_kg"
 
@@ -1053,6 +1107,13 @@ class SettingsStore(
             ExerciseDisposal.MAX_CARB_EQUIV_PER_MIN,
         )
 
+        private const val K_CGM_SENSOR_LIFE_DAYS = "cgm.sensor_life_days"
+        internal const val K_CGM_SHOW_SENSOR_NAMES = "cgm.show_sensor_names"
+        /** Hidden. The safe direction: a name that leaks a serial cannot be un-leaked from a screenshot. */
+        const val DEFAULT_SHOW_SENSOR_NAMES = false
+        const val DEFAULT_SENSOR_LIFE_DAYS = 15
+        const val SENSOR_LIFE_DAYS_MIN = 3
+        const val SENSOR_LIFE_DAYS_MAX = 30
         /** Usage state, not configuration — see the note on [lastRapidPreset] for why the prefix is
          *  outside [CONFIG_PREFIXES]. No default label lives here: the catalogue's own first entry of
          *  the family is the fallback, so this build cannot name an insulin the catalogue dropped. */

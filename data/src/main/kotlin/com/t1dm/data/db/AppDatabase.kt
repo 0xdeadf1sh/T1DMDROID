@@ -28,6 +28,7 @@ import kotlinx.coroutines.Dispatchers
         CgmSourceEntity::class,
         CgmReadingEntity::class,
         CgmRawSampleEntity::class,
+        CgmSensorSecretEntity::class,
         SampleEntity::class,
         DoseEventEntity::class,
         CgmAdvertRawEntity::class,
@@ -49,8 +50,9 @@ import kotlinx.coroutines.Dispatchers
         BgInfillEntity::class,
         ExerciseSessionEntity::class,
         ExerciseFixEntity::class,
+        EventTombstoneEntity::class,
     ],
-    version = 20,
+    version = 24,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -58,6 +60,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun cgmSourceDao(): CgmSourceDao
     abstract fun cgmReadingDao(): CgmReadingDao
     abstract fun cgmRawSampleDao(): CgmRawSampleDao
+    abstract fun cgmSensorSecretDao(): CgmSensorSecretDao
     abstract fun sampleDao(): SampleDao
     abstract fun doseEventDao(): DoseEventDao
     abstract fun cgmAdvertRawDao(): CgmAdvertRawDao
@@ -78,6 +81,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun bgInfillDao(): BgInfillDao
     abstract fun exerciseSessionDao(): ExerciseSessionDao
     abstract fun exerciseFixDao(): ExerciseFixDao
+    abstract fun eventTombstoneDao(): EventTombstoneDao
 
     companion object {
         const val NAME = "t1dm.db"
@@ -86,17 +90,22 @@ abstract class AppDatabase : RoomDatabase() {
          * The current keep-forever schema version (must equal the `@Database(version = …)` above).
          * A full app reset ([T1dmRepository.wipeAllData]) row-wipes at THIS version — never a drop.
          *
-         * **A version bump lands on EVERY branch, whichever branch's work motivated it.** Nothing in
-         * the schema names a sensor family, so a bump can look like it belongs to the driver that
-         * needed it — but the two branches build against one database file on one phone, there is no
-         * destructive fallback (see the builder below), and a build whose `@Database(version =)` is
-         * behind the file it opens throws on launch.
+         * **A version bump lands on EVERY branch, whichever branch's work motivated it.** Nothing in the
+         * schema names a sensor family, so a bump can look like it belongs to the driver that needed it —
+         * but the two branches share one database file on one phone, there is no destructive fallback (see
+         * the builder below), and a build whose `@Database(version =)` is behind the file it opens throws
+         * on launch. Version 19 (`cgm_sensor_secret`, `cgm_source.ordinal`) is one such bump; version 20
+         * (`lora`, `bg_infill`) is another; version 21 (`event_tombstone` and the mutation stamps) is
+         * a third; version 22 (`bg_infill.spanStartMs`, `bg_infill.promotedAtMs`) is a fourth; version
+         * 23 (the adapter's guard verdict) is a fifth.
          *
-         * Version 19 is such a bump, and on this branch it adds nothing: the storage it introduces
-         * belongs to a path only the local-only branch carries. It is still counted, so that version
-         * 20 (`lora`, `bg_infill`) means the same thing on both — see [MigrationRunner.MIGRATION_18_19].
+         * v22 carries the rule with unusual force. `ReadingProvenance.RECONSTRUCTED` is stored as
+         * TEXT through `Converters.stringToProvenance`, which is `valueOf` and THROWS on a name it
+         * does not know — so a build of the other branch reading a row this one promoted crashes on
+         * the READ, not on open, and the crash is nowhere near the migration. The enum value and
+         * the version bump land on both branches together.
          */
-        const val SCHEMA_VERSION = 20
+        const val SCHEMA_VERSION = 24
 
         /**
          * Build the on-disk database. Migrations come exclusively from [MigrationRunner];

@@ -2,7 +2,6 @@ package com.t1dm.ui.graph
 
 import com.t1dm.core.model.CurveKind
 import com.t1dm.core.model.LogMarker
-import com.t1dm.core.model.LogState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -29,8 +28,7 @@ class LogMarkerClusterTest {
     private val RIGHT = 1000f
     private val SEP = 30f // ⇒ marks within 30 000 ms of each other combine
 
-    private fun mark(offsetMs: Long, state: LogState = LogState.DELIVERED) =
-        LogMarker(T0 + offsetMs, CurveKind.CARB, state)
+    private fun mark(offsetMs: Long) = LogMarker(T0 + offsetMs, CurveKind.CARB)
 
     private fun cluster(
         markers: List<LogMarker>,
@@ -178,33 +176,6 @@ class LogMarkerClusterTest {
         assertEquals(3, out[1].from)
         assertEquals(4, out[1].to)
         out.zipWithNext { a, b -> assertTrue("runs overlap", a.to <= b.from) }
-    }
-
-    // ── the pulse verdict ────────────────────────────────────────────────────────────────────────
-
-    @Test fun clusterIsCommittedWhenAnyMemberStillIs() {
-        val out = cluster(
-            listOf(
-                mark(0, state = LogState.DELIVERED),
-                mark(10_000, state = LogState.DELIVERED),
-                mark(20_000, state = LogState.COMMITTED),
-            ),
-        )
-        assertEquals(1, out.size)
-        assertTrue("one unacknowledged member keeps the whole mark breathing", out.single().committed)
-    }
-
-    @Test fun clusterIsDeliveredOnlyWhenEveryMemberIs() {
-        val out = cluster(listOf(mark(0), mark(10_000), mark(20_000)))
-        assertFalse(out.single().committed)
-    }
-
-    @Test fun committedStateDoesNotLeakAcrossClusters() {
-        // A committed mark must not make its distant neighbour pulse too.
-        val out = cluster(listOf(mark(0, state = LogState.COMMITTED), mark(500_000)))
-        assertEquals(2, out.size)
-        assertTrue(out[0].committed)
-        assertFalse(out[1].committed)
     }
 
     // ── pixel space, not time: stable across zoom and screen width ───────────────────────────────

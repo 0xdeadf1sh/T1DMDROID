@@ -55,7 +55,7 @@ class BgGlanceComputerTest {
 
     @Test fun `eligible falling forecast yields approaching and urgent crossings with correct ETAs`() {
         val state = InferenceState(predictions = listOf(prediction(falling)))
-        val g = BgGlanceComputer.compute(reading(112), state, thresholds, lossMin = 20, staleMin = 15, nowMs = now)
+        val g = BgGlanceComputer.compute(GlanceReadings.create(listOf(reading(112))), state, thresholds, lossMin = 20, staleMin = 15, nowMs = now)
 
         assertTrue(g.forecastEligible)
         assertTrue(g.predictedLowCrossing)
@@ -74,7 +74,7 @@ class BgGlanceComputerTest {
 
     @Test fun `stale forecast is ineligible - no predictive fields`() {
         val state = InferenceState(predictions = listOf(prediction(falling, stale = true)))
-        val g = BgGlanceComputer.compute(reading(112), state, thresholds, lossMin = 20, staleMin = 15, nowMs = now)
+        val g = BgGlanceComputer.compute(GlanceReadings.create(listOf(reading(112))), state, thresholds, lossMin = 20, staleMin = 15, nowMs = now)
         assertFalse(g.forecastEligible)
         assertNull(g.approaching)
         assertNull(g.urgent)
@@ -83,7 +83,7 @@ class BgGlanceComputerTest {
 
     @Test fun `degenerate forecast is ineligible - no predictive fields`() {
         val state = InferenceState(predictions = listOf(prediction(falling, status = ForecastStatus.NON_FINITE)))
-        val g = BgGlanceComputer.compute(reading(112), state, thresholds, lossMin = 20, staleMin = 15, nowMs = now)
+        val g = BgGlanceComputer.compute(GlanceReadings.create(listOf(reading(112))), state, thresholds, lossMin = 20, staleMin = 15, nowMs = now)
         assertFalse(g.forecastEligible)
         assertNull(g.approaching)
     }
@@ -93,7 +93,7 @@ class BgGlanceComputerTest {
             predictions = emptyList(),
             warmup = WarmupProgress(measuredHours = 3.0, requiredHours = 24.0),
         )
-        val g = BgGlanceComputer.compute(reading(112), state, thresholds, lossMin = 20, staleMin = 15, nowMs = now)
+        val g = BgGlanceComputer.compute(GlanceReadings.create(listOf(reading(112))), state, thresholds, lossMin = 20, staleMin = 15, nowMs = now)
         assertFalse(g.forecastEligible)
         assertNull(g.approaching)
         assertEquals("collecting context", g.summary)
@@ -101,7 +101,7 @@ class BgGlanceComputerTest {
 
     @Test fun `signal loss and stale flags track the reading age`() {
         val state = InferenceState()
-        val g = BgGlanceComputer.compute(reading(112, ageMs = 25 * 60_000L), state, thresholds, lossMin = 20, staleMin = 15, nowMs = now)
+        val g = BgGlanceComputer.compute(GlanceReadings.create(listOf(reading(112, ageMs = 25 * 60_000L))), state, thresholds, lossMin = 20, staleMin = 15, nowMs = now)
         assertTrue(g.signalLoss)
         assertTrue(g.stale)
         assertTrue(g.alarmActive)

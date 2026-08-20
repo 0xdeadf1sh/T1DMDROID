@@ -94,6 +94,11 @@ internal fun logEntryFields(entry: LoggedEntry): List<Pair<String, String>> = bu
     }
     logNote(entry)?.let { add("Note" to it) }
     add("Time" to logTimeLabel(entry.tsMs, entry.tzOffsetMin))
+    // Stated wherever the row is restated, not only in the Logs list. The two surfaces describe the
+    // same row from the same vocabulary, and a mark that says "8 U" while the list beside it says
+    // "8 U · edited" is the disagreement this file exists to prevent. Only when true: an unedited
+    // row has nothing to disclose.
+    if (entry.edited) add("Edited" to logTimeLabel(entry.mutatedAtMs!!, entry.tzOffsetMin))
 }
 
 /**

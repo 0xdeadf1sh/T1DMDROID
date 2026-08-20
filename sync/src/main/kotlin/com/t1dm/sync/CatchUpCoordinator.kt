@@ -1,5 +1,6 @@
 package com.t1dm.sync
 
+import com.t1dm.core.model.CurveKind
 import com.t1dm.data.T1dmRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -46,6 +47,11 @@ class CatchUpCoordinator(
     // wired at the :app composition root (it needs the outbox enqueuers + entity→DTO mappers), and it
     // MUST be wired there — left at this default the gate is inert and no history is ever re-mirrored.
     private val reMirror: HistoryReMirror = HistoryReMirror { false },
+    // Re-files any deletion whose outbox row was never written. Wired at the `:app` root for the
+    // same reason [reMirror] is — the DTO envelope is a `:sync` type `:data` cannot build. Left at
+    // this default nothing is ever replayed and a crash between the delete and the enqueue loses
+    // the deletion silently.
+    private val tombstones: TombstoneReplay = TombstoneReplay { 0 },
     // §3.5: the live channel latches an overflow here (`trySend` dropped a frame); the next connect
     // then forces a full resync. MUST be the SAME instance the StreamClient sets — wired in AppContainer.
     private val desync: AtomicBoolean = AtomicBoolean(false),
@@ -88,9 +94,14 @@ class CatchUpCoordinator(
         catchUp(if (fullResync) null else repo.newestSampleTsAtOrBefore(nowMs()))
         val events = catchUpEvents(if (fullResync) null else repo.newestEventTs())
         val filled = repo.reconcileReadingsFromSamples()
+        // Deletions the phone authored but never got a push filed for — a process death between the
+        // delete transaction and the enqueue, or a tombstone the queue's size cap evicted. Without
+        // this the server keeps the deleted event forever and re-delivers it on every catch-up.
+        val replayed = tombstones.replay()
 
         if (filled > 0) Timber.tag(TAG).i("reconciled %d sample row(s) into cgm_reading", filled)
         if (events > 0) Timber.tag(TAG).i("hydrated %d meal/dose catch-up event(s)", events)
+        if (replayed > 0) Timber.tag(TAG).i("re-filed %d unpushed tombstone(s)", replayed)
     }
 
     /**
@@ -183,13 +194,55 @@ class CatchUpCoordinator(
      */
     suspend fun catchUpEvents(from: Long?): Int {
         var processed = 0
+        val now = nowMs()
         for (dto in http.getMeals(from = from, to = null).meals) {
-            repo.hydrateMealEvent(dto.toLoggedMealEntity()); processed++
+            applyMeal(dto, now); processed++
         }
         for (dto in http.getDoses(from = from, to = null).doses) {
-            repo.hydrateDoseEvent(dto.toLoggedDoseEntity()); processed++
+            applyDose(dto, now); processed++
         }
         return processed
+    }
+
+    /**
+     * One catch-up meal, in the three states the wire can carry.
+     *
+     * A tombstone is APPLIED rather than hydrated over: it is the deletion arriving, not a record.
+     * An event whose `client_id` is already here is an EDIT — a second read-write session raising a
+     * meal's grams, or this phone's own correction reflected back — and `insertIgnore` would drop
+     * it, leaving the local copy stale for the life of the row. Only a genuinely new id is a create.
+     */
+    private suspend fun applyMeal(dto: MealEventDto, now: Long) {
+        if (dto.deleted) {
+            repo.applyServerTombstone(
+                clientId = dto.client_id,
+                kind = CurveKind.CARB,
+                tsMs = dto.ts,
+                tzOffsetMin = dto.tz_offset,
+                updatedAt = dto.updated_at,
+                nowMs = now,
+            )
+            return
+        }
+        val row = dto.toLoggedMealEntity()
+        if (repo.hydrateMealEvent(row) == -1L) repo.applyServerMealEdit(row)
+    }
+
+    /** The dose twin of [applyMeal]. */
+    private suspend fun applyDose(dto: DoseEventDto, now: Long) {
+        if (dto.deleted) {
+            repo.applyServerTombstone(
+                clientId = dto.client_id,
+                kind = CurveKind.INSULIN,
+                tsMs = dto.ts,
+                tzOffsetMin = dto.tz_offset,
+                updatedAt = dto.updated_at,
+                nowMs = now,
+            )
+            return
+        }
+        val row = dto.toLoggedDoseEntity()
+        if (repo.hydrateDoseEvent(row) == -1L) repo.applyServerDoseEdit(row)
     }
 
     private companion object {
@@ -219,4 +272,19 @@ class CatchUpCoordinator(
  */
 fun interface HistoryReMirror {
     suspend fun reMirror(serverEpoch: String): Boolean
+}
+
+/**
+ * Re-file the outbox push for every deletion that has not got one, and return how many.
+ *
+ * The gap it closes is narrow and real: `:data` writes the tombstone and deletes the event in one
+ * transaction, then `:app` files the push — and a process death between the two would otherwise
+ * leave a deletion the phone believes it made and the server never hears about. The same replay
+ * re-files a tombstone the queue's size cap evicted.
+ *
+ * Wired at the `:app` composition root, where the outbox enqueuers and the tombstone→DTO mappers
+ * coexist; `:data` deliberately keeps no `:sync` dependency and never spells a dedup key.
+ */
+fun interface TombstoneReplay {
+    suspend fun replay(): Int
 }

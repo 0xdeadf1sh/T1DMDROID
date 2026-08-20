@@ -31,9 +31,53 @@ data class AnchorInfo(
 data class IobSnapshot(
     val iobU: Double?,
     val cobG: Double,
+    /**
+     * The log-gap mark. `MAX(MIN(tsMs, loggedAtMs))` over the dose store, not `MAX(tsMs)` — it
+     * answers "how long since the phone was TOLD about insulin", not "what timestamp is on the
+     * newest row", so a dose dragged into the present cannot quiet the rail that reads it.
+     */
     val lastLoggedDoseTsMs: Long?,
+    /**
+     * What the dose history has had done to it. Not defaulted, and not three nullable Longs: with
+     * a default the "the store did not tell me" case and the "nothing has been edited" case are the
+     * same value, so every construction site that omitted it would disable
+     * [Rails.doseHistoryEdited] with no compiler signal — a rail that is structurally fail-OPEN,
+     * which is the opposite of what this file's own contract says a rail must be.
+     */
+    val doseHistory: DoseHistoryState,
 ) {
     fun minSinceLastDose(nowMs: Long): Long? = lastLoggedDoseTsMs?.let { (nowMs - it) / 60_000L }
+}
+
+/**
+ * Whether a logged dose inside its own action window has been edited or deleted, and whether the
+ * user has acknowledged it.
+ *
+ * [Unknown] is a real state and it BLOCKS: the reads behind this can fail, and "I could not find
+ * out" must not read as "nothing has changed".
+ */
+sealed interface DoseHistoryState {
+    /** The dose history could not be read. Fails closed. */
+    data object Unknown : DoseHistoryState
+
+    /** Nothing edited or deleted is still acting. */
+    data object Clean : DoseHistoryState
+
+    /**
+     * A mutated dose is still inside its action window.
+     *
+     * @param actingUntilMs when the changed insulin stops acting — the LATER of the dose's pre-edit
+     *   and post-edit curve ends, or, for a deleted dose, the end it had when it was deleted. Reading
+     *   only the post-edit row would let the edits that understate IOB most also shorten the block
+     *   the most.
+     * @param mutatedAtMs the newest edit or deletion stamp an acknowledgement has to cover.
+     * @param acknowledgedAtMs when the user last acknowledged the changed history; null = never.
+     */
+    data class Mutated(
+        val actingUntilMs: Long,
+        val mutatedAtMs: Long,
+        val acknowledgedAtMs: Long?,
+    ) : DoseHistoryState
 }
 
 /** The backend/precision provenance of the selected model + the fp16↔fp32 agreement verdict (§3.6-E). */

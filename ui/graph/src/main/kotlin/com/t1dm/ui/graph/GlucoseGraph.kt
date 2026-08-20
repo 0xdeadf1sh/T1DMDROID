@@ -1,6 +1,7 @@
 package com.t1dm.ui.graph
 
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
@@ -9,6 +10,7 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateCentroid
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Box
@@ -28,6 +30,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.geometry.isSpecified
 import androidx.compose.ui.graphics.ClipOp
 import androidx.compose.ui.graphics.Color
@@ -64,8 +67,9 @@ import com.t1dm.core.design.rememberHapticDetent
 import com.t1dm.core.model.AlertThresholds
 import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.CurveKind
+import com.t1dm.core.model.MaskGeometry
+import com.t1dm.core.model.ReconstructedBg
 import com.t1dm.core.model.LogMarker
-import com.t1dm.core.model.LogState
 import com.t1dm.core.model.PaintStroke
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
@@ -96,10 +100,11 @@ data class GraphScrub(
      *  reaches, or null when none of the three is available. */
     val bgValue: Float?,
     val inPredZone: Boolean,
-    /** True when [bgValue] was taken from the rolled forecast's EXTRAPOLATED tail rather than a reading
-     *  or a validated forecast. The read-out must mark it: every other surface of that region is
-     *  hatched, dashed, bounded and captioned, and this row would otherwise be the one place a
-     *  compounding self-fed number is presented exactly like a validated one. */
+    /** True when [bgValue] was taken from the roll past its validated prefix rather than from a
+     *  reading or the cycle forecast. Carried because it is a true fact about where the number came
+     *  from, and because the seam tests are written against it; nothing renders it. The panel draws
+     *  the roll as what it is — the cycle's own forecast re-fed to itself — and the roll is kept out
+     *  of every rail by TYPE rather than by a glyph. */
     val bgExtrapolated: Boolean,
     /** Raw carb appearance (grams per 5-min) at the cursor, or null when no overlay is present. */
     val carbRate: Float?,
@@ -215,6 +220,30 @@ fun GlucoseGraph(
      *  slot. The caller resolves them against the richer feed it reduced [logMarkers] from, so the
      *  amounts never enter this panel. */
     onMarkerTap: ((List<Int>) -> Unit)? = null,
+    /**
+     * The reconstructions to draw over the trace — an unpromoted fill and a promoted one alike.
+     * DISPLAY ONLY: nothing drawn on this panel is stored, and the act that writes a reconstruction
+     * into the record lives in the Lab, where the model and its numbers are named.
+     */
+    reconstructed: List<ReconstructedBg> = emptyList(),
+    /** mg/dL → Kovatchev risk, from the Rust core. Needed only to draw a reconstruction on the risk
+     *  axis; null there means the reconstruction is not drawn at all. */
+    kovatchevF: ((Double) -> Double)? = null,
+    /**
+     * Non-null puts the panel in EDIT mode: one finger drags out a stretch of time, two or more
+     * still pan and zoom. Null leaves the gesture exactly as it was.
+     *
+     * A drag SELECTS and does nothing else. What happens to a selection is a separate, deliberate
+     * press on the edit bar — which is the whole difference from the mode this replaced, where the
+     * end of a drag immediately reconstructed and there was no way back.
+     *
+     * Everything in it comes from the selected model's own descriptor. The app holds no geometry.
+     */
+    maskControls: MaskControls? = null,
+    /** The stretch currently selected, drawn as a shaded column with a handle at each end. */
+    editSelection: MaskSelection? = null,
+    /** A drag finished: the stretch it selected, snapped and clamped, or null when it cleared it. */
+    onEditSelection: ((MaskSelection?) -> Unit)? = null,
     rangeMinMgdl: Int? = null,
     rangeMaxMgdl: Int? = null,
     predictedClock: PredictedClock? = null,
@@ -300,6 +329,9 @@ fun GlucoseGraph(
     // no further.
     val stepBars = remember { StepBarPath() }
     val dash = remember { PathEffect.dashPathEffect(floatArrayOf(6f, 6f)) }
+    /** Distinct from [dash] on purpose: a reconstruction and an interpolation are different claims,
+     *  and two identical dashes would say they are the same one. */
+    val reconDash = remember { PathEffect.dashPathEffect(floatArrayOf(2f, 5f)) }
     // Draw styles are immutable value objects with no per-frame content, so they are hoisted beside the
     // paths rather than rebuilt inside the loops that use them: the interpolated-point ring allocated
     // one per POINT (up to 241 a frame), the smoothed trace one per flush, the scrub dot one per frame.
@@ -310,13 +342,14 @@ fun GlucoseGraph(
     // frame. `reset()` retains capacity, so after the first frame these grow no further.
     val fanPath = remember { Path() }
     val rolledPath = remember { Path() }
+
+    /** The reconstruction fan's own scratch. Its OWN, not `fanPath`'s: the forecast overlay and this
+     *  one are drawn in the same pass, and sharing one would have each reset the other's vertices. */
+    val reconPath = remember { Path() }
     val labelCache = remember { GraphLabelCache() }
     // Both trace legends are the primary ink at 9 sp — the same style, since exactly one of them is ever
     // drawn (the toggle makes "smoothed" a SWAP for the raw trace, never an overlay of it).
     val traceLegendStyle = remember(cs.primary) { TextStyle(color = cs.primary, fontSize = 9.sp) }
-    val rolledLegendStyle = remember(cs.onSurface) {
-        TextStyle(color = cs.onSurface.copy(alpha = 0.7f), fontSize = 9.sp)
-    }
     // Where the selected model's fan ends is where the roll's hatched band begins, and the two must
     // state one uncertainty there — see [RolledSeam]. Resolved here rather than inside the draw: it
     // changes only when the forecast set does, and the draw phase re-runs at the display's refresh
@@ -379,10 +412,6 @@ fun GlucoseGraph(
     val insulinLane = remember(logMarkers) { markerLane(logMarkers, CurveKind.INSULIN) }
     val markSepPx = logMarkerSeparationPx(dpPx)
     val markSizePx = LOG_MARKER_DP * dpPx
-    // The committed pulse. ONE animation drives every committed mark — they say the same thing, so they
-    // should say it in unison, and a per-mark animation would be a hundred animations on a busy day.
-    val motionOn = LocalAnimationsEnabled.current
-    val markerPulse = remember { Animatable(LOG_MARKER_STATIC_ALPHA) }
 
     // The stroke under the finger. The buffer is PLAIN memory (mutated from the pointer handler); the
     // Canvas is driven by [liveCount], which is snapshot state, so a new sample invalidates the DRAW
@@ -466,6 +495,63 @@ fun GlucoseGraph(
     // so the coroutine always calls the CURRENT composition's closure over the current frame,
     // predictions and plot insets rather than the ones it captured when it was launched.
     val paintOn = paintControls != null
+    val maskOn = maskControls != null && !paintOn
+    // ONE key for the pointer handler, because a re-key cancels a gesture in flight. The three
+    // modes are mutually exclusive by construction — paint wins, because it is the one the user
+    // turned on most recently — so an enum says exactly what a pair of booleans would and cannot
+    // hold a state that does not exist.
+    val gestureMode = when {
+        paintOn -> GraphGesture.PAINT
+        maskOn -> GraphGesture.EDIT
+        else -> GraphGesture.NAVIGATE
+    }
+    val maskCtl by rememberUpdatedState(maskControls)
+    val selNow by rememberUpdatedState(editSelection)
+    val emitSel by rememberUpdatedState(onEditSelection)
+
+    // ── The two things on this panel that MOVE between discrete states ───────────────────────────
+    //
+    // A selection snaps to whole patches and a τ sweep steps the fan's ladder, so both changed by
+    // jumping. Each is interpolated from wherever its previous interpolation had reached, which
+    // turns a run of jumps into one continuous travel; neither animation delays the state itself,
+    // only how it is painted, so the finger is never waiting on the picture.
+    var selTween by remember { mutableStateOf(SelectionTween(null, null)) }
+    val selProgress = remember { Animatable(1f) }
+    LaunchedEffect(editSelection) {
+        val target = editSelection
+        val drawnNow = lerpSelection(selTween.from, selTween.to, selProgress.value)
+        if (target == null || drawnNow == null) {
+            selTween = SelectionTween(target, target)
+            selProgress.snapTo(1f)
+            return@LaunchedEffect
+        }
+        selTween = SelectionTween(drawnNow, target)
+        selProgress.snapTo(0f)
+        selProgress.animateTo(1f, tween(SELECTION_TWEEN_MS, easing = FastOutSlowInEasing))
+    }
+    // NOTE both interpolations are resolved in the DRAW phase, never here. `Animatable.value` is
+    // snapshot state, so reading it in the composable body subscribes the whole ~1100-line body to
+    // every animation frame; read inside the Canvas lambda it invalidates the draw phase alone,
+    // which is the discipline the live paint stroke above already follows.
+
+    var reconTween by remember { mutableStateOf(ReconTween(emptyList(), emptyList())) }
+    val reconProgress = remember { Animatable(1f) }
+    LaunchedEffect(reconstructed) {
+        val target = reconstructed
+        val drawnNow = lerpReconstruction(reconTween.from, reconTween.to, reconProgress.value)
+        // Only a MOVE is interpolated: the same slots at different levels, which is what a τ sweep
+        // is. A fill landing or a span leaving changes which slots exist, and sliding one row set
+        // into another would draw a curve through slots the model never spoke about.
+        if (!sameSlots(drawnNow, target)) {
+            reconTween = ReconTween(target, target)
+            reconProgress.snapTo(1f)
+            return@LaunchedEffect
+        }
+        reconTween = ReconTween(drawnNow, target)
+        reconProgress.snapTo(0f)
+        reconProgress.animateTo(1f, tween(RECON_TWEEN_MS, easing = FastOutSlowInEasing))
+    }
+
     val controls by rememberUpdatedState(paintControls)
     val paintNow by rememberUpdatedState(paint)
     val emitStroke by rememberUpdatedState(onPaintStroke)
@@ -493,24 +579,6 @@ fun GlucoseGraph(
         if (viewStartMs.isNaN()) emptyList()
         else clusterLogMarkers(carbLane.marks, viewStartMs, viewSpanMs, leftPx, plotRightPx, markSepPx)
     }
-
-    /**
-     * Whether a committed mark is actually DRAWN — read off the cluster lists rather than tested
-     * against the viewport by hand.
-     *
-     * The pulse is the only thing keeping this panel's frame loop alive when nothing else moves, so a
-     * mark the user cannot see must not start it; unbounded over the feed, one log from days ago held
-     * the UI thread at the display's refresh rate indefinitely, because `LogState.COMMITTED` has no
-     * timeout by design (see [LoggedEntry]) and never resolves while the server is unreachable.
-     *
-     * But "visible" has to mean exactly what the marker layer means by it. [clusterLogMarkers] culls
-     * to the plot WIDENED by one glyph on each side, so a mark straddling an edge is still drawn and
-     * must still breathe; an independent `tsMs in viewStart..viewEnd` test was narrower than that and
-     * would have frozen a drawn mark. Deriving the answer from the clusters removes the second
-     * definition instead of trying to keep two in step — and the lists are already memoised on the
-     * viewport, so this costs a scan of what is on screen, not of the feed.
-     */
-    val anyCommitted = insulinClusters.any { it.committed } || carbClusters.any { it.committed }
 
     // What a tap on the marker band resolves to: positions in the caller's OWN feed, for it to name.
     // Rebuilt every composition and read through `rememberUpdatedState` like every other closure the
@@ -631,25 +699,6 @@ fun GlucoseGraph(
         if (!frame.isEmpty) { viewStartMs = followEndMs() - viewSpanMs; clamp() }
     }
 
-    // The committed marks' endless fade. Two things it deliberately is not:
-    //
-    //  - It is not built from `motionSpec`. That returns `snap()` with motion off, and a snapped fade to
-    //    invisible would silently stop distinguishing committed from delivered exactly when the user has
-    //    asked for a static UI. The disabled branch is therefore a HELD alpha, not an animation at all —
-    //    the same choice, for the same reason, as `pulseHighlight`.
-    //  - It is not started when nothing is waiting on the server. An always-running animation would keep
-    //    the panel invalidating its draw phase forever for a mark that has nothing left to say.
-    LaunchedEffect(motionOn, anyCommitted) {
-        if (!motionOn || !anyCommitted) {
-            markerPulse.snapTo(LOG_MARKER_STATIC_ALPHA)
-            return@LaunchedEffect
-        }
-        while (true) {
-            markerPulse.animateTo(LOG_MARKER_PULSE_MIN_ALPHA, tween(LOG_MARKER_PULSE_MS, easing = LinearEasing))
-            markerPulse.animateTo(LOG_MARKER_PULSE_MAX_ALPHA, tween(LOG_MARKER_PULSE_MS, easing = LinearEasing))
-        }
-    }
-
     if (frame.isEmpty) {
         Box(modifier.height(220.dp), contentAlignment = Alignment.Center) {
             Text("No glucose data yet", color = cs.onSurface.copy(alpha = 0.6f), fontSize = 13.sp)
@@ -691,7 +740,123 @@ fun GlucoseGraph(
             // a long press is how one starts a deliberate stroke. A second finger landing mid-stroke
             // abandons the in-flight stroke CLEANLY — nothing is emitted and nothing is persisted —
             // rather than smearing it across the pan.
-            .pointerInput(paintOn) {
+            .pointerInput(gestureMode) {
+                // MASK ON: one finger drags a span, two or more pan and zoom — the same shape the
+                // paint branch uses, for the same reason. A drag is horizontal only: a mask is a
+                // stretch of TIME, and the vertical axis has nothing to say about it.
+                if (gestureMode == GraphGesture.EDIT) {
+                    // ONE hand-written loop rather than `detectDragGestures` beside
+                    // `detectTransformGestures`, and for the reason the note above gives: a drag
+                    // detector CONSUMES, and `detectTransformGestures` aborts the moment it sees a
+                    // consumed change — so the two co-resident left the panel unpannable with two
+                    // fingers for as long as edit mode was on. This is the shape the paint branch
+                    // uses, counting pressed pointers itself: one finger selects, two or more pan
+                    // and zoom, and a second finger landing mid-selection abandons the selection
+                    // cleanly rather than smearing it across the pan.
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        val c = maskCtl ?: return@awaitEachGesture
+                        val sink = emitSel ?: return@awaitEachGesture
+                        val box = plotBox
+                        if (box.width <= 0f) return@awaitEachGesture
+                        down.consume()
+
+                        val slopPx = EDIT_DRAG_SLOP_DP * dpPx
+                        val grabPx = EDIT_HANDLE_GRAB_DP * dpPx
+                        val startX = down.position.x
+
+                        fun tsAt(x: Float): Long =
+                            (viewStartMs + (x - box.left) / (box.width / viewSpanMs)).toLong()
+
+                        // Resolved to an instant HERE rather than held as a pixel. The viewport
+                        // moves under a drag — the forecast clock ticks the window forward on its
+                        // own — and a start pixel read against a later viewport translates the
+                        // whole stretch.
+                        val fromTs = tsAt(startX)
+
+                        // Which end of the EXISTING selection this gesture is dragging, if any.
+                        // The OPPOSITE end becomes the anchor, and it is anchored INCLUSIVELY:
+                        // `endMs` is exclusive, and handing it to `selectionOf` — which treats a
+                        // boundary as lying inside the patch starting there — grew the untouched
+                        // right edge by one patch on every left-handle resize.
+                        var anchorTs = Long.MIN_VALUE
+                        selNow?.let { sel ->
+                            val ppmNow = box.width / viewSpanMs
+                            val x0 = ((sel.startMs - viewStartMs) * ppmNow + box.left).toFloat()
+                            val x1 = ((sel.endMs - viewStartMs) * ppmNow + box.left).toFloat()
+                            val dLeft = kotlin.math.abs(startX - x0)
+                            val dRight = kotlin.math.abs(startX - x1)
+                            // Nearest handle wins outright. An if/else-if on the left one first
+                            // takes both whenever the selection is drawn narrower than the grab
+                            // radius, which is every one-patch selection on a 24 h window.
+                            if (dLeft <= grabPx || dRight <= grabPx) {
+                                anchorTs = if (dLeft <= dRight) sel.endMs - c.patchMs else sel.startMs
+                                haptics.perform(HapticEvent.Tap)
+                            }
+                        }
+
+                        var mode = EditGesture.SELECT
+                        var moved = anchorTs != Long.MIN_VALUE
+                        var emitted: MaskSelection? = null
+                        // Latched BEFORE the loop. `selNow` tracks what this gesture has already
+                        // emitted — a recomposition lands between the last emit and a second finger
+                        // arriving — so restoring `selNow` on the switch would put back the stretch
+                        // the aborted gesture just drew rather than the one it started from.
+                        val selAtStart = selNow
+
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val pressed = event.changes.count { it.pressed }
+                            if (pressed == 0) break
+                            if (pressed >= 2 && mode != EditGesture.TRANSFORM) {
+                                // The second finger declares intent. Anything this gesture had
+                                // selected is put back, so a pan never leaves a stretch nobody
+                                // aimed at highlighted.
+                                if (emitted != null) sink(selAtStart)
+                                mode = EditGesture.TRANSFORM
+                            }
+                            when (mode) {
+                                EditGesture.TRANSFORM -> {
+                                    // No slop gate: a pan that has to be earned would fight the
+                                    // selection the other finger is still resting on.
+                                    val zoom = event.calculateZoom()
+                                    val pan = event.calculatePan()
+                                    val centroid = event.calculateCentroid(useCurrent = false)
+                                    if ((zoom != 1f || pan != Offset.Zero) && centroid.isSpecified) {
+                                        applyTransform(centroid.x, pan.x, zoom)
+                                    }
+                                    event.changes.forEach { if (it.positionChanged()) it.consume() }
+                                }
+                                EditGesture.SELECT -> {
+                                    val ch = event.changes.firstOrNull { it.pressed } ?: break
+                                    // A gesture shorter than the slop is a TOUCH, and a touch
+                                    // selects nothing. Without it every stray contact on an armed
+                                    // panel selected a patch. A handle grab is exempt: the finger
+                                    // is already on the thing it means to move.
+                                    if (!moved && kotlin.math.abs(ch.position.x - startX) >= slopPx) {
+                                        moved = true
+                                    }
+                                    if (moved) {
+                                        val anchor = if (anchorTs != Long.MIN_VALUE) anchorTs else fromTs
+                                        val next = selectionOf(anchor, tsAt(ch.position.x), c)
+                                        // EVERY move, not just the lift. Resizing that only landed
+                                        // on touch-up meant dragging a handle blind and finding out
+                                        // afterwards where it went.
+                                        if (next != null && next != emitted) {
+                                            emitted = next
+                                            sink(next)
+                                        }
+                                    }
+                                    event.changes.forEach { if (it.pressed) it.consume() }
+                                }
+                            }
+                        }
+                        if (mode == EditGesture.SELECT && emitted != null) {
+                            haptics.perform(HapticEvent.Commit)
+                        }
+                    }
+                    return@pointerInput
+                }
                 if (!paintOn) {
                     coroutineScope {
                         launch(start = CoroutineStart.UNDISPATCHED) {
@@ -911,8 +1076,9 @@ fun GlucoseGraph(
                 for (i in 0 until rs.size) {
                     val t = rs.tsMs[i].toDouble()
                     if (t < vLo || t > vHi) continue
-                    if (rs.lo[i] < yMin) yMin = rs.lo[i]
-                    if (rs.hi[i] > yMax) yMax = rs.hi[i]
+                    // The OUTERMOST pair alone bounds the fan; the inner ones sit inside it.
+                    if (rs.lo[0][i] < yMin) yMin = rs.lo[0][i]
+                    if (rs.hi[0][i] > yMax) yMax = rs.hi[0][i]
                 }
             }
             // The HINDSIGHT fan is deliberately NOT folded in, unlike the two above. Those are
@@ -949,6 +1115,9 @@ fun GlucoseGraph(
             // that lingered here after that extraction were read by nothing.
             val lineColor = cs.primary
             val interpColor = cs.primary.copy(alpha = 0.45f)
+            // `onSurfaceVariant`, not a glucose colour: a reconstruction is a model's statement
+            // about a slot, and drawing it in the trace's own ink would make it a glucose claim.
+            val reconColor = cs.onSurfaceVariant.copy(alpha = 0.55f)
             val warmupColor = cs.secondary
             // I5 — "Smoothed" is a SWAP, not an overlay: when on (and a smooth exists) the raw sensor
             // polyline is REPLACED by the model-input smoothed trace, so exactly one trace is on screen.
@@ -1084,17 +1253,15 @@ fun GlucoseGraph(
                 //       buried under it — and BEFORE the BG trace, so an icon can never sit on top of a
                 //       hypoglycaemic excursion, which drops into exactly these lanes.
                 //
-                //       The alpha is read HERE, in the draw lambda, so a running fade invalidates the
-                //       draw phase alone — a marker breathing must not recompose the panel. Everything
-                //       else the lanes need is decided in composition: at refresh rate, the whole of
-                //       this section is two translate-and-blit loops over lists already built.
+                //       Everything the lanes need is decided in composition: at refresh rate, the
+                //       whole of this section is two translate-and-blit loops over lists already
+                //       built. Nothing here animates — a mark carries no state to animate.
                 drawLogMarkers(
                     insulinClusters,
                     painter = insulinMarkPainter,
                     tint = insulinTint,
                     sizePx = markSizePx,
                     laneTopY = logMarkerLaneTop(CurveKind.INSULIN, plotBottom, dpPx),
-                    committedAlpha = markerPulse.value,
                 )
                 drawLogMarkers(
                     carbClusters,
@@ -1102,8 +1269,83 @@ fun GlucoseGraph(
                     tint = carbTint,
                     sizePx = markSizePx,
                     laneTopY = logMarkerLaneTop(CurveKind.CARB, plotBottom, dpPx),
-                    committedAlpha = markerPulse.value,
                 )
+
+                // (4c) The model's reconstruction of a stretch of the curve, and the span the
+                //      finger is selecting. DISPLAY ONLY — nothing drawn here is stored, and the act
+                //      that writes one into the record lives in the Lab.
+                lerpSelection(selTween.from, selTween.to, selProgress.value)?.let { s ->
+                    val x0 = ((s.startMs - viewStartMs) * ppm + plotLeft).toFloat()
+                    val x1 = ((s.endMs - viewStartMs) * ppm + plotLeft).toFloat()
+                    if (x1 >= plotLeft && x0 <= plotRight) {
+                        drawRect(
+                            cs.primary.copy(alpha = 0.14f),
+                            topLeft = Offset(maxOf(x0, plotLeft), plotTop),
+                            size = Size(minOf(x1, plotRight) - maxOf(x0, plotLeft), plotHeight),
+                        )
+                        // A handle at each end, drawn full-height so the grab target is the whole
+                        // edge rather than a dot the thumb has to find.
+                        val w = EDIT_HANDLE_W_DP * dpPx
+                        for (x in listOf(x0, x1)) {
+                            if (x < plotLeft - w || x > plotRight + w) continue
+                            drawRect(
+                                cs.primary.copy(alpha = 0.85f),
+                                topLeft = Offset(x - w / 2f, plotTop),
+                                size = Size(w, plotHeight),
+                            )
+                        }
+                    }
+                }
+                // Kovatchev is a RISK axis, and `convertMgdlTo` leaves mg/dL alone in it — so a
+                // reconstruction drawn through that helper lands at 120 on an axis whose whole range
+                // is about ±3, i.e. off-plot. The risk transform lives in the Rust core and this
+                // module keeps no copy of it, so a panel that cannot supply one draws no
+                // reconstruction rather than a line in the wrong space. Thresholds already skip this
+                // space for the same reason.
+                val recon = lerpReconstruction(reconTween.from, reconTween.to, reconProgress.value)
+                if (recon.isNotEmpty() && (frame.unit != UnitSpace.Kovatchev || kovatchevF != null)) {
+                    drawReconstruction(
+                        rows = recon,
+                        xOf = { ts -> ((ts - viewStartMs) * ppm + plotLeft).toFloat() },
+                        // The frame's own unit, through the same transforms the trace used — never
+                        // a second spelling of either.
+                        yOf = { mgdl ->
+                            yToPx(
+                                if (frame.unit == UnitSpace.Kovatchev) {
+                                    (kovatchevF?.invoke(mgdl) ?: mgdl).toFloat()
+                                } else {
+                                    convertMgdlTo(mgdl.toFloat(), frame.unit)
+                                },
+                            )
+                        },
+                        // The forecast's own ink, because a fill and a forecast are one artifact
+                        // under different inputs.
+                        ink = cs.tertiary,
+                        fanColor = cs.tertiary,
+                        plotLeft = plotLeft,
+                        plotRight = plotRight,
+                        // The drawn TRACE at the bracketing slot, in pixels — whatever the panel
+                        // shows there, so the reconstruction meets the curve the eye is following
+                        // rather than a second reading of it. Null when the trace draws nothing at
+                        // that slot, which is the ordinary case at the far end of a fill that runs
+                        // to the newest measurement.
+                        anchorPxAt = { ts ->
+                            val i = frame.nearestIndex(ts.toDouble())
+                            when {
+                                i < 0 || kotlin.math.abs(frame.absMs(i) - ts) > GRID_HALF_MS -> null
+                                // Never onto the model's OWN output. Joining a reconstruction to a
+                                // neighbouring reconstruction and pinching the fan shut there says
+                                // the two meet at something known, when both are the same guess.
+                                // A carried-forward or warm-up point is still a join worth making —
+                                // it is the curve the eye is following — and it keeps its own
+                                // provenance styling in the trace beneath.
+                                frame.flags[i] == GraphFrame.FLAG_RECONSTRUCTED -> null
+                                else -> yToPx(frame.ys[i])
+                            }
+                        },
+                        scratch = reconPath,
+                    )
+                }
 
                 // (5) BG polyline, segment-styled by provenance; gaps broken. Suppressed when the smoothed
                 //     model-input trace has replaced it (I5).
@@ -1116,12 +1358,18 @@ fun GlucoseGraph(
                     // at a 6 h window and up to `GraphFrame.maxPoints` fully zoomed out, every frame.
                     val warm = fa == GraphFrame.FLAG_WARMUP || fb == GraphFrame.FLAG_WARMUP
                     val interp = fa == GraphFrame.FLAG_INTERPOLATED || fb == GraphFrame.FLAG_INTERPOLATED
+                    // The SEGMENT matters more than the marker: point markers are suppressed at
+                    // 6 h and wider, so on every window the patient normally uses the polyline is
+                    // the whole rendering, and a reconstruction falling through to `lineColor`
+                    // would draw as an unbroken measured trace.
+                    val recon = fa == GraphFrame.FLAG_RECONSTRUCTED || fb == GraphFrame.FLAG_RECONSTRUCTED
                     val col = when {
                         warm -> warmupColor
                         interp -> interpColor
+                        recon -> reconColor
                         else -> lineColor
                     }
-                    val effect = if (warm || interp) dash else null
+                    val effect = if (warm || interp) dash else if (recon) reconDash else null
                     drawLine(
                         col,
                         Offset(xToPx(frame.xs[i]), yToPx(frame.ys[i])),
@@ -1140,6 +1388,8 @@ fun GlucoseGraph(
                             GraphFrame.FLAG_WARMUP -> drawCircle(warmupColor, r, c)
                             GraphFrame.FLAG_INTERPOLATED ->
                                 drawCircle(interpColor, r, c, style = interpRingStroke)
+                            GraphFrame.FLAG_RECONSTRUCTED ->
+                                drawCircle(reconColor, r, c, style = interpRingStroke)
                             else -> drawCircle(lineColor, r, c)
                         }
                     }
@@ -1214,30 +1464,16 @@ fun GlucoseGraph(
                     }
                 }
 
-                // (6.6) The ephemeral, DISPLAY-ONLY rolled forecast (I2): the extrapolated tail beyond the
-                //       validated 2 h is drawn hatched/dimmed with a boundary + legend, so it can never be
-                //       mistaken for a validated forecast (and it never drives an alert or a dose).
+                // (6.6) The on-demand rolled forecast (I2), drawn in the forecast's own hand: it is
+                //       the cycle's forecast re-fed to itself on the same fp32 path, and it stays
+                //       display-only by TYPE — `:calc` cannot accept a `RolledForecast` — rather than
+                //       by being painted to look provisional.
                 rolled?.let { rs ->
                     fun absToPx(ms: Double): Float = (plotLeft + (ms - viewStartMs) * ppm).toFloat()
-                    drawRolledSeries(rs, AbsToPx(::absToPx), ValToPx(::yToPx), plotTop, plotBottom, cs.tertiary, cs.onSurface, rolledSeam, rolledPath)
-                    val legendText = if (rs.degenerate) "extrapolated · degenerated · display-only"
-                    else "extrapolated · unvalidated · display-only"
-                    val leg = measurer.measure(legendText, rolledLegendStyle)
-                    // Lifted clear of the marker band whenever the lanes claim it. Both this caption and
-                    // the lanes are measured up from `plotBottom` and the caption is drawn LAST, so left
-                    // where it was it prints straight over the carb lane — and it is the one thing keeping
-                    // the extrapolated tail from being read as a validated forecast, so neither layer may
-                    // be allowed to bury the other. Gated on exactly what the lanes are gated on — the
-                    // FEED, not the clusters — so the caption holds one height for as long as marks exist
-                    // rather than hopping as they pan in and out of view.
-                    //
-                    // The band is a third of a short plot's height, so the lift is clamped to the plot
-                    // top: overlapping a lane is bad, but being clipped away by the plot rectangle would
-                    // silence the caption altogether, which is the one outcome not tolerable here.
-                    val laneless = carbLane.marks.isEmpty() && insulinLane.marks.isEmpty()
-                    val legFloor = plotBottom - if (laneless) 0f else LOG_MARKER_BAND_DP * dpPx
-                    val legTop = (legFloor - leg.size.height - 2f).coerceAtLeast(plotTop)
-                    drawText(leg, topLeft = Offset((plotRight - leg.size.width - 4f).coerceAtLeast(plotLeft), legTop))
+                    drawRolledSeries(
+                        rs, AbsToPx(::absToPx), ValToPx(::yToPx),
+                        cs.tertiary, cs.tertiary, rolledSeam, rolledPath,
+                    )
                 }
 
                 // (7) Scrub cursor — time-anchored, so it reads in the forecast zone too (item 3). U8 — the
@@ -1394,16 +1630,10 @@ private const val SCRUB_VALUE_TEMPLATE = "199.9 g"
  *  and model may be absent. Values carry their unit so the right column reads on its own. */
 internal fun scrubRows(sc: GraphScrub): List<Pair<String, String>> {
     val out = ArrayList<Pair<String, String>>(5)
-    // "*" marks the prediction zone; "~" SUPERSEDES it past the rolled forecast's validated prefix,
-    // where the number is extrapolated and unvalidated (an extrapolated value is necessarily in the
-    // prediction zone, so the two never both apply). One glyph rather than a word: the value column is
-    // sized from a fixed template, and the panel already carries the hatch, the boundary rule and the
-    // "extrapolated · unvalidated · display-only" caption that say it at length.
-    val mark = when {
-        sc.bgExtrapolated -> "~"
-        sc.inPredZone -> "*"
-        else -> ""
-    }
+    // "*" marks the prediction zone. Nothing distinguishes a rolled step from a forecast one: the
+    // roll IS the forecast re-fed to itself, and it cannot reach a rail, an alert or a dose whatever
+    // the read-out says, because `:calc` cannot accept its type.
+    val mark = if (sc.inPredZone) "*" else ""
     val bgStr = sc.bgValue?.let { formatValue(it, sc.unit) + mark } ?: "--"
     out.add("BG" to bgStr)
     sc.carbRate?.let { out.add("Carb" to "%.1f g".format(it)) }
@@ -1611,11 +1841,11 @@ private fun syntheticMarkers(): List<LogMarker> {
     val t0 = 1_720_000_000_000L
     val step = 300_000L
     return listOf(
-        LogMarker(t0 + 20 * step, CurveKind.CARB, LogState.DELIVERED),
-        LogMarker(t0 + 62 * step, CurveKind.CARB, LogState.DELIVERED),
-        LogMarker(t0 + 62 * step, CurveKind.INSULIN, LogState.DELIVERED),
-        LogMarker(t0 + 100 * step, CurveKind.INSULIN, LogState.COMMITTED),
-        LogMarker(t0 + 101 * step, CurveKind.INSULIN, LogState.DELIVERED),
+        LogMarker(t0 + 20 * step, CurveKind.CARB),
+        LogMarker(t0 + 62 * step, CurveKind.CARB),
+        LogMarker(t0 + 62 * step, CurveKind.INSULIN),
+        LogMarker(t0 + 100 * step, CurveKind.INSULIN),
+        LogMarker(t0 + 101 * step, CurveKind.INSULIN),
     )
 }
 
@@ -1783,3 +2013,27 @@ fun DrawScope.drawGraphFurniture(
         drawLine(axisColor, Offset(plotLeft, plotBottom), Offset(plotRight, plotBottom), 1.5f)
 
 }
+
+// ── Edit mode's touch geometry ──────────────────────────────────────────────────────────
+//
+// A drag shorter than the slop selects NOTHING. On an armed panel every stray contact used to
+// select a patch and reconstruct it, which is how a fill landed where nobody aimed.
+private const val EDIT_DRAG_SLOP_DP = 16f
+
+/** How far either side of a selection edge counts as grabbing that handle. */
+private const val EDIT_HANDLE_GRAB_DP = 20f
+
+/** The drawn width of a handle. Narrower than its grab target, deliberately: the bar marks the
+ *  edge and the target is what the thumb actually has to hit. */
+private const val EDIT_HANDLE_W_DP = 3f
+
+/** How long the highlight takes to reach a selection's new edges. Short enough that a drag reads as
+ *  the edge being pushed rather than followed, long enough to smooth a patch-sized jump. */
+private const val SELECTION_TWEEN_MS = 130
+
+/** How long the drawn line takes to reach the fan's newly-chosen level. The τ ladder has 17 stops,
+ *  so a sweep across it is a run of these rather than one. */
+private const val RECON_TWEEN_MS = 110
+
+/** Half a grid step. A trace point further than this from a slot is a point at some other slot. */
+private const val GRID_HALF_MS = 150_000.0

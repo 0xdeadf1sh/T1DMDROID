@@ -326,6 +326,8 @@ class RollingForecasterAlignmentTest {
         override fun forecastSlice(f: Forecast, fromPatch: Int, toPatch: Int): Forecast = f
 
         override fun bandLine(desc: ModelDescriptor, f: Forecast, tau: Double): List<Double> = f.medianBg
+        override fun bandLineAt(desc: ModelDescriptor, qTauRisk: List<Double>, tau: Double): List<Double> =
+            emptyList()
 
         override fun forecastDegeneracyCheck(desc: ModelDescriptor, forecast: Forecast): ForecastStatus = ForecastStatus.OK
 
@@ -354,6 +356,14 @@ class RollingForecasterAlignmentTest {
             opts: LoraTrainOpts,
             progress: com.t1dm.core.model.LoraProgressSink?,
         ): LoraTrainResult = unused()
+        override fun loraGuard(
+            head: NativeHead,
+            desc: ModelDescriptor,
+            samples: List<LoraSample>,
+            weights: com.t1dm.core.model.LoraWeights,
+            opts: com.t1dm.core.model.LoraGuardOpts,
+        ): com.t1dm.core.model.LoraGuardReport = unused()
+        override fun loraGuardOptsFit(): com.t1dm.core.model.LoraGuardOpts = unused()
         override fun loraNew(
             config: LoraConfig,
             headSha256: String,

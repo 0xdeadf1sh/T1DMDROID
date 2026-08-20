@@ -1,0 +1,133 @@
+package com.t1dm.data
+
+import com.t1dm.core.model.CgmReading
+import com.t1dm.core.model.CgmSourceId
+import com.t1dm.core.model.ReadingFlag
+import com.t1dm.core.model.ReadingProvenance
+import com.t1dm.data.db.SampleEntity
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Test
+
+/**
+ * [T1dmRepository.projectedBgSample] — what a reading does to the wide `sample` row for its slot.
+ *
+ * The case that gives this file its reason to exist is the third test: a reading filed under the instant
+ * it was SAMPLED can be older than a `sample` row that some other channel has already touched, and the
+ * projection must still carry it. The guard that used to sit here compared the two and returned early,
+ * which lost the BG for that slot silently — no `bgMgdl`, no INGEST row, nothing on the wire and nothing
+ * in the statistics, while `cgm_reading` still held the reading so nothing looked wrong anywhere.
+ */
+class BgProjectionTest {
+
+    @Test
+    fun `an empty slot takes the reading whole`() {
+        val out = T1dmRepository.projectedBgSample(empty(SLOT, updatedAt = SLOT), reading(bgMgdl = 121))
+
+        assertEquals(121, out.bgMgdl)
+        assertEquals(ReadingProvenance.MEASURED, out.bgProvenance)
+        assertEquals(ReadingFlag.NORMAL, out.bgFlag)
+        assertEquals(330, out.tzOffsetMin)
+        assertNotNull("the label must name the sensor that produced the number", out.bgSource)
+        assertEquals(SOURCE.opaque, out.bgSource)
+    }
+
+    @Test
+    fun `the other channels of the row are left alone`() {
+        val base = empty(SLOT, updatedAt = SLOT).copy(steps = 412, mood = 3, hr = 68, exercise = 2.5)
+        val out = T1dmRepository.projectedBgSample(base, reading(bgMgdl = 96))
+
+        assertEquals(412, out.steps)
+        assertEquals(3, out.mood)
+        assertEquals(68, out.hr)
+        assertEquals(2.5, out.exercise!!, 0.0)
+        assertEquals(SLOT, out.ts)
+    }
+
+    /**
+     * The regression this exists for.
+     *
+     * `updatedAt` is bumped by every channel that writes the row — steps, mood, heart rate, and the
+     * exercise disposal curve, which writes buckets up to ninety minutes AHEAD of the clock. A sensor that
+     * files a reading under the instant it was sampled therefore routinely offers a reading whose instant
+     * is behind that stamp, and comparing the two is not a decision about which reading is right: which
+     * reading holds the slot was settled by [supersedesGridSlot] before this ran.
+     */
+    @Test
+    fun `a reading older than the row's stamp still projects`() {
+        val touchedLater = empty(SLOT, updatedAt = SLOT + 90 * 60_000L)
+        val out = T1dmRepository.projectedBgSample(touchedLater, reading(bgMgdl = 58, rxWallMs = SLOT))
+
+        assertEquals("the BG of the slot was dropped", 58, out.bgMgdl)
+        assertEquals(ReadingFlag.NORMAL, out.bgFlag)
+    }
+
+    /**
+     * §7: `updated_at` is the ordering key for the server's idempotent upsert, so it may never go
+     * backwards for a row — a redelivery carrying an older stamp is a no-op there, and a row whose stamp
+     * regressed would freeze at the server until wall time caught up again.
+     */
+    @Test
+    fun `the row's stamp never moves backwards`() {
+        val stamped = empty(SLOT, updatedAt = SLOT + 600_000)
+        assertEquals(
+            SLOT + 600_000,
+            T1dmRepository.projectedBgSample(stamped, reading(rxWallMs = SLOT)).updatedAt,
+        )
+        assertEquals(
+            SLOT + 900_000,
+            T1dmRepository.projectedBgSample(stamped, reading(rxWallMs = SLOT + 900_000)).updatedAt,
+        )
+    }
+
+    /** A WARMUP row has no value, and projecting it must null the slot rather than leave the last one. */
+    @Test
+    fun `a reading with no value clears the slot's BG`() {
+        val held = T1dmRepository.projectedBgSample(empty(SLOT, updatedAt = SLOT), reading(bgMgdl = 140))
+        val out = T1dmRepository.projectedBgSample(
+            held,
+            reading(bgMgdl = null, flag = ReadingFlag.WARMUP, rxWallMs = SLOT + 60_000),
+        )
+        assertEquals(null, out.bgMgdl)
+        assertEquals(ReadingFlag.WARMUP, out.bgFlag)
+    }
+
+    private companion object {
+        /** On the grid: 1_700_000_100_000 % 300_000 == 0. */
+        const val SLOT = 1_700_000_100_000L
+        val SOURCE = CgmSourceId("vendor:serial")
+
+        fun reading(
+            bgMgdl: Int? = 100,
+            flag: ReadingFlag = ReadingFlag.NORMAL,
+            rxWallMs: Long = SLOT + 40_000,
+        ) = CgmReading(
+            sourceId = SOURCE,
+            tsMs = SLOT,
+            bgMgdl = bgMgdl,
+            trendTenthsPerMin = 2,
+            minFromStart = 300,
+            quality = null,
+            provenance = ReadingProvenance.MEASURED,
+            flag = flag,
+            tzOffsetMin = 330,
+            rxWallMs = rxWallMs,
+            rssi = -70,
+        )
+
+        fun empty(ts: Long, updatedAt: Long) = SampleEntity(
+            ts = ts,
+            tzOffsetMin = 0,
+            bgMgdl = null,
+            bgSource = null,
+            bgProvenance = null,
+            bgFlag = null,
+            steps = null,
+            mood = null,
+            hr = null,
+            sleep = null,
+            exercise = null,
+            updatedAt = updatedAt,
+        )
+    }
+}

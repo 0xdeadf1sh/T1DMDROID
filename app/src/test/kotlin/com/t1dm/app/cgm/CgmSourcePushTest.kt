@@ -1,0 +1,72 @@
+package com.t1dm.app.cgm
+
+import com.t1dm.core.model.CgmSourceDescriptor
+import com.t1dm.core.model.CgmSourceId
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * What the descriptor push discloses.
+ *
+ * `serial` is the number printed on the sensor, and a vendor may also build the advertised name out of
+ * it. A client that sends it puts a real device identifier into the server's storage, its backups and its
+ * operator console; one that omits it loses nothing but the console's ability to name the physical
+ * sensor, and omitting it is not a contract change (`SPEC/http-api.md`, CGM source).
+ *
+ * Every value below is fabricated and names no vendor, model or device.
+ */
+class CgmSourcePushTest {
+
+    private val descriptor = CgmSourceDescriptor(
+        id = CgmSourceId("vendor:7000000001"),
+        vendorId = "vendor",
+        sensorModelId = "vendor:model",
+        advertName = "Brand7000000001",
+        displayName = "Brand7000000001",
+        serialSuffix = "7000000001",
+        warmupWindowMin = 45,
+        passiveOnly = false,
+        ordinal = 0,
+    )
+
+    @Test
+    fun `the serial is never sent`() {
+        val dto = cgmSourceDto(descriptor, nowMs = 1_700_000_000_000L)
+        assertEquals(descriptor.id.opaque, dto.id)
+        assertNull(dto.serial)
+        assertEquals(1_700_000_000_000L, dto.updated_at)
+    }
+
+    /** Nothing in the body may be invertible back to the serial — the id is a 16-byte digest for exactly
+     *  this reason, and the point is lost if the serial rides along beside it under another name. */
+    @Test
+    fun `the body contains the serial nowhere`() {
+        val dto = cgmSourceDto(descriptor, nowMs = 0L)
+        val body = listOfNotNull(dto.id, dto.family, dto.model, dto.serial).joinToString("|")
+        assertTrue(body, !body.contains("7000000001"))
+        assertTrue("the id must still be the opaque label", dto.id.startsWith("s_"))
+    }
+
+    /**
+     * A sensor whose advertised name IS its serial, which is why the withholding is unconditional
+     * rather than a field-by-field judgement.
+     */
+    @Test
+    fun `a serial that is also the advertised name is still withheld`() {
+        val serialAsName = descriptor.copy(advertName = "Brand7000000001", displayName = "Brand7000000001")
+        val dto = cgmSourceDto(serialAsName, nowMs = 0L)
+        val body = listOfNotNull(dto.id, dto.family, dto.model, dto.serial).joinToString("|")
+        assertTrue(body, !body.contains("7000000001"))
+    }
+
+    /** What a product is stays disclosed: neither field names a device, and the console needs one of them
+     *  to say what kind of sensor a series came from. */
+    @Test
+    fun `the vendor and model are disclosed`() {
+        val dto = cgmSourceDto(descriptor, nowMs = 0L)
+        assertEquals("vendor", dto.family)
+        assertEquals("vendor:model", dto.model)
+    }
+}

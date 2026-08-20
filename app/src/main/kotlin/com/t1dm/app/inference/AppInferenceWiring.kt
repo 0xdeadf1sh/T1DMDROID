@@ -49,7 +49,15 @@ class RoomBgHistoryProvider(
     private suspend fun series(maxSteps: Int, minSteps: Int, withReconstructed: Boolean): BgSeries? {
         val srcId = registry.authoritative.value ?: repository.authoritativeSourceId() ?: return null
         val readings = repository.recentReadings(srcId, maxSteps + 12)
-            .filter { it.bgMgdl != null && it.flag == ReadingFlag.NORMAL } // excludes warmup + invalid
+            // Excludes warm-up and invalid — and, on the dosing path, a PROMOTED reconstruction.
+            // Promotion puts a model's own output into `cgm_reading`, so without the provenance
+            // test `dosingBgSeries` would swallow it through the reading table while still
+            // correctly refusing the `bg_infill` copy — closing exactly the loop between a model's
+            // output and the advice derived from it that this split exists to prevent.
+            .filter {
+                it.bgMgdl != null && it.flag == ReadingFlag.NORMAL &&
+                    (withReconstructed || it.provenance != ReadingProvenance.RECONSTRUCTED)
+            }
         if (readings.size < minSteps) return null
 
         val byTs = TreeMap<Long, Double>()
@@ -122,6 +130,56 @@ class RoomBgHistoryProvider(
         val out = DoubleArray(nSteps) { Double.NaN }
         for (i in 0 until nSteps) byTs[start + i * GRID_MS]?.let { out[i] = it }
         return BgSeries(out, anchorTsMs = anchor, gridStartMs = start)
+    }
+
+    /**
+     * Which trailing slots hold a model's own output rather than a measurement.
+     *
+     * BOTH routes, because they are separate copies of the same claim and either alone leaves a
+     * hole: promotion writes a `RECONSTRUCTED` row into `cgm_reading`, and [recentBgSeries] splices
+     * an UNPROMOTED `bg_infill` value into a slot no reading covers. A promoted span normally has a
+     * row in both tables, but a stranded one — its band gone, its reading still stored — has only
+     * the first, and that is precisely the row a fit must not condition on.
+     */
+    override suspend fun reconstructedSlots(maxSteps: Int): Set<Long> {
+        if (maxSteps <= 0) return emptySet()
+        val srcId = registry.authoritative.value ?: repository.authoritativeSourceId() ?: return emptySet()
+        val readings = repository.recentReadings(srcId, maxSteps + 12)
+        if (readings.isEmpty()) return emptySet()
+        // Which slots [series] would take a value from at all, and which of those are a model's own
+        // output. Both routes count, because they are separate copies of the same claim and either
+        // alone leaves a hole: promotion writes a `RECONSTRUCTED` row into `cgm_reading`, and
+        // [recentBgSeries] splices an UNPROMOTED `bg_infill` value into a slot no reading covers. A
+        // promoted span normally has a row in both tables, but a stranded one — its band gone, its
+        // reading still stored — has only the first, and that is precisely the row a fit must not
+        // condition on.
+        val covered = HashSet<Long>()
+        val fromModel = HashSet<Long>()
+        for (r in readings) {
+            if (r.bgMgdl == null || r.flag != ReadingFlag.NORMAL) continue
+            covered.add(r.tsMs)
+            if (r.provenance == ReadingProvenance.RECONSTRUCTED) fromModel.add(r.tsMs)
+        }
+        val oldest = readings.minOf { it.tsMs }
+        val newest = readings.maxOf { it.tsMs }
+        for (f in runCatching { repository.infillInRange(oldest, newest) }.getOrElse { emptyList() }) {
+            covered.add(f.ts)
+            fromModel.add(f.ts)
+        }
+        if (fromModel.isEmpty()) return emptySet()
+        // And the CARRY. [series] holds the last value it saw across every uncovered slot, so a
+        // reconstruction keeps standing in until something else covers a slot — up to a patch of it
+        // where a fill ends on a patch boundary and the sensor resumed mid-patch. Naming only the
+        // slot a reconstruction was written at left that run admissible, which is the same model
+        // output reaching the same fit context by a slower route.
+        val out = HashSet<Long>(fromModel)
+        var ts = oldest
+        var carrying = false
+        while (ts <= newest) {
+            if (covered.contains(ts)) carrying = fromModel.contains(ts) else if (carrying) out.add(ts)
+            ts += GRID_MS
+        }
+        return out
     }
 
     /**

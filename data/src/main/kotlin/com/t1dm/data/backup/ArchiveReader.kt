@@ -5,12 +5,15 @@ import androidx.room.useWriterConnection
 import com.t1dm.data.db.AppDatabase
 import com.t1dm.data.db.BasalScheduleEntity
 import com.t1dm.data.db.CgmReadingEntity
+import com.t1dm.data.db.CgmSourceEntity
 import com.t1dm.data.db.ConformalDeltaEntity
 import com.t1dm.data.db.LoraEntity
 import com.t1dm.data.db.ExerciseFixEntity
 import com.t1dm.data.db.ExerciseSessionEntity
 import com.t1dm.data.db.FoodEntity
 import com.t1dm.data.db.InsulinTypeEntity
+import com.t1dm.data.db.EventTombstoneEntity
+import com.t1dm.data.db.TOMBSTONE_KIND_DOSE
 import com.t1dm.data.db.LoggedDoseEntity
 import com.t1dm.data.db.LoggedMealEntity
 import com.t1dm.data.db.PaintStrokeEntity
@@ -179,6 +182,31 @@ class ArchiveReader(private val db: AppDatabase) {
                 s.meals.add(r)
                 if (s.meals.size >= Archive.BATCH) flushMeals(s)
             }
+            // Applied IMMEDIATELY, not batched, and that ordering is load-bearing: a tombstone
+            // has to be on record before the meal or dose it deletes is merged, or the archived
+            // event is restored and the deletion is undone by the restore. Records may appear in
+            // any order in the file, so [flushEvents] re-applies the deletions afterwards too.
+            Archive.T_TOMBSTONE -> {
+                val r = runCatching { Archive.readTombstone(o) }.getOrNull() ?: return s.skip()
+                s.tombstones.add(r)
+                // Upsert only where the file's deletion is at least as new as the one on record. A
+                // blind upsert walks a local tombstone's `updatedAt` BACKWARDS, and that stamp is
+                // the whole ordering guard: below the deleted event's own `updatedAt`, the next
+                // catch-up re-hydrates what the patient deleted and the deletion never re-applies.
+                val ix = deletions(s)
+                if ((ix[r.clientId] ?: Long.MIN_VALUE) < r.updatedAt) {
+                    tx { db.eventTombstoneDao().upsert(r) }
+                    ix[r.clientId] = r.updatedAt
+                }
+                s.applied = s.applied.copy(tombstones = s.applied.tombstones + 1)
+            }
+            // A promoted fill's band. Merge-only: a row the local table already has at that slot
+            // is this install's own and is not displaced by an archived one.
+            Archive.T_INFILL -> {
+                val r = runCatching { Archive.readInfill(o) }.getOrNull() ?: return s.skip()
+                tx { db.bgInfillDao().insertIgnoreAll(listOf(r)) }
+                s.applied = s.applied.copy(infills = s.applied.infills + 1)
+            }
             Archive.T_STROKE -> {
                 val r = runCatching { Archive.readStroke(o) }.getOrNull() ?: return s.skip()
                 s.strokes.add(r)
@@ -268,8 +296,61 @@ class ArchiveReader(private val db: AppDatabase) {
         flushSamples(s)
         flushDoses(s)
         flushMeals(s)
+        // A deletion in the file may have been read AFTER the event it deletes, so re-apply every
+        // one now that both are in — the file's record order is not guaranteed. Deletions already
+        // on record are the flushes' own business ([deleted]); this pass is only for the file's.
+        applyTombstones(s)
         flushStrokes(s)
         flushExerciseFixes(s)
+    }
+
+    /**
+     * Every deletion on record, `clientId` → its stamp, loaded once and then kept current.
+     *
+     * A restore is the one event path that does not run through
+     * [com.t1dm.data.T1dmRepository.hydrateMealEvent], which is where the deletion filter lives:
+     * [flushDoses] and [flushMeals] insert into the DAO directly. Without this the archived copy of
+     * a meal the patient deleted merges cleanly — deletion is a hard delete, so the unique
+     * `clientId` index is free — and catch-up cannot repair it, because the event high-water mark
+     * is a MAX over the live tables and never moves back over the resurrected row. Only a latched
+     * full resync would take it out again.
+     *
+     * Loaded lazily like [MergeState.strokeKeys]: one bounded scan, and only for a file that
+     * carries events at all.
+     */
+    private suspend fun deletions(s: MergeState): HashMap<String, Long> =
+        s.deletions ?: HashMap<String, Long>().also { m ->
+            for (t in db.eventTombstoneDao().all()) m[t.clientId] = t.updatedAt
+            s.deletions = m
+        }
+
+    /** True when a deletion on record covers [clientId] at or after [updatedAt] — the same rule
+     *  [com.t1dm.data.T1dmRepository.hydrateMealEvent] applies to a catch-up. */
+    private suspend fun deleted(s: MergeState, clientId: String, updatedAt: Long): Boolean =
+        (deletions(s)[clientId] ?: Long.MIN_VALUE) >= updatedAt
+
+    /**
+     * Re-apply the file's deletions once every event it carried is in.
+     *
+     * The guard is on the LIVE ROW, not on the tombstone table: the read branch has already stored
+     * this deletion, so comparing the two compares a value against itself and can never fire. A row
+     * authored strictly after the deletion is a re-creation under the same key and survives.
+     */
+    private suspend fun applyTombstones(s: MergeState) {
+        if (s.tombstones.isEmpty()) return
+        tx {
+            for (t in s.tombstones) {
+                if (t.kind == TOMBSTONE_KIND_DOSE) {
+                    db.loggedDoseDao().byClientId(t.clientId)
+                        ?.takeIf { it.updatedAt <= t.updatedAt }
+                        ?.let { db.loggedDoseDao().delete(it.id) }
+                } else {
+                    db.loggedMealDao().byClientId(t.clientId)
+                        ?.takeIf { it.updatedAt <= t.updatedAt }
+                        ?.let { db.loggedMealDao().delete(it.id) }
+                }
+            }
+        }
     }
 
     private suspend fun flushReadings(s: MergeState) {
@@ -292,8 +373,11 @@ class ArchiveReader(private val db: AppDatabase) {
 
     private suspend fun flushDoses(s: MergeState) {
         if (s.doses.isEmpty()) return
-        val rows = s.doses.toList()
+        val all = s.doses.toList()
         s.doses.clear()
+        val rows = all.filterNot { deleted(s, it.clientId, it.updatedAt) }
+        s.skipped += all.size - rows.size
+        if (rows.isEmpty()) return
         val added = tx { db.loggedDoseDao().insertIgnoreAll(rows).count { it != -1L } }
         s.applied = s.applied.copy(doses = s.applied.doses + added)
         s.duplicates += rows.size - added
@@ -301,8 +385,11 @@ class ArchiveReader(private val db: AppDatabase) {
 
     private suspend fun flushMeals(s: MergeState) {
         if (s.meals.isEmpty()) return
-        val rows = s.meals.toList()
+        val all = s.meals.toList()
         s.meals.clear()
+        val rows = all.filterNot { deleted(s, it.clientId, it.updatedAt) }
+        s.skipped += all.size - rows.size
+        if (rows.isEmpty()) return
         val added = tx { db.loggedMealDao().insertIgnoreAll(rows).count { it != -1L } }
         s.applied = s.applied.copy(meals = s.applied.meals + added)
         s.duplicates += rows.size - added
@@ -432,9 +519,11 @@ class ArchiveReader(private val db: AppDatabase) {
         // restoring a backup restores which sensors were being read, and several of them may be.
         if (s.sources.isNotEmpty()) {
             val free = db.cgmSourceDao().authoritativeCount() == 0
-            val rows = s.sources.mapNotNull { o ->
-                runCatching { Archive.readSource(o, authoritative = false) }.getOrNull()
-            }
+            val rows = renumber(
+                s.sources.mapNotNull { o ->
+                    runCatching { Archive.readSource(o, authoritative = false) }.getOrNull()
+                },
+            )
             val added = db.cgmSourceDao().insertIgnoreAll(rows).count { it != -1L }
             if (free) {
                 // Every row landed non-authoritative; exactly one is then chosen. The archive's own
@@ -500,6 +589,16 @@ class ArchiveReader(private val db: AppDatabase) {
         db.useWriterConnection { transactor -> transactor.immediateTransaction { body() } }
 
     /**
+     * Read what the phone already holds, so the incoming sources can be numbered against it.
+     *
+     * One query on a table with a row per sensor the phone has ever met, and only when the archive carried
+     * sources at all. It runs inside [applyBounded]'s write transaction, so nothing can mint an ordinal
+     * between this read and the insert that follows it.
+     */
+    private suspend fun renumber(rows: List<CgmSourceEntity>): List<CgmSourceEntity> =
+        if (rows.isEmpty()) rows else renumbered(db.cgmSourceDao().all(), rows)
+
+    /**
      * How many rows the store already holds under each natural key, spent down as archived rows are
      * matched against it.
      *
@@ -537,6 +636,10 @@ class ArchiveReader(private val db: AppDatabase) {
         val samples = ArrayList<SampleEntity>(Archive.BATCH)
         val doses = ArrayList<LoggedDoseEntity>(Archive.BATCH)
         val meals = ArrayList<LoggedMealEntity>(Archive.BATCH)
+
+        /** Every deletion the file carried, so the merge can re-apply them after the events land —
+         *  the file's record order is not guaranteed. */
+        val tombstones = ArrayList<EventTombstoneEntity>()
         val strokes = ArrayList<PaintStrokeEntity>(Archive.BATCH)
         val exerciseSessions = ArrayList<ExerciseSessionEntity>(Archive.BATCH)
         val exerciseFixes = ArrayList<Pair<String, ExerciseFixEntity>>(Archive.BATCH)
@@ -559,6 +662,11 @@ class ArchiveReader(private val db: AppDatabase) {
          *  pay for a scan of a table it is not going to touch. */
         var strokeKeys: HashSet<Long>? = null
 
+        /** `clientId` → the newest deletion stamp on record for it, live across the whole merge:
+         *  loaded from the store on first use, then kept current as the file's own deletions land.
+         *  See [ArchiveReader.deletions]. */
+        var deletions: HashMap<String, Long>? = null
+
         var applied = ArchiveCounts()
         var duplicates = 0
         var skipped = 0
@@ -566,7 +674,46 @@ class ArchiveReader(private val db: AppDatabase) {
         fun skip() { skipped++ }
     }
 
-    private companion object {
+    internal companion object {
         const val BUF = 1 shl 16
+
+        /**
+         * Give every source about to be inserted a per-sensor ordinal no row already [stored] uses.
+         *
+         * **The one field a merge insert cannot take verbatim.** Every other column of `cgm_source`
+         * describes the sensor itself, so copying it out of the file is exactly right; `ordinal` describes
+         * the sensor's place among the sensors on ONE phone. It is minted, once per row, inside
+         * [com.t1dm.data.T1dmRepository.upsertSource]'s write transaction — and a restore does not go
+         * through there, it inserts into the table directly. A file carrying 0..2 restored onto a phone
+         * already holding 0..2 left six sensors sharing three numbers, permanently; with sensor names
+         * hidden — the default — `CGM #1` is the only identity most surfaces show, so one label would name
+         * two physical devices. That is the exact ambiguity the persisted number exists to prevent.
+         *
+         * The file's number is KEPT wherever it is free, so the ordinary restore — a whole backup onto a
+         * fresh phone — reproduces the numbering the user already knows. Only a collision is renumbered,
+         * and never a row already stored: an existing sensor's number is what the user has learned to read
+         * as that device, and a restore may not move it.
+         *
+         * A row whose `sourceId` the phone already holds is passed through untouched and claims nothing:
+         * the insert ignores it and the stored row keeps its own number. Without that, re-importing the
+         * same file would burn a fresh ordinal per sensor every time and count the numbers up for ever.
+         */
+        fun renumbered(
+            stored: List<CgmSourceEntity>,
+            incoming: List<CgmSourceEntity>,
+        ): List<CgmSourceEntity> {
+            val known = stored.mapTo(HashSet(stored.size)) { it.sourceId }
+            val taken = stored.mapTo(HashSet(stored.size)) { it.ordinal }
+            var next = 0
+            return incoming.map { row ->
+                if (!known.add(row.sourceId)) return@map row
+                if (row.ordinal >= 0 && taken.add(row.ordinal)) return@map row
+                // The sentinel a file written before the column carried lands here too. Numbering it now
+                // rather than on the next hydrate is what keeps an unnumbered sensor — one the privacy
+                // label cannot name at all — from ever reaching the screen.
+                while (!taken.add(next)) next++
+                row.copy(ordinal = next)
+            }
+        }
     }
 }

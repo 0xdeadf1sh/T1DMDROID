@@ -8,6 +8,8 @@ import com.t1dm.core.model.CgmRawSample
 import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.CgmSourceDescriptor
 import com.t1dm.core.model.CgmSourceId
+import com.t1dm.core.model.CurveKind
+import com.t1dm.core.model.EventTombstone
 import com.t1dm.core.model.isRealMeasurement
 import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.ForecastWindow
@@ -16,6 +18,7 @@ import com.t1dm.core.model.ModelPrediction
 import com.t1dm.core.model.PaintStroke
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
+import com.t1dm.core.model.ReconstructedBg
 import com.t1dm.core.model.RecentMeal
 import com.t1dm.data.backup.ArchiveCounts
 import com.t1dm.data.backup.ArchiveReader
@@ -25,17 +28,27 @@ import com.t1dm.data.db.AppDatabase
 import com.t1dm.data.db.BasalScheduleEntity
 import com.t1dm.data.db.CgmAdvertRawEntity
 import com.t1dm.data.db.CgmReadingEntity
+import com.t1dm.data.db.CgmSensorSecretEntity
 import com.t1dm.data.db.CgmSourceEntity
 import com.t1dm.data.db.DoseEventEntity
 import com.t1dm.data.db.ExerciseFixEntity
 import com.t1dm.data.db.ExerciseSessionEntity
 import com.t1dm.data.db.FoodEntity
 import com.t1dm.data.db.InsulinTypeEntity
+import com.t1dm.data.db.EventTombstoneEntity
 import com.t1dm.data.db.LoggedDoseEntity
+import com.t1dm.data.db.TOMBSTONE_KIND_DOSE
+import com.t1dm.data.db.TOMBSTONE_KIND_MEAL
+import com.t1dm.data.db.actingUntilMs
+import com.t1dm.data.db.toModel as infillToModel
+import com.t1dm.data.db.affectsChannel
+import com.t1dm.data.db.curveAfterEdit
+import com.t1dm.data.db.toModel as tombstoneToModel
 import com.t1dm.data.db.LoggedMealEntity
 import com.t1dm.data.db.HwTelemetryEntity
 import com.t1dm.data.db.KvEntity
 import com.t1dm.data.db.NS_ENTRY_DEDUP_PREFIX
+import com.t1dm.data.db.NS_TREATMENT_DEDUP_PREFIX
 import com.t1dm.data.db.OutboxEntity
 import com.t1dm.data.db.OutboxKind
 import com.t1dm.data.db.OutboxState
@@ -80,34 +93,25 @@ import java.io.OutputStream
  *  - projection provenance: INVALID readings never reach `sample`; the sample carries the bg
  *    provenance/flag so downstream (alarm, graph) can honour §3.6-A.
  */
-/**
- * What became of the queued server push when a logged meal/dose was undone — the one part of an undo
- * the phone does not control, and therefore the one part the receipt must not overstate.
- *
- * The outbox has no SENT state ([OutboxState] is `{PENDING, INFLIGHT, FAILED}` and `QueueDrainer`
- * DELETEs a row on HTTP success), so "already sent" and "size-evicted" are the same observation: the
- * row is gone. MEAL/DOSE are never age-evictable, so absence overwhelmingly means sent.
- */
-enum class PushWithdrawal {
-    /** No push was ever enqueued for this write — the undo is total. */
-    NEVER_QUEUED,
-
-    /** The push was still PENDING and has been withdrawn: nothing about this event left the phone. */
-    WITHDRAWN,
-
-    /** The push was INFLIGHT — a send was in progress. The queue row is gone either way, but the PUT
-     *  may already have landed, so the server copy is unknown rather than absent. */
-    RACED,
-
-    /** The queue row was already gone: the event is on the server and cannot be recalled (no DELETE
-     *  in the server API), and `CatchUpCoordinator` re-hydrates it by `clientId` on the next WS
-     *  (re)connect — deleting the newest event even moves `newestEventTs()` backward, widening the
-     *  pull window that resurrects it. */
-    ALREADY_SENT,
-}
-
 /** How far a source's stored record actually reaches, both ends inclusive. */
 data class ReadingExtent(val oldestMs: Long, val newestMs: Long)
+
+/**
+ * One grid slot's BG as it stood before a cut — everything an undo needs to put it back.
+ *
+ * Carries the ROWS, not a value: a slot can hold a reading from every source that ever wrote it,
+ * each with its own provenance and flag, and `sample` holds the resolved four fields separately.
+ * Restoring from a single mg/dL number would file whatever came back as an ordinary measurement,
+ * which is exactly the claim `isRealMeasurement` exists to refuse.
+ */
+data class BgCut(
+    val ts: Long,
+    val readings: List<CgmReadingEntity>,
+    val bgMgdl: Int?,
+    val bgSource: String?,
+    val bgProvenance: ReadingProvenance?,
+    val bgFlag: ReadingFlag?,
+)
 
 class T1dmRepository(
     private val db: AppDatabase,
@@ -116,10 +120,11 @@ class T1dmRepository(
      * The wall clock, for the one thing in this class that is about NOW rather than about an event:
      * an outbox row's `createdAtMs`, which is its write instant.
      *
-     * Every other timestamp here is passed in by the caller and stays that way. This one must not be,
-     * because the queue reads `createdAtMs` as when the row was written — it is what the age bound is
-     * measured from and what drain order follows — and a reading's own instant is not that number
-     * except by coincidence. See [upsertReading].
+     * Every other timestamp here is passed in by the caller and stays that way. This one cannot be:
+     * a reading now reaches [upsertReading] either from a live sensor, where its own `rxWallMs` IS
+     * now, or recovered from a sensor's internal store hours or days after it was taken — and using
+     * the event instant for a queue row makes the queue believe it was written then. See
+     * [upsertReading].
      */
     private val nowMs: () -> Long = System::currentTimeMillis,
 ) : OutboxSink {
@@ -150,6 +155,7 @@ class T1dmRepository(
     private val sources get() = db.cgmSourceDao()
     private val readings get() = db.cgmReadingDao()
     private val rawSamples get() = db.cgmRawSampleDao()
+    private val sensorSecrets get() = db.cgmSensorSecretDao()
     private val samples get() = db.sampleDao()
     private val doses get() = db.doseEventDao()
     private val loggedDoses get() = db.loggedDoseDao()
@@ -166,6 +172,7 @@ class T1dmRepository(
     private val loras get() = db.loraDao()
     private val infills get() = db.bgInfillDao()
     private val exerciseSessions get() = db.exerciseSessionDao()
+    private val tombstones get() = db.eventTombstoneDao()
     private val exerciseFixes get() = db.exerciseFixDao()
 
     /**
@@ -232,9 +239,10 @@ class T1dmRepository(
         descriptor: CgmSourceDescriptor,
         authoritative: Boolean,
         nowMs: Long,
-    ) = withContext(io) {
+    ): Int = withContext(io) {
         inWriteTx {
             val existing = sources.byId(descriptor.id.value)
+            val ordinal = existing?.ordinal?.takeIf { it >= 0 } ?: (sources.maxOrdinal() + 1)
             sources.upsert(
                 CgmSourceEntity(
                     sourceId = descriptor.id.value,
@@ -257,13 +265,65 @@ class T1dmRepository(
                     addedAtMs = existing?.addedAtMs ?: nowMs,
                     lastSeenMs = nowMs,
                     hidden = !authoritative && (existing?.hidden ?: false),
+                    // Minted ONCE, here, inside the transaction that first records the row — so it is
+                    // assigned for both sensor families in one place, and two sensors recorded
+                    // concurrently cannot claim the same number. Never revised afterwards: the number is
+                    // what a user reads as "this physical sensor". An archive restore does NOT come
+                    // through here — it inserts into the table directly — and resolves its own numbers
+                    // against the stored ones; see `ArchiveReader.renumbered`.
+                    ordinal = ordinal,
                 ),
             )
             if (authoritative) {
                 sources.clearAuthoritative()
                 sources.setAuthoritative(descriptor.id.value)
             }
+            ordinal
         }
+    }
+
+    /**
+     * Give every row still carrying the unassigned sentinel a number, in the order the lists already show
+     * them.
+     *
+     * The last line of defence, not a step of any flow: the migration numbers what was on the phone when
+     * it ran, [upsertSource] numbers what the app records, and an archive restore numbers what it inserts.
+     * A row reaching the table with the sentinel means one of those three has a hole — and an unnumbered
+     * sensor is one the privacy label cannot name at all, so it is worth catching cheaply rather than
+     * showing. Runs on the hydrate path: one query on a table with a row per sensor the phone has ever
+     * met, writing nothing when there is nothing to number.
+     */
+    suspend fun assignMissingSourceOrdinals() = withContext(io) {
+        val pending = sources.unnumberedSourceIds()
+        if (pending.isEmpty()) return@withContext
+        inWriteTx {
+            var next = sources.maxOrdinal() + 1
+            for (sourceId in pending) {
+                sources.setOrdinal(sourceId, next)
+                next++
+            }
+        }
+    }
+
+    // ─── Sealed per-sensor secrets ────────────────────────────────────────────────────────────────
+
+    /**
+     * One sensor's opaque secret, or null when none is held.
+     *
+     * The bytes are sealed before they arrive and are stored and returned verbatim; nothing here knows
+     * what they mean. See [com.t1dm.data.db.CgmSensorSecretEntity] for why they are worth this much care.
+     */
+    suspend fun sensorSecret(id: CgmSourceId): ByteArray? = withContext(io) {
+        sensorSecrets.byId(id.value)?.blob
+    }
+
+    suspend fun putSensorSecret(id: CgmSourceId, blob: ByteArray, nowMs: Long) = withContext(io) {
+        sensorSecrets.upsert(CgmSensorSecretEntity(sourceId = id.value, blob = blob, updatedAtMs = nowMs))
+    }
+
+    /** Forget ONE sensor's secret. Unrecoverable; see [CgmSensorSecretDao.deleteById]. */
+    suspend fun deleteSensorSecret(id: CgmSourceId) = withContext(io) {
+        sensorSecrets.deleteById(id.value)
     }
 
     /** Enforce exactly-one-authoritative atomically (SPEC §3.1). The promoted source is activated and
@@ -378,6 +438,17 @@ class T1dmRepository(
     fun observeLatestReading(sourceId: CgmSourceId): Flow<CgmReading?> =
         readings.observeLatest(sourceId.value).map { it?.toModel() }.distinctUntilChanged()
 
+    /**
+     * The newest row that is a real MEASUREMENT — what every glance surface reads its glucose,
+     * trend and staleness from.
+     *
+     * Separate from [observeLatestReading] rather than filtered at each call site: a promoted
+     * reconstruction is a row in `cgm_reading` like any other, and handing one to a glance would
+     * put a model's number on the lock screen as the patient's glucose.
+     */
+    fun observeLastMeasuredReading(sourceId: CgmSourceId): Flow<CgmReading?> =
+        readings.observeLatestMeasured(sourceId.value).map { it?.toModel() }.distinctUntilChanged()
+
     /** The most recent [limit] readings for [sourceId], newest first (Phase-2 inference context). */
     suspend fun recentReadings(sourceId: CgmSourceId, limit: Int): List<CgmReading> =
         withContext(io) { readings.recent(sourceId.value, limit).map { it.toModel() } }
@@ -405,9 +476,9 @@ class T1dmRepository(
      *
      * **Then the slot.** [supersedesGridSlot] decides, and where it says no this returns having
      * changed nothing but the raw store: not the reading, not `sample`, not the outbox. Skipping the
-     * projection is what keeps `sample.bgMgdl` equal to the reading that won — its own LWW guard
-     * compares receive instants and would otherwise hand the slot to the later arrival while
-     * `cgm_reading` held the nearer one. The extra read this costs is one primary-key seek.
+     * projection is what keeps `sample.bgMgdl` equal to the reading that won, and it is the ONLY thing
+     * that keeps them equal — the projection itself no longer second-guesses the decision (see
+     * [projectedBgSample]). The extra read this costs is one primary-key seek.
      */
     suspend fun upsertReading(reading: CgmReading) = withContext(io) {
         requireGrid(reading.tsMs)
@@ -421,10 +492,28 @@ class T1dmRepository(
             readings.upsert(entity)
             val authoritative = sources.authoritativeSourceId()
             if (authoritative == reading.sourceId.value && reading.flag != ReadingFlag.INVALID) {
+                // A real measurement has landed in a slot a model reconstructed, so the
+                // reconstruction of it is stale by construction — a sensor's own history pull, or a
+                // catch-up, can recover a gap days later, and leaving the fill would draw a band
+                // around a real reading.
+                //
+                // Placed HERE, after the slot contest and inside the authoritative branch, and
+                // gated on a real measurement: a non-authoritative sensor's row, or one flagged
+                // WARMUP, must not take the band away from a slot it does not own. A PROMOTED span
+                // is spared outright — its row is the only copy of the band the stored sample
+                // carries, and deleting it would leave a reconstruction with no uncertainty and no
+                // way back. The measurement still wins the slot; the promoted span is demoted by a
+                // deliberate act, not by a side effect.
+                if (isRealMeasurement(reading.provenance, reading.flag)) {
+                    val fill = infills.at(reading.tsMs)
+                    if (fill != null && fill.promotedAtMs == null) infills.deleteAt(reading.tsMs)
+                }
                 projectBg(reading)
-                // `createdAtMs` is the WRITE instant, never the event's — see [enqueueRow]. A reading
-                // whose own instant is older than the write would be age-evicted against a clock it
-                // never ran on, and would sort ahead of every alert queued afterwards.
+                // `createdAtMs` is the WRITE instant, never the event's — see [enqueueRow]. They are
+                // the same number for a live reading and days apart for one recovered from a sensor's
+                // own store, and passing the event instant there would age-evict the whole recovery
+                // before a single attempt (the queue would read it as having been written when the
+                // sample was taken) and sort what survived ahead of every alert queued afterwards.
                 val queuedAt = nowMs()
                 enqueueIngest(reading.tsMs, queuedAt)
                 // The bridge is fed HERE and not from `enqueueIngest`, which the scalar merge path also
@@ -449,22 +538,9 @@ class T1dmRepository(
     }
 
     private suspend fun projectBg(reading: CgmReading) {
-        val existing = samples.byTs(reading.tsMs)
-        if (existing != null && reading.rxWallMs < existing.updatedAt) return // LWW: keep newer
-        val base = existing ?: emptySample(reading.tsMs, reading.tzOffsetMin, reading.rxWallMs)
-        samples.upsert(
-            base.copy(
-                tzOffsetMin = reading.tzOffsetMin,
-                bgMgdl = reading.bgMgdl,
-                // Stamped with the reading's own source rather than looked up: only the authoritative
-                // source reaches here, and taking it from the reading means the label can never name a
-                // sensor other than the one that produced the number beside it.
-                bgSource = reading.sourceId.opaque,
-                bgProvenance = reading.provenance,
-                bgFlag = reading.flag,
-                updatedAt = maxOf(base.updatedAt, reading.rxWallMs),
-            ),
-        )
+        val base = samples.byTs(reading.tsMs)
+            ?: emptySample(reading.tsMs, reading.tzOffsetMin, reading.rxWallMs)
+        samples.upsert(projectedBgSample(base, reading))
     }
 
     // ─── Samples ────────────────────────────────────────────────────────────────────────────
@@ -592,185 +668,335 @@ class T1dmRepository(
      * sample bucket, and it mints the phone `clientId` (§3.2) when the caller left it blank (never
      * re-minted). No `sample` projection (the `bolus`/`basal` scalar columns are retired, §3.1).
      *
+     * It also stamps `loggedAtMs` when the caller left it at its default, for the same reason it
+     * mints the id here rather than at each of the five call sites: the log-gap mark is
+     * `MAX(MIN(tsMs, loggedAtMs))`, so a single unstamped row pins the whole mark at zero and the
+     * rail then reports a gap of the entire Unix epoch on every recommendation, forever. A caller
+     * that carries its own stamp — a catch-up hydrating a server-authored row, a restore — keeps
+     * it.
+     *
      * Returns the PERSISTED entity — snapped `tsMs`, minted `clientId`, DB rowid — so the `:app` seam
      * builds the matching `PUT /v1/doses` DTO from it and app + wire agree on one id and one grid ts.
      */
     suspend fun logLoggedDose(dose: LoggedDoseEntity): LoggedDoseEntity = withContext(io) {
-        val row = dose.copy(clientId = dose.clientId.ifBlank { newClientId() }, tsMs = snapToGrid(dose.tsMs))
+        val row = dose.copy(
+            clientId = dose.clientId.ifBlank { newClientId() },
+            tsMs = snapToGrid(dose.tsMs),
+            loggedAtMs = dose.loggedAtMs.takeIf { it != 0L } ?: nowMs(),
+        )
         row.copy(id = loggedDoses.insert(row)).also { _logEvents.update { t -> t + 1 } }
     }
 
     /**
      * Log a meal (`logged_meal`) — the self-describing appearance-curve event the reconstructed carb
      * channel reads AND the row a `PUT /v1/meals` mirrors (pushed at the `:app` seam). As with
-     * [logLoggedDose] this writer is the single snap+id authority: it grid-snaps `tsMs`
-     * (round-to-nearest, §4-#1) and mints the phone `clientId` (§3.2) when the caller left it blank
-     * (never re-minted). No `sample` projection (the `carbs` scalar is retired, §3.1).
+     * [logLoggedDose] this writer is the single snap+id+stamp authority: it grid-snaps `tsMs`
+     * (round-to-nearest, §4-#1), mints the phone `clientId` (§3.2) when the caller left it blank
+     * (never re-minted), and stamps `loggedAtMs`. No `sample` projection (the `carbs` scalar is
+     * retired, §3.1).
      *
      * Returns the PERSISTED entity — snapped `tsMs`, minted `clientId`, DB rowid — so the `:app` seam
      * builds the matching `PUT /v1/meals` DTO from it and app + wire agree on one id and one grid ts.
      */
     suspend fun logMeal(meal: LoggedMealEntity): LoggedMealEntity = withContext(io) {
-        val row = meal.copy(clientId = meal.clientId.ifBlank { newClientId() }, tsMs = snapToGrid(meal.tsMs))
+        val row = meal.copy(
+            clientId = meal.clientId.ifBlank { newClientId() },
+            tsMs = snapToGrid(meal.tsMs),
+            loggedAtMs = meal.loggedAtMs.takeIf { it != 0L } ?: nowMs(),
+        )
         row.copy(id = loggedMeals.insert(row)).also { _logEvents.update { t -> t + 1 } }
     }
 
+    // ─── Editing and deleting a logged event (Room v21) ────────────────────────────────────
+
     /**
-     * Undo a just-logged meal: drop the `logged_meal` row and, in the SAME transaction, withdraw the
-     * `PUT /v1/meals` push still sitting in the outbox. See [undoLoggedDose] for why the two deletes
-     * must be atomic and what the returned [PushWithdrawal] can and cannot promise.
+     * Rewrite a logged meal in place, keeping its identity.
+     *
+     * `clientId` and `loggedAtMs` are preserved — the first because the server upserts on it and a
+     * re-minted id would create a second record beside the one being corrected, the second because
+     * it is the log-gap mark and must not move when the numbers do. `updatedAt` and `mutatedAtMs`
+     * take [nowMs], so the wire's ordering guard sees a strictly newer authoring stamp than the
+     * create it replaces.
+     *
+     * The stored appearance curve is rescaled or dropped rather than carried — see
+     * [com.t1dm.data.db.curveAfterEdit], which is where the reason is written down.
+     *
+     * Returns the persisted row, so the caller builds the wire DTO from what was actually stored,
+     * exactly as the logging path already does.
      */
-    suspend fun undoLoggedMeal(
-        rowId: Long,
-        outboxId: Long?,
-        dedupKey: String?,
-        mirrorDedupKey: String? = null,
-    ): PushWithdrawal =
+    suspend fun editLoggedMeal(row: LoggedMealEntity, nowMs: Long): LoggedMealEntity? =
         withContext(io) {
-            inWriteTx {
+            val stored = inWriteTx {
+                val old = loggedMeals.byId(row.id) ?: return@inWriteTx null
+                val next = row.copy(
+                    clientId = old.clientId,
+                    loggedAtMs = old.loggedAtMs,
+                    tsMs = snapToGrid(row.tsMs),
+                    customCurve = old.curveAfterEdit(row),
+                    updatedAt = maxOf(nowMs, old.updatedAt + 1),
+                    mutatedAtMs = nowMs,
+                )
+                loggedMeals.update(next)
+                if (old.affectsChannel(next)) {
+                    invalidateForecastDerivedInTx(minOf(old.tsMs, next.tsMs))
+                }
+                next
+            }
+            stored?.also { _logEvents.update { t -> t + 1 } }
+        }
+
+    /**
+     * The dose twin of [editLoggedMeal], with one extra column, and the same curve rule: the action
+     * curve a bolus carries is absolute, so correcting 8 U logged as 4 U has to move it.
+     *
+     * `mutatedActingUntilMs` records where the dose's action curve ended BEFORE the edit, and it is
+     * written once — on the first edit — so a chain of edits cannot walk it forward. The
+     * dose-history rail reads the later of that and the post-edit end, because the edits that
+     * understate IOB most are exactly the ones that shorten the post-edit window: cutting
+     * `durationMin` from 360 to 30 would otherwise buy a five-minute block against five and a half
+     * hours of wrong IOB.
+     */
+    suspend fun editLoggedDose(row: LoggedDoseEntity, nowMs: Long): LoggedDoseEntity? =
+        withContext(io) {
+            val stored = inWriteTx {
+                val old = loggedDoses.byId(row.id) ?: return@inWriteTx null
+                val next = row.copy(
+                    clientId = old.clientId,
+                    loggedAtMs = old.loggedAtMs,
+                    tsMs = snapToGrid(row.tsMs),
+                    customCurve = old.curveAfterEdit(row),
+                    updatedAt = maxOf(nowMs, old.updatedAt + 1),
+                    mutatedAtMs = nowMs,
+                    mutatedActingUntilMs = old.mutatedActingUntilMs ?: old.actingUntilMs(),
+                )
+                loggedDoses.update(next)
+                if (old.affectsChannel(next)) {
+                    invalidateForecastDerivedInTx(minOf(old.tsMs, next.tsMs))
+                }
+                next
+            }
+            stored?.also { _logEvents.update { t -> t + 1 } }
+        }
+
+    /**
+     * Delete a logged meal, leaving a tombstone in its place.
+     *
+     * There is no refusal branch. The wire carries a deletion as an ordinary upsert flagged
+     * `deleted`, so it is ordered against the create by `updatedAt` and a redelivery of the record
+     * cannot overtake it — which is what the old "the push has already drained, so this cannot be
+     * revoked" refusal existed for.
+     *
+     * `updatedAt` is forced strictly newer than the row it retires rather than trusting [nowMs]: a
+     * phone clock that has not advanced, or has moved backwards (`SPEC/invariants.md` §7 names
+     * that), would otherwise author a stamp the server correctly ignores, and the deletion would
+     * be frozen with no sign of it anywhere.
+     *
+     * Returns the tombstone so `:app` — which owns the wire envelope — can file the push. The
+     * `pushEnqueuedAtMs` column and the connect-time replay cover the crash window between the two.
+     */
+    suspend fun tombstoneLoggedMeal(rowId: Long, nowMs: Long): EventTombstone? =
+        withContext(io) {
+            val out = inWriteTx {
+                val row = loggedMeals.byId(rowId) ?: return@inWriteTx null
+                val tomb = EventTombstoneEntity(
+                    clientId = row.clientId,
+                    kind = TOMBSTONE_KIND_MEAL,
+                    tsMs = row.tsMs,
+                    tzOffsetMin = row.tzOffsetMin,
+                    updatedAt = maxOf(nowMs, row.updatedAt + 1),
+                    createdAtMs = nowMs,
+                    pushEnqueuedAtMs = null,
+                    actingUntilMs = null,
+                )
+                tombstones.upsert(tomb)
                 loggedMeals.delete(rowId)
-                mirrorDedupKey?.let { outbox.deleteByDedupKeyInState(it, OutboxState.PENDING) }
-                withdrawPush(outboxId, dedupKey)
+                withdrawBridgedTreatment(row.clientId)
+                invalidateForecastDerivedInTx(row.tsMs)
+                tomb.tombstoneToModel()
             }
-        }.also { _logEvents.update { t -> t + 1 } }
+            out?.also { _logEvents.update { t -> t + 1 } }
+        }
 
-    /**
-     * Undo a just-logged dose: drop the `logged_dose` row and, in the SAME transaction, withdraw the
-     * `PUT /v1/doses` push still sitting in the outbox.
-     *
-     * **Atomicity is a §3.6-G requirement, not a nicety.** IOB is computed from logged doses only
-     * (§3.6-F), and two rails read the store this write moved: `Rails.iobCeiling` (§3.6-C), which
-     * fail-closed BLOCKS a nonzero dose when IOB is unknown, and `Rails.mandatoryConfirmation`, which
-     * triggers off `latestLoggedInsulinTs()`. Removing the newest dose lowers assumed IOB (relaxing
-     * the ceiling) and moves the last-logged mark backward (tightening the confirmation trigger) —
-     * both are fail-closed-consistent, because a removed log means *less* insulin may be assumed
-     * active, never more. A HALF unwind is the unsafe state: the phone forgetting a dose the server
-     * still holds leaves phone IOB understated against the record it mirrors, so both deletes ride one
-     * `inWriteTx`. The §3.6-A model-free alarm path is untouched either way — it evaluates the
-     * classified MEASURED reading off the live `readingBus`, never the event store.
-     *
-     * The returned [PushWithdrawal] is the honest state of the *server* copy, which no local delete
-     * can revoke: there is no DELETE in the server API, and `CatchUpCoordinator.catchUpEvents`
-     * re-hydrates by `clientId` on every WS (re)connect, so an already-drained event comes back.
-     *
-     * Bumps [logEvents] exactly once, after the transaction commits — the sole trigger that repaints
-     * IOB/COB, the curve channels and the dashboard overlay, since an event delete touches neither
-     * `cgm_reading` nor `sample` (§3.1: the carb/bolus/basal scalars are retired).
-     *
-     * [mirrorDedupKey], when given, names the Nightscout-bridge row for the SAME event, withdrawn in
-     * this transaction too. Both pushes are held for the same withdrawal window, so an undo inside it
-     * takes back both; leaving the mirror behind would have the third party keep a dose the phone and
-     * its own server had both forgotten — the one copy nobody would ever see contradicted.
-     *
-     * PENDING-only, deliberately: a mirror row already claimed INFLIGHT is mid-POST to a host that has
-     * no delete, so removing it locally would erase the record of a request that still lands.
-     */
-    suspend fun undoLoggedDose(
-        rowId: Long,
-        outboxId: Long?,
-        dedupKey: String?,
-        mirrorDedupKey: String? = null,
-    ): PushWithdrawal =
+    /** The dose twin of [tombstoneLoggedMeal]. It additionally records where the deleted dose's
+     *  action curve ended, because after the delete there is no row left to read a duration off and
+     *  the dose-history rail has to keep blocking while that insulin could still be acting. */
+    suspend fun tombstoneLoggedDose(rowId: Long, nowMs: Long): EventTombstone? =
         withContext(io) {
-            inWriteTx {
+            val out = inWriteTx {
+                val row = loggedDoses.byId(rowId) ?: return@inWriteTx null
+                val tomb = EventTombstoneEntity(
+                    clientId = row.clientId,
+                    kind = TOMBSTONE_KIND_DOSE,
+                    tsMs = row.tsMs,
+                    tzOffsetMin = row.tzOffsetMin,
+                    updatedAt = maxOf(nowMs, row.updatedAt + 1),
+                    createdAtMs = nowMs,
+                    pushEnqueuedAtMs = null,
+                    actingUntilMs = maxOf(row.actingUntilMs(), row.mutatedActingUntilMs ?: 0L),
+                )
+                tombstones.upsert(tomb)
                 loggedDoses.delete(rowId)
-                mirrorDedupKey?.let { outbox.deleteByDedupKeyInState(it, OutboxState.PENDING) }
-                withdrawPush(outboxId, dedupKey)
+                withdrawBridgedTreatment(row.clientId)
+                invalidateForecastDerivedInTx(row.tsMs)
+                tomb.tombstoneToModel()
             }
-        }.also { _logEvents.update { t -> t + 1 } }
+            out?.also { _logEvents.update { t -> t + 1 } }
+        }
+
+    /** Deletions whose push has not been filed yet — the connect-time replay's work list. */
+    suspend fun unpushedTombstones(): List<EventTombstone> =
+        withContext(io) { tombstones.unpushed().map { it.tombstoneToModel() } }
+
+    suspend fun markTombstonePushed(clientId: String, atMs: Long) =
+        withContext(io) { tombstones.markPushed(clientId, atMs) }
 
     /**
-     * Delete the queued push behind [outboxId] if it is still ours to delete, and report what the
-     * server therefore holds. Runs inside the caller's transaction so the read and the delete cannot
-     * be split by a concurrent drain.
+     * Apply a deletion another read-write session authored, arriving on catch-up.
      *
-     * [dedupKey] is a guard, not a lookup key. The column is `AUTOINCREMENT`, so an id is never
-     * reused and cannot address a row other than the one it was handed out for — but the id travels
-     * on an `:app` log handle that outlives the row, the process, and (via an undo receipt) any
-     * assumption about which store minted it, and the check costs one column comparison. A mismatch is
-     * treated as ALREADY_SENT: the conservative reading, since it refuses to delete a queued push this
-     * caller cannot prove is theirs. `outboxId <= 0` means the caller's `enqueue` returned -1 (the
-     * unique-dedupKey conflict path) — unreachable for a genuine log, whose `clientId` is freshly
-     * minted — and null means no push was ever enqueued for this write.
+     * Idempotent, and ordered: a tombstone already on record with an equal or newer `updatedAt`
+     * wins, so a redelivery cannot walk the stamp backward. `pushEnqueuedAtMs` is stamped because
+     * this deletion did not originate here and there is nothing for this phone to push.
      */
-    private suspend fun withdrawPush(outboxId: Long?, dedupKey: String?): PushWithdrawal {
-        if (outboxId == null || outboxId <= 0L || dedupKey == null) return PushWithdrawal.NEVER_QUEUED
-        val row = outbox.byId(outboxId) ?: return PushWithdrawal.ALREADY_SENT
-        if (row.dedupKey != dedupKey) return PushWithdrawal.ALREADY_SENT
-        outbox.delete(outboxId)
-        // PENDING is not evidence that nothing was transmitted. `QueueDrainer.reschedule` returns a row
-        // to PENDING after an attempt whose response was lost — the server may well have applied it —
-        // and `drainOnce` opens by reclaiming crash-wedged INFLIGHT rows the same way. `attempts` is
-        // what distinguishes the two: `revert` (auth / no-profile, where nothing was accepted) leaves
-        // it alone, every real wire attempt advances it. WITHDRAWN has to mean PROVABLY never sent.
-        val everAttempted = row.state == OutboxState.INFLIGHT || row.attempts > 0
-        return if (everAttempted) PushWithdrawal.RACED else PushWithdrawal.WITHDRAWN
+    suspend fun applyServerTombstone(
+        clientId: String,
+        kind: CurveKind,
+        tsMs: Long,
+        tzOffsetMin: Int,
+        updatedAt: Long,
+        nowMs: Long,
+    ) = withContext(io) {
+        inWriteTx {
+            val known = tombstones.byClientId(clientId)
+            if (known != null && known.updatedAt >= updatedAt) return@inWriteTx
+            val kindText = if (kind == CurveKind.INSULIN) TOMBSTONE_KIND_DOSE else TOMBSTONE_KIND_MEAL
+            val acting = if (kind == CurveKind.INSULIN) {
+                loggedDoses.byClientId(clientId)?.let { d ->
+                    maxOf(d.actingUntilMs(), d.mutatedActingUntilMs ?: 0L)
+                }
+            } else {
+                null
+            }
+            tombstones.upsert(
+                EventTombstoneEntity(
+                    clientId = clientId,
+                    kind = kindText,
+                    tsMs = tsMs,
+                    tzOffsetMin = tzOffsetMin,
+                    updatedAt = updatedAt,
+                    createdAtMs = nowMs,
+                    pushEnqueuedAtMs = nowMs,
+                    actingUntilMs = acting,
+                ),
+            )
+            if (kind == CurveKind.INSULIN) {
+                loggedDoses.byClientId(clientId)?.let { loggedDoses.delete(it.id) }
+            } else {
+                loggedMeals.byClientId(clientId)?.let { loggedMeals.delete(it.id) }
+            }
+            invalidateForecastDerivedInTx(tsMs)
+        }
+        _logEvents.update { t -> t + 1 }
     }
 
     /**
-     * Delete a logged meal the user has decided against, keyed by its push's [dedupKey] rather than by
-     * a remembered outbox rowid — the Logs panel meets a row long after the enqueue rowid was
-     * forgotten, whereas the dedupKey is a pure function of the event's `client_id`.
+     * Apply an edit another read-write session authored, arriving on catch-up.
      *
-     * **The refusal is the point.** With no queued push under that key the server has the event and no
-     * local delete can revoke it (the API has no DELETE, and `CatchUpCoordinator` re-hydrates by
-     * `clientId` on the next WS connect — deleting the newest event even moves `newestEventTs()`
-     * backward, widening the pull window that resurrects it). So this deletes NOTHING in that case and
-     * reports [PushWithdrawal.ALREADY_SENT]; the caller must not paper over it. A push that was still
-     * ours to withdraw takes the row with it, atomically, for the §3.6-G reason spelt out on
-     * [undoLoggedDose].
+     * The hydration path is `insertIgnore`, which is right for a create and wrong for an edit: an
+     * id-keyed insert against an existing row is dropped, so a second session raising a dose from
+     * 4 U to 8 U would never reach this phone and local IOB would stay understated for the life of
+     * the row. This is the other direction of the same door the tombstone filter closes.
      *
-     * The resolve and the withdraw share one transaction, so a drain cannot land between them; the
-     * dedupKey cross-check inside [withdrawPush] still guards the recycled-rowid case.
+     * Ordered on `updatedAt`, like every other application of a remote write.
+     *
+     * A remote edit arms the dose-history rail exactly as a local one does. The wire carries neither
+     * mutation column — a DTO is the record, not this phone's history of being told about it — so
+     * they are minted here or the rail never sees the edit at all, and a remote reduction of a bolus
+     * lowers local IOB with nothing standing in front of the next recommendation. The pre-edit
+     * action end is taken from the row being replaced, and only on the first mutation, so a chain of
+     * remote edits cannot walk it forward and a shortened `durationMin` cannot shorten the block.
      */
-    suspend fun deleteCommittedMeal(
-        rowId: Long,
-        dedupKey: String,
-        mirrorDedupKey: String? = null,
-    ): PushWithdrawal =
-        withContext(io) {
-            inWriteTx { withdrawCommitted(dedupKey, mirrorDedupKey) { loggedMeals.delete(rowId) } }
-        }.also { if (it != PushWithdrawal.ALREADY_SENT) _logEvents.update { t -> t + 1 } }
+    suspend fun applyServerDoseEdit(ev: LoggedDoseEntity): Boolean = withContext(io) {
+        val changed = inWriteTx {
+            val old = loggedDoses.byClientId(ev.clientId) ?: return@inWriteTx false
+            if (ev.updatedAt <= old.updatedAt) return@inWriteTx false
+            val candidate = ev.copy(
+                id = old.id,
+                loggedAtMs = old.loggedAtMs,
+                mutatedAtMs = old.mutatedAtMs,
+                mutatedActingUntilMs = old.mutatedActingUntilMs,
+            )
+            val moved = old.affectsChannel(candidate)
+            val next = if (!moved) candidate else candidate.copy(
+                mutatedAtMs = maxOf(ev.updatedAt, old.mutatedAtMs ?: Long.MIN_VALUE),
+                mutatedActingUntilMs = old.mutatedActingUntilMs ?: old.actingUntilMs(),
+            )
+            loggedDoses.update(next)
+            if (moved) invalidateForecastDerivedInTx(minOf(old.tsMs, next.tsMs))
+            true
+        }
+        if (changed) _logEvents.update { t -> t + 1 }
+        changed
+    }
 
-    /** The dose twin of [deleteCommittedMeal]; same refusal, same atomicity, same §3.6-G reasoning. */
-    suspend fun deleteCommittedDose(
-        rowId: Long,
-        dedupKey: String,
-        mirrorDedupKey: String? = null,
-    ): PushWithdrawal =
-        withContext(io) {
-            inWriteTx { withdrawCommitted(dedupKey, mirrorDedupKey) { loggedDoses.delete(rowId) } }
-        }.also { if (it != PushWithdrawal.ALREADY_SENT) _logEvents.update { t -> t + 1 } }
+    /** The meal twin of [applyServerDoseEdit]. */
+    suspend fun applyServerMealEdit(ev: LoggedMealEntity): Boolean = withContext(io) {
+        val changed = inWriteTx {
+            val old = loggedMeals.byClientId(ev.clientId) ?: return@inWriteTx false
+            if (ev.updatedAt <= old.updatedAt) return@inWriteTx false
+            val candidate = ev.copy(id = old.id, loggedAtMs = old.loggedAtMs, mutatedAtMs = old.mutatedAtMs)
+            val moved = old.affectsChannel(candidate)
+            val next = if (!moved) candidate else {
+                candidate.copy(mutatedAtMs = maxOf(ev.updatedAt, old.mutatedAtMs ?: Long.MIN_VALUE))
+            }
+            loggedMeals.update(next)
+            if (old.affectsChannel(next)) invalidateForecastDerivedInTx(minOf(old.tsMs, next.tsMs))
+            true
+        }
+        if (changed) _logEvents.update { t -> t + 1 }
+        changed
+    }
+
+    /** True when the local record already covers a deletion of [clientId] at or after [updatedAt]. */
+    private suspend fun tombstoned(clientId: String, updatedAt: Long): Boolean =
+        (tombstones.byClientId(clientId)?.updatedAt ?: Long.MIN_VALUE) >= updatedAt
 
     /**
-     * Resolve the queued push behind [dedupKey], withdraw it through the one deletion path
-     * ([withdrawPush]), and delete the event row only if the withdrawal got there first. Runs inside
-     * the caller's transaction.
+     * Drop everything derived from a forecast that was computed over a window this mutation moved.
      *
-     * An absent queue row means ALREADY_SENT here, NOT `NEVER_QUEUED`: on this path the enqueue is not
-     * in doubt (every meal/dose writer files one), so absence can only mean the row has left — which is
-     * exactly the state that must refuse.
+     * The single owner of that decision — the infill promotion and the adapter phases call it
+     * rather than each dropping their own subset, because three triggers dropping overlapping sets
+     * is how one of them ends up dropping something another still needs.
+     *
+     * Runs inside the caller's transaction. Only ever called for a CHANNEL-AFFECTING change: a note
+     * or a timezone correction moves no curve and invalidates nothing.
      */
-    private suspend fun withdrawCommitted(
-        dedupKey: String,
-        mirrorDedupKey: String? = null,
-        deleteRow: suspend () -> Unit,
-    ): PushWithdrawal {
-        val queued = outbox.byDedupKey(dedupKey) ?: return PushWithdrawal.ALREADY_SENT
-        val outcome = withdrawPush(queued.id, dedupKey)
-        if (outcome != PushWithdrawal.ALREADY_SENT) {
-            // Withdrawn together, or not at all. The refusal above means the event stays, so the mirror
-            // must stay queued with it; past it, an event being deleted must not still reach a third
-            // party that offers no way to take it back.
-            mirrorDedupKey?.let { outbox.deleteByDedupKeyInState(it, OutboxState.PENDING) }
-            deleteRow()
+    private suspend fun invalidateForecastDerivedInTx(affectedFromMs: Long) {
+        predictions.deleteFrom(affectedFromMs)
+        infills.deleteFrom(affectedFromMs)
+        // A band correction is dropped only when the window it was fitted over actually reaches the
+        // change: `[fittedAtMs - windowDays, fittedAtMs]` meets `[affectedFromMs, ∞)` exactly when
+        // `fittedAtMs >= affectedFromMs`. A blanket delete would take this morning's calibration off
+        // every model because a week-old meal's grams were corrected — and the direction is not
+        // benign: `conformal.rs` fits a signed offset that usually WIDENS the fan, so losing one
+        // draws a visibly tighter band with nothing saying why.
+        for (row in conformalDeltas.all()) {
+            if (row.fittedAtMs >= affectedFromMs) conformalDeltas.deleteByModel(row.modelId)
         }
-        return outcome
+        // An adapter is FLAGGED, never auto-detached. Detaching would silently change the
+        // forecaster under the patient as a side effect of an edit they did not connect to it;
+        // the flag refuses the next attach and says why, which is a decision they get to make.
+        loras.markHistoryMutated(nowMs())
     }
 
     /** Window reads for curve/channel reconstruction (feed [com.t1dm.data.curve.RoomDoseStore]). */
     suspend fun loggedDosesInRange(fromMs: Long, toMs: Long): List<LoggedDoseEntity> =
         withContext(io) { loggedDoses.inRange(fromMs, toMs) }
+
+    /** One logged meal by rowid — what an edit reads before it rewrites. */
+    suspend fun loggedMealById(id: Long): LoggedMealEntity? = withContext(io) { loggedMeals.byId(id) }
+
+    /** One logged dose by rowid. */
+    suspend fun loggedDoseById(id: Long): LoggedDoseEntity? = withContext(io) { loggedDoses.byId(id) }
 
     suspend fun loggedMealsInRange(fromMs: Long, toMs: Long): List<LoggedMealEntity> =
         withContext(io) { loggedMeals.inRange(fromMs, toMs) }
@@ -787,14 +1013,6 @@ class T1dmRepository(
 
     fun observeRecentLoggedDoses(limit: Int): Flow<List<LoggedDoseEntity>> =
         loggedDoses.observeRecent(limit)
-
-    /**
-     * The dedupKeys of every queued push of the given [kinds] — the "not yet accepted by the server"
-     * set. `distinctUntilChanged` because Room invalidates per TABLE, so every INGEST enqueue would
-     * otherwise re-emit an identical set and re-run the join above it.
-     */
-    fun observeQueuedDedupKeys(kinds: List<OutboxKind>): Flow<Set<String>> =
-        outbox.observeDedupKeys(kinds).map { it.toSet() }.distinctUntilChanged()
 
     /** The last [limit] distinct GI-bearing meals as [RecentMeal] quick-picks (Phase 7C, item 9). */
     fun observeRecentMeals(limit: Int = 3): Flow<List<RecentMeal>> =
@@ -824,22 +1042,62 @@ class T1dmRepository(
     suspend fun activeBasalDoses(): List<BasalScheduleEntity> =
         withContext(io) { basalSchedules.activeDoses() }
 
-    /** Timestamp of the most recent logged insulin dose (IOB provenance, §3.6-F); null = none. */
-    suspend fun latestLoggedInsulinTs(): Long? = withContext(io) { loggedDoses.latestTs() }
+    /**
+     * The log-gap rail's mark — `MAX(MIN(tsMs, loggedAtMs))`, not `MAX(tsMs)`.
+     *
+     * An edit can only ever move this mark BACKWARD, so a dose retimed forward cannot quiet
+     * `Rails.mandatoryConfirmation`. That matters because the rail's question is "how long since the
+     * phone was told about insulin", and dragging a dose's timestamp into the present answers it
+     * with a claim rather than an observation. Legitimate backdating is unaffected: the min is the
+     * claimed `tsMs` there, which is what a backdated dose means.
+     */
+    suspend fun latestLoggedInsulinTs(): Long? = withContext(io) { loggedDoses.latestLoggedMarkTs() }
 
     /**
-     * Newest event ts held locally — `MAX(ts)` over `logged_meal ∪ logged_dose` — the event
-     * high-water mark the WS-connect catch-up pulls meal/dose history forward from (§3.5), the
-     * event-side twin of [newestSampleTsAtOrBefore]. Null when neither store holds a row.
+     * When the last edited or deleted dose stops acting, or null when none is still in flight.
+     *
+     * The union of both stores is the whole point. `logged_dose` answers for an EDITED dose; a
+     * DELETED one has no row left to read a duration off, so its action end is carried on the
+     * tombstone. Omitting the second half would leave the rail unable to fire for exactly the case
+     * it exists to cover — a deleted dose silently lowers assumed IOB, and nothing would stand
+     * between that and a larger recommended bolus.
+     */
+    suspend fun editedDoseActiveUntilMs(): Long? = withContext(io) {
+        val edited = loggedDoses.editedDoseActiveUntilMs()
+        val deleted = tombstones.latestActingUntilMs(TOMBSTONE_KIND_DOSE)
+        when {
+            edited == null -> deleted
+            deleted == null -> edited
+            else -> maxOf(edited, deleted)
+        }
+    }
+
+    /** The newest dose-history mutation an acknowledgement has to cover — an edit stamp or a
+     *  deletion stamp. Unioned for the same reason as [editedDoseActiveUntilMs]: without the
+     *  deletion term a block raised by a delete could never be acknowledged. */
+    suspend fun latestDoseMutationMs(): Long? = withContext(io) {
+        val edited = loggedDoses.latestMutationMs()
+        val deleted = tombstones.latestCreatedAtMs(TOMBSTONE_KIND_DOSE)
+        when {
+            edited == null -> deleted
+            deleted == null -> edited
+            else -> maxOf(edited, deleted)
+        }
+    }
+
+    /**
+     * Newest event ts held locally — `MAX(ts)` over `logged_meal ∪ logged_dose ∪ event_tombstone` —
+     * the event high-water mark the WS-connect catch-up pulls meal/dose history forward from
+     * (§3.5), the event-side twin of [newestSampleTsAtOrBefore]. Null when none of the three holds
+     * a row.
+     *
+     * The tombstone term is what keeps a deletion from widening the pull window. Without it,
+     * deleting the newest event moves this mark backward, the next catch-up re-reads the range the
+     * deleted event was in, and the event comes back. The hydration filter is the belt to that
+     * brace.
      */
     suspend fun newestEventTs(): Long? = withContext(io) {
-        val meal = loggedMeals.latestTs()
-        val dose = loggedDoses.latestTs()
-        when {
-            meal == null -> dose
-            dose == null -> meal
-            else -> maxOf(meal, dose)
-        }
+        listOfNotNull(loggedMeals.latestTs(), loggedDoses.latestTs(), tombstones.latestTs()).maxOrNull()
     }
 
     /** The most recent non-null mood across the wide sample. */
@@ -935,8 +1193,24 @@ class T1dmRepository(
     /** Delete a bout and its track together. One transaction because there is no foreign key to do
      *  it for us: a half-applied delete leaves fixes keyed to a bout that no longer exists, and
      *  nothing would ever select them again to notice. */
-    suspend fun deleteExerciseSession(id: Long) = withContext(io) {
+    suspend fun deleteExerciseSession(
+        id: Long,
+        unwind: List<ExerciseCurveBucket>,
+        nowMs: Long,
+    ) = withContext(io) {
         inWriteTx {
+            // Take the bout's disposal grams back out of every slot it wrote, in the same
+            // transaction. Deleting the session alone leaves them in the wide sample forever, and
+            // the model goes on seeing carbohydrate disposal from a bout the patient erased. Each
+            // bucket carries `priorGrams` — what THIS bout put there — so the merge removes its own
+            // share and leaves an overlapping bout's alone, exactly as [recordExerciseCurve]'s
+            // within-bout rewrite does.
+            for (b in unwind) {
+                mergeSampleInTx(b.gridTs, b.tzOffsetMin, nowMs) {
+                    it.copy(exercise = mergedExerciseGrams(it.exercise, b.priorGrams, 0.0))
+                }
+                enqueueIngest(b.gridTs, nowMs)
+            }
             exerciseFixes.deleteForSession(id)
             exerciseSessions.delete(id)
         }
@@ -1091,7 +1365,8 @@ class T1dmRepository(
                 .map { it.toModel() }
         }
 
-    /** Every sample this source was heard to send in `[fromMs, toMs]` of RECEIVE time, oldest first. */
+    /** Every sample this source was heard to send in `[fromMs, toMs]`, oldest first — on the same clock
+     *  the samples are filed under ([com.t1dm.core.model.CgmRawSample]), not on the grid. */
     suspend fun rawSamplesInRange(sourceId: CgmSourceId, fromMs: Long, toMs: Long): List<CgmRawSample> =
         withContext(io) { rawSamples.rangeForSource(sourceId.value, fromMs, toMs).map { it.toModel() } }
 
@@ -1170,6 +1445,49 @@ class T1dmRepository(
         }
     }
 
+    override suspend fun enqueueSuperseding(
+        kind: OutboxKind,
+        dedupKey: String,
+        payload: ByteArray,
+        nowMs: Long,
+        notBeforeMs: Long,
+    ): Long = withContext(io) {
+        inWriteTx {
+            outbox.deleteByDedupKey(dedupKey)
+            enqueueRow(kind, dedupKey, payload, nowMs, notBeforeMs)
+        }
+    }
+
+    /**
+     * Take the bridged mirror of one event out of the queue.
+     *
+     * A deletion used to travel as a withdrawal, which removed the bridged row with it. It travels
+     * as a tombstone now, and the third party has no tombstone: an undelivered mirror left in the
+     * queue is a meal or a dose that the patient deleted here and that arrives THERE afterwards,
+     * with no route to take it back out again.
+     */
+    private suspend fun withdrawBridgedTreatment(clientId: String) =
+        outbox.deleteByDedupKey("$NS_TREATMENT_DEDUP_PREFIX$clientId")
+
+    /**
+     * Take an EDITED event's bridged mirror out of the queue, and answer whether it was still there
+     * to take.
+     *
+     * The answer is what the caller needs, not the withdrawal. A bridged treatment carries the amount
+     * frozen at the instant it was queued, and `/api/v1` has no update for one that has landed — so an
+     * edit can only be honoured on the host by withdrawing the mirror BEFORE it goes and sending the
+     * corrected one instead. Re-sending after it has gone would not replace anything: the bridged
+     * `created_at` derives from `updatedAt`, which an edit bumps, so the host would file a SECOND
+     * treatment beside the first and the logbook would double-count the insulin.
+     *
+     * State-scoped, unlike [withdrawBridgedTreatment], and for the same reason
+     * [enqueueReplacingPending] is: a row already claimed INFLIGHT is being POSTed right now, and
+     * deleting it would not unsend it — it would only make the caller believe nothing had gone.
+     */
+    suspend fun withdrawEditedBridgedTreatment(clientId: String): Boolean = withContext(io) {
+        outbox.deleteByDedupKeyInState("$NS_TREATMENT_DEDUP_PREFIX$clientId", OutboxState.PENDING) > 0
+    }
+
     /** Deduplicated: the queue table is written far more often than its DEPTH moves — a row going
      *  INFLIGHT, being rescheduled under backoff or having its attempt count bumped all invalidate the
      *  table without changing the count. Each such emission previously cost `SyncManager` an extra
@@ -1185,8 +1503,25 @@ class T1dmRepository(
     suspend fun oldestServerBoundOutboxCreatedAt(): Long? =
         withContext(io) { outbox.oldestCreatedAtExcluding(OutboxKind.NIGHTSCOUT) }
 
-    private suspend fun enqueueIngest(gridTs: Long, nowMs: Long) =
-        enqueueRow(OutboxKind.INGEST, "ingest:sample:$gridTs", ByteArray(0), nowMs)
+    /**
+     * Queue the ingest push for one grid slot, DISPLACING whatever is queued for it.
+     *
+     * A plain enqueue is `INSERT OR IGNORE` on the unique dedup key, so a slot with a row already
+     * INFLIGHT — claimed by the drainer, waiting on an HTTP round trip that takes as long as the
+     * link does — silently drops the new write. A demotion or a BG deletion made in that window
+     * would be discarded, `mergeServerSample` would gap-fill the server's retained value back in,
+     * and the reconstruct-at-drain path would re-upload it. Meals and doses have used the
+     * superseding form since they gained an edit; this is the same door on the ingest side.
+     *
+     * Superseding is safe against the in-flight request: the drainer deletes by ROW ID on success,
+     * so removing the row leaves that delete a no-op and the fresh row drains afterwards, from the
+     * sample as it stands at drain time.
+     */
+    private suspend fun enqueueIngest(gridTs: Long, nowMs: Long): Long {
+        val key = "ingest:sample:$gridTs"
+        outbox.deleteByDedupKey(key)
+        return enqueueRow(OutboxKind.INGEST, key, ByteArray(0), nowMs)
+    }
 
     private suspend fun enqueueRow(
         kind: OutboxKind,
@@ -1485,9 +1820,13 @@ class T1dmRepository(
      * index and is IGNOREd (idempotent, no duplicate); this NEVER re-projects into `sample` and NEVER
      * enqueues (the event originated on this phone — re-pushing would echo-loop). Off-main.
      */
-    suspend fun hydrateMealEvent(ev: LoggedMealEntity): Long = withContext(io) { loggedMeals.insertIgnore(ev) }
+    suspend fun hydrateMealEvent(ev: LoggedMealEntity): Long = withContext(io) {
+        if (tombstoned(ev.clientId, ev.updatedAt)) -1L else loggedMeals.insertIgnore(ev)
+    }
 
-    suspend fun hydrateDoseEvent(ev: LoggedDoseEntity): Long = withContext(io) { loggedDoses.insertIgnore(ev) }
+    suspend fun hydrateDoseEvent(ev: LoggedDoseEntity): Long = withContext(io) {
+        if (tombstoned(ev.clientId, ev.updatedAt)) -1L else loggedDoses.insertIgnore(ev)
+    }
 
     /**
      * One bounded page of the §3.8 full re-mirror to a freshly-wiped server (the H7 upload direction).
@@ -1528,7 +1867,7 @@ class T1dmRepository(
      * settings-backed Flow in the process therefore re-emitted an identical value about twice a
      * minute — and through the glance combine that reached a widget push, which rebuilds a 48 h
      * insulin curve, rescans the day's steps and crosses the RemoteViews boundary. Same hazard, and
-     * the same remedy, as [observeQueuedDedupKeys].
+     * the same remedy, as every other table-scoped observer here.
      *
      * Deduplicating on the RAW string is what keeps this safe for a liveness reader as well as a
      * value reader. An emission here never identified WHICH key was written, so it could not carry
@@ -1682,6 +2021,13 @@ class T1dmRepository(
      * flag): the connected-GATT session that holds the live sensor is process-scoped, so a reset that
      * leaves the process (and that session) alive must not drop the active-source binding — the sensor
      * stays connected and its new readings repopulate the just-wiped `cgm_reading` table.
+     *
+     * **It keeps `cgm_sensor_secret` too, and that is a deliberate limit on "erase everything".** Some
+     * sensor families hold per-sensor state that the sensor itself will not hand back once established,
+     * so for a sensor still on the patient's arm these bytes can be the only copy in existence. Discarding
+     * them is not erasing data, it is retiring hardware. Clearing one is a per-sensor action
+     * ([deleteSensorSecret]), taken for one named sensor by the plugin that owns it and only where that
+     * sensor no longer needs it — never for all of them by a global reset.
      */
     // ── Adapters (LoRA) ─────────────────────────────────────────────────────────────
 
@@ -1705,6 +2051,37 @@ class T1dmRepository(
      * one adapter per model may be attached: two would be a fan nobody could name, and the
      * forecast path reads exactly one row.
      */
+    /** Record a deliberate override of the counterfactual guard on ONE adapter row. */
+    suspend fun setLoraGuardOverride(id: Long, nowMs: Long) =
+        withContext(io) { loras.setGuardOverride(id, nowMs) }
+
+    /** Store what the counterfactual guard measured about one adapter. */
+    suspend fun setLoraGuard(
+        id: Long,
+        verdict: String,
+        windows: Int,
+        frozenMgdl: Double,
+        adaptedMgdl: Double,
+        retention: Double,
+        signAgreement: Double,
+        why: String,
+        nowMs: Long,
+    ) = withContext(io) {
+        loras.setGuard(
+            id, verdict, windows, frozenMgdl, adaptedMgdl, retention, signAgreement, why, nowMs,
+        )
+    }
+
+    /**
+     * Flag every adapter fitted before [nowMs] as standing on a history that has since changed.
+     *
+     * Called from the same invalidation a channel-affecting log edit runs: an adapter fitted on
+     * windows the patient has since rewritten describes a record that no longer exists, and attach
+     * refuses until it is re-fitted.
+     */
+    suspend fun markLoraHistoryMutated(nowMs: Long) =
+        withContext(io) { loras.markHistoryMutated(nowMs) }
+
     suspend fun attachLora(id: Long, modelId: String, nowMs: Long) = inWriteTx {
         loras.detachAll(modelId, nowMs)
         loras.attach(id, nowMs)
@@ -1720,7 +2097,209 @@ class T1dmRepository(
     // ── Reconstructed samples over a sensor gap ─────────────────────────────────────
 
     /** Store what a model reconstructed over a gap. Never a reading: see [BgInfillEntity]. */
-    suspend fun saveInfill(rows: List<BgInfillEntity>) = withContext(io) { infills.upsert(rows) }
+    /**
+     * Store a reconstructed run, keyed as one span. The caller passes rows in `ts` order; the span
+     * key is the first row's `ts` unless the caller set one.
+     *
+     * Returns false, writing nothing, when any slot already holds a PROMOTED fill. The upsert is a
+     * REPLACE on `ts`, so without the check a second drag across those slots orphans the promotion
+     * outright: the old span key disappears (demotion answers "Span is gone"), the new key is
+     * unpromoted (it answers "Not promoted"), and the `RECONSTRUCTED` readings stay in the record —
+     * on the phone and on the server — with no route left to take them out.
+     */
+    suspend fun saveInfill(rows: List<BgInfillEntity>): Boolean = withContext(io) {
+        if (rows.isEmpty()) return@withContext false
+        inWriteTx {
+            for (r in rows) {
+                if (infills.at(r.ts)?.promotedAtMs != null) return@inWriteTx false
+            }
+            val spanStart = rows.first().ts
+            infills.upsert(rows.map { if (it.spanStartMs == 0L) it.copy(spanStartMs = spanStart) else it })
+            true
+        }
+    }
+
+    /** Reconstructions in a window, as the drawing layer's own type. */
+    fun observeReconstructed(fromMs: Long, toMs: Long): Flow<List<ReconstructedBg>> =
+        infills.observeRange(fromMs, toMs).map { rows -> rows.map { it.infillToModel() } }
+
+    suspend fun reconstructedInRange(fromMs: Long, toMs: Long): List<ReconstructedBg> =
+        withContext(io) { infills.inRange(fromMs, toMs).map { it.infillToModel() } }
+
+    /** The span heads in a window — one row per reconstructed run, for the Lab's list. */
+    fun observeReconstructedSpans(fromMs: Long, toMs: Long): Flow<List<ReconstructedBg>> =
+        infills.observeSpanHeads(fromMs, toMs).map { rows -> rows.map { it.infillToModel() } }
+
+    /** One span's rows, oldest first — what the τ sweep and the discard act on. */
+    suspend fun infillSpan(spanStartMs: Long): List<BgInfillEntity> =
+        withContext(io) { infills.span(spanStartMs) }
+
+    suspend fun reconstructedSpanSize(spanStartMs: Long): Int =
+        withContext(io) { infills.spanSize(spanStartMs) }
+
+    /**
+     * Write a reconstructed span into the record as stored, syncable samples — or say why not.
+     *
+     * This is the one act in the app that turns model output into something every other reader
+     * treats as the patient's history, so every refusal below is a safety property rather than a
+     * convenience. The value stays permanently flagged `RECONSTRUCTED`, which is the discriminator
+     * `isRealMeasurement` keys on: it may never clear an alarm, feed a dose, be a fit target, or be
+     * scored against.
+     *
+     * It deliberately does NOT go through [upsertReading]. That path stamps `bgSource` from the
+     * reading and feeds the Nightscout queue, and a reconstruction may do neither — no sensor
+     * produced it, and a third party with no way to take a record back must not receive one.
+     */
+    suspend fun promoteInfillSpan(spanStartMs: Long, nowMs: Long): PromoteResult = withContext(io) {
+        inWriteTx {
+            val rows = infills.span(spanStartMs)
+            if (rows.isEmpty()) return@inWriteTx PromoteResult.Refused("Span is gone")
+            if (rows.any { it.promotedAtMs != null }) {
+                return@inWriteTx PromoteResult.Refused("Already promoted")
+            }
+            val src = sources.authoritativeSourceId()
+                ?: return@inWriteTx PromoteResult.Refused("No authoritative sensor")
+
+            // Explicitly the null branch, and it fails closed. With no measurement to promote
+            // behind, the promoted rows would become the ONLY rows for this source, and every
+            // glance surface that reads the newest row — the bottom bar most of all — would show a
+            // model's number as the patient's glucose.
+            val newestMeasured = readings.newestMeasuredTs(src)
+                ?: return@inWriteTx PromoteResult.Refused("No measured reading to promote behind")
+            if (rows.any { it.ts >= newestMeasured }) {
+                // This is what forbids promoting a FORECAST span: a promoted forecast becomes the
+                // newest row in `cgm_reading` and is read as the current BG.
+                return@inWriteTx PromoteResult.Refused("Not in the past")
+            }
+
+            // And this is what forbids promoting a BACKCAST. A one-sided reconstruction has nothing
+            // bracketing it on the left, so its only anchor is its right neighbour — promoting one
+            // extends the patient's history backwards on a single anchor. Drawing one is fine.
+            if (readings.newestMeasuredBefore(src, rows.first().ts) == null) {
+                return@inWriteTx PromoteResult.Refused("Nothing measured before the span")
+            }
+
+            for (row in rows) {
+                val stored = readings.byTs(src, row.ts)
+                if (stored != null && stored.provenance == ReadingProvenance.MEASURED) {
+                    return@inWriteTx PromoteResult.Refused("Slot measured")
+                }
+                if (!row.mgdl.isFinite() || !row.lo90.isFinite() || !row.hi90.isFinite() ||
+                    row.lo90 > row.mgdl || row.mgdl > row.hi90 || row.mgdl <= 0.0
+                ) {
+                    return@inWriteTx PromoteResult.Refused("Band is degenerate")
+                }
+            }
+
+            var written = 0
+            for (row in rows) {
+                // The offset comes from the nearest bracketing measurement, left-preferring — the
+                // one-sided rule `SPEC/inference.md` §7.4 uses for the anchor — and never from the
+                // clock's current zone. `SPEC/invariants.md` §2 keys every day-boundary reduction on
+                // the row's OWN offset, and a gap can straddle a DST change or a flight.
+                val tz = readings.tzOffsetNearest(src, row.ts) ?: 0
+                val entity = CgmReadingEntity(
+                    sourceId = src,
+                    tsMs = row.ts,
+                    bgMgdl = Math.round(row.mgdl).toInt(),
+                    trendTenthsPerMin = null,
+                    minFromStart = null,
+                    quality = null,
+                    provenance = ReadingProvenance.RECONSTRUCTED,
+                    flag = ReadingFlag.NORMAL,
+                    tzOffsetMin = tz,
+                    // A reconstruction was never received, so it has no receive instant of its own
+                    // to be filed under; the slot it reconstructs is the only honest answer. It gets
+                    // no `cgm_sample_raw` row for the same reason.
+                    rxWallMs = row.ts,
+                    rssi = null,
+                )
+                // Not every pre-flighted row reaches the record: the grid-slot rule also declines
+                // to displace a valued INTERPOLATED row, which `GridStamper` writes across any
+                // dropout while the Lab still lists that stretch as a gap. The count below is of
+                // what was WRITTEN, not of what was considered, so the read-out cannot claim a
+                // record change that did not happen.
+                if (!supersedesGridSlot(readings.byTs(src, row.ts), entity)) continue
+                readings.upsert(entity)
+                written++
+                val base = samples.byTs(row.ts) ?: emptySample(row.ts, tz, row.ts)
+                samples.upsert(
+                    base.copy(
+                        bgMgdl = entity.bgMgdl,
+                        // Null, deliberately, and not the source id: `bgSource` is an assertion
+                        // about which SENSOR produced the number, and none did. The reading row's
+                        // `sourceId` is a storage key and is a different question.
+                        bgSource = null,
+                        bgProvenance = ReadingProvenance.RECONSTRUCTED,
+                        bgFlag = ReadingFlag.NORMAL,
+                        tzOffsetMin = tz,
+                        updatedAt = maxOf(base.updatedAt + 1, nowMs),
+                    ),
+                )
+                enqueueIngest(row.ts, nowMs)
+            }
+            if (written == 0) return@inWriteTx PromoteResult.Refused("Every slot already holds a value")
+            infills.markPromoted(spanStartMs, nowMs)
+            PromoteResult.Promoted(written)
+        }.also { if (it is PromoteResult.Promoted) _logEvents.update { t -> t + 1 } }
+    }
+
+    /**
+     * Take a promoted span back out of the record.
+     *
+     * Only rows still flagged `RECONSTRUCTED` are removed — a measurement that has since landed in
+     * one of those slots is the real thing and stays. The server's copy is cleared through the
+     * ingest `clear` array, which is the only way the contract offers to erase a stored scalar;
+     * without it the next catch-up would merge the promoted value straight back.
+     *
+     * The slot is resolved across EVERY source rather than under the current authority. Promotion
+     * files under whichever source was authoritative at the time, a sensor lasts ten to fourteen
+     * days, and the span list reaches back a fortnight — so any sensor change between promoting and
+     * demoting would otherwise leave the reading in place while this reported it removed.
+     */
+    suspend fun demoteInfillSpan(spanStartMs: Long, nowMs: Long): PromoteResult = withContext(io) {
+        inWriteTx {
+            val rows = infills.span(spanStartMs)
+            if (rows.isEmpty()) return@inWriteTx PromoteResult.Refused("Span is gone")
+            if (rows.all { it.promotedAtMs == null }) {
+                return@inWriteTx PromoteResult.Refused("Not promoted")
+            }
+            var removed = 0
+            for (row in rows) {
+                val stored = readings.allAt(row.ts)
+                    .filter { it.provenance == ReadingProvenance.RECONSTRUCTED }
+                if (stored.isEmpty()) continue
+                for (r in stored) readings.deleteAt(r.sourceId, row.ts)
+                val sample = samples.byTs(row.ts)
+                if (sample != null && sample.bgProvenance == ReadingProvenance.RECONSTRUCTED) {
+                    samples.upsert(
+                        sample.copy(
+                            bgMgdl = null,
+                            bgSource = null,
+                            bgProvenance = null,
+                            bgFlag = null,
+                            updatedAt = maxOf(sample.updatedAt + 1, nowMs),
+                        ),
+                    )
+                    enqueueIngest(row.ts, nowMs)
+                }
+                removed++
+            }
+            // `removed == 0` is a legitimate end state, not a refusal: the sensor's own history can
+            // deliver real measurements for slots a promoted fill occupied, and `supersedesGridSlot`
+            // lets a measurement replace a reconstruction in place while this table's promoted rows
+            // are deliberately spared. Nothing of the span is in the record any more, so unpromoting
+            // is exactly what the record already says — and refusing here stranded the span
+            // permanently: undemotable, undiscardable, and (once a cut refused to cross a promoted
+            // span) blocking a cut of the real measurements that had replaced it.
+            //
+            // The desync this once guarded against is closed at its source instead: `cutBgRange`
+            // refuses to erase a stored RECONSTRUCTED reading.
+            infills.markPromoted(spanStartMs, null)
+            PromoteResult.Promoted(removed)
+        }.also { _logEvents.update { t -> t + 1 } }
+    }
+
 
     suspend fun infillInRange(fromMs: Long, toMs: Long): List<BgInfillEntity> =
         withContext(io) { infills.inRange(fromMs, toMs) }
@@ -1728,7 +2307,149 @@ class T1dmRepository(
     fun observeInfill(fromMs: Long, toMs: Long): Flow<List<BgInfillEntity>> =
         infills.observeRange(fromMs, toMs)
 
-    suspend fun clearInfill(fromMs: Long, toMs: Long) = withContext(io) { infills.deleteRange(fromMs, toMs) }
+    /**
+     * Throw a drawn span away — the panel's discard, and the only route by which a fill the patient
+     * did not want leaves the device.
+     *
+     * Refuses a PROMOTED span, in the statement rather than here: a promoted span has rows in
+     * `sample` and on the server, and this table holds the only copy of the band they carry.
+     * Demotion is the way out of that state, and it reads the span from here.
+     *
+     * @return true when a span was removed.
+     */
+    suspend fun discardInfillSpan(spanStartMs: Long): Boolean = withContext(io) {
+        infills.deleteSpanIfUnpromoted(spanStartMs) > 0
+    }
+
+    /**
+     * Move a drawn span's line to a different quantile of the fan it already holds.
+     *
+     * [line] is one mg/dL value per row of the span, oldest first, as the crate read the stored fan
+     * at [tau]. Nothing is recomputed here and no fan is touched: this changes WHICH level of an
+     * emitted fan is drawn, and records that level so a promotion of it cannot later be mistaken
+     * for the median.
+     *
+     * Refuses a promoted span. Once written into the record the line is a stored sample, and moving
+     * it would rewrite the patient's history from a slider.
+     */
+    suspend fun retauInfillSpan(spanStartMs: Long, tau: Double, line: List<Double>): Boolean =
+        withContext(io) {
+            inWriteTx {
+                val rows = infills.span(spanStartMs)
+                if (rows.isEmpty() || rows.any { it.promotedAtMs != null }) return@inWriteTx false
+                if (rows.size != line.size) return@inWriteTx false
+                rows.forEachIndexed { i, r -> infills.setLineAt(r.ts, line[i], tau) }
+                true
+            }
+        }
+
+    /**
+     * Erase every BG on the grid in `[fromMs, toMs]` and hand back what was erased.
+     *
+     * The returned rows are the WHOLE of what [restoreBgCut] needs to put them back — each source's
+     * reading at the slot, and the `sample` row's four BG fields. Captured before the delete rather
+     * than reconstructed after it: once the rows are gone nothing else on the device holds a
+     * deleted reading's provenance, and an undo that guessed at it would file model output, or a
+     * calibration, as an ordinary sensor measurement.
+     */
+    suspend fun cutBgRange(fromMs: Long, toMs: Long, nowMs: Long): List<BgCut> = withContext(io) {
+        requireGrid(fromMs)
+        requireGrid(toMs)
+        val cuts = ArrayList<BgCut>()
+        inWriteTx {
+            var ts = fromMs
+            while (ts <= toMs) {
+                val slotReadings = readings.allAt(ts)
+                // A STORED RECONSTRUCTION in the range is refused whole, rather than erased along
+                // with the measurements around it. Erasing one takes its row out of `cgm_reading`
+                // while `bg_infill` still calls the span promoted, and the two then disagree; the
+                // band — the only copy there is — becomes ordinary deletable state, and an undo
+                // restores the stored reconstruction with nothing left able to take it out again.
+                // Demotion is the operation that removes one, and it already exists.
+                //
+                // Keyed on the stored ROW rather than on a promoted band, because those two come
+                // apart: a real measurement can supersede a promoted fill in place, leaving a band
+                // still marked promoted over a stretch that is now entirely measured — and refusing
+                // there would make ordinary readings uncuttable.
+                if (slotReadings.any { it.provenance == ReadingProvenance.RECONSTRUCTED }) {
+                    throw IllegalStateException("Demote the reconstruction in this stretch first")
+                }
+                val row = samples.byTs(ts)
+                if (slotReadings.isNotEmpty() || row?.bgMgdl != null) {
+                    cuts.add(
+                        BgCut(
+                            ts = ts,
+                            readings = slotReadings,
+                            bgMgdl = row?.bgMgdl,
+                            bgSource = row?.bgSource,
+                            bgProvenance = row?.bgProvenance,
+                            bgFlag = row?.bgFlag,
+                        ),
+                    )
+                }
+                ts += GRID_MS
+            }
+            for (c in cuts) {
+                for (r in c.readings) readings.deleteAt(r.sourceId, c.ts)
+                val row = samples.byTs(c.ts)
+                if (row != null) {
+                    samples.upsert(
+                        row.copy(
+                            bgMgdl = null,
+                            bgSource = null,
+                            bgProvenance = null,
+                            bgFlag = null,
+                            updatedAt = maxOf(nowMs, row.updatedAt + 1),
+                        ),
+                    )
+                }
+                enqueueIngest(c.ts, nowMs)
+            }
+            // The UNPROMOTED fills only, and deliberately not [invalidateForecastDerivedInTx].
+            //
+            // That owner's remit is a CHANNEL-affecting change — a meal's grams, a dose's units —
+            // and part of what it drops is `prediction`, every stored forecast made at or after the
+            // change. A stored forecast is the record of what the model SAID at that cycle, which
+            // is exactly what the hindsight sweep exists to replay; dropping a day of it because
+            // one compression low was erased destroys the history rather than correcting it. A BG
+            // edit falsifies one thing: a reconstruction OF that stretch, which describes a curve
+            // that no longer exists.
+            if (cuts.isNotEmpty()) infills.deleteFrom(fromMs)
+        }
+        if (cuts.isNotEmpty()) _logEvents.update { t -> t + 1 }
+        cuts
+    }
+
+    /**
+     * Put back exactly what [cutBgRange] took, provenance and all, and re-push each slot.
+     *
+     * The re-push is not optional. A cut sends the server a `clear`, and the server obeys; without
+     * a matching push the value is back on the phone and gone everywhere else, which is a worse
+     * state than either the cut or the undo.
+     */
+    suspend fun restoreBgCut(cuts: List<BgCut>, nowMs: Long) = withContext(io) {
+        if (cuts.isEmpty()) return@withContext
+        inWriteTx {
+            for (c in cuts) {
+                for (r in c.readings) readings.upsert(r)
+                val row = samples.byTs(c.ts)
+                if (row != null) {
+                    samples.upsert(
+                        row.copy(
+                            bgMgdl = c.bgMgdl,
+                            bgSource = c.bgSource,
+                            bgProvenance = c.bgProvenance,
+                            bgFlag = c.bgFlag,
+                            updatedAt = maxOf(nowMs, row.updatedAt + 1),
+                        ),
+                    )
+                }
+                enqueueIngest(c.ts, nowMs)
+            }
+            infills.deleteFrom(cuts.minOf { it.ts })
+        }
+        _logEvents.update { t -> t + 1 }
+    }
 
     suspend fun clearInfillForModel(modelId: String) = withContext(io) { infills.deleteByModel(modelId) }
 
@@ -1757,6 +2478,10 @@ class T1dmRepository(
             conformalDeltas.deleteAll()
             loras.deleteAll()
             infills.deleteAll()
+            // A deletion outlives the thing it deleted, so a reset that leaves it behind carries
+            // the patient's old deletions into a new server profile — where they re-push and then
+            // permanently refuse to re-hydrate the events they name.
+            tombstones.deleteAll()
             exerciseFixes.deleteAll()
             exerciseSessions.deleteAll()
             // kv LAST: it holds the watch nonce ceilings + pairing bits + every setting.
@@ -1778,11 +2503,11 @@ class T1dmRepository(
          */
         const val RAW_SAMPLE_RETENTION_MS: Long = 7L * 24 * 60 * 60 * 1000
 
-        /** The receive instant below which a sub-grid sample has expired at [nowMs]. */
+        /** The filed instant below which a sub-grid sample has expired at [nowMs]. */
         internal fun rawSampleCutoff(nowMs: Long): Long = nowMs - RAW_SAMPLE_RETENTION_MS
 
         /**
-         * The receive instants that [snapToGrid] files into [gridTs] — the inverse of the snap, and
+         * The instants that [snapToGrid] files into [gridTs] — the inverse of the snap, and
          * the only place it is written down.
          *
          * Round-to-nearest makes it `[gridTs − GRID_MS/2, gridTs + GRID_MS/2 − 1]`: the lower bound
@@ -1837,6 +2562,47 @@ class T1dmRepository(
         /** A fresh phone-minted event id (§3.2). v4 UUID — acceptable per §8.6 (v7 preferred for
          *  time-ordering but not in the JDK); the repository writer guarantees a non-blank id. */
         private fun newClientId(): String = java.util.UUID.randomUUID().toString()
+
+        /**
+         * [base] with [reading]'s BG projected onto it — the whole of the write, lifted out so it is
+         * testable without a database.
+         *
+         * **There is deliberately no last-writer-wins guard here.** One did exist, comparing the
+         * reading's own instant against the slot's `updatedAt` and returning early when the reading was
+         * older, and it was wrong twice over.
+         *
+         * It was redundant: [supersedesGridSlot] has already run, it is a total order over the SET of
+         * samples offered for the slot, and it has just said this reading is the one the slot holds. A
+         * second, differently-shaped comparison after it can only disagree with it.
+         *
+         * And it could silently lose a reading. `updatedAt` is bumped by every channel that writes the
+         * row — steps, mood, heart rate, and the exercise disposal curve, which writes buckets up to
+         * ninety minutes AHEAD of the clock. So a source that files a reading under the instant it was
+         * SAMPLED rather than delivered would fail the comparison against a slot some other channel had
+         * touched, and the slot would end with no `bgMgdl`, no INGEST row, nothing on the wire and
+         * nothing in the statistics — while `cgm_reading` still held the reading, so nothing anywhere
+         * would look wrong.
+         *
+         * `updatedAt` stays a MAXIMUM, and that is what keeps the row syncable once a reading's instant
+         * can lag it. It is §7's ordering key for the server's idempotent upsert, so a stamp that went
+         * backwards would make the server ignore the row until wall time caught up again. Held at the
+         * maximum, every stamp this row ever sends is at least the one the server already holds — and
+         * `POST /v1/ingest` is explicitly the endpoint that accepts an EQUAL stamp (`http-api.md`: so two
+         * partial fills of one slot sharing a stamp both land), so a BG projected onto a slot another
+         * channel has already stamped still reaches the server rather than being read as a redelivery.
+         */
+        internal fun projectedBgSample(base: SampleEntity, reading: CgmReading): SampleEntity =
+            base.copy(
+                tzOffsetMin = reading.tzOffsetMin,
+                bgMgdl = reading.bgMgdl,
+                // Stamped with the reading's own source rather than looked up: only the authoritative
+                // source reaches here, and taking it from the reading means the label can never name a
+                // sensor other than the one that produced the number beside it.
+                bgSource = reading.sourceId.opaque,
+                bgProvenance = reading.provenance,
+                bgFlag = reading.flag,
+                updatedAt = maxOf(base.updatedAt, reading.rxWallMs),
+            )
 
         private fun emptySample(ts: Long, tzOffsetMin: Int, updatedAt: Long) = SampleEntity(
             ts = ts,

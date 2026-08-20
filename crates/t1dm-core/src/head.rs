@@ -42,6 +42,32 @@ const N_SPREADS: usize = 3;
 const N_QUANTILES: usize = 7;
 /// Floor of the cosine learning-rate schedule, as a fraction of `LoraTrainOpts::lr`.
 const LR_MIN_RATIO: f64 = 0.1;
+
+/// What the counterfactual guard is run with at the end of a fit.
+///
+/// **These numbers are reasoned, not measured.** The retention band is deliberately wide: it is
+/// meant to catch a COLLAPSE and a runaway AMPLIFICATION, not to police an adapter that shifts
+/// the response by a third. Expect to retune after three real fits, and change them here rather
+/// than at a call site so every surface reports the same bar.
+/// `min_frozen_response`: below 2 mg/dL per unit at the horizon the frozen model has no response
+/// worth preserving, and a ratio against it would be noise divided by noise — hence Inconclusive
+/// rather than a pass.
+const GUARD_OPTS_FIT: LoraGuardOpts = LoraGuardOpts {
+    max_windows: 64,
+    min_windows: 8,
+    probe_dose_u: 1.0,
+    min_frozen_response: 2.0,
+    min_retention: 0.25,
+    max_retention: 4.0,
+    min_sign_agreement: 0.75,
+};
+/// The bar the fit's own guard pass measures against, exported so a probe of a stored adapter
+/// measures against the SAME one. Two copies of a threshold are two thresholds the day one moves.
+#[uniffi::export]
+pub fn lora_guard_opts_fit() -> LoraGuardOpts {
+    GUARD_OPTS_FIT
+}
+
 /// Serialized-adapter magic and version.
 const LORA_MAGIC: &[u8; 8] = b"T1DMLORA";
 const LORA_VERSION: u16 = 2;
@@ -839,6 +865,17 @@ pub struct LoraSample {
     pub anchors: Vec<f64>,
     pub target_bg: Vec<f64>,
     pub n_slots: i32,
+    /// The SAME window's trunk hidden state with a probe dose injected into the masked span's
+    /// dose channel — the counterfactual branch. Empty when the window was not paired.
+    ///
+    /// Its whole job is to make "what does one more unit of insulin do to this forecast" a
+    /// quantity the fit can see. Without it an adapter can null the model's marginal dose
+    /// response with a rank-1 map, score better on pinball loss, and hand the calculator a
+    /// forecaster that does not respond to insulin at all.
+    pub hidden_pert: Vec<f64>,
+    /// True for the trailing-forecast geometry — the only one the guard measures on, because it
+    /// is the only one whose terminal step is the horizon a dose recommendation is read at.
+    pub is_forecast: bool,
 }
 
 /// Optimiser settings. The defaults the app offers are deliberately timid: this fits a few
@@ -855,6 +892,14 @@ pub struct LoraTrainOpts {
     pub holdout_frac: f64,
     pub weight_decay: f64,
     pub seed: i64,
+    /// How hard to pin the ADAPTED marginal dose response to the frozen model's. `0.0` disables
+    /// the term entirely.
+    ///
+    /// A MULTIPLE of the frozen head's own mean training pinball loss rather than a raw
+    /// coefficient, so `1.0` means "a total collapse of the counterfactual costs as much as the
+    /// frozen model's entire loss" and the number means the same thing across patients and
+    /// checkpoints. See `distill_scale` on the report for what it resolved to.
+    pub distill_weight: f64,
 }
 
 /// What a fit did, in the terms the panel has to show before anyone attaches it.
@@ -880,6 +925,58 @@ pub struct LoraTrainReport {
     /// when no epoch beat the frozen head and the identity adapter was kept. With no holdout
     /// there is nothing to select on and this is `epochs_run`.
     pub best_epoch: i32,
+    /// Training samples that carried a usable counterfactual branch. Zero means the
+    /// distillation term did nothing, whatever `distill_weight` was set to.
+    pub n_paired: i32,
+    /// The coefficient actually applied — `distill_weight · F / S`, where `F` is the frozen
+    /// head's mean training pinball and `S` the mean squared frozen response. `0.0` when the
+    /// term was off or nothing was paired.
+    pub distill_scale: f64,
+    /// The distillation term alone, per epoch. `loss_history` carries the sum, so without this
+    /// a fit whose pinball improved while its dose response collapsed looks like a good one.
+    pub distill_history: Vec<f64>,
+    /// What the counterfactual guard made of the returned adapter on held-out forecast windows.
+    /// `None` when there were none to measure on — which is itself a reason not to attach.
+    pub guard: Option<LoraGuardReport>,
+}
+
+/// What the counterfactual guard is allowed to conclude, and on what evidence.
+#[derive(Debug, Clone, Copy, PartialEq, uniffi::Record)]
+pub struct LoraGuardOpts {
+    pub max_windows: i32,
+    pub min_windows: i32,
+    pub probe_dose_u: f64,
+    /// Below this, the frozen model has no response worth preserving and the guard declines to
+    /// judge rather than passing an adapter it cannot measure.
+    pub min_frozen_response: f64,
+    pub min_retention: f64,
+    pub max_retention: f64,
+    pub min_sign_agreement: f64,
+}
+
+/// Whether an adapter preserved the model's marginal response to insulin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum LoraGuardVerdict {
+    Pass,
+    Blocked,
+    Inconclusive,
+}
+
+/// The guard's finding, with every input to it, so a refusal can be read rather than trusted.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct LoraGuardReport {
+    pub verdict: LoraGuardVerdict,
+    pub n_windows: i32,
+    /// mg/dL at the span's terminal step per unit of insulin, frozen model.
+    pub frozen_response_mgdl: f64,
+    /// The same, with the adapter applied.
+    pub adapted_response_mgdl: f64,
+    /// `adapted / frozen`. 1.0 is perfect preservation; near 0 is a collapse.
+    pub retention: f64,
+    /// The fraction of windows where both responses have the same sign.
+    pub sign_agreement: f64,
+    /// Which clause fired, and its two numbers. Empty on a pass.
+    pub why: String,
 }
 
 /// A caller that wants to watch a fit run. Called once per epoch, never per sample: a fit is
@@ -936,6 +1033,22 @@ pub fn lora_train(
                 reason: format!("sample {i} is malformed for {n} slots of a {d}-wide head"),
             });
         }
+        // A truncated pairing must not silently train on a shorter branch: the counterfactual
+        // is either the whole window or it is absent.
+        if !s.hidden_pert.is_empty() && s.hidden_pert.len() != n * d {
+            return Err(CoreError::Internal {
+                reason: format!(
+                    "sample {i}'s counterfactual is {} long, needs {} for {n} slots",
+                    s.hidden_pert.len(),
+                    n * d,
+                ),
+            });
+        }
+    }
+    if !opts.distill_weight.is_finite() || opts.distill_weight < 0.0 {
+        return Err(CoreError::Internal {
+            reason: format!("distill_weight {} is not a finite non-negative number", opts.distill_weight),
+        });
     }
     let n_total = samples.len();
     let n_holdout = ((n_total as f64) * opts.holdout_frac).floor() as usize;
@@ -950,6 +1063,49 @@ pub fn lora_train(
     let mut w = lora_new(config, head.sha256.clone(), d as i32, head.hidden as i32, out_dim as i32, opts.seed)?;
     let holdout_before = mean_loss(head, desc, holdout, None)?;
 
+    // ── the distillation term's normaliser and its frozen targets ──
+    //
+    // `d0` is what the FROZEN model does to its own median when one unit of insulin is added:
+    // the quantity the adapter must not null. Computed once, with no adapter, at two head
+    // forwards per paired sample and no trunk forward at all.
+    //
+    // `scale = distill_weight · F / S` makes the weight a MULTIPLE of the frozen head's own
+    // mean training loss, so it means the same thing across patients and checkpoints. `S` is a
+    // GLOBAL mean rather than a per-sample divisor, so a window where the frozen model barely
+    // responds contributes proportionally little instead of being amplified into dominance.
+    let distill_on = opts.distill_weight > 0.0;
+    let mut d0_train: Vec<Option<Vec<f64>>> = vec![None; train.len()];
+    // Counted whatever the weight is. `n_paired` reports how many training windows CARRIED a
+    // counterfactual branch, which is a property of the replay and not of the optimiser: folding it
+    // into the `distill_on` branch made a comparison run at `distill_weight = 0` indistinguishable
+    // from a fit whose replay never paired anything at all.
+    let mut n_paired = train.iter().filter(|s| !s.hidden_pert.is_empty()).count() as i32;
+    let mut distill_scale = 0.0f64;
+    if distill_on {
+        n_paired = 0;
+        let mut sq_acc = 0.0f64;
+        let mut sq_n = 0usize;
+        for (i, s) in train.iter().enumerate() {
+            if s.hidden_pert.is_empty() {
+                continue;
+            }
+            let m = branch_median_risk(head, desc, s, None, false)?;
+            let mp = branch_median_risk(head, desc, s, None, true)?;
+            let d: Vec<f64> = m.iter().zip(&mp).map(|(a, b)| a - b).collect();
+            sq_acc += d.iter().map(|x| x * x).sum::<f64>() / d.len().max(1) as f64;
+            sq_n += 1;
+            d0_train[i] = Some(d);
+            n_paired += 1;
+        }
+        if sq_n > 0 {
+            let s_mean = sq_acc / sq_n as f64;
+            let f_mean = mean_loss(head, desc, train, None)?;
+            if s_mean > 0.0 && f_mean.is_finite() {
+                distill_scale = opts.distill_weight * f_mean / s_mean;
+            }
+        }
+    }
+
     let n_params = w.params.len();
     let mut m = vec![0.0f64; n_params];
     let mut v = vec![0.0f64; n_params];
@@ -957,6 +1113,7 @@ pub fn lora_train(
     let mut order: Vec<usize> = (0..n_train).collect();
     let mut history = Vec::with_capacity(opts.epochs as usize);
     let mut holdout_history = Vec::with_capacity(opts.epochs as usize);
+    let mut distill_history = Vec::with_capacity(opts.epochs as usize);
     let (b1, b2, eps) = (0.9f64, 0.999f64, 1e-8f64);
     let mut t = 0.0f64;
     let mut first_loss = f64::NAN;
@@ -982,12 +1139,25 @@ pub fn lora_train(
             1.0
         };
         let mut epoch_loss = 0.0;
+        let mut epoch_distill = 0.0;
         for &idx in &order {
             let lora = Lora::from_weights(&w, d, head.hidden, out_dim)?;
             let mut grad = vec![0.0f64; n_params];
-            let loss =
-                sample_loss_and_grad(head, desc, &train[idx], Some(&lora), Some(&mut grad))?;
+            let ctx = d0_train[idx].as_ref().and_then(|d0| {
+                if distill_scale > 0.0 { Some(DistillCtx { d0, scale: distill_scale }) } else { None }
+            });
+            let mut distill_term = 0.0;
+            let loss = sample_loss_and_grad(
+                head,
+                desc,
+                &train[idx],
+                Some(&lora),
+                Some(&mut grad),
+                ctx.as_ref(),
+                Some(&mut distill_term),
+            )?;
             epoch_loss += loss;
+            epoch_distill += distill_term;
             t += 1.0;
             let lr_t = opts.lr * sched * (1.0 - b2.powf(t)).sqrt() / (1.0 - b1.powf(t));
             for p in 0..n_params {
@@ -1002,6 +1172,7 @@ pub fn lora_train(
             first_loss = mean;
         }
         history.push(mean);
+        distill_history.push(epoch_distill / n_train as f64);
         if !mean.is_finite() {
             return Err(CoreError::Internal {
                 reason: format!("training diverged at epoch {epoch}"),
@@ -1030,6 +1201,14 @@ pub fn lora_train(
         (opts.epochs, f64::NAN)
     };
     let improved = n_holdout > 0 && holdout_after < holdout_before;
+    // The guard runs on the weights the fit is actually RETURNING, and on held-out windows
+    // only. The fit is never refused on it — the block is on ATTACH, where a person is present
+    // to read the reason and decide.
+    let guard = if holdout.iter().any(|s| s.is_forecast && !s.hidden_pert.is_empty()) {
+        Some(lora_guard(head, desc, holdout.to_vec(), &w, GUARD_OPTS_FIT)?)
+    } else {
+        None
+    };
     let report = LoraTrainReport {
         n_train: n_train as i32,
         n_holdout: n_holdout as i32,
@@ -1042,6 +1221,10 @@ pub fn lora_train(
         loss_history: history,
         holdout_history,
         best_epoch,
+        n_paired,
+        distill_scale,
+        distill_history,
+        guard,
     };
     Ok(LoraTrainResult { weights: w, report })
 }
@@ -1052,6 +1235,240 @@ pub fn lora_train(
 pub struct LoraTrainResult {
     pub weights: LoraWeights,
     pub report: LoraTrainReport,
+}
+
+/// The per-span median projection of [`assemble_decode`] and nothing else — `m = anchor + B Bᵀ
+/// delta`, in RISK space.
+///
+/// For the branch that needs only the median line. It reuses `global_median_dim` /
+/// `global_median_basis` rather than re-deriving the projection, because a second implementation
+/// of it is exactly the drift this crate exists to avoid.
+fn span_median_risk(
+    desc: &ModelDescriptor,
+    head_raw: &[f64],
+    anchors: &[f64],
+    n: usize,
+) -> Result<Vec<f64>, CoreError> {
+    let n_steps = n * PATCH_SIZE;
+    let p = desc.prediction_patches()?;
+    let g = global_median_dim(desc, n, p);
+    let basis = global_median_basis(n_steps, g);
+    // The anchor is one value for the whole span, exactly as the production assembly reads it.
+    let anchor = desc.kovatchev.f(*anchors.first().unwrap_or(&0.0));
+    let mut z = vec![0.0f64; g];
+    for (j, zj) in z.iter_mut().enumerate() {
+        let mut acc = 0.0;
+        for i in 0..n_steps {
+            acc += head_raw[i * N_QUANTILES] * basis[i * g + j];
+        }
+        *zj = acc;
+    }
+    let mut m = vec![0.0f64; n_steps];
+    for (i, mi) in m.iter_mut().enumerate() {
+        let mut acc = 0.0;
+        for (j, zj) in z.iter().enumerate() {
+            acc += zj * basis[i * g + j];
+        }
+        *mi = anchor + acc;
+    }
+    Ok(m)
+}
+
+/// The guard's statistic, as a pure function of two response arrays.
+///
+/// Separated from the forwards that produce them so it can be tested with literal numbers — the
+/// clause ordering below IS the safety property, and it is the part most likely to be got wrong
+/// by a later edit.
+///
+/// **It measures PRESERVATION, not correctness.** A frozen model whose marginal insulin response
+/// is already wrong-signed passes here as long as the adapter keeps that sign. Exposing a
+/// wrong-signed model is `SensitivityProbe`'s job and stays there, deliberately: a guard that
+/// tried to do both would refuse adapters for a defect the adapter did not introduce.
+/// [r0]/[r1] are the frozen and adapted responses in RISK space — the ratio's space — and
+/// [m0]/[m1] the same responses in mg/dL per unit, which are reported and gated on but never
+/// divided by one another. See [lora_guard] for why the two are not one.
+fn guard_verdict(
+    r0: &[f64],
+    r1: &[f64],
+    m0: &[f64],
+    m1: &[f64],
+    opts: &LoraGuardOpts,
+) -> LoraGuardReport {
+    fn median(v: &[f64]) -> f64 {
+        let mut s: Vec<f64> = v.iter().copied().filter(|x| x.is_finite()).collect();
+        if s.is_empty() {
+            return f64::NAN;
+        }
+        s.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let mid = s.len() / 2;
+        if s.len() % 2 == 0 { (s[mid - 1] + s[mid]) / 2.0 } else { s[mid] }
+    }
+
+    let n = r0.len().min(r1.len()).min(m0.len()).min(m1.len());
+    let frozen_risk = median(&r0[..n]);
+    let adapted_risk = median(&r1[..n]);
+    let frozen = median(&m0[..n]);
+    let adapted = median(&m1[..n]);
+    let agree = if n == 0 {
+        0.0
+    } else {
+        r0[..n].iter().zip(&r1[..n]).filter(|(a, b)| *a * *b > 0.0).count() as f64 / n as f64
+    };
+    let retention = adapted_risk / frozen_risk;
+
+    let mut report = LoraGuardReport {
+        verdict: LoraGuardVerdict::Pass,
+        n_windows: n as i32,
+        frozen_response_mgdl: frozen,
+        adapted_response_mgdl: adapted,
+        retention,
+        sign_agreement: agree,
+        why: String::new(),
+    };
+
+    // First clause that fires wins, and the two inconclusive ones come first: an adapter the
+    // guard could not measure must never read as one it measured and passed.
+    if (n as i32) < opts.min_windows {
+        report.verdict = LoraGuardVerdict::Inconclusive;
+        report.why = format!("only {n} held-out forecast windows, needs {}", opts.min_windows);
+    } else if !frozen.is_finite() || frozen.abs() < opts.min_frozen_response {
+        report.verdict = LoraGuardVerdict::Inconclusive;
+        report.why = format!(
+            "the frozen model's own response is {frozen:.2} mg/dL/U, below {:.2} — nothing to preserve",
+            opts.min_frozen_response,
+        );
+    } else if !frozen_risk.is_finite() || frozen_risk == 0.0 {
+        report.verdict = LoraGuardVerdict::Inconclusive;
+        report.why = "the frozen model's risk-space response is zero — nothing to ratio".to_string();
+    } else if !retention.is_finite() {
+        report.verdict = LoraGuardVerdict::Inconclusive;
+        report.why = "retention is not finite".to_string();
+    } else if retention < opts.min_retention {
+        report.verdict = LoraGuardVerdict::Blocked;
+        report.why = format!(
+            "keeps {:.0}% of the model's dose response ({adapted:.2} vs {frozen:.2} mg/dL/U), floor {:.0}%",
+            retention * 100.0,
+            opts.min_retention * 100.0,
+        );
+    } else if retention > opts.max_retention {
+        // An amplification is as untrustworthy as a collapse: it feeds the calculator an
+        // inflated ISF, and the dose that follows is too large rather than too small.
+        report.verdict = LoraGuardVerdict::Blocked;
+        report.why = format!(
+            "amplifies the dose response {:.1}× ({adapted:.2} vs {frozen:.2} mg/dL/U), ceiling {:.1}×",
+            retention,
+            opts.max_retention,
+        );
+    } else if agree < opts.min_sign_agreement {
+        report.verdict = LoraGuardVerdict::Blocked;
+        report.why = format!(
+            "agrees on the direction in only {:.0}% of windows, floor {:.0}%",
+            agree * 100.0,
+            opts.min_sign_agreement * 100.0,
+        );
+    }
+    report
+}
+
+/// Measure what an adapter did to the model's marginal response to one unit of insulin.
+///
+/// Head-only arithmetic: four head forwards and four median assemblies per window, and no trunk
+/// forward at all — the counterfactual hidden states were computed once when the samples were
+/// built. The response is read in mg/dL at the span's TERMINAL step, which is the same quantity
+/// `SensitivityProbe` differences and, at forecast geometry, the horizon a dose is read at.
+///
+/// The anchor is identical in both branches — the probe touches the dose channels only, and the
+/// anchor is read off the BG channel — so it cancels exactly, and the guard cannot be satisfied
+/// by an adapter that merely moves the anchor.
+#[uniffi::export]
+pub fn lora_guard(
+    head: &HeadModel,
+    desc: &ModelDescriptor,
+    samples: Vec<LoraSample>,
+    weights: &LoraWeights,
+    opts: LoraGuardOpts,
+) -> Result<LoraGuardReport, CoreError> {
+    let out_dim = head.k * N_QUANTILES;
+    let lora = Lora::from_weights(weights, head.d_model, head.hidden, out_dim)?;
+    // Ragged samples are refused, not indexed. This is an exported entry point — the Probe path
+    // hands it whatever a caller built — and `branch_median_risk` slices `hidden[slot * d_model..]`
+    // without checking, which panics ACROSS the FFI boundary rather than returning an error.
+    let want = |s: &LoraSample| (s.n_slots.max(0) as usize) * head.d_model;
+    for s in &samples {
+        if s.hidden.len() < want(s) || (!s.hidden_pert.is_empty() && s.hidden_pert.len() < want(s)) {
+            return Err(CoreError::Internal {
+                reason: format!(
+                    "guard sample has {} hidden and {} perturbed values for {} slots of d_model {}",
+                    s.hidden.len(),
+                    s.hidden_pert.len(),
+                    s.n_slots,
+                    head.d_model,
+                ),
+            });
+        }
+    }
+    let usable: Vec<&LoraSample> = samples
+        .iter()
+        .filter(|s| s.is_forecast && !s.hidden_pert.is_empty())
+        .collect();
+    let take = (opts.max_windows.max(0) as usize).min(usable.len());
+    let windows = &usable[usable.len() - take..];
+
+    // Two spaces, and the split is load-bearing.
+    //
+    // RETENTION is a ratio, and it is taken in RISK space — the space the pinball loss and the
+    // distillation term are both formed in, so the guard reads the quantity the fit optimises.
+    // `f_inv` is strongly convex, so the same risk-space response differences to a different
+    // number of mg/dL at 80 than at 250: a ratio of mg/dL responses carries a TERMINAL-LEVEL ratio
+    // alongside the response ratio, and an adapter that merely shifted the forecast's level would
+    // move it. That is a wrong-quantity guard.
+    //
+    // The mg/dL pair is still measured, still reported and still what `min_frozen_response` gates
+    // on, because "does the model respond to insulin at all" is a clinical question and 2 mg/dL/U
+    // is a clinical floor. It is read, never ratioed.
+    let mut r0 = Vec::with_capacity(windows.len());
+    let mut r1 = Vec::with_capacity(windows.len());
+    let mut m0 = Vec::with_capacity(windows.len());
+    let mut m1 = Vec::with_capacity(windows.len());
+    for s in windows {
+        let n = s.n_slots.max(0) as usize;
+        if n == 0 {
+            continue;
+        }
+        let last = n * PATCH_SIZE - 1;
+        let dose = if opts.probe_dose_u.abs() > 0.0 { opts.probe_dose_u } else { 1.0 };
+        let f_base = branch_median_risk(head, desc, s, None, false)?[last];
+        let f_pert = branch_median_risk(head, desc, s, None, true)?[last];
+        let a_base = branch_median_risk(head, desc, s, Some(&lora), false)?[last];
+        let a_pert = branch_median_risk(head, desc, s, Some(&lora), true)?[last];
+        r0.push((f_base - f_pert) / dose);
+        r1.push((a_base - a_pert) / dose);
+        m0.push((desc.kovatchev.f_inv(f_base) - desc.kovatchev.f_inv(f_pert)) / dose);
+        m1.push((desc.kovatchev.f_inv(a_base) - desc.kovatchev.f_inv(a_pert)) / dose);
+    }
+    Ok(guard_verdict(&r0, &r1, &m0, &m1, &opts))
+}
+
+/// One branch's median line, in risk space: forward the head over the chosen hidden state and
+/// project it through the same per-span DCT the production assembly uses.
+fn branch_median_risk(
+    head: &HeadModel,
+    desc: &ModelDescriptor,
+    sample: &LoraSample,
+    lora: Option<&Lora>,
+    perturbed: bool,
+) -> Result<Vec<f64>, CoreError> {
+    let n = sample.n_slots.max(0) as usize;
+    let out_dim = head.k * N_QUANTILES;
+    let hidden = if perturbed { &sample.hidden_pert } else { &sample.hidden };
+    let mut head_raw = vec![0.0f64; n * PATCH_SIZE * N_QUANTILES];
+    let mut a = Activations::new(head.hidden, out_dim, head.d_model);
+    for slot in 0..n {
+        let h = &hidden[slot * head.d_model..(slot + 1) * head.d_model];
+        head.forward_slot(h, lora, &mut a);
+        head.expand_basis(&a.out, &mut head_raw[slot * PATCH_SIZE * N_QUANTILES..]);
+    }
+    span_median_risk(desc, &head_raw, &sample.anchors, n)
 }
 
 fn mean_loss(
@@ -1070,7 +1487,7 @@ fn mean_loss(
     };
     let mut acc = 0.0;
     for s in samples {
-        acc += sample_loss_and_grad(head, desc, s, lora.as_ref(), None)?;
+        acc += sample_loss_and_grad(head, desc, s, lora.as_ref(), None, None, None)?;
     }
     Ok(acc / samples.len() as f64)
 }
@@ -1100,12 +1517,21 @@ fn pinball(desc: &ModelDescriptor, q_tau_risk: &[f64], target_bg: &[f64], n_step
 /// projection of the median, the within-patch basis, and finally the head's three layers into
 /// the adapter sites. The base weights take no gradient — they are frozen inside the `.pte`
 /// and this crate could not write them back if it wanted to.
+/// The frozen model's marginal response for one sample, and the coefficient to pin it with.
+struct DistillCtx<'a> {
+    /// `m_0(hidden)[i] − m_0(hidden_pert)[i]`, in risk space, `n_steps` long.
+    d0: &'a [f64],
+    scale: f64,
+}
+
 fn sample_loss_and_grad(
     head: &HeadModel,
     desc: &ModelDescriptor,
     sample: &LoraSample,
     lora: Option<&Lora>,
     mut grad: Option<&mut [f64]>,
+    distill: Option<&DistillCtx<'_>>,
+    mut distill_out: Option<&mut f64>,
 ) -> Result<f64, CoreError> {
     let n = sample.n_slots.max(0) as usize;
     let n_steps = n * PATCH_SIZE;
@@ -1133,7 +1559,52 @@ fn sample_loss_and_grad(
         n as i32,
         0.0,
     )?;
-    let loss = pinball(desc, &fan.q_tau_risk, &sample.target_bg, n_steps);
+    let mut loss = pinball(desc, &fan.q_tau_risk, &sample.target_bg, n_steps);
+
+    // ── the counterfactual branch ──
+    //
+    // A SECOND forward of the same adapted head over the perturbed hidden state, giving the
+    // adapted model's own marginal response `m − m'`. The term is the squared distance between
+    // that and the frozen model's `d0`.
+    //
+    // Read on the ASSEMBLED median and in RISK space, for the same two reasons the pinball term
+    // is: the per-span DCT projection is not an identity — on the reference descriptor half the
+    // raw-delta space is null — so a term read on `head_raw` would take gradient from
+    // coefficients the decode discards; and mg/dL residuals would spend the adapter's capacity on
+    // the hyperglycaemic half while `f_inv`'s clamp zeroed the gradient at exactly the rails a
+    // hypo response lives near.
+    //
+    // MEDIAN COLUMN ONLY. The median line is what the sensitivity probe differences and what
+    // collapses; pinning the spreads' marginal response too would fight the pinball term's
+    // freedom to widen this patient's bands.
+    let paired = distill.filter(|c| c.scale > 0.0 && !sample.hidden_pert.is_empty());
+    let mut pert: Option<(Vec<Activations>, Vec<f64>, Vec<f64>)> = None;
+    let mut err = vec![0.0f64; n_steps];
+    if let Some(ctx) = paired {
+        let mut acts_p: Vec<Activations> = Vec::with_capacity(n);
+        let mut raw_p = vec![0.0f64; n_steps * N_QUANTILES];
+        for slot in 0..n {
+            let mut a = Activations::new(head.hidden, out_dim, head.d_model);
+            let h = &sample.hidden_pert[slot * head.d_model..(slot + 1) * head.d_model];
+            head.forward_slot(h, lora, &mut a);
+            head.expand_basis(&a.out, &mut raw_p[slot * PATCH_SIZE * N_QUANTILES..]);
+            acts_p.push(a);
+        }
+        let m_pert = span_median_risk(desc, &raw_p, &sample.anchors, n)?;
+        let mut acc = 0.0;
+        for i in 0..n_steps {
+            let m = fan.q_tau_risk[i * N_QUANTILES + N_SPREADS];
+            err[i] = (m - m_pert[i]) - ctx.d0[i];
+            acc += err[i] * err[i];
+        }
+        let term = ctx.scale * acc / n_steps as f64;
+        loss += term;
+        if let Some(out) = distill_out.take() {
+            *out = term;
+        }
+        pert = Some((acts_p, raw_p, m_pert));
+    }
+
     let grad = match grad.take() {
         None => return Ok(loss),
         Some(g) => g,
@@ -1163,13 +1634,17 @@ fn sample_loss_and_grad(
     //    at or beyond it on its own side ──
     let mut d_median = vec![0.0f64; n_steps];
     let mut d_head_raw = vec![0.0f64; n_steps * N_QUANTILES];
+    // `c = 2·scale / n_steps`: the derivative of the mean squared error. The baseline branch
+    // takes `+c·e[i]` on its median and the perturbed branch `−c·e[i]`, because `e` is their
+    // difference minus a constant.
+    let c_distill = paired.map_or(0.0, |ctx| 2.0 * ctx.scale / n_steps as f64);
     for i in 0..n_steps {
         let row = i * N_QUANTILES;
         let mut dm = 0.0;
         for k in 0..N_QUANTILES {
             dm += dq[row + k];
         }
-        d_median[i] = dm;
+        d_median[i] = dm + c_distill * err[i];
         // up_j (levels 4..6) = m + Σ_{t<=j} d_up_t ; dn_j (levels 2−j) = m − Σ_{t<=j} d_dn_t
         for t in 0..N_SPREADS {
             let mut d_up = 0.0;
@@ -1236,9 +1711,65 @@ fn sample_loss_and_grad(
         }
     }
 
+    // ONE implementation, run once per branch, accumulating into the SAME gradient buffer. The
+    // perturbed branch uses its own activations and its own hidden input throughout — a shared
+    // buffer with the baseline branch's activations would silently compute the wrong chain.
+    backward_head_into_sites(
+        head, lora, &acts, &sample.hidden, &d_head_raw,
+        (off_hidden, off_l0, off_l1, off_l2), grad,
+    );
+
+    if let (Some(ctx), Some((acts_p, _, _))) = (paired, pert.as_ref()) {
+        // The perturbed branch's whole median gradient is `−c·e`, and its SPREADS take none: the
+        // distillation term never reads one, so the softplus/cumsum fan contributes nothing here.
+        let mut d_median_p = vec![0.0f64; n_steps];
+        for i in 0..n_steps {
+            d_median_p[i] = -2.0 * ctx.scale / n_steps as f64 * err[i];
+        }
+        let mut d_raw_p = vec![0.0f64; n_steps * N_QUANTILES];
+        // The same projection pullback as above — `B Bᵀ` is symmetric — reusing the one basis.
+        let mut zp = vec![0.0f64; g];
+        for (j, zj) in zp.iter_mut().enumerate() {
+            let mut acc = 0.0;
+            for (i, dm) in d_median_p.iter().enumerate() {
+                acc += dm * basis[i * g + j];
+            }
+            *zj = acc;
+        }
+        for i in 0..n_steps {
+            let mut acc = 0.0;
+            for (j, zj) in zp.iter().enumerate() {
+                acc += zj * basis[i * g + j];
+            }
+            d_raw_p[i * N_QUANTILES] = acc;
+        }
+        backward_head_into_sites(
+            head, lora, acts_p, &sample.hidden_pert, &d_raw_p,
+            (off_hidden, off_l0, off_l1, off_l2), grad,
+        );
+    }
+    Ok(loss)
+}
+
+/// The head's backward pass for one branch, from `d_head_raw` into the adapter sites.
+///
+/// Lifted out so the baseline and counterfactual branches run the SAME chain over their own
+/// activations and their own hidden input, accumulating into one gradient buffer. With no
+/// counterfactual it is called once and is bit-identical to what it replaced.
+#[allow(clippy::too_many_arguments)]
+fn backward_head_into_sites(
+    head: &HeadModel,
+    lora: &Lora,
+    acts: &[Activations],
+    hidden: &[f64],
+    d_head_raw: &[f64],
+    offs: (usize, usize, usize, usize),
+    grad: &mut [f64],
+) {
+    let (off_hidden, off_l0, off_l1, off_l2) = offs;
+    let out_dim = head.k * N_QUANTILES;
     let mut d_out = vec![0.0f64; out_dim];
-    for slot in 0..n {
-        let a = &acts[slot];
+    for (slot, a) in acts.iter().enumerate() {
         head.expand_basis_backward(
             &d_head_raw[slot * PATCH_SIZE * N_QUANTILES..(slot + 1) * PATCH_SIZE * N_QUANTILES],
             &mut d_out,
@@ -1282,14 +1813,13 @@ fn sample_loss_and_grad(
 
         // the hidden bottleneck: h_in = h + scale·B_h(A_h·h), so d_h flows to both terms
         if let Some(site) = &lora.hidden_site {
-            let h = &sample.hidden[slot * head.d_model..(slot + 1) * head.d_model];
+            let h = &hidden[slot * head.d_model..(slot + 1) * head.d_model];
             let mut sink = vec![0.0f64; head.d_model];
             let (da, db) =
                 grad[off_hidden..off_hidden + site.n_params()].split_at_mut(site.r * site.n_in);
             site.backward(h, &a.u_hidden, &d_h, lora.scale, da, db, &mut sink);
         }
     }
-    Ok(loss)
 }
 
 
@@ -1353,6 +1883,19 @@ mod tests {
             // finite-difference check measures the gradient rather than a corner.
             target_bg: (0..n_slots * PATCH_SIZE).map(|i| 190.0 + i as f64).collect(),
             n_slots: n_slots as i32,
+            hidden_pert: Vec::new(),
+            is_forecast: true,
+        }
+    }
+
+    /// The same window with a COUNTERFACTUAL branch, drawn from its own seed so the frozen
+    /// model's response `d0` is genuinely non-zero — a paired sample whose two branches agreed
+    /// would make the distillation term vanish and its gradient check prove nothing.
+    fn sample_paired(d_model: usize, n_slots: usize, seed: u64, pert_seed: u64) -> LoraSample {
+        let mut rng = Rng::new(pert_seed);
+        LoraSample {
+            hidden_pert: (0..n_slots * d_model).map(|_| rng.normal()).collect(),
+            ..sample(d_model, n_slots, seed)
         }
     }
 
@@ -1494,7 +2037,7 @@ mod tests {
         }
         let lora = Lora::from_weights(&w, 8, 6, 21).unwrap();
         let mut analytic = vec![0.0f64; w.params.len()];
-        sample_loss_and_grad(&head, &d, &s, Some(&lora), Some(&mut analytic)).unwrap();
+        sample_loss_and_grad(&head, &d, &s, Some(&lora), Some(&mut analytic), None, None).unwrap();
 
         let h = 1e-6;
         let mut checked = 0;
@@ -1505,8 +2048,8 @@ mod tests {
             minus.params[p] -= h;
             let lp = Lora::from_weights(&plus, 8, 6, 21).unwrap();
             let lm = Lora::from_weights(&minus, 8, 6, 21).unwrap();
-            let f_plus = sample_loss_and_grad(&head, &d, &s, Some(&lp), None).unwrap();
-            let f_minus = sample_loss_and_grad(&head, &d, &s, Some(&lm), None).unwrap();
+            let f_plus = sample_loss_and_grad(&head, &d, &s, Some(&lp), None, None, None).unwrap();
+            let f_minus = sample_loss_and_grad(&head, &d, &s, Some(&lm), None, None, None).unwrap();
             let fd = (f_plus - f_minus) / (2.0 * h);
             let got = analytic[p];
             let scale = fd.abs().max(got.abs()).max(1e-6);
@@ -1521,6 +2064,240 @@ mod tests {
         assert!(analytic.iter().any(|g| g.abs() > 1e-8), "the gradient is entirely zero");
     }
 
+    /// The DISTILLATION term's own gradient, checked the same way and for the same reason.
+    ///
+    /// This is the only thing standing between a plausible training curve and an adapter
+    /// optimising the wrong quantity: the term runs a second forward through the whole head and
+    /// accumulates into the same buffer, so a sign error or a missed branch would show up as a
+    /// fit that trains smoothly while doing nothing about the counterfactual.
+    #[test]
+    fn the_distillation_gradient_matches_finite_differences() {
+        let d = desc();
+        let (head, spec) = synthetic_head(8, 6, 3);
+        let s = sample_paired(8, 4, 3, 77);
+        let mut w = lora_new(cfg(), spec.sha256.clone(), spec.d_model, spec.hidden, spec.out_dim, 17).unwrap();
+        let mut rng = Rng::new(23);
+        for p in w.params.iter_mut() {
+            *p = rng.normal() * 0.2;
+        }
+        // A non-zero frozen response, so the term is not trivially satisfied at `e = 0`.
+        let m = branch_median_risk(&head, &d, &s, None, false).unwrap();
+        let mp = branch_median_risk(&head, &d, &s, None, true).unwrap();
+        let d0: Vec<f64> = m.iter().zip(&mp).map(|(a, b)| a - b).collect();
+        assert!(d0.iter().any(|x| x.abs() > 1e-9), "the frozen response is zero; nothing to pin");
+        let ctx = DistillCtx { d0: &d0, scale: 3.0 };
+
+        let lora = Lora::from_weights(&w, 8, 6, 21).unwrap();
+        let mut analytic = vec![0.0f64; w.params.len()];
+        let with_term =
+            sample_loss_and_grad(&head, &d, &s, Some(&lora), Some(&mut analytic), Some(&ctx), None)
+                .unwrap();
+
+        // FIRST: the term does something at all.
+        //
+        // The finite-difference check below differences the SAME function it takes the analytic
+        // gradient from, so an implementation that ignored `ctx` outright would satisfy it
+        // perfectly — zero against zero is consistent. What that check proves is that the two
+        // agree; what this one proves is that there is anything for them to agree about.
+        let mut without = vec![0.0f64; w.params.len()];
+        let no_term =
+            sample_loss_and_grad(&head, &d, &s, Some(&lora), Some(&mut without), None, None)
+                .unwrap();
+        assert!(
+            (with_term - no_term).abs() > 1e-9,
+            "the distillation term did not move the loss: {with_term:.9e} vs {no_term:.9e}",
+        );
+        let moved = analytic
+            .iter()
+            .zip(&without)
+            .filter(|(a, b)| (*a - *b).abs() > 1e-9)
+            .count();
+        assert!(
+            moved > analytic.len() / 4,
+            "the term moved only {moved} of {} gradient components",
+            analytic.len(),
+        );
+
+        let h = 1e-6;
+        let mut checked = 0;
+        for p in (0..w.params.len()).step_by(7) {
+            let mut plus = w.clone();
+            plus.params[p] += h;
+            let mut minus = w.clone();
+            minus.params[p] -= h;
+            let lp = Lora::from_weights(&plus, 8, 6, 21).unwrap();
+            let lm = Lora::from_weights(&minus, 8, 6, 21).unwrap();
+            let f_plus = sample_loss_and_grad(&head, &d, &s, Some(&lp), None, Some(&ctx), None).unwrap();
+            let f_minus = sample_loss_and_grad(&head, &d, &s, Some(&lm), None, Some(&ctx), None).unwrap();
+            let fd = (f_plus - f_minus) / (2.0 * h);
+            let got = analytic[p];
+            let scale = fd.abs().max(got.abs()).max(1e-6);
+            assert!(
+                (fd - got).abs() / scale < 1e-4,
+                "param {p}: analytic {got:.9e} vs finite difference {fd:.9e}"
+            );
+            checked += 1;
+        }
+        assert!(checked > 10, "only {checked} parameters were checked");
+    }
+
+    /// With the term off, or the sample unpaired, the whole path must be bit-identical to what
+    /// it replaced — the refactor into two branches must not have moved the baseline.
+    #[test]
+    fn an_unpaired_sample_is_unchanged_by_the_distillation_path() {
+        let d = desc();
+        let (head, spec) = synthetic_head(8, 6, 3);
+        let unpaired = sample(8, 4, 3);
+        let mut w = lora_new(cfg(), spec.sha256.clone(), spec.d_model, spec.hidden, spec.out_dim, 17).unwrap();
+        let mut rng = Rng::new(23);
+        for p in w.params.iter_mut() {
+            *p = rng.normal() * 0.2;
+        }
+        let lora = Lora::from_weights(&w, 8, 6, 21).unwrap();
+
+        let mut g_off = vec![0.0f64; w.params.len()];
+        let l_off = sample_loss_and_grad(&head, &d, &unpaired, Some(&lora), Some(&mut g_off), None, None).unwrap();
+
+        // An unpaired sample offered a context still takes nothing from it: there is no second
+        // branch to compare against.
+        let d0 = vec![1.0f64; unpaired.n_slots as usize * PATCH_SIZE];
+        let ctx = DistillCtx { d0: &d0, scale: 5.0 };
+        let mut g_on = vec![0.0f64; w.params.len()];
+        let l_on = sample_loss_and_grad(&head, &d, &unpaired, Some(&lora), Some(&mut g_on), Some(&ctx), None).unwrap();
+
+        assert_eq!(l_off, l_on);
+        assert_eq!(g_off, g_on);
+
+        // …and a PAIRED sample with `scale = 0` is likewise untouched.
+        let paired = sample_paired(8, 4, 3, 77);
+        let zero = DistillCtx { d0: &d0, scale: 0.0 };
+        let mut g_zero = vec![0.0f64; w.params.len()];
+        let mut g_none = vec![0.0f64; w.params.len()];
+        let l_zero = sample_loss_and_grad(&head, &d, &paired, Some(&lora), Some(&mut g_zero), Some(&zero), None).unwrap();
+        let l_none = sample_loss_and_grad(&head, &d, &paired, Some(&lora), Some(&mut g_none), None, None).unwrap();
+        assert_eq!(l_zero, l_none);
+        assert_eq!(g_zero, g_none);
+    }
+
+    /// The guard's clause ordering, on literal numbers. The ordering IS the safety property:
+    /// an adapter the guard could not measure must never read as one it measured and passed.
+    #[test]
+    fn the_guard_orders_its_clauses_so_an_unmeasurable_adapter_is_never_a_pass() {
+        let opts = LoraGuardOpts {
+            max_windows: 64,
+            min_windows: 4,
+            probe_dose_u: 1.0,
+            min_frozen_response: 2.0,
+            min_retention: 0.25,
+            max_retention: 4.0,
+            min_sign_agreement: 0.75,
+        };
+
+        // These cases exercise the VERDICT, not the two-space split, so each set stands for both
+        // the risk-space response the ratio is taken on and the mg/dL response that is reported.
+        let v = |a: &[f64], b: &[f64]| guard_verdict(a, b, a, b, &opts);
+
+        // Preserved: same sign everywhere, retention 1.
+        let r0 = vec![-10.0, -12.0, -11.0, -9.0];
+        assert_eq!(v(&r0, &r0).verdict, LoraGuardVerdict::Pass);
+
+        // Collapsed to a twentieth — the failure the whole phase exists for.
+        let dead = vec![-0.5, -0.6, -0.55, -0.45];
+        let got = v(&r0, &dead);
+        assert_eq!(got.verdict, LoraGuardVerdict::Blocked);
+        assert!(got.why.contains("dose response"), "{}", got.why);
+
+        // Amplified fourfold and more: an inflated ISF is as untrustworthy as a collapsed one,
+        // and the dose that follows is too LARGE.
+        let loud = vec![-60.0, -62.0, -61.0, -59.0];
+        assert_eq!(v(&r0, &loud).verdict, LoraGuardVerdict::Blocked);
+
+        // Retention is fine — the medians agree — but the direction disagrees on three windows
+        // in eight. Eight rather than four because a mixed-sign median over four values sits near
+        // zero, which would trip the retention clause first and test nothing about this one.
+        let wide = vec![-10.0; 8];
+        let mut flipped = vec![-10.0; 8];
+        for v in flipped.iter_mut().take(3) {
+            *v = 10.0;
+        }
+        let got = v(&wide, &flipped);
+        assert_eq!(got.retention, 1.0, "the medians agree; only the signs differ");
+        assert_eq!(got.verdict, LoraGuardVerdict::Blocked);
+        assert!(got.why.contains("direction"), "{}", got.why);
+
+        // Too few windows, and a frozen model with no response to preserve: INCONCLUSIVE, never
+        // a pass. These are checked before every Blocked clause for exactly that reason.
+        assert_eq!(v(&r0[..2], &r0[..2]).verdict, LoraGuardVerdict::Inconclusive);
+        let flat = vec![0.1, -0.1, 0.05, -0.05];
+        assert_eq!(v(&flat, &flat).verdict, LoraGuardVerdict::Inconclusive);
+
+        // The two-space split itself. The mg/dL pair is REPORTED and gated on; it is never the
+        // ratio. Here the adapter preserved the risk-space response exactly while the mg/dL
+        // response doubled — a pure level shift through a convex `f_inv` — and retention must not
+        // move, because nothing about the model's response to insulin changed.
+        let risk = vec![-10.0, -12.0, -11.0, -9.0];
+        let mgdl_frozen = vec![-20.0, -24.0, -22.0, -18.0];
+        let mgdl_adapted: Vec<f64> = mgdl_frozen.iter().map(|x| x * 2.0).collect();
+        let shifted = guard_verdict(&risk, &risk, &mgdl_frozen, &mgdl_adapted, &opts);
+        assert_eq!(shifted.retention, 1.0, "retention is the risk-space ratio");
+        assert_eq!(shifted.verdict, LoraGuardVerdict::Pass);
+        assert_eq!(shifted.frozen_response_mgdl, -21.0);
+        assert_eq!(shifted.adapted_response_mgdl, -42.0);
+
+        // ...and the mg/dL floor still bites on the pair, not on the ratio's space: a frozen model
+        // with a healthy risk-space response but under 2 mg/dL/U at the horizon has nothing worth
+        // preserving in the units a dose is read in.
+        let tiny = vec![-0.5, -0.6, -0.55, -0.45];
+        let quiet = guard_verdict(&risk, &risk, &tiny, &tiny, &opts);
+        assert_eq!(quiet.verdict, LoraGuardVerdict::Inconclusive);
+        assert!(quiet.why.contains("mg/dL/U"), "{}", quiet.why);
+    }
+
+    /// A whole fit with the term on: it runs, reports what it did, and reaches a verdict.
+    #[test]
+    fn a_paired_fit_reports_its_distillation_and_a_guard_verdict() {
+        let d = desc();
+        let (head, _) = synthetic_head(8, 6, 3);
+        let samples: Vec<LoraSample> =
+            (0..40).map(|i| sample_paired(8, 4, 100 + i as u64, 900 + i as u64)).collect();
+        let opts = LoraTrainOpts {
+            epochs: 6,
+            lr: 5e-3,
+            holdout_frac: 0.3,
+            weight_decay: 0.0,
+            seed: 4,
+            distill_weight: 1.0,
+        };
+        let out = lora_train(&head, &d, samples, cfg(), opts, None).expect("training runs");
+
+        assert_eq!(out.report.n_paired, out.report.n_train);
+        assert!(out.report.distill_scale > 0.0, "the term was on but scaled to zero");
+        assert_eq!(out.report.distill_history.len(), out.report.epochs_run as usize);
+        assert!(out.report.guard.is_some(), "held-out forecast windows existed");
+        // The held-out number stays PURE pinball, so every stored adapter's pair remains
+        // comparable and `improved` stays well posed.
+        assert!(out.report.holdout_loss_before.is_finite());
+    }
+
+    /// A truncated counterfactual is refused by name rather than silently trained on.
+    #[test]
+    fn a_truncated_counterfactual_is_rejected() {
+        let d = desc();
+        let (head, _) = synthetic_head(8, 6, 3);
+        let mut samples: Vec<LoraSample> = (0..16).map(|i| sample(8, 4, 100 + i as u64)).collect();
+        samples[3].hidden_pert = vec![0.0; 5]; // neither empty nor n·d
+        let opts = LoraTrainOpts {
+            epochs: 2,
+            lr: 1e-3,
+            holdout_frac: 0.25,
+            weight_decay: 0.0,
+            seed: 4,
+            distill_weight: 1.0,
+        };
+        let err = lora_train(&head, &d, samples, cfg(), opts, None).unwrap_err();
+        assert!(format!("{err:?}").contains("counterfactual"), "{err:?}");
+    }
+
     #[test]
     fn training_reduces_the_loss_and_reports_a_held_out_number() {
         let d = desc();
@@ -1532,6 +2309,7 @@ mod tests {
             holdout_frac: 0.25,
             weight_decay: 0.0,
             seed: 4,
+            distill_weight: 0.0,
         };
         let out = lora_train(&head, &d, samples, cfg(), opts, None).expect("training runs");
         assert_eq!(out.report.n_holdout, 6);
@@ -1571,7 +2349,7 @@ mod tests {
         let d = desc();
         let (head, _) = synthetic_head(8, 6, 3);
         let mk = || -> Vec<LoraSample> { (0..24).map(|i| sample(8, 4, 100 + i as u64)).collect() };
-        let base = LoraTrainOpts { epochs: 4, lr: 2e-2, holdout_frac: 0.25, weight_decay: 0.0, seed: 9 };
+        let base = LoraTrainOpts { epochs: 4, lr: 2e-2, holdout_frac: 0.25, weight_decay: 0.0, seed: 9, distill_weight: 0.0 };
         let short = lora_train(&head, &d, mk(), cfg(), base, None).unwrap().report;
         let long = lora_train(&head, &d, mk(), cfg(), LoraTrainOpts { epochs: 200, ..base }, None)
             .unwrap()
@@ -1593,7 +2371,7 @@ mod tests {
         let d = desc();
         let (head, _) = synthetic_head(8, 6, 3);
         let samples: Vec<LoraSample> = (0..12).map(|i| sample(8, 4, i as u64)).collect();
-        let opts = LoraTrainOpts { epochs: 3, lr: 1e-3, holdout_frac: 0.0, weight_decay: 0.0, seed: 2 };
+        let opts = LoraTrainOpts { epochs: 3, lr: 1e-3, holdout_frac: 0.0, weight_decay: 0.0, seed: 2, distill_weight: 0.0 };
         let out = lora_train(&head, &d, samples, cfg(), opts, None).unwrap();
         assert_eq!(out.report.n_holdout, 0);
         assert_eq!(out.report.best_epoch, 3);
@@ -1614,7 +2392,7 @@ mod tests {
         let d = desc();
         let (head, _) = synthetic_head(8, 6, 3);
         let samples: Vec<LoraSample> = (0..24).map(|i| sample(8, 4, i as u64)).collect();
-        let opts = LoraTrainOpts { epochs: 5, lr: 1e-3, holdout_frac: 0.25, weight_decay: 0.0, seed: 3 };
+        let opts = LoraTrainOpts { epochs: 5, lr: 1e-3, holdout_frac: 0.25, weight_decay: 0.0, seed: 3, distill_weight: 0.0 };
         let rec = std::sync::Arc::new(Rec(StdMutex::new(Vec::new())));
         lora_train(&head, &d, samples, cfg(), opts, Some(rec.clone())).unwrap();
         assert_eq!(*rec.0.lock().unwrap(), vec![(1, 5), (2, 5), (3, 5), (4, 5), (5, 5)]);
@@ -1625,7 +2403,7 @@ mod tests {
         let d = desc();
         let (head, _) = synthetic_head(8, 6, 3);
         let samples: Vec<LoraSample> = (0..6).map(|i| sample(8, 4, i as u64)).collect();
-        let opts = LoraTrainOpts { epochs: 4, lr: 1e-3, holdout_frac: 0.2, weight_decay: 0.0, seed: 1 };
+        let opts = LoraTrainOpts { epochs: 4, lr: 1e-3, holdout_frac: 0.2, weight_decay: 0.0, seed: 1, distill_weight: 0.0 };
         assert!(lora_train(&head, &d, samples, cfg(), opts, None).is_err());
     }
 
@@ -1634,7 +2412,7 @@ mod tests {
         let d = desc();
         let (head, _) = synthetic_head(8, 6, 3);
         let good: Vec<LoraSample> = (0..12).map(|i| sample(8, 4, i as u64)).collect();
-        let base = LoraTrainOpts { epochs: 2, lr: 1e-3, holdout_frac: 0.2, weight_decay: 0.0, seed: 1 };
+        let base = LoraTrainOpts { epochs: 2, lr: 1e-3, holdout_frac: 0.2, weight_decay: 0.0, seed: 1, distill_weight: 0.0 };
         for opts in [
             LoraTrainOpts { epochs: 0, ..base },
             LoraTrainOpts { epochs: 100_000, ..base },

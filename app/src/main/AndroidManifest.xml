@@ -8,9 +8,10 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
 
-    <!-- CGM: passive advertisement scan only, no location. The watch (Phase 5) additionally needs
-         a CONNECTED GATT session — BLUETOOTH_CONNECT, declared by the :watch module and merged
-         here. The scan permission is shared with the CGM path. -->
+    <!-- CGM: BLUETOOTH_SCAN for the brief device-discovery scan (obtain the BluetoothDevice for
+         connectGatt, matched by name/serial, no location), and BLUETOOTH_CONNECT for the held GATT
+         session that is the sole read path (the connected AiDEX/LinX link survives screen-off). The
+         watch (Phase 5) also uses BLUETOOTH_CONNECT. -->
     <uses-permission
         android:name="android.permission.BLUETOOTH_SCAN"
         android:usesPermissionFlags="neverForLocation" />
@@ -36,12 +37,6 @@
          startForeground throws when a declared type's permissions are missing, so a monitor that also
          claimed `location` would refuse to start for anyone who declines it. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
-
-    <!-- Aggressive background scanning: the FGS raises AodScanActivity from a screen-off broadcast to
-         hold the display genuinely ON so HyperOS/powerkeeper does not suspend the locked BLE scan. A
-         background activity launch is refused on 12+ unless the app holds this permission — the
-         standard "keep-alive overlay" exemption (granted once via a Settings special-access screen). -->
-    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <!-- QR token scan (Phase 7C item 12): the ZXing CaptureActivity uses the camera to read a
          server-token / {baseUrl,token} QR. Optional feature — the token can always be typed. -->
@@ -130,23 +125,6 @@
             android:name=".service.DoseCalcService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
-
-        <!-- The keep-screen-on "AOD" scan surface (aggressive background scanning). Its own task +
-             excludeFromRecents so it never appears in Recents or the MainActivity back-stack;
-             singleTask + noHistory so re-raising it never stacks; show/turn-screen-on so it can wake
-             a dark display over the keyguard. app-internal (exported=false). -->
-        <activity
-            android:name=".aod.AodScanActivity"
-            android:exported="false"
-            android:theme="@style/Theme.T1dm.Aod"
-            android:taskAffinity=".AodTask"
-            android:excludeFromRecents="true"
-            android:noHistory="true"
-            android:launchMode="singleTask"
-            android:showWhenLocked="true"
-            android:turnScreenOn="true"
-            android:screenOrientation="portrait"
-            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode|density" />
 
         <!-- The logged exercise bout's GPS track. Deliberately outside every auto-restart path — no
              START_STICKY, no onTaskRemoved re-arm, no watchdog, not in BootReceiver: a location

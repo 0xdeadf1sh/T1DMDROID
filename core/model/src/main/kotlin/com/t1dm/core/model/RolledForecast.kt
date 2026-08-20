@@ -31,6 +31,14 @@ data class RolledForecast(
     val lowerBg: DoubleArray,
     /** The τ=.95 upper band edge (mg/dL) per step. */
     val upperBg: DoubleArray,
+    /**
+     * The whole fan, `steps × nQuantiles` step-major and ascending in τ — the same layout
+     * [ModelPrediction.bandsMgdl] uses.
+     *
+     * [lowerBg]/[upperBg] are its outermost pair, written from the same read at the same instant.
+     * EMPTY when the producer had no fan for every step, which draws as the single band it is.
+     */
+    val bandsMgdl: DoubleArray = DoubleArray(0),
     /** The prefix length that lies inside the VALIDATED horizon (2 h ⇒ 24). Steps past this are
      *  extrapolated and must be drawn distinctly and never alerted on. */
     val validatedSteps: Int,
@@ -62,7 +70,8 @@ data class RolledForecast(
         if (other !is RolledForecast) return false
         return anchorTsMs == other.anchorTsMs && stepMs == other.stepMs &&
             medianBg.contentEquals(other.medianBg) && lowerBg.contentEquals(other.lowerBg) &&
-            upperBg.contentEquals(other.upperBg) && validatedSteps == other.validatedSteps &&
+            upperBg.contentEquals(other.upperBg) && bandsMgdl.contentEquals(other.bandsMgdl) &&
+            validatedSteps == other.validatedSteps &&
             requestedHours == other.requestedHours && eligible == other.eligible &&
             degenerate == other.degenerate && reason == other.reason &&
             completedRolls == other.completedRolls && requestedRolls == other.requestedRolls

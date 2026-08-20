@@ -32,7 +32,7 @@ import com.t1dm.core.model.DkaTimeline
  * untuned estimate, and no §3.6 rail reads it (DeathClock.kt /).
  *
  * Hues derive from the roles the caller passes so the road renders in each theme's own key. The
- * figures are drawn in the DeathArt hand — a ketone drop bearing a bang, a lidded eye, a
+ * figures are drawn in the DeathArt/CgmArt hand — a ketone drop bearing a bang, a lidded eye, a
  * gravestone on its plinth — sized off the caller's box and carrying no text of their own.
  */
 

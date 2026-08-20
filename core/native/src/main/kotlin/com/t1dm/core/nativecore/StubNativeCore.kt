@@ -2,6 +2,8 @@ package com.t1dm.core.nativecore
 
 import com.t1dm.core.common.GameWorld
 import com.t1dm.core.common.NativeCore
+import com.t1dm.core.model.LoraGuardOpts
+import com.t1dm.core.model.LoraGuardReport
 import com.t1dm.core.model.BaselineFit
 import com.t1dm.core.model.BaselineForecast
 import com.t1dm.core.model.BaselineModel
@@ -115,6 +117,9 @@ class StubNativeCore : NativeCore {
     override fun bandLine(desc: ModelDescriptor, f: Forecast, tau: Double): List<Double> =
         TODO("Phase 2: native band_line")
 
+    override fun bandLineAt(desc: ModelDescriptor, qTauRisk: List<Double>, tau: Double): List<Double> =
+        TODO("Phase 2: native band_line_at")
+
     // The head seam needs the real crate: there is no host-side reimplementation of it, and a
     // stub that returned a plausible head would be worse than none.
     override fun headOpen(bytes: ByteArray, spec: HeadSpec): NativeHead? = null
@@ -127,6 +132,16 @@ class StubNativeCore : NativeCore {
         opts: LoraTrainOpts,
         progress: LoraProgressSink?,
     ): LoraTrainResult = TODO("Phase 2: native lora_train")
+
+    override fun loraGuard(
+        head: NativeHead,
+        desc: ModelDescriptor,
+        samples: List<LoraSample>,
+        weights: LoraWeights,
+        opts: LoraGuardOpts,
+    ): LoraGuardReport = TODO("Phase 2: native lora_guard")
+
+    override fun loraGuardOptsFit(): LoraGuardOpts = TODO("Phase 2: native lora_guard_opts_fit")
 
     override fun loraNew(
         config: LoraConfig,

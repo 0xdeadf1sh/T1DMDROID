@@ -2,7 +2,6 @@ package com.t1dm.core.design
 
 import com.t1dm.core.model.CurveKind
 import com.t1dm.core.model.InsulinKind
-import com.t1dm.core.model.LogState
 import com.t1dm.core.model.LoggedEntry
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -24,13 +23,13 @@ class LoggedEntryDialogTest {
     private fun meal(grams: Double, gi: Double?, detail: String? = null) = LoggedEntry(
         rowId = 1, clientId = "m", kind = CurveKind.CARB, insulin = null,
         tsMs = ts, tzOffsetMin = 120, amount = grams, gi = gi, detail = detail,
-        state = LogState.DELIVERED,
+        updatedAtMs = ts, mutatedAtMs = null,
     )
 
     private fun dose(units: Double, kind: InsulinKind, insulin: String?) = LoggedEntry(
         rowId = 2, clientId = "d", kind = CurveKind.INSULIN, insulin = kind,
         tsMs = ts, tzOffsetMin = 120, amount = units, gi = null, detail = insulin,
-        state = LogState.COMMITTED,
+        updatedAtMs = ts, mutatedAtMs = null,
     )
 
     private fun fields(entry: LoggedEntry) = logEntryFields(entry).toMap()

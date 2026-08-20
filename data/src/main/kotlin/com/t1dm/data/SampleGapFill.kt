@@ -11,8 +11,11 @@ import com.t1dm.data.db.SampleEntity
  * `updated_at` as authored by the phone and stored verbatim by the server; it is NOT a merge
  * discriminator (see [SampleGapFill]) — only the timestamp stamped on a materialized server-only
  * bucket. `:sync` maps its wire DTO onto this so the merge stays free of any transport type. The
- * server row carries no BG provenance/flag, so `:sync` reconstructs MEASURED/NORMAL when a bg is
- * present (provenance is lost on the round-trip through the server's narrower schema).
+ * server row carries `bg_reconstructed` since contract 0.5.0, so `:sync` maps a present `bg` to
+ * RECONSTRUCTED or MEASURED from that flag and to NORMAL. Do NOT re-hardcode MEASURED here: a
+ * promoted span coming back from a catch-up would then be read as sensor signal from the moment it
+ * landed, where it could clear an alarm and feed a dose. The flag is the only thing on the wire
+ * that says otherwise, and it rides both the REST row and the live frame.
  */
 data class SamplePatch(
     val ts: Long,

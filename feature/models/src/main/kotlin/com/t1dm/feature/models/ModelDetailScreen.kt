@@ -310,7 +310,7 @@ fun ModelDetailScreen(
         val scored = suite?.horizons.orEmpty().filter { it.sufficient }
 
         section("Realized accuracy — band τ.25–.75") {
-            Note("Forecast vs realized BG (advisory — not a dosing claim)")
+            Note("Forecast vs realized BG")
             when {
                 scored.isNotEmpty() -> {
                     BandTable(scored)

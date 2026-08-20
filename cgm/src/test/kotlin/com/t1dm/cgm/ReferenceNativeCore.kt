@@ -1,5 +1,8 @@
 package com.t1dm.cgm
 
+import com.t1dm.core.common.GameWorld
+import com.t1dm.core.common.NativeCore
+import com.t1dm.core.common.NativeHead
 import com.t1dm.core.model.AdvancedStats
 import com.t1dm.core.model.BasalSchedule
 import com.t1dm.core.model.BaselineFit
@@ -21,6 +24,8 @@ import com.t1dm.core.model.GapRun
 import com.t1dm.core.model.GraphInput
 import com.t1dm.core.model.HeadSpec
 import com.t1dm.core.model.LoraConfig
+import com.t1dm.core.model.LoraGuardOpts
+import com.t1dm.core.model.LoraGuardReport
 import com.t1dm.core.model.LoraProgressSink
 import com.t1dm.core.model.LoraSample
 import com.t1dm.core.model.LoraTrainOpts
@@ -35,9 +40,6 @@ import com.t1dm.core.model.StatSample
 import com.t1dm.core.model.SynthParams
 import com.t1dm.core.model.SynthSeries
 import com.t1dm.core.model.TerrainSpec
-import com.t1dm.core.common.GameWorld
-import com.t1dm.core.common.NativeCore
-import com.t1dm.core.common.NativeHead
 
 /**
  * Test-only [NativeCore] backed by [AidexCodec] — a stand-in for the Rust `t1dm-core`, so the :cgm
@@ -66,6 +68,9 @@ class ReferenceNativeCore : NativeCore {
     override fun assembleDecode(desc: ModelDescriptor, headRaw: List<Double>, anchors: List<Double>, slotPatch: List<Int>, nMasked: Int, carrySpread: Double): Forecast = TODO("not exercised by :cgm tests")
     override fun forecastSlice(f: Forecast, fromPatch: Int, toPatch: Int): Forecast = TODO("not exercised by :cgm tests")
     override fun bandLine(desc: ModelDescriptor, f: Forecast, tau: Double): List<Double> = TODO("not exercised by :cgm tests")
+    override fun bandLineAt(desc: ModelDescriptor, qTauRisk: List<Double>, tau: Double): List<Double> = TODO("not exercised by :cgm tests")
+    override fun loraGuard(head: NativeHead, desc: ModelDescriptor, samples: List<LoraSample>, weights: LoraWeights, opts: LoraGuardOpts): LoraGuardReport = TODO("not exercised by :cgm tests")
+    override fun loraGuardOptsFit(): LoraGuardOpts = TODO("not exercised by :cgm tests")
     override fun headOpen(bytes: ByteArray, spec: HeadSpec): NativeHead? = TODO("not exercised by :cgm tests")
     override fun loraTrain(head: NativeHead, desc: ModelDescriptor, samples: List<LoraSample>, config: LoraConfig, opts: LoraTrainOpts, progress: LoraProgressSink?): LoraTrainResult = TODO("not exercised by :cgm tests")
     override fun loraNew(config: LoraConfig, headSha256: String, dModel: Int, hidden: Int, outDim: Int, seed: Long): LoraWeights = TODO("not exercised by :cgm tests")

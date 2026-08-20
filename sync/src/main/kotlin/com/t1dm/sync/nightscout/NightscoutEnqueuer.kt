@@ -4,6 +4,7 @@ import com.t1dm.data.OutboxSink
 import com.t1dm.data.db.LoggedDoseEntity
 import com.t1dm.data.db.LoggedMealEntity
 import com.t1dm.data.db.NS_ENTRY_DEDUP_PREFIX
+import com.t1dm.data.db.NS_TREATMENT_DEDUP_PREFIX
 import com.t1dm.data.db.OutboxKind
 import com.t1dm.sync.OutboxRequest
 import com.t1dm.sync.SyncJson
@@ -11,7 +12,7 @@ import kotlinx.serialization.encodeToString
 
 /** The key a bridged meal/dose is filed under — deterministic in the phone-minted `client_id`, so an
  *  undo can name the exact row to withdraw after the enqueue rowid is forgotten. */
-fun nsTreatmentDedupKey(clientId: String): String = "ns:treat:$clientId"
+fun nsTreatmentDedupKey(clientId: String): String = "$NS_TREATMENT_DEDUP_PREFIX$clientId"
 
 /**
  * Enqueue-on-write producer for the Nightscout bridge — the mirror of `OutboxEnqueuer`, filing

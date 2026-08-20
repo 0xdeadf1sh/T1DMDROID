@@ -15,8 +15,10 @@ import com.t1dm.core.model.CgmSourceId
  * must never read a constant a later edit could move underneath it — so it repeats the answer as
  * frozen SQL literals and `MigrationConstantsTest` holds the two together.
  *
- * The answer is exact rather than a guess: the AiDEX X plugin is the only vendor plugin the app has
- * ever shipped, so every source ever recorded is one of its sensors, save the synthetic debug one.
+ * The answer is exact rather than a guess, and stays exact as more vendor plugins ship. It is only ever
+ * asked about a row written BEFORE the `sensorModelId` column existed, and at that point the AiDEX X
+ * plugin was the only one the app had — so every such row is one of its sensors, save the synthetic debug
+ * one. A source recorded by a later plugin carries its own model id and never reaches here.
  */
 internal fun legacySensorModelIdFor(sourceId: String): String =
     if (sourceId == CgmSourceId.DEBUG.value) CgmSensorModelId.AIDEX_DEBUG else CgmSensorModelId.AIDEX_X

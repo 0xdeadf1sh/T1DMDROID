@@ -7,6 +7,16 @@ enum class ReadingProvenance {
 
     /** A gap-fill value (linear interpolation across a dropout); never clears an alarm. */
     INTERPOLATED,
+
+    /**
+     * A value a model reconstructed over a sensor gap, which the patient then promoted to a stored
+     * sample by a deliberate action (`SPEC/invariants.md` §1, `http-api.md`'s `bg_reconstructed`).
+     *
+     * The flag is for life. Such a value may never clear an alarm, never count as measured context
+     * for a cold start or a warm-up, and never enter a statistic as a measurement — which is to say
+     * it is not a measurement, and [isRealMeasurement] is the one place that has to keep saying so.
+     */
+    RECONSTRUCTED,
 }
 
 /** Presentation/gating classification of a reading (§3.1). */
@@ -23,10 +33,23 @@ enum class ReadingFlag {
 }
 
 /**
- * One 5-minute grid sample from a CGM source (§3.1). `tsMs` is phone-receive
- * time snapped to the grid (`tsMs % 300_000 == 0`); the sensor's own clock is never trusted in
- * passive mode. Nullable value fields let a row exist (e.g. INTERPOLATED, WARMUP) without a
+ * One 5-minute grid sample from a CGM source (§3.1). `tsMs` is [rxWallMs] snapped to the grid
+ * (`tsMs % 300_000 == 0`). Nullable value fields let a row exist (e.g. INTERPOLATED, WARMUP) without a
  * defined measurement.
+ *
+ * **[rxWallMs] is the instant the reading is FILED under**, and which instant that is depends on what
+ * the source can tell us:
+ *
+ *  - A source that dates nothing is filed under the phone-receive instant. That is the best available
+ *    answer to "when was this measured", and for a sensor that samples on the grid it is exact enough
+ *    that the two questions never come apart.
+ *  - A source that reports a sample INDEX on a fixed cadence is filed under the sample instant
+ *    reconstructed from that index. For a sensor faster than the grid this is the better answer and the
+ *    difference is material: several of its samples fall in one slot, and filing them by delivery time
+ *    puts them in slots they were not measured in.
+ *
+ * A sensor's own real-time clock is used for neither. They are set by the phone at best and read a
+ * factory default at worst, and nothing on the wire says which.
  */
 data class CgmReading(
     val sourceId: CgmSourceId,
@@ -38,7 +61,7 @@ data class CgmReading(
     val provenance: ReadingProvenance,
     val flag: ReadingFlag,
     val tzOffsetMin: Int,
-    val rxWallMs: Long,                // raw phone-receive wall time before grid snap
+    val rxWallMs: Long,                // the instant filed under, before the grid snap; see above
     val rssi: Int?,
 )
 

@@ -29,6 +29,7 @@ fun DisplaySettingsScreen(
     targetHigh: Int,
     animationsEnabled: Boolean,
     volumeNavEnabled: Boolean,
+    showSensorNames: Boolean,
     backgroundAlphaPct: Int,
     themeOptions: List<Pair<String, String>>,
     selectedThemeId: String,
@@ -43,6 +44,7 @@ fun DisplaySettingsScreen(
     onSetTargetRange: (low: Int, high: Int) -> Unit,
     onSetAnimationsEnabled: (Boolean) -> Unit,
     onSetVolumeNavEnabled: (Boolean) -> Unit,
+    onSetShowSensorNames: (Boolean) -> Unit,
     onSetBackgroundAlpha: (Int) -> Unit,
     onSelectTheme: (String) -> Unit,
     onSelectFont: (String) -> Unit,
@@ -129,6 +131,9 @@ fun DisplaySettingsScreen(
                 SettingsNote("This launcher can't add widgets from the app — long-press the home screen, Widgets, T1DM.")
             }
         }
+
+        SettingsSectionHeader("Privacy")
+        ToggleRow(displaySensorNames, showSensorNames) { onSetShowSensorNames(it) }
 
         SettingsSectionHeader("Motion")
         ToggleRow(displayAnimations, animationsEnabled) { onSetAnimationsEnabled(it) }
@@ -252,6 +257,18 @@ private val displayWidgets = SettingsKnob(
     ),
 )
 
+private val displaySensorNames = SettingsKnob(
+    id = "display.sensor_names",
+    screen = SettingsScreenKey.DISPLAY,
+    section = "Privacy",
+    label = "Show sensor names",
+    subtitle = "Off shows CGM #0 — a sensor's name can be its serial",
+    synonyms = listOf(
+        "sensor name", "sensor names", "serial", "serial number", "privacy", "hide", "anonymise",
+        "anonymize", "redact", "screenshot", "identifier", "device name", "mask",
+    ),
+)
+
 private val displayAnimations = SettingsKnob(
     id = "display.animations",
     screen = SettingsScreenKey.DISPLAY,
@@ -299,6 +316,7 @@ internal val settingsDisplayKnobs = listOf(
     displayTargetHigh,
     displayTemperatureUnit,
     displayWidgets,
+    displaySensorNames,
     displayAnimations,
     displayVolumeNav,
     displayHaptics,

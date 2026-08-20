@@ -1,6 +1,7 @@
 package com.t1dm.calc
 
 import com.t1dm.core.model.CurveEvent
+import com.t1dm.core.model.PROBE_DOSE_U
 import com.t1dm.core.model.SensitivityEstimate
 import timber.log.Timber
 
@@ -85,6 +86,11 @@ class SensitivityProbe(
     /** The selected model's id, read fresh. Sampled either side of the three rolls so a selection
      *  changed mid-probe yields no figure rather than one stamped with the wrong artifact. */
     private val selectedModelId: suspend () -> String?,
+    /** The dose history's mutation state, for the same refusal the calculator makes. NOT defaulted,
+     *  for the reason [IobSnapshot.doseHistory] is not: [DoseHistoryState.Clean] is the fail-OPEN
+     *  value, and a default hands it to every caller that forgets the wiring with no compiler signal
+     *  that a gate has been switched off. A test that wants the open case says so. */
+    private val doseHistory: suspend () -> DoseHistoryState,
 ) {
 
     suspend fun probe(
@@ -123,6 +129,18 @@ class SensitivityProbe(
                 candidateU = candidateU,
                 smoothingWindow = smoothingWindow,
             )
+
+        // The same refusal the calculator makes, for the same reason. This probe hands the user an
+        // ISF/ICR number they act on, and it is derived from the same insulin history the
+        // calculator has just declined to read.
+        val history = doseHistory()
+        if (history is DoseHistoryState.Unknown) return withhold("dose history unreadable")
+        if (history is DoseHistoryState.Mutated &&
+            nowMs < history.actingUntilMs &&
+            (history.acknowledgedAtMs == null || history.acknowledgedAtMs < history.mutatedAtMs)
+        ) {
+            return withhold("dose history edited inside the active-insulin window")
+        }
 
         val modelBefore = selectedModelId() ?: return withhold("no selected model")
 
@@ -184,9 +202,6 @@ class SensitivityProbe(
 
     companion object {
         private const val TAG = "Sensitivity"
-
-        /** The probe dose. One unit, so the drop IS the ISF without a scaling step to get wrong. */
-        const val PROBE_DOSE_U = 1.0
 
         /** The probe meal. Ten grams rather than one: a single gram's predicted rise is small enough
          *  to sit inside the decode's own grain, and the response is not assumed linear, so the

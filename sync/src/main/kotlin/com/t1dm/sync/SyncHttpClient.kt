@@ -56,7 +56,6 @@ interface SyncHttpClient {
     suspend fun execute(request: SyncRequest): SyncResponse
     suspend fun health(): HealthDto
     suspend fun ingest(body: IngestDto): IngestAck
-    suspend fun putPredictions(preds: List<PredictionWriteDto>): PutPredictionsAck
     /** `PUT /v1/meals` — batch-upsert meal curve events, idempotent by `client_id`. */
     suspend fun putMeals(meals: List<MealEventDto>): EventBatchAck
     /** `PUT /v1/doses` — batch-upsert dose curve events, idempotent by `client_id`. */
@@ -142,9 +141,6 @@ class OkHttpSyncClient(
     override suspend fun health(): HealthDto = get("/v1/health")
 
     override suspend fun ingest(body: IngestDto): IngestAck = send("POST", "/v1/ingest", body)
-
-    override suspend fun putPredictions(preds: List<PredictionWriteDto>): PutPredictionsAck =
-        send("PUT", "/v1/predictions", preds)
 
     override suspend fun putMeals(meals: List<MealEventDto>): EventBatchAck =
         send("PUT", "/v1/meals", meals)

@@ -18,9 +18,11 @@ import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.data.db.AppDatabase
 import com.t1dm.data.db.BasalScheduleEntity
+import com.t1dm.data.db.BgInfillEntity
 import com.t1dm.data.db.CgmAdvertRawEntity
 import com.t1dm.data.db.DoseEventEntity
 import com.t1dm.data.db.DoseKind
+import com.t1dm.data.db.EventTombstoneEntity
 import com.t1dm.data.db.ExerciseFixEntity
 import com.t1dm.data.db.ExerciseSessionEntity
 import com.t1dm.data.db.FoodEntity
@@ -28,7 +30,9 @@ import com.t1dm.data.db.HwTelemetryEntity
 import com.t1dm.data.db.InsulinTypeEntity
 import com.t1dm.data.db.LoggedDoseEntity
 import com.t1dm.data.db.LoggedMealEntity
+import com.t1dm.data.db.LoraEntity
 import com.t1dm.data.db.PredictionEntity
+import com.t1dm.data.db.TOMBSTONE_KIND_DOSE
 import com.t1dm.data.db.SavedMealEntity
 import com.t1dm.data.db.SavedMealItemEntity
 import com.t1dm.data.db.ServerProfileEntity
@@ -187,6 +191,34 @@ class ResetWipeTest {
             ),
         )
 
+        // A deletion, an adapter and a reconstruction. All three outlive the rows they describe, so
+        // a reset that leaves any of them behind carries the old record into the new one: a
+        // tombstone re-pushes to a fresh server profile and then refuses to re-hydrate what it
+        // names, and an adapter or a fill describes a history that no longer exists.
+        db.eventTombstoneDao().upsert(
+            EventTombstoneEntity(
+                clientId = "gone-1", kind = TOMBSTONE_KIND_DOSE, tsMs = now, tzOffsetMin = 0,
+                updatedAt = now, createdAtMs = now, pushEnqueuedAtMs = null,
+                actingUntilMs = now + 300_000L,
+            ),
+        )
+        db.loraDao().upsert(
+            LoraEntity(
+                modelId = "m", name = "fit 1", blob = ByteArray(64), rank = 4, alpha = 8.0,
+                targets = 0b1100, nParams = 16, nTrain = 10, nHoldout = 4, epochs = 5,
+                holdoutBefore = 1.0, holdoutAfter = 0.9, improved = true, attached = false,
+                createdAtMs = now, updatedAtMs = now,
+            ),
+        )
+        db.bgInfillDao().upsert(
+            listOf(
+                BgInfillEntity(
+                    ts = now, mgdl = 120.0, lo90 = 110.0, hi90 = 130.0, modelId = "m",
+                    createdAtMs = now, spanStartMs = now,
+                ),
+            ),
+        )
+
         // kv: a setting, and the watch pairing + nonce-ceiling rows the wipe must burn.
         repo.putKv("ui.theme", "umbrella", now)
         repo.putKv("watch.paired", "1", now)
@@ -206,6 +238,11 @@ class ResetWipeTest {
         // Without these the location assertions below would pass on an empty table.
         assertEquals(1L, count("exercise_session"))
         assertEquals(1L, count("exercise_fix"))
+        // ...and the same for the three the list gained: an assertion that a table is empty proves
+        // nothing about a table that was never filled.
+        assertEquals(1L, count("event_tombstone"))
+        assertEquals(1L, count("lora"))
+        assertEquals(1L, count("bg_infill"))
 
         repo.wipeAllData()
 
@@ -231,6 +268,10 @@ class ResetWipeTest {
             "logged_meal", "basal_schedule", "cgm_advert_raw", "outbox", "prediction", "server_profile",
             "hw_telemetry", "saved_meal", "saved_meal_item", "bg_paint_stroke", "conformal_delta",
             "exercise_session", "exercise_fix", "kv",
+            // Three the list was missing. A deletion left behind re-pushes to a new server profile
+            // and then refuses to re-hydrate what it names; an adapter and a reconstruction left
+            // behind describe a record that no longer exists.
+            "event_tombstone", "lora", "bg_infill",
         )
     }
 }

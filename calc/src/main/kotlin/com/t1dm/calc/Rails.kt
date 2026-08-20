@@ -133,6 +133,55 @@ object Rails {
     }
 
     /**
+     * The dose history was rewritten under the IOB. BLOCKS while the changed insulin could still be
+     * acting, unless the user has acknowledged that specific change.
+     *
+     * **Why this rail has to exist.** Deleting a logged dose used to be refused outright once its
+     * push had drained, and the one case that could still happen — undoing the dose just logged —
+     * was safe by accident: the removed row was the NEWEST, so `latestLoggedInsulinTs()` moved
+     * backward and [mandatoryConfirmation] fired. Editing breaks that coupling in both directions.
+     *
+     *  - It can LOWER assumed IOB with the log-gap mark unmoved: a units reduction, a shortened
+     *    `durationMin`, a bolus retyped to a longer-acting shape, an earlier `ts`, or the deletion
+     *    of a dose that is not the newest. [iobCeiling] then admits more insulin, in silence.
+     *  - It can RAISE assumed IOB while moving the mark FORWARD: a dose dragged later. That quiets
+     *    the very rail whose job is to say the log may be stale.
+     *
+     * The window is the changed dose's own action end rather than an arbitrary timeout, so the rail
+     * stands exactly as long as the insulin it distrusts could still be working — and it is the
+     * LATER of the pre-edit and post-edit ends, because otherwise cutting a duration from six hours
+     * to thirty minutes would buy a five-minute block against five and a half hours of wrong IOB.
+     *
+     * [DoseHistoryState.Unknown] blocks: an unreadable history is not a clean one.
+     */
+    fun doseHistoryEdited(
+        iob: IobSnapshot?,
+        candidateU: Double,
+        nowMs: Long,
+        config: CalcConfig,
+    ): RailVerdict {
+        val name = "dose-history-edited"
+        if (!config.rails.doseHistoryEdited) return RailVerdict.Pass
+        if (candidateU <= 0.0) return RailVerdict.Pass
+        val unreadable = RailVerdict.Block(name, "Dose history unreadable — blocking a nonzero dose")
+        val history = iob?.doseHistory ?: return unreadable
+        return when (history) {
+            DoseHistoryState.Unknown -> unreadable
+            DoseHistoryState.Clean -> RailVerdict.Pass
+            is DoseHistoryState.Mutated -> when {
+                nowMs >= history.actingUntilMs -> RailVerdict.Pass
+                history.acknowledgedAtMs != null &&
+                    history.acknowledgedAtMs >= history.mutatedAtMs -> RailVerdict.Pass
+                else -> RailVerdict.Block(
+                    name,
+                    "Dose log edited — IOB may be wrong " +
+                        "(clears in ${(history.actingUntilMs - nowMs) / 60_000L} min)",
+                )
+            }
+        }
+    }
+
+    /**
      * §3.6-F mandatory confirmation. A nonzero recommendation combined with a long gap since the last
      * logged dose (or no logged dose at all) is a mandatory-confirmation trigger — the IOB is computed
      * from logged doses only, so a stale log silently under-counts active insulin.

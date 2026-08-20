@@ -39,6 +39,17 @@ private class RecordingSink : OutboxSink {
         return rows.size.toLong()
     }
 
+    override suspend fun enqueueSuperseding(
+        kind: OutboxKind,
+        dedupKey: String,
+        payload: ByteArray,
+        nowMs: Long,
+        notBeforeMs: Long,
+    ): Long {
+        rows.removeAll { it.dedupKey == dedupKey }
+        return enqueue(kind, dedupKey, payload, nowMs, notBeforeMs)
+    }
+
     override suspend fun enqueueReplacingPending(
         kind: OutboxKind,
         dedupKey: String,
@@ -97,6 +108,18 @@ private class QueueSink : OutboxSink {
         notBeforeMs: Long,
     ): Long {
         rows.removeAll { it.dedupKey == dedupKey && !it.inflight }
+        return enqueue(kind, dedupKey, payload, nowMs, notBeforeMs)
+    }
+
+    /** Unlike [enqueueReplacingPending], this removes an INFLIGHT row too — the whole point. */
+    override suspend fun enqueueSuperseding(
+        kind: OutboxKind,
+        dedupKey: String,
+        payload: ByteArray,
+        nowMs: Long,
+        notBeforeMs: Long,
+    ): Long {
+        rows.removeAll { it.dedupKey == dedupKey }
         return enqueue(kind, dedupKey, payload, nowMs, notBeforeMs)
     }
 }
@@ -230,66 +253,6 @@ class OutboxEnqueuerTest {
         stale = false,
         latencyMs = 13.8,
     )
-
-    /**
-     * The wire hazard a log-driven re-run introduced. `pred:<cycleTs>` keys a CYCLE, and a cycle can
-     * run twice inside its own 5-min slot — the tick fires one, a logged meal fires another off the
-     * channels it just moved. Under the plain unique-key IGNORE the second batch was silently dropped,
-     * leaving the server on the pre-log forecast while the phone drew the post-log one. The queue must
-     * still hold at most ONE prediction push per cycle, and it must be the newest.
-     */
-    @Test
-    fun `a re-run inside one cycle replaces the queued prediction rather than being dropped`() = runTest {
-        val sink = QueueSink()
-        val enqueuer = OutboxEnqueuer(sink)
-
-        val first = enqueuer.enqueuePredictions(gridTs, listOf(prediction(120.0)), now)
-        val second = enqueuer.enqueuePredictions(gridTs, listOf(prediction(180.0)), now + 4_000)
-
-        assertTrue("the re-run must not be ignored", second > 0)
-        assertTrue("the replacement is a NEW row — ids are never reused", second != first)
-        assertEquals("still at most one prediction push per cycle", 1, sink.rows.size)
-        val body = sink.bodyUnder("pred:$gridTs")
-        assertTrue("the queued push must carry the LATEST forecast", body.contains("180.0"))
-        assertFalse("the superseded forecast must be gone", body.contains("120.0"))
-    }
-
-    /** A different cycle is a different key, so a genuine second cycle still queues beside the first. */
-    @Test
-    fun `a later cycle queues beside the earlier one instead of replacing it`() = runTest {
-        val sink = QueueSink()
-        val enqueuer = OutboxEnqueuer(sink)
-
-        enqueuer.enqueuePredictions(gridTs, listOf(prediction(120.0)), now)
-        enqueuer.enqueuePredictions(gridTs + 300_000L, listOf(prediction(180.0, gridTs + 300_000L)), now + 300_000L)
-
-        assertEquals(2, sink.rows.size)
-        assertEquals(
-            setOf("pred:$gridTs", "pred:${gridTs + 300_000L}"),
-            sink.rows.map { it.dedupKey }.toSet(),
-        )
-    }
-
-    /**
-     * The drain race, held to the side it is documented on. Once the drainer has claimed the row it
-     * owns the key and the body is on the wire; the replace must NOT delete it out from under the send,
-     * so the fresher batch loses the unique index and reports -1. Nothing is corrupted by that — the
-     * `updated_at` ordering means the delivered body cannot outrank a newer one — and the next cycle
-     * re-enqueues under its own key seconds later.
-     */
-    @Test
-    fun `a claimed row is left to its send and the replacement reports it`() = runTest {
-        val sink = QueueSink()
-        val enqueuer = OutboxEnqueuer(sink)
-
-        enqueuer.enqueuePredictions(gridTs, listOf(prediction(120.0)), now)
-        sink.claim("pred:$gridTs")
-        val blocked = enqueuer.enqueuePredictions(gridTs, listOf(prediction(180.0)), now + 4_000)
-
-        assertEquals("a claimed key must report the refusal, not pretend to have queued", -1L, blocked)
-        assertEquals(1, sink.rows.size)
-        assertTrue("the body on the wire is untouched", sink.bodyUnder("pred:$gridTs").contains("120.0"))
-    }
 
     @Test
     fun `eviction priority ranks irreplaceable clinical records above regenerable forecasts`() {

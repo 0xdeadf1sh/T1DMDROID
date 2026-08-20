@@ -6,6 +6,7 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.security.keystore.StrongBoxUnavailableException
 import android.util.Base64
+import com.t1dm.app.notify.GlanceReadings
 import com.t1dm.core.common.T1dmDispatchers
 import java.security.KeyStore
 import javax.crypto.Cipher
@@ -55,13 +56,17 @@ class AppWatchGlanceSource(
 
     override suspend fun currentGlance(nowMs: Long): WatchPush? {
         val src = repository.authoritativeSourceId() ?: return null
-        val latest = repository.recentReadings(src, 1).firstOrNull() ?: return null
+        // 36 rows, not 1: a one-row read cannot find the newest MEASUREMENT behind a promoted
+        // reconstruction, and every glucose fact the watch shows is read off that measurement.
+        val rows = repository.recentReadings(src, 36)
+        val readings = GlanceReadings.create(rows)
+        if (readings.latest == null) return null
 
         // Lift the ONE shared computation (BgGlanceComputer) so the watch, the always-on
         // notification, and the widgets agree by construction (Phase 7B). The §3.6 gate lives
         // there; the watch just maps the glance onto its frozen wire record.
         val g = com.t1dm.app.notify.BgGlanceComputer.compute(
-            latest = latest,
+            readings = readings,
             state = inferenceState.value,
             thresholds = thresholdsProvider(),
             lossMin = lossMinProvider(),

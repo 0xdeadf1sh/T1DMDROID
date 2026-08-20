@@ -10,6 +10,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -33,12 +34,23 @@ import com.t1dm.core.design.rememberHapticDetent
 import com.t1dm.core.design.rememberT1dmHaptics
 import kotlin.math.roundToInt
 
-/** What a fit is about to be given. */
+/**
+ * What a fit is about to be given.
+ *
+ * The four sites are part of the spec rather than fixed by the runner, because which of them an
+ * adapter may touch is the single largest lever on whether a fit can destroy the model's response
+ * to insulin. The defaults are [com.t1dm.core.model.LoraSites.DEFAULT] — l1 and l2 — and that file
+ * carries the reason.
+ */
 data class LoraFitSpec(
     val name: String,
     val rank: Int,
     val epochs: Int,
     val windows: Int,
+    val targetHidden: Boolean = false,
+    val targetL0: Boolean = false,
+    val targetL1: Boolean = true,
+    val targetL2: Boolean = true,
 )
 
 /**
@@ -84,6 +96,14 @@ fun LoraPanel(
     state: LoraPanelState,
     onFit: (LoraFitSpec) -> Unit,
     onAttach: (Long) -> Unit,
+    /** Measure a stored adapter against the model's dose response and record the verdict — the
+     *  route out of `ABSENT` for an imported or restored adapter that does not go through the
+     *  override. */
+    onProbe: (Long) -> Unit = {},
+    /** The deliberate second action that clears a guard refusal for ONE adapter. Separate from
+     *  [onAttach] because what is being overridden is a measurement, not a preference. The typed
+     *  name rides with it; the controller, not this dialog, is what compares it. */
+    onOverride: (Long, String) -> Unit = { _, _ -> },
     onDetach: () -> Unit,
     onRename: (Long, String) -> Unit,
     onDelete: (Long) -> Unit,
@@ -103,6 +123,7 @@ fun LoraPanel(
     }
     var renaming by remember { mutableStateOf<LabAdapter?>(null) }
     var deleting by remember { mutableStateOf<LabAdapter?>(null) }
+    var overriding by remember { mutableStateOf<LabAdapter?>(null) }
 
     Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         state.unavailable?.let {
@@ -154,10 +175,41 @@ fun LoraPanel(
                         )
                         Spacer()
                         if (!a.attached) {
-                            TextButton(onClick = { haptics.perform(HapticEvent.Commit); onAttach(a.id) }) {
-                                Text("Attach")
+                            // Disabled AND refused underneath: `LabController.attach` enforces the
+                            // same predicate, so this is the affordance, never the gate.
+                            TextButton(
+                                enabled = a.attachRefusal == null,
+                                onClick = { haptics.perform(HapticEvent.Commit); onAttach(a.id) },
+                            ) { Text("Attach") }
+                            if (a.attachRefusal != null && !a.guardOverridden) {
+                                TextButton(
+                                    enabled = !state.busy,
+                                    onClick = { haptics.perform(HapticEvent.Tap); onProbe(a.id) },
+                                ) { Text("Probe") }
+                                TextButton(onClick = { haptics.perform(HapticEvent.Warn); overriding = a }) {
+                                    Text("Override")
+                                }
                             }
                         }
+                    }
+                    a.attachRefusal?.let {
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                    // Only where the ratio is a number. An INCONCLUSIVE verdict can carry a
+                    // non-finite retention — a frozen model with no response divides by zero — and
+                    // "dose response NaN%" reads as a measurement rather than as its absence.
+                    if (a.guardWindows > 0 && a.guardRetention.isFinite()) {
+                        Text(
+                            "dose response ${"%.0f".format(a.guardRetention * 100)}% over " +
+                                "${a.guardWindows} windows " +
+                                "(${"%.1f".format(a.guardAdaptedMgdl)} vs " +
+                                "${"%.1f".format(a.guardFrozenMgdl)} mg/dL/U)",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
                     }
                     Text(
                         "r${a.rank} · ${a.nParams} params · ${a.nTrain}+${a.nHoldout} windows",
@@ -219,6 +271,40 @@ fun LoraPanel(
             },
         )
     }
+    overriding?.let { a ->
+        var typed by remember(a.id) { mutableStateOf("") }
+        LaunchedEffect(a.id) { haptics.perform(HapticEvent.Warn) }
+        AlertDialog(
+            onDismissRequest = { haptics.perform(HapticEvent.Reject); overriding = null },
+            title = { Text("Override the dose-response check?") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(a.attachRefusal.orEmpty())
+                    Text("Type ${a.name} to confirm")
+                    OutlinedTextField(
+                        value = typed,
+                        onValueChange = { typed = it },
+                        singleLine = true,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = typed.trim() == a.name,
+                    onClick = {
+                        haptics.perform(HapticEvent.Commit)
+                        onOverride(a.id, typed)
+                        overriding = null
+                    },
+                ) { Text("Override") }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { haptics.perform(HapticEvent.Reject); overriding = null },
+                ) { Text("Cancel") }
+            },
+        )
+    }
     deleting?.let { a ->
         LaunchedEffect(a.id) { haptics.perform(HapticEvent.Warn) }
         AlertDialog(
@@ -259,6 +345,11 @@ private fun FitDialog(defaultName: String, onDismiss: () -> Unit, onFit: (LoraFi
     var rank by remember { mutableStateOf(4f) }
     var epochs by remember { mutableStateOf(20f) }
     var windows by remember { mutableStateOf(200f) }
+    var tHidden by remember { mutableStateOf(false) }
+    var tL0 by remember { mutableStateOf(false) }
+    var tL1 by remember { mutableStateOf(true) }
+    var tL2 by remember { mutableStateOf(true) }
+    val noSite = !tHidden && !tL0 && !tL1 && !tL2
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Fit adapter") },
@@ -291,10 +382,20 @@ private fun FitDialog(defaultName: String, onDismiss: () -> Unit, onFit: (LoraFi
                     valueRange = 40f..400f,
                     steps = 8,
                 )
+                Text("Sites", style = MaterialTheme.typography.bodySmall)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    FilterChip(tHidden, { tHidden = !tHidden }, { Text("hidden") })
+                    FilterChip(tL0, { tL0 = !tL0 }, { Text("l0") })
+                    FilterChip(tL1, { tL1 = !tL1 }, { Text("l1") })
+                    FilterChip(tL2, { tL2 = !tL2 }, { Text("l2") })
+                }
             }
         },
         confirmButton = {
             TextButton(
+                // An adapter with no site would train nothing; the crate refuses it, and this is
+                // where that refusal is cheapest to make visible.
+                enabled = !noSite,
                 onClick = {
                     onFit(
                         LoraFitSpec(
@@ -302,6 +403,10 @@ private fun FitDialog(defaultName: String, onDismiss: () -> Unit, onFit: (LoraFi
                             rank = rank.roundToInt(),
                             epochs = epochs.roundToInt(),
                             windows = windows.roundToInt(),
+                            targetHidden = tHidden,
+                            targetL0 = tL0,
+                            targetL1 = tL1,
+                            targetL2 = tL2,
                         ),
                     )
                 },

@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.NetworkCapabilities
 import android.content.Intent
 import android.media.RingtoneManager
+import com.t1dm.app.notify.GlanceReadings
 import com.t1dm.alerts.ActiveAlarm
 import com.t1dm.alerts.AlarmConfig
 import com.t1dm.alerts.AlarmEngine
@@ -40,11 +41,11 @@ import com.t1dm.watch.WatchLinkConfig
 import com.t1dm.watch.WatchSecurityState
 import com.t1dm.watch.ble.AndroidWatchCentral
 import com.t1dm.app.watch.UniffiWatchSessionFactory
-import com.t1dm.cgm.AidexXPlugin
-import com.t1dm.cgm.AidexXSourceRegistry
 import com.t1dm.core.common.DefaultT1dmDispatchers
 import com.t1dm.core.common.NativeCore
 import com.t1dm.core.common.T1dmDispatchers
+import com.t1dm.cgm.AidexXPlugin
+import com.t1dm.cgm.AidexXSourceRegistry
 import com.t1dm.core.model.isRealMeasurement
 import com.t1dm.core.model.BackendId
 import com.t1dm.core.model.StatsWindow
@@ -56,6 +57,8 @@ import com.t1dm.core.model.ErrorGridLattices
 import com.t1dm.core.model.ZoneLattice
 import com.t1dm.core.model.CgmSourceDescriptor
 import com.t1dm.core.model.CurveKind
+import com.t1dm.core.model.MaskGeometry
+import com.t1dm.core.model.ReconstructedBg
 import com.t1dm.core.model.CurveEvent
 import com.t1dm.core.model.InferenceCause
 import com.t1dm.core.model.InsulinFamily
@@ -65,7 +68,6 @@ import com.t1dm.core.model.MetricsConfig
 import com.t1dm.core.model.ModelMetrics
 import com.t1dm.core.model.InferenceState
 import com.t1dm.core.model.IobCobReadout
-import com.t1dm.core.model.LogState
 import com.t1dm.core.model.LoggedEntry
 import com.t1dm.core.model.PaintStroke
 import com.t1dm.core.model.ReadingFlag
@@ -82,6 +84,7 @@ import com.t1dm.calc.BolusCalculator
 import com.t1dm.calc.BolusResolver
 import com.t1dm.calc.CalcConfig
 import com.t1dm.calc.DoseAdvisor
+import com.t1dm.calc.DoseHistoryState
 import com.t1dm.calc.IobSnapshot
 import com.t1dm.calc.IobSource
 import com.t1dm.calc.Objective
@@ -97,9 +100,12 @@ import com.t1dm.app.exercise.AppExerciseSource
 import com.t1dm.app.service.ExerciseService
 import com.t1dm.core.model.ActiveExercise
 import com.t1dm.app.stats.AppStatsSource
-import com.t1dm.data.PushWithdrawal
+import com.t1dm.core.model.SpanLinePreview
+import com.t1dm.data.BgCut
 import com.t1dm.data.T1dmRepository
 import com.t1dm.ui.graph.StepsFrame
+import com.t1dm.ui.graph.MaskControls
+import com.t1dm.ui.graph.MaskSelection
 import com.t1dm.data.backup.ArchiveCounts
 import com.t1dm.data.backup.ArchiveResult
 import com.t1dm.data.backup.NotAnArchiveException
@@ -145,7 +151,6 @@ import com.t1dm.sync.mealDedupKey
 import com.t1dm.sync.toDoseEventDto
 import com.t1dm.sync.toMealEventDto
 import com.t1dm.app.lab.LabController
-import com.t1dm.feature.models.LabGap
 import com.t1dm.feature.models.LoraFitSpec
 import com.t1dm.feature.models.LoraFitProgress
 import com.t1dm.feature.models.LoraPanelState
@@ -157,10 +162,15 @@ import com.t1dm.inference.CurveEventSource
 import com.t1dm.inference.FutureOverrideSource
 import com.t1dm.inference.InferenceController
 import com.t1dm.inference.InferenceControllerDefaults
+import com.t1dm.inference.ProbeInsulinPort
 import com.t1dm.inference.buildInferenceController
 import com.t1dm.sync.CatchUpCoordinator
 import com.t1dm.sync.DrainConfig
 import com.t1dm.sync.HistoryReMirror
+import com.t1dm.sync.TombstoneReplay
+import com.t1dm.sync.toDoseTombstoneDto
+import com.t1dm.sync.toMealTombstoneDto
+import com.t1dm.data.curve.GiToGamma
 import com.t1dm.sync.ModelSyncCoordinator
 import com.t1dm.sync.NoActiveProfileException
 import com.t1dm.sync.OkHttpSyncClient
@@ -176,7 +186,6 @@ import com.t1dm.sync.nightscout.NightscoutClient
 import com.t1dm.sync.nightscout.NightscoutConfigStore
 import com.t1dm.sync.nightscout.NightscoutEnqueuer
 import com.t1dm.sync.nightscout.OkHttpNightscoutClient
-import com.t1dm.sync.nightscout.nsTreatmentDedupKey
 import com.t1dm.sync.WebSocketStreamClient
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.StateFlow
@@ -199,6 +208,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.distinctUntilChangedBy
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
@@ -226,15 +236,19 @@ private const val SMOOTHING_PREVIEW_HOURS = 3L
  */
 private const val INITIAL_HISTORY_WINDOW_MS = 30L * 24 * 3_600_000L
 
-/** Per-model kv key for the forecast-backend switcher (issue 20 STEP 4): the BackendId enum name per
- *  model id, or absent = auto (the fp32 XNNPACK authority). */
-private fun kvForecastBackend(modelId: String) = "inference.forecast_backend.$modelId"
-
 /** How many logged meals/doses the Logs feed carries. Bounded at the QUERY, per table, because both
  *  stores are keep-forever: at a handful of entries a day this is months of scrolling, and the panel is
  *  a review surface rather than an export. The interleaved list is trimmed to the same bound, so the
  *  cut is by TIME rather than by whichever table happens to be busier. */
 private const val LOG_FEED_LIMIT = 400
+
+/** When the user last acknowledged an edited or deleted dose inside its own action window — the
+ *  deliberate second action that clears `Rails.doseHistoryEdited`. */
+private const val KV_DOSE_EDIT_ACK = "calc.dose_edit_ack_ms"
+
+/** Per-model kv key for the forecast-backend switcher (issue 20 STEP 4): the BackendId enum name per
+ *  model id, or absent = auto (the fp32 XNNPACK authority). */
+private fun kvForecastBackend(modelId: String) = "inference.forecast_backend.$modelId"
 
 /** The clinical/published horizons the on-device accuracy aggregator reports (Phase 7C). The
  *  longest also fixes the WINDOW the suite scores: `SPEC/invariants.md` §6.2's level metrics are
@@ -288,6 +302,17 @@ private const val REMIRROR_MAX_DRAIN_PASSES = 12
  *  converges over as many connects as it takes. */
 private const val REMIRROR_MAX_PAGES_PER_PASS = 20
 
+/** How many BG-panel edits the undo stack holds. Each Cut entry carries every row it removed, so
+ *  the stack is the only thing on the device that grows with how much was cut. */
+private const val BG_EDIT_UNDO_MAX = 32
+
+/** How much history the panel's edit mode reaches when no model is loaded to size it — a day of
+ *  five-minute slots, which is enough to place a cut anywhere the panel opens on. */
+private const val CUT_ONLY_CONTEXT_STEPS = 288
+
+/** The four registry-wide inputs the CGM panel folds (combine's typed arity is 5, so they are gathered
+ *  here before the final combine with the per-sensor map and the sensor-life setting). */
+
 /**
  * The manual composition root ("DI/wiring: manual is fine"). Built once in
  * [com.t1dm.app.T1dmApplication] and reached via `(application as T1dmApplication).container`.
@@ -323,10 +348,20 @@ class AppContainer(context: Context) {
     val pubsRepository: PubsRepository by lazy { PubsRepository(BlueskyClient(dispatchers), dispatchers) }
 
     /** The `:cgm` persistence port bound onto the Room-backed [T1dmRepository]. */
-    private val cgmRepository by lazy { AppCgmRepository(repository, outboxEnqueuer) }
+    private val cgmRepository by lazy {
+        AppCgmRepository(repository, outboxEnqueuer)
+    }
 
     val plugin: AidexXPlugin by lazy { AidexXPlugin(nativeCore, cgmRepository) }
 
+    /**
+     * The passive-advertisement CGM registry (the sole read path). It owns the one shared
+     * `BleAdvertScanner`, recognises every advert through [plugin], and routes each to its own source;
+     * the FGS ([com.t1dm.app.service.CgmScanService]) calls `registry.start()` and collects
+     * `registry.readings()`, narrowing to the AUTHORITATIVE source before the reading bus the
+     * model-free alarm and inference consume (§3.6 — the alarm path is staleness-driven and must see
+     * one sensor's stream, not several interleaved).
+     */
     val registry: AidexXSourceRegistry by lazy {
         AidexXSourceRegistry(
             plugin = plugin,
@@ -492,29 +527,6 @@ class AppContainer(context: Context) {
 
     /** The TIMED-mode forecast period (whole minutes), read fresh per timed tick by the FGS driver. */
     suspend fun forecastPeriodMin(): Int = settingsStore.currentForecastPeriodMin()
-
-    // ─── Aggressive-scan snapshots (mirror forecastModeSnapshot) — the FGS's screen-off receiver reads
-    // these synchronously off @Volatiles to decide whether to raise the keep-screen-on AOD surface,
-    // kept current by collectors on the persisted flags. The activity reads `aggressiveShowGlucose`
-    // (live flow) for its content and this snapshot for its window brightness at onCreate. ──────────
-    @Volatile
-    var aggressiveScanSnapshot: Boolean = false
-        private set
-
-    @Volatile
-    var aggressiveOnlyChargingSnapshot: Boolean = false
-        private set
-
-    @Volatile
-    var aggressiveShowGlucoseSnapshot: Boolean = true
-        private set
-
-    val aggressiveScanEnabled: Flow<Boolean> get() = settingsStore.aggressiveScanEnabled
-    val aggressiveShowGlucose: Flow<Boolean> get() = settingsStore.aggressiveShowGlucose
-    val aggressiveOnlyCharging: Flow<Boolean> get() = settingsStore.aggressiveOnlyCharging
-    suspend fun setAggressiveScanEnabled(on: Boolean) = settingsStore.setAggressiveScanEnabled(on)
-    suspend fun setAggressiveShowGlucose(on: Boolean) = settingsStore.setAggressiveShowGlucose(on)
-    suspend fun setAggressiveOnlyCharging(on: Boolean) = settingsStore.setAggressiveOnlyCharging(on)
 
     // ─── Alert actuators (Phase 7B — per-band sound + K90 vibration; kv-backed via SettingsStore) ──
 
@@ -761,6 +773,15 @@ class AppContainer(context: Context) {
      *  Push with: `adb push descriptor.json <this>/` and `adb push t1dmai_best.xnnpack.pte <this>/`. */
     val modelsDir: File = File(appContext.getExternalFilesDir(null), "models").apply { mkdirs() }
 
+    /**
+     * The forecast store, held rather than built inline because the stream reconnect has to reach it:
+     * the contract obliges a client to re-send its most recent forecast on every (re)connect, and
+     * the only thing holding one is this.
+     */
+    val roomPredictionStore: RoomPredictionStore by lazy {
+        RoomPredictionStore(repository, streamClient, syncStatusStore)
+    }
+
     /** The Phase-2 orchestrator: builds one shared context per cycle, fans out serially over the
      *  running set, decodes + guards in Rust, publishes + persists predictions tagged by model_id. */
     val inferenceController: InferenceController by lazy {
@@ -769,9 +790,9 @@ class AppContainer(context: Context) {
             dispatchers = dispatchers,
             modelsDir = modelsDir,
             history = RoomBgHistoryProvider(repository, registry),
-            // Phase 3: the dedicated `prediction` table is the source of truth, and every cycle
-            // enqueues a deduped `PREDICTIONS` batch for all running models (retires the kv blob).
-            predictionStore = RoomPredictionStore(repository, outboxEnqueuer, syncStatusStore),
+            // The dedicated `prediction` table is the source of truth for every local reader; the
+            // cycle additionally offers each model's forecast to the open stream, which stores none.
+            predictionStore = roomPredictionStore,
             // Phase 4 completion: the main-view forecast now conditions feat 1 / feat 2 on the
             // reconstructed carb-appearance + insulin-action channels (SPEC §3.3), not `normalize(0)`.
             contextChannels = ContextChannelSource { gridStartMs, nSteps ->
@@ -788,6 +809,14 @@ class AppContainer(context: Context) {
             // BG input filter (INFERENCE.md §7.1): the SAME window the calculator's roll and the
             // dashboard's smoothed overlay read, so one setting governs one signal everywhere.
             smoothingWindowProvider = { smoothingWindow() },
+            // The adapter guard's counterfactual stimulus: a real unit of rapid insulin, from the
+            // preset the advisor searches against and the writer commits, so the guard's
+            // mg/dL-per-unit is the quantity the sensitivity read-out reports and not an impulse
+            // nobody receives.
+            probeInsulin = ProbeInsulinPort { units, steps ->
+                val curve = presetCurve(units, resolveRapidPreset(null))
+                DoubleArray(steps) { i -> curve.getOrElse(i) { 0.0 } }
+            },
             // Running-set cap: how many discovered models run (and push a prediction) each cycle,
             // read fresh each discovery so a Settings edit takes on the next refresh (mirrors warmup).
             maxRunningProvider = { maxRunningModels() },
@@ -899,7 +928,7 @@ class AppContainer(context: Context) {
             license = "MIT. Permission is granted, free of charge, to use, copy, modify, merge, publish, " +
                 "distribute, sublicense and/or sell copies of this software, provided the copyright " +
                 "notice and this permission notice are included. Provided \"as is\", without warranty " +
-                "of any kind. Advisory only — this software never actuates insulin.",
+                "of any kind.",
             modelId = meta?.modelId,
             modelArchVersion = meta?.archVersion,
             modelParamCount = meta?.paramCount,
@@ -1124,7 +1153,6 @@ class AppContainer(context: Context) {
         if (cal.expiredAt(System.currentTimeMillis())) return null
         return cal.delta
     }
-
 
     /**
      * [modelId]'s OWN forecast horizon in minutes, or null when it cannot be established.
@@ -1490,6 +1518,8 @@ class AppContainer(context: Context) {
             repo = repository,
             scope = appScope,
             reMirror = HistoryReMirror { epoch -> reMirrorHistory(epoch) },
+            tombstones = TombstoneReplay { replayTombstones() },
+            // NOTE: `replayTombstones` is suspend; TombstoneReplay's method is too.
             desync = streamClient.desync,
         )
     }
@@ -1518,6 +1548,7 @@ class AppContainer(context: Context) {
             repository = repository,
             status = syncStatusStore,
             dispatchers = dispatchers,
+            resendForecast = { roomPredictionStore.resendLatest() },
         )
     }
 
@@ -1769,9 +1800,9 @@ class AppContainer(context: Context) {
 
     /**
      * Erase EVERYTHING and return the app to a first-run state IN-PLACE (issue 5) — deliberately WITHOUT
-     * stopping the foreground service or killing the process, so the advertisement scan keeps RUNNING
-     * across the reset (the user's requirement) and the sensor's next adverts immediately repopulate the
-     * just-wiped `cgm_reading` table. Consequences of keeping the process alive: (a) the
+     * stopping the foreground service or killing the process, so the held GATT session keeps the sensor
+     * CONNECTED across the reset (the user's requirement) and the sensor's new readings immediately
+     * repopulate the just-wiped `cgm_reading` table. Consequences of keeping the process alive: (a) the
      * `cgm_source` rows are PRESERVED so the active-source binding survives; (b) the in-memory,
      * process-scoped caches that Room-backed flows don't self-heal (the alarm config, snooze state, the
      * inference warmup latch, GMI, the ephemeral bolus/roll state, the published forecast) are returned
@@ -1780,18 +1811,23 @@ class AppContainer(context: Context) {
      * artifacts + seed dictionaries (see [T1dmRepository.wipeAllData]) — this also clears the watch
      * pairing/epoch/nonce-ceiling kv rows;
      * (3) burn the secrets that live OUTSIDE Room — the Keystore-wrapped server token(s) and the watch
-     * key-wrapping alias (the watch key material itself was a kv blob, already gone in step 2); (4) reset
+     * key-wrapping alias (the watch key material itself was a kv blob, already gone in step 2). The CGM
+     * sensor-secret alias is deliberately NOT among them, and neither are the `cgm_sensor_secret` rows:
+     * this reset keeps the sensor CONNECTED by design, so it is still worn, and for one sensor family
+     * those bytes are the only password that could ever unbind it. Destroying them would retire the
+     * hardware rather than erase data — releasing a sensor is a per-sensor action, not a side effect of a
+     * global reset; (4) reset
      * the process-scoped in-memory caches to first-run. The caller then relaunches the UI IN-PROCESS via
      * [restartApp] (a fresh Activity task, NOT a process kill) so the app-lifetime StateFlows re-emit the
      * empty store while the FGS + sensor connection live on. Off-main.
      */
     suspend fun resetAllData() = withContext(dispatchers.io) {
-        // KEEP THE SCAN RUNNING across the reset. The BLE scan is process-scoped (the FGS in this same
-        // process owns it), so — unlike the old stop-service + kill-process reset — we deliberately DO
-        // NOT stop CgmScanService, do NOT stop the registry, and do NOT kill the process. The scan lives
-        // on and the next adverts repopulate the just-wiped cgm_reading table (the user's explicit
-        // requirement). We therefore also PRESERVE the cgm_source rows so the active-source binding
-        // survives the wipe.
+        // KEEP THE SENSOR CONNECTED across the reset. The connected-GATT session that holds the live
+        // sensor is process-scoped (the FGS in this same process owns it), so — unlike the old
+        // stop-service + kill-process reset — we deliberately DO NOT stop CgmScanService, do NOT stop the
+        // registry, and do NOT kill the process. The sensor stays connected and its new readings
+        // repopulate the just-wiped cgm_reading table (the user's explicit requirement). We therefore
+        // also PRESERVE the cgm_source rows so the active-source binding survives the wipe.
         //
         // Drop the in-memory watch session + disable the link BEFORE the wipe so no late 5-min push can
         // re-persist key material or a nonce ceiling into the kv rows we are about to clear (which would
@@ -1801,7 +1837,7 @@ class AppContainer(context: Context) {
         runCatching { tokenStore.clearAll() }
         com.t1dm.app.watch.WatchKeyCipher.deleteKey()
         // Return the in-memory, process-scoped caches to first-run WITHOUT a process kill (which would
-        // drop the scan). The Room-backed StateFlows self-heal from the wiped store; these are the
+        // drop the GATT link). The Room-backed StateFlows self-heal from the wiped store; these are the
         // caches that would otherwise show stale data after the in-place relaunch.
         refreshAlarmConfig()          // thresholds → coded defaults, pushed live into the running engine
         runCatching { clearSnooze() }
@@ -1827,10 +1863,11 @@ class AppContainer(context: Context) {
 
     /**
      * Return the UI to a first-run state IN-PROCESS (issue 5) — relaunch [MainActivity] as a fresh task
-     * WITHOUT killing the process, so the foreground service (and the advertisement scan it holds)
-     * survive the reset. The app-scoped [AppContainer] is reused; [resetAllData] has already returned
-     * its caches to first-run, and every Room-backed StateFlow re-emits the wiped store, so the rebuilt
-     * Activity opens at the empty home. (Contrast the old `Runtime.exit(0)`, which dropped the scan.)
+     * WITHOUT killing the process, so the foreground service (and the held GATT session that keeps the
+     * sensor connected) survive the reset. The app-scoped [AppContainer] is reused; [resetAllData] has
+     * already returned its caches to first-run, and every Room-backed StateFlow re-emits the wiped
+     * store, so the rebuilt Activity opens at the empty home. (Contrast the old `Runtime.exit(0)`, which
+     * dropped the connection.)
      */
     fun restartApp() {
         appContext.packageManager.getLaunchIntentForPackage(appContext.packageName)
@@ -1930,52 +1967,246 @@ class AppContainer(context: Context) {
         )
     }
 
-    private val _labGaps = MutableStateFlow<List<LabGap>>(emptyList())
-    val labGaps: StateFlow<List<LabGap>> = _labGaps.asStateFlow()
-
     private val _loraPanel = MutableStateFlow(LoraPanelState(modelId = ""))
     val loraPanel: StateFlow<LoraPanelState> = _loraPanel.asStateFlow()
 
-    /** The gaps in the trailing fortnight, marked with whether a fill already stands. */
-    suspend fun refreshLabGaps() {
-        val gaps = runCatching { labController.gaps() }.getOrElse { emptyList() }
-        val fmt = SimpleDateFormat("d MMM HH:mm", Locale.getDefault())
-        _labGaps.value = gaps.map { g ->
-            val filled = runCatching { repository.infillInRange(g.startMs, g.endMs - 1).isNotEmpty() }
-                .getOrDefault(false)
-            LabGap(
-                startMs = g.startMs,
-                endMs = g.endMs,
-                steps = g.steps,
-                label = fmt.format(Date(g.startMs)),
-                filled = filled,
+    // ─── Reconstruction: the panel's mask, and the Lab's promotion ──────────────────────────
+
+    private val _panelMaskNote = MutableStateFlow<String?>(null)
+
+    /** What the last mask run or promotion said. A refusal has several ordinary causes and a silent
+     *  one reads as a control that does nothing. */
+    val panelMaskNote: StateFlow<String?> = _panelMaskNote.asStateFlow()
+
+    /**
+     * What the SELECTED model's descriptor permits a mask to be, or null when no model with a
+     * descriptor is selected — which is what hides the control.
+     *
+     * Built only from the descriptor. `PROJECTS/T1DMDROID.md`'s rule is that nothing in the app
+     * holds a geometry of its own, and every number here would otherwise be a second copy free to
+     * disagree with the artifact it describes.
+     */
+    suspend fun maskControls(): MaskControls? {
+        // The SELECTED model, not the Lab's pick. The panel draws the selected model's fan and
+        // reconstructs through its geometry, so taking the Lab's would let a span be masked under
+        // one descriptor's patch size while the trace beside it came from another's — and, because
+        // the Lab's pick is null until the Lab has been opened at least once, the whole affordance
+        // simply never appeared on a fresh launch.
+        val desc = inferenceController.selectedModelInfo()?.takeIf { it.real }?.descriptor
+        val src = repository.authoritativeSourceId() ?: return null
+        // A day of slots when there is no model to size the window: enough to place a cut anywhere
+        // the panel opens on, and the descriptor's own context length when there is one.
+        val span = desc?.let { it.minContextPatches * it.patchSize } ?: CUT_ONLY_CONTEXT_STEPS
+        val rows = repository.recentReadings(src, span)
+        val newestMeasured = rows.firstOrNull {
+            isRealMeasurement(it.provenance, it.flag) && it.bgMgdl != null
+        }?.tsMs ?: return null
+        // No model, no patch geometry: the selection falls back to the five-minute grid the store
+        // keys, which is the shape a cut has anyway. Reconstruction is refused separately, by
+        // `fromDescriptor`, rather than by the whole edit mode being absent.
+        if (desc == null) {
+            return MaskControls(
+                patchMs = 300_000L,
+                maxSpans = 1,
+                maxSpanPatches = CUT_ONLY_CONTEXT_STEPS,
+                maxMaskedPatches = CUT_ONLY_CONTEXT_STEPS,
+                forecastPatches = 0,
+                newestMeasuredMs = newestMeasured,
+                contextFloorMs = rows.minOfOrNull { it.tsMs } ?: newestMeasured,
+                fromDescriptor = false,
             )
         }
+        val patchMs = desc.patchSize.toLong() * 300_000L
+        return MaskControls(
+            patchMs = patchMs,
+            maxSpans = desc.maskMaxSpans,
+            maxSpanPatches = desc.maskSpanMax,
+            maxMaskedPatches = desc.maxMaskedPatches,
+            forecastPatches = desc.predictionHorizonHours * 12 / desc.patchSize,
+            newestMeasuredMs = newestMeasured,
+            contextFloorMs = rows.minOfOrNull { it.tsMs } ?: newestMeasured,
+        )
+    }
+
+    /** Reconstructions over the window the panel has loaded. */
+    fun panelReconstructed(fromMs: Long, toMs: Long): Flow<List<ReconstructedBg>> =
+        repository.observeReconstructed(fromMs, toMs)
+
+    /**
+     * Reconstruct the selected stretch. The geometry came from where it sits, never from a control.
+     *
+     * [selection] is the stretch the edit bar is aimed at, and the geometry the caller derived from
+     * where it sits. One selection at a time, deliberately: a second highlight that stayed on screen
+     * while a tool fired at the first is a control aimed at something other than what it shows.
+     */
+    fun runPanelMask(selection: MaskSelection, geometry: MaskGeometry) {
+        // The SAME model [maskControls] took the geometry from — the selected one. Reconstructing
+        // through the Lab's pick would decode the span under a descriptor the drag was never
+        // bounded by, and on a fresh launch there is no Lab pick at all.
+        val modelId = inferenceController.selectedModelInfo()?.takeIf { it.real }?.id ?: run {
+            _panelMaskNote.value = "No model selected"
+            return
+        }
+        appScope.launch {
+            _panelMaskNote.value = "Reconstructing…"
+            val note = runCatching {
+                labController.runSpan(modelId, selection.startMs, selection.endMs, geometry)
+            }.getOrElse { it.message ?: "Reconstruction failed" }
+            // Undoable only when a span actually landed. A forecast writes nothing, and a refusal
+            // that pushed an undo entry would put a button on screen that took back somebody else's
+            // edit — the one thing an undo stack must never do.
+            if (geometry != MaskGeometry.FORECAST &&
+                repository.reconstructedSpanSize(selection.startMs) > 0
+            ) {
+                pushBgEdit(BgEdit.Fill(selection.startMs))
+            }
+            _panelMaskNote.value = note
+        }
+    }
+
+    // ─── The BG panel's edit stack ──────────────────────────────────────────────────────────
+    //
+    // Held HERE rather than in the composable, for the reason the fit's progress is: an edit
+    // outlives the screen that made it, and an undo that vanished on a navigation would be a trap
+    // rather than a convenience. In memory and session-scoped on purpose — a cut is pushed to the
+    // server as it is made, and a stack that survived a process death would offer to undo something
+    // the record has long since agreed about.
+
+    private sealed interface BgEdit {
+        /** The rows a cut took, everything an undo needs to put them back. */
+        data class Cut(val rows: List<BgCut>) : BgEdit
+
+        /** A span a fill drew. Undoing it discards the span; a promoted one refuses. */
+        data class Fill(val spanStartMs: Long) : BgEdit
+    }
+
+    private val bgEdits = ArrayDeque<BgEdit>()
+    private val _bgEditDepth = MutableStateFlow(0)
+
+    /** How many panel edits can still be taken back. */
+    val bgEditDepth: StateFlow<Int> = _bgEditDepth.asStateFlow()
+
+    private fun pushBgEdit(edit: BgEdit) {
+        bgEdits.addLast(edit)
+        // Bounded: the stack holds the geometry of every cut it can undo, and an unbounded one on a
+        // panel where a drag is cheap is a slow leak with no ceiling.
+        while (bgEdits.size > BG_EDIT_UNDO_MAX) bgEdits.removeFirst()
+        _bgEditDepth.value = bgEdits.size
     }
 
     /**
-     * Fill one gap. Also in [appScope], and its outcome REACHES the screen: a repair refuses for
-     * several ordinary reasons — a gap longer than the head's slots, one sitting at the window
-     * edge, one the model declined — and the longest gaps, which the list shows first, are the
-     * likeliest to refuse. A silent refusal reads as a button that does nothing.
+     * Erase every BG on the grid in `[fromMs, toMs]` — the patient's own correction of a compression
+     * low or a stretch of nonsense, and the only route by which stored physiologic values leave the
+     * record.
+     *
+     * Both ends are snapped here rather than trusted: the panel's selection is a pixel range
+     * resolved to instants, and the repository requires grid slots because that is what the server
+     * keys reconstruction on.
      */
-    fun repairGap(gap: LabGap) {
-        val modelId = labController.state.value.modelId ?: return
+    fun cutBgRange(fromMs: Long, toMs: Long) {
         appScope.launch {
-            _labGapNote.value = "Filling ${gap.label}…"
-            val note = runCatching {
-                labController.repair(modelId, LabController.Gap(gap.startMs, gap.endMs, gap.steps))
-            }.getOrElse { it.message ?: "Fill failed" }
-            Timber.i("gap fill %s: %s", gap.label, note)
-            _labGapNote.value = note
-            refreshLabGaps()
+            val from = T1dmRepository.snapToGrid(fromMs)
+            val to = T1dmRepository.snapToGrid(toMs)
+            if (to < from) return@launch
+            val cut = runCatching { repository.cutBgRange(from, to, System.currentTimeMillis()) }
+                .getOrElse {
+                    Timber.tag("AppContainer").w(it, "BG cut failed")
+                    _panelMaskNote.value = it.message ?: "Cut failed"
+                    return@launch
+                }
+            if (cut.isEmpty()) {
+                _panelMaskNote.value = "Nothing stored there"
+                return@launch
+            }
+            pushBgEdit(BgEdit.Cut(cut))
+            _panelMaskNote.value = "Cut ${cut.size} readings"
         }
     }
 
-    private val _labGapNote = MutableStateFlow<String?>(null)
+    /** Take back the last cut or fill. */
+    fun undoBgEdit() {
+        appScope.launch {
+            val edit = bgEdits.removeLastOrNull() ?: return@launch
+            _bgEditDepth.value = bgEdits.size
+            _panelMaskNote.value = when (edit) {
+                is BgEdit.Cut -> runCatching {
+                    repository.restoreBgCut(edit.rows, System.currentTimeMillis())
+                    "Restored ${edit.rows.size} readings"
+                }.getOrElse { it.message ?: "Undo failed" }
 
-    /** What the last fill did or why it refused. */
-    val labGapNote: StateFlow<String?> = _labGapNote.asStateFlow()
+                is BgEdit.Fill -> runCatching {
+                    when {
+                        repository.discardInfillSpan(edit.spanStartMs) -> "Fill removed"
+                        // Two ways an entry outlives what it points at, and they need different
+                        // words: a promotion is reversible by demoting, and a span a later cut
+                        // already dropped is simply not there. A single message for both sends the
+                        // user looking for a Demote button on a span that no longer exists.
+                        repository.infillSpan(edit.spanStartMs).isEmpty() -> "That fill is already gone"
+                        else -> "Fill was promoted — demote it first"
+                    }
+                }.getOrElse { it.message ?: "Undo failed" }
+            }
+        }
+    }
+
+    /** Throw a drawn span away. */
+    fun discardSpan(spanStartMs: Long) {
+        appScope.launch {
+            _panelMaskNote.value = runCatching { labController.discard(spanStartMs) }
+                .getOrElse { it.message ?: "Discard failed" }
+        }
+    }
+
+    /** Move a drawn span's line to the fan's τ-th quantile, and store the level it landed on. */
+    fun retauSpan(spanStartMs: Long, tau: Double) {
+        appScope.launch {
+            _panelMaskNote.value = runCatching { labController.retau(spanStartMs, tau) }
+                .getOrElse { it.message ?: "Could not move the line" }
+            // The stored line and the preview now agree, so the preview has nothing left to say.
+            _tauPreview.value = null
+        }
+    }
+
+    private val _tauPreview = MutableStateFlow<SpanLinePreview?>(null)
+
+    /** The line the τ slider is currently over, before it is committed. Drawing only. */
+    val tauPreview: StateFlow<SpanLinePreview?> = _tauPreview.asStateFlow()
+
+    /**
+     * Read a span's fan at [tau] and publish the line WITHOUT storing it.
+     *
+     * Its own job, cancelled by the next tick: a slider emits faster than a fan can be read and
+     * decoded, and letting them queue would run the thumb's whole travel one position behind.
+     */
+    private var tauPreviewJob: Job? = null
+
+    fun previewTau(spanStartMs: Long, tau: Double) {
+        tauPreviewJob?.cancel()
+        tauPreviewJob = appScope.launch {
+            val preview = runCatching { labController.previewTau(spanStartMs, tau) }.getOrNull()
+            if (preview != null) _tauPreview.value = preview
+        }
+    }
+
+    fun clearPanelMask() {
+        _panelMaskNote.value = null
+    }
+
+    fun promoteSpan(spanStartMs: Long) {
+        appScope.launch {
+            _panelMaskNote.value =
+                runCatching { labController.promote(spanStartMs) }
+                    .getOrElse { it.message ?: "Promotion failed" }
+        }
+    }
+
+    fun demoteSpan(spanStartMs: Long) {
+        appScope.launch {
+            _panelMaskNote.value =
+                runCatching { labController.demote(spanStartMs) }
+                    .getOrElse { it.message ?: "Demotion failed" }
+        }
+    }
 
     suspend fun refreshLoraPanel(modelId: String) {
         val desc = inferenceController.descriptorOf(modelId)
@@ -2040,10 +2271,57 @@ class AppContainer(context: Context) {
      * the standing forecast on screen was made by the forecaster that just stopped existing.
      */
     suspend fun attachAdapter(modelId: String, adapterId: Long) {
+        // A refusal is a RESULT, not an exception: the guard blocking an adapter is an ordinary
+        // outcome the panel has to state, and the reason it gives is the guard's own numbers.
         runCatching { labController.attach(modelId, adapterId) }
+            .onSuccess { refusal ->
+                if (refusal != null) _loraPanel.update { s -> s.copy(error = refusal) }
+            }
             .onFailure { _loraPanel.update { s -> s.copy(error = it.message ?: "Attach failed") } }
+            // Only when something actually changed. A refused attach leaves the model exactly as it
+            // was, and forcing a cycle for it spends a full forward and republishes the fan the
+            // panel is already showing.
+            .getOrNull()?.let { refusal -> if (refusal == null) reevaluateInferenceNow() }
         refreshLoraPanel(modelId)
-        reevaluateInferenceNow()
+    }
+
+    /** The deliberate second action that clears a guard refusal for one adapter. The typed name is
+     *  compared by the controller, not by the dialog that collected it. */
+    suspend fun overrideAdapterGuard(modelId: String, adapterId: Long, typedName: String) {
+        runCatching { labController.overrideGuard(modelId, adapterId, typedName) }
+            .onSuccess { refusal ->
+                if (refusal != null) _loraPanel.update { s -> s.copy(error = refusal) }
+            }
+            .onFailure { _loraPanel.update { s -> s.copy(error = it.message ?: "Override failed") } }
+        refreshLoraPanel(modelId)
+    }
+
+    /**
+     * Measure a stored adapter against the model's dose response.
+     *
+     * In [appScope] for the reason a fit is: the replay is a few hundred forwards and a screen's
+     * own scope cancels it the moment the user navigates away.
+     */
+    fun probeAdapter(modelId: String, adapterId: Long) {
+        if (_loraPanel.value.busy) return
+        _loraPanel.update {
+            it.copy(
+                progress = LoraFitProgress(LoraFitProgress.Phase.Replay, 0, 0),
+                error = null,
+                lastReport = null,
+            )
+        }
+        appScope.launch {
+            val note = runCatching {
+                labController.probe(modelId, adapterId) { done, total ->
+                    _loraPanel.update {
+                        it.copy(progress = LoraFitProgress(LoraFitProgress.Phase.Replay, done, total))
+                    }
+                }
+            }.getOrElse { it.message ?: "Probe failed" }
+            _loraPanel.update { it.copy(progress = null, lastReport = note) }
+            refreshLoraPanel(modelId)
+        }
     }
 
     suspend fun detachAdapter(modelId: String) {
@@ -2180,7 +2458,14 @@ class AppContainer(context: Context) {
 
     /** The bout store: the sessions Flow, the start/stop writers, the track, and the launch-time
      *  reconcile that closes a bout the process died inside. */
-    val exerciseController: ExerciseController by lazy { ExerciseController(repository, dispatchers) }
+    val exerciseController: ExerciseController by lazy {
+        ExerciseController(
+            repository,
+            dispatchers,
+            curveEngine,
+            carbEquivPerMin = { settingsStore.currentCarbEquivPerMin() },
+        )
+    }
 
     /** The bout being recorded now, published by [com.t1dm.sensors.ExerciseRecorder] inside
      *  [com.t1dm.app.service.ExerciseService] and read by the panel. Null whenever none is running. */
@@ -2443,9 +2728,14 @@ class AppContainer(context: Context) {
     }
 
     private val sensitivityProbe by lazy {
-        SensitivityProbe(rollingForecaster, bolusResolver, probeCarbResolver, anchorSource) {
-            inferenceController.authorityModelInfo()?.takeIf { it.real }?.id
-        }
+        SensitivityProbe(
+            rollingForecaster,
+            bolusResolver,
+            probeCarbResolver,
+            anchorSource,
+            selectedModelId = { inferenceController.authorityModelInfo()?.takeIf { it.real }?.id },
+            doseHistory = { readDoseHistory() },
+        )
     }
 
     /** §3.6-D anchor facts from the authoritative source's recent grid readings (fail-closed: null ⇒ no signal). */
@@ -2677,8 +2967,21 @@ class AppContainer(context: Context) {
         val lastMeasured = recent
             .filter { isRealMeasurement(it.provenance, it.flag) && it.bgMgdl != null }
             .maxByOrNull { it.tsMs }
+        // `newest` stays the newest row OUTRIGHT, and that is deliberate. Filtering it through
+        // `isRealMeasurement` would make `warmup` constant-false whenever the window holds one
+        // NORMAL measured row — a WARMUP-flagged reading could never win the slot — and
+        // `Rails.freshness`'s warm-up block would become dead code. A sensor session restarting at
+        // 10:00 would then dispense a recommendation off a warming-up sensor.
         val newest = recent.maxByOrNull { it.tsMs }!!
-        val fabricated = recent.count { it.provenance == ReadingProvenance.INTERPOLATED || it.flag == ReadingFlag.WARMUP }
+        // A promoted RECONSTRUCTION counts as fabricated context, like an interpolation and a
+        // warm-up row. This is what makes the freshness rail fire rather than merely excluding the
+        // value: `Rails.freshness` blocks once the fraction passes its bound, so a promoted span
+        // inside the 3 h anchor window refuses the dose outright.
+        val fabricated = recent.count {
+            it.provenance == ReadingProvenance.INTERPOLATED ||
+                it.provenance == ReadingProvenance.RECONSTRUCTED ||
+                it.flag == ReadingFlag.WARMUP
+        }
         return AnchorInfo(
             lastMeasuredTsMs = lastMeasured?.tsMs,
             anchorTsMs = newest.tsMs,
@@ -2693,8 +2996,36 @@ class AppContainer(context: Context) {
             iobU = channelBuilder.onBoard(nowMs, CurveKind.INSULIN),
             cobG = channelBuilder.onBoard(nowMs, CurveKind.CARB),
             lastLoggedDoseTsMs = repository.latestLoggedInsulinTs(),
+            doseHistory = readDoseHistory(),
         )
     }.getOrNull()
+
+    /**
+     * What has been done to the dose history, for [Rails.doseHistoryEdited].
+     *
+     * The reads are wrapped separately from the rest of the snapshot: a throw here must reach the
+     * rail as [DoseHistoryState.Unknown] — which BLOCKS — rather than take the whole snapshot to
+     * null and be indistinguishable from a store that had nothing to report.
+     */
+    private suspend fun readDoseHistory(): DoseHistoryState = runCatching {
+        val until = repository.editedDoseActiveUntilMs() ?: return@runCatching DoseHistoryState.Clean
+        val mutatedAt = repository.latestDoseMutationMs() ?: return@runCatching DoseHistoryState.Clean
+        DoseHistoryState.Mutated(
+            actingUntilMs = until,
+            mutatedAtMs = mutatedAt,
+            acknowledgedAtMs = repository.getKv(KV_DOSE_EDIT_ACK)?.toLongOrNull(),
+        )
+    }.getOrElse { DoseHistoryState.Unknown }
+
+    /**
+     * Acknowledge the edited dose history — the deliberate second action that clears
+     * [Rails.doseHistoryEdited].
+     *
+     * Structurally separate from the calculator's own confirm button on purpose: this one says "I
+     * know the insulin log changed and I have taken that into account", and folding it into the
+     * ordinary confirm would turn it into a keystroke on the way to a dose.
+     */
+    suspend fun acknowledgeDoseEdit(nowMs: Long) = repository.putKv(KV_DOSE_EDIT_ACK, nowMs.toString(), nowMs)
 
     // ── Entry writers: persist the self-describing event, project the wide sample, mirror the series.
 
@@ -2906,28 +3237,66 @@ class AppContainer(context: Context) {
     }
 
     /**
-     * Take back a just-logged meal/dose: the event row and its still-queued push are deleted in ONE
-     * repository transaction, and `T1dmRepository.logEvents` — the only trigger an event delete can
-     * fire, since it touches neither `cgm_reading` nor `sample` — is bumped, which is what repaints
-     * [iobCob] and, through it, the dashboard's curve overlay and the §3.6-F IOB provenance line.
+     * Take back a just-logged meal/dose: one repository transaction writes the tombstone and removes
+     * the event, and `T1dmRepository.logEvents` — the only trigger an event delete can fire, since
+     * it touches neither `cgm_reading` nor `sample` — is bumped, which is what repaints [iobCob]
+     * and, through it, the dashboard's curve overlay and the §3.6-F IOB provenance line.
      *
-     * The returned [PushWithdrawal] is what the receipt must be honest about: everything local is
-     * gone unconditionally, but a push that already drained is on the server for good.
+     * There is nothing left to report. The deletion travels as a tombstone on the same upsert the
+     * create rode, ordered against it by `updated_at`, so it lands whatever the push had already
+     * done — the old "the server has it and cannot be told otherwise" outcome no longer exists.
      *
-     * The local row goes whatever the push's fate, so the carb/insulin channel has moved and the
-     * forecast is re-run — the withdrawal of a dose lowers assumed IOB exactly as logging it raised it.
+     * The carb/insulin channel has moved either way, so the forecast is re-run.
      */
-    suspend fun undoLog(handle: LogHandle): PushWithdrawal = when (handle.kind) {
-        // The bridged mirror is withdrawn in the same transaction. Both pushes were queued under the
-        // same hold, so an undo inside it takes back both; leaving the mirror would have a third party
-        // keep an event the phone and its own server had both forgotten.
-        LoggedEventKind.MEAL -> repository.undoLoggedMeal(
-            handle.rowId, handle.outboxId, handle.dedupKey, nsTreatmentDedupKey(handle.clientId),
-        )
-        LoggedEventKind.DOSE -> repository.undoLoggedDose(
-            handle.rowId, handle.outboxId, handle.dedupKey, nsTreatmentDedupKey(handle.clientId),
-        )
-    }.also { reforecastAfterCurveWrite() }
+    suspend fun undoLog(handle: LogHandle) {
+        when (handle.kind) {
+            LoggedEventKind.MEAL -> tombstoneAndPushMeal(handle.rowId)
+            LoggedEventKind.DOSE -> tombstoneAndPushDose(handle.rowId)
+        }
+        reforecastAfterCurveWrite()
+    }
+
+    /**
+     * Delete a logged meal and file its deletion: one transaction writes the tombstone and removes
+     * the event, then the push goes out under the SAME dedup key the create used.
+     *
+     * The tombstone is marked pushed only after the enqueue returns, so a process death between the
+     * two leaves it for [replayTombstones] to find on the next connect.
+     */
+    private suspend fun tombstoneAndPushMeal(rowId: Long) {
+        val now = System.currentTimeMillis()
+        val tomb = repository.tombstoneLoggedMeal(rowId, now) ?: return
+        outboxEnqueuer.enqueueMealTombstone(tomb.toMealTombstoneDto(), now)
+        repository.markTombstonePushed(tomb.clientId, now)
+    }
+
+    /** The dose twin of [tombstoneAndPushMeal]. */
+    private suspend fun tombstoneAndPushDose(rowId: Long) {
+        val now = System.currentTimeMillis()
+        val tomb = repository.tombstoneLoggedDose(rowId, now) ?: return
+        outboxEnqueuer.enqueueDoseTombstone(tomb.toDoseTombstoneDto(), now)
+        repository.markTombstonePushed(tomb.clientId, now)
+    }
+
+    /**
+     * Re-file the push for every deletion that has not got one — the connect-time replay.
+     *
+     * Covers a process death between the delete transaction and the enqueue, and a tombstone the
+     * queue's size cap evicted. Returns how many were re-filed.
+     */
+    private suspend fun replayTombstones(): Int {
+        val now = System.currentTimeMillis()
+        var n = 0
+        for (tomb in repository.unpushedTombstones()) {
+            when (tomb.kind) {
+                CurveKind.CARB -> outboxEnqueuer.enqueueMealTombstone(tomb.toMealTombstoneDto(), now)
+                CurveKind.INSULIN -> outboxEnqueuer.enqueueDoseTombstone(tomb.toDoseTombstoneDto(), now)
+            }
+            repository.markTombstonePushed(tomb.clientId, now)
+            n++
+        }
+        return n
+    }
 
     /**
      * Queue a bridged mirror of an event just logged, if the bridge is on.
@@ -2940,6 +3309,35 @@ class AppContainer(context: Context) {
         if (!repository.nightscoutBridgeEnabled) return
         runCatching { enqueue() }
             .onFailure { Timber.tag("Nightscout").w(it, "mirror enqueue failed") }
+    }
+
+    /**
+     * Re-mirror an edited meal or dose, and ONLY where the original mirror can still be recalled.
+     *
+     * The server push supersedes under its own key, so `T1DMSERVER` always ends up with the corrected
+     * event. The bridge has no such mechanism: a treatment carries its amount frozen into the queued
+     * payload, `/api/v1` offers no update for one that has landed, and the bridged `created_at`
+     * derives from `updatedAt` — which an edit bumps. Re-sending a landed treatment would therefore
+     * file a SECOND one beside it and double-count the insulin in someone's logbook.
+     *
+     * So the withdrawal is the gate, exactly as it is on the delete path. Withdrawn: the host never
+     * saw the old amount and gets the new one. Not withdrawn: it has gone or is going, the old amount
+     * stands, and that is said out loud rather than papered over with a duplicate.
+     *
+     * The withdrawal runs whether or not the bridge is currently on. A queued mirror of an event that
+     * has since been edited is wrong whatever happens to it next.
+     */
+    private suspend fun remirrorEditedTreatment(clientId: String, enqueue: suspend () -> Long) {
+        val withdrawn = runCatching { repository.withdrawEditedBridgedTreatment(clientId) }
+            .onFailure { Timber.tag("Nightscout").w(it, "withdrawal of an edited mirror failed") }
+            .getOrDefault(false)
+        if (!repository.nightscoutBridgeEnabled) return
+        if (!withdrawn) {
+            Timber.tag("Nightscout").w("an edited event's mirror was not recallable; the host keeps what it has")
+            return
+        }
+        runCatching { enqueue() }
+            .onFailure { Timber.tag("Nightscout").w(it, "mirror re-enqueue failed") }
     }
 
     private fun LoggedMealEntity.handle(outboxId: Long, label: String) = LogHandle(
@@ -2973,22 +3371,18 @@ class AppContainer(context: Context) {
      * amount and no row id. Reducing it there rather than here is what makes a mark and the row behind
      * it the same list position, and therefore what lets a tap on a mark name what it stands for.
      *
-     * **The join happens HERE and nowhere else, on purpose.** The verdict is queue membership under the
-     * event's dedup key, and that key's format ([mealDedupKey] / [doseDedupKey]) is owned by `:sync`,
-     * which `:data` must not depend on and must not re-spell — so `:data` hands up the two event flows
-     * and the queued key set, and this is the one place that holds them against each other. There is no
-     * SENT state (`QueueDrainer` DELETEs on a 2xx), so presence in that set is the whole of "not
-     * delivered", and time alone can never promote a row: an offline phone keeps every log
-     * [LogState.COMMITTED] for as long as it stays offline.
-     *
-     * Absence is read as delivered, which is honest rather than proven — see [LogState].
+     * **There is no queue join any more.** The feed used to be held against the outbox to say
+     * whether a row had reached the server, and that verdict decided whether Delete was offered.
+     * Neither survives: a deletion is now ordered against the create it removes, so it lands
+     * whatever the queue has done, and the claim itself was never provable — the outbox has no SENT
+     * state, so an absent row means "sent", "rejected" and "evicted" alike. What each row does carry
+     * is whether it has been EDITED, which is a fact rather than an inference.
      */
     val loggedEntries: Flow<List<LoggedEntry>> = combine(
         repository.observeRecentLoggedMeals(LOG_FEED_LIMIT),
         repository.observeRecentLoggedDoses(LOG_FEED_LIMIT),
-        repository.observeQueuedDedupKeys(listOf(OutboxKind.MEAL, OutboxKind.DOSE)),
-    ) { meals, doses, queued ->
-        val rows = meals.map { it.toLoggedEntry(queued) } + doses.map { it.toLoggedEntry(queued) }
+    ) { meals, doses ->
+        val rows = meals.map { it.toLoggedEntry() } + doses.map { it.toLoggedEntry() }
         rows
             // Totally ordered, not merely sorted by time: two rows can share a grid slot (the event ts
             // is snapped to the 5-min grid), and an unstable order would reshuffle the list under the
@@ -3002,29 +3396,72 @@ class AppContainer(context: Context) {
     }
 
     /**
-     * Remove a logged entry the user has decided against. Reuses the undo path's single deletion
-     * transaction, and inherits its refusal: with the push already drained the server holds the event,
-     * the API has no DELETE, and the next WS catch-up would re-hydrate it by `clientId` — so nothing is
-     * removed and [PushWithdrawal.ALREADY_SENT] comes back for the caller to say so.
-     *
-     * The re-run is conditional for the same reason: on the refusal NOTHING was deleted, so no channel
-     * moved and a cycle would only recompute the forecast it already published.
+     * Remove a logged entry the user has decided against. Unconditional: the same tombstone path the
+     * undo takes, with no refusal branch left to have.
      */
-    suspend fun deleteLoggedEntry(entry: LoggedEntry): PushWithdrawal = when (entry.kind) {
-        CurveKind.CARB -> repository.deleteCommittedMeal(
-            entry.rowId, mealDedupKey(entry.clientId), nsTreatmentDedupKey(entry.clientId),
-        )
-        CurveKind.INSULIN -> repository.deleteCommittedDose(
-            entry.rowId, doseDedupKey(entry.clientId), nsTreatmentDedupKey(entry.clientId),
-        )
-    }.also { if (it != PushWithdrawal.ALREADY_SENT) reforecastAfterCurveWrite() }
+    suspend fun deleteLoggedEntry(entry: LoggedEntry) {
+        when (entry.kind) {
+            CurveKind.CARB -> tombstoneAndPushMeal(entry.rowId)
+            CurveKind.INSULIN -> tombstoneAndPushDose(entry.rowId)
+        }
+        reforecastAfterCurveWrite()
+    }
+
+    /**
+     * Rewrite a logged meal, keeping its identity, and re-push it under the same key.
+     *
+     * The shape params are re-resolved from the edited GI exactly as the logging path resolves them,
+     * and the stored appearance curve is rescaled to the edited grams by the repository writer, so
+     * an edited meal reconstructs through the shape a freshly logged one would. The push supersedes
+     * whatever is queued under that key — a create still pending, or an earlier edit.
+     */
+    suspend fun editLoggedMeal(entry: LoggedEntry, grams: Double, gi: Double?, tsMs: Long) {
+        val now = System.currentTimeMillis()
+        val old = repository.loggedMealById(entry.rowId) ?: return
+        val shape = gi?.let { GiToGamma.paramsForGi(it) }
+        val edited = repository.editLoggedMeal(
+            old.copy(
+                tsMs = tsMs,
+                grams = grams,
+                gi = gi,
+                k = shape?.k ?: old.k,
+                theta = shape?.theta ?: old.theta,
+                durationMin = shape?.durationMin ?: old.durationMin,
+            ),
+            now,
+        ) ?: return
+        outboxEnqueuer.enqueueMeal(edited.toMealEventDto(), now)
+        remirrorEditedTreatment(edited.clientId) {
+            nightscoutEnqueuer.enqueueMeal(edited, now, holdMs = pushHoldMs())
+        }
+        reforecastAfterCurveWrite()
+    }
+
+    /**
+     * The dose twin of [editLoggedMeal].
+     *
+     * [requireLoggableDose] guards the edit as it guards a write: the action curve scales linearly
+     * with the amount, so a non-finite one enters IOB as NaN, where it defeats the ceiling rail
+     * outright — every comparison against NaN being false.
+     */
+    suspend fun editLoggedDose(entry: LoggedEntry, units: Double, tsMs: Long) {
+        requireLoggableDose(units)
+        val now = System.currentTimeMillis()
+        val old = repository.loggedDoseById(entry.rowId) ?: return
+        val edited = repository.editLoggedDose(old.copy(tsMs = tsMs, units = units), now) ?: return
+        outboxEnqueuer.enqueueDose(edited.toDoseEventDto(), now)
+        remirrorEditedTreatment(edited.clientId) {
+            nightscoutEnqueuer.enqueueDose(edited, now, holdMs = pushHoldMs())
+        }
+        reforecastAfterCurveWrite()
+    }
 
     /** The withdrawal window, in minutes, and its writer — the Logs panel's own knob. */
     val pushHoldMin: Flow<Int> get() = settingsStore.pushHoldMin
 
     suspend fun setPushHoldMin(minutes: Int) = settingsStore.setPushHoldMin(minutes)
 
-    private fun LoggedMealEntity.toLoggedEntry(queued: Set<String>) = LoggedEntry(
+    private fun LoggedMealEntity.toLoggedEntry() = LoggedEntry(
         rowId = id,
         clientId = clientId,
         kind = CurveKind.CARB,
@@ -3038,10 +3475,11 @@ class AppContainer(context: Context) {
         // at once — and a phrase rendered here would be the copy those surfaces later disagreed over.
         gi = gi,
         detail = note,
-        state = stateFor(mealDedupKey(clientId), queued),
+        updatedAtMs = updatedAt,
+        mutatedAtMs = mutatedAtMs,
     )
 
-    private fun LoggedDoseEntity.toLoggedEntry(queued: Set<String>) = LoggedEntry(
+    private fun LoggedDoseEntity.toLoggedEntry() = LoggedEntry(
         rowId = id,
         clientId = clientId,
         kind = CurveKind.INSULIN,
@@ -3053,11 +3491,9 @@ class AppContainer(context: Context) {
         // The resolved insulin the writer persisted — the clinical preset or the custom type, i.e. the
         // curve this row actually reconstructs through, not whatever chip was on screen.
         detail = note,
-        state = stateFor(doseDedupKey(clientId), queued),
+        updatedAtMs = updatedAt,
+        mutatedAtMs = mutatedAtMs,
     )
-
-    private fun stateFor(dedupKey: String, queued: Set<String>): LogState =
-        if (dedupKey in queued) LogState.COMMITTED else LogState.DELIVERED
 
     /** Receipt/dialog numerals: integral amounts read as "45", a half unit still as "4.5". */
     private fun fmtAmount(v: Double): String =
@@ -3135,6 +3571,28 @@ class AppContainer(context: Context) {
         }.distinctUntilChanged()
 
     /**
+     * What to call the VIEWED sensor in the bottom bar, with the sensor-name privacy setting applied.
+     *
+     * Resolved here rather than in the composable, deliberately. That chip sits in the chrome of every
+     * screen in the app and recomposes on every reading and every clock tick, and `shortName` does string
+     * work per call — so the label is computed when the sensor or the setting changes and at no other time.
+     *
+     * With names hidden this is the sensor's persisted ordinal and nothing else. One family builds its
+     * advertised name out of the number printed on the sensor, so a photograph of any screen carrying that
+     * name carries the serial with it.
+     */
+    val viewedSourceLabel: Flow<String?> =
+        combine(viewedSource, settingsStore.showSensorNames) { d, showNames ->
+            d?.incidentalName(showNames)
+        }.distinctUntilChanged()
+
+    /** The same, for the believed sensor, where the CGM settings read-out names it. */
+    val authoritativeSourceLabel: Flow<String?> =
+        combine(authoritativeSource, settingsStore.showSensorNames) { d, showNames ->
+            d?.incidentalName(showNames)
+        }.distinctUntilChanged()
+
+    /**
      * Bottom-bar tap: step to the next ACTIVE sensor, in the order the phone met them, wrapping
      * through the authoritative one.
      *
@@ -3197,6 +3655,11 @@ class AppContainer(context: Context) {
      * though neither had ever been stored per source. Widening the DRAWN history fixes both without
      * touching what is believed: [latestReading], the alarm engine, the `sample` projection and the
      * model's own context all still read the one authoritative source (§3.1).
+     *
+     * **Scoped to the VIEWED source, which is usually the authoritative one.** Stepping the bottom bar
+     * to another active sensor re-points the trace at it: still its whole model class, with the viewed
+     * source breaking a contested grid slot, so where both sensors hold a reading you see the one you
+     * asked for and where only the other does it backfills. Nothing about authority moves with it.
      */
     val dashboardReadings: Flow<List<CgmReading>> =
         combine(viewedSource, historyLoadedFromMs) { d, from -> d to from }
@@ -3256,6 +3719,40 @@ class AppContainer(context: Context) {
     }
 
     /**
+     * The two readings every glance surface needs, as one value.
+     *
+     * The pair is the guard, not a convenience: [latestReading] is the newest row whatever its
+     * provenance, and a promoted reconstruction is a row like any other. Passing it in as the
+     * current BG is the mistake that puts a model's number on the always-on notification, the
+     * predictive alert and the home and lock widgets, and it is a mistake a single value cannot
+     * make.
+     */
+    val glanceReadings: Flow<GlanceReadings> = authoritativeSource.flatMapLatest { d ->
+        if (d == null) {
+            flowOf(GlanceReadings.EMPTY)
+        } else {
+            combine(
+                repository.observeLatestReading(d.id),
+                repository.observeLastMeasuredReading(d.id),
+            ) { latest, measured -> GlanceReadings.of(latest, measured) }
+        }
+    }
+
+    /**
+     * The VIEWED source's newest reading — for the bottom bar's sensor chip, which names a sensor and
+     * shows its link quality and so must describe ONE of them. [latestReading] stays authoritative and
+     * still drives the BG value, the trend arrow and the staleness verdict beside it: those answer
+     * "what is my glucose", which the believed sensor alone gets to say.
+     *
+     * Equal to [latestReading] whenever the panel is on the authoritative source, which is nearly
+     * always, so the second observer costs nothing in the ordinary case.
+     */
+    val viewedReading: Flow<CgmReading?> = viewedSource.flatMapLatest { d ->
+        if (d == null) flowOf(null) else repository.observeLatestReading(d.id)
+    }
+
+
+    /**
      * IOB/COB (§3.6-F) recomputed off-main on ANY trigger that can change it: a reading emit, a scalar
      * `sample` write (mood/steps), AND a logged dose/meal. Meal/dose events no longer project onto
      * `sample` (the carb/bolus/basal scalar columns were retired, §3.1), so they are picked up via
@@ -3313,7 +3810,6 @@ class AppContainer(context: Context) {
     val predictiveAlertRaised = MutableStateFlow(false)
 
     // ─── Hill-climb minigame (cosmetic; reads the record, writes nothing) ─────────────────────
-
 
     /** The chosen run's window: [fromMs] through to the newest reading. A one-shot read of the same
      *  CLASS-scoped range query the panel observes — the terrain IS the panel's trace, so a track cut
@@ -3388,7 +3884,7 @@ class AppContainer(context: Context) {
     val bgPulses: Flow<BgPulses> by lazy {
         combine(latestReading, syncStatus, watchSecurity) { latest, sync, watch ->
             val serverToken = (sync.wsCursor ?: 0L) + sync.alertCount +
-                sync.modelPushes.values.sumOf { it.count }
+                sync.forecastStream.values.sumOf { it.sent }
             BgPulses(
                 server = serverToken,
                 cgm = latest?.tsMs ?: 0L,
@@ -3397,13 +3893,38 @@ class AppContainer(context: Context) {
         }
     }
 
-    /** Whether the public build's first-run disclaimer has been acknowledged (false on a fresh
-     *  install and after a full reset). Read only by the public flavor's `Disclaimer`. */
-    val disclaimerAcknowledged: Flow<Boolean> get() = settingsStore.disclaimerAcknowledged
-    suspend fun acknowledgeDisclaimer() = settingsStore.acknowledgeDisclaimer()
+    /** The user-configured TOTAL sensor service life (days, 3–30, default 15), for the CGM-panel slider.
+     *  Only the total is a setting now — the elapsed part comes from the sensor (see [sensorExpiryMs]). */
+    val sensorLifeDays: Flow<Int> get() = settingsStore.sensorLifeDays
 
-    /** I11 — the user-entered CGM sensor-lifetime expiry instant (epoch-ms), or null when unset. */
-    val sensorExpiryMs: Flow<Long?> get() = settingsStore.sensorExpiryMs
+    // these synchronously off @Volatiles to decide whether to raise the keep-screen-on AOD surface,
+    // kept current by collectors on the persisted flags. The activity reads `aggressiveShowGlucose`
+    // (live flow) for its content and this snapshot for its window brightness at onCreate. ──────────
+    @Volatile
+    var aggressiveScanSnapshot: Boolean = false
+        private set
+
+    @Volatile
+    var aggressiveOnlyChargingSnapshot: Boolean = false
+        private set
+
+    @Volatile
+    var aggressiveShowGlucoseSnapshot: Boolean = true
+        private set
+
+    val aggressiveScanEnabled: Flow<Boolean> get() = settingsStore.aggressiveScanEnabled
+
+    val aggressiveShowGlucose: Flow<Boolean> get() = settingsStore.aggressiveShowGlucose
+
+    val aggressiveOnlyCharging: Flow<Boolean> get() = settingsStore.aggressiveOnlyCharging
+
+    suspend fun setAggressiveScanEnabled(on: Boolean) = settingsStore.setAggressiveScanEnabled(on)
+
+    suspend fun setAggressiveShowGlucose(on: Boolean) = settingsStore.setAggressiveShowGlucose(on)
+
+    suspend fun setAggressiveOnlyCharging(on: Boolean) = settingsStore.setAggressiveOnlyCharging(on)
+
+    // ─── Alert actuators (Phase 7B — per-band sound + K90 vibration; kv-backed via SettingsStore) ──
 
     /** Set/renew the sensor lifetime from a user-entered remaining duration; stores the absolute
      *  expiry so the countdown survives restarts. */
@@ -3414,28 +3935,44 @@ class AppContainer(context: Context) {
 
     suspend fun clearSensorLifetime() = settingsStore.clearSensorExpiry()
 
+    /** Whether the public build's first-run disclaimer has been acknowledged (false on a fresh
+     *  install and after a full reset). Read only by the public flavor's `Disclaimer`. */
+    val disclaimerAcknowledged: Flow<Boolean> get() = settingsStore.disclaimerAcknowledged
+
+    suspend fun acknowledgeDisclaimer() = settingsStore.acknowledgeDisclaimer()
+    suspend fun setSensorLifeDays(days: Int) = settingsStore.setSensorLifeDays(days)
+
+    /**
+     * The sensor's derived expiry instant (epoch-ms): the sensor's own start — anchored off the latest
+     * reading's `minFromStart` (sensor minutes-since-activation) — plus the configured total service
+     * life. Null until a reading carrying a sensor age arrives. The BG panel + CGM panel count it down.
+     * Sensor-sourced (the elapsed part is read from the connected session); only the total life is a
+     * user setting (replaces the old user-entered absolute-expiry knob).
+     */
+    val sensorExpiryMs: Flow<Long?> by lazy {
+        combine(latestReading, sensorLifeDays) { latest, lifeDays ->
+            val mfs = latest?.minFromStart ?: return@combine null
+            val startMs = latest.tsMs - mfs.toLong() * 60_000L
+            startMs + lifeDays.toLong() * 86_400_000L
+        }
+    }
+
     /**
      * The instant the active sensor's warm-up ends (epoch-ms), or null whenever there is no such instant
-     * to state. Anchored on the latest reading's `minFromStart` — the sensor's own minutes-since-
-     * activation, the one age a passive advertisement carries — taken against that reading's RAW receive
-     * time, plus the ACTIVE source's persisted warm-up window.
+     * to state. Derived off the latest reading's `minFromStart` pinned to its RAW RECEIVE time, plus the
+     * ACTIVE source's persisted warm-up window.
      *
-     * `rxWallMs`, not `tsMs`: the grid stamp is the same wall clock rounded to the nearest 5 minutes,
-     * while the chip counts this instant down against an unrounded `System.currentTimeMillis()`. Anchoring
-     * on it would carry ±2.5 min of error, and — because `tsMs` holds still across a slot while
-     * `minFromStart` ticks each minute — would walk the deadline backwards within a slot and jump it
-     * forwards at the boundary. The raw receive time advances in lockstep with the sensor's age, so the
-     * reconstructed activation instant stays put.
+     * The anchor is `rxWallMs`, not the grid stamp. `tsMs` holds still across a five-minute slot while
+     * `minFromStart` ticks every minute, so subtracting one from the other makes the reconstructed
+     * activation instant recede a minute per minute: the countdown runs visibly backwards within a slot
+     * and jumps forward at each boundary, and the ±2.5 min snap alone can put the deadline behind `now`
+     * on arrival. `rxWallMs` advances in lockstep with the sensor's own age, so the reconstruction holds
+     * still — which is what makes it an anchor.
      *
      * Null unless warm-up is genuinely in progress: it requires a latest reading actually flagged
-     * `WARMUP` (the pipeline's own verdict — on this branch [com.t1dm.cgm.ReadingClassifier]'s, which is
-     * that same window applied to that same age), a sensor age to anchor on, and an active source whose
-     * window is known. Anything missing fails closed to null and the BG panel keeps its two-state expiry
+     * `WARMUP` (the pipeline's own verdict — see `ReadingClassifier`), a sensor age to anchor on, and
+     * an active source whose window is known. Anything missing fails closed to null and the BG panel keeps its two-state expiry
      * countdown rather than inventing an instant.
-     *
-     * Deliberately NOT derived from [sensorExpiryMs], which on this branch is a user-entered absolute
-     * instant with no sensor age behind it: the two countdowns answer different questions and only this
-     * one is sensor-sourced.
      */
     val sensorWarmupEndMs: Flow<Long?> by lazy {
         combine(latestReading, authoritativeSource) { latest, active ->
@@ -3445,40 +3982,6 @@ class AppContainer(context: Context) {
             latest.rxWallMs - mfs.toLong() * 60_000L + window.toLong() * 60_000L
         }
     }
-
-    /**
-     * CGM panel: retune the ACTIVE source's sensor warm-up window (minutes). Routed through the registry
-     * rather than straight at the repository because the live [com.t1dm.cgm.AidexXSource] holds the
-     * classifier the next advert is judged against; a write that reached only the column would leave the
-     * pipeline applying the old window until the process restarted.
-     *
-     * Nothing to do with the INFERENCE warm-up (`setWarmupHours`): that is how much trailing history the
-     * forecast waits for, a wholly separate concept that happens to share a word.
-     */
-    suspend fun setSensorWarmupMin(minutes: Int) {
-        val id = repository.authoritativeSourceId() ?: return
-        registry.setWarmupWindowMin(id, minutes)
-    }
-
-    /** Settings → CGM source "Remove" — take a retired sensor off the recorded list. A display flag:
-     *  the source stays on record, so its readings stay in the BG panel's model-wide history. */
-    fun hideCgm(id: String) = registry.hide(com.t1dm.core.model.CgmSourceId(id))
-
-    /** Settings → CGM source: make a sensor the one every value on screen is derived from. It starts
-     *  being read if it was not; the sensor it replaces keeps being read, so promoting is not a
-     *  disconnection. */
-    /** The authoritative sensor changed: drop the forecast, which was conditioned on the outgoing
-     *  sensor's history and describes nothing beside the incoming sensor's glucose. */
-    fun invalidateInferenceOnSourceChange() = inferenceController.onCgmSourceChanged()
-
-    fun makeAuthoritativeCgm(id: String) =
-        registry.setAuthoritative(com.t1dm.core.model.CgmSourceId(id))
-
-    /** Settings → CGM source: start reading a sensor. Additive — nothing else stops. */
-    fun activateCgm(id: String) = registry.activate(com.t1dm.core.model.CgmSourceId(id))
-
-    /** Settings → CGM source: stop reading a sensor. Refused for the authoritative one. */
-    fun deactivateCgm(id: String) = registry.deactivate(com.t1dm.core.model.CgmSourceId(id))
 
     private fun serverLight(sync: SyncStatus, profile: ServerProfile?): ReachLight = when {
         profile == null -> ReachLight(LinkHealth.OFF, "no server profile configured")
@@ -3616,10 +4119,42 @@ class AppContainer(context: Context) {
     fun rotateWatchKeys() = watchLink.rotate()
     fun unpairWatch() = watchLink.unpair()
 
+    /** The authoritative sensor changed: drop the forecast, which was conditioned on the outgoing
+     *  sensor's history and describes nothing beside the incoming sensor's glucose. */
+    fun invalidateInferenceOnSourceChange() = inferenceController.onCgmSourceChanged()
+
+    fun makeAuthoritativeCgm(id: String) =
+        registry.setAuthoritative(com.t1dm.core.model.CgmSourceId(id))
+
+    /** CGM panel: start reading a sensor. Additive — nothing else stops. */
+    fun activateCgm(id: String) = registry.activate(com.t1dm.core.model.CgmSourceId(id))
+
+    /** CGM panel: stop reading a sensor. Refused for the authoritative one. */
+    fun deactivateCgm(id: String) = registry.deactivate(com.t1dm.core.model.CgmSourceId(id))
+
+    /** CGM panel "Remove" — take a retired sensor off the list. A display flag: the source stays on
+     *  record, so its readings stay in the BG panel's model-wide history. */
+    fun hideCgm(id: String) = registry.hide(com.t1dm.core.model.CgmSourceId(id))
+
+    /**
+     * Settings → CGM: retune the ACTIVE source's sensor warm-up window (minutes). Routed through the registry
+     * rather than straight at the repository so its in-memory descriptor set moves with the column — a
+     * later re-sighting re-upserts that set, and a stale copy there would overwrite the edit.
+     *
+     * Nothing to do with the INFERENCE warm-up (`setWarmupHours`): that is how much trailing history the
+     * forecast waits for, a wholly separate concept that happens to share a word.
+     */
+    suspend fun setSensorWarmupMin(minutes: Int) {
+        val id = repository.authoritativeSourceId() ?: return
+        registry.setWarmupWindowMin(id, minutes)
+    }
+
     /** The FGS 5-min grid tick calls this to seal + push one glance (suspends in low-power mode). */
     suspend fun pushToWatch(nowMs: Long) = watchLink.pushNow(nowMs)
 
     companion object {
+        /** The adoption document's name in the app's external files directory — see [ct5ImportSource]. */
+
         /** F6 — hysteresis: once the thermal gate has tripped, inference resumes only after the die cools
          *  to `thresholdC - THERMAL_RESUME_MARGIN_C`, so a reading hovering at the threshold cannot flap
          *  the forecast on and off cycle-to-cycle. */

@@ -68,6 +68,7 @@ data class RailToggles(
     val iobCeiling: Boolean = true,
     val mandatoryConfirmation: Boolean = true,
     val hypoTreatment: Boolean = true,
+    val doseHistoryEdited: Boolean = true,
 ) {
     companion object {
         /** All optional rails disabled — the "all-rails-off = identity" CI invariant (Phase 4 §7). */
@@ -77,6 +78,7 @@ data class RailToggles(
             iobCeiling = false,
             mandatoryConfirmation = false,
             hypoTreatment = false,
+            doseHistoryEdited = false,
         )
     }
 }

@@ -12,7 +12,6 @@ import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.PointerInputScope
 import com.t1dm.core.model.CurveKind
 import com.t1dm.core.model.LogMarker
-import com.t1dm.core.model.LogState
 import kotlin.math.abs
 
 /**
@@ -73,27 +72,18 @@ private const val LOG_MARKER_LANE_GAP_DP = 2.5f
 internal const val LOG_MARKER_BAND_DP =
     LOG_MARKER_FOOT_DP + LOG_MARKER_DP + LOG_MARKER_LANE_GAP_DP + LOG_MARKER_DP
 
-/** A DELIVERED mark's fixed alpha: present and legible, but plainly quieter than a committed one at any
- *  point in its fade — including the static value motion-off holds. */
-internal const val LOG_MARKER_DELIVERED_ALPHA = 0.5f
-
-/** The committed pulse's floor and ceiling. The floor stays above [LOG_MARKER_DELIVERED_ALPHA]'s
- *  neighbourhood only at its peak — the whole point is that a committed mark BREATHES past a delivered
- *  one rather than sitting at a second fixed level. */
-internal const val LOG_MARKER_PULSE_MIN_ALPHA = 0.3f
-internal const val LOG_MARKER_PULSE_MAX_ALPHA = 1f
-
 /**
- * What a committed mark holds when motion is OFF. Deliberately the pulse's CEILING and not a snapped
- * fade: `motionSpec` would collapse the animation to a snap, and a snapped 1→0 fade is invisible — the
- * marker would stop saying anything exactly when the user asked for a static UI (Pulse.kt makes the
- * same choice for the same reason). Held at the ceiling it is still unmistakably louder than
- * [LOG_MARKER_DELIVERED_ALPHA], it simply does not breathe.
+ * The one alpha a mark has: present and legible, and the same for every log.
+ *
+ * There used to be two, and a pulse between them, saying whether the server had acknowledged the
+ * row. Nothing replaces it, and that is the design. The claim was honest-but-unproven — the outbox
+ * has no SENT state, so an absent queue row means "sent", "permanently rejected" and "size-evicted"
+ * alike — and it no longer decides anything either, now that a delete does not depend on whether
+ * the push has drained. Reinstating a per-mark indicator would put back exactly the claim its own
+ * documentation admitted it could not make. The queue's depth and age are on the Network panel,
+ * which is where a statement about the server belongs.
  */
-internal const val LOG_MARKER_STATIC_ALPHA = LOG_MARKER_PULSE_MAX_ALPHA
-
-/** One leg of the committed fade. Slow enough to read as breathing rather than blinking. */
-internal const val LOG_MARKER_PULSE_MS = 950
+internal const val LOG_MARKER_ALPHA = 0.85f
 
 /** The pixel distance within which two marks in the SAME lane combine, at the current density. */
 internal fun logMarkerSeparationPx(dpPx: Float): Float = (LOG_MARKER_DP + LOG_MARKER_GAP_DP) * dpPx
@@ -173,9 +163,6 @@ internal fun markerLane(markers: List<LogMarker>, kind: CurveKind): MarkerLane {
  */
 internal data class MarkerCluster(
     val xPx: Float,
-    /** True when ANY member is still awaiting the server, which is what makes the whole cluster pulse:
-     *  a combined mark must not go quiet merely because most of what it stands for has landed. */
-    val committed: Boolean,
     val from: Int,
     val to: Int,
 ) {
@@ -223,16 +210,14 @@ internal fun clusterLogMarkers(
     var count = 0
     var sumX = 0.0
     var lastX = 0f
-    var committed = false
     // The run of `markers` the open cluster spans. Contiguous by construction: the cull only ever drops
     // a prefix and a suffix of an ascending list.
     var firstIdx = 0
     var lastIdx = 0
     fun flush() {
-        if (count > 0) out.add(MarkerCluster((sumX / count).toFloat(), committed, firstIdx, lastIdx + 1))
+        if (count > 0) out.add(MarkerCluster((sumX / count).toFloat(), firstIdx, lastIdx + 1))
         count = 0
         sumX = 0.0
-        committed = false
     }
     for (i in markers.indices) {
         val m = markers[i]
@@ -245,7 +230,6 @@ internal fun clusterLogMarkers(
         sumX += x
         lastX = x
         lastIdx = i
-        if (m.state == LogState.COMMITTED) committed = true
     }
     flush()
     return out
@@ -381,8 +365,7 @@ internal suspend fun PointerInputScope.detectLogMarkerTaps(onTap: (Offset) -> Un
  * rather than as a colour because this runs inside the draw lambda, which the committed pulse re-enters
  * at the display's refresh rate.
  *
- * [committedAlpha] is the live pulse and must be read inside the Canvas's draw lambda, so a running
- * fade invalidates the draw phase alone and never a composition.
+ * Every mark draws at [LOG_MARKER_ALPHA]. There is no per-mark state left to render.
  */
 internal fun DrawScope.drawLogMarkers(
     clusters: List<MarkerCluster>,
@@ -390,7 +373,6 @@ internal fun DrawScope.drawLogMarkers(
     tint: ColorFilter,
     sizePx: Float,
     laneTopY: Float,
-    committedAlpha: Float,
 ) {
     if (clusters.isEmpty()) return
     val glyph = Size(sizePx, sizePx)
@@ -399,7 +381,7 @@ internal fun DrawScope.drawLogMarkers(
             with(painter) {
                 draw(
                     glyph,
-                    alpha = if (c.committed) committedAlpha else LOG_MARKER_DELIVERED_ALPHA,
+                    alpha = LOG_MARKER_ALPHA,
                     colorFilter = tint,
                 )
             }

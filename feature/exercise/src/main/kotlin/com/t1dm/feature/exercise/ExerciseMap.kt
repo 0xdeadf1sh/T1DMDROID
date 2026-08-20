@@ -27,7 +27,12 @@ import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.BoundingBox
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.CustomZoomButtonsController
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Point
 import org.osmdroid.views.MapView
+import org.osmdroid.views.Projection
+import org.osmdroid.views.overlay.Overlay
 import org.osmdroid.views.overlay.Polyline
 import java.io.File
 
@@ -51,8 +56,16 @@ import java.io.File
  * it here. What does leave, if the user exports one, is the archive; see `ArchiveWriter`.
  */
 @Composable
-fun ExerciseMap(track: List<TrackPoint>, modifier: Modifier = Modifier) {
+fun ExerciseMap(
+    track: List<TrackPoint>,
+    modifier: Modifier = Modifier,
+    /** Where the review's slider says the bout was, or null when nothing recorded says. */
+    cursor: TrackFix? = null,
+) {
     val context = LocalContext.current
+    // Read HERE, in the composable body. `CompositionLocal.current` and `MaterialTheme.colorScheme`
+    // are composable-only getters and cannot be reached from `AndroidView`'s `update`, which is a
+    // plain `(T) -> Unit`; the Int is what crosses.
     val ink = MaterialTheme.colorScheme.primary.toArgb()
 
     val host = remember(context) { MapHost(context) }
@@ -78,6 +91,12 @@ fun ExerciseMap(track: List<TrackPoint>, modifier: Modifier = Modifier) {
         }
     }
 
+    // Registered AFTER the polyline, so the dot draws over the line rather than under it. An
+    // osmdroid overlay rather than a Compose layer: the MapView is opaque and self-drawing, so
+    // anything laid over it in Compose would not pan or zoom with the tiles beneath.
+    val dot = remember(map) { CursorOverlay().also { map.overlays.add(it) } }
+    val cursorPoint = remember(cursor) { cursor?.let { GeoPoint(it.lat, it.lon) } }
+
     // A camera fitted before the view has been measured lands on a zero-sized viewport, so the first fit
     // is deferred to the layout that gives it one. Registered HERE, once per map, rather than from the
     // update lambda: `update` runs on every recomposition and the view is still unmeasured over the
@@ -85,10 +104,30 @@ fun ExerciseMap(track: List<TrackPoint>, modifier: Modifier = Modifier) {
     // the points captured when it was registered. It reads the current points instead, so a track that
     // arrived while the view was still unmeasured is the one it fits.
     val latest by rememberUpdatedState(points)
+    // The fit is ONE-SHOT, and a plain holder rather than snapshot state so setting it cannot
+    // invalidate composition. `update` now runs on every detent of the review's slider, and without
+    // this the camera would re-fit on each one — snapping back and undoing a pan the user had just
+    // made, with no affordance to resume following.
+    val fitted = remember(map, points) { booleanArrayOf(false) }
     DisposableEffect(map) {
-        val fit = MapView.OnFirstLayoutListener { _, _, _, _, _ -> fitTo(map, latest) }
+        val fit = MapView.OnFirstLayoutListener { _, _, _, _, _ ->
+            if (!fitted[0] && latest.isNotEmpty()) {
+                fitTo(map, latest)
+                fitted[0] = true
+            }
+        }
         map.addOnFirstLayoutListener(fit)
         onDispose { map.removeOnFirstLayoutListener(fit) }
+    }
+
+    // The polyline's geometry is rebuilt HERE and not in `update`. `Polyline.setPoints` rebuilds a
+    // `LinearRing`, an allocation proportional to the fix count — an hour's run is around nine
+    // hundred of them — and `update` now runs whenever the cursor moves.
+    LaunchedEffect(map, points, ink) {
+        line.setPoints(points)
+        line.outlinePaint.color = ink
+        line.outlinePaint.strokeWidth = TRACK_WIDTH_PX
+        map.invalidate()
     }
 
     val owner = LocalLifecycleOwner.current
@@ -108,14 +147,56 @@ fun ExerciseMap(track: List<TrackPoint>, modifier: Modifier = Modifier) {
         factory = { map },
         modifier = modifier,
         update = { view ->
-            line.setPoints(points)
-            line.outlinePaint.color = ink
-            line.outlinePaint.strokeWidth = TRACK_WIDTH_PX
-            if (view.width > 0 && view.height > 0) fitTo(view, points)
+            dot.at = cursorPoint
+            dot.fillArgb = ink
+            if (!fitted[0] && view.width > 0 && view.height > 0 && points.isNotEmpty()) {
+                fitTo(view, points)
+                fitted[0] = true
+            }
+            // The camera never follows the cursor: no centre, no animate, no zoom on a cursor
+            // change. This panel exists to show the whole route, an auto-camera would fight a user
+            // who has panned, and the scrub graph beside it has no auto-follow either — the two
+            // halves of one review must not disagree about whether the cursor drives a viewport.
             view.invalidate()
         },
     )
 }
+
+/**
+ * The position dot: a filled disc with a light ring around it.
+ *
+ * `Overlay` rather than `Marker`, for the same reason the polyline is built without the map:
+ * `Marker(mapView)` attaches a default info window that inflates osmdroid's bubble layout, which is
+ * a layout and a resource dependency bought for nothing on a track that is not tappable. Only
+ * `draw(Canvas, Projection)` is overridden — osmdroid's three-argument `draw` delegates to it.
+ */
+private class CursorOverlay : Overlay() {
+    var at: GeoPoint? = null
+    var fillArgb: Int = 0
+
+    private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+    private val halo = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = CURSOR_HALO_PX
+        color = CURSOR_HALO_ARGB
+    }
+    private val px = Point()
+
+    override fun draw(canvas: Canvas, projection: Projection) {
+        val p = at ?: return
+        projection.toPixels(p, px)
+        fill.color = fillArgb
+        canvas.drawCircle(px.x.toFloat(), px.y.toFloat(), CURSOR_RADIUS_PX, fill)
+        canvas.drawCircle(px.x.toFloat(), px.y.toFloat(), CURSOR_RADIUS_PX, halo)
+    }
+}
+
+private const val CURSOR_RADIUS_PX = 9f
+private const val CURSOR_HALO_PX = 3f
+
+/** Raw white, outside the palette, for the reason `TRACK_WIDTH_PX` is in raw pixels: this ring has
+ *  to separate the dot from arbitrary third-party raster, not from the app's own surface. */
+private val CURSOR_HALO_ARGB = 0xE6FFFFFF.toInt()
 
 /**
  * The map and the tile provider under it, built off the composition and owned until the panel is gone.

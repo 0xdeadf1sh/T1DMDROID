@@ -13,6 +13,18 @@ import org.junit.Test
 
 class NightscoutMappersTest {
 
+    /**
+     * The bridge sends what a SENSOR read. `sgv` has no way to say "a model reconstructed this", the
+     * host has no route to take a record back out, and the third party would carry it as glucose for
+     * good. The second of two independent stops; the first is that promotion files no bridge row.
+     */
+    @Test
+    fun `a promoted reconstruction is never bridged`() {
+        val recon = sample(112).copy(bgProvenance = ReadingProvenance.RECONSTRUCTED)
+        assertNull("a reconstruction must not reach the bridge", recon.toNsEntry(null))
+        assertEquals(112, sample(112).toNsEntry(null)?.sgv)
+    }
+
     private fun sample(bg: Int?, ts: Long = 1_787_000_000_000L, tz: Int = 180) = SampleEntity(
         ts = ts,
         tzOffsetMin = tz,

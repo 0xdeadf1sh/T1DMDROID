@@ -1,8 +1,13 @@
 package com.t1dm.app
 
+import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -12,9 +17,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -24,27 +29,23 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
-import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
-import android.content.Context
-import android.content.ContextWrapper
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.produceState
-import com.t1dm.app.widget.STALE_MIN
-import kotlinx.coroutines.delay
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -53,93 +54,104 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.text.font.FontFamily
-import com.t1dm.core.design.HapticEvent
-import com.t1dm.core.design.HapticStrength
-import com.t1dm.core.design.LocalAnimationsEnabled
-import com.t1dm.core.design.LocalDeathMode
-import com.t1dm.core.design.LocalT1dmHaptics
-import com.t1dm.core.design.T1dmHaptics
-import com.t1dm.core.design.LocalT1dmSemantics
-import com.t1dm.core.design.SignalBars
-import com.t1dm.core.design.TimeOfDayIcon
-import com.t1dm.core.design.hapticClickable
-import com.t1dm.core.design.ThemeBackdrop
-import com.t1dm.core.design.navEnter
-import com.t1dm.core.design.navExit
-import com.t1dm.app.di.AppContainer.BolusAdviceUi
-import com.t1dm.app.di.LogHandle
-import com.t1dm.app.di.deleteReceipt
-import com.t1dm.app.di.logReceipt
-import com.t1dm.app.di.undoReceipt
-import com.t1dm.app.service.DoseCalcService
-import com.t1dm.app.service.ExerciseService
-import com.t1dm.feature.insulin.BolusCalculatorScreen
-import com.t1dm.core.model.CgmReading
-import com.t1dm.core.model.InferenceCause
-import com.t1dm.core.model.InferenceState
-import com.t1dm.core.model.ReadingFlag
-import com.t1dm.core.model.ReadingProvenance
-import com.t1dm.core.model.InsulinPresetSpec
-import com.t1dm.core.model.BezierCurve
-import com.t1dm.core.model.DkaTimeline
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
-import com.t1dm.app.di.AppContainer
+import com.t1dm.alerts.AlarmSeverity
+import com.t1dm.alerts.VibrationPreset
 import com.t1dm.app.backup.BackupRoute
-import com.t1dm.app.sync.SyncStatus
-import com.t1dm.app.sync.toPanelState
-import com.t1dm.feature.settings.NightscoutSettingsScreen
-import com.t1dm.feature.settings.ServerSettingsScreen
-import com.t1dm.feature.settings.DeathModeScreen
+import com.t1dm.app.di.AppContainer
+import com.t1dm.app.di.AppContainer.BolusAdviceUi
+import com.t1dm.app.di.LogHandle
+import com.t1dm.app.di.logReceipt
+import com.t1dm.app.di.undoReceipt
 import com.t1dm.app.notify.BgFormat
 import com.t1dm.app.notify.BgGlanceComputer
-import com.t1dm.core.model.SensitivityEstimate
-import com.t1dm.core.model.UnitSpace
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import com.t1dm.feature.dashboard.DashboardScreen
-import com.t1dm.feature.exercise.ExerciseScreen
-import com.t1dm.feature.exercise.ExerciseSessionScreen
-import com.t1dm.feature.exercise.reviewWindow
-import com.t1dm.core.model.ExerciseKind
-import com.t1dm.core.model.ExerciseSession
-import com.t1dm.core.model.TrackPoint
-import com.t1dm.feature.game.GameScreen
-import com.t1dm.core.model.CarTuning
-import com.t1dm.feature.hardware.HardwareScreen
-import com.t1dm.feature.insulin.InsulinScreen
-import com.t1dm.feature.insulin.InsulinTypeBuilderScreen
-import com.t1dm.feature.meals.FoodEditorScreen
-import com.t1dm.feature.meals.MealBuilderScreen
-import com.t1dm.feature.meals.MealEditorScreen
-import com.t1dm.feature.logs.LogsScreen
-import com.t1dm.feature.meals.MealsScreen
-import com.t1dm.core.model.Food
-import com.t1dm.core.model.SavedMeal
-import com.t1dm.feature.pubs.PubsScreen
-import com.t1dm.feature.models.ModelDetailScreen
-import com.t1dm.feature.models.LabScreen
-import com.t1dm.feature.models.LoraPanel
-import com.t1dm.feature.models.ModelsScreen
-import com.t1dm.core.model.CgEga
+import com.t1dm.app.service.DoseCalcService
+import com.t1dm.app.service.ExerciseService
+import com.t1dm.app.settings.SettingsStore
+import com.t1dm.app.sync.SyncStatus
+import com.t1dm.app.sync.toPanelState
+import com.t1dm.app.widget.STALE_MIN
+import com.t1dm.core.design.BundledPalettes
+import com.t1dm.core.design.HapticEvent
+import com.t1dm.core.design.HapticStrength
+import com.t1dm.core.design.LocalAnimationsEnabled
+import com.t1dm.core.design.LocalDeathMode
+import com.t1dm.core.design.LocalT1dmHaptics
+import com.t1dm.core.design.LocalT1dmSemantics
+import com.t1dm.core.design.SignalBars
+import com.t1dm.core.design.T1dmFontId
+import com.t1dm.core.design.T1dmHaptics
+import com.t1dm.core.design.ThemeBackdrop
+import com.t1dm.core.design.ThemeIds
+import com.t1dm.core.design.TimeOfDayIcon
+import com.t1dm.core.design.hapticClickable
+import com.t1dm.core.design.navEnter
+import com.t1dm.core.design.navExit
+import com.t1dm.core.design.parseThemeJson
 import com.t1dm.core.model.BASELINE_MODEL_ID
 import com.t1dm.core.model.BandCalibration
 import com.t1dm.core.model.BandCalibrationOutcome
 import com.t1dm.core.model.BaselineFit
+import com.t1dm.core.model.BezierCurve
+import com.t1dm.core.model.CarTuning
+import com.t1dm.core.model.CgEga
+import com.t1dm.core.model.CgmReading
+import com.t1dm.core.model.CurveKind
+import com.t1dm.core.model.DkaTimeline
 import com.t1dm.core.model.ErrorGridLattices
+import com.t1dm.core.model.ExerciseKind
+import com.t1dm.core.model.ExerciseSession
+import com.t1dm.core.model.Food
+import com.t1dm.core.model.InferenceCause
+import com.t1dm.core.model.InferenceState
+import com.t1dm.core.model.InsulinPresetSpec
+import com.t1dm.core.model.LogMarker
 import com.t1dm.core.model.ModelMetrics
 import com.t1dm.core.model.ModelPrediction
+import com.t1dm.core.model.ReadingFlag
+import com.t1dm.core.model.ReadingProvenance
+import com.t1dm.core.model.SavedMeal
+import com.t1dm.core.model.SensitivityEstimate
+import com.t1dm.core.model.TrackPoint
+import com.t1dm.core.model.UnitSpace
+import com.t1dm.data.T1dmRepository
+import com.t1dm.data.curve.CurveEngine
+import com.t1dm.data.curve.ExerciseDisposal
+import com.t1dm.data.settings.GraphSettingsStore
+import com.t1dm.feature.dashboard.CircadianScreen
+import com.t1dm.feature.dashboard.DashboardScreen
+import com.t1dm.feature.exercise.ExerciseScreen
+import com.t1dm.feature.exercise.ExerciseSessionScreen
+import com.t1dm.feature.exercise.reviewWindow
+import com.t1dm.feature.game.GameScreen
+import com.t1dm.feature.hardware.HardwareScreen
+import com.t1dm.feature.insulin.BolusCalculatorScreen
+import com.t1dm.feature.insulin.InsulinScreen
+import com.t1dm.feature.insulin.InsulinTypeBuilderScreen
+import com.t1dm.feature.logs.LogsScreen
+import com.t1dm.feature.meals.FoodEditorScreen
+import com.t1dm.feature.meals.MealBuilderScreen
+import com.t1dm.feature.meals.MealEditorScreen
+import com.t1dm.feature.meals.MealsScreen
+import com.t1dm.feature.models.LabScreen
+import com.t1dm.feature.models.LoraPanel
+import com.t1dm.feature.models.ModelDetailScreen
+import com.t1dm.feature.models.ModelsScreen
 import com.t1dm.feature.network.NetworkScreen
+import com.t1dm.feature.pubs.PubsScreen
 import com.t1dm.feature.security.SecurityPanelState
 import com.t1dm.feature.security.SecurityScreen
 import com.t1dm.feature.settings.AboutScreen
@@ -151,42 +163,33 @@ import com.t1dm.feature.settings.CurveParams
 import com.t1dm.feature.settings.CurveParamsScreen
 import com.t1dm.feature.settings.DataSettingsScreen
 import com.t1dm.feature.settings.DeathClockSettingsScreen
+import com.t1dm.feature.settings.DeathModeScreen
 import com.t1dm.feature.settings.DeviceTempAlertScreen
 import com.t1dm.feature.settings.DisplaySettingsScreen
-import com.t1dm.feature.settings.LocalSettingsFocus
-import com.t1dm.feature.settings.SettingsFocusController
-import com.t1dm.feature.settings.SettingsScreenKey
 import com.t1dm.feature.settings.ForecastSettingsScreen
 import com.t1dm.feature.settings.GraphSettingsScreen
+import com.t1dm.feature.settings.LocalSettingsFocus
+import com.t1dm.feature.settings.NightscoutSettingsScreen
 import com.t1dm.feature.settings.PowerSettingsScreen
 import com.t1dm.feature.settings.RecordedSource
+import com.t1dm.feature.settings.ServerSettingsScreen
+import com.t1dm.feature.settings.SettingsFocusController
 import com.t1dm.feature.settings.SettingsScreen
+import com.t1dm.feature.settings.SettingsScreenKey
 import com.t1dm.feature.settings.SignalSafetyScreen
 import com.t1dm.feature.settings.WatchSettingsScreen
+import com.t1dm.feature.stats.StatsScreen
 import com.t1dm.ui.graph.GraphFrame
 import com.t1dm.ui.graph.HindsightFrame
+import com.t1dm.ui.graph.MaskControls
 import com.t1dm.ui.graph.PredictedClock
 import com.t1dm.ui.graph.graphFrameOf
 import com.t1dm.ui.graph.hindsightFrameOf
-import com.t1dm.alerts.AlarmSeverity
-import com.t1dm.alerts.VibrationPreset
-import com.t1dm.app.settings.SettingsStore
-import com.t1dm.data.T1dmRepository
-import com.t1dm.data.curve.CurveEngine
-import com.t1dm.data.curve.ExerciseDisposal
-import com.t1dm.data.settings.GraphSettingsStore
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.PickVisualMediaRequest
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.asImageBitmap
 import com.t1dm.watch.WatchSecurityState
-import com.t1dm.feature.stats.StatsScreen
-import com.t1dm.feature.dashboard.CircadianScreen
-import com.t1dm.core.design.BundledPalettes
-import com.t1dm.core.design.T1dmFontId
-import com.t1dm.core.design.ThemeIds
-import com.t1dm.core.design.parseThemeJson
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** Map the `:watch` security state onto the feature-local panel model (keeps `:feature:security`
  *  free of a `:watch` dependency — the removable seam). */
@@ -314,8 +317,7 @@ fun T1dmApp(container: AppContainer) {
                     .consumeWindowInsets(padding)
                     .imePadding(),
             ) {
-                // Flavor-specific: a first-run modal in the public build, no-op in the personal one.
-                // It emits no layout node once acknowledged, so the column is the bare chrome after.
+                // Flavor-specific: real text in the public build, no-op in the personal build.
                 Disclaimer(container)
                 Breadcrumb(navController, container)
                 T1dmNavHost(
@@ -366,8 +368,8 @@ private suspend fun SnackbarHostState.postLogReceipt(
         duration = SnackbarDuration.Long,
     )
     if (result == SnackbarResult.ActionPerformed) {
-        val outcome = container.undoLog(handle)
-        showSnackbar(undoReceipt(handle, outcome), duration = SnackbarDuration.Long)
+        container.undoLog(handle)
+        showSnackbar(undoReceipt(handle), duration = SnackbarDuration.Long)
     }
 }
 
@@ -428,6 +430,7 @@ internal fun crumbsFor(route: String?, modelId: String?, editLabel: String? = nu
         "settings/curves" -> settings(Crumb("Curve & PK", null))
         "settings/cgm" -> settings(Crumb("CGM source", null))
         "settings/server" -> settings(Crumb("Server", null))
+        "settings/nightscout" -> settings(Crumb("Nightscout", null))
         "settings/watch" -> settings(Crumb("Watch", null))
         "settings/power" -> settings(Crumb("Low power", null))
         "settings/data" -> settings(Crumb("Reset", null))
@@ -795,15 +798,30 @@ private fun T1dmBottomBar(
     val reading by container.latestReading.collectAsState(null)
     val unit by container.statsRepository.unitSpace.collectAsState(UnitSpace.MgDl)
     // The VIEWED source, not the authoritative one: this chip names whichever sensor the BG panel is
-    // drawing, and tapping it steps to the next active sensor. Off the authoritative one it is the
-    // only thing on screen saying so, which is why it carries the marker rather than just the name.
-    val source by container.viewedSource.collectAsState(null)
+    // drawing, and tapping it steps to the next active sensor. Off the authoritative one the whole
+    // read-out takes [ColorScheme.tertiary] — name, value, arrow and unit together — which is the entire
+    // marker. It replaced a "• view" word appended to the name: a colour costs no width, and this row
+    // shares one line with the signal bars, where a longer sensor name already had none to spare.
+    //
+    // A pre-resolved LABEL rather than the descriptor: the sensor-name privacy setting is applied where
+    // the flow is built, so this composition — which recomposes on every reading and every clock tick,
+    // on every screen in the app — does no string work of its own.
+    val sourceLabel by container.viewedSourceLabel.collectAsState(null)
     val viewingOther by container.viewingNonAuthoritative.collectAsState(false)
+    // The chip's own reading, so its name and its signal bars describe the same sensor.
+    val viewedReading by container.viewedReading.collectAsState(null)
+
+    // ONE sensor's reading drives the whole read-out — value, arrow, age and staleness — and it is the
+    // VIEWED one, so the bar answers "what is the sensor I am looking at saying" rather than mixing two
+    // sensors' answers into one row. `reading` remains the authoritative sensor's and is what the alarm
+    // engine, the statistics, the dose calculator and the wire read; the two differ only while the panel
+    // is deliberately off the believed sensor, and the tint below is what says so at a glance.
+    val shown = if (viewingOther) viewedReading else reading
 
     // ONE clock for both the age chip and the staleness verdict. Fast while the reading is young so
     // the chip counts seconds honestly, coarse afterwards — the verdict only has to be right to within
     // a fraction of STALE_MIN, and this composition sits on every screen in the app.
-    val rxWallMs = reading?.rxWallMs
+    val rxWallMs = shown?.rxWallMs
     val nowMs by produceState(System.currentTimeMillis(), rxWallMs) {
         while (true) {
             value = System.currentTimeMillis()
@@ -837,18 +855,31 @@ private fun T1dmBottomBar(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Text(
-                        text = BgFormat.value(reading?.bgMgdl, unit),
+                        text = BgFormat.value(shown?.bgMgdl, unit),
                         style = MaterialTheme.typography.displaySmall,
                         fontWeight = FontWeight.Bold,
-                        color = if (stale) cs.error else Color.Unspecified,
+                        // Three states, and the order matters. STALE wins outright: a number that may be
+                        // minutes old is a stronger warning than which sensor produced it. Otherwise the
+                        // value takes the same tint the sensor name carries while the panel is off the
+                        // believed sensor, so a glance can never mistake this number for the one the alarm
+                        // engine and the dose calculator are acting on.
+                        color = when {
+                            stale -> cs.error
+                            viewingOther -> cs.tertiary
+                            else -> Color.Unspecified
+                        },
                         maxLines = 1,
                     )
                     TimeOfDayIcon()
                 }
                 Text(
-                    text = BgFormat.unitLabel(unit) + (reading?.let { readingSuffix(it) } ?: ""),
+                    text = BgFormat.unitLabel(unit) + (shown?.let { readingSuffix(it) } ?: ""),
                     style = MaterialTheme.typography.bodySmall,
-                    color = if (stale) cs.error else cs.onSurfaceVariant,
+                    color = when {
+                        stale -> cs.error
+                        viewingOther -> cs.tertiary
+                        else -> cs.onSurfaceVariant
+                    },
                     maxLines = 1,
                 )
             }
@@ -858,9 +889,10 @@ private fun T1dmBottomBar(
                 if (!stale) {
                     Text(
                         text = BgFormat.arrow(
-                            BgGlanceComputer.classifyTrend(reading?.trendTenthsPerMin, reading?.bgMgdl, null),
+                            BgGlanceComputer.classifyTrend(shown?.trendTenthsPerMin, shown?.bgMgdl, null),
                         ),
                         style = MaterialTheme.typography.headlineSmall,
+                        color = if (viewingOther) cs.tertiary else Color.Unspecified,
                     )
                 }
                 Row(
@@ -871,26 +903,42 @@ private fun T1dmBottomBar(
                     Text(
                         // Marked while the panel is off the believed sensor. Terse because it sits in
                         // the chrome on every screen: the graph itself carries the fuller statement.
-                        text = (source?.shortName ?: "no source") + if (viewingOther) " • view" else "",
+                        text = sourceLabel ?: "no source",
                         style = MaterialTheme.typography.bodySmall,
                         color = if (viewingOther) cs.tertiary else Color.Unspecified,
                         maxLines = 1,
+                        // Names differ in length by family — a ten-digit serial is far longer than the
+                        // other family's — and this row shares one line with the signal bars, so a name
+                        // too long to fit is trimmed rather than pushing them off the edge.
+                        overflow = TextOverflow.Ellipsis,
                     )
-                    // Identical to `bgSignals.cgmRssi`, which is defined as exactly this — and taking it
-                    // from the reading keeps a second always-on combine off every screen in the app.
-                    reading?.rssi?.let { SignalBars(it) }
+                    // The VIEWED sensor's link, matching the name it sits beside: a name and a signal
+                    // strength are one statement about one sensor, and pairing this sensor's name with
+                    // another's bars said something untrue about both.
+                    //
+                    // The held link first, because it is current and never gaps. The stored reading's
+                    // RSSI is the fallback for a source read by ADVERTISEMENT, where there is no link to
+                    // poll and the advert's own strength is the live measurement — and only while that
+                    // reading is fresh, so an idle sensor draws no bars off a reading from days ago.
+                    viewedReading?.rssi?.takeUnless { stale }?.let { SignalBars(it) }
                 }
                 ageMs?.let { LastReadingChip(it, stale) }
             }
         }
     }
-
 }
 
-/** Warm-up / interpolated provenance, appended to the unit label the way the BG panel's header did. */
+/**
+ * Provenance, appended to the unit label the way the BG panel's header did.
+ *
+ * The reconstructed case is the one that has to be here. This bar renders the number in bold on
+ * every screen in the app, and a promoted reconstruction is a row in `cgm_reading` like any other —
+ * unlabelled, a model's output would read as the patient's glucose everywhere at once.
+ */
 private fun readingSuffix(r: CgmReading): String = when {
     r.flag == ReadingFlag.WARMUP -> "  • warmup"
     r.provenance == ReadingProvenance.INTERPOLATED -> "  • interpolated"
+    r.provenance == ReadingProvenance.RECONSTRUCTED -> "  • reconstructed"
     else -> ""
 }
 
@@ -1133,24 +1181,45 @@ private fun T1dmNavHost(
             // read-out costs nothing at all, and the container's TTL keeps a burst of ticks from
             // re-probing.
             val sensitivity = rememberSensitivity(container)
-            val viewingOtherSource by container.viewingNonAuthoritative.collectAsState(false)
+            // Every forecast on this panel — the fan, the hindsight sweep, the rolled overlay — was
+            // computed from the AUTHORITATIVE sensor's history, so none of it describes the sensor
+            // being looked at once the bottom bar has stepped off it. Emptying the list withholds all
+            // three at their single source rather than gating each surface, and the panel's own
+            // "collecting context" state is what it falls back to. The bottom-bar chip carries the
+            // marker saying why.
+            val viewingOther by container.viewingNonAuthoritative.collectAsState(false)
             val viewedSourceKey by container.viewedSourceKey.collectAsState(null)
             // Read off the UNWITHHELD predictions, so the panel reserves the forecast's room even on the
             // step where it refuses to draw it. Withholding the fan must not move the trace.
             val forecastEndMs = inference.predictions.firstOrNull { it.selected }
                 ?.takeIf { it.horizonSteps > 0 }
                 ?.let { it.anchorTsMs + it.horizonSteps * it.stepMs }
+            // The reconstruction layer. `maskControls` is null — and the mask gesture off — until a
+            // model with a descriptor is selected, which is what hides the whole affordance rather
+            // than offering one the app has no geometry for.
+            val maskNote by container.panelMaskNote.collectAsState()
+            val bgEditDepth by container.bgEditDepth.collectAsState()
+            val tauPreview by container.tauPreview.collectAsState()
+            var maskControls by remember { mutableStateOf<MaskControls?>(null) }
+            // Re-read on the newest reading as well as on the model: `newestMeasuredMs` and
+            // `contextFloorMs` are what the geometry is derived from, and a stale pair classifies a
+            // stretch by where the trace was rather than where it is — a cut moves both.
+            LaunchedEffect(
+                inference.predictions.firstOrNull { it.selected }?.modelId,
+                readings.lastOrNull()?.tsMs,
+            ) {
+                maskControls = runCatching { container.maskControls() }.getOrNull()
+            }
+            val reconWindowStart = (historyFloorMs ?: (System.currentTimeMillis() - 86_400_000L))
+            val reconstructed by remember(reconWindowStart) {
+                container.panelReconstructed(reconWindowStart, System.currentTimeMillis() + 86_400_000L)
+            }.collectAsState(emptyList())
             DashboardScreen(
                 readings = readings,
                 sourceKey = viewedSourceKey,
                 unit = glucoseUnit,
                 thresholds = container.alarmConfig.thresholds,
-                // Every forecast on this panel — the fan, the hindsight sweep, the rolled overlay — was
-                // computed from the AUTHORITATIVE sensor's history, so none of it describes the sensor
-                // being looked at once the bottom bar has stepped off it. Emptying the list withholds all
-                // three at their single source rather than gating each surface. The bottom-bar chip
-                // carries the marker saying why.
-                predictions = if (viewingOtherSource) emptyList() else inference.predictions,
+                predictions = if (viewingOther) emptyList() else inference.predictions,
                 kovatchevF = container.nativeCore::kovatchevF,
                 calibrateBands = calibrateBands,
                 calibrateFans = calibrateFans,
@@ -1159,6 +1228,19 @@ private fun T1dmNavHost(
                 curveChannels = container::dashboardOverlayChannels,
                 stepSeries = container::dashboardStepSeries,
                 logEntries = logEntries,
+                reconstructed = reconstructed,
+                maskControls = maskControls,
+                onFillSpan = { sel, geometry -> container.runPanelMask(sel, geometry) },
+                maskNote = maskNote,
+                onCutBg = container::cutBgRange,
+                onUndoBgEdit = container::undoBgEdit,
+                canUndoBgEdit = bgEditDepth > 0,
+                onPromoteSpan = container::promoteSpan,
+                onDemoteSpan = container::demoteSpan,
+                onDiscardSpan = container::discardSpan,
+                onRetauSpan = container::retauSpan,
+                onPreviewTau = container::previewTau,
+                tauPreview = tauPreview,
                 historyFloorMs = historyFloorMs,
                 onExtendHistory = container::extendHistoryBackTo,
                 forecastEndMs = forecastEndMs,
@@ -1183,9 +1265,9 @@ private fun T1dmNavHost(
                 // the AUTHORITATIVE sensor's history, so it does not describe the sensor on screen.
                 // The control goes with it — offering a roll whose result cannot be drawn is worse than
                 // not offering one.
-                rolledForecast = if (viewingOtherSource) null else rolled,
-                rollComputing = if (viewingOtherSource) false else rollComputing,
-                onRoll = if (viewingOtherSource) null else ({ hours: Double -> container.requestRollForDisplay(hours) }),
+                rolledForecast = if (viewingOther) null else rolled,
+                rollComputing = if (viewingOther) false else rollComputing,
+                onRoll = if (viewingOther) null else ({ hours: Double -> container.requestRollForDisplay(hours) }),
                 onClearRoll = { container.clearRoll() },
                 lowPowerActive = lowPowerActive,
                 forecastAdaptive = forecastMode == SettingsStore.FORECAST_MODE_ADAPTIVE,
@@ -1262,8 +1344,6 @@ private fun T1dmNavHost(
             val inference by container.inferenceState.collectAsState(InferenceState())
             val lab = container.labController
             val labState by lab.state.collectAsState()
-            val gaps by container.labGaps.collectAsState()
-            val gapNote by container.labGapNote.collectAsState()
             val scope = rememberCoroutineScope()
             // The running set is what the Lab may reach, and it changes under it (a model can be
             // deleted, an update applied), so the surface follows it rather than sampling it once.
@@ -1272,19 +1352,9 @@ private fun T1dmNavHost(
             }
             LabScreen(
                 state = labState,
-                gaps = gaps,
-                gapNote = gapNote,
                 onPickModel = { lab.pickModel(it); scope.launch { lab.refresh(labState.models) } },
-                onToggleSynthetic = lab::setSynthetic,
                 onSeed = lab::setSeed,
-                onSpans = lab::setSpans,
-                onToggleForecast = lab::setForecast,
-                onPickAdapter = lab::pickAdapter,
-                onTau = lab::setTau,
-                onRun = { scope.launch { lab.run() } },
-                onFindGaps = { scope.launch { container.refreshLabGaps() } },
-                // Fired directly, not through the screen's scope: the fill outlives this screen.
-                onRepair = { gap -> container.repairGap(gap) },
+                onGenerate = { scope.launch { lab.generate() } },
                 onOpenAdapters = { id -> navController.navigate("models/$id/lora") },
             )
         }
@@ -1299,6 +1369,10 @@ private fun T1dmNavHost(
                 state = panel,
                 onFit = { spec -> container.fitAdapter(id, spec) },
                 onAttach = { adapterId -> scope.launch { container.attachAdapter(id, adapterId) } },
+                onProbe = { adapterId -> container.probeAdapter(id, adapterId) },
+                onOverride = { adapterId, typedName ->
+                    scope.launch { container.overrideAdapterGuard(id, adapterId, typedName) }
+                },
                 onDetach = { scope.launch { container.detachAdapter(id) } },
                 onRename = { adapterId, name ->
                     scope.launch { lab.rename(id, adapterId, name); container.refreshLoraPanel(id) }
@@ -1771,6 +1845,15 @@ private fun T1dmNavHost(
                 isComputing = ui is BolusAdviceUi.Running,
                 insulinLabel = insulinLabel,
                 adviceExpired = adviceExpired,
+                onAcknowledgeDoseEdit = { target ->
+                    // Ordered inside one coroutine: the stamp has to be committed before the search
+                    // reads the dose history back, or the recompute lands on the block it just
+                    // cleared.
+                    scope.launch {
+                        container.acknowledgeDoseEdit(System.currentTimeMillis())
+                        DoseCalcService.recommend(ctx, targetMgdl = target)
+                    }
+                },
                 onAccept = { c ->
                     scope.launch {
                         // A 0 U / carb-rescue acceptance writes no dose, so there is no handle and no
@@ -1911,10 +1994,28 @@ private fun T1dmNavHost(
                     { fans, steps, nq -> calibrateSessionFans(m, fans, steps, nq) },
                 )
             }
+            // The carbohydrate and insulin over exactly the review window, not the live Logs feed:
+            // that feed is bounded at a few hundred rows, so it is empty for an old bout — which is
+            // the bout a review is for. Reduced to marks here, so the drawing layer sees no amounts.
+            val sessionMarkers by produceState(emptyList<LogMarker>(), window) {
+                val w = window
+                value = if (w == null) {
+                    emptyList()
+                } else {
+                    runCatching {
+                        val meals = container.repository.loggedMealsInRange(w.first, w.last)
+                            .map { LogMarker(it.tsMs, CurveKind.CARB) }
+                        val doses = container.repository.loggedDosesInRange(w.first, w.last)
+                            .map { LogMarker(it.tsMs, CurveKind.INSULIN) }
+                        (meals + doses).sortedBy { it.tsMs }
+                    }.getOrDefault(emptyList())
+                }
+            }
             ExerciseSessionScreen(
                 session = session,
                 gridMs = T1dmRepository.GRID_MS,
                 track = track,
+                logMarkers = sessionMarkers,
                 frame = frame,
                 hindsight = hindsight,
                 unit = unit,
@@ -2016,6 +2117,7 @@ private fun T1dmNavHost(
             val ss = container.settingsStore
             val animations by ss.animationsEnabled.collectAsState(true)
             val volumeNav by ss.volumeNavEnabled.collectAsState(true)
+            val showSensorNames by ss.showSensorNames.collectAsState(SettingsStore.DEFAULT_SHOW_SENSOR_NAMES)
             val themeId by ss.themeId.collectAsState(SettingsStore.DEFAULT_THEME)
             val fontId by ss.fontId.collectAsState(SettingsStore.DEFAULT_FONT)
             val tempUnit by container.temperatureUnit.collectAsState(com.t1dm.core.model.TempUnit.CELSIUS)
@@ -2058,6 +2160,7 @@ private fun T1dmNavHost(
                 targetHigh = statsState.targetRange.highMgdl,
                 animationsEnabled = animations,
                 volumeNavEnabled = volumeNav,
+                showSensorNames = showSensorNames,
                 backgroundAlphaPct = bgAlphaPct,
                 themeOptions = themeOptions,
                 selectedThemeId = themeId,
@@ -2072,6 +2175,7 @@ private fun T1dmNavHost(
                 onSetTargetRange = { lo, hi -> container.statsViewModel.setTargetRange(lo, hi) },
                 onSetAnimationsEnabled = { on -> scope.launch { ss.setAnimationsEnabled(on) } },
                 onSetVolumeNavEnabled = { on -> scope.launch { ss.setVolumeNavEnabled(on) } },
+                onSetShowSensorNames = { on -> scope.launch { ss.setShowSensorNames(on) } },
                 onSetBackgroundAlpha = { pct -> scope.launch { ss.setBackgroundAlphaPct(pct) } },
                 onSelectTheme = { id -> scope.launch { ss.setThemeId(id) } },
                 onSelectFont = { id -> scope.launch { ss.setFontId(id) } },
@@ -2165,6 +2269,7 @@ private fun T1dmNavHost(
             val rIob by ss.railIobCeiling.collectAsState(true)
             val rConfirm by ss.railConfirm.collectAsState(true)
             val rHypo by ss.railHypoTreatment.collectAsState(true)
+            val rDoseHist by ss.railDoseHistory.collectAsState(true)
             CalculatorSettingsScreen(
                 objectiveOptions = listOf(
                     SettingsStore.OBJ_KOVATCHEV to "Min Kovatchev risk",
@@ -2177,7 +2282,7 @@ private fun T1dmNavHost(
                 predictedLow = predLow, iobCeiling = iobCeil,
                 gridMaxU = gridMax, gridStepU = gridStep,
                 railFreshness = rFresh, railPredictedLow = rPred, railIobCeiling = rIob,
-                railConfirm = rConfirm, railHypoTreatment = rHypo,
+                railConfirm = rConfirm, railHypoTreatment = rHypo, railDoseHistory = rDoseHist,
                 onSetObjective = { k -> scope.launch { ss.setCalcObjective(k) } },
                 onSetTarget = { lo, hi, mid -> scope.launch { ss.setCalcTarget(lo, hi, mid) } },
                 onSetAsymmetry = { hypo, hyper -> scope.launch { ss.setCalcAsymmetry(hypo, hyper) } },
@@ -2189,6 +2294,7 @@ private fun T1dmNavHost(
                 onSetRailIobCeiling = { on -> scope.launch { ss.setRail(SettingsStore.RAIL_IOB, on) } },
                 onSetRailConfirm = { on -> scope.launch { ss.setRail(SettingsStore.RAIL_CONFIRM, on) } },
                 onSetRailHypoTreatment = { on -> scope.launch { ss.setRail(SettingsStore.RAIL_HYPO, on) } },
+                onSetRailDoseHistory = { on -> scope.launch { ss.setRail(SettingsStore.RAIL_DOSE_EDIT, on) } },
             )
         }
         composable("settings/curves") {
@@ -2492,9 +2598,18 @@ private fun T1dmNavHost(
                 // The container's scope, not this composition's: a delete is a transaction plus a
                 // notice, and leaving the panel between the press and the commit must not cancel it —
                 // the same hazard the log writers are hoisted off the route scope for.
+                // Says nothing on success: the row leaving the list IS the feedback, and a
+                // delete no longer has an outcome to report — the tombstone lands whatever the
+                // push had already done.
                 onDelete = { entry ->
+                    container.appScope.launch { container.deleteLoggedEntry(entry) }
+                },
+                onEdit = { entry, amount, tsMs ->
                     container.appScope.launch {
-                        deleteReceipt(container.deleteLoggedEntry(entry))?.let(onNotice)
+                        when (entry.kind) {
+                            CurveKind.CARB -> container.editLoggedMeal(entry, amount, entry.gi, tsMs)
+                            CurveKind.INSULIN -> container.editLoggedDose(entry, amount, tsMs)
+                        }
                     }
                 },
             )

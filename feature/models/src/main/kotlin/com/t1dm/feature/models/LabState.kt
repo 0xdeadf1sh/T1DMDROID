@@ -1,107 +1,53 @@
 package com.t1dm.feature.models
 
 /**
- * What the Lab screen draws. Everything here is the result of ONE run and is thrown away on the
- * next: nothing in the Lab is stored, pushed, or read by an alarm, a rail or a statistic.
+ * What the Lab screen draws. Everything here is the result of ONE generate and is thrown away on
+ * the next: nothing in the Lab is stored, pushed, or read by an alarm, a rail or a statistic.
  */
-
-/** One masked span, in context-relative patch coordinates — what the user painted. */
-data class LabSpan(val startPatch: Int, val patches: Int) {
-    val endPatch: Int get() = startPatch + patches
-}
-
-/** One decoded span, ready to draw: its position on the grid and the fan the model gave it. */
-data class LabFan(
-    val startStep: Int,
-    /** mg/dL per step, at the level the τ slider currently reads. */
-    val line: List<Double>,
-    /** The τ.05 and τ.95 edges — the fan's own outer bounds, whatever the slider says. */
-    val lo: List<Double>,
-    val hi: List<Double>,
-    val isForecast: Boolean,
-)
 
 /**
- * A completed run. [tauLadder] holds the fan read at every fifth percentile, computed once in the
- * core: the slider picks a precomputed line rather than interpolating here, so the one
- * implementation of "read the fan at τ" stays in Rust where the fan was assembled.
+ * One generated synthetic trace — the Lab's whole output.
+ *
+ * The Lab generates and nothing else. Reconstruction, promotion and the τ sweep all live on the BG
+ * panel now, where the curve being changed is the one on screen; keeping a second surface that
+ * could also write a fill meant two places to look for where one came from.
+ *
+ * Nothing here is stored, pushed, or read by an alarm, a rail, a statistic or a fit target. It is a
+ * synthetic patient drawn on a chart, thrown away on the next generate.
  */
-data class LabRun(
-    val modelId: String,
-    val synthetic: Boolean,
-    val adapterName: String?,
-    val statusNote: String?,
-    val latencyMs: Double,
-    /** Context BG per step, null where the step is masked or absent — the trace the model saw. */
-    val contextBg: List<Double?>,
+data class LabSynth(
+    val seed: Long,
     val gridStartMs: Long,
     val stepMs: Long,
-    val patchSize: Int,
-    val nCtx: Int,
-    /** Per masked span: the decoded rows, in ascending grid position. */
-    val fans: List<LabFanLadder>,
-)
-
-/** One span's fans at every τ on the ladder, plus its outer edges. */
-data class LabFanLadder(
-    val startStep: Int,
-    val isForecast: Boolean,
-    val lo: List<Double>,
-    val hi: List<Double>,
-    /** τ → line, ascending in τ. */
-    val ladder: List<Pair<Double, List<Double>>>,
+    /** mg/dL per step. */
+    val bg: List<Double>,
+    /** Which steps came from this phone's own record instead of the generator — the generator fills
+     *  only what the history LACKS, so a trace on a well-covered phone is mostly real. */
+    val real: List<Boolean>,
+    val carb: List<Double>,
+    val insulin: List<Double>,
+    val exercise: List<Double>,
 ) {
-    /** The line nearest [tau] — the ladder's own step is the slider's resolution. */
-    fun at(tau: Double): List<Double> =
-        ladder.minByOrNull { kotlin.math.abs(it.first - tau) }?.second ?: emptyList()
+    val syntheticSteps: Int get() = real.count { !it }
 }
 
 /** The Lab's whole surface state. */
 data class LabUiState(
     val models: List<String> = emptyList(),
     val modelId: String? = null,
-    /** Context patches the selected model accepts, and the envelope its sampler ever drew. */
+    /** Context patches the selected model accepts — the length a generated trace is cut to. */
     val contextPatches: Int = 0,
-    val maxMaskedPatches: Int = 0,
-    val maxSpans: Int = 0,
-    val maxSpanPatches: Int = 0,
-    val synthetic: Boolean = false,
-    val seed: Long = 1,
-    val spans: List<LabSpan> = emptyList(),
-    val withForecast: Boolean = true,
-    val adapters: List<LabAdapter> = emptyList(),
-    val adapterId: Long? = null,
-    val tau: Double = 0.5,
-    val running: Boolean = false,
-    val run: LabRun? = null,
-    /** Why the last attempt did not produce a run. */
-    val error: String? = null,
-    /** Real context available, in patches — what makes synthetic mode necessary or not. */
+    /** Real context available, in patches — how much of a trace the generator will NOT invent. */
     val realPatches: Int = 0,
-    /** The forecast span's length, from the model's own horizon — it costs head slots too. */
-    val forecastPatches: Int = 0,
+    val seed: Long = 1,
+    val adapters: List<LabAdapter> = emptyList(),
+    val generating: Boolean = false,
+    val generated: LabSynth? = null,
+    /** Why the last attempt produced nothing. */
+    val error: String? = null,
 ) {
-    val maskedPatches: Int get() = spans.sumOf { it.patches }
-
-    /** Empty when the masked set is inside everything the model was trained on. */
-    val outOfDistribution: String?
-        get() = when {
-            spans.size > maxSpans -> "${spans.size} spans (trained to $maxSpans)"
-            spans.any { it.patches > maxSpanPatches } -> "span over $maxSpanPatches patches"
-            else -> null
-        }
-
-    /** Why Run is unavailable, or null when it is. */
-    val blocked: String?
-        get() = when {
-            modelId == null -> "No model loaded"
-            !synthetic && realPatches < contextPatches ->
-                "Need $contextPatches patches of history, have $realPatches"
-            spans.isEmpty() && !withForecast -> "Nothing masked"
-            maskedPatches + (if (withForecast) forecastPatches else 0) > maxMaskedPatches ->
-                "Over $maxMaskedPatches masked patches"
-            else -> null
-        }
+    /** Why Generate is unavailable, or null when it is. */
+    val blocked: String? get() = if (modelId == null) "No model loaded" else null
 }
 
 /** An adapter as the Lab and the adapter panel list it. */
@@ -118,17 +64,22 @@ data class LabAdapter(
     val improved: Boolean,
     val attached: Boolean,
     val updatedAtMs: Long,
+    /**
+     * Why this adapter may not be attached, or null when it may.
+     *
+     * Resolved once, by the same pure predicate `LabController.attach` enforces, so the button and
+     * the gate cannot disagree. The panel renders it; it does not decide it.
+     */
+    val attachRefusal: String? = null,
+    /** How much of the model's marginal dose response the adapter kept — 1.0 is preservation.
+     *  A ratio in risk space; the pair below is the same responses in the units a dose is read in. */
+    val guardRetention: Double = 0.0,
+    val guardWindows: Int = 0,
+    /** mg/dL per unit at the horizon, frozen model and adapted. Shown beside the ratio, because a
+     *  ratio alone hides which of the two moved. */
+    val guardFrozenMgdl: Double = 0.0,
+    val guardAdaptedMgdl: Double = 0.0,
+    /** True once the user has deliberately overridden a refusal on this row. */
+    val guardOverridden: Boolean = false,
 )
 
-/**
- * One gap in the measured signal, as the repair offers it. [filled] marks a gap this phone has
- * already reconstructed — a reconstruction is not evidence, so refilling one changes nothing but
- * which model's guess is stored.
- */
-data class LabGap(
-    val startMs: Long,
-    val endMs: Long,
-    val steps: Int,
-    val label: String,
-    val filled: Boolean,
-)

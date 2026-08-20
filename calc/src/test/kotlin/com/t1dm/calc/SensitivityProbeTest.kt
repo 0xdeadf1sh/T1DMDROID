@@ -34,7 +34,10 @@ class SensitivityProbeTest {
         port: ForecastPort,
         anchor: AnchorInfo? = fakeAnchor(now),
         modelIds: () -> String? = { MODEL },
-    ) = SensitivityProbe(port, FakeBolusResolver(), FakeCarbResolver(), { anchor }, { modelIds() })
+    ) = SensitivityProbe(
+        port, FakeBolusResolver(), FakeCarbResolver(), { anchor }, { modelIds() },
+        { DoseHistoryState.Clean },
+    )
 
     @Test
     fun isf_and_icr_are_the_terminal_median_displacements() = runTest {

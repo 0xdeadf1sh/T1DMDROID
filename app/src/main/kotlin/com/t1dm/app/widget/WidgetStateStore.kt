@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import com.t1dm.app.notify.GlanceReadings
 import com.t1dm.alerts.AlarmConfig
 import com.t1dm.app.notify.BgGlanceComputer
 import com.t1dm.app.settings.SettingsStore
@@ -192,8 +193,10 @@ internal object WidgetStateStore {
         val state = InferenceState()
         val (glyText, glyKind) = computeGlyStatus(state, thresholds, nowMs)
         return WidgetSnapshot(
+            // The cached row is written from `glance.bgMgdl`, which already reads the last
+            // MEASUREMENT, so the cache can only ever hold one.
             glance = BgGlanceComputer.compute(
-                latest = latest,
+                readings = GlanceReadings.create(listOfNotNull(latest)),
                 state = state,
                 thresholds = thresholds,
                 lossMin = lossMin,

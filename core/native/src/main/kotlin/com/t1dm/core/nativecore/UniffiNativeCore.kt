@@ -7,6 +7,9 @@ import com.t1dm.core.model.GapRun
 import com.t1dm.core.model.GraphInput
 import com.t1dm.core.model.HeadSpec
 import com.t1dm.core.model.HeadTensorSpec
+import com.t1dm.core.model.LoraGuardOpts
+import com.t1dm.core.model.LoraGuardReport
+import com.t1dm.core.model.LoraGuardVerdict
 import com.t1dm.core.model.LoraConfig
 import com.t1dm.core.model.LoraProgressSink
 import com.t1dm.core.model.LoraSample
@@ -83,6 +86,7 @@ import uniffi.t1dm_core.bucketize as uniffiBucketize
 import uniffi.t1dm_core.buildGraphInput as uniffiBuildGraphInput
 import uniffi.t1dm_core.forecastSlice as uniffiForecastSlice
 import uniffi.t1dm_core.bandLine as uniffiBandLine
+import uniffi.t1dm_core.bandLineAt as uniffiBandLineAt
 import uniffi.t1dm_core.loraNew as uniffiLoraNew
 import uniffi.t1dm_core.LoraProgress as UniffiLoraProgress
 import uniffi.t1dm_core.loraTrain as uniffiLoraTrain
@@ -100,7 +104,12 @@ import uniffi.t1dm_core.MaskSpan as UniffiMaskSpan
 import uniffi.t1dm_core.LoraConfig as UniffiLoraConfig
 import uniffi.t1dm_core.LoraWeights as UniffiLoraWeights
 import uniffi.t1dm_core.LoraSample as UniffiLoraSample
+import uniffi.t1dm_core.LoraGuardOpts as UniffiLoraGuardOpts
+import uniffi.t1dm_core.LoraGuardReport as UniffiLoraGuardReport
+import uniffi.t1dm_core.LoraGuardVerdict as UniffiLoraGuardVerdict
 import uniffi.t1dm_core.LoraTrainOpts as UniffiLoraTrainOpts
+import uniffi.t1dm_core.loraGuard as uniffiLoraGuard
+import uniffi.t1dm_core.loraGuardOptsFit as uniffiLoraGuardOptsFit
 import uniffi.t1dm_core.LoraTrainReport as UniffiLoraTrainReport
 import uniffi.t1dm_core.LoraTrainResult as UniffiLoraTrainResult
 import uniffi.t1dm_core.SynthParams as UniffiSynthParams
@@ -259,6 +268,9 @@ class UniffiNativeCore : NativeCore {
     override fun bandLine(desc: ModelDescriptor, f: Forecast, tau: Double): List<Double> =
         uniffiBandLine(desc.toUniffi(), f.toUniffi(), tau)
 
+    override fun bandLineAt(desc: ModelDescriptor, qTauRisk: List<Double>, tau: Double): List<Double> =
+        uniffiBandLineAt(desc.toUniffi(), qTauRisk, tau)
+
     /** The Rust head object, wrapped so nothing outside this module holds a uniffi type. It
      *  owns native memory; [close] releases it. */
     private class UniffiHead(val inner: UniffiHeadModel) : NativeHead {
@@ -306,6 +318,22 @@ class UniffiNativeCore : NativeCore {
         seed: Long,
     ): LoraWeights =
         uniffiLoraNew(config.toUniffi(), headSha256, dModel, hidden, outDim, seed).toModel()
+
+    override fun loraGuard(
+        head: NativeHead,
+        desc: ModelDescriptor,
+        samples: List<LoraSample>,
+        weights: LoraWeights,
+        opts: LoraGuardOpts,
+    ): LoraGuardReport = uniffiLoraGuard(
+        (head as UniffiHead).inner,
+        desc.toUniffi(),
+        samples.map { it.toUniffi() },
+        weights.toUniffi(),
+        opts.toUniffi(),
+    ).toModel()
+
+    override fun loraGuardOptsFit(): LoraGuardOpts = uniffiLoraGuardOptsFit().toModel()
 
     override fun loraSerialize(w: LoraWeights): ByteArray = uniffiLoraSerialize(w.toUniffi())
 
@@ -1145,10 +1173,34 @@ private fun UniffiLoraWeights.toModel(): LoraWeights =
     LoraWeights(config.toModel(), headSha256, dModel, hidden, outDim, params)
 
 private fun LoraSample.toUniffi(): UniffiLoraSample =
-    UniffiLoraSample(hidden, anchors, targetBg, nSlots)
+    UniffiLoraSample(hidden, anchors, targetBg, nSlots, hiddenPert, isForecast)
 
 private fun LoraTrainOpts.toUniffi(): UniffiLoraTrainOpts =
-    UniffiLoraTrainOpts(epochs, lr, holdoutFrac, weightDecay, seed)
+    UniffiLoraTrainOpts(epochs, lr, holdoutFrac, weightDecay, seed, distillWeight)
+
+private fun LoraGuardOpts.toUniffi(): UniffiLoraGuardOpts = UniffiLoraGuardOpts(
+    maxWindows, minWindows, probeDoseU, minFrozenResponse,
+    minRetention, maxRetention, minSignAgreement,
+)
+
+private fun UniffiLoraGuardOpts.toModel(): LoraGuardOpts = LoraGuardOpts(
+    maxWindows, minWindows, probeDoseU, minFrozenResponse,
+    minRetention, maxRetention, minSignAgreement,
+)
+
+private fun UniffiLoraGuardReport.toModel(): LoraGuardReport = LoraGuardReport(
+    verdict = when (verdict) {
+        UniffiLoraGuardVerdict.PASS -> LoraGuardVerdict.PASS
+        UniffiLoraGuardVerdict.BLOCKED -> LoraGuardVerdict.BLOCKED
+        UniffiLoraGuardVerdict.INCONCLUSIVE -> LoraGuardVerdict.INCONCLUSIVE
+    },
+    nWindows = nWindows,
+    frozenResponseMgdl = frozenResponseMgdl,
+    adaptedResponseMgdl = adaptedResponseMgdl,
+    retention = retention,
+    signAgreement = signAgreement,
+    why = why,
+)
 
 private fun UniffiLoraTrainReport.toModel(): LoraTrainReport = LoraTrainReport(
     nTrain = nTrain,
@@ -1162,6 +1214,10 @@ private fun UniffiLoraTrainReport.toModel(): LoraTrainReport = LoraTrainReport(
     lossHistory = lossHistory,
     holdoutHistory = holdoutHistory,
     bestEpoch = bestEpoch,
+    nPaired = nPaired,
+    distillScale = distillScale,
+    distillHistory = distillHistory,
+    guard = guard?.toModel(),
 )
 
 private fun UniffiLoraTrainResult.toModel(): LoraTrainResult =

@@ -19,5 +19,46 @@
                 <action android:name="com.t1dm.app.SET_SERVER" />
             </intent-filter>
         </receiver>
+
+        <!-- DEBUG SPIKE (connection-survival probe). Its own connectedDevice FGS that holds a
+             non-bonding GATT link to the AiDEX and heartbeats it every 30s to test screen-off
+             survival. Reuses the main manifest's BLUETOOTH_SCAN/BLUETOOTH_CONNECT/
+             FOREGROUND_SERVICE_CONNECTED_DEVICE permissions. Absent from release. -->
+        <service
+            android:name=".service.AidexProbeService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
+
+        <!-- Exported trigger for the probe (HyperOS-friendly am-broadcast route, mirrors
+             CgmDebugReceiver). -->
+        <receiver
+            android:name=".service.AidexProbeReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.t1dm.app.PROBE_START" />
+                <action android:name="com.t1dm.app.PROBE_BOND" />
+                <action android:name="com.t1dm.app.PROBE_HANDSHAKE" />
+                <action android:name="com.t1dm.app.PROBE_BRINGUP" />
+                <action android:name="com.t1dm.app.PROBE_ACTIVATE" />
+                <action android:name="com.t1dm.app.PROBE_REALTIME" />
+                <action android:name="com.t1dm.app.PROBE_HISTORY" />
+                <action android:name="com.t1dm.app.PROBE_STOP" />
+            </intent-filter>
+        </receiver>
+
+        <!-- DEBUG foreground bring-up screen for a FRESH AiDEX X (K90-as-master). Owns its own held
+             BluetoothGatt so `createBond()` is foreground-initiated (the MIUI Pair dialog appears) and
+             the bond + serial-AES handshake complete in ONE continuous connection (the sensor drops a
+             disconnected bond with KEY_MISSING). showWhenLocked/turnScreenOn keep it visible; a plain
+             platform theme so a bare android.app.Activity renders without AppCompat. Exported for
+             `am start`. Absent from release. -->
+        <activity
+            android:name=".debug.AidexBringupActivity"
+            android:exported="true"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
+            android:excludeFromRecents="true"
+            android:screenOrientation="portrait"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar" />
     </application>
 </manifest>

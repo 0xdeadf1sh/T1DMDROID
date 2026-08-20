@@ -82,6 +82,14 @@ class RollingForecaster(
         val median = DoubleArray(n) { r.steps[it].medianBg }
         val lower = DoubleArray(n) { r.steps[it].lowerBg }
         val upper = DoubleArray(n) { r.steps[it].upperBg }
+        // The whole fan, step-major, only when EVERY step has one: a ragged array would have the
+        // overlay draw some steps as three bands and the rest as one.
+        val nq = r.steps.firstOrNull()?.bandsMgdl?.size ?: 0
+        val bands = if (nq > 0 && r.steps.all { it.bandsMgdl.size == nq }) {
+            DoubleArray(n * nq) { i -> r.steps[i / nq].bandsMgdl[i % nq] }
+        } else {
+            DoubleArray(0)
+        }
         val degenerate = r.eligibility == ForecastEligibility.DEGENERATE
         val eligible = r.eligibility == ForecastEligibility.ELIGIBLE
         val validHours = r.completedRolls * (validatedSteps / HorizonPolicy.STEPS_PER_HOUR.toDouble())
@@ -95,6 +103,7 @@ class RollingForecaster(
             medianBg = median,
             lowerBg = lower,
             upperBg = upper,
+            bandsMgdl = bands,
             validatedSteps = validatedSteps,
             requestedHours = requestedHours,
             eligible = eligible,
@@ -238,9 +247,16 @@ class RollingForecaster(
         for (i in 0 until minOf(predSteps, steps)) {
             if (i !in f.medianBg.indices) break
             val median = f.medianBg[i]
-            val lower = f.bandsMgdl.getOrElse(i * nq + 0) { median }       // τ=.05
-            val upper = f.bandsMgdl.getOrElse(i * nq + (nq - 1)) { median } // τ=.95
-            out.add(FanStep(median, lower, upper))
+            // The whole slot, taken once. The outer pair is columns 0 and 6 of the same seven, so
+            // the three come from one read rather than three that could disagree.
+            val fan = if (f.bandsMgdl.size >= (i + 1) * nq) {
+                List(nq) { k -> f.bandsMgdl[i * nq + k] }
+            } else {
+                emptyList()
+            }
+            val lower = fan.firstOrNull() ?: median       // τ=.05
+            val upper = fan.lastOrNull() ?: median        // τ=.95
+            out.add(FanStep(median, lower, upper, fan))
         }
     }
 

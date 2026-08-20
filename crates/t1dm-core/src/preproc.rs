@@ -1387,13 +1387,8 @@ pub fn forecast_slice(f: &Forecast, from_patch: i32, to_patch: i32) -> Result<Fo
 /// nothing that classifies a category may consume it.
 #[uniffi::export]
 pub fn band_line(desc: &ModelDescriptor, f: &Forecast, tau: f64) -> Result<Vec<f64>, CoreError> {
-    if !tau.is_finite() {
-        return Err(CoreError::Internal {
-            reason: format!("tau {tau} must be finite"),
-        });
-    }
-    let levels = QUANTILE_LEVELS;
-    let tau = tau.clamp(levels[0], levels[N_QUANTILES - 1]);
+    // The fan against the run it came from, which [`band_line_at`] cannot check on its own: a fan
+    // holding a whole number of steps can still hold the wrong number of them.
     let n_steps = f.median_risk.len();
     if f.q_tau_risk.len() != n_steps * N_QUANTILES {
         return Err(CoreError::Internal {
@@ -1403,6 +1398,39 @@ pub fn band_line(desc: &ModelDescriptor, f: &Forecast, tau: f64) -> Result<Vec<f
             ),
         });
     }
+    band_line_at(desc, f.q_tau_risk.clone(), tau)
+}
+
+/// The same line, read from a fan held on its own rather than inside a [`Forecast`].
+///
+/// The panel stores a reconstructed span's risk-space fan and nothing else of the run that made
+/// it, so sweeping τ after the fact has no `Forecast` to hand. One interpolation body serves both
+/// entry points deliberately: a second copy of the bracket-and-lerp would be free to drift from
+/// this one, and the two would then disagree about where the same τ sits on the same fan.
+///
+/// `q_tau_risk` is `n_steps · N_QUANTILES` risk-space values, ascending τ within each step.
+#[uniffi::export]
+pub fn band_line_at(
+    desc: &ModelDescriptor,
+    q_tau_risk: Vec<f64>,
+    tau: f64,
+) -> Result<Vec<f64>, CoreError> {
+    if !tau.is_finite() {
+        return Err(CoreError::Internal {
+            reason: format!("tau {tau} must be finite"),
+        });
+    }
+    if q_tau_risk.len() % N_QUANTILES != 0 {
+        return Err(CoreError::Internal {
+            reason: format!(
+                "fan of {} values is not a whole number of {N_QUANTILES}-level steps",
+                q_tau_risk.len()
+            ),
+        });
+    }
+    let levels = QUANTILE_LEVELS;
+    let tau = tau.clamp(levels[0], levels[N_QUANTILES - 1]);
+    let n_steps = q_tau_risk.len() / N_QUANTILES;
     // The bracketing pair, and the weight of the upper one.
     let mut hi = 1usize;
     while hi < N_QUANTILES - 1 && levels[hi] < tau {
@@ -1413,8 +1441,8 @@ pub fn band_line(desc: &ModelDescriptor, f: &Forecast, tau: f64) -> Result<Vec<f
     let w = if span > 0.0 { (tau - levels[lo]) / span } else { 0.0 };
     Ok((0..n_steps)
         .map(|i| {
-            let a = f.q_tau_risk[i * N_QUANTILES + lo];
-            let b = f.q_tau_risk[i * N_QUANTILES + hi];
+            let a = q_tau_risk[i * N_QUANTILES + lo];
+            let b = q_tau_risk[i * N_QUANTILES + hi];
             desc.kovatchev.f_inv(a + (b - a) * w)
         })
         .collect())
@@ -2625,6 +2653,34 @@ mod tests {
         assert_close(&lo, &band_line(&d, &f, 0.05).unwrap(), 1e-12, "tau below the fan");
         assert_close(&hi, &band_line(&d, &f, 0.95).unwrap(), 1e-12, "tau above the fan");
         assert!(band_line(&d, &f, f64::NAN).is_err());
+    }
+
+    /// The fan read on its own is the same line as the fan read inside its run.
+    ///
+    /// Both entry points share one interpolation body; this pins that they are wired to it, since
+    /// a stored span's τ sweep and a live forecast's must not disagree about the same fan.
+    #[test]
+    fn band_line_at_reads_a_bare_fan_the_same_way() {
+        let d = test_descriptor();
+        let f = decoded(&case("forecast"), &d);
+        for tau in [0.05, 0.13, 0.5, 0.5001, 0.77, 0.95] {
+            let inside = band_line(&d, &f, tau).unwrap();
+            let bare = band_line_at(&d, f.q_tau_risk.clone(), tau).unwrap();
+            assert_close(&bare, &inside, 1e-12, &format!("band_line_at({tau})"));
+        }
+        assert!(band_line_at(&d, f.q_tau_risk.clone(), f64::NAN).is_err());
+    }
+
+    /// A fan that is not a whole number of seven-level steps is a blob from another build, and it
+    /// is refused rather than read as a shorter run — half a fan drawn as nested bands would be a
+    /// shape nothing emitted.
+    #[test]
+    fn band_line_at_refuses_a_ragged_fan() {
+        let d = test_descriptor();
+        assert!(band_line_at(&d, vec![0.1; N_QUANTILES * 3 + 1], 0.5).is_err());
+        assert!(band_line_at(&d, vec![0.1; N_QUANTILES - 1], 0.5).is_err());
+        // Empty is a whole number of steps — zero of them — and reads as an empty line.
+        assert_eq!(band_line_at(&d, vec![], 0.5).unwrap().len(), 0);
     }
 
     #[test]

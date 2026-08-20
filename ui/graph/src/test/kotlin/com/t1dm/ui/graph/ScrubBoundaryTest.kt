@@ -20,14 +20,16 @@ import org.junit.Test
 /**
  * The scrub read-out ACROSS the validated/rolled boundary.
  *
- * The panel draws two forecasts end to end — the validated 2 h fan, then the display-only rolled
- * tail — and the read-out samples whichever covers the cursor. Two things are asserted here, and they
- * are inseparable: that dragging across the seam keeps reporting (an unbounded nearest-step scan over
- * the validated series answered every time after its horizon with its last step, which froze the row
- * at the 2 h value and made the rolled fallback beneath it unreachable), and that a value taken from
- * the extrapolated tail is MARKED — the tail is hatched, dashed, bounded and captioned everywhere
- * else on the panel, so a read-out printing it exactly like a validated number would be the one
- * surface contradicting all of them.
+ * The panel draws two forecasts end to end — the validated 2 h fan, then the rolled tail — and the
+ * read-out samples whichever covers the cursor. What is asserted is that dragging across the seam
+ * keeps REPORTING: an unbounded nearest-step scan over the validated series answered every time
+ * after its horizon with its last step, which froze the row at the 2 h value and made the rolled
+ * fallback beneath it unreachable.
+ *
+ * The read-out no longer distinguishes the two. [GraphScrub.bgExtrapolated] still records which
+ * series the number came from and is asserted here, but the panel draws the roll as what it is —
+ * the cycle's own forecast re-fed to itself — and the roll is kept out of every rail by TYPE, since
+ * `:calc` cannot accept a `RolledForecast`.
  *
  * Geometry of the fixture: readings end at [T0]; the validated forecast covers `T0 + (1..24)·STEP`
  * with medians 101…124; the roll covers `T0 + (1..48)·STEP` with medians 101…148 and a validated
@@ -149,14 +151,15 @@ class ScrubBoundaryTest {
         assertTrue(scrubAt(24.6).bgExtrapolated)
     }
 
-    @Test fun aValueFromTheExtrapolatedTailIsMarked() {
+    @Test fun aValueFromTheRolledTailIsReportedAndFlagged() {
         val after = scrubAt(25.0)
-        assertTrue(after.bgExtrapolated)
-        assertEquals("BG" to "125~", bgRow(after))
+        assertTrue("the field still records which series answered", after.bgExtrapolated)
+        // Printed exactly like any other value in the prediction zone: the roll IS the forecast.
+        assertEquals("BG" to "125*", bgRow(after))
         // …all the way to the end of the roll.
         val last = scrubAt(48.0)
         assertTrue(last.bgExtrapolated)
-        assertEquals("BG" to "148~", bgRow(last))
+        assertEquals("BG" to "148*", bgRow(last))
     }
 
     @Test fun theRollsValidatedPrefixIsNotMarked() {

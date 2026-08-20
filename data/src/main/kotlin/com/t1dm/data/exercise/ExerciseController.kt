@@ -4,7 +4,10 @@ import com.t1dm.core.common.T1dmDispatchers
 import com.t1dm.core.model.ExerciseKind
 import com.t1dm.core.model.ExerciseSession
 import com.t1dm.core.model.TrackPoint
+import com.t1dm.data.ExerciseCurveBucket
 import com.t1dm.data.T1dmRepository
+import com.t1dm.data.curve.CurveEngine
+import com.t1dm.data.curve.ExerciseDisposal
 import com.t1dm.data.db.ExerciseFixEntity
 import com.t1dm.data.db.ExerciseSessionEntity
 import kotlinx.coroutines.flow.Flow
@@ -24,6 +27,9 @@ import java.util.TimeZone
 class ExerciseController(
     private val repository: T1dmRepository,
     private val dispatchers: T1dmDispatchers,
+    private val curves: CurveEngine,
+    /** The patient's own grams-per-minute, for re-deriving a bout's magnitude on a delete. */
+    private val carbEquivPerMin: suspend () -> Double = { ExerciseDisposal.DEFAULT_CARB_EQUIV_PER_MIN },
     private val now: () -> Long = System::currentTimeMillis,
 ) {
     /** Every recorded bout, newest first. */
@@ -97,7 +103,43 @@ class ExerciseController(
     suspend fun track(id: Long): List<TrackPoint> =
         withContext(dispatchers.io) { repository.exerciseTrack(id).map { it.toModel() } }
 
-    suspend fun delete(id: Long) = repository.deleteExerciseSession(id)
+    /**
+     * Delete a bout, taking its glucose-disposal grams back out of the wide sample with it.
+     *
+     * The unwind is re-derived from the bout's own stored parameters rather than read back from
+     * anywhere: what a bout contributed per slot is held only in the live recorder's in-memory map,
+     * which does not survive the process. Re-deriving is exact, because the magnitude is a pure
+     * function of the bout's duration (`SPEC/invariants.md` §5 — duration alone, never pace or
+     * energy), and it goes through the one [CurveEngine.gamma] the recorder itself used rather than
+     * a second spelling of the same curve.
+     *
+     * A bout still running has no end, so its length is what it has recorded so far.
+     */
+    suspend fun delete(id: Long) = withContext(dispatchers.io) {
+        val bout = repository.exerciseSession(id)
+        val unwind = if (bout == null) {
+            emptyList()
+        } else {
+            val minutes = ((bout.endMs ?: now()) - bout.startMs).coerceAtLeast(0L) / 60_000.0
+            val params = ExerciseDisposal.paramsFor(minutes, carbEquivPerMin())
+            if (params.grams <= 0.0) {
+                emptyList()
+            } else {
+                val values = curves.gamma(params.grams, params.k, params.theta, params.durationMin)
+                val gridStart = T1dmRepository.snapToGrid(bout.startMs)
+                values.indices.map { i ->
+                    val gridTs = gridStart + i * T1dmRepository.GRID_MS
+                    ExerciseCurveBucket(
+                        gridTs = gridTs,
+                        tzOffsetMin = bout.tzOffsetMin,
+                        grams = 0.0,
+                        priorGrams = values[i],
+                    )
+                }
+            }
+        }
+        repository.deleteExerciseSession(id, unwind, now())
+    }
 
     /**
      * Close every bout the app never saw stopped, at the newest instant it can prove the bout was

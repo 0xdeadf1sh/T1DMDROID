@@ -18,6 +18,19 @@ package com.t1dm.core.model
  * action window, so a rapid analogue has not finished acting: both figures are smaller than the
  * textbook whole-action definitions of the same names. See `SensitivityProbe`.
  */
+/**
+ * The counterfactual probe dose, in units.
+ *
+ * ONE definition, read by `:calc`'s `SensitivityProbe` and by the adapter guard's paired replay in
+ * `:inference`. Both differences a forecast against the same forecast with this much rapid insulin
+ * added, and both report a response PER UNIT — so two constants under two names is two physical
+ * inputs that are supposed to be one, and the guard's mg/dL-per-unit would stop meaning what the
+ * sensitivity read-out's does.
+ *
+ * One unit, so the difference IS the response without a scaling step to get wrong.
+ */
+const val PROBE_DOSE_U = 1.0
+
 data class SensitivityEstimate(
     val atMs: Long,
     val horizonMs: Long,

@@ -42,9 +42,9 @@ internal fun CgmReading.toEntity(): CgmReadingEntity = CgmReadingEntity(
 )
 
 /**
- * The same reception, filed under the instant it arrived rather than the slot it was snapped into.
+ * The same reception, filed under its own instant rather than the slot it was snapped into.
  *
- * `provenance` does not cross: only a `MEASURED` reading has a receive instant to be filed under, so
+ * `provenance` does not cross: only a `MEASURED` reading has an instant of its own to be filed under, so
  * the caller ([T1dmRepository.upsertReading]) keeps the gap-fills out and every row here is real by
  * construction. `tsMs` does not cross either — which slot this sample was filed under is
  * [T1dmRepository.snapToGrid]'s answer, and storing it beside the sample would be a second copy of it.
@@ -90,6 +90,7 @@ internal fun CgmSourceEntity.toDescriptor(): CgmSourceDescriptor = CgmSourceDesc
     // vendor constant (not a persisted column) and is informational only — nothing branches on it.
     passiveOnly = false,
     hidden = hidden,
+    ordinal = ordinal,
 )
 
 internal fun PaintStrokeEntity.toModel(): PaintStroke {

@@ -27,11 +27,22 @@ enum class ForecastEligibility {
     MISSING,
 }
 
-/** One step of the rolled fan in mg/dL: the median plus the extreme band edges (τ=.05 / τ=.95). */
+/**
+ * One step of the rolled fan in mg/dL: the median, the extreme band edges (τ=.05 / τ=.95), and the
+ * whole fan those edges are the outermost pair of.
+ *
+ * [lowerBg]/[upperBg] stay named fields because every rail, score and width in `:calc` reads them by
+ * name and reads nothing else. [bandsMgdl] is additive and DISPLAY-ONLY: the rolled overlay draws
+ * the same three nested pairs the cycle forecast does, and could not while the interior levels were
+ * projected away here. Empty when the producer had no fan to give, which is the honest state and the
+ * one that draws a single band.
+ */
 data class FanStep(
     val medianBg: Double,
     val lowerBg: Double,
     val upperBg: Double,
+    /** Seven mg/dL levels, ascending τ. Written with [lowerBg]/[upperBg] from one fan or not at all. */
+    val bandsMgdl: List<Double> = emptyList(),
 ) {
     val bandWidth: Double get() = upperBg - lowerBg
 }

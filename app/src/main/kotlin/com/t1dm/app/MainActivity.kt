@@ -125,9 +125,10 @@ class MainActivity : ComponentActivity() {
     private fun requestRuntimePermissions() {
         val wanted = buildList {
             add(Manifest.permission.BLUETOOTH_SCAN)
-            // The watch link holds a GATT session, and on Android 12+ BLUETOOTH_CONNECT is granted
-            // independently of BLUETOOTH_SCAN — so it must be requested explicitly or connectGatt()
-            // fails with a permission error even after the user allows "Nearby devices".
+            // BLUETOOTH_CONNECT is REQUIRED for the held GATT session (the sole CGM read path) — on
+            // Android 12+ it is granted independently of BLUETOOTH_SCAN, so it must be requested
+            // explicitly or connectGatt() fails with a permission error even after the user allows
+            // "Nearby devices". (Omitting it was a leftover from the passive-advertisement era.)
             add(Manifest.permission.BLUETOOTH_CONNECT)
             add(Manifest.permission.ACTIVITY_RECOGNITION)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {

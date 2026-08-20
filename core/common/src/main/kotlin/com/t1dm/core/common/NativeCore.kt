@@ -12,6 +12,8 @@ import com.t1dm.core.model.GraphInput
 import com.t1dm.core.model.HeadSpec
 import com.t1dm.core.model.LoraConfig
 import com.t1dm.core.model.LoraProgressSink
+import com.t1dm.core.model.LoraGuardOpts
+import com.t1dm.core.model.LoraGuardReport
 import com.t1dm.core.model.LoraSample
 import com.t1dm.core.model.LoraTrainOpts
 import com.t1dm.core.model.LoraTrainResult
@@ -163,6 +165,17 @@ interface NativeCore {
      */
     fun bandLine(desc: ModelDescriptor, f: Forecast, tau: Double): List<Double>
 
+    /**
+     * The same line, read from a fan held on its own rather than inside a [Forecast].
+     *
+     * A reconstructed span outlives the run that made it: `bg_infill` keeps the span's risk-space
+     * fan and none of the rest, so sweeping τ over a fill drawn an hour ago has no [Forecast] to
+     * pass. The crate shares one interpolation body between this and [bandLine].
+     *
+     * [qTauRisk] is `steps × 7` risk-space values, ascending τ within each step.
+     */
+    fun bandLineAt(desc: ModelDescriptor, qTauRisk: List<Double>, tau: Double): List<Double>
+
     // ── The head seam and its adapter (LoRA) ────────────────────────────────────────
 
     /** Parse the head side file against the descriptor's `head` block, digest checked.
@@ -181,6 +194,27 @@ interface NativeCore {
         opts: LoraTrainOpts,
         progress: LoraProgressSink? = null,
     ): LoraTrainResult
+
+    /**
+     * Measure what an adapter did to the model's marginal response to one unit of insulin, on
+     * held-out forecast windows.
+     *
+     * Head-only arithmetic — the counterfactual hidden states were computed once when the samples
+     * were built, so this costs no trunk forward at all. It measures PRESERVATION, not
+     * correctness: a model whose response is already wrong-signed passes as long as the adapter
+     * keeps that sign, and exposing that stays the sensitivity probe's job.
+     */
+    fun loraGuard(
+        head: NativeHead,
+        desc: ModelDescriptor,
+        samples: List<LoraSample>,
+        weights: LoraWeights,
+        opts: LoraGuardOpts,
+    ): LoraGuardReport
+
+    /** The bar the fit's own guard pass measures against, from the crate. A later probe of a stored
+     *  adapter has to use the same one or the two verdicts mean different things. */
+    fun loraGuardOptsFit(): LoraGuardOpts
 
     /** A fresh adapter: `B = 0`, so it is exactly the identity until it has been trained.
      *  [headSha256] binds it to the head it may attach to. */

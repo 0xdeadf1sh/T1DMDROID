@@ -1,6 +1,5 @@
 package com.t1dm.app.di
 
-import com.t1dm.data.PushWithdrawal
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -48,38 +47,15 @@ fun logReceipt(handle: LogHandle, zone: ZoneId = ZoneId.systemDefault()): String
     "Logged ${handle.label} at ${hhmm(handle.tsMs, zone)}"
 
 /**
- * What to say after a Logs-panel delete, or null to say nothing.
+ * The follow-up line after an Undo.
  *
- * Null for the clean cases on purpose: the row leaving the list IS the feedback, and a snackbar
- * restating it would be the reassurance the house style cuts. The two cases that do speak are the ones
- * the list cannot express — a refusal (nothing was removed, and the reason is otherwise invisible) and
- * a race (the row is gone here, but the server may hold a copy the list can no longer mention).
+ * There is one case now, not four. A deletion travels as a tombstone on the same upsert the create
+ * rode, ordered against it by `updated_at`, so it lands whatever the push had already done — there
+ * is no longer a "may have landed" or an "already sent, not deleted" to report, and no receipt
+ * hedging about a server copy that comes back.
  *
- * `NEVER_QUEUED` is unreachable on that path — `T1dmRepository.deleteCommittedMeal` resolves a real
- * queue row before it withdraws anything — and is folded in with the silent case rather than given
- * wording that could never appear.
+ * A Logs-panel delete says nothing at all: the row leaving the list IS the feedback, and a snackbar
+ * restating it would be the reassurance the house style cuts.
  */
-fun deleteReceipt(outcome: PushWithdrawal): String? = when (outcome) {
-    PushWithdrawal.NEVER_QUEUED, PushWithdrawal.WITHDRAWN -> null
-    PushWithdrawal.RACED -> "Deleted here — upload may have landed"
-    PushWithdrawal.ALREADY_SENT -> "Already sent — not deleted"
-}
-
-/**
- * The follow-up line after an Undo. It reports the *local* delete as done (it is — the row is gone
- * inside one transaction) and the *server* copy exactly as truthfully as [PushWithdrawal] permits:
- * a drained push cannot be recalled (the server API has no DELETE) and `CatchUpCoordinator`
- * re-hydrates it by `clientId` on the next WS reconnect, so promising a clean unwind there would be
- * a lie the next sync exposes.
- */
-fun undoReceipt(handle: LogHandle, outcome: PushWithdrawal): String {
-    val head = when (outcome) {
-        PushWithdrawal.NEVER_QUEUED, PushWithdrawal.WITHDRAWN ->
-            "Removed ${handle.label} — nothing was sent."
-        PushWithdrawal.RACED ->
-            "Removed ${handle.label} here — its upload was already in flight and may have landed."
-        PushWithdrawal.ALREADY_SENT ->
-            "Removed ${handle.label} here — the server copy was already sent and returns on the next sync."
-    }
-    return (listOf(head) + handle.caveats).joinToString(" ")
-}
+fun undoReceipt(handle: LogHandle): String =
+    (listOf("Removed ${handle.label}.") + handle.caveats).joinToString(" ")

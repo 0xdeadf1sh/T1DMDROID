@@ -246,6 +246,7 @@ class TransactionTest {
         addedAtMs = 0L,
         lastSeenMs = null,
         hidden = false,
+        ordinal = 0,
     )
 
     private fun descriptor(id: String) = CgmSourceDescriptor(

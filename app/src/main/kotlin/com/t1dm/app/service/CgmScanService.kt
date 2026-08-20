@@ -30,6 +30,7 @@ import com.t1dm.alerts.kind
 import com.t1dm.app.MainActivity
 import com.t1dm.app.T1dmApplication
 import com.t1dm.app.di.AppContainer
+import com.t1dm.app.notify.GlanceReadings
 import com.t1dm.app.notify.AlarmActionReceiver
 import com.t1dm.app.notify.AlertRepeatScheduler
 import com.t1dm.app.notify.BgGlance
@@ -87,10 +88,11 @@ import kotlinx.coroutines.delay
 import timber.log.Timber
 import java.util.TimeZone
 
-/** The four live inputs the glance refresh combines: the latest reading, inference state, unit space,
- *  and the active theme as an (id, customJson) pair (folded in so a theme change repaints at once). */
+/** The four live inputs the glance refresh combines: the reading PAIR (newest row and newest
+ *  measurement — see [GlanceReadings]), inference state, unit space, and the active theme as an
+ *  (id, customJson) pair (folded in so a theme change repaints at once). */
 private data class GlanceInputs(
-    val latest: CgmReading?,
+    val readings: GlanceReadings,
     val state: InferenceState,
     val unit: UnitSpace,
     val theme: Pair<String, String?>,
@@ -460,7 +462,9 @@ class CgmScanService : LifecycleService() {
             val timedTicks = flow {
                 while (isActive) {
                     if (container.forecastModeSnapshot == SettingsStore.FORECAST_MODE_TIMED) {
-                        val periodMs = container.forecastPeriodMin() * 60_000L
+                        // coerceAtLeast(1) — a 0-minute period (corrupt kv / bad import) would make
+                        // `now % periodMs` divide by zero.
+                        val periodMs = container.forecastPeriodMin().coerceAtLeast(1) * 60_000L
                         val now = System.currentTimeMillis()
                         delay((periodMs - now % periodMs).coerceAtLeast(1L)) // to the next period boundary
                         // Re-check after the sleep: the user may have left TIMED while we waited.
@@ -500,15 +504,15 @@ class CgmScanService : LifecycleService() {
                 container.settingsStore.customThemeJson,
             ) { id, json -> id to json }
             combine(
-                container.latestReading.onStart { emit(null) },
+                container.glanceReadings.onStart { emit(GlanceReadings.EMPTY) },
                 container.inferenceState,
                 container.statsRepository.unitSpace.onStart { emit(UnitSpace.MgDl) },
                 ticker,
                 theme,
-            ) { latest, state, unit, _, themeSig ->
-                GlanceInputs(latest, state, unit, themeSig)
-            }.collectLatest { (latest, state, unit, themeSig) ->
-                runCatching { refreshGlanceSurfaces(latest, state, unit, themeSig) }
+            ) { readings, state, unit, _, themeSig ->
+                GlanceInputs(readings, state, unit, themeSig)
+            }.collectLatest { (readings, state, unit, themeSig) ->
+                runCatching { refreshGlanceSurfaces(readings, state, unit, themeSig) }
                     .onFailure { Timber.tag(TAG).w(it, "glance refresh failed (alarm path unaffected)") }
             }
         }
@@ -528,13 +532,13 @@ class CgmScanService : LifecycleService() {
      * warning), and the widgets. The §3.6 gate lives inside [BgGlanceComputer]; here we only render.
      */
     private suspend fun refreshGlanceSurfaces(
-        latest: CgmReading?,
+        readings: GlanceReadings,
         state: InferenceState,
         unit: UnitSpace,
         themeSig: Pair<String, String?>,
     ) {
         val glance: BgGlance = BgGlanceComputer.compute(
-            latest = latest,
+            readings = readings,
             state = state,
             thresholds = container.alarmConfig.thresholds,
             lossMin = container.alarmConfig.lossMin,
@@ -604,7 +608,8 @@ class CgmScanService : LifecycleService() {
         // Age first, toggle second. The toggle is a Room read and the age is a subtraction, and the age
         // rules the blink out on all but the two refreshes that follow a reading — so asking Settings
         // first spent a query per ticker tick to answer a question the next term had already closed.
-        val ageMs = latest?.let { System.currentTimeMillis() - it.rxWallMs } ?: Long.MAX_VALUE
+        val ageMs = readings.lastMeasured?.let { System.currentTimeMillis() - it.rxWallMs }
+            ?: Long.MAX_VALUE
         val animate = ageMs in 0 until GlucoseWidget.FRESH_WINDOW_MS &&
             runCatching { container.settingsStore.currentAnimationsEnabled() }.getOrDefault(true)
         if (animate) {

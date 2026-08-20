@@ -159,38 +159,117 @@ and puts a low-rank adapter in front of it.
 
 ## The Lab
 
-One screen that runs any loaded model over any masked set. Forecast, backcast and
-infill are the same artifact under a different `slot_sel`, so the Lab needs no
-second inference path — it passes a masked set the cycle never asks for.
+One screen that generates a synthetic patient over the selected model's context
+window. Nothing it produces is stored, pushed, alarmed on, or read by the dose
+calculator, which is what lets it invent a week of history.
 
-Nothing the Lab produces is stored, pushed, alarmed on, or read by the dose
-calculator. That is what lets it mask real glucose, invent a week of history, and
-run an untried adapter.
+**Synthetic mode** fills only the steps the real history lacks — every real sample
+survives — from the seeded generator in `crates/t1dm-core/src/synth.rs`. It exists
+because the newer models read up to seven days of context and a phone that has
+been running two days cannot give them one. It is a shaped plausibility, not a
+simulator and not the patient. The trace marks which steps it invented.
 
-- **Synthetic mode** fills only the steps the real history lacks — every real
-  sample survives — from the seeded generator in `crates/t1dm-core/src/synth.rs`.
-  It exists because the newer models read up to seven days of context and a phone
-  that has been running two days cannot give them one. It is a shaped
-  plausibility, not a simulator and not the patient.
-- **The median slider** reads the fan the model already emitted at an arbitrary
-  level. The line is computed in the crate, in risk space, between the two
-  published levels that bracket τ; the screen picks from a precomputed ladder
-  rather than interpolating itself.
+The model is picked for its window LENGTH. No inference runs here.
 
-## Gap repair
+## Editing the curve
 
-A sensor swap or a dropped signal leaves a hole, and a seven-day context with a
-hole in it is a context the model never saw. The repair masks the gap's patches
-INSIDE a window that has real evidence on both sides of it — which is the whole
-advantage of an infill over a forecast — and stores the reconstruction in its own
-`bg_infill` table.
+The BG panel is the editing surface. `Edit` swaps the chip row for a toolbar; one
+finger drags out a stretch of time and stops there, and every act on that stretch
+is a separate press. A drag shorter than the touch slop selects nothing, and each
+end of a selection is a handle that resizes it.
+
+- **Cut** erases every stored BG on the grid in the selection, locally and on the
+  server. It is the only operation in the app that destroys measured physiologic
+  data on purpose.
+- **Fill** reconstructs the selection. Forecast, backcast and infill are the same
+  artifact under a different `slot_sel`, so this needs no second inference path —
+  it passes a masked set the cycle never asks for. The geometry is derived from
+  where the stretch sits and named on the button; it is never chosen.
+- **τ** reads the fan the model already emitted at an arbitrary level, in the
+  crate, in risk space, between the two published levels that bracket τ. It moves
+  the drawn line through the fan and records which level it landed on, so a
+  promotion of it cannot later be read as the median.
+- **Undo** takes back the last cut or fill. It holds in memory for the session: a
+  cut is pushed to the server as it is made, and undoing one restores the rows
+  with their provenance and re-pushes each slot.
+- **Fills** hides the reconstruction overlay without discarding anything.
+
+A gap in the sensor signal is a hole, and a seven-day context with a hole in it is
+a context the model never saw. A fill masks the gap's patches INSIDE a window that
+has real evidence on both sides of it — the whole advantage of an infill over a
+forecast — and stores the reconstruction in its own `bg_infill` table.
 
 **A fill is not a reading.** It conditions the DISPLAYED forecast and nothing else:
-not the alarm engine, not the statistics, not the accuracy suite, not the wire.
-`fitBgSeries`, the series a model is FITTED on, never sees one, and neither does
-`dosingBgSeries` — a dose scored partly on a model's own reconstruction would close
-a loop between an output and the advice derived from it. The BG panel does not yet
-draw fills.
+not the alarm engine, not the statistics, not the accuracy suite, not the dose
+calculator. `fitBgSeries`, the series a model is FITTED on, never sees one, and
+neither does `dosingBgSeries` — a dose scored partly on a model's own
+reconstruction would close a loop between an output and the advice derived from
+it. The BG panel draws a fill as its quantile fan with a dashed line over it, in
+the surface's own muted ink and never in a glucose colour. A row that predates the
+fan columns has two band edges and nothing between them, and draws as the single
+band it is. A span nobody wants is **discarded**; the fan and the row go with it.
+
+**A fill can be PROMOTED into the record** from the panel's edit bar, and it then
+crosses the wire as a sample flagged reconstructed. The flag is for life: the
+value may never clear an alarm, feed a dose, count as measured context for a cold
+start, or enter a statistic. A backcast may not be promoted at all — nothing
+brackets it on the left, so storing one extends the history backwards on a single
+anchor.
+
+**A promoted sample is neither a fit TARGET nor a fit WINDOW'S CONTEXT.**
+`fitBgSeries` excludes it from the target, and the replay drops any window whose
+context holds a reconstruction at all — promoted into `cgm_reading`, or spliced in
+from `bg_infill`. The provider names those slots (`reconstructedSlots`) rather than
+the replay inferring them, because the fit series is `NaN` at an ordinary sensor
+gap too: testing it for `NaN` across the window cannot tell the rule's subject from
+a dropout, and refusing both leaves a record with one sensor change contributing no
+usable window at all. A carried-forward slot stays admissible — a model is
+CONDITIONED on a dense context by design.
+
+**And the window's ANCHOR must be measured.** `build_graph_input` anchors a masked
+run on one step — the last step of the patch to its left, or the first step of the
+patch to its right where there is no left one — and the pinball target, the frozen
+baseline and both of the guard's terminal reads are all measured from it. A carried
+value sitting there is a flat stretch that never happened being used as the
+reference every residual is taken against.
+
+## The counterfactual guard
+
+An adapter is a few thousand parameters fitted to one patient's own weeks, and the
+loss it is fitted on says nothing about whether the model still responds to
+insulin. It can null that response with a rank-1 map, score better on pinball
+loss, and hand the dose calculator a forecaster that does not move when insulin is
+added — which is exactly the marginal response `Rails.predictedLowVeto` reads,
+because that rail tests the MEDIAN line and not a band edge.
+
+Two things stand against it, and they are independent:
+
+- **A distillation term during the fit.** Every forecast window is replayed twice —
+  once as it happened and once with one unit of RAPID INSULIN added to the horizon,
+  as the action curve the preset resolves and a logged bolus stores, not as a lump
+  in one bucket — and the term pins the ADAPTED difference between the two to the
+  FROZEN model's. It is read on the assembled fan and in risk space, for the same
+  two reasons the pinball term is, and on the median column alone: pinning the
+  spreads would fight the pinball term's freedom to widen this patient's bands.
+  Windows at infill and backcast geometry carry no counterfactual: the response is
+  read at a horizon's terminal step, and an infill has none.
+- **A verdict at attach.** After the fit, the same response is measured on held-out
+  forecast windows. The RATIO is taken in risk space — the space the distillation
+  term is formed in, so the guard reads the quantity the fit optimises, and a pure
+  level shift through a convex `f_inv` cannot move it. The mg/dL-per-unit pair is
+  measured and reported beside it, and is what the "nothing to preserve" floor
+  gates on. Together they decide Pass, Blocked or Inconclusive. The verdict and every input to it
+  are stored on the adapter's row, and attach is refused STRUCTURALLY — in
+  `LabController.attach`, not merely in the panel — on Blocked, on Inconclusive,
+  and on an adapter nobody has measured at all. An adapter arriving by import or by
+  an archive restore is in that last state, and silence is not a pass.
+
+The refusal is overridable by a deliberate second action, which sticks to that
+adapter's row: a re-fit makes a fresh row with no override.
+
+The guard measures PRESERVATION, not correctness. A model whose marginal response
+is already wrong-signed passes as long as the adapter keeps that sign; exposing
+that is the sensitivity probe's job and stays there.
 
 ## Backends
 

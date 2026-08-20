@@ -1,5 +1,6 @@
 package com.t1dm.data.stats
 
+import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.core.common.NativeCore
 import com.t1dm.core.common.T1dmDispatchers
 import com.t1dm.core.model.AdvancedStats
@@ -164,6 +165,11 @@ internal fun parseUnitSpace(raw: String?): UnitSpace =
  * excludes non-positive BG from every glucose metric); `steps`/`mood` still feed the activity
  * channels. Carbs/bolus/basal were demoted off the sample row to self-describing curve events
  * (§5), so they are `null` here.
+ *
+ * A RECONSTRUCTED BG maps to `0.0` too, which is to say it does not exist as far as any statistic
+ * is concerned. `SPEC/invariants.md` §1 says a promoted reconstruction may never enter a statistic
+ * as a measurement, and the crate's own `valid` subsequence is `bg_mgdl.is_finite() && > 0.0` — so
+ * the existing sentinel says it exactly, with no Rust change and no golden vectors to regenerate.
  */
 internal fun SampleEntity.toStatSample(): StatSample = StatSample(
     tsMs = ts,
@@ -171,7 +177,7 @@ internal fun SampleEntity.toStatSample(): StatSample = StatSample(
     // runs up to 90 days and may straddle a DST change or a flight, and reading today's offset onto
     // an old row would key it to a day the patient did not live.
     tzOffsetMin = tzOffsetMin,
-    bgMgdl = bgMgdl?.toDouble() ?: 0.0,
+    bgMgdl = bgMgdl?.takeIf { bgProvenance != ReadingProvenance.RECONSTRUCTED }?.toDouble() ?: 0.0,
     carbsG = null,
     bolusU = null,
     basalU = null,

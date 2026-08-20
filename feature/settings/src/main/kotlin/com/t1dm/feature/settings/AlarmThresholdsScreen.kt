@@ -22,9 +22,6 @@ fun AlarmThresholdsScreen(
     onChange: (urgentLow: Int, low: Int, high: Int, urgentHigh: Int) -> Unit,
 ) {
     SettingsScaffold(SettingsScreenKey.ALARM_THRESHOLDS) {
-        DangerBanner(
-            "No safety clamp — a wrong value weakens your safety net",
-        )
         SettingsNote("mg/dL · urgent bands bypass DND")
 
         IntStepper(alarmUrgentLow, urgentLow, "mg/dL", step = 5, min = 0) { onChange(it, low, high, urgentHigh) }

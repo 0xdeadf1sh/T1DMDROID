@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -47,6 +48,10 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.ui.Modifier
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -69,12 +74,18 @@ import com.t1dm.core.design.OnBoardReadout
 import com.t1dm.core.design.LoggedEntryDialog
 import com.t1dm.core.design.SignalBars
 import com.t1dm.core.design.argbWithAlpha
-import com.t1dm.core.design.iconStyleForTheme
 import com.t1dm.core.design.crossfadeOnSwap
+import com.t1dm.core.model.MaskGeometry
+import com.t1dm.core.model.ReconstructedBg
+import com.t1dm.core.model.SpanLinePreview
+import com.t1dm.ui.graph.MaskControls
+import com.t1dm.ui.graph.MaskSelection
+import com.t1dm.core.design.iconStyleForTheme
 import com.t1dm.core.design.rememberHapticDetent
 import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.model.AlertThresholds
 import com.t1dm.core.model.CgmReading
+import com.t1dm.core.model.isRealMeasurement
 import com.t1dm.core.model.IobCobReadout
 import com.t1dm.core.model.LoggedEntry
 import com.t1dm.core.model.ModelPrediction
@@ -92,6 +103,8 @@ import com.t1dm.ui.graph.CurveOverlayToggles
 import com.t1dm.ui.graph.GlucoseGraph
 import com.t1dm.ui.graph.GraphFrame
 import com.t1dm.ui.graph.GraphInsets
+import com.t1dm.ui.graph.GraphScrub
+import com.t1dm.ui.graph.geometryOf
 import com.t1dm.ui.graph.PaintControls
 import com.t1dm.ui.graph.PaintFrame
 import com.t1dm.ui.graph.PredSeries
@@ -132,8 +145,8 @@ import com.t1dm.ui.graph.predOverlayOf
 fun DashboardScreen(
     readings: List<CgmReading>,
     // Which sensor [readings] were drawn for. Identity only — the panel neither queries nor filters on
-    // it; it is what the chart dissolves across when the bottom bar steps to another sensor, so that
-    // the trace is replaced through a blend rather than swapped in one frame.
+    // it; it is what the chart fades across when the bottom bar steps to another sensor, so that the
+    // trace is replaced under a dip rather than swapped in one frame.
     sourceKey: String? = null,
     thresholds: AlertThresholds? = null,
     unit: UnitSpace = UnitSpace.MgDl,
@@ -173,6 +186,40 @@ fun DashboardScreen(
     // on a mark opens. The reduction happens HERE so a mark and the row it stands for are the same
     // list position by construction, which is the whole of how a tap names what it hit.
     logEntries: List<LoggedEntry> = emptyList(),
+    /** Reconstructions over the loaded window — drawn here, and now edited here too. */
+    reconstructed: List<ReconstructedBg> = emptyList(),
+    /** Non-null puts the panel in edit mode; every number in it comes from the selected model's own
+     *  descriptor, because the app holds no geometry of its own. */
+    maskControls: MaskControls? = null,
+    /** Reconstruct the selected stretch under the geometry DERIVED from where it sits. */
+    onFillSpan: ((MaskSelection, MaskGeometry) -> Unit)? = null,
+    /** What the last edit did, verbatim from the runner — refusals included. */
+    maskNote: String? = null,
+    /**
+     * Erase every BG on the grid in `[fromMs, toMs]`, locally and on the server — the escape hatch
+     * for a compression low or a stretch of nonsense, and the only way values already in the record
+     * come back out.
+     *
+     * Null leaves the affordance off the panel entirely rather than offering one that refuses.
+     */
+    onCutBg: ((fromMs: Long, toMs: Long) -> Unit)? = null,
+    /** Take back the last cut or fill made this session. */
+    onUndoBgEdit: (() -> Unit)? = null,
+    /** Whether there is anything to take back. The stack lives in `:app`, not here: a fit or a cut
+     *  outlives this composable, and an undo that vanished on navigation would be a trap. */
+    canUndoBgEdit: Boolean = false,
+    /** Write the selected span into the record as stored, syncable samples. */
+    onPromoteSpan: ((Long) -> Unit)? = null,
+    /** Take a promoted span back out of the record. */
+    onDemoteSpan: ((Long) -> Unit)? = null,
+    /** Throw an unpromoted span away — the removal that did not exist before. */
+    onDiscardSpan: ((Long) -> Unit)? = null,
+    /** Move a drawn span's line to the fan's τ-th quantile and STORE that level. Fired on release. */
+    onRetauSpan: ((spanStartMs: Long, tau: Double) -> Unit)? = null,
+    /** Read the fan at a τ the thumb is still travelling through, without storing anything. */
+    onPreviewTau: ((spanStartMs: Long, tau: Double) -> Unit)? = null,
+    /** The uncommitted line, applied over [reconstructed] so the drawn curve follows the thumb. */
+    tauPreview: SpanLinePreview? = null,
     // Where the record begins, against where [readings] begins. They differ because the panel loads a
     // window rather than the whole store — a class accumulates every sensor ever worn, over a table
     // that is never pruned, so loading all of it grew without bound. The graph floors its pannable
@@ -204,13 +251,14 @@ fun DashboardScreen(
     temperatureUnit: TempUnit = TempUnit.CELSIUS,
     stepsToday: Int? = null,
     // The sensor time-left expiry instant (absolute epoch-ms), counted down live to the right of the
-    // TEMP readout. USER-ENTERED: a passive advertisement carries no service-life fact, so Settings →
-    // CGM collects the remaining life and stores an absolute instant. Null ⇒ no expiry countdown.
+    // TEMP readout. Sensor-derived: the connected session reports the sensor's age (minFromStart), and
+    // the app adds the configurable total service life. Null ⇒ no expiry countdown (no sensor age yet).
     sensorExpiryMs: Long? = null,
     // The instant the active sensor's warm-up ends (absolute epoch-ms), non-null ONLY while it is
     // genuinely warming up — the nullity IS the warm-up state, independent of [sensorExpiryMs] and of
-    // whether the instant has already passed. While both are null the chip is not shown at all. This
-    // is CGM sensor warm-up, not the inference context warm-up [warmup] carries.
+    // whether the instant has already passed (the sensor's own bit may outlive the configured window).
+    // While both are null the chip is not shown at all. This is CGM sensor warm-up, not the inference
+    // context warm-up [warmup] carries.
     sensorWarmupEndMs: Long? = null,
     // Issues 7 & 9 — the warmup-surviving circadian belief, so the TOP axis renders the predicted
     // clock even while the BG forecast is (correctly) suppressed. Falls back to the selected
@@ -469,6 +517,25 @@ fun DashboardScreen(
     val paintScope = rememberCoroutineScope()
     val paintAvailable = onAddPaintStroke != null && onDeletePaintStroke != null
     var paintOn by remember { mutableStateOf(false) }
+    // Edit mode is offered when a model with a descriptor is selected — `maskControls` carries every
+    // number a selection is bounded by, and the app holds no geometry of its own to fall back on —
+    // or when a cut is possible, which needs no model at all.
+    val editAvailable = maskControls != null && (onFillSpan != null || onCutBg != null)
+    var editOn by remember(editAvailable) { mutableStateOf(false) }
+    // The stretch of time the finger has picked out. One, not a set: the bar acts on the thing the
+    // panel is highlighting, and a second highlight that stayed on screen while a tool fired at the
+    // first is a control aimed at something other than what it shows.
+    var editSelection by remember { mutableStateOf<MaskSelection?>(null) }
+    // Whether reconstructions are drawn at all. A latch, because "show me the trace without the
+    // model's guesses over it" is a question the panel could not answer before.
+    var showFills by remember { mutableStateOf(true) }
+    var confirmCut by remember { mutableStateOf<MaskSelection?>(null) }
+    // How much of the screen the chips and the read-out under the panel get. The panel has `weight`,
+    // so it is exactly the complement: shrinking this grows the graph.
+    var controlsHeightDp by remember { mutableStateOf(CONTROLS_HEIGHT_MAX_DP) }
+    // The last slot the scrub cursor settled on, HELD past release. The cursor is the panel's only
+    // per-slot pointer, and a control that lived only while a finger was down could not be pressed.
+    var scrubbed by remember { mutableStateOf<GraphScrub?>(null) }
     var paintTool by remember { mutableStateOf(PaintTool.DEFAULT) }
     var paintErasing by remember { mutableStateOf(false) }
     var paintWidthDp by remember { mutableStateOf(PaintTool.DEFAULT.defaultWidthDp) }
@@ -526,6 +593,67 @@ fun DashboardScreen(
         }
     }
 
+    // ── What the selection is, and therefore what the bar may offer ──────────────────────────────
+    //
+    // Derived from the selection every recomposition rather than held beside it: a fill landing, a
+    // cut committing or the trace scrolling all change what the same stretch of time contains, and
+    // a cached answer would leave a button aimed at something that is no longer there.
+    // The rows as DRAWN: the stored fan with any uncommitted τ line laid over it. One list feeds
+    // both the panel and the edit bar, so the curve under the thumb and the level the bar reports
+    // cannot disagree while the slider is moving.
+    val shown = remember(reconstructed, tauPreview) {
+        val p = tauPreview
+        if (p == null) {
+            reconstructed
+        } else {
+            reconstructed.map { row ->
+                val v = if (row.spanStartMs == p.spanStartMs) p.mgdl[row.tsMs] else null
+                if (v == null) row else row.copy(mgdl = v, tau = p.tau)
+            }
+        }
+    }
+    val sel = editSelection
+    val selRows = remember(sel, shown) {
+        sel?.let { r -> shown.filter { it.tsMs >= r.startMs && it.tsMs < r.endMs } }.orEmpty()
+    }
+    // One span, or none. A selection straddling two spans names neither, and promoting "whichever
+    // one is first" is the kind of guess that writes the wrong thing into the record.
+    val selSpan = remember(selRows) {
+        selRows.map { it.spanStartMs }.distinct().singleOrNull()?.let { start ->
+            start to selRows.first()
+        }
+    }
+    val cutCount = remember(sel, readings) {
+        sel?.let { r ->
+            readings.count {
+                it.tsMs >= r.startMs && it.tsMs < r.endMs && it.bgMgdl != null &&
+                    isRealMeasurement(it.provenance, it.flag)
+            }
+        } ?: 0
+    }
+    val editState = BgEditState(
+        hasSelection = sel != null,
+        cutCount = cutCount,
+        // Named by the geometry it would run, which is a fact about where the stretch sits rather
+        // than a mode anyone picked. A forecast is not stored and an infill may be, and a button
+        // that said "Fill" for both would hide the difference at the moment it matters.
+        fillLabel = sel?.takeIf { onFillSpan != null && maskControls?.fromDescriptor == true }?.let {
+            when (geometryOf(it, maskControls!!)) {
+                MaskGeometry.FORECAST -> "Forecast"
+                MaskGeometry.BACKCAST -> "Backcast"
+                MaskGeometry.INFILL -> "Fill"
+            }
+        },
+        spanStartMs = selSpan?.first,
+        spanPromoted = selSpan?.second?.promoted == true,
+        // A pre-fan row has two edges and nothing between them; there is no level to sweep to.
+        spanTauSweepable = selSpan != null && selSpan.second.promoted.not() &&
+            selRows.all { it.bands.isNotEmpty() } && onRetauSpan != null,
+        tau = selSpan?.second?.tau ?: 0.5,
+        canUndo = canUndoBgEdit,
+        busy = false,
+    )
+
     // The selected model's circadian-phase clock (item 21) + its approaching excursions (item 16).
     // Issues 7 & 9: prefer the in-cycle prediction's belief, but fall back to the warmup-surviving
     // [circadianTime] so the TOP axis still renders the predicted clock while forecasts are withheld.
@@ -540,32 +668,62 @@ fun DashboardScreen(
         }
         warmup?.let { WarmupBanner(it) }
         if (noFutureInsulin) NoFutureInsulinBanner()
-        if (paintOn && paintAvailable) {
-            PaintPalette(
-                tool = paintTool,
-                erasing = paintErasing,
-                colorArgb = paintColor,
-                canUndo = paintUndo.isNotEmpty(),
-                canRedo = paintRedo.isNotEmpty(),
-                onSelectTool = { t ->
-                    paintErasing = false
-                    paintTool = t
-                    // Picking a tool SEEDS its width and alpha; both stay overridable in the dialog.
-                    paintWidthDp = t.defaultWidthDp
-                    paintColor = seedInk(t, paintColor)
-                },
-                onSelectEraser = { paintErasing = !paintErasing },
-                onOpenStyle = { showPaintStyle = true },
-                onUndo = { undoPaint() },
-                onRedo = { redoPaint() },
-            )
-        }
-        // I2 — the ephemeral rolled-forecast status line: a plain reason when it is degenerate/absent,
-        // otherwise a note that the drawn tail is extrapolated + display-only, with a Clear affordance.
-        rolledForecast?.takeIf { !it.isEmpty || it.reason != null }?.let { rf ->
+        // I2 — the rolled forecast's status line, and ONLY when something went wrong. A roll that
+        // came back whole is drawn on the panel and says everything it has to say there; a row that
+        // rendered anyway took its height out of the panel's weight, so asking for a roll shrank the
+        // graph the roll is drawn on. Clearing one lives on the chip row beside Roll.
+        rolledForecast?.takeIf { it.reason != null || it.isEmpty }?.let { rf ->
             RolledStatusBanner(rf, onClear = onClearRoll)
         }
         val panelModifier = Modifier.fillMaxWidth().weight(1f)
+        // The toolbars are drawn OVER the panel rather than above it. Stacked in the column they
+        // took their height out of the panel's weight, so arming a tool shrank the very graph the
+        // tool acts on — and paint's palette and the edit bar are both transient, which is exactly
+        // what an overlay is for. Declared after the chart, so they take the touch first.
+        @Composable
+        fun PanelToolbars() {
+            if (paintOn && paintAvailable) {
+                PaintPalette(
+                    tool = paintTool,
+                    erasing = paintErasing,
+                    colorArgb = paintColor,
+                    canUndo = paintUndo.isNotEmpty(),
+                    canRedo = paintRedo.isNotEmpty(),
+                    onSelectTool = { t ->
+                        paintErasing = false
+                        paintTool = t
+                        // Picking a tool SEEDS its width and alpha; both stay overridable in the dialog.
+                        paintWidthDp = t.defaultWidthDp
+                        paintColor = seedInk(t, paintColor)
+                    },
+                    onSelectEraser = { paintErasing = !paintErasing },
+                    onOpenStyle = { showPaintStyle = true },
+                    onUndo = { undoPaint() },
+                    onRedo = { redoPaint() },
+                )
+            }
+            if (editOn && editAvailable) {
+                BgEditBar(
+                    state = editState,
+                    note = maskNote,
+                    showSpans = showFills,
+                    onDone = { editOn = false; editSelection = null },
+                    onCut = { editSelection?.let { confirmCut = it } },
+                    onFill = {
+                        val c = maskControls
+                        val s2 = editSelection
+                        if (c != null && s2 != null) onFillSpan?.invoke(s2, geometryOf(s2, c))
+                    },
+                    onTau = { t -> editState.spanStartMs?.let { onRetauSpan?.invoke(it, t) } },
+                    onTauPreview = { t -> editState.spanStartMs?.let { onPreviewTau?.invoke(it, t) } },
+                    onPromote = { editState.spanStartMs?.let { onPromoteSpan?.invoke(it) } },
+                    onDemote = { editState.spanStartMs?.let { onDemoteSpan?.invoke(it) } },
+                    onDiscard = { editState.spanStartMs?.let { onDiscardSpan?.invoke(it) } },
+                    onUndo = { onUndoBgEdit?.invoke() },
+                    onToggleSpans = { showFills = it },
+                )
+            }
+        }
         val slot = gameSlot
         val spanMin = if (viewSpanMs > 0.0) (viewSpanMs / 60_000.0).toFloat() else windowHours * 60f
         val dropAt = gameStartMs
@@ -616,6 +774,14 @@ fun DashboardScreen(
             showSteps = showSteps,
             logMarkers = logMarkers,
             onMarkerTap = { hits -> tappedLogs = hits.mapNotNull { logEntries.getOrNull(it) } },
+            onScrub = { s -> if (s != null) scrubbed = s },
+            reconstructed = if (showFills) shown else emptyList(),
+            kovatchevF = kovatchevF,
+            // Null unless the chip is lit: a non-null `maskControls` IS edit mode in the graph, so
+            // passing it unconditionally would leave every pan and every scrub selecting a stretch.
+            maskControls = if (editOn) maskControls else null,
+            editSelection = editSelection,
+            onEditSelection = { editSelection = it },
             rangeMinMgdl = rangeMinMgdl,
             rangeMaxMgdl = rangeMaxMgdl,
             predictedClock = predictedClock,
@@ -652,14 +818,63 @@ fun DashboardScreen(
                 }
                 }
             }
+            // Over the chart, top-aligned. A sibling declared last, so a press on a chip is taken
+            // here and never reaches the panel's own gesture handler underneath.
+            //
+            // On its own ground: a toolbar floating transparently over the trace is a row of labels
+            // competing with a glucose curve for the same pixels. Nearly opaque rather than fully,
+            // so it still reads as sitting ON the panel rather than replacing part of it.
+            if ((paintOn && paintAvailable) || (editOn && editAvailable)) {
+                Box(
+                    Modifier
+                        .align(Alignment.TopCenter)
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.94f))
+                        // The toolbar's own chips claim their presses, but its padding, its τ
+                        // label and its note line are not pointer nodes — and the hit test only
+                        // stops descending to a LOWER SIBLING once some node has recorded a hit, so
+                        // a press on the bar's dead ground reached the panel underneath and started
+                        // a selection, or drew a stroke through the palette.
+                        //
+                        // Recording the hit is the whole job, and this node exists to do nothing
+                        // else. It CONSUMES NOTHING: the chips and the τ slider are its children,
+                        // they are dispatched first on the main pass, and a parent that ate their
+                        // moves would leave the slider unable to travel — which is exactly what
+                        // consuming here did.
+                        .pointerInput(Unit) {
+                            awaitPointerEventScope {
+                                while (true) awaitPointerEvent()
+                            }
+                        },
+                ) { PanelToolbars() }
+            }
         }
         // Under the graph, directly above the app's bottom bar: the chips are what the thumb reaches
         // for, so they sit where the thumb is. The read-out that used to head this panel moved into
         // that bar, where the nav wheel's hub fills the gap it left.
         if (iobCob != null || sensitivity != null || curveChannels != null || smoothMgdl != null ||
             onRoll != null || paintAvailable || gameSlot != null || hindsightIn != null ||
-            stepSeries != null
+            stepSeries != null || editAvailable
         ) {
+            // The panel takes whatever this block leaves, so the handle sizes the panel by sizing
+            // THIS: drag it down and the graph grows into the space the read-out gives up, drag it
+            // up and the read-out gets it back. One state, and the complement falls out of the
+            // weight — a panel with an explicit height of its own would have to be kept in step with
+            // every banner above it that comes and goes.
+            PanelResizeHandle(
+                heightDp = controlsHeightDp,
+                onHeightDp = { controlsHeightDp = it },
+            )
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    // A CAP, never a fixed height. Forcing the height padded the block out to the
+                    // cap whenever the read-out was shorter, which put a band of empty surface
+                    // between the last line and the nav bar. Capped, the block wraps its content
+                    // and the grip only ever takes height AWAY from it.
+                    .heightIn(max = controlsHeightDp.dp)
+                    .clipToBounds(),
+            ) {
             OverlayControls(
                 iobCob = iobCob,
                 sensitivity = sensitivity,
@@ -677,8 +892,12 @@ fun DashboardScreen(
                 showHindsight = showHindsight,
                 rollAvailable = onRoll != null,
                 rollComputing = rollComputing,
+                rollClearable = rolledForecast?.let { !it.isEmpty } == true && onClearRoll != null,
+                onClearRoll = { onClearRoll?.invoke() },
                 paintAvailable = paintAvailable,
                 paintOn = paintOn,
+                editAvailable = editAvailable,
+                editOn = editOn,
                 gameAvailable = gameSlot != null,
                 gameOn = gameOn,
                 onToggleGame = { gameOn = it },
@@ -687,12 +906,17 @@ fun DashboardScreen(
                 onToggleSteps = { showSteps = it },
                 onToggleSmoothed = { showSmoothed = it },
                 onToggleHindsight = { showHindsight = it },
-                onTogglePaint = { on -> paintOn = on },
+                onTogglePaint = { on -> paintOn = on; if (on) editOn = false },
+                onToggleEdit = { on ->
+                    editOn = on
+                    if (on) paintOn = false else editSelection = null
+                },
                 onWindow = { h ->
                     windowHours = h
                     onSetWindowHours?.invoke(h)
                 },
             )
+            }
         }
     }
 
@@ -707,6 +931,35 @@ fun DashboardScreen(
             onColorChange = { paintColor = it },
             onWidthChange = { paintWidthDp = it.coerceIn(PAINT_WIDTH_MIN_DP, PAINT_WIDTH_MAX_DP) },
             onDismiss = { showPaintStyle = false },
+        )
+    }
+
+    confirmCut?.let { range ->
+        val haptics = rememberT1dmHaptics()
+        val tz = scrubbed?.tzOffsetMin ?: readings.lastOrNull()?.tzOffsetMin ?: 0
+        LaunchedEffect(range) { haptics.perform(HapticEvent.Warn) }
+        AlertDialog(
+            onDismissRequest = { haptics.perform(HapticEvent.Reject); confirmCut = null },
+            confirmButton = {
+                TextButton(onClick = {
+                    haptics.perform(HapticEvent.Confirm)
+                    // The end is exclusive on the panel and inclusive on the grid the store keys.
+                    onCutBg?.invoke(range.startMs, range.endMs - STEP_MS)
+                    confirmCut = null
+                }) { Text("Cut") }
+            },
+            dismissButton = {
+                TextButton(onClick = { haptics.perform(HapticEvent.Reject); confirmCut = null }) {
+                    Text("Cancel")
+                }
+            },
+            title = {
+                Text("Cut $cutCount from " + hhmm(range.startMs, tz) + "–" + hhmm(range.endMs - STEP_MS, tz))
+            },
+            // Says what survives leaving this screen, because that is the part a stack cannot fix:
+            // the cut goes to the server the moment it is made, and the undo that puts it back is
+            // held in memory.
+            text = { Text("Erased here and on the server. Undo holds until you leave the app.") },
         )
     }
 
@@ -732,6 +985,13 @@ private class PaintUndoOp(var stroke: PaintStroke, val added: Boolean)
  *  fields would give it an identity `equals` that lies — so the copy is spelled out. */
 private fun PaintStroke.withId(newId: Long): PaintStroke =
     PaintStroke(newId, createdAtMs, tool, colorArgb, widthDp, tsMs, yFrac)
+
+/** `HH:mm` at the slot's OWN stored offset, never the phone's current zone — `SPEC/invariants.md`
+ *  §2, and a deletion confirmation naming the wrong hour is a confirmation of the wrong slot. */
+private fun hhmm(tsMs: Long, tzOffsetMin: Int): String {
+    val mins = Math.floorMod((tsMs / 60_000L) + tzOffsetMin, 1440L).toInt()
+    return "%02d:%02d".format(mins / 60, mins % 60)
+}
 
 /** Honest units for the roll horizon: whole hours or "N h 30 min", and "30 min" below one hour. */
 private fun rollHoursLabel(hours: Double): String {
@@ -778,8 +1038,7 @@ private fun RollConfirmDialog(onDismiss: () -> Unit, onConfirm: (Double) -> Unit
         text = {
             Column {
                 Text(
-                    "Re-feeds the forecast $rolls time${if (rolls == 1) "" else "s"} — " +
-                        "extrapolated, never alerts",
+                    "Re-feeds the forecast $rolls time${if (rolls == 1) "" else "s"}",
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Spacer(Modifier.height(16.dp))
@@ -800,13 +1059,16 @@ private fun RollConfirmDialog(onDismiss: () -> Unit, onConfirm: (Double) -> Unit
     )
 }
 
-/** The ephemeral rolled-forecast status line (I2). States the honest disposition in plain language. */
+/** The rolled forecast's status line (I2): what went wrong, if anything, and a way to clear it. */
 @Composable
 private fun RolledStatusBanner(rf: RolledForecast, onClear: (() -> Unit)?) {
+    // Only a FAILURE speaks. A roll that came back whole is drawn on the panel in the forecast's own
+    // hand and needs no words beside it — the standing caption said the same thing after every
+    // successful roll, which is how a line stops being read at all.
     val msg = when {
         rf.reason != null -> rf.reason!!
         rf.isEmpty -> "No rolled forecast"
-        else -> "Rolled to ${rollHoursLabel(rf.requestedHours)} — past 2 h extrapolated, display-only"
+        else -> null
     }
     val haptics = rememberT1dmHaptics()
     // A roll that came back DEGENERATE is a result the user asked for and did not get; it lands while
@@ -819,7 +1081,7 @@ private fun RolledStatusBanner(rf: RolledForecast, onClear: (() -> Unit)?) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            msg,
+            msg.orEmpty(),
             style = MaterialTheme.typography.labelMedium,
             color = if (rf.degenerate) MaterialTheme.colorScheme.error
             else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
@@ -908,8 +1170,13 @@ private fun OverlayControls(
     showHindsight: Boolean,
     rollAvailable: Boolean,
     rollComputing: Boolean,
+    /** True while a roll is actually drawn — the only state in which clearing one means anything. */
+    rollClearable: Boolean,
+    onClearRoll: () -> Unit,
     paintAvailable: Boolean,
     paintOn: Boolean,
+    editAvailable: Boolean,
+    editOn: Boolean,
     gameAvailable: Boolean,
     gameOn: Boolean,
     onToggleGame: (Boolean) -> Unit,
@@ -919,6 +1186,7 @@ private fun OverlayControls(
     onToggleSmoothed: (Boolean) -> Unit,
     onToggleHindsight: (Boolean) -> Unit,
     onTogglePaint: (Boolean) -> Unit,
+    onToggleEdit: (Boolean) -> Unit,
     onWindow: (Int) -> Unit,
 ) {
     val haptics = rememberT1dmHaptics()
@@ -939,6 +1207,12 @@ private fun OverlayControls(
                     leadingIcon = if (rollComputing) {
                         { CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp) }
                     } else null,
+                )
+            }
+            if (rollClearable) {
+                AssistChip(
+                    onClick = { haptics.perform(HapticEvent.Reject); onClearRoll() },
+                    label = { Text("Clear roll") },
                 )
             }
             // Carbs / Insulin / Steps / Smoothed / Paint are LATCHES, not a single-choice group, so each speaks
@@ -992,6 +1266,17 @@ private fun OverlayControls(
                     selected = paintOn,
                     onClick = { haptics.toggled(!paintOn); onTogglePaint(!paintOn) },
                     label = { Text("Paint") },
+                )
+            }
+            // Edit mode. Turning it on SWAPS this row for the edit bar, so the tools sit where the
+            // chips were rather than beside them. Mutually exclusive with Paint at the caller,
+            // because both claim the same horizontal drag and the graph resolves that by precedence
+            // rather than by asking.
+            if (editAvailable) {
+                FilterChip(
+                    selected = editOn,
+                    onClick = { haptics.toggled(!editOn); onToggleEdit(!editOn) },
+                    label = { Text("Edit") },
                 )
             }
             // Game mode swaps what the PANEL renders — the dashboard around it is untouched, so the
@@ -1174,9 +1459,9 @@ private fun ReachabilityBar(
         // A fixed-60-bpm liveness heartbeat, just past the steps count (never a real heart-rate reading).
         HeartbeatChip()
         // The sensor time-left, counted down live, right of TEMP: to the end of warm-up while the sensor
-        // is warming up, otherwise to the user-entered expiry instant. Either instant alone is enough to
-        // show it — the two are independent, and gating the whole chip on the expiry would suppress the
-        // warm-up state whenever no expiry is known.
+        // is warming up, otherwise to the derived expiry (sensor age + configurable service life). Either
+        // instant alone is enough to show it — the two are independent, and gating the whole chip on the
+        // expiry would suppress the warm-up state whenever no expiry is known.
         if (sensorExpiryMs != null || sensorWarmupEndMs != null) {
             SensorLifeChip(sensorExpiryMs, sensorWarmupEndMs)
         }
@@ -1184,10 +1469,9 @@ private fun ReachabilityBar(
 }
 
 /**
- * The sensor time-left chip, in three states. Its two instants have DIFFERENT provenance: [expiryMs] is
- * the user-entered sensor lifetime (Settings → CGM), because a passive advertisement listener cannot read
- * the sensor's true age; [warmupEndMs] alone is sensor-anchored — the sensor's own age (`minFromStart`)
- * plus the active source's configured warm-up window (also on the CGM panel).
+ * The sensor time-left chip, in three states. Sensor-DERIVED throughout: the sensor reports its own age
+ * (`minFromStart`), and the app anchors both derived instants on it — expiry from the configurable total
+ * service life, warm-up end from the configurable per-source warm-up window (both in Settings → CGM).
  *
  *  - **warming up** ([warmupEndMs] non-null) — counts down to the END OF WARM-UP.
  *  - **live** — counts down to [expiryMs].
@@ -1200,13 +1484,12 @@ private fun ReachabilityBar(
  * naming what its number counts down to. Sighted ambiguity was chosen; inaccessibility was not.
  *
  * **The warm-up STATE is [warmupEndMs]'s nullity, not its ordering against the clock.** The flow supplies
- * an instant only while the pipeline flags the sensor `WARMUP`, and this chip does not re-derive that
- * verdict from the deadline — the two are computed off the same window and the same sensor age, but the
- * flag is what the trace, the header suffix and the CGM light all already agree with. So a warm-up
- * deadline that has slipped into the past while the flag still stands means the sensor is still warming
- * and the app cannot say for how much longer — not that warm-up ended. The chip keeps the warm-up colour
- * and prints `WARM` in place of a countdown: it will not fabricate an instant it has not been given, and
- * it will not fall back to a live countdown that contradicts everything else on the panel at once.
+ * an instant only while the pipeline flags the sensor `WARMUP`, and on the connected path that verdict is
+ * the sensor's own bit, which owes nothing to the configured window and may outlive it. So a warm-up
+ * deadline already in the past means the sensor is still warming and the app cannot say for how much
+ * longer — not that warm-up ended. The chip keeps the warm-up colour and prints `WARM` in place of a
+ * countdown: it will not fabricate an instant the sensor has not supplied, and it will not fall back to a
+ * live countdown that contradicts the trace, the header suffix and the CGM light all at once.
  *
  * Both instants are optional and independent; the caller composes this whenever either exists. `EXP` is
  * reachable only with an [expiryMs] to have passed.
@@ -1499,3 +1782,63 @@ private fun BoxScope.TapToPlace(
         )
     }
 }
+
+/**
+ * The grip between the panel and the controls under it.
+ *
+ * Drag it and the controls block resizes; the panel has `weight`, so it takes the complement and
+ * the graph grows or shrinks by exactly what the read-out gives up or takes back. Sized by what is
+ * BELOW rather than by an explicit panel height, because the panel's neighbours above it — the
+ * reachability bar, the warm-up banner, the no-insulin banner — come and go, and a height set
+ * against one of them present would be wrong the moment it left.
+ */
+@Composable
+private fun PanelResizeHandle(heightDp: Float, onHeightDp: (Float) -> Unit) {
+    val haptics = rememberT1dmHaptics()
+    val detent = rememberHapticDetent(HapticEvent.SegmentTick)
+    val density = LocalDensity.current
+    // The handler is keyed on `Unit` — a re-key cancels a drag in flight — so nothing it needs may
+    // be read from the enclosing composition directly. `SuspendPointerInputElement` compares only
+    // its keys, so the node is REUSED across recompositions and keeps the first lambda instance:
+    // reading the parameter would freeze `heightDp` at its first value for the life of the node,
+    // and every event would then recompute the same near-initial height instead of accumulating.
+    val currentHeight by rememberUpdatedState(heightDp)
+    val emit by rememberUpdatedState(onHeightDp)
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .height(14.dp)
+            .pointerInput(Unit) {
+                // Accumulated across the gesture. `detectVerticalDragGestures` reports the delta
+                // since the PREVIOUS event, not since the start.
+                var live = 0f
+                detectVerticalDragGestures(
+                    onDragStart = { live = currentHeight; haptics.perform(HapticEvent.DragStart) },
+                    onDragEnd = { haptics.perform(HapticEvent.DragEnd) },
+                ) { change, dy ->
+                    change.consume()
+                    // The controls block sits BELOW this grip and the screen's bottom edge is fixed,
+                    // so growing it pushes the boundary UP. Subtracting makes the boundary travel
+                    // WITH the finger: drag down and the graph takes the room the read-out gives up.
+                    live = (live - dy / density.density)
+                        .coerceIn(CONTROLS_HEIGHT_MIN_DP, CONTROLS_HEIGHT_MAX_DP)
+                    detent.at((live / 8f).toInt())
+                    emit(live)
+                }
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            Modifier
+                .size(width = 32.dp, height = 3.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.25f)),
+        )
+    }
+}
+
+/** Enough for the chips row and nothing else — the graph at its tallest. */
+private const val CONTROLS_HEIGHT_MIN_DP = 44f
+
+/** Enough for every read-out line at the largest font scale, with the graph at its shortest. */
+private const val CONTROLS_HEIGHT_MAX_DP = 260f

@@ -4,6 +4,7 @@ import com.t1dm.core.model.AlertBand
 import com.t1dm.core.model.AlertThresholds
 import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.ForecastStatus
+import com.t1dm.core.model.isRealMeasurement
 import com.t1dm.core.model.InferenceState
 import com.t1dm.core.model.ModelPrediction
 import kotlin.math.roundToInt
@@ -77,16 +78,57 @@ data class PredictiveCrossing(
  * `status == OK && !stale`, and the warmup gate (predictions cleared, `state.warmup != null`)
  * degrades every surface to BG + trend with an honest "collecting context".
  */
+/**
+ * The two readings a glance needs, as one value so no call site can pass the same row twice.
+ *
+ * That mistake is the hazard this type exists for. Every glance surface — the always-on foreground
+ * notification, the predictive urgent alert, the home and lock widgets, the watch — is driven from
+ * here, and a promoted reconstruction is a row in `cgm_reading` like any other. Handing it in as
+ * the current BG would put a model's number on the patient's lock screen as their glucose.
+ *
+ * [create] is the only way to build one, and it applies the filter itself.
+ */
+data class GlanceReadings private constructor(
+    /** The newest row, whatever its provenance. Drives nothing but the "there is newer than this"
+     *  observation. */
+    val latest: CgmReading?,
+    /** The newest row that is a real measurement with a value. Drives everything else. */
+    val lastMeasured: CgmReading?,
+) {
+    companion object {
+        /** [rows] newest-first, as every reading DAO returns them. */
+        fun create(rows: List<CgmReading>): GlanceReadings = GlanceReadings(
+            latest = rows.firstOrNull(),
+            lastMeasured = rows.firstOrNull {
+                isRealMeasurement(it.provenance, it.flag) && it.bgMgdl != null
+            },
+        )
+
+        /** For a caller that already holds the two rows separately and can prove the second is a
+         *  measurement — the Room observers do, in SQL. */
+        fun of(latest: CgmReading?, lastMeasured: CgmReading?): GlanceReadings =
+            GlanceReadings(latest, lastMeasured)
+
+        val EMPTY = GlanceReadings(null, null)
+    }
+}
+
 object BgGlanceComputer {
 
+    /**
+     * @param readings the newest row whatever its provenance, and the newest REAL MEASUREMENT — see
+     *   [GlanceReadings]. Every glucose fact below is read off the measurement; the newest row
+     *   survives only so a caller can tell that the panel holds rows the last measurement does not.
+     */
     fun compute(
-        latest: CgmReading?,
+        readings: GlanceReadings,
         state: InferenceState,
         thresholds: AlertThresholds,
         lossMin: Int,
         staleMin: Int,
         nowMs: Long,
     ): BgGlance {
+        val latest = readings.lastMeasured
         val warmup = state.warmup != null
         if (latest == null) {
             return BgGlance(

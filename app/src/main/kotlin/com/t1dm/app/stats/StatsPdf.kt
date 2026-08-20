@@ -33,7 +33,7 @@ import kotlin.math.ceil
  * [PdfDocument] (no dependency). The report is drawn on a WHITE page regardless of the active theme
  * so it prints legibly, and every BG level is in mg/dL (the canonical space the stats are computed
  * in) — the active unit space is stated in the header for provenance. A [Pager] auto-breaks pages,
- * stamping the advisory footer + page number on each. The caller streams it to a SAF-chosen file.
+ * stamping the page number on each. The caller streams it to a SAF-chosen file.
  */
 object StatsPdf {
     private const val W = 595 // A4 @ 72 dpi
@@ -185,10 +185,6 @@ object StatsPdf {
         }
 
         private fun stampFooter() {
-            cv.drawText(
-                "Personal advisory tool — NOT medical advice. Computed locally from CGM history.",
-                M, H - 18f, footP,
-            )
             cv.drawText("Page $pageNo", W - M - 40f, H - 18f, footP)
         }
 

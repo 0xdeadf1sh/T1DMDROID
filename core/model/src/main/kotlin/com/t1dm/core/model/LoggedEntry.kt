@@ -1,26 +1,16 @@
 package com.t1dm.core.model
 
 /**
- * How far a logged carb/insulin row has got on its way to the server.
+ * One logged event reduced to what a time-axis marker needs: WHEN and WHICH channel. The graph
+ * draws markers; it must not be handed the amounts, the curve parameters or the row ids it would
+ * then be free to render or mutate.
  *
- * There are exactly two states, and the boundary between them is an ACKNOWLEDGEMENT, never an
- * elapsed duration: `QueueDrainer` DELETEs an outbox row on a 2xx and the queue has no SENT state,
- * so the presence of a row under the event's dedup key is the only "not yet accepted" signal the
- * phone has. A log therefore stays [COMMITTED] for as long as the phone is offline, however long
- * that is, and no timer may promote it.
- *
- * The converse reading — absence ⇒ [DELIVERED] — is the honest one but not a proof. `QueueDrainer`
- * also deletes a row on a permanent 4xx, and the hard size cap can evict one (MEAL/DOSE are exempt
- * from age-eviction and are the last kinds the cap reaches, so this needs a queue that has overrun
- * with nothing regenerable left in it). Both leave exactly what a successful send leaves. The same
- * ambiguity is already what `PushWithdrawal.ALREADY_SENT` rests on in `:data`.
- */
-enum class LogState { COMMITTED, DELIVERED }
-
-/**
- * One logged event reduced to what a time-axis marker needs: WHEN, WHICH channel, and whether it is
- * still withdrawable. The graph draws markers; it must not be handed the amounts, the curve
- * parameters or the row ids it would then be free to render or mutate.
+ * There is deliberately no delivery state here any more. A mark used to carry one, and the claim it
+ * made was honest-but-unproven: the outbox has no SENT state, so an absent queue row means "sent",
+ * "permanently rejected" or "size-evicted" alike. Nothing replaces it — a delete no longer depends
+ * on whether the push has drained, so the distinction bought the reader nothing and cost a
+ * continuously animating frame loop. The queue's own depth and age are on the Network panel, which
+ * is where a statement about the server belongs.
  *
  * That holds even though a mark can now be tapped for what it stands for. The panel answers a tap with
  * POSITIONS in the list it was given, and its caller — which reduced [LoggedEntry] to this in the first
@@ -34,12 +24,15 @@ enum class LogState { COMMITTED, DELIVERED }
 data class LogMarker(
     val tsMs: Long,
     val kind: CurveKind,
-    val state: LogState,
 )
 
 /**
- * One row of the Logs panel: an insulin dose or a carbohydrate entry the user logged, with the
- * server-acknowledgement state that decides whether it may still be deleted.
+ * One row of the Logs panel: an insulin dose or a carbohydrate entry the user logged.
+ *
+ * Every row is editable and deletable, unconditionally: a deletion travels as a tombstone on the
+ * same upsert the create rode, so it is ordered against the create by `updatedAt` and cannot be
+ * overtaken by a redelivery. There is therefore no state left for this type to carry about whether
+ * a delete is still available.
  *
  * A value type in the dependency-free model layer, like every other feature-screen read model: the
  * panel sees no Room entity, no outbox, and no dedup key. `:app` joins the two event tables against
@@ -55,6 +48,10 @@ data class LogMarker(
  *                 has to say "not recorded" must be able to tell an absent index from a present one,
  *                 and one that formats it must not have to parse a string back apart to do so.
  * @param detail   the row's own note — the resolved insulin type for a dose — or null.
+ * @param updatedAtMs the row's current authoring stamp, bumped by every edit; the wire ordering key.
+ * @param mutatedAtMs when the row was last edited, or null if it never has been. A surface showing a
+ *                    figure derived from this row must be able to say the numbers were changed after
+ *                    the fact.
  */
 data class LoggedEntry(
     val rowId: Long,
@@ -66,9 +63,10 @@ data class LoggedEntry(
     val amount: Double,
     val gi: Double?,
     val detail: String?,
-    val state: LogState,
+    val updatedAtMs: Long,
+    val mutatedAtMs: Long?,
 ) {
-    val committed: Boolean get() = state == LogState.COMMITTED
+    val edited: Boolean get() = mutatedAtMs != null
 
-    val marker: LogMarker get() = LogMarker(tsMs, kind, state)
+    val marker: LogMarker get() = LogMarker(tsMs, kind)
 }

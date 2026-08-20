@@ -2,7 +2,6 @@ package com.t1dm.ui.graph
 
 import com.t1dm.core.model.CurveKind
 import com.t1dm.core.model.LogMarker
-import com.t1dm.core.model.LogState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -49,11 +48,9 @@ class LogMarkerHitTest {
      *  separation past the edge). */
     private val STRADDLE = LOG_MARKER_DP * DP / 3f
 
-    private fun carb(offsetMs: Long, state: LogState = LogState.DELIVERED) =
-        LogMarker(T0 + offsetMs, CurveKind.CARB, state)
+    private fun carb(offsetMs: Long) = LogMarker(T0 + offsetMs, CurveKind.CARB)
 
-    private fun insulin(offsetMs: Long, state: LogState = LogState.DELIVERED) =
-        LogMarker(T0 + offsetMs, CurveKind.INSULIN, state)
+    private fun insulin(offsetMs: Long) = LogMarker(T0 + offsetMs, CurveKind.INSULIN)
 
     /** The feed, split and clustered exactly as the panel does it, then tapped at ([x], [y]).
      *  [viewStartMs] pans the window, which is the only way to put a mark off the plot's edge. */

@@ -34,6 +34,7 @@ fun buildInferenceController(
     baselineStore: BaselineStore? = null,
     curveEvents: CurveEventSource? = null,
     loraStore: LoraStore? = null,
+    probeInsulin: ProbeInsulinPort? = null,
 ): InferenceController {
     val store = ModelStore(modelsDir, native)
     val controller = InferenceController(
@@ -52,6 +53,7 @@ fun buildInferenceController(
         smoothingWindowProvider = smoothingWindowProvider,
         baseline = BaselineRunner(native, dispatchers, baselineStore, curveEvents, futureOverrides),
         loraStore = loraStore,
+        probeInsulin = probeInsulin,
     )
     controller.registerBackend(ExecuTorchXnnpackBackend())
     controller.registerBackend(ExecuTorchNeuronBackend())

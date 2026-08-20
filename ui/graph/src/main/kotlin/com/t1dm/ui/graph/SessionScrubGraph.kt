@@ -7,14 +7,20 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.text.rememberTextMeasurer
+import com.t1dm.core.design.LocalT1dmSemantics
+import com.t1dm.core.design.logMarkerIcon
 import com.t1dm.core.model.AlertThresholds
+import com.t1dm.core.model.CurveKind
+import com.t1dm.core.model.LogMarker
 import com.t1dm.core.model.UnitSpace
 import kotlin.math.abs
 
@@ -48,6 +54,14 @@ fun SessionScrubGraph(
     hindsight: HindsightFrame? = null,
     unit: UnitSpace = UnitSpace.MgDl,
     thresholds: AlertThresholds? = null,
+    /**
+     * The carbohydrate and insulin logged over the review window, as time-axis marks.
+     *
+     * A separate parameter because [GraphFrame] carries CGM readings and nothing else — and loaded
+     * over the review window rather than taken from the live Logs feed, which is bounded at 400 rows
+     * and would be empty for a bout from last month.
+     */
+    logMarkers: List<LogMarker> = emptyList(),
     tzOffsetMin: Int = 0,
     rangeMinMgdl: Int? = null,
     rangeMaxMgdl: Int? = null,
@@ -60,6 +74,21 @@ fun SessionScrubGraph(
     // pointer rate and every one of these is a constant the draw would otherwise re-allocate.
     val fanPath = remember { Path() }
     val tracePath = remember { Path() }
+    // The marker layer, resolved exactly as [GlucoseGraph] resolves it so a mark means the same
+    // thing on both panels. The inks come from the SEMANTIC roles rather than the Material
+    // projection for the reason that panel gives: the glyphs are shape-fixed, the tint is the only
+    // thing the theme still says about a mark, and a mark must be the colour of the curve channel
+    // it stands for wherever it is drawn.
+    val dpPx = density.density
+    val semantics = LocalT1dmSemantics.current
+    val carbMarkPainter = rememberVectorPainter(logMarkerIcon(CurveKind.CARB))
+    val insulinMarkPainter = rememberVectorPainter(logMarkerIcon(CurveKind.INSULIN))
+    val carbTint = remember(semantics.secondary) { ColorFilter.tint(semantics.secondary) }
+    val insulinTint = remember(semantics.inRange) { ColorFilter.tint(semantics.inRange) }
+    val carbLane = remember(logMarkers) { markerLane(logMarkers, CurveKind.CARB) }
+    val insulinLane = remember(logMarkers) { markerLane(logMarkers, CurveKind.INSULIN) }
+    val markSepPx = logMarkerSeparationPx(dpPx)
+    val markSizePx = LOG_MARKER_DP * dpPx
     val traceStroke = remember { Stroke(width = 2.2f, cap = StrokeCap.Round, join = StrokeJoin.Round) }
 
     // Measured from [GraphInsets], never transcribed: the BG panel's own frame, so a value read here
@@ -131,6 +160,37 @@ fun SessionScrubGraph(
                     cs.primary.copy(alpha = 0.10f),
                     topLeft = Offset(sx0, plotTop),
                     size = Size(sx1 - sx0, plotBottom - plotTop),
+                )
+            }
+
+            // The logged carbohydrate and insulin, in their two lanes.
+            //
+            // Inside the clip and BEFORE the trace, per [drawLogMarkers]'s own instruction: an icon
+            // must never sit on top of the glucose line, because a hypoglycaemic excursion drops
+            // into exactly the band these lanes occupy. `plotBottom` is the furniture pass's plot
+            // floor rather than `size.height`, so the lanes overlay the plot's lower band and
+            // neither the value axis nor its scale moves.
+            //
+            // Clustered here rather than in a `remember`: this viewport is fixed by the arguments,
+            // so the moving `viewStartMs`/`viewSpanMs` [GlucoseGraph] memoises against cannot change,
+            // and keying a `remember` on the canvas size would add a composition dependency this
+            // panel does not otherwise have.
+            if (logMarkers.isNotEmpty()) {
+                drawLogMarkers(
+                    clusterLogMarkers(
+                        insulinLane.marks, windowStartMs.toDouble(), windowSpanMs.toDouble(),
+                        plotLeft, plotRight, markSepPx,
+                    ),
+                    insulinMarkPainter, insulinTint, markSizePx,
+                    logMarkerLaneTop(CurveKind.INSULIN, plotBottom, dpPx),
+                )
+                drawLogMarkers(
+                    clusterLogMarkers(
+                        carbLane.marks, windowStartMs.toDouble(), windowSpanMs.toDouble(),
+                        plotLeft, plotRight, markSepPx,
+                    ),
+                    carbMarkPainter, carbTint, markSizePx,
+                    logMarkerLaneTop(CurveKind.CARB, plotBottom, dpPx),
                 )
             }
 

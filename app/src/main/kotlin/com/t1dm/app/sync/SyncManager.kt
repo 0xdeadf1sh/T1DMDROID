@@ -31,6 +31,13 @@ class SyncManager(
     private val repository: T1dmRepository,
     private val status: SyncStatusStore,
     private val dispatchers: T1dmDispatchers,
+    /**
+     * Re-send the most recent forecast on every (re)connect — the contract's obligation, not a
+     * nicety. Nothing stores a forecast, so a receiver that came up after the last cycle draws
+     * nothing for up to five minutes and cannot tell that from a model that withheld a degenerate
+     * one. One frame closes the window.
+     */
+    private val resendForecast: suspend () -> Unit = {},
     private val drainIntervalMs: Long = 60_000L,
 ) {
     fun launch(scope: CoroutineScope) {
@@ -45,8 +52,16 @@ class SyncManager(
         scope.launch(dispatchers.io) {
             catchUp.events().collect { ev ->
                 when (ev) {
-                    is StreamEvent.Connected -> { status.onWs(WsConnState.CONNECTED, null); drainNow() }
-                    is StreamEvent.Reconnected -> { status.onWs(WsConnState.CONNECTED, ev.cursor); drainNow() }
+                    is StreamEvent.Connected -> {
+                        status.onWs(WsConnState.CONNECTED, null)
+                        resendForecast()
+                        drainNow()
+                    }
+                    is StreamEvent.Reconnected -> {
+                        status.onWs(WsConnState.CONNECTED, ev.cursor)
+                        resendForecast()
+                        drainNow()
+                    }
                     is StreamEvent.Disconnected -> status.onWs(WsConnState.RECONNECTING, null)
                     is StreamEvent.Alert -> {
                         status.onAlert("${ev.kind} @ ${ev.ts}")

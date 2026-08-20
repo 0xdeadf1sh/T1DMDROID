@@ -118,6 +118,14 @@ private fun insulin(s: IconStyle) = glyph("insulin", s) { // syringe barrel (dia
     moveTo(15f, 5f); lineTo(19f, 9f); lineTo(17f, 11f); lineTo(13f, 7f); close()
 }
 
+private fun cgm(s: IconStyle) = glyph("cgm", s) { // a round CGM sensor patch: disc + a broadcast arc
+    moveTo(12f, 5f); arcTo(6f, 6f, 0f, true, true, 11.99f, 5f); close() // sensor disc
+    moveTo(12f, 9f); arcTo(2f, 2f, 0f, true, false, 12.01f, 9f); close() // lit centre well
+    // a small broadcast tick rising off the upper-right
+    moveTo(17.5f, 3.5f); lineTo(20.5f, 3.5f); lineTo(20.5f, 4.5f); lineTo(17.5f, 4.5f); close()
+    moveTo(19.5f, 3.5f); lineTo(20.5f, 3.5f); lineTo(20.5f, 6.5f); lineTo(19.5f, 6.5f); close()
+}
+
 private fun security(s: IconStyle) = glyph("watch", s) { // a wristwatch (the companion-device panel)
     moveTo(12f, 6.5f); arcTo(5.5f, 5.5f, 0f, true, true, 11.99f, 6.5f); close() // round case
     moveTo(9.6f, 6.9f); lineTo(14.4f, 6.9f); lineTo(13.9f, 2.2f); lineTo(10.1f, 2.2f); close() // upper strap
@@ -309,6 +317,7 @@ fun navIcon(route: String, style: IconStyle): ImageVector = when (route) {
     "meals" -> meals(style)
     "insulin" -> insulin(style)
     "exercise" -> exercise(style)
+    "cgm" -> cgm(style)
     "security" -> security(style)
     "backup" -> backup(style)
     "logs" -> logs(style)

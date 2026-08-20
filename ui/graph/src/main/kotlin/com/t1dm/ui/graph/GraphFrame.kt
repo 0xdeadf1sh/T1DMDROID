@@ -19,7 +19,8 @@ import kotlinx.coroutines.withContext
  *  - [xs] — minutes since [t0Ms] (ascending). Minutes keep the magnitudes small enough for `Float`
  *    to stay exact across a multi-day window (a week = 10 080 min ≪ 2^24).
  *  - [ys] — the glucose value already converted into [unit].
- *  - [flags] — one of [FLAG_MEASURED] / [FLAG_INTERPOLATED] / [FLAG_WARMUP], so the renderer can
+ *  - [flags] — one of [FLAG_MEASURED] / [FLAG_INTERPOLATED] / [FLAG_WARMUP] /
+ *    [FLAG_RECONSTRUCTED], so the renderer can
  *    make fabricated and warm-up points visually distinct without re-deriving provenance.
  *  - [breakAfter] — true where a true dropout (no interpolation) follows point `i`; the polyline is
  *    cut there rather than bridging the gap with a fictitious straight line.
@@ -60,6 +61,12 @@ class GraphFrame internal constructor(
         const val FLAG_MEASURED = 0
         const val FLAG_INTERPOLATED = 1
         const val FLAG_WARMUP = 2
+
+        /** A promoted model reconstruction. It has its own flag because it is the one value on this
+         *  panel that would otherwise be pixel-identical to sensor signal, and the renderer must
+         *  distinguish it in the POLYLINE as well as the point marker — at 6 h and wider the markers
+         *  are suppressed and the line is the whole rendering. */
+        const val FLAG_RECONSTRUCTED = 3
 
         val EMPTY = GraphFrame(
             t0Ms = 0L, tzOffsetMin = 0, unit = UnitSpace.MgDl,
@@ -114,6 +121,7 @@ fun buildGraphFrame(
         flags[i] = when {
             r.flag == ReadingFlag.WARMUP -> GraphFrame.FLAG_WARMUP
             r.provenance == ReadingProvenance.INTERPOLATED -> GraphFrame.FLAG_INTERPOLATED
+            r.provenance == ReadingProvenance.RECONSTRUCTED -> GraphFrame.FLAG_RECONSTRUCTED
             else -> GraphFrame.FLAG_MEASURED
         }
     }
@@ -155,7 +163,7 @@ fun buildGraphFrame(
     return GraphFrame(t0, kept.last().tzOffsetMin, unit, xs, ys, flags, breakAfter, minY, maxY)
 }
 
-private fun convert(mgdl: Double, unit: UnitSpace, kovatchevF: ((Double) -> Double)?): Double =
+internal fun convert(mgdl: Double, unit: UnitSpace, kovatchevF: ((Double) -> Double)?): Double =
     when (unit) {
         UnitSpace.MgDl -> mgdl
         UnitSpace.MmolL -> mgdl / 18.0182

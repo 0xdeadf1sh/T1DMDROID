@@ -1,5 +1,6 @@
 package com.t1dm.sync.nightscout
 
+import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.data.db.DoseKind
 import com.t1dm.data.db.LoggedDoseEntity
 import com.t1dm.data.db.LoggedMealEntity
@@ -51,6 +52,11 @@ fun nsDirection(trendTenthsPerMin: Int?): String? = when {
  */
 fun SampleEntity.toNsEntry(trendTenthsPerMin: Int?): NsEntryDto? {
     val bg = bgMgdl ?: return null
+    // A reconstruction is a model's output, not sensor signal, and the bridge's schema has no way to
+    // say so — `sgv` means "the sensor read this". A third party with no route to take a record back
+    // out must never receive one. The second of two independent stops; the first is that promotion
+    // files no bridge row at all.
+    if (bgProvenance == ReadingProvenance.RECONSTRUCTED) return null
     return NsEntryDto(
         sgv = bg,
         date = ts,

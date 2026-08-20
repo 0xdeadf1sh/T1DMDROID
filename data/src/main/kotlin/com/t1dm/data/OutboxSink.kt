@@ -50,4 +50,27 @@ interface OutboxSink {
         nowMs: Long,
         notBeforeMs: Long = 0L,
     ): Long
+
+    /**
+     * Append a row under [dedupKey], first removing whatever is filed there in ANY state — PENDING
+     * or INFLIGHT.
+     *
+     * [enqueueReplacingPending] deliberately spares an in-flight row, and that sparing is for the
+     * Nightscout host: it has no idempotency key and no delete, so a request already on the wire
+     * must stay recorded or the phone loses track of something that still lands. Neither reason
+     * holds for the phone's own server. Its writes are keyed on `client_id` and ordered on
+     * `updated_at`, so a superseded in-flight PUT that arrives late is simply corrected by the
+     * newer body behind it — and an edit or a deletion that could not replace a queued create would
+     * otherwise be dropped by the unique index and lost.
+     *
+     * Restricted to MEAL and DOSE for that reason. `QueueDrainer`'s post-send `delete`/`reschedule`
+     * both no-op on a row already gone, so nothing else changes.
+     */
+    suspend fun enqueueSuperseding(
+        kind: OutboxKind,
+        dedupKey: String,
+        payload: ByteArray,
+        nowMs: Long,
+        notBeforeMs: Long = 0L,
+    ): Long
 }

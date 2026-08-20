@@ -10,8 +10,8 @@ import org.junit.Test
 
 /**
  * [supersedesGridSlot] — which of one sensor's samples claims a five-minute slot — plus the two
- * pieces of arithmetic the sub-grid store rests on: the receive-time window of a slot, and the
- * retention cutoff.
+ * pieces of arithmetic the sub-grid store rests on: the window of filed instants that snap into a
+ * slot, and the retention cutoff.
  */
 class GridSlotSelectionTest {
 
@@ -49,6 +49,40 @@ class GridSlotSelectionTest {
         stream += interpolated(SLOT + 9 * GRID)
 
         assertEquals(lastWriterWins(stream), withContest(stream))
+    }
+
+    /**
+     * A THREE-minute sensor filed on its own sample clock — the case the contest exists for, and the one
+     * the five-minute guarantee above deliberately does not reach.
+     *
+     * Five samples fall into three slots, so two slots are contested. Which sample each keeps is decided by
+     * nearness to the slot instant and by nothing else, so the answer is the same however the five arrive:
+     * a burst drained out of order, or a re-delivery after a reconnect, lands on the same three rows.
+     */
+    @Test
+    fun `a three-minute sensor keeps the sample nearest each slot, whatever the arrival order`() {
+        val stream = (0 until 5).map { i ->
+            val sampledAt = SLOT + i * 180_000L
+            measured(T1dmRepository.snapToGrid(sampledAt), sampledAt).copy(bgMgdl = 100 + i)
+        }
+        val expected = mapOf(
+            SLOT to 100,             // 0 min: alone in its slot
+            SLOT + GRID to 102,      // 6 min, one minute from the slot — against the 3-min sample's two
+            SLOT + 2 * GRID to 103,  // 9 min, one minute from the slot — against the 12-min sample's two
+        )
+        val orders = listOf(
+            stream,
+            stream.reversed(),
+            listOf(stream[3], stream[0], stream[4], stream[2], stream[1]),
+            listOf(stream[2], stream[4], stream[1], stream[3], stream[0]),
+        )
+        for (order in orders) {
+            assertEquals(
+                "this arrival order chose differently",
+                expected,
+                withContest(order).mapValues { it.value.bgMgdl },
+            )
+        }
     }
 
     @Test

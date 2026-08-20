@@ -61,10 +61,12 @@ class FakeOutboxDao : OutboxDao {
     override suspend fun byDedupKey(dedupKey: String): OutboxEntity? =
         rows.values.firstOrNull { it.dedupKey == dedupKey }
 
-    /** Re-emitted off the depth signal, which is the only invalidation this fake has; Room's own
-     *  invalidation is per-table and just as coarse. */
-    override fun observeDedupKeys(kinds: List<OutboxKind>): Flow<List<String>> =
-        depth.map { rows.values.filter { r -> r.kind in kinds }.map { r -> r.dedupKey } }
+    override suspend fun deleteByDedupKey(dedupKey: String): Int {
+        val hit = rows.values.filter { it.dedupKey == dedupKey }
+        hit.forEach { rows.remove(it.id) }
+        depth.value = rows.size
+        return hit.size
+    }
 
     override suspend fun delete(id: Long) { rows.remove(id); depth.value = rows.size }
 
@@ -122,7 +124,6 @@ open class NoopSyncHttpClient : SyncHttpClient {
     override suspend fun execute(request: SyncRequest): SyncResponse = nope()
     override suspend fun health(): HealthDto = nope()
     override suspend fun ingest(body: IngestDto): IngestAck = nope()
-    override suspend fun putPredictions(preds: List<PredictionWriteDto>): PutPredictionsAck = nope()
     override suspend fun putMeals(meals: List<MealEventDto>): EventBatchAck = nope()
     override suspend fun putDoses(doses: List<DoseEventDto>): EventBatchAck = nope()
     override suspend fun putBasalSchedule(body: BasalScheduleDto): EventBatchAck = nope()

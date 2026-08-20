@@ -497,11 +497,67 @@ class MigrationTest {
     }
 
     @Test
-    fun migrate18To19_isTheReservedNoOpAndLeavesTheSchemaExactlyAsItWas() {
-        // Schema 19 is reserved on this branch: the storage it introduces belongs to a path only the
-        // local-only branch carries, so the migration executes no statement. It is still registered and
-        // still validated, because Room needs a path for every step and because "this step changes
-        // nothing here" is a claim worth holding to the schema rather than assuming.
+    fun migrate18To19_theSecretTableIsAddedAndEverySourceIsNumberedInListOrder() {
+        // v19 (a second sensor family): one additive table for the per-sensor secrets, and one column on
+        // `cgm_source` numbering the sensors. Both halves are hand-written DDL, and this is the only thing
+        // in the project that compares them against what Room expects — there is no destructive fallback,
+        // so a one-column drift is a launch crash on the phone rather than a lost row.
+        //
+        // The ordinal is what a user reads as "this physical sensor", so the backfill has to be
+        // deterministic and has to agree with the order every list query already uses (`addedAtMs`, then
+        // `sourceId`). Two rows sharing an instant is the case that decides whether it is total.
+        helper.createDatabase(18).use { db ->
+            fun source(id: String, added: Long) = db.execSQL(
+                "INSERT INTO `cgm_source` " +
+                    "(`sourceId`,`vendorId`,`sensorModelId`,`advertName`,`displayName`,`serialSuffix`," +
+                    "`authoritative`,`active`,`warmupWindowMin`,`addedAtMs`,`lastSeenMs`,`hidden`) " +
+                    "VALUES ('$id','aidexx','aidexx:x',NULL,'n','s',0,0,60,$added,$added,0)",
+            )
+            source("aidexx:C", 3_000)
+            source("aidexx:A", 1_000)
+            // Same instant as A, so only the sourceId tiebreak can separate them.
+            source("aidexx:B", 1_000)
+        }
+
+        val db = helper.runMigrationsAndValidate(19, listOf(MigrationRunner.MIGRATION_18_19))
+
+        assertEquals(1, countTables(db, "cgm_sensor_secret"))
+        assertEquals(0, countRows(db, "SELECT COUNT(*) FROM `cgm_sensor_secret`"))
+
+        // Zero-based, gapless, and in the order the lists show: A (1000), B (1000, later id), C (3000).
+        for ((id, ordinal) in listOf("aidexx:A" to 0, "aidexx:B" to 1, "aidexx:C" to 2)) {
+            assertEquals(
+                "ordinal of $id",
+                1,
+                countRows(db, "SELECT COUNT(*) FROM `cgm_source` WHERE `sourceId` = '$id' AND `ordinal` = $ordinal"),
+            )
+        }
+        // No row may be left carrying the unassigned sentinel, and none may share a number.
+        assertEquals(0, countRows(db, "SELECT COUNT(*) FROM `cgm_source` WHERE `ordinal` < 0"))
+        assertEquals(3, countRows(db, "SELECT COUNT(DISTINCT `ordinal`) FROM `cgm_source`"))
+        // Additive: the migration adds a table and a column and touches nothing else.
+        assertEquals(3, countRows(db, "SELECT COUNT(*) FROM `cgm_source`"))
+        assertEquals(3, countRows(db, "SELECT COUNT(*) FROM `cgm_source` WHERE `warmupWindowMin` = 60"))
+
+        // The secret is keyed on the source, one row per sensor: a second write for a sensor must replace
+        // the first rather than land beside it, because two secrets for one sensor is two answers to
+        // "which key does it hold".
+        db.execSQL("INSERT INTO `cgm_sensor_secret` (`sourceId`,`blob`,`updatedAtMs`) VALUES ('aidexx:A',X'0102',1)")
+        assertTrue(
+            "a second secret was accepted for a sensor that already had one",
+            runCatching {
+                db.execSQL("INSERT INTO `cgm_sensor_secret` (`sourceId`,`blob`,`updatedAtMs`) VALUES ('aidexx:A',X'0304',2)")
+            }.isFailure,
+        )
+        assertEquals(1, countRows(db, "SELECT COUNT(*) FROM `cgm_sensor_secret`"))
+        db.close()
+    }
+
+    @Test
+    fun migrate18To19_isIdempotentOnADatabaseThatAlreadyHasTheColumn() {
+        // Both statements have to survive being run again: a migration interrupted part way is re-applied
+        // whole on the next open, and neither the table creation nor the numbering may fail or move a row
+        // when it is. (The ALTER is the one statement that cannot be re-run, which is why it is not.)
         helper.createDatabase(18).use { db ->
             db.execSQL(
                 "INSERT INTO `cgm_source` " +
@@ -512,10 +568,11 @@ class MigrationTest {
         }
 
         val db = helper.runMigrationsAndValidate(19, listOf(MigrationRunner.MIGRATION_18_19))
+        db.execSQL(MigrationRunner.SQL_18_19_CREATE_SECRET)
+        db.execSQL(MigrationRunner.SQL_18_19_BACKFILL_ORDINAL)
 
-        // The row is untouched, and nothing was created beside it.
-        assertEquals(1, countRows(db, "SELECT COUNT(*) FROM `cgm_source`"))
-        assertEquals(1, countRows(db, "SELECT COUNT(*) FROM `cgm_source` WHERE `warmupWindowMin` = 60"))
+        assertEquals(1, countRows(db, "SELECT COUNT(*) FROM `cgm_source` WHERE `ordinal` = 0"))
+        assertEquals(1, countTables(db, "cgm_sensor_secret"))
         db.close()
     }
 
@@ -535,11 +592,149 @@ class MigrationTest {
         db.close()
     }
 
+    /**
+     * v21 (a logged event becomes editable and deletable). The backfill is what this pins, not the
+     * shape: `loggedAtMs` takes `updatedAt` on every existing row, which is the honest reading —
+     * nothing could edit one before v21, so `updatedAt` was only ever set at insert.
+     */
     @Test
-    fun migrate1To20_fullChain() {
+    fun migrate20To21_theMutationStampsBackfillAndTheTombstoneTableIsAdded() {
+        val seed = helper.createDatabase(20)
+        seed.execSQL(
+            "INSERT INTO `logged_dose` (`clientId`,`tsMs`,`kind`,`units`,`durationMin`,`tzOffsetMin`," +
+                "`note`,`updatedAt`) VALUES ('d-1',1700000100000,'BOLUS',4.0,360.0,0,NULL,1700000111111)",
+        )
+        seed.execSQL(
+            "INSERT INTO `logged_meal` (`clientId`,`tsMs`,`grams`,`durationMin`,`tzOffsetMin`," +
+                "`note`,`updatedAt`) VALUES ('m-1',1700000100000,45.0,180.0,0,NULL,1700000122222)",
+        )
+        seed.close()
+
+        val db = helper.runMigrationsAndValidate(21, listOf(MigrationRunner.MIGRATION_20_21))
+
+        assertEquals(1, countRows(db, "SELECT COUNT(*) FROM `logged_dose`"))
+        assertEquals(1, countRows(db, "SELECT COUNT(*) FROM `logged_meal`"))
+        assertEquals(
+            "every pre-v21 row's loggedAtMs is its updatedAt",
+            0,
+            countRows(db, "SELECT COUNT(*) FROM `logged_dose` WHERE `loggedAtMs` != `updatedAt`"),
+        )
+        assertEquals(
+            0,
+            countRows(db, "SELECT COUNT(*) FROM `logged_meal` WHERE `loggedAtMs` != `updatedAt`"),
+        )
+        assertEquals(
+            "nothing has been edited yet — a fact about the rows, not an unknown",
+            0,
+            countRows(db, "SELECT COUNT(*) FROM `logged_dose` WHERE `mutatedAtMs` IS NOT NULL"),
+        )
+        assertEquals(1, countTables(db, "event_tombstone"))
+        assertEquals(0, countRows(db, "SELECT COUNT(*) FROM `event_tombstone`"))
+        db.close()
+    }
+
+    /** v22 (the span key and the promotion stamp). The backfill makes every pre-v22 row its own
+     *  one-step span — honest, because the runs were never recorded. */
+    @Test
+    fun migrate21To22_theSpanKeyBackfillsToEachRowsOwnTs() {
+        val seed = helper.createDatabase(21)
+        seed.execSQL(
+            "INSERT INTO `bg_infill` (`ts`,`mgdl`,`lo90`,`hi90`,`modelId`,`createdAtMs`) " +
+                "VALUES (1700000100000,120.0,100.0,140.0,'m.pte',1700000100000)",
+        )
+        seed.close()
+
+        val db = helper.runMigrationsAndValidate(22, listOf(MigrationRunner.MIGRATION_21_22))
+
+        assertEquals(1, countRows(db, "SELECT COUNT(*) FROM `bg_infill`"))
+        assertEquals(
+            0,
+            countRows(db, "SELECT COUNT(*) FROM `bg_infill` WHERE `spanStartMs` != `ts`"),
+        )
+        assertEquals(
+            "nothing has been promoted yet",
+            0,
+            countRows(db, "SELECT COUNT(*) FROM `bg_infill` WHERE `promotedAtMs` IS NOT NULL"),
+        )
+        db.close()
+    }
+
+    /**
+     * v23 (an adapter carries the verdict on its own dose response). The backfill is what matters:
+     * `ABSENT` is the state that REFUSES attach, so an adapter nobody measured — including one
+     * that arrived by import or by an archive restore — is blocked rather than assumed fine.
+     */
+    @Test
+    fun migrate22To23_anUnmeasuredAdapterBackfillsToAbsent() {
+        val seed = helper.createDatabase(22)
+        seed.execSQL(
+            "INSERT INTO `lora` (`modelId`,`name`,`blob`,`rank`,`alpha`,`targets`,`nParams`," +
+                "`nTrain`,`nHoldout`,`epochs`,`holdoutBefore`,`holdoutAfter`,`improved`," +
+                "`attached`,`createdAtMs`,`updatedAtMs`) VALUES ('m.pte','a',X'00',4,8.0,15,100," +
+                "40,10,20,0.5,0.4,1,0,1700000000000,1700000000000)",
+        )
+        seed.close()
+
+        val db = helper.runMigrationsAndValidate(23, listOf(MigrationRunner.MIGRATION_22_23))
+
+        assertEquals(1, countRows(db, "SELECT COUNT(*) FROM `lora`"))
+        assertEquals(
+            "an adapter nobody measured is ABSENT, which refuses attach",
+            1,
+            countRows(db, "SELECT COUNT(*) FROM `lora` WHERE `guardVerdict` = 'ABSENT'"),
+        )
+        assertEquals(
+            "and it carries no override",
+            0,
+            countRows(db, "SELECT COUNT(*) FROM `lora` WHERE `guardOverrideAtMs` IS NOT NULL"),
+        )
+        db.close()
+    }
+
+    /**
+     * v24 (a reconstructed span keeps its whole fan, and the τ its line was read at).
+     *
+     * The back-fill is what matters: a pre-v24 row has two band edges and nothing between them, so
+     * its fan is EMPTY rather than five levels synthesised from the edges — a manufactured interior
+     * would draw a shape no model emitted and be indistinguishable from one that did. And `tau`
+     * back-fills to `0.5`, because every row written before this migration is the median.
+     */
+    @Test
+    fun migrate23To24_anOldFillHasNoFanAndIsTheMedian() {
+        val seed = helper.createDatabase(23)
+        seed.execSQL(
+            "INSERT INTO `bg_infill` (`ts`,`mgdl`,`lo90`,`hi90`,`modelId`,`createdAtMs`," +
+                "`spanStartMs`,`promotedAtMs`) VALUES (1700000000000,120.0,95.0,150.0,'m.pte'," +
+                "1700000000000,1700000000000,NULL)",
+        )
+        seed.close()
+
+        val db = helper.runMigrationsAndValidate(24, listOf(MigrationRunner.MIGRATION_23_24))
+
+        assertEquals(1, countRows(db, "SELECT COUNT(*) FROM `bg_infill`"))
+        assertEquals(
+            "a fill drawn before the fan was kept has no fan",
+            1,
+            countRows(db, "SELECT COUNT(*) FROM `bg_infill` WHERE LENGTH(`bandsMgdl`) = 0 AND LENGTH(`bandsRisk`) = 0"),
+        )
+        assertEquals(
+            "and its line is the median, which is what it was",
+            1,
+            countRows(db, "SELECT COUNT(*) FROM `bg_infill` WHERE `tau` = 0.5"),
+        )
+        assertEquals(
+            "the outer band it did carry survives untouched",
+            1,
+            countRows(db, "SELECT COUNT(*) FROM `bg_infill` WHERE `lo90` = 95.0 AND `hi90` = 150.0"),
+        )
+        db.close()
+    }
+
+    @Test
+    fun migrate1To24_fullChain() {
         helper.createDatabase(1).close()
         helper.runMigrationsAndValidate(
-            20,
+            24,
             listOf(
                 MigrationRunner.MIGRATION_1_2,
                 MigrationRunner.MIGRATION_2_3,
@@ -560,6 +755,10 @@ class MigrationTest {
                 MigrationRunner.MIGRATION_17_18,
                 MigrationRunner.MIGRATION_18_19,
                 MigrationRunner.MIGRATION_19_20,
+                MigrationRunner.MIGRATION_20_21,
+                MigrationRunner.MIGRATION_21_22,
+                MigrationRunner.MIGRATION_22_23,
+                MigrationRunner.MIGRATION_23_24,
             ),
         )
     }

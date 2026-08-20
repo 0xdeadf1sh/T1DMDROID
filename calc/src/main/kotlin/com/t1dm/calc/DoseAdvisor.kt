@@ -117,10 +117,25 @@ class DoseAdvisor(
             )
         }
 
+        // (5b) the dose history was rewritten under the IOB the whole search stands on.
+        //
+        // Evaluated HERE rather than beside the other global gates, and forcing 0 U rather than
+        // refusing outright, because both alternatives take the carb-rescue path down with them.
+        // The rail blocks when the history is unreadable, and `buildIobSnapshot` wraps its reads in
+        // one runCatching — so any store failure would otherwise deny a patient at 58 mg/dL the
+        // rescue-carb number, which does not depend on the edited insulin at all. Insulin withheld,
+        // rescue advice preserved: that is what a fail-closed verdict means on this path.
+        val editedHistory = Rails.doseHistoryEdited(iob, candidateU = 1.0, nowMs = nowMs, config = config)
+
         // (6) per-candidate rails: pick the best-scoring finite candidate clearing the BLOCK rails.
         val zeroCandidate = result.ranked.firstOrNull { it.doseU == 0.0 } ?: Candidate(0.0, 0.0, result.baseline)
         var chosen: Candidate? = null
+        if (editedHistory is RailVerdict.Block) {
+            notes.add(editedHistory.reason)
+            chosen = zeroCandidate
+        }
         for (c in result.ranked) {
+            if (chosen != null) break
             if (c.score == Double.POSITIVE_INFINITY) continue
             val veto = Rails.predictedLowVeto(c.fan, config)
             val ceiling = Rails.iobCeiling(iob, c.doseU, config)
@@ -139,6 +154,7 @@ class DoseAdvisor(
         val confirm = Rails.mandatoryConfirmation(iob, chosen.doseU, nowMs, config)
         val confirmReasons = ArrayList<String>()
         if (confirm is RailVerdict.RequireConfirm) { confirmReasons.add(confirm.reason); notes.add(confirm.reason) }
+        if (editedHistory is RailVerdict.Block) confirmReasons.add(editedHistory.reason)
         val requiresConfirmation = confirmReasons.isNotEmpty()
 
         val card = buildCard(anchor, iob, backend, chosen, nowMs, requiresConfirmation, confirmReasons, config, smoothing)
@@ -148,6 +164,7 @@ class DoseAdvisor(
             card = card,
             railNotes = notes,
             requiresConfirmation = requiresConfirmation,
+            doseHistoryEdited = editedHistory is RailVerdict.Block,
         )
     }
 

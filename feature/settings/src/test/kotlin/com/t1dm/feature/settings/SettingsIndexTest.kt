@@ -256,13 +256,13 @@ private val SCREEN_SOURCES = mapOf(
     SettingsScreenKey.FORECAST to "ForecastSettingsScreen.kt",
     SettingsScreenKey.CALCULATOR to "CalculatorSettingsScreen.kt",
     SettingsScreenKey.CURVES to "CurveParamsScreen.kt",
-    SettingsScreenKey.CGM to "CgmSettingsScreen.kt",
     SettingsScreenKey.SERVER to "ServerSettingsScreen.kt",
     SettingsScreenKey.NIGHTSCOUT to "NightscoutSettingsScreen.kt",
     SettingsScreenKey.WATCH to "WatchSettingsScreen.kt",
     SettingsScreenKey.POWER to "PowerSettingsScreen.kt",
     SettingsScreenKey.DATA to "DataSettingsScreen.kt",
     SettingsScreenKey.DEATH_CLOCK to "DeathClockSettingsScreen.kt",
+    SettingsScreenKey.CGM to "CgmSettingsScreen.kt",
 )
 
 /** Screens whose entries are whole-page: read-only panels, a signpost, and the Death rite. */

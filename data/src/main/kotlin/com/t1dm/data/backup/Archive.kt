@@ -3,7 +3,9 @@ package com.t1dm.data.backup
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.data.db.BasalScheduleEntity
+import com.t1dm.data.db.BgInfillEntity
 import com.t1dm.data.db.CgmReadingEntity
+import com.t1dm.data.db.EventTombstoneEntity
 import com.t1dm.data.db.CgmSourceEntity
 import com.t1dm.data.db.ConformalDeltaEntity
 import com.t1dm.data.db.LoraEntity
@@ -105,6 +107,14 @@ object Archive {
     const val T_LORA = "lora"
     const val T_EXERCISE = "exercise"
     const val T_EXERCISE_FIX = "exerciseFix"
+
+    /** A deleted logged event. Without it a restore resurrects everything the patient deleted —
+     *  the same defect the catch-up hydration filter exists to prevent, arriving by another door. */
+    const val T_TOMBSTONE = "tombstone"
+
+    /** A PROMOTED reconstruction's 90 % band. The only place that band exists — the wire carries a
+     *  boolean and no fan — so without it a restore brings the value back with no uncertainty. */
+    const val T_INFILL = "infill"
     const val T_END = "end"
 
     /** Rows per statement on both paths. Large enough that the per-statement overhead disappears,
@@ -320,6 +330,9 @@ object Archive {
         w.put("tz", r.tzOffsetMin)
         w.putOrSkip("n", r.note)
         w.put("ua", r.updatedAt)
+        w.put("lat", r.loggedAtMs)
+        w.putOrSkip("mut", r.mutatedAtMs)
+        w.putOrSkip("mau", r.mutatedActingUntilMs)
         w.close()
     }
 
@@ -337,6 +350,11 @@ object Archive {
         tzOffsetMin = o.int("tz") ?: err("dose", "tz"),
         note = o.str("n"),
         updatedAt = o.long("ua") ?: err("dose", "ua"),
+        // An archive written before these columns existed has no `lat`; `ua` is the honest reading,
+        // and it is the migration's own backfill rule.
+        loggedAtMs = o.long("lat") ?: o.long("ua") ?: 0L,
+        mutatedAtMs = o.long("mut"),
+        mutatedActingUntilMs = o.long("mau"),
     )
 
     fun write(w: RecordWriter, r: LoggedMealEntity) {
@@ -352,6 +370,8 @@ object Archive {
         w.put("tz", r.tzOffsetMin)
         w.putOrSkip("n", r.note)
         w.put("ua", r.updatedAt)
+        w.put("lat", r.loggedAtMs)
+        w.putOrSkip("mut", r.mutatedAtMs)
         w.close()
     }
 
@@ -367,6 +387,62 @@ object Archive {
         tzOffsetMin = o.int("tz") ?: err("meal", "tz"),
         note = o.str("n"),
         updatedAt = o.long("ua") ?: err("meal", "ua"),
+        /** See [readDose]. */
+        loggedAtMs = o.long("lat") ?: o.long("ua") ?: 0L,
+        mutatedAtMs = o.long("mut"),
+    )
+
+    fun write(w: RecordWriter, r: BgInfillEntity) {
+        w.open(T_INFILL)
+        w.put("ts", r.ts)
+        w.put("mid", r.mgdl)
+        w.put("lo", r.lo90)
+        w.put("hi", r.hi90)
+        w.put("m", r.modelId)
+        w.put("ca", r.createdAtMs)
+        w.put("sp", r.spanStartMs)
+        w.putOrSkip("pa", r.promotedAtMs)
+        w.close()
+    }
+
+    fun readInfill(o: JsonObject) = BgInfillEntity(
+        ts = o.long("ts") ?: err("infill", "ts"),
+        mgdl = o.dbl("mid") ?: err("infill", "mid"),
+        lo90 = o.dbl("lo") ?: err("infill", "lo"),
+        hi90 = o.dbl("hi") ?: err("infill", "hi"),
+        modelId = o.str("m") ?: err("infill", "m"),
+        createdAtMs = o.long("ca") ?: err("infill", "ca"),
+        spanStartMs = o.long("sp") ?: o.long("ts") ?: 0L,
+        // Restored PROMOTED as written. The `sample` rows in the same archive carry
+        // `bgProvenance = RECONSTRUCTED`, and the two have to agree — a band restored as unpromoted
+        // beside a promoted sample is exactly the disagreement this row exists to prevent.
+        promotedAtMs = o.long("pa") ?: o.long("ca"),
+    )
+
+    fun write(w: RecordWriter, r: EventTombstoneEntity) {
+        w.open(T_TOMBSTONE)
+        w.put("cid", r.clientId)
+        w.put("kd", r.kind)
+        w.put("ts", r.tsMs)
+        w.put("tz", r.tzOffsetMin)
+        w.put("ua", r.updatedAt)
+        w.put("ca", r.createdAtMs)
+        w.putOrSkip("pe", r.pushEnqueuedAtMs)
+        w.putOrSkip("au", r.actingUntilMs)
+        w.close()
+    }
+
+    fun readTombstone(o: JsonObject) = EventTombstoneEntity(
+        clientId = o.str("cid") ?: err("tombstone", "cid"),
+        kind = o.str("kd") ?: err("tombstone", "kd"),
+        tsMs = o.long("ts") ?: err("tombstone", "ts"),
+        tzOffsetMin = o.int("tz") ?: err("tombstone", "tz"),
+        updatedAt = o.long("ua") ?: err("tombstone", "ua"),
+        createdAtMs = o.long("ca") ?: err("tombstone", "ca"),
+        // A restored deletion is already accounted for on the server it was pushed to; leaving this
+        // null would have the connect-time replay re-file every deletion in the archive.
+        pushEnqueuedAtMs = o.long("pe") ?: o.long("ca"),
+        actingUntilMs = o.long("au"),
     )
 
     fun write(w: RecordWriter, r: BasalScheduleEntity) {
@@ -546,6 +622,10 @@ object Archive {
         w.put("ac", r.authoritative)
         w.put("av", r.active)
         w.put("hd", r.hidden)
+        // The stable per-sensor number. Carried so a restore keeps the number the user has learned to
+        // read as this physical sensor; a file written before the column existed has none, and the
+        // restoring phone assigns one.
+        w.put("or", r.ordinal)
         w.close()
     }
 
@@ -588,6 +668,12 @@ object Archive {
             // user did, carries no invariant across the whole table, and dropping it would re-list
             // every sensor they had removed.
             hidden = o.bool("hd") ?: false,
+            // Read from the file but NOT trusted: unlike every other column here, this one describes the
+            // sensor's place among the sensors on one phone rather than the sensor itself, so the same
+            // number may already be in use where the file is landing. The restore resolves that against
+            // the rows already stored, keeping this value wherever it is free — see
+            // `ArchiveReader.renumbered`. The sentinel is what a file written before the column carried.
+            ordinal = o.int("or") ?: -1,
         )
     }
 
@@ -666,6 +752,12 @@ object Archive {
      * `at` (attached) deliberately does NOT ride. Which adapter a model runs is a property of the
      * phone the model is on, not of the file: restoring a backup must not silently re-attach an
      * adapter to a live forecast, and the panel is where that choice is made.
+     *
+     * The guard's verdict and every input to it DO ride. It is provenance — what was measured about
+     * this adapter, when, and on what evidence — and dropping it turned a restore into a silent
+     * downgrade to `ABSENT`, which refuses attach with no way to tell "nobody looked" from "the
+     * file forgot". The override does not ride: it was granted by a person on one phone, about one
+     * row, and a restore is not that person saying it again.
      */
     fun write(w: RecordWriter, r: LoraEntity) {
         w.open(T_LORA)
@@ -684,6 +776,16 @@ object Archive {
         w.put("imp", r.improved)
         w.put("ca", r.createdAtMs)
         w.put("ua", r.updatedAtMs)
+        w.put("gv", r.guardVerdict)
+        w.put("gw", r.guardWindows)
+        w.put("gf", r.guardFrozenMgdl)
+        w.put("gaj", r.guardAdaptedMgdl)
+        w.put("gr", r.guardRetention)
+        w.put("gs", r.guardSignAgreement)
+        w.put("gy", r.guardWhy)
+        w.put("npr", r.nPaired)
+        w.put("ds", r.distillScale)
+        w.put("fa", r.fittedAtMs)
         w.close()
     }
 
@@ -712,6 +814,21 @@ object Archive {
             attached = false,
             createdAtMs = o.long("ca") ?: err("lora", "ca"),
             updatedAtMs = o.long("ua") ?: err("lora", "ua"),
+            // Absent in a file written before the guard shipped, which reads as ABSENT — the honest
+            // state for an adapter nobody measured, and the one that refuses attach.
+            guardVerdict = o.str("gv") ?: "ABSENT",
+            guardWindows = o.int("gw") ?: 0,
+            guardFrozenMgdl = o.dbl("gf") ?: 0.0,
+            guardAdaptedMgdl = o.dbl("gaj") ?: 0.0,
+            guardRetention = o.dbl("gr") ?: 0.0,
+            guardSignAgreement = o.dbl("gs") ?: 0.0,
+            guardWhy = o.str("gy").orEmpty(),
+            nPaired = o.int("npr") ?: 0,
+            distillScale = o.dbl("ds") ?: 0.0,
+            // Zero means "not fitted on THIS phone's history" and is what an older file yields.
+            // [com.t1dm.inference.loraAttachRefusal] reads it that way rather than as an ancient
+            // fit instant, which every log edit would otherwise invalidate for ever.
+            fittedAtMs = o.long("fa") ?: 0L,
         )
     }
 

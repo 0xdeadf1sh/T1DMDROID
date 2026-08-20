@@ -74,10 +74,12 @@ fun fakeIob(
     iobU: Double? = 1.0,
     cobG: Double = 0.0,
     lastLoggedMinAgo: Long? = 30,
+    doseHistory: DoseHistoryState = DoseHistoryState.Clean,
 ): IobSnapshot = IobSnapshot(
     iobU = iobU,
     cobG = cobG,
     lastLoggedDoseTsMs = lastLoggedMinAgo?.let { nowMs - it * 60_000L },
+    doseHistory = doseHistory,
 )
 
 fun fp32Backend(agreementOk: Boolean? = null): BackendInfo =

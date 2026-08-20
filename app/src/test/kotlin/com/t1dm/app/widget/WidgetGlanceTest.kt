@@ -1,5 +1,6 @@
 package com.t1dm.app.widget
 
+import com.t1dm.app.notify.GlanceReadings
 import androidx.datastore.preferences.core.mutablePreferencesOf
 import com.t1dm.app.notify.BgGlanceComputer
 import com.t1dm.core.design.ThemeIds
@@ -46,7 +47,7 @@ class WidgetGlanceTest {
 
     private fun snapshot(latest: CgmReading?, nowMs: Long) = WidgetSnapshot(
         glance = BgGlanceComputer.compute(
-            latest = latest,
+            readings = GlanceReadings.create(listOfNotNull(latest)),
             state = InferenceState(),
             thresholds = thresholds,
             lossMin = 25,

@@ -66,6 +66,11 @@ sealed interface AdviceResult {
      * A ranked recommendation. [best] is the top candidate that survived the per-candidate rails;
      * [ranked] the full scored list (best-first) for the UI. [railNotes] records every rail decision.
      * [requiresConfirmation] mirrors the card. [rescueCarbsG] is non-null only on the hypo path.
+     *
+     * [doseHistoryEdited] is set when [Rails.doseHistoryEdited] forced this recommendation to 0 U.
+     * It is carried as a flag rather than left for a reader to recognise among [railNotes], because
+     * the block clears only on a deliberate acknowledgement and the surface offering that
+     * acknowledgement must not identify the rail by matching its prose.
      */
     data class Recommended(
         val best: Candidate,
@@ -74,5 +79,6 @@ sealed interface AdviceResult {
         val railNotes: List<String>,
         val requiresConfirmation: Boolean,
         val rescueCarbsG: Double? = null,
+        val doseHistoryEdited: Boolean = false,
     ) : AdviceResult
 }

@@ -2,11 +2,11 @@
   "formatVersion": 1,
   "database": {
     "version": 20,
-    "identityHash": "8c59a3c9611ba50955486cdd4e8dc6eb",
+    "identityHash": "49e562612f033195c99ab986ab54a4a8",
     "entities": [
       {
         "tableName": "cgm_source",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`sourceId` TEXT NOT NULL, `vendorId` TEXT NOT NULL, `sensorModelId` TEXT NOT NULL, `advertName` TEXT, `displayName` TEXT NOT NULL, `serialSuffix` TEXT, `authoritative` INTEGER NOT NULL, `active` INTEGER NOT NULL, `warmupWindowMin` INTEGER NOT NULL, `addedAtMs` INTEGER NOT NULL, `lastSeenMs` INTEGER, `hidden` INTEGER NOT NULL, PRIMARY KEY(`sourceId`))",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`sourceId` TEXT NOT NULL, `vendorId` TEXT NOT NULL, `sensorModelId` TEXT NOT NULL, `advertName` TEXT, `displayName` TEXT NOT NULL, `serialSuffix` TEXT, `authoritative` INTEGER NOT NULL, `active` INTEGER NOT NULL, `warmupWindowMin` INTEGER NOT NULL, `addedAtMs` INTEGER NOT NULL, `lastSeenMs` INTEGER, `hidden` INTEGER NOT NULL, `ordinal` INTEGER NOT NULL DEFAULT -1, PRIMARY KEY(`sourceId`))",
         "fields": [
           {
             "fieldPath": "sourceId",
@@ -76,6 +76,13 @@
             "columnName": "hidden",
             "affinity": "INTEGER",
             "notNull": true
+          },
+          {
+            "fieldPath": "ordinal",
+            "columnName": "ordinal",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "-1"
           }
         ],
         "primaryKey": {
@@ -253,6 +260,36 @@
             "createSql": "CREATE INDEX IF NOT EXISTS `index_cgm_sample_raw_rxWallMs` ON `${TABLE_NAME}` (`rxWallMs`)"
           }
         ]
+      },
+      {
+        "tableName": "cgm_sensor_secret",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`sourceId` TEXT NOT NULL, `blob` BLOB NOT NULL, `updatedAtMs` INTEGER NOT NULL, PRIMARY KEY(`sourceId`))",
+        "fields": [
+          {
+            "fieldPath": "sourceId",
+            "columnName": "sourceId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "blob",
+            "columnName": "blob",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAtMs",
+            "columnName": "updatedAtMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "sourceId"
+          ]
+        }
       },
       {
         "tableName": "sample",
@@ -1925,7 +1962,7 @@
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '8c59a3c9611ba50955486cdd4e8dc6eb')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '49e562612f033195c99ab986ab54a4a8')"
     ]
   }
 }

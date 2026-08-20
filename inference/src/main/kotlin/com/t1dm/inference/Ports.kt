@@ -31,6 +31,30 @@ data class BgSeries(val mgdl: DoubleArray, val anchorTsMs: Long, val gridStartMs
  * much context that is comes from the model's own descriptor — `MIN_CONTEXT_PATCHES`, which the
  * current models put at several days — and never from a constant here.
  */
+/**
+ * The insulin stimulus the adapter guard's counterfactual branch injects.
+ *
+ * A port rather than a constant, because a unit of insulin is a CURVE and this module holds no
+ * pharmacokinetics: the preset catalogue, the peak and the DIA all live where a dose is written.
+ * Adding the whole unit to a single 5-minute bucket of a units-per-step channel — which is what
+ * stood here — is not a bolus at all; through the descriptor's normalisation it is roughly nineteen
+ * sigma out of distribution, and the guard's stored mg/dL-per-unit, its frozen-response floor and
+ * the distillation target the adapter is pinned to were all measured against a stimulus nobody
+ * receives.
+ *
+ * NOT defaulted at its use site. A null port means the counterfactual branch does not run at all —
+ * no pairing, no verdict, `ABSENT`, and attach refused — which is the honest reading of "this build
+ * cannot say what a unit of insulin looks like."
+ */
+fun interface ProbeInsulinPort {
+    /**
+     * [units] of rapid insulin as absolute action per 5-minute step, [steps] long, zero-padded past
+     * the end of the curve and truncated at [steps]. The same shape a logged bolus stores, from the
+     * same resolver, so the guard's stimulus and the patient's are one thing.
+     */
+    suspend fun action(units: Double, steps: Int): DoubleArray
+}
+
 interface BgHistoryProvider {
     /** Newest-last mg/dL series of at most [maxSteps] 5-min steps, or `null` if under [minSteps].
      *  May stand a model-reconstructed sample in for a slot the sensor never covered — see
@@ -69,6 +93,21 @@ interface BgHistoryProvider {
      * pretend it can, and the baseline fit then declines rather than fitting on filled data.
      */
     suspend fun fitBgSeries(maxSteps: Int, minSteps: Int): BgSeries? = null
+
+    /**
+     * The grid slots in the trailing [maxSteps] whose value is a MODEL'S OWN OUTPUT — a promoted
+     * reconstruction standing in `cgm_reading`, or an unpromoted fill [recentBgSeries] splices in.
+     *
+     * `SPEC/invariants.md` §1: a promoted value may never be a fit target or a fit window's
+     * context. A fit replay cannot honour that by testing [fitBgSeries] for `NaN`, because that
+     * series is `NaN` at an ordinary sensor gap too — the two are indistinguishable there, and
+     * refusing both rejects every window a record with one sensor change has. This names the slots
+     * the rule is actually about.
+     *
+     * Default empty — a provider that cannot tell model output from measurement says so by
+     * reporting none, and the caller's own anchor and target tests still stand.
+     */
+    suspend fun reconstructedSlots(maxSteps: Int): Set<Long> = emptySet()
 }
 
 /**

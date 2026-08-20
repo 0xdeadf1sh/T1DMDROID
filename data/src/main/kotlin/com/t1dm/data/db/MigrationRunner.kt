@@ -602,24 +602,63 @@ object MigrationRunner {
     }
 
     /**
-     * v18 → v19: nothing, deliberately.
+     * The `cgm_sensor_secret` DDL, frozen, and held as a constant for the reason
+     * [SQL_17_18_CREATE_TABLE] is: the migration is the one description of this table Room does not
+     * check, and on a store with no destructive fallback a forgotten column is a launch crash rather
+     * than a lost row.
+     */
+    internal const val SQL_18_19_CREATE_SECRET =
+        "CREATE TABLE IF NOT EXISTS `cgm_sensor_secret` (" +
+            "`sourceId` TEXT NOT NULL, `blob` BLOB NOT NULL, `updatedAtMs` INTEGER NOT NULL, " +
+            "PRIMARY KEY(`sourceId`))"
+
+    /**
+     * The `cgm_source.ordinal` column. The DEFAULT is part of the schema Room compares, not a
+     * convenience: `CgmSourceEntity` declares `@ColumnInfo(defaultValue = "-1")`, and a column added
+     * without it would differ from the one a fresh install builds and Room would refuse to open the
+     * upgraded database.
+     */
+    internal const val SQL_18_19_ADD_ORDINAL =
+        "ALTER TABLE `cgm_source` ADD COLUMN `ordinal` INTEGER NOT NULL DEFAULT -1"
+
+    /**
+     * Number the rows already on record, zero-based.
      *
-     * **A reserved version, not an oversight.** Schema 19 exists on the local-only branch, where it
-     * adds a sealed per-sensor secret store and a per-sensor ordinal for the connected-sensor path
-     * that only that branch has. Neither has any reader here, and creating them would put storage on
-     * this branch for a feature it does not carry.
+     * Counts how many rows sort before each one in `addedAtMs, sourceId` — the same order every list
+     * query already uses, so the numbers a phone shows after upgrading are the order it has always
+     * listed its sensors in. Deterministic and total: the tiebreak on `sourceId` means two rows sharing
+     * an `addedAtMs` still get distinct numbers, and `<=` on the tied branch makes each row count itself
+     * so the sequence starts at zero with no gaps.
+     */
+    internal const val SQL_18_19_BACKFILL_ORDINAL =
+        "UPDATE `cgm_source` SET `ordinal` = (" +
+            "SELECT COUNT(*) FROM `cgm_source` c2 WHERE c2.`addedAtMs` < `cgm_source`.`addedAtMs` " +
+            "OR (c2.`addedAtMs` = `cgm_source`.`addedAtMs` AND c2.`sourceId` <= `cgm_source`.`sourceId`)" +
+            ") - 1"
+
+    /**
+     * v18 → v19: the sealed per-sensor secret store, and a stable per-sensor ordinal.
      *
-     * Numbering it anyway is what keeps the two schemas commensurable: version 20 then means the
-     * same thing on both — `lora` and `bg_infill` present — so every migration after this one is
-     * written once, and a backup archive's recorded version resolves to one schema rather than two.
-     * Skipping to 19 here and calling it the adapter migration would have made two different
-     * databases share a number, which the next migration would then have had to guess between.
+     * Both in ONE migration on purpose. There is no destructive fallback, so a DDL that disagrees with
+     * an entity by one column is a launch crash on the user's daily-driver phone, and the chain
+     * validator that would catch it is instrumented. One migration means one hand-written DDL, one
+     * exported schema and one instrumented validation to arrange rather than two.
      *
-     * Room requires a registered path for every step, so this is a real Migration that executes no
-     * statement, rather than a gap.
+     * `cgm_sensor_secret` begins empty and is never backfilled: it holds material established during a
+     * pairing that has already happened, so nothing on this phone could reconstruct a row for a sensor
+     * bound before the table existed. `ordinal` IS backfilled, because the order it records is one the
+     * database already has.
+     *
+     * No sensor family is named anywhere in here. DDL transcribed verbatim from the generated
+     * `schemas/<db>/19.json` (its `${'$'}{TABLE_NAME}` placeholder resolved) so the migrated database is
+     * byte-identical to a fresh `createAllTables`.
      */
     val MIGRATION_18_19 = object : Migration(18, 19) {
-        override fun migrate(connection: SQLiteConnection) = Unit
+        override fun migrate(connection: SQLiteConnection) {
+            connection.execSQL(SQL_18_19_CREATE_SECRET)
+            connection.execSQL(SQL_18_19_ADD_ORDINAL)
+            connection.execSQL(SQL_18_19_BACKFILL_ORDINAL)
+        }
     }
 
     /**
@@ -659,6 +698,191 @@ object MigrationRunner {
         }
     }
 
+    internal const val SQL_20_21_DOSE_LOGGED_AT =
+        "ALTER TABLE `logged_dose` ADD COLUMN `loggedAtMs` INTEGER NOT NULL DEFAULT 0"
+
+    internal const val SQL_20_21_DOSE_LOGGED_AT_BACKFILL =
+        "UPDATE `logged_dose` SET `loggedAtMs` = `updatedAt`"
+
+    internal const val SQL_20_21_DOSE_MUTATED_AT =
+        "ALTER TABLE `logged_dose` ADD COLUMN `mutatedAtMs` INTEGER"
+
+    internal const val SQL_20_21_DOSE_MUTATED_ACTING =
+        "ALTER TABLE `logged_dose` ADD COLUMN `mutatedActingUntilMs` INTEGER"
+
+    internal const val SQL_20_21_MEAL_LOGGED_AT =
+        "ALTER TABLE `logged_meal` ADD COLUMN `loggedAtMs` INTEGER NOT NULL DEFAULT 0"
+
+    internal const val SQL_20_21_MEAL_LOGGED_AT_BACKFILL =
+        "UPDATE `logged_meal` SET `loggedAtMs` = `updatedAt`"
+
+    internal const val SQL_20_21_MEAL_MUTATED_AT =
+        "ALTER TABLE `logged_meal` ADD COLUMN `mutatedAtMs` INTEGER"
+
+    internal const val SQL_20_21_CREATE_TOMBSTONE =
+        "CREATE TABLE IF NOT EXISTS `event_tombstone` (" +
+            "`clientId` TEXT NOT NULL, `kind` TEXT NOT NULL, `tsMs` INTEGER NOT NULL, " +
+            "`tzOffsetMin` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, " +
+            "`createdAtMs` INTEGER NOT NULL, `pushEnqueuedAtMs` INTEGER, " +
+            "`actingUntilMs` INTEGER, PRIMARY KEY(`clientId`))"
+
+    internal const val SQL_20_21_CREATE_TOMBSTONE_TS_INDEX =
+        "CREATE INDEX IF NOT EXISTS `index_event_tombstone_tsMs` ON `event_tombstone` (`tsMs`)"
+
+    internal const val SQL_20_21_CREATE_TOMBSTONE_PUSH_INDEX =
+        "CREATE INDEX IF NOT EXISTS `index_event_tombstone_pushEnqueuedAtMs` " +
+            "ON `event_tombstone` (`pushEnqueuedAtMs`)"
+
+    /**
+     * v20 → v21 (a logged event becomes editable and deletable): additive only.
+     *
+     * `loggedAtMs` is back-filled from `updatedAt`, which is the honest reading for a pre-v21 row:
+     * nothing could edit one, so `updatedAt` was only ever set at insert. `mutatedAtMs` and
+     * `mutatedActingUntilMs` stay null — no row has been edited yet, which is a fact about them
+     * rather than an unknown.
+     *
+     * `event_tombstone` is what makes a deletion survive: the row it replaces is gone, so the
+     * tombstone is the only thing left carrying the `updatedAt` a stale redelivery is rejected by,
+     * the only local record hydration can refuse against, and the only term keeping the event
+     * high-water mark from moving backward.
+     */
+    val MIGRATION_20_21 = object : Migration(20, 21) {
+        override fun migrate(connection: SQLiteConnection) {
+            connection.execSQL(SQL_20_21_DOSE_LOGGED_AT)
+            connection.execSQL(SQL_20_21_DOSE_LOGGED_AT_BACKFILL)
+            connection.execSQL(SQL_20_21_DOSE_MUTATED_AT)
+            connection.execSQL(SQL_20_21_DOSE_MUTATED_ACTING)
+            connection.execSQL(SQL_20_21_MEAL_LOGGED_AT)
+            connection.execSQL(SQL_20_21_MEAL_LOGGED_AT_BACKFILL)
+            connection.execSQL(SQL_20_21_MEAL_MUTATED_AT)
+            connection.execSQL(SQL_20_21_CREATE_TOMBSTONE)
+            connection.execSQL(SQL_20_21_CREATE_TOMBSTONE_TS_INDEX)
+            connection.execSQL(SQL_20_21_CREATE_TOMBSTONE_PUSH_INDEX)
+        }
+    }
+
+    internal const val SQL_21_22_INFILL_SPAN =
+        "ALTER TABLE `bg_infill` ADD COLUMN `spanStartMs` INTEGER NOT NULL DEFAULT 0"
+
+    internal const val SQL_21_22_INFILL_PROMOTED =
+        "ALTER TABLE `bg_infill` ADD COLUMN `promotedAtMs` INTEGER"
+
+    internal const val SQL_21_22_BACKFILL_SPAN =
+        "UPDATE `bg_infill` SET `spanStartMs` = `ts`"
+
+    internal const val SQL_21_22_INFILL_SPAN_INDEX =
+        "CREATE INDEX IF NOT EXISTS `index_bg_infill_spanStartMs` ON `bg_infill` (`spanStartMs`)"
+
+    /**
+     * v21 → v22 (a reconstructed span becomes an identity, and can be promoted): additive only.
+     *
+     * The backfill makes every pre-v22 row its own one-step span. That is honest rather than
+     * clever: the contiguous runs were never recorded, and reconstructing them with a
+     * gap-and-island query inside a migration would invent an identity nothing ever authored. The
+     * cost is a longer span list for old fills, and a fill is cheap to remake.
+     */
+    val MIGRATION_21_22 = object : Migration(21, 22) {
+        override fun migrate(connection: SQLiteConnection) {
+            connection.execSQL(SQL_21_22_INFILL_SPAN)
+            connection.execSQL(SQL_21_22_INFILL_PROMOTED)
+            connection.execSQL(SQL_21_22_BACKFILL_SPAN)
+            connection.execSQL(SQL_21_22_INFILL_SPAN_INDEX)
+        }
+    }
+
+    internal const val SQL_22_23_LORA_GUARD_VERDICT =
+        "ALTER TABLE `lora` ADD COLUMN `guardVerdict` TEXT NOT NULL DEFAULT 'ABSENT'"
+
+    internal const val SQL_22_23_LORA_GUARD_WINDOWS =
+        "ALTER TABLE `lora` ADD COLUMN `guardWindows` INTEGER NOT NULL DEFAULT 0"
+
+    internal const val SQL_22_23_LORA_GUARD_FROZEN =
+        "ALTER TABLE `lora` ADD COLUMN `guardFrozenMgdl` REAL NOT NULL DEFAULT 0"
+
+    internal const val SQL_22_23_LORA_GUARD_ADAPTED =
+        "ALTER TABLE `lora` ADD COLUMN `guardAdaptedMgdl` REAL NOT NULL DEFAULT 0"
+
+    internal const val SQL_22_23_LORA_GUARD_RETENTION =
+        "ALTER TABLE `lora` ADD COLUMN `guardRetention` REAL NOT NULL DEFAULT 0"
+
+    internal const val SQL_22_23_LORA_GUARD_SIGN =
+        "ALTER TABLE `lora` ADD COLUMN `guardSignAgreement` REAL NOT NULL DEFAULT 0"
+
+    internal const val SQL_22_23_LORA_GUARD_WHY =
+        "ALTER TABLE `lora` ADD COLUMN `guardWhy` TEXT NOT NULL DEFAULT ''"
+
+    internal const val SQL_22_23_LORA_N_PAIRED =
+        "ALTER TABLE `lora` ADD COLUMN `nPaired` INTEGER NOT NULL DEFAULT 0"
+
+    internal const val SQL_22_23_LORA_DISTILL_SCALE =
+        "ALTER TABLE `lora` ADD COLUMN `distillScale` REAL NOT NULL DEFAULT 0"
+
+    internal const val SQL_22_23_LORA_GUARD_OVERRIDE =
+        "ALTER TABLE `lora` ADD COLUMN `guardOverrideAtMs` INTEGER"
+
+    internal const val SQL_22_23_LORA_HISTORY_MUTATED =
+        "ALTER TABLE `lora` ADD COLUMN `historyMutatedAtMs` INTEGER"
+
+    internal const val SQL_22_23_LORA_FITTED_AT =
+        "ALTER TABLE `lora` ADD COLUMN `fittedAtMs` INTEGER NOT NULL DEFAULT 0"
+
+    /**
+     * v22 → v23 (an adapter carries the verdict on its own dose response): additive only.
+     *
+     * `guardVerdict` back-fills to `ABSENT`, which is the honest state for a row nothing measured
+     * — and the state that REFUSES attach. Silence is not a pass: an adapter that arrived by
+     * import or by an archive restore has no verdict either, and both routes end here.
+     *
+     * `historyMutatedAtMs` lives with the guard's own columns rather than with the log-mutation
+     * work that motivated it, because both are inputs to one predicate: an adapter is refused when
+     * it was never measured, when it was measured and blocked, or when the history it was fitted
+     * on has since been rewritten.
+     */
+    val MIGRATION_22_23 = object : Migration(22, 23) {
+        override fun migrate(connection: SQLiteConnection) {
+            connection.execSQL(SQL_22_23_LORA_GUARD_VERDICT)
+            connection.execSQL(SQL_22_23_LORA_GUARD_WINDOWS)
+            connection.execSQL(SQL_22_23_LORA_GUARD_FROZEN)
+            connection.execSQL(SQL_22_23_LORA_GUARD_ADAPTED)
+            connection.execSQL(SQL_22_23_LORA_GUARD_RETENTION)
+            connection.execSQL(SQL_22_23_LORA_GUARD_SIGN)
+            connection.execSQL(SQL_22_23_LORA_GUARD_WHY)
+            connection.execSQL(SQL_22_23_LORA_N_PAIRED)
+            connection.execSQL(SQL_22_23_LORA_DISTILL_SCALE)
+            connection.execSQL(SQL_22_23_LORA_GUARD_OVERRIDE)
+            connection.execSQL(SQL_22_23_LORA_HISTORY_MUTATED)
+            connection.execSQL(SQL_22_23_LORA_FITTED_AT)
+        }
+    }
+
+    internal const val SQL_23_24_INFILL_BANDS_MGDL =
+        "ALTER TABLE `bg_infill` ADD COLUMN `bandsMgdl` BLOB NOT NULL DEFAULT x''"
+
+    internal const val SQL_23_24_INFILL_BANDS_RISK =
+        "ALTER TABLE `bg_infill` ADD COLUMN `bandsRisk` BLOB NOT NULL DEFAULT x''"
+
+    internal const val SQL_23_24_INFILL_TAU =
+        "ALTER TABLE `bg_infill` ADD COLUMN `tau` REAL NOT NULL DEFAULT 0.5"
+
+    /**
+     * v23 → v24 (a reconstructed span keeps its whole fan, and the τ its line was read at):
+     * additive only.
+     *
+     * The two blobs back-fill EMPTY rather than to a fan synthesised from `lo90`/`hi90`. A pre-v24
+     * row records two edges and nothing between them; manufacturing the five interior levels would
+     * put a shape on the panel that no model ever emitted, and would then be indistinguishable
+     * from one that did. An empty fan draws as the single band it actually is and refuses to move
+     * its τ — which is why `tau` back-fills to `0.5`: every row written before this migration is
+     * the median, and saying so is what keeps a promoted pre-v24 value honest.
+     */
+    val MIGRATION_23_24 = object : Migration(23, 24) {
+        override fun migrate(connection: SQLiteConnection) {
+            connection.execSQL(SQL_23_24_INFILL_BANDS_MGDL)
+            connection.execSQL(SQL_23_24_INFILL_BANDS_RISK)
+            connection.execSQL(SQL_23_24_INFILL_TAU)
+        }
+    }
+
     val ALL: Array<Migration> = arrayOf(
         MIGRATION_1_2,
         MIGRATION_2_3,
@@ -679,6 +903,10 @@ object MigrationRunner {
         MIGRATION_17_18,
         MIGRATION_18_19,
         MIGRATION_19_20,
+        MIGRATION_20_21,
+        MIGRATION_21_22,
+        MIGRATION_22_23,
+        MIGRATION_23_24,
     )
 
     /** Apply every registered migration to a builder; the sole path that wires migrations. */

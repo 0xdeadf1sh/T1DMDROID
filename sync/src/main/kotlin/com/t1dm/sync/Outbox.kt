@@ -11,9 +11,12 @@ import kotlinx.serialization.encodeToString
  * `ALERT > DOSE > MEAL > INGEST > STATS > PREDICTIONS > SERIES > PHOTO`. Higher rank survives;
  * when the queue is over its size bound the lowest-rank, oldest rows are dropped first. An ALERT (a
  * safety signal) is the last thing ever evicted; a stale display PREDICTION or a PHOTO is the first.
- * SERIES is a retired tombstone (the app DB is not wiped, so a pending pre-upgrade row must still
- * decode and drain to completion). Only the ORDER is load-bearing — nothing persists a rank, so the
- * numbers are free to close up when a kind leaves.
+ * SERIES and PREDICTIONS are retired tombstones (the app DB is not wiped, so a pending pre-upgrade
+ * row must still DECODE — `OutboxKind` persists as its enum name and `valueOf` throws on one it does
+ * not know, which would wedge every drain thereafter, not just its own). A leftover PREDICTIONS row
+ * drains against a route the server no longer serves, takes a permanent 4xx and is dropped, which is
+ * self-cleaning. Only the ORDER is load-bearing — nothing persists a rank, so the numbers are free
+ * to close up when a kind leaves.
  */
 internal val OutboxKind.priority: Int
     get() = when (this) {
@@ -83,64 +86,11 @@ fun cgmSourceDedupKey(id: String): String = "cgmsrc:$id"
 /**
  * Enqueue-on-write producer API (Phase 3). The integrate agent calls these from the
  * CycleRunner / event writers; each serializes the wire body into an [OutboxRequest] envelope and
- * appends a deduped outbox row. Dedup is enforced by the unique `dedupKey` index — this is the
- * "dedup BEFORE send" that makes the non-idempotent `PUT /v1/predictions` safe: the same
- * cycle+models batch can be enqueued only once.
+ * appends a deduped outbox row. Dedup is enforced by the unique `dedupKey` index — one row per
+ * key, so a repeated write of the same event cannot queue twice. A forecast does not come through
+ * here at all: it is an unstored stream frame with no queue behind it and no retry.
  */
 class OutboxEnqueuer(private val repo: OutboxSink) {
-
-    /**
-     * All running models' forecasts for one cycle, as a single `PUT /v1/predictions` batch.
-     *
-     * The ONE producer that REPLACES rather than appends. `pred:<cycleTsMs>` keys a cycle, not a
-     * body, and a cycle can be run more than once inside its own 5-min slot — the grid tick fires
-     * one, and a logged meal or dose fires another off the same slot with the carb/insulin channels
-     * it just changed. Under the plain append the second batch collided with the unique key and was
-     * IGNORED, silently: the phone drew the post-log forecast while the server kept the pre-log one
-     * until the next slot. [com.t1dm.data.OutboxSink.enqueueReplacingPending] drops the superseded
-     * row first, so the queue still holds at most one prediction push per cycle and it is always the
-     * newest. Returns -1 when a drain already owns the key — see that method for the race.
-     */
-    suspend fun enqueuePredictions(cycleTsMs: Long, preds: List<ModelPrediction>, nowMs: Long): Long =
-        enqueuePredictionsWithSizes(cycleTsMs, preds, nowMs).first
-
-    /**
-     * Enqueue the batch AND report each model's wire size, from ONE encode per prediction.
-     *
-     * The caller wants both, and asking for them separately serialised every running model's
-     * 192-double forecast twice per inference cycle — once for the payload, once purely to count its
-     * bytes for the Network panel's accounting. `SyncJson` does not pretty-print, so a JSON array is
-     * exactly its elements joined by commas inside brackets: the body built here is byte-for-byte the
-     * one `encodeToString(list)` produced, and each element's own length is the size it contributes.
-     * [toWrite] is likewise called once per prediction rather than twice.
-     */
-    suspend fun enqueuePredictionsWithSizes(
-        cycleTsMs: Long,
-        preds: List<ModelPrediction>,
-        nowMs: Long,
-    ): Pair<Long, Map<String, Int>> {
-        val encoded = preds.map { it.modelId to SyncJson.encodeToString(it.toWrite(cycleTsMs, nowMs)) }
-        val body = encoded.joinToString(separator = ",", prefix = "[", postfix = "]") { it.second }
-        val id = repo.enqueueReplacingPending(
-            kind = OutboxKind.PREDICTIONS,
-            dedupKey = "pred:$cycleTsMs",
-            payload = OutboxRequest("PUT", "/v1/predictions", body).encode(),
-            nowMs = nowMs,
-        )
-        return id to encoded.associate { (modelId, json) -> modelId to json.toByteArray(Charsets.UTF_8).size }
-    }
-
-    /**
-     * Per-`model_id` serialized wire size (bytes) of one cycle's batch, for the Network panel's
-     * per-model push accounting. Computed off the same [toWrite] shape — same [cycleTsMs]/[nowMs]
-     * `made_at`/`updated_at` — the batch is sent as, so the sum matches the pushed
-     * `PUT /v1/predictions` body (bar the JSON array framing). Callers must pass only finite
-     * forecasts — the JSON encoder rejects NaN/Inf.
-     */
-    fun predictionWireSizes(preds: List<ModelPrediction>, cycleTsMs: Long, nowMs: Long): Map<String, Int> =
-        preds.associate {
-            it.modelId to SyncJson.encodeToString(it.toWrite(cycleTsMs, nowMs)).toByteArray(Charsets.UTF_8).size
-        }
 
     /** Mark a grid slot dirty; the drainer resolves and posts the current `sample` at drain time. */
     suspend fun enqueueIngest(gridTsMs: Long, nowMs: Long): Long = repo.enqueue(
@@ -162,12 +112,34 @@ class OutboxEnqueuer(private val repo: OutboxSink) {
      * last year's meals has nothing left to reconsider, and dating a hold from `nowMs` there would stall
      * the walk behind a delay that buys nobody anything.
      */
-    suspend fun enqueueMeal(ev: MealEventDto, nowMs: Long, holdMs: Long = 0L): Long = repo.enqueue(
+    suspend fun enqueueMeal(ev: MealEventDto, nowMs: Long, holdMs: Long = 0L): Long = repo.enqueueSuperseding(
         kind = OutboxKind.MEAL,
         dedupKey = mealDedupKey(ev.client_id),
         payload = OutboxRequest("PUT", "/v1/meals", SyncJson.encodeToString(listOf(ev))).encode(),
         nowMs = nowMs,
         notBeforeMs = if (holdMs > 0L) nowMs + holdMs else 0L,
+    )
+
+    /**
+     * A deleted meal, as a tombstone on the same route the create rode.
+     *
+     * **Same kind and same dedupKey as the create, deliberately.** A new kind or a new key would let
+     * the queue hold a create and its deletion at once, and the size cap evicts by
+     * `(priority, createdAtMs, id)` — so a deletion filed under its own key could be evicted while
+     * the create it retires survived, and the event would come back. One key per event keeps
+     * occupancy at one row, leaves MEAL/DOSE never-age-evictable and their priorities exactly as
+     * they are, and means the size cap's behaviour is unchanged by this.
+     *
+     * The body carries no curve fields at all: they are required on a live meal and ignored on a
+     * deletion, and omitting them is both what a client replaying a deletion it no longer holds the
+     * body for can do, and what the contract asks of one that wants the content gone rather than
+     * merely hidden.
+     */
+    suspend fun enqueueMealTombstone(ev: MealTombstoneDto, nowMs: Long): Long = repo.enqueueSuperseding(
+        kind = OutboxKind.MEAL,
+        dedupKey = mealDedupKey(ev.client_id),
+        payload = OutboxRequest("PUT", "/v1/meals", SyncJson.encodeToString(listOf(ev))).encode(),
+        nowMs = nowMs,
     )
 
     /**
@@ -188,12 +160,20 @@ class OutboxEnqueuer(private val repo: OutboxSink) {
 
     /** A logged dose (bolus gamma / basal Bateman) as a PK action curve — `PUT /v1/doses`. [holdMs] is
      *  the withdrawal window, exactly as on [enqueueMeal]. */
-    suspend fun enqueueDose(ev: DoseEventDto, nowMs: Long, holdMs: Long = 0L): Long = repo.enqueue(
+    suspend fun enqueueDose(ev: DoseEventDto, nowMs: Long, holdMs: Long = 0L): Long = repo.enqueueSuperseding(
         kind = OutboxKind.DOSE,
         dedupKey = doseDedupKey(ev.client_id),
         payload = OutboxRequest("PUT", "/v1/doses", SyncJson.encodeToString(listOf(ev))).encode(),
         nowMs = nowMs,
         notBeforeMs = if (holdMs > 0L) nowMs + holdMs else 0L,
+    )
+
+    /** The dose twin of [enqueueMealTombstone]; same kind, same key, same reasoning. */
+    suspend fun enqueueDoseTombstone(ev: DoseTombstoneDto, nowMs: Long): Long = repo.enqueueSuperseding(
+        kind = OutboxKind.DOSE,
+        dedupKey = doseDedupKey(ev.client_id),
+        payload = OutboxRequest("PUT", "/v1/doses", SyncJson.encodeToString(listOf(ev))).encode(),
+        nowMs = nowMs,
     )
 
     /**

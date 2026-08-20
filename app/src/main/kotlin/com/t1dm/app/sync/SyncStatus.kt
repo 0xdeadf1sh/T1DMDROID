@@ -9,8 +9,20 @@ import kotlinx.coroutines.flow.update
 /** WebSocket connection lifecycle as the panel sees it. */
 enum class WsConnState { DISCONNECTED, CONNECTED, RECONNECTING }
 
-/** Cumulative `PUT /v1/predictions` push accounting for one `model_id` (this process lifetime). */
-data class ModelPushStat(val count: Long, val bytes: Long)
+/**
+ * Forecast-frame liveness for one `model_id`, this process lifetime.
+ *
+ * Not a push count. A cumulative count described durable outbox rows the queue was accountable for;
+ * nothing is accountable for a forecast frame at contract 0.5.0 — there is no queue behind it and
+ * no retry — so what can honestly be reported is whether the last cycle's forecast reached the
+ * socket and how long ago. [lastSentMs] is rendered as an AGE for that reason.
+ */
+data class ForecastStreamStat(
+    val sent: Long,
+    val dropped: Long,
+    val lastSentMs: Long?,
+    val lastBytes: Int,
+)
 
 /**
  * The live sync telemetry the Network panel renders (Phase 3 deliverable 6). Purely
@@ -26,7 +38,7 @@ data class SyncStatus(
     val wsCursor: Long? = null,
     val lastAlert: String? = null,
     val alertCount: Long = 0,
-    val modelPushes: Map<String, ModelPushStat> = emptyMap(),
+    val forecastStream: Map<String, ForecastStreamStat> = emptyMap(),
 )
 
 /**
@@ -54,13 +66,16 @@ class SyncStatusStore {
         it.copy(lastAlert = label, alertCount = it.alertCount + 1)
     }
 
-    /** Fold one cycle's per-model wire sizes into the running counters. */
-    fun onPredictionPush(sizes: Map<String, Int>) = _state.update { s ->
-        val merged = s.modelPushes.toMutableMap()
-        for ((id, bytes) in sizes) {
-            val cur = merged[id] ?: ModelPushStat(0, 0)
-            merged[id] = ModelPushStat(cur.count + 1, cur.bytes + bytes)
+    /** Record one forecast frame's fate. [delivered] false means no live socket, or a full
+     *  outgoing buffer — the whole failure model, with nothing behind it. */
+    fun onForecastFrame(modelId: String, bytes: Int, delivered: Boolean) = _state.update { s ->
+        val merged = s.forecastStream.toMutableMap()
+        val cur = merged[modelId] ?: ForecastStreamStat(0, 0, null, 0)
+        merged[modelId] = if (delivered) {
+            cur.copy(sent = cur.sent + 1, lastSentMs = System.currentTimeMillis(), lastBytes = bytes)
+        } else {
+            cur.copy(dropped = cur.dropped + 1, lastBytes = bytes)
         }
-        s.copy(modelPushes = merged)
+        s.copy(forecastStream = merged)
     }
 }

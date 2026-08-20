@@ -31,11 +31,13 @@ data class ArchiveCounts(
     val loras: Int = 0,
     val exerciseSessions: Int = 0,
     val exerciseFixes: Int = 0,
+    val tombstones: Int = 0,
+    val infills: Int = 0,
 ) {
     val total: Int
         get() = readings + samples + doses + meals + basal + foods + savedMeals +
             savedItems + insulinTypes + strokes + sources + profiles + conformal +
-            loras + exerciseSessions + exerciseFixes
+            loras + exerciseSessions + exerciseFixes + tombstones + infills
 }
 
 /**
@@ -49,12 +51,18 @@ data class ArchiveCounts(
  * **What is deliberately not here.** The outbox (a queue of pushes for a token the restoring install
  * will not have), the raw advert capture (forensics, unbounded, and meaningless off the device that
  * heard it), `prediction` and `hw_telemetry` (recomputed from the readings this archive does carry),
- * and the legacy `dose_event` table, superseded by `logged_dose`. `bg_infill` is out for a reason of
- * its own: a fill is a model's reconstruction of a gap, not evidence, and the artifact that made it
- * may not exist on the machine the archive is restored to — a restore would carry one model's guess
- * into another model's history. The readings the gaps sit in ARE carried, so a fill can be made
- * again. The `rw` server token is absent by construction: it lives in the Keystore and has never
- * been a column.
+ * and the legacy `dose_event` table, superseded by `logged_dose`. An UNPROMOTED `bg_infill` row is out
+ * for a reason of its own: a fill is a model's reconstruction of a gap, not evidence, and the
+ * artifact that made it may not exist on the machine the archive is restored to — a restore would
+ * carry one model's guess into another model's history. The readings the gaps sit in ARE carried,
+ * so a fill can be made again. The `rw` server token is absent by construction: it lives in the
+ * Keystore and has never been a column.
+ *
+ * A PROMOTED `bg_infill` row IS carried, and the exclusion above is exactly why. Promotion put the
+ * value into `sample`, which the archive does carry, and this row is the only place its 90 % band
+ * exists — the wire carries a boolean and no fan. Leaving it out would restore a reconstructed
+ * sample with no uncertainty beside it and no way to demote it, which is the state
+ * `BgInfillEntity`'s own documentation says must never exist.
  *
  * `cgm_sample_raw` is out too, and for a reason the others do not have: it is the one table with a
  * RETENTION BOUND (`T1dmRepository.RAW_SAMPLE_RETENTION_MS`). Carrying it would put rows in the file
@@ -283,7 +291,17 @@ class ArchiveWriter(private val db: AppDatabase) {
         val loras = db.loraDao().all()
         for (r in loras) Archive.write(rw, r)
 
+        // Deletions. Bounded — one row per event the patient ever deleted — so a one-shot read.
+        val tombstones = db.eventTombstoneDao().all()
+        for (r in tombstones) Archive.write(rw, r)
+
+        // PROMOTED fills only. See the exclusion note at the top of this file.
+        val infills = db.bgInfillDao().allPromoted()
+        for (r in infills) Archive.write(rw, r)
+
         return counts.copy(
+            tombstones = tombstones.size,
+            infills = infills.size,
             basal = basal.size,
             foods = foods.size,
             savedMeals = savedMeals.size,
@@ -317,6 +335,8 @@ class ArchiveWriter(private val db: AppDatabase) {
         rw.put(Archive.T_LORA, c.loras)
         rw.put(Archive.T_EXERCISE, c.exerciseSessions)
         rw.put(Archive.T_EXERCISE_FIX, c.exerciseFixes)
+        rw.put(Archive.T_TOMBSTONE, c.tombstones)
+        rw.put(Archive.T_INFILL, c.infills)
         rw.close()
     }
 

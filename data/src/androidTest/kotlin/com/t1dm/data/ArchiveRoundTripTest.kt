@@ -275,6 +275,7 @@ class ArchiveRoundTripTest {
                 displayName = "last year's sensor",
                 serialSuffix = "0001", authoritative = false, active = false, warmupWindowMin = 60,
                 addedAtMs = 1_600_000_000_000L, lastSeenMs = 1_600_100_000_000L, hidden = false,
+                ordinal = 0,
             ),
         )
         populate(source) // adds SOURCE_ID with a much later addedAtMs, and active = true
@@ -582,6 +583,7 @@ class ArchiveRoundTripTest {
         sourceId = SOURCE_ID, vendorId = "aidex", sensorModelId = CgmSensorModelId.AIDEX_X, advertName = null, displayName = "AiDEX X",
         serialSuffix = "4321", authoritative = true, active = true, warmupWindowMin = 60,
         addedAtMs = 1_700_000_000_000L, lastSeenMs = 1_700_000_600_000L, hidden = false,
+        ordinal = 1,
     )
 
     private fun reading(i: Int) = CgmReadingEntity(

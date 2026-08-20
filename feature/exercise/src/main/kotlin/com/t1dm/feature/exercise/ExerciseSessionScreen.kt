@@ -28,6 +28,7 @@ import com.t1dm.core.design.panelCardColors
 import com.t1dm.core.design.rememberHapticDetent
 import com.t1dm.core.design.verticalScrollbar
 import com.t1dm.core.model.AlertThresholds
+import com.t1dm.core.model.LogMarker
 import com.t1dm.core.model.EXERCISE_MAX_BOUT_MS
 import com.t1dm.core.model.ExerciseSession
 import com.t1dm.core.model.TrackPoint
@@ -63,6 +64,14 @@ fun ExerciseSessionScreen(
     hindsight: HindsightFrame? = null,
     unit: UnitSpace = UnitSpace.MgDl,
     thresholds: AlertThresholds? = null,
+    /**
+     * The carbohydrate and insulin logged over the review window.
+     *
+     * Loaded over exactly [reviewWindow] by the caller rather than taken from the live Logs feed:
+     * that feed is bounded at a few hundred rows, so it would be empty for a bout from last month —
+     * which is exactly the bout a review is for.
+     */
+    logMarkers: List<LogMarker> = emptyList(),
     rangeMinMgdl: Int? = null,
     rangeMaxMgdl: Int? = null,
 ) {
@@ -111,7 +120,14 @@ fun ExerciseSessionScreen(
             )
         } else {
             Card(colors = panelCardColors(), modifier = Modifier.fillMaxWidth()) {
-                ExerciseMap(track, Modifier.fillMaxWidth().height(MAP_HEIGHT))
+                // The slider drives the dot, and nothing else: the camera does not follow it. The
+                // dot is withheld outside the track's own span and across a rest with nothing
+                // recorded near the cursor — see [trackPositionAt] — rather than pinned to an end.
+                ExerciseMap(
+                    track,
+                    Modifier.fillMaxWidth().height(MAP_HEIGHT),
+                    cursor = trackPositionAt(track, cursorMs, gridMs),
+                )
             }
         }
 
@@ -126,6 +142,7 @@ fun ExerciseSessionScreen(
             hindsight = hindsight,
             unit = unit,
             thresholds = thresholds,
+            logMarkers = logMarkers,
             tzOffsetMin = session.tzOffsetMin,
             rangeMinMgdl = rangeMinMgdl,
             rangeMaxMgdl = rangeMaxMgdl,

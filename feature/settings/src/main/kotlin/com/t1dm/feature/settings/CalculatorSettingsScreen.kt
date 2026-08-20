@@ -31,6 +31,7 @@ fun CalculatorSettingsScreen(
     railIobCeiling: Boolean,
     railConfirm: Boolean,
     railHypoTreatment: Boolean,
+    railDoseHistory: Boolean,
     onSetObjective: (String) -> Unit,
     onSetTarget: (low: Double, high: Double, mid: Double) -> Unit,
     onSetAsymmetry: (hypo: Double, hyper: Double) -> Unit,
@@ -42,14 +43,9 @@ fun CalculatorSettingsScreen(
     onSetRailIobCeiling: (Boolean) -> Unit,
     onSetRailConfirm: (Boolean) -> Unit,
     onSetRailHypoTreatment: (Boolean) -> Unit,
+    onSetRailDoseHistory: (Boolean) -> Unit,
 ) {
     SettingsScaffold(SettingsScreenKey.CALCULATOR) {
-        DangerBanner(
-            "Advisory only — the app never actuates insulin; it recommends a dose you administer. " +
-                "Thresholds are unbounded; enabled rails still refuse on stale or degenerate data, " +
-                "disabling one removes that protection.",
-        )
-
         SettingsSectionHeader("Objective")
         ChipPicker(calcObjective, objectiveOptions, objective) { onSetObjective(it) }
 
@@ -75,6 +71,7 @@ fun CalculatorSettingsScreen(
         DoubleStepper(calcIobCeiling, iobCeiling, "U", step = 0.5, min = 0.0) { onSetIobCeiling(it) }
         ToggleRow(calcRailConfirm, railConfirm) { onSetRailConfirm(it) }
         ToggleRow(calcRailHypoTreatment, railHypoTreatment) { onSetRailHypoTreatment(it) }
+        ToggleRow(calcRailDoseHistory, railDoseHistory) { onSetRailDoseHistory(it) }
     }
 }
 
@@ -243,6 +240,18 @@ private val calcRailHypoTreatment = SettingsKnob(
     ),
 )
 
+private val calcRailDoseHistory = SettingsKnob(
+    id = "calc.rail_dose_history",
+    screen = SettingsScreenKey.CALCULATOR,
+    section = "Rails",
+    label = "Edited dose log",
+    subtitle = "Hold insulin at 0 U while an edited or deleted dose could still be acting",
+    synonyms = listOf(
+        "dose history", "edited", "edit", "deleted", "delete", "log", "iob", "stale",
+        "rail", "acknowledge", "corrected",
+    ),
+)
+
 internal val settingsCalculatorKnobs = listOf(
     calcObjective,
     calcTargetLow,
@@ -259,4 +268,5 @@ internal val settingsCalculatorKnobs = listOf(
     calcIobCeiling,
     calcRailConfirm,
     calcRailHypoTreatment,
+    calcRailDoseHistory,
 )

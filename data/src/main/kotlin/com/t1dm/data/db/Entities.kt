@@ -6,6 +6,9 @@ import androidx.room.Index
 import androidx.room.PrimaryKey
 import androidx.room.TypeConverters
 import com.t1dm.core.model.BackendId
+import com.t1dm.core.model.CurveKind
+import com.t1dm.core.model.EventTombstone
+import com.t1dm.core.model.ReconstructedBg
 import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.Precision
 import com.t1dm.core.model.ReadingFlag
@@ -48,6 +51,11 @@ enum class OutboxKind { ALERT, DOSE, MEAL, INGEST, STATS, PREDICTIONS, SERIES, P
  * and the only symptom would be bridged readings that silently never send.
  */
 const val NS_ENTRY_DEDUP_PREFIX = "ns:entry:"
+
+/** The key a bridged meal/dose is filed under, prefix half. Here rather than in `:sync` because the
+ *  repository has to WITHDRAW one when the event it mirrors is deleted, and a second spelling of the
+ *  key would withdraw nothing. */
+const val NS_TREATMENT_DEDUP_PREFIX = "ns:treat:"
 
 /** Lifecycle of an outbox row across drain attempts. */
 enum class OutboxState { PENDING, INFLIGHT, FAILED }
@@ -93,7 +101,62 @@ data class CgmSourceEntity(
     val addedAtMs: Long,
     val lastSeenMs: Long?,
     val hidden: Boolean,
+    /**
+     * A small stable number per sensor, zero-based, for the surfaces that must name a sensor without
+     * printing what it advertises. `-1` until one has been minted.
+     *
+     * **Persisted rather than derived, because a rank derived from order is not stable.** Numbering by
+     * `addedAtMs` at read time looks equivalent and is not: an archive restore reads `addedAtMs`
+     * verbatim, so bringing an older sensor back inserts a row earlier in the order and renumbers every
+     * sensor after it — the number the user has learned to read as one physical device silently becomes
+     * another. Minted once, in the write transaction that first records the row, and never revised.
+     */
+    @ColumnInfo(defaultValue = "-1") val ordinal: Int,
 )
+
+/**
+ * One sensor's sealed, opaque secret — the per-sensor state that cannot be recovered from the sensor
+ * itself once lost.
+ *
+ * **Deliberately knows nothing about what it holds.** The bytes are written and read by the CGM plugin
+ * that owns that family; their layout and its versioning live there. This table stores a byte string
+ * against a source id and interprets none of it, so no sensor family's protocol is named in `:data`.
+ *
+ * **Sealed at rest.** The composition root wraps [blob] with an AndroidKeyStore key before it arrives
+ * here, on the same pattern the watch key material uses — the one place in this app that holds a
+ * Keystore handle is the one place that can.
+ *
+ * **A table of its own, not a `kv` row.** The full-erase clears `kv` wholesale even when it is
+ * preserving the CGM sources, and for a sensor still on the patient's arm these bytes may be the only
+ * thing that could ever release it. A separate table can be preserved by the same reset that preserves
+ * the source rows.
+ *
+ * Not in the archive: the archive is a portable file, and sealing is per-install, so a wrapped blob
+ * would restore as unreadable bytes on any other phone and as a false promise on this one.
+ */
+@Entity(tableName = "cgm_sensor_secret")
+data class CgmSensorSecretEntity(
+    @PrimaryKey val sourceId: String,
+    val blob: ByteArray,
+    val updatedAtMs: Long,
+) {
+    // ByteArray in a data class: identity equality would make two equal rows unequal, and Room's own
+    // diffing and the tests both compare by value.
+    override fun equals(other: Any?): Boolean =
+        this === other || (
+            other is CgmSensorSecretEntity &&
+                sourceId == other.sourceId &&
+                blob.contentEquals(other.blob) &&
+                updatedAtMs == other.updatedAtMs
+            )
+
+    override fun hashCode(): Int =
+        (31 * (31 * sourceId.hashCode() + blob.contentHashCode())) + updatedAtMs.hashCode()
+
+    /** Never log the bytes. */
+    override fun toString(): String =
+        "CgmSensorSecretEntity(sourceId=$sourceId, ${blob.size} sealed bytes, updatedAtMs=$updatedAtMs)"
+}
 
 /**
  * Authoritative per-source reading store, grid-keyed on `(sourceId, tsMs)` so the GridStamper
@@ -124,8 +187,9 @@ data class CgmReadingEntity(
 )
 
 /**
- * Every accepted sample at its true receive instant, off the grid — the sub-grid record
- * [CgmReadingEntity] cannot hold (see [com.t1dm.core.model.CgmRawSample] for what a row means).
+ * Every accepted sample at the instant it is filed under, off the grid — the sub-grid record
+ * [CgmReadingEntity] cannot hold (see [com.t1dm.core.model.CgmRawSample] for what a row means, and which
+ * instant that is for a source that dates its own samples).
  *
  * Keyed on `(sourceId, rxWallMs)` rather than a slot, which is the whole difference: a three-minute
  * sensor puts five samples into three slots, and only here do all five survive. Insert is IGNORE, so
@@ -280,6 +344,23 @@ data class LoggedDoseEntity(
     val tzOffsetMin: Int,
     val note: String?,
     val updatedAt: Long,
+    // The wall clock when this row was INSERTed, never revised by an edit (Room v21). It is the
+    // earlier half of the log-gap mark: `MAX(MIN(tsMs, loggedAtMs))`. Retiming a dose forward must
+    // not be able to quiet the rail that says the log may be stale, and pinning the mark to when
+    // the phone was TOLD is what stops it.
+    //
+    // `defaultValue` as well as the Kotlin default: `MIGRATION_20_21` adds this column with
+    // `DEFAULT 0`, and a Kotlin default governs the INSERT while saying nothing about the DDL — so
+    // without it a fresh install's table differs from an upgraded one's at the same schema version.
+    @ColumnInfo(defaultValue = "0") val loggedAtMs: Long = 0L,
+    // When this row was last edited; null until it first is (Room v21).
+    val mutatedAtMs: Long? = null,
+    // The action-curve end of this dose AS IT STOOD BEFORE its first edit — `ts + durationMin` read
+    // from the pre-edit row. The dose-history rail's window is the LATER of this and the current
+    // row's end, because the edits that understate IOB most are exactly the ones that shorten the
+    // post-edit window: a `durationMin` cut from 360 to 30 would otherwise block for five minutes
+    // while IOB stayed wrong for five and a half hours. Null until first edited.
+    val mutatedActingUntilMs: Long? = null,
 )
 
 /**
@@ -308,6 +389,39 @@ data class LoggedMealEntity(
     val tzOffsetMin: Int,
     val note: String?,
     val updatedAt: Long,
+    /** See [LoggedDoseEntity.loggedAtMs], `defaultValue` included. */
+    @ColumnInfo(defaultValue = "0") val loggedAtMs: Long = 0L,
+    /** See [LoggedDoseEntity.mutatedAtMs]. */
+    val mutatedAtMs: Long? = null,
+)
+
+/**
+ * A logged event the patient deleted (Room v21). The row survives the event, and that is the whole
+ * mechanism: only a surviving row carries the `updatedAt` the server's ordering guard compares a
+ * stale redelivery against, and only a local record of the deletion stops an id-keyed catch-up
+ * hydration from resurrecting it.
+ *
+ * See `com.t1dm.core.model.EventTombstone` for the three jobs it does. [pushEnqueuedAtMs] is null
+ * until `:app` has filed the outbox row, so a process death between the delete transaction and the
+ * enqueue leaves the connect-time replay something to find.
+ *
+ * [kind] is raw TEXT mapped at the repository edge, matching `exercise_session.kind`, so the table
+ * carries no dependency on the model enum's ordinal.
+ */
+@Entity(tableName = "event_tombstone", indices = [Index("tsMs"), Index("pushEnqueuedAtMs")])
+data class EventTombstoneEntity(
+    @PrimaryKey val clientId: String,
+    val kind: String,
+    val tsMs: Long,
+    val tzOffsetMin: Int,
+    // Phone clock at deletion, forced strictly newer than the row it retires.
+    val updatedAt: Long,
+    val createdAtMs: Long,
+    val pushEnqueuedAtMs: Long?,
+    // For a dose, `tsMs + durationMin` of the row as it stood when it was deleted. The rail keeps
+    // blocking while a deleted dose could still be acting, and after the delete there is no row
+    // left to read a duration off.
+    val actingUntilMs: Long? = null,
 )
 
 /**
@@ -589,19 +703,41 @@ data class ConformalDeltaEntity(
 )
 
 /**
- * One model-reconstructed BG sample over a gap the sensor left (Room v20).
+ * One model-reconstructed BG sample over a gap the sensor left (Room v20; span and promotion v22).
  *
  * **This is not a reading and must never be counted as one.** It lives in its own table for that
  * reason: `SPEC/invariants.md` §1 makes a filled value a presentation step, and this one is not
- * even a carry-forward — it is what a model thinks was there. What it does is condition a later
- * forecast: a seven-day context with a hole in it is a context the model never saw. Nothing else
- * reads it — not the alarm engine, not the dose calculator, not the statistics, not the accuracy
- * suite, not the fit targets, not the wire — and the BG panel does not yet draw it either.
+ * even a carry-forward — it is what a model thinks was there.
+ *
+ * What reads it: the conditioning series (`RoomBgHistoryProvider.recentBgSeries` — a seven-day
+ * context with a hole in it is a context the model never saw), the BG panel, and, once promoted,
+ * the `sample` row and the wire. What never reads it, promoted or not: the alarm engine, the dose
+ * calculator, `fitBgSeries`, `dosingBgSeries`, the statistics and the accuracy suite.
  *
  * [lo90]/[hi90] carry the fan the fill came with, because a reconstructed value without its
- * uncertainty invites exactly the reading it must not be given.
+ * uncertainty invites exactly the reading it must not be given — and because this row is the ONLY
+ * place that band exists. The wire carries a boolean and no fan.
+ *
+ * [bandsMgdl] and [bandsRisk] are the WHOLE fan (Room v24) — seven levels per slot, ascending τ —
+ * where [lo90]/[hi90] are its outer pair alone. Both are written by one statement from one run, so
+ * the outer pair is not a second fact free to drift; it stays a column because the promotion path,
+ * the archive and the wire all read it by name. The risk-space copy is what τ is interpolated in
+ * (`SPEC/inference.md` §8: the fan is assembled there, and interpolating in mg/dL crosses the
+ * warp), and [mgdl] is the line read at [tau] — not necessarily the median.
+ *
+ * Both blobs are EMPTY on a row written before v24. A fill from then has an outer band and no fan,
+ * so it draws as one band and its τ cannot be moved; that is the honest state, and inventing five
+ * interior levels from two edges would draw a shape the model never emitted.
+ *
+ * @param spanStartMs the `ts` of the first row of the contiguous run this belongs to. Promotion and
+ *   demotion act on a span, and a contiguity scan at read time is not an identity two operations
+ *   can be relied on to agree about. Pre-v22 rows are back-filled to their own `ts` — each becomes
+ *   a one-step span, which is honest: the runs were never recorded, and guessing them from a
+ *   gap-and-island query inside a migration would invent an identity nothing authored.
+ * @param promotedAtMs when this span was written into the record as a stored sample, or null while
+ *   it is only a drawing.
  */
-@Entity(tableName = "bg_infill")
+@Entity(tableName = "bg_infill", indices = [Index(value = ["spanStartMs"])])
 data class BgInfillEntity(
     @PrimaryKey val ts: Long,
     val mgdl: Double,
@@ -609,7 +745,48 @@ data class BgInfillEntity(
     val hi90: Double,
     val modelId: String,
     val createdAtMs: Long,
-)
+    @ColumnInfo(defaultValue = "0") val spanStartMs: Long = 0,
+    val promotedAtMs: Long? = null,
+    // Room v24. Every one carries `defaultValue` as well as a Kotlin default, and the two must
+    // agree with `MIGRATION_23_24`'s `ALTER TABLE … DEFAULT`: a Kotlin default alone governs the
+    // INSERT and says nothing about the DDL, so a FRESH install's table would differ from an
+    // UPGRADED one's and Room's own schema validation would report the mismatch.
+    /** Seven mg/dL levels per slot, ascending τ. Empty on a pre-v24 row. */
+    @ColumnInfo(typeAffinity = ColumnInfo.BLOB, defaultValue = "x''")
+    val bandsMgdl: ByteArray = ByteArray(0),
+    /** The same fan in risk space — what τ is interpolated in. Empty on a pre-v24 row. */
+    @ColumnInfo(typeAffinity = ColumnInfo.BLOB, defaultValue = "x''")
+    val bandsRisk: ByteArray = ByteArray(0),
+    /** Which quantile [mgdl] is the line at. `0.5` is the median, and every pre-v24 row is one. */
+    @ColumnInfo(defaultValue = "0.5") val tau: Double = 0.5,
+) {
+    // Room entities are compared by value in tests and by identity nowhere; the two blobs make the
+    // generated `equals` reference-compare, which is why both are spelled out here.
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is BgInfillEntity) return false
+        return ts == other.ts && mgdl == other.mgdl && lo90 == other.lo90 && hi90 == other.hi90 &&
+            modelId == other.modelId && createdAtMs == other.createdAtMs &&
+            spanStartMs == other.spanStartMs && promotedAtMs == other.promotedAtMs &&
+            bandsMgdl.contentEquals(other.bandsMgdl) && bandsRisk.contentEquals(other.bandsRisk) &&
+            tau == other.tau
+    }
+
+    override fun hashCode(): Int {
+        var h = ts.hashCode()
+        h = 31 * h + mgdl.hashCode()
+        h = 31 * h + lo90.hashCode()
+        h = 31 * h + hi90.hashCode()
+        h = 31 * h + modelId.hashCode()
+        h = 31 * h + createdAtMs.hashCode()
+        h = 31 * h + spanStartMs.hashCode()
+        h = 31 * h + (promotedAtMs?.hashCode() ?: 0)
+        h = 31 * h + bandsMgdl.contentHashCode()
+        h = 31 * h + bandsRisk.contentHashCode()
+        h = 31 * h + tau.hashCode()
+        return h
+    }
+}
 
 /**
  * One low-rank adapter (Room v20) — a fitted personalisation of ONE model's BG head.
@@ -647,6 +824,45 @@ data class LoraEntity(
     val attached: Boolean,
     val createdAtMs: Long,
     val updatedAtMs: Long,
+    // ── the counterfactual guard's verdict (Room v23) ──
+    //
+    // Stored on the ROW rather than in the adapter blob, deliberately: the blob is what the
+    // adapter IS and its format is unchanged, while this is provenance — what was measured about
+    // it, when, and on what evidence. An adapter arriving by import or by archive restore
+    // therefore has no verdict, which is the honest state and the one that refuses attach.
+    // Every one of these carries `defaultValue` as well as a Kotlin default, and the two must agree
+    // with `MIGRATION_22_23`'s `ALTER TABLE … DEFAULT`. A Kotlin default alone governs the INSERT
+    // and says nothing about the DDL, so a FRESH install's `lora` table would have no defaults at
+    // all where an UPGRADED one does — the exact drift a fresh-vs-upgraded comparison exists to
+    // catch, and one that Room's own schema validation reports as a mismatch.
+    /** `PASS` / `BLOCKED` / `INCONCLUSIVE` / `ABSENT`, by name. Absent means never probed. */
+    @ColumnInfo(defaultValue = "ABSENT") val guardVerdict: String = "ABSENT",
+    @ColumnInfo(defaultValue = "0") val guardWindows: Int = 0,
+    /** mg/dL per unit at the horizon, frozen model and adapted. Stored so a refusal can be READ
+     *  rather than trusted — the ratio alone hides which side moved. */
+    @ColumnInfo(defaultValue = "0") val guardFrozenMgdl: Double = 0.0,
+    @ColumnInfo(defaultValue = "0") val guardAdaptedMgdl: Double = 0.0,
+    @ColumnInfo(defaultValue = "0") val guardRetention: Double = 0.0,
+    @ColumnInfo(defaultValue = "0") val guardSignAgreement: Double = 0.0,
+    @ColumnInfo(defaultValue = "") val guardWhy: String = "",
+    /** How many training windows carried a counterfactual branch, and what the distillation term
+     *  ran at. Zero means the fit could not see the dose response at all. */
+    @ColumnInfo(defaultValue = "0") val nPaired: Int = 0,
+    @ColumnInfo(defaultValue = "0") val distillScale: Double = 0.0,
+    /**
+     * When the user deliberately overrode a refusal, or null.
+     *
+     * It sticks to THIS row: a re-fit makes a fresh row with no override, so an override can
+     * never outlive the adapter it was granted for.
+     */
+    val guardOverrideAtMs: Long? = null,
+    /**
+     * When the dose or meal history this adapter was fitted on was last edited or deleted, or
+     * null. An adapter fitted on a history that has since changed describes windows that no
+     * longer exist, and attach refuses until it is re-fitted or overridden.
+     */
+    val historyMutatedAtMs: Long? = null,
+    @ColumnInfo(defaultValue = "0") val fittedAtMs: Long = 0,
 ) {
     override fun equals(other: Any?): Boolean =
         other is LoraEntity && id == other.id && modelId == other.modelId && name == other.name &&
@@ -655,7 +871,14 @@ data class LoraEntity(
             nHoldout == other.nHoldout && epochs == other.epochs &&
             holdoutBefore == other.holdoutBefore && holdoutAfter == other.holdoutAfter &&
             improved == other.improved && attached == other.attached &&
-            createdAtMs == other.createdAtMs && updatedAtMs == other.updatedAtMs
+            createdAtMs == other.createdAtMs && updatedAtMs == other.updatedAtMs &&
+            guardVerdict == other.guardVerdict && guardWindows == other.guardWindows &&
+            guardFrozenMgdl == other.guardFrozenMgdl && guardAdaptedMgdl == other.guardAdaptedMgdl &&
+            guardRetention == other.guardRetention &&
+            guardSignAgreement == other.guardSignAgreement && guardWhy == other.guardWhy &&
+            nPaired == other.nPaired && distillScale == other.distillScale &&
+            guardOverrideAtMs == other.guardOverrideAtMs &&
+            historyMutatedAtMs == other.historyMutatedAtMs && fittedAtMs == other.fittedAtMs
 
     override fun hashCode(): Int = 31 * (31 * id.hashCode() + modelId.hashCode()) + blob.contentHashCode()
 }
@@ -737,3 +960,110 @@ data class ExerciseFixEntity(
     val accuracyM: Float,
     val speedMps: Float?,
 )
+
+/** `event_tombstone.kind` for a deleted meal — raw TEXT, mapped at the repository edge. */
+const val TOMBSTONE_KIND_MEAL = "meal"
+
+/** `event_tombstone.kind` for a deleted dose. */
+const val TOMBSTONE_KIND_DOSE = "dose"
+
+/** The dependency-free shape `:app` builds the deletion's wire body from. */
+fun EventTombstoneEntity.toModel(): EventTombstone = EventTombstone(
+    clientId = clientId,
+    kind = if (kind == TOMBSTONE_KIND_DOSE) CurveKind.INSULIN else CurveKind.CARB,
+    tsMs = tsMs,
+    tzOffsetMin = tzOffsetMin,
+    updatedAt = updatedAt,
+    actingUntilMs = actingUntilMs,
+)
+
+/** Where this dose's action curve ends, from the row as it stands. */
+fun LoggedDoseEntity.actingUntilMs(): Long = tsMs + (durationMin * 60_000.0).toLong()
+
+/**
+ * True when [next] moves the insulin channel rather than merely relabelling the row.
+ *
+ * A note or a timezone correction changes nothing a forecast was conditioned on, and invalidating
+ * a band correction and a window of stored predictions over one would be a visible, unexplained
+ * change to what the patient sees for no reason at all.
+ */
+fun LoggedDoseEntity.affectsChannel(next: LoggedDoseEntity): Boolean =
+    tsMs != next.tsMs ||
+        kind != next.kind ||
+        units != next.units ||
+        durationMin != next.durationMin ||
+        k != next.k ||
+        theta != next.theta ||
+        kaPerHour != next.kaPerHour ||
+        kePerHour != next.kePerHour ||
+        !customCurve.contentEquals(next.customCurve)
+
+/** The meal twin of [LoggedDoseEntity.affectsChannel]; `gi` counts because the appearance gamma is
+ *  resolved from it. */
+fun LoggedMealEntity.affectsChannel(next: LoggedMealEntity): Boolean =
+    tsMs != next.tsMs ||
+        grams != next.grams ||
+        gi != next.gi ||
+        k != next.k ||
+        theta != next.theta ||
+        durationMin != next.durationMin ||
+        !customCurve.contentEquals(next.customCurve)
+
+/**
+ * The `customCurve` an edit of this row into [next] must store.
+ *
+ * A stored curve is ABSOLUTE — every generator behind it takes the amount as a linear scale — so it
+ * is keyed to the amount that produced it. Carried across an edit unchanged it goes on describing
+ * the pre-edit dose, and the curve engine prefers it over `units`, so IOB, the ceiling rail and the
+ * forecast all keep reading the number the edit corrected away.
+ *
+ * Linearity is what makes the ratio exact, and it holds for all four generators: `gamma`,
+ * `expAction`, `bateman`, and a normalized user shape multiplied by the amount. Rescaling therefore
+ * also preserves a user-drawn shape, which re-deriving from a preset would discard.
+ *
+ * A change to a SHAPE input cannot be rescaled, so the curve is dropped and the row re-derives from
+ * the params it carries. A caller that supplied its own re-derived curve is left alone.
+ */
+fun LoggedDoseEntity.curveAfterEdit(next: LoggedDoseEntity): ByteArray? = when {
+    !next.customCurve.contentEquals(customCurve) -> next.customCurve
+    kind != next.kind || durationMin != next.durationMin || k != next.k || theta != next.theta ||
+        kaPerHour != next.kaPerHour || kePerHour != next.kePerHour -> null
+    else -> customCurve.rescaledBy(units, next.units)
+}
+
+/** The meal twin of [LoggedDoseEntity.curveAfterEdit]; `gi` counts as a shape input because the
+ *  appearance gamma is resolved from it. */
+fun LoggedMealEntity.curveAfterEdit(next: LoggedMealEntity): ByteArray? = when {
+    !next.customCurve.contentEquals(customCurve) -> next.customCurve
+    gi != next.gi || durationMin != next.durationMin || k != next.k || theta != next.theta -> null
+    else -> customCurve.rescaledBy(grams, next.grams)
+}
+
+/** [this] scaled by [to]/[from], or null where the ratio is not usable and the row's own params
+ *  are the better authority. */
+private fun ByteArray?.rescaledBy(from: Double, to: Double): ByteArray? {
+    if (this == null) return null
+    if (from == to) return this
+    if (!from.isFinite() || !to.isFinite() || from == 0.0) return null
+    val factor = to / from
+    return toDoubleList().map { it * factor }.toBlob()
+}
+
+/** A reconstructed row as the drawing layer's own type. */
+fun BgInfillEntity.toModel(): ReconstructedBg = ReconstructedBg(
+    tsMs = ts,
+    mgdl = mgdl,
+    lo90 = lo90,
+    hi90 = hi90,
+    modelId = modelId,
+    spanStartMs = if (spanStartMs == 0L) ts else spanStartMs,
+    promoted = promotedAtMs != null,
+    // Only a fan of the expected width is handed on. A blob of some other length is a row written
+    // by a build that meant something else by it, and half a fan drawn as nested bands would be a
+    // shape nothing emitted.
+    bands = bandsMgdl.toDoubleList().takeIf { it.size == FAN_LEVELS }.orEmpty(),
+    tau = tau,
+)
+
+/** The seven quantile levels the head emits (`SPEC/invariants.md` §6) — the width of one slot's fan. */
+private const val FAN_LEVELS = 7

@@ -449,7 +449,7 @@ fun Modifier.hapticClickable(
  * and never on a repeat.
  *
  * The quantisation must happen at the call site, not here, because only the call site knows the grain
- * (`CgmSettingsScreen` steps in days, `MealsScreen` in 5 g, the graph in sample indices). Handing it a raw
+ * (`CgmScreen` steps in days, `MealsScreen` in 5 g, the graph in sample indices). Handing it a raw
  * `Float` reproduces exactly the failure the engine's rate limit only papers over: a pointer-move
  * stream that saturates the LRA into a flat buzz instead of a texture that tracks the data.
  *

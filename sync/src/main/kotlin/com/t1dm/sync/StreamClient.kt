@@ -10,7 +10,9 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.JsonElement
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -57,7 +59,21 @@ interface StreamClient {
      * coordinator clears it.
      */
     val desync: AtomicBoolean
+
+    /**
+     * Send one forecast up the stream. Returns `false` when there is no live socket or the outgoing
+     * buffer is full — that is the whole failure model, and there is nothing behind it.
+     *
+     * A forecast is ephemeral by design at contract 0.5.0: no route stores one, the next cycle is
+     * at most five minutes away, and replaying a stale one would have the operator console draw a
+     * twenty-minute-old fan as current. A dropped frame is dropped.
+     */
+    suspend fun sendPrediction(dto: PredictionWriteDto): ForecastFrame
 }
+
+/** What one forecast frame did: the size of the text that left the phone, and whether the socket
+ *  took it. Both from one encode — see [StreamClient.sendPrediction]. */
+data class ForecastFrame(val bytes: Int, val delivered: Boolean)
 
 /** Default OkHttp client for the stream — no read timeout (long-lived), pings keep it alive. */
 private fun defaultStreamOkHttp(config: StreamConfig): OkHttpClient =
@@ -84,6 +100,22 @@ class WebSocketStreamClient(
     override val desync: AtomicBoolean = AtomicBoolean(false),
 ) : StreamClient {
 
+    /** The socket a forecast frame goes out on, or null when none is up. Written from OkHttp's own
+     *  dispatcher and read from the caller's, hence `@Volatile`. */
+    @Volatile
+    private var live: WebSocket? = null
+
+    override suspend fun sendPrediction(dto: PredictionWriteDto): ForecastFrame =
+        withContext(dispatchers.io) {
+            // Encoded ONCE. The size the Network panel reports is the size of the text that was
+            // actually sent, so measuring it by re-encoding both cost a second serialization per
+            // model per cycle and left room for the two to disagree.
+            val text = SyncJson.encodeToString<WsClientFrame>(dto.toStreamFrame())
+            val bytes = text.toByteArray(Charsets.UTF_8).size
+            val ws = live ?: return@withContext ForecastFrame(bytes, delivered = false)
+            ForecastFrame(bytes, runCatching { ws.send(text) }.getOrDefault(false))
+        }
+
     override fun events(): Flow<StreamEvent> = channelFlow {
         var attempt = 0
         var lastCursor: Long? = null
@@ -98,6 +130,7 @@ class WebSocketStreamClient(
             val listener = object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: Response) {
                     attempt = 0 // a live connection resets the backoff ladder
+                    live = webSocket
                     if (everConnected) trySend(StreamEvent.Reconnected(lastCursor)) else trySend(StreamEvent.Connected)
                     everConnected = true
                 }
@@ -112,15 +145,18 @@ class WebSocketStreamClient(
                 }
 
                 override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                    live = null
                     webSocket.close(NORMAL_CLOSURE, null)
                     closed.complete(Unit)
                 }
 
                 override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                    live = null
                     closed.complete(Unit)
                 }
 
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                    live = null
                     Timber.tag(TAG).d(t, "stream dropped; will reconnect")
                     closed.complete(Unit)
                 }
@@ -129,6 +165,7 @@ class WebSocketStreamClient(
             try {
                 closed.await()
             } finally {
+                live = null
                 webSocket.cancel()
                 trySend(StreamEvent.Disconnected)
             }

@@ -5,6 +5,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.SkipQueryVerification
+import androidx.room.Update
 import androidx.room.Upsert
 import kotlinx.coroutines.flow.Flow
 
@@ -127,6 +128,41 @@ interface CgmSourceDao {
     /** Merge insert (archive restore): a `sourceId` the phone already knows wins. */
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertIgnoreAll(rows: List<CgmSourceEntity>): List<Long>
+
+    /**
+     * The highest ordinal in use, or `-1` when none has been minted. Read inside the same write
+     * transaction that assigns the next one, so two sensors recorded at once cannot claim the same
+     * number.
+     */
+    @Query("SELECT COALESCE(MAX(ordinal), -1) FROM cgm_source")
+    suspend fun maxOrdinal(): Int
+
+    /** Rows still carrying the unassigned sentinel — an archive written before the column existed. */
+    @Query("SELECT sourceId FROM cgm_source WHERE ordinal < 0 ORDER BY addedAtMs, sourceId")
+    suspend fun unnumberedSourceIds(): List<String>
+
+    @Query("UPDATE cgm_source SET ordinal = :ordinal WHERE sourceId = :sourceId")
+    suspend fun setOrdinal(sourceId: String, ordinal: Int)
+}
+
+/**
+ * The sealed per-sensor secret store. Three operations and no queries: nothing lists these, nothing
+ * joins them, and nothing but the owning plugin ever reads one.
+ */
+@Dao
+interface CgmSensorSecretDao {
+    @Upsert suspend fun upsert(row: CgmSensorSecretEntity)
+
+    @Query("SELECT * FROM cgm_sensor_secret WHERE sourceId = :sourceId")
+    suspend fun byId(sourceId: String): CgmSensorSecretEntity?
+
+    /**
+     * Forget ONE sensor's secret. Deliberately per-sensor: there is no delete-all, because the only
+     * caller that would want one is the full erase, and erasing the sole means of releasing a sensor
+     * that is still on the patient's arm is destroying hardware rather than deleting data.
+     */
+    @Query("DELETE FROM cgm_sensor_secret WHERE sourceId = :sourceId")
+    suspend fun deleteById(sourceId: String)
 }
 
 @Dao
@@ -170,6 +206,13 @@ interface CgmReadingDao {
 
     @Query("SELECT * FROM cgm_reading WHERE sourceId = :sourceId ORDER BY tsMs DESC LIMIT 1")
     fun observeLatest(sourceId: String): Flow<CgmReadingEntity?>
+
+    /** The newest REAL measurement — never an interpolation and never a promoted reconstruction. */
+    @Query(
+        "SELECT * FROM cgm_reading WHERE sourceId = :sourceId AND bgMgdl IS NOT NULL " +
+            "AND provenance = 'MEASURED' AND flag = 'NORMAL' ORDER BY tsMs DESC LIMIT 1",
+    )
+    fun observeLatestMeasured(sourceId: String): Flow<CgmReadingEntity?>
 
     /** The reading at one grid slot for [sourceId], or null — the gap check for server-history
      *  hydration (a server row only fills a slot the phone has no local reading for). */
@@ -244,6 +287,49 @@ interface CgmReadingDao {
     @Query("SELECT MAX(tsMs) FROM cgm_reading WHERE sourceId = :sourceId")
     suspend fun newestTs(sourceId: String): Long?
 
+    /** Remove one source's reading at one grid slot — the BG the patient deleted, or a demoted
+     *  reconstruction. */
+    @Query("DELETE FROM cgm_reading WHERE sourceId = :sourceId AND tsMs = :ts")
+    suspend fun deleteAt(sourceId: String, ts: Long)
+
+    /**
+     * Every source's reading at one grid slot.
+     *
+     * Demotion reads it, and must: a promoted row is filed under whichever source was authoritative
+     * when it was written, and a sensor lasts ten to fourteen days against a span list that reaches
+     * back a fortnight. Resolving only the CURRENT authority leaves the reconstruction in place
+     * after any sensor change, while the caller reports it removed.
+     */
+    @Query("SELECT * FROM cgm_reading WHERE tsMs = :ts")
+    suspend fun allAt(ts: Long): List<CgmReadingEntity>
+
+    /** The newest real measurement on a source, or null when it holds none. Promotion refuses when
+     *  this is null: the promoted rows would otherwise be the only rows for the source, and every
+     *  glance surface reads the newest row. */
+    @Query(
+        "SELECT MAX(tsMs) FROM cgm_reading WHERE sourceId = :sourceId AND bgMgdl IS NOT NULL " +
+            "AND provenance = 'MEASURED' AND flag = 'NORMAL'",
+    )
+    suspend fun newestMeasuredTs(sourceId: String): Long?
+
+    /** The newest real measurement strictly before [ts]. Null is exactly the one-sided condition
+     *  that makes a span a BACKCAST, which may be drawn but never promoted. */
+    @Query(
+        "SELECT MAX(tsMs) FROM cgm_reading WHERE sourceId = :sourceId AND tsMs < :ts " +
+            "AND bgMgdl IS NOT NULL AND provenance = 'MEASURED' AND flag = 'NORMAL'",
+    )
+    suspend fun newestMeasuredBefore(sourceId: String, ts: Long): Long?
+
+    /** The UTC offset of the measurement nearest [ts], preferring the one on its left — the
+     *  one-sided rule `SPEC/inference.md` §7.4 uses for the anchor. Never the clock's zone now: a
+     *  gap can straddle a DST change or a flight, and every day-boundary reduction keys on the
+     *  row's own offset. */
+    @Query(
+        "SELECT tzOffsetMin FROM cgm_reading WHERE sourceId = :sourceId AND provenance = 'MEASURED' " +
+            "ORDER BY (CASE WHEN tsMs <= :ts THEN 0 ELSE 1 END), ABS(tsMs - :ts) LIMIT 1",
+    )
+    suspend fun tzOffsetNearest(sourceId: String, ts: Long): Int?
+
     @Query("DELETE FROM cgm_reading")
     suspend fun deleteAll()
 
@@ -274,7 +360,7 @@ interface CgmReadingDao {
 }
 
 /**
- * The sub-grid record beside `cgm_reading` — every accepted sample at its true receive instant.
+ * The sub-grid record beside `cgm_reading` — every accepted sample at the instant it is filed under.
  *
  * Deliberately NO `Flow`. Room invalidates per TABLE, so an observer here would re-run on every
  * incoming sample AND on every retention sweep, and this table is written more often than the grid
@@ -284,21 +370,23 @@ interface CgmReadingDao {
 @Dao
 interface CgmRawSampleDao {
     /**
-     * IGNORE, not REPLACE: the row filed under a receive instant is what arrived at that instant, and
+     * IGNORE, not REPLACE: the row filed under an instant is the sample taken at that instant, and
      * nothing later knows better. This makes the write idempotent, so a retried persist cannot
      * double-file a sample — and it is what lets `upsertReading` insert unconditionally, before the
-     * slot has been contested, without a read to check.
+     * slot has been contested, without a read to check. It is also what makes a RE-DELIVERED sample
+     * free: a source that dates its own samples files the same one under the same instant however many
+     * times it arrives.
      */
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertIgnore(row: CgmRawSampleEntity): Long
 
     /**
-     * One source's samples received in `[fromMs, toMs]`, oldest first — one seek down the
+     * One source's samples filed into `[fromMs, toMs]`, oldest first — one seek down the
      * `(sourceId, rxWallMs)` primary key.
      *
-     * The window is a RECEIVE-time window, not a grid window: the caller that wants the samples
-     * behind one slot asks [com.t1dm.data.T1dmRepository.rawSamplesForSlot], which owns the
-     * conversion so the half-open slot boundary is spelled once.
+     * The window is in FILED instants, not grid slots: the caller that wants the samples behind one
+     * slot asks [com.t1dm.data.T1dmRepository.rawSamplesForSlot], which owns the conversion so the
+     * half-open slot boundary is spelled once.
      */
     @Query(
         "SELECT * FROM cgm_sample_raw WHERE sourceId = :sourceId " +
@@ -457,6 +545,45 @@ interface LoggedDoseDao {
     @Query("SELECT MAX(tsMs) FROM logged_dose")
     suspend fun latestTs(): Long?
 
+    @Update suspend fun update(dose: LoggedDoseEntity)
+
+    @Query("SELECT * FROM logged_dose WHERE id = :id")
+    suspend fun byId(id: Long): LoggedDoseEntity?
+
+    @Query("SELECT * FROM logged_dose WHERE clientId = :clientId")
+    suspend fun byClientId(clientId: String): LoggedDoseEntity?
+
+    /**
+     * The log-gap rail's mark: the newest dose by the EARLIER of when it claims to have been taken
+     * and when the phone was told about it.
+     *
+     * Not `MAX(tsMs)`. An edit can only ever move this mark backward, so retiming a dose forward
+     * cannot quiet `Rails.mandatoryConfirmation` — which is the rail that says the log may be
+     * stale, and which retiming would otherwise silence exactly when the log had just been
+     * rewritten. Legitimate backdating is unaffected: the min is the claimed `tsMs` there.
+     */
+    @Query("SELECT MAX(MIN(tsMs, loggedAtMs)) FROM logged_dose")
+    suspend fun latestLoggedMarkTs(): Long?
+
+    /**
+     * When the last edited dose stops acting — the LATER of its pre-edit and post-edit curve ends.
+     *
+     * The pre-edit term is load-bearing. Reading the post-edit row alone would let a `durationMin`
+     * cut from 360 to 30 shorten the block to five minutes while the IOB it invalidated stayed
+     * wrong for five and a half hours, and an edit that moved `tsMs` earlier would end the window
+     * sooner rather than later. The edits that understate IOB most are precisely the ones that
+     * shrink the post-edit window.
+     */
+    @Query(
+        "SELECT MAX(MAX(tsMs + CAST(durationMin * 60000 AS INTEGER), " +
+            "COALESCE(mutatedActingUntilMs, 0))) FROM logged_dose WHERE mutatedAtMs IS NOT NULL",
+    )
+    suspend fun editedDoseActiveUntilMs(): Long?
+
+    /** The newest dose-history edit stamp an acknowledgement has to cover. */
+    @Query("SELECT MAX(mutatedAtMs) FROM logged_dose")
+    suspend fun latestMutationMs(): Long?
+
     /** Batch gap-fill for the sample→dose reconcile (server bolus history that predates this build). */
     @Insert
     suspend fun insertAll(doses: List<LoggedDoseEntity>)
@@ -503,6 +630,14 @@ interface LoggedMealDao {
      *  mark `T1dmRepository.newestEventTs()` (§3.5), max'd with [LoggedDoseDao.latestTs]. */
     @Query("SELECT MAX(tsMs) FROM logged_meal")
     suspend fun latestTs(): Long?
+
+    @Update suspend fun update(meal: LoggedMealEntity)
+
+    @Query("SELECT * FROM logged_meal WHERE id = :id")
+    suspend fun byId(id: Long): LoggedMealEntity?
+
+    @Query("SELECT * FROM logged_meal WHERE clientId = :clientId")
+    suspend fun byClientId(clientId: String): LoggedMealEntity?
 
     /** Event window read for curve/channel reconstruction and event-range hydration / re-mirror
      *  (§3.4/§3.8). Ordered oldest-first. */
@@ -639,6 +774,18 @@ interface OutboxDao {
     @Query("SELECT MIN(createdAtMs) FROM outbox WHERE kind != :excluded")
     suspend fun oldestCreatedAtExcluding(excluded: OutboxKind): Long?
 
+    /**
+     * Delete the row under [dedupKey] whatever state it is in — unlike the state-scoped
+     * `deleteByDedupKeyInState`, which deliberately spares an INFLIGHT row.
+     *
+     * That sparing exists for the Nightscout host, which has no idempotency key and no delete, so a
+     * request already on the wire must stay recorded. Neither reason holds for the phone's own
+     * server: its upserts are keyed and ordered, so a superseded in-flight PUT that still lands is
+     * corrected by the newer body behind it.
+     */
+    @Query("DELETE FROM outbox WHERE dedupKey = :dedupKey")
+    suspend fun deleteByDedupKey(dedupKey: String): Int
+
     /** Oldest-first over the whole queue (bounded by the configured max size); priority-ranked and
      *  trimmed in Kotlin because Android SQLite lacks `DELETE … ORDER BY … LIMIT`. */
     @Query("SELECT id, kind, createdAtMs FROM outbox ORDER BY createdAtMs, id")
@@ -646,27 +793,18 @@ interface OutboxDao {
 
     /** The row behind a rowid handed out by [enqueue], or null once it has drained. There is no SENT
      *  state — `QueueDrainer` DELETEs on HTTP success — so *absent* is the only "already sent" signal
-     *  there is, and it is indistinguishable from evicted. Read before an undo withdraws the push, so
-     *  the receipt can say which of the two happened instead of guessing (see
-     *  `T1dmRepository.withdrawPush`). This returns the whole row rather than just the state so that
-     *  the dedupKey cross-check there is possible. */
+     *  there is, and it is indistinguishable from evicted. Returns the whole row rather than just the
+     *  state so a caller can cross-check the dedupKey it expected. */
     @Query("SELECT * FROM outbox WHERE id = :id")
     suspend fun byId(id: Long): OutboxEntity?
 
     /** The row filed under [dedupKey] (the index is unique), or null once it has drained. The Logs
      *  panel's delete path resolves a push this way rather than by rowid: the enqueue rowid was handed
      *  to a snackbar minutes-to-days ago and is long forgotten, whereas the dedupKey is a pure function
-     *  of the event's `client_id`. Read INSIDE the deleting transaction — see
-     *  `T1dmRepository.deleteCommittedMeal` — so a concurrent drain cannot land between the two. */
+     *  of the event's `client_id`. Read INSIDE the deleting transaction, so a concurrent drain cannot
+     *  land between the two. */
     @Query("SELECT * FROM outbox WHERE dedupKey = :dedupKey")
     suspend fun byDedupKey(dedupKey: String): OutboxEntity?
-
-    /** Every queued dedupKey of the given [kinds]. There is no SENT state (this queue DELETEs on a
-     *  2xx), so membership of this set is the whole of "the server has not accepted it yet" — which is
-     *  what the Logs panel's committed/delivered split is read from. Table-scoped Room invalidation
-     *  means this re-emits on any outbox write, so callers should collapse equal emissions. */
-    @Query("SELECT dedupKey FROM outbox WHERE kind IN (:kinds)")
-    fun observeDedupKeys(kinds: List<OutboxKind>): Flow<List<String>>
 
     @Query("DELETE FROM outbox WHERE id = :id")
     suspend fun delete(id: Long)
@@ -690,8 +828,8 @@ interface OutboxDao {
      * `attempts` does not survive the reclaim (the UPDATE below leaves it alone), so after a crash a
      * row that was mid-send is indistinguishable from one that never reached the wire. That is
      * harmless for an idempotent destination and NOT harmless for the Nightscout bridge, whose host
-     * has no idempotency key: replaying such a row unasked duplicates a dose. `T1dmRepository.withdrawPush`
-     * already treats INFLIGHT as evidence of a wire attempt for the same reason.
+     * has no idempotency key: replaying such a row unasked duplicates a dose — which is why the
+     * drainer asks the host whether it already has the treatment before re-posting one.
      */
     @Query("SELECT id FROM outbox WHERE state = :state")
     suspend fun idsInState(state: OutboxState): List<Long>
@@ -706,9 +844,9 @@ interface OutboxDao {
     /** CONDITIONAL state change; returns the rows actually updated (0 or 1). `QueueDrainer` takes a
      *  whole batch of PENDING rows in one snapshot and then spends an HTTP round trip per row, so a
      *  row can sit in that snapshot for minutes while still PENDING on disk — long enough for an undo
-     *  to withdraw it. Claiming through this rather than the unconditional [reschedule] is what makes
-     *  INFLIGHT the mutual-exclusion token `T1dmRepository.withdrawPush` already assumes it is: a zero
-     *  return means the row was deleted (or claimed) underneath the snapshot and must not be sent. */
+     *  to supersede it. Claiming through this rather than the unconditional [reschedule] is what makes
+     *  INFLIGHT a mutual-exclusion token: a zero return means the row was deleted (or claimed)
+     *  underneath the snapshot and must not be sent. */
     @Query("UPDATE outbox SET state = :to WHERE id = :id AND state = :from")
     suspend fun claim(id: Long, from: OutboxState, to: OutboxState): Int
 
@@ -750,6 +888,11 @@ interface PredictionDao {
     /** Drop every forecast row of a removed model (Phase 7C model deletion). */
     @Query("DELETE FROM prediction WHERE modelId = :modelId")
     suspend fun deleteByModel(modelId: String)
+
+    /** Drop every model's forecasts made at or after [fromMs] — the ones whose context could have
+     *  contained a logged event the patient has since edited or deleted. */
+    @Query("DELETE FROM prediction WHERE madeAtMs >= :fromMs")
+    suspend fun deleteFrom(fromMs: Long)
 
     @Query("DELETE FROM prediction")
     suspend fun deleteAll()
@@ -1027,9 +1170,91 @@ interface BgInfillDao {
     @Query("DELETE FROM bg_infill WHERE ts BETWEEN :fromMs AND :toMs")
     suspend fun deleteRange(fromMs: Long, toMs: Long)
 
-    /** Drop the fills a removed model made: they are that model's reconstruction, not evidence. */
-    @Query("DELETE FROM bg_infill WHERE modelId = :modelId")
+    /**
+     * Drop the UNPROMOTED fills a removed model made: they are that model's reconstruction, not
+     * evidence.
+     *
+     * A promoted row is exempt for the reason [deleteFrom] states — this table holds the only copy
+     * of the 90 % band a promoted sample carries, the wire carrying a boolean and no fan. Without
+     * the exemption, removing or updating a model leaves a stored `RECONSTRUCTED` reading in
+     * `sample`, in `cgm_reading` and on the server with its band gone and no way to demote it,
+     * because demotion reads the span from here.
+     */
+    @Query("DELETE FROM bg_infill WHERE modelId = :modelId AND promotedAtMs IS NULL")
     suspend fun deleteByModel(modelId: String)
+
+    /**
+     * Drop every UNPROMOTED fill at or after [fromMs] — a reconstruction made over a curve the
+     * patient has since edited describes a history that no longer exists.
+     *
+     * A promoted row is exempt, and that exemption is load-bearing: it is the only copy of the 90 %
+     * band the promoted sample carries, since the wire carries a boolean and no fan. Deleting one
+     * here would leave a stored reconstruction with no uncertainty beside it and no way to demote
+     * it, because demotion reads the span from this table.
+     */
+    @Query("DELETE FROM bg_infill WHERE ts >= :fromMs AND promotedAtMs IS NULL")
+    suspend fun deleteFrom(fromMs: Long)
+
+    /** One row by slot, for the stale-fill check on a landing measurement. */
+    @Query("SELECT * FROM bg_infill WHERE ts = :ts")
+    suspend fun at(ts: Long): BgInfillEntity?
+
+    /** One span, oldest first — what promotion and demotion act on. */
+    @Query("SELECT * FROM bg_infill WHERE spanStartMs = :spanStartMs ORDER BY ts")
+    suspend fun span(spanStartMs: Long): List<BgInfillEntity>
+
+    /** Mark a whole span promoted, or (with null) demoted. */
+    @Query("UPDATE bg_infill SET promotedAtMs = :atMs WHERE spanStartMs = :spanStartMs")
+    suspend fun markPromoted(spanStartMs: Long, atMs: Long?)
+
+    /**
+     * Drop a whole span, but only while it is UNPROMOTED — the panel's discard.
+     *
+     * The promoted guard is in the statement rather than at the caller because this is the one
+     * removal a finger can reach: a promoted span has rows in `sample` and on the server, and
+     * deleting its band here would leave a stored reconstruction that nothing can demote, since
+     * demotion reads the span from this table.
+     */
+    @Query("DELETE FROM bg_infill WHERE spanStartMs = :spanStartMs AND promotedAtMs IS NULL")
+    suspend fun deleteSpanIfUnpromoted(spanStartMs: Long): Int
+
+    /** Move one slot's drawn line to a different quantile of the fan it already holds. */
+    @Query("UPDATE bg_infill SET mgdl = :mgdl, tau = :tau WHERE ts = :ts")
+    suspend fun setLineAt(ts: Long, mgdl: Double, tau: Double)
+
+    /** Drop the fill at one slot — a measurement has landed there, so the reconstruction of it is
+     *  stale by construction. */
+    @Query("DELETE FROM bg_infill WHERE ts = :ts")
+    suspend fun deleteAt(ts: Long)
+
+    /** Every promoted row, oldest first. The archive's page source: a promoted fill is part of the
+     *  record, and this table is the only place its band exists. */
+    @Query("SELECT * FROM bg_infill WHERE promotedAtMs IS NOT NULL ORDER BY ts")
+    suspend fun allPromoted(): List<BgInfillEntity>
+
+    /**
+     * Every span's FIRST SURVIVING row in the window, newest first — the Lab's span list.
+     *
+     * The span's own head row can go: a measurement landing in that slot deletes the fill there
+     * ([deleteAt]), which is right. Keying the list on `ts = spanStartMs` then dropped the whole
+     * span out of the Lab — unpromotable, undemotable, and invisible — while its remaining rows
+     * stayed on the panel. `MIN(ts)` per span is stable under that.
+     */
+    @Query(
+        "SELECT * FROM bg_infill AS h WHERE ts = " +
+            "(SELECT MIN(ts) FROM bg_infill AS b WHERE b.spanStartMs = h.spanStartMs) " +
+            "AND ts BETWEEN :fromMs AND :toMs ORDER BY ts DESC",
+    )
+    fun observeSpanHeads(fromMs: Long, toMs: Long): Flow<List<BgInfillEntity>>
+
+    /** How many rows a span holds, for the list's read-out. */
+    @Query("SELECT COUNT(*) FROM bg_infill WHERE spanStartMs = :spanStartMs")
+    suspend fun spanSize(spanStartMs: Long): Int
+
+    /** Merge insert (archive restore): a row this install already holds at that slot is its own
+     *  and is not displaced by an archived one. */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertIgnoreAll(rows: List<BgInfillEntity>): List<Long>
 
     @Query("DELETE FROM bg_infill")
     suspend fun deleteAll()
@@ -1048,6 +1273,44 @@ interface LoraDao {
 
     @Query("SELECT * FROM lora WHERE modelId = :modelId ORDER BY name")
     suspend fun byModel(modelId: String): List<LoraEntity>
+
+    @Query("UPDATE lora SET guardOverrideAtMs = :atMs, updatedAtMs = :atMs WHERE id = :id")
+    suspend fun setGuardOverride(id: Long, atMs: Long)
+
+    /**
+     * Record a fresh verdict on one adapter — the Probe path's only writer.
+     *
+     * Every input rides beside the verdict, not just the verdict: a refusal has to be READABLE
+     * rather than trusted, and a retention ratio alone hides which of the two responses moved.
+     */
+    @Query(
+        "UPDATE lora SET guardVerdict = :verdict, guardWindows = :windows, " +
+            "guardFrozenMgdl = :frozenMgdl, guardAdaptedMgdl = :adaptedMgdl, " +
+            "guardRetention = :retention, guardSignAgreement = :signAgreement, " +
+            "guardWhy = :why, updatedAtMs = :atMs WHERE id = :id",
+    )
+    suspend fun setGuard(
+        id: Long,
+        verdict: String,
+        windows: Int,
+        frozenMgdl: Double,
+        adaptedMgdl: Double,
+        retention: Double,
+        signAgreement: Double,
+        why: String,
+        atMs: Long,
+    )
+
+    /**
+     * Flag every adapter FITTED HERE before [nowMs]. An adapter fitted on a history the patient has
+     * since rewritten describes windows that no longer exist.
+     *
+     * `fittedAtMs > 0` is the whole of what excludes an imported or archive-restored adapter: it
+     * was never fitted on this phone's record, so an edit to that record says nothing about it, and
+     * flagging one refused it for ever under a rule the override cannot clear.
+     */
+    @Query("UPDATE lora SET historyMutatedAtMs = :nowMs WHERE fittedAtMs > 0 AND fittedAtMs <= :nowMs")
+    suspend fun markHistoryMutated(nowMs: Long)
 
     @Query("SELECT * FROM lora WHERE id = :id")
     suspend fun byId(id: Long): LoraEntity?
@@ -1210,4 +1473,47 @@ interface ExerciseFixDao {
             "(tsMs > :afterTs OR (tsMs = :afterTs AND id > :afterId)) ORDER BY tsMs, id LIMIT :limit",
     )
     suspend fun pageFrom(sessionId: Long, afterTs: Long, afterId: Long, limit: Int): List<ExerciseFixEntity>
+}
+
+/**
+ * The deleted-event table. Small and keep-forever: a tombstone is roughly eighty bytes, deletions
+ * are rare, and dropping one re-opens the resurrection hole for any catch-up that still reaches
+ * that range — the phone cannot know the server's retention, so it cannot know when that is safe.
+ */
+@Dao
+interface EventTombstoneDao {
+    @Upsert suspend fun upsert(row: EventTombstoneEntity)
+
+    @Query("SELECT * FROM event_tombstone WHERE clientId = :clientId")
+    suspend fun byClientId(clientId: String): EventTombstoneEntity?
+
+    /** The tombstone term in the event high-water mark. Without it, deleting the newest event walks
+     *  the catch-up cursor backward and the widened pull window re-hydrates what was deleted. */
+    @Query("SELECT MAX(tsMs) FROM event_tombstone")
+    suspend fun latestTs(): Long?
+
+    /** Deletions whose push `:app` has not filed yet — the connect-time replay's work list. Covers
+     *  a process death between the delete transaction and the enqueue, and a tombstone the queue's
+     *  size cap ever evicts. */
+    @Query("SELECT * FROM event_tombstone WHERE pushEnqueuedAtMs IS NULL ORDER BY createdAtMs")
+    suspend fun unpushed(): List<EventTombstoneEntity>
+
+    @Query("UPDATE event_tombstone SET pushEnqueuedAtMs = :atMs WHERE clientId = :clientId")
+    suspend fun markPushed(clientId: String, atMs: Long)
+
+    /** When the last DELETED dose stops acting. The rail's other half: `logged_dose` cannot answer
+     *  this, because the row a deleted dose's duration would be read from is gone. */
+    @Query("SELECT MAX(actingUntilMs) FROM event_tombstone WHERE kind = :kind")
+    suspend fun latestActingUntilMs(kind: String): Long?
+
+    /** The newest deletion stamp an acknowledgement has to cover, alongside the newest edit stamp. */
+    @Query("SELECT MAX(createdAtMs) FROM event_tombstone WHERE kind = :kind")
+    suspend fun latestCreatedAtMs(kind: String): Long?
+
+    @Query("SELECT * FROM event_tombstone ORDER BY createdAtMs")
+    suspend fun all(): List<EventTombstoneEntity>
+
+    /** Full-erase (app reset). Row-only DELETE — the schema/table is untouched. */
+    @Query("DELETE FROM event_tombstone")
+    suspend fun deleteAll()
 }

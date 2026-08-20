@@ -202,6 +202,18 @@ data class LoraSample(
     val anchors: List<Double>,
     val targetBg: List<Double>,
     val nSlots: Int,
+    /**
+     * The SAME window's trunk hidden state with a probe dose injected into the masked span's dose
+     * channel. Empty when the window was not paired.
+     *
+     * It is what makes "what does one more unit of insulin do to this forecast" a quantity the fit
+     * can see. Without it an adapter can null the model's marginal dose response with a rank-1 map,
+     * score better on pinball loss, and hand the calculator a forecaster that does not respond to
+     * insulin at all.
+     */
+    val hiddenPert: List<Double> = emptyList(),
+    /** True for the trailing-forecast geometry — the only one the guard measures on. */
+    val isForecast: Boolean = true,
 )
 
 /** Optimiser settings for a fit. */
@@ -211,6 +223,47 @@ data class LoraTrainOpts(
     val holdoutFrac: Double,
     val weightDecay: Double,
     val seed: Long,
+    /** How hard to pin the adapted marginal dose response to the frozen model's; `0.0` is off. A
+     *  multiple of the frozen head's own mean training loss, not a raw coefficient. */
+    val distillWeight: Double = 1.0,
+)
+
+/**
+ * What the counterfactual guard is allowed to conclude, and on what evidence.
+ *
+ * DELIBERATELY UNDEFAULTED. The bar the fit's own guard pass uses lives in the crate, and defaults
+ * here were a second copy of every number in it — correct the day they were written, and free to
+ * disagree the day one moved. `NativeCore.loraGuardOptsFit()` reads the crate's.
+ */
+data class LoraGuardOpts(
+    val maxWindows: Int,
+    val minWindows: Int,
+    val probeDoseU: Double,
+    val minFrozenResponse: Double,
+    val minRetention: Double,
+    val maxRetention: Double,
+    val minSignAgreement: Double,
+)
+
+/**
+ * Whether an adapter preserved the model's marginal response to insulin.
+ *
+ * Four values against the crate's three: [ABSENT] is a storage-only state meaning "never probed",
+ * which no guard run can produce. It exists because a stored adapter with no verdict must be
+ * refused at attach rather than treated as unproblematic — an adapter arriving by import or by
+ * archive restore has no verdict, and silence is not a pass.
+ */
+enum class LoraGuardVerdict { PASS, BLOCKED, INCONCLUSIVE, ABSENT }
+
+/** The guard's finding, with every input to it, so a refusal can be read rather than trusted. */
+data class LoraGuardReport(
+    val verdict: LoraGuardVerdict,
+    val nWindows: Int,
+    val frozenResponseMgdl: Double,
+    val adaptedResponseMgdl: Double,
+    val retention: Double,
+    val signAgreement: Double,
+    val why: String,
 )
 
 /** What a fit did, in the terms the panel has to show before anyone attaches it. */
@@ -229,6 +282,16 @@ data class LoraTrainReport(
     val holdoutHistory: List<Double>,
     /** The epoch whose weights the fit returned; `0` when no epoch beat the frozen head. */
     val bestEpoch: Int,
+    /** Training samples that carried a usable counterfactual branch. */
+    val nPaired: Int = 0,
+    /** The coefficient the distillation term actually ran with. */
+    val distillScale: Double = 0.0,
+    /** The distillation term alone, per epoch — `lossHistory` carries the sum, so without this a
+     *  fit whose pinball improved while its dose response collapsed looks like a good one. */
+    val distillHistory: List<Double> = emptyList(),
+    /** What the guard made of the returned adapter. Null when there was nothing to measure on,
+     *  which is itself a reason not to attach. */
+    val guard: LoraGuardReport? = null,
 )
 
 /** Called once per epoch while a fit runs. Never per sample. */
