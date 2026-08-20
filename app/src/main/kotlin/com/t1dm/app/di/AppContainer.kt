@@ -2270,13 +2270,16 @@ class AppContainer(context: Context) {
         // outcome the panel has to state, and the reason it gives is the guard's own numbers.
         runCatching { labController.attach(modelId, adapterId) }
             .onSuccess { refusal ->
-                if (refusal != null) _loraPanel.update { s -> s.copy(error = refusal) }
+                if (refusal != null) {
+                    _loraPanel.update { s -> s.copy(error = refusal) }
+                } else {
+                    // Only when something actually changed. A refused attach leaves the model exactly
+                    // as it was, and forcing a cycle for it spends a full forward and republishes the
+                    // fan the panel is already showing.
+                    reevaluateInferenceNow()
+                }
             }
             .onFailure { _loraPanel.update { s -> s.copy(error = it.message ?: "Attach failed") } }
-            // Only when something actually changed. A refused attach leaves the model exactly as it
-            // was, and forcing a cycle for it spends a full forward and republishes the fan the
-            // panel is already showing.
-            .getOrNull()?.let { refusal -> if (refusal == null) reevaluateInferenceNow() }
         refreshLoraPanel(modelId)
     }
 
