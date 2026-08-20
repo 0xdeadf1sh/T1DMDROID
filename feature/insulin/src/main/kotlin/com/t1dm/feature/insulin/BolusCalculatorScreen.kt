@@ -76,17 +76,6 @@ fun BolusCalculatorScreen(
      *  so null means "not yet known", and an Accept that would write a dose stays closed until it lands
      *  rather than confirming a row whose insulin it cannot name. */
     insulinLabel: String? = null,
-    /** True once the recommendation has outlived the anchor it was computed from; Accept goes dead and
-     *  the card is greyed, because every freshness figure on it describes a BG that has since aged. */
-    adviceExpired: Boolean = false,
-    /** Clear [AdviceResult.Recommended.doseHistoryEdited] — "I know the insulin log changed and I
-     *  have taken it into account" — and recompute at the given target. Null where the host has no
-     *  writer for it, which closes the control rather than offering one that does nothing.
-     *
-     *  One callback rather than an acknowledge beside [onRecompute], because the two must be
-     *  ORDERED: the block is re-evaluated by the search, so a recompute racing the stamp reads the
-     *  history it was just told about and lands back on 0 U. */
-    onAcknowledgeDoseEdit: ((targetMgdl: Double) -> Unit)? = null,
     onAccept: (Candidate) -> Unit = {},
     onRecompute: (targetMgdl: Double) -> Unit = {},
 ) {
@@ -116,8 +105,6 @@ fun BolusCalculatorScreen(
             is AdviceResult.Recommended -> RecommendedBody(
                 result,
                 insulinLabel,
-                adviceExpired,
-                onAcknowledgeDoseEdit?.let { ack -> { ack(targetMgdl) } },
                 onAccept,
             )
         }
@@ -195,8 +182,6 @@ private fun RefusedCard(refused: AdviceResult.Refused) {
 private fun RecommendedBody(
     rec: AdviceResult.Recommended,
     insulinLabel: String?,
-    adviceExpired: Boolean,
-    onAcknowledgeDoseEdit: (() -> Unit)?,
     onAccept: (Candidate) -> Unit,
 ) {
     var acknowledged by remember(rec) { mutableStateOf(false) }
@@ -229,7 +214,7 @@ private fun RecommendedBody(
         }
     }
 
-    DecisionCardView(rec.card, adviceExpired)
+    DecisionCardView(rec.card)
 
     RankedList(rec.ranked)
 
@@ -254,19 +239,6 @@ private fun RecommendedBody(
             }
         }
     }
-    // The one escape from [Rails.doseHistoryEdited], and deliberately its own press rather than a
-    // third checkbox in the column above: those two say the card was read, this one says the insulin
-    // log was corrected and the correction has been taken into account. Folding it in would make it
-    // a keystroke on the way to a dose.
-    if (rec.doseHistoryEdited && onAcknowledgeDoseEdit != null) {
-        OutlinedButton(
-            onClick = { haptics.perform(HapticEvent.Commit); onAcknowledgeDoseEdit() },
-            enabled = !adviceExpired,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Text("Dose log reviewed — recompute")
-        }
-    }
     // A carb-rescue or a 0 U acceptance writes no `logged_dose` at all, so it names no insulin; every
     // other acceptance does, and that is what makes [insulinLabel] a precondition below.
     val writesDose = rec.rescueCarbsG == null && rec.best.doseU > 0.0
@@ -288,12 +260,11 @@ private fun RecommendedBody(
                 pendingAccept = rec.best
             }
         },
-        enabled = acknowledged && confirmSatisfied && !adviceExpired && (!writesDose || insulinLabel != null),
+        enabled = acknowledged && confirmSatisfied && (!writesDose || insulinLabel != null),
         modifier = Modifier.fillMaxWidth(),
     ) {
         Text(
             when {
-                adviceExpired -> "Expired — recompute"
                 rec.rescueCarbsG != null -> "Accept — treat low"
                 else -> "Accept ${fmt(rec.best.doseU)} U"
             },
@@ -313,19 +284,10 @@ private fun RecommendedBody(
 }
 
 @Composable
-private fun DecisionCardView(card: DecisionCard, expired: Boolean = false) {
+private fun DecisionCardView(card: DecisionCard) {
     Card(Modifier.fillMaxWidth(), colors = panelCardColors()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text("Decision card", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-            // Every figure below was measured when the search ran. Once that has lapsed they are a
-            // record, not a description, and the card says so rather than reading present-tense.
-            if (expired) {
-                Text(
-                    "As measured at the time of the search",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.error,
-                )
-            }
             fieldRow("Last real reading", card.ageOfLastRealReadingMin?.let { "$it min ago" } ?: "none")
             fieldRow("Interpolated/warm-up", "${(card.interpolatedFraction * 100).toInt()}%" + if (card.warmup) " · WARM-UP" else "")
             fieldRow("Backend", "${card.backend} · ${card.precision}" + agreementSuffix(card.agreementOk))

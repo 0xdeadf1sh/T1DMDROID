@@ -1821,22 +1821,7 @@ private fun T1dmNavHost(
             val targetHigh by ss.calcTargetHigh.collectAsState(180.0)
             val targetMid by ss.calcTargetMid.collectAsState(110.0)
             val insulinLabel by produceState<String?>(null) { value = container.resolvedRapidLabel() }
-            // The advice carries its own expiry, but nothing republishes the flow once the search
-            // ends — so without a tick the screen would sit on a live Accept indefinitely. Ticking
-            // only while a Ready result is on screen keeps this off every other route.
             val ready = ui as? BolusAdviceUi.Ready
-            val adviceExpired by produceState(false, ready) {
-                val r = ready
-                if (r == null) {
-                    value = false
-                    return@produceState
-                }
-                while (true) {
-                    value = System.currentTimeMillis() - r.computedAtMs > r.staleAfterMs
-                    if (value) return@produceState
-                    delay(CHROME_TICK_MS)
-                }
-            }
             BolusCalculatorScreen(
                 result = ready?.result,
                 targetLowMgdl = targetLow,
@@ -1844,16 +1829,6 @@ private fun T1dmNavHost(
                 initialTargetMgdl = targetMid,
                 isComputing = ui is BolusAdviceUi.Running,
                 insulinLabel = insulinLabel,
-                adviceExpired = adviceExpired,
-                onAcknowledgeDoseEdit = { target ->
-                    // Ordered inside one coroutine: the stamp has to be committed before the search
-                    // reads the dose history back, or the recompute lands on the block it just
-                    // cleared.
-                    scope.launch {
-                        container.acknowledgeDoseEdit(System.currentTimeMillis())
-                        DoseCalcService.recommend(ctx, targetMgdl = target)
-                    }
-                },
                 onAccept = { c ->
                     scope.launch {
                         // A 0 U / carb-rescue acceptance writes no dose, so there is no handle and no
@@ -2204,19 +2179,16 @@ private fun T1dmNavHost(
             val scope = rememberCoroutineScope()
             val lossMin by container.settingsStore.lossMin.collectAsState(20)
             val lossEsc by container.settingsStore.lossEscalatedMin.collectAsState(12)
-            val staleMin by container.settingsStore.calcFreshnessMin.collectAsState(15)
             val weakOn by container.settingsStore.weakSignalEnabled.collectAsState(true)
             val weakDbm by container.settingsStore.weakSignalDbm.collectAsState(-90)
             val weakSustain by container.settingsStore.weakSignalSustainMin.collectAsState(3)
             SignalSafetyScreen(
                 lossMin = lossMin,
                 lossEscalatedMin = lossEsc,
-                dosingStaleMin = staleMin,
                 weakSignalEnabled = weakOn,
                 weakSignalDbm = weakDbm,
                 weakSignalSustainMin = weakSustain,
                 onSetLoss = { a, b -> scope.launch { container.saveLossWindows(a, b) } },
-                onSetDosingStale = { m -> scope.launch { container.settingsStore.setCalcFreshnessMin(m) } },
                 onSetWeakSignal = { e, d, s -> scope.launch { container.saveWeakSignal(e, d, s) } },
             )
         }
@@ -2264,12 +2236,10 @@ private fun T1dmNavHost(
             val iobCeil by ss.calcIobCeiling.collectAsState(12.0)
             val gridMax by ss.calcGridMaxU.collectAsState(15.0)
             val gridStep by ss.calcGridStepU.collectAsState(0.5)
-            val rFresh by ss.railFreshness.collectAsState(true)
             val rPred by ss.railPredictedLow.collectAsState(true)
             val rIob by ss.railIobCeiling.collectAsState(true)
             val rConfirm by ss.railConfirm.collectAsState(true)
             val rHypo by ss.railHypoTreatment.collectAsState(true)
-            val rDoseHist by ss.railDoseHistory.collectAsState(true)
             CalculatorSettingsScreen(
                 objectiveOptions = listOf(
                     SettingsStore.OBJ_KOVATCHEV to "Min Kovatchev risk",
@@ -2281,20 +2251,18 @@ private fun T1dmNavHost(
                 hypoWeight = hypoW, hyperWeight = hyperW,
                 predictedLow = predLow, iobCeiling = iobCeil,
                 gridMaxU = gridMax, gridStepU = gridStep,
-                railFreshness = rFresh, railPredictedLow = rPred, railIobCeiling = rIob,
-                railConfirm = rConfirm, railHypoTreatment = rHypo, railDoseHistory = rDoseHist,
+                railPredictedLow = rPred, railIobCeiling = rIob,
+                railConfirm = rConfirm, railHypoTreatment = rHypo,
                 onSetObjective = { k -> scope.launch { ss.setCalcObjective(k) } },
                 onSetTarget = { lo, hi, mid -> scope.launch { ss.setCalcTarget(lo, hi, mid) } },
                 onSetAsymmetry = { hypo, hyper -> scope.launch { ss.setCalcAsymmetry(hypo, hyper) } },
                 onSetPredictedLow = { v -> scope.launch { ss.setCalcPredictedLow(v) } },
                 onSetIobCeiling = { v -> scope.launch { ss.setCalcIobCeiling(v) } },
                 onSetGrid = { mx, st -> scope.launch { ss.setCalcGrid(mx, st) } },
-                onSetRailFreshness = { on -> scope.launch { ss.setRail(SettingsStore.RAIL_FRESHNESS, on) } },
                 onSetRailPredictedLow = { on -> scope.launch { ss.setRail(SettingsStore.RAIL_PREDICTED_LOW, on) } },
                 onSetRailIobCeiling = { on -> scope.launch { ss.setRail(SettingsStore.RAIL_IOB, on) } },
                 onSetRailConfirm = { on -> scope.launch { ss.setRail(SettingsStore.RAIL_CONFIRM, on) } },
                 onSetRailHypoTreatment = { on -> scope.launch { ss.setRail(SettingsStore.RAIL_HYPO, on) } },
-                onSetRailDoseHistory = { on -> scope.launch { ss.setRail(SettingsStore.RAIL_DOSE_EDIT, on) } },
             )
         }
         composable("settings/curves") {

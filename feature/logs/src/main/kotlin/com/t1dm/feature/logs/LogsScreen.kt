@@ -327,12 +327,11 @@ private fun EntryRow(entry: LoggedEntry, onDelete: () -> Unit, onEdit: () -> Uni
 /**
  * Ask once before dropping a clinical row.
  *
- * Not friction for its own sake, and no longer a fail-closed-consistent change either. IOB is
- * computed from logged doses only (§3.6-F), so deleting the NEWEST dose lowers assumed insulin and
- * moves the log-gap mark backward, which tightens the rail that reads it — but deleting an older one
- * lowers assumed IOB with the mark unmoved, which RELAXES `Rails.iobCeiling` in silence. That is
- * what `Rails.doseHistoryEdited` exists to catch, and it is why this dialog asks rather than assumes
- * the direction is safe.
+ * Not friction for its own sake. IOB is computed from logged doses only (§3.6-F), so deleting the
+ * NEWEST dose lowers assumed insulin and moves the log-gap mark backward, which tightens the rail
+ * that reads it — but deleting an older one lowers assumed IOB with the mark unmoved, which RELAXES
+ * `Rails.iobCeiling` in silence. Nothing downstream catches that, so this dialog is the only place
+ * the direction is questioned at all.
  */
 @Composable
 private fun DeleteConfirmDialog(entry: LoggedEntry, onConfirm: () -> Unit, onDismiss: () -> Unit) {

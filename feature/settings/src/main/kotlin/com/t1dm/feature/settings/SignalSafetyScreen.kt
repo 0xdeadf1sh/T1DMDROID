@@ -3,11 +3,9 @@ package com.t1dm.feature.settings
 import androidx.compose.runtime.Composable
 
 /**
- * Settings → Signal & freshness (Phase 7C item 14; §3.6-A/D). Two safety windows:
- *  - the **loss-of-signal** window (minutes with no MEASURED reading before the model-free alarm
- *    fires) and its **escalated** shortening when the last real reading was low or falling;
- *  - the **dosing staleness gate**: the calculator refuses to recommend a dose off an anchor older
- *    than this many minutes (§3.6-D freshness rail).
+ * Settings → Signal (Phase 7C item 14; §3.6-A). The **loss-of-signal** window (minutes with no
+ * MEASURED reading before the model-free alarm fires), its **escalated** shortening when the last
+ * real reading was low or falling, and the **weak-signal** warning.
  *
  * All are user-set; the loss windows have a 1-minute floor only. Pure/stateless.
  */
@@ -15,12 +13,10 @@ import androidx.compose.runtime.Composable
 fun SignalSafetyScreen(
     lossMin: Int,
     lossEscalatedMin: Int,
-    dosingStaleMin: Int,
     weakSignalEnabled: Boolean,
     weakSignalDbm: Int,
     weakSignalSustainMin: Int,
     onSetLoss: (lossMin: Int, escalatedMin: Int) -> Unit,
-    onSetDosingStale: (min: Int) -> Unit,
     onSetWeakSignal: (enabled: Boolean, dbm: Int, sustainMin: Int) -> Unit,
 ) {
     SettingsScaffold(SettingsScreenKey.SIGNAL) {
@@ -38,10 +34,6 @@ fun SignalSafetyScreen(
         IntStepper(signalWeakSustain, weakSignalSustainMin, "min", step = 1, min = 0) {
             onSetWeakSignal(weakSignalEnabled, weakSignalDbm, it)
         }
-
-        SettingsSectionHeader("Dosing freshness gate")
-        DangerBanner("Calculator refuses on readings older than this")
-        IntStepper(signalDosingStale, dosingStaleMin, "min", step = 1, min = 1) { onSetDosingStale(it) }
     }
 }
 
@@ -101,23 +93,10 @@ private val signalWeakSustain = SettingsKnob(
     synonyms = listOf("sustain", "sustained", "duration", "hold", "debounce", "how long", "weak signal", "rssi"),
 )
 
-private val signalDosingStale = SettingsKnob(
-    id = "signal.dosing_stale",
-    screen = SettingsScreenKey.SIGNAL,
-    section = "Dosing freshness gate",
-    label = "Refuse dosing if anchor older than",
-    subtitle = "The freshness rail: no recommendation off a reading older than this",
-    synonyms = listOf(
-        "freshness", "stale", "staleness", "anchor", "age", "old reading", "gate", "rail",
-        "refuse", "dosing", "bolus", "calculator", "safety", "interpolated",
-    ),
-)
-
 internal val settingsSignalKnobs = listOf(
     signalLossWindow,
     signalLossEscalated,
     signalWeakEnabled,
     signalWeakDbm,
     signalWeakSustain,
-    signalDosingStale,
 )

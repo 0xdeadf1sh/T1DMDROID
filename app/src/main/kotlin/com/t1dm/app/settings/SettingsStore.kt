@@ -234,7 +234,7 @@ class SettingsStore(
 
     // ── BG input filter (INFERENCE.md §7.1) — the causal Savitzky-Golay window the BG channel is
     // pre-filtered at before normalization. It governs the MODEL INPUT, not the drawing: it shifts
-    // the `last_bg` anchor the §3.6-D freshness gate, the rails and the countdown all rest on, so it
+    // the `last_bg` anchor the rails and the countdown rest on, so it
     // is an `inference.` key (hand-listed in CONFIG_EXACT_KEYS) rather than a cosmetic `graph.` one.
     // Snapped to an offered detent on EVERY read: the window must be odd, and the Rust model-input
     // guard rejects anything else outright rather than substituting a default.
@@ -288,16 +288,13 @@ class SettingsStore(
     val calcHyperWeight: Flow<Double> = doubleFlow(K_CALC_HYPER_W, calcDef.asymmetry.hyperWeight)
     val calcPredictedLow: Flow<Double> = doubleFlow(K_CALC_PRED_LOW, calcDef.predictedLowThresholdMgdl)
     val calcIobCeiling: Flow<Double> = doubleFlow(K_CALC_IOB_CEIL, calcDef.iobCeilingU)
-    val calcFreshnessMin: Flow<Int> = intFlow(K_CALC_FRESHNESS_MIN, (calcDef.freshnessMaxAgeMs / 60_000L).toInt())
     val calcGridMaxU: Flow<Double> = doubleFlow(K_CALC_GRID_MAX, calcDef.grid.maxU)
     val calcGridStepU: Flow<Double> = doubleFlow(K_CALC_GRID_STEP, calcDef.grid.stepU)
 
-    val railFreshness: Flow<Boolean> = boolFlow(K_RAIL_FRESH, calcDef.rails.freshnessGate)
     val railPredictedLow: Flow<Boolean> = boolFlow(K_RAIL_PREDLOW, calcDef.rails.predictedLowVeto)
     val railIobCeiling: Flow<Boolean> = boolFlow(K_RAIL_IOB, calcDef.rails.iobCeiling)
     val railConfirm: Flow<Boolean> = boolFlow(K_RAIL_CONFIRM, calcDef.rails.mandatoryConfirmation)
     val railHypoTreatment: Flow<Boolean> = boolFlow(K_RAIL_HYPO, calcDef.rails.hypoTreatment)
-    val railDoseHistory: Flow<Boolean> = boolFlow(K_RAIL_DOSE_EDIT, calcDef.rails.doseHistoryEdited)
 
     suspend fun setCalcTarget(low: Double, high: Double, mid: Double) {
         put(K_CALC_TARGET_LOW, low.coerceAtLeast(0.0).toString())
@@ -313,7 +310,6 @@ class SettingsStore(
 
     suspend fun setCalcPredictedLow(v: Double) = put(K_CALC_PRED_LOW, v.coerceAtLeast(0.0).toString())
     suspend fun setCalcIobCeiling(v: Double) = put(K_CALC_IOB_CEIL, v.coerceAtLeast(0.0).toString())
-    suspend fun setCalcFreshnessMin(v: Int) = put(K_CALC_FRESHNESS_MIN, v.coerceAtLeast(1).toString())
     suspend fun setCalcGrid(maxU: Double, stepU: Double) {
         put(K_CALC_GRID_MAX, maxU.coerceAtLeast(0.0).toString())
         put(K_CALC_GRID_STEP, stepU.coerceAtLeast(0.1).toString())
@@ -321,12 +317,10 @@ class SettingsStore(
 
     suspend fun setRail(rail: String, on: Boolean) {
         val key = when (rail) {
-            RAIL_FRESHNESS -> K_RAIL_FRESH
             RAIL_PREDICTED_LOW -> K_RAIL_PREDLOW
             RAIL_IOB -> K_RAIL_IOB
             RAIL_CONFIRM -> K_RAIL_CONFIRM
             RAIL_HYPO -> K_RAIL_HYPO
-            RAIL_DOSE_EDIT -> K_RAIL_DOSE_EDIT
             else -> return
         }
         put(key, if (on) "1" else "0")
@@ -351,19 +345,16 @@ class SettingsStore(
                 hyperWeight = getDouble(K_CALC_HYPER_W, calcDef.asymmetry.hyperWeight),
             ),
             rails = RailToggles(
-                freshnessGate = getBool(K_RAIL_FRESH, calcDef.rails.freshnessGate),
                 predictedLowVeto = getBool(K_RAIL_PREDLOW, calcDef.rails.predictedLowVeto),
                 iobCeiling = getBool(K_RAIL_IOB, calcDef.rails.iobCeiling),
                 mandatoryConfirmation = getBool(K_RAIL_CONFIRM, calcDef.rails.mandatoryConfirmation),
                 hypoTreatment = getBool(K_RAIL_HYPO, calcDef.rails.hypoTreatment),
-                doseHistoryEdited = getBool(K_RAIL_DOSE_EDIT, calcDef.rails.doseHistoryEdited),
             ),
             grid = GridSpec(
                 minU = calcDef.grid.minU,
                 maxU = getDouble(K_CALC_GRID_MAX, calcDef.grid.maxU),
                 stepU = getDouble(K_CALC_GRID_STEP, calcDef.grid.stepU).coerceAtLeast(0.1),
             ),
-            freshnessMaxAgeMs = getInt(K_CALC_FRESHNESS_MIN, (calcDef.freshnessMaxAgeMs / 60_000L).toInt()) * 60_000L,
             predictedLowThresholdMgdl = getDouble(K_CALC_PRED_LOW, calcDef.predictedLowThresholdMgdl),
             iobCeilingU = getDouble(K_CALC_IOB_CEIL, calcDef.iobCeilingU),
         )
@@ -376,7 +367,6 @@ class SettingsStore(
             // added here keeps its `true` default, so the override that is meant to disable every
             // optional rail would silently leave the newest one standing.
             rails = RailToggles.ALL_OFF,
-            freshnessMaxAgeMs = Long.MAX_VALUE,
             predictedLowThresholdMgdl = 0.0,
             iobCeilingU = Double.MAX_VALUE,
         )
@@ -781,12 +771,10 @@ class SettingsStore(
         const val OBJ_HIT_TARGET = "hit_target"
 
         // Rail identifiers (for setRail).
-        const val RAIL_FRESHNESS = "freshness"
         const val RAIL_PREDICTED_LOW = "predicted_low"
         const val RAIL_IOB = "iob"
         const val RAIL_CONFIRM = "confirm"
         const val RAIL_HYPO = "hypo"
-        const val RAIL_DOSE_EDIT = "dose_edit"
 
         private const val CONFIG_FORMAT = "t1dm.config"
         private const val CONFIG_VERSION = 1
@@ -1043,15 +1031,12 @@ class SettingsStore(
         private const val K_CALC_HYPER_W = "calc.hyper_weight"
         private const val K_CALC_PRED_LOW = "calc.predicted_low"
         private const val K_CALC_IOB_CEIL = "calc.iob_ceiling"
-        private const val K_CALC_FRESHNESS_MIN = "calc.freshness_min"
         private const val K_CALC_GRID_MAX = "calc.grid_max_u"
         private const val K_CALC_GRID_STEP = "calc.grid_step_u"
-        private const val K_RAIL_FRESH = "calc.rail_freshness"
         private const val K_RAIL_PREDLOW = "calc.rail_predicted_low"
         private const val K_RAIL_IOB = "calc.rail_iob"
         private const val K_RAIL_CONFIRM = "calc.rail_confirm"
         private const val K_RAIL_HYPO = "calc.rail_hypo"
-        private const val K_RAIL_DOSE_EDIT = "calc.rail_dose_edit"
 
         private const val K_DEATH = "death.enabled"
 

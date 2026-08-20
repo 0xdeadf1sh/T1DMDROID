@@ -60,10 +60,14 @@ fun interface CarbResolver {
  * however much of the meal has appeared by then. Reading the full ~5 h action window instead would
  * match the textbook definitions but would rest the number on the re-fed extrapolated tail.
  *
- * **What it refuses, and what it reports.** Null means *no model response was obtained* — a stale,
- * warm-up, absent or mostly-fabricated anchor, no selected model, a non-eligible fan, an empty or
- * ragged validated window, or arithmetic that yields no finite number. The panel renders that as
- * `N/A`, so an absent figure is legible as an absence rather than as a feature that failed to appear.
+ * **What it refuses, and what it reports.** Null means *no model response was obtained* — no
+ * selected model, a non-eligible fan, an empty or ragged validated window, or arithmetic that yields
+ * no finite number. The panel renders that as `N/A`, so an absent figure is legible as an absence
+ * rather than as a feature that failed to appear.
+ *
+ * It does NOT judge the anchor the figures were measured off. A stale, warm-up or mostly-interpolated
+ * anchor still yields a figure, stamped `atMs = nowMs` and printed beside a live IOB, and the horizon
+ * is the only qualification carried with it.
  *
  * A response that WAS obtained is reported whatever it says, including a negative ISF, and the panel
  * marks it. This is deliberate and is not the fail-closed stance relaxing: fail-closed governs
@@ -78,19 +82,9 @@ class SensitivityProbe(
     private val port: ForecastPort,
     private val insulin: BolusResolver,
     private val carb: CarbResolver,
-    /** §3.6-D anchor facts. The probe gates on these ITSELF rather than borrowing [Rails.freshness]:
-     *  that rail is switchable by the user because a dose is theirs to take, and it speaks in the
-     *  language of refusing to dose. Whether a displayed figure was derived from a current reading is
-     *  not a preference, so this gate has no toggle. */
-    private val anchorSource: AnchorInfoSource,
     /** The selected model's id, read fresh. Sampled either side of the three rolls so a selection
      *  changed mid-probe yields no figure rather than one stamped with the wrong artifact. */
     private val selectedModelId: suspend () -> String?,
-    /** The dose history's mutation state, for the same refusal the calculator makes. NOT defaulted,
-     *  for the reason [IobSnapshot.doseHistory] is not: [DoseHistoryState.Clean] is the fail-OPEN
-     *  value, and a default hands it to every caller that forgets the wiring with no compiler signal
-     *  that a gate has been switched off. A test that wants the open case says so. */
-    private val doseHistory: suspend () -> DoseHistoryState,
 ) {
 
     suspend fun probe(
@@ -104,21 +98,6 @@ class SensitivityProbe(
         val steps = config.horizon.validatedSteps
         if (steps <= 0) return withhold("validated horizon is 0 steps")
 
-        // §3.6-D. The rolls themselves cannot catch this: the production port never reports STALE by
-        // its own documented contract, and a carried-forward anchor yields a perfectly eligible fan
-        // that simply describes a BG from some time ago. Stamping that `atMs = nowMs` and printing it
-        // beside a live IOB is the one way this read-out could mislead badly.
-        val anchor = anchorSource.current(nowMs) ?: return withhold("no anchor")
-        val lastMeasured = anchor.lastMeasuredTsMs ?: return withhold("no measured reading")
-        if (anchor.warmup) return withhold("sensor warm-up")
-        val anchorAgeMs = nowMs - lastMeasured
-        if (anchorAgeMs > config.freshnessMaxAgeMs) {
-            return withhold("anchor ${anchorAgeMs / 60_000}m old (limit ${config.freshnessMaxAgeMs / 60_000}m)")
-        }
-        if (anchor.interpolatedFraction > config.maxInterpolatedFraction) {
-            return withhold("interpolated %.2f > %.2f".format(anchor.interpolatedFraction, config.maxInterpolatedFraction))
-        }
-
         fun request(candidate: List<CurveEvent>?, candidateU: Double) =
             ForecastRequest(
                 rollStartMs = nowMs,
@@ -129,18 +108,6 @@ class SensitivityProbe(
                 candidateU = candidateU,
                 smoothingWindow = smoothingWindow,
             )
-
-        // The same refusal the calculator makes, for the same reason. This probe hands the user an
-        // ISF/ICR number they act on, and it is derived from the same insulin history the
-        // calculator has just declined to read.
-        val history = doseHistory()
-        if (history is DoseHistoryState.Unknown) return withhold("dose history unreadable")
-        if (history is DoseHistoryState.Mutated &&
-            nowMs < history.actingUntilMs &&
-            (history.acknowledgedAtMs == null || history.acknowledgedAtMs < history.mutatedAtMs)
-        ) {
-            return withhold("dose history edited inside the active-insulin window")
-        }
 
         val modelBefore = selectedModelId() ?: return withhold("no selected model")
 
@@ -174,9 +141,6 @@ class SensitivityProbe(
         // number at all refuses below — a zero carb response divides to an infinity, which is not a
         // figure to display but an absence of one.
         //
-        // The panel marks a wrong-signed figure rather than hiding it. The §3.6-D gates above are a
-        // different matter and still refuse: those are about the INPUT not being current, where there
-        // is no model response to report honestly in the first place.
         val isf = insulinDrop / PROBE_DOSE_U
         val icr = isf * PROBE_CARB_G / carbRise
         if (!isf.isFinite() || !icr.isFinite()) {

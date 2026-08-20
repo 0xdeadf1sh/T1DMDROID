@@ -32,12 +32,8 @@ class SensitivityProbeTest {
 
     private fun probeOf(
         port: ForecastPort,
-        anchor: AnchorInfo? = fakeAnchor(now),
         modelIds: () -> String? = { MODEL },
-    ) = SensitivityProbe(
-        port, FakeBolusResolver(), FakeCarbResolver(), { anchor }, { modelIds() },
-        { DoseHistoryState.Clean },
-    )
+    ) = SensitivityProbe(port, FakeBolusResolver(), FakeCarbResolver(), { modelIds() })
 
     @Test
     fun isf_and_icr_are_the_terminal_median_displacements() = runTest {
@@ -167,47 +163,6 @@ class SensitivityProbeTest {
             seen[2].candidate!!.map { it.kind },
         )
         assertEquals("a meal contributes no candidate insulin", 0.0, seen[2].candidateU, 0.0)
-    }
-
-    // ── the anchor gate (§3.6-D) ──────────────────────────────────────────────────────────────────
-    // The rolls cannot catch any of these: the production port never reports STALE by its own
-    // documented contract, so a carried-forward anchor yields a perfectly ELIGIBLE fan describing a
-    // BG from some time ago.
-
-    @Test
-    fun no_anchor_at_all_withholds_the_estimate() = runTest {
-        assertNull(probeOf(FakeForecastPort(), anchor = null).probe(now, config))
-    }
-
-    @Test
-    fun an_anchor_with_no_measured_reading_withholds_the_estimate() = runTest {
-        val anchor = fakeAnchor(now, hasMeasured = false)
-        assertNull(probeOf(FakeForecastPort(), anchor).probe(now, config))
-    }
-
-    @Test
-    fun a_warm_up_anchor_withholds_the_estimate() = runTest {
-        assertNull(probeOf(FakeForecastPort(), fakeAnchor(now, warmup = true)).probe(now, config))
-    }
-
-    @Test
-    fun a_stale_anchor_withholds_the_estimate() = runTest {
-        val limitMin = config.freshnessMaxAgeMs / 60_000L
-        assertNull(
-            "past the freshness limit",
-            probeOf(FakeForecastPort(), fakeAnchor(now, ageMin = limitMin + 1)).probe(now, config),
-        )
-        // The boundary itself still stands: the gate is "older than", not "at least".
-        assertNotNull(
-            "at the limit is still current",
-            probeOf(FakeForecastPort(), fakeAnchor(now, ageMin = limitMin)).probe(now, config),
-        )
-    }
-
-    @Test
-    fun a_mostly_fabricated_anchor_withholds_the_estimate() = runTest {
-        val fabricated = fakeAnchor(now, interpolatedFraction = config.maxInterpolatedFraction + 0.01)
-        assertNull(probeOf(FakeForecastPort(), fabricated).probe(now, config))
     }
 
     @Test

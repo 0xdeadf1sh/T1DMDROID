@@ -10,8 +10,8 @@ import androidx.compose.runtime.Composable
  * missing/degenerate/stale input; a threshold only tunes where it trips. Nothing here actuates; the
  * calculator only *recommends* a dose the user administers.
  *
- * The freshness (staleness) gate lives on the "Signal & freshness" screen. Pure/stateless. Objective
- * is an opaque key string so this module stays free of the `:calc` dependency.
+ * Pure/stateless. Objective is an opaque key string so this module stays free of the `:calc`
+ * dependency.
  */
 @Composable
 fun CalculatorSettingsScreen(
@@ -26,24 +26,20 @@ fun CalculatorSettingsScreen(
     iobCeiling: Double,
     gridMaxU: Double,
     gridStepU: Double,
-    railFreshness: Boolean,
     railPredictedLow: Boolean,
     railIobCeiling: Boolean,
     railConfirm: Boolean,
     railHypoTreatment: Boolean,
-    railDoseHistory: Boolean,
     onSetObjective: (String) -> Unit,
     onSetTarget: (low: Double, high: Double, mid: Double) -> Unit,
     onSetAsymmetry: (hypo: Double, hyper: Double) -> Unit,
     onSetPredictedLow: (Double) -> Unit,
     onSetIobCeiling: (Double) -> Unit,
     onSetGrid: (maxU: Double, stepU: Double) -> Unit,
-    onSetRailFreshness: (Boolean) -> Unit,
     onSetRailPredictedLow: (Boolean) -> Unit,
     onSetRailIobCeiling: (Boolean) -> Unit,
     onSetRailConfirm: (Boolean) -> Unit,
     onSetRailHypoTreatment: (Boolean) -> Unit,
-    onSetRailDoseHistory: (Boolean) -> Unit,
 ) {
     SettingsScaffold(SettingsScreenKey.CALCULATOR) {
         SettingsSectionHeader("Objective")
@@ -64,14 +60,12 @@ fun CalculatorSettingsScreen(
         DoubleStepper(calcGridStep, gridStepU, "U", step = 0.1, min = 0.1) { onSetGrid(gridMaxU, it) }
 
         SettingsSectionHeader("Rails")
-        ToggleRow(calcRailFreshness, railFreshness) { onSetRailFreshness(it) }
         ToggleRow(calcRailPredictedLow, railPredictedLow) { onSetRailPredictedLow(it) }
         DoubleStepper(calcPredictedLowFloor, predictedLow, "mg/dL", step = 5.0, min = 0.0) { onSetPredictedLow(it) }
         ToggleRow(calcRailIobCeiling, railIobCeiling) { onSetRailIobCeiling(it) }
         DoubleStepper(calcIobCeiling, iobCeiling, "U", step = 0.5, min = 0.0) { onSetIobCeiling(it) }
         ToggleRow(calcRailConfirm, railConfirm) { onSetRailConfirm(it) }
         ToggleRow(calcRailHypoTreatment, railHypoTreatment) { onSetRailHypoTreatment(it) }
-        ToggleRow(calcRailDoseHistory, railDoseHistory) { onSetRailDoseHistory(it) }
     }
 }
 
@@ -164,15 +158,6 @@ private val calcGridStep = SettingsKnob(
     synonyms = listOf("grid", "step", "increment", "resolution", "granularity", "units", "search", "quantisation"),
 )
 
-private val calcRailFreshness = SettingsKnob(
-    id = "calc.rail_freshness",
-    screen = SettingsScreenKey.CALCULATOR,
-    section = "Rails",
-    label = "Freshness gate",
-    subtitle = "Refuse on a stale / interpolated anchor",
-    synonyms = listOf("freshness", "stale", "rail", "gate", "anchor", "old reading", "interpolated", "refuse", "safety"),
-)
-
 private val calcRailPredictedLow = SettingsKnob(
     id = "calc.rail_predicted_low",
     screen = SettingsScreenKey.CALCULATOR,
@@ -240,18 +225,6 @@ private val calcRailHypoTreatment = SettingsKnob(
     ),
 )
 
-private val calcRailDoseHistory = SettingsKnob(
-    id = "calc.rail_dose_history",
-    screen = SettingsScreenKey.CALCULATOR,
-    section = "Rails",
-    label = "Edited dose log",
-    subtitle = "Hold insulin at 0 U while an edited or deleted dose could still be acting",
-    synonyms = listOf(
-        "dose history", "edited", "edit", "deleted", "delete", "log", "iob", "stale",
-        "rail", "acknowledge", "corrected",
-    ),
-)
-
 internal val settingsCalculatorKnobs = listOf(
     calcObjective,
     calcTargetLow,
@@ -261,12 +234,10 @@ internal val settingsCalculatorKnobs = listOf(
     calcHyperWeight,
     calcGridMax,
     calcGridStep,
-    calcRailFreshness,
     calcRailPredictedLow,
     calcPredictedLowFloor,
     calcRailIobCeiling,
     calcIobCeiling,
     calcRailConfirm,
     calcRailHypoTreatment,
-    calcRailDoseHistory,
 )

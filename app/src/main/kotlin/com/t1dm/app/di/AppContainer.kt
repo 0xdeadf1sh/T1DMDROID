@@ -84,7 +84,6 @@ import com.t1dm.calc.BolusCalculator
 import com.t1dm.calc.BolusResolver
 import com.t1dm.calc.CalcConfig
 import com.t1dm.calc.DoseAdvisor
-import com.t1dm.calc.DoseHistoryState
 import com.t1dm.calc.IobSnapshot
 import com.t1dm.calc.IobSource
 import com.t1dm.calc.Objective
@@ -241,10 +240,6 @@ private const val INITIAL_HISTORY_WINDOW_MS = 30L * 24 * 3_600_000L
  *  a review surface rather than an export. The interleaved list is trimmed to the same bound, so the
  *  cut is by TIME rather than by whichever table happens to be busier. */
 private const val LOG_FEED_LIMIT = 400
-
-/** When the user last acknowledged an edited or deleted dose inside its own action window — the
- *  deliberate second action that clears `Rails.doseHistoryEdited`. */
-private const val KV_DOSE_EDIT_ACK = "calc.dose_edit_ack_ms"
 
 /** Per-model kv key for the forecast-backend switcher (issue 20 STEP 4): the BackendId enum name per
  *  model id, or absent = auto (the fp32 XNNPACK authority). */
@@ -2732,9 +2727,7 @@ class AppContainer(context: Context) {
             rollingForecaster,
             bolusResolver,
             probeCarbResolver,
-            anchorSource,
             selectedModelId = { inferenceController.authorityModelInfo()?.takeIf { it.real }?.id },
-            doseHistory = { readDoseHistory() },
         )
     }
 
@@ -2759,19 +2752,8 @@ class AppContainer(context: Context) {
     sealed interface BolusAdviceUi {
         data object Idle : BolusAdviceUi
         data object Running : BolusAdviceUi
-        /**
-         * A finished recommendation, stamped with WHEN it was computed and how long it may stand.
-         *
-         * The stamp is the whole point: this flow is application-scoped and has no ticker, so a
-         * Recommended result used to be held across navigation and Activity recreation with Accept
-         * live and every freshness fact on its decision card — the anchor age above all — frozen at
-         * search time yet rendered in the present tense.
-         */
-        data class Ready(
-            val result: AdviceResult,
-            val computedAtMs: Long,
-            val staleAfterMs: Long,
-        ) : BolusAdviceUi
+        /** A finished recommendation. */
+        data class Ready(val result: AdviceResult) : BolusAdviceUi
     }
 
     val bolusAdvice = MutableStateFlow<BolusAdviceUi>(BolusAdviceUi.Idle)
@@ -2801,10 +2783,7 @@ class AppContainer(context: Context) {
         // currentCalcConfig) so the advisor emits a number rather than refusing off a bad forecast.
         val result = runCatching { doseAdvisor.recommendBolus(now, announced, cfg, bypassDegeneracyGate = deathModeSnapshot) }
             .getOrElse { AdviceResult.Refused(listOf("Calculator error — ${it.message ?: it::class.simpleName}")) }
-        // The advice may stand exactly as long as the anchor it was computed from: past the
-        // calculator's own §3.6-D freshness limit the recommendation is describing a BG that is no
-        // longer current, so the screen must stop offering it.
-        bolusAdvice.value = BolusAdviceUi.Ready(result, now, cfg.freshnessMaxAgeMs)
+        bolusAdvice.value = BolusAdviceUi.Ready(result)
     }
 
     fun clearBolusAdvice() { bolusAdvice.value = BolusAdviceUi.Idle }
@@ -2969,14 +2948,11 @@ class AppContainer(context: Context) {
             .maxByOrNull { it.tsMs }
         // `newest` stays the newest row OUTRIGHT, and that is deliberate. Filtering it through
         // `isRealMeasurement` would make `warmup` constant-false whenever the window holds one
-        // NORMAL measured row — a WARMUP-flagged reading could never win the slot — and
-        // `Rails.freshness`'s warm-up block would become dead code. A sensor session restarting at
-        // 10:00 would then dispense a recommendation off a warming-up sensor.
+        // NORMAL measured row, and the card would report a warming-up sensor as a settled one.
         val newest = recent.maxByOrNull { it.tsMs }!!
         // A promoted RECONSTRUCTION counts as fabricated context, like an interpolation and a
-        // warm-up row. This is what makes the freshness rail fire rather than merely excluding the
-        // value: `Rails.freshness` blocks once the fraction passes its bound, so a promoted span
-        // inside the 3 h anchor window refuses the dose outright.
+        // warm-up row. Nothing gates on the fraction — these three fields are the §3.6-F card's
+        // anchor disclosure and only that.
         val fabricated = recent.count {
             it.provenance == ReadingProvenance.INTERPOLATED ||
                 it.provenance == ReadingProvenance.RECONSTRUCTED ||
@@ -2996,36 +2972,8 @@ class AppContainer(context: Context) {
             iobU = channelBuilder.onBoard(nowMs, CurveKind.INSULIN),
             cobG = channelBuilder.onBoard(nowMs, CurveKind.CARB),
             lastLoggedDoseTsMs = repository.latestLoggedInsulinTs(),
-            doseHistory = readDoseHistory(),
         )
     }.getOrNull()
-
-    /**
-     * What has been done to the dose history, for [Rails.doseHistoryEdited].
-     *
-     * The reads are wrapped separately from the rest of the snapshot: a throw here must reach the
-     * rail as [DoseHistoryState.Unknown] — which BLOCKS — rather than take the whole snapshot to
-     * null and be indistinguishable from a store that had nothing to report.
-     */
-    private suspend fun readDoseHistory(): DoseHistoryState = runCatching {
-        val until = repository.editedDoseActiveUntilMs() ?: return@runCatching DoseHistoryState.Clean
-        val mutatedAt = repository.latestDoseMutationMs() ?: return@runCatching DoseHistoryState.Clean
-        DoseHistoryState.Mutated(
-            actingUntilMs = until,
-            mutatedAtMs = mutatedAt,
-            acknowledgedAtMs = repository.getKv(KV_DOSE_EDIT_ACK)?.toLongOrNull(),
-        )
-    }.getOrElse { DoseHistoryState.Unknown }
-
-    /**
-     * Acknowledge the edited dose history — the deliberate second action that clears
-     * [Rails.doseHistoryEdited].
-     *
-     * Structurally separate from the calculator's own confirm button on purpose: this one says "I
-     * know the insulin log changed and I have taken that into account", and folding it into the
-     * ordinary confirm would turn it into a keystroke on the way to a dose.
-     */
-    suspend fun acknowledgeDoseEdit(nowMs: Long) = repository.putKv(KV_DOSE_EDIT_ACK, nowMs.toString(), nowMs)
 
     // ── Entry writers: persist the self-describing event, project the wide sample, mirror the series.
 

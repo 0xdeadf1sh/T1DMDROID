@@ -49,29 +49,6 @@ class RailInvariantsTest {
     }
 
     @Test
-    fun refuses_when_anchor_stale() = runTest {
-        val advisor = advisorOf(
-            port = FakeForecastPort(),
-            anchor = fakeAnchor(now, ageMin = 40), iob = fakeIob(now), // 40 min > 15 min default
-        )
-        val r = advisor.recommendBolus(now, emptyList(), CalcConfig())
-        assertTrue("a stale anchor must refuse", r is AdviceResult.Refused)
-        assertTrue((r as AdviceResult.Refused).reasons.first().contains("stale", ignoreCase = true))
-    }
-
-    @Test
-    fun refuses_when_no_measured_reading() = runTest {
-        val advisor = advisorOf(FakeForecastPort(), anchor = fakeAnchor(now, hasMeasured = false), iob = fakeIob(now))
-        assertTrue(advisor.recommendBolus(now, emptyList(), CalcConfig()) is AdviceResult.Refused)
-    }
-
-    @Test
-    fun refuses_when_no_anchor_at_all() = runTest {
-        val advisor = advisorOf(FakeForecastPort(), anchor = null, iob = fakeIob(now))
-        assertTrue(advisor.recommendBolus(now, emptyList(), CalcConfig()) is AdviceResult.Refused)
-    }
-
-    @Test
     fun refuses_when_no_selected_model() = runTest {
         val advisor = advisorOf(FakeForecastPort(), anchor = fakeAnchor(now), iob = fakeIob(now), backend = null)
         assertTrue(advisor.recommendBolus(now, emptyList(), CalcConfig()) is AdviceResult.Refused)
@@ -163,10 +140,10 @@ class RailInvariantsTest {
 
     @Test
     fun iob_ceiling_blocks_nonzero_dose_when_iob_unknown() {
-        val v = Rails.iobCeiling(iob = IobSnapshot(iobU = null, cobG = 0.0, lastLoggedDoseTsMs = null, doseHistory = DoseHistoryState.Clean), candidateU = 4.0, config = CalcConfig())
+        val v = Rails.iobCeiling(iob = IobSnapshot(iobU = null, cobG = 0.0, lastLoggedDoseTsMs = null), candidateU = 4.0, config = CalcConfig())
         assertTrue("unknown IOB + nonzero dose must block", v is RailVerdict.Block)
         // …but a zero dose is always safe.
-        assertEquals(RailVerdict.Pass, Rails.iobCeiling(IobSnapshot(null, 0.0, null, DoseHistoryState.Clean), 0.0, CalcConfig()))
+        assertEquals(RailVerdict.Pass, Rails.iobCeiling(IobSnapshot(null, 0.0, null), 0.0, CalcConfig()))
     }
 
     // ── (2) All-rails-off = identity ────────────────────────────────────────────────────
@@ -297,7 +274,7 @@ class RailInvariantsTest {
     @Test
     fun iob_unknown_forces_zero_dose_fallback() = runTest {
         val port = FakeForecastPort(startBg = 240.0, mgdlPerU = 15.0) // hyper ⇒ a bolus is otherwise wanted
-        val advisor = advisorOf(port, anchor = fakeAnchor(now), iob = IobSnapshot(null, 0.0, null, DoseHistoryState.Clean))
+        val advisor = advisorOf(port, anchor = fakeAnchor(now), iob = IobSnapshot(null, 0.0, null))
         val r = advisor.recommendBolus(now, emptyList(), CalcConfig()) as AdviceResult.Recommended
         assertEquals("unknown IOB must fall back to 0 U", 0.0, r.best.doseU, 0.0)
         assertTrue(r.railNotes.any { it.contains("IOB", ignoreCase = true) })
@@ -340,99 +317,4 @@ class RailInvariantsTest {
     }
 
     // ── (8) dose-history-edited ─────────────────────────────────────────────────────────
-
-    /**
-     * The rail blocks while a changed dose is still acting, clears at that dose's own action end
-     * rather than on a timeout, and is cleared early only by an acknowledgement that covers the
-     * mutation it was raised for.
-     */
-    @Test
-    fun dose_history_edited_blocks_until_the_changed_insulin_stops_acting() {
-        fun verdict(history: DoseHistoryState, config: CalcConfig = CalcConfig()) =
-            Rails.doseHistoryEdited(
-                iob = IobSnapshot(iobU = 2.0, cobG = 0.0, lastLoggedDoseTsMs = now - 600_000, doseHistory = history),
-                candidateU = 1.0,
-                nowMs = now,
-                config = config,
-            )
-
-        val acting = DoseHistoryState.Mutated(
-            actingUntilMs = now + 3_600_000,
-            mutatedAtMs = now - 60_000,
-            acknowledgedAtMs = null,
-        )
-        assertTrue("a mutated dose still acting must block", verdict(acting) is RailVerdict.Block)
-
-        // An acknowledgement AFTER the mutation clears it.
-        assertEquals(
-            RailVerdict.Pass,
-            verdict(acting.copy(acknowledgedAtMs = now - 30_000)),
-        )
-        // One from BEFORE it does not — a second edit re-raises the block.
-        assertTrue(
-            "a stale acknowledgement must not clear a newer edit",
-            verdict(acting.copy(acknowledgedAtMs = now - 120_000)) is RailVerdict.Block,
-        )
-
-        // It expires at the dose's own action end, a number rather than a timeout.
-        assertEquals(RailVerdict.Pass, verdict(acting.copy(actingUntilMs = now - 1)))
-
-        // Unknown fails CLOSED — "I could not read the history" is not "nothing changed".
-        assertTrue("unknown dose history must block", verdict(DoseHistoryState.Unknown) is RailVerdict.Block)
-        assertEquals(RailVerdict.Pass, verdict(DoseHistoryState.Clean))
-
-        // A null snapshot blocks for the same reason.
-        assertTrue(
-            Rails.doseHistoryEdited(null, candidateU = 1.0, nowMs = now, config = CalcConfig())
-                is RailVerdict.Block,
-        )
-
-        // Disabled is an explicit no-op, like every other rail.
-        assertEquals(
-            RailVerdict.Pass,
-            verdict(acting, CalcConfig(rails = RailToggles(doseHistoryEdited = false))),
-        )
-        // And a zero dose is always safe.
-        assertEquals(
-            RailVerdict.Pass,
-            Rails.doseHistoryEdited(
-                iob = IobSnapshot(2.0, 0.0, now - 600_000, acting),
-                candidateU = 0.0,
-                nowMs = now,
-                config = CalcConfig(),
-            ),
-        )
-    }
-
-    /**
-     * A blocked dose history withholds INSULIN, never the hypo carb-rescue number.
-     *
-     * The rescue does not depend on the edited insulin at all, and refusing the whole
-     * recommendation would leave a patient at 58 mg/dL with nothing.
-     */
-    @Test
-    fun an_edited_dose_history_withholds_insulin_but_not_the_rescue_carbs() = runTest {
-        val mutated = DoseHistoryState.Mutated(now + 3_600_000, now - 60_000, null)
-
-        // Hyperglycaemic: a bolus is otherwise wanted, and the rail forces 0 U with the reason said.
-        val hyper = advisorOf(
-            FakeForecastPort(startBg = 240.0, mgdlPerU = 15.0),
-            anchor = fakeAnchor(now),
-            iob = fakeIob(now, doseHistory = mutated),
-        )
-        val r = hyper.recommendBolus(now, emptyList(), CalcConfig()) as AdviceResult.Recommended
-        assertEquals("an edited dose history must withhold insulin", 0.0, r.best.doseU, 0.0)
-        assertTrue(r.requiresConfirmation)
-        assertTrue(r.railNotes.any { it.contains("Dose log edited") })
-
-        // Hypoglycaemic: the rescue number still comes back.
-        val hypo = advisorOf(
-            FakeForecastPort(startBg = 58.0, mgdlPerU = 15.0),
-            anchor = fakeAnchor(now, currentBg = 58.0),
-            iob = fakeIob(now, doseHistory = mutated),
-        )
-        val h = hypo.recommendBolus(now, emptyList(), CalcConfig()) as AdviceResult.Recommended
-        assertEquals(0.0, h.best.doseU, 0.0)
-        assertNotNull("the rescue number must survive the block", h.rescueCarbsG)
-    }
 }

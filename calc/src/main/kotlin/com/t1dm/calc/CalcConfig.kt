@@ -63,22 +63,18 @@ data class Asymmetry(
  * only be lifted via the DoseAdvisor.recommendBolus `bypassDegeneracyGate` (DEATH) parameter.
  */
 data class RailToggles(
-    val freshnessGate: Boolean = true,
     val predictedLowVeto: Boolean = true,
     val iobCeiling: Boolean = true,
     val mandatoryConfirmation: Boolean = true,
     val hypoTreatment: Boolean = true,
-    val doseHistoryEdited: Boolean = true,
 ) {
     companion object {
         /** All optional rails disabled — the "all-rails-off = identity" CI invariant (Phase 4 §7). */
         val ALL_OFF = RailToggles(
-            freshnessGate = false,
             predictedLowVeto = false,
             iobCeiling = false,
             mandatoryConfirmation = false,
             hypoTreatment = false,
-            doseHistoryEdited = false,
         )
     }
 }
@@ -155,10 +151,6 @@ data class CalcConfig(
     val split: SplitSpec = SplitSpec(),
     val horizon: HorizonPolicy = HorizonPolicy(),
     // ── Rail thresholds (user-set, UNBOUNDED) ──────────────────────────────────────────
-    /** §3.6-D: refuse a recommendation when the last MEASURED reading is older than this. */
-    val freshnessMaxAgeMs: Long = 15 * 60_000L,
-    /** §3.6-D: refuse when more than this fraction of the recent anchor context is interpolated/warmup. */
-    val maxInterpolatedFraction: Double = 0.34,
     /** Predicted-low veto: block a dose whose MEDIAN drops below this within the VALIDATED window. */
     val predictedLowThresholdMgdl: Double = 70.0,
     /** IOB ceiling: block when assumed IOB + candidate dose exceeds this. */

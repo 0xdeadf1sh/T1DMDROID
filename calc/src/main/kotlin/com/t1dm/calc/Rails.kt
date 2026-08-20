@@ -24,40 +24,11 @@ sealed interface RailVerdict {
 }
 
 /**
- * The individual rails. Global rails ([freshness], [baselineDegeneracy]) gate the *whole*
- * recommendation and refuse it outright when they block; per-candidate rails ([predictedLowVeto],
- * [iobCeiling]) filter the grid; [mandatoryConfirmation] annotates the chosen candidate.
+ * The individual rails. [baselineDegeneracy] gates the *whole* recommendation and refuses it
+ * outright when it blocks; per-candidate rails ([predictedLowVeto], [iobCeiling]) filter the grid;
+ * [mandatoryConfirmation] annotates the chosen candidate.
  */
 object Rails {
-
-    /**
-     * §3.6-D CGM freshness gate. Refuses any recommendation off a stale or over-interpolated anchor.
-     * Fail-closed order: no anchor → no MEASURED reading → warm-up → too-old → too-interpolated.
-     */
-    fun freshness(anchor: AnchorInfo?, nowMs: Long, config: CalcConfig): RailVerdict {
-        val name = "freshness"
-        if (!config.rails.freshnessGate) return RailVerdict.Pass
-        if (anchor == null) {
-            return RailVerdict.Block(name, "No CGM signal — refusing to dose without a current reading.")
-        }
-        val lastMeasured = anchor.lastMeasuredTsMs
-            ?: return RailVerdict.Block(name, "No MEASURED reading yet — refusing to dose off an interpolated or warm-up value.")
-        if (anchor.warmup) {
-            return RailVerdict.Block(name, "Sensor is still warming up — refusing to dose off a warm-up value.")
-        }
-        val ageMs = nowMs - lastMeasured
-        if (ageMs > config.freshnessMaxAgeMs) {
-            val mins = ageMs / 60_000L
-            val limit = config.freshnessMaxAgeMs / 60_000L
-            return RailVerdict.Block(name, "Last real BG is $mins min old (limit $limit min) — refusing to dose off a stale anchor.")
-        }
-        if (anchor.interpolatedFraction > config.maxInterpolatedFraction) {
-            val pct = (anchor.interpolatedFraction * 100).toInt()
-            val limit = (config.maxInterpolatedFraction * 100).toInt()
-            return RailVerdict.Block(name, "$pct% of the recent context is interpolated/warm-up (limit $limit%) — refusing to dose off a mostly-fabricated anchor.")
-        }
-        return RailVerdict.Pass
-    }
 
     /**
      * §3.6-B/-C baseline degeneracy gate. The do-nothing (candidate = null) fan is the reference the
@@ -130,55 +101,6 @@ object Rails {
             )
         }
         return RailVerdict.Pass
-    }
-
-    /**
-     * The dose history was rewritten under the IOB. BLOCKS while the changed insulin could still be
-     * acting, unless the user has acknowledged that specific change.
-     *
-     * **Why this rail has to exist.** Deleting a logged dose used to be refused outright once its
-     * push had drained, and the one case that could still happen — undoing the dose just logged —
-     * was safe by accident: the removed row was the NEWEST, so `latestLoggedInsulinTs()` moved
-     * backward and [mandatoryConfirmation] fired. Editing breaks that coupling in both directions.
-     *
-     *  - It can LOWER assumed IOB with the log-gap mark unmoved: a units reduction, a shortened
-     *    `durationMin`, a bolus retyped to a longer-acting shape, an earlier `ts`, or the deletion
-     *    of a dose that is not the newest. [iobCeiling] then admits more insulin, in silence.
-     *  - It can RAISE assumed IOB while moving the mark FORWARD: a dose dragged later. That quiets
-     *    the very rail whose job is to say the log may be stale.
-     *
-     * The window is the changed dose's own action end rather than an arbitrary timeout, so the rail
-     * stands exactly as long as the insulin it distrusts could still be working — and it is the
-     * LATER of the pre-edit and post-edit ends, because otherwise cutting a duration from six hours
-     * to thirty minutes would buy a five-minute block against five and a half hours of wrong IOB.
-     *
-     * [DoseHistoryState.Unknown] blocks: an unreadable history is not a clean one.
-     */
-    fun doseHistoryEdited(
-        iob: IobSnapshot?,
-        candidateU: Double,
-        nowMs: Long,
-        config: CalcConfig,
-    ): RailVerdict {
-        val name = "dose-history-edited"
-        if (!config.rails.doseHistoryEdited) return RailVerdict.Pass
-        if (candidateU <= 0.0) return RailVerdict.Pass
-        val unreadable = RailVerdict.Block(name, "Dose history unreadable — blocking a nonzero dose")
-        val history = iob?.doseHistory ?: return unreadable
-        return when (history) {
-            DoseHistoryState.Unknown -> unreadable
-            DoseHistoryState.Clean -> RailVerdict.Pass
-            is DoseHistoryState.Mutated -> when {
-                nowMs >= history.actingUntilMs -> RailVerdict.Pass
-                history.acknowledgedAtMs != null &&
-                    history.acknowledgedAtMs >= history.mutatedAtMs -> RailVerdict.Pass
-                else -> RailVerdict.Block(
-                    name,
-                    "Dose log edited — IOB may be wrong " +
-                        "(clears in ${(history.actingUntilMs - nowMs) / 60_000L} min)",
-                )
-            }
-        }
     }
 
     /**
