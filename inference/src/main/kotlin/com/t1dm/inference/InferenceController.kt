@@ -1889,7 +1889,9 @@ class InferenceController(
          *  and made completion flap). Paired with the monotonic [warmupSatisfiedUpTo] latch. */
         const val WARMUP_COMPLETION_FRACTION = 0.85
         const val N_QUANTILES = 7
-        const val CARRY_SPREAD = 0.0 // single-window (≤2 h) this phase; rolling widening is Phase 4
+        /** No rolling widening: the cycle forecast is one ≤2 h window with no seam to carry across.
+         *  §9's per-level carry belongs to `:calc`'s RollingForecaster, which rolls past the window. */
+        val CARRY_SPREAD = emptyList<Double>()
         const val LATENCY_WINDOW = 60
 
         /** Context window for a cycle with NO descriptor to size it from — a device whose only

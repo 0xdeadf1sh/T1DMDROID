@@ -108,7 +108,7 @@ class StubNativeCore : NativeCore {
         anchors: List<Double>,
         slotPatch: List<Int>,
         nMasked: Int,
-        carrySpread: Double,
+        carrySpread: List<Double>,
     ): Forecast = TODO("Phase 2: native assemble_decode")
 
     override fun forecastSlice(f: Forecast, fromPatch: Int, toPatch: Int): Forecast =

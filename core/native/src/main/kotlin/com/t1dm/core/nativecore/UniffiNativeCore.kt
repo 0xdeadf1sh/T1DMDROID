@@ -258,7 +258,7 @@ class UniffiNativeCore : NativeCore {
         anchors: List<Double>,
         slotPatch: List<Int>,
         nMasked: Int,
-        carrySpread: Double,
+        carrySpread: List<Double>,
     ): Forecast =
         uniffiAssembleDecode(desc.toUniffi(), headRaw, anchors, slotPatch, nMasked, carrySpread).toModel()
 

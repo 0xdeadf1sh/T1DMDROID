@@ -140,6 +140,12 @@ interface NativeCore {
      * The fan this returns is the RAW one: no conformal correction is applied here, and none
      * is applied to anything stored, pushed or classified. §8.4's recalibration is a display
      * quantity fitted on device and applied downstream by [applyQuantileConformal].
+     *
+     * [carrySpread] is §9's rolling widening and is PER LEVEL: empty for none, one value for
+     * every level alike, or six in `head_raw`'s own spread layout `[.75 .9 .95 | .25 .1 .05]`.
+     * Any other length is refused rather than broadcast — a carry shared across the levels
+     * re-seeds each of them from the outermost one's accumulation, and one seam later the fan
+     * is a slab.
      */
     fun assembleDecode(
         desc: ModelDescriptor,
@@ -147,7 +153,7 @@ interface NativeCore {
         anchors: List<Double>,
         slotPatch: List<Int>,
         nMasked: Int,
-        carrySpread: Double,
+        carrySpread: List<Double>,
     ): Forecast
 
     /** The rows of [f] whose slot sits in `[fromPatch, toPatch)`, as a Forecast of its own —

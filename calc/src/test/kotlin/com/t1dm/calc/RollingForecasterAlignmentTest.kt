@@ -230,12 +230,76 @@ class RollingForecasterAlignmentTest {
     }
 
     /**
+     * The roll's `carry_spread` is PER LEVEL (`SPEC/inference.md` §8.1, §9): each level resumes at
+     * the offset it reached, in the argument's own layout `[up .75 .9 .95 | dn .25 .1 .05]`, read
+     * off the fan the previous roll produced. Roll 0 carries nothing.
+     *
+     * A single scalar carry — the outermost level's accumulation, added to all six — is what put
+     * the .75 edge of one roll outside the .95 edge of the one before it, so the three nested pairs
+     * met at every 2 h seam and the fan drew as one wide band.
+     */
+    @Test
+    fun rollCarriesSpreadPerLevel() = runTest {
+        val native = RecordingNativeCore()
+        val store = object : DoseStore {
+            override suspend fun carbEvents(fromMs: Long, toMs: Long): List<CurveEvent> = emptyList()
+            override suspend fun insulinEvents(fromMs: Long, toMs: Long): List<CurveEvent> = emptyList()
+            override suspend fun activeBasalSchedule(): BasalSchedule? = null
+        }
+        val history = object : BgHistoryProvider {
+            override suspend fun recentBgSeries(maxSteps: Int, minSteps: Int): BgSeries =
+                BgSeries(DoubleArray(nCtx) { 120.0 }, anchorTsMs = g + (nCtx - 1) * STEP_MS, gridStartMs = g)
+
+            override suspend fun dosingBgSeries(maxSteps: Int, minSteps: Int): BgSeries =
+                recentBgSeries(maxSteps, minSteps)
+        }
+        val model = object : SelectedModelHandle {
+            override val descriptor = this@RollingForecasterAlignmentTest.descriptor
+            override val backendInfo = fp32Backend()
+            override suspend fun run(input: GraphTensors): GraphOutput = GraphOutput(FloatArray(4 * 6 * 7))
+        }
+        val forecaster = RollingForecaster(
+            native, dispatchers, ChannelBuilder(CurveEngine(native, dispatchers), store),
+            history, SelectedModelProvider { model },
+        )
+
+        val fan = forecaster.roll(
+            ForecastRequest(
+                rollStartMs = nowMs,
+                fullRollSteps = 72,          // three 24-step rolls ⇒ two seams
+                validatedSteps = 24,
+                announced = emptyList(),
+                candidate = null,
+                candidateU = 0.0,
+            ),
+        )
+        assertTrue("the roll must complete and be eligible over the fakes", fan.eligible)
+        assertEquals("three rolls must each decode once", 3, native.carryCalls.size)
+
+        assertTrue(
+            "roll 0 has no seam behind it and must carry nothing, got ${native.carryCalls[0]}",
+            native.carryCalls[0].isEmpty(),
+        )
+        // Off RISK_ROW: median 3.0, up edges 5/7/9 ⇒ [2,4,6]; down edges 2/1/0 ⇒ [1,2,3] nearest→far.
+        val expected = listOf(2.0, 4.0, 6.0, 1.0, 2.0, 3.0)
+        for (r in 1 until native.carryCalls.size) {
+            assertEquals(
+                "roll $r must carry the previous roll's terminal offsets, level by level",
+                expected, native.carryCalls[r],
+            )
+        }
+    }
+
+    /**
      * A [NativeCore] that records the `bucketize` grid origins and the `buildContext` channels the roll
      * builds, while giving `bucketize`/`buildContext`/`assembleDecode`/`forecastDegeneracyCheck` just
      * enough real behaviour for one clean roll. `bucketize` mirrors the Rust rule the fix depends on:
      * a step whose absolute time maps to `idx < 0` is DROPPED. Every other method is unused on this path.
      */
     private class RecordingNativeCore : NativeCore {
+        /** Every `carry_spread` the roll handed to `assembleDecode`, in roll order. */
+        val carryCalls = mutableListOf<List<Double>>()
+
         data class BucketizeCall(val gridStartMs: Long, val nSteps: Int, val kind: CurveKind)
         data class BuildContextCall(
             val bg: List<Double>,
@@ -310,13 +374,17 @@ class RollingForecasterAlignmentTest {
             anchors: List<Double>,
             slotPatch: List<Int>,
             nMasked: Int,
-            carrySpread: Double,
+            carrySpread: List<Double>,
         ): Forecast {
+            carryCalls.add(carrySpread)
             val steps = nMasked * desc.patchSize
             val nq = 7
             return Forecast(
                 medianRisk = List(steps) { 0.0 },
-                qTauRisk = List(steps * nq) { (it % nq).toDouble() },
+                // ASYMMETRIC about the median (col 3): up offsets [2,4,6], down offsets [1,2,3], so a
+                // carry read off this fan pins the level ORDER and the down side's flip, not just its
+                // length.
+                qTauRisk = List(steps * nq) { RISK_ROW[it % nq] },
                 medianBg = List(steps) { 120.0 },
                 bandsMgdl = List(steps * nq) { 110.0 + (it % nq) * 2.0 },
                 slotPatch = slotPatch.take(nMasked),
@@ -432,3 +500,7 @@ class RollingForecasterAlignmentTest {
         override fun createGameWorld(terrain: TerrainSpec, tuning: CarTuning): GameWorld = unused()
     }
 }
+
+/** One ascending-τ risk fan row the recording decode returns. Deliberately ASYMMETRIC about the
+ *  median (col 3): up offsets [2,4,6], down offsets [1,2,3]. */
+private val RISK_ROW = listOf(0.0, 1.0, 2.0, 3.0, 5.0, 7.0, 9.0)

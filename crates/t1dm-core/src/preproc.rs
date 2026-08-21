@@ -1222,6 +1222,13 @@ pub struct Forecast {
 /// column 0 is the median delta; columns 1..=3 the τ>.5 spreads (nearest→far); 4..=6 the τ<.5
 /// spreads. The median is `anchor + proj_DCT(delta)` (a low-frequency L2 contraction that
 /// cannot drift); the fan is `m ± carry_spread ± cumsum(softplus+floor)`.
+///
+/// `carry_spread` is the rolling widening of INFERENCE.md §9, and it is PER LEVEL: empty for
+/// none, one value for every level alike, or `2·N_SPREADS` in `head_raw[1..]`'s own layout
+/// `[.75 .9 .95 | .25 .1 .05]`. One value shared across the levels re-seeds each of them from
+/// the outermost one's accumulation, so the next roll's .75 edge lands outside this roll's .95
+/// edge and the fan flattens into a slab — which is why the shape is checked here rather than
+/// left to a caller.
 #[uniffi::export]
 pub fn assemble_decode(
     desc: &ModelDescriptor,
@@ -1229,7 +1236,7 @@ pub fn assemble_decode(
     anchors: Vec<f64>,
     slot_patch: Vec<i32>,
     n_masked: i32,
-    carry_spread: f64,
+    carry_spread: Vec<f64>,
 ) -> Result<Forecast, CoreError> {
     let stride = PATCH_SIZE * N_QUANTILES;
     if head_raw.is_empty() || head_raw.len() % stride != 0 {
@@ -1254,6 +1261,28 @@ pub fn assemble_decode(
                 anchors.len(),
                 slot_patch.len()
             ),
+        });
+    }
+    let carry: [f64; 2 * N_SPREADS] = match carry_spread.len() {
+        0 => [0.0; 2 * N_SPREADS],
+        1 => [carry_spread[0]; 2 * N_SPREADS],
+        n if n == 2 * N_SPREADS => {
+            let mut c = [0.0; 2 * N_SPREADS];
+            c.copy_from_slice(&carry_spread);
+            c
+        }
+        n => {
+            return Err(CoreError::Internal {
+                reason: format!(
+                    "carry_spread must hold 0, 1 or {} values (per level), got {n}",
+                    2 * N_SPREADS
+                ),
+            })
+        }
+    };
+    if carry.iter().any(|c| !c.is_finite() || *c < 0.0) {
+        return Err(CoreError::Internal {
+            reason: "carry_spread must be finite and non-negative on every level".into(),
         });
     }
     let kov = desc.kovatchev;
@@ -1306,8 +1335,8 @@ pub fn assemble_decode(
         for k in 0..N_SPREADS {
             cs_up += softplus(head_raw[i * N_QUANTILES + 1 + k]) + floor;
             cs_dn += softplus(head_raw[i * N_QUANTILES + 1 + N_SPREADS + k]) + floor;
-            up[k] = mi + carry_spread + cs_up;
-            dn[k] = mi - carry_spread - cs_dn;
+            up[k] = mi + carry[k] + cs_up;
+            dn[k] = mi - carry[N_SPREADS + k] - cs_dn;
         }
         // Ascending τ: [dn.flip | m | up] = [.05 .1 .25 | .5 | .75 .9 .95].
         let row = i * N_QUANTILES;
@@ -1745,7 +1774,7 @@ mod tests {
             f64s(&c["anchors"]),
             c["slot_patch"].as_array().unwrap().iter().map(|v| v.as_i64().unwrap() as i32).collect(),
             n_masked,
-            0.0,
+            vec![],
         )
         .expect("golden decode")
     }
@@ -1952,7 +1981,7 @@ mod tests {
         for kov in [OTHER_KOVATCHEV, SHIPPED_KOVATCHEV] {
             let d = ModelDescriptor { kovatchev: kov, ..test_descriptor() };
             let f =
-                assemble_decode(&d, flat.clone(), vec![120.0; 4], vec![0, 1, 2, 3], 4, 0.0)
+                assemble_decode(&d, flat.clone(), vec![120.0; 4], vec![0, 1, 2, 3], 4, vec![])
                     .unwrap();
             for v in &f.median_bg {
                 assert!((v - 120.0).abs() < 1e-6, "anchor round trip under {kov:?} gave {v}");
@@ -2108,6 +2137,57 @@ mod tests {
 
 
 
+    /// The rolling carry is PER LEVEL (INFERENCE.md §8.1, §9): each edge moves by its own
+    /// offset and by no other, the median does not move, and a single value widens every level
+    /// alike. A carry shared across the levels is what makes the next roll's .75 edge land
+    /// outside this roll's .95 edge.
+    #[test]
+    fn carry_spread_is_per_level() {
+        let d = test_descriptor();
+        let mut head = vec![0.0f64; 4 * PATCH_SIZE * N_QUANTILES];
+        for (i, h) in head.iter_mut().enumerate() {
+            *h = ((i % 5) as f64 - 2.0) * 0.3; // something asymmetric on both sides
+        }
+        let anchors = vec![120.0; 4];
+        let slots = vec![0, 1, 2, 3];
+        let bare = assemble_decode(&d, head.clone(), anchors.clone(), slots.clone(), 4, vec![])
+            .unwrap();
+        // [up .75 .9 .95 | dn .25 .1 .05]
+        let carry = vec![0.10, 0.20, 0.30, 0.40, 0.50, 0.60];
+        let per = assemble_decode(&d, head.clone(), anchors.clone(), slots.clone(), 4, carry.clone())
+            .unwrap();
+
+        for i in 0..bare.median_risk.len() {
+            let row = i * N_QUANTILES;
+            assert!((per.q_tau_risk[row + N_SPREADS] - bare.q_tau_risk[row + N_SPREADS]).abs() < 1e-12,
+                "the carry moved the median");
+            for k in 0..N_SPREADS {
+                let up = per.q_tau_risk[row + N_SPREADS + 1 + k] - bare.q_tau_risk[row + N_SPREADS + 1 + k];
+                let dn = bare.q_tau_risk[row + N_SPREADS - 1 - k] - per.q_tau_risk[row + N_SPREADS - 1 - k];
+                assert!((up - carry[k]).abs() < 1e-12, "up level {k} moved by {up}, want {}", carry[k]);
+                assert!((dn - carry[N_SPREADS + k]).abs() < 1e-12,
+                    "dn level {k} moved by {dn}, want {}", carry[N_SPREADS + k]);
+            }
+        }
+
+        // One value is that value in every slot; none is the identity.
+        let one = assemble_decode(&d, head.clone(), anchors.clone(), slots.clone(), 4, vec![0.37])
+            .unwrap();
+        let six = assemble_decode(&d, head.clone(), anchors.clone(), slots.clone(), 4, vec![0.37; 6])
+            .unwrap();
+        assert_eq!(one.q_tau_risk, six.q_tau_risk);
+        assert_eq!(bare.q_tau_risk, assemble_decode(&d, head.clone(), anchors.clone(), slots.clone(), 4, vec![0.0]).unwrap().q_tau_risk);
+
+        // A shape that is neither is refused, never broadcast; so is a negative or non-finite one.
+        for bad in [vec![0.1, 0.2], vec![0.0; 7], vec![-0.1; 6], vec![f64::NAN; 6]] {
+            assert!(
+                assemble_decode(&d, head.clone(), anchors.clone(), slots.clone(), 4, bad.clone())
+                    .is_err(),
+                "carry {bad:?} must be refused"
+            );
+        }
+    }
+
     // ── forecast_degeneracy_check (§3.6-B) ───────────────────────────────────────────
     #[test]
     fn degeneracy_non_finite() {
@@ -2129,7 +2209,7 @@ mod tests {
         for i in 0..24 {
             head[i * 7] = 100.0; // huge risk delta
         }
-        let f = assemble_decode(&d, head, vec![120.0; 4], vec![0, 1, 2, 3], 4, 0.0).unwrap();
+        let f = assemble_decode(&d, head, vec![120.0; 4], vec![0, 1, 2, 3], 4, vec![]).unwrap();
         let hi = d.kovatchev.bg_clamp_max;
         assert!(f.median_bg.iter().all(|&v| (v - hi).abs() < 1e-6));
         assert_eq!(forecast_degeneracy_check(&test_descriptor(), &f), ForecastStatus::RailPinned);

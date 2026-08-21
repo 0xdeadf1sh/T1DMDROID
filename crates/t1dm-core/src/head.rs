@@ -1557,7 +1557,7 @@ fn sample_loss_and_grad(
         sample.anchors.clone(),
         slot_patch,
         n as i32,
-        0.0,
+        vec![],
     )?;
     let mut loss = pinball(desc, &fan.q_tau_risk, &sample.target_bg, n_steps);
 

@@ -169,7 +169,7 @@ class RollingForecaster(
         val exercise = ArrayDeque<Double>(ctx0.exercise.toList())
 
         val outSteps = ArrayList<FanStep>(request.fullRollSteps)
-        var carrySpread = 0.0
+        var carrySpread = emptyList<Double>()
         val nRolls = (request.fullRollSteps + predSteps - 1) / predSteps
         // Resolved ONCE for the whole roll: a Settings edit mid-roll must not smooth roll r+1
         // differently from roll r, or the re-fed median would cross a filter discontinuity. A dose
@@ -228,12 +228,12 @@ class RollingForecaster(
                 insulin.addLast(predInsulin.getOrElse(i) { 0.0 })
                 exercise.addLast(predExercise.getOrElse(i) { 0.0 })
             }
-            // `terminalHalfWidth` reads the fan the roll just produced, and that fan ALREADY
-            // carries `carrySpread` on both sides — so adding it back compounds the carry
+            // `terminalOffsets` reads the fan the roll just produced, and that fan ALREADY
+            // carries `carrySpread` on every level — so adding it back compounds the carry
             // geometrically and the envelope balloons over a long roll. What the next roll must
-            // start from is this one's carry PLUS the half-width the model itself emitted, and
-            // that sum is exactly the terminal half-width just measured (SPEC/inference.md §9).
-            carrySpread = terminalHalfWidth(forecast)
+            // start from is this one's carry PLUS the spread the model itself emitted, and that
+            // sum is exactly the terminal offset just measured (SPEC/inference.md §9).
+            carrySpread = terminalOffsets(forecast)
         }
 
         val trimmed = if (outSteps.size > request.fullRollSteps) outSteps.subList(0, request.fullRollSteps).toList() else outSteps.toList()
@@ -260,15 +260,24 @@ class RollingForecaster(
         }
     }
 
-    /** The terminal-step risk-space half-width, seeding the next roll's carry_spread (§9.4). */
-    private fun terminalHalfWidth(f: Forecast): Double {
+    /**
+     * The terminal-step risk-space spread PER LEVEL, seeding the next roll's `carry_spread`
+     * (§9.4) in that argument's own layout: `[up .75 .9 .95 | dn .25 .1 .05]`.
+     *
+     * Per level and not one half-width: a single carry, seeded from the outermost level and
+     * added to all six, hands the next roll's .75 edge the whole .05–.95 accumulation, so it
+     * opens outside the .95 edge this roll ended on and the three nested pairs collapse onto one
+     * another a seam later.
+     */
+    private fun terminalOffsets(f: Forecast): List<Double> {
         val nq = 7
+        val nSpreads = nq / 2
         val steps = f.medianRisk.size
-        if (steps == 0 || f.qTauRisk.size < steps * nq) return 0.0
-        val last = steps - 1
-        val top = f.qTauRisk[last * nq + (nq - 1)]
-        val med = f.qTauRisk[last * nq + 3]
-        return (top - med).coerceAtLeast(0.0)
+        if (steps == 0 || f.qTauRisk.size < steps * nq) return emptyList()
+        val row = (steps - 1) * nq
+        val med = f.qTauRisk[row + nSpreads]
+        return List(nSpreads) { k -> (f.qTauRisk[row + nSpreads + 1 + k] - med).coerceAtLeast(0.0) } +
+            List(nSpreads) { k -> (med - f.qTauRisk[row + nSpreads - 1 - k]).coerceAtLeast(0.0) }
     }
 
     private fun sliceOrPad(src: DoubleArray, from: Int, len: Int): List<Double> =
