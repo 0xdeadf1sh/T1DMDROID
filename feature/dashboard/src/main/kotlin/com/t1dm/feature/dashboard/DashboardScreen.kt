@@ -337,12 +337,20 @@ fun DashboardScreen(
     // telemetry/sync but must not stipple faint secondary fans over the BG panel.
     // Keyed on [calibrateBands] too: `:app` re-remembers that lambda exactly when the stored §8.4
     // correction changes, so a fresh fit repaints the fan without waiting for the next cycle.
-    val overlay by produceState(emptyList<PredSeries>(), predictions, unit, calibrateBands) {
+    //
+    // While a rolled forecast is on the panel the correction is DROPPED. §8.4 fits the delta against
+    // the 2 h forecast masked set and it may not be broadcast to another protocol, so the roll's
+    // autoregressive tail can never carry it — and a calibrated fan beside a raw one puts two
+    // different uncertainties on one picture, which read as the forecast narrowing at the 2 h mark
+    // the moment the calibrated fan ran out. One quantity per panel; the correction comes back when
+    // the roll is dismissed.
+    val rollOnPanel = rolledForecast?.isEmpty == false
+    val overlay by produceState(emptyList<PredSeries>(), predictions, unit, calibrateBands, rollOnPanel) {
         value = predOverlayOf(
             predictions.filter { it.selected },
             unit,
             kovatchevF = kovatchevF,
-            calibrateBands = calibrateBands,
+            calibrateBands = calibrateBands.takeIf { !rollOnPanel },
         )
     }
 
