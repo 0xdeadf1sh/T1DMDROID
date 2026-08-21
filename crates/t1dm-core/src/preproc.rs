@@ -1221,14 +1221,15 @@ pub struct Forecast {
 /// applied by [`crate::apply_quantile_conformal`] at the last point before pixels. `head_raw`
 /// column 0 is the median delta; columns 1..=3 the τ>.5 spreads (nearest→far); 4..=6 the τ<.5
 /// spreads. The median is `anchor + proj_DCT(delta)` (a low-frequency L2 contraction that
-/// cannot drift); the fan is `m ± carry_spread ± cumsum(softplus+floor)`.
+/// cannot drift); the fan is `m ± hypot(carry_spread, cumsum(softplus+floor))`.
 ///
 /// `carry_spread` is the rolling widening of INFERENCE.md §9, and it is PER LEVEL: empty for
 /// none, one value for every level alike, or `2·N_SPREADS` in `head_raw[1..]`'s own layout
 /// `[.75 .9 .95 | .25 .1 .05]`. One value shared across the levels re-seeds each of them from
 /// the outermost one's accumulation, so the next roll's .75 edge lands outside this roll's .95
 /// edge and the fan flattens into a slab — which is why the shape is checked here rather than
-/// left to a caller.
+/// left to a caller. It composes with the span's own spread in QUADRATURE, not by addition:
+/// adding is the perfectly-correlated bound and is twice too wide by the fourth roll.
 #[uniffi::export]
 pub fn assemble_decode(
     desc: &ModelDescriptor,
@@ -1335,8 +1336,12 @@ pub fn assemble_decode(
         for k in 0..N_SPREADS {
             cs_up += softplus(head_raw[i * N_QUANTILES + 1 + k]) + floor;
             cs_dn += softplus(head_raw[i * N_QUANTILES + 1 + N_SPREADS + k]) + floor;
-            up[k] = mi + carry[k] + cs_up;
-            dn[k] = mi - carry[N_SPREADS + k] - cs_dn;
+            // The carry is another roll's increment, so it composes with this span's own
+            // spread in QUADRATURE (independent increments add variances). Skipped when
+            // there is no carry, which keeps every single-window decode bit-identical.
+            let (c_up, c_dn) = (carry[k], carry[N_SPREADS + k]);
+            up[k] = mi + if c_up == 0.0 { cs_up } else { c_up.hypot(cs_up) };
+            dn[k] = mi - if c_dn == 0.0 { cs_dn } else { c_dn.hypot(cs_dn) };
         }
         // Ascending τ: [dn.flip | m | up] = [.05 .1 .25 | .5 | .75 .9 .95].
         let row = i * N_QUANTILES;
@@ -2137,10 +2142,11 @@ mod tests {
 
 
 
-    /// The rolling carry is PER LEVEL (INFERENCE.md §8.1, §9): each edge moves by its own
-    /// offset and by no other, the median does not move, and a single value widens every level
-    /// alike. A carry shared across the levels is what makes the next roll's .75 edge land
-    /// outside this roll's .95 edge.
+    /// The rolling carry is PER LEVEL and composes in QUADRATURE (INFERENCE.md §8.1, §9): each
+    /// edge takes `hypot(its own carry, its own native offset)`, the median does not move, and a
+    /// single value widens every level alike. A carry shared across the levels is what makes the
+    /// next roll's .75 edge land outside this roll's .95 edge; an ADDED carry is the
+    /// perfectly-correlated bound, twice too wide by the fourth roll.
     #[test]
     fn carry_spread_is_per_level() {
         let d = test_descriptor();
@@ -2159,14 +2165,21 @@ mod tests {
 
         for i in 0..bare.median_risk.len() {
             let row = i * N_QUANTILES;
-            assert!((per.q_tau_risk[row + N_SPREADS] - bare.q_tau_risk[row + N_SPREADS]).abs() < 1e-12,
+            let med = bare.q_tau_risk[row + N_SPREADS];
+            assert!((per.q_tau_risk[row + N_SPREADS] - med).abs() < 1e-12,
                 "the carry moved the median");
             for k in 0..N_SPREADS {
-                let up = per.q_tau_risk[row + N_SPREADS + 1 + k] - bare.q_tau_risk[row + N_SPREADS + 1 + k];
-                let dn = bare.q_tau_risk[row + N_SPREADS - 1 - k] - per.q_tau_risk[row + N_SPREADS - 1 - k];
-                assert!((up - carry[k]).abs() < 1e-12, "up level {k} moved by {up}, want {}", carry[k]);
-                assert!((dn - carry[N_SPREADS + k]).abs() < 1e-12,
-                    "dn level {k} moved by {dn}, want {}", carry[N_SPREADS + k]);
+                // Each edge's distance from the median is hypot(its own carry, its own native
+                // offset) — quadrature, and strictly less than the additive carry + offset.
+                let (up_i, dn_i) = (row + N_SPREADS + 1 + k, row + N_SPREADS - 1 - k);
+                let (nat_up, nat_dn) = (bare.q_tau_risk[up_i] - med, med - bare.q_tau_risk[dn_i]);
+                let (got_up, got_dn) = (per.q_tau_risk[up_i] - med, med - per.q_tau_risk[dn_i]);
+                assert!((got_up - carry[k].hypot(nat_up)).abs() < 1e-12,
+                    "up level {k} offset {got_up}, want hypot({}, {nat_up})", carry[k]);
+                assert!((got_dn - carry[N_SPREADS + k].hypot(nat_dn)).abs() < 1e-12,
+                    "dn level {k} offset {got_dn}, want hypot({}, {nat_dn})", carry[N_SPREADS + k]);
+                assert!(got_up < carry[k] + nat_up && got_dn < carry[N_SPREADS + k] + nat_dn,
+                    "quadrature must sit inside the perfectly-correlated additive bound");
             }
         }
 
