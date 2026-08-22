@@ -1950,10 +1950,11 @@ private fun T1dmNavHost(
             // one model's history rather than two models' mixed.
             val modelId = inference.selectedPrediction?.modelId
                 ?: inference.running.firstOrNull { it.selected }?.modelId
-            // The SAME §8.4 correction the BG panel's two display fans wear, remembered against the
-            // same map for the same reason: a fresh fit redraws the sweep instead of leaving it on the
-            // basis it was built with. Drawn raw beside two calibrated fans it would state a second,
-            // narrower uncertainty with nothing saying why.
+            // The SAME §8.4 correction the BG panel's two display fans wear when no rolled band is
+            // up (a rolled band takes it off both of them), remembered against the same map for the
+            // same reason: a fresh fit redraws the sweep instead of leaving it on the basis it was
+            // built with. Drawn raw beside calibrated fans it would state a second, narrower
+            // uncertainty with nothing saying why. This screen carries no roll, so it is not gated.
             val calibrateSessionFans: (String, () -> List<Double>, Int, Int) -> List<Double>? =
                 remember(bandCalibrations) {
                     { m, fans, steps, nq -> container.calibratedFanBatch(bandCalibrations, m, fans, steps, nq) }

@@ -104,6 +104,13 @@ per model in the `conformal_delta` table.
   correction in-sample, to rows it was fitted on, which §8.4's exchangeability
   argument does not cover; accepted because nothing either sweep draws is read by
   anything.
+- **A rolled band takes the correction off the whole panel.** The on-demand roll
+  extends past the 2 h masked set the delta is fitted against, and §8.4 forbids
+  broadcasting a delta to another protocol, so the roll's tail can never wear one.
+  For as long as a rolled band is drawn, the BG panel's forecast overlay and its
+  hindsight sweep drop the correction too, on the same rule as above: one basis per
+  panel. The trigger is the band, not the roll — a roll no longer than the validated
+  horizon, or a degenerate one, draws only a median line and takes nothing away.
 - **The wire carries the raw fan.** `SPEC/http-api.md`'s Prediction has no
   calibrated/raw discriminator, and a calibrated fan would satisfy its "row index
   3 equals `line`" and travel indistinguishably. Nothing calibrated is written to

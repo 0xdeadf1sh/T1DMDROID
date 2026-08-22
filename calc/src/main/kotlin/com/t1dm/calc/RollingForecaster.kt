@@ -228,11 +228,12 @@ class RollingForecaster(
                 insulin.addLast(predInsulin.getOrElse(i) { 0.0 })
                 exercise.addLast(predExercise.getOrElse(i) { 0.0 })
             }
-            // `terminalOffsets` reads the fan the roll just produced, and that fan ALREADY
-            // carries `carrySpread` on every level — so adding it back compounds the carry
-            // geometrically and the envelope balloons over a long roll. What the next roll must
-            // start from is this one's carry PLUS the spread the model itself emitted, and that
-            // sum is exactly the terminal offset just measured (SPEC/inference.md §9).
+            // `terminalOffsets` reads the fan the roll just produced, and that fan ALREADY carries
+            // `carrySpread` on every level: each edge sits at `hypot(carry, the spread the model
+            // itself emitted)`. That composition IS what the next roll must start from, so the
+            // measurement REPLACES the carry rather than being folded into it — folding it in again
+            // would count this roll's carry twice and balloon the envelope over a long roll
+            // (SPEC/inference.md §9).
             carrySpread = terminalOffsets(forecast)
         }
 
