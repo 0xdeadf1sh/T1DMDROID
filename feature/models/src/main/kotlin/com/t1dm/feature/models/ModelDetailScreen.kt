@@ -542,7 +542,7 @@ fun ModelDetailScreen(
         AlertDialog(
             onDismissRequest = { haptics.perform(HapticEvent.Reject); showDropCalibration = false },
             title = { Text("Drop the band correction?") },
-            text = { Text("Raw bands until a refit. Needs half a day of matured forecasts.") },
+            text = { Text("Raw bands until a refit. Needs ~17 h of matured forecasts.") },
             confirmButton = {
                 TextButton(
                     onClick = {
@@ -813,6 +813,10 @@ private fun emptyWhy(m: ModelMetrics?): String {
     if (m == null) return "Insufficient history — nothing scored yet"
     val built = m.nMatured - m.nIncomplete
     return when {
+        // Ahead of the history arms: after a sensor change there IS history, and saying there is not
+        // sends the user looking for a fault that is not there.
+        m.nForeignSource > 0 && m.nMatured == 0 ->
+            "${m.nForeignSource} forecasts from the previous sensor — refit after ~17 h"
         m.nMatured == 0 -> "Insufficient history — no matured forecast yet"
         built == 0 -> "CGM gaps — ${m.nIncomplete} of ${m.nMatured} forecasts dropped"
         m.suite.nWindows == 0 -> "Fan not scoreable — $built forecasts rejected"
