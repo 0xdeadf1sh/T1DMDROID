@@ -143,7 +143,7 @@ class ResetWipeTest {
         db.predictionDao().upsert(
             PredictionEntity(
                 madeAtMs = 300_000L, modelId = "m", horizonSteps = 1, nQuantiles = 1, stepMs = 300_000L,
-                anchorTsMs = 300_000L, lastBg = 120.0, lineBlob = ByteArray(8), fanBlob = ByteArray(8),
+                anchorTsMs = 300_000L, sourceId = "src", lastBg = 120.0, lineBlob = ByteArray(8), fanBlob = ByteArray(8),
                 todBlob = null, todConf = null, status = ForecastStatus.OK, backend = BackendId.EXECUTORCH_XNNPACK_FP32,
                 precision = Precision.FP32, selected = true, stale = false, latencyMs = 9.0, createdAtMs = 300_000L,
             ),

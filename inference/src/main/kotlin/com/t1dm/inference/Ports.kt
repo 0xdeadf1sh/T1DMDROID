@@ -10,16 +10,28 @@ import com.t1dm.core.model.ModelPrediction
  * anchor, §3.6-D — interpolated carry-forward never resets it); [gridStartMs] is the grid timestamp
  * of `mgdl[0]`, so the carb/insulin channels reconstructed over `[gridStartMs, +size·STEP)` align
  * index-for-index with the BG array feeding `build_context`.
+ *
+ * [sourceId] is the CGM source every value here came from, and it travels with the series so a
+ * forecast can record which sensor conditioned it. Two sensors worn at once do not agree — a 28
+ * mg/dL median gap between two of this patient's has been measured — so a forecast made on one and
+ * scored against the other measures the gap between sensors and calls it model error. Null only
+ * where there is no sensor behind the series at all (a synthetic probe context).
  */
-data class BgSeries(val mgdl: DoubleArray, val anchorTsMs: Long, val gridStartMs: Long) {
+data class BgSeries(
+    val mgdl: DoubleArray,
+    val anchorTsMs: Long,
+    val gridStartMs: Long,
+    val sourceId: String? = null,
+) {
     override fun equals(other: Any?): Boolean =
         other is BgSeries && anchorTsMs == other.anchorTsMs && gridStartMs == other.gridStartMs &&
-            mgdl.contentEquals(other.mgdl)
+            sourceId == other.sourceId && mgdl.contentEquals(other.mgdl)
 
     override fun hashCode(): Int {
         var h = mgdl.contentHashCode()
         h = 31 * h + anchorTsMs.hashCode()
         h = 31 * h + gridStartMs.hashCode()
+        h = 31 * h + (sourceId?.hashCode() ?: 0)
         return h
     }
 }

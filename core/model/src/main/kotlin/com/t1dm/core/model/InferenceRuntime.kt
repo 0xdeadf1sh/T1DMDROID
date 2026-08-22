@@ -182,6 +182,16 @@ data class ModelPrediction(
     val modelId: String,
     val cycleTsMs: Long,
     val anchorTsMs: Long,
+    /**
+     * The CGM source whose readings conditioned this forecast, or null when none is known.
+     *
+     * It is here so a matured window can be refused unless the sensor that produced the forecast is
+     * the sensor now supplying its truth. Two sensors worn at once disagree — 28 mg/dL between two
+     * of this patient's — and scoring across a swap measures that gap and calls it model error,
+     * which the §8.4 fit then pushes into the band the patient is shown. Null is UNKNOWN and never
+     * matches, so an unstamped forecast is dropped rather than guessed at.
+     */
+    val sourceId: String? = null,
     val stepMs: Long,
     val medianBg: List<Double>,
     val bandsMgdl: List<Double>,

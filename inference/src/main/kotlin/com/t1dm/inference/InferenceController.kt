@@ -1582,6 +1582,7 @@ class InferenceController(
             modelId = entry.bundle.id,
             cycleTsMs = cycleTs,
             anchorTsMs = series.anchorTsMs,
+            sourceId = series.sourceId,
             stepMs = GRID_MS,
             medianBg = forecast.medianBg,
             bandsMgdl = forecast.bandsMgdl,

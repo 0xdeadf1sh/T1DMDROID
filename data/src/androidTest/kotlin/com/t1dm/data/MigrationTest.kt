@@ -731,10 +731,44 @@ class MigrationTest {
     }
 
     @Test
-    fun migrate1To24_fullChain() {
+    fun migrate24To25_forecastsWithNoSensorAreDiscarded() {
+        val seed = helper.createDatabase(24)
+        seed.execSQL(
+            "INSERT INTO `prediction` (`madeAtMs`,`modelId`,`horizonSteps`,`nQuantiles`,`stepMs`," +
+                "`anchorTsMs`,`lastBg`,`lineBlob`,`fanBlob`,`todBlob`,`todConf`,`status`,`backend`," +
+                "`precision`,`selected`,`stale`,`latencyMs`,`createdAtMs`) VALUES " +
+                "(1700000000000,'m',24,7,300000,1700000000000,120.0,x'',x'',NULL,NULL,'OK'," +
+                "'EXECUTORCH_XNNPACK_FP32','FP32',1,0,1.0,1700000000000)",
+        )
+        seed.close()
+
+        val db = helper.runMigrationsAndValidate(25, listOf(MigrationRunner.MIGRATION_24_25))
+
+        assertEquals(
+            "a forecast that does not record its sensor cannot be attributed, so it is deleted",
+            0,
+            countRows(db, "SELECT COUNT(*) FROM `prediction`"),
+        )
+        // The column exists and takes a source id: a post-migration write must round-trip.
+        db.execSQL(
+            "INSERT INTO `prediction` (`madeAtMs`,`modelId`,`horizonSteps`,`nQuantiles`,`stepMs`," +
+                "`anchorTsMs`,`sourceId`,`lastBg`,`lineBlob`,`fanBlob`,`todBlob`,`todConf`,`status`," +
+                "`backend`,`precision`,`selected`,`stale`,`latencyMs`,`createdAtMs`) VALUES " +
+                "(1700000300000,'m',24,7,300000,1700000300000,'vendorb:1',120.0,x'',x'',NULL,NULL,'OK'," +
+                "'EXECUTORCH_XNNPACK_FP32','FP32',1,0,1.0,1700000300000)",
+        )
+        assertEquals(
+            1,
+            countRows(db, "SELECT COUNT(*) FROM `prediction` WHERE `sourceId` = 'vendorb:1'"),
+        )
+        db.close()
+    }
+
+    @Test
+    fun migrate1To25_fullChain() {
         helper.createDatabase(1).close()
         helper.runMigrationsAndValidate(
-            24,
+            25,
             listOf(
                 MigrationRunner.MIGRATION_1_2,
                 MigrationRunner.MIGRATION_2_3,
@@ -759,6 +793,7 @@ class MigrationTest {
                 MigrationRunner.MIGRATION_21_22,
                 MigrationRunner.MIGRATION_22_23,
                 MigrationRunner.MIGRATION_23_24,
+                MigrationRunner.MIGRATION_24_25,
             ),
         )
     }

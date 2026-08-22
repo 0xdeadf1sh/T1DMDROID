@@ -52,7 +52,7 @@ import kotlinx.coroutines.Dispatchers
         ExerciseFixEntity::class,
         EventTombstoneEntity::class,
     ],
-    version = 24,
+    version = 25,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -97,7 +97,7 @@ abstract class AppDatabase : RoomDatabase() {
          * on launch. Version 19 (`cgm_sensor_secret`, `cgm_source.ordinal`) is one such bump; version 20
          * (`lora`, `bg_infill`) is another; version 21 (`event_tombstone` and the mutation stamps) is
          * a third; version 22 (`bg_infill.spanStartMs`, `bg_infill.promotedAtMs`) is a fourth; version
-         * 23 (the adapter's guard verdict) is a fifth.
+         * 23 (the adapter's guard verdict) is a fifth; version 25 (`prediction.sourceId`) is a sixth.
          *
          * v22 carries the rule with unusual force. `ReadingProvenance.RECONSTRUCTED` is stored as
          * TEXT through `Converters.stringToProvenance`, which is `valueOf` and THROWS on a name it
@@ -105,7 +105,7 @@ abstract class AppDatabase : RoomDatabase() {
          * the READ, not on open, and the crash is nowhere near the migration. The enum value and
          * the version bump land on both branches together.
          */
-        const val SCHEMA_VERSION = 24
+        const val SCHEMA_VERSION = 25
 
         /**
          * Build the on-disk database. Migrations come exclusively from [MigrationRunner];

@@ -593,6 +593,10 @@ data class PredictionEntity(
     val nQuantiles: Int,
     val stepMs: Long,
     val anchorTsMs: Long,
+    /** The CGM source that conditioned this forecast (Room v25). NULL is UNKNOWN and never matches
+     *  an authoritative source, so such a row is refused by the maturation walk rather than scored
+     *  against whichever sensor happens to be authoritative later. */
+    val sourceId: String?,
     val lastBg: Double,
     @ColumnInfo(typeAffinity = ColumnInfo.BLOB) val lineBlob: ByteArray,   // H f64
     @ColumnInfo(typeAffinity = ColumnInfo.BLOB) val fanBlob: ByteArray,    // nQuantiles·H f64, q-major

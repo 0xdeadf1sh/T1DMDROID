@@ -186,6 +186,7 @@ class BaselineRunner(
             modelId = BASELINE_MODEL_ID,
             cycleTsMs = cycleTs,
             anchorTsMs = series.anchorTsMs,
+            sourceId = series.sourceId,
             stepMs = GRID_MS,
             medianBg = forecast.medianBg,
             bandsMgdl = forecast.bandsMgdl,

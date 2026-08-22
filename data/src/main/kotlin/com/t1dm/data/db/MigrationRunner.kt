@@ -864,6 +864,12 @@ object MigrationRunner {
     internal const val SQL_23_24_INFILL_TAU =
         "ALTER TABLE `bg_infill` ADD COLUMN `tau` REAL NOT NULL DEFAULT 0.5"
 
+    internal const val SQL_24_25_PREDICTION_SOURCE =
+        "ALTER TABLE `prediction` ADD COLUMN `sourceId` TEXT DEFAULT NULL"
+
+    /** Every pre-v25 forecast, discarded: none of them records which sensor conditioned it. */
+    internal const val SQL_24_25_DROP_UNATTRIBUTED = "DELETE FROM `prediction`"
+
     /**
      * v23 → v24 (a reconstructed span keeps its whole fan, and the τ its line was read at):
      * additive only.
@@ -880,6 +886,35 @@ object MigrationRunner {
             connection.execSQL(SQL_23_24_INFILL_BANDS_MGDL)
             connection.execSQL(SQL_23_24_INFILL_BANDS_RISK)
             connection.execSQL(SQL_23_24_INFILL_TAU)
+        }
+    }
+
+    /**
+     * v24 → v25 (a forecast records the sensor that conditioned it): one nullable column, and every
+     * existing row deleted.
+     *
+     * The column exists so [com.t1dm.data.T1dmRepository]'s maturation walk can refuse a window
+     * whose forecast came from one sensor and whose truth comes from another. Two sensors worn at
+     * once disagree — 28 mg/dL median between two of this patient's — and a swap silently turned
+     * every older window into a measurement of that gap, which the §8.4 fit then pushed into the
+     * displayed band.
+     *
+     * The DELETE is the point, not housekeeping. A pre-v25 row cannot be attributed: the sensor
+     * that conditioned it is not recorded anywhere, and it cannot be inferred from the row. Left in
+     * place as NULL they would simply be refused by the walk for as long as they were retained,
+     * carrying blobs for a purpose nothing can serve. Backfilling them with the CURRENT
+     * authoritative source would be worse than deleting them — it would assert the very
+     * cross-sensor attribution this column exists to prevent, and do it invisibly.
+     *
+     * What it costs: the realised-accuracy tables, CG-EGA and the band fit all read these rows, so
+     * every model's history restarts here. A calibration already fitted from them survives in
+     * `conformal_delta` and is not touched — one that was fitted across a sensor swap is dropped
+     * from the model's own screen, by hand, because only the user knows whether it was.
+     */
+    val MIGRATION_24_25 = object : Migration(24, 25) {
+        override fun migrate(connection: SQLiteConnection) {
+            connection.execSQL(SQL_24_25_PREDICTION_SOURCE)
+            connection.execSQL(SQL_24_25_DROP_UNATTRIBUTED)
         }
     }
 
@@ -907,6 +942,7 @@ object MigrationRunner {
         MIGRATION_21_22,
         MIGRATION_22_23,
         MIGRATION_23_24,
+        MIGRATION_24_25,
     )
 
     /** Apply every registered migration to a builder; the sole path that wires migrations. */

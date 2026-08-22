@@ -1623,8 +1623,18 @@ class T1dmRepository(
         if (truth.isEmpty()) return@withContext ForecastWindowSet.EMPTY
         val truthTs = LongArray(truth.size) { truth[it].first }
 
+        // The forecast must come from the SAME sensor as the truth it is about to be scored
+        // against. `authoritative` scopes the truth side; this scopes the forecast side, and one
+        // without the other is not a guard: a source change turns every older window into a
+        // measurement of the gap between two sensors — 28 mg/dL between two of this patient's —
+        // and the §8.4 fit, built from these windows, pushes that gap into the band on screen.
+        // A null `sourceId` is UNKNOWN (a pre-v25 row, or a forecast with no sensor behind it) and
+        // never matches, so it is refused rather than assumed to be this one.
         val rows = predictions.range(sinceMs, nowMs - horizonMs).map { it.toModel() }
-            .filter { it.modelId == modelId && it.status == ForecastStatus.OK }
+            .filter {
+                it.modelId == modelId && it.status == ForecastStatus.OK &&
+                    it.sourceId == authoritative
+            }
 
         var nMatured = 0
         var nIncomplete = 0

@@ -93,7 +93,7 @@ class RoomBgHistoryProvider(
         // measured sample is the FIRST match — `lastOrNull` would pick the oldest and wrongly age the
         // anchor (⇒ perpetual STALE + a fan anchored into the far past, off-screen).
         val lastMeasured = readings.firstOrNull { it.provenance == ReadingProvenance.MEASURED }?.tsMs ?: anchor
-        return BgSeries(out, anchorTsMs = lastMeasured, gridStartMs = start)
+        return BgSeries(out, anchorTsMs = lastMeasured, gridStartMs = start, sourceId = srcId.value)
     }
 
     /**
@@ -129,7 +129,7 @@ class RoomBgHistoryProvider(
         val start = anchor - (nSteps - 1L) * GRID_MS
         val out = DoubleArray(nSteps) { Double.NaN }
         for (i in 0 until nSteps) byTs[start + i * GRID_MS]?.let { out[i] = it }
-        return BgSeries(out, anchorTsMs = anchor, gridStartMs = start)
+        return BgSeries(out, anchorTsMs = anchor, gridStartMs = start, sourceId = srcId.value)
     }
 
     /**
