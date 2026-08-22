@@ -918,6 +918,23 @@ object MigrationRunner {
         }
     }
 
+    internal const val SQL_25_26_DELTA_SOURCE =
+        "ALTER TABLE `conformal_delta` ADD COLUMN `sourceId` TEXT DEFAULT NULL"
+
+    /**
+     * v25 → v26 (a band correction records the sensor it was fitted for): additive only.
+     *
+     * No DELETE, unlike [MIGRATION_24_25]. A correction with no source is refused by the apply — the
+     * fan draws raw — but the row still says what the last fit bought and when, which the drill-down
+     * needs in order to explain why nothing is being applied. A deleted row would leave that screen
+     * unable to distinguish "never fitted" from "fitted, and no longer trusted".
+     */
+    val MIGRATION_25_26 = object : Migration(25, 26) {
+        override fun migrate(connection: SQLiteConnection) {
+            connection.execSQL(SQL_25_26_DELTA_SOURCE)
+        }
+    }
+
     val ALL: Array<Migration> = arrayOf(
         MIGRATION_1_2,
         MIGRATION_2_3,
@@ -943,6 +960,7 @@ object MigrationRunner {
         MIGRATION_22_23,
         MIGRATION_23_24,
         MIGRATION_24_25,
+        MIGRATION_25_26,
     )
 
     /** Apply every registered migration to a builder; the sole path that wires migrations. */

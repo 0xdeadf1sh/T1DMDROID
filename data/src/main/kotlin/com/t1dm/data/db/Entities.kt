@@ -704,6 +704,9 @@ data class ConformalDeltaEntity(
     val meanWidth90Cal: Double?,
     val windowDays: Int,
     val fittedAtMs: Long,
+    /** The CGM source the fit's windows were scoped to (Room v26). NULL is UNKNOWN and is refused by
+     *  the apply, so a correction fitted before this column existed draws the raw fan. */
+    val sourceId: String?,
 )
 
 /**

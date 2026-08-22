@@ -262,6 +262,11 @@ private const val ACCURACY_WINDOW_DAYS = 14
  * .conformalMinCalWindows()` derives that floor (19 for the seven levels of §6) and the core
  * raises anything below it.
  *
+ * It is a floor on the SPLIT, not on the window set, and the difference is what a user waits: the
+ * core fits on `CAL_FRACTION` = 0.7 of the set, so 144 calibration windows needs 206 matured ones —
+ * 17 h of five-minute cycles, and ~19 h from an empty table once the last of them has to mature.
+ * Any user-facing text about the wait quotes that, never this constant.
+ *
  * It is deliberately unrelated to `MetricsConfig.minSamples`, the display gate the drill-down's
  * tables use. That one asks whether an RMSE is worth printing; this one asks whether 24 × 6 = 144
  * one-sided order statistics can each be resolved from their own residuals. At six windows every
@@ -1046,7 +1051,7 @@ class AppContainer(context: Context) {
         val suite = withContext(dispatchers.default) {
             nativeCore.forecastMetricsSuite(set.windows, ACCURACY_HORIZONS_MIN, config, includeCgEga)
         }
-        return ModelMetrics(suite, set.nMatured, set.nIncomplete, minSamples)
+        return ModelMetrics(suite, set.nMatured, set.nIncomplete, minSamples, set.nForeignSource)
     }
 
     // ── Band recalibration (`SPEC/inference.md` §8.4), fitted on device ──────────────────────────
@@ -1146,6 +1151,13 @@ class AppContainer(context: Context) {
         // Nor is a delta whose evidence has gone stale. The row is kept rather than deleted — the
         // drill-down still has to be able to say what lapsed and when — but it stops being drawn.
         if (cal.expiredAt(System.currentTimeMillis())) return null
+        // Nor one fitted for a different sensor. A delta states one sensor's error, two sensors worn
+        // at once disagree, and after an authority change the windows that would expose it have aged
+        // out — so this is the last place the question can be asked at all. A null on either side is
+        // UNKNOWN and refuses: an unstamped correction, or an authority the registry has not yet
+        // resolved, both draw the raw fan rather than a correction nothing vouches for.
+        val authoritative = registry.authoritative.value?.value
+        if (authoritative == null || cal.sourceId != authoritative) return null
         return cal.delta
     }
 
@@ -1253,6 +1265,11 @@ class AppContainer(context: Context) {
                     meanWidth90Cal = fit.meanWidth90Cal,
                     windowDays = days,
                     fittedAtMs = now,
+                    // The sensor every window in this fit was scoped to. Read from the repository,
+                    // not the registry, because it must be the value `forecastWindows` filtered on —
+                    // a delta stamped with anything else would be vouched for by windows it did not
+                    // come from.
+                    sourceId = repository.authoritativeSourceId()?.value,
                 ),
             )
             return BandCalibrationOutcome(fit, true, set.nMatured, set.nIncomplete)

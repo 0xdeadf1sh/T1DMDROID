@@ -765,10 +765,35 @@ class MigrationTest {
     }
 
     @Test
-    fun migrate1To25_fullChain() {
+    fun migrate25To26_aCorrectionSurvivesAndGainsItsSensor() {
+        val seed = helper.createDatabase(25)
+        seed.execSQL(
+            "INSERT INTO `conformal_delta` (`modelId`,`steps`,`nQuantiles`,`deltaBlob`,`nCal`,`nEval`," +
+                "`maxAbsDeltaMgdl`,`cov90Raw`,`cov90Cal`,`meanWidth90Raw`,`meanWidth90Cal`," +
+                "`windowDays`,`fittedAtMs`) VALUES ('m',24,7,x'',400,120,18.0,0.81,0.9,60.0,72.0,14,5)",
+        )
+        seed.close()
+
+        val db = helper.runMigrationsAndValidate(26, listOf(MigrationRunner.MIGRATION_25_26))
+
+        assertEquals(
+            "the row is kept — the drill-down still has to say what the last fit bought",
+            1,
+            countRows(db, "SELECT COUNT(*) FROM `conformal_delta`"),
+        )
+        assertEquals(
+            "with no sensor, which the apply reads as UNKNOWN and refuses to draw",
+            1,
+            countRows(db, "SELECT COUNT(*) FROM `conformal_delta` WHERE `sourceId` IS NULL"),
+        )
+        db.close()
+    }
+
+    @Test
+    fun migrate1To26_fullChain() {
         helper.createDatabase(1).close()
         helper.runMigrationsAndValidate(
-            25,
+            26,
             listOf(
                 MigrationRunner.MIGRATION_1_2,
                 MigrationRunner.MIGRATION_2_3,
@@ -794,6 +819,7 @@ class MigrationTest {
                 MigrationRunner.MIGRATION_22_23,
                 MigrationRunner.MIGRATION_23_24,
                 MigrationRunner.MIGRATION_24_25,
+                MigrationRunner.MIGRATION_25_26,
             ),
         )
     }

@@ -437,25 +437,40 @@ interface SampleDao {
     fun observeMaxTs(): Flow<Long?>
 
     /**
-     * The `sample` rows carrying a BG that NO source in [sourceIds] has a `cgm_reading` for — the gap
-     * set the sample→reading reconcile inserts, resolved in SQL instead of by diffing the whole
-     * projection against the whole ts column in the heap. `NOT EXISTS` seeks the `(sourceId, tsMs)`
-     * primary key per candidate row per source, so a reconcile with nothing to do reads nothing back.
+     * The `sample` rows carrying a BG that NO source at all has a `cgm_reading` for — the gap set the
+     * sample→reading reconcile inserts, resolved in SQL instead of by diffing the whole projection
+     * against the whole ts column in the heap. `NOT EXISTS` seeks the `tsMs` index per candidate row,
+     * so a reconcile with nothing to do reads nothing back.
      *
-     * **The membership test spans the model class, not one source, and that is load-bearing.** It was
-     * per-source, and `sample` is not source-scoped — so every sensor replacement produced a source
-     * with no readings at any slot, matched the entire projection, and was back-filled with a complete
-     * duplicate of all history. A year of fortnightly swaps took `cgm_reading` from ~105 k rows to
-     * ~1.5 M and the database from 17 MB to 184 MB, and the BG panel — which reads the whole class —
-     * then had to materialise and collapse away every copy. A slot already covered by a sibling
-     * sensor is a slot this one does not need.
+     * **The membership test spans EVERY source, and that is load-bearing twice over.**
+     *
+     * It was per-source once, and `sample` is not source-scoped — so every sensor replacement produced
+     * a source with no readings at any slot, matched the entire projection, and was back-filled with a
+     * complete duplicate of all history. A year of fortnightly swaps took `cgm_reading` from ~105 k rows
+     * to ~1.5 M and the database from 17 MB to 184 MB, and the BG panel — which reads the whole class —
+     * then had to materialise and collapse away every copy.
+     *
+     * Widening it to the model class fixed the duplication and left the same hole open across CLASSES.
+     * A projection row was authored by whichever source held authority at the time; matching only
+     * against the incoming class means that after a cross-class change every historical slot looks
+     * missing, and the outgoing sensor's whole record is rewritten as the incoming sensor's own
+     * MEASURED readings. Measured on one patient's database at the moment of such a change: 8,844 rows
+     * spanning five weeks, every one of them already held by the outgoing sensor, every one of them
+     * predating the incoming sensor's first reading. Those rows are what
+     * [com.t1dm.data.T1dmRepository.forecastWindows] scores a forecast against, and two sensors
+     * disagree — so the mislabelling arrives as model error and is fitted into the band the patient is
+     * shown.
+     *
+     * A slot ANY sensor already covers is a slot this pass has nothing to add to. That is what the
+     * reconcile is for — recovering slots the phone holds no reading for at all — and the narrower
+     * tests were both approximations of it.
      */
     @Query(
         "SELECT * FROM sample WHERE bgMgdl IS NOT NULL AND NOT EXISTS (" +
-            "SELECT 1 FROM cgm_reading WHERE cgm_reading.sourceId IN (:sourceIds) AND cgm_reading.tsMs = sample.ts" +
+            "SELECT 1 FROM cgm_reading WHERE cgm_reading.tsMs = sample.ts" +
             ") ORDER BY ts",
     )
-    suspend fun bgSlotsMissingReading(sourceIds: List<String>): List<SampleEntity>
+    suspend fun bgSlotsMissingReading(): List<SampleEntity>
 
     /** One-shot windowed read (oldest-first) for the stats recompute (Phase 6). */
     @Query("SELECT * FROM sample WHERE ts BETWEEN :fromMs AND :toMs ORDER BY ts")

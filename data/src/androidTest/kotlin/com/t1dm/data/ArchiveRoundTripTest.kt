@@ -633,7 +633,7 @@ class ArchiveRoundTripTest {
         deltaBlob = DoubleArray(steps * nQuantiles) { it * 0.25 }.toBlob(),
         nCal = 400, nEval = 120, maxAbsDeltaMgdl = 18.0,
         cov90Raw = 0.81, cov90Cal = 0.90, meanWidth90Raw = 60.0, meanWidth90Cal = 72.0,
-        windowDays = 14, fittedAtMs = 7L,
+        windowDays = 14, fittedAtMs = 7L, sourceId = "aidexx:TESTSERIAL",
     )
 
     private fun boutRow(clientId: String, kind: String) = ExerciseSessionEntity(

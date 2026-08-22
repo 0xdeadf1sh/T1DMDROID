@@ -714,6 +714,10 @@ object Archive {
         w.putOrSkip("w9c", r.meanWidth90Cal)
         w.put("wd", r.windowDays)
         w.put("fa", r.fittedAtMs)
+        // The sensor the fit was scoped to rides with it. Dropped, every restored correction would
+        // read as UNKNOWN and be refused by the apply — a restore would silently return the patient
+        // to raw bands. Skipped when absent, so a pre-v26 archive still reads.
+        w.putOrSkip("src", r.sourceId)
         w.close()
     }
 
@@ -741,6 +745,9 @@ object Archive {
             meanWidth90Cal = o.dbl("w9c"),
             windowDays = o.int("wd") ?: err("conformal", "wd"),
             fittedAtMs = o.long("fa") ?: err("conformal", "fa"),
+            // Absent in a pre-v26 archive, and absent means UNKNOWN: the correction restores, the
+            // drill-down can still say what it once bought, and the apply refuses to draw it.
+            sourceId = o.str("src"),
         )
     }
 

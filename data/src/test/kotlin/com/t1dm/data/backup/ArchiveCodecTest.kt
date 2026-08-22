@@ -441,6 +441,6 @@ class ArchiveCodecTest {
         deltaBlob = DoubleArray(steps * nQuantiles) { it * 0.5 }.toBlob(),
         nCal = 400, nEval = 120, maxAbsDeltaMgdl = 18.0,
         cov90Raw = 0.81, cov90Cal = 0.90, meanWidth90Raw = 60.0, meanWidth90Cal = 72.0,
-        windowDays = 14, fittedAtMs = 5L,
+        windowDays = 14, fittedAtMs = 5L, sourceId = "aidexx:TESTSERIAL",
     )
 }

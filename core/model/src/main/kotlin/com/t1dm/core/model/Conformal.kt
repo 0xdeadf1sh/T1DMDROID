@@ -100,6 +100,17 @@ data class BandCalibration(
     val meanWidth90Cal: Double?,
     val windowDays: Int,
     val fittedAtMs: Long,
+    /**
+     * The CGM source every window in the fit was scoped to, or null for a correction fitted before
+     * this was recorded.
+     *
+     * A delta is a statement about one sensor's error. Two sensors worn at once disagree, so a
+     * correction fitted while one held authority describes nothing about the next one's glucose —
+     * and the fit cannot notice, because by then its windows are gone. Recorded here so the APPLY
+     * can refuse it the moment authority moves, which is the only place the question can still be
+     * asked. Null is UNKNOWN and never matches, so an unstamped correction stops being drawn.
+     */
+    val sourceId: String? = null,
 ) {
     /**
      * When this correction stops being applied — one [windowDays] past the fit.

@@ -1559,10 +1559,23 @@ class T1dmRepository(
     suspend fun predictionsInRange(fromMs: Long, toMs: Long): List<ModelPrediction> =
         withContext(io) { predictions.range(fromMs, toMs).map { it.toModel() } }
 
-    /** One model's stored forecasts over a window, ascending — what the BG panel sweeps in hindsight.
-     *  Read-only and display-only: these are the rows as they were written, never a re-forecast. */
+    /**
+     * One model's stored forecasts over a window, ascending — what the BG panel sweeps in hindsight.
+     * Read-only and display-only: these are the rows as they were written, never a re-forecast.
+     *
+     * Scoped to the authoritative source, like [forecastWindows] and for the same reason. A sweep
+     * paints stored fans over the trace the panel is drawing, so a fan conditioned on the outgoing
+     * sensor lands on the incoming sensor's readings — the same cross-sensor pairing the scoring path
+     * refuses, shown to the eye instead of to a metric, and wearing the §8.4 correction while it does
+     * it. A forecast with no recorded source (pre-v25) is refused on the same terms.
+     */
     suspend fun predictionsForModelInRange(modelId: String, fromMs: Long, toMs: Long): List<ModelPrediction> =
-        withContext(io) { predictions.rangeForModel(modelId, fromMs, toMs).map { it.toModel() } }
+        withContext(io) {
+            val authoritative = sources.authoritativeSourceId() ?: return@withContext emptyList()
+            predictions.rangeForModel(modelId, fromMs, toMs)
+                .map { it.toModel() }
+                .filter { it.sourceId == authoritative }
+        }
 
     /** Purge every stored forecast of a removed model (Phase 7C model deletion). */
     suspend fun deletePredictionsForModel(modelId: String) = withContext(io) { predictions.deleteByModel(modelId) }
@@ -1630,11 +1643,12 @@ class T1dmRepository(
         // and the §8.4 fit, built from these windows, pushes that gap into the band on screen.
         // A null `sourceId` is UNKNOWN (a pre-v25 row, or a forecast with no sensor behind it) and
         // never matches, so it is refused rather than assumed to be this one.
-        val rows = predictions.range(sinceMs, nowMs - horizonMs).map { it.toModel() }
-            .filter {
-                it.modelId == modelId && it.status == ForecastStatus.OK &&
-                    it.sourceId == authoritative
-            }
+        val ofModel = predictions.range(sinceMs, nowMs - horizonMs).map { it.toModel() }
+            .filter { it.modelId == modelId && it.status == ForecastStatus.OK }
+        val rows = ofModel.filter { it.sourceId == authoritative }
+        // Counted, not merely dropped: this is the one loss the patient can explain and act on, and
+        // an unexplained empty panel after a sensor change reads as a broken app.
+        val nForeignSource = ofModel.size - rows.size
 
         var nMatured = 0
         var nIncomplete = 0
@@ -1663,7 +1677,7 @@ class T1dmRepository(
                 lastBg = anchor.toDouble(),
             )
         }
-        ForecastWindowSet(out, nMatured, nIncomplete)
+        ForecastWindowSet(out, nMatured, nIncomplete, nForeignSource)
     }
 
     /** Nearest realized BG to [targetTs] within [toleranceMs], or null. Binary search on [truthTs]. */
@@ -1797,12 +1811,11 @@ class T1dmRepository(
      */
     suspend fun reconcileReadingsFromSamples(): Int = withContext(io) {
         val authoritative = sources.authoritativeSourceId() ?: return@withContext 0
-        // The gap set spans the authoritative source's whole MODEL CLASS. Asking it per source made every
-        // sensor replacement inherit a full duplicate of the record — see [SampleDao.bgSlotsMissingReading].
-        val klass = sources.byId(authoritative)?.sensorModelId
-        val siblings = if (klass == null) listOf(authoritative) else sources.idsForSensorModel(klass)
+        // The gap set is slots NO sensor holds a reading for. Narrower tests — per source, then per
+        // model class — each let a sensor change re-import another sensor's record under this one's id;
+        // see [SampleDao.bgSlotsMissingReading] for what each cost.
         inWriteTx {
-            val fill = samples.bgSlotsMissingReading(siblings).asSequence()
+            val fill = samples.bgSlotsMissingReading().asSequence()
                 .map { s ->
                     CgmReadingEntity(
                         sourceId = authoritative,
@@ -1915,6 +1928,7 @@ class T1dmRepository(
                 nCal = cal.nCal,
                 nEval = cal.nEval,
                 maxAbsDeltaMgdl = cal.maxAbsDeltaMgdl,
+                sourceId = cal.sourceId,
                 cov90Raw = cal.cov90Raw,
                 cov90Cal = cal.cov90Cal,
                 meanWidth90Raw = cal.meanWidth90Raw,
@@ -1969,6 +1983,7 @@ class T1dmRepository(
             nCal = nCal,
             nEval = nEval,
             maxAbsDeltaMgdl = maxAbsDeltaMgdl,
+            sourceId = sourceId,
             cov90Raw = cov90Raw,
             cov90Cal = cov90Cal,
             meanWidth90Raw = meanWidth90Raw,

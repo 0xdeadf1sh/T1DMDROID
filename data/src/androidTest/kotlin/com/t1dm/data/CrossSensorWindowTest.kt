@@ -14,6 +14,7 @@ import com.t1dm.core.model.Precision
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.data.db.AppDatabase
+import com.t1dm.data.db.SampleEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.runTest
 import org.junit.After
@@ -134,6 +135,60 @@ class CrossSensorWindowTest {
         )
         // And it is the right one: truth is the authoritative sensor's 120, never the worn one's 148.
         assertEquals(120.0, set.windows.single().realizedBg.first(), 1e-9)
+    }
+
+    /**
+     * The sample→reading reconcile may not invent one sensor's history for another.
+     *
+     * `sample` is a single projection written by whichever source held authority at the time, and its
+     * `bgSource` is opaque and null for every row written before v15 — so it cannot be used to
+     * attribute a slot. The gap set is therefore slots NO sensor covers. Matching per source, and
+     * later per model class, each let a sensor change re-import the outgoing sensor's whole record as
+     * the incoming sensor's own MEASURED readings, which is the truth side of the window guard above.
+     */
+    @Test
+    fun theReconcileSkipsSlotsAnotherSensorAlreadyCovers() = runTest {
+        repo.upsertSource(descriptor(worn), authoritative = false, nowMs = t0)
+        repo.upsertSource(descriptor(truthSrc), authoritative = true, nowMs = t0)
+
+        // Five slots the OUTGOING sensor measured, projected into `sample` as it was authoritative
+        // then. The incoming sensor has no reading at any of them — the shape that used to match.
+        for (i in 0 until 5) {
+            val ts = t0 + i * step
+            repo.upsertReading(reading(worn, ts, 148))
+            db.sampleDao().upsert(
+                SampleEntity(
+                    ts = ts, tzOffsetMin = 0, bgMgdl = 148, bgSource = null,
+                    bgProvenance = ReadingProvenance.MEASURED, bgFlag = ReadingFlag.NORMAL,
+                    steps = null, mood = null, hr = null, sleep = null, exercise = null,
+                    updatedAt = ts,
+                ),
+            )
+        }
+        // One slot nothing has a reading for — the case the reconcile genuinely exists to recover.
+        val orphan = t0 + 10 * step
+        db.sampleDao().upsert(
+            SampleEntity(
+                ts = orphan, tzOffsetMin = 0, bgMgdl = 101, bgSource = null,
+                bgProvenance = ReadingProvenance.MEASURED, bgFlag = ReadingFlag.NORMAL,
+                steps = null, mood = null, hr = null, sleep = null, exercise = null,
+                updatedAt = orphan,
+            ),
+        )
+
+        val inserted = repo.reconcileReadingsFromSamples()
+
+        assertEquals("only the uncovered slot may be filled", 1, inserted)
+        assertEquals(
+            "the incoming sensor must not be given the outgoing one's readings",
+            null,
+            db.cgmReadingDao().byTs(truthSrc.value, t0),
+        )
+        assertEquals(
+            "and the genuinely missing slot is recovered",
+            101,
+            db.cgmReadingDao().byTs(truthSrc.value, orphan)?.bgMgdl,
+        )
     }
 
     private companion object {

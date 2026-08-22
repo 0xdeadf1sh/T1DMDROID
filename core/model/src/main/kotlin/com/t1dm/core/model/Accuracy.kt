@@ -44,11 +44,19 @@ data class ForecastWindow(
  * drops the whole forecast — as does a fan whose width disagrees with the rest of the set.
  * [nIncomplete] is how many were dropped that way, out of [nMatured] considered — carried so the
  * drill-down can say why a panel is empty rather than merely that it is.
+ *
+ * [nForeignSource] is the other way a window is lost, and it needs its own number because it is the
+ * only one the patient can act on. A forecast conditioned on a sensor that no longer holds authority
+ * is refused outright — scoring it against the incoming sensor measures the gap between the two — and
+ * such a window is neither matured nor incomplete: it never entered the walk. Folded into either of
+ * the others it would report a CGM problem, and reported nowhere it leaves a panel that is empty for
+ * a knowable reason saying it has no history.
  */
 data class ForecastWindowSet(
     val windows: List<ForecastWindow>,
     val nMatured: Int,
     val nIncomplete: Int,
+    val nForeignSource: Int = 0,
 ) {
     companion object {
         val EMPTY = ForecastWindowSet(emptyList(), 0, 0)
@@ -402,6 +410,9 @@ data class ModelMetrics(
     val nMatured: Int,
     val nIncomplete: Int,
     val minSamples: Int,
+    /** Forecasts refused because the sensor that made them no longer holds authority — see
+     *  [ForecastWindowSet.nForeignSource]. The one emptiness the panel can explain. */
+    val nForeignSource: Int = 0,
 ) {
     companion object {
         val EMPTY = ModelMetrics(MetricsSuite.EMPTY, 0, 0, 0)
