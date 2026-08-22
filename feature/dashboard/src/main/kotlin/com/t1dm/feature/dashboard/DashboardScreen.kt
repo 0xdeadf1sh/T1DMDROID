@@ -115,6 +115,7 @@ import com.t1dm.ui.graph.SmoothedTrace
 import com.t1dm.ui.graph.StepsFrame
 import com.t1dm.ui.graph.hindsightFrameOf
 import com.t1dm.ui.graph.paintFrameOf
+import com.t1dm.ui.graph.paintsBand
 import com.t1dm.ui.graph.rolledSeriesOf
 import com.t1dm.ui.graph.smoothedTraceOf
 import com.t1dm.ui.graph.stepsFrameOf
@@ -333,18 +334,30 @@ fun DashboardScreen(
     val frame by produceState(GraphFrame.EMPTY, readings, unit) {
         value = graphFrameOf(readings, unit, kovatchevF = kovatchevF)
     }
+    // The rolled fan converted to the active unit once, off-thread (mirrors the prediction overlay).
+    // Built BEFORE the forecast overlay because the correction below is decided on it.
+    val rolledSeries by produceState<RolledSeries?>(null, rolledForecast, unit) {
+        value = rolledSeriesOf(rolledForecast, unit, kovatchevF)
+    }
+
+    // Whether a rolled BAND is on the panel — [RolledSeries.paintsBand], the same predicate the draw
+    // uses, never a second reading of it. A roll that exists is not a roll that draws: at or under
+    // the validated horizon (2 h, the Roll dialog's own default) the tail is one step long and only a
+    // median line is painted, and a degenerate roll paints no band at any horizon.
+    val rollOnPanel = rolledSeries?.paintsBand() == true
+
     // Only the SELECTED model's fan is painted; the other running models forecast for
     // telemetry/sync but must not stipple faint secondary fans over the BG panel.
     // Keyed on [calibrateBands] too: `:app` re-remembers that lambda exactly when the stored §8.4
     // correction changes, so a fresh fit repaints the fan without waiting for the next cycle.
     //
-    // While a rolled forecast is on the panel the correction is DROPPED. §8.4 fits the delta against
-    // the 2 h forecast masked set and it may not be broadcast to another protocol, so the roll's
-    // autoregressive tail can never carry it — and a calibrated fan beside a raw one puts two
-    // different uncertainties on one picture, which read as the forecast narrowing at the 2 h mark
-    // the moment the calibrated fan ran out. One quantity per panel; the correction comes back when
-    // the roll is dismissed.
-    val rollOnPanel = rolledForecast?.isEmpty == false
+    // While a rolled band is on the panel the correction is DROPPED, here and from the hindsight
+    // sweep below. §8.4 fits the delta against the 2 h forecast masked set and it may not be
+    // broadcast to another protocol, so the roll's autoregressive tail can never carry it — and a
+    // calibrated fan beside a raw one puts two different uncertainties on one picture, which reads
+    // as the forecast narrowing where the calibrated fan ran out. One quantity per panel; the
+    // correction comes back when the roll is dismissed. Dropping it for a roll that draws no band
+    // would be the same fault in reverse: a correction lost with nothing on screen needing it.
     val overlay by produceState(emptyList<PredSeries>(), predictions, unit, calibrateBands, rollOnPanel) {
         value = predOverlayOf(
             predictions.filter { it.selected },
@@ -362,10 +375,6 @@ fun DashboardScreen(
     // I2 — the Roll confirmation dialog + its chosen horizon (30 min…12 h, 30-min steps, default 2 h).
     var showRollDialog by remember { mutableStateOf(false) }
 
-    // The rolled fan converted to the active unit once, off-thread (mirrors the prediction overlay).
-    val rolledSeries by produceState<RolledSeries?>(null, rolledForecast, unit) {
-        value = rolledSeriesOf(rolledForecast, unit, kovatchevF)
-    }
 
     // Reconstruct the carb/insulin channels over the readings' grid span, extended INTO THE FUTURE by
     // a fixed horizon so the committed doses' appearance/action tails are visible in the prediction
@@ -502,12 +511,14 @@ fun DashboardScreen(
     // redraws the sweep instead of leaving it on the basis it was built with.
     val hindsight by produceState<HindsightFrame?>(
         null, hindsightBucket, hindsightModelId, hindsightLatestCycleMs, unit, kovatchevF, hindsightIn,
-        calibrateFans,
+        calibrateFans, rollOnPanel,
     ) {
         val resolve = hindsightIn
         val bucket = hindsightBucket
         val modelId = hindsightModelId
-        val calibrate = calibrateFans
+        // Gated on [rollOnPanel] with the forecast overlay: the sweep shares the panel with it, and a
+        // calibrated sweep beside a raw fan is the same two-bases-one-picture the drop exists to avoid.
+        val calibrate = calibrateFans.takeIf { !rollOnPanel }
         value = if (resolve == null || bucket == null || modelId == null) null
         else hindsightFrameOf(
             resolve(modelId, bucket.first, bucket.second),

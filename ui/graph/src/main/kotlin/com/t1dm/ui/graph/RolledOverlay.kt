@@ -100,11 +100,10 @@ fun buildRolledSeries(
  *
  * The hatched band opens at the validated boundary so it abuts the forecast, and the forecast's fan
  * ENDS at that same boundary — so at that x two renderings state an uncertainty for one instant. It
- * is the same quantity (τ.05/.95 of the same model at the same step) but not necessarily the same
- * number: the fan carries the `SPEC/inference.md` §8.4 band correction, applied at the last point
- * before pixels, and the roll — built by `:calc` for the dose search and never entitled to a display
- * correction — does not. The visible result is a step in the drawn uncertainty exactly where the
- * dashed boundary rule tells the reader the two series join.
+ * is the same quantity (τ.05/.95 of the same model at the same step) and, while a rolled band is on
+ * the panel, the same number: the §8.4 correction is dropped from every fan the panel draws for as
+ * long as the roll is up, precisely because the roll's autoregressive tail can never carry one and a
+ * calibrated fan meeting a raw one steps where they join.
  *
  * Drawing the shared vertex once, from the fan, closes it whether or not a correction is in force,
  * and does so without extrapolating a correction into the tail, where none is fitted and none may be
@@ -117,6 +116,19 @@ class RolledSeam(val tsMs: Long, val lo: Float, val hi: Float)
  *  abuts the prefix rather than starting a step late. */
 internal fun RolledSeries.bandFromIndex(): Int =
     (validatedSteps.coerceIn(0, size) - 1).coerceAtLeast(0)
+
+/**
+ * Whether this roll actually paints a BAND, as opposed to a bare median line: it must be sound, and
+ * its extrapolated tail must be long enough to open one. A roll no longer than the validated
+ * horizon has a one-step tail and draws no band at all — the 2 h the Roll dialog offers by default
+ * is exactly that case.
+ *
+ * Public and read by the panel, not just by the draw: whether a rolled band is on screen is what
+ * decides whether the panel's other fans may wear the §8.4 correction, and that question must be
+ * answered by the same predicate that decides the ink. Two copies of this rule drift, and the drift
+ * is silent — a panel dropping its correction for a band that was never drawn.
+ */
+fun RolledSeries.paintsBand(): Boolean = !degenerate && size - bandFromIndex() >= 2
 
 /** The band's opening lower edge: the fan's, when [seam] falls on that same instant; else the
  *  roll's own. Split from [bandOpenHi] rather than returned as a pair — this runs inside the draw. */
@@ -175,7 +187,7 @@ internal fun DrawScope.drawRolledSeries(
     // Everything past it is the roll's own — no correction is fitted out there and none may be
     // invented. Over the prefix the cycle forecast draws its own fan, and a second one on top of it
     // would simply be twice the ink.
-    if (!s.degenerate && s.size - s.bandFromIndex() >= 2) {
+    if (s.paintsBand()) {
         val from = s.bandFromIndex()
         // `drawPredSeries`'s own order and alphas: innermost first, outermost last and heaviest, so
         // the composite darkens towards the centre exactly as the cycle fan beside it does.

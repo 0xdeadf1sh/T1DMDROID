@@ -313,6 +313,37 @@ class BgPanelTest {
         assertEquals(24, s.extrapolatedSteps)
     }
 
+    /**
+     * [RolledSeries.paintsBand] is what decides both the ink and whether the panel's other fans keep
+     * their §8.4 correction, so it is pinned here for every case that reaches it. A roll no longer
+     * than its validated prefix has a one-step tail and paints NO band — 2 h is the Roll dialog's
+     * default, so that is the ordinary case, not an edge one — and a degenerate roll paints none at
+     * any length. Read the other way: the panel may only drop its correction when this is true.
+     */
+    @Test fun rolledSeries_paintsBandOnlyWhenTheTailIsLongEnoughAndSound() {
+        // 2 h requested == the validated prefix: a median line and nothing else.
+        val twoHours = buildRolledSeries(rolled(DoubleArray(24) { 120.0 }, requestedHours = 2.0), UnitSpace.MgDl, null)!!
+        assertFalse("a roll at the validated horizon paints no band", twoHours.paintsBand())
+        // Every shorter stop the dialog offers behaves the same way.
+        for (steps in intArrayOf(6, 12, 18, 24)) {
+            val short = buildRolledSeries(
+                rolled(DoubleArray(steps) { 120.0 }, validatedSteps = steps, requestedHours = steps / 12.0),
+                UnitSpace.MgDl, null,
+            )!!
+            assertFalse("a ${steps / 12.0} h roll paints no band", short.paintsBand())
+        }
+        // One step past the prefix is the first length that opens one.
+        val justOver = buildRolledSeries(rolled(DoubleArray(25) { 120.0 }), UnitSpace.MgDl, null)!!
+        assertTrue("a tail of two steps opens the band", justOver.paintsBand())
+        val fourHours = buildRolledSeries(rolled(DoubleArray(48) { 120.0 }), UnitSpace.MgDl, null)!!
+        assertTrue("a 4 h roll paints a band", fourHours.paintsBand())
+        // Degenerate paints nothing however long the valid prefix is.
+        val degenerate = buildRolledSeries(
+            rolled(DoubleArray(48) { 120.0 }, degenerate = true), UnitSpace.MgDl, null,
+        )!!
+        assertFalse("a degenerate roll paints no band at any length", degenerate.paintsBand())
+    }
+
     @Test fun rolledSeries_emptyRollDrawsNothing() {
         assertNull(buildRolledSeries(RolledForecast.NONE, UnitSpace.MgDl, null))
         assertNull(buildRolledSeries(null, UnitSpace.MgDl, null))
