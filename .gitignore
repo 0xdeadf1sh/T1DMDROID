@@ -37,8 +37,11 @@ target/
 *.pt
 *.pte
 models/*.bin
-# generated .pte + descriptor.json (regenerate via T1DMAI/exporters)
-models/exported/
+# generated .pte + descriptor.json (regenerate via T1DMAI/exporters). The whole directory is
+# staging for exported artifacts and nothing in it is tracked — the test fixture that used to
+# sit here as `models/descriptor.json` now lives with the tests that read it, in
+# `crates/t1dm-core/src/testdata/`.
+models/
 
 # ── Claude Code ─────────────────────────────────────────────────────────────
 # Per-user Claude state stays local; share the project skills with contributors.

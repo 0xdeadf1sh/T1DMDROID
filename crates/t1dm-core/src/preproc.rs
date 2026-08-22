@@ -1809,10 +1809,15 @@ mod tests {
         bg_clamp_max: 400.0,
     };
 
-    const REFERENCE_DESCRIPTOR: &str = include_str!("../../../models/descriptor.json");
+    const REFERENCE_DESCRIPTOR: &str = include_str!("testdata/reference_descriptor.json");
 
-    /// The shipped descriptor, parsed. Tests that need a variant clone it with `..`, so a
-    /// fixture descriptor can never drift from the one the app actually reads.
+    /// A real exported descriptor, parsed — the fixture the whole module's tests clone with `..`
+    /// when they need a variant, so no test invents a geometry the exporter cannot produce.
+    ///
+    /// It lives in the crate rather than in `models/`, which is an untracked staging directory for
+    /// artifacts: the app reads the per-model descriptor pushed beside its `.pte`, never a file in
+    /// the repository, so keeping the fixture there tracked one thing under a name that promised
+    /// another.
     fn test_descriptor() -> ModelDescriptor {
         parse_descriptor(REFERENCE_DESCRIPTOR.to_string()).expect("reference descriptor")
     }

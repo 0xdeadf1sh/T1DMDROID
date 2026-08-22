@@ -1828,7 +1828,7 @@ mod tests {
     use super::*;
     use crate::preproc::{parse_descriptor, HeadTensorSpec};
 
-    const REFERENCE_DESCRIPTOR: &str = include_str!("../../../models/descriptor.json");
+    const REFERENCE_DESCRIPTOR: &str = include_str!("testdata/reference_descriptor.json");
 
     fn desc() -> ModelDescriptor {
         parse_descriptor(REFERENCE_DESCRIPTOR.to_string()).expect("reference descriptor")
