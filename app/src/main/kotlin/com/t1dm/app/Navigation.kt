@@ -1547,6 +1547,7 @@ private fun T1dmNavHost(
                 // container refuses a re-entrant call outright — three, because only the last of
                 // them holds when the fit is started from somewhere this screen cannot see.
                 onFitBandCalibration = { if (!fitting) fitTick++ },
+                onDropBandCalibration = { scope.launch { container.dropBandCalibration(modelId) } },
             )
         }
         composable("hardware") {

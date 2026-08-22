@@ -1191,6 +1191,20 @@ class AppContainer(context: Context) {
      * "no fit ran" and "nothing matured to fit on" are different facts about the patient's history
      * and only one of them is about the patient.
      */
+    /**
+     * Drop a model's stored §8.4 correction, from the model's own drill-down.
+     *
+     * By hand rather than by rule, because the case that needs it cannot be detected after the
+     * fact: a correction fitted from windows that straddle a CGM source change measures the gap
+     * between two sensors, and once the older forecasts have aged out there is nothing left to
+     * infer that from. The raw fan is drawn until a refit — never a stale correction kept for
+     * want of a better one.
+     */
+    suspend fun dropBandCalibration(modelId: String) = withContext(dispatchers.io) {
+        runCatching { repository.deleteBandCalibration(modelId) }
+        Unit
+    }
+
     suspend fun fitBandCalibration(
         modelId: String,
         days: Int = ACCURACY_WINDOW_DAYS,

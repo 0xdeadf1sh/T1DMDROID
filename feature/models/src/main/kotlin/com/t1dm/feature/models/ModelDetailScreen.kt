@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -155,6 +156,11 @@ fun ModelDetailScreen(
      *  correction without re-announcing a result the user has already read. */
     bandCalibrationOutcome: BandCalibrationOutcome? = null,
     onFitBandCalibration: () -> Unit = {},
+    /** Drops the stored §8.4 correction, returning the model to its raw fan. Offered because a
+     *  correction fitted across a CGM source change measures the gap between two sensors, and the
+     *  only cure is to discard it and refit once enough windows from one sensor exist — which no
+     *  gate can decide, since only the user knows the sensor was swapped. */
+    onDropBandCalibration: () -> Unit = {},
     /** Runs the classical baseline's fit. Non-null only when this drill-down IS the baseline's, so
      *  its own model is the one place its fit lives — a neural model's screen never shows it. */
     onFitBaseline: (() -> Unit)? = null,
@@ -168,6 +174,9 @@ fun ModelDetailScreen(
     val telemetry = state.telemetryOf(modelId)
     val running = state.runningOf(modelId)
     val haptics = rememberT1dmHaptics()
+    // Hoisted above the LazyColumn for the reason the horizon below is: `section` is a lazy item,
+    // so state remembered inside one dies when it scrolls out and the dialog would close itself.
+    var showDropCalibration by remember { mutableStateOf(false) }
 
     // The error grid's horizon, hoisted ABOVE the LazyColumn deliberately: `section` is a lazy
     // `item {}`, so a `remember` placed inside the grid's own section is discarded the moment that
@@ -513,11 +522,42 @@ fun ModelDetailScreen(
                     enabled = !bandCalibrationFitting,
                     onClick = { haptics.perform(HapticEvent.Tap); onFitBandCalibration() },
                 ) { Text("Recalibrate") }
+                // Offered only when there is one to drop. Confirmed like every other destructive
+                // action, and Warn-on-raise for the same reason they are: the fit costs the user
+                // half a day of matured windows to earn back.
+                if (bandCalibration != null) {
+                    TextButton(
+                        enabled = !bandCalibrationFitting,
+                        onClick = { haptics.perform(HapticEvent.Warn); showDropCalibration = true },
+                    ) { Text("Drop") }
+                }
                 if (bandCalibrationFitting) {
                     CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
                 }
             }
         }
+    }
+
+    if (showDropCalibration) {
+        AlertDialog(
+            onDismissRequest = { haptics.perform(HapticEvent.Reject); showDropCalibration = false },
+            title = { Text("Drop the band correction?") },
+            text = { Text("Raw bands until a refit. Needs half a day of matured forecasts.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        haptics.perform(HapticEvent.Commit)
+                        onDropBandCalibration()
+                        showDropCalibration = false
+                    },
+                ) { Text("Drop") }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { haptics.perform(HapticEvent.Reject); showDropCalibration = false },
+                ) { Text("Cancel") }
+            },
+        )
     }
 }
 
