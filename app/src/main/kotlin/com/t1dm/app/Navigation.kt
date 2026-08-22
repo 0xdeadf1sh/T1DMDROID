@@ -1228,8 +1228,12 @@ private fun T1dmNavHost(
                 curveChannels = container::dashboardOverlayChannels,
                 stepSeries = container::dashboardStepSeries,
                 logEntries = logEntries,
-                reconstructed = reconstructed,
-                maskControls = maskControls,
+                // Withheld with the forecast, for the same reason: a fill is reconstructed from
+                // the AUTHORITATIVE sensor's history, so drawn over another sensor's trace it sits
+                // on readings that are not the ones under it. Nulling the controls takes the whole
+                // edit mode with it, the cut included.
+                reconstructed = if (viewingOther) emptyList() else reconstructed,
+                maskControls = if (viewingOther) null else maskControls,
                 onFillSpan = { sel, geometry -> container.runPanelMask(sel, geometry) },
                 maskNote = maskNote,
                 onCutBg = container::cutBgRange,
