@@ -23,80 +23,62 @@ Designed by a T1DM patient, informed by lived experience.
 
 ## What it is
 
-T1DMDROID reads glucose the way a beacon scanner reads a beacon: the AiDEX X broadcasts its current reading roughly once per minute, and the app listens for those advertisements passively — no pairing, no bond, no GATT connection. Sensor activation, calibration, and warmup remain the job of the sensor's official app on a separate phone; T1DMDROID is a pure, indefinite passive reader. Each reading is stamped with the phone's receive time snapped to a 5-minute grid.
+The AiDEX X broadcasts its current reading roughly once per minute and the app listens passively — no pairing, no bond, no GATT connection. Activation, calibration and warmup stay with the sensor's official app on a separate phone. Each reading is stamped with the phone's receive time snapped to a 5-minute grid.
 
-On top of that live feed it runs a small transformer forecasting model entirely on the device, surfaces the current value with a trend and a glanceable forecast, logs meals and insulin, computes advisory statistics, and drives a deterministic, model-free alarm path for out-of-range and loss-of-signal conditions. The model predicts any withheld stretch of glucose rather than only the next two hours, so the same artifact fills a gap the sensor left as well as it forecasts, and it can be personalised on device by a low-rank adapter fitted from the wearer's own matured forecasts while the exported weights stay frozen. Optional integrations add a self-hosted sync server and an encrypted BLE watch accessory.
+A small transformer runs over that feed entirely on the device. It predicts any withheld stretch of glucose rather than only the next two hours, so one artifact fills a gap the sensor left as well as it forecasts, and a low-rank adapter can personalise it from the wearer's own matured forecasts while the exported weights stay frozen. Around it sit meal and insulin logs, advisory statistics, and a deterministic, model-free alarm path for out-of-range and loss-of-signal. Optional integrations add a self-hosted sync server and an encrypted BLE watch accessory.
 
 The Bluetooth, inference, and watch protocols are documented under [`docs/`](docs): [`CGM.md`](docs/CGM.md), [`INFERENCE.md`](docs/INFERENCE.md), [`WATCH_BLE.md`](docs/WATCH_BLE.md), and [`T1DMSERVER_API.md`](docs/T1DMSERVER_API.md).
 
 
 ## Features
 
-### Blood Glucose Graph
-
-<img width="400" height="auto" alt="photo_2026-07-25_18-53-18" src="https://github.com/user-attachments/assets/c2ba5931-586a-41c9-adcd-f05e913a3899" />
-
-### Autoregressive Rolling
-
-https://github.com/user-attachments/assets/e808ddd5-ca75-431e-9789-bdbe94ceeabf
-
-### Paint Inside The BG Graph
-
-https://github.com/user-attachments/assets/334f76ef-a84a-4fc8-a1f8-9040f8f336c3
-
-### Circadian Rhythm & Remaining Time
-
-https://github.com/user-attachments/assets/e185384e-b671-4c99-8f8a-807c9d805a21
-
-### ADA Professional Publications Feed
-
-https://github.com/user-attachments/assets/965587fb-25f4-41ec-a54d-8c45f806bb47
-
-### Advanced Statistics
-
-https://github.com/user-attachments/assets/7742f1ac-be4e-490f-9903-e3bced23e9ea
-
-### Real-Time Model Inference
-
-https://github.com/user-attachments/assets/a8c8d0d1-829c-4df6-b147-50ef2424a656
-
-### Logging Meals
-
-https://github.com/user-attachments/assets/7173971f-fe94-4b10-ab7e-935e4f1adfe1
-
-### Logging Insulin
-
-https://github.com/user-attachments/assets/5a84df1a-5db9-49cd-94a9-a4a4c17546d5
-
-### Advanced Searchable Settings Panel
-
-https://github.com/user-attachments/assets/13ade4ea-f50f-4c91-bf23-62ef8dae1c96
-
-### Theming
-
-https://github.com/user-attachments/assets/319401e4-09ff-4e8f-964f-0eb8a0808fca
+<table>
+<tr>
+<td align="center" width="33%"><video src="https://github.com/user-attachments/assets/0f52cf8b-5122-4d68-ba36-b0f84b7090b7" width="230" controls></video><br><b>Blood glucose graph</b><br><sub>Tall panel carrying IOB and COB</sub></td>
+<td align="center" width="33%"><video src="https://github.com/user-attachments/assets/7704a16f-3539-4345-9c17-5330ad572e46" width="230" controls></video><br><b>Paint</b><br><sub>Freehand marks inside the graph</sub></td>
+<td align="center" width="33%"><video src="https://github.com/user-attachments/assets/970528b8-9494-4861-94ce-05db97fa3843" width="230" controls></video><br><b>Drive</b><br><sub>Steer along the curve</sub></td>
+</tr>
+<tr>
+<td align="center"><video src="https://github.com/user-attachments/assets/22db9310-0cea-4283-b328-7d66f2bb77be" width="230" controls></video><br><b>Autoregressive rolling</b><br><sub>Rolls the model past its horizon</sub></td>
+<td align="center"><video src="https://github.com/user-attachments/assets/21c5ab35-24fc-42be-9720-2de01283ca97" width="230" controls></video><br><b>Hindsight</b><br><sub>Past forecasts against what followed</sub></td>
+<td align="center"><video src="https://github.com/user-attachments/assets/434dfd60-c53a-4bca-b50d-9a8e5aae45bd" width="230" controls></video><br><b>Infilling</b><br><sub>Withhold a stretch, refill it</sub></td>
+</tr>
+<tr>
+<td align="center"><video src="https://github.com/user-attachments/assets/49221852-40a6-4bec-bdfd-8ddd313d9d3a" width="230" controls></video><br><b>Circadian clock</b><br><sub>The hour-of-day the physiology resembles</sub></td>
+<td align="center"><video src="https://github.com/user-attachments/assets/d3374eb4-f7f3-42b5-bf1e-99e328fbefc6" width="230" controls></video><br><b>Model evaluation</b><br><sub>Error, calibration and Clarke zones per horizon</sub></td>
+<td align="center"><video src="https://github.com/user-attachments/assets/2b77341c-9f8c-46f8-893f-9fdfaab3709d" width="230" controls></video><br><b>LoRA adapters</b><br><sub>Fitted on device from replayed forecasts</sub></td>
+</tr>
+<tr>
+<td align="center"><video src="https://github.com/user-attachments/assets/a6dcc3eb-f52b-4bf2-8803-b3e13068edf6" width="230" controls></video><br><b>Log carbohydrates</b><br><sub>GI preset, grams, and the appearance curve</sub></td>
+<td align="center"><video src="https://github.com/user-attachments/assets/296c5f4e-feac-44bd-b342-f3dafa270075" width="230" controls></video><br><b>Log insulin</b><br><sub>Type preset, units, and the PK action curve</sub></td>
+<td align="center"><video src="https://github.com/user-attachments/assets/e7d7a001-f89f-475b-9446-823c71ec5ae3" width="230" controls></video><br><b>Multiple sensors</b><br><sub>One scan, every sensor in range</sub></td>
+</tr>
+<tr>
+<td align="center"><video src="https://github.com/user-attachments/assets/6533d16f-3953-4410-b155-2cffecfde8f4" width="230" controls></video><br><b>Statistics</b><br><sub>Variability indices, TIR by time of day</sub></td>
+<td align="center"><video src="https://github.com/user-attachments/assets/ef631f0b-0cc8-4353-8d8a-c27599a725d2" width="230" controls></video><br><b>Settings</b><br><sub>Searchable</sub></td>
+<td align="center"></td>
+</tr>
+</table>
 
 ### Exercise
 
-The Exercise panel records a bout from a manual start to a manual stop, following GPS position during walks and runs and drawing the route on OpenStreetMap tiles. Distance and pace are measured between accepted fixes; energy expenditure comes from the ACSM walking and running metabolic equations at zero grade and appears only once a body mass has been entered, since nothing else on the device can supply one. Each bout's per-five-minute magnitude — the whole seconds of it recorded in that slot — is folded into the same wide sensor series that already carries glucose, heart rate, steps, sleep and mood, and syncs on the row that already exists.
+Bouts run from a manual start to a manual stop, following GPS during walks and runs and drawing the route on OpenStreetMap tiles. Distance and pace come from accepted fixes; energy expenditure from the ACSM walking and running equations at zero grade, shown only once a body mass has been entered. Each bout's per-five-minute magnitude folds into the same wide sensor series that carries glucose, heart rate, steps, sleep and mood.
 
-Every recorded bout opens its own review: the route, the glucose trace over the half hour before the bout and the two hours after it, and a slider that sweeps the forecast the model issued at any instant in that window across the trace that followed it. Where no forecast was issued — warm-up, a thermal pause, a phone that was off — the slider shows nothing rather than the nearest one. The track itself is never uploaded; drawing it fetches map tiles for the surrounding area from the OpenStreetMap servers, cached on the device.
+Every bout opens its own review: the route, the glucose trace from 30 minutes before to 2 hours after, and a slider sweeping the forecast issued at any instant in that window across the trace that followed it. Where no forecast was issued, the slider shows nothing rather than the nearest one. Tracks are never uploaded; map tiles are fetched for the surrounding area and cached on the device.
 
 ### Backup and Restore
 
-The Backup panel writes the whole local record — every glucose reading, the wide sensor series, logged meals and doses, basal schedules, custom foods, saved meals, insulin types, recorded exercise bouts and their GPS tracks, the graph's freehand drawings, and every setting — to one gzipped, line-delimited JSON file. Automatic backups run on a chosen cadence into a folder outside app storage, so they survive an uninstall, with a configurable number of older archives retained.
+One gzipped, line-delimited JSON file holds the whole local record — every glucose reading, the wide sensor series, meals, doses, basal schedules, custom foods, saved meals, insulin types, exercise bouts and their tracks, the graph's freehand drawings, and every setting. Automatic backups run on a chosen cadence into a folder outside app storage, so they survive an uninstall, with a configurable number of older archives retained.
 
-Restoring merges: a record already present on the device is kept, so importing the same file twice changes nothing and an older archive can never roll back newer data. The server token is never written to a backup — it lives in the Android Keystore rather than in the database.
+Restore merges: a record already present is kept, so importing the same file twice changes nothing and an older archive can never roll back newer data. The server token is never written to a backup — it lives in the Android Keystore rather than in the database.
 
 
 ## Architecture
 
 - **UI:** Jetpack Compose, organized as a multi-module Gradle build so the CGM-source and model-backend seams stay pluggable.
-- **Rust core (`t1dm-core`, via JNI/NDK):** owns the correctness-critical, hot numerics — AiDEX frame decode and its CRCs, session crypto, the model pre/post pipeline (causal Savitzky-Golay smoothing, normalize/denormalize, the Kovatchev risk transform, quantile assembly), and the watch AES-128-GCM. Kotlin keeps the UI, BLE plumbing, storage, and orchestration. The core is tested bit-for-bit against golden vectors in CI.
-- **On-device inference:** [ExecuTorch](https://pytorch.org/executorch/). One exported model runs on two backends — CPU (XNNPACK, fp32) as the reference authority, and the GPU (Vulkan compute delegate, fp16) as a measured shadow whose agreement with the CPU path is measured before it may inform anything — behind a clean backend seam. The Vulkan delegate comes from a custom ExecuTorch build vendored under `third_party/`; the stock runtime registers XNNPACK only.
+- **Rust core (`t1dm-core`, via JNI/NDK):** the correctness-critical, hot numerics — AiDEX frame decode and its CRCs, session crypto, the model pre/post pipeline (causal Savitzky-Golay smoothing, normalize/denormalize, the Kovatchev risk transform, quantile assembly), and the watch AES-128-GCM. Kotlin keeps the UI, BLE plumbing, storage, and orchestration. The core is tested bit-for-bit against golden vectors in CI.
+- **On-device inference:** [ExecuTorch](https://pytorch.org/executorch/). One exported model runs on two backends behind a clean seam — CPU (XNNPACK, fp32) as the reference authority, and the GPU (Vulkan compute delegate, fp16) as a measured shadow whose agreement with the CPU path is measured before it may inform anything. The Vulkan delegate comes from a custom ExecuTorch build vendored under `third_party/`; the stock runtime registers XNNPACK only.
 - **Storage & orchestration:** Room on the bundled SQLite driver; an always-on foreground service plus WorkManager run the passive scan, the 5-minute grid, inference, sync, and the alarm path off the main thread.
-
-Heavy compute never runs on the main thread; the UI observes results reactively.
 
 
 ## Module map
@@ -119,58 +101,55 @@ Heavy compute never runs on the main thread; the UI observes results reactively.
 
 ## Building
 
-Requirements:
-
 - Android SDK **36** and the NDK, JDK **21**.
-- A Rust toolchain with the `aarch64-linux-android` target and [`cargo-ndk`](https://github.com/bbqsrc/cargo-ndk) installed **and on `PATH`** (the native build silently skips if `cargo-ndk` is missing).
+- A Rust toolchain with the `aarch64-linux-android` target and [`cargo-ndk`](https://github.com/bbqsrc/cargo-ndk) installed **and on `PATH`** — the native build silently skips if `cargo-ndk` is missing.
 
-The app targets **arm64-v8a only**, `minSdk 34`, `targetSdk 36`. Build the optimized personal release APK with:
+The app targets **arm64-v8a only**, `minSdk 34`, `targetSdk 36`.
 
 ```sh
 ./gradlew :app:assemblePersonalRelease
 ```
 
-There are two product flavors: `personal` (the daily build) and `public` (installs under a `.pub` application id). Release builds are R8-minified and resource-shrunk; if no `keystore.properties` is present they fall back to the debug signing key so a fresh checkout still produces an installable APK.
+Two product flavors: `personal` (the daily build) and `public` (installs under a `.pub` application id). Release builds are R8-minified and resource-shrunk; without a `keystore.properties` they fall back to the debug signing key, so a fresh checkout still produces an installable APK.
 
 
 ## Running on Xiaomi HyperOS / MIUI
 
-HyperOS (and MIUI generally) manage background apps far more aggressively than stock Android, and an always-on passive CGM reader is exactly the kind of app they curtail. The setup below is required for reliable operation. Note that HyperOS may silently reset some of these toggles after a system update or reboot, so they are worth re-checking periodically.
+HyperOS manages background apps far more aggressively than stock Android, and an always-on passive CGM reader is exactly the kind of app it curtails. The setup below is required for reliable operation, and a system update or reboot can silently reset parts of it.
 
 ### Battery and autostart
 
 In **Settings → Apps**, for T1DMDROID:
 
-- Enable **Autostart** / "Background autostart" (also lets it start on boot).
-- Set the battery mode to **No restrictions** — the default "Battery saver" level throttles background work.
-- Turn **off** "Pause app activity if unused".
-- Grant the standard Android **battery-optimization exemption** ("Ignore battery optimizations") as well.
+- **Autostart** on — this also lets it start on boot.
+- Battery mode **No restrictions**; the default "Battery saver" level throttles background work.
+- **Pause app activity if unused** off.
+- The standard Android **battery-optimization exemption** granted as well.
 
-Also exempt the **system Bluetooth app** (Settings → Apps → show system apps → Bluetooth → battery usage → **Unrestricted**) — easy to miss, and the scan depends on it. Finally, **lock the app in Recents** (drag its card down until it shows a padlock) so "clear all" and the memory cleaner don't evict it. Setting the phone to **Performance** power mode helps as well.
+Also set the **system Bluetooth app** to **Unrestricted** (Settings → Apps → show system apps → Bluetooth → battery usage) — easy to miss, and the scan depends on it. **Lock the app in Recents** (drag its card down until it shows a padlock) so "clear all" and the memory cleaner cannot evict it. **Performance** power mode helps as well.
 
 ### Background collection while the screen is off
 
-On Android 14+, and especially on HyperOS, the system suspends a background app's Bluetooth-LE scan when the screen turns off — a plain real-time scan stops delivering the moment the phone locks. To keep collecting, the app uses **offloaded batch scanning**: the Bluetooth controller buffers the sensor's advertisements in hardware regardless of screen state, and HyperOS flushes those batches on roughly a **five-minute timer**.
+On Android 14+, and especially on HyperOS, the system suspends a background app's Bluetooth-LE scan when the screen turns off. To keep collecting, the app uses **offloaded batch scanning**: the Bluetooth controller buffers the sensor's advertisements in hardware regardless of screen state, and HyperOS flushes those batches on roughly a **five-minute timer**.
 
-The practical consequence: while the phone is locked, new glucose readings — and therefore any alarms — can lag by up to about **five minutes**. This is an OS-imposed floor for a passive-advertisement sensor (a device you can *connect* to over GATT is not affected), and it does not apply while the screen is on. Each batched reading is timestamped at its true capture instant, so no 5-minute grid slot is lost.
+So while the phone is locked, new readings — and therefore any alarms — can lag by up to about **five minutes**. This is an OS-imposed floor for a passive-advertisement sensor, and does not apply while the screen is on. Each batched reading is timestamped at its true capture instant, so no 5-minute grid slot is lost.
 
 ### Glucose on the lock screen
 
-The app posts a persistent, silent notification with the current glucose value and trend. HyperOS hides **silent** notifications from the lock screen by default and removes the corresponding control from Settings, so the notification will appear in the shade but not on the lock screen until that control is re-enabled once:
+The app posts a persistent, silent notification with the current glucose value and trend. HyperOS hides **silent** notifications from the lock screen by default and removes the corresponding control from Settings, so the notification appears in the shade but not on the lock screen until that control is re-enabled once:
 
 ```sh
 adb shell settings put secure lock_screen_show_silent_notifications 1
 ```
 
-Alternatively, use an "Activity Launcher"-type app to open
-`com.android.settings.Settings$ConfigureNotificationSettingsActivity` → **Notifications on lock screen** → **Show conversations, default and silent**.
+An "Activity Launcher"-type app reaches the same control: `com.android.settings.Settings$ConfigureNotificationSettingsActivity` → **Notifications on lock screen** → **Show conversations, default and silent**.
 
-This setting is **device-wide** (it affects every app's silent notifications), persists across reboots, and is cleared by a factory reset — there is no way for an app to set it on your behalf.
+The setting is **device-wide**, persists across reboots, and is cleared by a factory reset — no app can set it on the user's behalf.
 
 
 ## Target device
 
-The build targets a single phone: a **Redmi K90 Max** (MediaTek Dimensity 9500 / MT6993), running **Android 16 / HyperOS**, arm64-v8a. Accelerated inference runs on the GPU through Vulkan; the SoC's APU is not used, since the MediaTek NeuroPilot runtime ships through Play feature delivery and a sideloaded build cannot fetch it. Other devices are untested and unsupported.
+The build targets a single phone: a **Redmi K90 Max** (MediaTek Dimensity 9500 / MT6993) running **Android 16 / HyperOS**, arm64-v8a. Accelerated inference runs on the GPU through Vulkan; the SoC's APU is not used, since the MediaTek NeuroPilot runtime ships through Play feature delivery and a sideloaded build cannot fetch it. Other devices are untested and unsupported.
 
 
 ## Related projects
