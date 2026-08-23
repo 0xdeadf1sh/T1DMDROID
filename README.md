@@ -34,29 +34,32 @@ The Bluetooth, inference, and watch protocols are documented under [`docs/`](doc
 
 <table>
 <tr>
-<td align="center" width="33%"><video src="https://github.com/user-attachments/assets/0f52cf8b-5122-4d68-ba36-b0f84b7090b7" width="230" controls></video><br><b>Blood glucose graph</b><br><sub>Tall panel carrying IOB and COB</sub></td>
-<td align="center" width="33%"><video src="https://github.com/user-attachments/assets/7704a16f-3539-4345-9c17-5330ad572e46" width="230" controls></video><br><b>Paint</b><br><sub>Freehand marks inside the graph</sub></td>
-<td align="center" width="33%"><video src="https://github.com/user-attachments/assets/970528b8-9494-4861-94ce-05db97fa3843" width="230" controls></video><br><b>Drive</b><br><sub>Steer along the curve</sub></td>
+<td align="center" width="50%"><video src="https://github.com/user-attachments/assets/0f52cf8b-5122-4d68-ba36-b0f84b7090b7" width="320" controls></video><br><b>Blood glucose graph</b></td>
+<td align="center" width="50%"><video src="https://github.com/user-attachments/assets/e7d7a001-f89f-475b-9446-823c71ec5ae3" width="320" controls></video><br><b>Multiple sensors</b></td>
 </tr>
 <tr>
-<td align="center"><video src="https://github.com/user-attachments/assets/22db9310-0cea-4283-b328-7d66f2bb77be" width="230" controls></video><br><b>Autoregressive rolling</b><br><sub>Rolls the model past its horizon</sub></td>
-<td align="center"><video src="https://github.com/user-attachments/assets/21c5ab35-24fc-42be-9720-2de01283ca97" width="230" controls></video><br><b>Hindsight</b><br><sub>Past forecasts against what followed</sub></td>
-<td align="center"><video src="https://github.com/user-attachments/assets/434dfd60-c53a-4bca-b50d-9a8e5aae45bd" width="230" controls></video><br><b>Infilling</b><br><sub>Withhold a stretch, refill it</sub></td>
+<td align="center" width="50%"><video src="https://github.com/user-attachments/assets/7704a16f-3539-4345-9c17-5330ad572e46" width="320" controls></video><br><b>Paint</b></td>
+<td align="center" width="50%"><video src="https://github.com/user-attachments/assets/970528b8-9494-4861-94ce-05db97fa3843" width="320" controls></video><br><b>Drive</b></td>
 </tr>
 <tr>
-<td align="center"><video src="https://github.com/user-attachments/assets/49221852-40a6-4bec-bdfd-8ddd313d9d3a" width="230" controls></video><br><b>Circadian clock</b><br><sub>The hour-of-day the physiology resembles</sub></td>
-<td align="center"><video src="https://github.com/user-attachments/assets/d3374eb4-f7f3-42b5-bf1e-99e328fbefc6" width="230" controls></video><br><b>Model evaluation</b><br><sub>Error, calibration and Clarke zones per horizon</sub></td>
-<td align="center"><video src="https://github.com/user-attachments/assets/2b77341c-9f8c-46f8-893f-9fdfaab3709d" width="230" controls></video><br><b>LoRA adapters</b><br><sub>Fitted on device from replayed forecasts</sub></td>
+<td align="center" width="50%"><video src="https://github.com/user-attachments/assets/22db9310-0cea-4283-b328-7d66f2bb77be" width="320" controls></video><br><b>Autoregressive rolling</b></td>
+<td align="center" width="50%"><video src="https://github.com/user-attachments/assets/21c5ab35-24fc-42be-9720-2de01283ca97" width="320" controls></video><br><b>Hindsight</b></td>
 </tr>
 <tr>
-<td align="center"><video src="https://github.com/user-attachments/assets/a6dcc3eb-f52b-4bf2-8803-b3e13068edf6" width="230" controls></video><br><b>Log carbohydrates</b><br><sub>GI preset, grams, and the appearance curve</sub></td>
-<td align="center"><video src="https://github.com/user-attachments/assets/296c5f4e-feac-44bd-b342-f3dafa270075" width="230" controls></video><br><b>Log insulin</b><br><sub>Type preset, units, and the PK action curve</sub></td>
-<td align="center"><video src="https://github.com/user-attachments/assets/e7d7a001-f89f-475b-9446-823c71ec5ae3" width="230" controls></video><br><b>Multiple sensors</b><br><sub>One scan, every sensor in range</sub></td>
+<td align="center" width="50%"><video src="https://github.com/user-attachments/assets/434dfd60-c53a-4bca-b50d-9a8e5aae45bd" width="320" controls></video><br><b>Infilling</b></td>
+<td align="center" width="50%"><video src="https://github.com/user-attachments/assets/49221852-40a6-4bec-bdfd-8ddd313d9d3a" width="320" controls></video><br><b>Circadian clock</b></td>
 </tr>
 <tr>
-<td align="center"><video src="https://github.com/user-attachments/assets/6533d16f-3953-4410-b155-2cffecfde8f4" width="230" controls></video><br><b>Statistics</b><br><sub>Variability indices, TIR by time of day</sub></td>
-<td align="center"><video src="https://github.com/user-attachments/assets/ef631f0b-0cc8-4353-8d8a-c27599a725d2" width="230" controls></video><br><b>Settings</b><br><sub>Searchable</sub></td>
-<td align="center"></td>
+<td align="center" width="50%"><video src="https://github.com/user-attachments/assets/d3374eb4-f7f3-42b5-bf1e-99e328fbefc6" width="320" controls></video><br><b>Model evaluation</b></td>
+<td align="center" width="50%"><video src="https://github.com/user-attachments/assets/2b77341c-9f8c-46f8-893f-9fdfaab3709d" width="320" controls></video><br><b>LoRA adapters</b></td>
+</tr>
+<tr>
+<td align="center" width="50%"><video src="https://github.com/user-attachments/assets/a6dcc3eb-f52b-4bf2-8803-b3e13068edf6" width="320" controls></video><br><b>Log carbohydrates</b></td>
+<td align="center" width="50%"><video src="https://github.com/user-attachments/assets/296c5f4e-feac-44bd-b342-f3dafa270075" width="320" controls></video><br><b>Log insulin</b></td>
+</tr>
+<tr>
+<td align="center" width="50%"><video src="https://github.com/user-attachments/assets/6533d16f-3953-4410-b155-2cffecfde8f4" width="320" controls></video><br><b>Statistics</b></td>
+<td align="center" width="50%"><video src="https://github.com/user-attachments/assets/ef631f0b-0cc8-4353-8d8a-c27599a725d2" width="320" controls></video><br><b>Settings</b></td>
 </tr>
 </table>
 
