@@ -7,7 +7,7 @@ description: >-
   header, `SettingsNote`, dialog title/body/button, snackbar/toast, notification, alarm, predictive
   alert, or any §3.6 refusal/warning. Covers what counts as user-facing, the one-sentence ceiling,
   how warnings and alarms compress while keeping their WHY, when to delete a note outright, and what
-  is OUT of scope (comments, KDoc, logs, docs, SPEC). Triggers: "add a label", "warning message",
+  is OUT of scope (logs, docs, SPEC; comments and KDoc have their own, harder rule). Triggers: "add a label", "warning message",
   "settings note", "dialog copy", "error text", "empty-state text", "button text", "notification
   wording".
 ---
@@ -64,9 +64,11 @@ threshold, a duration, or the reason itself is a regression — that is the one 
 IN: `Text("…")` literals, string resources, notification / alarm / predictive-alert text, dialog and
 snackbar text, labels, subtitles, section headers, `SettingsNote`.
 
-OUT — leave these in the codebase's own dense, literate voice; do **not** terse-ify them:
-comments, KDoc, `Timber`/log messages, identifiers, kv keys, test names, the design docs, `docs/`,
-`README`. Their audience is a developer, not the app's user.
+OUT: `Timber`/log messages, identifiers, kv keys, test names, the design docs, `docs/`, `README`.
+Their audience is a developer, not the app's user.
+
+Comments and KDoc are out of scope here because they are cut **harder**, not because they are
+exempt — see the user-level `terse-code-comments` skill.
 
 ## Before you commit a string
 
