@@ -5,16 +5,13 @@ plugins {
     id("t1dm.android.compose")
 }
 
-// Release signing: read a gitignored keystore.properties if present, else fall back to the
-// debug keystore so `assembleRelease` always produces an installable APK on a fresh checkout.
+// keystore.properties is gitignored, so it is absent on a fresh checkout.
 val keystorePropsFile = rootProject.file("keystore.properties")
 val hasKeystore = keystorePropsFile.exists()
 val keystoreProps = Properties().apply {
     if (hasKeystore) keystorePropsFile.inputStream().use { load(it) }
 }
 
-// Short git SHA for the About panel's internal build info (Phase 7C). Degrades to "unknown"
-// off a git checkout so a fresh export still builds.
 val gitSha: String = runCatching {
     val p = ProcessBuilder("git", "rev-parse", "--short", "HEAD")
         .directory(rootProject.projectDir).redirectErrorStream(true).start()
@@ -29,20 +26,18 @@ android {
         versionCode = 121
         versionName = "0.51.6"
 
-        // arm64-v8a only (single target device). Harmless until native .so libs ship.
+        // Single target device.
         ndk {
             abiFilters += "arm64-v8a"
         }
 
-        // Vulkan capability-probe JNI shim (issue 20 — STEP 5). arm64-only C++17, links the NDK
-        // Vulkan loader; enumerates the GPU without running the model.
+        // Vulkan capability-probe shim: enumerates the GPU without running the model.
         externalNativeBuild {
             cmake {
                 cppFlags += "-std=c++17"
             }
         }
 
-        // About-panel build provenance (public-safe).
         buildConfigField("String", "GIT_SHA", "\"$gitSha\"")
         buildConfigField("String", "EXECUTORCH_VERSION", "\"1.3.1\"")
     }
@@ -60,11 +55,10 @@ android {
 
     flavorDimensions += "distribution"
     productFlavors {
-        // Personal build: the medical disclaimer is compiled out (no-op stub source set).
+        // Disclaimer compiled out via a no-op stub source set; the public flavor ships it.
         create("personal") {
             dimension = "distribution"
         }
-        // Public build: ships the real disclaimer composable.
         create("public") {
             dimension = "distribution"
             applicationIdSuffix = ".pub"
@@ -106,8 +100,7 @@ dependencies {
     implementation(project(":core:design"))
 
     implementation(project(":data"))
-    // :data exposes Room via `implementation`; the composition root builds the DB, so it needs
-    // room-runtime on its own classpath to name AppDatabase/RoomDatabase.
+    // :data exposes Room via `implementation`; the root names AppDatabase itself.
     implementation(libs.androidx.room.runtime)
     implementation(project(":cgm"))
     implementation(project(":sensors"))
@@ -131,9 +124,8 @@ dependencies {
     implementation(project(":feature:logs"))
     implementation(project(":feature:game"))
     implementation(project(":feature:backup"))
-    // Not for drawing: the composition root names PredictedClock to hand the panel's own axis
-    // clock from the dashboard to drive mode, and :feature:dashboard exposes :ui:graph via
-    // `implementation`, so the type is off this classpath otherwise.
+    // Not for drawing: :feature:dashboard exposes :ui:graph via `implementation`, so the root
+    // cannot name PredictedClock without this.
     implementation(project(":ui:graph"))
 
     implementation(libs.androidx.core.ktx)
@@ -143,10 +135,8 @@ dependencies {
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.navigation.compose)
     implementation(libs.kotlinx.coroutines.android)
-    // JsonElement only (no @Serializable codegen, so no compiler plugin): the config-backup envelope
-    // is parsed with the SAME implementation on device and on the host JVM, which `org.json` — an
-    // Android reimplementation whose unit-test stand-in differs — cannot offer. Already in the APK
-    // via :sync and :feature:pubs.
+    // JsonElement only, no codegen: the same JSON implementation on device and on the host JVM,
+    // which `org.json`'s unit-test stand-in is not.
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.timber)
 
@@ -154,7 +144,6 @@ dependencies {
     implementation(libs.bundles.compose)
     debugImplementation(libs.androidx.compose.ui.tooling)
 
-    // Home / lock glance widgets (Phase 7B).
     implementation(libs.androidx.glance.appwidget)
     implementation(libs.androidx.glance.material3)
 

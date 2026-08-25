@@ -21,18 +21,9 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * Covers the in-place edit of a saved meal ([T1dmRepository.updateSavedMeal]): the header keeps its
- * id, the portion snapshots are REPLACED, and the whole thing is one transaction.
- *
- * The stakes are set by the schema: `saved_meal_item` has no foreign key and therefore no cascade, so
- * every item row that outlives its header is a permanent orphan reachable by nothing but the full
- * wipe. Two failure modes follow, and both are asserted here — a throw between the delete and the
- * re-insert (which must roll the header write back with it) and an edit aimed at a meal deleted out
- * from under the editor (which must write nothing at all).
- *
- * Instrumented, in-memory, sensor-free. Built with [BundledSQLiteDriver] like production, since the
- * repository's `inWriteTx` reaches for the driver-based `useWriterConnection`/`immediateTransaction`
- * path (see `TransactionTest`).
+ * `saved_meal_item` has no foreign key and no cascade, so an item row outliving its header is a
+ * permanent orphan. Built with [BundledSQLiteDriver] like production: `inWriteTx` reaches for the
+ * driver-based `useWriterConnection`/`immediateTransaction` path.
  */
 @RunWith(AndroidJUnit4::class)
 class SavedMealUpdateTest {
@@ -75,11 +66,6 @@ class SavedMealUpdateTest {
             c.usePrepared("SELECT COUNT(*) FROM saved_meal_item") { it.step(); it.getLong(0) }
         }
 
-    /**
-     * The contract in one test: the id survives, the name and `updatedAt` move, the old portions are
-     * gone and only the new ones remain — and the table holds nothing beyond them, so the replacement
-     * left no orphans behind.
-     */
     @Test
     fun updateReplacesItemsInPlaceWithoutMintingAnId() = runBlocking {
         val id = repo.saveMeal("breakfast", listOf(item("oats", 60.0), item("milk", 200.0)), t0)
@@ -105,12 +91,8 @@ class SavedMealUpdateTest {
         assertEquals("the replaced portions must be gone, not merely hidden", 3L, totalItemRows())
     }
 
-    /**
-     * `observeMeals()` selects from `saved_meal` alone, so an edit that touched only the item rows
-     * would never invalidate the Flow and the saved-meals list would sit there stale. The header write
-     * is therefore unconditional — proven here by an edit that leaves the name exactly as it was and
-     * still moves `updatedAt`.
-     */
+    /** `observeMeals()` selects from `saved_meal` alone, so an item-only edit must still write the
+     *  header or the Flow never invalidates. */
     @Test
     fun itemOnlyEditStillWritesTheHeader() = runBlocking {
         val id = repo.saveMeal("lunch", listOf(item("rice", 100.0)), t0)
@@ -122,12 +104,7 @@ class SavedMealUpdateTest {
         assertEquals(150.0, repo.savedMealItems(id).single().grams, 1e-9)
     }
 
-    /**
-     * The atomicity proof. The re-insert is made to fail (a row carrying the primary key of an item
-     * belonging to ANOTHER meal violates the `saved_meal_item` PK), and the whole edit unwinds: the
-     * old portions are still there and the header still carries its old name and timestamp. Were the
-     * delete not inside the transaction, the meal would survive as a named, empty husk.
-     */
+    /** The re-insert is made to fail on the `saved_meal_item` PK of another meal's item row. */
     @Test
     fun aFailedReinsertRollsBackTheWholeEdit() = runBlocking {
         val other = repo.saveMeal("other", listOf(item("bread", 50.0)), t0)
@@ -153,11 +130,8 @@ class SavedMealUpdateTest {
         assertEquals("the other meal is untouched and nothing was stranded", 3L, totalItemRows())
     }
 
-    /**
-     * Deleted while it was being edited — the delete affordance sits in the same row as the edit one.
-     * The header UPDATE matches nothing, and the items must NOT be written: with no foreign key they
-     * would be orphans no query can reach and only a full wipe removes.
-     */
+    /** The header UPDATE matches nothing; with no foreign key the items would be unreachable
+     *  orphans. */
     @Test
     fun updateOfADeletedMealWritesNothing() = runBlocking {
         val id = repo.saveMeal("gone", listOf(item("apple", 100.0)), t0)
@@ -170,7 +144,6 @@ class SavedMealUpdateTest {
         assertEquals("no orphan item rows may be left behind", 0L, totalItemRows())
     }
 
-    /** An edit down to nothing is legal at the store level; it must still leave zero item rows. */
     @Test
     fun updateToAnEmptyItemSetLeavesNoRows() = runBlocking {
         val id = repo.saveMeal("snack", listOf(item("crisps", 30.0)), t0)

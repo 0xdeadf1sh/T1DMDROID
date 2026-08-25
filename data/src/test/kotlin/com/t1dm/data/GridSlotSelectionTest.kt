@@ -8,11 +8,6 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * [supersedesGridSlot] — which of one sensor's samples claims a five-minute slot — plus the two
- * pieces of arithmetic the sub-grid store rests on: the window of filed instants that snap into a
- * slot, and the retention cutoff.
- */
 class GridSlotSelectionTest {
 
     @Test
@@ -21,14 +16,6 @@ class GridSlotSelectionTest {
         assertTrue(supersedesGridSlot(null, interpolated(SLOT)))
     }
 
-    /**
-     * The guarantee this change is bounded by: for a sensor that samples on the grid, the stored
-     * series is exactly what plain `INSERT OR REPLACE` produced. Such a sensor never offers two
-     * measurements for one slot, so the contest is never reached — asserted here by folding a
-     * realistic stream both ways and demanding the same map. The stream carries everything a
-     * five-minute sensor can produce: jittered receptions, a dropout and its gap-fills, a
-     * re-delivered advert, and a warm-up row a later gap-fill lands on top of.
-     */
     @Test
     fun `a five-minute sensor gets the same series as replace-in-place`() {
         val stream = ArrayList<CgmReadingEntity>()
@@ -37,28 +24,18 @@ class GridSlotSelectionTest {
             val slot = SLOT + i * GRID
             stream += measured(slot, slot + jitter[i])
         }
-        // A dropout: slots 6 and 7 are never measured, and the stamper fills them when slot 8 lands.
         stream += interpolated(SLOT + 6 * GRID)
         stream += interpolated(SLOT + 7 * GRID)
         stream += measured(SLOT + 8 * GRID, SLOT + 8 * GRID + 3_000)
-        // The same advert delivered twice — an identical row, so neither fold may move.
+        // The same advert delivered twice.
         stream += stream[3]
-        // A suppressed warm-up row that a later gap-fill overwrites. This is the one place the two
-        // provenances contend for a slot, and the contest deliberately declines to re-decide it.
+        // The one slot where warm-up and gap-fill contend; the contest declines to re-decide it.
         stream += measured(SLOT + 9 * GRID, SLOT + 9 * GRID + 1_000, flag = ReadingFlag.WARMUP)
         stream += interpolated(SLOT + 9 * GRID)
 
         assertEquals(lastWriterWins(stream), withContest(stream))
     }
 
-    /**
-     * A THREE-minute sensor filed on its own sample clock — the case the contest exists for, and the one
-     * the five-minute guarantee above deliberately does not reach.
-     *
-     * Five samples fall into three slots, so two slots are contested. Which sample each keeps is decided by
-     * nearness to the slot instant and by nothing else, so the answer is the same however the five arrive:
-     * a burst drained out of order, or a re-delivery after a reconnect, lands on the same three rows.
-     */
     @Test
     fun `a three-minute sensor keeps the sample nearest each slot, whatever the arrival order`() {
         val stream = (0 until 5).map { i ->
@@ -66,9 +43,9 @@ class GridSlotSelectionTest {
             measured(T1dmRepository.snapToGrid(sampledAt), sampledAt).copy(bgMgdl = 100 + i)
         }
         val expected = mapOf(
-            SLOT to 100,             // 0 min: alone in its slot
-            SLOT + GRID to 102,      // 6 min, one minute from the slot — against the 3-min sample's two
-            SLOT + 2 * GRID to 103,  // 9 min, one minute from the slot — against the 12-min sample's two
+            SLOT to 100,             // 0 min, alone
+            SLOT + GRID to 102,      // 6 min, 1 min out; beats the 3-min sample
+            SLOT + 2 * GRID to 103,  // 9 min, 1 min out; beats the 12-min sample
         )
         val orders = listOf(
             stream,
@@ -93,7 +70,6 @@ class GridSlotSelectionTest {
         assertTrue("the nearer sample did not take the slot", supersedesGridSlot(far, near))
     }
 
-    /** Distance is absolute: a sample early by 20 s beats one late by 130 s. */
     @Test
     fun `nearness is measured either side of the instant`() {
         val early = measured(SLOT, SLOT - 20_000)
@@ -102,10 +78,6 @@ class GridSlotSelectionTest {
         assertTrue(supersedesGridSlot(late, early))
     }
 
-    /**
-     * The winner is a function of the SET of samples, not of the order they were written — so a
-     * retried or out-of-order persist lands on the same row a clean run does.
-     */
     @Test
     fun `the winner does not depend on arrival order`() {
         val a = measured(SLOT, SLOT - 120_000)
@@ -117,10 +89,6 @@ class GridSlotSelectionTest {
         }
     }
 
-    /**
-     * Equidistant is reachable — a slot's five minutes are symmetric about it — so the tie-break has
-     * to be stated: the EARLIER reception wins, which is to say the incumbent keeps the slot.
-     */
     @Test
     fun `equidistant samples resolve to the earlier reception`() {
         val early = measured(SLOT, SLOT - 60_000)
@@ -140,21 +108,12 @@ class GridSlotSelectionTest {
         )
     }
 
-    /**
-     * A gap-fill and a measurement are not two candidates for one instant, so the contest sits this
-     * one out and the write behaves exactly as it did before: replace in place.
-     */
     @Test
     fun `an interpolated row is left to replace in place`() {
         assertTrue(supersedesGridSlot(measured(SLOT, SLOT + 1_000), interpolated(SLOT)))
         assertTrue(supersedesGridSlot(interpolated(SLOT), measured(SLOT, SLOT + 140_000)))
     }
 
-    /**
-     * One source cannot receive two different samples in the same millisecond, so an identical
-     * receive instant is the same write arriving again — a retry, or a caller rewriting a slot on
-     * purpose (the debug seeder does). That replaces in place, exactly as it did before.
-     */
     @Test
     fun `the same receive instant replaces in place`() {
         val row = measured(SLOT, SLOT + 40_000)
@@ -162,11 +121,6 @@ class GridSlotSelectionTest {
         assertTrue(supersedesGridSlot(row, row))
     }
 
-    /**
-     * The slot window is the inverse of the snap, and this is what holds it there: every instant in
-     * the window snaps into the slot and the instants either side of it do not. Spelling those bounds
-     * again in a caller is what this makes unnecessary.
-     */
     @Test
     fun `the slot window is exactly the instants that snap into the slot`() {
         val window = T1dmRepository.rawSampleWindowFor(SLOT)
@@ -177,7 +131,6 @@ class GridSlotSelectionTest {
         }
         assertEquals(SLOT - GRID, T1dmRepository.snapToGrid(window.first - 1))
         assertEquals(SLOT + GRID, T1dmRepository.snapToGrid(window.last + 1))
-        // Adjacent windows tile: no instant belongs to two slots, none to neither.
         assertEquals(window.last + 1, T1dmRepository.rawSampleWindowFor(SLOT + GRID).first)
     }
 
@@ -233,14 +186,14 @@ class GridSlotSelectionTest {
             rssi = null,
         )
 
-        /** What `upsertReading` now stores, slot by slot. */
+        /** What `upsertReading` stores, slot by slot. */
         fun withContest(rows: List<CgmReadingEntity>): Map<Long, CgmReadingEntity> {
             val out = LinkedHashMap<Long, CgmReadingEntity>()
             for (r in rows) if (supersedesGridSlot(out[r.tsMs], r)) out[r.tsMs] = r
             return out
         }
 
-        /** What `INSERT OR REPLACE` stored before it. */
+        /** What `INSERT OR REPLACE` stores. */
         fun lastWriterWins(rows: List<CgmReadingEntity>): Map<Long, CgmReadingEntity> =
             rows.associateBy { it.tsMs }
     }

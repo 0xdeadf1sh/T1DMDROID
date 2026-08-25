@@ -11,11 +11,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
-/**
- * OkHttp-backed transport for the REST outbox drain. Exercises the real wire (MockWebServer): the
- * Bearer header rides every request (`/v1/health` included, per the auth change), and 4xx/5xx are
- * surfaced as [SyncResponse] rather than thrown so the drainer can classify them.
- */
 class OkHttpSyncClientTest {
 
     private lateinit var server: MockWebServer
@@ -78,7 +73,7 @@ class OkHttpSyncClientTest {
         assertEquals("m.pte", models[0].id)
         assertEquals("abc", models[0].sha256)
         assertEquals(42L, models[0].bytes)
-        assertTrue(models[0].meta is kotlinx.serialization.json.JsonObject) // opaque, unparsed
+        assertTrue(models[0].meta is kotlinx.serialization.json.JsonObject)
         assertEquals(null, models[1].meta)
         val recorded = server.takeRequest()
         assertEquals("GET", recorded.method)
@@ -124,7 +119,7 @@ class OkHttpSyncClientTest {
             runBlocking { client.execute(SyncRequest("GET", "/v1/health", null)) }
             throw AssertionError("expected NoActiveProfileException")
         } catch (_: NoActiveProfileException) {
-            // expected — the drainer stands down
+            // expected
         }
     }
 }

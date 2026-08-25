@@ -10,11 +10,6 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Test
 
-/**
- * #17 — the live circadian (time-of-day) head must ride the `PUT /v1/predictions` write as a nested
- * [CircadianDto] carrying `probs`/`predicted_hour`/`resultant_r`/`n_bins`/`bin_hours` losslessly, and
- * must serialize as `null` (never a zeroed 12-vector) when the model produced no time head.
- */
 class WireMapperCircadianTest {
 
     private fun prediction(predictedTime: PredictedTime?): ModelPrediction {

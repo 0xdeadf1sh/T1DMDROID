@@ -22,16 +22,8 @@ import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.KeyValueRow
 import com.t1dm.core.design.rememberT1dmHaptics
 
-/**
- * Settings → Nightscout bridge: a one-way mirror of BG, carbohydrate and bolus into a third-party
- * host that speaks the Nightscout `/api/v1` subset.
- *
- * The secret field is write-only, exactly as the server screen's token is: blank on entry, and a
- * blank value on save keeps the stored one. It accepts either the host's plaintext token or the SHA-1
- * it displays beside it — `normalizeApiSecret` decides which it was given.
- *
- * State is hoisted; persistence and the probe are `:app` concerns passed as callbacks.
- */
+/** One-way mirror into a host speaking the Nightscout `/api/v1` subset. The secret field is
+ *  write-only: blank on entry, and a blank value on save keeps the stored one. */
 @Composable
 fun NightscoutSettingsScreen(
     initialUrl: String,
@@ -110,8 +102,6 @@ fun NightscoutSettingsScreen(
         }
     }
 }
-
-// ── search index (see SettingsIndex.kt) ───────────────────────────────────────────────────────────
 
 private const val NS_SECTION = "Nightscout bridge"
 

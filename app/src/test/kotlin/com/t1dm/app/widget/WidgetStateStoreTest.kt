@@ -19,11 +19,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * The widget's fallback render (the boot / reaped-service path). What matters is that a cached tile
- * cannot lie: it re-ages against the wall clock rather than freezing, it keeps the user's units,
- * theme and alarm geometry, and it never carries a forecast claim forward.
- */
+/** The widget's fallback render: the boot / reaped-service path. */
 class WidgetStateStoreTest {
 
     private val thresholds = AlertThresholds(urgentLowMgdl = 60, lowMgdl = 80, highMgdl = 170, urgentHighMgdl = 240)
@@ -105,7 +101,7 @@ class WidgetStateStoreTest {
         assertEquals(ThemeIds.HELLO_KITTY to null, WidgetStateStore.themeOf(prefs))
     }
 
-    /** The user's bands, not the boot defaults: 175 is HIGH against 170 but IN_RANGE against 180. */
+    /** 175 is HIGH against the persisted 170, IN_RANGE against the default 180. */
     @Test
     fun `cached band uses the persisted thresholds`() {
         val nowMs = 1_700_000_000_000L
@@ -117,7 +113,6 @@ class WidgetStateStoreTest {
         assertEquals(AlertBand.IN_RANGE, AlarmConfig.DEFAULT.thresholds.bandFor(175))
     }
 
-    /** The persisted loss window drives signal-loss, so a reaped service cannot silently widen it. */
     @Test
     fun `signal loss is evaluated against the persisted window`() {
         val writeAt = 1_700_000_000_000L
@@ -128,7 +123,7 @@ class WidgetStateStoreTest {
         assertTrue(WidgetStateStore.read(prefs, writeAt + 26L * 60_000L)!!.glance.signalLoss)
     }
 
-    /** §3.6: no InferenceState survives the process, so a cached tile must never assert a forecast. */
+    /** §3.6: no InferenceState survives the process. */
     @Test
     fun `cached render carries no forecast claim`() {
         val nowMs = 1_700_000_000_000L
@@ -146,7 +141,6 @@ class WidgetStateStoreTest {
         assertNull(cached.steps)
     }
 
-    /** A render with no reading must clear the cached one rather than resurrect it later. */
     @Test
     fun `a readingless render clears the cached value`() {
         val nowMs = 1_700_000_000_000L
@@ -160,7 +154,6 @@ class WidgetStateStoreTest {
         assertNull(cached.rssi)
     }
 
-    /** A theme retired by a later build must not leave the tile with an unresolvable id. */
     @Test
     fun `a retired persisted theme id is coerced`() {
         val nowMs = 1_700_000_000_000L

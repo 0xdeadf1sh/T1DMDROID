@@ -10,48 +10,30 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
 
 /**
- * A real seven-segment LCD, drawn cell by cell: `dd:hh:mm:ss` where every digit is seven mitred bars
- * and the UNLIT bars are still painted, faintly, beneath the lit ones — the ghost of the dead cells is
- * what makes a physical display read as a display rather than as text in a monospace font. Everything
- * derives from the two colour roles the caller passes, so the readout takes each theme's own light.
- *
- * Two properties are load-bearing for the circadian panel's insulin-exhaustion countdown:
- *
- *  - [remainingMs] is a LAMBDA, invoked inside the draw scope. A 1 s ticker held as a
- *    [androidx.compose.runtime.State] and read only here invalidates DRAW alone — the surrounding
- *    panel never recomposes (the idiom Scrollbar.kt and Pulse.kt already lean on).
- *  - a lapsed span reads `00:00:00:00` in [lapsed]; the split clamps at zero, so a landmark already in
- *    the past shows a stopped clock rather than a negative wrap.
- *
- * The colon pulse is the one piece of DECORATION here, so it is gated on [LocalAnimationsEnabled]
- * (Motion.kt): with motion off the colons simply stay lit. The digits keep ticking either way — they
- * carry data, not motion.
+ * [remainingMs] is a LAMBDA invoked inside the draw scope, so a 1 s ticker read only here invalidates
+ * DRAW alone and never recomposes the panel. A lapsed span clamps to `00:00:00:00` rather than
+ * wrapping negative. The colon pulse is decoration, hence gated on [LocalAnimationsEnabled].
  */
 
-/**
- * The classic segment map, bit 0…6 = a…g: a top, b upper-right, c lower-right, d bottom, e lower-left,
- * f upper-left, g middle.
- */
+/** Bit 0…6 = a…g: a top, b upper-right, c lower-right, d bottom, e lower-left, f upper-left,
+ *  g middle. */
 private val SEGMENT_MASKS = intArrayOf(
-    0x3F, // 0 — abcdef
-    0x06, // 1 — bc
-    0x5B, // 2 — abdeg
-    0x4F, // 3 — abcdg
-    0x66, // 4 — bcfg
-    0x6D, // 5 — acdfg
-    0x7D, // 6 — acdefg
-    0x07, // 7 — abc
-    0x7F, // 8 — abcdefg
-    0x6F, // 9 — abcdfg
+    0x3F, // 0
+    0x06, // 1
+    0x5B, // 2
+    0x4F, // 3
+    0x66, // 4
+    0x6D, // 5
+    0x7D, // 6
+    0x07, // 7
+    0x7F, // 8
+    0x6F, // 9
 )
 
-/** Segments lit for [digit]; anything outside 0–9 yields a BLANK cell (0) rather than a wrong glyph. */
+/** Anything outside 0–9 yields a BLANK cell, not a wrong glyph. */
 internal fun sevenSegmentMask(digit: Int): Int = if (digit in 0..9) SEGMENT_MASKS[digit] else 0
 
-/**
- * `[dd, hh, mm, ss]` for a remaining span, clamped at zero. The day field is capped at 99 999 so a
- * user who dials an absurd offset gets a saturated readout instead of an `Int` wrap.
- */
+/** `[dd, hh, mm, ss]`, clamped at zero; days saturate at 99 999 rather than wrapping. */
 internal fun ddHhMmSs(remainingMs: Long): IntArray {
     val s = (remainingMs / 1000L).coerceAtLeast(0L)
     return intArrayOf(
@@ -86,7 +68,7 @@ fun SevenSegmentClock(
 }
 
 private fun DrawScope.drawLcd(fields: IntArray, on: Color, colonLit: Boolean) {
-    // The day field widens past 99 rather than truncating; the layout below simply gets one more cell.
+    // The day field widens past 99 rather than truncating.
     val dayGlyphs = maxOf(2, fields[0].toString().length)
     val cells = ArrayList<Int>(dayGlyphs + 9)
     var d = fields[0]
@@ -107,8 +89,7 @@ private fun DrawScope.drawLcd(fields: IntArray, on: Color, colonLit: Boolean) {
     var dw = size.height * DIGIT_ASPECT
     if (dw * units > size.width) dw = size.width / units
     val dh = dw / DIGIT_ASPECT
-    // Right-aligned: the readout is a value in a label/value row, and the seconds column must not
-    // wander horizontally as the day field gains a digit.
+    // Right-aligned, so the seconds column does not wander as the day field gains a digit.
     var x = size.width - dw * units
     val y = (size.height - dh) / 2f
 
@@ -155,10 +136,10 @@ private fun DrawScope.drawColon(left: Float, top: Float, w: Float, h: Float, on:
     }
 }
 
-/** The italic lean every LCD has: above the cell's middle the glyph slides right, below it, left. */
+/** Above the cell's middle the glyph slides right; below it, left. */
 private fun shear(x: Float, y: Float, ym: Float): Float = x + (ym - y) * SEG_SLANT
 
-/** A horizontal bar with mitred (pointed) ends, so abutting segments meet at a hairline. */
+/** Mitred ends, so abutting segments meet at a hairline. */
 private fun barH(x0: Float, x1: Float, y: Float, t: Float, gap: Float, ym: Float): Path {
     val a = x0 + gap
     val b = x1 - gap

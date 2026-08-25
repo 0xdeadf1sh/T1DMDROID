@@ -32,17 +32,7 @@ import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.rememberT1dmHaptics
 
-/**
- * The Lab: generate a synthetic patient over the selected model's context window.
- *
- * **Generation is all it does.** Reconstruction, promotion, demotion and the τ sweep live on the BG
- * panel, where the curve being changed is the one on screen — a second surface that could also
- * write a fill meant two places to look for where one came from, and the two disagreed about which
- * model had made it.
- *
- * Nothing produced here is stored, synced, alarmed on, or read by the dose calculator, which is
- * what lets it invent a week of history without any of it reaching the patient's record.
- */
+/** Nothing produced here is stored, synced, alarmed on, or read by the dose calculator. */
 @Composable
 fun LabScreen(
     state: LabUiState,
@@ -56,8 +46,6 @@ fun LabScreen(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        // Scrollable: the running set grows with what is pushed to the device, and the row ran
-        // off the edge at three models — taking the Adapters button, the last item, with it.
         Row(
             Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -99,9 +87,6 @@ fun LabScreen(
 
         state.generated?.let { synth ->
             HorizontalDivider()
-            // Says how much of the trace is invented, because that is the only thing about it that
-            // matters: the generator fills what the history LACKS, so a well-covered phone gets a
-            // trace that is mostly its own.
             Text(
                 "seed ${synth.seed} · ${synth.bg.size} steps · ${synth.syntheticSteps} invented",
                 style = MaterialTheme.typography.bodySmall,
@@ -111,10 +96,7 @@ fun LabScreen(
     }
 }
 
-/**
- * The generated trace. Invented stretches are drawn in the accent, measured ones in the surface ink,
- * so which is which is readable without a legend.
- */
+/** Invented stretches in the accent, measured ones in the surface ink. */
 @Composable
 private fun SynthChart(synth: LabSynth, modifier: Modifier) {
     val measured = MaterialTheme.colorScheme.onSurface
@@ -131,9 +113,7 @@ private fun SynthChart(synth: LabSynth, modifier: Modifier) {
         fun y(v: Double) = (size.height * (1.0 - (v - lo) / (hi - lo))).toFloat()
         fun x(i: Int) = i * dx
 
-        // Segment by provenance, so a run of invented steps is one stroke rather than a dashed
-        // approximation of one. A step whose value is not finite breaks the run rather than
-        // bridging it.
+        // Segmented by provenance; a non-finite step breaks the run rather than bridging it.
         var start = 0
         while (start < bg.size) {
             if (!bg[start].isFinite()) { start++; continue }
@@ -161,7 +141,7 @@ private fun SynthChart(synth: LabSynth, modifier: Modifier) {
     }
 }
 
-/** The 70 and 180 mg/dL rails, so an excursion is readable without axis labels. */
+/** The 70 and 180 mg/dL rails. */
 private fun DrawScope.drawTargetRails(lo: Double, hi: Double, y: (Double) -> Float) {
     listOf(70.0, 180.0).forEach { v ->
         if (v in lo..hi) {

@@ -2,13 +2,7 @@ package com.t1dm.feature.settings
 
 import androidx.compose.runtime.Composable
 
-/**
- * Settings → Signal (Phase 7C item 14; §3.6-A). The **loss-of-signal** window (minutes with no
- * MEASURED reading before the model-free alarm fires), its **escalated** shortening when the last
- * real reading was low or falling, and the **weak-signal** warning.
- *
- * All are user-set; the loss windows have a 1-minute floor only. Pure/stateless.
- */
+/** The loss windows count minutes with no MEASURED reading; they have a 1-minute floor only. */
 @Composable
 fun SignalSafetyScreen(
     lossMin: Int,
@@ -36,8 +30,6 @@ fun SignalSafetyScreen(
         }
     }
 }
-
-// ── search index (see SettingsIndex.kt) ───────────────────────────────────────────────────────────
 
 private val signalLossWindow = SettingsKnob(
     id = "signal.loss_window",

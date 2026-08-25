@@ -5,13 +5,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * The LCD's two pure kernels. The drawing is geometry no unit test can usefully assert, but the
- * digit→segment map is a lookup table where a single transposed bit yields a glyph that is *legible
- * and wrong* — a 6 that reads as a 5 — which is exactly the class of defect a countdown to one's own
- * death should not have. The expectations here are rebuilt from the named segments rather than copied
- * from the table, so the test is an independent statement of which bars each numeral lights.
- */
 class SevenSegmentTest {
 
     private val a = 1 shl 0 // top
@@ -38,10 +31,8 @@ class SevenSegmentTest {
 
     @Test
     fun `the pairs a transposed bit would confuse stay distinct`() {
-        // 0 is the only numeral with no middle bar; 8 is the only one with every bar.
         assertEquals(0, sevenSegmentMask(0) and g)
         assertEquals(0x7F, sevenSegmentMask(8))
-        // 6 is 5 plus the lower-left; 9 is 8 minus it. Both are one bit from their neighbour.
         assertEquals(sevenSegmentMask(5) or e, sevenSegmentMask(6))
         assertEquals(sevenSegmentMask(8) and e.inv(), sevenSegmentMask(9))
         assertEquals(10, (0..9).map { sevenSegmentMask(it) }.toSet().size)
@@ -61,7 +52,7 @@ class SevenSegmentTest {
         assertArrayEquals(intArrayOf(0, 0, 0, 59), ddHhMmSs(59_999))
         assertArrayEquals(intArrayOf(0, 0, 1, 0), ddHhMmSs(60_000))
         assertArrayEquals(intArrayOf(1, 0, 0, 0), ddHhMmSs(86_400_000L))
-        // The shipped default chain: 2 + 29 + 59 h = 90 h = 3 d 18 h.
+        // Default chain: 2 + 29 + 59 h = 90 h = 3 d 18 h.
         assertArrayEquals(intArrayOf(3, 18, 0, 0), ddHhMmSs(90L * 3_600_000L))
         assertArrayEquals(intArrayOf(1, 2, 3, 4), ddHhMmSs(((26L * 60 + 3) * 60 + 4) * 1000))
     }
@@ -75,7 +66,7 @@ class SevenSegmentTest {
 
     @Test
     fun `an absurd offset saturates the day field instead of wrapping the Int`() {
-        // 106 751 991 167 days would overflow an Int; the readout must saturate, not go negative.
+        // 106 751 991 167 days overflows an Int.
         val fields = ddHhMmSs(Long.MAX_VALUE)
         assertEquals(99_999, fields[0])
         assertTrue(fields.drop(1).all { it >= 0 })

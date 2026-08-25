@@ -16,20 +16,12 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import java.util.TimeZone
 
-/**
- * Orchestrates the meal builder (Phase 4 deliverable 3/4) over the [T1dmRepository]
- * glycemic dictionary + the [MealCurveResolver]. It is the seam `:app` hands the (pure-Compose)
- * `:feature:meals` screen: search/browse foods, resolve the live combined carb-appearance preview,
- * save custom foods + saved meals, and LOG a meal (which folds into the wide sample and reshapes the
- * forecast via the reconstructed carb channel). Every call is off the main thread.
- */
 class MealsController(
     private val repository: T1dmRepository,
     private val resolver: MealCurveResolver,
     private val dispatchers: T1dmDispatchers,
     private val now: () -> Long = System::currentTimeMillis,
 ) {
-    /** Seed the bundled dictionary once (idempotent: only when the `food` table is empty). */
     suspend fun seedIfEmpty() = withContext(dispatchers.io) {
         if (repository.foodCount() == 0) {
             val ts = now()
@@ -67,18 +59,13 @@ class MealsController(
             }
         }
 
-    /** The live combined carb-appearance (Ra) preview for the components being assembled. */
     suspend fun resolvePreview(components: List<MealComponent>): ResolvedMealCurve =
         resolver.resolveCombined(components, startMs = 0L)
 
     suspend fun saveCustomFood(food: Food) =
         repository.upsertFood(food.toCustomEntity(now()))
 
-    /**
-     * Edit a custom food in place — same id, same FTS row (the `food_au` trigger reindexes it).
-     * False when the row vanished or is a bundled seed row; see [T1dmRepository.updateCustomFood] for
-     * why an ungated upsert would be dangerous, and for why saved meals are left alone.
-     */
+    /** False when the row vanished or is a bundled seed row; see [T1dmRepository.updateCustomFood]. */
     suspend fun updateCustomFood(food: Food): Boolean =
         repository.updateCustomFood(food.toCustomEntity(now()))
 
@@ -87,26 +74,19 @@ class MealsController(
     suspend fun saveMeal(name: String, components: List<MealComponent>): Long =
         repository.saveMeal(name, components.map { it.toItemEntity(0) }, now())
 
-    /**
-     * Edit a saved meal in place — same id, portion snapshots replaced. False when the meal was
-     * deleted while it was being edited (nothing is written in that case; see
-     * [T1dmRepository.updateSavedMeal]).
-     */
+    /** False when the meal was deleted while it was being edited; nothing is written then. */
     suspend fun updateMeal(id: Long, name: String, components: List<MealComponent>): Boolean =
         repository.updateSavedMeal(id, name, components.map { it.toItemEntity(id) }, now())
 
     suspend fun deleteSavedMeal(id: Long) = repository.deleteSavedMeal(id)
 
-    /**
-     * Log a meal at [tsMs]: resolve the combined appearance curve and persist a self-describing
-     * `logged_meal` whose [LoggedMealEntity.customCurve] IS that curve (grams = total carbs), so the
-     * reconstructed carb channel reproduces it exactly regardless of later preset changes.
-     */
+    /** The stored [LoggedMealEntity.customCurve] IS the resolved curve (grams = total carbs), so the
+     *  carb channel reproduces it exactly whatever the presets become later. */
     suspend fun logMeal(components: List<MealComponent>, tsMs: Long = now()): LoggedMealEntity =
         withContext(dispatchers.io) {
-            // Round-to-nearest (not floor) so the builder meal lands in the SAME grid slot the round-to-
-            // nearest CGM/single-food/dose writers use (repository.snapToGrid, GridStamper.snap); a floor
-            // snap misaligned the carb channel vs BG by up to one 5-min step (§4-#1 grid invariant).
+            // Round-to-nearest, not floor, so this lands in the SAME slot as the CGM/single-food/dose
+            // writers (`repository.snapToGrid`, `GridStamper.snap`); a floor snap misaligns the carb
+            // channel against BG by up to one step.
             val gridTs = Math.floorDiv(tsMs + CurveEngine.STEP_MS / 2, CurveEngine.STEP_MS) * CurveEngine.STEP_MS
             val resolved = resolver.resolveCombined(components, gridTs)
             val tz = TimeZone.getDefault().getOffset(gridTs) / 60_000

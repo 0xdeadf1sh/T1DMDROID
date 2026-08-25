@@ -5,14 +5,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * Laying a bout's resolved disposal curve on the five-minute grid, and diffing it against what the
- * same bout last wrote.
- *
- * Framework-free: the curve arrives already resolved, so nothing here needs Room or the JNI seam.
- * What it pins is the alignment — bucket 0 at the slot the session started in, on the grid the
- * repository's own `requireGrid` enforces — and the bookkeeping that keeps a rewrite idempotent.
- */
 class ExerciseCurveBucketsTest {
 
     private val grid = T1dmRepository.GRID_MS
@@ -32,8 +24,7 @@ class ExerciseCurveBucketsTest {
 
     @Test
     fun `the start is snapped to the NEAREST slot, as every other event on this grid is`() {
-        // Round, not floor: SPEC §1 makes which of the two part of the contract, because both land on
-        // the grid and both pass every validation while filing the same event in different buckets.
+        // Round, not floor: SPEC §1 makes which of the two part of the contract.
         assertEquals(b0, buckets(b0 + 2 * 60_000, doubleArrayOf(1.0)).first().gridTs)
         assertEquals(b0 + grid, buckets(b0 + 3 * 60_000, doubleArrayOf(1.0)).first().gridTs)
     }
@@ -57,7 +48,6 @@ class ExerciseCurveBucketsTest {
     fun `a rewrite carries what this bout last put in each slot`() {
         val first = doubleArrayOf(0.5, 1.5, 1.0)
         val written = buckets(b0, first).associate { it.gridTs to it.grams }
-        // The bout ran longer, so the magnitude grew and every bucket moved with it.
         val second = doubleArrayOf(1.0, 3.0, 2.0, 0.4)
         val out = buckets(b0, second, written)
         assertEquals(4, out.size)
@@ -67,21 +57,17 @@ class ExerciseCurveBucketsTest {
 
     @Test
     fun `an unmoved slot is not rewritten`() {
-        // Recording the same duration twice must cost nothing: the write would be a no-op on the
-        // stored number and would still mint the row and enqueue an INGEST push for it.
+        // The write would be a no-op that still mints the row and enqueues an INGEST push.
         val values = doubleArrayOf(0.5, 1.5, 1.0)
         val written = buckets(b0, values).associate { it.gridTs to it.grams }
         assertEquals(emptyList<Long>(), buckets(b0, values, written).map { it.gridTs })
-        // Only the slot that actually moved is filed.
         val moved = doubleArrayOf(0.5, 1.5, 2.0)
         assertEquals(listOf(b0 + 2 * grid), buckets(b0, moved, written).map { it.gridTs })
     }
 
     @Test
     fun `the curve extends past now, because a truncated one does not sum to its total`() {
-        // A 30-minute bout is 24 buckets of curve — its own six plus §5's ninety-minute tail — so
-        // eighteen of them are slots the clock has not reached. That is inherent to the definition,
-        // not an accident of when the write happened.
+        // 24 buckets: the bout's six plus §5's ninety-minute tail, most of them past now.
         val out = buckets(b0, DoubleArray(24) { 1.0 })
         assertEquals(b0 + 23 * grid, out.last().gridTs)
     }

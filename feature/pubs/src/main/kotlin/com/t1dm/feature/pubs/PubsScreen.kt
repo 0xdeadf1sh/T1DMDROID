@@ -59,13 +59,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
-/**
- * The research-feed surface (`:feature:pubs`): adapubs.bsky.social's author feed rendered as native
- * cards. It seeds from [PubsRepository.lastGood] so a tab re-entry paints instantly, loads once on
- * first composition, and offers pull-to-refresh. Every failure becomes a plain-language line rather
- * than a bare HTTP code; colours come solely from the active theme, and the only motion — the image
- * cross-fade — is gated on [LocalAnimationsEnabled].
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PubsScreen(repository: PubsRepository) {
@@ -86,7 +79,7 @@ fun PubsScreen(repository: PubsRepository) {
                 error = null
                 refreshing = false
             } catch (c: CancellationException) {
-                throw c // a superseded load owns none of the UI state; its replacement will set it
+                throw c // a superseded load owns no UI state
             } catch (t: Throwable) {
                 error = friendlyError(t)
                 refreshing = false
@@ -96,9 +89,7 @@ fun PubsScreen(repository: PubsRepository) {
 
     LaunchedEffect(Unit) { load(userInitiated = false) }
 
-    // A pull-to-refresh has no button to press, so the release-into-refresh is the only place the
-    // gesture can be acknowledged; the outcome is announced separately when the error lands, because
-    // a network failure arrives seconds later with nothing on screen having visibly moved.
+    // The release acknowledges the gesture; the failure lands seconds later with nothing moving.
     LaunchedEffect(error) { if (error != null) haptics.perform(HapticEvent.Warn) }
 
     val pullState = rememberPullToRefreshState()
@@ -159,8 +150,7 @@ private fun PostCard(post: PubPost) {
     val context = LocalContext.current
     val haptics = rememberT1dmHaptics()
     Card(
-        // NavSwitch, not Tap: the press leaves T1DM entirely for the browser, and a departure ought
-        // to feel like the destination changes it shares a vocabulary with.
+        // NavSwitch, not Tap: the press leaves the app for the browser.
         onClick = { haptics.perform(HapticEvent.NavSwitch); openUrl(context, post.postUrl) },
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         modifier = Modifier.fillMaxWidth(),
@@ -240,8 +230,7 @@ private fun LinkCard(link: PubLink) {
                     it,
                     null,
                     Modifier.fillMaxWidth().heightIn(max = 180.dp),
-                    // Fit, not Crop: adapubs' link-card thumbs are text-bearing graphical abstracts;
-                    // cropping clips the words at the edges. Letterbox instead.
+                    // The thumbs are text-bearing abstracts; Crop would clip the words.
                     ContentScale.Fit,
                 )
             }

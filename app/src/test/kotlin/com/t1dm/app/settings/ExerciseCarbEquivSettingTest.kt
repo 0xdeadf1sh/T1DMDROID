@@ -6,14 +6,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * The carb-equivalent knob's persistence contract and its placement.
- *
- * It is the single per-patient number in `../T1DMCOMMON/SPEC/invariants.md` §5's exercise disposal
- * curve, so the two things worth pinning are that the store and the curve resolver cannot disagree
- * about its default or its rails — a slider offering a value the resolver would clamp is a slider
- * that lies — and that it is exportable while the body mass beside it is not.
- */
+/** `../T1DMCOMMON/SPEC/invariants.md` §5. */
 class ExerciseCarbEquivSettingTest {
 
     @Test
@@ -42,7 +35,6 @@ class ExerciseCarbEquivSettingTest {
 
     @Test
     fun `a garbled or empty row reads as the default, never as zero`() {
-        // Zero would mean a bout disposes of nothing, which is not a setting anybody chose.
         assertEquals(0.5, SettingsStore.decodeCarbEquivPerMin("half"), EPS)
         assertEquals(0.5, SettingsStore.decodeCarbEquivPerMin(""), EPS)
         assertEquals(0.5, SettingsStore.decodeCarbEquivPerMin("NaN"), EPS)
@@ -52,7 +44,6 @@ class ExerciseCarbEquivSettingTest {
     @Test
     fun `the rate is exportable configuration, and it does not carry the body mass with it`() {
         assertTrue(SettingsStore.isConfigKey(SettingsStore.K_EXERCISE_CARB_EQUIV))
-        // By exact key and not an `exercise.` prefix: the body mass is the user's own and stays out.
         assertFalse(SettingsStore.isConfigKey(SettingsStore.K_EXERCISE_BODY_MASS_KG))
         assertFalse(SettingsStore.isConfigKey("exercise.anything_else"))
     }

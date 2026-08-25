@@ -8,12 +8,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * Host JVM tests for [buildGraphFrame]'s dropout-break logic (the "chopped up" 30d/90d regression):
- * a genuine >maxGapMin gap in the RAW series must survive min/max decimation, while decimation's own
- * point spacing must never fabricate a break. The Canvas drawing is not unit-tested; these cover the
- * `breakAfter` booleans behind it.
- */
 class GraphFrameTest {
 
     private val GRID = 300_000L                         // 5-min grid, epoch-ms
@@ -26,21 +20,17 @@ class GraphFrameTest {
     )
 
     @Test fun frameCarriesTheNewestOffset_notTheOldest() {
-        // The dashboard observes the WHOLE store, so a history begun at +120 and continuing past a DST
-        // transition at +60 must render on +60 — the offset the phone keeps now. Taking the first
-        // reading's froze the axis an hour off wall-clock for the life of the record, which the date row
-        // states outright as the wrong weekday either side of local midnight.
+        // A history begun at +120 and continuing past a DST transition must render on +60, the
+        // offset the phone keeps now.
         val summer = (0 until 10).map { reading(T0 + it * GRID, 120, tz = 120) }
         val winter = (0 until 10).map { reading(T0 + (10 + it) * GRID, 120, tz = 60) }
         assertEquals(60, buildGraphFrame(summer + winter).tzOffsetMin)
-        // Order of the input must not matter: the frame sorts by time, and the offset follows that sort.
+        // Input order must not matter: the frame sorts by time, and the offset follows that sort.
         assertEquals(60, buildGraphFrame(winter + summer).tzOffsetMin)
     }
 
     @Test fun denseContinuousSeriesHasNoFabricatedBreaks() {
-        // A 90-day series on the exact 5-min grid — the reported "chopped up" scenario. It far exceeds
-        // maxPoints (6000) so it decimates; every raw gap is one grid step, so a correct frame has ZERO
-        // breaks. (The pre-fix code, breaking on post-decimation spacing, fabricated thousands here.)
+        // Far past maxPoints (6000) so it decimates; every raw gap is one grid step ⇒ zero breaks.
         val n = 288 * 90
         val readings = (0 until n).map { reading(T0 + it * GRID, 100 + it % 40) }
         val frame = buildGraphFrame(readings)
@@ -49,8 +39,7 @@ class GraphFrameTest {
     }
 
     @Test fun realDropoutSurvivesDecimation() {
-        // Two dense contiguous halves separated by a genuine 3-hour dropout. Total > 6000 ⇒ decimates,
-        // yet the one real >maxGapMin gap must still cut the polyline.
+        // Total > 6000 ⇒ decimates, yet the one real dropout must still cut the polyline.
         val half = 4000
         val first = (0 until half).map { reading(T0 + it * GRID, 100 + it % 40) }
         val resume = first.last().tsMs + 3 * 60 * 60 * 1000L
@@ -61,7 +50,7 @@ class GraphFrameTest {
     }
 
     @Test fun smallContiguousSeriesHasNoBreaks() {
-        // Under maxPoints ⇒ no decimation; contiguous data breaks nowhere.
+        // Under maxPoints ⇒ no decimation.
         val readings = (0 until 100).map { reading(T0 + it * GRID, 100 + it % 40) }
         val frame = buildGraphFrame(readings)
         assertEquals(100, frame.size)
@@ -69,8 +58,7 @@ class GraphFrameTest {
     }
 
     @Test fun smallSeriesRealGapBreaks() {
-        // Ten readings, a 45-min dropout (> the 30-min default), then ten more — under maxPoints so no
-        // decimation; the raw break must show through verbatim.
+        // A 45-min dropout, past the 30-min default, under maxPoints so no decimation.
         val first = (0 until 10).map { reading(T0 + it * GRID, 100 + it % 40) }
         val resume = first.last().tsMs + 45 * 60 * 1000L
         val second = (0 until 10).map { reading(resume + it * GRID, 100 + it % 40) }

@@ -7,16 +7,9 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 
 /**
- * Eviction priority: irreplaceable clinical records outrank regenerable forecasts —
- * `ALERT > DOSE > MEAL > INGEST > STATS > PREDICTIONS > SERIES > PHOTO`. Higher rank survives;
- * when the queue is over its size bound the lowest-rank, oldest rows are dropped first. An ALERT (a
- * safety signal) is the last thing ever evicted; a stale display PREDICTION or a PHOTO is the first.
- * SERIES and PREDICTIONS are retired tombstones (the app DB is not wiped, so a pending pre-upgrade
- * row must still DECODE — `OutboxKind` persists as its enum name and `valueOf` throws on one it does
- * not know, which would wedge every drain thereafter, not just its own). A leftover PREDICTIONS row
- * drains against a route the server no longer serves, takes a permanent 4xx and is dropped, which is
- * self-cleaning. Only the ORDER is load-bearing — nothing persists a rank, so the numbers are free
- * to close up when a kind leaves.
+ * Higher survives: over the size bound the lowest-rank, oldest rows go first. SERIES and PREDICTIONS
+ * are retired but must still DECODE — `OutboxKind` persists as its enum name and `valueOf` throws on
+ * an unknown one, wedging every drain. Only the order is load-bearing; nothing persists a rank.
  */
 internal val OutboxKind.priority: Int
     get() = when (this) {
@@ -24,28 +17,22 @@ internal val OutboxKind.priority: Int
         OutboxKind.DOSE -> 8
         OutboxKind.MEAL -> 7
         OutboxKind.INGEST -> 6
-        // Below INGEST: a descriptor only names a label the readings already carry, so a reading must
-        // never wait behind it. The server accepts a label for a source it has not been told about,
-        // which is what makes arriving late harmless.
+        // Below INGEST: a reading must never wait behind a descriptor. The server accepts a label
+        // for a source it has not been told about, so arriving late is harmless.
         OutboxKind.CGM_SOURCE -> 5
         OutboxKind.STATS -> 4
         OutboxKind.PREDICTIONS -> 3
         OutboxKind.SERIES -> 2
-        // Near the bottom on purpose: a bridged row MIRRORS a record the phone already holds and has
-        // already queued for its own server. Dropping one loses a third party's copy of an event, not
-        // the event — so it must yield to every row that carries the record itself.
+        // A bridged row MIRRORS a record already queued for the phone's own server; dropping one
+        // loses a third party's copy, not the event.
         OutboxKind.NIGHTSCOUT -> 1
         OutboxKind.PHOTO -> 0
     }
 
 /**
- * Whether an over-age outbox row may be dropped by the age-eviction sweep (gated in [QueueDrainer]).
- * Irreplaceable clinical kinds (ALERT/DOSE/MEAL) never age out — only the hard size cap can
- * ever evict them; regenerable kinds (INGEST/STATS/PREDICTIONS/SERIES/PHOTO/NIGHTSCOUT) do.
- *
- * NIGHTSCOUT ages out despite mirroring a clinical event, because what it carries is a COPY: the
- * event itself is in `logged_meal`/`logged_dose` and on the phone's own server either way. A bridged
- * row that has sat undeliverable for the full age bound is a stale duplicate, not a lost record.
+ * ALERT/DOSE/MEAL never age out — only the hard size cap can evict them. NIGHTSCOUT does despite
+ * mirroring a clinical event: it carries a COPY, and the event itself is in `logged_meal`/
+ * `logged_dose` either way.
  */
 internal val OutboxKind.ageEvictable: Boolean
     get() = when (this) {
@@ -54,29 +41,20 @@ internal val OutboxKind.ageEvictable: Boolean
     }
 
 /**
- * The self-describing envelope stored in an outbox row's `payload` for **event** kinds
- * (PREDICTIONS/MEAL/DOSE/STATS/ALERT/PHOTO, plus the retired SERIES tombstone): the exact `/v1`
- * [method]/[path] and JSON [body] captured at enqueue time, so the drainer replays it verbatim.
- * INGEST is the one exception — it stores an EMPTY
- * payload as a dirty-marker keyed `ingest:sample:<ts>`, and the drainer resolves the *current*
- * `sample` row at drain time, so repeated writes to one grid slot coalesce (LWW) into a single
- * up-to-date push instead of a stale snapshot.
+ * The `/v1` [method]/[path]/[body] captured at enqueue time, replayed verbatim by the drainer.
+ * INGEST is the exception: an EMPTY payload as a dirty-marker keyed `ingest:sample:<ts>`, resolved
+ * at drain time so repeated writes to one grid slot coalesce (LWW).
  */
 @Serializable
 data class OutboxRequest(val method: String, val path: String, val body: String) {
     fun toSyncRequest() = SyncRequest(method, path, body.toByteArray(Charsets.UTF_8))
 }
 
-/** The `ingest:sample:<ts>` dedupKey convention; the drainer parses the ts back out. */
+/** `ingest:sample:<ts>`; the drainer parses the ts back out. */
 internal const val INGEST_DEDUP_PREFIX = "ingest:sample:"
 
-/**
- * The dedupKey a logged meal / dose push is filed under — deterministic in the event's phone-minted
- * `client_id` (§3.2), so the row stays addressable after the enqueue rowid is forgotten (process
- * death) and cross-checkable against a rowid SQLite may have recycled. Public because the undo path
- * in `:app` must name the exact key [OutboxEnqueuer.enqueueMeal]/[OutboxEnqueuer.enqueueDose] wrote,
- * and a second copy of the string here would be free to drift from the one that matters.
- */
+/** Deterministic in the event's phone-minted `client_id` (§3.2), so `:app`'s undo can name the exact
+ *  row after the enqueue rowid is forgotten. */
 fun mealDedupKey(clientId: String): String = "meal:$clientId"
 
 fun doseDedupKey(clientId: String): String = "dose:$clientId"
@@ -84,11 +62,9 @@ fun doseDedupKey(clientId: String): String = "dose:$clientId"
 fun cgmSourceDedupKey(id: String): String = "cgmsrc:$id"
 
 /**
- * Enqueue-on-write producer API (Phase 3). The integrate agent calls these from the
- * CycleRunner / event writers; each serializes the wire body into an [OutboxRequest] envelope and
- * appends a deduped outbox row. Dedup is enforced by the unique `dedupKey` index — one row per
- * key, so a repeated write of the same event cannot queue twice. A forecast does not come through
- * here at all: it is an unstored stream frame with no queue behind it and no retry.
+ * Dedup is enforced by the unique `dedupKey` index — one row per key, so a repeated write of the
+ * same event cannot queue twice. A forecast does not come through here at all: it is an unstored
+ * stream frame with no queue behind it and no retry.
  */
 class OutboxEnqueuer(private val repo: OutboxSink) {
 
@@ -101,16 +77,9 @@ class OutboxEnqueuer(private val repo: OutboxSink) {
     )
 
     /**
-     * A logged meal as a self-describing appearance curve — `PUT /v1/meals` (1-element batch).
-     *
-     * [holdMs] postpones the FIRST send attempt by that much, so the row stays withdrawable from the
-     * Logs panel for a window the user chooses. It is a persisted floor on `nextAttemptMs`, not a timer:
-     * nothing in the app counts it down, it survives process death, and an offline phone simply keeps
-     * the row past the hold as it would any other undrained push.
-     *
-     * `0` — the default, and what the §3.8 re-mirror walk must use — means eligible at once. A replay of
-     * last year's meals has nothing left to reconsider, and dating a hold from `nowMs` there would stall
-     * the walk behind a delay that buys nobody anything.
+     * [holdMs] postpones the FIRST send attempt, keeping the row withdrawable. A persisted floor on
+     * `nextAttemptMs`, not a timer: nothing counts it down and it survives process death. `0` means
+     * eligible at once, which is what the §3.8 re-mirror walk must use.
      */
     suspend fun enqueueMeal(ev: MealEventDto, nowMs: Long, holdMs: Long = 0L): Long = repo.enqueueSuperseding(
         kind = OutboxKind.MEAL,
@@ -121,19 +90,9 @@ class OutboxEnqueuer(private val repo: OutboxSink) {
     )
 
     /**
-     * A deleted meal, as a tombstone on the same route the create rode.
-     *
-     * **Same kind and same dedupKey as the create, deliberately.** A new kind or a new key would let
-     * the queue hold a create and its deletion at once, and the size cap evicts by
-     * `(priority, createdAtMs, id)` — so a deletion filed under its own key could be evicted while
-     * the create it retires survived, and the event would come back. One key per event keeps
-     * occupancy at one row, leaves MEAL/DOSE never-age-evictable and their priorities exactly as
-     * they are, and means the size cap's behaviour is unchanged by this.
-     *
-     * The body carries no curve fields at all: they are required on a live meal and ignored on a
-     * deletion, and omitting them is both what a client replaying a deletion it no longer holds the
-     * body for can do, and what the contract asks of one that wants the content gone rather than
-     * merely hidden.
+     * Same kind and same dedupKey as the create, deliberately: under its own key the size cap could
+     * evict the deletion while the create it retires survived, and the event would come back. The
+     * body carries no curve fields — required on a live meal, ignored on a deletion.
      */
     suspend fun enqueueMealTombstone(ev: MealTombstoneDto, nowMs: Long): Long = repo.enqueueSuperseding(
         kind = OutboxKind.MEAL,
@@ -142,15 +101,8 @@ class OutboxEnqueuer(private val repo: OutboxSink) {
         nowMs = nowMs,
     )
 
-    /**
-     * A CGM sensor descriptor — `PUT /v1/cgm-sources` (contract 0.4.0), so the server can resolve the
-     * opaque `bg_source` its samples carry to a family, a model and a serial.
-     *
-     * Deduped on the source id, not on a body: a descriptor is a description of one physical object,
-     * and the newest one the phone has is the only one worth sending. `REPLACE` semantics are not
-     * needed — a pending row for this id is already going to carry whatever is current at drain time
-     * for the fields that matter, and the id itself never changes.
-     */
+    /** Deduped on the source id, not on a body: a descriptor describes one physical object, and the
+     *  newest one the phone has is the only one worth sending. */
     suspend fun enqueueCgmSource(src: CgmSourceDto, nowMs: Long): Long = repo.enqueue(
         kind = OutboxKind.CGM_SOURCE,
         dedupKey = cgmSourceDedupKey(src.id),
@@ -158,8 +110,7 @@ class OutboxEnqueuer(private val repo: OutboxSink) {
         nowMs = nowMs,
     )
 
-    /** A logged dose (bolus gamma / basal Bateman) as a PK action curve — `PUT /v1/doses`. [holdMs] is
-     *  the withdrawal window, exactly as on [enqueueMeal]. */
+    /** [holdMs] is the withdrawal window, exactly as on [enqueueMeal]. */
     suspend fun enqueueDose(ev: DoseEventDto, nowMs: Long, holdMs: Long = 0L): Long = repo.enqueueSuperseding(
         kind = OutboxKind.DOSE,
         dedupKey = doseDedupKey(ev.client_id),
@@ -168,7 +119,7 @@ class OutboxEnqueuer(private val repo: OutboxSink) {
         notBeforeMs = if (holdMs > 0L) nowMs + holdMs else 0L,
     )
 
-    /** The dose twin of [enqueueMealTombstone]; same kind, same key, same reasoning. */
+    /** The dose twin of [enqueueMealTombstone]. */
     suspend fun enqueueDoseTombstone(ev: DoseTombstoneDto, nowMs: Long): Long = repo.enqueueSuperseding(
         kind = OutboxKind.DOSE,
         dedupKey = doseDedupKey(ev.client_id),
@@ -177,15 +128,9 @@ class OutboxEnqueuer(private val repo: OutboxSink) {
     )
 
     /**
-     * The full active basal template as a `PUT /v1/basal-schedule` full-replace. There is no
-     * dedicated basal [OutboxKind], so it rides DOSE — inheriting DOSE's priority and its
-     * never-age-evict guarantee (a schedule is an irreplaceable clinical record); routing is by the
-     * envelope path, not the kind. Deduped on the schedule's version — the newest slot `updated_at`
-     * — so a genuine edit re-enqueues while an exact retry coalesces to a single no-op push.
-     *
-     * Takes NO hold, despite riding the DOSE kind: the hold exists to keep a row withdrawable, and a
-     * template is not a logged event — the Logs panel lists `logged_meal`/`logged_dose` and has no
-     * affordance that could withdraw this. A later edit supersedes it by version instead.
+     * There is no basal [OutboxKind], so this rides DOSE for its priority and never-age-evict;
+     * routing is by the envelope path, not the kind. Deduped on the newest slot `updated_at`. No
+     * hold: a template is not a logged event and nothing can withdraw it.
      */
     suspend fun enqueueBasalSchedule(schedule: BasalScheduleDto, nowMs: Long): Long {
         val version = schedule.slots.maxOfOrNull { it.updated_at } ?: nowMs
@@ -197,7 +142,7 @@ class OutboxEnqueuer(private val repo: OutboxSink) {
         )
     }
 
-    /** One phone-computed window block — `PUT /v1/stats`; deduped to at most one per window per day. */
+    /** Deduped to at most one per window per day. */
     suspend fun enqueueStats(stats: StatsPushDto, nowMs: Long): Long = repo.enqueue(
         kind = OutboxKind.STATS,
         dedupKey = "stats:${stats.window}:${nowMs / 86_400_000}",

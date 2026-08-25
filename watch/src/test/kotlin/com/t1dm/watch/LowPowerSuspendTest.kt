@@ -28,12 +28,6 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * The locked low-power rule: battery-saver SUSPENDS the 5-min push — the link seals
- * ONE final frame with the LOW_POWER status bit set, flips to SUSPENDED_LOW_POWER, then idles (a
- * later tick writes nothing). Drives the REAL [WatchLink.pushNow] against a fake central that plays
- * the ESP32-C3 side of the handshake and decrypts the captured pushes.
- */
 class LowPowerSuspendTest {
 
     private val dispatchers = object : T1dmDispatchers {
@@ -75,8 +69,6 @@ class LowPowerSuspendTest {
         override suspend fun writePush(bytes: ByteArray) { pushes.add(bytes) }
         override fun disconnect() { isReady = false }
 
-        /** Decrypt a captured wire push exactly as the watch firmware would, returning the glance. The
-         *  wire bytes ARE the authoritative record (§6.1); the watch opens it whole. */
         fun open(wire: ByteArray): WatchPush =
             WatchPushCodec.decode(watch.emulatorOpenPush(wire))
     }
@@ -109,7 +101,6 @@ class LowPowerSuspendTest {
         link.confirmSas()
         await(link) { it.phase == WatchLinkPhase.LIVE }
 
-        // 1) normal push — LOW_POWER bit clear, glance intact
         link.pushNow(1_000L)
         await(link) { it.lastPushMs == 1_000L }
         assertEquals(1, central.pushes.size)
@@ -117,14 +108,12 @@ class LowPowerSuspendTest {
         assertFalse("normal frame must not set LOW_POWER", g1.status.lowPowerSuspending)
         assertEquals(140, g1.bgMgdl)
 
-        // 2) battery saver on — exactly ONE more (flagged) frame, phase → SUSPENDED_LOW_POWER
         low = true
         link.pushNow(2_000L)
         await(link) { it.phase == WatchLinkPhase.SUSPENDED_LOW_POWER }
         assertEquals(2, central.pushes.size)
         assertTrue("final low-power frame must set LOW_POWER bit", central.open(central.pushes[1]).status.lowPowerSuspending)
 
-        // 3) still suspended — a subsequent tick writes NOTHING (pusher idle)
         link.pushNow(3_000L)
         delay(300)
         assertEquals("pusher must stay idle while suspended", 2, central.pushes.size)

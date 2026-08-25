@@ -10,20 +10,8 @@ import com.t1dm.core.model.UnitSpace
 import kotlin.math.roundToInt
 
 /**
- * Builds the always-on ongoing notification (item 15): the live BG read-out that replaces the static
- * "monitoring active" text on the foreground-service notification. The title carries current BG +
- * trend arrow (in the active unit); the body carries the last-updated age, a §3.6-GATED predictive
- * line, and — when the model build carries a time head — the model's predicted CIRCADIAN time (I7).
- *
- * The predictive gate lives entirely in [BgGlance] (computed by [BgGlanceComputer]): a predictive
- * countdown is shown ONLY when [BgGlance.approaching] is non-null, which the computer produces only
- * for an eligible forecast. When ineligible the body degrades to BG + trend plus an honest
- * "collecting context" / "forecast unavailable" — never a fabricated ETA. The circadian line is
- * INDEPENDENT of that gate (it is a phase belief, not a glucose forecast, and drives no alert); it is
- * shown only when [InferenceState.selectedPredictedTime] is non-null, and omitted silently otherwise.
- *
- * The small icon geometry + accent swatch follow the active theme (issue I1): the caller passes the
- * resolved [IconStyle] and accent ARGB, since this runs outside Compose.
+ * The predictive line is gated in [BgGlanceComputer]: an ineligible forecast degrades to BG plus
+ * trend, never a fabricated ETA. The circadian line is not gated — a phase belief, not a forecast.
  */
 class LiveNotificationPresenter(
     context: Context,
@@ -49,9 +37,9 @@ class LiveNotificationPresenter(
             .setContentText(body)
             .setStyle(Notification.BigTextStyle().bigText(body))
             .setOngoing(true)
-            .setOnlyAlertOnce(true) // updates in place, never re-buzzes; the alarm path owns sound
+            .setOnlyAlertOnce(true) // the alarm path owns sound
             .setCategory(Notification.CATEGORY_STATUS)
-            .setVisibility(Notification.VISIBILITY_PUBLIC) // the full read-out shows on the lock screen (I6)
+            .setVisibility(Notification.VISIBILITY_PUBLIC)
             .setContentIntent(contentIntent)
             .build()
     }
@@ -63,9 +51,8 @@ class LiveNotificationPresenter(
         return "${statusToken(glance)} · $v $arrow ${BgFormat.unitLabel(unit)}"
     }
 
-    /** The glycemic STATUS token (I6), derived from the glance EXACTLY as the top-bar indicator
-     *  (Navigation.glycemicStatusOf) and the lock widget do — fail-closed, so warmup / no eligible
-     *  forecast / an ineligible one reads VOID and never a positive STABLE claim. */
+    /** Fail-closed: warmup or no eligible forecast reads VOID, never STABLE. Same derivation as
+     *  Navigation.glycemicStatusOf and the lock widget. */
     private fun statusToken(glance: BgGlance): String = when {
         glance.warmup || glance.forecastUnavailable || !glance.forecastEligible -> "VOID"
         glance.approaching != null ->
@@ -90,9 +77,7 @@ class LiveNotificationPresenter(
         return listOfNotNull(age, forecast, circadian, nextForecastLine()).joinToString("\n")
     }
 
-    /** "Next forecast in Xm Ys" (I2): the model cycles on each 5-minute wall-clock boundary, so the
-     *  countdown targets the next such boundary. Recomputed at build time; the 30 s re-render cadence
-     *  keeps it roughly current between the model's own cycles. */
+    /** The model cycles on each 5-minute wall-clock boundary; this counts down to the next one. */
     private fun nextForecastLine(): String {
         val nowMs = System.currentTimeMillis()
         val nextMs = (nowMs / 300_000L + 1) * 300_000L
@@ -103,8 +88,6 @@ class LiveNotificationPresenter(
         return "Next forecast in $rem"
     }
 
-    /** The model's circadian-phase belief as a clock read-out. Not gated — a phase belief, not a
-     *  glucose forecast; shown only when the model build actually carries a decoded time head. */
     private fun circadianLine(t: PredictedTime): String {
         val hf = ((t.predictedHour % 24.0) + 24.0) % 24.0
         val h = hf.toInt()

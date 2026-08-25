@@ -13,21 +13,13 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-/**
- * The AiDEX X [CgmSource] (§3.1). It does not own the radio — a single shared
- * [BleAdvertScanner], driven by [AidexXSourceRegistry], routes recognized adverts here via
- * [ingest]. Each accepted advert is decoded, classified, grid-stamped, persisted through the
- * [CgmRepository], and re-emitted on [readings].
- */
+/** The AiDEX X [CgmSource] (§3.1). Owns no radio: [AidexXSourceRegistry] routes adverts to [ingest]. */
 class AidexXSource(
     descriptor: CgmSourceDescriptor,
     nativeCore: NativeCore,
     private val repository: CgmRepository,
 ) : CgmSource {
 
-    /** The descriptor on record for this source. A `var` for exactly one field — the warm-up window,
-     *  which the user tunes at runtime ([setWarmupWindowMin]) — so a reader of `descriptor` sees the
-     *  window the pipeline is actually classifying against rather than the one it was built with. */
     override var descriptor: CgmSourceDescriptor = descriptor
         private set
 
@@ -45,23 +37,17 @@ class AidexXSource(
         classifier = classifier,
     )
 
-    /**
-     * Retune the warm-up window this source classifies against, in place and effective from the very
-     * next advert. The classifier is mutated rather than the pipeline rebuilt — see
-     * [ReadingClassifier.warmupWindowMin] for why that state must survive the edit — and the clamp
-     * lives there, so [descriptor] is updated from the value that was actually installed.
-     */
+    /** Effective from the next advert. Mutates the classifier: [CgmPipeline] state must survive the
+     *  edit. The clamp lives in [ReadingClassifier], so [descriptor] takes the installed value. */
     fun setWarmupWindowMin(minutes: Int) {
         classifier.warmupWindowMin = minutes
         descriptor = descriptor.copy(warmupWindowMin = classifier.warmupWindowMin)
     }
 
-    /** Called when scanning begins, before any advert lands. */
     fun onScanning() {
         if (_status.value == CgmSourceStatus.Idle) _status.value = CgmSourceStatus.Scanning
     }
 
-    /** Run one captured advert through the pipeline, persist its outputs, and emit readings. */
     suspend fun ingest(raw: RawAdvert) {
         val out = pipeline.process(raw)
 
@@ -83,7 +69,7 @@ class AidexXSource(
         }
     }
 
-    /** Loss-of-signal transition, driven by the service's wall-clock watchdog (§3.6-A). */
+    /** Driven by the service's wall-clock watchdog (§3.6-A). */
     fun markSignalLost() {
         if (_status.value == CgmSourceStatus.Live || _status.value == CgmSourceStatus.Warmup) {
             _status.value = CgmSourceStatus.SignalLost

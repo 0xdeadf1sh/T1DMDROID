@@ -28,23 +28,14 @@ import java.util.Date
 import java.util.Locale
 import kotlin.math.ceil
 
-/**
- * Renders a [StatsComposite] to a multi-page A4 PDF (item 6 — "Export to PDF") using the platform
- * [PdfDocument] (no dependency). The report is drawn on a WHITE page regardless of the active theme
- * so it prints legibly, and every BG level is in mg/dL (the canonical space the stats are computed
- * in) — the active unit space is stated in the header for provenance. A [Pager] auto-breaks pages,
- * stamping the page number on each. The caller streams it to a SAF-chosen file.
- */
+/** Every BG level is drawn in mg/dL, whatever the active unit space. */
 object StatsPdf {
     private const val W = 595 // A4 @ 72 dpi
     private const val H = 842
     private const val M = 40f
     private const val FOOT = 34f
 
-    /**
-     * [cuts] anchors the heatmap's colour ramp. [ClinicalCuts.UNAVAILABLE] omits the heatmap sections
-     * rather than printing a grid cut in the wrong place — the same refusal the screen makes.
-     */
+    /** [ClinicalCuts.UNAVAILABLE] omits the heatmap rather than cut its grid in the wrong place. */
     fun write(out: OutputStream, c: StatsComposite, cuts: ClinicalCuts) {
         val doc = PdfDocument()
         val p = Pager(doc)
@@ -59,21 +50,18 @@ object StatsPdf {
         p.body("n = ${s.nSamples} readings over ${d(s.spanMs / 86_400_000.0, 1)} days.  Levels below are in mg/dL.")
         p.gap(4f)
 
-        // ── Time in range ──
         p.section("Time in range")
         p.tirStrip(s.subBands)
         p.kv("Below / In range / Above", "${pct(s.tbr)}  /  ${pct(s.tir)}  /  ${pct(s.tar)}")
         p.kv("Very low <54 / low", "${pct(s.subBands.veryLow)}  /  ${pct(s.subBands.low)}")
         p.kv("High / very high >250", "${pct(s.subBands.high)}  /  ${pct(s.subBands.veryHigh)}")
 
-        // ── AGP ──
         if (s.agp.isNotEmpty()) {
             p.section("Ambulatory glucose profile")
             p.caption("Median (line) with the 25–75 % and 5–95 % percentile bands across the day.")
             p.agpChart(s.agp, c.targetRange)
         }
 
-        // ── Glycemic metrics ──
         p.section("Glycemic metrics")
         p.kv("Mean BG", "${d(s.meanBg, 0)} mg/dL")
         p.kv("GMI (est. HbA1c)", "${d(s.gmi, 1)} %")
@@ -82,7 +70,6 @@ object StatsPdf {
         p.kv("MAGE", "${d(s.mage, 0)} mg/dL")
         p.kv("GRI (glycemia risk index)", d(gri(s.subBands), 0))
 
-        // ── Variability & risk ──
         p.section("Variability & risk")
         p.kv("MODD", "${d(s.modd, 0)} mg/dL")
         p.kv("CONGA 1h / 2h / 4h", "${d(s.conga1, 0)} / ${d(s.conga2, 0)} / ${d(s.conga4, 0)} mg/dL")
@@ -91,7 +78,6 @@ object StatsPdf {
         p.kv("ADRR", d(s.adrr, 1))
         p.kv("GRADE", "${d(s.grade.grade, 1)}   (hypo ${pct(s.grade.hypo)} · eu ${pct(s.grade.eu)} · hyper ${pct(s.grade.hyper)})")
 
-        // ── Diurnal TIR ──
         if (s.tod.any { it.n > 0 }) {
             p.section("Time in range by time of day")
             s.tod.forEach { b ->
@@ -101,11 +87,7 @@ object StatsPdf {
             }
         }
 
-        // ── Weekday × hour heatmaps ──
-        // Both summaries, because the export is read away from the app where the chip cannot be
-        // flipped: the median is what that hour usually looks like, the mean is what it averages to,
-        // and a pair of cells that disagree is itself the finding. Median first, matching the screen's
-        // default. LOCAL time, unlike the diurnal card above it — see stats.rs's day-boundary block.
+        // LOCAL time, unlike the diurnal card above it — see stats.rs's day-boundary block.
         if (s.heatmap.isNotEmpty() && cuts.isUsable) {
             p.section("Glucose by day and hour")
             p.caption("Local time. Colour runs blue (low) → green (in range) → red (high); an outlined cell has no reading.")
@@ -115,14 +97,12 @@ object StatsPdf {
             }
         }
 
-        // ── Glucose distribution ──
         if (s.histogram.any { it.count > 0 }) {
             p.section("Glucose distribution")
             p.caption("Share of readings per 20 mg/dL band (40–400).")
             p.histogram(s, c.targetRange)
         }
 
-        // ── Episodes ──
         p.section("Excursion episodes")
         p.episode("Hypoglycemia (< ${c.targetRange.lowMgdl})", s.hypoEpisodes, isHypo = true)
         p.episode("Hyperglycemia (> ${c.targetRange.highMgdl})", s.hyperEpisodes, isHypo = false)
@@ -130,7 +110,6 @@ object StatsPdf {
             p.caption("No sustained excursions (≥2 consecutive readings) outside the target range in this window.")
         }
 
-        // ── Treatments ──
         val hasTx = s.totalCarbs > 0 || s.totalBolus > 0 || s.totalBasal > 0 || s.meanSteps != null
         if (hasTx) {
             p.section("Treatments & activity")
@@ -141,7 +120,6 @@ object StatsPdf {
             s.mood?.let { p.kv("Mood", "${d(it.mean, 1)} (n=${it.n})") }
         }
 
-        // ── Server cross-check ──
         c.server?.let { sv ->
             p.section("Server cache (cross-check)")
             p.kv("Server mean / GMI / CV", "${d(sv.meanBg, 0)}  /  ${d(sv.gmi, 1)}%  /  ${d(sv.cv, 1)}%")
@@ -151,7 +129,6 @@ object StatsPdf {
         p.finish(out)
     }
 
-    // ── the paginator: owns the current page/canvas, y-cursor, and page breaks ──
     private class Pager(private val doc: PdfDocument) {
         private var pageNo = 0
         private lateinit var page: PdfDocument.Page
@@ -229,19 +206,14 @@ object StatsPdf {
             y += bh + 2f
         }
 
-        /**
-         * The 7×24 grid for one summary. Cells are sized off the page width, so the whole week fits
-         * a single A4 column without a second page break mid-grid; an unmeasured cell is outlined
-         * rather than filled, exactly as on screen, so a gap can never read as a glucose value.
-         */
+        /** An unmeasured cell is outlined, never filled, so a gap cannot read as a value. */
         fun heatGrid(cells: List<HeatCell>, stat: HeatStat, target: TargetRange, cuts: ClinicalCuts) {
             val labelW = 26f
             val gridW = W - 2 * M - labelW
             val cw = gridW / HEATMAP_HOURS
             val rh = 13f
             val gh = rh * DAY_LABELS.size
-            // The caption is claimed by the SAME need() as the grid, so a page break can never land
-            // between them and strand a heading at the foot of a page.
+            // One need() for caption and grid, so a break cannot land between them.
             need(gh + 40f)
             cv.drawText(
                 if (stat == HeatStat.Median) "Median per weekday and hour" else "Mean per weekday and hour",
@@ -249,7 +221,6 @@ object StatsPdf {
             )
             y += 17f
             val top = y
-            // Scattered into the dense lattice once; the same NaN sentinel the screen uses for absent.
             val grid = FloatArray(DAY_LABELS.size * HEATMAP_HOURS) { Float.NaN }
             for (cell in cells) {
                 if (cell.dow in DAY_LABELS.indices && cell.hour in 0 until HEATMAP_HOURS) {
@@ -278,7 +249,6 @@ object StatsPdf {
             y = top + gh + 14f
         }
 
-        /** The ramp with its four anchors named, so the grids are readable without the app. */
         fun heatLegend(target: TargetRange, cuts: ClinicalCuts) {
             need(26f)
             y += 4f
@@ -290,8 +260,6 @@ object StatsPdf {
             val x0 = M + 26f
             val w = W - 2 * M - 26f
             val bh = 7f
-            // Sampled per pixel column through the SAME `heatColor` the screen and the grids use, so
-            // the key cannot drift from what it is a key to.
             val fill = Paint().apply { isAntiAlias = false }
             var px = 0
             while (px < w.toInt()) {

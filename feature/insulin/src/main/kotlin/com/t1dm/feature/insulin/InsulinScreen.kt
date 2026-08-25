@@ -51,64 +51,27 @@ import kotlin.math.roundToInt
 
 private enum class Tab { BOLUS, BASAL }
 
-// Insulin slider bounds (Phase 7C, item 11): 1–20 U in 1 U steps ⇒ 20 stops ⇒ 18 interior steps.
+// 1–20 U in 1 U steps ⇒ 20 stops ⇒ 18 interior steps.
 private const val DOSE_MIN = 1.0
 private const val DOSE_MAX = 20.0
 private const val DOSE_STEPS = 18
 
-/** Enough for any dose anyone will ever type, and far short of the ~309 digits that reach +Infinity. */
+/** Far short of the ~309 digits that reach +Infinity. */
 private const val MAX_UNITS_CHARS = 8
 
-/**
- * A dose is loggable only if it is positive and FINITE.
- *
- * `> 0.0` alone is not that test: it rejects NaN by accident but accepts +Infinity, which flows into
- * the action curve as an infinite scale, writes a row carrying Inf and NaN, and then poisons IOB —
- * where it defeats the §3.6-C ceiling outright, since every comparison against NaN is false.
- */
+/** Finite, not just `> 0.0`: +Infinity poisons IOB and defeats the §3.6-C ceiling, since every
+ *  comparison against NaN is false. */
 private fun Double?.loggableDose(): Double? = this?.takeIf { it.isFinite() && it > 0.0 }
 
 /**
- * The Phase-4 insulin entry surface (deliverable 1 — "manual bolus/basal entry").
- * Both channels feed the model as a **PK action** rate (model-io-curves.md): a rapid bolus is the
- * Loop/OpenAPS exponential activity curve; a long-acting basal is a broad, near-flat Bateman. `:app`
- * writes the self-describing `logged_dose` row (the chosen preset's peak/DIA for rapid, its DIA +
- * ka/ke for basal), folds units into the wide `sample` (bolusU / basalU), and enqueues
- * `PUT /v1/series/{bolus,basal}`.
- *
- * Stateless + callback-driven, dependency-light. IOB is surfaced at the top with its §3.6-F
- * provenance ("from logged doses only; last logged N min ago") so a nonzero dose taken after a long
- * logging gap is visibly under-counted — the same fact the calculator's decision card will gate on.
- * A "pick a saved insulin type / draw a custom curve" affordance is a seam for the curve-editor work
- * (deliverable 4), reached through the [footer] slot.
- *
- * **The panel picks the insulin, and the pick governs.** [presetCatalog] is the shared clinical
- * catalogue (`insulin_preset_catalog`) partitioned here by family; the label the user selects is what
- * [onLogBolus]/[onLogBasal] hand the writer, and the writer commits that preset's curve. It did not
- * always: the screen once offered a one-variant rapid enum and a two-variant basal enum, and the
- * writer discarded both to resolve a Settings selection instead — so the row named an insulin the
- * panel had never shown. Every dose still passes a confirm-then-commit dialog, and the dialog names
- * the selected preset precisely so a disagreement of that kind cannot be confirmed blind.
- *
- * [initialRapidLabel]/[initialBasalLabel] seed each tab from the insulin LAST LOGGED of that kind.
- * That stickiness follows the dose, never the tap: selecting a chip and walking away changes nothing,
- * and the caller writes the memory only when a row is actually committed.
- *
- * N10 — this screen had no scroll container at all, so the BASAL tab (units field + slider + preset
- * chips + labelled sparkline + advisory + button) simply ran off the bottom, and the on-screen
- * keyboard raised by the units field buried "Log bolus"/"Log basal" with no way to reach them. It now
- * owns EXACTLY ONE vertical scroll, and [footer] renders inside it: see the matching note on
- * `MealsScreen` for why a caller must never place siblings after this screen in a plain Column (they
- * are measured with `maxHeight = 0`). The preset rows scroll HORIZONTALLY inside it — seven labels as
- * long as "Ultra-rapid lispro · Lyumjev" would otherwise take the whole panel to stack.
+ * Owns EXACTLY ONE vertical scroll, with [footer] inside it: a sibling placed after this screen in a
+ * plain Column is measured with `maxHeight = 0`.
+ * [initialRapidLabel]/[initialBasalLabel] seed each tab from the insulin last logged of that kind.
  */
 @Composable
 fun InsulinScreen(
     iobCob: IobCobReadout? = null,
-    // The model-probed ISF/ICR, shown beside IOB/COB exactly as the BG and Meals panels show it —
-    // see `:core:design` OnBoardReadout for why all three read from one definition. Null renders as
-    // "N/A" rather than vanishing. DISPLAY-ONLY: the dose calculator on this screen searches the
-    // model directly and neither reads nor is influenced by these figures.
+    // Display-only: the dose calculator searches the model directly and never reads these.
     sensitivity: SensitivityEstimate? = null,
     unit: UnitSpace = UnitSpace.MgDl,
     presetCatalog: List<InsulinPresetSpec> = emptyList(),
@@ -150,15 +113,8 @@ fun InsulinScreen(
     }
 }
 
-/**
- * One tab. The two kinds differ only in which slice of the catalogue they offer, the sparkline's
- * accent, and the basal's signpost to the schedule search — everything else (the dose field, the
- * preset row, the preview, the confirm-then-commit beat) is the same surface, so they share it.
- *
- * The log button is disabled until BOTH a finite positive dose and a preset exist. The second half
- * matters: the catalogue arrives asynchronously, and a press before it lands would otherwise have to
- * invent an insulin to name in the confirmation.
- */
+/** Disabled until a preset exists as well as a dose: the catalogue arrives asynchronously, and the
+ *  confirmation has to name an insulin. */
 @Composable
 private fun DoseEntry(
     kind: InsulinKind,
@@ -168,8 +124,6 @@ private fun DoseEntry(
     onLog: (Double, String) -> Unit,
 ) {
     var unitsText by remember { mutableStateOf("") }
-    // Re-seeded when the catalogue or the last-logged label arrives (both are read asynchronously),
-    // and never afterwards — a tap moves the selection, and only a committed dose moves the seed.
     var selectedLabel by remember(presets, initialLabel) {
         mutableStateOf(presets.firstOrNull { it.label == initialLabel }?.label ?: presets.firstOrNull()?.label)
     }
@@ -194,11 +148,6 @@ private fun DoseEntry(
                 )
             }
         }
-        // The selected preset's own provenance, verbatim from the catalogue — it carries the peak,
-        // the DIA and where they come from. This is the only place that survives: it used to sit
-        // under the Settings picker, and dropping the picker without it would have left a clinical
-        // PK choice on a dose path with nothing behind it. Rendered for the SELECTION alone; seven
-        // citations at once would bury the chips.
         preset?.let {
             Text(
                 it.citation,
@@ -208,10 +157,6 @@ private fun DoseEntry(
             )
         }
 
-        // N9 — the basal PK-action curve is previewed like the bolus but normalized to its OWN peak so
-        // its deliberately broad, near-flat plateau is visible (a 24–42 h Bateman spreads a dose so
-        // thinly it would otherwise vanish on any shared scale). Labelled so the flatness reads as
-        // intended, not as a bug.
         if (previewCurve != null && dose != null && preset != null) {
             Text(
                 if (kind == InsulinKind.BOLUS) {
@@ -240,10 +185,6 @@ private fun DoseEntry(
             )
         }
 
-        // Propose only. `unitsText` is cleared on confirm, never on the press, so a Cancel keeps what
-        // was typed; and ConfirmLogDialog owns the Warn/Confirm/Reject beat while the commit receipt
-        // owns the Commit, so this press is a plain Tap. Anything heavier would announce a dose that
-        // has not been written yet.
         Button(
             onClick = {
                 haptics.perform(HapticEvent.Tap)
@@ -257,8 +198,7 @@ private fun DoseEntry(
     pending?.let { p ->
         ConfirmLogDialog(
             pending = p,
-            // The dialog restated `p.typeLabel`, so that is the label the write must carry — not
-            // whatever the chip row holds by the time Log is pressed.
+            // `p.typeLabel`, not the chip row's label now: the dialog restated this one.
             onConfirm = { onLog(p.units, p.typeLabel); unitsText = ""; pending = null },
             onDismiss = { pending = null },
         )
@@ -270,20 +210,14 @@ private fun UnitsField(value: String, onChange: (String) -> Unit) {
     Column(Modifier.fillMaxWidth()) {
         OutlinedTextField(
             value = value,
-            // The length cap is load-bearing, not cosmetic: the digit filter admits no 'e' and no
-            // sign, but a digit string past ~308 characters still parses to +Infinity.
             onValueChange = { onChange(it.filter { c -> c.isDigit() || c == '.' }.take(MAX_UNITS_CHARS)) },
             label = { Text("Units (U)") },
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
         )
-        // Insulin slider (1–20 U, 1 U steps) bound to the SAME dose value: dragging rewrites the
-        // text, typing repositions the thumb (rounded/clamped). Empty/out-of-range text parks the
-        // thumb at 1 U without clobbering what the user typed.
         val units = value.toDoubleOrNull()
-        // Keyed off the drag's own `onValueChange` and quantised to the 1 U stop — NOT off `units`,
-        // which the two-way binding also moves when the user types into the field above.
+        // Keyed off the drag, not `units` — typing moves that too.
         val doseDetent = rememberHapticDetent()
         Slider(
             value = (units ?: DOSE_MIN).coerceIn(DOSE_MIN, DOSE_MAX).toFloat(),
@@ -294,18 +228,14 @@ private fun UnitsField(value: String, onChange: (String) -> Unit) {
     }
 }
 
-/** §3.6-F: IOB is computed from LOGGED doses only, so a long silence since the last one is the fact
- *  the reader needs beside the number. Insulin is the screen that owns that caveat; Meals does not
- *  restate it. */
+/** §3.6-F. */
 private fun iobProvenance(r: IobCobReadout): String =
     r.minsSinceLastLoggedInsulin
         ?.let { "logged doses only · last logged $it min ago" }
         ?: "no insulin logged yet"
 
-/** A tiny filled sparkline of a per-5-min PK curve (preview only). N7 — the curve is 0 at t=0 with the
- *  first sample at t=+5 min: `values[i]` is the appearance/action over `[i·5, (i+1)·5)` min, so it is
- *  anchored at slot `i+1` and slot 0 is the zero baseline (mirrors `CurvePreview` / the dashboard
- *  overlay). Previously `values[0]` was drawn at x=0, making a high-GI curve appear to start mid-rise. */
+/** Preview only. `values[i]` is the action over `[i·5, (i+1)·5)` min, so it is drawn at slot `i+1`
+ *  and slot 0 is the zero baseline. */
 @Composable
 internal fun CurveSparkline(values: DoubleArray, color: Color) {
     Canvas(Modifier.fillMaxWidth().height(56.dp).padding(vertical = 4.dp)) {
@@ -315,7 +245,7 @@ internal fun CurveSparkline(values: DoubleArray, color: Color) {
         val n = values.size
         val dx = size.width / n
         val path = Path().apply {
-            moveTo(0f, size.height) // t=0, value 0
+            moveTo(0f, size.height)
             for (i in 0 until n) {
                 lineTo((i + 1) * dx, size.height - (values[i].toFloat() / peak) * size.height * 0.9f)
             }

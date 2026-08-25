@@ -84,43 +84,21 @@ import java.time.format.DateTimeFormatter
 import kotlin.math.min
 import kotlin.math.roundToInt
 
-/** Pedal diameter. The pedals are the only controls and are used blind, so they sit in the lower
- *  corners where thumbs rest; at this size the two never crowd the 220 dp panel yet stay comfortably
- *  above the 48 dp touch-target floor, and both can be held at once. */
+/** Above the 48 dp touch-target floor; two fit without crowding the 220 dp panel. */
 private val PEDAL_SIZE = 76.dp
 
-/**
- * How wide the car should READ on the glass — and therefore, now, what the camera zooms to.
- *
- * It used to size the car directly, decoupled from the world scale, which is what let a constant-size
- * marker sit on a variable-scale ground and register at exactly one point (see `drawCar`). It is now the
- * other end of that relationship: [GameViewport.zoomedWidthM] divides the plot width by this to get the
- * span at which the car drawn TRUE SCALE is this wide, and `GameZoom` eases the view onto it. So this is
- * still the one knob for the car's apparent size — it just moves the camera instead of the car, which is
- * the only version of it that keeps both tyres on the curve.
- *
- * Raising it zooms in and shows less of the trace; lowering it zooms out and shrinks the car.
- */
+/** Apparent car width. [GameViewport.zoomedWidthM] picks the span at which a true-scale car is
+ *  this wide. */
 private val CAR_DRAW_DP = 120.dp
 
-/**
- * How far BEFORE the chart's left edge the track is cut, as a MULTIPLE OF THE VISIBLE SPAN.
- *
- * Two things need ground behind the car. The chart's polyline enters the panel from off-screen — its
- * frame holds readings from before the viewport — so a track starting exactly at the viewport edge
- * begins at the first reading INSIDE it and looks lopped off. And the camera seats the car at ~38 % of
- * the width, so once it follows, better than a third of a span must exist behind it.
- *
- * A fixed margin cannot serve either: 45 minutes is ample at a half-hour window and nothing at six
- * hours, which is exactly why the curve stayed cut. One full span of lead covers both at any zoom.
- */
+/** Ground cut before the chart's left edge, as a multiple of the visible span: a fixed margin is
+ *  ample at a half-hour window and nothing at six hours. */
 private const val TRACK_LEAD_SPANS = 1f
 
-/** Progress-bar thickness. It lives in the top inset's base 10 dp band, so it has to be slim enough to
- *  sit there without touching the plot's edge or the clock axis below it. */
+/** Fits the top inset's base 10 dp band without touching the plot edge or the clock axis. */
 private val PROGRESS_H = 5.dp
 
-/** Dial radius. Small enough that the pair sits between the pedals without crowding the track. */
+/** The pair must fit between the pedals. */
 private val GAUGE_RADIUS = 30.dp
 
 
@@ -131,61 +109,18 @@ private const val HAND_OFF_MS = 220
 
 private val DAY_LABEL: DateTimeFormatter = DateTimeFormatter.ofPattern("EEE d MMM")
 
-/**
- * The hill-climb minigame: an immersive route whose terrain IS the glucose trace.
- *
- * Stateless and callback-driven like every other feature screen — it owns no repository, no navigation
- * and no FFI. `:app` hands down the coverage histogram, a reader for one run's readings, the panel's
- * unit/axis settings, the Rust car tune, a world constructor and the dedicated game dispatcher.
- *
- * **Isolation, structurally.** The solver runs on [gameDispatcher] (`t1dm-game`), never on
- * `t1dm-inference` and never on a `default` worker the §3.6-A alarm engine and the decode path share.
- * The frame path touches Compose snapshot state exactly twice — a `Long` counter read only inside the
- * draw lambda, and a 4 Hz HUD cell — so sixty frames a second invalidate DRAW and recompose nothing.
- * See [runGameLoop] and [CarFrame].
- *
- * **The sensory layer** is procedural end to end and ships no assets: [GameSynth] on an `AudioTrack` at
- * `USAGE_GAME`, and `:core:design`'s continuous haptic mixer on the vibrator. Both are per-composition
- * resources with explicit teardown, and both take their level from the app-wide `ui.haptics` /
- * `AudioManager` settings rather than from a knob of their own. See [GameFeel].
- *
- * [alarmRaised] is **the interlock**: any deterministic alarm OR predictive urgent alert silences the
- * sound, hands audio focus back, and RELEASES the vibrator outright — never ducks it, because
- * `:alerts` announces on that same actuator and a game holding a sustained effect could supersede the
- * buzz meant to wake the user. It does NOT pause. An earlier build froze the world on any raised
- * alarm, which left the game unplayable for the hours a routine high stays up; and confiscating the
- * controls is not this app's posture (advisory only, never actuating). The alarm
- * keeps its own loud, DND-piercing surface; the game simply gets out of its way.
- *
- * IT IS NOT SURFACED, and that is a known gap rather than a decision: the sensory layer just stops, so a
- * player whose glucose has crossed a threshold experiences the game going mute for no stated reason and
- * reasonably reads it as a fault. (This comment claimed the HUD marked it. It never did.)
- * `:app` maps both alarm writers onto this boolean and deliberately reports FALSE under DEATH mode,
- * whose whole contract is that the user has chosen to defeat §3.6's presentation.
- *
- * The global "disable all animations" flag does NOT gate the loop. That flag governs decorative and
- * looping motion (`Motion.kt`); here the motion is the content, exactly as the BG panel's line is, and
- * a snapped game is not a game.
- */
+/** Solver runs on [gameDispatcher], never on `t1dm-inference` or a shared `default` worker. The frame
+ *  path touches snapshot state twice: a draw-lambda tick and a 4 Hz HUD cell. [alarmRaised] releases
+ *  the vibrator and audio focus outright rather than ducking — `:alerts` uses the same actuator. */
 @Composable
 fun GameScreen(
     modifier: Modifier = Modifier,
-    /** The left edge of the chart's viewport: where the TRACK begins, so the curve behind the car is
-     *  drawn rather than cut off. */
     trackFromMs: Long,
-    /** The instant the user tapped: where the CAR is dropped, somewhere inside the track. */
     dropAtMs: Long,
-    /** The panel's threshold bands, so the hypo/hyper tints survive into drive mode. */
     thresholds: AlertThresholds?,
-    /** The chart's model-time axis, so it survives into drive mode rather than the panel dropping to
-     *  "model time n/a" the moment the car is dropped. */
     predictedClock: PredictedClock?,
-    /** Fired once the track is built and the first frame is drawable. Until then the caller keeps the
-     *  chart on screen: swapping earlier shows this composable's loading state, which is the "flash"
-     *  between chart and game. */
+    /** Caller keeps the chart up until this fires. */
     onReady: () -> Unit = {},
-    /** The panel's LIVE visible span, in minutes — the chart's own viewport, adopted wholesale so the
-     *  panel neither zooms nor re-spans when the game starts. */
     spanMinutes: Float,
     latestReadingMs: Long?,
     unit: UnitSpace,
@@ -210,9 +145,7 @@ fun GameScreen(
     }
 
     val built = scene
-    // NO opaque base. The panel's background is the per-theme backdrop the Scaffold paints behind the
-    // whole app, and game mode is a mode of that panel: filling here would hide the very motif the
-    // graph shows through, which is exactly what it looked like when it did.
+    // No opaque base: game mode is a mode of the panel, and the backdrop must show through.
     Box(modifier) {
         when {
             built == null || carTuning == null -> Loading()
@@ -238,13 +171,7 @@ fun GameScreen(
     }
 }
 
-/**
- * The immersive shell around one loaded world.
- *
- * Split out of [GameScreen] so every per-run holder is `remember`-ed against this composable's own
- * lifetime: a new scene enters a new instance (via `key`) and the previous loop, world and buffers go
- * with the old one.
- */
+/** Own composable so every per-run holder is remembered against one scene's lifetime (via `key`). */
 @Composable
 private fun GameStage(
     scene: GameScene,
@@ -266,8 +193,7 @@ private fun GameStage(
     val art = remember(tuning) { CarArt(tuning) }
     val dpPx = with(LocalDensity.current) { 1.dp.toPx() }
     val chalk = remember(dpPx) { ChalkPens(dpPx) }
-    // Per-frame scratch, memoised exactly as GlucoseGraph memoises its corridor and pens: the frame
-    // path must allocate nothing, and a Path rewound is a Path reused.
+    // The frame path allocates nothing; a Path rewound is a Path reused.
     val groundPath = remember { Path() }
     val paintPath = remember { Path() }
 
@@ -281,52 +207,25 @@ private fun GameStage(
     val hud = remember { HudState() }
     val liveRef = remember { LiveReadingRef() }
     val zone = remember { ZoneId.systemDefault() }
-    // Pinned for the run, as [GameScene] pins the unit and the zone: the panel must not re-label under
-    // a moving car, and a forecast landing mid-run would re-lay the top inset and compress the scene by
-    // 14 dp in one frame. The labels still advance — the hour comes off this anchor and the elapsed
-    // time — so only the model's revision of its own belief waits for the exit.
+    // Pinned for the run: a forecast landing mid-run would re-lay the top inset under a moving car.
     val runClock = remember { predictedClock }
     val haptics = rememberT1dmHaptics()
-    // Read through rememberUpdatedState: the loop outlives any recomposition that swaps the lambda.
+    // The loop outlives any recomposition that swaps the lambda.
     val firstFrame by rememberUpdatedState(onFirstFrame)
 
-    /**
-     * Whether the CALLER has been told to put the chart away. Nothing is drawn here until it has, and the
-     * two facts are flipped by the same Main-thread write so they land in ONE recomposition.
-     *
-     * The handover cannot be atomic on its own: the loop must publish a frame before it can say "I have
-     * something to show", and telling the caller costs a hop to Main. Gating on the published frame alone
-     * is not enough — that frame's draw already sees a non-zero tick, so the game drew its own copy of the
-     * threshold bands while the chart underneath was still drawing them too. Two translucent fills
-     * stacked, for the one or two frames until the caller recomposed: the bright flash on the hypo and
-     * hyper bands the instant the car was dropped. Pairing the two writes is what makes them exchange
-     * cleanly rather than overlap.
-     */
+    /** Flipped in the same Main-thread write as the caller's hand-off, so both land in ONE
+     *  recomposition; gating on the published frame alone draws the threshold bands twice. */
     var handedOver by remember { mutableStateOf(false) }
 
-    /**
-     * The hand-off fade, and it must be COMPLEMENTARY to the chart's.
-     *
-     * The dashboard does not swap the chart out; it cross-fades it over [HAND_OFF_MS] once told the game
-     * is ready, deliberately, so that everything the chart carries and the game does not — the forecast
-     * fan, the curve overlays, its own point styling — dissolves rather than vanishing in a frame. But the
-     * two surfaces also draw the SAME furniture, and two translucent fills do not cross-fade, they ADD:
-     * with the chart at 1 and the game at 1, the hypo and hyper bands were briefly drawn at twice their
-     * opacity and then settled back. That was the flash on the bands.
-     *
-     * Fading in on the same curve keeps the sum at unity for everything the two share, which is what makes
-     * it an exchange rather than an overlap. The duration is coupled to the dashboard's by hand; if that
-     * one moves, this must move with it.
-     */
+    /** Complementary to the dashboard's chart cross-fade — shared translucent fills add rather than
+     *  cross-fade. Duration coupled to it by hand. */
     val motionOn = LocalAnimationsEnabled.current
     val handOff by animateFloatAsState(
         targetValue = if (handedOver) 1f else 0f,
         animationSpec = tween(if (motionOn) HAND_OFF_MS else 0),
         label = "gameHandOff",
     )
-    // The sensory layer. Both halves are per-composition resources with explicit teardown — the
-    // vibrator because a sustained layer must be given back, the AudioTrack because a generator thread
-    // outliving its screen is a thread writing silence forever.
+    // Explicit teardown: a generator thread outliving its screen writes silence forever.
     val mixer = rememberHapticMixer()
     val audio = rememberGameAudio()
     val feel = remember(mixer, audio) { GameFeel(audio, mixer) }
@@ -336,26 +235,12 @@ private fun GameStage(
     var confirmExit by remember { mutableStateOf(false) }
     LaunchedEffect(confirmExit) { gate.set(GameHold.Modal, confirmExit) }
 
-    /**
-     * THE ALARM INTERLOCK. A raised alarm silences the sound and hands the actuator back outright —
-     * never ducks it. `:alerts` renders an urgent-low on the SAME single vibrator, and the platform has
-     * no mixing: whichever writer went last owns it. A game holding a bed here would either be
-     * superseded (harmless) or supersede the buzz meant to wake the user (not), and the asymmetry of
-     * those outcomes is the whole argument for release over attenuation.
-     *
-     * It does NOT pause. An earlier build froze the world on any raised alarm, which made the game
-     * unplayable for the hours a routine high stays up — and confiscating the controls is not this
-     * app's posture anyway (advisory only). The alarm keeps its own loud,
-     * DND-piercing surface; the game gets out of its way and says so in the HUD.
-     */
     LaunchedEffect(alarmRaised) {
         if (alarmRaised || gate.holds.has(GameHold.Background)) feel.release() else feel.resume()
     }
 
-    // HARD PAUSE the instant the screen stops being RESUMED. The frame clock alone is not enough: it
-    // stops on window DETACH, so a dialog or a partially-occluding overlay would leave the world
-    // running under it. Releasing the pedals here too, because a pointer that never gets its up event
-    // would otherwise resume at full throttle.
+    // The frame clock stops only on window DETACH, so a dialog would leave the world running under
+    // it. Pedals released too: a pointer that never gets its up event resumes at full throttle.
     val owner = LocalLifecycleOwner.current
     val alarmNow by rememberUpdatedState(alarmRaised)
     DisposableEffect(owner) {
@@ -364,8 +249,7 @@ private fun GameStage(
             gate.set(GameHold.Background, backgrounded)
             if (backgrounded) {
                 controls.release()
-                // Audio focus goes back too: a game route left on the nav stack must not keep another
-                // app ducked, nor keep a generator thread alive behind a locked screen.
+                // A game route left on the nav stack must not keep another app ducked.
                 feel.release()
             } else if (!alarmNow) {
                 feel.resume()
@@ -386,17 +270,14 @@ private fun GameStage(
             try {
                 runGameLoop(
                     scene.track.map.worldXOf(dropAtMs),
-                    // ONE Main-thread write for both: the caller drops the chart and this Canvas starts
-                    // drawing in the same recomposition, so the bands are never drawn twice. See
-                    // [handedOver].
+                    // ONE Main-thread write for both, or the bands draw twice. See [handedOver].
                     { withContext(Dispatchers.Main) { firstFrame(); handedOver = true } },
                     scene.track.map.worldXOf(seatAtMs),
                     world, scene.track, bus, camera, zoom, controls, viewport,
                     gate, commands, hud, liveRef, zone, feel,
                 )
             } finally {
-                // The world is refcounted in Rust and freed through a JVM Cleaner: dropping the
-                // reference leaks the heightfield until a GC happens by. Cancellation runs this.
+                // Refcounted in Rust, freed by a JVM Cleaner: dropping it leaks the heightfield.
                 world.close()
             }
         }
@@ -409,78 +290,50 @@ private fun GameStage(
 
     BackHandler { requestExit() }
 
-    // Resolved in composition, never in the draw lambda: a density lookup there would run sixty times a
-    // second for a constant.
+    // In composition, never in the draw lambda: sixty density lookups a second for a constant.
     val density = LocalDensity.current
     val leftInsetPx = with(density) { GraphInsets.Left.toPx() }
     val rightInsetPx = with(density) { GraphInsets.Right.toPx() }
     val topInsetPx = with(density) { GraphInsets.top(runClock != null).toPx() }
     val bottomInsetPx = with(density) { GraphInsets.Bottom.toPx() }
     val modelAxisPx = with(density) { if (runClock != null) GraphInsets.ModelAxis.toPx() else 0f }
-    // Sized past the furniture's per-frame working set — two axes of tick labels, the value labels and
-    // the captions, better than twenty distinct strings. The chart could live with the default eight
-    // because it lays them out on recomposition; here every miss is a text layout at sixty hertz.
+    // Past the furniture's per-frame working set (>20 strings); every miss is a text layout at 60 Hz.
     val measurer = rememberTextMeasurer(cacheSize = 32)
-    // The furniture's axis labels are memoised across frames; game mode redraws them every frame the
-    // car moves, so it wants this at least as much as the panel does.
     val labelCache = remember { GraphLabelCache() }
     val gaugeRadiusPx = with(density) { GAUGE_RADIUS.toPx() }
-    // Pixels per CAR-LOCAL metre, from the tune's own overall length so a retune cannot silently
-    // change the drawn size.
+    // Pixels per car-local metre, off the tune's own length so a retune cannot change the drawn size.
     val carScalePx = with(density) { CAR_DRAW_DP.toPx() } / (tuning.chassisHalfLen * 2f)
     val gaugeInsetPx = with(density) { 8.dp.toPx() }
     val progressThicknessPx = with(density) { PROGRESS_H.toPx() }
     val furnitureColors = MaterialTheme.colorScheme
-    // The car's DRAWN size, in pixels per car-local metre. Constant, so it stays legible at any window
-    // the user has set; its position remains the solver's own.
-    // The camera spans the user's own window (one world metre per minute) and the world's full value
-    // height. Written as plain memory, like the pixel sizes, so neither enters the frame path.
+    // Plain memory, so neither enters the frame path.
     SideEffect {
         viewport.visibleWidthM = spanMinutes * scene.track.map.metresPerMinute
         viewport.worldHeightM = scene.track.map.worldHeight
-        // The zoom's destination is derived from these two, on the game thread — see
-        // [GameViewport.zoomedWidthM]. Published here because density, insets and the tune are all
-        // composition's to know and none of them is the loop's business.
         viewport.carScalePx = carScalePx
         viewport.plotInsetPx = leftInsetPx + rightInsetPx
     }
 
-    // The opening belongs to the LOOP now, not to composition — see `runGameLoop`. It has to: the world
-    // zooms before the car appears, and only the loop knows when the span has arrived. An Animatable
-    // here could not be kept in step with a hold it cannot observe, and the car spawning mid-zoom was
-    // the one frame the zoom exists to avoid — drawn true-scale, a car at the chart's span is a few
-    // pixels wide and squashed by the axis anisotropy.
     Box(Modifier.fillMaxSize()) {
         Canvas(
             Modifier
                 .fillMaxSize()
-                // Read inside the layer block, so the fade invalidates the LAYER and never composition.
+                // Read inside the layer block: the fade invalidates the LAYER, not composition.
                 .graphicsLayer { alpha = handOff }
                 .onSizeChanged {
-                    // Plain memory, so a layout pass never enters the frame path as a recomposition.
+                    // Plain memory, so a layout pass never enters the frame path.
                     viewport.widthPx = it.width.toFloat()
                     viewport.heightPx = it.height.toFloat()
                 },
         ) {
-            // THE draw-phase snapshot read. Its only observer is this draw scope, so the game thread's
-            // per-frame write invalidates the draw and nothing else. Read it in composition anywhere —
-            // even to build a label — and every frame recomposes instead.
+            // Draw-phase read only: read the tick in composition and every frame recomposes.
             val frameTick = bus.tick
-            // NOTHING until the chart has been handed over, and this is load-bearing rather than tidy.
-            //
-            // This Canvas is composed and drawing from the moment the scene builds, and there is
-            // deliberately no opaque base (game mode is a mode of the panel, so the backdrop shows
-            // through). Drawing before the handover therefore painted the game UNDER a live chart: the
-            // zeroed frame buffer first (`camWidth` defaults to a 10 m window, magnifying the terrain
-            // ~11×), and then, once a frame existed, a second copy of the threshold bands over the
-            // chart's own. `runGameLoop` names the first of those in its KDoc; the second was the flash
-            // on the hypo and hyper bands. `frameTick` is still read above, and must be — it is what
-            // subscribes this draw to the frame bus at all.
+            // Nothing until the hand-off. This Canvas draws from scene build and has no opaque base, so
+            // an earlier frame paints the game under the live chart. `frameTick` is read above because
+            // that read is what subscribes this draw to the bus.
             if (!handedOver || frameTick == 0L) return@Canvas
             val f = bus.published
 
-            // The panel keeps its frame while the car drives: same insets as the graph, so the left
-            // value axis, both time axes and the grid land exactly where they were a chip-tap ago.
             val plotLeft = leftInsetPx
             val plotRight = size.width - rightInsetPx
             val plotTop = topInsetPx
@@ -488,24 +341,16 @@ private fun GameStage(
             val plotW = (plotRight - plotLeft).coerceAtLeast(1f)
             val plotH = (plotBottom - plotTop).coerceAtLeast(1f)
 
-            // The panel keeps the GRAPH's own frame: value maps down the height and time across the
-            // width, INDEPENDENTLY, exactly as GlucoseGraph does. So the vertical scale is fixed to the
-            // world's full value span (the user's configured range) and never follows the car — only
-            // time pans. An isotropic camera would have shown ~198 m of a 40 m world at a 6 h window
-            // and flattened the terrain to a line.
+            // Anisotropic by design: value maps down the height, time across the width, independently.
             val map = scene.track.map
             val pxX = plotW / f.camWidth.coerceAtLeast(1e-3f)
-            // NO intro pan. The panel must be identical the frame before and the frame after Drive is
-            // tapped; sliding the viewport in was exactly the "visible shift" that broke the illusion.
-            // The car's fall is kept — that is the car arriving, not the chart moving.
+            // No intro pan: the panel must be identical the frame before and after Drive is tapped.
             val camLeftM = f.camLeft
-            // From the FRAME, not from the map: the speed widening opens the value axis too, so the
-            // vertical scale changes with it. See [GameZoom.fov].
+            // From the frame, not the map: the speed widening opens the value axis too. See [GameZoom.fov].
             val pxY = plotH / f.camHeight.coerceAtLeast(1e-3f)
-            // The drop arrives on the frame, already in world metres, so it rides the vertical scale.
+            // World metres, so it rides the vertical scale.
             val carLiftPx = f.carLiftM * pxY
-            // The vertical camera is a dead-band rescue, zero in the normal case — but it must actually
-            // be honoured, or a car above the axis ceiling leaves the panel and never comes back.
+            // Dead-band rescue, zero in the normal case; unhonoured, a car above the ceiling stays gone.
             val camBottomM = f.camBottom
             val floorPx = plotBottom + camBottomM * pxY
             val camRightMs = map.tsMsAt(camLeftM + f.camWidth)
@@ -516,8 +361,6 @@ private fun GameStage(
                 plotLeft = plotLeft, plotTop = plotTop, plotRight = plotRight, plotBottom = plotBottom,
                 viewStartMs = camLeftMs.toDouble(),
                 viewSpanMs = (camRightMs - camLeftMs).toDouble().coerceAtLeast(1.0),
-                // The axis follows the vertical camera. It has to: labels pinned to the configured
-                // range while the view had scrolled would be describing ground that is not on screen.
                 yMin = map.valueAt(camBottomM),
                 yMax = map.valueAt(camBottomM + f.camHeight),
                 thresholds = thresholds,
@@ -527,8 +370,6 @@ private fun GameStage(
                 labels = labelCache,
             )
 
-            // The world is clipped INTO the plot rect, so the car can never drive over the axis
-            // labels the way a trace never does.
             clipRect(left = plotLeft, top = plotTop, right = plotRight, bottom = plotBottom) {
                 translate(left = plotLeft, top = 0f) {
                     drawGameWorld(
@@ -538,12 +379,10 @@ private fun GameStage(
                         pxPerWorldY = pxY,
                         fillSky = false,
                     )
-                    // TRUE scale, both axes: [GameZoom] is what makes that legible. See [drawCar]. Not
-                    // drawn at all until the zoom has arrived and the car has been released to fall.
+                    // True scale on both axes. See [drawCar].
                     if (f.carShown) {
                         translate(top = -carLiftPx) {
-                            // Smoke BEFORE the car so the plume sits behind it, and inside the same lift
-                            // so it does not stay pinned to the ground while the car is still falling in.
+                            // Before the car, so the plume sits behind it, and inside the same lift.
                             drawSmoke(art, f, skin, camLeftM, floorPx, pxX, worldY = pxY)
                             drawCar(art, f, skin, camLeftM, floorPx, pxX, worldY = pxY)
                         }
@@ -551,11 +390,7 @@ private fun GameStage(
                 }
             }
 
-            // The run's progress, in the panel's TOP INSET rather than inside the plot: the plot's own top
-            // is where the trace's peaks live and where the value axis puts its highest label, and a bar
-            // laid over either would be covering the data it is describing. That inset is shared with the
-            // model's clock axis, which hangs off the plot's edge, so the bar centres in the band ABOVE
-            // that strip and lands on the same 2.5 dp whether or not a clock is up.
+            // In the top inset, not the plot: the plot's top holds the peaks and the highest label.
             drawProgress(
                 progress = f.progress,
                 left = plotLeft,
@@ -566,12 +401,9 @@ private fun GameStage(
                 accent = furnitureColors.primary,
             )
 
-            // The instrument pair, low and centred between the pedals so neither thumb covers it.
             drawGauges(
                 f,
-                // Centred on the PANEL, not the plot rect: the plot is inset 46 dp on the left for
-                // the value axis and 12 on the right, so centring on it sits the pair visibly right of
-                // where the eye expects the middle of the panel to be.
+                // Panel, not plot rect: the plot's asymmetric insets would sit the pair right of centre.
                 centreX = size.width * 0.5f,
                 bottomY = plotBottom - gaugeInsetPx,
                 radius = gaugeRadiusPx,
@@ -582,9 +414,7 @@ private fun GameStage(
             )
         }
 
-        // Two pedals in the lower corners, translucent so the ground still reads through them. Sized
-        // for a thumb at rest rather than a fingertip, and inset from the edges so the gesture
-        // navigation bar cannot swallow a press.
+        // Inset from the edges so the gesture navigation bar cannot swallow a press.
         PedalZone(
             skin,
             Modifier.align(Alignment.BottomStart).padding(start = 10.dp, bottom = 10.dp).size(PEDAL_SIZE),
@@ -614,8 +444,6 @@ private fun GameStage(
     }
 }
 
-/** How the run ended, and the two things to do about it. The only chrome the game keeps: everything
- *  else it needs to say, it says with the world. */
 @Composable
 private fun TerminalCard(hud: HudState, modifier: Modifier, onRestart: () -> Unit, onExit: () -> Unit) {
     val run = hud.value.run
@@ -639,14 +467,8 @@ private fun TerminalCard(hud: HudState, modifier: Modifier, onRestart: () -> Uni
     }
 }
 
-/**
- * One pedal: a transparent hit target whose pressed state goes straight into [GameControls] — plain
- * memory, so the solver sees the press with no state write at all.
- *
- * The tint has its own `pressed` flag, and it is read ONLY inside the draw lambda below, so a press
- * invalidates this zone's draw and recomposes nothing — the same discipline the frame path holds,
- * applied to the one piece of feedback that has to be immediate rather than at frame cadence.
- */
+/** `pressed` is read only inside the draw lambda: a press invalidates this zone's draw, not
+ *  composition. */
 @Composable
 private fun PedalZone(
     skin: GameSkin,
@@ -671,13 +493,10 @@ private fun PedalZone(
                 }
             },
     ) {
-        // A round pedal pad, not a screen-half: it reads as a control you press rather than a region
-        // you tap, and it leaves the track visible either side of it.
         val r = size.minDimension * 0.5f
         val c = Offset(size.width * 0.5f, size.height * 0.5f)
         drawCircle(if (pressed) skin.pedalDown else skin.pedalIdle, r, c)
         drawCircle(skin.pedalInk, r, c, style = Stroke(width = r * 0.06f), alpha = 0.5f)
-        // A treadplate for the gas, a bar for the brake — legible without a word of text.
         val ink = skin.pedalInk
         if (brake) {
             drawRoundRect(

@@ -14,13 +14,8 @@ android {
     }
 }
 
-// A CLEAN REMOVABLE SEAM (architecture-native-core.md / PLAN §2.1): nothing depends on :watch.
-// It reaches out only to the shared model + the dispatcher port — never to :inference, :alerts,
-// :sync, :core:native or Room — so the whole accessory can be excised by deleting the module and
-// its DI bindings. The push snapshot + crypto + nonce persistence all arrive through ports the
-// composition root binds. The real X25519/AES-128-GCM lives in the Rust `t1dm-core` (bound in
-// :app via a WatchSession over uniffi); this module ships a loopback session so the phone-side
-// handshake/push validate against a desktop BLE-peripheral emulator before the ESP32-C3 exists.
+// A removable seam: nothing depends on :watch, and it reaches out only through ports.
+// The real X25519/AES-128-GCM lives in Rust `t1dm-core`; this module ships only a loopback session.
 dependencies {
     implementation(project(":core:model"))
     implementation(project(":core:common"))

@@ -15,12 +15,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
-/**
- * OkHttp-WebSocket-backed `/v1/stream`. Replaces the hand-rolled RFC 6455 codec tests: it drives the
- * real OkHttp WebSocket against MockWebServer's upgrade, asserting that `sample`/`alert` surface
- * (and unknown types are ignored), that the token rides the handshake query, and that a drop
- * reconnects carrying the last-seen cursor.
- */
 class OkHttpStreamClientTest {
 
     private lateinit var server: MockWebServer
@@ -35,7 +29,6 @@ class OkHttpStreamClientTest {
         config = config,
     )
 
-    /** A one-shot upgrade that emits [messages] on open, then closes the socket. */
     private fun upgrade(vararg messages: String) = MockResponse().withWebSocketUpgrade(
         object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
@@ -51,12 +44,12 @@ class OkHttpStreamClientTest {
             upgrade(
                 """{"type":"sample","ts":111,"bg":120.0,"updated_at":111}""",
                 """{"type":"photo","ts":500}""",     // a known frame this client does not surface
-                """{"type":"parsnip","ts":501}""",   // a discriminant no build of this client knows
+                """{"type":"parsnip","ts":501}""",   // an unknown discriminant
                 """{"type":"alert","ts":222,"kind":"low"}""",
             ),
         )
 
-        // Connected, Sample, Alert, Disconnected — both middle frames are dropped, so four events.
+        // four events: Connected, Sample, Alert, Disconnected
         val events = withTimeout(5_000) {
             streamClient(StreamConfig(baseReconnectMs = 60_000)).events().take(4).toList()
         }
@@ -68,7 +61,6 @@ class OkHttpStreamClientTest {
         assertEquals(StreamEvent.Alert(222, "low", null), events[2])
         assertEquals(StreamEvent.Disconnected, events[3])
 
-        // The token rides the handshake as a query param (server auth for the upgrade).
         assertTrue(server.takeRequest().path!!.contains("token=tkn"))
     }
 
@@ -77,7 +69,7 @@ class OkHttpStreamClientTest {
         server.enqueue(upgrade("""{"type":"sample","ts":111,"bg":120.0,"updated_at":111}"""))
         server.enqueue(upgrade("""{"type":"alert","ts":999,"kind":"high"}"""))
 
-        // Connected, Sample(111), Disconnected, Reconnected(111) — immediate backoff.
+        // four events; zero backoff so the reconnect is immediate
         val events = withTimeout(5_000) {
             streamClient(StreamConfig(baseReconnectMs = 0, maxReconnectMs = 0)).events().take(4).toList()
         }

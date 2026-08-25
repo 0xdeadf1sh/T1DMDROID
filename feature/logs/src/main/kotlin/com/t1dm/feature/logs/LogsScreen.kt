@@ -44,44 +44,20 @@ import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.model.LoggedEntry
 import kotlin.math.roundToInt
 
-/**
- * The Logs panel: every insulin dose and every carbohydrate entry the user has logged, newest first.
- *
- * It owns the two clinical event stores (`logged_dose` / `logged_meal`) the model reconstructs its
- * carb and insulin channels from, and nothing else.
- *
- * **Every row can be edited and deleted, unconditionally.** There are no longer two delivery states
- * gating that: a deletion travels as a tombstone on the same upsert the create rode, ordered against
- * it by `updated_at`, so it can no longer be overtaken by a catch-up re-hydrating the row. What the
- * hold still buys is narrower and worth saying plainly — it spares a log undone immediately the
- * round trip of a create followed by its own deletion.
- *
- * A row that has been edited says so. Every figure the user is looking at was computed from its
- * current values, and the same withholding-beats-inventing rule that governs the rest of the app
- * applies to a number whose inputs were changed after the fact.
- *
- * It also carries the MOOD picker, the sole author of `sample.mood` — a scalar of the six-series
- * ingest row rather than a clinical event, which is why it sits above the list instead of in it and
- * writes an overwrite of the current 5-minute bucket rather than a row that could be withdrawn.
- *
- * Pure and stateless in the house mould: it renders the [entries] `:app` joined against the queue and
- * hoists both actions. No `:data`, no `:sync`, no knowledge that an outbox exists.
- */
 @Composable
 fun LogsScreen(
     entries: List<LoggedEntry> = emptyList(),
     holdMin: Int = 0,
     holdMaxMin: Int = 0,
-    /** The most recent mood written, 1..5, or null when none has been. */
+    /** 1..5; null when none has been written. */
     currentMood: Int? = null,
     onSetHoldMin: (Int) -> Unit = {},
     onPickMood: (Int) -> Unit = {},
     onDelete: (LoggedEntry) -> Unit = {},
-    /** Commit an edit: the row, its new amount (grams or units), and its new instant. */
+    /** Amount in grams or units by kind; the Long is an epoch-ms instant. */
     onEdit: (LoggedEntry, Double, Long) -> Unit = { _, _, _ -> },
 ) {
-    // The row a delete has been asked for, held here rather than per-row: the confirmation outlives the
-    // row's own composition once the list re-sorts under it.
+    // Held here, not per-row: the confirmation outlives the row once the list re-sorts under it.
     var pending by remember { mutableStateOf<LoggedEntry?>(null) }
     var editing by remember { mutableStateOf<LoggedEntry?>(null) }
 
@@ -103,8 +79,7 @@ fun LogsScreen(
                 )
             }
         } else {
-            // `clientId` is the phone-minted event id and is unique across BOTH tables, so it keys the
-            // list without the kind having to be folded in.
+            // `clientId` is unique across BOTH tables, so the kind need not be folded into the key.
             items(entries, key = { it.clientId }) { entry ->
                 EntryRow(entry, onDelete = { pending = entry }, onEdit = { editing = entry })
             }
@@ -128,17 +103,8 @@ fun LogsScreen(
     }
 }
 
-/**
- * Rewrite a logged row's amount and time.
- *
- * Amount and time only. Everything else about a row — an insulin type, a meal's glycaemic index —
- * changes the curve's SHAPE, and a shape edit is a different question from a magnitude one: the
- * former needs the same resolver the logging path runs and the pickers that go with it. Correcting
- * a mistyped dose is the case this exists for.
- *
- * The time is offered in minutes relative to what is stored, so the field is a correction rather
- * than a re-entry. The repository snaps it back onto the five-minute grid.
- */
+/** The shift is minutes relative to the stored instant; the repository snaps the result back onto
+ *  the five-minute grid. */
 @Composable
 private fun EditEntryDialog(
     entry: LoggedEntry,
@@ -193,21 +159,13 @@ private fun EditEntryDialog(
     )
 }
 
-/** Receipt/dialog numerals: integral amounts read as "45", a half unit still as "4.5". */
 private fun fmtAmount(v: Double): String =
     if (v == Math.rint(v) && v.isFinite()) v.toLong().toString() else "%.1f".format(v)
 
-/** Mood 1..5 (worst→best); the value is the integer written to `sample.mood` and pushed on the
- *  six-scalar ingest row. The glyphs ARE the scale, so nothing is labelled but the section itself. */
+/** 1..5, worst→best; the value written to `sample.mood`. */
 private val MOODS = listOf(1 to "😞", 2 to "🙁", 3 to "😐", 4 to "🙂", 5 to "😀")
 
-/**
- * The one user-facing writer of `sample.mood`.
- *
- * A five-stop scale, not five buttons — a detent, like any other single-choice picker. The write it
- * triggers is silent: mood is an overwrite of the current bucket's value rather than an appended
- * clinical row, so it earns no Commit and appears in no list below.
- */
+/** The write is silent: mood overwrites the current bucket rather than appending a clinical row. */
 @Composable
 private fun MoodPicker(current: Int?, onPick: (Int) -> Unit) {
     val haptics = rememberT1dmHaptics()
@@ -230,16 +188,10 @@ private fun MoodPicker(current: Int?, onPick: (Int) -> Unit) {
     }
 }
 
-/** The slider's grain, in minutes — the same 5-minute quantum every other event time in the app is on. */
+/** Minutes; the app's five-minute event quantum. */
 private const val HOLD_STEP_MIN = 5
 
-/**
- * The send hold: how long a newly logged row waits before its push is first attempted.
- *
- * The note stays, but what it says has changed. Delete now works on every row at any age, so the
- * hold no longer governs it — what it still buys is sparing a log undone immediately the round trip
- * of a create followed by its own deletion.
- */
+/** How long a newly logged row waits before its push is first attempted. */
 @Composable
 private fun HoldSection(holdMin: Int, maxMin: Int, onSet: (Int) -> Unit) {
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -254,8 +206,7 @@ private fun HoldSection(holdMin: Int, maxMin: Int, onSet: (Int) -> Unit) {
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold,
         )
-        // Fed the QUANTISED value, not Material's continuous Float, so the detent ticks once per stop
-        // rather than once per pixel (the same reasoning as the two duration sliders in Settings → CGM).
+        // Fed the quantised value, not Material's continuous Float, so it ticks once per stop.
         val detent = rememberHapticDetent()
         if (maxMin >= HOLD_STEP_MIN) {
             Slider(
@@ -276,10 +227,8 @@ private fun HoldSection(holdMin: Int, maxMin: Int, onSet: (Int) -> Unit) {
 private fun EntryRow(entry: LoggedEntry, onDelete: () -> Unit, onEdit: () -> Unit) {
     val cs = MaterialTheme.colorScheme
     Card(Modifier.fillMaxWidth(), colors = panelCardColors()) {
-        // The panel's OWN ink, read inside the card so it is the card's. `panelCardColors` guarantees
-        // this one clears AA against the container; `cs.onSurface` is the unguarded role it may have
-        // had to reject, and a row deriving its secondary lines from that would be guarded on one line
-        // and unguarded on the next — at opposite polarities.
+        // `panelCardColors` guarantees this ink clears AA against the container; `cs.onSurface` is
+        // the unguarded role it may have had to reject.
         val ink = LocalContentColor.current
         Row(
             Modifier.fillMaxWidth().padding(12.dp),
@@ -324,15 +273,8 @@ private fun EntryRow(entry: LoggedEntry, onDelete: () -> Unit, onEdit: () -> Uni
     }
 }
 
-/**
- * Ask once before dropping a clinical row.
- *
- * Not friction for its own sake. IOB is computed from logged doses only (§3.6-F), so deleting the
- * NEWEST dose lowers assumed insulin and moves the log-gap mark backward, which tightens the rail
- * that reads it — but deleting an older one lowers assumed IOB with the mark unmoved, which RELAXES
- * `Rails.iobCeiling` in silence. Nothing downstream catches that, so this dialog is the only place
- * the direction is questioned at all.
- */
+/** §3.6-F: deleting an OLDER dose lowers assumed IOB with the log-gap mark unmoved, silently
+ *  relaxing `Rails.iobCeiling`. Nothing downstream catches that; this dialog is the only guard. */
 @Composable
 private fun DeleteConfirmDialog(entry: LoggedEntry, onConfirm: () -> Unit, onDismiss: () -> Unit) {
     val haptics = rememberT1dmHaptics()

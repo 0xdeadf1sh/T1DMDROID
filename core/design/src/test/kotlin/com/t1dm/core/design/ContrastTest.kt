@@ -7,18 +7,7 @@ import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * The contrast kernel, and the two claims the themed panel surfaces make with it: that every bundled
- * palette's own ink is legible on its own panel, and that a palette which makes that false is caught
- * rather than shipped.
- *
- * The interesting cases are all at the ends — the anchors WCAG fixes exactly (black on white = 21),
- * the crossover where black and white are equally bad, and the imported theme that collapses
- * `surfaceVariant` onto `surface`, which [parseThemeJson] does by design when the JSON omits it.
- */
 class ContrastTest {
-
-    // ── the kernel, against values WCAG pins exactly ────────────────────────────────────────────
 
     @Test fun `luminance anchors at black and white`() {
         assertEquals(0f, relativeLuminanceArgb(Color.Black.toArgb()), 1e-6f)
@@ -37,11 +26,8 @@ class ContrastTest {
     }
 
     @Test fun `sRGB is not linear — mid grey is nowhere near half`() {
-        // The whole reason the kernel cannot average channels: #808080 sits at ~0.216, not 0.5.
         assertEquals(0.2158f, relativeLuminanceArgb(0xFF808080.toInt()), 1e-3f)
     }
-
-    // ── compositing ─────────────────────────────────────────────────────────────────────────────
 
     @Test fun `a fully opaque foreground is itself and a fully transparent one is the background`() {
         val fg = 0xFF00E5FF.toInt()
@@ -52,7 +38,7 @@ class ContrastTest {
 
     @Test fun `half alpha lands halfway, per channel`() {
         val out = compositeArgb(argbWithAlpha(0xFFFFFFFF.toInt(), 0.5f), 0xFF000000.toInt())
-        // 0.5f quantises to 128/255, so the midpoint is 128 rather than 127.
+        // 0.5f quantises to 128/255, so 128 not 127.
         assertEquals(128, (out shr 16) and 0xFF)
         assertEquals(128, (out shr 8) and 0xFF)
         assertEquals(128, out and 0xFF)
@@ -64,11 +50,8 @@ class ContrastTest {
         assertEquals(0xFF, (out ushr 24) and 0xFF)
     }
 
-    // ── the unconditional floor ─────────────────────────────────────────────────────────────────
-
     @Test fun `black-or-white clears AA over every colour there is`() {
-        // The claim [maxContrastInk] rests on. Swept coarsely over the whole cube, plus the greys
-        // around the crossover (L ~ 0.179) where the two candidates are at their closest.
+        // The greys near the crossover (L ~ 0.179) are where the two candidates are closest.
         var worst = Float.MAX_VALUE
         for (r in 0..255 step 15) for (g in 0..255 step 15) for (b in 0..255 step 15) {
             val c = Color(r / 255f, g / 255f, b / 255f)
@@ -88,8 +71,6 @@ class ContrastTest {
         assertEquals(Color.White, maxContrastInk(TronPalette.surface))
     }
 
-    // ── the panel's ink, per palette ────────────────────────────────────────────────────────────
-
     @Test fun `every bundled palette's ink clears AA on its own panel`() {
         for (p in BundledPalettes) {
             val ratio = contrastRatio(p.ink, p.surfaceVariant)
@@ -104,23 +85,18 @@ class ContrastTest {
     }
 
     @Test fun `the panel is a different colour under every bundled palette`() {
-        // "Theme-variant" is the whole point: the three must not resolve to one shared grey.
         val containers = BundledPalettes.map { it.surfaceVariant }
         assertEquals(containers.size, containers.distinct().size)
         for (p in BundledPalettes) {
-            // …and none of them is Material's baseline card grey, on either scheme.
+            // Material's baseline card greys, dark and light.
             assertNotEquals(Color(0xFF36343B), p.surfaceVariant)
             assertNotEquals(Color(0xFFE6E0E9), p.surfaceVariant)
         }
     }
 
-    // ── the hostile import ──────────────────────────────────────────────────────────────────────
-
     /**
-     * An imported palette as [parseThemeJson] would build one: `surfaceVariant` is optional there and
-     * derives from `surface` outright, so a minimal import paints its panels the same colour as its
-     * page. Assembled directly rather than parsed — the parser is `org.json`, which is an unmocked
-     * stub in a JVM unit test; what is under test here is the panel's reaction, not the parse.
+     * As [parseThemeJson] builds one: surfaceVariant defaults to surface. Assembled, not parsed —
+     * org.json is a stub in a JVM unit test.
      */
     private fun imported(surface: Color, ink: Color) = TronPalette.copy(
         id = ThemeIds.CUSTOM,
@@ -155,12 +131,7 @@ class ContrastTest {
         }
     }
 
-    // ── the TRANSLUCENT import: parseThemeJson accepts #AARRGGBB for every role it parses ────────
-
     @Test fun `a translucent panel is judged as painted, not as opaque`() {
-        // 12.5 % white over a near-black page paints ~#252930. Read raw, the container looks like
-        // white and a pale ink looks illegible on it, so the guard flips to black — the worse of the
-        // two over what is actually drawn.
         val page = Color(0xFF060A12)
         val panel = Color(0x20FFFFFF)
         val ink = Color(0xFFDCEAF5)
@@ -169,8 +140,6 @@ class ContrastTest {
     }
 
     @Test fun `a translucent ink is measured over the panel it is drawn on`() {
-        // Alpha thins the ink toward the panel. The same RGB clears AA at full strength and does not
-        // at 20 %, and the guard has to reach opposite conclusions about the two.
         val page = Color(0xFF060A12)
         val panel = Color(0xFF152134)
         assertEquals(Color(0xFFDCEAF5), legibleInkOver(page, panel, Color(0xFFDCEAF5)))

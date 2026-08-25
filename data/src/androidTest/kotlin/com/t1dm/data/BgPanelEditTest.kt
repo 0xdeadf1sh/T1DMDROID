@@ -30,14 +30,6 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/**
- * The BG panel's own edits: cut a stretch of the curve, put it back, throw a fill away, and move a
- * drawn line through the fan it came with.
- *
- * A cut is the only operation in the app that destroys measured physiologic data on purpose, so
- * what the undo restores is a safety property rather than a convenience — a restore that guessed at
- * provenance would file model output, or a calibration, as an ordinary sensor measurement.
- */
 @RunWith(AndroidJUnit4::class)
 class BgPanelEditTest {
 
@@ -106,8 +98,7 @@ class BgPanelEditTest {
         createdAtMs = now,
         spanStartMs = spanStart,
         bandsMgdl = fan(mgdl).toBlob(),
-        // Risk space is not exercised here — the decode is the crate's, and this suite has no
-        // descriptor. What matters is that the blob survives a round trip at its own width.
+        // Not real risk-space values; only the round trip is under test.
         bandsRisk = fan(mgdl / 100.0).toBlob(),
         tau = 0.5,
     )
@@ -132,7 +123,6 @@ class BgPanelEditTest {
         assertNull(db.sampleDao().byTs(t0)?.bgMgdl)
     }
 
-    /** An empty stretch is not an error, and it must not push an undo entry's worth of nothing. */
     @Test
     fun cutting_an_empty_stretch_takes_nothing() = runTest {
         seedThreeReadings()
@@ -141,13 +131,7 @@ class BgPanelEditTest {
             db.cgmReadingDao().allAt(t0 + 2 * step).size)
     }
 
-    /**
-     * The undo restores the ROWS, provenance and flag included — not a value.
-     *
-     * A restore that re-filed everything as MEASURED would turn a suppressed or calibrated reading
-     * into one `isRealMeasurement` accepts, which is the predicate every alarm and every dose rail
-     * is anchored on.
-     */
+    /** Provenance and flag come back too: `isRealMeasurement` gates every alarm and dose rail. */
     @Test
     fun an_undo_puts_back_the_row_it_took_rather_than_a_number() = runTest {
         repo.upsertSource(descriptor(), authoritative = true, nowMs = t0)
@@ -183,7 +167,6 @@ class BgPanelEditTest {
         assertTrue("and so is the restore", db.outboxDao().count() > 0)
     }
 
-    /** A cut invalidates what was derived from the curve it changed. */
     @Test
     fun a_cut_drops_the_unpromoted_fills_that_followed_it() = runTest {
         seedThreeReadings()
@@ -208,8 +191,7 @@ class BgPanelEditTest {
         val spanStart = t0 + step
         repo.saveInfill(listOf(fill(spanStart, spanStart), fill(spanStart + step, spanStart)))
 
-        // Promoted first: the refusal is the property worth pinning, because this table holds the
-        // only copy of the band a promoted sample carries.
+        // This table holds the only copy of a promoted sample's band.
         assertTrue(repo.promoteInfillSpan(spanStart, now) is PromoteResult.Promoted)
         assertFalse("a promoted span refuses the discard", repo.discardInfillSpan(spanStart))
         assertEquals(2, db.bgInfillDao().span(spanStart).size)
@@ -220,14 +202,8 @@ class BgPanelEditTest {
         assertFalse("and discarding a span that is gone reports so", repo.discardInfillSpan(spanStart))
     }
 
-    /**
-     * A cut leaves the STORED FORECASTS alone.
-     *
-     * `invalidateForecastDerivedInTx` drops `prediction` from the change onwards, which is right
-     * for a channel-affecting edit and wrong here: a stored forecast is the record of what the
-     * model SAID at that cycle, and replaying it is the whole of what the hindsight sweep does.
-     * Erasing one compression low took a day of that record with it.
-     */
+    /** A stored forecast is the record of what the model SAID at that cycle, and the hindsight
+     *  sweep replays it, so `invalidateForecastDerivedInTx` must not reach it. */
     @Test
     fun a_cut_keeps_the_forecasts_that_were_already_made() = runTest {
         seedThreeReadings()
@@ -255,7 +231,6 @@ class BgPanelEditTest {
         )
         assertEquals(1, repo.predictionsForModelInRange("m.pte", t0, now).size)
 
-        // A cut BEFORE the forecast was made — the case that used to wipe everything after it.
         repo.cutBgRange(t0, t0, now)
 
         assertEquals(
@@ -265,13 +240,8 @@ class BgPanelEditTest {
         )
     }
 
-    /**
-     * A cut refuses to cross a PROMOTED span, whole.
-     *
-     * Erasing one takes its `RECONSTRUCTED` rows out of `cgm_reading` while `bg_infill` still calls
-     * the span promoted, and from that state a demote removes nothing, unpromotes anyway, and the
-     * band — the only copy there is — becomes ordinary deletable state.
-     */
+    /** Cutting the `RECONSTRUCTED` rows while `bg_infill` still calls the span promoted leaves the
+     *  band — the only copy there is — as ordinary deletable state. */
     @Test
     fun a_cut_refuses_to_cross_a_promoted_span() = runTest {
         repo.upsertSource(descriptor(), authoritative = true, nowMs = t0)
@@ -287,19 +257,12 @@ class BgPanelEditTest {
         assertEquals(2, db.bgInfillDao().span(spanStart).size)
         assertTrue(db.bgInfillDao().span(spanStart).all { it.promotedAtMs != null })
 
-        // Demote first, and the same cut goes through.
         assertTrue(repo.demoteInfillSpan(spanStart, now) is PromoteResult.Promoted)
         assertEquals(2, repo.cutBgRange(t0, t0 + 3 * step, now).size)
     }
 
-    /**
-     * A promoted span the SENSOR has since superseded can still be demoted, and then discarded.
-     *
-     * A real measurement replaces a reconstruction in place, while this table's promoted row is
-     * deliberately spared. Demotion then finds nothing to remove — and refusing there stranded the
-     * span for good: undemotable, undiscardable, and blocking a cut of the very measurements that
-     * had replaced it. Nothing of the span is in the record, so saying so is the whole job.
-     */
+    /** A measurement replaces the reconstruction in place while the promoted row is spared, so
+     *  demotion finds nothing to remove and must still succeed, or the span is stranded. */
     @Test
     fun a_span_the_sensor_superseded_can_still_be_demoted_and_discarded() = runTest {
         repo.upsertSource(descriptor(), authoritative = true, nowMs = t0)
@@ -309,7 +272,6 @@ class BgPanelEditTest {
         repo.saveInfill(listOf(fill(spanStart, spanStart)))
         assertTrue(repo.promoteInfillSpan(spanStart, now) is PromoteResult.Promoted)
 
-        // The sensor's own history arrives for the slot the fill occupied.
         repo.upsertReading(measured(spanStart, 130))
         assertEquals(
             ReadingProvenance.MEASURED,
@@ -323,14 +285,10 @@ class BgPanelEditTest {
         )
         assertTrue("and it can now be thrown away", repo.discardInfillSpan(spanStart))
 
-        // …and the real measurement that replaced it is cuttable again.
         assertEquals(1, repo.cutBgRange(spanStart, spanStart, now).size)
     }
 
-    /**
-     * Moving the line records WHICH level it is, so a promotion of it cannot later be read as the
-     * median. The fan itself is never touched.
-     */
+    /** Recording the level keeps a later promotion from being read as the median. */
     @Test
     fun moving_the_line_records_its_level_and_leaves_the_fan_alone() = runTest {
         val spanStart = t0 + step
@@ -369,7 +327,6 @@ class BgPanelEditTest {
         assertEquals(0.5, db.bgInfillDao().span(spanStart).single().tau, 0.0)
     }
 
-    /** The fan round-trips at its own width, which is what makes it drawable as nested bands. */
     @Test
     fun the_stored_fan_keeps_its_seven_levels() = runTest {
         val spanStart = t0 + step

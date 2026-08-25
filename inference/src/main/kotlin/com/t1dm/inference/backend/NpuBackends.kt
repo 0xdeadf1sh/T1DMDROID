@@ -5,42 +5,6 @@ import com.t1dm.core.model.ModelDescriptor
 import com.t1dm.core.model.Precision
 import java.io.File
 
-/**
- * The NPU routing targets behind the [InferenceBackend] seam (§3.2). fp32 CPU XNNPACK
- * ([ExecuTorchXnnpackBackend]) REMAINS THE AUTHORITY; each NPU path here is an alternative backend
- * that is cross-checked against the fp32 goldens and NEVER silently promoted.
- *
- * Every NPU backend below FAILS its `load` with a plain-language, evidence-based reason — so a
- * mis-routed model is refused loudly (the controller falls back to the [StubBackend]) rather than a
- * silent no-op, and the Hardware / Models panels can state UNAMBIGUOUSLY why each is unavailable
- * (issue 1 — end the "stub" ambiguity). The reasons are factual, not aspirational. NOTHING RUNS ON
- * THE APU; the one accelerated path that does execute is [ExecuTorchVulkanBackend] at the end of
- * this file, on the GPU, which is why the file's name undersells it:
- *
- *  • [LiteRtNpuBackend] — the LiteRT-unified MediaTek NeuroPilot path (the user's chosen NPU route).
- *    The `.tflite` ARTIFACT is proven: `T1DMAI/exporters/litert_npu.py` converts the SAME modified
- *    `head_raw`+`time_logits` forward via `litert-torch` and matches the fp32 authority to
- *    `max|Δ| ≈ 1.4e-6` (head_raw) / `4.5e-6` (time_logits) on host. On-device execution is blocked
- *    for THIS app because the NeuroPilot NPU runtime libraries ship only via Google Play PODAI /
- *    Play Feature Delivery (`litert_npu_runtime_libraries:mediatek_runtime`), which a sideload-only
- *    build cannot fetch; and LiteRT exposes no Kotlin/Java API to confirm the APU actually executed
- *    the graph (only the C++/Python `is_fully_accelerated()`), so a silent CPU/GPU partial-delegation
- *    could not be told apart from real APU execution. When those two gaps close (runtime `.so`s
- *    bundled into `jniLibs`, or a Play track), the load becomes
- *    `CompiledModel.create(assets, "<id>.tflite", Options(Accelerator.NPU, Accelerator.GPU))` and the
- *    run reads BOTH output buffers exactly as [ExecuTorchXnnpackBackend] reads the two `.pte` slots.
- *    Dep: `com.google.ai.edge.litert:litert:2.1.x` (google() maven), minSdk 31, arm64-v8a only.
- *
- *  • [ExecuTorchNeuronBackend] — an fp16 ExecuTorch MediaTek/Neuron delegate. The stock
- *    `org.pytorch:executorch-android:1.3.1` AAR ships ONLY `libexecutorch.so` (zero Neuron/MediaTek
- *    delegate), and the MediaTek NeuroPilot SDK (`mtk_neuron`/`ncc-tflite`) needed to lower a
- *    `.neuron.pte` is partner-gated and not installed — so there is nothing to route to.
- *
- *  • [LiteRtNeuronBackend] — the legacy TFLite NeuroPilot *delegate* path, superseded by the
- *    LiteRT-unified [LiteRtNpuBackend] `CompiledModel` route above; kept only as an enumerated id.
- */
-
-/** The LiteRT-unified MediaTek NeuroPilot NPU path (issue 1). Artifact proven; on-device blocked. */
 class LiteRtNpuBackend : InferenceBackend {
     override val id = BackendId.LITERT_NPU
     override val caps = BackendCaps(precision = Precision.FP32)
@@ -59,7 +23,6 @@ class LiteRtNpuBackend : InferenceBackend {
     override fun close(m: LoadedModel) = Unit
 }
 
-/** ExecuTorch + MediaTek Neuron delegate, fp16 on the APU 990 — no delegate in the shipped AAR. */
 class ExecuTorchNeuronBackend : InferenceBackend {
     override val id = BackendId.EXECUTORCH_NEURON_FP16
     override val caps = BackendCaps(precision = Precision.FP16)
@@ -76,7 +39,6 @@ class ExecuTorchNeuronBackend : InferenceBackend {
     override fun close(m: LoadedModel) = Unit
 }
 
-/** Legacy TFLite NeuroPilot *delegate* path — superseded by the LiteRT-unified [LiteRtNpuBackend]. */
 class LiteRtNeuronBackend : InferenceBackend {
     override val id = BackendId.LITERT_NEURON_FP16
     override val caps = BackendCaps(precision = Precision.FP16)
@@ -91,32 +53,9 @@ class LiteRtNeuronBackend : InferenceBackend {
     override fun close(m: LoadedModel) = Unit
 }
 
-/**
- * ExecuTorch Vulkan GPU-compute delegate on the Mali GPU (issue 20). One class serves BOTH the
- * fp32 ([BackendId.EXECUTORCH_VULKAN_FP32]) and the fp16 ([BackendId.EXECUTORCH_VULKAN_FP16])
- * variants: the precision is baked into the `.pte` by the exporter's `force_fp16` (fp16 GPU
- * storage+compute; the input/output STAGING buffers stay fp32, so `Tensor.fromBlob(FloatArray)` and
- * `dataAsFloatArray` are unchanged) and routed by the descriptor `engine`, so `load`/`run` are
- * precision-agnostic here — only [id]/[caps] differ. The custom
- * `executorch-android` AAR built from ExecuTorch 1.3.1 source with `EXECUTORCH_BUILD_VULKAN=ON`
- * DOES register the Vulkan backend (verified: the packaged `libexecutorch.so` carries the
- * `VulkanBackend` symbol + op library, alongside XNNPACK). The host PARTITION report is strong —
- * 95.1 % of the edge graph (974/1024 ops, 18 subgraphs) delegates to Vulkan; only the boolean
- * attention-mask reduction + two RoPE inv-freq scalars fall back to the portable CPU kernels
- * (RoPE trig, SDPA, ALiBi, and the einsum step-basis all delegate).
- *
- * The artifact exists. `T1DMAI/exporters/executorch_vulkan.py` serializes a `.vulkan.pte` after
- * installing its own fix for the ExecuTorch-1.3.1 Vulkan preprocess pipeline, which used to trip
- * `AssertionError: fake mode … doesn't match mode …` in `exir/pass_base.py` on every
- * constant-folding fusion: a constant-only pass yields ZERO fake inputs, so the pass base spawned
- * a fresh `FakeTensorMode` that then disagreed with the graph's own. The XNNPACK lowering path
- * never hit it. With that cured, `load`/`run` below are the ordinary `Module.load` plus the dual
- * `head_raw`/`time_logits` read, exactly as [ExecuTorchXnnpackBackend] performs them.
- *
- * fp32 XNNPACK CPU stays the AUTHORITY regardless (safety rule E). This backend may render a
- * forecast, but its numerics must pass the fp32-agreement gate before they may feed any §3.6
- * dosing decision.
- */
+/** Serves both Vulkan ids: precision is baked into the `.pte` by the exporter, so only [id]/[caps]
+ *  differ. Needs the custom AAR built with `EXECUTORCH_BUILD_VULKAN=ON`. fp32 XNNPACK stays the
+ *  authority; these numerics must pass the fp32-agreement gate before feeding a §3.6 dose. */
 class ExecuTorchVulkanBackend(
     override val id: BackendId = BackendId.EXECUTORCH_VULKAN_FP32,
     precision: Precision = Precision.FP32,
@@ -129,15 +68,9 @@ class ExecuTorchVulkanBackend(
         val module: org.pytorch.executorch.Module,
     ) : LoadedModel
 
-    /**
-     * Load the `.vulkan.pte`. The custom AAR's `libexecutorch.so` registers `VulkanBackend`, so
-     * `Module.load` resolves the Vulkan-delegated subgraphs at load time (the delegate builds its
-     * Vulkan compute context + shaders here). A device without a working Vulkan compute path throws
-     * from native — the controller catches it and falls back to the [StubBackend], never silently to
-     * a different backend. The artifact is REQUIRED to be the `.vulkan.pte` (the XNNPACK `.pte` would
-     * load fine on the same runtime but would NOT exercise the GPU — the descriptor's `engine` routes
-     * the right artifact here).
-     */
+    /** Must be the `.vulkan.pte`; the XNNPACK `.pte` loads on the same runtime but never reaches the
+     *  GPU. Native throws without a working Vulkan compute path; the controller falls back to
+     *  [StubBackend], never to another backend. */
     override fun load(desc: ModelDescriptor, pte: File): LoadedModel {
         require(pte.exists()) { "vulkan pte artifact missing: ${pte.absolutePath}" }
         val module = org.pytorch.executorch.Module.load(
@@ -147,12 +80,8 @@ class ExecuTorchVulkanBackend(
         return EtModel(pte.nameWithoutExtension, caps, module)
     }
 
-    /**
-     * One forward `(patches, struct-mask, slot_sel) → (head_raw, time_logits?, slot_hidden?)`,
-     * the same output contract as [ExecuTorchXnnpackBackend] — the same modified forward was
-     * lowered, only the partitioner differs. Blocking; the controller confines it to the
-     * single-thread `inference` dispatcher.
-     */
+    /** Outputs in order: head_raw, time_logits?, slot_hidden?. Blocking; the controller confines it
+     *  to the single-thread `inference` dispatcher. */
     override fun run(m: LoadedModel, x: GraphTensors): GraphOutput {
         val model = m as EtModel
         val patches = org.pytorch.executorch.Tensor.fromBlob(

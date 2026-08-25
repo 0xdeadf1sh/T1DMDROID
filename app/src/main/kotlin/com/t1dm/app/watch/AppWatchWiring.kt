@@ -26,29 +26,17 @@ import com.t1dm.watch.proto.WatchStatus
 import com.t1dm.watch.proto.WatchTrend
 import kotlinx.coroutines.flow.StateFlow
 
-/**
- * `:app` bindings for the `:watch` ports (the removable seam — everything the module needs about the
- * rest of the app arrives here, so deleting these three classes + the DI wiring excises the watch).
- * The glance is composed from the repository (BG/trend/age), the threshold bands, and the SELECTED
- * model's latest prediction; nonce + pairing persistence ride the Room `kv` store.
- */
-
 private const val GRID_MS = 300_000L
 
 /**
- * Builds the 5-min glance (locked contract): current BG + trend + a one-line forecast
- * summary from the selected model + the alert band + status bits. Derives the staleness/signal-loss
- * bits from the last MEASURED reading's age (the freshness/loss windows) since the deterministic
- * alarm engine lives in the FGS, not here; the [WatchStatus.lowPowerSuspending] bit is set later by
- * the link.
+ * Staleness and signal loss come off the last MEASURED reading's age;
+ * [WatchStatus.lowPowerSuspending] is set later by the link.
  */
 class AppWatchGlanceSource(
     private val repository: T1dmRepository,
     private val inferenceState: StateFlow<InferenceState>,
-    // Providers (not values) so each glance reads the CURRENT alarm config — the thresholds/loss window
-    // are a live @Volatile that Settings edits re-hydrate; capturing them once at construction froze the
-    // watch's band/signal-loss classification to boot-time values (a later threshold edit never reached
-    // the 5-min push). Mirrors the AlarmEngine's live-config seam.
+    // Providers, not values: the thresholds and loss window are live config that Settings edits
+    // re-hydrate, and capturing them at construction freezes the watch to boot-time values.
     private val thresholdsProvider: () -> AlertThresholds,
     private val lossMinProvider: () -> Int,
     private val staleMin: Int = 15,
@@ -56,15 +44,12 @@ class AppWatchGlanceSource(
 
     override suspend fun currentGlance(nowMs: Long): WatchPush? {
         val src = repository.authoritativeSourceId() ?: return null
-        // 36 rows, not 1: a one-row read cannot find the newest MEASUREMENT behind a promoted
-        // reconstruction, and every glucose fact the watch shows is read off that measurement.
+        // 36 rows, not 1: the newest MEASUREMENT can sit behind a promoted reconstruction.
         val rows = repository.recentReadings(src, 36)
         val readings = GlanceReadings.create(rows)
         if (readings.latest == null) return null
 
-        // Lift the ONE shared computation (BgGlanceComputer) so the watch, the always-on
-        // notification, and the widgets agree by construction (Phase 7B). The §3.6 gate lives
-        // there; the watch just maps the glance onto its frozen wire record.
+        // The one shared computation, so watch, notification and widgets agree by construction.
         val g = com.t1dm.app.notify.BgGlanceComputer.compute(
             readings = readings,
             state = inferenceState.value,
@@ -91,8 +76,7 @@ class AppWatchGlanceSource(
                 predictedLowCrossing = g.predictedLowCrossing,
                 predictedHighCrossing = g.predictedHighCrossing,
                 alarmActive = g.alarmActive,
-                // Preserve the frozen wire semantics: "no eligible forecast" (true in warmup too,
-                // where fcEnd is null) — the warmup bit distinguishes the collecting-context case.
+                // Frozen wire semantics: true in warmup too, where fcEnd is null.
                 forecastUnavailable = g.fcEndMgdl == null,
             ),
         )
@@ -107,13 +91,7 @@ class AppWatchGlanceSource(
     }
 }
 
-/**
- * Battery-saver / low-power detection (Q9 — default entry 20 %, configurable). Two
- * independent triggers, both settings-gated (Phase 7C item 14): the OS power-save signal AND a
- * user-set battery-percentage floor. When the whole feature is disabled it never suspends the watch
- * push. Every input is read fresh per call so a Settings change takes effect on the next 5-min tick;
- * a failed battery read fails OPEN (not low-power) so the push is never wrongly muted.
- */
+/** A failed battery read fails OPEN (not low-power), so the push is never wrongly muted. */
 class AndroidLowPowerProvider(
     private val context: Context,
     private val enabled: suspend () -> Boolean,
@@ -135,7 +113,6 @@ class AndroidLowPowerProvider(
     }.getOrNull()
 }
 
-/** Windowed nonce ceiling in the Room `kv` store, per epoch (risk S6 burn-the-window). */
 class RoomNonceStore(private val repository: T1dmRepository) : NonceStore {
     override suspend fun loadCeiling(epoch: Int): Long =
         repository.getKv(key(epoch))?.toLongOrNull() ?: 0L
@@ -154,11 +131,8 @@ class RoomNonceStore(private val repository: T1dmRepository) : NonceStore {
 }
 
 /**
- * AndroidKeyStore-backed envelope for the watch durable blob: a hardware-bound AES-256-GCM key wraps
- * the material and the on-disk form is `base64(iv):base64(ct)`. Mirrors [com.t1dm.sync.KeystoreTokenStore]
- * (stock GCM, non-exportable key) with a distinct alias, but PREFERS StrongBox (the K90's Dimensity
- * 9500 exposes it; Q6), degrading to a TEE key if StrongBox is unavailable. Kept in `:app`
- * because only the composition root has the Keystore; `:watch` stays pure-JVM.
+ * On-disk form is `base64(iv):base64(ct)`. StrongBox preferred, TEE if unavailable. In `:app`
+ * because only the composition root has the Keystore.
  */
 internal class WatchKeyCipher(context: Context) {
     private val appContext = context.applicationContext
@@ -171,8 +145,7 @@ internal class WatchKeyCipher(context: Context) {
             Base64.encodeToString(ct, Base64.NO_WRAP)
     }
 
-    /** Reverses [wrap]; throws (caught by the caller for the legacy-plaintext fallback) on any envelope
-     *  that this key did not produce — a bare base64 blob has no `:` and fails here immediately. */
+    /** Throws on any envelope this key did not produce; the caller catches for the legacy fallback. */
     fun unwrap(packed: String): ByteArray {
         val sep = packed.indexOf(':')
         require(sep > 0) { "not a wrapped envelope" }
@@ -189,8 +162,7 @@ internal class WatchKeyCipher(context: Context) {
         return generate(strongBox = true) ?: generate(strongBox = false)!!
     }
 
-    /** Returns null when StrongBox was requested but the platform rejects it, so the caller retries in
-     *  the TEE. `appContext` is unused by the spec but kept to bind the key to this install's Keystore. */
+    /** Null when StrongBox was requested and the platform rejects it; the caller retries in the TEE. */
     private fun generate(strongBox: Boolean): SecretKey? {
         val gen = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
         val spec = KeyGenParameterSpec.Builder(
@@ -216,8 +188,7 @@ internal class WatchKeyCipher(context: Context) {
         private const val TRANSFORM = "AES/GCM/NoPadding"
         private const val GCM_TAG_BITS = 128
 
-        /** Full-erase (issue 5): delete the wrapping key. The wrapped watch key MATERIAL is a kv blob
-         *  (dropped by the DB wipe); removing the alias burns the last recoverable trace. Idempotent. */
+        /** Deletes the wrapping key; the wrapped material is a kv blob the DB wipe drops. Idempotent. */
         fun deleteKey() = runCatching {
             val ks = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
             if (ks.containsAlias(KEY_ALIAS)) ks.deleteEntry(KEY_ALIAS)
@@ -225,12 +196,9 @@ internal class WatchKeyCipher(context: Context) {
     }
 }
 
-/** Pairing bit + epoch + the authoritative uniffi session's durable blob (X25519 secret + epoch root
- *  + burned nonce ceiling) in the Room `kv` store. The blob is wrapped at rest with an AndroidKeyStore
- *  AES-256-GCM key ([WatchKeyCipher]); a Phase-5 CLEAR base64 blob written before the wrap existed is
- *  read back via the legacy fallback and RE-WRAPPED on the next save (no forced re-pair). The host-test
- *  loopback double carries no key material, so [WatchPairingStore.Pairing.material] is null there and
- *  only the paired/epoch bits are meaningful. */
+/** The blob is wrapped at rest by [WatchKeyCipher]; a plaintext base64 blob written before the wrap
+ *  existed is read via the legacy fallback and re-wrapped on the next save. The host-test loopback
+ *  double carries no key material, so [WatchPairingStore.Pairing.material] is null there. */
 class RoomWatchPairingStore(
     private val repository: T1dmRepository,
     context: Context,
@@ -248,8 +216,6 @@ class RoomWatchPairingStore(
         return WatchPairingStore.Pairing(epoch = epoch, bonded = true, material = material)
     }
 
-    /** Unwrap the Keystore envelope; if that fails, interpret the stored value as the legacy plaintext
-     *  base64 blob so a pre-wrap on-device session still resumes (it is re-wrapped on the next save). */
     private fun decodeMaterial(stored: String): ByteArray? =
         runCatching { cipher.unwrap(stored) }
             .getOrElse { runCatching { Base64.decode(stored, Base64.NO_WRAP) }.getOrNull() }

@@ -18,17 +18,9 @@ import com.t1dm.core.model.UnitSpace
 import kotlin.math.max
 import kotlin.math.min
 
-/**
- * The Ambulatory Glucose Profile ribbon (PLAN "Phase 6 — Stats"): the p5-p95 and p25-p75 percentile
- * bands with the p50 median line, laid over the 24 h time-of-day axis. A dedicated Canvas in the
- * terminal aesthetic — everything heavy (the percentiles) was computed in Rust; this only maps the
- * already-tiny (≤48-bin) ribbon to pixels, so it repaints at 120 Hz without jank.
- *
- * All BG values arrive in mg/dL and are converted into [unit] via [kovatchevF] ONCE in a
- * [remember] keyed on the ribbon + unit, so pan/paint never re-touch the JNI boundary. Bins are
- * sparse (only populated ones emitted); consecutive bins are joined linearly, so a data gap is
- * bridged rather than left as a hole.
- */
+/** p5-p95 and p25-p75 bands with the p50 median over a 24 h axis. Values arrive in mg/dL and are
+ *  converted into [unit] once. Bins are sparse and joined linearly, so a data gap is bridged rather
+ *  than left as a hole. */
 @Composable
 fun AgpChart(
     agp: List<AgpBin>,
@@ -50,7 +42,7 @@ fun AgpChart(
             .height(200.dp),
     ) {
         if (data == null || data.n == 0) return@Canvas
-        val leftPad = 108f   // room for the y labels (px; density-independent enough at this size)
+        val leftPad = 108f   // px; room for the y labels
         val bottomPad = 34f
         val topPad = 10f
         val rightPad = 10f
@@ -61,7 +53,6 @@ fun AgpChart(
         fun x(minuteOfDay: Float): Float = leftPad + (minuteOfDay / 1440f) * plotW
         fun y(v: Float): Float = topPad + (1f - (v - data.yMin) / (data.yMax - data.yMin)) * plotH
 
-        // Target band (in-range) shaded across the full width.
         val tLoY = y(data.targetLo)
         val tHiY = y(data.targetHi)
         drawRect(
@@ -70,7 +61,6 @@ fun AgpChart(
             size = androidx.compose.ui.geometry.Size(plotW, tLoY - tHiY),
         )
 
-        // Vertical hour grid (0,6,12,18,24) + horizontal target lines.
         for (h in 0..24 step 6) {
             val gx = x(h / 24f * 1440f)
             drawLine(gridColor, androidx.compose.ui.geometry.Offset(gx, topPad), androidx.compose.ui.geometry.Offset(gx, topPad + plotH), 1f)
@@ -78,11 +68,9 @@ fun AgpChart(
         drawLine(gridColor, androidx.compose.ui.geometry.Offset(leftPad, tLoY), androidx.compose.ui.geometry.Offset(leftPad + plotW, tLoY), 1f)
         drawLine(gridColor, androidx.compose.ui.geometry.Offset(leftPad, tHiY), androidx.compose.ui.geometry.Offset(leftPad + plotW, tHiY), 1f)
 
-        // Percentile ribbons (outer p5-p95, then inner p25-p75) as filled areas.
         drawBand(data.xs, data.p5, data.p95, outerBandColor, ::x, ::y)
         drawBand(data.xs, data.p25, data.p75, innerBandColor, ::x, ::y)
 
-        // Median polyline.
         val median = Path()
         for (i in 0 until data.n) {
             val px = x(data.xs[i]); val py = y(data.p50[i])
@@ -90,7 +78,6 @@ fun AgpChart(
         }
         drawPath(median, medianColor, style = Stroke(width = 3f))
 
-        // Axis labels: hour ticks + a few BG gridlines in the active unit.
         val paint = android.graphics.Paint().apply {
             color = android.graphics.Color.argb(
                 255,
@@ -105,7 +92,6 @@ fun AgpChart(
             val gx = x(h / 24f * 1440f)
             drawContext.canvas.nativeCanvas.drawText("${h}h", gx - 8f, size.height - 10f, paint)
         }
-        // y labels at target low/high + the top extreme.
         drawContext.canvas.nativeCanvas.drawText(fmtAxis(data.targetLo, unit), 6f, tLoY + 7f, paint)
         drawContext.canvas.nativeCanvas.drawText(fmtAxis(data.targetHi, unit), 6f, tHiY + 7f, paint)
         drawContext.canvas.nativeCanvas.drawText(fmtAxis(data.yMax, unit), 6f, y(data.yMax) + 18f, paint)
@@ -130,7 +116,7 @@ private inline fun DrawScope.drawBand(
     drawPath(path, color)
 }
 
-/** Immutable, unit-converted AGP frame: parallel arrays over the populated bins (ascending). */
+/** Parallel arrays over the populated bins, ascending, already in the display unit. */
 private class AgpFrame(
     val xs: FloatArray,
     val p5: FloatArray,
@@ -169,7 +155,7 @@ private fun buildAgpFrame(
     }
     val tLo = c(target.lowMgdl.toDouble())
     val tHi = c(target.highMgdl.toDouble())
-    // Ensure the target band is visible even if the ribbon is tight; pad 8 %.
+    // Pad 8 % so the target band stays visible when the ribbon is tight.
     var yMin = min(lo, tLo)
     var yMax = max(hi, tHi)
     val pad = (yMax - yMin).let { if (it <= 0f) 1f else it * 0.08f }
@@ -177,7 +163,7 @@ private fun buildAgpFrame(
     return AgpFrame(xs, p5, p25, p50, p75, p95, yMin, yMax, tLo, tHi)
 }
 
-/** mg/dL → the active unit space (mmol/L divides; Kovatchev uses the native `f`). */
+/** mg/dL → the active unit space. */
 internal fun convertBg(mgdl: Double, unit: UnitSpace, kovatchevF: (Double) -> Double): Double =
     when (unit) {
         UnitSpace.MgDl -> mgdl

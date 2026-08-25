@@ -54,51 +54,28 @@ import com.t1dm.core.model.SensitivityEstimate
 import com.t1dm.core.model.UnitSpace
 import kotlin.math.roundToInt
 
-// Carb slider bounds (Phase 7C, item 9): 5–120 g in 5 g steps ⇒ 24 stops ⇒ 22 interior Slider steps.
+// 5–120 g in 5 g steps ⇒ 24 stops ⇒ 22 interior Slider steps.
 private const val CARB_MIN = 5.0
 private const val CARB_MAX = 120.0
 private const val CARB_STEPS = 22
 
 /**
- * The Phase-4 carb entry surface (deliverable 1 — "manual carb entry"). Logs a meal
- * as grams + a glycemic index that parameterizes the **appearance (Ra)** gamma (model-io-curves.md:
- * carbs feed the model as grams-per-5-min Ra, juice ⇒ high early peak, bread ⇒ spread). `:app` writes
- * the self-describing `logged_meal` row (via `CurveEngine.Presets.carbGammaForGi`), folds grams into
- * the wide `sample`, and enqueues `PUT /v1/series/carbs`.
- *
- * Stateless + callback-driven, dependency-light (only `:core:*`) like the Phase-1 dashboard. The
- * live [previewCurve] sparkline shows the exact Ra the model will see. A "pick a saved meal / food
- * from the dictionary" affordance is a documented seam for the meal-builder work (deliverable 3),
- * reached through the [footer] slot.
- *
- * N10 — the screen owns EXACTLY ONE vertical scroll container, and everything it shows (including
- * [footer]) lives inside it. A caller must never wrap it in a bare `Column` with siblings after it:
- * `verticalScroll` reports the full incoming `maxHeight` once its content overflows, and a Column
- * measures unweighted children against the *remaining* main axis, so any sibling placed after this
- * screen is measured with `maxHeight = 0` — zero-height, undrawn and unhittable, with no clipping
- * warning to say so. That is precisely how the meal-builder link went missing. Wrapping it in a
- * scrollable Column is not an escape either: nesting two vertical scrolls throws at measure time.
+ * Owns EXACTLY ONE vertical scroll, with [footer] inside it: a sibling placed after this screen in a
+ * plain Column is measured with `maxHeight = 0` — undrawn, unhittable, no warning. A scrollable
+ * Column is no escape either; two nested vertical scrolls throw at measure time.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun MealsScreen(
     iobCob: IobCobReadout? = null,
-    // The model-probed ISF/ICR, shown beside IOB/COB exactly as the BG and Insulin panels show it —
-    // see `:core:design` OnBoardReadout for why all three read from one definition. Null renders as
-    // "N/A" rather than vanishing; DISPLAY-ONLY, and nothing on this screen may act on it.
+    // Display-only: nothing on this screen may act on it.
     sensitivity: SensitivityEstimate? = null,
     unit: UnitSpace = UnitSpace.MgDl,
     recentMeals: List<RecentMeal> = emptyList(),
     previewCurve: (suspend (grams: Double, gi: Double) -> DoubleArray)? = null,
     photoThumbnail: ImageBitmap? = null,
-    /**
-     * Whether a photo will actually be uploaded with this meal.
-     *
-     * Distinct from [photoThumbnail], which is only what the preview can DRAW: the two cells are set
-     * independently, so a decode that failed left a meal whose photo the §3.6-G dialog denied while
-     * the POST still went out — to a server with no delete endpoint — and a cancelled re-take
-     * promised an upload that never fired. This must be the same cell that gates the POST.
-     */
+    /** Must be the cell that gates the POST. [photoThumbnail] is only what the preview can draw;
+     *  the two are set independently, and a failed decode leaves an upload still pending. */
     photoAttached: Boolean = photoThumbnail != null,
     onTakePhoto: () -> Unit = {},
     onChoosePhoto: () -> Unit = {},
@@ -111,15 +88,9 @@ fun MealsScreen(
     var gi by remember { mutableFloatStateOf(GiChip.MIXED.gi.toFloat()) }
     val grams = gramsText.toDoubleOrNull()
     val scroll = rememberScrollState()
-    // The meal the Log press proposes, held until the confirmation resolves. Nullable-payload state,
-    // the same shape the model-removal confirm uses. Nothing is written and nothing is cleared while
-    // it is non-null — see the deferred field clear on the Button below.
     var pending by remember { mutableStateOf<PendingLog.Meal?>(null) }
     val haptics = rememberT1dmHaptics()
-    // The carb slider is two-way bound to the text field above it — dragging rewrites the text and
-    // TYPING repositions the thumb — so the detent is driven from `onValueChange`, which only the drag
-    // calls, and keyed on the 5 g stop rather than the raw Float. Keying it on `grams` instead would
-    // buzz once per keystroke.
+    // Keyed on the 5 g stop from the drag alone; on `grams` it would buzz once per keystroke.
     val gramsDetent = rememberHapticDetent()
     val giDetent = rememberHapticDetent(HapticEvent.ScrubTick)
 
@@ -137,9 +108,6 @@ fun MealsScreen(
             singleLine = true,
             modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
         )
-        // Carb slider (5–120 g, 5 g steps) bound to the SAME grams value: dragging rewrites the text,
-        // typing repositions the thumb (rounded/clamped into range). An out-of-range or empty text
-        // simply parks the thumb at the low end without overwriting what the user typed.
         Slider(
             value = (grams ?: CARB_MIN).coerceIn(CARB_MIN, CARB_MAX).toFloat(),
             onValueChange = { gramsDetent.at(it.roundToInt()); gramsText = it.roundToInt().toString() },
@@ -183,8 +151,7 @@ fun MealsScreen(
                 )
             }
         }
-        // GI is continuous, so its grain is imposed here: one tick per whole 5 GI points, which is
-        // about the resolution the number below it is read at.
+        // GI is continuous; the grain is imposed here, one tick per 5 points.
         Slider(
             value = gi,
             onValueChange = { giDetent.at((it / 5f).roundToInt()); gi = it },
@@ -203,8 +170,6 @@ fun MealsScreen(
             CurveSparkline(curve, MaterialTheme.colorScheme.secondary)
         }
 
-        // Issue 7 — attach a photo of the meal. The capture/pick is driven by the app-level launchers;
-        // the log button carries the upload (Navigation reads the pending Uri after logCarb).
         Row(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             modifier = Modifier.padding(top = 16.dp),
@@ -216,9 +181,8 @@ fun MealsScreen(
                 onClick = { haptics.perform(HapticEvent.Tap); onChoosePhoto() },
             ) { Text("Choose photo") }
         }
-        // Gated on the ATTACHMENT, not the thumbnail: a photo whose preview would not decode is still
-        // going to be uploaded, so Remove has to stay reachable — it was the only way to call it off,
-        // and it used to vanish with the preview.
+        // Gated on the ATTACHMENT, not the thumbnail: a photo whose preview will not decode still
+        // uploads, so Remove must stay reachable.
         if (photoAttached) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -248,11 +212,6 @@ fun MealsScreen(
             )
         }
 
-        // The press only PROPOSES the meal; `gramsText` survives until the dialog is confirmed, so a
-        // Cancel does not silently wipe what was typed (it used to clear synchronously, here).
-        // The press only PROPOSES: it raises ConfirmLogDialog, which owns the Warn/Confirm/Reject beat,
-        // and `:app`'s receipt owns the Commit once a row actually exists. A Tap here and nothing more,
-        // or the same act would speak three times.
         Button(
             onClick = {
                 haptics.perform(HapticEvent.Tap)
@@ -284,11 +243,8 @@ fun MealsScreen(
     }
 }
 
-/** A tiny filled sparkline of a per-5-min curve — a preview only, not the dashboard overlay. N7 — the
- *  rendered curve is 0 at t=0 with the first sample at t=+5 min: `values[i]` is the appearance/action
- *  over `[i·5, (i+1)·5)` min, so it is anchored at slot `i+1` and slot 0 is the zero baseline (mirrors
- *  `CurvePreview` / the dashboard overlay). Previously `values[0]` was drawn at x=0, so a high-GI Ra
- *  (whose +5 min sample is already ~65 % of the peak) appeared to start mid-rise / instantly. */
+/** Preview only. `values[i]` is the appearance over `[i·5, (i+1)·5)` min, so it is drawn at slot
+ *  `i+1` and slot 0 is the zero baseline. */
 @Composable
 internal fun CurveSparkline(values: DoubleArray, color: Color) {
     Canvas(Modifier.fillMaxWidth().height(56.dp).padding(vertical = 4.dp)) {
@@ -298,7 +254,7 @@ internal fun CurveSparkline(values: DoubleArray, color: Color) {
         val n = values.size
         val dx = size.width / n
         val path = Path().apply {
-            moveTo(0f, size.height) // t=0, value 0
+            moveTo(0f, size.height)
             for (i in 0 until n) {
                 lineTo((i + 1) * dx, size.height - (values[i].toFloat() / peak) * size.height * 0.9f)
             }

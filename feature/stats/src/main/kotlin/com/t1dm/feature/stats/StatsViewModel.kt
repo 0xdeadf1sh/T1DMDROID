@@ -12,15 +12,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-/**
- * State holder for the Stats screen (PLAN "Phase 6 — Stats"). Hoists the whole [StatsComposite] off
- * the composable: the window switcher, the server⊕local fetch/recompute, and the two settings
- * (target range, unit space). Every fetch/recompute runs on [source]'s own dispatchers (the Rust
- * reduction on the default dispatcher); the composable only paints the emitted [UiState].
- *
- * Constructed once in `:app`'s `AppContainer` on a long-lived [scope], mirroring the other stateful
- * holders there — so the window/composite survive Activity churn and recomposition.
- */
+/** Every fetch and recompute runs on [source]'s own dispatchers. Constructed once in `:app` on a
+ *  long-lived [scope], so the window and composite survive Activity churn. */
 class StatsViewModel(
     private val source: StatsSource,
     private val scope: CoroutineScope,
@@ -47,8 +40,8 @@ class StatsViewModel(
                 _state.update { it.copy(unitSpace = u, composite = it.composite?.copy(unitSpace = u)) }
             }
         }
-        // The target range's FIRST emission triggers the initial load; each later change reloads
-        // (TIR/TBR/TAR depend on the range, so it is not a mere repaint).
+        // The first emission triggers the initial load; TIR/TBR/TAR depend on the range, so a later
+        // change reloads rather than repaints.
         scope.launch {
             source.targetRange.collect { t ->
                 _state.update { it.copy(targetRange = t) }
@@ -62,11 +55,10 @@ class StatsViewModel(
         load(window, refresh = false)
     }
 
-    /** Manual "Recompute": forces the server cache fresh AND re-derives the local block. */
     fun recompute() = load(_state.value.window, refresh = true)
 
     fun setUnitSpace(space: UnitSpace) {
-        scope.launch { source.setUnitSpace(space) } // re-emits via the unitSpace flow → repaint
+        scope.launch { source.setUnitSpace(space) } // re-emits via unitSpace → repaint
     }
 
     fun setTargetRange(lowMgdl: Int, highMgdl: Int) {

@@ -1,64 +1,39 @@
-//! Advanced glycemic statistics (Phase 6, §"Phase 6 — Stats").
+//! Sample series → `AdvancedStats` against the user's target range, in mg/dL.
 //!
-//! A pure, golden-gated engine that reduces a time-ordered sample series to the
-//! `AdvancedStats` block the phone renders against the user's *configurable* target
-//! range `[target_low, target_high]` mg/dL. The server (`T1DMSERVER`) already ships the
-//! range-independent shared block (GMI/CV/SD/mean_bg/TDD/…); this reproduces those
-//! exactly (same formulas) so a local recompute parity-checks the server cache, and adds
-//! the range-dependent + richer metrics the server does not carry: time-weighted
-//! TIR/TBR/TAR, the clinical sub-bands, LBGI/HBGI, MAGE, and the AGP percentile ribbon.
-//!
-//! Everything here is total: an empty or degenerate series yields a well-defined empty
-//! `AdvancedStats` (`n_samples == 0`), never a panic or a NaN. Every FALLIBLE
-//! `#[uniffi::export]` returns `Result` (`clinical_cuts` returns a pair of constants and cannot
-//! fail); release builds are `panic = "abort"`.
-//!
-//! Formula provenance:
-//!   - LBGI/HBGI: Kovatchev et al., "Symmetrization of the Blood Glucose Measurement
-//!     Scale and Its Applications", Diabetes Care 20(11):1655-1658, 1997; and Kovatchev
-//!     et al., "Risk analysis of blood glucose data", J Diabetes Sci Technol, 2009.
-//!     r(bg) = 10·f(bg)²; rl = r when f(bg)<0 else 0; rh = r when f(bg)>0 else 0;
-//!     LBGI = mean(rl), HBGI = mean(rh). `f` is the crate's `kovatchev_f` (INFERENCE.md §5).
-//!   - GMI(%) = 3.31 + 0.02392·mean_bg(mg/dL): Bergenstal et al., "Glucose Management
-//!     Indicator (GMI)", Diabetes Care 41(11):2275-2280, 2018. (Matches the server.)
-//!   - MAGE: Service et al., "Mean amplitude of glycemic excursions, a measure of
-//!     diabetic instability", Diabetes 19(9):644-655, 1970 — excursions exceeding 1 SD,
-//!     averaged. Exact variant pinned below + by stats_golden.json.
+//! The shared block (`mean_bg`/`sd`/`cv`/`gmi` and the treatment totals) reproduces
+//! `T1DMSERVER`'s bit-for-bit. An empty or all-invalid series yields `AdvancedStats::empty()`,
+//! never a NaN. LBGI/HBGI: Kovatchev 1997/2009, over the crate's `kovatchev_f`. GMI: Bergenstal
+//! 2018. MAGE: Service 1970, variant pinned by stats_golden.json.
 
 use crate::{kovatchev_f, CoreError};
 
-/// Gaps beyond this (sensor dropout) are clamped so a stale reading cannot inflate a
-/// band's time-weight. Six missed 5-min CGM buckets.
+/// Dropout clamp on a sample's time-weight: six missed 5-min buckets.
 const MAX_GAP_MS: i64 = 30 * 60_000;
-/// Minutes in a day — the AGP bin grid must divide it evenly.
 const DAY_MIN: u32 = 1440;
 const DAY_MS: f64 = 86_400_000.0;
-/// Clinical AGP fixed sub-band edges (mg/dL); the target edges are user-configurable.
+/// Fixed clinical sub-band edges, mg/dL.
 const VERY_LOW: f64 = 54.0;
 const VERY_HIGH: f64 = 250.0;
-/// mg/dL → mmol/L (the SI molar-mass conversion for glucose, 18.0182 mg/dL per mmol/L).
+/// Glucose molar mass, 18.0182 mg/dL per mmol/L.
 const MMOL_PER_MGDL: f64 = 1.0 / 18.0182;
-/// Schlichtkrull M-value ideal reference glucose (mg/dL).
+/// Schlichtkrull M-value ideal reference, mg/dL.
 const M_REF: f64 = 120.0;
-/// GRADE region thresholds (mmol/L), Hill 2007: hypo < 3.9, hyper > 7.8.
+/// GRADE region thresholds, mmol/L (Hill 2007).
 const GRADE_HYPO_MMOL: f64 = 3.9;
 const GRADE_HYPER_MMOL: f64 = 7.8;
-/// Glucose distribution histogram: 20 mg/dL bins over [40, 400) → 18 bins (tails clamp in).
+/// 20 mg/dL bins over [40, 400); tails clamp in.
 const HIST_LO: f64 = 40.0;
 const HIST_HI: f64 = 400.0;
 const HIST_BIN: f64 = 20.0;
-/// An excursion episode needs at least this many consecutive in-band samples.
 const EPISODE_MIN_SAMPLES: usize = 2;
 
-/// One input sample on the shared 5-min grid. `bg_mgdl` is required; the treatment /
-/// activity channels are `None` where the grid cell carries no such event.
-/// uniffi record → Kotlin `StatSample`.
+/// One sample on the shared 5-min grid. The treatment / activity channels are `None` where the
+/// cell carries no such event.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct StatSample {
     pub ts_ms: i64,
-    /// The client's UTC offset in MINUTES, east-positive, at `ts_ms` (`SPEC/invariants.md` §2).
-    /// `UTC−5` is `-300`. It never shifts `ts_ms`, which is always UTC; it exists so an aggregation
-    /// keyed on the patient's own calendar — `heatmap`, and only `heatmap` — can resolve one.
+    /// UTC offset in MINUTES, east-positive (`SPEC/invariants.md` §2): `UTC−5` is `-300`. It never
+    /// shifts `ts_ms`, which is always UTC.
     pub tz_offset_min: i32,
     pub bg_mgdl: f64,
     pub carbs_g: Option<f64>,
@@ -68,11 +43,9 @@ pub struct StatSample {
     pub mood: Option<i32>,
 }
 
-/// Time-weighted fraction of the record spent in each clinical band (partitions the record:
-/// sums to 1 over a non-empty series). `in_range` uses the *configurable* target edges;
-/// `very_low`/`very_high` are the 54/250 clinical cuts, each clamped to the nearer target
-/// edge so an unbounded target (`target_low` < 54 or `target_high` > 250) still yields five
-/// disjoint bands.
+/// Time-weighted fraction of the record in each band; sums to 1 over a non-empty series.
+/// `in_range` uses the configurable target edges; the 54/250 clinical cuts are clamped to the
+/// nearer target edge so the five bands stay disjoint under an unbounded target.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct SubBands {
     pub very_low: f64,
@@ -82,8 +55,7 @@ pub struct SubBands {
     pub very_high: f64,
 }
 
-/// Per-time-of-day-bin BG percentiles for the AGP ribbon. `minute_of_day` is the bin's
-/// start (0..1440). Only populated bins are emitted; the chart interpolates gaps.
+/// `minute_of_day` is the bin's start (0..1440). Only populated bins are emitted.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct AgpBin {
     pub minute_of_day: u32,
@@ -94,24 +66,9 @@ pub struct AgpBin {
     pub p95: f64,
 }
 
-/// One populated cell of the day-of-week × hour-of-day glucose grid.
-///
-/// `dow` is 0 = Monday … 6 = Sunday; `hour` is 0..24. Both are resolved in the patient's LOCAL
-/// time, from each sample's own `tz_offset_min` — so a week reads as the week that was lived, and a
-/// DST shift moves the samples it actually moved rather than the whole column.
-///
-/// Both summaries are plain sample-count reductions over the cell's valid-BG samples, NOT
-/// time-weighted: a cell is one hour of one weekday repeated across the window, and the gaps that
-/// time-weighting exists to handle fall between cells rather than inside them.
-///
-/// `median_bg` is the same type-7 percentile the AGP ribbon's `p50` is (`percentile_sorted`), so the
-/// two agree on what a median is. It is carried ALONGSIDE `mean_bg` rather than instead of it: both
-/// come out of one pass, the caller's choice between them is a repaint, and a cell whose mean and
-/// median disagree sharply is itself the interesting case — one compression low or one rebound high
-/// in an hour-of-week cell drags the mean well off what that hour usually looks like.
-///
-/// Only populated cells are emitted, ascending by `(dow, hour)`. An absent cell means no reading,
-/// which the chart must render as absent — never as a value.
+/// `dow` is 0 = Monday … 6 = Sunday, `hour` 0..24, both in the patient's LOCAL time. Sample-count
+/// reductions, not time-weighted; `median_bg` is the AGP ribbon's own type-7 percentile. Only
+/// populated cells, ascending by `(dow, hour)`; an absent cell means no reading, not a value.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct HeatCell {
     pub dow: u32,
@@ -121,23 +78,20 @@ pub struct HeatCell {
     pub median_bg: f64,
 }
 
-/// The fixed clinical level-2 cuts, in mg/dL: below `very_low_mgdl` is level-2 hypoglycaemia and
-/// above `very_high_mgdl` level-2 hyperglycaemia. Unlike the target range they are not configurable.
+/// The fixed level-2 cuts, mg/dL. Not configurable, unlike the target range.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct ClinicalCuts {
     pub very_low_mgdl: f64,
     pub very_high_mgdl: f64,
 }
 
-/// The cuts `sub_bands` partitions on, exposed because a renderer of a glucose COLOUR SCALE needs
-/// the same two numbers to anchor its extremes. Re-stating them on the Kotlin side would be a second
-/// copy of a definition the band fractions are actually cut at, free to drift from it silently.
+/// Exposed so a colour scale anchors on the same cuts `sub_bands` is partitioned at, rather than
+/// on a second copy.
 #[uniffi::export]
 pub fn clinical_cuts() -> ClinicalCuts {
     ClinicalCuts { very_low_mgdl: VERY_LOW, very_high_mgdl: VERY_HIGH }
 }
 
-/// Optional mood summary over samples that carry a mood score.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct MoodSummary {
     pub mean: f64,
@@ -146,10 +100,8 @@ pub struct MoodSummary {
     pub max: i32,
 }
 
-/// Sample-count TIR/TBR/TAR within a fixed 6-hour time-of-day bucket (start 0/360/720/1080
-/// minutes). A count-based fraction (not time-weighted) over the bucket's valid-BG samples —
-/// the diurnal breakdown the single overall time-weighted TIR cannot express. All four
-/// buckets are always emitted (an empty bucket carries `n == 0` and zero fractions).
+/// Sample-count TIR/TBR/TAR in a fixed 6-hour bucket (start 0/360/720/1080 min), NOT
+/// time-weighted. All four buckets are always emitted; an empty one carries `n == 0`.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct TodBucket {
     pub start_min: u32,
@@ -159,9 +111,8 @@ pub struct TodBucket {
     pub tar: f64,
 }
 
-/// One fixed-width bin of the glucose distribution histogram: 20 mg/dL bins spanning
-/// `[40, 400)` (18 bins); readings below/above clamp into the end bins. `frac = count / n`.
-/// Every bin is emitted (including empties) so the chart draws a full distribution.
+/// 20 mg/dL bins spanning `[40, 400)`; readings outside clamp into the end bins. Every bin is
+/// emitted, empties included.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct HistBin {
     pub lo: f64,
@@ -170,10 +121,9 @@ pub struct HistBin {
     pub frac: f64,
 }
 
-/// Aggregate of the hypo (resp. hyper) excursion EPISODES: a maximal run of ≥2 consecutive
-/// valid samples strictly below `target_low` (resp. above `target_high`), split by a sensor
-/// dropout gap (> `MAX_GAP_MS`). `mean_extreme` is the mean per-episode nadir (hypo) / peak
-/// (hyper); `worst_extreme` the single most extreme reading across all episodes.
+/// An episode is a maximal run of ≥2 consecutive valid samples past the target edge, split by a
+/// gap > `MAX_GAP_MS`. `mean_extreme` is the mean per-episode nadir/peak, `worst_extreme` the
+/// single most extreme reading.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct EpisodeSummary {
     pub count: u32,
@@ -195,9 +145,8 @@ impl EpisodeSummary {
     }
 }
 
-/// GRADE (Hill et al. 2007) mean risk score plus its hypo/eu/hyper attribution — the
-/// fraction of the summed score contributed by readings in each region (thresholds 3.9 /
-/// 7.8 mmol/L). The three fractions sum to 1 whenever the score is positive.
+/// GRADE (Hill 2007) mean score with its hypo/eu/hyper attribution: each region's share of the
+/// summed score. The three sum to 1 whenever the score is positive.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct GradeSplit {
     pub grade: f64,
@@ -206,81 +155,58 @@ pub struct GradeSplit {
     pub hyper: f64,
 }
 
-/// The full advanced-stats block. Range-dependent + richer metrics on top of the
-/// server's shared block; the shared fields (`mean_bg`/`sd`/`cv`/`gmi` and the raw
-/// treatment totals) reproduce the server bit-for-bit for the parity check. Daily rates
-/// use the observed span (`span_ms`); callers wanting the server's fixed-window
-/// denominator can re-derive them from the exposed `total_*`.
+/// Daily rates use the observed `span_ms`; the server's fixed-window denominator can be
+/// re-derived from `total_*`.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct AdvancedStats {
-    /// Count of valid-BG samples (matches the server's `n`).
+    /// Valid-BG samples only.
     pub n_samples: u32,
-    /// Observed span first→last sample (ms); the daily-rate denominator.
+    /// First→last sample, ms.
     pub span_ms: i64,
-    /// Time-weighted fractions vs the target range (0..1).
+    /// Time-weighted, 0..1.
     pub tir: f64,
     pub tbr: f64,
     pub tar: f64,
-    /// Finer clinical breakdown (also time-weighted).
     pub sub_bands: SubBands,
-    /// Kovatchev low/high blood-glucose indices (mean risk).
     pub lbgi: f64,
     pub hbgi: f64,
-    /// Mean amplitude of glycemic excursions (> 1 SD).
     pub mage: f64,
-    /// Shared block — reproduces the server exactly.
     pub mean_bg: f64,
     pub sd: f64,
     pub cv: f64,
     pub gmi: f64,
-    /// Raw treatment totals over the window (so callers can re-normalize).
     pub total_carbs: f64,
     pub total_bolus: f64,
     pub total_basal: f64,
-    /// Per-day rates over `span_ms`.
+    /// Per day over `span_ms`.
     pub mean_daily_carbs: f64,
     pub tdd: f64,
     pub bolus_basal_ratio: f64,
-    /// Mean of present step counts, or `None` if no sample carried steps.
+    /// `None` if no sample carried steps.
     pub mean_steps: Option<f64>,
-    /// Mood summary, or `None` if no sample carried a mood.
+    /// `None` if no sample carried a mood.
     pub mood: Option<MoodSummary>,
-    /// AGP percentile ribbon, one entry per populated time-of-day bin, ascending.
+    /// One entry per populated bin, ascending.
     pub agp: Vec<AgpBin>,
-    // ── Variability & risk extensions (Phase 7D) ──────────────────────────────
-    /// Mean Of Daily Differences — |ΔBG| at matched minute-of-day across consecutive days.
     pub modd: f64,
-    /// CONGA at 1 / 2 / 4 h lag (SD of the n-hour net glycemic action).
     pub conga1: f64,
     pub conga2: f64,
     pub conga4: f64,
-    /// J-index = 0.001·(mean + SD)² (mg/dL space).
     pub j_index: f64,
-    /// Schlichtkrull M-value (ideal reference 120 mg/dL).
     pub m_value: f64,
-    /// Average Daily Risk Range (Kovatchev).
     pub adrr: f64,
-    /// Between-day SD of the per-day mean glucose (day-to-day variability).
     pub dtd_sd: f64,
-    /// GRADE score + hypo/eu/hyper attribution.
     pub grade: GradeSplit,
-    /// Diurnal TIR — four fixed 6-hour time-of-day buckets (always length 4).
+    /// Always length 4.
     pub tod: Vec<TodBucket>,
-    /// Glucose distribution histogram (20 mg/dL bins over [40,400); always length 18).
+    /// Always length 18.
     pub histogram: Vec<HistBin>,
-    /// Hypo (< target_low) excursion-episode aggregate.
     pub hypo_episodes: EpisodeSummary,
-    /// Hyper (> target_high) excursion-episode aggregate.
     pub hyper_episodes: EpisodeSummary,
-    /// Mean AND median glucose per (day-of-week, hour-of-day) cell, in LOCAL time — populated cells only,
-    /// ascending by `(dow, hour)`. The one aggregation in this block keyed on the patient's own
-    /// calendar; see `HeatCell`, and see `advanced_stats` on why the others are not.
     pub heatmap: Vec<HeatCell>,
 }
 
 impl AdvancedStats {
-    /// The well-defined empty block (degenerate/empty input). All fractions/metrics 0,
-    /// channels absent — never NaN.
     fn empty() -> Self {
         AdvancedStats {
             n_samples: 0,
@@ -323,8 +249,7 @@ impl AdvancedStats {
     }
 }
 
-/// numpy-compatible (type-7, linear) percentile of an already-sorted slice. `p` in
-/// `[0,100]`. `sorted` must be non-empty (caller guarantees).
+/// Type-7 (numpy-compatible) percentile. `p` in `[0,100]`; `sorted` must be non-empty.
 fn percentile_sorted(sorted: &[f64], p: f64) -> f64 {
     let n = sorted.len();
     if n == 1 {
@@ -340,10 +265,8 @@ fn percentile_sorted(sorted: &[f64], p: f64) -> f64 {
     }
 }
 
-/// MAGE via turning-point extrema, retaining excursions whose amplitude exceeds `sd`,
-/// then averaging. Deterministic definition (pinned by stats_golden.json + a sawtooth
-/// unit test): reduce the BG series to alternating extrema (endpoints included, flats
-/// skipped); a swing between consecutive extrema counts iff its amplitude > `sd`.
+/// Alternating turning-point extrema (endpoints included, flats skipped); a swing counts iff its
+/// amplitude exceeds `sd`. Variant pinned by stats_golden.json and the sawtooth test.
 fn mage(bg: &[f64], sd: f64) -> f64 {
     if bg.len() < 2 {
         return 0.0;
@@ -378,35 +301,25 @@ fn mage(bg: &[f64], sd: f64) -> f64 {
     }
 }
 
-/// The UTC day index a timestamp falls in (days since the epoch). Used for the day-partitioned
-/// variability metrics (MODD / ADRR / day-to-day). A fixed offset, so day boundaries are
-/// consistent within the record even if not local-midnight aligned.
 #[inline]
 fn day_of(ts_ms: i64) -> i64 {
     ts_ms.div_euclid(DAY_MS as i64)
 }
 
-/// The minute-of-day (0..1440) a timestamp falls in.
 #[inline]
 fn minute_of_day(ts_ms: i64) -> i64 {
     ts_ms.rem_euclid(DAY_MS as i64) / 60_000
 }
 
-/// A sample's LOCAL wall-clock instant: its UTC timestamp shifted by its own `tz_offset_min`
-/// (`SPEC/invariants.md` §2).
-///
-/// Every day-keyed reduction in this module goes through here, and `ts_ms` itself is never
-/// modified — the shift exists only to answer "which day, and what time of day, was this for the
-/// patient". Per SAMPLE rather than per window because a 90-day window can straddle a DST change or
-/// a flight, and one offset applied to all of them would move readings the patient never moved.
+/// A sample's LOCAL wall-clock instant (`SPEC/invariants.md` §2). Per sample, not per window: a
+/// long window can straddle a DST change or a flight. `ts_ms` itself is never modified.
 #[inline]
 fn local_ms(s: &StatSample) -> i64 {
     s.ts_ms + s.tz_offset_min as i64 * 60_000
 }
 
-/// MODD — Mean Of Daily Differences (Molnar et al. 1972): the mean |ΔBG| between readings
-/// exactly 24 h apart, matched on identical minute-of-day across consecutive days. 0 when no
-/// matched pair exists. A `BTreeMap` keeps the summation order deterministic.
+/// MODD (Molnar 1972): mean |ΔBG| between readings matched on minute-of-day across consecutive
+/// days. 0 with no matched pair. `BTreeMap` keeps the summation order deterministic.
 fn modd(valid: &[&StatSample]) -> f64 {
     use std::collections::BTreeMap;
     let mut by_key: BTreeMap<(i64, i64), f64> = BTreeMap::new();
@@ -428,9 +341,8 @@ fn modd(valid: &[&StatSample]) -> f64 {
     }
 }
 
-/// CONGA-n — Continuous Overlapping Net Glycemic Action (McDonnell et al. 2005): the
-/// population SD of the differences `Dt = bg(t) − bg(t − n·60 min)` over every t whose
-/// n-hour-earlier reading is present. 0 with fewer than two such differences.
+/// CONGA-n (McDonnell 2005): population SD of `bg(t) − bg(t − n h)`. 0 with fewer than two
+/// differences.
 fn conga(valid: &[&StatSample], hours: i64) -> f64 {
     use std::collections::BTreeMap;
     let mut by_ts: BTreeMap<i64, f64> = BTreeMap::new();
@@ -452,17 +364,15 @@ fn conga(valid: &[&StatSample], hours: i64) -> f64 {
     var.sqrt()
 }
 
-/// The per-reading GRADE contribution (Hill et al. 2007): `425·[log10(log10(bg mmol/L)) +
-/// 0.16]²`, capped at 50. The mmol value is floored just above 1 so the nested log stays
-/// real for any positive BG (physiological BG ≫ 18 mg/dL never hits the floor).
+/// Per-reading GRADE (Hill 2007), capped at 50. The mmol value is floored just above 1 so the
+/// nested log stays real for any positive BG.
 #[inline]
 fn grade_contrib(bg_mgdl: f64) -> f64 {
     let mmol = (bg_mgdl * MMOL_PER_MGDL).max(1.000_001);
     (425.0 * (mmol.log10().log10() + 0.16).powi(2)).min(50.0)
 }
 
-/// ADRR — Average Daily Risk Range (Kovatchev et al. 2006): the mean over days of
-/// `max(low-risk) + max(high-risk)`, where risk `r(bg) = 10·f(bg)²`. 0 with no readings.
+/// ADRR (Kovatchev 2006): mean over days of `max(low-risk) + max(high-risk)`.
 fn adrr(valid: &[&StatSample]) -> f64 {
     use std::collections::BTreeMap;
     let mut per_day: BTreeMap<i64, (f64, f64)> = BTreeMap::new();
@@ -481,7 +391,7 @@ fn adrr(valid: &[&StatSample]) -> f64 {
     sum / per_day.len() as f64
 }
 
-/// Between-day SD of the per-day mean glucose (day-to-day variability). 0 with < 2 days.
+/// Between-day SD of the per-day mean. 0 with fewer than 2 days.
 fn dtd_sd(valid: &[&StatSample]) -> f64 {
     use std::collections::BTreeMap;
     let mut per_day: BTreeMap<i64, (f64, u32)> = BTreeMap::new();
@@ -499,26 +409,10 @@ fn dtd_sd(valid: &[&StatSample]) -> f64 {
     var.sqrt()
 }
 
-/// Epoch day 0 (1970-01-01) was a **Thursday**, so a local-day index maps to an ISO weekday
-/// (0 = Monday) by adding 3 before the modulus. Named rather than inlined because the constant is
-/// a calendar fact and reads as a magic number everywhere else.
+/// Epoch day 0 (1970-01-01) was a Thursday, so +3 maps a day index to an ISO weekday (0 = Monday).
 const EPOCH_DOW_SHIFT: i64 = 3;
 
-/// The `(dow, hour)` glucose grid — mean and median per cell — in LOCAL time.
-///
-/// Each sample carries its own `tz_offset_min` (`SPEC/invariants.md` §2), applied here and nowhere
-/// else in this module: the offset is added to the timestamp to get a local wall-clock instant, and
-/// that instant is decomposed into an ISO weekday and an hour. Per-sample rather than per-window
-/// because the window spans up to 90 days and can straddle a DST boundary or a flight — using one
-/// offset for all of them would shift every reading by the last one's.
-///
-/// A fixed 7×24 lattice of per-cell value vectors — the median needs the values kept, not just a
-/// running sum — walked once and emitted sparse; a cell no sample landed in is left out entirely
-/// rather than emitted as zero, which the renderer needs to tell "no data" from "in range".
 fn heatmap(valid: &[&StatSample]) -> Vec<HeatCell> {
-    // The cells are collected as values rather than as running sums because the median needs them
-    // all. 168 buckets over at most a 90-day window is ~26 000 f64 in total — the same series
-    // already resident — and each cell sorts on its own ~150 entries.
     let mut cells: Vec<Vec<f64>> = vec![Vec::new(); 7 * 24];
     for s in valid {
         let local = local_ms(s);
@@ -535,8 +429,6 @@ fn heatmap(valid: &[&StatSample]) -> Vec<HeatCell> {
             }
             let n = vals.len();
             let sum: f64 = vals.iter().sum();
-            // Sorted in place; `percentile_sorted` is the AGP ribbon's own, so a cell median and an
-            // AGP p50 over the same values are the same number by construction.
             vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
             out.push(HeatCell {
                 dow: d as u32,
@@ -550,8 +442,6 @@ fn heatmap(valid: &[&StatSample]) -> Vec<HeatCell> {
     out
 }
 
-/// Four fixed 6-hour diurnal buckets (00-06/06-12/12-18/18-24), each carrying its
-/// sample-count TBR/TIR/TAR vs the target edges. Always four entries.
 fn tod_buckets(valid: &[&StatSample], tlo: f64, thi: f64) -> Vec<TodBucket> {
     let mut cnt = [[0u32; 3]; 4]; // [bucket][below, in, above]
     for s in valid {
@@ -574,7 +464,6 @@ fn tod_buckets(valid: &[&StatSample], tlo: f64, thi: f64) -> Vec<TodBucket> {
         .collect()
 }
 
-/// The 18-bin glucose distribution histogram (20 mg/dL bins, [40,400), tails clamped).
 fn histogram(bgs: &[f64]) -> Vec<HistBin> {
     let nbins = ((HIST_HI - HIST_LO) / HIST_BIN) as usize;
     let mut counts = vec![0u32; nbins];
@@ -593,10 +482,8 @@ fn histogram(bgs: &[f64]) -> Vec<HistBin> {
         .collect()
 }
 
-/// Detect the hypo (`below == true`, edge `target_low`) / hyper (`below == false`, edge
-/// `target_high`) excursion episodes and aggregate them. An episode is a maximal run of
-/// ≥ `EPISODE_MIN_SAMPLES` consecutive in-band valid samples; a dropout gap (> `MAX_GAP_MS`)
-/// splits a run. Duration is last−first ts; the extreme is the run's nadir/peak.
+/// Episodes below `edge` (`below == true`) or above it. Duration is last−first ts; the extreme is
+/// the run's nadir/peak.
 fn episodes(valid: &[&StatSample], edge: f64, below: bool) -> EpisodeSummary {
     let mut runs: Vec<Vec<(i64, f64)>> = Vec::new();
     let mut cur: Vec<(i64, f64)> = Vec::new();
@@ -649,32 +536,12 @@ fn episodes(valid: &[&StatSample], edge: f64, below: bool) -> EpisodeSummary {
     }
 }
 
-/// Compute the `AdvancedStats` for `samples` against the target range and AGP bin grid.
+/// `target_low`/`target_high` are mg/dL. Band fractions are weight sums, not sample counts; the
+/// shared block and the treatment totals are plain sample-count reductions, matching the server.
 ///
-/// * `target_low`/`target_high` — mg/dL, `low < high` required.
-/// * `agp_bins` — time-of-day bins; must evenly divide 1440 (e.g. 24 hourly, 48 half-hourly).
-///
-/// Time-weighting: each valid-BG sample holds the gap to the next (clamped to
-/// `MAX_GAP_MS`); the final sample holds the median clamped gap. Band fractions are
-/// weight sums, not sample counts. The shared block (`mean_bg`/`sd`/`cv`/`gmi`) and the
-/// treatment totals are plain sample-count reductions, matching the server.
-///
-/// Fail-closed: an empty series, or one with no finite positive BG, returns
-/// `AdvancedStats::empty()`. Bad range / bin count returns `Err`.
-///
-/// # Day boundaries
-///
-/// `SPEC/invariants.md` §2 requires any aggregation keyed on a day to say which day it means. Every
-/// one here is keyed on the patient's **local** day, resolved per sample through [`local_ms`] from
-/// that sample's own `tz_offset_min` — so a window spanning a DST change or a flight keys each
-/// reading to the day it was actually lived. That covers `heatmap`, `agp`, `tod`, `modd`, `adrr` and
-/// `dtd_sd`.
-///
-/// `conga*` is the exception that needs no boundary at all: it compares each reading with the one a
-/// fixed lag earlier, so shifting every timestamp by the same offset cancels and it is invariant
-/// under the choice. It is listed here only so a reader does not go looking for the omission.
-///
-/// Nothing here shifts `ts_ms` itself, which is always UTC (§2).
+/// Every day-keyed aggregation (`heatmap`, `agp`, `tod`, `modd`, `adrr`, `dtd_sd`) keys on the
+/// patient's LOCAL day through [`local_ms`] (`SPEC/invariants.md` §2); `conga*` compares a fixed
+/// lag and is invariant under a uniform offset, so it needs no boundary.
 #[uniffi::export]
 pub fn advanced_stats(
     samples: Vec<StatSample>,
@@ -695,11 +562,10 @@ pub fn advanced_stats(
     let tlo = target_low as f64;
     let thi = target_high as f64;
 
-    // Sort by timestamp (defensive — time-weighting needs order); cheap clone.
+    // Time-weighting needs order.
     let mut all = samples;
     all.sort_by_key(|s| s.ts_ms);
 
-    // Valid-BG subsequence for every BG-derived metric.
     let valid: Vec<&StatSample> =
         all.iter().filter(|s| s.bg_mgdl.is_finite() && s.bg_mgdl > 0.0).collect();
     if valid.is_empty() {
@@ -708,7 +574,6 @@ pub fn advanced_stats(
     let n = valid.len();
     let bgs: Vec<f64> = valid.iter().map(|s| s.bg_mgdl).collect();
 
-    // ── time weights over the valid subsequence ──────────────────────────────
     let mut weights = vec![0.0f64; n];
     let mut gaps: Vec<i64> = Vec::with_capacity(n.saturating_sub(1));
     for i in 0..n - 1 {
@@ -716,9 +581,8 @@ pub fn advanced_stats(
         gaps.push(g);
         weights[i] = g as f64;
     }
-    // Last sample: median clamped gap (or the grid nominal when only one sample).
     let last = if gaps.is_empty() {
-        MAX_GAP_MS as f64 // single sample: nominal, cancels in the ratio anyway
+        MAX_GAP_MS as f64 // single sample: cancels in the ratio
     } else {
         let mut g = gaps.clone();
         g.sort_unstable();
@@ -733,12 +597,9 @@ pub fn advanced_stats(
     weights[n - 1] = last;
     let wsum: f64 = weights.iter().sum();
 
-    // ── band fractions (time-weighted) ───────────────────────────────────────
-    // The fixed 54/250 clinical cuts are clamped to the (unbounded) target edges so the five
-    // bands always PARTITION: a target dipping below 54 pulls the very-low cut down to `tlo`
-    // (and one climbing above 250 pushes the very-high cut up to `thi`). Without this, a
-    // reading in the overlap would land in both a level-2 band AND in_range — inflating the
-    // fractions past 1 (they'd stop summing to wsum). A single if/else chain keeps them disjoint.
+    // The 54/250 cuts are clamped to the target edges so the five bands always PARTITION: a target
+    // below 54 (or above 250) would otherwise double-count a reading into a level-2 band AND
+    // in_range.
     let vlo_cut = VERY_LOW.min(tlo);
     let vhi_cut = VERY_HIGH.max(thi);
     let (mut w_vlow, mut w_low, mut w_in, mut w_high, mut w_vhigh) = (0.0, 0.0, 0.0, 0.0, 0.0);
@@ -770,14 +631,12 @@ pub fn advanced_stats(
         very_high: w_vhigh * inv,
     };
 
-    // ── shared block: mean / population SD / CV / GMI (matches the server) ────
     let mean_bg = bgs.iter().sum::<f64>() / n as f64;
     let var = bgs.iter().map(|v| (v - mean_bg).powi(2)).sum::<f64>() / n as f64;
     let sd = var.sqrt();
     let cv = if mean_bg != 0.0 { sd / mean_bg * 100.0 } else { 0.0 };
     let gmi = 3.31 + 0.02392 * mean_bg;
 
-    // ── LBGI / HBGI (Kovatchev risk; reuse the crate's f) ────────────────────
     let (mut lsum, mut hsum) = (0.0, 0.0);
     for &bg in &bgs {
         let f = kovatchev_f(bg);
@@ -791,10 +650,8 @@ pub fn advanced_stats(
     let lbgi = lsum / n as f64;
     let hbgi = hsum / n as f64;
 
-    // ── MAGE ─────────────────────────────────────────────────────────────────
     let mage_v = mage(&bgs, sd);
 
-    // ── channels (over all samples) ──────────────────────────────────────────
     let span_ms = all.last().unwrap().ts_ms - all.first().unwrap().ts_ms;
     let days = span_ms as f64 / DAY_MS;
     let total_carbs: f64 = all.iter().filter_map(|s| s.carbs_g).sum();
@@ -824,8 +681,7 @@ pub fn advanced_stats(
         })
     };
 
-    // ── AGP percentile bands ─────────────────────────────────────────────────
-    let bin_width = DAY_MIN / agp_bins; // minutes per bin (exact — divides 1440)
+    let bin_width = DAY_MIN / agp_bins; // minutes per bin
     let mut buckets: Vec<Vec<f64>> = vec![Vec::new(); agp_bins as usize];
     for s in &valid {
         let minute_of_day = minute_of_day(local_ms(s)) as u32;
@@ -848,7 +704,6 @@ pub fn advanced_stats(
         });
     }
 
-    // ── variability & risk extensions (Phase 7D) ─────────────────────────────
     let modd_v = modd(&valid);
     let conga1 = conga(&valid, 1);
     let conga2 = conga(&valid, 2);
@@ -858,7 +713,6 @@ pub fn advanced_stats(
     let adrr_v = adrr(&valid);
     let dtd = dtd_sd(&valid);
 
-    // GRADE score + region attribution.
     let (mut g_sum, mut g_hypo, mut g_eu, mut g_hyper) = (0.0, 0.0, 0.0, 0.0);
     for &bg in &bgs {
         let g = grade_contrib(bg);
@@ -946,8 +800,7 @@ mod tests {
             .iter()
             .map(|s| StatSample {
                 ts_ms: s["ts_ms"].as_i64().unwrap(),
-                // Absent ⇒ UTC. The golden series predates the field and is anchored at epoch 0, so
-                // reading it as 0 leaves every pre-existing expectation in the file untouched.
+                // Absent ⇒ UTC.
                 tz_offset_min: s["tz_offset_min"].as_i64().unwrap_or(0) as i32,
                 bg_mgdl: s["bg_mgdl"].as_f64().unwrap(),
                 carbs_g: opt_f(&s["carbs_g"]),
@@ -979,7 +832,6 @@ mod tests {
         assert_eq!(out.n_samples, e["n_samples"].as_u64().unwrap() as u32);
         assert_eq!(out.span_ms, e["span_ms"].as_i64().unwrap());
 
-        // Range-dependent (time-weighted).
         close(out.tir, e["tir"].as_f64().unwrap(), 1e-9, "tir");
         close(out.tbr, e["tbr"].as_f64().unwrap(), 1e-9, "tbr");
         close(out.tar, e["tar"].as_f64().unwrap(), 1e-9, "tar");
@@ -989,22 +841,19 @@ mod tests {
         close(out.sub_bands.in_range, sb["in_range"].as_f64().unwrap(), 1e-9, "in_range");
         close(out.sub_bands.high, sb["high"].as_f64().unwrap(), 1e-9, "high");
         close(out.sub_bands.very_high, sb["very_high"].as_f64().unwrap(), 1e-9, "very_high");
-        // Bands partition the record.
         close(out.sub_bands.very_low + out.sub_bands.low + out.sub_bands.in_range
                 + out.sub_bands.high + out.sub_bands.very_high, 1.0, 1e-9, "sub_bands sum");
 
-        // Risk-space + variability.
         close(out.lbgi, e["lbgi"].as_f64().unwrap(), 1e-6, "lbgi");
         close(out.hbgi, e["hbgi"].as_f64().unwrap(), 1e-6, "hbgi");
         close(out.mage, e["mage"].as_f64().unwrap(), 1e-6, "mage");
 
-        // Shared block (must match the server bit-for-bit → tight tol).
+        // Server parity → tight tol.
         close(out.mean_bg, e["mean_bg"].as_f64().unwrap(), 1e-9, "mean_bg");
         close(out.sd, e["sd"].as_f64().unwrap(), 1e-9, "sd");
         close(out.cv, e["cv"].as_f64().unwrap(), 1e-9, "cv");
         close(out.gmi, e["gmi"].as_f64().unwrap(), 1e-9, "gmi");
 
-        // Channels.
         close(out.total_carbs, e["total_carbs"].as_f64().unwrap(), 1e-9, "total_carbs");
         close(out.total_bolus, e["total_bolus"].as_f64().unwrap(), 1e-9, "total_bolus");
         close(out.total_basal, e["total_basal"].as_f64().unwrap(), 1e-9, "total_basal");
@@ -1019,7 +868,6 @@ mod tests {
         assert_eq!(m.min, em["min"].as_i64().unwrap() as i32);
         assert_eq!(m.max, em["max"].as_i64().unwrap() as i32);
 
-        // AGP ribbon.
         let ea = e["agp"].as_array().unwrap();
         assert_eq!(out.agp.len(), ea.len(), "agp bin count");
         for (got, want) in out.agp.iter().zip(ea) {
@@ -1031,7 +879,6 @@ mod tests {
             close(got.p95, want["p95"].as_f64().unwrap(), 1e-9, "agp.p95");
         }
 
-        // ── Phase-7D extensions (independent numpy reference in the golden) ──
         close(out.modd, e["modd"].as_f64().unwrap(), 1e-6, "modd");
         close(out.conga1, e["conga1"].as_f64().unwrap(), 1e-6, "conga1");
         close(out.conga2, e["conga2"].as_f64().unwrap(), 1e-6, "conga2");
@@ -1045,7 +892,6 @@ mod tests {
         close(out.grade.hypo, eg["hypo"].as_f64().unwrap(), 1e-9, "grade.hypo");
         close(out.grade.eu, eg["eu"].as_f64().unwrap(), 1e-9, "grade.eu");
         close(out.grade.hyper, eg["hyper"].as_f64().unwrap(), 1e-9, "grade.hyper");
-        // GRADE region fractions partition the score.
         close(out.grade.hypo + out.grade.eu + out.grade.hyper, 1.0, 1e-9, "grade split sum");
 
         let et = e["tod"].as_array().unwrap();
@@ -1081,7 +927,7 @@ mod tests {
             close(got.worst_extreme, w["worst_extreme"].as_f64().unwrap(), 1e-9, "ep.worst");
         }
 
-        // ── (dow, hour) heatmap, LOCAL time (the golden's samples carry UTC+05:30) ──
+        // The golden's samples carry UTC+05:30.
         let ehm = e["heatmap"].as_array().unwrap();
         assert_eq!(out.heatmap.len(), ehm.len(), "heatmap cell count");
         let mut heat_total = 0u32;
@@ -1093,30 +939,24 @@ mod tests {
             close(got.median_bg, want["median_bg"].as_f64().unwrap(), 1e-9, "heat.median_bg");
             heat_total += got.n;
         }
-        // This series is a 30-minute grid, so no (weekday, hour) cell holds more than two samples
-        // and the two summaries coincide in every one of them. The golden therefore cannot tell a
-        // median from a mean — `heatmap_summarises_each_cell_by_mean_and_median` is what does.
+        // A 30-minute grid: no cell holds more than two samples, so mean and median coincide and
+        // the golden cannot tell them apart. `heatmap_summarises_each_cell_by_mean_and_median` can.
         assert!(
             out.heatmap.iter().all(|c| c.n <= 2 && (c.mean_bg - c.median_bg).abs() < 1e-12),
             "golden cells are n<=2; if this fires the fixture changed and the median needs its own \
              expectations here",
         );
         assert_eq!(heat_total, out.n_samples, "the grid partitions the valid samples");
-        // Emitted ascending by (dow, hour), and every index in range: the renderer scatters these
-        // into a fixed 7×24 lattice and would silently drop or mis-place anything outside it.
         assert!(
             out.heatmap.windows(2).all(|w| (w[0].dow, w[0].hour) < (w[1].dow, w[1].hour)),
             "heatmap cells ascend by (dow, hour)",
         );
         assert!(out.heatmap.iter().all(|c| c.dow < 7 && c.hour < 24), "heatmap indices in range");
-        // The offset must survive as MINUTES: the first sample is epoch 0 — Thursday 00:00 UTC —
-        // which at +05:30 is Thursday 05:30 local, so dow 3 (Mon = 0) and hour 5. Truncating the
+        // Epoch 0 is Thursday 00:00 UTC, which at +05:30 is Thursday 05:30 local. Truncating the
         // offset to whole hours, or dropping it, moves this cell.
         let first = &out.heatmap[0];
         assert_eq!((first.dow, first.hour), (3, 5), "epoch 0 at +05:30 is Thu 05:00-06:00 local");
     }
-
-    // ── hand-computed anchors for the extensions the periodic golden leaves degenerate ──
 
     fn s(ts_ms: i64, bg: f64) -> StatSample {
         StatSample { ts_ms, tz_offset_min: 0, bg_mgdl: bg, carbs_g: None, bolus_u: None, basal_u: None, steps: None, mood: None }
@@ -1124,13 +964,11 @@ mod tests {
 
     #[test]
     fn modd_and_dtd_hand_computed() {
-        // Two days, one matched minute-of-day (00:00) per day: day0 = 100, day1 = 140.
-        // MODD = |140−100| = 40. Daily means differ (100 vs 140) → dtd_sd = SD([100,140]) = 20.
+        // day0 = 100, day1 = 140 at the same minute-of-day: MODD = 40, dtd_sd = SD([100,140]) = 20.
         let day = 86_400_000i64;
         let out = advanced_stats(vec![s(0, 100.0), s(day, 140.0)], 70, 180, 24).unwrap();
         close(out.modd, 40.0, 1e-9, "modd two-day");
         close(out.dtd_sd, 20.0, 1e-9, "dtd two-day");
-        // A single day → no matched pair, no between-day SD: both 0, no NaN.
         let one = advanced_stats(vec![s(0, 100.0), s(300_000, 120.0)], 70, 180, 24).unwrap();
         close(one.modd, 0.0, 1e-12, "modd single day");
         close(one.dtd_sd, 0.0, 1e-12, "dtd single day");
@@ -1138,20 +976,18 @@ mod tests {
 
     #[test]
     fn conga_hand_computed() {
-        // 5-min grid, values [100,110,130]; CONGA-5min-lag differences = [10,20];
-        // reuse the 1-hour path shape by lagging 5 min is awkward, so test the 1h lag:
-        // samples one hour apart [100, 130, 160] → Dt = [30,30], SD = 0.
+        // One hour apart, [100, 130, 160] → Dt = [30, 30], SD = 0.
         let hr = 3_600_000i64;
         let out = advanced_stats(vec![s(0, 100.0), s(hr, 130.0), s(2 * hr, 160.0)], 70, 180, 24).unwrap();
         close(out.conga1, 0.0, 1e-9, "conga1 constant slope → 0 SD");
-        // Uneven: [100, 130, 150] → Dt = [30, 20]; population SD = 5.
+        // [100, 130, 150] → Dt = [30, 20], population SD = 5.
         let out2 = advanced_stats(vec![s(0, 100.0), s(hr, 130.0), s(2 * hr, 150.0)], 70, 180, 24).unwrap();
         close(out2.conga1, 5.0, 1e-9, "conga1 uneven");
     }
 
     #[test]
     fn j_and_m_value_hand_computed() {
-        // Constant 120 mg/dL: SD = 0 → J = 0.001·120² = 14.4; M = |10·log10(120/120)|³ = 0.
+        // Constant 120: SD = 0 → J = 0.001·120² = 14.4; M = |10·log10(120/120)|³ = 0.
         let flat: Vec<StatSample> = (0..6).map(|i| s(i * 300_000, 120.0)).collect();
         let out = advanced_stats(flat, 70, 180, 24).unwrap();
         close(out.j_index, 14.4, 1e-9, "j-index @120 flat");
@@ -1160,18 +996,17 @@ mod tests {
 
     #[test]
     fn episodes_hand_computed() {
-        // 30-min grid (== MAX_GAP_MS, no gap break). One hypo run (2 samples: 60,50) and one
-        // hyper run (3 samples: 200,240,210), separated by an in-range sample.
+        // A 30-min grid is exactly MAX_GAP_MS, so no run is gap-broken.
         let g = 1_800_000i64;
         let series = vec![
-            s(0, 120.0),          // in range
-            s(g, 60.0),           // hypo start
-            s(2 * g, 50.0),       // hypo (nadir 50)
-            s(3 * g, 120.0),      // recover
-            s(4 * g, 200.0),      // hyper start
-            s(5 * g, 240.0),      // hyper (peak 240)
-            s(6 * g, 210.0),      // hyper
-            s(7 * g, 120.0),      // recover
+            s(0, 120.0),
+            s(g, 60.0),
+            s(2 * g, 50.0),
+            s(3 * g, 120.0),
+            s(4 * g, 200.0),
+            s(5 * g, 240.0),
+            s(6 * g, 210.0),
+            s(7 * g, 120.0),
         ];
         let out = advanced_stats(series, 70, 180, 24).unwrap();
         assert_eq!(out.hypo_episodes.count, 1, "one hypo episode");
@@ -1181,15 +1016,13 @@ mod tests {
         assert_eq!(out.hyper_episodes.count, 1, "one hyper episode");
         assert_eq!(out.hyper_episodes.total_duration_ms, 2 * g, "hyper dur = two steps");
         close(out.hyper_episodes.mean_extreme, 240.0, 1e-9, "hyper peak");
-        // A lone below-target sample (< min-samples) is NOT an episode.
         let lone = advanced_stats(vec![s(0, 120.0), s(g, 55.0), s(2 * g, 120.0)], 70, 180, 24).unwrap();
         assert_eq!(lone.hypo_episodes.count, 0, "single-sample dip is not an episode");
     }
 
     #[test]
     fn grade_split_hand_computed() {
-        // All-euglycemic constant 120 mg/dL (6.66 mmol, between 3.9 and 7.8) → the whole score
-        // is attributed to `eu`; hypo and hyper fractions are 0.
+        // 120 mg/dL is 6.66 mmol/L, between the 3.9 and 7.8 cuts, so the whole score is `eu`.
         let flat: Vec<StatSample> = (0..6).map(|i| s(i * 300_000, 120.0)).collect();
         let out = advanced_stats(flat, 70, 180, 24).unwrap();
         close(out.grade.eu, 1.0, 1e-12, "grade all-eu");
@@ -1198,11 +1031,9 @@ mod tests {
         assert!(out.grade.grade > 0.0, "even eu glucose carries a small positive GRADE");
     }
 
-    // ── independent anchors (not routed through the golden generator) ────────
-
     #[test]
     fn lbgi_hbgi_pure_low_and_high() {
-        // A series pinned at 70 mg/dL: f(70) ≈ -0.8806 < 0 → all risk is LBGI, HBGI = 0.
+        // f(70) < 0 → all risk is LBGI.
         let lows: Vec<StatSample> = (0..12)
             .map(|i| StatSample {
                 ts_ms: i * 300_000,
@@ -1220,7 +1051,7 @@ mod tests {
         close(s.lbgi, want_l, 1e-9, "lbgi @70");
         close(s.hbgi, 0.0, 1e-12, "hbgi @70");
 
-        // Pinned at 250 mg/dL: f(250) > 0 → all risk is HBGI, LBGI = 0.
+        // f(250) > 0 → all risk is HBGI.
         let highs: Vec<StatSample> = (0..12)
             .map(|i| StatSample {
                 ts_ms: i * 300_000,
@@ -1240,27 +1071,25 @@ mod tests {
 
     #[test]
     fn mage_sawtooth_hand_computed() {
-        // [100,100,200,100,200,100]: SD ≈ 47.14; every 100-swing exceeds 1 SD → MAGE = 100.
+        // SD ≈ 47.14; every 100-swing exceeds it → MAGE = 100.
         let vals = [100.0, 100.0, 200.0, 100.0, 200.0, 100.0];
         let mean = vals.iter().sum::<f64>() / 6.0;
         let sd = (vals.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / 6.0).sqrt();
         assert!((sd - 47.140).abs() < 1e-2, "sd {sd}");
         assert_eq!(mage(&vals, sd), 100.0);
-        // Sub-SD swings are filtered: a big 100→300 step (200) dwarfs SD (≈74) and counts;
-        // the ±1 wobbles do not → MAGE = 200 (the sole qualifying excursion).
+        // The 200 step clears SD (≈74) and the ±1 wobbles do not → MAGE = 200.
         let mix = [100.0, 300.0, 299.0, 300.0, 299.0, 300.0];
         let mm = mix.iter().sum::<f64>() / 6.0;
         let sdm = (mix.iter().map(|v| (v - mm).powi(2)).sum::<f64>() / 6.0).sqrt();
         assert!((1.0..200.0).contains(&sdm), "sd {sdm} must sit between the wobble and the step");
         assert_eq!(mage(&mix, sdm), 200.0);
-        // A constant series has no excursion → MAGE = 0 (no NaN from an empty average).
+        // No excursion → 0, not a NaN from an empty average.
         assert_eq!(mage(&[100.0, 100.0, 100.0, 100.0], 0.0), 0.0);
     }
 
     #[test]
     fn agp_percentiles_hand_computed() {
-        // Two bins (720-min each). Bin 0 (minute-of-day < 720) gets 40,100,200,300,400 across
-        // days; type-7 percentiles of that are exactly [52,100,200,300,380].
+        // Type-7 percentiles of [40,100,200,300,400] are exactly [52,100,200,300,380].
         let day = 86_400_000i64;
         let vals = [40.0f64, 100.0, 200.0, 300.0, 400.0];
         let samples: Vec<StatSample> = vals
@@ -1290,10 +1119,8 @@ mod tests {
 
     #[test]
     fn time_weighting_clamps_dropout_gap() {
-        // Three readings: 100 (in), 100 (in) five minutes on, then a 6-hour-later 300
-        // (very-high). The 6h gap is a sensor dropout: without the clamp the second
-        // in-range reading would persist for 6h and swamp everything. The clamp caps that
-        // forward gap at MAX_GAP_MS (30 min).
+        // 100, 100 five minutes on, then a 6-hour-later 300. Without the clamp the second reading
+        // would carry the whole 6 h of weight.
         let s = advanced_stats(
             vec![
                 StatSample { ts_ms: 0, tz_offset_min: 0, bg_mgdl: 100.0, carbs_g: None, bolus_u: None, basal_u: None, steps: None, mood: None },
@@ -1305,24 +1132,19 @@ mod tests {
             24,
         )
         .unwrap();
-        // gaps = [300k, clamp(6h)=1_800k]; last weight = median([300k,1_800k]) = 1_050k.
-        // in-range weight = 300k(bg100) + 1_800k(bg100); very-high = 1_050k(bg300).
+        // gaps = [300k, clamp(6h) = 1_800k]; last weight = median = 1_050k.
         let total = 300_000.0 + 1_800_000.0 + 1_050_000.0; // 3_150k
         close(s.tir, (300_000.0 + 1_800_000.0) / total, 1e-9, "clamped tir");
         close(s.tar, 1_050_000.0 / total, 1e-9, "clamped tar");
-        // The clamp did fire: without it the middle reading would hold the full 6h
-        // (21_600k), pinning tir far higher than this.
         assert!(s.tir < 0.9, "unclamped tir would exceed 0.98; the clamp pulls it to ~0.667");
         close(s.tir + s.tar, 1.0, 1e-9, "two bands partition the record");
     }
 
     #[test]
     fn empty_and_degenerate_are_total() {
-        // Empty series.
         let s = advanced_stats(vec![], 70, 180, 24).unwrap();
         assert_eq!(s.n_samples, 0);
         assert!(s.agp.is_empty() && s.mean_steps.is_none() && s.mood.is_none());
-        // All-invalid BG (NaN / non-positive) → still empty, no NaN leak.
         let bad = vec![
             StatSample { ts_ms: 0, tz_offset_min: 0, bg_mgdl: f64::NAN, carbs_g: Some(1.0), bolus_u: None, basal_u: None, steps: None, mood: None },
             StatSample { ts_ms: 1, tz_offset_min: 0, bg_mgdl: -5.0, carbs_g: None, bolus_u: None, basal_u: None, steps: None, mood: None },
@@ -1332,7 +1154,6 @@ mod tests {
         for v in [s.tir, s.tbr, s.tar, s.lbgi, s.hbgi, s.mage, s.mean_bg, s.sd, s.cv, s.gmi] {
             assert!(v.is_finite(), "no NaN/inf in empty stats");
         }
-        // Single valid sample: no panic, finite, one AGP bin.
         let one = vec![StatSample {
             ts_ms: 500_000,
             tz_offset_min: 0,
@@ -1350,7 +1171,6 @@ mod tests {
         assert!(s.mean_daily_carbs == 0.0 && s.tdd == 0.0, "zero-span daily rates are 0");
     }
 
-    /// A sample at `ts_ms` whose local wall clock is offset by `tz`, carrying `bg`.
     fn tzs(ts_ms: i64, tz: i32, bg: f64) -> StatSample {
         StatSample {
             ts_ms,
@@ -1367,11 +1187,8 @@ mod tests {
     #[test]
     fn heatmap_keys_on_local_time_per_sample() {
         let hour = 3_600_000i64;
-        // Epoch 0 is Thursday 00:00 UTC. Two samples at the SAME instant, in two time zones: one
-        // reads it as Thursday 00:00 (dow 3, hour 0), the other — 5 hours behind — as Wednesday
-        // 19:00 (dow 2, hour 19). A window-wide offset, or a UTC key, would collapse them into one
-        // cell; only a per-sample one splits them, which is what a 90-day window across a flight or
-        // a DST change actually contains.
+        // Epoch 0 is Thursday 00:00 UTC; the same instant at UTC-5 is Wednesday 19:00. Only a
+        // per-sample offset splits them into two cells.
         let out = advanced_stats(vec![tzs(0, 0, 100.0), tzs(0, -300, 140.0)], 70, 180, 24).unwrap();
         assert_eq!(out.heatmap.len(), 2, "same instant, two zones, two cells");
         assert_eq!((out.heatmap[0].dow, out.heatmap[0].hour), (2, 19), "UTC-5 → Wed 19:00");
@@ -1379,19 +1196,18 @@ mod tests {
         assert_eq!((out.heatmap[1].dow, out.heatmap[1].hour), (3, 0), "UTC → Thu 00:00");
         close(out.heatmap[1].mean_bg, 100.0, 1e-12, "the UTC cell carries its own sample");
 
-        // The full ISO week, walked from a known Monday: epoch day 4 is 1970-01-05, a Monday.
+        // Epoch day 4 (1970-01-05) is a Monday.
         let monday = 4 * DAY_MS as i64;
         for d in 0..7i64 {
             let out = advanced_stats(vec![tzs(monday + d * DAY_MS as i64, 0, 100.0)], 70, 180, 24).unwrap();
             assert_eq!(out.heatmap[0].dow, d as u32, "day {d} after a Monday is dow {d}");
         }
 
-        // A NEGATIVE local instant (pre-epoch once the offset is applied) must still key correctly —
-        // `rem_euclid`/`div_euclid`, not `%` and `/`, which would give hour -1 and the wrong day.
+        // A negative local instant needs `rem_euclid`/`div_euclid`; `%` and `/` would give hour -1
+        // and the wrong day.
         let out = advanced_stats(vec![tzs(0, -60, 100.0)], 70, 180, 24).unwrap();
         assert_eq!((out.heatmap[0].dow, out.heatmap[0].hour), (2, 23), "UTC-1 at epoch 0 → Wed 23:00");
 
-        // Cells are means, not sums, and only valid BG counts toward them.
         let out = advanced_stats(
             vec![tzs(0, 0, 100.0), tzs(hour / 2, 0, 200.0), tzs(hour / 3, 0, -1.0)],
             70,
@@ -1406,9 +1222,7 @@ mod tests {
 
     #[test]
     fn heatmap_summarises_each_cell_by_mean_and_median() {
-        // The case the golden cannot reach: one cell, an odd sample count, and an outlier far enough
-        // out to separate the two summaries. This is the whole reason the median is carried — a
-        // single rebound high in an hour-of-week cell drags the mean off what that hour usually is.
+        // One cell, an odd sample count, an outlier: the case the golden cannot reach.
         let min = 60_000i64;
         let quiet = [100.0, 104.0, 96.0, 102.0];
         let mut s: Vec<StatSample> =
@@ -1419,12 +1233,12 @@ mod tests {
         assert_eq!(out.heatmap.len(), 1, "all five minutes are one (weekday, hour) cell");
         let c = &out.heatmap[0];
         assert_eq!(c.n, 5);
-        // mean = (100+104+96+102+400)/5 = 160.4 — out of range, on four in-range readings.
+        // mean = (100+104+96+102+400)/5 = 160.4
         close(c.mean_bg, 160.4, 1e-9, "cell mean is dragged by the spike");
-        // median of {96,100,102,104,400} = 102 — what that hour actually looks like.
+        // median of {96,100,102,104,400} = 102
         close(c.median_bg, 102.0, 1e-9, "cell median resists the spike");
 
-        // Even n takes the midpoint of the two central values (type-7 at 50, the AGP p50's rule).
+        // Even n takes the midpoint of the two central values (type-7 at 50).
         let even = advanced_stats(
             vec![tzs(0, 0, 90.0), tzs(min, 0, 110.0), tzs(2 * min, 0, 130.0), tzs(3 * min, 0, 170.0)],
             70,
@@ -1435,7 +1249,6 @@ mod tests {
         close(even.heatmap[0].median_bg, 120.0, 1e-9, "even-n median is the midpoint");
         close(even.heatmap[0].mean_bg, 125.0, 1e-9, "even-n mean");
 
-        // A single-sample cell has both equal to that sample; neither may be NaN.
         let one = advanced_stats(vec![tzs(0, 0, 123.0)], 70, 180, 24).unwrap();
         close(one.heatmap[0].median_bg, 123.0, 1e-12, "n=1 median");
         close(one.heatmap[0].mean_bg, 123.0, 1e-12, "n=1 mean");
@@ -1444,9 +1257,8 @@ mod tests {
     #[test]
     fn every_day_keyed_metric_reads_the_offset() {
         let hr = 3_600_000i64;
-        // 02:00 and 04:00 UTC on one day. At UTC they are both in the 00:00-06:00 diurnal bucket; at
-        // UTC+05:30 they are 07:30 and 09:30 local, which is the 06:00-12:00 bucket. Same readings,
-        // same instants — only the patient's clock differs, and the bucketing must follow it.
+        // 02:00 and 04:00 UTC are both in the 00:00-06:00 bucket; at UTC+05:30 they are 07:30 and
+        // 09:30 local, which is the 06:00-12:00 one.
         fn at(tz: i32) -> AdvancedStats {
             advanced_stats(
                 vec![tzs(2 * 3_600_000, tz, 100.0), tzs(4 * 3_600_000, tz, 120.0)],
@@ -1461,13 +1273,11 @@ mod tests {
         assert_eq!(utc.tod[0].n, 2, "at UTC both readings are in 00:00-06:00");
         assert_eq!(ist.tod[0].n, 0, "at +05:30 neither is");
         assert_eq!(ist.tod[1].n, 2, "they are in 06:00-12:00 instead");
-        // The AGP ribbon bins on the same clock.
         assert_eq!(utc.agp[0].minute_of_day, 120, "02:00 UTC");
         assert_eq!(ist.agp[0].minute_of_day, 420, "07:30 local falls in the 07:00 hourly bin");
 
-        // Day-to-day SD groups by the LOCAL day. Two readings four hours apart across UTC midnight
-        // are one local day at UTC-05:00 and two distinct days at UTC — so a between-day spread
-        // exists in one framing and not in the other.
+        // Two readings four hours apart across UTC midnight are one local day at UTC-05:00 and two
+        // distinct days at UTC.
         let across = |tz: i32| {
             advanced_stats(
                 vec![tzs(22 * hr, tz, 100.0), tzs(26 * hr, tz, 200.0)],
@@ -1481,8 +1291,6 @@ mod tests {
         assert!(across(0) > 0.0, "at UTC the two readings straddle midnight, so two days");
         close(across(-300), 0.0, 1e-12, "at UTC-5 both are the same local day, so no spread");
 
-        // MODD and CONGA are invariant under a UNIFORM offset — both members of every matched pair
-        // shift together — which is why the golden could not have caught this and this test exists.
         let uniform = |tz: i32| {
             let day = DAY_MS as i64;
             advanced_stats(
@@ -1524,19 +1332,16 @@ mod tests {
 
     #[test]
     fn unbounded_target_bands_still_partition() {
-        // The target edges are unbounded by design: target_low may sit BELOW the fixed 54
-        // very-low cut and target_high ABOVE the fixed 250 very-high cut. A reading in the
-        // overlap ([tlo,54) or (250,thi]) is IN RANGE, and must land in exactly one band — the
-        // fixed cuts are clamped to the target edges so the five weighted bands still sum to 1
-        // (before the fix such a reading double-counted into a level-2 band AND in_range).
-        let g = 300_000i64; // 5-min grid → equal weights, so each of 5 samples is 0.2.
+        // target_low may sit below the fixed 54 cut and target_high above the fixed 250 one. A
+        // reading in the overlap is IN RANGE and must land in exactly one band.
+        let g = 300_000i64; // 5-min grid → equal weights, 0.2 each
         let out = advanced_stats(
             vec![
-                s(0, 45.0),        // < tlo(50) and < 54 → very_low
-                s(g, 52.0),        // in [tlo,54): now in_range, NOT very_low
+                s(0, 45.0),        // very_low
+                s(g, 52.0),        // in [tlo,54) → in_range
                 s(2 * g, 120.0),   // in_range
-                s(3 * g, 270.0),   // in (250,thi]: now in_range, NOT very_high
-                s(4 * g, 320.0),   // > thi(300) and > 250 → very_high
+                s(3 * g, 270.0),   // in (250,thi] → in_range
+                s(4 * g, 320.0),   // very_high
             ],
             50,
             300,

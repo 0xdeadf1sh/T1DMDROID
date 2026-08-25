@@ -1,28 +1,6 @@
-//! The BG head, re-run on device, and the low-rank adapter that personalises it.
-//!
-//! The exported `.pte` bakes its weights in and offers no seam. What it does offer is
-//! `slot_hidden` — the trunk's final-normed hidden state at each masked slot — and the export
-//! writes `bg_head`'s own weights beside the artifact. Together those let this crate
-//! reproduce `head_raw` outside the graph, and therefore adapt it: the trunk stays frozen in
-//! the `.pte`, and everything trainable lives in a few thousand low-rank numbers here.
-//!
-//! Two adapter sites, both optional and both zero at initialisation, so an attached-but-
-//! untrained adapter is the identity and the fan does not move:
-//!
-//! * a rank-`r` bottleneck on the hidden state itself, `h + s·B_h(A_h h)` — it re-weights the
-//!   representation the head reads, which is where a patient differs from the simulator pool;
-//! * a rank-`r` delta on each of the head's three `Linear`s, `y = Wx + b + s·B(Ax)` — the
-//!   ordinary LoRA placement.
-//!
-//! **What this can and cannot do.** The trunk's attention and FFN blocks are frozen inside the
-//! graph and no gradient reaches them. This adapts the representation the head consumes and
-//! the head itself; it does not retrain the model. That is the whole reason it is cheap enough
-//! to fit on a phone from one patient's own history.
-//!
-//! Everything is fp64, like the rest of the pre/post path. Training is exact analytic
-//! gradients through the same assembly `preproc::assemble_decode` performs — the pinball loss
-//! is read on the ASSEMBLED fan, not on `head_raw`, because the fan is what the patient sees
-//! and the per-span projection between them is not an identity.
+//! The BG head, re-run on device from the exported head weights, and the low-rank adapter that
+//! personalises it. The trunk stays frozen in the `.pte`; only the adapter trains. The pinball
+//! loss is read on the ASSEMBLED fan, not on `head_raw` — the projection between is no identity.
 
 use std::sync::Mutex;
 
@@ -34,24 +12,18 @@ use crate::preproc::{
 };
 use crate::CoreError;
 
-/// Steps per patch — the head expands each slot to this many timesteps.
+/// Timesteps per slot.
 const PATCH_SIZE: usize = 6;
 /// Quantile spreads per side of the median.
 const N_SPREADS: usize = 3;
 /// `1 + 2·N_SPREADS`.
 const N_QUANTILES: usize = 7;
-/// Floor of the cosine learning-rate schedule, as a fraction of `LoraTrainOpts::lr`.
+/// Cosine LR floor, as a fraction of `LoraTrainOpts::lr`.
 const LR_MIN_RATIO: f64 = 0.1;
 
-/// What the counterfactual guard is run with at the end of a fit.
-///
-/// **These numbers are reasoned, not measured.** The retention band is deliberately wide: it is
-/// meant to catch a COLLAPSE and a runaway AMPLIFICATION, not to police an adapter that shifts
-/// the response by a third. Expect to retune after three real fits, and change them here rather
-/// than at a call site so every surface reports the same bar.
-/// `min_frozen_response`: below 2 mg/dL per unit at the horizon the frozen model has no response
-/// worth preserving, and a ratio against it would be noise divided by noise — hence Inconclusive
-/// rather than a pass.
+/// Reasoned, not measured. The retention band is wide on purpose: it catches a collapse or a
+/// runaway amplification, not a shift of a third. `min_frozen_response`: below 2 mg/dL per unit
+/// the frozen model has nothing worth preserving, so the guard declines rather than passes.
 const GUARD_OPTS_FIT: LoraGuardOpts = LoraGuardOpts {
     max_windows: 64,
     min_windows: 8,
@@ -61,14 +33,12 @@ const GUARD_OPTS_FIT: LoraGuardOpts = LoraGuardOpts {
     max_retention: 4.0,
     min_sign_agreement: 0.75,
 };
-/// The bar the fit's own guard pass measures against, exported so a probe of a stored adapter
-/// measures against the SAME one. Two copies of a threshold are two thresholds the day one moves.
+/// Exported so a probe of a stored adapter measures against the same bar as the fit.
 #[uniffi::export]
 pub fn lora_guard_opts_fit() -> LoraGuardOpts {
     GUARD_OPTS_FIT
 }
 
-/// Serialized-adapter magic and version.
 const LORA_MAGIC: &[u8; 8] = b"T1DMLORA";
 const LORA_VERSION: u16 = 2;
 
@@ -85,15 +55,12 @@ fn silu(x: f64) -> f64 {
     x * sigmoid(x)
 }
 
-/// `d/dx [x·σ(x)] = σ(x)·(1 + x·(1 − σ(x)))`.
 fn silu_grad(x: f64) -> f64 {
     let s = sigmoid(x);
     s * (1.0 + x * (1.0 - s))
 }
 
-// ── The frozen head ─────────────────────────────────────────────────────────────────
-
-/// One dense layer of the head, row-major `(out, in)` as torch stores it.
+/// Row-major `(out, in)`, as torch stores it.
 struct Linear {
     w: Vec<f64>,
     b: Vec<f64>,
@@ -113,7 +80,6 @@ impl Linear {
         }
     }
 
-    /// `dx += Wᵀ dy`.
     fn backward_input(&self, dy: &[f64], dx: &mut [f64]) {
         for o in 0..self.n_out {
             let g = dy[o];
@@ -128,11 +94,9 @@ impl Linear {
     }
 }
 
-/// The head as the export wrote it: the within-patch basis plus three `Linear`s. Frozen —
-/// nothing here is ever a training parameter.
+/// Frozen: nothing here is ever a training parameter.
 #[derive(uniffi::Object)]
 pub struct HeadModel {
-    /// The digest of the file these weights came from — the identity an adapter is bound to.
     sha256: String,
     step_basis: Vec<f64>, // (PATCH_SIZE, K) row-major
     l0: Linear,
@@ -141,8 +105,6 @@ pub struct HeadModel {
     d_model: usize,
     hidden: usize,
     k: usize,
-    /// A parsed adapter, or none. Held here so a forward is one FFI call rather than one per
-    /// slot with the weights crossing each time.
     lora: Mutex<Option<Lora>>,
 }
 
@@ -163,11 +125,8 @@ fn read_f32_le(buf: &[u8], off: usize, n: usize) -> Result<Vec<f64>, CoreError> 
 
 #[uniffi::export]
 impl HeadModel {
-    /// Parse the flat fp32 head file against the descriptor's `head` block.
-    ///
-    /// The digest is checked, not merely recorded: a head paired with the wrong graph
-    /// reproduces a plausible, finite, wrong `head_raw`, and no downstream guard can see it.
-    /// The tensor order comes from the block, so a format change is a descriptor change.
+    /// The digest is checked, not merely recorded: a head paired with the wrong graph reproduces
+    /// a plausible, finite, wrong `head_raw`. Tensor order comes from the descriptor block.
     #[uniffi::constructor]
     pub fn parse(bytes: Vec<u8>, spec: HeadSpec) -> Result<std::sync::Arc<Self>, CoreError> {
         if spec.activation != "silu" {
@@ -262,15 +221,12 @@ impl HeadModel {
         }))
     }
 
-    /// Attach an adapter, or detach with `None`. Attaching is instant and reversible: the base
-    /// weights are untouched, so detaching restores the graph's own fan exactly.
+    /// `None` detaches. The base weights are untouched, so detach restores the graph's own fan.
     pub fn set_lora(&self, lora: Option<LoraWeights>) -> Result<(), CoreError> {
         let parsed = match lora {
             None => None,
             Some(w) => {
-                // Geometry alone does not identify a head: two checkpoints of the same width have
-                // the same one, and an adapter fitted on either would load into the other and
-                // decode plausibly, finitely, wrong.
+                // Geometry alone does not identify a head: same-width checkpoints share it.
                 if w.head_sha256 != self.sha256 {
                     return Err(CoreError::Internal {
                         reason: "adapter was fitted on a different head than this model's".into(),
@@ -283,8 +239,6 @@ impl HeadModel {
         Ok(())
     }
 
-    /// The digest of the head file this model was parsed from — what an adapter records so it can
-    /// only ever be attached back to the head it was fitted on.
     pub fn sha256(&self) -> String {
         self.sha256.clone()
     }
@@ -297,13 +251,8 @@ impl HeadModel {
         self.d_model as i32
     }
 
-    /// `head_raw` for `n_slots` hidden states, flat `(n_slots·PATCH_SIZE·N_QUANTILES)` in the
-    /// same layout `assemble_decode` consumes.
-    ///
-    /// With no adapter attached this reproduces the graph's own `head_raw`, which is worth
-    /// checking once at load: a mismatch means the head file and the `.pte` are not the same
-    /// head, and the adapter path must then be refused rather than silently disagreeing with
-    /// every forecast the app already stored.
+    /// `head_raw` for `n_slots` hidden states, flat `n_slots·PATCH_SIZE·N_QUANTILES` in the
+    /// layout `assemble_decode` consumes. With no adapter this reproduces the graph's own.
     pub fn forward(&self, hidden: Vec<f64>, n_slots: i32) -> Result<Vec<f64>, CoreError> {
         let n = n_slots.max(0) as usize;
         if n == 0 || hidden.len() != n * self.d_model {
@@ -328,8 +277,7 @@ impl HeadModel {
     }
 }
 
-/// Scratch buffers for one slot's forward, reused across slots so a 300-window training pass
-/// does not allocate per slot.
+/// Reused across slots, so a training pass does not allocate per slot.
 struct Activations {
     h_in: Vec<f64>,
     z1: Vec<f64>,
@@ -394,8 +342,7 @@ impl HeadModel {
         }
     }
 
-    /// `head_raw[s, c] = Σ_k step_basis[s, k] · coeff[k, c]`, coeff being `out` viewed
-    /// row-major as `(K, N_QUANTILES)`.
+    /// `out` is row-major `(K, N_QUANTILES)`.
     fn expand_basis(&self, out: &[f64], dst: &mut [f64]) {
         for s in 0..PATCH_SIZE {
             for c in 0..N_QUANTILES {
@@ -408,7 +355,6 @@ impl HeadModel {
         }
     }
 
-    /// The transpose of [`expand_basis`]: `d_out[k, c] = Σ_s step_basis[s, k] · d_head[s, c]`.
     fn expand_basis_backward(&self, d_head: &[f64], d_out: &mut [f64]) {
         for v in d_out.iter_mut() {
             *v = 0.0;
@@ -427,15 +373,12 @@ impl HeadModel {
     }
 }
 
-// ── The adapter ─────────────────────────────────────────────────────────────────────
-
-/// Which sites an adapter attaches to, its rank, and its scaling. `alpha/rank` is the usual
-/// LoRA scale, so raising the rank does not silently raise the step size with it.
+/// The scale is `alpha/rank`, so raising the rank does not raise the step size with it.
 #[derive(Debug, Clone, Copy, PartialEq, uniffi::Record)]
 pub struct LoraConfig {
     pub rank: i32,
     pub alpha: f64,
-    /// The bottleneck on the hidden state the head reads.
+    /// The hidden state the head reads.
     pub target_hidden: bool,
     pub target_l0: bool,
     pub target_l1: bool,
@@ -463,13 +406,12 @@ impl LoraConfig {
     }
 }
 
-/// A trained (or freshly initialised) adapter, as it travels across the FFI and into storage.
 /// `params` is the flat concatenation of every site's `A` then `B`, in site order
 /// hidden → l0 → l1 → l2, skipping the sites the config leaves off.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct LoraWeights {
     pub config: LoraConfig,
-    /// The digest of the head file this adapter was fitted on. An adapter belongs to ONE head.
+    /// An adapter belongs to ONE head.
     pub head_sha256: String,
     pub d_model: i32,
     pub hidden: i32,
@@ -491,7 +433,7 @@ impl Site {
         self.r * self.n_in + self.n_out * self.r
     }
 
-    /// `u = A x`, then `y += scale · B u`. Returns `u`, which the backward pass needs.
+    /// Returns `u = A x`, which the backward pass needs.
     fn add(&self, x: &[f64], y: &mut [f64], scale: f64) -> Vec<f64> {
         let mut u = vec![0.0f64; self.r];
         for j in 0..self.r {
@@ -512,13 +454,12 @@ impl Site {
         u
     }
 
-    /// The hidden-state bottleneck: `h' = h + scale · B(A h)`, written into `dst`.
     fn apply(&self, h: &[f64], dst: &mut [f64], scale: f64) -> Vec<f64> {
         dst.copy_from_slice(h);
         self.add(h, dst, scale)
     }
 
-    /// Accumulate `dA`, `dB` and the input gradient for `y = ... + scale·B(Ax)`.
+    /// Accumulates into `da`, `db` and `dx`.
     fn backward(
         &self,
         x: &[f64],
@@ -529,7 +470,6 @@ impl Site {
         db: &mut [f64],
         dx: &mut [f64],
     ) {
-        // dB[o, j] = scale · dy[o] · u[j]; du[j] = scale · Σ_o dy[o] · B[o, j]
         let mut du = vec![0.0f64; self.r];
         for o in 0..self.n_out {
             let g = dy[o];
@@ -541,7 +481,6 @@ impl Site {
                 du[j] += scale * g * self.b[o * self.r + j];
             }
         }
-        // dA[j, i] = du[j] · x[i]; dx[i] += Σ_j du[j] · A[j, i]
         for j in 0..self.r {
             let g = du[j];
             if g == 0.0 {
@@ -564,7 +503,7 @@ struct Lora {
     l2_site: Option<Site>,
 }
 
-/// The site geometry a config implies, in the fixed order the flat parameter vector uses.
+/// Site order of the flat parameter vector.
 fn site_shapes(
     cfg: &LoraConfig,
     d_model: usize,
@@ -647,9 +586,7 @@ impl Lora {
     }
 }
 
-/// A deterministic parameter initialiser. `A` gets small Gaussian noise and `B` is **zero**,
-/// so a fresh adapter is exactly the identity: attaching one changes no forecast until it has
-/// been trained, which is what makes attach/detach safe to offer as a toggle.
+/// `B` is zero, so a fresh adapter is exactly the identity.
 #[uniffi::export]
 pub fn lora_new(
     config: LoraConfig,
@@ -691,8 +628,7 @@ pub fn lora_new(
     })
 }
 
-/// A small deterministic PRNG (xorshift64*), so a seed reproduces an adapter exactly and a
-/// training run can be replayed. Nothing here is cryptographic.
+/// xorshift64*: a seed replays a run exactly. NOT cryptographic.
 pub(crate) struct Rng(u64);
 
 impl Rng {
@@ -714,16 +650,13 @@ impl Rng {
         (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
     }
 
-    /// Standard normal, Box-Muller. One of the pair is used; the other is discarded, which
-    /// costs a little and keeps the state machine trivial.
+    /// Standard normal, Box-Muller; the second of the pair is discarded.
     pub(crate) fn normal(&mut self) -> f64 {
         let u1 = self.uniform().max(1e-12);
         let u2 = self.uniform();
         (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
     }
 }
-
-// ── Serialization ───────────────────────────────────────────────────────────────────
 
 fn hex_to_bytes(hex: &str) -> [u8; 32] {
     let mut out = [0u8; 32];
@@ -740,11 +673,7 @@ fn bytes_to_hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
-/// Serialize an adapter for storage or backup: a fixed header, the parameters as
-/// little-endian fp64, then a sha256 over everything before it.
-///
-/// The digest is what makes a restored backup trustworthy — a truncated or edited adapter
-/// otherwise loads as a plausible one and quietly moves every forecast it touches.
+/// A fixed header, the parameters as little-endian fp64, then a sha256 over everything before.
 #[uniffi::export]
 pub fn lora_serialize(w: &LoraWeights) -> Vec<u8> {
     let mut out = Vec::with_capacity(64 + w.params.len() * 8);
@@ -771,8 +700,7 @@ pub fn lora_serialize(w: &LoraWeights) -> Vec<u8> {
     out
 }
 
-/// Inverse of [`lora_serialize`]. Total on hostile input: a short, mistyped or corrupted blob
-/// is an error, never a partially-populated adapter.
+/// Total on hostile input: a corrupt blob is an error, never a partial adapter.
 #[uniffi::export]
 pub fn lora_deserialize(bytes: Vec<u8>) -> Result<LoraWeights, CoreError> {
     const HEADER: usize = 8 + 2 + 2 + 8 + 1 + 32 + 4 + 4 + 4 + 4;
@@ -850,59 +778,36 @@ pub fn lora_deserialize(bytes: Vec<u8>) -> Result<LoraWeights, CoreError> {
     })
 }
 
-// ── Training ────────────────────────────────────────────────────────────────────────
-
-/// One training window: the trunk hidden states of a span's slots, that span's anchors, and
-/// the BG that actually happened.
-///
 /// `hidden` is `n_slots · d_model`, `anchors` is `n_slots` mg/dL, `target_bg` is
 /// `n_slots · PATCH_SIZE` mg/dL. The slots must be ONE contiguous span — the median projection
-/// runs per span, so a sample spanning two of them would be trained through a projection no
-/// forecast ever uses.
+/// runs per span.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct LoraSample {
     pub hidden: Vec<f64>,
     pub anchors: Vec<f64>,
     pub target_bg: Vec<f64>,
     pub n_slots: i32,
-    /// The SAME window's trunk hidden state with a probe dose injected into the masked span's
-    /// dose channel — the counterfactual branch. Empty when the window was not paired.
-    ///
-    /// Its whole job is to make "what does one more unit of insulin do to this forecast" a
-    /// quantity the fit can see. Without it an adapter can null the model's marginal dose
-    /// response with a rank-1 map, score better on pinball loss, and hand the calculator a
-    /// forecaster that does not respond to insulin at all.
+    /// The SAME window's hidden state with a probe dose injected into the masked span's dose
+    /// channel. Empty when the window was not paired.
     pub hidden_pert: Vec<f64>,
-    /// True for the trailing-forecast geometry — the only one the guard measures on, because it
-    /// is the only one whose terminal step is the horizon a dose recommendation is read at.
+    /// Trailing-forecast geometry: the only one the guard measures on.
     pub is_forecast: bool,
 }
 
-/// Optimiser settings. The defaults the app offers are deliberately timid: this fits a few
-/// thousand parameters to one patient's own weeks, and the failure mode of trying harder is a
-/// forecast that is confidently wrong about the patient it was fitted to.
 #[derive(Debug, Clone, Copy, PartialEq, uniffi::Record)]
 pub struct LoraTrainOpts {
     pub epochs: i32,
     pub lr: f64,
-    /// Fraction of the samples, taken from the END of the supplied order, held out and never
-    /// trained on. The caller supplies samples in chronological order, so the split is
-    /// chronological too — an adapter validated on windows it had already seen tells you
-    /// nothing about the next one.
+    /// Held out from the END of the supplied order. Samples must arrive chronological, or the
+    /// split is not.
     pub holdout_frac: f64,
     pub weight_decay: f64,
     pub seed: i64,
-    /// How hard to pin the ADAPTED marginal dose response to the frozen model's. `0.0` disables
-    /// the term entirely.
-    ///
-    /// A MULTIPLE of the frozen head's own mean training pinball loss rather than a raw
-    /// coefficient, so `1.0` means "a total collapse of the counterfactual costs as much as the
-    /// frozen model's entire loss" and the number means the same thing across patients and
-    /// checkpoints. See `distill_scale` on the report for what it resolved to.
+    /// Pins the adapted marginal dose response to the frozen model's; `0.0` disables the term.
+    /// A MULTIPLE of the frozen head's own mean training pinball loss, not a raw coefficient.
     pub distill_weight: f64,
 }
 
-/// What a fit did, in the terms the panel has to show before anyone attaches it.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct LoraTrainReport {
     pub n_train: i32,
@@ -910,44 +815,33 @@ pub struct LoraTrainReport {
     pub epochs_run: i32,
     pub train_loss_first: f64,
     pub train_loss_last: f64,
-    /// Held-out pinball loss of the FROZEN head, before any adaptation.
+    /// Of the FROZEN head, before any adaptation.
     pub holdout_loss_before: f64,
-    /// Held-out pinball loss of the adapter this fit produced.
     pub holdout_loss_after: f64,
-    /// True only when the adapter beat the frozen head on windows it never trained on.
-    /// A fit that does not clear this bar has learnt the patient's past, not their physiology.
+    /// The adapter beat the frozen head on windows it never trained on.
     pub improved: bool,
     pub loss_history: Vec<f64>,
-    /// Held-out loss measured at the END of each epoch, `epochs_run` long. `loss_history`'s
-    /// held-out twin: the training curve alone cannot show where a fit began to overfit.
+    /// Measured at the END of each epoch, `epochs_run` long.
     pub holdout_history: Vec<f64>,
-    /// The epoch whose weights this fit RETURNED — the argmin of `holdout_history`, or `0`
-    /// when no epoch beat the frozen head and the identity adapter was kept. With no holdout
-    /// there is nothing to select on and this is `epochs_run`.
+    /// The epoch whose weights were RETURNED: argmin of `holdout_history`, `0` when the identity
+    /// adapter was kept, `epochs_run` when there was no holdout to select on.
     pub best_epoch: i32,
-    /// Training samples that carried a usable counterfactual branch. Zero means the
-    /// distillation term did nothing, whatever `distill_weight` was set to.
+    /// Training samples that carried a usable counterfactual branch.
     pub n_paired: i32,
-    /// The coefficient actually applied — `distill_weight · F / S`, where `F` is the frozen
-    /// head's mean training pinball and `S` the mean squared frozen response. `0.0` when the
-    /// term was off or nothing was paired.
+    /// The coefficient applied: `distill_weight · F / S`. `0.0` when the term did nothing.
     pub distill_scale: f64,
-    /// The distillation term alone, per epoch. `loss_history` carries the sum, so without this
-    /// a fit whose pinball improved while its dose response collapsed looks like a good one.
+    /// The distillation term alone, per epoch; `loss_history` carries the sum.
     pub distill_history: Vec<f64>,
-    /// What the counterfactual guard made of the returned adapter on held-out forecast windows.
-    /// `None` when there were none to measure on — which is itself a reason not to attach.
+    /// `None` when there were no held-out forecast windows to measure on.
     pub guard: Option<LoraGuardReport>,
 }
 
-/// What the counterfactual guard is allowed to conclude, and on what evidence.
 #[derive(Debug, Clone, Copy, PartialEq, uniffi::Record)]
 pub struct LoraGuardOpts {
     pub max_windows: i32,
     pub min_windows: i32,
     pub probe_dose_u: f64,
-    /// Below this, the frozen model has no response worth preserving and the guard declines to
-    /// judge rather than passing an adapter it cannot measure.
+    /// Below this the guard declines to judge rather than pass what it cannot measure.
     pub min_frozen_response: f64,
     pub min_retention: f64,
     pub max_retention: f64,
@@ -962,7 +856,6 @@ pub enum LoraGuardVerdict {
     Inconclusive,
 }
 
-/// The guard's finding, with every input to it, so a refusal can be read rather than trusted.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct LoraGuardReport {
     pub verdict: LoraGuardVerdict,
@@ -971,30 +864,23 @@ pub struct LoraGuardReport {
     pub frozen_response_mgdl: f64,
     /// The same, with the adapter applied.
     pub adapted_response_mgdl: f64,
-    /// `adapted / frozen`. 1.0 is perfect preservation; near 0 is a collapse.
+    /// `adapted / frozen`.
     pub retention: f64,
     /// The fraction of windows where both responses have the same sign.
     pub sign_agreement: f64,
-    /// Which clause fired, and its two numbers. Empty on a pass.
+    /// Empty on a pass.
     pub why: String,
 }
 
-/// A caller that wants to watch a fit run. Called once per epoch, never per sample: a fit is
-/// hundreds of samples an epoch and a callback on each would cost more than the gradient.
+/// Called once per epoch, never per sample.
 #[uniffi::export(with_foreign)]
 pub trait LoraProgress: Send + Sync {
     fn on_epoch(&self, epoch: i32, epochs: i32, train_loss: f64, holdout_loss: f64);
 }
 
-/// Fit an adapter on the patient's own matured windows.
-///
 /// The loss is the pinball loss over the seven levels, in RISK space, read on the assembled
-/// fan — the same assembly a forecast goes through, per-span median projection included.
-/// Optimising `head_raw` directly would optimise a quantity the projection then discards.
-///
-/// Returns the adapter and its report. The caller decides whether to attach it; nothing here
-/// attaches anything, and a fit that fails to beat the frozen head on held-out windows is
-/// returned honestly rather than suppressed.
+/// fan: optimising `head_raw` would optimise a quantity the projection then discards.
+/// Attaches nothing.
 #[uniffi::export]
 pub fn lora_train(
     head: &HeadModel,
@@ -1033,8 +919,7 @@ pub fn lora_train(
                 reason: format!("sample {i} is malformed for {n} slots of a {d}-wide head"),
             });
         }
-        // A truncated pairing must not silently train on a shorter branch: the counterfactual
-        // is either the whole window or it is absent.
+        // The counterfactual is the whole window or absent, never a shorter branch.
         if !s.hidden_pert.is_empty() && s.hidden_pert.len() != n * d {
             return Err(CoreError::Internal {
                 reason: format!(
@@ -1063,22 +948,12 @@ pub fn lora_train(
     let mut w = lora_new(config, head.sha256.clone(), d as i32, head.hidden as i32, out_dim as i32, opts.seed)?;
     let holdout_before = mean_loss(head, desc, holdout, None)?;
 
-    // ── the distillation term's normaliser and its frozen targets ──
-    //
-    // `d0` is what the FROZEN model does to its own median when one unit of insulin is added:
-    // the quantity the adapter must not null. Computed once, with no adapter, at two head
-    // forwards per paired sample and no trunk forward at all.
-    //
-    // `scale = distill_weight · F / S` makes the weight a MULTIPLE of the frozen head's own
-    // mean training loss, so it means the same thing across patients and checkpoints. `S` is a
-    // GLOBAL mean rather than a per-sample divisor, so a window where the frozen model barely
-    // responds contributes proportionally little instead of being amplified into dominance.
+    // `d0` is what the FROZEN model does to its own median per unit of insulin — the quantity the
+    // adapter must not null. `S` is a GLOBAL mean rather than a per-sample divisor, so a window
+    // where the frozen model barely responds contributes little instead of dominating.
     let distill_on = opts.distill_weight > 0.0;
     let mut d0_train: Vec<Option<Vec<f64>>> = vec![None; train.len()];
-    // Counted whatever the weight is. `n_paired` reports how many training windows CARRIED a
-    // counterfactual branch, which is a property of the replay and not of the optimiser: folding it
-    // into the `distill_on` branch made a comparison run at `distill_weight = 0` indistinguishable
-    // from a fit whose replay never paired anything at all.
+    // Counted whatever the weight is: a property of the replay, not of the optimiser.
     let mut n_paired = train.iter().filter(|s| !s.hidden_pert.is_empty()).count() as i32;
     let mut distill_scale = 0.0f64;
     if distill_on {
@@ -1117,21 +992,18 @@ pub fn lora_train(
     let (b1, b2, eps) = (0.9f64, 0.999f64, 1e-8f64);
     let mut t = 0.0f64;
     let mut first_loss = f64::NAN;
-    // Epoch 0 is the UNTRAINED adapter, which is exactly the identity — so the frozen head is
-    // itself a candidate, and a fit whose every epoch overfits returns something that changes
-    // no forecast rather than one that makes them worse.
+    // Epoch 0 is the identity adapter, so the frozen head is itself a candidate.
     let mut best = (0i32, holdout_before);
     let mut best_params = w.params.clone();
 
     for epoch in 0..opts.epochs {
-        // Fisher-Yates on the deterministic RNG, so a seed replays the run exactly.
+        // Deterministic RNG: a seed replays the run exactly.
         for i in (1..order.len()).rev() {
             let j = (rng.next_u64() % (i as u64 + 1)) as usize;
             order.swap(i, j);
         }
-        // Cosine decay across the run, floored at LR_MIN_RATIO. Adam's step size is the same
-        // at the last sample as at the first, so a long fit random-walks at full amplitude
-        // around whatever it found; the schedule is deterministic and keeps a seed replayable.
+        // Adam's step size does not decay on its own; a long fit would random-walk at full
+        // amplitude around whatever it found.
         let sched = if opts.epochs > 1 {
             let phase = std::f64::consts::PI * epoch as f64 / (opts.epochs - 1) as f64;
             LR_MIN_RATIO + (1.0 - LR_MIN_RATIO) * 0.5 * (1.0 + phase.cos())
@@ -1178,9 +1050,7 @@ pub fn lora_train(
                 reason: format!("training diverged at epoch {epoch}"),
             });
         }
-        // The held-out number, every epoch. It is what selects the returned weights, and
-        // measuring it once at the end is what let a fit hand back the epoch it had already
-        // overfitted on. One forward pass over the holdout — no gradient.
+        // Selects the returned weights. One forward pass over the holdout, no gradient.
         let h = mean_loss(head, desc, holdout, Some(&w))?;
         holdout_history.push(h);
         if n_holdout > 0 && h < best.1 {
@@ -1192,8 +1062,7 @@ pub fn lora_train(
         }
     }
 
-    // With no holdout there is nothing to select on, so the last epoch stands and the report
-    // says so rather than implying a choice was made.
+    // No holdout: nothing to select on, so the last epoch stands.
     let (best_epoch, holdout_after) = if n_holdout > 0 {
         w.params.copy_from_slice(&best_params);
         best
@@ -1201,9 +1070,8 @@ pub fn lora_train(
         (opts.epochs, f64::NAN)
     };
     let improved = n_holdout > 0 && holdout_after < holdout_before;
-    // The guard runs on the weights the fit is actually RETURNING, and on held-out windows
-    // only. The fit is never refused on it — the block is on ATTACH, where a person is present
-    // to read the reason and decide.
+    // On the weights actually RETURNED, held-out windows only. The fit is never refused on it —
+    // the block is on ATTACH, where a person can read the reason.
     let guard = if holdout.iter().any(|s| s.is_forecast && !s.hidden_pert.is_empty()) {
         Some(lora_guard(head, desc, holdout.to_vec(), &w, GUARD_OPTS_FIT)?)
     } else {
@@ -1229,20 +1097,13 @@ pub fn lora_train(
     Ok(LoraTrainResult { weights: w, report })
 }
 
-/// An adapter and the account of how it was fitted, which travel together — a set of weights
-/// with no held-out numbers beside them is not something anyone can decide to attach.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct LoraTrainResult {
     pub weights: LoraWeights,
     pub report: LoraTrainReport,
 }
 
-/// The per-span median projection of [`assemble_decode`] and nothing else — `m = anchor + B Bᵀ
-/// delta`, in RISK space.
-///
-/// For the branch that needs only the median line. It reuses `global_median_dim` /
-/// `global_median_basis` rather than re-deriving the projection, because a second implementation
-/// of it is exactly the drift this crate exists to avoid.
+/// The per-span median projection of [`assemble_decode`] and nothing else, in RISK space.
 fn span_median_risk(
     desc: &ModelDescriptor,
     head_raw: &[f64],
@@ -1253,7 +1114,7 @@ fn span_median_risk(
     let p = desc.prediction_patches()?;
     let g = global_median_dim(desc, n, p);
     let basis = global_median_basis(n_steps, g);
-    // The anchor is one value for the whole span, exactly as the production assembly reads it.
+    // One anchor for the whole span, as the production assembly reads it.
     let anchor = desc.kovatchev.f(*anchors.first().unwrap_or(&0.0));
     let mut z = vec![0.0f64; g];
     for (j, zj) in z.iter_mut().enumerate() {
@@ -1274,19 +1135,9 @@ fn span_median_risk(
     Ok(m)
 }
 
-/// The guard's statistic, as a pure function of two response arrays.
-///
-/// Separated from the forwards that produce them so it can be tested with literal numbers — the
-/// clause ordering below IS the safety property, and it is the part most likely to be got wrong
-/// by a later edit.
-///
-/// **It measures PRESERVATION, not correctness.** A frozen model whose marginal insulin response
-/// is already wrong-signed passes here as long as the adapter keeps that sign. Exposing a
-/// wrong-signed model is `SensitivityProbe`'s job and stays there, deliberately: a guard that
-/// tried to do both would refuse adapters for a defect the adapter did not introduce.
-/// [r0]/[r1] are the frozen and adapted responses in RISK space — the ratio's space — and
-/// [m0]/[m1] the same responses in mg/dL per unit, which are reported and gated on but never
-/// divided by one another. See [lora_guard] for why the two are not one.
+/// Measures PRESERVATION, not correctness: a wrong-signed frozen model passes if the adapter
+/// keeps that sign. [r0]/[r1] are the frozen and adapted responses in RISK space, the ratio's
+/// space; [m0]/[m1] the same in mg/dL per unit, reported and gated on but never ratioed.
 fn guard_verdict(
     r0: &[f64],
     r1: &[f64],
@@ -1326,8 +1177,7 @@ fn guard_verdict(
         why: String::new(),
     };
 
-    // First clause that fires wins, and the two inconclusive ones come first: an adapter the
-    // guard could not measure must never read as one it measured and passed.
+    // The order is the safety property: what could not be measured must never read as a pass.
     if (n as i32) < opts.min_windows {
         report.verdict = LoraGuardVerdict::Inconclusive;
         report.why = format!("only {n} held-out forecast windows, needs {}", opts.min_windows);
@@ -1351,8 +1201,7 @@ fn guard_verdict(
             opts.min_retention * 100.0,
         );
     } else if retention > opts.max_retention {
-        // An amplification is as untrustworthy as a collapse: it feeds the calculator an
-        // inflated ISF, and the dose that follows is too large rather than too small.
+        // An inflated ISF gives too LARGE a dose; as untrustworthy as a collapse.
         report.verdict = LoraGuardVerdict::Blocked;
         report.why = format!(
             "amplifies the dose response {:.1}× ({adapted:.2} vs {frozen:.2} mg/dL/U), ceiling {:.1}×",
@@ -1370,16 +1219,9 @@ fn guard_verdict(
     report
 }
 
-/// Measure what an adapter did to the model's marginal response to one unit of insulin.
-///
-/// Head-only arithmetic: four head forwards and four median assemblies per window, and no trunk
-/// forward at all — the counterfactual hidden states were computed once when the samples were
-/// built. The response is read in mg/dL at the span's TERMINAL step, which is the same quantity
-/// `SensitivityProbe` differences and, at forecast geometry, the horizon a dose is read at.
-///
-/// The anchor is identical in both branches — the probe touches the dose channels only, and the
-/// anchor is read off the BG channel — so it cancels exactly, and the guard cannot be satisfied
-/// by an adapter that merely moves the anchor.
+/// What an adapter did to the model's marginal response to one unit of insulin, read at the
+/// span's TERMINAL step. Head-only: the counterfactual hidden states were built once. The anchor
+/// is identical in both branches and cancels exactly.
 #[uniffi::export]
 pub fn lora_guard(
     head: &HeadModel,
@@ -1390,9 +1232,8 @@ pub fn lora_guard(
 ) -> Result<LoraGuardReport, CoreError> {
     let out_dim = head.k * N_QUANTILES;
     let lora = Lora::from_weights(weights, head.d_model, head.hidden, out_dim)?;
-    // Ragged samples are refused, not indexed. This is an exported entry point — the Probe path
-    // hands it whatever a caller built — and `branch_median_risk` slices `hidden[slot * d_model..]`
-    // without checking, which panics ACROSS the FFI boundary rather than returning an error.
+    // Ragged samples are refused, not indexed: `branch_median_risk` slices without checking, and
+    // the panic would cross the FFI boundary.
     let want = |s: &LoraSample| (s.n_slots.max(0) as usize) * head.d_model;
     for s in &samples {
         if s.hidden.len() < want(s) || (!s.hidden_pert.is_empty() && s.hidden_pert.len() < want(s)) {
@@ -1414,18 +1255,9 @@ pub fn lora_guard(
     let take = (opts.max_windows.max(0) as usize).min(usable.len());
     let windows = &usable[usable.len() - take..];
 
-    // Two spaces, and the split is load-bearing.
-    //
-    // RETENTION is a ratio, and it is taken in RISK space — the space the pinball loss and the
-    // distillation term are both formed in, so the guard reads the quantity the fit optimises.
-    // `f_inv` is strongly convex, so the same risk-space response differences to a different
-    // number of mg/dL at 80 than at 250: a ratio of mg/dL responses carries a TERMINAL-LEVEL ratio
-    // alongside the response ratio, and an adapter that merely shifted the forecast's level would
-    // move it. That is a wrong-quantity guard.
-    //
-    // The mg/dL pair is still measured, still reported and still what `min_frozen_response` gates
-    // on, because "does the model respond to insulin at all" is a clinical question and 2 mg/dL/U
-    // is a clinical floor. It is read, never ratioed.
+    // RETENTION is a ratio taken in RISK space, the space the loss is formed in. `f_inv` is
+    // convex, so a ratio of mg/dL responses would carry a terminal-level ratio with it. The mg/dL
+    // pair is reported and gated by `min_frozen_response`, a clinical floor, but never ratioed.
     let mut r0 = Vec::with_capacity(windows.len());
     let mut r1 = Vec::with_capacity(windows.len());
     let mut m0 = Vec::with_capacity(windows.len());
@@ -1449,8 +1281,7 @@ pub fn lora_guard(
     Ok(guard_verdict(&r0, &r1, &m0, &m1, &opts))
 }
 
-/// One branch's median line, in risk space: forward the head over the chosen hidden state and
-/// project it through the same per-span DCT the production assembly uses.
+/// One branch's median line, in risk space.
 fn branch_median_risk(
     head: &HeadModel,
     desc: &ModelDescriptor,
@@ -1492,10 +1323,7 @@ fn mean_loss(
     Ok(acc / samples.len() as f64)
 }
 
-/// Risk-space pinball loss of an assembled fan against what actually happened, averaged over
-/// steps and levels. Risk space is where the fan lives and where a hypo error costs what it
-/// clinically costs; averaging mg/dL residuals instead would train the adapter to spend its
-/// capacity on the hyperglycaemic half of the range.
+/// Risk-space pinball loss of an assembled fan, averaged over steps and levels.
 fn pinball(desc: &ModelDescriptor, q_tau_risk: &[f64], target_bg: &[f64], n_steps: usize) -> f64 {
     let kov = desc.kovatchev;
     let mut acc = 0.0;
@@ -1509,14 +1337,6 @@ fn pinball(desc: &ModelDescriptor, q_tau_risk: &[f64], target_bg: &[f64], n_step
     acc / (n_steps * N_QUANTILES) as f64
 }
 
-/// One sample's loss, and — when `grad` is given — the gradient of that loss with respect to
-/// every adapter parameter.
-///
-/// The chain runs backwards through the same stages the forward went through: the pinball
-/// derivative on each of the seven levels, the cumsum-of-softplus fan, the per-span DCT
-/// projection of the median, the within-patch basis, and finally the head's three layers into
-/// the adapter sites. The base weights take no gradient — they are frozen inside the `.pte`
-/// and this crate could not write them back if it wanted to.
 /// The frozen model's marginal response for one sample, and the coefficient to pin it with.
 struct DistillCtx<'a> {
     /// `m_0(hidden)[i] − m_0(hidden_pert)[i]`, in risk space, `n_steps` long.
@@ -1537,7 +1357,6 @@ fn sample_loss_and_grad(
     let n_steps = n * PATCH_SIZE;
     let out_dim = head.k * N_QUANTILES;
 
-    // ── forward, keeping every activation the backward pass needs ──
     let mut acts: Vec<Activations> = Vec::with_capacity(n);
     let mut head_raw = vec![0.0f64; n_steps * N_QUANTILES];
     for slot in 0..n {
@@ -1548,8 +1367,7 @@ fn sample_loss_and_grad(
         acts.push(a);
     }
 
-    // The slots of one sample are one contiguous span, so the assembly is the production one
-    // with a contiguous slot_patch — not a second implementation of it.
+    // One contiguous span, so the production assembly applies with a contiguous slot_patch.
     let slot_patch: Vec<i32> = (0..n as i32).collect();
     let fan = assemble_decode(
         desc,
@@ -1561,22 +1379,9 @@ fn sample_loss_and_grad(
     )?;
     let mut loss = pinball(desc, &fan.q_tau_risk, &sample.target_bg, n_steps);
 
-    // ── the counterfactual branch ──
-    //
-    // A SECOND forward of the same adapted head over the perturbed hidden state, giving the
-    // adapted model's own marginal response `m − m'`. The term is the squared distance between
-    // that and the frozen model's `d0`.
-    //
-    // Read on the ASSEMBLED median and in RISK space, for the same two reasons the pinball term
-    // is: the per-span DCT projection is not an identity — on the reference descriptor half the
-    // raw-delta space is null — so a term read on `head_raw` would take gradient from
-    // coefficients the decode discards; and mg/dL residuals would spend the adapter's capacity on
-    // the hyperglycaemic half while `f_inv`'s clamp zeroed the gradient at exactly the rails a
-    // hypo response lives near.
-    //
-    // MEDIAN COLUMN ONLY. The median line is what the sensitivity probe differences and what
-    // collapses; pinning the spreads' marginal response too would fight the pinball term's
-    // freedom to widen this patient's bands.
+    // A second forward of the same adapted head over the perturbed hidden state, squared against
+    // the frozen `d0`. Read on the ASSEMBLED median in RISK space, for the same reasons the
+    // pinball term is. MEDIAN COLUMN ONLY: pinning the spreads would fight the pinball term.
     let paired = distill.filter(|c| c.scale > 0.0 && !sample.hidden_pert.is_empty());
     let mut pert: Option<(Vec<Activations>, Vec<f64>, Vec<f64>)> = None;
     let mut err = vec![0.0f64; n_steps];
@@ -1617,7 +1422,6 @@ fn sample_loss_and_grad(
         Some(l) => l,
     };
 
-    // ── dL/dq for each of the seven levels ──
     let kov = desc.kovatchev;
     let scale_n = 1.0 / (n_steps * N_QUANTILES) as f64;
     let mut dq = vec![0.0f64; n_steps * N_QUANTILES];
@@ -1625,18 +1429,15 @@ fn sample_loss_and_grad(
         let y = kov.f(sample.target_bg[i]);
         for (k, tau) in QUANTILE_LEVELS.iter().enumerate() {
             let e = y - fan.q_tau_risk[i * N_QUANTILES + k];
-            // d/dq of max(tau·e, (tau−1)·e) with e = y − q.
             dq[i * N_QUANTILES + k] = scale_n * if e > 0.0 { -tau } else { 1.0 - tau };
         }
     }
 
-    // ── through the fan: the median moves all seven levels; each spread moves the levels
-    //    at or beyond it on its own side ──
+    // The median moves all seven levels; each spread the levels at or beyond it on its side.
     let mut d_median = vec![0.0f64; n_steps];
     let mut d_head_raw = vec![0.0f64; n_steps * N_QUANTILES];
-    // `c = 2·scale / n_steps`: the derivative of the mean squared error. The baseline branch
-    // takes `+c·e[i]` on its median and the perturbed branch `−c·e[i]`, because `e` is their
-    // difference minus a constant.
+    // The baseline median takes `+c·e[i]` and the perturbed `−c·e[i]`: `e` is their difference
+    // minus a constant.
     let c_distill = paired.map_or(0.0, |ctx| 2.0 * ctx.scale / n_steps as f64);
     for i in 0..n_steps {
         let row = i * N_QUANTILES;
@@ -1660,8 +1461,7 @@ fn sample_loss_and_grad(
         }
     }
 
-    // ── through the per-span median projection: m = anchor + B Bᵀ delta, and B Bᵀ is
-    //    symmetric, so the pullback is the same projection applied to dL/dm ──
+    // `B Bᵀ` is symmetric, so the pullback is the same projection applied to dL/dm.
     let p = desc.prediction_patches()?;
     let g = global_median_dim(desc, n, p);
     let basis = global_median_basis(n_steps, g);
@@ -1681,7 +1481,6 @@ fn sample_loss_and_grad(
         d_head_raw[i * N_QUANTILES] = acc;
     }
 
-    // ── through the head, slot by slot, into the adapter sites ──
     let mut off_hidden = 0usize;
     let mut off_l0 = 0usize;
     let mut off_l1 = 0usize;
@@ -1711,23 +1510,19 @@ fn sample_loss_and_grad(
         }
     }
 
-    // ONE implementation, run once per branch, accumulating into the SAME gradient buffer. The
-    // perturbed branch uses its own activations and its own hidden input throughout — a shared
-    // buffer with the baseline branch's activations would silently compute the wrong chain.
+    // Once per branch, into the SAME gradient buffer, each branch with its own activations.
     backward_head_into_sites(
         head, lora, &acts, &sample.hidden, &d_head_raw,
         (off_hidden, off_l0, off_l1, off_l2), grad,
     );
 
     if let (Some(ctx), Some((acts_p, _, _))) = (paired, pert.as_ref()) {
-        // The perturbed branch's whole median gradient is `−c·e`, and its SPREADS take none: the
-        // distillation term never reads one, so the softplus/cumsum fan contributes nothing here.
+        // The perturbed branch's spreads take no gradient: the term never reads one.
         let mut d_median_p = vec![0.0f64; n_steps];
         for i in 0..n_steps {
             d_median_p[i] = -2.0 * ctx.scale / n_steps as f64 * err[i];
         }
         let mut d_raw_p = vec![0.0f64; n_steps * N_QUANTILES];
-        // The same projection pullback as above — `B Bᵀ` is symmetric — reusing the one basis.
         let mut zp = vec![0.0f64; g];
         for (j, zj) in zp.iter_mut().enumerate() {
             let mut acc = 0.0;
@@ -1751,11 +1546,7 @@ fn sample_loss_and_grad(
     Ok(loss)
 }
 
-/// The head's backward pass for one branch, from `d_head_raw` into the adapter sites.
-///
-/// Lifted out so the baseline and counterfactual branches run the SAME chain over their own
-/// activations and their own hidden input, accumulating into one gradient buffer. With no
-/// counterfactual it is called once and is bit-identical to what it replaced.
+/// Accumulates into `grad`; called once per branch, with that branch's own activations.
 #[allow(clippy::too_many_arguments)]
 fn backward_head_into_sites(
     head: &HeadModel,
@@ -1775,7 +1566,6 @@ fn backward_head_into_sites(
             &mut d_out,
         );
 
-        // l2: out = W2·a2 + b2 + scale·B2(A2·a2)
         let mut d_a2 = vec![0.0f64; head.hidden];
         head.l2.backward_input(&d_out, &mut d_a2);
         if let Some(site) = &lora.l2_site {
@@ -1783,13 +1573,11 @@ fn backward_head_into_sites(
             site.backward(&a.a2, &a.u2, &d_out, lora.scale, da, db, &mut d_a2);
         }
 
-        // silu at z2
         let mut d_z2 = vec![0.0f64; head.hidden];
         for i in 0..head.hidden {
             d_z2[i] = d_a2[i] * silu_grad(a.z2[i]);
         }
 
-        // l1
         let mut d_a1 = vec![0.0f64; head.hidden];
         head.l1.backward_input(&d_z2, &mut d_a1);
         if let Some(site) = &lora.l1_site {
@@ -1797,13 +1585,11 @@ fn backward_head_into_sites(
             site.backward(&a.a1, &a.u1, &d_z2, lora.scale, da, db, &mut d_a1);
         }
 
-        // silu at z1
         let mut d_z1 = vec![0.0f64; head.hidden];
         for i in 0..head.hidden {
             d_z1[i] = d_a1[i] * silu_grad(a.z1[i]);
         }
 
-        // l0
         let mut d_h = vec![0.0f64; head.d_model];
         head.l0.backward_input(&d_z1, &mut d_h);
         if let Some(site) = &lora.l0_site {
@@ -1811,7 +1597,6 @@ fn backward_head_into_sites(
             site.backward(&a.h_in, &a.u0, &d_z1, lora.scale, da, db, &mut d_h);
         }
 
-        // the hidden bottleneck: h_in = h + scale·B_h(A_h·h), so d_h flows to both terms
         if let Some(site) = &lora.hidden_site {
             let h = &hidden[slot * head.d_model..(slot + 1) * head.d_model];
             let mut sink = vec![0.0f64; head.d_model];
@@ -1834,9 +1619,7 @@ mod tests {
         parse_descriptor(REFERENCE_DESCRIPTOR.to_string()).expect("reference descriptor")
     }
 
-    /// A small head in the shipped file format, weights and digest included. Small on purpose:
-    /// a finite-difference gradient check over the real 128-wide head would take minutes and
-    /// prove nothing extra.
+    /// A small head in the shipped file format; small so the gradient checks stay quick.
     fn synthetic_head(d_model: usize, hidden: usize, k: usize) -> (std::sync::Arc<HeadModel>, HeadSpec) {
         let out_dim = k * N_QUANTILES;
         let mut rng = Rng::new(0xC0FFEE);
@@ -1879,8 +1662,7 @@ mod tests {
         LoraSample {
             hidden: (0..n_slots * d_model).map(|_| rng.normal()).collect(),
             anchors: vec![120.0; n_slots],
-            // Well away from the anchor, so no residual sits on the pinball kink and a
-            // finite-difference check measures the gradient rather than a corner.
+            // Well away from the anchor, so no residual sits on the pinball kink.
             target_bg: (0..n_slots * PATCH_SIZE).map(|i| 190.0 + i as f64).collect(),
             n_slots: n_slots as i32,
             hidden_pert: Vec::new(),
@@ -1888,9 +1670,7 @@ mod tests {
         }
     }
 
-    /// The same window with a COUNTERFACTUAL branch, drawn from its own seed so the frozen
-    /// model's response `d0` is genuinely non-zero — a paired sample whose two branches agreed
-    /// would make the distillation term vanish and its gradient check prove nothing.
+    /// A COUNTERFACTUAL branch from its own seed, so the frozen response `d0` is non-zero.
     fn sample_paired(d_model: usize, n_slots: usize, seed: u64, pert_seed: u64) -> LoraSample {
         let mut rng = Rng::new(pert_seed);
         LoraSample {
@@ -1915,7 +1695,6 @@ mod tests {
         let (_, spec) = synthetic_head(8, 6, 3);
         let mut bad = spec.clone();
         bad.sha256 = "0".repeat(64);
-        // Any bytes at all, with a digest that does not describe them.
         let bytes = vec![0u8; 4 * (PATCH_SIZE * 3 + 6 * 8 + 6 + 6 * 6 + 6 + 21 * 6 + 21)];
         assert!(HeadModel::parse(bytes.clone(), bad).is_err(), "digest must be checked");
         let mut short = spec.clone();
@@ -1925,8 +1704,6 @@ mod tests {
 
     #[test]
     fn a_fresh_adapter_is_exactly_the_identity() {
-        // Attaching an untrained adapter must not move a single forecast: B is zero, so the
-        // low-rank term is zero, and attach/detach is safe to offer as a toggle.
         let (head, spec) = synthetic_head(8, 6, 3);
         let s = sample(8, 4, 7);
         let base = head.forward(s.hidden.clone(), 4).unwrap();
@@ -1970,8 +1747,6 @@ mod tests {
         let back = lora_deserialize(blob.clone()).expect("round trip");
         assert_eq!(back, w);
 
-        // A single flipped byte anywhere must be refused rather than loaded as a plausible
-        // adapter that quietly moves every forecast it touches.
         for i in [0usize, 12, blob.len() / 2, blob.len() - 33] {
             let mut bad = blob.clone();
             bad[i] ^= 0xFF;
@@ -1984,23 +1759,17 @@ mod tests {
     #[test]
     fn an_adapter_belongs_to_the_head_it_was_fitted_on() {
         let (head, spec) = synthetic_head(8, 6, 3);
-        // Same config, different trunk width: attaching it would read the wrong weights with
-        // every shape check downstream still passing.
         let foreign = lora_new(cfg(), spec.sha256.clone(), 16, 6, 21, 3).unwrap();
         assert!(head.set_lora(Some(foreign)).is_err());
 
-        // And the case geometry cannot catch: the SAME shape, a DIFFERENT head. Two checkpoints of
-        // one capacity have identical head dimensions, so without the digest an adapter fitted on
-        // either would load into the other and decode plausibly, finitely, wrong.
+        // The case geometry cannot catch: the SAME shape, a DIFFERENT head.
         let mut other = lora_new(cfg(), spec.sha256.clone(), 8, 6, 21, 9).unwrap();
         other.head_sha256 = "f".repeat(64);
         assert!(head.set_lora(Some(other)).is_err(), "an adapter from another head was accepted");
 
-        // Its own is accepted, and the digest survives the round trip.
         let mine = lora_new(cfg(), spec.sha256.clone(), 8, 6, 21, 9).unwrap();
         assert!(head.set_lora(Some(mine.clone())).is_ok());
         assert_eq!(lora_deserialize(lora_serialize(&mine)).unwrap().head_sha256, spec.sha256);
-        // A digest that is not one is refused at creation.
         assert!(lora_new(cfg(), "short".into(), 8, 6, 21, 1).is_err());
     }
 
@@ -2021,10 +1790,7 @@ mod tests {
         }));
     }
 
-    /// The analytic gradient against central finite differences, through the WHOLE chain: the
-    /// pinball loss, the cumsum fan, the per-span median projection, the within-patch basis and
-    /// the head's three layers. This is the only thing standing between a plausible-looking
-    /// training curve and an adapter that optimises the wrong quantity.
+    /// The analytic gradient against central finite differences, through the whole chain.
     #[test]
     fn gradient_matches_finite_differences() {
         let d = desc();
@@ -2064,12 +1830,7 @@ mod tests {
         assert!(analytic.iter().any(|g| g.abs() > 1e-8), "the gradient is entirely zero");
     }
 
-    /// The DISTILLATION term's own gradient, checked the same way and for the same reason.
-    ///
-    /// This is the only thing standing between a plausible training curve and an adapter
-    /// optimising the wrong quantity: the term runs a second forward through the whole head and
-    /// accumulates into the same buffer, so a sign error or a missed branch would show up as a
-    /// fit that trains smoothly while doing nothing about the counterfactual.
+    /// The distillation term's own gradient, checked the same way.
     #[test]
     fn the_distillation_gradient_matches_finite_differences() {
         let d = desc();
@@ -2093,12 +1854,8 @@ mod tests {
             sample_loss_and_grad(&head, &d, &s, Some(&lora), Some(&mut analytic), Some(&ctx), None)
                 .unwrap();
 
-        // FIRST: the term does something at all.
-        //
-        // The finite-difference check below differences the SAME function it takes the analytic
-        // gradient from, so an implementation that ignored `ctx` outright would satisfy it
-        // perfectly — zero against zero is consistent. What that check proves is that the two
-        // agree; what this one proves is that there is anything for them to agree about.
+        // The check below differences the SAME function it takes the gradient from, so ignoring
+        // `ctx` outright would satisfy it. This proves there is something to agree about.
         let mut without = vec![0.0f64; w.params.len()];
         let no_term =
             sample_loss_and_grad(&head, &d, &s, Some(&lora), Some(&mut without), None, None)
@@ -2141,8 +1898,6 @@ mod tests {
         assert!(checked > 10, "only {checked} parameters were checked");
     }
 
-    /// With the term off, or the sample unpaired, the whole path must be bit-identical to what
-    /// it replaced — the refactor into two branches must not have moved the baseline.
     #[test]
     fn an_unpaired_sample_is_unchanged_by_the_distillation_path() {
         let d = desc();
@@ -2158,8 +1913,6 @@ mod tests {
         let mut g_off = vec![0.0f64; w.params.len()];
         let l_off = sample_loss_and_grad(&head, &d, &unpaired, Some(&lora), Some(&mut g_off), None, None).unwrap();
 
-        // An unpaired sample offered a context still takes nothing from it: there is no second
-        // branch to compare against.
         let d0 = vec![1.0f64; unpaired.n_slots as usize * PATCH_SIZE];
         let ctx = DistillCtx { d0: &d0, scale: 5.0 };
         let mut g_on = vec![0.0f64; w.params.len()];
@@ -2168,7 +1921,6 @@ mod tests {
         assert_eq!(l_off, l_on);
         assert_eq!(g_off, g_on);
 
-        // …and a PAIRED sample with `scale = 0` is likewise untouched.
         let paired = sample_paired(8, 4, 3, 77);
         let zero = DistillCtx { d0: &d0, scale: 0.0 };
         let mut g_zero = vec![0.0f64; w.params.len()];
@@ -2179,8 +1931,6 @@ mod tests {
         assert_eq!(g_zero, g_none);
     }
 
-    /// The guard's clause ordering, on literal numbers. The ordering IS the safety property:
-    /// an adapter the guard could not measure must never read as one it measured and passed.
     #[test]
     fn the_guard_orders_its_clauses_so_an_unmeasurable_adapter_is_never_a_pass() {
         let opts = LoraGuardOpts {
@@ -2193,28 +1943,21 @@ mod tests {
             min_sign_agreement: 0.75,
         };
 
-        // These cases exercise the VERDICT, not the two-space split, so each set stands for both
-        // the risk-space response the ratio is taken on and the mg/dL response that is reported.
+        // These cases exercise the VERDICT, not the two-space split, so one set stands for both.
         let v = |a: &[f64], b: &[f64]| guard_verdict(a, b, a, b, &opts);
 
-        // Preserved: same sign everywhere, retention 1.
         let r0 = vec![-10.0, -12.0, -11.0, -9.0];
         assert_eq!(v(&r0, &r0).verdict, LoraGuardVerdict::Pass);
 
-        // Collapsed to a twentieth — the failure the whole phase exists for.
         let dead = vec![-0.5, -0.6, -0.55, -0.45];
         let got = v(&r0, &dead);
         assert_eq!(got.verdict, LoraGuardVerdict::Blocked);
         assert!(got.why.contains("dose response"), "{}", got.why);
 
-        // Amplified fourfold and more: an inflated ISF is as untrustworthy as a collapsed one,
-        // and the dose that follows is too LARGE.
         let loud = vec![-60.0, -62.0, -61.0, -59.0];
         assert_eq!(v(&r0, &loud).verdict, LoraGuardVerdict::Blocked);
 
-        // Retention is fine — the medians agree — but the direction disagrees on three windows
-        // in eight. Eight rather than four because a mixed-sign median over four values sits near
-        // zero, which would trip the retention clause first and test nothing about this one.
+        // Eight, not four: a mixed-sign median over four sits near zero and trips retention first.
         let wide = vec![-10.0; 8];
         let mut flipped = vec![-10.0; 8];
         for v in flipped.iter_mut().take(3) {
@@ -2225,16 +1968,11 @@ mod tests {
         assert_eq!(got.verdict, LoraGuardVerdict::Blocked);
         assert!(got.why.contains("direction"), "{}", got.why);
 
-        // Too few windows, and a frozen model with no response to preserve: INCONCLUSIVE, never
-        // a pass. These are checked before every Blocked clause for exactly that reason.
         assert_eq!(v(&r0[..2], &r0[..2]).verdict, LoraGuardVerdict::Inconclusive);
         let flat = vec![0.1, -0.1, 0.05, -0.05];
         assert_eq!(v(&flat, &flat).verdict, LoraGuardVerdict::Inconclusive);
 
-        // The two-space split itself. The mg/dL pair is REPORTED and gated on; it is never the
-        // ratio. Here the adapter preserved the risk-space response exactly while the mg/dL
-        // response doubled — a pure level shift through a convex `f_inv` — and retention must not
-        // move, because nothing about the model's response to insulin changed.
+        // Risk-space response preserved, mg/dL doubled: retention must not move.
         let risk = vec![-10.0, -12.0, -11.0, -9.0];
         let mgdl_frozen = vec![-20.0, -24.0, -22.0, -18.0];
         let mgdl_adapted: Vec<f64> = mgdl_frozen.iter().map(|x| x * 2.0).collect();
@@ -2244,16 +1982,13 @@ mod tests {
         assert_eq!(shifted.frozen_response_mgdl, -21.0);
         assert_eq!(shifted.adapted_response_mgdl, -42.0);
 
-        // ...and the mg/dL floor still bites on the pair, not on the ratio's space: a frozen model
-        // with a healthy risk-space response but under 2 mg/dL/U at the horizon has nothing worth
-        // preserving in the units a dose is read in.
+        // The mg/dL floor bites on the pair, not on the ratio's space.
         let tiny = vec![-0.5, -0.6, -0.55, -0.45];
         let quiet = guard_verdict(&risk, &risk, &tiny, &tiny, &opts);
         assert_eq!(quiet.verdict, LoraGuardVerdict::Inconclusive);
         assert!(quiet.why.contains("mg/dL/U"), "{}", quiet.why);
     }
 
-    /// A whole fit with the term on: it runs, reports what it did, and reaches a verdict.
     #[test]
     fn a_paired_fit_reports_its_distillation_and_a_guard_verdict() {
         let d = desc();
@@ -2274,12 +2009,10 @@ mod tests {
         assert!(out.report.distill_scale > 0.0, "the term was on but scaled to zero");
         assert_eq!(out.report.distill_history.len(), out.report.epochs_run as usize);
         assert!(out.report.guard.is_some(), "held-out forecast windows existed");
-        // The held-out number stays PURE pinball, so every stored adapter's pair remains
-        // comparable and `improved` stays well posed.
+        // The held-out number stays PURE pinball, so stored adapters stay comparable.
         assert!(out.report.holdout_loss_before.is_finite());
     }
 
-    /// A truncated counterfactual is refused by name rather than silently trained on.
     #[test]
     fn a_truncated_counterfactual_is_rejected() {
         let d = desc();
@@ -2324,7 +2057,7 @@ mod tests {
         assert!(out.report.holdout_loss_after.is_finite());
         assert_eq!(out.report.loss_history.len(), 12);
         assert_eq!(out.report.holdout_history.len(), 12);
-        // The returned weights are the argmin of the held-out trace, not the last epoch's.
+        // The argmin of the held-out trace, not the last epoch's.
         assert!(out.report.best_epoch >= 0 && out.report.best_epoch <= 12);
         assert!(
             out.report.holdout_loss_after <= out.report.holdout_loss_before,
@@ -2336,7 +2069,6 @@ mod tests {
             let at_best = out.report.holdout_history[out.report.best_epoch as usize - 1];
             assert!((at_best - out.report.holdout_loss_after).abs() < 1e-12);
         }
-        // The fit is reproducible from its seed.
         let samples2: Vec<LoraSample> = (0..24).map(|i| sample(8, 4, 100 + i as u64)).collect();
         let again = lora_train(&head, &d, samples2, cfg(), opts, None).unwrap();
         assert_eq!(again.weights.params, out.weights.params);
@@ -2344,8 +2076,6 @@ mod tests {
 
     #[test]
     fn a_longer_fit_never_returns_a_worse_adapter_than_a_shorter_one() {
-        // The failure this pins: a fit that overfits used to hand back the epoch it had
-        // overfitted on, so raising the epoch count made the forecast worse.
         let d = desc();
         let (head, _) = synthetic_head(8, 6, 3);
         let mk = || -> Vec<LoraSample> { (0..24).map(|i| sample(8, 4, 100 + i as u64)).collect() };
@@ -2360,14 +2090,12 @@ mod tests {
             long.holdout_loss_after,
             short.holdout_loss_after
         );
-        // ...and never worse than attaching nothing at all.
         assert!(long.holdout_loss_after <= long.holdout_loss_before + 1e-12);
         assert!(long.holdout_history.iter().all(|v| v.is_finite()));
     }
 
     #[test]
     fn a_fit_with_no_holdout_keeps_the_last_epoch_and_says_so() {
-        // Nothing to select on: the report must not imply a choice was made.
         let d = desc();
         let (head, _) = synthetic_head(8, 6, 3);
         let samples: Vec<LoraSample> = (0..12).map(|i| sample(8, 4, i as u64)).collect();

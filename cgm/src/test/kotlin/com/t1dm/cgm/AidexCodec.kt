@@ -3,13 +3,8 @@ package com.t1dm.cgm
 import com.t1dm.core.model.DecodedAdvert
 import com.t1dm.core.model.PrevGlucose
 
-/**
- * A faithful pure-Kotlin port of the CGM.md §3.1 layout and §3.2 CRC32, used by the tests to
- * stand in for the (not-yet-wired) Rust `decode_advert`, and to *encode* synthetic valid adverts
- * so the pipeline can be exercised end-to-end without radio. When the Rust core lands, the same
- * golden bytes gate it under `rust-golden`; this port exists only to make the :cgm pipeline
- * deterministically testable now.
- */
+/** Pure-Kotlin port of the CGM.md §3.1 layout and §3.2 CRC32, to encode synthetic adverts for the
+ *  tests without radio. */
 object AidexCodec {
 
     private const val POLY = 0x04C11DB7L
@@ -24,7 +19,7 @@ object AidexCodec {
     fun le16(b: ByteArray, off: Int): Int =
         (b[off].toInt() and 0xFF) or ((b[off + 1].toInt() and 0xFF) shl 8)
 
-    /** MSB-first bit-serial CRC32, poly 0x04C11DB7, no reflect, no xorout (CGM.md §3.2). */
+    /** MSB-first bit-serial, no reflect, no xorout (CGM.md §3.2). */
     fun crc32Normal(buf: ByteArray, len: Int, init: Long): Long {
         var crc = init and 0xFFFFFFFFL
         for (k in 0 until len) {
@@ -40,14 +35,11 @@ object AidexCodec {
         return crc and 0xFFFFFFFFL
     }
 
-    /** seed = (le32[0]+le32[4]+le32[8]+le32[12]) mod 0x7FA777, over the 16-byte body. */
     fun seedFor(body16: ByteArray): Long =
         (le32(body16, 0) + le32(body16, 4) + le32(body16, 8) + le32(body16, 12)) % SEED_MOD
 
-    /** CRC over payload[0..15] with the payload-derived seed. */
     fun crcOf(payload: ByteArray): Long = crc32Normal(payload, 16, seedFor(payload))
 
-    /** Decode + CRC-validate a ≥20-byte LinX advert payload; `null` on short / CRC-fail. */
     fun decode(payload: ByteArray): DecodedAdvert? {
         if (payload.size < 20) return null
         val calc = crcOf(payload)
@@ -75,7 +67,6 @@ object AidexCodec {
         )
     }
 
-    /** Build a 20-byte advert payload with a valid CRC32 (for synthetic pipeline tests). */
     fun encode(
         minFromStart: Int,
         glucose: Int,

@@ -14,12 +14,6 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * The `(tsMs, yFrac)` → world projection. The whole reason the stroke store chose absolute epoch-ms is
- * on trial here: the game's x axis IS time, so registration between the art and the ground it hangs
- * over should cost nothing and require no fudge factor. Y is the panel's height fraction inverted onto
- * a y-up world, which is exact given the same fixed world map the terrain used.
- */
 class WorldPaintTest {
 
     private val GRID = 300_000L
@@ -47,24 +41,19 @@ class WorldPaintTest {
 
     @Test fun aStrokeLandsAtTheTimeAndHeightItWasDrawn() {
         val t = track()
-        // Two points 30 minutes apart, at the plot's top edge and its exact middle.
         val f = buildPaintFrame(listOf(stroke(1L, pts = arrayOf(T0 to 0f, T0 + 30 * 60_000L to 0.5f))))
         val w = buildWorldPaint(f, t)
 
         assertEquals(1, w.strokeCount)
         assertEquals(2, w.pointCount)
-        // x is time, straight through: 30 minutes is 30 metres at the shipped scale.
         assertEquals(0f, w.xs[0], 1e-3f)
         assertEquals(30f * METRES_PER_MINUTE, w.xs[1], 1e-3f)
-        // yFrac 0 is the plot TOP, which is the world CEILING; 0.5 is half way down.
+        // yFrac 0 is the plot TOP, i.e. the world ceiling.
         assertEquals(WORLD_HEIGHT_M, w.ys[0], 1e-3f)
         assertEquals(WORLD_HEIGHT_M / 2f, w.ys[1], 1e-3f)
     }
 
     @Test fun theProjectionIsExactlyTheTerrainsOwn() {
-        // The claim that makes the layer world-anchored rather than merely nearby: paint x and terrain
-        // x are the SAME function of time, so a stroke drawn over a reading sits over that reading's
-        // hill at every camera position, with no registration step anywhere.
         val t = track()
         val ts = T0 + 17 * GRID
         val f = buildPaintFrame(listOf(stroke(1L, pts = arrayOf(ts to 0.25f))))
@@ -73,8 +62,6 @@ class WorldPaintTest {
     }
 
     @Test fun yFracOutsideThePlotStaysOutside() {
-        // A finger that strayed past the plot box is clipped at draw time, never flattened onto the
-        // edge — so the world must not clamp it either.
         val t = track()
         val f = buildPaintFrame(listOf(stroke(1L, pts = arrayOf(T0 to -0.2f, T0 + 60_000L to 1.4f))))
         val w = buildWorldPaint(f, t)
@@ -86,7 +73,7 @@ class WorldPaintTest {
         val t = track()
         val f = buildPaintFrame(listOf(stroke(1L, widthDp = 32f, pts = arrayOf(T0 to 0.5f))))
         val w = buildWorldPaint(f, t, panelDp = 320f)
-        // A tenth of a nominal panel is a tenth of the world height, whatever the camera later does.
+        // A tenth of a nominal panel is a tenth of the world height.
         assertEquals(WORLD_HEIGHT_M / 10f, w.widths[0], 1e-3f)
     }
 
@@ -95,7 +82,7 @@ class WorldPaintTest {
         val inside = stroke(1L, pts = arrayOf(T0 + 60 * 60_000L to 0.3f))
         val before = stroke(2L, pts = arrayOf(T0 - 30L * 86_400_000L to 0.3f))
         val after = stroke(3L, pts = arrayOf(t.endMs + 86_400_000L to 0.3f))
-        // Straddling: intersection, not containment — a stroke drawn across a wider window still shows.
+        // Intersection, not containment.
         val straddling = stroke(4L, pts = arrayOf(T0 - 86_400_000L to 0.1f, t.endMs + 86_400_000L to 0.9f))
 
         val w = buildWorldPaint(buildPaintFrame(listOf(inside, before, after, straddling)), t)
@@ -107,16 +94,13 @@ class WorldPaintTest {
         val a = stroke(1L, tool = "chalk", pts = arrayOf(T0 to 0.2f))
         val b = stroke(2L, tool = "highlighter", pts = arrayOf(T0 + 60_000L to 0.4f))
         val w = buildWorldPaint(buildPaintFrame(listOf(b, a)), t)
-        // buildPaintFrame orders by (createdAtMs, id) so later strokes cover earlier ones; the world
-        // must not reshuffle that or the layering inverts.
+        // buildPaintFrame orders by (createdAtMs, id); the world must not reshuffle that.
         assertEquals(PaintFrame.TOOL_CHALK, w.tools[0])
         assertEquals(PaintFrame.TOOL_HIGHLIGHTER, w.tools[1])
         assertEquals(a.colorArgb, w.colors[0])
     }
 
     @Test fun boundsAreScannedNotReadOffTheEnds() {
-        // A stroke dragged backwards: its last point is its leftmost. Reading the ends would cull it
-        // out of a camera it is plainly inside.
         val t = track()
         val f = buildPaintFrame(
             listOf(stroke(1L, pts = arrayOf(T0 + 60 * 60_000L to 0.5f, T0 + 10 * 60_000L to 0.5f))),
@@ -124,9 +108,7 @@ class WorldPaintTest {
         val w = buildWorldPaint(f, t)
         assertEquals(10f * METRES_PER_MINUTE, w.minX[0], 1e-3f)
         assertEquals(60f * METRES_PER_MINUTE, w.maxX[0], 1e-3f)
-        // Windows in MINUTES mapped through the scale, not bare world metres: the stroke spans
-        // minutes 10–60, so a camera over minutes 20–30 is inside it and one over 100–120 is past it
-        // at any [METRES_PER_MINUTE].
+        // Windows in minutes mapped through the scale, so this holds at any [METRES_PER_MINUTE].
         assertTrue("a camera over the stroke sees it", w.intersects(0, 20f * METRES_PER_MINUTE, 30f * METRES_PER_MINUTE))
         assertFalse("one past it does not", w.intersects(0, 100f * METRES_PER_MINUTE, 120f * METRES_PER_MINUTE))
     }

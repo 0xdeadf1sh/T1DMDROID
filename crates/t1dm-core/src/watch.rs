@@ -1,24 +1,13 @@
-//! Watch-link cryptography (SPEC §3) — the security source of truth for
-//! the phone → ESP32-C3 push. Kotlin owns the GATT plumbing and the at-rest key wrap
-//! (Keystore/StrongBox); *this* module owns every byte that crosses the air.
+//! Watch-link cryptography (SPEC §3): every byte that crosses the phone → ESP32-C3 air. Kotlin
+//! owns the GATT plumbing and the at-rest key wrap (Keystore/StrongBox).
 //!
-//! Suite (v1, versioned on the wire and in the persisted state):
-//!   - key agreement  : **X25519** ECDH (RFC 7748), one ephemeral keypair per session
-//!   - key derivation : **HKDF-SHA256** — extract the DH secret to a root, expand two
-//!                      per-direction AES keys bound to *both* public keys (transcript
-//!                      binding → no unknown-key-share); a manual ratchet advances the root
-//!   - record AEAD    : **AES-128-GCM**, 16-byte key, 12-byte nonce, 16-byte tag
-//!   - nonce          : `epoch:u32_le || seq:u64_le` — monotone per direction; the send
-//!                      counter is *windowed* and the window is **burned on cold start** so
-//!                      a `kill -9` / battery-yank can never re-emit a `(key, nonce)` pair
-//!   - authentication : a deterministic 6-digit **SAS** over both public keys (ZRTP-style),
-//!                      compared aloud on phone + watch to defeat a MITM on first pair
+//! Suite v1, versioned on the wire and in the persisted state: X25519 ECDH, HKDF-SHA256 to two
+//! per-direction AES-128-GCM keys bound to both public keys, a nonce of `epoch:u32_le ||
+//! seq:u64_le`, and a 6-digit SAS compared aloud to defeat a MITM on first pair. The send
+//! counter's window is burned on cold start, so a `kill -9` can never re-emit a `(key, nonce)`.
 //!
-//! Data flows phone → watch, but the state machine is symmetric: `seal` is the local
-//! send direction and `open` the receive direction (PUSH_ACK / loopback tests), each with
-//! its own key and counter. Every `#[uniffi::export]` fn returns `Result` and never panics
-//! on hostile input — a truncated frame, a replayed seq, an epoch mismatch, a poisoned
-//! lock: all are `Err`, never an abort (release builds are `panic = "abort"`).
+//! `seal` is the local send direction, `open` the receive one (PUSH_ACK), each with its own key
+//! and counter. Hostile input is always `Err`, never a panic.
 
 use std::sync::{Arc, Mutex};
 
@@ -32,37 +21,26 @@ use zeroize::Zeroize;
 
 use crate::CoreError;
 
-// ── Suite v1 domain-separation constants ───────────────────────────────────────────
-/// HKDF-Extract salt — pins the whole schedule to this app + suite version.
 const SALT: &[u8] = b"t1dm-watch/x25519/hkdf-sha256/aes128gcm/v1";
-/// Expand label: DH secret → 32-byte epoch-0 root.
 const INFO_ROOT: &[u8] = b"t1dm-watch root v1";
-/// Expand labels for the two per-direction keys (A = lexicographically lower pubkey).
 const INFO_A2B: &[u8] = b"t1dm-watch key A->B v1";
 const INFO_B2A: &[u8] = b"t1dm-watch key B->A v1";
-/// Expand label for the manual ratchet: root_e → root_{e+1}.
 const INFO_RATCHET: &[u8] = b"t1dm-watch ratchet v1";
-/// SAS domain separator.
 const SAS_INFO: &[u8] = b"t1dm-watch sas v1";
 
-/// AEAD frame version byte (leads every sealed record).
 const FRAME_VER: u8 = 1;
-/// Persisted-state blob magic + version.
 const STATE_MAGIC: &[u8; 4] = b"T1WC";
 const STATE_VER: u8 = 1;
 
-/// Send-counter reservation window. Each `export_state` reserves seqs up to
-/// `send_next + NONCE_WINDOW`; `seal` refuses once it reaches the reserved ceiling until
-/// the caller checkpoints again. Cold start jumps `send_next` to the persisted ceiling,
-/// burning any unused seqs in the window → no `(key, nonce)` can ever repeat.
+/// `export_state` reserves seqs up to `send_next + NONCE_WINDOW`; `seal` refuses at the ceiling
+/// until the caller checkpoints again. Cold start jumps to the persisted ceiling, burning the
+/// unused window, so no `(key, nonce)` can repeat.
 const NONCE_WINDOW: u64 = 64;
 
-/// AES-128-GCM sizes.
 const KEY_LEN: usize = 16;
 const NONCE_LEN: usize = 12;
 const TAG_LEN: usize = 16;
-/// Frame header: `ver(1) || epoch(4) || seq(8)`. The full header is fed as AEAD AAD, so
-/// epoch/seq are authenticated and cannot be mauled.
+/// `ver(1) || epoch(4) || seq(8)`, fed whole as AEAD AAD.
 const HDR_LEN: usize = 1 + 4 + 8;
 
 const X25519_LEN: usize = 32;
@@ -76,30 +54,24 @@ fn internal(reason: impl Into<String>) -> CoreError {
     CoreError::Internal { reason: reason.into() }
 }
 
-/// Which side of the canonical (lower, higher) pubkey ordering we are. Fixes which of the
-/// two derived keys is "send" vs "receive" without any negotiated role bit.
+/// Which side of the canonical (lower, higher) pubkey ordering we are; fixes send vs receive
+/// without a negotiated role bit.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Role {
-    /// Our pubkey sorts lower → we send with k_A2B, receive with k_B2A.
     A,
-    /// Our pubkey sorts higher → we send with k_B2A, receive with k_A2B.
     B,
 }
 
-/// The established, per-epoch secret material + counters.
 struct Established {
     peer_public: [u8; X25519_LEN],
     role: Role,
     epoch: u32,
-    /// Current epoch root (ratcheted on `rotate`); zeroized when replaced.
     root: [u8; 32],
     send_key: [u8; KEY_LEN],
     recv_key: [u8; KEY_LEN],
-    /// Next send seq to emit.
     send_next: u64,
-    /// Reserved ceiling: `seal` refuses at `send_next == send_ceiling`.
     send_ceiling: u64,
-    /// Smallest acceptable receive seq (strictly-increasing replay guard; gaps ok).
+    /// Replay guard: the smallest acceptable receive seq. Gaps are fine.
     recv_min: u64,
 }
 
@@ -112,28 +84,23 @@ impl Drop for Established {
 }
 
 enum Phase {
-    /// Fresh keypair minted; awaiting the peer's public key.
     Handshake,
     Established(Established),
 }
 
 struct Inner {
-    /// Our X25519 secret. Retained so `accept_peer` (post-SAS confirm) can run and so
-    /// `sas()`/`public_key()` work throughout the handshake; consumed on `reset`.
+    /// Retained through the handshake so `accept_peer` and `sas` can run; replaced on `reset`.
     secret: StaticSecret,
     public: [u8; X25519_LEN],
     phase: Phase,
 }
 
-/// A watch crypto session. One per paired watch; `Arc`-shared, internally locked.
+/// One per paired watch; `Arc`-shared, internally locked.
 #[derive(uniffi::Object)]
 pub struct WatchSession {
     inner: Mutex<Inner>,
 }
 
-// ── key schedule ────────────────────────────────────────────────────────────────────
-
-/// Order the two public keys canonically → `(low, high)`.
 fn order_pubkeys<'a>(
     ours: &'a [u8; X25519_LEN],
     theirs: &'a [u8; X25519_LEN],
@@ -145,7 +112,6 @@ fn order_pubkeys<'a>(
     }
 }
 
-/// HKDF-Extract(SALT, dh) then Expand(INFO_ROOT) → the epoch-0 root.
 fn derive_root(dh: &[u8; 32]) -> Result<[u8; 32], CoreError> {
     let hk = Hkdf::<Sha256>::new(Some(SALT), dh);
     let mut root = [0u8; 32];
@@ -154,8 +120,7 @@ fn derive_root(dh: &[u8; 32]) -> Result<[u8; 32], CoreError> {
     Ok(root)
 }
 
-/// Expand a per-direction 16-byte key from the epoch root: `HKDF-Expand(root, label ||
-/// pk_low || pk_high)`. Binding both pubkeys pins the key to the exact handshake.
+/// Binding both pubkeys pins the key to the exact handshake.
 fn derive_dir_key(
     root: &[u8; 32],
     label: &[u8],
@@ -173,7 +138,6 @@ fn derive_dir_key(
     Ok(key)
 }
 
-/// Advance the root one ratchet step: `root' = HKDF-Expand(root, INFO_RATCHET)`.
 fn ratchet_root(root: &[u8; 32]) -> Result<[u8; 32], CoreError> {
     let hk = Hkdf::<Sha256>::from_prk(root).map_err(|_| internal("hkdf ratchet from_prk"))?;
     let mut next = [0u8; 32];
@@ -182,7 +146,7 @@ fn ratchet_root(root: &[u8; 32]) -> Result<[u8; 32], CoreError> {
     Ok(next)
 }
 
-/// (send_key, recv_key) for `role` from the current epoch root + ordered pubkeys.
+/// Returns `(send_key, recv_key)` for `role`.
 fn dir_keys(
     root: &[u8; 32],
     role: Role,
@@ -197,7 +161,6 @@ fn dir_keys(
     })
 }
 
-/// The deterministic 6-digit SAS over both public keys (order-independent).
 fn compute_sas(a: &[u8; X25519_LEN], b: &[u8; X25519_LEN]) -> String {
     let (lo, hi) = order_pubkeys(a, b);
     let mut h = Sha256::new();
@@ -225,12 +188,8 @@ fn to_arr32(v: &[u8], what: &str) -> Result<[u8; 32], CoreError> {
     Ok(a)
 }
 
-// ── FFI surface ─────────────────────────────────────────────────────────────────────
-
 #[uniffi::export]
 impl WatchSession {
-    /// Start a handshake: mint a fresh ephemeral X25519 keypair (OS CSPRNG). The session
-    /// is in the `Handshake` phase until `accept_peer`.
     #[uniffi::constructor]
     pub fn new() -> Arc<Self> {
         let secret = StaticSecret::random_from_rng(OsRng);
@@ -240,12 +199,9 @@ impl WatchSession {
         })
     }
 
-    /// Restore a persisted session and **burn the send window**: `send_next` jumps to the
-    /// persisted ceiling with NO headroom, so the next nonce is strictly past anything used
-    /// pre-crash *and* the first `seal` refuses until the caller reserves+persists a fresh
-    /// window via `export_state` — that mandatory cold-start checkpoint is what makes a
-    /// second crash equally safe. The blob is the ciphertext-of-secrets Kotlin keeps under
-    /// Keystore/StrongBox.
+    /// Restore a persisted session and BURN the send window: `send_next` jumps to the persisted
+    /// ceiling with no headroom, so the first `seal` refuses until `export_state` reserves and the
+    /// caller persists a fresh one. That mandatory checkpoint is what makes a second crash safe.
     #[uniffi::constructor]
     pub fn restore(state: Vec<u8>) -> Result<Arc<Self>, CoreError> {
         // magic(4) ver(1) role(1) epoch(4) send_ceiling(8) recv_min(8)
@@ -284,7 +240,6 @@ impl WatchSession {
         let (pk_low, pk_high) = order_pubkeys(&public, &peer_public);
         let (send_key, recv_key) = dir_keys(&root, role, pk_low, pk_high)?;
 
-        // BURN: never reuse a seq below the reserved ceiling.
         let est = Established {
             peer_public,
             role,
@@ -301,13 +256,12 @@ impl WatchSession {
         }))
     }
 
-    /// Our 32-byte X25519 public key (send to the peer as HELLO).
+    /// Send to the peer as HELLO.
     pub fn public_key(&self) -> Result<Vec<u8>, CoreError> {
         Ok(self.lock()?.public.to_vec())
     }
 
-    /// The current epoch (0 after the first `accept_peer`, +1 per `rotate`), or `Err` if
-    /// still in handshake.
+    /// 0 after the first `accept_peer`, +1 per `rotate`. `Err` while still in handshake.
     pub fn epoch(&self) -> Result<u32, CoreError> {
         match &self.lock()?.phase {
             Phase::Established(e) => Ok(e.epoch),
@@ -315,14 +269,11 @@ impl WatchSession {
         }
     }
 
-    /// True once keys are live.
     pub fn is_established(&self) -> Result<bool, CoreError> {
         Ok(matches!(self.lock()?.phase, Phase::Established(_)))
     }
 
-    /// The authoritative next send seq to emit (`send_next`). After `restore` this is the
-    /// burned ceiling, so the phone panel surfaces the resumed counter, not a local 0.
-    /// `Err` while still in handshake.
+    /// After `restore` this is the burned ceiling, not a local 0. `Err` while still in handshake.
     pub fn send_seq(&self) -> Result<u64, CoreError> {
         match &self.lock()?.phase {
             Phase::Established(e) => Ok(e.send_next),
@@ -330,8 +281,7 @@ impl WatchSession {
         }
     }
 
-    /// The authoritative receive replay floor (`recv_min`): the smallest seq still
-    /// acceptable to `open`. `Err` while still in handshake.
+    /// The smallest seq `open` still accepts. `Err` while still in handshake.
     pub fn recv_min(&self) -> Result<u64, CoreError> {
         match &self.lock()?.phase {
             Phase::Established(e) => Ok(e.recv_min),
@@ -339,12 +289,10 @@ impl WatchSession {
         }
     }
 
-    /// Accept the peer's public key: run ECDH, derive the epoch-0 root + both direction
-    /// keys, and arm the counters. Idempotent-unsafe: re-accepting resets the session to
-    /// a fresh epoch-0 (use `rotate` to advance an established link).
+    /// ECDH → the epoch-0 root, both direction keys, armed counters. Re-accepting RESETS the
+    /// session to a fresh epoch 0; use `rotate` to advance an established link.
     pub fn accept_peer(&self, peer_public: Vec<u8>) -> Result<(), CoreError> {
         let peer = to_arr32(&peer_public, "peer public")?;
-        // Reject a degenerate/identical key (all-zero DH or peer == us).
         if peer == [0u8; 32] {
             return Err(dec("peer public key is all-zero"));
         }
@@ -355,8 +303,7 @@ impl WatchSession {
         let peer_pk = PublicKey::from(peer);
         let dh = inner.secret.diffie_hellman(&peer_pk);
         let dh_bytes: [u8; 32] = *dh.as_bytes();
-        // X25519 contributory-behaviour guard: an all-zero shared secret means a
-        // small-order/attacker point — refuse rather than key off a known value.
+        // A small-order peer point would key off a known value.
         if !dh.was_contributory() {
             return Err(dec("non-contributory ECDH (small-order peer key)"));
         }
@@ -372,15 +319,14 @@ impl WatchSession {
             send_key,
             recv_key,
             send_next: 0,
-            // In-memory initial window; `export_state` extends + persists it.
+            // In-memory until `export_state` persists one.
             send_ceiling: NONCE_WINDOW,
             recv_min: 0,
         });
         Ok(())
     }
 
-    /// The 6-digit SAS to compare on both devices. `Err` until `accept_peer` (the peer key
-    /// is one of its two inputs).
+    /// `Err` until `accept_peer`; the peer key is one of its two inputs.
     pub fn sas(&self) -> Result<String, CoreError> {
         let inner = self.lock()?;
         match &inner.phase {
@@ -389,9 +335,8 @@ impl WatchSession {
         }
     }
 
-    /// Seal `plaintext` for the send direction → a self-describing frame
-    /// (`ver||epoch||seq||ct||tag`). `aad` is extra caller context authenticated but not
-    /// transmitted (may be empty). Refuses once the reserved nonce window is exhausted —
+    /// Seal for the send direction → `ver||epoch||seq||ct||tag`. `aad` is authenticated but not
+    /// transmitted, and may be empty. Refuses once the reserved nonce window is exhausted —
     /// checkpoint via `export_state` to extend it.
     pub fn seal(&self, plaintext: Vec<u8>, aad: Vec<u8>) -> Result<Vec<u8>, CoreError> {
         let mut inner = self.lock()?;
@@ -421,9 +366,8 @@ impl WatchSession {
         Ok(frame)
     }
 
-    /// Open a received frame for the receive direction → plaintext. Enforces: frame
-    /// version, epoch match, strictly-increasing seq (replay/reorder guard), and the GCM
-    /// tag. `aad` must match what the sender authenticated.
+    /// Enforces frame version, epoch match, strictly-increasing seq and the GCM tag. `aad` must
+    /// match what the sender authenticated.
     pub fn open(&self, frame: Vec<u8>, aad: Vec<u8>) -> Result<Vec<u8>, CoreError> {
         let mut inner = self.lock()?;
         let e = match &mut inner.phase {
@@ -459,9 +403,8 @@ impl WatchSession {
         Ok(pt)
     }
 
-    /// Manual key rotation: ratchet the root forward one epoch, re-derive both keys, reset
-    /// the per-epoch counters. Forward-secret — the previous root is zeroized. Returns the
-    /// new epoch. The peer must ratchet in lockstep (REKEY on the wire).
+    /// Ratchet the root one epoch, re-derive both keys, reset the per-epoch counters. The previous
+    /// root is zeroized; the peer must ratchet in lockstep (REKEY on the wire).
     pub fn rotate(&self) -> Result<u32, CoreError> {
         let mut inner = self.lock()?;
         let public = inner.public;
@@ -484,21 +427,19 @@ impl WatchSession {
         Ok(new_epoch)
     }
 
-    /// Session reset / unpair: discard all derived secrets and mint a fresh keypair. The
-    /// link must be re-paired (new `accept_peer` + new SAS) afterwards.
+    /// Discard all derived secrets and mint a fresh keypair; the link must then be re-paired.
     pub fn reset(&self) -> Result<(), CoreError> {
         let mut inner = self.lock()?;
         let secret = StaticSecret::random_from_rng(OsRng);
         inner.public = PublicKey::from(&secret).to_bytes();
-        inner.secret = secret; // old StaticSecret zeroizes on drop (dalek zeroize feature)
+        inner.secret = secret; // the old secret zeroizes on drop
         inner.phase = Phase::Handshake;
         Ok(())
     }
 
-    /// Serialize the resumable session + **reserve a fresh send window** (`send_ceiling =
-    /// send_next + NONCE_WINDOW`). The caller MUST durably persist the returned blob before
-    /// trusting subsequent seals; on the next cold start `restore` burns to this ceiling.
-    /// The blob carries the root + our secret in the clear — Kotlin wraps it at rest.
+    /// Serialize the session and reserve a fresh send window. The caller MUST durably persist the
+    /// blob before trusting later seals. It carries the root and our secret in the clear — Kotlin
+    /// wraps it at rest.
     pub fn export_state(&self) -> Result<Vec<u8>, CoreError> {
         let mut inner = self.lock()?;
         let secret_bytes = inner.secret.to_bytes();
@@ -544,8 +485,7 @@ impl WatchSession {
     }
 }
 
-/// Standalone SAS over two public keys — lets the UI / docs recompute it independently of a
-/// live session. Order-independent; `Err` on a non-32-byte key.
+/// Order-independent; `Err` on a non-32-byte key.
 #[uniffi::export]
 pub fn watch_sas(a: Vec<u8>, b: Vec<u8>) -> Result<String, CoreError> {
     Ok(compute_sas(&to_arr32(&a, "pubkey a")?, &to_arr32(&b, "pubkey b")?))
@@ -570,7 +510,6 @@ mod tests {
         serde_json::from_str(include_str!("testdata/watch_golden.json")).unwrap()
     }
 
-    // ── RFC 7748 §5.2 X25519 known-answer ────────────────────────────────────────────
     #[test]
     fn x25519_rfc7748_kat() {
         let g = golden();
@@ -582,7 +521,6 @@ mod tests {
         assert_eq!(tohex(&got), tohex(&want), "RFC 7748 X25519 KAT");
     }
 
-    // ── RFC 5869 Test Case 1 HKDF-SHA256 ─────────────────────────────────────────────
     #[test]
     fn hkdf_sha256_rfc5869_tc1() {
         let g = golden();
@@ -595,11 +533,9 @@ mod tests {
         let mut okm = vec![0u8; l];
         hk.expand(&info, &mut okm).unwrap();
         assert_eq!(tohex(&okm), k["okm"].as_str().unwrap());
-        // Also pin the PRK via from_prk round-trip length.
         assert_eq!(k["okm"].as_str().unwrap().len(), l * 2);
     }
 
-    // ── AES-128-GCM seal/open round-trip on a fixed vector ───────────────────────────
     #[test]
     fn aes128gcm_roundtrip_kat() {
         let g = golden();
@@ -619,7 +555,6 @@ mod tests {
         assert_eq!(back, pt, "GCM open");
     }
 
-    // ── SAS determinism + order-independence ─────────────────────────────────────────
     #[test]
     fn sas_deterministic_and_symmetric() {
         let g = golden();
@@ -631,7 +566,7 @@ mod tests {
         assert_eq!(watch_sas(b, a).unwrap(), want, "SAS must be order-independent");
     }
 
-    // ── fully-worked sealed PUSH frame (the vector docs/WATCH_BLE.md publishes) ───────
+    // The worked vector docs/WATCH_BLE.md publishes.
     #[test]
     fn worked_push_frame() {
         let g = golden();
@@ -650,7 +585,6 @@ mod tests {
         assert_eq!(a.sas().unwrap(), k["sas"].as_str().unwrap(), "SAS");
         assert_eq!(a.sas().unwrap(), b.sas().unwrap(), "SAS match");
 
-        // Inspect derived material (A's send key = phone→watch if A is phone).
         {
             let inner = a.lock().unwrap();
             if let Phase::Established(e) = &inner.phase {
@@ -666,12 +600,10 @@ mod tests {
         let frame = a.seal(plaintext.clone(), aad.clone()).unwrap();
         assert_eq!(tohex(&frame), k["frame"].as_str().unwrap(), "worked PUSH frame");
 
-        // The counterpart opens it.
         let opened = b.open(frame, aad).unwrap();
         assert_eq!(opened, plaintext, "peer opens the worked frame");
     }
 
-    // ── loopback e2e: random handshake → seal/open both ways, SAS matches ─────────────
     #[test]
     fn loopback_e2e() {
         let phone = WatchSession::new();
@@ -688,7 +620,7 @@ mod tests {
             let f = phone.seal(msg.clone(), vec![0xAB, i]).unwrap();
             assert_eq!(watch.open(f, vec![0xAB, i]).unwrap(), msg, "push {i}");
         }
-        // Reverse direction (PUSH_ACK) uses the other key pair.
+        // PUSH_ACK uses the other key pair.
         let ack = watch.seal(b"ack".to_vec(), vec![]).unwrap();
         assert_eq!(phone.open(ack, vec![]).unwrap(), b"ack");
     }
@@ -701,24 +633,18 @@ mod tests {
         b.accept_peer(a.public_key().unwrap()).unwrap();
 
         let f0 = a.seal(b"hello".to_vec(), vec![]).unwrap();
-        // Tamper one ciphertext byte → auth failure, not panic.
         let mut bad = f0.clone();
         let last = bad.len() - 1;
         bad[last] ^= 0x01;
         assert!(b.open(bad, vec![]).is_err());
-        // AAD mismatch → auth failure.
         assert!(b.open(f0.clone(), vec![0x99]).is_err());
 
-        // Good open advances the watermark.
         assert_eq!(b.open(f0.clone(), vec![]).unwrap(), b"hello");
-        // Replay the same frame → rejected (seq < min).
         assert!(b.open(f0, vec![]).is_err());
 
-        // Epoch mismatch: rotate only A, its next frame won't open on stale-epoch B.
         a.rotate().unwrap();
         let f_new = a.seal(b"e1".to_vec(), vec![]).unwrap();
         assert!(b.open(f_new.clone(), vec![]).is_err(), "epoch-desync must fail closed");
-        // Both rotate → back in sync.
         b.rotate().unwrap();
         assert_eq!(b.open(f_new, vec![]).unwrap(), b"e1");
     }
@@ -748,7 +674,6 @@ mod tests {
         assert_ne!(key_e0, key_e1, "rotation must change the direction key");
     }
 
-    // ── kill -9 / battery-yank: the persisted window is burned, never reused ──────────
     #[test]
     fn kill9_no_nonce_reuse() {
         let a = WatchSession::new();
@@ -756,9 +681,7 @@ mod tests {
         a.accept_peer(b.public_key().unwrap()).unwrap();
         b.accept_peer(a.public_key().unwrap()).unwrap();
 
-        // Checkpoint at seq 0 → reserves ceiling = NONCE_WINDOW.
         let blob = a.export_state().unwrap();
-        // Emit three frames pre-crash (seqs 0,1,2); the peer tracks them.
         let mut used = Vec::new();
         for _ in 0..3 {
             let f = a.seal(b"x".to_vec(), vec![]).unwrap();
@@ -768,23 +691,17 @@ mod tests {
         }
         assert_eq!(used, vec![0, 1, 2]);
 
-        // *** kill -9 ***  — no further export; `a` and its in-memory send_next vanish.
+        // kill -9: no further export, so `a`'s in-memory send_next vanishes.
         drop(a);
         let a2 = WatchSession::restore(blob).unwrap();
 
-        // Cold start is fail-closed: `restore` burns send_next up to the persisted ceiling
-        // and leaves NO headroom, so the first `seal` refuses until a fresh window is
-        // reserved + persisted. (Otherwise a second crash could re-emit the same ceiling.)
         assert!(a2.seal(b"y".to_vec(), vec![]).is_err(), "restore must force a checkpoint");
-        let _blob2 = a2.export_state().unwrap(); // reserve + (caller would persist) a new window
+        let _blob2 = a2.export_state().unwrap(); // reserve a new window
 
-        // The next nonce must be past the burned window (>= NONCE_WINDOW), never a reuse.
         let f = a2.seal(b"y".to_vec(), vec![]).unwrap();
         let seq = u64::from_le_bytes(f[5..13].try_into().unwrap());
         assert_eq!(seq, NONCE_WINDOW, "cold start must burn to the reserved ceiling");
         assert!(!used.contains(&seq), "a (key,nonce) was reused after restart!");
-        // And the peer (whose recv watermark survived at 3) still accepts it — seq 64 > 2.
-        // (fresh b here would accept from 0; the real peer persists recv_min alongside.)
     }
 
     #[test]
@@ -796,33 +713,28 @@ mod tests {
         a.rotate().unwrap();
         b.rotate().unwrap();
 
-        // b receives one frame → recv_min advances to 1.
         let f = a.seal(b"m".to_vec(), vec![]).unwrap();
         b.open(f, vec![]).unwrap();
         let blob = b.export_state().unwrap();
         let b2 = WatchSession::restore(blob).unwrap();
         assert_eq!(b2.epoch().unwrap(), 1, "epoch survives restore");
-        // A stale (seq 0) frame at this epoch must still be rejected after restore.
-        // Re-derive an epoch-1 seq-0 frame from a fresh sender sharing b2's keys is
-        // impractical here; instead assert the watermark by re-sending from a.
+        // The watermark is asserted indirectly: re-deriving an epoch-1 seq-0 frame from a fresh
+        // sender sharing b2's keys is impractical here.
         let f2 = a.seal(b"n".to_vec(), vec![]).unwrap(); // seq 1
         assert_eq!(b2.open(f2, vec![]).unwrap(), b"n");
     }
 
-    // ── resume surfaces the real counters, not a local 0 ─────────────────────────────
     #[test]
     fn send_seq_recv_min_resume_after_restore() {
         let a = WatchSession::new();
         let b = WatchSession::new();
         a.accept_peer(b.public_key().unwrap()).unwrap();
         b.accept_peer(a.public_key().unwrap()).unwrap();
-        // Fresh session: counters start at 0; handshake-phase peers Err before establish.
         assert_eq!(a.send_seq().unwrap(), 0);
         assert_eq!(a.recv_min().unwrap(), 0);
         assert!(WatchSession::new().send_seq().is_err());
         assert!(WatchSession::new().recv_min().is_err());
 
-        // Emit a few frames so send_next advances; b's recv_min tracks them.
         for _ in 0..3 {
             let f = a.seal(b"x".to_vec(), vec![]).unwrap();
             b.open(f, vec![]).unwrap();
@@ -830,14 +742,11 @@ mod tests {
         assert_eq!(a.send_seq().unwrap(), 3);
         assert_eq!(b.recv_min().unwrap(), 3);
 
-        // Checkpoint → the persisted ceiling is send_next + NONCE_WINDOW.
         let blob = a.export_state().unwrap();
         drop(a);
         let a2 = WatchSession::restore(blob).unwrap();
-        // Resume must surface the BURNED ceiling (3 + NONCE_WINDOW), never a local 0.
         assert_eq!(a2.send_seq().unwrap(), 3 + NONCE_WINDOW, "resumed send seq == burned ceiling");
 
-        // recv_min likewise survives a restore of the receiving side.
         let bblob = b.export_state().unwrap();
         let b2 = WatchSession::restore(bblob).unwrap();
         assert_eq!(b2.recv_min().unwrap(), 3, "resumed recv floor persists");
@@ -846,12 +755,9 @@ mod tests {
     #[test]
     fn hostile_inputs_never_panic() {
         let s = WatchSession::new();
-        // Bad-length peer key.
         assert!(s.accept_peer(vec![0u8; 31]).is_err());
         assert!(s.accept_peer(vec![]).is_err());
-        // All-zero peer key.
         assert!(s.accept_peer(vec![0u8; 32]).is_err());
-        // Ops before establishment.
         assert!(s.seal(vec![1, 2, 3], vec![]).is_err());
         assert!(s.open(vec![0u8; 64], vec![]).is_err());
         assert!(s.sas().is_err());
@@ -860,10 +766,8 @@ mod tests {
         assert!(s.epoch().is_err());
         assert!(s.send_seq().is_err());
         assert!(s.recv_min().is_err());
-        // Malformed restore blobs.
         assert!(WatchSession::restore(vec![]).is_err());
         assert!(WatchSession::restore(vec![0u8; 200]).is_err());
-        // Establish, then feed truncated / garbage frames to open.
         let peer = WatchSession::new();
         s.accept_peer(peer.public_key().unwrap()).unwrap();
         for len in 0..(HDR_LEN + TAG_LEN) {

@@ -6,7 +6,6 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Test
 
-/** Where the slider says the patient was, and — more importantly — when it refuses to say. */
 class TrackCursorTest {
 
     private val t0 = 1_700_000_000_000L
@@ -29,13 +28,8 @@ class TrackCursorTest {
         assertEquals(-0.1, p.lon, 1e-9)
     }
 
-    /**
-     * Longitude interpolates too, and against a number.
-     *
-     * Every fix in the shared track sits on one meridian, so a mapper that returned the bracketing
-     * fix's longitude, or the wrong endpoint's, or latitude twice, would satisfy every other case
-     * here. One diagonal leg is what separates a real interpolation from a coincidence.
-     */
+    /** Every fix in the shared track sits on one meridian, so only a diagonal leg separates a real
+     *  interpolation from a coincidence. */
     @Test
     fun longitude_interpolates_between_two_fixes() {
         val diagonal = listOf(fix(0, 51.0, -0.10), fix(60_000, 51.002, -0.06))
@@ -58,21 +52,13 @@ class TrackCursorTest {
         assertEquals(51.0, p!!.lat, 1e-9)
     }
 
-    /** Outside the track's own span there is nothing recorded, and the dot is withheld rather than
-     *  pinned to an end — the review window reaches two hours past the bout. */
     @Test
     fun outside_the_track_span_it_withholds() {
         assertNull(trackPositionAt(track, t0 - 1, grid))
         assertNull(trackPositionAt(track, t0 + 120_001, grid))
     }
 
-    /**
-     * The bound is the distance to the NEARER fix, not the width of the bracket.
-     *
-     * This is the case the bracket-width rule got wrong: a 5 min 10 s stop is an ordinary bracket
-     * wider than one grid slot, and a cursor five seconds from a recorded fix would have had the
-     * dot vanish while the BG row beneath it printed a measurement for the same instant.
-     */
+    /** A 5 min 10 s stop is an ordinary bracket wider than one grid slot. */
     @Test
     fun a_cursor_seconds_from_a_recorded_fix_resolves_however_wide_the_bracket() {
         val stop = listOf(fix(0, 51.0, -0.1), fix(310_000, 51.5, -0.2))
@@ -81,11 +67,9 @@ class TrackCursorTest {
             trackPositionAt(stop, t0 + 305_000, grid),
         )
         assertNotNull("five seconds from the near fix", trackPositionAt(stop, t0 + 5_000, grid))
-        // …and the middle of a long rest, where nothing was recorded near, still withholds.
         assertNull(trackPositionAt(stop, t0 + 155_000, grid))
     }
 
-    /** A cursor sitting exactly on a fix resolves to it, whatever its neighbour is doing. */
     @Test
     fun a_cursor_on_a_fix_resolves_to_that_fix() {
         val sparse = listOf(fix(0, 51.0, -0.1), fix(3_600_000, 52.0, -0.2))

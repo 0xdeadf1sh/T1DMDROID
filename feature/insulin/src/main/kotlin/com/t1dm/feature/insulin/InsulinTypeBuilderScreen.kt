@@ -40,15 +40,6 @@ import com.t1dm.core.model.BezierCurve
 import com.t1dm.ui.graph.CurveEditor
 import com.t1dm.ui.graph.CurvePreview
 
-/**
- * The insulin **type** builder (Phase 4 deliverable 4, `:feature:insulin`) — the
- * "pick a saved insulin type / draw a custom curve" seam the dose-entry [InsulinScreen] points at.
- * It lists the quick presets (Novorapid gamma; Lantus/Tresiba Bateman) plus any user-defined types,
- * shows the live **PK-action** preview for a trial dose ([onResolve]), lets a dose be logged against
- * the selected type, and defines a new custom type — either analytically (gamma `k`/`theta` for a
- * bolus, Bateman `ka`/`ke` for a basal) or by DRAWING a custom action curve with the reusable
- * [CurveEditor]. Stateless + callback-driven.
- */
 @Composable
 fun InsulinTypeBuilderScreen(
     types: List<InsulinType>,
@@ -62,8 +53,6 @@ fun InsulinTypeBuilderScreen(
     var unitsText by remember { mutableStateOf("") }
     val units = unitsText.toDoubleOrNull()
     val scroll = rememberScrollState()
-    // Which (type, units) pair the Log press proposes — the button is rendered per selected type, so
-    // the confirmation has to carry the type with it rather than re-read the selection.
     var pending by remember { mutableStateOf<Pair<InsulinType, PendingLog.Dose>?>(null) }
     val haptics = rememberT1dmHaptics()
 
@@ -103,7 +92,6 @@ fun InsulinTypeBuilderScreen(
                     value = runCatching { onResolve(type, units) }.getOrDefault(emptyList())
                 }
                 CurvePreview(values = curve)
-                // Propose only; the dialog and the receipt carry the rest of the beat.
                 Button(
                     onClick = {
                         haptics.perform(HapticEvent.Tap)
@@ -175,7 +163,6 @@ private fun CustomTypeBuilder(onSaveType: (InsulinType) -> Unit) {
         )
     }
     val curveDegenerate = drawCurve && curve.isDegenerate()
-    // Felt at the drag that flattens the curve, not at the dead Save button noticed afterwards.
     LaunchedEffect(curveDegenerate) {
         if (curveDegenerate) haptics.perform(HapticEvent.Warn)
     }

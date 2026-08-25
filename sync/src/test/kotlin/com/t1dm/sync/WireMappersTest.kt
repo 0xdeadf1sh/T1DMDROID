@@ -6,15 +6,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
-/**
- * What the wire says about a BG, and what the phone stores because of it.
- *
- * The one mapping in the app where a wrong answer is not a wrong pixel: provenance is what every
- * safety gate keys on — an alarm may only be cleared by a measured reading, and only a measured
- * reading enters the dosing series — so a reconstruction that arrives flagged MEASURED is a model's
- * output admitted as sensor signal. Both inbound paths are pinned here because they are separate
- * code and only one of them was taught the flag when it shipped.
- */
+/** Provenance is what the safety gates key on: only a measured reading clears an alarm or enters the
+ *  dosing series. Both inbound paths are pinned because they are separate code. */
 class WireMappersTest {
 
     private fun rest(bg: Double?, reconstructed: Boolean) = SampleDto(

@@ -1,67 +1,35 @@
 package com.t1dm.calc
 
-/**
- * The user-configurable policy for the dose calculators (§3.6, Phase 4
- * deliverable 5/6). Every numeric threshold here is **user-set and deliberately UNBOUNDED** —
- * the user overrode the compiled ceiling, and the advisory-only + manual-administration model is
- * the terminal safety net. The *rails* still exist and still fail closed; a
- * threshold merely tunes where an enabled rail trips.
- *
- * Nothing in this module actuates insulin. A [CalcConfig] only shapes which candidate dose the
- * grid search *recommends* to the human.
- */
+/** Every threshold here is user-set and UNBOUNDED (§3.6); a rail still fails closed, the
+ *  threshold only tunes where it trips. */
 
-/** The user's glycaemic goal in mg/dL. [target] is the single-point aim for HitTargetAtTime. */
 data class TargetRange(
     val lowMgdl: Double = 70.0,
     val highMgdl: Double = 180.0,
     val targetMgdl: Double = 110.0,
 )
 
-/** The selectable scoring objective for the forecast fan (Phase 4 §5). */
 sealed interface Objective {
-    /** Minimise the horizon-weighted count of steps predicted out of [TargetRange]. */
     data object MinTimeOutOfRange : Objective
 
-    /** Minimise horizon-weighted Kovatchev blood-glucose risk (LBGI + HBGI, both off the median). */
     data object MinKovatchevRisk : Objective
 
-    /** Drive the median to [TargetRange.targetMgdl] at [atMsFromNow] ms past the roll start. */
+    /** [atMsFromNow] is measured from the roll start. */
     data class HitTargetAtTime(val atMsFromNow: Long) : Objective
 
-    /**
-     * Drive the median onto a single user-set BG [targetMgdl] across the whole horizon — the
-     * scalar-target analogue of [MinTimeOutOfRange], scoring the median's distance from one point
-     * rather than an in-range band. [targetMgdl] is user-set and UNBOUNDED (§3.6); the app sources it
-     * from a slider bounded by the calculator's own low/high target so no extra clamp is required. The
-     * scorer carries its OWN intrinsic median hypo term (`scoreHitTargetBg`), so hypo protection
-     * on this — the objective the Bolus advisor forces — does NOT rest on the user-disableable
-     * predicted-low VETO rail.
-     */
+    /** Its scorer carries an intrinsic median hypo term, so hypo protection on the objective the
+     *  Bolus advisor forces does not rest on the user-disableable predicted-low veto. */
     data class HitTargetBg(val targetMgdl: Double) : Objective
 }
 
-/**
- * Relative penalties for the two failure directions (PLAN "configurable hypo/hyper asymmetry").
- * Unbounded and independent: the user may punish hypo far harder than hyper, or vice-versa.
- *
- * Both directions are scored off the **median**. Hypo was previously scored off the lower quantile
- * band, hyper off the median; that asymmetry made every nonzero dose look hypo-risky on a widening
- * fan, so these weights are now the only thing expressing the preference — which is what they were
- * always meant to be. Widening the fan can no longer, by itself, push the advisor toward zero.
- */
+/** Both directions score off the median; these weights are the whole of the hypo/hyper preference. */
 data class Asymmetry(
     val hypoWeight: Double = 3.0,
     val hyperWeight: Double = 1.0,
 )
 
-/**
- * Per-rail enable switches ("guard-rail toggles exist"). A disabled rail is a
- * no-op; an **enabled** rail always fails closed on missing / degenerate / stale / collapsed input
- * (SPEC §3.6-C). The baseline-degeneracy rail ([Rails.baselineDegeneracy]) is deliberately NOT one of
- * these toggles — scoring a degenerate fan is meaningless — so it is enforced structurally and can
- * only be lifted via the DoseAdvisor.recommendBolus `bypassDegeneracyGate` (DEATH) parameter.
- */
+/** A disabled rail is a no-op; an enabled one fails closed on bad input (§3.6-C).
+ *  [Rails.baselineDegeneracy] is deliberately not toggleable here. */
 data class RailToggles(
     val predictedLowVeto: Boolean = true,
     val iobCeiling: Boolean = true,
@@ -69,7 +37,6 @@ data class RailToggles(
     val hypoTreatment: Boolean = true,
 ) {
     companion object {
-        /** All optional rails disabled — the "all-rails-off = identity" CI invariant (Phase 4 §7). */
         val ALL_OFF = RailToggles(
             predictedLowVeto = false,
             iobCeiling = false,
@@ -79,7 +46,6 @@ data class RailToggles(
     }
 }
 
-/** The bounded candidate grid for the bolus search. [maxU] is user-set and unbounded. */
 data class GridSpec(
     val minU: Double = 0.0,
     val maxU: Double = 15.0,
@@ -90,11 +56,11 @@ data class GridSpec(
         require(maxU >= minU) { "grid maxU < minU" }
     }
 
-    /** The candidate doses, always including a 0 U baseline (the do-nothing counterfactual). */
+    /** Units. Always includes the 0 U baseline. */
     fun doses(): List<Double> {
         val out = sortedSetOf(0.0)
         var d = minU
-        // Guard against a runaway grid; the user's unbounded maxU is honoured but capped in count.
+        // An unbounded maxU is honoured but capped in count.
         var n = 0
         while (d <= maxU + 1e-9 && n < MAX_CANDIDATES) {
             out.add(((d * 1e6).toLong() / 1e6)) // de-noise fp accumulation
@@ -108,10 +74,6 @@ data class GridSpec(
     }
 }
 
-/**
- * The split-bolus search envelope (Phase 4 §6 — "coarse fraction × gap grid under a
- * configurable cap"). [maxParts] and [maxGapMin] are the user's cap; [gapGridMin] the coarse gaps.
- */
 data class SplitSpec(
     val enabled: Boolean = true,
     val maxParts: Int = 2,
@@ -119,12 +81,8 @@ data class SplitSpec(
     val firstFractionGrid: List<Double> = listOf(0.5, 0.6, 0.7),
 )
 
-/**
- * The horizon-weighting policy (PLAN "§ 5h-roll finding"). Contributions beyond the validated
- * [predictionHorizonHours] are discounted to [beyondWindowWeight] when *selecting* a dose — the
- * far, self-fed median is the least reliable and carry_spread widening is a heuristic, not a
- * calibrated quantile. The full [fullRollHours] roll is still produced for context.
- */
+/** Past [predictionHorizonHours] the median is self-fed and the widening uncalibrated, hence the
+ *  [beyondWindowWeight] discount when selecting a dose. The full roll is still produced. */
 data class HorizonPolicy(
     val predictionHorizonHours: Double = 2.0,
     val fullRollHours: Double = 5.0,
@@ -138,10 +96,6 @@ data class HorizonPolicy(
     }
 }
 
-/**
- * The complete calculator policy. All thresholds are user-set and unbounded; the rails they tune
- * still fail closed (SPEC §3.6-C). Conservative *defaults* per open-Q10 sign-off.
- */
 data class CalcConfig(
     val target: TargetRange = TargetRange(),
     val objective: Objective = Objective.MinKovatchevRisk,
@@ -150,16 +104,12 @@ data class CalcConfig(
     val grid: GridSpec = GridSpec(),
     val split: SplitSpec = SplitSpec(),
     val horizon: HorizonPolicy = HorizonPolicy(),
-    // ── Rail thresholds (user-set, UNBOUNDED) ──────────────────────────────────────────
-    /** Predicted-low veto: block a dose whose MEDIAN drops below this within the VALIDATED window. */
+    /** Vetoes a dose whose MEDIAN drops below this inside the VALIDATED window. */
     val predictedLowThresholdMgdl: Double = 70.0,
-    /** IOB ceiling: block when assumed IOB + candidate dose exceeds this. */
     val iobCeilingU: Double = 12.0,
-    /** §3.6-F: a nonzero recommendation with the last logged dose older than this is mandatory-confirm. */
+    /** §3.6-F: a nonzero dose with the last logged dose older than this is mandatory-confirm. */
     val longGapSinceLogMs: Long = 3 * 60 * 60_000L,
-    /** Hypo-treatment path: current or near-term predicted BG below this switches to carb rescue. */
     val hypoNowThresholdMgdl: Double = 70.0,
-    /** Rescue carbs are dosed to lift BG by ~[rescueTargetLiftMgdl] at the assumed [carbSensitivityMgdlPerG]. */
     val rescueTargetLiftMgdl: Double = 50.0,
     val carbSensitivityMgdlPerG: Double = 3.0,
 )

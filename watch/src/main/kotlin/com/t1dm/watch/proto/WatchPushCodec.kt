@@ -7,50 +7,18 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /**
- * The frozen, little-endian byte layout of a [WatchPush] plaintext, plus the sealed WIRE frame that
- * wraps a [SealedFrame] for the PUSH characteristic (docs/WATCH_BLE.md §Push). Pure, deterministic,
- * and golden-tested so the firmware decoder and the app encoder cannot drift.
- *
- * Plaintext (17-byte fixed head + N-byte summary, N ≤ [WatchPush.MAX_SUMMARY]):
- * ```
- *  off  type  field
- *   0   u8    payload_version
- *   1   u8    status_bits              (WatchStatus.toBits)
- *   2   i16   bg_mgdl                  (-1 = none)
- *   4   i16   trend_tenths             (Short.MIN_VALUE = none)
- *   6   u8    alert_band               (0..4 URGENT_LOW..URGENT_HIGH; 0xFF none)
- *   7   u8    forecast_status          (0..4; 0xFF none)
- *   8   i16   fc_end_mgdl              (-1 = none)
- *  10   u8    fc_horizon_steps         (each step = 5 min)
- *  11   u8    fc_trend                 (WatchTrend ordinal)
- *  12   u32   reading_age_s            (seconds since last MEASURED reading)
- *  16   u8    summary_len N
- *  17  ..N    summary                  (UTF-8)
- * ```
- *
- * Sealed wire frame written to PUSH — the authoritative record of docs/WATCH_BLE.md §6.1 (the 13-byte
- * cleartext header is also the AEAD associated data; there is NO magic or direction byte — the two
- * directions are separated by KEY, not by a wire flag):
- * ```
- *   0   u8    version = 0x01
- *   1   u32   epoch                    (little-endian)
- *   5   u64   seq                      (little-endian; the windowed nonce counter)
- *  13   ..    ciphertext || 16-byte GCM tag
- * ```
- * The [crypto.WatchSession] produces and consumes this record whole (the header is built inside the
- * cipher so `epoch`/`seq` are authenticated); this codec only serialises the plaintext and offers a
- * header parse for the panel/tests.
+ * The frozen little-endian layout of a [WatchPush] plaintext (17-byte head + UTF-8 summary) and the
+ * sealed record for the PUSH characteristic (docs/WATCH_BLE.md §Push, §6.1). Golden-tested so the
+ * firmware decoder and the app encoder cannot drift.
  */
 object WatchPushCodec {
 
-    /** Frame version byte leading every sealed record (docs/WATCH_BLE.md §9.1). */
+    /** docs/WATCH_BLE.md §9.1. */
     const val FRAME_VERSION = 0x01
-    /** `version(1) || epoch(u32le) || seq(u64le)` = the authoritative header / AEAD AAD length. */
+    /** `version(1) || epoch(u32le) || seq(u64le)`, also the AEAD associated data. */
     const val HEADER_LEN = 13
     private const val TAG_LEN = 16
     private const val NONE_I16 = -1
-
-    // ── Plaintext ───────────────────────────────────────────────────────────────────────────────
 
     fun encode(push: WatchPush): ByteArray {
         val summaryBytes = push.summary.encodeToByteArray().let {
@@ -101,15 +69,10 @@ object WatchPushCodec {
         )
     }
 
-    // ── Sealed wire frame (authoritative §6.1) ──────────────────────────────────────────────────
-
-    /** The bytes written to the PUSH characteristic ARE the sealed record; this is the identity that
-     *  names the intent at the call site. The header (version/epoch/seq) lives inside [SealedFrame.frame],
-     *  built and authenticated by the cipher — the codec never prepends anything. */
+    /** The sealed record IS the wire frame; the cipher already built and authenticated its header. */
     fun wireFrame(sealed: SealedFrame): ByteArray = sealed.frame
 
-    /** Parse the 13-byte authoritative header of a PUSH record; null if too short or a wrong version.
-     *  Returns `(epoch, SealedFrame(seq, wholeRecord))` — the whole record is what the peer opens. */
+    /** `(epoch, SealedFrame(seq, wholeRecord))`; null if too short or a wrong version (fail-closed). */
     fun parseWireFrame(b: ByteArray): Pair<Int, SealedFrame>? {
         if (b.size < HEADER_LEN + TAG_LEN) return null
         if (b[0].toInt() and 0xFF != FRAME_VERSION) return null
@@ -118,8 +81,6 @@ object WatchPushCodec {
         val seq = hdr.long
         return epoch.toInt() to SealedFrame(seq, b)
     }
-
-    // ── enum ↔ wire ─────────────────────────────────────────────────────────────────────────────
 
     private fun bandToWire(band: AlertBand?): Int = band?.ordinal ?: 0xFF
     private fun wireToBand(v: Int): AlertBand? = AlertBand.entries.getOrNull(v)

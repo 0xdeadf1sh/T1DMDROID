@@ -1,19 +1,12 @@
 package com.t1dm.cgm
 
-/**
- * Re-parses raw BLE AD structures ourselves (Phase 1). Android's
- * `ScanRecord.getManufacturerSpecificData(0x0059)` returns the *merged* concatenation of the
- * two 0x0059 structures the AiDEX X advertises (the 20-byte glucose block and the ~5-byte status
- * block, CGM.md §3), so it cannot be trusted to hand back the glucose payload cleanly. We walk
- * the `[len][type][data…]` TLV stream and pick the ≥20-byte 0x0059 manufacturer structure.
- */
+/** Android's `ScanRecord.getManufacturerSpecificData` returns the MERGED concatenation of the two
+ *  0x0059 structures the sensor advertises (CGM.md §3), so the `[len][type][data…]` TLV stream is
+ *  walked here instead. */
 object AdStructureParser {
 
-    /**
-     * Return the manufacturer payload (the bytes *after* the 2-byte company id) of the first
-     * 0x0059 manufacturer-specific structure whose payload is at least [minLen] bytes — i.e. the
-     * glucose block, never the short status block. `null` when no such structure is present.
-     */
+    /** The bytes AFTER the 2-byte company id, from the first matching structure whose payload is at
+     *  least [minLen] — the glucose block, never the short status block. Null when there is none. */
     fun manufacturerPayload(
         adBytes: ByteArray,
         companyId: Int = CgmConstants.MANUFACTURER_ID,
@@ -29,18 +22,18 @@ object AdStructureParser {
             // 0xFF = Manufacturer Specific Data; needs at least type(1)+company(2).
             if (type == 0xFF && len >= 3) {
                 val cid = (adBytes[i + 2].toInt() and 0xFF) or ((adBytes[i + 3].toInt() and 0xFF) shl 8)
-                val payloadLen = len - 3        // subtract the type byte and the 2 company bytes
+                val payloadLen = len - 3
                 if (cid == companyId && payloadLen >= minLen) {
                     val from = i + 4
                     return adBytes.copyOfRange(from, from + payloadLen)
                 }
             }
-            i += len + 1                        // advance past [len byte][len data bytes]
+            i += len + 1                        // [len byte] + len data bytes
         }
         return null
     }
 
-    /** Extract the Complete (0x09) or Shortened (0x08) Local Name, if present (CGM.md §3). */
+    /** The Complete (0x09) or Shortened (0x08) Local Name (CGM.md §3). */
     fun localName(adBytes: ByteArray): String? {
         var i = 0
         val n = adBytes.size

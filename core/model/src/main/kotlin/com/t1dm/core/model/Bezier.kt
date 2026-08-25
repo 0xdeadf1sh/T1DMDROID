@@ -2,28 +2,18 @@ package com.t1dm.core.model
 
 import kotlin.math.ceil
 
-/** One on-curve control point of a [BezierCurve]: a rate [y] (≥ 0, linear amount axis) at time
- *  [xMin] (minutes from the log instant). The user drags these; the curve interpolates smoothly. */
+/** Rate [y] (>= 0) at [xMin] minutes from the log instant. */
 data class BezierPoint(val xMin: Double, val y: Double)
 
 /**
- * A smooth cubic curve authored by the Bézier control-point editor (Phase 7D item 19
- * — "replace the piecewise-linear editor with a cubic Bézier control-point editor"). It is a pure
- * SHAPE: the absolute [y] scale is irrelevant because [sampleNormalized] area-normalises to a
- * caller-supplied dose total, exactly as the gamma / Bateman presets and the old [PwlCurve] did — so
- * it drops into the same `customCurve` BLOB pipeline (model-io-curves.md: carbs feed the model as an
- * appearance-rate curve, insulin as a PK-action-rate curve).
- *
- * The interpolant is a C¹ cubic Hermite spline with Catmull-Rom tangents through the (x-sorted)
- * control points — i.e. each span is a cubic Bézier segment — clamped to 0 outside the first/last
- * point and never negative. This yields the rounded, tension-free shape a Bézier editor implies while
- * keeping the drawn curve identical to the sampled one (both go through [valueAt]).
+ * A pure shape: [sampleNormalized] area-normalises to a caller-supplied total, so the absolute [y]
+ * scale is irrelevant. C¹ cubic Hermite with Catmull-Rom tangents through the x-sorted points,
+ * clamped to 0 outside the first and last, never negative.
  */
 data class BezierCurve(
     val durationMin: Double,
     val points: List<BezierPoint>,
 ) {
-    /** The C¹ cubic-Hermite (Catmull-Rom) value at [xMin]; 0 before the first / after the last point. */
     fun valueAt(xMin: Double): Double {
         val p = points
         if (p.isEmpty()) return 0.0
@@ -37,7 +27,7 @@ data class BezierCurve(
         if (h <= 0.0) return maxOf(p1.y, p2.y).coerceAtLeast(0.0)
         val p0 = if (i > 0) p[i - 1] else p1
         val p3 = if (i + 2 < p.size) p[i + 2] else p2
-        // Catmull-Rom tangents (secant of the neighbours), scaled to the local span.
+        // Catmull-Rom tangents, scaled to the local span.
         val m1 = tangent(p0, p2) * h
         val m2 = tangent(p1, p3) * h
         val t = (xMin - p1.xMin) / h
@@ -50,11 +40,8 @@ data class BezierCurve(
         return (h00 * p1.y + h10 * m1 + h01 * p2.y + h11 * m2).coerceAtLeast(0.0)
     }
 
-    /**
-     * Sample into `ceil(durationMin / stepMin)` per-step buckets (midpoint rule) then scale so the
-     * buckets sum to [total]. A degenerate (zero-area) curve yields all-zeros — the one transform from
-     * an editor shape to the model-facing amount-per-5-min curve (identical contract to [PwlCurve]).
-     */
+    /** `ceil(durationMin / stepMin)` buckets by the midpoint rule, scaled to sum to [total]; all
+     *  zeros for a curve that encloses no area. */
     fun sampleNormalized(total: Double, stepMin: Double = 5.0): List<Double> {
         val n = ceil(durationMin / stepMin).toInt().coerceAtLeast(1)
         val raw = DoubleArray(n) { i -> valueAt((i + 0.5) * stepMin).coerceAtLeast(0.0) }
@@ -64,12 +51,8 @@ data class BezierCurve(
         return raw.map { it * scale }
     }
 
-    /**
-     * True when the shape encloses no positive area — [sampleNormalized] would yield all-zeros, so it
-     * encodes no meal / dose. A degenerate curve must be REFUSED with a plain reason (never saved as a
-     * silent zero curve): the model is trained on real appearance / action humps, and a flat input is
-     * out-of-distribution as well as clinically meaningless.
-     */
+    /** Encloses no positive area. Refuse it with a plain reason rather than saving a silent zero
+     *  curve: a flat input is out-of-distribution as well as clinically meaningless. */
     fun isDegenerate(stepMin: Double = 5.0): Boolean {
         val n = ceil(durationMin / stepMin).toInt().coerceAtLeast(1)
         var area = 0.0
@@ -83,7 +66,6 @@ data class BezierCurve(
             return if (dx <= 0.0) 0.0 else (b.y - a.y) / dx
         }
 
-        /** A sensible default: a smooth hump rising from 0, peaking at [peakFrac], decaying to 0. */
         fun default(durationMin: Double, peakFrac: Double = 0.30): BezierCurve = BezierCurve(
             durationMin = durationMin,
             points = listOf(
@@ -94,7 +76,6 @@ data class BezierCurve(
             ),
         )
 
-        /** Compact dependency-free serialisation `dur|x,y;x,y;…` for kv persistence (Settings). */
         fun encode(c: BezierCurve): String =
             "${c.durationMin}|" + c.points.joinToString(";") { "${it.xMin},${it.y}" }
 

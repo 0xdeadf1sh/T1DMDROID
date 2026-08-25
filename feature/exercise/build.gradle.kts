@@ -17,8 +17,8 @@ dependencies {
     implementation(libs.bundles.compose)
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.osmdroid.android)
-    // LocalLifecycleOwner. The osmdroid MapView holds a tile thread and a disk cache, and neither the
-    // frame clock nor window detach is a pause for it — it has to be driven from the Activity's state.
+    // LocalLifecycleOwner: the osmdroid MapView's tile thread and disk cache pause on the Activity's
+    // state, not on window detach.
     implementation(libs.androidx.lifecycle.runtime.compose)
 
     testImplementation(libs.junit)

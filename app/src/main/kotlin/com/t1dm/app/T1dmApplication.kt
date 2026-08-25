@@ -13,7 +13,6 @@ import timber.log.Timber
 
 class T1dmApplication : Application() {
 
-    /** The manual composition root; everything long-lived hangs off this. */
     lateinit var container: AppContainer
         private set
 
@@ -27,19 +26,14 @@ class T1dmApplication : Application() {
         }
 
         container = AppContainer(this)
-        // Before any UI: a build can retire a theme, and both the persisted id and the launcher alias
-        // it selected outlive that. Every wake-up path lands here, which is the point — the launcher
-        // repair cannot presuppose the user could still launch us.
+        // Before any UI: the launcher repair cannot presuppose the user could still launch us.
         RetiredThemeMigration.run(this)
         container.startInference()
-        container.startBuilders() // seed the bundled glycemic dictionary + insulin presets (off-main, idempotent)
+        container.startBuilders() // off-main, idempotent
         CgmWatchdog.enqueue(this)
-        SyncDrainWorker.enqueue(this) // deferrable outbox drain fallback (FGS drains opportunistically)
-        WidgetRefreshWorker.enqueue(this) // widget repaint fallback (the FGS is the only live driver)
-        // The automatic-backup schedule is reconciled with its setting on every start, not only when
-        // the setting is edited: an app upgrade or a "force stop" cancels pending work, and a backup
-        // schedule that has quietly stopped is precisely the silence this feature must not have.
-        // Off-main — reading the cadence is a kv hit.
+        SyncDrainWorker.enqueue(this) // fallback; the FGS drains opportunistically
+        WidgetRefreshWorker.enqueue(this) // fallback; the FGS is the only live driver
+        // Reconciled every start, not only on edit: an upgrade or a force stop cancels pending work.
         container.appScope.launch {
             AutoBackupWorker.sync(this@T1dmApplication, container.settingsStore.currentBackupCadenceHours())
         }
@@ -52,9 +46,7 @@ class T1dmApplication : Application() {
                 .detectDiskWrites()
                 .detectCustomSlowCalls()
                 .detectNetwork()
-                // No penaltyFlashScreen: its full-window red border (fired on a main-thread disk
-                // read/write, e.g. a theme/font/unit KV touch) was the "red press-flash". Violations
-                // still surface via penaltyLog — the diagnostic stays, the red frame goes.
+                // No penaltyFlashScreen: its red border on a main-thread kv touch was the press-flash.
                 .penaltyLog()
                 .build(),
         )

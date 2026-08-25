@@ -14,16 +14,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.abs
 
-/**
- * The partitions and the lattice arithmetic the figures assemble on this side. Everything else they
- * draw is the core's own number, rendered; these are worked out here, so they are the only
- * arithmetic in the figures that can be wrong on its own.
- *
- * Nothing here classifies a pair. The Clarke boundaries live in `t1dm-core::accuracy` and are pinned
- * there against `T1DMAI/realdata/metrics.py`; the lattices below are synthetic fixtures standing in
- * for whatever the core returns, so a change to the zone algebra cannot be masked by a copy of it
- * kept in this file.
- */
+// Nothing here classifies a pair: the boundaries live in `t1dm-core::accuracy` and the lattices
+// below are synthetic fixtures.
 class AccuracyFiguresTest {
 
     private fun block(a: Double, ab: Double, d: Double, e: Double) = PointBlock(
@@ -55,7 +47,6 @@ class AccuracyFiguresTest {
         assertEquals(100f, s.sum(), 1e-3f)
     }
 
-    /** Float noise must not turn a full partition into a negative slice. */
     @Test
     fun `an over-full partition clamps rather than inverts`() {
         val s = clarkeShares(block(a = 90.0, ab = 100.0000001, d = 0.0, e = 0.0))
@@ -63,14 +54,12 @@ class AccuracyFiguresTest {
         assertEquals(0f, s[2], 1e-4f)
     }
 
-    /** A partial partition would render as a plausible shape, which is worse than no shape. */
     @Test
     fun `a non-finite input yields no bar at all`() {
         assertEquals(emptyList<Float>(), clarkeShares(block(a = Double.NaN, ab = 96.0, d = 3.0, e = 1.0)))
         assertEquals(emptyList<Float>(), clarkeShares(block(a = 82.0, ab = 96.0, d = 3.0, e = Double.NaN)))
     }
 
-    /** A region that held no point has no triple — an empty track, and the count says why. */
     @Test
     fun `an empty CG-EGA region draws nothing and carries its zero`() {
         val row = cgEgaRow("hypo", CgEgaRegion(apPct = null, bePct = null, epPct = null, nAp = 0, nBe = 0, nEp = 0))
@@ -85,14 +74,8 @@ class AccuracyFiguresTest {
         assertEquals("n=1000", row.note)
     }
 
-    // ── The Clarke error grid ──────────────────────────────────────────────────────────────────
-
-    /**
-     * A stand-in lattice with the STRUCTURE the real one has — a diagonal A band whose two halves
-     * nearly touch, and four zones in separated lobes above and below it — without a line of the
-     * real zone algebra. What is under test is the encoding and the letter placement, never the
-     * classification: that is the core's, and is pinned there.
-     */
+    /** The real lattice's structure — a diagonal A band, four zones lobed above and below it —
+     *  with none of its zone algebra. */
     private fun syntheticGrid(cells: Int = 40): ZoneLattice {
         val zones = ArrayList<ClarkeZone>(cells * cells)
         for (ti in 0 until cells) for (pi in 0 until cells) {
@@ -110,12 +93,9 @@ class AccuracyFiguresTest {
         return ZoneLattice.of(400.0, cells, zones)
     }
 
-    /** A classifier that is NOT symmetric in its two axes — what the orientation probe leans on. */
     private fun asymmetric(truth: List<Double>, pred: List<Double>): List<ClarkeZone> =
         truth.flatMap { t -> pred.map { p -> if (p > t) ClarkeZone.D else ClarkeZone.B } }
 
-    /** The runs must tile every column exactly — no gap the background shows through, no overlap
-     *  painting one zone over another, and every cell the zone the lattice gave it. */
     @Test
     fun `the run encoding reproduces the lattice exactly`() {
         val grid = syntheticGrid()
@@ -126,7 +106,6 @@ class AccuracyFiguresTest {
             assertEquals(0, column.first().predFrom)
             assertEquals(grid.cells, column.last().predUntil)
             column.zipWithNext { a, b -> assertEquals(a.predUntil, b.predFrom) }
-            // Adjacent runs must differ, or the encoding is emitting a boundary that is not one.
             column.zipWithNext { a, b -> assertTrue(a.zone != b.zone) }
             column.forEach { run ->
                 (run.predFrom until run.predUntil).forEach { pi ->
@@ -136,10 +115,6 @@ class AccuracyFiguresTest {
         }
     }
 
-    /**
-     * The property that keeps a letter from naming a region it does not sit in: an anchor is always
-     * a coordinate the LATTICE puts in that zone, never a remembered position.
-     */
     @Test
     fun `every zone letter sits in its own zone`() {
         val grid = syntheticGrid()
@@ -154,11 +129,7 @@ class AccuracyFiguresTest {
         }
     }
 
-    /**
-     * Sitting in its own zone is not enough: the letter is a glyph with EXTENT, and one anchored a
-     * cell from a boundary is drawn mostly over the neighbouring region — which is what a reader
-     * takes it to name. So the anchor must be uniform out to the glyph's own reach.
-     */
+    /** A glyph has extent: anchored a cell from a boundary it is drawn over the neighbour. */
     @Test
     fun `every zone letter stands clear of its own boundary`() {
         val grid = syntheticGrid()
@@ -177,26 +148,19 @@ class AccuracyFiguresTest {
         }
     }
 
-    /**
-     * A lobe too thin to hold a glyph clear of its own edges keeps its letter anyway. A region
-     * named imprecisely still tells a reader which region it is; an unlettered one tells them
-     * nothing, and the legend cannot say WHERE.
-     */
     @Test
     fun `a lobe thinner than the clearance is still lettered`() {
         val cells = 40
         val clear = anchorClearanceCells(cells)
         val zones = ArrayList<ClarkeZone>(cells * cells)
         for (ti in 0 until cells) for (pi in 0 until cells) {
-            // One stripe of E, `clear` cells narrower than the clearance needs, in a field of A.
             zones += if (pi in 20 until 20 + clear) ClarkeZone.E else ClarkeZone.A
         }
         val anchors = zoneAnchors(ZoneLattice.of(400.0, cells, zones))
         assertTrue("the thin lobe kept no letter", anchors.any { it.zone == ClarkeZone.E.ordinal })
     }
 
-    /** Four zones lobe above and below the diagonal and get a letter each side; zone A straddles it,
-     *  so its two candidates collapse to one rather than printing an A twice on one band. */
+    /** A straddles the diagonal, so its two candidates collapse to one; the other four lobe twice. */
     @Test
     fun `a zone that lobes twice is lettered twice and one that straddles is lettered once`() {
         val byZone = zoneAnchors(syntheticGrid()).groupBy { it.zone }
@@ -206,28 +170,20 @@ class AccuracyFiguresTest {
         }
     }
 
-    /** No lattice ⇒ nothing to paint and nothing to letter — never a half-drawn grid. */
     @Test
     fun `an empty lattice paints nothing`() {
         assertTrue(ZoneLattice.EMPTY.isEmpty)
         assertEquals(emptyList<ZoneRun>(), zoneRuns(ZoneLattice.EMPTY))
         assertEquals(emptyList<ZoneAnchor>(), zoneAnchors(ZoneLattice.EMPTY))
-        // A lattice whose zone list does not match its declared size is refused whole.
+        // A zone list that does not match the declared size is refused whole.
         assertTrue(ZoneLattice.of(400.0, 4, listOf(ClarkeZone.A)).isEmpty)
     }
 
-    /**
-     * `zoneCount` is DERIVED from the cells, never taken on trust.
-     *
-     * [zoneAnchors] sizes its per-group arrays from it and then indexes them with the very ordinals
-     * the lattice stores, so a count that undershot would throw inside composition rather than fail
-     * closed. Deriving it means the mismatch cannot be constructed — which is what this pins.
-     */
+    /** [zoneAnchors] sizes its arrays from it and indexes them with the stored ordinals, so an
+     *  undershooting count would throw inside composition rather than fail closed. */
     @Test
     fun `zoneCount is derived from the cells it actually holds`() {
         assertEquals(ClarkeZone.values().size, syntheticGrid().zoneCount)
-        // A classifier that only ever returns two zones yields a two-zone lattice, and the anchor
-        // pass over it must letter those two and not walk off the end of its own arrays.
         val cells = 20
         val zones = List(cells * cells) { if (it % 2 == 0) ClarkeZone.A else ClarkeZone.B }
         val sparse = ZoneLattice.of(400.0, cells, zones)
@@ -236,7 +192,6 @@ class AccuracyFiguresTest {
         assertTrue(zoneRuns(sparse).all { it.zone < sparse.zoneCount })
     }
 
-    /** The lattice is truth-major, and it is the classifier's answer that says so — not this file. */
     @Test
     fun `the lattice keeps the classifier's orientation`() {
         val grid = ZoneLattice.build(::asymmetric)
@@ -251,8 +206,8 @@ class AccuracyFiguresTest {
         }
     }
 
-    /** A transposed lattice is a well-formed picture of a mirrored grid, so it is refused outright
-     *  rather than painted — the probes carry no expected zone, only the classifier's own answer. */
+    /** A transposed lattice is a well-formed picture of a mirrored grid, so it is refused, not
+     *  painted. */
     @Test
     fun `a transposed or short classifier yields no lattice`() {
         assertTrue(ZoneLattice.build { t, p -> asymmetric(p, t) }.isEmpty)
@@ -265,12 +220,8 @@ class AccuracyFiguresTest {
             List(n) { ScoredPoint(pred = 120.0, truth = 110.0, clarke = z, dts = DtsZone.A, dtsRisk = 0.1) }
         }
 
-    /** The shared reducer, pointed at the Clarke column — the selector is the only thing that
-     *  differs between the two grids' scatters, and passing the wrong one is what this pins. */
     private fun clarkeZoneShares(pts: List<ScoredPoint>) = zoneShares(pts) { it.clarke.ordinal }
 
-    /** The scatter's shares are counted off the very enums the core derived its percentages from,
-     *  so they need no remainder for C and cannot round into a negative slice. */
     @Test
     fun `the scatter's shares partition its own points`() {
         val s = clarkeZoneShares(points(ClarkeZone.A to 82, ClarkeZone.B to 14, ClarkeZone.D to 3, ClarkeZone.E to 1))
@@ -278,8 +229,8 @@ class AccuracyFiguresTest {
         assertEquals(100f, s.sum(), 1e-3f)
     }
 
-    /** The same population reduced both ways — off the points here, off the core's four published
-     *  totals in the stacked figure — must agree, or the two Clarke figures disagree on screen. */
+    /** Off the points here against off the core's four totals; disagreement puts two Clarke figures
+     *  on screen that contradict each other. */
     @Test
     fun `the two reductions of one population agree`() {
         val pts = points(ClarkeZone.A to 70, ClarkeZone.B to 10, ClarkeZone.C to 13, ClarkeZone.D to 5, ClarkeZone.E to 2)
@@ -287,14 +238,12 @@ class AccuracyFiguresTest {
         clarkeZoneShares(pts).zip(fromTotals).forEach { (a, b) -> assertEquals(a, b, 1e-4f) }
     }
 
-    /** No points ⇒ no shares, so the legend names the zones and claims nothing about them. */
     @Test
     fun `an empty scatter has no shares`() {
         assertEquals(emptyList<Float>(), clarkeZoneShares(emptyList()))
     }
 
-    /** One selector per grid, and they must actually select differently — a scatter drawn with the
-     *  wrong column would be a picture of the other grid under this one's letters. */
+    /** The wrong selector draws the other grid's picture under this one's letters. */
     @Test
     fun `the two grids' selectors read different columns of one series`() {
         val pts = listOf(
@@ -305,10 +254,8 @@ class AccuracyFiguresTest {
         assertEquals(listOf(50f, 0f, 0f, 50f, 0f), zoneShares(pts) { it.dts.ordinal })
     }
 
-    // ── The DTS grid's shares ──────────────────────────────────────────────────────────────────
-
-    /** All five come off the core, so this is a pass-through — no remainder, and therefore no A+B
-     *  quantity anywhere for a caller to reach for. */
+    /** All five come off the core: a pass-through, no remainder, and no A+B for a caller to reach
+     *  for. */
     @Test
     fun `the DTS shares are published whole`() {
         val s = dtsShares(dtsBlock(a = 93.1, b = 5.2, c = 1.0, d = 0.5, e = 0.2))
@@ -322,13 +269,9 @@ class AccuracyFiguresTest {
         assertEquals(emptyList<Float>(), dtsShares(dtsBlock(93.0, 5.0, 1.0, 0.5, Double.NaN)))
     }
 
-    // ── The Trend Accuracy Matrix ──────────────────────────────────────────────────────────────
-
     private fun matrix(counts: List<Int>, pct: List<Double>) =
         TrendMatrix(counts, List(5) { 0 }, pct, counts.sum())
 
-    /** Labels are derived from the core's own edges, so a change to the binning relabels the axis
-     *  rather than leaving it captioning the old one. */
     @Test
     fun `bin labels are built from the core's edges`() {
         assertEquals(
@@ -337,16 +280,15 @@ class AccuracyFiguresTest {
         )
     }
 
-    /** An edge list of the wrong length labels nothing: an axis captioned from a guess is worse
-     *  than one with no labels, and a stub core supplies exactly that empty list. */
+    /** A stub core supplies the empty list, and an axis captioned from a guess is worse than an
+     *  unlabelled one. */
     @Test
     fun `a wrong-length edge list labels nothing`() {
         assertEquals(emptyList<String>(), trendBinLabels(emptyList()))
         assertEquals(emptyList<String>(), trendBinLabels(listOf(-1.0, 1.0)))
     }
 
-    /** The matrix is read TRUTH-MAJOR, and [TrendMatrix.countAt] is what enforces it. A transposed
-     *  read is well-formed and describes the opposite failure, so this pins the index arithmetic. */
+    /** Truth-major; a transposed read is well-formed and describes the opposite failure. */
     @Test
     fun `the matrix is read truth-major`() {
         val counts = MutableList(TREND_BINS * TREND_BINS) { 0 }
@@ -355,7 +297,7 @@ class AccuracyFiguresTest {
         assertEquals(7, m.countAt(4, 2))
         assertEquals(0, m.countAt(2, 4))
         assertEquals(7, m.peak)
-        // Off the table is 0, never an exception — a figure may probe any cell.
+        // Off the table is 0, never an exception.
         assertEquals(0, m.countAt(9, 9))
     }
 

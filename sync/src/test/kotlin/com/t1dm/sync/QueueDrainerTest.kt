@@ -40,7 +40,7 @@ class QueueDrainerTest {
     @Test
     fun drainsFifoAndDeletesOnSuccess() = runTest {
         val dao = FakeOutboxDao()
-        // Insertion order is scrambled; FIFO is by createdAtMs, so drain order must be 10,20,30.
+        // FIFO is by createdAtMs, not insertion order.
         dao.enqueue(OutboxEntity(kind = OutboxKind.ALERT, dedupKey = "c", payload = envelope("/c"), createdAtMs = 30, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
         dao.enqueue(OutboxEntity(kind = OutboxKind.ALERT, dedupKey = "a", payload = envelope("/a"), createdAtMs = 10, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
         dao.enqueue(OutboxEntity(kind = OutboxKind.ALERT, dedupKey = "b", payload = envelope("/b"), createdAtMs = 20, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
@@ -68,7 +68,6 @@ class QueueDrainerTest {
         assertEquals(1, row1.attempts)
         assertEquals(10_000L + 1_000L, row1.nextAttemptMs) // base·2^0, jitter off
 
-        // Not due yet at the same instant → a second pass attempts nothing.
         assertEquals(0, d.drainOnce().retried)
 
         now = row1.nextAttemptMs
@@ -78,11 +77,6 @@ class QueueDrainerTest {
         assertEquals(now + 2_000L, row2.nextAttemptMs) // base·2^1
     }
 
-    /**
-     * The empty queue — the steady state, and the one the timer, the grid tick and every WS reconnect
-     * all keep asking about — costs one COUNT and nothing else, and answers exactly what the full pass
-     * answered: an all-zero [DrainResult].
-     */
     @Test
     fun emptyQueueCostsOneCountAndNoTableWork() = runTest {
         val dao = CountingOutboxDao(FakeOutboxDao())
@@ -97,8 +91,7 @@ class QueueDrainerTest {
         assertTrue(http.requests.isEmpty())
     }
 
-    /** A queue holding only a crash-wedged INFLIGHT row has nothing DUE, but it is not empty — the pass
-     *  must still run, or the row would never be reclaimed to PENDING and would never be sent again. */
+    /** Nothing is DUE, but the pass must still run or the wedged row is never reclaimed to PENDING. */
     @Test
     fun inflightOnlyQueueStillRunsTheFullPass() = runTest {
         val inner = FakeOutboxDao()
@@ -115,8 +108,6 @@ class QueueDrainerTest {
         assertEquals(0, inner.count())
     }
 
-    /** Counts the table operations one pass issues, so "the empty pass touches nothing" is asserted
-     *  rather than assumed. Everything not counted delegates to the real fake. */
     private class CountingOutboxDao(private val inner: FakeOutboxDao) : OutboxDao by inner {
         var resetStateCalls = 0
         var evictionRowsCalls = 0
@@ -161,7 +152,7 @@ class QueueDrainerTest {
 
         assertEquals(DrainResult.StandDown.AUTH, r.standDown)
         assertEquals(0, r.sent)
-        assertEquals(2, dao.count())                         // nothing dropped
+        assertEquals(2, dao.count())
         assertEquals(1, http.requests.size)                  // broke after the first 401
         assertTrue(dao.snapshot().all { it.state == OutboxState.PENDING })
     }
@@ -207,10 +198,8 @@ class QueueDrainerTest {
 
     @Test
     fun rowWithdrawnAfterTheBatchSnapshotIsNeverSent() = runTest {
-        // `dueBatch` snapshots the whole pass up front, so a tail row stays PENDING on disk for as
-        // long as the rows ahead of it take to send — the window in which an undo can withdraw it and
-        // report WITHDRAWN ("nothing about this event left the phone"). Claiming PENDING→INFLIGHT
-        // conditionally is what keeps that receipt honest.
+        // `dueBatch` snapshots the pass up front, so a tail row stays PENDING while the rows ahead of
+        // it send; the conditional PENDING→INFLIGHT claim is what makes an undo's WITHDRAWN honest.
         val dao = FakeOutboxDao()
         dao.enqueue(OutboxEntity(kind = OutboxKind.ALERT, dedupKey = "a", payload = envelope("/a"), createdAtMs = 10, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
         val doseId = dao.enqueue(OutboxEntity(kind = OutboxKind.DOSE, dedupKey = "dose:x", payload = envelope("/v1/doses"), createdAtMs = 20, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
@@ -244,7 +233,6 @@ class QueueDrainerTest {
     @Test
     fun sizeEvictionDropsLowestPriorityOldestFirst() = runTest {
         val dao = FakeOutboxDao()
-        // 4 rows, cap 2 → drop 2. Priority ALERT(7) > MEAL(5) > INGEST(4) > PREDICTIONS(2) > SERIES(1) > PHOTO(0).
         dao.enqueue(OutboxEntity(kind = OutboxKind.ALERT, dedupKey = "1", payload = ByteArray(0), createdAtMs = 10, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
         dao.enqueue(OutboxEntity(kind = OutboxKind.PHOTO, dedupKey = "2", payload = ByteArray(0), createdAtMs = 20, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
         dao.enqueue(OutboxEntity(kind = OutboxKind.SERIES, dedupKey = "3", payload = ByteArray(0), createdAtMs = 30, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
@@ -254,15 +242,13 @@ class QueueDrainerTest {
         val evicted = d.evict(nowMs = 100)
 
         assertEquals(2, evicted)
-        // PHOTO(0) then SERIES(1) go first; ALERT + MEAL survive.
         val kinds = dao.snapshot().map { it.kind }.toSet()
         assertEquals(setOf(OutboxKind.ALERT, OutboxKind.MEAL), kinds)
     }
 
     @Test
     fun ageEvictionSparesNonEvictableClinicalKindsButExpiresRegenerable() = runTest {
-        // §3.7: age-eviction is gated on `ageEvictable`. An irreplaceable ALERT (not ageEvictable)
-        // survives past `maxAgeMs`; a regenerable PHOTO expires — priority is irrelevant to age.
+        // §3.7: age-eviction is gated on `ageEvictable`, not on priority.
         val dao = FakeOutboxDao()
         dao.enqueue(OutboxEntity(kind = OutboxKind.ALERT, dedupKey = "old", payload = ByteArray(0), createdAtMs = 0, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
         dao.enqueue(OutboxEntity(kind = OutboxKind.PHOTO, dedupKey = "old-photo", payload = ByteArray(0), createdAtMs = 0, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
@@ -271,7 +257,7 @@ class QueueDrainerTest {
 
         val evicted = d.evict(nowMs = 10_000)   // cutoff = 5_000; both ts-0 rows are old
 
-        assertEquals(1, evicted)   // only the expired PHOTO is dropped; the expired ALERT is spared
+        assertEquals(1, evicted)
         assertEquals(setOf(OutboxKind.ALERT, OutboxKind.PHOTO), dao.snapshot().map { it.kind }.toSet())
         assertEquals(listOf("old", "new"), dao.snapshot().map { it.dedupKey })
     }

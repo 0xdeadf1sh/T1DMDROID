@@ -34,14 +34,6 @@ import com.t1dm.core.design.rememberHapticDetent
 import com.t1dm.core.design.rememberT1dmHaptics
 import kotlin.math.roundToInt
 
-/**
- * What a fit is about to be given.
- *
- * The four sites are part of the spec rather than fixed by the runner, because which of them an
- * adapter may touch is the single largest lever on whether a fit can destroy the model's response
- * to insulin. The defaults are [com.t1dm.core.model.LoraSites.DEFAULT] — l1 and l2 — and that file
- * carries the reason.
- */
 data class LoraFitSpec(
     val name: String,
     val rank: Int,
@@ -53,15 +45,9 @@ data class LoraFitSpec(
     val targetL2: Boolean = true,
 )
 
-/**
- * How far a running fit has got. The two phases cost very differently — the replay is one graph
- * forward per window, the training loop is one pass over every window per epoch — so they are
- * counted separately rather than folded into one bar that stalls.
- */
 data class LoraFitProgress(val phase: Phase, val done: Int, val total: Int) {
     enum class Phase { Replay, Train }
 
-    /** Null while the total is unknown, which renders as an indeterminate bar. */
     val fraction: Float? get() = if (total > 0) (done.toFloat() / total).coerceIn(0f, 1f) else null
 
     val label: String get() = when (phase) {
@@ -70,11 +56,10 @@ data class LoraFitProgress(val phase: Phase, val done: Int, val total: Int) {
     }
 }
 
-/** The adapter panel's state for one model. */
 data class LoraPanelState(
     val modelId: String,
     val adapters: List<LabAdapter> = emptyList(),
-    /** Why this model can take no adapter, or null when it can. */
+    /** Why no adapter can be taken; null when one can. */
     val unavailable: String? = null,
     val progress: LoraFitProgress? = null,
     val error: String? = null,
@@ -83,26 +68,15 @@ data class LoraPanelState(
     val busy: Boolean get() = progress != null
 }
 
-/**
- * The adapters of one model: fit, attach, rename, delete, back up.
- *
- * The base weights are frozen inside the artifact and are never written. What is listed here is a
- * few thousand numbers fitted from this patient's own matured windows, and the held-out pair beside
- * each row is the whole basis for attaching one — an adapter that did not beat the frozen head on
- * windows it never saw has learnt the patient's past, not their physiology.
- */
 @Composable
 fun LoraPanel(
     state: LoraPanelState,
     onFit: (LoraFitSpec) -> Unit,
     onAttach: (Long) -> Unit,
-    /** Measure a stored adapter against the model's dose response and record the verdict — the
-     *  route out of `ABSENT` for an imported or restored adapter that does not go through the
-     *  override. */
+    /** The route out of `ABSENT` for an imported or restored adapter, short of the override. */
     onProbe: (Long) -> Unit = {},
-    /** The deliberate second action that clears a guard refusal for ONE adapter. Separate from
-     *  [onAttach] because what is being overridden is a measurement, not a preference. The typed
-     *  name rides with it; the controller, not this dialog, is what compares it. */
+    /** Clears a guard refusal for one adapter. The controller, not this dialog, compares the
+     *  typed name. */
     onOverride: (Long, String) -> Unit = { _, _ -> },
     onDetach: () -> Unit,
     onRename: (Long, String) -> Unit,
@@ -112,8 +86,6 @@ fun LoraPanel(
 ) {
     val haptics = rememberT1dmHaptics()
     var fitting by remember { mutableStateOf(false) }
-    // One pulse when a fit lands, not one per progress tick: the bar is continuous and the
-    // completion is the only event.
     var wasBusy by remember { mutableStateOf(false) }
     LaunchedEffect(state.busy) {
         if (wasBusy && !state.busy) {
@@ -175,8 +147,8 @@ fun LoraPanel(
                         )
                         Spacer()
                         if (!a.attached) {
-                            // Disabled AND refused underneath: `LabController.attach` enforces the
-                            // same predicate, so this is the affordance, never the gate.
+                            // `LabController.attach` enforces the same predicate; this is the
+                            // affordance, never the gate.
                             TextButton(
                                 enabled = a.attachRefusal == null,
                                 onClick = { haptics.perform(HapticEvent.Commit); onAttach(a.id) },
@@ -199,9 +171,8 @@ fun LoraPanel(
                             color = MaterialTheme.colorScheme.error,
                         )
                     }
-                    // Only where the ratio is a number. An INCONCLUSIVE verdict can carry a
-                    // non-finite retention — a frozen model with no response divides by zero — and
-                    // "dose response NaN%" reads as a measurement rather than as its absence.
+                    // An INCONCLUSIVE verdict can carry a non-finite retention (frozen model,
+                    // divide by zero), and "NaN%" would read as a measurement.
                     if (a.guardWindows > 0 && a.guardRetention.isFinite()) {
                         Text(
                             "dose response ${"%.0f".format(a.guardRetention * 100)}% over " +
@@ -336,8 +307,7 @@ private fun Spacer() = androidx.compose.foundation.layout.Spacer(Modifier.paddin
 
 @Composable
 private fun FitDialog(defaultName: String, onDismiss: () -> Unit, onFit: (LoraFitSpec) -> Unit) {
-    // One detent per slider: each is stepped, and a tick should mark the step the user landed on
-    // rather than every pointer sample the drag produced.
+    // One detent per slider, so a tick marks the step rather than every pointer sample.
     val rankDetent = rememberHapticDetent(HapticEvent.SegmentTick)
     val epochDetent = rememberHapticDetent(HapticEvent.SegmentTick)
     val windowDetent = rememberHapticDetent(HapticEvent.SegmentTick)
@@ -393,8 +363,7 @@ private fun FitDialog(defaultName: String, onDismiss: () -> Unit, onFit: (LoraFi
         },
         confirmButton = {
             TextButton(
-                // An adapter with no site would train nothing; the crate refuses it, and this is
-                // where that refusal is cheapest to make visible.
+                // No site trains nothing; the crate refuses it too.
                 enabled = !noSite,
                 onClick = {
                     onFit(

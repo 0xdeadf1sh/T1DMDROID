@@ -44,15 +44,8 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/**
- * Verifies the issue-5 full app reset ([T1dmRepository.wipeAllData]): every user + runtime table is
- * emptied, the shipped reference data (seed food dictionary + builtin insulin presets) is KEPT, the
- * watch nonce-ceiling kv rows are cleared (so a later re-pair cannot reuse a (key, nonce) pair), and
- * the store is left at the CURRENT schema version (a row-wipe, never a destructive drop/recreate).
- *
- * Instrumented (real device SQLite), sensor-free. The in-memory builder omits the `food_fts` callback
- * (the shadow virtual table is not exercised here) — the custom-food DELETE is a plain row delete.
- */
+/** The in-memory builder omits the `food_fts` callback, so the custom-food DELETE is a plain row
+ *  delete. */
 @RunWith(AndroidJUnit4::class)
 class ResetWipeTest {
 
@@ -94,10 +87,9 @@ class ResetWipeTest {
             c.usePrepared("PRAGMA user_version") { it.step(); it.getLong(0) }
         }
 
-    /** Write at least one row into every table the wipe must clear (plus the seed rows it must keep). */
     private suspend fun seedEveryTable() {
         val now = 1_700_000_000_000L
-        // source → reading (projects a sample + enqueues an INGEST outbox row).
+        // Also projects a sample and enqueues an INGEST outbox row.
         repo.upsertSource(descriptor, authoritative = true, nowMs = now)
         repo.upsertReading(
             CgmReading(
@@ -139,7 +131,6 @@ class ResetWipeTest {
         )
         repo.saveMeal("saved", listOf(SavedMealItemEntity(mealId = 0, foodId = null, name = "rice", grams = 100.0, carbsPer100g = 28.0, gi = 70.0, customCurve = null)), now)
 
-        // A prediction row (dedicated table).
         db.predictionDao().upsert(
             PredictionEntity(
                 madeAtMs = 300_000L, modelId = "m", horizonSteps = 1, nQuantiles = 1, stepMs = 300_000L,
@@ -149,13 +140,11 @@ class ResetWipeTest {
             ),
         )
 
-        // Reference data (kept) + user-added rows (wiped).
         db.foodDao().insert(FoodEntity(name = "SeedApple", brand = null, carbsPer100g = 14.0, gi = 40.0, category = "fruit", source = "USDA", custom = false, customCurve = null, updatedAt = now))
         db.foodDao().insert(FoodEntity(name = "MyFood", brand = null, carbsPer100g = 20.0, gi = 55.0, category = "custom", source = "user", custom = true, customCurve = null, updatedAt = now))
         db.insulinTypeDao().insert(InsulinTypeEntity(name = "Novorapid", kind = DoseKind.BOLUS, durationMin = 300.0, k = 2.0, theta = 30.0, kaPerHour = null, kePerHour = null, customCurve = null, builtin = true, updatedAt = now))
         db.insulinTypeDao().insert(InsulinTypeEntity(name = "MyInsulin", kind = DoseKind.BOLUS, durationMin = 300.0, k = 2.0, theta = 30.0, kaPerHour = null, kePerHour = null, customCurve = null, builtin = false, updatedAt = now))
 
-        // A freehand graph annotation (Room v8) — display-only user data, wiped whole (no seed rows).
         repo.addPaintStroke(
             PaintStroke(
                 id = 0, createdAtMs = now, tool = "brush", colorArgb = -1, widthDp = 3f,
@@ -163,8 +152,6 @@ class ResetWipeTest {
             ),
         )
 
-        // A fitted band correction (Room v10) — derived from the forecasts the wipe removes, so it
-        // cannot outlive them.
         repo.putBandCalibration(
             BandCalibration(
                 modelId = "m", delta = List(7) { 0.5 }, steps = 1, nQuantiles = 7, nCal = 30, nEval = 12,
@@ -173,8 +160,6 @@ class ResetWipeTest {
             ),
         )
 
-        // An exercise bout and its GPS track — the one stored location there is, so this is the row
-        // the reset most has to take with it.
         val bout = repo.startExerciseSession(
             ExerciseSessionEntity(
                 clientId = "", startMs = now, endMs = null, tzOffsetMin = 0, kind = "WALK",
@@ -191,10 +176,6 @@ class ResetWipeTest {
             ),
         )
 
-        // A deletion, an adapter and a reconstruction. All three outlive the rows they describe, so
-        // a reset that leaves any of them behind carries the old record into the new one: a
-        // tombstone re-pushes to a fresh server profile and then refuses to re-hydrate what it
-        // names, and an adapter or a fill describes a history that no longer exists.
         db.eventTombstoneDao().upsert(
             EventTombstoneEntity(
                 clientId = "gone-1", kind = TOMBSTONE_KIND_DOSE, tsMs = now, tzOffsetMin = 0,
@@ -219,7 +200,6 @@ class ResetWipeTest {
             ),
         )
 
-        // kv: a setting, and the watch pairing + nonce-ceiling rows the wipe must burn.
         repo.putKv("ui.theme", "umbrella", now)
         repo.putKv("watch.paired", "1", now)
         repo.putKv("watch.keymaterial", "iv:ct", now)
@@ -230,16 +210,12 @@ class ResetWipeTest {
     fun wipeEmptiesEveryTableKeepsSeedsAndSchema() = runTest {
         seedEveryTable()
 
-        // Sanity: the tables are non-empty before the wipe.
         assertEquals(2L, count("food"))
         assertEquals(2L, count("insulin_type"))
         assert(count("kv") >= 4L)
         assertEquals(1L, count("prediction"))
-        // Without these the location assertions below would pass on an empty table.
         assertEquals(1L, count("exercise_session"))
         assertEquals(1L, count("exercise_fix"))
-        // ...and the same for the three the list gained: an assertion that a table is empty proves
-        // nothing about a table that was never filled.
         assertEquals(1L, count("event_tombstone"))
         assertEquals(1L, count("lora"))
         assertEquals(1L, count("bg_infill"))
@@ -248,29 +224,24 @@ class ResetWipeTest {
 
         for (t in WIPED_EMPTY) assertEquals("$t must be empty after reset", 0L, count(t))
 
-        // Reference data survives; user-added rows are gone.
         assertEquals("seed food kept", 1L, count("food"))
         assertEquals("custom food wiped", 0L, count("food WHERE custom = 1"))
         assertEquals("builtin insulin kept", 1L, db.insulinTypeDao().builtinCount().toLong())
         assertEquals("custom insulin wiped", 0L, count("insulin_type WHERE builtin = 0"))
 
-        // Nonce ceilings + pairing + settings all gone (kv fully cleared).
         assertEquals("kv fully cleared (nonce ceilings + pairing + settings)", 0L, count("kv"))
 
-        // Row-wipe, not a drop/recreate: still at the CURRENT schema version.
+        // Row-wipe, not a drop/recreate.
         assertEquals(AppDatabase.SCHEMA_VERSION.toLong(), userVersion())
     }
 
     private companion object {
-        /** Every table the reset must leave empty (food + insulin_type keep their seed rows). */
+        /** food + insulin_type are absent: they keep their seed rows. */
         val WIPED_EMPTY = listOf(
             "cgm_source", "cgm_reading", "cgm_sample_raw", "sample", "dose_event", "logged_dose",
             "logged_meal", "basal_schedule", "cgm_advert_raw", "outbox", "prediction", "server_profile",
             "hw_telemetry", "saved_meal", "saved_meal_item", "bg_paint_stroke", "conformal_delta",
             "exercise_session", "exercise_fix", "kv",
-            // Three the list was missing. A deletion left behind re-pushes to a new server profile
-            // and then refuses to re-hydrate what it names; an adapter and a reconstruction left
-            // behind describe a record that no longer exists.
             "event_tombstone", "lora", "bg_infill",
         )
     }

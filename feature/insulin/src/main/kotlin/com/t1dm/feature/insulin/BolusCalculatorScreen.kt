@@ -44,27 +44,9 @@ import com.t1dm.core.design.verticalScrollbar
 import com.t1dm.core.model.InsulinKind
 import kotlin.math.roundToInt
 
-/**
- * The ranked-candidate bolus-calculator surface (Phase 4 §5 + §3.6-F). It is a pure,
- * stateless function of the [AdviceResult] the `:app` computed off-thread via `DoseAdvisor`; the UI
- * itself never scores, never gates — it only *presents* the fail-closed verdict and holds the
- * point-of-decision acknowledgement.
- *
- * Two terminal shapes:
- *  - [AdviceResult.Refused] → the plain-language WHY of every global rail that blocked (freshness /
- *    degeneracy / no-model / fp16-disagreement). There is no Accept — a refusal has no dose.
- *  - [AdviceResult.Recommended] → the recommended dose (or carb-rescue), the ranked alternatives, and
- *    the §3.6-F decision card. **Accept is gated behind acknowledging the card**, and behind a second
- *    mandatory confirmation whenever [AdviceResult.Recommended.requiresConfirmation] is set (a long gap
- *    since the last logged dose + a nonzero dose). Accept only ever *records the human's decision* —
- *    it does not, and cannot, actuate insulin. A confirm-then-commit dialog then restates the
- *    `logged_dose` about to be written; it is a third, additive gate and replaces neither checkbox.
- *
- * The calculator scores every candidate toward a SINGLE target BG the user picks on the [TargetBgSlider]
- * (§3.6, advisory only). Its bounds are the calculator's own low/high target thresholds — the same band
- * the in-range objective is measured against — so the chosen target is user-set within [hypo, hyper] and
- * needs no further clamping; [onRecompute] carries that value down into the fail-closed search.
- */
+/** Stateless presentation of a fail-closed verdict; Accept records the human's decision and never
+ *  actuates insulin. A refusal has no dose and no Accept. Accept is gated on the decision card, on
+ *  [AdviceResult.Recommended.requiresConfirmation], and on a confirm-then-commit dialog. */
 @Composable
 fun BolusCalculatorScreen(
     result: AdviceResult?,
@@ -72,16 +54,12 @@ fun BolusCalculatorScreen(
     targetHighMgdl: Double,
     initialTargetMgdl: Double,
     isComputing: Boolean = false,
-    /** The resolved rapid insulin the search ran against and the write will carry — read asynchronously,
-     *  so null means "not yet known", and an Accept that would write a dose stays closed until it lands
-     *  rather than confirming a row whose insulin it cannot name. */
+    /** Null means not yet resolved; an Accept that would write a dose stays closed until it lands. */
     insulinLabel: String? = null,
     onAccept: (Candidate) -> Unit = {},
     onRecompute: (targetMgdl: Double) -> Unit = {},
 ) {
-    // The slider's own bounds ARE the clamp (the calculator low/high target). Guard only the widget's
-    // invariant that start ≤ end (the thresholds are user-set and unbounded, so a mis-ordered or
-    // zero-width pair is possible) — this never narrows the user's target, it only keeps Slider legal.
+    // Guards only Slider's start ≤ end invariant; the bounds are the clamp and this never narrows them.
     val lo = minOf(targetLowMgdl, targetHighMgdl)
     val hi = maxOf(targetLowMgdl, targetHighMgdl).let { if (it > lo) it else lo + 1.0 }
     var targetMgdl by remember(lo, hi, initialTargetMgdl) {
@@ -90,9 +68,7 @@ fun BolusCalculatorScreen(
     val scroll = rememberScrollState()
     val haptics = rememberT1dmHaptics()
 
-    // N10 — the 16 dp frame sits INSIDE the scroll (as on every other panel) so the scrollbar, which
-    // must precede `verticalScroll`, tracks the true viewport and rides flush against its edge rather
-    // than floating 16 dp in from it.
+    // padding inside the scroll, and the scrollbar before `verticalScroll`, so it tracks the true viewport.
     Column(
         Modifier.fillMaxSize().verticalScrollbar(scroll).fadingEdges(scroll).verticalScroll(scroll)
             .padding(16.dp),
@@ -128,15 +104,10 @@ fun BolusCalculatorScreen(
     }
 }
 
-/**
- * The single target-BG picker (§3.6 — advisory only). One slider spanning the calculator's own
- * [low]…[high] target thresholds; its value is the BG the grid search drives the forecast median toward.
- * The bounds are the clamp — no separate "safe range" limit is imposed on the user's choice.
- */
+/** The [low]…[high] bounds are the clamp; no separate "safe range" is imposed on the choice. */
 @Composable
 private fun TargetBgSlider(target: Double, low: Double, high: Double, onChange: (Double) -> Unit) {
-    // Continuous, so the grain is imposed here: one tick per whole mg/dL — exactly the number the
-    // read-out above the slider shows, so the texture and the digits agree.
+    // One detent per whole mg/dL, matching the read-out's digits.
     val targetDetent = rememberHapticDetent(HapticEvent.ScrubTick)
     Card(Modifier.fillMaxWidth(), colors = panelCardColors()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -165,10 +136,7 @@ private fun TargetBgSlider(target: Double, low: Double, high: Double, onChange: 
 @Composable
 private fun RefusedCard(refused: AdviceResult.Refused) {
     val haptics = rememberT1dmHaptics()
-    // §3.6 fail-closed: the calculator declined to recommend anything at all. It lands asynchronously,
-    // seconds after Recompute, replacing a card the user may not be looking at — so the refusal is
-    // announced. Keyed on the reasons, so a re-render of the same refusal is silent while a NEW one
-    // (a different rail tripping) speaks again.
+    // Keyed on the reasons: the same refusal re-rendered is silent, a new rail tripping speaks again.
     LaunchedEffect(refused.reasons) { haptics.perform(HapticEvent.Warn) }
     Card(Modifier.fillMaxWidth(), colors = panelCardColors()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -187,9 +155,7 @@ private fun RecommendedBody(
     var acknowledged by remember(rec) { mutableStateOf(false) }
     var confirmed by remember(rec) { mutableStateOf(false) }
     val confirmSatisfied = !rec.requiresConfirmation || confirmed
-    // The confirm-then-commit dialog is a THIRD gate, strictly additive to the two §3.6-F checkboxes
-    // above — those still gate the button's `enabled`; this only gates what the press does. A
-    // carb-rescue accept writes no dose at all, so it has nothing to restate and raises no dialog.
+    // A third gate, additive to the two checkboxes: they gate `enabled`, this gates what the press does.
     var pendingAccept by remember(rec) { mutableStateOf<Candidate?>(null) }
     val haptics = rememberT1dmHaptics()
 
@@ -239,17 +205,10 @@ private fun RecommendedBody(
             }
         }
     }
-    // A carb-rescue or a 0 U acceptance writes no `logged_dose` at all, so it names no insulin; every
-    // other acceptance does, and that is what makes [insulinLabel] a precondition below.
+    // Only a dose-writing accept needs [insulinLabel], which is why it is a precondition below.
     val writesDose = rec.rescueCarbsG == null && rec.best.doseU > 0.0
-    // The §3.6-F terminal accept — the only press in the app that records a dosing decision. The two
-    // branches deliberately differ: a carb-rescue or 0 U acceptance writes NO dose and raises no
-    // dialog, so this press is the whole act and carries the Commit itself; a real dose only proposes,
-    // and its Commit is owned by the receipt once the `logged_dose` row exists.
-    //
-    // Held closed until the resolved insulin has landed, for the reason the insulin panel's log button
-    // is: the catalogue is read asynchronously, and a press before it arrives would leave the
-    // confirmation with no insulin to restate but the dose still about to be written.
+    // The only press in the app that records a dosing decision. A carb-rescue or 0 U accept writes no
+    // dose and carries the Commit itself; a real dose only proposes, and waits for the resolved insulin.
     Button(
         onClick = {
             if (!writesDose) {
@@ -271,8 +230,7 @@ private fun RecommendedBody(
         )
     }
 
-    // Non-null by the gate above — the dialog restates the insulin the writer will resolve, never a
-    // placeholder standing in for one it has not read yet.
+    // Non-null by the gate above: never a placeholder standing in for an insulin it has not read.
     val label = insulinLabel
     if (label != null) pendingAccept?.let { c ->
         ConfirmLogDialog(
@@ -294,8 +252,7 @@ private fun DecisionCardView(card: DecisionCard) {
             fieldRow("Assumed IOB", card.assumedIobU?.let { "${fmt(it)} U (logged only)" } ?: "unknown")
             fieldRow("Last logged dose", card.minSinceLastLoggedDose?.let { "$it min ago" } ?: "never")
             fieldRow("Forecast band width", card.bandWidthMgdl?.let { "±${(it / 2).toInt()} mg/dL" } ?: "—")
-            // §3.6-F: the input filter is disclosed only when it is NOT the default, since it shifts
-            // the last_bg anchor every other row on this card is qualifying.
+            // Disclosed only when not the default: it shifts the last_bg anchor the other rows qualify.
             if (card.smoothingWindow != DecisionCard.DEFAULT_SMOOTHING_WINDOW) {
                 fieldRow(
                     "BG input filter",
@@ -314,21 +271,15 @@ private fun RankedList(ranked: List<Candidate>) {
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Text("Alternatives", style = MaterialTheme.typography.titleSmall)
         top.forEach { c ->
-            // The MEDIAN minimum over the validated window — the quantity the veto and the objective
-            // now read. The band's minimum would explain a block that no longer keys on it.
+            // Median minimum, the quantity the veto reads; the band's minimum would explain another block.
             val low = c.fan.minMedianBg()?.toInt()
             fieldRow("${fmt(c.doseU)} U", "score ${"%.2f".format(c.score)}" + (low?.let { " · min $it" } ?: ""))
         }
     }
 }
 
-/**
- * Used both inside a panel (the decision card) and on the bare page (the alternatives list), so its
- * dimmed label derives from the content colour IN FORCE rather than from
- * `MaterialTheme.colorScheme.onSurface`. Inside a panel the two differ: `panelCardColors` may have had
- * to reject the palette role, and a label computed from the rejected one would sit at the opposite
- * polarity to the value beside it.
- */
+/** The dimmed label derives from the content colour IN FORCE, not `colorScheme.onSurface`:
+ *  `panelCardColors` may have rejected the palette role, putting the two at opposite polarity. */
 @Composable
 private fun fieldRow(label: String, value: String) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {

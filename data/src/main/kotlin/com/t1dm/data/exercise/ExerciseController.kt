@@ -15,20 +15,13 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import java.util.TimeZone
 
-/**
- * Orchestrates the exercise bout store over [T1dmRepository], on the [com.t1dm.data.meals.MealsController]
- * pattern: it is the seam `:app` composes the (pure-Compose) `:feature:exercise` panel against, and
- * the one place `exercise_session`'s raw `kind` TEXT is turned into an [ExerciseKind] and back.
- *
- * It does NOT write the per-bucket magnitude. That goes into the wide sample through
- * [T1dmRepository.recordExerciseCurve], from the recorder in `:sensors`, so it rides the same
- * transactional merge and `INGEST` enqueue every other scalar does.
- */
+/** Does NOT write the per-bucket magnitude: that goes into the wide sample through
+ *  [T1dmRepository.recordExerciseCurve], from the recorder in `:sensors`. */
 class ExerciseController(
     private val repository: T1dmRepository,
     private val dispatchers: T1dmDispatchers,
     private val curves: CurveEngine,
-    /** The patient's own grams-per-minute, for re-deriving a bout's magnitude on a delete. */
+    /** Grams per minute, for re-deriving a bout's magnitude on a delete. */
     private val carbEquivPerMin: suspend () -> Double = { ExerciseDisposal.DEFAULT_CARB_EQUIV_PER_MIN },
     private val now: () -> Long = System::currentTimeMillis,
 ) {
@@ -36,14 +29,8 @@ class ExerciseController(
     val sessions: Flow<List<ExerciseSession>> =
         repository.observeExerciseSessions().map { rows -> rows.map { it.toModel() } }
 
-    /**
-     * Open a bout at [startMs] and return the persisted row, whose id everything downstream addresses
-     * it by.
-     *
-     * [startMs] stays a wall-clock instant — see [T1dmRepository.startExerciseSession] — and the
-     * timezone offset is resolved once, here, from the instant the bout began rather than from
-     * whatever the clock says when it ends.
-     */
+    /** [startMs] stays a wall-clock instant, and the offset is resolved from it rather than from
+     *  whatever the clock says when the bout ends. */
     suspend fun start(kind: ExerciseKind, startMs: Long = now()): ExerciseSession =
         withContext(dispatchers.io) {
             repository.startExerciseSession(
@@ -63,15 +50,8 @@ class ExerciseController(
             ).toModel()
         }
 
-    /**
-     * Close a bout with what the recorder measured. [kcal] is null where no figure could be
-     * justified, and stays whatever it was — nothing recomputes it later.
-     *
-     * [interrupted] is what separates a bout the USER ended from one the app ended for them — the
-     * `EXERCISE_MAX_BOUT_MS` limit here, a process death in [reconcileOpenSessions]. Both close at
-     * an instant the user did not choose, and the panel says so rather than presenting it as a
-     * decision.
-     */
+    /** [kcal] is null where no figure could be justified, and nothing recomputes it. [interrupted]
+     *  marks a bout the app ended: the `EXERCISE_MAX_BOUT_MS` limit, or [reconcileOpenSessions]. */
     suspend fun stop(
         id: Long,
         endMs: Long,
@@ -91,7 +71,6 @@ class ExerciseController(
         )
     }
 
-    /** Append a batch of accepted fixes to a bout's track. */
     suspend fun appendTrack(sessionId: Long, points: List<TrackPoint>) =
         withContext(dispatchers.io) {
             repository.appendExerciseFixes(points.map { it.toEntity(sessionId) })
@@ -104,16 +83,9 @@ class ExerciseController(
         withContext(dispatchers.io) { repository.exerciseTrack(id).map { it.toModel() } }
 
     /**
-     * Delete a bout, taking its glucose-disposal grams back out of the wide sample with it.
-     *
-     * The unwind is re-derived from the bout's own stored parameters rather than read back from
-     * anywhere: what a bout contributed per slot is held only in the live recorder's in-memory map,
-     * which does not survive the process. Re-deriving is exact, because the magnitude is a pure
-     * function of the bout's duration (`SPEC/invariants.md` §5 — duration alone, never pace or
-     * energy), and it goes through the one [CurveEngine.gamma] the recorder itself used rather than
-     * a second spelling of the same curve.
-     *
-     * A bout still running has no end, so its length is what it has recorded so far.
+     * Takes the bout's disposal grams back out of the wide sample. The unwind is re-derived from the
+     * bout's own parameters — what it contributed per slot lived only in the recorder's memory — and
+     * is exact: the magnitude is a function of duration alone (`SPEC/invariants.md` §5).
      */
     suspend fun delete(id: Long) = withContext(dispatchers.io) {
         val bout = repository.exerciseSession(id)
@@ -142,15 +114,9 @@ class ExerciseController(
     }
 
     /**
-     * Close every bout the app never saw stopped, at the newest instant it can prove the bout was
-     * still running — the last recorded fix, or the start when the track is empty — and mark it
-     * interrupted. Returns how many were closed.
-     *
-     * Run once at launch. A killed recording is NOT resumed: the location service joins none of the
-     * restart paths, because a foreground service restarted from the background would go on recording
-     * a bout the user believes ended. Closing at what was recorded is the fail-closed reading of a
-     * process that died — the alternative, closing at "now", would credit the bout with every hour
-     * the phone spent switched off.
+     * Close every bout the app never saw stopped, at the newest instant it can prove it was still
+     * running, and mark it interrupted. Run once at launch. A killed recording is NOT resumed: a
+     * foreground service restarted from the background would record a bout the user believes ended.
      */
     suspend fun reconcileOpenSessions(nowMs: Long): Int = withContext(dispatchers.io) {
         val open = repository.openExerciseSessions()
@@ -170,20 +136,15 @@ class ExerciseController(
 }
 
 /**
- * Where a bout the app never saw stopped is closed: the newest fix it recorded, or its own start when
- * it recorded none.
- *
- * Never "now". The process died at an unknown moment and the phone may have been off for a day
- * since; closing at the current clock would credit the bout with every hour of it. The newest fix is
- * the last instant the app can prove the recording was still running, and a bout with no track at all
- * can prove nothing past its start. Clamped so a track holding a stamp older than the start — which
- * only a hand-edited archive can produce — cannot end a bout before it began.
+ * Never "now": the process died at an unknown moment and the phone may have been off since, so the
+ * newest fix is the last instant the recording can be proven to have been running. Clamped, so a
+ * track holding a stamp older than the start cannot end a bout before it began.
  */
 internal fun interruptedEndMs(startMs: Long, newestFixTsMs: Long?): Long =
     maxOf(newestFixTsMs ?: startMs, startMs)
 
-/** Unknown names decode to [ExerciseKind.OTHER]: `kind` is raw TEXT precisely so a bout recorded by
- *  a later build stays readable, and a `valueOf` here would give that back. */
+/** Unknown names decode to [ExerciseKind.OTHER]: `kind` is raw TEXT so a bout recorded by a later
+ *  build stays readable. */
 internal fun ExerciseSessionEntity.toModel() = ExerciseSession(
     id = id,
     startMs = startMs,

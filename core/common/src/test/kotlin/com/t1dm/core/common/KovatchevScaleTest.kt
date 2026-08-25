@@ -4,17 +4,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * [KovatchevScale] vs the Rust core's own golden fixture (`crates/t1dm-core/src/testdata/golden.json`,
- * the file `preproc.rs` pins as `GOLDEN`). The fixture carries two exact `f`/`f_inv` pairs produced by
- * the Python reference — `q_tau_risk` ↔ `bands_mgdl` (168 points, 33.7-276.5 mg/dL) and
- * `median_risk` ↔ `median_bg` (24 points) — so asserting BOTH directions across them pins this mirror
- * to the same numbers the crate is gated on. Tolerance is 1e-9: `kotlin.math` and Rust's `f64` both
- * reach the platform libm, which agrees to ~1e-15 here but is not guaranteed bit-identical.
- *
- * The reference values and totality guards of INFERENCE.md §5 are mirrored from the crate's own
- * `kovatchev_f_reference_values` / `kovatchev_guards_are_total`; there is no JSON fixture for them.
- */
+/** [KovatchevScale] against the Rust core's golden fixture, `crates/t1dm-core/src/testdata/golden.json`.
+ *  Tolerance 1e-9: both reach the platform libm, which is not guaranteed bit-identical. */
 class KovatchevScaleTest {
 
     private val golden: String by lazy {
@@ -23,8 +14,7 @@ class KovatchevScaleTest {
         }.bufferedReader().use { it.readText() }
     }
 
-    /** The fixture's arrays are flat lists of doubles, so a bracket slice beats pulling in a JSON
-     *  parser this module does not otherwise need. */
+    /** Flat arrays of doubles; a bracket slice beats a JSON parser this module does not need. */
     private fun doubles(key: String): List<Double> {
         val at = golden.indexOf("\"$key\"")
         assertTrue("golden.json has no \"$key\"", at >= 0)
@@ -77,8 +67,7 @@ class KovatchevScaleTest {
         }
     }
 
-    /** Both directions are total on hostile input — the display chrome calls them off a persisted
-     *  snapshot and must never produce a NaN read-out. */
+    /** The display chrome calls these off a persisted snapshot and must never read out NaN. */
     @Test fun guards_are_total() {
         for (r in listOf(Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, -1e9, 1e9)) {
             val g = KovatchevScale.fInv(r)

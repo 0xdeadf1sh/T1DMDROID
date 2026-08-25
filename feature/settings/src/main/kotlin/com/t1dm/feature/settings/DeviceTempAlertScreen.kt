@@ -2,14 +2,7 @@ package com.t1dm.feature.settings
 
 import androidx.compose.runtime.Composable
 
-/**
- * Settings → Device temperature alert (F7). A standalone alarm on the phone's BATTERY-sensor temperature,
- * distinct from the glucose alarms: it fires at [alertC] and clears once the reading falls back to
- * [clearC], the gap giving hysteresis so it does not chatter around a single value. Uniquely among the
- * alarms it is EXEMPT from DEATH mode's global suppression (D4) — an overheating phone is a hardware
- * hazard the app will not silence. Marking it critical routes it to the high-priority channel. Shown and
- * stored in °C. Pure/stateless.
- */
+/** Phone battery-sensor temperature in °C. Exempt from DEATH mode's global suppression (D4). */
 @Composable
 fun DeviceTempAlertScreen(
     enabled: Boolean,
@@ -29,8 +22,6 @@ fun DeviceTempAlertScreen(
         ToggleRow(deviceTempCritical, critical) { onSetCritical(it) }
     }
 }
-
-// ── search index (see SettingsIndex.kt) ───────────────────────────────────────────────────────────
 
 private const val TEMP_SECTION = "Device temperature alert"
 

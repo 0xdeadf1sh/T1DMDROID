@@ -3,60 +3,38 @@ package com.t1dm.calc
 import com.t1dm.core.model.CurveEvent
 import com.t1dm.core.model.ForecastStatus
 
-/**
- * Why a rolled forecast fan may not be trusted to drive a rail or a dose selection (SPEC §3.6-B/-C/-D).
- * Only [ELIGIBLE] fans may score a candidate or clear a rail; every other value forces the
- * dependent rail to fail closed.
- */
+/** Only [ELIGIBLE] may score a candidate or clear a rail; anything else fails the dependent rail
+ *  closed (§3.6-B/-C/-D). */
 enum class ForecastEligibility {
-    /** Finite, monotone, non-collapsed, and anchored on a fresh MEASURED reading. */
+    /** Finite, monotone, non-collapsed, anchored on a fresh MEASURED reading. */
     ELIGIBLE,
 
-    /** The Rust `forecast_degeneracy_check` rejected the fan (NaN / rail-pinned / collapsed / mis-ordered). */
+    /** The Rust `forecast_degeneracy_check` rejected the fan. */
     DEGENERATE,
 
-    /**
-     * The anchor is older than the freshness gate (§3.6-D). **Dead in production**: the real
-     * [RollingForecaster] never emits STALE — it yields only [MISSING] / [DEGENERATE] / [ELIGIBLE].
-     * Staleness is enforced solely by the DoseAdvisor freshness gate (§3.6-D), never by the fan; this
-     * value survives only for fakes and defence in depth.
-     */
+    /** Dead in production: [RollingForecaster] never emits it, freshness is the DoseAdvisor's gate
+     *  (§3.6-D). Kept for fakes and defence in depth. */
     STALE,
 
-    /** No selected model / no `.pte` / no context — the forecast could not be produced at all. */
+    /** No selected model / no `.pte` / no context. */
     MISSING,
 }
 
-/**
- * One step of the rolled fan in mg/dL: the median, the extreme band edges (τ=.05 / τ=.95), and the
- * whole fan those edges are the outermost pair of.
- *
- * [lowerBg]/[upperBg] stay named fields because every rail, score and width in `:calc` reads them by
- * name and reads nothing else. [bandsMgdl] is additive and DISPLAY-ONLY: the rolled overlay draws
- * the same three nested pairs the cycle forecast does, and could not while the interior levels were
- * projected away here. Empty when the producer had no fan to give, which is the honest state and the
- * one that draws a single band.
- */
+/** One step in mg/dL. [lowerBg]/[upperBg] are τ=.05 / τ=.95, the outermost pair of [bandsMgdl],
+ *  and the only levels `:calc` reads. */
 data class FanStep(
     val medianBg: Double,
     val lowerBg: Double,
     val upperBg: Double,
-    /** Seven mg/dL levels, ascending τ. Written with [lowerBg]/[upperBg] from one fan or not at all. */
+    /** DISPLAY-ONLY. Seven mg/dL levels, ascending τ; empty when the producer had no fan. */
     val bandsMgdl: List<Double> = emptyList(),
 ) {
     val bandWidth: Double get() = upperBg - lowerBg
 }
 
-/**
- * A candidate dose's forecast fan, rolled to the full action window (~5 h) by re-feeding the median
- * (INFERENCE.md §9). [steps] is step-major over the whole roll; [validatedSteps] marks the prefix
- * inside the validated `PREDICTION_HORIZON_HOURS` window that dose *selection* is capped to — the
- * tail beyond is carried for context and scored only at [HorizonPolicy.beyondWindowWeight].
- *
- * **Fail-closed contract.** A [ForecastPort] never throws for a degenerate/stale/absent forecast; it
- * returns a fan whose [eligibility] is non-[ForecastEligibility.ELIGIBLE] and whose [steps] may be
- * empty. Consumers must check [eligible] before reading any band.
- */
+/** Rolled by re-feeding the median (INFERENCE.md §9). [steps] is step-major; [validatedSteps] marks
+ *  the prefix dose selection is capped to. A non-eligible fan may have empty [steps]: check
+ *  [eligible] before reading any band. */
 data class PredFan(
     val candidateU: Double,
     val steps: List<FanStep>,
@@ -67,40 +45,21 @@ data class PredFan(
 ) {
     val eligible: Boolean get() = eligibility == ForecastEligibility.ELIGIBLE
 
-    /**
-     * The validated prefix of [steps] — the window dose selection is capped to. Clamped into
-     * `0..steps.size`, so a malformed [validatedSteps] yields an empty window rather than an
-     * exception or a silent read of the extrapolated tail.
-     *
-     * Dose decisions read THIS, never the whole roll. The tail past it is carried for context and
-     * for the display curve; it is extrapolated by re-feeding the median (INFERENCE.md §9), and a
-     * gate keyed on it would be decided by steps the app itself declines to call validated.
-     */
+    /** Dose decisions read this, never the whole roll. Clamped, so a malformed [validatedSteps]
+     *  yields an empty window rather than a throw or a read of the extrapolated tail. */
     fun validatedWindow(): List<FanStep> = steps.subList(0, validatedSteps.coerceIn(0, steps.size))
 
-    /** The lowest MEDIAN across the validated window, or null when that window is empty. */
+    /** Null when the validated window is empty. */
     fun minMedianBg(): Double? = validatedWindow().minOfOrNull { it.medianBg }
 
-    /**
-     * The step index (0-based) at which the MEDIAN first drops below [mgdl] within the validated
-     * window, or null. The predicted-low veto reads this.
-     *
-     * The median, not the lower band: a band edge answers "could this go low", which for a widening
-     * fan is true of nearly every roll and pinned the advisor at 0 U unconditionally. The median
-     * answers "is low the expected outcome". That is a deliberate reduction in caution — the
-     * compensating protections are the objective's own hypo term (see [Scoring]) and the
-     * degeneracy gate, which still refuses an unusable fan outright.
-     */
+    /** 0-based step index within the validated window, or null. The median, not the lower band:
+     *  a widening edge is under any floor on nearly every roll and pinned the advisor at 0 U. */
     fun firstMedianBelow(mgdl: Double): Int? =
         validatedWindow().indexOfFirst { it.medianBg < mgdl }.takeIf { it >= 0 }
 }
 
-/**
- * A request to roll the SELECTED fp32-authoritative model under one announced-future scenario. Maps
- * one-to-one onto [com.t1dm.data.curve.ChannelBuilder.futureOverrides]: [announced] is the user's
- * committed future meals/boluses, [candidate] the dose the calculator is scoring (null = the
- * do-nothing baseline). [candidateU] is the candidate's total insulin, carried for the card / IOB rail.
- */
+/** [announced] is the user's committed future; [candidate] the dose being scored, null = the
+ *  do-nothing baseline. [candidateU] is the candidate's INSULIN total, for the card and IOB rail. */
 data class ForecastRequest(
     val rollStartMs: Long,
     val fullRollSteps: Int,
@@ -108,27 +67,14 @@ data class ForecastRequest(
     val announced: List<CurveEvent>,
     val candidate: List<CurveEvent>?,
     val candidateU: Double,
-    /** The BG causal-SavGol window (INFERENCE.md §7.1) this roll MUST be built at. The [DoseAdvisor]
-     *  pins one resolved value onto every candidate of a recommendation, so the ranking cannot compare
-     *  fans anchored on two different `last_bg` values and the §3.6-F card can state the window its fan
-     *  was actually built at. `null` lets the port resolve its own — the display roll, which follows
-     *  the live setting rather than a decision's snapshot. */
+    /** INFERENCE.md §7.1. Pinned by the [DoseAdvisor] across one recommendation; null lets the port
+     *  resolve its own from the live setting. */
     val smoothingWindow: Int? = null,
 )
 
-/**
- * The seam to the selected model's rolled forecast (SPEC §3.2 `ForecastEngine`, used by `:calc`).
- * The real implementation ([RollingForecaster]) drives `ChannelBuilder` → `NativeCore.buildContext`
- * → the fp32 backend → `assemble_decode` → `forecast_degeneracy_check`, per roll. Calculators and
- * their property tests depend only on this interface, so the safety logic is exercised against a
- * deterministic fake with no model on device.
- */
+/** SPEC §3.2 `ForecastEngine`. */
 interface ForecastPort {
-    /**
-     * Roll one candidate to the full window. **Fail-closed**: on a missing model or a degenerate roll,
-     * return a non-eligible [PredFan] — never throw, never fabricate a band. Staleness is NOT the fan's
-     * concern: the production [RollingForecaster] never emits [ForecastEligibility.STALE]; freshness is
-     * enforced solely by the DoseAdvisor freshness gate (§3.6-D).
-     */
+    /** Fail-closed: return a non-eligible [PredFan] on a missing model or a degenerate roll — never
+     *  throw, never fabricate a band. */
     suspend fun roll(request: ForecastRequest): PredFan
 }

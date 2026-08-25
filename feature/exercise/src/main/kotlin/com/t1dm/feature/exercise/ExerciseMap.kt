@@ -37,35 +37,18 @@ import org.osmdroid.views.overlay.Polyline
 import java.io.File
 
 /**
- * A bout's track on raster OpenStreetMap tiles.
- *
- * The app's only `AndroidView`, and the only place it reaches outside Compose at all. Two consequences
- * are worth knowing before touching it. The `MapView` is an opaque self-drawing `ViewGroup`: it punches
- * a hard rectangle through the app's transparent backdrop and follows neither the palette nor the
- * font, which is why it is clipped into a card and kept modest rather than dressed up — a colour filter
- * faking the theme would only make the tiles unreadable. And it holds a tile thread and a disk cache,
- * so its lifecycle is driven explicitly and `onDetach` is not optional.
- *
- * Nothing here is built during composition: the tile store is opened off the main thread and the panel
- * draws an empty box until it is up — see [MapHost] for what that buys and what it costs.
- *
- * The cache sits under `cacheDir`, which is what keeps this free of any storage permission and lets
- * the platform reclaim it. The user agent is mandatory: the OSM tile servers refuse an unnamed client.
- *
- * The track NEVER leaves the phone — no wire field carries it, and it is not sent anywhere by drawing
- * it here. What does leave, if the user exports one, is the archive; see `ArchiveWriter`.
+ * `MapView` is an opaque self-drawing `ViewGroup` — no palette, no font — holding a tile thread and
+ * a disk cache, so its lifecycle is driven explicitly and `onDetach` is not optional. The track
+ * never leaves the phone; no wire field carries it.
  */
 @Composable
 fun ExerciseMap(
     track: List<TrackPoint>,
     modifier: Modifier = Modifier,
-    /** Where the review's slider says the bout was, or null when nothing recorded says. */
     cursor: TrackFix? = null,
 ) {
     val context = LocalContext.current
-    // Read HERE, in the composable body. `CompositionLocal.current` and `MaterialTheme.colorScheme`
-    // are composable-only getters and cannot be reached from `AndroidView`'s `update`, which is a
-    // plain `(T) -> Unit`; the Int is what crosses.
+    // Composable-only getters, unreachable from `update`; the Int is what crosses.
     val ink = MaterialTheme.colorScheme.primary.toArgb()
 
     val host = remember(context) { MapHost(context) }
@@ -75,15 +58,11 @@ fun ExerciseMap(
     val points = remember(track) { track.map { GeoPoint(it.lat, it.lon) } }
     val map = host.map
     if (map == null) {
-        // The tile store is still opening. An empty box, not a spinner: the card is already sized, and
-        // what is being waited on is a local file open rather than anything that can fail visibly.
         Box(modifier)
         return
     }
 
-    // Constructed WITHOUT the map: handed one, osmdroid attaches a default info window and inflates its
-    // own bubble layout for it. The track is not tappable, so that is a layout and a resource dependency
-    // bought for nothing — and resource shrinking is the release variant's job to get right.
+    // Constructed without the map: handed one, osmdroid attaches an info window and inflates a layout.
     val line = remember(map) {
         Polyline().also {
             it.outlinePaint.isAntiAlias = true
@@ -91,23 +70,14 @@ fun ExerciseMap(
         }
     }
 
-    // Registered AFTER the polyline, so the dot draws over the line rather than under it. An
-    // osmdroid overlay rather than a Compose layer: the MapView is opaque and self-drawing, so
-    // anything laid over it in Compose would not pan or zoom with the tiles beneath.
+    // After the polyline, so the dot draws over it.
     val dot = remember(map) { CursorOverlay().also { map.overlays.add(it) } }
     val cursorPoint = remember(cursor) { cursor?.let { GeoPoint(it.lat, it.lon) } }
 
-    // A camera fitted before the view has been measured lands on a zero-sized viewport, so the first fit
-    // is deferred to the layout that gives it one. Registered HERE, once per map, rather than from the
-    // update lambda: `update` runs on every recomposition and the view is still unmeasured over the
-    // first of them, so a listener added there was added again on each pass — one fit per pass, each to
-    // the points captured when it was registered. It reads the current points instead, so a track that
-    // arrived while the view was still unmeasured is the one it fits.
+    // Fitting before measurement lands on a zero-sized viewport. Registered once per map, not from
+    // `update`, which would add a listener per recomposition.
     val latest by rememberUpdatedState(points)
-    // The fit is ONE-SHOT, and a plain holder rather than snapshot state so setting it cannot
-    // invalidate composition. `update` now runs on every detent of the review's slider, and without
-    // this the camera would re-fit on each one — snapping back and undoing a pan the user had just
-    // made, with no affordance to resume following.
+    // One-shot, and a plain holder so setting it cannot invalidate composition.
     val fitted = remember(map, points) { booleanArrayOf(false) }
     DisposableEffect(map) {
         val fit = MapView.OnFirstLayoutListener { _, _, _, _, _ ->
@@ -120,9 +90,7 @@ fun ExerciseMap(
         onDispose { map.removeOnFirstLayoutListener(fit) }
     }
 
-    // The polyline's geometry is rebuilt HERE and not in `update`. `Polyline.setPoints` rebuilds a
-    // `LinearRing`, an allocation proportional to the fix count — an hour's run is around nine
-    // hundred of them — and `update` now runs whenever the cursor moves.
+    // Not in `update`: `setPoints` rebuilds a `LinearRing` per call, and `update` runs on cursor moves.
     LaunchedEffect(map, points, ink) {
         line.setPoints(points)
         line.outlinePaint.color = ink
@@ -153,23 +121,14 @@ fun ExerciseMap(
                 fitTo(view, points)
                 fitted[0] = true
             }
-            // The camera never follows the cursor: no centre, no animate, no zoom on a cursor
-            // change. This panel exists to show the whole route, an auto-camera would fight a user
-            // who has panned, and the scrub graph beside it has no auto-follow either — the two
-            // halves of one review must not disagree about whether the cursor drives a viewport.
+            // Deliberately no camera follow on a cursor change.
             view.invalidate()
         },
     )
 }
 
-/**
- * The position dot: a filled disc with a light ring around it.
- *
- * `Overlay` rather than `Marker`, for the same reason the polyline is built without the map:
- * `Marker(mapView)` attaches a default info window that inflates osmdroid's bubble layout, which is
- * a layout and a resource dependency bought for nothing on a track that is not tappable. Only
- * `draw(Canvas, Projection)` is overridden — osmdroid's three-argument `draw` delegates to it.
- */
+/** `Overlay`, not `Marker`: `Marker(mapView)` inflates an info-window layout. osmdroid's
+ *  three-argument `draw` delegates to this one. */
 private class CursorOverlay : Overlay() {
     var at: GeoPoint? = null
     var fillArgb: Int = 0
@@ -194,24 +153,13 @@ private class CursorOverlay : Overlay() {
 private const val CURSOR_RADIUS_PX = 9f
 private const val CURSOR_HALO_PX = 3f
 
-/** Raw white, outside the palette, for the reason `TRACK_WIDTH_PX` is in raw pixels: this ring has
- *  to separate the dot from arbitrary third-party raster, not from the app's own surface. */
+/** Raw white, outside the palette: separates the dot from arbitrary raster, not from the app's surface. */
 private val CURSOR_HALO_ARGB = 0xE6FFFFFF.toInt()
 
 /**
- * The map and the tile provider under it, built off the composition and owned until the panel is gone.
- *
- * The PROVIDER is what touches the disk. It resolves and creates the tile-cache directory, opens
- * osmdroid's SQLite tile store and scans the base path for archives — all of it inside the `MapView`
- * constructor if the constructor is left to build its own, which put a database open on the frame that
- * opens a bout review. Built on IO and handed over instead. The `MapView` itself is still built on the
- * main thread and cannot be otherwise: its tile-complete `Handler` and its `GestureDetector` each take
- * the Looper of whichever thread constructs them.
- *
- * The handover runs under the same lock as [release] because the two race, and losing that race leaks:
- * `withContext` discards its result when its caller has already been cancelled — the review closed
- * while the store was opening — and a provider dropped that way keeps three broadcast receivers
- * registered on the application context for the life of the process.
+ * Provider built on IO — its constructor opens osmdroid's SQLite tile store. The `MapView` cannot
+ * be: its `Handler` and `GestureDetector` take the constructing thread's Looper. Handover locks
+ * against [release]; a provider dropped rather than detached leaks three broadcast receivers.
  */
 private class MapHost(private val context: Context) {
     var map by mutableStateOf<MapView?>(null)
@@ -222,9 +170,7 @@ private class MapHost(private val context: Context) {
 
     suspend fun open() {
         withContext(Dispatchers.IO) { adopt(newTileProvider(context.applicationContext)) }
-        // The view is built under the lock too, so it and [release] cannot both end up detaching the
-        // same provider: either this finds one and the view owns it from here, or [release] already
-        // took it and there is nothing left to build.
+        // Under the lock too, so this and [release] cannot both detach the same provider.
         synchronized(this) {
             val tiles = provider ?: return
             map = newMapView(context, tiles)
@@ -256,7 +202,7 @@ private class MapHost(private val context: Context) {
     }
 }
 
-/** Every disk touch the map needs, in one place so one thread hop covers all of it. */
+/** Mandatory user agent: the OSM tile servers refuse an unnamed client. */
 private fun newTileProvider(app: Context): MapTileProviderBasic {
     Configuration.getInstance().apply {
         userAgentValue = app.packageName
@@ -267,19 +213,16 @@ private fun newTileProvider(app: Context): MapTileProviderBasic {
     return MapTileProviderBasic(app, TileSourceFactory.MAPNIK)
 }
 
-/** The tile source rides on the provider — the view adopts whatever the provider it is handed carries,
- *  so setting it again here would only clear a cache that was never filled. */
+/** The tile source rides on the provider; setting it again here would clear a cache never filled. */
 private fun newMapView(context: Context, tiles: MapTileProviderBasic) = MapView(context, tiles).apply {
     setMultiTouchControls(true)
-    // The ± buttons are a second zoom control over a pinch surface, drawn in osmdroid's own style in
-    // the middle of a themed panel.
     zoomController.setVisibility(CustomZoomButtonsController.Visibility.NEVER)
 }
 
 private fun fitTo(map: MapView, points: List<GeoPoint>) {
     if (points.isEmpty()) return
     val box = BoundingBox.fromGeoPoints(points)
-    // A bout that never moved is one point, and a box with no span asks osmdroid for infinite zoom.
+    // A zero-span box asks osmdroid for infinite zoom.
     if (box.latitudeSpan <= 0.0 || box.longitudeSpanWithDateLine <= 0.0) {
         map.controller.setZoom(STILL_ZOOM)
         map.controller.setCenter(points.first())
@@ -288,11 +231,10 @@ private fun fitTo(map: MapView, points: List<GeoPoint>) {
     }
 }
 
-/** Street level — what a track of a few metres is legible at. */
+/** Street level. */
 private const val STILL_ZOOM = 17.0
 
-/** Keeps the ends of a route off the card's edge. */
 private const val TRACK_PAD_PX = 48
 
-/** osmdroid paints in raw pixels, not dp — this is a line thick enough to follow over street tiles. */
+/** osmdroid paints in raw pixels, not dp. */
 private const val TRACK_WIDTH_PX = 8f

@@ -3,12 +3,7 @@ package com.t1dm.app.settings
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
-/**
- * The snooze-duration setting's persistence contract (§3.6 C1). Exercises the REAL encode/decode the
- * [SettingsStore] routes `setSnoozeMin`/`currentSnoozeMin` through — the Room I/O between them is a
- * pass-through identical to every other alarm knob, so this pins the value round-trip (default, floor,
- * garbage) without an on-device / Robolectric harness.
- */
+/** §3.6 C1. Pins the encode/decode round-trip; the Room I/O between them is a pass-through. */
 class SnoozeDurationSettingTest {
 
     @Test

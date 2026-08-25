@@ -5,18 +5,7 @@ import com.t1dm.data.db.PaintStrokeBlob
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
-/**
- * The two halves of the `bg_paint_stroke` viewport cull (Room v8): the indexed time bounds a stroke is
- * stored under, and the window predicate they are selected by.
- *
- * The bounds are real production code ([toEntity]) and carry the actual bug surface — a freehand
- * stroke may be dragged backwards in time, so its first/last sample are not its extremes. The window
- * rule is pinned here as a table of cases and replayed verbatim against real SQLite by the instrumented
- * `PaintStrokeDaoTest`; this half runs on the host JVM, where no Room query can.
- */
 class PaintStrokeWindowTest {
-
-    // ── item 1: indexed bounds are scanned, not read off the ends ───────────────────────────
 
     @Test
     fun boundsSpanTheWholePolyline() {
@@ -25,7 +14,6 @@ class PaintStrokeWindowTest {
         assertEquals(T0 + 900, e.maxTsMs)
     }
 
-    /** Dragged leftwards: the last sample is the EARLIEST, so first/last would invert the bounds. */
     @Test
     fun boundsSurviveAStrokeDrawnBackwardsInTime() {
         val e = stroke(longArrayOf(T0 + 900, T0 + 500, T0 + 100)).toEntity()
@@ -33,7 +21,6 @@ class PaintStrokeWindowTest {
         assertEquals(T0 + 900, e.maxTsMs)
     }
 
-    /** Dragged out and back: the extreme is in the middle, unreachable from either end. */
     @Test
     fun boundsSurviveAStrokeThatDoublesBack() {
         val e = stroke(longArrayOf(T0 + 300, T0 + 999, T0 + 320)).toEntity()
@@ -55,12 +42,7 @@ class PaintStrokeWindowTest {
         assertEquals(ts.toList(), decoded.tsMs.toList())
     }
 
-    /**
-     * The two columns that carry a pen's identity are pure pass-through in both directions: `tool` is
-     * open TEXT with no converter, `widthDp` a plain REAL with no clamp. That is the whole of the
-     * forward-compatibility story — a pen a later build invents, at whatever width it was authored,
-     * decodes on an older one, which resolves the unknown name onto the fine pencil and draws it.
-     */
+    /** `tool` is open TEXT and `widthDp` an unclamped REAL, so a later build's pen decodes here. */
     @Test
     fun theToolNameAndItsWidthSurviveTheEntityRoundTrip() {
         val s = PaintStroke(
@@ -72,8 +54,6 @@ class PaintStrokeWindowTest {
         assertEquals(96f, back.widthDp, 0f)
         assertEquals(0xFF112233.toInt(), back.colorArgb)
     }
-
-    // ── item 2: the window predicate ────────────────────────────────────────────────────────
 
     @Test
     fun windowSelectsEveryIntersectingStroke() {
@@ -87,14 +67,11 @@ class PaintStrokeWindowTest {
         const val WINDOW_FROM = T0 + 1_000L
         const val WINDOW_TO = T0 + 2_000L
 
-        /**
-         * The transcription of `PaintStrokeDao.observeOverlapping`'s WHERE clause: intersection, not
-         * containment, inclusive at both ends. The SQL itself is exercised by the instrumented test.
-         */
+        /** Transcribes `PaintStrokeDao.observeOverlapping`'s WHERE clause: intersection, inclusive. */
         fun overlaps(minTsMs: Long, maxTsMs: Long, fromMs: Long, toMs: Long): Boolean =
             maxTsMs >= fromMs && minTsMs <= toMs
 
-        /** name, minTsMs, maxTsMs, is-visible — replayed row-for-row by `PaintStrokeDaoTest`. */
+        /** Replayed row-for-row by `PaintStrokeDaoTest`. */
         val CASES = listOf(
             Case("wholly before the window", T0, T0 + 500, false),
             Case("wholly after the window", T0 + 3_000, T0 + 4_000, false),

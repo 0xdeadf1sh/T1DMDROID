@@ -43,34 +43,18 @@ import kotlin.math.cos
 import kotlin.math.min
 import kotlin.math.sin
 
-/**
- * The Circadian Clock (item 22 / Phase 7D). Renders the selected model's decoded hour-of-day
- * belief ([PredictedTime]) as a 24-hour dial: a 12-wedge circular histogram (wedge k spans
- * `[2k, 2k+2)` h, its radius + opacity ∝ `probs[k]`) with an analog-clock HAND at
- * [PredictedTime.predictedHour] whose length + alpha ∝ [PredictedTime.resultantR] (the confidence /
- * resultant length). A readable clock face (hour ticks + 00/06/12/18 labels) underlays it, and the
- * local wall-clock hand is drawn faintly for contrast (ties to the 7A dual-time idea).
- *
- * The geometry mirrors T1DMAI `clock_face.py` / `utils.clock_wedge_geometry`: hour 0 at the top,
- * increasing clockwise, `resultantR` already computed in the Rust `decode_time`. When the belief is
- * absent (the descriptor has no time section, or the STUB backend serves the forecast) it states so
- * plainly — every empty state says WHY.
- */
+/** Dial geometry mirrors T1DMAI `clock_face.py` / `utils.clock_wedge_geometry`. */
 @Composable
 fun CircadianScreen(
     predictedTime: PredictedTime?,
     realBackendAvailable: Boolean,
-    /** Whether the selected model's descriptor even declares a time section (issue 7 — true null cause). */
     hasTimeSection: Boolean = true,
-    /** Whether the forecast is still WARMING UP / collecting context (issue 7 — the real reason during warmup). */
     warmingUp: Boolean = false,
-    /** Whether [predictedTime], when present, was formed on limited warmup context (⇒ low-confidence caveat). */
     lowContext: Boolean = false,
-    /** Current insulin-on-board (U); drives the morbid insulin-exhaustion projection below the dial. */
+    /** Insulin-on-board, U. */
     iobU: Double? = null,
-    /** Wall-clock ms at which IOB is projected to decay to zero (logged doses + basal tails); null ⇒ anchor at now. */
+    /** Wall-clock ms at which IOB is projected to reach zero. */
     iobZeroMs: Long? = null,
-    /** User-tunable forward offsets (DKA→coma→death) for the display-only projection. */
     dkaTimeline: DkaTimeline = DkaTimeline.DEFAULT,
     modifier: Modifier = Modifier,
 ) {
@@ -83,7 +67,6 @@ fun CircadianScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        // N1 — the "Circadian clock" title lives in the breadcrumb; no duplicate in-view header.
         Text(
             "The model's belief about which hour-of-day the current physiology resembles",
             style = MaterialTheme.typography.bodySmall,
@@ -95,7 +78,6 @@ fun CircadianScreen(
         } else {
             if (lowContext) LowContextCaveat()
 
-            // A gentle 10-second tick so the local-time hand stays honest without a busy loop.
             val nowMs by produceState(System.currentTimeMillis()) {
                 while (true) {
                     value = System.currentTimeMillis()
@@ -126,41 +108,31 @@ fun CircadianScreen(
             }
         }
 
-        // The insulin-exhaustion projection is independent of the circadian belief, so it renders in
-        // every mode — even when the clock is absent (stub backend, no time section, or warmup).
+        // Independent of the circadian belief, so it renders in every mode.
         DeathCountdownSection(iobU, iobZeroMs, dkaTimeline)
     }
 }
 
-/**
- * A deliberately morbid, DISPLAY-ONLY countdown (F5): from the instant IOB is projected to reach
- * zero, chain the user-tunable forward offsets DKA → coma → death and count each landmark down live,
- * on a seven-segment LCD, above a road running from that instant to the grave. No §3.6 rail reads
- * this — it is an estimate, not a clinical alarm. When no zero-crossing is known
- * ([iobZeroMs] null) we anchor at *now*, which is the harshest reading.
- */
+/** Display only: no §3.6 rail reads this. An estimate, not a clinical alarm. */
 @Composable
 private fun DeathCountdownSection(iobU: Double?, iobZeroMs: Long?, tl: DkaTimeline) {
-    // A 1-second cadence keeps the seconds column alive; this panel is a stopwatch, not a slow gauge.
-    // The State is deliberately NOT unwrapped here: every reader below is a lambda the Canvas invokes
-    // in its DRAW phase, so a tick repaints the four figures and nothing recomposes or relayouts.
+    // The State is deliberately not unwrapped: every reader below is a lambda the Canvas invokes in
+    // its draw phase, so a tick repaints and nothing recomposes.
     val nowMs = produceState(System.currentTimeMillis()) {
         while (true) {
             value = System.currentTimeMillis()
             kotlinx.coroutines.delay(1_000L)
         }
     }
-    // Anchor is captured ONCE (not the live nowMs), else landmark − nowMs cancels to a constant and the
-    // clock freezes. It is the PROJECTED IOB-zero instant and nothing else: substituting `now` when the
-    // crossing is unknown renders an invented full-length countdown in the typography of a real
-    // projection, which is the one thing this panel must never do.
+    // Captured once, not the live nowMs, else landmark − nowMs cancels to a constant and the clock
+    // freezes. The projected IOB-zero instant and nothing else: substituting `now` when the crossing
+    // is unknown would render an invented countdown in the typography of a real projection.
     val anchor = iobZeroMs
     fun h(x: Double) = (x * 3_600_000.0).toLong()
     val marks = JourneyMarks.EVEN
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text("Insulin-exhaustion projection", style = MaterialTheme.typography.labelLarge)
-            // The quantity being exhausted — the one fact that makes the anchor legible.
             if (iobU != null) {
                 Text(
                     "%.1f U".format(iobU),
@@ -192,12 +164,11 @@ private fun DeathCountdownSection(iobU: Double?, iobZeroMs: Long?, tl: DkaTimeli
     }
 }
 
-/** [ReadoutRow]'s label/value layout with the value on an LCD; a lapsed landmark reads it in error. */
+/** A lapsed landmark reads in error. */
 @Composable
 private fun CountdownRow(label: String, remainingMs: () -> Long) {
     Row(
-        // Against a 28 dp digit block, 2 dp left the three clocks all but touching; this is a gap of
-        // roughly half a glyph, which is what makes them read as three figures rather than a slab.
+        // Roughly half a glyph against the 28 dp digit block; 2 dp left the clocks touching.
         Modifier.fillMaxWidth().padding(vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -206,12 +177,6 @@ private fun CountdownRow(label: String, remainingMs: () -> Long) {
     }
 }
 
-/**
- * The four DISTINCT reasons the hour-of-day belief can be absent, each named plainly (issue 7 — the
- * old copy misattributed a warmup gap to "no time section"). Precedence: a stub backend has no probe
- * at all; then a descriptor without a time section; then warmup (transient, resolves as history
- * accrues); otherwise the probe ran but its output could not be decoded this cycle.
- */
 @Composable
 private fun EmptyCircadian(realBackendAvailable: Boolean, hasTimeSection: Boolean, warmingUp: Boolean) {
     val msg = when {
@@ -227,7 +192,6 @@ private fun EmptyCircadian(realBackendAvailable: Boolean, hasTimeSection: Boolea
     Text(msg, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
-/** Caveat shown above the dial when the belief was formed on limited warmup context (issues 7 & 9). */
 @Composable
 private fun LowContextCaveat() {
     Text(
@@ -237,7 +201,7 @@ private fun LowContextCaveat() {
     )
 }
 
-/** A signed hour offset wrapped to `[-12, 12)` h, e.g. "+1:30" / "−2:00". */
+/** Wrapped to `[-12, 12)` h, e.g. "+1:30" / "−2:00". */
 private fun formatOffset(deltaHours: Double): String {
     var d = deltaHours % 24.0
     if (d < -12.0) d += 24.0
@@ -280,7 +244,6 @@ private fun CircadianDial(pt: PredictedTime, localHour: Double, modifier: Modifi
         drawCircle(faceColor, radius = rOuter, center = center, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.5f))
         drawCircle(faceColor.copy(alpha = 0.25f), radius = rHist, center = center, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1f))
 
-        // 12 wedges (bin k over [2k, 2k+2) h): radius + opacity ∝ probs[k]/maxProb.
         val probs = pt.probs
         val nBins = probs.size.coerceAtLeast(1)
         val binH = if (pt.binHours > 0) pt.binHours else 24.0 / nBins
@@ -311,7 +274,6 @@ private fun CircadianDial(pt: PredictedTime, localHour: Double, modifier: Modifi
             )
         }
 
-        // Hour ticks every 2 h; 00/06/12/18 labelled.
         for (h in 0 until 24 step 2) {
             val ang = hourToRadians(h.toDouble())
             val inner = pointAt(center, rOuter * 0.92f, ang)
@@ -320,10 +282,8 @@ private fun CircadianDial(pt: PredictedTime, localHour: Double, modifier: Modifi
         }
         drawFaceLabels(center, rOuter, tickInk.toArgb())
 
-        // Local wall-clock hand (faint, for contrast).
         drawHand(center, rHist * 0.9f, hourToRadians(localHour), localHandColor, 4f)
 
-        // The MODEL hand: length + alpha ∝ resultantR.
         val r = pt.resultantR.coerceIn(0.0, 1.0)
         val len = rHist * (0.30f + 0.65f * r.toFloat())
         drawHand(center, len, hourToRadians(pt.predictedHour), handColor.copy(alpha = (0.35f + 0.65f * r).toFloat()), 6f)
@@ -331,7 +291,7 @@ private fun CircadianDial(pt: PredictedTime, localHour: Double, modifier: Modifi
     }
 }
 
-// hour 0 at top (12 o'clock), increasing clockwise on a 24-h dial.
+// Hour 0 at top, increasing clockwise on a 24-h dial.
 private fun hourToRadians(hour: Double): Double = -PI / 2.0 + (hour / 24.0) * 2.0 * PI
 
 /** Compose `drawArc` uses degrees with 0° at 3 o'clock, positive = clockwise. */

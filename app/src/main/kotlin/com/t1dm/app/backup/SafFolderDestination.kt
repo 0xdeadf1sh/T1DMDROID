@@ -8,19 +8,8 @@ import com.t1dm.data.backup.Archive
 import java.io.InputStream
 import java.io.OutputStream
 
-/**
- * A folder the user granted once through `ACTION_OPEN_DOCUMENT_TREE`, with the grant persisted
- * across reboots.
- *
- * Writing outside the app's own storage is the entire point: Android deletes app-private files on
- * uninstall, so a backup kept there could never serve the fresh-install restore this exists for.
- *
- * **Files are matched by PREFIX, not by extension.** Some document providers rewrite or append an
- * extension on create, and the archive is identified by its gzip magic rather than its name in any
- * case — so [PREFIX] is the whole of what makes a file ours, and a provider that renames
- * `t1dm-20260803-0400.t1dmbak` to something with a `.bin` on the end breaks neither the retention
- * sweep nor a restore.
- */
+/** Files are matched by [PREFIX], not by extension: some providers rewrite or append one on create,
+ *  and the archive is identified by its gzip magic rather than its name. */
 class SafFolderDestination(
     context: Context,
     private val treeUri: Uri,
@@ -38,9 +27,8 @@ class SafFolderDestination(
     override suspend fun write(name: String, body: suspend (OutputStream) -> Unit): StoredBackup {
         val target = DocumentsContract.createDocument(resolver, parentDocUri, MIME, name)
             ?: throw BackupDestinationException("could not create a file in $label")
-        // A failure past this point leaves a zero-or-partial-length document behind, which the
-        // retention sweep would count as a backup and prune a good one to make room for. Delete it
-        // and re-raise, so a failed run costs nothing rather than costing the oldest real archive.
+        // A partial document left here would be counted by the retention sweep, which would then
+        // prune a good backup to make room for it.
         try {
             resolver.openOutputStream(target)?.use { body(it) }
                 ?: throw BackupDestinationException("could not open $name for writing")
@@ -76,10 +64,8 @@ class SafFolderDestination(
                 )
             }
         }
-        // Newest first by the provider's own timestamp, with the name as the tie-break. The name
-        // carries a sortable stamp, so it stands in coherently when a provider reports no
-        // last-modified at all — which some do, and which would otherwise make the sweep's idea of
-        // "oldest" arbitrary.
+        // Name as the tie-break: some providers report no last-modified, and the name carries a
+        // sortable stamp.
         out.sortWith(compareByDescending<StoredBackup> { it.modifiedAtMs }.thenByDescending { it.name })
         return out
     }
@@ -109,20 +95,14 @@ class SafFolderDestination(
         }
 
     companion object {
-        /** What makes a file in the chosen folder one of ours. Also keeps the sweep from deleting
-         *  anything the user happens to keep alongside them. */
+        /** What makes a file ours, and what keeps the sweep off everything else in the folder. */
         const val PREFIX = "t1dm-"
 
         const val MIME = "application/octet-stream"
 
-        /** `t1dm-YYYYMMDD-HHMM.t1dmbak` — lexically sortable, so the name alone orders the set even
-         *  when a provider reports no timestamp. */
         fun fileName(stamp: String): String = "$PREFIX$stamp.${Archive.EXTENSION}"
 
-        /**
-         * The granted folder's own display name, read once at grant time and then stored. Null when
-         * the provider will not say — some do not — and the caller substitutes a generic label.
-         */
+        /** Null when the provider will not say; the caller substitutes a generic label. */
         fun displayName(context: Context, treeUri: Uri): String? {
             val docUri = DocumentsContract.buildDocumentUriUsingTree(
                 treeUri,
@@ -146,6 +126,6 @@ class SafFolderDestination(
     }
 }
 
-/** A destination-layer failure, carrying a message fit to show the user. Distinct from an archive
- *  parse failure so the panel can say whether the folder or the file was the problem. */
+/** Its message is shown to the user. Distinct from an archive parse failure, so the panel can say
+ *  whether the folder or the file was the problem. */
 class BackupDestinationException(message: String) : java.io.IOException(message)

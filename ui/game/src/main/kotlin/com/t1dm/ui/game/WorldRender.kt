@@ -11,23 +11,8 @@ import com.t1dm.ui.graph.strokeWithTool
 import kotlin.math.ceil
 import kotlin.math.floor
 
-/**
- * Draw the annotation layer where it was drawn — in the world, not on the glass.
- *
- * The camera is a pure affine: `screenX = (worldX − camLeft)·pxPerWorld`, `screenY = floorPx −
- * worldY·pxPerWorld` (the sign flip is the y-up world meeting a y-down canvas). Nothing is rebuilt as
- * the camera moves; a frame is two multiply-adds per point, one rewound [scratch] path shared by every
- * stroke, and one [ChalkPens] built by the caller — the same zero-allocation contract the BG panel's
- * own paint pass holds, for the same reason (this runs 60 times a second).
- *
- * CALL THIS BEFORE THE GROUND FILL. Everything the player scribbled below the trace is then covered by
- * the terrain and everything above it is sky scenery, with no depth test and no second pass: see
- * [appendGroundLine], the stroked curve it sits beneath.
- *
- * Two culls, mirroring `drawPaintFrame`. Whole strokes go in O(1) on their scanned world-x bounds;
- * inside a survivor, segments wholly outside the view (± one camera width of slack) are skipped and the
- * path is cut there, which also keeps emitted coordinates near the canvas instead of kilometres off it.
- */
+/** Allocates nothing per frame: [scratch] is rewound for every stroke and [chalk] is the caller's.
+ *  CALL BEFORE THE GROUND FILL — that is what buries strokes under the trace, with no depth test. */
 fun DrawScope.drawWorldPaint(
     paint: WorldPaint,
     camLeft: Float,
@@ -83,13 +68,8 @@ fun DrawScope.drawWorldPaint(
     }
 }
 
-/**
- * The terrain as an OPEN polyline — the BG curve itself, with nothing below it.
- *
- * Drive mode is a mode of the BG panel, so the curve is STROKED and nothing is painted beneath it —
- * a filled region under the trace reads as solid ground in a game but as a coloured mass under a
- * chart. Gaps stay gaps: a dropout breaks the line rather than bridging it.
- */
+/** Open polyline, never filled: this is the BG curve. A dropout breaks the line rather than
+ *  bridging it. */
 fun GameTrack.appendGroundLine(
     path: Path,
     camLeft: Float,

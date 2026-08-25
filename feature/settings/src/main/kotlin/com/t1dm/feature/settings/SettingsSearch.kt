@@ -30,24 +30,11 @@ import com.t1dm.core.design.hapticClickable
 import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.design.verticalScrollbar
 
-/** Tall enough to browse a screen's worth of hits, short enough to leave the hub's rows visible. */
+/** Tall enough for a screen of hits, short enough to leave the hub's rows visible. */
 private val RESULTS_MAX_HEIGHT = 320.dp
 
-/**
- * The Settings search field (the hub's masthead) and its result list.
- *
- * Results are grouped by destination and each group is headed by its full breadcrumb path, so a hit is
- * read as "where this lives" and not merely "what it is called". Labels alone are not enough: "Low" and
- * "High" name both an alarm band and a calculator target, which the path separates, while "Play a
- * sound", "Vibration" and "IOB ceiling" each appear twice on ONE page, which only the section and
- * subtitle line beneath the label can.
- *
- * The three most recent searches ride under the field as chips. They are recorded on RESULT TAP, never
- * per keystroke: a history fed by the text field would fill with the prefixes of one word.
- *
- * Pure/stateless apart from the query draft — [recent] is persisted by `:app`, and [onOpen] is what
- * navigates and requests the knob's highlight.
- */
+/** Results are grouped by destination under the full breadcrumb path — labels alone collide.
+ *  A search is recorded on RESULT TAP, never per keystroke. [recent] is persisted by `:app`. */
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun SettingsSearchBar(
@@ -97,7 +84,6 @@ fun SettingsSearchBar(
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
                         modifier = Modifier.weight(1f),
                     )
-                    // Discarding a history is a refusal of what is on screen, not a confirmation.
                     TextButton(onClick = { haptics.perform(HapticEvent.Reject); onClearRecentSearches() }) {
                         Text("Clear recents")
                     }
@@ -120,8 +106,7 @@ fun SettingsSearchBar(
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
         )
-        // Bounded and independently scrollable so it can nest inside the hub without fighting the
-        // outer scroll for constraints (the meal builder's food browser, N8/N11).
+        // Bounded and independently scrollable so it can nest without fighting the outer scroll.
         val listState = rememberLazyListState()
         LazyColumn(
             state = listState,
@@ -159,8 +144,6 @@ private fun groupByScreen(results: List<SettingsKnob>): List<Pair<SettingsScreen
 
 @Composable
 private fun ResultRow(knob: SettingsKnob, onClick: () -> Unit) {
-    // A Tap, not the NavSwitch a hub row speaks: the press answers a search rather than announcing a
-    // descent through the hierarchy, and the arrival is already stated by the pulse on the row itself.
     Column(
         Modifier
             .fillMaxWidth()

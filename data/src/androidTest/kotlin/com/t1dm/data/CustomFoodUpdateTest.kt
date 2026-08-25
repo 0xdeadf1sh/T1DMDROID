@@ -23,22 +23,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/**
- * Covers the in-place edit of a custom food ([T1dmRepository.updateCustomFood]): the id survives, the
- * FTS5 index follows the new name by itself, and the two ways an ungated `@Upsert` would do damage are
- * both refused.
- *
- * The stakes come from the asymmetry in [com.t1dm.data.db.FoodDao]: `deleteCustom` is gated
- * `AND custom = 1` but `upsert` is gated on nothing, and `Food.toCustomEntity` hard-sets
- * `custom = true` / `source = "user"`. So an unguarded write would (a) convert a shipped dictionary
- * row into a user food and (b) resurrect a deleted row at its old id, since Room's upsert inserts with
- * the explicit primary key when nothing conflicts. Both are asserted here, as is the invariant that
- * makes the whole edit safe: a saved meal's portions are SNAPSHOTS and must not move with the food.
- *
- * Built with the same wiring production uses — [BundledSQLiteDriver] (whose SQLite ships `fts5`, unlike
- * the HyperOS/Android-16 system build) plus the [FoodFts] `onCreate` callback, which is what puts the
- * `food_au` AFTER UPDATE trigger in place. Instrumented, in-memory, sensor-free.
- */
+/** [BundledSQLiteDriver]'s SQLite ships `fts5`; the HyperOS/Android-16 system build does not. */
 @RunWith(AndroidJUnit4::class)
 class CustomFoodUpdateTest {
 
@@ -55,8 +40,7 @@ class CustomFoodUpdateTest {
             ApplicationProvider.getApplicationContext(),
             AppDatabase::class.java,
         )
-            // Mirror AppDatabase.build: the FTS5 virtual table and its three sync triggers are
-            // Room-invisible, so onCreate must create them.
+            // Mirror AppDatabase.build: the FTS5 table and its triggers are Room-invisible.
             .addCallback(object : RoomDatabase.Callback() {
                 override fun onCreate(connection: SQLiteConnection) = FoodFts.create(connection)
             })
@@ -86,17 +70,12 @@ class CustomFoodUpdateTest {
         updatedAt = t0,
     )
 
-    /** Insert a row and hand back the id the autoincrement minted for it. */
     private suspend fun insert(row: FoodEntity): Long {
         repo.upsertFood(row)
         return repo.searchFoods(row.name).first { it.name == row.name }.id
     }
 
-    /**
-     * The contract in one test: the edit lands under the SAME id (never a fork), and `food_fts` follows
-     * without a hand-rolled reindex — the row answers to its new name and no longer to its old one,
-     * which only the `food_au` delete-and-reinsert pair produces.
-     */
+    /** The `food_au` delete-and-reinsert pair is what makes the row answer to its new name only. */
     @Test
     fun updateKeepsTheIdAndTheFtsIndexFollowsTheNewName() = runBlocking {
         val id = insert(food("oatcake", carbs = 62.0))
@@ -117,11 +96,8 @@ class CustomFoodUpdateTest {
         assertTrue("the old name must leave the index with the row", repo.searchFoods("oatcake").isEmpty())
     }
 
-    /**
-     * `upsert` is not gated on `custom` the way `deleteCustom` is, and the custom-food mapper hard-sets
-     * `custom = true`, so an unguarded edit aimed at a seed id would quietly turn a shipped dictionary
-     * row into a user food — deletable, and listed under "Your foods".
-     */
+    /** `upsert` is not gated on `custom` the way `deleteCustom` is, and the mapper hard-sets
+     *  `custom = true`: an unguarded edit at a seed id would turn a shipped row into a user food. */
     @Test
     fun aSeedRowIsRefusedAndNeverBecomesAUserFood() = runBlocking {
         repo.seedFoods(listOf(food("basmati rice", carbs = 28.0, custom = false)))
@@ -139,10 +115,7 @@ class CustomFoodUpdateTest {
         assertTrue(repo.observeCustomFoods().first().isEmpty())
     }
 
-    /**
-     * Room's `@Upsert` INSERTs when nothing conflicts — with the explicit primary key. An edit carrying
-     * the id of a row deleted out from under it would therefore re-create it rather than fail.
-     */
+    /** Room's `@Upsert` INSERTs with the explicit primary key when nothing conflicts. */
     @Test
     fun aDeletedFoodIsNotResurrectedByAStaleEdit() = runBlocking {
         val id = insert(food("sourdough"))
@@ -156,11 +129,8 @@ class CustomFoodUpdateTest {
         assertTrue("the FTS row went with it", repo.searchFoods("sourdough").isEmpty())
     }
 
-    /**
-     * The invariant the whole feature rests on: `saved_meal_item` denormalizes carbs/GI/curve at add
-     * time and carries no foreign key back to `food`, so editing the food must leave every stored meal
-     * exactly as it was. Anyone "fixing" this by re-resolving components from `foodId` breaks it.
-     */
+    /** `saved_meal_item` denormalizes carbs/GI/curve at add time and holds no foreign key back to
+     *  `food`. Re-resolving a portion from its `foodId` would break this. */
     @Test
     fun editingAFoodLeavesSavedMealSnapshotsAlone() = runBlocking {
         val id = insert(food("polenta", carbs = 70.0, gi = 68.0))

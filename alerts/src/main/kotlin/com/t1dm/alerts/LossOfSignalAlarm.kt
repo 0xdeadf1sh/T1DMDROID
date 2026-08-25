@@ -2,41 +2,16 @@ package com.t1dm.alerts
 
 import com.t1dm.core.model.CgmReading
 
-/**
- * The model-free loss-of-signal alarm (§3.6-A). Fires when no MEASURED reading has
- * arrived for the configured window, and escalates (shorter window, CRITICAL) when the last real
- * reading was low or falling — the exact windows in which a user relying on urgent-low is otherwise
- * unprotected (official app steals the sensor, out-of-range, Doze kill).
- *
- * Only an eligible MEASURED reading refreshes the clock; INTERPOLATED gap-fill deliberately does
- * NOT, so a dropout papered over with interpolated points still surfaces as lost signal. The alarm
- * never fires before a first real reading is seen — there is no signal to have lost.
- *
- * Deterministic: the wall clock is always passed in via [evaluate], never read internally.
- */
+/** Loss-of-signal (§3.6-A). Only an eligible MEASURED reading refreshes the clock; interpolated
+ *  gap-fill deliberately does not. Nothing fires before a first measured reading. */
 class LossOfSignalAlarm(private var config: AlarmConfig) {
 
     private var lastMeasured: CgmReading? = null
 
-    /** When the believed sensor last changed. The clock runs from whichever is later, this or the
-     *  last measured reading — see [onSourceChanged]. */
     private var armedAtMs: Long? = null
 
-    /**
-     * The believed sensor changed at [nowMs]: RESTART the staleness clock from here.
-     *
-     * The clock is otherwise seeded from the last MEASURED reading, so carrying it across a promotion
-     * ages the new sensor by however long the old one had been quiet and fires loss-of-signal against
-     * a sensor reporting perfectly. Restarting fixes that without disarming anything: the predicate
-     * stays "no measured reading for N minutes", and a new sensor that never reports still trips it N
-     * minutes after the promotion.
-     *
-     * Clearing [lastMeasured] instead would have been a §3.6-A regression, and a silent one: this
-     * alarm returns null while it has no reading, so a promotion onto a dead or warming-up sensor
-     * would have raised NOTHING, with no bound on how long. [lastMeasured] is deliberately kept for a
-     * second reason too — it is the escalation basis, so a patient last seen low keeps the CRITICAL
-     * tier across a sensor change instead of dropping to the ordinary one.
-     */
+    /** Restarts the staleness clock at [nowMs]. [lastMeasured] is deliberately kept: clearing it
+     *  would raise nothing at all on a dead new sensor, and it is the escalation basis. */
     fun onSourceChanged(nowMs: Long) {
         armedAtMs = nowMs
     }
@@ -44,15 +19,11 @@ class LossOfSignalAlarm(private var config: AlarmConfig) {
     var loss: SignalLoss? = null
         private set
 
-    /** Live-swap the loss windows / fall-rate / thresholds WITHOUT touching [loss] or the freshness
-     *  clock (§3.6-A). A widened window never clears a standing loss episode on the spot; the next
-     *  [evaluate] re-decides against the new window. */
+    /** Never clears a standing episode; the next [evaluate] re-decides. */
     fun updateConfig(config: AlarmConfig) {
         this.config = config
     }
 
-    /** Refreshes the freshness clock on an eligible MEASURED reading (which also clears any loss).
-     *  INTERPOLATED / WARMUP / INVALID readings are ignored. */
     fun onReading(reading: CgmReading): SignalLoss? {
         if (reading.isEligibleMeasured()) {
             lastMeasured = reading
@@ -61,8 +32,7 @@ class LossOfSignalAlarm(private var config: AlarmConfig) {
         return loss
     }
 
-    /** Re-evaluates against wall-clock [nowMs]. Idempotent while an episode persists — it keeps the
-     *  existing [SignalLoss] object (same escalation) rather than churning a new one each tick. */
+    /** Idempotent while an episode persists: keeps the same [SignalLoss] object. */
     fun evaluate(nowMs: Long): SignalLoss? {
         val last = lastMeasured
         if (last == null) {
@@ -71,8 +41,6 @@ class LossOfSignalAlarm(private var config: AlarmConfig) {
         }
         val escalate = isLowOrFalling(last, config)
         val windowMin = if (escalate) config.lossEscalatedMin else config.lossMin
-        // The later of the last reading and the last promotion: a fresh sensor gets its full window,
-        // and a sensor that never reports still trips the alarm one window after being believed.
         val since = maxOf(last.rxWallMs, armedAtMs ?: Long.MIN_VALUE)
         val overdue = nowMs - since >= windowMin * 60_000L
         loss = when {

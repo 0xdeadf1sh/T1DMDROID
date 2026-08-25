@@ -54,39 +54,13 @@ import com.t1dm.core.model.AlertBand
 import timber.log.Timber
 import kotlin.math.roundToInt
 
-/**
- * The single, adaptive glucose widget (replaces the three fixed Glance tiles). [SizeMode.Responsive]
- * lets ONE provider paint four densities — the launcher picks the largest that fits:
- *   Compact  — number + trend arrow;
- *   Medium   — + DEATH/NORMAL status, zone pill, forecast, age;
- *   Large    — + a metrics row (IOB · COB · GMI · steps · signal);
- *   XLarge   — + a second metrics row (circadian clock).
- * It reads the live [T1dmActivePalette] so every element follows the active theme across all five
- * palettes + a custom one. Motion is state-driven and free (no polling loop): a per-reading
- * "freshness" accent the FGS settles with ONE delayed re-render ([FRESH_WINDOW_MS]); gated by the
- * global animations toggle via [WidgetSnapshot.animationsEnabled].
- */
 class GlucoseWidget : GlanceAppWidget() {
     override val sizeMode = SizeMode.Responsive(setOf(Compact, Medium, Large, XLarge))
 
     /**
-     * Renders in three tiers of decreasing knowledge, and never blank: the live pull, else the
-     * last-known snapshot [WidgetStateStore] persisted in this widget's own Glance state, else the
-     * honest "nothing known yet" floor.
-     *
-     * The guard is not defensive habit. A throw here does not leave the previous tile standing — Glance
-     * catches it and pushes `errorUiLayout` ("Can't show content") in its place — and the pull reaches
-     * through the container into Room, which a cold or still-locked process cannot open. But the graver
-     * failure is not a throw at all: a read that suspends and NEVER resumes (a cold, widget-only process
-     * forcing the Room InvalidationTracker's first subscribe; a starved reader-pool acquire) is not an
-     * exception and no `runCatching` can catch it — it would park this function short of `provideContent`
-     * forever, leaving the host inflating its loading layout (the perpetual white-tile spinner). So the
-     * pull runs under a hard [SNAPSHOT_BUDGET_MS] wall clock ([boundedWidgetPull]): a timeout is folded
-     * into the SAME `live == null` fallback a throw is, and `provideContent` is therefore always reached.
-     *
-     * The palette is seeded from the SAME snapshot rather than from whatever the FGS last wrote, so a
-     * render that did not originate in the service (boot, [WidgetRefreshWorker], a resize) still paints
-     * the persisted theme instead of the process-default Tron.
+     * Three tiers and never blank: the live pull, else the persisted snapshot, else the unknown floor.
+     * The pull runs under a wall clock because a read that never resumes is not an exception and would
+     * park this short of `provideContent`, leaving the host's loading spinner up for good.
      */
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         val nowMs = System.currentTimeMillis()
@@ -97,11 +71,8 @@ class GlucoseWidget : GlanceAppWidget() {
         ) { currentWidgetSnapshot(context) }
         val cached = if (live != null) null else runCatching { lastKnown(context, id) }.getOrNull()
 
-        // Before composing, not after: T1dmGlanceColors and WidgetSurface both read the process-global
-        // holders at composition time (core/design Theme.kt). Nothing known ⇒ nothing written, so a
-        // render that cannot establish the theme leaves whatever authority last did rather than
-        // clobbering it back to the default. Guarded so a malformed persisted theme cannot throw on the
-        // one path that runs BEFORE provideContent — the same spinner-forever failure the pull bound closes.
+        // Before composing: the palette holders are read at composition time. Nothing known ⇒ nothing
+        // written, so a render that cannot establish the theme leaves whatever authority last did.
         themeOf(live, cached)?.let { (themeId, customThemeJson) ->
             runCatching { applyWidgetPalette(resolvePalette(themeId, customThemeJson)) }
                 .onFailure { Timber.tag(TAG).w(it, "widget palette seed failed — keeping the current palette") }
@@ -118,12 +89,8 @@ class GlucoseWidget : GlanceAppWidget() {
         }
     }
 
-    /**
-     * Leave the last successfully-pushed RemoteViews on the host instead of replacing them with
-     * Glance's "Can't show content" layout (the default does exactly that, then rethrows). A stale but
-     * readable number is strictly more useful than an error card, and the composition itself is pure —
-     * anything that can fail has already failed in [provideGlance] and been absorbed there.
-     */
+    /** The default replaces the tile with Glance's "Can't show content" layout; a stale number is
+     *  better than an error card. */
     override fun onCompositionError(context: Context, glanceId: GlanceId, appWidgetId: Int, throwable: Throwable) {
         Timber.tag(TAG).w(throwable, "widget composition failed — leaving the previous tile in place")
     }
@@ -140,14 +107,10 @@ class GlucoseWidget : GlanceAppWidget() {
     companion object {
         private const val TAG = "GlucoseWidget"
 
-        /** A reading younger than this renders the "fresh" accent; the FGS schedules one delayed
-         *  re-render just past it so a new value reads as a brief pulse rather than a static jump. */
+        /** A reading younger than this renders the "fresh" accent; the FGS schedules one re-render past it. */
         const val FRESH_WINDOW_MS = 2000L
 
-        /** The hard wall-clock ceiling on the live snapshot pull. A healthy pull is a few bounded Room
-         *  reads plus a curve eval — tens of milliseconds — so this is generous headroom for a warm
-         *  process, yet short enough that a widget woken onto a cold/locked one recovers to its cached
-         *  (or floor) tile within a couple of seconds instead of holding the loading spinner open. */
+        /** A healthy pull is tens of milliseconds, so this only bounds a cold or still-locked process. */
         const val SNAPSHOT_BUDGET_MS = 2500L
     }
 }
@@ -155,32 +118,27 @@ class GlucoseWidget : GlanceAppWidget() {
 class GlucoseWidgetReceiver : GlanceAppWidgetReceiver() {
     override val glanceAppWidget: GlanceAppWidget = GlucoseWidget()
 
-    /** The first tile has just been pinned: arm the periodic refresh here as well as at boot, so a
-     *  widget added to an install that has not rebooted since is covered from the moment it appears. */
     override fun onEnabled(context: Context) {
         super.onEnabled(context)
         WidgetRefreshWorker.enqueue(context)
     }
 }
 
-// Responsive breakpoints (min size at which each layout applies); the launcher renders the largest fit.
+// The minimum size at which each layout applies.
 private val Compact = DpSize(120.dp, 48.dp)
 private val Medium = DpSize(170.dp, 108.dp)
 private val Large = DpSize(250.dp, 118.dp)
 private val XLarge = DpSize(210.dp, 168.dp)
 
-/** The NORMAL-mode indicator: a plain blue filled dot (DEATH shows a red skull instead). */
 private val NormalBlue = Color(0xFF2E7DFF)
 
-/** The STABLE badge green (matches Navigation's stableGreen — a positive, non-theme claim colour). */
+/** Matches Navigation's stableGreen. */
 private val StableGreen = Color(0xFF3DD68C)
 
 @Composable
 private fun WidgetSurface(snap: WidgetSnapshot) {
     val p = T1dmActivePalette
     val size = LocalSize.current
-    // The same per-theme motif the app paints, rasterised to a bitmap (Glance/RemoteViews can't run the
-    // live Canvas painter) at the user's Background opacity; a flat p.background base when it's off.
     val density = LocalContext.current.resources.displayMetrics.density
     val backdrop = widgetBackdropBitmap(
         p,
@@ -260,7 +218,6 @@ private fun XLargeContent(snap: WidgetSnapshot, p: T1dmPalette) {
     }
 }
 
-/** The value + arrow (+ unit) on the left; the DEATH/NORMAL status icon and glycemic-zone pill on the right. */
 @Composable
 private fun Header(snap: WidgetSnapshot, p: T1dmPalette, numberSp: Int, arrowSp: Int) {
     Row(modifier = GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -273,7 +230,6 @@ private fun Header(snap: WidgetSnapshot, p: T1dmPalette, numberSp: Int, arrowSp:
     }
 }
 
-/** DEATH → red skull; NORMAL (DEATH off) → a blue filled circle. */
 @Composable
 private fun StatusIcon(death: Boolean) {
     if (death) {
@@ -287,8 +243,6 @@ private fun StatusIcon(death: Boolean) {
     }
 }
 
-/** The BG value + trend arrow, value tinted by glycemic band, arrow flipped to the accent while fresh.
- *  Warmup / signal loss are carried by the forecast line, not a spinner. */
 @Composable
 private fun BgRow(snap: WidgetSnapshot, p: T1dmPalette, numberSp: Int, arrowSp: Int) {
     val g = snap.glance
@@ -304,8 +258,7 @@ private fun BgRow(snap: WidgetSnapshot, p: T1dmPalette, numberSp: Int, arrowSp: 
     }
 }
 
-/** The app-wide glycemic status badge (matches Navigation's top-bar U1): green STABLE, red HYPO/HYPER
- *  in N, muted VOID. Fail-closed — the number's own band tint still shows the measured band. */
+/** Mirrors Navigation's top-bar status badge (U1). */
 @Composable
 private fun GlyBadge(snap: WidgetSnapshot, p: T1dmPalette) {
     val bg = when (snap.glyKind) {
@@ -322,8 +275,6 @@ private fun GlyBadge(snap: WidgetSnapshot, p: T1dmPalette) {
     }
 }
 
-/** IOB · COB · GMI · steps · signal, spread across the width. Cells with no data read "—". The signal
- *  meter sits right of STEPS (bars, per the user request); the RSSI is the connected link's live poll. */
 @Composable
 private fun PrimaryMetrics(snap: WidgetSnapshot, p: T1dmPalette) {
     Row(modifier = GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -339,7 +290,6 @@ private fun PrimaryMetrics(snap: WidgetSnapshot, p: T1dmPalette) {
     }
 }
 
-/** Circadian clock (XLarge second row; the signal meter now lives next to STEPS in [PrimaryMetrics]). */
 @Composable
 private fun SecondaryMetrics(snap: WidgetSnapshot, p: T1dmPalette) {
     Row(modifier = GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -384,8 +334,7 @@ private fun bandColor(band: AlertBand?, p: T1dmPalette): Color = when (band) {
     null -> p.inkMuted
 }
 
-/** The reading's age, or an explicit "no reading". [BgGlance.readingAgeMs] is 0 when there is nothing
- *  to age, which `BgFormat.age` would otherwise render as a confident "now" under a "--" value. */
+/** [BgGlance.readingAgeMs] is 0 with no reading, which `BgFormat.age` would render as a confident "now". */
 private fun ageText(g: BgGlance): String = if (g.hasReading) BgFormat.age(g.readingAgeMs) else "no reading"
 
 private fun forecastText(g: BgGlance): String = when {
@@ -412,7 +361,6 @@ private fun formatClock(hour: Double): String {
     return "%02d:%02d".format(h, m)
 }
 
-/** Human-readable step count: as-is below 1000, else "K" (e.g. 400, 5K, 5.4K, 12K). */
 private fun humanSteps(n: Int): String {
     if (n < 1000) return n.toString()
     val k = n / 1000.0
@@ -427,7 +375,6 @@ private fun isFresh(snap: WidgetSnapshot): Boolean =
     snap.animationsEnabled && snap.glance.hasReading &&
         snap.glance.readingAgeMs in 0 until GlucoseWidget.FRESH_WINDOW_MS
 
-/** Readable ink for text laid over a saturated band colour, by perceived luminance. */
 private fun onColor(c: Color): Color {
     val l = 0.299f * c.red + 0.587f * c.green + 0.114f * c.blue
     return if (l > 0.6f) Color.Black else Color.White

@@ -7,11 +7,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * The §3.6 presentation-gate safety guards (C1–C5), test-pinned. The snooze/dismiss never touches the
- * engine; these prove the pure [SnoozeState] gate and [visibleAfterGates] behave exactly as specced:
- * time-bounded silence, escalation-pierce, dismiss-until-clear, DEATH-suppresses-all, over-temp-exempt.
- */
+/** Pins the §3.6 presentation gate: guards C1–C5 and [visibleAfterGates]. */
 class SnoozeStateTest {
 
     private fun lowBreach() = ThresholdBreach(AlertBand.LOW, 65, 0L, AlarmSeverity.WARNING, false, "low")
@@ -21,8 +17,6 @@ class SnoozeStateTest {
         SignalLoss(0L, 20, null, null, severity, severity == AlarmSeverity.CRITICAL, "loss")
     private fun overTemp() = OverTemperature(45.0, 0L, 44.0, 41.0, AlarmSeverity.WARNING, false, "hot")
 
-    // ── C1 — a snooze is TIME-BOUNDED and auto-expires ─────────────────────────────────────────────
-
     @Test
     fun `snooze suppresses within the window then auto-expires`() {
         val s = SnoozeState.NONE.snooze(lowBreach(), untilMs = 15 * MIN)
@@ -30,8 +24,6 @@ class SnoozeStateTest {
         assertFalse("expired at the boundary", s.silences(lowBreach(), nowMs = 15 * MIN))
         assertFalse("stays expired after", s.silences(lowBreach(), nowMs = 20 * MIN))
     }
-
-    // ── C2 — escalation PIERCES the snooze ─────────────────────────────────────────────────────────
 
     @Test
     fun `a worse severity pierces an active snooze`() {
@@ -59,8 +51,6 @@ class SnoozeStateTest {
         assertTrue("snoozing URGENT_LOW also covers the milder LOW", s.silences(lowBreach(), nowMs = 5 * MIN))
     }
 
-    // ── Option 2 — Dismiss is WARNING-only; CRITICAL/urgent tiers are Snooze-only ──────────────────
-
     @Test
     fun `only WARNING glucose and signal tiers are dismissable`() {
         assertTrue("WARNING low is dismissable", lowBreach().isDismissable())
@@ -85,13 +75,10 @@ class SnoozeStateTest {
         assertFalse("but the snooze auto-expires", s.silences(urgentLowBreach(), nowMs = 15 * MIN))
     }
 
-    // ── C3 — a dismiss silences only the CURRENT breach; a new one re-alerts ───────────────────────
-
     @Test
     fun `dismiss suppresses the current breach then a new breach after a clear re-alerts`() {
         var s = SnoozeState.NONE.dismiss(lowBreach())
         assertTrue("dismiss ignores the clock", s.silences(lowBreach(), nowMs = 1_000 * MIN))
-        // The breach clears (in-range reading) ⇒ prune drops the dismiss entry.
         s = s.pruned(AlarmState.CLEAR, nowMs = 1_000 * MIN)
         assertFalse("a genuinely new breach must re-alert", s.silences(lowBreach(), nowMs = 2_000 * MIN))
     }
@@ -117,8 +104,6 @@ class SnoozeStateTest {
         assertTrue(s.pruned(active, nowMs = 10 * MIN).entries.isEmpty())
     }
 
-    // ── C5 — over-temperature is NEVER snoozable ───────────────────────────────────────────────────
-
     @Test
     fun `over-temperature can never be snoozed or dismissed`() {
         val snoozed = SnoozeState.NONE.snooze(overTemp(), untilMs = 15 * MIN)
@@ -127,8 +112,6 @@ class SnoozeStateTest {
         assertTrue(dismissed.entries.isEmpty())
         assertFalse(snoozed.silences(overTemp(), nowMs = 0L))
     }
-
-    // ── visibleAfterGates — the single presentation gate the notifier uses ─────────────────────────
 
     @Test
     fun `DEATH suppresses glucose and signal but never over-temperature`() {
@@ -150,7 +133,7 @@ class SnoozeStateTest {
     @Test
     fun `a snooze never gates over-temperature presentation`() {
         val state = AlarmState(null, null, overTemp())
-        // Even if a stray entry somehow existed, silences() returns false for over-temp.
+        // A snooze entry for over-temp is unreachable, so NONE is the only state to test.
         val v = state.visibleAfterGates(false, SnoozeState.NONE, nowMs = 5 * MIN)
         assertNotNull(v.overTemperature)
     }

@@ -47,19 +47,17 @@ class AlarmEngineTest {
     @Test
     fun `co-existing critical alarms tie-break to the threshold breach`() {
         val e = engine()
-        // Urgent-low (CRITICAL) also makes the last reading "low" ⇒ escalated loss (CRITICAL).
         e.onReading(reading(50, rxWallMs = 0))
         e.onTick(12 * MIN)
         val s = e.state.value
         assertEquals(AlarmSeverity.CRITICAL, s.threshold!!.severity)
         assertEquals(AlarmSeverity.CRITICAL, s.signalLoss!!.severity)
-        assertTrue(s.primary is ThresholdBreach) // threshold wins the severity tie
+        assertTrue(s.primary is ThresholdBreach)
     }
 
     @Test
     fun `an escalated loss outranks a mere warning threshold`() {
         val e = engine()
-        // HIGH (WARNING) but falling ⇒ escalated loss (CRITICAL) should be primary.
         e.onReading(reading(200, rxWallMs = 0, trendTenthsPerMin = -20))
         e.onTick(12 * MIN)
         val s = e.state.value
@@ -82,11 +80,11 @@ class AlarmEngineTest {
     @Test
     fun `a critical threshold breach outranks a critical over-temperature`() {
         val e = AlarmEngine(AlarmConfig.DEFAULT.copy(overTempSeverity = AlarmSeverity.CRITICAL))
-        e.onReading(reading(50, rxWallMs = 0)) // urgent low ⇒ CRITICAL threshold
-        e.onTick(MIN, tempC = 45.0)            // CRITICAL over-temp
+        e.onReading(reading(50, rxWallMs = 0))
+        e.onTick(MIN, tempC = 45.0)
         val s = e.state.value
         assertEquals(AlarmSeverity.CRITICAL, s.threshold!!.severity)
         assertEquals(AlarmSeverity.CRITICAL, s.overTemperature!!.severity)
-        assertTrue(s.primary is ThresholdBreach) // glucose beats device at equal severity
+        assertTrue(s.primary is ThresholdBreach)
     }
 }

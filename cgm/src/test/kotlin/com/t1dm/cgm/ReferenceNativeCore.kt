@@ -41,17 +41,8 @@ import com.t1dm.core.model.SynthParams
 import com.t1dm.core.model.SynthSeries
 import com.t1dm.core.model.TerrainSpec
 
-/**
- * Test-only [NativeCore] backed by [AidexCodec] — a stand-in for the Rust `t1dm-core`, so the :cgm
- * pipeline can be driven bit-faithfully against the CGM.md golden vectors without the native library.
- *
- * **Only the advert-decode surface is real.** [decodeAdvert], [advertCrc32] and the two risk-space
- * conversions are what the :cgm tests exercise; every other member exists to satisfy the [NativeCore]
- * contract and throws if a future test wires one. That contract grows with the model work, so the
- * stubs below are mechanical and meant to be regenerated from the interface rather than maintained by
- * hand — and they throw rather than answer, because a stub returning a plausible zero would let a
- * test pass on an answer nothing computed.
- */
+/** Test-only [NativeCore] on [AidexCodec]: only advert decode and the risk conversions answer.
+ *  Every other member throws rather than return a zero a test could pass on. */
 class ReferenceNativeCore : NativeCore {
     override fun roundtrip(msg: String): String = msg
     override fun decodeAdvert(payload: ByteArray): DecodedAdvert? = AidexCodec.decode(payload)
@@ -59,7 +50,6 @@ class ReferenceNativeCore : NativeCore {
     override fun kovatchevF(mgdl: Double): Double = 0.0
     override fun kovatchevFInv(risk: Double): Double = 0.0
 
-    // ── Contract-only, never called from :cgm ───────────────────────────────────────────
     override fun parseDescriptor(json: String): ModelDescriptor? = TODO("not exercised by :cgm tests")
     override fun causalSmooth(series: List<Double>, clampMin: Double?, clampMax: Double?, window: Int): List<Double> = TODO("not exercised by :cgm tests")
     override fun normalizeSample(desc: ModelDescriptor, bg: Double, carb: Double, insulin: Double, exercise: Double): List<Double> = TODO("not exercised by :cgm tests")

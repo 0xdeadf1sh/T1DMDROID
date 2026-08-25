@@ -10,9 +10,8 @@ android {
 dependencies {
     implementation(project(":core:design"))
     implementation(project(":core:model"))
-    // The world IS the BG panel's own render model: GraphFrame / SmoothedTrace / PaintFrame, plus the
-    // run walk and tool geometry the panel and the game must agree on. Deliberately NOT :data — the
-    // host collects and passes state down, exactly as :feature:dashboard does for :ui:graph.
+    // The world is the BG panel's own render model. Deliberately NOT :data — the host collects the
+    // state and passes it down, as :feature:dashboard does for :ui:graph.
     implementation(project(":ui:graph"))
 
     implementation(libs.kotlinx.coroutines.core)

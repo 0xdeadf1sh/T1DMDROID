@@ -16,25 +16,11 @@ import org.json.JSONObject
 import timber.log.Timber
 import java.util.TreeMap
 
-/**
- * `:app` implementation of the `:inference` [BgHistoryProvider] port (Phase 2
- * deliverable 4): the shared BG history the cycle conditions on, projected off Room + the CGM
- * registry. The Phase-2 `kv`-blob [com.t1dm.inference.PredictionStore] is retired in Phase 3 —
- * [com.t1dm.app.sync.RoomPredictionStore] now persists to the dedicated `prediction` table and
- * enqueues the `PREDICTIONS` outbox batch.
- */
-
 private const val GRID_MS = 300_000L
 
-/**
- * Projects the authoritative source's grid-aligned readings into the trailing per-5-min-step mg/dL series
- * the model conditions on. WARMUP/INVALID readings are excluded (§3.1 — suppressed from inference);
- * gaps within the covered window are carried forward. Returns `null` when fewer than `minSteps` real
- * readings exist (the "collecting context" state — the model needs ≥16 patches / 8 h). This provider
- * supplies only the BG series; the carb-appearance / insulin-action context is supplied SEPARATELY by
- * the `ContextChannelSource` / `FutureOverrideSource` wired to the real `ChannelBuilder` curve engine
- * (see `AppContainer`), NOT a `normalize(0)` baseline.
- */
+/** The authoritative source's readings as a trailing per-5-min-step mg/dL series. WARMUP/INVALID
+ *  excluded (§3.1); gaps carried forward; null below `minSteps`. BG only — the carb-appearance and
+ *  insulin-action channels come from `ContextChannelSource` / `FutureOverrideSource`. */
 class RoomBgHistoryProvider(
     private val repository: T1dmRepository,
     private val registry: AidexXSourceRegistry,
@@ -49,11 +35,8 @@ class RoomBgHistoryProvider(
     private suspend fun series(maxSteps: Int, minSteps: Int, withReconstructed: Boolean): BgSeries? {
         val srcId = registry.authoritative.value ?: repository.authoritativeSourceId() ?: return null
         val readings = repository.recentReadings(srcId, maxSteps + 12)
-            // Excludes warm-up and invalid — and, on the dosing path, a PROMOTED reconstruction.
-            // Promotion puts a model's own output into `cgm_reading`, so without the provenance
-            // test `dosingBgSeries` would swallow it through the reading table while still
-            // correctly refusing the `bg_infill` copy — closing exactly the loop between a model's
-            // output and the advice derived from it that this split exists to prevent.
+            // The dosing path also refuses a PROMOTED reconstruction: promotion puts a model's own
+            // output into `cgm_reading`, and it must not reach the advice derived from it.
             .filter {
                 it.bgMgdl != null && it.flag == ReadingFlag.NORMAL &&
                     (withReconstructed || it.provenance != ReadingProvenance.RECONSTRUCTED)
@@ -70,9 +53,7 @@ class RoomBgHistoryProvider(
         if (nSteps < minSteps) return null
 
         val start = anchor - (nSteps - 1L) * GRID_MS
-        // A reconstructed sample stands in for a slot the sensor never covered — better evidence
-        // than a carry-forward, which is a flat stretch that never happened. Real readings still
-        // win outright, and nothing here reaches `fitBgSeries`: a fill is never a fit target.
+        // A fill stands in for a slot the sensor never covered; real readings still win outright.
         val filled = if (!withReconstructed) {
             emptyMap()
         } else {
@@ -88,28 +69,15 @@ class RoomBgHistoryProvider(
             if (v != null) last = v
             out[i] = last
         }
-        // Anchor freshness on the MOST-RECENT MEASURED reading (interpolated points never reset it,
-        // §3.6-D). `readings` is ordered newest-first (DAO `ORDER BY tsMs DESC`), so the freshest
-        // measured sample is the FIRST match — `lastOrNull` would pick the oldest and wrongly age the
-        // anchor (⇒ perpetual STALE + a fan anchored into the far past, off-screen).
+        // Freshness anchors on the most-recent MEASURED reading (§3.6-D). `readings` is newest-first
+        // (DAO `ORDER BY tsMs DESC`), so `lastOrNull` here would pick the oldest and age the anchor.
         val lastMeasured = readings.firstOrNull { it.provenance == ReadingProvenance.MEASURED }?.tsMs ?: anchor
         return BgSeries(out, anchorTsMs = lastMeasured, gridStartMs = start, sourceId = srcId.value)
     }
 
-    /**
-     * The series a model is FITTED on: MEASURED readings only, with every uncovered grid slot left
-     * as `NaN` rather than carried forward.
-     *
-     * [recentBgSeries] fills gaps because a model must be CONDITIONED on a dense context. A fit is
-     * the opposite case: a carried-forward run is a flat stretch that never happened, and a
-     * least-squares fit handed enough of them learns persistence from artifacts. `SPEC/invariants.md`
-     * §1 makes a filled value a presentation step and never something treated as measured, so the
-     * gaps travel and the core drops the rows that span them.
-     *
-     * Two further departures from [recentBgSeries], both deliberate: interpolated rows are excluded
-     * outright (only real sensor signal is a fit target), and the length is not rounded down to whole
-     * patches — that is a neural-input constraint and costs the fit usable rows for nothing.
-     */
+    /** The fit series: MEASURED only, uncovered grid slots left as `NaN` rather than carried forward
+     *  — `SPEC/invariants.md` §1 makes a filled value presentation, never a fit target, so the gaps
+     *  travel and the core drops the rows spanning them. Length is NOT rounded to whole patches. */
     override suspend fun fitBgSeries(maxSteps: Int, minSteps: Int): BgSeries? {
         val srcId = registry.authoritative.value ?: repository.authoritativeSourceId() ?: return null
         val readings = repository.recentReadings(srcId, maxSteps + 12)
@@ -132,27 +100,14 @@ class RoomBgHistoryProvider(
         return BgSeries(out, anchorTsMs = anchor, gridStartMs = start, sourceId = srcId.value)
     }
 
-    /**
-     * Which trailing slots hold a model's own output rather than a measurement.
-     *
-     * BOTH routes, because they are separate copies of the same claim and either alone leaves a
-     * hole: promotion writes a `RECONSTRUCTED` row into `cgm_reading`, and [recentBgSeries] splices
-     * an UNPROMOTED `bg_infill` value into a slot no reading covers. A promoted span normally has a
-     * row in both tables, but a stranded one — its band gone, its reading still stored — has only
-     * the first, and that is precisely the row a fit must not condition on.
-     */
+    /** Which trailing slots hold a model's own output. BOTH routes count: promotion writes a
+     *  `RECONSTRUCTED` row into `cgm_reading`, and [recentBgSeries] splices an UNPROMOTED `bg_infill`
+     *  value into an uncovered slot; a stranded span has only the first. */
     override suspend fun reconstructedSlots(maxSteps: Int): Set<Long> {
         if (maxSteps <= 0) return emptySet()
         val srcId = registry.authoritative.value ?: repository.authoritativeSourceId() ?: return emptySet()
         val readings = repository.recentReadings(srcId, maxSteps + 12)
         if (readings.isEmpty()) return emptySet()
-        // Which slots [series] would take a value from at all, and which of those are a model's own
-        // output. Both routes count, because they are separate copies of the same claim and either
-        // alone leaves a hole: promotion writes a `RECONSTRUCTED` row into `cgm_reading`, and
-        // [recentBgSeries] splices an UNPROMOTED `bg_infill` value into a slot no reading covers. A
-        // promoted span normally has a row in both tables, but a stranded one — its band gone, its
-        // reading still stored — has only the first, and that is precisely the row a fit must not
-        // condition on.
         val covered = HashSet<Long>()
         val fromModel = HashSet<Long>()
         for (r in readings) {
@@ -167,11 +122,8 @@ class RoomBgHistoryProvider(
             fromModel.add(f.ts)
         }
         if (fromModel.isEmpty()) return emptySet()
-        // And the CARRY. [series] holds the last value it saw across every uncovered slot, so a
-        // reconstruction keeps standing in until something else covers a slot — up to a patch of it
-        // where a fill ends on a patch boundary and the sensor resumed mid-patch. Naming only the
-        // slot a reconstruction was written at left that run admissible, which is the same model
-        // output reaching the same fit context by a slower route.
+        // And the CARRY: [series] holds the last value across every uncovered slot, so a
+        // reconstruction keeps standing in until something else covers one.
         val out = HashSet<Long>(fromModel)
         var ts = oldest
         var carrying = false
@@ -182,11 +134,8 @@ class RoomBgHistoryProvider(
         return out
     }
 
-    /**
-     * WARMUP-gate numerator (inference-runtime.md): how many MEASURED (non-interpolated), NORMAL
-     * readings sit inside the trailing [windowSteps] grid slots. Interpolated carry-forward and
-     * WARMUP/INVALID rows do NOT count — only real sensor signal advances warmup.
-     */
+    /** The warmup-gate numerator: distinct grid slots in the trailing [windowSteps] covered by a
+     *  MEASURED, NORMAL reading. Carry-forward and WARMUP/INVALID rows do not advance warmup. */
     override suspend fun measuredStepsInWindow(windowSteps: Int): Int {
         if (windowSteps <= 0) return 0
         val srcId = registry.authoritative.value ?: repository.authoritativeSourceId() ?: return 0
@@ -199,7 +148,6 @@ class RoomBgHistoryProvider(
         if (readings.isEmpty()) return 0
         val anchor = readings.maxOf { it.tsMs }
         val windowStart = anchor - (windowSteps - 1L) * GRID_MS
-        // Distinct 5-min grid slots covered by a measured reading within the trailing window.
         return readings.asSequence()
             .filter { it.tsMs >= windowStart }
             .map { it.tsMs / GRID_MS }
@@ -208,13 +156,9 @@ class RoomBgHistoryProvider(
     }
 }
 
-/**
- * `:app` implementation of the `:inference` [TelemetryStore] port (Phase 7C — Models drill-down): the
- * CUMULATIVE per-model inference telemetry (#predictions + total backend wall-time) as one JSON blob
- * in the Room `kv` store, keyed [KV_KEY]. Kept off the schema (a single kv row) so `:inference` needs
- * no Room dependency; O(1) read/write per cycle. Malformed/absent ⇒ an empty map (fail-open), so a
- * corrupt row can never break a cycle — the counters simply restart.
- */
+/** Cumulative per-model telemetry as one JSON blob in the Room `kv` store, off the schema so
+ *  `:inference` needs no Room dependency. Malformed or absent ⇒ an empty map: a corrupt row restarts
+ *  the counters rather than breaking a cycle. */
 class KvTelemetryStore(private val repository: T1dmRepository) : TelemetryStore {
 
     override suspend fun load(): Map<String, CumulativeTelemetry> {
@@ -246,20 +190,9 @@ class KvTelemetryStore(private val repository: T1dmRepository) : TelemetryStore 
     }
 }
 
-/**
- * `:app` implementation of the `:inference` [BaselineStore]: the fitted classical baseline as one
- * JSON blob in the Room `kv` store. Kept off the schema for the same reason [KvTelemetryStore] is —
- * `:inference` needs no Room dependency, and this is one row read once at startup and written once
- * per manual fit.
- *
- * The weights and the band estimator are stored TOGETHER because they are one model
- * ([BaselineModel]); a load that recovered one without the other would produce forecasts whose
- * fan came from a different fit than the median.
- *
- * Fail-closed on anything unreadable: a corrupt, truncated, or shape-inconsistent blob loads as
- * `null` (no model, and the panel offers a fit) rather than as a model whose weights do not match
- * its declared feature count.
- */
+/** The fitted baseline as one JSON blob in the Room `kv` store. Weights and band estimator are one
+ *  model and are stored together. Fail-closed: anything corrupt, truncated or shape-inconsistent
+ *  loads as `null`, never as a model whose weights do not match its declared feature count. */
 class KvBaselineStore(private val repository: T1dmRepository) : BaselineStore {
 
     override suspend fun load(): BaselineModel? {
@@ -279,9 +212,8 @@ class KvBaselineStore(private val repository: T1dmRepository) : BaselineStore {
             val nFeatures = o.getInt("nFeatures")
             val weights = o.getJSONArray("weights").toDoubleList()
             val bandDelta = o.getJSONArray("bandDelta").toDoubleList()
-            // The shape checks are the point of the version field's company: a blob whose weight
-            // count disagrees with its own spec cannot be run, and running it would decode a
-            // forecast off whichever features happened to line up.
+            // A blob whose weight count disagrees with its own spec would decode a forecast off
+            // whichever features happened to line up.
             if (weights.size != spec.horizonSteps * (1 + nFeatures)) return null
             if (bandDelta.isNotEmpty() && bandDelta.size != spec.horizonSteps * N_QUANTILES) return null
             if (weights.any { !it.isFinite() } || bandDelta.any { !it.isFinite() }) return null
@@ -333,10 +265,9 @@ class KvBaselineStore(private val repository: T1dmRepository) : BaselineStore {
     private companion object {
         const val KV_KEY = "inference.baseline.model"
 
-        /** Bumped when the blob's SHAPE changes. An older blob is dropped rather than migrated:
-         *  a refit costs one button press and is exact, where a migration would be a guess.
-         *  2: the forward carb/insulin blocks joined the feature set, so v1 weights index a
-         *  different design row and would decode a plausible, finite, wrong forecast. */
+        /** Bumped when the blob's SHAPE changes; an older blob is dropped, not migrated. 2: the
+         *  forward carb/insulin blocks joined the feature set, so v1 weights index a different
+         *  design row and would decode a plausible, finite, wrong forecast. */
         const val BLOB_VERSION = 2
 
         const val N_QUANTILES = 7

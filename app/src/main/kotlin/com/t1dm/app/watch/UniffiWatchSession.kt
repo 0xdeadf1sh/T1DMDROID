@@ -12,17 +12,9 @@ import java.security.MessageDigest
 import uniffi.t1dm_core.WatchSession as RustWatchSession
 
 /**
- * The SHIPPING watch crypto session: the authoritative X25519 → HKDF-SHA256 → per-direction
- * AES-128-GCM [RustWatchSession] (t1dm-core, uniffi) adapted to the `:watch` [WatchSession] port.
- * This lives in `:app` — the composition root — precisely because `:watch` is a clean removable seam
- * that may not depend on `:core:native`; the module ships a loopback double for its pure-JVM tests,
- * and `:app` binds THIS in its place (retiring the loopback from every shipped path).
- *
- * The Rust session establishes its keys the moment [acceptPeer] runs (there is no separate "confirm"
- * in the cipher); the SAS-gated promotion to LIVE is a phone-side UX concern, so this adapter tracks
- * the {UNPAIRED, AWAIT_PEER, AWAIT_SAS, LIVE} lifecycle locally while delegating every byte on the
- * wire to Rust. Seal/open exchange the FULL authoritative record (`ver||epoch||seq||ct||tag`,
- * docs/WATCH_BLE.md §6.1) with EMPTY caller AAD (§6.1); the 13-byte header is the AEAD AAD internally.
+ * The `:watch` [WatchSession] port over Rust's [RustWatchSession]; it lives in `:app` because
+ * `:watch` may not depend on `:core:native`. [acceptPeer] establishes the keys, so the SAS gate to
+ * LIVE is phone-side only. Seal/open carry the full record with EMPTY caller AAD (docs/WATCH_BLE.md §6.1).
  */
 class UniffiWatchSession internal constructor(
     private val rust: RustWatchSession,
@@ -33,7 +25,7 @@ class UniffiWatchSession internal constructor(
         if (established) WatchSessionState.LIVE else WatchSessionState.UNPAIRED
         private set
 
-    /** Surfaced for the panel only; the authoritative counters live inside Rust's session. */
+    /** Display only; Rust's session holds the authoritative counters. */
     private var lastSendSeq: Long = 0L
     private var lastRecvSeq: Long = 0L
 
@@ -41,14 +33,14 @@ class UniffiWatchSession internal constructor(
         get() = runCatching { rust.epoch().toInt() }.getOrDefault(0)
 
     override fun startHandshake(): ByteArray {
-        // Mint a fresh ephemeral X25519 keypair (reset returns the session to the Handshake phase).
+        // reset mints a fresh ephemeral X25519 keypair.
         rust.reset()
         state = WatchSessionState.AWAIT_PEER
         return rust.publicKey()
     }
 
     override fun acceptPeer(peerPublic: ByteArray) {
-        rust.acceptPeer(peerPublic) // runs ECDH + HKDF, establishes epoch-0 keys (still SAS-pending)
+        rust.acceptPeer(peerPublic) // ECDH + HKDF; the epoch-0 keys exist from here
         state = WatchSessionState.AWAIT_SAS
     }
 
@@ -59,7 +51,7 @@ class UniffiWatchSession internal constructor(
 
     override fun confirm() {
         check(state == WatchSessionState.AWAIT_SAS) { "confirm requires AWAIT_SAS, was $state" }
-        state = WatchSessionState.LIVE // keys were already derived by acceptPeer; the SAS gates trust
+        state = WatchSessionState.LIVE
     }
 
     override fun seal(plaintext: ByteArray): SealedFrame {
@@ -77,8 +69,6 @@ class UniffiWatchSession internal constructor(
         return pt
     }
 
-    /** Manual rotation is exposed as a fresh SAS-authenticated re-handshake (a new ephemeral keypair);
-     *  [com.t1dm.watch.WatchLink] drives the HELLO/HELLO_ACK/CONFIRM that follow. */
     override fun rotate(): ByteArray = startHandshake()
 
     override fun reset() {
@@ -95,8 +85,7 @@ class UniffiWatchSession internal constructor(
         state = state,
         epoch = epoch,
         keyFingerprint = runCatching { fingerprint(rust.publicKey()) }.getOrNull(),
-        // The authoritative counters live in Rust and survive a restore (send_seq resumes at the burned
-        // ceiling, not 0); the local vars only cover the pre-LIVE handshake, where the getters Err.
+        // Rust's counters survive a restore; the locals only cover the pre-LIVE handshake, where these Err.
         sendSeq = runCatching { rust.sendSeq().toLong() }.getOrDefault(lastSendSeq),
         recvSeq = runCatching { rust.recvMin().toLong() }.getOrDefault(lastRecvSeq),
         sas = if (state == WatchSessionState.AWAIT_SAS) runCatching { sas() }.getOrNull() else null,
@@ -112,19 +101,13 @@ class UniffiWatchSession internal constructor(
             return v
         }
 
-        /** A short, displayable identifier for the pairing — the first 4 bytes of SHA-256(our public
-         *  key), never any secret key material. */
         fun fingerprint(publicKey: ByteArray): String =
             MessageDigest.getInstance("SHA-256").digest(publicKey).copyOf(4).joinToString(":") { "%02x".format(it) }
     }
 }
 
-/**
- * Builds the authoritative uniffi-backed [UniffiWatchSession]. [resume] restores the durable blob the
- * pairing store kept — Rust's `restore` BURNS the send-nonce window from the blob's own persisted
- * ceiling, so the [WatchSessionFactory.resume] `burnedCeiling` hint is redundant here (the blob is the
- * source of truth). A missing/undecodable blob falls back to a [fresh] session ⇒ a re-pair.
- */
+/** `burnedCeiling` is ignored: Rust's `restore` burns the send-nonce window from the blob itself,
+ *  which is the source of truth. An undecodable blob falls back to [fresh] ⇒ a re-pair. */
 class UniffiWatchSessionFactory : WatchSessionFactory {
     override fun fresh(): WatchSession = UniffiWatchSession(RustWatchSession(), established = false)
 

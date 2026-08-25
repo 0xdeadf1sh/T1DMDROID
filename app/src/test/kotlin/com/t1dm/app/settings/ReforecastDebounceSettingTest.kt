@@ -4,13 +4,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * The log-driven re-forecast debounce's persistence contract. The Room I/O around it is a
- * pass-through like every other `inference.` knob, so what is worth pinning is what a mistake would
- * cost quietly: the window governs how promptly a logged meal or dose reaches the model, a value past
- * the 5-min grid would let the "prompt" cycle land after the tick it exists to anticipate, and an
- * `inference.` key is invisible to config export unless hand-listed.
- */
 class ReforecastDebounceSettingTest {
 
     @Test
@@ -36,7 +29,6 @@ class ReforecastDebounceSettingTest {
             SettingsStore.encodeLogReforecastDebounceS(9_000),
         )
         assertEquals("0", SettingsStore.encodeLogReforecastDebounceS(-30))
-        // A value a wider-ceilinged build (or a hand-edited backup) persisted cannot outlive this one.
         assertEquals(
             SettingsStore.MAX_LOG_REFORECAST_DEBOUNCE_S,
             SettingsStore.decodeLogReforecastDebounceS("9000"),

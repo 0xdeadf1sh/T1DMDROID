@@ -2,17 +2,8 @@ package com.t1dm.feature.settings
 
 import androidx.compose.runtime.Composable
 
-/**
- * Settings → Alarm thresholds (Phase 7C item 14; §3.6-A). The four
- * deterministic model-free bands — urgent-low / low / high / urgent-high — in mg/dL. Every value is
- * **user-set and deliberately UNBOUNDED**: there is no clinical clamp (the user explicitly overrode a
- * compiled ceiling). The screen only warns when the values are out of the expected
- * `urgentLow ≤ low ≤ high ≤ urgentHigh` order so a slip is visible; it never blocks it.
- *
- * Pure/stateless. Changing a threshold re-persists it immediately and the running model-free alarm
- * adopts the new thresholds live — a currently-firing alarm re-classifies on its next reading, without
- * a restart. A raised threshold never silences a standing low on the spot (§3.6-A).
- */
+/** mg/dL, deliberately unbounded — no clinical clamp; out-of-order values warn, never block.
+ *  A raised threshold never silences a standing low (§3.6-A). */
 @Composable
 fun AlarmThresholdsScreen(
     urgentLow: Int,
@@ -37,8 +28,6 @@ fun AlarmThresholdsScreen(
         }
     }
 }
-
-// ── search index (see SettingsIndex.kt) ───────────────────────────────────────────────────────────
 
 private const val ALARM_SECTION = "Alarm thresholds"
 

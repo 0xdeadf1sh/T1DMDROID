@@ -3,25 +3,8 @@ package com.t1dm.calc
 import kotlin.math.abs
 import kotlin.math.min
 
-/**
- * Scores a candidate's forecast fan under the selected [Objective] (Phase 4 §5). Lower is
- * better. Three invariants hold across every objective:
- *
- *  1. **Horizon weighting** — a step inside the validated window weighs 1.0; a step beyond it weighs
- *     [HorizonPolicy.beyondWindowWeight], so dose *selection* is dominated by the validated ≤2 h
- *     horizon while the far roll still nudges ties (SPEC § 5h-roll finding).
- *  2. **Everything off the median** — hypo and hyper penalties both read [FanStep.medianBg]. The
- *     quantile band no longer influences dose selection anywhere. It survives for display, for the
- *     accuracy metrics, and for the degeneracy gate that decides whether a fan is fit to use at all.
- *     Hypo scoring previously read the widening [FanStep.lowerBg]; on any realistically wide fan that
- *     penalised every nonzero dose, and together with the veto rail it pinned the advisor at 0 U.
- *     The asymmetry of invariant 3 is now the whole of the hypo/hyper preference.
- *  3. **Configurable asymmetry** — hypo and hyper contributions scale by [Asymmetry.hypoWeight] /
- *     [Asymmetry.hyperWeight], unbounded and independent.
- *
- * An ineligible fan is unscoreable and returns [Double.POSITIVE_INFINITY] — it can never win the
- * grid search (fail-closed at the objective layer, orthogonal to the rails).
- */
+/** Lower is better. Every objective scores off [FanStep.medianBg]: the band influences dose
+ *  selection nowhere. An ineligible fan returns [Double.POSITIVE_INFINITY] and can never win. */
 object Scoring {
 
     fun scoreFan(fan: PredFan, config: CalcConfig): Double {
@@ -59,22 +42,9 @@ object Scoring {
         return acc
     }
 
-    /**
-     * Scores a candidate by how close its horizon-weighted MEDIAN sits to a single scalar target BG
-     * (Objective.HitTargetBg). It is the point-target analogue of [scoreTimeOutOfRange]: every step
-     * contributes the absolute median-to-target distance, discounted beyond the validated window and
-     * scaled asymmetrically — an under-target median leans on [Asymmetry.hypoWeight], an over-target
-     * one on [Asymmetry.hyperWeight].
-     *
-     * On top of that median-hit term it carries its OWN intrinsic hypo penalty off the MEDIAN — the
-     * same horizon-weighted [KovatchevRisk.lbgi] term as [scoreTimeOutOfRange] / [scoreKovatchev] —
-     * so a candidate whose median drops below [TargetRange.lowMgdl] is penalised here directly. That
-     * this term exists at all is what matters and has not changed: hypo protection must NOT rest
-     * solely on the predicted-low VETO rail (Rails.predictedLowVeto), because that rail is
-     * user-disableable and HitTargetBg is the objective the Bolus advisor forces — with the rail off,
-     * this term is the only thing keeping the primary advisor path from recommending a dose predicted
-     * to cause hypoglycaemia. Every other objective is likewise self-protecting (object invariant 2).
-     */
+    /** The intrinsic lbgi term is load-bearing: Rails.predictedLowVeto is user-disableable and this
+     *  is the objective the Bolus advisor forces, so with the rail off this term is the only thing
+     *  keeping the primary path off a dose predicted to cause hypoglycaemia. */
     private fun scoreHitTargetBg(fan: PredFan, config: CalcConfig, obj: Objective.HitTargetBg): Double {
         val a = config.asymmetry
         val target = obj.targetMgdl
@@ -91,10 +61,9 @@ object Scoring {
 
     private fun scoreHitTarget(fan: PredFan, config: CalcConfig, obj: Objective.HitTargetAtTime): Double {
         val idx = (obj.atMsFromNow / fan.stepMs).toInt()
-        if (idx !in fan.steps.indices) return Double.POSITIVE_INFINITY // the target time is off the roll — unscoreable
+        if (idx !in fan.steps.indices) return Double.POSITIVE_INFINITY // target time is off the roll
         val target = config.target.targetMgdl
-        // Primary term: squared deviation of the median at the requested time. A light asymmetric
-        // hypo regulariser off the MEDIAN keeps the search from overshooting into a low.
+        // Squared deviation at the requested time, plus a hypo regulariser against overshoot.
         val dev = fan.steps[idx].medianBg - target
         var acc = dev * dev
         val a = config.asymmetry

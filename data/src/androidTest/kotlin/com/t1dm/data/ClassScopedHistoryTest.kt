@@ -21,14 +21,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/**
- * The BG panel's history spans a sensor MODEL, not one physical sensor (§3.1).
- *
- * The defect this pins down: `sourceId` names one sensor and retires with it, so a source-scoped
- * panel emptied itself the moment an expired sensor was replaced — no earlier readings, and, because
- * the graph floors its pannable domain at the first reading on screen, no earlier logged meal or
- * dose reachable either. Nothing had been deleted; it had merely stopped being selected.
- */
+/** The BG panel's history spans a sensor MODEL, not one physical sensor — §3.1. */
 @RunWith(AndroidJUnit4::class)
 class ClassScopedHistoryTest {
 
@@ -79,7 +72,6 @@ class ClassScopedHistoryTest {
         db.close()
     }
 
-    /** The reported symptom, as a test: yesterday's sensor expired, today's is active. */
     @Test
     fun replacingASensorKeepsTheExpiredOnesHistoryOnThePanel() = runTest {
         repo.upsertSource(descriptor(expired, CgmSensorModelId.AIDEX_X), authoritative = true, nowMs = 1_000)
@@ -92,10 +84,8 @@ class ClassScopedHistoryTest {
         val history = repo.observeReadingsForSensorModel(CgmSensorModelId.AIDEX_X, fresh, 0, Long.MAX_VALUE).first()
 
         assertEquals(listOf(300_000L, 600_000L, 1_200_000L), history.map { it.tsMs })
-        // The oldest reading is what floors the graph's pannable domain, and therefore what decides
-        // whether a meal logged before the sensor change can be scrolled back to at all.
+        // The oldest reading floors the graph's pannable domain.
         assertEquals(300_000L, history.first().tsMs)
-        // ... and the source-scoped read still sees one sensor, so nothing downstream widened.
         assertEquals(1, repo.observeReadings(fresh, 0, Long.MAX_VALUE).first().size)
     }
 
@@ -125,7 +115,7 @@ class ClassScopedHistoryTest {
 
         assertEquals(1, history.size)
         assertEquals(fresh, history.single().sourceId)
-        // The trace agrees with the number printed above it, which reads the active source alone.
+        // The number printed above the trace reads the active source alone.
         assertEquals(repo.observeLatestReading(fresh).first()?.bgMgdl, history.single().bgMgdl)
     }
 
@@ -137,11 +127,6 @@ class ClassScopedHistoryTest {
         )
     }
 
-    /**
-     * The floor the graph pans to is the record's beginning, NOT the beginning of what was loaded.
-     * Without this separation, windowing the trace would re-create the very defect the class scoping
-     * was written to fix — a meal logged before the loaded window would be unreachable again.
-     */
     @Test
     fun theClassFloorIsTheRecordsBeginningNotTheLoadedWindows() = runTest {
         repo.upsertSource(descriptor(expired, CgmSensorModelId.AIDEX_X), authoritative = false, nowMs = 1_000)
@@ -149,13 +134,11 @@ class ClassScopedHistoryTest {
         repo.upsertReading(reading(expired, 300_000L, bg = 100))
         repo.upsertReading(reading(fresh, 900_000L, bg = 120))
 
-        // A window that deliberately excludes the retired sensor's reading.
         val windowed = repo.observeReadingsForSensorModel(
             CgmSensorModelId.AIDEX_X, fresh, fromMs = 600_000L, toMs = Long.MAX_VALUE,
         ).first()
         assertEquals(listOf(900_000L), windowed.map { it.tsMs })
 
-        // ... and the floor still reaches past it, so the graph's domain does too.
         assertEquals(300_000L, repo.observeOldestTsForSensorModel(CgmSensorModelId.AIDEX_X).first())
     }
 
@@ -166,11 +149,7 @@ class ClassScopedHistoryTest {
         assertTrue(repo.observeOldestTsForSensorModel(CgmSensorModelId.AIDEX_X).first() == null)
     }
 
-    /**
-     * The reconcile's gap set spans the class. Asked per source it matched the entire projection for
-     * every newly activated sensor, so each replacement inherited a full duplicate of the record —
-     * ~105k rows becoming ~1.5M over a year of swaps, all of which the panel then had to collapse away.
-     */
+    /** The reconcile's gap set spans the class, not one source. */
     @Test
     fun reconcileDoesNotDuplicateHistoryOntoAReplacementSensor() = runTest {
         repo.upsertSource(descriptor(expired, CgmSensorModelId.AIDEX_X), authoritative = true, nowMs = 1_000)

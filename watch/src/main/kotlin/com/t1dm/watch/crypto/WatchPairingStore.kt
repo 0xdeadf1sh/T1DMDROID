@@ -1,12 +1,8 @@
 package com.t1dm.watch.crypto
 
 /**
- * Durable pairing state: whether a session exists, its epoch, and (for the real uniffi session) the
- * sealed-at-rest key material. On process start [com.t1dm.watch.WatchLink] reads this to decide
- * whether to RESUME an existing pairing (reconnect + push) or sit UNPAIRED awaiting a manual pair.
- * :app binds it to the Room `kv` store (keys wrapped by the Keystore, per Q6); the
- * in-memory default keeps host tests total. Loopback carries no real keys, so [material] is null
- * there and only the paired/epoch bits are meaningful.
+ * Durable pairing state; :app binds it to the Room `kv` store with the key material wrapped by the
+ * Keystore. [Pairing.material] is null on the loopback, where only the paired/epoch bits mean anything.
  */
 interface WatchPairingStore {
     suspend fun load(): Pairing?

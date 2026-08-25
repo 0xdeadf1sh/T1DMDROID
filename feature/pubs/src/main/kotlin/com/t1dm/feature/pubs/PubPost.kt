@@ -1,10 +1,7 @@
 package com.t1dm.feature.pubs
 
-/**
- * The UI-facing shape of a single feed post — the DTOs in `BlueskyDto.kt` are the wire form; these
- * are what [PubsScreen] renders. Everything the card needs is resolved up front (permalink,
- * display name fallback, absolute image URLs), so the composable stays free of AT-protocol detail.
- */
+/** The UI-facing form of a post; `BlueskyDto.kt` holds the wire form. Resolved up front, so the
+ *  card carries no AT-protocol detail. */
 data class PubPost(
     val id: String,
     val postUrl: String,
@@ -20,7 +17,6 @@ data class PubPost(
     val replyCount: Int,
 )
 
-/** An external link card (a DOI/journal reference); [thumbUrl] is absent on ~a quarter of cards. */
 data class PubLink(
     val uri: String,
     val title: String,
@@ -28,7 +24,6 @@ data class PubLink(
     val thumbUrl: String?,
 )
 
-/** An embedded image; [thumbUrl] drives the grid, [fullUrl] the tap-through, [alt] the a11y label. */
 data class PubImage(
     val thumbUrl: String,
     val fullUrl: String,

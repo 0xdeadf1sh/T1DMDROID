@@ -7,11 +7,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * §3.8 (H7) walk bookkeeping. Every assertion here stands for a way the phone can lose history
- * silently, because the epoch this ledger guards is recorded once and never revisited: promote it a
- * moment early and the samples still sitting in the outbox are never offered to the server again.
- */
+/** §3.8 (H7) walk bookkeeping. */
 class ReMirrorLedgerTest {
 
     private val horizon = 7L * 24 * 60 * 60_000   // DrainConfig.maxAgeMs
@@ -39,12 +35,10 @@ class ReMirrorLedgerTest {
         assertTrue(walk.raiseEvents)
         assertEquals(epochA, kv[ReMirrorKeys.PENDING_EPOCH])
         assertEquals(storeA, kv[ReMirrorKeys.WALK_STORE])
-        // Nothing has been earned yet — least of all the epoch the gate records.
         assertNull(kv[ReMirrorKeys.MIRRORED_EPOCH])
     }
 
-    /** The defect this ledger exists for: without a persisted cursor a walk over a month of samples
-     *  restarts at ts 0 on every connect and never converges. */
+    /** Without a persisted cursor a walk restarts at ts 0 on every connect and never converges. */
     @Test
     fun resumedWalkKeepsItsStampAndItsBankedCursorAndDoesNotRaiseEventsAgain() = runTest {
         val l = ledger()
@@ -59,11 +53,6 @@ class ReMirrorLedgerTest {
         assertFalse(resumed.raiseEvents)
     }
 
-    /**
-     * A pass that enqueued only part of the meal/dose phase and then died banks nothing, so the phase is
-     * raised again — whole, under a fresh stamp — rather than resumed atop a half-enqueued one. Skipping
-     * it on the strength of a stamp alone leaves the remainder unmentioned until the horizon expires.
-     */
     @Test
     fun anUnbankedEventPhaseIsRaisedAgainWholeUnderAFreshStamp() = runTest {
         val l = ledger()
@@ -91,13 +80,8 @@ class ReMirrorLedgerTest {
         assertEquals(epochB, kv[ReMirrorKeys.PENDING_EPOCH])
     }
 
-    /**
-     * A repointed profile on the SAME epoch discards the cursor as well as the stamp. A matching epoch is
-     * NOT evidence that the banked prefix reached this store: the epoch is read once at the head of the
-     * pass while the endpoint is resolved per request, so a profile repointed mid-pass drains later pages
-     * to the new host and banks them under the old epoch. Keeping the prefix on a matching epoch alone
-     * would skip exactly those pages forever on the return.
-     */
+    /** A matching epoch is not evidence the banked prefix reached this store: the epoch is read once
+     *  per pass, the endpoint per request, so a mid-pass repoint banks the new host's pages. */
     @Test
     fun aChangedProfileOnTheSameEpochDiscardsTheStampAndTheCursor() = runTest {
         val l = ledger()
@@ -112,8 +96,6 @@ class ReMirrorLedgerTest {
         assertTrue(re.raiseEvents)
     }
 
-    /** …and the discard is durable: returning to the original store does not resurrect the prefix that
-     *  drained somewhere else while the walk was in flight. */
     @Test
     fun returningToTheOriginalStoreDoesNotResurrectTheDiscardedCursor() = runTest {
         val l = ledger()
@@ -125,8 +107,7 @@ class ReMirrorLedgerTest {
         assertEquals(0L, l.resume(epochA, storeA, nowMs = 4_000).scalarCursor)
     }
 
-    /** Past the eviction horizon an INGEST/STATS row's absence stops meaning "sent", so the walk is
-     *  re-raised — but the cursor's page-by-page proof does not expire with it. */
+    /** Past the horizon a missing row stops meaning "sent"; the cursor's own proof does not expire. */
     @Test
     fun aWalkPastTheEvictionHorizonIsReRaisedWithItsCursorIntact() = runTest {
         val l = ledger()
@@ -145,9 +126,9 @@ class ReMirrorLedgerTest {
     fun drainedThroughIgnoresRowsQueuedAfterTheStamp() = runTest {
         val l = ledger()
         oldestQueued = 1_000
-        assertFalse(l.drainedThrough(1_000))     // a row exactly as old as the walk is still the walk's
+        assertFalse(l.drainedThrough(1_000))     // a row as old as the walk is still the walk's
         oldestQueued = 1_001
-        assertTrue(l.drainedThrough(1_000))      // only live rows left
+        assertTrue(l.drainedThrough(1_000))
         oldestQueued = null
         assertTrue(l.drainedThrough(1_000))
     }
@@ -164,8 +145,7 @@ class ReMirrorLedgerTest {
         assertTrue(l.delivered(epochA, storeA, nowMs = 2_000))
     }
 
-    /** An empty queue takes the horizon guard too: a walk whose markers were all age-evicted during an
-     *  outage would otherwise read as complete without a single row being examined. */
+    /** A walk whose markers were all age-evicted would otherwise read as complete, unexamined. */
     @Test
     fun deliveredIsRefusedPastTheHorizonEvenOnAnEmptyQueue() = runTest {
         val l = ledger()
@@ -176,8 +156,7 @@ class ReMirrorLedgerTest {
         assertTrue(l.delivered(epochA, storeA, nowMs = 1_000 + horizon - 1))
     }
 
-    /** The endpoint is resolved per request and an outbox row carries no store identity, so a profile
-     *  repointed while the walk drained sent the history somewhere this epoch does not name. */
+    /** An outbox row carries no store identity, so a repoint mid-walk sent history elsewhere. */
     @Test
     fun deliveredIsRefusedWhenTheStoreMovedUnderTheWalk() = runTest {
         val l = ledger()

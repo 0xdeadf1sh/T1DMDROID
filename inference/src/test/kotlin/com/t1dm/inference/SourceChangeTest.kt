@@ -15,23 +15,8 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 
-/**
- * What happens to a published forecast when AUTHORITY MOVES to another sensor.
- *
- * `SPEC/invariants.md` §7.1 makes the authoritative source the sole input to the forecast, so a fan
- * conditioned on the outgoing sensor's history describes a sensor the app has stopped believing. It
- * cannot be left to age out on its own either: the widget, the watch and the ongoing notification each
- * pair a forecast with a glucose number, so a surviving fan beside the NEW sensor's reading presents two
- * sensors as one statement — and that number is what a dose gets taken against.
- *
- * The SERIES follows authority with nothing having to invalidate it, because `RoomBgHistoryProvider`
- * resolves the authoritative id on every call rather than holding one. What needs a deliberate act is
- * discarding what was already published, and that is what these pin. The caller is `CgmScanService`,
- * which watches `registry.authoritative` for a transition between two non-null ids.
- *
- * Seeded through [InferenceController.restoreLast] rather than a test-only setter, so the state under
- * test is reached the way the app reaches it.
- */
+/** `SPEC/invariants.md` §7.1. The caller is `CgmScanService`, on a transition between two non-null
+ *  authoritative ids. */
 class SourceChangeTest {
 
     @get:Rule val tmp = TemporaryFolder()
@@ -46,13 +31,11 @@ class SourceChangeTest {
 
         val s = controller.state.value
         assertTrue("a fan built on the old sensor's history must not outlive it", s.predictions.isEmpty())
-        // The cycle stamps go with it: an instant and a cause describing a cycle whose input is gone
-        // would date the emptiness to the wrong sensor.
+        // The stamps go too: they would date the emptiness to the outgoing sensor.
         assertNull(s.lastCycleTsMs)
         assertNull(s.lastCause)
     }
 
-    /** Idempotent: the coordinator may report a change this has already acted on. */
     @Test
     fun `dropping twice is the same as dropping once`() = runTest {
         val controller = controller(listOf(prediction("m1", selected = true)))
@@ -64,10 +47,7 @@ class SourceChangeTest {
         assertTrue(controller.state.value.predictions.isEmpty())
     }
 
-    /**
-     * The circadian belief is the model's reading of the hour of day, not something the sensor
-     * conditioned, so it survives a promotion instead of blanking the panel's clock beside the fan.
-     */
+    /** The circadian belief reads the hour of day, not the sensor. */
     @Test
     fun `the circadian read-out is not dropped with the forecast`() = runTest {
         val controller = controller(listOf(prediction("m1", selected = true)))

@@ -5,15 +5,8 @@ import com.t1dm.data.db.ServerProfileEntity
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
-/**
- * N-profile server store with exactly one active profile (Phase 3 / server-
- * integration memory). Profile *metadata* persists in Room (via [T1dmRepository]); the `rw` token
- * persists in the Keystore-backed [TokenStore], keyed by profile id. Full CRUD/switch UI is Phase 7,
- * but the schema is N-profile now so that work is additive, not a migration.
- *
- * The composition root passes [activeEndpoint] to the [SyncHttpClient] and [StreamClient] so they
- * always follow the current active profile without holding a stale URL/token.
- */
+/** N profiles, exactly one active. Metadata in Room; the `rw` token in [TokenStore], keyed by
+ *  profile id. */
 class ServerProfileStore(
     private val repo: T1dmRepository,
     private val tokens: TokenStore,
@@ -24,7 +17,7 @@ class ServerProfileStore(
     fun observeActive(): Flow<ServerProfile?> =
         repo.observeActiveProfile().map { it?.toDomain() }
 
-    /** Create or update a profile; when [makeActive] the one-active invariant is enforced atomically. */
+    /** [makeActive] enforces the one-active invariant atomically. */
     suspend fun upsert(
         id: String,
         label: String,
@@ -55,7 +48,6 @@ class ServerProfileStore(
         tokens.remove(id)
     }
 
-    /** The current active endpoint (base URL + token), or `null` if none is configured/tokened. */
     suspend fun activeEndpoint(): ServerEndpoint? {
         val p = repo.activeProfile() ?: return null
         val token = tokens.get(p.id) ?: return null

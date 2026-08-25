@@ -1,4 +1,4 @@
 package com.t1dm.core.model
 
-/** The active glucose unit space (§3.4). Exactly one is active app-wide. */
+/** §3.4. Exactly one active app-wide. */
 enum class UnitSpace { MgDl, MmolL, Kovatchev }

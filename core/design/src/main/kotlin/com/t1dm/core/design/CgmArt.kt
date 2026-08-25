@@ -9,15 +9,8 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.lerp
 
-/**
- * The CGM SENSOR iconography (the companion to [drawEsp32Watch] for the Watch panel): the round,
- * skin-worn AiDEX X / LinX transmitter rendered wholly in Compose Canvas, drawn centred and scaled to
- * fill the caller's `size`. A soft adhesive patch, a raised circular transmitter dome, a lit centre,
- * and three BLE broadcast arcs rising off the dome — an honest, still portrait of the thing this whole
- * panel talks to. The hues derive from the two roles the caller passes so it renders in each theme's
- * own light: [primary] the theme accent (the dome, the lit centre, the broadcast arcs), [ink] the
- * neutral foreground (the adhesive patch).
- */
+/** The CGM sensor icon, centred and scaled to fill the caller's `size`. [primary] is the theme
+ *  accent (dome, lit centre, broadcast arcs), [ink] the neutral foreground (adhesive patch). */
 
 private fun Color.mix(other: Color, t: Float): Color = lerp(this, other, t)
 
@@ -28,7 +21,6 @@ fun DrawScope.drawCgmSensor(primary: Color, ink: Color) {
     val cy = h / 2f
     val r = minOf(w, h) * 0.5f
 
-    // ── the adhesive patch: a soft, rounded-square skin pad the sensor sits on ────────────────────
     val padHalf = r * 0.74f
     val padColor = ink.mix(Color.White, 0.14f)
     drawRoundRect(
@@ -48,7 +40,6 @@ fun DrawScope.drawCgmSensor(primary: Color, ink: Color) {
         style = Stroke(width = w * 0.006f),
     )
 
-    // ── the transmitter dome: a raised circular case with a bevelled rim ──────────────────────────
     val domeR = r * 0.50f
     drawCircle(
         Brush.radialGradient(
@@ -65,21 +56,18 @@ fun DrawScope.drawCgmSensor(primary: Color, ink: Color) {
         center = Offset(cx, cy),
         style = Stroke(width = w * 0.008f),
     )
-    // a subtle inner ring seam
     drawCircle(
         primary.mix(Color.White, 0.18f).copy(alpha = 0.5f),
         radius = domeR * 0.70f,
         center = Offset(cx, cy),
         style = Stroke(width = w * 0.005f),
     )
-    // the lit centre (the sensing well)
     drawCircle(
         primary.mix(Color.White, 0.55f),
         radius = domeR * 0.22f,
         center = Offset(cx, cy),
     )
 
-    // ── three BLE broadcast arcs rising off the upper-right of the dome ───────────────────────────
     val arcCx = cx + domeR * 0.30f
     val arcCy = cy - domeR * 0.30f
     for (i in 1..3) {

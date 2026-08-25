@@ -17,26 +17,6 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * The scrub read-out ACROSS the validated/rolled boundary.
- *
- * The panel draws two forecasts end to end — the validated 2 h fan, then the rolled tail — and the
- * read-out samples whichever covers the cursor. What is asserted is that dragging across the seam
- * keeps REPORTING: an unbounded nearest-step scan over the validated series answered every time
- * after its horizon with its last step, which froze the row at the 2 h value and made the rolled
- * fallback beneath it unreachable.
- *
- * The read-out no longer distinguishes the two. [GraphScrub.bgExtrapolated] still records which
- * series the number came from and is asserted here, but the panel draws the roll as what it is —
- * the cycle's own forecast re-fed to itself — and the roll is kept out of every rail by TYPE, since
- * `:calc` cannot accept a `RolledForecast`.
- *
- * Geometry of the fixture: readings end at [T0]; the validated forecast covers `T0 + (1..24)·STEP`
- * with medians 101…124; the roll covers `T0 + (1..48)·STEP` with medians 101…148 and a validated
- * prefix of 24, so its step 23 coincides with the forecast's last step and its step 24 is the first
- * extrapolated one. Medians rise by one per step, so a frozen row is arithmetically distinguishable
- * from a tracking one at every sample.
- */
 class ScrubBoundaryTest {
 
     private val STEP = 300_000L
@@ -51,7 +31,6 @@ class ScrubBoundaryTest {
 
     private val frame = buildGraphFrame((11 downTo 0).map { reading(T0 - it * STEP) })
 
-    /** The validated 2 h forecast: 24 steps, median 101…124, a plain ±{5,10,15} fan. */
     private val validated: PredSeries = run {
         val median = List(24) { 101.0 + it }
         val bands = ArrayList<Double>(24 * NQ)
@@ -67,7 +46,6 @@ class ScrubBoundaryTest {
         )!!
     }
 
-    /** The 4 h roll continuing it: 48 steps, median 101…148, the first 24 inside the validated 2 h. */
     private val roll: RolledSeries = buildRolledSeries(
         RolledForecast(
             anchorTsMs = T0, stepMs = STEP,
@@ -87,21 +65,17 @@ class ScrubBoundaryTest {
 
     private fun stepsRow(sc: GraphScrub) = scrubRows(sc).firstOrNull { it.first == "Steps" }
 
-    // ── the Steps row's presence rules ───────────────────────────────────────────────────────────
 
     @Test fun aWiredStepsFeedAlwaysYieldsARow() {
-        // The box must keep a fixed shape as the thumb travels: a line that appeared and vanished
-        // with the data would read as a glitch. So with a feed present every cursor gets a Steps row,
-        // and an unmeasured bucket or a cursor off the grid reads 0 rather than dropping it.
         val f = buildStepsFrame(intArrayOf(0, 40, StepsFrame.NO_DATA), T0 - 11 * STEP)
         fun at(ms: Double) = buildScrub(frame, listOf(validated), null, f, null, roll, ms)
 
         assertEquals("Steps" to "40", stepsRow(at((T0 - 10 * STEP).toDouble())))
         // Measured still.
         assertEquals("Steps" to "0", stepsRow(at((T0 - 11 * STEP).toDouble())))
-        // Never measured — shown as 0 by the read-out's own choice, not by the frame's.
+        // Never measured — 0 by the read-out's own choice, not the frame's.
         assertEquals("Steps" to "0", stepsRow(at((T0 - 9 * STEP).toDouble())))
-        // Off the grid entirely, including out in the forecast zone where no step can exist.
+        // Off the grid entirely.
         assertEquals("Steps" to "0", stepsRow(at((T0 - 40 * STEP).toDouble())))
         assertEquals("Steps" to "0", stepsRow(at(T0 + 30.0 * STEP)))
         // The frame itself still knows the difference; only the read-out coerces.
@@ -110,26 +84,22 @@ class ScrubBoundaryTest {
     }
 
     @Test fun noStepsFeedOmitsTheRowEntirely() {
-        // No pedometer wired at all is a different statement from "no steps then", and the panel
-        // should not invent a row for a feature it does not have.
+        // No feed at all is a different statement from "no steps then".
         assertNull(stepsRow(scrubAt(0.0)))
     }
 
     @Test fun scrubbingAcrossTheBoundaryReportsContinuously() {
         val before = scrubAt(23.0) // inside the validated forecast
-        val seam = scrubAt(24.0) // exactly the last validated step, where the roll's prefix ends
+        val seam = scrubAt(24.0) // the last validated step, where the roll's prefix ends
         val after = scrubAt(25.0) // the first extrapolated step
 
         assertEquals(123f, before.bgValue!!, 1e-3f)
         assertEquals(124f, seam.bgValue!!, 1e-3f)
         assertEquals(125f, after.bgValue!!, 1e-3f)
 
-        // The freeze this test exists for: an unbounded scan answers every time past the horizon with
-        // the horizon's own value, so `after` would equal `seam` and the row would never move again.
+        // An unbounded scan would answer past the horizon with the horizon's own value.
         assertNotEquals(seam.bgValue, after.bgValue)
 
-        // No gap anywhere between the two series either: sampled every 30 s from well inside the
-        // validated fan to the far end of the roll, the row always has a number.
         var t = 20.0
         while (t <= 48.0) {
             assertTrue("no reading at step $t", scrubAt(t).bgValue != null)
@@ -138,15 +108,12 @@ class ScrubBoundaryTest {
     }
 
     @Test fun theSeamItselfReadsTheValidatedForecast() {
-        // The two series meet at T0+24·STEP. The validated one owns that step — it is not extrapolated,
-        // and it keeps the plain prediction marker.
         val seam = scrubAt(24.0)
         assertFalse(seam.bgExtrapolated)
         assertTrue(seam.inPredZone)
         assertEquals("BG" to "124*", bgRow(seam))
 
-        // The validated series keeps answering to half a step past its last, exactly as it does between
-        // any two of its own steps; the roll takes over from there.
+        // The validated series answers to half a step past its last; the roll takes over there.
         assertFalse(scrubAt(24.4).bgExtrapolated)
         assertTrue(scrubAt(24.6).bgExtrapolated)
     }
@@ -154,18 +121,14 @@ class ScrubBoundaryTest {
     @Test fun aValueFromTheRolledTailIsReportedAndFlagged() {
         val after = scrubAt(25.0)
         assertTrue("the field still records which series answered", after.bgExtrapolated)
-        // Printed exactly like any other value in the prediction zone: the roll IS the forecast.
         assertEquals("BG" to "125*", bgRow(after))
-        // …all the way to the end of the roll.
         val last = scrubAt(48.0)
         assertTrue(last.bgExtrapolated)
         assertEquals("BG" to "148*", bgRow(last))
     }
 
     @Test fun theRollsValidatedPrefixIsNotMarked() {
-        // Warmup: no validated forecast exists at all, so the roll answers inside its own validated
-        // prefix. Those steps coincide with the 2 h horizon and the overlay draws them as a plain line
-        // — marking them would cry wolf over the region that is not extrapolated.
+        // No validated forecast, so the roll answers inside its own validated prefix.
         val warm = scrubAt(10.0, predictions = emptyList())
         assertEquals(110f, warm.bgValue!!, 1e-3f)
         assertFalse(warm.bgExtrapolated)
@@ -173,14 +136,12 @@ class ScrubBoundaryTest {
     }
 
     @Test fun pastTheEndOfEverythingTheRowWithholds() {
-        // Beyond the roll there is no forecast of any kind, and the panel draws nothing there. The
-        // read-out says so rather than extending the last number across the empty future view.
+        // Nothing past the roll: withheld rather than extending the last number.
         val beyond = scrubAt(60.0)
         assertNull(beyond.bgValue)
         assertFalse(beyond.bgExtrapolated)
         assertEquals("BG" to "--", bgRow(beyond))
 
-        // Same past the validated horizon when no roll has been requested.
         val noRoll = buildScrub(frame, listOf(validated), null, null, null, null, T0 + 40.0 * STEP)
         assertNull(noRoll.bgValue)
     }

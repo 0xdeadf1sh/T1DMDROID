@@ -24,15 +24,9 @@ import kotlinx.coroutines.withTimeout
 import timber.log.Timber
 
 /**
- * The Android BLE-central implementation of [WatchCentral] (task deliverable 1). The phone dials the
- * watch: scan-by-name → `connectGatt` → `requestMtu` → `discoverServices` → subscribe CONTROL. This
- * is a CONNECTED session and needs BLUETOOTH_CONNECT (declared in this module's manifest), distinct
- * from the CGM's passive neverForLocation BLUETOOTH_SCAN. Discovery still uses the
- * scanner (BLUETOOTH_SCAN, already held for the CGM). Every GATT callback hops onto the injected
- * dispatchers so nothing lands on the main thread (§2.3 — the UI must never block).
- *
- * The permission checks are the caller's responsibility (the FGS gates on grant); the
- * `MissingPermission` lint is suppressed because the calls are only reached after that gate.
+ * A CONNECTED session: needs BLUETOOTH_CONNECT, unlike the CGM's passive BLUETOOTH_SCAN. Every GATT
+ * callback hops onto the injected dispatchers, never main. Permission is the caller's gate, which is
+ * what the `MissingPermission` suppress rests on.
  */
 @SuppressLint("MissingPermission")
 class AndroidWatchCentral(
@@ -70,8 +64,8 @@ class AndroidWatchCentral(
                 ?: throw IllegalStateException("connectGatt returned null (adapter off?)")
             gatt = g
 
-            // Await STATE_CONNECTED before any GATT op: a requestMtu/discoverServices issued
-            // before the connection is up is silently dropped and no callback ever fires.
+            // A requestMtu/discoverServices issued before STATE_CONNECTED is silently dropped, and
+            // no callback ever fires.
             connectDone = CompletableDeferred()
             check(connectDone!!.await()) { "GATT connection failed before bring-up" }
 

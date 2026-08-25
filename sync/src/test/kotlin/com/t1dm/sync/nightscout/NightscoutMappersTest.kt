@@ -13,11 +13,7 @@ import org.junit.Test
 
 class NightscoutMappersTest {
 
-    /**
-     * The bridge sends what a SENSOR read. `sgv` has no way to say "a model reconstructed this", the
-     * host has no route to take a record back out, and the third party would carry it as glucose for
-     * good. The second of two independent stops; the first is that promotion files no bridge row.
-     */
+    /** Fail closed: `sgv` claims sensor signal, and the host has no route to take a record back out. */
     @Test
     fun `a promoted reconstruction is never bridged`() {
         val recon = sample(112).copy(bgProvenance = ReadingProvenance.RECONSTRUCTED)
@@ -40,11 +36,7 @@ class NightscoutMappersTest {
         updatedAt = ts,
     )
 
-    /**
-     * The trend is TENTHS of mg/dL per minute and Nightscout's arrows are cut at whole mg/dL per
-     * minute. Reading the stored value as whole units would put every ordinary reading past the
-     * double-arrow threshold and still look like data — so the cuts are pinned here explicitly.
-     */
+    /** Trend is TENTHS of mg/dL per minute; read as whole units, every reading double-arrows. */
     @Test
     fun `direction cuts at tenths, not whole units`() {
         assertEquals("Flat", nsDirection(0))
@@ -59,7 +51,6 @@ class NightscoutMappersTest {
         assertEquals("DoubleDown", nsDirection(-30))
     }
 
-    /** An absent trend is not a claim that glucose is level. */
     @Test
     fun `null trend yields no direction, not Flat`() {
         assertNull(nsDirection(null))
@@ -81,11 +72,8 @@ class NightscoutMappersTest {
         assertNull(sample(null).toNsEntry(10))
     }
 
-    /**
-     * `exercise` is grams of carbohydrate EQUIVALENT — a disposal term with the opposite sign to a
-     * meal. Anything that let it reach the wire near a carb field would have the logbook read a bout
-     * of exercise as food eaten, so the entry must carry BG and nothing else.
-     */
+    /** `exercise` is carbohydrate EQUIVALENT, opposite in sign to a meal: near a carb field a bout of
+     *  exercise would read as food eaten. */
     @Test
     fun `entry carries bg only, never exercise or steps`() {
         val json = NsJson.encodeToString(NsEntryDto.serializer(), sample(100).toNsEntry(0)!!)
@@ -148,11 +136,8 @@ class NightscoutMappersTest {
         assertNull(t.carbs)
     }
 
-    /**
-     * A T1DM basal record is units DELIVERED; Nightscout's basal model is a RATE with a duration.
-     * There is no mapping between them that is not a factor-of-duration error, so the bridge must
-     * decline rather than guess — an amount posted into a rate field misreports total insulin.
-     */
+    /** A T1DM basal is units DELIVERED, Nightscout's a RATE with a duration — no mapping between them
+     *  without a factor-of-duration error. */
     @Test
     fun `basal is declined, not guessed at`() {
         assertNull(dose(DoseKind.BASAL, 22.0).toNsTreatment())

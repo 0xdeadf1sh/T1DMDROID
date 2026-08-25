@@ -2,17 +2,8 @@ package com.t1dm.feature.settings
 
 import androidx.compose.runtime.Composable
 
-/**
- * Settings → Dose calculator (Phase 7C item 14; §3.6). The full
- * advisory policy: the scoring objective, the hypo/hyper asymmetry, the candidate-dose grid, the
- * per-rail enable switches, and the rail thresholds. Every numeric threshold is **user-set and
- * deliberately UNBOUNDED** — a disabled rail is a no-op, an enabled rail still fails closed on
- * missing/degenerate/stale input; a threshold only tunes where it trips. Nothing here actuates; the
- * calculator only *recommends* a dose the user administers.
- *
- * Pure/stateless. Objective is an opaque key string so this module stays free of the `:calc`
- * dependency.
- */
+/** Thresholds are deliberately unbounded; an enabled rail still fails closed on missing or stale
+ *  input, and nothing here actuates. Objective is an opaque key: no `:calc` dependency (§3.6). */
 @Composable
 fun CalculatorSettingsScreen(
     objectiveOptions: List<Pair<String, String>>,
@@ -68,11 +59,6 @@ fun CalculatorSettingsScreen(
         ToggleRow(calcRailHypoTreatment, railHypoTreatment) { onSetRailHypoTreatment(it) }
     }
 }
-
-// ── search index (see SettingsIndex.kt) ───────────────────────────────────────────────────────────
-//
-// "IOB ceiling" names BOTH the rail switch and the threshold it trips on; the ids are what separate
-// them, and the subtitle is what tells the two search hits apart on screen.
 
 private val calcObjective = SettingsKnob(
     id = "calc.objective",

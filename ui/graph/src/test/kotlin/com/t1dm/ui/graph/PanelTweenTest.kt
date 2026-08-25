@@ -7,13 +7,6 @@ import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * The two interpolations the panel paints through, out of the composable so they can be pinned.
- *
- * Both exist because the states either side of them are DISCRETE — a selection snaps to whole
- * patches, a τ sweep steps a seven-level ladder — so what is being smoothed is how a jump is drawn,
- * never when it takes effect.
- */
 class PanelTweenTest {
 
     private val patchMs = 6 * 300_000L
@@ -32,11 +25,7 @@ class PanelTweenTest {
         assertEquals(t0 + 5 * patchMs, mid.endMs)
     }
 
-    /**
-     * Epoch milliseconds do not survive a `Float`, which is why the mix is in `Double`: the nearest
-     * representable neighbours of a 2026 instant are about 130 ms apart, and the panel resolves far
-     * finer than that.
-     */
+    /** Epoch ms do not survive a Float — neighbours ~130 ms apart — so the mix is in Double. */
     @Test
     fun the_interpolation_keeps_millisecond_resolution() {
         val from = MaskSelection(t0, t0 + patchMs)
@@ -45,7 +34,6 @@ class PanelTweenTest {
         assertEquals(t0 + 500L, mid.startMs)
     }
 
-    /** Nothing to move to means nothing drawn; nothing to move FROM means it is simply there. */
     @Test
     fun a_missing_end_snaps_rather_than_interpolating() {
         val sel = MaskSelection(t0, t0 + patchMs)
@@ -75,11 +63,6 @@ class PanelTweenTest {
         assertEquals(to[0].lo90, mid[0].lo90, 0.0)
     }
 
-    /**
-     * A different SET of slots is a fill landing or a span leaving, not a move. Sliding one set into
-     * another would draw a curve through slots the model never spoke about, so the target is taken
-     * whole.
-     */
     @Test
     fun a_changed_slot_set_is_taken_whole() {
         val from = listOf(row(t0, 100.0))
@@ -94,7 +77,6 @@ class PanelTweenTest {
         assertTrue(sameSlots(from, listOf(row(t0, 999.0))))
     }
 
-    /** A slot with no finite value has nothing to interpolate towards; it is drawn as it stands. */
     @Test
     fun a_non_finite_slot_is_left_alone() {
         val from = listOf(row(t0, Double.NaN))

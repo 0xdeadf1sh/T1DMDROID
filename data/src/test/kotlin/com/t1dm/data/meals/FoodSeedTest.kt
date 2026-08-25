@@ -4,19 +4,11 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * Host-JVM integrity checks on the bundled glycemic dictionary ([FoodSeed]) — pure Kotlin, no device.
- * Guards the invariants the re-seed migration ([com.t1dm.data.db.MigrationRunner.MIGRATION_5_6]) and
- * the GI→gamma mapping depend on: a full catalogue, a UNIQUE `(name, brand)` natural key (the
- * migration's `NOT EXISTS` dedup matches on it), and GI/carb values inside the ranges the curve
- * engine tolerates. The on-device count + FTS search live in the instrumented `FoodSeedDbTest`.
- */
 class FoodSeedTest {
 
     @Test
     fun catalogueSpansTheRequestedBreadth() {
         assertTrue("expected a grown ~300-500 catalogue, got ${FoodSeed.ROWS.size}", FoodSeed.ROWS.size >= 300)
-        // A diet-spanning spread: every headline food group is represented.
         val categories = FoodSeed.ROWS.map { it.category }.toSet()
         val expected = setOf(
             "Fruit", "Beverage", "Bread", "Bakery", "Cereal", "Grain", "Pasta", "Vegetable",

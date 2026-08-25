@@ -1,5 +1,4 @@
-// Plugin versions are declared once here (apply false) so the convention plugins in
-// build-logic can apply them by id without repeating versions.
+// Versions declared once (apply false) so build-logic's convention plugins apply them by id.
 plugins {
     alias(libs.plugins.android.application) apply false
     alias(libs.plugins.android.library) apply false

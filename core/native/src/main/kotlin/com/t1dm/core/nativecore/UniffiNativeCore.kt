@@ -183,17 +183,9 @@ import uniffi.t1dm_core.StatSample as UniffiStatSample
 import uniffi.t1dm_core.SubBands as UniffiSubBands
 
 /**
- * The real [NativeCore], backed by the uniffi-generated binding into the Rust `t1dm-core`
- * crate. Requires libt1dm_core.so in jniLibs (produced by the `cargoNdkBuild` task); until
- * the NDK cross-build runs, [StubNativeCore] stands in so the app runs on host-only tooling.
- *
- * The Rust `decode_advert` / `parse_descriptor` return `Result`, so a short or CRC-failing
- * payload (resp. malformed descriptor) surfaces as `CoreException` and we map it to the
- * frozen contract's `null`. The remaining pre/post fns surface a malformed shape as
- * `CoreException` too; those are programmer errors on this side of the seam (the Rust is the
- * numeric authority), so they propagate rather than being swallowed. The uniffi record types
- * live under `uniffi.t1dm_core`; the [toModel]/[toUniffi] projections translate them to and
- * from the `:core:model` data classes every downstream consumer speaks.
+ * Needs libt1dm_core.so in jniLibs; [StubNativeCore] stands in on host-only builds. A
+ * `CoreException` from `decode_advert` / `parse_descriptor` maps to the contract's `null`; the other
+ * pre/post fns let theirs propagate, being programmer errors on this side of the seam.
  */
 class UniffiNativeCore : NativeCore {
     override fun roundtrip(msg: String): String = uniffiRoundtrip(msg)
@@ -211,7 +203,7 @@ class UniffiNativeCore : NativeCore {
 
     override fun kovatchevFInv(risk: Double): Double = uniffiKovatchevFInv(risk)
 
-    // ── Model pre/post pipeline (Phase 2, INFERENCE.md §§6-8) ───────────────────────
+    // INFERENCE.md §§6-8
 
     override fun parseDescriptor(json: String): ModelDescriptor? =
         try {
@@ -271,8 +263,7 @@ class UniffiNativeCore : NativeCore {
     override fun bandLineAt(desc: ModelDescriptor, qTauRisk: List<Double>, tau: Double): List<Double> =
         uniffiBandLineAt(desc.toUniffi(), qTauRisk, tau)
 
-    /** The Rust head object, wrapped so nothing outside this module holds a uniffi type. It
-     *  owns native memory; [close] releases it. */
+    /** Owns native memory; [close] releases it. */
     private class UniffiHead(val inner: UniffiHeadModel) : NativeHead {
         override fun setLora(w: LoraWeights?) = inner.setLora(w?.toUniffi())
         override fun hasLora(): Boolean = inner.hasLora()
@@ -368,9 +359,7 @@ class UniffiNativeCore : NativeCore {
     override fun forecastDegeneracyCheck(desc: ModelDescriptor, forecast: Forecast): ForecastStatus =
         uniffiForecastDegeneracyCheck(desc.toUniffi(), forecast.toUniffi()).toModel()
 
-    /** Rust `decode_time` throws `CoreException` on a bad shape / non-finite logit; we map it to
-     *  the fail-open `null` so a malformed time output can never crash a cycle (the BG forecast
-     *  path is unaffected). */
+    /** Fail-open `null`: a malformed time output must not crash a cycle, and the BG path is unaffected. */
     override fun decodeTime(timeLogits: List<Double>, nBins: Int, binHours: Double): PredictedTime? =
         try {
             uniffiDecodeTime(timeLogits, nBins, binHours).toModel()
@@ -378,7 +367,7 @@ class UniffiNativeCore : NativeCore {
             null
         }
 
-    // ── Shared curve/PK engine (Phase 4, SPEC §3.3) ─────────────────────────────────
+    // SPEC §3.3
 
     override fun gamma(total: Double, k: Double, theta: Double, durMin: Double): List<Double> =
         uniffiGamma(total, k, theta, durMin)
@@ -406,14 +395,7 @@ class UniffiNativeCore : NativeCore {
     override fun extendBasal(schedule: BasalSchedule, fromMs: Long, toMs: Long): List<CurveEvent> =
         uniffiExtendBasal(schedule.toUniffi(), fromMs, toMs).map { it.toModel() }
 
-    // ── Advanced stats (Phase 6) ────────────────────────────────────────────────────
-
-    /**
-     * Rust `advanced_stats` throws only on a bad range / bin count (both caller-controlled and
-     * validated upstream); the empty/all-invalid series returns `AdvancedStats::empty()` as `Ok`.
-     * We nonetheless map any `CoreException` to the model's fail-closed [AdvancedStats.EMPTY] so a
-     * malformed argument can never crash the stats screen — the safety posture is fail-closed.
-     */
+    /** Fail-closed to [AdvancedStats.EMPTY] so a malformed argument cannot crash the stats screen. */
     override fun advancedStats(
         samples: List<StatSample>,
         targetLow: Int,
@@ -431,8 +413,7 @@ class UniffiNativeCore : NativeCore {
             AdvancedStats.EMPTY
         }
 
-    /** A pair of crate constants; it cannot fail, but the fail-closed map is kept for the reason
-     *  every other call here keeps one — a scale anchored on a guess is worse than no scale. */
+    /** Cannot fail; the fail-closed map is kept anyway — a scale anchored on a guess is worse than none. */
     override fun clinicalCuts(): ClinicalCuts =
         try {
             uniffiClinicalCuts().let { ClinicalCuts(it.veryLowMgdl, it.veryHighMgdl) }
@@ -440,13 +421,7 @@ class UniffiNativeCore : NativeCore {
             ClinicalCuts.UNAVAILABLE
         }
 
-    /**
-     * Rust `forecast_metrics_suite` is total (empty input, non-finite values and mis-ordered fans
-     * are handled internally) and only `Err`s on a structurally impossible argument — a horizon off
-     * the five-minute grid, a ragged window set, a non-finite threshold. We map any `CoreException`
-     * to [MetricsSuite.EMPTY] so the drill-down can never crash on a malformed window set; the
-     * safety posture is fail-closed, and an empty suite renders as "insufficient history".
-     */
+    /** Fail-closed to [MetricsSuite.EMPTY], which renders as "insufficient history". */
     override fun forecastMetricsSuite(
         windows: List<ForecastWindow>,
         horizonsMin: List<Int>,
@@ -464,11 +439,7 @@ class UniffiNativeCore : NativeCore {
             MetricsSuite.EMPTY
         }
 
-    /**
-     * Rust `clarke_zone_grid` only `Err`s on an axis it cannot classify or a lattice past its cell
-     * ceiling. Fail-closed to no lattice at all: the figure that consumes this paints the five
-     * regions from it, and a partial lattice would paint regions that are wrong rather than absent.
-     */
+    /** No lattice at all rather than a partial one, which would paint regions wrong rather than absent. */
     override fun clarkeZoneGrid(
         truthAxisMgdl: List<Double>,
         predAxisMgdl: List<Double>,
@@ -479,7 +450,7 @@ class UniffiNativeCore : NativeCore {
             emptyList()
         }
 
-    /** Same contract as [clarkeZoneGrid]: no lattice at all rather than a partial one. */
+    /** As [clarkeZoneGrid]: no lattice at all rather than a partial one. */
     override fun dtsZoneGrid(
         truthAxisMgdl: List<Double>,
         predAxisMgdl: List<Double>,
@@ -490,8 +461,7 @@ class UniffiNativeCore : NativeCore {
             emptyList()
         }
 
-    /** A crate constant; it cannot fail, but the fail-closed map is kept for the reason every other
-     *  call here keeps one — an axis labelled from a guessed edge is worse than an unlabelled one. */
+    /** Cannot fail; an axis labelled from a guessed edge is worse than an unlabelled one. */
     override fun trendBinEdges(): List<Double> =
         try {
             uniffiTrendBinEdges()
@@ -499,16 +469,11 @@ class UniffiNativeCore : NativeCore {
             emptyList()
         }
 
-    // ── Split-conformal band recalibration (t1dm-core::conformal, INFERENCE.md §8.4) ─
+    // INFERENCE.md §8.4
 
     override fun conformalMinCalWindows(): Int = uniffiConformalMinCalWindows().toInt()
 
-    /**
-     * Rust `fit_quantile_conformal` is total — an empty, ragged or non-finite window set comes back
-     * as a refusal with its counts, not an error — and only `Err`s on a structurally impossible
-     * argument. A `CoreException` maps to [ConformalFit.NONE], which is the same fail-closed answer
-     * the refusal path gives: no correction, and a panel that says the fit did not run.
-     */
+    /** Fail-closed to [ConformalFit.NONE], the same answer the core's own refusal path gives. */
     override fun fitQuantileConformal(
         windows: List<ForecastWindow>,
         minCalWindows: Int,
@@ -519,12 +484,7 @@ class UniffiNativeCore : NativeCore {
             ConformalFit.NONE
         }
 
-    /**
-     * Fail-closed to the RAW fan. Every rejection the core makes here is a caller-side shape or
-     * invariant breach — a delta of the wrong length, a non-finite value, a delta that would move
-     * the median — and in each case the honest fallback is the fan the model actually produced,
-     * which is what `null` means to the one display surface that calls this.
-     */
+    /** `null` means the RAW fan to the one display surface that calls this. */
     override fun applyQuantileConformal(
         bandsMgdl: List<Double>,
         delta: List<Double>,
@@ -535,8 +495,7 @@ class UniffiNativeCore : NativeCore {
             null
         }
 
-    /** Fail-closed to the RAW fans, for the reason [applyQuantileConformal] is — and for the whole
-     *  batch, since the core refuses one rather than correcting part of it. */
+    /** As [applyQuantileConformal], and for the whole batch: the core refuses rather than correct part. */
     override fun applyQuantileConformalBatch(
         fansMgdl: List<Double>,
         delta: List<Double>,
@@ -547,18 +506,10 @@ class UniffiNativeCore : NativeCore {
             null
         }
 
-    // ── The classical baseline (t1dm-core::baseline) ────────────────────────────────
-
     override fun baselineDefaultSpec(): BaselineSpec = uniffiBaselineDefaultSpec().toModel()
 
-    /**
-     * Rust `fit_baseline_ridge` `Err`s on a window it cannot fit at all — too short for the lag
-     * span and horizon, no complete design rows after gaps, a spec outside its bounds, or normal
-     * equations that will not factor. Every one of those is "there is no model", so the fail-closed
-     * answer is `null` and the panel says the fit did not run. A fit that RAN but found too little
-     * held-out history is NOT an error: it returns with an all-zero delta, and the withholding
-     * happens downstream at the degeneracy guard where it can be explained.
-     */
+    /** `null` means there is no model. A fit that RAN but found too little held-out history is not
+     *  an error: it returns an all-zero delta and the withholding happens at the degeneracy guard. */
     override fun fitBaselineRidge(
         bgMgdl: List<Double>,
         gridStartMs: Long,
@@ -580,12 +531,7 @@ class UniffiNativeCore : NativeCore {
             null
         }
 
-    /**
-     * Fail-closed to no forecast. Every rejection here is a shape or freshness breach the caller
-     * owns — a gap in the lag span, a tail of the wrong length, a model whose weights disagree with
-     * its spec — and in each case the honest outcome is that this cycle publishes nothing for the
-     * baseline, not that it publishes something built from a padded input.
-     */
+    /** Fail-closed: this cycle publishes nothing rather than a forecast built from a padded input. */
     override fun baselinePredict(
         model: BaselineModel,
         bgTail: List<Double>,
@@ -606,24 +552,16 @@ class UniffiNativeCore : NativeCore {
     override fun baselineDegeneracyCheck(forecast: BaselineForecast): ForecastStatus =
         uniffiBaselineDegeneracyCheck(forecast.toUniffi()).toModel()
 
-    // ── Hill-climb minigame physics (t1dm-core::game) ───────────────────────────────
-
     override fun defaultCarTuning(): CarTuning = uniffiDefaultCarTuning().toModel()
 
-    /**
-     * Unlike every fail-open/fail-closed mapping above, a `CoreException` here is NOT swallowed:
-     * the constructor only rejects a degenerate terrain or tuning, which is a caller bug on this
-     * side of the seam, and silently handing back a stub world would hide it behind a frozen car.
-     */
+    /** NOT swallowed, unlike every mapping above: the constructor only rejects a degenerate terrain
+     *  or tuning, and a stub world would hide that caller bug behind a frozen car. */
     override fun createGameWorld(terrain: TerrainSpec, tuning: CarTuning): GameWorld =
         UniffiGameWorld(UniffiGameWorldObject(terrain.toUniffi(), tuning.toUniffi()))
 }
 
-/**
- * The uniffi object behind the pure-JVM [GameWorld] port. Holds `trackLength` locally because it
- * is fixed at construction and a per-frame FFI round trip for a constant is exactly the cost the
- * Rust solver exists to avoid.
- */
+/** Holds `trackLength` locally: a per-frame FFI round trip for a constant is the cost the Rust
+ *  solver exists to avoid. */
 private class UniffiGameWorld(private val rust: UniffiGameWorldObject) : GameWorld {
     override val trackLength: Float = rust.trackLength()
 
@@ -636,7 +574,7 @@ private class UniffiGameWorld(private val rust: UniffiGameWorldObject) : GameWor
 
     override fun resetAt(x: Float): CarState = rust.resetAt(x).toModel()
 
-    /** Frees the Rust world now rather than at the next GC — see [GameWorld]. */
+    /** Frees the Rust world now rather than at the next GC. */
     override fun close() = rust.close()
 }
 
@@ -979,9 +917,8 @@ private fun UniffiInsulinFamily.toModel(): InsulinFamily = when (this) {
     else -> throw IllegalStateException("Unexpected UniffiInsulinFamily: $this")
 }
 
-// The Rust `preset` enum is intentionally NOT projected — the app keys a selection by the stable
-// [InsulinPresetSpec.label] and drives the curve off the numeric peak/DIA/ka/ke fields, so no
-// fragile round-trip of the uniffi enum variant names is needed (issue 19).
+// The Rust `preset` enum is deliberately not projected: a selection keys on the stable
+// [InsulinPresetSpec.label], not on a round-trip of uniffi variant names.
 private fun UniffiInsulinPresetSpec.toModel(): InsulinPresetSpec = InsulinPresetSpec(
     family = family.toModel(),
     label = label,

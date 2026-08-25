@@ -9,29 +9,16 @@ import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * The three rules [ExerciseService] cannot be trusted to keep on its own, pinned off-device: what the
- * bout notification is REBUILT on, which Stop of a bout actually runs, and what the panel is told when
- * a bout never opened. A [android.app.Service] cannot be built on the host, which is why each of them
- * is a pure function or a plain object here rather than a field on the service.
- */
+/** A [android.app.Service] cannot be built on the host; each rule is a pure function or object. */
 class ExerciseServiceTest {
 
-    // ─── The notification's rebuild rate ──────────────────────────────────────────────────────────
-
-    /**
-     * The defect this pins: the rebuild used to be keyed on the rendered line, which carries metres,
-     * so `LocationSource`'s 4 s cadence moved it on every accepted fix and nothing was filtered at all.
-     */
     @Test
     fun `a bucket of 4-second fixes rebuilds the notification at most once a minute`() {
-        // Five minutes of accepted fixes at walking pace: one every 4 s, 5.6 m apart.
         val bucket = (0..75).map { i -> active(elapsedMs = i * 4_000L, distanceM = i * 5.6) }
 
         assertEquals(76, bucket.size)
-        // Every one of the 76 reads differently, which is what made the old key useless.
         assertEquals(76, bucket.map(::progressText).distinct().size)
-        // "0 min", then one key per minute of the bucket once the first metres have landed.
+        // "0 min", then one key per minute of the bucket.
         assertEquals(7, bucket.map(::progressKey).distinct().size)
     }
 
@@ -47,8 +34,6 @@ class ExerciseServiceTest {
         assertNotEquals(progressKey(active(1_000L, 12.0)), progressKey(active(1_000L, 12.0, id = 2L)))
     }
 
-    /** The notification renders no reason, so one appearing must not cost a rebuild. Add it to the
-     *  line and this expectation is the one to change. */
     @Test
     fun `a reason the line does not carry does not rebuild it`() {
         val a = active(30_000L, 100.0)
@@ -60,8 +45,6 @@ class ExerciseServiceTest {
         assertEquals("3 min · 412 m", progressText(active(200_000L, 411.6)))
         assertEquals("0 min", progressText(active(0L, 0.0)))
     }
-
-    // ─── Which Stop runs ──────────────────────────────────────────────────────────────────────────
 
     @Test
     fun `only the first stop of a bout runs`() {
@@ -109,8 +92,7 @@ class ExerciseServiceTest {
         assertTrue(gate.isCurrent(second))
     }
 
-    /** A STOP with nothing recording still has to leave the foreground — the service is up, with a
-     *  notification, and no bout will ever close it. */
+    /** The service is up, with a notification, and no bout will ever close it. */
     @Test
     fun `a stop before any bout started still runs`() {
         val gate = BoutGate()
@@ -118,8 +100,6 @@ class ExerciseServiceTest {
         assertTrue(gate.beginStop())
         assertTrue(gate.isCurrent(gate.generation))
     }
-
-    // ─── A bout that never opened ─────────────────────────────────────────────────────────────────
 
     @Test
     fun `a start that failed names the fault`() {

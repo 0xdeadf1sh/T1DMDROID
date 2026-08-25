@@ -1,35 +1,25 @@
 package com.t1dm.watch.crypto
 
 /**
- * Durable persistence of the per-epoch send-counter CEILING (risk S6, "windowed send-counter +
- * cold-start burn-the-window"). The AEAD nonce is a monotonic counter; reusing a `(key,nonce)` pair
- * annihilates GCM confidentiality AND integrity, so across process death / a `kill -9` / a battery
- * yank we must resume STRICTLY ABOVE the last value that could conceivably have gone out.
- *
- * [WatchLink] checkpoints the seq as it seals (batched/high-water) and, on cold start, reads the
- * ceiling to seed [WatchSessionFactory.resume]. :app binds this to the Room `kv` store; the
- * in-memory default keeps host tests + non-persistent runs total.
+ * The AEAD nonce is a monotonic counter: reusing a `(key, nonce)` annihilates GCM confidentiality
+ * AND integrity, so across process death the session must resume STRICTLY ABOVE the last seq that
+ * could conceivably have gone out.
  */
 interface NonceStore {
-    /** Highest send seq known to have possibly been transmitted for [epoch] (0 if none). */
+    /** Highest send seq possibly transmitted for [epoch]; 0 if none. */
     suspend fun loadCeiling(epoch: Int): Long
 
-    /** Record a new high-water send seq for [epoch]. Monotonic: never lowers the stored ceiling. */
+    /** Monotonic: never lowers the stored ceiling. */
     suspend fun recordCeiling(epoch: Int, seq: Long)
 
-    /** Forget all epochs (on UNPAIR / reset). */
     suspend fun clear()
 
-    /**
-     * The safety margin added on top of the persisted ceiling when burning the window at cold start,
-     * so a checkpoint that lagged the last few in-flight seals can never collide. Generous: the
-     * seq counter is 64 bits and we send ~once per 5 min.
-     */
+    /** Added on top of the persisted ceiling at cold start, so a checkpoint that lagged the last
+     *  in-flight seals cannot collide. Generous: the seq is 64 bits and one frame goes out per 5 min. */
     val burnMargin: Long get() = 256L
 }
 
-/** Non-persistent default (host tests, and the pre-wiring build). Loses the ceiling on restart —
- *  acceptable only where the process (and thus the session keys) also do not survive. */
+/** Loses the ceiling on restart: acceptable only where the session keys do not survive either. */
 class InMemoryNonceStore : NonceStore {
     private val ceilings = HashMap<Int, Long>()
 

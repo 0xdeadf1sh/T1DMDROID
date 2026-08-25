@@ -23,17 +23,8 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/**
- * In-memory Room verification of the dedicated `prediction` table (the fan-BLOB round-trip and the
- * `(madeAtMs, modelId)` REPLACE) plus the post-redesign catch-up reconciliation:
- *  - `mergeServerSample` now presence-gap-fills the wide `sample` via [SampleGapFill] — it fills
- *    ONLY scalars the local row lacks and NEVER overwrites a present local value, with NO `updated_at`
- *    discriminator, so a server echo can never win over local truth (decisions #2/#3). The retired LWW
- *    fold-of-carbs is gone — carbs/bolus/basal are no longer sample scalars (§3.1).
- *  - meal/dose history re-hydrates by phone `clientId` via [T1dmRepository.hydrateMealEvent] /
- *    [T1dmRepository.hydrateDoseEvent] (`@Insert(onConflict = IGNORE)` on the unique `clientId`), so a
- *    redelivery is a no-op with no duplicate row (§3.4). Instrumented so the real SQLite exercises both.
- */
+/** `mergeServerSample` gap-fills the wide `sample` by PRESENCE — no `updated_at` discriminator, so
+ *  a server echo never wins over a local value (§3.1). Re-hydration keys on `clientId` (§3.4). */
 @RunWith(AndroidJUnit4::class)
 class PredictionDaoTest {
 
@@ -85,7 +76,7 @@ class PredictionDaoTest {
         val p = loaded.single()
         assertEquals("m1", p.modelId)
         assertEquals(original.medianBg, p.medianBg)
-        assertEquals(original.bandsMgdl, p.bandsMgdl)       // fan BLOB round-trips exactly
+        assertEquals(original.bandsMgdl, p.bandsMgdl)
         assertEquals(ForecastStatus.OK, p.status)
         assertEquals(BackendId.EXECUTORCH_XNNPACK_FP32, p.backend)
         assertEquals(Precision.FP32, p.precision)
@@ -96,8 +87,8 @@ class PredictionDaoTest {
     @Test
     fun sameCycleModelReplacesInPlace() = kotlinx.coroutines.test.runTest {
         repo.upsertPredictions(listOf(pred("m1")), nowMs = 1_000)
-        repo.upsertPredictions(listOf(pred("m1")), nowMs = 2_000)   // re-run same cycle+model
-        assertEquals(1, repo.latestCyclePredictions().size)         // one row, not two
+        repo.upsertPredictions(listOf(pred("m1")), nowMs = 2_000)
+        assertEquals(1, repo.latestCyclePredictions().size)
     }
 
     @Test
@@ -108,7 +99,7 @@ class PredictionDaoTest {
         )
         val loaded = repo.latestCyclePredictions()
         assertEquals(3, loaded.size)
-        assertEquals("m2", loaded.first().modelId)      // selected model first
+        assertEquals("m2", loaded.first().modelId)
     }
 
     @Test
@@ -122,7 +113,7 @@ class PredictionDaoTest {
 
     @Test
     fun mergeServerSampleGapFillsMissingScalarsNeverOverwritingLocal() = kotlinx.coroutines.test.runTest {
-        // Seed a local MEASURED bg (projected into the wide sample via the reading path).
+        // The reading path projects into the wide `sample`.
         repo.upsertSource(
             com.t1dm.core.model.CgmSourceDescriptor(
                 id = com.t1dm.core.model.CgmSourceId("aidexx:X"), vendorId = "aidexx",
@@ -136,19 +127,17 @@ class PredictionDaoTest {
             CgmReadingWith(ts, bg = 120, prov = ReadingProvenance.MEASURED, rx = 5_000),
         )
 
-        // A server patch that (a) tries to OVERWRITE the present bg and (b) fills a MISSING scalar (hr).
         val wrote = repo.mergeServerSample(
             SamplePatch(ts = ts, tzOffsetMin = 0, updatedAt = 9_000, bgMgdl = 999, hr = 60),
         )
         assertTrue(wrote)
         val s = repo.sampleAt(ts)!!
-        assertEquals(120, s.bgMgdl)                          // present bg preserved (never clobbered)
-        assertEquals(ReadingProvenance.MEASURED, s.bgProvenance)  // provenance intact (safety rail #5)
-        assertEquals(60, s.hr)                               // the gap (hr) is filled from the server
-        assertEquals(5_000L, s.updatedAt)                    // local updated_at kept, NOT re-stamped
+        assertEquals(120, s.bgMgdl)
+        assertEquals(ReadingProvenance.MEASURED, s.bgProvenance)
+        assertEquals(60, s.hr)
+        assertEquals(5_000L, s.updatedAt)                    // local stamp, not re-stamped
 
-        // A NEWER server updated_at still cannot win over a present local value — no clock discriminator
-        // (the crux of replacing LWW: presence gap-fill only, decisions #2/#3).
+        // A newer server `updated_at` still cannot win: there is no clock discriminator.
         val wrote2 = repo.mergeServerSample(
             SamplePatch(ts = ts, tzOffsetMin = 0, updatedAt = 50_000, bgMgdl = 888, hr = 77),
         )
@@ -162,14 +151,13 @@ class PredictionDaoTest {
     @Test
     fun hydrateDoseEventIgnoresRedeliveryByClientId() = kotlinx.coroutines.test.runTest {
         val ev = doseEvent(clientId = "dose-A", tsMs = 300_000L, units = 5.0)
-        assertTrue(repo.hydrateDoseEvent(ev) > 0)                          // first insert
-        assertEquals(-1L, repo.hydrateDoseEvent(ev.copy(units = 999.0)))   // same clientId ⇒ IGNOREd
+        assertTrue(repo.hydrateDoseEvent(ev) > 0)
+        assertEquals(-1L, repo.hydrateDoseEvent(ev.copy(units = 999.0)))   // same clientId ⇒ ignored
 
         val rows = repo.loggedDosesInRange(0L, 10_000_000L)
-        assertEquals(1, rows.size)                                         // no duplicate row
-        assertEquals(5.0, rows.single().units, 0.0)                        // original retained, not overwritten
+        assertEquals(1, rows.size)
+        assertEquals(5.0, rows.single().units, 0.0)
 
-        // A distinct clientId still hydrates.
         assertTrue(repo.hydrateDoseEvent(doseEvent(clientId = "dose-B", tsMs = 600_000L, units = 3.0)) > 0)
         assertEquals(2, repo.loggedDosesInRange(0L, 10_000_000L).size)
     }

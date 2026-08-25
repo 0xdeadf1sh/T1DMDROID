@@ -11,8 +11,6 @@ import com.t1dm.data.db.CgmSourceEntity
 import com.t1dm.data.db.PaintStrokeBlob
 import com.t1dm.data.db.PaintStrokeEntity
 
-/** Entity ⇄ domain mappings kept out of the DAOs so Room only ever sees flat rows. */
-
 internal fun CgmReadingEntity.toModel(): CgmReading = CgmReading(
     sourceId = CgmSourceId(sourceId),
     tsMs = tsMs,
@@ -42,12 +40,8 @@ internal fun CgmReading.toEntity(): CgmReadingEntity = CgmReadingEntity(
 )
 
 /**
- * The same reception, filed under its own instant rather than the slot it was snapped into.
- *
- * `provenance` does not cross: only a `MEASURED` reading has an instant of its own to be filed under, so
- * the caller ([T1dmRepository.upsertReading]) keeps the gap-fills out and every row here is real by
- * construction. `tsMs` does not cross either — which slot this sample was filed under is
- * [T1dmRepository.snapToGrid]'s answer, and storing it beside the sample would be a second copy of it.
+ * No `provenance`: the caller keeps gap-fills out, so every row here is MEASURED. No `tsMs`: the
+ * slot is [T1dmRepository.snapToGrid]'s answer, and storing it here would be a second copy.
  */
 internal fun CgmReading.toRawEntity(): CgmRawSampleEntity = CgmRawSampleEntity(
     sourceId = sourceId.value,
@@ -73,11 +67,6 @@ internal fun CgmRawSampleEntity.toModel(): CgmRawSample = CgmRawSample(
     rssi = rssi,
 )
 
-/**
- * The `passiveOnly` flag is a vendor constant, not a persisted column (the AiDEX X impl is the only
- * source and now uses a CONNECTED GATT session as the sole read path), so it is reconstructed as
- * `false`. It is informational only — nothing branches on it.
- */
 internal fun CgmSourceEntity.toDescriptor(): CgmSourceDescriptor = CgmSourceDescriptor(
     id = CgmSourceId(sourceId),
     vendorId = vendorId,
@@ -86,8 +75,7 @@ internal fun CgmSourceEntity.toDescriptor(): CgmSourceDescriptor = CgmSourceDesc
     displayName = displayName,
     serialSuffix = serialSuffix,
     warmupWindowMin = warmupWindowMin,
-    // The AiDEX X impl is now the CONNECTED (GATT) read path, not passive advertisement. The flag is a
-    // vendor constant (not a persisted column) and is informational only — nothing branches on it.
+    // A vendor constant, not a persisted column; informational only, nothing branches on it.
     passiveOnly = false,
     hidden = hidden,
     ordinal = ordinal,
@@ -106,12 +94,7 @@ internal fun PaintStrokeEntity.toModel(): PaintStroke {
     )
 }
 
-/**
- * The time bounds are scanned, not read off the ends: a freehand stroke may double back in X (drag
- * left, then right), so `tsMs.first()`/`last()` are not its extremes and an index built on them would
- * cull a stroke that is on screen. Empty strokes have no bounds at all and are refused upstream by
- * [T1dmRepository.addPaintStroke].
- */
+/** A stroke may double back in X, so the time bounds are scanned, not read off the ends. */
 internal fun PaintStroke.toEntity(): PaintStrokeEntity = PaintStrokeEntity(
     id = id,
     createdAtMs = createdAtMs,

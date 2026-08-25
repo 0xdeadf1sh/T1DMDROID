@@ -48,101 +48,64 @@ import kotlinx.coroutines.withContext
 import timber.log.Timber
 import kotlin.math.max
 
-/**
- * The Phase-2 inference orchestrator (§3.2, Phase 2 deliverable 4). It owns the
- * running set (every discovered model up to a user-configurable cap, default 5), the loaded backend
- * handles, and the observable [state]. A cycle —
- * fired by the 5-min `GridTick` in `CgmScanService`, or manually/synthetically — builds one shared
- * BG history, fans out **serially** over the running set on the single-thread `inference`
- * dispatcher, decodes each `head_raw` in the fp32/fp64 Rust core (`assemble_decode`), gates it
- * through the degeneracy guard (§3.6-B), then publishes + persists the predictions tagged by
- * `model_id`.
- *
- * Everything heavy is off the main thread by construction (§2.3): `Module.load` and `backend.run`
- * on `inference`, all Rust pre/post on `default`, persistence delegated to the `:app`
- * [PredictionStore] (Room `io`). A [Mutex] serialises whole cycles so a slow cycle and a fresh
- * `GridTick` never overlap on the one APU/CPU command queue.
- */
+/** Owns the running set, the loaded backend handles and the observable [state]. `Module.load` and
+ *  `backend.run` go on the `inference` dispatcher, all Rust pre/post on `default`, and [cycleMutex]
+ *  serialises whole cycles so two forwards never overlap on the one APU/CPU command queue. */
 class InferenceController(
     private val native: NativeCore,
     private val dispatchers: T1dmDispatchers,
     private val store: ModelStore,
     private val history: BgHistoryProvider,
     private val predictionStore: PredictionStore,
-    /** §3.6-D freshness gate default (Q10): last MEASURED older than this ⇒ forecast STALE. */
+    /** Last MEASURED older than this ⇒ forecast STALE (§3.6-D). */
     private val freshnessThresholdMs: Long = 15 * 60_000L,
-    /** The user's running-set cap (§2.3), read FRESH each discovery (kv-backed;
-     *  mirrors [warmupHoursProvider]). Every discovered model up to this cap runs each cycle;
-     *  coerced to ≥1. null/throw ⇒ [DEFAULT_MAX_RUNNING]. */
+    /** Read FRESH each discovery; coerced to ≥1. */
     private val maxRunningProvider: suspend () -> Int = { DEFAULT_MAX_RUNNING },
     /** Reconstructed carb/insulin context channels (SPEC §3.3); null ⇒ `normalize(0)` baseline. */
     private val contextChannels: ContextChannelSource? = null,
-    /** Committed dose tails carried into the PREDICTION ZONE (SPEC §3.3); null ⇒ `normalize(0)`
-     *  baseline. Distinct from [contextChannels] (the past): this is the already-logged action that
-     *  keeps absorbing past the now-boundary, so the forecast responds to a just-logged dose the way
-     *  the calculator's baseline roll does. See [FutureOverrideSource]. */
+    /** The already-logged action still absorbing past the now-boundary (SPEC §3.3), as against
+     *  [contextChannels], the past. Null ⇒ `normalize(0)` baseline. */
     private val futureOverrides: FutureOverrideSource? = null,
-    /** The user's `warmupHours` setting, read FRESH each cycle (kv-backed). The model's own
-     *  MIN_CONTEXT is the binding floor and comes from its descriptor. inference-runtime.md. */
+    /** Read FRESH each cycle. The model's own MIN_CONTEXT is the binding floor
+     *  (inference-runtime.md). */
     private val warmupHoursProvider: suspend () -> Double = { DEFAULT_WARMUP_HOURS },
-    /** The user's PER-MODEL forecast-backend preference (kv-backed in :app), re-read FRESH for every
-     *  discovered model id at each discovery. null ⇒ auto (the fp32 XNNPACK authority). Steers the
-     *  DISPLAY forecast cycle ONLY — the dosing/authority path ignores it entirely (§3.6-E). */
+    /** Re-read per model at each discovery. null ⇒ auto (the fp32 XNNPACK authority). Steers the
+     *  DISPLAY forecast cycle ONLY — the dosing path ignores it entirely (§3.6-E). */
     private val backendPrefProvider: suspend (modelId: String) -> BackendId? = { null },
-    /** Durable cumulative per-model inference telemetry (Phase 7C — Models drill-down). Null ⇒
-     *  session-only in-memory counters. */
+    /** Null ⇒ session-only in-memory counters. */
     private val telemetryStore: TelemetryStore? = null,
-    /** D1/D4 thermal gate: the current [ThermalStatus] (BATTERY-sensor °C, thresholds from Settings),
-     *  or null when the gate is disabled / the temperature is unreadable ⇒ never gates. Read FRESH each
-     *  cycle. This gate has NO death-mode check — it stays active in DEATH (the one §3.6 rail DEATH does
-     *  not defeat), since running the APU into a thermal fault is a hardware risk, not a glucose alarm. */
+    /** BATTERY-sensor °C, read FRESH each cycle; null (gate disabled or unreadable) never gates. No
+     *  death-mode check — the one §3.6 rail DEATH does not defeat, a thermal fault being a hardware
+     *  risk rather than a glucose alarm. */
     private val thermalProvider: suspend () -> ThermalStatus? = { null },
-    /** The user's causal-SavGol window for the BG channel (INFERENCE.md §7.1), read FRESH each cycle
-     *  (kv-backed; mirrors [warmupHoursProvider]). Snapped to an offered detent and defaulted on a
-     *  throw, so a corrupt setting can never reach the Rust guard. It MOVES the §3.6-D `last_bg`
-     *  anchor, hence its exclusion from the agreement probe below. */
+    /** INFERENCE.md §7.1, read FRESH each cycle. Snapped to an offered detent, so a corrupt setting
+     *  never reaches the Rust guard. It MOVES the §3.6-D `last_bg` anchor, hence its exclusion from
+     *  the agreement probe. */
     private val smoothingWindowProvider: suspend () -> Int = { InferenceControllerDefaults.SAVGOL_WINDOW },
-    /** The stimulus the adapter guard's counterfactual branch injects. Null ⇒ no branch is run at
-     *  all, so no window is paired, no verdict is reachable and every adapter stays `ABSENT`. */
+    /** Null ⇒ the counterfactual branch never runs, so every adapter stays `ABSENT`. */
     private val probeInsulin: ProbeInsulinPort? = null,
-    /** The classical baseline the neural models are compared against. It runs beside the loaded set
-     *  every cycle and publishes an ordinary [ModelPrediction], so every consumer that reads a FAN
-     *  treats it as another model. It is not part of [loaded] because it has no descriptor and no
-     *  artifact — it is fitted on device rather than exported — and `SPEC/invariants.md` §4 rule 5
-     *  makes a descriptor and an artifact one unit, so there is no honest bundle to give it. The
-     *  consequence is that [authorityModelInfo] cannot resolve it and the dose path fails closed
-     *  while it is selected; see [com.t1dm.core.model.BaselineModel]. Null ⇒ absent. */
+    /** Runs beside [loaded] and publishes an ordinary [ModelPrediction], but is not IN [loaded]: it
+     *  has no descriptor and no artifact, which `SPEC/invariants.md` §4 rule 5 makes one unit. So
+     *  [authorityModelInfo] cannot resolve it and the dose path fails closed while it is selected. */
     private val baseline: BaselineRunner? = null,
-    /** The attached adapter per model, re-read every cycle. Null ⇒ every model runs frozen. */
+    /** Re-read every cycle. Null ⇒ every model runs frozen. */
     private val loraStore: LoraStore? = null,
 ) {
     private val _state = MutableStateFlow(InferenceState())
     val state: StateFlow<InferenceState> = _state.asStateFlow()
 
-    /**
-     * Drop the standing forecast because the authoritative CGM sensor changed.
-     *
-     * Every published prediction was conditioned on the OUTGOING sensor's history, so beside the new
-     * sensor's glucose it describes nothing — and the widget, the watch glance and the ongoing
-     * notification all pair the two. Clearing them puts the panel back into its "collecting context"
-     * state, which is the truth: the model has no history for this sensor yet.
-     *
-     * The running model set, the metadata and the telemetry survive — none of them is about a sensor.
-     * The next cycle republishes as soon as the new sensor has enough context (`recentBgSeries`
-     * returns null below `minSteps`, so nothing is emitted from a short series).
-     */
+    /** Every published prediction was conditioned on the OUTGOING sensor's history, so beside the
+     *  new sensor's glucose it describes nothing. The running set, metadata and telemetry survive. */
     fun onCgmSourceChanged() {
-        // `update`, not `value = value.copy(...)`: this is called from the service's own coroutine,
-        // outside the cycle mutex, so a read-modify-write here races a cycle publishing its results
-        // and could restore the predictions it is trying to drop.
+        // `update`, not `value = value.copy(...)`: called outside the cycle mutex, so a
+        // read-modify-write here races a cycle publishing its results.
         _state.update { it.copy(predictions = emptyList(), lastCycleTsMs = null, lastCause = null) }
     }
 
     private val stub = StubBackend()
     private val backends = HashMap<BackendId, InferenceBackend>()
 
-    /** The re-runnable heads, opened lazily and verified against the graph on first use. Only the
-     *  adapter path reads them; a cycle never does. */
+    /** Opened lazily and verified against the graph on first use. Only the adapter path reads them. */
     private val heads = HeadCache(native)
 
     private data class Entry(
@@ -155,98 +118,78 @@ class InferenceController(
     )
 
     private val loaded = LinkedHashMap<String, Entry>()
-    /** Every DISCOVERED backend variant of a model id (xnnpack / vulkan / …), before load. */
+    /** Every DISCOVERED backend variant of a model id, before load. */
     private val variants = LinkedHashMap<String, LinkedHashMap<BackendId, ModelBundle>>()
-    /** Every SUCCESSFULLY-LOADED variant, so the active cycle + the agreement probe reuse handles. */
+    /** Every SUCCESSFULLY-LOADED variant, so the cycle and the agreement probe reuse handles. */
     private val loadedVariants = LinkedHashMap<String, LinkedHashMap<BackendId, Entry>>()
-    /** The evidence-based forecast-backend switcher catalog (issue 20 STEP 4). */
     private var catalog: List<BackendAvailability> = emptyList()
-    /** The user's requested forecast backend PER MODEL id (kv-persisted in :app); absent/null ⇒ auto
-     *  (authority). Repopulated from [backendPrefProvider] on every discovery. */
+    /** Per model id; absent/null ⇒ auto (the authority). Repopulated on every discovery. */
     private val forecastBackendPrefs = HashMap<String, BackendId?>()
-    /** Cached fp32-agreement verdict per NON-authority backend (null until a comparison runs). */
+    /** Per NON-authority backend; absent until a comparison runs. */
     private val agreementByBackend = HashMap<BackendId, Boolean>()
-    /** The last on-device GPU-vs-CPU comparison (timings + numerics + agreement). */
     private var lastComparison: BackendComparison? = null
-    /** Why the last [runBackendComparison] returned null, or null when it produced a comparison. The
-     *  same string [runBackendComparison] puts in the note, kept reachable here because a caller that
-     *  does not render [state]'s note (the model drill-down) would otherwise see only the null and be
-     *  unable to say anything at all. */
+    /** Why the last [runBackendComparison] returned null. Reachable here for a caller that does not
+     *  render [state]'s note and would otherwise have nothing to say. */
     @Volatile
     var lastProbeRefusal: String? = null
         private set
-    /** Process RSS growth (KB) attributed to the non-authority backend's load (best-effort). */
+    /** Process RSS growth in KB at the non-authority backend's load; best-effort. */
     private var vulkanLoadRssKb: Long? = null
-    /** Written under [cycleMutex] on the inference thread (selectModel / refreshModelsLocked) but read
-     *  unlocked off the default dispatcher in the runFromHistory preamble — @Volatile so that read sees
-     *  the latest write instead of a stale cached value (FIX #10). */
+    /** Written under [cycleMutex] on the inference thread, read unlocked off the default dispatcher
+     *  in the [runFromHistory] preamble. */
     @Volatile
     private var selectedId: String? = null
     private val latencySamples = HashMap<String, ArrayDeque<Double>>()
-    /** Cumulative per-model telemetry (durable via [telemetryStore]); loaded once, then in-memory. */
+    /** Durable via [telemetryStore]; loaded once, then in-memory. */
     private val cumulative = HashMap<String, CumulativeTelemetry>()
     private var telemetryLoaded = false
-    /** WARMUP hysteresis: the largest `requiredSteps` window whose completion coverage has EVER been met.
-     *  Warmup completion latches monotonically at or below it, so a single dropped slot from a gappy
-     *  passive CGM cannot flap the forecast (and the glycemic status + circadian clock) back into
-     *  "collecting context". In-memory only — a process restart re-evaluates from history. */
+    /** The largest `requiredSteps` window whose coverage has EVER been met; warmup latches
+     *  monotonically at or below it, so one dropped slot cannot flap the forecast back into
+     *  "collecting context". In-memory only. */
     @Volatile
     private var warmupSatisfiedUpTo = 0
     private val cycleMutex = Mutex()
-    /** Thermal-gate hysteresis latch: once the die crosses [ThermalStatus.thresholdC] we stay BLOCKED
-     *  until it falls back below `thresholdC - resumeMarginC`, so a temperature hovering on the
-     *  threshold cannot flap the forecast on and off cycle to cycle. In-memory only. */
+    /** Latches at [ThermalStatus.thresholdC] and clears only below `thresholdC - resumeMarginC`, so
+     *  a temperature hovering on the threshold cannot flap the forecast. In-memory only. */
     @Volatile
     private var thermalBlocked = false
 
-    /** The thermal verdict already reached for the cycle stamped [nowMs], so the two gates a
-     *  history-fed cycle passes through consult one temperature sample rather than two. See
-     *  [overTempNote]. One immutable holder behind one volatile write, so the stamp and the note it
-     *  belongs to can never be read apart. */
+    /** One immutable holder behind one volatile write, so the stamp and its note can never be read
+     *  apart. See [overTempNote]. */
     private class ThermalVerdict(val nowMs: Long, val note: String?)
 
     @Volatile
     private var thermalVerdict: ThermalVerdict? = null
 
-    /** Register the backends the controller may route to (real XNNPACK + documented NPU stubs). */
     fun registerBackend(backend: InferenceBackend) { backends[backend.id] = backend }
 
-    /** Reset the monotonic warmup latch — after an IN-PLACE data wipe (issue 5, which preserves the
-     *  process so the sensor stays connected) the app must re-earn warmup from the now-empty history;
-     *  the latch cannot be allowed to survive the reset, or the forecast would run on empty context. */
+    /** After an IN-PLACE data wipe the app must re-earn warmup, or the forecast runs on empty
+     *  context. */
     suspend fun resetWarmupLatch() = cycleMutex.withLock { warmupSatisfiedUpTo = 0 }
 
-    /**
-     * Fit the classical baseline from the patient's own history — the manual action behind the
-     * Models panel's button. Returns the fit (with its held-out evidence) or a failure naming the
-     * refusal. Not serialised on [cycleMutex]: the fit reads history and touches no loaded handle,
-     * and it takes long enough that blocking the cycle for its duration would stall the forecast.
-     * [BaselineRunner] serialises fits against each other.
-     */
+    /** Not serialised on [cycleMutex]: the fit touches no loaded handle and runs long enough that
+     *  holding it would stall the forecast. [BaselineRunner] serialises fits against each other. */
     suspend fun fitBaseline(nowMs: Long, minCalWindows: Int): Result<BaselineFit> {
         val b = baseline ?: return Result.failure(IllegalStateException("no baseline runner"))
         val result = b.fit(history, nowMs, minCalWindows)
         if (result.isSuccess) {
-            // The row already exists; what changes is that it now has a model behind it. Republish
-            // immediately so the drill-down shows the new provenance without waiting for a tick.
+            // Republish now so the drill-down shows the new provenance without waiting for a tick.
             _state.value = _state.value.copy(running = runningModels(), baselineModel = b.fitted)
         }
         return result
     }
 
-    /** Rehydrate the last persisted predictions so the overlay is populated before the first tick. */
     suspend fun restoreLast() {
         runCatching { baseline?.restore() }.onFailure { Timber.tag(TAG).w(it, "baseline restore failed") }
-        // The baseline's row exists before any cycle has ticked — and before any fit — so publish it
-        // here rather than leaving the panel empty until the first forecast lands.
+        // The baseline's row exists before any cycle or fit; publish it rather than leaving the
+        // panel empty until the first forecast lands.
         if (baseline != null) {
             _state.value = _state.value.copy(running = runningModels(), baselineModel = baseline.fitted)
         }
         val last = runCatching { predictionStore.loadLast() }.getOrNull() ?: return
         if (last.isNotEmpty()) {
-            // Rehydrate the circadian belief from the restored selected forecast too (the graph's clock
-            // axis reads [circadianTime] directly), so a cold start doesn't show a lit forecast with a
-            // dark clock until the first live cycle. Null belief leaves the clock as-is.
+            // So a cold start does not show a lit forecast against a dark clock. A null belief
+            // leaves the clock as it was.
             val sel = last.firstOrNull { it.selected }
             _state.value = _state.value.copy(
                 predictions = last.sortedByDescending { it.selected },
@@ -257,21 +200,13 @@ class InferenceController(
         }
     }
 
-    /**
-     * (Re)discover models on disk and load the running set: every discovered model up to the
-     * [maxRunningProvider] cap (read fresh here), so the panel shows N rows, N forecasts run each
-     * cycle, and N predictions are pushed. Closes handles that dropped out, loads each running model
-     * onto its backend (falling back to the [StubBackend] when the `.pte` is absent or a real load
-     * throws), and preserves the current selection when it stays in the running set, else falls back
-     * to the first running model. Only the SELECTED model gets the full dual-backend catalog +
-     * agreement probe (it alone feeds dosing). Runs its native loads on the `inference` thread.
-     */
+    /** Loads every discovered model up to the [maxRunningProvider] cap, falling back to the
+     *  [StubBackend] when a `.pte` is absent or its load throws. Only the SELECTED model gets the
+     *  dual-backend catalog and agreement probe. Native loads run on the `inference` thread. */
     suspend fun refreshModels() = cycleMutex.withLock { refreshModelsLocked() }
 
-    /** The body of [refreshModels] WITHOUT acquiring [cycleMutex] — call only while already holding it
-     *  (its in-class callers [deleteModel] and [refreshOrNote] do). External/unlocked callers use the
-     *  public [refreshModels]. Splitting avoids a non-reentrant-[Mutex] deadlock while still serialising
-     *  the loaded-set close/reload against a live [runCycle] — the race the 1→N model fan-out widened. */
+    /** Call only while already holding [cycleMutex], which is not reentrant. Unlocked callers use
+     *  the public [refreshModels]. */
     private suspend fun refreshModelsLocked() = withContext(dispatchers.inference) {
         if (!telemetryLoaded) {
             runCatching { telemetryStore?.load() }.getOrNull()?.let { cumulative.putAll(it) }
@@ -279,8 +214,7 @@ class InferenceController(
         }
         val bundles = store.discover()
 
-        // Close every previously-loaded variant + regroup discovery. Refresh is rare (startup +
-        // backend switch), so a full close/reload is simpler than diffing and avoids stale handles.
+        // Refresh is rare, so a full close/reload beats diffing and cannot leave a stale handle.
         loadedVariants.values.forEach { m -> m.values.forEach { runCatching { it.backend.close(it.handle) } } }
         loadedVariants.clear()
         loaded.clear()
@@ -291,37 +225,27 @@ class InferenceController(
             variants.getOrPut(b.id) { LinkedHashMap() }[b.backendId] = b
         }
 
-        // Re-read the persisted PER-MODEL backend preference for every discovered id (suspend provider;
-        // fine on the inference dispatcher). A stale entry for a vanished model simply goes unused.
+        // A stale entry for a vanished model simply goes unused.
         for (id in variants.keys) {
             forecastBackendPrefs[id] = runCatching { backendPrefProvider(id) }.getOrNull()
         }
 
-        // The running set this discovery: every discovered id up to the (fresh) user cap. `loaded` was
-        // cleared above; the per-cycle fan-out and runningModels() both iterate it, so loading N here
-        // makes the panel show N rows, run N forecasts, and push N predictions.
         val cap = runCatching { maxRunningProvider() }.getOrNull()?.coerceAtLeast(1) ?: DEFAULT_MAX_RUNNING
         val runningIds = variants.keys.take(cap).toList()
-        // Preserve the current selection across refreshes (backend switch / model add-remove) when it
-        // is still in the running set; else fall back to the first running id. selectModel() can only
-        // ever pick a loaded (running) model, so a valid selection stays valid unless the cap shrank
-        // below its position, in which case falling back to the first running model is correct.
-        // A fitted baseline is a valid selection that is not in `runningIds` (it has no bundle to
-        // discover), so it must survive a refresh; and when no neural model is installed at all it
-        // is the only thing left to select.
+        // A fitted baseline is a valid selection that is not in `runningIds` — it has no bundle to
+        // discover — so it must survive a refresh, and with no neural model installed it is the only
+        // thing left to select.
         selectedId = selectedId
             ?.takeIf { it in runningIds || (it == BASELINE_MODEL_ID && baseline?.fitted != null) }
             ?: runningIds.firstOrNull()
             ?: BASELINE_MODEL_ID.takeIf { baseline?.fitted != null }
-        // Full dual-backend catalog + agreement probe for the SELECTED model only (it feeds dosing);
-        // this loads its variants into loadedVariants[selectedId].
+        // SELECTED model only, and this is what loads its variants into loadedVariants.
         catalog = buildCatalog(selectedId)
         for (id in runningIds) {
             if (id != selectedId) loadModelActive(id)   // selected already loaded by buildCatalog
             loaded[id] = chooseActive(id)
         }
 
-        // When the cap hides installed models, say so — folded into whichever note applies.
         val truncated = if (variants.size > cap)
             "running $cap of ${variants.size} installed models (cap in Settings → Forecast & models)"
         else null
@@ -363,14 +287,9 @@ class InferenceController(
         )
     }
 
-    /**
-     * Probe every registered backend for the primary model and build the evidence-based switcher
-     * catalog (issue 20 STEP 4). A backend with a real `.pte` for this engine is ATTEMPTED with a
-     * native load: success ⇒ available (the handle is cached in [loadedVariants] for the cycle + the
-     * agreement probe); a load failure ⇒ unavailable with the native reason verbatim. A backend with
-     * no artifact surfaces its own documented reason (Neuron/LiteRT throw a static explanation) — so
-     * the switcher can always state UNAMBIGUOUSLY why a path is unavailable, never a bare "stub".
-     */
+    /** A real `.pte` is ATTEMPTED: success caches the handle in [loadedVariants], a failure carries
+     *  the native reason verbatim, and no artifact surfaces the backend's own documented reason — so
+     *  the switcher always states why a path is unavailable, never a bare "stub". */
     private fun buildCatalog(primaryId: String?): List<BackendAvailability> {
         val vmap = primaryId?.let { variants[it] } ?: LinkedHashMap()
         val anyDesc = vmap.values.firstOrNull()?.descriptor
@@ -408,8 +327,8 @@ class InferenceController(
         }
     }
 
-    /** Pick the active cycle backend for [id]: the requested pref if loaded, else the fp32 XNNPACK
-     *  authority, else any loaded variant, else the StubBackend (real path blocked). */
+    /** In order: the requested pref if loaded, the fp32 XNNPACK authority, any loaded variant, the
+     *  StubBackend. */
     private fun chooseActive(id: String): Entry {
         val vmap = loadedVariants[id] ?: LinkedHashMap()
         val chosen = forecastBackendPrefs[id]?.let { vmap[it] }
@@ -421,12 +340,9 @@ class InferenceController(
         return Entry(bundle, stub, handle, BackendId.STUB, Precision.FP32, real = false)
     }
 
-    /** Load backend variant(s) for a NON-selected running model into loadedVariants[id]: ALWAYS the
-     *  fp32 XNNPACK authority when present (so this model can feed dosing the INSTANT it is selected —
-     *  §3.6-E — without waiting for a catalog rebuild), PLUS its persisted display backend (the pref)
-     *  if different, PLUS a fallback to any variant so it still forecasts. Cheap CPU loads; the full
-     *  evidence-based dual-backend probe is [buildCatalog]'s job and runs for the selected model only.
-     *  chooseActive falls back to the StubBackend when nothing loaded. */
+    /** For a NON-selected running model: ALWAYS the fp32 XNNPACK authority when present, so this
+     *  model can feed dosing the INSTANT it is selected (§3.6-E), plus its display pref, plus any
+     *  variant as a fallback. The full probe is [buildCatalog]'s job. */
     private fun loadModelActive(id: String) {
         val vmap = variants[id] ?: return
         val loadedForId = loadedVariants.getOrPut(id) { LinkedHashMap() }
@@ -439,30 +355,20 @@ class InferenceController(
             loadedForId[bid] = Entry(variant, backend, handle, bid, variant.precision, real = true)
         }
         tryLoad(BackendId.EXECUTORCH_XNNPACK_FP32) // authority — always, so selecting this model can dose
-        tryLoad(forecastBackendPrefs[id])          // the DISPLAY-active backend (the pref), if different
+        tryLoad(forecastBackendPrefs[id])          // the DISPLAY-active backend, if different
         if (loadedForId.isEmpty()) for (bid in vmap.keys) { tryLoad(bid); if (loadedForId.isNotEmpty()) break }
     }
 
-    /**
-     * Set the FORECAST-CYCLE backend for one model id (issue 20 STEP 4). Governs the DISPLAY forecast
-     * cycle ONLY; the dosing path stays fail-closed on a non-authoritative backend until the agreement
-     * probe passes (§3.6-E). Assumes the caller has already persisted the choice to kv (discovery re-reads
-     * it via [backendPrefProvider]); re-runs discovery so the active handle + catalog + "executing on" line
-     * reflect the choice; if the requested backend cannot load, the controller falls back to the authority
-     * and the requested-vs-executing divergence is visible to the user. Returns the backend ACTUALLY active
-     * for [modelId] afterwards.
-     */
+    /** DISPLAY cycle only; dosing stays fail-closed on a non-authoritative backend until the
+     *  agreement probe passes (§3.6-E). The caller has already persisted the choice; discovery
+     *  re-reads it. Returns the backend ACTUALLY active, which may be the authority fallback. */
     suspend fun setForecastBackend(modelId: String, pref: BackendId?): BackendId? {
         forecastBackendPrefs[modelId] = pref
         refreshModels()
         return loaded[modelId]?.effectiveBackend
     }
 
-    /**
-     * Debug-only: publish a NON_FINITE forecast for the selected model so the overlay/panels can be
-     * verified to flag a degenerate forecast as ineligible (Phase 2 verify:
-     * "force-degenerate intent confirms the fan is flagged and ineligible"). Not wired in release.
-     */
+    /** Debug-only, not wired in release. */
     fun debugPublishDegenerate(nowMs: Long) {
         val id = selectedId ?: loaded.keys.firstOrNull() ?: return
         val entry = loaded[id] ?: return
@@ -493,14 +399,8 @@ class InferenceController(
         Timber.tag(TAG).w("debugPublishDegenerate: forced NON_FINITE forecast for %s", id)
     }
 
-    /**
-     * Debug-only: publish an ELIGIBLE (OK, fresh) forecast whose median ramps linearly from [startBg]
-     * to [endBg] over the horizon, so the §3.6-gated predictive surfaces (the always-on notification's
-     * "approaching …" line and the full-screen predictive-urgent alert) can be driven to their POSITIVE
-     * state without a live descending sensor trace — the exact path HyperOS blocked in Phase 7A. The
-     * fan is a fixed ±15 mg/dL monotone band so it passes the degeneracy guard's intent by construction.
-     * Not wired in release.
-     */
+    /** Debug-only, not wired in release: an ELIGIBLE fan ramping [startBg] to [endBg], with a fixed
+     *  ±15 mg/dL monotone band so the degeneracy guard passes it. */
     fun debugPublishForecast(nowMs: Long, startBg: Double, endBg: Double) {
         val id = selectedId ?: loaded.keys.firstOrNull() ?: return
         val entry = loaded[id] ?: return
@@ -543,27 +443,21 @@ class InferenceController(
         Timber.tag(TAG).w("debugPublishForecast: %s %.0f→%.0f", id, startBg, endBg)
     }
 
-    /**
-     * Immutable snapshot of the SELECTED model's provenance for the `:calc` dose advisor
-     * ([com.t1dm.core.model] types only, so `:inference` keeps no `:calc` dependency). [real] is
-     * false when the [StubBackend] stood in for a missing/failed `.pte` — the calculator treats a
-     * non-real selected model as "no model" and fails closed (§3.6-E).
-     */
+    /** [real] is false when the [StubBackend] stood in for a missing or failed `.pte`; the
+     *  calculator then treats the selected model as "no model" and fails closed (§3.6-E). */
     data class SelectedModelInfo(
         val id: String,
         val descriptor: ModelDescriptor,
         val backend: BackendId,
         val precision: Precision,
         val real: Boolean,
-        /** §3.6-E: null = not measured; true/false = last fp32-agreement probe. The authoritative
-         *  XNNPACK backend leaves this null and is trusted regardless; any other backend is trusted
-         *  for dosing ONLY when this is true (BackendInfo.trustworthy). */
+        /** Null = not measured. The XNNPACK authority leaves it null and is trusted regardless; any
+         *  other backend is trusted for dosing ONLY when it is true (§3.6-E). */
         val agreementOk: Boolean?,
     )
 
-    /** The selected model's provenance as it is DISPLAYED (the switcher-chosen active backend), or
-     *  null when nothing is loaded/selected. This follows [forecastBackendPrefs]; it drives the
-     *  "Executing on:" line and panels — NOT the dosing path (see [authorityModelInfo]). */
+    /** As DISPLAYED: follows [forecastBackendPrefs], and is NOT the dosing path (see
+     *  [authorityModelInfo]). */
     fun selectedModelInfo(): SelectedModelInfo? {
         val id = selectedId ?: return null
         val e = loaded[id] ?: return null
@@ -572,16 +466,9 @@ class InferenceController(
         return SelectedModelInfo(id, e.bundle.descriptor, e.effectiveBackend, e.precision, e.real, agreement)
     }
 
-    /**
-     * The AUTHORITATIVE fp32 XNNPACK CPU provenance for the selected model's DOSING path (§3.6-E).
-     * Deliberately ignores [forecastBackendPrefs]: dose advice must ALWAYS be computed on the fp32 CPU
-     * authority regardless of which backend the switcher renders the DISPLAYED forecast with, so this
-     * resolves the loaded XNNPACK variant directly from [loadedVariants] (the authority `.pte` is the
-     * deployed one and is always loaded when discovery succeeds). [backend] is therefore always
-     * [BackendId.EXECUTORCH_XNNPACK_FP32] and [agreementOk] is null (trusted by construction —
-     * `BackendInfo.trustworthy`). Returns null (⇒ `:calc` fails closed) when the authority variant is
-     * not loaded — a genuinely model-free state, never a silent promotion of a GPU/NPU path.
-     */
+    /** The DOSING path's provenance (§3.6-E). Deliberately ignores [forecastBackendPrefs]: dose
+     *  advice is always computed on the fp32 CPU authority. Null when that variant is not loaded, so
+     *  `:calc` fails closed rather than a GPU/NPU path being silently promoted. */
     fun authorityModelInfo(): SelectedModelInfo? {
         val id = selectedId ?: return null
         val e = loadedVariants[id]?.get(BackendId.EXECUTORCH_XNNPACK_FP32) ?: return null
@@ -591,26 +478,17 @@ class InferenceController(
         )
     }
 
-    /**
-     * Run one forward on the SELECTED model for the dose calculator's rolled search. Confined to the
-     * single-thread `inference` dispatcher AND serialised against a live 5-min cycle through
-     * [cycleMutex] (§2.3 — never two forwards concurrent on the one APU/CPU command queue). Throws if
-     * no model is selected/loaded; the [com.t1dm.calc.RollingForecaster] catches and fails closed.
-     */
+    /** Confined to the `inference` dispatcher and serialised on [cycleMutex] — never two forwards on
+     *  the one command queue. Throws when nothing is selected; the caller fails closed. */
     suspend fun runSelected(input: GraphTensors): GraphOutput = cycleMutex.withLock {
         val id = selectedId ?: error("no selected model")
         val e = loaded[id] ?: error("selected model not loaded")
         withContext(dispatchers.inference) { e.backend.run(e.handle, input) }
     }
 
-    /**
-     * Run one forward for the DOSE CALCULATOR on the AUTHORITATIVE fp32 XNNPACK variant of the selected
-     * model — NEVER the switcher-chosen display backend (§3.6-E). The forecast the `:calc` rails consume
-     * is thus produced on the fp32 CPU authority whatever the user is looking at, so the backend-agreement
-     * refusal never arises in normal use. A CPU forward is ~13.8 ms — negligible against the 5-min cycle.
-     * Same confinement + [cycleMutex] serialisation as [runSelected]. Throws when the authority variant is
-     * not loaded; [com.t1dm.calc.RollingForecaster] catches and fails closed.
-     */
+    /** The DOSE path's forward, on the fp32 XNNPACK authority and NEVER the display backend
+     *  (§3.6-E). Same confinement as [runSelected]. Throws when that variant is not loaded; the
+     *  caller fails closed. */
     suspend fun runSelectedAuthority(input: GraphTensors): GraphOutput = cycleMutex.withLock {
         val id = selectedId ?: error("no selected model")
         val e = loadedVariants[id]?.get(BackendId.EXECUTORCH_XNNPACK_FP32)
@@ -618,15 +496,8 @@ class InferenceController(
         withContext(dispatchers.inference) { e.backend.run(e.handle, input) }
     }
 
-    // ── Experiments: an arbitrary masked set, on any loaded model ───────────────────
-
-    /**
-     * One experimental run: what was masked, what came back, and everything needed to draw it.
-     *
-     * [forecast] holds EVERY decoded slot, infill spans included, with `slotPatch` naming where
-     * each sits — a Lab run is not a cycle and must not be reduced to a trailing horizon. Nothing
-     * here is stored, pushed, or read by an alarm, a rail or a statistic.
-     */
+    /** [forecast] holds EVERY decoded slot, infill spans included, with `slotPatch` naming where
+     *  each sits — not a trailing horizon. Nothing here is stored, pushed or read by an alarm. */
     data class MaskedRun(
         val modelId: String,
         val forecast: Forecast,
@@ -642,31 +513,16 @@ class InferenceController(
         val latencyMs: Double,
     )
 
-    /**
-     * Drop a model's cached head — call whenever its artifact changes under a fixed id.
-     *
-     * The parity check that proves a head belongs to its graph runs ONCE per model and is
-     * remembered; without this, a replaced artifact inherits the previous head's verdict and the
-     * adapter path decodes against weights that are not the graph's.
-     */
+    /** Call whenever an artifact changes under a fixed id: the parity verdict is remembered per
+     *  model, so a replaced artifact would otherwise inherit the previous head's. */
     fun evictHead(modelId: String) = heads.evict(modelId)
 
-    /** What a model's re-runnable head turned out to be — `null` for an unknown model. */
     fun headState(modelId: String): HeadCache.State? =
         loaded[modelId]?.bundle?.let { heads.stateOf(it) }
 
-    /**
-     * Run [modelId] over one window with an arbitrary masked set.
-     *
-     * [spans] are context-relative patch indices; [withForecast] appends the future zone. A pure
-     * infill passes `withForecast = false`, which is what a gap repair wants — the evidence on
-     * BOTH sides of the gap is then real, and no slot is spent on a forecast nobody asked for.
-     *
-     * When [lora] is non-null the fan is assembled from the head re-run over the graph's own
-     * `slot_hidden` instead of the graph's `head_raw`. A model whose head is absent or disagrees
-     * refuses rather than silently falling back to the unadapted fan — the whole point of the run
-     * would otherwise be invisible.
-     */
+    /** [spans] are context-relative patch indices; [withForecast] appends the future zone, and a
+     *  pure infill passes false. A non-null [lora] assembles from the head re-run over `slot_hidden`;
+     *  a model whose head is absent or disagrees refuses rather than returning the unadapted fan. */
     suspend fun runMasked(
         modelId: String,
         series: BgSeries,
@@ -720,28 +576,17 @@ class InferenceController(
         )
     }
 
-    /**
-     * Replay historical windows through [modelId] and pair each with the BG that actually
-     * followed — the training set an adapter is fitted on.
-     *
-     * The hidden states are recomputed here rather than stored per cycle: they are a function of
-     * the model and the window, so storing them would add megabytes a day AND go stale the moment
-     * the artifact was replaced. Windows are returned oldest-first, which is what makes the fit's
-     * held-out split chronological.
-     *
-     * A window whose realised horizon carries a gap is DROPPED. `SPEC/invariants.md` §1 makes a
-     * carried-forward value a presentation step, and fitting on one teaches the adapter that
-     * glucose holds perfectly still for an hour.
-     */
+    /** Windows are returned OLDEST-FIRST, which is what makes the fit's held-out split
+     *  chronological. A window whose realised horizon carries a gap is DROPPED: a carried-forward
+     *  value is a presentation step (`SPEC/invariants.md` §1), not glucose holding still. */
     suspend fun loraSamples(
         modelId: String,
         maxWindows: Int,
         strideSteps: Int,
         onWindow: ((done: Int, total: Int) -> Unit)? = null,
     ): List<LoraSample> {
-        // The handle is captured under the lock, and re-checked under it before every forward: a
-        // discovery refresh can close a model's backend handle mid-replay, and running against a
-        // closed handle is a native crash rather than an exception.
+        // Captured under the lock and re-checked under it before every forward: a discovery refresh
+        // can close the handle mid-replay, and a forward on a closed handle is a native crash.
         val entry = cycleMutex.withLock { loaded[modelId] } ?: error("model $modelId is not loaded")
         val desc = entry.bundle.descriptor
         val ctxSteps = desc.minContextPatches * desc.patchSize
@@ -749,14 +594,11 @@ class InferenceController(
         val stride = strideSteps.coerceAtLeast(desc.patchSize)
         val want = ctxSteps + predSteps + stride * maxWindows.coerceAtLeast(1)
         val dense = history.recentBgSeries(want, ctxSteps + predSteps) ?: return emptyList()
-        // The FIT series is what a target may come from, and it is a different series: a different
-        // filter, a different length, and its own grid origin. Project it onto the context grid by
-        // TIMESTAMP — reading it by the context's index would pair each window with glucose from
-        // some other moment, and every fit would look ordinary while learning the wrong pairing.
+        // The fit series has its own filter, length and grid origin, so project it onto the context
+        // grid by TIMESTAMP: by index it would pair each window with glucose from another moment.
         val measured = history.fitBgSeries(want, ctxSteps + predSteps)
-            ?: return emptyList()   // no measured series ⇒ no honest target; never fall back to
-                                    // the carried-forward one, which is a flat stretch that never
-                                    // happened (`SPEC/invariants.md` §1).
+            ?: return emptyList()   // no measured series ⇒ no honest target; never the
+                                    // carried-forward one (`SPEC/invariants.md` §1).
         val n = dense.mgdl.size
         val target = DoubleArray(n) { Double.NaN }
         for (i in measured.mgdl.indices) {
@@ -764,10 +606,8 @@ class InferenceController(
             if (j in 0 until n) target[j] = measured.mgdl[i]
         }
         val ch = buildDoseChannels(dense)
-        // Which slots of `dense` are the model's OWN OUTPUT. `SPEC/invariants.md` §1 keeps a
-        // promoted reconstruction out of a fit window's context, and this is what says where one
-        // is: `target` is NaN at a sensor gap and at a reconstruction alike, so a test on it
-        // cannot tell the rule's subject from an ordinary dropout.
+        // Which slots of `dense` are the model's OWN OUTPUT (`SPEC/invariants.md` §1). `target` is
+        // NaN at a sensor gap and at a reconstruction alike, so a test on it cannot tell them apart.
         val reconstructed = runCatching { history.reconstructedSlots(want) }.getOrElse { emptySet() }
         val out = ArrayList<LoraSample>(maxWindows)
 
@@ -779,8 +619,8 @@ class InferenceController(
         }
         val total = origins.size
         var seen = 0
-        // The masked run a non-forecast window carries, in patches: as long as the forecast horizon
-        // where the context has room, so the three geometries pose the model a comparable question.
+        // As long as the forecast horizon where the context has room, so the three geometries pose
+        // the model a comparable question.
         val spanPatches = (predSteps / desc.patchSize).coerceIn(1, desc.maskSpanMax.coerceAtLeast(1))
         val ctxPatches = desc.minContextPatches
         for ((index, o) in origins.asReversed().withIndex()) {  // oldest first: chronological split
@@ -793,40 +633,25 @@ class InferenceController(
                 ch.insulin.copyOfRange(ctxFrom, o),
                 ch.exercise.copyOfRange(ctxFrom, o),
             )
-            // The doses that ACTUALLY happened over the horizon are the announced plan for a
-            // training window: that is the conditioning the model was trained under, and feeding
-            // it the no-event baseline instead would teach the adapter to expect nothing.
+            // The doses that ACTUALLY happened are a training window's announced plan; the no-event
+            // baseline would teach the adapter to expect nothing.
             val ahead = ModelChannels(
                 ch.carb.copyOfRange(o, o + predSteps),
                 ch.insulin.copyOfRange(o, o + predSteps),
                 ch.exercise.copyOfRange(o, o + predSteps),
             )
-            // Which shape this window poses. A backcast or an infill masks a run INSIDE the
-            // context and has no future zone at all, so its target is that run's own realised
-            // glucose rather than the horizon's — and it carries no counterfactual, the guard
-            // being able to read a response only at a horizon's terminal step.
+            // A backcast or an infill masks a run INSIDE the context and has no future zone, so its
+            // target is that run's own realised glucose and it carries no counterfactual.
             val geometry = LoraGeometryPlan.geometryAt(index)
             val startPatch = LoraGeometryPlan.startPatch(geometry, ctxPatches, spanPatches)
             val isForecastWindow = geometry == MaskGeometry.FORECAST || startPatch == null
-            // The window's ANCHOR must be a real measurement, and only the anchor.
-            //
-            // `build_graph_input` anchors a masked span on ONE step: the last step of the patch to
-            // its left, or the first step of the patch to its right when there is no left one. That
-            // step is what the pinball target, the baseline `d0` and both of the guard's terminal
-            // reads are measured from, so a promoted reconstruction sitting there has the model
-            // grading its own work.
-            //
-            // Testing the whole context instead rejected every window on any real record: `target`
-            // is the fit series — real sensor signal only, NaN everywhere else — and a multi-day
-            // context with no gap at all does not survive a single sensor change. The fit then
-            // reported "0 usable windows" on a phone with months of history.
+            // The ANCHOR must be a real measurement, and only the anchor: it is the one step the
+            // pinball target, the baseline `d0` and both guard reads are measured from. Testing the
+            // whole context instead reported "0 usable windows" on a record with one sensor change.
             val anchorStep = anchorStepOf(ctxFrom, o, startPatch, spanPatches, desc.patchSize)
             if (anchorStep !in target.indices || target[anchorStep].isNaN()) continue
-            // And NO reconstruction anywhere in the context, which is the rule itself rather than a
-            // proxy for it. A carried-forward slot stays admissible: the model is CONDITIONED on a
-            // dense context by design, and refusing every gap — which is what testing `target` for
-            // NaN across the window did — left a record with one sensor change contributing no
-            // usable window at all.
+            // No reconstruction anywhere in the context — the rule itself, not a proxy. A
+            // carried-forward slot stays admissible: the model is conditioned on a dense context.
             if (reconstructed.isNotEmpty() &&
                 (ctxFrom until o).any { dense.gridStartMs + it.toLong() * GRID_MS in reconstructed }
             ) {
@@ -841,20 +666,16 @@ class InferenceController(
                 smoothingWindow(),
                 withForecast = isForecastWindow,
             )
-            // The masked run's own realised glucose, measured — the context test above has already
-            // refused any window where one of these slots is not a real reading.
             val spanTarget = if (isForecastWindow) {
                 realized
             } else {
                 val from = ctxFrom + startPatch!! * desc.patchSize
                 target.copyOfRange(from, from + spanPatches * desc.patchSize)
             }
-            // A masked run's own target is measured or the window is dropped. `realized` was
-            // already checked; this is the branch that reads from inside the context instead.
+            // The branch that reads from inside the context; `realized` was checked above.
             if (spanTarget.any { it.isNaN() }) continue
-            // ONE forward per lock acquisition, not one lock for the whole replay: a few hundred
-            // windows is minutes of forwards, and holding the cycle mutex across them would starve
-            // the live 5-minute forecast for as long as a fit runs.
+            // ONE forward per lock acquisition: holding the mutex across a few hundred windows
+            // would starve the live 5-minute forecast for as long as a fit runs.
             val run = cycleMutex.withLock {
                 if (loaded[modelId] !== entry) return out
                 withContext(dispatchers.inference) { entry.backend.run(entry.handle, GraphIo.tensors(gi)) }
@@ -863,16 +684,9 @@ class InferenceController(
             val hidden = run.slotHidden ?: return out
             val d = desc.dModel
 
-            // ── the counterfactual branch ──
-            //
             // The SAME window with one unit of insulin added to the horizon's dose channel, so the
-            // fit can see what the model does with it. A second trunk forward, and the only reason
-            // the replay costs more than it did — which is why it is spent on FORECAST windows
-            // only: the guard measures at the horizon, and the terminal step of an infill is not
-            // one. Everything else about the window is byte-identical, so the response is a
-            // property of the dose and not of the two forwards disagreeing.
-            // FORECAST windows only, and that is what keeps the pairing cost near half: the guard
-            // reads the response at the horizon's terminal step, which an infill does not have.
+            // response is a property of the dose. FORECAST windows only: the guard reads at the
+            // horizon's terminal step, which an infill does not have.
             val stimulus = if (!isForecastWindow) {
                 null
             } else {
@@ -910,8 +724,7 @@ class InferenceController(
                     anchors = gi.anchors.take(gi.nMasked),
                     targetBg = spanTarget.toList(),
                     nSlots = gi.nMasked,
-                    // Either the WHOLE window or nothing: a truncated pairing would have the fit
-                    // train one branch against a shorter other, and the crate refuses it by name.
+                    // Either the WHOLE window or nothing; the crate refuses a truncated pairing.
                     hiddenPert = if (hiddenPert != null && hiddenPert.size >= gi.nMasked * d) {
                         hiddenPert.take(gi.nMasked * d).map { it.toDouble() }
                     } else {
@@ -925,7 +738,7 @@ class InferenceController(
         return out
     }
 
-    /** Fit an adapter for [modelId] on [samples]. Attaches nothing — the caller decides. */
+    /** Attaches nothing — the caller decides. */
     suspend fun trainLora(
         modelId: String,
         samples: List<LoraSample>,
@@ -938,25 +751,16 @@ class InferenceController(
         if (state !is HeadCache.State.Ready) {
             error("model $modelId takes no adapter: ${(state as? HeadCache.State.Unusable)?.why ?: "no head file"}")
         }
-        // Deliberately OUTSIDE the cycle mutex: a fit is minutes of CPU, and it touches no backend
-        // handle. It reads the head's frozen weights and carries its own adapter through the
-        // gradient loop, so a cycle running the same head with an attached adapter is unaffected.
+        // Deliberately OUTSIDE the cycle mutex: minutes of CPU touching no backend handle. It reads
+        // the head's frozen weights and carries its own adapter through the gradient loop.
         return withContext(dispatchers.default) {
             native.loraTrain(state.head, entry.bundle.descriptor, samples, config, opts, progress)
         }
     }
 
-    /**
-     * Measure what a STORED adapter does to the model's marginal response to insulin.
-     *
-     * The fit runs this on its own held-out windows and stores the verdict; this is the same
-     * measurement for an adapter that arrived some other way — imported, restored from an archive,
-     * or fitted before the guard existed — none of which carry one, and all of which are refused at
-     * attach until somebody looks.
-     *
-     * The bar comes from the crate ([NativeCore.loraGuardOptsFit]) rather than from a literal here,
-     * so a probe and a fit cannot reach different verdicts about the same adapter.
-     */
+    /** What a STORED adapter does to the model's marginal response to insulin — the measurement an
+     *  imported or restored adapter carries no verdict for. The bar comes from
+     *  [NativeCore.loraGuardOptsFit], so a probe and a fit cannot disagree about one adapter. */
     suspend fun guardAdapter(
         modelId: String,
         weights: LoraWeights,
@@ -967,8 +771,7 @@ class InferenceController(
         if (state !is HeadCache.State.Ready) {
             error("model $modelId takes no adapter: ${(state as? HeadCache.State.Unusable)?.why ?: "no head file"}")
         }
-        // Outside the cycle mutex for the reason the fit is: head-only arithmetic over already
-        // computed hidden states, touching no backend handle.
+        // Outside the cycle mutex for the reason the fit is: head-only arithmetic, no handle.
         return withContext(dispatchers.default) {
             native.loraGuard(
                 state.head,
@@ -980,23 +783,14 @@ class InferenceController(
         }
     }
 
-    /** The descriptor of a loaded model, for a caller that must respect its geometry. */
     fun descriptorOf(modelId: String): ModelDescriptor? = loaded[modelId]?.bundle?.descriptor
 
-    /**
-     * Manually pick the SELECTED model — the one whose forecast the BG panel draws and whose fp32 CPU
-     * authority feeds dosing; a no-op if [id] is not in the running set. All running models keep running
-     * and pushing predictions regardless; selection governs only the DISPLAYED forecast (+ circadian) and
-     * the dosing authority. Two steps: (1) immediately re-flag the already-computed predictions so the
-     * panel switches to [id]'s fan this instant (rather than waiting for the next cycle); (2) re-run
-     * discovery so the Compute-backend switcher catalog + agreement probe describe the newly selected
-     * model (and its dual-backend catalog is (re)loaded). Suspends — callers launch it in a scope.
-     */
+    /** A no-op when [id] is not in the running set. Every running model keeps forecasting;
+     *  selection governs only the DISPLAYED forecast, the circadian belief and the dosing authority.
+     *  The predictions are re-flagged at once so the panel switches without waiting for a cycle. */
     suspend fun selectModel(id: String) {
-        // Guard the selectedId write + the immediate prediction re-flag under cycleMutex (FIX #10): they
-        // read and mutate the same loaded/selectedId that refreshModelsLocked() clears+reloads on the
-        // inference thread and that runFromHistory's preamble snapshots. Release BEFORE refreshModels() —
-        // it re-acquires the non-reentrant cycleMutex and would otherwise self-deadlock.
+        // The write and the re-flag race refreshModelsLocked on the inference thread. Release BEFORE
+        // refreshModels(), which re-acquires the non-reentrant mutex.
         cycleMutex.withLock {
             val isFittedBaseline = id == BASELINE_MODEL_ID && baseline?.fitted != null
             if (id !in loaded.keys && !isFittedBaseline) return
@@ -1008,8 +802,8 @@ class InferenceController(
                 predictions = _state.value.predictions
                     .map { it.copy(selected = it.modelId == id) }
                     .sortedByDescending { it.selected },
-                // Switching to a model with no time head clears the belief outright rather than
-                // leaving the previous model's on screen, frozen at the instant of the switch.
+                // A model with no time head clears the belief rather than leaving the previous
+                // model's on screen, frozen at the instant of the switch.
                 circadianTime = if (hasTime) sel?.predictedTime ?: _state.value.circadianTime else null,
                 circadianAnchorMs = if (hasTime) {
                     sel?.predictedTime?.let { sel.anchorTsMs } ?: _state.value.circadianAnchorMs
@@ -1023,26 +817,17 @@ class InferenceController(
         refreshModels()
     }
 
-    /**
-     * Delete the model with descriptor id [id] from disk (its descriptor+`.pte` pair(s) via
-     * [ModelStore.delete]) and purge its in-memory footprint: the durable per-model telemetry, the
-     * rolling-latency window, and the forecast-backend preference. Serialised on [cycleMutex] so it
-     * never races a live cycle over the loaded set, and the actual file removal runs on the `inference`
-     * thread. [refreshModels] re-scans afterwards, closing the just-deleted handles and reselecting the
-     * next remaining model (or none), and we strip any stale prediction for [id] from the overlay
-     * immediately so the graph does not keep drawing a fan for a model that no longer exists. Returns
-     * whether a matching artifact was actually removed from disk.
-     */
+    /** Deletes the pair from disk and purges the in-memory footprint: telemetry, latency window,
+     *  backend preference and any standing prediction, so the graph stops drawing a fan for a model
+     *  that no longer exists. Returns whether an artifact was actually removed. */
     suspend fun deleteModel(id: String): Boolean = cycleMutex.withLock {
         heads.evict(id)
-        // The baseline has no artifact to unlink; discarding the fitted weights is the same act, and
-        // the row carries the same ✕, so removing it must mean the same thing.
+        // The baseline has no artifact to unlink; discarding the fitted weights is the same act.
         if (id == BASELINE_MODEL_ID) {
             val had = baseline?.fitted != null
             baseline?.clear()
             if (selectedId == BASELINE_MODEL_ID) selectedId = null
-            // The same purge the neural branch performs: stale counters for a model that no longer
-            // exists would otherwise be attributed to the next fit under the same id.
+            // Stale counters would otherwise be attributed to the next fit under the same id.
             cumulative.remove(id); latencySamples.remove(id)
             runCatching { telemetryStore?.save(HashMap(cumulative)) }
             refreshModelsLocked()
@@ -1061,18 +846,12 @@ class InferenceController(
         removed
     }
 
-    /**
-     * Run the honest on-device comparison of the non-authority backend (the Vulkan GPU delegate)
-     * against the fp32 XNNPACK authority (issue 20 STEP 3 + §3.6-E). Both run the SAME fixed
-     * deterministic input; [runs] warm forwards each are timed (median) plus the first cold forward,
-     * and `head_raw` + the decoded mg/dL median are compared worst-case. The decoded-mg/dL agreement
-     * verdict is cached ([agreementByBackend]) so — and ONLY so — the backend may feed the dosing
-     * path. Serialised on [cycleMutex] against a live cycle; runs on the `inference` thread. Returns
-     * null (with a note) when there is no non-authority backend loaded to compare.
-     */
+    /** Both backends run the SAME fixed input: [runs] warm forwards each plus a cold one, and
+     *  `head_raw` and the decoded mg/dL median compared worst-case. Caching the mg/dL verdict in
+     *  [agreementByBackend] is what — and all that — lets a non-authority backend feed dosing. */
     suspend fun runBackendComparison(runs: Int = 20): BackendComparison? = cycleMutex.withLock {
-        // Every refusal below states itself, in the note AND in [lastProbeRefusal]. Returning a bare
-        // null told the drill-down nothing, so its button ran the probe and the screen said nothing.
+        // Every refusal states itself, in the note AND in [lastProbeRefusal]; a bare null left the
+        // drill-down with nothing to show after its button ran the probe.
         fun refuse(why: String): BackendComparison? {
             lastProbeRefusal = why
             _state.value = _state.value.copy(note = why)
@@ -1094,15 +873,13 @@ class InferenceController(
             return (System.nanoTime() - t0) / 1_000_000.0
         }
 
-        // Cold forward each (first call — includes any lazy shader/kernel warmup on the GPU path).
+        // First call, so it includes any lazy shader or kernel warmup on the GPU path.
         val coldAuth = timeOne(authority)
         val coldOther = timeOne(other)
-        // Warm medians.
         val authMs = ArrayList<Double>(runs)
         val otherMs = ArrayList<Double>(runs)
         repeat(runs) { authMs.add(timeOne(authority)); otherMs.add(timeOne(other)) }
 
-        // Numerics on one more shared input: decode both to mg/dL and take the worst-case deltas.
         val probe = probeGraphInput(desc)
         val authOut = withContext(dispatchers.inference) {
             authority.backend.run(authority.handle, GraphIo.tensors(probe))
@@ -1145,12 +922,8 @@ class InferenceController(
         cmp
     }
 
-    /**
-     * Run one forward of [backendId]'s loaded variant on the FIXED deterministic probe input and
-     * return its raw `head_raw` (debug/verification only — the CPU-unchanged proof compares the
-     * XNNPACK head_raw byte-for-byte across the stock and custom AAR). Null if that variant is not
-     * loaded. Serialised like every other forward.
-     */
+    /** Debug only: the CPU-unchanged proof compares this `head_raw` byte-for-byte across the stock
+     *  and custom AAR. Null when that variant is not loaded. */
     suspend fun debugHeadRaw(backendId: BackendId): FloatArray? = cycleMutex.withLock {
         val id = selectedId ?: return@withLock null
         val e = loadedVariants[id]?.get(backendId) ?: return@withLock null
@@ -1158,15 +931,14 @@ class InferenceController(
         withContext(dispatchers.inference) { e.backend.run(e.handle, input) }.headRaw
     }
 
-    /** Build the FIXED, time-independent, dose-free probe input (deterministic across runs/builds).
-     *  The smoothing window is PINNED to [InferenceControllerDefaults.SAVGOL_WINDOW], never the user
-     *  setting: this input feeds the §3.6-E fp16-agreement verdict and the byte-for-byte
-     *  CPU-unchanged proof, both of which must stay invariant under a Settings knob. */
+    /** FIXED, time-independent and dose-free. The smoothing window is PINNED to
+     *  [InferenceControllerDefaults.SAVGOL_WINDOW], never the user setting: the §3.6-E agreement
+     *  verdict and the CPU-unchanged proof must stay invariant under a Settings knob. */
     private suspend fun probeInput(desc: ModelDescriptor): GraphTensors =
         GraphIo.tensors(probeGraphInput(desc))
 
-    /** The probe's built input, kept apart from [probeInput] so the comparison can read its
-     *  anchors for the decode rather than reconstructing them from the series. */
+    /** Kept apart from [probeInput] so the comparison reads the decode's anchors from here rather
+     *  than reconstructing them. */
     private suspend fun probeGraphInput(desc: ModelDescriptor): GraphInput {
         val steps = desc.maxContextPatches * desc.patchSize
         val series = SyntheticContext.plausible24h(steps, anchorTsMs = PROBE_ANCHOR_MS)
@@ -1181,34 +953,9 @@ class InferenceController(
         )
     }
 
-    /**
-     * D1/D4 thermal gate (read FRESH each cycle): consult [thermalProvider] and, with hysteresis,
-     * decide whether inference must pause because the device is too hot. Returns the banner note while
-     * BLOCKED, else null (and clears the latch). A null status (gate disabled or temperature
-     * unreadable) never gates. Latches at [ThermalStatus.thresholdC] and resumes only below
-     * `thresholdC - resumeMarginC` so a temperature hovering on the threshold cannot flap the forecast.
-     *
-     * **Once per cycle, not once per gate.** A history-fed cycle passes this gate twice — [runFromHistory]
-     * sharpens the message before the warmup gate can claim the banner, then [runCycle] applies it again
-     * as the universal chokepoint every forecast funnels through. Both calls carry the SAME [cycleNowMs],
-     * which is what identifies them as one cycle, so the second reuses the first's verdict: one
-     * [thermalProvider] invocation (three settings reads and a battery-sensor binder round trip) instead
-     * of two, and — the part that was a latent defect rather than a cost — ONE advance of the hysteresis
-     * latch instead of two advances against two different temperature samples.
-     *
-     * This is a per-cycle share, deliberately NOT a wall-clock cache: a cycle with a fresh `nowMs` always
-     * re-reads, and [runCycle] driven directly (the synthetic/manual path) carries its own `nowMs` and so
-     * has its own read. And it is confined to the *inference* gate — the deterministic over-temperature
-     * ALARM runs on its own uncached read in `AlarmController`, so nothing here can move when that alarm
-     * fires.
-     *
-     * What the discarded second read actually offered is worth naming: the temperature behind
-     * [thermalProvider] is `ACTION_BATTERY_CHANGED`'s `EXTRA_TEMPERATURE`, a STICKY broadcast the system
-     * refreshes on battery events rather than on demand. Two reads separated by the warmup query and the
-     * history fetch that sit between these gates are overwhelmingly the same sticky Intent and hence the
-     * same number — which is why re-deciding on it could only ever re-affirm the first verdict, and why
-     * doing so twice against the hysteresis latch was the defect rather than the safeguard.
-     */
+    /** The banner note while BLOCKED, else null. A history-fed cycle passes this gate twice, so a
+     *  second call with the same [cycleNowMs] reuses the verdict: one temperature read, and ONE
+     *  advance of the hysteresis latch. A per-cycle share, deliberately not a wall-clock cache. */
     private suspend fun overTempNote(cycleNowMs: Long): String? {
         thermalVerdict?.takeIf { it.nowMs == cycleNowMs }?.let { return it.note }
         val t = thermalProvider() ?: run {
@@ -1224,30 +971,21 @@ class InferenceController(
         return note
     }
 
-    /** Fire a cycle off the shared BG history (the `GridTick` path). */
     suspend fun runFromHistory(cause: InferenceCause = InferenceCause.GRID_TICK, nowMs: Long) {
-        // Anchor context-window sizing + the warmup gate to the SELECTED model's descriptor (mirrors
-        // buildFutureChannels) — with N running models `loaded.values.first()` is the first-discovered,
-        // NOT necessarily the selected/displayed model whose forecast + warmup these bounds govern.
-        // Snapshot the descriptor + the selected entry's provenance ONCE under cycleMutex (FIX #10): the
-        // whole preamble below runs off the default dispatcher and must not read the live loaded/selectedId
-        // while refreshModelsLocked() clears+reloads them on the inference thread. Release the lock at once —
-        // refreshModels(), circadianDuringWarmup(), and runCycle() below each re-acquire the non-reentrant
-        // cycleMutex, so holding it across them (or across the forward) would deadlock/serialise.
+        // Size the context and the warmup gate on the SELECTED model's descriptor; with N running
+        // models `loaded.values.first()` is the first-discovered, not the selected one. Snapshot
+        // under the lock, then release: the calls below each re-acquire the non-reentrant mutex.
         val (descAny, selReal, selHasTime) = cycleMutex.withLock {
             val selEntry = loaded[selectedId]
             val desc = (selEntry ?: loaded.values.firstOrNull())?.bundle?.descriptor
             Triple(desc, selEntry?.real ?: false, selEntry?.bundle?.descriptor?.time != null)
         }
-        // A fitted baseline is a running model with no descriptor, so the descriptor-derived context
-        // bounds below fall back to the exported models' own window. Without this the grid tick
-        // returns here on a device carrying only the baseline, the relaxed guard in runCycle is never
-        // reached, and the Models panel lists a running model that silently never forecasts.
+        // A fitted baseline is a running model with no descriptor. Without this fallback a
+        // baseline-only device returns here every tick and never forecasts.
         val baselineOnly = descAny == null && baseline?.fitted != null
         if (descAny == null && !baselineOnly) { refreshModels(); return }
-        // Thermal gate BEFORE the warmup gate: while blocked, publish a clean over-temp banner (empty
-        // predictions, PRESERVING circadianTime so the clock stays lit) instead of a warmup/forecast
-        // state. runCycle carries the universal chokepoint guard; this one only sharpens the message.
+        // Before the warmup gate, so the banner is the over-temp one rather than a warmup state;
+        // `copy` preserves circadianTime, so the clock stays lit. runCycle is the real chokepoint.
         overTempNote(nowMs)?.let { note ->
             _state.value = _state.value.copy(
                 predictions = emptyList(), lastCause = InferenceCause.OVER_TEMPERATURE, note = note,
@@ -1260,48 +998,34 @@ class InferenceController(
         val maxSteps = descAny?.let { it.maxContextPatches * it.patchSize }
             ?: NO_DESCRIPTOR_MAX_STEPS
 
-        // ── WARMUP gate (inference-runtime.md): withhold forecasts until at least `warmupHours` of
-        //    MEASURED (non-interpolated) context has accrued, floored at the model's MIN_CONTEXT.
-        //    DISTINCT from the per-cycle freshness gate below; both remain in force.
+        // WARMUP gate (inference-runtime.md): withhold until `warmupHours` of MEASURED context has
+        // accrued, floored at the model's MIN_CONTEXT. Distinct from the freshness gate; both stand.
         val minContextHours = minSteps * GRID_MS / MS_PER_HOUR
         val requiredHours = warmupHoursProvider().coerceAtLeast(minContextHours)
         val requiredSteps = Math.round(requiredHours * MS_PER_HOUR / GRID_MS).toInt()
         val measuredSteps = runCatching { history.measuredStepsInWindow(requiredSteps) }.getOrDefault(0)
-        // Warmup completes at WARMUP_COMPLETION_FRACTION coverage of the required window — a passive
-        // advertisement CGM never fills every slot, so demanding a gapless window kept the forecast stuck
-        // in (and flapping around) warmup. Once met it LATCHES monotonically, so a later dropped slot can
-        // no longer flap the forecast, glycemic status, and circadian clock back into "collecting context".
+        // A passive advertisement CGM never fills every slot, so completion needs only
+        // WARMUP_COMPLETION_FRACTION coverage, and then latches monotonically.
         val completionSteps = kotlin.math.ceil(requiredSteps * WARMUP_COMPLETION_FRACTION).toInt()
         if (measuredSteps >= completionSteps) warmupSatisfiedUpTo = maxOf(warmupSatisfiedUpTo, requiredSteps)
         val warmedUp = measuredSteps >= completionSteps || requiredSteps <= warmupSatisfiedUpTo
         if (!warmedUp) {
             val measuredHours = measuredSteps * GRID_MS / MS_PER_HOUR
-            // The BG forecast stays (correctly) suppressed — §3.6 gates untouched, [predictions] empty.
-            // BUT the circadian-phase belief is NOT a glucose forecast and NOT a dosing signal, and it
-            // degrades gracefully with little context, so we still publish it (issues 7 & 9) as a
-            // low-context belief. It survives warmup via [circadianTime], never re-entering the forecast
-            // path. Fail-OPEN to null when there is not yet enough raw history to run a single forward.
-            // Only when the SELECTED model has a time head. `circadianDuringWarmup` runs a forward on
-            // whatever descriptor it can find, so with the baseline selected it would publish another
-            // model's belief under the selection — and pay for a forward pass to do it.
+            // The circadian belief is neither a glucose forecast nor a dosing signal and degrades
+            // gracefully, so it is published during warmup as low-context. Only when the SELECTED
+            // model has a time head, or it would publish another model's belief under the selection.
             val warmupBelief = if (selHasTime) {
                 runCatching { circadianDuringWarmup() }.getOrNull()
             } else {
                 null
             }
-            // The BASELINE is not gated by this window, and should not be. The gate exists because a
-            // neural export conditions on 96–288 steps and says nothing trustworthy with less; the ridge
-            // reads `nLags` trailing values and its own IOB/COB, so 24 h of accrual is a requirement it
-            // does not have. Withholding it bought a blank panel for a day per install and no safety:
-            // it cannot reach the dose calculator, the ISF/ICR probe or the rolled overlay, all of which
-            // fail closed on a model with no descriptor and no graph.
-            //
-            // Its OWN guards still decide. It must be fitted, the series must cover `nLags`, and the
-            // §3.6 degeneracy classification applies to its fan exactly as to any other.
+            // The BASELINE is not gated by this window: it reads `nLags` trailing values rather than
+            // 96–288 steps, and it cannot reach the calculator, the ISF/ICR probe or the rolled
+            // overlay, which all fail closed without a graph. Its own guards still decide.
             val warmupBaseline = runCatching { baselineDuringWarmup(nowMs) }
                 .getOrElse { Timber.tag(TAG).w(it, "baseline cycle failed during warmup"); null }
             _state.value = _state.value.copy(
-                // Only the baseline's. The neural fan stays suppressed, which is what this gate is for.
+                // Only the baseline's; the neural fan stays suppressed.
                 predictions = listOfNotNull(warmupBaseline),
                 lastCause = InferenceCause.COLLECTING_CONTEXT,
                 warmup = com.t1dm.core.model.WarmupProgress(measuredHours, requiredHours),
@@ -1339,20 +1063,16 @@ class InferenceController(
         runCycle(cause, series, nowMs)
     }
 
-    /**
-     * Run one full cycle over [series]. Public so the service can drive a synthetic/manual cycle
-     * (cold-start verification with a plausible 24 h series — the sensor is not needed).
-     */
+    /** Public so the service can drive a synthetic or manual cycle with no sensor present. */
     suspend fun runCycle(cause: InferenceCause, series: BgSeries, nowMs: Long) = cycleMutex.withLock {
         // A fitted baseline is a running model in its own right, so a device with no `.pte` pushed
-        // still has something to publish and must not bail out of the cycle here.
+        // still has something to publish.
         if (loaded.isEmpty() && baseline?.fitted == null) {
             refreshOrNote()
             if (loaded.isEmpty() && baseline?.fitted == null) return@withLock
         }
-        // Thermal gate — the UNIVERSAL chokepoint: every forecast (grid tick, manual, synthetic) funnels
-        // through here, so blocking here blocks them all. Empty predictions + OVER_TEMPERATURE cause;
-        // circadianTime is left untouched by copy() so the clock stays lit while inference is paused.
+        // The UNIVERSAL chokepoint: grid tick, manual and synthetic all funnel through here.
+        // `copy` leaves circadianTime untouched, so the clock stays lit while inference is paused.
         overTempNote(nowMs)?.let { note ->
             _state.value = _state.value.copy(
                 predictions = emptyList(), lastCause = InferenceCause.OVER_TEMPERATURE, note = note,
@@ -1365,23 +1085,17 @@ class InferenceController(
         val t0 = System.nanoTime()
         val preds = ArrayList<ModelPrediction>(loaded.size)
 
-        // ONE shared context build across the running set: the carb-appearance (feat 1) + insulin-
-        // action (feat 2) channels reconstructed from the logged meals/doses/basal (SPEC §3.3),
-        // aligned to the BG grid. Model-independent (the per-desc normalization happens in
-        // build_context); a null/failed source falls back to the `normalize(0)` no-dose baseline.
+        // ONE shared context build across the running set (SPEC §3.3), aligned to the BG grid.
+        // Model-independent: the per-descriptor normalization happens in build_context.
         val doseChannels = buildDoseChannels(series)
 
-        // ONE shared PREDICTION-ZONE build: the COMMITTED dose tails (already-logged meals/doses still
-        // absorbing past the now-boundary) reconstructed via the SAME curve engine the calculator's
-        // baseline roll uses (SPEC §3.3). Carried into build_context's announced-future slots so a
-        // just-logged meal RAISES (and a just-logged insulin LOWERS) the main-view forecast, instead
-        // of appearing in the past then vanishing at the boundary (an impossible drop-off ⇒ wrong dip).
-        // Model-independent (rollStartMs is the grid boundary; predSteps is the fixed pred zone) but
-        // anchored to the SELECTED model's descriptor for a stable, deterministic pred-zone length.
+        // ONE shared PREDICTION-ZONE build (SPEC §3.3), on the SAME curve engine the calculator's
+        // baseline roll uses, so a just-logged meal RAISES the forecast rather than vanishing at the
+        // boundary. Anchored to the SELECTED model's descriptor for a stable pred-zone length.
         val anchorDesc = (loaded[selectedId] ?: loaded.values.firstOrNull())?.bundle?.descriptor
         val futureChannels = anchorDesc?.let { buildFutureChannels(series, it) }
 
-        // Serial fan-out over the running set (never concurrent on the one command queue).
+        // Serial: never two forwards on the one command queue.
         for ((id, entry) in loaded) {
             val pred = runCatching { runOne(entry, id == selectedId, series, doseChannels, futureChannels, cycleTs, stale) }
                 .getOrElse {
@@ -1390,8 +1104,8 @@ class InferenceController(
             if (pred != null) preds.add(pred)
         }
 
-        // The baseline runs on the same anchor and the same grid, but off the RAW series and its own
-        // causal IOB/COB — see [BaselineRunner] for why it does not share the neural input transform.
+        // Same anchor and grid, but off the RAW series and its own causal IOB/COB — see
+        // [BaselineRunner].
         baseline?.let { b ->
             val pred = runCatching { b.predict(series, cycleTs, selectedId == BASELINE_MODEL_ID, stale) }
                 .getOrElse { Timber.tag(TAG).w(it, "baseline cycle failed"); null }
@@ -1404,9 +1118,7 @@ class InferenceController(
 
         val durationMs = ((System.nanoTime() - t0) / 1_000_000.0).toLong()
         val selPred = preds.firstOrNull { it.selected }
-        // Whether the SELECTED model can produce an hour-of-day belief at all. False for the
-        // classical baseline, which carries no time head — and false, correctly, for any neural
-        // export cut without one.
+        // False for the classical baseline, and for any neural export cut without a time head.
         val selHasTime = loaded[selectedId]?.bundle?.descriptor?.time != null
         _state.value = _state.value.copy(
             running = runningModels(),
@@ -1422,15 +1134,9 @@ class InferenceController(
             } else {
                 loaded[selectedId]?.real ?: false
             },
-            // A full cycle republishes the circadian belief from the selected prediction (full context,
-            // not low-context) so the clock/dial track the live forecast the moment warmup clears. When
-            // THIS cycle's forecast carries no decoded time, keep the last known belief rather than
-            // blinking the clock OFF while a forecast is showing (a slow circadian phase, not a dosing signal).
-            //
-            // That carry-over holds a belief across a TRANSIENT decode failure of a model that HAS a
-            // time head. It must not survive a switch to a model that has none: the belief on screen
-            // would then belong to a different model, frozen at the instant of the switch, with the
-            // panel's own "no time section" state unreachable because a stale value is not null.
+            // Keep the last belief across a TRANSIENT decode failure rather than blinking the clock
+            // off under a live forecast — but never across a switch to a model with no time head, or
+            // the belief on screen belongs to a different model.
             circadianTime = if (selHasTime) selPred?.predictedTime ?: _state.value.circadianTime else null,
             circadianAnchorMs = if (selHasTime) {
                 selPred?.predictedTime?.let { selPred.anchorTsMs } ?: _state.value.circadianAnchorMs
@@ -1455,11 +1161,8 @@ class InferenceController(
         )
     }
 
-    /**
-     * Decode a graph output against the input that produced it: the per-slot anchors and the slot
-     * layout are the input's, never reconstructed. A decode that re-derives its own anchor is how
-     * an infill span silently anchors on the forecast's neighbour.
-     */
+    /** Anchors and slot layout come from the input that produced [out], never re-derived: that is
+     *  how an infill span silently anchors on the forecast's neighbour. */
     private fun decode(desc: ModelDescriptor, out: GraphOutput, gi: GraphInput): Forecast =
         native.assembleDecode(
             desc,
@@ -1470,15 +1173,9 @@ class InferenceController(
             CARRY_SPREAD,
         )
 
-    /**
-     * The adapted `head_raw` for this cycle, or null to run frozen.
-     *
-     * Null is the ordinary case — no adapter attached, or no store wired. It is NOT a fallback: a
-     * model with an adapter attached whose adapter cannot be applied THROWS, which drops that
-     * model's prediction for the cycle. Falling back to the frozen fan would store, alarm on and
-     * calibrate against a forecaster the user is not looking at, and mix two of them in one
-     * model's history with nothing recording which produced which row.
-     */
+    /** Null runs frozen — no adapter attached, or no store wired. NOT a fallback: an attached
+     *  adapter that cannot be applied THROWS, dropping that model's prediction for the cycle rather
+     *  than mixing two forecasters in one model's history. */
     private suspend fun adaptedHeadRaw(entry: Entry, gi: GraphInput, out: GraphOutput): List<Double>? {
         val store = loraStore ?: return null
         val w = store.attached(entry.bundle.id) ?: return null
@@ -1499,22 +1196,15 @@ class InferenceController(
         }
     }
 
-    /**
-     * The adapted `head_raw` for a caller outside the cycle — the dose path, which must score on
-     * the same forecaster the panel draws.
-     *
-     * `null` is the frozen model. An ATTACHED adapter that cannot be applied THROWS here rather
-     * than returning null: the cycle can fall back to the frozen fan because a forecast is due
-     * either way, but a dose scored on a different model from the displayed one is exactly the
-     * disagreement §3.6-E exists to prevent, so the roll fails closed instead.
-     */
+    /** For the dose path, which must score on the same forecaster the panel draws. `null` is the
+     *  frozen model; an ATTACHED adapter that cannot be applied THROWS, so the roll fails closed
+     *  rather than scoring a dose on a different model from the displayed one (§3.6-E). */
     suspend fun adaptedHeadRawFor(modelId: String, out: GraphOutput, mSlots: Int): List<Double>? {
         val store = loraStore ?: return null
         val w = store.attached(modelId) ?: return null
         val entry = cycleMutex.withLock { loaded[modelId] } ?: error("model $modelId is not loaded")
-        // The dose path can be the FIRST caller after a process start — a recommendation asked for
-        // before any cycle has run — so it proves the head against this very forward rather than
-        // assuming a cycle already did.
+        // The dose path can be the FIRST caller after a process start, so the head is proved against
+        // this very forward rather than assuming a cycle already did it.
         heads.verify(entry.bundle, out.slotHidden, out.headRaw, mSlots)
         val state = heads.stateOf(entry.bundle)
         if (state !is HeadCache.State.Ready) {
@@ -1549,14 +1239,10 @@ class InferenceController(
         recordCumulative(entry.bundle.id, latMs)
 
         heads.verify(entry.bundle, out.slotHidden, out.headRaw, gi.mSlots)
-        // An attached adapter re-runs the head over the graph's own hidden states. It FAILS OPEN to
-        // the frozen fan: a forecast is due this cycle either way, and a fan the app can justify is
-        // better than none. The panel names which one it got.
         val adapted = adaptedHeadRaw(entry, gi, out)
 
-        // The cycle masks nothing but the future zone, so every decoded slot IS the forecast —
-        // but slice by patch anyway rather than by count, so an added infill span cannot quietly
-        // shift which rows the panel, the alarms and the calculator read.
+        // Slice by patch rather than by count, so an added infill span cannot shift which rows the
+        // panel, the alarms and the calculator read.
         val forecast: Forecast = withContext(dispatchers.default) {
             val all = native.assembleDecode(
                 desc,
@@ -1572,10 +1258,7 @@ class InferenceController(
         val status: ForecastStatus =
             withContext(dispatchers.default) { native.forecastDegeneracyCheck(desc, forecast) }
 
-        // Circadian-phase belief (Phase 7A): the co-trained time probe's second `.pte` output,
-        // reduced to a predicted hour-of-day in the Rust core. Purely additive — fail-OPEN to null
-        // (descriptor lacks a time section, backend returned no slot-1 tensor, or the decode
-        // throws) so it can NEVER perturb the BG forecast/degeneracy path above.
+        // Fail-OPEN to null, so the time probe can never perturb the BG forecast above.
         val predictedTime: PredictedTime? = decodeTimeSafely(desc, out.timeLogits)
 
         return ModelPrediction(
@@ -1598,13 +1281,8 @@ class InferenceController(
         )
     }
 
-    /**
-     * Decode the time-probe's slot-1 logits into a circadian-phase belief, fail-OPEN. Returns null
-     * unless the descriptor declares a time section AND the backend produced a matching flat
-     * `(P, nBins)` tensor; any decode error (mapped by [NativeCore.decodeTime] to null) or a
-     * length mismatch also yields null. Never throws — the caller must not let a time-probe hiccup
-     * touch the BG forecast.
-     */
+    /** Fail-OPEN: null unless the descriptor declares a time section AND the tensor is a matching
+     *  flat `(P, nBins)`. Never throws — a time-probe hiccup must not touch the BG forecast. */
     private suspend fun decodeTimeSafely(desc: ModelDescriptor, timeLogits: FloatArray?): PredictedTime? {
         val time = desc.time ?: return null
         val logits = timeLogits ?: return null
@@ -1619,26 +1297,9 @@ class InferenceController(
         }
     }
 
-    /**
-     * Run ONE forward on the selected model DURING WARMUP purely to obtain the circadian-phase belief
-     * (issues 7 & 9) — the BG forecast stays suppressed and is never derived here. Returns the decoded
-     * belief + the series anchor it was formed at, or null when it cannot run at all: no real backend
-     * (the stub carries no probe), a descriptor without a time section, too little raw history for a
-     * single forward, or any decode hiccup. Serialised on [cycleMutex] like every other forward so it
-     * never overlaps a calculator `runSelected` on the one command queue. Never throws (the caller
-     * wraps it too); a time-probe hiccup must not perturb the warmup gate.
-     */
-    /**
-     * One baseline forecast while the WARMUP gate is withholding the neural fan.
-     *
-     * The series is asked for at the BASELINE's own floor — `nLags` trailing steps — not the neural
-     * minimum, because that floor is the whole reason this runs at all. [BaselineRunner.predict] rejects
-     * anything shorter, so the two agree and a short history simply yields null.
-     *
-     * Never marked `selected`: selection drives the calculator, the ISF/ICR probe and the rolled overlay,
-     * and all three fail closed on a model with no graph. During warmup this fan is the panel's, and
-     * nothing else's.
-     */
+    /** The series is asked for at the BASELINE's own floor — `nLags` trailing steps — not the neural
+     *  minimum, which is the whole reason this runs. Never marked `selected`: selection drives the
+     *  calculator and the rolled overlay, which fail closed on a model with no graph. */
     private suspend fun baselineDuringWarmup(nowMs: Long): ModelPrediction? {
         val b = baseline ?: return null
         val lags = b.fitted?.spec?.nLags ?: return null
@@ -1678,11 +1339,8 @@ class InferenceController(
         }
     }
 
-    /**
-     * Reconstruct the carb-appearance + insulin-action channels ONCE for the cycle from the logged
-     * events (SPEC §3.3), aligned to `series.gridStartMs`. Off-main via the source's own dispatcher.
-     * A missing/failed source or a length mismatch falls back to the `normalize(0)` no-dose baseline.
-     */
+    /** Aligned to `series.gridStartMs` (SPEC §3.3). A missing or failed source, or a length
+     *  mismatch, falls back to the `normalize(0)` no-dose baseline. */
     private suspend fun buildDoseChannels(series: BgSeries): ModelChannels {
         val n = series.mgdl.size
         val src = contextChannels ?: return ModelChannels.zero(n)
@@ -1696,14 +1354,9 @@ class InferenceController(
         }
     }
 
-    /**
-     * Reconstruct the COMMITTED prediction-zone dose tails ONCE for the cycle (SPEC §3.3). Aligned to
-     * the grid boundary one step past the last context sample (`gridStartMs + n·STEP`) — so the tail
-     * carried here continues seamlessly from the [contextChannels] past. Length = the model's fixed
-     * pred zone (P·S). A missing/failed source or mismatch ⇒ `null`, i.e. the `normalize(0)` no-dose
-     * baseline (exact pre-Phase-4c behaviour). Uses the SAME `ChannelBuilder.futureOverrides` engine
-     * as `RollingForecaster`, so the directional response is identical.
-     */
+    /** Aligned to the grid boundary one step past the last context sample, so the tail continues
+     *  seamlessly from the [contextChannels] past; length is the fixed pred zone (P·S). Null ⇒ the
+     *  `normalize(0)` no-dose baseline. Same engine as `RollingForecaster` (SPEC §3.3). */
     private suspend fun buildFutureChannels(series: BgSeries, desc: ModelDescriptor): ModelChannels? {
         val src = futureOverrides ?: return null
         val predSteps = predSteps(desc)
@@ -1717,18 +1370,13 @@ class InferenceController(
         }
     }
 
-    /** The fixed prediction-zone step count for a descriptor: P·S (mirrors RollingForecaster). */
+    /** P·S, mirroring `RollingForecaster`. */
     private fun predSteps(desc: ModelDescriptor): Int =
         (desc.predictionHorizonHours * STEPS_PER_HOUR / desc.patchSize) * desc.patchSize
 
-    /**
-     * Build the graph input, conditioning feats 1-3 (carb / insulin / exercise) on the past
-     * reconstructed channels [ch] AND the prediction zone on the COMMITTED future tails [future]
-     * (SPEC §3.3) — so the main-view forecast reflects logged meals/doses across the now-boundary.
-     * `future == null` seeds the pred-zone dose slots to `normalize(0)` (no committed dose / unwired).
-     * Channel order is fixed carb-insulin-exercise at every `native.buildGraphInput` slot
-     * (context AND announced), identical to `RollingForecaster` — no swap.
-     */
+    /** A null [future] seeds the pred-zone dose slots to `normalize(0)`. Channel order is fixed
+     *  carb-insulin-exercise at every slot, context and announced alike, identical to
+     *  `RollingForecaster` — no swap. */
     private suspend fun buildGraphInput(
         desc: ModelDescriptor,
         mgdl: DoubleArray,
@@ -1758,21 +1406,16 @@ class InferenceController(
             )
         }
 
-    /** The user's BG smoothing window, snapped to an offered detent; a missing/throwing provider
-     *  yields the default. Read fresh per cycle so a Settings edit takes on the next tick. */
+    /** Snapped to an offered detent; read fresh per cycle, so a Settings edit takes on the next
+     *  tick. */
     private suspend fun smoothingWindow(): Int =
         InferenceControllerDefaults.nearestSmoothingStop(
             runCatching { smoothingWindowProvider() }.getOrNull() ?: InferenceControllerDefaults.SAVGOL_WINDOW,
         )
 
-    /**
-     * The running set as the panels see it: the loaded exported models, then the classical baseline.
-     *
-     * The baseline is listed whether or not it has been fitted. It is not discovered from disk — it
-     * is a model this app always has — so hiding it until a fit would leave its own Fit action with
-     * nowhere to live, and the first fit would need an entry point outside the model it belongs to.
-     * [InferenceState.baselineModel] is what says which of the two states it is in.
-     */
+    /** The baseline is listed whether or not it has been fitted — it is not discovered from disk, so
+     *  hiding it until a fit would leave its own Fit action nowhere to live.
+     *  [InferenceState.baselineModel] says which of the two states it is in. */
     private fun runningModels(): List<RunningModel> {
         val neural = loaded.map { (id, e) ->
             RunningModel(id, e.effectiveBackend, e.precision, id == selectedId)
@@ -1786,14 +1429,9 @@ class InferenceController(
         )
     }
 
-    /**
-     * The on-disk `.pte` filenames of the currently-loaded running set — the identity the model-sync
-     * coordinator keys on to decide whether a server update would overwrite a LIVE (dosing-relevant)
-     * artifact (⇒ stage for manual apply) versus a new/stub one (⇒ apply in place). NOT the descriptor
-     * `model_id`, which can diverge from the artifact filename for an adb-pushed model. Empty when no
-     * model is loaded. A stub stand-in's bundle still names its intended `.pte`, but that file is absent,
-     * so the coordinator's own live-file check routes it to apply-in-place.
-     */
+    /** `.pte` filenames, NOT the descriptor `model_id`, which can diverge from the filename for an
+     *  adb-pushed model. The sync coordinator keys on this to decide whether a server update would
+     *  overwrite a LIVE artifact (stage it) or a new one (apply in place). */
     fun runningArtifactFileNames(): Set<String> = loaded.values.map { it.bundle.pte.name }.toSet()
 
     private fun recordLatency(id: String, ms: Double) {
@@ -1807,10 +1445,8 @@ class InferenceController(
         cumulative[id] = CumulativeTelemetry(cur.predictions + 1, cur.totalInferenceMs + ms)
     }
 
-    /** The loaded running set's static meta (param count / disk size / arch dims / reference). */
     private fun metasSnapshot(): List<ModelMeta> = loaded.values.map { it.bundle.meta }
 
-    /** Cumulative per-model telemetry for every model that has ever run this install. */
     private fun telemetrySnapshot(): List<ModelTelemetry> = cumulative.map { (id, c) ->
         ModelTelemetry(id, c.predictions, c.totalInferenceMs)
     }
@@ -1826,35 +1462,28 @@ class InferenceController(
         )
     }
 
-    /** Reload the running set when it is empty. Its sole caller [runCycle] already holds [cycleMutex],
-     *  so it uses the lock-free [refreshModelsLocked] (calling the locking [refreshModels] here would
-     *  self-deadlock the non-reentrant mutex). */
+    /** Its sole caller [runCycle] already holds [cycleMutex], so this takes the lock-free path. */
     private suspend fun refreshOrNote() {
         if (loaded.isEmpty()) refreshModelsLocked()
     }
 
-    /** Current process resident-set size (KB) from /proc/self/statm; 0 if unreadable (best-effort). */
+    /** KB from /proc/self/statm; 0 when unreadable. */
     private fun residentKb(): Long = runCatching {
         val pages = java.io.File("/proc/self/statm").readText().trim().split(" ")[1].toLong()
         pages * 4L // 4 KB page (K90 runtime page size = 4 KB — see target-device.md)
     }.getOrDefault(0L)
 
     companion object {
-        /** Default running-set cap when [maxRunningProvider] is unset/unreadable (Settings default). */
         const val DEFAULT_MAX_RUNNING = 5
         const val TAG = "CycleRunner"
         const val GRID_MS = 300_000L
-        /** Fixed anchor for the deterministic probe/comparison input — reproducible across builds. */
+        /** Fixed, so the probe input is reproducible across builds. */
         const val PROBE_ANCHOR_MS = 1_700_000_000_000L
-        /** §3.6-E agreement tolerance on the decoded mg/dL median (the hypo-relevant band tol). */
+        /** §3.6-E agreement tolerance on the decoded mg/dL median. */
         const val AGREEMENT_TOL_MGDL = 3.0
-        /**
-         * Stable switcher display order. Only backends that can actually load on this build are
-         * listed: the fp32 XNNPACK CPU authority and the fp16 Vulkan GPU. `EXECUTORCH_VULKAN_FP32`
-         * is deliberately absent — Vulkan ships fp16, so no fp32 `.vulkan.pte` is deployed and the
-         * entry could only ever refuse with "artifact missing". The NPU ids stay in [BackendId] (and
-         * in the Hardware catalog's reasons) but are not offered as choices.
-         */
+        /** Switcher display order, and only backends that can load on this build.
+         *  `EXECUTORCH_VULKAN_FP32` is deliberately absent: Vulkan ships fp16, so that entry could
+         *  only ever refuse with "artifact missing". The NPU ids stay in [BackendId], unoffered. */
         val BACKEND_ORDER = listOf(
             BackendId.EXECUTORCH_XNNPACK_FP32,
             BackendId.EXECUTORCH_VULKAN_FP16,
@@ -1883,23 +1512,20 @@ class InferenceController(
         const val MS_PER_HOUR = 3_600_000.0
         /** 5-min grid ⇒ 12 steps/hour (mirrors calc HorizonPolicy.STEPS_PER_HOUR). */
         const val STEPS_PER_HOUR = 12
-        /** inference-runtime.md default warmup window (h); the setting floors at MIN_CONTEXT = 8 h. */
+        /** Hours (inference-runtime.md); the setting floors at MIN_CONTEXT = 8 h. */
         const val DEFAULT_WARMUP_HOURS = 24.0
-        /** Warmup completes at this fraction of the required window covered by MEASURED slots, tolerating
-         *  the gaps a passive advertisement CGM inevitably leaves (a fully gapless window is unrealistic
-         *  and made completion flap). Paired with the monotonic [warmupSatisfiedUpTo] latch. */
+        /** Fraction of the required window covered by MEASURED slots, since a passive advertisement
+         *  CGM leaves gaps and a gapless demand made completion flap. */
         const val WARMUP_COMPLETION_FRACTION = 0.85
         const val N_QUANTILES = 7
-        /** No rolling widening: the cycle forecast is one ≤2 h window with no seam to carry across.
-         *  §9's per-level carry belongs to `:calc`'s RollingForecaster, which rolls past the window. */
+        /** Empty: the cycle forecast is one ≤2 h window with no seam to carry across. §9's per-level
+         *  carry belongs to `:calc`'s RollingForecaster. */
         val CARRY_SPREAD = emptyList<Double>()
         const val LATENCY_WINDOW = 60
 
-        /** Context window for a cycle with NO descriptor to size it from — a device whose only
-         *  running model is the fitted classical baseline. 8 h and 24 h of steps: the baseline
-         *  reads `nLags` of them and the rest is the WARMUP gate's floor. Deliberately NOT the
-         *  neural models' own bounds, which now run to days — a device with no neural model must
-         *  not wait a week to satisfy a gate that is not about one. */
+        /** 8 h and 24 h of steps, for a cycle with no descriptor to size it from. Deliberately NOT
+         *  the neural bounds, which run to days: a baseline-only device must not wait a week on a
+         *  gate that is not about it. */
         const val NO_DESCRIPTOR_MIN_STEPS = 96
         const val NO_DESCRIPTOR_MAX_STEPS = 288
 

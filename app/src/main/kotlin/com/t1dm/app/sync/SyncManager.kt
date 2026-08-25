@@ -11,44 +11,25 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import timber.log.Timber
 
-/**
- * The `:app` sync orchestrator (Phase 3 deliverables 3–4, 6–7). It binds the durable
- * outbox drainer, the WebSocket catch-up coordinator, and the Network-panel telemetry into the
- * always-on foreground service scope. Three long-lived collectors, all on [T1dmDispatchers.io]:
- *
- *  1. live outbox depth → panel (INGEST/PREDICTIONS enqueue-on-write is invisible to a drain);
- *  2. the merged `/v1/stream` — samples fold into the wide table via LWW inside the coordinator,
- *     `Reconnected` triggers the REST catch-up, alerts are surfaced, and a (re)connect kicks a drain;
- *  3. an opportunistic periodic drain, the responsive complement to the deferrable WorkManager job.
- *
- * [drainNow] is also invoked from the 5-min grid tick, so a fresh INGEST/PREDICTIONS row is flushed
- * promptly when the tailnet is up. The drainer serialises passes internally, so overlapping callers
- * are safe. Nothing here blocks the model-free alarm path or the inference cycle (§2.3, §3.6-A).
- */
+/** Three long-lived collectors, all on [T1dmDispatchers.io]. [drainNow] is also called from the
+ *  5-min grid tick; the drainer serialises passes. Never blocks the alarm path (§2.3, §3.6-A). */
 class SyncManager(
     private val drainer: QueueDrainer,
     private val catchUp: CatchUpCoordinator,
     private val repository: T1dmRepository,
     private val status: SyncStatusStore,
     private val dispatchers: T1dmDispatchers,
-    /**
-     * Re-send the most recent forecast on every (re)connect — the contract's obligation, not a
-     * nicety. Nothing stores a forecast, so a receiver that came up after the last cycle draws
-     * nothing for up to five minutes and cannot tell that from a model that withheld a degenerate
-     * one. One frame closes the window.
-     */
+    /** Nothing stores a forecast, so a receiver that came up after the last cycle has none. */
     private val resendForecast: suspend () -> Unit = {},
     private val drainIntervalMs: Long = 60_000L,
 ) {
     fun launch(scope: CoroutineScope) {
-        // 1) Live depth + oldest-age → panel, independent of drains.
         scope.launch(dispatchers.io) {
             repository.observeOutboxDepth().collect { depth ->
                 status.onDepth(depth, repository.oldestOutboxCreatedAt())
             }
         }
 
-        // 2) WS stream: LWW merge + catch-up (inside the coordinator) + panel state + drain on connect.
         scope.launch(dispatchers.io) {
             catchUp.events().collect { ev ->
                 when (ev) {
@@ -72,7 +53,6 @@ class SyncManager(
             }
         }
 
-        // 3) Opportunistic periodic drain (WorkManager is the deferrable fallback).
         scope.launch(dispatchers.io) {
             while (isActive) {
                 drainNow()
@@ -81,7 +61,7 @@ class SyncManager(
         }
     }
 
-    /** One drain pass; refreshes the panel with the outcome. Safe to call concurrently (drainer Mutex). */
+    /** Safe to call concurrently; the drainer holds a Mutex. */
     suspend fun drainNow() {
         val result = runCatching { drainer.drainOnce() }
             .onFailure { Timber.tag(TAG).w(it, "drain pass failed") }

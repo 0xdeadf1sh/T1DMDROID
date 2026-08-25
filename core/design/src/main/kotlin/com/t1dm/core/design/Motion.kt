@@ -22,20 +22,9 @@ import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.graphics.rememberGraphicsLayer
 
 /**
- * The single lever that makes the "disable all animations" setting real (issue 17). Motion in the app
- * flows through three doors, and each reads [LocalAnimationsEnabled] via a helper here so the flag
- * genuinely collapses everything to a snap. A fourth door is not motion at all — see below:
- *
- *  1. **Screen transitions** — the `NavHost` enter/exit/pop specs (the crossfade the user sees on
- *     every tab change) come from [navEnter]/[navExit], which return [EnterTransition.None] /
- *     [ExitTransition.None] when motion is off.
- *  2. **Value/spec animations** — any `animate*AsState`/`AnimatedVisibility` spec should be built with
- *     [motionSpec], which returns [snap] when motion is off. [crossfadeOnSwap] is the same door for a
- *     surface whose whole contents are replaced at once.
- *  3. **Imperative scrolls** — call sites branch on [LocalAnimationsEnabled] to `scrollTo` instead of
- *     `animateScrollTo` (the bottom-nav auto-centre).
- *
- * Decorative/looping motion is simply not started when the flag is off.
+ * Every path motion takes reads [LocalAnimationsEnabled]: specs through [motionSpec], nav transitions
+ * through [navEnter]/[navExit], imperative scrolls by branching at the call site. Decorative and
+ * looping motion is simply not started when the flag is off.
  */
 
 const val DEFAULT_MOTION_MS = 220
@@ -44,7 +33,6 @@ const val DEFAULT_MOTION_MS = 220
 @ReadOnlyComposable
 fun animationsOn(): Boolean = LocalAnimationsEnabled.current
 
-/** A finite spec that becomes an instant [snap] when motion is disabled. */
 fun <T> motionSpec(enabled: Boolean, durationMs: Int = DEFAULT_MOTION_MS): FiniteAnimationSpec<T> =
     if (enabled) tween(durationMs) else snap()
 
@@ -55,27 +43,9 @@ fun navExit(enabled: Boolean): ExitTransition =
     if (enabled) fadeOut(tween(DEFAULT_MOTION_MS)) else ExitTransition.None
 
 /**
- * Cross-dissolve this node's contents whenever [key] changes — the BG panel's chart, when the bottom
- * bar steps to another sensor. The outgoing picture and the incoming one are on screen together at
- * complementary alpha, so neither passes through the background.
- *
- * **It does not compose the content twice.** The outgoing picture is a [GraphicsLayer] recording — the
- * display list built for the frame before the swap — replayed beside the live one. Two layers,
- * ping-ponged on each swap so the one holding the pre-swap recording is never the one being written.
- *
- * **The recording must OWN its drawing commands.** Giving the content a layer of its own underneath
- * would make `record` cheap — a RenderNode replay rather than a re-run of the content's draw — but
- * both recordings would then merely reference that one shared RenderNode, so the held "outgoing"
- * picture would update to the incoming content the instant it changed and the dissolve would blend the
- * new picture with itself. The cost of a real snapshot is that a dissolve re-runs the content's draw
- * once per frame, for its ~13 frames. A caller with its own fade should keep it in a `graphicsLayer`
- * OUTSIDE this modifier, where an alpha change stays a layer-property update and never reaches here.
- *
- * A swap is a change between two KNOWN keys: the key's flow is seeded null, and dissolving that
- * placeholder into the first real value would fade the surface in on every cold start.
- *
- * With motion off this collapses to the bare receiver — no layers, no draw-phase work at all.
- * "Disabled" has to mean absent, not merely invisible.
+ * Cross-dissolve this node's contents when [key] changes. The recording must OWN its draw commands: a
+ * layer under the content would leave both recordings referencing one RenderNode and blend the new
+ * picture with itself, so a caller's own fade belongs in a `graphicsLayer` OUTSIDE this modifier.
  */
 @Composable
 fun Modifier.crossfadeOnSwap(key: Any?): Modifier {
@@ -84,8 +54,8 @@ fun Modifier.crossfadeOnSwap(key: Any?): Modifier {
     val second = rememberGraphicsLayer()
     val progress = remember { Animatable(1f) }
     val swap = remember { SwapCrossfade() }
-    // Armed in COMPOSITION, so the first draw under a new key already knows not to overwrite the
-    // outgoing recording; effect-versus-draw ordering within a frame is not something to bet on.
+    // Armed in COMPOSITION: the first draw under a new key must already know not to overwrite the
+    // outgoing recording. Effect-versus-draw ordering within a frame is not safe to bet on.
     remember(key) {
         if (swap.last != null && key != null) {
             swap.pending = true
@@ -101,12 +71,9 @@ fun Modifier.crossfadeOnSwap(key: Any?): Modifier {
     }
     return this
         .drawWithContent {
-            // Read UNCONDITIONALLY, before any branch. A draw pass re-collects its snapshot reads from
-            // scratch, so a pass that branches AROUND this read unsubscribes the node from the
-            // animation — and the arming pass, which always runs before the effect that starts it, is
-            // exactly such a pass. Nothing would invalidate the draw again: the flag below is a plain
-            // field and every animation frame would land on no observer, so the dissolve would freeze
-            // on the outgoing picture until some unrelated redraw cut it away.
+            // Read UNCONDITIONALLY, before any branch: a draw pass re-collects its snapshot reads, so
+            // one that branches around this read unsubscribes the node from the animation and freezes
+            // the dissolve on the outgoing picture.
             val p = progress.value
             val t = if (swap.pending) 0f else p
             val live = if (swap.flip) second else first
@@ -117,15 +84,9 @@ fun Modifier.crossfadeOnSwap(key: Any?): Modifier {
                 live.blendMode = BlendMode.SrcOver
                 drawLayer(live)
             } else {
-                // Both halves inside ONE offscreen, the incoming one ADDED rather than laid over.
-                //
-                // Drawn straight onto the canvas, two source-over layers at t and 1 - t cover
-                // `a + b - ab`, not `a + b`: they lose `t(1 - t)` of the node's own coverage, worst at
-                // the midpoint, and anything solid enough to notice — the read-out's bold figures —
-                // dips through the middle of every dissolve and reads as a flash. Added inside a layer
-                // the coverages sum exactly, and the colour is the plain `old(1 - t) + new·t` a
-                // dissolve is supposed to be. The offscreen also CLIPS, which keeps a recording made
-                // at a different height from spilling outside the node while the two sizes disagree.
+                // Both halves inside ONE offscreen, the incoming one ADDED. Two source-over layers at
+                // t and 1 - t cover `a + b - ab`, losing `t(1 - t)` of coverage and flashing at the
+                // midpoint; added inside a layer they sum exactly. The offscreen also clips.
                 held.alpha = 1f - t
                 held.blendMode = BlendMode.SrcOver
                 live.alpha = t
@@ -138,8 +99,8 @@ fun Modifier.crossfadeOnSwap(key: Any?): Modifier {
         }
 }
 
-/** [crossfadeOnSwap]'s cross-draw state. Plain fields, not snapshot state: none of it is a fact
- *  anything may recompose on, and the draw phase is invalidated by [Animatable] alone. */
+/** Plain fields, not snapshot state: nothing here may recompose, and [Animatable] alone invalidates
+ *  the draw. */
 private class SwapCrossfade {
     var last: Any? = null
     var pending = false

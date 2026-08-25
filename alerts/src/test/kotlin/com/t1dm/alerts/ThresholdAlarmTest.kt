@@ -17,7 +17,7 @@ class ThresholdAlarmTest {
     fun `each band is classified from a measured reading`() {
         assertEquals(AlertBand.URGENT_LOW, alarm().onReading(reading(50))!!.band)
         assertEquals(AlertBand.LOW, alarm().onReading(reading(65))!!.band)
-        assertNull(alarm().onReading(reading(120))) // IN_RANGE ⇒ no breach
+        assertNull(alarm().onReading(reading(120)))
         assertEquals(AlertBand.HIGH, alarm().onReading(reading(200))!!.band)
         assertEquals(AlertBand.URGENT_HIGH, alarm().onReading(reading(300))!!.band)
     }

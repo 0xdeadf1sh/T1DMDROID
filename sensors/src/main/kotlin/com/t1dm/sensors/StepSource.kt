@@ -10,28 +10,18 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 
-/**
- * The hardware edge of the step pipeline (§3.5 / Phase 1). Registers a
- * `TYPE_STEP_COUNTER` [SensorEventListener], stamps each cumulative reading with phone wall time
- * (passive phone-time stamping, mirroring the CGM path), and folds it through a per-subscription
- * [StepBucketer] into a [Flow] of grid-aligned [StepBucket]s.
- *
- * Requires the `ACTIVITY_RECOGNITION` runtime permission, declared by `:app`.
- */
+/** Readings are stamped with phone wall time, as the CGM path stamps its own. Requires the
+ *  `ACTIVITY_RECOGNITION` runtime permission, declared by `:app`. */
 class StepSource(
     private val sensorManager: SensorManager,
     private val clock: () -> Long = System::currentTimeMillis,
     private val bucketMs: Long = FIVE_MIN_MS,
 ) {
-    /** True when the device exposes a step counter (the K90 does; guards graceful no-op elsewhere). */
     fun isAvailable(): Boolean = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER) != null
 
-    /**
-     * Cold flow of per-5-min step buckets. Each subscription owns a fresh [StepBucketer], so its
-     * first sample primes the baseline. Sensor callbacks are delivered on a dedicated background
-     * [HandlerThread] — never the main thread — since bucketing plus the downstream Room write must
-     * stay off the UI (§2.3). Closes empty on a device with no step counter.
-     */
+    /** Each subscription owns a fresh [StepBucketer], so its first sample only primes the baseline.
+     *  Callbacks arrive on a dedicated [HandlerThread], never the main one, since the bucketing and
+     *  the Room write behind it must stay off the UI. Closes empty with no step counter. */
     fun buckets(): Flow<StepBucket> = callbackFlow {
         val sensor = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)
         if (sensor == null) {

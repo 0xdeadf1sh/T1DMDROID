@@ -8,15 +8,6 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * Which insulin a dose row ends up carrying.
- *
- * This is a dose write path, and the defect it replaces was not a crash: `logBolus`/`logBasal` took
- * the preset the panel handed them and DISCARDED it, resolving a Settings selection instead. The
- * screen offered one insulin, the confirmation dialog restated a second, and the row persisted the
- * second — every one of them internally consistent, and the disagreement visible nowhere. So the
- * precedence is pinned here rather than left to a reviewer's eye.
- */
 class InsulinPresetResolutionTest {
 
     private fun rapid(label: String, peak: Double) =
@@ -42,12 +33,9 @@ class InsulinPresetResolutionTest {
     fun `what the panel picked is what the writer commits`() {
         val picked = resolve(InsulinFamily.RapidExp, "Faster aspart · Fiasp")
         assertEquals("Faster aspart · Fiasp", picked?.label)
-        // Not merely the label: the curve parameters must be the picked preset's, or the row would
-        // name one insulin and reconstruct another.
         assertEquals(55.0, picked!!.peakMin, 0.0)
     }
 
-    /** A stale sticky memory must never override a live pick — that is the old defect exactly. */
     @Test
     fun `the pick beats the remembered insulin`() {
         val picked = resolve(InsulinFamily.RapidExp, "Lispro · Humalog", lastLogged = "Faster aspart · Fiasp")
@@ -68,7 +56,6 @@ class InsulinPresetResolutionTest {
         assertEquals("Glargine U100 · Lantus", resolve(InsulinFamily.BasalBateman, null)?.label)
     }
 
-    /** A renamed or dropped preset must degrade to a real insulin, not throw on the dose path. */
     @Test
     fun `an unknown label falls through instead of failing`() {
         assertEquals(
@@ -77,26 +64,21 @@ class InsulinPresetResolutionTest {
         )
     }
 
-    /** A basal label can never select a rapid curve, or a 42 h Bateman would be committed as a bolus. */
+    /** A basal label selecting a rapid curve would commit a 42 h Bateman as a bolus. */
     @Test
     fun `a label from the other family is not honoured`() {
         assertEquals("Aspart · NovoRapid/Novolog", resolve(InsulinFamily.RapidExp, "Degludec · Tresiba")?.label)
         assertEquals("Glargine U100 · Lantus", resolve(InsulinFamily.BasalBateman, "Lispro · Humalog")?.label)
     }
 
-    /** Null means "no catalogue" — a broken native build. The caller must fail closed on it rather
-     *  than invent a PK, so the contract is that nothing is substituted here. */
+    /** Null means no catalogue; the caller must fail closed rather than substitute one. */
     @Test
     fun `an empty catalogue resolves to nothing at all`() {
         assertNull(resolveInsulinPreset(emptyList(), InsulinFamily.RapidExp, "Lispro · Humalog", null))
         assertNull(resolveInsulinPreset(catalog.filter { it.family == InsulinFamily.RapidExp }, InsulinFamily.BasalBateman, null, null))
     }
 
-    /**
-     * The last-used memory is per-device usage state, not configuration. Exporting it would ship one
-     * person's last dose into another install, where it would silently decide the curve of the next
-     * dose logged without a pick.
-     */
+    /** Per-device state, not configuration: an export would set another install's next dose curve. */
     @Test
     fun `the last-used insulin is not exportable configuration`() {
         assertTrue(!SettingsStore.isConfigKey(SettingsStore.K_LAST_RAPID_PRESET))

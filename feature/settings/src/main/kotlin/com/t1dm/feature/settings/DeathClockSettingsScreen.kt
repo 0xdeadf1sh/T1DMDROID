@@ -2,13 +2,7 @@ package com.t1dm.feature.settings
 
 import androidx.compose.runtime.Composable
 
-/**
- * Settings → Death clock (F5, locked decision D2). Tunes the three forward-from-prior-landmark offsets
- * that drive the Circadian screen's insulin-exhaustion countdown: hours from IOB reaching zero to DKA,
- * from DKA to coma, and from coma to death. Each is measured from the PRECEDING landmark, not from now.
- * These figures are a deliberately morbid projection for the personal build — DISPLAY-ONLY: no §3.6 rail
- * or gate ever reads them, so changing them cannot alter any safety behaviour. In hours. Pure/stateless.
- */
+/** Hours, each measured from the preceding landmark. Display-only: no §3.6 rail or gate reads them. */
 @Composable
 fun DeathClockSettingsScreen(
     dkaAfterIobZeroH: Double,
@@ -25,8 +19,6 @@ fun DeathClockSettingsScreen(
         DoubleStepper(deathClockDeath, deathAfterComaH, "h", step = 0.5, min = 0.0) { onSetDeath(it) }
     }
 }
-
-// ── search index (see SettingsIndex.kt) ───────────────────────────────────────────────────────────
 
 private const val DEATH_CLOCK_SECTION = "Death clock"
 

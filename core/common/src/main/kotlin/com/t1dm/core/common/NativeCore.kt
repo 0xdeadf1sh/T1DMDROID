@@ -38,24 +38,16 @@ import com.t1dm.core.model.PredictedTime
 import com.t1dm.core.model.StatSample
 import com.t1dm.core.model.TerrainSpec
 
-/**
- * Kotlin-facing surface of the Rust `t1dm-core` crate. :app (and every consumer) depends on
- * THIS, never on the uniffi-generated binding directly; :core:native supplies the real impl.
- *
- * The Phase-1 FFI surface is frozen here as Kotlin signatures; the Rust bodies + the uniffi
- * wiring land in :core:native in the next phase. Every function is total on garbage input
- * (`panic = "abort"` in the crate) — a short or CRC-failing advert is `null`, never a panic.
- */
+/** Kotlin-facing surface of the Rust `t1dm-core` crate; consumers depend on THIS, never on the
+ *  uniffi-generated binding. Every function is total on garbage input (`panic = "abort"`). */
 interface NativeHead : AutoCloseable {
-    /** Attach an adapter, or detach with `null`. The base weights are untouched, so detaching
-     *  restores the graph's own fan exactly. */
+    /** Attach an adapter, or detach with `null`. The base weights are untouched. */
     fun setLora(w: LoraWeights?)
 
     fun hasLora(): Boolean
 
     /** `head_raw` for [nSlots] hidden states, in the layout `assembleDecode` consumes. With no
-     *  adapter attached this must reproduce the graph's own `head_raw` — worth checking once
-     *  at load, since a mismatched head is a plausible forecast rather than an error. */
+     *  adapter attached it reproduces the graph's own `head_raw`. */
     fun forward(hidden: List<Double>, nSlots: Int): List<Double>
 }
 
@@ -69,21 +61,18 @@ interface NativeCore {
     /** The advert CRC32 (CGM.md §3.2), as an unsigned value in the low 32 bits of the Long. */
     fun advertCrc32(payload: ByteArray): Long
 
-    /** Kovatchev BG → risk-space transform `f` (used by the graph unit space + stats axis). */
+    /** Kovatchev BG → risk-space transform `f`. */
     fun kovatchevF(mgdl: Double): Double
 
     /** Inverse Kovatchev transform `f_inv`, risk-space → mg/dL. */
     fun kovatchevFInv(risk: Double): Double
 
-    // ── Model pre/post pipeline (Phase 2, INFERENCE.md §§6-8) ───────────────────────
 
     /** Parse a model `descriptor.json` (SPEC §2.4); `null` on malformed JSON / a missing field. */
     fun parseDescriptor(json: String): ModelDescriptor?
 
     /** Strictly-causal one-sided Savitzky-Golay smooth (INFERENCE.md §7.1) over an ODD [window]
-     *  (1 = unfiltered pass-through); optional output clamps (BG → [20,500]; carb/insulin → min 0)
-     *  hold at every window. An out-of-contract window degrades to the default rather than throwing —
-     *  [buildContext], the model-input path, rejects it instead. */
+     *  (1 = pass-through). An out-of-contract window degrades to the default rather than throwing. */
     fun causalSmooth(series: List<Double>, clampMin: Double?, clampMax: Double?, window: Int): List<Double>
 
     /** z-score a raw `[bg, carb, insulin, exercise]` sample (bg risk-z, the rest log1p-z). */
@@ -98,26 +87,9 @@ interface NativeCore {
     /** Inverse of [normalizeSample]; the 4-element `z` must carry all channels. */
     fun denormalizeSample(desc: ModelDescriptor, z: List<Double>): List<Double>
 
-    /**
-     * Build the whole fixed-shape graph input from a raw per-step history (INFERENCE.md
-     * §§7.2-7.4): the left-padded patch tensor with its masked-patch fill and announcement
-     * bit, the additive attention mask, the one-hot slot selection, and the per-slot anchors.
-     *
-     * [exercise] is a carbohydrate-EQUIVALENT disposal in g/step — a positive magnitude in
-     * its own channel, on the scale the model was trained at.
-     *
-     * [withForecast] appends the future patches at the right edge, masked, with the dose
-     * channels at the announced plan or the `normalize(0)` no-event baseline. Without it the
-     * window is pure history and forecasts nothing, which is what a gap repair wants: the
-     * evidence on BOTH sides of the gap is then real.
-     *
-     * [maskSpans] names the withheld context patches — empty for a plain forecast.
-     *
-     * [smoothingWindow] is the odd causal SavGol window applied to the **BG channel only**
-     * (1 = unfiltered); the other three are analytic reconstructions and reach the model raw.
-     * Throws on a malformed shape, an impossible masked set, OR an out-of-contract window —
-     * the window moves every anchor, so it fails closed here.
-     */
+    /** The fixed-shape graph input from a raw per-step history (INFERENCE.md §§7.2-7.4).
+     *  [exercise] is carbohydrate-EQUIVALENT disposal in g/step, positive. [smoothingWindow] is the
+     *  odd causal SavGol window on the BG channel ONLY. Throws on a bad shape, masked set or window. */
     fun buildGraphInput(
         desc: ModelDescriptor,
         bg: List<Double>,
@@ -132,21 +104,9 @@ interface NativeCore {
         smoothingWindow: Int,
     ): GraphInput
 
-    /**
-     * Assemble `head_raw` (`M·S·7`, risk) into an ascending quantile fan and decode to mg/dL
-     * (INFERENCE.md §8). The `M` axis is a SET of masked patches: [slotPatch] groups it into
-     * contiguous spans and the median runs per span. `headRaw` is fp64-upcast by the backend.
-     *
-     * The fan this returns is the RAW one: no conformal correction is applied here, and none
-     * is applied to anything stored, pushed or classified. §8.4's recalibration is a display
-     * quantity fitted on device and applied downstream by [applyQuantileConformal].
-     *
-     * [carrySpread] is §9's rolling widening and is PER LEVEL: empty for none, one value for
-     * every level alike, or six in `head_raw`'s own spread layout `[.75 .9 .95 | .25 .1 .05]`.
-     * Any other length is refused rather than broadcast — a carry shared across the levels
-     * re-seeds each of them from the outermost one's accumulation, and one seam later the fan
-     * is a slab.
-     */
+    /** `head_raw` (`M·S·7`, risk) → ascending quantile fan, decoded to mg/dL (INFERENCE.md §8). The
+     *  fan is RAW; §8.4's correction is applied downstream by [applyQuantileConformal]. [carrySpread]
+     *  is PER LEVEL: empty, one value, or six in `[.75 .9 .95 | .25 .1 .05]` — never broadcast. */
     fun assembleDecode(
         desc: ModelDescriptor,
         headRaw: List<Double>,
@@ -156,42 +116,23 @@ interface NativeCore {
         carrySpread: List<Double>,
     ): Forecast
 
-    /** The rows of [f] whose slot sits in `[fromPatch, toPatch)`, as a Forecast of its own —
-     *  how an infill span and a forecast are separated after one decode. */
+    /** The rows of [f] whose slot sits in `[fromPatch, toPatch)`, as a Forecast of its own. */
     fun forecastSlice(f: Forecast, fromPatch: Int, toPatch: Int): Forecast
 
-    /**
-     * The fan's own line at an arbitrary quantile level, in mg/dL: a linear interpolation
-     * between the two published levels that bracket [tau], taken in RISK space and then
-     * inverted. `tau = 0.5` is the median untouched; outside the published levels the line is
-     * clamped rather than extrapolated.
-     *
-     * This reads a fan the model already emitted. It moves no median, is stored nowhere, and
-     * nothing that classifies a category may consume it.
-     */
+    /** The fan's line at arbitrary [tau], mg/dL: interpolated in RISK space between the bracketing
+     *  published levels, clamped outside them. Nothing that classifies a category may consume it. */
     fun bandLine(desc: ModelDescriptor, f: Forecast, tau: Double): List<Double>
 
-    /**
-     * The same line, read from a fan held on its own rather than inside a [Forecast].
-     *
-     * A reconstructed span outlives the run that made it: `bg_infill` keeps the span's risk-space
-     * fan and none of the rest, so sweeping τ over a fill drawn an hour ago has no [Forecast] to
-     * pass. The crate shares one interpolation body between this and [bandLine].
-     *
-     * [qTauRisk] is `steps × 7` risk-space values, ascending τ within each step.
-     */
+    /** [bandLine] for a fan held on its own. [qTauRisk] is `steps × 7` risk-space values, ascending
+     *  τ within each step. */
     fun bandLineAt(desc: ModelDescriptor, qTauRisk: List<Double>, tau: Double): List<Double>
 
-    // ── The head seam and its adapter (LoRA) ────────────────────────────────────────
 
-    /** Parse the head side file against the descriptor's `head` block, digest checked.
-     *  `null` when the bytes and the block disagree — which means the head and the graph are
-     *  not from the same export, and the adapter path must then be refused. */
+    /** Digest checked against the descriptor's `head` block. `null` when they disagree: the head and
+     *  the graph are not from the same export. */
     fun headOpen(bytes: ByteArray, spec: HeadSpec): NativeHead?
 
-    /** Fit an adapter on the patient's own matured windows. Attaches nothing: the caller
-     *  decides, and a fit that fails to beat the frozen head is reported honestly.
-     *  [progress] is called once per epoch, on the calling thread. */
+    /** Attaches nothing; the caller decides. [progress] is called once per epoch, on the calling thread. */
     fun loraTrain(
         head: NativeHead,
         desc: ModelDescriptor,
@@ -201,15 +142,9 @@ interface NativeCore {
         progress: LoraProgressSink? = null,
     ): LoraTrainResult
 
-    /**
-     * Measure what an adapter did to the model's marginal response to one unit of insulin, on
-     * held-out forecast windows.
-     *
-     * Head-only arithmetic — the counterfactual hidden states were computed once when the samples
-     * were built, so this costs no trunk forward at all. It measures PRESERVATION, not
-     * correctness: a model whose response is already wrong-signed passes as long as the adapter
-     * keeps that sign, and exposing that stays the sensitivity probe's job.
-     */
+    /** What an adapter did to the marginal response to one unit of insulin, on held-out windows.
+     *  Head-only arithmetic, no trunk forward. Measures PRESERVATION, not correctness: a
+     *  wrong-signed response passes as long as the adapter keeps the sign. */
     fun loraGuard(
         head: NativeHead,
         desc: ModelDescriptor,
@@ -218,12 +153,10 @@ interface NativeCore {
         opts: LoraGuardOpts,
     ): LoraGuardReport
 
-    /** The bar the fit's own guard pass measures against, from the crate. A later probe of a stored
-     *  adapter has to use the same one or the two verdicts mean different things. */
+    /** The bar the fit's own guard pass measures against; a later probe must use the same one. */
     fun loraGuardOptsFit(): LoraGuardOpts
 
-    /** A fresh adapter: `B = 0`, so it is exactly the identity until it has been trained.
-     *  [headSha256] binds it to the head it may attach to. */
+    /** `B = 0`: exactly the identity until trained. [headSha256] binds it to the head it may attach to. */
     fun loraNew(
         config: LoraConfig,
         headSha256: String,
@@ -233,19 +166,15 @@ interface NativeCore {
         seed: Long,
     ): LoraWeights
 
-    /** Serialize an adapter for storage or backup (digest-protected). */
+    /** Digest-protected. */
     fun loraSerialize(w: LoraWeights): ByteArray
 
-    /** Inverse of [loraSerialize]; `null` on a truncated, corrupted or foreign blob. */
+    /** `null` on a truncated, corrupted or foreign blob. */
     fun loraDeserialize(bytes: ByteArray): LoraWeights?
 
-    // ── The synthetic patient ───────────────────────────────────────────────────────
-
-    /** The generator's default parameters. */
     fun synthDefaultParams(): SynthParams
 
-    /** Generate [nSteps] of synthetic history ending at the caller's "now",
-     *  [startHourOfDay] being the local clock hour at step 0. */
+    /** Ends at the caller's "now"; [startHourOfDay] is the local clock hour at step 0. */
     fun synthSeries(
         nSteps: Int,
         startHourOfDay: Double,
@@ -253,8 +182,7 @@ interface NativeCore {
         seed: Long,
     ): SynthSeries
 
-    /** Fill the `NaN` steps of a real history from a synthetic one, keeping every real
-     *  sample. The dose channels are filled on the SAME steps as the BG. */
+    /** Fills the `NaN` steps only; the dose channels fill on the SAME steps as the BG. */
     fun synthFillGaps(
         realBg: List<Double>,
         realCarb: List<Double>,
@@ -266,34 +194,25 @@ interface NativeCore {
     /** The absent-sample runs in a gridded BG series (`NaN` marks absent), longest first. */
     fun findGaps(bg: List<Double>, minSteps: Int): List<GapRun>
 
-    /** The safety guard every rail/alert gates on (§3.6-B): rejects non-finite, rail-pinned,
-     *  collapsed-band, and mis-ordered forecasts. Takes the [desc] the forecast was decoded
-     *  with — the rails are descriptor-defined, and against the wrong physical range the
-     *  rail-pin test cannot fire at all. */
+    /** The safety guard every rail/alert gates on (§3.6-B). [desc] must be the one the forecast was
+     *  decoded with: the rails are descriptor-defined. */
     fun forecastDegeneracyCheck(desc: ModelDescriptor, forecast: Forecast): ForecastStatus
 
-    /** Decode the time-probe's per-patch logits (flat `(P, nBins)`, the `.pte` slot-1 tensor)
-     *  into a single hour-of-day belief via the `origin_patch` reduction (softmax patch 0 + mean
-     *  resultant). `null` on a bad shape / non-finite logit (fail-open — the predicted hour is
-     *  optional and never blocks the BG forecast). */
+    /** [timeLogits] is flat `(P, nBins)`. `null` on a bad shape or non-finite logit — fail-OPEN, the
+     *  predicted hour never blocks the BG forecast. */
     fun decodeTime(timeLogits: List<Double>, nBins: Int, binHours: Double): PredictedTime?
 
-    // ── Shared curve/PK engine (Phase 4, SPEC §3.3; bit-faithful to simulator.py) ────
 
-    /** Gamma-distributed Ra/PK curve, amount-per-5-min-step, `sum == total` (carbs +
-     *  bolus shape; == `simulator.gamma_curve`). */
+    /** Amount per 5-min step, `sum == total`; == `simulator.gamma_curve`. */
     fun gamma(total: Double, k: Double, theta: Double, durMin: Double): List<Double>
 
-    /** Bateman long-acting basal curve, amount-per-5-min-step, `sum == total`
-     *  (== `simulator.basal_curve`, default 5 h tail-clip). */
+    /** Amount per 5-min step, `sum == total`; == `simulator.basal_curve`, default 5 h tail-clip. */
     fun bateman(total: Double, durMin: Double, ka: Double, ke: Double): List<Double>
 
-    /** Loop/OpenAPS exponential insulin-activity curve (OPT-IN clinical rapid presets, issue 19),
-     *  amount-per-5-min-step, `sum == total`; peaks at [peakMin], ~0 by [diaMin]. Off-distribution. */
+    /** Amount per 5-min step, `sum == total`; peaks at [peakMin], ~0 by [diaMin]. Off-distribution. */
     fun expActionCurve(total: Double, peakMin: Double, diaMin: Double): List<Double>
 
-    /** The clinical insulin preset catalogue (issue 19): the two in-distribution simulator defaults
-     *  plus the OPT-IN, off-distribution rapid/basal presets, each with its peak/DIA + citation. */
+    /** The two in-distribution simulator defaults plus the OPT-IN, off-distribution presets. */
     fun insulinPresetCatalog(): List<com.t1dm.core.model.InsulinPresetSpec>
 
     /** Sum every [kind]-matching event's curve onto the fixed grid
@@ -303,17 +222,12 @@ interface NativeCore {
     /** IOB/COB at [atMs] = the remaining tail area of every [kind]-matching event. */
     fun onBoard(events: List<CurveEvent>, atMs: Long, kind: CurveKind): Double
 
-    /** Expand a daily-repeating [schedule] into the Bateman events whose action overlaps
-     *  `[fromMs, toMs)` (the auto-extended near-flat basal background). */
+    /** The Bateman events of a daily-repeating [schedule] whose action overlaps `[fromMs, toMs)`. */
     fun extendBasal(schedule: BasalSchedule, fromMs: Long, toMs: Long): List<CurveEvent>
 
-    // ── Advanced stats (Phase 6, SPEC §"Phase 6 — Stats"; t1dm-core::stats) ─────────
 
-    /** The full advanced-stats block (TIR/TBR/TAR + sub-bands, LBGI/HBGI, MAGE, the shared
-     *  server-parity block, per-channel totals, and the AGP percentile ribbon) over [samples]
-     *  vs the `[targetLow, targetHigh]` mg/dL range, binned to [agpBins] time-of-day bins
-     *  (must divide 1440). Fail-closed: an empty/all-invalid series yields
-     *  [AdvancedStats.EMPTY]; a bad range/bin argument yields it too rather than throwing. */
+    /** [targetLow]/[targetHigh] are mg/dL; [agpBins] must divide 1440. Fail-closed: an empty series
+     *  or a bad argument yields [AdvancedStats.EMPTY] rather than throwing. */
     fun advancedStats(
         samples: List<StatSample>,
         targetLow: Int,
@@ -321,27 +235,14 @@ interface NativeCore {
         agpBins: Int,
     ): AdvancedStats
 
-    /** The fixed clinical level-2 cuts (mg/dL) that [AdvancedStats.subBands] partitions on — the two
-     *  numbers a glucose COLOUR SCALE anchors its extremes at. Read from the crate rather than
-     *  restated on this side, so a scale cannot come to disagree with the fractions it is colouring.
-     *  Fail-closed: a host stub with no library yields [ClinicalCuts.UNAVAILABLE], and a caller that
-     *  cannot anchor must render nothing rather than a wrong scale. */
+    /** The fixed clinical level-2 cuts (mg/dL), read from the crate and never restated here.
+     *  Fail-closed to [ClinicalCuts.UNAVAILABLE]; a caller that cannot anchor renders nothing. */
     fun clinicalCuts(): ClinicalCuts
 
-    // ── Forecast accuracy (Phase 7C, t1dm-core::accuracy) ───────────────────────────
 
-    /**
-     * Score matured forecast [windows] the way `T1DMAI/realdata/metrics.py::compute_suite` does —
-     * per horizon on the band projection of `SPEC/invariants.md` §6.2 with the median line nested
-     * beneath, plus CG-EGA (§6.3) over the whole window. A horizon with fewer than
-     * [MetricsConfig.minSamples] scored windows is still returned with its true `n` and
-     * `sufficient = false`, so the UI can say "insufficient history" plainly.
-     *
-     * [includeCgEga] gates the CG-EGA pass alone: it walks every step of every window through the
-     * P-EGA × R-EGA zone algebra, so a caller wanting only the level metrics passes `false` and
-     * gets [MetricsSuite.cgega] `= null`. Total on any input; a bad argument yields
-     * [MetricsSuite.EMPTY].
-     */
+    /** Band projection of `SPEC/invariants.md` §6.2 per horizon, plus CG-EGA (§6.3). A horizon under
+     *  [MetricsConfig.minSamples] returns its true `n` with `sufficient = false`; [includeCgEga]
+     *  `= false` yields [MetricsSuite.cgega] `= null`. A bad argument yields [MetricsSuite.EMPTY]. */
     fun forecastMetricsSuite(
         windows: List<ForecastWindow>,
         horizonsMin: List<Int>,
@@ -349,119 +250,46 @@ interface NativeCore {
         includeCgEga: Boolean,
     ): MetricsSuite
 
-    /**
-     * Classify a lattice of `(truth, pred)` mg/dL coordinates into Clarke zones, row-major and
-     * TRUTH-MAJOR: cell `(i, j)` is `truthAxisMgdl[i]` against `predAxisMgdl[j]`, at index
-     * `i * predAxisMgdl.size + j`.
-     *
-     * The reason this crosses the seam at all: the zone boundaries are inequalities inside the
-     * core, and a figure drawing the five regions would otherwise transcribe them. It samples this
-     * instead and paints what comes back, so an outline is the classifier's own verdict rasterised
-     * rather than a second copy free to drift from the points it encloses.
-     *
-     * Fail-closed: an axis carrying a non-finite coordinate, or a lattice past the core's cell
-     * ceiling, yields an empty list — no regions rather than wrong ones.
-     */
+    /** TRUTH-MAJOR: cell `(i, j)` is `truthAxisMgdl[i]` against `predAxisMgdl[j]`, at index
+     *  `i * predAxisMgdl.size + j`. Fail-closed to an empty list on a non-finite coordinate or a
+     *  lattice past the core's cell ceiling. */
     fun clarkeZoneGrid(truthAxisMgdl: List<Double>, predAxisMgdl: List<Double>): List<ClarkeZone>
 
-    /**
-     * The same lattice on the DTS Error Grid (Klonoff et al. 2024) — TRUTH-MAJOR, identical layout
-     * and identical fail-closed contract to [clarkeZoneGrid].
-     *
-     * It crosses the seam for a stronger reason than Clarke's does: the DTS borders are level sets of
-     * a log-ratio of prediction to truth, asymmetric about the identity, so a renderer outlining them
-     * would have to reimplement the function rather than restate four inequalities. The coefficients
-     * are `t1dm-core::accuracy::dts_risk`'s and are deliberately not repeated on this side.
-     */
+    /** The DTS Error Grid (Klonoff et al. 2024): same layout and fail-closed contract as
+     *  [clarkeZoneGrid]. The coefficients are `t1dm-core::accuracy::dts_risk`'s, never repeated here. */
     fun dtsZoneGrid(truthAxisMgdl: List<Double>, predAxisMgdl: List<Double>): List<DtsZone>
 
-    /**
-     * The interior rate-bin edges of the Trend Accuracy Matrix, mg/dL per minute, ascending — always
-     * `TREND_BINS - 1` of them.
-     *
-     * Read from the crate rather than restated here for the reason [clinicalCuts] is: the figure has
-     * to LABEL five bins, and a label is the edge written out. Fail-closed to an empty list, which a
-     * caller renders as unlabelled axes rather than as edges it guessed.
-     */
+    /** Interior rate-bin edges, mg/dL per minute, ascending; always `TREND_BINS - 1`. Read from the
+     *  crate, never restated here. Fail-closed to an empty list: unlabelled axes, not guessed edges. */
     fun trendBinEdges(): List<Double>
 
-    // ── Split-conformal band recalibration (t1dm-core::conformal, INFERENCE.md §8.4) ─
 
-    /**
-     * The smallest calibration count at which no quantile level's conformal order statistic is
-     * clamped — derived from the level tuple of `SPEC/invariants.md` §6, not chosen. Below it the
-     * extreme levels' offsets ARE the minimum and the maximum of the residual sample, so the
-     * nominal coverage they claim is arithmetic that never ran. A caller's own threshold is raised
-     * to this.
-     */
+    /** The smallest calibration count at which no level's order statistic is clamped, derived from
+     *  the level tuple of `SPEC/invariants.md` §6. A caller's own threshold is raised to this. */
     fun conformalMinCalWindows(): Int
 
-    /**
-     * Fit a per-`(step, τ)` additive band correction (§8.4) from matured forecast [windows], which
-     * must be in the order they were made: the split is CHRONOLOGICAL, the older part fitted on and
-     * the newer part held out and scored. A random split would read better and mean less — the
-     * question a delta has to answer is whether a correction fitted on the past holds on the future.
-     *
-     * [minCalWindows] is the threshold on the CALIBRATION split, raised to [conformalMinCalWindows]
-     * when it is below the point the arithmetic degenerates. Under it the result is
-     * [ConformalFit.sufficient] `= false` with an all-zero delta. Total on any input; a core error
-     * yields [ConformalFit.NONE], which is the same fail-closed answer.
-     */
+    /** A per-`(step, τ)` additive band correction (§8.4). [windows] must be in the order they were
+     *  made: the split is CHRONOLOGICAL. [minCalWindows] is raised to [conformalMinCalWindows]; under
+     *  it, `sufficient = false` with an all-zero delta. A core error yields [ConformalFit.NONE]. */
     fun fitQuantileConformal(windows: List<ForecastWindow>, minCalWindows: Int): ConformalFit
 
-    /**
-     * Apply a fitted delta to a band fan (§8.4): add, restore the median EXACTLY, then clamp
-     * outward so the fan cannot cross. Both arrays are `steps · nQuantiles` step-major, ascending τ.
-     *
-     * Fail-closed to the RAW fan (`null`) on anything the core rejects — a length disagreement, a
-     * non-finite value, or a delta whose median column is not zero. Never a partially corrected
-     * fan, and never a fan drawn around a moved point forecast.
-     */
+    /** §8.4: add, restore the median EXACTLY, clamp outward. Both arrays are `steps · nQuantiles`,
+     *  step-major, ascending τ. Fail-closed to the RAW fan (`null`); never partially corrected. */
     fun applyQuantileConformal(bandsMgdl: List<Double>, delta: List<Double>): List<Double>?
 
-    /**
-     * [applyQuantileConformal] for many fans of ONE shape in a single crossing (§8.4).
-     *
-     * [fansMgdl] is `nFans · steps · nQuantiles`, fan-major: fan `i` occupies
-     * `[i · fanLen, (i + 1) · fanLen)` where `fanLen == delta.size`, each in the same step-major
-     * ascending-τ layout the single-fan apply takes. One [delta] corrects every fan, which is the
-     * only shape a caller wants — a delta is fitted per model id, so a batch is one model's forecasts.
-     *
-     * For the BG panel's hindsight sweep, which recalibrates a day of stored fans at once: ~288 of
-     * them, at one FFI crossing per sweep rather than one per fan.
-     *
-     * Fail-closed to the RAW fans (`null`) for the WHOLE batch on anything the core rejects. Never a
-     * partially corrected batch: half a sweep corrected and half of it raw would state two
-     * uncertainties in one picture, which is what a caller reaches for this to avoid.
-     */
+    /** [applyQuantileConformal] for many fans of ONE shape in a single crossing (§8.4). [fansMgdl] is
+     *  `nFans · steps · nQuantiles`, fan-major, `fanLen == delta.size`; one [delta] corrects every
+     *  fan. Fail-closed to the RAW fans (`null`) for the WHOLE batch, never partially corrected. */
     fun applyQuantileConformalBatch(fansMgdl: List<Double>, delta: List<Double>): List<Double>?
 
-    // ── The classical baseline (t1dm-core::baseline) ────────────────────────────────
 
-    /** The baseline's shipped shape and shrinkage — 12 lags, 24 steps, λ = 1.0, IOB and COB on.
-     *  Read from the core rather than restated here so a retune moves one number, not two. */
+    /** Read from the core rather than restated here. */
     fun baselineDefaultSpec(): BaselineSpec
 
-    /**
-     * Fit the baseline and calibrate its band fan in one pass over the patient's own history.
-     *
-     * [bgMgdl] is a grid-aligned trailing series starting at [gridStartMs], newest last, with a
-     * non-finite entry marking a gap — gaps DROP the affected design rows rather than being
-     * filled, since `SPEC/invariants.md` §1 makes gap-filling a presentation step and never a
-     * fitted value. [events] are the resolved carb and insulin curves spanning the same window,
-     * including the tails of anything still acting when it opens, from which the core derives
-     * strictly-causal IOB and COB.
-     *
-     * The window is split chronologically: the older part fits the weights, the newer part becomes
-     * the conformal window set, and the conformal fit splits again inside itself — so the coverage
-     * it reports was measured on windows neither the weights nor the delta ever saw.
-     *
-     * Total on any input in the sense that matters: `null` on anything the core rejects, which is
-     * a window too short, a design with no complete rows, or a spec it cannot solve. A fit that
-     * RAN but found too little held-out history returns non-null with
-     * [com.t1dm.core.model.ConformalFit.sufficient] `= false` and an all-zero delta — a model that
-     * predicts a median and has its forecasts withheld for want of an honest band.
-     */
+    /** [bgMgdl] is grid-aligned from [gridStartMs], newest last, a non-finite entry marking a gap —
+     *  gaps DROP the affected design rows rather than being filled (`SPEC/invariants.md` §1). Split
+     *  chronologically: older fits the weights, newer calibrates. `null` on anything the core rejects;
+     *  a fit that ran on too little held-out history returns `sufficient = false` and a zero delta. */
     fun fitBaselineRidge(
         bgMgdl: List<Double>,
         gridStartMs: Long,
@@ -471,26 +299,10 @@ interface NativeCore {
         minCalWindows: Int,
     ): BaselineFit?
 
-    /**
-     * Run a fitted baseline for one cycle. [bgTail] is the trailing `nLags` mg/dL values
-     * OLDEST-FIRST; [iob]/[cob] are the causal on-board amounts at the anchor.
-     *
-     * The band estimator travels inside [model], so there is no uncalibrated fan a caller could
-     * accidentally publish. `null` on anything the core rejects — a gap in the tail, a tail of the
-     * wrong length, a model whose weights disagree with its spec — which the controller treats as
-     * "no forecast this cycle" rather than substituting one.
-     */
-    /**
-     * [futureCarb] / [futureInsulin] are the COMMITTED per-5-min carb appearance and insulin action
-     * over the prediction zone, index 0 being the step after the anchor — the same channels the
-     * neural cycle carries into its prediction patches. They are what let a just-logged dose move
-     * this forecast at all: on-board alone is a scalar at the anchor, and a dose snapping to a later
-     * grid slot contributes nothing to it until the next CGM sample arrives.
-     *
-     * Both must be at least `horizonSteps` long. A short array yields `null` rather than being
-     * zero-padded, because a zero-padded future is not a missing input — it is the claim that no
-     * dose is coming.
-     */
+    /** [bgTail] is the trailing `nLags` mg/dL values OLDEST-FIRST; [iob]/[cob] are the causal
+     *  on-board amounts at the anchor. [futureCarb]/[futureInsulin] are the COMMITTED per-5-min carb
+     *  appearance and insulin action over the prediction zone, index 0 the step after the anchor, at
+     *  least `horizonSteps` long — a short array yields `null` rather than being zero-padded. */
     fun baselinePredict(
         model: BaselineModel,
         bgTail: List<Double>,
@@ -500,36 +312,20 @@ interface NativeCore {
         futureInsulin: List<Double>,
     ): BaselineForecast?
 
-    /**
-     * The strictly-causal on-board amount at one instant — the IOB/COB feature
-     * [baselinePredict] consumes, counting only events that had already STARTED at [atMs].
-     *
-     * Deliberately not [onBoard], which counts every matching event's remaining tail including an
-     * announced future dose. That is the right reading for "insulin still to act" on the calculator,
-     * and the wrong one for a design column: the fit builds its IOB/COB from started events only, so
-     * a live cycle using the other definition would infer on a feature it never trained on.
-     */
+    /** The IOB/COB feature [baselinePredict] consumes: only events already STARTED at [atMs].
+     *  Deliberately not [onBoard], which counts announced future doses too. */
     fun baselineOnBoardAt(events: List<CurveEvent>, atMs: Long, kind: CurveKind): Double
 
-    /**
-     * The §3.6-B degeneracy guard for a forecast with no risk space: fan order judged on the
-     * mg/dL bands, rails on the clinical physical domain. Shares its predicates and epsilons with
-     * [forecastDegeneracyCheck] inside the core rather than restating them.
-     *
-     * An uncalibrated baseline lands on [ForecastStatus.CollapsedBand] here, which is the intended
-     * withholding and not an error.
-     */
+    /** §3.6-B for a forecast with no risk space: order judged on the mg/dL bands, rails on the
+     *  clinical physical domain. An uncalibrated baseline lands on [ForecastStatus.CollapsedBand],
+     *  which is the intended withholding and not an error. */
     fun baselineDegeneracyCheck(forecast: BaselineForecast): ForecastStatus
 
-    // ── Hill-climb minigame physics (t1dm-core::game) ───────────────────────────────
 
-    /** The offroad car tune the game ships (large wheels, long travel, high torque, strong
-     *  grip). Rust owns these numbers; nothing on this side transcribes them. */
+    /** Rust owns these numbers; nothing on this side transcribes them. */
     fun defaultCarTuning(): CarTuning
 
-    /** Open a live physics world over [terrain]. The heightfield crosses the FFI exactly
-     *  here — every later frame is one [GameWorld.step]. The caller OWNS the result and must
-     *  [GameWorld.close] it. Throws on a degenerate terrain or tuning (a caller bug: the
-     *  solver validates once here so the per-frame path can be total). */
+    /** The heightfield crosses the FFI exactly here. The caller OWNS the result and must
+     *  [GameWorld.close] it. Throws on a degenerate terrain or tuning. */
     fun createGameWorld(terrain: TerrainSpec, tuning: CarTuning): GameWorld
 }

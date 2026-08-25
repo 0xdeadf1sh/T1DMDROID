@@ -7,8 +7,6 @@ import com.t1dm.core.model.ReadingProvenance
 
 internal const val MIN = 60_000L
 
-/** Builds a grid-stamped [CgmReading] for injected-sequence tests. Defaults describe a normal,
- *  MEASURED, flat reading; each field is overridable to exercise a specific pathway. */
 internal fun reading(
     bgMgdl: Int?,
     rxWallMs: Long = 0L,
@@ -31,7 +29,6 @@ internal fun reading(
     rssi = rssi,
 )
 
-/** Records the sink calls the [AlarmController] makes, for deterministic wiring assertions. */
 internal class FakeNotifier : AlarmNotifier {
     var emitCount = 0
     var clearCount = 0

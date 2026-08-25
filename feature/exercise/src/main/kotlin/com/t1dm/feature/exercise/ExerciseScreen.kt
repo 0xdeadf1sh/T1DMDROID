@@ -42,17 +42,8 @@ import com.t1dm.core.model.ExerciseKind
 import com.t1dm.core.model.ExerciseSession
 import kotlin.math.roundToInt
 
-/**
- * The Exercise panel: the bout being recorded (or the controls to start one), the body mass its energy
- * figure cannot be computed without, and every bout already recorded, newest first.
- *
- * Pure and stateless in the house mould — it renders what `:app` collected off the port and hoists
- * every write. It knows nothing of the location service, of Room, or of the wire.
- *
- * [degraded] is the one honesty channel and must be rendered wherever it is set: a location permission
- * the user declined, a provider switched off, or a receiver that has gone quiet all leave a bout
- * looking exactly like a walk that went nowhere.
- */
+/** [degraded] must be rendered wherever it is set: a declined permission or a quiet receiver leaves
+ *  a bout looking exactly like a walk that went nowhere. */
 @Composable
 fun ExerciseScreen(
     sessions: List<ExerciseSession> = emptyList(),
@@ -67,8 +58,7 @@ fun ExerciseScreen(
     footer: @Composable () -> Unit = {},
 ) {
     val listState = rememberLazyListState()
-    // Held by the SCREEN and carrying the whole session, not its index: the list is rebuilt from the
-    // store under an open dialog, so an index would name a different bout by the time it is accepted.
+    // The whole session, not its index: the list is rebuilt under an open dialog.
     var confirming by remember { mutableStateOf<ExerciseSession?>(null) }
     LazyColumn(
         Modifier.fillMaxSize().padding(horizontal = 16.dp).fadingEdges(listState),
@@ -102,8 +92,6 @@ fun ExerciseScreen(
         AlertDialog(
             onDismissRequest = { confirming = null },
             title = { Text("Delete this bout?") },
-            // The one fact not inferable from the title: the route goes with it, and unlike the glucose
-            // either side of the bout it cannot be reconstructed.
             text = { Text("Track is lost") },
             confirmButton = {
                 TextButton(onClick = {
@@ -175,13 +163,7 @@ private fun StartCard(degraded: String?, onStart: (ExerciseKind) -> Unit) {
     }
 }
 
-/**
- * Body mass, the one input the energy figure cannot derive.
- *
- * Panel-owned rather than a Settings knob, and deliberately outside the shareable config export —
- * the store's own note says why. The commit is on release, not on every drag sample: the value is
- * kv-backed, and writing per pointer move is a database round trip per pixel.
- */
+/** Commit on release, not per drag sample: the value is kv-backed. */
 @Composable
 private fun BodyMassRow(bodyMassKg: Double?, onSet: (Double) -> Unit) {
     var draft by remember(bodyMassKg) { mutableFloatStateOf((bodyMassKg ?: MASS_DEFAULT_KG).toFloat()) }
@@ -220,25 +202,19 @@ private fun SessionRow(session: ExerciseSession, onOpen: (Long) -> Unit, onDelet
                 Text(
                     logTimeLabel(session.startMs, session.tzOffsetMin),
                     style = MaterialTheme.typography.bodySmall,
-                    // Inside a panel card the ink is the card's, not the scheme's — `panelCardColors`
-                    // measures a legible one against the painted surface.
+                    // Inside a panel card the ink is the card's, not the scheme's.
                     color = LocalContentColor.current.copy(alpha = 0.7f),
                 )
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(durationLabel(session.activeSec), style = MaterialTheme.typography.bodyMedium)
-                // NOT on the bout being recorded. `observeAll` has no `endMs` filter, so the open row is
-                // in this list beside the live card — and deleting it would delete the row and its fixes
-                // while the recorder carried on: the service keeps its GNSS receiver and its notification,
-                // and every fix it goes on writing names a session that no longer exists. Those rows are
-                // reachable from no query and skipped by the archive, so they accumulate unreadably; and
-                // the bout would end by closing a row that is gone, leaving no record at all while its
-                // disposal is already in the model's channel and on the wire. Stop it first, then delete.
+                // Not for the bout being recorded: `observeAll` has no `endMs` filter, so the open row
+                // sits here beside the live card, and deleting it leaves the recorder writing fixes
+                // for a session that is gone.
                 if (session.endMs != null) {
                     IconButton(
                         onClick = { haptics.perform(HapticEvent.Tap); onDeleteRequest() },
-                        // No TTS voice speaks U+2715, so the glyph alone announces as an unlabelled button
-                        // with neither the action nor which bout it acts on.
+                        // No TTS voice speaks U+2715.
                         modifier = Modifier.semantics {
                             contentDescription = "Delete ${kindLabel(session.kind)} bout"
                         },
@@ -255,15 +231,7 @@ fun kindLabel(kind: ExerciseKind): String = when (kind) {
     ExerciseKind.OTHER -> "Other"
 }
 
-/**
- * Metres as the panel and the foreground-service notification both say them, or null when the bout
- * measured no distance at all.
- *
- * Public, and the only place this is formatted: the service notification says the same thing about
- * the same bout as the card behind it, and two formatters would eventually disagree about the grain.
- * Locale-free by construction (integer arithmetic, not `String.format`) so the decimal separator
- * cannot move under a non-US default locale.
- */
+/** Locale-free by construction, so the decimal separator cannot move under a non-US locale. */
 fun distanceLabel(metres: Double?): String? {
     if (metres == null || !metres.isFinite() || metres <= 0.0) return null
     if (metres < 1_000.0) return "${metres.roundToInt()} m"
@@ -271,7 +239,6 @@ fun distanceLabel(metres: Double?): String? {
     return "${hundredths / 100}.${(hundredths % 100).toString().padStart(2, '0')} km"
 }
 
-/** `h:mm:ss` past an hour, `m:ss` below it — the shape a stopwatch reads in. */
 fun durationLabel(seconds: Int): String {
     val s = seconds.coerceAtLeast(0)
     val h = s / 3600
@@ -281,16 +248,12 @@ fun durationLabel(seconds: Int): String {
     return if (h > 0) "$h:$mm:$ss" else "$m:$ss"
 }
 
-/** `5:31 /km`, or null where the bout has not covered enough ground for a pace to mean anything —
- *  the recorder withholds it below its own distance floor rather than dividing scatter by seconds. */
 internal fun paceLabel(secPerKm: Double?): String? {
     if (secPerKm == null || !secPerKm.isFinite() || secPerKm <= 0.0) return null
     val s = secPerKm.roundToInt()
     return "${s / 60}:${(s % 60).toString().padStart(2, '0')} /km"
 }
 
-/** The running bout in one line — elapsed, distance, pace, energy — with each part omitted rather
- *  than shown empty. Pure, so the wording is testable without a composition. */
 internal fun liveLine(active: ActiveExercise): String = buildList {
     add(durationLabel((active.elapsedMs / 1000L).toInt()))
     distanceLabel(active.distanceM)?.let { add(it) }
@@ -298,15 +261,7 @@ internal fun liveLine(active: ActiveExercise): String = buildList {
     active.kcal?.let { add("$it kcal") }
 }.joinToString(" · ")
 
-/**
- * Why the running bout carries no kcal, or null when it carries one.
- *
- * Only the two causes the user can do something about, and each named rather than lumped: an
- * [ExerciseKind.OTHER] bout is one the ACSM walking/running equations in `:sensors` do not describe
- * at all, and a missing body mass is the row directly below. A bout that has simply not covered any ground
- * yet says nothing — it will, in a minute, and blaming that on the mass would send the user to the
- * wrong knob.
- */
+/** The ACSM walk/run equations in `:sensors` do not describe an [ExerciseKind.OTHER] bout. */
 internal fun kcalNote(active: ActiveExercise, bodyMassKg: Double?): String? = when {
     active.kcal != null -> null
     active.session.kind == ExerciseKind.OTHER -> "kcal needs walk or run"
@@ -314,15 +269,13 @@ internal fun kcalNote(active: ActiveExercise, bodyMassKg: Double?): String? = wh
     else -> null
 }
 
-/** What a bout already recorded amounts to, for the review's header. */
 internal fun summaryLine(session: ExerciseSession): String = buildList {
     add(durationLabel(session.activeSec))
     distanceLabel(session.distanceM)?.let { add(it) }
     session.kcal?.let { add("$it kcal") }
 }.joinToString(" · ")
 
-// The slider's own travel, not a rule: the store enforces the only floor that binds, and it is lower
-// than this. Nothing here may be read as a clinical bound.
+// Slider travel, not a clinical bound; the store enforces the only floor that binds.
 private const val MASS_MIN_KG = 30f
 private const val MASS_MAX_KG = 200f
 private const val MASS_DEFAULT_KG = 70.0

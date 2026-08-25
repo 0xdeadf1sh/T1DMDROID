@@ -64,66 +64,9 @@ import com.t1dm.core.model.displayName
 import kotlin.math.abs
 
 /**
- * The per-model PERFORMANCE drill-down (Phase 7C — item 24). Three blocks:
- *
- *  1. META — parameter count, on-disk size, arch dims + geometry (item 7, size reasoning).
- *  2. TELEMETRY — this install's cumulative avg inference EXEC time, #predictions, and TOTAL time
- *     spent in the backend forward (the [ModelTelemetry] the CycleRunner updates + persists).
- *  3. ON-DEVICE REALIZED ACCURACY — the full metric suite of `SPEC/invariants.md` §6.1-6.3,
- *     computed by the golden-gated Rust core over stored `prediction` rows vs the realized
- *     `cgm_reading` trajectory. It reproduces `T1DMAI/realdata/metrics.py::compute_suite`, so these
- *     figures are directly comparable to that project's validation table — every block except
- *     CG-EGA, which is not: that project passes the truth and the forecast to `cg_ega_counts`
- *     transposed, so the %AP/%BE/%EP it publishes assigns the glycaemic region by the forecast and
- *     is a different statistic from the one shown here (see the divergence note above the CG-EGA
- *     block in `t1dm-core::accuracy`). A gap between the two is not evidence about the export.
- *
- *     Two identity rules govern how it may be shown, both from the spec:
- *
- *       - The BASIS is part of every figure (§6.2). The band projection is the headline and the
- *         median line is a separate table beneath it — never one column carrying both. And because
- *         a wider band can only lower the error, no band figure appears without `band_cov50` and
- *         `band_width50` in the same row: a band widened until it swallows every truth scores a
- *         flawless zero, and those two are the only things that expose it.
- *       - CG-EGA is a WHOLE-WINDOW statistic (§6.3), so it carries no horizon label. It is also the
- *         costly pass, and is computed only on a tap.
- *
- *     A horizon with too little matured history says so PLAINLY (never a noisy stat), and an empty
- *     panel states which of the two reasons it is: nothing matured yet, or matured forecasts whose
- *     realized trajectory had a CGM gap.
- *
- *     Each table is paired with a Canvas figure (AccuracyFigures.kt) over the SAME rows — the table
- *     is the exact number, the figure the shape: the error against the persistence baseline it is
- *     scored against, the coverage against the target it claims, and the two zone partitions, which
- *     are read as proportions rather than as four decimals apiece. A figure only ever receives
- *     horizons that PASSED `sufficient`, so none of them draws an axis over a horizon the tables
- *     have just declined to score.
- *
- *     Three figures share ONE horizon — the reader's, defaulting to [CLARKE_GRID_DEFAULT_MIN]: the
- *     Clarke error grid, the DTS error grid, and the Trend Accuracy Matrix. Each is a scatter or a
- *     table of that horizon's pairs; the two grids' regions come from lattices the core classified
- *     ([lattices]) rather than from boundaries restated here, and all three are drawn on the MEDIAN
- *     LINE — the one basis a scatter can carry honestly (see `ErrorGridFigure`). Choosing a horizon
- *     the suite declined to score draws nothing and says so by name; it never quietly plots a
- *     neighbouring one, and the picker stays live underneath so the reader can move.
- *
- *  4. THE TWO 2024 METRICS. The DTS Error Grid and the Trend Accuracy Matrix are Klonoff et al.
- *     2024 (J Diabetes Sci Technol 18(6):1346). Unlike everything above them they have NO
- *     counterpart in `T1DMAI/realdata/metrics.py`, so they are pinned to the paper rather than to
- *     that project and no figure here may be read against its validation table. They are also
- *     device metrics by origin — a monitor against a reference — applied here to a forecast against
- *     the realized trajectory, which is the same repurposing this screen already makes of Clarke
- *     and CG-EGA and carries the same caveat: never quote one against a published CGM accuracy
- *     figure. The DTS grid's `pZA` is reported ALONE, never as an A+B, because its panel declined
- *     to publish a combined zone.
- *
- * Everything is advisory: the accuracy of a FORECAST, never a dosing claim.
- *
- * **The descriptor's reference metrics are not shown, and must not be.** [ModelMeta.reference] is
- * still parsed — the `model_card` block is part of the descriptor — so it remains one field access
- * away, and it does not belong on this screen: it is a held-out validation table from another
- * dataset, and beneath the realized suite it reads as a second opinion on THIS patient's forecasts,
- * which is the one thing it cannot be. The realized numbers are the only accuracy claim made here.
+ * Realized accuracy per `SPEC/invariants.md` §6.1–6.3. CG-EGA diverges from
+ * `T1DMAI/realdata/metrics.py`, which passes truth and forecast transposed — a different statistic,
+ * not evidence about the export. [ModelMeta.reference] is parsed but must never be shown here.
  */
 @Composable
 fun ModelDetailScreen(
@@ -134,7 +77,7 @@ fun ModelDetailScreen(
     onRecomputeAccuracy: () -> Unit,
     /** Null while the lattices are still being classified off-main; empty when the core had none. */
     lattices: ErrorGridLattices?,
-    /** The core's own trend rate-bin edges; empty on a stub core, which leaves the axes unlabelled. */
+    /** Empty on a stub core, which leaves the axes unlabelled. */
     trendBinEdges: List<Double> = emptyList(),
     cgEga: CgEga?,
     cgEgaLoading: Boolean,
@@ -145,28 +88,21 @@ fun ModelDetailScreen(
     onSelectBackend: (BackendId?) -> Unit,
     onRunComparison: () -> Unit,
     probeRunning: Boolean = false,
-    /** Why the last probe produced no comparison; null when it produced one. The probe refuses on a
-     *  backend that is not loaded, and its note is rendered on the Models list, not here — so without
-     *  this the button ran and the screen said nothing. */
+    /** Why the last probe produced no comparison; null when it produced one. */
     probeRefusal: String? = null,
-    /** The stored §8.4 band correction for this model, or null when it has never been fitted. */
+    /** §8.4. Null when never fitted. */
     bandCalibration: BandCalibration? = null,
     bandCalibrationFitting: Boolean = false,
-    /** What the last fit STARTED FROM THIS SCREEN did; null on a fresh open, so a reopen shows the
-     *  correction without re-announcing a result the user has already read. */
+    /** Null on a fresh open, so a reopen re-announces nothing already read. */
     bandCalibrationOutcome: BandCalibrationOutcome? = null,
     onFitBandCalibration: () -> Unit = {},
-    /** Drops the stored §8.4 correction, returning the model to its raw fan. Offered because a
-     *  correction fitted across a CGM source change measures the gap between two sensors, and the
-     *  only cure is to discard it and refit once enough windows from one sensor exist — which no
-     *  gate can decide, since only the user knows the sensor was swapped. */
+    /** Manual because a correction fitted across a sensor swap measures the gap between two
+     *  sensors, and only the user knows the sensor was swapped. */
     onDropBandCalibration: () -> Unit = {},
-    /** Runs the classical baseline's fit. Non-null only when this drill-down IS the baseline's, so
-     *  its own model is the one place its fit lives — a neural model's screen never shows it. */
+    /** Non-null only when this drill-down is the baseline's. */
     onFitBaseline: (() -> Unit)? = null,
     baselineFitting: Boolean = false,
-    /** What the last fit started from this screen produced; null on a fresh open, so reopening does
-     *  not re-announce a result the user has already read. */
+    /** Null on a fresh open, so a reopen re-announces nothing already read. */
     baselineFitNote: String? = null,
 ) {
     val isBaseline = modelId == BASELINE_MODEL_ID
@@ -174,16 +110,12 @@ fun ModelDetailScreen(
     val telemetry = state.telemetryOf(modelId)
     val running = state.runningOf(modelId)
     val haptics = rememberT1dmHaptics()
-    // Hoisted above the LazyColumn for the reason the horizon below is: `section` is a lazy item,
-    // so state remembered inside one dies when it scrolls out and the dialog would close itself.
+    // Hoisted above the LazyColumn: `section` is a lazy item, so state remembered inside one dies
+    // when it scrolls out and the dialog would close itself.
     var showDropCalibration by remember { mutableStateOf(false) }
 
-    // The error grid's horizon, hoisted ABOVE the LazyColumn deliberately: `section` is a lazy
-    // `item {}`, so a `remember` placed inside the grid's own section is discarded the moment that
-    // item scrolls out of the viewport and the choice would snap silently back to the default.
-    // Saveable so a rotation keeps it; keyed on the model and stored nowhere, so a fresh open of any
-    // drill-down starts at the default — the same lifetime the suite, the CG-EGA walk and the fit
-    // outcome already have here. It is a reading posture, not a preference, so it gets no setting.
+    // Hoisted for the same reason. Saveable so a rotation keeps it; keyed on the model and stored
+    // nowhere, so a fresh open starts at the default.
     var gridHorizonMin by rememberSaveable(modelId) { mutableStateOf(CLARKE_GRID_DEFAULT_MIN) }
 
     val listState = rememberLazyListState()
@@ -196,8 +128,8 @@ fun ModelDetailScreen(
             Text(modelId, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
             running?.let {
                 Text(
-                    // displayName() already carries the precision; and only a graph model can be the
-                    // fp32 dosing authority, so the baseline must not claim to be one.
+                    // displayName() already carries the precision; only a graph model can be the
+                    // fp32 authority.
                     it.backend.displayName() + when {
                         it.selected && isBaseline -> " · SELECTED"
                         it.selected -> " · SELECTED (fp32-authoritative)"
@@ -209,12 +141,6 @@ fun ModelDetailScreen(
             }
         }
 
-        // ── 0. The classical baseline's own fit ──
-        //
-        // This lives on the model's own screen rather than on the Models list because it belongs to
-        // one model, and because the row is listed before the first fit there is always somewhere to
-        // put it. The figures below are the fit's OWN held-out evidence; the realized-accuracy
-        // sections further down score it the same way they score a neural model.
         if (isBaseline && onFitBaseline != null) {
             section("Baseline") {
                 val b = state.baselineModel
@@ -232,13 +158,11 @@ fun ModelDetailScreen(
                         ).joinToString(" · "),
                     )
                     KeyVal("horizon", "${b.spec.horizonSteps * 5 / 60} h")
-                    // The band IS the model here, so an uncalibrated one is not a missing garnish —
-                    // it is why nothing is being forecast, and the §3.6-B guard withholds every cycle.
+                    // §3.6-B — the band IS the model here, so an uncalibrated one withholds every
+                    // cycle.
                     if (!b.calibrated) Note("Band uncalibrated — forecasts withheld")
                 }
-                // The one asymmetry with a graph model, and the user meets it the moment they select
-                // this one and open the calculator. Say it here rather than let the refusal there
-                // read as a fault.
+                // Said here so the calculator's refusal does not read as a fault.
                 Note("No dose advice — the calculator needs a graph model")
                 baselineFitNote?.let { Note(it) }
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -253,9 +177,8 @@ fun ModelDetailScreen(
             }
         }
 
-        // ── 1. Meta ──
-        // Skipped for the baseline: every field here is descriptor- or artifact-derived, and it has
-        // neither, so the section could only ever say "n/a" six times.
+        // Skipped for the baseline: every field is descriptor- or artifact-derived, and it has
+        // neither.
         if (!isBaseline) section("Model") {
             if (meta == null) {
                 Note("No descriptor metadata")
@@ -270,7 +193,6 @@ fun ModelDetailScreen(
             }
         }
 
-        // ── 2. Cumulative telemetry ──
         section("Inference telemetry (this install)") {
             if (telemetry == null || telemetry.predictions == 0L) {
                 Note("No forecasts recorded yet")
@@ -284,12 +206,8 @@ fun ModelDetailScreen(
             }
         }
 
-        // ── Compute backend (per-model forecast switcher; issue 20 STEP 4) ──
-        // Only meaningful while the model is in the running set (a loaded backend to switch), AND only
-        // for the SELECTED model: the switcher's [catalog]/[comparison] are the controller's single
-        // selected-model-bound state (backendCatalog / backendComparison), so rendering them for a
-        // non-selected running model would show the SELECTED model's availability + run the agreement
-        // probe against it — a mismatch. Selecting a model rebuilds that catalog for it (selectModel).
+        // [catalog]/[comparison] are the controller's SELECTED-model state, so a non-selected
+        // running model would show the wrong model's availability and probe against it.
         if (running != null) {
             section("Compute backend") {
                 if (running.selected) {
@@ -311,10 +229,7 @@ fun ModelDetailScreen(
             }
         }
 
-        // ── 3. On-device realized accuracy ──
-        // Keep the prior rows on screen through a recompute (issue 6): only collapse to the one-line
-        // "Computing…" when there is NO prior suite; otherwise the tables stay put and a subtle
-        // inline hint (in the button row, so section height is unchanged) marks the refresh.
+        // Keep prior rows through a recompute: collapse to "Computing…" only with no prior suite.
         val suite = accuracy?.suite
         val scored = suite?.horizons.orEmpty().filter { it.sufficient }
 
@@ -323,8 +238,8 @@ fun ModelDetailScreen(
             when {
                 scored.isNotEmpty() -> {
                     BandTable(scored)
-                    // Kept in this section deliberately: §6.2 forbids a band figure standing apart
-                    // from its coverage and width, and the table above carries both.
+                    // §6.2 — a band figure may not stand apart from its coverage and width, and the
+                    // table above carries both.
                     ErrorByHorizonFigure(scored)
                 }
                 accuracyLoading -> Note("Computing…")
@@ -344,22 +259,15 @@ fun ModelDetailScreen(
         }
 
         if (scored.isNotEmpty()) {
-            // Both bands' realized coverage against what they claim (§6.2) — the figure that says
-            // whether the fan is honest, and the only reading under which a flawless error column
-            // can still be a bad forecast.
+            // §6.2 — realized coverage against what both bands claim.
             section("Calibration") { CalibrationFigure(scored) }
-            // The basis is part of a figure's identity (§6.2) and this one is off the band, like
-            // every other level metric — so the header carries it, exactly as the band table's does.
             section("Clarke zones — band τ.25–.75") { ClarkeFigure(scored) }
-            // The same window on the 2024 DTS grid. `pZA` is its headline and the table prints all
-            // five shares individually — never an A+B, which the paper's panel explicitly declines
-            // to report and which this screen must therefore not offer either.
+            // Five shares individually, never an A+B: the paper's panel declines to report one.
             section("DTS zones — band τ.25–.75") {
                 DtsFigure(scored)
                 DtsTable(scored)
             }
-            // Per horizon, like the level metrics and unlike CG-EGA: trend agreement decays with
-            // horizon, and pooling the whole window would hide exactly that.
+            // Per horizon: trend agreement decays with horizon, and pooling would hide that.
             section("Trend risk categories — median line") {
                 Note("1 no risk · 2 under · 3 over · 4/5 extreme")
                 TrendCategoryFigure(scored)
@@ -374,31 +282,15 @@ fun ModelDetailScreen(
             }
         }
 
-        // ── 3a. Clarke error grid — one horizon's scatter over the zone regions ──
-        //
-        // Outside the `scored` gate deliberately, as CG-EGA is: a figure that declines to draw must
-        // say why, and a section that simply vanishes says nothing at all.
-        //
-        // ONE horizon still, but the reader chooses which, opening on [CLARKE_GRID_DEFAULT_MIN] rather
-        // than on the longest the suite scored. Every other horizon is a tap away, and each keeps its
-        // zone shares in the stacked figure above regardless. The basis is the MEDIAN LINE and the
-        // header carries it (§6.2) — see the figure's own note for why the band projection, normative
-        // everywhere else, is the one basis this picture may not be drawn on.
-        //
-        // Two things keep the picker honest. The options are the suite's OWN horizons rather than a
-        // list restated here (`ACCURACY_HORIZONS_MIN` belongs to the app container, and a copy of it
-        // in this module would go stale in silence), and [clarkeGridPick] returns the chosen
-        // [HorizonMetrics] itself rather than an index — so the caption's horizon, its `n` and the
-        // pairs it plots are three readings of one object and cannot come apart. A horizon the tables
-        // declined is REFUSED by name ahead of every other empty state, never redrawn as its
-        // neighbour, and its tab stays live so the reader can move to one that scored.
+        // Outside the `scored` gate deliberately: a figure that declines to draw must say why.
+        // The options are the suite's own horizons — a copy of `ACCURACY_HORIZONS_MIN` here would go
+        // stale in silence — and [clarkeGridPick] returns the record, so label, `n` and pairs cannot
+        // come apart.
         val pick = clarkeGridPick(suite?.horizons.orEmpty(), gridHorizonMin)
         val gridRefusal = pick.refusal(accuracy?.minSamples ?: 0)
 
-        // Both error grids and the trend matrix read the SAME horizon, and each section carries the
-        // picker so a reader who has scrolled to one can move without going back. One piece of state
-        // behind all three: the three are three readings of one horizon's pairs, and letting them
-        // drift apart would invite comparing a 30-minute Clarke share against a 120-minute DTS one.
+        // One horizon behind all three, so a 30-minute Clarke share is never read against a
+        // 120-minute DTS one.
         gridSection(
             "Clarke error grid — median line",
             "Band projection clips to the truth; its grid reads as coverage",
@@ -412,13 +304,8 @@ fun ModelDetailScreen(
             }
         }
 
-        // ── 3a-ii. The DTS error grid (Klonoff 2024) ──
-        //
-        // The same pairs on the grid that supersedes the Surveillance Error Grid. It sits beside
-        // Clarke rather than replacing it because the two disagree in ways worth seeing: the DTS
-        // zone A is a shade under Clarke's flat ±20 % and is not symmetric about it, and the whole
-        // plane is asymmetric — reading high is penalised harder than reading low by the same ratio,
-        // which Clarke does not do at all. The exact edges are `dts_risk`'s, in the crate.
+        // Beside Clarke, not replacing it: the DTS zone A is not Clarke's flat ±20 %, and reading
+        // high is penalised harder than reading low. The edges are `dts_risk`'s, in the crate.
         gridSection(
             "DTS error grid — median line",
             "Klonoff 2024 · reading high scores worse than reading low",
@@ -432,11 +319,8 @@ fun ModelDetailScreen(
             }
         }
 
-        // ── 3a-iii. The Trend Accuracy Matrix ──
-        //
-        // Median line only, and the section header says so. §6.2's own consequence is why: the band
-        // projection equals the truth wherever the band covered, so a rate differenced from it
-        // inherits the truth's derivative and the matrix would sit on its diagonal by construction.
+        // §6.2 — the band projection equals the truth wherever the band covered, so a rate off it
+        // would sit on the diagonal by construction. Median line only.
         gridSection(
             "Trend accuracy — median line",
             "Rate over 15 min vs realized",
@@ -445,7 +329,7 @@ fun ModelDetailScreen(
             if (h.trend.isEmpty) Note("No scored pairs") else TrendMatrixFigure(h.trend, trendBinLabels(trendBinEdges))
         }
 
-        // ── 3b. CG-EGA — whole window (§6.3), computed only on request ──
+        // §6.3 — whole window; the costly pass, so only on request.
         section("CG-EGA") {
             when {
                 cgEga != null -> {
@@ -460,30 +344,16 @@ fun ModelDetailScreen(
             }
         }
 
-        // ── 3c. Band recalibration (§8.4) — the one action here that changes what is DRAWN ──
-        //
-        // Outside the `scored` gate, like CG-EGA and the error grid: an action that declines to run
-        // must say why, and a section that simply vanishes says nothing at all.
-        //
-        // The rows are the whole statement of what the correction is worth, and they are chosen so
-        // that none of them can be read alone. `fit / held out` says how much history each half saw;
-        // the coverage pair says what the correction bought on windows it never fitted; and the
-        // WIDTH pair beside it is what §6.2 requires of any band figure, because a band widened
-        // until it swallows every truth covers perfectly and forecasts nothing. `max shift` is how a
-        // reader tells a real correction from one that rounds to the raw fan.
-        // Skipped for the baseline: §8.4's correction recalibrates a fan a model already produced,
-        // and the baseline's band is not that — it IS its interval, fitted with the weights and
-        // shown in the Baseline section above. Offering a second, display-only correction on top
-        // would stack two estimators of the same thing.
+        // §8.4. Skipped for the baseline: the correction recalibrates a fan a model produced, and
+        // the baseline's band IS its interval — a second one would stack two estimators of the same
+        // thing.
         if (!isBaseline) section("Band recalibration") {
             Note("Display only — alarms and doses read the raw band")
             if (bandCalibration == null) {
                 Note("Not fitted — raw bands")
             } else {
-                // A lapsed correction stops being drawn (the apply reads the same predicate), so the
-                // rows below become a record of what it once bought rather than a description of the
-                // fan on screen. Saying so is the whole point: the figures are unchanged and true,
-                // and without this line they read as present tense.
+                // The apply reads the same predicate, so a lapsed correction's rows below are a
+                // record of what it once bought, not the fan on screen.
                 if (bandCalibration.expiredAt(System.currentTimeMillis())) {
                     Note("Expired after ${bandCalibration.windowDays} d — raw bands")
                 }
@@ -499,14 +369,8 @@ fun ModelDetailScreen(
                 )
                 KeyVal("max shift", "${f1(bandCalibration.maxAbsDeltaMgdl)} mg/dL")
             }
-            // The fail-closed outcomes. A refusal names both numbers — the same shape the
-            // insufficient-horizon notes above use — so the user learns how far short they are
-            // rather than merely that the fit declined.
-            //
-            // The two BandFitRefusal arms come first and are worded as conditions of the app,
-            // because they are: neither reached the window walk, so neither has grounds to say
-            // anything about how much of this patient's history matured. Falling through to
-            // `emptyWhy` would tell them their data was inadequate on evidence nobody gathered.
+            // The two BandFitRefusal arms come first: neither reached the window walk, so falling
+            // through to `emptyWhy` would blame data nobody gathered.
             bandCalibrationOutcome?.let { o ->
                 val fit = o.fit
                 when {
@@ -514,7 +378,7 @@ fun ModelDetailScreen(
                     o.refusal == BandFitRefusal.HORIZON_UNKNOWN -> Note("No forecast yet — horizon unknown")
                     fit == null -> Note(emptyWhy(accuracy))
                     !fit.sufficient -> Note("${fit.nCal} fit windows, need ${fit.minCalWindows}")
-                    else -> Unit // The rows above already changed, and they say it exactly.
+                    else -> Unit // The rows above already say it.
                 }
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -522,9 +386,7 @@ fun ModelDetailScreen(
                     enabled = !bandCalibrationFitting,
                     onClick = { haptics.perform(HapticEvent.Tap); onFitBandCalibration() },
                 ) { Text("Recalibrate") }
-                // Offered only when there is one to drop. Confirmed like every other destructive
-                // action, and Warn-on-raise for the same reason they are: the fit costs the user
-                // half a day of matured windows to earn back.
+                // Confirmed: a refit costs half a day of matured windows to earn back.
                 if (bandCalibration != null) {
                     TextButton(
                         enabled = !bandCalibrationFitting,
@@ -561,18 +423,15 @@ fun ModelDetailScreen(
     }
 }
 
-// ── The realized-accuracy tables ───────────────────────────────────────────────────────────────
-//
-// Column order follows `T1DMAI/realdata/report.py::_suite_table` so a figure here lines up with the
-// same figure there. Every table scrolls sideways (DataTable) rather than crushing its columns.
+// Column order follows `T1DMAI/realdata/report.py::_suite_table`.
 
 private fun col(header: String, weight: Float) =
     com.t1dm.core.design.TableColumn(header, weight, numeric = true)
 
 private const val WIDE = 980
 
-/** §6.2 headline. `cov50`/`w50` are in the SAME row as the band errors, deliberately: they are what
- *  keeps a band widened until it swallows every truth from reading as a flawless score. */
+/** §6.2. `cov50`/`w50` share the row with the band errors: they are what keeps a band widened
+ *  until it swallows every truth from reading as flawless. */
 @Composable
 private fun BandTable(hs: List<HorizonMetrics>) {
     com.t1dm.core.design.DataTable(
@@ -591,8 +450,7 @@ private fun BandTable(hs: List<HorizonMetrics>) {
     )
 }
 
-/** The same block on the median line — a different quantity on one forecast (§6.2), so a separate
- *  table rather than extra columns. No coverage: the median is a line and has none. */
+/** §6.2 — a different quantity on one forecast, so a separate table. A line has no coverage. */
 @Composable
 private fun MedianTable(hs: List<HorizonMetrics>) {
     com.t1dm.core.design.DataTable(
@@ -609,7 +467,7 @@ private fun MedianTable(hs: List<HorizonMetrics>) {
     )
 }
 
-/** The outer envelope and the persistence baseline both bases' skill is measured against. */
+/** The persistence baseline both bases' skill is measured against. */
 @Composable
 private fun OuterTable(hs: List<HorizonMetrics>) {
     com.t1dm.core.design.DataTable(
@@ -626,8 +484,7 @@ private fun OuterTable(hs: List<HorizonMetrics>) {
     )
 }
 
-/** §6.1 band-edge recall/precision, with the denominators beside them — a recall of 1.00 over one
- *  true crossing is not the same claim as one over forty. */
+/** §6.1. The denominators sit beside the ratios: 1.00 over one crossing is not 1.00 over forty. */
 @Composable
 private fun ExcursionTable(hs: List<HorizonMetrics>) {
     com.t1dm.core.design.DataTable(
@@ -643,21 +500,9 @@ private fun ExcursionTable(hs: List<HorizonMetrics>) {
     )
 }
 
-/**
- * The DTS Error Grid's five shares, per horizon (Klonoff 2024).
- *
- * `A` alone is the paper's metric — `pZA` — and there is deliberately no A+B column: the panel that
- * published this grid declined to report one, so offering it here would be this screen inventing a
- * figure the statistic does not have. `|risk|` is the mean absolute risk the zones band, carried
- * beside them because it does not round a near-miss up into a whole zone the way a share does.
- *
- * `cov50` and `w50` sit in the SAME row, exactly as [BandTable]'s do, and for a sharper reason. The
- * band projection is `clip(truth, lo, hi)`, so a pair whose truth fell inside the band has
- * `pred == truth` and scores a DTS risk of `ln(1) = 0` — unconditionally zone A. `pZA` is therefore
- * bounded below by the realized coverage, and a band widened until it swallows every truth prints a
- * flawless `A 100.0 · |risk| 0.000`. These two columns are the only things in the row that move when
- * that happens, which is what §6.2 requires of any band figure.
- */
+/** No A+B column: the panel that published the grid declined to report one. `cov50`/`w50` share
+ *  the row because the band projection is `clip(truth, lo, hi)`, so a covered pair scores
+ *  `ln(1) = 0` — unconditionally zone A, and `pZA` is bounded below by the coverage. */
 @Composable
 private fun DtsTable(hs: List<HorizonMetrics>) {
     com.t1dm.core.design.DataTable(
@@ -678,8 +523,8 @@ private fun DtsTable(hs: List<HorizonMetrics>) {
     )
 }
 
-/** The Trend Accuracy Matrix's five risk categories, per horizon. `n` is the matrix's own count,
- *  which is below the horizon's `n` wherever a window's 15-minute lookback did not reach. */
+/** `n` is the matrix's own count, below the horizon's wherever the 15-minute lookback did not
+ *  reach. */
 @Composable
 private fun TrendTable(hs: List<HorizonMetrics>) {
     com.t1dm.core.design.DataTable(
@@ -732,55 +577,24 @@ private fun pct(v: Double): String = if (!v.isFinite()) "—" else "%.1f".format
 
 private fun skill(b: PointBlock): String = f2(b.skillPoint)
 
-// ── The Clarke error grid's horizon choice ─────────────────────────────────────────────────────
-
-/**
- * The horizon the error grid opens on, in minutes.
- *
- * Not the longest the suite scored, which is what this section used to plot. 60 min is the horizon
- * a forecast is read at — long enough for the model's own error to separate from persistence, short
- * enough that the scatter is still about the forecast rather than about the drift of the day — and
- * the other horizons are one tap away rather than one recompute.
- *
- * A default, not a member of the option list: the options are the suite's own horizons, and this
- * resolves against them ([clarkeGridPick]) rather than adding to them.
- */
+/** Minutes. 60 is long enough for the model's error to separate from persistence, short enough
+ *  that the scatter is still about the forecast. A default, not a member of the option list. */
 internal const val CLARKE_GRID_DEFAULT_MIN = 60
 
-/**
- * What the error grid's picker offers, and which of it the current choice resolves to.
- *
- * [options] is EVERY horizon the suite scored, ascending — including one that failed `sufficient`,
- * so a reader who lands on it has somewhere to go. [selected] is the chosen horizon's own metrics
- * record, deliberately the object rather than its index or its number: the figure's caption, its
- * `n` and its scatter are all read off this one value, so a picture labelled 60 min cannot be
- * plotting 120's pairs. Null only where the suite scored no horizon at all.
- */
+/** [options] is every horizon the suite scored, ascending, insufficient ones included. [selected]
+ *  is the record itself, not an index, so caption, `n` and scatter cannot come apart; null only
+ *  where the suite scored no horizon. */
 internal data class ClarkeGridPick(
     val options: List<Int>,
     val selected: HorizonMetrics?,
 ) {
-    /**
-     * Why the chosen horizon may not be drawn, or null where it may.
-     *
-     * The same shape as the insufficient rows the accuracy section prints above, deliberately: "too
-     * few windows" is one fact and reads the same wherever this screen states it. A refusal never
-     * substitutes another horizon — the picker is what moves the reader, not the figure.
-     */
+    /** Null where it may be drawn. Never substitutes another horizon. */
     fun refusal(minSamples: Int): String? =
         selected?.takeUnless { it.sufficient }?.let { "${it.horizonMin} min: n=${it.n}, need $minSamples" }
 }
 
-/**
- * Resolve the standing choice [wantedMin] against the horizons the suite actually scored.
- *
- * The choice is held as a NUMBER of minutes rather than an index or a position, so it survives a
- * recompute that adds or drops a horizon. Where the suite does not carry it — a stale choice, or
- * the default against a horizon set that has none — the nearest offered horizon is taken, ties to
- * the shorter. That is not a silent fallback: the picker shows the resolution as its selection, so
- * what is drawn and what is highlighted are the same horizon, and neither is one the reader is
- * still being told they chose.
- */
+/** [wantedMin] is minutes, not an index, so it survives a recompute that adds or drops a horizon.
+ *  A horizon the suite does not carry resolves to the nearest offered one, ties to the shorter. */
 internal fun clarkeGridPick(horizons: List<HorizonMetrics>, wantedMin: Int): ClarkeGridPick {
     val ordered = horizons.sortedBy { it.horizonMin }
     val chosen = ordered.firstOrNull { it.horizonMin == wantedMin }
@@ -788,12 +602,7 @@ internal fun clarkeGridPick(horizons: List<HorizonMetrics>, wantedMin: Int): Cla
     return ClarkeGridPick(ordered.map { it.horizonMin }, chosen)
 }
 
-/**
- * The grid's horizon row — this screen's second single-choice control, and a segmented row rather
- * than [BackendChoiceRow] because three numbers need no subtitle apiece and the section is a figure,
- * not a form. Material3 1.3.1 performs no haptic of its own, so the tick is fired here, as at every
- * other choice site in the app.
- */
+/** Material3 1.3.1 performs no haptic of its own, so the tick is fired here. */
 @Composable
 private fun ClarkeHorizonPicker(options: List<Int>, selected: Int?, onSelect: (Int) -> Unit) {
     val haptics = rememberT1dmHaptics()
@@ -808,13 +617,11 @@ private fun ClarkeHorizonPicker(options: List<Int>, selected: Int?, onSelect: (I
     }
 }
 
-/** Why the panel is empty — never merely THAT it is. */
 private fun emptyWhy(m: ModelMetrics?): String {
     if (m == null) return "Insufficient history — nothing scored yet"
     val built = m.nMatured - m.nIncomplete
     return when {
-        // Ahead of the history arms: after a sensor change there IS history, and saying there is not
-        // sends the user looking for a fault that is not there.
+        // Ahead of the history arms: after a sensor change there IS history.
         m.nForeignSource > 0 && m.nMatured == 0 ->
             "${m.nForeignSource} forecasts from the previous sensor — refit after ~17 h"
         m.nMatured == 0 -> "Insufficient history — no matured forecast yet"
@@ -824,12 +631,8 @@ private fun emptyWhy(m: ModelMetrics?): String {
     }
 }
 
-/**
- * The per-model forecast-backend chooser (issue 20 STEP 4, relocated from Settings). Governs the
- * DISPLAY forecast only; per §3.6-E dose advice always runs on the fp32 XNNPACK CPU authority (or a
- * backend that PASSED the agreement probe), so a non-authoritative choice renders the forecast while
- * dosing stays pinned to the CPU authority.
- */
+/** §3.6-E — the display forecast only; dose advice stays on the fp32 XNNPACK CPU authority, or a
+ *  backend that passed the agreement probe. */
 @Composable
 private fun ComputeBackendControls(
     running: com.t1dm.core.model.RunningModel,
@@ -848,7 +651,7 @@ private fun ComputeBackendControls(
         "Display forecast only; dose advice stays on CPU unless probed",
     )
 
-    // Live truth: what is ACTUALLY executing (may differ from the request on a load failure).
+    // What is actually executing; may differ from the request after a load failure.
     Row(Modifier.fillMaxWidth().padding(top = 4.dp)) {
         Text("Executing on ", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(
@@ -858,7 +661,6 @@ private fun ComputeBackendControls(
         )
     }
 
-    // Auto row (auto = the fp32 CPU authority).
     BackendChoiceRow(
         title = "Auto (fp32 CPU authority)",
         subtitle = "Authoritative XNNPACK CPU path — trusted for dose advice",
@@ -866,8 +668,8 @@ private fun ComputeBackendControls(
         selected = requestedBackend == null,
         onClick = { haptics.perform(HapticEvent.SegmentTick); refusal = null; onSelectBackend(null) },
     )
-    // This build ships exactly two real compute paths: the XNNPACK CPU authority and the Vulkan GPU
-    // delegate. The Play-delivered NeuroPilot NPU / legacy LiteRT rows are not reachable here.
+    // This build ships only the XNNPACK CPU and Vulkan paths; the Play-delivered NeuroPilot NPU
+    // and legacy LiteRT rows are unreachable.
     val shown = catalog.filter {
         it.backend == BackendId.EXECUTORCH_XNNPACK_FP32 ||
             it.backend == BackendId.EXECUTORCH_VULKAN_FP16 ||
@@ -883,9 +685,7 @@ private fun ComputeBackendControls(
             },
             available = b.available,
             selected = requestedBackend == b.backend,
-            // An unavailable backend is a REAL refusal — the row stays enabled deliberately so it can
-            // explain itself in [refusal] rather than going dead, which is exactly the case the
-            // vocabulary's Reject exists for (a disabled control could say nothing at all).
+            // Stays enabled deliberately: a disabled row could not explain itself.
             onClick = {
                 if (b.available) {
                     haptics.perform(HapticEvent.SegmentTick)
@@ -898,8 +698,7 @@ private fun ComputeBackendControls(
             },
         )
     }
-    // A row refusal is the fresher of the two — tapping a row clears the probe's, and tapping the
-    // probe clears the row's — so whichever is set is the one the last tap produced.
+    // Each tap clears the other's, so whichever is set came from the last tap.
     (refusal ?: probeRefusal)?.let {
         Text(
             it,
@@ -917,8 +716,7 @@ private fun ComputeBackendControls(
         onClick = { haptics.perform(HapticEvent.Tap); refusal = null; onRunComparison() },
     ) {
         if (probeRunning) {
-            // LocalContentColor, not the indicator's default primary: inside a DISABLED filled button
-            // the content is drawn at 38 % onSurface, and a primary-coloured spinner reads as live.
+            // Not the default primary: in a disabled filled button a primary spinner reads as live.
             CircularProgressIndicator(
                 Modifier.size(16.dp),
                 strokeWidth = 2.dp,
@@ -996,20 +794,8 @@ private fun BackendComparisonCard(c: BackendComparison) {
     }
 }
 
-// ── small building blocks ──
-
-/**
- * One figure section keyed on the error grids' shared horizon: the note, the picker, and either the
- * figure or the single reason it may not be drawn.
- *
- * A `LazyListScope` extension rather than a composable because [section] is a lazy `item {}` — the
- * body is composed later, inside that item, and a `@Composable` helper called from the list builder
- * would be invoked in the builder's own non-composable scope.
- *
- * The refusal is passed in already resolved so all three sections state it identically: "too few
- * windows" is one fact and reads the same wherever this screen says it. A refusal never substitutes
- * another horizon — the picker is what moves the reader, and it stays live underneath.
- */
+/** A `LazyListScope` extension, not a composable: the body is composed later, inside the lazy
+ *  item, whereas a `@Composable` helper would be called in the builder's non-composable scope. */
 private inline fun androidx.compose.foundation.lazy.LazyListScope.gridSection(
     title: String,
     note: String,

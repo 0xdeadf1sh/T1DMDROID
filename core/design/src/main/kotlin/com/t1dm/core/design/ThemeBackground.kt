@@ -23,30 +23,16 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.lerp
 
-/**
- * The per-theme full-screen BACKDROP (Phase 7D). Each theme paints its own signature motif behind the
- * whole app — the Tron light-grid, the Umbrella mark, the Hello Kitty face — all in pure Compose Canvas
- * (no raster assets), so each tints and scales with the theme exactly like the rest of the app's
- * iconography ([WatchArt], [NavIcons]).
- *
- * [ThemeBackdrop] draws it at a user-set opacity (Settings -> Display -> Background), so it reads as a
- * faint wash by default and can be dialled to 0 (off) or all the way up. The painters themselves paint
- * at full strength; the alpha is applied by the caller once, over the whole layer.
- */
+/** The painters paint at full strength; the caller applies the user's alpha once, over the whole
+ *  layer. */
 @Composable
 fun ThemeBackdrop(alphaPct: Int, modifier: Modifier = Modifier) {
     if (alphaPct <= 0) return
     val palette = LocalT1dmSemantics.current
     val a = (alphaPct / 100f).coerceIn(0f, 1f)
-    // Drop-in override: if a raster `@drawable/theme_bg_<themeId>` (e.g. theme_bg_umbrella.png,
-    // theme_bg_hello_kitty.png) has been placed in the app, use it as the backdrop, scaled to fill;
-    // otherwise fall back to the pure-Canvas painter below. This lets the user supply their own
-    // per-theme wallpaper/logo without touching code — it is drawn at the same user-set opacity.
     val resId = rememberBackdropRasterId(palette.id)
     if (resId != 0) {
-        // Draw the supplied image as a CENTRED motif at half the screen size (not a full-bleed crop),
-        // over the app-background base, at the user's opacity. Fit (not Crop) keeps the whole motif
-        // visible; the 0.5 fraction is the "half size" the backdrop reads best at.
+        // Centred at half size, Fit rather than Crop, so the whole motif stays visible.
         Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Image(
                 painter = painterResource(resId),
@@ -62,8 +48,7 @@ fun ThemeBackdrop(alphaPct: Int, modifier: Modifier = Modifier) {
     }
 }
 
-/** The drop-in raster id for [themeId] (`@drawable/theme_bg_<themeId>`), or 0 when none ships. Held
- *  here so [ThemeBackdrop] resolves it once per theme rather than on every draw. */
+/** `@drawable/theme_bg_<themeId>`, or 0 when none ships. */
 @Composable
 private fun rememberBackdropRasterId(themeId: String): Int {
     val ctx = LocalContext.current
@@ -73,24 +58,16 @@ private fun rememberBackdropRasterId(themeId: String): Int {
     }
 }
 
-/**
- * The themes with a signature motif, and the painter each is drawn by.
- *
- * [drawThemeBackground] dispatches through it; a theme absent from it paints a flat wash.
- */
 private val MOTIF_PAINTERS: Map<String, DrawScope.(T1dmPalette) -> Unit> = mapOf(
     ThemeIds.TRON to { p -> drawTronBackground(p) },
     ThemeIds.UMBRELLA to { p -> drawUmbrellaBackground(p) },
     ThemeIds.HELLO_KITTY to { p -> drawHelloKittyBackground(p) },
 )
 
-/** Dispatch to the active theme's painter; a custom/unknown theme gets a plain background wash. */
 fun DrawScope.drawThemeBackground(p: T1dmPalette) {
     val painter = MOTIF_PAINTERS[p.id]
     if (painter != null) painter(p) else drawRect(p.background)
 }
-
-// ── Per-theme painters (designed in the 7D theme pass; pure shape APIs only) ──────────────────────────
 
 private fun DrawScope.drawTronBackground(p: T1dmPalette) {
     val w = size.width
@@ -98,10 +75,9 @@ private fun DrawScope.drawTronBackground(p: T1dmPalette) {
     val cx = w / 2f
     val horizon = h * 0.42f
 
-    // Opaque base so the whole backdrop sits under the caller's alpha layer.
+    // Opaque base, under the caller's alpha layer.
     drawRect(p.background, size = size)
 
-    // A cold vertical wash that blooms to a bright band exactly at the horizon.
     drawRect(
         Brush.verticalGradient(
             0f to p.background,
@@ -114,7 +90,6 @@ private fun DrawScope.drawTronBackground(p: T1dmPalette) {
         size = size,
     )
 
-    // A radial halo pinned on the vanishing point.
     drawCircle(
         Brush.radialGradient(
             listOf(p.primary.copy(alpha = 0.22f), p.primary.copy(alpha = 0f)),
@@ -125,7 +100,6 @@ private fun DrawScope.drawTronBackground(p: T1dmPalette) {
         center = Offset(cx, horizon),
     )
 
-    // Every conduit is stroked twice: a wide soft bloom, then a thin bright core.
     fun glow(a: Offset, b: Offset, wide: Color, core: Color, wWide: Float, wCore: Float) {
         drawLine(wide, a, b, strokeWidth = wWide, cap = StrokeCap.Round)
         drawLine(core, a, b, strokeWidth = wCore, cap = StrokeCap.Round)
@@ -134,11 +108,10 @@ private fun DrawScope.drawTronBackground(p: T1dmPalette) {
     val meshWide = lerp(p.grid, p.primary, 0.30f).copy(alpha = 0.20f)
     val meshCore = lerp(p.grid, p.primary, 0.60f).copy(alpha = 0.55f)
 
-    // Mirror the lattice above and below the horizon — a floor and a ceiling of light.
     for (half in intArrayOf(1, -1)) {
         val farY = if (half == 1) h else 0f
         val span = kotlin.math.abs(farY - horizon)
-        // Latitude lines: quadratic spacing bunches them toward the horizon (perspective).
+        // Quadratic spacing bunches them toward the horizon.
         val rows = 9
         for (i in 1..rows) {
             val t = i.toFloat() / rows
@@ -152,7 +125,6 @@ private fun DrawScope.drawTronBackground(p: T1dmPalette) {
                 h * 0.006f, h * 0.0015f,
             )
         }
-        // Longitude lines: a fan radiating from the vanishing point past the frame edge.
         val cols = 7
         for (k in -cols..cols) {
             val xFar = cx + k.toFloat() / cols * w * 1.9f
@@ -160,7 +132,6 @@ private fun DrawScope.drawTronBackground(p: T1dmPalette) {
         }
     }
 
-    // The horizon itself — the brightest seam.
     glow(
         Offset(0f, horizon), Offset(w, horizon),
         p.primary.copy(alpha = 0.30f), p.primary.copy(alpha = 0.95f),
@@ -178,7 +149,6 @@ private fun DrawScope.drawUmbrellaBackground(p: T1dmPalette) {
     // Opaque base under the caller's alpha layer.
     drawRect(p.background, size = size)
 
-    // A faint radial lift beneath the mark, and a whisper of a containment ring.
     drawCircle(
         Brush.radialGradient(
             listOf(lerp(p.background, p.primary, 0.12f), p.background),
@@ -188,16 +158,15 @@ private fun DrawScope.drawUmbrellaBackground(p: T1dmPalette) {
     )
     drawCircle(p.primary.copy(alpha = 0.14f), radius = r * 1.06f, center = Offset(cx, cy), style = Stroke(width = w * 0.02f))
 
-    val white = p.ink   // the palette's off-white reads as the logo's white, theme-coherent.
-    val red = p.primary // hazard red.
+    val white = p.ink
+    val red = p.primary
 
-    // Eight octagon vertices, a vertex pointing straight up (the umbrella's peak).
+    // A vertex points straight up.
     fun vert(k: Int): Offset {
         val ang = -kotlin.math.PI / 2.0 + k * kotlin.math.PI / 4.0
         return Offset(cx + (r * kotlin.math.cos(ang)).toFloat(), cy + (r * kotlin.math.sin(ang)).toFloat())
     }
 
-    // Eight wedges, apex at centre, alternating red and white, each shaded from a dark hub outward.
     for (k in 0 until 8) {
         val v0 = vert(k)
         val v1 = vert(k + 1)
@@ -213,13 +182,11 @@ private fun DrawScope.drawUmbrellaBackground(p: T1dmPalette) {
         )
     }
 
-    // Thin dark ribs along every radial, seating each panel like an umbrella's struts.
     for (k in 0 until 8) {
         val v = vert(k)
         drawLine(p.background.copy(alpha = 0.92f), Offset(cx, cy), v, strokeWidth = w * 0.007f, cap = StrokeCap.Butt)
     }
 
-    // The octagon silhouette: a heavy dark contour with a fine bright inner highlight.
     val oct = Path().apply {
         val v0 = vert(0); moveTo(v0.x, v0.y)
         for (k in 1 until 8) { val v = vert(k); lineTo(v.x, v.y) }
@@ -228,7 +195,6 @@ private fun DrawScope.drawUmbrellaBackground(p: T1dmPalette) {
     drawPath(oct, lerp(red, Color.Black, 0.45f), style = Stroke(width = w * 0.012f, join = StrokeJoin.Miter))
     drawPath(oct, white.copy(alpha = 0.35f), style = Stroke(width = w * 0.003f, join = StrokeJoin.Miter))
 
-    // The central hub.
     drawCircle(lerp(red, Color.Black, 0.30f), radius = r * 0.11f, center = Offset(cx, cy))
     drawCircle(white.copy(alpha = 0.85f), radius = r * 0.11f, center = Offset(cx, cy), style = Stroke(width = w * 0.006f))
 }
@@ -243,7 +209,6 @@ private fun DrawScope.drawHelloKittyBackground(p: T1dmPalette) {
     // Opaque base under the caller's alpha layer.
     drawRect(p.background, size = size)
 
-    // A gentle blush wash, paling at the crown, warming toward the foot.
     drawRect(
         Brush.verticalGradient(
             0f to lerp(p.background, p.surface, 0.45f),
@@ -254,7 +219,6 @@ private fun DrawScope.drawHelloKittyBackground(p: T1dmPalette) {
         size = size,
     )
 
-    // A reusable heart, tip down.
     fun heart(x: Float, y: Float, s: Float, color: Color) {
         val path = Path().apply {
             moveTo(x, y + s)
@@ -265,7 +229,6 @@ private fun DrawScope.drawHelloKittyBackground(p: T1dmPalette) {
         drawPath(path, color)
     }
 
-    // Hearts strewn quietly across the field so the face still leads.
     heart(w * 0.14f, h * 0.16f, w * 0.045f, p.primary.copy(alpha = 0.35f))
     heart(w * 0.86f, h * 0.12f, w * 0.035f, p.secondary.copy(alpha = 0.40f))
     heart(w * 0.90f, h * 0.80f, w * 0.05f, p.primary.copy(alpha = 0.30f))
@@ -275,7 +238,7 @@ private fun DrawScope.drawHelloKittyBackground(p: T1dmPalette) {
     val outline = lerp(p.ink, Color.Black, 0.30f)
     val faceW = w * 0.012f
 
-    // Ears beneath the face — a filled triangle each side.
+    // Ears, drawn beneath the face.
     for (sgn in intArrayOf(-1, 1)) {
         val ear = Path().apply {
             moveTo(cx + sgn * rF * 0.20f, cy - rF * 0.78f)
@@ -287,7 +250,6 @@ private fun DrawScope.drawHelloKittyBackground(p: T1dmPalette) {
         drawPath(ear, outline, style = Stroke(width = faceW, join = StrokeJoin.Round, cap = StrokeCap.Round))
     }
 
-    // The round white face — a soft cast shadow, a radial sheen, a crisp dark contour.
     drawCircle(Color.Black.copy(alpha = 0.06f), radius = rF, center = Offset(cx + w * 0.006f, cy + h * 0.008f))
     drawCircle(
         Brush.radialGradient(
@@ -298,7 +260,6 @@ private fun DrawScope.drawHelloKittyBackground(p: T1dmPalette) {
     )
     drawCircle(outline, radius = rF, center = Offset(cx, cy), style = Stroke(width = faceW))
 
-    // Pink inner-ear accents peeking above the face.
     for (sgn in intArrayOf(-1, 1)) {
         val inner = Path().apply {
             moveTo(cx + sgn * rF * 0.44f, cy - rF * 0.78f)
@@ -309,12 +270,10 @@ private fun DrawScope.drawHelloKittyBackground(p: T1dmPalette) {
         drawPath(inner, lerp(p.primary, Color.White, 0.25f).copy(alpha = 0.8f))
     }
 
-    // Soft blush cheeks.
     for (sgn in intArrayOf(-1, 1)) {
         drawCircle(p.primary.copy(alpha = 0.22f), radius = rF * 0.14f, center = Offset(cx + sgn * rF * 0.56f, cy + rF * 0.20f))
     }
 
-    // Two dark oval eyes, each with a small catch-light.
     val eye = lerp(p.ink, Color.Black, 0.45f)
     for (sgn in intArrayOf(-1, 1)) {
         val ex = cx + sgn * rF * 0.42f
@@ -332,7 +291,6 @@ private fun DrawScope.drawHelloKittyBackground(p: T1dmPalette) {
     drawOval(Color(0xFFF6B93B), topLeft = noseTL, size = Size(noseW, noseH))
     drawOval(lerp(Color(0xFFF6B93B), Color.Black, 0.30f), topLeft = noseTL, size = Size(noseW, noseH), style = Stroke(width = w * 0.004f))
 
-    // Three whiskers a side, splaying gently.
     val whisker = p.inkMuted
     for (sgn in intArrayOf(-1, 1)) {
         for (row in -1..1) {
@@ -347,7 +305,7 @@ private fun DrawScope.drawHelloKittyBackground(p: T1dmPalette) {
         }
     }
 
-    // The signature bow, perched on the viewer's-right ear.
+    // The bow, on the viewer's-right ear.
     val bx = cx + rF * 0.62f
     val by = cy - rF * 0.92f
     val ww = rF * 0.42f

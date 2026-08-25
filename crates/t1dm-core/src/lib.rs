@@ -1,120 +1,84 @@
-//! t1dm-core — the correctness core. Phase 1 lands the cheapest, most safety-adjacent
-//! members: the AiDEX X advertisement decode + its bespoke CRC32 (CGM.md §3.1/§3.2)
-//! and the Kovatchev risk transform `f`/`f_inv` with clamp guards (INFERENCE.md §5).
-//! Model pre/post, the curve engine and watch crypto land in later phases
-//! (§2.2).
-//!
-//! Release builds are `panic = "abort"`, so a panic tears down the whole process.
-//! The discipline that follows: **every `#[uniffi::export]` fn returns `Result` (or is
-//! total) and never panics on hostile input** — a malformed advert is `Err`, not a
-//! slice-OOB. `decode_advert`/`advert_crc32` are fuzzed to prove this.
+//! Release builds are `panic = "abort"`: every `#[uniffi::export]` fn returns `Result` or is
+//! total, and never panics on hostile input.
 
 uniffi::setup_scaffolding!();
 
-/// Model pre/post-processing pipeline (savgol, normalize, context build, quantile
-/// assemble/decode, degeneracy guard). Phase 2, INFERENCE.md §§6-8.
+/// INFERENCE.md §§6-8.
 mod preproc;
 pub use preproc::*;
 
-/// The BG head re-run on device from the exported head weights, and the low-rank adapter
-/// that personalises it. The trunk stays frozen inside the `.pte`; everything trainable is a
-/// few thousand numbers here, fitted from the patient's own matured windows.
+/// The trunk stays frozen inside the `.pte`; only the head and its adapter are trainable here.
 mod head;
 pub use head::*;
 
-/// A seeded synthetic patient: BG, meal, insulin and exercise channels on the five-minute
-/// grid, for running a model over a context longer than the history on hand. Never stored,
-/// never synced, and never read by anything that classifies a category.
+/// Seeded synthetic channels on the five-minute grid. Never stored, never synced, never read
+/// by anything that classifies a category.
 mod synth;
 pub use synth::*;
 
-/// The shared curve/PK engine (gamma Ra + Bateman basal + bolus PK, bucketize, IOB/COB,
-/// basal tiling). Phase 4, §3.3; bit-faithful to `simulator.py`.
+/// Bit-faithful to `simulator.py`.
 mod curve;
 pub use curve::*;
 
-/// Watch-link cryptography (X25519 ECDH → HKDF-SHA256 → per-direction AES-128-GCM with a
-/// windowed nonce + deterministic SAS). Phase 5, §3,.
 mod watch;
 pub use watch::*;
 
-/// Advanced glycemic statistics (TIR/TBR/TAR, LBGI/HBGI, MAGE, AGP percentile bands,
-/// per-channel) vs a user-configurable target range. Phase 6, §"Phase 6".
 mod stats;
 pub use stats::*;
 
-/// On-device forecast-accuracy aggregator (per-horizon RMSE/MAE/MARD + central-90
-/// coverage) over matured prediction↔realization pairs, and the full band-projected metric
-/// suite of `SPEC/invariants.md` §6.1-6.3. Phase 7C, §"Phase 7".
+/// `SPEC/invariants.md` §6.1-6.3.
 mod accuracy;
 pub use accuracy::*;
 
-/// Split-conformal quantile recalibration of the band fan (`SPEC/inference.md` §8.4) — the fit,
-/// from the patient's own matured windows, and the median-fixed monotone apply. Display-side
-/// only: nothing that classifies a category reads a calibrated fan.
+/// `SPEC/inference.md` §8.4. Display-side only: nothing that classifies a category reads a
+/// calibrated fan.
 mod conformal;
 pub use conformal::*;
 
-/// The classical forecast baseline the neural model is compared against: direct multi-step ridge
-/// regression on lagged CGM plus causal IOB/COB, fitted on the patient's own history, its band fan
-/// supplied by the same §8.4 split conformal the neural fan uses. Advisory and comparative only.
+/// Ridge baseline; band fan from the same §8.4 conformal. Advisory and comparative only.
 mod baseline;
 pub use baseline::*;
 
-/// Continuous Glucose-Error Grid Analysis (Kovatchev 2004) — the P-EGA × R-EGA zone algebra
-/// the metric suite's %AP/%BE/%EP is reduced from. Crate-internal; reached through
-/// `accuracy::forecast_metrics_suite`.
+/// Continuous Glucose-Error Grid Analysis (Kovatchev 2004).
 mod cg_ega;
 
-/// 2D arcade car physics for the in-app hill-climb minigame, whose terrain IS the glucose
-/// trace. Cosmetic only — no §3.6 path, no reading, dose or alarm depends on it. A uniffi
-/// Object so a 60 Hz frame loop costs one FFI call per frame.
+/// Cosmetic only: no reading, dose or alarm depends on it. A uniffi Object so a 60 Hz frame
+/// loop costs one FFI call per frame.
 mod game;
 pub use game::*;
 
-// ── CLINICAL Kovatchev risk constants (INFERENCE.md §5, §11) ───────────────────────
-// The PUBLISHED parameterization (Kovatchev 1997), fixed on purpose so LBGI/HBGI/ADRR stay
-// comparable to the diabetes literature. This is NOT the risk space the model forecasts in:
-// a checkpoint carries its OWN re-anchored constants, which arrive in the descriptor's
-// `kovatchev` block and are read from there (see `preproc::KovatchevParams`). The two
-// deliberately differ — do not "unify" them, and never decode a model output with these.
+// The PUBLISHED parameterization (Kovatchev 1997, INFERENCE.md §5), for literature
+// comparability. NOT the risk space the model forecasts in: a checkpoint carries its own
+// re-anchored constants in the descriptor. Never decode a model output with these.
 const KOV_CLINICAL_SCALE: f64 = 1.509;
 const KOV_CLINICAL_POWER: f64 = 1.084;
 const KOV_CLINICAL_OFFSET: f64 = 5.381;
-/// Physical BG bounds of the CLINICAL scale (INFERENCE.md §5). The model's own bounds ride
-/// the descriptor (`KovatchevParams::bg_clamp_min` / `_max`) and need not equal these.
+/// Clinical-scale BG bounds (INFERENCE.md §5); the model's own ride the descriptor.
 pub(crate) const CLINICAL_BG_CLAMP_MIN: f64 = 20.0;
 pub(crate) const CLINICAL_BG_CLAMP_MAX: f64 = 500.0;
 
-// ── AiDEX advertisement layout (CGM.md §3.1) ───────────────────────────────────────
-/// The 20-byte 0x0059 glucose payload: 16 data bytes + a trailing LE u32 CRC.
+/// The 20-byte 0x0059 glucose payload (CGM.md §3.1): 16 data bytes + a trailing LE u32 CRC.
 const ADVERT_LEN: usize = 20;
-/// Bytes the CRC is computed over, and the seed is derived from (P[0..15]).
+/// CRC and seed input: P[0..15].
 const ADVERT_DATA_LEN: usize = 16;
-/// CRC32 (advertisement) polynomial: MSB-first, no reflect, no final xor (CGM.md §3.2).
+/// MSB-first, no reflect, no final xor (CGM.md §3.2).
 const ADVERT_CRC_POLY: u32 = 0x04C1_1DB7;
 /// Seed modulus applied to the summed LE words (CGM.md §3.2).
 const ADVERT_SEED_MOD: u32 = 0x7F_A777;
-/// Glucose occupies the low 10 bits of the 16-bit bitfield; the valid flag is bit 15.
+/// Glucose is the low 10 bits of the 16-bit bitfield; the valid flag is bit 15.
 const GLUCOSE_MASK: u16 = 0x03FF;
 
-/// Error surface crossing the FFI. uniffi maps this onto `CoreException` on the Kotlin
-/// side, so callers see a typed throwable rather than a process abort. `decode_advert`
-/// yields `Decode` on a short or CRC-failing payload; the Kotlin adapter maps that to the
-/// contract's `null` (NativeCore.decodeAdvert returns `DecodedAdvert?`).
+/// uniffi maps this onto Kotlin `CoreException`; the adapter maps `Decode` to the contract's
+/// `null` (`NativeCore.decodeAdvert` returns `DecodedAdvert?`).
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum CoreError {
-    /// A byte payload failed to decode/validate (too short, CRC mismatch, bad framing).
     #[error("decode failed: {reason}")]
     Decode { reason: String },
-    /// A catch-all for invariants that should never trip in practice; surfacing it as
-    /// `Err` keeps us on the no-panic path even for "impossible" states.
     #[error("internal error: {reason}")]
     Internal { reason: String },
 }
 
-/// One of the two trailing minute-glucose readings in a LinX advert (CGM.md §3.1).
-/// uniffi record → Kotlin `com.t1dm.core.model.PrevGlucose` (mapped in the adapter).
+/// CGM.md §3.1. uniffi record → Kotlin `com.t1dm.core.model.PrevGlucose`.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct PrevGlucose {
     pub glucose_mgdl: i32,
@@ -122,10 +86,7 @@ pub struct PrevGlucose {
     pub quality: i32,
 }
 
-/// The decoded, CRC-validated 20-byte LinX / AiDEX X glucose advertisement
-/// (CGM.md §3.1/§3.2). A pure data carrier — the WARMUP heuristic, gating and
-/// grid-stamping live upstream in Kotlin. `crc32` holds the validated (== stored ==
-/// computed) CRC as an unsigned value in the low 32 bits of the i64.
+/// CGM.md §3.1/§3.2. `crc32` holds the validated CRC unsigned in the low 32 bits of the i64.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct DecodedAdvert {
     pub min_from_start: i32,
@@ -138,14 +99,10 @@ pub struct DecodedAdvert {
     pub crc32: i64,
 }
 
-/// Phase-0 liveness probe for the Kotlin↔Rust seam. Echoes its argument through the
-/// uniffi boundary so both sides can assert byte-identical behaviour.
 #[uniffi::export]
 pub fn roundtrip(msg: String) -> Result<String, CoreError> {
     Ok(format!("rust-core echo: {msg}"))
 }
-
-// ── AiDEX advertisement decode + CRC (CGM.md §3.1/§3.2) ─────────────────────────────
 
 #[inline]
 fn le32(b: &[u8]) -> u32 {
@@ -157,10 +114,8 @@ fn le16(b: &[u8]) -> u16 {
     u16::from_le_bytes([b[0], b[1]])
 }
 
-/// `crc32_normal` (CGM.md §3.2): bit-serial, MSB-first, big-endian bit order, no
-/// reflection, no final xor. The `<< 1` on `u32` drops the high bit (wraps) rather than
-/// panicking — shift-overflow only panics on an out-of-range shift *amount*, never on
-/// value bits shifting out.
+/// CGM.md §3.2. `<< 1` on u32 drops the high bit rather than panicking: shift-overflow
+/// panics only on an out-of-range shift amount.
 fn crc32_normal(buf: &[u8], init: u32) -> u32 {
     let mut crc = init;
     for &b in buf {
@@ -176,14 +131,11 @@ fn crc32_normal(buf: &[u8], init: u32) -> u32 {
     crc
 }
 
-/// The advertisement CRC32 over the 16-byte data region (CGM.md §3.2): a data-derived
-/// seed (sum of the four LE words mod `0x7FA777`) fed into `crc32_normal`. `data` must
-/// be at least 16 bytes; only the first 16 are used.
+/// CGM.md §3.2. Seed is the four LE words summed mod `0x7FA777`. `data` must be at least
+/// 16 bytes; only the first 16 are used.
 fn advert_crc(data: &[u8]) -> u32 {
-    // The seed accumulates in a WRAPPING u32 — the sensor firmware's native uint32.
-    // A wider accumulator diverges the moment the four LE words sum past 2^32; CGM.md's
-    // published vectors never overflow, so this stayed invisible until live hardware
-    // (whose larger minfromstart/quality bytes push the sum over) exercised the wrap.
+    // WRAPPING u32 — the firmware's native uint32. A wider accumulator diverges once the four
+    // LE words sum past 2^32, which CGM.md's published vectors never reach but live hardware does.
     let seed = le32(&data[0..4])
         .wrapping_add(le32(&data[4..8]))
         .wrapping_add(le32(&data[8..12]))
@@ -197,10 +149,8 @@ fn glucose_of(bitfield: u16) -> (i32, bool) {
     ((bitfield & GLUCOSE_MASK) as i32, (bitfield >> 15) & 1 == 1)
 }
 
-/// Decode + CRC-validate a LinX / AiDEX X glucose advertisement (CGM.md §3.1/§3.2).
-/// `payload` is the 0x0059 manufacturer data (≥20 bytes; the interleaved 5-byte status
-/// advert and any trailing bytes are rejected/ignored). Returns `Err(Decode)` — never
-/// panics — on a short or CRC-failing payload, which the Kotlin adapter maps to `null`.
+/// CGM.md §3.1/§3.2. `payload` is the 0x0059 manufacturer data, ≥20 bytes; trailing bytes are
+/// ignored. `Err(Decode)` — never a panic — on short or CRC-failing input; Kotlin maps it to `null`.
 #[uniffi::export]
 pub fn decode_advert(payload: Vec<u8>) -> Result<DecodedAdvert, CoreError> {
     if payload.len() < ADVERT_LEN {
@@ -241,9 +191,8 @@ pub fn decode_advert(payload: Vec<u8>) -> Result<DecodedAdvert, CoreError> {
     })
 }
 
-/// The advertisement CRC32 over a payload's 16-byte data region (CGM.md §3.2), returned
-/// unsigned in the low 32 bits of the i64. `Err(Decode)` — never a panic — if the payload
-/// is shorter than the 16 data bytes the CRC is defined over.
+/// CGM.md §3.2, over the 16-byte data region; returned unsigned in the low 32 bits of the i64.
+/// `Err(Decode)` — never a panic — if the payload is shorter than 16 bytes.
 #[uniffi::export]
 pub fn advert_crc32(payload: Vec<u8>) -> Result<i64, CoreError> {
     if payload.len() < ADVERT_DATA_LEN {
@@ -257,17 +206,9 @@ pub fn advert_crc32(payload: Vec<u8>) -> Result<i64, CoreError> {
     Ok(advert_crc(&payload) as i64)
 }
 
-// ── Kovatchev risk transform (INFERENCE.md §5) ─────────────────────────────────────
-
-/// `f(g) = SCALE·(ln(g)^POWER − OFFSET)`, mg/dL → risk, on the **clinical** (published)
-/// parameterization. Total: BG is clamped to the physical `[20, 500]` first (guaranteeing a
-/// positive `ln` base and a finite result); a NaN input is treated as the low bound rather
-/// than propagated.
-///
-/// This drives the glycemic indices (LBGI/HBGI/ADRR) and the risk-warped display axis, where
-/// literature comparability is the point. **Model outputs do not live on this scale** — decode
-/// those through the descriptor's own [`ModelDescriptor::kovatchev`], which a re-anchored
-/// checkpoint ships with different constants and different physical bounds.
+/// mg/dL → risk on the CLINICAL scale (INFERENCE.md §5). NaN is treated as the low bound.
+/// Model outputs are not on this scale — decode those through the descriptor's own
+/// [`ModelDescriptor::kovatchev`].
 #[uniffi::export]
 pub fn kovatchev_f(mgdl: f64) -> f64 {
     let g = if mgdl.is_nan() {
@@ -278,13 +219,8 @@ pub fn kovatchev_f(mgdl: f64) -> f64 {
     KOV_CLINICAL_SCALE * (g.ln().powf(KOV_CLINICAL_POWER) - KOV_CLINICAL_OFFSET)
 }
 
-/// `f_inv(r) = exp((r/SCALE + OFFSET)^(1/POWER))`, risk → mg/dL on the **clinical** scale,
-/// with the guards of INFERENCE.md §5: non-finite risk is replaced (NaN/−inf → f(20), +inf →
-/// f(500)), the risk input is clamped to `[f(20), f(500)]` (keeping the base ≥ 0, so no
-/// complex/NaN and no fp `exp` overflow), and the output is clamped to `[20, 500]` mg/dL.
-///
-/// The inverse of [`kovatchev_f`], and carries the same warning: this is not the transform
-/// that decodes a forecast.
+/// risk → mg/dL, the inverse of [`kovatchev_f`] with the guards of INFERENCE.md §5. Not the
+/// transform that decodes a forecast.
 #[uniffi::export]
 pub fn kovatchev_f_inv(risk: f64) -> f64 {
     let r_lo = kovatchev_f(CLINICAL_BG_CLAMP_MIN); // f(20) ≈ −3.1629
@@ -318,8 +254,6 @@ mod tests {
         assert_eq!(roundtrip(String::new()).unwrap(), "rust-core echo: ");
     }
 
-    // ── CGM.md §3.1/§3.2 golden vectors ─────────────────────────────────────────────
-
     #[test]
     fn decode_advert_golden_vector() {
         let p = hex("60 54 01 00 1F 5C 80 3E 54 80 3A 4E 80 36 00 00 7E AE DD 01");
@@ -345,7 +279,6 @@ mod tests {
 
     #[test]
     fn decode_advert_live_sample() {
-        // Live sample, serial 22222C74D9: 115 mg/dL, trend +0.8, prev 112/110, minfromstart 1418.
         let p = hex("8a 05 00 00 08 73 80 63 70 80 64 6e 80 63 00 00 a0 7d b6 66");
         let d = decode_advert(p).expect("live sample must decode");
         assert_eq!(d.min_from_start, 1418);
@@ -359,9 +292,7 @@ mod tests {
 
     #[test]
     fn decode_advert_live_overflow_seed() {
-        // Real capture, serial 22222C74D9 (minfromstart 4338): the four LE seed words
-        // sum past 2^32, so a non-wrapping accumulator computes the wrong CRC. Locks in
-        // the u32-wrapping seed that CGM.md's smaller published vectors never exercise.
+        // The four LE seed words sum past 2^32; a non-wrapping accumulator gets the wrong CRC.
         let p = hex("f2 10 00 00 14 ad 80 63 ac 80 64 a8 80 63 00 00 dd fe f8 3f");
         let d = decode_advert(p).expect("live overflow-seed advert must decode");
         assert_eq!(d.min_from_start, 4338);
@@ -374,8 +305,6 @@ mod tests {
         );
     }
 
-    // ── decode is total on hostile input (never panics, always Err) ─────────────────
-
     #[test]
     fn decode_rejects_short_payload() {
         for len in 0..ADVERT_LEN {
@@ -386,7 +315,6 @@ mod tests {
 
     #[test]
     fn decode_rejects_crc_failure() {
-        // Golden vector with one corrupted CRC byte must fail closed.
         let mut p = hex("60 54 01 00 1F 5C 80 3E 54 80 3A 4E 80 36 00 00 7E AE DD 01");
         p[16] ^= 0xFF;
         assert!(matches!(decode_advert(p), Err(CoreError::Decode { .. })));
@@ -401,9 +329,7 @@ mod tests {
 
     #[test]
     fn decode_fuzz_never_panics() {
-        // Deterministic xorshift stream of 20-byte payloads. Garbage overwhelmingly fails
-        // the CRC → Err; the invariant under test is that no input panics (the harness
-        // turns any panic into a failure) and that a decoded packet's CRC is self-consistent.
+        // Deterministic xorshift; the invariant under test is that no input panics.
         let mut state: u64 = 0x1234_5678_9ABC_DEF0;
         let mut next = || {
             state ^= state << 13;
@@ -421,23 +347,19 @@ mod tests {
             match decode_advert(p.to_vec()) {
                 Ok(d) => {
                     decoded += 1;
-                    // A successful decode means computed == stored CRC by construction.
                     assert_eq!(d.crc32 as u32, advert_crc(&p));
                 }
                 Err(CoreError::Decode { .. }) => {}
                 Err(e) => panic!("unexpected error variant: {e:?}"),
             }
         }
-        // Also feed variable-length garbage, including sub-minimal lengths.
         for len in 0..40usize {
             let p: Vec<u8> = (0..len).map(|i| (next() as u8) ^ (i as u8)).collect();
             let _ = decode_advert(p);
         }
-        // Sanity: a random 32-bit CRC matches ~1/2^32, so essentially none of 200k should pass.
+        // A random 32-bit CRC matches ~1/2^32, so essentially none of 200k should pass.
         assert!(decoded < 8, "improbably many random CRC hits: {decoded}");
     }
-
-    // ── INFERENCE.md §5 Kovatchev reference values + round-trip ──────────────────────
 
     #[test]
     fn kovatchev_f_reference_values() {
@@ -465,7 +387,6 @@ mod tests {
 
     #[test]
     fn kovatchev_f_inv_reference_values() {
-        // Inverse of the §5 reference risks lands back on the mg/dL values.
         let cases = [(-3.1629, 20.0), (-0.2196, 100.0), (0.8792, 180.0)];
         for (r, want) in cases {
             let got = kovatchev_f_inv(r);
@@ -475,7 +396,6 @@ mod tests {
 
     #[test]
     fn kovatchev_guards_are_total() {
-        // Non-finite and out-of-range inputs must clamp, never NaN/inf out.
         for r in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1e9, 1e9] {
             let g = kovatchev_f_inv(r);
             assert!(

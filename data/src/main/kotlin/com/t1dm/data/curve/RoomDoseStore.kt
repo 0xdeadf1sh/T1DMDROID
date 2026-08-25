@@ -14,12 +14,8 @@ import com.t1dm.data.db.LoggedMealEntity
 import com.t1dm.data.db.toDoubleList
 
 /**
- * The Room-backed [DoseStore] (§3.3): resolves `logged_dose` / `logged_meal`
- * rows into [CurveEvent]s via the [CurveEngine], and reads the active `basal_schedule`. Each
- * row is self-describing (it carries its own curve params), so reconstruction is stable across
- * preset changes; a meal's optional `customCurve` BLOB overrides the gamma. Window queries use
- * the DAO `tsMs BETWEEN` reads — the [ChannelBuilder] pads the window back far enough to catch
- * any still-acting tail.
+ * Each row carries its own curve params, so reconstruction is stable across preset changes.
+ * Window reads key on `tsMs`; the caller pads the window back to catch a still-acting tail.
  */
 class RoomDoseStore(
     private val engine: CurveEngine,
@@ -37,12 +33,7 @@ class RoomDoseStore(
     override suspend fun basalInjectionEvents(fromMs: Long, toMs: Long): List<CurveEvent> =
         loggedDoses.inRange(fromMs, toMs).filter { it.kind == DoseKind.BASAL }.map { it.toCurveEvent() }
 
-    /**
-     * Both halves from ONE `logged_dose` window read. The two calls above are the same query over the
-     * same window differing only in the `kind` they keep, so a caller wanting both — every IOB gather
-     * and every channel build for a user with no basal schedule — issued the query twice. `filter`
-     * preserves order, so each half is the identical list the separate call returns.
-     */
+    /** One window read for both halves; `filter` keeps order, so each half matches the separate call. */
     override suspend fun insulinAndBasalInjectionEvents(
         fromMs: Long,
         toMs: Long,
@@ -59,7 +50,6 @@ class RoomDoseStore(
     }
 
     private suspend fun LoggedMealEntity.toCurveEvent(): CurveEvent {
-        // A user-drawn appearance curve overrides the GI-derived gamma (food-builder path).
         val values = customCurve?.toDoubleList()
             ?: engine.gamma(
                 grams,
@@ -71,16 +61,12 @@ class RoomDoseStore(
     }
 
     private suspend fun LoggedDoseEntity.toCurveEvent(): CurveEvent {
-        // A user-drawn action curve overrides the analytic gamma/Bateman (custom insulin type),
-        // mirroring the meal path.
         val values = customCurve?.toDoubleList()
             ?: when (kind) {
                 DoseKind.BOLUS -> if (k != null && theta != null) {
-                    // An already-logged gamma bolus reconstructs from its own stored params.
                     engine.gamma(units, k, theta, durationMin).asList()
                 } else {
-                    // A clinical exp-action bolus normally rides in customCurve; this is the degenerate
-                    // fallback (NovoRapid-shaped exp action) — no simulator gamma.
+                    // Fallback only: a clinical exp-action bolus rides in customCurve. NovoRapid-shaped.
                     engine.expAction(units, minOf(75.0, durationMin * 0.4), durationMin).asList()
                 }
                 DoseKind.BASAL -> engine.bateman(
@@ -107,7 +93,7 @@ class RoomDoseStore(
     )
 
     private companion object {
-        /** Fallback GI when a meal carries neither explicit gamma params nor a GI (medium-GI). */
+        /** Medium GI. */
         const val DEFAULT_GI: Double = 50.0
     }
 }

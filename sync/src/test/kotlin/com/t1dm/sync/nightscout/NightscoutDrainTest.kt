@@ -18,10 +18,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.IOException
 
-/**
- * The bridge's behaviour inside the shared drainer: what it must never do to the patient's own sync,
- * and the replay case its idempotency guard exists for.
- */
 class NightscoutDrainTest {
 
     private val dispatchers = TestDispatchers()
@@ -78,9 +74,8 @@ class NightscoutDrainTest {
         state = state,
     )
 
-    /** A T1DMSERVER-bound row carrying its own envelope. Deliberately NOT an INGEST dirty-marker:
-     *  that resolves through `sampleAt`, which is null here, so it would be dropped before the wire
-     *  and could not witness whether the bridge disturbed it. */
+    /** Deliberately not an INGEST marker: `sampleAt` is null here, so one would be dropped before the
+     *  wire and could not witness whether the bridge disturbed it. */
     private fun serverRow(key: String) = OutboxEntity(
         kind = OutboxKind.ALERT,
         dedupKey = key,
@@ -104,11 +99,8 @@ class NightscoutDrainTest {
         { 10_000L }, { 0.0 }, bridge, { null },
     )
 
-    /**
-     * The case the guard exists for. `resetState` reclaims a crash-wedged INFLIGHT row WITHOUT
-     * advancing `attempts`, so keying the replay check on `attempts` alone would skip precisely the
-     * row that was on the wire when the process died — and re-POST a bolus the host already holds.
-     */
+    /** `resetState` reclaims a crash-wedged INFLIGHT row WITHOUT advancing `attempts`, so keying the
+     *  replay check on `attempts` alone would re-POST a bolus the host already holds. */
     @Test
     fun `a row reclaimed from INFLIGHT is treated as a replay`() = runTest {
         val dao = FakeOutboxDao()
@@ -122,7 +114,6 @@ class NightscoutDrainTest {
         assertEquals(1, result.sent)
     }
 
-    /** A first attempt is not a replay, and must not pay for a read-back it does not need. */
     @Test
     fun `a first attempt skips the guard and posts`() = runTest {
         val dao = FakeOutboxDao()
@@ -135,10 +126,6 @@ class NightscoutDrainTest {
         assertEquals(1, bridge.requests.size)
     }
 
-    /**
-     * A third party rejecting its credential is THEIR problem. It must back off its own row and never
-     * stand the queue down, or a misconfigured bridge would stall the patient's own record.
-     */
     @Test
     fun `a bridge 401 backs off one row and never stands the queue down`() = runTest {
         val dao = FakeOutboxDao()
@@ -154,10 +141,8 @@ class NightscoutDrainTest {
         assertTrue(result.nightscoutError!!.contains("401"))
     }
 
-    /**
-     * One unreachable bridge must cost the pass ONE timeout, not one per bridged row — the batch is
-     * FIFO and interleaved, so the patient's own rows queue behind every one of them.
-     */
+    /** The batch is FIFO and interleaved: one unreachable bridge must cost the pass one timeout, not
+     *  one per bridged row. */
     @Test
     fun `one bridge transport failure stands the bridge down for the rest of the pass`() = runTest {
         val dao = FakeOutboxDao()
@@ -173,7 +158,6 @@ class NightscoutDrainTest {
         assertTrue("the server row is unaffected", server.requests.isNotEmpty())
     }
 
-    /** A bridge switched off while rows were queued drops them; it must not retry them forever. */
     @Test
     fun `rows for a disabled bridge are dropped, not retried`() = runTest {
         val dao = FakeOutboxDao()
@@ -187,7 +171,6 @@ class NightscoutDrainTest {
         assertEquals(0, dao.count())
     }
 
-    /** A bridged BG slot whose sample has vanished has nothing to mirror. */
     @Test
     fun `a bg marker with no sample is dropped`() = runTest {
         val dao = FakeOutboxDao()

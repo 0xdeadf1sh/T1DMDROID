@@ -8,18 +8,10 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
 
-/**
- * Bootstraps the :inference host-JVM test source set around [ModelStore.delete]. [delete] never
- * touches the Rust parser (it resolves ids straight off the descriptor JSON), so a bare
- * [StubNativeCore] suffices — the point is the on-disk sweep: EVERY descriptor + `.pte` pair sharing
- * the deleted id goes (a model may ship under several backend variants under one id), the other
- * model's pair survives, and an id that names nothing returns false.
- */
 class ModelStoreTest {
 
     @get:Rule val tmp = TemporaryFolder()
 
-    /** Write a `<name>.descriptor.json` carrying [id] + [artifact], and touch the artifact beside it. */
     private fun seed(dir: File, name: String, id: String, artifact: String) {
         File(dir, "$name.descriptor.json").writeText("""{"id":"$id","artifact":"$artifact"}""")
         File(dir, artifact).writeText("pte-bytes")
@@ -28,7 +20,6 @@ class ModelStoreTest {
     @Test
     fun delete_removes_only_the_matching_id_including_all_variants() {
         val dir = tmp.newFolder("models")
-        // idA ("alpha") ships two backend variants sharing the id; idB ("beta") is unrelated.
         seed(dir, "alpha.xnnpack", id = "alpha", artifact = "alpha.xnnpack.pte")
         seed(dir, "alpha.neuron", id = "alpha", artifact = "alpha.neuron.pte")
         seed(dir, "beta", id = "beta", artifact = "beta.xnnpack.pte")
@@ -41,7 +32,6 @@ class ModelStoreTest {
         assertFalse(File(dir, "alpha.xnnpack.pte").exists())
         assertFalse(File(dir, "alpha.neuron.descriptor.json").exists())
         assertFalse(File(dir, "alpha.neuron.pte").exists())
-        // idB's pair is untouched.
         assertTrue(File(dir, "beta.descriptor.json").exists())
         assertTrue(File(dir, "beta.xnnpack.pte").exists())
     }
@@ -58,11 +48,7 @@ class ModelStoreTest {
         assertTrue(File(dir, "beta.xnnpack.pte").exists())
     }
 
-    /**
-     * The head side file belongs to the artifact and is swept with it. An orphaned head is not
-     * merely litter: it would be paired with whatever next takes the id, and an adapter fitted
-     * against one head reads the wrong weights under another with every shape check still passing.
-     */
+    /** An orphaned head would pair with whatever next takes the id, every shape check passing. */
     @Test
     fun delete_takes_the_head_side_file_with_the_artifact() {
         val dir = tmp.newFolder("models")

@@ -8,21 +8,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 
-/**
- * The Settings root — the complete configuration hub (Phase 7C, items 14 & 17). Every
- * user-tunable knob in the app is reachable from here, grouped into sub-sections; the safety-critical,
- * deliberately-UNBOUNDED knobs (alarm thresholds, calculator rails/thresholds, loss-of-signal windows)
- * are grouped under "Alarms & safety" and flagged inside their own screens. The
- * bottom-nav overflow is deliberately left for Phase 7D — this pass only fleshes out the hub.
- *
- * Above the rows sits the search field: twenty-odd sub-screens hold something over eighty separate
- * knobs, and a hub that lists only the screens cannot answer "where is the DND bypass". It is pinned
- * OUTSIDE the scrolling scaffold so it stays reachable while the rows move under it.
- *
- * Pure/stateless: it holds no state, only routes. Each row navigates to a dedicated sub-screen that
- * the caller ([com.t1dm.app] Navigation) wires to the persisted value + its setter; [onOpenKnob] is
- * that same navigation for a search hit, plus the request to reveal the matched row.
- */
+/** The hub. Rows only navigate; the search field is pinned OUTSIDE the scrolling scaffold so it
+ *  stays reachable while the rows move under it. [onOpenKnob] navigates and reveals the matched row. */
 @Composable
 fun SettingsScreen(
     onOpenDisplay: () -> Unit = {},
@@ -45,19 +32,17 @@ fun SettingsScreen(
     onOpenDeath: () -> Unit = {},
     onOpenDeviceTemp: () -> Unit = {},
     onOpenDeathClock: () -> Unit = {},
-    /** The three most recent committed searches, newest first (persisted in kv by `:app`). */
+    /** Newest first; persisted by `:app`. */
     recentSearches: List<String> = emptyList(),
     onOpenKnob: (SettingsKnob) -> Unit = {},
     onRecordSearch: (String) -> Unit = {},
     onClearRecentSearches: () -> Unit = {},
-    // False in the public flavor: the fail-open DEATH-mode override is compiled out, so its entry row
-    // is withheld rather than shown inert (the death-clock projection row above it stays).
+    // False in the public flavor: the fail-open DEATH-mode override is compiled out, so its row is
+    // withheld rather than shown inert.
     deathModeSupported: Boolean = true,
 ) {
     Column(Modifier.fillMaxSize()) {
         SettingsSearchBar(
-            // The same withholding the DEATH row gets below: an unfiltered index would let the public
-            // build reach a screen its own hub deliberately hides.
             index = SettingsIndex.visible(deathModeSupported),
             recent = recentSearches,
             onOpen = onOpenKnob,
@@ -113,10 +98,7 @@ fun SettingsScreen(
     }
 }
 
-/**
- * The two rows that leave `:feature:settings` entirely (for `:feature:models`). There is nothing of
- * theirs to anchor here, so they are whole-screen entries — a search hit navigates and stops.
- */
+/** Rendered by `:feature:models`, so these are whole-screen entries: a hit navigates and stops. */
 internal val settingsModelsKnobs = listOf(
     SettingsKnob(
         id = "models.select",

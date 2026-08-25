@@ -8,23 +8,9 @@ import com.t1dm.data.T1dmRepository
 import com.t1dm.data.db.CgmAdvertRawEntity
 import kotlinx.coroutines.flow.first
 
-/**
- * The `PUT /v1/cgm-sources` body for one sensor.
- *
- * **`serial` is never sent, by any setting.** It is the number printed on the sensor — for one family it
- * is also the advertised name — so a client that sends it puts a real device identifier into the server's
- * storage, its backups and its operator console, permanently and with no way to recall it. Omitting it is
- * not a contract change and loses nothing but the console's ability to name the physical sensor
- * (`SPEC/http-api.md`, CGM source). `family` and `model` name a product rather than a device and are sent,
- * so the console can still say what kind of sensor a series came from.
- *
- * Deliberately NOT a function of the sensor-name display setting, which it once was. That setting decides
- * whether a name is drawn on this phone's own screen; making the upload depend on it meant reading a name
- * locally started transmitting the serial within one re-upsert, unprompted and irreversibly, from a switch
- * whose label promised only a display change. A local display choice must not move data off the device.
- *
- * Extracted from the adapter so the withholding is a property of a pure function and can be held to it.
- */
+/** `serial` is never sent, by any setting: it identifies a real device, and the server would hold it
+ *  permanently (`SPEC/http-api.md`, CGM source). `family` and `model` name a product, not a device.
+ *  Never keyed off a display setting: a local display choice must not move data off the device. */
 internal fun cgmSourceDto(
     descriptor: CgmSourceDescriptor,
     nowMs: Long,
@@ -36,20 +22,12 @@ internal fun cgmSourceDto(
     updated_at = nowMs,
 )
 
-/**
- * Binds the storage-agnostic `:cgm` [CgmRepository] port onto the Room-backed [T1dmRepository]
- * in `:data` (the freeze deliberately left `@Database` + the repository to the Data owner, so the
- * CGM pipeline declared only a domain-typed port). This is the single adapter the composition root
- * wires; the pipeline never sees a Room entity.
- */
 class AppCgmRepository(
     private val repository: T1dmRepository,
-    /** Enqueues the `PUT /v1/cgm-sources` descriptor push. Nullable so a test double, and the
-     *  composition order during construction, need not supply one. */
+    /** Null when none is wired: construction order, and test doubles. */
     private val enqueuer: com.t1dm.sync.OutboxEnqueuer? = null,
     private val nowMs: () -> Long = System::currentTimeMillis,
-    /** Seals the per-sensor secrets at rest. Its own Keystore alias, never the watch's — see
-     *  [CgmSensorKeyCipher]. */
+    /** Its own Keystore alias, never the watch's. */
     private val cipher: CgmSensorKeyCipher = CgmSensorKeyCipher(),
 ) : CgmRepository {
 
@@ -59,9 +37,7 @@ class AppCgmRepository(
         lastSeenMs: Long,
     ): Int {
         val ordinal = repository.upsertSource(descriptor, authoritative, lastSeenMs)
-        // Push the descriptor so the server can resolve the opaque label its samples already carry.
-        // Deduped on the source id, so the coordinator's re-upserts collapse to one queued row. What the
-        // body may and may not carry is [cgmSourceDto]'s to decide, and it is not a setting.
+        // Deduped on the source id, so the coordinator's re-upserts collapse to one queued row.
         val now = nowMs()
         enqueuer?.enqueueCgmSource(cgmSourceDto(descriptor, nowMs = now), nowMs = now)
         return ordinal
@@ -74,9 +50,7 @@ class AppCgmRepository(
     override suspend fun deactivate(id: CgmSourceId) = repository.deactivateSource(id)
 
     override suspend fun loadSources(): List<CgmSourceDescriptor> {
-        // Number anything that reached the table without an ordinal before the coordinator reads the
-        // list: a sensor the label cannot name is worth one query on the hydrate path to catch. No-op
-        // otherwise — every writer numbers its own rows.
+        // No-op unless a row reached the table unnumbered; the label cannot name such a sensor.
         repository.assignMissingSourceOrdinals()
         return repository.observeSources().first()
     }
@@ -92,14 +66,8 @@ class AppCgmRepository(
 
     override suspend fun upsertReading(reading: CgmReading) = repository.upsertReading(reading)
 
-    /**
-     * Sealed on the way in and opened on the way out, so the stored bytes are unreadable off this
-     * install. This adapter is the only place with a Keystore handle, which is why the sealing lives here
-     * and not in `:cgm` or `:data`.
-     *
-     * An unreadable row returns null rather than throwing, and the bytes stay on disk: it is the only copy
-     * of material that cannot be recovered from the sensor, so a failed open must never become a delete.
-     */
+    /** An unreadable row returns null and the bytes stay on disk: it is the only copy of material that
+     *  cannot be recovered from the sensor, so a failed open must never become a delete. */
     override suspend fun loadSensorSecret(id: CgmSourceId): ByteArray? =
         repository.sensorSecret(id)?.let(cipher::open)
 
@@ -108,7 +76,7 @@ class AppCgmRepository(
 
     override suspend fun clearSensorSecret(id: CgmSourceId) = repository.deleteSensorSecret(id)
 
-    // Plain kv, not the sealed store: this is recoverable progress, not key material — see the port.
+    // Plain kv, not the sealed store: recoverable progress, not key material.
     override suspend fun loadSourceCursor(id: CgmSourceId): Int =
         repository.getKv(cursorKey(id))?.toIntOrNull() ?: 0
 

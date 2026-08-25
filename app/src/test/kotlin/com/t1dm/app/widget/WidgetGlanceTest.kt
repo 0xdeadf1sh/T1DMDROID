@@ -20,13 +20,6 @@ import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * The wall-clock bound on the live pull ([boundedWidgetPull]) and the fallback cascade it feeds. The
- * defect this pins: `provideGlance` used to await the pull unbounded, so a single read that suspended
- * and never resumed parked it short of `provideContent` forever and the host held its loading spinner.
- * What matters here is that BOTH failure modes — a throw AND a stall — collapse to the same `null` the
- * cascade keys on, never propagating, and that the tile then renders the last-known or the honest floor.
- */
 class WidgetGlanceTest {
 
     private val thresholds = AlertThresholds(urgentLowMgdl = 60, lowMgdl = 80, highMgdl = 170, urgentHighMgdl = 240)
@@ -73,8 +66,7 @@ class WidgetGlanceTest {
         customThemeJson = null,
     )
 
-    /** The fallback the render commits, mirroring `provideGlance`: live if the pull completed, else the
-     *  cached tile re-aged, else the honest floor. */
+    /** Mirrors `provideGlance`'s fallback chain. */
     private fun resolve(live: WidgetSnapshot?, cachedNow: Long, prefs: androidx.datastore.preferences.core.Preferences?) =
         live ?: prefs?.let { WidgetStateStore.read(it, cachedNow) } ?: WidgetStateStore.unknown(cachedNow)
 
@@ -92,7 +84,6 @@ class WidgetGlanceTest {
         assertNull(errored)
     }
 
-    /** A throw is absorbed to null (never rethrown) and routed to [onError], not [onTimeout]. */
     @Test
     fun `a throwing pull yields null via onError, not propagation`() = runBlocking {
         var timedOut = false
@@ -103,20 +94,18 @@ class WidgetGlanceTest {
 
         assertNull(live)
         assertFalse(timedOut)
-        // Not assertSame: coroutine stacktrace recovery hands onError a recovered copy, not the instance.
+        // Not assertSame: stacktrace recovery hands onError a copy.
         assertTrue(errored is IllegalStateException)
         assertEquals("cold Room open failed", errored?.message)
     }
 
-    /** The crux: a read that never resumes is cancelled at the budget and yields null (routed to
-     *  [onTimeout]) rather than parking the caller — this is what a `runCatching` alone cannot do. */
     @Test
     fun `a stalled pull is bounded to null via onTimeout`() = runBlocking {
         var timedOut = false
         var errored: Throwable? = null
 
         val live = boundedWidgetPull(40L, onTimeout = { timedOut = true }, onError = { errored = it }) {
-            awaitCancellation() // models a read parked forever (a stuck InvalidationTracker subscribe)
+            awaitCancellation()
         }
 
         assertNull(live)
@@ -124,7 +113,6 @@ class WidgetGlanceTest {
         assertNull(errored)
     }
 
-    /** End-to-end: a stalled pull with a populated cache renders the last-known reading, re-aged. */
     @Test
     fun `a stalled pull falls back to the last-known tile`() = runBlocking {
         val writeAt = 1_700_000_000_000L
@@ -142,7 +130,6 @@ class WidgetGlanceTest {
         assertEquals(ThemeIds.HELLO_KITTY, rendered.themeId)
     }
 
-    /** End-to-end: a stalled pull with NO cache renders the honest floor, never a spinner or a lie. */
     @Test
     fun `a stalled pull with no cache falls back to the floor tile`() = runBlocking {
         val nowMs = 1_700_000_000_000L

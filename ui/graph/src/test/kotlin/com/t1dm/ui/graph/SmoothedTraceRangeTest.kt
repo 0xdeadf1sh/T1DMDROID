@@ -9,20 +9,12 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * [visibleRange] against the per-point test it replaces.
- *
- * The smoothed trace's draw used to walk the whole history and ask of each point "is `t` within one
- * span either side of the viewport?"; it now binary-searches the range that predicate admits. The
- * predicate is monotone, so the two must select the identical set — and that is exactly what is
- * asserted here, over a history far longer than any viewport, at every zoom and at both ends.
- */
 class SmoothedTraceRangeTest {
 
     private val t0 = 1_700_000_000_000L
     private val step = 300_000L
 
-    /** A year of 5-min points with two real dropouts, built through the production path. */
+    /** A year of 5-min points with two dropouts. */
     private fun trace(n: Int = 105_120, gapAt: Set<Int> = setOf(20_000, 60_000)): SmoothedTrace {
         val src = CgmSourceId("test")
         val out = ArrayList<CgmReading>(n)
@@ -41,7 +33,6 @@ class SmoothedTraceRangeTest {
         return buildSmoothedTrace(out, UnitSpace.MgDl, smoothMgdl = { it })
     }
 
-    /** The predicate the draw loop applied to every point, brute-forced. */
     private fun byScan(tr: SmoothedTrace, viewStartMs: Double, viewSpanMs: Double): List<Int> {
         val lo = viewStartMs - viewSpanMs
         val hi = viewStartMs + viewSpanMs + viewSpanMs
@@ -67,8 +58,7 @@ class SmoothedTraceRangeTest {
     @Test fun range_isExactAtAPointsOwnInstant() {
         val tr = trace(n = 500, gapAt = emptySet())
         val span = 6.0 * 3_600_000.0
-        // A viewport whose ± one span boundaries land EXACTLY on stored instants, and a half-step either
-        // side of them — where a `toLong()` truncation instead of ceil/floor would admit or drop a point.
+        // Boundaries on stored instants, ± a half step: where a toLong() truncation would differ.
         val anchor = tr.tsMs[200].toDouble() + span
         for (nudge in listOf(-1.0, -0.5, 0.0, 0.5, 1.0, -step / 2.0, step / 2.0)) {
             assertSameSelection(tr, anchor + nudge, span, "nudge=$nudge")

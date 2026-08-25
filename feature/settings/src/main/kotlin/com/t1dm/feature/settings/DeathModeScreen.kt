@@ -74,32 +74,18 @@ import com.t1dm.core.design.rememberT1dmHaptics
 import kotlinx.coroutines.launch
 import kotlin.math.PI
 
-/**
- * The DEATH-mode activation rite — the page that silences every alarm and draws back every safety
- * rail, irrevocably, until it is rescinded. Not a settings toggle but a funeral rite: a dreadful
- * warning, three slow tolls of a synthesised bell, and a signed covenant with the angel of death
- * ملاك الموت, after which the screen shows a sealed view — an animated angel and the line "The bell
- * tolls for thee" — bearing a single grave affordance to rescind.
- *
- * Every colour is read from the active theme so the dread renders in each palette's own key: cold
- * neon on Tron, blood-red on Umbrella, a soft pink-macabre on Hello Kitty. The page draws its own
- * warning text directly — [DangerBanner] is suppressed while death mode is engaged, so it cannot be
- * relied on here.
- */
+/** [DangerBanner] is suppressed while death mode is engaged, so this page draws its own warning. */
 @Composable
 fun DeathModeScreen(active: Boolean, onActivate: () -> Unit, onDeactivate: () -> Unit) {
     val toll = remember { FuneralToll() }
     DisposableEffect(Unit) { onDispose { toll.release() } }
 
-    // The covenant becomes sealed the moment the signature is submitted, before the persisted flag
-    // propagates back as `active`; either suffices to show the sealed view.
+    // Set at signature, before the persisted flag propagates back as `active`; either suffices.
     var sealedLocally by remember { mutableStateOf(false) }
     val sealed = active || sealedLocally
 
     var stage by remember { mutableStateOf(Rite.WARNING) }
-    // A transient state that plays the covenant rending apart before the rite is truly rescinded.
     var tearing by remember { mutableStateOf(false) }
-    // Each return to the un-engaged state re-opens the rite at its first stanza.
     LaunchedEffect(sealed) { if (!sealed) { stage = Rite.WARNING; tearing = false } }
 
     val animationsOn = LocalAnimationsEnabled.current
@@ -112,14 +98,12 @@ fun DeathModeScreen(active: Boolean, onActivate: () -> Unit, onDeactivate: () ->
         else -> DeathView.WARNING
     }
 
-    // Transparent root so the per-theme backdrop shows through at the user's opacity, like every other
-    // screen — the DEATH rite sits over the same canvas rather than blotting it out.
+    // No background: the per-theme backdrop shows through at the user's opacity.
     Box(Modifier.fillMaxSize()) {
         AnimatedContent(
             targetState = view,
             transitionSpec = {
                 if (animationsOn) {
-                    // A slow, funereal cross-dissolve: fade, a faint downward drift, a breath of scale.
                     ContentTransform(
                         targetContentEnter = fadeIn(tween(600, easing = EaseInOut)) +
                             slideInVertically(tween(600, easing = EaseInOut)) { it / 14 } +
@@ -185,8 +169,6 @@ fun DeathModeScreen(active: Boolean, onActivate: () -> Unit, onDeactivate: () ->
 private enum class Rite { WARNING, TOLLING, CONTRACT }
 private enum class DeathView { WARNING, TOLLING, CONTRACT, SEALED, TEARING }
 
-// ── (a) the warning ────────────────────────────────────────────────────────────────────────────
-
 @Composable
 private fun WarningStanza(onBegin: () -> Unit) {
     val cs = MaterialTheme.colorScheme
@@ -210,12 +192,8 @@ private fun WarningStanza(onBegin: () -> Unit) {
         accent = cs.error,
     )
     Spacer(Modifier.height(4.dp))
-    // Crossing from the warning into the rite is the one genuine Warn on this page: the stanza itself
-    // is standing furniture, the press is the threshold.
     GraveButton("Begin", onClick = { haptics.perform(HapticEvent.Warn); onBegin() })
 }
-
-// ── (b) the tolling ────────────────────────────────────────────────────────────────────────────
 
 private const val MIN_TOLL_INTERVAL_MS = 1200L
 
@@ -228,7 +206,7 @@ private fun TollingRite(toll: FuneralToll, onComplete: () -> Unit) {
     var lastTollMs by remember { mutableLongStateOf(0L) }
     val swing = remember { androidx.compose.animation.core.Animatable(0f) }
 
-    // After the third vow, let the bell still before the covenant is revealed.
+    // Let the bell still before the covenant is revealed.
     LaunchedEffect(count) {
         if (count >= 3) {
             kotlinx.coroutines.delay(900)
@@ -251,17 +229,13 @@ private fun TollingRite(toll: FuneralToll, onComplete: () -> Unit) {
             .pointerInput(Unit) {
                 detectTapGestures {
                     val now = System.currentTimeMillis()
-                    // Soft-reject hurried taps so the rite stays slow and solemn. The refusal was
-                    // wholly silent before — the bell simply did not answer — which read as a dead
-                    // canvas rather than as the rite insisting on its own pace.
+                    // Soft-reject hurried taps so the rite stays slow.
                     if (count >= 3 || now - lastTollMs < MIN_TOLL_INTERVAL_MS) {
                         haptics.perform(HapticEvent.Reject)
                         return@detectTapGestures
                     }
                     lastTollMs = now
                     count += 1
-                    // Each toll is a vow that cannot be unsaid: the heaviest pattern in the vocabulary,
-                    // under the bell's own strike.
                     haptics.perform(HapticEvent.Commit)
                     toll.toll()
                     val dir = if (count % 2 == 0) -1f else 1f
@@ -295,8 +269,6 @@ private fun tollNumeral(count: Int): String = when (count) {
     2 -> "II"
     else -> "III"
 }
-
-// ── (c) the covenant ───────────────────────────────────────────────────────────────────────────
 
 @Composable
 private fun CovenantRite(onSign: () -> Unit) {
@@ -346,8 +318,6 @@ private fun CovenantRite(onSign: () -> Unit) {
             .height(160.dp)
             .background(cs.surface)
             .pointerInput(Unit) {
-                // The same pen-down / pen-up pair the BG panel's paint layer speaks, so signing here
-                // feels like drawing there: barely-there contact, a lighter lift.
                 detectDragGestures(
                     onDragStart = { off ->
                         haptics.perform(HapticEvent.StrokeStart)
@@ -372,7 +342,7 @@ private fun CovenantRite(onSign: () -> Unit) {
             Offset(size.width * 0.94f, size.height * 0.74f),
             strokeWidth = 2f,
         )
-        // Reading `inkVersion` here registers the ink mutations that force a redraw.
+        // Reading `inkVersion` is what registers the ink mutations for redraw.
         if (inkVersion >= 0) {
             val pen = Stroke(width = 5f, cap = StrokeCap.Round)
             strokes.forEach { drawPath(it, inkColor, style = pen) }
@@ -395,8 +365,6 @@ private fun CovenantRite(onSign: () -> Unit) {
         ) {
             Text("Clear", color = cs.onSurface.copy(alpha = 0.6f))
         }
-        // Signing is the act that defeats §3.6 wholesale — irreversible in the only sense that matters,
-        // and so it lands with the same Commit a written dose does.
         GraveButton(
             "Sign the covenant",
             enabled = hasInk,
@@ -404,8 +372,6 @@ private fun CovenantRite(onSign: () -> Unit) {
         )
     }
 }
-
-// ── (d) the sealed rite ──────────────────────────────────────────────────────────────────────────
 
 @Composable
 private fun SealedRite(onRescind: () -> Unit) {
@@ -440,8 +406,6 @@ private fun SealedRite(onRescind: () -> Unit) {
     )
     Spacer(Modifier.height(8.dp))
     OutlinedButton(
-        // Tearing the covenant restores every rail — a refusal of the pact, and the one press on this
-        // page that makes the app safer.
         onClick = { haptics.perform(HapticEvent.Reject); onRescind() },
         colors = ButtonDefaults.outlinedButtonColors(contentColor = cs.error),
     ) {
@@ -456,19 +420,13 @@ private fun SealedRite(onRescind: () -> Unit) {
     Spacer(Modifier.height(12.dp))
 }
 
-// ── (e) the tearing ─────────────────────────────────────────────────────────────────────────────
-
-/** The rescission made visible: the sealed covenant rends along a jagged diagonal, and its two
- *  halves rotate, slide and fall away before the watch is restored. When the rift completes, and
- *  only then, [onTornAway] deactivates the rite. */
+/** [onTornAway] fires only once the rift completes. */
 @Composable
 private fun TearingRite(onTornAway: () -> Unit) {
     val cs = MaterialTheme.colorScheme
     val tear = remember { androidx.compose.animation.core.Animatable(0f) }
     LaunchedEffect(Unit) {
-        // A slow, resisting rend — the covenant holds, then gives near the end, so the tearing reads
-        // as deliberate rather than brisk. Every transform below is a function of `tear.value`, so the
-        // halves part in step across the whole span and reach their rest exactly as the rift completes.
+        // Every transform below is a function of `tear.value`, so the halves part in step.
         tear.animateTo(1f, tween(2200, easing = CubicBezierEasing(0.7f, 0f, 0.85f, 0.35f)))
         onTornAway()
     }
@@ -485,7 +443,6 @@ private fun TearingRite(onTornAway: () -> Unit) {
         val w = size.width
         val h = size.height
 
-        // A rough zigzag rip running top to bottom, biased across the diagonal.
         val steps = 6
         val pts = (0..steps).map { i ->
             val f = i / steps.toFloat()
@@ -506,8 +463,7 @@ private fun TearingRite(onTornAway: () -> Unit) {
             close()
         }
 
-        // Each half is the same contract paper, clipped to one side of the rift and carried off as a
-        // rigid shard — the clip travels with the transform so the piece stays whole while it falls.
+        // The clip travels with the transform so each shard stays whole as it falls.
         withTransform({
             rotate(-24f * t, pivot = Offset(w * 0.30f, h * 0.5f))
             translate(-w * 0.55f * t, h * 0.7f * t)
@@ -523,7 +479,6 @@ private fun TearingRite(onTornAway: () -> Unit) {
             drawContract(0f, primary = cs.primary, accent = cs.error, ink = cs.onSurface)
         }
 
-        // A raw seam of red glows in the rift for the instant before the halves part.
         val seam = Path().apply {
             moveTo(pts.first().x, pts.first().y)
             pts.drop(1).forEach { lineTo(it.x, it.y) }
@@ -542,9 +497,6 @@ private fun TearingRite(onTornAway: () -> Unit) {
     Spacer(Modifier.height(12.dp))
 }
 
-// ── shared pieces ────────────────────────────────────────────────────────────────────────────────
-
-/** A short poetic stanza, centred, with a thin accent rule above it. */
 @Composable
 private fun Verse(lines: List<String>, accent: Color) {
     Box(
@@ -585,10 +537,7 @@ private fun GraveButton(text: String, enabled: Boolean = true, onClick: () -> Un
     }
 }
 
-// ── the idle clock ───────────────────────────────────────────────────────────────────────────────
-
-/** A continuous idle-motion phase in [0, 2π) for breathing/sway/flicker, or a frozen 0 when motion
- *  is disabled. */
+/** Phase in [0, 2π), or a frozen 0 when motion is disabled. */
 @Composable
 private fun idlePhase(durationMs: Int, label: String): Float =
     if (LocalAnimationsEnabled.current) {
@@ -601,11 +550,8 @@ private fun idlePhase(durationMs: Int, label: String): Float =
         ).value
     } else 0f
 
-// ── search index (see SettingsIndex.kt) ───────────────────────────────────────────────────────────
-//
-// The rite is one thing, not a page of knobs — five panes of a single covenant, with nothing inside
-// to scroll to. Withheld from the index in the public flavor exactly as the hub withholds its row
-// (SettingsIndex.visible), since the override itself is compiled out there.
+// Withheld from the index in the public flavor by SettingsIndex.visible; the override is compiled
+// out there.
 
 private val deathModeRite = SettingsKnob(
     id = "death_mode.rite",

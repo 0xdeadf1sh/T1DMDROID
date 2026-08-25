@@ -18,38 +18,21 @@ import kotlin.math.max
 import kotlin.math.roundToInt
 
 /**
- * The widget backdrop: the SAME per-theme motif the app paints ([drawThemeBackground]) rasterised to a
- * bitmap so it can back a Glance tile. Glance renders to `RemoteViews`, whose fixed view vocabulary has
- * no `Canvas`, so the app's live Compose painter cannot run there; we drive the identical [DrawScope]
- * extension through an offscreen [CanvasDrawScope] and hand the result to `ImageProvider(bitmap)`.
- *
- * The composite mirrors the app exactly (see `T1dmApp`/`ThemeBackdrop`): an opaque [T1dmPalette.background]
- * base, then the painter drawn once at the user's `backgroundAlphaPct` over it — a group alpha, so the
- * painter's own base-fill is a no-op on the flat regions and only the motif is dimmed. The output is
- * fully opaque (no launcher wallpaper bleeds through to wreck contrast on the big BG read-out).
- *
- * Because the painters are purely proportional (geometry scales with `size`, no dp/px constants), the
- * raster is density-free: we cap the long edge to [MAX_DIM] preserving aspect and let Glance FillBounds
- * scale it up — a pure upscale of a soft wash, with the crisp content drawn as real views on top.
+ * Glance renders to `RemoteViews`, which has no `Canvas`, so the app's motif is rasterised offscreen.
+ * The composite mirrors `T1dmApp`/`ThemeBackdrop`: an opaque base, the painter over it at a group alpha.
+ * The painters are purely proportional, so the long edge can be capped and scaled back up by FillBounds.
  */
 private const val MAX_DIM = 480
 
-// Keyed on the palette's full content hash (T1dmPalette is a data class, so hashCode covers every
-// colour role), NOT just p.id — every custom theme shares id "custom", so an id-only key served a stale
-// backdrop after the user edited the custom palette.
+// Keyed on the palette's full content hash, not p.id: every custom theme shares the id "custom", so
+// an id-only key served a stale backdrop after an edit.
 private data class BackdropKey(val paletteHash: Int, val w: Int, val h: Int, val alphaPct: Int)
 
-/** Process-level cache: widget refreshes are frequent (the 30 s ticker) but theme/size/alpha rarely
- *  change, and Glance's per-update composition would otherwise re-rasterise every push. Tiny bitmaps
- *  (≤ MAX_DIM², ARGB), a handful of entries — evicted wholesale past the cap. */
+/** Process-wide: theme, size and alpha rarely change, but Glance re-composes on every push. */
 private val cache = LinkedHashMap<BackdropKey, Bitmap>()
 private const val CACHE_CAP = 6
 
-/**
- * The opaque backdrop bitmap for [p] at [alphaPct] opacity, sized from the widget's pixel [widthPx] ×
- * [heightPx] (capped). Null when the motif is off (`alphaPct <= 0`) — the caller then uses a flat base —
- * or when the size is degenerate / rasterisation fails.
- */
+/** Opaque. Null when the motif is off (`alphaPct <= 0`), the size is degenerate, or rasterising fails. */
 internal fun widgetBackdropBitmap(p: T1dmPalette, widthPx: Int, heightPx: Int, alphaPct: Int): Bitmap? {
     val a = (alphaPct / 100f)
     if (a <= 0f || widthPx <= 0 || heightPx <= 0) return null

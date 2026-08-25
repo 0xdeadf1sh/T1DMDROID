@@ -1,65 +1,7 @@
-//! 2D arcade car physics for the in-app hill-climb minigame — the terrain is a *glucose
-//! trace*: the car drives LEFT→RIGHT, i.e. forward in time toward now, and a jagged
-//! excursion is a jagged hill. Purely cosmetic: nothing here touches the §3.6 fail-closed
-//! path, no reading, dose or alarm depends on it, and the module is deliberately isolated
-//! from every safety seam (§3.6 is untouched by this file).
-//!
-//! WHY IT LIVES IN RUST. A frame loop is the one place the JNA/uniffi call cost actually
-//! bites, so the whole world is a **uniffi Object**: the heightfield is marshalled ONCE per
-//! track and each frame is a single [`GameWorld::step`] returning one flat scalar
-//! [`CarState`] record. The step path does not allocate in steady state — rapier reuses its
-//! island, contact and constraint buffers across steps — but that is a property of the
-//! engine's reuse, not a guarantee this module can make. Construction and [`GameWorld::reset`]
-//! do allocate; both are once-per-track events, not per-frame ones.
-//!
-//! THE MODEL. rapier2d, in its ordinary vehicle configuration: a dynamic chassis cuboid, two
-//! dynamic ball wheels, and one **pin-slot joint** per wheel — Box2D's wheel joint by another
-//! name. Locking only the joint's `LIN_Y` leaves the wheel free to slide along the chassis-down
-//! axis (that slide IS the suspension stroke, a position motor at `suspension_rest` with the
-//! tuning's stiffness and damping, hard-stopped by a `[0, suspension_travel]` limit) and free
-//! to spin about it (a velocity motor on `ANG_X`, whose target is the rev limiter and whose
-//! force ceiling is the motor or brake torque). The chassis takes the exact equal-and-opposite
-//! reaction of whatever the drive motor delivers, so a throttle stab lifts the nose because
-//! the solver says so rather than because a fudge factor was tuned to make it.
-//!
-//! WHAT THIS REPLACED, AND WHY. The previous solver was hand-derived: raycast wheels sampling
-//! three points across a footprint, a bespoke tyre impulse, four penalty-spring chassis
-//! corners. It chattered, structurally. Which of the three footprint samples was highest
-//! switched abruptly as the car moved, so the solved suspension extension jumped
-//! discontinuously; that jump was divided by `dt` and fed to a 1 500 N·s/m damper, spiking the
-//! suspension force every time the maximum changed hands. Three point samples cannot represent
-//! a circle rolling over a kink. Ball-versus-polyline contact can, exactly and continuously,
-//! and the wheels no longer fight over the chassis because contacts and joints are solved
-//! together with warm starting instead of one wheel at a time against a locally-derived
-//! effective mass.
-//!
-//! TERRAIN. `heights[i]` is the ground height at `x = i·dx`, piecewise-linear between samples,
-//! collided as an **oriented polyline** — see [`build_ground`] for why a polyline and not the
-//! obvious `HeightField`. A **negative or non-finite sample is a GAP** — no ground at all —
-//! which is the natural encoding for a CGM dropout: a stretch the sensor never reported becomes
-//! a chasm you fall into, expressed by simply omitting that cell's segment. Falling past
-//! `kill_y` (one world-height below the floor) ends the run.
-//!
-//! The module keeps the raw heights alongside the collider, because the collider's copy has been
-//! sanitised and the gap markers are gone from it. `sample`, `roughness` and the seating search
-//! all read the raw Vec.
-//!
-//! HONESTY CAVEAT on the golden. Unlike `curve`/`preproc`/`stats`, this module has **no
-//! external numeric authority** — there is no `simulator.py` for a made-up arcade car, so
-//! `game_golden.json` is a *regression pin generated from this code*, not a correctness
-//! oracle. It proves only that a refactor cannot silently change the tuned feel. The
-//! correctness weight is carried by the behavioural tests below (rests on flat ground,
-//! rolls downhill, climbs under throttle, crashes inverted, a
-//! chasm ends the run) and by the determinism + fuzz tests.
-//!
-//! Everything is total on hostile input. Release builds are `panic = "abort"`, so a panic
-//! inside a 60 Hz frame loop would take the whole app down: `step` clamps a non-finite or
-//! absurd `dt`, saturates throttle/brake, caps the substep count, rails every velocity, and
-//! freezes the run as `Crashed` rather than letting a non-finite pose reach the frame. Nothing
-//! in rapier panics on non-finite numeric input — it silently poisons the state instead — so
-//! the guard is a finiteness firewall on the way in (`dx` is rejected unless its reciprocal is
-//! finite too, and heights are sanitised before the collider is built), a finiteness check on
-//! the way out of every substep, and a finiteness fold on each signal `snapshot` derives.
+//! 2D arcade car physics for the hill-climb minigame; the terrain is a glucose trace, driven
+//! left→right. Cosmetic — nothing here touches the §3.6 fail-closed path. `game_golden.json` is
+//! a regression pin generated from this code, not an external oracle. rapier poisons its state
+//! on a non-finite input rather than panicking, so every path in and out of it is checked.
 
 use std::sync::{Arc, Mutex};
 
@@ -68,125 +10,76 @@ use rapier2d::prelude::*;
 
 use crate::CoreError;
 
-// ── Fixed-step integrator (SPEC-free; a rendering concern) ──────────────────────────────
-/// Physics tick. 1/120 s ⇒ exactly two substeps per 60 fps frame, four per 30 fps.
+/// 1/120 s ⇒ two substeps per 60 fps frame.
 const FIXED_DT: f32 = 1.0 / 120.0;
-/// Hard cap on substeps consumed by one [`GameWorld::step`]. Beyond this the surplus
-/// accumulator is DROPPED rather than chased — a spiral of death in a frame loop would
-/// wedge the UI thread, and a dropped tick is merely a hitch.
+/// Surplus beyond this is dropped rather than chased: a frame-loop spiral would wedge the UI
+/// thread, and a dropped tick is merely a hitch.
 const MAX_SUBSTEPS: u32 = 8;
-/// Longest frame delta honoured (250 ms). A longer gap (app backgrounded, GC pause) is
-/// truncated so the car does not teleport through the terrain.
+/// Longest frame delta honoured; a longer gap is truncated so the car cannot tunnel.
 const MAX_FRAME_DT_S: f32 = 0.25;
 
-// ── Allocation / index guards (the `curve::MAX_GRID_STEPS` precedent) ───────────────────
-/// Upper bound on heightfield samples (~200 k ⇒ 200 km at the default 1 m spacing). A
-/// larger field is a caller bug; refusing it keeps the one `Vec` bounded so a hostile size
-/// is the documented `Err` rather than an abort on a failed allocation.
+/// ~200 km at the default 1 m spacing. Keeps the one `Vec` bounded, so a hostile size is `Err`
+/// rather than an abort on a failed allocation.
 const MAX_TERRAIN_SAMPLES: usize = 200_000;
-/// Two samples is the minimum that defines a segment.
+/// The minimum that defines a segment.
 const MIN_TERRAIN_SAMPLES: usize = 2;
-/// Longest track accepted, in world metres. Vertices are absolute, so past ~1e6 an f32 loses
-/// metres between neighbouring samples; and an infinite span (a huge `dx` times a large sample
-/// count) makes the collider's AABB infinite, at which point the broad phase stops producing
-/// ground pairs at all and the car falls through the world.
+/// Metres. Vertices are absolute, so past ~1e6 an f32 loses metres between neighbouring samples;
+/// and an infinite span makes the collider's AABB infinite, at which point the broad phase stops
+/// producing ground pairs and the car falls through the world.
 const MAX_TRACK_LENGTH: f32 = 1.0e6;
-/// How far the flat run-off left of the start line extends (m). Sized so it cannot be crossed
-/// inside a session rather than merely to look generous: the only thing slowing a car coasting
-/// backwards on the flat is [`LINEAR_DAMPING`], which decays a velocity with a 1/0.02 = 50 s time
-/// constant, so the furthest a car railed at [`MAX_SPEED`] can ever travel is 200 × 50 = 10 km.
-/// At `length` — what this used to be — a 60 m track gave 60 m of apron, crossed in about three
-/// seconds, after which the car fell to `kill_y` and the run read `Crashed` with no visible cause.
+/// Flat run-off left of the start line (m). Sized so it cannot be crossed: [`LINEAR_DAMPING`]
+/// decays a velocity with a 50 s time constant, so a car railed at [`MAX_SPEED`] travels at most
+/// 10 km backwards.
 const RUN_OFF_LENGTH: f32 = 10_000.0;
 
-// ── Numeric rails: every one of these exists to keep the integrator finite ──────────────
-/// Linear speed cap (m/s). Far above any reachable speed; catches a divergence early.
+/// m/s. Far above anything reachable; catches a divergence early.
 const MAX_SPEED: f32 = 200.0;
-/// Angular speed cap (rad/s) — ~5 flips per second.
+/// rad/s — ~5 flips per second.
 const MAX_ANGULAR: f32 = 32.0;
-/// Ceiling on any motor gain handed to rapier. `validate_tuning` bounds the tuning by sign,
-/// not by magnitude, so a legal-but-absurd torque could otherwise overflow the derived
-/// damping coefficient to +inf and poison the solve.
+/// `validate_tuning` bounds the tuning by sign, not magnitude, so a legal-but-absurd torque could
+/// otherwise overflow the derived damping coefficient to +inf and poison the solve.
 const MAX_MOTOR_GAIN: f32 = 1.0e12;
 
-// ── Solver configuration ────────────────────────────────────────────────────────────────
-/// rapier expresses its tolerances in metres and scales them by this. The car is ~28 m long
-/// on wheels of 3.6 m radius — geometrically a 10× human-scale vehicle — so the tolerances
-/// have to be scaled with it or the allowed penetration and the prediction distance are a
-/// tenth of a percent of the wheel.
+/// rapier scales its metre tolerances by this. The car is ~28 m long on 3.6 m wheels —
+/// geometrically a 10× human-scale vehicle.
 const LENGTH_UNIT: f32 = 10.0;
-/// TGS-Soft substeps per `step` (rapier divides `dt` by this, so it is an integration rate,
-/// not a relaxation count): 8 ⇒ an effective 960 Hz inner rate.
+/// TGS-Soft substeps per `step`. rapier divides `dt` by this, so it is an integration rate and
+/// not a relaxation count: 8 ⇒ an effective 960 Hz inner rate.
 const SOLVER_SUBSTEPS: usize = 8;
-/// Speculative-contact distance, before the `LENGTH_UNIT` scale ⇒ 0.20 m. At rapier's default
-/// (0.02 m here) a wheel landing near the rev limiter travels further in one substep than the
-/// solver will look ahead, buries itself, and is thrown back out by depenetration alone.
+/// Before the `LENGTH_UNIT` scale ⇒ 0.20 m. At rapier's default a wheel landing near the rev
+/// limiter travels further in one substep than the solver looks ahead, and buries itself.
 const PREDICTION_DISTANCE: f32 = 0.02;
-/// Penetration the solver does not chase, before the `LENGTH_UNIT` scale ⇒ 0.01 m. This is
-/// what a resting wheel actually sinks — 0.3 % of its radius.
+/// Before the `LENGTH_UNIT` scale ⇒ 0.01 m, which is what a resting wheel actually sinks.
 const ALLOWED_LINEAR_ERROR: f32 = 0.001;
-/// Contact impulses are written back as `impulse_accumulator + impulse`, and the accumulator
-/// folds in the previous step's residual before it is warmstart-scaled — so a steady-state
-/// reading is inflated by exactly `(N+1)/N` over `N` substeps. This undoes it.
+/// Undoes the warm-start inflation: the impulse accumulator folds in the previous step's residual,
+/// so a steady-state reading is `(N+1)/N` over `N` substeps.
 const IMPULSE_WARMSTART_BIAS: f32 = 8.0 / 9.0; // SOLVER_SUBSTEPS / (SOLVER_SUBSTEPS + 1)
-/// Proportional gain of the drive motor, as a multiple of the gain that would exactly saturate
-/// the torque ceiling from a standstill. Above 1 the motor holds full torque until the wheel is
-/// within `1/GAIN` of the rev limiter and then fades — which is the old model's explicit
-/// `fwd_fade`/`rev_fade` ramp, obtained here for free from the constraint.
+/// A multiple of the gain that would exactly saturate the torque ceiling from a standstill. Above
+/// 1 the motor holds full torque until within `1/GAIN` of the rev limiter, then fades.
 const DRIVE_MOTOR_GAIN: f32 = 4.0;
 
-// ── Chassis contact ─────────────────────────────────────────────────────────────────────
-/// Coulomb friction of bodywork scraping along the ground. Combined with the terrain's by
-/// `Min` so the bodywork keeps its own low value against a deliberately grippy surface.
+/// Bodywork scraping along the ground. Combined with the terrain's by `Min`, so it keeps its own
+/// low value against a deliberately grippy surface.
 const CHASSIS_FRICTION: f32 = 0.35;
 
-// ── Aerodynamic / rolling losses ────────────────────────────────────────────────────────
-/// Linear velocity bleed per second (air drag stand-in).
+/// Air-drag stand-in (1/s).
 const LINEAR_DAMPING: f32 = 0.02;
-/// Angular velocity bleed per second. Low enough that a launch still flips.
+/// 1/s. Low enough that a launch still flips.
 const ANGULAR_DAMPING: f32 = 0.35;
-/// Free-spinning wheel bleed per second (grounded wheels wind down).
+/// Grounded wheel bleed (1/s).
 const WHEEL_SPIN_DAMPING: f32 = 0.6;
-/// Spin damping while AIRBORNE (1/s). A wheel off the ground has only its bearing to slow it, so it
-/// should keep turning through a jump; damping it at the contact-patch rate visibly halts it in
-/// mid-air, which reads as the tyre seizing.
+/// Airborne wheel bleed (1/s). Only the bearing slows it; damping at the contact-patch rate
+/// visibly halts it mid-jump.
 const WHEEL_SPIN_DAMPING_AIR: f32 = 0.06;
 /// Consecutive contact-free ticks before [`CarState::airborne`] is reported — 16 ⇒ 133 ms.
-///
-/// The per-wheel flags are instantaneous by design; `airborne` is not, because it is the one the
-/// sensory layer reads as an EDGE. `!airborne` after `airborne` is a touchdown: it fires the landing
-/// one-shot and un-hushes the haptic bed. A wheel genuinely clears the solver's 0.2 m tolerance for
-/// a single tick as it crests a sharp lip, and calling that a flight makes every lip a landing —
-/// measured at 3.3 airborne episodes a second on the deliberately sawtoothed `glucose_terrain`
-/// fixture, 48 of 49 of them two ticks or shorter. That is the failure commit 3252335 closed on the
-/// impulse channel arriving through the contact one.
-///
-/// The threshold is a function of the LIMITER, and it moved when the limiter did. It has to sit above
-/// the longest lip clearance and below the shortest genuine flight, and both distributions shift up
-/// with speed: the launch velocity a fixed kink imparts scales with how fast the kink is crossed, so
-/// the same lip that lofted the car for 6 ticks at 50 m/s lofts it for around 10 at 101. At 8 the two
-/// 1-tick blips visible in `airborne_does_not_strobe_on_a_jagged_trace` were lip clearances promoted
-/// to flights — each one a false touchdown, i.e. a click in the hand and a hole in the bed.
-///
-/// 16 clears them and still reports every genuine flight that fixture produces (the shortest survives
-/// as 2 frames of a 5-frame episode; the rest run 10–24 frames). The tie stays broken toward GROUNDED
-/// deliberately: a suppressed 130 ms hop costs a landing cue nobody would have noticed, whereas a
-/// false one is felt. A seat placed clear of the ground arms the counter outright — a car dropped into
-/// mid-air is not a transient.
+/// It is read as an EDGE, so a lip cleared for one tick must not read as a flight; the tie stays
+/// broken toward GROUNDED, and the threshold moves with the rev limiter.
 const AIRBORNE_ARM_TICKS: u32 = 16;
 /// Angular acceleration (rad/s²) the pedals apply to the chassis while airborne. A game mechanic,
-/// not a physical claim — hence an acceleration applied straight to the chassis' angular velocity
-/// rather than a torque, so it is independent of the tune's inertia.
-///
-/// It has to be sized against what a launch already put into the car, not against a car at rest.
-/// Driving off a lip at 49 m/s leaves the chassis rotating nose-DOWN at 0.8 rad/s, because the
-/// front wheel drops into the void while the rear still drives; at 3.2 rad/s² a third of a second
-/// of the half-second flight went on merely cancelling that, and the pedal read as inert. 6.0 nulls
-/// it in 0.14 s and still leaves authority to trim the landing — and a full turn in a one-second
-/// jump, which is the outer limit of what this world's airtime allows.
+/// not a physical claim — applied to the angular velocity rather than as a torque, so the tune's
+/// inertia does not change it. Sized to null a launch's 0.8 rad/s nose-down in 0.14 s.
 const AIR_PITCH_ACCEL: f32 = 6.0;
 
-// ── Geometry derived from the tuning rather than exposed as more knobs ──────────────────
 /// Wheel attach points sit at ±this fraction of the chassis half-length.
 const WHEELBASE_FRAC: f32 = 0.90;
 /// The driver's head, in chassis half-lengths behind centre and metres above the roof.
@@ -196,197 +89,62 @@ const HEAD_ABOVE_ROOF: f32 = 0.42;
 const REAR: usize = 0;
 const FRONT: usize = 1;
 
-// ── Presentation-only derived signals ───────────────────────────────────────────────────
-/// Idle engine speed of the RPM proxy.
 const IDLE_RPM: f32 = 800.0;
 /// Wheel rad/s → RPM through a single notional reduction (60/2π × gear).
 const RPM_PER_RAD_S: f32 = 9.5493 * 7.0;
-/// Revving against a stalled wheel still makes noise: throttle adds this much RPM.
+/// Revving a stalled wheel still makes noise.
 const THROTTLE_RPM_BUMP: f32 = 900.0;
 const MAX_RPM: f32 = 9_000.0;
-/// Half-width, in samples, of the roughness window read under the car.
+/// Samples either side of the car.
 const ROUGH_HALF_WINDOW: usize = 6;
-/// Mean slope-change per sample that reads as "maximally rough" (roughness saturates at 1).
+/// Mean slope-change per sample at which roughness saturates to 1.
 const ROUGH_REF: f32 = 0.5;
 
-// ── Offroad default tune (see `default_car_tuning`) ─────────────────────────────────────
-/// The tune is sized to the WORLD, not to a real vehicle. The terrain is the glucose trace at
-/// `METRES_PER_MINUTE` (3 m per minute), so one 5-minute reading interval is 15 world metres: a
-/// 2.8 m car met every reading step as a cliff and tripped on ordinary data. This car is ~28 m long,
-/// spanning about two reading intervals, so a single step is a bump it bridges and a genuine
-/// excursion is a hill it has to climb.
-///
-/// The whole tune hangs off ONE number: the anti-wheelie ratio `L/h`, half the wheelbase over the
-/// centre of mass' height above the contact patch. It is 12.6 / 5.6 = 2.25 here. Everything the car
-/// is allowed to do — how much torque, how much gravity, how steep a face it takes at pinned
-/// throttle — is bounded by it, because the front wheel lifts once thrust-to-weight reaches
-/// `cos θ · L/h` on a face of angle θ. Nothing else in the tune can buy past that.
-///
-/// Chassis mass (kg). HEAVY on purpose: at 320 kg the car read as a toy that skittered off every
-/// bump. It buys heft — momentum through a dip, a suspension that settles rather than pings — and
-/// costs nothing in acceleration, since the mass cancels out of both the thrust-to-weight the
-/// torque is derived from and the wheelie condition that bounds it.
+/// The tune is sized to the WORLD: the terrain is the glucose trace at 3 m per minute, so one
+/// 5-minute reading is 15 world metres and the car has to be ~28 m long to bridge one. What it is
+/// allowed to do is bounded by the anti-wheelie ratio `L/h` = 2.25, out of which mass cancels.
 const D_MASS: f32 = 450.0;
-/// Half-length / half-height of the chassis box (m). LONG: the wheelbase is the entire
-/// anti-wheelie budget, and a stubby car loops on the first steep face.
+/// Half-length of the chassis box (m). The wheelbase is the entire anti-wheelie budget, and a
+/// stubby car loops on the first steep face.
 const D_HALF_LEN: f32 = 14.0;
-/// Half-height of the chassis box (m). It sets the centre of mass height `h` = `wheel_radius + (rest −
-/// sag) + half_height` ≈ 5.84, which is the only term either ceiling in [`D_MOTOR_TORQUE`] responds to.
-///
-/// RAISING IT WAS TRIED AND IS WRONG, and the static algebra that recommends it is a trap worth
-/// recording. On paper the two ceilings move oppositely in `h` — the wheelie ceiling `L/h` falls as the
-/// tub rises, the rear-drive traction ceiling `(μ/2)/(1 − μ·h/2L)` climbs, because more weight
-/// transfers onto the driven wheel — and they cross at `h = L/μ` = 6.3 where both equal μ. That
-/// argument says 1.6 is below the optimum and 2.05 sits on it, worth 11 % of thrust.
-///
-/// Measured on the 42° ramp, 2.05 was WORSE at every torque: the fraction of the climb spent on both
-/// wheels fell from 89.5 % to 75.7 % at unchanged torque, and the collapse moved DOWN, to 3.5 % planted
-/// at a thrust 1.6 sustains at 82 %. The static crossing ignores what the derating clause below already
-/// warns of — a wheelie is self-feeding, so what binds is not the ceiling but the pitch angle at which
-/// the ceiling starts receding faster than the car can recover, and a taller `h` reaches that angle
-/// sooner. `L/h` is the number to keep large. See [`steep_traction_probe`].
+/// Half-height of the chassis box (m); it sets the centre-of-mass height `h` ≈ 5.84. RAISING IT IS
+/// A TRAP: the static algebra crosses the two ceilings at `h = L/μ` = 6.3, but measured on the 42°
+/// ramp 2.05 was worse at every torque, because a wheelie self-feeds. Keep `L/h` large.
 const D_HALF_HEIGHT: f32 = 1.6;
-/// BIG wheels: the contact is exact now, but a large wheel still bridges a jagged trace where a
-/// small one drops into every notch narrower than its own diameter — and a notch is where a ball
-/// gets pinched between opposing facets and welded in place (see [`D_GRIP`]).
+/// BIG wheels: a large one bridges a jagged trace where a small one drops into every notch
+/// narrower than its diameter — and a notch is where a ball gets welded (see [`D_GRIP`]).
 const D_WHEEL_RADIUS: f32 = 3.6;
 const D_WHEEL_MASS: f32 = 26.0;
-/// LONG travel over a short free length. Kept as short as the ride allows, because it sits
-/// directly under the centre of mass and every centimetre of it is wheelie.
+/// Long travel over a short free length: it sits directly under the centre of mass, and every
+/// centimetre of free length is wheelie.
 const D_SUSP_REST: f32 = 1.6;
 const D_SUSP_TRAVEL: f32 = 4.0;
-/// Stiffness (N/m) and damping (N·s/m). The spring is a two-sided position motor at
-/// `suspension_rest`, so it PULLS the wheel back up once the stroke passes the free length — which
-/// means the static sag `m·g/2k` is not just ride height, it is the entire DROOP budget: the wheel
-/// leaves the ground the moment the chassis rises that far above it. 8 kN/m puts the sag at 0.96 m,
-/// a quarter of the travel (motocross's own number) and 0.076 rad of pitch the front wheel can
-/// absorb before it unloads — four times what 15.3 kN/m allowed, and the difference between a front
-/// wheel that follows a jagged trace and one that skips over it.
-///
-/// Damping is half-critical for the 225 kg each spring carries: `c_crit = 2√(k·m)` = 2.68 kN·s/m,
-/// so 1.34 settles a landing in about one overshoot rather than pinging. The joint motor runs
-/// `MotorModel::ForceBased`, under which both keep exactly these units regardless of the masses
-/// either side of the joint.
+/// Stiffness (N/m) and damping (N·s/m); `MotorModel::ForceBased` holds those units whatever the
+/// masses either side. The position motor is two-sided, so the static sag `m·g/2k` = 0.96 m is the
+/// whole DROOP budget. Damping is half of `c_crit = 2√(k·m)` = 2.68 kN·s/m.
 const D_SUSP_STIFFNESS: f32 = 8_000.0;
 const D_SUSP_DAMPING: f32 = 1_340.0;
-/// Rear-wheel torque (N·m). `τ/r` = 20.0 kN of thrust against 17.1 kN of weight (chassis and both
-/// wheels, at `D_GRAVITY`) — a thrust-to-weight of 1.17, which is 40 m/s², four earth-g, so it
-/// leaves the line. Braking is matched to it: a brake that cannot out-decelerate the motor's
-/// acceleration feels broken. (Brake is also reverse: hold it on the flat and the car backs up.)
-///
-/// Why not more. Two ceilings sit above this number and the LOWER one binds. The wheelie ceiling is
-/// `L/h` = 2.16, derated by the pitch it produces — at a nose-up δ the arms become
-/// `L cos δ − h sin δ` over `h cos δ + L sin δ`, already 1.65 at δ = 0.1 rad — so a wheelie is
-/// self-feeding once started. On paper the tyre saturates first: with load transfer onto the driven
-/// rear, the traction ceiling on a grade θ is `(μ/2)/(1 − μ·h/2L) · cos θ`, which at μ = 2.0 is 1.80 g
-/// on the flat and only 1.34 g on the 42° face `climbs_a_steep_slope_under_throttle` demands.
-///
-/// That reading is WRONG about which ceiling binds, and the sweep below is why: the car survives 1.22
-/// on that face — comfortably past the 1.34 the traction bound would put it under, but nowhere near
-/// it — and then does not degrade at 1.24, it BACKFLIPS. What binds is the self-feeding wheelie, and it
-/// binds discontinuously. Treat the algebra as an upper bound and the sweep as the tune.
-///
-/// The 1.5 an arcade climber usually wants is off the table, and doubly so. The friction available on a
-/// face of angle θ cannot exceed `μ · cos θ` however the weight is distributed — at μ = 2.0 on 42° that
-/// is 1.49, attained only with the front wheel exactly weightless — and raising μ is the only lever,
-/// which [`D_GRIP`] has 11 % of before the car welds itself to the terrain. But the wheelie gives out
-/// at 1.24 regardless, well under even that, and geometry does not buy past it either: raising `h`
-/// toward the algebraic optimum makes the flip come SOONER, measured (see [`D_HALF_HEIGHT`]).
-///
-/// WHERE THE CLIFF ACTUALLY IS, measured rather than derived, because the derivation above locates a
-/// soft ceiling and the real one is a cliff. Swept on the 42° ramp by the fraction of the climb spent
-/// on BOTH wheels — the only robust statistic, since `climbs_a_steep_slope_under_throttle` samples
-/// contact at one frame and near the limit that is a coin toss on a chattering wheel:
-///
-/// ```text
-///   τ=70 000  T/W 1.14   89.5 % planted   430 m climbed
-///   τ=72 000  T/W 1.17   86.8 % planted   444 m
-///   τ=74 000  T/W 1.20   81.7 % planted   458 m
-///   τ=75 000  T/W 1.22   75.2 % planted   465 m
-///   τ=76 000  T/W 1.24    6.5 % planted   170 m — CRASHED
-/// ```
-///
-/// One thousand N·m — 1.3 % — separates the best climb this car has ever managed from a backflip. That
-/// is the self-feeding wheelie: there is no gentle degradation to tune against, so the number is set by
-/// how much margin the cliff deserves rather than by how much thrust the tyre will pass. 72 000 sits
-/// 5.3 % below it and still climbs 3 % further than 70 000 did.
-///
-/// The return on more would be small regardless, since the rev limiter and not the torque sets the top
-/// speed. The launch is not what suffers: 1.17 is 40 m/s², four earth-g, and the car passes 16 m/s
-/// inside a second from rest. Reproduce with [`steep_traction_probe`].
+/// Rear-wheel torque (N·m) ⇒ a thrust-to-weight of 1.17. What bounds it is the self-feeding
+/// wheelie rather than the tyre, and it binds as a CLIFF: swept on the 42° ramp, 75 000 still
+/// climbs and 76 000 backflips. Reproduce with [`steep_traction_probe`].
 const D_MOTOR_TORQUE: f32 = 72_000.0;
 const D_BRAKE_TORQUE: f32 = 72_000.0;
-/// Rev limiter (rad/s) ⇒ ~101 m/s at `D_WHEEL_RADIUS`, crossing the ~45-minute viewport (135 world
-/// m) in about 1.4 s. Not a soft asymptote: the drive is a velocity motor with `DRIVE_MOTOR_GAIN`
-/// behind it, so the car sits ON the limiter within a few seconds of level ground rather than
-/// creeping toward it, and the limiter IS the top speed.
-///
-/// It is the one number in the tune that buys speed for nothing. Top speed is set here and not by
-/// [`D_MOTOR_TORQUE`], which only sets how fast the limiter is reached, so raising it costs neither
-/// of the two ceilings that bound acceleration (see [`D_MOTOR_TORQUE`]). What it does cost is
-/// AIRTIME: hang time is `2v/g` and the launch speed off a kink scales with v, so doubling this
-/// doubles how far a ripple throws the car. The hand-rolled solver could not hold 34 for that
-/// reason — at 110 m/s it spent the trace airborne — and the margin here is why 28 is the ceiling
-/// rather than a waypoint.
+/// Rev limiter (rad/s) ⇒ ~101 m/s at `D_WHEEL_RADIUS`. The drive is a velocity motor, so the
+/// limiter IS the top speed rather than an asymptote. It costs AIRTIME: hang time is `2v/g` and
+/// the launch speed off a kink scales with v.
 const D_MAX_WHEEL_OMEGA: f32 = 28.0;
-/// Grip is fenced on BOTH sides, and 2.0 sits nearly centred in the only window that works.
-///
-/// The floor is a derivation. The traction ceiling on a grade θ is `(μ/2)/(1 − μ·h/2L) · cos θ`,
-/// which falls to the 1.14 the motor asks for at μ = 1.82 on the 42° face. Below that the steep
-/// climb stops being torque-limited and turns traction-limited — it degrades softly rather than
-/// failing (μ = 1.6 still covers 229 m of the 42° face against 265 m here), but the tune's central
-/// claim, that torque and not the tyre is what bounds this car, does not survive it.
-///
-/// The ceiling is a cliff. A notch narrower than the wheel pinches the ball between two facets whose
-/// normals oppose horizontally; the pair squeezes with large, near-cancelling normal forces, each
-/// licensing `μ ×` itself in friction, so the pinch is a WELD that grows with μ and with nothing the
-/// car can push back against. The oriented polyline's pseudo-normals do not reach this case — they
-/// clamp a contact normal into the cone the two incident segments span, which collapses the
-/// *collinear* artefact but leaves a genuine V exactly as sharp as it is. Swept over
-/// `glucose_terrain` at pinned throttle: μ = 2.35 runs the whole 600 m and finishes; μ = 2.38 never
-/// leaves the spawn, driven wheel on the limiter throughout.
-///
-/// The window is therefore [1.82, 2.35] and 2.0 lies +18 % / −9 % inside it. Grip has little room to
-/// move in EITHER direction, which is the point of writing both walls down. What the weld needs is a
-/// near-VERTICAL facet, not merely sampling finer than the wheel: swept over triangular waves of
-/// fixed 0.4 and 0.8 slope with the wavelength taken from 30 m down to 2 m — a fifth of the wheel's
-/// diameter — nothing welds even at μ = 2.4, and the shortest wavelengths are the FASTEST terrain of
-/// the lot, because the wheel bridges them into a smooth ramp. `glucose_terrain`'s 5-sample sawtooth
-/// supplies what a triangle cannot: a 1.4 m rise thrown away in a single 1 m step. This is also why
-/// the hand-rolled solver could afford 3.2 and this one cannot — one raycast per wheel has no notch
-/// to be pinched in.
+/// Fenced on both sides. Below ~1.82 the steep climb turns traction-limited; above ~2.35 a notch
+/// narrower than the wheel WELDS it, the two opposing facets squeezing with near-cancelling
+/// normals that each license `μ ×` themselves in friction. 2.0 is +18 % / −9 % inside that window.
 const D_GRIP: f32 = 2.0;
-/// VESTIGIAL. The hand-rolled solver cancelled this fraction of the tyre's slip velocity itself,
-/// each substep; rapier's Coulomb friction does the same job from `grip` alone and takes no such
-/// knob. The field stays because the FFI record is frozen, and `validate_tuning` still holds it to
-/// (0, 1] so a caller cannot tell it has stopped meaning anything.
+/// VESTIGIAL: rapier's Coulomb friction takes no such knob and `grip` alone sets the tyre. The
+/// field stays because the FFI record is frozen, and `validate_tuning` still holds it to (0, 1].
 const D_TRACTION_RELAX: f32 = 0.9;
-/// Exaggerated gravity — and the reason the car can accelerate as hard as it does.
-///
-/// At the wheelie point `thrust × CoM height = weight × half-wheelbase`; substituting `T = m·a` the
-/// MASS CANCELS, leaving a ceiling of `a_max = g·L/h` — 76 m/s² at g = 34 and `L/h` = 2.25 —
-/// regardless of how much torque or mass is thrown at it. Torque alone therefore cannot buy
-/// acceleration past that point; it only buys wheelspin and a backflip.
-///
-/// Gravity was raised to 60 to buy that ceiling, and it cost the JUMPS: hang time is `2v/g`, so at
-/// 60 the car was slammed back down and never left the ground. Airtime and hard acceleration pull
-/// against each other through this one constant.
-///
-/// The way out is the OTHER term. Dropping the centre of mass — smaller wheels, a lower tub, less ride
-/// height — took `L/h` from 1.87 to 2.25, so a ceiling that needed g = 60 before now holds at g = 34.
-/// That is a 76 % longer hang time for the same acceleration. Mass is not part of it in either
-/// direction: a projectile's arc is mass-independent, and the mass cancels out of the wheelie
-/// condition entirely. It was halved because a lighter car is thrown further by the same spring, which
-/// is what makes a bump launch rather than absorb.
-///
-/// But that lever is SPENT — pulling it further now costs what it used to buy. Lowering `h` raises the
-/// wheelie ceiling and lowers the rear-drive traction ceiling `(μ/2)/(1 − μ·h/2L) · cos θ`, since less
-/// load transfers onto the driven wheel; the two cross at `h = L/μ` = 6.3 m. At h = 5.6 the car is
-/// already past the crossing and traction is the binding ceiling (1.80 g flat against the wheelie's
-/// 2.25), so every further centimetre off the roof line lowers the ceiling that actually binds.
+/// Exaggerated. At the wheelie point the mass cancels, leaving `a_max = g·L/h` = 76 m/s², which no
+/// amount of torque buys past. Raising g costs the JUMPS, hang time being `2v/g`; the other lever
+/// is `L/h`, and it is spent (see [`D_HALF_HEIGHT`]).
 const D_GRAVITY: f32 = 34.0;
-/// Rollover threshold (rad). ~80°: steeper than any climbable slope, so a hill cannot
-/// masquerade as a crash.
+/// rad. ~80°, steeper than any climbable slope, so a hill cannot masquerade as a crash.
 const D_CRASH_TILT: f32 = 1.4;
 
 const PI: f32 = std::f32::consts::PI;
@@ -401,14 +159,13 @@ fn internal(reason: impl Into<String>) -> CoreError {
     CoreError::Internal { reason: reason.into() }
 }
 
-/// A heightfield sample is solid ground only if it is finite and non-negative; anything
-/// else is a GAP (no ground). See the module header — a CGM dropout is a chasm.
+/// Finite and non-negative is ground; anything else is a GAP.
 #[inline]
 fn solid(h: f32) -> bool {
     h.is_finite() && h >= 0.0
 }
 
-/// Saturate a caller-supplied 0..1 control. Non-finite ⇒ 0 (released), never propagated.
+/// Saturate a caller-supplied control. Non-finite ⇒ 0, released.
 #[inline]
 fn sane01(v: f32) -> f32 {
     if v.is_finite() {
@@ -418,7 +175,7 @@ fn sane01(v: f32) -> f32 {
     }
 }
 
-/// Clamp a derived solver gain into `[0, hi]`, mapping a non-finite value to 0.
+/// Non-finite ⇒ 0.
 #[inline]
 fn gain(v: f32, hi: f32) -> f32 {
     if v.is_finite() {
@@ -428,8 +185,7 @@ fn gain(v: f32, hi: f32) -> f32 {
     }
 }
 
-/// Wrap an angle to (−π, π]. Keeps `ang` from growing without bound across many flips,
-/// where f32 would start losing the fractional part.
+/// To (−π, π]. Left unbounded across many flips, `ang` loses its fraction in f32.
 #[inline]
 fn wrap_pi(a: f32) -> f32 {
     if !a.is_finite() {
@@ -449,37 +205,27 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
 
-/// Blend two angles the SHORT way round. A naive lerp across the wrap seam takes the long
-/// arc — the car flips through a whole turn in one frame — and both the chassis pitch and the
-/// wheels' rolled angle are wrapped values that cross it constantly.
+/// The SHORT way round. A naive lerp across the wrap seam takes the long arc — a whole turn in
+/// one frame — and both the chassis pitch and the rolled angle cross that seam constantly.
 #[inline]
 fn lerp_angle(a: f32, b: f32, t: f32) -> f32 {
     a + wrap_pi(b - a) * t
 }
 
-// ── FFI types ───────────────────────────────────────────────────────────────────────────
-
-/// How the current run ended, or that it has not. `Crashed` and `Finished` are
-/// all TERMINAL: once set, [`GameWorld::step`] is a no-op that re-returns the frozen state,
-/// which keeps the contract deterministic and the frame loop free (the renderer plays its
-/// own outro). [`GameWorld::reset`] is the only way back to `Running`.
+/// `Crashed` and `Finished` are TERMINAL: [`GameWorld::step`] then re-returns the frozen state,
+/// and [`GameWorld::reset`] is the only way back to `Running`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum RunState {
     Running,
-    /// Rollover (driver's head on the ground past the tilt threshold) or a fall past the
-    /// kill plane at the bottom of a chasm.
+    /// Rollover, or a fall past the kill plane.
     Crashed,
-    /// Reached the right-hand edge of the heightfield — the present moment.
+    /// Reached the right-hand edge of the heightfield.
     Finished,
 }
 
-/// The terrain the car drives over. `heights[i]` is the ground height at `x = i·dx`, in
-/// world units, and the ground is piecewise-linear between samples. A **negative or
-/// non-finite** sample marks a GAP with no ground at all.
-///
-/// `world_height` is the nominal vertical extent of the play area; it only fixes the kill
-/// plane at `−world_height` (one full world-height below the floor), which is what a fall
-/// through a gap has to cross to end the run.
+/// `heights[i]` is the ground height at `x = i·dx`, piecewise-linear between samples; a negative
+/// or non-finite sample is a GAP, with no ground at all. `world_height` only fixes the kill plane,
+/// at `−world_height`.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct TerrainSpec {
     pub heights: Vec<f32>,
@@ -487,8 +233,7 @@ pub struct TerrainSpec {
     pub world_height: f32,
 }
 
-/// Everything about the car a caller may bend. [`default_car_tuning`] is the offroad build
-/// the game ships; the constants it is built from carry the provenance of each number.
+/// The `D_*` constants [`default_car_tuning`] is built from carry the provenance of each number.
 #[derive(Debug, Clone, Copy, PartialEq, uniffi::Record)]
 pub struct CarTuning {
     pub chassis_mass: f32,
@@ -496,41 +241,36 @@ pub struct CarTuning {
     pub chassis_half_height: f32,
     pub wheel_radius: f32,
     pub wheel_mass: f32,
-    /// Free length of the suspension: attach point → wheel centre, unloaded.
+    /// Free length: attach point → wheel centre, unloaded.
     pub suspension_rest: f32,
     /// Maximum extension; beyond it the wheel has left the ground.
     pub suspension_travel: f32,
     pub suspension_stiffness: f32,
     pub suspension_damping: f32,
-    /// Rear-wheel drive torque at full throttle (N·m).
+    /// N·m at full throttle.
     pub motor_torque: f32,
     pub brake_torque: f32,
-    /// Rev limiter (rad/s): the drive motor holds full torque until the wheel is within
-    /// `1/DRIVE_MOTOR_GAIN` of this, then fades to zero at it.
+    /// Rev limiter (rad/s): full torque until within `1/DRIVE_MOTOR_GAIN` of it, then fading.
     pub max_wheel_omega: f32,
-    /// Coulomb friction coefficient of the tyres against the terrain.
+    /// Tyre Coulomb friction.
     pub grip: f32,
-    /// Unused since the solver became rapier; `grip` alone sets the tyre now. Still validated to
-    /// (0, 1] so the record's contract is unchanged. See [`D_TRACTION_RELAX`].
+    /// Unused; `grip` alone sets the tyre. Still validated to (0, 1] so the record's contract is
+    /// unchanged. See [`D_TRACTION_RELAX`].
     pub traction_relax: f32,
     pub gravity: f32,
     /// Chassis tilt past which a head-to-ground contact is a rollover (rad).
     pub crash_tilt_rad: f32,
 }
 
-/// One frame of everything the renderer, the haptics and the synthesised engine audio need.
-/// Flat scalars on purpose: a `uniffi::Record` of scalars costs one buffer read per frame,
-/// whereas a `Vec<f32>` would box every element on the Kotlin side.
-///
-/// Angles are radians in a **y-up, counter-clockwise-positive** world. `rear_angle` /
-/// `front_angle` are rolled angles in the *driving* sense (increasing = rolling forward
-/// toward +x); a y-up canvas draws them negated.
+/// Angles are radians in a y-up, counter-clockwise-positive world. `rear_angle`/`front_angle` are
+/// rolled angles in the DRIVING sense (increasing = rolling toward +x); a y-up canvas draws them
+/// negated.
 #[derive(Debug, Clone, Copy, PartialEq, uniffi::Record)]
 pub struct CarState {
     /// Chassis centre of mass.
     pub x: f32,
     pub y: f32,
-    /// Chassis pitch; 0 is level, positive is nose-up.
+    /// 0 is level, positive nose-up.
     pub angle: f32,
     pub vx: f32,
     pub vy: f32,
@@ -539,10 +279,10 @@ pub struct CarState {
     pub rear_x: f32,
     pub rear_y: f32,
     pub rear_angle: f32,
-    /// Rear wheel spin (rad/s), positive rolling forward.
+    /// rad/s, positive rolling forward.
     pub rear_omega: f32,
-    /// Carrying load, or within the solver's speculative reach of the ground — 0.2 m here, 5 % of
-    /// the wheel's own radius. Instantaneous, unlike [`CarState::airborne`]. See [`Phys::touching`].
+    /// Carrying load, or within the solver's 0.2 m speculative reach of the ground.
+    /// Instantaneous, unlike [`CarState::airborne`]. See [`Phys::touching`].
     pub rear_contact: bool,
 
     pub front_x: f32,
@@ -551,33 +291,27 @@ pub struct CarState {
     pub front_omega: f32,
     pub front_contact: bool,
 
-    /// Synthesised engine speed. NOT a physical crank speed — a monotone function of rear
-    /// wheel speed plus a throttle bump so revving a stalled wheel still sounds like work.
+    /// NOT a crank speed: a monotone function of rear wheel speed plus a throttle bump.
     pub rpm: f32,
-    /// Throttle actually delivered. Drives the exhaust art.
+    /// Throttle actually delivered.
     pub throttle_applied: f32,
-    /// Normal impulse in excess of simply carrying the car's weight, accumulated over this step
-    /// (N·s). Rectified, so it is one-sided: 6e-5 settled on flat ground and exactly 0 rolling it at
-    /// the limiter, but a couple of newton-seconds while a fresh seat is still settling. Large on a
-    /// landing or a bodywork slam — the haptics amplitude.
+    /// Normal impulse over this step in excess of carrying the car's weight (N·s). Rectified, so
+    /// one-sided: ~0 at rest, large on a landing or a bodywork slam. The haptics amplitude.
     pub impact_impulse: f32,
     /// Mean terrain slope-change under the car, saturating at 1. The rumble amplitude.
     pub roughness: f32,
-    /// Nothing touching — neither wheel, nor bodywork — for [`AIRBORNE_ARM_TICKS`] running. NOT the
-    /// instantaneous negation of the contact flags: this one is read as an edge, so it is
-    /// deliberately slow to arm and instant to clear. See [`AIRBORNE_ARM_TICKS`].
+    /// Nothing touching, wheels or bodywork, for [`AIRBORNE_ARM_TICKS`] running. NOT the
+    /// instantaneous negation of the contact flags: read as an edge, so slow to arm and instant
+    /// to clear.
     pub airborne: bool,
-    /// Furthest x reached, measured from the start line. Monotone non-decreasing.
+    /// Furthest x reached, from the start line. Monotone non-decreasing.
     pub distance_m: f32,
-    /// Fraction of the tank left, in [0, 1].
     pub run: RunState,
-    /// Simulated seconds consumed so far — substeps actually run, not wall clock.
+    /// Substeps actually run, not wall clock.
     pub elapsed_s: f32,
 }
 
-/// The offroad build: large wheels, long travel, high torque, strong grip. Tuned so a
-/// jagged glucose excursion is climbable rather than a trap. Exported so Kotlin never has
-/// to transcribe these numbers — the Rust remains the single authority.
+/// Exported so Kotlin never transcribes these numbers; the Rust is the single authority.
 #[uniffi::export]
 pub fn default_car_tuning() -> CarTuning {
     CarTuning {
@@ -600,11 +334,8 @@ pub fn default_car_tuning() -> CarTuning {
     }
 }
 
-// ── Terrain ─────────────────────────────────────────────────────────────────────────────
-
-/// The raw heightfield, gap markers intact. The collider's own copy is sanitised (see
-/// [`build_ground`]), so every query that has to distinguish ground from a dropout reads this
-/// one instead.
+/// The raw heightfield, gap markers intact; the collider's copy is sanitised (see
+/// [`build_ground`]), so anything distinguishing ground from a dropout reads this.
 struct Terrain {
     heights: Vec<f32>,
     dx: f32,
@@ -616,8 +347,8 @@ struct Terrain {
 }
 
 impl Terrain {
-    /// Ground height at `x`, or `None` where the field has a gap. Both indices are clamped
-    /// into range before any `heights[…]`, so no `x` — including ±inf — can slice OOB.
+    /// Ground height at `x`, `None` at a gap. Both indices are clamped, so no `x` — ±inf
+    /// included — can slice OOB.
     #[inline]
     fn sample(&self, x: f32) -> Option<f32> {
         if !x.is_finite() {
@@ -637,9 +368,8 @@ impl Terrain {
         Some(h0 + (h1 - h0) * f)
     }
 
-    /// Mean |second difference| of the heightfield over a fixed window centred on `x`,
-    /// divided by `dx` (a mean slope change per sample) and normalised to [0, 1]. Gaps are
-    /// skipped rather than treated as cliffs — a dropout is not a washboard.
+    /// Mean |second difference| over a window centred on `x`, per `dx`, normalised to [0, 1].
+    /// Gaps are skipped rather than treated as cliffs.
     fn roughness(&self, x: f32) -> f32 {
         let n = self.heights.len();
         if n < 3 || !x.is_finite() {
@@ -665,11 +395,9 @@ impl Terrain {
         if cnt == 0 {
             return 0.0;
         }
-        // Belt as well as braces: the constructor already rejects a `dx` whose reciprocal is not
-        // finite, but this is the one number `snapshot` derives downstream of both the input
-        // firewall and the per-substep finiteness check, and it crosses the FFI documented as
-        // [0, 1]. Kotlin's `coerceIn` passes a NaN through unchanged, so a NaN here would reach
-        // the rumble amplitude.
+        // The one signal `snapshot` derives downstream of both the input firewall and the
+        // per-substep check, and it crosses the FFI documented as [0, 1] — which Kotlin's
+        // `coerceIn` would not enforce, since it passes a NaN through unchanged.
         let r = (acc / cnt as f32) * self.inv_dx / ROUGH_REF;
         if r.is_finite() {
             r.clamp(0.0, 1.0)
@@ -679,38 +407,20 @@ impl Terrain {
     }
 }
 
-/// Build the collider shape for `raw` at `dx` spacing, plus the flat run-off left of the start
-/// line. `None` when the trace has no solid cell anywhere — there is then no ground to collide
-/// with at all, which is what an all-dropout track means.
+/// Collider shape for `raw` at `dx` spacing, plus the flat run-off left of the start line. `None`
+/// when no cell is solid.
 ///
-/// WHY A POLYLINE AND NOT A HEIGHTFIELD. parry's 2D `HeightField` is the obvious fit and it is
-/// the wrong one: it hands the narrow phase a bare `Segment` per cell with **no normal
-/// constraints**, so a ball straddling a shared vertex picks up a second, *radial* contact from
-/// the neighbouring segment — a normal tilted off the true surface even where the two cells are
-/// exactly collinear. That is the classic internal-edge artefact, and on flat ground at 48 m/s
-/// it kicked the wheel 44 cm into the air once per cell crossed (measured: clearance ranged over
-/// [−0.013, +0.436] m, one lift-off per vertex, the rate tracking v/dx exactly). Invisible at
-/// this world's scale but not inaudible: the rectified excess-over-weight that feeds the haptics
-/// turned it into a spike train at ~16 crossings a second on ground with no bumps in it.
+/// A polyline and not a 2D `HeightField`: heightfields hand the narrow phase a bare segment per
+/// cell with no normal constraint, so a ball straddling a shared vertex takes a radial contact off
+/// the neighbour and is kicked into the air once per cell. [`PolylineFlags::ORIENTED`] clamps each
+/// contact normal into the cone the incident segments span; the heightfield flag that would do the
+/// same is 3D-only.
 ///
-/// `Polyline` with [`PolylineFlags::ORIENTED`] is parry's fix for exactly that: it computes an
-/// outward pseudo-normal at every vertex and clamps each contact normal into the cone the two
-/// incident segments span, so the collinear case collapses to the face normal and there is
-/// nothing left to kick. Same measurement on the same ground: [−0.0139, −0.0135] m, a 0.4 mm
-/// envelope. 2D heightfields have no such flag — `HeightFieldFlags::FIX_INTERNAL_EDGES` is
-/// `heightfield3.rs` only — so this is a shape choice, not a tuning one.
+/// `ccw_face_normal([a, b])` is `(b − a)` rotated −90°, outward to the RIGHT of the winding, so the
+/// index pairs run `[i + 1, i]` to point the ground's normal up.
 ///
-/// `ccw_face_normal([a, b])` is `(b − a)` rotated −90°, so the outward side is to the RIGHT of
-/// the winding: to point the ground's normal up, the segments have to run right-to-LEFT. Hence
-/// index pairs `[i + 1, i]` over vertices in natural order — the vertex array stays indexable
-/// by sample while the winding is reversed.
-///
-/// A GAP is simply a cell with no index pair. Nothing is emitted for it, so it produces no
-/// contact — the exact encoding a CGM dropout wants. The gap sample's *height* still matters
-/// though: the vertex is in the array whether or not a segment references it, and a non-finite
-/// marker there poisons the polyline's AABB and the broad phase stops reporting ground at all.
-/// Carrying the last solid height forward keeps the AABB tight and leaves the live segment
-/// abutting a hole ending at a plausible lip.
+/// A gap emits no index pair, but its vertex stays in the array and carries the last solid height:
+/// a non-finite marker there poisons the AABB and the broad phase stops reporting ground at all.
 fn build_ground(raw: &[f32], dx: f32) -> Option<SharedShape> {
     let seed = raw.iter().copied().find(|h| solid(*h))?;
     let mut carry = seed;
@@ -727,10 +437,8 @@ fn build_ground(raw: &[f32], dx: f32) -> Option<SharedShape> {
             idx.push([i as u32 + 1, i as u32]);
         }
     }
-    // The run-off: `Terrain::sample` clamps its index, so the ground it reports extends flat
-    // forever to the left of the start line, and the car does use it — released on a steep start
-    // it rolls backwards off x = 0 and has to keep rolling rather than fall out of the world.
-    // Only when the first sample is solid, which is exactly when `sample` reports ground there.
+    // The run-off. `Terrain::sample` clamps its index, so it reports ground flat forever left of
+    // the start line, and a car released on a steep start rolls backwards off x = 0 onto it.
     if solid(raw[0]) {
         let apron = verts.len() as u32;
         verts.push(Vector::new(-RUN_OFF_LENGTH, raw[0]));
@@ -742,14 +450,11 @@ fn build_ground(raw: &[f32], dx: f32) -> Option<SharedShape> {
     Some(SharedShape::new(Polyline::with_flags(verts, Some(idx), PolylineFlags::ORIENTED)))
 }
 
-// ── Simulation state ────────────────────────────────────────────────────────────────────
-
-/// The renderer's view of one wheel, mirrored out of the rigid body after each substep.
 #[derive(Clone, Copy)]
 struct Wheel {
-    /// Spin in the driving sense: positive rolls the car toward +x (rad/s).
+    /// Driving sense: positive rolls the car toward +x (rad/s).
     spin: f32,
-    /// Accumulated rolled angle, wrapped to (−2π, 2π) (render only).
+    /// Accumulated rolled angle, wrapped to (−2π, 2π). Render only.
     angle: f32,
     contact: bool,
     /// World-space wheel centre.
@@ -757,14 +462,9 @@ struct Wheel {
     cy: f32,
 }
 
-/// Everything drawn about the car at one tick boundary. Kept for the tick BEFORE the current
-/// one so [`Sim::snapshot`] can interpolate.
-///
-/// Frames arrive every ~16.7 ms and ticks are 1/120 s, so the accumulator's residue makes a
-/// frame consume one tick or three where it usually consumes two. Reporting whichever tick
-/// happened to land last therefore moves the car unequal distances on equal-duration frames —
-/// judder that has nothing to do with the physics. Blending the two bracketing ticks by the
-/// residue restores the correspondence between wall-clock and drawn motion.
+/// Kept for the tick BEFORE the current one, so [`Sim::snapshot`] can interpolate: the
+/// accumulator's residue makes a frame consume one tick or three, so drawing whichever tick
+/// landed last moves the car unequal distances on equal-duration frames.
 #[derive(Clone, Copy)]
 struct Pose {
     x: f32,
@@ -781,8 +481,7 @@ struct WheelPose {
     angle: f32,
 }
 
-/// Where a rebuild puts the car: chassis pose and velocity, plus the suspension extension the
-/// wheels are hung at.
+/// Chassis pose and velocity, plus the suspension extension the wheels hang at.
 #[derive(Clone, Copy)]
 struct Seat {
     x: f32,
@@ -794,9 +493,8 @@ struct Seat {
     ext: f32,
 }
 
-/// The rapier world. Rebuilt wholesale by [`Sim::seat_car`] rather than teleported: a teleport
-/// leaves the narrow phase's warm-start impulses and the joint accumulators live, so the first
-/// step after a reposition replays the previous run's impulse as a one-frame kick.
+/// Rebuilt wholesale by [`Sim::seat_car`] rather than teleported: a teleport leaves the warm-start
+/// impulses and joint accumulators live, and the next step replays them as a one-frame kick.
 struct Phys {
     bodies: RigidBodySet,
     colliders: ColliderSet,
@@ -820,8 +518,8 @@ impl Phys {
         let mut colliders = ColliderSet::new();
         let mut joints = ImpulseJointSet::new();
 
-        // Absent only when the trace has no solid cell anywhere; an empty polyline would carry an
-        // inverted AABB into the broad phase, and "no ground" is better said by saying nothing.
+        // Absent only when no cell is solid; an empty polyline would carry an inverted AABB into
+        // the broad phase.
         if let Some(ground) = ground {
             let ground_body = bodies.insert(RigidBodyBuilder::fixed());
             colliders.insert_with_parent(
@@ -839,16 +537,14 @@ impl Phys {
                 .angvel(seat.av)
                 .linear_damping(LINEAR_DAMPING)
                 .angular_damping(ANGULAR_DAMPING)
-                // At `LENGTH_UNIT` = 10 the sleep threshold is 4 m/s, so a creeping car would
-                // be eligible — and a sleeping island freezes its contact impulses, which the
-                // haptics read. Three bodies cost nothing to keep awake.
+                // At `LENGTH_UNIT` = 10 the sleep threshold is 4 m/s, and a sleeping island
+                // freezes the contact impulses the haptics read.
                 .can_sleep(false)
                 .ccd_enabled(false),
         );
         let chassis_col = colliders.insert_with_parent(
             ColliderBuilder::cuboid(t.chassis_half_len, t.chassis_half_height)
-                // `mass` preserves the shape's I/m ratio, so the inertia is the solid box's
-                // `m(w² + h²)/12` — the same figure the hand-rolled solver derived.
+                // `mass` preserves the shape's I/m ratio: the inertia is `m(w² + h²)/12`.
                 .mass(t.chassis_mass)
                 .friction(CHASSIS_FRICTION)
                 .friction_combine_rule(CoefficientCombineRule::Min)
@@ -889,12 +585,9 @@ impl Phys {
             );
 
             // Pin-slot. Locking only LIN_Y leaves the wheel free along the joint's x — which
-            // `local_axis1` points down the chassis — and free to spin about it. `dist` along
-            // that axis IS the suspension extension, so the position motor's target and the
-            // limit are both in metres below the anchor, and the locked perpendicular is the
-            // chassis' fore/aft, which is what stops the wheel walking along the body.
-            // `ForceBased` is what keeps the tuning's stiffness in N/m and damping in N·s/m
-            // independent of the masses either side.
+            // `local_axis1` points down the chassis — and free to spin about it; `dist` along that
+            // axis IS the suspension extension, so the motor target and limit are metres below the
+            // anchor, and the locked perpendicular is the chassis' fore/aft.
             let joint = GenericJointBuilder::new(JointAxesMask::LIN_Y)
                 .local_axis1(-Vector::Y)
                 .local_axis2(-Vector::Y)
@@ -914,9 +607,8 @@ impl Phys {
                 .contacts_enabled(false)
                 .build();
 
-            // Argument order is (body1, body2), and `local_axis1`/`local_anchor1` above are
-            // written in CHASSIS coordinates — pass the wheel first and the car hangs off the
-            // wheel's rim instead.
+            // (body1, body2), and `local_axis1`/`local_anchor1` are in CHASSIS coordinates: pass
+            // the wheel first and the car hangs off the wheel's rim.
             susp[i] = joints.insert(chassis, body, joint, true);
             wheels[i] = body;
         }
@@ -956,19 +648,9 @@ impl Phys {
         );
     }
 
-    /// Is this collider carrying, or all but carrying, the ground?
-    ///
-    /// NOT `has_any_active_contact`: that is true whenever a solver contact exists, and solver
-    /// contacts are speculative, so it reports a wheel hovering clear with no force through it.
-    /// A pair that carried impulse, or whose deepest contact is within `tol`, is the honest test.
-    /// When the collider is genuinely clear the whole pair disappears and the iterator is empty.
-    ///
-    /// `tol` cannot be the solver's penetration slop (0.01 m). A planted wheel does not rest AT the
-    /// surface: speculative contacts settle it a little above, measured at +13.9 mm on a straight
-    /// ramp at 47 m/s (over a bob of only 0.6 mm — the ride is quiet, the standoff is not zero).
-    /// That standoff alone exceeds the slop, so at that tolerance the test falls back to "did this
-    /// pair carry impulse", which goes false on the unloaded half of every oscillation. The caller
-    /// passes the speculative distance instead — 0.2 m, 5 % of the wheel's own radius.
+    /// Carrying, or all but carrying, the ground. NOT `has_any_active_contact`: that is true of a
+    /// speculative contact carrying no force. `tol` must be the speculative distance and not the
+    /// solver's 0.01 m slop — a planted wheel rests ~14 mm above the surface, already past it.
     fn touching(&self, col: ColliderHandle, tol: f32) -> bool {
         self.narrow_phase.contact_pairs_with(col).any(|pair| {
             pair.total_impulse_magnitude() > 0.0
@@ -976,9 +658,8 @@ impl Phys {
         })
     }
 
-    /// Total normal impulse through this collider over the step (N·s). A ball on the terrain
-    /// polyline straddles several segments and so produces several manifolds;
-    /// `total_impulse_magnitude` folds over all of them.
+    /// Total normal impulse through this collider over the step (N·s). A ball straddles several
+    /// polyline segments, so several manifolds are folded together.
     fn normal_impulse(&self, col: ColliderHandle) -> f32 {
         self.narrow_phase
             .contact_pairs_with(col)
@@ -990,27 +671,25 @@ impl Phys {
 struct Sim {
     terrain: Terrain,
     tune: CarTuning,
-    /// The terrain collider's shape, run-off included. An `Arc` under the hood, so a rebuild
-    /// re-hangs it rather than re-deriving (and re-BVH-ing) a polyline that can be 200 000
-    /// segments long. `None` when the trace is solid nowhere.
+    /// An `Arc`, so a rebuild re-hangs the shape rather than re-BVH-ing a polyline that can be
+    /// 200 000 segments long. `None` when the trace is solid nowhere.
     ground: Option<SharedShape>,
     params: IntegrationParameters,
     gravity: Vector,
     phys: Phys,
 
     // Mirror of the solver, refreshed after every substep that produced finite state. The
-    // renderer reads this, never the bodies — so a poisoned solve freezes the last good frame
-    // instead of handing a NaN across the FFI.
+    // renderer reads this and never the bodies, so a poisoned solve freezes the last good frame.
     x: f32,
     y: f32,
     ang: f32,
     vx: f32,
     vy: f32,
     av: f32,
-    /// `[REAR]` = rear (driven), `[FRONT]` = front.
+    /// `[REAR]`, `[FRONT]`.
     wheels: [Wheel; 2],
-    /// The pose one tick behind the mirror, for the render interpolation. Seeded equal to the
-    /// mirror by [`Sim::seat_car`] so a fresh seat never blends against a previous run.
+    /// One tick behind the mirror, for the render interpolation. Seeded equal to the mirror by
+    /// [`Sim::seat_car`], so a fresh seat never blends against a previous run.
     prev: Pose,
 
     run: RunState,
@@ -1023,13 +702,12 @@ struct Sim {
     throttle_applied: f32,
     /// The REPORTED grounded state: `!airborne`, after [`AIRBORNE_ARM_TICKS`] of hysteresis.
     any_contact: bool,
-    /// Consecutive ticks with nothing touching, for that hysteresis.
+    /// Consecutive ticks with nothing touching.
     air_ticks: u32,
 
     /// Static-sag extension the car is seated at.
     sag_ext: f32,
-    /// Impulse one substep of merely standing still costs (N·s) — the whole car's weight, wheels
-    /// included, since the wheels are rigid bodies now rather than massless raycasts.
+    /// What one substep of standing still costs (N·s): the whole car's weight, wheels included.
     weight_impulse: f32,
 }
 
@@ -1045,7 +723,7 @@ impl Sim {
             max_ccd_substeps: 0,
             ..Default::default()
         };
-        // Static sag: the extension at which both springs carry half the weight each.
+        // The extension at which both springs carry half the weight each.
         let sag = if tune.suspension_stiffness > 0.0 {
             (0.5 * tune.chassis_mass * tune.gravity / tune.suspension_stiffness)
                 .clamp(0.0, tune.suspension_rest)
@@ -1091,9 +769,8 @@ impl Sim {
         s
     }
 
-    /// Rebuild the world with the car at `seat`, and re-derive the mirror from it. Bookkeeping
-    /// (run state, distance, elapsed) is deliberately untouched — [`Sim::reset_from`]
-    /// owns that.
+    /// Rebuild the world with the car at `seat` and re-derive the mirror. The run bookkeeping is
+    /// deliberately untouched; [`Sim::reset_from`] owns that.
     fn seat_car(&mut self, seat: Seat) {
         let ok = seat.x.is_finite()
             && seat.y.is_finite()
@@ -1115,11 +792,8 @@ impl Sim {
         self.vx = seat.vx;
         self.vy = seat.vy;
         self.av = seat.av;
-        // Derive the contact flags from where the car actually landed rather than asserting
-        // them. A seat can legitimately be over a chasm — `reset_from` falls back to the tap
-        // when no landable run exists at all — and the renderer, the haptics bed and the audio
-        // all read this frame before any physics has run, so asserting contact painted one frame
-        // of a planted car that was in fact in free fall.
+        // Derived, not asserted: a seat can legitimately be over a chasm, and the renderer, the
+        // haptics and the audio all read this frame before any physics has run.
         let mut any = false;
         for i in 0..2 {
             let at = self.phys.bodies[self.phys.wheels[i]].translation();
@@ -1143,14 +817,12 @@ impl Sim {
         Pose { x: self.x, y: self.y, ang: self.ang, wheels: [w(REAR), w(FRONT)] }
     }
 
-    /// Place the car, settled, on the first stretch of solid ground long enough to hold it.
     fn reset(&mut self) {
         self.reset_from(0.0);
     }
 
-    /// Index at which the first run of more than `span` consecutive solid samples begins,
-    /// searching forward from `from`. `None` when no such run exists — there is no landable
-    /// ground left.
+    /// Where the first run of more than `span` consecutive solid samples begins, searching
+    /// forward from `from`. `None` when there is no landable ground left.
     fn landable_from(&self, from: usize, span: usize) -> Option<usize> {
         let n = self.terrain.heights.len();
         let mut run = 0usize;
@@ -1167,11 +839,8 @@ impl Sim {
         None
     }
 
-    /// Place the car on the first stretch of solid ground at or after `from_x`.
-    ///
-    /// The track spans the whole visible window so the curve is not cut off behind the car, which
-    /// means the START is no longer the track's origin — it is wherever the user tapped. Searching
-    /// forward from there (rather than from zero) is what puts the car under the finger.
+    /// Place the car on the first solid ground at or after `from_x`. The track spans the whole
+    /// visible window, so the start is wherever the user tapped, not the track's origin.
     fn reset_from(&mut self, from_x: f32) {
         let t = self.tune;
         let n = self.terrain.heights.len();
@@ -1181,26 +850,21 @@ impl Sim {
         } else {
             0
         };
-        // No landable run at or after the tap — a tap past the last solid ground, or onto a chasm
-        // that never closes — used to leave the car wherever the finger fell. Fall back to the first
-        // landable run anywhere on the track instead, so a seat is always ground the car can sit on.
+        // No landable run at or after the tap: fall back to the first anywhere on the track, so a
+        // seat is always ground the car can sit on.
         let first = self
             .landable_from(begin, span)
             .or_else(|| self.landable_from(0, span))
             .unwrap_or(begin);
-        // The seat has to leave the car ON the track. `first` can sit at the very end of the
-        // heightfield, and adding the chassis half-length then put `sx` at or past `terrain.length`
-        // — which IS the finish line, so the run was Finished on its first simulated step and the
-        // car never moved. Clamping here rather than only at the call site keeps the FFI sound for
-        // any caller, `reset_at` included.
+        // `first` can sit at the very end of the heightfield, where adding the chassis half-length
+        // puts `sx` at or past `terrain.length` — which IS the finish line. Clamped here rather
+        // than at the call site, so every caller is sound.
         let max_sx = (self.terrain.length - t.chassis_half_len).max(0.0);
         let sx = (first as f32 * self.terrain.dx + t.chassis_half_len).min(max_sx);
         let ext = self.sag_ext;
 
-        // Land the car ALIGNED with the local grade, not level. A level chassis dropped on a
-        // slope steeper than `suspension_travel / wheelbase` starts with a wheel hanging in
-        // space; it then slams down and the recovery reads as a launch — which is exactly
-        // how a merely steep start line turns into an instant backflip.
+        // ALIGNED with the local grade, not level. A level chassis on a steeper slope starts with
+        // a wheel in space, then slams down, and the recovery reads as a launch.
         let wb = t.chassis_half_len * WHEELBASE_FRAC;
         let hr = self.terrain.sample(sx - wb);
         let hf = self.terrain.sample(sx + wb);
@@ -1222,10 +886,8 @@ impl Sim {
         });
         self.run = RunState::Running;
         self.start_x = sx;
-        // The same reference as the start line, NOT `self.x`: the chassis centre of mass sits at
-        // `sx − sin(ang)·lift`, so on a downhill grade it is already ahead of the start and a
-        // fresh seat would report metres travelled before the car had moved (1.59 m on a −1.0
-        // grade), while on an uphill one the `.max(0.0)` would silently eat the same distance.
+        // The start line's reference, NOT `self.x`: the centre of mass is ahead of `sx` on a
+        // downhill grade, so a fresh seat would report metres before the car had moved.
         self.max_x = sx;
         self.elapsed = 0.0;
         self.accumulator = 0.0;
@@ -1242,8 +904,7 @@ impl Sim {
         let thr = sane01(throttle);
         let brk = sane01(brake);
         let dt_s = if dt_ms.is_finite() { (dt_ms * 1e-3).clamp(0.0, MAX_FRAME_DT_S) } else { 0.0 };
-        // The accumulator itself is railed: a burst of long frames cannot bank unbounded
-        // simulation debt.
+        // Railed: a burst of long frames cannot bank unbounded simulation debt.
         self.accumulator = (self.accumulator + dt_s).clamp(0.0, MAX_FRAME_DT_S + FIXED_DT);
 
         let mut n = 0u32;
@@ -1257,7 +918,7 @@ impl Sim {
             }
         }
         if n >= MAX_SUBSTEPS {
-            // Drop the surplus rather than chase it: a frame loop must never spiral.
+            // Dropped rather than chased: a frame loop must never spiral.
             self.accumulator = 0.0;
         }
     }
@@ -1269,8 +930,6 @@ impl Sim {
         self.throttle_applied = thr;
 
         self.drive(thr, brake);
-        // A grounded wheel is slowed at the contact patch; an airborne one has only its
-        // bearing, and damping it at the contact rate visibly halts it mid-jump.
         for i in 0..2 {
             let damp = if self.wheels[i].contact { WHEEL_SPIN_DAMPING } else { WHEEL_SPIN_DAMPING_AIR };
             if let Some(b) = self.phys.bodies.get_mut(self.phys.wheels[i]) {
@@ -1280,18 +939,15 @@ impl Sim {
 
         self.phys.step(&self.params, self.gravity);
 
-        // ── the non-finite rail: freeze rather than propagate a NaN into the frame ─────
-        // Nothing in rapier panics on a hostile number; it poisons the state silently. The
-        // mirror still holds the last finite frame, so freezing here is what the old solver's
-        // roll-back was: the run ends, and the renderer plays its crash outro over a sane pose.
+        // rapier does not panic on a hostile number, it poisons the state silently. The mirror
+        // still holds the last finite frame, so freezing here leaves a sane pose on screen.
         if !self.solver_finite() {
             self.run = RunState::Crashed;
             return;
         }
         self.rail_velocities();
 
-        // The solver's own speculative reach: inside it a contact is still being constrained, and
-        // it is scaled by `LENGTH_UNIT` so it tracks this world rather than a metre-scale one.
+        // The solver's own speculative reach, `LENGTH_UNIT`-scaled to this world.
         let tol = self.params.prediction_distance();
         let rear_c = self.phys.touching(self.phys.wheel_cols[REAR], tol);
         let front_c = self.phys.touching(self.phys.wheel_cols[FRONT], tol);
@@ -1299,11 +955,8 @@ impl Sim {
         let any_contact = rear_c || front_c || body_c;
         self.air_ticks = if any_contact { 0 } else { self.air_ticks.saturating_add(1) };
 
-        // AIRBORNE PITCH CONTROL (the hill-climber's signature move): with no wheel on the ground the
-        // pedals stop being drive and become attitude — throttle rotates the nose up, brake rotates it
-        // down — so a jump can be landed level instead of being a coin toss. Keyed off the RAW
-        // contact, not the hysteresised flag: the pedal has to bite the moment the ground is gone,
-        // and a stray tick of it is 0.05 rad/s.
+        // Off the ground the pedals become attitude control. Keyed off the RAW contact and not the
+        // hysteresised flag: the pedal has to bite the moment the ground is gone.
         if !any_contact {
             let pitch = (thr - brake).clamp(-1.0, 1.0);
             if let Some(b) = self.phys.bodies.get_mut(self.phys.chassis) {
@@ -1314,14 +967,11 @@ impl Sim {
 
         self.mirror(dt, [rear_c, front_c], self.air_ticks < AIRBORNE_ARM_TICKS);
 
-        // Excess over merely holding the car up — the haptics signal, ~0 at rest, large on a
-        // landing or a bodywork slam. Every ground contact counts, wheels and bodywork alike.
         let carried = self.phys.normal_impulse(self.phys.wheel_cols[REAR])
             + self.phys.normal_impulse(self.phys.wheel_cols[FRONT])
             + self.phys.normal_impulse(self.phys.chassis_col);
         self.impact += (carried * IMPULSE_WARMSTART_BIAS - self.weight_impulse).max(0.0);
 
-        // ── rollover: the driver's head touching ground past the tilt threshold ────────
         let (sin_a, cos_a) = self.ang.sin_cos();
         let hx_l = -HEAD_BACK_FRAC * t.chassis_half_len;
         let hy_l = t.chassis_half_height + HEAD_ABOVE_ROOF;
@@ -1333,7 +983,6 @@ impl Sim {
         };
         let rolled = self.ang.abs() > t.crash_tilt_rad;
 
-        // ── run rules, in priority order ───────────────────────────────────────────────
         if self.x >= self.terrain.length {
             self.run = RunState::Finished;
         } else if self.y < self.terrain.kill_y {
@@ -1343,12 +992,9 @@ impl Sim {
         }
     }
 
-    /// Point the rear joint's spin motor at the rev limiter, bounded by the pedal's torque.
-    ///
-    /// The motor targets the RELATIVE rate `ω_wheel − ω_chassis`, which is what a drivetrain
-    /// physically commands, and the chassis takes the exact equal-and-opposite reaction. Forward
-    /// motion toward +x is a NEGATIVE spin in a y-up, counter-clockwise-positive world, so the
-    /// forward target is negative and brake — which is also reverse — is positive.
+    /// The motor targets the RELATIVE rate `ω_wheel − ω_chassis`, and the chassis takes the exact
+    /// equal-and-opposite reaction. Forward motion toward +x is a NEGATIVE spin in a y-up,
+    /// CCW-positive world, so the forward target is negative and brake — also reverse — positive.
     fn drive(&mut self, throttle: f32, brake: f32) {
         let t = self.tune;
         let target = (brake - throttle) * t.max_wheel_omega;
@@ -1399,8 +1045,7 @@ impl Sim {
         }
     }
 
-    /// Copy the solved state into the renderer's mirror. Only ever called after
-    /// [`Sim::solver_finite`] has passed.
+    /// Only ever called after [`Sim::solver_finite`] has passed.
     fn mirror(&mut self, dt: f32, contact: [bool; 2], any_contact: bool) {
         self.prev = self.pose();
         let c = &self.phys.bodies[self.phys.chassis];
@@ -1417,7 +1062,7 @@ impl Sim {
             let b = &self.phys.bodies[self.phys.wheels[i]];
             let at = b.translation();
             let w = &mut self.wheels[i];
-            // The FFI's sense is positive-rolling-forward; the solver's is counter-clockwise.
+            // The FFI's sense is positive-rolling-forward, the solver's counter-clockwise.
             w.spin = -b.angvel();
             w.angle = (w.angle + w.spin * dt) % TWO_PI;
             if !w.angle.is_finite() {
@@ -1431,11 +1076,9 @@ impl Sim {
         self.max_x = self.max_x.max(self.x);
     }
 
-    /// The frame the renderer draws. The POSE is interpolated between the last two ticks by
-    /// however much of a tick the accumulator is still holding — see [`Pose`]. Everything else
-    /// is the current tick verbatim: a velocity, an impulse or a run verdict blended with its
-    /// predecessor would be a lie about the state the physics is actually in, and the haptics
-    /// and the audio read those.
+    /// The POSE is interpolated between the last two ticks by whatever the accumulator still
+    /// holds (see [`Pose`]). Every other field is the current tick verbatim: a blended velocity,
+    /// impulse or verdict would be a lie about the state the physics is in.
     fn snapshot(&self) -> CarState {
         let rear = self.wheels[REAR];
         let front = self.wheels[FRONT];
@@ -1474,9 +1117,8 @@ impl Sim {
         }
     }
 
-    /// Re-seat the car mid-run at a chosen pitch, height and descent rate, leaving the run's
-    /// bookkeeping alone. Only the behavioural tests use it — a drop test needs to put the car
-    /// in the air, which the FFI deliberately offers no way to do.
+    /// Re-seat mid-run, leaving the run bookkeeping alone. Tests only: a drop test has to put the
+    /// car in the air, which the FFI deliberately offers no way to do.
     #[cfg(test)]
     fn place_for_test(&mut self, ang: f32, y: f32, vy: f32) {
         let seat = Seat { x: self.x, y, ang, vx: self.vx, vy, av: self.av, ext: self.sag_ext };
@@ -1484,15 +1126,9 @@ impl Sim {
     }
 }
 
-// ── FFI surface ─────────────────────────────────────────────────────────────────────────
-
-/// One hill-climb world: terrain + car + run state. `Arc`-shared and internally locked, so
-/// a Compose frame loop can hold it in a `remember { }` and the renderer, the haptics and
-/// the audio all read one [`CarState`] per frame.
-///
-/// Own it deterministically: the generated Kotlin object is `AutoCloseable` behind a JVM
-/// `Cleaner`, so dropping the reference frees the Rust world only at the next GC. Close it
-/// in a `DisposableEffect` when the screen goes away.
+/// `Arc`-shared and internally locked. The generated Kotlin object is `AutoCloseable` behind a JVM
+/// `Cleaner`, so dropping the reference frees the Rust world only at the next GC — close it in a
+/// `DisposableEffect`.
 #[derive(uniffi::Object)]
 pub struct GameWorld {
     inner: Mutex<Sim>,
@@ -1500,8 +1136,7 @@ pub struct GameWorld {
 
 #[uniffi::export]
 impl GameWorld {
-    /// Build a world. Validates the heightfield and every tuning field up front — this is
-    /// the ONE fallible, allocating, message-formatting entry point; `step` is not.
+    /// The ONE fallible, allocating, message-formatting entry point; `step` is not.
     #[uniffi::constructor]
     pub fn new(terrain: TerrainSpec, tuning: CarTuning) -> Result<Arc<Self>, CoreError> {
         let n = terrain.heights.len();
@@ -1511,10 +1146,9 @@ impl GameWorld {
         if n > MAX_TERRAIN_SAMPLES {
             return Err(dec(format!("terrain: {n} samples (max {MAX_TERRAIN_SAMPLES})")));
         }
-        // The reciprocal has to be finite too. A sub-normal `dx` (1.4e-45, say) is finite and
-        // positive and gives a finite `length`, but `inv_dx` overflows to +inf — and every
-        // derived signal that multiplies by it then reads `0 · inf = NaN`, which `clamp` does
-        // NOT sanitise: it rejects a NaN *bound*, never a NaN *self*.
+        // The reciprocal has to be finite too: a sub-normal `dx` is finite and positive, but
+        // `inv_dx` overflows to +inf and every signal scaled by it reads `0 · inf = NaN` — which
+        // `clamp` does NOT sanitise, since it rejects a NaN bound, never a NaN self.
         if !terrain.dx.is_finite() || terrain.dx <= 0.0 || !(1.0 / terrain.dx).is_finite() {
             return Err(dec(format!("terrain: dx must be finite and > 0, got {}", terrain.dx)));
         }
@@ -1543,57 +1177,50 @@ impl GameWorld {
         Ok(Arc::new(Self { inner: Mutex::new(Sim::new(t, tuning)) }))
     }
 
-    /// Advance by one rendered frame and return everything the frame needs.
-    ///
-    /// `dt_ms` is the wall-clock frame delta; it is accumulated and consumed in fixed
-    /// 1/120 s ticks (two per 60 fps frame), with the surplus beyond [`MAX_SUBSTEPS`]
-    /// dropped so a stalled frame cannot cascade. `throttle` and `brake` are saturated to
-    /// [0, 1]; a non-finite control reads as released. Once the run is terminal this is a
-    /// pure re-read of the frozen state.
+    /// `dt_ms` is the wall-clock frame delta, consumed in fixed 1/120 s ticks with the surplus
+    /// beyond [`MAX_SUBSTEPS`] dropped. `throttle`/`brake` saturate to [0, 1]; a non-finite
+    /// control reads as released. Once the run is terminal this is a re-read of the frozen state.
     pub fn step(&self, dt_ms: f32, throttle: f32, brake: f32) -> Result<CarState, CoreError> {
         let mut sim = self.lock()?;
         sim.advance(dt_ms, throttle, brake);
         Ok(sim.snapshot())
     }
 
-    /// The current frame without advancing — for a paused screen or a fresh recomposition.
+    /// The current frame without advancing.
     pub fn state(&self) -> Result<CarState, CoreError> {
         Ok(self.lock()?.snapshot())
     }
 
-    /// Put the car back on the start line with a full tank and a `Running` run.
+    /// Put the car back on the start line, `Running`.
     pub fn reset(&self) -> Result<CarState, CoreError> {
         let mut sim = self.lock()?;
         sim.reset();
         Ok(sim.snapshot())
     }
 
-    /// Re-place the car at the first solid ground at or after `x` (world metres) and report the new
-    /// state. Used to drop the car where the user tapped, in a track that spans the whole visible
-    /// window rather than beginning under the car.
+    /// Re-place the car at the first solid ground at or after `x` (world metres) — where the user
+    /// tapped, in a track that spans the whole visible window.
     pub fn reset_at(&self, x: f32) -> Result<CarState, CoreError> {
         let mut sim = self.lock()?;
         sim.reset_from(x);
         Ok(sim.snapshot())
     }
 
-    /// x of the finish line: the right-hand edge of the heightfield.
+    /// x of the finish line.
     pub fn track_length(&self) -> Result<f32, CoreError> {
         Ok(self.lock()?.terrain.length)
     }
 }
 
-// Helpers live OUTSIDE the exported block: uniffi tries to export every method in an
-// annotated `impl` and rejects signatures it cannot lower (the `watch::WatchSession`
-// precedent).
+// Outside the exported block: uniffi tries to export every method in an annotated `impl` and
+// rejects signatures it cannot lower.
 impl GameWorld {
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, Sim>, CoreError> {
         self.inner.lock().map_err(|_| internal("game world lock poisoned"))
     }
 }
 
-/// Reject a tuning that would make the integrator meaningless (or divide by zero) before it
-/// can ever reach the step path.
+/// Reject a tuning that would make the integrator meaningless before it reaches the step path.
 fn validate_tuning(t: &CarTuning) -> Result<(), CoreError> {
     let positive: [(&str, f32); 9] = [
         ("chassis_mass", t.chassis_mass),
@@ -1662,23 +1289,18 @@ mod tests {
         );
     }
 
-    /// Flat ground, 400 m at 1 m spacing.
     fn flat() -> TerrainSpec {
         TerrainSpec { heights: vec![10.0; 401], dx: 1.0, world_height: 40.0 }
     }
 
-    /// A constant grade rising to the right; `rise` metres per metre.
-    /// A constant grade, long enough that the car cannot reach the end of it inside any test's frame
-    /// budget. It is 2 km rather than 400 m because the shipped tune covers 400 m in about five
-    /// seconds: on the shorter ramp the climb tests were not measuring a climb at all by the end, they
-    /// were measuring a car that had run off the top and was airborne over the void past it.
+    /// A constant grade rising to the right, `rise` metres per metre. 2 km, so no test's frame
+    /// budget can run the car off the top.
     fn ramp(rise: f32) -> TerrainSpec {
         let heights: Vec<f32> = (0..2001).map(|i| 10.0 + rise * i as f32).collect();
         TerrainSpec { heights, dx: 1.0, world_height: 2_000.0 }
     }
 
-    /// The shape the game actually renders: a jagged glucose excursion. Deterministic —
-    /// two sines plus a fixed 5-sample sawtooth jitter, no RNG.
+    /// A jagged glucose excursion. Deterministic, no RNG.
     fn glucose_terrain() -> TerrainSpec {
         let heights: Vec<f32> = (0..601)
             .map(|i| {
@@ -1696,7 +1318,7 @@ mod tests {
         GameWorld::new(spec, default_car_tuning()).expect("world must build")
     }
 
-    /// Drive for `frames` at a nominal 60 fps and return the last frame.
+    /// `frames` at a nominal 60 fps.
     fn drive(w: &GameWorld, frames: u32, throttle: f32, brake: f32) -> CarState {
         let mut last = w.state().unwrap();
         for _ in 0..frames {
@@ -1704,8 +1326,6 @@ mod tests {
         }
         last
     }
-
-    // ── the car sits still on flat ground ───────────────────────────────────────────────
 
     #[test]
     fn rests_stably_on_flat_ground() {
@@ -1720,21 +1340,16 @@ mod tests {
         assert!(s.vy.abs() < 0.05, "resting vy = {}", s.vy);
         assert!(s.rear_contact && s.front_contact, "both wheels must stay down");
         assert!(!s.airborne);
-        // Nothing is landing, so the excess-normal impulse must stay near zero. The bound is 5 and
-        // not 0.1 because the four seconds this drives cover the SEAT TRANSIENT: the car is placed
-        // at the analytic static sag and takes ~1.7 s to settle into the solver's own equilibrium,
-        // peaking at 2.1 N·s on the way — 1.5 % of one substep's weight impulse. Past 3.3 s the
-        // floor is 6e-5, so what this bound really rules out is a car that never settles.
+        // The bound is 5 and not 0.1 because these four seconds cover the SEAT TRANSIENT: placed
+        // at the analytic sag, the car takes ~1.7 s to settle, peaking at 2.1 N·s on the way.
         assert!(s.impact_impulse < 5.0, "resting impact = {}", s.impact_impulse);
         assert_close(s.roughness, 0.0, 1e-6, "flat roughness");
     }
 
     #[test]
     fn rolling_flat_ground_at_speed_registers_no_impacts() {
-        // Ground with no bumps in it must produce no bumps. It is the collider's job, not the
-        // haptics': the 2D heightfield this replaced kicked the wheel 44 cm up at every cell vertex
-        // — invisible against a 40 m world, but a 16 Hz spike train through `impact_impulse`, which
-        // `GameFeel` fires a cue on the rising edge of.
+        // The collider's job, not the haptics': an internal-edge kick at every cell vertex is a
+        // 16 Hz spike train through `impact_impulse`, whose rising edge fires a cue.
         let w = world(TerrainSpec { heights: vec![10.0; 4001], dx: 1.0, world_height: 40.0 });
         drive(&w, 600, 1.0, 0.0); // reach the limiter
         let mut peak = 0.0f32;
@@ -1749,23 +1364,9 @@ mod tests {
 
     #[test]
     fn airborne_does_not_strobe_on_a_jagged_trace() {
-        // `airborne` is read as an EDGE — the touchdown that fires the landing one-shot — so a wheel
-        // clearing a sharp lip for a tick must not read as a flight. On this fixture (a 1.4 m rise
-        // thrown away in a single 1 m step) the unhysteresised flag produced 49 "flights" in 15 s,
-        // 48 of them two frames or shorter: a train of thuds, which is the failure 3252335 closed on
-        // the impulse channel arriving through this one.
-        // What this asserts is the MECHANISM, not a headcount, because neither a count nor a duration
-        // can see a strobe once the flag is hysteresised. A count cannot: at the shipped limiter this
-        // fixture launches the car for real, so more episodes is as likely to mean genuine airtime as
-        // chatter. A duration cannot either, and that is the subtler trap — `airborne` only arms after
-        // [`AIRBORNE_ARM_TICKS`], so even a ONE-FRAME report already implies ~150 ms of unbroken air.
-        // Under hysteresis a short report is a short flight, never a blip.
-        //
-        // So compare the two flags directly: the per-wheel ones are instantaneous, and the fixture
-        // breaks them constantly (a 1.4 m rise thrown away in a single 1 m step). The property worth
-        // pinning is that `airborne` passes only a small fraction of those through, since each one it
-        // passes ends in a touchdown edge that fires the landing one-shot. That is the failure commit
-        // 3252335 closed on the impulse channel, arriving through this one.
+        // `airborne` is read as an EDGE, so a wheel clearing a lip for a tick must not read as a
+        // flight. Compare the two flags rather than counting episodes or timing them: once the flag
+        // is hysteresised neither a count nor a duration can see a strobe.
         let w = world(glucose_terrain());
         let (mut raw, mut reported) = (0u32, 0u32);
         let (mut raw_in, mut rep_in) = (false, false);
@@ -1796,16 +1397,12 @@ mod tests {
         let w = world(flat());
         let s = drive(&w, 600, 0.0, 0.0);
         let t = default_car_tuning();
-        // Wheel centres sit exactly one radius above the ground.
         assert_close(s.rear_y, 10.0 + t.wheel_radius, 0.02, "rear ride height");
         assert_close(s.front_y, 10.0 + t.wheel_radius, 0.02, "front ride height");
     }
 
-    // ── gravity does its job ────────────────────────────────────────────────────────────
-
     #[test]
     fn rolls_downhill_without_throttle() {
-        // Falling to the right: −12 % grade.
         let w = world(ramp(-0.12));
         let s = drive(&w, 300, 0.0, 0.0); // 5 s
         assert!(s.distance_m > 3.0, "should have rolled downhill, distance = {}", s.distance_m);
@@ -1821,11 +1418,9 @@ mod tests {
         assert!(s.vx <= 0.05, "must not creep uphill unpowered, vx = {}", s.vx);
     }
 
-    // ── the whole point: it climbs ──────────────────────────────────────────────────────
-
     #[test]
     fn climbs_a_modest_slope_under_throttle() {
-        // 25 % grade (~14°) — a routine glucose excursion.
+        // 25 % grade ≈ 14°.
         let w = world(ramp(0.25));
         let s = drive(&w, 420, 1.0, 0.0); // 7 s
         assert_eq!(s.run, RunState::Running, "a 25 % grade must not end the run");
@@ -1837,7 +1432,7 @@ mod tests {
 
     #[test]
     fn climbs_a_steep_slope_under_throttle() {
-        // 90 % grade (~42°): the steepest face the shipped tune takes at pinned throttle.
+        // 90 % grade ≈ 42°: the steepest face the shipped tune takes at pinned throttle.
         let w = world(ramp(0.9));
         let s = drive(&w, 600, 1.0, 0.0);
         assert_ne!(s.run, RunState::Crashed, "a 42° face must not loop the car");
@@ -1865,11 +1460,8 @@ mod tests {
         assert!(s.vx < -0.5, "brake must back the car up on the flat, vx = {}", s.vx);
     }
 
-    // ── run rules ───────────────────────────────────────────────────────────────────────
-
     #[test]
     fn reaching_the_right_edge_finishes() {
-        // A short, gently downhill track the car can run out in a few seconds.
         let heights: Vec<f32> = (0..60).map(|i| 20.0 - 0.15 * i as f32).collect();
         let w = world(TerrainSpec { heights, dx: 1.0, world_height: 40.0 });
         let mut last = w.state().unwrap();
@@ -1884,9 +1476,6 @@ mod tests {
 
     #[test]
     fn reset_at_the_right_edge_seats_the_car_short_of_the_finish() {
-        // Tapping the far right of the BG panel is the natural "start me at now" gesture, and it used
-        // to seat the car at or past `terrain.length` — which IS the finish — so the run ended on its
-        // first step, having travelled nothing.
         let w = world(flat());
         let len = w.track_length().unwrap();
         for tap in [len, len * 2.0, f32::MAX] {
@@ -1900,8 +1489,8 @@ mod tests {
 
     #[test]
     fn reset_at_a_bottomless_tap_falls_back_to_landable_ground() {
-        // Solid for the first 40 m, gap for the rest: a tap into the gap has no landable run after
-        // it, so the seat falls back to real ground rather than dropping the car into the chasm.
+        // Solid for the first 40 m, gap for the rest: a tap into the gap has no landable run
+        // after it.
         let mut heights = vec![12.0f32; 200];
         for h in heights.iter_mut().skip(40) {
             *h = -1.0; // gap marker
@@ -1914,10 +1503,7 @@ mod tests {
 
     #[test]
     fn a_fresh_seat_has_travelled_nothing_on_any_grade() {
-        // `distance_m` is measured from the start line, and the start line is the WHEEL mid-point.
-        // Seeding the counter from the chassis centre of mass instead put it ahead of the line on a
-        // descent (1.59 m before the car had moved) and behind it on a climb, where the `.max(0.0)`
-        // ate the same distance silently for the whole run.
+        // The start line is the WHEEL mid-point, not the chassis centre of mass.
         for rise in [-1.0f32, -0.25, 0.0, 0.25, 1.0] {
             let heights: Vec<f32> = (0..2001).map(|i| 2_000.0 + rise * i as f32).collect();
             let w = world(TerrainSpec { heights, dx: 1.0, world_height: 6_000.0 });
@@ -1928,7 +1514,6 @@ mod tests {
     #[test]
     fn a_seat_over_a_chasm_reports_itself_airborne() {
         // No landable run anywhere, so the seat falls back to the tap and the car is in free fall.
-        // The renderer, the haptic bed and the audio all read this frame before any physics has run.
         let w = world(TerrainSpec { heights: vec![-1.0; 200], dx: 1.0, world_height: 20.0 });
         let s = w.state().unwrap();
         assert!(s.airborne, "seated over a chasm but reporting grounded");
@@ -1937,12 +1522,12 @@ mod tests {
 
     #[test]
     fn rejects_a_dx_whose_reciprocal_overflows() {
-        // Finite, positive, and gives a finite track length — but `1/dx` is +inf, so every derived
-        // signal that scales by it reads `0 · inf = NaN`, and `clamp` does not sanitise a NaN self.
+        // Finite, positive, finite track length — but `1/dx` is +inf, so a signal scaled by it
+        // reads `0 · inf = NaN`, and `clamp` does not sanitise a NaN self.
         let spec =
             TerrainSpec { heights: vec![10.0; 401], dx: f32::from_bits(1), world_height: 40.0 };
         assert!(GameWorld::new(spec, default_car_tuning()).is_err());
-        // And the derived signal is total anyway, for a `dx` that slips past any future guard.
+        // The derived signal is total anyway, for a `dx` that slips past a future guard.
         let t = Terrain {
             heights: vec![10.0; 401],
             dx: f32::MIN_POSITIVE,
@@ -1956,9 +1541,7 @@ mod tests {
     #[test]
     fn the_run_off_cannot_be_driven_off() {
         // Released on a steep start line the car rolls BACKWARDS off x = 0, and the only thing
-        // slowing it on the flat apron is the air-drag stand-in. An apron as long as the track — what
-        // this used to be — is crossed in seconds on a short one, after which the car falls to the
-        // kill plane and the run reads Crashed with nothing on screen to explain it.
+        // slowing it on the apron is the air-drag stand-in.
         let heights: Vec<f32> = (0..60).map(|i| 10.0 + 0.9 * i as f32).collect();
         let w = world(TerrainSpec { heights, dx: 1.0, world_height: 400.0 });
         let mut last = w.state().unwrap();
@@ -1974,8 +1557,7 @@ mod tests {
 
     #[test]
     fn a_chasm_ends_the_run() {
-        // Solid for 110 m, then nothing — a CGM dropout wide enough that no launch speed
-        // clears it before the fall reaches the kill plane.
+        // Solid for 110 m, then nothing: wider than any launch speed clears.
         let mut heights = vec![12.0f32; 300];
         for h in heights.iter_mut().skip(110) {
             *h = -1.0; // gap marker
@@ -1994,7 +1576,6 @@ mod tests {
 
     #[test]
     fn inverted_landing_crashes() {
-        // Drop the car in upside-down: the head hits ground past the tilt threshold.
         let w = world(flat());
         {
             let mut sim = w.inner.lock().unwrap();
@@ -2012,7 +1593,6 @@ mod tests {
 
     #[test]
     fn upright_landing_does_not_crash() {
-        // The same drop, right way up, must NOT trip the rollover rule.
         let w = world(flat());
         {
             let mut sim = w.inner.lock().unwrap();
@@ -2024,8 +1604,7 @@ mod tests {
 
     #[test]
     fn a_steep_hill_is_not_mistaken_for_a_rollover() {
-        // Sitting on a 100 % grade pitches the chassis 45° — well inside `crash_tilt_rad`,
-        // so terrain pitch alone must never read as a rollover.
+        // A 100 % grade pitches the chassis 45°, well inside `crash_tilt_rad`.
         let w = world(ramp(1.0));
         let s = drive(&w, 600, 0.0, 0.0);
         assert_ne!(s.run, RunState::Crashed, "a 45° hill must not read as a rollover");
@@ -2059,11 +1638,6 @@ mod tests {
         assert!(!s.rear_contact && !s.front_contact);
     }
 
-    // ── terminal runs ───────────────────────────────────────────────────────────────────
-
-    /// Inherited from the deleted `running_dry_ends_the_run_and_cuts_the_throttle`. Fuel is gone, but
-    /// the property that test ALSO carried is not about fuel: once a run is terminal the solver freezes
-    /// and releases the throttle, whatever ended it. Re-pinned against the finish line.
     #[test]
     fn a_terminal_run_freezes_and_releases_the_throttle() {
         let heights: Vec<f32> = (0..60).map(|i| 20.0 - 0.15 * i as f32).collect();
@@ -2094,19 +1668,15 @@ mod tests {
         assert_eq!(fresh.elapsed_s, 0.0);
         assert_eq!(fresh.rear_omega, 0.0);
         assert_eq!(fresh.vx, 0.0);
-        // Placement aligns with the local grade, so the pitch is the start line's, not zero.
+        // Placement aligns with the local grade, so the pitch is the start line's.
         let flat_start = world(flat()).reset().unwrap();
         assert_eq!(flat_start.angle, 0.0);
-        // Re-driving from a reset must retrace the first run exactly.
         let again = drive(&w, 600, 1.0, 0.0);
         assert_eq!(again, driven);
     }
 
-    // ── determinism ─────────────────────────────────────────────────────────────────────
-
     #[test]
     fn identical_inputs_give_identical_states() {
-        // A ragged but fixed control script, including uneven frame deltas.
         let script: Vec<(f32, f32, f32)> = (0..900u32)
             .map(|i| {
                 let dt = 1000.0 / 60.0 + (i % 7) as f32 * 0.9;
@@ -2149,7 +1719,7 @@ mod tests {
             assert_eq!(seated.front_y, mirrored.wheels[FRONT].cy);
             assert_eq!(w.state().unwrap(), seated, "state() must not drift from the seat");
 
-            // Driving away and re-seating must not blend the new seat against the old run.
+            // Re-seating must not blend the new seat against the old run.
             drive(&w, 120, 1.0, 0.0);
             let again = w.reset_at(0.0).unwrap();
             let mirrored = w.inner.lock().unwrap().pose();
@@ -2161,7 +1731,7 @@ mod tests {
     fn a_partial_tick_reports_a_pose_between_the_two_it_brackets() {
         let w = world(ramp(-0.25));
         drive(&w, 240, 1.0, 0.0); // get it moving; leaves the accumulator empty
-        // One and a half ticks: consumes one, banks half of the next.
+        // Consumes one tick, banks half of the next.
         let s = w.step(1000.0 * FIXED_DT * 1.5, 1.0, 0.0).unwrap();
         let (prev, cur, alpha, vx) = {
             let g = w.inner.lock().unwrap();
@@ -2178,14 +1748,13 @@ mod tests {
         between(s.y, prev.y, cur.y, "chassis y");
         between(s.rear_x, prev.wheels[REAR].cx, cur.wheels[REAR].cx, "rear x");
         between(s.front_x, prev.wheels[FRONT].cx, cur.wheels[FRONT].cx, "front x");
-        // Only the pose is blended.
         assert_eq!(s.vx, vx, "velocity must be the current tick's, unblended");
     }
 
     #[test]
     fn the_shortest_arc_carries_the_wheel_across_the_wrap_seam() {
-        // A wheel a hair short of a full turn, blended toward one a hair past it: the long way
-        // round spins it backwards through the whole revolution.
+        // A hair short of a full turn blended toward a hair past it; the long way round spins it
+        // backwards through the whole revolution.
         let got = lerp_angle(TWO_PI - 0.05, -TWO_PI + 0.05, 0.5) % TWO_PI;
         assert_close(wrap_pi(got), 0.0, 1e-5, "seam crossing");
         assert_close(lerp_angle(3.0, -3.0, 0.0), 3.0, 1e-6, "t = 0 is the previous angle");
@@ -2194,14 +1763,11 @@ mod tests {
 
     #[test]
     fn the_accumulator_makes_a_long_frame_bounded() {
-        // One absurd frame must not teleport the car: the substep cap bounds the advance.
         let a = world(flat());
         let sa = a.step(10_000.0, 1.0, 0.0).unwrap();
         assert!(sa.elapsed_s <= MAX_SUBSTEPS as f32 * FIXED_DT + 1e-6, "elapsed = {}", sa.elapsed_s);
         assert!(sa.x.is_finite() && sa.y.is_finite());
     }
-
-    // ── hostile input ───────────────────────────────────────────────────────────────────
 
     #[test]
     fn rejects_a_degenerate_terrain() {
@@ -2241,12 +1807,9 @@ mod tests {
 
     #[test]
     fn a_tuning_that_overflows_the_normal_load_does_not_abort() {
-        // Every field here is finite, positive and correctly ordered, so `validate_tuning` (which
-        // bounds by sign, not magnitude) accepts it — yet MAX_SUSPENSION_G · mass · gravity
-        // overflows to +inf, the suspension clamp no longer caps anything, and `grip · normal` is
-        // 0 · inf = NaN. A NaN bound makes `f32::clamp` panic, and `panic = "abort"` in release
-        // would take the app down from inside the frame loop. `createGameWorld` takes a
-        // caller-built tuning, so this is reachable across the seam.
+        // Every field is finite, positive and correctly ordered, so `validate_tuning` — which
+        // bounds by sign, not magnitude — accepts it, yet the derived loads overflow to +inf and
+        // `0 · inf = NaN`. A NaN bound panics `f32::clamp`, and release is `panic = "abort"`.
         let mut t = default_car_tuning();
         t.chassis_mass = 1e20;
         t.gravity = 1e20;
@@ -2262,8 +1825,7 @@ mod tests {
 
     #[test]
     fn a_terrain_of_pure_gap_does_not_panic() {
-        // No solid ground anywhere: the car is placed at the origin and falls to the kill
-        // plane. The invariant is that nothing panics and the run terminates.
+        // No solid ground anywhere: the car falls to the kill plane. Nothing may panic.
         let w = world(TerrainSpec { heights: vec![-1.0; 200], dx: 1.0, world_height: 20.0 });
         let mut last = w.state().unwrap();
         for _ in 0..2000 {
@@ -2308,9 +1870,8 @@ mod tests {
 
     #[test]
     fn fuzz_never_panics() {
-        // Deterministic xorshift over BOTH the terrain and the control stream. This module
-        // is reached from a 60 Hz frame loop under `panic = "abort"`, so the invariant is
-        // simply: nothing here can ever abort the process.
+        // Deterministic xorshift over both the terrain and the control stream; reached from a
+        // 60 Hz frame loop under `panic = "abort"`, so nothing here may abort the process.
         // Free fns rather than closures: two closures over the same `state` would collide.
         fn xs(state: &mut u64) -> u64 {
             *state ^= *state << 13;
@@ -2318,8 +1879,7 @@ mod tests {
             *state ^= *state << 17;
             *state
         }
-        /// A uniformly random 32-bit pattern reinterpreted as f32 — NaNs, infinities,
-        /// subnormals and absurd magnitudes all appear.
+        /// A random 32-bit pattern as f32: NaNs, infinities, subnormals, absurd magnitudes.
         fn xf(state: &mut u64) -> f32 {
             f32::from_bits((xs(state) >> 32) as u32)
         }
@@ -2364,8 +1924,6 @@ mod tests {
         }
     }
 
-    // ── regression pin (see the module header's honesty caveat) ─────────────────────────
-
     #[test]
     fn golden_trace_is_pinned() {
         let g = golden();
@@ -2402,8 +1960,7 @@ mod tests {
         }
     }
 
-    /// Diagnostic, not a gate: how much of a full-throttle run over the real terrain shape is spent
-    /// airborne, and how hard it accelerates. Run with
+    /// Diagnostic, not a gate.
     ///   `cargo test -p t1dm-core airtime_probe -- --ignored --nocapture`
     #[test]
     #[ignore]
@@ -2427,12 +1984,11 @@ mod tests {
 
     #[test]
     fn pedals_rotate_the_car_only_while_airborne() {
-        // A ramp that ends in a cliff: drive off it, then hold throttle in the air.
+        // A ramp ending in a cliff.
         let mut heights: Vec<f32> = (0..300).map(|i| 10.0 + 0.05 * i as f32).collect();
         heights.extend((0..400).map(|_| f32::NAN)); // the void past the lip
         let spec = TerrainSpec { heights, dx: 1.0, world_height: 400.0 };
         let w = GameWorld::new(spec, default_car_tuning()).unwrap();
-        // Reach the lip.
         let mut s = w.state().unwrap();
         for _ in 0..600 {
             s = w.step(1000.0 / 60.0, 1.0, 0.0).unwrap();
@@ -2443,7 +1999,7 @@ mod tests {
         for _ in 0..30 { s = w.step(1000.0 / 60.0, 1.0, 0.0).unwrap(); }
         assert!(s.angle > a0, "throttle should rotate the nose up in the air: {} -> {}", a0, s.angle);
 
-        // Planted, the same input must NOT be an attitude control.
+        // Planted, the same input must not be an attitude control.
         let flat = TerrainSpec { heights: vec![10.0; 400], dx: 1.0, world_height: 400.0 };
         let g = GameWorld::new(flat, default_car_tuning()).unwrap();
         let mut p = g.state().unwrap();
@@ -2451,11 +2007,8 @@ mod tests {
         assert!(p.angle.abs() < 0.25, "planted car should not pitch on throttle: {}", p.angle);
     }
 
-    /// Diagnostic: how solidly the front wheel stays down on the steepest face the tune must hold, as
-    /// a function of torque. `climbs_a_steep_slope_under_throttle` samples contact at ONE frame, which
-    /// near the traction ceiling is a coin toss on a wheel that is chattering — so the number that
-    /// actually decides the torque is the FRACTION of the climb spent on both wheels, and this is
-    /// where it is read off.
+    /// Diagnostic: the FRACTION of the climb spent on both wheels, per torque — the number the
+    /// torque is set by, a one-frame contact sample near the ceiling being a coin toss.
     ///   `cargo test -p t1dm-core steep_traction_probe -- --ignored --nocapture`
     #[test]
     #[ignore]
@@ -2486,11 +2039,9 @@ mod tests {
         }
     }
 
-    /// Diagnostic: airtime over a REALISTIC track — 5-minute readings joined linearly, the shape the
-    /// panel actually draws — rather than the deliberately jagged `glucose_terrain` fixture. Reports
-    /// peak clearance both in world metres and as a FRACTION OF THE WORLD HEIGHT, which is what
-    /// decides whether a jump is visible: the panel maps the whole world height onto the plot, so a
-    /// hop of 0.5 % of it is a few pixels however impressive the metres sound.
+    /// Diagnostic: airtime over a realistic track, 5-minute readings joined linearly. Peak
+    /// clearance is reported as a FRACTION OF THE WORLD HEIGHT, which is what decides whether a
+    /// jump is visible on a panel that maps the whole world height onto the plot.
     ///   `cargo test -p t1dm-core smooth_airtime_probe -- --ignored --nocapture`
     #[test]
     #[ignore]
@@ -2530,7 +2081,6 @@ mod tests {
                     if clear > peak_clear { peak_clear = clear; }
                 }
             }
-            // Routine drift slope at this exaggeration, for context.
             let drift_deg = ((3.0 * world_h / span) / mpm).atan().to_degrees();
             println!(
                 "H={:5.0}  airborne {:3}/900 ({:4.1}%)  peak clear {:5.2} m = {:4.2}% of H  \
@@ -2541,8 +2091,8 @@ mod tests {
         }
     }
 
-    /// Regenerate `testdata/game_golden.json` on stdout. `#[ignore]`d: the fixture is a
-    /// deliberate pin, so replacing it is a manual act, never a side effect of `cargo test`.
+    /// Regenerate `testdata/game_golden.json` on stdout. `#[ignore]`d so replacing the pin is a
+    /// manual act, never a side effect of `cargo test`.
     ///   `cargo test -p t1dm-core emit_game_golden -- --ignored --nocapture`
     #[test]
     #[ignore]

@@ -23,17 +23,8 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/**
- * A matured window may only pair a forecast with truth from the SAME sensor (Room v25).
- *
- * The defect this pins down: two sensors worn at once do not agree — a 28 mg/dL median gap was
- * measured between two of this patient's — and `forecastWindows` scoped only the TRUTH side to the
- * authoritative source. A forecast conditioned on the outgoing sensor was therefore scored against
- * the incoming one, which measures the gap between two sensors and calls it model error. Those
- * windows feed the realised-accuracy suite, CG-EGA and the `SPEC/inference.md` §8.4 band fit, so a
- * sensor swap silently pushed the sensor gap into the band drawn for the patient: the fitted τ.05
- * offset came out at −28 mg/dL, the sensor gap almost exactly.
- */
+/** A matured window may only pair a forecast with truth from the SAME sensor; a cross-sensor gap
+ *  reaches CG-EGA and the `SPEC/inference.md` §8.4 band fit as model error. */
 @RunWith(AndroidJUnit4::class)
 class CrossSensorWindowTest {
 
@@ -74,7 +65,6 @@ class CrossSensorWindowTest {
         rssi = -70,
     )
 
-    /** One well-formed forecast, stamped with the source that conditioned it. */
     private fun prediction(cycleTs: Long, sourceId: String?) = ModelPrediction(
         modelId = MODEL,
         cycleTsMs = cycleTs,
@@ -111,10 +101,8 @@ class CrossSensorWindowTest {
         repo.upsertSource(descriptor(worn), authoritative = false, nowMs = t0)
         repo.upsertSource(descriptor(truthSrc), authoritative = true, nowMs = t0)
 
-        // Truth from the authoritative sensor, covering every step of every window below.
         for (i in 0..(horizonSteps * 4)) repo.upsertReading(reading(truthSrc, t0 + i * step, 120))
-        // The other sensor is worn at the same time and reads 28 mg/dL higher. Present so the test
-        // fails the way the field did — a plausible reading at every instant, simply not this one's.
+        // Present so a plausible-but-wrong truth exists at every instant.
         for (i in 0..(horizonSteps * 4)) repo.upsertReading(reading(worn, t0 + i * step, 148))
 
         repo.upsertPredictions(
@@ -133,26 +121,18 @@ class CrossSensorWindowTest {
             "only the window whose forecast came from the authoritative sensor may mature",
             1, set.windows.size,
         )
-        // And it is the right one: truth is the authoritative sensor's 120, never the worn one's 148.
+        // Truth is the authoritative sensor's 120, never the worn one's 148.
         assertEquals(120.0, set.windows.single().realizedBg.first(), 1e-9)
     }
 
-    /**
-     * The sample→reading reconcile may not invent one sensor's history for another.
-     *
-     * `sample` is a single projection written by whichever source held authority at the time, and its
-     * `bgSource` is opaque and null for every row written before v15 — so it cannot be used to
-     * attribute a slot. The gap set is therefore slots NO sensor covers. Matching per source, and
-     * later per model class, each let a sensor change re-import the outgoing sensor's whole record as
-     * the incoming sensor's own MEASURED readings, which is the truth side of the window guard above.
-     */
+    /** `sample` is one projection and its `bgSource` is null for every pre-v15 row, so it cannot
+     *  attribute a slot: the gap set is slots NO sensor covers. */
     @Test
     fun theReconcileSkipsSlotsAnotherSensorAlreadyCovers() = runTest {
         repo.upsertSource(descriptor(worn), authoritative = false, nowMs = t0)
         repo.upsertSource(descriptor(truthSrc), authoritative = true, nowMs = t0)
 
-        // Five slots the OUTGOING sensor measured, projected into `sample` as it was authoritative
-        // then. The incoming sensor has no reading at any of them — the shape that used to match.
+        // Five slots the outgoing sensor measured and projected; the incoming one has none of them.
         for (i in 0 until 5) {
             val ts = t0 + i * step
             repo.upsertReading(reading(worn, ts, 148))
@@ -165,7 +145,7 @@ class CrossSensorWindowTest {
                 ),
             )
         }
-        // One slot nothing has a reading for — the case the reconcile genuinely exists to recover.
+        // The slot no sensor covers — what the reconcile exists to recover.
         val orphan = t0 + 10 * step
         db.sampleDao().upsert(
             SampleEntity(

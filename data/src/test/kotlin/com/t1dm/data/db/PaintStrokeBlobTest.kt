@@ -6,16 +6,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
 
-/**
- * The `bg_paint_stroke.points` codec (Room v8). A stroke is keep-forever user data whose only copy is
- * this blob, so the round trip must be exact — not approximate — for the degenerate shapes the gesture
- * layer will actually produce (a one-point tap, a stroke that doubles back in time) and at the sizes a
- * long unbroken drag reaches. The wire layout is asserted byte-for-byte because a silent endianness or
- * stride change would decode old rows into garbage rather than fail.
- */
 class PaintStrokeBlobTest {
-
-    // ── item 1: round trip ──────────────────────────────────────────────────────────────────
 
     @Test
     fun roundTripsATypicalStroke() {
@@ -54,7 +45,6 @@ class PaintStrokeBlobTest {
         assertArrayEquals(y, back.yFrac, 0f)
     }
 
-    /** A freehand stroke may be dragged leftwards: timestamps are not sorted and must not be reordered. */
     @Test
     fun preservesNonMonotonicTimestampsInOrder() {
         val ts = longArrayOf(T0 + 500, T0 + 200, T0, T0 + 900)
@@ -62,7 +52,7 @@ class PaintStrokeBlobTest {
         assertArrayEquals(ts, PaintStrokeBlob.decode(PaintStrokeBlob.encode(ts, y)).tsMs)
     }
 
-    /** Out-of-panel y is legal (the renderer clips); the codec must not clamp or drop it. */
+    /** Out-of-panel y is legal; the renderer clips. */
     @Test
     fun preservesOutOfRangeAndExtremeValues() {
         val ts = longArrayOf(Long.MIN_VALUE, 0L, Long.MAX_VALUE)
@@ -72,8 +62,6 @@ class PaintStrokeBlobTest {
         assertArrayEquals(y, back.yFrac, 0f)
     }
 
-    // ── item 2: the wire layout ─────────────────────────────────────────────────────────────
-
     @Test
     fun writesTheDocumentedLittleEndianLayout() {
         val blob = PaintStrokeBlob.encode(longArrayOf(1L), floatArrayOf(0f))
@@ -81,13 +69,11 @@ class PaintStrokeBlobTest {
         assertEquals('1'.code.toByte(), blob[1])
         assertEquals('P'.code.toByte(), blob[2])
         assertEquals(PaintStrokeBlob.VERSION.toByte(), blob[3])
-        // count = 1 and tsMs = 1, both little-endian: low byte first, then zeros.
+        // count = 1 then tsMs = 1, little-endian.
         assertArrayEquals(byteArrayOf(1, 0, 0, 0), blob.copyOfRange(4, 8))
         assertArrayEquals(byteArrayOf(1, 0, 0, 0, 0, 0, 0, 0), blob.copyOfRange(8, 16))
         assertEquals("12 B stride per point", 20, blob.size)
     }
-
-    // ── item 3: malformed input fails loudly ────────────────────────────────────────────────
 
     @Test
     fun rejectsMismatchedChannelLengths() {
@@ -101,7 +87,7 @@ class PaintStrokeBlobTest {
 
     @Test
     fun rejectsAForeignBlob() {
-        // The f64 series codec used by `customCurve` — right column type, wrong payload.
+        // The f64 series codec `customCurve` uses: right column type, wrong payload.
         assertRejects { PaintStrokeBlob.decode(doubleArrayOf(1.0, 2.0).toBlob()) }
     }
 

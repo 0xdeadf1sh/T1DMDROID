@@ -6,12 +6,6 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * The scrollbar's geometry kernel is pure and therefore the one part of it worth testing off-device:
- * the drawing is a rounded rect, but the proportion, the clamp and the "there is nothing to indicate"
- * guards are where an off-by-one silently produces a thumb that overruns the track or a permanent
- * stripe on a panel that does not scroll.
- */
 class ScrollbarThumbTest {
 
     private val minThumb = 24f
@@ -23,8 +17,7 @@ class ScrollbarThumbTest {
 
     @Test
     fun `unmeasured scroll state has no thumb`() {
-        // ScrollState.maxValue is Int.MAX_VALUE until the scroll node has measured; drawn naively that
-        // is an infinitely long document, i.e. a min-height thumb pinned to the top of every panel.
+        // ScrollState.maxValue is Int.MAX_VALUE until the node has measured.
         assertTrue(isUnscrollable(Int.MAX_VALUE))
         assertNull(
             scrollThumb(viewportPx = 1000f, maxScrollPx = Int.MAX_VALUE, scrollPx = 0, minThumbPx = minThumb),
@@ -34,7 +27,6 @@ class ScrollbarThumbTest {
 
     @Test
     fun `thumb is the viewport's share of the content`() {
-        // 1000 px viewport over 3000 px of content (2000 px of travel) ⇒ one third of the track.
         val t = scrollThumb(viewportPx = 1000f, maxScrollPx = 2000, scrollPx = 0, minThumbPx = minThumb)!!
         assertEquals(1000f / 3f, t.heightPx, 0.01f)
         assertEquals(0f, t.topPx, 0.01f)
@@ -92,7 +84,7 @@ class ScrollbarThumbTest {
         assertEquals(minThumb, top.heightPx, 0.01f) // 10/400 of 340 px is below the floor
         assertEquals(0f, top.topPx, 0.01f)
 
-        // The last index at which a full screen of items is still visible is total - visible.
+        // 390 = total - visible: the last index with a full screen.
         val end = lazyThumb(viewport, totalItems = 400, firstVisibleIndex = 390, visibleCount = 10, minThumbPx = minThumb)!!
         assertEquals(viewport, end.topPx + end.heightPx, 0.01f)
 

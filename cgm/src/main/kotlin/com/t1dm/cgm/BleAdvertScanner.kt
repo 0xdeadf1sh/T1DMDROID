@@ -18,30 +18,9 @@ import kotlinx.coroutines.flow.flowOn
 import java.util.UUID
 
 /**
- * Passive AiDEX X advertisement scanner (Phase 1). Filters at the BLE layer on
- * manufacturer 0x0059 **and** the 0x181F CGM service, `SCAN_MODE_LOW_LATENCY`, legacy adverts,
- * `CALLBACK_TYPE_ALL_MATCHES`. Name-prefix (`LinX-`, …) can't be expressed as a `ScanFilter` (that
- * needs an exact name), so it is post-filtered downstream.
- *
- * **Report-delay batching for screen-off survival ([reportDelayMs] > 0).** Stock AOSP keeps a
- * *filtered* foreground-service scan alive across screen-off, but Xiaomi/HyperOS goes beyond AOSP and
- * fully SUSPENDS it the moment the phone locks (`dumpsys bluetooth_manager` → "Filter Suspended";
- * verified on-device — a `reportDelay 0` scan, callback or PendingIntent, delivers nothing while
- * locked). The one configuration that survives is **offloaded batch scanning**: the controller buffers
- * adverts in hardware, independent of the host's screen state, and flushes them via
- * [ScanCallback.onBatchScanResults] — on a Xiaomi-imposed ~5-minute timer when locked, or every
- * [reportDelayMs] when awake. A ~5-min flush loses no grid slot for a sensor that advertises ~1/min
- * onto a 5-min grid (CGM.md §3); it does add up to ~5 min of latency to the screen-off alarm path.
- * The caller passes `reportDelayMs = 0` (real-time callback) only when the controller reports no
- * offloaded-batching support.
- *
- * Because batched results arrive together long after capture, each is stamped from
- * [ScanResult.getTimestampNanos] (its true boot-clock receive time, mapped to wall time), NOT the
- * flush moment — so grid-snapping downstream lands every advert in its real 5-min slot.
- *
- * The callback does the minimum on the binder thread — copy the raw AD bytes, map the timestamp,
- * offer to the channel (§2.3) — and all decode work happens downstream on `Dispatchers.Default` via
- * [flowOn]. No `BLUETOOTH_CONNECT`, no location: advertisement-only (`neverForLocation`).
+ * Passive AiDEX X advertisement scanner. A name prefix cannot be expressed as a `ScanFilter`, so it
+ * is post-filtered downstream. [reportDelayMs] > 0 selects offloaded batch scanning, the only mode
+ * HyperOS does not suspend at screen-off; it costs up to ~5 min of latency on the alarm path.
  */
 class BleAdvertScanner(
     private val scanner: BluetoothLeScanner?,
@@ -60,7 +39,6 @@ class BleAdvertScanner(
                 rawAdvertFrom(result)?.let { trySend(it) }
             }
 
-            // Batched (screen-off) delivery: a whole buffered burst arrives at once.
             override fun onBatchScanResults(results: MutableList<ScanResult>) {
                 for (r in results) rawAdvertFrom(r)?.let { trySend(it) }
             }
@@ -84,7 +62,6 @@ class BleAdvertScanner(
         val SERVICE_PARCEL_UUID: ParcelUuid =
             ParcelUuid(UUID.fromString("0000181F-0000-1000-8000-00805F9B34FB"))
 
-        /** The BLE-layer filter (manufacturer 0x0059 ∧ the 0x181F CGM service). */
         fun scanFilters(): List<ScanFilter> = listOf(
             ScanFilter.Builder()
                 .setManufacturerData(CgmConstants.MANUFACTURER_ID, byteArrayOf())
@@ -99,10 +76,9 @@ class BleAdvertScanner(
             .setReportDelay(reportDelayMs)
             .build()
 
-        /** Copy one [ScanResult] into a [RawAdvert] off whatever thread delivered it. The receive
-         *  wall-time is derived from the record's boot-clock [ScanResult.getTimestampNanos] so a
-         *  batch flushed minutes later still stamps each advert at its true capture instant. Null when
-         *  the record carries no raw AD bytes. */
+        /** Stamped from the record's boot-clock [ScanResult.getTimestampNanos], not the flush moment,
+         *  so a late-flushed batch keeps each advert's true capture instant. Null when the record
+         *  carries no raw AD bytes. */
         @SuppressLint("MissingPermission")
         fun rawAdvertFrom(result: ScanResult): RawAdvert? {
             val record = result.scanRecord ?: return null

@@ -24,20 +24,15 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.random.Random
 
-/** Reconnect tunables for the WS stream. */
 data class StreamConfig(
     val baseReconnectMs: Long = 2_000,
     val maxReconnectMs: Long = 60_000,
-    /** OkHttp application-level keepalive; a missed pong fails the socket and triggers reconnect. */
+    /** A missed pong fails the socket and triggers a reconnect. */
     val pingIntervalMs: Long = 20_000,
 )
 
-/**
- * What the app cares about from `/v1/stream` (deliverable 4): [Sample] rows (projected to the wide
- * table via LWW) and [Alert] fan-out, plus the connection-lifecycle markers the catch-up needs.
- * [Reconnected] still carries the last-seen Sample [cursor] for the Network panel, but the coordinator
- * catches up from its own local high-water marks rather than this value.
- */
+/** [Reconnected] carries the last-seen Sample cursor for the Network panel only; the coordinator
+ *  catches up from its own local high-water marks. */
 sealed interface StreamEvent {
     data class Sample(val patch: SamplePatch) : StreamEvent
     data class Alert(val ts: Long, val kind: String, val payload: JsonElement?) : StreamEvent
@@ -46,36 +41,25 @@ sealed interface StreamEvent {
     object Disconnected : StreamEvent
 }
 
-/** The push-stream seam; a [Flow] the service collects. Reconnects internally with backoff. */
+/** Reconnects internally with backoff. */
 interface StreamClient {
     fun events(): Flow<StreamEvent>
 
-    /**
-     * Overflow desync signal, shared by reference with the catch-up coordinator. It is set to `true`
-     * when a live event is dropped because the stream channel was full (a `trySend` that failed under
-     * load). The coordinator reads-and-clears it on connect and, when set, does a full resync
-     * (`from = null`) instead of an incremental catch-up — the idempotent gap-fill / `ON CONFLICT`
-     * upserts make a complete re-download harmless. This client is the sole producer; only the
-     * coordinator clears it.
-     */
+    /** Set when a live event is dropped because the stream channel was full. This client is the sole
+     *  producer; only the catch-up coordinator reads and clears it. */
     val desync: AtomicBoolean
 
     /**
-     * Send one forecast up the stream. Returns `false` when there is no live socket or the outgoing
-     * buffer is full — that is the whole failure model, and there is nothing behind it.
-     *
-     * A forecast is ephemeral by design at contract 0.5.0: no route stores one, the next cycle is
-     * at most five minutes away, and replaying a stale one would have the operator console draw a
-     * twenty-minute-old fan as current. A dropped frame is dropped.
+     * Not delivered when there is no live socket or the outgoing buffer is full — the whole failure
+     * model. No route stores a forecast, and a dropped frame is dropped.
      */
     suspend fun sendPrediction(dto: PredictionWriteDto): ForecastFrame
 }
 
-/** What one forecast frame did: the size of the text that left the phone, and whether the socket
- *  took it. Both from one encode — see [StreamClient.sendPrediction]. */
+/** [bytes] is the size of the text that left the phone, not of the DTO inside it. */
 data class ForecastFrame(val bytes: Int, val delivered: Boolean)
 
-/** Default OkHttp client for the stream — no read timeout (long-lived), pings keep it alive. */
+/** No read timeout: the socket is long-lived and pings keep it alive. */
 private fun defaultStreamOkHttp(config: StreamConfig): OkHttpClient =
     OkHttpClient.Builder()
         .connectTimeout(10_000, TimeUnit.MILLISECONDS)
@@ -84,13 +68,9 @@ private fun defaultStreamOkHttp(config: StreamConfig): OkHttpClient =
         .build()
 
 /**
- * OkHttp-backed RFC 6455 client. It follows the active profile via [endpoint], reconnects with
- * jittered backoff, and relies on OkHttp's built-in ping/pong keepalive. It keeps a Sample-only
- * cursor for the Network panel (no longer load-bearing — the coordinator catches up from local
- * high-water marks, not this cursor) and raises [desync] when the channel overflows and drops a live
- * event, so the next connect does a full resync. Only `sample` and `alert` are surfaced; the rest are
- * decoded-and-ignored. Collection is confined to [T1dmDispatchers.io]; OkHttp delivers callbacks on
- * its own dispatcher and we hop back via the channel.
+ * Follows the active profile via [endpoint] and reconnects with jittered backoff. Collection is
+ * confined to [T1dmDispatchers.io]; OkHttp delivers its callbacks on its own dispatcher and they hop
+ * back through the channel.
  */
 class WebSocketStreamClient(
     private val endpoint: suspend () -> ServerEndpoint?,
@@ -100,16 +80,13 @@ class WebSocketStreamClient(
     override val desync: AtomicBoolean = AtomicBoolean(false),
 ) : StreamClient {
 
-    /** The socket a forecast frame goes out on, or null when none is up. Written from OkHttp's own
-     *  dispatcher and read from the caller's, hence `@Volatile`. */
+    /** Written from OkHttp's own dispatcher, read from the caller's — hence `@Volatile`. */
     @Volatile
     private var live: WebSocket? = null
 
     override suspend fun sendPrediction(dto: PredictionWriteDto): ForecastFrame =
         withContext(dispatchers.io) {
-            // Encoded ONCE. The size the Network panel reports is the size of the text that was
-            // actually sent, so measuring it by re-encoding both cost a second serialization per
-            // model per cycle and left room for the two to disagree.
+            // Encoded once: the reported size must be the size of the text actually sent.
             val text = SyncJson.encodeToString<WsClientFrame>(dto.toStreamFrame())
             val bytes = text.toByteArray(Charsets.UTF_8).size
             val ws = live ?: return@withContext ForecastFrame(bytes, delivered = false)
@@ -129,7 +106,7 @@ class WebSocketStreamClient(
                 .build()
             val listener = object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: Response) {
-                    attempt = 0 // a live connection resets the backoff ladder
+                    attempt = 0
                     live = webSocket
                     if (everConnected) trySend(StreamEvent.Reconnected(lastCursor)) else trySend(StreamEvent.Connected)
                     everConnected = true
@@ -138,8 +115,7 @@ class WebSocketStreamClient(
                 override fun onMessage(webSocket: WebSocket, text: String) {
                     decode(text)?.let { ev ->
                         if (ev is StreamEvent.Sample) lastCursor = ev.patch.ts
-                        // A full channel drops the event silently; flag a desync so the coordinator
-                        // does a full resync on the next connect instead of an incremental one.
+                        // A full channel drops the event silently; the next connect resyncs in full.
                         if (trySend(ev).isFailure) desync.set(true)
                     }
                 }

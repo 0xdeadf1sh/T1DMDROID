@@ -7,13 +7,7 @@ import android.media.AudioAttributes
 import android.net.Uri
 import android.os.VibrationEffect
 
-/**
- * User-configurable per-severity actuators for the alert notifications (Phase 7 "Alert polish"):
- * a sound Uri (null ⇒ silent — vibrate only) and a K90 vibration preset per tier, plus the DND-bypass
- * bit for the urgent tier. Deliberately a plain value type; `:app` reads the kv-backed choices and
- * supplies it (the module stays free of a settings dependency). Additive to the deterministic path —
- * changing a sound can never alter WHEN an alarm fires, only how it is announced.
- */
+/** A null sound means silent — vibration only. */
 data class AlertActuatorConfig(
     val warningSound: Uri?,
     val criticalSound: Uri?,
@@ -21,7 +15,7 @@ data class AlertActuatorConfig(
     val criticalVibration: VibrationPreset = VibrationPreset.INSISTENT,
     val bypassDnd: Boolean = true,
 ) {
-    /** A stable version token so a config change yields fresh channel ids (channels are immutable). */
+    /** Channel ids embed this: a channel's sound, importance and DND bit are frozen at creation. */
     fun version(): String {
         var h = 7
         h = 31 * h + (warningSound?.hashCode() ?: 0)
@@ -33,16 +27,10 @@ data class AlertActuatorConfig(
     }
 
     companion object {
-        /** The Phase-1 behaviour: silent channels, speak through the K90 actuators only. */
         val SILENT = AlertActuatorConfig(warningSound = null, criticalSound = null)
     }
 }
 
-/**
- * K90 vibration presets ("many presets, no editor, rich use of K90 actuators").
- * Rendered with hardware primitives ([VibrationEffect.Composition]) when the device exposes them
- * (the Dimensity-9500 K90 does), degrading to a plain waveform otherwise.
- */
 enum class VibrationPreset {
     NONE,
     SOFT,
@@ -50,7 +38,7 @@ enum class VibrationPreset {
     INSISTENT,
     ESCALATING;
 
-    /** A one-shot waveform fallback for [VibrationEffect.createWaveform] (no primitive support). */
+    /** Fallback where the device exposes no vibration primitives. */
     fun waveform(): LongArray = when (this) {
         NONE -> longArrayOf(0)
         SOFT -> longArrayOf(0, 200)
@@ -60,12 +48,6 @@ enum class VibrationPreset {
     }
 }
 
-/**
- * The two severity channels, shared by the deterministic [AndroidAlarmNotifier] and the model-driven
- * predictive-alert presenter in `:app`, so both tiers announce identically. Channel ids carry the
- * config [AlertActuatorConfig.version] because a channel's sound / importance / DND-bypass are frozen
- * at creation — a changed config simply migrates to a new channel id.
- */
 object AlertChannels {
 
     fun ids(config: AlertActuatorConfig): Ids {
@@ -85,7 +67,6 @@ object AlertChannels {
         val deviceCritical: String,
     )
 
-    /** Idempotently (re)create both channels for [config] and return their ids. Prunes stale ones. */
     fun ensure(context: Context, config: AlertActuatorConfig): Ids {
         val nm = context.getSystemService(NotificationManager::class.java)
         val ids = ids(config)
@@ -107,9 +88,7 @@ object AlertChannels {
             lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
             setSound(config.criticalSound, if (config.criticalSound != null) alarmAttrs else null)
         }
-        // Device-over-temperature (D4) rides its OWN channels so it is manageable separately in system
-        // settings and — unlike the urgent glucose tier — NEVER bypasses Do-Not-Disturb: a thermal
-        // notice is device-health, not a glucose emergency, and must not punch through DND.
+        // Device temperature never bypasses DND, unlike the urgent glucose tier.
         val device = NotificationChannel(ids.device, "Device temperature", NotificationManager.IMPORTANCE_DEFAULT).apply {
             description = "Temperature high — forecasting paused"
             configureVibration(config.warningVibration)
@@ -123,7 +102,6 @@ object AlertChannels {
         }
         nm.createNotificationChannels(listOf(warning, critical, device, deviceCritical))
 
-        // Prune older-versioned channels so the settings list stays clean.
         val keep = setOf(ids.warning, ids.critical, ids.device, ids.deviceCritical)
         nm.notificationChannels
             .filter {

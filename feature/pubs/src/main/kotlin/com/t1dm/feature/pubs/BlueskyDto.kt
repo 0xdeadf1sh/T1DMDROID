@@ -3,13 +3,8 @@ package com.t1dm.feature.pubs
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
-/**
- * Wire DTOs for the public AppView `app.bsky.feed.getAuthorFeed` response — modelling only what
- * adapubs actually emits. The decoder is lenient (`ignoreUnknownKeys`), so every field the feed
- * carries but the UI ignores (facets, aspect ratios, bookmark counts, viewer state, …) is dropped
- * rather than fought. Non-optional fields are the ones the mapper hard-depends on; everything else
- * defaults so a sparse post never fails to decode.
- */
+// Non-optional fields are the ones the mapper hard-depends on; the rest default so a sparse post
+// still decodes.
 
 @Serializable
 internal data class AuthorFeedResponse(
@@ -47,12 +42,8 @@ internal data class PostRecord(
     val createdAt: String? = null,
 )
 
-/**
- * One embed view, discriminated by [type] (`app.bsky.embed.images#view`,
- * `app.bsky.embed.external#view`, `…video#view`, `…record#view`, …). Only the image and external
- * shapes are modelled; any other kind — video, a quote/record embed, an unknown future type — simply
- * carries neither [external] nor a non-empty [images], so the mapper degrades it to a text-only post.
- */
+/** Only the image and external shapes are modelled; any other [type] carries neither, so the
+ *  mapper degrades it to a text-only post. */
 @Serializable
 internal data class EmbedView(
     @SerialName("\$type") val type: String? = null,

@@ -14,13 +14,8 @@ import android.view.WindowManager
 import com.t1dm.feature.hardware.HardwareInfo
 import java.io.File
 
-/**
- * Best-effort detected-hardware probe for the Hardware panel top readout (Phase 7C —
- * item 8). Reads Build/os APIs, /proc, /sys, ActivityManager, Display, and the thermal/battery
- * services; EVERY field is guarded so an unavailable source degrades to null ("n/a" in the UI) rather
- * than crashing. Nothing here is on a hot path — [probe] is called once when the panel opens (off-main
- * via the caller); the GL renderer query spins up a throwaway EGL pbuffer context and tears it down.
- */
+/** Every field degrades to null rather than throwing. Call [probe] off the main thread: the GL
+ *  query spins up a throwaway EGL pbuffer context. */
 class HardwareProbe(private val context: Context) {
 
     fun probe(): HardwareInfo = HardwareInfo(
@@ -51,7 +46,6 @@ class HardwareProbe(private val context: Context) {
             listOfNotNull(mfr, model).joinToString(" ").ifBlank { null }
         } else null
     }.getOrNull() ?: runCatching {
-        // Fall back to the board platform / hardware string (e.g. mt6993 = Dimensity 9500).
         listOfNotNull(
             Build.HARDWARE.takeIf { it.isNotBlank() },
             Build.BOARD.takeIf { it.isNotBlank() },
@@ -61,7 +55,6 @@ class HardwareProbe(private val context: Context) {
     private fun cpuTopology(): String? = runCatching {
         val n = Runtime.getRuntime().availableProcessors()
         val freqs = cpuMaxFreqsGhz()
-        // Cluster the cores by max frequency (big.LITTLE / DynamIQ tiers).
         val tiers = freqs.groupingBy { it }.eachCount().entries.sortedByDescending { it.key }
         val topo = if (tiers.isNotEmpty()) {
             tiers.joinToString(" + ") { "${it.value}×${"%.2f".format(it.key)}GHz" }
@@ -78,7 +71,7 @@ class HardwareProbe(private val context: Context) {
     }.getOrDefault(emptyList())
 
     private fun pageSizeKb(): Int? = runCatching {
-        // 16 KB-page detection (target-device.md). Prefer the API, fall back to the syscall constant.
+        // 16 KB-page detection (target-device.md).
         val bytes = if (Build.VERSION.SDK_INT >= 34) android.system.Os.sysconf(android.system.OsConstants._SC_PAGESIZE) else 4096L
         (bytes / 1024L).toInt()
     }.getOrNull()
@@ -128,16 +121,13 @@ class HardwareProbe(private val context: Context) {
         }
     }.getOrNull()
 
-    /** The battery-sensor temperature in Celsius (U9). The dedicated Temperature row renders it in the
-     *  user's chosen C/F/K unit, so it is no longer folded into the [battery] string. */
     private fun batteryTempC(): Double? = runCatching {
         val intent = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
         intent?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, -1)?.takeIf { it > 0 }?.let { it / 10.0 }
     }.getOrNull()
 
     private fun npu(): String? = runCatching {
-        // No public NPU inventory API; infer from the SoC. The K90's MT6993 (Dimensity 9500) carries
-        // the APU 990 (target-device.md). Report a best-effort inference, else n/a.
+        // No public NPU inventory API; inferred from the SoC (target-device.md).
         val plat = (Build.HARDWARE + " " + Build.BOARD).lowercase()
         when {
             plat.contains("mt6993") -> "MediaTek APU 990 (Dimensity 9500, inferred)"
@@ -146,13 +136,8 @@ class HardwareProbe(private val context: Context) {
         }
     }.getOrNull()
 
-    /**
-     * The inference-backend catalog (issue 1 — no "stub" ambiguity). Static routing targets + a plain
-     * reason for each; the LIVE truth of which one executed is the Hardware panel's "Executing on:"
-     * line (from the selected model's [com.t1dm.core.model.RunningModel.backend]). fp32 CPU XNNPACK is
-     * the authority; the LiteRT NPU artifact is proven on host but blocked on-device for a sideload
-     * build. Kept a `List<String>` so the panel renders it without an API change.
-     */
+    /** Static routing targets, not what ran: the live backend is the selected model's
+     *  [com.t1dm.core.model.RunningModel.backend]. */
     private fun backends(): List<String> = listOf(
         "ExecuTorch XNNPACK fp32 (CPU) — AUTHORITATIVE, executes",
         "LiteRT NPU (MediaTek NeuroPilot) — .tflite converts + matches fp32 to Δ≈1.4e-6 on host; " +
@@ -164,10 +149,6 @@ class HardwareProbe(private val context: Context) {
             "Forecast & models → Compute backend (this small model runs slower than CPU — see the per-backend rows below)",
     )
 
-    /**
-     * Query the GL_RENDERER string via a throwaway off-screen EGL pbuffer context. Fully guarded;
-     * returns null if EGL init / context creation fails (headless, no GPU, driver quirk).
-     */
     private fun gpuRenderer(): String? = runCatching {
         val display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
         if (display == EGL14.EGL_NO_DISPLAY) return null

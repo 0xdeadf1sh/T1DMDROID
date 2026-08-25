@@ -6,19 +6,9 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * The arbitration in [HapticMixer], driven against a fake actuator and a hand-cranked clock.
- *
- * Everything asserted here is invisible on a device: a duck that never lifts feels like a bug in the
- * physics, a cue silently queued instead of dropped feels like input lag, and an intensity that scales
- * the bed but not the cues feels like nothing at all. All three are arithmetic, so all three are
- * tested where arithmetic can be — the Android render paths are deliberately behind [HapticRenderer]
- * precisely so this file needs no vibrator.
- */
 class HapticMixerTest {
 
-    /** Every actuator write, in order. The renderer interface has no `cancel`, which is decision 2 made
-     *  structural: there is no method here through which a §3.6-A alarm buzz could be shortened. */
+    /** No `cancel`, deliberately: nothing here can shorten a §3.6-A alarm buzz. */
     private class FakeRenderer : HapticRenderer {
         val arms = mutableListOf<Triple<Float, Float, Float>>()
         val shots = mutableListOf<List<HapticStep>>()
@@ -46,7 +36,6 @@ class HapticMixerTest {
         var strength: HapticStrength = strength
         val mixer = HapticMixer(renderer, { this.strength }, { clock.ms })
 
-        /** One frame of a 60 fps surface holding the bed at [level]. */
         fun frame(level: Float, texture: Float = 0f, dtMs: Long = 16L) {
             clock.advance(dtMs)
             mixer.bed(level, texture)
@@ -54,8 +43,6 @@ class HapticMixerTest {
     }
 
     private fun Rig.lastArm() = renderer.arms.last()
-
-    // ── intensity ──────────────────────────────────────────────────────────────────────────────
 
     @Test
     fun `off costs nothing at all — no arm, no shot, at any level`() {
@@ -114,12 +101,9 @@ class HapticMixerTest {
         assertEquals(0, rig.renderer.arms.size)
     }
 
-    // ── the sustained layer ────────────────────────────────────────────────────────────────────
-
     @Test
     fun `the bed is re-armed at the control period, not at frame rate`() {
         val rig = Rig()
-        // One second of a 60 fps surface.
         repeat(60) { rig.frame(0.7f) }
         val expected = (60 * 16L / CONTROL_PERIOD_MS).toInt()
         assertTrue(
@@ -143,15 +127,11 @@ class HapticMixerTest {
         val rig = Rig()
         rig.frame(0.8f)
         val armed = rig.renderer.arms.size
-        // The very next frame: well inside the control period.
         rig.frame(0f)
         assertEquals("going silent must not arm anything", armed, rig.renderer.arms.size)
-        // And the bed re-enters from zero, so the swell back is a swell.
         repeat(6) { rig.frame(0.8f) }
         assertEquals(0f, rig.renderer.arms[armed].first, 1e-5f)
     }
-
-    // ── ducking ────────────────────────────────────────────────────────────────────────────────
 
     @Test
     fun `a cue owns the actuator while it sounds, then the bed returns at the duck level`() {
@@ -163,12 +143,10 @@ class HapticMixerTest {
         val fired = rig.clock.ms
         assertEquals(1, rig.renderer.shots.size)
 
-        // While the cue is on the actuator nothing else may be issued.
         rig.clock.ms = fired + HapticCue.Impact.durationMs / 2
         rig.mixer.bed(0.8f)
         assertEquals("the bed must not supersede its own cue", before, rig.renderer.arms.size)
 
-        // Then the hush: present, but pressed almost flat.
         rig.clock.ms = fired + HapticCue.Impact.durationMs
         rig.mixer.bed(0.8f)
         val ducked = rig.lastArm().second
@@ -192,8 +170,6 @@ class HapticMixerTest {
         rig.mixer.bed(0.8f)
         assertEquals("the hush must lift on the boundary", 0.8f, rig.lastArm().second, 1e-5f)
     }
-
-    // ── priority, and the drop rule ────────────────────────────────────────────────────────────
 
     @Test
     fun `the loudest cue wins outright`() {
@@ -234,7 +210,6 @@ class HapticMixerTest {
         rig.clock.advance(10)
         rig.mixer.cue(HapticCue.Blip)
         assertEquals(1, rig.renderer.shots.size)
-        // A whole second of frames: a queue would drain into one of them.
         repeat(60) { rig.frame(0.6f) }
         assertEquals("the dropped blip must be gone, not deferred", 1, rig.renderer.shots.size)
     }
@@ -253,8 +228,6 @@ class HapticMixerTest {
         assertTrue(HapticCue.Blip.priority < HapticCue.Impact.priority)
         assertTrue(HapticCue.Impact.priority < HapticCue.Shock.priority)
     }
-
-    // ── the alarm interlock ────────────────────────────────────────────────────────────────────
 
     @Test
     fun `release hands the actuator back and refuses everything after it`() {
@@ -301,8 +274,6 @@ class HapticMixerTest {
         HapticMixer.None.release()
         HapticMixer.None.resume()
     }
-
-    // ── the kernel's own contract ──────────────────────────────────────────────────────────────
 
     @Test
     fun `the kernel reports a drop as null and an acceptance as steps`() {

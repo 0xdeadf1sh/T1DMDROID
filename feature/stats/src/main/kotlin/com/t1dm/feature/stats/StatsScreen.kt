@@ -49,19 +49,12 @@ import com.t1dm.core.model.TargetRange
 import com.t1dm.core.model.TodBucket
 import com.t1dm.core.model.UnitSpace
 
-/**
- * The Stats screen (PLAN "Phase 6 — Stats"). A pure function of the hoisted [StatsViewModel.UiState]:
- * a 7/30/90-day window switcher, the AGP percentile ribbon, the TIR/TBR/TAR stacked bar with the
- * clinical sub-bands, the metric cards (GMI/CV/SD/mean/LBGI/HBGI/MAGE), the per-channel summaries
- * (shown only where data exists), a Kovatchev/unit toggle, and a manual Recompute. Every empty state
- * says WHY in plain language. No compute here — the composable only paints.
- */
+/** Pure paint over the hoisted [StatsViewModel.UiState]; no compute here. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun StatsScreen(
     state: StatsViewModel.UiState,
     kovatchevF: (Double) -> Double,
-    // The fixed clinical cuts the heatmap's ramp anchors its extremes at, read from the Rust crate.
     // [ClinicalCuts.UNAVAILABLE] (no native library) suppresses the heatmap rather than colouring it
     // on a scale cut in the wrong place.
     cuts: ClinicalCuts,
@@ -72,9 +65,7 @@ fun StatsScreen(
     onExportPdf: () -> Unit = {},
     exportStatus: String? = null,
 ) {
-    // Wrap in a Box so the busy indicator is a weightless overlay (issue 1/6): it never inserts or
-    // removes a row, so switching window/unit or recomputing keeps every element exactly in place —
-    // and, unlike the old reserved top slot, it costs no dead space above the window switcher.
+    // The busy indicator is a weightless overlay, so nothing shifts while it shows.
     val haptics = rememberT1dmHaptics()
     val scroll = rememberScrollState()
     Box(Modifier.fillMaxSize()) {
@@ -135,7 +126,6 @@ fun StatsScreen(
             val local = composite.local
             val unit = composite.unitSpace
 
-            // ── AGP ────────────────────────────────────────────────────────────────────────────────
             if (local.agp.isNotEmpty()) {
                 SectionCard("Ambulatory glucose profile") {
                     Text(
@@ -156,7 +146,6 @@ fun StatsScreen(
                 InfoCard("No local BG history in this window")
             }
 
-            // ── Time in range ────────────────────────────────────────────────────────────────────
             SectionCard("Time in range — target ${composite.targetRange.lowMgdl}–${composite.targetRange.highMgdl} mg/dL") {
                 TirBar(local.subBands)
                 Box(Modifier.height(10.dp))
@@ -173,7 +162,6 @@ fun StatsScreen(
                 )
             }
 
-            // ── Metric cards ─────────────────────────────────────────────────────────────────────
             SectionCard("Glycemic metrics") {
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Metric("Mean", fmtLevel(local.meanBg, unit, kovatchevF), unitLabel(unit))
@@ -188,7 +176,6 @@ fun StatsScreen(
                 }
             }
 
-            // ── Variability & risk indices ─────────────────────────────────────────────────────────
             SectionCard("Variability & risk") {
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Metric("MODD", fmtSpread(local.modd, unit), spreadUnit(unit))
@@ -210,23 +197,16 @@ fun StatsScreen(
                 )
             }
 
-            // ── Diurnal time-in-range (four 6-hour buckets) ─────────────────────────────────────────
             if (local.tod.any { it.n > 0 }) {
                 SectionCard("Time in range by time of day") {
                     local.tod.forEach { b -> DiurnalRow(b) }
                 }
             }
 
-            // ── Weekday × hour glucose heatmap ──────────────────────────────────────────────────────
-            // The finer cut of the card above it, and on the SAME clock: every day-keyed reduction in
-            // the core now keys on the patient's local day, resolved per sample from that sample's own
-            // tz_offset. So this grid's columns and the diurnal card's buckets are in phase and can be
-            // read against each other. See the day-boundary block on `advanced_stats` in
-            // crates/t1dm-core/src/stats.rs.
+            // In phase with the diurnal card above: both key on the patient's local day, resolved
+            // per sample from its own tz_offset. See `advanced_stats` in crates/t1dm-core/src/stats.rs.
             if (local.heatmap.isNotEmpty() && cuts.isUsable) {
-                // Which summary the cells show. Local to the card and not hoisted into the ViewModel:
-                // the core computes both in one pass, so this changes nothing but the paint — there
-                // is no reload to coordinate and nothing to persist.
+                // Not hoisted: the core computes both in one pass, so this is a repaint.
                 var heatStat by remember { mutableStateOf(HeatStat.Median) }
                 SectionCard("Glucose by day and hour") {
                     Text(
@@ -258,7 +238,6 @@ fun StatsScreen(
                 }
             }
 
-            // ── Glucose distribution histogram ──────────────────────────────────────────────────────
             if (local.histogram.any { it.count > 0 }) {
                 SectionCard("Glucose distribution") {
                     Text(
@@ -271,7 +250,6 @@ fun StatsScreen(
                 }
             }
 
-            // ── Hypo / hyper episode tables ─────────────────────────────────────────────────────────
             SectionCard("Excursion episodes") {
                 EpisodeRow("Hypo (< ${composite.targetRange.lowMgdl})", local.hypoEpisodes, isHypo = true, unit = unit, kovatchevF = kovatchevF)
                 Box(Modifier.height(8.dp))
@@ -286,7 +264,6 @@ fun StatsScreen(
                 }
             }
 
-            // ── Per-channel (only where data exists) ──────────────────────────────────────────────
             val channels = perChannelMetrics(local)
             if (channels.isNotEmpty()) {
                 SectionCard("Treatments & activity") {
@@ -296,7 +273,6 @@ fun StatsScreen(
                 }
             }
 
-            // ── Server parity cross-check ─────────────────────────────────────────────────────────
             composite.server?.let { s ->
                 SectionCard("Server cache (cross-check)") {
                     Text(
@@ -319,8 +295,6 @@ fun StatsScreen(
         }
     }
 }
-
-// ── Switchers ─────────────────────────────────────────────────────────────────────────────────
 
 @Composable
 private fun WindowSwitcher(current: StatsWindow, onSelect: (StatsWindow) -> Unit) {
@@ -350,14 +324,9 @@ private fun UnitSwitcher(current: UnitSpace, onSelect: (UnitSpace) -> Unit) {
     }
 }
 
-// ── Building blocks ─────────────────────────────────────────────────────────────────────────
-//
 // Every dimmed line below derives from `LocalContentColor.current`, never from
-// `MaterialTheme.colorScheme.onSurface`. Inside a panel those are two different colours: the first is
-// the ink `panelCardColors` has PROVED clears AA against the card, the second is the raw palette role
-// it may have had to reject. A card whose heading took the guarded ink and whose label took the
-// rejected one would carry two inks at opposite polarities. Outside a panel the two coincide — the
-// Scaffold pins its content colour to the same role — so the rule costs nothing to apply everywhere.
+// `MaterialTheme.colorScheme.onSurface`: inside a panel the first is the ink `panelCardColors` has
+// proved clears AA against the card, the second the raw palette role it may have rejected.
 
 @Composable
 private fun SectionCard(title: String, content: @Composable () -> Unit) {
@@ -404,7 +373,6 @@ private fun TirBar(bands: SubBands) {
             .height(28.dp),
     ) {
         if (!anyData) {
-            // I15 — the empty-state fill tracks the theme (was a hardcoded translucent white).
             Box(Modifier.weight(1f).fillMaxHeight().background(LocalContentColor.current.copy(alpha = 0.12f)))
             return@Row
         }
@@ -482,8 +450,7 @@ private fun DiurnalRow(b: TodBucket) {
     }
 }
 
-/** A simple vertical-bar histogram; each 20 mg/dL bin's height ∝ its share, coloured by which
- *  clinical band the bin's centre falls in relative to the target range. */
+/** Bin height ∝ its share; coloured by the band the bin's centre falls in. */
 @Composable
 private fun HistogramChart(s: AdvancedStats, target: TargetRange) {
     val maxFrac = s.histogram.maxOfOrNull { it.frac }?.takeIf { it > 0.0 } ?: 1.0
@@ -519,7 +486,7 @@ private fun HistogramChart(s: AdvancedStats, target: TargetRange) {
 @Composable
 private fun EpisodeRow(label: String, e: EpisodeSummary, isHypo: Boolean, unit: UnitSpace, kovatchevF: (Double) -> Double) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-        // weight(1f) so the descriptive line wraps instead of starving the count column (issue 11).
+        // weight(1f) so the line wraps instead of starving the count column.
         Column(Modifier.weight(1f).padding(end = 12.dp)) {
             Text(label, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
             if (e.count > 0) {
@@ -548,8 +515,6 @@ private fun fmtDurationMin(ms: Double): String {
     return if (min >= 60) "${min / 60}h${(min % 60).toString().padStart(2, '0')}" else "${min}m"
 }
 
-// ── Formatting ────────────────────────────────────────────────────────────────────────────────
-
 private fun perChannelMetrics(s: AdvancedStats): List<Triple<String, String, String>> = buildList {
     if (s.totalCarbs > 0.0) add(Triple("Carbs/day", fmt(s.meanDailyCarbs, 0), "g"))
     if (s.totalBolus > 0.0 || s.totalBasal > 0.0) add(Triple("TDD", fmt(s.tdd, 1), "U/day"))
@@ -558,7 +523,6 @@ private fun perChannelMetrics(s: AdvancedStats): List<Triple<String, String, Str
     s.mood?.let { add(Triple("Mood", fmt(it.mean, 1), "n=${it.n}")) }
 }
 
-/** The chip caption and the subtitle's leading word — one definition so they cannot disagree. */
 private fun statLabel(stat: HeatStat): String = when (stat) {
     HeatStat.Median -> "Median"
     HeatStat.Mean -> "Mean"
@@ -570,7 +534,7 @@ internal fun unitLabel(unit: UnitSpace): String = when (unit) {
     UnitSpace.Kovatchev -> "risk f(g)"
 }
 
-/** Dispersion (SD, MAGE) is only meaningful in a linear space — never Kovatchev; show mg/dL then. */
+/** Dispersion is only meaningful in a linear space — never Kovatchev; show mg/dL then. */
 private fun spreadUnit(unit: UnitSpace): String = if (unit == UnitSpace.MmolL) "mmol/L" else "mg/dL"
 
 private fun fmtSpread(mgdl: Double, unit: UnitSpace): String =
@@ -586,14 +550,14 @@ private fun fmtLevel(mgdl: Double, unit: UnitSpace, kovatchevF: (Double) -> Doub
 
 private fun fmtPct(frac: Double): String = "${fmt(frac * 100.0, 1)}%"
 
-/** Glycemia Risk Index (Klonoff 2022): a single 0-100 composite of the hypo/hyper sub-bands (fractions
- *  here, so ×100 to percent). GRI = 3·VLow + 2.4·Low + 1.6·VHigh + 0.8·High, capped at 100. */
+/** Glycemia Risk Index (Klonoff 2022) = 3·VLow + 2.4·Low + 1.6·VHigh + 0.8·High, capped at 100;
+ *  the bands are fractions here, hence the ×100. */
 internal fun griOf(b: SubBands): Double =
     (3.0 * b.veryLow * 100 + 2.4 * b.low * 100 + 1.6 * b.veryHigh * 100 + 0.8 * b.high * 100).coerceIn(0.0, 100.0)
 
 private fun fmt(v: Double, dp: Int): String = String.format("%.${dp}f", v)
 
-// Clinical band palette (fixed; not theme-linked — clinical convention).
+// Fixed, not theme-linked — clinical convention.
 private val BAND_VLOW = Color(0xFFB71C1C)
 private val BAND_LOW = Color(0xFFF57C00)
 private val BAND_IN = Color(0xFF2E7D32)

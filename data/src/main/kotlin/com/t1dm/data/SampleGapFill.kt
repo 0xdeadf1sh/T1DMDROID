@@ -5,17 +5,10 @@ import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.data.db.SampleEntity
 
 /**
- * A neutral wide-sample patch used to fold a server-originated row (WS `sample` event or REST
- * `GET /v1/series` catch-up) into the local wide `sample` table. Series absent from the source are
- * `null` and never clobber a local value (gap preservation). [updatedAt] carries the row's
- * `updated_at` as authored by the phone and stored verbatim by the server; it is NOT a merge
- * discriminator (see [SampleGapFill]) — only the timestamp stamped on a materialized server-only
- * bucket. `:sync` maps its wire DTO onto this so the merge stays free of any transport type. The
- * server row carries `bg_reconstructed` since contract 0.5.0, so `:sync` maps a present `bg` to
- * RECONSTRUCTED or MEASURED from that flag and to NORMAL. Do NOT re-hardcode MEASURED here: a
- * promoted span coming back from a catch-up would then be read as sensor signal from the moment it
- * landed, where it could clear an alarm and feed a dose. The flag is the only thing on the wire
- * that says otherwise, and it rides both the REST row and the live frame.
+ * A server row folded into the local wide `sample` table; a null series never clobbers a local
+ * value. [updatedAt] is not a merge discriminator. Do NOT default [bgProvenance] to MEASURED:
+ * `:sync` maps it from the wire `bg_reconstructed` flag, and a promoted span read back as sensor
+ * signal could clear an alarm and feed a dose.
  */
 data class SamplePatch(
     val ts: Long,
@@ -29,22 +22,18 @@ data class SamplePatch(
     val mood: Int? = null,
     val hr: Int? = null,
     val sleep: Int? = null,
-    /** Grams of carbohydrate equivalent per bucket — the one scalar here that is not an integer
-     *  series (`SPEC/invariants.md` §3). */
+    /** Grams of carbohydrate equivalent (`SPEC/invariants.md` §3). */
     val exercise: Double? = null,
 )
 
 /**
- * No-server-over-local reconciliation of a server [SamplePatch] against the local `sample` row
- * (§3.3). The phone is the sole read-write author, so a catch-up/WS row is only the
- * phone's own earlier push reflected back; presence gap-fill fills ONLY fields the local row lacks
- * (`existing.x ?: patch.x`) and NEVER overwrites a present local value. Unlike the retired LWW merge
- * this has no clock dependency — it compares no `updated_at`, so a cross-clock skew can never let a
- * server echo win over local truth (decisions #2/#3). Local `tzOffsetMin`/`updatedAt` are preserved.
+ * Fills ONLY the fields the local row lacks (§3.3), never overwriting a present local value, and
+ * compares no `updated_at`, so clock skew cannot let a server echo win. Local
+ * `tzOffsetMin`/`updatedAt` are preserved.
  */
 object SampleGapFill {
 
-    /** The gap-filled row to write, or `null` when the patch adds nothing the local row lacked. */
+    /** Null when the patch adds nothing the local row lacked. */
     fun fill(existing: SampleEntity?, patch: SamplePatch): SampleEntity? {
         if (existing == null) return materialize(patch)
         val merged = existing.copy(
@@ -61,16 +50,12 @@ object SampleGapFill {
         return if (merged == existing) null else merged
     }
 
-    /** A bucket present only on the server: materialize it verbatim (nothing local to preserve). */
     private fun materialize(p: SamplePatch) = SampleEntity(
         ts = p.ts,
         tzOffsetMin = p.tzOffsetMin,
         bgMgdl = p.bgMgdl,
-        // The SERVER's label, which is the phone's own from when it first pushed this slot. Never the
-        // currently authoritative sensor's: attributing a reading to a sensor that may not have
-        // produced it is the one thing this column must never do. Nulling it was worse still — a
-        // gap-fill re-enqueues the slot, and the re-push then cleared the label the server held for a
-        // reading the phone had never changed.
+        // The SERVER's label — never the currently authoritative sensor's, which may not have
+        // produced this reading, and never null, which the re-push would clear on the server.
         bgSource = p.bgSource,
         bgProvenance = p.bgProvenance,
         bgFlag = p.bgFlag,

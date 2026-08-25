@@ -5,14 +5,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * §3.6-F: the decision card discloses the BG input filter (INFERENCE.md §7.1) the recommended fan was
- * BUILT at, so one recommendation must resolve that window exactly once and pin it onto every roll of
- * the grid search. The source here hands back a different detent on every read — a Settings › Graph
- * edit landing while the (cancellable, navigable-away-from) search is in flight — so a second read
- * would surface both as a grid ranked across two `last_bg` anchors and as a card describing its own
- * fan with a window that fan never saw.
- */
+/** §3.6-F; the disclosed BG input filter is INFERENCE.md §7.1. One recommendation resolves the window
+ *  once and pins it onto every roll — the source here returns a different detent on every read. */
 class SmoothingWindowPinTest {
 
     private class RecordingPort(private val inner: ForecastPort) : ForecastPort {

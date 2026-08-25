@@ -34,28 +34,10 @@ import androidx.compose.ui.unit.dp
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
-/**
- * A self-contained HSV colour picker: a saturation/value square, a hue slider and an alpha slider,
- * plus a row of swatches drawn from the ACTIVE theme so the first colours offered are ones that
- * already belong on the screen.
- *
- * Written from primitives rather than pulled in: the whole control is three `Canvas`es and one pointer
- * helper, so a third-party picker would be a transitive dependency bought for a gradient and a thumb.
- * It lives in `:core:design` because nothing about it is graph-specific — the BG panel's paint palette
- * is merely its first caller.
- *
- * The numeric kernel ([hsvToArgb] / [argbToHsv]) is deliberately Android-free and unit-tested: HSV
- * round-tripping is subtly wrong at exactly the edges a slider is dragged to — hue is undefined at
- * zero saturation, and 360° must fold onto 0°.
- */
+/** HSV colour picker. The numeric kernel ([hsvToArgb] / [argbToHsv]) is deliberately Android-free
+ *  and unit-tested: hue is undefined at zero saturation, and 360° must fold onto 0°. */
 
-// ── the pure kernel (no Android types; see ColorPickerTest) ────────────────────────────────────
-
-/**
- * Pack an HSV colour into sRGB ARGB. [hue] is in degrees and may be any real value: it is folded into
- * `[0, 360)`, so a slider that overshoots its end wraps rather than sticking. [sat], [value] and
- * [alpha] are clamped to `[0, 1]`.
- */
+/** [hue] is in degrees, folded into `[0, 360)`; [sat], [value] and [alpha] are clamped to `[0, 1]`. */
 fun hsvToArgb(hue: Float, sat: Float, value: Float, alpha: Float = 1f): Int {
     val h = ((hue % 360f) + 360f) % 360f
     val s = sat.coerceIn(0f, 1f)
@@ -78,12 +60,8 @@ fun hsvToArgb(hue: Float, sat: Float, value: Float, alpha: Float = 1f): Int {
     return (a shl 24) or (chan(r1) shl 16) or (chan(g1) shl 8) or chan(b1)
 }
 
-/**
- * Decompose sRGB ARGB into `[hue°, saturation, value]`. Alpha is deliberately NOT returned — it is
- * carried by the picker's own slider (see [argbAlpha]); folding it in here would invite the classic
- * bug of a colour quietly losing its transparency on every round trip through the square. Hue is
- * undefined for a grey and reported as 0 rather than NaN, so the hue slider always has somewhere to sit.
- */
+/** `[hue°, saturation, value]`. Alpha is deliberately NOT returned; the picker's own slider carries
+ *  it (see [argbAlpha]). Hue is undefined for a grey and reported as 0, never NaN. */
 fun argbToHsv(argb: Int): FloatArray {
     val r = ((argb shr 16) and 0xFF) / 255f
     val g = ((argb shr 8) and 0xFF) / 255f
@@ -103,23 +81,14 @@ fun argbToHsv(argb: Int): FloatArray {
 /** The alpha channel of [argb] as `[0, 1]`. */
 fun argbAlpha(argb: Int): Float = ((argb ushr 24) and 0xFF) / 255f
 
-/** [argb] with its alpha replaced; the RGB triple is untouched. */
 fun argbWithAlpha(argb: Int, alpha: Float): Int {
     val a = (alpha.coerceIn(0f, 1f) * 255f).roundToInt().coerceIn(0, 255)
     return (argb and 0x00FFFFFF) or (a shl 24)
 }
 
-// ── the control ────────────────────────────────────────────────────────────────────────────────
-
-/**
- * The picker. Fully controlled — it holds no colour of its own, so the caller's state is the single
- * truth and an external change (a swatch tapped elsewhere, a tool's seeded alpha) lands at once.
- *
- * The hue is derived from [colorArgb] each frame rather than remembered, which has one consequence
- * worth stating: dragging saturation or value to zero makes the hue unrecoverable from the colour.
- * [hueOverride] lets the caller pin the hue the user last chose across such a pass through grey;
- * leaving it null accepts the slider snapping to red at `s = 0`.
- */
+/** Fully controlled; holds no colour of its own. The hue is derived from [colorArgb] each frame, so
+ *  it is unrecoverable once saturation or value reaches zero — [hueOverride] pins the last chosen
+ *  hue across that pass through grey, and null accepts the slider snapping to red. */
 @Composable
 fun ColorPicker(
     colorArgb: Int,
@@ -135,8 +104,7 @@ fun ColorPicker(
     val alpha = argbAlpha(colorArgb)
 
     Column(modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        // Saturation (x) × value (y): the standard construction — a white→hue ramp across, multiplied
-        // by a transparent→black ramp down.
+        // Saturation (x) × value (y).
         Canvas(
             Modifier
                 .fillMaxWidth()
@@ -153,8 +121,8 @@ fun ColorPicker(
             thumb(Offset(sat * size.width, (1f - value) * size.height))
         }
 
-        // Hue: the wheel unrolled. Seven stops is exact — the sRGB hue ramp is piecewise linear in 60°
-        // sectors, and the last stop closes the wrap back onto red.
+        // Seven stops is exact: the sRGB hue ramp is piecewise linear in 60° sectors, and the last
+        // closes the wrap back onto red.
         RampSlider(
             brush = Brush.horizontalGradient(List(7) { Color(hsvToArgb(it * 60f, 1f, 1f)) }),
             fraction = hue / 360f,
@@ -164,8 +132,7 @@ fun ColorPicker(
             },
         )
 
-        // Alpha over a checkerboard, so "transparent" reads as transparency rather than as the
-        // surface colour behind the control.
+        // Over a checkerboard, so "transparent" reads as transparency.
         RampSlider(
             brush = Brush.horizontalGradient(
                 listOf(Color(argbWithAlpha(colorArgb, 0f)), Color(argbWithAlpha(colorArgb, 1f))),
@@ -189,9 +156,7 @@ fun ColorPicker(
                         .size(28.dp)
                         .clip(CircleShape)
                         .background(Color(argbWithAlpha(s, 1f)))
-                        // A swatch chooses hue/saturation/value ONLY — the alpha already dialled in (or
-                        // seeded by the tool) survives, so picking a colour never silently turns a
-                        // highlighter opaque.
+                        // Hue/saturation/value ONLY: the alpha already dialled in survives.
                         .hapticClickable(HapticEvent.Tap) { onColorChange(argbWithAlpha(s, alpha)) },
                     contentAlignment = Alignment.Center,
                 ) {
@@ -209,7 +174,6 @@ fun ColorPicker(
     }
 }
 
-/** One horizontal ramp with a thumb: the hue and alpha sliders differ only in their brush. */
 @Composable
 private fun RampSlider(
     brush: Brush,
@@ -230,7 +194,7 @@ private fun RampSlider(
     }
 }
 
-/** The shared thumb: a white ring inside a dark one, so it survives on any underlying colour. */
+/** A white ring inside a dark one, so it survives on any underlying colour. */
 private fun DrawScope.thumb(at: Offset) {
     drawCircle(Color.Black.copy(alpha = 0.55f), 8.5f, at, style = Stroke(width = 3f))
     drawCircle(Color.White, 8.5f, at, style = Stroke(width = 2f))
@@ -250,13 +214,8 @@ private fun DrawScope.checkerboard(cell: Float = 7f) {
     }
 }
 
-/**
- * Report every pointer position from the touch-down onwards, with NO slop gate: a picker must land the
- * colour under the finger on contact, not after it has travelled far enough to be called a drag. The
- * lambda is read through [rememberUpdatedState] so the handler never restarts — and so never drops a
- * gesture — when the caller's state changes under it, which in a fully controlled picker is on every
- * sample.
- */
+/** Every pointer position from the touch-down onwards, with NO slop gate. The lambda is read through
+ *  [rememberUpdatedState] so the handler never restarts, and so never drops a gesture. */
 @Composable
 private fun Modifier.trackPointer(onPos: (Offset, Size) -> Unit): Modifier {
     val current by rememberUpdatedState(onPos)
@@ -276,11 +235,7 @@ private fun Modifier.trackPointer(onPos: (Offset, Size) -> Unit): Modifier {
     }
 }
 
-/**
- * Swatches derived from the ACTIVE theme: the glucose-band semantics first (a note about a hypo ought
- * to be able to be the same red the band is), then the Material accents. Alpha is stripped — a swatch
- * chooses a hue, never a transparency.
- */
+/** From the ACTIVE theme: glucose-band semantics first, then the Material accents. Alpha is stripped. */
 @Composable
 fun themeSwatches(): List<Int> {
     val p = LocalT1dmSemantics.current

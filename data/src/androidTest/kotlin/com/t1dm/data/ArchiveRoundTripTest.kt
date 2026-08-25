@@ -46,14 +46,6 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.util.zip.GZIPInputStream
 
-/**
- * The archive end to end, against real SQLite: write a populated store out, read it into an empty
- * one, and hold the two against each other.
- *
- * The properties under test are the ones a backup is worthless without — that everything comes back,
- * that restoring twice is not restoring twice, that a local row is never displaced by an archived
- * one, and that a file cut short says so instead of quietly restoring less than it claims.
- */
 @RunWith(AndroidJUnit4::class)
 class ArchiveRoundTripTest {
 
@@ -87,8 +79,6 @@ class ArchiveRoundTripTest {
     private suspend fun restoreInto(db: AppDatabase, bytes: ByteArray) =
         ArchiveReader(db).read(ByteArrayInputStream(bytes))
 
-    // ── the whole record, out and back ────────────────────────────────────────────────────────
-
     @Test
     fun everythingComesBack() = runTest {
         populate(source)
@@ -118,9 +108,7 @@ class ArchiveRoundTripTest {
 
     @Test
     fun theFittedBandCorrectionSurvivesWithItsShapeIntact() = runTest {
-        // The one archived table whose payload is only meaningful alongside its own declared shape:
-        // a delta whose blob length disagrees with `steps · nQuantiles` is refused on read, so a
-        // silent reshape here would cost the model its correction on every later forecast.
+        // A delta whose blob length disagrees with `steps · nQuantiles` is refused on read.
         populate(source)
         restoreInto(target, archiveOf(source))
         val original = source.conformalDeltaDao().all().single()
@@ -149,8 +137,7 @@ class ArchiveRoundTripTest {
         val items = target.savedMealDao().itemsOf(meal.id)
         assertEquals("the portions did not follow their meal's new local id", 2, items.size)
         assertEquals(setOf("Oats", "Milk"), items.mapTo(HashSet()) { it.name })
-        // The archived foodId is a per-device id and is deliberately dropped — carried over it would
-        // point at whatever unrelated food happens to hold that id here.
+        // The archived foodId is per-device and deliberately dropped.
         assertTrue("a stale food link was carried across", items.all { it.foodId == null })
     }
 
@@ -174,23 +161,16 @@ class ArchiveRoundTripTest {
         assertEquals(28.979530, track.first().lon, 0.0)
         assertTrue("the track came back out of order", track.zipWithNext().all { (a, b) -> a.tsMs < b.tsMs })
 
-        // A bout recorded with no location at all still restores — as a bout with no track, which is
-        // what it was.
         val indoor = bouts.single { it.clientId == BOUT_INDOOR }
         assertTrue(target.exerciseFixDao().forSession(indoor.id).isEmpty())
         assertNull(indoor.distanceM)
         assertNull(indoor.kcal)
     }
 
-    // ── merging: the local row always wins ────────────────────────────────────────────────────
-
     @Test
     fun anArchivedTrackIsNotAppendedToABoutThePhoneAlreadyHolds() = runTest {
         populate(source)
         val bytes = archiveOf(source)
-        // The same bout by `clientId`, already here with its own track — a reinstall that restored
-        // once and is being restored again. Appending the archived fixes would double the polyline
-        // and draw the route twice over itself.
         val local = target.exerciseSessionDao().insert(
             source.exerciseSessionDao().pageFrom(Long.MIN_VALUE, Long.MIN_VALUE, 100)
                 .single { it.clientId == BOUT_RUN }.copy(id = 0),
@@ -223,8 +203,7 @@ class ArchiveRoundTripTest {
     fun aLocalReadingIsNeverOverwrittenByAnArchivedOne() = runTest {
         populate(source)
         val bytes = archiveOf(source)
-        // The same grid slot, a different value: the phone's own reading is the authority (§3.1) and
-        // an archive may only ever fill a gap.
+        // The phone's own reading is the authority — §3.1.
         target.cgmReadingDao().upsert(reading(0).copy(bgMgdl = 999))
         restoreInto(target, bytes)
         val kept = target.cgmReadingDao().pageFrom(SOURCE_ID, Long.MIN_VALUE, 1).single()
@@ -235,7 +214,6 @@ class ArchiveRoundTripTest {
     fun anArchivedEventDoesNotDuplicateOneTheServerAlreadyRehydrated() = runTest {
         populate(source)
         val bytes = archiveOf(source)
-        // Same clientId, arrived by a different road — exactly what a catch-up does after a reinstall.
         target.loggedDoseDao().insert(dose(0))
         restoreInto(target, bytes)
         val doses = target.loggedDoseDao().pageFrom(Long.MIN_VALUE, Long.MIN_VALUE, 100)
@@ -257,18 +235,13 @@ class ArchiveRoundTripTest {
     fun aRestoredSourceMayTakeTheActiveFlagOnAFreshInstall() = runTest {
         populate(source)
         restoreInto(target, archiveOf(source))
-        // The fresh-install case: nothing holds the flag, so the restored source becomes usable at
-        // once rather than leaving the phone with a sensor it knows about but is not reading.
         assertEquals(1, target.cgmSourceDao().authoritativeCount())
         assertEquals(SOURCE_ID, target.cgmSourceDao().authoritativeSourceId())
     }
 
     @Test
     fun aFreshInstallActivatesTheSensorThatWasWorn_notTheOldestEverSeen() = runTest {
-        // `cgm_source` accumulates every sensor the phone has ever heard, and the export walks it
-        // `ORDER BY addedAtMs` — oldest first. Activating "the first row that landed" therefore
-        // picked the sensor longest retired, and on a fresh install pointed the whole reading path
-        // at a serial that will never advertise again: no BG, no stats, nothing to diagnose.
+        // The export walks `cgm_source` ORDER BY addedAtMs, so its first row is the oldest sensor.
         source.cgmSourceDao().upsert(
             CgmSourceEntity(
                 sourceId = "aidex-OLD", vendorId = "aidex", sensorModelId = CgmSensorModelId.AIDEX_X, advertName = null,
@@ -278,7 +251,7 @@ class ArchiveRoundTripTest {
                 ordinal = 0,
             ),
         )
-        populate(source) // adds SOURCE_ID with a much later addedAtMs, and active = true
+        populate(source) // adds SOURCE_ID with a later addedAtMs, active
 
         restoreInto(target, archiveOf(source))
 
@@ -319,18 +292,14 @@ class ArchiveRoundTripTest {
         val bytes = archiveOf(source)
         target.basalScheduleDao().insertAll(listOf(basalRow(SCHEDULE_A, 0)))
         restoreInto(target, bytes)
-        // One row locally, and the archive's two rows for that schedule are skipped WHOLE rather
-        // than interleaved into a day the user never configured.
+        // Skipped whole, not interleaved into a day the user never configured.
         assertEquals(1, target.basalScheduleDao().all().count { it.scheduleId == SCHEDULE_A })
         assertEquals(1, target.basalScheduleDao().all().count { it.scheduleId == SCHEDULE_B })
     }
 
     @Test
     fun twoSavedMealsSharingANameBothSurviveARestore() = runTest {
-        // `saved_meal.name` carries no unique index and nothing enforces one, so two meals called
-        // "Breakfast" are legitimate. Deduplicating on a set that grew as each archived meal was
-        // accepted made the second look like a duplicate of the first: it was dropped, its portions
-        // were dropped with it, and both were reported as rows the phone already held.
+        // `saved_meal.name` carries no unique index, so two meals called "Breakfast" are legitimate.
         val a = source.savedMealDao().insertMeal(SavedMealEntity(name = "Breakfast", updatedAt = 1L))
         val b = source.savedMealDao().insertMeal(SavedMealEntity(name = "Breakfast", updatedAt = 2L))
         source.savedMealDao().insertItems(
@@ -347,7 +316,6 @@ class ArchiveRoundTripTest {
         assertEquals(2, first.applied.savedMeals)
         assertEquals(0, first.duplicates)
 
-        // And still idempotent: the counting merge must not turn "two locally" into "add two more".
         val second = restoreInto(target, bytes)
         assertEquals(0, second.applied.total)
         assertEquals(2, target.savedMealDao().allMeals().size)
@@ -384,14 +352,10 @@ class ArchiveRoundTripTest {
         assertEquals(1, target.paintStrokeDao().pageFrom(Long.MIN_VALUE, 100).size)
     }
 
-    // ── damaged and foreign files ─────────────────────────────────────────────────────────────
-
     @Test
     fun aTruncatedArchiveSaysSoAndStillRestoresWhatItHas() = runTest {
         populate(source)
         val whole = gunzip(archiveOf(source))
-        // Cut mid-file, as a full disk or a killed process would. Everything up to the cut is still
-        // good data and is worth having; what must not happen is the restore reporting success.
         val lines = whole.decodeToString().lines()
         val cut = lines.take(lines.size / 2).joinToString("\n").toByteArray()
 
@@ -402,11 +366,8 @@ class ArchiveRoundTripTest {
 
     @Test
     fun aTruncatedGZIPPEDArchiveIsRecoveredRatherThanThrown() = runTest {
-        // The test above cuts DECOMPRESSED bytes, which takes the reader's plain pass-through branch
-        // and never touches the inflater — so it passed while the real case threw. Every archive the
-        // writer emits is gzip, and a cut deflate stream raises EOFException from inside
-        // `readLine`, which used to escape `read()` entirely: nothing was flushed, nothing counted,
-        // and the caller reported total failure for a file most of which was good.
+        // Unlike the cut above, this one reaches the inflater: a cut deflate raises EOFException
+        // from inside `readLine`.
         populate(source)
         val whole = archiveOf(source)
         val cut = whole.copyOf(whole.size / 2)
@@ -419,16 +380,15 @@ class ArchiveRoundTripTest {
 
     @Test
     fun losingOnlyTheGzipTrailerCostsNothingAtAll() = runTest {
-        // The nastiest shape: every record including the terminator is present and readable, and the
-        // stream still throws on the 8-byte trailer. Before the fix this lost the ENTIRE restore —
-        // every bounded table with it — for one missing byte.
+        // Every record including the terminator is present; the stream still throws on the
+        // 8-byte trailer.
         populate(source)
         val whole = archiveOf(source)
         val result = restoreInto(target, whole.copyOf(whole.size - 1))
 
         assertFalse("the terminator was read, so this file is not truncated", result.truncated)
         assertEquals(READINGS, target.cgmReadingDao().pageFrom(SOURCE_ID, Long.MIN_VALUE, 10_000).size)
-        // The bounded tables are applied last of all and were the first thing lost.
+        // The bounded tables are applied last of all.
         assertEquals(1, target.savedMealDao().allMeals().size)
         assertEquals(1, target.cgmSourceDao().all().size)
         assertEquals(1, target.conformalDeltaDao().all().size)
@@ -460,8 +420,7 @@ class ArchiveRoundTripTest {
     @Test
     fun anUncompressedArchiveStillRestores() = runTest {
         populate(source)
-        // The reader sniffs the gzip magic rather than trusting a filename, so a hand-decompressed
-        // archive — or one a provider mangled the extension of — is still readable.
+        // The reader sniffs the gzip magic rather than trusting a filename.
         val result = restoreInto(target, gunzip(archiveOf(source)))
         assertFalse(result.truncated)
         assertEquals(READINGS, target.cgmReadingDao().pageFrom(SOURCE_ID, Long.MIN_VALUE, 10_000).size)
@@ -477,15 +436,9 @@ class ArchiveRoundTripTest {
 
     @Test
     fun aPrettyPrintedSettingsDocumentDoesNotSplitTheHeader() = runTest {
-        // `SettingsStore.exportJson` pretty-prints — it was written for a document a human might
-        // open — and embedding that verbatim put newlines INSIDE the header, which split one record
-        // across several lines and left the archive unreadable to its own reader. The fixture used
-        // by the other tests is single-line, so only the real settings document exposed it.
         populate(source)
         val bytes = archiveOf(source, config = PRETTY_CONFIG)
 
-        // The header must be complete on line one — that is the whole invariant a line-delimited
-        // format rests on, and it is what a multi-line settings document broke.
         val firstLine = gunzip(bytes).decodeToString().substringBefore('\n')
         val header = Archive.json.parseToJsonElement(firstLine).jsonObject
         assertEquals(Archive.FORMAT, (header["format"] as JsonPrimitive).content)
@@ -503,7 +456,6 @@ class ArchiveRoundTripTest {
         populate(source)
         val result = restoreInto(target, archiveOf(source, config = "{ this is not json"))
         assertNull(result.configJson)
-        // The rows are what an archive is for; a bad header must not take them down with it.
         assertFalse(result.truncated)
         assertEquals(READINGS, target.cgmReadingDao().pageFrom(SOURCE_ID, Long.MIN_VALUE, 10_000).size)
     }
@@ -516,24 +468,18 @@ class ArchiveRoundTripTest {
         assertEquals(0, result.skipped)
     }
 
-    // ── the file itself ───────────────────────────────────────────────────────────────────────
-
     @Test
     fun theArchiveIsGzippedAndPagesBeyondOneBatch() = runTest {
         populate(source)
         val bytes = archiveOf(source)
         assertEquals(Archive.GZIP_MAGIC_0, bytes[0].toInt() and 0xff)
         assertEquals(Archive.GZIP_MAGIC_1, bytes[1].toInt() and 0xff)
-        // More readings than one page, so the keyset walk is genuinely exercised rather than
-        // completing in a single query and hiding a cursor bug.
         assertTrue("the fixture no longer spans multiple pages", READINGS > Archive.BATCH)
         assertTrue("compression bought nothing", bytes.size < gunzip(bytes).size / 2)
     }
 
     private fun gunzip(bytes: ByteArray): ByteArray =
         GZIPInputStream(ByteArrayInputStream(bytes)).use { it.readBytes() }
-
-    // ── fixtures ──────────────────────────────────────────────────────────────────────────────
 
     private suspend fun populate(db: AppDatabase) {
         db.cgmSourceDao().upsert(cgmSource())
@@ -560,7 +506,6 @@ class ArchiveRoundTripTest {
         )
         val runId = db.exerciseSessionDao().insert(boutRow(BOUT_RUN, "RUN"))
         db.exerciseFixDao().insertAll(List(FIXES) { fix(runId, it) })
-        // A bout with no track at all — indoors, or with location denied. It must restore as one.
         db.exerciseSessionDao().insert(
             boutRow(BOUT_INDOOR, "OTHER").copy(distanceM = null, kcal = null),
         )
@@ -624,8 +569,7 @@ class ArchiveRoundTripTest {
         category = "bread", source = "user", custom = true, customCurve = null, updatedAt = 6L,
     )
 
-    /** A fitted §8.4 band correction. Its blob must satisfy `steps · nQuantiles · 8` bytes or the
-     *  decoder refuses it, so the shape is built from the same two numbers it declares. */
+    /** §8.4. The blob must be `steps · nQuantiles · 8` bytes or the decoder refuses it. */
     private fun conformalRow(steps: Int = 12, nQuantiles: Int = 7) = ConformalDeltaEntity(
         modelId = "t1dmai-best",
         steps = steps,
@@ -669,18 +613,15 @@ class ArchiveRoundTripTest {
         const val BOUT_RUN = "bout-run"
         const val BOUT_INDOOR = "bout-indoor"
 
-        /** Past `Archive.BATCH`, so the export's keyset paging and the restore's batched inserts are
-         *  both exercised across a page boundary rather than completing in one. */
+        /** Past `Archive.BATCH`, so a page boundary is crossed. */
         const val READINGS = 1_200
 
-        /** Likewise past `Archive.BATCH`: a track has to cross a flush boundary, because that is
-         *  where a fix could be flushed before the bout it belongs to. */
+        /** Likewise past `Archive.BATCH`: a fix could be flushed before its bout. */
         const val FIXES = 700
 
         val CONFIG = """{"format":"t1dm.config","version":1,"exportedAtMs":1,"kv":{"alarm.low_mgdl":"75"}}"""
 
-        /** Exactly the shape `SettingsStore.exportJson` produces — `JSONObject.toString(2)`, with a
-         *  newline after every field. This is the input that broke the header in the first place. */
+        /** The shape `SettingsStore.exportJson` produces — `JSONObject.toString(2)`, multi-line. */
         val PRETTY_CONFIG = """
             {
               "format": "t1dm.config",

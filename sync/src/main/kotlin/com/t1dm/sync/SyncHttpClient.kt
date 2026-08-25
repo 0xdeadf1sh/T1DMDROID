@@ -13,7 +13,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
 
-/** A raw `/v1` request the drainer executes verbatim; `body` is UTF-8 JSON or `null` for GETs. */
+/** [body] is UTF-8 JSON, or null for a GET. */
 data class SyncRequest(val method: String, val path: String, val body: ByteArray?) {
     override fun equals(other: Any?) = other is SyncRequest &&
         method == other.method && path == other.path && (body?.contentEquals(other.body ?: ByteArray(0)) ?: (other.body == null))
@@ -21,69 +21,60 @@ data class SyncRequest(val method: String, val path: String, val body: ByteArray
     override fun hashCode() = (method.hashCode() * 31 + path.hashCode()) * 31 + (body?.contentHashCode() ?: 0)
 }
 
-/** An HTTP response with the status already surfaced; 4xx/5xx do NOT throw (the drainer classifies). */
+/** 4xx/5xx do NOT throw; the drainer classifies. */
 data class SyncResponse(val code: Int, val body: ByteArray) {
     val ok: Boolean get() = code in 200..299
 
-    /** A 4xx that will never succeed on replay (malformed) — the drainer drops it. */
+    /** A 4xx that will never succeed on replay; the drainer drops it. */
     val permanentClientError: Boolean get() = code in 400..499 && code != 401 && code != 403 && code != 429
 
-    /** Auth failure — the token/profile needs fixing; the drainer stands down without dropping. */
+    /** The drainer stands down without dropping. */
     val authError: Boolean get() = code == 401 || code == 403
 
     override fun equals(other: Any?) = other is SyncResponse && code == other.code && body.contentEquals(other.body)
     override fun hashCode() = code * 31 + body.contentHashCode()
 }
 
-/** Thrown when no active profile/token is configured; the drainer treats this as "stand down". */
+/** The drainer treats this as stand down. */
 class NoActiveProfileException : IllegalStateException("no active server profile / token")
 
-/**
- * A downloaded model artifact held in memory (≤~9 MB, an acceptable buffer) beside the server's
- * declared content hash from the `X-SHA256` response header. The coordinator verifies the bytes
- * against [sha256] before the artifact is placed where ModelStore can discover it; [sha256] is
- * `null` if the server omitted the header (the registry-row hash is then the fallback source).
- */
+/** Held whole in memory (≤~9 MB). [sha256] is the `X-SHA256` header, null when the server omitted
+ *  it — the registry-row hash is then the fallback. */
 class ModelArtifact(val bytes: ByteArray, val sha256: String?)
 
 /**
- * The `/v1` client (docs/T1DMSERVER_API.md). [execute] is the generic path the [QueueDrainer] drives
- * with an outbox envelope; the typed helpers are the read/health surface the Network panel and
- * catch-up use. Every call carries the active profile's `rw` Bearer token and runs on
- * [T1dmDispatchers.io]. Tailscale makes transport TLS moot, so plaintext `http://` is expected.
+ * The `/v1` client (docs/T1DMSERVER_API.md). Every call carries the active profile's `rw` Bearer
+ * token and runs on [T1dmDispatchers.io]. Tailscale makes transport TLS moot, so plaintext `http://`
+ * is expected.
  */
 interface SyncHttpClient {
     suspend fun execute(request: SyncRequest): SyncResponse
     suspend fun health(): HealthDto
     suspend fun ingest(body: IngestDto): IngestAck
-    /** `PUT /v1/meals` — batch-upsert meal curve events, idempotent by `client_id`. */
+    /** `PUT /v1/meals`; idempotent by `client_id`. */
     suspend fun putMeals(meals: List<MealEventDto>): EventBatchAck
-    /** `PUT /v1/doses` — batch-upsert dose curve events, idempotent by `client_id`. */
+    /** `PUT /v1/doses`; idempotent by `client_id`. */
     suspend fun putDoses(doses: List<DoseEventDto>): EventBatchAck
-    /** `PUT /v1/basal-schedule` — full-replace the active basal template (idempotent by slot `client_id`). */
+    /** `PUT /v1/basal-schedule`; full-replace, idempotent by slot `client_id`. */
     suspend fun putBasalSchedule(body: BasalScheduleDto): EventBatchAck
-    /** `PUT /v1/stats` — push one phone-computed window block, idempotent by `window`. */
+    /** `PUT /v1/stats`; idempotent by `window`. */
     suspend fun putStats(body: StatsPushDto): EventBatchAck
     suspend fun postAlert(body: AlertWriteDto): IdAck
     suspend fun getSeries(from: Long?, to: Long?, cursor: Long?, limit: Int?, fields: String?): SeriesPageDto
-    /** `GET /v1/meals?from&to` — meal curve events in the window (both bounds optional; `null` ⇒ unbounded). */
+    /** `GET /v1/meals?from&to`; a null bound is unbounded. */
     suspend fun getMeals(from: Long?, to: Long?): MealsPageDto
-    /** `GET /v1/doses?from&to` — dose curve events in the window (both bounds optional; `null` ⇒ unbounded). */
+    /** `GET /v1/doses?from&to`; a null bound is unbounded. */
     suspend fun getDoses(from: Long?, to: Long?): DosesPageDto
-    /** `GET /v1/basal-schedule` — the current active basal template. */
     suspend fun getBasalSchedule(): BasalScheduleDto
-    /** Attach a meal photo: `POST /v1/photos`, multipart `ts` (epoch-ms) + `image` file part whose
-     *  filename carries the extension. Returns the server's `{ok,id,sha256}` ack. */
+    /** `POST /v1/photos`, multipart `ts` (epoch-ms) + `image` whose filename carries the extension. */
     suspend fun postPhoto(tsMs: Long, bytes: ByteArray, ext: String): PhotoAck
-    /** `GET /v1/models` — the served model registry, unwrapped from its `models` envelope. */
+    /** `GET /v1/models`, unwrapped from its `models` envelope. */
     suspend fun listModels(): List<ModelDto>
-    /** `GET /v1/models/{id}/download` — streams the `application/octet-stream` artifact into memory
-     *  and surfaces the `X-SHA256` response header so the caller can verify integrity. A 4xx/5xx
-     *  surfaces as a plain failure (`require`). */
+    /** Streams the artifact into memory and surfaces `X-SHA256` for the caller's integrity check. */
     suspend fun downloadModel(id: String): ModelArtifact
 }
 
-/** Shared JSON: tolerant on read, gap-omitting on write (an absent field must never null a row). */
+/** Tolerant on read, gap-omitting on write: an absent field must never null a row. */
 internal val SyncJson: Json = Json {
     ignoreUnknownKeys = true
     encodeDefaults = true
@@ -91,7 +82,6 @@ internal val SyncJson: Json = Json {
     classDiscriminator = "type"
 }
 
-/** Default OkHttp client for the outbox drain — a shared connection pool, plaintext-friendly. */
 private fun defaultSyncOkHttp(connectTimeoutMs: Long, readTimeoutMs: Long): OkHttpClient =
     OkHttpClient.Builder()
         .connectTimeout(connectTimeoutMs, TimeUnit.MILLISECONDS)
@@ -107,11 +97,7 @@ class OkHttpSyncClient(
     private val client: OkHttpClient = defaultSyncOkHttp(10_000, 20_000),
 ) : SyncHttpClient {
 
-    /**
-     * OkHttp does NOT throw on 4xx/5xx (the drainer classifies via [SyncResponse]); it throws
-     * `IOException` only on transport failure, which propagates so the drainer backs off. Every
-     * call — `/v1/health` included — carries the active profile's `rw` Bearer token.
-     */
+    /** Transport failure throws `IOException` and propagates so the drainer backs off. */
     override suspend fun execute(request: SyncRequest): SyncResponse = withContext(dispatchers.io) {
         val ep = endpoint() ?: throw NoActiveProfileException()
         val builder = Request.Builder()
@@ -194,11 +180,8 @@ class OkHttpSyncClient(
     override suspend fun listModels(): List<ModelDto> = get<ModelsEnvelope>("/v1/models").models
 
     /**
-     * A DIRECT streaming GET (not the JSON [get] helper): the artifact is a large binary. Rides its
-     * own call on [T1dmDispatchers.io], carries the `rw` Bearer token, and surfaces `X-SHA256` for
-     * the caller's integrity check. [id] is a `.pte` filename with no special chars in practice, but
-     * it is percent-encoded as a single path segment via [HttpUrl] for safety. Throws
-     * [NoActiveProfileException] with no endpoint; a 4xx/5xx surfaces via [require].
+     * A direct GET, not the JSON [get] helper: the artifact is a large binary. [id] is percent-encoded
+     * as a single path segment.
      */
     override suspend fun downloadModel(id: String): ModelArtifact = withContext(dispatchers.io) {
         val ep = endpoint() ?: throw NoActiveProfileException()
@@ -220,10 +203,8 @@ class OkHttpSyncClient(
     }
 
     /**
-     * A DIRECT multipart POST (not the JSON outbox): a photo is a large binary, unfit for the
-     * text-JSON replay queue, so it rides its own call on [T1dmDispatchers.io]. Throws
-     * [NoActiveProfileException] with no endpoint; a 4xx/5xx surfaces via [require] so the caller's
-     * `runCatching` reports a plain failure. The server derives the extension from the filename.
+     * A direct multipart POST, not the JSON outbox: a photo is unfit for the text-JSON replay queue.
+     * The server derives the extension from the filename.
      */
     override suspend fun postPhoto(tsMs: Long, bytes: ByteArray, ext: String): PhotoAck =
         withContext(dispatchers.io) {

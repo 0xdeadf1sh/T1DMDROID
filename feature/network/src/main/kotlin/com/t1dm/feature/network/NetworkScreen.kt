@@ -16,13 +16,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.fadingEdges
 
-/**
- * One `model_id`'s forecast-frame liveness (this process lifetime).
- *
- * A forecast rides the open stream and nothing stores it, so there is no queue to be accountable
- * for and no retry to count. What can honestly be shown is whether the last frame left and when —
- * hence an AGE rather than a cumulative total.
- */
+/** One `model_id`'s forecast-frame liveness, this process lifetime. */
 data class ForecastStreamRow(
     val modelId: String,
     val sent: Long,
@@ -31,14 +25,9 @@ data class ForecastStreamRow(
     val lastBytes: Int,
 )
 
-/** One up, non-loopback local interface and its (non-link-local) addresses. Plain read model — the
- *  `:app` layer gathers these from `java.net.NetworkInterface`; this module stays Android-free. */
+/** An up, non-loopback interface and its non-link-local addresses. */
 data class NetIface(val name: String, val addresses: List<String>)
 
-/**
- * A snapshot of the DEVICE's own network posture (issue 2), gathered off-main in `:app` and attached
- * to [NetworkPanelState] by the navigation layer. Purely a read model — no Android types leak here.
- */
 data class NetworkDiagnostics(
     val online: Boolean,
     val validated: Boolean,
@@ -52,11 +41,6 @@ data class NetworkDiagnostics(
     val interfaces: List<NetIface>,
 )
 
-/**
- * Everything the Network panel renders (Phase 3 deliverable 6). Transport-typed
- * facts (drain outcome, WS lifecycle, backoff) arrive pre-formatted from `:app`; simple counters
- * arrive numeric so the panel can render them against their configured bounds. Purely a read model.
- */
 data class NetworkPanelState(
     val hasProfile: Boolean = false,
     val profileLabel: String? = null,
@@ -75,8 +59,7 @@ data class NetworkPanelState(
     val net: NetworkDiagnostics? = null,
     val nightscoutEnabled: Boolean = false,
     val nightscoutUrl: String? = null,
-    /** Last bridge failure, or null. The bridge never stands the queue down, so this is the only
-     *  place a rejected secret or an unreachable host becomes visible. */
+    /** The bridge never stands the queue down, so this is the only sign it is failing. */
     val nightscoutError: String? = null,
 )
 
@@ -91,9 +74,6 @@ fun NetworkScreen(state: NetworkPanelState = NetworkPanelState()) {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        // N1 — the "Network" title lives in the breadcrumb; no duplicate in-view header.
-        // Issue 2 — the DEVICE's own network comes first (online/transport/Wi-Fi/interfaces), gathered
-        // off-main by `:app`; before the first snapshot arrives (net == null) the sections read "gathering…".
         val net = state.net
         Section("Connectivity")
         if (net == null) {
@@ -172,8 +152,6 @@ private fun Section(title: String) {
     )
 }
 
-/** N6 — every field now goes through the shared aligned key/value table (fixed-weight columns,
- *  right-aligned tabular-figure values) so labels and values no longer smush together. */
 @Composable
 private fun Field(label: String, value: String) {
     com.t1dm.core.design.KeyValueRow(
@@ -186,7 +164,6 @@ private fun Field(label: String, value: String) {
 
 private fun yesNo(b: Boolean): String = if (b) "yes" else "no"
 
-/** e.g. "-57 dBm (4/4)"; "—" when Wi-Fi is off / disconnected (no readable RSSI). */
 private fun wifiSignal(rssiDbm: Int?, level: Int?): String = when {
     rssiDbm == null -> "—"
     level == null -> "$rssiDbm dBm"

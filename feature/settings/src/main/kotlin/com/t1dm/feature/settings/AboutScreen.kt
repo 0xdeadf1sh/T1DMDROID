@@ -22,11 +22,7 @@ import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.fadingEdges
 import com.t1dm.core.design.hapticClickable
 
-/**
- * Read-only "About" panel (Phase 7C — item 18): app identity, version/build, the
- * MIT licence, the loaded model's provenance (id + descriptor arch + ExecuTorch version), the git
- * SHA, and internal build info. All copy is PUBLIC-SAFE — no tokens, no keys, no host-internal paths.
- */
+/** Public-safe copy only: no tokens, no keys, no host-internal paths. */
 data class AboutInfo(
     val appName: String,
     val versionName: String,
@@ -72,8 +68,7 @@ fun AboutScreen(info: AboutInfo) {
             textDecoration = TextDecoration.Underline,
             modifier = Modifier
                 .fillMaxWidth()
-                // NavSwitch: the press hands off to the browser, which is a destination change even
-                // though the destination is not ours.
+                // NavSwitch: hands off to the browser.
                 .hapticClickable(HapticEvent.NavSwitch) { uriHandler.openUri(repoUrl) }
                 .padding(vertical = 4.dp),
         )
@@ -104,11 +99,6 @@ private fun Section(title: String) {
 private fun Kv(k: String, v: String) {
     com.t1dm.core.design.KeyValueRow(k, v, numeric = false)
 }
-
-// ── search index (see SettingsIndex.kt) ───────────────────────────────────────────────────────────
-//
-// Read-only throughout, so one whole-screen entry rather than a row apiece: every fact on the page
-// answers the same question, and there is nothing here to scroll to or tune.
 
 private val aboutPage = SettingsKnob(
     id = "about.page",

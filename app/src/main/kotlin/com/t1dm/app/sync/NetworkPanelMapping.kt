@@ -5,11 +5,6 @@ import com.t1dm.feature.network.NetworkPanelState
 import com.t1dm.sync.DrainResult
 import com.t1dm.sync.ServerProfile
 
-/**
- * Maps the transport-typed [SyncStatus] onto the `:feature:network` read model, pre-formatting the
- * drain outcome, backoff, and WS lifecycle into human-readable strings so the panel stays free of
- * `:sync`/`:app` types (Phase 3 deliverable 6).
- */
 fun SyncStatus.toPanelState(
     active: ServerProfile?,
     maxSize: Int,

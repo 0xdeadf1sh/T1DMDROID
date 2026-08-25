@@ -13,10 +13,6 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * Records every enqueued row so a test can assert the exact [OutboxKind] + replayed [OutboxRequest]
- * (method/path/body) captured at write time, with no Room in the loop.
- */
 private class RecordingSink : OutboxSink {
     data class Row(
         val kind: OutboxKind,
@@ -62,12 +58,8 @@ private class RecordingSink : OutboxSink {
     }
 }
 
-/**
- * A queue faithful to the two rules the prediction replace turns on: the `dedupKey` index is UNIQUE
- * (a plain [enqueue] under a taken key is IGNORED and yields -1), and INFLIGHT is the drainer's
- * mutual-exclusion token — [enqueueReplacingPending] may displace a PENDING row and must leave a
- * claimed one alone. Ids are strictly increasing and never reused, as the `AUTOINCREMENT` column is.
- */
+/** Faithful to Room where it matters: `dedupKey` is UNIQUE (a taken key yields -1), INFLIGHT is the
+ *  drainer's claim, and ids are strictly increasing and never reused. */
 private class QueueSink : OutboxSink {
     data class Row(
         val id: Long,
@@ -80,7 +72,6 @@ private class QueueSink : OutboxSink {
     val rows = mutableListOf<Row>()
     private var seq = 0L
 
-    /** Move the row under [dedupKey] to INFLIGHT, as `OutboxDao.claim` does before anything is sent. */
     fun claim(dedupKey: String) {
         rows.first { it.dedupKey == dedupKey }.inflight = true
     }
@@ -111,7 +102,6 @@ private class QueueSink : OutboxSink {
         return enqueue(kind, dedupKey, payload, nowMs, notBeforeMs)
     }
 
-    /** Unlike [enqueueReplacingPending], this removes an INFLIGHT row too — the whole point. */
     override suspend fun enqueueSuperseding(
         kind: OutboxKind,
         dedupKey: String,
@@ -124,13 +114,6 @@ private class QueueSink : OutboxSink {
     }
 }
 
-/**
- * The redesigned event writers push self-describing curve events to the durable outbox: a meal as a
- * `PUT /v1/meals` batch, a dose as `PUT /v1/doses`, and a phone-computed window block as
- * `PUT /v1/stats`. This asserts each enqueues exactly one row with the right
- * kind, `client_id`/`window`-keyed `dedupKey`, endpoint, and method — and that the eviction-priority
- * ordering places irreplaceable clinical records above regenerable forecasts.
- */
 class OutboxEnqueuerTest {
 
     private val now = 1_700_000_000_000L
@@ -163,7 +146,7 @@ class OutboxEnqueuerTest {
         byPath.getValue("/v1/meals").let {
             assertEquals(OutboxKind.MEAL, it.kind)
             assertEquals("PUT", it.request.method)
-            assertEquals("meal:meal-1", it.dedupKey)          // keyed by client_id (#4/#7)
+            assertEquals("meal:meal-1", it.dedupKey)
         }
         byPath.getValue("/v1/doses").let {
             assertEquals(OutboxKind.DOSE, it.kind)
@@ -173,7 +156,7 @@ class OutboxEnqueuerTest {
         byPath.getValue("/v1/stats").let {
             assertEquals(OutboxKind.STATS, it.kind)
             assertEquals("PUT", it.request.method)
-            assertEquals("stats:7d:${now / 86_400_000}", it.dedupKey)   // ≤1 per window per day (#6)
+            assertEquals("stats:7d:${now / 86_400_000}", it.dedupKey)   // ≤1 per window per day
         }
     }
 
@@ -202,11 +185,6 @@ class OutboxEnqueuerTest {
         assertEquals(72.0, block.tir, 0.0)
     }
 
-    /**
-     * The withdrawal hold reaches `nextAttemptMs` and nothing else: only MEAL/DOSE take one, and only
-     * when asked. A stats push must never be delayed by it, and a re-mirror replay (which
-     * passes no hold) must stay immediately due or the walk stalls.
-     */
     @Test
     fun `only a held meal or dose is postponed, and only by the hold`() = runTest {
         val sink = RecordingSink()
@@ -234,9 +212,6 @@ class OutboxEnqueuerTest {
         assertTrue("a re-mirrored event must be due at once", sink.rows.all { it.notBeforeMs == 0L })
     }
 
-    // ── the prediction replace ────────────────────────────────────────────────────────────────────
-
-    /** One model's forecast for [cycleTs], flat at [mgdl] so the enqueued body identifies the run. */
     private fun prediction(mgdl: Double, cycleTs: Long = gridTs) = ModelPrediction(
         modelId = "m1",
         cycleTsMs = cycleTs,
@@ -260,15 +235,13 @@ class OutboxEnqueuerTest {
         assertEquals(8, OutboxKind.DOSE.priority)
         assertEquals(7, OutboxKind.MEAL.priority)
         assertEquals(6, OutboxKind.INGEST.priority)
-        assertEquals(5, OutboxKind.CGM_SOURCE.priority)  // below INGEST: a label, not a reading
+        assertEquals(5, OutboxKind.CGM_SOURCE.priority)  // a label, not a reading
         assertEquals(4, OutboxKind.STATS.priority)
         assertEquals(3, OutboxKind.PREDICTIONS.priority)
         assertEquals(2, OutboxKind.SERIES.priority)      // retired tombstone
         assertEquals(1, OutboxKind.NIGHTSCOUT.priority)  // a mirror of a record the phone still holds
         assertEquals(0, OutboxKind.PHOTO.priority)
 
-        // Every kind appears, so adding one without ranking it fails here rather than silently
-        // landing at whatever its ordinal happens to be.
         val ranked = listOf(
             OutboxKind.ALERT, OutboxKind.DOSE, OutboxKind.MEAL, OutboxKind.INGEST,
             OutboxKind.CGM_SOURCE, OutboxKind.STATS, OutboxKind.PREDICTIONS, OutboxKind.SERIES,

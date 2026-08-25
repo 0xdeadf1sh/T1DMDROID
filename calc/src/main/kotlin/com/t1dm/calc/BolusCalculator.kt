@@ -3,38 +3,21 @@ package com.t1dm.calc
 import com.t1dm.core.model.CurveEvent
 import kotlinx.coroutines.yield
 
-/**
- * Resolves a candidate insulin dose into its announced-future [CurveEvent]s (the dose-scaled gamma
- * PK), so the calculator stays agnostic of the curve engine. In production this is backed by
- * the selected preset's `CurveEngine.rapidEvent`; in tests a fake returns a marker the fake [ForecastPort] reads.
- */
 fun interface BolusResolver {
     suspend fun resolve(doseU: Double, atMs: Long): List<CurveEvent>
 }
 
-/**
- * The bounded grid-search bolus engine (Phase 4 §5). For each candidate dose it feeds the dose
- * as announced future insulin into the SELECTED fp32-authoritative model via [ForecastPort], rolls to
- * the full window, scores the fan under the configured objective, and returns the candidates ranked
- * best-first. It is pure with respect to the rails — the [DoseAdvisor] layers the fail-closed rails and
- * the freshness gate on top. Cooperatively cancellable (a `yield()` per candidate) so a fresh
- * `GridTick` or a screen exit aborts a long search promptly.
- */
+/** No rails here; [DoseAdvisor] layers those on top. */
 class BolusCalculator(
     private val port: ForecastPort,
     private val resolver: BolusResolver,
 ) {
-    /**
-     * Roll and score every grid dose (plus the 0 U baseline). Returns the ranked candidates and the
-     * separately-identified [baseline] fan (candidate = null) the [DoseAdvisor] uses for the global
-     * degeneracy gate. Ineligible candidate fans are retained but score to +∞ (they can never win).
-     */
+    /** Ineligible candidate fans are kept but score to +∞, so they can never win. */
     suspend fun search(
         rollStartMs: Long,
         announced: List<CurveEvent>,
         config: CalcConfig,
-        /** Pinned by the [DoseAdvisor] so every candidate of one search is rolled through the SAME BG
-         *  input filter; null leaves the port to resolve its own per roll. */
+        /** Pins one BG input filter across the whole grid; null lets the port resolve its own. */
         smoothingWindow: Int? = null,
     ): SearchResult {
         val validated = config.horizon.validatedSteps
@@ -46,7 +29,7 @@ class BolusCalculator(
 
         val ranked = ArrayList<Candidate>()
         for (doseU in config.grid.doses()) {
-            yield() // cancellable
+            yield()
             val fan = if (doseU == 0.0) {
                 baseline
             } else {

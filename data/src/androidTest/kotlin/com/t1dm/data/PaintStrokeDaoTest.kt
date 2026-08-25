@@ -16,14 +16,8 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/**
- * In-memory Room verification of the `bg_paint_stroke` viewport cull (Room v8) against real SQLite.
- * The window predicate is **intersection, not containment** and inclusive at both ends — a stroke
- * wider than the window, or half scrolled off it, is still on screen and must come back — and the
- * indexed `minTsMs`/`maxTsMs` it is selected by are derived by scanning every point, so a stroke drawn
- * backwards in time is bounded correctly. The case table below is the same one the host-JVM
- * `PaintStrokeWindowTest` pins the rule with; this test replays it through the SQL.
- */
+/** The window predicate is intersection, not containment, inclusive at both ends. `minTsMs`/
+ *  `maxTsMs` come from scanning every point. Same case table as host-JVM `PaintStrokeWindowTest`. */
 @RunWith(AndroidJUnit4::class)
 class PaintStrokeDaoTest {
 
@@ -43,7 +37,6 @@ class PaintStrokeDaoTest {
     @After
     fun tearDown() = db.close()
 
-    /** A two-point stroke spanning exactly [minTs]..[maxTs], authored at [createdAtMs]. */
     private fun stroke(minTs: Long, maxTs: Long, createdAtMs: Long = T0) = PaintStroke(
         id = 0,
         createdAtMs = createdAtMs,

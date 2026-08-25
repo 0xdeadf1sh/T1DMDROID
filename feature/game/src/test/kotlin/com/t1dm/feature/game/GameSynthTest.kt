@@ -5,14 +5,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.abs
 
-/**
- * The generator's arithmetic, checked where arithmetic can be checked.
- *
- * None of this needs an `AudioTrack`, which is the point of [GameSynth] holding no Android type: the
- * failures that matter here — a voice that never decays and pins the mixer, a sweep that steps instead
- * of glides, an overshoot that clips into a buzz — are all properties of the buffer, and a buffer is
- * something a JVM test can look at.
- */
 class GameSynthTest {
 
     private val rate = 48_000
@@ -20,7 +12,7 @@ class GameSynthTest {
 
     private fun synth() = GameSynth(rate)
 
-    /** Render [seconds] into one flat buffer, a HAL burst at a time, exactly as the audio thread does. */
+    /** A HAL burst at a time, exactly as the audio thread does. */
     private fun GameSynth.take(seconds: Float): FloatArray {
         val frames = (seconds * rate).toInt() / block * block
         val out = FloatArray(frames)
@@ -40,10 +32,7 @@ class GameSynthTest {
         return m
     }
 
-    /**
-     * Zero crossings with hysteresis, so the induction noise riding on the engine cannot manufacture
-     * one. A plain sign test counts every wobble near the axis; this only counts a genuine excursion.
-     */
+    /** Hysteresis, so induction noise riding on the engine cannot manufacture a crossing. */
     private fun FloatArray.crossings(from: Int): Int {
         val gate = peak(from) * 0.3f
         if (gate <= 0f) return 0
@@ -60,7 +49,6 @@ class GameSynthTest {
         return n
     }
 
-    // ── silence ────────────────────────────────────────────────────────────────────────────────
 
     @Test
     fun `a synth nobody has asked for anything of is exactly silent`() {
@@ -86,12 +74,10 @@ class GameSynthTest {
         s.rpm = 6_000f
         s.engine = 0f
         assertEquals("no engine", 0f, s.take(0.4f).peak(), 1e-6f)
-        // …and a one-shot still lands.
         s.trigger(GameSfx.Coin)
         assertTrue("a coin must still sound", s.take(0.4f).peak() > 0.02f)
     }
 
-    // ── the engine voice ───────────────────────────────────────────────────────────────────────
 
     @Test
     fun `pitch tracks rpm`() {
@@ -110,8 +96,7 @@ class GameSynthTest {
         val red = rateAt(9_000f)
         assertTrue("idle=$idle mid=$mid", mid > idle)
         assertTrue("mid=$mid red=$red", red > mid)
-        // 800 → 9000 rpm is an 11× fundamental; a mapping that had collapsed to a constant would not
-        // clear even a doubling.
+        // 800 → 9000 rpm is an 11× fundamental; a mapping collapsed to a constant clears no doubling.
         assertTrue("idle=$idle red=$red", red > idle * 3)
     }
 
@@ -122,8 +107,7 @@ class GameSynthTest {
         s.engine = 1f
         s.rpm = 900f
         s.take(0.2f)
-        // The whole point of the continuous mapping: a jump straight to the limiter must still arrive
-        // as a glide, so no two adjacent samples may differ by more than a fraction of full scale.
+        // A jump straight to the limiter must still arrive as a glide.
         s.rpm = 9_000f
         s.load = 1f
         val out = s.take(0.5f)
@@ -149,13 +133,11 @@ class GameSynthTest {
             for (i in a.size / 3 until a.size) e += a[i].toDouble() * a[i]
             return e
         }
-        // Brightness is a redistribution, not a boost: the two must be within a few dB of each other,
-        // or "harmonic content tracks load" has quietly become "volume tracks load".
+        // Brightness is a redistribution, not a boost: within a few dB, or volume is tracking load.
         val ratio = energy(hard) / energy(quiet)
         assertTrue("energy ratio $ratio", ratio in 0.4..2.5)
     }
 
-    // ── one-shots ──────────────────────────────────────────────────────────────────────────────
 
     @Test
     fun `every one-shot sounds, then falls silent`() {
@@ -166,8 +148,7 @@ class GameSynthTest {
             s.trigger(sfx)
             val out = s.take(2f)
             assertTrue("$sfx never sounded", out.peak() > 0.05f)
-            // The tail: nothing may still be ringing two seconds later, or a run accumulates voices
-            // until the pool is stolen from under the next landing.
+            // Nothing may still ring two seconds later, or a run accumulates voices until the pool is stolen.
             assertEquals("$sfx is still ringing", 0f, out.peak(out.size - rate / 4), 1e-4f)
         }
     }
@@ -194,8 +175,7 @@ class GameSynthTest {
             s.take(0.2f)
             s.trigger(sfx)
             val out = s.take(0.3f)
-            // The attack ramp exists so the onset is not a click; a click is a first sample that is
-            // already most of the way to the peak.
+            // A click is a first sample already most of the way to the peak.
             assertTrue("$sfx onset ${out[0]}", abs(out[0]) < 0.05f)
         }
     }
@@ -217,7 +197,6 @@ class GameSynthTest {
         assertEquals("everything must still decay away", 0f, out.peak(out.size - rate / 4), 1e-3f)
     }
 
-    // ── headroom ───────────────────────────────────────────────────────────────────────────────
 
     @Test
     fun `output never leaves full scale, however much is happening`() {

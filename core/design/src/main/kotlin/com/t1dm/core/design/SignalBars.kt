@@ -15,12 +15,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 
-/**
- * The shared BLE signal-strength indicator (item 20, reused by I10): a four-bar RSSI meter plus the
- * raw dBm. It lives in `:core:design` so both the BG-panel header and the Settings → CGM source
- * screen render the SAME indicator rather than two drifting copies. Buckets follow the usual BLE
- * bands; colours are drawn from the active theme so it tracks each palette.
- */
+/** Buckets follow the usual BLE RSSI bands. */
 @Composable
 fun SignalBars(rssi: Int) {
     val filled = when {
@@ -33,8 +28,7 @@ fun SignalBars(rssi: Int) {
     val on = MaterialTheme.colorScheme.primary
     val off = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.20f)
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(1.dp)) {
-        // The bars sit a touch high so their centres line up with the adjacent text baseline while the
-        // ascending-bar bottoms stay aligned.
+        // A touch high, so the bar centres line up with the adjacent text baseline.
         Row(
             Modifier.offset(y = (-2).dp),
             verticalAlignment = Alignment.Bottom,

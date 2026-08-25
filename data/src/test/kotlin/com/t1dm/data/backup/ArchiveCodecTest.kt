@@ -26,13 +26,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.StringWriter
 
-/**
- * The archive's RECORD codec, host-side. Pure in both directions — no Room, no Android — which is
- * the whole reason it was factored out of the reader and writer that drive the database.
- *
- * What these pin is the property the format lives or dies by: a row written and read back is the
- * same row. Everything else in a backup is plumbing around that.
- */
 class ArchiveCodecTest {
 
     private fun render(write: (Archive.RecordWriter) -> Unit): String {
@@ -42,8 +35,6 @@ class ArchiveCodecTest {
     }
 
     private fun parse(line: String) = Archive.json.parseToJsonElement(line.trim()).jsonObject
-
-    // ── readings: the row that repeats six figures of times ───────────────────────────────────
 
     @Test
     fun `a reading round-trips whole`() {
@@ -71,7 +62,6 @@ class ArchiveCodecTest {
             flag = ReadingFlag.WARMUP, tzOffsetMin = 0, rxWallMs = 1L, rssi = null,
         )
         val line = render { Archive.write(it, r) }
-        // The point of the omission: five absent columns cost five absent keys, not five "null"s.
         assertFalse("null was written out", line.contains("null"))
         assertEquals(r, Archive.readReading(parse(line)))
     }
@@ -89,15 +79,12 @@ class ArchiveCodecTest {
         assertTrue(runCatching { Archive.readReading(parse(line)) }.isFailure)
     }
 
-    // ── strings: the one hazard a line-delimited format has ───────────────────────────────────
-
     @Test
     fun `a note carrying newlines quotes and control characters survives intact`() {
         val nasty = "line one\nline\ttwo \"quoted\" \\ backslash  \r\n end"
         val d = dose(note = nasty)
         val line = render { Archive.write(it, d) }
-        // If the escaper let a raw newline through, this record would be two lines and every record
-        // after it would be garbage. One line is the assertion that matters most in this file.
+        // A raw newline would split the record and garble every record after it.
         assertEquals("the record spans more than one line", 1, line.trimEnd('\n').lines().size)
         assertEquals(nasty, Archive.readDose(parse(line)).note)
     }
@@ -108,14 +95,10 @@ class ArchiveCodecTest {
         assertEquals(text, Archive.readDose(parse(render { Archive.write(it, dose(note = text)) })).note)
     }
 
-    // ── numbers ───────────────────────────────────────────────────────────────────────────────
-
     @Test
     fun `a non-finite double round-trips as itself rather than breaking the line`() {
         for (v in listOf(Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY)) {
             val line = render { Archive.write(it, dose(units = v)) }
-            // The line must still be valid JSON — a bare NaN token would make the whole record
-            // unparseable and silently drop a logged dose on restore.
             val back = Archive.readDose(parse(line)).units
             if (v.isNaN()) assertTrue("NaN did not survive", back.isNaN()) else assertEquals(v, back, 0.0)
         }
@@ -129,8 +112,6 @@ class ArchiveCodecTest {
         assertEquals(4.2f, Archive.readStroke(parse(line)).widthDp, 0f)
     }
 
-    // ── blobs and derived columns ─────────────────────────────────────────────────────────────
-
     @Test
     fun `a custom curve blob survives base64 byte for byte`() {
         val curve = doubleArrayOf(0.1, 0.25, 0.5, 0.15).toBlob()
@@ -140,7 +121,6 @@ class ArchiveCodecTest {
 
     @Test
     fun `a stroke's time bounds are recomputed from its points, not trusted from the file`() {
-        // Deliberately out of order and doubling back, so first-and-last would give the wrong answer.
         val ts = longArrayOf(5_000L, 1_000L, 9_000L, 3_000L)
         val s = stroke(points = PaintStrokeBlob.encode(ts, FloatArray(4) { 0.5f }))
         val back = Archive.readStroke(parse(render { Archive.write(it, s) }))
@@ -159,17 +139,14 @@ class ArchiveCodecTest {
         val c = conformal(steps = 12, nQuantiles = 7)
         val good = Archive.readConformal(parse(render { Archive.write(it, c) }))
         assertEquals(12, good.steps)
-        // Same blob, a shape it cannot possibly hold: applying it to a fan would misread every band.
+        // Same blob, a shape it cannot hold.
         val bad = render { Archive.write(it, c.copy(steps = 11)) }
         assertTrue(runCatching { Archive.readConformal(parse(bad)) }.isFailure)
     }
 
-    // ── flags the file must not be allowed to set ─────────────────────────────────────────────
-
     @Test
     fun `a restored food is always custom and a restored insulin type is never builtin`() {
-        // Both flags gate the reset's "keep what a fresh install ships" sweep. If a file could set
-        // them, a hand-edited archive would smuggle rows past an erase the user asked for.
+        // A file that could set these would smuggle rows past a reset.
         val foodLine = render { Archive.write(it, food()) }.replace("\"cat\"", "\"custom\":true,\"cat\"")
         assertTrue(Archive.readFood(parse(foodLine)).custom)
 
@@ -186,18 +163,14 @@ class ArchiveCodecTest {
 
     @Test
     fun `the archive records WHICH source was authoritative, as a preference the reader may consult`() {
-        // The flag is not applied directly — the restore decides, because the exactly-one-authoritative
-        // invariant is the local table's to keep. But it must be RECORDED: without it the restore
-        // had no way to tell the worn sensor from a retired one and fell back to file order, which
-        // is oldest-first.
+        // Recorded, not applied: the exactly-one-authoritative invariant is the local table's to keep.
         assertEquals(true, parse(render { Archive.write(it, source(authoritative = true)) }).bool("ac"))
         assertEquals(false, parse(render { Archive.write(it, source(authoritative = false)) }).bool("ac"))
     }
 
     @Test
     fun `a source record written before the authority flag existed still decodes`() {
-        // Additive field: an archive from the first build carries no `ac`, and must not fail here —
-        // the reader falls back to the most recently seen source instead.
+        // No `ac`: the reader falls back to the most recently seen source.
         val old = """{"t":"source","sid":"s","vid":"v","dn":"d","wm":60,"aa":1,"ls":2}"""
         assertEquals("s", Archive.readSource(parse(old), authoritative = false).sourceId)
         assertNull(parse(old).bool("ac"))
@@ -210,11 +183,7 @@ class ArchiveCodecTest {
         assertEquals("v:model", Archive.readSource(parse(line), authoritative = true).sensorModelId)
     }
 
-    /**
-     * An archive written before the column existed carries no `mid`, and must land the sensor in the
-     * SAME class `MIGRATION_10_11` would give it. Were the two to disagree, restoring a backup and
-     * upgrading in place would file one sensor two different ways and split its history on the panel.
-     */
+    /** Must land the sensor in the same class `MIGRATION_10_11` gives it. */
     @Test
     fun `a source record written before the sensor model existed is classified as the migration would`() {
         val real = """{"t":"source","sid":"aidexx:ABC","vid":"aidexx","dn":"d","wm":60,"aa":1,"ls":2}"""
@@ -224,11 +193,7 @@ class ArchiveCodecTest {
         assertEquals(CgmSensorModelId.AIDEX_DEBUG, Archive.readSource(parse(debug), authoritative = false).sensorModelId)
     }
 
-    /**
-     * A removal is durable across an export/restore. Unlike `ac` this IS read back from the file: it
-     * records what the user did and carries no invariant across the table, so dropping it would put
-     * every sensor they had removed back on the list of whatever phone the archive lands on.
-     */
+    /** Unlike `ac`, this IS read back from the file: it records what the user did. */
     @Test
     fun `a removed source survives the round trip as removed`() {
         val line = render { Archive.write(it, source(authoritative = false, hidden = true)) }
@@ -239,8 +204,6 @@ class ArchiveCodecTest {
 
     @Test
     fun `a source record written before removal existed decodes as listed`() {
-        // Additive field: an archive from an older build carries no `hd`, and false is the state every
-        // such row was exported in — the alternative would hide a sensor the user never removed.
         val old = """{"t":"source","sid":"s","vid":"v","dn":"d","wm":60,"aa":1,"ls":2}"""
         assertEquals(false, Archive.readSource(parse(old), authoritative = false).hidden)
     }
@@ -250,8 +213,6 @@ class ArchiveCodecTest {
         authoritative = authoritative, active = authoritative,
         warmupWindowMin = 60, addedAtMs = 1L, lastSeenMs = 2L, hidden = hidden, ordinal = 0,
     )
-
-    // ── the wide projection ───────────────────────────────────────────────────────────────────
 
     @Test
     fun `a sample round-trips including its nullable series`() {
@@ -267,8 +228,7 @@ class ArchiveCodecTest {
 
     @Test
     fun `the exercise scalar survives as fractional grams, and pre-v17 seconds do not`() {
-        // Grams of carbohydrate equivalent, so a whole number is the exception rather than the rule —
-        // the old integer key would have rounded 2.5 g away.
+        // Grams of carbohydrate equivalent, so fractional.
         val s = SampleEntity(
             ts = 600_000L, tzOffsetMin = 0, bgMgdl = null, bgSource = null,
             bgProvenance = null, bgFlag = null, steps = null, mood = null, hr = null, sleep = null,
@@ -276,9 +236,8 @@ class ArchiveCodecTest {
         )
         assertEquals(s, Archive.readSample(parse(render { Archive.write(it, s) })))
 
-        // An archive written before schema 17 carries whole ACTIVE SECONDS under `ex`. Reading one as
-        // grams would restore a hundredfold value into a column that syncs, so it is dropped: the key
-        // moved to `exg` precisely so the two cannot be confused.
+        // Pre-v17 archives carry active SECONDS under `ex`; reading those as grams would be a
+        // hundredfold error, so the key moved to `exg` and `ex` is dropped.
         val legacy = parse("""{"t":"sample","ts":600000,"tz":0,"ex":300,"ua":9}""")
         assertNull(Archive.readSample(legacy).exercise)
     }
@@ -294,14 +253,10 @@ class ArchiveCodecTest {
 
     @Test
     fun `the autogenerated row id is never carried across`() {
-        // An archived row becomes a NEW row on the restoring device; carrying its id would be a claim
-        // on one that device may already have given to something else.
         val back = Archive.readMeal(parse(render { Archive.write(it, meal().copy(id = 4242L)) }))
         assertEquals(0L, back.id)
         assertNull(back.customCurve)
     }
-
-    // ── exercise bouts and their tracks ───────────────────────────────────────────────────────
 
     @Test
     fun `a bout round-trips whole`() {
@@ -311,9 +266,7 @@ class ArchiveCodecTest {
 
     @Test
     fun `a bout still open restores still open`() {
-        // A null `endMs` is a bout the archive caught mid-recording, or one the process died inside.
-        // Inventing an end for it here would claim a stop that never happened; the same reconcile
-        // that settles a killed bout settles this one, at what was actually recorded.
+        // Null `endMs`: a bout caught mid-recording, or one the process died inside.
         val open = exerciseSession().copy(endMs = null, interrupted = false)
         val line = render { Archive.write(it, open) }
         assertFalse("an absent end was written out as null", line.contains("null"))
@@ -322,8 +275,7 @@ class ArchiveCodecTest {
 
     @Test
     fun `a bout kind a later build introduced still restores`() {
-        // `kind` is raw TEXT on purpose — the whole point is that an older build can read a bout a
-        // newer one recorded. Resolving the enum on this path would hand that hazard straight back.
+        // `kind` is raw TEXT on purpose: an older build must read a newer build's bout.
         val line = """{"t":"exercise","cid":"c","st":1,"tz":0,"kd":"SWIM","as":60,"it":false,"ua":1}"""
         assertEquals("SWIM", Archive.readExercise(parse(line)).kind)
     }
@@ -338,8 +290,6 @@ class ArchiveCodecTest {
 
     @Test
     fun `a fix names its bout by clientId, never by the rowid`() {
-        // The rowid is autogenerated per device, so on the restoring phone it names a different bout
-        // — or none. The bout's phone-minted `clientId` is the one link that travels.
         val f = exerciseFix()
         val line = render { Archive.write(it, f.copy(sessionId = 987_654_321L), "bout-1") }
         assertFalse("the local rowid travelled", line.contains("987654321"))
@@ -355,8 +305,7 @@ class ArchiveCodecTest {
 
     @Test
     fun `a fix keeps enough precision to place it on a street`() {
-        // Six decimal places is ~0.1 m at the equator; anything coarser would draw a track through
-        // the buildings beside the one that was actually walked.
+        // Six decimals is ~0.1 m at the equator.
         val f = exerciseFix().copy(lat = 41.015137, lon = 28.979530)
         val back = Archive.readExerciseFix(parse(render { Archive.write(it, f, "bout-1") })).second
         assertEquals(41.015137, back.lat, 0.0)
@@ -375,8 +324,6 @@ class ArchiveCodecTest {
         val line = """{"t":"exerciseFix","ts":1,"la":1.0,"lo":2.0,"acc":5.0}"""
         assertTrue(runCatching { Archive.readExerciseFix(parse(line)) }.isFailure)
     }
-
-    // ── fixtures ──────────────────────────────────────────────────────────────────────────────
 
     private fun exerciseSession() = ExerciseSessionEntity(
         clientId = "cccccccc-dddd-eeee-ffff-000000000000",

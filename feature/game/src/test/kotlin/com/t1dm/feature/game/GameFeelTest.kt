@@ -8,11 +8,6 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * The physics-to-senses mapping. Everything here is an opinion about feel that can only be wrong
- * silently: a landing that fires every frame reads as a broken actuator, one that never fires reads as
- * a dead one, and a rumble that ignores the ground reads as no rumble at all.
- */
 class GameFeelTest {
 
     private fun car(
@@ -31,11 +26,9 @@ class GameFeelTest {
         airborne = airborne, distanceM = 0f, run = run, elapsedS = 0f,
     )
 
-    /** The tracker seeds on its first observation, so a run always starts from a settled frame. */
     private fun seeded(first: CarState = car()): FeelTracker =
         FeelTracker().also { it.observe(first) }
 
-    // ── the sustained bed ──────────────────────────────────────────────────────────────────────
 
     @Test
     fun `airborne is silence, not a quieter bed`() {
@@ -92,7 +85,6 @@ class GameFeelTest {
         assertEquals(0f, after.engine, 0f)
     }
 
-    // ── the transients ─────────────────────────────────────────────────────────────────────────
 
     @Test
     fun `the first observation never fires — a car placed in the air does not thud`() {
@@ -109,7 +101,6 @@ class GameFeelTest {
         val landing = t.observe(car(airborne = false, impulse = 300f))
         assertEquals(HapticCue.Impact, landing.cue)
         assertEquals(GameSfx.Landing, landing.sfx)
-        // …and never again while the wheels stay down.
         repeat(10) { assertNull(t.observe(car(airborne = false, impulse = 300f)).cue) }
     }
 
@@ -146,7 +137,6 @@ class GameFeelTest {
         assertEquals(HapticCue.Impact, bump.cue)
         // A level, not an edge, would re-fire every frame the load stayed high.
         assertNull(t.observe(car(impulse = FeelTracker.BUMP_IMPULSE * 4f)).cue)
-        // It re-arms once the load drops back.
         t.observe(car(impulse = 0f))
         assertEquals(HapticCue.Impact, t.observe(car(impulse = FeelTracker.BUMP_IMPULSE * 4f)).cue)
     }
@@ -175,7 +165,6 @@ class GameFeelTest {
         assertNull(done.sfx)
     }
 
-    // ── the whole layer ────────────────────────────────────────────────────────────────────────
 
     @Test
     fun `the mute feel layer swallows a whole run`() {

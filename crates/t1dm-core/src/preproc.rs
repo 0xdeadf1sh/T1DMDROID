@@ -1,92 +1,57 @@
-//! Model pre/post-processing — the fp64 reference pipeline (Phase 2, INFERENCE.md).
-//!
-//! The ExecuTorch graph is cut at `head_raw` (B,4,6,7) in risk space; everything on
-//! either side of that cut lives here, in fp64 Rust, as the numerical authority
-//! (§2.4/§3.2). The descriptor JSON is the SOLE source of the
-//! normalization stats and the checkpoint-absent decode constants — the app never
-//! parses the `.pt` pickle.
-//!
-//! Pipeline (INFERENCE.md §§6-8):
-//!   raw channels ──savgol (BG)──> ──normalize──> context (z) ──graph──> head_raw
-//!                                                │                     │
-//!                                          last_bg anchor        assemble_decode
-//!                                                                (softplus+floor,
-//!                                                                 cumsum fan, global
-//!                                                                 DCT median, f_inv)
-//!
-//! Every `#[uniffi::export]` fn is total on hostile input (the crate is
-//! `panic = "abort"`): malformed shapes return `Err(CoreError)`, degenerate forecasts
-//! are flagged by [`forecast_degeneracy_check`] rather than trusted.
+//! Model pre/post-processing in fp64, INFERENCE.md §§6-8. The graph is cut at `head_raw`
+//! (B,4,6,7) in risk space; the descriptor JSON is the sole source of the normalization stats
+//! and the decode constants. Every exported fn is total on hostile input (`panic = "abort"`).
 
 use serde::Deserialize;
 
-// Deliberately does NOT import the crate's clinical `kovatchev_f`/`kovatchev_f_inv`: every
-// (b)↔(c) crossing on the model path goes through the descriptor's own `KovatchevParams`,
-// and having the clinical pair in scope here is how they get reached for by accident.
+// The clinical `kovatchev_f`/`kovatchev_f_inv` are deliberately not imported: every (b)↔(c)
+// crossing on the model path goes through the descriptor's own `KovatchevParams`.
 use crate::CoreError;
 
-// ── Fixed architecture constants (INFERENCE.md §11; not descriptor-varying) ─────────
-/// Steps per patch (6 × 5 min = 30 min).
+/// 6 × 5 min steps = 30 min.
 const PATCH_SIZE: usize = 6;
-/// Input feature stack width
 /// `[bg_absolute, carb_intake, insulin_combined, exercise_equiv, bg_masked]`.
 const N_FEAT: usize = 5;
-/// The normalized SIGNAL channels — feats 0..3. Feat 4 carries no statistics.
+/// Feats 0..3; feat 4 carries no statistics.
 const N_CHANNELS: usize = 4;
-/// Feature index of the per-patch masked-announcement bit. Nothing else writes it, and a
-/// builder that forgets it announces every masked patch as an observation with every shape
-/// still matching and every fan still monotone.
+/// Masked-announcement bit. Forgetting to set it announces a masked patch as an observation,
+/// with every shape still matching and every fan still monotone.
 const BG_MASKED_FEAT: usize = 4;
-/// Quantile spreads per side of the median.
+/// Per side of the median.
 const N_SPREADS: usize = 3;
-/// Head raw width `= 1 + 2·N_SPREADS`, == number of quantiles.
 const N_QUANTILES: usize = 1 + 2 * N_SPREADS;
-/// `std` floor in the z-score denominator (INFERENCE.md §6).
+/// z-score denominator (INFERENCE.md §6).
 const STD_FLOOR: f64 = 1e-8;
-/// PyTorch `F.softplus` linear-regime threshold: `x > 20 ⇒ softplus(x) == x`.
+/// PyTorch `F.softplus`: `x > 20 ⇒ softplus(x) == x`.
 const SOFTPLUS_THRESHOLD: f64 = 20.0;
 
-/// One-sided Savitzky-Golay endpoint taps for `(window=7, polyorder=2)`, oldest→newest,
-/// as exact rationals over 42: `[5,-3,-6,-4,3,15,32]/42` (`scipy.signal.savgol_coeffs(7,
-/// 2, pos=6, use='dot')`). `use='dot'` order is load-bearing — the newest sample carries
-/// the largest weight (32/42), so the endpoint estimate does not lag (utils.py §causal).
+/// `scipy.signal.savgol_coeffs(7, 2, pos=6, use='dot')` as exact rationals over 42,
+/// oldest→newest. The `use='dot'` order is load-bearing: the newest sample carries the largest
+/// weight, so the endpoint estimate does not lag.
 const SAVGOL_TAPS: [f64; 7] = [5.0, -3.0, -6.0, -4.0, 3.0, 15.0, 32.0];
 const SAVGOL_DENOM: f64 = 42.0;
-/// The default window — what every build applied unconditionally before the filter became
-/// configurable, and the value the goldens and the fp16-agreement probe are pinned to.
+/// The goldens and the fp16-agreement probe are pinned to this window.
 const SAVGOL_WINDOW: usize = 7;
-/// Largest accepted window. Well past the widest offered detent (25) yet small enough that a
-/// hostile value can never provoke a giant tap allocation before the odd/positive guards bite.
+/// Past the widest offered detent (25), small enough that a hostile value allocates nothing huge.
 const SAVGOL_WINDOW_MAX: i32 = 99;
 
-// ── Degeneracy thresholds (§3.6-B) ──────────────────────────────────────────────────
-/// mg/dL tolerance for "pinned to a rail" (flat 20 or flat 500).
 const RAIL_EPS_MGDL: f64 = 1e-3;
-/// mg/dL band width below which the fan is treated as collapsed (a healthy fan clears
-/// this by orders of magnitude — the 1e-3 risk spread floor alone yields ≳0.06 mg/dL).
+/// The 1e-3 risk spread floor alone yields ≳0.06 mg/dL, so a healthy fan clears this hugely.
 const COLLAPSE_EPS_MGDL: f64 = 1e-4;
-/// Non-monotonicity tolerance for the ascending quantile fan (risk space).
+/// Quantile fan ascent, risk space.
 const MONOTONE_TOL: f64 = 1e-9;
 
-// ── Model descriptor (INFERENCE.md §2, SPEC §2.4) ───────────────────────────────────
-
-/// Per-channel normalization statistics. `bg_absolute` lives in Kovatchev **risk**
-/// space (mean/std fit on `f(bg)`); `carb_intake` / `insulin_combined` in **log1p**
-/// space (INFERENCE.md §6).
+/// `bg_absolute` in Kovatchev risk space (fit on `f(bg)`); `carb_intake`/`insulin_combined`
+/// in log1p space (INFERENCE.md §6).
 #[derive(Debug, Clone, Copy, PartialEq, uniffi::Record, Deserialize)]
 pub struct ChannelStat {
     pub mean: f64,
     pub std: f64,
 }
 
-/// The Kovatchev risk parameterization **the exported checkpoint was trained under**, read
-/// verbatim from the descriptor's `kovatchev` block (INFERENCE.md §5).
-///
-/// A checkpoint re-anchored to a different physical BG range ships different constants, so
-/// these cannot be baked into the runtime: decoding risk-space output with the wrong
-/// `scale`/`offset` yields plausible, finite, wrong mg/dL — silently, with no guard able to
-/// see it. The crate's free `kovatchev_f`/`kovatchev_f_inv` are the separate, deliberately
-/// fixed CLINICAL scale (LBGI/HBGI, display axis) and must never decode a forecast.
+/// The risk parameterization the exported checkpoint was trained under, read from the
+/// descriptor (INFERENCE.md §5). The crate's free `kovatchev_f`/`kovatchev_f_inv` are the fixed
+/// CLINICAL scale and must never decode a forecast: wrong constants decode to plausible mg/dL.
 #[derive(Debug, Clone, Copy, PartialEq, uniffi::Record, Deserialize)]
 pub struct KovatchevParams {
     #[serde(rename = "SCALE")]
@@ -95,18 +60,17 @@ pub struct KovatchevParams {
     pub power: f64,
     #[serde(rename = "OFFSET")]
     pub offset: f64,
-    /// Lower physical BG bound (mg/dL); `f` clamps to it and `f_inv` cannot decode below it.
+    /// mg/dL.
     #[serde(rename = "BG_CLAMP_MIN")]
     pub bg_clamp_min: f64,
-    /// Upper physical BG bound (mg/dL).
+    /// mg/dL.
     #[serde(rename = "BG_CLAMP_MAX")]
     pub bg_clamp_max: f64,
 }
 
 impl KovatchevParams {
-    /// `f(g) = scale·(ln(g)^power − offset)`, mg/dL → risk. Total on hostile input with the
-    /// same guard order as the clinical [`crate::kovatchev_f`]: clamp to the physical range
-    /// first (so the `ln` base is positive), NaN treated as the low bound.
+    /// `f(g) = scale·(ln(g)^power − offset)`, mg/dL → risk. Clamps to the physical range first,
+    /// so the `ln` base is positive; NaN reads as the low bound.
     pub(crate) fn f(&self, mgdl: f64) -> f64 {
         let g = if mgdl.is_nan() {
             self.bg_clamp_min
@@ -116,10 +80,8 @@ impl KovatchevParams {
         self.scale * (g.ln().powf(self.power) - self.offset)
     }
 
-    /// `f_inv(r) = exp((r/scale + offset)^(1/power))`, risk → mg/dL. Non-finite risk is
-    /// replaced (NaN/−inf → the low rail, +inf → the high rail), the risk input is clamped to
-    /// `[f(min), f(max)]` — keeping the base ≥ 0, so no complex/NaN and no `exp` overflow —
-    /// and the output is clamped to the physical range.
+    /// `f_inv(r) = exp((r/scale + offset)^(1/power))`, risk → mg/dL. NaN/−inf read as the low
+    /// rail, +inf as the high one; the clamp to `[f(min), f(max)]` keeps the base ≥ 0.
     pub(crate) fn f_inv(&self, risk: f64) -> f64 {
         let r_lo = self.f(self.bg_clamp_min);
         let r_hi = self.f(self.bg_clamp_max);
@@ -137,11 +99,8 @@ impl KovatchevParams {
     }
 }
 
-/// The co-trained hour-of-day TIME PROBE section of a descriptor (the second `.pte`
-/// output). Present iff the exported graph emits `time_logits`; a graph cut at `head_raw`
-/// leaves this `None` and the app surfaces no predicted-hour belief (fail-open, never
-/// hard-depended-on). `output_index` is the positional `.pte` slot (1 in the current
-/// export); `n_bins`/`bin_hours` describe the hour-of-day circle the logits softmax over.
+/// The co-trained hour-of-day probe. Absent when the graph is cut at `head_raw`, and that
+/// absence is fail-open — no predicted hour is surfaced. `output_index` is the `.pte` slot.
 #[derive(Debug, Clone, Copy, PartialEq, uniffi::Record)]
 pub struct TimeHead {
     pub output_index: i32,
@@ -149,18 +108,16 @@ pub struct TimeHead {
     pub bin_hours: f64,
 }
 
-/// One tensor in the head side file, named and shaped in FILE order.
+/// Named and shaped in FILE order.
 #[derive(Debug, Clone, PartialEq, uniffi::Record, Deserialize)]
 pub struct HeadTensorSpec {
     pub name: String,
     pub shape: Vec<i32>,
 }
 
-/// The BG head the export wrote beside the artifact — the seam an adapter attaches to.
-///
-/// Everything needed to read a flat fp32 dump back into layers, plus a digest over the exact
-/// bytes. The digest is checked on load rather than recorded: a head paired with the wrong
-/// graph reproduces a plausible, finite, wrong `head_raw`, and nothing downstream can see it.
+/// The BG head the export wrote beside the artifact — the seam an adapter attaches to. The
+/// digest is checked on load: a head paired with the wrong graph gives a plausible, wrong
+/// `head_raw` that nothing downstream can see.
 #[derive(Debug, Clone, PartialEq, uniffi::Record, Deserialize)]
 pub struct HeadSpec {
     pub file: String,
@@ -175,63 +132,47 @@ pub struct HeadSpec {
     pub tensors: Vec<HeadTensorSpec>,
 }
 
-/// The full pre/post contract parsed from `descriptor.json` — the app's sole source of
-/// the normalization stats plus the decode-critical constants absent from the
-/// checkpoint (INFERENCE.md §3.1, SPEC §2.4). Downstream Rust reads every constant from
-/// here so a re-exported model can never silently diverge from its baked graph.
+/// The pre/post contract parsed from `descriptor.json` (INFERENCE.md §3.1, SPEC §2.4).
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct ModelDescriptor {
     pub bg: ChannelStat,
     pub carb: ChannelStat,
     pub insulin: ChannelStat,
-    /// Carbohydrate-EQUIVALENT glucose disposal, g/step — a positive magnitude in its own
-    /// channel, never a negative carbohydrate value in the carb channel.
+    /// Carbohydrate-equivalent glucose disposal, g/step — a positive magnitude in its own
+    /// channel, never a negative carbohydrate.
     pub exercise: ChannelStat,
-    /// RoPE base frequency (checkpoint-absent; descriptor-carried).
     pub rope_base: i32,
-    /// Global-median DCT subspace dimension at a span of `PREDICTION_PATCHES`; shorter spans scale
-    /// down from it (`global_median_dim`). Descriptor-carried — it is a training-time choice.
+    /// DCT subspace dimension at a span of `PREDICTION_PATCHES`; shorter spans scale down from
+    /// it (`global_median_dim`).
     pub median_global_dim: i32,
-    /// Global-median basis kind (`"dct"`).
     pub step_basis_type: String,
-    /// Additive floor on each softplus spread (`BG_QUANTILE_SPREAD_MIN`, 1e-3).
+    /// Additive floor on each softplus spread.
     pub quantile_spread_min: f64,
-    /// Struct-mask blocked-position fill for the fp16-safe softmax (`-30000.0`).
+    /// Blocked-position fill, fp16-safe.
     pub neg_fill: f64,
-    /// Prediction horizon in hours (default 2 ⇒ P = 4 patches).
     pub prediction_horizon_hours: i32,
     pub max_context_patches: i32,
     pub min_context_patches: i32,
     pub patch_size: i32,
     pub n_input_features: i32,
-    /// The exported graph's fixed sequence length `T`. The window is left-padded into it,
-    /// so the future patches always sit at the right edge and the absolute RoPE positions
-    /// match training.
+    /// `T`. The window is left-padded into it, so the future patches sit at the right edge and
+    /// the absolute RoPE positions match training.
     pub seq_len: i32,
     /// `M` — the head's slot count, and the cap on the masked set a caller may ask for.
     pub max_masked_patches: i32,
-    /// Spans per masked set, and the longest span, that the training sampler ever drew.
-    /// Beyond either the model is being asked for something it never saw.
+    /// The most spans, and the longest span, the training sampler ever drew.
     pub mask_max_spans: i32,
     pub mask_span_max: i32,
-    /// Trunk width — the length of one slot's hidden state.
     pub d_model: i32,
-    /// `K` — within-patch basis columns the head emits per (slot, channel).
+    /// `K` — within-patch basis columns per (slot, channel).
     pub step_basis_dim: i32,
-    /// The risk transform THIS checkpoint was trained under — the sole authority for every
-    /// (b)↔(c) crossing on the model path (INFERENCE.md §5).
+    /// INFERENCE.md §5.
     pub kovatchev: KovatchevParams,
-    /// Split-conformal band recalibration flag. **Default false** for real-CGM
-    /// deployment (INFERENCE.md §8.4 — a simulator-fit delta must never silently
-    /// narrow the safety bands).
+    /// Default false for real-CGM deployment: a simulator-fit delta must never silently narrow
+    /// the safety bands (INFERENCE.md §8.4).
     pub conformal_enabled: bool,
-    /// The co-trained hour-of-day time-probe descriptor, or `None` when the exported graph
-    /// is cut at `head_raw` (BG fan only). Consumed by [`decode_time`] to surface a
-    /// circadian-phase belief; its absence is graceful (no predicted-hour rendered).
     pub time: Option<TimeHead>,
-    /// The BG head shipped beside the artifact, or `None` when the export wrote none. Its
-    /// absence costs no forecast — the graph's own `head_raw` is the fast path — but it is
-    /// the only seam an adapter can attach to, so a model without it takes no LoRA.
+    /// `None` costs no forecast, but a model without a head takes no adapter.
     pub head: Option<HeadSpec>,
 }
 
@@ -259,15 +200,12 @@ impl ModelDescriptor {
     }
 }
 
-// ── descriptor.json parsing ─────────────────────────────────────────────────────────
-
 #[derive(Deserialize)]
 struct NormStatsDto {
     bg_absolute: ChannelStat,
     carb_intake: ChannelStat,
     insulin_combined: ChannelStat,
-    /// REQUIRED. A descriptor without it predates the exercise channel, and running such a
-    /// model against a five-feature input builds a context it was never trained on.
+    /// No default: without it the exercise column would be normalized on another channel's scale.
     exercise_equiv: ChannelStat,
 }
 
@@ -284,10 +222,8 @@ struct ConformalDto {
     enabled: bool,
 }
 
-/// The exporter's `geometry` block, verbatim. The SCREAMING names are the exporter's, kept
-/// so the descriptor has ONE schema across the suite rather than a projected second one:
-/// every projection is a place a key can be silently dropped, and a dropped decode constant
-/// is invisible until a forecast decodes wrong.
+/// The exporter's `geometry` block verbatim, its names kept: a projected second schema is a
+/// place to silently drop a decode constant.
 #[derive(Deserialize)]
 struct GeometryDto {
     #[serde(rename = "T")]
@@ -334,8 +270,7 @@ struct DescriptorDto {
     normalization_stats: NormStatsDto,
     geometry: GeometryDto,
     constants: ConstantsDto,
-    /// REQUIRED. Absent ⇒ the descriptor is rejected rather than decoded against a guessed
-    /// scale: there is no safe default, and a wrong one is invisible downstream.
+    /// No safe default: absent ⇒ rejected, never decoded against a guessed scale.
     kovatchev: KovatchevParams,
     #[serde(default)]
     conformal: Option<ConformalDto>,
@@ -349,8 +284,7 @@ fn default_mask_max_spans() -> i32 {
     3
 }
 
-/// Parse a model `descriptor.json` (SPEC §2.4) into a [`ModelDescriptor`]. Returns
-/// `Err(CoreError::Decode)` — never panics — on malformed JSON or a missing field.
+/// SPEC §2.4. Never panics: malformed JSON or a missing field returns `Err(CoreError::Decode)`.
 #[uniffi::export]
 pub fn parse_descriptor(json: String) -> Result<ModelDescriptor, CoreError> {
     let d: DescriptorDto = serde_json::from_str(&json).map_err(|e| CoreError::Decode {
@@ -365,9 +299,8 @@ pub fn parse_descriptor(json: String) -> Result<ModelDescriptor, CoreError> {
             ),
         });
     }
-    // Only the 'global' median is implemented here. A checkpoint trained under another mode
-    // decodes to a DIFFERENT median through this one — smooth, finite and wrong — so the
-    // descriptor's own declaration is checked rather than carried and ignored.
+    // A checkpoint trained under another median mode decodes through this one smooth, finite
+    // and wrong.
     if d.constants.median_mode != "global" {
         return Err(CoreError::Decode {
             reason: format!(
@@ -384,8 +317,6 @@ pub fn parse_descriptor(json: String) -> Result<ModelDescriptor, CoreError> {
             ),
         });
     }
-    // The time-probe section is OPTIONAL (a `head_raw`-only export omits it). When present it
-    // must describe a non-degenerate hour circle, else the predicted-hour decode is unusable.
     let time = match d.time {
         None => None,
         Some(t) => {
@@ -435,13 +366,9 @@ pub fn parse_descriptor(json: String) -> Result<ModelDescriptor, CoreError> {
         head: d.head,
     };
 
-    // ── Fail-closed guards on decode-critical descriptor drift (§3.6-B, INFERENCE.md §11) ──
-    // A re-exported model whose decode constants diverge from its baked graph is REJECTED
-    // here (Decode → a `null` descriptor on the Kotlin side → the model is refused), never
-    // silently trusted: several of these degrade into a *confident-flat* forecast that
-    // `forecast_degeneracy_check` cannot catch (e.g. `median_global_dim=0` pins the median at
-    // the anchor via an empty DCT basis; a negative value casts to `usize::MAX` and defeats
-    // the low-frequency contraction).
+    // Decode-critical drift is refused, not trusted: several of these degrade into a
+    // confident-flat forecast `forecast_degeneracy_check` cannot catch (`median_global_dim = 0`
+    // pins the median at the anchor through an empty DCT basis).
     for (name, v) in [
         ("seq_len", desc.seq_len),
         ("max_masked_patches", desc.max_masked_patches),
@@ -450,9 +377,8 @@ pub fn parse_descriptor(json: String) -> Result<ModelDescriptor, CoreError> {
         ("mask_max_spans", desc.mask_max_spans),
         ("mask_span_max", desc.mask_span_max),
     ] {
-        // A negative dimension casts to a colossal usize downstream and the allocation aborts the
-        // process (the crate is `panic = "abort"`), so it is refused here where a refusal is just a
-        // skipped model.
+        // A negative dimension casts to a colossal usize downstream and the allocation aborts
+        // the process (`panic = "abort"`).
         if v < 1 {
             return Err(CoreError::Decode {
                 reason: format!("geometry {name} = {v} must be >= 1"),
@@ -511,10 +437,9 @@ pub fn parse_descriptor(json: String) -> Result<ModelDescriptor, CoreError> {
             reason: format!("rope_base {} must be > 0", desc.rope_base),
         });
     }
-    // The risk transform decodes every forecast, so a malformed one is rejected outright.
-    // `bg_clamp_min > 1` keeps `ln(g) > 0`, without which `ln(g)^power` is NaN for a
-    // fractional power; `scale > 0` keeps `f` increasing (so `f(min) < f(max)` bracket the
-    // f_inv clamp the right way round); `power > 0` keeps `1/power` finite.
+    // `bg_clamp_min > 1` keeps `ln(g) > 0`, without which `ln(g)^power` is NaN for a fractional
+    // power; `scale > 0` keeps `f` increasing, so `f(min) < f(max)` bracket the f_inv clamp the
+    // right way round; `power > 0` keeps `1/power` finite.
     let k = desc.kovatchev;
     if ![k.scale, k.power, k.offset, k.bg_clamp_min, k.bg_clamp_max]
         .iter()
@@ -537,8 +462,7 @@ pub fn parse_descriptor(json: String) -> Result<ModelDescriptor, CoreError> {
             ),
         });
     }
-    // Defense in depth: prove the round trip is total at both rails before any forecast rides
-    // it (an offset that drives the f_inv base negative would otherwise surface as NaN mg/dL).
+    // Prove the round trip is total at both rails before any forecast rides it.
     let (r_lo, r_hi) = (k.f(k.bg_clamp_min), k.f(k.bg_clamp_max));
     if !(r_lo.is_finite() && r_hi.is_finite() && r_lo < r_hi)
         || !k.f_inv(r_lo).is_finite()
@@ -548,8 +472,6 @@ pub fn parse_descriptor(json: String) -> Result<ModelDescriptor, CoreError> {
             reason: format!("kovatchev transform is not total on [{}, {}]", k.bg_clamp_min, k.bg_clamp_max),
         });
     }
-    // Reject a patch_size/horizon that does not tile the prediction hour (defense in depth
-    // over the patch_size guard; also forces a representable prediction-patch count).
     if desc.prediction_patches().is_err() {
         return Err(CoreError::Decode {
             reason: format!(
@@ -562,11 +484,8 @@ pub fn parse_descriptor(json: String) -> Result<ModelDescriptor, CoreError> {
     Ok(desc)
 }
 
-// ── Causal Savitzky-Golay smoother (INFERENCE.md §7.1) ──────────────────────────────
-
-/// Accept a caller-supplied window: odd, in `[1, SAVGOL_WINDOW_MAX]`. Anything else is a
-/// programming error or a corrupt persisted setting and fails closed — an even window has no
-/// endpoint-centred abscissa and `w < 1` would index a tap set that does not exist.
+/// Odd, in `[1, SAVGOL_WINDOW_MAX]`. Fails closed: an even window has no endpoint-centred
+/// abscissa.
 fn validate_window(window: i32) -> Result<usize, CoreError> {
     if window < 1 || window > SAVGOL_WINDOW_MAX || window % 2 == 0 {
         return Err(CoreError::Internal {
@@ -578,20 +497,9 @@ fn validate_window(window: i32) -> Result<usize, CoreError> {
     Ok(window as usize)
 }
 
-/// Endpoint taps for `(window, polyorder = 2)` derived at runtime, oldest→newest, as
-/// `(taps, denom)` — the caller divides ONCE after accumulating, so the shipped default keeps
-/// its exact integer rationals over 42 and stays bit-identical to the pre-configurable filter
-/// (the CPU-unchanged proof compares `head_raw` byte-for-byte across the stock and custom AAR,
-/// and `savgol_solver_reproduces_reference_taps` is what pins the `w = 7` fast path to those
-/// rationals; the §3.6-E agreement probe is a mg/dL-tolerance GPU-vs-CPU check in ONE process
-/// and could not see the difference, since both backends consume the same taps).
-///
-/// The general branch is the least-squares quadratic fit to `x[t-(w-1) ..= t]` evaluated at the
-/// newest sample — `scipy.signal.savgol_coeffs(w, 2, pos=w-1, use='dot')` — solved in closed
-/// form rather than by a pseudo-inverse. Centring the abscissa at `m = (w-1)/2` (`u = i - m`)
-/// kills the odd power sums, leaving `S0 = w`, `S2 = Σu²`, `S4 = Σu⁴` and a 2×2 solve; the
-/// endpoint sits at `u = m`. `w = 1` is the identity (`m = 0` ⇒ `S2 = 0`; scipy likewise
-/// rejects `polyorder >= window_length`), i.e. an unfiltered pass-through.
+/// Endpoint taps for `(window, polyorder = 2)`, oldest→newest, as `(taps, denom)`: the caller
+/// divides ONCE, so `w = 7` stays the exact rationals over 42 and bit-identical to the
+/// pre-configurable filter. Others: `savgol_coeffs(w, 2, pos=w-1, use='dot')`; `w = 1` is identity.
 fn savgol_endpoint_taps(window: usize) -> (Vec<f64>, f64) {
     match window {
         1 => (vec![1.0], 1.0),
@@ -600,8 +508,7 @@ fn savgol_endpoint_taps(window: usize) -> (Vec<f64>, f64) {
     }
 }
 
-/// The closed-form solver behind [`savgol_endpoint_taps`], already normalized (sums to 1).
-/// Callers must not hand it `window < 3` — the `S2` division is singular at `m = 0`.
+/// Normalized (sums to 1). `window < 3` is singular: the `S2` division at `m = 0`.
 fn savgol_endpoint_taps_general(window: usize) -> Vec<f64> {
     let m = ((window - 1) / 2) as f64;
     let s0 = window as f64;
@@ -616,20 +523,9 @@ fn savgol_endpoint_taps_general(window: usize) -> Vec<f64> {
         .collect()
 }
 
-/// Strictly-causal one-sided Savitzky-Golay smooth of a 1-D signal ([`window`] odd,
-/// `polyorder=2`, evaluated at the endpoint). `out[t]` is the degree-2 fit to
-/// `x[t-(window-1) ..= t]` read at `t`, so it uses only `x[≤t]` and never leaks the future; the
-/// left edge is causally replicated with `x[0]`. `window = 1` is the identity — the raw signal,
-/// clamped. Optional physical clamps are applied to the output (BG → `[20,500]`;
-/// carb/insulin → `min = 0`); they are NOT part of the filter and hold at every window.
-///
-/// A wider window suppresses more sensor noise (white-noise variance falls as `Σtap²`) but the
-/// endpoint estimator EXTRAPOLATES its quadratic to the edge of its own support, so it settles
-/// more slowly after a turn and overshoots a spike further — wider is not unconditionally safer.
-///
-/// An out-of-contract window (even, `< 1`, or above the accepted ceiling) falls back to the
-/// default `SAVGOL_WINDOW` instead of panicking (the crate is `panic = "abort"`); the model
-/// input path — [`build_context`] — rejects it outright rather than silently substituting.
+/// Strictly causal Savitzky-Golay (INFERENCE.md §7.1): `out[t]` is the degree-2 endpoint fit to
+/// `x[t-(window-1) ..= t]`, left edge replicated with `x[0]`, `window = 1` the identity. The
+/// clamps are not part of the filter. An out-of-contract window falls back to `SAVGOL_WINDOW`.
 #[uniffi::export]
 pub fn causal_smooth(
     series: Vec<f64>,
@@ -641,7 +537,6 @@ pub fn causal_smooth(
     causal_smooth_w(&series, clamp_min, clamp_max, w)
 }
 
-/// The validated-window kernel behind [`causal_smooth`].
 fn causal_smooth_w(
     series: &[f64],
     clamp_min: Option<f64>,
@@ -657,7 +552,6 @@ fn causal_smooth_w(
     for t in 0..n {
         let mut acc = 0.0f64;
         for (j, &tap) in taps.iter().enumerate() {
-            // window sample = x[t - (W-1) + j], replicated with x[0] on the left edge.
             let idx = t as isize - (window as isize - 1) + j as isize;
             let xv = if idx < 0 { series[0] } else { series[idx as usize] };
             acc += tap * xv;
@@ -678,32 +572,28 @@ fn causal_smooth_w(
     out
 }
 
-// ── Per-channel normalize / denormalize (INFERENCE.md §6) ───────────────────────────
-
-/// z-score one raw value for input feature `feat` (0=bg risk-z, 1/2=carb/insulin
-/// log1p-z), stats from the descriptor.
+/// feat 0 is bg risk-z, 1/2/3 log1p-z (INFERENCE.md §6).
 fn normalize_feat(d: &ModelDescriptor, feat: usize, x: f64) -> f64 {
     let s = d.stat(feat);
     let pre = if feat == 0 {
-        d.kovatchev.f(x) // clamps to the descriptor's range and scrubs NaN internally
+        d.kovatchev.f(x)
     } else {
         x.max(0.0).ln_1p()
     };
     (pre - s.mean) / (s.std + STD_FLOOR)
 }
 
-/// Inverse of [`normalize_feat`] back to raw units.
 fn denormalize_feat(d: &ModelDescriptor, feat: usize, z: f64) -> f64 {
     let s = d.stat(feat);
     let v = z * (s.std + STD_FLOOR) + s.mean;
     if feat == 0 {
-        d.kovatchev.f_inv(v) // risk → mg/dL, clamped to the descriptor's range
+        d.kovatchev.f_inv(v)
     } else {
         v.exp_m1().max(0.0)
     }
 }
 
-/// Normalize a raw `[bg_mgdl, carb, insulin, exercise]` sample to z-space (INFERENCE.md §6).
+/// Raw `[bg_mgdl, carb, insulin, exercise]` → z.
 #[uniffi::export]
 pub fn normalize_sample(
     desc: &ModelDescriptor,
@@ -720,7 +610,7 @@ pub fn normalize_sample(
     ]
 }
 
-/// Denormalize a z-space `[bg, carb, insulin, exercise]` sample back to raw units.
+/// z `[bg, carb, insulin, exercise]` → raw units.
 #[uniffi::export]
 pub fn denormalize_sample(desc: &ModelDescriptor, z: Vec<f64>) -> Result<Vec<f64>, CoreError> {
     if z.len() != N_CHANNELS {
@@ -731,25 +621,17 @@ pub fn denormalize_sample(desc: &ModelDescriptor, z: Vec<f64>) -> Result<Vec<f64
     Ok((0..N_CHANNELS).map(|f| denormalize_feat(desc, f, z[f])).collect())
 }
 
-// ── Context construction (INFERENCE.md §7) ──────────────────────────────────────────
-
-/// One masked span over the window, in CONTEXT-relative patch coordinates: patch 0 is the
-/// oldest real context patch the caller supplied, whatever left-padding lands in front of it.
+/// CONTEXT-relative patch coordinates: patch 0 is the oldest real context patch the caller
+/// supplied, whatever left-padding lands in front of it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
 pub struct MaskSpan {
     pub start_patch: i32,
     pub length: i32,
 }
 
-/// The complete fixed-shape graph input, built here so the mask rule, the left-pad and the
-/// masked-patch fill exist once. Kotlin copies the three float buffers into direct NIO
-/// buffers and hands them to the backend unchanged; nothing on that side reasons about
-/// geometry.
-///
-/// `patches` is `T·PATCH_SIZE·N_FEAT` step-major (`flat = (patch·PATCH_SIZE + step)·N_FEAT +
-/// feat`), `attn_mask` is `T·T` additive (`0` attend / `neg_fill` block), `slot_sel` is
-/// `M·T` one-hot rows. `anchors` and `slot_patch` describe all `M` slots; only the first
-/// `n_masked` are real, and `assemble_decode` decodes exactly those.
+/// `patches` is `T·PATCH_SIZE·N_FEAT` step-major (`(patch·PATCH_SIZE + step)·N_FEAT + feat`),
+/// `attn_mask` is `T·T` additive (`0` attend / `neg_fill` block), `slot_sel` is `M·T` one-hot
+/// rows. `anchors`/`slot_patch` cover all `M` slots; only the first `n_masked` are real.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct GraphInput {
     pub n_ctx: i32,
@@ -762,23 +644,13 @@ pub struct GraphInput {
     pub slot_sel: Vec<f32>,
     pub anchors: Vec<f64>,
     pub slot_patch: Vec<i32>,
-    /// Absolute patch index of the first future patch, or `-1` when the window carries no
-    /// future zone (a pure infill or backcast, which forecasts nothing).
+    /// Absolute patch index, or `-1` when the window carries no future zone.
     pub first_forecast_patch: i32,
 }
 
-/// Validate the masked set over a window of `n_real` real patches, `n_ctx` of them observed.
-///
-/// Four rules, each a correctness requirement:
-///
-/// * spans never abut — one visible patch must separate neighbours, and that separator is
-///   what makes the anchor, the per-span median basis and the span grouping well defined.
-///   Two spans with nothing between them ARE one longer span, and the sampler this mirrors
-///   never emitted that pair.
-/// * `sum(length) <= M` — the head has that many slots.
-/// * every future patch is masked. There is no observed BG there at all, so a future patch
-///   left visible announces a fabricated `z = 0` as an observation.
-/// * at least one patch stays visible, since every span anchors on a visible neighbour.
+/// Spans never abut: the separating visible patch is what makes the anchor, the per-span basis
+/// and the span grouping well defined. Every future patch is masked — a visible one would
+/// announce a fabricated `z = 0` as an observation.
 fn resolve_mask_spans(
     desc: &ModelDescriptor,
     spans: &[MaskSpan],
@@ -804,7 +676,7 @@ fn resolve_mask_spans(
     }
     out.sort_by_key(|(s, _)| *s);
     if n_real > n_ctx {
-        out.push((n_ctx, n_real - n_ctx)); // the future zone, masked by construction
+        out.push((n_ctx, n_real - n_ctx)); // the future zone
     }
     if out.is_empty() {
         return Err(CoreError::Internal {
@@ -841,30 +713,9 @@ fn resolve_mask_spans(
     Ok(out)
 }
 
-/// Build the whole fixed-shape graph input from raw per-step history (INFERENCE.md §§7.2-7.4).
-///
-/// `bg`/`carb`/`insulin`/`exercise` are equal-length trailing series of `n_ctx·PATCH_SIZE`
-/// steps. `exercise` is a carbohydrate-EQUIVALENT disposal in g/step — a positive magnitude
-/// in its own channel, on the scale the model was trained at, never an intensity and never a
-/// negative carbohydrate.
-///
-/// `with_forecast` appends the `P` future patches at the right edge, masked, with the dose
-/// channels at the announced plan or the `normalize(0)` no-event baseline. Without it the
-/// window is pure history and forecasts nothing — which is what a gap repair wants, since the
-/// evidence on BOTH sides of the gap is then real.
-///
-/// `mask_spans` names the withheld context patches, empty for a plain forecast.
-///
-/// `smoothing_window` selects the causal Savitzky-Golay window applied to the **BG channel
-/// only** (odd, `1` = unfiltered); it fails closed on anything else rather than substituting a
-/// default, because this is the model-input path. Carb, insulin and exercise are passed
-/// unfiltered: they are analytic reconstructions (gamma / Bateman / exponential action
-/// curves), already smooth by construction, and filtering them only blunts the onset of a
-/// meal, a dose or a bout. Both keep their physical guards — BG clamped to the descriptor's
-/// range, the other three floored at 0 by `normalize_feat`'s `log1p` — at every window.
-///
-/// The window MOVES every anchor, since each is read off a smoothed BG cell, so it is
-/// decision-relevant and not a display preference.
+/// INFERENCE.md §§7.2-7.4. `bg`/`carb`/`insulin`/`exercise` are equal-length trailing series of
+/// `n_ctx·PATCH_SIZE` steps; `exercise` is carbohydrate-equivalent disposal in g/step, positive.
+/// `smoothing_window` filters the BG channel ONLY, fails closed, and moves every anchor.
 #[allow(clippy::too_many_arguments)]
 #[uniffi::export]
 pub fn build_graph_input(
@@ -937,15 +788,9 @@ pub fn build_graph_input(
         }
     }
 
-    // Pre-filter BG at the requested window — PER VISIBLE RUN, not across the whole series.
-    //
-    // The filter is causal, so a step's value is a weighted sum of the six before it. Run it over
-    // the raw series and the six steps after a masked span carry that span's own withheld BG into
-    // the model's input, and the anchor of a span with a right-side neighbour is read from a cell
-    // built out of the very values being withheld. Both are leaks from the answer into the
-    // question: an infill scored that way is scored against evidence it was supposed not to have.
-    // Restarting at each boundary is also what a causal filter would do if the data were simply
-    // absent, which is what a masked patch means.
+    // Filter BG PER VISIBLE RUN, not across the whole series: the causal kernel would otherwise
+    // carry a masked span's own withheld BG into the steps after it and into a right-side
+    // anchor — the answer leaking into the question.
     let mut sm_bg = vec![0.0f64; n];
     {
         let mut masked_step = vec![false; n];
@@ -979,10 +824,9 @@ pub fn build_graph_input(
         }
     }
 
-    // Normalize the observed context, step-major into the padded patch buffer.
     let pad0 = t - n_real;
     let mut patches = vec![0.0f32; t * PATCH_SIZE * N_FEAT];
-    let mut ctx_bg_z = vec![0.0f64; n]; // kept in f64 for the anchor read-back
+    let mut ctx_bg_z = vec![0.0f64; n]; // f64 for the anchor read-back
     for gs in 0..n {
         let z = [
             normalize_feat(desc, 0, sm_bg[gs]),
@@ -997,9 +841,8 @@ pub fn build_graph_input(
         }
     }
 
-    // The future zone: BG withheld, dose channels at the announced plan or the no-event
-    // baseline. A literal z = 0 there routes through the sparse log1p inverse and announces a
-    // phantom dose, which is why the baseline is normalize(0) and not zero.
+    // The no-event baseline is normalize(0), not a literal z = 0 — which would route through the
+    // sparse log1p inverse and announce a phantom dose.
     if with_forecast {
         let zbase: [f64; 3] = [
             normalize_feat(desc, 1, 0.0),
@@ -1009,7 +852,7 @@ pub fn build_graph_input(
         for j in 0..pred_steps {
             let patch = pad0 + n_ctx + j / PATCH_SIZE;
             let base = (patch * PATCH_SIZE + j % PATCH_SIZE) * N_FEAT;
-            patches[base] = 0.0; // BG: what the model predicts
+            patches[base] = 0.0; // BG withheld
             for (k, announced) in [&announced_carb, &announced_insulin, &announced_exercise]
                 .iter()
                 .enumerate()
@@ -1022,10 +865,9 @@ pub fn build_graph_input(
         }
     }
 
-    // Announce the masked set: feat 0 withheld, feat 4 set, on every masked patch.
     let mut visible = vec![true; t];
     for i in 0..pad0 {
-        visible[i] = false; // a pad row is neither visible nor masked; is_pad dominates
+        visible[i] = false; // a pad row is neither visible nor masked
     }
     let mut slot_patch_real: Vec<i32> = Vec::with_capacity(m);
     for (start, length) in &spans {
@@ -1042,7 +884,7 @@ pub fn build_graph_input(
     }
     let n_masked = slot_patch_real.len();
 
-    // The attention rule (SPEC/inference.md §4), in the four load-bearing lines.
+    // SPEC/inference.md §4.
     let mut attn = vec![desc.neg_fill as f32; t * t];
     for row in 0..t {
         let row_is_pad = row < pad0;
@@ -1050,7 +892,7 @@ pub fn build_graph_input(
         for col in 0..t {
             let col_is_pad = col < pad0;
             let allow = if row_is_pad || col_is_pad {
-                row == col // a pad row reads nothing but itself; no all-False row
+                row == col // a pad row reads only itself; no all-blocked row
             } else {
                 visible[col] || row_is_masked
             };
@@ -1060,7 +902,7 @@ pub fn build_graph_input(
         }
     }
 
-    // Slot selection. Surplus slots repeat patch 0 and are discarded downstream.
+    // Surplus slots repeat patch 0 and are discarded downstream.
     let mut slot_sel = vec![0.0f32; m * t];
     let mut slot_patch = vec![0i32; m];
     for j in 0..m {
@@ -1069,11 +911,9 @@ pub fn build_graph_input(
         slot_patch[j] = if j < n_masked { slot_patch_real[j] } else { -1 };
     }
 
-    // Per-slot anchors: one-sided and left-preferring — the last step of the span's left
-    // neighbour, or the first step of the right neighbour when the left one is padding or
-    // does not exist. Only a VISIBLE cell may be named: feat 0 of a masked patch is a
-    // legal-looking z that decodes to an ordinary mg/dL, so a wrong index yields a plausible
-    // anchor rather than an error.
+    // Left-preferring: the last step of the left neighbour, else the first of the right. Only a
+    // VISIBLE cell may be named — feat 0 of a masked patch decodes to an ordinary mg/dL, so a
+    // wrong index gives a plausible anchor rather than an error.
     let mut anchors = vec![0.0f64; m];
     for (start, length) in &spans {
         let left = *start as i64 - 1;
@@ -1100,8 +940,8 @@ pub fn build_graph_input(
             anchors[slot] = a;
         }
     }
-    // Padded slots still need a legal mg/dL anchor: the forward asserts every slot is above
-    // the physical floor, and a z-scored value routed in by mistake trips it.
+    // Padded slots still need a legal mg/dL anchor; the forward asserts every slot clears the
+    // physical floor.
     let fill = anchors[0];
     for a in anchors.iter_mut().skip(n_masked) {
         *a = fill;
@@ -1122,23 +962,17 @@ pub fn build_graph_input(
     })
 }
 
-// ── Global-median DCT basis (INFERENCE.md §8.2) ─────────────────────────────────────
-
-/// DCT-II cosine modes over `n` steps, `g` columns, L2-orthonormalized. Replicates
-/// `utils.get_global_median_basis`, INCLUDING its unconditional fp32 round-trip
-/// (`.to(float32).to(dtype)`): the columns are normalized in fp64, then each entry is
-/// quantized through fp32 — load-bearing for bit-close agreement. Returned row-major
-/// `(n, g)`.
+/// DCT-II modes over `n` steps, `g` columns, row-major `(n, g)`. Replicates
+/// `utils.get_global_median_basis` INCLUDING its fp32 round-trip, which is load-bearing for
+/// bit-close agreement (INFERENCE.md §8.2).
 pub(crate) fn global_median_basis(n: usize, g: usize) -> Vec<f64> {
     let mut b = vec![0.0f64; n * g];
-    // B[s,j] = cos(pi*(s+0.5)*j/n).
     for s in 0..n {
         for j in 0..g {
             b[s * g + j] =
                 (std::f64::consts::PI * (s as f64 + 0.5) * j as f64 / n as f64).cos();
         }
     }
-    // L2-normalize each column, then quantize through fp32 (matches PyTorch .to(f32)).
     for j in 0..g {
         let mut nrm = 0.0f64;
         for s in 0..n {
@@ -1154,17 +988,16 @@ pub(crate) fn global_median_basis(n: usize, g: usize) -> Vec<f64> {
     b
 }
 
-/// `G_L` — the smooth-basis dimension for a masked span of `L` patches, clamped to the
-/// span's own step count. A FIXED `G` is a defect rather than an approximation: at `L = 1`
-/// the projection would have a column per step, i.e. the identity, so the anti-drift
-/// contraction is ABSENT rather than weakened, and every fan assert still passes.
+/// `G_L` for a span of `L` patches, clamped to the span's own step count. A FIXED `G` is a
+/// defect: at `L = 1` the projection is the identity, so the anti-drift contraction is ABSENT
+/// and every fan assert still passes.
 pub(crate) fn global_median_dim(desc: &ModelDescriptor, span_patches: usize, p: usize) -> usize {
     let num = desc.median_global_dim as usize * span_patches;
     let g = num.div_ceil(p.max(1)).max(1);
     g.min(span_patches * PATCH_SIZE)
 }
 
-/// Numerically-stable softplus matching PyTorch `F.softplus` (beta=1, threshold=20).
+/// Matches PyTorch `F.softplus` (beta=1, threshold=20).
 fn softplus(x: f64) -> f64 {
     if x > SOFTPLUS_THRESHOLD {
         x
@@ -1173,9 +1006,8 @@ fn softplus(x: f64) -> f64 {
     }
 }
 
-/// Group `n_masked` slots into contiguous spans. Slot `j` continues slot `j-1`'s span iff
-/// their patch indices are adjacent — the masked set never lets two spans abut, so adjacency
-/// identifies a span exactly. Returns one `(start_slot, length)` per span.
+/// Adjacent patch indices identify a span exactly, since the masked set never lets two spans
+/// abut. Returns one `(start_slot, length)` per span.
 fn span_layout(slot_patch: &[i32], n_masked: usize) -> Vec<(usize, usize)> {
     let mut spans: Vec<(usize, usize)> = Vec::new();
     for j in 0..n_masked {
@@ -1191,14 +1023,9 @@ fn span_layout(slot_patch: &[i32], n_masked: usize) -> Vec<(usize, usize)> {
     spans
 }
 
-// ── Quantile assembly + decode (INFERENCE.md §8.1-8.3) ──────────────────────────────
-
-/// The decoded forecast. All arrays are step-major over the decoded slots
-/// (`i = slot·PATCH_SIZE + step`). `median_risk` / `q_tau_risk` are risk space (the model's
-/// native output space); `median_bg` / `bands_mgdl` are the `f_inv` mg/dL projections
-/// consumed by rails, alerts and the GUI. `slot_patch` names the absolute patch each decoded
-/// slot came from, which is what locates a span on a chart — and, for a masked set holding
-/// more than the forecast, what tells an infill row from a forecast row.
+/// Step-major over the decoded slots (`i = slot·PATCH_SIZE + step`). `median_risk`/`q_tau_risk`
+/// are risk space, `median_bg`/`bands_mgdl` the `f_inv` mg/dL projections. `slot_patch` names
+/// each slot's absolute patch — what tells an infill row from a forecast row.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct Forecast {
     pub median_risk: Vec<f64>,
@@ -1208,28 +1035,13 @@ pub struct Forecast {
     pub slot_patch: Vec<i32>,
 }
 
-/// Assemble `head_raw` (`M·PATCH_SIZE·7`, risk space) into an ascending quantile fan and
-/// decode to mg/dL (INFERENCE.md §8.1, `BG_HEAD_MEDIAN_MODE='global'`).
+/// `head_raw` is `M·PATCH_SIZE·7` in risk space: column 0 the median delta, 1..=3 the τ>.5
+/// spreads (nearest→far), 4..=6 the τ<.5 spreads (INFERENCE.md §8.1). The fan returned is RAW —
+/// §8.4's conformal correction is applied later, at the last point before pixels.
 ///
-/// The `M` axis is a SET of masked patches, not a trailing horizon: `slot_patch` groups it
-/// into contiguous spans and the median runs per span, so nothing accumulates or low-passes
-/// across the visible patches between two spans. Each slot anchors on its own span's visible
-/// neighbour. Slots past `n_masked` are padding and are dropped.
-///
-/// The fan returned is the RAW one: §8.4's conformal recalibration is not applied here and is
-/// applied to nothing this function feeds — it is a display correction, fitted on device and
-/// applied by [`crate::apply_quantile_conformal`] at the last point before pixels. `head_raw`
-/// column 0 is the median delta; columns 1..=3 the τ>.5 spreads (nearest→far); 4..=6 the τ<.5
-/// spreads. The median is `anchor + proj_DCT(delta)` (a low-frequency L2 contraction that
-/// cannot drift); the fan is `m ± hypot(carry_spread, cumsum(softplus+floor))`.
-///
-/// `carry_spread` is the rolling widening of INFERENCE.md §9, and it is PER LEVEL: empty for
-/// none, one value for every level alike, or `2·N_SPREADS` in `head_raw[1..]`'s own layout
-/// `[.75 .9 .95 | .25 .1 .05]`. One value shared across the levels re-seeds each of them from
-/// the outermost one's accumulation, so the next roll's .75 edge lands outside this roll's .95
-/// edge and the fan flattens into a slab — which is why the shape is checked here rather than
-/// left to a caller. It composes with the span's own spread in QUADRATURE, not by addition:
-/// adding is the perfectly-correlated bound and is twice too wide by the fourth roll.
+/// `carry_spread` (INFERENCE.md §9) is empty, one value for every level alike, or `2·N_SPREADS`
+/// in `[.75 .9 .95 | .25 .1 .05]` order. It composes with the span's own spread in QUADRATURE;
+/// adding is the perfectly-correlated bound, twice too wide by the fourth roll.
 #[uniffi::export]
 pub fn assemble_decode(
     desc: &ModelDescriptor,
@@ -1291,13 +1103,12 @@ pub fn assemble_decode(
     let floor = desc.quantile_spread_min;
     let n_steps = n_masked * PATCH_SIZE;
 
-    // Median, per span: project that span's per-step delta onto its own low-frequency
-    // DCT-II subspace over the span's own L·S steps, patch-major (flat = patch·S + step).
+    // Median per span, patch-major (flat = patch·S + step).
     let mut median = vec![0.0f64; n_steps];
     for (start_slot, length) in span_layout(&slot_patch, n_masked) {
         let n = length * PATCH_SIZE;
         let g = global_median_dim(desc, length, p);
-        let basis = global_median_basis(n, g); // (n, g) row-major, fp32-quantized
+        let basis = global_median_basis(n, g);
         let delta: Vec<f64> = (0..n)
             .map(|i| head_raw[(start_slot * PATCH_SIZE + i) * N_QUANTILES])
             .collect();
@@ -1314,15 +1125,13 @@ pub fn assemble_decode(
             for (j, zj) in zc.iter().enumerate() {
                 acc += zj * basis[i * g + j];
             }
-            // The anchor is flat across the slot's own steps, and every slot of one span
-            // carries the same value.
+            // Every slot of one span carries the same anchor.
             let slot = start_slot + i / PATCH_SIZE;
             let anchor = kov.f(anchors[slot].clamp(kov.bg_clamp_min, kov.bg_clamp_max));
             median[start_slot * PATCH_SIZE + i] = anchor + acc;
         }
     }
 
-    // Spreads: softplus + floor, cumsum fan around the median (§8.1).
     let mut median_risk = vec![0.0f64; n_steps];
     let mut q_tau_risk = vec![0.0f64; n_steps * N_QUANTILES];
     let mut median_bg = vec![0.0f64; n_steps];
@@ -1336,9 +1145,8 @@ pub fn assemble_decode(
         for k in 0..N_SPREADS {
             cs_up += softplus(head_raw[i * N_QUANTILES + 1 + k]) + floor;
             cs_dn += softplus(head_raw[i * N_QUANTILES + 1 + N_SPREADS + k]) + floor;
-            // The carry is another roll's increment, so it composes with this span's own
-            // spread in QUADRATURE (independent increments add variances). Skipped when
-            // there is no carry, which keeps every single-window decode bit-identical.
+            // Independent increments add variances. Skipped at zero, keeping a single-window
+            // decode bit-identical.
             let (c_up, c_dn) = (carry[k], carry[N_SPREADS + k]);
             up[k] = mi + if c_up == 0.0 { cs_up } else { c_up.hypot(cs_up) };
             dn[k] = mi - if c_dn == 0.0 { cs_dn } else { c_dn.hypot(cs_dn) };
@@ -1368,12 +1176,8 @@ pub fn assemble_decode(
     })
 }
 
-/// The rows of `f` whose slot sits in `[from_patch, to_patch)`, as a Forecast of its own.
-///
-/// A masked set may hold an infill span and a forecast at once, and almost nothing
-/// downstream wants both: the alarm engine, the rails and the accuracy suite read the
-/// forecast, the chart draws each infill where it sits. Slicing by patch keeps that split in
-/// one place rather than in every caller's index arithmetic.
+/// The rows whose slot sits in `[from_patch, to_patch)`. A masked set can hold an infill span
+/// and a forecast at once, and almost nothing downstream wants both.
 #[uniffi::export]
 pub fn forecast_slice(f: &Forecast, from_patch: i32, to_patch: i32) -> Result<Forecast, CoreError> {
     let keep: Vec<usize> = f
@@ -1409,20 +1213,11 @@ pub fn forecast_slice(f: &Forecast, from_patch: i32, to_patch: i32) -> Result<Fo
     Ok(out)
 }
 
-/// The fan's own line at an arbitrary quantile level, in mg/dL.
-///
-/// The model emits seven levels; reading the fan at a τ between two of them is a linear
-/// interpolation in RISK space followed by `f_inv` — the space the fan was assembled in, and
-/// the only one where the interpolation is between neighbouring band edges rather than across
-/// a warp. τ at a published level returns that level's own edge, and `τ = 0.5` returns the
-/// median untouched, so the default line is the same line as ever.
-///
-/// This reads a fan the model already emitted. It moves no median, is stored nowhere, and
-/// nothing that classifies a category may consume it.
+/// The fan at an arbitrary τ, mg/dL: linear interpolation in RISK space, then `f_inv`. A
+/// published level returns its own edge. Nothing that classifies a category may consume it.
 #[uniffi::export]
 pub fn band_line(desc: &ModelDescriptor, f: &Forecast, tau: f64) -> Result<Vec<f64>, CoreError> {
-    // The fan against the run it came from, which [`band_line_at`] cannot check on its own: a fan
-    // holding a whole number of steps can still hold the wrong number of them.
+    // [`band_line_at`] cannot check this: a whole number of steps can still be the wrong number.
     let n_steps = f.median_risk.len();
     if f.q_tau_risk.len() != n_steps * N_QUANTILES {
         return Err(CoreError::Internal {
@@ -1435,14 +1230,8 @@ pub fn band_line(desc: &ModelDescriptor, f: &Forecast, tau: f64) -> Result<Vec<f
     band_line_at(desc, f.q_tau_risk.clone(), tau)
 }
 
-/// The same line, read from a fan held on its own rather than inside a [`Forecast`].
-///
-/// The panel stores a reconstructed span's risk-space fan and nothing else of the run that made
-/// it, so sweeping τ after the fact has no `Forecast` to hand. One interpolation body serves both
-/// entry points deliberately: a second copy of the bracket-and-lerp would be free to drift from
-/// this one, and the two would then disagree about where the same τ sits on the same fan.
-///
-/// `q_tau_risk` is `n_steps · N_QUANTILES` risk-space values, ascending τ within each step.
+/// The same line, from a bare fan: `n_steps · N_QUANTILES` risk-space values, ascending τ within
+/// each step. One interpolation body serves both entry points so they cannot drift apart.
 #[uniffi::export]
 pub fn band_line_at(
     desc: &ModelDescriptor,
@@ -1465,7 +1254,6 @@ pub fn band_line_at(
     let levels = QUANTILE_LEVELS;
     let tau = tau.clamp(levels[0], levels[N_QUANTILES - 1]);
     let n_steps = q_tau_risk.len() / N_QUANTILES;
-    // The bracketing pair, and the weight of the upper one.
     let mut hi = 1usize;
     while hi < N_QUANTILES - 1 && levels[hi] < tau {
         hi += 1;
@@ -1482,38 +1270,23 @@ pub fn band_line_at(
         .collect())
 }
 
-/// The seven levels the head emits, ascending — `invariants.md` §6.
+/// Ascending — `invariants.md` §6.
 pub(crate) const QUANTILE_LEVELS: [f64; N_QUANTILES] = [0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95];
 
-// ── Forecast degeneracy guard (§3.6-B) ──────────────────────────────────────────────
-
-/// Why a forecast is unfit to drive a rail, alert, or calculator score. Because `f_inv`
-/// clamps to the descriptor's physical range, a collapsed or runaway model reads as a
-/// *confident flat rail*, not an obvious NaN — hence the explicit rail / collapse /
-/// mis-order checks.
+/// `f_inv` clamps to the descriptor's physical range, so a collapsed or runaway model reads as
+/// a confident flat rail rather than an obvious NaN.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum ForecastStatus {
-    /// Passed every check; eligible to drive rails/alerts.
     Ok,
-    /// A NaN or infinity in the median or the fan.
     NonFinite,
-    /// The whole median is pinned flat at the descriptor's low or high physical rail.
     RailPinned,
-    /// The band has (near-)zero width at every step.
     CollapsedBand,
-    /// The quantile fan is not monotone ascending (an fp16 mis-order).
     MisorderedQuantiles,
 }
 
-/// The safety guard every rail and alert gates on (§3.6-B). Rejects: non-finite values,
-/// a rail-pinned flat median, a collapsed (zero-width) band, and a mis-ordered quantile
-/// fan. A forecast that fails is `DEGENERATE` — ineligible for a predictive alert and it
-/// forces the fail-closed rails to block.
-///
-/// Takes the `desc` the forecast was decoded with because the rails ARE descriptor-defined:
-/// checked against the wrong physical range the rail test cannot fire at all (a median
-/// pinned flat at 40 mg/dL clears a `<= 20` test), and the guard silently passes exactly the
-/// forecast it exists to reject.
+/// §3.6-B. A forecast that fails is ineligible for a predictive alert and forces the rails to
+/// block. `desc` must be the one it was decoded with: against the wrong physical range the rail
+/// test cannot fire at all, and the guard passes exactly what it exists to reject.
 #[uniffi::export]
 pub fn forecast_degeneracy_check(desc: &ModelDescriptor, f: &Forecast) -> ForecastStatus {
     let n = f.median_bg.len();
@@ -1526,7 +1299,6 @@ pub fn forecast_degeneracy_check(desc: &ModelDescriptor, f: &Forecast) -> Foreca
         return ForecastStatus::NonFinite; // structurally broken ⇒ fail closed
     }
 
-    // (1) Non-finite anywhere.
     let finite = f.median_risk.iter().all(|v| v.is_finite())
         && f.median_bg.iter().all(|v| v.is_finite())
         && f.q_tau_risk.iter().all(|v| v.is_finite())
@@ -1535,18 +1307,15 @@ pub fn forecast_degeneracy_check(desc: &ModelDescriptor, f: &Forecast) -> Foreca
         return ForecastStatus::NonFinite;
     }
 
-    // (2) Mis-ordered fan (risk space, the rawer signal before the f_inv clamp).
     if !fan_is_ascending(&f.q_tau_risk, n, N_QUANTILES) {
         return ForecastStatus::MisorderedQuantiles;
     }
 
-    // (3) Rail-pinned flat median, against THIS model's physical rails.
     let (lo, hi) = (desc.kovatchev.bg_clamp_min, desc.kovatchev.bg_clamp_max);
     if median_is_rail_pinned(&f.median_bg, lo, hi) {
         return ForecastStatus::RailPinned;
     }
 
-    // (4) Collapsed band: the widest step is still near-zero width.
     if fan_is_collapsed(&f.bands_mgdl, n, N_QUANTILES) {
         return ForecastStatus::CollapsedBand;
     }
@@ -1554,15 +1323,9 @@ pub fn forecast_degeneracy_check(desc: &ModelDescriptor, f: &Forecast) -> Foreca
     ForecastStatus::Ok
 }
 
-// ── The degeneracy predicates, shared with the classical baseline ───────────────────
-//
-// `crate::baseline` runs the same three tests on a forecast that has no risk space and no
-// descriptor: it judges fan order on the mg/dL bands and rails on the clinical physical domain.
-// Only the inputs differ, so only the inputs are passed — the epsilons and the comparisons
-// themselves stay here, in one copy. Two guards that agreed on the day they were written and
-// drifted afterwards is precisely the failure the suite's no-second-copy rule exists to prevent.
+// `crate::baseline` runs these same tests without a risk space or a descriptor; only the inputs
+// differ, so the epsilons and the comparisons stay here, in one copy.
 
-/// True when every step's fan ascends across `nq` levels, within [`MONOTONE_TOL`].
 pub(crate) fn fan_is_ascending(fan: &[f64], n: usize, nq: usize) -> bool {
     for i in 0..n {
         let row = i * nq;
@@ -1575,14 +1338,11 @@ pub(crate) fn fan_is_ascending(fan: &[f64], n: usize, nq: usize) -> bool {
     true
 }
 
-/// True when the whole median sits on one physical rail — the shape a collapsed or runaway
-/// model takes after an output clamp, which reads as a confident flat line rather than a NaN.
 pub(crate) fn median_is_rail_pinned(median_bg: &[f64], lo: f64, hi: f64) -> bool {
     median_bg.iter().all(|&v| v <= lo + RAIL_EPS_MGDL)
         || median_bg.iter().all(|&v| v >= hi - RAIL_EPS_MGDL)
 }
 
-/// True when even the widest step's outer band is narrower than [`COLLAPSE_EPS_MGDL`].
 pub(crate) fn fan_is_collapsed(bands_mgdl: &[f64], n: usize, nq: usize) -> bool {
     let max_width = (0..n)
         .map(|i| {
@@ -1593,14 +1353,9 @@ pub(crate) fn fan_is_collapsed(bands_mgdl: &[f64], n: usize, nq: usize) -> bool 
     max_width < COLLAPSE_EPS_MGDL
 }
 
-// ── Time-probe decode (circadian-phase belief) ──────────────────────────────────────
-
-/// The decoded hour-of-day belief of the co-trained TIME PROBE (the second `.pte`
-/// output). [`probs`] is the `n_bins`-long softmax of the ORIGIN prediction patch's
-/// logits; [`predicted_hour`] is the mean-resultant hour in `[0,24)`; [`resultant_r`] is
-/// the resultant length in `[0,1]` = the circular concentration (confidence). This is the
-/// model's belief about **what hour-of-day it currently is** (a circadian phase), NOT a
-/// per-forecast-step timestamp — a predicted-time axis is this hour plus the step offset.
+/// [`probs`] is the softmax of the ORIGIN prediction patch; [`predicted_hour`] the
+/// mean-resultant hour in `[0,24)`; [`resultant_r`] the circular concentration in `[0,1]`. A
+/// belief about the current hour-of-day, not a per-forecast-step timestamp.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct PredictedTime {
     pub probs: Vec<f64>,
@@ -1610,8 +1365,7 @@ pub struct PredictedTime {
     pub bin_hours: f64,
 }
 
-/// Numerically-stable softmax over `logits` (shift by the max). An empty slice yields an
-/// empty vector; a zero/underflowing partition falls back to uniform so no NaN escapes.
+/// A zero or underflowing partition falls back to uniform, so no NaN escapes.
 fn softmax(logits: &[f64]) -> Vec<f64> {
     let n = logits.len();
     if n == 0 {
@@ -1633,12 +1387,9 @@ fn softmax(logits: &[f64]) -> Vec<f64> {
     exps
 }
 
-/// Port of `utils.time_of_day_resultant`: the probability-weighted mean resultant vector
-/// over the hour-of-day circle. Bin `k` sits at center hour `bin_hours·(k + 0.5)` mapped
-/// to angle `θ_k = 2π·center/24`; the resultant is `(Σ pₖcosθₖ, Σ pₖsinθₖ)`. Returns
-/// `(hour, R)` with `hour = (atan2(sin,cos) mod 2π)·24/2π ∈ [0,24)` and
-/// `R = hypot(cos,sin) ∈ [0,1]`. At `R → 0` the resultant vanishes and `hour` is FP-noise
-/// (the caller treats it as undefined via [`R_DEGENERATE_EPS`]).
+/// Port of `utils.time_of_day_resultant`. Bin `k` sits at center hour `bin_hours·(k + 0.5)`.
+/// Returns `(hour ∈ [0,24), R ∈ [0,1])`; at `R → 0` the resultant vanishes and `hour` is FP
+/// noise the caller must treat as undefined.
 fn time_of_day_resultant(probs: &[f64], bin_hours: f64) -> (f64, f64) {
     let mut c = 0.0f64;
     let mut s = 0.0f64;
@@ -1657,12 +1408,9 @@ fn time_of_day_resultant(probs: &[f64], bin_hours: f64) -> (f64, f64) {
     (hour, r)
 }
 
-/// Decode the time-probe's per-prediction-patch logits (`time_logits`, flat row-major
-/// `(P, n_bins)` = the `.pte` slot-1 tensor) into a single hour-of-day belief per the
-/// declared `origin_patch` reduction: softmax the ORIGIN patch (index 0) and take its mean
-/// resultant. Total on hostile input — a non-multiple length, a zero `n_bins`, or a
-/// non-finite logit yields `Err` (the caller maps it to a null predicted-time, fail-open).
-/// Faithful to T1DMAI's `inference.estimate_current_hour` (`time_pred[:,0,:]`).
+/// `time_logits` is flat row-major `(P, n_bins)`. Reduces to the ORIGIN patch (index 0), as
+/// T1DMAI's `inference.estimate_current_hour` does. Hostile input yields `Err`, which the caller
+/// maps to a null predicted time (fail-open).
 #[uniffi::export]
 pub fn decode_time(time_logits: Vec<f64>, n_bins: i32, bin_hours: f64) -> Result<PredictedTime, CoreError> {
     if n_bins <= 0 {
@@ -1684,7 +1432,6 @@ pub fn decode_time(time_logits: Vec<f64>, n_bins: i32, bin_hours: f64) -> Result
             reason: format!("bin_hours {bin_hours} must be finite and > 0"),
         });
     }
-    // origin_patch reduction: the first n_bins entries are prediction patch 0.
     let patch0 = &time_logits[0..nb];
     if patch0.iter().any(|v| !v.is_finite()) {
         return Err(CoreError::Decode {
@@ -1707,16 +1454,14 @@ mod tests {
     use super::*;
     use serde_json::Value;
 
-    /// The cross-implementation fixture: T1DMAI's own reference for the same inputs,
-    /// regenerated by `T1DMAI/exporters/rust_golden.py` whenever the contract moves.
+    /// T1DMAI's reference for the same inputs; regenerated by `T1DMAI/exporters/rust_golden.py`.
     const PIPELINE: &str = include_str!("testdata/pipeline_golden.json");
 
     fn pipeline() -> Value {
         serde_json::from_str(PIPELINE).unwrap()
     }
 
-    /// Every case the fixture carries. Named here so a case ADDED to the generator and not read
-    /// here fails the count check below rather than sitting unexercised.
+    /// A case added to the generator and not named here fails the count check below.
     const CASES: [&str; 5] = [
         "forecast",
         "infill",
@@ -1741,8 +1486,7 @@ mod tests {
             .clone()
     }
 
-    /// Build the graph input for a golden case, at the reference's own (unfiltered) window —
-    /// T1DMAI applies no smoother, so any other window compares two different pipelines.
+    /// At the reference's own unfiltered window: T1DMAI applies no smoother.
     fn built(c: &Value, d: &ModelDescriptor) -> GraphInput {
         let spans: Vec<MaskSpan> = c["mask_spans"]
             .as_array()
@@ -1769,8 +1513,7 @@ mod tests {
         .expect("golden case must build")
     }
 
-    /// The reference's own decode of a case: its head output, its anchors, its slot layout.
-    /// Feeding OUR anchors here would let two errors cancel.
+    /// The reference's own head output and anchors; feeding ours would let two errors cancel.
     fn decoded(c: &Value, d: &ModelDescriptor) -> Forecast {
         let n_masked = c["n_masked"].as_i64().unwrap() as i32;
         assemble_decode(
@@ -1788,10 +1531,8 @@ mod tests {
         v.as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect()
     }
 
-    /// A DIFFERENT parameterization from the shipped one — a different scale and a different
-    /// physical range — used to prove the pipeline follows the descriptor rather than a baked
-    /// constant. It is not any released model's transform, and nothing decodes against it
-    /// outside these tests.
+    /// Not any released model's transform: a second parameterization, to prove the pipeline
+    /// follows the descriptor rather than a baked constant.
     const OTHER_KOVATCHEV: KovatchevParams = KovatchevParams {
         scale: 1.509,
         power: 1.084,
@@ -1800,7 +1541,6 @@ mod tests {
         bg_clamp_max: 500.0,
     };
 
-    /// The shipped parameterization, restated so a test can name it beside the other one.
     const SHIPPED_KOVATCHEV: KovatchevParams = KovatchevParams {
         scale: 2.2211457449985317,
         power: 1.084,
@@ -1811,13 +1551,8 @@ mod tests {
 
     const REFERENCE_DESCRIPTOR: &str = include_str!("testdata/reference_descriptor.json");
 
-    /// A real exported descriptor, parsed — the fixture the whole module's tests clone with `..`
-    /// when they need a variant, so no test invents a geometry the exporter cannot produce.
-    ///
-    /// It lives in the crate rather than in `models/`, which is an untracked staging directory for
-    /// artifacts: the app reads the per-model descriptor pushed beside its `.pte`, never a file in
-    /// the repository, so keeping the fixture there tracked one thing under a name that promised
-    /// another.
+    /// A real exported descriptor; tests clone it with `..` rather than inventing a geometry the
+    /// exporter cannot produce.
     fn test_descriptor() -> ModelDescriptor {
         parse_descriptor(REFERENCE_DESCRIPTOR.to_string()).expect("reference descriptor")
     }
@@ -1833,7 +1568,6 @@ mod tests {
         }
     }
 
-    // ── descriptor.json parses to the pinned constants ──────────────────────────────
     #[test]
     fn parse_descriptor_reference() {
         let d = test_descriptor();
@@ -1844,16 +1578,12 @@ mod tests {
         assert_eq!(d.prediction_horizon_hours, 2);
         assert_eq!(d.prediction_patches().unwrap(), 4);
         assert!(!d.conformal_enabled);
-        // The five-feature input and the seven-day window the newer models read.
         assert_eq!(d.n_input_features, N_FEAT as i32);
         assert_eq!(d.seq_len, d.max_context_patches + 4);
         assert!(d.max_context_patches >= d.min_context_patches);
         assert!(d.max_masked_patches >= 4, "the head must hold at least a forecast");
         assert!(d.d_model > 0 && d.step_basis_dim > 0);
-        // The exercise channel has statistics of its own; without them the fourth input
-        // feature would be normalized against another channel's scale.
         assert!(d.exercise.std > 0.0);
-        // The head side file is what an adapter attaches to.
         let head = d.head.as_ref().expect("the reference export ships a head file");
         assert_eq!(head.out_dim, head.step_basis_dim * N_QUANTILES as i32);
         assert_eq!(head.sha256.len(), 64);
@@ -1861,9 +1591,6 @@ mod tests {
 
     #[test]
     fn parse_descriptor_refuses_the_retired_three_feature_input() {
-        // The exercise channel and the masked-announcement bit are not optional: a descriptor
-        // from before them describes a model this build cannot construct an input for, and
-        // running one anyway would feed carbohydrate statistics to an insulin column.
         let mut v: Value = serde_json::from_str(REFERENCE_DESCRIPTOR).unwrap();
         v["geometry"]["N_INPUT_FEATURES"] = serde_json::json!(3);
         assert!(matches!(parse_descriptor(v.to_string()), Err(CoreError::Decode { .. })));
@@ -1876,15 +1603,13 @@ mod tests {
         assert!(matches!(parse_descriptor(v.to_string()), Err(CoreError::Decode { .. })));
     }
 
-    /// The reference descriptor declares the risk space the model was TRAINED in, not the
-    /// clinical one. Pinned numerically because a stale descriptor beside a newer `.pte`
-    /// decodes finite, plausible, wrong mg/dL, and nothing downstream can see it.
+    /// Pinned numerically: a stale descriptor beside a newer `.pte` decodes finite, plausible,
+    /// wrong mg/dL that nothing downstream can see.
     #[test]
     fn reference_descriptor_is_anchored_on_the_trained_range() {
         let k = test_descriptor().kovatchev;
         assert_eq!(k, SHIPPED_KOVATCHEV, "reference descriptor must carry the shipped constants");
-        // The clamp is the physical range; the ANCHORS the constants were solved for sit
-        // inside it, and the two are not the same pair.
+        // The clamp is the physical range; the anchors the constants were solved for sit inside it.
         assert_eq!(k.bg_clamp_min, 10.0);
         assert_eq!(k.bg_clamp_max, 400.0);
         let root_ten = 10.0f64.sqrt();
@@ -1898,16 +1623,13 @@ mod tests {
         assert!(matches!(parse_descriptor("{}".into()), Err(CoreError::Decode { .. })));
     }
 
-    // ── #16: parse_descriptor fails closed on decode-critical drift ──────────────────
     #[test]
     fn parse_descriptor_rejects_decode_critical_drift() {
-        // The unmodified reference descriptor passes every guard.
         assert!(
             parse_descriptor(REFERENCE_DESCRIPTOR.to_string()).is_ok(),
             "reference descriptor must still parse"
         );
 
-        // Splice one drifted field into the reference and assert a fail-closed Decode.
         let bad = |block: &str, key: &str, val: Value| -> Result<ModelDescriptor, CoreError> {
             let mut v: Value = serde_json::from_str(REFERENCE_DESCRIPTOR).unwrap();
             v[block][key] = val;
@@ -1922,24 +1644,17 @@ mod tests {
         assert!(is_decode(bad("constants", "neg_fill", serde_json::json!(0.0))));
         assert!(is_decode(bad("constants", "neg_fill", serde_json::json!(30000.0))));
         assert!(is_decode(bad("constants", "BG_QUANTILE_SPREAD_MIN", serde_json::json!(-1e-3))));
-        // NaN is not representable in JSON → serialized as null → Decode at the parse step.
+        // NaN is not representable in JSON: it serializes to null.
         assert!(is_decode(bad("constants", "BG_QUANTILE_SPREAD_MIN", serde_json::json!(f64::NAN))));
         assert!(is_decode(bad("geometry", "MIN_CONTEXT_PATCHES", serde_json::json!(0))));
         assert!(is_decode(bad("geometry", "MAX_CONTEXT_PATCHES", serde_json::json!(8))));
         assert!(is_decode(bad("constants", "PREDICTION_HORIZON_HOURS", serde_json::json!(0))));
         assert!(is_decode(bad("constants", "ROPE_BASE", serde_json::json!(0))));
-        // A median this build does not assemble decodes to a different — smooth, finite, wrong —
-        // line through the one it does.
         assert!(is_decode(bad("constants", "BG_HEAD_MEDIAN_MODE", serde_json::json!("cumulative"))));
     }
 
-    // ── the risk transform is the DESCRIPTOR's, never a baked-in one ─────────────────
-
     #[test]
     fn parse_descriptor_requires_the_kovatchev_block() {
-        // A descriptor that does not declare its risk transform is REJECTED. Defaulting to
-        // any particular scale is what silently mis-decoded a re-anchored checkpoint: the
-        // output stays finite and plausible, so nothing downstream can notice.
         let mut v: Value = serde_json::from_str(REFERENCE_DESCRIPTOR).unwrap();
         v.as_object_mut().unwrap().remove("kovatchev");
         assert!(matches!(parse_descriptor(v.to_string()), Err(CoreError::Decode { .. })));
@@ -1963,16 +1678,13 @@ mod tests {
         // ln(g) <= 0 makes ln(g)^power NaN for a fractional power.
         assert!(is_decode(bad("BG_CLAMP_MIN", serde_json::json!(1.0))));
         assert!(is_decode(bad("BG_CLAMP_MIN", serde_json::json!(0.0))));
-        // Inverted / empty physical range.
         assert!(is_decode(bad("BG_CLAMP_MAX", serde_json::json!(5.0))));
     }
 
     #[test]
     fn decode_follows_the_descriptor_not_a_baked_constant() {
-        // THE regression. Risk-space output means nothing without the scale that produced
-        // it: decoding a risk-v3 forecast against risk-v2 constants yields finite, plausible,
-        // WRONG mg/dL (true 120 reads ~102, true 300 reads ~394). Same risk value in, the two
-        // parameterizations must disagree, and each must invert its own f exactly.
+        // Decoding under the wrong constants yields finite, plausible, WRONG mg/dL: true 120
+        // reads ~102, true 300 reads ~394.
         for mgdl in [55.0, 70.0, 120.0, 180.0, 300.0] {
             let r_v3 = SHIPPED_KOVATCHEV.f(mgdl);
             let own = SHIPPED_KOVATCHEV.f_inv(r_v3);
@@ -1985,8 +1697,7 @@ mod tests {
             );
         }
 
-        // And the full assemble_decode path rides the descriptor: a flat (all-zero) head_raw
-        // anchors the median at last_bg, recovered exactly through each descriptor's own f/f_inv.
+        // A flat head_raw anchors the median, recovered through each descriptor's own f/f_inv.
         let flat = vec![0.0f64; 4 * PATCH_SIZE * N_QUANTILES];
         for kov in [OTHER_KOVATCHEV, SHIPPED_KOVATCHEV] {
             let d = ModelDescriptor { kovatchev: kov, ..test_descriptor() };
@@ -1996,7 +1707,6 @@ mod tests {
             for v in &f.median_bg {
                 assert!((v - 120.0).abs() < 1e-6, "anchor round trip under {kov:?} gave {v}");
             }
-            // f_inv can never leave the descriptor's own physical range.
             for v in &f.bands_mgdl {
                 assert!(
                     *v >= kov.bg_clamp_min - 1e-9 && *v <= kov.bg_clamp_max + 1e-9,
@@ -2010,9 +1720,8 @@ mod tests {
 
     #[test]
     fn rail_pinned_is_detected_at_the_descriptors_own_rails() {
-        // A median flat at 40 mg/dL is rail-pinned for risk-v3 but an ordinary low forecast
-        // for risk-v2 — the check is meaningless without the descriptor. Before the guard took
-        // one, a risk-v3 rail-pin sailed through: nothing can reach the old 20 mg/dL rail.
+        // The check is meaningless without the descriptor: 40 mg/dL is a rail under one
+        // parameterization and an ordinary low forecast under the other.
         let n = 4 * PATCH_SIZE;
         let pinned = |bg: f64| Forecast {
             median_risk: vec![0.0; n],
@@ -2024,8 +1733,6 @@ mod tests {
         let shipped = ModelDescriptor { kovatchev: SHIPPED_KOVATCHEV, ..test_descriptor() };
         let other = ModelDescriptor { kovatchev: OTHER_KOVATCHEV, ..test_descriptor() };
 
-        // 20 mg/dL is the OTHER parameterization's floor and an ordinary low forecast under
-        // the shipped one; 10 is the shipped floor. Each descriptor must call its own.
         assert_eq!(forecast_degeneracy_check(&shipped, &pinned(10.0)), ForecastStatus::RailPinned);
         assert_eq!(forecast_degeneracy_check(&shipped, &pinned(400.0)), ForecastStatus::RailPinned);
         assert_eq!(forecast_degeneracy_check(&shipped, &pinned(20.0)), ForecastStatus::Ok);
@@ -2036,7 +1743,7 @@ mod tests {
 
     #[test]
     fn descriptor_kovatchev_guards_are_total() {
-        // The same hostile-input totality the clinical pair guarantees (INFERENCE.md §5).
+        // The same totality the clinical pair guarantees (INFERENCE.md §5).
         for kov in [OTHER_KOVATCHEV, SHIPPED_KOVATCHEV] {
             for r in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1e9, 1e9] {
                 let g = kov.f_inv(r);
@@ -2052,17 +1759,13 @@ mod tests {
     }
 
 
-    /// The five detents the app offers (Off / Standard / Moderate / Strong / Heavy).
+    /// The five detents the app offers: Off / Standard / Moderate / Strong / Heavy.
     const STOPS: [i32; 5] = [1, 7, 13, 19, 25];
 
-    // ── the runtime solver reproduces the pinned reference taps ──────────────────────
     #[test]
     fn savgol_solver_reproduces_reference_taps() {
-        // The general closed form must land on the exact rationals over 42 that the golden
-        // fixture (and every pre-configurable build) pins, to fp64 round-off.
         let want: Vec<f64> = SAVGOL_TAPS.iter().map(|t| t / SAVGOL_DENOM).collect();
         assert_close(&savgol_endpoint_taps_general(7), &want, 1e-15, "solver taps w=7");
-        // ...and the w=7 fast path is the exact rationals, so the default smooth is bit-identical.
         let (taps, denom) = savgol_endpoint_taps(7);
         assert_eq!(taps, SAVGOL_TAPS.to_vec());
         assert_eq!(denom, SAVGOL_DENOM);
@@ -2075,8 +1778,6 @@ mod tests {
             assert_eq!(taps.len(), w as usize, "w={w}: tap count");
             let sum: f64 = taps.iter().sum::<f64>() / denom;
             assert!((sum - 1.0).abs() < 1e-12, "w={w}: taps sum to {sum}, not 1");
-            // use='dot' ordering: the NEWEST sample carries the largest weight, so the
-            // endpoint estimate does not lag.
             let newest = taps[w as usize - 1] / denom;
             assert!(
                 taps.iter().all(|t| t / denom <= newest + 1e-12),
@@ -2089,7 +1790,6 @@ mod tests {
     fn savgol_window_one_is_the_identity() {
         let x = vec![120.0, 4.0, 900.0, -30.0, 77.5];
         assert_eq!(causal_smooth(x.clone(), None, None, 1), x);
-        // The physical clamps are not part of the filter — they hold at w=1 too.
         assert_eq!(
             causal_smooth(x, Some(OTHER_KOVATCHEV.bg_clamp_min), Some(OTHER_KOVATCHEV.bg_clamp_max), 1),
             vec![120.0, 20.0, 500.0, 20.0, 77.5]
@@ -2112,8 +1812,7 @@ mod tests {
 
     #[test]
     fn causal_smooth_falls_back_on_an_out_of_contract_window() {
-        // Display-path totality: an even / non-positive / oversized window must never panic
-        // (the crate is `panic = "abort"`); it degrades to the default instead.
+        // Must never panic: the crate is `panic = "abort"`.
         let x: Vec<f64> = (0..32).map(|i| 90.0 + i as f64).collect();
         let want = causal_smooth(x.clone(), None, None, SAVGOL_WINDOW as i32);
         for bad in [0, -7, 8, SAVGOL_WINDOW_MAX + 2, i32::MIN] {
@@ -2147,17 +1846,14 @@ mod tests {
 
 
 
-    /// The rolling carry is PER LEVEL and composes in QUADRATURE (INFERENCE.md §8.1, §9): each
-    /// edge takes `hypot(its own carry, its own native offset)`, the median does not move, and a
-    /// single value widens every level alike. A carry shared across the levels is what makes the
-    /// next roll's .75 edge land outside this roll's .95 edge; an ADDED carry is the
-    /// perfectly-correlated bound, twice too wide by the fourth roll.
+    /// Each edge takes `hypot(its own carry, its own native offset)` and the median does not
+    /// move (INFERENCE.md §8.1, §9).
     #[test]
     fn carry_spread_is_per_level() {
         let d = test_descriptor();
         let mut head = vec![0.0f64; 4 * PATCH_SIZE * N_QUANTILES];
         for (i, h) in head.iter_mut().enumerate() {
-            *h = ((i % 5) as f64 - 2.0) * 0.3; // something asymmetric on both sides
+            *h = ((i % 5) as f64 - 2.0) * 0.3; // asymmetric on both sides
         }
         let anchors = vec![120.0; 4];
         let slots = vec![0, 1, 2, 3];
@@ -2174,8 +1870,6 @@ mod tests {
             assert!((per.q_tau_risk[row + N_SPREADS] - med).abs() < 1e-12,
                 "the carry moved the median");
             for k in 0..N_SPREADS {
-                // Each edge's distance from the median is hypot(its own carry, its own native
-                // offset) — quadrature, and strictly less than the additive carry + offset.
                 let (up_i, dn_i) = (row + N_SPREADS + 1 + k, row + N_SPREADS - 1 - k);
                 let (nat_up, nat_dn) = (bare.q_tau_risk[up_i] - med, med - bare.q_tau_risk[dn_i]);
                 let (got_up, got_dn) = (per.q_tau_risk[up_i] - med, med - per.q_tau_risk[dn_i]);
@@ -2188,7 +1882,6 @@ mod tests {
             }
         }
 
-        // One value is that value in every slot; none is the identity.
         let one = assemble_decode(&d, head.clone(), anchors.clone(), slots.clone(), 4, vec![0.37])
             .unwrap();
         let six = assemble_decode(&d, head.clone(), anchors.clone(), slots.clone(), 4, vec![0.37; 6])
@@ -2196,7 +1889,6 @@ mod tests {
         assert_eq!(one.q_tau_risk, six.q_tau_risk);
         assert_eq!(bare.q_tau_risk, assemble_decode(&d, head.clone(), anchors.clone(), slots.clone(), 4, vec![0.0]).unwrap().q_tau_risk);
 
-        // A shape that is neither is refused, never broadcast; so is a negative or non-finite one.
         for bad in [vec![0.1, 0.2], vec![0.0; 7], vec![-0.1; 6], vec![f64::NAN; 6]] {
             assert!(
                 assemble_decode(&d, head.clone(), anchors.clone(), slots.clone(), 4, bad.clone())
@@ -2206,7 +1898,6 @@ mod tests {
         }
     }
 
-    // ── forecast_degeneracy_check (§3.6-B) ───────────────────────────────────────────
     #[test]
     fn degeneracy_non_finite() {
         let d = test_descriptor();
@@ -2221,11 +1912,10 @@ mod tests {
 
     #[test]
     fn degeneracy_rail_pinned() {
-        // A runaway model: enormous median delta ⇒ every median clamps to 500.
         let d = test_descriptor();
         let mut head = vec![0.0f64; 4 * 6 * 7];
         for i in 0..24 {
-            head[i * 7] = 100.0; // huge risk delta
+            head[i * 7] = 100.0;
         }
         let f = assemble_decode(&d, head, vec![120.0; 4], vec![0, 1, 2, 3], 4, vec![]).unwrap();
         let hi = d.kovatchev.bg_clamp_max;
@@ -2235,7 +1925,6 @@ mod tests {
 
     #[test]
     fn degeneracy_collapsed_band() {
-        // Construct a zero-width fan directly (all quantiles == median).
         let n = 24;
         let median_risk = vec![-0.2; n];
         let median_bg = vec![100.0; n];
@@ -2261,7 +1950,6 @@ mod tests {
     fn degeneracy_misordered() {
         let d = test_descriptor();
         let mut f = decoded(&case("forecast"), &d);
-        // Swap two fan entries at step 0 to break monotonicity.
         f.q_tau_risk.swap(0, 6);
         assert_eq!(forecast_degeneracy_check(&test_descriptor(), &f), ForecastStatus::MisorderedQuantiles);
     }
@@ -2273,15 +1961,12 @@ mod tests {
         assert_eq!(forecast_degeneracy_check(&test_descriptor(), &f), ForecastStatus::Ok);
     }
 
-    // ── Time-probe decode goldens (testdata/time_head_golden.json) ───────────────────
-
     const TIME_GOLDEN: &str = include_str!("testdata/time_head_golden.json");
 
     fn time_golden() -> Value {
         serde_json::from_str(TIME_GOLDEN).unwrap()
     }
 
-    /// Circular |Δhour| on the 24 h clock (wrap-aware).
     fn circ_dhour(a: f64, b: f64) -> f64 {
         let mut d = (a - b).rem_euclid(24.0);
         if d > 12.0 {
@@ -2290,7 +1975,6 @@ mod tests {
         d.abs()
     }
 
-    /// Reproduce softmax + `time_of_day_resultant`/`decode_bins` for every golden row.
     #[test]
     fn time_head_golden_rows() {
         let g = time_golden();
@@ -2318,7 +2002,6 @@ mod tests {
                 "{name}: R got {r}, want {want_r} (|Δ|={:.3e} > {r_tol:.1e})",
                 (r - want_r).abs()
             );
-            // Sanity: hour_defined agrees with the resultant magnitude.
             assert_eq!(r >= r_deg, hour_defined, "{name}: hour_defined vs R>=eps");
             if hour_defined {
                 let dh = circ_dhour(hour, want_hour);
@@ -2327,8 +2010,6 @@ mod tests {
         }
     }
 
-    /// `decode_time` reduces to the ORIGIN patch (index 0): a flat (P, n_bins) buffer built
-    /// from the four real model per-patch logit rows must decode to `model_slot0`'s belief.
     #[test]
     fn decode_time_origin_patch_reduction() {
         let g = time_golden();
@@ -2341,14 +2022,13 @@ mod tests {
             .collect();
         assert_eq!(patch_rows.len(), 4, "expected 4 model patch rows");
 
-        // Concatenate all four patches row-major into one (4, n_bins) flat buffer.
         let mut flat: Vec<f64> = Vec::new();
         for r in &patch_rows {
             flat.extend(f64s(&r["logits"]));
         }
         let pt = decode_time(flat, n_bins, bin_hours).expect("decode_time must succeed");
 
-        let want = &patch_rows[0]; // origin = model_slot0
+        let want = &patch_rows[0];
         assert_eq!(pt.n_bins, n_bins);
         assert_eq!(pt.bin_hours, bin_hours);
         assert_close(&pt.probs, &f64s(&want["probs"]), 1e-4, "decode_time probs");
@@ -2357,37 +2037,30 @@ mod tests {
         assert!((pt.resultant_r - want["R"].as_f64().unwrap()).abs() <= g["R_tol"].as_f64().unwrap());
     }
 
-    /// `decode_time` is total on hostile input — never panics, always `Err` on bad shape.
     #[test]
     fn decode_time_rejects_bad_input() {
-        assert!(decode_time(vec![], 12, 2.0).is_err()); // empty
-        assert!(decode_time(vec![0.0; 5], 12, 2.0).is_err()); // not a multiple of n_bins
-        assert!(decode_time(vec![0.0; 12], 0, 2.0).is_err()); // zero n_bins
-        assert!(decode_time(vec![0.0; 12], 12, 0.0).is_err()); // zero bin_hours
+        assert!(decode_time(vec![], 12, 2.0).is_err());
+        assert!(decode_time(vec![0.0; 5], 12, 2.0).is_err());
+        assert!(decode_time(vec![0.0; 12], 0, 2.0).is_err());
+        assert!(decode_time(vec![0.0; 12], 12, 0.0).is_err());
         let mut nan = vec![0.0; 12];
         nan[3] = f64::NAN;
-        assert!(decode_time(nan, 12, 2.0).is_err()); // non-finite origin logit
+        assert!(decode_time(nan, 12, 2.0).is_err());
     }
 
-    /// The descriptor's optional time section parses when present and is `None` when absent.
     #[test]
     fn parse_descriptor_time_section() {
-        // Present in the reference export, which emits the co-trained probe.
         let t = test_descriptor().time.expect("time section must parse");
         assert_eq!(t.n_bins, 12);
         assert_eq!(t.bin_hours, 2.0);
 
-        // Absent ⇒ None, and no predicted hour is surfaced.
         let mut v: Value = serde_json::from_str(REFERENCE_DESCRIPTOR).unwrap();
         v.as_object_mut().unwrap().remove("time");
         assert!(parse_descriptor(v.to_string()).unwrap().time.is_none());
 
-        // A degenerate time section (n_bins ≤ 0) fails closed.
         v["time"] = serde_json::json!({ "output_index": 1, "n_bins": 0, "bin_hours": 2.0 });
         assert!(parse_descriptor(v.to_string()).is_err());
     }
-
-    // ── the built graph input matches T1DMAI's own, case by case ─────────────────────
 
     #[test]
     fn graph_input_matches_the_reference_pipeline() {
@@ -2400,13 +2073,11 @@ mod tests {
             assert_eq!(gi.t, c["t"].as_i64().unwrap() as i32, "{name}: T");
             assert_eq!(gi.n_masked, c["n_masked"].as_i64().unwrap() as i32, "{name}: n_masked");
 
-            // The patch tensor, including the withheld BG and the announcement bit.
             let want = f64s(&c["patches_f32"]);
             let got: Vec<f64> = gi.patches.iter().map(|v| *v as f64).collect();
             assert_close(&got, &want, tol, &format!("{name}: patches"));
 
-            // The attention pattern is boolean, so it is compared exactly. A digest catches a
-            // rule that is subtly wrong everywhere as readily as one wrong cell.
+            // A digest catches a rule wrong everywhere as readily as one wrong cell.
             let bytes: Vec<u8> = gi.attn_mask.iter().map(|v| u8::from(*v == 0.0)).collect();
             assert_eq!(
                 format!("{:x}", Sha256::digest(&bytes)),
@@ -2414,7 +2085,6 @@ mod tests {
                 "{name}: attention pattern"
             );
 
-            // The masked set and its anchors.
             let want_slots: Vec<i32> = c["slot_patch"]
                 .as_array()
                 .unwrap()
@@ -2430,7 +2100,6 @@ mod tests {
                 &format!("{name}: anchors"),
             );
 
-            // Every slot_sel row is one-hot on the patch its slot names.
             let t = gi.t as usize;
             for (j, patch) in gi.slot_patch.iter().enumerate() {
                 let row = &gi.slot_sel[j * t..(j + 1) * t];
@@ -2462,9 +2131,8 @@ mod tests {
         }
     }
 
-    /// The span-scaled basis dimension is the whole reason a one-patch infill does not simply
-    /// reproduce its own noise. `span_ladder` holds spans of 1, 2, 3 and 4 patches at once,
-    /// which no single forecast reaches.
+    /// `span_ladder` holds spans of 1, 2, 3 and 4 patches at once, which no single forecast
+    /// reaches.
     #[test]
     fn median_projection_contracts_at_every_span_length() {
         let d = test_descriptor();
@@ -2480,7 +2148,6 @@ mod tests {
             .collect();
         for (start, length) in span_layout(&slots, slots.len()) {
             let n = length * PATCH_SIZE;
-            // A projection can only shrink: ||m − anchor|| <= ||delta|| over the span.
             let mut proj = 0.0;
             let mut raw = 0.0;
             for i in 0..n {
@@ -2499,8 +2166,6 @@ mod tests {
             );
         }
     }
-
-    // ── masked-set rules ─────────────────────────────────────────────────────────────
 
     #[test]
     fn masked_patches_withhold_bg_and_announce_themselves() {
@@ -2548,7 +2213,6 @@ mod tests {
                     checked += 1;
                 }
             }
-            // Nothing may read a pad column.
             for col in 0..pad0 {
                 assert_eq!(gi.attn_mask[row * t + col], d.neg_fill as f32);
             }
@@ -2565,8 +2229,6 @@ mod tests {
 
     #[test]
     fn parse_descriptor_rejects_a_geometry_that_would_abort_the_process() {
-        // A negative dimension casts to a colossal usize in the builder and the allocation tears
-        // the process down; the crate is `panic = "abort"`, so there is nothing to catch.
         let bad = |block: &str, key: &str, val: Value| {
             let mut v: Value = serde_json::from_str(REFERENCE_DESCRIPTOR).unwrap();
             v[block][key] = val;
@@ -2577,15 +2239,11 @@ mod tests {
             assert!(bad("geometry", key, serde_json::json!(0)).is_err(), "{key} = 0");
         }
         assert!(bad("constants", "BG_HEAD_STEP_BASIS_DIM", serde_json::json!(0)).is_err());
-        // A window the graph cannot hold is refused rather than truncated.
         assert!(bad("geometry", "T", serde_json::json!(4)).is_err());
     }
 
-    /// The masked set is the question; the withheld BG is the answer. The causal filter is a
-    /// weighted sum of the six preceding steps, so run over the whole series it would carry a
-    /// masked span's own glucose into the visible patch after it AND into the anchor of any span
-    /// that anchors on its right neighbour — an infill scored against evidence it was supposed not
-    /// to have.
+    /// Run over the whole series, the causal filter would carry a masked span's own glucose into
+    /// the visible patch after it and into a right-side anchor.
     #[test]
     fn withheld_bg_never_reaches_a_visible_patch_through_the_filter() {
         let d = test_descriptor();
@@ -2604,7 +2262,6 @@ mod tests {
         };
         let base: Vec<f64> = (0..n).map(|i| 120.0 + (i % 17) as f64).collect();
         let mut perturbed = base.clone();
-        // Move ONLY the withheld steps, by a lot.
         for v in perturbed[masked_from..masked_to].iter_mut() {
             *v = 300.0;
         }
@@ -2637,20 +2294,18 @@ mod tests {
             )
         };
         let sp = |s: i32, l: i32| MaskSpan { start_patch: s, length: l };
-        // Abutting spans are one longer span, which the sampler never drew and the anchor
-        // cannot describe.
+        // abutting spans
         assert!(call(vec![sp(10, 2), sp(12, 2)], false).is_err());
-        // A span abutting the future zone leaves the forecast with no visible neighbour.
+        // abuts the future zone
         assert!(call(vec![sp(d.min_context_patches - 2, 2)], true).is_err());
-        // More masked patches than the head has slots.
+        // more masked patches than slots
         let too_many: Vec<MaskSpan> =
             (0..d.max_masked_patches + 1).map(|i| sp(i * 2, 1)).collect();
         assert!(call(too_many, false).is_err());
-        // Off the end of the observed context.
+        // off the end of the observed context
         assert!(call(vec![sp(d.min_context_patches - 1, 4)], false).is_err());
-        // A window with nothing masked at all has nothing to predict.
+        // nothing masked at all
         assert!(call(vec![], false).is_err());
-        // …and the ordinary forecast is accepted.
         assert!(call(vec![], true).is_ok());
         assert!(call(vec![sp(20, 3)], true).is_ok());
     }
@@ -2665,7 +2320,7 @@ mod tests {
             &d, bg, z.clone(), z.clone(), z, None, None, None, vec![], true, 1
         )
         .is_err());
-        // Ragged channels, and a history that does not tile the patch.
+        // ragged channels; a history that does not tile the patch
         let n = d.min_context_patches as usize * PATCH_SIZE;
         assert!(build_graph_input(
             &d, vec![120.0; n], vec![0.0; n - 1], vec![0.0; n], vec![0.0; n],
@@ -2679,9 +2334,7 @@ mod tests {
         .is_err());
     }
 
-    /// An announced future dose reaches the prediction zone, and an unannounced one takes the
-    /// `normalize(0)` no-event baseline rather than a literal `z = 0` — which would announce a
-    /// phantom fraction of a gram through the sparse log1p inverse.
+    /// An unannounced dose takes the `normalize(0)` baseline, not a literal `z = 0`.
     #[test]
     fn announced_doses_reach_the_future_zone() {
         let d = test_descriptor();
@@ -2705,8 +2358,7 @@ mod tests {
             assert!((gi.patches[base + 3] as f64 - zbase[3]).abs() < 1e-6, "exercise step {j}");
             assert_eq!(gi.patches[base], 0.0, "future BG must stay withheld");
         }
-        // An announced channel on a window with no future zone is a caller error, not a
-        // silently ignored argument.
+        // A caller error, not a silently ignored argument.
         assert!(build_graph_input(
             &d, vec![120.0; n], vec![0.0; n], vec![0.0; n], vec![0.0; n],
             Some(carb), None, None, vec![MaskSpan { start_patch: 10, length: 2 }], false, 1,
@@ -2714,15 +2366,12 @@ mod tests {
         .is_err());
     }
 
-    // ── reading the fan ──────────────────────────────────────────────────────────────
-
     #[test]
     fn band_line_at_the_median_is_the_median() {
         let d = test_descriptor();
         let f = decoded(&case("forecast"), &d);
         let line = band_line(&d, &f, 0.5).unwrap();
         assert_close(&line, &f.median_bg, 1e-12, "band_line(0.5)");
-        // Each published level returns its own edge.
         for (k, tau) in QUANTILE_LEVELS.iter().enumerate() {
             let line = band_line(&d, &f, *tau).unwrap();
             let want: Vec<f64> = (0..f.median_bg.len())
@@ -2744,8 +2393,7 @@ mod tests {
             }
             prev = line;
         }
-        // Outside the published levels the line is clamped to the outermost edge rather than
-        // extrapolated: the model said nothing about a level it never emitted.
+        // Clamped to the outermost edge, not extrapolated.
         let lo = band_line(&d, &f, 0.0).unwrap();
         let hi = band_line(&d, &f, 1.0).unwrap();
         assert_close(&lo, &band_line(&d, &f, 0.05).unwrap(), 1e-12, "tau below the fan");
@@ -2753,10 +2401,6 @@ mod tests {
         assert!(band_line(&d, &f, f64::NAN).is_err());
     }
 
-    /// The fan read on its own is the same line as the fan read inside its run.
-    ///
-    /// Both entry points share one interpolation body; this pins that they are wired to it, since
-    /// a stored span's τ sweep and a live forecast's must not disagree about the same fan.
     #[test]
     fn band_line_at_reads_a_bare_fan_the_same_way() {
         let d = test_descriptor();
@@ -2769,15 +2413,12 @@ mod tests {
         assert!(band_line_at(&d, f.q_tau_risk.clone(), f64::NAN).is_err());
     }
 
-    /// A fan that is not a whole number of seven-level steps is a blob from another build, and it
-    /// is refused rather than read as a shorter run — half a fan drawn as nested bands would be a
-    /// shape nothing emitted.
     #[test]
     fn band_line_at_refuses_a_ragged_fan() {
         let d = test_descriptor();
         assert!(band_line_at(&d, vec![0.1; N_QUANTILES * 3 + 1], 0.5).is_err());
         assert!(band_line_at(&d, vec![0.1; N_QUANTILES - 1], 0.5).is_err());
-        // Empty is a whole number of steps — zero of them — and reads as an empty line.
+        // Empty is a whole number of steps — zero of them.
         assert_eq!(band_line_at(&d, vec![], 0.5).unwrap().len(), 0);
     }
 
@@ -2791,11 +2432,10 @@ mod tests {
         let fc = forecast_slice(&f, first, gi.t).unwrap();
         assert_eq!(fc.slot_patch, (first..gi.t).collect::<Vec<i32>>());
         assert_eq!(fc.median_bg.len(), 4 * PATCH_SIZE);
-        // The infill rows are the rest, and none of them sits in the forecast.
         let infill = forecast_slice(&f, 0, first).unwrap();
         assert!(infill.slot_patch.iter().all(|p| *p < first));
         assert_eq!(infill.median_bg.len() + fc.median_bg.len(), f.median_bg.len());
-        // A range holding no slot is an error, not an empty forecast nothing checks.
+        // An empty range is an error, not an empty forecast nothing checks.
         assert!(forecast_slice(&f, first, first).is_err());
     }
 }

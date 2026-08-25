@@ -21,44 +21,23 @@ import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.core.model.UnitSpace
 
 /**
- * The widget's last-known render, mirrored into Glance's OWN per-widget Preferences store (the
- * `PreferencesGlanceStateDefinition` every `GlanceAppWidget` already carries) so the tile has
- * something truthful to paint when the live pull cannot run.
- *
- * It exists because the tile has no platform-driven refresh at all: `updatePeriodMillis="0"` means
- * AppWidgetServiceImpl registers no repeating update alarm, and the AppWidget service does not persist
- * RemoteViews across a reboot — so after every boot the host inflates the `initialLayout` spinner and
- * stays there until this app pushes. The first push can arrive long after the host is up (or never, if
- * the FGS's BLE-permission gate `stopSelf()`s it), and the pull it drives reaches straight into Room
- * through the container: on a cold process that read can throw, and a throw out of `provideGlance`
- * REPLACES the tile with Glance's "Can't show content" surface rather than leaving the last render
- * standing. This store is what the fallback renders instead.
- *
- * Deliberately NOT a second glance computation: the cached render rebuilds a [CgmReading] from the
- * persisted (BG, trend, receive-time) triple and re-runs the SAME [BgGlanceComputer] the notification
- * and the watch use, so a stale tile agrees with the live one by construction and its age is measured
- * against the wall clock at render time rather than frozen at write time. The forecast half degrades
- * fail-closed on its own: with no [InferenceState] to replay there is no eligible prediction, so the
- * cached tile reads "Forecast unavailable" / VOID and can never assert a stale STABLE (§3.6).
- *
- * Only the fields a render actually needs are kept. Everything the process holds in memory and cannot
- * reconstruct offline (IOB/COB, GMI, steps, the circadian clock) is left null and renders "—", which
- * is the honest answer for a tile drawn without the app's runtime.
+ * The last-known render, in Glance's own per-widget Preferences, for when the live pull cannot run.
+ * Not a second glance computation: it rebuilds a [CgmReading] and re-runs the same [BgGlanceComputer],
+ * so a cached tile ages against the wall clock and, with no [InferenceState] to replay, fails closed
+ * to VOID rather than asserting a stale STABLE (§3.6).
  */
 internal object WidgetStateStore {
 
-    /** Absent ⇒ nothing was ever written for this widget id, so there is no last-known render. */
+    /** Absent ⇒ no last-known render for this widget id. */
     private val KEY_SAVED_AT = longPreferencesKey("t1dm.widget.saved_at_ms")
 
-    // The reading triple. All three are REMOVED together when the live render had no reading, so the
-    // cache can never resurrect a value the live path had already stopped showing.
+    // Removed together, so the cache can never resurrect a reading the live path stopped showing.
     private val KEY_BG = intPreferencesKey("t1dm.widget.bg_mgdl")
     private val KEY_TREND = intPreferencesKey("t1dm.widget.trend_tenths")
     private val KEY_RX_WALL = longPreferencesKey("t1dm.widget.rx_wall_ms")
     private val KEY_RSSI = intPreferencesKey("t1dm.widget.rssi")
 
-    // Presentation settings — without these a cached tile would paint the process defaults (mg/dL,
-    // Tron) over a user who chose otherwise, which is the quieter half of the cold-process bug.
+    // Without these a cached tile paints the process defaults over the user's own choices.
     private val KEY_UNIT = stringPreferencesKey("t1dm.widget.unit")
     private val KEY_THEME = stringPreferencesKey("t1dm.widget.theme_id")
     private val KEY_CUSTOM_THEME = stringPreferencesKey("t1dm.widget.custom_theme_json")
@@ -66,19 +45,17 @@ internal object WidgetStateStore {
     private val KEY_ANIMATIONS = booleanPreferencesKey("t1dm.widget.animations")
     private val KEY_DEATH = booleanPreferencesKey("t1dm.widget.death")
 
-    // The user's alarm geometry, so the cached number keeps its measured band tint and the age-based
-    // signal-loss line keeps the user's window instead of silently reverting to the boot defaults.
+    // So a cached tile keeps the user's band tint and signal-loss window, not the boot defaults.
     private val KEY_THR_URGENT_LOW = intPreferencesKey("t1dm.widget.thr_urgent_low")
     private val KEY_THR_LOW = intPreferencesKey("t1dm.widget.thr_low")
     private val KEY_THR_HIGH = intPreferencesKey("t1dm.widget.thr_high")
     private val KEY_THR_URGENT_HIGH = intPreferencesKey("t1dm.widget.thr_urgent_high")
     private val KEY_LOSS_MIN = intPreferencesKey("t1dm.widget.loss_min")
 
-    /** The synthetic source the rebuilt reading is stamped with; never persisted, never re-ingested. */
+    /** Synthetic: never stored, never re-ingested. */
     private val CACHED_SOURCE = CgmSourceId("t1dm.widget.cache")
 
-    /** Mirror a render that actually happened. [nowMs] must be the instant [snap] was computed at, so
-     *  the receive-time recovered from the glance's age is the reading's real one. */
+    /** [nowMs] must be the instant [snap] was computed at, or the recovered receive time is wrong. */
     fun write(prefs: MutablePreferences, snap: WidgetSnapshot, nowMs: Long) {
         prefs[KEY_SAVED_AT] = nowMs
         val g = snap.glance
@@ -149,16 +126,10 @@ internal object WidgetStateStore {
         )
     }
 
-    /** The persisted (theme id, custom JSON) pair, coerced onto a theme this build still carries —
-     *  the seed for [com.t1dm.core.design.applyWidgetPalette] when the live settings read failed. */
     fun themeOf(prefs: Preferences): Pair<String, String?> =
         normalizeThemeId(prefs[KEY_THEME]) to prefs[KEY_CUSTOM_THEME]
 
-    /**
-     * The floor render: no live pull, no cache (a widget pinned onto a process that has never yet
-     * completed a render). Everything unknown, nothing invented — the tile shows "--", "no reading"
-     * and a VOID status rather than the host's loading spinner or Glance's error surface.
-     */
+    /** The floor render: nothing known, nothing invented. */
     fun unknown(nowMs: Long): WidgetSnapshot = snapshotOf(
         latest = null,
         thresholds = DEFAULT_THRESHOLDS,
@@ -188,13 +159,11 @@ internal object WidgetStateStore {
         customThemeJson: String?,
         nowMs: Long,
     ): WidgetSnapshot {
-        // An empty InferenceState is not a placeholder, it is the truth: nothing off-process knows what
-        // the model last said, so every forecast-derived field must fail closed.
+        // Nothing off-process knows what the model last said, so every forecast field fails closed.
         val state = InferenceState()
         val (glyText, glyKind) = computeGlyStatus(state, thresholds, nowMs)
         return WidgetSnapshot(
-            // The cached row is written from `glance.bgMgdl`, which already reads the last
-            // MEASUREMENT, so the cache can only ever hold one.
+            // glance.bgMgdl already reads the last MEASUREMENT, so the cache can only hold one.
             glance = BgGlanceComputer.compute(
                 readings = GlanceReadings.create(listOfNotNull(latest)),
                 state = state,

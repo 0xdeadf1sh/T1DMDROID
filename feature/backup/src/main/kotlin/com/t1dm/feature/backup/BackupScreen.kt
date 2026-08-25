@@ -35,7 +35,6 @@ import com.t1dm.core.design.fadingEdges
 import com.t1dm.core.design.panelCardColors
 import com.t1dm.core.design.rememberT1dmHaptics
 
-/** One archive already sitting in the chosen folder. */
 class BackupEntry(
     val id: String,
     val name: String,
@@ -43,8 +42,7 @@ class BackupEntry(
     val modifiedAtMs: Long,
 )
 
-/** Everything the panel renders. Assembled in `:app`; this module sees no repository, no SAF and
- *  no WorkManager. */
+/** Assembled in `:app`; this module sees no repository, no SAF, no WorkManager. */
 class BackupPanelState(
     val folderLabel: String? = null,
     val cadenceHours: Int = 0,
@@ -57,7 +55,7 @@ class BackupPanelState(
     val lastErrorAtMs: Long? = null,
     val lastError: String? = null,
     val backups: List<BackupEntry> = emptyList(),
-    /** Non-null while an operation runs, and what it is. Disables every action. */
+    /** Non-null while an operation runs; disables every action. */
     val busy: String? = null,
     /** The outcome of the last thing the user asked for. */
     val status: String? = null,
@@ -65,14 +63,8 @@ class BackupPanelState(
 )
 
 /**
- * The Backup panel: the whole local record to a file, on a schedule, to a folder that survives
- * uninstall.
- *
- * A restore MERGES and never overwrites, which is why the affordance carries no typed confirmation
- * the way the reset does — the worst a mistaken restore can do is add rows the phone was missing.
- * Deleting a stored archive is the one irreversible act here and is the only one behind a dialog.
- *
- * Pure and stateless in the house mould: state in, callbacks out.
+ * A restore merges and never overwrites, so only deleting an archive — the one irreversible act here
+ * — is behind a dialog.
  */
 @Composable
 fun BackupScreen(
@@ -120,7 +112,6 @@ fun BackupScreen(
                             enabled = enabled,
                         ) { Text(if (state.folderLabel == null) "Choose…" else "Change…") }
                     }
-                    // The one fact the control cannot carry: why the folder must be outside the app.
                     Note("Outside app storage, so it survives uninstall")
 
                     ChipRow(
@@ -151,9 +142,7 @@ fun BackupScreen(
                                 "${formatBytes(state.lastOkBytes)} · ${formatRows(state.lastOkRows)} rows",
                         )
                     }
-                    // Shown ALONGSIDE the last success, not instead of it: a destination that worked
-                    // last week and has failed every night since is the state worth surfacing, and
-                    // one overwritten status line would hide exactly that.
+                    // Alongside the last success, not instead of it.
                     if (state.lastError != null && state.lastErrorAtMs != null) {
                         Text(
                             "Failed ${relativeAge(state.nowMs, state.lastErrorAtMs)} — ${state.lastError}",
@@ -331,8 +320,6 @@ internal fun cadenceLabel(hours: Int): String = when (hours) {
     else -> "${hours}h"
 }
 
-/** Bytes at one decimal past a megabyte, none below — a backup's size is a sanity check, not a
- *  measurement, and "1.2 MB" answers it where "1,234,567 B" does not. */
 internal fun formatBytes(bytes: Long): String = when {
     bytes >= 1_048_576L -> "%.1f MB".format(bytes / 1_048_576.0)
     bytes >= 1024L -> "${bytes / 1024} kB"
@@ -342,12 +329,7 @@ internal fun formatBytes(bytes: Long): String = when {
 internal fun formatRows(rows: Int): String =
     if (rows >= 10_000) "${rows / 1000}k" else rows.toString()
 
-/**
- * Coarse relative age. A backup is judged in hours and days, so minutes are the finest unit worth
- * printing and anything older than a fortnight is simply "3w". A future timestamp — a provider with
- * a skewed clock, or a file copied from another device — reads as "just now" rather than as a
- * negative age.
- */
+/** A future timestamp — a skewed provider clock — reads as "just now", not a negative age. */
 internal fun relativeAge(nowMs: Long, thenMs: Long): String {
     val delta = (nowMs - thenMs).coerceAtLeast(0L)
     val minutes = delta / 60_000L

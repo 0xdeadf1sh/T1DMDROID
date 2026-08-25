@@ -17,12 +17,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * The predictive-crossing ETA math and the §3.6 gate that all three glanceable surfaces share. A
- * falling eligible median yields the "approaching" (low) and "urgent" (urgent-low) crossings with the
- * right ETAs; a stale or degenerate forecast — or the warmup gate — yields NO predictive fields (the
- * fail-closed direction that must degrade to BG + trend, never a fabricated countdown).
- */
+/** The predictive-crossing ETA math and the §3.6 gate the three glanceable surfaces share. */
 class BgGlanceComputerTest {
 
     private val now = 1_700_000_000_000L

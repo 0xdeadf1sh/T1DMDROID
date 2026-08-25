@@ -1,52 +1,25 @@
 package com.t1dm.feature.settings
 
-/**
- * The searchable index of every individual knob in Settings.
- *
- * Twenty-odd sub-screens hold something over eighty separately-tunable things, and the hub only lists
- * the screens — so a knob whose page you cannot name is effectively unreachable. This index is what
- * the search field on the hub matches against.
- *
- * Two invariants keep it honest, and both are structural rather than aspirational:
- *
- *  1. **An entry lives beside the control it describes.** Each screen file declares its own
- *     `settings*Knobs` list at the foot of the file; [SettingsIndex] only concatenates them. A knob
- *     and its index entry therefore move together in review, and a label edited on one line without
- *     the other is a one-screen diff, not an archaeology exercise.
- *  2. **An unindexed knob does not compile.** The four shared controls (SettingsComponents.kt) take a
- *     [SettingsKnob] where they used to take a bare label string, and read their label and subtitle
- *     out of it; bespoke controls are wrapped in [SettingsAnchor]. There is no way to render a knob
- *     that the index does not know about, which is the only anti-drift mechanism that survives
- *     contact with Compose — no host test can see a call site.
- *
- * The module stays route-free (feature screens know callbacks, never routes): an entry names a
- * [SettingsScreenKey], and `:app` maps the key to its route in one table beside `crumbsFor`.
- */
+/** Every knob in Settings, for the hub's search field. Each screen file declares its own
+ *  `settings*Knobs` list; the shared controls take a [SettingsKnob], so an unindexed knob does not
+ *  compile. Entries name a [SettingsScreenKey], never a route. */
 data class SettingsKnob(
-    /** Globally unique, hand-assigned. Labels collide ("IOB ceiling" is both a rail and its
-     *  threshold; "Play a sound" and "Vibration" each appear twice on one page), so an id derived
-     *  from the label could not address a row. */
+    /** Globally unique, hand-assigned: labels collide, so an id derived from one could not address
+     *  a row. */
     val id: String,
     val screen: SettingsScreenKey,
-    /** The section header the knob sits under, or "" on a headerless page. */
+    /** The section header, or "" on a headerless page. */
     val section: String,
     val label: String,
     val subtitle: String = "",
-    /** Half-remembered words that should find this knob: the vocabulary the user has, rather than the
-     *  vocabulary the label happens to use. Lower-case; matched whole, by prefix and by substring. */
+    /** Lower-case; matched whole, by prefix and by substring. */
     val synonyms: List<String> = emptyList(),
-    /** False for whole-screen entries (About, the Death rite, the model pages) that have no in-page
-     *  control to scroll to — navigation still happens, nothing is pulsed. */
+    /** False for whole-screen entries with no in-page control to scroll to. */
     val anchored: Boolean = true,
 )
 
-/**
- * The settings destinations, as opaque keys. [breadcrumb] is the trail BELOW the "Settings" root, i.e.
- * exactly what `crumbsFor` renders minus its leading crumb; a `:app` test pins the two together so the
- * path a search result advertises cannot drift from the one the breadcrumb bar shows on arrival.
- */
+/** [breadcrumb] is the trail BELOW the "Settings" root. */
 enum class SettingsScreenKey(val breadcrumb: String, internal val indexed: Boolean = true) {
-    /** The hub itself. Its rows are navigation, not knobs, so it carries no entries. */
     ROOT("Settings", indexed = false),
     DISPLAY("Display"),
     GRAPH("Graph"),
@@ -54,8 +27,6 @@ enum class SettingsScreenKey(val breadcrumb: String, internal val indexed: Boole
     SIGNAL("Alarms › Signal"),
     ALERTS("Sound"),
     DEVICE_TEMP("Alarms › Device heat"),
-    /** Warm-up, cadence, the running-set cap and the thermal gate — everything that decides whether a
-     *  cycle happens. Four separate destinations until they were merged; see [ForecastSettingsScreen]. */
     FORECAST("Forecast"),
     CALCULATOR("Bolus calculator"),
     CURVES("Curve & PK"),
@@ -67,8 +38,7 @@ enum class SettingsScreenKey(val breadcrumb: String, internal val indexed: Boole
     POWER("Low power"),
     DATA("Reset"),
 
-    /** Leaves this module entirely, as [MODELS] does: backup is its own top-level panel now. It
-     *  stays in the index so a search for "export" or "backup" still finds it and lands there. */
+    /** Rendered outside this module; indexed so a search for it still lands there. */
     BACKUP("Backup"),
     ABOUT("About"),
     DEATH_CLOCK("Death clock"),
@@ -76,7 +46,7 @@ enum class SettingsScreenKey(val breadcrumb: String, internal val indexed: Boole
 }
 
 object SettingsIndex {
-    /** Declaration order is the tie-break for equally-scoring hits, so it follows the hub's own order. */
+    /** Declaration order is the tie-break for equal scores, so it follows the hub's order. */
     val ALL: List<SettingsKnob> = buildList {
         addAll(settingsDisplayKnobs)
         addAll(settingsGraphKnobs)
@@ -104,28 +74,12 @@ object SettingsIndex {
 
     fun byId(id: String): SettingsKnob? = byId[id]
 
-    /**
-     * The index as the running flavor may present it. The public build withholds the DEATH-mode row
-     * from the hub (the fail-open override is compiled out), so search must withhold it too — an
-     * unfiltered index would otherwise let the public build reach a screen its own hub hides.
-     */
+    /** The public build hides the DEATH-mode row, so search must withhold it too. */
     fun visible(deathModeSupported: Boolean): List<SettingsKnob> =
         if (deathModeSupported) ALL else ALL.filterNot { it.screen == SettingsScreenKey.DEATH_MODE }
 }
 
-/**
- * Rank [index] against [query]. Forgiving by design — the user is reaching for a knob whose exact
- * wording they do not remember:
- *
- *  - case-insensitive throughout;
- *  - every whitespace-separated token must match SOMETHING (AND across tokens, so "urgent low" beats
- *    "low" alone rather than drowning in it);
- *  - a token matches a field whole, by word-prefix, or as a bare substring, in that order of worth;
- *  - label > synonym > section > subtitle, so "risk" surfaces the objective picker before every screen
- *    whose prose happens to mention risk.
- *
- * Blank query ⇒ no results (the caller shows recent searches instead).
- */
+/** Case-insensitive. Field worth: label > synonym > section > subtitle. Blank query ⇒ no results. */
 fun searchSettings(query: String, index: List<SettingsKnob> = SettingsIndex.ALL): List<SettingsKnob> {
     val tokens = query.lowercase().split(' ', '\t', '\n', ',', '/').filter { it.isNotBlank() }
     if (tokens.isEmpty()) return emptyList()
@@ -148,7 +102,7 @@ private fun scoreKnob(knob: SettingsKnob, tokens: List<String>): Int {
             fieldScore(knob.section, t, whole = 34, prefix = 30, word = 28, contains = 24),
             fieldScore(knob.subtitle, t, whole = 20, prefix = 18, word = 17, contains = 14),
         )
-        // AND across tokens: a query is a conjunction of hints, not a bag of alternatives.
+        // AND across tokens.
         if (best == 0) return 0
         total += best
     }
@@ -167,7 +121,6 @@ private fun fieldScore(field: String, token: String, whole: Int, prefix: Int, wo
     }
 }
 
-/** A token that opens any word in the field — what makes "vib" find "Vibration" mid-sentence. */
 private fun hasWordStartingWith(field: String, token: String): Boolean {
     var i = field.indexOf(token)
     while (i >= 0) {

@@ -5,17 +5,11 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * Host JVM tests for the Steps overlay's pure half: the frame build and the bar geometry
- * [emitStepBars] emits through its sink. The Canvas draw itself is not reachable from a unit test —
- * which is what the sink exists for, exactly as [CurvePathSink] does for the curve overlay.
- */
 class StepsBarTest {
 
     private val STEP = 300_000L
     private val T0 = 1_700_000_000_000L / STEP * STEP
 
-    /** A recording sink: every bar, in emission order. */
     private class Bars : StepBarSink {
         data class Bar(val left: Float, val top: Float, val right: Float, val bottom: Float) {
             val width: Float get() = right - left
@@ -28,7 +22,7 @@ class StepsBarTest {
         }
     }
 
-    /** Projection: 1 px per minute, origin at [T0] — so one 5-min bucket is 5 px wide. */
+    /** 1 px per minute from [T0]: one 5-min bucket is 5 px wide. */
     private fun px(scale: Double = 1.0 / 60_000.0) =
         AbsToPx { ms -> ((ms - T0.toDouble()) * scale).toFloat() }
 
@@ -42,15 +36,13 @@ class StepsBarTest {
         emitStepBars(frame, px(scale), bandTop = 0f, plotBottom = 100f, lo = lo, hi = hi, dpPx = dpPx, sink = it)
     }
 
-    // ── frame build ──────────────────────────────────────────────────────────────────────────────
 
     @Test fun emptyInputIsTheEmptyFrame() {
         assertTrue(buildStepsFrame(IntArray(0), T0).isEmpty)
     }
 
     @Test fun allZeroBucketsIsEmpty() {
-        // Rows exist but nobody moved: max is 0, so there is nothing to scale against and no bar to
-        // draw. It must report empty rather than divide by that zero.
+        // max is 0: nothing to scale against, so empty rather than a divide by that zero.
         assertTrue(buildStepsFrame(IntArray(12), T0).isEmpty)
     }
 
@@ -68,30 +60,24 @@ class StepsBarTest {
         assertEquals(1, f.clampedIndexAt((T0 + STEP).toDouble()))
     }
 
-    // ── stepsAt: what the scrub read-out reads ───────────────────────────────────────────────────
 
     @Test fun stepsAtReadsTheBucketAndDistinguishesStillFromUnmeasured() {
-        // Bucket 2 was never measured; bucket 0 was measured as a genuine still five minutes.
         val f = buildStepsFrame(intArrayOf(0, 30, StepsFrame.NO_DATA, 90), T0)
-        // A MEASURED zero is an answer — they were still — so the row appears saying 0.
+        // A measured zero is an answer.
         assertEquals(0, f.stepsAt(T0)!!.toInt())
         assertEquals(30, f.stepsAt(T0 + STEP)!!.toInt())
         // Anywhere inside a bucket reads that bucket, not the nearest edge.
         assertEquals(30, f.stepsAt(T0 + STEP + 299_999L)!!.toInt())
         assertEquals(90, f.stepsAt(T0 + 3 * STEP)!!.toInt())
-        // An UNMEASURED bucket is not a zero. Reporting 0 here would assert the patient was still
-        // through a stretch nothing was watching — the fail-closed rule inverted.
+        // An unmeasured bucket is not a zero: 0 would assert stillness nothing was watching.
         assertNull(f.stepsAt(T0 + 2 * STEP))
-        // Outside the grid there is likewise nothing to report.
         assertNull(f.stepsAt(T0 - 1))
         assertNull(f.stepsAt(T0 + 4 * STEP))
         assertNull(StepsFrame.EMPTY.stepsAt(T0))
     }
 
     @Test fun anEntirelyUnmeasuredWindowDrawsNothingAndReportsNothing() {
-        // The device with no step sensor, or without the permission: every bucket is the sentinel.
-        // The frame must read as empty (no bars, no divide by a zero peak) AND the read-out must
-        // stay silent at every cursor rather than printing a column of zeros across the window.
+        // No step sensor, or no permission: every bucket is the sentinel.
         val f = buildStepsFrame(IntArray(64) { StepsFrame.NO_DATA }, T0)
         assertTrue("an unmeasured window is empty", f.isEmpty)
         assertEquals(0, emit(f).bars.size)
@@ -99,8 +85,7 @@ class StepsBarTest {
     }
 
     @Test fun theSentinelNeverScalesABar() {
-        // NO_DATA is negative so it can never become the peak; the bars must be scaled by the real
-        // maximum, and an unmeasured bucket must emit nothing at all.
+        // NO_DATA is negative, so it can never become the peak.
         val f = buildStepsFrame(intArrayOf(StepsFrame.NO_DATA, 50, StepsFrame.NO_DATA, 100), T0)
         assertEquals(100, f.max)
         val bars = emit(f).bars
@@ -109,10 +94,8 @@ class StepsBarTest {
         assertEquals(46f, bars[0].height, 1e-3f)
     }
 
-    // ── bar geometry ─────────────────────────────────────────────────────────────────────────────
 
     @Test fun onlyPositiveBucketsDrawABar() {
-        // A sleeping night is mostly zeroes; they must draw nothing at all rather than a baseline smear.
         val bars = emit(buildStepsFrame(intArrayOf(0, 30, 0, 0, 90, 0), T0)).bars
         assertEquals(2, bars.size)
         assertEquals(1f * 5f, bars[0].left, 1e-3f) // bucket 1 → 5 min in → 5 px
@@ -121,7 +104,7 @@ class StepsBarTest {
 
     @Test fun heightIsProportionalToTheFramePeak() {
         val bars = emit(buildStepsFrame(intArrayOf(50, 100), T0)).bars
-        // Band is 100 px with 0.92 headroom: the peak bucket reaches 92, half of it 46.
+        // 100 px band with 0.92 headroom: the peak reaches 92, half of it 46.
         assertEquals(92f, bars[1].height, 1e-3f)
         assertEquals(46f, bars[0].height, 1e-3f)
         assertTrue("bars stand on the plot floor", bars.all { it.bottom == 100f })
@@ -134,7 +117,6 @@ class StepsBarTest {
     }
 
     @Test fun aGapSeparatesAdjacentBars() {
-        // Two neighbouring busy buckets must read as two bars, not one block.
         val bars = emit(buildStepsFrame(intArrayOf(10, 10), T0)).bars
         assertEquals(2, bars.size)
         assertTrue("bar is narrower than the 5 px pitch", bars[0].width < 5f)
@@ -147,25 +129,20 @@ class StepsBarTest {
         assertEquals(11, emit(f, lo = 20, hi = 30).bars.size)
     }
 
-    // ── the merge: cost bounded by plot width, not by history length ─────────────────────────────
 
     @Test fun subPixelBucketsMergeInsteadOfEmittingHairlines() {
-        // A fortnight of 5-min buckets under a viewport so wide each is a hundredth of a pixel. The
-        // unmerged draw would emit 4032 bars a frame; the merge must collapse them to something
-        // bounded by the pixels available.
+        // A fortnight of buckets each a hundredth of a pixel wide; unmerged, 4032 bars a frame.
         val f = buildStepsFrame(IntArray(4032) { 10 }, T0)
         val squashed = 1.0 / 60_000.0 / 100.0
         val n = emit(f, scale = squashed).bars.size
-        // The bound that matters is a PIXEL bound: never more bars than there are columns to put
-        // them in, whatever the history holds. 4032 buckets at this scale span ~201 px.
+        // A pixel bound: never more bars than there are columns to put them in.
         val plotPx = 4032 * 300_000.0 * squashed
         assertTrue("emitted $n bars over ${plotPx.toInt()} px", n <= plotPx + 1)
         assertTrue("still drew something", n > 0)
     }
 
     @Test fun aMergedBarCarriesItsGroupsPeak() {
-        // Max, not mean: at a zoom needing the merge, averaging a walk into the idle hours around it
-        // would erase the walk. Ten buckets, one of them the frame peak, squeezed under one bar.
+        // Max, not mean: averaging a walk into the idle hours around it would erase the walk.
         val steps = IntArray(10) { if (it == 4) 100 else 1 }
         val f = buildStepsFrame(steps, T0)
         val bars = emit(f, scale = 1.0 / 60_000.0 / 50.0).bars
@@ -183,10 +160,7 @@ class StepsBarTest {
     }
 
     @Test fun mergedBarsDoNotRePhaseWhenTheViewportSlides() {
-        // A pan must slide the SAME bars across the screen. If the groups were cut from `lo` — which
-        // moves with the viewport — a merged band would be re-partitioned on every frame of a drag and
-        // would visibly shimmer. Same frame, same scale, cull start walked one bucket at a time: every
-        // bar the two views share must sit at the same data-anchored x.
+        // Groups cut from `lo` would be re-partitioned on every frame of a pan, and shimmer.
         val f = buildStepsFrame(IntArray(120) { (it * 7) % 13 + 1 }, T0)
         val squashed = 1.0 / 60_000.0 / 10.0
         val base = emit(f, scale = squashed, lo = 0, hi = 119).bars.map { it.left }.toSet()
@@ -198,7 +172,6 @@ class StepsBarTest {
     }
 
     @Test fun aDenseGridStillLeavesAVisibleBar() {
-        // Where the pitch is narrower than the gap, the gap must not consume the bar entirely.
         val f = buildStepsFrame(IntArray(50) { 10 }, T0)
         val bars = emit(f, dpPx = 3.5f).bars
         assertTrue("every bar has positive width", bars.all { it.width > 0f })

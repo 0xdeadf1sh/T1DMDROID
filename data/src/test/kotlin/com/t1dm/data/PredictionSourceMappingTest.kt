@@ -8,13 +8,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
-/**
- * The sensor that conditioned a forecast survives the entity round-trip (Room v25).
- *
- * It is what `T1dmRepository.forecastWindows` refuses a cross-sensor window by, so a mapper that
- * dropped it would silently restore the defect: every window would read back as UNKNOWN, be refused,
- * and the band fit would go on refusing forever with nothing saying why.
- */
 class PredictionSourceMappingTest {
 
     private fun prediction(sourceId: String?) = ModelPrediction(
@@ -39,14 +32,13 @@ class PredictionSourceMappingTest {
     fun sourceIdSurvivesTheRoundTrip() {
         val back = prediction("vendorb:TESTSERIAL").toEntity(nowMs = 1L).toModel()
         assertEquals("vendorb:TESTSERIAL", back.sourceId)
-        // The fan is transposed on the way in and back on the way out; the source rides beside it.
+        // The fan is transposed on the way in and back on the way out.
         assertEquals(prediction("vendorb:TESTSERIAL").bandsMgdl, back.bandsMgdl)
     }
 
     @Test
     fun anUnknownSourceStaysNullRatherThanBecomingAnEmptyString() {
-        // Null is UNKNOWN and must never round-trip into a value that could equal a real source id
-        // — "" compares equal to "" and would make two unstamped forecasts look like the same sensor.
+        // Null is UNKNOWN; "" would compare equal and merge two unstamped forecasts.
         assertNull(prediction(null).toEntity(nowMs = 1L).toModel().sourceId)
         assertNull(prediction(null).toEntity(nowMs = 1L).sourceId)
     }

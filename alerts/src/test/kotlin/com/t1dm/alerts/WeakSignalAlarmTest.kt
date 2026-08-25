@@ -28,8 +28,8 @@ class WeakSignalAlarmTest {
     @Test
     fun `fires only after the weak signal is sustained`() {
         val a = alarm()
-        a.onReading(reading(120, rxWallMs = 0, rssi = -95)) // below -90
-        assertNull(a.evaluate(2 * MIN))                     // not sustained long enough
+        a.onReading(reading(120, rxWallMs = 0, rssi = -95))
+        assertNull(a.evaluate(2 * MIN))
         val weak = a.evaluate(3 * MIN)
         assertNotNull(weak)
         assertEquals(-95, weak!!.rssiDbm)
@@ -40,7 +40,7 @@ class WeakSignalAlarmTest {
     @Test
     fun `a threshold-boundary rssi counts as weak (at-or-below)`() {
         val a = alarm()
-        a.onReading(reading(120, rxWallMs = 0, rssi = -90)) // exactly at the threshold
+        a.onReading(reading(120, rxWallMs = 0, rssi = -90))
         assertNotNull(a.evaluate(3 * MIN))
     }
 
@@ -49,7 +49,7 @@ class WeakSignalAlarmTest {
         val a = alarm()
         a.onReading(reading(120, rxWallMs = 0, rssi = -95))
         assertNotNull(a.evaluate(3 * MIN))
-        a.onReading(reading(120, rxWallMs = 3 * MIN, rssi = -70)) // link recovered
+        a.onReading(reading(120, rxWallMs = 3 * MIN, rssi = -70))
         assertNull(a.weak)
         assertNull(a.evaluate(3 * MIN))
     }
@@ -59,7 +59,6 @@ class WeakSignalAlarmTest {
         val a = alarm()
         a.onReading(reading(120, rxWallMs = 0, rssi = -95))
         assertNotNull(a.evaluate(3 * MIN))
-        // No fresh reading for over lossMin (20) minutes — weak-signal defers to loss-of-signal.
         assertNull(a.evaluate(21 * MIN))
     }
 
@@ -81,7 +80,7 @@ class WeakSignalAlarmTest {
     fun `it surfaces through the engine state`() {
         val engine = AlarmEngine(config)
         engine.onReading(reading(120, rxWallMs = 0, rssi = -95), nowMs = 0)
-        assertNull(engine.state.value.weakSignal) // not yet sustained
+        assertNull(engine.state.value.weakSignal)
         engine.onTick(3 * MIN)
         assertNotNull(engine.state.value.weakSignal)
     }

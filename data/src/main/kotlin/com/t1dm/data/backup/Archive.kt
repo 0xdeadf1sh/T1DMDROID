@@ -35,61 +35,24 @@ import java.io.Writer
 import java.util.Base64
 
 /**
- * The `t1dm.archive` format: the FULL local record — every reading, every logged event, the
- * user-authored catalogues, the drawings, and the settings document — as **gzipped JSON Lines**.
- *
- * ```
- * {"format":"t1dm.archive","version":1,"createdAtMs":…,"schema":10,"app":"0.22.0","config":{…}}
- * {"t":"reading","s":"…","ts":1712345400000,"bg":132,…}
- * {"t":"meal","cid":"…","ts":…,"g":45.0,…}
- * …
- * {"t":"end","reading":105120,"sample":105120,"meal":812,…}
- * ```
- *
- * **Why lines rather than one JSON document.** A year of five-minute readings is ~105 000 rows, and
- * every whole-document shape — a `JsonObject` tree, a `List<Entity>`, a rendered `String` — costs
- * tens of megabytes of heap on a phone that is also running inference. Records on their own lines
- * mean the writer appends one at a time and the reader parses one at a time, so peak memory is a
- * single row plus the gzip window regardless of how long the user has been running the app. It also
- * buys two things a monolithic document cannot:
- *
- * - **Per-record fault isolation.** One unparseable line is skipped and counted; the restore
- *   continues. This extends the philosophy the drawings import already had — one bad blob must not
- *   cost the user everything else in the file — to the whole schema.
- * - **Detectable truncation.** A backup cut short by a full disk or a killed process is missing its
- *   `end` record, so it is *recognisably* incomplete rather than a plausible-looking partial that
- *   restores quietly short. Without a terminator there is no way to tell one from the other.
- *
- * The price is that the file is not a single valid JSON document. It is gzipped and not meant for
- * hand-editing, so that costs nothing real.
- *
- * **Keys are short** because the common ones repeat six figures of times, and **null fields are
- * omitted** rather than emitted as `null` — `cgm_reading` alone carries five nullable columns, so
- * writing them out would spend a meaningful fraction of the file on the word "null". An absent key
- * decodes as null, which is what makes the omission lossless.
- *
- * Enums ride **by name**, matching `Converters`: reordering an enum can then never silently
- * reinterpret an archived row, and a name a later build introduced fails only its own record.
- * BLOB columns ride as base64 of the SAME little-endian f64 encoding the columns already use
- * ([com.t1dm.data.db.Blobs], [com.t1dm.data.db.PaintStrokeBlob]) — re-expanding a polyline into
- * JSON numbers would triple the file and give the archive a second geometry format to keep in step.
+ * The `t1dm.archive` format: the whole local record as gzipped JSON Lines, one record per line,
+ * terminated by an `end` record — a file missing it was truncated, and one unparseable line is
+ * skipped and counted rather than costing the rest. Keys are short and null fields are omitted; an
+ * absent key decodes as null. Enums ride by name, blobs as base64 of the stored little-endian f64.
  */
 object Archive {
 
     const val FORMAT = "t1dm.archive"
     const val VERSION = 1
 
-    /** The file extension the panel writes. Distinct from `.json` on purpose: the bytes are gzip,
-     *  and a `.json` that no text editor can open is a worse lie than an opaque extension. */
+    /** The bytes are gzip, so not `.json`. */
     const val EXTENSION = "t1dmbak"
 
-    /** GZIP's two magic bytes, as `InputStream.read()` returns them (0–255). The reader sniffs
-     *  these rather than trusting the extension, so a file renamed by a mail client or a cloud sync
-     *  still restores — and a legacy uncompressed backup is recognised by their absence. */
+    /** As `InputStream.read()` returns them (0–255). The reader sniffs these rather than the
+     *  extension, so a renamed file still restores and a legacy uncompressed backup is recognised. */
     const val GZIP_MAGIC_0 = 0x1f
     const val GZIP_MAGIC_1 = 0x8b
 
-    // ── record tags ───────────────────────────────────────────────────────────────────────────
 
     const val T_READING = "reading"
     const val T_SAMPLE = "sample"
@@ -108,31 +71,22 @@ object Archive {
     const val T_EXERCISE = "exercise"
     const val T_EXERCISE_FIX = "exerciseFix"
 
-    /** A deleted logged event. Without it a restore resurrects everything the patient deleted —
-     *  the same defect the catch-up hydration filter exists to prevent, arriving by another door. */
+    /** Without it a restore resurrects everything the patient deleted. */
     const val T_TOMBSTONE = "tombstone"
 
-    /** A PROMOTED reconstruction's 90 % band. The only place that band exists — the wire carries a
-     *  boolean and no fan — so without it a restore brings the value back with no uncertainty. */
+    /** The only copy of a promoted reconstruction's 90 % band: the wire carries a boolean and no fan. */
     const val T_INFILL = "infill"
     const val T_END = "end"
 
-    /** Rows per statement on both paths. Large enough that the per-statement overhead disappears,
-     *  small enough that a page of readings is a few hundred KB rather than a few tens of MB. */
+    /** Rows per statement: a page of readings is a few hundred KB rather than a few tens of MB. */
     const val BATCH = 500
 
     internal val json = Json { ignoreUnknownKeys = true }
 
-    // ── writing ───────────────────────────────────────────────────────────────────────────────
 
     /**
-     * A field-at-a-time JSON object writer over a [Writer].
-     *
-     * It appends straight into the underlying (buffered) writer instead of rendering each record to
-     * a `String` first: at 105 000 rows that intermediate would be 105 000 short-lived allocations
-     * on the export path, which runs unattended and daily. Nothing here is reusable across records
-     * by design — there is no state to reset and therefore no way to leak a field from one row to
-     * the next.
+     * Appends straight into the (buffered) [out] rather than rendering each record to a `String`
+     * first. Holds no state across records, so no field can leak from one row to the next.
      */
     class RecordWriter(private val out: Writer) {
 
@@ -158,9 +112,8 @@ object Archive {
 
         fun put(k: String, v: Double) { key(k); writeDouble(v) }
 
-        /** Written from the FLOAT, not widened to a double first: `4.2f.toDouble().toString()` is
-         *  `4.199999809265137`, which round-trips to the same bits but bloats the file and reads as
-         *  though precision were lost. `Float.toString` gives the shortest form that reloads exactly. */
+        /** From the FLOAT, not widened to a double: `4.2f.toDouble().toString()` is
+         *  `4.199999809265137`. `Float.toString` gives the shortest form that reloads exactly. */
         fun put(k: String, v: Float) {
             key(k)
             if (v.isFinite()) out.write(v.toString()) else writeString(v.toString())
@@ -182,29 +135,21 @@ object Archive {
             if (v != null) { key(k); writeString(B64_ENC.encodeToString(v)) }
         }
 
-        /** Raw pre-rendered JSON (the settings document, which arrives already serialised). */
+        /** Written verbatim; the caller has already serialised it. */
         fun putRaw(k: String, jsonText: String) { key(k); out.write(jsonText) }
 
         /**
-         * JSON has no literal for NaN or either infinity, so a non-finite double is written as a
-         * STRING and read back as one. Emitting the bare `NaN` token would produce a line no parser
-         * accepts — the record would be dropped on restore — and coercing it to null or to zero
-         * would silently invent a value the user never had. These should not occur in a physiologic
-         * column, but "should not" is exactly the case a backup has to survive.
+         * JSON has no literal for NaN or either infinity, so a non-finite double rides as a STRING
+         * and reads back as one. The bare token would produce a line no parser accepts.
          */
         private fun writeDouble(v: Double) {
             if (v.isFinite()) out.write(v.toString()) else writeString(v.toString())
         }
 
         /**
-         * Bulk-copies the runs that need no escaping and only breaks out per character for the ones
-         * that do. Every string in this format — a source id, a UUID, a base64 blob, an enum name —
-         * is clean in the overwhelming majority of cases, so the common path is a single
-         * [Writer.write] of the whole run rather than one call per character.
-         *
-         * Escaping control characters is not cosmetic here: a raw newline inside a free-text note
-         * would split one record across two lines and corrupt every record after it. That is the
-         * one hazard a line-delimited format genuinely has, and this is where it is closed.
+         * Bulk-copies the runs that need no escaping. Escaping control characters is load-bearing:
+         * a raw newline inside a free-text note would split one record across two lines and corrupt
+         * every record after it.
          */
         private fun writeString(s: String) {
             out.write("\"")
@@ -239,13 +184,9 @@ object Archive {
 
     private val CTRL: Array<String> = Array(0x20) { "\\u%04x".format(it) }
 
-    // ── per-entity codecs ─────────────────────────────────────────────────────────────────────
-    //
-    // Every decoder throws on a missing REQUIRED field. That is deliberate and is what makes the
-    // reader's skip-and-count honest: a record that cannot yield a well-formed row is dropped by
-    // itself rather than inserted half-built with defaults standing in for data that was never
-    // there. Autogenerated ids are never carried — an archived row becomes a NEW row on the
-    // restoring device, never a claim on an id that device may already have given to something else.
+    // Every decoder throws on a missing REQUIRED field: a record that cannot yield a well-formed row
+    // is dropped by itself rather than inserted half-built with defaults standing in for data that
+    // was never there. Autogenerated ids are never carried — an archived row becomes a NEW row.
 
     fun write(w: RecordWriter, r: CgmReadingEntity) {
         w.open(T_READING)
@@ -288,10 +229,9 @@ object Archive {
         w.putOrSkip("md", r.mood)
         w.putOrSkip("hr", r.hr)
         w.putOrSkip("sl", r.sleep)
-        // `exg` and not the `ex` an archive written before schema 17 carries: that key held whole
-        // active SECONDS per bucket, and reading one as grams would restore a hundredfold value into
-        // a column that syncs. An unknown key is ignored and an absent one decodes as null, so each
-        // reader drops the other's exercise rather than misreading it.
+        // `exg`, not the `ex` an archive written before schema 17 carries: that key held whole active
+        // SECONDS per bucket, and reading one as grams would restore a hundredfold value into a
+        // column that syncs.
         w.putOrSkip("exg", r.exercise)
         w.putOrSkip("bs", r.bgSource)
         w.put("ua", r.updatedAt)
@@ -303,7 +243,7 @@ object Archive {
         tzOffsetMin = o.int("tz") ?: err("sample", "tz"),
         bgMgdl = o.int("bg"),
         // Absent in a file written before the column existed, which is the honest answer: that
-        // archive genuinely has no record of which sensor produced the reading.
+        // archive has no record of which sensor produced the reading.
         bgSource = o.str("bs"),
         bgProvenance = o.str("pv")?.let(ReadingProvenance::valueOf),
         bgFlag = o.str("fl")?.let(ReadingFlag::valueOf),
@@ -350,8 +290,7 @@ object Archive {
         tzOffsetMin = o.int("tz") ?: err("dose", "tz"),
         note = o.str("n"),
         updatedAt = o.long("ua") ?: err("dose", "ua"),
-        // An archive written before these columns existed has no `lat`; `ua` is the honest reading,
-        // and it is the migration's own backfill rule.
+        // A file written before these columns has no `lat`; `ua` is the migration's own backfill rule.
         loggedAtMs = o.long("lat") ?: o.long("ua") ?: 0L,
         mutatedAtMs = o.long("mut"),
         mutatedActingUntilMs = o.long("mau"),
@@ -413,9 +352,8 @@ object Archive {
         modelId = o.str("m") ?: err("infill", "m"),
         createdAtMs = o.long("ca") ?: err("infill", "ca"),
         spanStartMs = o.long("sp") ?: o.long("ts") ?: 0L,
-        // Restored PROMOTED as written. The `sample` rows in the same archive carry
-        // `bgProvenance = RECONSTRUCTED`, and the two have to agree — a band restored as unpromoted
-        // beside a promoted sample is exactly the disagreement this row exists to prevent.
+        // Restored PROMOTED as written: the `sample` rows in the same archive carry
+        // `bgProvenance = RECONSTRUCTED`, and the two have to agree.
         promotedAtMs = o.long("pa") ?: o.long("ca"),
     )
 
@@ -439,8 +377,8 @@ object Archive {
         tzOffsetMin = o.int("tz") ?: err("tombstone", "tz"),
         updatedAt = o.long("ua") ?: err("tombstone", "ua"),
         createdAtMs = o.long("ca") ?: err("tombstone", "ca"),
-        // A restored deletion is already accounted for on the server it was pushed to; leaving this
-        // null would have the connect-time replay re-file every deletion in the archive.
+        // A restored deletion is already accounted for on the server it was pushed to; null would
+        // have the connect-time replay re-file every deletion in the archive.
         pushEnqueuedAtMs = o.long("pe") ?: o.long("ca"),
         actingUntilMs = o.long("au"),
     )
@@ -493,9 +431,8 @@ object Archive {
         gi = o.dbl("gi"),
         category = o.str("cat") ?: err("food", "cat"),
         source = o.str("src") ?: err("food", "src"),
-        // Always true on restore: only user-added foods are archived, and a restored row is a
-        // user-added row on the new device too. Trusting an archived flag here would let a
-        // hand-edited file smuggle a row past `deleteAllCustom`, which the reset relies on.
+        // Only user-added foods are archived. Trusting an archived flag would let a hand-edited file
+        // smuggle a row past `deleteAllCustom`, which the reset relies on.
         custom = true,
         customCurve = o.blob("cc"),
         updatedAt = o.long("ua") ?: err("food", "ua"),
@@ -544,15 +481,13 @@ object Archive {
         kaPerHour = o.dbl("ka"),
         kePerHour = o.dbl("ke"),
         customCurve = o.blob("cc"),
-        // As with [readFood]: archived types are user-defined by construction, and an archived
-        // `builtin = 1` would survive the reset that is supposed to clear it.
+        // As with [readFood]: an archived `builtin = 1` would survive the reset meant to clear it.
         builtin = false,
         updatedAt = o.long("ua") ?: err("insulinType", "ua"),
     )
 
-    /** `minTsMs`/`maxTsMs` are deliberately NOT written: they are derived from the polyline, and
-     *  [readStroke] recomputes them. Archiving a derived column only creates a way for the file to
-     *  disagree with itself. */
+    /** `minTsMs`/`maxTsMs` are derived from the polyline and deliberately NOT written; [readStroke]
+     *  recomputes them. */
     fun write(w: RecordWriter, r: PaintStrokeEntity) {
         w.open(T_STROKE)
         w.put("ca", r.createdAtMs)
@@ -564,17 +499,9 @@ object Archive {
     }
 
     /**
-     * Decoding the polyline is the validation: [PaintStrokeBlob.decode] refuses a wrong magic,
-     * an unknown layout version and a truncated point array, so a corrupt blob is caught here and
-     * costs one skipped drawing instead of an insert that fails mid-batch and takes the rest of the
-     * page with it.
-     *
-     * The indexed time bounds are recomputed from the decoded points rather than read from the
-     * file. They are the key the viewport query seeks on, so bounds that disagreed with the geometry
-     * would make a drawing invisible at the one window it belongs to — and a hand-edited or
-     * half-written file is exactly where that disagreement would come from. Scanning every point is
-     * required regardless of cost: a stroke that doubles back in X has no sorted first-or-last to
-     * shortcut to.
+     * Decoding the polyline is the validation, so a corrupt blob costs one skipped drawing instead
+     * of an insert that fails mid-batch. The time bounds are recomputed rather than read: they key
+     * the viewport query, and bounds disagreeing with the geometry hide the drawing.
      */
     fun readStroke(o: JsonObject): PaintStrokeEntity {
         val blob = o.blob("pts") ?: err("stroke", "pts")
@@ -597,14 +524,8 @@ object Archive {
         )
     }
 
-    /**
-     * `ac` records WHICH source was live, and is read back only as a preference — never applied
-     * directly. Omitting it entirely (as this first did) left the restore with no way to tell the
-     * worn sensor from a retired one, so it activated whichever row happened to come first, which is
-     * the OLDEST the phone ever saw: the export walks `cgm_source` by `addedAtMs` ascending. On the
-     * fresh install this whole feature exists for, that pointed the reading path at a sensor that
-     * will never advertise again.
-     */
+    /** `ac` records WHICH source was live, and is read back only as a preference — never applied
+     *  directly. Without it a restore activates the oldest row the phone ever saw. */
     fun write(w: RecordWriter, r: CgmSourceEntity) {
         w.open(T_SOURCE)
         w.put("sid", r.sourceId)
@@ -616,63 +537,52 @@ object Archive {
         w.put("wm", r.warmupWindowMin)
         w.put("aa", r.addedAtMs)
         w.putOrSkip("ls", r.lastSeenMs)
-        // `ac` keeps the key and the meaning it has always had — the one sensor being believed — which
-        // is what the column called `active` meant before v14 split the name off the claim. `av` is
-        // the new, weaker flag beside it: the app was reading this sensor.
+        // `ac` keeps the key and the meaning it has always had — the one sensor being believed.
+        // `av` is the weaker flag beside it: the app was reading this sensor.
         w.put("ac", r.authoritative)
         w.put("av", r.active)
         w.put("hd", r.hidden)
-        // The stable per-sensor number. Carried so a restore keeps the number the user has learned to
-        // read as this physical sensor; a file written before the column existed has none, and the
-        // restoring phone assigns one.
+        // The stable per-sensor number. A file written before the column has none, and the restoring
+        // phone assigns one.
         w.put("or", r.ordinal)
         w.close()
     }
 
     /**
-     * [authoritative] is decided by the CALLER, never by the file: `cgm_source` carries an
-     * exactly-one-authoritative invariant (§3.1) and a restore onto a phone that already has a live
-     * sensor must not land a second claimant on it.
+     * [authoritative] is decided by the CALLER, never by the file: `cgm_source` is
+     * exactly-one-authoritative (§3.1), and a restore must not land a second claimant on a live one.
      */
     fun readSource(o: JsonObject, authoritative: Boolean): CgmSourceEntity {
-        // Bound before the constructor call because the class fallback below needs it. A named
-        // argument is not in scope for the arguments after it, so reading `sid` twice was the only
-        // alternative — and the second read would then have to invent a value for the absent case
-        // that the first read has already refused to continue past.
+        // Bound first because the class fallback below needs it: a named argument is not in scope
+        // for the arguments after it.
         val sourceId = o.str("sid") ?: err("source", "sid")
         return CgmSourceEntity(
             sourceId = sourceId,
             vendorId = o.str("vid") ?: err("source", "vid"),
-            // `mid` postdates the archive format, so a file written before the column existed carries
-            // none. It falls back to exactly what MIGRATION_10_11 backfills a stored row with — the two
-            // must agree, or the same sensor would land in one class by upgrade and another by restore,
-            // and its history would split in the panel.
+        // A file written before the column carries no `mid`. The fallback must match what
+        // MIGRATION_10_11 backfills, or the same sensor lands in one class by upgrade and another by
+        // restore, and its history splits in the panel.
             sensorModelId = o.str("mid") ?: legacySensorModelIdFor(sourceId),
-            // Null rather than invented: a source recorded before the column existed genuinely has
-            // no record of what it advertised, and a guess would be indistinguishable from one.
+        // Null rather than invented: a source recorded before the column genuinely has no record of
+        // what it advertised.
             advertName = o.str("an"),
             displayName = o.str("dn") ?: err("source", "dn"),
             serialSuffix = o.str("ss"),
             authoritative = authoritative,
-            // Read from the file, unlike [authoritative]: which sensors the app was reading is the
-            // user's standing decision and carries no invariant across the table. A file written
-            // before v14 split the flags carries only `ac`, and falls back to it — the same seeding
-            // `MigrationRunner.MIGRATION_13_14` applies to a stored row, so the same archive restored
-            // and the same phone upgraded land on the same state.
+        // Read from the file, unlike [authoritative]: it is the user's standing decision and carries
+        // no invariant across the table. A file written before v14 carries only `ac` and falls back
+        // to it — the same seeding `MigrationRunner.MIGRATION_13_14` applies to a stored row.
             active = o.bool("av") ?: o.bool("ac") ?: false,
             warmupWindowMin = o.int("wm") ?: err("source", "wm"),
             addedAtMs = o.long("aa") ?: err("source", "aa"),
             lastSeenMs = o.long("ls"),
-            // Absent in a file written before the column existed, and false is the state every such
-            // row was exported in. Unlike [authoritative] this IS read from the file: it says what the
-            // user did, carries no invariant across the whole table, and dropping it would re-list
-            // every sensor they had removed.
+        // Absent before the column existed, and false is the state every such row was exported in.
+        // Read from the file: it says what the user did, and dropping it would re-list every sensor
+        // they had removed.
             hidden = o.bool("hd") ?: false,
-            // Read from the file but NOT trusted: unlike every other column here, this one describes the
-            // sensor's place among the sensors on one phone rather than the sensor itself, so the same
-            // number may already be in use where the file is landing. The restore resolves that against
-            // the rows already stored, keeping this value wherever it is free — see
-            // `ArchiveReader.renumbered`. The sentinel is what a file written before the column carried.
+        // Read but NOT trusted: this describes the sensor's place among one phone's sensors, so the
+        // number may already be in use where the file lands. `ArchiveReader.renumbered` resolves it.
+        // -1 is what a file written before the column carried.
             ordinal = o.int("or") ?: -1,
         )
     }
@@ -714,9 +624,8 @@ object Archive {
         w.putOrSkip("w9c", r.meanWidth90Cal)
         w.put("wd", r.windowDays)
         w.put("fa", r.fittedAtMs)
-        // The sensor the fit was scoped to rides with it. Dropped, every restored correction would
-        // read as UNKNOWN and be refused by the apply — a restore would silently return the patient
-        // to raw bands. Skipped when absent, so a pre-v26 archive still reads.
+        // The sensor the fit was scoped to rides with it: dropped, every restored correction would
+        // read as UNKNOWN and be refused by the apply — a silent return to raw bands.
         w.putOrSkip("src", r.sourceId)
         w.close()
     }
@@ -725,9 +634,8 @@ object Archive {
         val steps = o.int("st") ?: err("conformal", "st")
         val nq = o.int("nq") ?: err("conformal", "nq")
         val blob = o.blob("d") ?: err("conformal", "d")
-        // The same self-consistency the observer enforces when reading these rows back: a delta whose
-        // length disagrees with its own declared shape cannot be applied to a fan, so it is refused
-        // at the door rather than stored to be silently dropped on every later read.
+        // A delta whose length disagrees with its own declared shape cannot be applied to a fan, so
+        // it is refused at the door rather than stored to be dropped on every later read.
         if (steps <= 0 || nq <= 0 || blob.size != steps * nq * Double.SIZE_BYTES) {
             throw IllegalArgumentException("conformal delta shape disagrees with its blob")
         }
@@ -745,26 +653,16 @@ object Archive {
             meanWidth90Cal = o.dbl("w9c"),
             windowDays = o.int("wd") ?: err("conformal", "wd"),
             fittedAtMs = o.long("fa") ?: err("conformal", "fa"),
-            // Absent in a pre-v26 archive, and absent means UNKNOWN: the correction restores, the
-            // drill-down can still say what it once bought, and the apply refuses to draw it.
+            // Absent means UNKNOWN: the correction restores, and the apply refuses to draw it.
             sourceId = o.str("src"),
         )
     }
 
     /**
-     * A fitted adapter. The weight blob rides verbatim, digest and all — it is `t1dm-core`'s own
-     * serialized form and nothing here interprets it, so a restore either hands back the exact
-     * adapter that was fitted or (on a corrupted blob) is refused by the crate at load.
-     *
-     * `at` (attached) deliberately does NOT ride. Which adapter a model runs is a property of the
-     * phone the model is on, not of the file: restoring a backup must not silently re-attach an
-     * adapter to a live forecast, and the panel is where that choice is made.
-     *
-     * The guard's verdict and every input to it DO ride. It is provenance — what was measured about
-     * this adapter, when, and on what evidence — and dropping it turned a restore into a silent
-     * downgrade to `ABSENT`, which refuses attach with no way to tell "nobody looked" from "the
-     * file forgot". The override does not ride: it was granted by a person on one phone, about one
-     * row, and a restore is not that person saying it again.
+     * The weight blob rides verbatim — `t1dm-core`'s own serialized form, uninterpreted here.
+     * `attached` deliberately does NOT ride: which adapter a model runs is a property of the phone,
+     * not of the file. The guard's verdict and every input to it DO ride, as provenance; the
+     * override does not — it was granted by a person, about one row, on one phone.
      */
     fun write(w: RecordWriter, r: LoraEntity) {
         w.open(T_LORA)
@@ -799,8 +697,7 @@ object Archive {
     fun readLora(o: JsonObject): LoraEntity {
         val blob = o.blob("b") ?: err("lora", "b")
         val nParams = o.int("np") ?: err("lora", "np")
-        // A blob too short to hold its own header and digest can never load, so it is refused at
-        // the door rather than stored to fail on every later read.
+        // A blob too short to hold its own header and digest can never load.
         if (nParams <= 0 || blob.size < 32) {
             throw IllegalArgumentException("adapter blob cannot hold $nParams parameters")
         }
@@ -832,17 +729,15 @@ object Archive {
             guardWhy = o.str("gy").orEmpty(),
             nPaired = o.int("npr") ?: 0,
             distillScale = o.dbl("ds") ?: 0.0,
-            // Zero means "not fitted on THIS phone's history" and is what an older file yields.
-            // [com.t1dm.inference.loraAttachRefusal] reads it that way rather than as an ancient
-            // fit instant, which every log edit would otherwise invalidate for ever.
+            // Zero means "not fitted on THIS phone's history", not an ancient fit instant that every
+            // log edit would invalidate for ever. See [com.t1dm.inference.loraAttachRefusal].
             fittedAtMs = o.long("fa") ?: 0L,
         )
     }
 
     /**
      * `kd` rides as the raw stored TEXT, not through [com.t1dm.core.model.ExerciseKind]: the column
-     * is deliberately unconverted so a bout recorded by a later build survives an older one, and
-     * resolving the enum here would hand that hazard straight back on the restore path.
+     * is unconverted so a bout recorded by a later build survives an older one.
      */
     fun write(w: RecordWriter, r: ExerciseSessionEntity) {
         w.open(T_EXERCISE)
@@ -863,9 +758,8 @@ object Archive {
     fun readExercise(o: JsonObject) = ExerciseSessionEntity(
         clientId = o.str("cid") ?: err("exercise", "cid"),
         startMs = o.long("st") ?: err("exercise", "st"),
-        // Absent means the bout was still open when the archive was written. It restores open and is
-        // closed by the same reconcile that settles a bout the process died under — inventing an end
-        // for it here would claim a stop that never happened.
+        // Absent means the bout was still open when the archive was written, and it restores open.
+        // Inventing an end would claim a stop that never happened.
         endMs = o.long("en"),
         tzOffsetMin = o.int("tz") ?: err("exercise", "tz"),
         kind = o.str("kd") ?: err("exercise", "kd"),
@@ -878,10 +772,8 @@ object Archive {
     )
 
     /**
-     * A fix carries its bout's `clientId` rather than the stored `sessionId`. The rowid is
-     * autogenerated per device, so on the restoring phone it names a different bout — or none —
-     * exactly as `saved_meal_item.mealId` does; the difference is that a bout HAS a stable
-     * phone-minted id, so the link travels as that instead of as a positional index.
+     * A fix carries its bout's `clientId` rather than the stored `sessionId`: the rowid is
+     * autogenerated per device, so on the restoring phone it would name a different bout, or none.
      */
     fun write(w: RecordWriter, r: ExerciseFixEntity, sessionClientId: String) {
         w.open(T_EXERCISE_FIX)
@@ -894,8 +786,8 @@ object Archive {
         w.close()
     }
 
-    /** The parent's `clientId` beside the row; `sessionId` is a placeholder the reader resolves once
-     *  it knows which local bout the archived one became. */
+    /** `sessionId` is a placeholder the reader resolves once it knows which local bout the archived
+     *  one became. */
     fun readExerciseFix(o: JsonObject): Pair<String, ExerciseFixEntity> {
         val cid = o.str("cid") ?: err("exerciseFix", "cid")
         return cid to ExerciseFixEntity(
@@ -914,11 +806,8 @@ object Archive {
     internal fun decodeB64(s: String): ByteArray = B64_DEC.decode(s)
 }
 
-// ── field accessors over one parsed record ────────────────────────────────────────────────────
-//
-// File-level rather than members of [Archive] so a reader can call `o.str("nm")` directly instead
-// of through a scoping block. An absent key decodes as null, which is what makes the writer's
-// omit-nulls policy lossless.
+// File-level rather than members of [Archive] so a reader can call `o.str("nm")` directly. An absent
+// key decodes as null, which is what makes the writer's omit-nulls policy lossless.
 
 private fun JsonObject.prim(k: String): JsonPrimitive? = this[k] as? JsonPrimitive
 
@@ -930,8 +819,8 @@ internal fun JsonObject.bool(k: String): Boolean? = prim(k)?.booleanOrNull
 
 internal fun JsonObject.str(k: String): String? = prim(k)?.contentOrNull
 
-/** Mirrors the writer's double handling: a finite double arrives as a number, a non-finite one as
- *  the string `NaN` / `Infinity` / `-Infinity`, and both decode back to the value written. */
+/** A finite double arrives as a number, a non-finite one as the string `NaN` / `Infinity` /
+ *  `-Infinity`; both decode back to the value written. */
 internal fun JsonObject.dbl(k: String): Double? {
     val p = prim(k) ?: return null
     return p.doubleOrNull ?: p.contentOrNull?.toDoubleOrNull()

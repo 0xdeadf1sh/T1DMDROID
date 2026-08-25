@@ -38,11 +38,10 @@ class SplitAndBasalTest {
             tzOffsetMin = 0,
             doses = listOf(BasalDoseSpec(timeOfDayMin = 8 * 60, doseU = 0.0, durationMin = 1440.0, kaPerHour = 0.30, kePerHour = 0.07)),
         )
-        // A port whose BG falls with total basal (candidateU proxy is 0 here; model overnight risk via start).
         val goodPort = BasalForecastPort { schedule, rollStartMs, nSteps, validated ->
             val total = schedule.doses.sumOf { it.doseU }
             val steps = (0 until nSteps).map { i ->
-                val median = 220.0 - total * 6.0 // more basal ⇒ lower fasting BG
+                val median = 220.0 - total * 6.0
                 FanStep(median, median - 8.0, median + 8.0)
             }
             PredFan(0.0, steps, STEP_MS, validated, com.t1dm.core.model.ForecastStatus.OK, ForecastEligibility.ELIGIBLE)
@@ -50,7 +49,6 @@ class SplitAndBasalTest {
         val calc = BasalCalculator(goodPort)
         val ranked = calc.search(template, totalGrid = listOf(10.0, 16.0, 22.0, 28.0), rollStartMs = now, rollHours = 6.0, config = CalcConfig(objective = Objective.MinKovatchevRisk))
         assertTrue(ranked.isNotEmpty())
-        // Best should be the total that brings fasting BG nearest target without going low.
         assertTrue("ranked best is finite", ranked.first().score.isFinite())
         assertTrue("totals preserved", ranked.all { it.totalDailyU in listOf(10.0, 16.0, 22.0, 28.0) })
 

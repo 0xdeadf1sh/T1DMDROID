@@ -4,12 +4,7 @@ import com.t1dm.core.common.T1dmDispatchers
 import java.time.Instant
 import kotlinx.coroutines.withContext
 
-/**
- * Fetches [actor]'s Bluesky author feed via [BlueskyClient] and maps the wire DTOs to [PubPost]s.
- * The last successful result is memoised in [lastGood] so a screen re-entry paints immediately
- * instead of flashing a spinner; a load failure propagates the client's plain-language throw
- * untouched (the screen turns it into an error state), leaving [lastGood] intact.
- */
+/** A failure propagates the client's throw untouched and leaves [lastGood] intact. */
 class PubsRepository(
     private val client: BlueskyClient,
     private val dispatchers: T1dmDispatchers,
@@ -50,11 +45,8 @@ private fun PostView.toPubPost(): PubPost {
     )
 }
 
-/**
- * Turn an `at://<did>/app.bsky.feed.post/<rkey>` uri into its public bsky.app permalink, keyed on the
- * resolvable [handle] rather than the opaque DID. The record key is the tail after the last '/';
- * anything that doesn't match the post shape degrades to the author's profile page.
- */
+/** Keyed on the resolvable [handle], not the DID. Anything not shaped like a post degrades to the
+ *  author's profile page. */
 private fun permalink(atUri: String, handle: String): String {
     val rkey = atUri
         .takeIf { it.startsWith("at://") && it.contains("/app.bsky.feed.post/") }

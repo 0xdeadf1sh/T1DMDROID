@@ -6,14 +6,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Test
 
-/**
- * The rule that keeps a stored action/appearance curve honest across an edit.
- *
- * A curve is stored ABSOLUTE and the engine prefers it over the amount beside it, so a curve
- * carried across an edit unchanged goes on describing the pre-edit dose: 8 U logged as 4 U and then
- * corrected reads 8 U everywhere while IOB keeps returning the 4 U curve, and the ceiling rail then
- * admits roughly the difference.
- */
+/** A curve is stored ABSOLUTE, and the engine prefers it over the amount beside it. */
 class CurveAfterEditTest {
 
     private fun dose(units: Double, curve: List<Double>?, durationMin: Double = 300.0) =

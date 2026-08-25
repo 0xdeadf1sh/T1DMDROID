@@ -11,12 +11,6 @@ import com.t1dm.data.db.SavedMealItemEntity
 import com.t1dm.data.db.toBlob
 import com.t1dm.data.db.toDoubleList
 
-/**
- * Entity ⇄ model projections for the meal builder / insulin builder (Phase 4).
- * Kept out of the concurrently-edited `Mappers.kt` and scoped to this package. The normalized
- * custom-curve BLOBs use the shared little-endian `f64` codec ([toBlob]/[toDoubleList]).
- */
-
 internal fun FoodEntity.toModel(): Food = Food(
     id = id,
     name = name,
@@ -29,7 +23,6 @@ internal fun FoodEntity.toModel(): Food = Food(
     customCurve = customCurve?.toDoubleList(),
 )
 
-/** A custom-food row from the food builder (always `custom = true`). */
 internal fun Food.toCustomEntity(nowMs: Long): FoodEntity = FoodEntity(
     id = id,
     name = name,
@@ -43,7 +36,6 @@ internal fun Food.toCustomEntity(nowMs: Long): FoodEntity = FoodEntity(
     updatedAt = nowMs,
 )
 
-/** Drop a dictionary food into the builder as a portion. */
 internal fun Food.toComponent(grams: Double): MealComponent = MealComponent(
     foodId = id,
     name = name,

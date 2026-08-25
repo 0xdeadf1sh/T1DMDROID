@@ -10,43 +10,12 @@ import org.junit.Test
 import java.io.File
 
 /**
- * Holds the migrations' frozen SQL against the Kotlin the running app uses.
- *
- * Two things are pinned here, for the same reason in two shapes: a migration describes what the
- * schema became at a fixed point, so it cannot read a constant a later edit could move underneath
- * it, and nothing else notices when the two drift.
- *
- *  - `MIGRATION_10_11`'s sensor-model literals against [CgmSensorModelId] / [CgmSourceId].
- *  - `MIGRATION_17_18`'s `cgm_sample_raw` DDL against [CgmRawSampleEntity]'s own field list. Room
- *    checks the entity against the schema it generates, and it checks the migrated database against
- *    that schema at open — but nothing checks the migration's hand-written DDL until an upgrade runs
- *    on a real install, where a mismatch is a launch crash rather than a lost row (there is no
- *    destructive fallback).
- *
- * A migration may not read [CgmSensorModelId] — it describes what the schema became at a fixed point, and
- * a later rename there would silently rewrite history for every device that upgrades afterwards. So
- * the model ids appear in the migration as literal strings, and this is what stops the two drifting:
- * rename [CgmSensorModelId.AIDEX_X] without amending the SQL and stored sensors would be backfilled into
- * one class while every newly discovered sensor joined another, splitting one history in two on the
- * BG panel with nothing failing anywhere.
- *
- * These read [MigrationRunner]'s own statement strings rather than a transcription of them —
- * a copy of the SQL here would pass happily while the migration said something else.
- *
- * Nothing runs this on its own: it is reached only by `:data:testDebugUnitTest`, invoked by hand.
- * Run it after touching either side.
+ * A migration may not read a Kotlin constant a later rename could move, and its hand-written DDL is
+ * checked nowhere until an upgrade runs on a device — a launch crash, with no destructive fallback.
+ * These read `MigrationRunner`'s own statements, never a transcription.
  */
 class MigrationConstantsTest {
 
-    /**
-     * The v19→v20 DDL against the schema Room itself generated for those entities.
-     *
-     * Room checks the ENTITY against its generated schema, and it checks a MIGRATED database
-     * against that schema at open — but nothing checks the hand-written migration SQL until an
-     * upgrade runs on a real install, where a one-column drift is a launch crash rather than a lost
-     * row (there is no destructive fallback). The exported schema JSON is tracked, so that check
-     * can happen here, on every build, instead of on the phone.
-     */
     /** One exported schema, whichever directory the suite runs from. */
     private fun schemaText(version: Int): String {
         val schema = File("schemas/com.t1dm.data.db.AppDatabase/$version.json")
@@ -56,7 +25,6 @@ class MigrationConstantsTest {
         return schema.readText()
     }
 
-    /** One entity's own `createSql`, with Room's placeholder resolved. */
     private fun createSqlOf(text: String, table: String): String {
         val at = text.indexOf("\"tableName\": \"$table\"")
         assertTrue("entity $table is absent from the exported schema", at > 0)
@@ -75,9 +43,7 @@ class MigrationConstantsTest {
 
         assertEquals(createSql("lora"), MigrationRunner.SQL_19_20_CREATE_LORA)
         assertEquals(createSql("bg_infill"), MigrationRunner.SQL_19_20_CREATE_INFILL)
-        // The index carries its own name into the schema, so a rename here is a mismatch there.
-        // Room stores it with the table placeholder unresolved, so put the placeholder back rather
-        // than resolving the schema's copy.
+        // Room stores the index with the table placeholder unresolved, so put it back.
         val index = MigrationRunner.SQL_19_20_CREATE_LORA_INDEX
             .replace("`lora`", "`\${TABLE_NAME}`")
             .replace("\"", "\\\"")
@@ -85,17 +51,8 @@ class MigrationConstantsTest {
     }
 
     /**
-     * Every column v21, v22 and v23 ADD, against the schema Room generates for a FRESH install.
-     *
-     * The v20 check above compares whole `CREATE TABLE`s, which an additive migration has none of.
-     * That left the three additive versions spot-checked by substring, and it is exactly the additive
-     * case that drifts: a Kotlin default governs the INSERT and says nothing about the DDL, so an
-     * `ALTER TABLE … DEFAULT 0` on an upgrade against a column declared without `@ColumnInfo`
-     * produces two different tables for one schema version. Room reports that as a mismatch on the
-     * first open of whichever install it did not generate the schema from.
-     *
-     * The check reads each migration's own SQL rather than a list written out here: a column added
-     * to the migration and not to the entity fails without anything being added to this test.
+     * A Kotlin default governs the INSERT and says nothing about the DDL, so an additive migration can
+     * build a different table from a fresh install's. Read from the migration's own SQL by reflection.
      */
     @Test
     fun `every column the additive migrations add is in the exported schema`() {
@@ -149,11 +106,7 @@ class MigrationConstantsTest {
         )
     }
 
-    /**
-     * An upgrade in place and a restore from a pre-`modelId` archive must put the same sensor in the
-     * same class. They are different code paths — SQL in the migration, Kotlin in the archive reader
-     * — so nothing but this makes them agree.
-     */
+    /** Different code paths: SQL in the migration, Kotlin in the archive reader. */
     @Test
     fun `the archive fallback agrees with the migration backfill`() {
         assertEquals(CgmSensorModelId.AIDEX_DEBUG, legacySensorModelIdFor(CgmSourceId.DEBUG.value))
@@ -171,12 +124,6 @@ class MigrationConstantsTest {
         )
     }
 
-    /**
-     * The upgrade path and the fresh-install path must build the same `cgm_sample_raw`. Room builds
-     * one from [CgmRawSampleEntity]; the migration builds the other by hand. Add a field to the
-     * entity without amending the DDL and a fresh install gets the column while an upgrade does not
-     * — and Room refuses to open the upgraded database at all.
-     */
     @Test
     fun `the raw-sample DDL declares exactly the entity's columns`() {
         val declared = BACKTICKED.findAll(MigrationRunner.SQL_17_18_CREATE_TABLE)
@@ -194,7 +141,6 @@ class MigrationConstantsTest {
         )
     }
 
-    /** The table both statements name, and the index name Room derives from `@Index("rxWallMs")`. */
     @Test
     fun `the raw-sample DDL names the table and index Room will look for`() {
         assertTrue(
@@ -213,18 +159,12 @@ class MigrationConstantsTest {
         )
     }
 
-    /** Re-running a migration must not fail on an object that already exists. */
     @Test
     fun `the raw-sample DDL is idempotent`() {
         assertTrue(MigrationRunner.SQL_17_18_CREATE_TABLE.startsWith("CREATE TABLE IF NOT EXISTS "))
         assertTrue(MigrationRunner.SQL_17_18_CREATE_INDEX.startsWith("CREATE INDEX IF NOT EXISTS "))
     }
 
-    /**
-     * The same guard as the raw-sample one, for the same reason: `cgm_sensor_secret` is built by hand in
-     * the migration and by Room on a fresh install, and nothing compares the two until an upgrade runs on
-     * a real device — where a mismatch is a launch crash, not a lost row.
-     */
     @Test
     fun `the sensor-secret DDL declares exactly the entity's columns`() {
         val declared = BACKTICKED.findAll(MigrationRunner.SQL_18_19_CREATE_SECRET)
@@ -256,13 +196,7 @@ class MigrationConstantsTest {
         )
     }
 
-    /**
-     * The `ordinal` column, and its DEFAULT.
-     *
-     * Room compares column defaults as part of the schema, so the ALTER must carry the same one
-     * [CgmSourceEntity] declares — otherwise the upgraded database differs from a fresh install in a way
-     * Room refuses to open, on a store with no destructive fallback.
-     */
+    /** Room compares column defaults, so the ALTER must carry the one the entity declares. */
     @Test
     fun `the ordinal column matches what the entity declares, default included`() {
         val alter = MigrationRunner.SQL_18_19_ADD_ORDINAL
@@ -273,8 +207,6 @@ class MigrationConstantsTest {
             "the default must match @ColumnInfo(defaultValue = \"-1\"): $alter",
             alter.contains("DEFAULT -1"),
         )
-        // The same sentinel is now also stated in Kotlin, for the descriptor the lists are built from,
-        // and the two have to agree: a row carrying the column default must read back as unnumbered.
         assertTrue(
             "the SQL default and CgmSourceDescriptor.UNASSIGNED_ORDINAL must be the same value: $alter",
             alter.contains("DEFAULT ${com.t1dm.core.model.CgmSourceDescriptor.UNASSIGNED_ORDINAL}"),
@@ -282,12 +214,8 @@ class MigrationConstantsTest {
     }
 
     /**
-     * The backfill must number every row exactly once, from zero, in the order the lists already use.
-     *
-     * Run here as SQL semantics rather than as a string match: the tiebreak on `sourceId` is what stops
-     * two sensors sharing an `addedAtMs` from sharing a number, and `<=` on that branch is what makes each
-     * row count itself so the sequence starts at zero. Both are easy to write the other way round and
-     * neither would fail anywhere else.
+     * The `sourceId` tiebreak stops two rows sharing a number; `<=` on that branch is what makes the
+     * sequence start at zero. Both are easy to write the other way round.
      */
     @Test
     fun `the ordinal backfill numbers every row once, from zero, in list order`() {
@@ -297,7 +225,7 @@ class MigrationConstantsTest {
             "v2:A" to 50L,  // a second vendor, and the oldest row
             "v1:D" to 300L,
         )
-        // The statement's own arithmetic, evaluated in Kotlin against the same order.
+        // The statement's own arithmetic, in Kotlin.
         val numbered = rows.associate { (id, added) ->
             id to rows.count { (id2, added2) -> added2 < added || (added2 == added && id2 <= id) } - 1
         }
@@ -314,13 +242,8 @@ class MigrationConstantsTest {
     }
 
     /**
-     * The v19 statements name only tables and columns — no sensor vendor, family or model anywhere.
-     *
-     * Stated as an ALLOWLIST of the identifiers these statements may use, rather than as a list of names
-     * they may not. A denylist would have to spell every vendor's name in a file that is shared verbatim
-     * with the public branch, which is the opposite of what it is trying to enforce; and it would go stale
-     * the moment a family were added. A migration describes what the schema became at a fixed point, so a
-     * name that could be renamed later must not appear in one at all.
+     * An allowlist, not a denylist: a denylist would have to spell every vendor's name in a file
+     * shared verbatim with the public branch.
      */
     @Test
     fun `the v19 statements name only tables and columns`() {
@@ -340,11 +263,8 @@ class MigrationConstantsTest {
     }
 
     /**
-     * The v21 statements are additive and back-fill honestly.
-     *
-     * The backfill is the half worth pinning: `loggedAtMs` takes `updatedAt`, which is right only
-     * because nothing could edit a pre-v21 row. A backfill to `0` would put every existing dose's
-     * log-gap mark at the epoch and make `Rails.mandatoryConfirmation` fire forever.
+     * `loggedAtMs` takes `updatedAt`: a backfill to 0 would put every existing dose's log-gap mark at
+     * the epoch and make `Rails.mandatoryConfirmation` fire forever.
      */
     @Test
     fun `the v21 statements add columns and back-fill loggedAtMs from updatedAt`() {
@@ -376,12 +296,8 @@ class MigrationConstantsTest {
     }
 
     /**
-     * The v23 statements are additive, and the verdict back-fills to the state that REFUSES.
-     *
-     * That default is the safety property: `ABSENT` means nobody has checked whether this adapter
-     * still lets the model respond to insulin, and an unchecked adapter must be blocked exactly
-     * like a checked-and-failed one. A default of `'PASS'` would silently attach every adapter
-     * that predates the guard.
+     * `ABSENT` means nobody has checked, and must block like a checked-and-failed adapter; a `'PASS'`
+     * default would silently attach every adapter that predates the guard.
      */
     @Test
     fun `the v23 verdict back-fills to the state that refuses attach`() {
@@ -390,8 +306,7 @@ class MigrationConstantsTest {
         assertTrue("an unmeasured adapter must default to ABSENT: $sql", sql.contains("DEFAULT 'ABSENT'"))
         assertFalse("never PASS: $sql", sql.contains("PASS"))
 
-        // The override and the history stamp are NULLABLE: absent is the ordinary state for both,
-        // and a defaulted zero would read as "overridden at the epoch".
+        // Nullable: a defaulted zero would read as "overridden at the epoch".
         for (sql in listOf(
             MigrationRunner.SQL_22_23_LORA_GUARD_OVERRIDE,
             MigrationRunner.SQL_22_23_LORA_HISTORY_MUTATED,

@@ -1,30 +1,13 @@
 package com.t1dm.core.model
 
-/**
- * The UI- and persistence-facing inference-runtime domain types (Phase 2, §3.2 /
- * §2.4). They live in `:core:model` — not `:inference` — so the graph overlay (`:ui:graph`) and the
- * Hardware / Models panels can render a forecast and per-model telemetry without depending on the
- * ExecuTorch backend module. The `InferenceBackend` seam itself (GraphInput/GraphOutput/backends)
- * stays in `:inference`; only the *results* cross into shared model space here.
- */
-
-/** Numeric precision a backend runs at. fp32 XNNPACK is the Phase-2 authority; fp16 is deferred.
- *  [FP64] is not an ExecuTorch path at all — it is the Rust core's own `f64`, which is what the
- *  classical baseline's solve and forecast run in end to end. */
+/** [FP64] is not an ExecuTorch path at all — it is the Rust core's own `f64`, which the classical
+ *  baseline's solve and forecast run in end to end. */
 enum class Precision { FP64, FP32, FP16 }
 
 /**
- * Which runtime executed a model this cycle (§3.2). `STUB` is the fixed-output
- * fallback used when no real `.pte` is present, so the whole pipeline still builds and runs.
- *
- * [EXECUTORCH_XNNPACK_FP32] is the authoritative CPU path (the only one that executes today).
- * [LITERT_NPU] is the LiteRT-unified MediaTek-NeuroPilot NPU path (issue 1): its `.tflite` artifact
- * converts from the SAME modified forward via litert-torch and matches the fp32 authority to
- * `max|Δ| ≈ 1.4e-6` on host, but on-device execution is blocked for a sideload build (the NeuroPilot
- * NPU runtime ships via Google Play PODAI / Play Feature Delivery). [EXECUTORCH_NEURON_FP16] and the
- * legacy [LITERT_NEURON_FP16] TFLite-delegate id remain enumerated but unavailable — see each
- * backend's plain-language reason ([com.t1dm.inference.backend]). The distinction is surfaced
- * verbatim on the Hardware / Models panels — no "stub" ambiguity.
+ * [EXECUTORCH_XNNPACK_FP32] is the authority and the only path that executes today; [STUB] is the
+ * fixed-output fallback when no real `.pte` is present. The rest are enumerated but unavailable —
+ * the NPU runtimes ship via Play, not to a sideload build.
  */
 enum class BackendId {
     EXECUTORCH_XNNPACK_FP32,
@@ -37,12 +20,6 @@ enum class BackendId {
     STUB,
 }
 
-/**
- * Human-readable backend label for the Hardware / Models panels (issue 1 — no "stub" ambiguity).
- * Names the engine + numeric precision + the compute unit it targets; the *live* execution truth is
- * the panel's "Executing on:" line (from the selected [RunningModel]), while this names the routing
- * target itself.
- */
 fun BackendId.displayName(): String = when (this) {
     BackendId.EXECUTORCH_XNNPACK_FP32 -> "XNNPACK CPU · fp32"
     BackendId.EXECUTORCH_NEURON_FP16 -> "Neuron NPU · fp16"
@@ -55,13 +32,9 @@ fun BackendId.displayName(): String = when (this) {
 }
 
 /**
- * One entry in the forecast-backend switcher catalog (issue 20 STEP 4). Enumerates a backend the
- * controller can route the FORECAST CYCLE to, with an evidence-based availability verdict: [available]
- * is true only when a real `.pte` for this engine is on device AND its native `load` succeeded on the
- * runtime classpath; otherwise [reason] states plainly why not (no artifact, no delegate in the AAR,
- * a partner-gated runtime, a load failure). [precision] is the numeric precision the backend runs at.
- * [authoritative] marks the fp32 XNNPACK CPU reference — the only backend trusted for dosing without
- * an agreement probe (§3.6-E).
+ * [available] is true only when a real `.pte` for this engine is on device AND its native `load`
+ * succeeded; otherwise [reason] states why not. [authoritative] marks the fp32 XNNPACK reference —
+ * the only backend trusted for dosing without an agreement probe (§3.6-E).
  */
 data class BackendAvailability(
     val backend: BackendId,
@@ -72,12 +45,10 @@ data class BackendAvailability(
 )
 
 /**
- * The honest on-device comparison of a NON-authoritative backend against the fp32 XNNPACK authority
- * (issue 20 STEP 3 + the §3.6-E agreement gate). Both backends run the SAME fixed deterministic input;
- * timings are medians over [runs] warm forwards plus the first (cold) forward, numerics are the worst-
- * case absolute deltas of `head_raw` (risk space) and the decoded mg/dL median fan. [agreementOk] is
- * the gate verdict: the decoded-mg/dL worst delta is within [toleranceMgdl]. A backend only feeds the
- * dosing path once [agreementOk] is true (BackendInfo.trustworthy) — the forecast may still render.
+ * Both backends run the SAME fixed deterministic input; timings are medians over [runs] warm
+ * forwards plus the first (cold) forward, numerics the worst-case absolute deltas of `head_raw`
+ * (risk space) and the decoded mg/dL median fan. [agreementOk] gates the dosing path only (§3.6-E);
+ * the forecast may render either way.
  */
 data class BackendComparison(
     val backend: BackendId,
@@ -96,7 +67,7 @@ data class BackendComparison(
     val loadRssGrowthKb: Long? = null,
 )
 
-/** One model in the running set (≤5; §2.3), tagged by the descriptor's `model_id`. */
+/** The running set is ≤5 (§2.3); [modelId] is the descriptor's `model_id`. */
 data class RunningModel(
     val modelId: String,
     val backend: BackendId,
@@ -105,11 +76,9 @@ data class RunningModel(
 )
 
 /**
- * Static, size-reasoning metadata for a running model (Phase 7C — Models panel meta rows). The
- * arch dims + [paramCount] come from the descriptor (`geometry` + the display-only `model_card`
- * block the exporter stamps); [diskBytes] is the `stat`'d artifact size (null when the `.pte` is
- * absent and the StubBackend stands in). [reference] carries the model's own held-out validation
- * metrics (train.py) as a REFERENCE — distinct from the on-device realized [MetricsSuite].
+ * [diskBytes] is the `stat`'d artifact size, null when the `.pte` is absent and the StubBackend
+ * stands in. [reference] carries the model's own held-out validation metrics as a REFERENCE —
+ * distinct from the on-device realized [MetricsSuite].
  */
 data class ModelMeta(
     val modelId: String,
@@ -128,14 +97,9 @@ data class ModelMeta(
     val reference: ReferenceMetrics? = null,
 )
 
-/**
- * The exported model's held-out validation reference metrics (from the descriptor `model_card`).
- *
- * Parsed because the block is part of the descriptor, and **rendered nowhere**. These are another
- * dataset's numbers: shown beside the on-device realized suite they read as a second opinion on this
- * patient's forecasts, which is the one thing they cannot be. Whatever needs them next is not the
- * Models drill-down.
- */
+/** Parsed because the block is part of the descriptor, and rendered NOWHERE: these are another
+ *  dataset's numbers, and beside the realized suite they read as a second opinion on this patient's
+ *  forecasts, which is the one thing they cannot be. */
 data class ReferenceMetrics(
     val horizonsMin: List<Int>,
     val rmseMgdl: List<Double?>,
@@ -147,12 +111,7 @@ data class ReferenceMetrics(
     val todMaeHiconfH: Double?,
 )
 
-/**
- * CUMULATIVE per-model inference telemetry (Phase 7C — Models drill-down). Unlike [ModelLatency]
- * (a rolling p50/p95 window), this is a durable running total the CycleRunner increments every
- * cycle and persists, surviving process restarts: how many forecasts a model has produced, the
- * TOTAL wall-time spent in its backend forward, and the derived average.
- */
+/** CUMULATIVE and persisted across process restarts, unlike [ModelLatency]'s rolling window. */
 data class ModelTelemetry(
     val modelId: String,
     val predictions: Long,
@@ -161,7 +120,7 @@ data class ModelTelemetry(
     val avgInferenceMs: Double get() = if (predictions > 0) totalInferenceMs / predictions else 0.0
 }
 
-/** Rolling per-model backend latency (ms) for the Hardware panel (Phase 2 §8). */
+/** Rolling per-model backend latency, ms. */
 data class ModelLatency(
     val modelId: String,
     val runs: Int,
@@ -171,26 +130,18 @@ data class ModelLatency(
 )
 
 /**
- * A decoded forecast for one model at one 5-min cycle (Phase 2 deliverable 4).
- * [medianBg] is the `P·S` mg/dL headline line; [bandsMgdl] the `P·S·[nQuantiles]` ascending-τ fan
- * (step-major `i = p·S + s`, then the τ column), both already `f_inv`-decoded in the Rust core.
- * [status] is the §3.6-B degeneracy verdict; a non-`OK` prediction is ineligible to drive a rail
- * or a predictive alert. [stale] marks a forecast whose anchor is older than the freshness gate
- * (§3.6-D) — surfaced now, enforced by the calculators in Phase 4.
+ * [medianBg] is the `P·S` mg/dL headline line; [bandsMgdl] the `P·S·[nQuantiles]` ascending-τ fan,
+ * step-major (`i = p·S + s`) then the τ column, both already `f_inv`-decoded in the Rust core.
+ * [status] is the §3.6-B degeneracy verdict and [stale] an anchor past the freshness gate (§3.6-D);
+ * a non-`OK` or stale prediction may not drive a rail or a predictive alert.
  */
 data class ModelPrediction(
     val modelId: String,
     val cycleTsMs: Long,
     val anchorTsMs: Long,
-    /**
-     * The CGM source whose readings conditioned this forecast, or null when none is known.
-     *
-     * It is here so a matured window can be refused unless the sensor that produced the forecast is
-     * the sensor now supplying its truth. Two sensors worn at once disagree — 28 mg/dL between two
-     * of this patient's — and scoring across a swap measures that gap and calls it model error,
-     * which the §8.4 fit then pushes into the band the patient is shown. Null is UNKNOWN and never
-     * matches, so an unstamped forecast is dropped rather than guessed at.
-     */
+    /** The CGM source whose readings conditioned this forecast. Two sensors worn at once disagree,
+     *  so scoring a matured window across a swap measures that gap and calls it model error. Null
+     *  is UNKNOWN and never matches, so an unstamped forecast is dropped rather than guessed at. */
     val sourceId: String? = null,
     val stepMs: Long,
     val medianBg: List<Double>,
@@ -203,32 +154,20 @@ data class ModelPrediction(
     val selected: Boolean,
     val stale: Boolean,
     val latencyMs: Double?,
-    /**
-     * The model's decoded circadian-phase belief this cycle, or null when the descriptor lacks a
-     * time section (graph cut at `head_raw`), the backend returned no second output, or the decode
-     * failed (fail-open — never blocks the BG forecast). Reachable for the BG panel via
-     * [InferenceState.selectedPrediction]`?.predictedTime`.
-     */
+    /** Null when the descriptor lacks a time section (graph cut at `head_raw`), the backend
+     *  returned no second output, or the decode failed — fail-open, never blocks the BG forecast. */
     val predictedTime: PredictedTime? = null,
 ) {
-    /** `true` iff this forecast is fit to render/drive (finite, ordered, non-collapsed, fresh). */
     val eligible: Boolean get() = status == ForecastStatus.OK && !stale
 
-    /** The step count `P·S` of the horizon (derived from [medianBg]). */
     val horizonSteps: Int get() = medianBg.size
 }
 
 /**
- * The decoded hour-of-day belief of a model's co-trained TIME PROBE for one cycle (mirrors the
- * Rust `PredictedTime`; Phase 7A). This is a CIRCADIAN-PHASE belief — the model's
- * estimate of **what hour-of-day it currently is**, NOT a per-forecast-step timestamp. A
- * predicted-time axis for the forecast is [predictedHour] plus each step's offset.
- *
- * [probs] is the [nBins]-long softmax of the ORIGIN prediction patch's logits; [predictedHour] the
- * mean-resultant hour in `[0,24)`; [resultantR] the resultant length in `[0,1]` = the circular
- * concentration (confidence — near 0 means the belief is diffuse / effectively undefined).
- * Non-null only when the selected model's descriptor carries a time section AND the decode
- * succeeded; the BG panel must treat null as "predicted time unavailable in this model build".
+ * The model's estimate of WHAT HOUR-OF-DAY IT IS NOW, not a per-forecast-step timestamp; a
+ * predicted-time axis is [predictedHour] plus each step's offset. [probs] is the [nBins]-long
+ * softmax of the ORIGIN prediction patch's logits, [predictedHour] the mean-resultant hour in
+ * `[0,24)`, [resultantR] the resultant length in `[0,1]` — near 0 the belief is diffuse.
  */
 data class PredictedTime(
     val probs: List<Double>,
@@ -238,20 +177,14 @@ data class PredictedTime(
     val binHours: Double,
 )
 
-/**
- * What triggered a cycle, surfaced for the Hardware/Models panels and logs. [LOG_WRITE] is a cycle a
- * logged meal/dose (or its withdrawal) fired off the curve channels it moved, rather than one the
- * cadence driver's tick fired; it runs the same controller path through the same gates, and is
- * distinguished only so a panel can say which of the two published the forecast on screen.
- */
+/** [LOG_WRITE] is a cycle a logged meal or dose (or its withdrawal) fired off the curve channels it
+ *  moved rather than the cadence tick; same controller path, same gates. */
 enum class InferenceCause { GRID_TICK, LOG_WRITE, MANUAL, SYNTHETIC, COLLECTING_CONTEXT, OVER_TEMPERATURE }
 
 /**
- * The device-temperature reading the inference gate reasons over (D1: the BATTERY-sensor °C — a true
- * die temp is unreadable on this device). [thresholdC] is the pause line; [warnMarginC] is how far
- * below it the TEMP chip turns amber; [resumeMarginC] is the hysteresis band the controller keeps
- * inference paused across until the reading falls below `thresholdC - resumeMarginC` (avoids flapping
- * on/off at the boundary). All fields are Celsius.
+ * The BATTERY sensor's °C — a true die temp is unreadable on this device. [thresholdC] is the pause
+ * line, [warnMarginC] how far below it the TEMP chip turns amber, [resumeMarginC] the hysteresis
+ * inference stays paused across until the reading falls below `thresholdC - resumeMarginC`.
  */
 data class ThermalStatus(
     val currentC: Double,
@@ -263,7 +196,7 @@ data class ThermalStatus(
 /** TEMP-chip band (D1): NORMAL below the warn margin, WARN within it, CRITICAL at/above threshold. */
 enum class ThermalLevel { NORMAL, WARN, CRITICAL }
 
-/** Compares in Celsius; thresholdC null ⇒ NORMAL (gate disabled ⇒ chip stays its normal color). */
+/** Celsius; null [thresholdC] ⇒ NORMAL, the gate being disabled. */
 fun thermalLevel(celsius: Double, thresholdC: Double?, warnMarginC: Double): ThermalLevel = when {
     thresholdC == null -> ThermalLevel.NORMAL
     celsius >= thresholdC -> ThermalLevel.CRITICAL
@@ -272,23 +205,17 @@ fun thermalLevel(celsius: Double, thresholdC: Double?, warnMarginC: Double): The
 }
 
 /**
- * Warmup-gate progress (inference-runtime.md — the WARMUP gate). While fewer than [requiredHours] of
- * MEASURED (non-interpolated) BG have accrued in the trailing window, the cycle suppresses every
- * prediction and the dashboard shows "collecting context — [measuredHours] / [requiredHours] h".
- * [requiredHours] is the user's `warmupHours` setting, floored at the model's MIN_CONTEXT (8 h).
- * This is DISTINCT from the per-cycle freshness gate (§3.6-D): freshness marks an aged anchor STALE;
- * warmup withholds forecasts until enough real history exists to condition on at all.
+ * Hours of MEASURED (non-interpolated) BG in the trailing window; below [requiredHours] the cycle
+ * suppresses every prediction. [requiredHours] is the user's `warmupHours` setting floored at the
+ * model's MIN_CONTEXT (8 h). Distinct from the freshness gate (§3.6-D), which only marks an anchor
+ * stale.
  */
 data class WarmupProgress(val measuredHours: Double, val requiredHours: Double) {
     val fraction: Double get() = if (requiredHours <= 0.0) 1.0 else (measuredHours / requiredHours).coerceIn(0.0, 1.0)
 }
 
-/**
- * The immutable snapshot the UI observes as a `StateFlow` (Phase 2). Carries the
- * running set, this cycle's per-model predictions (selected first), rolling latencies, and a
- * plain-language [note] for the "collecting context" / "forecast unavailable" states — every
- * refusal states WHY (Q10).
- */
+/** The immutable snapshot the UI observes as a `StateFlow`. [predictions] is selected-first, and
+ *  [note] states why a refusal refused. */
 data class InferenceState(
     val running: List<RunningModel> = emptyList(),
     val predictions: List<ModelPrediction> = emptyList(),
@@ -303,45 +230,33 @@ data class InferenceState(
     /** Non-null while the WARMUP gate is withholding forecasts (predictions cleared); null once met. */
     val warmup: WarmupProgress? = null,
     /**
-     * The selected model's circadian-phase belief, published INDEPENDENTLY of the BG forecast so it
-     * SURVIVES the warmup gate (issues 7 & 9). During a full cycle this equals the selected
-     * prediction's [PredictedTime]; during warmup it is a low-context belief formed from whatever
-     * history exists while [predictions] stays (correctly) empty. It is a phase belief, NOT a glucose
-     * forecast and NOT a dosing signal — no §3.6 gate depends on it.
+     * Published INDEPENDENTLY of the BG forecast so it SURVIVES the warmup gate: during warmup it is
+     * a low-context belief formed while [predictions] stays (correctly) empty. A phase belief, NOT a
+     * glucose forecast and NOT a dosing signal — no §3.6 gate depends on it.
      */
     val circadianTime: PredictedTime? = null,
     /** Anchor (epoch-ms) the [circadianTime] belief was formed at — the clock offset is measured from it. */
     val circadianAnchorMs: Long? = null,
-    /** True when [circadianTime] was formed during warmup on limited history (⇒ show a low-confidence caveat). */
+    /** True when [circadianTime] was formed during warmup on limited history. */
     val circadianLowContext: Boolean = false,
-    /** Whether the SELECTED model's descriptor declares a time section at all (distinguishes the
-     *  "no time section" empty state from a "decode failed" one). Defaults true until a cycle sets it. */
+    /** Distinguishes the "no time section" empty state from a "decode failed" one. Defaults true
+     *  until a cycle sets it. */
     val selectedHasTimeSection: Boolean = true,
-    /** The forecast-backend switcher catalog (issue 20 STEP 4): every routable backend with an
-     *  evidence-based availability verdict. Drives the Settings selector + the Hardware panel rows. */
     val backendCatalog: List<BackendAvailability> = emptyList(),
-    /** The backend the user REQUESTED for the forecast cycle of the SELECTED model (kv-persisted).
-     *  null ⇒ auto (authority). The backend ACTUALLY executing is [selectedPrediction]`.backend` /
-     *  the selected [RunningModel]. See [requestedBackendByModel] for the full per-model map. */
+    /** null ⇒ auto (authority). What is ACTUALLY executing is [selectedPrediction]`.backend`. */
     val requestedBackend: BackendId? = null,
-    /** The requested forecast backend PER MODEL id (kv-persisted; issue 20 STEP 4 is now per-model).
-     *  An id absent here (or mapped to null) means auto = the fp32 XNNPACK authority. Steers only the
-     *  DISPLAY forecast — never the dosing/authority path (§3.6-E). */
+    /** An id absent here (or mapped to null) means auto = the fp32 XNNPACK authority. Steers only
+     *  the DISPLAY forecast, never the dosing/authority path (§3.6-E). */
     val requestedBackendByModel: Map<String, BackendId?> = emptyMap(),
-    /** The last on-device GPU-vs-CPU comparison (timings + numerics + agreement verdict), or null
-     *  until one has been run (the switcher/Hardware panel trigger it when a GPU backend is active). */
+    /** Null until one has been run. */
     val backendComparison: BackendComparison? = null,
-    /** The fitted classical baseline, or null when it has never been fitted. The baseline's row is
-     *  listed in [running] either way — it is a model that exists on every device, unlike an exported
-     *  one — so this is what distinguishes "not fitted yet" from "fitted and running", and it is the
-     *  only provenance its drill-down has (it carries no descriptor and no [ModelMeta]). */
+    /** Null when the baseline has never been fitted; its row is listed in [running] either way. The
+     *  only provenance its drill-down has — it carries no descriptor and no [ModelMeta]. */
     val baselineModel: BaselineModel? = null,
     val note: String? = null,
 ) {
     val selectedPrediction: ModelPrediction? get() = predictions.firstOrNull { it.selected }
 
-    /** The selected model's circadian-phase belief this cycle, or null when unavailable (BG panel).
-     *  Prefers the warmup-surviving [circadianTime]; falls back to the in-cycle prediction's copy. */
     val selectedPredictedTime: PredictedTime? get() = circadianTime ?: selectedPrediction?.predictedTime
 
     fun latencyOf(modelId: String): ModelLatency? = latencies.firstOrNull { it.modelId == modelId }
@@ -352,6 +267,5 @@ data class InferenceState(
 
     fun runningOf(modelId: String): RunningModel? = running.firstOrNull { it.modelId == modelId }
 
-    /** The requested forecast backend for [modelId] (null ⇒ auto = the fp32 XNNPACK authority). */
     fun requestedBackendOf(modelId: String): BackendId? = requestedBackendByModel[modelId]
 }

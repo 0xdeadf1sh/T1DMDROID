@@ -4,10 +4,7 @@ import com.t1dm.core.model.BackendId
 import com.t1dm.core.model.Precision
 import com.t1dm.inference.InferenceControllerDefaults
 
-/**
- * One scored candidate in the ranked result (PLAN "ranked-candidate result"). [doseU] is the total
- * insulin; [splits] is present only for a split-bolus arrangement (the parts summing to [doseU]).
- */
+/** [doseU] is the TOTAL insulin; [splits], when present, sums back to it. */
 data class Candidate(
     val doseU: Double,
     val score: Double,
@@ -15,15 +12,11 @@ data class Candidate(
     val splits: List<SplitPart>? = null,
 )
 
-/** One part of a split bolus: [units] delivered [offsetMin] minutes after the first part. */
+/** [offsetMin] is measured from the first part. */
 data class SplitPart(val units: Double, val offsetMin: Int)
 
-/**
- * The §3.6-F point-of-decision cross-check card. It carries every decision-relevant fact to the
- * moment of choice; the UI gates Accept behind acknowledging it. [requiresConfirmation] is the *hard*
- * mandatory-confirmation flag (long log gap + nonzero dose); [confirmationReasons] and the always-on
- * acknowledgement are distinct — even a clean card must be acknowledged before Accept.
- */
+/** §3.6-F. [requiresConfirmation] is the hard rail flag; even a clean card must still be
+ *  acknowledged before Accept. */
 data class DecisionCard(
     val ageOfLastRealReadingMin: Long?,
     val interpolatedFraction: Double,
@@ -34,39 +27,24 @@ data class DecisionCard(
     val assumedIobU: Double?,
     val minSinceLastLoggedDose: Long?,
     val bandWidthMgdl: Double?,
-    /** The causal-SavGol window (samples) the model input was filtered at (INFERENCE.md §7.1).
-     *  It moves the `last_bg` anchor this whole card qualifies (§3.6-D), so a non-default value is
-     *  a decision-relevant fact; the UI renders it only when it differs from the default. */
+    /** Samples. INFERENCE.md §7.1. */
     val smoothingWindow: Int,
     val requiresConfirmation: Boolean,
     val confirmationReasons: List<String>,
 ) {
     companion object {
-        /** Re-exported so the card's renderer can tell "default" from "the user widened the filter"
-         *  without `:feature:insulin` taking a dependency on `:inference`. */
+        /** Re-exported so `:feature:insulin` need not depend on `:inference`. */
         const val DEFAULT_SMOOTHING_WINDOW = InferenceControllerDefaults.SAVGOL_WINDOW
     }
 }
 
-/**
- * The outcome of a calculator run. Either the whole recommendation is [Refused] (a global rail
- * blocked — freshness / degeneracy), or a dose is [Recommended] with its ranked alternatives, the
- * decision card, and any rail notes. A [Recommended] result with [rescueCarbsG] set is the
- * hypo-treatment carb-rescue path (insulin is withheld).
- *
- * Note the deliberate absence of any "administer" / "deliver" / "actuate" member — this type is the
- * terminal output of the module and it only *advises*. The structural no-actuator test asserts this.
- */
+/** The terminal output of the module. It has no "administer"/"deliver"/"actuate" member by design;
+ *  the structural no-actuator test asserts that. */
 sealed interface AdviceResult {
 
-    /** A global fail-closed rail refused the recommendation; [reasons] are human-readable. */
     data class Refused(val reasons: List<String>) : AdviceResult
 
-    /**
-     * A ranked recommendation. [best] is the top candidate that survived the per-candidate rails;
-     * [ranked] the full scored list (best-first) for the UI. [railNotes] records every rail decision.
-     * [requiresConfirmation] mirrors the card. [rescueCarbsG] is non-null only on the hypo path.
-     */
+    /** [ranked] is best-first. [rescueCarbsG] is non-null only on the hypo-treatment path. */
     data class Recommended(
         val best: Candidate,
         val ranked: List<Candidate>,

@@ -64,23 +64,8 @@ import kotlin.math.cos
 import kotlin.math.min
 import kotlin.math.sin
 
-/**
- * The keep-screen-on "always-on display" scan surface (HyperOS/powerkeeper suspends a
- * backgrounded BLE scan the moment the screen turns off, gating on the physical `is_screen_on`). By
- * holding a genuinely-ON display over the keyguard — `setShowWhenLocked` + `setTurnScreenOn` +
- * `FLAG_KEEP_SCREEN_ON` at near-zero brightness — the device stays interactive (`isInteractive()==true`),
- * so both AOSP and powerkeeper see `is_screen_on=1` and the real-time scan is never suspended. It is
- * raised by [com.t1dm.app.service.CgmScanService] via a full-screen-intent on `ACTION_SCREEN_OFF` while
- * the aggressive mode is engaged, and finishes itself the moment it is no longer visible ([onStop]) so
- * the user's next wake lands on their normal lock screen rather than this surface.
- *
- * When `aggressiveShowGlucose` is on it renders a dim monochrome dashboard (a DIY AOD, drifting slowly
- * to avoid OLED burn-in): an analog clock, the model's circadian circular-histogram, the BG hero, mode
- * (NORMAL/DEATH) and glycemic status (STABLE/VOID/…), IOB/COB/GMI/steps/temperature/battery, the CGM
- * signal + reading age, and the current forecast. Every value is fetched from the SAME container the
- * app UI reads (via [currentWidgetSnapshot] + [AppContainer]), so the AOD agrees with the app by
- * construction. Otherwise it is pitch-black (pure scan-keepalive, invisible in the pocket).
- */
+/** Near-black keep-screen-on surface over the keyguard: powerkeeper suspends a backgrounded BLE
+ *  scan unless the display is genuinely on. Raised by [com.t1dm.app.service.CgmScanService]. */
 class AodScanActivity : ComponentActivity() {
 
     private val container: AppContainer get() = (application as T1dmApplication).container
@@ -91,8 +76,7 @@ class AodScanActivity : ComponentActivity() {
         setTurnScreenOn(true)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        // Pin the panel near-black: dim-but-legible when showing the dashboard, effectively-off otherwise.
-        // A hard 0f reads as "system default" on some OEMs, so floor at a tiny epsilon.
+        // A hard 0f reads as "system default" on some OEMs, so floor at an epsilon.
         window.attributes = window.attributes.apply {
             screenBrightness = if (container.aggressiveShowGlucoseSnapshot) BRIGHT_GLUCOSE else BRIGHT_BLACK
         }
@@ -106,9 +90,7 @@ class AodScanActivity : ComponentActivity() {
         setContent { AodSurface(container) }
     }
 
-    /** Release the surface the instant it is no longer visible (screen off, or covered by an alarm's
-     *  full-screen intent) so the user's next wake shows the real keyguard; the service re-raises us
-     *  after its grace window if the screen simply went back off. */
+    /** Finish while invisible so the next wake shows the real keyguard; the service re-raises us. */
     override fun onStop() {
         super.onStop()
         finish()
@@ -120,13 +102,11 @@ class AodScanActivity : ComponentActivity() {
     }
 }
 
-// ── Monochrome palette (dim greys on black — legible on a near-off OLED, no colour) ─────────────────
 private val INK = Color(0xFFCFCFCF)
 private val INK_MID = Color(0xFF9E9E9E)
 private val INK_DIM = Color(0xFF6C6C6C)
 private val INK_FAINT = Color(0xFF3C3C3C)
 
-/** The full data snapshot the dashboard renders — everything drawn from the app's own container. */
 private data class AodData(
     val bgText: String,
     val arrow: String,
@@ -192,7 +172,6 @@ private suspend fun fetchAod(ctx: Context): AodData {
     )
 }
 
-/** Compact remaining-time for the sensor cell, e.g. "6d 4h" / "4h 12m" / "38m" / "expired". */
 private fun fmtRemaining(ms: Long): String {
     if (ms <= 0) return "expired"
     val totalMin = ms / 60_000L
@@ -224,9 +203,7 @@ private fun AodDashboard(container: AppContainer) {
     }
     val d = data ?: return
 
-    // Anti-burn-in drift: a slow (~8-min) Lissajous creep applied as a GPU-layer translation, so it
-    // moves sub-pixel per frame — imperceptible at a glance, yet it walks the bright pixels around over
-    // minutes. (The old whole-dp offset stepped ~1 dp every few seconds, which read as a visible jump.)
+    // Anti-burn-in drift: GPU-layer translation, so it moves sub-pixel per frame.
     val phase by rememberInfiniteTransition(label = "aod-drift").animateFloat(
         initialValue = 0f, targetValue = (2f * PI).toFloat(),
         animationSpec = infiniteRepeatable(tween(durationMillis = DRIFT_PERIOD_MS, easing = LinearEasing)),
@@ -243,10 +220,7 @@ private fun AodDashboard(container: AppContainer) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        // Mode + status … battery. Inset to span exactly the two clocks below rather than the full
-        // padded width (which read as too spread out): the clocks sit in a SpaceEvenly row of two
-        // DIAL_SIZE dials, so their outer edges are one SpaceEvenly gap — (width − 2·dial) / 3 — in
-        // from the padding; pad this row by that same gap and its ends line up with the clocks'.
+        // Inset by the clocks' own SpaceEvenly gap — (width − 2·dial) / 3 — so the ends line up.
         BoxWithConstraints(Modifier.fillMaxWidth()) {
             val gap = ((maxWidth - DIAL_SIZE * 2) / 3).coerceAtLeast(0.dp)
             Row(
@@ -267,7 +241,6 @@ private fun AodDashboard(container: AppContainer) {
                         fontSize = 13.sp,
                         fontWeight = FontWeight.Medium,
                     )
-                    // A drawn (monochrome) charging bolt — never an emoji, which would render in colour.
                     if (d.charging && d.batteryPct != null) ChargingBolt(Modifier.size(width = 8.dp, height = 13.dp))
                 }
             }
@@ -275,7 +248,6 @@ private fun AodDashboard(container: AppContainer) {
 
         Spacer(Modifier.size(18.dp))
 
-        // The two clocks — real (analog) and the model's circadian belief (circular histogram).
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
             LabeledDial("TIME") { AnalogClock(Modifier.size(DIAL_SIZE)) }
             LabeledDial(
@@ -285,7 +257,6 @@ private fun AodDashboard(container: AppContainer) {
 
         Spacer(Modifier.size(20.dp))
 
-        // BG hero.
         Text(
             text = if (d.arrow.isEmpty()) d.bgText else "${d.bgText} ${d.arrow}",
             color = INK,
@@ -306,7 +277,6 @@ private fun AodDashboard(container: AppContainer) {
 
         Spacer(Modifier.size(22.dp))
 
-        // Scalar read-outs, two per row.
         val cells = listOf(
             "IOB" to (d.iobU?.let { "%.1f U".format(it) } ?: "—"),
             "COB" to (d.cobG?.let { "%.0f g".format(it) } ?: "—"),
@@ -326,7 +296,7 @@ private fun AodDashboard(container: AppContainer) {
     }
 }
 
-/** A monochrome lightning bolt (charging indicator), drawn rather than an emoji so it stays grey. */
+/** Drawn rather than an emoji, which would render in colour. */
 @Composable
 private fun ChargingBolt(modifier: Modifier) {
     Canvas(modifier) {
@@ -360,7 +330,7 @@ private fun ReadoutCell(label: String, value: String, modifier: Modifier) {
     }
 }
 
-/** "mg/dL · updated 9m ago" with a live-ticking age (own 1 s ticker so only this line recomposes). */
+/** Own 1 s ticker so only this line recomposes. */
 @Composable
 private fun AgeLine(unitLabel: String, readingAtMs: Long?) {
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
@@ -371,7 +341,6 @@ private fun AgeLine(unitLabel: String, readingAtMs: Long?) {
     Text("$unitLabel  ·  $age", color = INK_DIM, fontSize = 14.sp, textAlign = TextAlign.Center)
 }
 
-// ── Analog wall clock (own 1 s ticker so only the clock recomposes each second) ─────────────────────
 @Composable
 private fun AnalogClock(modifier: Modifier) {
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
@@ -396,8 +365,7 @@ private fun AnalogClock(modifier: Modifier) {
     }
 }
 
-// ── Circadian dial: the model's hour-of-day belief as a 12-wedge circular histogram + resultant hand,
-//    monochrome (mirrors feature:dashboard CircadianDial geometry). Own slow ticker for the local hand. ─
+// Mirrors feature:dashboard CircadianDial geometry.
 @Composable
 private fun CircadianDial(pt: PredictedTime?, modifier: Modifier) {
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
@@ -429,13 +397,11 @@ private fun CircadianDial(pt: PredictedTime?, modifier: Modifier) {
                     size = Size(wr * 2, wr * 2),
                 )
             }
-            // Model hand: length + alpha ∝ resultant R.
             val rr = pt.resultantR.coerceIn(0.0, 1.0)
             drawHand(center, rHist * (0.30f + 0.65f * rr.toFloat()), topClockwise(pt.predictedHour / 24.0),
                 INK.copy(alpha = (0.35f + 0.65f * rr).toFloat()), 5f)
         }
 
-        // Hour ticks every 2 h; faint local wall-clock hand for contrast; hub.
         for (hh in 0 until 24 step 2) {
             val a = topClockwise(hh / 24.0)
             drawLine(INK_FAINT, pointAt(center, rOuter * 0.90f, a), pointAt(center, rOuter, a),
@@ -446,7 +412,7 @@ private fun CircadianDial(pt: PredictedTime?, modifier: Modifier) {
     }
 }
 
-// ── Monochrome CGM signal bars (thresholds mirror core.design SignalBars: −60/−70/−80/−90). ─────────
+// Thresholds mirror core.design SignalBars.
 @Composable
 private fun SignalBars(rssi: Int?, modifier: Modifier) {
     val filled = when {
@@ -473,7 +439,6 @@ private fun SignalBars(rssi: Int?, modifier: Modifier) {
     }
 }
 
-// ── shared geometry ────────────────────────────────────────────────────────────────────────────────
 /** Fraction of a full turn (0..1) → radians, 12 o'clock at top, increasing clockwise. */
 private fun topClockwise(frac: Double): Double = -PI / 2.0 + frac * 2.0 * PI
 
@@ -489,11 +454,7 @@ private fun localHourOfDay(ms: Long): Double {
     return c.get(Calendar.HOUR_OF_DAY) + c.get(Calendar.MINUTE) / 60.0 + c.get(Calendar.SECOND) / 3600.0
 }
 
-// Same drift distance + speed as the original whole-dp version (identical OLED protection); only the
-// RENDERING changed — sub-pixel via a GPU layer instead of 1-dp steps, so it no longer visibly jumps.
 private const val DRIFT_DP = 12f
 private const val DRIFT_PERIOD_MS = 120_000
 private const val REFRESH_MS = 10_000L
-// The clock/circadian dial edge length; the mode+battery header insets itself by the SpaceEvenly gap
-// this implies so its ends line up with the two dials.
 private val DIAL_SIZE = 112.dp

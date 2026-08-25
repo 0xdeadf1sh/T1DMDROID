@@ -6,23 +6,9 @@ import com.t1dm.core.model.UnitSpace
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/**
- * The SMOOTHED trace the model actually consumes (issue 13): the strictly-causal Savitzky-Golay
- * filtered BG series in mg/dL — i.e. the signal AFTER `t1dm-core::causal_smooth` (order 2, clamps
- * `[20,500]`, at the window the caller's smoother was built with) but BEFORE any Kovatchev risk
- * transform. This is precisely the channel that is then normalized and fed to the graph; overlaying
- * it lets the raw sensor trace and the model's own de-noised view of it be compared directly.
- *
- * The window is NOT a parameter here: it is baked into [smoothMgdl] by the caller, which reads the
- * one persisted setting the forecast cycle and the dose calculator also read — the drawn line and
- * the model input are the same signal, never two independently-configured smooths.
- *
- * Same immutable-primitive-array discipline as [GraphFrame]/[PredSeries]: the smooth is computed ONCE
- * off-thread (the native call is supplied as a lambda so `:ui:graph` keeps no JNI dependency), the
- * result carried here as absolute-ms + display-unit values, and the Canvas only maps it to pixels.
- * Values are projected into the active [UnitSpace] so the overlay lines up with the raw trace's axis;
- * the SOURCE is always the mg/dL smooth (the model input), not a risk-space quantity.
- */
+/** The smoothed trace the model consumes: mg/dL after `t1dm-core::causal_smooth` (order 2, clamps
+ *  `[20,500]`), before any Kovatchev transform. The window is baked into [smoothMgdl] by the caller.
+ *  Values are projected into the active unit; the SOURCE is always the mg/dL smooth. */
 class SmoothedTrace internal constructor(
     /** Absolute epoch-ms per point (ascending). */
     val tsMs: LongArray,
@@ -39,18 +25,9 @@ class SmoothedTrace internal constructor(
     }
 }
 
-/**
- * The contiguous index range the polyline is drawn over: the visible window widened by one full span on
- * each side — three viewports' worth, the same cull the draw has always applied — but REACHED rather
- * than walked. The predicate is monotone in `t`, so it selects a contiguous range; walking a
- * never-pruned history end to end to discover that range is work no viewport can use.
- *
- * The bounds are exact, not approximate. A point is drawn iff `t ∈ [viewStart − span, viewStart +
- * 2·span]`; [tsMs] is integral and ascending, so `ceil` and `floor` turn those Double bounds into the
- * equivalent Long ones and the range admitted is the identical set of points.
- *
- * Empty (`first > last`) when nothing is in reach.
- */
+/** The contiguous index range the polyline is drawn over: the visible window widened by one full span
+ *  each side. The bounds are exact — [tsMs] is integral and ascending, so ceil/floor admit the
+ *  identical set of points. Empty (`first > last`) when nothing is in reach. */
 internal fun SmoothedTrace.visibleRange(viewStartMs: Double, viewSpanMs: Double): IntRange {
     if (isEmpty) return IntRange.EMPTY
     val lo = lowerBoundLong(tsMs, kotlin.math.ceil(viewStartMs - viewSpanMs).toLong())
@@ -58,12 +35,8 @@ internal fun SmoothedTrace.visibleRange(viewStartMs: Double, viewSpanMs: Double)
     return lo..hi
 }
 
-/**
- * Build the smoothed overlay off the main thread. [smoothMgdl] is the causal SavGol smoother in
- * mg/dL (the `:core` native `causalSmooth` with clamps `[20,500]`, at the user's window); it is
- * passed in so this module never links the JNI seam. [kovatchevF] is only used to project into risk
- * space when that unit is active — the smooth itself is always computed in mg/dL.
- */
+/** Off the main thread. [smoothMgdl] is the causal SavGol smoother in mg/dL, passed in so this module
+ *  never links the JNI seam; [kovatchevF] only projects into risk space. */
 suspend fun smoothedTraceOf(
     readings: List<CgmReading>,
     unit: UnitSpace,
@@ -74,7 +47,7 @@ suspend fun smoothedTraceOf(
     buildSmoothedTrace(readings, unit, smoothMgdl, kovatchevF, maxGapMin)
 }
 
-/** Pure transform (no coroutines) — safe from a `@Preview`/test with an injected smoother. */
+/** Pure; safe from a `@Preview` or a test with an injected smoother. */
 fun buildSmoothedTrace(
     readings: List<CgmReading>,
     unit: UnitSpace,
@@ -90,7 +63,7 @@ fun buildSmoothedTrace(
 
     val raw = DoubleArray(kept.size) { kept[it].bgMgdl!!.toDouble() }
     val sm = smoothMgdl(raw)
-    if (sm.size != kept.size) return SmoothedTrace.EMPTY // defensive: smoother must be length-preserving
+    if (sm.size != kept.size) return SmoothedTrace.EMPTY // fail closed rather than draw misaligned
 
     val ts = LongArray(kept.size) { kept[it].tsMs }
     val ys = FloatArray(kept.size) { i ->

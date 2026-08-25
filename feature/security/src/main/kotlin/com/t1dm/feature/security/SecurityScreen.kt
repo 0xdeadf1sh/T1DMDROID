@@ -28,13 +28,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
-/**
- * The Security/Crypto panel (a dedicated section showing BOTH low- and high-level
- * crypto state). Pure/stateless: it renders the mapped [SecurityPanelState] and surfaces the manual
- * pair / confirm-SAS / rotate / unpair actions (manual key rotation + session reset
- * MUST be exposed). The state carries NO raw key bytes — only a truncated fingerprint, counters, and
- * the SAS to compare on both screens.
- */
+/** No raw key bytes reach here: fingerprint, counters and SAS only. */
 @Composable
 fun SecurityScreen(
     state: SecurityPanelState = SecurityPanelState(),
@@ -48,8 +42,6 @@ fun SecurityScreen(
         Modifier.fillMaxSize().fadingEdges(scroll).verticalScroll(scroll).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        // The panel leads with a large, still ESP32 wrist device — the accessory this whole screen
-        // pairs and secures. A round, merely-lit device; every hue is drawn from the active theme.
         val cs = MaterialTheme.colorScheme
         Canvas(
             Modifier.fillMaxWidth(0.62f).aspectRatio(1f).align(Alignment.CenterHorizontally),
@@ -77,13 +69,9 @@ fun SecurityScreen(
         }
 
         val haptics = rememberT1dmHaptics()
-        // The SAS appearing is the one moment on this page that DEMANDS the user look: the short
-        // authentication string is the whole defence against a man-in-the-middle, and it arrives
-        // asynchronously, mid-handshake, while they are looking at the watch rather than the phone.
         LaunchedEffect(state.sas) { if (state.sas != null) haptics.perform(HapticEvent.Warn) }
         LaunchedEffect(state.lastError) { if (state.lastError != null) haptics.perform(HapticEvent.Warn) }
 
-        // The SAS to compare on BOTH screens during pairing/rotation.
         if (state.sas != null) {
             Card(
                 Modifier.fillMaxWidth(),
@@ -110,9 +98,7 @@ fun SecurityScreen(
             if (state.canPair) {
                 Button(onClick = { haptics.perform(HapticEvent.Tap); onPair() }) { Text("Pair watch") }
             }
-            // Confirming the SAS is the human ASSERTING that two screens agree — the act the whole
-            // key exchange is authenticated by. Commit, not Confirm: it cannot be walked back without
-            // a rotation.
+            // Commit, not Confirm: cannot be walked back without a rotation.
             if (state.canConfirmSas) {
                 Button(
                     onClick = { haptics.perform(HapticEvent.Commit); onConfirmSas() },
@@ -123,7 +109,6 @@ fun SecurityScreen(
                     onClick = { haptics.perform(HapticEvent.Confirm); onRotate() },
                 ) { Text("Rotate keys") }
             }
-            // Unpairing throws away the keys — a teardown, hence Reject rather than a neutral Tap.
             if (state.canReset) {
                 OutlinedButton(
                     onClick = { haptics.perform(HapticEvent.Reject); onUnpair() },
@@ -142,10 +127,7 @@ private fun Kv(key: String, value: String) {
     )
 }
 
-/**
- * A feature-local projection of the watch security state, so `:feature:security` stays free of a
- * `:watch` dependency (the removable seam). `:app` maps `WatchSecurityState` onto this.
- */
+/** Keeps `:feature:security` free of a `:watch` dependency; `:app` maps `WatchSecurityState` onto it. */
 data class SecurityPanelState(
     val phase: String = "Unpaired",
     val deviceName: String? = null,
@@ -159,7 +141,6 @@ data class SecurityPanelState(
     val lastPush: String? = null,
     val lastAckSeq: Long? = null,
     val lowPowerSuspended: Boolean = false,
-    /** Connected-peripheral signal strength in dBm (periodic readRemoteRssi), or null. */
     val rssiDbm: Int? = null,
     val lastError: String? = null,
     val canPair: Boolean = true,

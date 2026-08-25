@@ -11,7 +11,7 @@ class CgmPipelineTest {
 
     private val sourceId = CgmSourceId("aidexx:22222C74D9")
 
-    // A grid-aligned instant: 300_000 * 5_666_667.
+    // Grid-aligned.
     private val base = 300_000L * 5_666_667L
 
     private fun pipeline() = CgmPipeline(
@@ -41,7 +41,6 @@ class CgmPipelineTest {
     fun `a re-advertised minute is deduped by minFromStart`() {
         val p = pipeline()
         val first = p.process(AdvertFixtures.raw(AdvertFixtures.fullAdvert(), rxWallMs = base))
-        // Same minFromStart (21600), arriving ~1 min later; must produce no new reading.
         val second = p.process(AdvertFixtures.raw(AdvertFixtures.fullAdvert(), rxWallMs = base + 60_000))
 
         assertEquals(1, first.readings.size)
@@ -80,6 +79,6 @@ class CgmPipelineTest {
 
         assertTrue(out.readings.isEmpty())
         assertTrue("CRC-failing frame is flagged invalid", !out.crcValid)
-        assertEquals(21600, out.minFromStart) // still isolated for the raw-advert store
+        assertEquals(21600, out.minFromStart)
     }
 }

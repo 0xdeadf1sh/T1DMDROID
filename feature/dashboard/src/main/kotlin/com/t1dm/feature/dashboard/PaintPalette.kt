@@ -35,19 +35,7 @@ import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.model.PaintTool
 import kotlin.math.roundToInt
 
-/**
- * The BG panel's drawing palette — visible ONLY while paint mode is on, immediately under the chip row
- * it is toggled from, so the controls sit between the toggle and the canvas they act on.
- *
- * Everything here is decoration. A tool, a colour and a width change nothing but the pixels of the
- * annotation layer: no stroke is ever read back by a calculator, a model channel, an alarm, or any
- * §3.6 rail, and the corridor the graph clips the layer out of guarantees the glucose trace stays
- * legible however much is drawn over it.
- *
- * Stateless and callback-driven like the rest of `:feature:dashboard`: the selection lives in
- * [DashboardScreen], the strokes live in Room behind `:app`'s callbacks, and this module still knows
- * of no store.
- */
+/** Decoration only: no stroke is read back by a calculator, a model channel, or an alarm. */
 @Composable
 internal fun PaintPalette(
     tool: PaintTool,
@@ -82,11 +70,7 @@ internal fun PaintPalette(
             onClick = { haptics.perform(HapticEvent.Tap); onSelectEraser() },
             label = { Text("Eraser") },
         )
-        // The current ink at FULL opacity, as the picker's own swatches are drawn. A highlighter is
-        // seeded at 22 % alpha, and composited straight onto the surface that reads as a faint grey
-        // disc indistinguishable from the chip behind it — which defeats the one question this swatch
-        // exists to answer. The alpha is dialled and read in Colour…, over the checkered ramp built
-        // for exactly that.
+        // Full opacity deliberately: a highlighter's own alpha reads as the chip behind it.
         Box(
             Modifier
                 .size(28.dp)
@@ -108,14 +92,8 @@ internal fun PaintPalette(
     }
 }
 
-/**
- * Colour + width, in one dialog so the palette row stays a row. The width slider lives here rather
- * than in the scrollable row on purpose: a horizontal slider inside a horizontally-scrolling container
- * is a gesture fight the user always loses.
- *
- * Selecting a tool SEEDS the width and the alpha from [PaintTool]; both remain fully overridable here,
- * which is why the tool itself contributes only cap/join geometry and texture at draw time.
- */
+/** Width lives here, not in the palette row: a horizontal slider inside a horizontally-scrolling
+ *  container is a gesture fight. */
 @Composable
 internal fun PaintStyleDialog(
     colorArgb: Int,
@@ -125,11 +103,8 @@ internal fun PaintStyleDialog(
     onDismiss: () -> Unit,
 ) {
     val haptics = rememberT1dmHaptics()
-    // No Warn on raise and no Reject on dismiss, unlike the log confirmations: this sheet asks nothing
-    // and refuses nothing — it is a style palette whose every edit has already landed live under the
-    // finger, so "Done" is a plain Tap and a scrim dismissal is not a cancellation of anything.
-    // The width slider is continuous; its detent is therefore the WHOLE DP the label shows, so the
-    // texture matches what the user can read rather than the Float behind it.
+    // No Warn on raise, no Reject on dismiss, unlike the log confirmations: every edit has already
+    // landed live. The detent is the whole dp the label shows, not the Float behind it.
     val widthDetent = rememberHapticDetent(HapticEvent.ScrubTick)
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -155,17 +130,8 @@ internal fun PaintStyleDialog(
 
 internal const val PAINT_WIDTH_MIN_DP = 1f
 
-/**
- * Set by the panel the pen has to fit rather than by taste. The plot box is 164–178 dp tall (220 dp
- * less the 10 dp top inset — 24 dp once the model's predicted-clock axis is up — and the 32 dp bottom
- * one), so 120 dp floods it in two passes; past that the round cap's radius exceeds the box's
- * half-height and every tap lands as a full-panel dab, which is a worse implement, not a bigger one.
- *
- * Raising this is backward-safe by construction: width is persisted PER STROKE, so no existing row
- * changes meaning, and nothing downstream assumes an upper bound — the renderer's only width guard is
- * a one-pixel floor.
- */
+/** The plot box is 164–178 dp tall: past 120 dp the round cap's radius exceeds its half-height and
+ *  every tap lands as a full-panel dab. */
 internal const val PAINT_WIDTH_MAX_DP = 120f
 
-/** The width and alpha a freshly-picked [tool] loads into the palette, applied to the current ink. */
 internal fun seedInk(tool: PaintTool, colorArgb: Int): Int = argbWithAlpha(colorArgb, tool.defaultAlpha)

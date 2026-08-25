@@ -6,20 +6,9 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * Integrity of the settings search index, and — the part that actually keeps it honest — the
- * assertion that no screen renders a knob the index has never heard of.
- *
- * The type system already forbids most of that: the four shared controls take a [SettingsKnob] and no
- * longer accept a bare label, so an unindexed stepper/toggle/picker does not compile. What it cannot
- * see is a BESPOKE control — the Bézier designers, the graph's own ± stepper, the server's text
- * fields, the warmup dial — which is why each of those is wrapped in [SettingsAnchor]. The source scan
- * below counts every anchoring call site per screen file and holds it equal to that screen's declared
- * entries, so both kinds of knob are covered by one number a reviewer can check.
- */
+/** The source scan below holds each screen file's anchoring call sites equal to its declared
+ *  entries — the one check that also covers bespoke controls, which the type system cannot see. */
 class SettingsIndexTest {
-
-    // ── integrity ─────────────────────────────────────────────────────────────────────────────────
 
     @Test
     fun `ids are unique`() {
@@ -69,7 +58,7 @@ class SettingsIndexTest {
     fun `the public flavor cannot reach the Death rite through search`() {
         assertTrue(SettingsIndex.visible(true).any { it.screen == SettingsScreenKey.DEATH_MODE })
         assertTrue(SettingsIndex.visible(false).none { it.screen == SettingsScreenKey.DEATH_MODE })
-        // Nothing else is withheld: the death CLOCK is a display-only projection the hub always shows.
+        // Nothing else is withheld: the death CLOCK is always shown.
         assertEquals(SettingsIndex.ALL.size - 1, SettingsIndex.visible(false).size)
     }
 
@@ -79,8 +68,6 @@ class SettingsIndexTest {
         assertNotNull(SettingsIndex.byId("alerts.bypass_dnd"))
         assertEquals(null, SettingsIndex.byId("nope.not.a.knob"))
     }
-
-    // ── no screen has knobs missing from the index ────────────────────────────────────────────────
 
     @Test
     fun `every anchoring call site on every screen has an index entry`() {
@@ -118,8 +105,6 @@ class SettingsIndexTest {
         assertEquals("new source file — add it to the index map or the knob-free list", known, present)
     }
 
-    // ── the matcher ───────────────────────────────────────────────────────────────────────────────
-
     @Test
     fun `a blank query yields nothing`() {
         assertTrue(searchSettings("").isEmpty())
@@ -135,7 +120,7 @@ class SettingsIndexTest {
     fun `half-remembered words find the right knob`() {
         assertTop("buzz", "display.haptics")
         assertTop("dnd", "alerts.bypass_dnd")
-        // The urgent bands merely SAY they pierce DND; the switch that decides it must still win.
+        // The urgent bands merely mention DND; the switch that decides it must win.
         assertTop("do not disturb", "alerts.bypass_dnd")
         assertTop("savgol", "graph.smoothing")
         assertTop("erase", "data.reset")
@@ -150,13 +135,6 @@ class SettingsIndexTest {
         assertTop("factory reset", "data.reset")
     }
 
-    /**
-     * The clinical insulin preset is not a setting. It is picked per dose on the insulin panel, and
-     * the writer commits what the panel picked; a Settings row that also chose it is precisely how
-     * the panel's presets came to be decorative while the row carried something else. An index entry
-     * would advertise a screen that cannot change it, so there must be none — by id, and by the
-     * brand names a user would actually search for.
-     */
     @Test
     fun `the insulin preset is picked per dose, so Settings does not index it`() {
         assertEquals(null, SettingsIndex.byId("curves.rapid_preset"))
@@ -186,7 +164,6 @@ class SettingsIndexTest {
 
     @Test
     fun `a word prefix matches mid-label`() {
-        // "vib" opens a word inside "Alert sound & vibration" / the Vibration pickers.
         val hits = searchSettings("vib").map { it.id }
         assertTrue("vib -> $hits", "alerts.warning_vibration" in hits && "alerts.critical_vibration" in hits)
     }
@@ -197,7 +174,6 @@ class SettingsIndexTest {
         val urgentLow = searchSettings("urgent low").map { it.id }
         assertEquals("alarm.urgent_low", urgentLow.first())
         assertTrue("a conjunction must not match more than its parts", urgentLow.size < low.size)
-        // Every hit for "urgent low" must have satisfied BOTH tokens.
         assertTrue(urgentLow.all { it in low })
     }
 
@@ -224,8 +200,6 @@ class SettingsIndexTest {
     }
 }
 
-// ── the source-scan machinery ─────────────────────────────────────────────────────────────────────
-
 /** Gradle runs unit tests with the module directory as the working directory. */
 private fun screensDir(): File {
     val dir = File(System.getProperty("user.dir"), "src/main/kotlin/com/t1dm/feature/settings")
@@ -236,7 +210,6 @@ private fun screensDir(): File {
 private val BLOCK_COMMENT = Regex("""/\*.*?\*/""", RegexOption.DOT_MATCHES_ALL)
 private val LINE_COMMENT = Regex("""//[^\n]*""")
 
-/** Every route by which a knob can acquire an anchor: the four shared controls, plus the wrapper. */
 private val ANCHORING_CALL = Regex("""\b(IntStepper|DoubleStepper|ToggleRow|ChipPicker|SettingsAnchor)\s*\(""")
 
 private fun anchorCallSites(file: File): Int {
@@ -245,7 +218,6 @@ private fun anchorCallSites(file: File): Int {
     return ANCHORING_CALL.findAll(body).count()
 }
 
-/** Screen key → the file that renders it. MODELS is `:feature:models`, so the hub file stands in. */
 private val SCREEN_SOURCES = mapOf(
     SettingsScreenKey.DISPLAY to "DisplaySettingsScreen.kt",
     SettingsScreenKey.GRAPH to "GraphSettingsScreen.kt",
@@ -265,7 +237,6 @@ private val SCREEN_SOURCES = mapOf(
     SettingsScreenKey.CGM to "CgmSettingsScreen.kt",
 )
 
-/** Screens whose entries are whole-page: read-only panels, a signpost, and the Death rite. */
 private val KNOB_FREE_SOURCES = setOf(
     "SettingsScreen.kt",
     "AboutScreen.kt",
@@ -274,7 +245,6 @@ private val KNOB_FREE_SOURCES = setOf(
     "FuneralToll.kt",
 )
 
-/** Not screens: the shared controls, the anchor plumbing, the index and the search UI. */
 private val INFRASTRUCTURE_SOURCES = setOf(
     "SettingsComponents.kt",
     "SettingsAnchors.kt",

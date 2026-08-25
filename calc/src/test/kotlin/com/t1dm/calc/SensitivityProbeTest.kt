@@ -10,15 +10,8 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * The model-probed ISF/ICR estimator, against the deterministic [FakeForecastPort] whose linear
- * response makes the expected figures exact: at the end of the roll the fake has applied the whole
- * of `mgdlPerU` per candidate unit and the whole of `mgdlPerG` per carb gram.
- *
- * The arithmetic test is the smaller half. The rest is the fail-closed contract — this estimate is
- * shown beside a patient's live IOB, so every branch that cannot justify a number must produce no
- * number rather than a plausible one.
- */
+/** [FakeForecastPort] is linear, so the expected figures are exact: by the end of the roll it has
+ *  applied the whole of `mgdlPerU` per candidate unit and of `mgdlPerG` per carb gram. */
 class SensitivityProbeTest {
 
     private val now = 1_900_000_000_000L
@@ -40,7 +33,6 @@ class SensitivityProbeTest {
         val port = FakeForecastPort(startBg = 180.0, mgdlPerU = 15.0, mgdlPerG = 3.0)
         val est = probeOf(port).probe(now, config)!!
 
-        // 1 U lowers the terminal median by mgdlPerU.
         assertEquals("ISF is the per-unit drop", 15.0, est.isfMgdlPerU, 1e-9)
         // 10 g raises it by 30, so one unit covers 15/3 = 5 g.
         assertEquals("ICR is the grams one unit cancels", 5.0, est.icrGPerU, 1e-9)
@@ -49,8 +41,6 @@ class SensitivityProbeTest {
         assertEquals("stamped with the artifact it describes", MODEL, est.modelId)
     }
 
-    // ── the estimate belongs to one model ─────────────────────────────────────────────────────────
-
     @Test
     fun no_selected_model_yields_no_figure() = runTest {
         assertNull(probeOf(FakeForecastPort(), modelIds = { null }).probe(now, config))
@@ -58,8 +48,7 @@ class SensitivityProbeTest {
 
     @Test
     fun a_selection_changed_mid_probe_yields_no_figure() = runTest {
-        // Three rolls are comparable only if one artifact produced all of them; a switch between the
-        // first and last would otherwise be reported as the new model's sensitivity.
+        // Three rolls are comparable only if one artifact produced all of them.
         val ids = ArrayDeque(listOf("model-a", "model-b"))
         val probe = probeOf(FakeForecastPort(), modelIds = { ids.removeFirstOrNull() ?: "model-b" })
         assertNull(probe.probe(now, config))
@@ -87,12 +76,6 @@ class SensitivityProbeTest {
         }
     }
 
-    // ── a response that was obtained is REPORTED, whatever it says ────────────────────────────────
-    // This is the read-out's remaining job. A model whose marginal insulin response is wrong-signed
-    // is a fact about the artifact, and it was invisible while the probe filtered it out: the panel
-    // showed nothing, which is indistinguishable from the feature being broken. That is how a real
-    // model defect stayed hidden until the probe was instrumented by hand.
-
     @Test
     fun an_insulin_response_in_the_wrong_direction_is_reported_not_hidden() = runTest {
         val est = probeOf(FakeForecastPort(mgdlPerU = -15.0, mgdlPerG = 3.0)).probe(now, config)!!
@@ -112,15 +95,13 @@ class SensitivityProbeTest {
         val flat = probeOf(FakeForecastPort(mgdlPerU = 0.5, mgdlPerG = 3.0)).probe(now, config)!!
         assertEquals(0.5, flat.isfMgdlPerU, 1e-9)
 
-        // A barely-responsive carb roll divides to a large ratio. Reported, not filtered.
         val wide = probeOf(FakeForecastPort(mgdlPerU = 15.0, mgdlPerG = 0.05)).probe(now, config)!!
         assertEquals(300.0, wide.icrGPerU, 1e-6)
     }
 
     @Test
     fun a_zero_carb_response_yields_no_figure_at_all() = runTest {
-        // The one arithmetic that produces no number rather than a bad one: ISF/0 is an infinity,
-        // which is an absence of a figure, not a figure. The panel renders this as N/A.
+        // ISF/0 is an infinity, which is an absence of a figure, not a figure.
         assertNull(probeOf(FakeForecastPort(mgdlPerU = 15.0, mgdlPerG = 0.0)).probe(now, config))
     }
 
@@ -130,13 +111,8 @@ class SensitivityProbeTest {
         assertNull(probeOf(FakeForecastPort()).probe(now, flat))
     }
 
-    /**
-     * The regression that matters most. `announced` and `candidate` are NOT interchangeable: the
-     * production [RollingForecaster] re-anchors only the candidate onto the prediction zone's first
-     * bucket. A meal passed as `announced` therefore lands at a different instant than the dose it is
-     * ratioed against — biasing ICR, and dropping the leading Ra bucket outright once the anchor
-     * ages. Both counterfactuals must ride `candidate`.
-     */
+    /** [RollingForecaster] re-anchors only the candidate onto the prediction zone's first bucket, so a
+     *  meal passed as `announced` lands at a different instant than the dose it is ratioed against. */
     @Test
     fun both_counterfactuals_ride_candidate_so_the_forecaster_re_anchors_them_alike() = runTest {
         val seen = mutableListOf<ForecastRequest>()
@@ -171,8 +147,7 @@ class SensitivityProbeTest {
         assertEquals(40.0, wide.isfMgdlPerU, 1e-9)
         assertEquals(381.0, wide.icrGPerU, 1.0)
 
-        // 0.5 g/U, which the panel renders with a decimal rather than rounding it to the "0g/U" a
-        // whole-gram format would print.
+        // 0.5 g/U — the panel prints a decimal, not the "0g/U" a whole-gram format would give.
         val tiny = probeOf(FakeForecastPort(mgdlPerU = 5.0, mgdlPerG = 10.0)).probe(now, config)!!
         assertEquals(0.5, tiny.icrGPerU, 1e-9)
 

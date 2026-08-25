@@ -13,54 +13,28 @@ import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 
 /**
- * Fetches the server's model registry and reconciles it against [modelsDir] so a fresh export
- * becomes discoverable by `ModelStore.discover()` (the `.pte` + `<name>.descriptor.json` pair).
- * Pure JVM — no `:inference` dependency — so the "is this model running?" question is an injected
- * provider ([runningArtifacts]), keeping the coordinator inference-agnostic.
- *
- * Integrity (deliverable 4): a download is written to a `.part`, `fsync`'d, its SHA-256 verified
- * against the response `X-SHA256` (registry hash as fallback), and only then atomically renamed —
- * the `.pte` FIRST, the descriptor LAST — so a model becomes discoverable only once BOTH files are
- * present and the bytes are proven.
- *
- * Auto-download / manual-apply (product decision 2): a NEW or non-running model is applied straight
- * to [modelsDir]; an update to a model the app is CURRENTLY running is staged under [PENDING_DIR]
- * (invisible to ModelStore's non-recursive, files-only scan) and never silently swapped — the app
- * layer promotes it via [applyPending].
- *
- * Fail-closed: the whole-registry pass never throws on a per-model fault; each row is guarded and
- * captured as [ModelSyncOutcome.Failed], and the rest proceed. (A failure to fetch the registry
- * list itself does propagate, so the caller — which wraps `sync()` in `runCatching` — can report
- * "offline".)
+ * Reconciles the server's model registry against [modelsDir]. A download lands `.part` → fsync →
+ * verify → rename, `.pte` first and descriptor last, so a model becomes discoverable only once both
+ * files are present. An update to a RUNNING model is staged under [PENDING_DIR], never swapped.
  */
 class ModelSyncCoordinator(
     private val modelsDir: File,
     private val http: SyncHttpClient,
-    /** The on-disk `.pte` FILENAMES of the currently-loaded running set — NOT descriptor ids. This is the
-     *  identity that actually answers "would this row overwrite a live model's bytes?": a server registry
-     *  id IS the artifact filename, so comparing filenames is robust whether the running model was placed
-     *  by this coordinator or adb-pushed with the canonical `<id>.xnnpack.pte` naming (whose descriptor
-     *  `id` omits the engine infix, so an id-keyed check would miss it and swap the dosing model). */
+    /** `.pte` FILENAMES, NOT descriptor ids: an adb-pushed model's descriptor `id` omits the engine
+     *  infix, so an id-keyed check would miss it and swap the dosing model. */
     private val runningArtifacts: suspend () -> Set<String> = { emptySet() },
     private val sha256Hex: (ByteArray) -> String = ::defaultSha256,
 ) {
-    /** Serialises whole passes: the startup, profile-saved, and manual-button triggers can all fire, and
-     *  two passes must never race on the shared `.part` staging path (an interleaved write could be
-     *  renamed live despite its in-memory-buffer hash "passing"). Also guards [applyPending]. */
+    /** Serialises whole passes: two would race on the shared `.part` staging path. Also guards
+     *  [applyPending]. */
     private val mutex = Mutex()
 
-    /** One pass: list the registry, then per `.pte` row download/verify/write or stage/skip. */
     suspend fun sync(): ModelSyncSummary = mutex.withLock {
         val running = runningArtifacts()
         val rows = http.listModels()
         ModelSyncSummary(rows.mapNotNull { row -> processRow(row, running) })
     }
 
-    /**
-     * Promote a staged update (from [PENDING_DIR]) into the live [modelsDir] — the app layer's
-     * manual apply. `.pte` first, descriptor last; the staged copies are consumed by the rename.
-     * Returns false if no complete staged pair exists for [localId].
-     */
     suspend fun applyPending(localId: String): Boolean = mutex.withLock {
         val pending = File(modelsDir, PENDING_DIR)
         val pteName = "$localId.pte"
@@ -73,7 +47,6 @@ class ModelSyncCoordinator(
         true
     }
 
-    /** Local ids with a complete staged update awaiting a manual [applyPending]. */
     fun pendingModelIds(): Set<String> {
         val pending = File(modelsDir, PENDING_DIR)
         val descs = pending.listFiles { f -> f.isFile && f.name.endsWith(".descriptor.json") } ?: return emptySet()
@@ -84,7 +57,7 @@ class ModelSyncCoordinator(
     }
 
     private suspend fun processRow(row: ModelDto, running: Set<String>): ModelSyncOutcome? {
-        if (!row.id.endsWith(".pte")) return null // ExecuTorch consumer: only `.pte` rows are relevant
+        if (!row.id.endsWith(".pte")) return null
 
         val meta = row.meta as? JsonObject
             ?: return skip(row.id, "meta null/invalid")
@@ -92,17 +65,10 @@ class ModelSyncCoordinator(
         val engine = (meta["engine"] as? JsonPrimitive)?.contentOrNull ?: DEFAULT_ENGINE
         if (engine.lowercase() !in SUPPORTED_ENGINES) return skip(row.id, "unsupported engine $engine")
 
-        // Reject a descriptor the core could not parse BEFORE placing it. `normalization_stats` is
-        // required and its absence is refused there; catching it here keeps an unusable descriptor
-        // from ever being written as discoverable in the first place.
-        //
-        // This is a cheap PRE-check, not the contract: the parse also requires the exercise channel,
-        // the geometry block and the risk transform, and a served model that fails any of those is
-        // skipped at discovery with a logged reason rather than run.
+        // A cheap PRE-check, not the contract: the core's parse also requires the exercise channel,
+        // the geometry block and the risk transform, and skips at discovery with a logged reason.
         if (meta["normalization_stats"] !is JsonObject) return skip(row.id, "descriptor missing normalization_stats")
 
-        // The local descriptor id we normalize to; the `.pte` filename is derived from it and (since the
-        // row id is a `.pte` filename) always equals row.id.
         val name = row.id.removeSuffix(".pte")
         val pteName = "$name.pte"
         val descName = "$name.descriptor.json"
@@ -122,8 +88,7 @@ class ModelSyncCoordinator(
         descName: String,
         running: Set<String>,
     ): ModelSyncOutcome {
-        // Up-to-date: a live artifact whose bytes hash to the registry hash needs no download; just
-        // ensure the descriptor pair is present so a lone `.pte` still becomes discoverable.
+        // Matching bytes still need the descriptor pair, so a lone `.pte` becomes discoverable.
         val livePte = File(modelsDir, pteName)
         if (livePte.exists() && row.sha256.isNotBlank() &&
             sha256Hex(livePte.readBytes()).equals(row.sha256, ignoreCase = true)
@@ -132,14 +97,11 @@ class ModelSyncCoordinator(
             return ModelSyncOutcome.AlreadyCurrent(row.id)
         }
 
-        // Download → write `.part` → fsync → verify BEFORE anything discoverable exists.
         val art = http.downloadModel(row.id)
         val expected = art.sha256?.ifBlank { null } ?: row.sha256.ifBlank { null }
 
-        // Stage (never swap in place) ONLY when this would overwrite a LIVE artifact that a running model
-        // is loaded from — i.e. the file already exists (with a different sha; the up-to-date branch above
-        // already returned) AND its filename is in the loaded running set. A brand-new model, or one that
-        // was only ever on the StubBackend (no live `.pte`), is applied in place — there is nothing to swap.
+        // Stage only when this would overwrite a LIVE artifact a running model is loaded from. A new
+        // model, or one with no live `.pte`, has nothing to swap and is applied in place.
         val isRunning = livePte.exists() && pteName in running
         val destDir = if (isRunning) File(modelsDir, PENDING_DIR) else modelsDir
         destDir.mkdirs()
@@ -160,12 +122,9 @@ class ModelSyncCoordinator(
         return if (isRunning) ModelSyncOutcome.UpdateDownloaded(row.id) else ModelSyncOutcome.FetchedNew(row.id)
     }
 
-    /** Write the served meta verbatim, but with `id` set to the LOGICAL model id ([logicalIdOf] — the
-     *  artifact stem minus its engine infix, e.g. `large.xnnpack` → `large`) and `artifact` to the exact
-     *  on-disk `.pte` ([pteName]). Sharing the logical id across a model's backend variants
-     *  (`.xnnpack`/`.vulkan`/…) is what makes ModelStore + InferenceController group them into ONE model
-     *  with a CPU/GPU toggle instead of N separate models. The running-set/dosing identity keys on the
-     *  `.pte` FILENAME (see [runningArtifacts]), never this id, so grouping cannot swap the dosing model. */
+    /** The served meta verbatim, but `id` normalized to the LOGICAL id ([logicalIdOf]) so a model's
+     *  backend variants group as one. The running-set/dosing identity keys on the `.pte` filename
+     *  (see [runningArtifacts]), never this id. */
     private fun writeDescriptor(dir: File, descName: String, meta: JsonObject, name: String, pteName: String) {
         val normalized = JsonObject(meta + mapOf("id" to JsonPrimitive(logicalIdOf(name)), "artifact" to JsonPrimitive(pteName)))
         val part = File(dir, "$descName.part")
@@ -173,9 +132,6 @@ class ModelSyncCoordinator(
         atomicRename(part, File(dir, descName))
     }
 
-    /** The logical model id: the artifact stem with a trailing engine infix (`.xnnpack`/`.vulkan`/…)
-     *  stripped so a model's backend variants share one id; a stem with no recognized infix (a single
-     *  unqualified model) is returned unchanged. */
     private fun logicalIdOf(name: String): String =
         if (name.substringAfterLast('.', "") in ENGINE_INFIXES) name.substringBeforeLast('.') else name
 
@@ -199,14 +155,13 @@ class ModelSyncCoordinator(
     companion object {
         const val TAG = "ModelSync"
 
-        /** Staging subdir for running-model updates; ModelStore's files-only scan never sees it. */
+        /** ModelStore's files-only scan never sees a subdir. */
         const val PENDING_DIR = "pending"
 
         /** Matches `ModelStore.bundleOf`'s default when a descriptor omits `engine`. */
         private const val DEFAULT_ENGINE = "executorch_xnnpack_fp32"
 
-        /** Filename engine infixes (`<logicalId>.<infix>.pte`) stripped to the logical id so a model's
-         *  backend variants group under one id. Distinct from the descriptor `engine` string. */
+        /** Filename infixes (`<logicalId>.<infix>.pte`), distinct from the descriptor `engine`. */
         private val ENGINE_INFIXES = setOf("xnnpack", "vulkan", "neuron", "litert_npu", "npu")
 
         /** The engine strings `ModelStore.backendOf` recognizes; anything else has no backend. */
@@ -221,33 +176,26 @@ class ModelSyncCoordinator(
     }
 }
 
-/** SHA-256 of [bytes] as lowercase hex; injectable into the coordinator for tests. */
+/** Lowercase hex. */
 fun defaultSha256(bytes: ByteArray): String =
     MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
-/** Per-model result of one [ModelSyncCoordinator.sync] pass. */
 sealed interface ModelSyncOutcome {
     val id: String
 
-    /** Live artifact already matches the registry hash; nothing downloaded. */
     data class AlreadyCurrent(override val id: String) : ModelSyncOutcome
 
-    /** A model the app was not running: downloaded, verified, applied to the live models dir. */
     data class FetchedNew(override val id: String) : ModelSyncOutcome
 
-    /** A running/selected model whose content changed: downloaded + STAGED, awaiting a manual apply
-     *  — the dosing model is never silently swapped. */
+    /** Staged, awaiting a manual apply: the dosing model is never silently swapped. */
     data class UpdateDownloaded(override val id: String) : ModelSyncOutcome
 
-    /** Deliberately ignored (null/invalid meta, unsupported engine); non-`.pte` rows are dropped
-     *  silently without an outcome. */
+    /** A non-`.pte` row is dropped silently instead, with no outcome at all. */
     data class Skipped(override val id: String, val reason: String) : ModelSyncOutcome
 
-    /** Attempted but faulted (network, sha mismatch, io); the pass captured it and continued. */
     data class Failed(override val id: String, val reason: String) : ModelSyncOutcome
 }
 
-/** The whole-pass result with convenience projections for the caller's human-readable line. */
 data class ModelSyncSummary(val outcomes: List<ModelSyncOutcome> = emptyList()) {
     val fetchedNew: List<String> get() = outcomes.filterIsInstance<ModelSyncOutcome.FetchedNew>().map { it.id }
     val updatesPendingApply: List<String>

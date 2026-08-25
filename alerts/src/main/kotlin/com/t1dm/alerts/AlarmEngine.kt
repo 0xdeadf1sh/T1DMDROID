@@ -5,16 +5,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-/**
- * Combines the four deterministic evaluators ([ThresholdAlarm], [LossOfSignalAlarm], [WeakSignalAlarm],
- * [OverTemperatureAlarm]) and publishes the merged [AlarmState] as a Flow (§3.6-A).
- * This is the testable heart of the
- * model-free path: it has no `:inference` dependency, no Android dependency, and reads no clock —
- * time enters only through [onReading]/[onTick].
- *
- * Mutation is synchronized so the CGM-reading collector and the wall-clock ticker may drive it from
- * different coroutines without racing the evaluators' internal state.
- */
 class AlarmEngine(config: AlarmConfig = AlarmConfig.DEFAULT) {
 
     private val threshold = ThresholdAlarm(config.thresholds)
@@ -25,7 +15,6 @@ class AlarmEngine(config: AlarmConfig = AlarmConfig.DEFAULT) {
     private val _state = MutableStateFlow(AlarmState.CLEAR)
     val state: StateFlow<AlarmState> = _state.asStateFlow()
 
-    /** Feed one grid-stamped reading. [nowMs] defaults to the reading's own receive time. */
     @Synchronized
     fun onReading(reading: CgmReading, nowMs: Long = reading.rxWallMs) {
         threshold.onReading(reading)
@@ -36,20 +25,9 @@ class AlarmEngine(config: AlarmConfig = AlarmConfig.DEFAULT) {
         publish()
     }
 
-    /**
-     * The authoritative sensor changed: forget what the previous one established about the LINK,
-     * and keep everything it established about the PATIENT.
-     *
-     * [LossOfSignalAlarm] RESTARTS its clock rather than forgetting the reading behind it, so the new
-     * sensor gets a full window and a sensor that never reports still trips the alarm. [WeakSignalAlarm]
-     * genuinely forgets: RSSI belongs to a radio link, and the old link is no evidence about the new.
-     *
-     * SAFETY: [ThresholdAlarm] is deliberately NOT reset, for the reason [updateConfig] does not
-     * clear a standing breach. A low is a fact about the patient, not about the sensor that saw it,
-     * and clearing the latch here would silence a genuine excursion at exactly the moment the user
-     * was fiddling with sensors. The next eligible MEASURED reading from the new sensor
-     * re-classifies it. Fail closed: keep alarming, never go quiet on a state change.
-     */
+    /** Forgets link state only. [LossOfSignalAlarm] restarts its clock rather than forgetting, so a
+     *  silent new sensor still trips. [ThresholdAlarm] is deliberately not reset: a standing low is a
+     *  fact about the patient, and clearing it here would go quiet mid-excursion. */
     @Synchronized
     fun onSourceChanged(nowMs: Long) {
         lossOfSignal.onSourceChanged(nowMs)
@@ -57,16 +35,8 @@ class AlarmEngine(config: AlarmConfig = AlarmConfig.DEFAULT) {
         publish()
     }
 
-    /**
-     * Live-apply a new [AlarmConfig] to the EXISTING sub-evaluators (a Settings edit reaching the
-     * already-running engine, §3.6-A). Swaps thresholds / loss windows / over-temp
-     * params only; it deliberately does NOT clear any active breach or latch and does NOT re-publish.
-     *
-     * SAFETY: a raised threshold must NOT instantly clear a genuine active low. The current breach is
-     * retained and the NEXT eligible MEASURED reading re-classifies it against the new thresholds — the
-     * engine never silences a standing excursion on a config edit alone. Synchronized with
-     * [onReading]/[onTick] so it cannot interleave an evaluator's internal state.
-     */
+    /** Swaps the sub-evaluators' params. Deliberately clears no active breach and does not publish:
+     *  a raised threshold must not silence a standing low; the next MEASURED reading re-classifies. */
     @Synchronized
     fun updateConfig(config: AlarmConfig) {
         threshold.updateThresholds(config.thresholds)
@@ -75,8 +45,7 @@ class AlarmEngine(config: AlarmConfig = AlarmConfig.DEFAULT) {
         overTemp.updateConfig(config)
     }
 
-    /** Wall-clock tick: re-evaluates the time-dependent loss-of-signal window and, given the current
-     *  battery-sensor [tempC] (null when unreadable), the latching over-temperature alarm. */
+    /** [tempC] is the battery sensor, null when unreadable. */
     @Synchronized
     fun onTick(nowMs: Long, tempC: Double? = null) {
         lossOfSignal.evaluate(nowMs)

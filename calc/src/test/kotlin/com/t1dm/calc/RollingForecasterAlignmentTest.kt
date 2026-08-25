@@ -35,35 +35,16 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * Pins the §4-#4 prediction-zone-origin fix (`RollingForecaster.rollInternal`): the roll must origin
- * its CONTEXT at `series.gridStartMs` and its FUTURE at the grid boundary one step past the last
- * context sample (`predZoneStartMs == gridStartMs + nCtx·STEP`, matching the reference cycle path in
- * `InferenceController`), re-anchoring the scored candidate by that same shift. Before the fix the
- * future origin was the raw `nowMs` and the candidate stayed at `nowMs`; because `nowMs` lies in the
- * current incomplete bucket, moving the origin without re-anchoring rounds the candidate's leading
- * step to `idx < 0` (dropped by `bucketize`), under-counting its lowering effect — a fail-OPEN
- * regression that would admit a larger bolus.
- *
- * The three assertions guard the three coupled parts of the fix; each fails against a distinct
- * pre-fix state, so reverting any one regresses this test:
- *  1. the FUTURE dose channel is bucketized on grid origin `G + n·STEP`, never the raw `nowMs`;
- *  2. a candidate of `U` U resolved at `nowMs` lands in future bucket 0 with `Σ ≈ U` (the re-anchor);
- *  3. with four trailing interpolated readings (anchor at `G + (n−4)·STEP`), a context insulin event
- *     at absolute `G + 2·STEP` lands at CONTEXT grid index 2 (origin `gridStartMs`, not `anchor`).
- *
- * The recording [RecordingNativeCore] captures the exact `gridStartMs` every `bucketize` is invoked
- * with and the `insulin`/`announcedInsulin` channels every `buildContext` receives, so the assertions
- * read the origins and the resolved channels the real path actually built.
- */
+/** Roll origins CONTEXT at `series.gridStartMs` and FUTURE at `gridStartMs + nCtx·STEP`, re-anchoring
+ *  the scored candidate by the same shift. An under-counted candidate fails OPEN. */
 class RollingForecasterAlignmentTest {
 
-    // 5-min grid; G is grid-aligned so every event sits on an exact bucket boundary.
+    // G is grid-aligned; every event sits on an exact bucket boundary.
     private val g = 1_500_000_000_000L
-    private val nCtx = 48                       // 8 patches of 6; a valid context length for the descriptor
-    private val predZoneStartMs = g + nCtx * STEP_MS            // == series.gridStartMs + nCtx·STEP
-    private val lastBucketStartMs = predZoneStartMs - STEP_MS   // the current (incomplete) bucket [·, predZone)
-    private val nowMs = lastBucketStartMs + STEP_MS / 4         // inside the last bucket's FIRST half
+    private val nCtx = 48                       // 8 patches of 6
+    private val predZoneStartMs = g + nCtx * STEP_MS
+    private val lastBucketStartMs = predZoneStartMs - STEP_MS   // the current, incomplete bucket
+    private val nowMs = lastBucketStartMs + STEP_MS / 4         // inside its FIRST half
 
     private val descriptor = ModelDescriptor(
         bg = ChannelStat(0.0, 1.0),
@@ -75,7 +56,7 @@ class RollingForecasterAlignmentTest {
         stepBasisType = "dct",
         quantileSpreadMin = 1e-3,
         negFill = -30000.0,
-        predictionHorizonHours = 2,   // ⇒ predPatches = 2·12/6 = 4, predSteps = 24
+        predictionHorizonHours = 2,   // predSteps = 24
         maxContextPatches = 8,        // maxSteps = 48
         minContextPatches = 4,        // minSteps = 24
         patchSize = 6,
@@ -105,9 +86,7 @@ class RollingForecasterAlignmentTest {
 
     @Test
     fun rollAlignsOriginsAndReanchorsCandidate() = runTest {
-        // A single-step insulin context event on grid index 2 (absolute G + 2·STEP).
         val ctxInsulinEvent = CurveEvent(g + 2 * STEP_MS, STEP_MS, CurveKind.INSULIN, 2.5, listOf(2.5))
-        // The scored candidate, resolved at the raw nowMs inside the current incomplete bucket.
         val candidateU = 4.0
         val candidate = CurveEvent(nowMs, STEP_MS, CurveKind.INSULIN, candidateU, listOf(candidateU))
 
@@ -120,9 +99,7 @@ class RollingForecasterAlignmentTest {
         val channels = ChannelBuilder(CurveEngine(native, dispatchers), store)
         val history = object : BgHistoryProvider {
             override suspend fun recentBgSeries(maxSteps: Int, minSteps: Int): BgSeries =
-                // Four trailing interpolated readings: the last MEASURED anchor is 4 steps before the
-                // last grid slot, so anchorTsMs != gridStartMs + (nCtx-1)·STEP and the pre-fix
-                // context origin (anchor - (nCtx-1)·STEP) would differ from gridStartMs.
+                // Anchor 4 steps before the last grid slot, so anchorTsMs != the last slot.
                 BgSeries(DoubleArray(nCtx) { 120.0 }, anchorTsMs = g + (nCtx - 4) * STEP_MS, gridStartMs = g)
 
             override suspend fun dosingBgSeries(maxSteps: Int, minSteps: Int): BgSeries =
@@ -145,11 +122,9 @@ class RollingForecasterAlignmentTest {
         )
         val fan = forecaster.roll(request)
 
-        // The whole recording path ran (context + future built, model forward + decode + degeneracy).
         assertTrue("the roll must complete and be eligible over the fakes", fan.eligible)
         assertTrue("buildContext must have been invoked", native.buildContextCalls.isNotEmpty())
 
-        // (1) Future origin == G + n·STEP, context origin == gridStartMs, and NEITHER is the raw nowMs.
         val futureCall = native.bucketizeCalls.first { it.kind == CurveKind.INSULIN && it.nSteps == request.fullRollSteps }
         val contextCall = native.bucketizeCalls.first { it.kind == CurveKind.INSULIN && it.nSteps == nCtx }
         assertEquals("future dose channel origin must be G + n·STEP (== InferenceController's predZone)", predZoneStartMs, futureCall.gridStartMs)
@@ -161,28 +136,19 @@ class RollingForecasterAlignmentTest {
 
         val built = native.buildContextCalls.first()
 
-        // (2) The candidate resolved at nowMs, re-anchored by candShift, lands in future bucket 0 and
-        // integrates to its full U. Without the re-anchor its leading step rounds to idx<0 (dropped)
-        // and announcedInsulin[0] would be 0 — the fail-open under-count.
+        // Without the re-anchor the leading step rounds to idx<0 and is dropped — the fail-open under-count.
         val announcedInsulin = built.announcedInsulin!!
         assertTrue("re-anchored candidate must occupy future bucket 0", announcedInsulin[0] > 0.0)
         assertEquals("re-anchored candidate must integrate to its full U", candidateU, announcedInsulin.sum(), 1e-9)
 
-        // (3) The context insulin event at absolute G + 2·STEP lands at context grid index 2 (origin
-        // gridStartMs). The pre-fix origin (anchor - (nCtx-1)·STEP == G - 3·STEP) would place it at
-        // index 5, so index 5 must be empty.
+        // The pre-fix origin (anchor - (nCtx-1)·STEP) would place it at index 5.
         val contextInsulin = built.insulin
         assertEquals("context insulin event must land at grid index 2", 2.5, contextInsulin[2], 1e-9)
         assertEquals("context insulin event must NOT land at the pre-fix index 5", 0.0, contextInsulin.getOrElse(5) { 0.0 }, 1e-9)
     }
 
-    /**
-     * The DOSING path must build its context at the user's BG smoothing window, not the default: the
-     * window shifts `last_bg`, so a calculator left on 7 while the display cycle ran at another would
-     * anchor its whole recommendation on a different number from the forecast drawn beside it. Also
-     * pins the snap-to-detent — an even/garbage persisted value would be rejected outright by the
-     * Rust model-input guard mid-roll.
-     */
+    /** The dosing context uses the user's BG smoothing window, not the default — the window shifts
+     *  `last_bg`. An even or garbage persisted value is snapped; the Rust guard would reject it. */
     @Test
     fun rollBuildsContextAtTheUserSmoothingWindow() = runTest {
         for ((persisted, expected) in listOf(25 to 25, 1 to 1, 12 to 13, 0 to 1, -4 to 1)) {
@@ -229,15 +195,8 @@ class RollingForecasterAlignmentTest {
         }
     }
 
-    /**
-     * The roll's `carry_spread` is PER LEVEL (`SPEC/inference.md` §8.1, §9): each level resumes at
-     * the offset it reached, in the argument's own layout `[up .75 .9 .95 | dn .25 .1 .05]`, read
-     * off the fan the previous roll produced. Roll 0 carries nothing.
-     *
-     * A single scalar carry — the outermost level's accumulation, added to all six — is what put
-     * the .75 edge of one roll outside the .95 edge of the one before it, so the three nested pairs
-     * met at every 2 h seam and the fan drew as one wide band.
-     */
+    /** `SPEC/inference.md` §8.1, §9. Carry layout `[up .75 .9 .95 | dn .25 .1 .05]`; roll 0 carries
+     *  nothing. */
     @Test
     fun rollCarriesSpreadPerLevel() = runTest {
         val native = RecordingNativeCore()
@@ -290,14 +249,10 @@ class RollingForecasterAlignmentTest {
         }
     }
 
-    /**
-     * A [NativeCore] that records the `bucketize` grid origins and the `buildContext` channels the roll
-     * builds, while giving `bucketize`/`buildContext`/`assembleDecode`/`forecastDegeneracyCheck` just
-     * enough real behaviour for one clean roll. `bucketize` mirrors the Rust rule the fix depends on:
-     * a step whose absolute time maps to `idx < 0` is DROPPED. Every other method is unused on this path.
-     */
+    /** `bucketize` mirrors the Rust rule: a step whose absolute time maps to `idx < 0` is DROPPED.
+     *  Every other method is unused on this path. */
     private class RecordingNativeCore : NativeCore {
-        /** Every `carry_spread` the roll handed to `assembleDecode`, in roll order. */
+        /** In roll order. */
         val carryCalls = mutableListOf<List<Double>>()
 
         data class BucketizeCall(val gridStartMs: Long, val nSteps: Int, val kind: CurveKind)
@@ -352,7 +307,6 @@ class RollingForecasterAlignmentTest {
             val predPatches = desc.predictionHorizonHours * 12 / desc.patchSize
             val t = patches + predPatches
             val m = desc.maxMaskedPatches
-            // The masked set a roll asks for: the trailing forecast, and nothing else.
             return GraphInput(
                 nCtx = patches,
                 t = t,
@@ -381,9 +335,6 @@ class RollingForecasterAlignmentTest {
             val nq = 7
             return Forecast(
                 medianRisk = List(steps) { 0.0 },
-                // ASYMMETRIC about the median (col 3): up offsets [2,4,6], down offsets [1,2,3], so a
-                // carry read off this fan pins the level ORDER and the down side's flip, not just its
-                // length.
                 qTauRisk = List(steps * nq) { RISK_ROW[it % nq] },
                 medianBg = List(steps) { 120.0 },
                 bandsMgdl = List(steps * nq) { 110.0 + (it % nq) * 2.0 },
@@ -399,7 +350,6 @@ class RollingForecasterAlignmentTest {
 
         override fun forecastDegeneracyCheck(desc: ModelDescriptor, forecast: Forecast): ForecastStatus = ForecastStatus.OK
 
-        // ── unused on the RollingForecaster roll path ───────────────────────────────────────────
         private fun unused(): Nothing = error("unused by RollingForecasterAlignmentTest")
         override fun roundtrip(msg: String): String = unused()
         override fun decodeAdvert(payload: ByteArray): DecodedAdvert? = unused()
@@ -491,9 +441,7 @@ class RollingForecasterAlignmentTest {
         ): BaselineForecast? = unused()
         override fun baselineOnBoardAt(events: List<CurveEvent>, atMs: Long, kind: CurveKind): Double = unused()
         override fun baselineDegeneracyCheck(forecast: BaselineForecast): ForecastStatus = unused()
-        // Not `unused()`: the rolling forecaster reads the RAW fan by construction, and the day one
-        // of its rails reaches for a calibrated one this must FAIL the alignment rather than throw
-        // somewhere unrelated. `null` is what every caller falls back to — the raw fan.
+        // Not `unused()`: the roll reads the RAW fan, and `null` is every caller's fallback to it.
         override fun applyQuantileConformal(bandsMgdl: List<Double>, delta: List<Double>): List<Double>? = null
         override fun applyQuantileConformalBatch(fansMgdl: List<Double>, delta: List<Double>): List<Double>? = null
         override fun defaultCarTuning(): CarTuning = unused()
@@ -501,6 +449,5 @@ class RollingForecasterAlignmentTest {
     }
 }
 
-/** One ascending-τ risk fan row the recording decode returns. Deliberately ASYMMETRIC about the
- *  median (col 3): up offsets [2,4,6], down offsets [1,2,3]. */
+/** Ascending-τ, ASYMMETRIC about the median (col 3): up offsets [2,4,6], down offsets [1,2,3]. */
 private val RISK_ROW = listOf(0.0, 1.0, 2.0, 3.0, 5.0, 7.0, 9.0)

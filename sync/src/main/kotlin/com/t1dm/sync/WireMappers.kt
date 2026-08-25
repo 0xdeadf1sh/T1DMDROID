@@ -12,17 +12,10 @@ import com.t1dm.data.db.SampleEntity
 import com.t1dm.data.db.toBlob
 import com.t1dm.data.db.toDoubleList
 
-/** Wire ⇄ local mappings for the `/v1` contract; the fan transpose and the curve-BLOB codec are the subtle steps. */
-
 /**
- * [ModelPrediction] → the forecast's wire shape — an inbound STREAM frame at contract 0.5.0, which
- * withdrew the prediction REST routes; nothing stores one. `line` is the median; `fan` is the
- * `nQuantiles × H` matrix in ascending-τ order (row 3 == line). The model carries the fan as
- * [ModelPrediction.bandsMgdl] step-major/τ-minor (`i = s·nQ + q`), so it transposes to quantile-
- * major rows here. `made_at` is the cycle grid ts and `updated_at` the phone wall clock, both stored
- * verbatim. The circadian belief rides as a nested [CircadianDto] carrying the time
- * head's `probs`/`predicted_hour`/`resultant_r`/`n_bins`/`bin_hours` losslessly, or `null` when the
- * model produced no time head (never a zeroed vector).
+ * `fan` is the `nQuantiles × H` matrix in ascending-τ order (row 3 == line). The model carries it
+ * step-major/τ-minor (`i = s·nQ + q`), so it transposes to quantile-major rows here. `made_at` is the
+ * cycle grid ts and `updated_at` the phone wall clock, both stored verbatim.
  */
 fun ModelPrediction.toWrite(cycleTsMs: Long, nowMs: Long): PredictionWriteDto {
     val h = medianBg.size
@@ -42,16 +35,9 @@ fun ModelPrediction.toWrite(cycleTsMs: Long, nowMs: Long): PredictionWriteDto {
 }
 
 /**
- * A wide local row → `POST /v1/ingest` bundle (integer series widened to the wire's floats). Only
- * the six demoted scalars travel here (`bg,hr,steps,sleep,exercise,mood`); carbs/bolus/basal are no
- * longer sample columns — a meal/dose is a self-describing curve event pushed separately via
- * `PUT /v1/meals` / `PUT /v1/doses`. `updated_at` is the phone clock, carried verbatim so the
- * server's COALESCE upsert applies a genuine edit and no-ops a byte-identical redelivery.
- *
- * `exercise` is the exception to "integer series widened": it is grams of carbohydrate equivalent
- * per bucket (`SPEC/invariants.md` §3, `SPEC/http-api.md`), already an `f64` on both sides, and it
- * must cross unrounded in both directions — an ordinary bucket holds a couple of grams, so rounding
- * would quantise the disposal curve away entirely.
+ * The integer series widened to the wire's floats — except `exercise`, which is grams of
+ * carbohydrate equivalent per bucket (`SPEC/invariants.md` §3) and must cross unrounded: a bucket
+ * holds a couple of grams, so rounding would quantise the disposal curve away.
  */
 fun SampleEntity.toIngest(): IngestDto = IngestDto(
     ts = ts,
@@ -66,28 +52,21 @@ fun SampleEntity.toIngest(): IngestDto = IngestDto(
     sleep = sleep?.toDouble(),
     exercise = exercise,
     mood = mood,
-    // A row whose BG the patient deleted has to say so: an omitted field leaves the server's copy
-    // untouched, so without naming the column the next catch-up would merge the value straight
-    // back. This is the whole of the clear on this route.
+    // A deleted BG has to be named: an omitted field leaves the server's copy untouched, so the next
+    // catch-up would merge the value straight back.
     clear = if (bgMgdl == null) listOf("bg") else null,
 )
 
-/**
- * A server row → catch-up [SamplePatch]. Provenance comes from the wire's `bg_reconstructed`; the
- * flag is what separates a promoted reconstruction from sensor signal, and every safety gate keys
- * on it. Floats snap back to the local integer series, `exercise` excepted — it is grams and stays
- * a float.
- */
+/** Floats snap back to the local integer series, `exercise` excepted — it is grams and stays a
+ *  float. */
 fun SampleDto.toPatch(): SamplePatch = SamplePatch(
     ts = ts,
     bgSource = bg_source,
     tzOffsetMin = tz_offset,
     updatedAt = updated_at,
     bgMgdl = bg?.let { Math.round(it).toInt() },
-    // A reconstructed value is NOT a measurement. Provenance is what every safety gate keys on —
-    // an alarm may only be cleared by a measured reading — so a promoted span coming back from a
-    // catch-up has to arrive carrying what it is, or it would be read as sensor signal from the
-    // moment it landed and would feed a dose.
+    // A reconstructed value is NOT a measurement. Every safety gate keys on provenance — an alarm
+    // may only be cleared by a measured reading — so it must arrive carrying what it is.
     bgProvenance = bg?.let {
         if (bg_reconstructed) ReadingProvenance.RECONSTRUCTED else ReadingProvenance.MEASURED
     },
@@ -99,11 +78,8 @@ fun SampleDto.toPatch(): SamplePatch = SamplePatch(
     exercise = exercise,
 )
 
-/**
- * The live frame → [SamplePatch]. The same rule as the REST twin, and for the same reason: a
- * reconstruction that arrives flagged MEASURED can clear an alarm and feed a dose, and provenance is
- * what every safety gate keys on.
- */
+/** The same provenance rule as the REST twin: a reconstruction arriving flagged MEASURED can clear
+ *  an alarm and feed a dose. */
 fun WsEvent.Sample.toPatch(): SamplePatch = SamplePatch(
     ts = ts,
     bgSource = bg_source,
@@ -121,12 +97,8 @@ fun WsEvent.Sample.toPatch(): SamplePatch = SamplePatch(
     exercise = exercise,
 )
 
-/**
- * [LoggedMealEntity] → the `PUT /v1/meals` element. The stored appearance-curve BLOB (little-endian
- * `f64`) decodes to the wire's `List<Double>` on the fixed 300 000 ms grid; a parametric meal has a
- * null curve and is reconstructed server-side from `gi`/`k`/`theta`. `client_id` is the phone-minted
- * idempotency key and `updated_at` is carried verbatim.
- */
+/** The stored appearance-curve BLOB (little-endian `f64`) decodes to the wire's `List<Double>` on
+ *  the 300 000 ms grid; a parametric meal has a null curve. */
 fun LoggedMealEntity.toMealEventDto(): MealEventDto = MealEventDto(
     client_id = clientId,
     ts = tsMs,
@@ -141,11 +113,8 @@ fun LoggedMealEntity.toMealEventDto(): MealEventDto = MealEventDto(
     note = note,
 )
 
-/**
- * [LoggedDoseEntity] → the `PUT /v1/doses` element. `kind` widens the local [DoseKind] to the wire's
- * lowercase `"bolus"`/`"basal"`; a BOLUS carries gamma `k`/`theta`, a BASAL carries Bateman
- * `ka_per_hour`/`ke_per_hour`. A user-drawn action curve rides as the resolved `custom_curve`.
- */
+/** `kind` widens the local [DoseKind] to the wire's lowercase `"bolus"`/`"basal"`; a BOLUS carries
+ *  gamma `k`/`theta`, a BASAL Bateman `ka_per_hour`/`ke_per_hour`. */
 fun LoggedDoseEntity.toDoseEventDto(): DoseEventDto = DoseEventDto(
     client_id = clientId,
     ts = tsMs,
@@ -162,10 +131,7 @@ fun LoggedDoseEntity.toDoseEventDto(): DoseEventDto = DoseEventDto(
     note = note,
 )
 
-/**
- * `GET /v1/meals` element → [LoggedMealEntity] for id-keyed catch-up hydration (`insertIgnore` on
- * `clientId`). The wire `custom_curve` is re-BLOBbed locally; `id` is left to Room's autogenerate.
- */
+/** `custom_curve` is re-BLOBbed locally; `id` is left to Room's autogenerate. */
 fun MealEventDto.toLoggedMealEntity(): LoggedMealEntity = LoggedMealEntity(
     clientId = client_id,
     tsMs = ts,
@@ -178,16 +144,12 @@ fun MealEventDto.toLoggedMealEntity(): LoggedMealEntity = LoggedMealEntity(
     tzOffsetMin = tz_offset,
     note = note,
     updatedAt = updated_at,
-    // A hydrated row was authored elsewhere, so the only honest "when the phone was told" is its
-    // authoring stamp, and it has not been edited HERE.
+    // Authored elsewhere, so its authoring stamp is the only honest "when", and it has no local edit.
     loggedAtMs = updated_at,
     mutatedAtMs = null,
 )
 
-/**
- * `GET /v1/doses` element → [LoggedDoseEntity] for id-keyed catch-up hydration. `kind` narrows the
- * wire's lowercase string back to [DoseKind]; `custom_curve` is re-BLOBbed locally.
- */
+/** `kind` narrows the wire's lowercase string back to [DoseKind]; `custom_curve` is re-BLOBbed. */
 fun DoseEventDto.toLoggedDoseEntity(): LoggedDoseEntity = LoggedDoseEntity(
     clientId = client_id,
     tsMs = ts,
@@ -208,7 +170,6 @@ fun DoseEventDto.toLoggedDoseEntity(): LoggedDoseEntity = LoggedDoseEntity(
     mutatedActingUntilMs = null,
 )
 
-/** The deletion of a meal, as the minimal body `PUT /v1/meals` accepts when `deleted` is set. */
 fun EventTombstone.toMealTombstoneDto(): MealTombstoneDto = MealTombstoneDto(
     client_id = clientId,
     ts = tsMs,
@@ -216,7 +177,6 @@ fun EventTombstone.toMealTombstoneDto(): MealTombstoneDto = MealTombstoneDto(
     updated_at = updatedAt,
 )
 
-/** The dose twin of [toMealTombstoneDto]. */
 fun EventTombstone.toDoseTombstoneDto(): DoseTombstoneDto = DoseTombstoneDto(
     client_id = clientId,
     ts = tsMs,

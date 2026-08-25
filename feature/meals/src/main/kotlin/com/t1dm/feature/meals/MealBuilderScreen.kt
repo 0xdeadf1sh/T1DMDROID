@@ -42,21 +42,6 @@ import com.t1dm.core.model.ResolvedMealCurve
 import com.t1dm.core.model.SavedMeal
 import com.t1dm.ui.graph.CurveEditor
 
-/**
- * The multi-food meal builder (Phase 4 deliverable 3/4) — the rich seam the simple
- * carb-entry [MealsScreen] points at. It searches the bundled glycemic dictionary (FTS5), assembles
- * a portioned component list, shows the LIVE combined **appearance (Ra)** curve
- * ([onResolve]) with its total carbs + peak time, and can save the meal, log it (reshaping the
- * forecast), add a custom food (with an optional drawn appearance curve), and recall a saved meal.
- * Stateless + callback-driven; all resolution/persistence is off-thread in the caller.
- *
- * It composes NEW meals only. Altering a stored meal or a custom food happens in its own view
- * ([MealEditorScreen] / [FoodEditorScreen]), reached through [onEditMeal] / [onEditFood]: an edit
- * session grafted onto this screen had to stash and restore the scratch meal it displaced, and left
- * Save aimed at whichever identity was open rather than at the thing on screen. The two lists here
- * are otherwise unlike — a [Food] is an ingredient priced per 100 g, a [SavedMeal] is a combination
- * of portions — so each row states its own facts rather than relying on prose to separate them.
- */
 @Composable
 fun MealBuilderScreen(
     savedMeals: List<SavedMeal>,
@@ -90,7 +75,6 @@ fun MealBuilderScreen(
         HorizontalDivider()
         SavedMeals(
             savedMeals = savedMeals,
-            // A tap drops a COPY into the scratch builder; no identity comes with it.
             onLoad = { meal -> draft.replaceAll(meal.components) },
             onEdit = onEditMeal,
             onDelete = onDeleteMeal,
@@ -108,11 +92,7 @@ private fun BuilderSummary(
     onSaveMeal: (String, List<MealComponent>) -> Unit,
 ) {
     val resolved = resolvedCurve(draft.components, onResolve)
-    // The meal the Log press proposes, resolved carbs and component breakdown captured at the press
-    // so the confirmation restates the row rather than whatever the list holds a moment later.
     var pending by remember { mutableStateOf<PendingLog.Meal?>(null) }
-    // Carbs logged by the last "Log meal" press, so the builder can confirm the action once it
-    // clears itself. Reset as soon as a new meal is started (a component is added).
     var justLoggedCarbs by rememberSaveable { mutableStateOf<Double?>(null) }
     var mealName by rememberSaveable { mutableStateOf("") }
     val isEmpty = draft.isEmpty
@@ -139,16 +119,12 @@ private fun BuilderSummary(
     ResolvedCurveSummary(resolved)
 
     Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        // Propose, then (on confirm) log and clear the builder: the collapse to the confirmation line
-        // is the feedback that the press took effect, and it also stops the no-feedback button from
-        // being mashed into duplicate logged_meal rows.
-        // Propose only — the dialog carries the Warn/Confirm/Reject and the receipt carries the Commit.
         Button(
             onClick = {
                 haptics.perform(HapticEvent.Tap)
                 pending = PendingLog.Meal(
                     grams = resolved.totalCarbs,
-                    gi = null, // a builder meal carries a combined Ra curve, not one glycemic index
+                    gi = null, // a combined Ra curve, not one GI
                     detail = draft.components.joinToString(", ") { "${it.name} ${it.grams.toInt()} g" },
                 )
             },
@@ -237,8 +213,7 @@ private fun FoodBuilder(
     onEditFood: (Long) -> Unit,
     onDeleteFood: (Long) -> Unit,
 ) {
-    // Saveable throughout: an editor route opened from a row below displaces this composition, and a
-    // half-drafted food (a hand-drawn curve above all) must not be the price of checking one.
+    // Saveable: an editor route opened from a row below displaces this composition mid-draft.
     var name by rememberSaveable { mutableStateOf("") }
     var carbsText by rememberSaveable { mutableStateOf("") }
     var giText by rememberSaveable { mutableStateOf("") }
@@ -278,8 +253,6 @@ private fun FoodBuilder(
         )
     }
     val curveDegenerate = useCustomCurve && curve.isDegenerate()
-    // Felt at the drag that flattens the curve, while the finger is still on the editor — the same
-    // moment the Save button goes dead, which is otherwise the only sign anything happened.
     LaunchedEffect(curveDegenerate) { if (curveDegenerate) haptics.perform(HapticEvent.Warn) }
     if (useCustomCurve) {
         CurveEditor(curve = curve, onChange = { curve = it })

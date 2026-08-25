@@ -27,7 +27,6 @@ class NightscoutClientTest {
         dispatchers = dispatchers,
     )
 
-    /** The credential is the `api-secret` header carrying a SHA-1 — never a Bearer token. */
     @Test
     fun `sends the api-secret header`() = runTest {
         server.enqueue(MockResponse().setResponseCode(200).setBody("[]"))
@@ -38,11 +37,7 @@ class NightscoutClientTest {
         assertEquals("/api/v1/entries", req.path)
     }
 
-    /**
-     * An unconfigured bridge throws its OWN exception. It must never be confused with
-     * `NoActiveProfileException`, which stands the whole outbox down: a bridge nobody set up would
-     * then stall the patient's own server sync.
-     */
+    /** Never `NoActiveProfileException`: that stands the whole outbox down. */
     @Test(expected = NightscoutDisabledException::class)
     fun `disabled bridge throws its own exception`() = runTest {
         client(enabled = false).execute(SyncRequest("GET", "/api/v1/status.json", null))
@@ -73,7 +68,6 @@ class NightscoutClientTest {
             .toByteArray(),
     )
 
-    /** The `client_id` marker in `notes` is the primary recognition path after a lost ack. */
     @Test
     fun `alreadyPosted recognises its own earlier post by client id`() = runTest {
         server.enqueue(
@@ -84,7 +78,7 @@ class NightscoutClientTest {
         assertTrue(client().alreadyPosted(treatmentRequest()))
     }
 
-    /** …and the (type, timestamp, amount) triple is the fallback for a host that drops `notes`. */
+    /** The fallback shape is (type, timestamp, amount). */
     @Test
     fun `alreadyPosted recognises it by shape when notes are dropped`() = runTest {
         server.enqueue(
@@ -95,10 +89,6 @@ class NightscoutClientTest {
         assertTrue(client().alreadyPosted(treatmentRequest()))
     }
 
-    /**
-     * Not recognised ⇒ false ⇒ the caller re-posts. A different amount at the same instant is a
-     * DIFFERENT dose, and treating it as a match would silently drop a real one.
-     */
     @Test
     fun `alreadyPosted is false for a different dose at the same instant`() = runTest {
         server.enqueue(
@@ -115,7 +105,6 @@ class NightscoutClientTest {
         assertFalse(client().alreadyPosted(treatmentRequest()))
     }
 
-    /** Entries are not treatments: the guard must not claim to know anything about them. */
     @Test
     fun `alreadyPosted never speaks for an entries request`() = runTest {
         assertFalse(client().alreadyPosted(SyncRequest("POST", "/api/v1/entries", "[]".toByteArray())))

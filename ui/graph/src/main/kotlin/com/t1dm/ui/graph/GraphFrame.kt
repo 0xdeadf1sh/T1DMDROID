@@ -7,24 +7,9 @@ import com.t1dm.core.model.UnitSpace
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/**
- * An immutable, primitive-array snapshot of a glucose series ready to draw (
- * Phase 1 / §3.4). All heavy work — unit-transform, decimation, gap detection — is done ONCE, off
- * the main thread, in [buildGraphFrame]; [com.t1dm.ui.graph.GlucoseGraph] only maps these arrays to
- * pixels and paints. No boxing, no `List<CgmReading>` retained: the Canvas never touches domain
- * types.
- *
- * Coordinates are stored screen-independent so pan/zoom/scrub are pure viewport transforms and never
- * force a rebuild:
- *  - [xs] — minutes since [t0Ms] (ascending). Minutes keep the magnitudes small enough for `Float`
- *    to stay exact across a multi-day window (a week = 10 080 min ≪ 2^24).
- *  - [ys] — the glucose value already converted into [unit].
- *  - [flags] — one of [FLAG_MEASURED] / [FLAG_INTERPOLATED] / [FLAG_WARMUP] /
- *    [FLAG_RECONSTRUCTED], so the renderer can
- *    make fabricated and warm-up points visually distinct without re-deriving provenance.
- *  - [breakAfter] — true where a true dropout (no interpolation) follows point `i`; the polyline is
- *    cut there rather than bridging the gap with a fictitious straight line.
- */
+/** Screen-independent snapshot, built off the main thread by [buildGraphFrame], so pan and zoom
+ *  never rebuild. [xs] minutes since [t0Ms], ascending; [ys] already in [unit]; [breakAfter] true
+ *  where a real dropout follows point `i`, cutting the polyline instead of bridging it. */
 class GraphFrame internal constructor(
     val t0Ms: Long,
     val tzOffsetMin: Int,
@@ -39,10 +24,10 @@ class GraphFrame internal constructor(
     val size: Int get() = xs.size
     val isEmpty: Boolean get() = xs.isEmpty()
 
-    /** Absolute epoch-ms of point [i] (reconstituted from the minute offset). */
+    /** Epoch-ms of point [i]. */
     fun absMs(i: Int): Double = t0Ms + xs[i].toDouble() * 60_000.0
 
-    /** Index of the point nearest to absolute [ms]; -1 when empty. Used by the scrub cursor. */
+    /** Nearest point to absolute [ms]; -1 when empty. */
     fun nearestIndex(ms: Double): Int {
         if (xs.isEmpty()) return -1
         val target = ((ms - t0Ms) / 60_000.0).toFloat()
@@ -62,10 +47,8 @@ class GraphFrame internal constructor(
         const val FLAG_INTERPOLATED = 1
         const val FLAG_WARMUP = 2
 
-        /** A promoted model reconstruction. It has its own flag because it is the one value on this
-         *  panel that would otherwise be pixel-identical to sensor signal, and the renderer must
-         *  distinguish it in the POLYLINE as well as the point marker — at 6 h and wider the markers
-         *  are suppressed and the line is the whole rendering. */
+        /** Own flag: the one value otherwise pixel-identical to sensor signal, and at 6 h and wider
+         *  the markers are suppressed, so the polyline must carry the distinction. */
         const val FLAG_RECONSTRUCTED = 3
 
         val EMPTY = GraphFrame(
@@ -76,7 +59,6 @@ class GraphFrame internal constructor(
     }
 }
 
-/** Suspend wrapper: build a [GraphFrame] off the main thread (§2.3, GraphFrame row). */
 suspend fun graphFrameOf(
     readings: List<CgmReading>,
     unit: UnitSpace = UnitSpace.MgDl,
@@ -87,15 +69,8 @@ suspend fun graphFrameOf(
     buildGraphFrame(readings, unit, maxGapMin, maxPoints, kovatchevF)
 }
 
-/**
- * Pure CPU transform (no coroutines) — safe to call directly from a `@Preview` or a test. Drops
- * value-less readings (INVALID / null bg), sorts by time, converts into [unit], marks genuine
- * dropout breaks on the RAW grid, then decimates with a min/max envelope if the count exceeds
- * [maxPoints] — carrying only the real breaks through so decimation never fabricates a gap.
- *
- * Kovatchev raw-space needs the native `f(g)` (§3.4); pass it as [kovatchevF]. When
- * absent, [UnitSpace.Kovatchev] falls back to mg/dL rather than fabricating a curve.
- */
+/** Pure CPU: callable from a `@Preview` or a test. [kovatchevF] is the native `f(g)`; without it
+ *  [UnitSpace.Kovatchev] falls back to mg/dL rather than fabricating a curve. */
 fun buildGraphFrame(
     readings: List<CgmReading>,
     unit: UnitSpace = UnitSpace.MgDl,
@@ -126,10 +101,7 @@ fun buildGraphFrame(
         }
     }
 
-    // Genuine dropout breaks live on the RAW grid: decimation drops points and can widen apparent
-    // spacing past maxGapMin with no real gap, so detect the breaks here and carry only these through.
-    // breakPrefix[j] = number of true entries in rawBreak[0, j) — an O(1) "is there a real dropout in
-    // this index range?" test for the decimated path below.
+    // Breaks belong to the RAW grid: decimation can widen spacing past maxGapMin with no real gap.
     val rawBreak = BooleanArray(n) { i -> i < n - 1 && (xs[i + 1] - xs[i]) > maxGapMin }
     val breakPrefix = IntArray(n + 1)
     for (j in 0 until n) breakPrefix[j + 1] = breakPrefix[j] + if (rawBreak[j]) 1 else 0
@@ -149,17 +121,13 @@ fun buildGraphFrame(
         if (ys[i] > maxY) maxY = ys[i]
     }
     if (srcIdx == null) {
-        // No decimation: the kept points ARE the raw grid, so carry rawBreak through verbatim.
         for (i in 0 until m - 1) breakAfter[i] = rawBreak[i]
     } else {
-        // Decimated: a segment breaks iff a genuine raw dropout falls between its two kept source
-        // indices (breakPrefix delta > 0), never merely because decimation spaced the points out.
+        // Breaks iff a raw dropout falls between the two kept source indices, not from spacing.
         for (k in 0 until m - 1) breakAfter[k] = breakPrefix[srcIdx[k + 1]] - breakPrefix[srcIdx[k]] > 0
     }
-    // The NEWEST reading's offset, not the oldest. The dashboard observes the whole store, so `first()`
-    // froze the axis on whatever offset was in force when the record began: after a DST transition or a
-    // move, every tick and the date row under it sat an hour off wall-clock for the life of the history.
-    // The last reading is the one whose offset the phone is actually keeping now.
+    // Newest offset, not the oldest: the oldest freezes the axis on the offset in force when the
+    // record began, leaving every tick an hour off after a DST change or a move.
     return GraphFrame(t0, kept.last().tzOffsetMin, unit, xs, ys, flags, breakAfter, minY, maxY)
 }
 
@@ -170,19 +138,13 @@ internal fun convert(mgdl: Double, unit: UnitSpace, kovatchevF: ((Double) -> Dou
         UnitSpace.Kovatchev -> kovatchevF?.invoke(mgdl) ?: mgdl
     }
 
-/** A min/max-decimation result: the reduced parallel arrays plus [srcIdx], the ORIGINAL pre-
- *  decimation index of every kept point, so genuine raw dropouts can be re-mapped onto the reduced
- *  polyline (a break must reflect a real gap, not bucket spacing). */
+/** [srcIdx] is each kept point's pre-decimation index, for re-mapping real dropouts. */
 private class Decimated(
     val xs: FloatArray, val ys: FloatArray, val flags: IntArray, val srcIdx: IntArray,
 )
 
-/**
- * Min/max bucket decimation: split the interior into ~[maxPoints]/2 buckets and keep each bucket's
- * lowest and highest sample (in time order). Preserves the visual envelope — spikes and nadirs
- * survive — where naive striding would drop them. Endpoints are always retained, and every kept
- * point records its source index (see [Decimated.srcIdx]).
- */
+/** Keeps each bucket's min and max in time order, so spikes and nadirs survive where striding
+ *  would drop them. Endpoints always kept. */
 private fun decimateMinMax(
     xs: FloatArray, ys: FloatArray, flags: IntArray, maxPoints: Int,
 ): Decimated {

@@ -7,17 +7,16 @@ import com.t1dm.core.model.DecodedAdvert
 import com.t1dm.core.model.ReadingFlag
 import java.util.TimeZone
 
-/** Everything one advert yielded, for both the reading stream and raw-advert forensics. */
 data class PipelineOutput(
     val readings: List<CgmReading>,
-    /** The ≥20-byte 0x0059 glucose payload we isolated, or `null` if none was present. */
+    /** Null when no ≥20-byte 0x0059 payload was present. */
     val glucosePayload: ByteArray?,
-    /** The CRC-validated decode, or `null` on a short / CRC-failing payload. */
+    /** Null on a short or CRC-failing payload. */
     val decoded: DecodedAdvert?,
-    /** `minFromStart` read straight off the payload (present whenever a payload was isolated). */
+    /** Present whenever a payload was isolated. */
     val minFromStart: Int?,
 ) {
-    /** A payload that decoded is, by construction, CRC-valid (CGM.md §3.2). */
+    /** A payload that decoded is CRC-valid (CGM.md §3.2). */
     val crcValid: Boolean get() = decoded != null
 
     override fun equals(other: Any?): Boolean {
@@ -38,16 +37,9 @@ data class PipelineOutput(
 }
 
 /**
- * The passive-advert decode pipeline for one CGM source (Phase 1):
- *
- * ```
- * AdStructureParser → DedupRing(minFromStart) → CRC gate + decode (NativeCore)
- *                   → ReadingClassifier → GridStamper
- * ```
- *
- * All stages are synchronous and side-effect-free (persistence is the caller's job, on IO), so
- * the whole pipeline is exercised deterministically from unit tests with a reference [NativeCore].
- * Stateful (the dedup ring and the grid stamper), so exactly one instance per source per thread.
+ * The passive-advert decode pipeline for one CGM source. Stages are synchronous and
+ * side-effect-free; persistence is the caller's job. Stateful (the dedup ring and the grid stamper),
+ * so exactly one instance per source per thread.
  */
 class CgmPipeline(
     private val sourceId: CgmSourceId,
@@ -55,15 +47,14 @@ class CgmPipeline(
     private val classifier: ReadingClassifier = ReadingClassifier(),
     private val dedup: DedupRing = DedupRing(),
     private val gridStamper: GridStamper = GridStamper(),
-    /** Grid-instant → local UTC offset in minutes; injectable for deterministic tests. */
+    /** Grid instant → local UTC offset, minutes. */
     private val tzOffsetMinFor: (Long) -> Int = { ms -> TimeZone.getDefault().getOffset(ms) / 60_000 },
 ) {
     fun process(raw: RawAdvert): PipelineOutput {
         val payload = AdStructureParser.manufacturerPayload(raw.adBytes)
             ?: return PipelineOutput(emptyList(), null, null, null)
 
-        // minFromStart is the first LE u16 of the payload (CGM.md §3.1); read it cheaply so a
-        // re-advertised minute short-circuits before the CRC.
+        // The first LE u16 of the payload (CGM.md §3.1).
         val mfs = (payload[0].toInt() and 0xFF) or ((payload[1].toInt() and 0xFF) shl 8)
         if (dedup.contains(mfs)) {
             return PipelineOutput(emptyList(), payload, null, mfs)

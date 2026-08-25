@@ -8,14 +8,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * The exercise disposal curve, against `../T1DMCOMMON/SPEC/invariants.md` §5.
- *
- * Two halves. The parameters are checked as literals, because §5 fixes them and a resolver that
- * quietly drifted off them would still produce a plausible-looking curve; the curve itself is
- * checked through the same [CurveEngine.gamma] the carbohydrate channel uses, over [StubNativeCore]
- * (the Kotlin port of `t1dm-core::curve`), so what is tested is the routine that actually runs.
- */
+/** `../T1DMCOMMON/SPEC/invariants.md` §5. */
 class ExerciseDisposalTest {
 
     private val dispatchers = DefaultT1dmDispatchers(
@@ -34,7 +27,7 @@ class ExerciseDisposalTest {
         assertEquals(15.0, short.theta, EPS)
         assertEquals(short.k, long.k, EPS)
         assertEquals(short.theta, long.theta, EPS)
-        // Peak at (k−1)·θ = 30 min, wherever the bout's length puts the window's end.
+        // Peak at (k−1)·θ = 30 min.
         assertEquals(30.0, (short.k - 1.0) * short.theta, EPS)
     }
 
@@ -47,9 +40,7 @@ class ExerciseDisposalTest {
 
     @Test
     fun `magnitude scales with duration alone`() {
-        // Doubling the bout doubles the grams; nothing else in this resolver can change them, which
-        // is the whole point — an intensity-scaled magnitude is off-distribution for every model
-        // pretrained on T1DMSIM.
+        // An intensity-scaled magnitude is off-distribution for models pretrained on T1DMSIM.
         val one = ExerciseDisposal.paramsFor(30.0, 0.5)
         val two = ExerciseDisposal.paramsFor(60.0, 0.5)
         assertEquals(2.0 * one.grams, two.grams, EPS)
@@ -99,8 +90,7 @@ class ExerciseDisposalTest {
 
     @Test
     fun `the curve sums to the magnitude`() = runTest {
-        // §5: a curve is a per-five-minute rate series that SUMS to the event's total. Summing is the
-        // invariant; the shape is the meaning.
+        // §5.
         for (minutes in listOf(5.0, 20.0, 45.0, 90.0, 300.0)) {
             val p = ExerciseDisposal.paramsFor(minutes)
             val values = engine.gamma(p.grams, p.k, p.theta, p.durationMin)
@@ -111,9 +101,7 @@ class ExerciseDisposalTest {
 
     @Test
     fun `the curve stops at the ninety-minute tail and carries no second one`() = runTest {
-        // The post-exercise sensitivity boost runs for six hours and is a SEPARATE mechanism; a
-        // consumer that folded it in here would count the same bout twice. A 30-minute bout is
-        // therefore two hours of curve, not eight.
+        // The post-exercise sensitivity boost is a separate mechanism; folding it in double-counts.
         val p = ExerciseDisposal.paramsFor(30.0)
         val values = engine.gamma(p.grams, p.k, p.theta, p.durationMin)
         assertEquals(24, values.size)

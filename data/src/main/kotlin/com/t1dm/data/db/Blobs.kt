@@ -3,11 +3,7 @@ package com.t1dm.data.db
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
-/**
- * Little-endian `f64` ⇄ `ByteArray` codec for the numeric-series BLOB columns (the `prediction`
- * fan/line/tod). LE is fixed so a DB copied between hosts decodes identically; the app is
- * arm64-only (little-endian) so this is also a no-copy match for the on-device buffers.
- */
+/** LE is fixed so a DB copied between hosts decodes identically. */
 fun DoubleArray.toBlob(): ByteArray {
     val buf = ByteBuffer.allocate(size * Double.SIZE_BYTES).order(ByteOrder.LITTLE_ENDIAN)
     for (v in this) buf.putDouble(v)

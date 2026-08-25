@@ -7,14 +7,6 @@ import com.t1dm.core.model.ForecastStatus
 /** 5-min grid, matching `CurveEngine.STEP_MS`. */
 const val STEP_MS = 300_000L
 
-/**
- * A deterministic stand-in for the real [RollingForecaster], so the calculator's safety logic is
- * exercised without a model on the host (the on-device `.pte` path is verified separately per the
- * plan). BG is a simple linear response: each candidate unit lowers BG by [mgdlPerU] and each
- * announced/candidate carb gram raises it by [mgdlPerG], ramped linearly over the roll; the band
- * widens with the horizon. [forceEligibility] injects the DEGENERATE / STALE / MISSING failure modes
- * the fail-closed invariants require.
- */
 class FakeForecastPort(
     private val startBg: Double = 200.0,
     private val driftPerStep: Double = 0.0,
@@ -48,7 +40,7 @@ class FakeForecastPort(
     }
 }
 
-/** The fake port keys off [ForecastRequest.candidateU]; the resolved events only matter to the real port. */
+/** The fake port keys off [ForecastRequest.candidateU], so the events themselves are inert. */
 class FakeBolusResolver : BolusResolver {
     override suspend fun resolve(doseU: Double, atMs: Long): List<CurveEvent> =
         listOf(CurveEvent(atMs, STEP_MS, CurveKind.INSULIN, doseU, listOf(doseU)))
@@ -83,7 +75,6 @@ fun fakeIob(
 fun fp32Backend(agreementOk: Boolean? = null): BackendInfo =
     BackendInfo(com.t1dm.core.model.BackendId.EXECUTORCH_XNNPACK_FP32, com.t1dm.core.model.Precision.FP32, agreementOk)
 
-/** Assemble a [DoseAdvisor] over the fakes with sensible defaults; override any dependency per test. */
 fun advisorOf(
     port: ForecastPort,
     anchor: AnchorInfo?,

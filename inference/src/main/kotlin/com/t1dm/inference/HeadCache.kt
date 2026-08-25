@@ -6,38 +6,27 @@ import com.t1dm.core.model.LoraWeights
 import timber.log.Timber
 import kotlin.math.abs
 
-/**
- * The re-runnable BG heads, one per model, opened from each artifact's side file and kept for as
- * long as the model is loaded.
- *
- * A head is only ever needed when an adapter is attached: without one the graph's own `head_raw`
- * is the fast path and this is dead weight. What makes it safe to use at all is the parity check
- * — with no adapter the head must reproduce the graph's output on the same hidden states. A head
- * paired with the wrong graph does not fail: it produces a finite, plausible, wrong fan. So a
- * model whose head disagrees is marked [Unusable] and refuses every adapter rather than quietly
- * forecasting differently from the one the app has been storing all along.
- */
+/** Re-runnable BG heads, one per model, opened from the artifact's side file; only needed when an
+ *  adapter is attached. A head paired with the wrong graph produces a finite, plausible, WRONG fan,
+ *  so one that fails the parity check is [Unusable] and refuses every adapter. */
 class HeadCache(private val native: NativeCore) {
 
-    /** What a model's head turned out to be, once. */
     sealed interface State {
-        /** Opened and agreeing with the graph. */
         data class Ready(val head: NativeHead, val maxDelta: Double) : State
 
-        /** No side file, or the descriptor declared none — the model runs, adapters do not. */
+        /** No side file, or none declared: the model runs, adapters do not. */
         data object Absent : State
 
-        /** Present but not the graph's own head, or unparseable. Adapters are refused. */
         data class Unusable(val why: String) : State
     }
 
     private val states = HashMap<String, State>()
 
-    /** The head for [bundle], opened on first use. Never throws. */
+    /** Opened on first use. Never throws. */
     @Synchronized
     fun stateOf(bundle: ModelBundle): State = states.getOrPut(bundle.id) { open(bundle) }
 
-    /** Drop and release [modelId]'s head — call when its artifact is replaced or deleted. */
+    /** Call when the artifact is replaced or deleted. */
     @Synchronized
     fun evict(modelId: String) {
         (states.remove(modelId) as? State.Ready)?.head?.close()
@@ -49,7 +38,7 @@ class HeadCache(private val native: NativeCore) {
         states.clear()
     }
 
-    /** Record a verdict, releasing any head it replaces — the native buffer is ours to free. */
+    /** Releases any head it replaces; the native buffer is ours to free. */
     private fun set(modelId: String, next: State) {
         (states[modelId] as? State.Ready)
             ?.takeIf { (next as? State.Ready)?.head !== it.head }
@@ -68,15 +57,8 @@ class HeadCache(private val native: NativeCore) {
         return State.Ready(head, maxDelta = Double.NaN)
     }
 
-    /**
-     * Confirm a freshly-opened head reproduces the graph's own `head_raw` from the graph's own
-     * `slot_hidden`, and record the worst disagreement. Called once per model, on the first run
-     * that has both tensors in hand.
-     *
-     * The tolerance is loose in absolute terms because `head_raw` is risk-space coefficients
-     * rather than a forecast, and the two paths differ in nothing but fp32-vs-fp64 arithmetic:
-     * anything above this is a different head, not rounding.
-     */
+    /** Once per model. [TOL] is loose because `head_raw` is risk-space coefficients and the two
+     *  paths differ only in fp32-vs-fp64; above it is a different head, not rounding. */
     @Synchronized
     fun verify(bundle: ModelBundle, slotHidden: FloatArray?, headRaw: FloatArray, mSlots: Int) {
         val state = states[bundle.id] as? State.Ready ?: return
@@ -108,7 +90,7 @@ class HeadCache(private val native: NativeCore) {
         )
     }
 
-    /** Attach [w] (or detach with null) to [bundle]'s head; false when the model has no usable one. */
+    /** Null detaches. False when the model has no usable head. */
     @Synchronized
     fun attach(bundle: ModelBundle, w: LoraWeights?): Boolean {
         val state = stateOf(bundle) as? State.Ready ?: return false

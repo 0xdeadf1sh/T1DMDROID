@@ -6,13 +6,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * The one temporal predicate a stored band correction has, and the reason it exists.
- *
- * Split conformal is valid only under exchangeability between the calibration set and the forecasts
- * the delta is later applied to — `t1dm-core::conformal` says so in its own module note and adds that
- * a patient whose behaviour changes invalidates a delta fitted before it, which is not repairable
- * inside the fit. Nothing on device can detect that change, so the correction is trusted for exactly
- * the span of history it was fitted on and no longer; past that the BG panel draws the raw fan.
+ * Split conformal holds only under exchangeability, and nothing on device detects a change in
+ * behaviour — so a correction is trusted for exactly the span it was fitted on and no longer.
  */
 class BandCalibrationExpiryTest {
 

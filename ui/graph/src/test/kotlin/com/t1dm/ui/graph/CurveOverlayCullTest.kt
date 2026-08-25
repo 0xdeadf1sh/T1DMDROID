@@ -4,27 +4,9 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * The curve overlay's viewport cull, held to the one thing that licenses it: **what the clip rectangle
- * can show is identical to what a full scan of the channel would have shown.**
- *
- * The draw itself is not reachable from a host test, so [emitCurveChannel] emits its path commands into
- * a [CurvePathSink] and these tests record them. Each case emits TWICE — once over the whole array (the
- * behaviour before the cull) and once over the culled window — reconstructs both as segment lists, and
- * asserts the two agree on every segment that intersects the plot rectangle. A segment lying wholly
- * outside it may differ freely; that is precisely the licence being claimed.
- *
- * The interesting case is a channel that is POSITIVE ACROSS THE WHOLE WINDOW, which an auto-extended
- * basal schedule makes ordinary: the run then has no opening zero to back-scan to, so the cull must be
- * safe without one.
- *
- * Two things carry that, and the tests pin both. The window is widened by a full viewport span on each
- * side, which puts the re-opened run's wall a whole plot width outside the clip — narrow that margin to
- * nothing and [cull_keepsEveryVisibleSegment_whenTheChannelIsPositiveEverywhere] and its two siblings
- * fail, which is how one knows the comparison below discriminates at all. And the run is entered at the
- * PREVIOUS bucket's own vertex, so the emitted polyline is right for any window, not merely for one
- * padded generously enough to hide a wrong one.
- */
+/** The curve overlay's viewport cull, held to the one thing that licenses it: what the clip
+ *  rectangle can show is identical to what a full scan would have shown. Each case emits twice —
+ *  whole array, then culled window — and compares every segment that meets the plot rectangle. */
 class CurveOverlayCullTest {
 
     private val grid = 1_700_000_000_000L
@@ -43,8 +25,6 @@ class CurveOverlayCullTest {
         return { ms -> (plotLeft + (ms - viewStartMs) * ppm).toFloat() }
     }
 
-    // ── recording sink ───────────────────────────────────────────────────────────────────────────
-
     private sealed interface Cmd
     private data class Move(val x: Float, val y: Float) : Cmd
     private data class Line(val x: Float, val y: Float) : Cmd
@@ -59,9 +39,8 @@ class CurveOverlayCullTest {
 
     private data class Seg(val x0: Float, val y0: Float, val x1: Float, val y1: Float)
 
-    /** The emitted commands as drawn segments, in order. A [Move] starts a new sub-path; [End] only
-     *  closes the fill's polygon back to a point already on the floor, so it adds no boundary the clip
-     *  can distinguish and is not a segment here. */
+    /** [Move] starts a new sub-path; [End] closes to a point already on the floor, so it adds no
+     *  boundary the clip can distinguish and is no segment here. */
     private fun segments(cmds: List<Cmd>): List<Seg> {
         val out = ArrayList<Seg>()
         var cx = Float.NaN
@@ -74,7 +53,7 @@ class CurveOverlayCullTest {
         return out
     }
 
-    /** Segments whose x-interval meets the plot rectangle — everything the clip can possibly paint. */
+    /** Segments whose x-interval meets the plot rectangle. */
     private fun visible(segs: List<Seg>): List<Seg> =
         segs.filter { maxOf(it.x0, it.x1) >= plotLeft && minOf(it.x0, it.x1) <= plotRight }
 
@@ -86,7 +65,7 @@ class CurveOverlayCullTest {
         return rec.cmds
     }
 
-    /** Emit the whole array and the culled window, and return (full, culled) command lists. */
+    /** The whole array and the culled window, as (full, culled). */
     private fun bothWays(values: FloatArray, viewStartMs: Double, viewSpanMs: Double): Pair<List<Cmd>, List<Cmd>> {
         val frame = buildCurveOverlay(
             carb = DoubleArray(values.size) { values[it].toDouble() },
@@ -100,18 +79,14 @@ class CurveOverlayCullTest {
         return emit(values, absToPx, 0, values.size - 1) to emit(values, absToPx, lo, hi)
     }
 
-    // ── channels ─────────────────────────────────────────────────────────────────────────────────
-
     /** Strictly positive everywhere — an auto-extended basal. One run, no opening zero anywhere. */
     private fun everywherePositive() = FloatArray(n) { 0.4f + 0.3f * kotlin.math.sin(it / 37.0).toFloat() + 0.4f }
 
-    /** Bursty: a 3 h gamma-ish hump every 12 h, zero between — a day's meals or boluses. */
+    /** A hump every 12 h, zero between — a day of meals or boluses. */
     private fun bursty() = FloatArray(n) { i ->
         val phase = i % 144
         if (phase < 36) (phase * (36 - phase)).toFloat() / 324f else 0f
     }
-
-    // ── the identity claim ───────────────────────────────────────────────────────────────────────
 
     @Test fun cull_keepsEveryVisibleSegment_whenTheChannelIsPositiveEverywhere() {
         val (viewStart, span) = view(2000, 6.0 * 3_600_000.0)
@@ -121,7 +96,7 @@ class CurveOverlayCullTest {
 
     @Test fun cull_keepsEveryVisibleSegment_acrossABurstyChannel() {
         val ch = bursty()
-        // Sweep the viewport across a fortnight: over a hump, over a flat stretch, and straddling both.
+        // Over a hump, over a flat stretch, and straddling both.
         for (startBucket in 0 until n - 100 step 53) {
             val (viewStart, span) = view(startBucket, 6.0 * 3_600_000.0)
             val (full, culled) = bothWays(ch, viewStart, span)
@@ -153,7 +128,6 @@ class CurveOverlayCullTest {
 
     @Test fun cull_showsNothingWhenTheViewportIsOffTheGridEntirely() {
         val ch = bursty()
-        // A fortnight before the grid, and a fortnight after it.
         for (offsetBuckets in listOf(-4032L * 2, 4032L * 2)) {
             val viewStart = (grid + offsetBuckets * step).toDouble()
             val (full, culled) = bothWays(ch, viewStart, 6.0 * 3_600_000.0)
@@ -161,8 +135,6 @@ class CurveOverlayCullTest {
             assertEquals(visible(segments(full)), visible(segments(culled)))
         }
     }
-
-    // ── the entry that makes the above true ──────────────────────────────────────────────────────
 
     @Test fun midRunEntry_risesToThePreviousBucketsVertex_notToTheFloor() {
         val ch = everywherePositive()
@@ -182,8 +154,6 @@ class CurveOverlayCullTest {
         val yPrev = floorY - (ch[lo - 1] / peak) * availH * 0.92f
         assertEquals(Move(xLeft, floorY), cmds[0])
         assertEquals("enters at the previous bucket's own vertex", Line(xLeft, yPrev), cmds[1])
-        // …and that vertex is a full plot width outside the clip, which is why the wall below it cannot
-        // be seen.
         assertTrue("the artificial left wall is off-screen", xLeft < plotLeft - (plotRight - plotLeft) + 1f)
     }
 
@@ -203,12 +173,10 @@ class CurveOverlayCullTest {
         assertTrue("the closing wall is off-screen", closing.x > plotRight + (plotRight - plotLeft) - 1f)
     }
 
-    // ── and that the cull is not vacuous ─────────────────────────────────────────────────────────
-
     @Test fun cull_actuallyBoundsTheWork() {
         val (viewStart, span) = view(2000, 6.0 * 3_600_000.0)
         val (full, culled) = bothWays(everywherePositive(), viewStart, span)
-        // 6 h of a fortnight-long array: three viewports' worth of buckets against 4032.
+        // 6 h of a fortnight-long array: three viewports' buckets against 4032.
         assertTrue("full scan touches the whole array", full.size > 4000)
         assertTrue("culled draws ~3 viewports (was ${culled.size})", culled.size < 240)
     }

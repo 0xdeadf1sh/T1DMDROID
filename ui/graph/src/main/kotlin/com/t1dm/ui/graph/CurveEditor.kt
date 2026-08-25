@@ -31,20 +31,9 @@ import com.t1dm.core.model.BezierCurve
 import com.t1dm.core.model.BezierPoint
 import kotlin.math.hypot
 
-/**
- * A reusable CUBIC BÉZIER **draggable-control-point** curve editor (Phase 7D item 19,
- * replacing the piecewise-linear knot editor). Shared by the meal builder (a custom carb-appearance
- * shape) and the insulin builder (a custom action shape). The rendered stroke is the same C¹ cubic
- * the sampler integrates ([BezierCurve.valueAt]) so the drawing IS the preview. Interactions mirror
- * the old editor:
- *  - **drag** a control point freely (x clamped to `[0, durationMin]`, y ≥ 0);
- *  - **tap** empty space to add a point there;
- *  - **long-press** a point to delete it (while > 2 remain).
- *
- * State is internal but hoisted on every edit via [onChange] as a fresh, x-sorted [BezierCurve]; pass
- * a changing [resetKey] to reseed from a new [curve]. The absolute y-scale is irrelevant downstream —
- * consumers area-normalise via [BezierCurve.sampleNormalized] — so the editor only conveys the shape.
- */
+/** Tap empty space to add a control point, long-press one to delete it while more than two remain.
+ *  [onChange] fires with a fresh x-sorted curve; a changing [resetKey] reseeds from [curve]. The
+ *  absolute y scale is irrelevant — consumers area-normalise via [BezierCurve.sampleNormalized]. */
 @Composable
 fun CurveEditor(
     curve: BezierCurve,
@@ -89,12 +78,8 @@ fun CurveEditor(
             .fillMaxWidth()
             .height(height)
             .onSizeChanged { sizePx = Offset(it.width.toFloat(), it.height.toFloat()) }
-            // Every branch here answers, because on a bare Canvas there is nothing else to tell the
-            // finger whether it hit a control point: a tap on empty space ADDS one (Tap), a long press
-            // on one REMOVES it (LongPress), and a long press that found nothing to remove — no point
-            // under the finger, or the last two, which the shape cannot lose — is refused (Reject)
-            // rather than swallowed. The drag itself is silent between its ends: a control point moves
-            // continuously with no detents to cross, so a tick per sample would be pure noise.
+            // A bare Canvas gives no other feedback about whether the finger hit a control point, so
+            // every branch answers. The drag is silent between its ends: no detents to cross.
             .pointerInput(resetKey) {
                 detectTapGestures(
                     onTap = { pos ->
@@ -158,7 +143,7 @@ fun CurveEditor(
             val sorted = pts.sortedBy { it.xMin }
             if (sorted.size >= 2) {
                 val shape = BezierCurve(dur, sorted)
-                // Dense sampling of the SAME interpolant the sampler uses — the drawing is the preview.
+                // The same interpolant the sampler uses, so the drawing is the preview.
                 val steps = 120
                 val fill = Path()
                 val line = Path()
@@ -185,10 +170,7 @@ fun CurveEditor(
     }
 }
 
-/**
- * A read-only rendering of an already-resolved per-step curve (grams-per-5-min for a carb
- * appearance, units-per-5-min for an insulin action). Used for the meal/insulin live previews.
- */
+/** [values] is a resolved per-step curve: grams-per-step for carbs, units-per-step for insulin. */
 @Composable
 fun CurvePreview(
     values: List<Double>,

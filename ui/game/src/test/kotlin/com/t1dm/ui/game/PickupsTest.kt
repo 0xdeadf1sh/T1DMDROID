@@ -12,13 +12,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * What the record leaves on the track. The trap these tests exist to catch is the conflation of the
- * three mg/dL bands: coins come from [TargetRange] (the stats TIR band), hazards from
- * [AlertThresholds.lowMgdl] (the user's alarm line, deliberately unbounded), and the graph's axis span
- * — which sets the world height — has nothing to do with either. They coincide at 70/180 by default
- * and must diverge the instant one is edited.
- */
+/** Three distinct mg/dL bands, coincident at 70/180 by default: coins from [TargetRange], hazards
+ *  from [AlertThresholds.lowMgdl], and the graph's axis span. They must diverge once one is edited. */
 class PickupsTest {
 
     private val GRID = 300_000L
@@ -39,7 +34,7 @@ class PickupsTest {
     private fun countOf(f: PickupField, kind: PickupKind) = (0 until f.size).count { f.kindAt(it) == kind }
 
     @Test fun coinsUseTheTargetRangeInclusively() {
-        // stats.rs scores in-range as `low <= bg <= high`, so both edges are coins and 181 is not.
+        // stats.rs scores in-range as `low <= bg <= high`, so both edges are coins.
         val bg = intArrayOf(69, 70, 120, 180, 181, 300)
         val rs = bg.mapIndexed { i, v -> reading(T0 + i * GRID, v) }
         val f = buildPickups(trackOf(rs), rs, target, alarms)
@@ -47,9 +42,8 @@ class PickupsTest {
     }
 
     @Test fun coinsFollowTheTargetRangeAndHazardsFollowTheAlarmLine() {
-        // The bands pulled apart: a tight 80-140 target and an alarm low dropped to 55. A reading of 65
-        // is then OUT of range (no coin) but ABOVE the danger line (no hazard) — which is exactly what
-        // the user asked for by setting them that way, and what deriving one from the other would break.
+        // 65 is out of range (no coin) but above the alarm line (no hazard); deriving one band from
+        // the other would break that.
         val rs = listOf(65, 100, 50).mapIndexed { i, v -> reading(T0 + i * GRID, v) }
         val t = trackOf(rs)
         val f = buildPickups(t, rs, TargetRange(80, 140), AlertThresholds(40, 55, 180, 250))
@@ -58,8 +52,6 @@ class PickupsTest {
     }
 
     @Test fun oneHazardPerExcursionAtItsNadir() {
-        // A single dip to 48 held over five readings. Twenty obstacles over one hypo would say the
-        // record contained twenty hypos.
         val bg = intArrayOf(110, 90, 68, 60, 52, 48, 55, 66, 90, 120)
         val rs = bg.mapIndexed { i, v -> reading(T0 + i * GRID, v) }
         val t = trackOf(rs)
@@ -69,13 +61,11 @@ class PickupsTest {
         val h = (0 until f.size).first { f.kindAt(it) == PickupKind.Hazard }
         assertEquals("at the nadir", T0 + 5 * GRID, f.tsMs[h])
         assertEquals("worth its depth below the low line", 22f, f.amounts[h], 1e-4f)
-        // Hazards sit ON the ground; only collectables float.
+        // Hazards sit on the ground; only collectables float.
         assertEquals(t.groundAtMs(f.tsMs[h]), f.ys[h], 1e-3f)
     }
 
     @Test fun aDropoutSplitsOneLowRunIntoTwoExcursions() {
-        // Low, then two silent hours, then low again. Nothing says it stayed low in between, so the
-        // record holds two events and the track holds two hazards.
         val a = (0 until 4).map { reading(T0 + it * GRID, 60) }
         val b = (0 until 4).map { reading(a.last().tsMs + 120 * 60_000L + it * GRID, 58) }
         val rs = a + b
@@ -84,7 +74,7 @@ class PickupsTest {
     }
 
     @Test fun warmupReadingsAreNotScored() {
-        // §3.6 suppresses warm-up from alarm evaluation; scoring it would be perverse in either sign.
+        // §3.6.
         val rs = listOf(
             reading(T0, 120, ReadingFlag.WARMUP),
             reading(T0 + GRID, 50, ReadingFlag.WARMUP),
@@ -103,7 +93,7 @@ class PickupsTest {
 
         assertTrue("something landed", f.size > 2)
         for (i in 1 until f.size) assertTrue("ascending at $i", f.xs[i] >= f.xs[i - 1])
-        // firstFrom is the frame loop's window seek; it must be a true lower bound.
+        // The frame loop's window seek: must be a true lower bound.
         val mid = f.xs[f.size / 2]
         val k = f.firstFrom(mid)
         assertTrue(k < f.size && f.xs[k] >= mid)

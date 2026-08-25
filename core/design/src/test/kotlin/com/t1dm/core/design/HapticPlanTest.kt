@@ -7,19 +7,10 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.roundToInt
 
-/**
- * The two parts of the haptics layer that can be wrong without anyone noticing on-device: the
- * intensity scaling (a mis-clamp reads as "Subtle feels the same as Standard", which nobody reports
- * as a bug) and the primitive-support fallback — which, contrary to what the name suggests, is the
- * ONLY path the target device ever takes: `dumpsys vibrator_manager` on the K90 reports
- * `supportedPrimitives = []` and `compositionSizeMax = 0`, so `areAllPrimitivesSupported` is false for
- * every recipe and the composition branch is the one that never runs there. Both are deliberately pure
- * — [hapticPlan] takes the support probe as a predicate precisely so a fake actuator can be handed to
- * it here.
- */
+/** On the K90 `supportedPrimitives = []`, so the waveform fallback is the only path it ever takes. */
 class HapticPlanTest {
 
-    /** The `:alerts` baseline: CLICK + TICK are all a modest LRA is guaranteed to compose. */
+    /** CLICK + TICK: all a modest LRA is guaranteed to compose. */
     private val modestActuator: (Set<HapticPrimitive>) -> Boolean = { needed ->
         needed.all { it == HapticPrimitive.CLICK || it == HapticPrimitive.TICK }
     }
@@ -28,8 +19,6 @@ class HapticPlanTest {
 
     private fun steps(event: HapticEvent, strength: HapticStrength, supports: (Set<HapticPrimitive>) -> Boolean) =
         (hapticPlan(event, strength, supports) as HapticPlan.Primitives).steps
-
-    // ── intensity ──────────────────────────────────────────────────────────────────────────────
 
     @Test
     fun `off plays nothing at all`() {
@@ -57,7 +46,7 @@ class HapticPlanTest {
 
     @Test
     fun `strong saturates rather than overdriving the composition scale`() {
-        // Commit's THUD is already at full amplitude; STRONG must clamp, not hand the vibrator 1.4.
+        // Commit's THUD is already at full amplitude.
         val thud = steps(HapticEvent.Commit, HapticStrength.STRONG, fullActuator)
             .single { it.primitive == HapticPrimitive.THUD }
         assertEquals(1f, thud.amplitude, 1e-6f)
@@ -80,8 +69,6 @@ class HapticPlanTest {
         }
     }
 
-    // ── primitive-unsupported fallback ─────────────────────────────────────────────────────────
-
     @Test
     fun `an event a modest actuator can compose stays on the primitive path`() {
         assertTrue(hapticPlan(HapticEvent.Tap, HapticStrength.STANDARD, modestActuator) is HapticPlan.Primitives)
@@ -90,8 +77,7 @@ class HapticPlanTest {
 
     @Test
     fun `an event needing a richer primitive degrades to a waveform`() {
-        // Commit needs THUD, Warn needs SPIN, ToggleOn a QUICK_RISE — none of which the modest
-        // actuator has — while the CLICK half of the same recipe is irrelevant to the decision.
+        // Each needs a primitive the modest actuator lacks: THUD, SPIN, QUICK_RISE.
         listOf(HapticEvent.Commit, HapticEvent.Warn, HapticEvent.ToggleOn, HapticEvent.SegmentTick).forEach {
             assertTrue(it.name, hapticPlan(it, HapticStrength.STANDARD, modestActuator) is HapticPlan.Waveform)
         }
@@ -100,7 +86,6 @@ class HapticPlanTest {
     @Test
     fun `the fallback waveform preserves the recipe rhythm`() {
         val plan = hapticPlan(HapticEvent.Commit, HapticStrength.STANDARD, modestActuator) as HapticPlan.Waveform
-        // CLICK, then 50 ms of silence, then a THUD.
         assertArrayEquals(
             longArrayOf(0, HapticPrimitive.CLICK.nominalMs, 50, HapticPrimitive.THUD.nominalMs),
             plan.waveform.timingsMs,
@@ -114,7 +99,6 @@ class HapticPlanTest {
         val standard = (hapticPlan(HapticEvent.Commit, HapticStrength.STANDARD, modestActuator) as HapticPlan.Waveform)
         assertTrue(subtle.waveform.amplitudes[1] < standard.waveform.amplitudes[1])
         assertTrue(subtle.waveform.amplitudes[3] < standard.waveform.amplitudes[3])
-        // Vibrator amplitudes are 1..255; a scaled-to-nothing step must still be a legal segment.
         assertTrue(subtle.waveform.amplitudes.filterIndexed { i, _ -> i % 2 == 1 }.all { it in 1..255 })
     }
 
@@ -128,8 +112,6 @@ class HapticPlanTest {
             assertTrue(event.name, waveform.amplitudes.all { it in 0..255 })
         }
     }
-
-    // ── the vocabulary itself ──────────────────────────────────────────────────────────────────
 
     @Test
     fun `only the gesture-riding events are rate limited`() {

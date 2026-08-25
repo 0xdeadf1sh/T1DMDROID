@@ -10,16 +10,9 @@ import com.t1dm.alerts.VibrationActuator
 import com.t1dm.core.design.IconStyle
 
 /**
- * Posts the model-PREDICTIVE urgent alert (item 2): when the SELECTED model forecasts an urgent-low
- * or urgent-high crossing on a §3.6-ELIGIBLE forecast ([BgGlance.urgent] non-null), it announces on
- * the SAME critical channel the deterministic alarm uses — DND-bypass, full-screen over the lock
- * screen, alarm sound, insistent vibration — so a predicted urgent crossing is as loud as a measured
- * one. It lives in `:app` (not `:alerts`) because it reads the inference-derived glance; `:alerts`
- * keeps no `:inference` dependency.
- *
- * SAFETY: strictly additive. It never touches the deterministic path and it SUPPRESSES itself while
- * a deterministic critical threshold breach is already firing (`alarmCriticalActive`), so it can only
- * ever add an EARLIER warning, never mute or replace the measured urgent alarm.
+ * Suppresses itself while the deterministic critical alarm is firing, so it can only ever add an
+ * earlier warning, never mute one. In `:app` rather than `:alerts`, which keeps no `:inference`
+ * dependency.
  */
 class PredictiveAlertPresenter(
     context: Context,
@@ -30,11 +23,10 @@ class PredictiveAlertPresenter(
     private val nm = app.getSystemService(NotificationManager::class.java)
     private val vibrations = VibrationActuator(app)
 
-    /** The crossing signature last announced, so an unchanged prediction does not re-buzz each cycle. */
+    /** The crossing last announced, so a steady prediction does not re-buzz each cycle. */
     private var lastKey: String? = null
 
-    /** True while an alert is SHOWING — the same gated decision that buzzes, republished so a consumer
-     *  cannot mistake "a crossing is predicted" for "the actuator is about to be seized". */
+    /** Returns true while the alert is showing. */
     fun update(
         glance: BgGlance,
         config: AlertActuatorConfig,
@@ -72,7 +64,6 @@ class PredictiveAlertPresenter(
         fullScreenIntent()?.let { builder.setFullScreenIntent(it, true) }
         nm.notify(TAG, ID, builder.build())
 
-        // Buzz only when the crossing target changes, so a steady prediction is not a repeating jab.
         if (key != lastKey) {
             vibrations.buzz(config.criticalVibration)
             lastKey = key
@@ -80,7 +71,6 @@ class PredictiveAlertPresenter(
         return true
     }
 
-    /** Withdraw any showing predictive alert (DEATH mode); the next eligible [update] re-announces. */
     fun clear() {
         nm.cancel(TAG, ID)
         lastKey = null

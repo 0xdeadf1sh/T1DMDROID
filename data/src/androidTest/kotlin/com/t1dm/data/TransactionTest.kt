@@ -29,15 +29,9 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * Proves the Room 2.7 **driver-based** write transaction the repository now relies on ([T1dmRepository]
- * `inWriteTx` = `useWriterConnection { immediateTransaction { … } }`) is genuinely atomic across DAOs,
- * and that the exactly-one-active-source invariant survives last-writer and concurrent ordering.
- *
- * The DB is built with [BundledSQLiteDriver] — the production configuration — so these run against the
- * same `ConnectionPoolImpl` / connection-confinement machinery as the app (not the legacy support
- * pool). The pivotal question the migration hinged on: do suspend DAO calls made INSIDE the
- * transaction join it (share the confined writer connection) or run on their own auto-committed
- * connection? [daoWritesInsideTransactionRollBackTogether] answers it by rolling back.
+ * Built with [BundledSQLiteDriver] — the production configuration — so these run against the same
+ * connection-confinement machinery as the app. [daoWritesInsideTransactionRollBackTogether] is the
+ * proof that suspend DAO calls made inside the transaction join it rather than auto-committing.
  */
 @RunWith(AndroidJUnit4::class)
 class TransactionTest {
@@ -53,8 +47,7 @@ class TransactionTest {
             ApplicationProvider.getApplicationContext(),
             AppDatabase::class.java,
         )
-            // Match production: ship our own SQLite. The transaction API under test
-            // (useWriterConnection/immediateTransaction) is only reachable via a configured driver.
+            // The transaction API under test is only reachable via a configured driver.
             .setDriver(BundledSQLiteDriver())
             .setQueryCoroutineContext(Dispatchers.IO)
             .build()
@@ -64,13 +57,8 @@ class TransactionTest {
     @After
     fun tearDown() = db.close()
 
-    /**
-     * TWO writes through TWO different DAOs inside one `immediateTransaction`, then a throw. Both rows
-     * are gone afterward — which can only happen if the DAO calls executed on the SAME confined writer
-     * connection and were undone by that transaction's rollback. Had they run on separate
-     * auto-committed connections, the rows would persist. This is the atomicity proof the
-     * invariant-critical bodies (setActiveSource / upsertSource / mergeSampleInTx) depend on.
-     */
+    /** Both rows gone can only happen if the two DAOs executed on the same confined writer
+     *  connection. */
     @Test
     fun daoWritesInsideTransactionRollBackTogether() = runBlocking {
         val src = sourceEntity("aidexx:ROLLBACK")
@@ -78,9 +66,9 @@ class TransactionTest {
         val thrown: RuntimeException? = try {
             db.useWriterConnection { transactor ->
                 transactor.immediateTransaction {
-                    db.cgmSourceDao().upsert(src)              // write #1 → cgm_source
-                    db.kvDao().put(KvEntity("k", "v", 1L))     // write #2 → kv (different table + DAO)
-                    // A READ DAO inside the writer tx must also confine and see the uncommitted rows.
+                    db.cgmSourceDao().upsert(src)
+                    db.kvDao().put(KvEntity("k", "v", 1L))
+                    // A read DAO inside the writer tx must confine too and see the uncommitted rows.
                     assertNotNull(db.cgmSourceDao().byId(src.sourceId))
                     assertEquals("v", db.kvDao().get("k"))
                     throw boom
@@ -95,7 +83,7 @@ class TransactionTest {
         assertNull("kv write must roll back with the transaction", db.kvDao().get("k"))
     }
 
-    /** The committing counterpart: without a throw both DAO writes persist (rules out a dead DB). */
+    /** Rules out a dead DB: without a throw both writes persist. */
     @Test
     fun daoWritesInsideTransactionCommitTogether() = runBlocking {
         val src = sourceEntity("aidexx:COMMIT")
@@ -109,11 +97,7 @@ class TransactionTest {
         assertEquals("v2", db.kvDao().get("k2"))
     }
 
-    /**
-     * upsertSource's clear-all-then-set is atomic: two adopting upserts leave exactly one authoritative
-     * row — the later one — never two and never zero. Both stay ACTIVE: promotion moves what is
-     * believed, and never stops the app reading the sensor it replaced.
-     */
+    /** Promotion moves authority alone; the sensor it replaced stays active. */
     @Test
     fun upsertSource_lastAdoptionWins() = runBlocking {
         repo.upsertSource(descriptor("aidexx:A"), authoritative = true, nowMs = 1L)
@@ -125,12 +109,8 @@ class TransactionTest {
         assertEquals("both stay active", 2, rows.count { it.active })
     }
 
-    /**
-     * A re-sighting NEVER clears the authoritative flag. `upsertSource` runs on every enumeration, from
-     * a descriptor the coordinator has held in memory, and it used to write the flag it was handed —
-     * so a pass that raced a promotion could leave the table with no authoritative row at all and
-     * silently stop the model, the alarms and the wire.
-     */
+    /** `upsertSource` runs on every enumeration from a descriptor held in memory, so it must take
+     *  `authoritative` from the stored row or a pass racing a promotion leaves none. */
     @Test
     fun upsertSource_reSightingPreservesAuthority() = runBlocking {
         repo.upsertSource(descriptor("aidexx:A"), authoritative = true, nowMs = 1L)
@@ -140,7 +120,6 @@ class TransactionTest {
         assertEquals("aidexx:A", rows.single { it.authoritative }.sourceId)
     }
 
-    /** Authority implies activity: promoting a source the app had stopped reading starts reading it. */
     @Test
     fun setAuthoritative_activatesAndUnhides() = runBlocking {
         repo.upsertSource(descriptor("aidexx:A"), authoritative = true, nowMs = 1L)
@@ -154,8 +133,7 @@ class TransactionTest {
         assertEquals(false, b.hidden)
     }
 
-    /** Deactivating and hiding both REFUSE the authoritative source — the guard is in the SQL, so it
-     *  holds whatever the caller does. */
+    /** The guard is in the SQL, so it holds whatever the caller does. */
     @Test
     fun theAuthoritativeSourceCannotBeStoppedOrHidden() = runBlocking {
         repo.upsertSource(descriptor("aidexx:A"), authoritative = true, nowMs = 1L)
@@ -167,7 +145,6 @@ class TransactionTest {
         assertEquals(false, a.hidden)
     }
 
-    /** Several sources may be active at once; exactly one of them is authoritative. */
     @Test
     fun manyActiveOneAuthoritative() = runBlocking {
         val ids = (0 until 4).map { "aidexx:S$it" }
@@ -180,12 +157,8 @@ class TransactionTest {
         assertEquals(ids[0], rows.single { it.authoritative }.sourceId)
     }
 
-    /**
-     * Concurrency/ordering: many overlapping setAuthoritativeSource calls serialize on the single writer
-     * connection, and because each is one atomic clear-all-then-set, the terminal state has EXACTLY
-     * one authoritative source. A non-atomic rewrite (clear and set on separate transactions) could
-     * momentarily — or, if interleaved, terminally — leave zero.
-     */
+    /** Each promotion is one atomic clear-all-then-set; a non-atomic rewrite could terminally
+     *  leave zero. */
     @Test
     fun concurrentSetAuthoritative_leavesExactlyOne() = runBlocking {
         val ids = (0 until 8).map { "aidexx:S$it" }
@@ -199,12 +172,7 @@ class TransactionTest {
         assertEquals("exactly one authoritative source after concurrent promotion", 1, authoritative.size)
     }
 
-    /**
-     * A removal survives the sensor being seen again. `upsertSource` runs on every sighting from a
-     * descriptor the registry has held since before the removal, so it must take `hidden` from the
-     * STORED row — taking it from the argument would put a removed sensor back on the list within one
-     * scan, and nothing else in the suite would notice.
-     */
+    /** `hidden` must come from the stored row: the registry's descriptor predates the removal. */
     @Test
     fun upsertSource_preservesHiddenAcrossReSighting() = runBlocking {
         repo.upsertSource(descriptor("aidexx:A"), authoritative = true, nowMs = 1L)
@@ -218,11 +186,6 @@ class TransactionTest {
         assertEquals(2L, b.lastSeenMs)
     }
 
-    /**
-     * The active source is never hidden, from either direction: [T1dmRepository.hideSource] refuses it
-     * outright, and adopting a hidden source as active clears the flag. A sensor authoritative for
-     * every value on screen must not be missing from the list that names it.
-     */
     @Test
     fun theActiveSourceIsNeverHidden() = runBlocking {
         repo.upsertSource(descriptor("aidexx:A"), authoritative = true, nowMs = 1L)

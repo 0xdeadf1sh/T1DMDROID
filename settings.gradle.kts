@@ -8,7 +8,7 @@ pluginManagement {
 }
 
 plugins {
-    // Lets Gradle auto-provision the JDK 21 toolchain if org.gradle.java.home isn't already 21.
+    // Auto-provisions the JDK 21 toolchain when org.gradle.java.home is not already 21.
     id("org.gradle.toolchains.foojay-resolver-convention") version "0.9.0"
 }
 
@@ -17,10 +17,8 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        // Vendored custom ExecuTorch 1.3.1 AAR with EXECUTORCH_BUILD_VULKAN=ON (issue 20). Consumed
-        // by :inference behind the `t1dm.vulkan` gradle property; carries BOTH VulkanBackend and the
-        // authoritative XnnpackBackend. flatDir carries no POM, so :inference adds the AAR's runtime
-        // transitives (fbjni / soloader) explicitly.
+        // Vendored ExecuTorch AAR built with Vulkan on. flatDir carries no POM, so :inference adds
+        // its transitives (fbjni / soloader) explicitly.
         flatDir { dirs("$rootDir/third_party/executorch-vulkan") }
     }
 }

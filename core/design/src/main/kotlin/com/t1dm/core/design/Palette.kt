@@ -7,15 +7,9 @@ import androidx.compose.ui.graphics.Color
 import org.json.JSONObject
 
 /**
- * The app's semantic colour token set (§3.4 / "3 themes via
- * semantic colour tokens"). Every surface that must repaint per theme — the graph bands, the stats
- * risk bands, the alert tiers, the widgets, the Circadian dial — reads these *roles*, not raw
- * literals, so a theme swap recolours the whole app coherently.
- *
- * The chrome roles ([background]/[surface]/[primary]/[secondary]/[ink]) also project onto a Material3
- * [ColorScheme] via [toColorScheme] so plain Material widgets follow the theme for free; the
- * glucose-band roles ([urgentLow]…[urgentHigh], [grid]) have no Material equivalent and are carried
- * separately through `LocalT1dmSemantics`.
+ * Semantic roles, never raw literals. The chrome roles project onto Material3 through
+ * [toColorScheme]; the glucose-band roles have no Material equivalent and travel through
+ * `LocalT1dmSemantics`.
  */
 data class T1dmPalette(
     val id: String,
@@ -31,15 +25,14 @@ data class T1dmPalette(
     val ink: Color,
     val inkMuted: Color,
     val grid: Color,
-    // Glucose bands (low→high), reused by graph, stats, alerts, widgets.
+    // Glucose bands, low→high.
     val urgentLow: Color,
     val low: Color,
     val inRange: Color,
     val high: Color,
     val urgentHigh: Color,
 ) {
-    /** Project the chrome roles onto a Material3 [ColorScheme] (dark or light per [dark]). Bands map
-     *  where they read best: [urgentLow] onto `error`, [inRange] onto `tertiary`. */
+    /** Bands map where they read best: [urgentLow] onto `error`, [inRange] onto `tertiary`. */
     fun toColorScheme(): ColorScheme {
         val base = if (dark) darkColorScheme() else lightColorScheme()
         return base.copy(
@@ -74,7 +67,6 @@ object ThemeIds {
     const val CUSTOM = "custom"
 }
 
-/** Tron Legacy — the DEFAULT: cyan-and-amber on near-black (the prior app aesthetic, promoted). */
 val TronPalette = T1dmPalette(
     id = ThemeIds.TRON,
     displayName = "Tron Legacy",
@@ -96,7 +88,6 @@ val TronPalette = T1dmPalette(
     urgentHigh = Color(0xFFFF3B30),
 )
 
-/** Umbrella Corp — dark red-on-black corporate: hazard red primary, steel secondary. */
 val UmbrellaPalette = T1dmPalette(
     id = ThemeIds.UMBRELLA,
     displayName = "Umbrella Corp",
@@ -118,7 +109,6 @@ val UmbrellaPalette = T1dmPalette(
     urgentHigh = Color(0xFFD50000),
 )
 
-/** Hello Kitty — light pink pastel: hot-pink primary on blush, plum ink. */
 val HelloKittyPalette = T1dmPalette(
     id = ThemeIds.HELLO_KITTY,
     displayName = "Hello Kitty",
@@ -140,30 +130,23 @@ val HelloKittyPalette = T1dmPalette(
     urgentHigh = Color(0xFFFF2D6E),
 )
 
-/** The bundled palettes, in selector order (Tron first = default). */
+/** In selector order; Tron first is the default. */
 val BundledPalettes: List<T1dmPalette> = listOf(TronPalette, UmbrellaPalette, HelloKittyPalette)
 
-/** Resolve a persisted id to a bundled palette, falling back to [TronPalette]. Custom themes are
- *  reconstructed from their JSON separately via [parseThemeJson]. */
 fun paletteForId(id: String?): T1dmPalette =
     BundledPalettes.firstOrNull { it.id == id } ?: TronPalette
 
-/** Whether [id] still names something this build can render — a bundled palette, or the custom slot. */
 fun isKnownThemeId(id: String?): Boolean = id == ThemeIds.CUSTOM || BundledPalettes.any { it.id == id }
 
 /**
- * Coerce a persisted theme id onto one this build still carries. An id can outlive the palette it
- * named — `"windows_xp"` and `"teto"` were bundled themes once, and both survive in the `ui.theme` kv
- * row, in any exported config, and in the launcher-alias override PackageManager keeps across an
- * upgrade. Every id→palette seam already fails soft onto [TronPalette]; this is the seam that lets a
- * *caller* notice the coercion and write the corrected id back, so the Settings chip row does not sit
- * with nothing selected while the app renders Tron.
+ * An id can outlive the palette it named: retired themes survive in the `ui.theme` kv row, in exports,
+ * and in the launcher-alias override. This is the seam that lets a caller notice the coercion and
+ * write the corrected id back.
  */
 fun normalizeThemeId(id: String?): String = if (isKnownThemeId(id)) id!! else ThemeIds.TRON
 
-/** Resolve the persisted (themeId, customThemeJson) pair to the active palette — the ONE place that
- *  decodes a custom theme, so the Activity, the FGS notification, and the widget all agree. A blank or
- *  malformed custom JSON falls back to [TronPalette]. */
+/** The ONE place a custom theme is decoded, so the Activity, the FGS notification and the widget all
+ *  agree. */
 fun resolvePalette(themeId: String?, customThemeJson: String?): T1dmPalette =
     if (themeId == ThemeIds.CUSTOM && !customThemeJson.isNullOrBlank()) {
         runCatching { parseThemeJson(customThemeJson) }.getOrDefault(TronPalette)
@@ -171,27 +154,8 @@ fun resolvePalette(themeId: String?, customThemeJson: String?): T1dmPalette =
         paletteForId(themeId)
     }
 
-// ── Custom-theme JSON import (item 25 — "parse a colour-scheme JSON via SAF into a custom theme") ──
-
-/**
- * The JSON a user imports to define a 4th, custom theme. Shape (every colour a `#RRGGBB` or
- * `#AARRGGBB` string):
- * ```
- * {
- *   "format": "t1dm.theme",
- *   "name": "My Theme",
- *   "dark": true,
- *   "colors": {
- *     "background": "#060A12", "surface": "#0E1626", "surfaceVariant": "#152134",
- *     "primary": "#00E5FF", "secondary": "#FFB300", "ink": "#DCEAF5",
- *     "urgentLow": "#FF2D55", "low": "#FFC142", "inRange": "#00E5A8",
- *     "high": "#FF9E2C", "urgentHigh": "#FF3B30"
- *   }
- * }
- * ```
- * `surfaceVariant`, `inkMuted`, `grid`, `onPrimary`, `onSecondary` are optional and derived from the
- * required roles when absent. Parsing is fail-closed with a plain-language message.
- */
+/** The imported file: a `"format": "t1dm.theme"` tag, `name`, `dark`, and a `colors` block whose
+ *  values are `#RRGGBB` or `#AARRGGBB` strings. */
 fun parseThemeJson(text: String): T1dmPalette {
     val root = runCatching { JSONObject(text) }
         .getOrElse { throw IllegalArgumentException("Not a theme file — invalid JSON") }

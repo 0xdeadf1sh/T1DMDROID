@@ -14,17 +14,8 @@ import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * The Clarke error grid's horizon choice, which is the only thing on that section a user drives.
- *
- * Nothing here scores a forecast — the horizons are synthetic records standing in for whatever
- * `forecast_metrics_suite` returned. What is under test is the resolution: which horizon the picker
- * opens on, which one a selection lands on, and what happens when the one selected did not earn
- * enough windows to be drawn. That last case is the reason the picker cannot simply index the
- * sufficient horizons: a figure labelled with one horizon and plotted from another is a lie the
- * reader has no way to catch, so the choice resolves to a whole record and the label, the `n` and
- * the pairs are three readings of it.
- */
+// Nothing here scores a forecast: the horizons are synthetic records standing in for whatever
+// `forecast_metrics_suite` returned.
 class ClarkeGridPickerTest {
 
     private fun points(n: Int): List<ScoredPoint> = List(n) {
@@ -46,7 +37,7 @@ class ClarkeGridPickerTest {
 
     private val excursion = ExcursionAccuracy(recall = 0.8, precision = 0.7, nTrue = 5, nPred = 6)
 
-    /** The median line is the basis the grid draws, so only it carries a per-point series (§6.2). */
+    /** §6.2 — the grid draws the median line, so only it carries points. */
     private fun horizon(min: Int, n: Int, sufficient: Boolean = true) = HorizonMetrics(
         horizonMin = min,
         n = n,
@@ -66,8 +57,6 @@ class ClarkeGridPickerTest {
 
     private fun suite(vararg hs: HorizonMetrics) = hs.toList()
 
-    // ── The default ────────────────────────────────────────────────────────────────────────────
-
     @Test
     fun `the grid opens on 60 minutes`() {
         assertEquals(60, CLARKE_GRID_DEFAULT_MIN)
@@ -75,7 +64,6 @@ class ClarkeGridPickerTest {
         assertEquals(60, pick.selected?.horizonMin)
     }
 
-    /** The section used to plot `maxByOrNull { horizonMin }`; the default must not be that again. */
     @Test
     fun `the default is not the longest horizon`() {
         val hs = suite(horizon(30, 40), horizon(60, 40), horizon(120, 40))
@@ -89,8 +77,6 @@ class ClarkeGridPickerTest {
         assertEquals(listOf(30, 60, 120), pick.options)
     }
 
-    // ── The selection ──────────────────────────────────────────────────────────────────────────
-
     @Test
     fun `a chosen horizon is the one resolved`() {
         val hs = suite(horizon(30, 40), horizon(60, 40), horizon(120, 40))
@@ -99,10 +85,6 @@ class ClarkeGridPickerTest {
         assertEquals(120, clarkeGridPick(hs, 120).selected?.horizonMin)
     }
 
-    /**
-     * The whole point of resolving to a record: the caption's horizon, its `n` and its scatter must
-     * come off ONE object, so a figure cannot name 60 min over 120's pairs.
-     */
     @Test
     fun `the scatter, its n and its label come off one record`() {
         val hs = suite(horizon(30, 11), horizon(60, 22), horizon(120, 33))
@@ -110,7 +92,7 @@ class ClarkeGridPickerTest {
             val sel = clarkeGridPick(hs, h.horizonMin).selected
             assertSame(h, sel)
             assertEquals(h.horizonMin, sel?.horizonMin)
-            // What ErrorGridFigure prints as `n=` against what the tables print in the `n` column.
+            // ErrorGridFigure's `n=` against the tables' `n` column.
             assertEquals(sel?.n, sel?.medianLine?.points?.size)
         }
     }
@@ -135,8 +117,6 @@ class ClarkeGridPickerTest {
         assertNull(pick.refusal(6))
     }
 
-    // ── The refusal ────────────────────────────────────────────────────────────────────────────
-
     @Test
     fun `an insufficient choice is refused by name, against its own n`() {
         val hs = suite(horizon(30, 40), horizon(60, 4, sufficient = false), horizon(120, 40))
@@ -144,7 +124,6 @@ class ClarkeGridPickerTest {
         assertEquals("60 min: n=4, need 6", pick.refusal(6))
     }
 
-    /** A figure labelled 60 that plots 120 is the failure this section must not have. */
     @Test
     fun `an insufficient choice is never redrawn as a neighbouring horizon`() {
         val hs = suite(horizon(30, 40), horizon(60, 4, sufficient = false), horizon(120, 40))
@@ -153,7 +132,6 @@ class ClarkeGridPickerTest {
         assertTrue(pick.selected?.sufficient == false)
     }
 
-    /** Refusing one horizon must not withdraw the others, or the reader is stuck on the refusal. */
     @Test
     fun `a refused horizon keeps the picker usable`() {
         val hs = suite(horizon(30, 40), horizon(60, 4, sufficient = false), horizon(120, 40))

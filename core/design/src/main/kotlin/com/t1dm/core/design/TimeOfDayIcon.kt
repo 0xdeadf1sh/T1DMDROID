@@ -21,17 +21,9 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 import java.util.Calendar
 
-/**
- * N4a — a per-theme morning/noon/evening/night glyph derived from the ACTUAL local time, in the same
- * geometry system as the nav icons and subtly animated.
- *
- * It lives in `:core:design` because the BG read-out it sits beside is now the app's bottom bar
- * (`:app`), not the dashboard panel it was written for.
- */
 @Composable
 fun TimeOfDayIcon(size: Dp = 28.dp, modifier: Modifier = Modifier) {
     val animationsOn = LocalAnimationsEnabled.current
-    // Re-evaluate the period once a minute so it stays honest without a busy loop.
     val hour by produceState(Calendar.getInstance().get(Calendar.HOUR_OF_DAY)) {
         while (true) {
             value = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
@@ -41,9 +33,8 @@ fun TimeOfDayIcon(size: Dp = 28.dp, modifier: Modifier = Modifier) {
     val style = iconStyleForTheme(LocalT1dmSemantics.current.id)
     val period = dayPeriodFor(hour)
     val icon = remember(period, style) { timeOfDayIcon(period, style) }
-    // A subtle breath; a static 1f when motion is disabled (N4c). Held as State and unwrapped inside
-    // the layer block — a 2.6 s breath that never ends must invalidate a layer property, not the
-    // composition that produced it.
+    // Held as State and unwrapped inside the layer block: a breath that never ends must invalidate a
+    // layer property, not the composition that produced it.
     val scale: State<Float> = if (animationsOn) {
         val transition = rememberInfiniteTransition(label = "tod")
         transition.animateFloat(

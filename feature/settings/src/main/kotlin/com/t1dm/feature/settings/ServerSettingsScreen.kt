@@ -24,21 +24,8 @@ import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.rememberT1dmHaptics
 import org.json.JSONObject
 
-/**
- * Settings → Server sub-screen (Phase 3 deliverable 2 + Phase 7C item 12 QR scan).
- * Configures the single active profile — base URL + the `rw` token — with a health-check probe and a
- * status read-out. The token field is write-only: blank on entry (the secret lives in the Keystore,
- * never surfaced) and a blank value on save keeps the stored one.
- *
- * The "Scan QR" affordance opens the ZXing embedded scanner (no Play Services); it accepts either a
- * bare token string, a `{baseUrl|url, token}` JSON object, or the server's own login-QR shape
- * `{type, token, addr, port}` (from which the base URL is composed). The scanned token still flows through
- * [onSave] into the Keystore-backed TokenStore, never the DB. Camera-denied / cancelled / malformed
- * QR each produce a plain-language message.
- *
- * State is hoisted: the screen holds only the in-progress form text; persistence, activation, and the
- * health probe are `:app` concerns passed as callbacks.
- */
+/** The token field is write-only: blank on entry, and a blank value on save keeps the stored one.
+ *  A scanned token flows through [onSave] into the Keystore-backed TokenStore, never the DB. */
 @Composable
 fun ServerSettingsScreen(
     initialLabel: String,
@@ -65,9 +52,6 @@ fun ServerSettingsScreen(
             scanMessage = "Scan cancelled — type the token instead."
             return@rememberLauncherForActivityResult
         }
-        // The scanner returns with the app in the background-to-foreground transition and nothing on
-        // screen has moved, so the outcome is easiest to feel: a legible QR confirms, an unusable one
-        // is refused.
         when (val parsed = parseServerQr(raw)) {
             is ServerQrPayload.Invalid -> {
                 haptics.perform(HapticEvent.Reject)
@@ -143,8 +127,7 @@ fun ServerSettingsScreen(
 
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             SettingsAnchor(serverSave, modifier = Modifier) {
-                // Confirm rather than Commit: this persists a profile and a token, but the heaviest
-                // pattern stays reserved for writes to the clinical record and for the erase.
+                // Confirm, not Commit: the heaviest pattern is reserved for the clinical record.
                 Button(
                     onClick = {
                         haptics.perform(HapticEvent.Confirm)
@@ -168,8 +151,7 @@ fun ServerSettingsScreen(
             Text(healthStatus, style = MaterialTheme.typography.bodyMedium)
         }
 
-        // Fetch the served model registry into the app's models dir (product decision 1). A new model is
-        // adopted on the next discovery; an update to the running model is staged and surfaced in Models.
+        // A new model is adopted at the next discovery; an update to the running one is staged.
         SettingsAnchor(serverSyncModels) {
             OutlinedButton(
                 onClick = { haptics.perform(HapticEvent.Tap); onSyncModels() },
@@ -185,19 +167,13 @@ fun ServerSettingsScreen(
     }
 }
 
-/** The accepted QR payload shapes (item 12): a bare token, `{baseUrl|url, token}` JSON, or the
- *  server's login QR `{type, token, addr, port}` (base URL composed as `http://addr:port`). */
 sealed interface ServerQrPayload {
     data class Valid(val token: String, val baseUrl: String?) : ServerQrPayload
     data class Invalid(val reason: String) : ServerQrPayload
 }
 
-/**
- * Parse a scanned QR string. A `{...}` JSON body may carry `token` plus, for the base URL, either an
- * explicit `baseUrl`/`url`/`base_url` or the server login-QR pair `addr`+`port` (composed as
- * `http://addr:port`); anything else is treated as a bare token. Fail-closed: an empty token yields
- * [ServerQrPayload.Invalid] with a plain reason. Pure — unit-testable without a camera.
- */
+/** JSON `{token}` plus `baseUrl`/`url`/`base_url`, or the login QR's `addr`+`port`; anything else is
+ *  a bare token. An empty token yields [ServerQrPayload.Invalid]. */
 fun parseServerQr(raw: String): ServerQrPayload {
     val trimmed = raw.trim()
     if (trimmed.isEmpty()) return ServerQrPayload.Invalid("it was empty")
@@ -210,8 +186,7 @@ fun parseServerQr(raw: String): ServerQrPayload {
             .map { obj.optString(it).trim() }
             .firstOrNull { it.isNotEmpty() }
             ?: obj.optString("addr").trim().takeIf { it.isNotEmpty() }?.let { addr ->
-                // The server's login QR renders {type, token, addr, port} with no base URL, so
-                // compose one from addr+port. Tailscale makes transport TLS moot ⇒ plain http.
+                // Tailscale makes transport TLS moot ⇒ plain http.
                 val port = obj.optInt("port", 0)
                 if (port in 1..65535) "http://$addr:$port" else "http://$addr"
             }
@@ -219,8 +194,6 @@ fun parseServerQr(raw: String): ServerQrPayload {
     }
     return ServerQrPayload.Valid(trimmed, null)
 }
-
-// ── search index (see SettingsIndex.kt) ───────────────────────────────────────────────────────────
 
 private const val SERVER_SECTION = "Server profile"
 

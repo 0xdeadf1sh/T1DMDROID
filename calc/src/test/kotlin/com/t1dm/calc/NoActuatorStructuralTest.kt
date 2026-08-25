@@ -3,14 +3,7 @@ package com.t1dm.calc
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * The **structural no-actuator** invariant (Phase 4 §7 / — "advisory-only,
- * NEVER actuates insulin"). The app is advisory-only: no code path may reach an insulin actuator. We
- * cannot prove that over arbitrary code, but we can pin the terminal seam: the public surface of the
- * calculator's result and orchestrator types must expose no member that *delivers* a dose — only ones
- * that *recommend* one. A future refactor that added a `deliver(...)` / `administer(...)` /
- * `actuate(...)` / `inject(...)` / pump-command member would flip this red.
- */
+/** Pins the terminal seam only: no member of these types may deliver a dose. */
 class NoActuatorStructuralTest {
 
     private val forbidden = Regex("(?i)(actuate|administer|deliver|inject|dispense|setrate|pumpcommand|sendbolus)")
@@ -41,8 +34,6 @@ class NoActuatorStructuralTest {
 
     @Test
     fun calc_module_declares_no_dependency_on_a_pump_or_actuator_type() {
-        // The result type is a pure data carrier: recommending a dose can only ever hand back numbers +
-        // a card, never a live delivery handle. Assert the recommended result exposes a plain dose value.
         val recommended = AdviceResult.Recommended::class.java
         assertTrue(recommended.methods.any { it.name == "getBest" })
         assertTrue(Candidate::class.java.methods.any { it.name == "getDoseU" })

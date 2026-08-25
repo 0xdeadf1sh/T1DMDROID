@@ -13,18 +13,9 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/**
- * The forecast-overlay model (Phase 2 deliverable 7): the selected model's median
- * line + 7-level quantile fan drawn over [GlucoseGraph], with the other running models drawn
- * faintly, and `DEGENERATE`/`STALE` states visibly flagged. Values are already unit-converted and
- * carried as absolute epoch-ms per forecast step, so the Canvas only maps them to pixels — the same
- * off-thread, immutable-primitive-array discipline as [GraphFrame].
- *
- * The fan is three nested bands from the ascending-τ columns: outer `.05/.95`, mid `.10/.90`, inner
- * `.25/.75`; [lo]/[hi] are ordered outer→inner. A degenerate forecast (finiteness / rail-pin /
- * collapsed band / mis-ordering, §3.6-B) is drawn dashed with no fan; a stale one (anchor past the
- * freshness gate, §3.6-D) is dimmed and dashed. Neither is eligible to drive a rail or alert.
- */
+/** One model's forecast, ready to draw. [tsMs] is absolute epoch-ms per step and the values are
+ *  already unit-converted. [lo]/[hi] are the three nested fan pairs ordered outer→inner: `.05/.95`,
+ *  `.10/.90`, `.25/.75`. [degenerate] is §3.6-B, [stale] §3.6-D; neither may drive a rail or alert. */
 class PredSeries internal constructor(
     val modelId: String,
     val selected: Boolean,
@@ -39,16 +30,9 @@ class PredSeries internal constructor(
     val isEmpty: Boolean get() = tsMs.isEmpty()
 }
 
-/**
- * Build the overlay off-thread from the cycle's predictions (§2.3).
- *
- * [calibrateBands] is the `SPEC/inference.md` §8.4 band recalibration, injected exactly as
- * [kovatchevF] is: the apply lives in the Rust core and this module keeps no copy of it. It yields
- * the calibrated fan for a prediction, or null for the raw one. It is applied HERE, at the last
- * point before pixels, and nowhere else — the stored row, the pushed row, the alarm engine, the
- * calculator rails and the accuracy suite all read the raw fan the model produced. Because §8.4
- * pins the median, the forecast LINE is identical either way; only the fan moves.
- */
+/** Off-thread (§2.3). [calibrateBands] is `SPEC/inference.md` §8.4, applied here at the last point
+ *  before pixels and nowhere else — the stored row, the pushed row, the alarms and `:calc` all read
+ *  the raw fan. §8.4 pins the median, so only the fan moves. */
 suspend fun predOverlayOf(
     predictions: List<ModelPrediction>,
     unit: UnitSpace = UnitSpace.MgDl,
@@ -58,15 +42,8 @@ suspend fun predOverlayOf(
     predictions.mapNotNull { buildPredSeries(it, unit, kovatchevF, calibrateBands?.invoke(it)) }
 }
 
-/**
- * Pure transform (no coroutines) — safe from a `@Preview`/test.
- *
- * [calibratedBandsMgdl] is an already-applied §8.4 fan in [ModelPrediction.bandsMgdl]'s own
- * step-major layout. A length disagreeing with this forecast's is IGNORED rather than reshaped: a
- * delta fitted at another horizon is not this forecast's correction, and the raw fan is the honest
- * fallback. The median line is read from [ModelPrediction.medianBg] either way — §8.4 holds it
- * fixed, so there is no calibrated median to draw.
- */
+/** Pure. [calibratedBandsMgdl] is an applied §8.4 fan in [ModelPrediction.bandsMgdl]'s own step-major
+ *  layout; a length disagreeing with this forecast's is IGNORED and the raw fan drawn. */
 fun buildPredSeries(
     p: ModelPrediction,
     unit: UnitSpace,
@@ -83,10 +60,8 @@ fun buildPredSeries(
         UnitSpace.Kovatchev -> kovatchevF?.invoke(mgdl) ?: mgdl
     }.toFloat()
 
-    // Prepend the ANCHOR point (the last MEASURED BG at anchorTsMs) as element 0 so the median AND
-    // fan grow OUT OF the last CGM reading instead of floating one step ahead — otherwise the forecast
-    // visibly starts above/below the trace it should continue from. The anchor's fan is zero-width
-    // (lo == hi == lastBg), fanning open from there. Forecast steps 1..n follow at (i)·stepMs.
+    // Element 0 is the ANCHOR — the last measured BG at anchorTsMs, fan zero-width — so the median
+    // and fan grow out of the trace instead of floating one step ahead of it.
     val anchorVal = conv(p.lastBg)
     val ts = LongArray(n + 1) { i -> p.anchorTsMs + i.toLong() * p.stepMs }
     val median = FloatArray(n + 1) { i -> if (i == 0) anchorVal else conv(p.medianBg[i - 1]) }
@@ -107,19 +82,10 @@ fun buildPredSeries(
     )
 }
 
-// The two dash patterns, held rather than rebuilt. Both are raw-pixel constants — no density, no theme,
-// nothing of the series in them — so deriving them inside the draw allocated an effect and its float
-// array once per series per frame, and this panel's draw phase re-runs at the display's refresh rate for
-// as long as a committed log marker is breathing. A [PathEffect] is immutable; one instance serves every
-// draw of every series.
+// Raw-pixel and series-independent, so one immutable effect serves every draw of every series.
 private val NOT_ELIGIBLE_DASH: PathEffect = PathEffect.dashPathEffect(floatArrayOf(7f, 6f))
 private val FLAG_TICK_DASH: PathEffect = PathEffect.dashPathEffect(floatArrayOf(3f, 4f))
 
-/**
- * Draw one forecast series into the plot. [absToPx]/[valToPx] project absolute epoch-ms and a
- * unit-value onto the shared [GlucoseGraph] viewport; [clip] guards the pixel range. Non-selected
- * series are faint; degenerate/stale series are dashed and fan-less.
- */
 internal fun DrawScope.drawPredSeries(
     s: PredSeries,
     absToPx: AbsToPx,
@@ -145,15 +111,12 @@ internal fun DrawScope.drawPredSeries(
 
     fun px(i: Int) = absToPx.of(s.tsMs[i].toDouble())
 
-    // Quantile fan (skip entirely when degenerate — a collapsed/misordered band must not read as
-    // confidence). Only the selected model shows the full fan; others get a single faint band.
+    // Skipped when degenerate: a collapsed or misordered band must not read as confidence.
     if (!degenerate) {
         val bands = if (s.selected) 3 else 1
         for (b in bands - 1 downTo 0) {
             val a = (if (s.selected) 0.06f + 0.05f * (2 - b) else 0.05f) * if (s.stale) 0.6f else 1f
-            // One scratch path for all three bands and every frame — `reset()` keeps its capacity,
-            // so the vertex arrays are allocated once for the life of the composition instead of
-            // three native `Path`s (each with a NativeAllocationRegistry finalizer) per frame.
+            // One scratch path for all three bands and every frame; `reset()` keeps its capacity.
             val path = scratch.also { it.reset() }
             for (i in 0 until s.size) {
                 val x = px(i); val y = valToPx.of(s.hi[b][i])
@@ -165,7 +128,6 @@ internal fun DrawScope.drawPredSeries(
         }
     }
 
-    // Median polyline.
     for (i in 0 until s.size - 1) {
         drawLine(
             lineColor.copy(alpha = medAlpha),
@@ -176,28 +138,22 @@ internal fun DrawScope.drawPredSeries(
             pathEffect = effect,
         )
     }
-    // Endpoint marker for the selected model so the 2 h horizon is legible.
     if (s.selected && !degenerate) {
         val li = s.size - 1
         drawCircle(lineColor.copy(alpha = medAlpha), 3.2f, androidx.compose.ui.geometry.Offset(px(li), valToPx.of(s.median[li])), style = Stroke(width = 1.6f))
     }
-    // A small flag tick at the horizon start when the forecast is not eligible.
     if (degenerate || s.stale) {
         val x = px(0)
         drawLine(flagColor.copy(alpha = 0.8f), androidx.compose.ui.geometry.Offset(x, plotTop), androidx.compose.ui.geometry.Offset(x, plotBottom), 1f, pathEffect = FLAG_TICK_DASH)
     }
 }
 
-/** The furthest forecast timestamp across all series, for viewport extension; `null` if none. */
 internal fun List<PredSeries>.maxTsMs(): Long? =
     mapNotNull { if (it.isEmpty) null else it.tsMs.last() }.maxOrNull()
 
-/**
- * The approaching hypo/hyper crossings (item 16): the FIRST step at which the SELECTED, §3.6-eligible
- * forecast median (mg/dL) drops below [lowMgdl] or rises above [highMgdl], each with an ETA from
- * [nowMs]. Returns nothing for a degenerate/stale forecast or when nothing is selected — so a marker
- * is never fabricated. Computed in mg/dL (the thresholds' space) regardless of the display unit.
- */
+/** The first crossing of [lowMgdl]/[highMgdl] by the SELECTED, §3.6-eligible median, with an ETA
+ *  from [nowMs]. Empty for a degenerate, stale or unselected forecast, so a marker is never
+ *  fabricated. mg/dL throughout, whatever the display unit. */
 fun excursionsOf(
     predictions: List<ModelPrediction>,
     lowMgdl: Int,

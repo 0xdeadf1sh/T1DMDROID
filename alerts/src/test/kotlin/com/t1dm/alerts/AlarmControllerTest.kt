@@ -32,7 +32,7 @@ class AlarmControllerTest {
         assertEquals(1, notifier.emitCount)
 
         val clearsBefore = notifier.clearCount
-        readings.emit(reading(120, rxWallMs = 5 * MIN)) // measured in-range clears
+        readings.emit(reading(120, rxWallMs = 5 * MIN)) // in range
         runCurrent()
         assertTrue(notifier.clearCount > clearsBefore)
 
@@ -75,9 +75,7 @@ class AlarmControllerTest {
         assertEquals(AlertBand.URGENT_LOW, notifier.lastEmit?.threshold?.band)
         val emitsAfterFire = notifier.emitCount
 
-        // A later tick with the breach still standing re-presents it — the controller drives ONE emit
-        // path (the notifier's own throttle bounds re-actuation), never a second reAlert that would
-        // double-buzz the CRITICAL primary.
+        // One emit path only; a second reAlert would double-buzz the CRITICAL primary.
         now = 6 * MIN
         ticks.emit(Unit)
         runCurrent()
@@ -102,10 +100,8 @@ class AlarmControllerTest {
         assertEquals(AlertBand.HIGH, notifier.lastEmit?.threshold?.band)
         val emitsAfterFire = notifier.emitCount
 
-        // Regression (§3.6 C1): a stable WARNING breach reuses the same object, so the engine's
-        // StateFlow deduplicates and the state collector never re-fires. onTick must still re-present it
-        // so the notifier can re-apply its gate (an expired snooze re-surfaces) and re-announce on its
-        // own throttle — otherwise a snoozed WARNING would be silenced permanently once snoozed.
+        // A stable WARNING breach reuses the same object, so the StateFlow dedupes and the collector
+        // never re-fires. Without onTick re-presenting it, a snoozed WARNING stays silenced for good.
         now = MIN
         ticks.emit(Unit)
         runCurrent()

@@ -1,21 +1,10 @@
 package com.t1dm.core.model
 
-/**
- * Domain mirrors of the Rust `t1dm-core::stats` records (Phase 6). Kept free of
- * the uniffi binding so every consumer speaks these `:core:model` types; `:core:native` projects
- * to/from the generated records at the seam (as it does for the curve/forecast surfaces).
- *
- * The Rust is the numeric authority; these carry no logic beyond an [AdvancedStats.EMPTY] sentinel
- * that mirrors the crate's fail-closed `AdvancedStats::empty()` (all zeros, no NaN, channels absent).
- */
-
-/** One grid sample fed to `advancedStats`. `bgMgdl` ≤ 0 (or non-finite) is excluded from every
- *  BG-derived metric by the Rust but its treatment/activity channels still count toward the totals. */
+/** `bgMgdl` <= 0 or non-finite is excluded from every BG-derived metric, but the sample's
+ *  treatment/activity channels still count toward the totals. */
 data class StatSample(
     val tsMs: Long,
-    /** The client's UTC offset in MINUTES, east-positive, at [tsMs] (`SPEC/invariants.md` §2). It never
-     *  shifts [tsMs], which is always UTC — it is what lets [AdvancedStats.heatmap] key on the
-     *  patient's own calendar, and it is the only field of this record that reads it. */
+    /** MINUTES, east-positive, at [tsMs] (`SPEC/invariants.md` §2). Never shifts [tsMs], which is UTC. */
     val tzOffsetMin: Int,
     val bgMgdl: Double,
     val carbsG: Double?,
@@ -25,8 +14,8 @@ data class StatSample(
     val mood: Int?,
 )
 
-/** Time-weighted clinical band fractions (sum to 1 over a non-empty series). `inRange` uses the
- *  configurable target edges; `veryLow`/`veryHigh` are the fixed 54/250 mg/dL clinical cuts. */
+/** Time-weighted, summing to 1 over a non-empty series. [inRange] uses the configurable target
+ *  edges; [veryLow]/[veryHigh] the fixed 54/250 mg/dL clinical cuts. */
 data class SubBands(
     val veryLow: Double,
     val low: Double,
@@ -35,7 +24,7 @@ data class SubBands(
     val veryHigh: Double,
 )
 
-/** One AGP time-of-day bin's BG percentile ribbon. [minuteOfDay] is the bin's start (0..1440). */
+/** [minuteOfDay] is the bin's start, 0..1440. */
 data class AgpBin(
     val minuteOfDay: Int,
     val p5: Double,
@@ -45,49 +34,35 @@ data class AgpBin(
     val p95: Double,
 )
 
-/**
- * The fixed clinical level-2 cuts, in mg/dL: below [veryLowMgdl] is level-2 hypoglycaemia, above
- * [veryHighMgdl] level-2 hyperglycaemia. Unlike [TargetRange] they are not configurable, and unlike
- * it they are not defined here — the Rust crate owns them, because that is where the band fractions
- * they partition are actually cut.
- */
+/** Level-2 cuts in mg/dL. Not configurable, and not valued here: the Rust crate owns them. */
 data class ClinicalCuts(val veryLowMgdl: Double, val veryHighMgdl: Double) {
-    /** Both cuts positive and ordered — the only state in which a scale may be anchored on them. */
     val isUsable: Boolean get() = veryLowMgdl > 0.0 && veryHighMgdl > veryLowMgdl
 
     companion object {
-        /** The fail-closed answer when no native library backs the call. Deliberately NOT the real
-         *  numbers: a stub that guessed them would be the second copy this type exists to prevent. */
+        /** Fail-closed when no native library backs the call; deliberately NOT the real numbers. */
         val UNAVAILABLE = ClinicalCuts(0.0, 0.0)
     }
 }
 
 /**
- * One populated cell of the day-of-week × hour-of-day glucose grid.
- *
- * [dow] is 0 = Monday … 6 = Sunday and [hour] is 0..23, both in the patient's LOCAL time, resolved
- * per sample from that sample's own [StatSample.tzOffsetMin]. [meanBg] and [medianBg] are plain
- * sample-count reductions over the cell's valid-BG samples; [medianBg] is the same type-7 percentile
- * the AGP ribbon's `p50` is. Both arrive from one pass, so choosing between them is a repaint.
- *
- * Only POPULATED cells exist. An absent `(dow, hour)` means no reading was taken then, and must
- * render as absent — never as a value, and in particular never as an in-range one.
+ * [dow] 0 = Monday .. 6 = Sunday, [hour] 0..23, both LOCAL, resolved per sample from that sample's
+ * own [StatSample.tzOffsetMin]. Only POPULATED cells exist: an absent `(dow, hour)` means no reading
+ * was taken then and must render as absent, never as a value and never as an in-range one.
  */
 data class HeatCell(val dow: Int, val hour: Int, val n: Int, val meanBg: Double, val medianBg: Double) {
-    /** The cell's value under [stat] — the single place the choice is resolved. */
     fun value(stat: HeatStat): Double = when (stat) {
         HeatStat.Median -> medianBg
         HeatStat.Mean -> meanBg
     }
 }
 
-/** Which summary a [HeatCell] is rendered by. Display-only: both are always computed. */
+/** Display-only: both are always computed. */
 enum class HeatStat { Median, Mean }
 
-/** Mood summary over the samples that carried a mood score. */
+/** [n] counts only the samples that carried a mood score. */
 data class MoodSummary(val mean: Double, val n: Int, val min: Int, val max: Int)
 
-/** Sample-count TIR/TBR/TAR within a fixed 6-hour diurnal bucket ([startMin] = 0/360/720/1080). */
+/** Sample-count, not time-weighted. [startMin] is 0/360/720/1080. */
 data class TodBucket(
     val startMin: Int,
     val n: Int,
@@ -96,10 +71,9 @@ data class TodBucket(
     val tar: Double,
 )
 
-/** One 20 mg/dL glucose-distribution histogram bin over [40,400) (tails clamp into the ends). */
+/** 20 mg/dL bins over [40,400); the tails clamp into the end bins. */
 data class HistBin(val lo: Double, val hi: Double, val count: Int, val frac: Double)
 
-/** Aggregate of the hypo/hyper excursion episodes (count/duration/mean-extreme/worst-extreme). */
 data class EpisodeSummary(
     val count: Int,
     val totalDurationMs: Long,
@@ -112,14 +86,13 @@ data class EpisodeSummary(
     }
 }
 
-/** GRADE mean score plus its hypo/eu/hyper attribution (fractions summing to 1 when positive). */
+/** [hypo]/[eu]/[hyper] are fractions summing to 1 when [grade] is positive. */
 data class GradeSplit(val grade: Double, val hypo: Double, val eu: Double, val hyper: Double) {
     companion object {
         val EMPTY = GradeSplit(0.0, 0.0, 0.0, 0.0)
     }
 }
 
-/** The full locally-recomputed advanced-stats block (Rust `AdvancedStats`). */
 data class AdvancedStats(
     val nSamples: Int,
     val spanMs: Long,
@@ -143,7 +116,6 @@ data class AdvancedStats(
     val meanSteps: Double?,
     val mood: MoodSummary?,
     val agp: List<AgpBin>,
-    // ── Variability & risk extensions (Phase 7D) ──
     val modd: Double,
     val conga1: Double,
     val conga2: Double,
@@ -157,10 +129,7 @@ data class AdvancedStats(
     val histogram: List<HistBin>,
     val hypoEpisodes: EpisodeSummary,
     val hyperEpisodes: EpisodeSummary,
-    /** Mean and median glucose per (day-of-week, hour) cell in LOCAL time — populated cells only,
-     *  ascending by `(dow, hour)`. Every day-keyed reduction in this block reads the patient's own
-     *  calendar, resolved per sample from its `tz_offset`, so this grid, [agp] and [tod] are all on
-     *  the same clock. */
+    /** LOCAL time, populated cells only, ascending by `(dow, hour)`. [agp] and [tod] share the clock. */
     val heatmap: List<HeatCell>,
 ) {
     val isEmpty: Boolean get() = nSamples == 0
@@ -185,11 +154,7 @@ data class AdvancedStats(
     }
 }
 
-/**
- * The global, user-configurable stats target range (SPEC §3.4 /). Drives
- * TIR/TBR/TAR and is DISTINCT from the alarm thresholds. Default 70-180 mg/dL (the ADA/consensus
- * time-in-range window).
- */
+/** mg/dL, §3.4. DISTINCT from the alarm thresholds. */
 data class TargetRange(val lowMgdl: Int, val highMgdl: Int) {
     companion object {
         val DEFAULT = TargetRange(70, 180)
@@ -198,15 +163,10 @@ data class TargetRange(val lowMgdl: Int, val highMgdl: Int) {
     }
 }
 
-/** A count + total-duration event stat (server hypo/hyper episodes). */
 data class EventStat(val count: Int, val durationMs: Long)
 
-/**
- * The server's daily-cached shared stats block (neutral mirror of `:sync`'s `StatsDto`, so
- * `:feature:stats` need not depend on `:sync`). `:app` maps the wire DTO onto this. The server
- * computes the O(1) shared fields; the richer AGP/LBGI/HBGI/MAGE/sub-bands come from the local
- * [AdvancedStats] recompute. `mean_bg`/`gmi`/`cv`/`sd` are the cross-check against the local block.
- */
+/** Neutral mirror of `:sync`'s `StatsDto`, so `:feature:stats` need not depend on `:sync`.
+ *  [meanBg]/[gmi]/[cv]/[sd] are the cross-check against the local [AdvancedStats]. */
 data class ServerStats(
     val window: StatsWindow,
     val tir: Double,
@@ -226,14 +186,8 @@ data class ServerStats(
     val nSamples: Int,
 )
 
-/**
- * The unified stats view (PLAN "Phase 6 — Stats"): the server cached block (default fast path,
- * O(1)) UNIONED with the locally-recomputed Rust [AdvancedStats] (the AGP ribbon, clinical
- * sub-bands, LBGI/HBGI, MAGE, and the authoritative cross-check). [server] is null when the server
- * is unreachable / unconfigured, with [serverReason] carrying the plain-language why; [local] is
- * always present (it is [AdvancedStats.EMPTY] when the window is too sparse). [recomputed] flags a
- * manual Recompute (server forced fresh + local re-derived).
- */
+/** [server] is null when the server is unreachable or unconfigured, [serverReason] saying why.
+ *  [local] is always present, [AdvancedStats.EMPTY] when the window is too sparse. */
 data class StatsComposite(
     val window: StatsWindow,
     val targetRange: TargetRange,
@@ -244,7 +198,7 @@ data class StatsComposite(
     val recomputed: Boolean,
 )
 
-/** The 7/30/90-day stats windows (server contract: serde `"7d"/"30d"/"90d"`; T1DMSERVER stats contract). */
+/** [wire] is the server contract's serde form. */
 enum class StatsWindow(val wire: String, val days: Int) {
     D7("7d", 7),
     D30("30d", 30),

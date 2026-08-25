@@ -4,18 +4,6 @@ import com.t1dm.core.model.DkaTimeline
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
-/**
- * The journey's fraction math. The road is a sequence of STAGES, not a time axis: each landmark gets
- * one leg of road however many hours it takes, because honouring the hours crushed the near landmarks
- * into the departure point (the default timeline puts DKA at 1/45 of the span). The durations are read
- * off the countdown rows above the drawing.
- *
- * What must still hold is that the arrow and the figures agree — the arrow reaches each landmark at
- * the instant that landmark is projected — so the warping in [journeyProgress] is the real subject
- * here. The clamps matter for the same reason the countdown clamps do: `insulinZeroMs` is deliberately
- * not clipped to the present, so the anchor can be an instant already past (arrow pinned at the grave)
- * or still ahead (pinned at the departure point).
- */
 class JourneyPathTest {
 
     private val default = DkaTimeline.DEFAULT // 2 + 29 + 59 h = 90 h
@@ -34,8 +22,6 @@ class JourneyPathTest {
 
     @Test
     fun `the arrow meets each landmark at the instant it is projected`() {
-        // The whole point of warping progress: 2 h in, the arrow is AT the DKA figure — a third of the
-        // way along — not 1/45 of the way along where a time-linear ratio would leave it.
         assertEquals(0f, at(0.0), 1e-6f)
         assertEquals(JourneyMarks.EVEN.dka, at(2.0), 1e-6f)
         assertEquals(JourneyMarks.EVEN.coma, at(31.0), 1e-6f)
@@ -51,8 +37,6 @@ class JourneyPathTest {
 
     @Test
     fun `a legs hours change its speed, never where its landmark sits`() {
-        // Stretch only the middle leg by more than 3x. The coma figure stays at two thirds; what
-        // changes is that the arrow now takes 98 h rather than 29 h to cross that stretch of road.
         val stretched = DkaTimeline(1.0, 98.0, 1.0)
         assertEquals(JourneyMarks.EVEN.dka, at(1.0, stretched), 1e-6f)
         assertEquals(JourneyMarks.EVEN.coma, at(99.0, stretched), 1e-6f)
@@ -66,7 +50,6 @@ class JourneyPathTest {
         assertEquals(JourneyMarks.EVEN.coma, at(5.0, noRunUp), 1e-6f)
         assertEquals(1f, at(10.0, noRunUp), 1e-6f)
 
-        // A zero FINAL leg means the grave arrives with the coma: the last third is crossed at once.
         val instantDeath = DkaTimeline(5.0, 5.0, 0.0)
         assertEquals(JourneyMarks.EVEN.coma, at(10.0, instantDeath), 1e-6f)
         assertEquals(1f, at(10.001, instantDeath), 1e-3f)
@@ -74,7 +57,6 @@ class JourneyPathTest {
 
     @Test
     fun `negative offsets are floored rather than trusted`() {
-        // Cannot arrive from the steppers (min 0), but a floored leg behaves as a zero-hour one.
         val negative = DkaTimeline(-4.0, 3.0, 1.0)
         assertEquals(JourneyMarks.EVEN.dka, at(0.001, negative), 1e-3f)
         assertEquals(JourneyMarks.EVEN.coma, at(3.0, negative), 1e-6f)

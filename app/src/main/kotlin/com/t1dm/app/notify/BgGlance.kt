@@ -10,15 +10,8 @@ import com.t1dm.core.model.ModelPrediction
 import kotlin.math.roundToInt
 
 /**
- * The single, model-space snapshot every glanceable surface renders — the always-on notification
- * (item 15), the home/lock widgets, and (via [com.t1dm.app.watch.AppWatchGlanceSource]) the watch
- * push — so all three AGREE by construction (Phase 7B). It carries the current BG + trend +
- * reading age, the deterministic band, and a §3.6-GATED forecast read-out: the predictive crossing
- * fields are non-null ONLY when the selected model's forecast is eligible (fresh MEASURED anchor,
- * passes the degeneracy guard) and not withheld by the warmup gate.
- *
- * Everything here is mg/dL / minutes; presenters convert to the active unit. Deliberately a plain
- * value type computed by the pure [BgGlanceComputer] so it is host-testable with no Android.
+ * mg/dL and minutes throughout; presenters convert to the active unit. The predictive crossing
+ * fields are non-null only for a §3.6-eligible, non-warmup forecast.
  */
 data class BgGlance(
     val bgMgdl: Int?,
@@ -26,40 +19,33 @@ data class BgGlance(
     val readingAgeMs: Long,
     val band: AlertBand?,
     val trend: GlanceTrend,
-    /** True iff the selected forecast is §3.6-eligible (OK status, fresh anchor) AND not in warmup. */
+    /** §3.6-eligible — OK status, fresh anchor — and not in warmup. */
     val forecastEligible: Boolean,
     val forecastStatus: ForecastStatus?,
-    /** Selected-model median BG at the horizon end (mg/dL), or null when no eligible forecast. */
+    /** Selected-model median at the horizon end. */
     val fcEndMgdl: Int?,
     val horizonSteps: Int,
     val warmup: Boolean,
     val signalLoss: Boolean,
     val stale: Boolean,
-    /** No eligible forecast exists (no model, degenerate/stale, but NOT the warmup case). */
+    /** No eligible forecast, excluding the warmup case. */
     val forecastUnavailable: Boolean,
     val predictedLowCrossing: Boolean,
     val predictedHighCrossing: Boolean,
     val alarmActive: Boolean,
-    /** Earliest predicted crossing of ANY band (low/high/urgent) — drives the notification's
-     *  "approaching …" line. Null when the forecast is ineligible or never leaves range. */
+    /** Earliest predicted crossing of any band. Null when ineligible or never out of range. */
     val approaching: PredictiveCrossing?,
-    /** Earliest predicted crossing of an URGENT band — drives the full-screen critical predictive
-     *  alert (item 2). Null unless the eligible median reaches urgent-low/urgent-high in horizon. */
+    /** Earliest predicted crossing of an urgent band. */
     val urgent: PredictiveCrossing?,
-    /** The one-line human-readable summary (≤ 40 chars; reused verbatim by the watch push). */
+    /** At most 40 chars; reused verbatim by the watch push. */
     val summary: String,
 ) {
     val hasReading: Boolean get() = bgMgdl != null
 }
 
-/** Coarse direction for a chevron; classified from the measured rate, falling back to the forecast. */
 enum class GlanceTrend { FLAT, RISING, FALLING, RISING_FAST, FALLING_FAST }
 
-/**
- * A §3.6-gated forecast crossing: the selected model predicts BG will cross [thresholdMgdl] in
- * about [etaMin] minutes, reaching [projectedMgdl]. [severity] is CRITICAL for the urgent bands
- * (drives DND-bypass + full-screen), WARNING for low/high.
- */
+/** CRITICAL is the urgent bands, WARNING is low/high. */
 data class PredictiveCrossing(
     val kind: Kind,
     val severity: Severity,
@@ -71,28 +57,12 @@ data class PredictiveCrossing(
     enum class Severity { WARNING, CRITICAL }
 }
 
-/**
- * The pure, Android-free glance computation lifted out of the watch source so the notification,
- * widgets, and watch all share ONE algorithm (Phase 7B "lift that same computation"). The
- * §3.6 gate is the `eligible` predicate: a forecast drives NO predictive field unless
- * `status == OK && !stale`, and the warmup gate (predictions cleared, `state.warmup != null`)
- * degrades every surface to BG + trend with an honest "collecting context".
- */
-/**
- * The two readings a glance needs, as one value so no call site can pass the same row twice.
- *
- * That mistake is the hazard this type exists for. Every glance surface — the always-on foreground
- * notification, the predictive urgent alert, the home and lock widgets, the watch — is driven from
- * here, and a promoted reconstruction is a row in `cgm_reading` like any other. Handing it in as
- * the current BG would put a model's number on the patient's lock screen as their glucose.
- *
- * [create] is the only way to build one, and it applies the filter itself.
- */
+/** One value so no call site can pass the same row twice: a promoted reconstruction is a row like
+ *  any other, and as the current BG it would put a model's number on the lock screen. */
 data class GlanceReadings private constructor(
-    /** The newest row, whatever its provenance. Drives nothing but the "there is newer than this"
-     *  observation. */
+    /** Newest row, whatever its provenance. */
     val latest: CgmReading?,
-    /** The newest row that is a real measurement with a value. Drives everything else. */
+    /** Newest real measurement with a value; drives everything else. */
     val lastMeasured: CgmReading?,
 ) {
     companion object {
@@ -104,8 +74,7 @@ data class GlanceReadings private constructor(
             },
         )
 
-        /** For a caller that already holds the two rows separately and can prove the second is a
-         *  measurement — the Room observers do, in SQL. */
+        /** Unchecked: the caller must have proved [lastMeasured] is a measurement. */
         fun of(latest: CgmReading?, lastMeasured: CgmReading?): GlanceReadings =
             GlanceReadings(latest, lastMeasured)
 
@@ -115,11 +84,6 @@ data class GlanceReadings private constructor(
 
 object BgGlanceComputer {
 
-    /**
-     * @param readings the newest row whatever its provenance, and the newest REAL MEASUREMENT — see
-     *   [GlanceReadings]. Every glucose fact below is read off the measurement; the newest row
-     *   survives only so a caller can tell that the panel holds rows the last measurement does not.
-     */
     fun compute(
         readings: GlanceReadings,
         state: InferenceState,
@@ -146,7 +110,7 @@ object BgGlanceComputer {
         val band = bg?.let { thresholds.bandFor(it) }
 
         val sel = state.selectedPrediction
-        val eligible = sel?.eligible == true // §3.6-B/D: OK status AND fresh anchor
+        val eligible = sel?.eligible == true // §3.6-B/D
         val fcEnd = sel?.takeIf { eligible }?.medianBg?.lastOrNull()?.roundToInt()
         val horizon = sel?.horizonSteps ?: 0
 
@@ -185,12 +149,8 @@ object BgGlanceComputer {
         )
     }
 
-    /**
-     * One pass over the eligible median: the FIRST step below `low` (or `urgentLow`) and the FIRST
-     * step at/above `high` (or `urgentHigh`). Returns (earliest-any, earliest-urgent) so the
-     * notification line and the urgent full-screen alert can target different tiers. The ETA is
-     * `(i+1)·stepMinutes` — the model's forecast begins one step past the now-line.
-     */
+    /** (earliest-any, earliest-urgent). ETA is `(i+1)·stepMin`: the first step is one past the
+     *  now-line. */
     private fun findCrossings(
         sel: ModelPrediction,
         t: AlertThresholds,

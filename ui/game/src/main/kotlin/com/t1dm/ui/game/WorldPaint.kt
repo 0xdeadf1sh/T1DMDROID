@@ -4,49 +4,33 @@ import com.t1dm.ui.graph.PaintFrame
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/**
- * The BG panel's freehand annotation layer, re-anchored into the game world — the same compressed-row
- * primitive-array discipline as [PaintFrame], one projection later.
- *
- * **Why it projects at all, rather than being drawn through the panel's own transform.** A stroke is
- * stored as `(tsMs, yFrac)`, and the game's x axis IS time, so the mapping is free: [WorldMap.worldXOf]
- * and [WorldMap.worldYOfFrac] are both affine and both already fixed for the run. Doing it ONCE at
- * track build buys two things the per-frame form cannot. The cull key becomes world x, so the camera
- * never round-trips through epoch-ms; and the stroke widths become world units, so a pen that was 6 dp
- * on a phone panel is a fixed number of metres of graffiti rather than a screen-constant smear that
- * shrinks as the camera pulls back.
- *
- * **Fully world-anchored** is the point: the art holds still while the camera moves, so the player
- * drives past and through it. Drawn BEFORE the ground fill, sky strokes read as scenery and anything
- * scribbled under the trace is buried by the terrain — occlusion for nothing, and no z-buffer.
- * Deliberately no collision: it is paint.
- */
+/** [PaintFrame] projected into the world once at track build: cull keys become world x and widths
+ *  become world metres. No collision. */
 class WorldPaint internal constructor(
-    /** Packed sRGB ARGB per stroke; the colour the user chose, untouched. */
+    /** Packed sRGB ARGB per stroke. */
     val colors: IntArray,
-    /** Stroke width in WORLD units (metres). See [PAINT_PANEL_DP] for the conversion's one assumption. */
+    /** Stroke width in world metres; see [PAINT_PANEL_DP]. */
     val widths: FloatArray,
     /** One of `PaintFrame.TOOL_*`. */
     val tools: IntArray,
-    /** Scanned world-x bounds — the O(1) camera cull, the exact analogue of `PaintFrame.minTsMs`. */
+    /** Scanned world-x bounds, for the O(1) camera cull. */
     val minX: FloatArray,
     val maxX: FloatArray,
     /** Compressed-row point index; stroke `s` owns `[offsets[s], offsets[s + 1])`. */
     val offsets: IntArray,
-    /** World x of every point of every stroke, concatenated in paint order. */
+    /** World x of every point, concatenated in paint order. */
     val xs: FloatArray,
-    /** World y (metres above the floor, y-UP) of every point. Outside `[0, worldHeight]` is legal —
-     *  a finger that strayed off the plot stays off it. */
+    /** World y in metres above the floor, y-UP. Outside `[0, worldHeight]` is legal. */
     val ys: FloatArray,
 ) {
-    /** Strokes in PAINT order: oldest-authored first, so later strokes cover earlier ones. */
+    /** Paint order: oldest first, so later strokes cover earlier ones. */
     val strokeCount: Int get() = colors.size
 
     val isEmpty: Boolean get() = colors.isEmpty()
 
     val pointCount: Int get() = xs.size
 
-    /** Does stroke [s] overlap the world-x window `[fromX, toX]`? Intersection, not containment. */
+    /** Intersection, not containment. */
     fun intersects(s: Int, fromX: Float, toX: Float): Boolean = maxX[s] >= fromX && minX[s] <= toX
 
     companion object {
@@ -58,33 +42,18 @@ class WorldPaint internal constructor(
     }
 }
 
-/**
- * Nominal height of the BG panel a stroke was authored over, in dp — the one number the dp→world width
- * conversion needs and the one number the store does not keep. `paint_stroke` persists `widthDp` and
- * nothing about the panel it was drawn on (which is `fillMaxWidth().weight(1f)`, so it varies with the
- * device and with what else is on the dashboard). A stroke's width is therefore mapped as a fraction of
- * a TYPICAL panel: 6 dp of pen over a ~320 dp panel becomes 6/320 of the world height. Wrong in the
- * fourth significant figure, invisible in a game.
- */
+/** Nominal dp height of the BG panel a stroke was authored over. `paint_stroke` keeps `widthDp` but
+ *  nothing about the panel, so a width is mapped as a fraction of a typical one. */
 const val PAINT_PANEL_DP = 320f
 
-/** Build the world paint layer off the main thread. */
 suspend fun worldPaintOf(
     paint: PaintFrame,
     track: GameTrack,
     panelDp: Float = PAINT_PANEL_DP,
 ): WorldPaint = withContext(Dispatchers.Default) { buildWorldPaint(paint, track, panelDp) }
 
-/**
- * Pure CPU transform — safe from a `@Preview` or a test.
- *
- * Strokes that miss the run's time window entirely are dropped here, on [PaintFrame]'s own scanned
- * bounds, which is the same `maxTs >= from && minTs <= to` predicate `PaintStrokeDao.observeOverlapping`
- * uses. That makes this cheap when the host has already queried the window (nothing is dropped) and
- * correct when it handed over the whole store (everything outside the run is). Either way it happens
- * ONCE — a per-frame query over the annotation layer is exactly what the primitive-array discipline
- * exists to prevent.
- */
+/** Pure; safe from a `@Preview` or a test. Strokes missing the run's window are dropped here, on the
+ *  same overlap predicate as `PaintStrokeDao.observeOverlapping`. */
 fun buildWorldPaint(paint: PaintFrame, track: GameTrack, panelDp: Float = PAINT_PANEL_DP): WorldPaint {
     if (paint.isEmpty || track.heights.isEmpty()) return WorldPaint.EMPTY
     val from = track.startMs.toDouble()
@@ -128,8 +97,7 @@ fun buildWorldPaint(paint: PaintFrame, track: GameTrack, panelDp: Float = PAINT_
             if (x > hi) hi = x
             w++
         }
-        // Scanned, never read off the ends: a freehand stroke can be dragged backwards or double back
-        // on itself, so its first and last points are not its extremes.
+        // Scanned, not read off the ends: a stroke can be dragged backwards or double back on itself.
         minX[k] = lo
         maxX[k] = hi
     }

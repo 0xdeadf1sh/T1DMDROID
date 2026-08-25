@@ -5,94 +5,36 @@ import com.t1dm.core.model.PROBE_DOSE_U
 import com.t1dm.core.model.SensitivityEstimate
 import timber.log.Timber
 
-/**
- * Resolves an announced meal into its appearance-(Ra)-curve [CurveEvent]s, so the probe stays
- * agnostic of the curve engine — the carbohydrate twin of [BolusResolver]. In production this is
- * backed by `CurveEngine.carbEvent` at the mixed-meal GI default; in tests a fake returns a marker
- * the fake [ForecastPort] reads.
- *
- * The glycaemic index is the resolver's to pin, not the probe's, and it is not incidental: GI shapes
- * how much of a meal has appeared by the probe's horizon, so it moves the estimated ratio. One
- * resolver, one GI, or two probes are not comparable.
- */
+/** The GI is the resolver's to pin: it moves how much of the meal has appeared by the probe's
+ *  horizon, so probes taken under two GIs are not comparable. */
 fun interface CarbResolver {
     suspend fun resolve(grams: Double, atMs: Long): List<CurveEvent>
 }
 
 /**
- * Estimates this patient's insulin sensitivity factor and insulin-to-carbohydrate ratio by asking
- * the selected fp32 authority what one unit and ten grams would each do, right now.
+ * ISF (mg/dL per U) and ICR (g per U) from three rolls of one [ForecastPort], differenced at the END
+ * of the validated window — so the ISF is strictly smaller than the whole-action figure a clinician
+ * quotes, and the ICR is shifted by however much of the meal has appeared by then.
  *
- * Three rolls of the SAME [ForecastPort] the dose calculator searches against, differing only in
- * what is injected into the prediction zone:
+ * Both counterfactuals ride `candidate`, never `announced`: only the candidate is re-anchored onto
+ * the prediction zone's first bucket, and as `announced` the meal and the dose land at instants that
+ * differ, with the leading Ra bucket droppable by `bucketize`'s negative-index guard.
  *
- * | roll | candidate |
- * | --- | --- |
- * | baseline | — |
- * | insulin | [PROBE_DOSE_U] U as a rapid PK curve |
- * | carbohydrate | [PROBE_CARB_G] g as an appearance (Ra) curve |
- *
- * **Both counterfactuals ride `candidate`, and that is load-bearing.** [ForecastRequest.announced]
- * and [ForecastRequest.candidate] are not interchangeable: the production [RollingForecaster]
- * re-anchors only the candidate onto the prediction zone's first bucket, because `announced` carries
- * the user's real committed future at real wall-clock instants while a candidate is a what-if
- * injected at the roll origin. A probe is a what-if. Passing the meal as `announced` — which this
- * did first — left the two counterfactuals injected at instants that differed by the gap between now
- * and the next grid boundary, so the ratio between them was measured off a meal further advanced
- * than the dose it was being ratioed against, and the leading Ra bucket could be dropped outright by
- * `bucketize`'s negative-index guard. `futureOverrides` splits a candidate by [CurveEvent.kind], so
- * a carbohydrate candidate reaches the carb channel exactly as an insulin one reaches the insulin
- * channel.
- *
- * Each roll is capped to the validated window ([HorizonPolicy.validatedSteps]), so `nRolls` is 1 and
- * the whole probe costs three model forwards with no autoregressive re-feed. The medians are read at
- * the END of that window and differenced:
- *
- * ```
- * ISF = median_baseline − median_insulin                    (mg/dL per U)
- * ICR = ISF × PROBE_CARB_G / (median_carb − median_baseline) (g per U)
- * ```
- *
- * **The horizon is part of the answer.** The read is at the validated window — the same prefix every
- * dose decision is capped to, and the only part of a roll this project is willing to call validated.
- * A rapid analogue is nowhere near finished acting there, so [SensitivityEstimate.isfMgdlPerU] is
- * strictly smaller than the whole-action ISF a clinician would quote, and the ICR is shifted by
- * however much of the meal has appeared by then. Reading the full ~5 h action window instead would
- * match the textbook definitions but would rest the number on the re-fed extrapolated tail.
- *
- * **What it refuses, and what it reports.** Null means *no model response was obtained* — no
- * selected model, a non-eligible fan, an empty or ragged validated window, or arithmetic that yields
- * no finite number. The panel renders that as `N/A`, so an absent figure is legible as an absence
- * rather than as a feature that failed to appear.
- *
- * It does NOT judge the anchor the figures were measured off. A stale, warm-up or mostly-interpolated
- * anchor still yields a figure, stamped `atMs = nowMs` and printed beside a live IOB, and the horizon
- * is the only qualification carried with it.
- *
- * A response that WAS obtained is reported whatever it says, including a negative ISF, and the panel
- * marks it. This is deliberate and is not the fail-closed stance relaxing: fail-closed governs
- * numbers that could be acted on, and nothing downstream can act on this one. What it buys is the
- * only view of a model's marginal behaviour available outside a debug build — a wrong-signed ISF is
- * a fact about the artifact, and filtering it out hid a real model defect behind a blank line.
- *
- * It never throws and never fabricates a figure. Nothing here can reach a dose: the result is a
- * [SensitivityEstimate], a type no rail, no advisor and no store accepts.
+ * Null ⇒ no model response was obtained. A response is reported unfiltered, wrong sign and all;
+ * nothing downstream can act on it, since no rail, advisor or store accepts a [SensitivityEstimate].
  */
 class SensitivityProbe(
     private val port: ForecastPort,
     private val insulin: BolusResolver,
     private val carb: CarbResolver,
-    /** The selected model's id, read fresh. Sampled either side of the three rolls so a selection
-     *  changed mid-probe yields no figure rather than one stamped with the wrong artifact. */
     private val selectedModelId: suspend () -> String?,
 ) {
 
     suspend fun probe(
         nowMs: Long,
         config: CalcConfig,
-        /** Pinned across all three rolls, exactly as the [DoseAdvisor] pins one window across a
-         *  candidate grid: differencing two fans built on different BG input filters would attribute
-         *  the filter's own step to the dose. */
+        /** Pinned across all three rolls: differencing fans built on different BG input filters
+         *  would attribute the filter's own step to the dose. */
         smoothingWindow: Int? = null,
     ): SensitivityEstimate? {
         val steps = config.horizon.validatedSteps
@@ -113,11 +55,10 @@ class SensitivityProbe(
 
         val baseline = port.roll(request(null, 0.0))
         val withInsulin = port.roll(request(insulin.resolve(PROBE_DOSE_U, nowMs), PROBE_DOSE_U))
-        // candidateU stays 0: it is the candidate's INSULIN total, which the IOB rail and the
-        // decision card read. A meal contributes none of it.
+        // candidateU stays 0: it is the candidate's INSULIN total, and a meal contributes none.
         val withCarb = port.roll(request(carb.resolve(PROBE_CARB_G, nowMs), 0.0))
 
-        // The three rolls are only comparable to each other if one artifact produced all three.
+        // The three rolls are comparable only if one artifact produced all three.
         val modelAfter = selectedModelId()
         if (modelAfter != modelBefore) return withhold("model changed mid-probe: $modelBefore -> $modelAfter")
 
@@ -126,7 +67,7 @@ class SensitivityProbe(
 
         val windows = fans.map { it.validatedWindow() }
         val n = windows[0].size
-        // Ragged windows would difference two different instants and call the gap a dose response.
+        // Ragged windows would difference two instants and call the gap a dose response.
         if (n == 0 || windows.any { it.size != n }) return withhold("windows ${windows.map { it.size }}")
 
         val terminal = windows.map { it[n - 1].medianBg }
@@ -135,12 +76,8 @@ class SensitivityProbe(
         val insulinDrop = terminal[0] - terminal[1]
         val carbRise = terminal[2] - terminal[0]
 
-        // NO direction or magnitude filter. A wrong-signed or implausible response is what the model
-        // actually said, and saying it is the point: this read-out doubles as the one place a model's
-        // marginal behaviour is visible without a debug build. Only arithmetic that produces no
-        // number at all refuses below — a zero carb response divides to an infinity, which is not a
-        // figure to display but an absence of one.
-        //
+        // No direction or magnitude filter: report what the model said. Only arithmetic with no
+        // result refuses — a zero carb response divides to an infinity, which is not a figure.
         val isf = insulinDrop / PROBE_DOSE_U
         val icr = isf * PROBE_CARB_G / carbRise
         if (!isf.isFinite() || !icr.isFinite()) {
@@ -157,8 +94,6 @@ class SensitivityProbe(
         )
     }
 
-    /** Every refusal states WHY, at INFO. A withheld estimate is indistinguishable on screen from a
-     *  feature that was never wired, and the difference is one log line. */
     private fun withhold(why: String): SensitivityEstimate? {
         Timber.tag(TAG).i("probe withheld: %s", why)
         return null
@@ -167,16 +102,8 @@ class SensitivityProbe(
     companion object {
         private const val TAG = "Sensitivity"
 
-        /** The probe meal. Ten grams rather than one: a single gram's predicted rise is small enough
-         *  to sit inside the decode's own grain, and the response is not assumed linear, so the
-         *  divisor must be a quantity the model can actually resolve. */
+        /** Ten grams, not one: a single gram's predicted rise sits inside the decode's own grain,
+         *  and the response is not assumed linear. */
         const val PROBE_CARB_G = 10.0
-
-        // No direction filter, no noise floor, no magnitude band — all three were removed
-        // deliberately, in that order, as it became clear the read-out's real job is to say what the
-        // model believes rather than to vouch for it. A model whose marginal insulin response is
-        // wrong-signed is exactly what an author needs to see, and it was invisible while the probe
-        // filtered it out: the app showed nothing, which is indistinguishable from the feature being
-        // broken. The panel marks such a figure and names the horizon it was measured at.
     }
 }

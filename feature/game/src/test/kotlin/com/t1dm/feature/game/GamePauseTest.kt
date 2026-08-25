@@ -11,10 +11,8 @@ private const val MS = 1_000_000L
 private const val FRAME_120 = 8_333_333L
 private const val FRAME_60 = 16_666_667L
 
-/**
- * Vsync jitter as PHASE noise about a fixed refresh grid, which is what a panel actually does: the
- * callback times wander inside a band, they do not random-walk away from the nominal rate.
- */
+/** Vsync jitter as PHASE noise about a fixed grid: the times wander inside a band, they do not
+ *  random-walk away from the nominal rate. */
 private fun vsyncStamps(t0: Long, periodNs: Long, count: Int, jitterNs: Long, seed: Long): LongArray {
     val rng = Random(seed)
     return LongArray(count) { k ->
@@ -36,8 +34,7 @@ class GameHoldsTest {
 
     @Test
     fun `holds released out of order do not resume the world`() {
-        // The failure a single boolean has: the screen goes to the background WHILE an alarm is up, the
-        // alarm clears first, and a `paused = false` write resumes a game nobody is looking at.
+        // A single boolean fails here: backgrounded WHILE an alarm is up, the alarm cleared first.
         var h = GameHolds.NONE.with(GameHold.Background, true).with(GameHold.Modal, true)
         assertTrue(h.paused)
         h = h.with(GameHold.Modal, false)
@@ -56,8 +53,7 @@ class GameHoldsTest {
 
     @Test
     fun `the earliest-declared hold is the reason reported`() {
-        // Declaration order IS precedence, and Background is first: a backgrounded screen is why the
-        // world is frozen even if a modal is also up over it.
+        // Declaration order IS precedence, and Background is declared first.
         val h = GameHolds.NONE
             .with(GameHold.Modal, true)
             .with(GameHold.Background, true)
@@ -113,14 +109,13 @@ class FrameClockPacerTest {
             }
         }
         assertEquals("one frame in two", 60, simulated)
-        // …and each carries a FULL frame of time, not half of one: skipping must not halve the timestep.
+        // A full frame of time each: skipping must not halve the timestep.
         assertEquals(16.667f, total / simulated, 0.01f)
     }
 
     @Test
     fun `a 60 Hz panel is simulated every frame despite its own jitter`() {
-        // A callback that arrives 0.4 ms early is still THE frame for its slot, not an early one to be
-        // skipped: reading it as early would collapse the rate to 30 fps every time it happened.
+        // A callback 0.4 ms early is still THE frame for its slot; read as early it collapses to 30 fps.
         val p = FrameClockPacer()
         var t = 1_000 * MS
         p.tick(t, false)
@@ -134,9 +129,8 @@ class FrameClockPacerTest {
 
     @Test
     fun `a jittery 120 Hz panel simulates every other callback and never every third`() {
-        // The defect this pacer exists to fix: gating on elapsed-since-last-SIMULATED-frame leaves
-        // 0.667 ms of margin across two 120 Hz callbacks, so any jitter past that waits for a third and
-        // the frame train alternates ~16.7 / ~25 ms. Phase-locked, the cadence is unconditional.
+        // Gating on elapsed-since-last-SIMULATED-frame leaves 0.667 ms of margin across two 120 Hz
+        // callbacks, so any jitter past that waits for a third. Phase-locked, the cadence is unconditional.
         val p = FrameClockPacer()
         val t0 = 1_000 * MS
         p.tick(t0, false)
@@ -150,8 +144,6 @@ class FrameClockPacerTest {
 
     @Test
     fun `phase locking does not let the cadence drift over a long run`() {
-        // Each frame carries real wall clock, so the simulated total must track the callback train it
-        // was drawn from — no shortfall, no borrowed time.
         val p = FrameClockPacer()
         val t0 = 1_000 * MS
         p.tick(t0, false)
@@ -186,8 +178,7 @@ class FrameClockPacerTest {
         val stalled = p.tick(t, false)
         assertTrue("the stall is handed over whole: $stalled", stalled > 2_990f)
 
-        // Whatever the phase was owed, it is not repaid: the very next callbacks resume the ordinary
-        // every-other cadence rather than a run of near-empty frames walking the backlog off.
+        // The owed phase is not repaid: the next callbacks resume the ordinary every-other cadence.
         val stamps = LongArray(40) { t + (it + 1) * FRAME_120 }
         val fired = p.simulatedIndices(stamps)
         assertEquals(20, fired.size)
@@ -203,8 +194,6 @@ class FrameClockPacerTest {
         t += FRAME_60
         assertTrue(p.tick(t, false) > 0f)
 
-        // Five minutes with the screen away. Frames may or may not keep arriving; either way nothing is
-        // simulated and nothing is banked.
         repeat(50) {
             t += 6_000 * MS
             assertEquals(0f, p.tick(t, paused = true), 0f)
@@ -216,8 +205,7 @@ class FrameClockPacerTest {
 
     @Test
     fun `a pause with no frames at all still resumes cleanly`() {
-        // The frame clock stops entirely when the window detaches, so the loop simply blocks. The very
-        // next callback carries the whole absence and must not be integrated.
+        // The frame clock stops on detach, so the next callback carries the whole absence.
         val p = FrameClockPacer()
         var t = 1_000 * MS
         p.tick(t, false)
@@ -229,8 +217,7 @@ class FrameClockPacerTest {
 
     @Test
     fun `a genuine stall is handed over whole for the solver to clamp`() {
-        // Not the pacer's decision: GameWorld.step consumes wall clock in fixed ticks and drops the
-        // surplus past its own cap, and duplicating that here would give two places to get it wrong.
+        // `GameWorld.step` drops its own surplus; clamping here too would be two places to get it wrong.
         val p = FrameClockPacer()
         var t = 1_000 * MS
         p.tick(t, false)

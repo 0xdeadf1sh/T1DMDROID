@@ -6,16 +6,8 @@ import android.content.Intent
 import com.t1dm.app.service.CgmScanService
 import timber.log.Timber
 
-/**
- * Receives the "Snooze" / "Dismiss" taps from the deterministic-alarm notification (built in
- * [com.t1dm.alerts.AndroidAlarmNotifier]) and hands them to the foreground service, which owns the live
- * [com.t1dm.alerts.AlarmEngine] state + notifier. Mirrors [AlertRepeatReceiver]: explicit, app-internal,
- * non-exported — the notification PendingIntents target it directly.
- *
- * SAFETY: this only forwards a PRESENTATION-layer request (§3.6 C4). The pure engine keeps firing; the
- * service silences only presentation, TIME-BOUNDED (snooze) or until-clear (dismiss), and escalation
- * still pierces it (C1–C3). DEATH mode remains the only permanent silence.
- */
+/** Forwards Snooze/Dismiss to the service holding the live [com.t1dm.alerts.AlarmEngine].
+ *  Presentation only (§3.6 C4): the engine keeps firing and escalation still pierces (C1–C3). */
 class AlarmActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val action = intent.action

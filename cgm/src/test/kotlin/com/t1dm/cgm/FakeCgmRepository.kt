@@ -35,7 +35,6 @@ open class FakeCgmRepository : CgmRepository {
         rawAdverts += RawRow(sourceId, rxWallMs, payload.copyOf(), crcValid, minFromStart)
     }
 
-    /** Every source ever upserted, in the order the ordinals were handed out. */
     val upsertedOrdinals = mutableMapOf<CgmSourceId, Int>()
 
     override suspend fun upsertSource(
@@ -59,27 +58,16 @@ open class FakeCgmRepository : CgmRepository {
         hidden += id
     }
 
-    /** The sealed secrets, unsealed — the double stores what the port was handed. */
+    /** Stored as the port handed them over, not sealed. */
     val sensorSecrets = mutableMapOf<CgmSourceId, ByteArray>()
 
-    /** Every write, in order, so a test can assert WHEN a secret was persisted relative to a frame. */
     val secretWrites = mutableListOf<Pair<CgmSourceId, ByteArray>>()
     val secretsCleared = mutableListOf<CgmSourceId>()
 
-    /**
-     * Run at the instant a secret is written, before the call returns.
-     *
-     * The seam that makes "persisted BEFORE the irreversible frame" assertable: a test samples how many
-     * frames had been written at this moment, which is the only way to observe an ordering that happens
-     * inside one suspend call.
-     */
+    /** Runs at the instant a secret is written, before the call returns. */
     var onSecretWrite: (() -> Unit)? = null
 
-    /**
-     * Set to make the store REFUSE, as the real one can: sealing runs the Keystore and the write runs
-     * SQLite, so a key-generation failure, an absent StrongBox or a full disk all arrive as a throw.
-     * Nothing is recorded when it does — this is a write that did not happen.
-     */
+    /** Thrown before anything is recorded: a write that did not happen. */
     var failSecretWrite: Throwable? = null
 
     override suspend fun loadSensorSecret(id: CgmSourceId): ByteArray? = sensorSecrets[id]

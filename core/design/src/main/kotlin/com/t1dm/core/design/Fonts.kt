@@ -5,12 +5,7 @@ import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 
-/**
- * The bundled global fonts (Q8 / "≥3 bundled, terminal-ish but
- * readable, tabular numerals, OFL"). Three OFL monos live in `res/font/`; their licences ship in
- * `res/raw/ofl_*` (SIL Open Font License). "System" restores the platform default. The choice is global
- * and persists (kv); the active [Typography] is rebuilt from it in `T1dmTheme`.
- */
+/** OFL monos from `res/font/`; their licences ship in `res/raw/ofl_*`. */
 enum class T1dmFontId(val storageKey: String, val displayName: String) {
     SYSTEM("system", "System default"),
     IBM_PLEX_MONO("ibm_plex_mono", "IBM Plex Mono"),
@@ -22,7 +17,6 @@ enum class T1dmFontId(val storageKey: String, val displayName: String) {
     }
 }
 
-/** The [FontFamily] for a font choice; [T1dmFontId.SYSTEM] yields Compose's default (null-family). */
 fun fontFamilyFor(id: T1dmFontId): FontFamily = when (id) {
     T1dmFontId.SYSTEM -> FontFamily.Default
     T1dmFontId.IBM_PLEX_MONO -> FontFamily(Font(R.font.ibm_plex_mono))
@@ -30,8 +24,6 @@ fun fontFamilyFor(id: T1dmFontId): FontFamily = when (id) {
     T1dmFontId.SPLINE_SANS_MONO -> FontFamily(Font(R.font.spline_sans_mono))
 }
 
-/** Restamp every [Typography] role with [family] so the whole app renders in the chosen font while
- *  keeping Material's size/weight scale. */
 fun typographyWith(family: FontFamily): Typography {
     val base = Typography()
     fun apply(s: androidx.compose.ui.text.TextStyle) = s.copy(fontFamily = family)
@@ -44,5 +36,5 @@ fun typographyWith(family: FontFamily): Typography {
     )
 }
 
-/** Unused weight guard kept so a variable-font upgrade can pick a weight instance later. */
+/** Unused; kept for a variable-font upgrade. */
 internal val DefaultDisplayWeight = FontWeight.Normal

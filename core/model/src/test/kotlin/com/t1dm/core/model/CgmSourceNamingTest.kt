@@ -4,11 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * How a sensor is NAMED, and the one rule that matters about it: the name a vendor advertises may be the
- * number printed on the sensor, so every surface that names a sensor incidentally must be able to say the
- * same thing without it.
- */
+/** The name a vendor advertises may be the serial printed on the sensor. */
 class CgmSourceNamingTest {
 
     private fun descriptor(
@@ -34,8 +30,7 @@ class CgmSourceNamingTest {
         assertEquals("CGM #17", descriptor(ordinal = 17).ordinalLabel())
     }
 
-    /** Storage mints the number; a descriptor a plugin has just built has none, and must not invent one
-     *  that storage would then disagree with. */
+    /** Storage mints the number; a plugin-built descriptor has none and must not invent one. */
     @Test
     fun `an unnumbered sensor is named by kind rather than given a number`() {
         assertEquals("CGM", descriptor().ordinalLabel())
@@ -50,14 +45,8 @@ class CgmSourceNamingTest {
         assertEquals("AiDEX X", d.incidentalName(showNames = true))
     }
 
-    /**
-     * The regression this exists for. A vendor may build the advertised name out of the serial with
-     * nothing but a brand prefix in front of it and no separator, so a `shortName` that failed to strip it
-     * would leak the serial through the very function meant to withhold it. With names HIDDEN, nothing
-     * derived from the serial may appear at all.
-     *
-     * The name below is fabricated and names no vendor: the shape is what is under test.
-     */
+    /** Regression: a name built from the serial with only a brand prefix and no separator would leak it
+     *  through the function meant to withhold it. The name below is fabricated and names no vendor. */
     @Test
     fun `hiding names withholds the serial even when the name is built entirely from it`() {
         val d = descriptor(display = "Brand7000000001", serial = "7000000001", ordinal = 0)
@@ -66,12 +55,11 @@ class CgmSourceNamingTest {
             "the hidden label must not contain the serial",
             !d.incidentalName(showNames = false).contains("7000000001"),
         )
-        // Shown, the brand survives and the digits go with the serial that produced them.
         assertEquals("Brand", d.incidentalName(showNames = true))
     }
 
-    /** `shortName` falls back to the whole name when stripping would leave nothing, so the hidden branch
-     *  is the only one that can be relied on to drop a serial. */
+    /** `shortName` falls back to the whole name when stripping would leave nothing, so only the
+     *  hidden branch can be relied on to drop a serial. */
     @Test
     fun `a name that is nothing but the serial still hides`() {
         val d = descriptor(display = "7000000001", serial = "7000000001", ordinal = 3)

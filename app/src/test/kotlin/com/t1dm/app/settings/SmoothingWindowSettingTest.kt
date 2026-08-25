@@ -4,14 +4,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * The BG input-filter setting's placement and default contract. The Room I/O around it is a
- * pass-through identical to every other `inference.` knob, so what is worth pinning here is what a
- * mistake would cost silently: a default other than 7 would un-smooth the model input on every
- * existing install at upgrade with no visible cause, and an `inference.` key is invisible to config
- * export unless it is hand-listed (there is deliberately no blanket `inference.` prefix, since that
- * would sweep runtime telemetry into the backup).
- */
 class SmoothingWindowSettingTest {
 
     @Test
@@ -36,7 +28,6 @@ class SmoothingWindowSettingTest {
             "an inference.* key must be hand-listed in CONFIG_EXACT_KEYS to survive a config backup",
             SettingsStore.isConfigKey(SettingsStore.K_INF_SAVGOL_WINDOW),
         )
-        // ...and the prefix really is not blanket-exported, which is why the entry is needed.
         assertTrue(!SettingsStore.isConfigKey("inference.some_runtime_telemetry"))
     }
 }

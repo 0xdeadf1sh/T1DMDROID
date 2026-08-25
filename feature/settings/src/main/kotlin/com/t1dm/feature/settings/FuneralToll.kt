@@ -9,20 +9,12 @@ import kotlin.math.abs
 import kotlin.math.exp
 import kotlin.math.sin
 
-/**
- * A runtime-synthesised funeral bell — the app bundles no audio assets, so a single strike is
- * generated as 16-bit mono PCM at construction and played through [AudioTrack] on a background
- * thread. The strike is an inharmonic bell: a low fundamental with a handful of stretched, unequally
- * decaying partials, a near-instant attack and a long exponential tail, so it reads as a slow, solemn
- * toll rather than a pure tone. Every [AudioTrack] touch is wrapped so a device without audio focus
- * stays silent instead of crashing the rite.
- */
+/** Runtime-synthesised bell strike; the app bundles no audio assets. */
 class FuneralToll(private val sampleRate: Int = 44100) {
-    // Cached so overlapping strikes ring over one another's tails, as a real bell does.
+    // Cached so overlapping strikes ring over one another's tails.
     private val executor = Executors.newCachedThreadPool()
     private val pcm: ShortArray = synthesizeStrike()
 
-    /** Play one bell strike. Never throws. */
     fun toll() {
         runCatching {
             executor.execute { runCatching { playOnce() } }
@@ -53,7 +45,7 @@ class FuneralToll(private val sampleRate: Int = 44100) {
             .build()
         track.write(pcm, 0, pcm.size)
         track.play()
-        // Let the tail ring out, then reclaim the track (interrupted on release()).
+        // Let the tail ring out; interrupted on release().
         Thread.sleep(pcm.size * 1000L / sampleRate + 120L)
         runCatching { track.stop() }
         runCatching { track.release() }
@@ -64,8 +56,7 @@ class FuneralToll(private val sampleRate: Int = 44100) {
         val n = (sampleRate * decaySeconds).toInt()
         val out = DoubleArray(n)
         val fundamental = 72.0
-        // Struck-bell partial ratios (hum / prime / tierce-ish / quint-ish); each partial keeps its own
-        // amplitude and decay — the upper partials fade first, as a cast bell's do.
+        // Struck-bell partial ratios: hum, prime, tierce, quint.
         val ratios = doubleArrayOf(1.0, 2.76, 5.40, 8.93)
         val amps = doubleArrayOf(1.0, 0.6, 0.4, 0.25)
         val decays = doubleArrayOf(2.6, 1.9, 1.2, 0.8)

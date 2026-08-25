@@ -4,16 +4,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * The push-hold setting's persistence contract: how long a freshly logged meal/dose waits before its
- * first send attempt, and therefore how long the Logs panel can still withdraw it. Exercises the REAL
- * encode/decode `setPushHoldMin`/`currentPushHoldMin` route through; the Room I/O between them is the
- * same pass-through every other kv knob uses.
- *
- * Zero is the one value that must survive untouched — unlike the snooze, which is floored at a minute
- * because a silence has to be time-bounded, a zero hold is a legitimate choice (push at once, no
- * withdrawal window) and a floor would silently impose a delay nobody asked for.
- */
+/** Zero is a legitimate hold — push at once, no withdrawal window — so unlike the snooze it is not
+ *  floored at a minute. */
 class PushHoldSettingTest {
 
     @Test

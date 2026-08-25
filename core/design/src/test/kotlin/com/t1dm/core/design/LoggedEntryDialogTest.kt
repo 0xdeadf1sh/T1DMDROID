@@ -7,17 +7,9 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
-/**
- * What a mark on the BG panel says when it is opened. Its whole job is to restate rows that were
- * written some time ago, so the wording is the thing worth pinning: a dialog that printed "GI 0" for a
- * builder meal, or read a free-text note as the name of the insulin injected, would be read as the
- * record itself — nothing downstream would ever contradict it, and the row it misdescribes is what IOB
- * and every rail that reads IOB are computed from. Pure functions precisely so this needs no
- * composition.
- */
 class LoggedEntryDialogTest {
 
-    /** 1970-01-02T03:04:00Z, and the offset is the row's own: +02:00 ⇒ 05:04 on the same day. */
+    /** 1970-01-02T03:04:00Z; at the row's +02:00 that is 05:04. */
     private val ts = 24 * 3_600_000L + 3 * 3_600_000L + 4 * 60_000L
 
     private fun meal(grams: Double, gi: Double?, detail: String? = null) = LoggedEntry(
@@ -34,8 +26,6 @@ class LoggedEntryDialogTest {
 
     private fun fields(entry: LoggedEntry) = logEntryFields(entry).toMap()
 
-    // ── the headline ─────────────────────────────────────────────────────────────────────────────
-
     @Test
     fun `an amount keeps its unit and its shape`() {
         assertEquals("45 g carbs", logAmountLabel(meal(45.0, 60.0)))
@@ -49,8 +39,6 @@ class LoggedEntryDialogTest {
         assertEquals("12.5 g carbs", logAmountLabel(meal(12.5, 60.0)))
     }
 
-    // ── what the row carries, and what it does not ───────────────────────────────────────────────
-
     @Test
     fun `a meal states its glycemic index`() {
         assertEquals("60", fields(meal(45.0, 60.0))["Glycemic index"])
@@ -58,17 +46,13 @@ class LoggedEntryDialogTest {
 
     @Test
     fun `a meal with no glycemic index says so rather than showing a number`() {
-        // A builder meal's appearance curve is the combination of its components; it has no single
-        // index, and "GI 0" would read as a legitimately low-GI meal.
+        // A builder meal has no single index; "GI 0" would read as a legitimately low-GI one.
         assertEquals("not recorded", fields(meal(62.0, null))["Glycemic index"])
     }
 
     @Test
     fun `a note is stated as a note, whatever the writer put in it`() {
-        // The local writers fill a dose's note with the insulin they resolved, but the column is free
-        // text — the backdate hook writes "backdated", and a row synced from another client carries
-        // whatever that client wrote. Calling it "Insulin" would assert which insulin was injected on
-        // the authority of a column that never promised one.
+        // The note column is free text; calling it "Insulin" would assert an insulin it never promised.
         assertEquals("NovoRapid", fields(dose(4.0, InsulinKind.BOLUS, "NovoRapid"))["Note"])
         assertEquals("backdated", fields(dose(4.0, InsulinKind.BOLUS, "backdated"))["Note"])
         assertNull(fields(dose(4.0, InsulinKind.BOLUS, null))["Insulin"])
@@ -76,7 +60,7 @@ class LoggedEntryDialogTest {
 
     @Test
     fun `a row with no note has no note field at all`() {
-        // Nothing was withheld — a row simply has no note — so there is no field to say so against.
+        // Absent, not withheld: no field rather than "not recorded".
         assertNull(fields(dose(4.0, InsulinKind.BOLUS, null))["Note"])
         assertNull(fields(dose(4.0, InsulinKind.BOLUS, "  "))["Note"])
         assertNull(fields(meal(45.0, 60.0))["Note"])
@@ -84,8 +68,6 @@ class LoggedEntryDialogTest {
 
     @Test
     fun `a meal's note is stated too, beside its index`() {
-        // Only the preset writers fill a meal's note today, but the sync mapper copies the wire's
-        // verbatim, and before this the column had no reader on any surface.
         val m = meal(45.0, null, detail = "hospital canteen")
         assertEquals("hospital canteen", fields(m)["Note"])
         assertEquals("not recorded", fields(m)["Glycemic index"])
@@ -93,12 +75,9 @@ class LoggedEntryDialogTest {
 
     @Test
     fun `the time is the offset the row was written at, not the reader's`() {
-        // +02:00 at the row, so 03:04 UTC reads as 05:04 — the wall clock the user acted on.
         assertEquals("Jan 2 · 05:04", fields(meal(45.0, 60.0))["Time"])
         assertEquals("Jan 2 · 03:04", logTimeLabel(ts, 0))
     }
-
-    // ── the list's second line ───────────────────────────────────────────────────────────────────
 
     @Test
     fun `the detail line is the index for a meal and the note for a dose`() {
@@ -109,7 +88,6 @@ class LoggedEntryDialogTest {
     @Test
     fun `a meal with no index falls back to its note rather than dropping it`() {
         assertEquals("hospital canteen", logDetailLabel(meal(62.0, null, detail = "hospital canteen")))
-        // The index wins where the row has both: it is the number the panel is read for.
         assertEquals("GI 60", logDetailLabel(meal(45.0, 60.0, detail = "hospital canteen")))
     }
 
@@ -118,8 +96,6 @@ class LoggedEntryDialogTest {
         assertNull(logDetailLabel(meal(62.0, null)))
         assertNull(logDetailLabel(dose(4.0, InsulinKind.BOLUS, null)))
     }
-
-    // ── one mark, several logs ───────────────────────────────────────────────────────────────────
 
     @Test
     fun `a single log titles itself and several are counted`() {

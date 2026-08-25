@@ -19,21 +19,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
-/**
- * Shared tabular primitives (issues 10 / 11 / 15). Every "table" in the app used to be a
- * `Row(SpaceBetween)` of two unweighted [Text]s: when the label grew, the value inherited a
- * one-glyph column and Compose broke a bare number like "54" into "5" / "4" (issue 11). These
- * components give each column a *fixed weight* so the split is stable, right-align numerics in
- * tabular monospace figures, and forbid mid-token wrapping on numeric cells.
- *
- * Two entry points:
- *  - [KeyValueRow] / [KeyValueTable] — the label ↔ value pair (Hardware, About, Model detail,
- *    Security, GPU/Vulkan…).
- *  - [DataTable] — a header + N-column grid (Model-detail reference metrics, stats episodes). Wide
- *    tables scroll horizontally rather than crushing their columns.
- */
-
-/** Tabular (fixed-advance) figures — a "54" occupies the same width as "10", so columns line up. */
+/** Fixed-advance figures, so columns line up. */
 private val TabularFigures = TextStyle(fontFeatureSettings = "tnum")
 
 @Composable
@@ -41,10 +27,7 @@ fun KeyValueRow(
     label: String,
     value: String?,
     modifier: Modifier = Modifier,
-    /** true ⇒ the value is a single-token number/measurement: forbid all wrapping so it can never
-     *  fracture (issue 11). false ⇒ free text (a renderer name, a package id) may wrap at word
-     *  boundaries. Either way the value keeps a stable, generous column, so a bare "54" never collapses
-     *  into a one-glyph box the way the old `Row(SpaceBetween)` let it. */
+    /** true ⇒ a single-token number: never wraps, so it cannot fracture mid-token. */
     numeric: Boolean = false,
     labelStyle: TextStyle = MaterialTheme.typography.bodySmall,
     valueStyle: TextStyle = MaterialTheme.typography.bodySmall,
@@ -71,8 +54,6 @@ fun KeyValueRow(
             color = if (value == null) MaterialTheme.colorScheme.onSurfaceVariant
             else MaterialTheme.colorScheme.onSurface,
             textAlign = TextAlign.End,
-            // Numerics are single tokens — forbid wrapping so a "54" can never split; a value wider
-            // than its column clips rather than fracturing. Free text may wrap at word boundaries.
             softWrap = !numeric,
             overflow = if (numeric) TextOverflow.Clip else TextOverflow.Visible,
         )
@@ -90,7 +71,6 @@ fun KeyValueTable(
     }
 }
 
-/** A column spec for [DataTable]. [numeric] right-aligns + monospaces + forbids mid-token wrap. */
 data class TableColumn(
     val header: String,
     val weight: Float = 1f,
@@ -102,7 +82,7 @@ fun DataTable(
     columns: List<TableColumn>,
     rows: List<List<String>>,
     modifier: Modifier = Modifier,
-    /** Below this width the whole grid scrolls sideways instead of crushing columns. */
+    /** Below this the grid scrolls sideways rather than crushing columns. */
     minWidth: Int = 320,
 ) {
     Column(

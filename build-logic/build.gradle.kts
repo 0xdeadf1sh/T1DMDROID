@@ -4,8 +4,7 @@ plugins {
 
 group = "com.t1dm.buildlogic"
 
-// No explicit toolchain: build-logic compiles the convention plugins with the launcher JVM
-// (the AS JBR / JDK 21 locally). The plugins still pin the *consumer* modules to jvmToolchain(21).
+// No toolchain here: compiles with the launcher JVM. The plugins pin consumers to jvmToolchain(21).
 
 dependencies {
     // On the runtime classpath so the precompiled convention plugins can apply these by id.

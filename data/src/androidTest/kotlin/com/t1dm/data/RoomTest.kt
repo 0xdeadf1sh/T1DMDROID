@@ -22,10 +22,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/**
- * In-memory Room verification of the Phase-1 persistence invariants (§3.1/§3.5).
- * Instrumented (real device SQLite) — deterministic and sensor-free.
- */
+/** Persistence invariants §3.1/§3.5. */
 @RunWith(AndroidJUnit4::class)
 class RoomTest {
 
@@ -83,12 +80,11 @@ class RoomTest {
     @Test
     fun gridKeyUpsertsInPlace() = runTest {
         val ts = 300_000L
-        // An early INTERPOLATED gap-fill, then the real MEASURED value at the same grid slot.
         repo.upsertReading(reading(ts, bg = 100, provenance = ReadingProvenance.INTERPOLATED, rxWallMs = ts))
         repo.upsertReading(reading(ts, bg = 120, provenance = ReadingProvenance.MEASURED, rxWallMs = ts + 1))
 
         val rows = repo.observeReadings(sourceId, 0, Long.MAX_VALUE).first()
-        assertEquals(1, rows.size) // upsert-in-place on (sourceId, tsMs), not a second row
+        assertEquals(1, rows.size) // upsert-in-place on (sourceId, tsMs)
         assertEquals(120, rows.first().bgMgdl)
         assertEquals(ReadingProvenance.MEASURED, rows.first().provenance)
     }
@@ -109,7 +105,7 @@ class RoomTest {
     @Test
     fun rejectsOffGridTimestamp() = runTest {
         assertThrows(IllegalArgumentException::class.java) {
-            // runTest already provides the coroutine; drive the suspend call synchronously here.
+            // runTest already provides the coroutine; drive the suspend call synchronously.
             kotlinx.coroutines.runBlocking {
                 repo.upsertReading(reading(300_001L, bg = 100, provenance = ReadingProvenance.MEASURED))
             }
@@ -123,7 +119,7 @@ class RoomTest {
         repo.upsertReading(reading(ts, bg = 110, provenance = ReadingProvenance.INTERPOLATED, rxWallMs = ts))
         repo.upsertReading(reading(ts, bg = 115, provenance = ReadingProvenance.MEASURED, rxWallMs = ts + 1))
 
-        // dedupKey = "ingest:sample:$ts" ⇒ the second write at the same slot must not add a row.
+        // dedupKey = "ingest:sample:$ts", so the second write adds no row.
         assertEquals(1, repo.observeOutboxDepth().first())
     }
 }

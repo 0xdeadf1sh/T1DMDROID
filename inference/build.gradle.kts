@@ -5,8 +5,7 @@ plugins {
 android {
     namespace = "com.t1dm.inference"
 
-    // The single target device is arm64-v8a; the ExecuTorch AAR also ships an x86_64 .so which we
-    // do not need. :app already filters to arm64-v8a at merge, so this keeps parity for the module.
+    // Parity with :app, which already filters to arm64-v8a at merge.
     defaultConfig {
         ndk { abiFilters += "arm64-v8a" }
     }
@@ -18,13 +17,9 @@ dependencies {
     implementation(project(":core:model"))
     implementation(project(":core:common"))
 
-    // ExecuTorch Android runtime, pinned to the exporter's version (descriptor.json → 1.3.1).
-    //
-    // `-Pt1dm.vulkan=false` selects the STOCK org.pytorch AAR (XNNPACK only) — used to capture the
-    // authoritative-CPU baseline for the "CPU path unchanged" proof. The DEFAULT (property absent or
-    // any value ≠ "false") selects the vendored custom AAR, whose single libexecutorch.so carries
-    // BOTH VulkanBackend and the same XnnpackBackend. flatDir supplies no POM, so the AAR's runtime
-    // transitives (fbjni / soloader nativeloader) are declared explicitly to match the stock POM.
+    // Pinned to the exporter's version (descriptor.json -> 1.3.1). `false` is the stock AAR
+    // (XNNPACK only); the default vendored AAR carries Vulkan and XNNPACK. flatDir supplies no POM,
+    // so the vendored branch declares the runtime transitives the stock POM would have.
     if (providers.gradleProperty("t1dm.vulkan").orNull == "false") {
         implementation(libs.executorch.android)
     } else {
@@ -37,10 +32,7 @@ dependencies {
     implementation(libs.timber)
 
     testImplementation(libs.junit)
-    // `restoreLast` and the state it publishes are suspending, so the source-change tests need a
-    // test scope to reach them.
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:${libs.versions.coroutines.get()}")
-    // Android's JVM unit-test android.jar stubs org.json to throw "not mocked"; ModelStore parses
-    // descriptor JSON with org.json, so the real implementation must shadow the stub on the test path.
+    // Shadows the unit-test android.jar's org.json stub, which throws "not mocked".
     testImplementation("org.json:json:20240303")
 }

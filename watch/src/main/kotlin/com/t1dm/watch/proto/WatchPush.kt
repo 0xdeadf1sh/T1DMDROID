@@ -4,33 +4,25 @@ import com.t1dm.core.model.AlertBand
 import com.t1dm.core.model.ForecastStatus
 
 /**
- * The 5-min glance pushed phone → watch (locked): current BG + trend + a one-line
- * forecast summary from the **selected** model + the alert band + status bits. **No images.** This
- * is the plaintext that [WatchPushCodec.encode] serialises and the crypto layer seals; the byte
- * layout is frozen in docs/WATCH_BLE.md and golden-tested.
- *
- * The composition root fills this from the repository (BG/trend/age), the alarm engine (band,
- * signal-loss), and the selected model's prediction (forecast fields + summary); [WatchLink] sets
- * [WatchStatus.lowPowerSuspending] before the final seal.
+ * The 5-min glance pushed phone -> watch: the plaintext [WatchPushCodec] serialises and the crypto
+ * layer seals. Forecast fields come from the selected model. Byte layout frozen in
+ * docs/WATCH_BLE.md.
  */
 data class WatchPush(
-    /** Current BG in mg/dL, or null when there is no reading to show. */
+    /** mg/dL. */
     val bgMgdl: Int?,
-    /** Rate of change in 0.1 mg/dL/min (sensor tenths), or null. */
+    /** 0.1 mg/dL/min. */
     val trendTenths: Int?,
-    /** Age of the last MEASURED reading, milliseconds — the quantified staleness the watch renders. */
+    /** Age of the last MEASURED reading, ms. */
     val readingAgeMs: Long,
-    /** The alert band the current BG falls in, or null when unknown. */
     val alertBand: AlertBand?,
-    /** The selected model's degeneracy verdict, or null when no eligible forecast exists. */
     val forecastStatus: ForecastStatus?,
-    /** The selected model's median BG at the horizon end (mg/dL), or null. */
+    /** Median at the horizon end, mg/dL. */
     val fcEndMgdl: Int?,
-    /** Forecast horizon length in 5-min steps (e.g. 24 = 120 min). */
+    /** 5-min steps. */
     val fcHorizonSteps: Int,
-    /** A coarse direction class for the glance chevron. */
     val fcTrend: WatchTrend,
-    /** The one-line, human-readable forecast summary from the SELECTED model (≤ [MAX_SUMMARY] bytes). */
+    /** At most [MAX_SUMMARY] bytes. */
     val summary: String,
     val status: WatchStatus,
 ) {
@@ -40,14 +32,12 @@ data class WatchPush(
     }
 }
 
-/** Coarse forecast direction for the watch chevron; ordinal is the wire value. */
+/** Ordinal is the wire value. */
 enum class WatchTrend { FLAT, RISING, FALLING, RISING_FAST, FALLING_FAST }
 
 /**
- * The status bitfield the watch reads to colour/annotate the glance and to know the phone's own
- * health. Every bit is a plain-language condition (human-readable everywhere);
- * [lowPowerSuspending] tells the watch the phone has SUSPENDED the 5-min scheduler
- * so a subsequently-frozen glance is expected, not a fault.
+ * [lowPowerSuspending] tells the watch the phone has suspended the 5-min scheduler, so a glance
+ * that then freezes is expected rather than a fault.
  */
 data class WatchStatus(
     val stale: Boolean = false,

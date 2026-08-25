@@ -14,13 +14,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
-/**
- * Wire-level tests for the AppView reader and its mapping. A [MockWebServer] serves a trimmed but
- * byte-faithful `getAuthorFeed` body carrying the three embed shapes adapubs actually emits — an
- * `images#view`, an `external#view`, and a bare text-only post whose link lives in facets — and the
- * assertions cover both the lenient decode (unknown keys, the `$type` discriminator) and the
- * DTO→[PubPost] projection (at:// permalink, external link card, resolved image URLs, counts).
- */
 class BlueskyClientTest {
 
     private lateinit var server: MockWebServer
@@ -29,7 +22,6 @@ class BlueskyClientTest {
 
     @After fun tearDown() { server.shutdown() }
 
-    /** Everything on Unconfined — the client's `withContext(io)` hops run inline under [runTest]. */
     private class ImmediateDispatchers : T1dmDispatchers {
         override val main = Dispatchers.Unconfined
         override val default = Dispatchers.Unconfined
@@ -176,8 +168,7 @@ class BlueskyClientTest {
     private companion object {
         const val ACTOR = "adapubs.bsky.social"
 
-        // Three real, trimmed adapubs posts (field names byte-exact): an images#view, an external#view,
-        // and a text-only post. `${'$'}type`, `aspectRatio`, and `bookmarkCount` exercise ignoreUnknownKeys.
+        // Trimmed real posts, field names byte-exact. The extra keys exercise ignoreUnknownKeys.
         val FEED_JSON = """
             {
               "feed": [

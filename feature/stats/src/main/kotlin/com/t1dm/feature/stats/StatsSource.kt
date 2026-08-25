@@ -7,38 +7,28 @@ import com.t1dm.core.model.TargetRange
 import com.t1dm.core.model.UnitSpace
 import kotlinx.coroutines.flow.Flow
 
-/**
- * The `:feature:stats` port (PLAN "Phase 6 — Stats"). `:app` supplies the implementation, composing
- * the `:data` `StatsRepository` (settings + local Rust recompute) with the `:sync` read client
- * (server cached block). Keeping the surface in `:core:model` types lets this feature module stay
- * free of both `:data` and `:sync`.
- */
+/** The port `:app` implements. `:core:model` types only, so this module needs neither `:data` nor
+ *  `:sync`. */
 interface StatsSource {
-    /** The global stats target range (drives TIR/TBR/TAR; distinct from the alarm thresholds). */
+    /** Distinct from the alarm thresholds. */
     val targetRange: Flow<TargetRange>
 
-    /** The active glucose unit space for the axis + metric display. */
     val unitSpace: Flow<UnitSpace>
 
     suspend fun setUnitSpace(space: UnitSpace)
 
     suspend fun setTargetRange(lowMgdl: Int, highMgdl: Int)
 
-    /** Kovatchev BG → risk-space `f` for the Kovatchev axis/metric display (the Rust authority). */
+    /** mg/dL → Kovatchev risk space; the Rust authority. */
     fun kovatchevF(mgdl: Double): Double
 
-    /** The server's daily-cached shared block, or a plain-language reason it is unavailable.
-     *  [refresh] forces the server to recompute fresh rather than serve its ≤24 h cache. */
+    /** [refresh] forces a fresh server recompute rather than its ≤24 h cache. */
     suspend fun serverStats(window: StatsWindow, refresh: Boolean): ServerStatsResult
 
-    /** The local Rust reduction over the Room `sample` series for [window] (off the main thread).
-     *  Memoized per window behind this port: re-entering the screen, or re-selecting a window already
-     *  shown, re-reads the memo rather than the ~26 000 rows a 90-day window holds. [refresh] forces
-     *  the reduction anyway — what the screen's own Recompute button means. */
+    /** Off the main thread, memoized per window; [refresh] forces the reduction anyway. */
     suspend fun localStats(window: StatsWindow, refresh: Boolean = false): AdvancedStats
 }
 
-/** Server-block outcome: the shared stats, or why they could not be fetched (offline/no profile). */
 sealed interface ServerStatsResult {
     data class Ok(val stats: ServerStats) : ServerStatsResult
     data class Unavailable(val reason: String) : ServerStatsResult

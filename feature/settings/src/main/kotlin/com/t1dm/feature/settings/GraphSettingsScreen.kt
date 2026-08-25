@@ -32,19 +32,9 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/**
- * Settings → BG graph range (Phase 7A item 1). The glucose Y-axis always spans at
- * least [minMgdl]..[maxMgdl]; it grows ABOVE the ceiling to never clip a high reading. Both are
- * mg/dL and stepped in 5-mg/dL increments; [onChange] persists the new pair (`min < max` enforced
- * upstream). Pure/stateless — the caller owns the persisted value.
- *
- * It also hosts the BG **input filter** ([smoothingWindow], one of [smoothingStops]). That knob is
- * not a drawing preference despite living here: the same window filters the channel the model reads
- * and shifts the `last_bg` anchor the dose calculator gates on, so the section states as much and
- * the decision card discloses a non-default value at the point of decision.
- * [smoothingPreviewMgdl] is a recent slice of the user's own trace (oldest→newest) and [smoothMgdl]
- * the native smoother `(series, window) -> series`, so the miniature shows the effect on real data.
- */
+/** mg/dL, stepped by 5; the axis grows above [maxMgdl] so highs never clip, and `min < max` is
+ *  enforced upstream. [smoothingWindow] filters the channel the model reads, not just the drawing.
+ *  [smoothingPreviewMgdl] is oldest→newest; [smoothMgdl] is the native `(series, window) -> series`. */
 @Composable
 fun GraphSettingsScreen(
     minMgdl: Int,
@@ -120,11 +110,8 @@ private fun SmoothingSection(
         "Filters the model input, not just the drawing",
         style = MaterialTheme.typography.bodyMedium,
     )
-    // Snap to the five detents; thumb position ↔ window index. The haptic tick and the persisted set
-    // fire only as the snapped stop crosses a boundary, not on every drag frame.
-    // Keyed on `window`: it arrives from a cold flow, so the FIRST composition sees the placeholder
-    // default and an unkeyed remember would seed the thumb from that and never adopt the persisted
-    // value — leaving the slider showing a window the smoother is not using.
+    // Keyed on `window`: it arrives from a cold flow, so an unkeyed remember would seed the thumb
+    // from the placeholder default and never adopt the persisted value.
     val startIdx = stops.indexOf(window).coerceAtLeast(0)
     var sliderPos by remember(window) { mutableFloatStateOf(startIdx.toFloat()) }
     var lastIdx by remember(window) { mutableIntStateOf(startIdx) }
@@ -159,8 +146,7 @@ private fun SmoothingSection(
     }
 
     if (smoothMgdl != null && previewMgdl.size >= 2) {
-        // The smooth is a JNI hop; keep it off the composition thread and rebuild only when the
-        // series or the window actually changes.
+        // The smooth is a JNI hop; keep it off the composition thread.
         val smoothed by produceState<DoubleArray?>(null, previewMgdl, window) {
             value = withContext(Dispatchers.Default) {
                 runCatching { smoothMgdl(previewMgdl, window) }.getOrNull()?.takeIf { it.size == previewMgdl.size }
@@ -175,7 +161,6 @@ private fun SmoothingSection(
     }
 }
 
-/** Raw (faint) against the filtered signal (accent) over the same recent slice, autoscaled to both. */
 @Composable
 private fun SmoothingPreview(raw: DoubleArray, smoothed: DoubleArray?) {
     val rawColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f)
@@ -212,8 +197,7 @@ private fun Stepper(label: String, value: Int, onDown: () -> Unit, onUp: () -> U
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(label, style = MaterialTheme.typography.bodyLarge)
-        // I13 — the ± buttons keep their intrinsic size; the VALUE field flexes (weight) and centres, so
-        // a wide value can never balloon the steppers.
+        // I13 — the value flexes, not the ± buttons.
         OutlinedButton(onClick = { haptics.perform(HapticEvent.SegmentTick); onDown() }) { Text("−5") }
         Text(
             text = "$value mg/dL",
@@ -226,8 +210,6 @@ private fun Stepper(label: String, value: Int, onDown: () -> Unit, onUp: () -> U
         Button(onClick = { haptics.perform(HapticEvent.SegmentTick); onUp() }) { Text("+5") }
     }
 }
-
-// ── search index (see SettingsIndex.kt) ───────────────────────────────────────────────────────────
 
 private val graphFloor = SettingsKnob(
     id = "graph.floor",

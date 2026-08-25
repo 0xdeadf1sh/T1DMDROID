@@ -25,18 +25,8 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/**
- * Editing and deleting a logged event (Room v21).
- *
- * A deletion writes a tombstone and removes the event in ONE transaction, and the tombstone is what
- * everything downstream stands on: it is the row a stale redelivery is rejected by, the record
- * hydration refuses against, and the term that keeps the event high-water mark from walking
- * backward. An edit bumps the authoring stamp and records what the dose's action curve looked like
- * BEFORE the change, which is what the dose-history rail's window is derived from.
- *
- * Instrumented against the production [BundledSQLiteDriver], like [TransactionTest], because
- * `inWriteTx` is only reachable through a configured driver.
- */
+/** Instrumented against the production [BundledSQLiteDriver]: `inWriteTx` is only reachable
+ *  through a configured driver. */
 @RunWith(AndroidJUnit4::class)
 class EventMutationTest {
 
@@ -76,11 +66,8 @@ class EventMutationTest {
             tzOffsetMin = 0, note = "NovoRapid", updatedAt = nowMs, loggedAtMs = nowMs,
         )
 
-    /**
-     * The delete leaves a tombstone behind, and the tombstone carries a STRICTLY NEWER stamp than
-     * the row it retires — even when the clock has not advanced, which `SPEC/invariants.md` §7 names
-     * as a real possibility. Without that the server's ordering guard ignores the deletion.
-     */
+    /** The tombstone outranks the row it retires even when the clock has not advanced
+     *  (`SPEC/invariants.md` §7), or the server's ordering guard ignores the deletion. */
     @Test
     fun deleting_a_dose_leaves_a_tombstone_with_a_strictly_newer_stamp() = runTest {
         val row = repo.logLoggedDose(dose())
@@ -99,15 +86,8 @@ class EventMutationTest {
         assertNull("nothing has filed its push yet", db.eventTombstoneDao().byClientId(row.clientId)!!.pushEnqueuedAtMs)
     }
 
-    /**
-     * An edit can only reach the Nightscout bridge by RECALLING the mirror the log filed, so the
-     * recall has to answer whether there was anything to recall.
-     *
-     * A bridged treatment freezes its amount into the queued payload and `/api/v1` has no update for
-     * one that has landed — and the bridged `created_at` derives from `updatedAt`, which an edit
-     * bumps, so re-sending would file a SECOND treatment beside the first rather than replace it.
-     * Double-counted insulin in someone's logbook is the failure this answer exists to prevent.
-     */
+    /** `/api/v1` has no update for a treatment that has landed, and the bridged `created_at`
+     *  derives from `updatedAt`, which an edit bumps — a re-send files a SECOND treatment. */
     @Test
     fun an_edited_events_bridged_mirror_is_recalled_only_while_it_is_still_pending() = runTest {
         val row = repo.logLoggedDose(dose())
@@ -127,11 +107,7 @@ class EventMutationTest {
         )
     }
 
-    /**
-     * A mirror the drainer has already claimed is NOT recalled. Deleting it would not unsend the POST
-     * in flight — it would only tell the caller nothing had gone, which is exactly the belief that
-     * produces a duplicate treatment.
-     */
+    /** Deleting a claimed row would not unsend the POST in flight, only hide that it went. */
     @Test
     fun a_mirror_already_claimed_by_the_drainer_is_left_where_it_is() = runTest {
         val row = repo.logLoggedDose(dose())
@@ -143,10 +119,8 @@ class EventMutationTest {
         assertNotNull("and the row it could not recall is still queued", db.outboxDao().byId(id))
     }
 
-    /**
-     * The high-water mark must not move backward on a delete. It does without the tombstone term,
-     * and the widened pull window then re-hydrates exactly what was deleted.
-     */
+    /** Without the tombstone term the mark moves back and the widened pull re-hydrates the
+     *  deletion. */
     @Test
     fun deleting_the_newest_event_does_not_walk_the_catch_up_cursor_backward() = runTest {
         val older = repo.logLoggedDose(dose(ts = nowMs - 300_000L))
@@ -173,19 +147,13 @@ class EventMutationTest {
         assertEquals("a stale redelivery must be refused", -1L, repo.hydrateDoseEvent(stale))
         assertNull(db.loggedDoseDao().byClientId(row.clientId))
 
-        // A version authored AFTER the deletion is a real re-creation and wins.
         val fresh = dose().copy(clientId = row.clientId, updatedAt = tomb.updatedAt + 500)
         assertTrue(repo.hydrateDoseEvent(fresh) > 0)
         assertNotNull(db.loggedDoseDao().byClientId(row.clientId))
     }
 
-    /**
-     * The rail's window is the LATER of the pre-edit and post-edit action ends.
-     *
-     * Reading the post-edit row alone would let a `durationMin` cut from 360 to 30 shorten the block
-     * to half an hour while the IOB it invalidated stayed wrong for six — the edits that understate
-     * IOB most are exactly the ones that shrink the post-edit window.
-     */
+    /** The rail's window is the LATER of the pre-edit and post-edit action ends; the post-edit row
+     *  alone would end the block while the IOB it invalidated stayed wrong. */
     @Test
     fun an_edit_that_shortens_a_dose_keeps_the_original_action_end() = runTest {
         val row = repo.logLoggedDose(dose(durationMin = 360.0))
@@ -202,11 +170,7 @@ class EventMutationTest {
         assertEquals(nowMs + 1_000, repo.latestDoseMutationMs())
     }
 
-    /**
-     * A DELETED dose still answers the rail. `logged_dose` cannot — the row is gone — so the action
-     * end rides the tombstone. Without it the rail can never fire for the case it exists to cover,
-     * and a deleted dose silently lowers assumed IOB with nothing between that and a larger bolus.
-     */
+    /** The row is gone from `logged_dose`, so the action end rides the tombstone. */
     @Test
     fun a_deleted_dose_still_reports_when_its_insulin_stops_acting() = runTest {
         val row = repo.logLoggedDose(dose(durationMin = 300.0))

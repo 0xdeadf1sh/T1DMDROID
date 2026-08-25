@@ -10,31 +10,19 @@ import com.t1dm.sync.OutboxRequest
 import com.t1dm.sync.SyncJson
 import kotlinx.serialization.encodeToString
 
-/** The key a bridged meal/dose is filed under — deterministic in the phone-minted `client_id`, so an
- *  undo can name the exact row to withdraw after the enqueue rowid is forgotten. */
+/** Deterministic in the phone-minted `client_id`, so an undo can name the exact row after the
+ *  enqueue rowid is forgotten. */
 fun nsTreatmentDedupKey(clientId: String): String = "$NS_TREATMENT_DEDUP_PREFIX$clientId"
 
 /**
- * Enqueue-on-write producer for the Nightscout bridge — the mirror of `OutboxEnqueuer`, filing
- * `NIGHTSCOUT` rows into the same durable outbox.
- *
- * Sharing the queue is the point: eviction, backoff, the size and age bounds, process-death recovery
- * and the withdrawal hold all already exist and are already tested, and a second queue would be a
- * second copy of every one of those decisions.
- *
- * Enqueueing is unconditional on the bridge being reachable but NOT on it being configured — the
- * caller checks that. A row enqueued for a bridge later switched off is dropped at drain time rather
- * than retried forever.
+ * Files `NIGHTSCOUT` rows into the same durable outbox as `OutboxEnqueuer`, sharing its eviction,
+ * backoff, bounds, crash recovery and withdrawal hold. Enqueueing does not check that the bridge is
+ * configured — the caller does; a row for a bridge later switched off is dropped at drain time.
  */
 class NightscoutEnqueuer(private val repo: OutboxSink) {
 
-    /**
-     * Mark a grid slot for upload.
-     *
-     * Like `INGEST`, the row carries an EMPTY payload and the drainer resolves the CURRENT `sample`
-     * and its trend at drain time, so repeated writes into one five-minute slot coalesce into a single
-     * up-to-date upload rather than a queue of superseded snapshots.
-     */
+    /** Like `INGEST`, an EMPTY payload: the drainer resolves the current `sample` and its trend at
+     *  drain time, so repeated writes into one slot coalesce into a single upload. */
     suspend fun enqueueEntry(gridTsMs: Long, nowMs: Long): Long = repo.enqueue(
         kind = OutboxKind.NIGHTSCOUT,
         dedupKey = "$NS_ENTRY_DEDUP_PREFIX$gridTsMs",
@@ -42,13 +30,12 @@ class NightscoutEnqueuer(private val repo: OutboxSink) {
         nowMs = nowMs,
     )
 
-    /** A logged meal as a `Carb Correction`. [holdMs] is the withdrawal window, exactly as on the
-     *  T1DMSERVER push — so an undo inside it takes back BOTH copies and nothing was ever sent. */
+    /** [holdMs] is the withdrawal window, as on the T1DMSERVER push, so an undo takes back both
+     *  copies. */
     suspend fun enqueueMeal(meal: LoggedMealEntity, nowMs: Long, holdMs: Long = 0L): Long =
         enqueueTreatment(meal.clientId, listOf(meal.toNsTreatment()), nowMs, holdMs)
 
-    /** A logged bolus as a `Correction Bolus`. Returns -1 for a BASAL dose, which this bridge does not
-     *  carry — see `LoggedDoseEntity.toNsTreatment`. */
+    /** Returns -1 for a BASAL dose, which this bridge does not carry. */
     suspend fun enqueueDose(dose: LoggedDoseEntity, nowMs: Long, holdMs: Long = 0L): Long {
         val treatment = dose.toNsTreatment() ?: return -1L
         return enqueueTreatment(dose.clientId, listOf(treatment), nowMs, holdMs)

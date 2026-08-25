@@ -7,15 +7,8 @@ import com.t1dm.core.design.ThemeIds
 import timber.log.Timber
 
 /**
- * Swaps the home-screen launcher icon to match the active theme (issues 2/6) by enabling exactly one
- * `<activity-alias>` and disabling the others. Component class names are namespace-qualified
- * (`com.t1dm.app.Launcher*`) even in the `.pub` flavour, since AGP expands `android:name=".Launcher*"`
- * against the manifest *namespace*, not the applicationId — so the [ComponentName] pairs the runtime
- * package ([Context.getPackageName], = applicationId) with the fixed namespace class name.
- *
- * The new alias is enabled *before* the stale ones are disabled, so the launcher is never left with
- * zero enabled entries (which would blank the icon). `DONT_KILL_APP` keeps the running process alive
- * across the swap.
+ * Class names stay namespace-qualified: AGP expands `android:name=".Launcher*"` against the manifest
+ * namespace, not the applicationId. Enable before disable, or the launcher is left with no entry.
  */
 object LauncherIconManager {
 
@@ -27,15 +20,10 @@ object LauncherIconManager {
         ThemeIds.HELLO_KITTY to "$NS.LauncherKitty",
     )
 
-    /** A custom theme borrows the Tron launcher geometry (matches [iconStyleForTheme]). */
     private fun aliasForThemeId(themeId: String?): String =
         aliasForTheme[themeId] ?: aliasForTheme.getValue(ThemeIds.TRON)
 
-    /**
-     * @param keepEnabledAlias an alias to leave enabled regardless — pass the alias that launched the
-     * current task (Option-B guard) so a swap can never disable the very component the launcher/recents
-     * is holding a handle to, which on HyperOS can otherwise strand or evict the task.
-     */
+    /** Pass the alias that launched the task as [keepEnabledAlias]; disabling it can strand the task. */
     fun apply(context: Context, themeId: String?, keepEnabledAlias: String? = null) {
         val pm = context.packageManager
         val pkg = context.packageName
@@ -47,7 +35,7 @@ object LauncherIconManager {
                     PackageManager.COMPONENT_ENABLED_STATE_ENABLED
             }
         }.getOrNull()
-        if (current == wanted) return // already correct — avoid a needless launcher churn.
+        if (current == wanted) return
 
         runCatching {
             pm.setComponentEnabledSetting(
@@ -66,21 +54,9 @@ object LauncherIconManager {
     }
 
     /**
-     * Guarantee the package still owns a LAUNCHER entry, and re-enable the default one when it does not.
-     *
-     * The per-component state [apply] writes is not a manifest fact: PackageManager persists it per user
-     * in `package-restrictions.xml`, where it SURVIVES a reinstall and OVERRIDES `android:enabled`. So a
-     * build that retires the alias a device happened to be sitting on (the Windows XP and Teto themes
-     * were removed with theirs) leaves that alias unresolvable while the survivors keep an explicit
-     * DISABLED override — zero components match `category.LAUNCHER`, and since [MainActivity] carries no
-     * LAUNCHER filter of its own the app drops off the home screen and out of the drawer entirely, with
-     * only `am start` left to reach it. Called from [T1dmApplication.onCreate], which every wake-up path
-     * runs through (Activity, BOOT_COMPLETED, a widget broadcast, the CgmWatchdog job), precisely because
-     * recovery must not presuppose the user can still launch the app.
-     *
-     * Idempotent, and one binder round-trip on the settled path. DEFAULT on the Tron alias means the
-     * manifest's `android:enabled="true"` is in force (a fresh install, or a state we reset); the others
-     * ship disabled, so for them only an explicit ENABLED counts.
+     * Component state persists in `package-restrictions.xml`, surviving reinstall and overriding
+     * `android:enabled`, so a retired alias can leave zero `category.LAUNCHER` components. Only Tron
+     * ships enabled in the manifest, so only for it does DEFAULT count as enabled.
      */
     fun ensureLauncherEntry(context: Context) {
         val pm = context.packageManager

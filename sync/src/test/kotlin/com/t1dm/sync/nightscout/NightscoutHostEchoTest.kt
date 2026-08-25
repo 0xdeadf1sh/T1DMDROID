@@ -10,18 +10,11 @@ import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * Pinned against what a real Nightscout-compatible host actually returned, not against what the API
- * shape suggests it would. Every literal below is a verbatim response body.
- *
- * The host rewrites more than it keeps: it composes its own `notes`, replaces `enteredBy` with
- * "System", normalises `created_at` to UTC, and materialises `carbs: 0` on a treatment posted without
- * carbs. Each of those defeated a different part of the replay guard when the guard was written
- * against assumptions.
- */
+/** Every literal below is a verbatim body from a real host. It composes its own `notes`, rewrites
+ *  `enteredBy`, normalises `created_at` to UTC, and invents `carbs: 0` on a treatment posted with
+ *  none. */
 class NightscoutHostEchoTest {
 
-    /** Verbatim: the echo of a `Correction Bolus` this bridge posted with `notes` = a client_id. */
     private val echoedBolus = NsJson.decodeFromString(
         ListSerializer(NsTreatmentDto.serializer()),
         """[{"_id":"DBAdmeGue6r7kE","eventType":"Correction Bolus","created_at":"2026-08-18T12:55:00.000Z",
@@ -29,7 +22,6 @@ class NightscoutHostEchoTest {
             "insulin":6,"carbs":0}]""",
     ).single()
 
-    /** Verbatim: the echo of a `Carb Correction` posted with `notes` = a client_id. */
     private val echoedMeal = NsJson.decodeFromString(
         ListSerializer(NsTreatmentDto.serializer()),
         """[{"_id":"DGBnm4Kclgn1LE","eventType":"Carb Correction","created_at":"2026-08-18T12:56:00.000Z",
@@ -44,30 +36,19 @@ class NightscoutHostEchoTest {
         notes = "afc4b6d7-ecf4-480f-bbb5-38b5184b8ead",
     )
 
-    /**
-     * The whole guard, against the real echo. It must recognise its own post despite the host having
-     * rewritten the timestamp to UTC, invented `carbs: 0`, and thrown the client_id away.
-     */
     @Test
     fun `the guard recognises its own post in a heavily rewritten echo`() {
         assertTrue(echoedBolus.matches(sentBolus))
     }
 
-    /**
-     * The host composes `notes` itself, so a non-empty note is NOT evidence the marker survived.
-     * Reading it as evidence would require a marker that can never match — the guard would then
-     * report "not present" for every replay and duplicate the dose it exists to prevent.
-     */
     @Test
     fun `a host-composed note is not mistaken for a surviving marker`() {
         assertFalse(looksLikeClientId("Bolus: 6u"))
         assertFalse(looksLikeClientId("#snack Food:  40g"))
         assertTrue(looksLikeClientId("afc4b6d7-ecf4-480f-bbb5-38b5184b8ead"))
-        // …and with the marker gone, demanding one finds nothing.
         assertFalse(echoedBolus.matches(sentBolus, requireMarker = true))
     }
 
-    /** `carbs: 0` invented on a bolus posted without carbs must not read as a different event. */
     @Test
     fun `an invented zero amount is the same as none`() {
         assertTrue(sameAmount(null, 0.0))
@@ -76,17 +57,13 @@ class NightscoutHostEchoTest {
         assertEquals(0.0, echoedBolus.carbs)
     }
 
-    /** A different event in the echo is still a different event. */
     @Test
     fun `the meal echo does not match the bolus that was sent`() {
         assertFalse(echoedMeal.matches(sentBolus))
     }
 
-    /**
-     * The reason a bridged treatment carries `updatedAt`: grid-snapping puts a meal and its bolus on
-     * ONE instant, and a host keying treatments by timestamp keeps only the first — acking the second
-     * with a 200 and storing nothing. This is the live failure that lost a logged meal.
-     */
+    /** A host keying treatments by timestamp keeps only the first of a grid-snapped meal+bolus pair,
+     *  acking the second with a 200 and storing nothing. */
     @Test
     fun `a meal and its bolus do not share a timestamp`() {
         val meal = LoggedMealEntity(

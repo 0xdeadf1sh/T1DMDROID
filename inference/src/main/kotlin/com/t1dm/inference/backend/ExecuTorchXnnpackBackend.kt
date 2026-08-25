@@ -8,15 +8,8 @@ import org.pytorch.executorch.Module
 import org.pytorch.executorch.Tensor
 import java.io.File
 
-/**
- * The CPU fp32 XNNPACK reference/authority, on the ExecuTorch Android runtime pinned to the
- * exporter's **1.3.1** (`org.pytorch:executorch-android:1.3.1`). It loads a `.pte` traced from
- * the modified forward and runs `(patches, struct, slot_sel) → (head_raw, time_logits,
- * slot_hidden)`.
- *
- * The forward is blocking and must run on the single-thread `inference` dispatcher; a loaded
- * [Module] is not safe to call concurrently.
- */
+/** The CPU fp32 authority, on ExecuTorch pinned to the exporter's 1.3.1. A loaded [Module] is not
+ *  safe to call concurrently: the blocking forward runs on the single-thread `inference` dispatcher. */
 class ExecuTorchXnnpackBackend : InferenceBackend {
     override val id = BackendId.EXECUTORCH_XNNPACK_FP32
     override val caps = BackendCaps(precision = Precision.FP32)
@@ -29,8 +22,7 @@ class ExecuTorchXnnpackBackend : InferenceBackend {
 
     override fun load(desc: ModelDescriptor, pte: File): LoadedModel {
         require(pte.exists()) { "pte artifact missing: ${pte.absolutePath}" }
-        // MMAP + mlock keeps the weights resident; IGNORE_ERRORS tolerates a device that cannot
-        // lock (falls back to a plain mmap) rather than failing the load.
+        // IGNORE_ERRORS: a device that cannot mlock falls back to a plain mmap instead of failing.
         val module = Module.load(pte.absolutePath, Module.LOAD_MODE_MMAP_USE_MLOCK_IGNORE_ERRORS)
         return EtModel(pte.nameWithoutExtension, caps, module)
     }
@@ -47,8 +39,7 @@ class ExecuTorchXnnpackBackend : InferenceBackend {
         require(head.size == x.mSlots * PATCH_SIZE * N_Q) {
             "head_raw size ${head.size} != M·S·7 ${x.mSlots * PATCH_SIZE * N_Q}"
         }
-        // Slots 1 and 2 are the time probe and the adapter seam. Both are read OPPORTUNISTICALLY:
-        // an export that emits neither leaves them null, and the BG forecast is unaffected.
+        // Time probe and adapter seam, both optional: an export emitting neither leaves them null.
         fun optional(i: Int): FloatArray? =
             if (out.size > i && out[i].isTensor) out[i].toTensor().dataAsFloatArray else null
         return GraphOutput(head, optional(1), optional(2))

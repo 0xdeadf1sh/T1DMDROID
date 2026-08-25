@@ -23,13 +23,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/**
- * Promoting a reconstructed span into the record, and taking it back out.
- *
- * Every refusal here is a safety property rather than a convenience: promotion is the one act in
- * the app that turns model output into something the rest of the app treats as the patient's
- * history, and each of these is a way that could go wrong quietly.
- */
+/** Promotion is the one act that turns model output into the patient's stored history. */
 @RunWith(AndroidJUnit4::class)
 class PromoteInfillTest {
 
@@ -127,11 +121,7 @@ class PromoteInfillTest {
         assertTrue(db.bgInfillDao().span(spanStart).all { it.promotedAtMs != null })
     }
 
-    /**
-     * A span with nothing measured before it is a BACKCAST: its only anchor is its right neighbour,
-     * so promoting one extends the patient's history backwards on a single anchor. Drawing it is
-     * fine; storing it is not.
-     */
+    /** A span with nothing measured before it has one anchor: drawing it is fine, storing it is not. */
     @Test
     fun a_backcast_span_is_refused() = runTest {
         repo.upsertSource(descriptor(), authoritative = true, nowMs = t0)
@@ -144,10 +134,7 @@ class PromoteInfillTest {
         assertNull(db.cgmReadingDao().byTs(src.value, spanStart))
     }
 
-    /**
-     * A span reaching past the newest measurement is a FORECAST. Promoting one makes it the newest
-     * row in `cgm_reading`, which every glance surface reads as the current BG.
-     */
+    /** It would become the newest `cgm_reading` row, which every glance surface reads as current BG. */
     @Test
     fun a_forecast_span_is_refused() = runTest {
         repo.upsertSource(descriptor(), authoritative = true, nowMs = t0)
@@ -182,8 +169,7 @@ class PromoteInfillTest {
         val row = db.cgmReadingDao().byTs(src.value, spanStart)!!
         assertEquals("the sensor's reading takes the slot", ReadingProvenance.MEASURED, row.provenance)
         assertEquals(133, row.bgMgdl)
-        // The promoted span's band is NOT deleted out from under it: it is the only copy, and
-        // demotion reads the span from this table.
+        // The band is not deleted out from under it: demotion reads the span from this table.
         assertEquals(2, db.bgInfillDao().span(spanStart).size)
     }
 
@@ -192,7 +178,6 @@ class PromoteInfillTest {
     fun demotion_removes_the_reconstruction_and_leaves_a_measurement_alone() = runTest {
         val spanStart = seedPromotableSpan()
         repo.promoteInfillSpan(spanStart, now)
-        // A real reading lands in the span's second slot afterwards.
         repo.upsertReading(measured(spanStart + 300_000L, 150))
 
         val r = repo.demoteInfillSpan(spanStart, now + 1_000)

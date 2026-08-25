@@ -35,25 +35,25 @@ class OverTemperatureAlarmTest {
     @Test
     fun `hysteresis holds between clear and alert, then clears at the clear point`() {
         val a = OverTemperatureAlarm(config())
-        assertNotNull(a.evaluate(44.0, 0))       // fire
-        assertNotNull(a.evaluate(42.0, MIN))     // in-band: hold
-        assertNotNull(a.evaluate(41.5, 2 * MIN)) // just above clear: hold
-        assertNull(a.evaluate(41.0, 3 * MIN))    // at clear: clears
+        assertNotNull(a.evaluate(44.0, 0))
+        assertNotNull(a.evaluate(42.0, MIN))
+        assertNotNull(a.evaluate(41.5, 2 * MIN))
+        assertNull(a.evaluate(41.0, 3 * MIN))
     }
 
     @Test
     fun `does not fire in the hysteresis band from cold`() {
         val a = OverTemperatureAlarm(config())
-        assertNull(a.evaluate(42.0, 0)) // between clear and alert, never fired ⇒ inert
+        assertNull(a.evaluate(42.0, 0))
     }
 
     @Test
     fun `null reading is inert and holds prior state`() {
         val a = OverTemperatureAlarm(config())
         a.evaluate(44.0, 0)
-        assertNotNull(a.evaluate(null, MIN)) // holds the standing episode
-        a.evaluate(41.0, 2 * MIN)            // cools ⇒ clears
-        assertNull(a.evaluate(null, 3 * MIN)) // holds the cleared state
+        assertNotNull(a.evaluate(null, MIN))
+        a.evaluate(41.0, 2 * MIN)
+        assertNull(a.evaluate(null, 3 * MIN))
     }
 
     @Test

@@ -1,40 +1,22 @@
 package com.t1dm.calc
 
-/**
- * The fail-closed guard-rails (SPEC §3.6-C). Every rail is **structurally fail-closed**: on missing,
- * degenerate, stale, or collapsed input an *enabled* rail BLOCKS (or forces confirmation) rather than
- * silently passing the dose — "a rail that reads as protection but passes the dose is worse than no
- * rail". A *disabled* rail is an explicit no-op (the user's unbounded-thresholds lock), and that is the
- * only way a rail lets bad input through.
- *
- * Every verdict carries a plain-language WHY (the general human-readable-messages rule).
- */
+/** §3.6-C. An enabled rail BLOCKS on missing, degenerate, stale or collapsed input; a disabled one
+ *  is a no-op, and that is the only way bad input gets through. */
 sealed interface RailVerdict {
-    /** The rail is satisfied (or disabled). */
     data object Pass : RailVerdict
 
-    /** The rail forbids this dose; [reason] states why in plain language. */
     data class Block(val rail: String, val reason: String) : RailVerdict
 
-    /** The dose may proceed only behind an explicit human acknowledgement of [reason]. */
     data class RequireConfirm(val rail: String, val reason: String) : RailVerdict
 
     val blocking: Boolean get() = this is Block
     val needsConfirm: Boolean get() = this is RequireConfirm
 }
 
-/**
- * The individual rails. [baselineDegeneracy] gates the *whole* recommendation and refuses it
- * outright when it blocks; per-candidate rails ([predictedLowVeto], [iobCeiling]) filter the grid;
- * [mandatoryConfirmation] annotates the chosen candidate.
- */
 object Rails {
 
-    /**
-     * §3.6-B/-C baseline degeneracy gate. The do-nothing (candidate = null) fan is the reference the
-     * whole search stands on; if the model cannot produce a trustworthy baseline the recommendation is
-     * refused. Never disableable — a degenerate fan is unscoreable.
-     */
+    /** §3.6-B/-C. Gates the whole recommendation and is never disableable: a degenerate fan is
+     *  unscoreable. */
     fun baselineDegeneracy(baseline: PredFan): RailVerdict {
         val name = "degeneracy"
         return when (baseline.eligibility) {
@@ -48,22 +30,9 @@ object Rails {
         }
     }
 
-    /**
-     * §3.6-C predicted-low veto. Blocks a candidate whose forecast MEDIAN drops below the threshold
-     * within the VALIDATED window. Fail-closed: an ineligible candidate fan, or one with no validated
-     * window to read, is a veto rather than a pass.
-     *
-     * Two deliberate narrowings from the band-and-full-roll form this replaces. Reading the median
-     * rather than the τ=.05 edge asks whether a low is the EXPECTED outcome rather than merely a
-     * possible one: the edge form was monotone in dose — insulin only lowers the forecast, so once
-     * the do-nothing baseline tripped it every candidate did — and the advisor could then only ever
-     * return 0 U. Reading the validated prefix rather than the whole roll stops the block being
-     * decided by extrapolated steps ([PredFan.validatedWindow]).
-     *
-     * This is less cautious than what it replaces, by intent. What still stands between a candidate
-     * and a hypo is the objective's own median hypo term ([Scoring]), which is not user-disableable,
-     * and the degeneracy gate, which refuses an unusable fan outright.
-     */
+    /** §3.6-C. Reads the MEDIAN over the VALIDATED window: the τ=.05 edge was monotone in dose, so
+     *  once the baseline tripped every candidate did and the advisor could only return 0 U. Deliberately
+     *  less cautious — the objective's own hypo term ([Scoring]) and the degeneracy gate remain. */
     fun predictedLowVeto(fan: PredFan, config: CalcConfig): RailVerdict {
         val name = "predicted-low"
         if (!config.rails.predictedLowVeto) return RailVerdict.Pass
@@ -83,10 +52,8 @@ object Rails {
         return RailVerdict.Pass
     }
 
-    /**
-     * §3.6-C IOB ceiling. Blocks when assumed IOB + candidate dose exceeds the ceiling. Fail-closed:
-     * an unknown IOB with a nonzero dose blocks (a forgotten log otherwise under-counts active insulin).
-     */
+    /** §3.6-C. Fail-closed: an unknown IOB with a nonzero dose blocks, since a forgotten log
+     *  under-counts active insulin. */
     fun iobCeiling(iob: IobSnapshot?, candidateU: Double, config: CalcConfig): RailVerdict {
         val name = "iob-ceiling"
         if (!config.rails.iobCeiling) return RailVerdict.Pass
@@ -103,11 +70,7 @@ object Rails {
         return RailVerdict.Pass
     }
 
-    /**
-     * §3.6-F mandatory confirmation. A nonzero recommendation combined with a long gap since the last
-     * logged dose (or no logged dose at all) is a mandatory-confirmation trigger — the IOB is computed
-     * from logged doses only, so a stale log silently under-counts active insulin.
-     */
+    /** §3.6-F. IOB comes from logged doses only, so a stale log silently under-counts. */
     fun mandatoryConfirmation(iob: IobSnapshot?, candidateU: Double, nowMs: Long, config: CalcConfig): RailVerdict {
         val name = "log-gap"
         if (!config.rails.mandatoryConfirmation) return RailVerdict.Pass

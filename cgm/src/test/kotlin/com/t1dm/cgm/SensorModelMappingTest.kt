@@ -6,17 +6,12 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * The vendor's advertised-name prefix table (§3.1) — what decides which sensor model a newly met
- * sensor is filed under, and therefore whose history it shares on the BG panel.
- */
+/** The vendor's advertised-name prefix table (§3.1). */
 class SensorModelMappingTest {
 
     @Test
     fun `every prefix this vendor recognises resolves to one model`() {
-        // The researched finding, pinned: LinX / AiDEX X / Lumi / Smart are brand skins of one
-        // MicroTech platform, served by one protocol. Splitting them would break a trace that ought
-        // to be continuous — the very defect the sensor model class exists to fix.
+        // LinX / AiDEX X / Lumi / Smart are brand skins of one MicroTech platform.
         val models = CgmConstants.MODEL_BY_NAME_PREFIX.values.toSet()
         assertEquals(setOf(CgmSensorModelId.AIDEX_X), models)
     }
@@ -31,8 +26,7 @@ class SensorModelMappingTest {
 
     @Test
     fun `the prefix list is derived from the table, never kept beside it`() {
-        // Juggluco keeps a second hand-maintained copy of its equivalent list with one entry missing,
-        // and those devices are mishandled as a result. One list, read two ways.
+        // Juggluco keeps a second hand-maintained copy of its list with one entry missing.
         assertEquals(CgmConstants.MODEL_BY_NAME_PREFIX.keys.toList(), CgmConstants.NAME_PREFIXES)
     }
 
@@ -41,7 +35,6 @@ class SensorModelMappingTest {
         assertNull(CgmConstants.matchAdvertName("Dexcom G7-1234"))
         // Gen-1 AiDEX advertises the bare name with no separator; every prefix here requires one.
         assertNull(CgmConstants.matchAdvertName("AiDEX"))
-        // A brand with nothing after it identifies no sensor.
         assertNull(CgmConstants.matchAdvertName("LinX-"))
     }
 
@@ -61,14 +54,13 @@ class SensorModelMappingTest {
         val d = AidexXPlugin.descriptorFor("9AB31F02C4", advertName = "LinX-9AB31F02C4")
         assertEquals("LinX-9AB31F02C4", d.advertName)
         assertEquals("LinX 9AB31F02C4", d.displayName)
-        // `shortName` is what the BG panel prints, and it must not keep the separator.
+        // What the BG panel prints.
         assertEquals("LinX", d.shortName)
         assertEquals(CgmSensorModelId.AIDEX_X, d.sensorModelId)
     }
 
     @Test
     fun `a sensor met without its advertised name still classifies, and says so by recording none`() {
-        // The registry path that rebuilds a descriptor from a stored serial alone.
         val d = AidexXPlugin.descriptorFor("9AB31F02C4")
         assertNull(d.advertName)
         assertEquals(CgmSensorModelId.AIDEX_X, d.sensorModelId)

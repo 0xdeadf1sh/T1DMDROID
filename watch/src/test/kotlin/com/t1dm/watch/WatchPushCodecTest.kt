@@ -12,7 +12,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
-/** Pins the frozen [WatchPush] byte layout + the sealed wire framing (docs/WATCH_BLE.md §Push). */
 class WatchPushCodecTest {
 
     private val full = WatchPush(
@@ -69,7 +68,6 @@ class WatchPushCodecTest {
     }
 
     @Test fun `wire frame is the authoritative record verbatim and its header parses`() {
-        // A hand-built §6.1 record: ver=0x01, epoch=3 (u32le), seq=0x01020304 (u64le), then ct||tag.
         val seq = 0x01020304L
         val header = ByteArray(WatchPushCodec.HEADER_LEN)
         header[0] = WatchPushCodec.FRAME_VERSION.toByte()
@@ -89,7 +87,6 @@ class WatchPushCodecTest {
         assertNull(WatchPushCodec.parseWireFrame(ByteArray(4)))
         // One byte shy of header(13)+tag(16).
         assertNull(WatchPushCodec.parseWireFrame(ByteArray(28).also { it[0] = 0x01 }))
-        // Correct length but a non-0x01 version byte.
         assertNull(WatchPushCodec.parseWireFrame(ByteArray(29).also { it[0] = 0x02 }))
     }
 }

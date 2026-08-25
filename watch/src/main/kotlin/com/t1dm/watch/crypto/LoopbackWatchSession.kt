@@ -4,15 +4,9 @@ import java.security.MessageDigest
 import java.security.SecureRandom
 
 /**
- * A HOST-TEST stand-in for the Rust [WatchSession]. The shipping :app now binds the authoritative
- * uniffi-backed session (real X25519/HKDF/AES-128-GCM); this double survives ONLY so the pure-JVM
- * `:watch` unit tests (which cannot load the native `.so`) can exercise the BLE central, the frame
- * codecs, the SAS UX, and the seq-window persistence. It reproduces the OBSERVABLE contract — a
- * 32-byte "public key" per side, a deterministic SAS both sides agree on, a monotonic windowed nonce,
- * the AUTHORITATIVE 13-byte record layout (docs/WATCH_BLE.md §6.1), and an authenticated round-trip
- * that fails closed on tamper/replay — using SHA-256 as a keystream/MAC. It is **NOT cryptographically
- * secure** (the "shared secret" is a symmetric hash of both public keys, no real X25519) and is never
- * bound in a shipping build.
+ * Host-test stand-in for the Rust [WatchSession]: SHA-256 as keystream/MAC, no real X25519. NOT
+ * cryptographically secure, and never bound in a shipping build. Reproduces the authoritative record
+ * layout of docs/WATCH_BLE.md §6.1 and fails closed on tamper or replay.
  */
 class LoopbackWatchSession internal constructor(
     override var epoch: Int,
@@ -52,7 +46,7 @@ class LoopbackWatchSession internal constructor(
         check(state == WatchSessionState.AWAIT_SAS) { "sas requires AWAIT_SAS, was $state" }
         val peer = requireNotNull(peerPublic)
         val h = sha256("sas".toByteArray() + canonical(myPublic, peer) + epochBytes())
-        // 20 bits → 6 decimal digits; both sides derive the identical value from the same inputs.
+        // 20 bits → 6 decimal digits.
         val n = ((h[0].toInt() and 0xFF) shl 12) or ((h[1].toInt() and 0xFF) shl 4) or (h[2].toInt() and 0x0F)
         val digits = (n % 1_000_000).toString().padStart(6, '0')
         return SasCode(digits = digits, words = sasWords(digits))
@@ -80,20 +74,16 @@ class LoopbackWatchSession internal constructor(
 
     override fun exportState(): WatchKeyMaterial? = null // the loopback has no durable key material
 
-    // ── Emulator counterpart (the desktop BLE-peripheral / a test plays the WATCH side) ─────────
-    // These mirror what the ESP32-C3 firmware does: OPEN a phone→watch push (kP2W/DIR_P2W) and SEAL
-    // a watch→phone ACK (kW2P/DIR_W2P). Exposed so the phone-side push + optional ACK path can be
-    // validated end-to-end against the emulator before real hardware exists.
 
     private var watchSendSeq: Long = 0L
 
-    /** WATCH-side decrypt of a phone→watch push (the full authoritative record); throws on a bad tag. */
+    /** Watch-side decrypt of a phone→watch push; throws on a bad tag. */
     fun emulatorOpenPush(frame: ByteArray): ByteArray {
         val key = requireNotNull(kP2W) { "no session key" }
         return openRecord(key, DIR_P2W, frame) { true }.second
     }
 
-    /** WATCH-side seal of a watch→phone ACK (e.g. PUSH_ACK), which the phone [open]s. */
+    /** Watch-side seal of a watch→phone ACK, which the phone [open]s. */
     fun emulatorSealAck(plaintext: ByteArray): SealedFrame {
         val key = requireNotNull(kW2P) { "no session key" }
         val seq = ++watchSendSeq
@@ -126,10 +116,8 @@ class LoopbackWatchSession internal constructor(
         sas = if (state == WatchSessionState.AWAIT_SAS) sas() else null,
     )
 
-    // ── authoritative-record framing (docs/WATCH_BLE.md §6.1): ver||epoch(u32le)||seq(u64le)||ct||tag.
-    // The 13-byte header is the authenticated AAD, mirroring the real AES-128-GCM session; the SHA-256
-    // keystream/MAC below still stand in for the cipher. There is NO direction byte on the wire — the
-    // `dir` here only picks the internal keystream domain, never a wire field.
+    // Record: ver||epoch(u32le)||seq(u64le)||ct||tag (docs/WATCH_BLE.md §6.1); the 13-byte header is
+    // the authenticated AAD. No direction byte on the wire — `dir` only picks the keystream domain.
 
     private fun authHeader(seq: Long): ByteArray {
         val b = ByteArray(HDR_LEN)
@@ -143,11 +131,11 @@ class LoopbackWatchSession internal constructor(
     private fun sealRecord(key: ByteArray, dir: Byte, seq: Long, plaintext: ByteArray): ByteArray {
         val header = authHeader(seq)
         val ct = xorKeystream(key, dir, seq, plaintext)
-        val tag = mac(key, dir, seq, header + ct) // AAD = the 13-byte header (epoch/seq authenticated)
+        val tag = mac(key, dir, seq, header + ct)
         return header + ct + tag
     }
 
-    /** Parse + verify a full record; [seqOk] gates replay. Returns (seq, plaintext). Fails closed. */
+    /** [seqOk] gates replay. Returns (seq, plaintext). Fails closed. */
     private inline fun openRecord(key: ByteArray, dir: Byte, frame: ByteArray, seqOk: (Long) -> Boolean): Pair<Long, ByteArray> {
         require(frame.size >= HDR_LEN + 16) { "sealed record shorter than header+tag" }
         require(frame[0] == FRAME_VER) { "unknown frame version ${frame[0]}" }
@@ -164,7 +152,6 @@ class LoopbackWatchSession internal constructor(
         return seq to xorKeystream(key, dir, seq, ct)
     }
 
-    // ── keystream / MAC helpers (SHA-256 as a stand-in; NOT the shipping cipher) ────────────────
 
     private fun xorKeystream(key: ByteArray, dir: Byte, seq: Long, data: ByteArray): ByteArray {
         val out = ByteArray(data.size)
@@ -217,14 +204,12 @@ class LoopbackWatchSession internal constructor(
     }
 }
 
-/** Builds [LoopbackWatchSession]s, applying the cold-start window burn on [resume]. */
 class LoopbackWatchSessionFactory(private val burnMargin: Long = 256L) : WatchSessionFactory {
 
     override fun fresh(): WatchSession = LoopbackWatchSession(epoch = 0, sendSeq = 0L)
 
     override fun resume(material: WatchKeyMaterial?, burnedCeiling: Long): WatchSession {
-        // The loopback has no persisted keys, so a resume with a ceiling starts a fresh session but
-        // still demonstrates the window-burn: the seq begins ABOVE the persisted ceiling + margin.
+        // No persisted keys, so a fresh session — but the seq still begins above the ceiling + margin.
         val start = if (burnedCeiling > 0) burnedCeiling + burnMargin else 0L
         return LoopbackWatchSession(epoch = 0, sendSeq = start)
     }

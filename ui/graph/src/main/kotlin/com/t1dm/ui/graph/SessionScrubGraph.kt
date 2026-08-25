@@ -24,24 +24,9 @@ import com.t1dm.core.model.LogMarker
 import com.t1dm.core.model.UnitSpace
 import kotlin.math.abs
 
-/**
- * A fixed-viewport chart over one bout: the glucose that actually happened, with the forecast issued
- * at the cursor drawn forward over it.
- *
- * It lives in `:ui:graph` rather than in the panel that shows it because everything it needs is
- * internal here — [drawHindsightFan], [AbsToPx]/[ValToPx], [fixedYRange]. Re-winding a fan in a
- * feature module would duplicate the τ-column→band pairing [buildPredSeries] fixed, and a second
- * y-axis rule would put two scales on the same picture.
- *
- * It is a smaller SIBLING of [GlucoseGraph], not a mode of it. The viewport is its arguments — no
- * pinch, no pan, no auto-follow, no gesture of any kind — because the cursor is driven from a slider
- * outside it, and the window is the bout plus its aftermath rather than anything the user chooses.
- *
- * Where [HindsightFrame.cycleAt] finds nothing the fan is simply absent. The catchment is NOT widened
- * and there is no nearest-fallback: over warm-up, a thermal pause or a phone that was off, no forecast
- * was issued, and pinning the last one before the hole would drag it under the finger looking exactly
- * like one that had been.
- */
+/** A fixed-viewport chart over one bout: the glucose that happened, with the forecast issued at the
+ *  cursor drawn forward over it. The viewport is its arguments — no pinch, pan or auto-follow. Where
+ *  [HindsightFrame.cycleAt] finds nothing the fan is absent; there is no nearest-fallback. */
 @Composable
 fun SessionScrubGraph(
     frame: GraphFrame,
@@ -54,13 +39,8 @@ fun SessionScrubGraph(
     hindsight: HindsightFrame? = null,
     unit: UnitSpace = UnitSpace.MgDl,
     thresholds: AlertThresholds? = null,
-    /**
-     * The carbohydrate and insulin logged over the review window, as time-axis marks.
-     *
-     * A separate parameter because [GraphFrame] carries CGM readings and nothing else — and loaded
-     * over the review window rather than taken from the live Logs feed, which is bounded at 400 rows
-     * and would be empty for a bout from last month.
-     */
+    /** Loaded over the review window rather than taken from the live Logs feed, which is bounded at
+     *  400 rows and would be empty for a bout from last month. */
     logMarkers: List<LogMarker> = emptyList(),
     tzOffsetMin: Int = 0,
     rangeMinMgdl: Int? = null,
@@ -70,15 +50,11 @@ fun SessionScrubGraph(
     val density = LocalDensity.current
     val measurer = rememberTextMeasurer(cacheSize = 32)
     val labels = remember { GraphLabelCache() }
-    // Draw-phase scratch, hoisted for the reason [GlucoseGraph] hoists its own: the cursor moves at
-    // pointer rate and every one of these is a constant the draw would otherwise re-allocate.
+    // Draw-phase scratch: the cursor moves at pointer rate.
     val fanPath = remember { Path() }
     val tracePath = remember { Path() }
-    // The marker layer, resolved exactly as [GlucoseGraph] resolves it so a mark means the same
-    // thing on both panels. The inks come from the SEMANTIC roles rather than the Material
-    // projection for the reason that panel gives: the glyphs are shape-fixed, the tint is the only
-    // thing the theme still says about a mark, and a mark must be the colour of the curve channel
-    // it stands for wherever it is drawn.
+    // Inks from the SEMANTIC roles, not the Material projection: a mark must be the colour of the
+    // curve channel it stands for wherever it is drawn.
     val dpPx = density.density
     val semantics = LocalT1dmSemantics.current
     val carbMarkPainter = rememberVectorPainter(logMarkerIcon(CurveKind.CARB))
@@ -91,8 +67,7 @@ fun SessionScrubGraph(
     val markSizePx = LOG_MARKER_DP * dpPx
     val traceStroke = remember { Stroke(width = 2.2f, cap = StrokeCap.Round, join = StrokeJoin.Round) }
 
-    // Measured from [GraphInsets], never transcribed: the BG panel's own frame, so a value read here
-    // and a value read there sit on the same axis.
+    // From [GraphInsets], never transcribed, so both panels sit on the same axis.
     val leftPx = with(density) { GraphInsets.Left.toPx() }
     val rightPx = with(density) { GraphInsets.Right.toPx() }
     val topPx = with(density) { GraphInsets.top(false).toPx() }
@@ -109,9 +84,8 @@ fun SessionScrubGraph(
         val viewSpanMs = windowSpanMs.toDouble().coerceAtLeast(1.0)
         val ppm = plotWidth / viewSpanMs
 
-        // Over the WHOLE frame rather than a visible slice: the caller loads exactly this window and
-        // the viewport never moves, so the axis is settled once and holds still while the thumb
-        // travels. A scale that re-fitted under the cursor would make two read-outs incomparable.
+        // Over the WHOLE frame, not a visible slice: the axis is settled once and holds still while
+        // the thumb travels, or two read-outs would be incomparable.
         var yMin = Float.POSITIVE_INFINITY
         var yMax = Float.NEGATIVE_INFINITY
         for (i in 0 until frame.size) {
@@ -150,9 +124,8 @@ fun SessionScrubGraph(
         )
 
         clipRect(left = plotLeft, top = plotTop, right = plotRight, bottom = plotBottom) {
-            // The bout itself, shaded. The window deliberately reaches past both ends — the forecast a
-            // bout provoked lands after it — so without this there is nothing saying which stretch of
-            // the trace was the exercise.
+            // The bout itself, shaded: the window reaches past both ends, so nothing else says which
+            // stretch of the trace was the exercise.
             val sx0 = absToPx(sessionStartMs.toDouble()).coerceIn(plotLeft, plotRight)
             val sx1 = absToPx(sessionEndMs.toDouble()).coerceIn(plotLeft, plotRight)
             if (sx1 - sx0 > 0.5f) {
@@ -163,18 +136,8 @@ fun SessionScrubGraph(
                 )
             }
 
-            // The logged carbohydrate and insulin, in their two lanes.
-            //
-            // Inside the clip and BEFORE the trace, per [drawLogMarkers]'s own instruction: an icon
-            // must never sit on top of the glucose line, because a hypoglycaemic excursion drops
-            // into exactly the band these lanes occupy. `plotBottom` is the furniture pass's plot
-            // floor rather than `size.height`, so the lanes overlay the plot's lower band and
-            // neither the value axis nor its scale moves.
-            //
-            // Clustered here rather than in a `remember`: this viewport is fixed by the arguments,
-            // so the moving `viewStartMs`/`viewSpanMs` [GlucoseGraph] memoises against cannot change,
-            // and keying a `remember` on the canvas size would add a composition dependency this
-            // panel does not otherwise have.
+            // Inside the clip and BEFORE the trace, per [drawLogMarkers]: an icon must never sit on
+            // top of the glucose line, since a hypo excursion drops into the band these lanes occupy.
             if (logMarkers.isNotEmpty()) {
                 drawLogMarkers(
                     clusterLogMarkers(
@@ -194,8 +157,7 @@ fun SessionScrubGraph(
                 )
             }
 
-            // The measured trace. Breaks are honoured, so a dropout stays a dropout rather than being
-            // bridged with a line nothing measured.
+            // Breaks are honoured: a dropout must not be bridged by a line nothing measured.
             if (!frame.isEmpty) {
                 val path = tracePath
                 path.reset()
@@ -212,8 +174,7 @@ fun SessionScrubGraph(
                 flush()
             }
 
-            // The forecast issued at the cursor's own cycle, in the second accent — the same hue the BG
-            // panel's sweep wears, and for the same reason: it is a hindsight fan, not a live one.
+            // The second accent, as on the BG panel: a hindsight fan, not a live one.
             hindsight?.let { hf ->
                 if (!hf.isEmpty) {
                     val c = hf.cycleAt(cursorMs.toDouble())
@@ -236,16 +197,9 @@ fun SessionScrubGraph(
     }
 }
 
-/**
- * Where the cursor's marker is drawn, in px, under the same viewport transform the trace is drawn with:
- * [viewStartMs] is the window's start, [ppm] is px per ms.
- *
- * HELD inside the plot box rather than dropped for leaving it. The window's ends are wall-clock instants
- * — a bout begins when the user says so — while [scrubCursorOf] snaps to the grid, so at either travel
- * limit the cursor lands up to half a slot outside the window. Tested for membership instead, the marker
- * vanished at one end of the slider for roughly half of all bouts while the read-out below went on
- * quoting a time and a BG for that same instant: the picture and the table disagreeing.
- */
+/** HELD inside the plot box rather than dropped for leaving it: the window's ends are wall-clock
+ *  while [scrubCursorOf] snaps to the grid, so at either travel limit the cursor lands up to half a
+ *  slot outside. [ppm] is px per ms. */
 internal fun scrubCursorPx(
     cursorMs: Long,
     viewStartMs: Double,
@@ -255,18 +209,9 @@ internal fun scrubCursorPx(
 ): Float = (plotLeft + (cursorMs - viewStartMs) * ppm).toFloat()
     .coerceIn(plotLeft, plotRight.coerceAtLeast(plotLeft))
 
-/**
- * The instant a slider sitting at [fraction] of `[windowStartMs, windowStartMs + windowSpanMs]` points
- * at, snapped to the nearest multiple of [gridMs].
- *
- * [gridMs] is a parameter rather than a constant here because the grid is `:data`'s fact and this
- * module may not restate it — the caller passes `T1dmRepository.GRID_MS`. The snap is the same
- * round-to-nearest the repository's own writers apply, so a cursor and a stored row on the same slot
- * agree about which slot that is.
- *
- * Quantising is what makes the scrub usable as well as correct: the detent under the thumb is fed this
- * value's grid index, and a raw `Float` there saturates the LRA into a flat buzz instead of a texture.
- */
+/** The instant a slider at [fraction] of the window points at, snapped to the nearest multiple of
+ *  [gridMs]. [gridMs] is a parameter because the grid is `:data`'s fact and this module may not
+ *  restate it — pass `T1dmRepository.GRID_MS`. */
 fun scrubCursorOf(windowStartMs: Long, windowSpanMs: Long, fraction: Float, gridMs: Long): Long {
     if (gridMs <= 0L) return windowStartMs
     val f = fraction.coerceIn(0f, 1f).toDouble()
@@ -274,26 +219,12 @@ fun scrubCursorOf(windowStartMs: Long, windowSpanMs: Long, fraction: Float, grid
     return Math.floorDiv(raw + gridMs / 2, gridMs) * gridMs
 }
 
-/** How far past the cursor the read-out quotes the swept forecast. Two horizons rather than the whole
- *  fan: the chart already draws every step, and this is the pair a bout is actually judged on. */
+/** How far past the cursor the read-out quotes the swept forecast. */
 private val SCRUB_LOOKAHEAD = listOf("+30 min" to 1_800_000L, "+60 min" to 3_600_000L)
 
-/**
- * The session read-out as (label, value) pairs: when the cursor is, what was measured there, and what
- * the forecast issued there said about the half hour and the hour after it.
- *
- * ALWAYS the same four rows, with a null value where there is nothing to say — a table that grew and
- * shrank under a travelling thumb would resize the box it sits in on every crossing.
- *
- * The BG is BOUNDED to half a grid slot. [GraphFrame.nearestIndex] clamps to the ends of the series,
- * so past the last reading it answers with that reading, and printed unqualified that is a measurement
- * asserted at an instant it was not taken at.
- *
- * The forecast rows are [HindsightFrame.medianAt]'s, so a cycle the app classified as degenerate or
- * stale yields no number at all: the chart can dash such a median, a table cannot, and an unqualified
- * figure here would assert what the picture beside it disowns. [HindsightFrame.degenerateAt] and
- * [HindsightFrame.staleAt] are what a caller says the reason with.
- */
+/** The read-out as (label, value) pairs. ALWAYS the same four rows, null where there is nothing to
+ *  say, so the box cannot resize under a travelling thumb. The BG is bounded to half a grid slot; a
+ *  degenerate or stale cycle yields no number at all, since a table cannot dash a median. */
 fun sessionScrubRows(
     frame: GraphFrame,
     hindsight: HindsightFrame?,
@@ -307,9 +238,8 @@ fun sessionScrubRows(
     rows.add("Local" to formatClock(cursorMs, tzOffsetMin))
     rows.add("BG" to measuredAt(frame, cursorMs, gridMs)?.let { formatValue(it, unit) })
     for ((label, offsetMs) in SCRUB_LOOKAHEAD) {
-        // No guard on `cycle` here: `medianAt` refuses an index it does not hold, an instant outside
-        // the horizon, and a cycle that was never eligible — one refusal, in the one place that can
-        // see all three.
+        // No guard on `cycle`: `medianAt` refuses an index it does not hold, an instant outside the
+        // horizon and a cycle that was never eligible — one refusal, where all three are visible.
         val v = hindsight?.medianAt(cycle, cursorMs + offsetMs)
         rows.add(label to v?.let { formatValue(it, unit) })
     }

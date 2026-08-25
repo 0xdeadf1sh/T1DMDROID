@@ -17,25 +17,19 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 
-/** Tolerant reader for the AppView response: unknown keys and lenient JSON never break a decode. */
 private val BlueskyJson: Json = Json {
     ignoreUnknownKeys = true
     isLenient = true
 }
 
-/** A modest default engine — the AppView is a small, quick JSON GET, so short timeouts suffice. */
 private fun defaultBlueskyOkHttp(): OkHttpClient =
     OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(20, TimeUnit.SECONDS)
         .build()
 
-/**
- * The unauthenticated Bluesky AppView client (`public.api.bsky.app`) — no token, no cleartext, one
- * read endpoint. [authorFeed] runs entirely on [T1dmDispatchers.io] (network and decode both) and
- * translates every failure — transport, non-2xx, or malformed body — into a plain-language message
- * on the thrown exception, so nothing above ever has to render a bare status code.
- */
+/** Unauthenticated: no token, one read endpoint. Every failure throws with a plain-language
+ *  message, never a bare status code. */
 class BlueskyClient(
     private val dispatchers: T1dmDispatchers,
     private val http: OkHttpClient = defaultBlueskyOkHttp(),
@@ -71,12 +65,8 @@ class BlueskyClient(
         }
     }
 
-    /**
-     * Enqueue the GET so an abandoned load frees its socket and thread at once: [Call.enqueue] runs on
-     * OkHttp's dispatcher (never the main thread), and tying the coroutine's cancellation to
-     * [Call.cancel] means a caller that walks away — a tab switch mid-fetch — no longer parks an IO
-     * thread inside a blocking `execute()` until the read timeout expires.
-     */
+    /** Enqueued, so cancelling the coroutine cancels the call instead of parking a thread in a
+     *  blocking `execute()` until the read timeout. */
     private suspend fun fetch(request: Request): Pair<Int, String> =
         suspendCancellableCoroutine { cont ->
             val call = http.newCall(request)

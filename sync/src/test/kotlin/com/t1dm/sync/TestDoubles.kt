@@ -11,7 +11,6 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.map
 
-/** All work on Unconfined — the drainer has no delays, so virtual time is unnecessary. */
 class TestDispatchers : T1dmDispatchers {
     override val main = Dispatchers.Unconfined
     override val default = Dispatchers.Unconfined
@@ -20,20 +19,15 @@ class TestDispatchers : T1dmDispatchers {
     override val game = Dispatchers.Unconfined
 }
 
-/**
- * In-memory [OutboxDao] faithful to the Room contract that matters for the drainer: `enqueue`
- * honours the unique `dedupKey` (IGNORE on conflict), `dueBatch` filters by state + due time and
- * orders FIFO (`createdAtMs, id`), and `evictionRows` is oldest-first. Ids are handed out strictly
- * increasing and never reused, as the table's `AUTOINCREMENT` primary key does — which is what lets a
- * displaced row's id stay unresolvable after `deleteByDedupKeyInState` replaces it.
- */
+/** Faithful to the Room contract the drainer leans on: unique `dedupKey` (IGNORE on conflict), FIFO
+ *  `dueBatch`, oldest-first `evictionRows`, ids strictly increasing and never reused. */
 class FakeOutboxDao : OutboxDao {
     private val rows = LinkedHashMap<Long, OutboxEntity>()
     private var seq = 0L
     private val depth = MutableStateFlow(0)
 
     override suspend fun enqueue(item: OutboxEntity): Long {
-        if (rows.values.any { it.dedupKey == item.dedupKey }) return -1L // unique dedupKey → IGNORE
+        if (rows.values.any { it.dedupKey == item.dedupKey }) return -1L
         val id = ++seq
         rows[id] = item.copy(id = id)
         depth.value = rows.size
@@ -57,7 +51,6 @@ class FakeOutboxDao : OutboxDao {
 
     override suspend fun byId(id: Long): OutboxEntity? = rows[id]
 
-    /** The `dedupKey` index is UNIQUE in Room, so at most one row can ever match. */
     override suspend fun byDedupKey(dedupKey: String): OutboxEntity? =
         rows.values.firstOrNull { it.dedupKey == dedupKey }
 
@@ -118,7 +111,6 @@ class FakeOutboxDao : OutboxDao {
     fun snapshot(): List<OutboxEntity> = rows.values.toList()
 }
 
-/** A [SyncHttpClient] whose every method throws until a subclass overrides it — a base for focused fakes. */
 open class NoopSyncHttpClient : SyncHttpClient {
     protected fun nope(): Nothing = throw UnsupportedOperationException("not used in these tests")
     override suspend fun execute(request: SyncRequest): SyncResponse = nope()
@@ -138,7 +130,6 @@ open class NoopSyncHttpClient : SyncHttpClient {
     override suspend fun downloadModel(id: String): ModelArtifact = nope()
 }
 
-/** Records every executed request and returns a scripted response (or throws) per call. */
 class RecordingHttpClient(
     private val handler: (SyncRequest, Int) -> SyncResponse,
 ) : NoopSyncHttpClient() {

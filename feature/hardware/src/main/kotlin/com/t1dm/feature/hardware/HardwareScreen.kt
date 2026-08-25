@@ -24,12 +24,6 @@ import com.t1dm.core.model.RunningModel
 import com.t1dm.core.model.TempUnit
 import com.t1dm.core.model.displayName
 
-/**
- * The Hardware panel — per-model inference rows (Phase 2 §8 "Hardware panel — per-
- * model rows"): each `model_id`'s backend, precision, and p50/p95 latency, plus the aggregate cycle
- * duration/cause. The fp16 agreement Δ column is stubbed pending the deferred NPU shadow (§3.6-E);
- * the per-model split is already keyed so it drops in without a layout change.
- */
 @Composable
 fun HardwareScreen(
     state: InferenceState,
@@ -38,13 +32,11 @@ fun HardwareScreen(
 ) {
     val listState = rememberLazyListState()
     LazyColumn(
-        // padding BEFORE fadingEdges: it insets the lazy layout's viewport, so applied after it the
-        // band would be measured against a box 16dp taller than the list actually clips at.
+        // padding BEFORE fadingEdges: it insets the viewport the band is measured against.
         Modifier.fillMaxSize().padding(16.dp).fadingEdges(listState),
         state = listState,
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        // ── Detected hardware readout (item 8) ──
         item {
             Text("Device hardware", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Column(Modifier.padding(top = 4.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -66,18 +58,12 @@ fun HardwareScreen(
                 ).joinToString(" · ").ifBlank { null })
                 HwRow("Thermal", hardware.thermalStatus)
                 HwRow("Battery", hardware.battery)
-                // U9 — the device temperature (battery sensor) in the user's chosen unit. No fan RPM is
-                // shown: it is permission-denied even to adb shell on this device, so never proxied.
+                // No fan RPM: permission-denied even to adb shell on this device, so never proxied.
                 HwRow("Temperature", hardware.batteryTempC?.let { temperatureUnit.format(it) })
             }
-            // N5 — the per-backend availability + evidence-based unavailability reasons moved to
-            // Settings → Forecast & models → Compute backend, where a user actually chooses a backend.
-            // Hardware keeps device + GPU/Vulkan capability + the live "Executing on" line + per-model
-            // timing below.
             HorizontalDivider(Modifier.padding(top = 8.dp))
         }
 
-        // ── GPU / Vulkan compute capability (issue 20 — STEP 5) ──
         item {
             Text("GPU / Vulkan compute", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             val vk = hardware.vulkan
@@ -103,11 +89,9 @@ fun HardwareScreen(
 
         item {
             Text("Inference hardware", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            // The LIVE execution truth (issue 1 — no "stub" ambiguity): the selected model's actual
-            // backend this cycle, named explicitly. STUB means no working .pte reached the device.
+            // STUB means no working .pte reached the device.
             val selected = state.running.firstOrNull { it.selected }
-            // displayName() already carries the precision (e.g. "XNNPACK CPU · fp32"), so don't append
-            // the raw enum precision again.
+            // displayName() already carries the precision — do not append the enum's.
             val executing = selected?.backend?.displayName() ?: "no model selected"
             Text(
                 "Executing on: $executing",
@@ -128,9 +112,6 @@ fun HardwareScreen(
             HorizontalDivider(Modifier.padding(top = 8.dp))
         }
 
-        // N5 — the forecast-backend availability catalog + evidence reasons now live in
-        // Settings → Forecast & models → Compute backend (the switcher), not here. A single pointer
-        // is kept so a user knows where to change/inspect it.
         item {
             Text(
                 "Choose the compute backend in Settings → Forecast & models → Compute backend",
@@ -179,8 +160,7 @@ private fun ModelRow(model: RunningModel, latency: ModelLatency?) {
 
 @Composable
 private fun HwRow(label: String, value: String?) {
-    // Shared aligned key/value table (issues 10/11/15) — a long SoC/renderer string wraps at word
-    // boundaries instead of stealing the value's column and fracturing a bare number.
+    // numeric = false: a long SoC string wraps at word boundaries instead of stealing the value column.
     com.t1dm.core.design.KeyValueRow(label, value, numeric = false)
 }
 

@@ -9,15 +9,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Test
 
-/**
- * [T1dmRepository.projectedBgSample] — what a reading does to the wide `sample` row for its slot.
- *
- * The case that gives this file its reason to exist is the third test: a reading filed under the instant
- * it was SAMPLED can be older than a `sample` row that some other channel has already touched, and the
- * projection must still carry it. The guard that used to sit here compared the two and returned early,
- * which lost the BG for that slot silently — no `bgMgdl`, no INGEST row, nothing on the wire and nothing
- * in the statistics, while `cgm_reading` still held the reading so nothing looked wrong anywhere.
- */
 class BgProjectionTest {
 
     @Test
@@ -44,15 +35,6 @@ class BgProjectionTest {
         assertEquals(SLOT, out.ts)
     }
 
-    /**
-     * The regression this exists for.
-     *
-     * `updatedAt` is bumped by every channel that writes the row — steps, mood, heart rate, and the
-     * exercise disposal curve, which writes buckets up to ninety minutes AHEAD of the clock. A sensor that
-     * files a reading under the instant it was sampled therefore routinely offers a reading whose instant
-     * is behind that stamp, and comparing the two is not a decision about which reading is right: which
-     * reading holds the slot was settled by [supersedesGridSlot] before this ran.
-     */
     @Test
     fun `a reading older than the row's stamp still projects`() {
         val touchedLater = empty(SLOT, updatedAt = SLOT + 90 * 60_000L)
@@ -62,11 +44,7 @@ class BgProjectionTest {
         assertEquals(ReadingFlag.NORMAL, out.bgFlag)
     }
 
-    /**
-     * §7: `updated_at` is the ordering key for the server's idempotent upsert, so it may never go
-     * backwards for a row — a redelivery carrying an older stamp is a no-op there, and a row whose stamp
-     * regressed would freeze at the server until wall time caught up again.
-     */
+    /** §7. */
     @Test
     fun `the row's stamp never moves backwards`() {
         val stamped = empty(SLOT, updatedAt = SLOT + 600_000)
@@ -80,7 +58,6 @@ class BgProjectionTest {
         )
     }
 
-    /** A WARMUP row has no value, and projecting it must null the slot rather than leave the last one. */
     @Test
     fun `a reading with no value clears the slot's BG`() {
         val held = T1dmRepository.projectedBgSample(empty(SLOT, updatedAt = SLOT), reading(bgMgdl = 140))

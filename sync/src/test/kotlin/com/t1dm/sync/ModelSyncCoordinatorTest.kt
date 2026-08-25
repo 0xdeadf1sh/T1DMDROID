@@ -15,17 +15,10 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
 
-/**
- * Reconciliation logic for the model-fetch coordinator, exercised against a real temp [modelsDir]
- * and the real [defaultSha256]. A focused [FakeModelSyncClient] serves the registry + artifact bytes
- * and counts `downloadModel` calls, so the "already-current is a no-op" and "verify before place"
- * invariants are observable without the wire.
- */
 class ModelSyncCoordinatorTest {
 
     @get:Rule val tmp = TemporaryFolder()
 
-    /** A [SyncHttpClient] that serves a scripted registry + per-id artifacts, counting downloads. */
     private class FakeModelSyncClient(
         private val rows: List<ModelDto>,
         private val artifacts: Map<String, ModelArtifact>,
@@ -57,7 +50,7 @@ class ModelSyncCoordinatorTest {
         running: Set<String> = emptySet(),
     ): Pair<ModelSyncCoordinator, FakeModelSyncClient> {
         val http = FakeModelSyncClient(rows, artifacts)
-        // `running` is the loaded running set's `.pte` FILENAMES (== the registry ids), not descriptor ids.
+        // `running` holds `.pte` FILENAMES (== the registry ids), not descriptor ids.
         return ModelSyncCoordinator(modelsDir, http, runningArtifacts = { running }) to http
     }
 
@@ -78,9 +71,9 @@ class ModelSyncCoordinatorTest {
         assertEquals(1, http.downloadCount)
         assertArrayEquals(bytes, File(dir, "m.pte").readBytes())
         val desc = Json.parseToJsonElement(File(dir, "m.descriptor.json").readText()).jsonObject
-        assertEquals("m.pte", desc["artifact"]!!.jsonPrimitive.content)  // paired for ModelStore
-        assertEquals("m", desc["id"]!!.jsonPrimitive.content)            // deterministic local id
-        assertFalse(File(dir, "m.pte.part").exists())                    // no leftover staging
+        assertEquals("m.pte", desc["artifact"]!!.jsonPrimitive.content)
+        assertEquals("m", desc["id"]!!.jsonPrimitive.content)
+        assertFalse(File(dir, "m.pte.part").exists())
     }
 
     @Test
@@ -96,8 +89,8 @@ class ModelSyncCoordinatorTest {
         val summary = coord.sync()
 
         assertEquals(listOf("m.pte" to "sha mismatch"), summary.failed)
-        assertFalse(File(dir, "m.pte").exists())          // never placed where ModelStore loads it
-        assertFalse(File(dir, "m.pte.part").exists())     // .part discarded
+        assertFalse(File(dir, "m.pte").exists())
+        assertFalse(File(dir, "m.pte.part").exists())
         assertFalse(File(dir, "m.descriptor.json").exists())
     }
 
@@ -148,7 +141,7 @@ class ModelSyncCoordinatorTest {
         val summary = coord.sync()
 
         assertEquals(listOf("m.pte"), summary.alreadyCurrent)
-        assertEquals(0, http.downloadCount) // the whole point: no re-fetch of an already-current model
+        assertEquals(0, http.downloadCount)
     }
 
     @Test
@@ -163,15 +156,15 @@ class ModelSyncCoordinatorTest {
             dir,
             rows = listOf(row("m.pte", meta(), newSha)),
             artifacts = mapOf("m.pte" to ModelArtifact(newBytes, newSha)),
-            running = setOf("m.pte"),                             // the dosing model's loaded .pte filename
+            running = setOf("m.pte"),
         )
 
         val summary = coord.sync()
 
         assertEquals(listOf("m.pte"), summary.updatesPendingApply)
-        assertArrayEquals(oldBytes, File(dir, "m.pte").readBytes())        // live NOT swapped
+        assertArrayEquals(oldBytes, File(dir, "m.pte").readBytes())
         val pending = File(dir, ModelSyncCoordinator.PENDING_DIR)
-        assertArrayEquals(newBytes, File(pending, "m.pte").readBytes())    // staged
+        assertArrayEquals(newBytes, File(pending, "m.pte").readBytes())
         assertTrue(File(pending, "m.descriptor.json").exists())
         assertEquals(setOf("m"), coord.pendingModelIds())
     }
@@ -193,7 +186,7 @@ class ModelSyncCoordinatorTest {
         val summary = coord.sync()
 
         assertEquals(listOf("m.pte"), summary.fetchedNew)
-        assertArrayEquals(newBytes, File(dir, "m.pte").readBytes())        // live replaced
+        assertArrayEquals(newBytes, File(dir, "m.pte").readBytes())
         assertFalse(File(dir, ModelSyncCoordinator.PENDING_DIR).exists())
     }
 
@@ -211,13 +204,13 @@ class ModelSyncCoordinatorTest {
             artifacts = mapOf("m.pte" to ModelArtifact(newBytes, newSha)),
             running = setOf("m.pte"),
         )
-        coord.sync() // stages into pending/
+        coord.sync()
 
         val applied = coord.applyPending("m")
 
         assertTrue(applied)
-        assertArrayEquals(newBytes, File(dir, "m.pte").readBytes())        // now live
-        assertTrue(coord.pendingModelIds().isEmpty())                     // staging consumed
+        assertArrayEquals(newBytes, File(dir, "m.pte").readBytes())
+        assertTrue(coord.pendingModelIds().isEmpty())
         assertFalse(File(File(dir, ModelSyncCoordinator.PENDING_DIR), "m.pte").exists())
     }
 
@@ -233,7 +226,6 @@ class ModelSyncCoordinatorTest {
         val dir = tmp.newFolder("models")
         val bytes = byteArrayOf(5, 5, 5)
         val sha = defaultSha256(bytes)
-        // Served meta's `artifact` disagrees with the id — must be overwritten to the real filename.
         val (coord, _) = coordinator(
             dir,
             rows = listOf(row("m.pte", meta(artifact = "totally-different.pte"), sha)),
@@ -256,8 +248,8 @@ class ModelSyncCoordinatorTest {
         val (coord, _) = coordinator(
             dir,
             rows = listOf(
-                row("bad.pte", meta(), "wrong-hash"),         // sha mismatch → Failed
-                row("good.pte", meta(), goodSha),             // proceeds regardless
+                row("bad.pte", meta(), "wrong-hash"),
+                row("good.pte", meta(), goodSha),
             ),
             artifacts = mapOf(
                 "bad.pte" to ModelArtifact(byteArrayOf(0), "deadbeef"),
@@ -284,16 +276,14 @@ class ModelSyncCoordinatorTest {
         val summary = coord.sync()
 
         assertEquals(0, http.downloadCount)
-        assertTrue(summary.outcomes.isEmpty())  // no outcome at all — not even a Skipped entry
+        assertTrue(summary.outcomes.isEmpty())
         assertEquals(0, dir.listFiles()!!.size)
     }
 
     @Test
     fun runningIdentityIsArtifactFilename_adbPushedModelUpdate_stages_notSwapped() = runBlocking {
-        // Regression (the review's HIGH finding): an adb-pushed running model has descriptor id
-        // "t1dmai_best" but its artifact — and the server registry id — is "t1dmai_best.xnnpack.pte".
-        // The running-set identity MUST be the .pte FILENAME; keying on the descriptor id would miss and
-        // overwrite the live dosing model in place. Here the running set is the loaded .pte filename.
+        // The running-set identity is the `.pte` FILENAME: an adb-pushed model's descriptor id
+        // ("t1dmai_best") is not its registry id, and keying on it would overwrite the live model.
         val dir = tmp.newFolder("models")
         val id = "t1dmai_best.xnnpack.pte"
         val oldBytes = byteArrayOf(1, 1, 1)
@@ -305,20 +295,19 @@ class ModelSyncCoordinatorTest {
             dir,
             rows = listOf(row(id, meta(), newSha)),
             artifacts = mapOf(id to ModelArtifact(newBytes, newSha)),
-            running = setOf(id),                              // the LOADED .pte filename, NOT "t1dmai_best"
+            running = setOf(id),
         )
 
         val summary = coord.sync()
 
         assertEquals(listOf(id), summary.updatesPendingApply)
-        assertArrayEquals(oldBytes, File(dir, id).readBytes())        // live dosing model NOT swapped
+        assertArrayEquals(oldBytes, File(dir, id).readBytes())
         assertArrayEquals(newBytes, File(File(dir, ModelSyncCoordinator.PENDING_DIR), id).readBytes())
     }
 
     @Test
     fun malformedDescriptor_missingNormalizationStats_skipped_nothingPlaced() = runBlocking {
-        // A verified-but-unusable descriptor (no normalization_stats) must be rejected BEFORE it is
-        // written, so it can never make ModelStore.discover() throw for the whole dir.
+        // Rejected before it is written, or `ModelStore.discover()` throws for the whole dir.
         val dir = tmp.newFolder("models")
         val badMeta = JsonObject(mapOf("engine" to JsonPrimitive("executorch_xnnpack_fp32")))
         val (coord, http) = coordinator(
@@ -330,7 +319,7 @@ class ModelSyncCoordinatorTest {
         val summary = coord.sync()
 
         assertEquals(listOf("m.pte" to "descriptor missing normalization_stats"), summary.skipped)
-        assertEquals(0, http.downloadCount)                          // rejected before any download
+        assertEquals(0, http.downloadCount)
         assertEquals(0, dir.listFiles()!!.size)
     }
 }

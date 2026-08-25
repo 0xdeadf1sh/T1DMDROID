@@ -44,13 +44,6 @@ import com.t1dm.core.model.RunningModel
 import com.t1dm.core.model.displayName
 import kotlinx.coroutines.launch
 
-/**
- * The Models panel (Phase 7C — item 7): the loaded running set, each row now carrying
- * the size-reasoning META (parameter count, on-disk `.pte` size, and the key arch dims from the
- * descriptor) so a model's footprint is legible at a glance, plus this cycle's forecast status. Tapping
- * a row opens its PERFORMANCE drill-down ([ModelDetailScreen], item 24). Selection is on a long-press-
- * free single tap in the pre-7D layout via the caret; the fp32-authoritative pick is [onSelect].
- */
 @Composable
 fun ModelsScreen(
     state: InferenceState,
@@ -61,8 +54,7 @@ fun ModelsScreen(
     onDelete: (String) -> Unit = {},
     onOpenAdapters: (String) -> Unit = {},
 ) {
-    // The delete confirmation is hoisted to the screen (not per-row) so a row recycling out of the
-    // LazyColumn viewport can't drop the pending confirmation mid-gesture.
+    // Hoisted to the screen: a row recycling out of the viewport would drop a per-row confirmation.
     var confirmDelete by remember { mutableStateOf<String?>(null) }
     val haptics = rememberT1dmHaptics()
     val listState = rememberLazyListState()
@@ -73,7 +65,6 @@ fun ModelsScreen(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             item {
-                // N1 — the "Models" title lives in the breadcrumb; no duplicate in-view header.
                 Text(
                     "${state.running.size} loaded · tap a row for detail",
                     style = MaterialTheme.typography.bodySmall,
@@ -103,9 +94,7 @@ fun ModelsScreen(
                         onApplyUpdate = onApplyUpdate,
                         onRequestDelete = { confirmDelete = it },
                         onOpenAdapters = onOpenAdapters,
-                        // The baseline's row is listed before it has ever been fitted, so its radio
-                        // stays inert until there is a model behind it to select. Tapping the row
-                        // still opens the drill-down, which is where the fit lives.
+                        // The baseline is listed before it has ever been fitted.
                         selectable = model.modelId != BASELINE_MODEL_ID || state.baselineModel != null,
                     )
                     HorizontalDivider()
@@ -113,16 +102,12 @@ fun ModelsScreen(
             }
         }
         confirmDelete?.let { id ->
-            // The three-beat every dialog in the app keeps: Warn on raise, Commit on the destructive
-            // accept (a deleted artifact is not recoverable, and losing the SELECTED model stops
-            // forecasting and dose advice outright), Reject on either way out.
             LaunchedEffect(id) { haptics.perform(HapticEvent.Warn) }
             AlertDialog(
                 onDismissRequest = { haptics.perform(HapticEvent.Reject); confirmDelete = null },
                 title = { Text("Remove model?") },
                 text = {
-                    // The baseline has no artifact to unlink — removing it discards the fitted
-                    // weights, and the row stays because the model is always available to refit.
+                    // The baseline has no artifact to unlink; its row stays, refittable.
                     Text(
                         if (id == BASELINE_MODEL_ID) {
                             "Discard the fitted baseline? Its forecasts stop until you fit again."
@@ -161,9 +146,6 @@ private fun ModelRow(
     onOpenAdapters: (String) -> Unit = {},
     selectable: Boolean = true,
 ) {
-    // N3 — tapping ANYWHERE on the row (name included) opens the detail; "select this model" is now an
-    // explicit RadioButton, never an invisible tap target on the title. Previously the name carried its
-    // own `onSelect` clickable that consumed the tap, so only the description below opened the detail.
     val haptics = rememberT1dmHaptics()
     Column(
         Modifier
@@ -172,9 +154,7 @@ private fun ModelRow(
             .padding(vertical = 8.dp),
     ) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            // The radio is the DOSING model picker (§3.6-E), not a nav affordance — it changes which
-            // forecast the dashboard and the calculator read. A detent, and audibly not the NavSwitch
-            // the row around it plays.
+            // §3.6-E — the dosing model picker, not a nav affordance.
             RadioButton(
                 selected = model.selected,
                 enabled = selectable,
@@ -197,15 +177,12 @@ private fun ModelRow(
             }
         }
         Text(
-            // displayName() already ends in the precision ("XNNPACK CPU · fp32"), so appending the
-            // enum repeated it — harmless-looking on the neural rows and outright confusing on the
-            // baseline, which read "Ridge CPU · fp64 · FP32" before the enum gained an FP64 member.
+            // displayName() already ends in the precision; appending the enum repeats it.
             model.backend.displayName() +
                 (prediction?.let { " · anchor ${it.lastBg.toInt()} mg/dL" } ?: ""),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        // Size-reasoning meta line (item 7): real param count + on-disk size + arch dims.
         meta?.let { m ->
             Text(
                 metaLine(m),
@@ -214,8 +191,6 @@ private fun ModelRow(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        // Auto-download / manual-apply (product decision 2): the running model has a newer artifact
-        // staged from the server. Applying it swaps + re-selects — never done silently for the dosing model.
         if (updateAvailable) {
             Text(
                 "Update downloaded — not applied",
@@ -223,15 +198,13 @@ private fun ModelRow(
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.padding(top = 4.dp),
             )
-            // Swapping the artifact under a running (possibly dosing) model — never done silently, and
-            // never felt as an ordinary tap.
+            // Swaps the artifact under a possibly-dosing model, so never silent.
             OutlinedButton(
                 onClick = { haptics.perform(HapticEvent.Commit); onApplyUpdate(model.modelId) },
             ) { Text("Apply update") }
         }
         if (model.modelId != BASELINE_MODEL_ID) {
-            // The ridge baseline has no head to adapt: it is a fitted linear model, not a frozen
-            // graph with a seam.
+            // The ridge baseline has no head to adapt.
             OutlinedButton(
                 onClick = { haptics.perform(HapticEvent.Tap); onOpenAdapters(model.modelId) },
             ) { Text("Adapters") }

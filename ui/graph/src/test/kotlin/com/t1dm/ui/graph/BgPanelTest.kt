@@ -16,36 +16,26 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * Host JVM tests for the pure BG-panel logic added in Phase 7A: the fixed Y-axis span (item 1), the
- * predicted-excursion detection (item 16), and the curve-overlay bucket sampler the scrub read-out
- * uses (item 3). The Canvas drawing itself is not unit-tested; these cover the numerics behind it.
- */
 class BgPanelTest {
 
     private val STEP = 300_000L
 
     @Test fun curveOverlayIndexAtRejectsThePreGridWindow() {
         // Integer division truncates toward zero, so the five minutes BEFORE the grid start used to
-        // resolve to bucket 0 and hand the scrub read-out the first bucket's rates as though they
-        // were the rates under the cursor. Reachable whenever history outruns the overlay's cap.
+        // resolve to bucket 0 and hand the read-out the first bucket's rates.
         val g = 1_700_000_000_000L / STEP * STEP
         val f = buildCurveOverlay(doubleArrayOf(9.0, 1.0, 2.0), doubleArrayOf(0.5, 0.1, 0.2), g, STEP)
         assertEquals(-1, f.indexAt(g - 1))
         assertEquals(-1, f.indexAt(g - STEP))
         assertEquals(0f, f.carbAt(g - 1), 0f)
         assertEquals(0f, f.insulinAt(g - 1), 0f)
-        // The grid itself is unaffected.
         assertEquals(0, f.indexAt(g))
         assertEquals(9f, f.carbAt(g), 1e-6f)
         assertEquals(2, f.indexAt(g + 2 * STEP))
         assertEquals(-1, f.indexAt(g + 3 * STEP))
     }
 
-    // ── item 1: fixed Y-axis span ────────────────────────────────────────────────────────────────
-
     @Test fun fixedRange_alwaysCoversConfiguredWindow() {
-        // Data sits comfortably inside 20..250 → axis still spans at least the configured window.
         val (lo, hi) = fixedYRange(90f, 160f, UnitSpace.MgDl, 20, 250)
         assertTrue("floor covers 20", lo <= 20f)
         assertTrue("ceiling covers 250", hi >= 250f)
@@ -67,8 +57,6 @@ class BgPanelTest {
         assertTrue("ceiling covers 250 mg/dL ≈ 13.9 mmol/L", hi >= 250f / 18.0182f)
     }
 
-    // ── item 16: predicted excursions ────────────────────────────────────────────────────────────
-
     private fun pred(
         medians: List<Double>,
         selected: Boolean = true,
@@ -89,7 +77,7 @@ class BgPanelTest {
         assertEquals(1, out.size)
         val hypo = out.single()
         assertFalse(hypo.hyper)
-        // First crossing below 70 is step index 2 → ts = anchor + 3·STEP; ETA = 15 min.
+        // First crossing below 70 is step index 2 ⇒ ts = anchor + 3·STEP; ETA = 15 min.
         assertEquals(anchor + 3 * STEP, hypo.tsMs)
         assertEquals(15L, hypo.etaMin)
     }
@@ -118,8 +106,6 @@ class BgPanelTest {
         assertTrue(excursionsOf(listOf(p), 70, 180).isEmpty())
     }
 
-    // ── item 3: overlay bucket sampling ──────────────────────────────────────────────────────────
-
     @Test fun overlaySampler_returnsRatePerBucketAndZeroOutside() {
         val grid = 1_700_000_000_000L
         val frame = buildCurveOverlay(
@@ -131,39 +117,30 @@ class BgPanelTest {
         assertEquals(2f, frame.carbAt(grid + STEP), 1e-6f)
         assertEquals(5f, frame.carbAt(grid + 2 * STEP), 1e-6f)
         assertEquals(0.3f, frame.insulinAt(grid + 3 * STEP), 1e-6f)
-        assertEquals(0f, frame.carbAt(grid - STEP), 1e-6f)          // before the grid
-        assertEquals(0f, frame.insulinAt(grid + 99 * STEP), 1e-6f)  // after the grid
+        assertEquals(0f, frame.carbAt(grid - STEP), 1e-6f)
+        assertEquals(0f, frame.insulinAt(grid + 99 * STEP), 1e-6f)
     }
-
-    // ── item 18: a tiny basal under a big bolus keeps its OWN scale (never crushed to invisibility) ──
 
     @Test fun basalSeries_carriedWithIndependentScale() {
         val grid = 1_700_000_000_000L
-        // A 24 h basal spreads its dose ~1/300 of a bolus gamma peak: per-step basal ≈ 0.01, bolus ≈ 3.
+        // A 24 h basal spreads its dose ~1/300 of a bolus gamma peak: basal ≈ 0.01, bolus ≈ 3.
         val basal = DoubleArray(8) { 0.01 }
         val bolus = doubleArrayOf(0.0, 0.0, 1.5, 3.0, 1.0, 0.0, 0.0, 0.0)
-        // The MODEL channel is basal + bolus SUMMED (model-io-curves.md) — that invariant is preserved.
+        // The model channel is basal + bolus SUMMED (model-io-curves.md).
         val combined = DoubleArray(8) { bolus[it] + basal[it] }
         val frame = buildCurveOverlay(carb = DoubleArray(8), insulin = combined, gridStartMs = grid, stepMs = STEP, basal = basal)
-        // Combined scale is bolus-dominated…
         assertEquals(3.01f, frame.insulinMax, 1e-4f)
-        // …but the basal is carried with its OWN, non-zero peak so the render can give it its own strip.
         assertEquals(0.01f, frame.basalMax, 1e-6f)
         assertEquals(0.01f, frame.basalAt(grid + 5 * STEP), 1e-6f)
-        // Bolus-only fallback: an empty basal reserves no strip (basalMax 0) and the combined draws whole.
         val noBasal = buildCurveOverlay(carb = DoubleArray(8), insulin = combined, gridStartMs = grid, stepMs = STEP)
         assertEquals(0f, noBasal.basalMax, 1e-6f)
     }
 
-    // ── item 16: no-future-insulin advisory (noFutureInsulinOverForecast) ────────────────────────
-
-    /** Grid whose bucket 0 == [now]; buckets extend NSTEP·5-min forward, some possibly before [now]. */
     private fun overlay(insulinPerStep: DoubleArray, gridStart: Long, carbPerStep: DoubleArray = DoubleArray(insulinPerStep.size)) =
         buildCurveOverlay(carb = carbPerStep, insulin = insulinPerStep, gridStartMs = gridStart, stepMs = STEP)
 
     @Test fun noFutureInsulin_true_whenNonEmptyOverlayHasAllZeroFutureInsulin() {
         val now = 1_700_000_000_000L
-        // 48 buckets from `now`, a visible carb tick (⇒ overlay is non-empty) but insulin flat-zero.
         val insulin = DoubleArray(48) { 0.0 }
         val carb = DoubleArray(48) { if (it == 4) 6.0 else 0.0 }
         val f = overlay(insulin, now, carb)
@@ -172,8 +149,6 @@ class BgPanelTest {
     }
 
     @Test fun noFutureInsulin_true_whenReconstructableChannelIsGenuinelyAllZero() {
-        // The item-16(c) improvement: buckets EXIST (readings present) but no carb and no insulin —
-        // isEmpty short-circuits true, yet the user genuinely has zero insulin ahead ⇒ they SHOULD warn.
         val now = 1_700_000_000_000L
         val f = overlay(DoubleArray(48) { 0.0 }, now)
         assertTrue("flat-zero channel still counts as empty for rendering", f.isEmpty)
@@ -182,20 +157,20 @@ class BgPanelTest {
 
     @Test fun noFutureInsulin_false_whenBolusTailCoversHorizon() {
         val now = 1_700_000_000_000L
-        // A bolus action tail landing ~1 h ahead (bucket 12), inside the 3 h default horizon.
+        // A bolus action tail at buckets 10..16, ~1 h ahead and inside the 3 h default horizon.
         val insulin = DoubleArray(48) { if (it in 10..16) 0.30 else 0.0 }
         assertFalse(noFutureInsulinOverForecast(overlay(insulin, now), emptyList(), now))
     }
 
     @Test fun noFutureInsulin_false_whenBasalScheduleCoversHorizon() {
         val now = 1_700_000_000_000L
-        // An auto-extended basal is summed into the combined channel: a thin but non-zero action everywhere.
+        // An auto-extended basal, summed in: thin but non-zero everywhere.
         val insulin = DoubleArray(48) { 0.01 }
         assertFalse(noFutureInsulinOverForecast(overlay(insulin, now), emptyList(), now))
     }
 
     @Test fun noFutureInsulin_true_whenBolusTailExpiredInThePast() {
-        // The on-device repro: a short-DIA bolus logged earlier whose action tail expires BEFORE `now`.
+        // A short-DIA bolus whose action tail expires BEFORE `now`.
         val now = 1_700_000_000_000L
         val gridStart = now - 20 * STEP // 20 past buckets, then `now`, then future
         val insulin = DoubleArray(40) { if (it in 2..8) 0.4 else 0.0 } // action only in the past
@@ -204,26 +179,23 @@ class BgPanelTest {
 
     @Test fun noFutureInsulin_true_whenInsulinLandsPastTheHorizonEnd() {
         val now = 1_700_000_000_000L
-        // Insulin only at bucket 40 (> the 36-bucket = 3 h horizon) ⇒ nothing covers the window ⇒ warn.
+        // Bucket 40 is past the 36-bucket (3 h) horizon, so nothing covers the window.
         val insulin = DoubleArray(48) { if (it == 40) 0.5 else 0.0 }
         assertTrue(noFutureInsulinOverForecast(overlay(insulin, now), emptyList(), now))
     }
 
     @Test fun noFutureInsulin_forecastEndExtendsTheHorizon() {
         val now = 1_700_000_000_000L
-        // Insulin lands at bucket 40 (past the default 3 h horizon). A forecast reaching bucket 44
-        // extends the horizon so that action now DOES cover the window ⇒ no warning.
+        // Bucket 40 is past the 3 h default; a forecast reaching bucket 44 extends the horizon over it.
         val insulin = DoubleArray(48) { if (it == 40) 0.5 else 0.0 }
         val fc = pred(medians = List(44) { 110.0 }, anchor = now) // horizon end = now + 44·STEP
         assertFalse(noFutureInsulinOverForecast(overlay(insulin, now), listOf(fc), now))
     }
 
     @Test fun noFutureInsulin_false_whenOverlayHasNoBuckets() {
-        // Fresh wipe / no readings ⇒ EMPTY frame (size 0) ⇒ fail-safe, nothing to reason about ⇒ no warn.
+        // No buckets at all: nothing to reason about, so no warning.
         assertFalse(noFutureInsulinOverForecast(CurveOverlayFrame.EMPTY, emptyList(), 1_700_000_000_000L))
     }
-
-    // ── item 13: smoothed model-input trace ─────────────────────────────────────────────────────
 
     private fun reading(ts: Long, bg: Int, flag: ReadingFlag = ReadingFlag.NORMAL) = CgmReading(
         sourceId = CgmSourceId("t"), tsMs = ts, bgMgdl = bg, trendTenthsPerMin = 0,
@@ -234,19 +206,18 @@ class BgPanelTest {
     @Test fun smoothedTrace_alignsAppliesSmootherAndConvertsUnit() {
         val t0 = 1_700_000_000_000L
         val readings = listOf(reading(t0, 100), reading(t0 + STEP, 120), reading(t0 + 2 * STEP, 140))
-        // Injected smoother: add 5 mg/dL so alignment + source-in-mg/dL are observable.
+        // +5 mg/dL, so the alignment and the mg/dL source are observable.
         val trace = buildSmoothedTrace(readings, UnitSpace.MgDl, smoothMgdl = { it.map { v -> v + 5.0 }.toDoubleArray() })
         assertEquals(3, trace.size)
         assertEquals(t0 + STEP, trace.tsMs[1])
         assertEquals(125f, trace.ys[1], 1e-4f)                       // 120 smoothed(+5), stays mg/dL
-        // mmol/L projection divides the mg/dL smooth by 18.0182.
         val mmol = buildSmoothedTrace(readings, UnitSpace.MmolL, smoothMgdl = { it.copyOf() })
         assertEquals((140f / 18.0182f), mmol.ys[2], 1e-4f)
     }
 
     @Test fun smoothedTrace_breaksOnDropout() {
         val t0 = 1_700_000_000_000L
-        // A 45-min gap (> 30-min default) between points 0 and 1 marks a break after 0.
+        // A 45-min gap, past the 30-min default.
         val readings = listOf(reading(t0, 100), reading(t0 + 9 * STEP, 110), reading(t0 + 10 * STEP, 120))
         val trace = buildSmoothedTrace(readings, UnitSpace.MgDl, smoothMgdl = { it.copyOf() })
         assertTrue("gap after point 0", trace.breakAfter[0])
@@ -254,9 +225,8 @@ class BgPanelTest {
     }
 
     @Test fun smoothedTrace_offWindowDrawsTheRawSignal() {
-        // "Off" (window 1) makes the native smoother the identity. The overlay must then LIE ON the
-        // raw trace rather than fail closed to EMPTY — the identity is still length-preserving, and
-        // drawing nothing would misreport the model input as unavailable.
+        // "Off" (window 1) makes the native smoother the identity: the overlay must then LIE ON the
+        // raw trace, not fail closed to EMPTY and misreport the model input as unavailable.
         val t0 = 1_700_000_000_000L
         val readings = listOf(reading(t0, 96), reading(t0 + STEP, 131), reading(t0 + 2 * STEP, 118))
         val trace = buildSmoothedTrace(readings, UnitSpace.MgDl, smoothMgdl = { it.copyOf() })
@@ -269,12 +239,10 @@ class BgPanelTest {
     @Test fun smoothedTrace_lengthMismatchFailsClosed() {
         val t0 = 1_700_000_000_000L
         val readings = listOf(reading(t0, 100), reading(t0 + STEP, 120))
-        // A misbehaving smoother that changes length yields an EMPTY trace rather than a misaligned draw.
+        // A length change yields EMPTY rather than a misaligned draw.
         val trace = buildSmoothedTrace(readings, UnitSpace.MgDl, smoothMgdl = { doubleArrayOf(1.0) })
         assertTrue(trace.isEmpty)
     }
-
-    // ── I2: the ephemeral, DISPLAY-ONLY rolled forecast ──────────────────────────────────────────
 
     private fun rolled(
         medians: DoubleArray,
@@ -301,30 +269,22 @@ class BgPanelTest {
         assertEquals(anchor + STEP, s.tsMs[0])
         assertEquals(anchor + 48 * STEP, s.tsMs[47])
         assertEquals(120f, s.median[0], 1e-4f)
-        // mmol/L converts once.
         val mmol = buildRolledSeries(rf, UnitSpace.MmolL, null)!!
         assertEquals(120f / 18.0182f, mmol.median[0], 1e-4f)
     }
 
     @Test fun rolledSeries_splitsValidatedFromExtrapolated() {
-        // 48 steps = 4 h; the first 24 (2 h) are validated, the remaining 24 are extrapolated.
+        // 48 steps = 4 h; the first 24 are validated.
         val s = buildRolledSeries(rolled(DoubleArray(48) { 120.0 }), UnitSpace.MgDl, null)!!
         assertEquals(24, s.validatedSteps)
         assertEquals(24, s.extrapolatedSteps)
     }
 
-    /**
-     * [RolledSeries.paintsBand] is what decides both the ink and whether the panel's other fans keep
-     * their §8.4 correction, so it is pinned here for every case that reaches it. A roll no longer
-     * than its validated prefix has a one-step tail and paints NO band — 2 h is the Roll dialog's
-     * default, so that is the ordinary case, not an edge one — and a degenerate roll paints none at
-     * any length. Read the other way: the panel may only drop its correction when this is true.
-     */
+    /** This decides both the ink and whether the panel's other fans keep their §8.4 correction, so
+     *  every case that reaches it is pinned here. */
     @Test fun rolledSeries_paintsBandOnlyWhenTheTailIsLongEnoughAndSound() {
-        // 2 h requested == the validated prefix: a median line and nothing else.
         val twoHours = buildRolledSeries(rolled(DoubleArray(24) { 120.0 }, requestedHours = 2.0), UnitSpace.MgDl, null)!!
         assertFalse("a roll at the validated horizon paints no band", twoHours.paintsBand())
-        // Every shorter stop the dialog offers behaves the same way.
         for (steps in intArrayOf(6, 12, 18, 24)) {
             val short = buildRolledSeries(
                 rolled(DoubleArray(steps) { 120.0 }, validatedSteps = steps, requestedHours = steps / 12.0),
@@ -332,12 +292,10 @@ class BgPanelTest {
             )!!
             assertFalse("a ${steps / 12.0} h roll paints no band", short.paintsBand())
         }
-        // One step past the prefix is the first length that opens one.
         val justOver = buildRolledSeries(rolled(DoubleArray(25) { 120.0 }), UnitSpace.MgDl, null)!!
         assertTrue("a tail of two steps opens the band", justOver.paintsBand())
         val fourHours = buildRolledSeries(rolled(DoubleArray(48) { 120.0 }), UnitSpace.MgDl, null)!!
         assertTrue("a 4 h roll paints a band", fourHours.paintsBand())
-        // Degenerate paints nothing however long the valid prefix is.
         val degenerate = buildRolledSeries(
             rolled(DoubleArray(48) { 120.0 }, degenerate = true), UnitSpace.MgDl, null,
         )!!
@@ -349,28 +307,18 @@ class BgPanelTest {
         assertNull(buildRolledSeries(null, UnitSpace.MgDl, null))
     }
 
-    /**
-     * THE SAFETY PIN (I2): a rolled forecast — even one whose EXTRAPOLATED tail plunges deep into hypo —
-     * is invisible to the alerting path. `excursionsOf` (which feeds the in-graph marker, and mirrors the
-     * top-bar indicator / notification countdown) consumes ONLY `List<ModelPrediction>`; a `RolledForecast`
-     * is a DISTINCT type with no conversion into a `ModelPrediction`, so it can never contribute a crossing.
-     * "HYPO in 19H" is therefore impossible off a rolled fan.
-     */
+    /** The safety pin: `excursionsOf` consumes only `List<ModelPrediction>`, and a `RolledForecast`
+     *  has no conversion into one, so no rolled fan can ever raise a crossing. */
     @Test fun rolledForecast_cannotReachTheAlertingPath() {
         val anchor = 1_700_000_000_000L
         // A roll whose tail collapses to 20 mg/dL far past the validated 2 h.
         val medians = DoubleArray(48) { if (it >= 30) 20.0 else 120.0 }
         val rf = rolled(medians, anchor = anchor)
         val series = buildRolledSeries(rf, UnitSpace.MgDl, null)!!
-        // The deep-hypo tail IS present in the render model (so it is drawn, hatched)…
         assertTrue("extrapolated tail is drawn", series.extrapolatedSteps > 0)
         assertTrue("tail reaches hypo", series.median.any { it <= 20f })
-        // …yet the alert path, given only the (empty) prediction list, sees NO crossing. There is no
-        // overload of excursionsOf that accepts a RolledForecast/RolledSeries — the seam is the type gap.
         assertTrue(excursionsOf(emptyList(), lowMgdl = 70, highMgdl = 180, nowMs = anchor).isEmpty())
     }
-
-    // ── the date row beneath the time axis ───────────────────────────────────────────────────────
 
     /** 2026-01-07T00:00Z — a Wednesday. */
     private val WED_JAN_7 = 1_767_744_000_000L
@@ -380,7 +328,7 @@ class BgPanelTest {
     }
 
     @Test fun axisDate_namesTheLocalDay_notTheUtcOne() {
-        // 23:00 UTC on the 6th is already the 7th an hour east; the axis is local end to end.
+        // 23:00 UTC on the 6th is already the 7th an hour east.
         val late = WED_JAN_7 - 3_600_000L
         assertEquals("January 7th, Wednesday", formatAxisDate(late, 60))
         assertEquals("January 6th, Tuesday", formatAxisDate(late, 0))

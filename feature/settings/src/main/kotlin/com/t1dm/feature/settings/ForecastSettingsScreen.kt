@@ -16,21 +16,6 @@ import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.rememberT1dmHaptics
 
-/**
- * Settings → Forecast — everything that governs WHEN the model forecasts and under what conditions it
- * declines to.
- *
- * Four pages, until they were not. Each held one or three knobs, and each cost a navigation to reach:
- * the warm-up window, the running-set cap, the cadence, and the thermal gate were separate destinations
- * under one section that had grown to eight rows while every other section held four. They belong
- * together by subject — all four decide whether a cycle happens at all — and the page they make is
- * smaller than Display or the dose calculator.
- *
- * The dose calculator, the curve parameters and the model list stay their own pages: those are about
- * what a forecast SAYS and which model says it, not about when one runs.
- *
- * Pure/stateless throughout — every value is passed in and every edit goes straight back out.
- */
 @Composable
 fun ForecastSettingsScreen(
     warmupHoursValue: Int,
@@ -65,8 +50,7 @@ fun ForecastSettingsScreen(
             listOf(true to "Adaptive", false to "Timed"),
             adaptive,
         ) { onSetAdaptive(it) }
-        // Only exists in timed mode; a search landing here while adaptive simply finds no row to
-        // reveal, and the scaffold releases the request rather than holding it for the next visit.
+        // Absent in adaptive mode; the scaffold releases a search request that finds no row.
         if (!adaptive) {
             IntStepper(forecastCadencePeriod, periodMinutes, "min", step = 1, min = 1, max = 60) { onSetPeriodMinutes(it) }
         }
@@ -83,10 +67,7 @@ fun ForecastSettingsScreen(
     }
 }
 
-/**
- * Hours of MEASURED (non-interpolated) BG the forecast waits for. Floored at the model's MIN_CONTEXT
- * (8 h) — the stepper cannot go below it — and capped at 72 h.
- */
+/** Hours of measured, non-interpolated BG. Floored at the model's MIN_CONTEXT. */
 @Composable
 private fun WarmupSection(hours: Int, minHours: Int, maxHours: Int, onChange: (Int) -> Unit) {
     val haptics = rememberT1dmHaptics()
@@ -105,9 +86,6 @@ private fun WarmupSection(hours: Int, minHours: Int, maxHours: Int, onChange: (I
                 enabled = hours > minHours,
             ) { Text("−1 h") }
 
-            // I13 — the ±1 h buttons keep their intrinsic size; the value field flexes (weight) and
-            // centres. Plain hours throughout: the day form it used to grow into ("1 day (24 h)") was
-            // both longer than the row and no clearer than the number it wrapped.
             Text(
                 text = "$hours h",
                 style = MaterialTheme.typography.headlineMedium,
@@ -129,10 +107,7 @@ private fun WarmupSection(hours: Int, minHours: Int, maxHours: Int, onChange: (I
     SettingsNote("Min $minHours h (the model's context floor) · max $maxHours h")
 }
 
-/**
- * How many discovered models run each cycle. Every running model forecasts and pushes under its own id;
- * the one selected on the Models screen is the one the dashboard draws.
- */
+/** Every running model pushes under its own id; the Models screen picks the one the dashboard draws. */
 @Composable
 private fun ModelCountSection(count: Int, minCount: Int, maxCount: Int, onChange: (Int) -> Unit) {
     val haptics = rememberT1dmHaptics()
@@ -171,12 +146,6 @@ private fun ModelCountSection(count: Int, minCount: Int, maxCount: Int, onChange
     }
     SettingsNote("1–8 · more models, more CPU")
 }
-
-// ── search index (see SettingsIndex.kt) ───────────────────────────────────────────────────────────
-//
-// The ids are UNCHANGED across the merge. They are the addresses a search result, a stored recent
-// search and the anchor registry all resolve, so renaming them would silently retire every one; only
-// the screen they name has moved.
 
 private val warmupHours = SettingsKnob(
     id = "warmup.hours",

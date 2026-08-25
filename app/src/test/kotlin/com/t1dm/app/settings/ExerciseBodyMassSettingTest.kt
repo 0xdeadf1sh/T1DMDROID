@@ -5,18 +5,13 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Test
 
-/**
- * The body-mass knob's placement and its round trip. Placement is the load-bearing half: this is the
- * one number that turns a bout into a kcal figure, and it is the user's own — a config export carries
- * settings to another phone or another person, and a body mass is neither.
- */
+/** The body mass is the user's own number, so it stays out of a config export. */
 class ExerciseBodyMassSettingTest {
 
     @Test
     fun `body mass is not part of the exportable config set`() {
         assertFalse(SettingsStore.isConfigKey(SettingsStore.K_EXERCISE_BODY_MASS_KG))
-        // `exercise.` is not a config PREFIX — the one exportable key under it is listed exactly, so
-        // a second knob added to the panel does not join the export by accident.
+        // `exercise.` is not a config prefix; the one exportable key under it is listed exactly.
         assertFalse(SettingsStore.isConfigKey("exercise.anything_else"))
     }
 
@@ -42,7 +37,6 @@ class ExerciseBodyMassSettingTest {
 
     @Test
     fun `there is no upper limit`() {
-        // Unbounded above, by the same rule that leaves the alarm thresholds unbounded.
         assertEquals(300.0, SettingsStore.decodeBodyMassKg("300.0")!!, 1e-9)
     }
 

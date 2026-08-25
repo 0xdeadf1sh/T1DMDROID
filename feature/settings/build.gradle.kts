@@ -17,8 +17,7 @@ dependencies {
     implementation(libs.bundles.compose)
     implementation(libs.androidx.activity.compose)
 
-    // QR token scan (item 12): ZXing embedded, Apache-2.0, no Play Services. Provides ScanContract
-    // + a self-contained CaptureActivity that requests CAMERA at runtime.
+    // Apache-2.0, no Play Services.
     implementation(libs.zxing.android.embedded)
 
     testImplementation(libs.junit)

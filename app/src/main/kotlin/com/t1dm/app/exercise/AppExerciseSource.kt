@@ -12,15 +12,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-/**
- * The `:app` composition of the exercise port — the seam between the panel and the phone-local bout
- * store, on the [com.t1dm.app.stats.AppStatsSource] pattern.
- *
- * [start] and [stop] only signal the foreground service. The bout row is opened and closed THERE,
- * beside the recorder that fills it, so a bout row cannot exist without something recording into it:
- * the panel cannot outlive the service, but the service can outlive the panel, which is the whole
- * reason it is a service.
- */
+/** [start] and [stop] only signal the foreground service; the bout row is opened and closed there. */
 class AppExerciseSource(
     private val controller: ExerciseController,
     private val settings: SettingsStore,

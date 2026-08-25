@@ -31,20 +31,8 @@ import com.t1dm.core.model.MealComponent
 import com.t1dm.core.model.ResolvedMealCurve
 import com.t1dm.core.model.SavedMeal
 
-/**
- * The stored-meal editor (`meals/builder/meal/{id}`) — rename, add/remove components, re-gram
- * portions, watch the combined **appearance (Ra)** curve follow, then overwrite the row, fork a copy,
- * or walk away.
- *
- * Its own view rather than a mode [MealBuilderScreen] falls into: as a mode it had to stash and
- * restore the scratch meal it displaced, suppress its own empty state, and keep Save pointed at an
- * identity that was invisible once the component list emptied. A route carries that identity instead.
- *
- * [meal] seeds the draft ONCE, keyed by its id. The saved-meal Flow re-emits a fresh [SavedMeal] on
- * every write — following it would discard the edit in progress the moment anything else touched the
- * store. The caller resolves a vanished id (deleted from another view) by leaving, not by mutating
- * what is on screen.
- */
+/** [meal] seeds the draft ONCE, keyed by its id: the saved-meal Flow re-emits on every write, and
+ *  following it would discard the edit in progress. */
 @Composable
 fun MealEditorScreen(
     meal: SavedMeal,
@@ -88,8 +76,6 @@ fun MealEditorScreen(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Button(
-                // Overwriting a stored template is irreversible — there is no undo log for saved meals
-                // — so it carries the heavy Commit, not the Confirm a fresh row gets.
                 onClick = { haptics.perform(HapticEvent.Commit); onSave(name.trim(), draft.snapshot()) },
                 enabled = savable,
             ) { Text("Save") }

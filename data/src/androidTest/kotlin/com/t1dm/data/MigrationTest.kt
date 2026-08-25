@@ -15,19 +15,9 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/**
- * Validates the keep-forever hand-written migration chain (Phase 1: destructive migration is
- * FORBIDDEN). Creates the schema at version N, applies the hand-written migration(s), and lets
- * [MigrationTestHelper] assert the migrated DB matches the exported N+1 schema exactly — catching any
- * DDL drift (index names, AUTOINCREMENT, nullability) between the migration and Room.
- *
- * Uses the **driver-based** [MigrationTestHelper] constructor with [BundledSQLiteDriver]: production
- * ships the bundled SQLite (its FTS5 — the OEM/HyperOS system SQLite omits `fts5`, see [AppDatabase]),
- * so migrations now run as connection-based `SQLiteConnection.execSQL` and the test must open the same
- * driver. The connection-based `runMigrationsAndValidate(version, migrations)` is lenient about
- * unknown tables, which is exactly right for v5 — the FTS5 `food_fts` shadow tables are Room-invisible
- * virtual tables that a strict stray-table check would false-positive on.
- */
+/** There is no destructive fallback, so a DDL drift is a launch crash on the phone. The helper must
+ *  open the [BundledSQLiteDriver] production ships, and its connection-based validate is lenient
+ *  about unknown tables — which is what lets the Room-invisible `food_fts` shadow tables pass. */
 @RunWith(AndroidJUnit4::class)
 class MigrationTest {
 
@@ -84,9 +74,6 @@ class MigrationTest {
     @Test
     fun migrate4To5_mealBuilderTablesMatchSchema() {
         helper.createDatabase(4).close()
-        // The FTS5 `food_fts` + its shadow tables (created by MIGRATION_4_5) are Room-invisible; the
-        // connection-based validator ignores unknown tables, so every ENTITY table is still checked
-        // against 5.json while the virtual tables are left alone.
         helper.runMigrationsAndValidate(5, listOf(MigrationRunner.MIGRATION_4_5))
     }
 
@@ -106,8 +93,7 @@ class MigrationTest {
 
     @Test
     fun migrate5To6_reseedIsSchemaNeutral() {
-        // MIGRATION_5_6 is a data-only re-seed (inserts the grown FoodSeed rows into `food`); the
-        // schema must be byte-identical to 5, so validating against 6.json still passes.
+        // A data-only re-seed: the schema must stay byte-identical to 5.
         helper.createDatabase(5).close()
         helper.runMigrationsAndValidate(6, listOf(MigrationRunner.MIGRATION_5_6))
     }
@@ -129,9 +115,8 @@ class MigrationTest {
 
     @Test
     fun migrate6To7_clientIdColumnsAndUniqueIndexMatchSchema() {
-        // v7 (app-authoritative redesign, §3.2/H1): additive `clientId` on logged_meal/logged_dose,
-        // each back-filled with a fresh UUID before the UNIQUE index is built. The retired
-        // sample.carbsG/bolusU/basalU columns are left dead in place, so the schema stays ALTER-only.
+        // `clientId` is back-filled with a fresh UUID before the UNIQUE index is built; the retired
+        // sample.carbsG/bolusU/basalU columns are left dead in place.
         helper.createDatabase(6).close()
         helper.runMigrationsAndValidate(7, listOf(MigrationRunner.MIGRATION_6_7))
     }
@@ -154,17 +139,14 @@ class MigrationTest {
 
     @Test
     fun migrate7To8_paintStrokeTableMatchesSchema() {
-        // v8 (graph annotation layer): one additive table + its two time-bound indices, nothing else
-        // touched — the drawings the user paints over the BG panel.
         helper.createDatabase(7).close()
         helper.runMigrationsAndValidate(8, listOf(MigrationRunner.MIGRATION_7_8))
     }
 
     @Test
     fun migrate8To9_noteTableIsGoneAndQueuedNoteRowsArePurged() {
-        // v9 (the free-text note surface is withdrawn): the sole subtractive step. Seed the v8 DB with
-        // a note row and a queued NOTE outbox row, then assert both are gone — the outbox purge is the
-        // load-bearing half, since `OutboxKind.valueOf("NOTE")` would throw on every later drain.
+        // The outbox purge is the load-bearing half: `OutboxKind.valueOf("NOTE")` would throw on
+        // every later drain.
         helper.createDatabase(8).use { db ->
             db.execSQL("INSERT INTO `note` (`tsMs`,`tzOffsetMin`,`text`,`updatedAt`) VALUES (1,0,'x',1)")
             db.execSQL(
@@ -187,17 +169,13 @@ class MigrationTest {
 
     @Test
     fun migrate9To10_conformalDeltaTableMatchesSchema() {
-        // v10 (on-device band recalibration): one additive table, no index, nothing else touched.
         helper.createDatabase(9).close()
         helper.runMigrationsAndValidate(10, listOf(MigrationRunner.MIGRATION_9_10))
     }
 
     @Test
     fun migrate10To11_everyStoredSourceIsClassifiedAndNoReadingMoves() {
-        // v11 (displayed history spans a sensor MODEL, not one physical sensor): `cgm_source` gains
-        // `sensorModelId` + its index. Seed two real sensors and the debug source, each holding a reading,
-        // then assert the backfill is exact and additive — this is the step that decides whether a
-        // year of history stays reachable on the BG panel after a sensor change.
+        // The backfill decides whether a year of history stays reachable after a sensor change.
         helper.createDatabase(10).use { db ->
             fun source(id: String, added: Long, active: Int) = db.execSQL(
                 "INSERT INTO `cgm_source` " +
@@ -220,12 +198,11 @@ class MigrationTest {
 
         val db = helper.runMigrationsAndValidate(11, listOf(MigrationRunner.MIGRATION_10_11))
 
-        // Both real sensors land in one class — the whole point: they now share a trace.
         assertEquals(
             2,
             countRows(db, "SELECT COUNT(*) FROM `cgm_source` WHERE `sensorModelId` = 'aidexx:x'"),
         )
-        // The debug source keeps its own, so injected readings do not graft onto the real history.
+        // The debug source keeps its own class, so injected readings never graft onto real history.
         assertEquals(
             1,
             countRows(
@@ -234,9 +211,8 @@ class MigrationTest {
                     "WHERE `sensorModelId` = 'aidexx:debug' AND `sourceId` = 'aidexx:DEBUG'",
             ),
         )
-        // No row may be left unclassified: '' would be a class of its own and would strand a sensor.
+        // '' would be a class of its own and would strand a sensor.
         assertEquals(0, countRows(db, "SELECT COUNT(*) FROM `cgm_source` WHERE `sensorModelId` = ''"))
-        // Additive: the migration classifies sources and touches nothing else.
         assertEquals(3, countRows(db, "SELECT COUNT(*) FROM `cgm_source`"))
         assertEquals(3, countRows(db, "SELECT COUNT(*) FROM `cgm_reading`"))
         assertEquals(1, countRows(db, "SELECT COUNT(*) FROM `cgm_source` WHERE `active` = 1"))
@@ -245,10 +221,8 @@ class MigrationTest {
 
     @Test
     fun migrate11To12_advertNameIsAddedAndLeftNull() {
-        // v12 (a source records what it advertised): one nullable column, nothing backfilled. The
-        // null is the point — the advertised name was discarded at match time, so for a sensor
-        // already on record the app genuinely does not know it, and inventing one here would be
-        // indistinguishable from having observed it.
+        // Nothing is backfilled: the advertised name was discarded at match time, so for a sensor
+        // already on record it is genuinely unknown.
         helper.createDatabase(11).use { db ->
             db.execSQL(
                 "INSERT INTO `cgm_source` " +
@@ -270,9 +244,7 @@ class MigrationTest {
 
     @Test
     fun migrate12To13_hiddenIsAddedAndEveryExistingSourceStaysListed() {
-        // v13 (a retired sensor can be taken off the lists): one column, defaulted to 0. The default
-        // is the point — removal is a decision the user has not made for any sensor already on record,
-        // and a row that came back hidden would vanish from the list without being asked for.
+        // Defaulted to 0: removal is a decision the user has not made for any existing sensor.
         helper.createDatabase(12).use { db ->
             db.execSQL(
                 "INSERT INTO `cgm_source` " +
@@ -285,18 +257,14 @@ class MigrationTest {
         val db = helper.runMigrationsAndValidate(13, listOf(MigrationRunner.MIGRATION_12_13))
 
         assertEquals(1, countRows(db, "SELECT COUNT(*) FROM `cgm_source` WHERE `hidden` = 0"))
-        // Additive: the migration adds a column and touches nothing else, the active flag included.
         assertEquals(1, countRows(db, "SELECT COUNT(*) FROM `cgm_source` WHERE `active` = 1"))
         db.close()
     }
 
     @Test
     fun migrate13To14_authorityIsRenamedAndActivitySeededFromIt() {
-        // v14 (several sensors may be read at once): `active` is RENAMED to `authoritative` and a new
-        // `active` takes the name, seeded from it. The seeding is the whole of the migration's
-        // judgement — the sensor that was believed is also, and still, the one being read — and the
-        // direction matters: seeding every known sensor active instead would have the app open a link
-        // to every sensor it has ever met on the next start.
+        // `active` is RENAMED to `authoritative` and a new `active` is seeded from it: seeding every
+        // known sensor active instead would open a link to every sensor ever met on the next start.
         helper.createDatabase(13).use { db ->
             db.execSQL(
                 "INSERT INTO `cgm_source` " +
@@ -314,7 +282,6 @@ class MigrationTest {
 
         val db = helper.runMigrationsAndValidate(14, listOf(MigrationRunner.MIGRATION_13_14))
 
-        // The old flag's meaning travelled to the new name, row for row.
         assertEquals(1, countRows(db, "SELECT COUNT(*) FROM `cgm_source` WHERE `authoritative` = 1"))
         assertEquals(
             1,
@@ -326,7 +293,6 @@ class MigrationTest {
             1,
             countRows(db, "SELECT COUNT(*) FROM `cgm_source` WHERE `active` = 1 AND `sourceId` = 'aidexx:BELIEVED'"),
         )
-        // Everything else on both rows is untouched — a rename must not disturb a retired sensor.
         assertEquals(1, countRows(db, "SELECT COUNT(*) FROM `cgm_source` WHERE `hidden` = 1 AND `sourceId` = 'aidexx:RETIRED'"))
         assertEquals(2, countRows(db, "SELECT COUNT(*) FROM `cgm_source`"))
         db.close()
@@ -334,10 +300,7 @@ class MigrationTest {
 
     @Test
     fun migrate14To15_bgSourceIsAddedAndLeftNull() {
-        // v15 (contract 0.4.0): `sample` records which sensor its bg came from. One nullable column,
-        // nothing backfilled — a row written before it genuinely has no record of the sensor behind
-        // it, every sensor the phone had met having been authoritative in turn, so stamping the
-        // current one would be indistinguishable from having known.
+        // Nothing is backfilled: a pre-v15 row genuinely has no record of which sensor wrote it.
         helper.createDatabase(14).use { db ->
             db.execSQL(
                 "INSERT INTO `sample` (`ts`,`tzOffsetMin`,`bgMgdl`,`bgProvenance`,`bgFlag`," +
@@ -355,10 +318,8 @@ class MigrationTest {
 
     @Test
     fun migrate15To16_exerciseTablesMatchSchemaAndNoSampleIsBackfilled() {
-        // v16 (logged exercise): two additive tables, nothing else touched. The `sample.exercise`
-        // column has existed and been null since v1, and null there means the magnitude was never
-        // recorded — which for every bucket predating this feature is exactly true, so a backfill
-        // would invent a bout that was never walked.
+        // No backfill: null `sample.exercise` means the magnitude was never recorded, which for
+        // every bucket predating this feature is true.
         helper.createDatabase(15).use { db ->
             db.execSQL(
                 "INSERT INTO `sample` (`ts`,`tzOffsetMin`,`bgMgdl`,`bgSource`,`bgProvenance`,`bgFlag`," +
@@ -380,8 +341,7 @@ class MigrationTest {
 
     @Test
     fun migrate15To16_theBoutClientIdIsUnique() {
-        // The unique index is what makes an archive restore a merge rather than a duplication: a bout
-        // the phone already holds must lose to itself, not land twice with two tracks.
+        // The unique index is what makes an archive restore a merge rather than a duplication.
         helper.createDatabase(15).close()
         val db = helper.runMigrationsAndValidate(16, listOf(MigrationRunner.MIGRATION_15_16))
 
@@ -402,11 +362,8 @@ class MigrationTest {
 
     @Test
     fun migrate16To17_exerciseBecomesGramsAndTheSecondsAreDropped() {
-        // v17 changes what the column MEANS, not just its type: whole active seconds per bucket
-        // (0..300) become grams of carbohydrate equivalent (order 2.5). No per-bucket function of the
-        // seconds recovers the grams — the disposal curve spreads a bout's magnitude over its length
-        // plus ninety minutes — so the old values are dropped rather than converted, and everything
-        // else in the row must survive the rebuild untouched.
+        // The column changes MEANING: whole active seconds per bucket become grams of carbohydrate
+        // equivalent. No per-bucket function recovers the grams, so the old values are dropped.
         helper.createDatabase(16).use { db ->
             db.execSQL(
                 "INSERT INTO `sample` (`ts`,`tzOffsetMin`,`bgMgdl`,`bgSource`,`bgProvenance`,`bgFlag`," +
@@ -424,7 +381,6 @@ class MigrationTest {
 
         assertEquals(2, countRows(db, "SELECT COUNT(*) FROM `sample`"))
         assertEquals(2, countRows(db, "SELECT COUNT(*) FROM `sample` WHERE `exercise` IS NULL"))
-        // Every other column of the rebuilt row is the one that went in.
         assertEquals(
             1,
             countRows(
@@ -445,9 +401,7 @@ class MigrationTest {
 
     @Test
     fun migrate17To18_rawSampleTableIsAddedEmptyAndNothingElseMoves() {
-        // v18 (the sub-grid sample record): one additive table, nothing else touched. No backfill is
-        // possible even in principle — `cgm_reading` has only ever held the sample that won each
-        // slot, so the samples this table exists to keep were discarded before it existed.
+        // No backfill is possible: `cgm_reading` only ever held the sample that won each slot.
         helper.createDatabase(17).use { db ->
             db.execSQL(
                 "INSERT INTO `cgm_reading` (`sourceId`,`tsMs`,`bgMgdl`,`trendTenthsPerMin`," +
@@ -469,8 +423,8 @@ class MigrationTest {
                     "AND `bgMgdl` = 120 AND `provenance` = 'MEASURED'",
             ),
         )
-        // Off-grid receive instants are the point of the table; the key is (sourceId, rxWallMs), so
-        // two samples of one source inside one slot both survive and a repeat of an instant does not.
+        // The key is (sourceId, rxWallMs): two samples inside one slot survive, a repeated instant
+        // does not.
         db.execSQL(
             "INSERT INTO `cgm_sample_raw` " +
                 "(`sourceId`,`rxWallMs`,`bgMgdl`,`trendTenthsPerMin`,`minFromStart`,`quality`," +
@@ -498,14 +452,8 @@ class MigrationTest {
 
     @Test
     fun migrate18To19_theSecretTableIsAddedAndEverySourceIsNumberedInListOrder() {
-        // v19 (a second sensor family): one additive table for the per-sensor secrets, and one column on
-        // `cgm_source` numbering the sensors. Both halves are hand-written DDL, and this is the only thing
-        // in the project that compares them against what Room expects — there is no destructive fallback,
-        // so a one-column drift is a launch crash on the phone rather than a lost row.
-        //
         // The ordinal is what a user reads as "this physical sensor", so the backfill has to be
-        // deterministic and has to agree with the order every list query already uses (`addedAtMs`, then
-        // `sourceId`). Two rows sharing an instant is the case that decides whether it is total.
+        // deterministic and to agree with the list order (`addedAtMs`, then `sourceId`).
         helper.createDatabase(18).use { db ->
             fun source(id: String, added: Long) = db.execSQL(
                 "INSERT INTO `cgm_source` " +
@@ -524,7 +472,7 @@ class MigrationTest {
         assertEquals(1, countTables(db, "cgm_sensor_secret"))
         assertEquals(0, countRows(db, "SELECT COUNT(*) FROM `cgm_sensor_secret`"))
 
-        // Zero-based, gapless, and in the order the lists show: A (1000), B (1000, later id), C (3000).
+        // Zero-based, gapless, in list order: A (1000), B (1000, later id), C (3000).
         for ((id, ordinal) in listOf("aidexx:A" to 0, "aidexx:B" to 1, "aidexx:C" to 2)) {
             assertEquals(
                 "ordinal of $id",
@@ -532,16 +480,13 @@ class MigrationTest {
                 countRows(db, "SELECT COUNT(*) FROM `cgm_source` WHERE `sourceId` = '$id' AND `ordinal` = $ordinal"),
             )
         }
-        // No row may be left carrying the unassigned sentinel, and none may share a number.
+        // `ordinal < 0` is the unassigned sentinel.
         assertEquals(0, countRows(db, "SELECT COUNT(*) FROM `cgm_source` WHERE `ordinal` < 0"))
         assertEquals(3, countRows(db, "SELECT COUNT(DISTINCT `ordinal`) FROM `cgm_source`"))
-        // Additive: the migration adds a table and a column and touches nothing else.
         assertEquals(3, countRows(db, "SELECT COUNT(*) FROM `cgm_source`"))
         assertEquals(3, countRows(db, "SELECT COUNT(*) FROM `cgm_source` WHERE `warmupWindowMin` = 60"))
 
-        // The secret is keyed on the source, one row per sensor: a second write for a sensor must replace
-        // the first rather than land beside it, because two secrets for one sensor is two answers to
-        // "which key does it hold".
+        // One row per sensor: two secrets for one sensor is two answers to "which key does it hold".
         db.execSQL("INSERT INTO `cgm_sensor_secret` (`sourceId`,`blob`,`updatedAtMs`) VALUES ('aidexx:A',X'0102',1)")
         assertTrue(
             "a second secret was accepted for a sensor that already had one",
@@ -555,9 +500,8 @@ class MigrationTest {
 
     @Test
     fun migrate18To19_isIdempotentOnADatabaseThatAlreadyHasTheColumn() {
-        // Both statements have to survive being run again: a migration interrupted part way is re-applied
-        // whole on the next open, and neither the table creation nor the numbering may fail or move a row
-        // when it is. (The ALTER is the one statement that cannot be re-run, which is why it is not.)
+        // A migration interrupted part way is re-applied whole on the next open, so both statements
+        // must survive a re-run. The ALTER cannot, which is why it is not one of them.
         helper.createDatabase(18).use { db ->
             db.execSQL(
                 "INSERT INTO `cgm_source` " +
@@ -578,9 +522,6 @@ class MigrationTest {
 
     @Test
     fun migrate19To20_theAdapterAndInfillTablesAreAdded() {
-        // v20 (the adapter and the reconstructed sample): two additive tables, both hand-written
-        // DDL. `runMigrationsAndValidate` is what compares them against what Room expects — and
-        // there is no destructive fallback, so a one-column drift is a launch crash on the phone.
         helper.createDatabase(19).close()
 
         val db = helper.runMigrationsAndValidate(20, listOf(MigrationRunner.MIGRATION_19_20))
@@ -592,11 +533,7 @@ class MigrationTest {
         db.close()
     }
 
-    /**
-     * v21 (a logged event becomes editable and deletable). The backfill is what this pins, not the
-     * shape: `loggedAtMs` takes `updatedAt` on every existing row, which is the honest reading —
-     * nothing could edit one before v21, so `updatedAt` was only ever set at insert.
-     */
+    /** `loggedAtMs` takes `updatedAt` on every existing row: nothing could edit one before v21. */
     @Test
     fun migrate20To21_theMutationStampsBackfillAndTheTombstoneTableIsAdded() {
         val seed = helper.createDatabase(20)
@@ -633,8 +570,7 @@ class MigrationTest {
         db.close()
     }
 
-    /** v22 (the span key and the promotion stamp). The backfill makes every pre-v22 row its own
-     *  one-step span — honest, because the runs were never recorded. */
+    /** Every pre-v22 row becomes its own one-step span; the runs were never recorded. */
     @Test
     fun migrate21To22_theSpanKeyBackfillsToEachRowsOwnTs() {
         val seed = helper.createDatabase(21)
@@ -659,11 +595,7 @@ class MigrationTest {
         db.close()
     }
 
-    /**
-     * v23 (an adapter carries the verdict on its own dose response). The backfill is what matters:
-     * `ABSENT` is the state that REFUSES attach, so an adapter nobody measured — including one
-     * that arrived by import or by an archive restore — is blocked rather than assumed fine.
-     */
+    /** `ABSENT` refuses attach, so an adapter nobody measured is blocked, not assumed fine. */
     @Test
     fun migrate22To23_anUnmeasuredAdapterBackfillsToAbsent() {
         val seed = helper.createDatabase(22)
@@ -691,14 +623,8 @@ class MigrationTest {
         db.close()
     }
 
-    /**
-     * v24 (a reconstructed span keeps its whole fan, and the τ its line was read at).
-     *
-     * The back-fill is what matters: a pre-v24 row has two band edges and nothing between them, so
-     * its fan is EMPTY rather than five levels synthesised from the edges — a manufactured interior
-     * would draw a shape no model emitted and be indistinguishable from one that did. And `tau`
-     * back-fills to `0.5`, because every row written before this migration is the median.
-     */
+    /** A pre-v24 row's fan is EMPTY, not levels synthesised from its two edges — a manufactured
+     *  interior would be indistinguishable from one a model emitted. `tau` back-fills to 0.5. */
     @Test
     fun migrate23To24_anOldFillHasNoFanAndIsTheMedian() {
         val seed = helper.createDatabase(23)
@@ -749,7 +675,6 @@ class MigrationTest {
             0,
             countRows(db, "SELECT COUNT(*) FROM `prediction`"),
         )
-        // The column exists and takes a source id: a post-migration write must round-trip.
         db.execSQL(
             "INSERT INTO `prediction` (`madeAtMs`,`modelId`,`horizonSteps`,`nQuantiles`,`stepMs`," +
                 "`anchorTsMs`,`sourceId`,`lastBg`,`lineBlob`,`fanBlob`,`todBlob`,`todConf`,`status`," +

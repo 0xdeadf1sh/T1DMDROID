@@ -14,23 +14,9 @@ import androidx.compose.ui.platform.LocalContext
 import java.util.concurrent.locks.LockSupport
 
 /**
- * [GameSynth] wired to the speaker: one `AudioTrack`, one generator thread, and audio focus.
- *
- * **The blocking write is the clock.** The thread renders exactly one HAL burst, hands it to
- * `AudioTrack.write(…, WRITE_BLOCKING)`, and blocks there until the mixer has room for the next —
- * which is the only pacing mechanism that cannot drift. There is no `Thread.sleep` on this path and no
- * timer; the one `sleep` in the file is in the parked branch, where nothing is being produced.
- *
- * **Nothing here may touch the frame loop.** The game thread's whole interaction with audio is a
- * handful of volatile field writes and an atomic OR (see [GameSynth]) — no queue, no lock, no
- * allocation — so a stalled mixer can starve the speaker but can never stall the physics, and a
- * long frame can never underrun the speaker.
- *
- * Sizing is queried rather than assumed. `FuneralToll` hardcodes 44 100 Hz; this device's HAL runs at
- * 48 000 with a 256-frame burst, and a track built at any other rate is silently resampled and
- * disqualified from the fast path — so [AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE] and
- * [AudioManager.PROPERTY_OUTPUT_FRAMES_PER_BUFFER] are the authority and the constants below are only
- * the fallback for a device that answers neither.
+ * The blocking `AudioTrack.write` is the clock: no sleep and no timer on this path. The game thread
+ * only writes volatile fields, so a stalled mixer can never stall the physics. A track built at
+ * anything but the HAL's own rate is resampled off the fast path; the constants below are fallback.
  */
 class GameAudio private constructor(
     private val audioManager: AudioManager,
@@ -41,8 +27,7 @@ class GameAudio private constructor(
     private val focusRequest: AudioFocusRequest =
         AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
             .setAudioAttributes(gameAttributes())
-            // Duck it ourselves, on a ramp. The platform's own ducking is a step, and a step on a
-            // continuous engine tone is the one artefact this whole file exists to avoid.
+            // Duck on a ramp instead: the platform's own ducking is a step.
             .setWillPauseWhenDucked(false)
             .setOnAudioFocusChangeListener { change ->
                 focusGain = when (change) {
@@ -70,14 +55,9 @@ class GameAudio private constructor(
         start()
     }
 
-    /**
-     * Start (or resume) making sound. Idempotent; takes audio focus if it is not already held.
-     */
     fun resume() {
         if (!running || active) return
-        // The GRANT is only ever reported as a return value — a granted request does not call the
-        // listener — so the gain has to be re-derived here. A permanent AUDIOFOCUS_LOSS latched it at
-        // 0, and leaving it there would mute the engine for the rest of the composition.
+        // A granted request does not call the listener, so the gain is re-derived here.
         val granted = runCatching { audioManager.requestAudioFocus(focusRequest) }
             .getOrDefault(AudioManager.AUDIOFOCUS_REQUEST_FAILED)
         focusGain = if (granted == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) 1f else 0f
@@ -86,14 +66,8 @@ class GameAudio private constructor(
         LockSupport.unpark(thread)
     }
 
-    /**
-     * **The alarm interlock's audio half, and the background hold's.** Fade out, park the track, and
-     * hand focus back — an alarm ringtone must not arrive ducked underneath a game engine.
-     *
-     * The fade is the synth's master ramp, so this returns immediately and the silence lands ~30 ms
-     * later without a click; the generator then parks rather than spinning on silence, because the
-     * game route can sit backgrounded on the nav stack indefinitely.
-     */
+    /** The alarm interlock's audio half: an alarm ringtone must not arrive ducked under a game
+     *  engine. The fade is the synth's master ramp, so silence lands ~30 ms later. */
     fun release() {
         if (!active) return
         active = false
@@ -101,8 +75,8 @@ class GameAudio private constructor(
         runCatching { audioManager.abandonAudioFocusRequest(focusRequest) }
     }
 
-    /** Permanent teardown. The generator thread does the release itself, one burst later, so nothing
-     *  is freed underneath a native write in flight. */
+    /** The generator thread does the release itself, one burst later, so nothing is freed under a
+     *  native write in flight. */
     fun close() {
         if (!running) return
         running = false
@@ -151,23 +125,19 @@ class GameAudio private constructor(
         runCatching { track.release() }
     }
 
-    /** Underruns since the track was created: the one honest measure of whether [BURSTS] is enough
-     *  headroom on a throttled SoC, and the number to reach for first if the engine ever crackles.
-     *  Nothing reads it today — it is a probe, not a control. */
+    /** Underruns since the track was created. A probe; nothing reads it. */
     val underruns: Int get() = runCatching { track.underrunCount }.getOrDefault(0)
 
     companion object {
         private const val FALLBACK_RATE = 48_000
         private const val FALLBACK_BURST = 256
 
-        /** Bursts of headroom. Two is the latency-optimal figure; four survives a scheduling hiccup on
-         *  a phone that is also decoding BLE frames and running a forecast, which this one is. */
+        /** Two is latency-optimal; four survives a scheduling hiccup. */
         private const val BURSTS = 4
 
         private const val DRAIN_BURSTS = 12
 
-        /** A poll rather than a pure park: `unpark` is the fast path, and the timeout is only there so
-         *  a lost wake-up costs a fifth of a second of silence instead of a dead engine. */
+        /** A poll, not a pure park: a lost wake-up costs a fifth of a second of silence, not the engine. */
         private const val PARK_POLL_NS = 200_000_000L
 
         private fun gameAttributes(): AudioAttributes =
@@ -176,10 +146,7 @@ class GameAudio private constructor(
                 .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                 .build()
 
-        /**
-         * Build the engine, or `null` if this device will not give us a track — in which case the game
-         * is silent and nothing else changes.
-         */
+        /** Null when the device refuses a track; the game is then silent. */
         fun create(context: Context): GameAudio? = runCatching {
             val am = context.getSystemService(AudioManager::class.java) ?: return null
             val rate = am.getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE)?.toIntOrNull()
@@ -199,8 +166,7 @@ class GameAudio private constructor(
                 .setAudioAttributes(gameAttributes())
                 .setAudioFormat(
                     AudioFormat.Builder()
-                        // Float in, float out: the mixer's own format, so nothing converts per sample
-                        // and an overshoot clips in the mixer instead of wrapping in a short.
+                        // The mixer's own format: nothing converts per sample, and an overshoot clips.
                         .setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
                         .setSampleRate(rate)
                         .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
@@ -219,7 +185,6 @@ class GameAudio private constructor(
     }
 }
 
-/** The engine for this composition, torn down with it. Null when the device refused a track. */
 @Composable
 internal fun rememberGameAudio(): GameAudio? {
     val app = LocalContext.current.applicationContext

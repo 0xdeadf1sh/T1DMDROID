@@ -10,11 +10,6 @@ import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * The loopback handshake + AEAD contract that the desktop-emulator scaffolding relies on: both
- * sides independently derive the SAME Short Authentication String, and a sealed phone→watch push
- * round-trips through the watch counterpart while tamper/replay fail closed.
- */
 class WatchHandshakeTest {
 
     private fun paired(): Pair<LoopbackWatchSession, LoopbackWatchSession> {
@@ -55,7 +50,7 @@ class WatchHandshakeTest {
         val (phone, watch) = paired()
         phone.confirm(); watch.confirm()
         val f = phone.seal("hello".encodeToByteArray())
-        // Flip the last (GCM tag) byte of the authoritative record → tag verification must fail.
+        // Flip the last byte: the GCM tag.
         val tampered = f.frame.clone().also { it[it.size - 1] = (it[it.size - 1] + 1).toByte() }
         assertThrows(IllegalArgumentException::class.java) { watch.emulatorOpenPush(tampered) }
     }

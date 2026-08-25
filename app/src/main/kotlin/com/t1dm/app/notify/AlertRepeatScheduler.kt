@@ -7,14 +7,7 @@ import android.content.Intent
 import android.os.SystemClock
 import timber.log.Timber
 
-/**
- * The urgent-alarm repeat cadence, delivered via an EXACT alarm (item 2 / PLAN "repeat cadence via
- * exact alarm"). While a CRITICAL alarm persists, [schedule] arms an
- * `setExactAndAllowWhileIdle` at the configured cadence; on fire the [AlertRepeatReceiver] hands back
- * to the foreground service to re-announce and re-arm. This survives Doze in a way the in-process
- * coroutine tick cannot, and it is purely ADDITIVE — it re-presents an already-active deterministic
- * alarm and never decides one.
- */
+/** Re-presents an already-active deterministic alarm; it never decides one. */
 class AlertRepeatScheduler(context: Context) {
     private val app = context.applicationContext
     private val am = app.getSystemService(AlarmManager::class.java)

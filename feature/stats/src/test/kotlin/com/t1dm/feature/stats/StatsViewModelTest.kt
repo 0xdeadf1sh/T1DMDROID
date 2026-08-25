@@ -18,11 +18,6 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Test
 
-/**
- * Host coverage for the Phase-6 Stats orchestration: the server⊕local union, the fail-closed
- * empty-state reason, and the server-unavailable degrade path. Uses a fully in-memory fake
- * [StatsSource] so no Room / native / OkHttp is touched.
- */
 @OptIn(ExperimentalCoroutinesApi::class)
 class StatsViewModelTest {
 

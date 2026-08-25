@@ -5,14 +5,8 @@ import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * The exercise panel's two registry entries, both of which fail SILENTLY when missed.
- *
- * [destinations] IS the nav wheel's ring, so a panel absent from it is unreachable while its route
- * still resolves — the screen exists and nothing points at it. And [crumbsFor] falls through to a
- * single crumb whose label is the raw route string, so an unregistered sub-route renders
- * `exercise/{sessionId}` as its own breadcrumb rather than failing.
- */
+/** Both entries fail silently: a panel off [destinations] is unreachable, and [crumbsFor] falls
+ *  through to a single crumb labelled with the raw route. */
 class ExerciseRouteTest {
 
     @Test
@@ -34,7 +28,7 @@ class ExerciseRouteTest {
             review,
         )
         assertEquals(2, review.size)
-        // The ancestor crumb must ascend to the hub; a null route there renders as dead text.
+        // A null route on the ancestor crumb renders as dead text.
         assertEquals("exercise", review.first().route)
         assertEquals(null, review.last().route)
     }

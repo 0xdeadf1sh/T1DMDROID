@@ -17,13 +17,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/**
- * In-memory Room verification of the single grid-snap authority (§4-#1): the repository writer
- * ([T1dmRepository.logLoggedDose] / [T1dmRepository.logMeal]) round-snaps a raw wall-clock `tsMs`
- * onto the 5-min grid at insert, so a logged event's bucket coincides with its own scalar-sample
- * bucket (no ≤±150 s sub-grid smear, the phantom the old reconcile double-counted). Instrumented
- * so the real SQLite exercises the persisted snap, not merely the returned value.
- */
+/** The single grid-snap authority (§4-#1): the repository writer snaps `tsMs` at insert. */
 @RunWith(AndroidJUnit4::class)
 class RoomDoseGridSnapTest {
 
@@ -42,27 +36,25 @@ class RoomDoseGridSnapTest {
 
     @After fun tearDown() = db.close()
 
-    // A grid-aligned base (== 1_000_000 · GRID) so the nearest bucket of G+137 s is provably G:
-    // 137 s < 150 s ⇒ round-to-nearest floors it back to the bucket start.
+    // 137 s < 150 s, so the nearest bucket of g + 137 s is g itself.
     private val g = 300_000_000_000L
     private val raw = g + 137_000L
-    // Replicates T1dmRepository.snapToGrid (private) — Math.floorDiv(ts + GRID/2, GRID) * GRID.
+    // Replicates T1dmRepository.snapToGrid (private).
     private val expected = Math.floorDiv(raw + GRID / 2, GRID) * GRID
 
     @Test
     fun loggedDose_tsSnappedToItsSampleBucket() = runTest {
         val stored = repo.logLoggedDose(doseAt(raw))
 
-        assertEquals(0L, stored.tsMs % GRID)          // lands on the 5-min grid
-        assertEquals(expected, stored.tsMs)           // == snapToGrid(raw)
-        assertEquals(g, stored.tsMs)                  // the nearest bucket is G itself
+        assertEquals(0L, stored.tsMs % GRID)
+        assertEquals(expected, stored.tsMs)
+        assertEquals(g, stored.tsMs)
 
-        // Persisted snapped (not merely returned snapped): the row ChannelBuilder reads is on-grid.
+        // Persisted snapped, not merely returned snapped.
         val persisted = repo.loggedDosesInRange(g - 10 * GRID, g + 10 * GRID).single()
         assertEquals(expected, persisted.tsMs)
 
-        // The event bucket IS a legal sample bucket: a scalar sample at the same instant shares the
-        // slot (requireGrid(expected) passing is itself the proof the snapped ts is a valid key).
+        // requireGrid(expected) passing is the proof the snapped ts is a legal sample key.
         assertTrue(repo.mergeServerSample(SamplePatch(ts = expected, tzOffsetMin = 0, updatedAt = raw, steps = 1)))
         assertEquals(stored.tsMs, repo.sampleAt(expected)!!.ts)
     }

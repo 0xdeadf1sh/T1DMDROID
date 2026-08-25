@@ -3,7 +3,6 @@ package com.t1dm.data.settings
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
-/** Host tests for the BG-panel axis-range sanitizer (Phase 7A item 1). */
 class BgRangeTest {
 
     @Test fun keepsValidRange() {
@@ -11,7 +10,7 @@ class BgRangeTest {
     }
 
     @Test fun enforcesMinBelowMax() {
-        // max <= min is nudged so the axis can never invert or collapse.
+        // Nudged so the axis can never invert or collapse.
         val r = BgRange.of(200, 150)
         assertEquals(200, r.minMgdl)
         assertEquals(201, r.maxMgdl)

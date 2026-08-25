@@ -38,19 +38,9 @@ import com.t1dm.ui.graph.CurvePreview
 import java.util.Locale
 
 /**
- * The custom-food editor (`meals/builder/food/{id}`) — the other half of what `Food.custom` has
- * always promised ("editable/deletable"); only the delete path existed before.
- *
- * The edit is confined to the dictionary row. Saved meals and already-logged meals built from this
- * food keep the carbs/GI/curve they SNAPSHOTTED at add time (`MealComponent`) — that snapshot is
- * precisely what lets a stored meal survive this edit and the food's later deletion, so nothing here
- * re-resolves them. The one line of copy on screen states that consequence, because it is the only
- * thing about the edit a competent user cannot infer from the fields.
- *
- * A stored [Food.customCurve] is a NORMALIZED SAMPLED shape (per-5-min buckets summing to 1.0) with
- * no inverse back to the [BezierCurve] the editor speaks. So a previously drawn curve can be kept
- * verbatim or redrawn from scratch — never nudged. Only a redraw re-samples; keeping it writes the
- * stored buckets straight back.
+ * Edits the dictionary row only; meals keep the snapshot they took at add time.
+ * A stored [Food.customCurve] is normalized per-5-min buckets with no inverse back to a
+ * [BezierCurve], so a drawn curve is kept verbatim or redrawn from scratch — never nudged.
  */
 @Composable
 fun FoodEditorScreen(
@@ -65,8 +55,7 @@ fun FoodEditorScreen(
         mutableStateOf(food.giOrNull?.let { String.format(Locale.ROOT, "%.0f", it) } ?: "")
     }
     var useCurve by remember(food.id) { mutableStateOf(food.customCurve != null) }
-    // Null while the stored shape is kept verbatim; non-null once the user elects to redraw (and from
-    // the outset for a food that has no stored shape to keep).
+    // Null while the stored shape is kept verbatim; non-null once redrawn.
     var drawn by remember(food.id) {
         mutableStateOf(if (food.customCurve == null) BezierCurve.default(180.0) else null)
     }
@@ -149,8 +138,6 @@ fun FoodEditorScreen(
                             name = name.trim(),
                             carbsPer100g = carbs ?: food.carbsPer100g,
                             giOrNull = giText.toDoubleOrNull(),
-                            // Only a REDRAW re-samples; a kept shape is written back bucket for bucket,
-                            // since there is no inverse from the samples to a curve to round-trip through.
                             customCurve = when {
                                 !useCurve -> null
                                 shape != null -> shape.sampleNormalized(1.0)
@@ -172,12 +159,6 @@ fun FoodEditorScreen(
     }
 }
 
-/**
- * A double as the user typed it: no trailing `.0`, no spurious precision.
- *
- * [Locale.ROOT], because this seeds a field that is read back with `toDoubleOrNull` — which knows only
- * `'.'` — and whose input filter strips everything else. Under a comma-decimal locale the default
- * would hand the field a value it can neither parse nor let the user retype.
- */
+/** [Locale.ROOT]: the field is read back with `toDoubleOrNull`, which knows only `'.'`. */
 private fun numText(v: Double): String =
     String.format(Locale.ROOT, "%.2f", v).trimEnd('0').trimEnd('.').ifEmpty { "0" }

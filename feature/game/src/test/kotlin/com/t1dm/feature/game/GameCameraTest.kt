@@ -4,12 +4,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * The vertical camera is a RESCUE, not a follow-cam: it must sit perfectly still while the car is
- * inside the view — otherwise drive mode would scroll the BG axis away from where the user left it —
- * and it must move the moment the car would otherwise leave the panel, which is what happened on a
- * hyper excursion when the view was pinned to the configured range.
- */
 class GameCameraTest {
 
     private val viewH = 100f
@@ -36,7 +30,6 @@ class GameCameraTest {
         val c = GameCamera()
         val bottom = c.targetBottomFrom(50f, 52f, viewH)
         assertTrue("the view must move down", bottom < 50f)
-        // Far below: clamped rather than scrolling the ground off the panel entirely.
         assertTrue("floor clamp holds", c.targetBottomFrom(0f, -900f, viewH) >= -2.5f)
     }
 

@@ -5,12 +5,6 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 
-/**
- * Renders a [VibrationPreset] on the device vibrator, preferring hardware primitives
- * ([VibrationEffect.Composition] — crisp CLICK/THUD/TICK on the K90's Dimensity-9500 actuator) and
- * degrading to a waveform where a primitive is unsupported. Shared by the deterministic notifier and
- * the model-driven predictive-alert presenter so both tiers feel identical.
- */
 class VibrationActuator(context: Context) {
 
     private val vibrator: Vibrator =

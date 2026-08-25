@@ -7,52 +7,40 @@ import kotlinx.serialization.json.JsonElement
 
 /**
  * Wire DTOs for the T1DMSERVER `/v1` contract (docs/T1DMSERVER_API.md). Field names match the JSON
- * exactly. The phone is the sole read-write author: physiologic meals/doses travel as self-describing
- * curve events keyed by a phone-minted `client_id`, and the phone's `updated_at` is carried verbatim
- * (the server never re-stamps). Null-asymmetry: the phone omits absent optionals on write
- * (`explicitNulls = false`), the server writes explicit `null` for gaps on read; `mood` is the lone
- * integer among the sample floats.
+ * exactly. The phone omits absent optionals on write (`explicitNulls = false`); the server writes
+ * explicit `null` for gaps on read. `mood` is the lone integer among the sample floats.
  */
 
 @Serializable
 data class HealthDto(val status: String, val ws_clients: Int = 0, val store_epoch: String? = null)
-
-// ── Sample row (read: GET /v1/series, WS `sample`) — demoted to six scalars ───────────────────
 
 @Serializable
 data class SampleDto(
     val ts: Long,
     val tz_offset: Int = 0,
     val bg: Double? = null,
-    /** Which CGM sensor [bg] came from. Read as well as written, so a slot the phone learns about
-     *  only from the server keeps the label the phone itself gave it. */
     val bg_source: String? = null,
     val hr: Double? = null,
     val steps: Double? = null,
     val sleep: Double? = null,
     val exercise: Double? = null,
     val mood: Int? = null,
-    /** `true` when [bg] is a model reconstruction the patient promoted, not a sensor reading
-     *  (contract 0.5.0). Always present and non-null on a read: a row written before 0.5.0 was never
-     *  promoted, so `false` is a fact about it rather than an unknown. */
+    /** [bg] is a promoted model reconstruction, not a sensor reading. Non-null on a read: `false`
+     *  is a fact about the row, not an unknown. */
     val bg_reconstructed: Boolean = false,
     val updated_at: Long = 0,
-    /** `true` on a tombstoned slot (contract 0.5.0). The row keeps whatever values its last writer
-     *  sent — the server stores what it receives and does not decide what a deletion means — so a
-     *  physiologic reader has to exclude it rather than infer it from all-null scalars. */
+    /** Tombstoned slot. The row keeps its last-written values, so a reader must exclude by this
+     *  flag rather than infer a deletion from all-null scalars. */
     val deleted: Boolean = false,
 )
 
 @Serializable
 data class SeriesPageDto(val rows: List<SampleDto> = emptyList(), val next_cursor: Long? = null)
 
-// ── Meal / Dose curve events (write: PUT /v1/meals, /v1/doses; read: GET /v1/meals, /v1/doses) ─
-
 /**
- * A meal as a self-describing appearance curve, keyed by the phone's [client_id]. A parametric meal
- * carries its gamma params ([gi]/[k]/[theta]); a mixed/builder meal instead carries the resolved
- * [custom_curve] on the fixed 300 000 ms grid (no per-food components — §8.3). [ts] is grid-snapped;
- * [updated_at] is the phone clock, stored verbatim.
+ * A meal as a self-describing appearance curve keyed by [client_id]. Parametric meals carry
+ * [gi]/[k]/[theta]; mixed/builder meals carry [custom_curve] on the 300 000 ms grid (§8.3). [ts] is
+ * grid-snapped, [updated_at] the phone clock stored verbatim.
  */
 @Serializable
 data class MealEventDto(
@@ -67,27 +55,13 @@ data class MealEventDto(
     val theta: Double? = null,
     val custom_curve: List<Double>? = null,
     val note: String? = null,
-    /**
-     * `true` on a tombstone (contract 0.5.0). A deletion is an ordinary upsert carrying this flag,
-     * so it inherits the strictly-newer `updated_at` guard and cannot be overtaken by a redelivery
-     * of the meal it removes.
-     *
-     * Defaulted, so every existing writer, every outbox envelope already on disk and every server
-     * read still decodes. A tombstone the phone authors is [MealTombstoneDto] — the curve fields are
-     * required on a live meal and ignored on a deletion, and omitting them is how a client that no
-     * longer holds the body still deletes it.
-     */
+    /** Tombstone. An ordinary upsert carrying the flag, so it inherits the strictly-newer
+     *  `updated_at` guard. The phone authors one as [MealTombstoneDto]. */
     val deleted: Boolean = false,
 )
 
-/**
- * A meal tombstone: the minimal body `PUT /v1/meals` accepts when [deleted] is set.
- *
- * A separate shape rather than nullable amounts on [MealEventDto], because those fields are
- * required on a live meal and making them optional there would let a malformed one store as a
- * zero-gram meal instead of answering 400. This body omits them entirely, which is also what the
- * contract asks of a client that wants the deleted content gone rather than merely hidden.
- */
+/** The minimal body `PUT /v1/meals` accepts when `deleted` is set. Separate from [MealEventDto] so
+ *  the curve fields stay required there — nullable, a malformed meal would store as zero grams. */
 @Serializable
 data class MealTombstoneDto(
     val client_id: String,
@@ -97,7 +71,6 @@ data class MealTombstoneDto(
     val deleted: Boolean = true,
 )
 
-/** The dose twin of [MealTombstoneDto]; `kind`, `units` and `duration_min` are likewise omitted. */
 @Serializable
 data class DoseTombstoneDto(
     val client_id: String,
@@ -108,9 +81,9 @@ data class DoseTombstoneDto(
 )
 
 /**
- * A dose as a self-describing PK action curve, keyed by the phone's [client_id]. [kind] is
- * `"bolus"` (gamma: [k]/[theta]) or `"basal"` (Bateman: [ka_per_hour]/[ke_per_hour]); a resolved
- * [custom_curve] overrides the params when present.
+ * A dose as a self-describing PK action curve keyed by [client_id]. [kind] is `"bolus"` (gamma:
+ * [k]/[theta]) or `"basal"` (Bateman: [ka_per_hour]/[ke_per_hour]); [custom_curve] overrides the
+ * params when present.
  */
 @Serializable
 data class DoseEventDto(
@@ -131,7 +104,7 @@ data class DoseEventDto(
     val deleted: Boolean = false,
 )
 
-/** The full active basal template (write: PUT /v1/basal-schedule full-replace; read: GET). */
+/** Full-replace: a `PUT` replaces the whole template. */
 @Serializable
 data class BasalScheduleDto(val schedule_id: String, val active: Boolean, val slots: List<BasalSlotDto>)
 
@@ -148,7 +121,7 @@ data class BasalSlotDto(
     val updated_at: Long,
 )
 
-/** Batch-upsert ack for PUT /v1/meals & /v1/doses — the accepted `client_id`s (idempotent by key). */
+/** [ids] are the accepted `client_id`s; the upsert is idempotent by key. */
 @Serializable
 data class EventBatchAck(val ok: Boolean = false, val ids: List<String> = emptyList())
 
@@ -158,9 +131,7 @@ data class MealsPageDto(val meals: List<MealEventDto> = emptyList())
 @Serializable
 data class DosesPageDto(val doses: List<DoseEventDto> = emptyList())
 
-// ── Prediction (write: the inbound `prediction` stream frame) ─────────────────────────────────
-
-/** The live circadian (time-of-day) head belief; `null` on the wire means "no head", never zeroed. */
+/** Null on the wire means no time head, never a zeroed vector. */
 @Serializable
 data class CircadianDto(
     val probs: List<Double>,
@@ -170,11 +141,8 @@ data class CircadianDto(
     val bin_hours: Double,
 )
 
-/**
- * The prediction write shape, keyed idempotent on `(made_at, model_id)`. [made_at] is the phone's
- * cycle ts and [updated_at] the phone clock — both stored verbatim. [circadian] replaces the former
- * zeroed `tod`/`tod_conf` pair.
- */
+/** Keyed idempotent on `(made_at, model_id)`. [made_at] is the phone's cycle ts, [updated_at] the
+ *  phone clock; both stored verbatim. */
 @Serializable
 data class PredictionWriteDto(
     val made_at: Long,
@@ -186,47 +154,36 @@ data class PredictionWriteDto(
     val circadian: CircadianDto? = null,
 )
 
-// ── Ingest (write: POST /v1/ingest) — six scalars, required updated_at ─────────────────────────
-
 @Serializable
 data class IngestDto(
     val ts: Long,
     val tz_offset: Int,
     val bg: Double? = null,
-    /** Which CGM sensor [bg] came from (contract 0.4.0) — opaque, never the serial. */
+    /** Opaque sensor label, never the serial. */
     val bg_source: String? = null,
     val hr: Double? = null,
     val steps: Double? = null,
     val sleep: Double? = null,
     val exercise: Double? = null,
     val mood: Int? = null,
-    /** See [SampleDto.bg_reconstructed]. Nullable on the write, where an absent key means `false`:
-     *  `SyncJson` sets `explicitNulls = false`, so an ordinary reading omits it entirely. */
+    /** See [SampleDto.bg_reconstructed]. An absent key means `false` (`explicitNulls = false`). */
     val bg_reconstructed: Boolean? = null,
     val updated_at: Long,
     /**
-     * Column names to erase at [ts] — the only way the contract offers to clear a stored scalar.
-     *
-     * Not an explicit null on the field itself. Contract 0.4.0 states that a write's explicit null
-     * leaves the column untouched, and there is no version marker anywhere on this wire, so
-     * overloading null would let any writer a version behind silently destroy stored readings. A
-     * 0.4.0 writer cannot emit this array and a 0.4.0 server ignores it.
+     * Column names to erase at [ts]. Not an explicit null: a written null leaves the column
+     * untouched, and with no version marker on the wire, overloading null would let an older writer
+     * destroy stored readings.
      */
     val clear: List<String>? = null,
     /**
-     * Whole-row tombstone at [ts]. Tri-state on purpose: `true` deletes, `false` revives, and an
-     * ABSENT key leaves the deletion exactly as it stands.
-     *
-     * The absence is what makes a deletion stick. Ingest is a partial-fill path — a later
-     * steps-only bundle, or the phone's own delayed CGM backfill into a past slot, arrives with a
-     * newer `updated_at` — and a non-null default here would have every one of them assert
-     * `deleted: false` and revive a slot the patient deleted.
+     * Whole-row tombstone at [ts]. Tri-state: `true` deletes, `false` revives, an ABSENT key leaves
+     * the deletion as it stands. Ingest is a partial-fill path, so a non-null default would have
+     * every later steps-only or backfill bundle revive a slot the patient deleted.
      */
     val deleted: Boolean? = null,
 )
 
-/** A CGM sensor descriptor — `PUT /v1/cgm-sources` (contract 0.4.0). [id] is the opaque label the
- *  samples carry; the rest is descriptive and each field may be absent. */
+/** [id] is the opaque label the samples carry; the rest is descriptive and may be absent. */
 @Serializable
 data class CgmSourceDto(
     val id: String,
@@ -239,8 +196,6 @@ data class CgmSourceDto(
 @Serializable
 data class IngestAck(val ok: Boolean = false, val ts: Long = 0)
 
-// ── Alerts (write) — client_id keyed ──────────────────────────────────────────────────────────
-
 @Serializable
 data class AlertWriteDto(
     val client_id: String,
@@ -252,20 +207,13 @@ data class AlertWriteDto(
 @Serializable
 data class IdAck(val ok: Boolean = false, val id: String = "")
 
-// ── Photo (write: POST /v1/photos, multipart/form-data) ───────────────────────────────────────
-
 @Serializable
 data class PhotoAck(val ok: Boolean = false, val id: Long = 0, val sha256: String = "")
 
-// ── Model registry (read: GET /v1/models) ─────────────────────────────────────────────────────
-
 /**
- * A served model-registry row (`GET /v1/models`). [id] IS the artifact filename (e.g.
- * `t1dmai_best.xnnpack.pte`); [meta] is the opaque sidecar JSON — the exporter's descriptor —
- * retained as an unparsed [JsonElement] (`null` when the server has no sidecar), which the
- * coordinator inspects with `jsonObject`/`jsonPrimitive` and writes back verbatim (bar the
- * normalized `id`/`artifact` fields). [sha256] is the registry-declared content hash, cross-checked
- * against the download's `X-SHA256` response header.
+ * [id] IS the artifact filename (e.g. `t1dmai_best.xnnpack.pte`). [meta] is the exporter's opaque
+ * sidecar, kept unparsed and written back verbatim, `null` when the server has none. [sha256] is
+ * cross-checked against the download's `X-SHA256` header.
  */
 @Serializable
 data class ModelDto(
@@ -281,8 +229,6 @@ data class ModelDto(
 
 @Serializable
 data class ModelsEnvelope(val models: List<ModelDto> = emptyList())
-
-// ── Stats (read: GET /v1/stats; write: PUT /v1/stats) ─────────────────────────────────────────
 
 @Serializable
 data class EventStatDto(val count: Int = 0, val duration_ms: Long = 0)
@@ -310,11 +256,8 @@ data class StatsDto(
 @Serializable
 data class StatsEnvelope(val stats: StatsDto)
 
-/**
- * The phone-computed stats block the server stores verbatim and re-serves (the server never
- * computes). A flat superset of the `core::Stats` fields the TUI renders; [window] is `7d`/`30d`/`90d`
- * and [updated_at] the phone clock.
- */
+/** Phone-computed; the server stores and re-serves it verbatim. [window] is `7d`/`30d`/`90d`,
+ *  [updated_at] the phone clock. */
 @Serializable
 data class StatsPushDto(
     val window: String,
@@ -336,16 +279,10 @@ data class StatsPushDto(
     val n_samples: Int = 0,
 )
 
-// ── WebSocket events (read: GET /v1/stream) ───────────────────────────────────────────────────
-
 /**
- * The nine push events carry their inlined event fields beside a `"type"` discriminant. Only
- * `sample` and `alert` are surfaced upward; the rest — `prediction`, `note`, `photo`, and the
- * `meal`/`dose`/`basal_schedule`/`stats` stubs — are decoded but ignored so an unknown or extra
- * field never breaks the stream (`ignoreUnknownKeys` tolerates the inlined fields we don't model).
- * The phone is the sole read-write author and every write fans out `broadcast_except(origin)`, so it
- * never receives its own meal/dose/basal/stats echo; those variants exist only to keep decoding total
- * (they are not wired to catch-up) and gap-hydration is REST-only.
+ * Event fields are inlined beside the `"type"` discriminant. Only `sample` and `alert` are surfaced
+ * upward; the rest are decoded solely to keep decoding total — the phone never receives its own
+ * meal/dose/basal/stats echo, and that history is hydrated over REST.
  */
 @Serializable
 sealed interface WsEvent {
@@ -356,13 +293,10 @@ sealed interface WsEvent {
         val tz_offset: Int = 0,
         val bg: Double? = null,
         val bg_source: String? = null,
-        /** Whether the BG beside it is a model's reconstruction rather than sensor signal. The REST
-         *  twin has carried this since 0.5.0 and this frame must too: without it a second read-write
-         *  session's promoted span arrives here as MEASURED, where it can clear an alarm and enter
-         *  the dosing series. Defaults false, which is what a 0.4.0 writer means. */
+        /** Without it another session's promoted span arrives as MEASURED, where it can clear an
+         *  alarm and enter the dosing series. Defaults false, which is what a 0.4.0 writer means. */
         val bg_reconstructed: Boolean = false,
-        /** A tombstoned sample. Nothing on the phone writes one today; decoded so that when
-         *  something does, this frame is not the path that silently drops it. */
+        /** Nothing on the phone writes one; decoded so this frame is not the path that drops it. */
         val deleted: Boolean = false,
         val hr: Double? = null,
         val steps: Double? = null,
@@ -395,18 +329,10 @@ sealed interface WsEvent {
     @Serializable @SerialName("stats") data class Stats(val window: String = "") : WsEvent
 }
 
-// ── WebSocket frames the CLIENT sends (write: GET /v1/stream) ──────────────────────────────────
-
 /**
- * The one frame the phone sends up the stream. Contract 0.5.0: a forecast has no REST route, and no
- * receiver stores one.
- *
- * **The payload's fields are inlined beside the `"type"` discriminant** — `{"type":"prediction",
- * "made_at":…,"line":[…],…}` — never nested under a property. A single named property would
- * serialize as `{"type":"prediction","body":{…}}`, which does not match the contract's schema and
- * which the server drops in silence: no error frame, no close, no log the phone can see. The
- * console would show nothing, forever, with nothing anywhere saying why. `WsClientFrameTest` pins
- * the exact frame text for that reason.
+ * The one frame the phone sends up the stream; no route stores a forecast. Fields are inlined beside
+ * the `"type"` discriminant, never nested under a property — a nested frame does not match the
+ * contract and the server drops it in silence. `WsClientFrameTest` pins the exact frame text.
  */
 @Serializable
 sealed interface WsClientFrame {
@@ -423,7 +349,6 @@ sealed interface WsClientFrame {
     ) : WsClientFrame
 }
 
-/** The stream frame for a forecast the phone has already computed. */
 fun PredictionWriteDto.toStreamFrame(): WsClientFrame.Prediction = WsClientFrame.Prediction(
     made_at = made_at,
     model_id = model_id,
@@ -434,8 +359,6 @@ fun PredictionWriteDto.toStreamFrame(): WsClientFrame.Prediction = WsClientFrame
     circadian = circadian,
 )
 
-/** The serialized size of the frame [toStreamFrame] produces — what actually leaves the phone, not
- *  the size of the DTO inside it. Public because the Network panel accounts for it and `SyncJson`
- *  is this module's own. */
+/** Serialized size of the frame, not of the DTO inside it. */
 fun PredictionWriteDto.frameBytes(): Int =
     SyncJson.encodeToString<WsClientFrame>(toStreamFrame()).toByteArray(Charsets.UTF_8).size

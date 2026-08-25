@@ -26,22 +26,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import timber.log.Timber
 
-/**
- * The phone-side watch orchestrator (task deliverables 2-4): it ties the BLE central, the crypto
- * [WatchSession], the windowed-nonce persistence, and the glance source into one accessory link,
- * and exposes a [StateFlow] the Security panel observes. It owns:
- *
- *  - the pairing handshake ([WatchHandshake]) up to AWAIT_SAS, then CONFIRM on the user's tap;
- * - manual ROTATE / RESET / UNPAIR (must be exposed);
- *  - the 5-min sealed PUSH ([pushNow], hooked to the FGS grid tick), off the main thread;
- *  - LOW-POWER suspend (one final flagged frame, then the scheduler idles) and resume;
- *  - reconnect with exponential backoff, and bond-loss / epoch-desync (ERR_* control frames) →
- *    a forced re-pair.
- *
- * Everything runs on [T1dmDispatchers.default] (crypto/seal) and `.io` (GATT) — never main (§2.3).
- * The link is dormant unless [WatchLinkConfig.enabled]; the whole seam removes by dropping the
- * module + the two DI bindings.
- */
+/** Runs on [T1dmDispatchers.default] (crypto/seal) and `.io` (GATT), never main. Dormant unless
+ *  [WatchLinkConfig.enabled]. */
 class WatchLink(
     private val centralProvider: () -> WatchCentral,
     private val sessionFactory: WatchSessionFactory,
@@ -67,7 +53,7 @@ class WatchLink(
     private var confirmAck: CompletableDeferred<ControlFrame.ConfirmAck>? = null
     private var ready: CompletableDeferred<Unit>? = null
 
-    /** Hosted from the FGS scope. On start, resume an existing pairing (reconnect + push) if enabled. */
+    /** Hosted from the FGS scope. */
     fun start(scope: CoroutineScope) {
         this.scope = scope
         scope.launch(dispatchers.default) {
@@ -81,12 +67,7 @@ class WatchLink(
         startRssiPoll(scope)
     }
 
-    /**
-     * Periodic RSSI sampler (Phase 7C — watch signal strength). While a transport is ready it reads
-     * the peripheral RSSI every [RSSI_POLL_MS] and publishes it to the panel + BG-panel WCH light;
-     * when disconnected it clears the reading (null ⇒ "no signal"). Off-main; a failed read is
-     * swallowed (the link liveness path is untouched).
-     */
+    /** Clears the reading to null when disconnected; a failed read is swallowed. */
     private fun startRssiPoll(scope: CoroutineScope) {
         rssiJob?.cancel()
         rssiJob = scope.launch(dispatchers.io) {
@@ -102,18 +83,8 @@ class WatchLink(
 
     fun setConfig(newConfig: WatchLinkConfig) { config = newConfig }
 
-    /**
-     * Undo [stopForReset]'s teardown once the wipe it was guarding has finished.
-     *
-     * `enabled = false` is teardown state, not a user preference — the link is constructed enabled and
-     * PAIRING is what actually gates it — but nothing in the process ever set it back. Since the reset
-     * stopped killing the process, a reset left the link disabled and the RSSI sampler cancelled for
-     * the rest of the process's life, so a subsequent re-pair completed its handshake and then pushed
-     * nothing, while the panel went on reporting the link live.
-     *
-     * Deliberately does NOT re-pair: the reset erased the key material, and a fresh X25519 handshake
-     * is exactly what should follow.
-     */
+    /** Undoes [stopForReset]: `enabled = false` is teardown state, not a preference, and nothing
+     *  else clears it. Deliberately does NOT re-pair — the reset erased the key material. */
     suspend fun resumeAfterReset() {
         linkMutex.withLock {
             config = config.copy(enabled = true)
@@ -121,16 +92,9 @@ class WatchLink(
         }
     }
 
-    /**
-     * Teardown for a FULL APP RESET (issue 5). Takes [linkMutex] so it SERIALISES with an in-flight
-     * [pushNow] critical section: a push that already began completes first (and the reset wipes the
-     * stores after it), while a push that starts afterwards finds the link disabled and returns before
-     * persisting. Disables the link and drops the in-memory session so no subsequent 5-min push can
-     * re-persist key material or a nonce ceiling into the `kv` store while it is being wiped —
-     * otherwise a late push could resurrect the very pairing the reset is erasing. Does NOT touch the
-     * stores (the reset wipes them); leaves the link UNPAIRED so a re-pair starts from a fresh X25519
-     * handshake (a new key ⇒ no (key, nonce) reuse). Idempotent.
-     */
+    /** Takes [linkMutex] so it serialises with an in-flight [pushNow]: a push starting later finds
+     *  the link disabled and returns before persisting, so it cannot re-persist key material or a
+     *  nonce ceiling into a store the reset is wiping. Does not touch the stores. Idempotent. */
     suspend fun stopForReset() {
         linkMutex.withLock {
             config = config.copy(enabled = false)
@@ -144,9 +108,7 @@ class WatchLink(
         }
     }
 
-    // ── Pairing ──────────────────────────────────────────────────────────────────────────────
 
-    /** Manual "Pair watch": connect the transport and run the handshake up to AWAIT_SAS. */
     fun beginPairing() {
         val s = scope ?: return
         s.launch(dispatchers.default) {
@@ -158,7 +120,6 @@ class WatchLink(
         }
     }
 
-    /** The user confirmed the SAS matches on both screens: send CONFIRM, await CONFIRM_ACK, go LIVE. */
     fun confirmSas() {
         val s = scope ?: return
         s.launch(dispatchers.default) {
@@ -174,7 +135,6 @@ class WatchLink(
         }
     }
 
-    /** Manual key ROTATION: bump the epoch, re-handshake (a new SAS to confirm). */
     fun rotate() {
         val s = scope ?: return
         s.launch(dispatchers.default) {
@@ -188,7 +148,6 @@ class WatchLink(
         }
     }
 
-    /** Manual RESET / UNPAIR: tell the watch, wipe local key material + counters, disconnect. */
     fun unpair() {
         val s = scope ?: return
         s.launch(dispatchers.default) {
@@ -223,29 +182,22 @@ class WatchLink(
 
     private suspend fun onSessionLive() {
         val session = session ?: return
-        // Persist the durable session blob AND reserve the first send-nonce window before any push
-        // (the real uniffi session refuses to seal until a window is reserved; §5.5 burn-the-window).
+        // The real session refuses to seal until a send-nonce window is reserved (§5.5).
         persistSession(session)
         _state.update { it.copy(phase = WatchLinkPhase.LIVE, bonded = true, sas = null, lastError = null) }
         syncCrypto()
     }
 
-    /** Checkpoint the resumable session: reserve+persist a fresh send-nonce window (real session) and
-     *  record the pairing. On the loopback double [WatchSession.exportState] is null → material stays
-     *  null and only the paired/epoch bits persist. */
+    /** Reserves and persists a fresh send-nonce window. The loopback double exports null material. */
     private suspend fun persistSession(session: WatchSession) {
         val material = runCatching { session.exportState() }.getOrNull()
         pairingStore.save(WatchPairingStore.Pairing(epoch = session.epoch, bonded = true, material = material))
     }
 
-    // ── Push (FGS 5-min tick) ──────────────────────────────────────────────────────────────────
 
     /**
-     * Seal + write one glance. Hooked to the FGS grid tick. In low-power mode it sends ONE final
-     * frame flagged `lowPowerSuspending` then idles (the watch expects the freeze); otherwise it
-     * requires a LIVE session + a ready transport, builds the glance, seals it under the next
-     * windowed nonce, CHECKPOINTS the ceiling BEFORE the write (so a crash mid-write can never
-     * re-issue the seq), and writes it. All off-main.
+     * Checkpoints the nonce ceiling BEFORE the write, so a crash mid-write cannot re-issue the seq.
+     * In low power it sends one final `lowPowerSuspending` frame, then idles. Off-main.
      */
     suspend fun pushNow(nowMs: Long): Unit = withContext(dispatchers.default) {
         linkMutex.withLock {
@@ -263,13 +215,9 @@ class WatchLink(
             val glance = runCatching { glanceSource.currentGlance(nowMs) }.getOrNull() ?: return@withLock
             val push = glance.copy(status = glance.status.copy(lowPowerSuspending = lp))
             val sealed = session.seal(WatchPushCodec.encode(push))
-            // The link may have been disabled (full reset / a config flip) while we were suspended in
-            // the currentGlance() Room read; do NOT re-persist key material or a nonce ceiling into kv
-            // rows a reset is wiping — that would resurrect the erased pairing (issue 5). The already
-            // burnMargin-guarded resume floor covers this un-checkpointed seq, so aborting is safe.
+            // The link may have been disabled while we were suspended in the currentGlance() read; do
+            // not persist into kv rows a reset is wiping. The burnMargin resume floor covers this seq.
             if (!config.enabled) return@withLock
-            // Checkpoint the nonce ceiling + re-reserve/persist the durable window BEFORE the radio
-            // write (fail-forward, never reuse): a crash mid-write resumes strictly past this seq.
             nonceStore.recordCeiling(session.epoch, sealed.seq)
             persistSession(session)
             runCatching { c.writePush(WatchPushCodec.wireFrame(sealed)) }
@@ -287,17 +235,14 @@ class WatchLink(
         }
     }
 
-    // ── Transport lifecycle ──────────────────────────────────────────────────────────────────
 
     private suspend fun resumeAndConnect(pairing: WatchPairingStore.Pairing) {
         val ceiling = nonceStore.loadCeiling(pairing.epoch)
         val session = sessionFactory.resume(pairing.material, ceiling).also { this.session = it }
         _state.update { it.copy(bonded = true, epoch = pairing.epoch) }
-        // The restore BURNED the send window (no headroom); reserve+persist a fresh one past the
-        // burned ceiling NOW — INDEPENDENTLY of transport success — so the first push can seal without
-        // reusing a (key,nonce) (§5.5) even when connectTransport() throws (watch out of range at boot)
-        // and we fall through to scheduleReconnect(), which does not persist. Exactly one reservation:
-        // this is the sole persistSession on the resume path.
+        // The restore burned the send window; reserve a fresh one now, independently of transport
+        // success, so the first push can seal without reusing a (key, nonce) (§5.5). The only
+        // reservation on this path.
         if (session.state == WatchSessionState.LIVE) persistSession(session)
         runCatching {
             connectTransport()
@@ -305,7 +250,6 @@ class WatchLink(
                 _state.update { it.copy(phase = WatchLinkPhase.LIVE) }
                 syncCrypto()
             } else {
-                // The keys did not survive (e.g. the loopback scaffold): a re-pair is required.
                 fail("Session could not be resumed from persisted keys — re-pair required")
             }
         }.onFailure { scheduleReconnect() }
@@ -319,7 +263,6 @@ class WatchLink(
         setPhase(WatchLinkPhase.CONNECTING)
         withContext(dispatchers.io) { c.connectByName(WatchGatt.ADV_NAME_PREFIX, config.connectTimeoutMs) }
         withTimeout(config.connectTimeoutMs) { ready!!.await() }
-        // Read the STATUS block to detect a reflash/epoch desync before trusting the link.
         runCatching { c.readStatus() }.getOrNull()?.let { detectEpochDesync(it) }
     }
 
@@ -355,7 +298,7 @@ class WatchLink(
     }
 
     private fun detectEpochDesync(status: ByteArray) {
-        // STATUS: [u8 proto][u8 epoch][…]; a mismatch against our session epoch means a reflash.
+        // STATUS: [u8 proto][u8 epoch][…]
         val sess = session ?: return
         if (status.size >= 2) {
             val watchEpoch = status[1].toInt() and 0xFF
@@ -402,7 +345,6 @@ class WatchLink(
         central = null
     }
 
-    // ── helpers ──────────────────────────────────────────────────────────────────────────────
 
     private fun setPhase(phase: WatchLinkPhase) = _state.update { it.copy(phase = phase) }
 
@@ -427,7 +369,6 @@ class WatchLink(
 
     companion object {
         private const val TAG = "WatchLink"
-        /** RSSI sampling cadence (ms) — frequent enough for a live signal bar, cheap on the radio. */
         private const val RSSI_POLL_MS = 15_000L
     }
 }

@@ -4,16 +4,9 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * The colour picker's Android-free kernel. The interesting cases are all edges a finger reaches by
- * dragging a slider to its stop: the achromatic axis (where hue is undefined), the hue wrap at 360°,
- * and alpha, which must survive every trip through the saturation/value square.
- */
 class ColorPickerTest {
 
     private fun hsvOf(argb: Int) = argbToHsv(argb)
-
-    // ── the primaries, exactly ──────────────────────────────────────────────────────────────────
 
     @Test fun `the six hue sectors land on the sRGB primaries`() {
         assertEquals(0xFFFF0000.toInt(), hsvToArgb(0f, 1f, 1f))
@@ -29,12 +22,9 @@ class ColorPickerTest {
         assertEquals(0xFFFFFFFF.toInt(), hsvToArgb(210f, 0f, 1f))
     }
 
-    // ── the wrap ────────────────────────────────────────────────────────────────────────────────
-
     @Test fun `hue folds into 0 to 360 rather than clamping`() {
         assertEquals(hsvToArgb(0f, 1f, 1f), hsvToArgb(360f, 1f, 1f))
         assertEquals(hsvToArgb(30f, 1f, 1f), hsvToArgb(390f, 1f, 1f))
-        // A slider dragged past its left end must wrap to the other end, not stick on red.
         assertEquals(hsvToArgb(330f, 1f, 1f), hsvToArgb(-30f, 1f, 1f))
     }
 
@@ -44,8 +34,6 @@ class ColorPickerTest {
             assertTrue("hue $h out of range for input $deg", h >= 0f && h < 360f)
         }
     }
-
-    // ── the achromatic axis ─────────────────────────────────────────────────────────────────────
 
     @Test fun `grey reports zero hue and zero saturation rather than NaN`() {
         val hsv = hsvOf(0xFF808080.toInt())
@@ -60,8 +48,6 @@ class ColorPickerTest {
         assertEquals(0f, hsv[1], 0f)
         assertEquals(0f, hsv[2], 0f)
     }
-
-    // ── round trips ─────────────────────────────────────────────────────────────────────────────
 
     @Test fun `hsv round-trips within one 8-bit step`() {
         var worst = 0
@@ -81,12 +67,9 @@ class ColorPickerTest {
         assertTrue("round trip drifted by $worst levels", worst <= 1)
     }
 
-    // ── alpha is carried separately, and survives ───────────────────────────────────────────────
-
     @Test fun `alpha survives a pass through the saturation value square`() {
         val start = hsvToArgb(200f, 0.8f, 0.9f, alpha = 0.25f)
         assertEquals(0.25f, argbAlpha(start), 1f / 255f)
-        // What the square does: re-pack the same alpha with new s/v.
         val moved = hsvToArgb(argbToHsv(start)[0], 0.1f, 0.2f, argbAlpha(start))
         assertEquals(0.25f, argbAlpha(moved), 1f / 255f)
     }

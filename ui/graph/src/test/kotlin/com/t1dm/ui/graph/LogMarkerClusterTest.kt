@@ -7,19 +7,9 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * Host JVM tests for the BG panel's log-marker geometry: [clusterLogMarkers], the pure pixel-space
- * arithmetic that decides how many icons a lane shows and where they stand, and [logMarkerLaneTop],
- * which decides which lane each channel gets. The Canvas drawing is not unit-tested; this pins the
- * arithmetic behind it.
- *
- * Clustering is now handed ONE LANE at a time, so every marker in a list here belongs to the same
- * channel and nothing in these tests mixes them: carbs and insulin cannot combine because they are
- * never passed to the same call.
- *
- * The projection is deliberately trivial throughout: a 1000 px plot over a 1 000 000 ms window, so
- * **1 px == 1000 ms** and every expected position can be read off the timestamps by inspection.
- */
+/** The BG panel's log-marker geometry. Clustering is handed ONE LANE at a time, so nothing here
+ *  mixes channels. The projection is deliberately trivial — 1000 px over 1 000 000 ms — so
+ *  1 px == 1000 ms and every expected position reads off the timestamps. */
 class LogMarkerClusterTest {
 
     private val T0 = 1_700_000_000_000L
@@ -38,8 +28,6 @@ class LogMarkerClusterTest {
         sep: Float = SEP,
     ) = clusterLogMarkers(markers, startMs, spanMs, LEFT, right, sep)
 
-    // ── one event is one icon ────────────────────────────────────────────────────────────────────
-
     @Test fun singleEventStandsAtItsOwnInstant() {
         val out = cluster(listOf(mark(250_000)))
         assertEquals(1, out.size)
@@ -50,17 +38,15 @@ class LogMarkerClusterTest {
         assertTrue(cluster(emptyList()).isEmpty())
     }
 
-    // ── combining ────────────────────────────────────────────────────────────────────────────────
-
     @Test fun collidingMarksCombineAtTheirMean() {
-        // 0 px and 20 px, inside the 30 px separation ⇒ ONE icon, standing between them.
+        // 0 px and 20 px, inside the 30 px separation.
         val out = cluster(listOf(mark(0), mark(20_000)))
         assertEquals(1, out.size)
         assertEquals(10f, out.single().xPx, 1e-3f)
     }
 
     @Test fun marksBeyondTheSeparationStayApart() {
-        // 0 px and 40 px: further apart than the 30 px separation ⇒ two icons, each standing alone.
+        // 0 px and 40 px: past the 30 px separation.
         val out = cluster(listOf(mark(0), mark(40_000)))
         assertEquals(2, out.size)
         assertEquals(0f, out[0].xPx, 1e-3f)
@@ -68,21 +54,16 @@ class LogMarkerClusterTest {
     }
 
     @Test fun separationIsInclusiveAndChains() {
-        // Single linkage on the LAST member admitted: 0 → 30 → 60 px, each step exactly the separation,
-        // so all three chain into one icon even though the ends are 60 px apart — and it stands at their
-        // mean, which for this run is the middle event.
+        // Single linkage on the LAST member admitted: 0 → 30 → 60 px, each step exactly the
+        // separation, so all three chain even though the ends are 60 px apart.
         val out = cluster(listOf(mark(0), mark(30_000), mark(60_000)))
         assertEquals(1, out.size)
         assertEquals(30f, out.single().xPx, 1e-3f)
     }
 
-    // ── the invariant the clustering exists for ──────────────────────────────────────────────────
-
     @Test fun twoIconsInOneLaneNeverOverlapAtAnyZoom() {
-        // The whole reason the arithmetic survived the badge: with no number to disambiguate them, two
-        // icons that touched would be indistinguishable from one. Single linkage guarantees the gap
-        // between emitted clusters exceeds the separation, which is a glyph PLUS its clear space — so
-        // the silhouettes cannot collide at any span the panel can be pinched to.
+        // Two icons that touched would be indistinguishable from one. Single linkage keeps every
+        // gap past the separation, which is a glyph plus its clear space.
         val dpPx = 3f
         val sep = logMarkerSeparationPx(dpPx)
         val glyph = LOG_MARKER_DP * dpPx
@@ -96,8 +77,6 @@ class LogMarkerClusterTest {
         }
     }
 
-    // ── the two fixed lanes ──────────────────────────────────────────────────────────────────────
-
     @Test fun insulinIsTheUpperLaneAndCarbsTheLower() {
         val dpPx = 3f
         val plotBottom = 600f
@@ -110,9 +89,7 @@ class LogMarkerClusterTest {
     }
 
     @Test fun laneTopsDependOnNothingButThePlotFloorAndTheDensity() {
-        // Lane position is information, so it must not move with the contents of the view: the function
-        // takes no marker, no viewport and no toggle, and both lanes are a fixed distance above the plot
-        // floor wherever that floor happens to be (it moves with the model-axis strip).
+        // Lane position is information: it must not move with the contents of the view.
         val dpPx = 2f
         for (plotBottom in floatArrayOf(120f, 481.5f, 600f)) {
             for (kind in CurveKind.entries) {
@@ -126,10 +103,8 @@ class LogMarkerClusterTest {
     }
 
     @Test fun everythingTheLanesClaimIsDerivedFromTheGlyph() {
-        // The glyph size is the ONE knob. The band the lanes borrow, the distance at which two marks
-        // combine and the reach of a tap are all measured from it, so growing a mark cannot leave a
-        // caption printing over a lane, two glyphs overlapping, or a tap target the size of the old
-        // icon. Stated as relations rather than figures: the figures are the layer's own business.
+        // The glyph size is the ONE knob: the band, the distance at which two marks combine and the
+        // reach of a tap are all measured from it. Stated as relations, never as figures.
         val dpPx = 3f
         assertTrue("both lanes fit inside the band", LOG_MARKER_BAND_DP > LOG_MARKER_DP * 2f)
         assertTrue("marks combine only past a whole glyph", logMarkerSeparationPx(dpPx) > LOG_MARKER_DP * dpPx)
@@ -138,9 +113,8 @@ class LogMarkerClusterTest {
     }
 
     @Test fun theWholeBandIsWhatTheTwoLanesBorrowFromThePlot() {
-        // The band is an OVERLAY: the caller's plotBottom, y scale and trace geometry are unchanged, so
-        // the only claim this layer makes on the plot is the strip from the upper lane's top down to the
-        // floor. Pinning it keeps a lane from silently growing into the trace.
+        // The band is an OVERLAY: the only claim on the plot is the strip from the upper lane's top
+        // down to the floor.
         val dpPx = 3f
         val plotBottom = 600f
         assertEquals(
@@ -150,11 +124,8 @@ class LogMarkerClusterTest {
         )
     }
 
-    // ── which logs a mark stands for ─────────────────────────────────────────────────────────────
-
     @Test fun aClusterNamesTheRunOfItsLaneItStandsFor() {
-        // A combined mark has to be able to list what it combined: a timestamp cannot do it (two rows
-        // can share a 5-min slot), so the run is carried.
+        // A timestamp cannot name the members — two rows share a 5-min slot — so the run is carried.
         val out = cluster(listOf(mark(0), mark(20_000), mark(500_000)))
         assertEquals(2, out.size)
         assertEquals(0, out[0].from)
@@ -166,8 +137,7 @@ class LogMarkerClusterTest {
     }
 
     @Test fun theRunsSurviveTheCullAndPartitionWhatIsDrawn() {
-        // Culling drops a prefix and a suffix of an ascending list, which is what keeps every run
-        // contiguous — the property the tap resolves members through.
+        // The cull drops a prefix and a suffix of an ascending list, so every run stays contiguous.
         val markers = listOf(mark(-500_000), mark(400_000), mark(420_000), mark(900_000), mark(2_000_000))
         val out = cluster(markers)
         assertEquals(2, out.size)
@@ -178,27 +148,21 @@ class LogMarkerClusterTest {
         out.zipWithNext { a, b -> assertTrue("runs overlap", a.to <= b.from) }
     }
 
-    // ── pixel space, not time: stable across zoom and screen width ───────────────────────────────
-
     @Test fun zoomingOutCombinesAndZoomingInSeparates() {
-        // The same three events, an hour apart, at two zooms. Nothing about the data changed — only the
-        // projection — and that is precisely what decides whether they are one icon or three.
+        // The same three events at two zooms: only the projection decides one icon or three.
         val markers = listOf(mark(0), mark(3_600_000), mark(7_200_000))
-        // 1000 px over 24 h ⇒ ~0.0116 px/s: the three land ~42 px apart ⇒ they stay separate…
+        // 24 h over 1000 px ⇒ ~42 px apart.
         assertEquals(3, cluster(markers, spanMs = 24.0 * 3_600_000.0).size)
-        // …and 1000 px over 30 days puts them ~1.4 px apart ⇒ a single icon.
+        // 30 days over 1000 px ⇒ ~1.4 px apart.
         assertEquals(1, cluster(markers, spanMs = 30.0 * 24.0 * 3_600_000.0).size)
     }
 
     @Test fun aWiderPlotSeparatesWhatANarrowOneCombined() {
-        // Same window, same events, twice the pixels: the phone that combines them in portrait shows
-        // them apart in landscape. A time-based threshold could not express this.
+        // Twice the pixels: a time-based threshold could not express this.
         val markers = listOf(mark(0), mark(25_000))
         assertEquals(1, cluster(markers).size)                    // 25 px apart on a 1000 px plot
         assertEquals(2, cluster(markers, right = 2000f).size)     // 50 px apart on a 2000 px plot
     }
-
-    // ── culling ──────────────────────────────────────────────────────────────────────────────────
 
     @Test fun marksOutsideTheViewportAreNotDrawn() {
         val out = cluster(
@@ -213,14 +177,11 @@ class LogMarkerClusterTest {
     }
 
     @Test fun aMarkStraddlingAnEdgeIsStillDrawn() {
-        // Just off the left edge by less than a glyph: its silhouette would still be partly visible, so
-        // it is kept and the clip trims the overhang.
+        // Off the left edge by less than a glyph: still partly visible, so it is kept and clipped.
         val out = cluster(listOf(mark(-10_000)))
         assertEquals(1, out.size)
         assertEquals(-10f, out.single().xPx, 1e-3f)
     }
-
-    // ── degenerate geometry ──────────────────────────────────────────────────────────────────────
 
     @Test fun aDegenerateViewportDrawsNothingRatherThanDividingByZero() {
         val markers = listOf(mark(0))
@@ -228,11 +189,8 @@ class LogMarkerClusterTest {
         assertTrue(cluster(markers, right = LEFT).isEmpty())
     }
 
-    // ── the density knob ─────────────────────────────────────────────────────────────────────────
-
     @Test fun separationScalesWithDisplayDensity() {
-        // The clustering distance is a dp quantity: the same two marks combine at the same PHYSICAL
-        // distance whatever the display's pixel density.
+        // The clustering distance is a dp quantity, so the physical distance is density-free.
         assertEquals(logMarkerSeparationPx(1f) * 3f, logMarkerSeparationPx(3f), 1e-4f)
         assertTrue("a mark plus its clear space", logMarkerSeparationPx(1f) > LOG_MARKER_DP)
     }

@@ -28,19 +28,7 @@ import com.t1dm.ui.graph.CurveEditor
 import com.t1dm.ui.graph.CurvePreview
 import kotlin.math.roundToInt
 
-/**
- * Read-only view of the carb-appearance / insulin-action curve PRESET defaults (the parametric
- * gamma / Bateman shapes — model-io-curves.md) PLUS the Phase 7D BÉZIER custom-curve designers (item
- * 19). The parametric presets remain the default; the Bézier editors are the CUSTOM-EDIT mode — drag
- * the control points to author a smooth carb-appearance or insulin-action template that is
- * area-normalised to the dose total exactly like the presets, then saved. Fresh custom foods /
- * insulin types in the builders start from these templates.
- *
- * The clinical insulin preset library is NOT chosen here. It is chosen on the insulin panel, at the
- * moment of the dose, and the writer commits what the panel picked. A picker on this screen was the
- * previous arrangement and it made the panel's own presets decorative: the two surfaces named
- * different insulins and only the confirmation dialog could see the disagreement.
- */
+/** The clinical insulin preset is not chosen here; the insulin panel picks it per dose. */
 data class CurveParams(
     val basalKaPerHour: Double,
     val basalKePerHour: Double,
@@ -50,8 +38,7 @@ data class CurveParams(
     val carbHighGiTheta: Double,
     val carbLowGiK: Double,
     val carbLowGiTheta: Double,
-    /** The exercise disposal gamma's shape. Fixed by SPEC §5 and shown for exactly that reason — it
-     *  is the half of that curve the patient does not get to move. */
+    /** Fixed by SPEC §5. */
     val exerciseK: Double,
     val exerciseTheta: Double,
 )
@@ -101,23 +88,15 @@ fun CurveParamsScreen(
     }
 }
 
-/**
- * The one per-patient number in the exercise disposal curve: grams of carbohydrate equivalent per
- * minute of exercise. Everything else about the curve is fixed — the shape by §5, the magnitude by
- * duration alone.
- *
- * Committed on release rather than per drag sample, as the body-mass slider is: the value is
- * kv-backed and a write per pointer move is a database round trip per pixel. [range] is the store's,
- * not a second copy, so the thumb cannot reach a value the writer would clamp.
- */
+/** Grams per minute. Committed on release, not per drag sample: the value is kv-backed.
+ *  [range] is the store's own, so the thumb cannot reach a value the writer would clamp. */
 @Composable
 private fun CarbEquivSlider(
     value: Double,
     range: ClosedFloatingPointRange<Double>,
     onSet: (Double) -> Unit,
 ) {
-    // Keyed on `value`: it arrives from a cold flow, so the first composition sees a placeholder and
-    // an unkeyed remember would strand the thumb there — the trap the smoothing slider records.
+    // Keyed on `value`: it arrives from a cold flow; unkeyed strands the thumb on the placeholder.
     var draft by remember(value) { mutableFloatStateOf(value.toFloat()) }
     val steps = ((range.endInclusive - range.start) / GRAIN).roundToInt()
     val detent = rememberHapticDetent()
@@ -133,8 +112,7 @@ private fun CarbEquivSlider(
         Slider(
             value = draft,
             onValueChange = { raw ->
-                // Snap to the printed grain, so the thumb and the read-out cannot disagree, and tick
-                // as the snapped stop crosses rather than on every drag frame.
+                // Snap to the printed grain so thumb and read-out cannot disagree.
                 val stop = (raw / GRAIN).roundToInt()
                 detent.at(stop)
                 draft = stop * GRAIN
@@ -147,7 +125,7 @@ private fun CarbEquivSlider(
     }
 }
 
-/** Slider grain — the resolution the read-out prints at, so no stop is invisible. */
+/** Matches the read-out's printed resolution. */
 private const val GRAIN = 0.1f
 
 @Composable
@@ -166,8 +144,6 @@ private fun BezierDesigner(initial: BezierCurve, defaultDurationMin: Double, onS
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         fontFamily = FontFamily.Monospace,
     )
-    // The drag that flattens the curve is the moment the shape stops being savable, and the finger is
-    // still on the glass — so the warning is felt exactly when it becomes true, and only then.
     androidx.compose.runtime.LaunchedEffect(degenerate) {
         if (degenerate) haptics.perform(HapticEvent.Warn)
     }
@@ -184,7 +160,6 @@ private fun BezierDesigner(initial: BezierCurve, defaultDurationMin: Double, onS
             enabled = !degenerate,
         ) { Text("Save custom curve") }
         OutlinedButton(
-            // Discarding the drawing is a refusal of what was drawn, not a confirmation of anything.
             onClick = {
                 haptics.perform(HapticEvent.Reject)
                 draft = BezierCurve.default(defaultDurationMin)
@@ -201,13 +176,6 @@ private fun Kv(k: String, v: String) {
         Text(v, style = MaterialTheme.typography.bodyMedium, fontFamily = FontFamily.Monospace)
     }
 }
-
-// ── search index (see SettingsIndex.kt) ───────────────────────────────────────────────────────────
-//
-// The Bateman / gamma read-outs below the designers are derived facts, not knobs — they are not
-// indexed. Neither is the clinical insulin preset: it is not a setting at all, it is picked per dose
-// on the insulin panel, and an index entry pointing here would send someone looking for "humalog" to
-// a screen that cannot change it.
 
 private val curveCarbBezier = SettingsKnob(
     id = "curves.carb_bezier",
@@ -244,9 +212,7 @@ private val curveExerciseCarbEquiv = SettingsKnob(
         "carb equivalent", "carbohydrate equivalent", "g/min", "grams per minute", "gamma", "curve",
         "bout",
     ),
-    // Deliberately NOT "sensitivity": §5 makes the post-exercise insulin-sensitivity boost a separate
-    // mechanism this curve never carries, and a synonym that sent someone here to look for it would
-    // advertise a knob that does not exist.
+    // Not "sensitivity": §5 keeps the post-exercise sensitivity boost a separate mechanism.
 )
 
 internal val settingsCurveKnobs = listOf(

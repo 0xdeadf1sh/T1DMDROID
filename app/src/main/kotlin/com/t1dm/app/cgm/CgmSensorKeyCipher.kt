@@ -10,18 +10,9 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 /**
- * Seals a CGM sensor's opaque secret at rest under an AndroidKeyStore AES-256-GCM key.
- *
- * The same shape as the watch link's key cipher, and deliberately a SEPARATE alias. The two protect
- * unrelated things with unrelated lifetimes: the watch key is burned by the full erase, and this one
- * must survive it — a sensor still on the patient's arm needs its secret to stay readable, and for some
- * families it is the only copy in existence. Sharing an alias would mean one deletion took both.
- *
- * StrongBox where the platform has it, the TEE otherwise. On-disk form is `iv || ciphertext`, with the
- * 12-byte GCM IV first: the column is a BLOB, so nothing is base64'd on the way in.
- *
- * The key is non-exportable, so a blob sealed here is readable only by this install of this app. That is
- * exactly why the archive does not carry these rows.
+ * On-disk form is `iv || ciphertext`, 12-byte GCM IV first, raw bytes into a BLOB column.
+ * A separate alias from the watch key on purpose: the full erase burns that one, this must survive it.
+ * Non-exportable, so a sealed blob is readable only by this install — the archive omits these rows.
  */
 class CgmSensorKeyCipher {
 
@@ -36,13 +27,7 @@ class CgmSensorKeyCipher {
         return out
     }
 
-    /**
-     * Reverses [seal]. Returns null on anything this key did not produce — a truncated blob, a failed
-     * tag, a row written under a key that has since been replaced.
-     *
-     * Null rather than a throw because the caller's honest answer to an unreadable secret is "this sensor
-     * needs rebinding", which is a state it must handle anyway. The bytes are left on disk untouched.
-     */
+    /** Null, not a throw, on anything this key did not produce; the caller must rebind anyway. */
     fun open(sealed: ByteArray): ByteArray? {
         if (sealed.size <= GCM_IV_BYTES) return null
         return runCatching {
@@ -62,7 +47,7 @@ class CgmSensorKeyCipher {
         return generate(strongBox = true) ?: generate(strongBox = false)!!
     }
 
-    /** Null when StrongBox was asked for and the platform refuses it, so the caller retries in the TEE. */
+    /** Null when StrongBox was asked for and refused, so the caller retries in the TEE. */
     private fun generate(strongBox: Boolean): SecretKey? {
         val gen = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
         val spec = KeyGenParameterSpec.Builder(
@@ -85,10 +70,7 @@ class CgmSensorKeyCipher {
     private companion object {
         const val ANDROID_KEYSTORE = "AndroidKeyStore"
 
-        /**
-         * NOT the watch alias. Deleting this one retires every sensor whose secret it protects, so
-         * nothing deletes it — there is deliberately no `deleteKey()` here, unlike on the watch side.
-         */
+        /** NOT the watch alias, and never deleted: that would retire every sensor it protects. */
         const val KEY_ALIAS = "t1dm_cgm_sensor_key"
         const val TRANSFORM = "AES/GCM/NoPadding"
         const val GCM_TAG_BITS = 128

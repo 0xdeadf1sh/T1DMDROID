@@ -47,13 +47,7 @@ import kotlin.math.exp
 import kotlin.math.pow
 import kotlin.math.roundToLong
 
-/**
- * TEMPORARY pure-Kotlin stand-in so the app runs end-to-end while the Rust cross-build is
- * blocked (no NDK / no aarch64 Rust std). The host crate already proves `roundtrip` under
- * `cargo test`.
- *
- * TODO(native-agent): replace with the uniffi-generated binding calling t1dm-core.
- */
+/** Pure-Kotlin stand-in for host-only builds, where there is no .so to load. */
 class StubNativeCore : NativeCore {
     override fun roundtrip(msg: String): String = "t1dm-core(stub):$msg"
 
@@ -68,8 +62,6 @@ class StubNativeCore : NativeCore {
 
     override fun kovatchevFInv(risk: Double): Double =
         TODO("Phase 1: native kovatchev_f_inv")
-
-    // ── Model pre/post pipeline (Phase 2) — real path is [UniffiNativeCore] ──────────
 
     override fun parseDescriptor(json: String): ModelDescriptor? =
         TODO("Phase 2: native parse_descriptor")
@@ -120,8 +112,7 @@ class StubNativeCore : NativeCore {
     override fun bandLineAt(desc: ModelDescriptor, qTauRisk: List<Double>, tau: Double): List<Double> =
         TODO("Phase 2: native band_line_at")
 
-    // The head seam needs the real crate: there is no host-side reimplementation of it, and a
-    // stub that returned a plausible head would be worse than none.
+    // No host-side head; a plausible one would be worse than none.
     override fun headOpen(bytes: ByteArray, spec: HeadSpec): NativeHead? = null
 
     override fun loraTrain(
@@ -178,16 +169,11 @@ class StubNativeCore : NativeCore {
     override fun forecastDegeneracyCheck(desc: ModelDescriptor, forecast: Forecast): ForecastStatus =
         TODO("Phase 2: native forecast_degeneracy_check")
 
-    // The time-probe decode lives in Rust (golden-gated); the host stub has no .so, so it
-    // fails OPEN to null — the predicted hour is optional and never blocks the BG path.
+    // Fails OPEN: the predicted hour is optional and never blocks the BG path.
     override fun decodeTime(timeLogits: List<Double>, nBins: Int, binHours: Double): PredictedTime? = null
 
-    // ── Shared curve/PK engine (Phase 4) ────────────────────────────────────────────
-    // Unlike the pre/post pipeline (which needs the model), the curve math is pure and
-    // deterministic, so the stub carries a faithful Kotlin port of t1dm-core::curve. This
-    // keeps host-only builds (and JVM unit tests) exercising the real curve shapes while
-    // the NDK cross-build is unavailable. The Rust remains the numeric authority; this
-    // mirror is golden-checked against it in the crate's tests and against simulator.py.
+    // The curve math is pure, so the stub ports `t1dm-core::curve`. The Rust stays the numeric
+    // authority; this mirror is golden-checked against it and against simulator.py.
 
     override fun gamma(total: Double, k: Double, theta: Double, durMin: Double): List<Double> {
         val n = (durMin / DT_MIN).toInt()
@@ -231,7 +217,7 @@ class StubNativeCore : NativeCore {
     }
 
     override fun expActionCurve(total: Double, peakMin: Double, diaMin: Double): List<Double> {
-        // Host mirror of the Loop/OpenAPS exponential activity model (golden-checked against Rust).
+        // Loop/OpenAPS exponential activity model.
         val n = (diaMin / DT_MIN).toInt()
         if (n <= 0 || peakMin <= 0.0 || peakMin >= diaMin / 2.0) return listOf(0.0)
         val tp = peakMin
@@ -252,7 +238,7 @@ class StubNativeCore : NativeCore {
     }
 
     override fun insulinPresetCatalog(): List<InsulinPresetSpec> {
-        // Host mirror of the Rust `insulin_preset_catalog()` (issue 19); values/citations transcribed.
+        // Values and citations transcribed from the Rust `insulin_preset_catalog()`.
         fun rapid(label: String, peak: Double, dia: Double, cite: String) =
             InsulinPresetSpec(InsulinFamily.RapidExp, label, peak, dia, 0.0, 0.0, true, cite)
         fun basal(label: String, diaH: Double, ka: Double, ke: Double, cite: String) =
@@ -325,10 +311,7 @@ class StubNativeCore : NativeCore {
         return out
     }
 
-    // ── Advanced stats (Phase 6) ────────────────────────────────────────────────────
-    // The stats math lives entirely in Rust (golden-gated); the host stub cannot reproduce it
-    // without the .so, so it yields the fail-closed empty block. The real path is [UniffiNativeCore];
-    // JVM unit tests that need real numbers drive the Rust crate directly (cargo) or a canned fake.
+    // Fail-closed empty block: the stats math is Rust-only.
     override fun advancedStats(
         samples: List<StatSample>,
         targetLow: Int,
@@ -336,18 +319,11 @@ class StubNativeCore : NativeCore {
         agpBins: Int,
     ): AdvancedStats = AdvancedStats.EMPTY
 
-    // The two clinical cuts are crate constants. Repeating their VALUES here would be exactly the
-    // second copy [NativeCore.clinicalCuts] exists to prevent, so the stub refuses instead — and a
-    // caller that cannot anchor a scale renders nothing rather than a scale cut in the wrong place.
+    // Refuses rather than repeat the crate's values; a caller that cannot anchor a scale draws none.
     override fun clinicalCuts(): ClinicalCuts = ClinicalCuts.UNAVAILABLE
 
-    // ── Forecast accuracy (Phase 7C) ────────────────────────────────────────────────
-    // The metric suite is golden-gated Rust numerics — the band projection, the Clarke zone
-    // algebra and the CG-EGA grid, all pinned bit-for-bit to `T1DMAI`'s reference. A Kotlin
-    // reproduction here would be a SECOND COPY of that definition, free to drift from the one
-    // the device actually renders, so the host stub yields the fail-closed empty suite instead.
-    // The real path is [UniffiNativeCore]; a host test wanting real numbers drives the crate
-    // directly (cargo) or feeds the drill-down a canned [MetricsSuite].
+    // Fail-closed empty suite: the metrics are pinned bit-for-bit to `T1DMAI`'s reference, and a
+    // Kotlin reproduction would be a second copy free to drift from it.
     override fun forecastMetricsSuite(
         windows: List<ForecastWindow>,
         horizonsMin: List<Int>,
@@ -355,9 +331,7 @@ class StubNativeCore : NativeCore {
         includeCgEga: Boolean,
     ): MetricsSuite = MetricsSuite.EMPTY
 
-    // The lattice exists precisely so the zone boundaries stay in one place; classifying it here
-    // would put a second copy of them in the module whose whole purpose is to have none.
-    // [ZoneLattice.build] treats an empty result as no lattice, and the figure draws nothing.
+    // Empty rather than a second copy of the zone boundaries; the figure then draws nothing.
     override fun clarkeZoneGrid(
         truthAxisMgdl: List<Double>,
         predAxisMgdl: List<Double>,
@@ -368,16 +342,10 @@ class StubNativeCore : NativeCore {
         predAxisMgdl: List<Double>,
     ): List<DtsZone> = emptyList()
 
-    // The bin edges are the crate's, for the same reason the clinical cuts are: an axis labelled
-    // from a guessed edge would caption a binning nothing here performed. No edges, no labels.
+    // The edges are the crate's; an axis labelled from a guess would caption a binning nothing did.
     override fun trendBinEdges(): List<Double> = emptyList()
 
-    // ── Split-conformal band recalibration (INFERENCE.md §8.4) ──────────────────────
-    // The side-aware order statistic and the median-fixed monotone apply live in the crate and
-    // nowhere else; re-expressing either here would be the second copy of a formula whose two
-    // versions would then be free to disagree about the hypo edge. The stub refuses instead: no
-    // correction fitted, and the raw fan returned for any apply — which is what every caller
-    // already falls back to.
+    // INFERENCE.md §8.4. Refuses: no fit, and the raw fan back from any apply.
     override fun conformalMinCalWindows(): Int = 0
 
     override fun fitQuantileConformal(
@@ -395,12 +363,8 @@ class StubNativeCore : NativeCore {
         delta: List<Double>,
     ): List<Double>? = null
 
-    // ── The classical baseline ──────────────────────────────────────────────────────
-    // The ridge solve, the causal on-board scatter and the residual-quantile band all live in the
-    // crate. A Kotlin reproduction would be a second numeric authority for the model the neural one
-    // is MEASURED against, which is the one place a quiet disagreement would corrupt the comparison
-    // rather than a single reading. The stub refuses: no default spec to fit against, no fit, no
-    // forecast — and a degeneracy verdict of NonFinite, which is the fail-closed verdict.
+    // The baseline is what the neural model is MEASURED against, so a second Kotlin numeric
+    // authority would corrupt the comparison rather than one reading. Refuses throughout.
     override fun baselineDefaultSpec(): BaselineSpec =
         TODO("the baseline is Rust-only; use UniffiNativeCore")
 
@@ -427,11 +391,7 @@ class StubNativeCore : NativeCore {
     override fun baselineDegeneracyCheck(forecast: BaselineForecast): ForecastStatus =
         ForecastStatus.NON_FINITE
 
-    // ── Hill-climb minigame physics ─────────────────────────────────────────────────
-    // The solver is Rust-only by design (a per-frame path with zero allocation is the whole
-    // reason it is not Kotlin), and unlike the curve engine there is no host consumer that
-    // needs it — the minigame only ever runs on device. A stub car would be a second physics
-    // implementation to keep in sync for no benefit, so this stays unimplemented.
+    // Rust-only by design: a zero-allocation per-frame path, and the minigame only runs on device.
 
     override fun defaultCarTuning(): CarTuning = TODO("game physics is Rust-only; use UniffiNativeCore")
 

@@ -8,24 +8,16 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * Host JVM tests for the AUTHORING half of the annotation layer: the capture buffer's
- * minimum-distance decimation, and the eraser's whole-stroke hit test. Both are pure numerics
- * deliberately kept out of the pointer handler and the Canvas so they can be pinned here (the same
- * split [BgPanelTest] and [PaintLayerTest] follow).
- */
 class PaintCaptureTest {
 
     private val T0 = 1_700_000_000_000L
 
-    /** The plot box these tests project into: 1000 px wide, 400 px tall, offset like the real panel. */
     private val LEFT = 46f
     private val TOP = 24f
     private val HEIGHT = 400f
 
     private fun capture() = StrokeCapture().apply { begin(T0) }
 
-    /** Feed a straight horizontal run of samples [stepPx] apart, as a slow finger would. */
     private fun StrokeCapture.sweep(n: Int, stepPx: Float, minStepPx: Float, y: Float = 100f): Int {
         var accepted = 0
         for (i in 0 until n) {
@@ -35,7 +27,6 @@ class PaintCaptureTest {
         return accepted
     }
 
-    // ── item 5: decimation by minimum distance ──────────────────────────────────────────────────
 
     @Test fun `the first sample is always accepted`() {
         val c = capture()
@@ -44,8 +35,7 @@ class PaintCaptureTest {
     }
 
     @Test fun `a slow drag is decimated to the step, not to the sample rate`() {
-        // 200 samples 0.5 px apart — a finger crawling at ~60 Hz. At a 2 px gate only every 4th
-        // survives, and the stroke costs 50 points rather than 200.
+        // 0.5 px steps at a 2 px gate: every 4th survives.
         val c = capture()
         val accepted = c.sweep(n = 200, stepPx = 0.5f, minStepPx = 2f)
         assertEquals(accepted, c.size)
@@ -65,45 +55,36 @@ class PaintCaptureTest {
     }
 
     @Test fun `distance is measured from the last ACCEPTED point, so sub-pixel creep cannot accumulate`() {
-        // 1.9 px each, gate 2 px: measured pairwise every sample would be rejected forever; measured
-        // from the last accepted point, every second one clears the gate.
         val c = capture()
         val accepted = c.sweep(n = 21, stepPx = 1.9f, minStepPx = 2f)
         assertEquals(accepted, c.size)
-        assertEquals(11, c.size) // the down sample + every second one after it
+        assertEquals(11, c.size) // the down sample + every second one after
     }
 
     @Test fun `a diagonal move is gated on true distance, not on either axis`() {
         val c = capture()
         c.add(0f, 0f, T0, 0f, 5f)
-        // 3-4-5: exactly on the gate, and neither component alone would clear it.
+        // 3-4-5: on the gate, and neither axis alone clears it.
         assertTrue(c.add(3f, 4f, T0 + 10, 0.1f, 5f))
         assertFalse(c.add(6f, 8f, T0 + 20, 0.2f, 5.1f))
     }
 
-    // ── the gate scales with the pen ────────────────────────────────────────────────────────────
 
-    /** The target device's density, so the numbers below are the ones a real stroke is gated at. */
+    /** The target device's density. */
     private val DP = 3.5f
 
     @Test fun `the gate is the flat floor up to a 16 dp nib and an eighth of the nib beyond`() {
-        // The floor governs everything narrower than 16 dp, which is the pencil, the marker and the
-        // chalk unchanged; the highlighter's 18 dp is a whisker past the crossover and gains a quarter
-        // of a dp, which is a fifth of a pixel at this density.
         assertEquals(2f * DP, paintMinStepPx(2f, DP), 1e-3f)     // fine
         assertEquals(2f * DP, paintMinStepPx(7f, DP), 1e-3f)     // marker
         assertEquals(2f * DP, paintMinStepPx(9f, DP), 1e-3f)     // chalk
         assertEquals(2f * DP, paintMinStepPx(16f, DP), 1e-3f)    // exactly the crossover
         assertEquals(2.25f * DP, paintMinStepPx(18f, DP), 1e-3f) // highlighter
-        // The flood pen scales with itself: an eighth of the nib at its default and at the maximum.
         assertEquals(12f * DP, paintMinStepPx(96f, DP), 1e-3f)
         assertEquals(15f * DP, paintMinStepPx(120f, DP), 1e-3f)
     }
 
     @Test fun `the gate never makes a pen draw as a polygon, at any width`() {
-        // Faceting shows when the chord departs visibly from the curve the finger traced. Its sagitta
-        // on a turn as tight as the pen itself is step² / 8·width — under half a dp everywhere on this
-        // range, which is inside the ink and under the round join, so decimation is felt and never seen.
+        // Sagitta of the chord on a turn as tight as the pen: step² / 8·width.
         for (w in floatArrayOf(2f, 7f, 9f, 18f, 96f, 120f)) {
             val stepDp = paintMinStepPx(w, 1f)
             assertTrue("$w dp pen: step $stepDp dp", stepDp * stepDp / (8f * w) < 0.5f)
@@ -111,9 +92,6 @@ class PaintCaptureTest {
     }
 
     @Test fun `a flood pen costs a small fraction of the points the flat gate would have kept`() {
-        // The same finger path — 1000 px at pointer rate — under the fine gate and under the flood
-        // pen's. Every point saved is one fewer vertex re-tessellated on EVERY draw pass of the live
-        // stroke and of every later pan, which is the whole reason the gate moved inside the gesture.
         val fine = capture()
         fine.sweep(n = 1000, stepPx = 1f, minStepPx = paintMinStepPx(2f, DP))
         val flood = capture()
@@ -121,13 +99,12 @@ class PaintCaptureTest {
         assertTrue("${flood.size} vs ${fine.size}", flood.size * 5 < fine.size)
     }
 
-    // ── the lift-off point ──────────────────────────────────────────────────────────────────────
 
     @Test fun `the final sample is accepted even inside the gate`() {
         val c = capture()
         c.add(0f, 0f, T0, 0f, 4f)
-        assertFalse(c.add(1f, 0f, T0 + 5, 0.01f, 4f)) // inside the gate
-        assertTrue(c.addFinal(1f, 0f, T0 + 5, 0.01f)) // …but it is where the finger lifted
+        assertFalse(c.add(1f, 0f, T0 + 5, 0.01f, 4f))
+        assertTrue(c.addFinal(1f, 0f, T0 + 5, 0.01f))
         assertEquals(2, c.size)
     }
 
@@ -138,7 +115,6 @@ class PaintCaptureTest {
         assertEquals(1, c.size)
     }
 
-    // ── what reaches the store ──────────────────────────────────────────────────────────────────
 
     @Test fun `a tap yields a one-point stroke, which the renderer draws as a dot`() {
         val c = capture()
@@ -187,11 +163,9 @@ class PaintCaptureTest {
         assertEquals(7f, s.widthDp, 0f)
     }
 
-    // ── the eraser's hit test ───────────────────────────────────────────────────────────────────
 
     private fun frameOf(vararg strokes: PaintStroke) = buildPaintFrame(strokes.toList())
 
-    /** A horizontal stroke at [yFrac] running from [fromMs] for [n] minutes. */
     private fun bar(id: Long, fromMs: Long, n: Int, yFrac: Float, createdAtMs: Long, widthDp: Float = 4f) =
         PaintStroke(
             id = id, createdAtMs = createdAtMs, tool = "fine", colorArgb = -1, widthDp = widthDp,
@@ -207,7 +181,6 @@ class PaintCaptureTest {
 
     @Test fun `a touch on a stroke erases it`() {
         val f = frameOf(bar(id = 5, fromMs = T0, n = 30, yFrac = 0.5f, createdAtMs = T0))
-        // 10 minutes in, on the line: x = LEFT + 10min * PPM, y = TOP + 0.5 * HEIGHT.
         assertEquals(5L, hit(f, LEFT + (600_000.0 * PPM).toFloat(), TOP + 0.5f * HEIGHT))
     }
 
@@ -217,7 +190,6 @@ class PaintCaptureTest {
     }
 
     @Test fun `the test is against SEGMENTS, so a two-point stroke is erasable in the middle`() {
-        // Two points an hour apart: a nearest-POINT test would refuse to erase it anywhere between.
         val f = frameOf(
             PaintStroke(9L, T0, "fine", -1, 4f, longArrayOf(T0, T0 + 3_600_000L), floatArrayOf(0.2f, 0.2f)),
         )
@@ -236,25 +208,23 @@ class PaintCaptureTest {
         val thin = frameOf(bar(id = 1, fromMs = T0, n = 30, yFrac = 0.5f, createdAtMs = T0, widthDp = 2f))
         val broad = frameOf(bar(id = 1, fromMs = T0, n = 30, yFrac = 0.5f, createdAtMs = T0, widthDp = 40f))
         val x = LEFT + (600_000.0 * PPM).toFloat()
-        val y = TOP + 0.5f * HEIGHT + 18f // 18 px off the centre line
+        val y = TOP + 0.5f * HEIGHT + 18f
         assertEquals(NO_STROKE, hit(thin, x, y, radiusPx = 4f))
         assertEquals(1L, hit(broad, x, y, radiusPx = 4f))
     }
 
     @Test fun `the widest pen is erasable across its full half-width and no further`() {
-        // dpPx is 1 here, so a 120 dp pen is 60 px of half-width and the tolerance is 60 + the reach.
+        // dpPx = 1 here, so a 120 dp pen is 60 px of half-width.
         val flood = frameOf(bar(id = 1, fromMs = T0, n = 30, yFrac = 0.5f, createdAtMs = T0, widthDp = 120f))
         val x = LEFT + (600_000.0 * PPM).toFloat()
         val centre = TOP + 0.5f * HEIGHT
-        assertEquals(1L, hit(flood, x, centre + 55f, radiusPx = 4f)) // still on the ink
-        assertEquals(NO_STROKE, hit(flood, x, centre + 70f, radiusPx = 4f)) // past it, and past the reach
+        assertEquals(1L, hit(flood, x, centre + 55f, radiusPx = 4f))
+        assertEquals(NO_STROKE, hit(flood, x, centre + 70f, radiusPx = 4f))
     }
 
     @Test fun `a round cap's over-reach past the ends is the ink it genuinely paints there`() {
-        // The segment-distance test measures a half-disc of the pen's radius past the last point. For a
-        // ROUND cap that disc is drawn, so the tolerance tracks the visible extent exactly and the
-        // eraser's slop stays the constant fingertip at any width. A flat-nibbed pen at 120 dp would
-        // paint nothing there and still measure as if it did — 60 dp of phantom hit region.
+        // Round cap: the half-disc past the last point is drawn, so the tolerance tracks the ink.
+        // A flat nib would paint nothing there and still measure as if it did.
         val flood = frameOf(bar(id = 1, fromMs = T0, n = 2, yFrac = 0.5f, createdAtMs = T0, widthDp = 120f))
         val endX = LEFT + (60_000.0 * PPM).toFloat()
         val centre = TOP + 0.5f * HEIGHT
@@ -272,13 +242,10 @@ class PaintCaptureTest {
         assertEquals(NO_STROKE, hit(f, LEFT + (600_000.0 * PPM).toFloat() + 60f, TOP + 0.3f * HEIGHT))
     }
 
-    // ── the geometry behind both ────────────────────────────────────────────────────────────────
 
     @Test fun `point to segment distance clamps to the endpoints`() {
-        // Beyond B along the line: the nearest point is B itself, not the infinite line's foot.
         assertEquals(25f, pointSegmentDistanceSq(15f, 0f, 0f, 0f, 10f, 0f), 1e-4f)
         assertEquals(25f, pointSegmentDistanceSq(-5f, 0f, 0f, 0f, 10f, 0f), 1e-4f)
-        // Perpendicular, inside the span.
         assertEquals(9f, pointSegmentDistanceSq(5f, 3f, 0f, 0f, 10f, 0f), 1e-4f)
     }
 

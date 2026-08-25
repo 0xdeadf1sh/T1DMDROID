@@ -7,12 +7,9 @@ import com.t1dm.data.db.toBlob
 import com.t1dm.data.db.toDoubleList
 
 /**
- * [ModelPrediction] ⇄ [PredictionEntity] (Phase 3). The one non-trivial step is the fan layout:
- * a [ModelPrediction.bandsMgdl] is **step-major, τ-minor** (`i = s·nQ + q`), whereas the server —
- * and therefore [PredictionEntity.fanBlob] — is **quantile-major** (`fan[q·H + s]`, one row per
- * quantile in ascending-τ order `[0.05,0.1,0.25,0.5,0.75,0.9,0.95]`, row 3 == the median line).
- * Storing wire-order means a `PREDICTIONS` push is a straight reshape, and this transpose is the
- * single place the two conventions meet. The round-trip is exact (see `PredictionMappingTest`).
+ * [ModelPrediction.bandsMgdl] is step-major, τ-minor (`s·nQ + q`); [PredictionEntity.fanBlob] is
+ * quantile-major (`q·H + s`), wire order, ascending τ `[0.05,0.1,0.25,0.5,0.75,0.9,0.95]`, row 3
+ * the median line. This transpose is the single place the two conventions meet.
  */
 
 internal fun ModelPrediction.toEntity(nowMs: Long): PredictionEntity {
@@ -25,9 +22,6 @@ internal fun ModelPrediction.toEntity(nowMs: Long): PredictionEntity {
             fanQMajor[q * h + s] = bandsMgdl[s * nq + q]
         }
     }
-    // Persist the circadian belief so a cold-start rehydrate keeps the clock lit (it was dropped before,
-    // leaving `predictedTime` null on every restored forecast): pack `[predictedHour, binHours, *probs]`
-    // into `todBlob` and the resultant length into `todConf`. Null belief ⇒ null blob (unchanged).
     val pt = predictedTime
     val todBlob = pt?.let { (listOf(it.predictedHour, it.binHours) + it.probs).toBlob() }
     return PredictionEntity(
@@ -63,8 +57,6 @@ internal fun PredictionEntity.toModel(): ModelPrediction {
             bands[s * nq + q] = fanQMajor[q * h + s]
         }
     }
-    // Reconstruct the circadian belief from the packed `[predictedHour, binHours, *probs]` blob so a
-    // rehydrated forecast keeps its clock; an absent (old-schema/null) blob stays null as before.
     val predictedTime: PredictedTime? = todBlob?.toDoubleList()?.takeIf { it.size >= 3 }?.let { packed ->
         val probs = packed.subList(2, packed.size)
         PredictedTime(

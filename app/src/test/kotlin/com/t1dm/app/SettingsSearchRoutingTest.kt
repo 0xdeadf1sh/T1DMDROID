@@ -8,15 +8,8 @@ import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * `:app`'s half of the settings search index: that every entry resolves to a route this NavHost
- * actually registers, that no settings destination is orphaned (reachable by hand but invisible to
- * search), and that the breadcrumb a result advertises is the one the trail renders on arrival.
- *
- * The index deliberately knows nothing of routes — `:feature:settings` names a screen by an opaque
- * key, exactly as theme ids, font ids and vibration presets cross that seam — so this is the only
- * place the two halves can be held against each other, and [crumbsFor] is the authority for both.
- */
+/** The index names a screen by an opaque key and knows nothing of routes, so `:app` is the only
+ *  place the two halves can be held against each other. */
 class SettingsSearchRoutingTest {
 
     @Test
@@ -25,8 +18,7 @@ class SettingsSearchRoutingTest {
             val route = settingsRouteFor(knob.screen)
             assertTrue("${knob.id}: empty route", route.isNotBlank())
             val crumbs = crumbsFor(route, null)
-            // `crumbsFor` falls through to a single crumb whose label IS the raw route when it does
-            // not recognise it — the exact silent failure a route-shaped focus argument would cause.
+            // `crumbsFor` falls through to a single crumb labelled with the raw route.
             assertNotEquals(
                 "${knob.id}: route \"$route\" has no breadcrumb entry",
                 listOf(Crumb(route, null)),
@@ -76,18 +68,12 @@ class SettingsSearchRoutingTest {
 
     private companion object {
         /**
-         * Settings destinations that live OUTSIDE `:feature:settings`, and so are not matched by
-         * [registeredSettingsRoutes]' prefix filter. Both are top-level panels in their own right
-         * that the settings search can nonetheless land on: the model list, and the backup panel,
-         * which took the export/import surface with it when it left Settings → Data.
-         *
-         * Listed explicitly rather than by loosening the filter — a filter wide enough to admit
-         * these would admit a typo just as readily, which is the whole of what this test is for.
+         * Settings destinations outside `:feature:settings`, so missed by [registeredSettingsRoutes]'
+         * prefix filter. Listed explicitly: a filter wide enough to admit them would admit a typo.
          */
         val OFF_MODULE_ROUTES = setOf("models", "backup")
     }
 
-    /** The routes the NavHost actually registers, read from the source rather than assumed. */
     private fun registeredSettingsRoutes(): Set<String> {
         val nav = File(System.getProperty("user.dir"), "src/main/kotlin/com/t1dm/app/Navigation.kt")
         assertTrue("cannot find Navigation.kt at ${nav.absolutePath}", nav.isFile)

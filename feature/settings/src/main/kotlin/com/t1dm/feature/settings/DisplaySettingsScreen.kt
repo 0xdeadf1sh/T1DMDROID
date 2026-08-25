@@ -12,16 +12,8 @@ import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.model.TempUnit
 import com.t1dm.core.model.UnitSpace
 
-/**
- * Settings → Display (Phase 7C item 14 + 7D item 25). The GLOBAL
- * glucose unit space, the single GLOBAL stats target range, the "disable all animations" toggle, and
- * — new in 7D — the THEME + FONT switcher, the custom-theme JSON import, and the haptics intensity.
- * Pure/stateless: theme / font / haptic ids are opaque strings the caller (`:app` Navigation, which
- * owns `:core:design`) supplies, marshals to their enums, and persists. The rule the SIGNATURE keeps
- * is that no `:core:design` (or `:alerts`) type crosses it; the haptics ENGINE, by contrast, arrives
- * ambiently through `LocalT1dmHaptics` and is never a parameter, so the screen stays as stateless and
- * as callback-driven as it was.
- */
+/** Theme / font / haptic ids are opaque strings: no `:core:design` or `:alerts` type crosses this
+ *  signature. The haptics engine arrives ambiently via `LocalT1dmHaptics`, never as a parameter. */
 @Composable
 fun DisplaySettingsScreen(
     unitSpace: UnitSpace,
@@ -51,7 +43,6 @@ fun DisplaySettingsScreen(
     onImportCustomTheme: () -> Unit,
     onSetTemperatureUnit: (TempUnit) -> Unit,
     onSelectHaptic: (String) -> Unit,
-    /** Play the tapped intensity immediately, before the setting round-trips (the alerts precedent). */
     onPreviewHaptic: (String) -> Unit = {},
     widgetPinSupported: Boolean = false,
     widgetPinActions: List<Pair<String, () -> Unit>> = emptyList(),
@@ -115,8 +106,7 @@ fun DisplaySettingsScreen(
         ) { onSetTemperatureUnit(it) }
 
         SettingsSectionHeader("Widgets")
-        // ONE index entry rather than one per widget: the button list is discovered at runtime from
-        // the launcher's pin support, and either branch of it answers the same search.
+        // One index entry, not one per widget: the button list is discovered at runtime.
         SettingsAnchor(displayWidgets) {
             if (widgetPinSupported && widgetPinActions.isNotEmpty()) {
                 widgetPinActions.forEach { (label, onPin) ->
@@ -144,16 +134,13 @@ fun DisplaySettingsScreen(
 
         SettingsSectionHeader("Haptics")
         SettingsNote("Independent of Animations; alarm vibration is set separately under Alerts.")
-        // The preview IS this picker's feedback, so it suppresses the detent every other ChipPicker
-        // plays: that tick would sound at the level being replaced, not the one being chosen.
+        // The preview is this picker's feedback; a detent would tick at the level being replaced.
         ChipPicker(displayHaptics, hapticOptions, selectedHaptic, tickOnSelect = false) {
             onPreviewHaptic(it)
             onSelectHaptic(it)
         }
     }
 }
-
-// ── search index (see SettingsIndex.kt) ───────────────────────────────────────────────────────────
 
 private val displayTheme = SettingsKnob(
     id = "display.theme",

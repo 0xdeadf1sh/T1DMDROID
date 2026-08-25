@@ -10,11 +10,9 @@ android {
 dependencies {
     implementation(project(":core:design"))
     implementation(project(":core:model"))
-    // GameWorld + the dispatcher holder. The screen never names NativeCore: :app hands it a
-    // `(TerrainSpec) -> GameWorld` factory, exactly as it hands :feature:dashboard a smoother.
+    // GameWorld + the dispatcher holder.
     implementation(project(":core:common"))
-    // The BG panel's own render model — GraphFrame / PaintFrame / ChalkPens — which :ui:game's world
-    // is cut from, and the tool geometry the paint layer must be drawn with.
+    // GraphFrame / PaintFrame / ChalkPens, and the tool geometry the paint layer is drawn with.
     implementation(project(":ui:graph"))
     implementation(project(":ui:game"))
 
@@ -22,11 +20,10 @@ dependencies {
 
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.bundles.compose)
-    // BackHandler: the back gesture is an exit affordance here, not a pop, so the route has to claim it.
+    // BackHandler: back is an exit affordance here, not a pop.
     implementation(libs.androidx.activity.compose)
-    // LocalLifecycleOwner. The frame clock alone is not a pause: it stops on window DETACH, not on a
-    // paused-but-visible Activity (a dialog, the recents peek, a partially-occluding overlay), and the
-    // solver must freeze the instant the screen stops being RESUMED.
+    // LocalLifecycleOwner: the frame clock stops on window detach, not on a paused-but-visible
+    // Activity, and the solver must freeze the instant the screen stops being resumed.
     implementation(libs.androidx.lifecycle.runtime.compose)
     debugImplementation(libs.androidx.compose.ui.tooling)
 

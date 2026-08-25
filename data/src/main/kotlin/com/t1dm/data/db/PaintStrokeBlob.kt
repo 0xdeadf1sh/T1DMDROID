@@ -4,24 +4,12 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /**
- * Versioned little-endian codec for `bg_paint_stroke.points` — the (epoch-ms, y-fraction) polyline of
- * one freehand annotation. Fixed endianness for the same reason as [toBlob] (a DB copied between
- * hosts must decode identically), but with a header the `customCurve` f64 series does not carry: a
- * stroke's layout can plausibly grow a channel (pressure, velocity) later, and a keep-forever store
- * cannot retro-fit a discriminator onto rows written without one.
- *
- * v1 layout — an 8-byte header, then [count] fixed 12-byte points:
- * ```
- * 'T' '1' 'P' | u8 version | u32 count | (i64 tsMs, f32 yFrac) × count
- * ```
- * X is a full **absolute** i64 per point rather than an i32 delta from a base timestamp: a stroke
- * drawn across the 90-day window spans ~7.8e9 ms, which an i32 delta overflows, and 4 bytes a point
- * does not buy a zoom-dependent failure mode. f32 on Y resolves ~4 decimal orders finer than one
- * pixel of any plausible panel height.
+ * Little-endian codec for `bg_paint_stroke.points`: `'T' '1' 'P' | u8 version | u32 count`, then
+ * `(i64 tsMs, f32 yFrac)` per point. Fixed endianness so a DB copied between hosts decodes
+ * identically; X is absolute, an i32 delta overflowing the 90-day window.
  */
 object PaintStrokeBlob {
 
-    /** The layout version written into every new blob; [decode] refuses anything else. */
     const val VERSION: Int = 1
 
     private const val HEADER_BYTES = 8
@@ -29,7 +17,7 @@ object PaintStrokeBlob {
 
     private val MAGIC = byteArrayOf('T'.code.toByte(), '1'.code.toByte(), 'P'.code.toByte())
 
-    /** The decoded polyline; parallel arrays, always of equal length. */
+    /** Parallel arrays, always of equal length. */
     class Points internal constructor(val tsMs: LongArray, val yFrac: FloatArray)
 
     fun encode(tsMs: LongArray, yFrac: FloatArray): ByteArray {
@@ -55,7 +43,7 @@ object PaintStrokeBlob {
         val buf = ByteBuffer.wrap(blob).order(ByteOrder.LITTLE_ENDIAN)
         buf.position(HEADER_BYTES - Int.SIZE_BYTES)
         val count = buf.int
-        // Long arithmetic: a hostile count would overflow the Int product and could match the length.
+        // Long arithmetic: an Int product would overflow and could match the length.
         require(count >= 0 && blob.size.toLong() == HEADER_BYTES + count.toLong() * POINT_BYTES) {
             "paint blob declares $count points but carries ${blob.size - HEADER_BYTES} B of payload"
         }

@@ -7,13 +7,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertSame
 import org.junit.Test
 
-/**
- * The per-grid-slot collapse the class-wide BG history is drawn through (§3.1).
- *
- * What is actually at stake: two sensors of one model worn at once — the replacement warming up
- * while the old one still reports — both hold a row at the same `tsMs`, and the panel must draw one
- * trace rather than zigzag between two sensors that disagree by a few mg/dL.
- */
+/** §3.1. */
 class GridSlotCollapseTest {
 
     private fun reading(
@@ -44,7 +38,6 @@ class GridSlotCollapseTest {
             reading("a", 600_000L, 110, 2L),
             reading("a", 900_000L, 120, 3L),
         )
-        // Identity, not merely equality: with nothing contested there is no reason to copy the list.
         assertSame(rows, collapseByGridSlot(rows, "a"))
     }
 
@@ -67,7 +60,6 @@ class GridSlotCollapseTest {
             reading("b", 300_000L, 105, rxWallMs = 2_000L),
         )
         assertEquals("b", collapseByGridSlot(rows, selectedSourceId = null).single().sourceId)
-        // ... and the selected source being absent from the class is the same case, not a special one.
         assertEquals("b", collapseByGridSlot(rows, selectedSourceId = "gone").single().sourceId)
     }
 
@@ -78,7 +70,6 @@ class GridSlotCollapseTest {
             reading("b", 300_000L, 105, rxWallMs = 5_000L),
         )
         assertEquals("a", collapseByGridSlot(ab, null).single().sourceId)
-        // Same two readings, opposite row order: the answer must not move.
         assertEquals("a", collapseByGridSlot(ab.reversed(), null).single().sourceId)
     }
 
@@ -101,11 +92,7 @@ class GridSlotCollapseTest {
         assertEquals(emptyList<CgmReadingEntity>(), collapseByGridSlot(emptyList(), "a"))
     }
 
-    /**
-     * The sensor change itself: the replacement is selected but still in warm-up, while the sensor
-     * being retired is still measuring. Ranking selection first would draw the warm-up value §3.6
-     * suppresses from inference and from alarm evaluation, over a good reading the phone holds.
-     */
+    /** §3.6. */
     @Test
     fun `a measuring sibling beats the selected sensor's warm-up reading`() {
         val rows = listOf(
@@ -141,7 +128,7 @@ class GridSlotCollapseTest {
             reading("a", 300_000L, 100, rxWallMs = 1_000L, flag = ReadingFlag.WARMUP),
             reading("b", 300_000L, 105, rxWallMs = 2_000L, provenance = ReadingProvenance.INTERPOLATED),
         )
-        // Neither is real, so the ranking falls through to selection, then reception time.
+        // Neither is real: ranking falls through to selection, then reception time.
         assertEquals("a", collapseByGridSlot(rows, selectedSourceId = "a").single().sourceId)
         assertEquals("b", collapseByGridSlot(rows, selectedSourceId = null).single().sourceId)
     }

@@ -8,12 +8,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
-/**
- * The panel's pure formatting, which the foreground-service notification also renders through. A
- * duration is the figure a bout is read by, and the failure mode is quiet: an hour rendered `60:00`
- * is legible, plausible and wrong, and a stopwatch that drops its leading zero (`5:7`) reads as
- * seven minutes.
- */
 class ExerciseLabelsTest {
 
     @Test
@@ -52,7 +46,6 @@ class ExerciseLabelsTest {
 
     @Test
     fun `no measured distance is no label, never a zero`() {
-        // A bout indoors or with location denied did not travel 0 m — it did not measure at all.
         assertNull(distanceLabel(null))
         assertNull(distanceLabel(0.0))
         assertNull(distanceLabel(Double.NaN))
@@ -67,8 +60,6 @@ class ExerciseLabelsTest {
 
     @Test
     fun `no pace is no label`() {
-        // The recorder withholds a pace below its own distance floor rather than dividing the
-        // receiver's scatter by a small number of seconds; the label must not invent one back.
         assertNull(paceLabel(null))
         assertNull(paceLabel(0.0))
         assertNull(paceLabel(Double.NaN))
@@ -95,10 +86,7 @@ class ExerciseLabelsTest {
             interrupted = false,
         )
         assertNull(interruptedNote(bout))
-        // Cut at its last recorded fix after the process died.
         assertEquals("Ended early — app stopped", interruptedNote(bout.copy(interrupted = true)))
-        // Ran the whole limit, so the limit is what to say — and the figure comes from the constant
-        // the service enforces, not from a number typed into the string.
         val capped = bout.copy(endMs = bout.startMs + EXERCISE_MAX_BOUT_MS, interrupted = true)
         assertEquals("Ended at the 12 h limit", interruptedNote(capped))
     }
@@ -112,13 +100,9 @@ class ExerciseLabelsTest {
         )
         val walk = ActiveExercise(bout, 600_000L, 800.0, null, null, null, null)
         assertEquals("kcal needs body mass", kcalNote(walk, null))
-        // The equations describe two gaits; OTHER is the label for everything they do not, and the
-        // body mass would not rescue it — so that is what the line has to say.
         val other = walk.copy(session = bout.copy(kind = ExerciseKind.OTHER))
         assertEquals("kcal needs walk or run", kcalNote(other, 70.0))
         assertEquals("kcal needs walk or run", kcalNote(other, null))
-        // A figure that exists needs no explanation, and neither does a walk that has a body mass and
-        // has simply not covered any ground yet.
         assertNull(kcalNote(walk.copy(kcal = 212), null))
         assertNull(kcalNote(walk.copy(distanceM = 0.0), 70.0))
     }

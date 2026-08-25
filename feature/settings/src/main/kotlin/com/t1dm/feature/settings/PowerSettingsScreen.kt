@@ -2,12 +2,7 @@ package com.t1dm.feature.settings
 
 import androidx.compose.runtime.Composable
 
-/**
- * Settings → Low-power mode (Phase 7C item 14; Q9 — default entry 20 %,
- * configurable). When the phone crosses the battery floor (or, optionally, the OS battery-saver turns
- * on) the watch push suspends after one final flagged frame; the CGM scan and alarms keep running.
- * Pure/stateless.
- */
+/** Crossing the floor suspends the watch push only; the CGM scan and alarms keep running. */
 @Composable
 fun PowerSettingsScreen(
     enabled: Boolean,
@@ -24,8 +19,6 @@ fun PowerSettingsScreen(
         ToggleRow(powerOsSaver, useOsSaver) { onSetUseOsSaver(it) }
     }
 }
-
-// ── search index (see SettingsIndex.kt) ───────────────────────────────────────────────────────────
 
 private const val POWER_SECTION = "Low-power mode"
 

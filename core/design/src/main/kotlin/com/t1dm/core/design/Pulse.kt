@@ -17,19 +17,9 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 
 /**
- * A one-shot "this is the row you asked for" highlight — the generalisation of the dashboard's
- * private data-movement flash, raised into `:core:design` for the Settings search (which scrolls a
- * matched knob into view and must then say *which* row it landed on).
- *
- * It is the fourth door motion flows through (Motion.kt enumerates the other three) and the one place
- * where [motionSpec] would be actively wrong: with motion off it returns `snap()`, and a snapped 1→0
- * fade is invisible — the highlight would silently do nothing exactly when the user has asked for a
- * static UI. So the disabled branch is not an animation at all but a STATIC tint held for
- * [PULSE_HIGHLIGHT_MS] and then cleared; the row is still marked, it simply does not breathe.
- *
- * The tint is the theme accent, not the neutral ink the press ripple was pinned to under U3. That fix
- * was about an *accidental* red rectangle under every tap; this mark is deliberate, momentary, and its
- * whole job is to be found, so it belongs to the accent the rest of the theme answers to.
+ * The one place [motionSpec] would be actively wrong: with motion off it returns `snap()`, and a
+ * snapped 1→0 fade is invisible. So the disabled branch is a STATIC tint held for
+ * [PULSE_HIGHLIGHT_MS], not an animation.
  */
 
 private const val PULSE_CYCLES = 2
@@ -37,14 +27,10 @@ private const val PULSE_RISE_MS = 260
 private const val PULSE_FALL_MS = 340
 private const val PULSE_PEAK_ALPHA = 0.30f
 
-/** How long a highlight stays lit, motion on or off — the caller's cue for when it may release. */
+/** How long a highlight stays lit, motion on or off. */
 const val PULSE_HIGHLIGHT_MS: Long = ((PULSE_RISE_MS + PULSE_FALL_MS) * PULSE_CYCLES).toLong()
 
-/**
- * Paint a transient accent wash behind this node while [active], then fade (or, with motion off,
- * blink) back to nothing. [inset] is negative to bleed the wash OUTSIDE the node, so a dense settings
- * row reads as a highlighted band rather than a tight box drawn inside its own padding.
- */
+/** [inset] is negative to bleed the wash OUTSIDE the node. */
 @Composable
 fun Modifier.pulseHighlight(
     active: Boolean,

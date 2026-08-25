@@ -14,7 +14,6 @@ class LossOfSignalAlarmTest {
 
     @Test
     fun `never fires before a first real reading is seen`() {
-        // Nothing to have lost; even far in the future there is no signal-loss alarm.
         assertNull(alarm().evaluate(nowMs = 60 * MIN))
     }
 
@@ -22,7 +21,7 @@ class LossOfSignalAlarmTest {
     fun `fires after the baseline window with no measured reading`() {
         val a = alarm()
         a.onReading(reading(120, rxWallMs = 0))
-        assertNull(a.evaluate(19 * MIN))       // not yet
+        assertNull(a.evaluate(19 * MIN))
         val loss = a.evaluate(20 * MIN)
         assertNotNull(loss)
         assertEquals(20, loss!!.windowMin)
@@ -33,7 +32,7 @@ class LossOfSignalAlarmTest {
     @Test
     fun `escalates to the shorter window when the last real reading was low`() {
         val a = alarm()
-        a.onReading(reading(60, rxWallMs = 0)) // LOW band
+        a.onReading(reading(60, rxWallMs = 0))
         assertNull(a.evaluate(11 * MIN))
         val loss = a.evaluate(12 * MIN)
         assertNotNull(loss)
@@ -45,7 +44,7 @@ class LossOfSignalAlarmTest {
     @Test
     fun `escalates when the last real reading was falling even if in range`() {
         val a = alarm()
-        a.onReading(reading(120, rxWallMs = 0, trendTenthsPerMin = -15)) // in range but dropping
+        a.onReading(reading(120, rxWallMs = 0, trendTenthsPerMin = -15))
         assertNull(a.evaluate(11 * MIN))
         assertEquals(true, a.evaluate(12 * MIN)!!.escalated)
     }
@@ -54,7 +53,7 @@ class LossOfSignalAlarmTest {
     fun `a flat in-range reading does not escalate`() {
         val a = alarm()
         a.onReading(reading(120, rxWallMs = 0, trendTenthsPerMin = 0))
-        assertNull(a.evaluate(12 * MIN))                 // baseline window not yet lapsed
+        assertNull(a.evaluate(12 * MIN))
         assertEquals(false, a.evaluate(20 * MIN)!!.escalated)
     }
 
@@ -63,9 +62,9 @@ class LossOfSignalAlarmTest {
         val a = alarm()
         a.onReading(reading(120, rxWallMs = 0))
         assertNotNull(a.evaluate(20 * MIN))
-        a.onReading(reading(120, rxWallMs = 20 * MIN)) // fresh real reading
+        a.onReading(reading(120, rxWallMs = 20 * MIN))
         assertNull(a.loss)
-        assertNull(a.evaluate(20 * MIN))               // age now 0
+        assertNull(a.evaluate(20 * MIN))
     }
 
     @Test
@@ -73,7 +72,6 @@ class LossOfSignalAlarmTest {
         val a = alarm()
         a.onReading(reading(120, rxWallMs = 0))
         a.onReading(reading(120, rxWallMs = 5 * MIN, provenance = ReadingProvenance.INTERPOLATED))
-        // Loss still measured from the last MEASURED reading (t=0), so it fires at 20 min.
         assertNotNull(a.evaluate(20 * MIN))
     }
 
@@ -83,6 +81,6 @@ class LossOfSignalAlarmTest {
         a.onReading(reading(120, rxWallMs = 0))
         val first = a.evaluate(20 * MIN)
         val later = a.evaluate(25 * MIN)
-        assertEquals(first, later) // same escalation ⇒ no churn
+        assertEquals(first, later)
     }
 }

@@ -11,11 +11,9 @@ import timber.log.Timber
 import java.util.concurrent.TimeUnit
 
 /**
- * The deferrable watchdog (§2.3 — "WorkManager watchdog"). It periodically nudges
- * [CgmScanService] back up should HyperOS/Doze have killed it out from under `START_STICKY` and
- * `onTaskRemoved`. Starting a foreground service from a background Worker can be refused on 14+, so
- * the restart is best-effort and swallowed — the model-free loss-of-signal alarm still covers any
- * kill window (§3.6-A).
+ * Periodic nudge to restart [CgmScanService] after a Doze/HyperOS kill (§2.3). A background
+ * foreground-service start can be refused on 14+, so the restart is best-effort; §3.6-A's
+ * loss-of-signal alarm covers the kill window.
  */
 class CgmWatchdog(context: Context, params: WorkerParameters) : Worker(context, params) {
     override fun doWork(): Result {

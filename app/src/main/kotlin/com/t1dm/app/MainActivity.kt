@@ -24,25 +24,16 @@ class MainActivity : ComponentActivity() {
 
     private val container: AppContainer get() = (application as T1dmApplication).container
 
-    /**
-     * The volume-key panel shortcut, registered by the composition (which owns the NavController and
-     * reads both the setting and the alarm state). Returns true when it navigated; false hands the
-     * key back to the system volume it normally is — which is what happens with the setting off,
-     * while any alarm condition stands, and before the composition has attached.
-     */
+    /** True when it navigated; false leaves the key as the system volume. */
     internal var volumeShortcut: ((up: Boolean) -> Boolean)? = null
 
-    /** Which volume key the shortcut claimed on ACTION_DOWN, so the matching ACTION_UP is consumed
-     *  by that same decision. Deciding twice is not equivalent: the setting can be toggled and an
-     *  alarm can fire between the two events, and a DOWN we swallowed followed by an UP we passed on
-     *  still raises the system volume panel over the panel we just navigated to. */
+    /** The key claimed on ACTION_DOWN, so its ACTION_UP is consumed by that same decision. */
     private var claimedKeyCode: Int? = null
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
             grants.forEach { (perm, granted) -> Timber.tag(TAG).i("perm %s granted=%b", perm, granted) }
-            // Start (or top-up) the monitor once the user has answered — a missing grant only
-            // narrows what the service can do; the service itself is resilient to it.
+            // Started whatever the grants: a missing one narrows the service rather than failing it.
             CgmScanService.start(this)
         }
 
@@ -72,11 +63,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /**
-     * Volume up ⇒ Meals, volume down ⇒ Insulin, while this Activity is foregrounded. Long-press
-     * repeats are swallowed rather than re-navigated: holding a key is how the volume is normally
-     * run up, and repeating the navigation would fight `launchSingleTop` for no gain.
-     */
+    /** Volume up navigates to Meals, volume down to Insulin. */
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val code = event.keyCode
         if (code != KeyEvent.KEYCODE_VOLUME_UP && code != KeyEvent.KEYCODE_VOLUME_DOWN) {
@@ -99,20 +86,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        // Re-evaluate inference immediately on resume so the panels reflect the CURRENT context instead of
-        // the last 5-min grid cycle's possibly-stale forecast (which lingered as a STABLE read-out on
-        // reopen). Serialised + gated identically inside the controller — never bypasses a §3.6 gate.
+        // Serialised and gated inside the controller; this never bypasses a §3.6 gate.
         container.reevaluateInferenceNow()
     }
 
     override fun onStop() {
         super.onStop()
-        // Defer the theme→launcher-icon swap to backgrounding: toggling an <activity-alias> while the
-        // task is foregrounded lets HyperOS's recents evict us mid-swap (see build gotchas). By onStop
-        // the user has left, so the churn is invisible and the eviction window is closed.
-        // Never disable the alias that launched us (`intent.component.className` resolves to the alias
-        // for an alias-launched Activity) — belt-and-braces against a recents eviction that could
-        // otherwise strand the task on a now-disabled component.
+        // Deferred to backgrounding: an <activity-alias> swap while foregrounded lets recents evict the task.
         runCatching {
             LauncherIconManager.apply(
                 applicationContext,
@@ -125,10 +105,7 @@ class MainActivity : ComponentActivity() {
     private fun requestRuntimePermissions() {
         val wanted = buildList {
             add(Manifest.permission.BLUETOOTH_SCAN)
-            // BLUETOOTH_CONNECT is REQUIRED for the held GATT session (the sole CGM read path) — on
-            // Android 12+ it is granted independently of BLUETOOTH_SCAN, so it must be requested
-            // explicitly or connectGatt() fails with a permission error even after the user allows
-            // "Nearby devices". (Omitting it was a leftover from the passive-advertisement era.)
+            // Granted independently of BLUETOOTH_SCAN on 12+; without it connectGatt() fails.
             add(Manifest.permission.BLUETOOTH_CONNECT)
             add(Manifest.permission.ACTIVITY_RECOGNITION)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {

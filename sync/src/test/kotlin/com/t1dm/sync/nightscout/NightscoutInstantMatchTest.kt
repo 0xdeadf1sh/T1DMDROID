@@ -4,11 +4,8 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * The receiving host re-renders timestamps: a reading posted at `+03:00` reads back as the same
- * instant at `+00:00`. Anything in the replay guard that compares the rendering rather than the
- * moment would report every replay as "not present" and duplicate the dose it exists to protect.
- */
+/** The host re-renders timestamps: posted at `+03:00`, read back as the same instant at `+00:00`.
+ *  A guard comparing the rendering rather than the moment would duplicate every replayed dose. */
 class NightscoutInstantMatchTest {
 
     private fun bolus(at: String, notes: String? = null) = NsTreatmentDto(
@@ -32,7 +29,6 @@ class NightscoutInstantMatchTest {
         assertTrue(readBack.matches(mine))
     }
 
-    /** The marker still wins when the host keeps it, offset rewriting or not. */
     @Test
     fun `the client id marker matches across a rewritten offset`() {
         val mine = bolus("2026-08-17T23:53:20+03:00", "cid-1")
@@ -40,7 +36,6 @@ class NightscoutInstantMatchTest {
         assertTrue(readBack.matches(mine, requireMarker = true))
     }
 
-    /** A different moment is a different event, however it is rendered. */
     @Test
     fun `a neighbouring slot is not a match`() {
         val mine = bolus("2026-08-17T23:53:20+03:00", "cid-1")

@@ -12,21 +12,12 @@ import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
 
-/** The dial sweep: 225° of arc, opening downward, the way an instrument binnacle reads. */
+/** Degrees of arc, opening downward. */
 private const val SWEEP_DEG = 225f
 private const val START_DEG = 157.5f
 
-/**
- * A speedometer and tachometer, drawn straight into the game's Canvas.
- *
- * No numerals on either face. A needle against a swept scale is already the reading; a digit beside it
- * is the same fact twice, and this app's house rule is to add no text that the surface already says.
- *
- * Deliberately NOT composables: they read [CarFrame] in the draw phase alongside the world, so a
- * needle moving sixty times a second invalidates draw and recomposes nothing — the same discipline
- * the car and the terrain follow. A Compose gauge here would put two recompositions per frame into
- * the hot path for two numbers.
- */
+/** Not composables: [CarFrame] is read in the draw phase, so a needle moving sixty times a second
+ *  invalidates the draw and recomposes nothing. */
 internal fun DrawScope.drawGauges(
     f: CarFrame,
     centreX: Float,
@@ -42,8 +33,7 @@ internal fun DrawScope.drawGauges(
         centre = Offset(centreX - gap * 0.5f, bottomY - radius),
         radius = radius,
         frac = f.speedMs / SPEED_FULL_SCALE_MS,
-        // No redline on the speedometer: the limiter is not a hazard, and marking the same fact on
-        // both faces would say it twice.
+        // No redline on the speedometer: the limiter is not a hazard.
         measurer = measurer, ink = ink, needle = accent, warn = warn, redlineFrom = 1.1f,
     )
     drawDial(
@@ -55,18 +45,9 @@ internal fun DrawScope.drawGauges(
     )
 }
 
-/**
- * The run, as a bar: filled behind the car, empty ahead of it, the boundary being where the car is.
- *
- * Spans exactly the PLOT's width on purpose. The plot's x axis is time and the track is time, so the
- * bar's boundary sits directly above the stretch of trace the car has covered — the two readings agree
- * by construction rather than by coincidence, and the bar doubles as a map of where in the day the run
- * is. It is measured from the SEAT rather than from the track's origin, because the run began wherever
- * the finger fell (see [CarFrame.progress]).
- *
- * No numerals and no head marker. A filled proportion is already the reading; a figure beside it would
- * be the same fact twice, and a disc at the boundary reads as debris rather than as an instrument.
- */
+/** Spans exactly the PLOT's width: the plot's x axis is time and the track is time, so the boundary
+ *  sits directly above the stretch of trace the car has covered. Measured from the SEAT — see
+ *  [CarFrame.progress]. */
 internal fun DrawScope.drawProgress(
     progress: Float,
     left: Float,
@@ -90,8 +71,7 @@ internal fun DrawScope.drawProgress(
         drawRoundRect(
             accent,
             topLeft = Offset(left, top),
-            // Never thinner than it is tall: a rounded rect narrower than its own corner radius renders
-            // as a pinched sliver, which at the first metre of a run looks like a rendering fault.
+            // Never thinner than it is tall: a rounded rect narrower than its corner radius pinches.
             size = Size((w * p).coerceAtLeast(thickness), thickness),
             cornerRadius = radius,
         )
@@ -112,7 +92,7 @@ private fun DrawScope.drawDial(
     val box = Size(radius * 2f, radius * 2f)
     val topLeft = Offset(centre.x - radius, centre.y - radius)
 
-    // Face: a translucent disc so the track still reads through it.
+    // Translucent, so the track still reads through the face.
     drawCircle(ink.copy(alpha = 0.22f), radius, centre)
     drawArc(
         color = ink.copy(alpha = 0.45f),
@@ -120,7 +100,6 @@ private fun DrawScope.drawDial(
         topLeft = topLeft, size = box,
         style = Stroke(width = radius * 0.09f, cap = StrokeCap.Round),
     )
-    // Redline segment, where there is one on this dial.
     if (redlineFrom < 1f) {
         drawArc(
             color = warn.copy(alpha = 0.75f),
@@ -130,7 +109,6 @@ private fun DrawScope.drawDial(
             style = Stroke(width = radius * 0.09f, cap = StrokeCap.Round),
         )
     }
-    // Ticks every tenth.
     for (i in 0..10) {
         val a = (START_DEG + SWEEP_DEG * i / 10f) * PI.toFloat() / 180f
         val outer = radius * 0.86f
@@ -142,7 +120,6 @@ private fun DrawScope.drawDial(
             strokeWidth = radius * 0.045f,
         )
     }
-    // Needle.
     val na = (START_DEG + SWEEP_DEG * f) * PI.toFloat() / 180f
     drawLine(
         if (f >= redlineFrom) warn else needle,

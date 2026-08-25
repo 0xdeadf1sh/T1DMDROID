@@ -20,17 +20,6 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/**
- * Instrumented verification of the fresh-install seed path (Phase 7C, meal-builder
- * catalogue). Builds a DB with the SAME wiring production uses — the [BundledSQLiteDriver] (whose
- * SQLite ships `fts5`, unlike the HyperOS/Android-16 system build) plus the [FoodFts] `onCreate`
- * callback — seeds the full [FoodSeed] catalogue, and asserts (a) every row lands in `food` and
- * (b) the external-content FTS5 index is searchable, including a row unique to the Phase-7C growth,
- * which proves the `food_ai` insert trigger repopulated `food_fts`.
- *
- * The re-seed migration [com.t1dm.data.db.MigrationRunner.MIGRATION_5_6] (the upgrade path) is
- * schema-validated in [MigrationTest]; this test covers the count + FTS behaviour on the fresh path.
- */
 @RunWith(AndroidJUnit4::class)
 class FoodSeedDbTest {
 
@@ -44,8 +33,8 @@ class FoodSeedDbTest {
             ApplicationProvider.getApplicationContext(),
             AppDatabase::class.java,
         )
-            // Mirror AppDatabase.build: the FTS5 virtual table is Room-invisible, so onCreate must
-            // create it, and the bundled driver supplies the fts5 module the OEM SQLite omits.
+            // Mirror AppDatabase.build: the FTS5 table is Room-invisible, and the OEM SQLite the
+            // bundled driver replaces has no fts5 module at all.
             .addCallback(object : RoomDatabase.Callback() {
                 override fun onCreate(connection: SQLiteConnection) = FoodFts.create(connection)
             })
@@ -84,14 +73,13 @@ class FoodSeedDbTest {
     @Test
     fun ftsFindsSeededFoods() = runTest {
         seed()
-        // A pre-existing Phase-4 staple and a Phase-7C addition both resolve through food_fts.
         assertTrue(repo.searchFoods("rice").any { it.name.contains("rice", ignoreCase = true) })
         assertTrue(
             "FTS trigger did not index the new 'Papaya' row",
             repo.searchFoods("papaya").any { it.name.equals("Papaya", ignoreCase = true) },
         )
         assertTrue(repo.searchFoods("burrito").any { it.name.equals("Burrito", ignoreCase = true) })
-        // Prefix search (repository appends `*`): "choc" reaches chocolate items.
+        // The repository appends `*`, so this is a prefix search.
         assertTrue(repo.searchFoods("choc").isNotEmpty())
     }
 }

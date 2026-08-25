@@ -44,17 +44,8 @@ import com.t1dm.core.model.MealComponent
 import com.t1dm.core.model.ResolvedMealCurve
 import com.t1dm.ui.graph.CurvePreview
 
-/**
- * The portioned component list being assembled, plus the ONE open re-gram draft that indexes it —
- * shared verbatim by the new-meal builder ([MealBuilderScreen]) and the stored-meal editor
- * ([MealEditorScreen]).
- *
- * The draft is POSITIONAL: it names a slot, not a component. Every mutation that shifts or replaces
- * what lives at that slot must therefore drop it, else `Set` writes the portion typed for one food
- * into whatever slid underneath. Binding the list and the draft into one holder makes that
- * structural rather than a rule each call site has to remember — the list is only reachable through
- * methods that close the draft when they must.
- */
+/** The re-gram draft is POSITIONAL — it names a slot, not a component — so every mutation that
+ *  shifts or replaces what sits at that slot closes it first. */
 @Stable
 internal class MealDraft(initial: List<MealComponent>) {
     val components: SnapshotStateList<MealComponent> =
@@ -76,7 +67,6 @@ internal class MealDraft(initial: List<MealComponent>) {
         components.removeAt(index)
     }
 
-    /** Drop a whole meal in (load a copy, seed the editor); the draft cannot survive it. */
     fun replaceAll(next: List<MealComponent>) {
         closeRegram()
         components.clear()
@@ -85,7 +75,6 @@ internal class MealDraft(initial: List<MealComponent>) {
 
     fun clear() = replaceAll(emptyList())
 
-    /** Open the re-gram field on [index] seeded with that portion, or close it if it is already open. */
     fun toggleRegram(index: Int) {
         if (regramIndex == index) return closeRegram()
         regramText = "%.0f".format(components[index].grams)
@@ -96,11 +85,8 @@ internal class MealDraft(initial: List<MealComponent>) {
         regramText = text.filter { it.isDigit() || it == '.' }
     }
 
-    /**
-     * Commit the open draft; false when it will not parse or is non-positive, which the caller refuses
-     * audibly rather than swallowing. Committing on the button (never per keystroke) also keeps the
-     * off-thread re-resolve — keyed on the component list BY VALUE — off the typing path.
-     */
+    /** Committed on the button, never per keystroke: the off-thread re-resolve is keyed on the
+     *  component list by value. */
     fun commitRegram(): Boolean {
         val i = regramIndex ?: return false
         val grams = regramText.toDoubleOrNull()
@@ -116,18 +102,9 @@ internal class MealDraft(initial: List<MealComponent>) {
     }
 }
 
-/**
- * The draft as parallel Bundle-storable lists, one entry per component.
- *
- * Saveable rather than merely remembered because the builder's ✎ affordances PUSH a destination
- * (`meals/builder/meal/{id}`, `…/food/{id}`), and Navigation-Compose disposes the composition it
- * displaces: a plain `remember` drops a ten-component meal on the floor the moment the user opens an
- * existing row to check its GI, with nothing to restore it from on the way back. The custom curve
- * travels as [com.t1dm.core.model.Food.customCurve] already is — a list of samples — flattened to a
- * string, and a null id/GI as the sentinels the rest of the module already uses.
- *
- * The open re-gram field is deliberately not carried: it is a half-typed portion, not work.
- */
+/** Parallel Bundle-storable lists, one entry per component. Saveable rather than remembered
+ *  because a ✎ pushes a route and Navigation-Compose disposes the composition it displaces. The
+ *  open re-gram field is deliberately not carried. */
 internal val MealDraftSaver: Saver<MealDraft, Any> = listSaver(
     save = { draft ->
         val c = draft.snapshot()
@@ -169,19 +146,15 @@ internal val MealDraftSaver: Saver<MealDraft, Any> = listSaver(
     },
 )
 
-/** A drawn shape through its own compact kv encoding, so it survives the same push. */
 internal val BezierCurveSaver: Saver<BezierCurve, String> =
     Saver(save = { BezierCurve.encode(it) }, restore = { BezierCurve.decode(it) })
 
-/** A draft that survives recomposition AND a route push, re-seeded only when [key] changes (the
- *  edited meal's id). */
 @Composable
 internal fun rememberMealDraft(
     initial: List<MealComponent> = emptyList(),
     key: Any? = Unit,
 ): MealDraft = rememberSaveable(key, saver = MealDraftSaver) { MealDraft(initial) }
 
-/** The live combined **appearance (Ra)** curve for [components], resolved off-thread by the caller. */
 @Composable
 internal fun resolvedCurve(
     components: List<MealComponent>,
@@ -194,14 +167,12 @@ internal fun resolvedCurve(
     return resolved
 }
 
-/** One row per component, with the inline re-gram field beneath whichever row has it open. */
 @Composable
 internal fun ComponentRows(draft: MealDraft) {
     val haptics = rememberT1dmHaptics()
     draft.components.forEachIndexed { i, c ->
-        // The food name is the only elastic member of the row: it takes what the carb read-out and the
-        // two actions leave and ellipsizes there. Unweighted, it claimed its intrinsic width first and
-        // starved them, so a long name broke `remove` across two lines mid-word ("rem" / "ove").
+        // The name is the elastic member: unweighted it claims its intrinsic width and starves the
+        // carb read-out and the two actions.
         Row(
             Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -218,9 +189,8 @@ internal fun ComponentRows(draft: MealDraft) {
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                // maxLines = 1 already forbids the wrap; the overflow must be Ellipsis rather than the
-                // default Clip, or an over-tight row truncates a label silently mid-word — "remo" reads
-                // as a shorter word, where "remo…" reads as a truncated one.
+                // Ellipsis, not the default Clip: a clipped label reads as a shorter word, not a
+                // truncated one.
                 Text(
                     "${"%.0f".format(c.carbs)} g carb",
                     style = MaterialTheme.typography.bodyMedium,
@@ -257,7 +227,6 @@ internal fun ComponentRows(draft: MealDraft) {
     }
 }
 
-/** Total carbs, appearance peak, and the combined Ra preview for a resolved component list. */
 @Composable
 internal fun ResolvedCurveSummary(resolved: ResolvedMealCurve) {
     Text(
@@ -269,11 +238,8 @@ internal fun ResolvedCurveSummary(resolved: ResolvedMealCurve) {
     CurvePreview(values = resolved.values)
 }
 
-/**
- * The FTS5 dictionary search and its bounded, independently-scrollable result list (N8 — the whole
- * seeded catalogue is reachable, not a clipped first-N slice). A bounded height lets it nest inside
- * an outer vertical scroll without an infinite-constraint conflict.
- */
+/** The bounded height lets this list nest inside an outer vertical scroll without an
+ *  infinite-constraint conflict. */
 @Composable
 internal fun FoodSearch(
     onSearch: suspend (String) -> List<Food>,
@@ -339,8 +305,6 @@ internal fun FoodSearch(
                 modifier = Modifier.weight(1f),
             )
             Button(
-                // A component joining the meal is a real addition to the thing being built, so it
-                // confirms; a portion that will not parse is refused rather than silently ignored.
                 onClick = {
                     val g = gramsText.toDoubleOrNull()
                     if (g != null && g > 0.0) {
@@ -356,11 +320,7 @@ internal fun FoodSearch(
     }
 }
 
-/**
- * The ✎ / 🗑 pair every editable row carries. Edit is "picked up, not committed" ([HapticEvent.DragStart])
- * — deliberately unlike the [HapticEvent.Confirm] a plain tap-to-load fires — and delete keeps its
- * [HapticEvent.Reject].
- */
+/** Edit fires DragStart — picked up, not committed — unlike a tap-to-load's Confirm. */
 @Composable
 internal fun RowActions(onEdit: () -> Unit, onDelete: () -> Unit) {
     val haptics = rememberT1dmHaptics()
@@ -376,11 +336,9 @@ internal fun RowActions(onEdit: () -> Unit, onDelete: () -> Unit) {
 
 internal fun foodLabel(f: Food): String = if (f.brand.isNullOrBlank()) f.name else "${f.name} (${f.brand})"
 
-/** A food's per-100 g facts — what makes it legible as an INGREDIENT rather than a portioned meal. */
 internal fun foodFacts(f: Food): String =
     "${"%.0f".format(f.carbsPer100g)} g/100 g" + (f.giOrNull?.let { " · GI ${it.toInt()}" } ?: " · GI —")
 
-/** Build a portioned component from a dictionary food (kept in the UI layer; no `:data` types). */
 internal fun Food.toComponentUi(grams: Double): MealComponent = MealComponent(
     foodId = id.takeIf { it != 0L },
     name = name,

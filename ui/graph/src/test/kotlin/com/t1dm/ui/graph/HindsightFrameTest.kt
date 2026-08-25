@@ -11,20 +11,8 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * The hindsight sweep's data structure.
- *
- * [HindsightFrame] trades a list of per-cycle series for six flat arrays because the cursor→fan
- * lookup runs at pointer rate, and that trade puts the correctness of the whole feature into index
- * arithmetic that nothing else checks. So these assert the two things the flattening can silently get
- * wrong — that a cycle's values come back out where they went in, and that the block stays
- * rectangular when the rows are not — plus the boundedness of the lookup, which is what stops a
- * sweep pinning the nearest stored fan under a cursor hours away from it.
- *
- * Geometry of the fixture: cycles every 5 min from [T0]; cycle `c` forecasts a flat line at
- * `200 + c` with a ±{5,10,15} fan, so a value identifies its cycle unambiguously and a mis-strided
- * read lands on a different number rather than a plausible one.
- */
+/** Fixture: cycles every 5 min from [T0]; cycle `c` forecasts a flat `200 + c` with a ±{5,10,15}
+ *  fan, so a mis-strided read lands on a different number rather than a plausible one. */
 class HindsightFrameTest {
 
     private val STEP = 300_000L
@@ -38,7 +26,7 @@ class HindsightFrameTest {
         nq: Int = NQ,
         status: ForecastStatus = ForecastStatus.OK,
         stepMs: Long = STEP,
-        /** The anchor, when it has come apart from the issue instant (a CGM dropout). */
+        /** The anchor, when it has come apart from the issue instant. */
         anchorC: Int = c,
         stale: Boolean = false,
     ): ModelPrediction {
@@ -66,7 +54,7 @@ class HindsightFrameTest {
         assertEquals(H + 1, f.span) // the prepended anchor point
         for (c in 0 until 5) {
             assertEquals(T0 + c * STEP, f.anchorMs[c])
-            // Step 0 is the anchor (the measured BG the forecast grew from); 1..H the forecast.
+            // Step 0 is the anchor; 1..H the forecast.
             assertEquals(200f + c, f.median[c * f.span], 1e-3f)
             for (i in 1..H) assertEquals(200f + c, f.median[c * f.span + i], 1e-3f)
         }
@@ -76,15 +64,14 @@ class HindsightFrameTest {
         val f = frameOf((0 until 3).map { pred(it) })!!
         for (c in 0 until 3) {
             val level = 200f + c
-            // Band 0 is the OUTER pair (.05/.95 ⇒ ±15), 2 the inner (.25/.75 ⇒ ±5). A stride error
-            // across cycles would read a neighbour's level and miss by 1, not by a band width.
+            // Band 0 is the OUTER pair (.05/.95 ⇒ ±15), 2 the inner (.25/.75 ⇒ ±5).
             for ((b, half) in listOf(0 to 15f, 1 to 10f, 2 to 5f)) {
                 val base = (b * f.cycles + c) * f.span
                 for (i in 1..H) {
                     assertEquals("lo b=$b c=$c i=$i", level - half, f.lo[base + i], 1e-3f)
                     assertEquals("hi b=$b c=$c i=$i", level + half, f.hi[base + i], 1e-3f)
                 }
-                // The anchor's fan is zero-width — the forecast fans open OUT of the last reading.
+                // The anchor's fan is zero-width.
                 assertEquals(level, f.lo[base], 1e-3f)
                 assertEquals(level, f.hi[base], 1e-3f)
             }
@@ -92,8 +79,7 @@ class HindsightFrameTest {
     }
 
     @Test fun raggedRowsAreDroppedRatherThanReshaped() {
-        // A shorter horizon, a different step, and a narrower fan: each is a forecast of something
-        // other than what the first row fixed, and none may be stretched to fit beside it.
+        // A shorter horizon, a different step, a narrower fan: none may be stretched to fit.
         val f = frameOf(
             listOf(
                 pred(0),
@@ -114,8 +100,7 @@ class HindsightFrameTest {
         assertEquals(204f + 15f, f.hi[outer + 1], 1e-3f)
     }
 
-    /** A stand-in for §8.4's apply: push every non-median column [by] mg/dL outward, hold the
-     *  median. Enough to tell a calibrated fan from a raw one by its width alone. */
+    /** A stand-in for §8.4's apply: widen every non-median column by [by], hold the median. */
     private fun widenBy(by: Double): (() -> List<Double>, Int, Int) -> List<Double>? = { fans, _, nq ->
         fans().mapIndexed { i, v ->
             val k = i % nq
@@ -124,15 +109,15 @@ class HindsightFrameTest {
     }
 
     @Test fun theSweepDrawsTheCalibratedFanRatherThanTheRawOne() {
-        // The defect this exists to stop: the live overlay draws the §8.4-corrected fan, so a sweep
-        // drawn from the raw stored fan states a second, narrower uncertainty on the same axes.
+        // A sweep drawn from the raw stored fan would state a second, narrower uncertainty on the
+        // same axes as the live overlay.
         var sawSteps = -1
         var sawNq = -1
         var sawLen = -1
         val rows = (0 until 3).map { pred(it) }
         val f = runBlocking {
             hindsightFrameOf(rows, UnitSpace.MgDl, null) { fans, steps, nq ->
-                // Built once, here, so the recorded length is the batch the implementation would send.
+                // Built once, so the recorded length is the batch the implementation sends.
                 val built = fans()
                 sawSteps = steps; sawNq = nq; sawLen = built.size
                 widenBy(20.0)({ built }, steps, nq)
@@ -160,13 +145,10 @@ class HindsightFrameTest {
     }
 
     @Test fun aCalibrationTheSweepCannotTrustLeavesEveryFanRaw() {
-        // All of them or none: half a sweep corrected beside half of it raw would put two
-        // uncertainties in one picture, which is the thing being fixed rather than a smaller version
-        // of it. A null (no fit, or one lapsed) and a size that disagrees are both refusals.
+        // All of them or none: half a sweep corrected beside half of it raw is the defect itself.
         val rows = (0 until 3).map { pred(it) }
         for (bad in listOf<(() -> List<Double>, Int, Int) -> List<Double>?>(
-            // The first never calls the builder at all — the ineligible path, which must not pay for
-            // a batch it will not use.
+            // The first never calls the builder: the ineligible path must not pay for the batch.
             { _, _, _ -> null },
             { fans, _, _ -> fans().let { it.take(it.size - 1) } },
             { fans, _, _ -> fans() + 0.0 },
@@ -182,15 +164,13 @@ class HindsightFrameTest {
     }
 
     @Test fun aFanOfADifferentWidthIsDroppedRatherThanCalibratedAgainstTheWrongDelta() {
-        // `nq` is pinned across the sweep like the horizon and the step are: one delta corrects the
-        // whole batch, so a row of another width has no correction here and cannot share the block.
+        // One delta corrects the whole batch, so a row of another width cannot share the block.
         val rows = listOf(pred(0), pred(1, nq = 9), pred(2))
         val f = runBlocking { hindsightFrameOf(rows, UnitSpace.MgDl, null, widenBy(20.0)) }!!
         assertEquals(2, f.cycles)
         assertEquals(T0 + 0 * STEP, f.anchorMs[0])
         assertEquals(T0 + 2 * STEP, f.anchorMs[1])
-        // The kept rows are still calibrated, and against their own levels rather than the dropped
-        // row's — a misaligned slice would read 201's fan under 202's median.
+        // Calibrated against their own levels: a misaligned slice would read 201's fan under 202's.
         assertEquals(200f - 35f, f.lo[(0 * f.cycles + 0) * f.span + 1], 1e-3f)
         assertEquals(202f - 35f, f.lo[(0 * f.cycles + 1) * f.span + 1], 1e-3f)
     }
@@ -204,19 +184,17 @@ class HindsightFrameTest {
 
     @Test fun theCursorLookupIsBoundedToHalfACycle() {
         val f = frameOf((0 until 4).map { pred(it) })!!
-        // Dead on, and within half a cycle either side.
         assertEquals(2, f.cycleAt((T0 + 2 * STEP).toDouble()))
         assertEquals(2, f.cycleAt((T0 + 2 * STEP).toDouble() + STEP * 0.4))
         assertEquals(2, f.cycleAt((T0 + 2 * STEP).toDouble() - STEP * 0.4))
-        // Past the ends: nothing. This is the bound the sweep depends on — unbounded, a cursor a day
-        // clear of the newest stored cycle would still drag that cycle's fan around under the finger.
+        // Past the ends: nothing. Unbounded, a cursor a day clear of the newest stored cycle would
+        // still drag that cycle's fan around under the finger.
         assertEquals(-1, f.cycleAt(T0 - STEP.toDouble()))
         assertEquals(-1, f.cycleAt((T0 + 4 * STEP).toDouble() + STEP))
     }
 
     @Test fun aGapInTheCyclesReadsAsAGap() {
-        // Inference did not run for an hour. The cursor in the middle of that hole must find nothing
-        // rather than the fan on either side of it.
+        // A hole in the cycles: the cursor inside it must find nothing, not the fan either side.
         val f = frameOf(listOf(pred(0), pred(1), pred(14), pred(15)))!!
         assertEquals(4, f.cycles)
         assertEquals(-1, f.cycleAt((T0 + 7 * STEP).toDouble()))
@@ -230,13 +208,9 @@ class HindsightFrameTest {
         assertNull(frameOf(listOf(pred(0, nq = 3))))
     }
 
-    /**
-     * The defect this whole pair of keys exists for. Across a CGM dropout the anchor freezes at the
-     * last measured reading while cycles keep firing, so many rows share one `anchorTsMs`. Keyed on
-     * the anchor, those cycles are mutually unreachable AND their zero gaps drag the median cadence
-     * to zero — which, clamped to 1 ms, gives a half-millisecond catchment and blanks the sweep over
-     * the ENTIRE window, healthy stretches included, looking exactly like "no forecasts stored here".
-     */
+    /** Across a CGM dropout the anchor freezes while cycles keep firing, so many rows share one
+     *  `anchorTsMs`. Keyed on the anchor, those cycles are mutually unreachable and the median gap
+     *  collapses to zero — a half-millisecond catchment that blanks the whole sweep. */
     @Test fun aDropoutDoesNotCollapseTheCadenceOrHideItsCycles() {
         // 6 healthy cycles, then 12 whose anchor is pinned at the last measured reading (cycle 5).
         val rows = (0 until 6).map { pred(it) } + (6 until 18).map { pred(it, anchorC = 5, stale = true) }
@@ -244,10 +218,8 @@ class HindsightFrameTest {
         assertEquals(18, f.cycles)
         // The cadence is the ISSUE cadence, untouched by the repeated anchors.
         assertEquals(STEP, f.cadenceMs)
-        // Every dropout cycle is individually reachable at its own issue instant — they tile the
-        // dropout rather than stacking on the instant it began.
+        // Each dropout cycle is reachable at its own issue instant.
         for (c in 6 until 18) assertEquals(c, f.cycleAt((T0 + c * STEP).toDouble()))
-        // And the healthy stretch still works, which is what the cadence collapse also destroyed.
         for (c in 0 until 6) assertEquals(c, f.cycleAt((T0 + c * STEP).toDouble()))
     }
 
@@ -257,10 +229,9 @@ class HindsightFrameTest {
         assertEquals(STEP, f.cadenceMs)
         // Found by when it was ISSUED...
         assertEquals(6, f.cycleAt((T0 + 9 * STEP).toDouble()))
-        // ...and its ANCHOR instant is not a key: the cursor there finds the cycle actually issued
-        // then, not the later one that merely grew from that reading.
+        // ...and its ANCHOR instant is not a key.
         assertEquals(3, f.cycleAt((T0 + 3 * STEP).toDouble()))
-        // ...while the fan is drawn from that reading, half an hour to the cursor's left.
+        // ...while the fan is drawn from that reading.
         assertEquals(T0 + 9 * STEP, f.madeMs[6])
         assertEquals(T0 + 3 * STEP, f.anchorMs[6])
     }
@@ -274,8 +245,7 @@ class HindsightFrameTest {
     }
 
     @Test fun aZeroMedianGapFallsBackToTheGridStepRatherThanToAMillisecond() {
-        // Pathological but silent if unguarded: keys that do not tell cycles apart must not yield a
-        // catchment no finger can hit.
+        // Keys that do not tell cycles apart must not yield a catchment no finger can hit.
         val rows = (0 until 5).map { pred(0) }
         val f = frameOf(rows)!!
         assertEquals(STEP, f.cadenceMs)
@@ -283,8 +253,7 @@ class HindsightFrameTest {
     }
 
     @Test fun theCatchmentFollowsTheOBSERVEDCadenceNotTheGridStep() {
-        // Timed mode at 15 min: the cursor must reach a cycle from anywhere between two of them, or
-        // the sweep blinks out for two thirds of every interval.
+        // At 15 min the cursor must reach a cycle from anywhere between two, or the sweep blinks out.
         val f = frameOf((0 until 4).map { pred(it * 3) })!!
         assertEquals(3 * STEP, f.cadenceMs)
         assertEquals(1, f.cycleAt((T0 + 3 * STEP).toDouble() + STEP * 1.4))

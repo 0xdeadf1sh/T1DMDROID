@@ -14,28 +14,14 @@ import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.lerp
 import kotlin.math.sin
 
-/**
- * The engraved iconography of DEATH mode — three memento-mori figures rendered wholly in Compose
- * Canvas, each drawn centred and scaled to fill the caller's `size`. The register is that of a
- * cathedral relief or a tarot frontispiece: solemn, funereal, never gory. Every hue is derived from
- * the three colour roles the caller passes so the dread renders in each theme's own key —
- * [primary] the theme accent (cold rim-light), [accent] the alarm-red ([androidx.compose.material3]
- * `colorScheme.error`, for haloes and blood-warmth), [ink] the neutral foreground (bone, linework).
- */
+/** Each figure draws centred and scaled to the caller's `size`. Roles: [primary] theme accent,
+ *  [accent] `colorScheme.error`, [ink] neutral foreground. */
 
-// A few tints derived from the roles; kept local so the figures read as one hand.
 private fun Color.toward(other: Color, t: Float): Color = lerp(this, other, t)
 private val Color.deep get() = toward(Color.Black, 0.62f)
 private val Color.abyss get() = toward(Color.Black, 0.86f)
 
-// ── the Angel of Death ───────────────────────────────────────────────────────────────────────────
-
-/**
- * A hooded, robed Angel of Death bearing a scythe. [phase] (a clock in [0, 2π)) drives a slow
- * vertical float, a faint robe sway, and a breathing alpha; passing 0f yields a still figure. The
- * cowl falls into shadow, two cold glints where eyes would be; a thin [primary] rim-light rides the
- * crescent blade; a hairline [accent] halo hangs behind the hood.
- */
+/** [phase] is a clock in [0, 2π); 0f is still. */
 fun DrawScope.drawReaper(phase: Float, primary: Color, accent: Color, ink: Color) {
     val w = size.width
     val h = size.height
@@ -49,7 +35,6 @@ fun DrawScope.drawReaper(phase: Float, primary: Color, accent: Color, ink: Color
 
     translate(top = floatY) {
         rotate(swayDeg, pivot = Offset(cx, shoulderY)) {
-            // A cold votive halo behind the cowl — a hairline ring of alarm-red, barely there.
             drawCircle(
                 accent.copy(alpha = 0.16f * breath),
                 radius = w * 0.205f,
@@ -67,7 +52,6 @@ fun DrawScope.drawReaper(phase: Float, primary: Color, accent: Color, ink: Color
             val halfHem = w * 0.345f
             val hoodTopY = h * 0.085f
 
-            // The robe silhouette: cowl crown down through the shoulders to a wide, riven hem.
             val robe = Path().apply {
                 moveTo(cx - halfShoulder, shoulderY)
                 cubicTo(
@@ -75,7 +59,6 @@ fun DrawScope.drawReaper(phase: Float, primary: Color, accent: Color, ink: Color
                     cx - halfHem * 1.02f, hemY - h * 0.07f,
                     cx - halfHem, hemY,
                 )
-                // A frayed, uneven hem.
                 lineTo(cx - halfHem * 0.58f, hemY - h * 0.035f)
                 lineTo(cx - halfHem * 0.24f, hemY - h * 0.008f)
                 lineTo(cx, hemY - h * 0.045f)
@@ -87,7 +70,6 @@ fun DrawScope.drawReaper(phase: Float, primary: Color, accent: Color, ink: Color
                     cx + halfShoulder * 1.12f, shoulderY + (hemY - shoulderY) * 0.48f,
                     cx + halfShoulder, shoulderY,
                 )
-                // The hood, arching over the void where a face would be.
                 cubicTo(
                     cx + halfShoulder, shoulderY - h * 0.15f,
                     cx + halfShoulder * 0.52f, hoodTopY,
@@ -112,7 +94,6 @@ fun DrawScope.drawReaper(phase: Float, primary: Color, accent: Color, ink: Color
             drawPath(robe, robeGrad, alpha = breath)
             drawPath(robe, accent.copy(alpha = 0.22f * breath), style = Stroke(width = w * 0.006f))
 
-            // Layered folds: darker creases and a pair of cold highlight ridges.
             val creaseP = ink.abyss.copy(alpha = 0.55f * breath)
             val ridgeP = ink.toward(primary, 0.22f).copy(alpha = 0.35f * breath)
             val creasePen = Stroke(width = w * 0.012f, cap = StrokeCap.Round)
@@ -142,7 +123,6 @@ fun DrawScope.drawReaper(phase: Float, primary: Color, accent: Color, ink: Color
                 drawPath(ridge, ridgeP, style = ridgePen)
             }
 
-            // The hollow of the cowl: a well of shadow with two faint, cold glints for eyes.
             val faceR = w * 0.108f
             drawOval(
                 Brush.radialGradient(
@@ -158,7 +138,6 @@ fun DrawScope.drawReaper(phase: Float, primary: Color, accent: Color, ink: Color
             drawCircle(glint, radius = faceR * 0.13f, center = Offset(cx - faceR * 0.34f, headCy - faceR * 0.05f))
             drawCircle(glint, radius = faceR * 0.13f, center = Offset(cx + faceR * 0.34f, headCy - faceR * 0.05f))
 
-            // The scythe: a long snath crossing behind the shoulder, a crescent blade at its head.
             val snathTop = Offset(cx + w * 0.30f, h * 0.085f)
             val snathBot = Offset(cx + w * 0.035f, h * 0.945f)
             val snath = Path().apply {
@@ -168,7 +147,6 @@ fun DrawScope.drawReaper(phase: Float, primary: Color, accent: Color, ink: Color
             drawPath(snath, ink.abyss.copy(alpha = 0.9f * breath), style = Stroke(width = w * 0.022f, cap = StrokeCap.Round))
             drawPath(snath, ink.toward(primary, 0.35f).copy(alpha = 0.45f * breath), style = Stroke(width = w * 0.007f, cap = StrokeCap.Round))
 
-            // A skeletal hand closed about the snath.
             val gripX = cx + w * 0.185f
             val gripY = h * 0.44f
             val bonePen = Stroke(width = w * 0.010f, cap = StrokeCap.Round)
@@ -183,13 +161,11 @@ fun DrawScope.drawReaper(phase: Float, primary: Color, accent: Color, ink: Color
             val by = snathTop.y + h * 0.005f
             val blade = Path().apply {
                 moveTo(bx, by)
-                // Convex back of the blade sweeping out to the point.
                 cubicTo(
                     bx - w * 0.28f, by - h * 0.02f,
                     bx - w * 0.46f, by + h * 0.07f,
                     bx - w * 0.40f, by + h * 0.205f,
                 )
-                // Concave cutting edge returning to the heel.
                 cubicTo(
                     bx - w * 0.30f, by + h * 0.10f,
                     bx - w * 0.12f, by + h * 0.05f,
@@ -206,7 +182,6 @@ fun DrawScope.drawReaper(phase: Float, primary: Color, accent: Color, ink: Color
                 ),
                 alpha = breath,
             )
-            // The rim-light riding the back of the crescent.
             val edge = Path().apply {
                 moveTo(bx, by)
                 cubicTo(
@@ -221,20 +196,13 @@ fun DrawScope.drawReaper(phase: Float, primary: Color, accent: Color, ink: Color
     }
 }
 
-// ── the passing bell ───────────────────────────────────────────────────────────────────────────────
-
-/**
- * A heavy funeral bell hung in a yoke, tolling. It pivots [swingDeg] degrees about the top mount
- * (0 = at rest). Cast-metal shading falls from [primary]/[ink]; [accent] warms the crown and lip;
- * a defined soundbow and a hanging clapper give it weight.
- */
+/** Pivots [swingDeg] degrees about the top mount; 0 = at rest. */
 fun DrawScope.drawBell(swingDeg: Float, primary: Color, accent: Color, ink: Color) {
     val w = size.width
     val h = size.height
     val cx = w / 2f
     val pivot = Offset(cx, h * 0.115f)
 
-    // The headstock and its posts stand fast while the bell swings beneath.
     val timber = ink.deep
     val postW = w * 0.028f
     drawLine(timber, Offset(w * 0.16f, h * 0.06f), Offset(w * 0.16f, h * 0.30f), strokeWidth = postW * 1.4f, cap = StrokeCap.Round)
@@ -262,7 +230,6 @@ fun DrawScope.drawBell(swingDeg: Float, primary: Color, accent: Color, ink: Colo
         val halfBow = w * 0.28f
         val halfMouth = w * 0.315f
 
-        // Canons: the looped ears the bell hangs from, and the staple pinning it to the yoke.
         drawLine(accent.toward(ink, 0.4f), pivot, Offset(cx, crownY), strokeWidth = w * 0.014f, cap = StrokeCap.Round)
         for (s in intArrayOf(-1, 1)) {
             val ear = Path().apply {
@@ -276,7 +243,6 @@ fun DrawScope.drawBell(swingDeg: Float, primary: Color, accent: Color, ink: Colo
             drawPath(ear, ink.toward(primary, 0.2f), style = Stroke(width = w * 0.02f, cap = StrokeCap.Round))
         }
 
-        // The bell body: shoulder, waist, flaring to the soundbow and mouth.
         val body = Path().apply {
             moveTo(cx - halfTop, shoulderY)
             cubicTo(
@@ -284,7 +250,6 @@ fun DrawScope.drawBell(swingDeg: Float, primary: Color, accent: Color, ink: Colo
                 cx - halfBow * 1.02f, soundbowY - h * 0.02f,
                 cx - halfBow, soundbowY,
             )
-            // The soundbow thickens outward to the flared mouth.
             cubicTo(
                 cx - halfMouth * 0.99f, soundbowY + (lipY - soundbowY) * 0.5f,
                 cx - halfMouth, lipY - h * 0.01f,
@@ -301,7 +266,6 @@ fun DrawScope.drawBell(swingDeg: Float, primary: Color, accent: Color, ink: Colo
                 cx + halfTop * 1.08f, shoulderY + (soundbowY - shoulderY) * 0.55f,
                 cx + halfTop, shoulderY,
             )
-            // The domed crown closing the shoulder.
             cubicTo(cx + halfTop, crownY, cx - halfTop, crownY, cx - halfTop, shoulderY)
             close()
         }
@@ -320,14 +284,12 @@ fun DrawScope.drawBell(swingDeg: Float, primary: Color, accent: Color, ink: Colo
         )
         drawPath(body, ink.abyss.copy(alpha = 0.7f), style = Stroke(width = w * 0.006f))
 
-        // The incised soundbow band.
         drawLine(
             accent.toward(ink, 0.25f).copy(alpha = 0.7f),
             Offset(cx - halfBow, soundbowY), Offset(cx + halfBow, soundbowY),
             strokeWidth = w * 0.008f,
         )
 
-        // The flared lip, and the clapper hung within it.
         drawLine(
             accent.toward(ink, 0.15f),
             Offset(cx - halfMouth * 1.02f, lipY), Offset(cx + halfMouth * 1.02f, lipY),
@@ -346,13 +308,7 @@ fun DrawScope.drawBell(swingDeg: Float, primary: Color, accent: Color, ink: Colo
     }
 }
 
-// ── the skull ────────────────────────────────────────────────────────────────────────────────────
-
-/**
- * A large, symmetric human skull, frontal. Tonal modelling falls from [ink] via a soft radial
- * gradient; a cold [primary] rim-light rides the crown, a whisper of [accent] warms the sockets.
- * [phase] drives a barely-there breathing/flicker so it reads alive-yet-dead; passing 0f is still.
- */
+/** [phase] is a clock in [0, 2π); 0f is still. */
 fun DrawScope.drawSkull(phase: Float, primary: Color, accent: Color, ink: Color) {
     val w = size.width
     val h = size.height
@@ -371,8 +327,6 @@ fun DrawScope.drawSkull(phase: Float, primary: Color, accent: Color, ink: Color)
     val jawHalf = w * 0.165f
     val domeCtrl = w * 0.15f
 
-    // The cranium: a broad rounded vault, a slight temporal pinch, the zygomatic flare of the
-    // cheekbones, then a tapering maxilla — the proportions of an ordinary human skull, not a creature.
     val skull = Path().apply {
         moveTo(cx - parietalHalf, parietalY)
         cubicTo(cx - parietalHalf * 0.98f, crownY + h * 0.015f, cx - domeCtrl, crownY, cx, crownY)
@@ -401,7 +355,6 @@ fun DrawScope.drawSkull(phase: Float, primary: Color, accent: Color, ink: Color)
         ),
         alpha = breath,
     )
-    // A cold rim-light along the crown; the bone's own dark contour beneath.
     val rim = Path().apply {
         moveTo(cx - parietalHalf, parietalY)
         cubicTo(cx - parietalHalf * 0.98f, crownY + h * 0.015f, cx - domeCtrl, crownY, cx, crownY)
@@ -410,7 +363,6 @@ fun DrawScope.drawSkull(phase: Float, primary: Color, accent: Color, ink: Color)
     drawPath(rim, primary.copy(alpha = 0.42f * breath), style = Stroke(width = w * 0.006f, cap = StrokeCap.Round))
     drawPath(skull, ink.abyss.copy(alpha = 0.5f), style = Stroke(width = w * 0.005f))
 
-    // Temporal hollows — the faint shadowed flats above the cheekbones.
     for (s in intArrayOf(-1, 1)) {
         drawOval(
             ink.abyss.copy(alpha = 0.16f * breath),
@@ -419,7 +371,6 @@ fun DrawScope.drawSkull(phase: Float, primary: Color, accent: Color, ink: Color)
         )
     }
 
-    // The brow ridge: a supraorbital crest, lit along its ridge and dipping at the glabella.
     val browY = h * 0.372f
     val browCrest = Path().apply {
         moveTo(cx - w * 0.275f, browY + h * 0.012f)
@@ -428,7 +379,6 @@ fun DrawScope.drawSkull(phase: Float, primary: Color, accent: Color, ink: Color)
     }
     drawPath(browCrest, ink.toward(Color.White, 0.12f).copy(alpha = 0.4f * breath), style = Stroke(width = w * 0.011f, cap = StrokeCap.Round))
 
-    // Zygomatic ridges — a highlight riding each cheekbone.
     for (s in intArrayOf(-1, 1)) {
         val zyg = Path().apply {
             moveTo(cx + s * w * 0.265f, cheekY - h * 0.03f)
@@ -437,13 +387,11 @@ fun DrawScope.drawSkull(phase: Float, primary: Color, accent: Color, ink: Color)
         drawPath(zyg, ink.toward(Color.White, 0.08f).copy(alpha = 0.28f * breath), style = Stroke(width = w * 0.013f, cap = StrokeCap.Round))
     }
 
-    // The eye sockets: rounded-triangular orbits sunk into shadow, each cradling a breathing ember.
     val eyeCy = h * 0.44f
     val sockHalfW = w * 0.115f
     val sockTop = h * 0.385f
     val sockBot = h * 0.505f
     val eyeDx = w * 0.15f
-    // A single slow breath of the glow: zero at phase 0 (calm, low), swelling to full at mid-cycle.
     val ember = sin(phase * 0.5f).let { it * it }
     val glowAlpha = 0.24f + 0.5f * ember
     val glowR = sockHalfW * (0.9f + 0.5f * ember)
@@ -468,7 +416,6 @@ fun DrawScope.drawSkull(phase: Float, primary: Color, accent: Color, ink: Color)
             ),
             alpha = breath,
         )
-        // The ember: a warm radial bloom, brightest at its core, pulsing off [phase].
         drawCircle(
             Brush.radialGradient(
                 colors = listOf(
@@ -490,7 +437,6 @@ fun DrawScope.drawSkull(phase: Float, primary: Color, accent: Color, ink: Color)
         drawPath(socket, ink.abyss.copy(alpha = 0.5f), style = Stroke(width = w * 0.004f))
     }
 
-    // The nasal aperture — an inverted heart, lobed at the bridge, tapering to a point below.
     val nasalTop = h * 0.53f
     val nasalBot = h * 0.635f
     val nasal = Path().apply {
@@ -504,7 +450,6 @@ fun DrawScope.drawSkull(phase: Float, primary: Color, accent: Color, ink: Color)
     drawPath(nasal, ink.abyss.copy(alpha = 0.92f * breath))
     drawPath(nasal, ink.abyss.copy(alpha = 0.5f), style = Stroke(width = w * 0.003f))
 
-    // The maxilla and its even upper row of teeth.
     val teethTop = h * 0.66f
     val teethBot = h * 0.75f
     val teethHalf = w * 0.14f
@@ -528,14 +473,12 @@ fun DrawScope.drawSkull(phase: Float, primary: Color, accent: Color, ink: Color)
     for (i in 1 until nTeeth) {
         val t = i.toFloat() / nTeeth
         val tx = cx - teethHalf + t * teethHalf * 2f
-        // A shallow arch: the row rises a touch toward the corners.
         val edge = (t - 0.5f) * 2f
         val topOff = edge * edge * h * 0.013f
         drawLine(divider, Offset(tx, teethTop + topOff), Offset(tx, teethBot - h * 0.004f), strokeWidth = w * 0.005f, cap = StrokeCap.Round)
     }
     drawPath(gum, ink.abyss.copy(alpha = 0.5f), style = Stroke(width = w * 0.004f, join = StrokeJoin.Round))
 
-    // A faint sagittal line down the nasal bridge, lending the bone its symmetry.
     drawLine(
         ink.abyss.copy(alpha = 0.28f * breath),
         Offset(cx, browY + h * 0.01f), Offset(cx, nasalTop - h * 0.01f),
@@ -543,17 +486,7 @@ fun DrawScope.drawSkull(phase: Float, primary: Color, accent: Color, ink: Color)
     )
 }
 
-// ── the covenant paper ───────────────────────────────────────────────────────────────────────────
-
-/**
- * The "Release of Liability" — a signed covenant on aged parchment, drawn so the rescind animation
- * can cleave it down the middle. Unlike the memento-mori figures the sheet is rendered as genuine
- * PAPER, blended toward white so it reads as a pale document on Tron and Umbrella's dark ground and
- * on Hello Kitty's light ground alike. [primary] lends the parchment its faint warmth and rules the
- * heading; [accent] is the wax seal; [ink] darkens the deckled edge and the drop-shadow; the writing
- * is struck in a near-black derived so it stays legible on the pale sheet in every theme. [phase]
- * gives only a whisper of sway — 0f is still.
- */
+/** [phase] is a clock in [0, 2π); 0f is still. The sheet is pale in every theme, not ink-derived. */
 fun DrawScope.drawContract(phase: Float, primary: Color, accent: Color, ink: Color) {
     val w = size.width
     val h = size.height
@@ -561,10 +494,9 @@ fun DrawScope.drawContract(phase: Float, primary: Color, accent: Color, ink: Col
     val cy = h / 2f
     val sway = sin(phase) * 0.9f
 
-    // The sheet is inherently pale: a warm parchment struck from white, faintly cast by the theme.
     val parchTop = Color.White.toward(primary, 0.05f).toward(accent, 0.02f)
     val parchBot = parchTop.toward(ink, 0.10f).toward(accent, 0.03f)
-    val writing = Color.Black.toward(primary, 0.16f) // near-black ink, a hair of the theme's hue
+    val writing = Color.Black.toward(primary, 0.16f)
     val edge = ink.toward(Color.Black, 0.35f)
 
     val l = w * 0.145f
@@ -575,19 +507,16 @@ fun DrawScope.drawContract(phase: Float, primary: Color, accent: Color, ink: Col
     val deckle = w * 0.0045f
     val sheet = deckledSheet(l, t, r, b, corner, deckle)
 
-    // A static bias plus the idle sway; the covenant hangs a touch askew like a pinned notice.
     rotate(-2.4f + sway, pivot = Offset(cx, cy)) {
-        // A soft, doubled drop-shadow to lift the paper off the ground.
         translate(w * 0.020f, h * 0.024f) { drawPath(sheet, edge.copy(alpha = 0.20f)) }
         translate(w * 0.010f, h * 0.013f) { drawPath(sheet, edge.copy(alpha = 0.22f)) }
 
-        // The sheet itself, aged from a lit top edge to a duskier foot.
         drawPath(
             sheet,
             Brush.verticalGradient(colors = listOf(parchTop, parchBot), startY = t, endY = b),
         )
         drawPath(sheet, edge.copy(alpha = 0.35f), style = Stroke(width = w * 0.004f))
-        // A faint inner rule and a ghost of a vertical fold — the seam the tear will follow.
+        // The vertical fold is the seam the rescind tear follows.
         drawPath(sheet, writing.copy(alpha = 0.06f), style = Stroke(width = w * 0.0025f))
         drawLine(
             writing.copy(alpha = 0.07f),
@@ -599,7 +528,6 @@ fun DrawScope.drawContract(phase: Float, primary: Color, accent: Color, ink: Col
         val contentR = r - (r - l) * 0.09f
         val span = contentR - contentL
 
-        // Heading block: two bold ruled bars standing in for a title and its subheading.
         val headY = t + (b - t) * 0.12f
         drawLine(
             writing.copy(alpha = 0.85f),
@@ -612,7 +540,6 @@ fun DrawScope.drawContract(phase: Float, primary: Color, accent: Color, ink: Col
             strokeWidth = (b - t) * 0.012f, cap = StrokeCap.Round,
         )
 
-        // Justified body: thin ruled lines, some run full, some fall short to end a paragraph.
         val ruleY = b - (b - t) * 0.155f
         val textTop = headY + (b - t) * 0.135f
         val textBot = ruleY - (b - t) * 0.06f
@@ -626,7 +553,6 @@ fun DrawScope.drawContract(phase: Float, primary: Color, accent: Color, ink: Col
             )
         }
 
-        // The signature: a hand-scrawled flourish riding above its ruling.
         val scrawl = Path().apply {
             val sy = ruleY - (b - t) * 0.018f
             val sx = contentL + span * 0.02f
@@ -641,11 +567,9 @@ fun DrawScope.drawContract(phase: Float, primary: Color, accent: Color, ink: Col
             Offset(contentL, ruleY), Offset(contentL + span * 0.6f, ruleY),
             strokeWidth = (b - t) * 0.005f,
         )
-        // A small notary "X" anchoring the signature line.
         drawLine(writing.copy(alpha = 0.5f), Offset(contentL - span * 0.01f, ruleY - (b - t) * 0.02f), Offset(contentL + span * 0.02f, ruleY + (b - t) * 0.01f), strokeWidth = (b - t) * 0.005f)
         drawLine(writing.copy(alpha = 0.5f), Offset(contentL - span * 0.01f, ruleY + (b - t) * 0.01f), Offset(contentL + span * 0.02f, ruleY - (b - t) * 0.02f), strokeWidth = (b - t) * 0.005f)
 
-        // The wax seal, pressed near the lower-right: a molten disc bearing a faint sigil.
         val sealCx = contentR - span * 0.09f
         val sealCy = b - (b - t) * 0.155f
         val sealR = span * 0.085f
@@ -661,7 +585,6 @@ fun DrawScope.drawContract(phase: Float, primary: Color, accent: Color, ink: Col
         )
         drawCircle(accent.toward(Color.Black, 0.5f).copy(alpha = 0.7f), radius = sealR, center = Offset(sealCx, sealCy), style = Stroke(width = w * 0.004f))
         drawCircle(accent.toward(Color.White, 0.3f).copy(alpha = 0.45f), radius = sealR * 0.66f, center = Offset(sealCx, sealCy), style = Stroke(width = w * 0.0035f))
-        // A five-rayed sigil impressed into the wax.
         val sigilInk = accent.toward(Color.White, 0.4f).copy(alpha = 0.5f)
         for (k in 0 until 5) {
             val a = (k.toFloat() / 5f) * (2f * kotlin.math.PI.toFloat()) - kotlin.math.PI.toFloat() / 2f
@@ -675,10 +598,7 @@ fun DrawScope.drawContract(phase: Float, primary: Color, accent: Color, ink: Col
     }
 }
 
-/**
- * A rounded rectangle whose edges are gently perturbed to read as the deckled, hand-torn margin of a
- * sheet of paper. Corners are rounded by [corner]; each edge waves by at most [deckle].
- */
+/** Corners rounded by [corner]; each edge waves by at most [deckle]. */
 private fun deckledSheet(l: Float, t: Float, r: Float, b: Float, corner: Float, deckle: Float): Path {
     val p = Path()
     val n = 12

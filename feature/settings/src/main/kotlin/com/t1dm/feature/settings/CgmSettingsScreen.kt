@@ -31,36 +31,18 @@ import com.t1dm.core.design.SignalBars
 import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.model.CgmSourceDescriptor
 
-/**
- * Settings → CGM source. Surfaces the authoritative source and every recorded source: several may be
- * read at once, exactly one is authoritative, and a row press promotes one or starts reading one.
- * Each of the non-authoritative ones is removable from the list.
- *  - I10: the ACTIVE source's live BLE signal strength (RSSI dBm + bars), reusing the BG-panel meter.
- *  - I11: a USER-ENTERED sensor lifetime. Because the AiDEX X is a passive advertisement listener we
- *    cannot read the sensor's true age, so the user enters the remaining life (days + hours + minutes);
- *    we store an absolute expiry instant and count it down live here and in the BG panel. It is plainly
- *    a user estimate, not read from the sensor, with a renew/reset for a new sensor.
- *  - The ACTIVE source's warm-up window. Unlike the lifetime this one IS anchored on something the
- *    sensor reports — `minFromStart`, its own minutes-since-activation — but the advert carries no
- *    warm-up flag, so the configured duration is the entire warm-up rule and the BG panel's warm-up
- *    countdown is derived from it.
- */
 @Composable
 fun CgmSettingsScreen(
     activeSourceName: String?,
     activeStatus: String?,
     recordedSources: List<RecordedSource>,
     onRemoveSource: (String) -> Unit = {},
-    /** Make this sensor the one every value on screen is derived from. */
     onMakeAuthoritative: (String) -> Unit = {},
-    /** Start reading this sensor, without believing it. */
     onStartReading: (String) -> Unit = {},
-    /** Stop reading this sensor, keeping it on the list. The reversible half of ✕. */
     onStopReading: (String) -> Unit = {},
     activeRssi: Int? = null,
     sensorExpiryMs: Long? = null,
-    /** The AUTHORITATIVE source's configured warm-up window (minutes), or null when no source is on
-     *  record — the window is per-source, so with nothing on record there is nothing to edit. */
+    /** Authoritative source's warm-up window, minutes; null when no source is on record. */
     warmupWindowMin: Int? = null,
     onSetWarmupMin: (Int) -> Unit = {},
     onSetSensorLifetime: (days: Int, hours: Int, minutes: Int) -> Unit = { _, _, _ -> },
@@ -83,15 +65,13 @@ fun CgmSettingsScreen(
                         ?: "none yet — scanning",
                     style = MaterialTheme.typography.bodyLarge,
                 )
-                // I10 — the active source's live signal strength, the same meter shown in the BG panel.
                 activeRssi?.let { SignalBars(it) }
             }
             Text("Recorded", style = MaterialTheme.typography.labelMedium)
             if (recordedSources.isEmpty()) {
                 Text("none", style = MaterialTheme.typography.bodyMedium)
             } else {
-                // Hoisted above the rows so the ask survives the list being rebuilt underneath it — a
-                // re-sighting rewrites this list, and a confirmation held inside a row would go with it.
+                // Hoisted above the rows: a re-sighting rebuilds the list and would take the ask with it.
                 var confirming by remember { mutableStateOf<RecordedSource?>(null) }
                 recordedSources.forEach { src ->
                     RecordedSourceRow(
@@ -120,14 +100,11 @@ fun CgmSettingsScreen(
 
         SettingsSectionHeader(WARMUP_SECTION)
         SettingsNote("No warm-up flag in the advert — this alone decides it; 0 = off")
-        // The window belongs to the ACTIVE source, so with none on record there is nothing to edit and
-        // the stepper is absent rather than showing an invented default.
         warmupWindowMin?.let {
             IntStepper(
                 knob = cgmWarmup,
                 value = it,
                 unit = "min",
-                // The 5-minute CGM grid quantum: every stop is a slot the pipeline can distinguish.
                 step = WARMUP_STEP_MIN,
                 min = CgmSourceDescriptor.WARMUP_WINDOW_RANGE.first,
                 max = CgmSourceDescriptor.WARMUP_WINDOW_RANGE.last,
@@ -153,13 +130,7 @@ fun CgmSettingsScreen(
     }
 }
 
-/**
- * One row of the recorded list.
- *
- * [active] — the app is reading this sensor and the BG panel may be switched to it; several may be.
- * [authoritative] — it is the one every value on screen comes from; exactly one is, and it is always
- * also active.
- */
+/** Several may be [active]; exactly one is [authoritative], and it is always also active. */
 data class RecordedSource(
     val id: String,
     val name: String,
@@ -167,14 +138,6 @@ data class RecordedSource(
     val authoritative: Boolean,
 )
 
-/**
- * A recorded sensor in one of three states, each with the single action it affords: **main** (the
- * authoritative one — no action, and no ✕, because taking the source of every value on screen off its
- * own list is not an offer worth making), **use** (being read but not believed — press to promote),
- * and **read** (known but not being read — press to start).
- *
- * The list only ever grows, so a sensor thrown away months ago keeps its ✕.
- */
 @Composable
 private fun RecordedSourceRow(
     src: RecordedSource,
@@ -209,9 +172,7 @@ private fun RecordedSourceRow(
             color = if (src.authoritative) MaterialTheme.colorScheme.primary
             else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
         )
-        // ✕ is two-stage, reversible half first. On a sensor being READ it stops reading and nothing
-        // else — no confirmation, because it undoes with one press. Only once a sensor is already
-        // stopped does ✕ delist it, and that one asks, because it cannot be undone.
+        // Stopping undoes with one press, so it does not ask; delisting cannot be undone, so it does.
         if (!src.authoritative) {
             val stops = src.active
             IconButton(
@@ -219,8 +180,7 @@ private fun RecordedSourceRow(
                     haptics.perform(HapticEvent.Tap)
                     if (stops) onStopReading(src.id) else onRequestRemove(src)
                 },
-                // The glyph is the whole label otherwise, and no TTS voice speaks U+2715 — the button
-                // announces as unlabelled, with neither the action nor which sensor it acts on.
+                // No TTS voice speaks U+2715; unlabelled otherwise.
                 modifier = Modifier.size(40.dp).semantics {
                     contentDescription = if (stops) "Stop reading ${src.name}" else "Remove ${src.name}"
                 },
@@ -236,15 +196,6 @@ private fun RecordedSourceRow(
     }
 }
 
-/**
- * The ask before a removal, in the app's house shape (bare M3 [AlertDialog], sentence-case `?` title,
- * verb-named accept, "Cancel", and the Warn-on-raise / Commit-on-accept / Reject-on-either-exit haptic
- * three-beat).
- *
- * The body line states the one fact the title cannot: this sounds like a deletion and is not one. The
- * source stays on record and its readings stay in the BG panel's history — which is the whole reason
- * the list hides rather than deletes.
- */
 @Composable
 private fun RemoveSourceDialog(name: String, onConfirm: () -> Unit, onDismiss: () -> Unit) {
     val haptics = rememberT1dmHaptics()
@@ -329,7 +280,6 @@ private fun DurationStepper(label: String, value: Int, min: Int = 0, max: Int, s
     }
 }
 
-/** A full breakdown (all non-zero units) for the settings read-out, e.g. "9 d 3 h 20 m". */
 private fun fullRemaining(ms: Long): String {
     val totalMin = ms / 60_000L
     val d = totalMin / 1440
@@ -342,14 +292,12 @@ private fun fullRemaining(ms: Long): String {
     }.joinToString(" ")
 }
 
-// ── search index (see SettingsIndex.kt) ───────────────────────────────────────────────────────────
-
 private const val SOURCE_SECTION = "Source"
 private const val LIFETIME_SECTION = "Sensor lifetime"
 private const val WARMUP_SECTION = "Sensor warm-up"
 private const val AGGRESSIVE_SECTION = "Aggressive background scanning"
 
-/** Stepper grain for the warm-up window: the 5-minute CGM grid quantum. */
+/** The 5-minute CGM grid quantum. */
 private const val WARMUP_STEP_MIN = 5
 
 private val cgmSource = SettingsKnob(

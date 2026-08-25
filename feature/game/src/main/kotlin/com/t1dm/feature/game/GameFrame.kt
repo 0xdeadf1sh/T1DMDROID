@@ -4,18 +4,9 @@ import com.t1dm.core.model.CarState
 import com.t1dm.ui.game.WORLD_HEIGHT_M
 
 /**
- * One finished frame: the car, the run, and the camera transform that goes with it — flat scalars in
- * PLAIN memory, deliberately outside the Compose snapshot system.
- *
- * This is the whole isolation trick, and it is the same one `GlucoseGraph` uses for its live stroke
- * buffer: the simulation writes here and nothing observes it, so a frame invalidates NOTHING. What the
- * draw phase subscribes to is a single monotone counter ([GameFrameBus.tick]) read inside the draw
- * lambda and nowhere else — so a new frame redraws and never recomposes. Read this object anywhere in
- * composition scope and that guarantee is gone.
- *
- * The camera rides in the frame rather than being followed by the renderer because it is a function of
- * the same timestep the solver consumed: computing it in the draw would either need the delta again or
- * settle at whatever rate the draw happened to run at.
+ * Flat scalars in PLAIN memory, outside the Compose snapshot system: the simulation writes here and
+ * nothing observes it, so a frame redraws and never recomposes. Read it in composition scope and that
+ * guarantee is gone. The camera rides here because it is a function of the timestep the solver took.
  */
 class CarFrame {
     var x = 0f
@@ -34,46 +25,34 @@ class CarFrame {
     var brake = 0f
     var distanceM = 0f
 
-    /** Forward speed (m/s) and engine speed (rpm) — the two gauges. Carried on the frame like every
-     *  other drawn quantity so the dials repaint in the draw phase, never as a recomposition. */
+    /** Forward speed (m/s) and engine speed (rpm). */
     var speedMs = 0f
     var rpm = 0f
 
-    /** [com.t1dm.core.model.RunState.ordinal] — an int so the frame stays free of object references
-     *  the writer would otherwise be publishing across threads. */
+    /** [com.t1dm.core.model.RunState.ordinal]; an int, so no object reference crosses threads. */
     var run = 0
 
     var camLeft = 0f
     var camBottom = 0f
     var camWidth = VISIBLE_WIDTH_M
 
-    /** World metres visible DOWN the panel. Carried per frame because the speed widening opens both axes
-     *  (`GameZoom.fov`) — so the value axis shows more than the configured BG range at speed, and the
-     *  draw must derive its vertical scale and its axis labels from this rather than from
-     *  `WorldMap.worldHeight`. */
+    /** World metres visible DOWN the panel. The draw derives its vertical scale and axis labels from
+     *  this, not from `WorldMap.worldHeight`. */
     var camHeight = WORLD_HEIGHT_M
 
-    /** The opening, carried on the frame rather than animated in composition. [carShown] is false for
-     *  the whole zoom — see [GameZoom.settled] — and [carLiftM] is how far above its settled pose the
-     *  car is still falling, in WORLD metres, so the drop rides the vertical scale like everything else.
-     *  Both live here because the loop owns the timing: it holds the solver until the drop lands, and a
-     *  composition-side animation could not be kept in step with a hold it cannot see. */
+    /** [carLiftM] is how far above its settled pose the car still is, in WORLD metres. The loop owns
+     *  the opening's timing: it holds the solver until the drop lands. */
     var carShown = false
     var carLiftM = 0f
 
-    /** The solver's own `throttleApplied` rather than the pedal, so the exhaust follows what the engine
-     *  was actually given. */
+    /** The solver's own `throttleApplied`, not the pedal. */
     var throttleApplied = 0f
 
-    /** How far along the run the car is, 0 at the drop and 1 at the finish. Computed in the loop rather
-     *  than the draw because it is measured from the SEAT — the tap, not the track's origin — and the
-     *  draw has no way to know where that was. */
+    /** 0 at the drop, 1 at the finish. Measured from the SEAT, not the track's origin. */
     var progress = 0f
 
-    /** The exhaust's emission phase, in puff-intervals. Advanced by the LOOP at a rate set by
-     *  [throttleApplied], so the trail is stateless in the draw: a puff's age is a function of this
-     *  number and its index, and nothing has to be stored between frames. Wrapped, so it never grows
-     *  into float's coarse range. */
+    /** Emission phase in puff-intervals, advanced by the loop. Wrapped, so it never grows into
+     *  float's coarse range. */
     var exhaustPhase = 0f
 
     fun set(
@@ -119,15 +98,9 @@ class CarFrame {
 }
 
 /**
- * The single-writer / single-reader hand-off between the game thread and the draw phase.
- *
- * THREE buffers, not two. With two, the writer's second swap after the reader has taken a reference
- * hands it back the buffer being read — a torn frame under a scheduling hiccup. With three the writer
- * has to complete two whole frames inside one draw before it can catch up, which at a 60 fps cap it
- * cannot; the cost is one extra flat object for the life of the screen.
- *
- * [tick] is the ONE piece of snapshot state in the frame path. It is `mutableLongStateOf`-backed so a
- * frame boxes nothing, and it must be read inside the draw lambda only.
+ * Single writer (game thread), single reader (draw phase). THREE buffers, not two: with two, the
+ * writer's second swap hands the reader back the buffer it is reading. [tick] is the one piece of
+ * snapshot state in the frame path, and must be read inside the draw lambda only.
  */
 class GameFrameBus {
     private val buffers = arrayOf(CarFrame(), CarFrame(), CarFrame())
@@ -139,14 +112,12 @@ class GameFrameBus {
 
     private val ticks = androidx.compose.runtime.mutableLongStateOf(0L)
 
-    /** DRAW-PHASE READ ONLY. Reading this in composition subscribes the composable and every frame
-     *  then recomposes — see [CarFrame]. */
+    /** DRAW-PHASE READ ONLY: read in composition, every frame recomposes. */
     val tick: Long get() = ticks.longValue
 
-    /** The buffer to fill for the frame being computed. Valid until the next [commit]. */
+    /** Valid until the next [commit]. */
     fun back(): CarFrame = buffers[writeIndex]
 
-    /** Publish the filled buffer and invalidate the draw. */
     fun commit() {
         published = buffers[writeIndex]
         writeIndex = (writeIndex + 1) % buffers.size
@@ -154,43 +125,31 @@ class GameFrameBus {
     }
 }
 
-/**
- * Throttle and brake, in plain volatile memory.
- *
- * The pedals are pointer handlers that write here directly instead of hoisting a `mutableStateOf`: a
- * finger resting on the throttle would otherwise recompose the whole screen on every pointer event,
- * and the pressed state is drawn from this same memory on the next frame anyway (which is at most
- * 16 ms away).
- */
+/** Plain volatile memory, not a hoisted `mutableStateOf`: a finger resting on the throttle would
+ *  otherwise recompose the whole screen on every pointer event. */
 class GameControls {
-    /** What the pedal is asking for: 1 while held, 0 while not. Written by the composition. */
+    /** 1 while held, 0 while not. Written by the composition. */
     @Volatile
     var throttleTarget = 0f
 
     @Volatile
     var brakeTarget = 0f
 
-    /** What the solver is actually given — the target RAMPED. Owned by the game thread. */
+    /** The target, ramped. Owned by the game thread. */
     var throttle = 0f
         private set
 
     var brake = 0f
         private set
 
-    /**
-     * Ease the applied controls toward their targets.
-     *
-     * A pedal is a boolean, and feeding that straight to a motor with a thrust-to-weight of ~1.4 means
-     * every brush of the glass is a full-power step from rest — which lifts the nose before it moves
-     * the car. Pressing ramps in over [PRESS_S]; releasing is quicker ([RELEASE_S]) because a control
-     * that lingers after the finger has gone feels broken rather than smooth.
-     */
+    /** A pedal is a boolean, and fed raw to a ~1.4 thrust-to-weight motor it lifts the nose before it
+     *  moves the car. Press ramps over [PRESS_S]; release is quicker. */
     fun ramp(dtS: Float) {
         throttle = approach(throttle, throttleTarget, dtS)
         brake = approach(brake, brakeTarget, dtS)
     }
 
-    /** Cut both instantly — a pointer that never gets its up event must not leave the car pinned. */
+    /** A pointer that never gets its up event must not leave the car pinned. */
     fun release() {
         throttleTarget = 0f
         brakeTarget = 0f
@@ -211,9 +170,8 @@ class GameControls {
     }
 }
 
-/** The canvas size, published out of layout for the game thread to derive the camera's world extent
- *  from. Plain memory for the same reason as [GameControls]: a rotation or an inset change must not
- *  be a frame-path recomposition. */
+/** Published out of layout for the game thread. Plain memory, as [GameControls]: a rotation or an
+ *  inset change must not be a frame-path recomposition. */
 class GameViewport {
     @Volatile
     var widthPx = 0f
@@ -221,14 +179,11 @@ class GameViewport {
     @Volatile
     var heightPx = 0f
 
-    /** World metres visible ACROSS the panel — the user's own graph window (one metre per minute), so
-     *  the game shows exactly the span the chart does rather than a zoom of its own. */
+    /** World metres visible ACROSS the panel — the user's own graph window, one metre per minute. */
     @Volatile
     var visibleWidthM = VISIBLE_WIDTH_M
 
-    /** Pixels per CAR-LOCAL metre the art is authored against, and the plot's total horizontal inset.
-     *  Published out of composition purely so the loop can derive [zoomedWidthM] without knowing
-     *  anything about density, insets or the tune. */
+    /** Pixels per CAR-LOCAL metre the art is authored against, and the plot's horizontal inset. */
     @Volatile
     var carScalePx = 0f
 
@@ -237,17 +192,14 @@ class GameViewport {
 
     val ready: Boolean get() = widthPx > 0f && heightPx > 0f
 
-    /** The span [GameZoom] eases toward: the one at which the world's horizontal scale EQUALS
-     *  [carScalePx], so the car drawn true-scale is exactly the size the art was designed at. Falls
-     *  back to the chart's own span before layout has reported a width, so the zoom never targets zero. */
+    /** The span [GameZoom] eases toward: world scale equals [carScalePx], so a true-scale car is the
+     *  size the art was designed at. Falls back to the chart's span before layout reports a width. */
     val zoomedWidthM: Float
         get() {
             val plotW = widthPx - plotInsetPx
             return if (plotW > 0f && carScalePx > 0f) plotW / carScalePx else visibleWidthM
         }
 
-    /** World metres visible down the panel. The vertical scale is the world's full value span — the
-     *  configured BG range — not an aspect-derived slice, because value maps down the height
-     *  independently of time across the width, exactly as the graph does. */
+    /** World metres visible down the panel: the full value span, not an aspect-derived slice. */
     var worldHeightM = 0f
 }

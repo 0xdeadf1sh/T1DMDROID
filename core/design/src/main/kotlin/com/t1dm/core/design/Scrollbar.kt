@@ -22,29 +22,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 
 /**
- * The shared vertical scrollbar (N11). Compose ships an indicator for neither [ScrollState] nor
- * [LazyListState], so every panel that overflows does so with no evidence that it overflows — the
- * defect the N10 containment fix exposed on Meals/Insulin, where content silently ran past the
- * viewport. It lives in `:core:design` (generalizing the private copy the meal builder's food browser
- * grew under N8) so every panel draws the SAME thumb rather than a handful of drifting hand-rolled
- * ones, and so the thumb is tinted from the active palette instead of a literal.
- *
- * Behaviour: a thin rounded thumb that fades in on scroll and back out once the gesture settles,
- * plus a single flash the moment the content is first measured as overflowing — the affordance that
- * says "there is more below" without leaving a permanent stripe over the content. Both fades run
- * through [motionSpec], so the global "disable all animations" toggle collapses them to an instant
- * show/hide rather than defeating the indicator.
- *
- * **Modifier order is load-bearing** for the [ScrollState] overload: it must sit BEFORE
- * `verticalScroll` in the chain —
- * `Modifier.fillMaxSize().verticalScrollbar(s).verticalScroll(s).padding(16.dp)`.
- * Placed after, the draw node is nested inside the scroll node, so its [DrawScope] size is the whole
- * CONTENT height and its coordinates translate with the scroll offset: the thumb would scroll away
- * with the content and be clipped. The [LazyListState] overload is the mirror image — it goes on the
- * `LazyColumn`'s own `modifier`, which is already outside the lazy layout's internal scrollable.
- *
- * The scroll position is read INSIDE the draw lambda, never in composition, so dragging invalidates
- * draw only and never recomposes the panel.
+ * Modifier order is load-bearing for the [ScrollState] overload: BEFORE `verticalScroll` in the chain.
+ * Placed after, the draw node nests inside the scroll node, so its [DrawScope] size is the whole
+ * content height and the thumb scrolls away with the content.
  */
 
 private const val FADE_IN_MS = 120
@@ -55,7 +35,7 @@ private val DEFAULT_WIDTH = 4.dp
 private val DEFAULT_MIN_THUMB = 24.dp
 private val DEFAULT_END_INSET = 2.dp
 
-/** A visible thumb, in pixels, relative to the viewport's top edge. */
+/** Pixels, relative to the viewport's top edge. */
 internal data class ScrollbarThumb(val topPx: Float, val heightPx: Float)
 
 @Composable
@@ -67,8 +47,7 @@ fun Modifier.verticalScrollbar(
     endInset: Dp = DEFAULT_END_INSET,
 ): Modifier {
     val alpha = rememberThumbAlpha {
-        // Pair so a maxValue change alone (the first measure, or content growing/shrinking past the
-        // viewport) also drives a flash — not just a change in scroll offset.
+        // Paired, so a maxValue change alone — the first measure, or content growing — also flashes.
         if (isUnscrollable(state.maxValue)) null else state.maxValue to state.value
     }
     return drawWithContent {
@@ -110,12 +89,8 @@ fun Modifier.verticalScrollbar(
     }
 }
 
-/**
- * The fade envelope, held in an [Animatable] rather than plain state so the panel that owns the
- * scroll column is never recomposed by it: the value is read from the draw lambda alone.
- * [position] returns null while the content fits, which snaps the thumb away instead of fading it —
- * a bar that fades out because the content shrank would read as a scroll that never happened.
- */
+/** [position] returns null while the content fits, which SNAPS the thumb away rather than fading it.
+ *  The value is read from the draw lambda alone, so the panel around it never recomposes. */
 @Composable
 private fun rememberThumbAlpha(position: () -> Any?): State<Float> {
     val motion = animationsOn()
@@ -127,8 +102,7 @@ private fun rememberThumbAlpha(position: () -> Any?): State<Float> {
                 return@collectLatest
             }
             alpha.animateTo(1f, motionSpec(motion, FADE_IN_MS))
-            // collectLatest cancels this the instant the next scroll position lands, so the hold only
-            // elapses once the gesture (and its fling) has actually settled.
+            // collectLatest cancels on the next position, so the hold elapses only after the fling.
             delay(IDLE_HOLD_MS)
             alpha.animateTo(0f, motionSpec(motion, FADE_OUT_MS))
         }
@@ -151,13 +125,10 @@ private fun DrawScope.drawThumb(
     )
 }
 
-/** [ScrollState.maxValue] is `Int.MAX_VALUE` until the scroll node has measured, so an unmeasured
- *  column is indistinguishable from an infinitely long one unless it is excluded explicitly. */
+/** [ScrollState.maxValue] is `Int.MAX_VALUE` until the scroll node has measured. */
 internal fun isUnscrollable(maxScrollPx: Int): Boolean =
     maxScrollPx <= 0 || maxScrollPx == Int.MAX_VALUE
 
-/** Pixel-exact thumb for a [ScrollState]: the viewport's share of the content, positioned by how
- *  much of the scrollable range has been consumed. */
 internal fun scrollThumb(
     viewportPx: Float,
     maxScrollPx: Int,
@@ -173,10 +144,8 @@ internal fun scrollThumb(
     )
 }
 
-/** Item-counted thumb for a [LazyListState]: a lazy list knows neither its total pixel height nor its
- *  scroll offset, so the proportion is taken over item counts. It is therefore approximate whenever
- *  items differ in height — good enough for a position hint, and the only estimate available without
- *  measuring every item. */
+/** The proportion is taken over item COUNTS — a lazy list knows no pixel height — so it is
+ *  approximate wherever items differ in height. */
 internal fun lazyThumb(
     viewportPx: Float,
     totalItems: Int,

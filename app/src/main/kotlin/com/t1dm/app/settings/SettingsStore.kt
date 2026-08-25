@@ -21,33 +21,18 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import org.json.JSONObject
 
-/** The last automatic backup that succeeded. */
 class BackupRunOk(val atMs: Long, val bytes: Long, val rows: Int)
 
-/** The last automatic backup that failed, and why. Kept beside [BackupRunOk] rather than replacing
- *  it, so the panel can show that a destination which once worked has since stopped. */
 class BackupRunError(val atMs: Long, val message: String)
 
-/**
- * The complete, kv-backed configuration surface for the Settings hub (Phase 7C —
- * items 14 & 17, "expose EVERY knob"). Every user-tunable knob that the rest of the app boots with a
- * hard-coded default for is persisted here so a restart restores it, and — per —
- * the thresholds are **user-set and deliberately UNBOUNDED**: this store only coerces values to a
- * non-negative sanity floor and never imposes a clinical ceiling.
- *
- * It deliberately lives in `:app` (not `:data`) so it can assemble the module-level policy types
- * [AlarmConfig] (`:alerts`) and [CalcConfig] (`:calc`) from the raw kv primitives. `:data` stays free
- * of those dependencies; it only owns the generic kv read/write + the bulk export/import.
- *
- * Nothing here actuates. A tuned threshold merely shapes when an *advisory* fires or which candidate
- * dose the calculator *recommends* — the manual-administration model remains the terminal safety net.
- */
+/** The kv-backed configuration surface for Settings. Thresholds are user-set and deliberately
+ *  UNBOUNDED: values are coerced to a non-negative sanity floor and never to a clinical ceiling.
+ *  Lives in `:app`, not `:data`, so it can assemble [AlarmConfig] and [CalcConfig] without pulling
+ *  those modules into `:data`. */
 class SettingsStore(
     private val repository: T1dmRepository,
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
-    // ── typed kv helpers ──────────────────────────────────────────────────────────────────────
-
     private fun intFlow(key: String, default: Int): Flow<Int> =
         repository.observeKv(key).map { it?.toIntOrNull() ?: default }
 
@@ -68,10 +53,8 @@ class SettingsStore(
 
     private suspend fun put(key: String, value: String) = repository.putKv(key, value, clock())
 
-    // ── Deterministic alarm thresholds + loss-of-signal (§3.6-A) ────────────────
-    // UNBOUNDED user values; only floored at 0. Ordering (urgentLow < low <= high < urgentHigh) is
-    // NOT enforced — the user's override is honoured — but the Settings screen surfaces a warning
-    // when the values are out of order so a mistake is visible.
+    // §3.6-A. Ordering (urgentLow < low <= high < urgentHigh) is NOT enforced; the Settings screen
+    // warns when the values are out of order.
 
     val alarmUrgentLow: Flow<Int> = intFlow(K_ALARM_URGENT_LOW, DEF.thresholds.urgentLowMgdl)
     val alarmLow: Flow<Int> = intFlow(K_ALARM_LOW, DEF.thresholds.lowMgdl)
@@ -90,8 +73,7 @@ class SettingsStore(
     val repeatCadenceMin: Flow<Int> = intFlow(K_REPEAT_CADENCE, DEF.repeatCadenceMin)
     val minActuationMin: Flow<Int> = intFlow(K_MIN_ACTUATION, DEF.minActuationIntervalMin)
 
-    /** How long a "Snooze" on a firing alarm silences presentation before it auto-expires (§3.6 C1 —
-     *  a snooze is always TIME-BOUNDED; permanent silence stays DEATH's job). Floored at 1 minute. */
+    /** Minutes of presentation silence; always TIME-BOUNDED (§3.6 C1), floored at 1. */
     val snoozeMin: Flow<Int> = intFlow(K_SNOOZE_MIN, DEFAULT_SNOOZE_MIN)
 
     suspend fun setLossWindows(lossMin: Int, lossEscalatedMin: Int) {
@@ -104,9 +86,8 @@ class SettingsStore(
     suspend fun currentSnoozeMin(): Int = decodeSnoozeMin(repository.getKv(K_SNOOZE_MIN))
     suspend fun setSnoozeMin(min: Int) = put(K_SNOOZE_MIN, encodeSnoozeMin(min))
 
-    // ── Weak-signal alarm — the connection RSSI (dBm) below which the sensor link is "weak", sustained
-    // for a window. A signal-QUALITY alert, distinct from the age-based loss-of-signal alarm; folded into
-    // currentAlarmConfig() so it rides the same snapshot the engine is built from. dBm is UNBOUNDED.
+    // Connection RSSI (dBm, unbounded) below which the link is "weak", sustained for a window. A
+    // signal-QUALITY alert, distinct from the age-based loss-of-signal alarm.
     val weakSignalEnabled: Flow<Boolean> = boolFlow(K_WEAK_SIGNAL_ON, DEF.weakSignalEnabled)
     val weakSignalDbm: Flow<Int> = intFlow(K_WEAK_SIGNAL_DBM, DEF.weakSignalDbm)
     val weakSignalSustainMin: Flow<Int> = intFlow(K_WEAK_SIGNAL_SUSTAIN, DEF.weakSignalSustainMin)
@@ -117,7 +98,6 @@ class SettingsStore(
         put(K_WEAK_SIGNAL_SUSTAIN, sustainMin.coerceAtLeast(0).toString())
     }
 
-    /** Assemble the deterministic-alarm policy from the persisted knobs (defaults where unset). */
     suspend fun currentAlarmConfig(): AlarmConfig = AlarmConfig(
         thresholds = AlertThresholds(
             urgentLowMgdl = getInt(K_ALARM_URGENT_LOW, DEF.thresholds.urgentLowMgdl),
@@ -139,7 +119,7 @@ class SettingsStore(
         weakSignalSustainMin = getInt(K_WEAK_SIGNAL_SUSTAIN, DEF.weakSignalSustainMin),
     )
 
-    // ── Alert actuators (per-band vibration + DND bypass; sounds handled with Uri in AppContainer) ──
+    // Sound URIs live in AppContainer, not here.
 
     val warningVibration: Flow<String> = repository.observeKv(K_VIB_WARN).map { it ?: VibrationPreset.DOUBLE.name }
     val criticalVibration: Flow<String> = repository.observeKv(K_VIB_CRIT).map { it ?: VibrationPreset.INSISTENT.name }
@@ -162,8 +142,6 @@ class SettingsStore(
     suspend fun setCriticalSoundOn(on: Boolean) = put(K_CRIT_SOUND_ON, if (on) "1" else "0")
     suspend fun setWarningSoundOn(on: Boolean) = put(K_WARN_SOUND_ON, if (on) "1" else "0")
 
-    // ── Low-power / battery-saver (Q9 — default 20 %, configurable) ─────────────────
-
     val lowPowerEnabled: Flow<Boolean> = boolFlow(K_POWER_ENABLED, true)
     val lowPowerPercent: Flow<Int> = intFlow(K_POWER_PCT, DEFAULT_LOW_POWER_PCT)
     val lowPowerUseOsSaver: Flow<Boolean> = boolFlow(K_POWER_OS_SAVER, true)
@@ -176,9 +154,8 @@ class SettingsStore(
     suspend fun currentLowPowerPercent(): Int = getInt(K_POWER_PCT, DEFAULT_LOW_POWER_PCT)
     suspend fun currentLowPowerUseOsSaver(): Boolean = getBool(K_POWER_OS_SAVER, true)
 
-    // ── Forecast cadence (F2 — adaptive per-reading vs a fixed wall-clock period) ────────────────
     // ADAPTIVE re-forecasts on every CGM reading; TIMED fires on a phone-clock grid of N minutes.
-    // Read as a live snapshot by the single-consumer forecast driver in CgmScanService.
+    // Read as a live snapshot by the forecast driver in CgmScanService.
 
     val forecastMode: Flow<String> =
         repository.observeKv(K_FORECAST_MODE).map { it ?: FORECAST_MODE_ADAPTIVE }
@@ -190,12 +167,9 @@ class SettingsStore(
     suspend fun setForecastPeriodMin(min: Int) =
         put(K_FORECAST_PERIOD_MIN, min.coerceIn(FORECAST_PERIOD_MIN_MIN, FORECAST_PERIOD_MIN_MAX).toString())
 
-    // ── Log-driven re-forecast debounce — how long a logged meal/dose waits before the model re-runs
-    // on the curve channels it just moved. A SIBLING of the cadence above, not a mode of it: the two
-    // tick sources fire on their own schedule regardless, and this only decides how promptly a WRITE
-    // gets its own cycle. The window exists to coalesce — a meal and then its bolus arrive seconds
-    // apart and are worth exactly one forward, not two — so it is short by default and clamped well
-    // under the grid so a re-run can never be deferred past the tick it was meant to pre-empt.
+    // How long a logged meal/dose waits before the model re-runs on the channels it moved. It
+    // coalesces a meal and its bolus into one re-run, and is clamped well under the grid so a re-run
+    // can never be deferred past the tick it was meant to pre-empt.
     val logReforecastDebounceS: Flow<Int> =
         repository.observeKv(K_INF_LOG_DEBOUNCE_S).map { decodeLogReforecastDebounceS(it) }
     suspend fun currentLogReforecastDebounceS(): Int =
@@ -203,9 +177,8 @@ class SettingsStore(
     suspend fun setLogReforecastDebounceS(seconds: Int) =
         put(K_INF_LOG_DEBOUNCE_S, encodeLogReforecastDebounceS(seconds))
 
-    // ── Thermal gate (D1/D3/D6 — pause inference on the BATTERY-sensor °C; a truer die temp is
-    // unreadable here). Gate ENABLED by default; the threshold/warn-margin are user-set (floored at 0).
-    // The gate reads the battery °C irrespective of DEATH (D4: it stays active in DEATH mode).
+    // Pauses inference on the BATTERY-sensor °C; a truer die temp is unreadable here. Enabled by
+    // default, thresholds floored at 0, and active even in DEATH mode (D4).
 
     val thermalGateEnabled: Flow<Boolean> = boolFlow(K_INF_THERMAL_ON, DEFAULT_THERMAL_ON)
     val inferenceMaxTempC: Flow<Double> = doubleFlow(K_INF_MAX_TEMP_C, DEFAULT_MAX_TEMP_C)
@@ -219,9 +192,8 @@ class SettingsStore(
     suspend fun setInferenceMaxTempC(c: Double) = put(K_INF_MAX_TEMP_C, c.coerceAtLeast(0.0).toString())
     suspend fun setThermalWarnMarginC(c: Double) = put(K_INF_WARN_MARGIN_C, c.coerceAtLeast(0.0).toString())
 
-    // ── Running-set cap (issues 1/2 — how many discovered models run each cycle). Every running model
-    // forecasts and pushes to the server tagged by its model_id; only the SELECTED model feeds the
-    // dashboard and dosing. User-configurable; coerced to [MIN, MAX], default DEFAULT_MAX_MODELS.
+    // How many discovered models run each cycle. Every running model forecasts and pushes tagged by
+    // its model_id; only the SELECTED one feeds the dashboard and dosing.
 
     val inferenceMaxModels: Flow<Int> = repository.observeKv(K_INF_MAX_MODELS)
         .map { it?.toIntOrNull()?.coerceIn(INF_MAX_MODELS_MIN, INF_MAX_MODELS_MAX) ?: DEFAULT_MAX_MODELS }
@@ -232,12 +204,9 @@ class SettingsStore(
     suspend fun setInferenceMaxModels(n: Int) =
         put(K_INF_MAX_MODELS, n.coerceIn(INF_MAX_MODELS_MIN, INF_MAX_MODELS_MAX).toString())
 
-    // ── BG input filter (INFERENCE.md §7.1) — the causal Savitzky-Golay window the BG channel is
-    // pre-filtered at before normalization. It governs the MODEL INPUT, not the drawing: it shifts
-    // the `last_bg` anchor the rails and the countdown rest on, so it
-    // is an `inference.` key (hand-listed in CONFIG_EXACT_KEYS) rather than a cosmetic `graph.` one.
-    // Snapped to an offered detent on EVERY read: the window must be odd, and the Rust model-input
-    // guard rejects anything else outright rather than substituting a default.
+    // The causal Savitzky-Golay window the BG channel is pre-filtered at (INFERENCE.md §7.1). It
+    // governs the MODEL INPUT, not the drawing. Snapped to an offered detent on EVERY read: the
+    // window must be odd, and the Rust model-input guard rejects anything else outright.
 
     val savgolWindow: Flow<Int> = repository.observeKv(K_INF_SAVGOL_WINDOW)
         .map { InferenceControllerDefaults.nearestSmoothingStop(it?.toIntOrNull() ?: DEFAULT_SAVGOL_WINDOW) }
@@ -249,8 +218,7 @@ class SettingsStore(
     suspend fun setSavgolWindow(window: Int) =
         put(K_INF_SAVGOL_WINDOW, InferenceControllerDefaults.nearestSmoothingStop(window).toString())
 
-    // ── Death-clock offsets (F5 — the morbid IOB-exhaustion projection). DISPLAY-ONLY forward offsets
-    // (hours) from each prior landmark; no §3.6 gate reads these. Tunable per D2, floored at 0.
+    // DISPLAY-ONLY forward offsets in hours from each prior landmark; no §3.6 gate reads these.
 
     val dkaAfterIobZeroH: Flow<Double> = doubleFlow(K_DEATH_DKA_H, DEFAULT_DKA_AFTER_IOB_ZERO_H)
     val comaAfterDkaH: Flow<Double> = doubleFlow(K_DEATH_COMA_H, DEFAULT_COMA_AFTER_DKA_H)
@@ -260,9 +228,8 @@ class SettingsStore(
     suspend fun setComaAfterDkaH(h: Double) = put(K_DEATH_COMA_H, h.coerceAtLeast(0.0).toString())
     suspend fun setDeathAfterComaH(h: Double) = put(K_DEATH_DEATH_H, h.coerceAtLeast(0.0).toString())
 
-    // ── Over-temperature alarm (F7 — the battery-°C alert, distinct from the inference gate). Fires at
-    // alertC, clears at clearC (hysteresis); D4-exempt from DEATH's global suppression. Folded into
-    // currentAlarmConfig() above so it rides the same snapshot the AlarmEngine is built from.
+    // The battery-°C alert, distinct from the inference gate above. Fires at alertC, clears at
+    // clearC (hysteresis); exempt from DEATH's global suppression (D4).
 
     val overTempEnabled: Flow<Boolean> = boolFlow(K_OVERTEMP_ENABLED, DEFAULT_OVERTEMP_ENABLED)
     val overTempAlertC: Flow<Double> = doubleFlow(K_OVERTEMP_ALERT_C, DEFAULT_OVERTEMP_ALERT_C)
@@ -275,8 +242,6 @@ class SettingsStore(
         put(K_OVERTEMP_CLEAR_C, clearC.coerceAtLeast(0.0).toString())
         put(K_OVERTEMP_CRITICAL, if (critical) "1" else "0")
     }
-
-    // ── Calculator policy (§3.6 — every threshold user-set, UNBOUNDED) ─────────────────────────
 
     private val calcDef = CalcConfig()
 
@@ -326,7 +291,6 @@ class SettingsStore(
         put(key, if (on) "1" else "0")
     }
 
-    /** Assemble the calculator policy from the persisted knobs (defaults where unset). */
     suspend fun currentCalcConfig(): CalcConfig {
         val objective = when (repository.getKv(K_CALC_OBJECTIVE)) {
             OBJ_MIN_TOR -> Objective.MinTimeOutOfRange
@@ -359,26 +323,20 @@ class SettingsStore(
             iobCeilingU = getDouble(K_CALC_IOB_CEIL, calcDef.iobCeilingU),
         )
         if (!currentDeathMode()) return assembled
-        // §3.6 override for DEATH mode: every optional user-safety rail off + its threshold neutralised,
-        // so the advisor still emits a number off a stale/degenerate forecast. The structural
-        // backend-agreement + baseline-degeneracy refusals in DoseAdvisor are untouched (not config-driven).
+        // §3.6 DEATH override: every optional rail off and its threshold neutralised. The structural
+        // refusals in DoseAdvisor are untouched — they are not config-driven.
         return assembled.copy(
-            // ALL_OFF rather than a list written out again: a rail added to [RailToggles] and not
-            // added here keeps its `true` default, so the override that is meant to disable every
-            // optional rail would silently leave the newest one standing.
+            // ALL_OFF rather than a list: a rail added to [RailToggles] and not repeated here would
+            // keep its `true` default and silently stay standing.
             rails = RailToggles.ALL_OFF,
             predictedLowThresholdMgdl = 0.0,
             iobCeilingU = Double.MAX_VALUE,
         )
     }
 
-    // ── DEATH mode (the total-silence override) — persisted, deliberately NOT in the exportable set
-    // (it must never travel with a shared config). Reading it flips the calculator to the §3.6 override
-    // below and silences the active alarm surfaces (the FGS gate reads it via AppContainer). ─────────
-
-    // Flavor-gated at the origin: in the public flavor DeathFlavor.SUPPORTED is false, so the override
-    // is pinned off (the key is never read or written) and every downstream reader — the §3.6 config
-    // rail/degeneracy-gate bypass, the FGS alarm-silence gate, the theme — sees a hard false.
+    // The total-silence override, deliberately NOT in the exportable set: it must never travel with a
+    // shared config. In the public flavor DeathFlavor.SUPPORTED is false, so the key is never read or
+    // written and every downstream reader sees a hard false.
     val deathMode: Flow<Boolean> =
         if (DeathFlavor.SUPPORTED) boolFlow(K_DEATH, false) else flowOf(false)
     suspend fun currentDeathMode(): Boolean = DeathFlavor.SUPPORTED && getBool(K_DEATH, false)
@@ -386,49 +344,35 @@ class SettingsStore(
         if (DeathFlavor.SUPPORTED) put(K_DEATH, if (on) "1" else "0")
     }
 
-    // ── UI (a global "disable all animations" toggle) ────────────────────────
-
     val animationsEnabled: Flow<Boolean> = boolFlow(K_UI_ANIMATIONS, true)
-    /** The one-shot mirror of [animationsEnabled], for the headless surfaces (the glucose widget's
-     *  live pull, the FGS's freshness-blink gate) that must read this ONCE without subscribing. A
-     *  `Flow.first()` there collects a live Room query, whose first emission drives the
-     *  InvalidationTracker's subscribe/refresh path — on a cold, widget-only process that can park where
-     *  a bounded `getKv` SELECT cannot, holding the tile on its loading spinner. */
+    /** A one-shot read for the headless surfaces. `Flow.first()` there collects a live Room query
+     *  whose first emission drives the InvalidationTracker — on a cold, widget-only process that can
+     *  park where a bounded `getKv` SELECT cannot. */
     suspend fun currentAnimationsEnabled(): Boolean = getBool(K_UI_ANIMATIONS, true)
     suspend fun setAnimationsEnabled(on: Boolean) = put(K_UI_ANIMATIONS, if (on) "1" else "0")
 
-    // ── Volume-key panel shortcuts (volume up ⇒ Meals, volume down ⇒ Insulin) ─────────────────────
-    // Off hands the keys back to the system volume they normally are. The shortcut ALSO stands down
-    // while any alarm condition is active, regardless of this setting — that gate lives at the
-    // dispatch site in MainActivity, not here, because it is not the user's to switch off.
+    // Volume up ⇒ Meals, volume down ⇒ Insulin. The shortcut also stands down while any alarm is
+    // active regardless of this setting; that gate lives at the dispatch site in MainActivity.
     val volumeNavEnabled: Flow<Boolean> = boolFlow(K_UI_VOLUME_NAV, true)
     suspend fun setVolumeNavEnabled(on: Boolean) = put(K_UI_VOLUME_NAV, if (on) "1" else "0")
 
-    // ── UI haptics intensity (core/design Haptics.kt) ─────────────────────────────────────────
-    // A SIBLING of the animation flag, not a dependent: a static UI and a mute one are different
-    // wants. Deliberately NOT the same knob as the `alerts.vib.*` presets above — those are §3.6-A
-    // alarm actuation and may never be attenuated by a UI comfort preference. Exposed as an opaque
-    // name string for the Settings chip row (the screen never sees a :core:design type).
+    // Deliberately NOT the `alerts.vib.*` presets above: those are §3.6-A alarm actuation and may
+    // never be attenuated by a UI comfort preference. An opaque name string for the chip row.
     val hapticsLevel: Flow<String> = repository.observeKv(K_UI_HAPTICS).map { it ?: DEFAULT_HAPTICS }
     suspend fun currentHapticsLevel(): HapticStrength = HapticStrength.forKey(repository.getKv(K_UI_HAPTICS))
     suspend fun setHapticsLevel(level: HapticStrength) = put(K_UI_HAPTICS, level.name)
 
-    // ── Themed background image opacity (0–100 %; 0 = off). The per-theme Canvas backdrop is drawn at
-    // this alpha behind the whole app. Exportable (ui.* prefix) so it travels with a shared config.
+    // Per-theme backdrop opacity, 0–100 %; 0 = off.
     val backgroundAlphaPct: Flow<Int> = intFlow(K_UI_BG_ALPHA, DEFAULT_BG_ALPHA_PCT)
     suspend fun currentBackgroundAlphaPct(): Int = getInt(K_UI_BG_ALPHA, DEFAULT_BG_ALPHA_PCT)
     suspend fun setBackgroundAlphaPct(pct: Int) = put(K_UI_BG_ALPHA, pct.coerceIn(0, 100).toString())
 
-    // ── Device-temperature unit (U9 — no fan; show a labelled device temperature, C/F/K) ─────────
     val temperatureUnit: Flow<String> = repository.observeKv(K_UI_TEMP_UNIT).map { it ?: DEFAULT_TEMP_UNIT }
     suspend fun setTemperatureUnit(key: String) = put(K_UI_TEMP_UNIT, key)
 
-    // ── Theme + font (item 25 — three themes + JSON import + a bundled font; persisted, exportable) ──
-    // The custom-theme JSON is stored verbatim so a re-selection of "custom" reconstructs the palette.
-    // Both read seams normalise: `ui.theme` is exportable, and importJson writes any allowlisted key
-    // through unvalidated, so an old backup can re-inject the id of a since-retired palette. Every
-    // id→palette resolver already falls back to Tron, but the Settings chip row selects on string
-    // equality — without this it would show NOTHING selected while the app rendered the default.
+    // The custom-theme JSON is stored verbatim, so re-selecting "custom" reconstructs the palette.
+    // Both read seams normalise: importJson writes allowlisted keys through unvalidated, so a backup
+    // can re-inject a retired palette id, and the Settings chip row selects on string equality.
     val themeId: Flow<String> =
         repository.observeKv(K_UI_THEME).map { normalizeThemeId(it ?: DEFAULT_THEME) }
     val fontId: Flow<String> = repository.observeKv(K_UI_FONT).map { it ?: DEFAULT_FONT }
@@ -438,12 +382,9 @@ class SettingsStore(
     suspend fun currentFontId(): String = repository.getKv(K_UI_FONT) ?: DEFAULT_FONT
     suspend fun currentCustomThemeJson(): String? = repository.getKv(K_UI_CUSTOM_THEME)
 
-    /**
-     * Rewrite a persisted `ui.theme` that no longer names a palette this build carries, returning the id
-     * it was coerced to — or null when the row already resolved and nothing was written. Run once at
-     * startup (see [com.t1dm.app.RetiredThemeMigration]) so the stale id does not survive to be exported
-     * again; a mid-session config import is covered by the normalisation on the read seams above.
-     */
+    /** Rewrites a `ui.theme` that no longer names a palette this build carries, returning the coerced
+     *  id — null when the row already resolved and nothing was written. Run once at startup, see
+     *  [com.t1dm.app.RetiredThemeMigration]. */
     suspend fun coerceRetiredThemeId(): String? {
         val raw = repository.getKv(K_UI_THEME) ?: return null
         val id = normalizeThemeId(raw)
@@ -454,20 +395,17 @@ class SettingsStore(
 
     suspend fun setThemeId(id: String) = put(K_UI_THEME, id)
     suspend fun setFontId(id: String) = put(K_UI_FONT, id)
-    /** Persist a validated custom-theme JSON blob (the caller validates via `parseThemeJson` first). */
+    /** The caller validates via `parseThemeJson` first. */
     suspend fun setCustomThemeJson(json: String) = put(K_UI_CUSTOM_THEME, json)
 
-    // ── Custom Bézier curve templates (item 19 — the Settings custom-curve designers) ───────────
-    // Stored as the compact `BezierCurve.encode` string under the exportable graph.* prefix.
+    // The compact `BezierCurve.encode` string.
     val carbBezier: Flow<String?> = repository.observeKv(K_CURVE_CARB_BEZIER)
     val insulinBezier: Flow<String?> = repository.observeKv(K_CURVE_INSULIN_BEZIER)
     suspend fun setCarbBezier(encoded: String) = put(K_CURVE_CARB_BEZIER, encoded)
     suspend fun setInsulinBezier(encoded: String) = put(K_CURVE_INSULIN_BEZIER, encoded)
 
-    // ── CGM sensor service life — the total lifetime (days) of the sensor model. The connected session
-    // reports the sensor's own ELAPSED age (minFromStart); this total lets "time left" be derived from
-    // it (AppContainer.sensorExpiryMs). A configurable slider (Settings → CGM), 3–30 days, default 15.
-    // Device/sensor-specific, so deliberately NOT part of the exportable config set (no `cgm.` prefix).
+    // The sensor model's total lifetime in days; "time left" is derived from it against the sensor's
+    // elapsed age. Device-specific, so deliberately outside the exportable set.
     val sensorLifeDays: Flow<Int> = repository.observeKv(K_CGM_SENSOR_LIFE_DAYS)
         .map { it?.toIntOrNull()?.coerceIn(SENSOR_LIFE_DAYS_MIN, SENSOR_LIFE_DAYS_MAX) ?: DEFAULT_SENSOR_LIFE_DAYS }
     suspend fun currentSensorLifeDays(): Int =
@@ -475,77 +413,35 @@ class SettingsStore(
     suspend fun setSensorLifeDays(days: Int) =
         put(K_CGM_SENSOR_LIFE_DAYS, days.coerceIn(SENSOR_LIFE_DAYS_MIN, SENSOR_LIFE_DAYS_MAX).toString())
 
-    // ── Sensor names outside the CGM panel — a privacy switch, DEFAULT OFF (names hidden) ──────────
-    //
-    // A vendor may build its advertised name out of the number printed on the sensor, so any surface
-    // carrying that name carries a real device identifier, and a photograph of it carries one too. Off,
-    // every incidental surface says `CGM #0` instead — the sensor's own persisted counter, derived from
-    // nothing. The CGM panel keeps real identity: that is where the user manages sensors and has to tell
-    // one from another, and it shows both so the number is resolvable.
-    //
-    // Deliberately OUTSIDE the exportable set (no `cgm.` prefix in CONFIG_PREFIXES, not an exact key), for
-    // a stronger reason than `cgm.sensor_life_days` has: a privacy default that silently flipped because
-    // someone imported a shared config is the wrong outcome in one direction only.
-    //
-    // It governs what is DRAWN on this phone and nothing else. It gated the descriptor push once, which
-    // meant turning names on to read one locally began uploading the serial within a re-upsert — a switch
-    // labelled as a display choice moving data off the device. The serial is now withheld from the wire
-    // unconditionally (`AppCgmRepository.cgmSourceDto`), so the two are independent and this one is free
-    // to be flipped for a screenshot.
+    // DEFAULT OFF: a vendor may build the advertised name out of the number printed on the sensor, so
+    // a surface carrying that name — or a photograph of it — carries a device identifier. Outside the
+    // exportable set, so an imported config cannot flip a privacy default. It governs what is DRAWN
+    // here and nothing else: the serial is withheld from the wire unconditionally (`cgmSourceDto`).
     val showSensorNames: Flow<Boolean> = boolFlow(K_CGM_SHOW_SENSOR_NAMES, DEFAULT_SHOW_SENSOR_NAMES)
     suspend fun setShowSensorNames(on: Boolean) = put(K_CGM_SHOW_SENSOR_NAMES, if (on) "1" else "0")
 
-    // ── Last-logged insulin, per kind — STICKINESS, not a setting ───────────────────────────────
-    //
-    // The insulin panel picks its preset out of the shared clinical catalogue, and the writer commits
-    // what the panel picked. These two keys only remember which one that was, so the panel reopens on
-    // the insulin actually in use and the callers with no pick of their own (the accepted advisory
-    // bolus, a debug quick action) inherit it. There is deliberately no Settings row: a settings
-    // screen that also chose the insulin is exactly the arrangement that let the panel and the row
-    // disagree, and nothing outside `AppContainer.logBolus`/`logBasal` writes them.
-    //
-    // Stored as the preset's stable label, unvalidated: the catalogue is the authority on which
-    // labels exist and resolution falls through a stale one (see `resolveInsulinPreset`). The keys
-    // sit OUTSIDE the exportable set (no `insulin.` prefix in CONFIG_PREFIXES, and not exact keys) —
-    // this is per-device usage state like `cgm.sensor_life_days`, not configuration, and importing
-    // someone else's last dose would silently change which curve the next unpicked dose commits.
+    // Stickiness, not a setting: the preset label last committed, so the panel reopens on the insulin
+    // in use and a caller with no pick of its own inherits it. Stored unvalidated — the catalogue is
+    // the authority and resolution falls through a stale label (`resolveInsulinPreset`). Outside the
+    // exportable set; nothing but `AppContainer.logBolus`/`logBasal` writes them.
     suspend fun lastRapidPreset(): String? = repository.getKv(K_LAST_RAPID_PRESET)
     suspend fun lastBasalPreset(): String? = repository.getKv(K_LAST_BASAL_PRESET)
     suspend fun setLastRapidPreset(label: String) = put(K_LAST_RAPID_PRESET, label)
     suspend fun setLastBasalPreset(label: String) = put(K_LAST_BASAL_PRESET, label)
 
-    // ── Body mass — the one input the exercise energy figure cannot derive ──────────────────────
-    //
-    // GPS gives the speed and the ACSM equations are mass-free in VO2 terms, so this is the single
-    // number standing between a logged bout and a kcal figure; without it none is shown. Edited in
-    // the exercise panel, with no Settings row, and deliberately OUTSIDE the exportable set (no
-    // `exercise.` prefix in CONFIG_PREFIXES, not an exact key) — the same call as
-    // `cgm.sensor_life_days`, and for a plainer reason: a body mass is the user's own, not
-    // configuration to be carried into a file they hand to someone else.
-    //
-    // Floored for sanity and NOT capped, per the store's own contract; a blank row reads as "not
-    // supplied", so clearing it is a write rather than a row deletion.
+    // The one input the exercise kcal figure cannot derive; without it none is shown. Outside the
+    // exportable set — a body mass is the user's own, not configuration to hand to someone else.
+    // Floored and NOT capped; a blank row reads as "not supplied", so clearing it is a write.
     val bodyMassKg: Flow<Double?> = repository.observeKv(K_EXERCISE_BODY_MASS_KG).map(::decodeBodyMassKg)
 
     suspend fun currentBodyMassKg(): Double? = decodeBodyMassKg(repository.getKv(K_EXERCISE_BODY_MASS_KG))
 
     suspend fun setBodyMassKg(kg: Double?) = put(K_EXERCISE_BODY_MASS_KG, encodeBodyMassKg(kg))
 
-    // ── Carbohydrate equivalent per minute of exercise — the ONE per-patient number in §5's
-    // glucose-disposal gamma ──────────────────────────────────────────────────────────────────────
-    //
-    // The magnitude of a bout's disposal curve is `duration_min · carb_equiv_per_min` grams, and this
-    // is that rate. Nothing else about the curve is tunable: the shape is fixed and the magnitude
-    // scales with duration alone, so a slider that took pace or heart rate into it would put the
-    // channel off-distribution against every model pretrained on T1DMSIM.
-    //
-    // EXPORTABLE, unlike the body mass above, and by an exact key rather than an `exercise.` prefix
-    // that would sweep the body mass in behind it: this one is configuration — a per-patient constant
-    // like the calculator's ratios — and it belongs in a file the user carries to a new phone.
-    // Import is coerced, because a hand-edited file is the one writer no slider bounds.
-    //
-    // It applies from the moment it changes and never backwards: a stored curve is what could be
-    // justified on the day it was written, the same rule the ACSM kcal figure follows for body mass.
+    // The one per-patient number in §5's glucose-disposal gamma: a bout's magnitude is
+    // `duration_min · carb_equiv_per_min` grams. Nothing else about the curve is tunable — a pace or
+    // heart-rate term would put the channel off-distribution against models pretrained on T1DMSIM.
+    // Exportable by exact key, and applies from the moment it changes, never backwards.
     val carbEquivPerMin: Flow<Double> =
         repository.observeKv(K_EXERCISE_CARB_EQUIV).map(::decodeCarbEquivPerMin)
 
@@ -555,25 +451,16 @@ class SettingsStore(
     suspend fun setCarbEquivPerMin(gPerMin: Double) =
         put(K_EXERCISE_CARB_EQUIV, encodeCarbEquivPerMin(gPerMin))
 
-    // ── Push hold — how long a freshly logged meal/dose sits in the outbox before its FIRST send
-    // attempt, and therefore how long the Logs panel can still withdraw it. Only the MEAL/DOSE event
-    // pushes take it (never INGEST/PREDICTIONS/STATS/ALERT/PHOTO, and never the basal template);
-    // it is stamped once, at enqueue, into `nextAttemptMs`. 0 = push at once, no withdrawal window.
-    //
-    // The hold cannot lose a record: MEAL/DOSE are exempt from age-eviction, so a held row waits
-    // indefinitely rather than expiring, and the FORECAST never reads the queue at all — predictions
-    // are reconstructed from the local `logged_*` rows through ChannelBuilder, so a held push changes
-    // nothing about what the model sees.
+    // How long a logged meal/dose sits in the outbox before its FIRST send attempt, and so how long
+    // the Logs panel can still withdraw it. MEAL/DOSE event pushes only, stamped once at enqueue into
+    // `nextAttemptMs`; 0 = push at once. Nothing is lost: MEAL/DOSE are exempt from age-eviction, and
+    // the forecast reads the local `logged_*` rows rather than the queue.
     val pushHoldMin: Flow<Int> = repository.observeKv(K_PUSH_HOLD_MIN).map { decodePushHoldMin(it) }
     suspend fun currentPushHoldMin(): Int = decodePushHoldMin(repository.getKv(K_PUSH_HOLD_MIN))
     suspend fun setPushHoldMin(min: Int) = put(K_PUSH_HOLD_MIN, encodePushHoldMin(min))
 
-    // ── Settings-search history — the three most recent COMMITTED queries, newest first ─────────
-    // One kv row holding the whole list, the compound-value idiom the Bézier curves and the custom
-    // theme already use. The key sits deliberately OUTSIDE the exportable set (no `search.` prefix
-    // in CONFIG_PREFIXES, and not an exact key): a `ui.` key would ship the user's typed queries
-    // inside every configuration backup they hand to someone, the same reasoning that keeps
-    // `cgm.sensor_life_days` and `death.enabled` out. `wipeAllData` clears it for free.
+    // The three most recent COMMITTED queries, newest first, in one kv row. Outside the exportable
+    // set: a `ui.` key would ship the user's typed queries inside every configuration backup.
     val recentSearches: Flow<List<String>> =
         repository.observeKv(K_SEARCH_RECENT).map { decodeRecentSearches(it) }
 
@@ -587,25 +474,18 @@ class SettingsStore(
 
     suspend fun clearRecentSearches() = put(K_SEARCH_RECENT, encodeRecentSearches(emptyList()))
 
-    // ── Automatic backup (see `com.t1dm.app.backup`) ────────────────────────────────────────────
-    //
-    // Every key here sits deliberately OUTSIDE the exportable set below — the same call as
-    // `search.recent_settings` and `death.enabled`, and for a sharper reason than either. The folder
-    // is a persisted SAF grant belonging to THIS install; carried into a backup it would arrive on a
-    // fresh phone as a URI that install holds no permission for, and the panel would report a
-    // configured destination it cannot write one byte to. The last-run fields are likewise state
-    // rather than configuration: restoring them would have a phone that has never run a backup
-    // claim one. `wipeAllData` clears the lot for free.
+    // Every key here sits outside the exportable set: the folder is a SAF grant belonging to THIS
+    // install and would arrive elsewhere as a URI that install holds no permission for, and the
+    // last-run fields are state — restoring them would have a phone claim a backup it never ran.
 
     val backupCadenceHours: Flow<Int> = repository.observeKv(K_BACKUP_CADENCE_H).map(::decodeBackupCadence)
     val backupKeep: Flow<Int> = repository.observeKv(K_BACKUP_KEEP).map(::decodeBackupKeep)
 
-    /** The persisted tree URI, or null when no folder has been granted. Blank reads as null, so
-     *  revoking the grant is a write rather than a row deletion. */
+    /** Null when no folder is granted; blank reads as null, so revoking is a write. */
     val backupFolderUri: Flow<String?> = repository.observeKv(K_BACKUP_TREE).map { it?.ifBlank { null } }
 
-    /** The chosen folder's display name, captured once at grant time. Resolving it from the URI
-     *  instead would put a `ContentResolver` query in the composition of a screen that recomposes. */
+    /** Captured once at grant time: resolving it from the URI would put a `ContentResolver` query in
+     *  the composition of a screen that recomposes. */
     val backupFolderLabel: Flow<String?> = repository.observeKv(K_BACKUP_LABEL).map { it?.ifBlank { null } }
 
     val backupLastOk: Flow<BackupRunOk?> = repository.observeKv(K_BACKUP_LAST_OK).map(::decodeBackupOk)
@@ -625,12 +505,8 @@ class SettingsStore(
         put(K_BACKUP_LABEL, label)
     }
 
-    /**
-     * Recording a success does NOT clear the last failure, and a failure does not clear the last
-     * success. Both are kept and both are shown: "it worked on Tuesday and has failed every night
-     * since" is precisely the state a single overwritten status field hides, and it is the one worth
-     * knowing — a backup that fails silently is worse than no backup, because it is trusted.
-     */
+    /** A success does NOT clear the last failure, nor a failure the last success: "worked on Tuesday,
+     *  has failed every night since" is the state a single status field hides. */
     suspend fun recordBackupOk(atMs: Long, bytes: Long, rows: Int) =
         put(K_BACKUP_LAST_OK, encodeBackupOk(atMs, bytes, rows))
 
@@ -639,10 +515,9 @@ class SettingsStore(
 
     suspend fun clearBackupError() = put(K_BACKUP_LAST_ERR, "")
 
-    // ── Config export / import (item 17 — versioned, via SAF) ──────────────────────────────────
-    // Exports ONLY the config keys (the allowlisted prefixes) — never runtime state such as the
-    // watch nonce ceilings (exporting/importing those across devices would risk (key,nonce) reuse)
-    // or the liveness heartbeat. Secrets never live in kv (the rw token is Keystore-wrapped).
+    // Exports ONLY the allowlisted config keys — never runtime state such as the watch nonce
+    // ceilings, where an import across devices would risk (key, nonce) reuse. Secrets never live in
+    // kv; the rw token is Keystore-wrapped.
 
     suspend fun exportJson(): String {
         val kv = repository.allKv().filterKeys(::isConfigKey)
@@ -656,11 +531,8 @@ class SettingsStore(
             .toString(2)
     }
 
-    /**
-     * Import a config JSON produced by [exportJson]. Fail-closed: a malformed document or a wrong
-     * format tag throws with a plain-language message; only allowlisted config keys are written (a
-     * tampered file cannot inject runtime state). Returns the number of keys applied.
-     */
+    /** Fail-closed: a malformed document or a wrong format tag throws, and only allowlisted config
+     *  keys are written, so a tampered file cannot inject runtime state. Returns the keys applied. */
     suspend fun importJson(text: String): Int {
         val root = runCatching { JSONObject(text) }
             .getOrElse { throw IllegalArgumentException("Not a valid config file (could not parse JSON).") }
@@ -695,43 +567,15 @@ class SettingsStore(
 
     suspend fun setAggressiveOnlyCharging(on: Boolean) = put(K_AGG_ONLY_CHARGING, if (on) "1" else "0")
 
-    // ── Last-logged insulin, per kind — STICKINESS, not a setting ───────────────────────────────
-    //
-    // The insulin panel picks its preset out of the shared clinical catalogue, and the writer commits
-    // what the panel picked. These two keys only remember which one that was, so the panel reopens on
-    // the insulin actually in use and the callers with no pick of their own (the accepted advisory
-    // bolus, a debug quick action) inherit it. There is deliberately no Settings row: a settings
-    // screen that also chose the insulin is exactly the arrangement that let the panel and the row
-    // disagree, and nothing outside `AppContainer.logBolus`/`logBasal` writes them.
-    //
-    // Stored as the preset's stable label, unvalidated: the catalogue is the authority on which
-    // labels exist and resolution falls through a stale one (see `resolveInsulinPreset`). The keys
-    // sit OUTSIDE the exportable set (no `insulin.` prefix in CONFIG_PREFIXES, and not exact keys) —
-    // this is per-device usage state like `cgm.sensor_expiry_ms`, not configuration, and importing
-    // someone else's last dose would silently change which curve the next unpicked dose commits.
-
     val sensorExpiryMs: Flow<Long?> = repository.observeKv(K_CGM_SENSOR_EXPIRY).map { it?.toLongOrNull() }
 
     suspend fun setSensorExpiryMs(ms: Long) = put(K_CGM_SENSOR_EXPIRY, ms.toString())
 
     suspend fun clearSensorExpiry() = put(K_CGM_SENSOR_EXPIRY, "")
 
-    // ── Aggressive background scanning (the keep-screen-on "AOD" that keeps the locked BLE scan
-    // alive). HyperOS/powerkeeper SUSPENDS a backgrounded scan the
-    // instant the screen turns off — the only app-side defeat is to hold the display genuinely ON
-    // (is_screen_on=1) behind a black/dim surface. This is a HEAVY, opt-in mode (the SoC never
-    // deep-idles), so it defaults OFF. Device-specific (the `cgm.` prefix keeps it out of the
-    // exportable config set). `show_glucose` renders a dim glucose read-out instead of pure black;
-    // `only_charging` restricts the mode to the charger to bound the battery cost.
-
     val disclaimerAcknowledged: Flow<Boolean> = boolFlow(K_DISCLAIMER_ACK, false)
 
     suspend fun acknowledgeDisclaimer() = put(K_DISCLAIMER_ACK, "1")
-
-    // ── CGM sensor lifetime (I11) — a USER-ENTERED absolute expiry instant (epoch-ms). Because the
-    // passive-advertisement sensor exposes no true age, the user enters remaining life and we store the
-    // resulting expiry; the BG panel + CGM settings count it down. Device/sensor-specific, so it is
-    // deliberately NOT part of the exportable config set. Empty/absent ⇒ null ⇒ no countdown shown.
 
     companion object {
         private const val K_DISCLAIMER_ACK = "disclaimer.acknowledged"
@@ -742,21 +586,13 @@ class SettingsStore(
 
         private val DEF = AlarmConfig.DEFAULT
 
-        /** The export/import allowlist predicate. A pure function of the constants below, lifted to
-         *  the companion so the placement of a new key is host-testable without Room. */
+        /** Lifted to the companion so the placement of a new key is host-testable without Room. */
         internal fun isConfigKey(key: String): Boolean =
             CONFIG_PREFIXES.any { key.startsWith(it) } || key in CONFIG_EXACT_KEYS
 
-        /**
-         * Per-key validation applied to an imported value before it is written. A key absent from
-         * the table is copied verbatim — most config is free-form, and the alarm THRESHOLDS are
-         * user-set without an upper limit by design.
-         *
-         * A key present here carries a contract a rail depends on, and import is the one writer that
-         * can otherwise persist a value no stepper could produce: the file may be hand-edited, or
-         * written by a build whose bounds differed. Returning null rejects the key, leaving the
-         * setting at its default rather than importing a value the rail cannot honour.
-         */
+        /** Per-key validation for an imported value. A key absent here is copied verbatim; a key
+         *  present carries a contract a rail depends on, and returning null rejects it, leaving the
+         *  setting at its default. */
         internal val CONFIG_COERCE: Map<String, (String) -> String?> = mapOf(
             K_SNOOZE_MIN to { raw -> raw.toIntOrNull()?.let(::encodeSnoozeMin) },
             K_PUSH_HOLD_MIN to { raw -> raw.toIntOrNull()?.let(::encodePushHoldMin) },
@@ -765,12 +601,10 @@ class SettingsStore(
 
         const val DEFAULT_LOW_POWER_PCT = 20
 
-        // Objective enum keys (persisted).
         const val OBJ_KOVATCHEV = "kovatchev"
         const val OBJ_MIN_TOR = "min_tor"
         const val OBJ_HIT_TARGET = "hit_target"
 
-        // Rail identifiers (for setRail).
         const val RAIL_PREDICTED_LOW = "predicted_low"
         const val RAIL_IOB = "iob"
         const val RAIL_CONFIRM = "confirm"
@@ -779,11 +613,9 @@ class SettingsStore(
         private const val CONFIG_FORMAT = "t1dm.config"
         private const val CONFIG_VERSION = 1
 
-        /** kv-key prefixes that constitute exportable configuration. */
         private val CONFIG_PREFIXES = listOf("alarm.", "alerts.", "power.", "calc.", "ui.", "graph.", "stats.")
-        // NOTE: no blanket `inference.` prefix — that would sweep runtime telemetry into the export.
-        // The four `alarm.overtemp_*` keys ride the existing `alarm.` prefix already. `death.enabled`
-        // stays deliberately non-exportable; only the display-only death-clock OFFSETS are exported.
+        // No blanket `inference.` prefix — it would sweep runtime telemetry into the export.
+        // `death.enabled` stays non-exportable; only the display-only death-clock offsets are.
         private val CONFIG_EXACT_KEYS = setOf(
             "inference.warmup_hours",
             K_FORECAST_MODE,
@@ -798,12 +630,10 @@ class SettingsStore(
             K_DEATH_COMA_H,
             K_DEATH_DEATH_H,
             K_PUSH_HOLD_MIN,
-            // By exact key, never an `exercise.` prefix: `exercise.body_mass_kg` sits beside it and
-            // is deliberately not exportable.
+            // By exact key, never an `exercise.` prefix: `exercise.body_mass_kg` sits beside it.
             K_EXERCISE_CARB_EQUIV,
         )
 
-        // ── Forecast cadence (PUBLIC — CgmScanService reads the mode) ─────────────────────────────
         const val K_FORECAST_MODE = "inference.forecast_mode"
         const val K_FORECAST_PERIOD_MIN = "inference.forecast_period_min"
         const val FORECAST_MODE_ADAPTIVE = "adaptive"
@@ -812,26 +642,21 @@ class SettingsStore(
         const val FORECAST_PERIOD_MIN_MIN = 1
         const val FORECAST_PERIOD_MIN_MAX = 60
 
-        // ── Log-driven re-forecast debounce (PUBLIC — see [logReforecastDebounceS]) ───────────────
         const val K_INF_LOG_DEBOUNCE_S = "inference.log_reforecast_debounce_s"
         const val DEFAULT_LOG_REFORECAST_DEBOUNCE_S = 4
 
-        /** The stepper's maximum, and the ceiling no writer may exceed. Deliberately far below the
-         *  5-min grid: past it a "prompt" re-run would land after the tick it exists to anticipate,
-         *  which is the setting silently doing nothing rather than doing less. */
+        /** The ceiling no writer may exceed. Far below the 5-min grid: past it a "prompt" re-run
+         *  would land after the tick it exists to anticipate. */
         const val MAX_LOG_REFORECAST_DEBOUNCE_S = 60
 
-        /** The debounce persistence contract, extracted so the round-trip is host-testable without
-         *  Room, as the snooze and push-hold pairs are. Both directions clamp to
-         *  `0..`[MAX_LOG_REFORECAST_DEBOUNCE_S] — 0 being a legitimate "re-run at once" — and a
-         *  garbage or unset read falls back to the default, so a value written by a build with a
-         *  wider ceiling (or hand-edited into a config backup) cannot outlive this one. */
+        /** Both directions clamp to `0..`[MAX_LOG_REFORECAST_DEBOUNCE_S] — 0 is a legitimate "re-run
+         *  at once" — and a garbage or unset read falls back to the default, so a value from a build
+         *  with a wider ceiling cannot outlive this one. */
         internal fun encodeLogReforecastDebounceS(seconds: Int): String =
             seconds.coerceIn(0, MAX_LOG_REFORECAST_DEBOUNCE_S).toString()
         internal fun decodeLogReforecastDebounceS(raw: String?): Int =
             raw?.toIntOrNull()?.coerceIn(0, MAX_LOG_REFORECAST_DEBOUNCE_S) ?: DEFAULT_LOG_REFORECAST_DEBOUNCE_S
 
-        // ── Thermal gate (PUBLIC) ─────────────────────────────────────────────────────────────────
         const val K_INF_THERMAL_ON = "inference.thermal_gate_enabled"
         const val K_INF_MAX_TEMP_C = "inference.max_temp_c"
         const val K_INF_WARN_MARGIN_C = "inference.thermal_warn_margin_c"
@@ -839,18 +664,15 @@ class SettingsStore(
         const val DEFAULT_MAX_TEMP_C = 45.0
         const val DEFAULT_WARN_MARGIN_C = 3.0
 
-        // ── Running-set cap (PUBLIC) ──────────────────────────────────────────────────────────────
         const val K_INF_MAX_MODELS = "inference.max_models"
         const val DEFAULT_MAX_MODELS = 5
         const val INF_MAX_MODELS_MIN = 1
         const val INF_MAX_MODELS_MAX = 8
 
-        // ── BG input filter (PUBLIC) ──────────────────────────────────────────────────────────────
         const val K_INF_SAVGOL_WINDOW = "inference.savgol_window"
         const val DEFAULT_SAVGOL_WINDOW = InferenceControllerDefaults.SAVGOL_WINDOW
         val SAVGOL_STOPS: List<Int> = InferenceControllerDefaults.SAVGOL_STOPS
 
-        // ── Death-clock offsets (PUBLIC) ──────────────────────────────────────────────────────────
         const val K_DEATH_DKA_H = "death.dka_after_iob_zero_h"
         const val K_DEATH_COMA_H = "death.coma_after_dka_h"
         const val K_DEATH_DEATH_H = "death.death_after_coma_h"
@@ -858,12 +680,10 @@ class SettingsStore(
         const val DEFAULT_COMA_AFTER_DKA_H = 29.0
         const val DEFAULT_DEATH_AFTER_COMA_H = 59.0
 
-        // ── Weak-signal alarm ─────────────────────────────────────────────────────────────────────
         private const val K_WEAK_SIGNAL_ON = "alarm.weak_signal_enabled"
         private const val K_WEAK_SIGNAL_DBM = "alarm.weak_signal_dbm"
         private const val K_WEAK_SIGNAL_SUSTAIN = "alarm.weak_signal_sustain_min"
 
-        // ── Over-temperature alarm (PUBLIC) ───────────────────────────────────────────────────────
         const val K_OVERTEMP_ENABLED = "alarm.overtemp_enabled"
         const val K_OVERTEMP_ALERT_C = "alarm.overtemp_alert_c"
         const val K_OVERTEMP_CLEAR_C = "alarm.overtemp_clear_c"
@@ -873,7 +693,6 @@ class SettingsStore(
         const val DEFAULT_OVERTEMP_CLEAR_C = 41.0
         const val DEFAULT_OVERTEMP_CRITICAL = false
 
-        // ── kv keys ────────────────────────────────────────────────────────────────────────────
         private const val K_ALARM_URGENT_LOW = "alarm.urgent_low_mgdl"
         private const val K_ALARM_LOW = "alarm.low_mgdl"
         private const val K_ALARM_HIGH = "alarm.high_mgdl"
@@ -885,36 +704,29 @@ class SettingsStore(
         private const val K_SNOOZE_MIN = "alarm.snooze_min"
         const val DEFAULT_SNOOZE_MIN = 15
 
-        /** The ceiling §3.6 C1 rests on, and the stepper's own maximum. A snooze is time-bounded, so
-         *  no writer — not the UI, not [importJson] — may persist a silence longer than this. */
+        /** The ceiling §3.6 C1 rests on: no writer, [importJson] included, may persist a longer
+         *  silence. */
         const val MAX_SNOOZE_MIN = 60
 
-        /** The snooze-duration persistence contract, extracted so the round-trip is host-testable
-         *  without Room: both directions clamp to 1..[MAX_SNOOZE_MIN] (a snooze is always
-         *  TIME-BOUNDED, §3.6 C1); reads fall back to [DEFAULT_SNOOZE_MIN] when unset/garbage.
-         *  The read clamps too, so a value persisted by an older build cannot outlive this one. */
+        /** Both directions clamp to 1..[MAX_SNOOZE_MIN] (§3.6 C1); unset or garbage falls back to
+         *  [DEFAULT_SNOOZE_MIN]. The read clamps too, so an older build's value cannot outlive this
+         *  one. */
         internal fun encodeSnoozeMin(min: Int): String = min.coerceIn(1, MAX_SNOOZE_MIN).toString()
         internal fun decodeSnoozeMin(raw: String?): Int =
             raw?.toIntOrNull()?.coerceIn(1, MAX_SNOOZE_MIN) ?: DEFAULT_SNOOZE_MIN
 
-        // ── Push hold (see [pushHoldMin]) ─────────────────────────────────────────────────────────
         const val K_PUSH_HOLD_MIN = "sync.push_hold_min"
         const val DEFAULT_PUSH_HOLD_MIN = 15
 
-        /** The stepper's maximum, and the ceiling no writer may exceed. A hold is a withdrawal window,
-         *  not a sync policy: past a couple of hours the phone is simply not mirroring its own record,
-         *  and every reader of the server copy — the console, a second session — is that far behind. */
+        /** The ceiling no writer may exceed. A hold is a withdrawal window, not a sync policy: past a
+         *  couple of hours the phone is not mirroring its own record. */
         const val MAX_PUSH_HOLD_MIN = 120
 
-        /** The push-hold persistence contract, extracted so the round-trip is host-testable without
-         *  Room, as the snooze pair is. Both directions clamp to `0..`[MAX_PUSH_HOLD_MIN] — 0 being a
-         *  legitimate "send immediately" — and a garbage or unset read falls back to the default, so a
-         *  value written by a build with a wider ceiling cannot outlive this one. */
+        /** Both directions clamp to `0..`[MAX_PUSH_HOLD_MIN] — 0 is a legitimate "send immediately" —
+         *  and a garbage or unset read falls back to the default. */
         internal fun encodePushHoldMin(min: Int): String = min.coerceIn(0, MAX_PUSH_HOLD_MIN).toString()
         internal fun decodePushHoldMin(raw: String?): Int =
             raw?.toIntOrNull()?.coerceIn(0, MAX_PUSH_HOLD_MIN) ?: DEFAULT_PUSH_HOLD_MIN
-
-        // ── Automatic backup — kv rows outside the export allowlist (see the flows above) ─────────
 
         const val K_BACKUP_CADENCE_H = "backup.cadence_h"
         const val K_BACKUP_KEEP = "backup.keep"
@@ -923,8 +735,8 @@ class SettingsStore(
         const val K_BACKUP_LAST_OK = "backup.last_ok"
         const val K_BACKUP_LAST_ERR = "backup.last_err"
 
-        /** 0 is OFF and is the default: automatic backup writes to a folder outside the app's own
-         *  storage, so it may not begin until the user has chosen one. */
+        /** 0 is OFF and the default: backup writes outside the app's own storage, so it may not begin
+         *  until the user has granted a folder. */
         const val BACKUP_CADENCE_OFF = 0
         val BACKUP_CADENCE_STOPS: List<Int> = listOf(BACKUP_CADENCE_OFF, 6, 24, 24 * 7)
         const val DEFAULT_BACKUP_CADENCE_H = BACKUP_CADENCE_OFF
@@ -932,13 +744,9 @@ class SettingsStore(
         val BACKUP_KEEP_STOPS: List<Int> = listOf(3, 7, 14, 30)
         const val DEFAULT_BACKUP_KEEP = 7
 
-        /**
-         * Both directions snap to a declared stop rather than clamping to a range. A cadence between
-         * stops is not a finer setting — it is a value no stepper produced, and honouring it would
-         * schedule a job at a period the panel cannot then display. An unset or unrecognised read
-         * falls back to the default, so a hand-edited row degrades to OFF rather than to a period
-         * WorkManager would silently round up to its own floor anyway.
-         */
+        /** Both directions snap to a declared stop rather than clamping: a value between stops is one
+         *  no stepper produced and the panel could not display. Unset or unrecognised falls back to
+         *  the default. */
         internal fun encodeBackupCadence(hours: Int): String = nearestStop(hours, BACKUP_CADENCE_STOPS).toString()
         internal fun decodeBackupCadence(raw: String?): Int =
             raw?.toIntOrNull()?.takeIf { it in BACKUP_CADENCE_STOPS } ?: DEFAULT_BACKUP_CADENCE_H
@@ -950,14 +758,9 @@ class SettingsStore(
         private fun nearestStop(value: Int, stops: List<Int>): Int =
             stops.minByOrNull { kotlin.math.abs(it - value) } ?: stops.first()
 
-        /**
-         * The last-run rows, pipe-separated so the round-trip is host-testable without Room and
-         * without `org.json` (an Android class, stubbed on the host JVM — see [encodeRecentSearches]
-         * for the same constraint). The message is the only free-text field and any pipe or newline
-         * in it is folded to a space on the way in, so a driver's error string can never forge a
-         * field boundary. Reads are total: garbage degrades to "no run recorded", never a throw on
-         * a panel that exists to report status.
-         */
+        /** Pipe-separated, not JSON: `org.json` is an Android class stubbed on the host JVM, so a
+         *  codec built on it cannot be unit-tested. Pipes and newlines in the message are folded to a
+         *  space, so it cannot forge a field boundary. Reads are total. */
         internal fun encodeBackupOk(atMs: Long, bytes: Long, rows: Int): String = "$atMs|$bytes|$rows"
 
         internal fun decodeBackupOk(raw: String?): BackupRunOk? {
@@ -981,25 +784,15 @@ class SettingsStore(
             return BackupRunError(at, message)
         }
 
-        /** Enough to name the cause; short enough that a driver stack trace cannot fill the row. */
+        /** Enough to name the cause; short enough that a stack trace cannot fill the row. */
         private const val MAX_BACKUP_ERROR_CHARS = 160
 
-        /** Settings-search history: a kv row outside the export allowlist (see [recentSearches]). */
         private const val K_SEARCH_RECENT = "search.recent_settings"
         const val RECENT_SEARCH_LIMIT = 3
 
-        /**
-         * The persistence contract for [recentSearches], extracted for the same reason the snooze
-         * pair is: the round-trip and the fail-soft read are then host-testable without Room.
-         *
-         * A newline-separated list rather than the `JSONArray` the Bézier/theme rows would suggest —
-         * `org.json` is an Android class, stubbed on the host JVM, so a codec built on it cannot be
-         * unit-tested at all (see the note in ConfigBackupTest). The search field is single-line, so
-         * the separator cannot occur in a query; encoding folds one in anyway, since `importJson`
-         * writes allowlisted keys through unvalidated and a smuggled newline must not become a second
-         * entry. Reads are total for the same reason: garbage degrades to "no history", never a throw
-         * on a settings page.
-         */
+        /** Newline-separated, not `JSONArray`: `org.json` is an Android class stubbed on the host
+         *  JVM, so a codec built on it cannot be unit-tested. The search field is single-line, but
+         *  encoding folds a newline anyway — `importJson` writes allowlisted keys unvalidated. */
         internal fun encodeRecentSearches(queries: List<String>): String =
             queries
                 .map { it.replace('\n', ' ').replace('\r', ' ').trim() }
@@ -1056,8 +849,8 @@ class SettingsStore(
         /** Panel-owned per-device state outside [CONFIG_PREFIXES] — see [bodyMassKg]. */
         internal const val K_EXERCISE_BODY_MASS_KG = "exercise.body_mass_kg"
 
-        /** A sanity floor only. There is no ceiling here, by the same rule that leaves the alarm
-         *  thresholds unbounded: the value is the user's to state. */
+        /** A sanity floor only; no ceiling, by the same rule that leaves the alarm thresholds
+         *  unbounded. */
         const val MIN_BODY_MASS_KG = 20.0
 
         internal fun decodeBodyMassKg(raw: String?): Double? =
@@ -1069,16 +862,9 @@ class SettingsStore(
         /** Grams of carbohydrate equivalent disposed per minute of exercise — see [carbEquivPerMin]. */
         const val K_EXERCISE_CARB_EQUIV = "exercise.carb_equiv_per_min"
 
-        /**
-         * The rate's persistence contract, extracted so the round trip is host-testable without Room.
-         *
-         * The default and the rails are `ExerciseDisposal`'s, not a second copy: the default is the
-         * population constant `../T1DMCOMMON/SPEC/invariants.md` §5 fixes and the rails are the ones
-         * the resolver clamps to, so a value this store accepted and the resolver then clamped would
-         * be a slider that silently lies. Both directions clamp, and a garbled or unset row falls
-         * back to the default rather than to zero — zero would mean a bout disposes of nothing, which
-         * is not a setting anybody chose.
-         */
+        /** The default and the rails are `ExerciseDisposal`'s, not a second copy: the default is the
+         *  population constant `../T1DMCOMMON/SPEC/invariants.md` §5 fixes, and the rails are what the
+         *  resolver clamps to. A garbled or unset row falls back to the default, never to zero. */
         internal fun encodeCarbEquivPerMin(gPerMin: Double): String =
             (if (gPerMin.isFinite()) clampCarbEquiv(gPerMin) else ExerciseDisposal.DEFAULT_CARB_EQUIV_PER_MIN)
                 .toString()
@@ -1094,14 +880,13 @@ class SettingsStore(
 
         private const val K_CGM_SENSOR_LIFE_DAYS = "cgm.sensor_life_days"
         internal const val K_CGM_SHOW_SENSOR_NAMES = "cgm.show_sensor_names"
-        /** Hidden. The safe direction: a name that leaks a serial cannot be un-leaked from a screenshot. */
+        /** Hidden: a name that leaks a serial cannot be un-leaked from a screenshot. */
         const val DEFAULT_SHOW_SENSOR_NAMES = false
         const val DEFAULT_SENSOR_LIFE_DAYS = 15
         const val SENSOR_LIFE_DAYS_MIN = 3
         const val SENSOR_LIFE_DAYS_MAX = 30
-        /** Usage state, not configuration — see the note on [lastRapidPreset] for why the prefix is
-         *  outside [CONFIG_PREFIXES]. No default label lives here: the catalogue's own first entry of
-         *  the family is the fallback, so this build cannot name an insulin the catalogue dropped. */
+        /** Usage state, not configuration — see [lastRapidPreset]. No default label here: the
+         *  catalogue's own first entry of the family is the fallback. */
         internal const val K_LAST_RAPID_PRESET = "insulin.last_rapid_preset"
         internal const val K_LAST_BASAL_PRESET = "insulin.last_basal_preset"
         const val DEFAULT_THEME = "tron"
