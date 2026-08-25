@@ -18,9 +18,12 @@ import com.t1dm.core.model.UnitSpace
 import androidx.compose.ui.graphics.toArgb
 import com.t1dm.feature.stats.DAY_LABELS
 import com.t1dm.feature.stats.HEATMAP_HOURS
+import com.t1dm.feature.stats.HEAT_CEIL_MGDL
+import com.t1dm.feature.stats.HEAT_FLOOR_MGDL
 import com.t1dm.feature.stats.HEAT_HIGH
 import com.t1dm.feature.stats.HEAT_IN
 import com.t1dm.feature.stats.HEAT_LOW
+import com.t1dm.feature.stats.HEAT_MID_MGDL
 import com.t1dm.feature.stats.heatColor
 import java.io.OutputStream
 import java.text.SimpleDateFormat
@@ -35,7 +38,7 @@ object StatsPdf {
     private const val M = 40f
     private const val FOOT = 34f
 
-    /** [ClinicalCuts.UNAVAILABLE] omits the heatmap rather than cut its grid in the wrong place. */
+    /** [ClinicalCuts.UNAVAILABLE] marks a missing native core; the heatmap is withheld with it. */
     fun write(out: OutputStream, c: StatsComposite, cuts: ClinicalCuts) {
         val doc = PdfDocument()
         val p = Pager(doc)
@@ -90,10 +93,10 @@ object StatsPdf {
         // LOCAL time, unlike the diurnal card above it — see stats.rs's day-boundary block.
         if (s.heatmap.isNotEmpty() && cuts.isUsable) {
             p.section("Glucose by day and hour")
-            p.caption("Local time. Colour runs blue (low) → green (in range) → red (high); an outlined cell has no reading.")
-            p.heatLegend(c.targetRange, cuts)
+            p.caption("Local time. Blue 70 → green 105 → red 140 mg/dL, clamped; an outlined cell has no reading.")
+            p.heatLegend()
             HeatStat.entries.forEach { stat ->
-                p.heatGrid(s.heatmap, stat, c.targetRange, cuts)
+                p.heatGrid(s.heatmap, stat)
             }
         }
 
@@ -207,7 +210,7 @@ object StatsPdf {
         }
 
         /** An unmeasured cell is outlined, never filled, so a gap cannot read as a value. */
-        fun heatGrid(cells: List<HeatCell>, stat: HeatStat, target: TargetRange, cuts: ClinicalCuts) {
+        fun heatGrid(cells: List<HeatCell>, stat: HeatStat) {
             val labelW = 26f
             val gridW = W - 2 * M - labelW
             val cw = gridW / HEATMAP_HOURS
@@ -238,7 +241,7 @@ object StatsPdf {
                     if (v.isNaN()) {
                         cv.drawRect(cx + 0.5f, ry + 0.5f, cx + cw - 0.5f, ry + rh - 0.5f, outline)
                     } else {
-                        fill.color = heatColor(v.toDouble(), target, cuts).toArgb()
+                        fill.color = heatColor(v.toDouble()).toArgb()
                         cv.drawRect(cx + 0.5f, ry + 0.5f, cx + cw - 0.5f, ry + rh - 0.5f, fill)
                     }
                 }
@@ -249,26 +252,22 @@ object StatsPdf {
             y = top + gh + 14f
         }
 
-        fun heatLegend(target: TargetRange, cuts: ClinicalCuts) {
+        fun heatLegend() {
             need(26f)
             y += 4f
-            val lo = target.lowMgdl.toDouble()
-            val hi = target.highMgdl.toDouble()
-            val floor = minOf(cuts.veryLowMgdl, lo)
-            val ceil = maxOf(cuts.veryHighMgdl, hi)
-            val span = (ceil - floor).takeIf { it > 0.0 } ?: 1.0
+            val span = HEAT_CEIL_MGDL - HEAT_FLOOR_MGDL
             val x0 = M + 26f
             val w = W - 2 * M - 26f
             val bh = 7f
             val fill = Paint().apply { isAntiAlias = false }
             var px = 0
             while (px < w.toInt()) {
-                fill.color = heatColor(floor + (px / w) * span, target, cuts).toArgb()
+                fill.color = heatColor(HEAT_FLOOR_MGDL + (px / w) * span).toArgb()
                 cv.drawRect(x0 + px, y, x0 + px + 1f, y + bh, fill)
                 px++
             }
-            listOf(floor, lo, hi, ceil).forEach { v ->
-                val x = x0 + ((v - floor) / span * w).toFloat()
+            listOf(HEAT_FLOOR_MGDL, HEAT_MID_MGDL, HEAT_CEIL_MGDL).forEach { v ->
+                val x = x0 + ((v - HEAT_FLOOR_MGDL) / span * w).toFloat()
                 cv.drawText(d(v, 0), (x - 6f).coerceIn(M, W - M - 18f), y + bh + 9f, axisP)
             }
             y += bh + 14f

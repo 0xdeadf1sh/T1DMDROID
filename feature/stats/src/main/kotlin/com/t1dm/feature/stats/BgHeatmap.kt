@@ -15,12 +15,9 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.unit.dp
-import com.t1dm.core.model.ClinicalCuts
 import com.t1dm.core.model.HeatCell
 import com.t1dm.core.model.HeatStat
-import com.t1dm.core.model.TargetRange
 import com.t1dm.core.model.UnitSpace
-import kotlin.math.max
 import kotlin.math.min
 
 const val HEATMAP_DAYS = 7
@@ -30,14 +27,11 @@ const val HEATMAP_HOURS = 24
 val DAY_LABELS = arrayOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
 /** 7 rows × 24 columns summarised by [stat] — both summaries come from one core pass, so [stat] is
- *  a repaint. The ramp is anchored on [target] and [cuts], not on the data's extremes, so a cell
- *  colour means the same glucose everywhere. An empty cell is an outline, never a fill. */
+ *  a repaint. An empty cell is an outline, never a fill. */
 @Composable
 fun BgHeatmap(
     heatmap: List<HeatCell>,
     stat: HeatStat,
-    target: TargetRange,
-    cuts: ClinicalCuts,
     unit: UnitSpace,
     kovatchevF: (Double) -> Double,
     modifier: Modifier = Modifier,
@@ -54,8 +48,8 @@ fun BgHeatmap(
             }
         }
     }
-    val colors = remember(grid, target, cuts) {
-        Array(grid.size) { i -> grid[i].takeIf { !it.isNaN() }?.let { heatColor(it.toDouble(), target, cuts) } }
+    val colors = remember(grid) {
+        Array(grid.size) { i -> grid[i].takeIf { !it.isNaN() }?.let { heatColor(it.toDouble()) } }
     }
     // Hoisted out of the draw: a Paint is a real allocation, and this repaints every scroll frame.
     val textPaint = remember(axisTextColor) {
@@ -115,33 +109,19 @@ fun BgHeatmap(
                 )
             }
         }
-        HeatLegend(target, cuts, unit, kovatchevF, textPaint)
+        HeatLegend(unit, kovatchevF, textPaint)
     }
 }
 
 /** The scale in numbers — what makes the grid readable without discriminating hue at all. */
 @Composable
 private fun HeatLegend(
-    target: TargetRange,
-    cuts: ClinicalCuts,
     unit: UnitSpace,
     kovatchevF: (Double) -> Double,
     textPaint: android.graphics.Paint,
 ) {
-    val lo = target.lowMgdl.toDouble()
-    val hi = target.highMgdl.toDouble()
-    val floor = min(cuts.veryLowMgdl, lo)
-    val ceil = max(cuts.veryHighMgdl, hi)
-    val span = (ceil - floor).takeIf { it > 0.0 } ?: 1.0
-    val loStop = ((lo - floor) / span).toFloat().coerceIn(0f, 1f)
-    val hiStop = ((hi - floor) / span).toFloat().coerceIn(loStop, 1f)
-    val brush = remember(loStop, hiStop) {
-        Brush.horizontalGradient(
-            0f to HEAT_LOW,
-            loStop to HEAT_IN,
-            hiStop to HEAT_IN,
-            1f to HEAT_HIGH,
-        )
+    val brush = remember {
+        Brush.horizontalGradient(0f to HEAT_LOW, HEAT_MID_STOP to HEAT_IN, 1f to HEAT_HIGH)
     }
     Canvas(Modifier.fillMaxWidth().height(30.dp)) {
         val leftPad = 62f
@@ -149,8 +129,7 @@ private fun HeatLegend(
         if (barW <= 0f) return@Canvas
         val barH = 8f
         drawRect(brush = brush, topLeft = Offset(leftPad, 0f), size = Size(barW, barH))
-        // Anchors only: the two clinical cuts and the two target edges.
-        for ((v, stop) in listOf(floor to 0f, lo to loStop, hi to hiStop, ceil to 1f)) {
+        for ((v, stop) in listOf(HEAT_FLOOR_MGDL to 0f, HEAT_MID_MGDL to HEAT_MID_STOP, HEAT_CEIL_MGDL to 1f)) {
             val x = leftPad + stop * barW
             drawContext.canvas.nativeCanvas.drawText(
                 fmtHeatAxis(convertBg(v, unit, kovatchevF), unit),
@@ -162,21 +141,23 @@ private fun HeatLegend(
     }
 }
 
-/** mg/dL → colour. Green spans the whole of [target]; each arm runs out to the matching cut. The
- *  cuts are clamped against the target edges exactly as the Rust clamps them: the target range is
- *  unbounded, so a wider one would leave an arm with zero or negative span. */
-fun heatColor(mgdl: Double, target: TargetRange, cuts: ClinicalCuts): Color {
-    val lo = target.lowMgdl.toDouble()
-    val hi = target.highMgdl.toDouble()
-    val floor = min(cuts.veryLowMgdl, lo)
-    val ceil = max(cuts.veryHighMgdl, hi)
-    return when {
-        mgdl <= floor -> HEAT_LOW
-        mgdl < lo -> lerp(HEAT_LOW, HEAT_IN, ((mgdl - floor) / (lo - floor)).toFloat())
-        mgdl <= hi -> HEAT_IN
-        mgdl < ceil -> lerp(HEAT_IN, HEAT_HIGH, ((mgdl - hi) / (ceil - hi)).toFloat())
-        else -> HEAT_HIGH
-    }
+/** Fixed, not the patient's target range: a cell colour means the same glucose on every phone. */
+const val HEAT_FLOOR_MGDL = 70.0
+const val HEAT_MID_MGDL = 105.0
+const val HEAT_CEIL_MGDL = 140.0
+
+private val HEAT_MID_STOP =
+    ((HEAT_MID_MGDL - HEAT_FLOOR_MGDL) / (HEAT_CEIL_MGDL - HEAT_FLOOR_MGDL)).toFloat()
+
+/** mg/dL → colour: blue at [HEAT_FLOOR_MGDL], green at [HEAT_MID_MGDL], red at [HEAT_CEIL_MGDL],
+ *  clamped outside. */
+fun heatColor(mgdl: Double): Color = when {
+    mgdl <= HEAT_FLOOR_MGDL -> HEAT_LOW
+    mgdl <= HEAT_MID_MGDL ->
+        lerp(HEAT_LOW, HEAT_IN, ((mgdl - HEAT_FLOOR_MGDL) / (HEAT_MID_MGDL - HEAT_FLOOR_MGDL)).toFloat())
+    mgdl < HEAT_CEIL_MGDL ->
+        lerp(HEAT_IN, HEAT_HIGH, ((mgdl - HEAT_MID_MGDL) / (HEAT_CEIL_MGDL - HEAT_MID_MGDL)).toFloat())
+    else -> HEAT_HIGH
 }
 
 private fun fmtHeatAxis(v: Double, unit: UnitSpace): String = when (unit) {

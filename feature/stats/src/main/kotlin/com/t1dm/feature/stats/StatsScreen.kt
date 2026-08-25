@@ -230,8 +230,6 @@ fun StatsScreen(
                     BgHeatmap(
                         heatmap = local.heatmap,
                         stat = heatStat,
-                        target = composite.targetRange,
-                        cuts = cuts,
                         unit = composite.unitSpace,
                         kovatchevF = kovatchevF,
                     )

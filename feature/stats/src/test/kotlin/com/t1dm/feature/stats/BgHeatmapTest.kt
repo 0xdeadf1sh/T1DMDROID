@@ -1,9 +1,7 @@
 package com.t1dm.feature.stats
 
-import com.t1dm.core.model.ClinicalCuts
 import com.t1dm.core.model.HeatCell
 import com.t1dm.core.model.HeatStat
-import com.t1dm.core.model.TargetRange
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
@@ -11,22 +9,19 @@ import org.junit.Test
 
 class BgHeatmapTest {
 
-    private val cuts = ClinicalCuts(veryLowMgdl = 54.0, veryHighMgdl = 250.0)
-    private val target = TargetRange(70, 180)
+    private fun c(mgdl: Double) = heatColor(mgdl)
 
-    private fun c(mgdl: Double) = heatColor(mgdl, target, cuts)
-
-    @Test fun theWholeTargetRangeIsOneFlatGreen() {
-        assertEquals(HEAT_IN, c(70.0))
-        assertEquals(HEAT_IN, c(125.0))
-        assertEquals(HEAT_IN, c(180.0))
+    @Test fun greenIsTheMidpointAlone() {
+        assertEquals(HEAT_IN, c(105.0))
+        assertNotEquals(HEAT_IN, c(104.0))
+        assertNotEquals(HEAT_IN, c(106.0))
     }
 
-    @Test fun theExtremesClampAtTheClinicalCuts() {
+    @Test fun theExtremesClampAtTheScaleEdges() {
+        assertEquals(HEAT_LOW, c(70.0))
         assertEquals(HEAT_LOW, c(54.0))
-        assertEquals(HEAT_LOW, c(20.0))
         assertEquals(HEAT_LOW, c(-5.0))
-        assertEquals(HEAT_HIGH, c(250.0))
+        assertEquals(HEAT_HIGH, c(140.0))
         assertEquals(HEAT_HIGH, c(400.0))
     }
 
@@ -38,49 +33,43 @@ class BgHeatmapTest {
                 (a.blue - b.blue) * (a.blue - b.blue)
 
         var prev = Float.MAX_VALUE
-        for (bg in 69 downTo 54) {
+        for (bg in 104 downTo 70) {
             val d = dist(c(bg.toDouble()), HEAT_LOW)
             assertTrue("$bg is no nearer blue than the value above it", d <= prev)
             prev = d
         }
-        assertNotEquals(HEAT_IN, c(69.0))
 
         prev = Float.MAX_VALUE
-        for (bg in 181..250) {
+        for (bg in 106..140) {
             val d = dist(c(bg.toDouble()), HEAT_HIGH)
             assertTrue("$bg is no nearer red than the value below it", d <= prev)
             prev = d
         }
-        assertNotEquals(HEAT_IN, c(181.0))
     }
 
-    @Test fun theRampFollowsTheUsersTargetRatherThanFixedEdges() {
-        assertNotEquals(HEAT_IN, c(190.0))
-        assertEquals(HEAT_IN, heatColor(190.0, TargetRange(70, 200), cuts))
+    @Test fun theScaleIsFixedAndIndependentOfTheTargetRange() {
+        // 180 is in range for the default target and still reads as high here, by design.
+        assertEquals(HEAT_HIGH, c(180.0))
+        assertNotEquals(HEAT_IN, c(125.0))
     }
 
-    @Test fun anUnboundedTargetStillYieldsAColour() {
-        // Target edges are unbounded and may swallow the cuts; each arm keeps a positive span,
-        // the same clamp the Rust applies.
-        val wide = TargetRange(40, 400)
-        for (bg in listOf(0.0, 39.0, 40.0, 200.0, 400.0, 401.0, 600.0)) {
-            val col = heatColor(bg, wide, cuts)
+    @Test fun everyValueYieldsAFiniteColour() {
+        for (bg in listOf(0.0, 69.0, 70.0, 105.0, 140.0, 141.0, 600.0)) {
+            val col = c(bg)
             assertTrue("$bg gave a non-finite red channel", col.red.isFinite())
             assertTrue("$bg gave a non-finite green channel", col.green.isFinite())
             assertTrue("$bg gave a non-finite blue channel", col.blue.isFinite())
         }
-        assertEquals(HEAT_IN, heatColor(45.0, wide, cuts))
-        assertEquals(HEAT_IN, heatColor(390.0, wide, cuts))
     }
 
     @Test fun theChipSelectsWhichSummaryColoursTheCell() {
-        // {100, 102, 400}: mean 200.67 is above the 180 edge, median 102 well inside.
-        val mean = (100.0 + 102.0 + 400.0) / 3.0
-        val cell = HeatCell(dow = 0, hour = 8, n = 3, meanBg = mean, medianBg = 102.0)
-        assertEquals(102.0, cell.value(HeatStat.Median), 0.0)
+        // {100, 105, 400}: mean 201.67 is above the 140 ceiling, median 105 exactly on green.
+        val mean = (100.0 + 105.0 + 400.0) / 3.0
+        val cell = HeatCell(dow = 0, hour = 8, n = 3, meanBg = mean, medianBg = 105.0)
+        assertEquals(105.0, cell.value(HeatStat.Median), 0.0)
         assertEquals(mean, cell.value(HeatStat.Mean), 0.0)
-        assertEquals(HEAT_IN, heatColor(cell.value(HeatStat.Median), target, cuts))
-        assertNotEquals(HEAT_IN, heatColor(cell.value(HeatStat.Mean), target, cuts))
+        assertEquals(HEAT_IN, c(cell.value(HeatStat.Median)))
+        assertEquals(HEAT_HIGH, c(cell.value(HeatStat.Mean)))
     }
 
     @Test fun theThreeAnchorsAreDistinct() {
