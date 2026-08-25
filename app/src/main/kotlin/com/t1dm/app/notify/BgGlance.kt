@@ -18,7 +18,10 @@ data class BgGlance(
     val trendTenths: Int?,
     val readingAgeMs: Long,
     val band: AlertBand?,
-    val trend: GlanceTrend,
+    /** Measured rate only; null where the source reports no rate. */
+    val trend: GlanceTrend?,
+    /** The selected forecast's own slope; drives the watch's `fc_trend` and nothing drawn as an arrow. */
+    val fcTrend: GlanceTrend,
     /** §3.6-eligible — OK status, fresh anchor — and not in warmup. */
     val forecastEligible: Boolean,
     val forecastStatus: ForecastStatus?,
@@ -97,7 +100,8 @@ object BgGlanceComputer {
         if (latest == null) {
             return BgGlance(
                 bgMgdl = null, trendTenths = null, readingAgeMs = 0L, band = null,
-                trend = GlanceTrend.FLAT, forecastEligible = false, forecastStatus = null,
+                trend = null, fcTrend = GlanceTrend.FLAT, forecastEligible = false,
+                forecastStatus = null,
                 fcEndMgdl = null, horizonSteps = 0, warmup = warmup, signalLoss = false,
                 stale = false, forecastUnavailable = true, predictedLowCrossing = false,
                 predictedHighCrossing = false, alarmActive = false, approaching = null,
@@ -124,7 +128,7 @@ object BgGlanceComputer {
         val (approaching, urgent) =
             if (eligible) findCrossings(sel!!, thresholds) else null to null
 
-        val trend = classifyTrend(latest.trendTenthsPerMin, bg, fcEnd)
+        val trend = measuredTrend(latest.trendTenthsPerMin)
 
         return BgGlance(
             bgMgdl = bg,
@@ -132,6 +136,7 @@ object BgGlanceComputer {
             readingAgeMs = ageMs,
             band = band,
             trend = trend,
+            fcTrend = forecastTrend(bg, fcEnd),
             forecastEligible = eligible && !warmup,
             forecastStatus = sel?.status,
             fcEndMgdl = fcEnd,
@@ -199,17 +204,18 @@ object BgGlanceComputer {
         return approaching to urgent
     }
 
-    fun classifyTrend(trendTenths: Int?, bg: Int?, fcEnd: Int?): GlanceTrend {
-        val rate = trendTenths?.let { it / 10.0 } ?: run {
-            if (bg != null && fcEnd != null) (fcEnd - bg) / 24.0 else 0.0
-        }
-        return when {
-            rate > 2.0 -> GlanceTrend.RISING_FAST
-            rate > 0.5 -> GlanceTrend.RISING
-            rate < -2.0 -> GlanceTrend.FALLING_FAST
-            rate < -0.5 -> GlanceTrend.FALLING
-            else -> GlanceTrend.FLAT
-        }
+    /** Null, never FLAT: a forecast's slope is not a measurement and must not be drawn as one. */
+    fun measuredTrend(trendTenths: Int?): GlanceTrend? = trendTenths?.let { classify(it / 10.0) }
+
+    fun forecastTrend(bg: Int?, fcEnd: Int?): GlanceTrend =
+        if (bg == null || fcEnd == null) GlanceTrend.FLAT else classify((fcEnd - bg) / 24.0)
+
+    private fun classify(rate: Double): GlanceTrend = when {
+        rate > 2.0 -> GlanceTrend.RISING_FAST
+        rate > 0.5 -> GlanceTrend.RISING
+        rate < -2.0 -> GlanceTrend.FALLING_FAST
+        rate < -0.5 -> GlanceTrend.FALLING
+        else -> GlanceTrend.FLAT
     }
 
     private fun summarize(

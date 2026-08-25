@@ -47,8 +47,8 @@ class LiveNotificationPresenter(
     private fun titleLine(glance: BgGlance, unit: UnitSpace): String {
         if (!glance.hasReading) return "No reading yet"
         val v = BgFormat.value(glance.bgMgdl, unit)
-        val arrow = BgFormat.arrow(glance.trend)
-        return "${statusToken(glance)} · $v $arrow ${BgFormat.unitLabel(unit)}"
+        val arrow = BgFormat.arrow(glance.trend).let { if (it.isEmpty()) "" else "$it " }
+        return "${statusToken(glance)} · $v $arrow${BgFormat.unitLabel(unit)}"
     }
 
     /** Fail-closed: warmup or no eligible forecast reads VOID, never STABLE. Same derivation as

@@ -251,10 +251,13 @@ private fun BgRow(snap: WidgetSnapshot, p: T1dmPalette, numberSp: Int, arrowSp: 
             BgFormat.value(g.bgMgdl, snap.unit),
             style = TextStyle(fontSize = numberSp.sp, fontWeight = FontWeight.Bold, color = ColorProvider(bandColor(g.band, p))),
         )
-        Text(
-            " ${BgFormat.arrow(g.trend)}",
-            style = TextStyle(fontSize = arrowSp.sp, color = ColorProvider(if (isFresh(snap)) p.primary else p.ink)),
-        )
+        val arrow = BgFormat.arrow(g.trend)
+        if (arrow.isNotEmpty()) {
+            Text(
+                " $arrow",
+                style = TextStyle(fontSize = arrowSp.sp, color = ColorProvider(if (isFresh(snap)) p.primary else p.ink)),
+            )
+        }
     }
 }
 

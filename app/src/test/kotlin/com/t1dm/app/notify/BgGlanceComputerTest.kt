@@ -23,11 +23,11 @@ class BgGlanceComputerTest {
     private val now = 1_700_000_000_000L
     private val thresholds = AlertThresholds(urgentLowMgdl = 55, lowMgdl = 70, highMgdl = 180, urgentHighMgdl = 250)
 
-    private fun reading(bg: Int?, ageMs: Long = 0L) = CgmReading(
+    private fun reading(bg: Int?, ageMs: Long = 0L, trend: Int? = -18) = CgmReading(
         sourceId = CgmSourceId("aidexx:TEST"),
         tsMs = now - ageMs,
         bgMgdl = bg,
-        trendTenthsPerMin = -18,
+        trendTenthsPerMin = trend,
         minFromStart = 100,
         quality = 100,
         provenance = ReadingProvenance.MEASURED,
@@ -65,6 +65,33 @@ class BgGlanceComputerTest {
         assertEquals(PredictiveCrossing.Kind.HYPO, u.kind)
         assertEquals(55, u.thresholdMgdl)
         assertEquals(35, u.etaMin) // first <55 at idx 6 -> (6+1)*5
+    }
+
+    @Test fun `a source reporting no rate has no arrow, while the forecast keeps its own trend`() {
+        val state = InferenceState(predictions = listOf(prediction(falling)))
+        val g = BgGlanceComputer.compute(GlanceReadings.create(listOf(reading(123, trend = null))), state, thresholds, lossMin = 20, staleMin = 15, nowMs = now)
+
+        assertNull(g.trend)
+        assertEquals("", BgFormat.arrow(g.trend))
+        assertEquals(GlanceTrend.FALLING_FAST, g.fcTrend)
+    }
+
+    @Test fun `a measured rate owns the arrow and the forecast never overrides it`() {
+        val state = InferenceState(predictions = listOf(prediction(listOf(200.0, 220.0, 240.0, 260.0))))
+        val g = BgGlanceComputer.compute(GlanceReadings.create(listOf(reading(123, trend = -18))), state, thresholds, lossMin = 20, staleMin = 15, nowMs = now)
+
+        assertEquals(GlanceTrend.FALLING, g.trend)
+        assertEquals(GlanceTrend.RISING_FAST, g.fcTrend)
+    }
+
+    /** The bottom bar classifies for itself; it and the glance must never disagree about one reading. */
+    @Test fun `the bottom bar and the glance classify one reading identically`() {
+        val state = InferenceState(predictions = listOf(prediction(falling)))
+        for (tenths in listOf(null, -25, -18, -3, 0, 8, 25)) {
+            val r = reading(123, trend = tenths)
+            val g = BgGlanceComputer.compute(GlanceReadings.create(listOf(r)), state, thresholds, lossMin = 20, staleMin = 15, nowMs = now)
+            assertEquals("tenths=$tenths", g.trend, BgGlanceComputer.measuredTrend(r.trendTenthsPerMin))
+        }
     }
 
     @Test fun `stale forecast is ineligible - no predictive fields`() {

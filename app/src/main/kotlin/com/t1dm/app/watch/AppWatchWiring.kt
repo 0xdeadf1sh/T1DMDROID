@@ -67,7 +67,7 @@ class AppWatchGlanceSource(
             forecastStatus = g.forecastStatus,
             fcEndMgdl = g.fcEndMgdl,
             fcHorizonSteps = g.horizonSteps,
-            fcTrend = g.trend.toWatchTrend(),
+            fcTrend = g.fcTrend.toWatchTrend(),
             summary = g.summary,
             status = WatchStatus(
                 stale = g.stale,

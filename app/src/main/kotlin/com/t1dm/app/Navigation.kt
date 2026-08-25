@@ -653,8 +653,9 @@ private fun GlycemicStatusBadge(status: GlyStatus) {
 }
 
 /** Past [STALE_MIN] the arrow is dropped and the value reddens: a missing reading is stale by the
- *  same argument, since `classifyTrend(null, …)` is FLAT. Figures come from [BgFormat], not the
- *  dashboard's native `f` — this is chrome, drawn where the graph's transform is not in scope. */
+ *  same argument, and a source reporting no rate is drawn without an arrow. Figures come from
+ *  [BgFormat], not the dashboard's native `f` — this is chrome, drawn where the graph's transform
+ *  is not in scope. */
 @Composable
 private fun T1dmBottomBar(
     navController: NavHostController,
@@ -739,7 +740,7 @@ private fun T1dmBottomBar(
                 if (!stale) {
                     Text(
                         text = BgFormat.arrow(
-                            BgGlanceComputer.classifyTrend(shown?.trendTenthsPerMin, shown?.bgMgdl, null),
+                            BgGlanceComputer.measuredTrend(shown?.trendTenthsPerMin),
                         ),
                         style = MaterialTheme.typography.headlineSmall,
                         color = if (viewingOther) cs.tertiary else Color.Unspecified,
