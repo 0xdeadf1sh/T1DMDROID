@@ -17,8 +17,10 @@ data class HeadSpec(
     val sha256: String,
     val dModel: Int,
     val hidden: Int,
-    val stepBasisDim: Int,
     val outDim: Int,
+    /** The rule taking `hidden` to the head's per-step input; a name this build does not
+     *  implement is refused at parse. */
+    val decoder: String,
     val tensors: List<HeadTensorSpec>,
 )
 
@@ -48,8 +50,6 @@ data class ModelDescriptor(
      *  channel, never a negative carbohydrate value in the carb channel. */
     val exercise: ChannelStat,
     val ropeBase: Int,
-    val medianGlobalDim: Int,
-    val stepBasisType: String,
     val quantileSpreadMin: Double,
     val negFill: Double,
     val predictionHorizonHours: Int,
@@ -65,10 +65,10 @@ data class ModelDescriptor(
      *  has never seen it. */
     val maskMaxSpans: Int,
     val maskSpanMax: Int,
-    /** Trunk width — the length of one slot's hidden state. */
+    /** Trunk width — the length of one patch's hidden state. */
     val dModel: Int,
-    /** `K` — within-patch basis columns the head emits per (slot, channel). */
-    val stepBasisDim: Int,
+    /** The architecture the checkpoint was trained under; only `risk-v5` parses. */
+    val archVersion: String,
     /** The risk transform THIS checkpoint was trained under; the sole decode authority. */
     val kovatchev: KovatchevParams,
     /** Read by nothing: no branch here or in the core, and the export emits no `conformal_delta`.

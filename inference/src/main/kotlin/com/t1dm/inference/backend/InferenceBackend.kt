@@ -24,12 +24,13 @@ class GraphTensors(
 )
 
 /** [headRaw] is the flattened `M·S·7` risk-space `head_raw`, C-contiguous over
- *  `(slot, step, level)`. [timeLogits] is the hour-of-day probe, flat `(M, nBins)`; [slotHidden] the
- *  per-slot final-normed hidden state, flat `(M, D_MODEL)`. Both null when the export omits them. */
+ *  `(slot, step, level)`. [timeLogits] is the hour-of-day probe, flat `(M, nBins)`; [hidden] the
+ *  final-normed state of every PATCH, flat `(T, D_MODEL)` — a span's spline nodes reach outside its
+ *  own slots, so the seam carries the whole window. Both null when the export omits them. */
 class GraphOutput(
     val headRaw: FloatArray,
     val timeLogits: FloatArray? = null,
-    val slotHidden: FloatArray? = null,
+    val hidden: FloatArray? = null,
 )
 
 /** Closed via [InferenceBackend.close]. */

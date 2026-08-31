@@ -121,13 +121,16 @@ per model in the `conformal_delta` table.
 ## The adapter (LoRA)
 
 The base weights are baked into the `.pte` and are never written. What the export
-gives instead is a seam: the graph emits `slot_hidden` — the trunk's final-normed
-hidden state per masked slot — and the head's own weights ship beside the artifact
-as a flat fp32 file. `crates/t1dm-core/src/head.rs` re-runs the head from those two
-and puts a low-rank adapter in front of it.
+gives instead is a seam: the graph emits `hidden` — the trunk's final-normed state
+for every patch — and the head's own weights ship beside the artifact as a flat
+fp32 file. `preproc::step_states` gathers each span's nodes out of `hidden` and
+splines them into the head's per-step input; `crates/t1dm-core/src/head.rs` re-runs
+the head over those states and puts a low-rank adapter in front of it.
 
-- **Where it attaches.** A rank-`r` bottleneck on the hidden state, and a rank-`r`
-  delta on each of the head's three `Linear`s. `B` starts at zero, so a fresh
+- **Where it attaches.** A rank-`r` bottleneck on the step state, and a rank-`r`
+  delta on each of the head's three `Linear`s. The spline is a fixed linear mix of
+  nodes and the site is linear, so this is the same function as the node-state
+  adapter `SPEC/inference.md` §3.1 describes. `B` starts at zero, so a fresh
   adapter is exactly the identity and attaching one changes no forecast until it
   has been trained.
 - **What it cannot do.** The trunk's attention and FFN blocks are frozen inside
@@ -145,8 +148,8 @@ and puts a low-rank adapter in front of it.
   not beat the frozen head learnt the patient's past, not their physiology, and the
   panel says so rather than hiding it.
 - **A head that is not the graph's own is refused.** With no adapter attached the
-  re-run head must reproduce the graph's `head_raw` from the graph's own
-  `slot_hidden`; that is checked once per model at first run. A mismatch disables
+  re-run head must reproduce the graph's `head_raw` from the graph's own `hidden`;
+  that is checked once per model at first run. A mismatch disables
   the adapter path for that model rather than forecasting differently from
   everything already stored.
 - **Attaching changes what the model is.** The adapted fan is the one the panel
@@ -156,7 +159,7 @@ and puts a low-rank adapter in front of it.
   suite reads were both fitted against the frozen forecaster, so both are dropped when
   an adapter is attached or detached.
 - **It fails closed, not open.** A model with an adapter attached whose adapter
-  cannot be applied — an unusable head, a graph with no `slot_hidden` — produces NO
+  cannot be applied — an unusable head, a graph with no `hidden` — produces NO
   forecast that cycle rather than a frozen one. Falling back silently would store and
   alarm on a forecaster the user is not looking at, and mix two of them in one model's
   history with nothing recording which produced which row.
@@ -283,7 +286,7 @@ that is the sensitivity probe's job and stays there.
 One exported model, two implemented backends: fp32 CPU via XNNPACK as the
 reference authority, and fp16 GPU via the Vulkan delegate as a measured shadow.
 Both take `(patches, attn_mask, slot_sel)` and return `(head_raw, time_logits,
-slot_hidden)`; the masked set crosses as a one-hot selection matrix, so no int64
+hidden)`; the masked set crosses as a one-hot selection matrix, so no int64
 tensor crosses the runtime boundary.
 A non-authoritative backend may render a forecast, but may not feed a dose until
 it has cleared the fp32-agreement gate. There is no NPU path — see

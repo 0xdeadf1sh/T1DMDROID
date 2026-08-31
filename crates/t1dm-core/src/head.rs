@@ -1,15 +1,17 @@
 //! The BG head, re-run on device from the exported head weights, and the low-rank adapter that
-//! personalises it. The trunk stays frozen in the `.pte`; only the adapter trains. The pinball
-//! loss is read on the ASSEMBLED fan, not on `head_raw` — the projection between is no identity.
+//! personalises it. The trunk stays frozen in the `.pte`; only the adapter trains. The head runs
+//! per 5-minute STEP, over the spline states `preproc::step_states` builds from the graph's
+//! `hidden` (INFERENCE.md §8.2).
+//!
+//! The adapter's hidden site sits on those step states rather than on the spline's nodes. The
+//! spline is a fixed linear mix of nodes and the site is linear, so the two are the same
+//! function: `W·(N + sBA·N) = W·N + sBA·(W·N)`.
 
 use std::sync::Mutex;
 
 use sha2::{Digest, Sha256};
 
-use crate::preproc::{
-    assemble_decode, global_median_basis, global_median_dim, HeadSpec, ModelDescriptor,
-    QUANTILE_LEVELS,
-};
+use crate::preproc::{assemble_decode, HeadSpec, ModelDescriptor, QUANTILE_LEVELS};
 use crate::CoreError;
 
 /// Timesteps per slot.
@@ -98,13 +100,11 @@ impl Linear {
 #[derive(uniffi::Object)]
 pub struct HeadModel {
     sha256: String,
-    step_basis: Vec<f64>, // (PATCH_SIZE, K) row-major
     l0: Linear,
     l1: Linear,
     l2: Linear,
     d_model: usize,
     hidden: usize,
-    k: usize,
     lora: Mutex<Option<Lora>>,
 }
 
@@ -177,20 +177,13 @@ impl HeadModel {
         };
         let d = spec.d_model.max(0) as usize;
         let h = spec.hidden.max(0) as usize;
-        let k = spec.step_basis_dim.max(0) as usize;
         let out = spec.out_dim.max(0) as usize;
-        if d == 0 || h == 0 || k == 0 || out != k * N_QUANTILES {
+        if d == 0 || h == 0 || out != N_QUANTILES {
             return Err(CoreError::Decode {
                 reason: format!(
-                    "head geometry invalid: d_model={d} hidden={h} k={k} out_dim={out} \
-                     (out_dim must be k·{N_QUANTILES})"
+                    "head geometry invalid: d_model={d} hidden={h} out_dim={out} \
+                     (out_dim must be {N_QUANTILES}, one row per step)"
                 ),
-            });
-        }
-        let sb = take("step_basis")?;
-        if sb.len() != PATCH_SIZE * k {
-            return Err(CoreError::Decode {
-                reason: format!("step_basis has {} values, want {}", sb.len(), PATCH_SIZE * k),
             });
         }
         let mk = |wn: &str, bn: &str, n_in: usize, n_out: usize| -> Result<Linear, CoreError> {
@@ -210,13 +203,11 @@ impl HeadModel {
         };
         Ok(std::sync::Arc::new(HeadModel {
             sha256: digest,
-            step_basis: sb,
             l0: mk("l0.weight", "l0.bias", d, h)?,
             l1: mk("l1.weight", "l1.bias", h, h)?,
             l2: mk("l2.weight", "l2.bias", h, out)?,
             d_model: d,
             hidden: h,
-            k,
             lora: Mutex::new(None),
         }))
     }
@@ -232,7 +223,7 @@ impl HeadModel {
                         reason: "adapter was fitted on a different head than this model's".into(),
                     });
                 }
-                Some(Lora::from_weights(&w, self.d_model, self.hidden, self.k * N_QUANTILES)?)
+                Some(Lora::from_weights(&w, self.d_model, self.hidden, N_QUANTILES)?)
             }
         };
         *self.lora.lock().expect("lora mutex") = parsed;
@@ -251,27 +242,29 @@ impl HeadModel {
         self.d_model as i32
     }
 
-    /// `head_raw` for `n_slots` hidden states, flat `n_slots·PATCH_SIZE·N_QUANTILES` in the
-    /// layout `assemble_decode` consumes. With no adapter this reproduces the graph's own.
-    pub fn forward(&self, hidden: Vec<f64>, n_slots: i32) -> Result<Vec<f64>, CoreError> {
+    /// `head_raw` for `n_slots` slots of step states — `n_slots·PATCH_SIZE·d_model` in, flat
+    /// `n_slots·PATCH_SIZE·N_QUANTILES` out, the layout `assemble_decode` consumes. With no
+    /// adapter this reproduces the graph's own.
+    pub fn forward(&self, step_states: Vec<f64>, n_slots: i32) -> Result<Vec<f64>, CoreError> {
         let n = n_slots.max(0) as usize;
-        if n == 0 || hidden.len() != n * self.d_model {
+        let n_steps = n * PATCH_SIZE;
+        if n == 0 || step_states.len() != n_steps * self.d_model {
             return Err(CoreError::Internal {
                 reason: format!(
-                    "hidden has {} values, want n_slots {n} × d_model {}",
-                    hidden.len(),
+                    "step_states has {} values, want n_slots {n} × {PATCH_SIZE} × d_model {}",
+                    step_states.len(),
                     self.d_model
                 ),
             });
         }
         let guard = self.lora.lock().expect("lora mutex");
         let lora = guard.as_ref();
-        let mut out = vec![0.0f64; n * PATCH_SIZE * N_QUANTILES];
-        let mut act = Activations::new(self.hidden, self.k * N_QUANTILES, self.d_model);
-        for s in 0..n {
-            let h = &hidden[s * self.d_model..(s + 1) * self.d_model];
-            self.forward_slot(h, lora, &mut act);
-            self.expand_basis(&act.out, &mut out[s * PATCH_SIZE * N_QUANTILES..]);
+        let mut out = vec![0.0f64; n_steps * N_QUANTILES];
+        let mut act = Activations::new(self.hidden, N_QUANTILES, self.d_model);
+        for i in 0..n_steps {
+            let h = &step_states[i * self.d_model..(i + 1) * self.d_model];
+            self.forward_step(h, lora, &mut act);
+            out[i * N_QUANTILES..(i + 1) * N_QUANTILES].copy_from_slice(&act.out);
         }
         Ok(out)
     }
@@ -309,7 +302,7 @@ impl Activations {
 }
 
 impl HeadModel {
-    fn forward_slot(&self, h: &[f64], lora: Option<&Lora>, act: &mut Activations) {
+    fn forward_step(&self, h: &[f64], lora: Option<&Lora>, act: &mut Activations) {
         act.h_in.copy_from_slice(h);
         if let Some(l) = lora {
             if let Some(a) = &l.hidden_site {
@@ -342,35 +335,6 @@ impl HeadModel {
         }
     }
 
-    /// `out` is row-major `(K, N_QUANTILES)`.
-    fn expand_basis(&self, out: &[f64], dst: &mut [f64]) {
-        for s in 0..PATCH_SIZE {
-            for c in 0..N_QUANTILES {
-                let mut acc = 0.0;
-                for k in 0..self.k {
-                    acc += self.step_basis[s * self.k + k] * out[k * N_QUANTILES + c];
-                }
-                dst[s * N_QUANTILES + c] = acc;
-            }
-        }
-    }
-
-    fn expand_basis_backward(&self, d_head: &[f64], d_out: &mut [f64]) {
-        for v in d_out.iter_mut() {
-            *v = 0.0;
-        }
-        for s in 0..PATCH_SIZE {
-            for c in 0..N_QUANTILES {
-                let g = d_head[s * N_QUANTILES + c];
-                if g == 0.0 {
-                    continue;
-                }
-                for k in 0..self.k {
-                    d_out[k * N_QUANTILES + c] += self.step_basis[s * self.k + k] * g;
-                }
-            }
-        }
-    }
 }
 
 /// The scale is `alpha/rank`, so raising the rank does not raise the step size with it.
@@ -778,16 +742,16 @@ pub fn lora_deserialize(bytes: Vec<u8>) -> Result<LoraWeights, CoreError> {
     })
 }
 
-/// `hidden` is `n_slots · d_model`, `anchors` is `n_slots` mg/dL, `target_bg` is
-/// `n_slots · PATCH_SIZE` mg/dL. The slots must be ONE contiguous span — the median projection
-/// runs per span.
+/// `hidden` is the window's STEP STATES, `n_slots · PATCH_SIZE · d_model`, as
+/// `preproc::step_states` returns them; `anchors` is `n_slots` mg/dL and `target_bg` is
+/// `n_slots · PATCH_SIZE` mg/dL. The slots must be ONE contiguous span.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct LoraSample {
     pub hidden: Vec<f64>,
     pub anchors: Vec<f64>,
     pub target_bg: Vec<f64>,
     pub n_slots: i32,
-    /// The SAME window's hidden state with a probe dose injected into the masked span's dose
+    /// The SAME window's step states with a probe dose injected into the masked span's dose
     /// channel. Empty when the window was not paired.
     pub hidden_pert: Vec<f64>,
     /// Trailing-forecast geometry: the only one the guard measures on.
@@ -879,8 +843,7 @@ pub trait LoraProgress: Send + Sync {
 }
 
 /// The loss is the pinball loss over the seven levels, in RISK space, read on the assembled
-/// fan: optimising `head_raw` would optimise a quantity the projection then discards.
-/// Attaches nothing.
+/// fan — the space and the shape the forecast is judged in. Attaches nothing.
 #[uniffi::export]
 pub fn lora_train(
     head: &HeadModel,
@@ -907,11 +870,12 @@ pub fn lora_train(
         });
     }
     let d = head.d_model;
-    let out_dim = head.k * N_QUANTILES;
+    let out_dim = N_QUANTILES;
     for (i, s) in samples.iter().enumerate() {
         let n = s.n_slots.max(0) as usize;
+        let want = n * PATCH_SIZE * d;
         if n == 0
-            || s.hidden.len() != n * d
+            || s.hidden.len() != want
             || s.anchors.len() != n
             || s.target_bg.len() != n * PATCH_SIZE
         {
@@ -920,12 +884,11 @@ pub fn lora_train(
             });
         }
         // The counterfactual is the whole window or absent, never a shorter branch.
-        if !s.hidden_pert.is_empty() && s.hidden_pert.len() != n * d {
+        if !s.hidden_pert.is_empty() && s.hidden_pert.len() != want {
             return Err(CoreError::Internal {
                 reason: format!(
-                    "sample {i}'s counterfactual is {} long, needs {} for {n} slots",
+                    "sample {i}'s counterfactual is {} long, needs {want} for {n} slots",
                     s.hidden_pert.len(),
-                    n * d,
                 ),
             });
         }
@@ -1103,36 +1066,12 @@ pub struct LoraTrainResult {
     pub report: LoraTrainReport,
 }
 
-/// The per-span median projection of [`assemble_decode`] and nothing else, in RISK space.
-fn span_median_risk(
-    desc: &ModelDescriptor,
-    head_raw: &[f64],
-    anchors: &[f64],
-    n: usize,
-) -> Result<Vec<f64>, CoreError> {
-    let n_steps = n * PATCH_SIZE;
-    let p = desc.prediction_patches()?;
-    let g = global_median_dim(desc, n, p);
-    let basis = global_median_basis(n_steps, g);
-    // One anchor for the whole span, as the production assembly reads it.
-    let anchor = desc.kovatchev.f(*anchors.first().unwrap_or(&0.0));
-    let mut z = vec![0.0f64; g];
-    for (j, zj) in z.iter_mut().enumerate() {
-        let mut acc = 0.0;
-        for i in 0..n_steps {
-            acc += head_raw[i * N_QUANTILES] * basis[i * g + j];
-        }
-        *zj = acc;
-    }
-    let mut m = vec![0.0f64; n_steps];
-    for (i, mi) in m.iter_mut().enumerate() {
-        let mut acc = 0.0;
-        for (j, zj) in z.iter().enumerate() {
-            acc += zj * basis[i * g + j];
-        }
-        *mi = anchor + acc;
-    }
-    Ok(m)
+/// The median line of [`assemble_decode`] and nothing else, in RISK space: each step's own
+/// anchor plus the head's delta.
+fn span_median_risk(desc: &ModelDescriptor, head_raw: &[f64], anchors: &[f64], n: usize) -> Vec<f64> {
+    (0..n * PATCH_SIZE)
+        .map(|i| desc.kovatchev.f(anchors[i / PATCH_SIZE]) + head_raw[i * N_QUANTILES])
+        .collect()
 }
 
 /// Measures PRESERVATION, not correctness: a wrong-signed frozen model passes if the adapter
@@ -1230,16 +1169,16 @@ pub fn lora_guard(
     weights: &LoraWeights,
     opts: LoraGuardOpts,
 ) -> Result<LoraGuardReport, CoreError> {
-    let out_dim = head.k * N_QUANTILES;
-    let lora = Lora::from_weights(weights, head.d_model, head.hidden, out_dim)?;
+    let lora = Lora::from_weights(weights, head.d_model, head.hidden, N_QUANTILES)?;
     // Ragged samples are refused, not indexed: `branch_median_risk` slices without checking, and
     // the panic would cross the FFI boundary.
-    let want = |s: &LoraSample| (s.n_slots.max(0) as usize) * head.d_model;
+    let want = |s: &LoraSample| (s.n_slots.max(0) as usize) * PATCH_SIZE * head.d_model;
     for s in &samples {
         if s.hidden.len() < want(s) || (!s.hidden_pert.is_empty() && s.hidden_pert.len() < want(s)) {
             return Err(CoreError::Internal {
                 reason: format!(
-                    "guard sample has {} hidden and {} perturbed values for {} slots of d_model {}",
+                    "guard sample has {} step-state and {} perturbed values for {} slots of \
+                     d_model {}",
                     s.hidden.len(),
                     s.hidden_pert.len(),
                     s.n_slots,
@@ -1290,16 +1229,15 @@ fn branch_median_risk(
     perturbed: bool,
 ) -> Result<Vec<f64>, CoreError> {
     let n = sample.n_slots.max(0) as usize;
-    let out_dim = head.k * N_QUANTILES;
-    let hidden = if perturbed { &sample.hidden_pert } else { &sample.hidden };
+    let states = if perturbed { &sample.hidden_pert } else { &sample.hidden };
     let mut head_raw = vec![0.0f64; n * PATCH_SIZE * N_QUANTILES];
-    let mut a = Activations::new(head.hidden, out_dim, head.d_model);
-    for slot in 0..n {
-        let h = &hidden[slot * head.d_model..(slot + 1) * head.d_model];
-        head.forward_slot(h, lora, &mut a);
-        head.expand_basis(&a.out, &mut head_raw[slot * PATCH_SIZE * N_QUANTILES..]);
+    let mut a = Activations::new(head.hidden, N_QUANTILES, head.d_model);
+    for i in 0..n * PATCH_SIZE {
+        let h = &states[i * head.d_model..(i + 1) * head.d_model];
+        head.forward_step(h, lora, &mut a);
+        head_raw[i * N_QUANTILES..(i + 1) * N_QUANTILES].copy_from_slice(&a.out);
     }
-    span_median_risk(desc, &head_raw, &sample.anchors, n)
+    Ok(span_median_risk(desc, &head_raw, &sample.anchors, n))
 }
 
 fn mean_loss(
@@ -1311,10 +1249,9 @@ fn mean_loss(
     if samples.is_empty() {
         return Ok(f64::NAN);
     }
-    let out_dim = head.k * N_QUANTILES;
     let lora = match w {
         None => None,
-        Some(w) => Some(Lora::from_weights(w, head.d_model, head.hidden, out_dim)?),
+        Some(w) => Some(Lora::from_weights(w, head.d_model, head.hidden, N_QUANTILES)?),
     };
     let mut acc = 0.0;
     for s in samples {
@@ -1355,15 +1292,14 @@ fn sample_loss_and_grad(
 ) -> Result<f64, CoreError> {
     let n = sample.n_slots.max(0) as usize;
     let n_steps = n * PATCH_SIZE;
-    let out_dim = head.k * N_QUANTILES;
 
-    let mut acts: Vec<Activations> = Vec::with_capacity(n);
+    let mut acts: Vec<Activations> = Vec::with_capacity(n_steps);
     let mut head_raw = vec![0.0f64; n_steps * N_QUANTILES];
-    for slot in 0..n {
-        let mut a = Activations::new(head.hidden, out_dim, head.d_model);
-        let h = &sample.hidden[slot * head.d_model..(slot + 1) * head.d_model];
-        head.forward_slot(h, lora, &mut a);
-        head.expand_basis(&a.out, &mut head_raw[slot * PATCH_SIZE * N_QUANTILES..]);
+    for i in 0..n_steps {
+        let mut a = Activations::new(head.hidden, N_QUANTILES, head.d_model);
+        let h = &sample.hidden[i * head.d_model..(i + 1) * head.d_model];
+        head.forward_step(h, lora, &mut a);
+        head_raw[i * N_QUANTILES..(i + 1) * N_QUANTILES].copy_from_slice(&a.out);
         acts.push(a);
     }
 
@@ -1386,16 +1322,16 @@ fn sample_loss_and_grad(
     let mut pert: Option<(Vec<Activations>, Vec<f64>, Vec<f64>)> = None;
     let mut err = vec![0.0f64; n_steps];
     if let Some(ctx) = paired {
-        let mut acts_p: Vec<Activations> = Vec::with_capacity(n);
+        let mut acts_p: Vec<Activations> = Vec::with_capacity(n_steps);
         let mut raw_p = vec![0.0f64; n_steps * N_QUANTILES];
-        for slot in 0..n {
-            let mut a = Activations::new(head.hidden, out_dim, head.d_model);
-            let h = &sample.hidden_pert[slot * head.d_model..(slot + 1) * head.d_model];
-            head.forward_slot(h, lora, &mut a);
-            head.expand_basis(&a.out, &mut raw_p[slot * PATCH_SIZE * N_QUANTILES..]);
+        for i in 0..n_steps {
+            let mut a = Activations::new(head.hidden, N_QUANTILES, head.d_model);
+            let h = &sample.hidden_pert[i * head.d_model..(i + 1) * head.d_model];
+            head.forward_step(h, lora, &mut a);
+            raw_p[i * N_QUANTILES..(i + 1) * N_QUANTILES].copy_from_slice(&a.out);
             acts_p.push(a);
         }
-        let m_pert = span_median_risk(desc, &raw_p, &sample.anchors, n)?;
+        let m_pert = span_median_risk(desc, &raw_p, &sample.anchors, n);
         let mut acc = 0.0;
         for i in 0..n_steps {
             let m = fan.q_tau_risk[i * N_QUANTILES + N_SPREADS];
@@ -1434,7 +1370,7 @@ fn sample_loss_and_grad(
     }
 
     // The median moves all seven levels; each spread the levels at or beyond it on its side.
-    let mut d_median = vec![0.0f64; n_steps];
+    // The median is the anchor plus column 0, so dL/dm lands on column 0 unchanged.
     let mut d_head_raw = vec![0.0f64; n_steps * N_QUANTILES];
     // The baseline median takes `+c·e[i]` and the perturbed `−c·e[i]`: `e` is their difference
     // minus a constant.
@@ -1445,7 +1381,7 @@ fn sample_loss_and_grad(
         for k in 0..N_QUANTILES {
             dm += dq[row + k];
         }
-        d_median[i] = dm + c_distill * err[i];
+        d_head_raw[row] = dm + c_distill * err[i];
         // up_j (levels 4..6) = m + Σ_{t<=j} d_up_t ; dn_j (levels 2−j) = m − Σ_{t<=j} d_dn_t
         for t in 0..N_SPREADS {
             let mut d_up = 0.0;
@@ -1459,26 +1395,6 @@ fn sample_loss_and_grad(
             d_head_raw[row + 1 + t] = d_up * sigmoid(raw_up);
             d_head_raw[row + 1 + N_SPREADS + t] = d_dn * sigmoid(raw_dn);
         }
-    }
-
-    // `B Bᵀ` is symmetric, so the pullback is the same projection applied to dL/dm.
-    let p = desc.prediction_patches()?;
-    let g = global_median_dim(desc, n, p);
-    let basis = global_median_basis(n_steps, g);
-    let mut z = vec![0.0f64; g];
-    for (j, zj) in z.iter_mut().enumerate() {
-        let mut acc = 0.0;
-        for (i, dm) in d_median.iter().enumerate() {
-            acc += dm * basis[i * g + j];
-        }
-        *zj = acc;
-    }
-    for i in 0..n_steps {
-        let mut acc = 0.0;
-        for (j, zj) in z.iter().enumerate() {
-            acc += zj * basis[i * g + j];
-        }
-        d_head_raw[i * N_QUANTILES] = acc;
     }
 
     let mut off_hidden = 0usize;
@@ -1518,25 +1434,9 @@ fn sample_loss_and_grad(
 
     if let (Some(ctx), Some((acts_p, _, _))) = (paired, pert.as_ref()) {
         // The perturbed branch's spreads take no gradient: the term never reads one.
-        let mut d_median_p = vec![0.0f64; n_steps];
-        for i in 0..n_steps {
-            d_median_p[i] = -2.0 * ctx.scale / n_steps as f64 * err[i];
-        }
         let mut d_raw_p = vec![0.0f64; n_steps * N_QUANTILES];
-        let mut zp = vec![0.0f64; g];
-        for (j, zj) in zp.iter_mut().enumerate() {
-            let mut acc = 0.0;
-            for (i, dm) in d_median_p.iter().enumerate() {
-                acc += dm * basis[i * g + j];
-            }
-            *zj = acc;
-        }
         for i in 0..n_steps {
-            let mut acc = 0.0;
-            for (j, zj) in zp.iter().enumerate() {
-                acc += zj * basis[i * g + j];
-            }
-            d_raw_p[i * N_QUANTILES] = acc;
+            d_raw_p[i * N_QUANTILES] = -2.0 * ctx.scale / n_steps as f64 * err[i];
         }
         backward_head_into_sites(
             head, lora, acts_p, &sample.hidden_pert, &d_raw_p,
@@ -1558,19 +1458,14 @@ fn backward_head_into_sites(
     grad: &mut [f64],
 ) {
     let (off_hidden, off_l0, off_l1, off_l2) = offs;
-    let out_dim = head.k * N_QUANTILES;
-    let mut d_out = vec![0.0f64; out_dim];
-    for (slot, a) in acts.iter().enumerate() {
-        head.expand_basis_backward(
-            &d_head_raw[slot * PATCH_SIZE * N_QUANTILES..(slot + 1) * PATCH_SIZE * N_QUANTILES],
-            &mut d_out,
-        );
+    for (i, a) in acts.iter().enumerate() {
+        let d_out = &d_head_raw[i * N_QUANTILES..(i + 1) * N_QUANTILES];
 
         let mut d_a2 = vec![0.0f64; head.hidden];
-        head.l2.backward_input(&d_out, &mut d_a2);
+        head.l2.backward_input(d_out, &mut d_a2);
         if let Some(site) = &lora.l2_site {
             let (da, db) = grad[off_l2..off_l2 + site.n_params()].split_at_mut(site.r * site.n_in);
-            site.backward(&a.a2, &a.u2, &d_out, lora.scale, da, db, &mut d_a2);
+            site.backward(&a.a2, &a.u2, d_out, lora.scale, da, db, &mut d_a2);
         }
 
         let mut d_z2 = vec![0.0f64; head.hidden];
@@ -1598,7 +1493,7 @@ fn backward_head_into_sites(
         }
 
         if let Some(site) = &lora.hidden_site {
-            let h = &hidden[slot * head.d_model..(slot + 1) * head.d_model];
+            let h = &hidden[i * head.d_model..(i + 1) * head.d_model];
             let mut sink = vec![0.0f64; head.d_model];
             let (da, db) =
                 grad[off_hidden..off_hidden + site.n_params()].split_at_mut(site.r * site.n_in);
@@ -1620,11 +1515,10 @@ mod tests {
     }
 
     /// A small head in the shipped file format; small so the gradient checks stay quick.
-    fn synthetic_head(d_model: usize, hidden: usize, k: usize) -> (std::sync::Arc<HeadModel>, HeadSpec) {
-        let out_dim = k * N_QUANTILES;
+    fn synthetic_head(d_model: usize, hidden: usize) -> (std::sync::Arc<HeadModel>, HeadSpec) {
+        let out_dim = N_QUANTILES;
         let mut rng = Rng::new(0xC0FFEE);
         let shapes: Vec<(&str, Vec<i32>)> = vec![
-            ("step_basis", vec![PATCH_SIZE as i32, k as i32]),
             ("l0.weight", vec![hidden as i32, d_model as i32]),
             ("l0.bias", vec![hidden as i32]),
             ("l1.weight", vec![hidden as i32, hidden as i32]),
@@ -1647,8 +1541,8 @@ mod tests {
             sha256: format!("{:x}", Sha256::digest(&bytes)),
             d_model: d_model as i32,
             hidden: hidden as i32,
-            step_basis_dim: k as i32,
             out_dim: out_dim as i32,
+            decoder: "bspline-centre-nodes".into(),
             tensors: shapes
                 .iter()
                 .map(|(n, s)| HeadTensorSpec { name: (*n).into(), shape: s.clone() })
@@ -1660,7 +1554,7 @@ mod tests {
     fn sample(d_model: usize, n_slots: usize, seed: u64) -> LoraSample {
         let mut rng = Rng::new(seed);
         LoraSample {
-            hidden: (0..n_slots * d_model).map(|_| rng.normal()).collect(),
+            hidden: (0..n_slots * PATCH_SIZE * d_model).map(|_| rng.normal()).collect(),
             anchors: vec![120.0; n_slots],
             // Well away from the anchor, so no residual sits on the pinball kink.
             target_bg: (0..n_slots * PATCH_SIZE).map(|i| 190.0 + i as f64).collect(),
@@ -1674,7 +1568,7 @@ mod tests {
     fn sample_paired(d_model: usize, n_slots: usize, seed: u64, pert_seed: u64) -> LoraSample {
         let mut rng = Rng::new(pert_seed);
         LoraSample {
-            hidden_pert: (0..n_slots * d_model).map(|_| rng.normal()).collect(),
+            hidden_pert: (0..n_slots * PATCH_SIZE * d_model).map(|_| rng.normal()).collect(),
             ..sample(d_model, n_slots, seed)
         }
     }
@@ -1692,10 +1586,10 @@ mod tests {
 
     #[test]
     fn head_file_must_match_its_descriptor() {
-        let (_, spec) = synthetic_head(8, 6, 3);
+        let (_, spec) = synthetic_head(8, 6);
         let mut bad = spec.clone();
         bad.sha256 = "0".repeat(64);
-        let bytes = vec![0u8; 4 * (PATCH_SIZE * 3 + 6 * 8 + 6 + 6 * 6 + 6 + 21 * 6 + 21)];
+        let bytes = vec![0u8; 4 * (6 * 8 + 6 + 6 * 6 + 6 + N_QUANTILES * 6 + N_QUANTILES)];
         assert!(HeadModel::parse(bytes.clone(), bad).is_err(), "digest must be checked");
         let mut short = spec.clone();
         short.tensors.pop();
@@ -1704,7 +1598,7 @@ mod tests {
 
     #[test]
     fn a_fresh_adapter_is_exactly_the_identity() {
-        let (head, spec) = synthetic_head(8, 6, 3);
+        let (head, spec) = synthetic_head(8, 6);
         let s = sample(8, 4, 7);
         let base = head.forward(s.hidden.clone(), 4).unwrap();
         let fresh = lora_new(cfg(), spec.sha256.clone(), spec.d_model, spec.hidden, spec.out_dim, 42).unwrap();
@@ -1719,7 +1613,7 @@ mod tests {
 
     #[test]
     fn a_trained_adapter_moves_the_head() {
-        let (head, spec) = synthetic_head(8, 6, 3);
+        let (head, spec) = synthetic_head(8, 6);
         let mut w = lora_new(cfg(), spec.sha256.clone(), spec.d_model, spec.hidden, spec.out_dim, 1).unwrap();
         let mut rng = Rng::new(99);
         for p in w.params.iter_mut() {
@@ -1737,7 +1631,7 @@ mod tests {
 
     #[test]
     fn adapter_round_trips_through_its_serialized_form() {
-        let (_, spec) = synthetic_head(8, 6, 3);
+        let (_, spec) = synthetic_head(8, 6);
         let mut w = lora_new(cfg(), spec.sha256.clone(), spec.d_model, spec.hidden, spec.out_dim, 5).unwrap();
         let mut rng = Rng::new(11);
         for p in w.params.iter_mut() {
@@ -1758,25 +1652,25 @@ mod tests {
 
     #[test]
     fn an_adapter_belongs_to_the_head_it_was_fitted_on() {
-        let (head, spec) = synthetic_head(8, 6, 3);
-        let foreign = lora_new(cfg(), spec.sha256.clone(), 16, 6, 21, 3).unwrap();
+        let (head, spec) = synthetic_head(8, 6);
+        let foreign = lora_new(cfg(), spec.sha256.clone(), 16, 6, 7, 3).unwrap();
         assert!(head.set_lora(Some(foreign)).is_err());
 
         // The case geometry cannot catch: the SAME shape, a DIFFERENT head.
-        let mut other = lora_new(cfg(), spec.sha256.clone(), 8, 6, 21, 9).unwrap();
+        let mut other = lora_new(cfg(), spec.sha256.clone(), 8, 6, 7, 9).unwrap();
         other.head_sha256 = "f".repeat(64);
         assert!(head.set_lora(Some(other)).is_err(), "an adapter from another head was accepted");
 
-        let mine = lora_new(cfg(), spec.sha256.clone(), 8, 6, 21, 9).unwrap();
+        let mine = lora_new(cfg(), spec.sha256.clone(), 8, 6, 7, 9).unwrap();
         assert!(head.set_lora(Some(mine.clone())).is_ok());
         assert_eq!(lora_deserialize(lora_serialize(&mine)).unwrap().head_sha256, spec.sha256);
-        assert!(lora_new(cfg(), "short".into(), 8, 6, 21, 1).is_err());
+        assert!(lora_new(cfg(), "short".into(), 8, 6, 7, 1).is_err());
     }
 
     #[test]
     fn config_guards_reject_a_pointless_or_hostile_adapter() {
-        let (_, spec) = synthetic_head(8, 6, 3);
-        let bad = |c: LoraConfig| lora_new(c, spec.sha256.clone(), 8, 6, 21, 1).is_err();
+        let (_, spec) = synthetic_head(8, 6);
+        let bad = |c: LoraConfig| lora_new(c, spec.sha256.clone(), 8, 6, 7, 1).is_err();
         assert!(bad(LoraConfig { rank: 0, ..cfg() }));
         assert!(bad(LoraConfig { rank: 1000, ..cfg() }));
         assert!(bad(LoraConfig { alpha: 0.0, ..cfg() }));
@@ -1794,14 +1688,14 @@ mod tests {
     #[test]
     fn gradient_matches_finite_differences() {
         let d = desc();
-        let (head, spec) = synthetic_head(8, 6, 3);
+        let (head, spec) = synthetic_head(8, 6);
         let s = sample(8, 4, 3);
         let mut w = lora_new(cfg(), spec.sha256.clone(), spec.d_model, spec.hidden, spec.out_dim, 17).unwrap();
         let mut rng = Rng::new(23);
         for p in w.params.iter_mut() {
             *p = rng.normal() * 0.2; // away from the B = 0 initialisation
         }
-        let lora = Lora::from_weights(&w, 8, 6, 21).unwrap();
+        let lora = Lora::from_weights(&w, 8, 6, 7).unwrap();
         let mut analytic = vec![0.0f64; w.params.len()];
         sample_loss_and_grad(&head, &d, &s, Some(&lora), Some(&mut analytic), None, None).unwrap();
 
@@ -1812,8 +1706,8 @@ mod tests {
             plus.params[p] += h;
             let mut minus = w.clone();
             minus.params[p] -= h;
-            let lp = Lora::from_weights(&plus, 8, 6, 21).unwrap();
-            let lm = Lora::from_weights(&minus, 8, 6, 21).unwrap();
+            let lp = Lora::from_weights(&plus, 8, 6, 7).unwrap();
+            let lm = Lora::from_weights(&minus, 8, 6, 7).unwrap();
             let f_plus = sample_loss_and_grad(&head, &d, &s, Some(&lp), None, None, None).unwrap();
             let f_minus = sample_loss_and_grad(&head, &d, &s, Some(&lm), None, None, None).unwrap();
             let fd = (f_plus - f_minus) / (2.0 * h);
@@ -1834,7 +1728,7 @@ mod tests {
     #[test]
     fn the_distillation_gradient_matches_finite_differences() {
         let d = desc();
-        let (head, spec) = synthetic_head(8, 6, 3);
+        let (head, spec) = synthetic_head(8, 6);
         let s = sample_paired(8, 4, 3, 77);
         let mut w = lora_new(cfg(), spec.sha256.clone(), spec.d_model, spec.hidden, spec.out_dim, 17).unwrap();
         let mut rng = Rng::new(23);
@@ -1848,7 +1742,7 @@ mod tests {
         assert!(d0.iter().any(|x| x.abs() > 1e-9), "the frozen response is zero; nothing to pin");
         let ctx = DistillCtx { d0: &d0, scale: 3.0 };
 
-        let lora = Lora::from_weights(&w, 8, 6, 21).unwrap();
+        let lora = Lora::from_weights(&w, 8, 6, 7).unwrap();
         let mut analytic = vec![0.0f64; w.params.len()];
         let with_term =
             sample_loss_and_grad(&head, &d, &s, Some(&lora), Some(&mut analytic), Some(&ctx), None)
@@ -1882,8 +1776,8 @@ mod tests {
             plus.params[p] += h;
             let mut minus = w.clone();
             minus.params[p] -= h;
-            let lp = Lora::from_weights(&plus, 8, 6, 21).unwrap();
-            let lm = Lora::from_weights(&minus, 8, 6, 21).unwrap();
+            let lp = Lora::from_weights(&plus, 8, 6, 7).unwrap();
+            let lm = Lora::from_weights(&minus, 8, 6, 7).unwrap();
             let f_plus = sample_loss_and_grad(&head, &d, &s, Some(&lp), None, Some(&ctx), None).unwrap();
             let f_minus = sample_loss_and_grad(&head, &d, &s, Some(&lm), None, Some(&ctx), None).unwrap();
             let fd = (f_plus - f_minus) / (2.0 * h);
@@ -1901,14 +1795,14 @@ mod tests {
     #[test]
     fn an_unpaired_sample_is_unchanged_by_the_distillation_path() {
         let d = desc();
-        let (head, spec) = synthetic_head(8, 6, 3);
+        let (head, spec) = synthetic_head(8, 6);
         let unpaired = sample(8, 4, 3);
         let mut w = lora_new(cfg(), spec.sha256.clone(), spec.d_model, spec.hidden, spec.out_dim, 17).unwrap();
         let mut rng = Rng::new(23);
         for p in w.params.iter_mut() {
             *p = rng.normal() * 0.2;
         }
-        let lora = Lora::from_weights(&w, 8, 6, 21).unwrap();
+        let lora = Lora::from_weights(&w, 8, 6, 7).unwrap();
 
         let mut g_off = vec![0.0f64; w.params.len()];
         let l_off = sample_loss_and_grad(&head, &d, &unpaired, Some(&lora), Some(&mut g_off), None, None).unwrap();
@@ -1992,7 +1886,7 @@ mod tests {
     #[test]
     fn a_paired_fit_reports_its_distillation_and_a_guard_verdict() {
         let d = desc();
-        let (head, _) = synthetic_head(8, 6, 3);
+        let (head, _) = synthetic_head(8, 6);
         let samples: Vec<LoraSample> =
             (0..40).map(|i| sample_paired(8, 4, 100 + i as u64, 900 + i as u64)).collect();
         let opts = LoraTrainOpts {
@@ -2016,7 +1910,7 @@ mod tests {
     #[test]
     fn a_truncated_counterfactual_is_rejected() {
         let d = desc();
-        let (head, _) = synthetic_head(8, 6, 3);
+        let (head, _) = synthetic_head(8, 6);
         let mut samples: Vec<LoraSample> = (0..16).map(|i| sample(8, 4, 100 + i as u64)).collect();
         samples[3].hidden_pert = vec![0.0; 5]; // neither empty nor n·d
         let opts = LoraTrainOpts {
@@ -2034,7 +1928,7 @@ mod tests {
     #[test]
     fn training_reduces_the_loss_and_reports_a_held_out_number() {
         let d = desc();
-        let (head, _) = synthetic_head(8, 6, 3);
+        let (head, _) = synthetic_head(8, 6);
         let samples: Vec<LoraSample> = (0..24).map(|i| sample(8, 4, 100 + i as u64)).collect();
         let opts = LoraTrainOpts {
             epochs: 12,
@@ -2077,7 +1971,7 @@ mod tests {
     #[test]
     fn a_longer_fit_never_returns_a_worse_adapter_than_a_shorter_one() {
         let d = desc();
-        let (head, _) = synthetic_head(8, 6, 3);
+        let (head, _) = synthetic_head(8, 6);
         let mk = || -> Vec<LoraSample> { (0..24).map(|i| sample(8, 4, 100 + i as u64)).collect() };
         let base = LoraTrainOpts { epochs: 4, lr: 2e-2, holdout_frac: 0.25, weight_decay: 0.0, seed: 9, distill_weight: 0.0 };
         let short = lora_train(&head, &d, mk(), cfg(), base, None).unwrap().report;
@@ -2097,7 +1991,7 @@ mod tests {
     #[test]
     fn a_fit_with_no_holdout_keeps_the_last_epoch_and_says_so() {
         let d = desc();
-        let (head, _) = synthetic_head(8, 6, 3);
+        let (head, _) = synthetic_head(8, 6);
         let samples: Vec<LoraSample> = (0..12).map(|i| sample(8, 4, i as u64)).collect();
         let opts = LoraTrainOpts { epochs: 3, lr: 1e-3, holdout_frac: 0.0, weight_decay: 0.0, seed: 2, distill_weight: 0.0 };
         let out = lora_train(&head, &d, samples, cfg(), opts, None).unwrap();
@@ -2118,7 +2012,7 @@ mod tests {
             }
         }
         let d = desc();
-        let (head, _) = synthetic_head(8, 6, 3);
+        let (head, _) = synthetic_head(8, 6);
         let samples: Vec<LoraSample> = (0..24).map(|i| sample(8, 4, i as u64)).collect();
         let opts = LoraTrainOpts { epochs: 5, lr: 1e-3, holdout_frac: 0.25, weight_decay: 0.0, seed: 3, distill_weight: 0.0 };
         let rec = std::sync::Arc::new(Rec(StdMutex::new(Vec::new())));
@@ -2129,7 +2023,7 @@ mod tests {
     #[test]
     fn training_refuses_a_history_too_short_to_fit() {
         let d = desc();
-        let (head, _) = synthetic_head(8, 6, 3);
+        let (head, _) = synthetic_head(8, 6);
         let samples: Vec<LoraSample> = (0..6).map(|i| sample(8, 4, i as u64)).collect();
         let opts = LoraTrainOpts { epochs: 4, lr: 1e-3, holdout_frac: 0.2, weight_decay: 0.0, seed: 1, distill_weight: 0.0 };
         assert!(lora_train(&head, &d, samples, cfg(), opts, None).is_err());
@@ -2138,7 +2032,7 @@ mod tests {
     #[test]
     fn training_rejects_hostile_options_and_malformed_samples() {
         let d = desc();
-        let (head, _) = synthetic_head(8, 6, 3);
+        let (head, _) = synthetic_head(8, 6);
         let good: Vec<LoraSample> = (0..12).map(|i| sample(8, 4, i as u64)).collect();
         let base = LoraTrainOpts { epochs: 2, lr: 1e-3, holdout_frac: 0.2, weight_decay: 0.0, seed: 1, distill_weight: 0.0 };
         for opts in [

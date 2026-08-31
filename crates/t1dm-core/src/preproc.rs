@@ -19,6 +19,10 @@ const N_CHANNELS: usize = 4;
 const BG_MASKED_FEAT: usize = 4;
 /// Per side of the median.
 const N_SPREADS: usize = 3;
+/// The only architecture this build decodes.
+const ARCH_VERSION: &str = "risk-v5";
+/// The only `head.decoder` this build implements — the spline of INFERENCE.md §8.2.
+const HEAD_DECODER: &str = "bspline-centre-nodes";
 const N_QUANTILES: usize = 1 + 2 * N_SPREADS;
 /// z-score denominator (INFERENCE.md §6).
 const STD_FLOOR: f64 = 1e-8;
@@ -127,8 +131,10 @@ pub struct HeadSpec {
     pub sha256: String,
     pub d_model: i32,
     pub hidden: i32,
-    pub step_basis_dim: i32,
     pub out_dim: i32,
+    /// The rule taking `hidden` to the head's per-step input (INFERENCE.md §8.2). Rejected when
+    /// it is not one this build implements, rather than assumed.
+    pub decoder: String,
     pub tensors: Vec<HeadTensorSpec>,
 }
 
@@ -142,10 +148,6 @@ pub struct ModelDescriptor {
     /// channel, never a negative carbohydrate.
     pub exercise: ChannelStat,
     pub rope_base: i32,
-    /// DCT subspace dimension at a span of `PREDICTION_PATCHES`; shorter spans scale down from
-    /// it (`global_median_dim`).
-    pub median_global_dim: i32,
-    pub step_basis_type: String,
     /// Additive floor on each softplus spread.
     pub quantile_spread_min: f64,
     /// Blocked-position fill, fp16-safe.
@@ -164,8 +166,8 @@ pub struct ModelDescriptor {
     pub mask_max_spans: i32,
     pub mask_span_max: i32,
     pub d_model: i32,
-    /// `K` — within-patch basis columns per (slot, channel).
-    pub step_basis_dim: i32,
+    /// The architecture the checkpoint was trained under; only `risk-v5` decodes through here.
+    pub arch_version: String,
     /// INFERENCE.md §5.
     pub kovatchev: KovatchevParams,
     /// Default false for real-CGM deployment: a simulator-fit delta must never silently narrow
@@ -250,14 +252,6 @@ struct GeometryDto {
 struct ConstantsDto {
     #[serde(rename = "ROPE_BASE")]
     rope_base: i32,
-    #[serde(rename = "BG_HEAD_MEDIAN_GLOBAL_DIM")]
-    median_global_dim: i32,
-    #[serde(rename = "BG_HEAD_MEDIAN_MODE")]
-    median_mode: String,
-    #[serde(rename = "BG_HEAD_STEP_BASIS_TYPE")]
-    step_basis_type: String,
-    #[serde(rename = "BG_HEAD_STEP_BASIS_DIM")]
-    step_basis_dim: i32,
     #[serde(rename = "BG_QUANTILE_SPREAD_MIN")]
     quantile_spread_min: f64,
     neg_fill: f64,
@@ -267,6 +261,7 @@ struct ConstantsDto {
 
 #[derive(Deserialize)]
 struct DescriptorDto {
+    arch_version: String,
     normalization_stats: NormStatsDto,
     geometry: GeometryDto,
     constants: ConstantsDto,
@@ -299,23 +294,26 @@ pub fn parse_descriptor(json: String) -> Result<ModelDescriptor, CoreError> {
             ),
         });
     }
-    // A checkpoint trained under another median mode decodes through this one smooth, finite
-    // and wrong.
-    if d.constants.median_mode != "global" {
+    // An earlier architecture decodes through this one smooth, finite and wrong: `risk-v4`
+    // projected the median onto a per-span DCT subspace, which this build no longer carries.
+    if d.arch_version != ARCH_VERSION {
         return Err(CoreError::Decode {
             reason: format!(
-                "unsupported BG_HEAD_MEDIAN_MODE {:?} (this build assembles the 'global' median)",
-                d.constants.median_mode
+                "arch_version {:?} is not {ARCH_VERSION}; this build decodes the B-spline \
+                 step-state head and cannot run another architecture",
+                d.arch_version
             ),
         });
     }
-    if d.constants.step_basis_type != "dct" {
-        return Err(CoreError::Decode {
-            reason: format!(
-                "unsupported step_basis_type {:?} (want \"dct\")",
-                d.constants.step_basis_type
-            ),
-        });
+    if let Some(h) = &d.head {
+        if h.decoder != HEAD_DECODER {
+            return Err(CoreError::Decode {
+                reason: format!(
+                    "head decoder {:?} is not {HEAD_DECODER}",
+                    h.decoder
+                ),
+            });
+        }
     }
     let time = match d.time {
         None => None,
@@ -345,8 +343,6 @@ pub fn parse_descriptor(json: String) -> Result<ModelDescriptor, CoreError> {
         insulin: d.normalization_stats.insulin_combined,
         exercise: d.normalization_stats.exercise_equiv,
         rope_base: c.rope_base,
-        median_global_dim: c.median_global_dim,
-        step_basis_type: c.step_basis_type,
         quantile_spread_min: c.quantile_spread_min,
         neg_fill: c.neg_fill,
         prediction_horizon_hours: c.prediction_horizon_hours,
@@ -359,21 +355,18 @@ pub fn parse_descriptor(json: String) -> Result<ModelDescriptor, CoreError> {
         mask_max_spans: g.mask_max_spans,
         mask_span_max: g.mask_span_lengths.iter().copied().max().unwrap_or(8),
         d_model: g.d_model,
-        step_basis_dim: c.step_basis_dim,
+        arch_version: d.arch_version,
         kovatchev: d.kovatchev,
         conformal_enabled: d.conformal.map(|x| x.enabled).unwrap_or(false),
         time,
         head: d.head,
     };
 
-    // Decode-critical drift is refused, not trusted: several of these degrade into a
-    // confident-flat forecast `forecast_degeneracy_check` cannot catch (`median_global_dim = 0`
-    // pins the median at the anchor through an empty DCT basis).
+    // Decode-critical drift is refused, not trusted.
     for (name, v) in [
         ("seq_len", desc.seq_len),
         ("max_masked_patches", desc.max_masked_patches),
         ("d_model", desc.d_model),
-        ("step_basis_dim", desc.step_basis_dim),
         ("mask_max_spans", desc.mask_max_spans),
         ("mask_span_max", desc.mask_span_max),
     ] {
@@ -391,11 +384,6 @@ pub fn parse_descriptor(json: String) -> Result<ModelDescriptor, CoreError> {
                 "seq_len {} cannot hold max_context_patches {}",
                 desc.seq_len, desc.max_context_patches
             ),
-        });
-    }
-    if desc.median_global_dim < 1 {
-        return Err(CoreError::Decode {
-            reason: format!("median_global_dim {} must be >= 1", desc.median_global_dim),
         });
     }
     if desc.patch_size != PATCH_SIZE as i32 {
@@ -962,39 +950,154 @@ pub fn build_graph_input(
     })
 }
 
-/// DCT-II modes over `n` steps, `g` columns, row-major `(n, g)`. Replicates
-/// `utils.get_global_median_basis` INCLUDING its fp32 round-trip, which is load-bearing for
-/// bit-close agreement (INFERENCE.md §8.2).
-pub(crate) fn global_median_basis(n: usize, g: usize) -> Vec<f64> {
-    let mut b = vec![0.0f64; n * g];
-    for s in 0..n {
-        for j in 0..g {
-            b[s * g + j] =
-                (std::f64::consts::PI * (s as f64 + 0.5) * j as f64 / n as f64).cos();
+/// Uniform cubic B-spline step weights for one span, row-major `(l·PATCH_SIZE, n_nodes)` with
+/// `n_nodes = l + has_left + has_right` (INFERENCE.md §8.2). Row `(i−1)·S + j` is step `j` of
+/// the span's masked patch `i`; columns are the nodes `lo..=hi` ascending. Every row sums to 1.
+///
+/// The end node repeats through the clamp, so a span at either edge of the window uses this one
+/// formula. Depends on `(l, has_left, has_right)` alone — never on the states.
+pub(crate) fn bspline_step_weights(l: usize, has_left: bool, has_right: bool) -> Vec<f64> {
+    let s = PATCH_SIZE;
+    let lo: i64 = if has_left { 0 } else { 1 };
+    let hi: i64 = if has_right { l as i64 + 1 } else { l as i64 };
+    let n_nodes = (hi - lo + 1) as usize;
+    let mut w = vec![0.0f64; l * s * n_nodes];
+    for i in 1..=l as i64 {
+        for j in 0..s {
+            let dc = (j as f64 - (s as f64 - 1.0) / 2.0) / s as f64;
+            let (k, u) = if dc < 0.0 { (i - 1, dc + 1.0) } else { (i, dc) };
+            let basis = [
+                (1.0 - u).powi(3) / 6.0,
+                (3.0 * u.powi(3) - 6.0 * u * u + 4.0) / 6.0,
+                (-3.0 * u.powi(3) + 3.0 * u * u + 3.0 * u + 1.0) / 6.0,
+                u.powi(3) / 6.0,
+            ];
+            let row = ((i - 1) as usize * s + j) * n_nodes;
+            for (b, o) in basis.iter().zip([-1i64, 0, 1, 2]) {
+                let col = ((k + o).clamp(lo, hi) - lo) as usize;
+                w[row + col] += b;
+            }
         }
     }
-    for j in 0..g {
-        let mut nrm = 0.0f64;
-        for s in 0..n {
-            let v = b[s * g + j];
-            nrm += v * v;
-        }
-        let nrm = nrm.sqrt();
-        for s in 0..n {
-            let normalized = b[s * g + j] / nrm;
-            b[s * g + j] = normalized as f32 as f64;
-        }
-    }
-    b
+    w
 }
 
-/// `G_L` for a span of `L` patches, clamped to the span's own step count. A FIXED `G` is a
-/// defect: at `L = 1` the projection is the identity, so the anti-drift contraction is ABSENT
-/// and every fan assert still passes.
-pub(crate) fn global_median_dim(desc: &ModelDescriptor, span_patches: usize, p: usize) -> usize {
-    let num = desc.median_global_dim as usize * span_patches;
-    let g = num.div_ceil(p.max(1)).max(1);
-    g.min(span_patches * PATCH_SIZE)
+/// One span of the masked set: which head slot it starts at, how long it is, and whether the
+/// visible neighbour on each side is a node.
+pub(crate) struct SpanGeom {
+    pub(crate) first_slot: usize,
+    pub(crate) length: usize,
+    pub(crate) has_left: bool,
+    pub(crate) has_right: bool,
+}
+
+/// The spans of a masked set, with each one's node bracket. `slot_patch` is one absolute patch
+/// index per head slot, `-1` on a padded slot; the graph points those at patch 0, where they
+/// fall out as singletons — reproduced here, so a padded slot's `head_raw` matches the graph's
+/// before `valid` discards it.
+///
+/// A neighbour is a node only when the span's edge patch may READ it under `attn_mask`
+/// (0.0 attend), which is what keeps a pad row from ever becoming one.
+pub(crate) fn span_geometry(slot_patch: &[i32], attn_mask: &[f32], t: usize) -> Vec<SpanGeom> {
+    let patch = |j: usize| -> usize { slot_patch[j].max(0) as usize };
+    let attends = |row: usize, col: usize| -> bool {
+        attn_mask
+            .get(row * t + col)
+            .is_some_and(|v| *v == 0.0)
+    };
+    let mut spans: Vec<SpanGeom> = Vec::new();
+    for j in 0..slot_patch.len() {
+        // A padded slot sits at patch 0 and cannot continue a span: that would need a
+        // predecessor at patch −1.
+        let continues = j > 0
+            && slot_patch[j] >= 0
+            && slot_patch[j - 1] >= 0
+            && slot_patch[j] == slot_patch[j - 1] + 1;
+        if continues {
+            spans.last_mut().expect("a span precedes any continuation").length += 1;
+        } else {
+            spans.push(SpanGeom { first_slot: j, length: 1, has_left: false, has_right: false });
+        }
+    }
+    for sp in spans.iter_mut() {
+        let first = patch(sp.first_slot);
+        let last = patch(sp.first_slot + sp.length - 1);
+        sp.has_left = first > 0 && attends(first, first - 1);
+        sp.has_right = last + 1 < t && attends(last, last + 1);
+    }
+    spans
+}
+
+/// The head's per-step input: `(m_slots · PATCH_SIZE · d_model)` fp64, slot-major, from the
+/// graph's `hidden` `(t · d_model)` (INFERENCE.md §8.2). A span's nodes are its own patches plus
+/// the visible neighbour on each side; the step states are the cubic B-spline over them.
+#[uniffi::export]
+pub fn step_states(
+    desc: &ModelDescriptor,
+    hidden: Vec<f32>,
+    slot_patch: Vec<i32>,
+    attn_mask: Vec<f32>,
+) -> Result<Vec<f64>, CoreError> {
+    let t = desc.seq_len as usize;
+    let d = desc.d_model as usize;
+    if hidden.len() != t * d {
+        return Err(CoreError::Internal {
+            reason: format!("hidden has {} values, want t {t} × d_model {d}", hidden.len()),
+        });
+    }
+    if attn_mask.len() != t * t {
+        return Err(CoreError::Internal {
+            reason: format!("attn_mask has {} values, want t² {}", attn_mask.len(), t * t),
+        });
+    }
+    if slot_patch.is_empty() || slot_patch.len() > desc.max_masked_patches as usize {
+        return Err(CoreError::Internal {
+            reason: format!(
+                "slot_patch holds {} slots, want 1..={}",
+                slot_patch.len(),
+                desc.max_masked_patches
+            ),
+        });
+    }
+    if slot_patch.iter().any(|&p| p >= t as i32) {
+        return Err(CoreError::Internal {
+            reason: format!("a slot names a patch outside the graph's T={t}"),
+        });
+    }
+    let node = |patch: usize| -> &[f32] { &hidden[patch * d..(patch + 1) * d] };
+    let mut out = vec![0.0f64; slot_patch.len() * PATCH_SIZE * d];
+    for sp in span_geometry(&slot_patch, &attn_mask, t) {
+        let w = bspline_step_weights(sp.length, sp.has_left, sp.has_right);
+        let first = slot_patch[sp.first_slot].max(0) as usize;
+        let n_nodes = sp.length + usize::from(sp.has_left) + usize::from(sp.has_right);
+        // Nodes `lo..=hi` ascending: the left neighbour where it is one, the span's own
+        // patches, then the right neighbour.
+        let mut nodes: Vec<&[f32]> = Vec::with_capacity(n_nodes);
+        if sp.has_left {
+            nodes.push(node(first - 1));
+        }
+        for i in 0..sp.length {
+            nodes.push(node(slot_patch[sp.first_slot + i].max(0) as usize));
+        }
+        if sp.has_right {
+            nodes.push(node(first + sp.length));
+        }
+        for i in 0..sp.length {
+            for j in 0..PATCH_SIZE {
+                let row = &w[(i * PATCH_SIZE + j) * n_nodes..(i * PATCH_SIZE + j + 1) * n_nodes];
+                let dst = ((sp.first_slot + i) * PATCH_SIZE + j) * d;
+                for (n, &weight) in row.iter().enumerate() {
+                    if weight == 0.0 {
+                        continue;
+                    }
+                    for c in 0..d {
+                        out[dst + c] += weight * nodes[n][c] as f64;
+                    }
+                }
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Matches PyTorch `F.softplus` (beta=1, threshold=20).
@@ -1004,23 +1107,6 @@ fn softplus(x: f64) -> f64 {
     } else {
         x.exp().ln_1p()
     }
-}
-
-/// Adjacent patch indices identify a span exactly, since the masked set never lets two spans
-/// abut. Returns one `(start_slot, length)` per span.
-fn span_layout(slot_patch: &[i32], n_masked: usize) -> Vec<(usize, usize)> {
-    let mut spans: Vec<(usize, usize)> = Vec::new();
-    for j in 0..n_masked {
-        let continues = j > 0 && slot_patch[j] == slot_patch[j - 1] + 1;
-        if continues {
-            if let Some(last) = spans.last_mut() {
-                last.1 += 1;
-            }
-        } else {
-            spans.push((j, 1));
-        }
-    }
-    spans
 }
 
 /// Step-major over the decoded slots (`i = slot·PATCH_SIZE + step`). `median_risk`/`q_tau_risk`
@@ -1099,37 +1185,15 @@ pub fn assemble_decode(
         });
     }
     let kov = desc.kovatchev;
-    let p = desc.prediction_patches()?;
     let floor = desc.quantile_spread_min;
     let n_steps = n_masked * PATCH_SIZE;
 
-    // Median per span, patch-major (flat = patch·S + step).
+    // Pointwise: the slot's own anchor plus the head's per-step delta. Nothing groups or
+    // low-passes here — the spans entered one stage earlier, in the step-state spline.
     let mut median = vec![0.0f64; n_steps];
-    for (start_slot, length) in span_layout(&slot_patch, n_masked) {
-        let n = length * PATCH_SIZE;
-        let g = global_median_dim(desc, length, p);
-        let basis = global_median_basis(n, g);
-        let delta: Vec<f64> = (0..n)
-            .map(|i| head_raw[(start_slot * PATCH_SIZE + i) * N_QUANTILES])
-            .collect();
-        let mut zc = vec![0.0f64; g];
-        for (j, zj) in zc.iter_mut().enumerate() {
-            let mut acc = 0.0f64;
-            for (i, d) in delta.iter().enumerate() {
-                acc += d * basis[i * g + j];
-            }
-            *zj = acc;
-        }
-        for i in 0..n {
-            let mut acc = 0.0f64;
-            for (j, zj) in zc.iter().enumerate() {
-                acc += zj * basis[i * g + j];
-            }
-            // Every slot of one span carries the same anchor.
-            let slot = start_slot + i / PATCH_SIZE;
-            let anchor = kov.f(anchors[slot].clamp(kov.bg_clamp_min, kov.bg_clamp_max));
-            median[start_slot * PATCH_SIZE + i] = anchor + acc;
-        }
+    for (i, mi) in median.iter_mut().enumerate() {
+        let anchor = kov.f(anchors[i / PATCH_SIZE].clamp(kov.bg_clamp_min, kov.bg_clamp_max));
+        *mi = anchor + head_raw[i * N_QUANTILES];
     }
 
     let mut median_risk = vec![0.0f64; n_steps];
@@ -1572,7 +1636,7 @@ mod tests {
     fn parse_descriptor_reference() {
         let d = test_descriptor();
         assert_eq!(d.rope_base, 1000);
-        assert_eq!(d.step_basis_type, "dct");
+        assert_eq!(d.arch_version, ARCH_VERSION);
         assert_eq!(d.quantile_spread_min, 1e-3);
         assert_eq!(d.neg_fill, -30000.0);
         assert_eq!(d.prediction_horizon_hours, 2);
@@ -1582,10 +1646,11 @@ mod tests {
         assert_eq!(d.seq_len, d.max_context_patches + 4);
         assert!(d.max_context_patches >= d.min_context_patches);
         assert!(d.max_masked_patches >= 4, "the head must hold at least a forecast");
-        assert!(d.d_model > 0 && d.step_basis_dim > 0);
+        assert!(d.d_model > 0);
         assert!(d.exercise.std > 0.0);
         let head = d.head.as_ref().expect("the reference export ships a head file");
-        assert_eq!(head.out_dim, head.step_basis_dim * N_QUANTILES as i32);
+        assert_eq!(head.out_dim, N_QUANTILES as i32, "the head emits one row per step");
+        assert_eq!(head.decoder, HEAD_DECODER);
         assert_eq!(head.sha256.len(), 64);
     }
 
@@ -1638,8 +1703,6 @@ mod tests {
         let is_decode =
             |r: Result<ModelDescriptor, CoreError>| matches!(r, Err(CoreError::Decode { .. }));
 
-        assert!(is_decode(bad("constants", "BG_HEAD_MEDIAN_GLOBAL_DIM", serde_json::json!(0))));
-        assert!(is_decode(bad("constants", "BG_HEAD_MEDIAN_GLOBAL_DIM", serde_json::json!(-1))));
         assert!(is_decode(bad("geometry", "PATCH_SIZE", serde_json::json!(4))));
         assert!(is_decode(bad("constants", "neg_fill", serde_json::json!(0.0))));
         assert!(is_decode(bad("constants", "neg_fill", serde_json::json!(30000.0))));
@@ -1650,7 +1713,30 @@ mod tests {
         assert!(is_decode(bad("geometry", "MAX_CONTEXT_PATCHES", serde_json::json!(8))));
         assert!(is_decode(bad("constants", "PREDICTION_HORIZON_HOURS", serde_json::json!(0))));
         assert!(is_decode(bad("constants", "ROPE_BASE", serde_json::json!(0))));
-        assert!(is_decode(bad("constants", "BG_HEAD_MEDIAN_MODE", serde_json::json!("cumulative"))));
+    }
+
+    /// A `risk-v4` artifact decodes through this build finite, plausible and wrong: its median
+    /// was a per-span DCT projection of the same `head_raw` column.
+    #[test]
+    fn parse_descriptor_refuses_an_earlier_architecture() {
+        let mut v: Value = serde_json::from_str(REFERENCE_DESCRIPTOR).unwrap();
+        v["arch_version"] = serde_json::json!("risk-v4");
+        assert!(matches!(parse_descriptor(v.to_string()), Err(CoreError::Decode { .. })));
+
+        let mut v: Value = serde_json::from_str(REFERENCE_DESCRIPTOR).unwrap();
+        v.as_object_mut().unwrap().remove("arch_version");
+        assert!(matches!(parse_descriptor(v.to_string()), Err(CoreError::Decode { .. })));
+
+        // A decoder this build does not implement is refused, never assumed to be this one.
+        let mut v: Value = serde_json::from_str(REFERENCE_DESCRIPTOR).unwrap();
+        v["head"]["decoder"] = serde_json::json!("step-basis-dct");
+        assert!(matches!(parse_descriptor(v.to_string()), Err(CoreError::Decode { .. })));
+
+        // A sidecar synced without the head block decodes `head_raw` alone and needs no name.
+        let mut v: Value = serde_json::from_str(REFERENCE_DESCRIPTOR).unwrap();
+        v.as_object_mut().unwrap().remove("head");
+        let d = parse_descriptor(v.to_string()).expect("a head-less sidecar still forecasts");
+        assert!(d.head.is_none());
     }
 
     #[test]
@@ -2134,37 +2220,138 @@ mod tests {
     /// `span_ladder` holds spans of 1, 2, 3 and 4 patches at once, which no single forecast
     /// reaches.
     #[test]
-    fn median_projection_contracts_at_every_span_length() {
+    fn the_median_is_the_anchor_plus_the_heads_own_delta() {
         let d = test_descriptor();
-        let c = case("span_ladder");
-        let f = decoded(&c, &d);
-        let head = f64s(&c["head_raw"]);
-        let anchors = f64s(&c["anchors"]);
-        let slots: Vec<i32> = c["slot_patch"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|v| v.as_i64().unwrap() as i32)
-            .collect();
-        for (start, length) in span_layout(&slots, slots.len()) {
-            let n = length * PATCH_SIZE;
-            let mut proj = 0.0;
-            let mut raw = 0.0;
-            for i in 0..n {
-                let idx = start * PATCH_SIZE + i;
-                let anchor = d.kovatchev.f(anchors[start]);
-                proj += (f.median_risk[idx] - anchor).powi(2);
-                raw += head[idx * N_QUANTILES].powi(2);
+        for name in ["span_ladder", "span_ladder_long", "infill"] {
+            let c = case(name);
+            let f = decoded(&c, &d);
+            let head = f64s(&c["head_raw"]);
+            let anchors = f64s(&c["anchors"]);
+            for i in 0..f.median_risk.len() {
+                let want = d.kovatchev.f(anchors[i / PATCH_SIZE]) + head[i * N_QUANTILES];
+                assert!(
+                    (f.median_risk[i] - want).abs() < 1e-12,
+                    "{name}[{i}]: median {} is not anchor + delta {want}",
+                    f.median_risk[i]
+                );
             }
-            assert!(
-                proj <= raw + 1e-9,
-                "span at slot {start} of {length} patches: projection grew ({proj} > {raw})"
-            );
-            assert!(
-                global_median_dim(&d, length, 4) <= n,
-                "span of {length} patches would take more basis columns than it has steps"
-            );
         }
+    }
+
+    /// The whole consumer-side path in one assert: the graph's `hidden`, the node gather, the
+    /// spline and the head file must rebuild the graph's OWN `head_raw`. A wrong node rule or a
+    /// transposed weight matrix decodes finite and plausible, and only this catches it.
+    #[test]
+    fn the_head_file_rebuilds_head_raw_from_hidden() {
+        use sha2::{Digest, Sha256};
+
+        let d = test_descriptor();
+        let g = pipeline();
+        let tol = g["tolerances"]["head_raw_from_hidden"].as_f64().unwrap();
+
+        let mut bytes: Vec<u8> = Vec::new();
+        let mut tensors: Vec<HeadTensorSpec> = Vec::new();
+        for t in g["head"].as_array().unwrap() {
+            for v in t["values"].as_array().unwrap() {
+                bytes.extend_from_slice(&(v.as_f64().unwrap() as f32).to_le_bytes());
+            }
+            tensors.push(HeadTensorSpec {
+                name: t["name"].as_str().unwrap().to_string(),
+                shape: t["shape"].as_array().unwrap().iter().map(|s| s.as_i64().unwrap() as i32).collect(),
+            });
+        }
+        // Read off `l0.weight (hidden, d_model)`: a head whose width differs from the trunk's
+        // would otherwise be pinned against the wrong geometry and never load.
+        let l0 = &tensors.iter().find(|t| t.name == "l0.weight").expect("golden ships l0.weight").shape;
+        let spec = HeadSpec {
+            file: "golden.head.bin".into(),
+            dtype: "fp32".into(),
+            byte_order: "little".into(),
+            activation: "silu".into(),
+            sha256: format!("{:x}", Sha256::digest(&bytes)),
+            d_model: l0[1],
+            hidden: l0[0],
+            out_dim: N_QUANTILES as i32,
+            decoder: HEAD_DECODER.into(),
+            tensors,
+        };
+        let head = crate::head::HeadModel::parse(bytes, spec).expect("golden head parses");
+
+        let mut ran = 0;
+        for name in CASES {
+            let c = case(name);
+            if c["hidden_f32"].is_null() {
+                continue; // a synthetic-head ladder never ran the trunk
+            }
+            let gi = built(&c, &d);
+            let hidden: Vec<f32> =
+                c["hidden_f32"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap() as f32).collect();
+            let states =
+                step_states(&d, hidden, gi.slot_patch.clone(), gi.attn_mask.clone()).expect("step states");
+            let got = head.forward(states, gi.m_slots).expect("head re-run");
+            // Only the real slots: a padded slot's row is discarded before it reaches a decode.
+            let n = gi.n_masked as usize * PATCH_SIZE * N_QUANTILES;
+            assert_close(&got[..n], &f64s(&c["head_raw"])[..n], tol, &format!("{name}: head_raw"));
+            ran += 1;
+        }
+        assert!(ran >= 2, "only {ran} cases carried a hidden state to rebuild from");
+    }
+
+    #[test]
+    fn every_spline_row_sums_to_one() {
+        for l in 1..=8usize {
+            for has_left in [false, true] {
+                for has_right in [false, true] {
+                    let n_nodes = l + usize::from(has_left) + usize::from(has_right);
+                    let w = bspline_step_weights(l, has_left, has_right);
+                    assert_eq!(w.len(), l * PATCH_SIZE * n_nodes);
+                    for r in 0..l * PATCH_SIZE {
+                        let s: f64 = w[r * n_nodes..(r + 1) * n_nodes].iter().sum();
+                        assert!(
+                            (s - 1.0).abs() < 1e-12,
+                            "L={l} left={has_left} right={has_right} row {r} sums to {s}"
+                        );
+                        assert!(
+                            w[r * n_nodes..(r + 1) * n_nodes].iter().all(|v| *v >= 0.0),
+                            "a cubic B-spline weight went negative"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The node bracket is T1DMAI's, per case: a neighbour is a node only where the span's edge
+    /// patch may read it, so a pad row never becomes one.
+    #[test]
+    fn span_geometry_matches_the_reference() {
+        let d = test_descriptor();
+        for name in CASES {
+            let c = case(name);
+            let gi = built(&c, &d);
+            let got = span_geometry(&gi.slot_patch[..gi.n_masked as usize], &gi.attn_mask, gi.t as usize);
+            let want = c["spans"].as_array().unwrap();
+            assert_eq!(got.len(), want.len(), "{name}: span count");
+            for (g, w) in got.iter().zip(want) {
+                assert_eq!(g.first_slot as i64, w["first_slot"].as_i64().unwrap(), "{name}: first_slot");
+                assert_eq!(g.length as i64, w["length"].as_i64().unwrap(), "{name}: length");
+                assert_eq!(g.has_left, w["has_left"].as_bool().unwrap(), "{name}: has_left");
+                assert_eq!(g.has_right, w["has_right"].as_bool().unwrap(), "{name}: has_right");
+            }
+        }
+    }
+
+    /// A padded slot reads patch 0 and is its own span, as the graph's `slot_sel` makes it.
+    #[test]
+    fn a_padded_slot_is_a_singleton_span_at_patch_zero() {
+        let t = 8usize;
+        let attn = vec![0.0f32; t * t];
+        let spans = span_geometry(&[3, 4, -1, -1], &attn, t);
+        assert_eq!(spans.len(), 3);
+        assert_eq!((spans[0].first_slot, spans[0].length), (0, 2));
+        assert_eq!((spans[1].first_slot, spans[1].length), (2, 1));
+        assert_eq!((spans[2].first_slot, spans[2].length), (3, 1));
+        assert!(!spans[1].has_left, "patch 0 has no left neighbour");
     }
 
     #[test]
@@ -2238,7 +2425,6 @@ mod tests {
             assert!(bad("geometry", key, serde_json::json!(-1)).is_err(), "{key} = -1");
             assert!(bad("geometry", key, serde_json::json!(0)).is_err(), "{key} = 0");
         }
-        assert!(bad("constants", "BG_HEAD_STEP_BASIS_DIM", serde_json::json!(0)).is_err());
         assert!(bad("geometry", "T", serde_json::json!(4)).is_err());
     }
 

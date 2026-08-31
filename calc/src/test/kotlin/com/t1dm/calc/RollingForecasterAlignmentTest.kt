@@ -52,8 +52,6 @@ class RollingForecasterAlignmentTest {
         insulin = ChannelStat(0.0, 1.0),
         exercise = ChannelStat(0.0, 1.0),
         ropeBase = 1000,
-        medianGlobalDim = 6,
-        stepBasisType = "dct",
         quantileSpreadMin = 1e-3,
         negFill = -30000.0,
         predictionHorizonHours = 2,   // predSteps = 24
@@ -66,7 +64,7 @@ class RollingForecasterAlignmentTest {
         maskMaxSpans = 3,
         maskSpanMax = 8,
         dModel = 32,
-        stepBasisDim = 6,
+        archVersion = "risk-v5",
         kovatchev = KovatchevParams(
             scale = 2.2211457449985317,
             power = 1.084,
@@ -321,6 +319,13 @@ class RollingForecasterAlignmentTest {
                 firstForecastPatch = patches,
             )
         }
+
+        override fun stepStates(
+            desc: ModelDescriptor,
+            hidden: List<Float>,
+            slotPatch: List<Int>,
+            attnMask: List<Float>,
+        ): List<Double> = List(slotPatch.size * desc.patchSize * desc.dModel) { 0.0 }
 
         override fun assembleDecode(
             desc: ModelDescriptor,

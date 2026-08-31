@@ -80,7 +80,7 @@ class ExecuTorchVulkanBackend(
         return EtModel(pte.nameWithoutExtension, caps, module)
     }
 
-    /** Outputs in order: head_raw, time_logits?, slot_hidden?. Blocking; the controller confines it
+    /** Outputs in order: head_raw, time_logits?, hidden?. Blocking; the controller confines it
      *  to the single-thread `inference` dispatcher. */
     override fun run(m: LoadedModel, x: GraphTensors): GraphOutput {
         val model = m as EtModel

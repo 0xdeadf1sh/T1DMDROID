@@ -1,5 +1,6 @@
 package com.t1dm.calc
 
+import com.t1dm.core.model.GraphInput
 import com.t1dm.core.model.ModelDescriptor
 import com.t1dm.inference.backend.GraphTensors
 import com.t1dm.inference.backend.GraphOutput
@@ -13,7 +14,7 @@ interface SelectedModelHandle {
 
     /** `head_raw` with this model's attached adapter applied; null ⇒ it runs frozen. Null must NOT
      *  paper over a failure: an attached adapter that cannot be applied throws. */
-    suspend fun adapt(out: GraphOutput, mSlots: Int): List<Double>? = null
+    suspend fun adapt(out: GraphOutput, gi: GraphInput): List<Double>? = null
 }
 
 /** null ⇒ no runnable model, and the forecast is MISSING. */

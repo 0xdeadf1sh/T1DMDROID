@@ -46,9 +46,9 @@ interface NativeHead : AutoCloseable {
 
     fun hasLora(): Boolean
 
-    /** `head_raw` for [nSlots] hidden states, in the layout `assembleDecode` consumes. With no
-     *  adapter attached it reproduces the graph's own `head_raw`. */
-    fun forward(hidden: List<Double>, nSlots: Int): List<Double>
+    /** `head_raw` for [nSlots] slots of [stepStates], in the layout `assembleDecode` consumes.
+     *  With no adapter attached it reproduces the graph's own `head_raw`. */
+    fun forward(stepStates: List<Double>, nSlots: Int): List<Double>
 }
 
 interface NativeCore {
@@ -115,6 +115,16 @@ interface NativeCore {
         nMasked: Int,
         carrySpread: List<Double>,
     ): Forecast
+
+    /** The head's per-step input, `M·PATCH_SIZE·D_MODEL`, splined from the graph's [hidden]
+     *  (`T·D_MODEL`) over each span's nodes (INFERENCE.md §8.2). [attnMask] decides which
+     *  neighbour is a node, so a pad row never becomes one. */
+    fun stepStates(
+        desc: ModelDescriptor,
+        hidden: List<Float>,
+        slotPatch: List<Int>,
+        attnMask: List<Float>,
+    ): List<Double>
 
     /** The rows of [f] whose slot sits in `[fromPatch, toPatch)`, as a Forecast of its own. */
     fun forecastSlice(f: Forecast, fromPatch: Int, toPatch: Int): Forecast

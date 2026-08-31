@@ -81,6 +81,7 @@ import uniffi.t1dm_core.advancedStats as uniffiAdvancedStats
 import uniffi.t1dm_core.clinicalCuts as uniffiClinicalCuts
 import uniffi.t1dm_core.advertCrc32 as uniffiAdvertCrc32
 import uniffi.t1dm_core.assembleDecode as uniffiAssembleDecode
+import uniffi.t1dm_core.stepStates as uniffiStepStates
 import uniffi.t1dm_core.bateman as uniffiBateman
 import uniffi.t1dm_core.bucketize as uniffiBucketize
 import uniffi.t1dm_core.buildGraphInput as uniffiBuildGraphInput
@@ -253,6 +254,13 @@ class UniffiNativeCore : NativeCore {
         carrySpread: List<Double>,
     ): Forecast =
         uniffiAssembleDecode(desc.toUniffi(), headRaw, anchors, slotPatch, nMasked, carrySpread).toModel()
+
+    override fun stepStates(
+        desc: ModelDescriptor,
+        hidden: List<Float>,
+        slotPatch: List<Int>,
+        attnMask: List<Float>,
+    ): List<Double> = uniffiStepStates(desc.toUniffi(), hidden, slotPatch, attnMask)
 
     override fun forecastSlice(f: Forecast, fromPatch: Int, toPatch: Int): Forecast =
         uniffiForecastSlice(f.toUniffi(), fromPatch, toPatch).toModel()
@@ -1003,8 +1011,6 @@ private fun UniffiModelDescriptor.toModel(): ModelDescriptor = ModelDescriptor(
     insulin = insulin.toModel(),
     exercise = exercise.toModel(),
     ropeBase = ropeBase,
-    medianGlobalDim = medianGlobalDim,
-    stepBasisType = stepBasisType,
     quantileSpreadMin = quantileSpreadMin,
     negFill = negFill,
     predictionHorizonHours = predictionHorizonHours,
@@ -1017,7 +1023,7 @@ private fun UniffiModelDescriptor.toModel(): ModelDescriptor = ModelDescriptor(
     maskMaxSpans = maskMaxSpans,
     maskSpanMax = maskSpanMax,
     dModel = dModel,
-    stepBasisDim = stepBasisDim,
+    archVersion = archVersion,
     kovatchev = kovatchev.toModel(),
     conformalEnabled = conformalEnabled,
     time = time?.toModel(),
@@ -1030,8 +1036,6 @@ private fun ModelDescriptor.toUniffi(): UniffiModelDescriptor = UniffiModelDescr
     insulin = insulin.toUniffi(),
     exercise = exercise.toUniffi(),
     ropeBase = ropeBase,
-    medianGlobalDim = medianGlobalDim,
-    stepBasisType = stepBasisType,
     quantileSpreadMin = quantileSpreadMin,
     negFill = negFill,
     predictionHorizonHours = predictionHorizonHours,
@@ -1044,7 +1048,7 @@ private fun ModelDescriptor.toUniffi(): UniffiModelDescriptor = UniffiModelDescr
     maskMaxSpans = maskMaxSpans,
     maskSpanMax = maskSpanMax,
     dModel = dModel,
-    stepBasisDim = stepBasisDim,
+    archVersion = archVersion,
     kovatchev = kovatchev.toUniffi(),
     conformalEnabled = conformalEnabled,
     time = time?.toUniffi(),
@@ -1079,8 +1083,8 @@ private fun HeadSpec.toUniffi(): UniffiHeadSpec = UniffiHeadSpec(
     sha256 = sha256,
     dModel = dModel,
     hidden = hidden,
-    stepBasisDim = stepBasisDim,
     outDim = outDim,
+    decoder = decoder,
     tensors = tensors.map { it.toUniffi() },
 )
 
@@ -1092,8 +1096,8 @@ private fun UniffiHeadSpec.toModel(): HeadSpec = HeadSpec(
     sha256 = sha256,
     dModel = dModel,
     hidden = hidden,
-    stepBasisDim = stepBasisDim,
     outDim = outDim,
+    decoder = decoder,
     tensors = tensors.map { it.toModel() },
 )
 

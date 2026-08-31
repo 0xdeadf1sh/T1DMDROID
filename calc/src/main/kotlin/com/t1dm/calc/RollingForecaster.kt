@@ -162,7 +162,7 @@ class RollingForecaster(
                     )
                     val out = withContext(dispatchers.inference) { model.run(GraphIo.tensors(built)) }
                     // Not a fallback: `adapt` throws if an attached adapter cannot be applied.
-                    val head = model.adapt(out, built.mSlots) ?: out.headRaw.map { it.toDouble() }
+                    val head = model.adapt(out, built) ?: out.headRaw.map { it.toDouble() }
                     val all = native.assembleDecode(
                         desc, head, built.anchors, built.slotPatch, built.nMasked, carrySpread,
                     )

@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
-  "id": "medium-sim",
+  "id": "d16-sim",
   "engine": "executorch_xnnpack_fp32",
   "executorch_version": "1.3.1",
-  "artifact": "medium-sim.xnnpack.pte",
+  "artifact": "d16-sim.xnnpack.pte",
   "precision": "fp32",
-  "arch_version": "risk-v4",
+  "arch_version": "risk-v5",
   "io": {
     "input_patches": {
       "name": "patches",
@@ -65,17 +65,17 @@
       "space": "raw-logits",
       "note": "(B, M, N_BINS): per-slot hour-of-day bin logits from the co-trained time probe; softmax over the N_BINS hour-of-day circle downstream (Rust). Present iff the time section below is present."
     },
-    "output_slot_hidden": {
-      "name": "slot_hidden",
+    "output_hidden": {
+      "name": "hidden",
       "output_index": 2,
       "shape": [
         1,
-        12,
-        128
+        340,
+        16
       ],
       "dtype": "fp32",
       "space": "trunk-hidden",
-      "note": "(B, M, D_MODEL) final-normed hidden state per slot \u2014 the adapter seam. Feed it to the head block's weights to reproduce head_raw, with or without a low-rank adapter."
+      "note": "(B, T, D_MODEL) final-normed hidden state per PATCH \u2014 the adapter seam. A span's spline nodes are its masked patches plus the visible neighbour on each side, so the seam carries the whole window: gather the nodes, build the step weights, and feed the head block's weights to reproduce head_raw, with or without a low-rank adapter."
     }
   },
   "time": {
@@ -144,9 +144,9 @@
       7,
       8
     ],
-    "D_MODEL": 128,
-    "N_LAYERS": 8,
-    "N_HEADS": 8,
+    "D_MODEL": 16,
+    "N_LAYERS": 32,
+    "N_HEADS": 1,
     "HEAD_DIM": 16,
     "CHANNEL_NAMES": [
       "bg_absolute",
@@ -190,10 +190,6 @@
     "ROPE_BASE": 1000,
     "RMSNORM_EPS": 1e-06,
     "NORMALIZE_STD_FLOOR": 1e-08,
-    "BG_HEAD_MEDIAN_MODE": "global",
-    "BG_HEAD_MEDIAN_GLOBAL_DIM": 12,
-    "BG_HEAD_STEP_BASIS_TYPE": "dct",
-    "BG_HEAD_STEP_BASIS_DIM": 6,
     "BG_QUANTILE_SPREAD_MIN": 0.001,
     "N_SPREADS": 3,
     "N_QUANTILES": 7,
@@ -224,70 +220,63 @@
     "note": "simulator-fit delta omitted for real CGM; raw bands are bit-identical (INFERENCE.md \u00a78.4)"
   },
   "head": {
-    "file": "medium-sim.head.bin",
+    "file": "d16-sim.head.bin",
     "dtype": "fp32",
     "byte_order": "little",
     "layout": "flat C-contiguous tensors concatenated in the order listed below",
     "activation": "silu",
-    "sha256": "8605aaa5fcaa36591d05ad0107c42ccf54d5ad66a0a7409cf89f2f7f5d7464cd",
-    "bytes": 153912,
-    "d_model": 128,
-    "hidden": 128,
-    "step_basis_dim": 6,
-    "out_dim": 42,
+    "sha256": "323a4da7edf49150f186d4253976c2923b5d64f2df4ae4c84bc34773f96e42bf",
+    "bytes": 2652,
+    "d_model": 16,
+    "hidden": 16,
+    "out_dim": 7,
     "tensors": [
-      {
-        "name": "step_basis",
-        "shape": [
-          6,
-          6
-        ]
-      },
       {
         "name": "l0.weight",
         "shape": [
-          128,
-          128
+          16,
+          16
         ]
       },
       {
         "name": "l0.bias",
         "shape": [
-          128
+          16
         ]
       },
       {
         "name": "l1.weight",
         "shape": [
-          128,
-          128
+          16,
+          16
         ]
       },
       {
         "name": "l1.bias",
         "shape": [
-          128
+          16
         ]
       },
       {
         "name": "l2.weight",
         "shape": [
-          42,
-          128
+          7,
+          16
         ]
       },
       {
         "name": "l2.bias",
         "shape": [
-          42
+          7
         ]
       }
     ],
-    "note": "head_raw[b,m,s,c] = sum_k step_basis[s,k] * l2(silu(l1(silu(l0(h)))))[b,m,k*(1+2*N_SPREADS)+c], h = slot_hidden[b,m]"
+    "note": "head_raw[b,m,s,:] = l2(silu(l1(silu(l0(H[b,m,s]))))), H the step state at the centre of step s of masked patch m: the cubic B-spline over that span's node states, gathered from hidden",
+    "decoder": "bspline-centre-nodes"
   },
   "model_card": {
-    "param_count": 2160054,
-    "val_step": 91000,
+    "param_count": 61043,
+    "val_step": 9999,
     "reference_metrics": {
       "source": "sim-validation",
       "note": "held-out simulator validation at the exported checkpoint (T1DMAI train.py); reference only, not on-device realized accuracy",
@@ -297,28 +286,28 @@
         120
       ],
       "rmse_mgdl": [
-        10.337,
-        14.4525,
-        22.7114
+        10.758,
+        15.3915,
+        23.7311
       ],
       "mard_pct": [
-        5.2118,
-        7.4578,
-        12.0167
+        5.6529,
+        8.2254,
+        13.1293
       ],
       "clarke_a_pct": [
-        99.87,
-        96.3589,
-        82.9649
+        99.7399,
+        94.0182,
+        81.5345
       ],
       "coverage90": [
-        0.8908,
-        0.9077,
-        0.8947
+        0.9103,
+        0.9038,
+        0.8934
       ],
-      "clarke_ab_pct": 99.5178,
-      "tod_mae_h": 0.3339,
-      "tod_mae_hiconf_h": 0.2496
+      "clarke_ab_pct": 99.171,
+      "tod_mae_h": 0.4454,
+      "tod_mae_hiconf_h": 0.3921
     }
   }
 }

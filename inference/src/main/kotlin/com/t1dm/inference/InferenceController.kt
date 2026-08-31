@@ -521,7 +521,8 @@ class InferenceController(
         loaded[modelId]?.bundle?.let { heads.stateOf(it) }
 
     /** [spans] are context-relative patch indices; [withForecast] appends the future zone, and a
-     *  pure infill passes false. A non-null [lora] assembles from the head re-run over `slot_hidden`;
+     *  pure infill passes false. A non-null [lora] assembles from the head re-run over the spline
+     *  states built from `hidden`;
      *  a model whose head is absent or disagrees refuses rather than returning the unadapted fan. */
     suspend fun runMasked(
         modelId: String,
@@ -539,7 +540,8 @@ class InferenceController(
         val t0 = System.nanoTime()
         val out = withContext(dispatchers.inference) { entry.backend.run(entry.handle, GraphIo.tensors(gi)) }
         val latMs = (System.nanoTime() - t0) / 1_000_000.0
-        heads.verify(entry.bundle, out.slotHidden, out.headRaw, gi.mSlots)
+        val steps = stepStates(entry.bundle, gi, out, needed = lora != null)
+        heads.verify(entry.bundle, steps, out.headRaw, gi.mSlots)
 
         val headRaw: List<Double> = if (lora == null) {
             out.headRaw.map { it.toDouble() }
@@ -548,10 +550,10 @@ class InferenceController(
             if (state !is HeadCache.State.Ready) {
                 error("model $modelId takes no adapter: ${(state as? HeadCache.State.Unusable)?.why ?: "no head file"}")
             }
-            val hidden = out.slotHidden ?: error("the graph emitted no slot_hidden to adapt")
+            val input = steps ?: error("the graph emitted no hidden state to adapt")
             state.head.setLora(lora)
             try {
-                withContext(dispatchers.default) { state.head.forward(hidden.map { it.toDouble() }, gi.mSlots) }
+                withContext(dispatchers.default) { state.head.forward(input, gi.mSlots) }
             } finally {
                 state.head.setLora(null)
             }
@@ -680,9 +682,10 @@ class InferenceController(
                 if (loaded[modelId] !== entry) return out
                 withContext(dispatchers.inference) { entry.backend.run(entry.handle, GraphIo.tensors(gi)) }
             }
-            heads.verify(entry.bundle, run.slotHidden, run.headRaw, gi.mSlots)
-            val hidden = run.slotHidden ?: return out
-            val d = desc.dModel
+            val steps = stepStates(entry.bundle, gi, run, needed = true)
+            heads.verify(entry.bundle, steps, run.headRaw, gi.mSlots)
+            val hidden = steps ?: return out
+            val d = desc.dModel * desc.patchSize
 
             // The SAME window with one unit of insulin added to the horizon's dose channel, so the
             // response is a property of the dose. FORECAST windows only: the guard reads at the
@@ -715,18 +718,18 @@ class InferenceController(
                         entry.backend.run(entry.handle, GraphIo.tensors(giPert))
                     }
                 }
-                runPert.slotHidden
+                stepStates(entry.bundle, giPert, runPert, needed = true)
             }
 
             out.add(
                 LoraSample(
-                    hidden = hidden.take(gi.nMasked * d).map { it.toDouble() },
+                    hidden = hidden.take(gi.nMasked * d),
                     anchors = gi.anchors.take(gi.nMasked),
                     targetBg = spanTarget.toList(),
                     nSlots = gi.nMasked,
                     // Either the WHOLE window or nothing; the crate refuses a truncated pairing.
                     hiddenPert = if (hiddenPert != null && hiddenPert.size >= gi.nMasked * d) {
-                        hiddenPert.take(gi.nMasked * d).map { it.toDouble() }
+                        hiddenPert.take(gi.nMasked * d)
                     } else {
                         emptyList()
                     },
@@ -1186,34 +1189,51 @@ class InferenceController(
                     ((state as? HeadCache.State.Unusable)?.why ?: "no head file"),
             )
         }
-        val hidden = out.slotHidden
-            ?: error("adapter attached to ${entry.bundle.id} but the graph emits no slot_hidden")
+        val steps = stepStates(entry.bundle, gi, out, needed = true)
+            ?: error("adapter attached to ${entry.bundle.id} but the graph emits no hidden state")
         state.head.setLora(w)
         return try {
-            withContext(dispatchers.default) { state.head.forward(hidden.map { it.toDouble() }, gi.mSlots) }
+            withContext(dispatchers.default) { state.head.forward(steps, gi.mSlots) }
         } finally {
             state.head.setLora(null)
+        }
+    }
+
+    /** The head's per-step input, or null when the export emits no `hidden`. Skipped entirely when
+     *  [needed] is false and the head's parity is already settled: the spline is `M·S·D` of work
+     *  that a frozen, already-verified cycle never reads. */
+    private suspend fun stepStates(
+        bundle: ModelBundle,
+        gi: GraphInput,
+        out: GraphOutput,
+        needed: Boolean,
+    ): List<Double>? {
+        val hidden = out.hidden ?: return null
+        if (!needed && !heads.needsVerify(bundle)) return null
+        return withContext(dispatchers.default) {
+            native.stepStates(bundle.descriptor, hidden.toList(), gi.slotPatch, gi.attnMask.toList())
         }
     }
 
     /** For the dose path, which must score on the same forecaster the panel draws. `null` is the
      *  frozen model; an ATTACHED adapter that cannot be applied THROWS, so the roll fails closed
      *  rather than scoring a dose on a different model from the displayed one (§3.6-E). */
-    suspend fun adaptedHeadRawFor(modelId: String, out: GraphOutput, mSlots: Int): List<Double>? {
+    suspend fun adaptedHeadRawFor(modelId: String, out: GraphOutput, gi: GraphInput): List<Double>? {
         val store = loraStore ?: return null
         val w = store.attached(modelId) ?: return null
         val entry = cycleMutex.withLock { loaded[modelId] } ?: error("model $modelId is not loaded")
+        val steps = stepStates(entry.bundle, gi, out, needed = true)
         // The dose path can be the FIRST caller after a process start, so the head is proved against
         // this very forward rather than assuming a cycle already did it.
-        heads.verify(entry.bundle, out.slotHidden, out.headRaw, mSlots)
+        heads.verify(entry.bundle, steps, out.headRaw, gi.mSlots)
         val state = heads.stateOf(entry.bundle)
         if (state !is HeadCache.State.Ready) {
             error("adapter attached to $modelId but its head is unusable: ${(state as? HeadCache.State.Unusable)?.why ?: "no head file"}")
         }
-        val hidden = out.slotHidden ?: error("adapter attached to $modelId but the graph emits no slot_hidden")
+        val input = steps ?: error("adapter attached to $modelId but the graph emits no hidden state")
         state.head.setLora(w)
         return try {
-            withContext(dispatchers.default) { state.head.forward(hidden.map { it.toDouble() }, mSlots) }
+            withContext(dispatchers.default) { state.head.forward(input, gi.mSlots) }
         } finally {
             state.head.setLora(null)
         }
@@ -1238,7 +1258,7 @@ class InferenceController(
         recordLatency(entry.bundle.id, latMs)
         recordCumulative(entry.bundle.id, latMs)
 
-        heads.verify(entry.bundle, out.slotHidden, out.headRaw, gi.mSlots)
+        heads.verify(entry.bundle, stepStates(entry.bundle, gi, out, needed = false), out.headRaw, gi.mSlots)
         val adapted = adaptedHeadRaw(entry, gi, out)
 
         // Slice by patch rather than by count, so an added infill span cannot shift which rows the

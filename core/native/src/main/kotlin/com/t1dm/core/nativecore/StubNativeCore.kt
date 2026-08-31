@@ -103,6 +103,13 @@ class StubNativeCore : NativeCore {
         carrySpread: List<Double>,
     ): Forecast = TODO("Phase 2: native assemble_decode")
 
+    override fun stepStates(
+        desc: ModelDescriptor,
+        hidden: List<Float>,
+        slotPatch: List<Int>,
+        attnMask: List<Float>,
+    ): List<Double> = TODO("Phase 2: native step_states")
+
     override fun forecastSlice(f: Forecast, fromPatch: Int, toPatch: Int): Forecast =
         TODO("Phase 2: native forecast_slice")
 

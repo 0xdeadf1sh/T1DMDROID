@@ -57,19 +57,26 @@ class HeadCache(private val native: NativeCore) {
         return State.Ready(head, maxDelta = Double.NaN)
     }
 
-    /** Once per model. [TOL] is loose because `head_raw` is risk-space coefficients and the two
-     *  paths differ only in fp32-vs-fp64; above it is a different head, not rounding. */
+    /** True while a model's head still owes a parity check, so the caller only pays for the step
+     *  states when they are actually needed. */
     @Synchronized
-    fun verify(bundle: ModelBundle, slotHidden: FloatArray?, headRaw: FloatArray, mSlots: Int) {
+    fun needsVerify(bundle: ModelBundle): Boolean =
+        (stateOf(bundle) as? State.Ready)?.maxDelta?.isNaN() == true
+
+    /** Once per model. [stepStates] is `preproc::step_states` over the graph's own `hidden`; null
+     *  when the export emits none. [TOL] is loose because `head_raw` is risk-space coefficients and
+     *  the two paths differ only in fp32-vs-fp64; above it is a different head, not rounding. */
+    @Synchronized
+    fun verify(bundle: ModelBundle, stepStates: List<Double>?, headRaw: FloatArray, mSlots: Int) {
         val state = states[bundle.id] as? State.Ready ?: return
         if (!state.maxDelta.isNaN()) return // already verified
-        val hidden = slotHidden ?: run {
-            set(bundle.id, State.Unusable("the graph emits no slot_hidden; nothing to adapt"))
+        val steps = stepStates ?: run {
+            set(bundle.id, State.Unusable("the graph emits no hidden state; nothing to adapt"))
             return
         }
         val had = state.head.hasLora()
         if (had) state.head.setLora(null)
-        val ours = runCatching { state.head.forward(hidden.map { it.toDouble() }, mSlots) }.getOrElse {
+        val ours = runCatching { state.head.forward(steps, mSlots) }.getOrElse {
             set(bundle.id, State.Unusable("head forward failed: ${it.message}"))
             return
         }

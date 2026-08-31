@@ -20,7 +20,7 @@ class StubBackend : InferenceBackend {
         for (p in 0 until x.mSlots) {
             for (s in 0 until S) {
                 val i = (p * S + s) * Q
-                // col0: risk-space rise, DCT-projected downstream.
+                // col0: risk-space rise, added to the slot's anchor downstream.
                 head[i] = 0.015f * (p * S + s)
                 // cols 1..6: pre-softplus spreads; softplus(-1.6)+1e-3 ≈ 0.19 risk each, cumsum'd
                 // into a widening fan that clears the degeneracy guard.

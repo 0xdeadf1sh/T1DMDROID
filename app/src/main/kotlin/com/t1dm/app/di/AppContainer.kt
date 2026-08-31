@@ -2054,8 +2054,8 @@ class AppContainer(context: Context) {
 
             override suspend fun adapt(
                 out: com.t1dm.inference.backend.GraphOutput,
-                mSlots: Int,
-            ): List<Double>? = inferenceController.adaptedHeadRawFor(info.id, out, mSlots)
+                gi: com.t1dm.core.model.GraphInput,
+            ): List<Double>? = inferenceController.adaptedHeadRawFor(info.id, out, gi)
         }
     }
 
