@@ -1174,6 +1174,17 @@ pub fn lora_guard(
     // the panic would cross the FFI boundary.
     let want = |s: &LoraSample| (s.n_slots.max(0) as usize) * PATCH_SIZE * head.d_model;
     for s in &samples {
+        // The anchor is read PER SLOT, so a short anchor list indexes out of bounds; the crate
+        // aborts on panic, so this must be a refusal.
+        if s.anchors.len() < s.n_slots.max(0) as usize {
+            return Err(CoreError::Internal {
+                reason: format!(
+                    "guard sample has {} anchors for {} slots",
+                    s.anchors.len(),
+                    s.n_slots,
+                ),
+            });
+        }
         if s.hidden.len() < want(s) || (!s.hidden_pert.is_empty() && s.hidden_pert.len() < want(s)) {
             return Err(CoreError::Internal {
                 reason: format!(
@@ -1905,6 +1916,17 @@ mod tests {
         assert!(out.report.guard.is_some(), "held-out forecast windows existed");
         // The held-out number stays PURE pinball, so stored adapters stay comparable.
         assert!(out.report.holdout_loss_before.is_finite());
+    }
+
+    /// The anchor is read per slot now, and the crate aborts on panic.
+    #[test]
+    fn the_guard_refuses_a_sample_with_too_few_anchors() {
+        let (head, spec) = synthetic_head(8, 6);
+        let d = desc();
+        let w = lora_new(cfg(), spec.sha256.clone(), 8, 6, 7, 4).unwrap();
+        let mut s = sample_paired(8, 4, 11, 12);
+        s.anchors.truncate(1);
+        assert!(lora_guard(&head, &d, vec![s], &w, GUARD_OPTS_FIT).is_err());
     }
 
     #[test]
