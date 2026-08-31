@@ -21,7 +21,7 @@ class BgHeatmapTest {
         assertEquals(HEAT_LOW, c(70.0))
         assertEquals(HEAT_LOW, c(54.0))
         assertEquals(HEAT_LOW, c(-5.0))
-        assertEquals(HEAT_HIGH, c(140.0))
+        assertEquals(HEAT_HIGH, c(180.0))
         assertEquals(HEAT_HIGH, c(400.0))
     }
 
@@ -40,7 +40,7 @@ class BgHeatmapTest {
         }
 
         prev = Float.MAX_VALUE
-        for (bg in 106..140) {
+        for (bg in 106..180) {
             val d = dist(c(bg.toDouble()), HEAT_HIGH)
             assertTrue("$bg is no nearer red than the value below it", d <= prev)
             prev = d
@@ -48,13 +48,15 @@ class BgHeatmapTest {
     }
 
     @Test fun theScaleIsFixedAndIndependentOfTheTargetRange() {
-        // 180 is in range for the default target and still reads as high here, by design.
-        assertEquals(HEAT_HIGH, c(180.0))
+        // The bounds coincide with the usual 70-180 band, but green is 105 — not a target-range
+        // edge and not the midpoint of the bar — so a cell reads the same on every phone.
+        assertEquals(HEAT_IN, c(HEAT_MID_MGDL))
         assertNotEquals(HEAT_IN, c(125.0))
+        assertNotEquals(HEAT_IN, c(140.0))
     }
 
     @Test fun everyValueYieldsAFiniteColour() {
-        for (bg in listOf(0.0, 69.0, 70.0, 105.0, 140.0, 141.0, 600.0)) {
+        for (bg in listOf(0.0, 69.0, 70.0, 105.0, 140.0, 180.0, 181.0, 600.0)) {
             val col = c(bg)
             assertTrue("$bg gave a non-finite red channel", col.red.isFinite())
             assertTrue("$bg gave a non-finite green channel", col.green.isFinite())
@@ -63,7 +65,7 @@ class BgHeatmapTest {
     }
 
     @Test fun theChipSelectsWhichSummaryColoursTheCell() {
-        // {100, 105, 400}: mean 201.67 is above the 140 ceiling, median 105 exactly on green.
+        // {100, 105, 400}: mean 201.67 is above the 180 ceiling, median 105 exactly on green.
         val mean = (100.0 + 105.0 + 400.0) / 3.0
         val cell = HeatCell(dow = 0, hour = 8, n = 3, meanBg = mean, medianBg = 105.0)
         assertEquals(105.0, cell.value(HeatStat.Median), 0.0)

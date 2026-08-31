@@ -141,10 +141,12 @@ private fun HeatLegend(
     }
 }
 
-/** Fixed, not the patient's target range: a cell colour means the same glucose on every phone. */
+/** Fixed, never read from the patient's target setting: a cell colour means the same glucose on
+ *  every phone. The bounds coincide with the usual 70-180 band, but nothing derives them from it.
+ *  Green sits at 105, so it is NOT the midpoint of the bar. */
 const val HEAT_FLOOR_MGDL = 70.0
 const val HEAT_MID_MGDL = 105.0
-const val HEAT_CEIL_MGDL = 140.0
+const val HEAT_CEIL_MGDL = 180.0
 
 private val HEAT_MID_STOP =
     ((HEAT_MID_MGDL - HEAT_FLOOR_MGDL) / (HEAT_CEIL_MGDL - HEAT_FLOOR_MGDL)).toFloat()
