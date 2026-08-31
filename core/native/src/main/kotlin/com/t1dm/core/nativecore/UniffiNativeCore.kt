@@ -275,8 +275,8 @@ class UniffiNativeCore : NativeCore {
     private class UniffiHead(val inner: UniffiHeadModel) : NativeHead {
         override fun setLora(w: LoraWeights?) = inner.setLora(w?.toUniffi())
         override fun hasLora(): Boolean = inner.hasLora()
-        override fun forward(hidden: List<Double>, nSlots: Int): List<Double> =
-            inner.forward(hidden, nSlots)
+        override fun forward(stepStates: List<Double>, nSlots: Int): List<Double> =
+            inner.forward(stepStates, nSlots)
         override fun close() = inner.destroy()
     }
 
