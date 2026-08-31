@@ -132,9 +132,6 @@ private val XLarge = DpSize(210.dp, 168.dp)
 
 private val NormalBlue = Color(0xFF2E7DFF)
 
-/** Matches Navigation's stableGreen. */
-private val StableGreen = Color(0xFF3DD68C)
-
 @Composable
 private fun WidgetSurface(snap: WidgetSnapshot) {
     val p = T1dmActivePalette
@@ -265,7 +262,7 @@ private fun BgRow(snap: WidgetSnapshot, p: T1dmPalette, numberSp: Int, arrowSp: 
 @Composable
 private fun GlyBadge(snap: WidgetSnapshot, p: T1dmPalette) {
     val bg = when (snap.glyKind) {
-        GlyKind.STABLE -> StableGreen
+        GlyKind.STABLE -> p.inRange
         GlyKind.EXCURSION -> p.urgentLow
         GlyKind.VOID -> p.surfaceVariant
     }

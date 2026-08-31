@@ -603,9 +603,8 @@ private fun glycemicStatusOf(
 private fun GlycemicStatusBadge(status: GlyStatus) {
     val animationsOn = LocalAnimationsEnabled.current
     val ctx = LocalContext.current
-    val stableGreen = Color(0xFF3DD68C)
     val color = when (status) {
-        is GlyStatus.Stable -> stableGreen
+        is GlyStatus.Stable -> LocalT1dmSemantics.current.inRange
         is GlyStatus.Excursion -> MaterialTheme.colorScheme.error
         is GlyStatus.Void -> MaterialTheme.colorScheme.onSurfaceVariant
     }
