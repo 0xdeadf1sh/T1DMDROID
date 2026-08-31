@@ -332,8 +332,8 @@ private fun DrawScope.drawHelloKittyBackground(p: T1dmPalette) {
     drawCircle(lerp(bow, Color.White, 0.30f).copy(alpha = 0.7f), radius = rF * 0.11f, center = Offset(bx, by), style = Stroke(width = w * 0.005f))
 }
 
-/** A page of set text: head and folio rules, ragged paragraphs, paper grain. Every position comes
- *  from [hashFrac], so the page is the same on every recompose. */
+/** Paper, not print: a soft page wash and grain. Every speck comes from [hashFrac], so the page is
+ *  the same on every recompose. */
 private fun DrawScope.drawEInkBackground(p: T1dmPalette) {
     val w = size.width
     val h = size.height
@@ -349,40 +349,6 @@ private fun DrawScope.drawEInkBackground(p: T1dmPalette) {
         ),
         size = size,
     )
-
-    val left = w * 0.14f
-    val right = w * 0.86f
-    val col = right - left
-    val rule = h * 0.0015f
-
-    drawLine(p.grid, Offset(left, h * 0.105f), Offset(right, h * 0.105f), strokeWidth = rule)
-    drawLine(p.grid, Offset(left, h * 0.930f), Offset(right, h * 0.930f), strokeWidth = rule)
-
-    val lh = h * 0.030f
-    val bottom = h * 0.885f
-    val glyph = p.inkMuted.copy(alpha = 0.55f)
-    var y = h * 0.165f
-    var i = 0
-    var inPara = 0
-    var paraLen = 4 + (hashFrac(1) * 4).toInt()
-    while (y < bottom) {
-        val indent = if (inPara == 0) col * 0.05f else 0f
-        val last = inPara == paraLen - 1
-        val len = if (last) col * (0.30f + 0.40f * hashFrac(i)) else col * (0.90f + 0.10f * hashFrac(i)) - indent
-        drawLine(
-            glyph,
-            Offset(left + indent, y), Offset(left + indent + len, y),
-            strokeWidth = lh * 0.30f, cap = StrokeCap.Round,
-        )
-        y += lh
-        i++
-        inPara++
-        if (inPara >= paraLen) {
-            inPara = 0
-            y += lh * 0.55f
-            paraLen = 3 + (hashFrac(i * 7) * 5).toInt()
-        }
-    }
 
     val grain = p.ink.copy(alpha = 0.035f)
     val speck = w * 0.0016f

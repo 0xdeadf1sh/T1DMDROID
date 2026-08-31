@@ -650,7 +650,7 @@ private fun NavWheelArcContent(
                             draw(
                                 Size(edge, edge),
                                 alpha = a,
-                                colorFilter = ColorFilter.tint(if (isHover) cs.primary else cs.onSurface),
+                                colorFilter = ColorFilter.tint(if (isHover) cs.primary else cs.onSurfaceVariant),
                             )
                         }
                     }
