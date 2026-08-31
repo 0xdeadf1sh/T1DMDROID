@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Per-theme launcher-icon background colours (issues 2/6). -->
-    <color name="ic_bg_tron">#060A12</color>
-    <color name="ic_bg_umbrella">#7A0010</color>
-    <color name="ic_bg_kitty">#FFF0F5</color>
+    <color name="ic_bg">#060A12</color>
+    <color name="ic_band_hypo">#5C1622</color>
+    <color name="ic_band_eu">#0A4A3A</color>
+    <color name="ic_band_hyper">#5C3A12</color>
 </resources>

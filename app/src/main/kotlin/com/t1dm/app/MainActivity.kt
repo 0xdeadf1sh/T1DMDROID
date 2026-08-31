@@ -90,18 +90,6 @@ class MainActivity : ComponentActivity() {
         container.reevaluateInferenceNow()
     }
 
-    override fun onStop() {
-        super.onStop()
-        // Deferred to backgrounding: an <activity-alias> swap while foregrounded lets recents evict the task.
-        runCatching {
-            LauncherIconManager.apply(
-                applicationContext,
-                container.themeIdSnapshot,
-                keepEnabledAlias = intent?.component?.className,
-            )
-        }
-    }
-
     private fun requestRuntimePermissions() {
         val wanted = buildList {
             add(Manifest.permission.BLUETOOTH_SCAN)

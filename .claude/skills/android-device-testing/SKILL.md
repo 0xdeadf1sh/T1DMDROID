@@ -49,17 +49,13 @@ pulling the app database during verification.
 
    ```bash
    android run --apks app/build/outputs/apk/personal/debug/app-personal-debug.apk \
-     --device <serial> --activity com.t1dm.app.LauncherTron
+     --device <serial> --activity com.t1dm.app.MainActivity
    ```
 
    - `--device` is the serial from `adb devices`; optional when exactly one device is attached.
-   - `--activity` is **required here**: the app declares one `MainActivity` plus three per-theme
-     `<activity-alias>` LAUNCHER entries, so `android run` reports *"Multiple candidates for type
-     ACTIVITY"* and refuses to guess. Pass **`com.t1dm.app.LauncherTron`** (the default-enabled alias,
-     which mirrors the real home-screen launch) or `com.t1dm.app.MainActivity`.
-   - If an alias fails to resolve, the device is carrying a stale per-component enabled state from an
-     older build (it outranks the manifest and survives reinstalls). `adb shell am start -n
-     com.t1dm.app/.MainActivity` always works; one launch runs `RetiredThemeMigration` and repairs it.
+   - `--activity` is optional now that `MainActivity` is the only LAUNCHER entry; pass it when
+     `android run` reports *"Multiple candidates for type ACTIVITY"*.
+   - `adb shell am start -n com.t1dm.app/.MainActivity` always works.
    - `android run` reinstalls each call, so it is the iterate-loop primitive — rebuild, `android run`,
      re-observe.
 
@@ -121,7 +117,7 @@ The ones that bite deployment on this Xiaomi/HyperOS device:
 - `POST_NOTIFICATIONS` still prompts after install; `pm grant com.t1dm.app
   android.permission.POST_NOTIFICATIONS` before a scripted launch, or the dialog stalls it.
 - After `am force-stop`, an intent that starts the FGS trips
-  `ForegroundServiceStartNotAllowedException` — relaunch `MainActivity`/`LauncherTron` first.
+  `ForegroundServiceStartNotAllowedException` — relaunch `MainActivity` first.
 - The non-exported `CgmScanService` cannot be poked directly over adb (HyperOS refuses "Requires
   permission not exported"); the debug build ships an **exported** `CgmDebugReceiver` that forwards
   intents to the running FGS via an app-internal `startForegroundService`. Broadcast to it explicitly,
