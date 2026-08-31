@@ -22,9 +22,14 @@ class CurveOverlayFrame internal constructor(
     // bolus gamma peak, so on the shared insulin scale it vanishes.
     val basal: FloatArray = FloatArray(0),
     val basalMax: Float = 0f,
+    /** Grams of carbohydrate EQUIVALENT disposed per step, positive. Read from the wide sample, so
+     *  it carries recorded bouts and replays alike — what the model was actually fed. */
+    val exercise: FloatArray = FloatArray(0),
+    val exerciseMax: Float = 0f,
 ) {
     val size: Int get() = carb.size
-    val isEmpty: Boolean get() = carb.isEmpty() || (carbMax <= 0f && insulinMax <= 0f)
+    val isEmpty: Boolean get() =
+        carb.isEmpty() || (carbMax <= 0f && insulinMax <= 0f && exerciseMax <= 0f)
 
     /** Units-per-step at [ms]; 0 outside the grid or absent. */
     fun basalAt(ms: Long): Float = indexAt(ms).let { if (it < 0 || it >= basal.size) 0f else basal[it] }
@@ -58,10 +63,26 @@ class CurveOverlayFrame internal constructor(
     /** Units-per-step at [ms]; 0 outside the grid. */
     fun insulinAt(ms: Long): Float = indexAt(ms).let { if (it < 0) 0f else insulin[it] }
 
+    /** Grams-per-step of carbohydrate equivalent at [ms]; 0 outside the grid or absent. */
+    fun exerciseAt(ms: Long): Float =
+        indexAt(ms).let { if (it < 0 || it >= exercise.size) 0f else exercise[it] }
+
     companion object {
         val EMPTY = CurveOverlayFrame(0L, 300_000L, FloatArray(0), FloatArray(0), 0f, 0f)
     }
 }
+
+/**
+ * The per-step series the overlay is built from, index-aligned to one grid window. [carb] and
+ * [insulin] are reconstructed from logged events; [exercise] is READ from the wide sample, so it
+ * carries recorded bouts as well as replays. Not a value type — it is carried, never compared.
+ */
+class OverlayInput(
+    val carb: DoubleArray,
+    val insulin: DoubleArray,
+    val basal: DoubleArray,
+    val exercise: DoubleArray,
+)
 
 /** SPEC §2.3. [basal] is the basal-only sub-channel, for rendering; pass empty for none. */
 suspend fun curveOverlayOf(
@@ -70,8 +91,9 @@ suspend fun curveOverlayOf(
     gridStartMs: Long,
     stepMs: Long = 300_000L,
     basal: DoubleArray = DoubleArray(0),
+    exercise: DoubleArray = DoubleArray(0),
 ): CurveOverlayFrame = withContext(Dispatchers.Default) {
-    buildCurveOverlay(carb, insulin, gridStartMs, stepMs, basal)
+    buildCurveOverlay(carb, insulin, gridStartMs, stepMs, basal, exercise)
 }
 
 /** Pure; safe from a `@Preview` or a test. */
@@ -81,21 +103,25 @@ fun buildCurveOverlay(
     gridStartMs: Long,
     stepMs: Long = 300_000L,
     basal: DoubleArray = DoubleArray(0),
+    exercise: DoubleArray = DoubleArray(0),
 ): CurveOverlayFrame {
-    val n = maxOf(carb.size, insulin.size)
+    val n = maxOf(maxOf(carb.size, insulin.size), exercise.size)
     if (n == 0) return CurveOverlayFrame.EMPTY
     val c = FloatArray(n) { i -> (carb.getOrElse(i) { 0.0 }).toFloat() }
     val ins = FloatArray(n) { i -> (insulin.getOrElse(i) { 0.0 }).toFloat() }
     val bas = FloatArray(n) { i -> (basal.getOrElse(i) { 0.0 }).toFloat() }
+    val exr = FloatArray(n) { i -> (exercise.getOrElse(i) { 0.0 }).toFloat() }
     var cMax = 0f
     var iMax = 0f
     var bMax = 0f
+    var eMax = 0f
     for (i in 0 until n) {
         if (c[i] > cMax) cMax = c[i]
         if (ins[i] > iMax) iMax = ins[i]
         if (bas[i] > bMax) bMax = bas[i]
+        if (exr[i] > eMax) eMax = exr[i]
     }
-    return CurveOverlayFrame(gridStartMs, stepMs, c, ins, cMax, iMax, bas, bMax)
+    return CurveOverlayFrame(gridStartMs, stepMs, c, ins, cMax, iMax, bas, bMax, exr, eMax)
 }
 
 /** Units-per-step below which the insulin channel carries no action. */
@@ -125,8 +151,12 @@ fun noFutureInsulinOverForecast(
     return true
 }
 
-data class CurveOverlayToggles(val carbs: Boolean = false, val insulin: Boolean = false) {
-    val any: Boolean get() = carbs || insulin
+data class CurveOverlayToggles(
+    val carbs: Boolean = false,
+    val insulin: Boolean = false,
+    val exercise: Boolean = false,
+) {
+    val any: Boolean get() = carbs || insulin || exercise
 }
 
 /** Fill and roof are one command stream; only the fill's runs are closed. The seam a host test
@@ -210,6 +240,7 @@ internal fun DrawScope.drawCurveOverlay(
     plotBottom: Float,
     carbColor: Color,
     insulinColor: Color,
+    exerciseColor: Color,
     viewStartMs: Double,
     viewSpanMs: Double,
     paths: CurveChannelPaths,
@@ -233,4 +264,5 @@ internal fun DrawScope.drawCurveOverlay(
     if (toggles.carbs) drawChannel(frame.carb, frame.carbMax, carbColor)
     // One total-insulin curve: bolus and basal are already combined; no separate basal floor-strip.
     if (toggles.insulin) drawChannel(frame.insulin, frame.insulinMax, insulinColor)
+    if (toggles.exercise) drawChannel(frame.exercise, frame.exerciseMax, exerciseColor)
 }

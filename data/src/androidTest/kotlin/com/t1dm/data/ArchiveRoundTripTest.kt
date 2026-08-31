@@ -21,6 +21,7 @@ import com.t1dm.data.db.ExerciseFixEntity
 import com.t1dm.data.db.ExerciseSessionEntity
 import com.t1dm.data.db.FoodEntity
 import com.t1dm.data.db.LoggedDoseEntity
+import com.t1dm.data.db.LoggedExerciseEntity
 import com.t1dm.data.db.LoggedMealEntity
 import com.t1dm.data.db.PaintStrokeBlob
 import com.t1dm.data.db.PaintStrokeEntity
@@ -104,6 +105,22 @@ class ArchiveRoundTripTest {
         assertEquals(1, target.conformalDeltaDao().all().size)
         assertEquals(2, target.exerciseSessionDao().pageFrom(Long.MIN_VALUE, Long.MIN_VALUE, 100).size)
         assertEquals(FIXES, result.applied.exerciseFixes)
+        assertEquals(1, target.loggedExerciseDao().pageFrom(Long.MIN_VALUE, Long.MIN_VALUE, 100).size)
+    }
+
+    @Test
+    fun aReplayComesBackWithTheCurveItLaidDown() = runTest {
+        // Without the shape a restored replay could not be deleted: the unwind re-derives from it,
+        // and the grams are already in the samples this same archive carries.
+        populate(source)
+        restoreInto(target, archiveOf(source))
+        val restored = target.loggedExerciseDao().pageFrom(Long.MIN_VALUE, Long.MIN_VALUE, 100).single()
+        assertEquals(22.5, restored.grams, 0.0)
+        assertEquals(3.0, restored.k, 0.0)
+        assertEquals(15.0, restored.theta, 0.0)
+        assertEquals(135.0, restored.curveDurationMin, 0.0)
+        // A per-device rowid names a different bout here, so it is dropped rather than translated.
+        assertNull(restored.sourceSessionId)
     }
 
     @Test
@@ -508,6 +525,13 @@ class ArchiveRoundTripTest {
         db.exerciseFixDao().insertAll(List(FIXES) { fix(runId, it) })
         db.exerciseSessionDao().insert(
             boutRow(BOUT_INDOOR, "OTHER").copy(distanceM = null, kcal = null),
+        )
+        db.loggedExerciseDao().insert(
+            LoggedExerciseEntity(
+                clientId = "replay-1", tsMs = NOW, tzOffsetMin = 0, kind = "WALK",
+                durationMin = 45.0, grams = 22.5, k = 3.0, theta = 15.0, curveDurationMin = 135.0,
+                sourceSessionId = 42L, updatedAt = NOW, loggedAtMs = NOW,
+            ),
         )
         val mealId = db.savedMealDao().insertMeal(SavedMealEntity(name = "Porridge", updatedAt = 5L))
         db.savedMealDao().insertItems(

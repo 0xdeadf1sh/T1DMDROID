@@ -29,6 +29,7 @@ import com.t1dm.data.db.FoodEntity
 import com.t1dm.data.db.HwTelemetryEntity
 import com.t1dm.data.db.InsulinTypeEntity
 import com.t1dm.data.db.LoggedDoseEntity
+import com.t1dm.data.db.LoggedExerciseEntity
 import com.t1dm.data.db.LoggedMealEntity
 import com.t1dm.data.db.LoraEntity
 import com.t1dm.data.db.PredictionEntity
@@ -176,6 +177,16 @@ class ResetWipeTest {
             ),
         )
 
+        repo.logLoggedExercise(
+            LoggedExerciseEntity(
+                clientId = "", tsMs = now, tzOffsetMin = 0, kind = "WALK", durationMin = 45.0,
+                grams = 22.5, k = 3.0, theta = 15.0, curveDurationMin = 135.0,
+                sourceSessionId = null, updatedAt = now,
+            ),
+            emptyList(),
+            now,
+        )
+
         db.eventTombstoneDao().upsert(
             EventTombstoneEntity(
                 clientId = "gone-1", kind = TOMBSTONE_KIND_DOSE, tsMs = now, tzOffsetMin = 0,
@@ -216,6 +227,7 @@ class ResetWipeTest {
         assertEquals(1L, count("prediction"))
         assertEquals(1L, count("exercise_session"))
         assertEquals(1L, count("exercise_fix"))
+        assertEquals(1L, count("logged_exercise"))
         assertEquals(1L, count("event_tombstone"))
         assertEquals(1L, count("lora"))
         assertEquals(1L, count("bg_infill"))
@@ -241,7 +253,7 @@ class ResetWipeTest {
             "cgm_source", "cgm_reading", "cgm_sample_raw", "sample", "dose_event", "logged_dose",
             "logged_meal", "basal_schedule", "cgm_advert_raw", "outbox", "prediction", "server_profile",
             "hw_telemetry", "saved_meal", "saved_meal_item", "bg_paint_stroke", "conformal_delta",
-            "exercise_session", "exercise_fix", "kv",
+            "exercise_session", "exercise_fix", "logged_exercise", "kv",
             "event_tombstone", "lora", "bg_infill",
         )
     }

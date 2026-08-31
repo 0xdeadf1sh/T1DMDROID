@@ -11,10 +11,13 @@ data class LogMarker(
 )
 
 /**
- * [amount] is grams of carbohydrate or units of insulin, per [kind]; [gi] is null for a dose and for
- * a multi-food builder meal, which has no single index. [rowId] is the `logged_meal`/`logged_dose`
- * rowid; [clientId] is unique across both tables, hence the list key. [updatedAtMs] is the wire
- * ordering key, and [mutatedAtMs] null if the row was never edited.
+ * [amount] is grams of carbohydrate, units of insulin, or MINUTES of exercise, per [kind] — an
+ * exercise bout's magnitude is a function of its duration alone (`SPEC/invariants.md` §5), so the
+ * duration is what the row carries and the grams are derived. [gi] is null for a dose and for
+ * a multi-food builder meal, which has no single index. [rowId] is the
+ * `logged_meal`/`logged_dose`/`logged_exercise` rowid; [clientId] is unique across all three
+ * tables, hence the list key. [updatedAtMs] is the wire ordering key, and [mutatedAtMs] null if the
+ * row was never edited.
  */
 data class LoggedEntry(
     val rowId: Long,

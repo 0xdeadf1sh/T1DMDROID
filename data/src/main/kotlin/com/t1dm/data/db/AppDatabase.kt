@@ -29,6 +29,7 @@ import kotlinx.coroutines.Dispatchers
         ServerProfileEntity::class,
         LoggedDoseEntity::class,
         LoggedMealEntity::class,
+        LoggedExerciseEntity::class,
         BasalScheduleEntity::class,
         FoodEntity::class,
         SavedMealEntity::class,
@@ -42,7 +43,7 @@ import kotlinx.coroutines.Dispatchers
         ExerciseFixEntity::class,
         EventTombstoneEntity::class,
     ],
-    version = 26,
+    version = 27,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -61,6 +62,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun serverProfileDao(): ServerProfileDao
     abstract fun loggedDoseDao(): LoggedDoseDao
     abstract fun loggedMealDao(): LoggedMealDao
+    abstract fun loggedExerciseDao(): LoggedExerciseDao
     abstract fun basalScheduleDao(): BasalScheduleDao
     abstract fun foodDao(): FoodDao
     abstract fun savedMealDao(): SavedMealDao
@@ -81,7 +83,7 @@ abstract class AppDatabase : RoomDatabase() {
          * database file, there is no destructive fallback, and an enum name one branch writes throws
          * in the other's `valueOf` on the READ, nowhere near the migration.
          */
-        const val SCHEMA_VERSION = 26
+        const val SCHEMA_VERSION = 27
 
         /** [FoodFts] is not a Room entity, so a fresh install creates it here; an upgrade gets it
          *  from [MigrationRunner.MIGRATION_4_5]. Same DDL both paths. */

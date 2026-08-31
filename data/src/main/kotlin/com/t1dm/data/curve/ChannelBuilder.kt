@@ -76,14 +76,27 @@ data class FutureChannels(
 
 data class InsulinOnBoard(val iobU: Double, val zeroMs: Long?)
 
-/** [basal] is a COMPONENT of [insulin], not an independent series; summing them double-counts. */
-data class OverlayChannels(val carb: DoubleArray, val insulin: DoubleArray, val basal: DoubleArray) {
+/** [basal] is a COMPONENT of [insulin], not an independent series; summing them double-counts.
+ *  [exercise] is READ, not reconstructed, exactly as [ContextChannels.exercise] is — so what is
+ *  drawn is what the model was fed, recorded bouts included. */
+data class OverlayChannels(
+    val carb: DoubleArray,
+    val insulin: DoubleArray,
+    val basal: DoubleArray,
+    val exercise: DoubleArray,
+) {
     override fun equals(other: Any?): Boolean =
         other is OverlayChannels && carb.contentEquals(other.carb) &&
-            insulin.contentEquals(other.insulin) && basal.contentEquals(other.basal)
+            insulin.contentEquals(other.insulin) && basal.contentEquals(other.basal) &&
+            exercise.contentEquals(other.exercise)
 
-    override fun hashCode(): Int =
-        31 * (31 * carb.contentHashCode() + insulin.contentHashCode()) + basal.contentHashCode()
+    override fun hashCode(): Int {
+        var h = carb.contentHashCode()
+        h = 31 * h + insulin.contentHashCode()
+        h = 31 * h + basal.contentHashCode()
+        h = 31 * h + exercise.contentHashCode()
+        return h
+    }
 }
 
 /**
@@ -121,6 +134,7 @@ class ChannelBuilder(
             carb = engine.bucketize(carbs, gridStartMs, nSteps, CurveKind.CARB),
             insulin = engine.bucketize(insulin.combined, gridStartMs, nSteps, CurveKind.INSULIN),
             basal = engine.bucketize(insulin.basal, gridStartMs, nSteps, CurveKind.INSULIN),
+            exercise = exerciseChannel(gridStartMs, nSteps),
         )
     }
 
@@ -167,11 +181,13 @@ class ChannelBuilder(
     suspend fun eventsIn(fromMs: Long, toMs: Long): List<CurveEvent> =
         store.carbEvents(fromMs - PAD_MS, toMs) + insulinEventsIn(fromMs - PAD_MS, toMs).combined
 
-    /** Logged store doses only. */
+    /** Logged store doses only. Exercise has no on-board quantity: the channel is read from the
+     *  wide sample, not reconstructed from events, so there is nothing here to integrate. */
     suspend fun onBoard(atMs: Long, kind: CurveKind): Double {
         val events = when (kind) {
             CurveKind.CARB -> store.carbEvents(atMs - PAD_MS, atMs + CurveEngine.STEP_MS)
             CurveKind.INSULIN -> insulinEventsAt(atMs)
+            CurveKind.EXERCISE -> return 0.0
         }
         return engine.onBoard(events, atMs, kind)
     }

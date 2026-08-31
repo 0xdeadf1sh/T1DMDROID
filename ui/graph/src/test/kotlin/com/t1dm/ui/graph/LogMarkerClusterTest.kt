@@ -77,13 +77,16 @@ class LogMarkerClusterTest {
         }
     }
 
-    @Test fun insulinIsTheUpperLaneAndCarbsTheLower() {
+    @Test fun theLanesStackCarbsInsulinExerciseUpFromTheFloor() {
         val dpPx = 3f
         val plotBottom = 600f
         val size = LOG_MARKER_DP * dpPx
+        val exerciseTop = logMarkerLaneTop(CurveKind.EXERCISE, plotBottom, dpPx)
         val insulinTop = logMarkerLaneTop(CurveKind.INSULIN, plotBottom, dpPx)
         val carbTop = logMarkerLaneTop(CurveKind.CARB, plotBottom, dpPx)
+        assertTrue("exercise sits above insulin", exerciseTop < insulinTop)
         assertTrue("insulin sits above carbs", insulinTop < carbTop)
+        assertTrue("the lanes do not overlap each other", exerciseTop + size <= insulinTop)
         assertTrue("the lanes do not overlap each other", insulinTop + size <= carbTop)
         assertTrue("the carb lane clears the axis line", carbTop + size < plotBottom)
     }
@@ -106,22 +109,19 @@ class LogMarkerClusterTest {
         // The glyph size is the ONE knob: the band, the distance at which two marks combine and the
         // reach of a tap are all measured from it. Stated as relations, never as figures.
         val dpPx = 3f
-        assertTrue("both lanes fit inside the band", LOG_MARKER_BAND_DP > LOG_MARKER_DP * 2f)
+        assertTrue("every lane fits inside the band", LOG_MARKER_BAND_DP > LOG_MARKER_DP * CurveKind.entries.size)
         assertTrue("marks combine only past a whole glyph", logMarkerSeparationPx(dpPx) > LOG_MARKER_DP * dpPx)
         assertEquals(logMarkerSeparationPx(dpPx) / 2f, logMarkerTapReachPx(dpPx), 1e-4f)
         assertTrue("a tap reaches past the glyph's edge", logMarkerTapReachPx(dpPx) > LOG_MARKER_DP * dpPx / 2f)
     }
 
-    @Test fun theWholeBandIsWhatTheTwoLanesBorrowFromThePlot() {
-        // The band is an OVERLAY: the only claim on the plot is the strip from the upper lane's top
-        // down to the floor.
+    @Test fun theWholeBandIsWhatTheLanesBorrowFromThePlot() {
+        // The band is an OVERLAY: the only claim on the plot is the strip from the topmost lane's
+        // top down to the floor.
         val dpPx = 3f
         val plotBottom = 600f
-        assertEquals(
-            plotBottom - LOG_MARKER_BAND_DP * dpPx,
-            logMarkerLaneTop(CurveKind.INSULIN, plotBottom, dpPx),
-            1e-3f,
-        )
+        val topmost = CurveKind.entries.minOf { logMarkerLaneTop(it, plotBottom, dpPx) }
+        assertEquals(plotBottom - LOG_MARKER_BAND_DP * dpPx, topmost, 1e-3f)
     }
 
     @Test fun aClusterNamesTheRunOfItsLaneItStandsFor() {

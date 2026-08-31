@@ -190,9 +190,19 @@ private val InsulinMark: ImageVector = filledGlyph("insulinmark") {
     lineTo(10.5f, 6f); lineTo(10.5f, 3.2f); lineTo(8f, 3.2f); close()
 }
 
+/** Exercise: a dumbbell — two weights, two collars and the bar. All rectangles, like the other two. */
+private val ExerciseMark: ImageVector = filledGlyph("exercisemark") {
+    moveTo(1.5f, 8f); lineTo(5f, 8f); lineTo(5f, 16f); lineTo(1.5f, 16f); close()
+    moveTo(6f, 10f); lineTo(8.5f, 10f); lineTo(8.5f, 14f); lineTo(6f, 14f); close()
+    moveTo(8.5f, 11f); lineTo(15.5f, 11f); lineTo(15.5f, 13f); lineTo(8.5f, 13f); close()
+    moveTo(15.5f, 10f); lineTo(18f, 10f); lineTo(18f, 14f); lineTo(15.5f, 14f); close()
+    moveTo(19f, 8f); lineTo(22.5f, 8f); lineTo(22.5f, 16f); lineTo(19f, 16f); close()
+}
+
 fun logMarkerIcon(kind: CurveKind): ImageVector = when (kind) {
     CurveKind.CARB -> CarbMark
     CurveKind.INSULIN -> InsulinMark
+    CurveKind.EXERCISE -> ExerciseMark
 }
 
 enum class DayPeriod { MORNING, NOON, EVENING, NIGHT }

@@ -101,6 +101,8 @@ data class GraphScrub(
     val carbRate: Float?,
     /** Units per 5-min, or null with no overlay. */
     val insulinRate: Float?,
+    /** Grams of carbohydrate EQUIVALENT disposed per 5-min, or null with no overlay. */
+    val exerciseRate: Float?,
     /** Null only when no pedometer feed is wired. An unmeasured bucket reads `0` here, so the
      *  read-out keeps a fixed set of rows; [StepsFrame.stepsAt] still tells the two apart. */
     val steps: Int?,
@@ -276,18 +278,23 @@ fun GlucoseGraph(
     val semantics = LocalT1dmSemantics.current
     val carbMarkPainter = rememberVectorPainter(logMarkerIcon(CurveKind.CARB))
     val insulinMarkPainter = rememberVectorPainter(logMarkerIcon(CurveKind.INSULIN))
+    val exerciseMarkPainter = rememberVectorPainter(logMarkerIcon(CurveKind.EXERCISE))
     // The curve overlay's own inks, so a mark is always the colour of the curve it stands for. The
     // semantic roles, not the Material projection: the glyphs are shape-fixed, so the tint is all the
     // theme says about a mark.
     val carbInk = semantics.secondary
     val insulinInk = semantics.inRange
+    // The one remaining chrome role. Not a glucose band, for the reason [stepsInk] gives below.
+    val exerciseInk = semantics.primary
     // Deliberately not a semantic role: every one is spoken for, and borrowing one would make a busy
     // hour read as a glucose statement.
     val stepsInk = remember(cs.onSurfaceVariant) { cs.onSurfaceVariant.copy(alpha = 0.38f) }
     val carbTint = remember(carbInk) { ColorFilter.tint(carbInk) }
     val insulinTint = remember(insulinInk) { ColorFilter.tint(insulinInk) }
+    val exerciseTint = remember(exerciseInk) { ColorFilter.tint(exerciseInk) }
     val carbLane = remember(logMarkers) { markerLane(logMarkers, CurveKind.CARB) }
     val insulinLane = remember(logMarkers) { markerLane(logMarkers, CurveKind.INSULIN) }
+    val exerciseLane = remember(logMarkers) { markerLane(logMarkers, CurveKind.EXERCISE) }
     val markSepPx = logMarkerSeparationPx(dpPx)
     val markSizePx = LOG_MARKER_DP * dpPx
 
@@ -421,6 +428,10 @@ fun GlucoseGraph(
         if (viewStartMs.isNaN()) emptyList()
         else clusterLogMarkers(carbLane.marks, viewStartMs, viewSpanMs, leftPx, plotRightPx, markSepPx)
     }
+    val exerciseClusters = remember(exerciseLane, viewStartMs, viewSpanMs, leftPx, plotRightPx, markSepPx) {
+        if (viewStartMs.isNaN()) emptyList()
+        else clusterLogMarkers(exerciseLane.marks, viewStartMs, viewSpanMs, leftPx, plotRightPx, markSepPx)
+    }
 
     // Read through `rememberUpdatedState`, so the handler tests against the current viewport rather
     // than the one it was launched under.
@@ -428,7 +439,7 @@ fun GlucoseGraph(
     val hitMarkers by rememberUpdatedState<(Offset) -> List<Int>>({ pos ->
         hitTestLogMarkers(
             pos.x, pos.y, plotBox.left, plotBox.right, plotBox.bottom, dpPx,
-            insulinLane, insulinClusters, carbLane, carbClusters,
+            insulinLane, insulinClusters, carbLane, carbClusters, exerciseLane, exerciseClusters,
         )
     })
 
@@ -967,7 +978,7 @@ fun GlucoseGraph(
                     val bandTop = plotBottom - plotHeight * 0.30f
                     drawCurveOverlay(
                         curveOverlay, curveToggles, AbsToPx(::absToPx), bandTop, plotBottom,
-                        carbColor = carbInk, insulinColor = insulinInk,
+                        carbColor = carbInk, insulinColor = insulinInk, exerciseColor = exerciseInk,
                         // The viewport, so the draw bounds itself: the channels span ~14 days of buckets.
                         viewStartMs = viewStartMs, viewSpanMs = viewSpanMs,
                         paths = overlayPaths,
@@ -990,6 +1001,13 @@ fun GlucoseGraph(
                     tint = carbTint,
                     sizePx = markSizePx,
                     laneTopY = logMarkerLaneTop(CurveKind.CARB, plotBottom, dpPx),
+                )
+                drawLogMarkers(
+                    exerciseClusters,
+                    painter = exerciseMarkPainter,
+                    tint = exerciseTint,
+                    sizePx = markSizePx,
+                    laneTopY = logMarkerLaneTop(CurveKind.EXERCISE, plotBottom, dpPx),
                 )
 
                 // DISPLAY ONLY — nothing drawn here is stored.
@@ -1235,6 +1253,7 @@ internal fun buildScrub(
     }
     val carb = overlay?.carbAt(ms.toLong())?.takeIf { overlay.carbMax > 0f }
     val insulin = overlay?.insulinAt(ms.toLong())?.takeIf { overlay.insulinMax > 0f }
+    val exercise = overlay?.exerciseAt(ms.toLong())?.takeIf { overlay.exerciseMax > 0f }
     val modelHour = clock?.let { predictedHourAt(ms.toLong(), it) }
     return GraphScrub(
         tsMs = ms.toLong(),
@@ -1244,6 +1263,7 @@ internal fun buildScrub(
         bgExtrapolated = extrapolated,
         carbRate = carb,
         insulinRate = insulin,
+        exerciseRate = exercise,
         // Read whether or not the band is DRAWN: a chip governs what is painted, not what is known.
         // A wired feed always yields a row — an unmeasured bucket reads 0 — so the box keeps a fixed
         // shape as the thumb travels.
@@ -1276,7 +1296,7 @@ private fun predictedClockLabel(ms: Long, clock: PredictedClock): String {
 }
 
 /** The label column is sized from the widest of these, so the box never resizes under the cursor. */
-private val SCRUB_LABELS = listOf("BG", "Carb", "Ins", "Steps", "Local", "Model")
+private val SCRUB_LABELS = listOf("BG", "Carb", "Ins", "Exr", "Steps", "Local", "Model")
 
 /** The widest value the right column can hold: a carb or insulin rate beats any BG or clock value.
  *  The column is sized from it, so its right edge holds still under the cursor. */
@@ -1292,6 +1312,7 @@ internal fun scrubRows(sc: GraphScrub): List<Pair<String, String>> {
     out.add("BG" to bgStr)
     sc.carbRate?.let { out.add("Carb" to "%.1f g".format(it)) }
     sc.insulinRate?.let { out.add("Ins" to "%.2f U".format(it)) }
+    sc.exerciseRate?.let { out.add("Exr" to "%.1f g".format(it)) }
     sc.steps?.let { out.add("Steps" to it.toString()) }
     out.add("Local" to formatClock(sc.tsMs, sc.tzOffsetMin))
     sc.modelHour?.let {

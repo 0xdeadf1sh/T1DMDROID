@@ -59,10 +59,13 @@ fun SessionScrubGraph(
     val semantics = LocalT1dmSemantics.current
     val carbMarkPainter = rememberVectorPainter(logMarkerIcon(CurveKind.CARB))
     val insulinMarkPainter = rememberVectorPainter(logMarkerIcon(CurveKind.INSULIN))
+    val exerciseMarkPainter = rememberVectorPainter(logMarkerIcon(CurveKind.EXERCISE))
     val carbTint = remember(semantics.secondary) { ColorFilter.tint(semantics.secondary) }
     val insulinTint = remember(semantics.inRange) { ColorFilter.tint(semantics.inRange) }
+    val exerciseTint = remember(semantics.primary) { ColorFilter.tint(semantics.primary) }
     val carbLane = remember(logMarkers) { markerLane(logMarkers, CurveKind.CARB) }
     val insulinLane = remember(logMarkers) { markerLane(logMarkers, CurveKind.INSULIN) }
+    val exerciseLane = remember(logMarkers) { markerLane(logMarkers, CurveKind.EXERCISE) }
     val markSepPx = logMarkerSeparationPx(dpPx)
     val markSizePx = LOG_MARKER_DP * dpPx
     val traceStroke = remember { Stroke(width = 2.2f, cap = StrokeCap.Round, join = StrokeJoin.Round) }
@@ -154,6 +157,14 @@ fun SessionScrubGraph(
                     ),
                     carbMarkPainter, carbTint, markSizePx,
                     logMarkerLaneTop(CurveKind.CARB, plotBottom, dpPx),
+                )
+                drawLogMarkers(
+                    clusterLogMarkers(
+                        exerciseLane.marks, windowStartMs.toDouble(), windowSpanMs.toDouble(),
+                        plotLeft, plotRight, markSepPx,
+                    ),
+                    exerciseMarkPainter, exerciseTint, markSizePx,
+                    logMarkerLaneTop(CurveKind.EXERCISE, plotBottom, dpPx),
                 )
             }
 

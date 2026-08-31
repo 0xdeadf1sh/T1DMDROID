@@ -100,6 +100,7 @@ import com.t1dm.core.model.UnitSpace
 import com.t1dm.core.model.WarmupProgress
 import com.t1dm.ui.graph.CurveOverlayFrame
 import com.t1dm.ui.graph.CurveOverlayToggles
+import com.t1dm.ui.graph.OverlayInput
 import com.t1dm.ui.graph.GlucoseGraph
 import com.t1dm.ui.graph.GraphFrame
 import com.t1dm.ui.graph.GraphInsets
@@ -145,7 +146,7 @@ fun DashboardScreen(
     // figure and the line carries none — never a dash or a zero.
     sensitivity: SensitivityEstimate? = null,
     // (carb, combined insulin, basal-only) for one grid window, from ONE resolve.
-    curveChannels: (suspend (gridStartMs: Long, nSteps: Int) -> Triple<DoubleArray, DoubleArray, DoubleArray>)? = null,
+    curveChannels: (suspend (gridStartMs: Long, nSteps: Int) -> OverlayInput)? = null,
     // Per-bucket step counts over one grid window. A lambda over an IntArray because this module
     // holds no `:data` dependency. Null ⇒ no step source, and the Steps chip is not offered.
     stepSeries: (suspend (gridStartMs: Long, nSteps: Int) -> IntArray)? = null,
@@ -281,7 +282,7 @@ fun DashboardScreen(
     var showRollDialog by remember { mutableStateOf(false) }
 
 
-    // The carb/insulin channels over the readings' grid span, extended into the future so committed
+    // The carb / insulin / exercise channels over the readings' grid span, extended into the future so committed
     // doses' tails are visible there too. Built whenever the resolver is wired, not gated on the
     // toggles: the scrub read-out reports the rates with the overlay hidden. Keyed on iobCob as well.
     val curveOverlay by produceState(CurveOverlayFrame.EMPTY, readings, predictions, curveChannels, iobCob, rolledForecast) {
@@ -304,8 +305,8 @@ fun DashboardScreen(
         val earliestStart = ((end / STEP_MS) - (MAX_OVERLAY_STEPS - 1L)) * STEP_MS
         val gridStart = maxOf(oldestReading, earliestStart)
         val nSteps = (((end - gridStart) / STEP_MS).toInt() + 1).coerceIn(1, MAX_OVERLAY_STEPS)
-        val (carb, insulin, basal) = resolver(gridStart, nSteps)
-        value = curveOverlayOf(carb, insulin, gridStart, STEP_MS, basal)
+        val ch = resolver(gridStart, nSteps)
+        value = curveOverlayOf(ch.carb, ch.insulin, gridStart, STEP_MS, ch.basal, ch.exercise)
     }
 
     // No insulin action over the forecast horizon: no committed bolus tail and no basal schedule (the
@@ -1013,6 +1014,14 @@ private fun OverlayControls(
                     onToggle(toggles.copy(insulin = !toggles.insulin))
                 },
                 label = { Text("Insulin") },
+            )
+            FilterChip(
+                selected = toggles.exercise,
+                onClick = {
+                    haptics.toggled(!toggles.exercise)
+                    onToggle(toggles.copy(exercise = !toggles.exercise))
+                },
+                label = { Text("Exercise") },
             )
             if (stepsAvailable) {
                 FilterChip(

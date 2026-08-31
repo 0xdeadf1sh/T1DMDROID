@@ -10,6 +10,7 @@ import com.t1dm.data.db.ConformalDeltaEntity
 import com.t1dm.data.db.LoraEntity
 import com.t1dm.data.db.ExerciseFixEntity
 import com.t1dm.data.db.ExerciseSessionEntity
+import com.t1dm.data.db.LoggedExerciseEntity
 import com.t1dm.data.db.FoodEntity
 import com.t1dm.data.db.InsulinTypeEntity
 import com.t1dm.data.db.EventTombstoneEntity
@@ -175,6 +176,12 @@ class ArchiveReader(private val db: AppDatabase) {
                 s.exerciseSessions.add(r)
                 if (s.exerciseSessions.size >= Archive.BATCH) flushExerciseSessions(s)
             }
+            // Insert-only, no curve re-lay: the grams are already in the samples this file carries.
+            Archive.T_LOGGED_EXERCISE -> {
+                val r = runCatching { Archive.readLoggedExercise(o) }.getOrNull() ?: return s.skip()
+                s.loggedExercise.add(r)
+                if (s.loggedExercise.size >= Archive.BATCH) flushLoggedExercise(s)
+            }
             Archive.T_EXERCISE_FIX -> {
                 val r = runCatching { Archive.readExerciseFix(o) }.getOrNull() ?: return s.skip()
                 s.exerciseFixes.add(r)
@@ -249,6 +256,7 @@ class ArchiveReader(private val db: AppDatabase) {
         applyTombstones(s)
         flushStrokes(s)
         flushExerciseFixes(s)
+        flushLoggedExercise(s)
     }
 
     /**
@@ -356,6 +364,23 @@ class ArchiveReader(private val db: AppDatabase) {
             }
         }
         s.applied = s.applied.copy(exerciseSessions = s.applied.exerciseSessions + added)
+        s.duplicates += rows.size - added
+    }
+
+    /**
+     * Merges on the unique `clientId`, and drops a row this phone has deleted — exactly as the meals
+     * and doses do. Without the tombstone filter a deleted replay returns while the archived samples
+     * carrying its grams lose to the phone's own, leaving a row whose curve is in no slot.
+     */
+    private suspend fun flushLoggedExercise(s: MergeState) {
+        if (s.loggedExercise.isEmpty()) return
+        val all = s.loggedExercise.toList()
+        s.loggedExercise.clear()
+        val rows = all.filterNot { deleted(s, it.clientId, it.updatedAt) }
+        s.skipped += all.size - rows.size
+        if (rows.isEmpty()) return
+        val added = tx { db.loggedExerciseDao().insertIgnoreAll(rows).count { it != -1L } }
+        s.applied = s.applied.copy(loggedExercise = s.applied.loggedExercise + added)
         s.duplicates += rows.size - added
     }
 
@@ -523,6 +548,7 @@ class ArchiveReader(private val db: AppDatabase) {
         val tombstones = ArrayList<EventTombstoneEntity>()
         val strokes = ArrayList<PaintStrokeEntity>(Archive.BATCH)
         val exerciseSessions = ArrayList<ExerciseSessionEntity>(Archive.BATCH)
+        val loggedExercise = ArrayList<LoggedExerciseEntity>(Archive.BATCH)
         val exerciseFixes = ArrayList<Pair<String, ExerciseFixEntity>>(Archive.BATCH)
 
         /** Archived bout `clientId` → the minted rowid. Only bouts this restore actually inserted. */

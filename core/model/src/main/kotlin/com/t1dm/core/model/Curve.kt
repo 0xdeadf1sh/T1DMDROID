@@ -2,10 +2,11 @@ package com.t1dm.core.model
 
 /**
  * Carbs feed the model as an appearance (Ra) rate — grams per 5 min summing to the meal total;
- * insulin as a PK ACTION rate, not delivery or IOB.
+ * insulin as a PK ACTION rate, not delivery or IOB; exercise as a carbohydrate-EQUIVALENT disposal
+ * rate, positive, the sign living in the equation that subtracts it.
  */
 
-enum class CurveKind { CARB, INSULIN }
+enum class CurveKind { CARB, INSULIN, EXERCISE }
 
 /**
  * [values] sum to [total] over the event: Ra grams for carbs, PK action-units for insulin.

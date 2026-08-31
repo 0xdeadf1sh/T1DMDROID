@@ -15,6 +15,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.model.CurveKind
 import com.t1dm.core.model.InsulinKind
+import com.t1dm.core.model.ExerciseKind
 import com.t1dm.core.model.LoggedEntry
 import java.time.Instant
 import java.time.ZoneOffset
@@ -40,7 +41,21 @@ fun logAmountLabel(entry: LoggedEntry): String = when (entry.kind) {
         }
         "${fmtNum(entry.amount)} U$shape"
     }
+    // Minutes, not the grams they resolve to: duration is what the patient chose and what §5 scales
+    // the disposal by. The kind rides here because the headline is the whole row for a replay.
+    CurveKind.EXERCISE -> "${fmtNum(entry.amount)} min" + entry.detail?.let { " ${it.lowercase()}" }.orEmpty()
 }
+
+fun exerciseKindLabel(kind: ExerciseKind): String = when (kind) {
+    ExerciseKind.WALK -> "Walk"
+    ExerciseKind.RUN -> "Run"
+    ExerciseKind.OTHER -> "Other"
+}
+
+/** Unknown names read as [ExerciseKind.OTHER]: `kind` is raw TEXT so a bout a later build wrote
+ *  still labels. */
+fun exerciseKindLabel(kind: String): String =
+    exerciseKindLabel(runCatching { ExerciseKind.valueOf(kind) }.getOrNull() ?: ExerciseKind.OTHER)
 
 /** In the offset the row was WRITTEN at, not the reader's current one. */
 fun logTimeLabel(tsMs: Long, tzOffsetMin: Int): String =
@@ -49,6 +64,8 @@ fun logTimeLabel(tsMs: Long, tzOffsetMin: Int): String =
 fun logDetailLabel(entry: LoggedEntry): String? = when (entry.kind) {
     CurveKind.CARB -> entry.gi?.let { "GI ${fmtNum(it)}" } ?: logNote(entry)
     CurveKind.INSULIN -> logNote(entry)
+    // Already in the headline; repeating it under would read as a second fact.
+    CurveKind.EXERCISE -> null
 }
 
 private fun logNote(entry: LoggedEntry): String? = entry.detail?.takeIf { it.isNotBlank() }
@@ -59,7 +76,7 @@ internal fun logEntryFields(entry: LoggedEntry): List<Pair<String, String>> = bu
     if (entry.kind == CurveKind.CARB) {
         add("Glycemic index" to (entry.gi?.let { fmtNum(it) } ?: NOT_RECORDED))
     }
-    logNote(entry)?.let { add("Note" to it) }
+    if (entry.kind != CurveKind.EXERCISE) logNote(entry)?.let { add("Note" to it) }
     add("Time" to logTimeLabel(entry.tsMs, entry.tzOffsetMin))
     // Only when true: an unedited row has nothing to disclose.
     if (entry.edited) add("Edited" to logTimeLabel(entry.mutatedAtMs!!, entry.tzOffsetMin))

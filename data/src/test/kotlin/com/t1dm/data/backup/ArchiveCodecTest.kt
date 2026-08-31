@@ -9,6 +9,7 @@ import com.t1dm.data.db.ConformalDeltaEntity
 import com.t1dm.data.db.DoseKind
 import com.t1dm.data.db.ExerciseFixEntity
 import com.t1dm.data.db.ExerciseSessionEntity
+import com.t1dm.data.db.LoggedExerciseEntity
 import com.t1dm.data.db.FoodEntity
 import com.t1dm.data.db.InsulinTypeEntity
 import com.t1dm.data.db.LoggedDoseEntity
@@ -259,6 +260,28 @@ class ArchiveCodecTest {
     }
 
     @Test
+    fun `a replay round-trips with the curve it laid down`() {
+        // The shape columns are the whole point: an unwind re-derives from them, so a restore that
+        // rounded or dropped one would leave grams in the samples nothing could take back out.
+        val r = loggedExercise()
+        val back = Archive.readLoggedExercise(parse(render { Archive.write(it, r) }))
+        assertEquals(r.copy(sourceSessionId = null), back)
+        assertEquals(r.grams, back.grams, 0.0)
+        assertEquals(r.curveDurationMin, back.curveDurationMin, 0.0)
+    }
+
+    @Test
+    fun `a replay's source bout is dropped, not carried to a phone where the rowid means nothing`() {
+        assertNull(Archive.readLoggedExercise(parse(render { Archive.write(it, loggedExercise()) })).sourceSessionId)
+    }
+
+    @Test
+    fun `an edited replay keeps its edit stamp`() {
+        val edited = loggedExercise().copy(mutatedAtMs = 1_700_000_300_000L)
+        assertEquals(edited, Archive.readLoggedExercise(parse(render { Archive.write(it, edited) })).copy(sourceSessionId = 7L))
+    }
+
+    @Test
     fun `a bout round-trips whole`() {
         val s = exerciseSession()
         assertEquals(s, Archive.readExercise(parse(render { Archive.write(it, s) })))
@@ -324,6 +347,22 @@ class ArchiveCodecTest {
         val line = """{"t":"exerciseFix","ts":1,"la":1.0,"lo":2.0,"acc":5.0}"""
         assertTrue(runCatching { Archive.readExerciseFix(parse(line)) }.isFailure)
     }
+
+    private fun loggedExercise() = LoggedExerciseEntity(
+        clientId = "11111111-2222-3333-4444-555555555555",
+        tsMs = 1_700_000_100_000L,
+        tzOffsetMin = 180,
+        kind = "WALK",
+        durationMin = 45.0,
+        grams = 22.5,
+        k = 3.0,
+        theta = 15.0,
+        curveDurationMin = 135.0,
+        sourceSessionId = 7L,
+        updatedAt = 1_700_000_200_000L,
+        loggedAtMs = 1_700_000_150_000L,
+        mutatedAtMs = null,
+    )
 
     private fun exerciseSession() = ExerciseSessionEntity(
         clientId = "cccccccc-dddd-eeee-ffff-000000000000",

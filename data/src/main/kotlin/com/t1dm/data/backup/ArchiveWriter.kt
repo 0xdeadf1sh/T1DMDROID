@@ -28,6 +28,7 @@ data class ArchiveCounts(
     val conformal: Int = 0,
     val loras: Int = 0,
     val exerciseSessions: Int = 0,
+    val loggedExercise: Int = 0,
     val exerciseFixes: Int = 0,
     val tombstones: Int = 0,
     val infills: Int = 0,
@@ -35,7 +36,7 @@ data class ArchiveCounts(
     val total: Int
         get() = readings + samples + doses + meals + basal + foods + savedMeals +
             savedItems + insulinTypes + strokes + sources + profiles + conformal +
-            loras + exerciseSessions + exerciseFixes + tombstones + infills
+            loras + exerciseSessions + loggedExercise + exerciseFixes + tombstones + infills
 }
 
 /**
@@ -197,6 +198,20 @@ class ArchiveWriter(private val db: AppDatabase) {
         }
         counts = counts.copy(exerciseSessions = exerciseSessions, exerciseFixes = exerciseFixes)
 
+        var loggedExercise = 0
+        var replayTs = Long.MIN_VALUE
+        var replayId = Long.MIN_VALUE
+        while (true) {
+            val page = db.loggedExerciseDao().pageFrom(replayTs, replayId, Archive.BATCH)
+            if (page.isEmpty()) break
+            for (r in page) Archive.write(rw, r)
+            loggedExercise += page.size
+            replayTs = page.last().tsMs
+            replayId = page.last().id
+            if (page.size < Archive.BATCH) break
+        }
+        counts = counts.copy(loggedExercise = loggedExercise)
+
         val basal = db.basalScheduleDao().all()
         for (r in basal) Archive.write(rw, r)
 
@@ -270,6 +285,7 @@ class ArchiveWriter(private val db: AppDatabase) {
         rw.put(Archive.T_CONFORMAL, c.conformal)
         rw.put(Archive.T_LORA, c.loras)
         rw.put(Archive.T_EXERCISE, c.exerciseSessions)
+        rw.put(Archive.T_LOGGED_EXERCISE, c.loggedExercise)
         rw.put(Archive.T_EXERCISE_FIX, c.exerciseFixes)
         rw.put(Archive.T_TOMBSTONE, c.tombstones)
         rw.put(Archive.T_INFILL, c.infills)

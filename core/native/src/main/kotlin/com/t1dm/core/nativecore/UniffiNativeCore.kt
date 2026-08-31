@@ -912,11 +912,13 @@ private fun UniffiAdvancedStats.toModel(): AdvancedStats = AdvancedStats(
 private fun UniffiCurveKind.toModel(): CurveKind = when (this) {
     UniffiCurveKind.CARB -> CurveKind.CARB
     UniffiCurveKind.INSULIN -> CurveKind.INSULIN
+    UniffiCurveKind.EXERCISE -> CurveKind.EXERCISE
 }
 
 private fun CurveKind.toUniffi(): UniffiCurveKind = when (this) {
     CurveKind.CARB -> UniffiCurveKind.CARB
     CurveKind.INSULIN -> UniffiCurveKind.INSULIN
+    CurveKind.EXERCISE -> UniffiCurveKind.EXERCISE
 }
 
 private fun UniffiInsulinFamily.toModel(): InsulinFamily = when (this) {

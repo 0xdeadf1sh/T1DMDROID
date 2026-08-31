@@ -46,6 +46,8 @@ pub const TRESIBA_DIA_MIN: f64 = 42.0 * 60.0;
 pub enum CurveKind {
     Carb,
     Insulin,
+    /// Carbohydrate-equivalent glucose disposal, g/step, positive. `SPEC/invariants.md` §5.
+    Exercise,
 }
 
 /// `values` sum to `total`: Ra grams for carbs, PK action-units for insulin.

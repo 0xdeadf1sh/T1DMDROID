@@ -315,9 +315,43 @@ class MigrationConstantsTest {
         }
     }
 
+    @Test
+    fun `the v27 replay-table DDL is exactly what Room generates`() {
+        val text = schemaText(27)
+        assertEquals(createSqlOf(text, REPLAY_TABLE), MigrationRunner.SQL_26_27_LOGGED_EXERCISE)
+        // Room stores an index with the table placeholder unresolved, so put it back.
+        for (sql in listOf(
+            MigrationRunner.SQL_26_27_LOGGED_EXERCISE_TS,
+            MigrationRunner.SQL_26_27_LOGGED_EXERCISE_CLIENT_ID,
+        )) {
+            val index = sql.replace("`$REPLAY_TABLE`", "`\${TABLE_NAME}`").replace("\"", "\\\"")
+            assertTrue("an index DDL Room is not looking for: $index", text.contains(index))
+        }
+    }
+
+    /** The unwind re-derives a replay's curve from the row, so the shape columns must be NOT NULL. */
+    @Test
+    fun `the replay DDL declares exactly the entity's columns, curve shape included`() {
+        val declared = BACKTICKED.findAll(MigrationRunner.SQL_26_27_LOGGED_EXERCISE)
+            .map { it.groupValues[1] }
+            .toSet() - REPLAY_TABLE
+        val fields = LoggedExerciseEntity::class.java.declaredFields
+            .filterNot { it.isSynthetic || it.name.startsWith('$') }
+            .map { it.name }
+            .toSet()
+        assertEquals(fields, declared)
+        for (column in listOf("grams", "k", "theta", "curveDurationMin")) {
+            assertTrue(
+                "`$column` must be NOT NULL or a delete cannot reproduce what the row laid down",
+                MigrationRunner.SQL_26_27_LOGGED_EXERCISE.contains("`$column` REAL NOT NULL"),
+            )
+        }
+    }
+
     private companion object {
         const val RAW_TABLE = "cgm_sample_raw"
         const val SECRET_TABLE = "cgm_sensor_secret"
+        const val REPLAY_TABLE = "logged_exercise"
         val BACKTICKED = Regex("`([A-Za-z_][A-Za-z0-9_]*)`")
 
         val ENTITY_FIELDS: Set<String> = CgmSourceEntity::class.java.declaredFields

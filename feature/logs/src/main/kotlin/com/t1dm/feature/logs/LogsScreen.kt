@@ -114,7 +114,10 @@ private fun EditEntryDialog(
     val haptics = rememberT1dmHaptics()
     var amountText by remember(entry.clientId) { mutableStateOf(fmtAmount(entry.amount)) }
     var shiftText by remember(entry.clientId) { mutableStateOf("0") }
-    val amount = amountText.toDoubleOrNull()
+    // A bout's magnitude is its duration times the carb-equivalent, and the duration is the bout's
+    // own — so a replay moves in time and in nothing else.
+    val timeOnly = entry.kind == CurveKind.EXERCISE
+    val amount = if (timeOnly) entry.amount else amountText.toDoubleOrNull()
     val shiftMin = shiftText.toLongOrNull()
     val valid = amount != null && amount > 0.0 && shiftMin != null
 
@@ -128,13 +131,15 @@ private fun EditEntryDialog(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                 )
-                OutlinedTextField(
-                    value = amountText,
-                    onValueChange = { amountText = it },
-                    label = { Text(if (entry.kind == CurveKind.CARB) "g" else "U") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                )
+                if (!timeOnly) {
+                    OutlinedTextField(
+                        value = amountText,
+                        onValueChange = { amountText = it },
+                        label = { Text(if (entry.kind == CurveKind.CARB) "g" else "U") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    )
+                }
                 OutlinedTextField(
                     value = shiftText,
                     onValueChange = { shiftText = it },

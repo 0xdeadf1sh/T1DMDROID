@@ -1,4 +1,4 @@
-package com.t1dm.sensors
+package com.t1dm.data.curve
 
 import com.t1dm.data.T1dmRepository
 import org.junit.Assert.assertEquals

@@ -8,8 +8,11 @@ import com.t1dm.data.ExerciseCurveBucket
 import com.t1dm.data.T1dmRepository
 import com.t1dm.data.curve.CurveEngine
 import com.t1dm.data.curve.ExerciseDisposal
+import com.t1dm.data.curve.exerciseCurveLaid
+import com.t1dm.data.curve.exerciseCurveTaken
 import com.t1dm.data.db.ExerciseFixEntity
 import com.t1dm.data.db.ExerciseSessionEntity
+import com.t1dm.data.db.LoggedExerciseEntity
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
@@ -24,6 +27,8 @@ class ExerciseController(
     /** Grams per minute, for re-deriving a bout's magnitude on a delete. */
     private val carbEquivPerMin: suspend () -> Double = { ExerciseDisposal.DEFAULT_CARB_EQUIV_PER_MIN },
     private val now: () -> Long = System::currentTimeMillis,
+    /** Per SLOT, not per row: a curve running ninety minutes past its bout can cross a DST step. */
+    private val tzOffsetMinAt: (Long) -> Int = { ms -> TimeZone.getDefault().getOffset(ms) / 60_000 },
 ) {
     /** Every recorded bout, newest first. */
     val sessions: Flow<List<ExerciseSession>> =
@@ -38,7 +43,7 @@ class ExerciseController(
                     clientId = "",
                     startMs = startMs,
                     endMs = null,
-                    tzOffsetMin = TimeZone.getDefault().getOffset(startMs) / 60_000,
+                    tzOffsetMin = tzOffsetMinAt(startMs),
                     kind = kind.name,
                     activeSec = 0,
                     distanceM = null,
@@ -112,6 +117,72 @@ class ExerciseController(
         }
         repository.deleteExerciseSession(id, unwind, now())
     }
+
+    /**
+     * [source] laid down again at [startMs]: its kind and its duration, rated at the patient's
+     * CURRENT carb-equivalent. Null for a bout with no duration — §5's magnitude is duration times
+     * rate, so a zero-length bout disposes of nothing and a row for it would unwind nothing.
+     */
+    suspend fun replay(source: ExerciseSession, startMs: Long): LoggedExerciseEntity? =
+        logExercise(source.kind, source.activeSec / 60.0, startMs, source.id)
+
+    /** Writes the §5 disposal gamma into `sample.exercise` and the row that owns it, in one go. */
+    suspend fun logExercise(
+        kind: ExerciseKind,
+        durationMin: Double,
+        startMs: Long,
+        sourceSessionId: Long? = null,
+    ): LoggedExerciseEntity? = withContext(dispatchers.io) {
+        val params = ExerciseDisposal.paramsFor(durationMin, carbEquivPerMin())
+        if (params.grams <= 0.0) return@withContext null
+        val nowMs = now()
+        val gridStart = T1dmRepository.snapToGrid(startMs)
+        val values = curves.gamma(params.grams, params.k, params.theta, params.durationMin)
+        val row = LoggedExerciseEntity(
+            clientId = "",
+            tsMs = gridStart,
+            tzOffsetMin = tzOffsetMinAt(gridStart),
+            kind = kind.name,
+            durationMin = durationMin,
+            grams = params.grams,
+            k = params.k,
+            theta = params.theta,
+            curveDurationMin = params.durationMin,
+            sourceSessionId = sourceSessionId,
+            updatedAt = nowMs,
+            loggedAtMs = nowMs,
+        )
+        repository.logLoggedExercise(row, exerciseCurveLaid(gridStart, values, tzOffsetMinAt), nowMs)
+    }
+
+    /**
+     * Moves a replay in time and nothing else: the magnitude is a function of duration alone, so the
+     * curve is the same array laid at a new start. Re-derived from what the ROW stores, so a
+     * carb-equivalent changed since it was logged cannot rewrite its history.
+     */
+    suspend fun shiftLoggedExercise(id: Long, tsMs: Long): LoggedExerciseEntity? =
+        withContext(dispatchers.io) {
+            val row = repository.loggedExerciseById(id) ?: return@withContext null
+            val values = curveOf(row)
+            val gridStart = T1dmRepository.snapToGrid(tsMs)
+            if (gridStart == row.tsMs) return@withContext row
+            repository.editLoggedExercise(
+                row = row.copy(tsMs = gridStart, tzOffsetMin = tzOffsetMinAt(gridStart)),
+                unwind = exerciseCurveTaken(row.tsMs, values, tzOffsetMinAt),
+                write = exerciseCurveLaid(gridStart, values, tzOffsetMinAt),
+                nowMs = now(),
+            )
+        }
+
+    /** Takes the row's grams back out of every slot it wrote, then drops it. */
+    suspend fun deleteLoggedExercise(id: Long) = withContext(dispatchers.io) {
+        val row = repository.loggedExerciseById(id)
+        val unwind = if (row == null) emptyList() else exerciseCurveTaken(row.tsMs, curveOf(row), tzOffsetMinAt)
+        repository.deleteLoggedExercise(id, unwind, now())
+    }
+
+    private suspend fun curveOf(row: LoggedExerciseEntity): DoubleArray =
+        curves.gamma(row.grams, row.k, row.theta, row.curveDurationMin)
 
     /**
      * Close every bout the app never saw stopped, at the newest instant it can prove it was still

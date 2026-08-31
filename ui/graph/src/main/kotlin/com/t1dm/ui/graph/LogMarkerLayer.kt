@@ -14,9 +14,10 @@ import com.t1dm.core.model.CurveKind
 import com.t1dm.core.model.LogMarker
 import kotlin.math.abs
 
-/** Two fixed lanes in the plot's lower region, insulin above carbs, decided by channel alone and
- *  measured down from the caller's `plotBottom` — an overlay, never a reduction of the plot. A tap
- *  is answered by position: indices into the caller's own list, so no amount enters this layer. */
+/** One fixed lane per channel in the plot's lower region, carbs on the floor and exercise on top,
+ *  decided by channel alone and measured down from the caller's `plotBottom` — an overlay, never a
+ *  reduction of the plot. A tap is answered by position: indices into the caller's own list, so no
+ *  amount enters this layer. */
 
 /** Glyph edge, in dp. The tap reach and the clustering distance both derive from it, so the reach is
  *  well under the platform's 48 dp guideline. */
@@ -34,10 +35,13 @@ private const val LOG_MARKER_FOOT_DP = 2.5f
  *  plot. */
 private const val LOG_MARKER_LANE_GAP_DP = 2.5f
 
+/** One per [CurveKind]. */
+private const val LOG_MARKER_LANES = 3f
+
 /** The layer's whole claim on the plot, in dp up from `plotBottom`. Everything that must stand clear
  *  of the lanes measures from this. */
 internal const val LOG_MARKER_BAND_DP =
-    LOG_MARKER_FOOT_DP + LOG_MARKER_DP + LOG_MARKER_LANE_GAP_DP + LOG_MARKER_DP
+    LOG_MARKER_FOOT_DP + LOG_MARKER_LANES * LOG_MARKER_DP + (LOG_MARKER_LANES - 1) * LOG_MARKER_LANE_GAP_DP
 
 /** One alpha for every log: the outbox has no SENT state, so no per-mark claim about the server can
  *  be made here. */
@@ -52,11 +56,14 @@ internal fun logMarkerTapReachPx(dpPx: Float): Float = logMarkerSeparationPx(dpP
 /** [plotBottom] is the caller's plot floor, never the composable's height, which the model-axis
  *  strip moves. */
 internal fun logMarkerLaneTop(kind: CurveKind, plotBottom: Float, dpPx: Float): Float {
-    val carbTop = plotBottom - (LOG_MARKER_FOOT_DP + LOG_MARKER_DP) * dpPx
-    return when (kind) {
-        CurveKind.CARB -> carbTop
-        CurveKind.INSULIN -> carbTop - (LOG_MARKER_LANE_GAP_DP + LOG_MARKER_DP) * dpPx
+    // Bottom-up, carbs on the floor: the order the panel's legend reads.
+    val lane = when (kind) {
+        CurveKind.CARB -> 0
+        CurveKind.INSULIN -> 1
+        CurveKind.EXERCISE -> 2
     }
+    val foot = LOG_MARKER_FOOT_DP + lane * (LOG_MARKER_LANE_GAP_DP + LOG_MARKER_DP)
+    return plotBottom - (foot + LOG_MARKER_DP) * dpPx
 }
 
 /** One channel, ascending by `tsMs`. `source[i]` is `marks[i]`'s position in the list passed to
@@ -150,6 +157,8 @@ internal fun hitTestLogMarkers(
     insulinClusters: List<MarkerCluster>,
     carbLane: MarkerLane,
     carbClusters: List<MarkerCluster>,
+    exerciseLane: MarkerLane = MarkerLane.EMPTY,
+    exerciseClusters: List<MarkerCluster> = emptyList(),
 ): List<Int> {
     if (xPx < plotLeft || xPx > plotRight) return emptyList()
     if (yPx < plotBottom - LOG_MARKER_BAND_DP * dpPx || yPx > plotBottom) return emptyList()
@@ -157,6 +166,7 @@ internal fun hitTestLogMarkers(
     val hits = ArrayList<Int>(4)
     collectHits(insulinLane, insulinClusters, xPx, reach, hits)
     collectHits(carbLane, carbClusters, xPx, reach, hits)
+    collectHits(exerciseLane, exerciseClusters, xPx, reach, hits)
     hits.sort()
     return hits
 }

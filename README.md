@@ -69,9 +69,11 @@ Bouts run from a manual start to a manual stop, following GPS during walks and r
 
 Every bout opens its own review: the route, the glucose trace from 30 minutes before to 2 hours after, and a slider sweeping the forecast issued at any instant in that window across the trace that followed it. Where no forecast was issued, the slider shows nothing rather than the nearest one. Tracks are never uploaded; map tiles are fetched for the surrounding area and cached on the device.
 
+A bout can also be replayed at a chosen instant, past or future, which lays its disposal curve into the exercise channel and lets the forecast answer it. A replay is a log like any other: it appears in Logs, its curve is drawn on the glucose panel beside the carbohydrate and insulin curves, and it can be moved in time or deleted, which takes its grams back out of the series.
+
 ### Backup and Restore
 
-One gzipped, line-delimited JSON file holds the whole local record — every glucose reading, the wide sensor series, meals, doses, basal schedules, custom foods, saved meals, insulin types, exercise bouts and their tracks, the graph's freehand drawings, and every setting. Automatic backups run on a chosen cadence into a folder outside app storage, so they survive an uninstall, with a configurable number of older archives retained.
+One gzipped, line-delimited JSON file holds the whole local record — every glucose reading, the wide sensor series, meals, doses, basal schedules, custom foods, saved meals, insulin types, exercise bouts and their tracks, replayed bouts, the graph's freehand drawings, and every setting. Automatic backups run on a chosen cadence into a folder outside app storage, so they survive an uninstall, with a configurable number of older archives retained.
 
 Restore merges: a record already present is kept, so importing the same file twice changes nothing and an older archive can never roll back newer data. The server token is never written to a backup — it lives in the Android Keystore rather than in the database.
 

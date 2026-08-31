@@ -97,11 +97,14 @@ import com.t1dm.inference.backend.GraphTensors
 import com.t1dm.core.nativecore.UniffiNativeCore
 import com.t1dm.app.exercise.AppExerciseSource
 import com.t1dm.app.service.ExerciseService
+import com.t1dm.core.design.exerciseKindLabel
 import com.t1dm.core.model.ActiveExercise
+import com.t1dm.core.model.ExerciseSession
 import com.t1dm.app.stats.AppStatsSource
 import com.t1dm.core.model.SpanLinePreview
 import com.t1dm.data.BgCut
 import com.t1dm.data.T1dmRepository
+import com.t1dm.ui.graph.OverlayInput
 import com.t1dm.ui.graph.StepsFrame
 import com.t1dm.ui.graph.MaskControls
 import com.t1dm.ui.graph.MaskSelection
@@ -118,6 +121,7 @@ import com.t1dm.feature.dashboard.ReachLight
 import com.t1dm.app.sync.WsConnState
 import com.t1dm.watch.WatchLinkPhase
 import com.t1dm.data.curve.ChannelBuilder
+import com.t1dm.data.curve.ExerciseDisposal
 import com.t1dm.data.curve.CurveEngine
 import com.t1dm.data.curve.ExerciseChannelSource
 import com.t1dm.data.curve.DoseStore
@@ -141,6 +145,7 @@ import com.t1dm.data.db.AppDatabase
 import com.t1dm.data.db.DoseKind
 import com.t1dm.data.db.LoggedDoseEntity
 import com.t1dm.data.db.toBlob
+import com.t1dm.data.db.LoggedExerciseEntity
 import com.t1dm.data.db.LoggedMealEntity
 import com.t1dm.data.db.OutboxKind
 import com.t1dm.sync.EventStatDto
@@ -1911,8 +1916,15 @@ class AppContainer(context: Context) {
         curveEngine.gamma(grams, k, theta, dur)
     }
 
-    /** Bit-for-bit the curve [logBolus]/[logBasal] commit for that preset — both go through
-     *  [presetCurve]. By value, not resolved, so the sparkline redraws on a chip tap. */
+    /** The exact disposal curve a bout of this many minutes lays into the exercise channel, at the
+     *  patient's current carb-equivalent. Empty for a bout that disposes of nothing. */
+    val previewExerciseCurve: suspend (Double) -> DoubleArray = { durationMin ->
+        val p = ExerciseDisposal.paramsFor(durationMin, settingsStore.currentCarbEquivPerMin())
+        if (p.grams <= 0.0) DoubleArray(0) else curveEngine.gamma(p.grams, p.k, p.theta, p.durationMin)
+    }
+
+    /** Bit-for-bit the curve [logBolus]/[logBasal] persist for [spec], both going through [presetCurve].
+     *  The preset is taken by value, not resolved, so the sparkline redraws on a chip tap. */
     val previewDoseCurve: suspend (Double, InsulinPresetSpec) -> DoubleArray = { units, spec ->
         presetCurve(units, spec)
     }
@@ -1945,13 +1957,11 @@ class AppContainer(context: Context) {
         return out
     }
 
-    /** Carbs, combined insulin and the BASAL-only sub-channel from ONE gather. Off-main. */
-    suspend fun dashboardOverlayChannels(
-        gridStartMs: Long,
-        nSteps: Int,
-    ): Triple<DoubleArray, DoubleArray, DoubleArray> {
+    /** Carbs, combined insulin and the BASAL-only sub-channel over one grid window, from ONE gather.
+     *  Off-main. */
+    suspend fun dashboardOverlayChannels(gridStartMs: Long, nSteps: Int): OverlayInput {
         val ch = channelBuilder.overlayChannels(gridStartMs, nSteps)
-        return Triple(ch.carb, ch.insulin, ch.basal)
+        return OverlayInput(ch.carb, ch.insulin, ch.basal, ch.exercise)
     }
 
     /**
@@ -2455,6 +2465,9 @@ class AppContainer(context: Context) {
             when (tomb.kind) {
                 CurveKind.CARB -> outboxEnqueuer.enqueueMealTombstone(tomb.toMealTombstoneDto(), now)
                 CurveKind.INSULIN -> outboxEnqueuer.enqueueDoseTombstone(tomb.toDoseTombstoneDto(), now)
+                // Unreachable: `event_tombstone.kind` decodes to CARB or INSULIN alone, and a replay
+                // is deleted by unwinding its grams, never by a tombstone.
+                CurveKind.EXERCISE -> continue
             }
             repository.markTombstonePushed(tomb.clientId, now)
             n++
@@ -2516,8 +2529,10 @@ class AppContainer(context: Context) {
     val loggedEntries: Flow<List<LoggedEntry>> = combine(
         repository.observeRecentLoggedMeals(LOG_FEED_LIMIT),
         repository.observeRecentLoggedDoses(LOG_FEED_LIMIT),
-    ) { meals, doses ->
-        val rows = meals.map { it.toLoggedEntry() } + doses.map { it.toLoggedEntry() }
+        repository.observeRecentLoggedExercise(LOG_FEED_LIMIT),
+    ) { meals, doses, exercise ->
+        val rows = meals.map { it.toLoggedEntry() } + doses.map { it.toLoggedEntry() } +
+            exercise.map { it.toLoggedEntry() }
         rows
             // Totally ordered, not merely sorted by time: two rows can share a grid slot, and an
             // unstable order would reshuffle the list under the reader on every emission.
@@ -2529,20 +2544,33 @@ class AppContainer(context: Context) {
             .take(LOG_FEED_LIMIT)
     }
 
-    /** Unconditional: the same tombstone path the undo takes, with no refusal branch left to have. */
+    /** Unconditional — the same tombstone path the undo takes. An exercise deletion tombstones
+     *  locally and pushes nothing: the wire has no exercise event, and the unwind corrects the wide
+     *  sample's scalar in place. */
     suspend fun deleteLoggedEntry(entry: LoggedEntry) {
         when (entry.kind) {
             CurveKind.CARB -> tombstoneAndPushMeal(entry.rowId)
             CurveKind.INSULIN -> tombstoneAndPushDose(entry.rowId)
+            CurveKind.EXERCISE -> exerciseController.deleteLoggedExercise(entry.rowId)
         }
         reforecastAfterCurveWrite()
     }
 
-    /**
-     * Keeps the row's identity. The shape is re-resolved from the edited GI as the logging path
-     * resolves it, and the stored curve is rescaled by the repository writer. The push supersedes
-     * whatever is queued under that key.
-     */
+    /** [source] replayed at [startMs]. Its disposal reaches the model the way a recorded bout's
+     *  does — through `sample.exercise` — so the forecast answers it on the next cycle. */
+    suspend fun replayExercise(source: ExerciseSession, startMs: Long) {
+        exerciseController.replay(source, startMs) ?: return
+        reforecastAfterCurveWrite()
+    }
+
+    /** Time only: §5 makes the magnitude a function of duration, and the duration is the bout's. */
+    suspend fun shiftLoggedExercise(entry: LoggedEntry, tsMs: Long) {
+        exerciseController.shiftLoggedExercise(entry.rowId, tsMs) ?: return
+        reforecastAfterCurveWrite()
+    }
+
+    /** Keeps the row's identity and re-pushes under the same key, superseding whatever is queued. The
+     *  shape is re-resolved from the edited GI and the stored curve rescaled by the repository writer. */
     suspend fun editLoggedMeal(entry: LoggedEntry, grams: Double, gi: Double?, tsMs: Long) {
         val now = System.currentTimeMillis()
         val old = repository.loggedMealById(entry.rowId) ?: return
@@ -2594,6 +2622,22 @@ class AppContainer(context: Context) {
         // Carried as STORED, never phrased here: `:core:design` owns how either reads.
         gi = gi,
         detail = note,
+        updatedAtMs = updatedAt,
+        mutatedAtMs = mutatedAtMs,
+    )
+
+    /** [LoggedEntry.amount] is MINUTES here and [LoggedEntry.detail] the bout kind — see
+     *  [com.t1dm.core.design.logAmountLabel], which renders the pair as one headline. */
+    private fun LoggedExerciseEntity.toLoggedEntry() = LoggedEntry(
+        rowId = id,
+        clientId = clientId,
+        kind = CurveKind.EXERCISE,
+        insulin = null,
+        tsMs = tsMs,
+        tzOffsetMin = tzOffsetMin,
+        amount = durationMin,
+        gi = null,
+        detail = exerciseKindLabel(kind),
         updatedAtMs = updatedAt,
         mutatedAtMs = mutatedAtMs,
     )

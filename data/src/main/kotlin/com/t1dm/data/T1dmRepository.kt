@@ -33,11 +33,13 @@ import com.t1dm.data.db.CgmSourceEntity
 import com.t1dm.data.db.DoseEventEntity
 import com.t1dm.data.db.ExerciseFixEntity
 import com.t1dm.data.db.ExerciseSessionEntity
+import com.t1dm.data.db.LoggedExerciseEntity
 import com.t1dm.data.db.FoodEntity
 import com.t1dm.data.db.InsulinTypeEntity
 import com.t1dm.data.db.EventTombstoneEntity
 import com.t1dm.data.db.LoggedDoseEntity
 import com.t1dm.data.db.TOMBSTONE_KIND_DOSE
+import com.t1dm.data.db.TOMBSTONE_KIND_EXERCISE
 import com.t1dm.data.db.TOMBSTONE_KIND_MEAL
 import com.t1dm.data.db.actingUntilMs
 import com.t1dm.data.db.toModel as infillToModel
@@ -120,6 +122,7 @@ class T1dmRepository(
     private val doses get() = db.doseEventDao()
     private val loggedDoses get() = db.loggedDoseDao()
     private val loggedMeals get() = db.loggedMealDao()
+    private val loggedExercise get() = db.loggedExerciseDao()
     private val basalSchedules get() = db.basalScheduleDao()
     private val advertsRaw get() = db.cgmAdvertRawDao()
     private val outbox get() = db.outboxDao()
@@ -574,6 +577,8 @@ class T1dmRepository(
         inWriteTx {
             val known = tombstones.byClientId(clientId)
             if (known != null && known.updatedAt >= updatedAt) return@inWriteTx
+            // No exercise event exists on the wire, so the server can never have authored one.
+            require(kind != CurveKind.EXERCISE) { "the server authors no exercise tombstone" }
             val kindText = if (kind == CurveKind.INSULIN) TOMBSTONE_KIND_DOSE else TOMBSTONE_KIND_MEAL
             val acting = if (kind == CurveKind.INSULIN) {
                 loggedDoses.byClientId(clientId)?.let { d ->
@@ -741,7 +746,11 @@ class T1dmRepository(
     /** The catch-up's event high-water mark. The tombstone term stops a deletion moving the mark
      *  backward and pulling the deleted event back in. */
     suspend fun newestEventTs(): Long? = withContext(io) {
-        listOfNotNull(loggedMeals.latestTs(), loggedDoses.latestTs(), tombstones.latestTs()).maxOrNull()
+        listOfNotNull(
+            loggedMeals.latestTs(),
+            loggedDoses.latestTs(),
+            tombstones.latestTs(listOf(TOMBSTONE_KIND_MEAL, TOMBSTONE_KIND_DOSE)),
+        ).maxOrNull()
     }
 
     fun observeLatestMood(): Flow<Int?> = samples.observeLatestMood()
@@ -764,8 +773,113 @@ class T1dmRepository(
 
     suspend fun deleteAllPaintStrokes() = withContext(io) { paintStrokes.deleteAll() }
 
-    // Phone-local, both tables. What syncs is the disposal curve [recordExerciseCurve] lays into the
-    // wide sample.
+    // Phone-local, all three tables. What syncs is the disposal curve [recordExerciseCurve] lays
+    // into the wide sample, and nothing here.
+
+    /**
+     * Row and curve in ONE transaction: a row whose grams never reached `sample.exercise`, or grams
+     * with no row to unwind them, are both unrecoverable by inspection. [buckets] carry
+     * `priorGrams = 0` — nothing of this row is in the slots yet. Returns the PERSISTED row.
+     */
+    suspend fun logLoggedExercise(
+        row: LoggedExerciseEntity,
+        buckets: List<ExerciseCurveBucket>,
+        nowMs: Long,
+    ): LoggedExerciseEntity = withContext(io) {
+        val minted = row.copy(
+            clientId = row.clientId.ifBlank { newClientId() },
+            tsMs = snapToGrid(row.tsMs),
+            loggedAtMs = row.loggedAtMs.takeIf { it != 0L } ?: nowMs,
+        )
+        inWriteTx {
+            val id = loggedExercise.insert(minted)
+            for (b in buckets) {
+                mergeSampleInTx(b.gridTs, b.tzOffsetMin, nowMs) {
+                    it.copy(exercise = mergedExerciseGrams(it.exercise, b.priorGrams, b.grams))
+                }
+            }
+            minted.copy(id = id)
+        }.also { _logEvents.update { t -> t + 1 } }
+    }
+
+    /**
+     * [unwind] takes the row's OLD curve back out and [write] lays the new one in — separate lists
+     * because a shift overlaps itself, and one merged bucket per slot would lose whichever half it
+     * did not carry. Order matters: unwind first. Null when the row is gone.
+     */
+    suspend fun editLoggedExercise(
+        row: LoggedExerciseEntity,
+        unwind: List<ExerciseCurveBucket>,
+        write: List<ExerciseCurveBucket>,
+        nowMs: Long,
+    ): LoggedExerciseEntity? = withContext(io) {
+        val next = row.copy(
+            tsMs = snapToGrid(row.tsMs),
+            updatedAt = maxOf(row.updatedAt + 1, nowMs),
+            mutatedAtMs = nowMs,
+        )
+        inWriteTx {
+            if (loggedExercise.byId(next.id) == null) return@inWriteTx null
+            for (b in unwind) {
+                mergeSampleInTx(b.gridTs, b.tzOffsetMin, nowMs) {
+                    it.copy(exercise = mergedExerciseGrams(it.exercise, b.priorGrams, 0.0))
+                }
+            }
+            for (b in write) {
+                mergeSampleInTx(b.gridTs, b.tzOffsetMin, nowMs) {
+                    it.copy(exercise = mergedExerciseGrams(it.exercise, b.priorGrams, b.grams))
+                }
+            }
+            loggedExercise.update(next)
+            next
+        }?.also { _logEvents.update { t -> t + 1 } }
+    }
+
+    /**
+     * [unwind] carries this row's own grams as `priorGrams`, so an overlapping bout's share stays.
+     * The tombstone is what stops a restore bringing the row back without its grams — the archive
+     * merge would insert it, the archived samples would lose to the phone's own, and a later delete
+     * or shift would then move grams this row never laid. `pushEnqueuedAtMs` is stamped for the same
+     * reason [applyServerTombstone] stamps it: there is nothing to push.
+     */
+    suspend fun deleteLoggedExercise(
+        id: Long,
+        unwind: List<ExerciseCurveBucket>,
+        nowMs: Long,
+    ) = withContext(io) {
+        inWriteTx {
+            loggedExercise.byId(id)?.let { row ->
+                tombstones.upsert(
+                    EventTombstoneEntity(
+                        clientId = row.clientId,
+                        kind = TOMBSTONE_KIND_EXERCISE,
+                        tsMs = row.tsMs,
+                        tzOffsetMin = row.tzOffsetMin,
+                        updatedAt = maxOf(nowMs, row.updatedAt + 1),
+                        createdAtMs = nowMs,
+                        pushEnqueuedAtMs = nowMs,
+                        actingUntilMs = null,
+                    ),
+                )
+            }
+            for (b in unwind) {
+                mergeSampleInTx(b.gridTs, b.tzOffsetMin, nowMs) {
+                    it.copy(exercise = mergedExerciseGrams(it.exercise, b.priorGrams, 0.0))
+                }
+            }
+            loggedExercise.delete(id)
+        }
+        _logEvents.update { t -> t + 1 }
+    }
+
+    suspend fun loggedExerciseById(id: Long): LoggedExerciseEntity? =
+        withContext(io) { loggedExercise.byId(id) }
+
+    suspend fun loggedExerciseInRange(fromMs: Long, toMs: Long): List<LoggedExerciseEntity> =
+        withContext(io) { loggedExercise.inRange(fromMs, toMs) }
+
+    fun observeRecentLoggedExercise(limit: Int): Flow<List<LoggedExerciseEntity>> =
+        loggedExercise.observeRecent(limit)
 
     /** Returns the PERSISTED row. `startMs` is NOT grid-snapped, unlike [logMeal]: a bout boundary is
      *  the instant the user chose. Only the per-bucket sample write is on the grid. */
@@ -928,8 +1042,11 @@ class T1dmRepository(
         edit: (SampleEntity) -> SampleEntity,
     ) {
         requireGrid(gridTs)
+        // [tzOffsetMin] seeds a NEW row only. §2 fixes `tz_offset` as the offset the slot was
+        // authored at, and a caller writing into a PAST slot resolves it from the device's zone
+        // today — after a move that renames the local hour of every statistic keyed on it.
         val base = samples.byTs(gridTs) ?: emptySample(gridTs, tzOffsetMin, nowMs)
-        samples.upsert(edit(base).copy(tzOffsetMin = tzOffsetMin, updatedAt = maxOf(base.updatedAt, nowMs)))
+        samples.upsert(edit(base).copy(updatedAt = maxOf(base.updatedAt, nowMs)))
         enqueueIngest(gridTs, nowMs)
     }
 
@@ -1753,6 +1870,7 @@ class T1dmRepository(
             tombstones.deleteAll()
             exerciseFixes.deleteAll()
             exerciseSessions.deleteAll()
+            loggedExercise.deleteAll()
             // kv LAST: it holds the watch nonce ceilings + pairing bits + every setting.
             kv.deleteAll()
         }

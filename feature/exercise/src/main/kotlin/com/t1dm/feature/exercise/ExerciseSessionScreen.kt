@@ -22,6 +22,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.KeyValueTable
+import com.t1dm.core.design.exerciseKindLabel as kindLabel
 import com.t1dm.core.design.fadingEdges
 import com.t1dm.core.design.logTimeLabel
 import com.t1dm.core.design.panelCardColors

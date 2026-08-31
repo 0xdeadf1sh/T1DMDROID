@@ -715,10 +715,32 @@ class MigrationTest {
     }
 
     @Test
-    fun migrate1To26_fullChain() {
+    fun migrate26To27_theReplayTableArrivesEmptyAndTheRecordedBoutsAreLeftAlone() {
+        val seed = helper.createDatabase(26)
+        seed.execSQL(
+            "INSERT INTO `exercise_session` (`clientId`,`startMs`,`endMs`,`tzOffsetMin`,`kind`," +
+                "`activeSec`,`distanceM`,`kcal`,`interrupted`,`note`,`updatedAt`) " +
+                "VALUES ('c1',1000,4000,0,'WALK',2700,NULL,NULL,0,NULL,4000)",
+        )
+        seed.close()
+
+        val db = helper.runMigrationsAndValidate(27, listOf(MigrationRunner.MIGRATION_26_27))
+
+        assertEquals(1, countTables(db, "logged_exercise"))
+        assertEquals(
+            "a recorded bout is not back-filled as a replay: its grams are already in `sample`",
+            0,
+            countRows(db, "SELECT COUNT(*) FROM `logged_exercise`"),
+        )
+        assertEquals(1, countRows(db, "SELECT COUNT(*) FROM `exercise_session`"))
+        db.close()
+    }
+
+    @Test
+    fun migrate1To27_fullChain() {
         helper.createDatabase(1).close()
         helper.runMigrationsAndValidate(
-            26,
+            27,
             listOf(
                 MigrationRunner.MIGRATION_1_2,
                 MigrationRunner.MIGRATION_2_3,
@@ -745,6 +767,7 @@ class MigrationTest {
                 MigrationRunner.MIGRATION_23_24,
                 MigrationRunner.MIGRATION_24_25,
                 MigrationRunner.MIGRATION_25_26,
+                MigrationRunner.MIGRATION_26_27,
             ),
         )
     }

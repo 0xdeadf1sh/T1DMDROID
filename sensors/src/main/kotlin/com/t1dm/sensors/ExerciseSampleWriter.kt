@@ -4,6 +4,7 @@ import com.t1dm.core.model.TrackPoint
 import com.t1dm.data.ExerciseCurveBucket
 import com.t1dm.data.T1dmRepository
 import com.t1dm.data.curve.CurveEngine
+import com.t1dm.data.curve.exerciseCurveBuckets
 import com.t1dm.data.curve.ExerciseDisposal
 import com.t1dm.data.exercise.ExerciseController
 import java.util.TimeZone
@@ -37,33 +38,6 @@ class RepositoryExerciseSampleWriter(
         repository.recordExerciseCurve(buckets, clock())
         for (b in buckets) written[b.gridTs] = b.grams
     }
-}
-
-/** Bucket `i` of [values] is the five minutes beginning `i` steps after the session's start slot;
- *  the snap is the repository's, per `../T1DMCOMMON/SPEC/invariants.md` §1. A slot whose value has
- *  not moved is dropped — the write would mint the row and an `INGEST` push for nothing. */
-internal fun exerciseCurveBuckets(
-    startMs: Long,
-    values: DoubleArray,
-    written: Map<Long, Double>,
-    tzOffsetMinAt: (Long) -> Int,
-): List<ExerciseCurveBucket> {
-    val gridStart = T1dmRepository.snapToGrid(startMs)
-    val out = ArrayList<ExerciseCurveBucket>(values.size)
-    for (i in values.indices) {
-        val gridTs = gridStart + i * T1dmRepository.GRID_MS
-        val prior = written[gridTs] ?: 0.0
-        if (values[i] == prior) continue
-        out.add(
-            ExerciseCurveBucket(
-                gridTs = gridTs,
-                tzOffsetMin = tzOffsetMinAt(gridTs),
-                grams = values[i],
-                priorGrams = prior,
-            ),
-        )
-    }
-    return out
 }
 
 /** Separate from [ExerciseSampleWriter]: the magnitude syncs, the track is phone-local. */

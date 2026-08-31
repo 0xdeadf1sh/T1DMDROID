@@ -645,6 +645,32 @@ object MigrationRunner {
         }
     }
 
+    internal const val SQL_26_27_LOGGED_EXERCISE =
+        "CREATE TABLE IF NOT EXISTS `logged_exercise` (" +
+            "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `clientId` TEXT NOT NULL, " +
+            "`tsMs` INTEGER NOT NULL, `tzOffsetMin` INTEGER NOT NULL, `kind` TEXT NOT NULL, " +
+            "`durationMin` REAL NOT NULL, `grams` REAL NOT NULL, `k` REAL NOT NULL, " +
+            "`theta` REAL NOT NULL, `curveDurationMin` REAL NOT NULL, `sourceSessionId` INTEGER, " +
+            "`updatedAt` INTEGER NOT NULL, `loggedAtMs` INTEGER NOT NULL DEFAULT 0, " +
+            "`mutatedAtMs` INTEGER)"
+
+    internal const val SQL_26_27_LOGGED_EXERCISE_TS =
+        "CREATE INDEX IF NOT EXISTS `index_logged_exercise_tsMs` ON `logged_exercise` (`tsMs`)"
+
+    internal const val SQL_26_27_LOGGED_EXERCISE_CLIENT_ID =
+        "CREATE UNIQUE INDEX IF NOT EXISTS `index_logged_exercise_clientId` " +
+            "ON `logged_exercise` (`clientId`)"
+
+    /** No backfill from `exercise_session`: those bouts already put their grams in `sample.exercise`,
+     *  and a row here would add a second copy of the same disposal. */
+    val MIGRATION_26_27 = object : Migration(26, 27) {
+        override fun migrate(connection: SQLiteConnection) {
+            connection.execSQL(SQL_26_27_LOGGED_EXERCISE)
+            connection.execSQL(SQL_26_27_LOGGED_EXERCISE_TS)
+            connection.execSQL(SQL_26_27_LOGGED_EXERCISE_CLIENT_ID)
+        }
+    }
+
     val ALL: Array<Migration> = arrayOf(
         MIGRATION_1_2,
         MIGRATION_2_3,
@@ -671,6 +697,7 @@ object MigrationRunner {
         MIGRATION_23_24,
         MIGRATION_24_25,
         MIGRATION_25_26,
+        MIGRATION_26_27,
     )
 
     fun <T : RoomDatabase> configure(builder: RoomDatabase.Builder<T>): RoomDatabase.Builder<T> =

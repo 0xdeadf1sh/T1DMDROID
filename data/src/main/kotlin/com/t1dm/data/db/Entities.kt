@@ -649,13 +649,55 @@ data class ExerciseFixEntity(
     val speedMps: Float?,
 )
 
+/**
+ * A replayed bout: the disposal gamma of `../T1DMCOMMON/SPEC/invariants.md` §5 laid into
+ * `sample.exercise` and nothing more. Phone-local — the wire has no exercise event, only the wide
+ * sample's scalar, so this table neither pushes nor tombstones.
+ *
+ * [durationMin] is the BOUT, [curveDurationMin] the curve it spreads over (`durationMin + 90`).
+ * [grams], [k], [theta] are stored RESOLVED so an unwind reproduces what this row actually wrote;
+ * re-deriving them would re-rate the row at whatever `exercise.carb_equiv_per_min` says today.
+ * [sourceSessionId] is the bout replayed from, kept for provenance and not joined on.
+ */
+@Entity(
+    tableName = "logged_exercise",
+    indices = [Index("tsMs"), Index(value = ["clientId"], unique = true)],
+)
+data class LoggedExerciseEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val clientId: String,
+    val tsMs: Long,
+    val tzOffsetMin: Int,
+    /** Raw TEXT, as `exercise_session.kind` is: a bout kind a later build writes stays readable. */
+    val kind: String,
+    val durationMin: Double,
+    val grams: Double,
+    val k: Double,
+    val theta: Double,
+    val curveDurationMin: Double,
+    val sourceSessionId: Long?,
+    val updatedAt: Long,
+    /** See [LoggedDoseEntity.loggedAtMs], `defaultValue` included. */
+    @ColumnInfo(defaultValue = "0") val loggedAtMs: Long = 0L,
+    /** See [LoggedDoseEntity.mutatedAtMs]. */
+    val mutatedAtMs: Long? = null,
+)
+
 const val TOMBSTONE_KIND_MEAL = "meal"
 
 const val TOMBSTONE_KIND_DOSE = "dose"
 
+/** Phone-local: it stops a restore resurrecting a deleted replay, and never reaches the wire — there
+ *  is no exercise event in `SPEC/http-api.md` for a server to have heard of. */
+const val TOMBSTONE_KIND_EXERCISE = "exercise"
+
 fun EventTombstoneEntity.toModel(): EventTombstone = EventTombstone(
     clientId = clientId,
-    kind = if (kind == TOMBSTONE_KIND_DOSE) CurveKind.INSULIN else CurveKind.CARB,
+    kind = when (kind) {
+        TOMBSTONE_KIND_DOSE -> CurveKind.INSULIN
+        TOMBSTONE_KIND_EXERCISE -> CurveKind.EXERCISE
+        else -> CurveKind.CARB
+    },
     tsMs = tsMs,
     tzOffsetMin = tzOffsetMin,
     updatedAt = updatedAt,

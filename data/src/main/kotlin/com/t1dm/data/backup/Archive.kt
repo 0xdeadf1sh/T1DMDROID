@@ -12,6 +12,7 @@ import com.t1dm.data.db.LoraEntity
 import com.t1dm.data.db.DoseKind
 import com.t1dm.data.db.ExerciseFixEntity
 import com.t1dm.data.db.ExerciseSessionEntity
+import com.t1dm.data.db.LoggedExerciseEntity
 import com.t1dm.data.db.FoodEntity
 import com.t1dm.data.db.InsulinTypeEntity
 import com.t1dm.data.db.LoggedDoseEntity
@@ -69,6 +70,9 @@ object Archive {
     const val T_CONFORMAL = "conformal"
     const val T_LORA = "lora"
     const val T_EXERCISE = "exercise"
+
+    /** The replay rows. Their grams ride in the samples, so a restore must NOT re-lay the curve. */
+    const val T_LOGGED_EXERCISE = "loggedExercise"
     const val T_EXERCISE_FIX = "exerciseFix"
 
     /** Without it a restore resurrects everything the patient deleted. */
@@ -769,6 +773,44 @@ object Archive {
         interrupted = o.bool("it") ?: false,
         note = o.str("n"),
         updatedAt = o.long("ua") ?: err("exercise", "ua"),
+    )
+
+    /**
+     * `sr` is dropped, not translated: `sourceSessionId` is a per-device rowid, so on the restoring
+     * phone it would name a different bout. It is provenance only and nothing joins on it.
+     */
+    fun write(w: RecordWriter, r: LoggedExerciseEntity) {
+        w.open(T_LOGGED_EXERCISE)
+        w.put("cid", r.clientId)
+        w.put("ts", r.tsMs)
+        w.put("tz", r.tzOffsetMin)
+        w.put("kd", r.kind)
+        w.put("dm", r.durationMin)
+        w.put("g", r.grams)
+        w.put("k", r.k)
+        w.put("th", r.theta)
+        w.put("cd", r.curveDurationMin)
+        w.put("ua", r.updatedAt)
+        w.put("la", r.loggedAtMs)
+        w.putOrSkip("ma", r.mutatedAtMs)
+        w.close()
+    }
+
+    fun readLoggedExercise(o: JsonObject) = LoggedExerciseEntity(
+        clientId = o.str("cid") ?: err("loggedExercise", "cid"),
+        tsMs = o.long("ts") ?: err("loggedExercise", "ts"),
+        tzOffsetMin = o.int("tz") ?: err("loggedExercise", "tz"),
+        kind = o.str("kd") ?: err("loggedExercise", "kd"),
+        durationMin = o.dbl("dm") ?: err("loggedExercise", "dm"),
+        // The curve's own parameters, so an unwind after a restore removes exactly what was laid.
+        grams = o.dbl("g") ?: err("loggedExercise", "g"),
+        k = o.dbl("k") ?: err("loggedExercise", "k"),
+        theta = o.dbl("th") ?: err("loggedExercise", "th"),
+        curveDurationMin = o.dbl("cd") ?: err("loggedExercise", "cd"),
+        sourceSessionId = null,
+        updatedAt = o.long("ua") ?: err("loggedExercise", "ua"),
+        loggedAtMs = o.long("la") ?: 0L,
+        mutatedAtMs = o.long("ma"),
     )
 
     /**

@@ -1039,6 +1039,38 @@ interface ConformalDeltaDao {
 }
 
 @Dao
+interface LoggedExerciseDao {
+    @Insert suspend fun insert(row: LoggedExerciseEntity): Long
+
+    @Update suspend fun update(row: LoggedExerciseEntity)
+
+    @Query("SELECT * FROM logged_exercise WHERE id = :id")
+    suspend fun byId(id: Long): LoggedExerciseEntity?
+
+    @Query("SELECT * FROM logged_exercise WHERE tsMs BETWEEN :fromMs AND :toMs ORDER BY tsMs")
+    suspend fun inRange(fromMs: Long, toMs: Long): List<LoggedExerciseEntity>
+
+    @Query("SELECT * FROM logged_exercise ORDER BY tsMs DESC, id DESC LIMIT :limit")
+    fun observeRecent(limit: Int): Flow<List<LoggedExerciseEntity>>
+
+    @Query("DELETE FROM logged_exercise WHERE id = :id")
+    suspend fun delete(id: Long)
+
+    @Query("DELETE FROM logged_exercise")
+    suspend fun deleteAll()
+
+    /** See [LoggedDoseDao.pageFrom] on the `(tsMs, id)` cursor. */
+    @Query(
+        "SELECT * FROM logged_exercise WHERE tsMs > :afterTs OR (tsMs = :afterTs AND id > :afterId) " +
+            "ORDER BY tsMs, id LIMIT :limit",
+    )
+    suspend fun pageFrom(afterTs: Long, afterId: Long, limit: Int): List<LoggedExerciseEntity>
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertIgnoreAll(rows: List<LoggedExerciseEntity>): List<Long>
+}
+
+@Dao
 interface ExerciseSessionDao {
     @Insert suspend fun insert(row: ExerciseSessionEntity): Long
 
@@ -1125,9 +1157,11 @@ interface EventTombstoneDao {
     suspend fun byClientId(clientId: String): EventTombstoneEntity?
 
     /** The tombstone term in the event high-water mark: without it, deleting the newest event walks
-     *  the catch-up cursor backward and re-hydrates what was deleted. */
-    @Query("SELECT MAX(tsMs) FROM event_tombstone")
-    suspend fun latestTs(): Long?
+     *  the catch-up cursor backward and re-hydrates what was deleted. [kinds] is the WIRE kinds
+     *  alone — a phone-local deletion guards no server event, and would advance the cursor past
+     *  events the catch-up has never fetched. */
+    @Query("SELECT MAX(tsMs) FROM event_tombstone WHERE kind IN (:kinds)")
+    suspend fun latestTs(kinds: List<String>): Long?
 
     /** The connect-time replay's work list: a process death between the delete and the enqueue, or
      *  a tombstone the queue's size cap evicted. */

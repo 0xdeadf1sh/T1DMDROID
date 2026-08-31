@@ -1616,6 +1616,11 @@ private fun T1dmNavHost(
                     navController.navigate("exercise/$id")
                 },
                 onDelete = { id -> container.appScope.launch { container.exercise.delete(id) } },
+                previewExerciseCurve = container.previewExerciseCurve,
+                // The container's scope: the write and its re-forecast must survive leaving the panel.
+                onReplay = { session, startMs ->
+                    container.appScope.launch { container.replayExercise(session, startMs) }
+                },
             )
         }
         composable("exercise/{sessionId}") { entry ->
@@ -1675,7 +1680,9 @@ private fun T1dmNavHost(
                             .map { LogMarker(it.tsMs, CurveKind.CARB) }
                         val doses = container.repository.loggedDosesInRange(w.first, w.last)
                             .map { LogMarker(it.tsMs, CurveKind.INSULIN) }
-                        (meals + doses).sortedBy { it.tsMs }
+                        val replays = container.repository.loggedExerciseInRange(w.first, w.last)
+                            .map { LogMarker(it.tsMs, CurveKind.EXERCISE) }
+                        (meals + doses + replays).sortedBy { it.tsMs }
                     }.getOrDefault(emptyList())
                 }
             }
@@ -2253,6 +2260,8 @@ private fun T1dmNavHost(
                         when (entry.kind) {
                             CurveKind.CARB -> container.editLoggedMeal(entry, amount, entry.gi, tsMs)
                             CurveKind.INSULIN -> container.editLoggedDose(entry, amount, tsMs)
+                            // `amount` is the unchanged duration: the dialog offers no field for it.
+                            CurveKind.EXERCISE -> container.shiftLoggedExercise(entry, tsMs)
                         }
                     }
                 },
