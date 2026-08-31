@@ -62,6 +62,7 @@ private val MOTIF_PAINTERS: Map<String, DrawScope.(T1dmPalette) -> Unit> = mapOf
     ThemeIds.TRON to { p -> drawTronBackground(p) },
     ThemeIds.UMBRELLA to { p -> drawUmbrellaBackground(p) },
     ThemeIds.HELLO_KITTY to { p -> drawHelloKittyBackground(p) },
+    ThemeIds.EINK to { p -> drawEInkBackground(p) },
 )
 
 fun DrawScope.drawThemeBackground(p: T1dmPalette) {
@@ -329,4 +330,69 @@ private fun DrawScope.drawHelloKittyBackground(p: T1dmPalette) {
     }
     drawCircle(lerp(bow, Color.Black, 0.12f), radius = rF * 0.11f, center = Offset(bx, by))
     drawCircle(lerp(bow, Color.White, 0.30f).copy(alpha = 0.7f), radius = rF * 0.11f, center = Offset(bx, by), style = Stroke(width = w * 0.005f))
+}
+
+/** A page of set text: head and folio rules, ragged paragraphs, paper grain. Every position comes
+ *  from [hashFrac], so the page is the same on every recompose. */
+private fun DrawScope.drawEInkBackground(p: T1dmPalette) {
+    val w = size.width
+    val h = size.height
+
+    // Opaque base under the caller's alpha layer.
+    drawRect(p.background, size = size)
+    drawRect(
+        Brush.verticalGradient(
+            0f to lerp(p.background, p.surface, 0.90f),
+            0.55f to lerp(p.background, p.surface, 0.35f),
+            1f to p.background,
+            startY = 0f, endY = h,
+        ),
+        size = size,
+    )
+
+    val left = w * 0.14f
+    val right = w * 0.86f
+    val col = right - left
+    val rule = h * 0.0015f
+
+    drawLine(p.grid, Offset(left, h * 0.105f), Offset(right, h * 0.105f), strokeWidth = rule)
+    drawLine(p.grid, Offset(left, h * 0.930f), Offset(right, h * 0.930f), strokeWidth = rule)
+
+    val lh = h * 0.030f
+    val bottom = h * 0.885f
+    val glyph = p.inkMuted.copy(alpha = 0.55f)
+    var y = h * 0.165f
+    var i = 0
+    var inPara = 0
+    var paraLen = 4 + (hashFrac(1) * 4).toInt()
+    while (y < bottom) {
+        val indent = if (inPara == 0) col * 0.05f else 0f
+        val last = inPara == paraLen - 1
+        val len = if (last) col * (0.30f + 0.40f * hashFrac(i)) else col * (0.90f + 0.10f * hashFrac(i)) - indent
+        drawLine(
+            glyph,
+            Offset(left + indent, y), Offset(left + indent + len, y),
+            strokeWidth = lh * 0.30f, cap = StrokeCap.Round,
+        )
+        y += lh
+        i++
+        inPara++
+        if (inPara >= paraLen) {
+            inPara = 0
+            y += lh * 0.55f
+            paraLen = 3 + (hashFrac(i * 7) * 5).toInt()
+        }
+    }
+
+    val grain = p.ink.copy(alpha = 0.035f)
+    val speck = w * 0.0016f
+    for (k in 0 until 220) {
+        drawCircle(grain, radius = speck, center = Offset(hashFrac(k * 3 + 1) * w, hashFrac(k * 5 + 2) * h))
+    }
+}
+
+/** 0f..1f, stable for a given [i]. */
+private fun hashFrac(i: Int): Float {
+    val s = kotlin.math.sin(i * 12.9898f) * 43758.5453f
+    return s - kotlin.math.floor(s)
 }

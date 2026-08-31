@@ -64,6 +64,7 @@ object ThemeIds {
     const val TRON = "tron"
     const val UMBRELLA = "umbrella"
     const val HELLO_KITTY = "hello_kitty"
+    const val EINK = "eink"
     const val CUSTOM = "custom"
 }
 
@@ -130,8 +131,32 @@ val HelloKittyPalette = T1dmPalette(
     urgentHigh = Color(0xFFFF2D6E),
 )
 
+/** Grayscale by construction: the bands separate by lightness alone, so [low] equals [high] and
+ *  [urgentLow] equals [urgentHigh] — direction reads from position, never from colour. */
+val EInkPalette = T1dmPalette(
+    id = ThemeIds.EINK,
+    displayName = "E-Ink",
+    dark = true,
+    background = Color(0xFF0B0B0A),
+    surface = Color(0xFF141412),
+    surfaceVariant = Color(0xFF1E1E1B),
+    primary = Color(0xFFF2EDE3),
+    onPrimary = Color(0xFF0B0B0A),
+    secondary = Color(0xFFC9C2B6),
+    onSecondary = Color(0xFF0B0B0A),
+    ink = Color(0xFFF2EDE3),
+    inkMuted = Color(0xFFA8A29A),
+    grid = Color(0xFF33322E),
+    urgentLow = Color(0xFFF2EDE3),
+    low = Color(0xFFC9C2B6),
+    inRange = Color(0xFF8A867E),
+    high = Color(0xFFC9C2B6),
+    urgentHigh = Color(0xFFF2EDE3),
+)
+
 /** In selector order; Tron first is the default. */
-val BundledPalettes: List<T1dmPalette> = listOf(TronPalette, UmbrellaPalette, HelloKittyPalette)
+val BundledPalettes: List<T1dmPalette> =
+    listOf(TronPalette, UmbrellaPalette, HelloKittyPalette, EInkPalette)
 
 fun paletteForId(id: String?): T1dmPalette =
     BundledPalettes.firstOrNull { it.id == id } ?: TronPalette
