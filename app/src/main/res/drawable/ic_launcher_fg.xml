@@ -1,14 +1,30 @@
 <?xml version="1.0" encoding="utf-8"?>
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
     <path
-        android:strokeColor="#FFFFFF"
         android:strokeWidth="6.5"
         android:strokeLineCap="round"
         android:strokeLineJoin="round"
         android:fillColor="#00000000"
-        android:pathData="M0,62 C6,61 13,61 20,59 C31,55 32,30 43,29 C55,28 57,62 66,74 C70,79 76,78 82,72 C91,63 100,58 108,55" />
+        android:pathData="M0,62 C6,61 13,61 20,59 C31,55 32,30 43,29 C55,28 57,62 66,74 C70,79 76,78 82,72 C91,63 100,58 108,55">
+        <aapt:attr name="android:strokeColor">
+            <!-- y 22..86 spans the plotted range: the peak clamps to red, the trough to blue. -->
+            <gradient
+                android:type="linear"
+                android:startX="54"
+                android:startY="22"
+                android:endX="54"
+                android:endY="86">
+                <item android:offset="0.0" android:color="#FF2D2D" />
+                <item android:offset="0.3" android:color="#FF9E80" />
+                <item android:offset="0.5" android:color="#FFFFFF" />
+                <item android:offset="0.7" android:color="#7FC4FF" />
+                <item android:offset="1.0" android:color="#2D8CFF" />
+            </gradient>
+        </aapt:attr>
+    </path>
 </vector>

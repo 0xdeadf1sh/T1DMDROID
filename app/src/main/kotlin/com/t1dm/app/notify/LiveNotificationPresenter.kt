@@ -3,8 +3,6 @@ package com.t1dm.app.notify
 import android.app.Notification
 import android.app.PendingIntent
 import android.content.Context
-import com.t1dm.core.design.IconStyle
-import com.t1dm.core.model.AlertBand
 import com.t1dm.core.model.PredictedTime
 import com.t1dm.core.model.UnitSpace
 import kotlin.math.roundToInt
@@ -23,14 +21,13 @@ class LiveNotificationPresenter(
     fun build(
         glance: BgGlance,
         unit: UnitSpace,
-        style: IconStyle,
         accentArgb: Int,
         predictedTime: PredictedTime?,
     ): Notification {
         val title = titleLine(glance, unit)
         val body = bodyLine(glance, predictedTime)
         return Notification.Builder(app, channelId)
-            .setSmallIcon(NotificationIcons.res(iconGlyphFor(glance), style))
+            .setSmallIcon(NotificationIcons.res())
             .setColor(accentArgb)
             .setColorized(false)
             .setContentTitle(title)
@@ -94,14 +91,5 @@ class LiveNotificationPresenter(
         val m = ((hf - h) * 60.0).toInt().coerceIn(0, 59)
         val conf = (t.resultantR.coerceIn(0.0, 1.0) * 100.0).roundToInt()
         return "Model clock ~%02d:%02d (%d%%)".format(h, m, conf)
-    }
-
-    private fun iconGlyphFor(glance: BgGlance): NotificationIcons.Glyph = when {
-        glance.signalLoss -> NotificationIcons.Glyph.SIGNAL_LOSS
-        glance.band == AlertBand.URGENT_LOW || glance.band == AlertBand.URGENT_HIGH ->
-            NotificationIcons.Glyph.WARNING
-        glance.approaching?.severity == PredictiveCrossing.Severity.CRITICAL ->
-            NotificationIcons.Glyph.WARNING
-        else -> NotificationIcons.Glyph.MONITOR
     }
 }

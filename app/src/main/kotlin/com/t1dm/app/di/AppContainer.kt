@@ -364,9 +364,6 @@ class AppContainer(context: Context) {
     var customThemeJsonSnapshot: String? = null
         private set
 
-    val iconStyle: com.t1dm.core.design.IconStyle
-        get() = com.t1dm.core.design.iconStyleForTheme(themeIdSnapshot)
-
     /** ARGB, for `Notification.Builder.setColor`. */
     val notificationAccentArgb: Int
         get() = com.t1dm.app.notify.NotificationIcons.accentArgb(themeIdSnapshot, customThemeJsonSnapshot)

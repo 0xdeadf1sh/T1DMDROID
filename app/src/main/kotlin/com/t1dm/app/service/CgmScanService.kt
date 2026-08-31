@@ -43,7 +43,6 @@ import androidx.glance.appwidget.updateAll
 import com.t1dm.app.widget.GlucoseWidget
 import androidx.compose.ui.graphics.toArgb
 import com.t1dm.core.design.applyWidgetPalette
-import com.t1dm.core.design.iconStyleForTheme
 import com.t1dm.core.design.resolvePalette
 import com.t1dm.core.model.InferenceState
 import com.t1dm.core.model.UnitSpace
@@ -187,7 +186,7 @@ class CgmScanService : LifecycleService() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val notif = Notification.Builder(this, CH_AOD)
-            .setSmallIcon(NotificationIcons.res(NotificationIcons.Glyph.MONITOR, container.iconStyle))
+            .setSmallIcon(NotificationIcons.res())
             .setColor(container.notificationAccentArgb)
             .setContentTitle("Keeping the CGM scan alive")
             .setContentText("The screen is held dark while the phone is locked.")
@@ -250,13 +249,7 @@ class CgmScanService : LifecycleService() {
                 actuatorConfig = { container.alertActuatorSnapshot },
                 fullScreenIntent = ::fullScreenIntent,
                 contentIntent = ::contentIntent,
-                smallIcon = { critical ->
-                    NotificationIcons.icon(
-                        this@CgmScanService,
-                        if (critical) NotificationIcons.Glyph.ALARM else NotificationIcons.Glyph.WARNING,
-                        container.iconStyle,
-                    )
-                },
+                smallIcon = { NotificationIcons.icon(this@CgmScanService) },
                 accentColor = { container.notificationAccentArgb },
                 // DEATH: the engine keeps firing (§3.6-A), the notifier presents nothing.
                 suppressed = { container.deathModeSnapshot },
@@ -443,7 +436,6 @@ class CgmScanService : LifecycleService() {
         // theme change repaints both surfaces at once and cannot race it. ONE resolution feeds both:
         // two decodes parsed an imported theme's JSON twice on every refresh.
         val (themeId, customJson) = themeSig
-        val style = iconStyleForTheme(themeId)
         val palette = resolvePalette(themeId, customJson)
         val accent = palette.primary.toArgb()
         // Push only what CHANGED: `SessionWorker` composes Glance on the MAIN thread and one widget
@@ -451,14 +443,14 @@ class CgmScanService : LifecycleService() {
         // written. A list, not a class, so a rendered input cannot silently fall out of the
         // comparison; `nowMs` staleness lives inside `glance`, so the ticker still gets through.
         val pushSig: List<Any?> =
-            listOf(glance, unit, style, accent, state.selectedPredictedTime, themeId, customJson)
+            listOf(glance, unit, accent, state.selectedPredictedTime, themeId, customJson)
         val surfacesChanged = pushSig != lastGlancePushSig
         if (surfacesChanged) lastGlancePushSig = pushSig
 
         val nm = getSystemService(NotificationManager::class.java)
         if (surfacesChanged) {
             runCatching {
-                nm.notify(NOTIF_ID, livePresenter.build(glance, unit, style, accent, state.selectedPredictedTime))
+                nm.notify(NOTIF_ID, livePresenter.build(glance, unit, accent, state.selectedPredictedTime))
             }
         }
 
@@ -471,7 +463,7 @@ class CgmScanService : LifecycleService() {
             false
         } else {
             predictiveAlerts.update(
-                glance, container.alertActuatorSnapshot, deterministicCriticalActive, style, accent,
+                glance, container.alertActuatorSnapshot, deterministicCriticalActive, accent,
             )
         }
 
@@ -908,7 +900,7 @@ class CgmScanService : LifecycleService() {
 
     private fun startForegroundNotified() {
         val notif: Notification = Notification.Builder(this, CH_SERVICE)
-            .setSmallIcon(NotificationIcons.res(NotificationIcons.Glyph.MONITOR, container.iconStyle))
+            .setSmallIcon(NotificationIcons.res())
             .setColor(container.notificationAccentArgb)
             .setContentTitle("Monitoring active")
             .setContentText("Watching CGM, steps, and alarms")

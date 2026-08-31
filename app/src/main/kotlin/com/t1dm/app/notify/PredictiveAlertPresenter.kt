@@ -7,7 +7,6 @@ import android.content.Context
 import com.t1dm.alerts.AlertActuatorConfig
 import com.t1dm.alerts.AlertChannels
 import com.t1dm.alerts.VibrationActuator
-import com.t1dm.core.design.IconStyle
 
 /**
  * Suppresses itself while the deterministic critical alarm is firing, so it can only ever add an
@@ -31,7 +30,6 @@ class PredictiveAlertPresenter(
         glance: BgGlance,
         config: AlertActuatorConfig,
         alarmCriticalActive: Boolean,
-        style: IconStyle,
         accentArgb: Int,
     ): Boolean {
         val urgent = glance.urgent
@@ -50,7 +48,7 @@ class PredictiveAlertPresenter(
         val eta = if (urgent.etaMin <= 5) "~5 min" else "~${urgent.etaMin} min"
         val body = "${urgent.projectedMgdl} mg/dL in $eta (crosses ${urgent.thresholdMgdl}). Predicted — verify."
         val builder = Notification.Builder(app, channels.critical)
-            .setSmallIcon(NotificationIcons.res(NotificationIcons.Glyph.WARNING, style))
+            .setSmallIcon(NotificationIcons.res())
             .setColor(accentArgb)
             .setContentTitle(title)
             .setContentText(body)

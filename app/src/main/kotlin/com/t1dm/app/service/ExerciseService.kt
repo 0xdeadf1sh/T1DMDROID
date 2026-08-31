@@ -219,11 +219,7 @@ class ExerciseService : LifecycleService() {
     /** The Stop action is the only way to end a bout without opening the app. */
     private fun notification(contentText: String?): Notification =
         Notification.Builder(this, CH_EXERCISE)
-            .setSmallIcon(
-                com.t1dm.app.notify.NotificationIcons.res(
-                    com.t1dm.app.notify.NotificationIcons.Glyph.MONITOR, container.iconStyle,
-                ),
-            )
+            .setSmallIcon(com.t1dm.app.notify.NotificationIcons.res())
             .setColor(container.notificationAccentArgb)
             .setContentTitle("Exercise")
             .apply { if (contentText != null) setContentText(contentText) }

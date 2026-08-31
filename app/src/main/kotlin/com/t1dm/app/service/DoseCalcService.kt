@@ -66,11 +66,7 @@ class DoseCalcService : LifecycleService() {
 
     private fun startForegroundNotified() {
         val notif: Notification = Notification.Builder(this, CH_CALC)
-            .setSmallIcon(
-                com.t1dm.app.notify.NotificationIcons.res(
-                    com.t1dm.app.notify.NotificationIcons.Glyph.DOSE, container.iconStyle,
-                ),
-            )
+            .setSmallIcon(com.t1dm.app.notify.NotificationIcons.res())
             .setColor(container.notificationAccentArgb)
             .setContentTitle("Bolus advisor")
             .setContentText("Rolling candidate doses…")
