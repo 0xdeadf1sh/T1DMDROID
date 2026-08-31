@@ -234,7 +234,6 @@ private const val INITIAL_HISTORY_WINDOW_MS = 30L * 24 * 3_600_000L
 private const val LOG_FEED_LIMIT = 400
 
 /** The BackendId enum name per model id; absent = auto (the fp32 XNNPACK authority). */
-private fun kvForecastBackend(modelId: String) = "inference.forecast_backend.$modelId"
 
 /** Minutes. The longest also fixes the window the suite scores — `SPEC/invariants.md` §6.2, §6.3. */
 private val ACCURACY_HORIZONS_MIN = listOf(30, 60, 120)
@@ -661,7 +660,6 @@ class AppContainer(context: Context) {
             // Read fresh each discovery.
             maxRunningProvider = { maxRunningModels() },
             // Re-read for every discovered id.
-            backendPrefProvider = { id -> forecastBackendPref(id) },
             telemetryStore = KvTelemetryStore(repository),
             // Re-read every cycle. Deserialization failure ⇒ null ⇒ the frozen model, never a
             // half-applied adapter.
@@ -1007,29 +1005,6 @@ class AppContainer(context: Context) {
 
     /** Snapped to an offered detent. */
     suspend fun setSmoothingWindow(window: Int) = settingsStore.setSavgolWindow(window)
-
-    /** Null/blank ⇒ auto = fp32 XNNPACK. */
-    private suspend fun forecastBackendPref(modelId: String): BackendId? =
-        repository.getKv(kvForecastBackend(modelId))?.takeIf { it.isNotBlank() }
-            ?.let { name -> runCatching { BackendId.valueOf(name) }.getOrNull() }
-
-    /** Null = auto. */
-    fun forecastBackendSetting(modelId: String): Flow<BackendId?> =
-        repository.observeKv(kvForecastBackend(modelId)).map { raw ->
-            raw?.takeIf { it.isNotBlank() }?.let { name -> runCatching { BackendId.valueOf(name) }.getOrNull() }
-        }
-
-    /**
-     * The DISPLAY forecast cycle only: dosing stays fail-closed on a non-authoritative backend until
-     * the agreement probe passes (§3.6-E). Returns the backend actually active, which differs from
-     * the request when it failed to load.
-     */
-    suspend fun setForecastBackend(modelId: String, backend: BackendId?): BackendId? {
-        repository.putKv(kvForecastBackend(modelId), backend?.name ?: "", System.currentTimeMillis())
-        return inferenceController.setForecastBackend(modelId, backend)
-    }
-
-    suspend fun runBackendComparison(runs: Int = 20) = inferenceController.runBackendComparison(runs)
 
     /** Hydrates [alarmConfig] before the FGS reads it. */
     fun startInference() {
@@ -1810,7 +1785,6 @@ class AppContainer(context: Context) {
             runCatching { repository.deleteBandCalibration(modelId) }
             runCatching { repository.deleteLorasForModel(modelId) }
             runCatching { repository.clearInfillForModel(modelId) }
-            runCatching { repository.putKv(kvForecastBackend(modelId), "", System.currentTimeMillis()) }
         }
         refreshPendingModelUpdates()
         reevaluateInferenceNow()
@@ -2064,15 +2038,8 @@ class AppContainer(context: Context) {
      * says, so [info] must be [authorityModelInfo]. The displayed backend is carried informationally
      * and can never affect `trustworthy` or a rail.
      */
-    private fun calcBackendInfo(info: com.t1dm.inference.InferenceController.SelectedModelInfo): BackendInfo {
-        val displayed = inferenceController.selectedModelInfo()?.backend
-        return BackendInfo(
-            backend = info.backend,
-            precision = info.precision,
-            agreementOk = info.agreementOk,
-            displayedBackend = displayed?.takeIf { it != info.backend },
-        )
-    }
+    private fun calcBackendInfo(info: com.t1dm.inference.InferenceController.SelectedModelInfo): BackendInfo =
+        BackendInfo(backend = info.backend, precision = info.precision)
 
     private val rollingForecaster by lazy {
         RollingForecaster(

@@ -56,8 +56,6 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.onStart
 import com.t1dm.cgm.BleAdvertScanner
-import com.t1dm.core.model.BackendComparison
-import com.t1dm.core.model.BackendId
 import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.CgmSensorModelId
 import com.t1dm.core.model.CgmSourceDescriptor
@@ -688,30 +686,6 @@ class CgmScanService : LifecycleService() {
             ACTION_SET_WARMUP -> lifecycleScope.launch {
                 container.setWarmupHours(intent.getIntExtra(EXTRA_HOURS, 24))
             }
-            ACTION_SET_BACKEND -> lifecycleScope.launch {
-                val name = intent.getStringExtra(EXTRA_BACKEND).orEmpty()
-                val pref = name.takeIf { it.isNotBlank() }?.let { runCatching { BackendId.valueOf(it) }.getOrNull() }
-                val modelId = container.inferenceController.state.value.running.firstOrNull { it.selected }?.modelId
-                    ?: container.inferenceController.state.value.running.firstOrNull()?.modelId
-                if (modelId == null) {
-                    Timber.tag(TAG).w("SET_BACKEND ignored — no running model to target")
-                } else {
-                    val active = container.setForecastBackend(modelId, pref)
-                    Timber.tag(TAG).i("SET_BACKEND model=%s requested=%s active=%s", modelId, pref, active)
-                }
-            }
-            ACTION_BACKEND_COMPARE -> lifecycleScope.launch {
-                container.inferenceController.refreshModels()
-                val cmp = container.runBackendComparison(intent.getIntExtra(EXTRA_RUNS, 20))
-                writeBackendReport(cmp)
-            }
-            ACTION_DUMP_HEADRAW -> lifecycleScope.launch {
-                val name = intent.getStringExtra(EXTRA_BACKEND) ?: BackendId.EXECUTORCH_XNNPACK_FP32.name
-                val bid = runCatching { BackendId.valueOf(name) }.getOrNull() ?: BackendId.EXECUTORCH_XNNPACK_FP32
-                container.inferenceController.refreshModels()
-                val head = container.inferenceController.debugHeadRaw(bid)
-                dumpHeadRaw(bid, head)
-            }
             ACTION_LOG_MEAL -> logMeal(
                 grams = intent.getDoubleExtra(EXTRA_GRAMS, 60.0),
                 gi = intent.getDoubleExtra(EXTRA_GI, 80.0),
@@ -975,36 +949,6 @@ class CgmScanService : LifecycleService() {
         }
     }
 
-    /** Writes the GPU-vs-CPU comparison to filesDir/backend_report.txt for an adb read. */
-    private fun writeBackendReport(cmp: BackendComparison?) {
-        val f = java.io.File(filesDir, "backend_report.txt")
-        val text = if (cmp == null) {
-            "backend comparison: UNAVAILABLE (no non-authoritative backend loaded to compare)\n"
-        } else buildString {
-            appendLine("backend comparison (${cmp.backend} vs ${cmp.authority}), runs=${cmp.runs}")
-            appendLine("warm median ms:  backend=%.3f  authority=%.3f".format(cmp.warmMedianMsBackend, cmp.warmMedianMsAuthority))
-            appendLine("cold ms:         backend=%.3f  authority=%.3f".format(cmp.coldMsBackend, cmp.coldMsAuthority))
-            appendLine("max|Δ| head_raw (risk):   %.6e".format(cmp.maxAbsHeadRawDelta))
-            appendLine("max|Δ| decoded mg/dL:     %.6f  (tol %.2f)".format(cmp.maxAbsDecodedMgdlDelta, cmp.toleranceMgdl))
-            appendLine("AGREEMENT: ${if (cmp.agreementOk) "PASS" else "FAIL"}")
-            appendLine("load RSS growth KB: ${cmp.loadRssGrowthKb ?: "n/a"}")
-        }
-        runCatching { f.writeText(text) }
-        Timber.tag(TAG).i("BACKEND_COMPARE →\n%s", text)
-    }
-
-    /** Dumps one backend's head_raw (168 floats) to filesDir for a byte-exact diff. */
-    private fun dumpHeadRaw(bid: BackendId, head: FloatArray?) {
-        val f = java.io.File(filesDir, "headraw_$bid.txt")
-        val text = if (head == null) "head_raw UNAVAILABLE for $bid (variant not loaded)\n"
-        else buildString {
-            appendLine("head_raw $bid n=${head.size} bitsum=${head.fold(0L) { a, v -> a + java.lang.Float.floatToRawIntBits(v) }}")
-            head.forEach { appendLine("%.9e".format(it)) }
-        }
-        runCatching { f.writeText(text) }
-        Timber.tag(TAG).i("DUMP_HEADRAW %s size=%s", bid, head?.size)
-    }
-
     companion object {
         private const val TAG = "CgmScan"
         private const val CH_SERVICE = "t1dm.service.cgm"
@@ -1047,11 +991,6 @@ class CgmScanService : LifecycleService() {
         const val ACTION_WATCH_ROTATE = "com.t1dm.app.WATCH_ROTATE"
         const val ACTION_WATCH_UNPAIR = "com.t1dm.app.WATCH_UNPAIR"
         const val ACTION_WATCH_PUSH = "com.t1dm.app.WATCH_PUSH"
-        const val ACTION_SET_BACKEND = "com.t1dm.app.SET_BACKEND"
-        const val ACTION_BACKEND_COMPARE = "com.t1dm.app.BACKEND_COMPARE"
-        const val ACTION_DUMP_HEADRAW = "com.t1dm.app.DUMP_HEADRAW"
-        const val EXTRA_BACKEND = "backend"
-        const val EXTRA_RUNS = "runs"
         const val EXTRA_BG = "bg"
         const val EXTRA_TRESIBA = "tresiba"
         const val EXTRA_AGE_MIN = "ageMin"

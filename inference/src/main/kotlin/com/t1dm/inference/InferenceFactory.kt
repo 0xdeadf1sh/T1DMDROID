@@ -5,11 +5,7 @@ import com.t1dm.core.common.T1dmDispatchers
 import com.t1dm.core.model.BackendId
 import com.t1dm.core.model.Precision
 import com.t1dm.core.model.ThermalStatus
-import com.t1dm.inference.backend.ExecuTorchNeuronBackend
-import com.t1dm.inference.backend.ExecuTorchVulkanBackend
 import com.t1dm.inference.backend.ExecuTorchXnnpackBackend
-import com.t1dm.inference.backend.LiteRtNeuronBackend
-import com.t1dm.inference.backend.LiteRtNpuBackend
 import java.io.File
 
 /** Keeps `:app` free of the concrete backend types and the ExecuTorch AAR classpath. */
@@ -23,7 +19,6 @@ fun buildInferenceController(
     futureOverrides: FutureOverrideSource? = null,
     warmupHoursProvider: suspend () -> Double = { InferenceControllerDefaults.WARMUP_HOURS },
     maxRunningProvider: suspend () -> Int = { InferenceController.DEFAULT_MAX_RUNNING },
-    backendPrefProvider: suspend (modelId: String) -> BackendId? = { null },
     telemetryStore: TelemetryStore? = null,
     thermalProvider: suspend () -> ThermalStatus? = { null },
     smoothingWindowProvider: suspend () -> Int = { InferenceControllerDefaults.SAVGOL_WINDOW },
@@ -43,7 +38,6 @@ fun buildInferenceController(
         futureOverrides = futureOverrides,
         warmupHoursProvider = warmupHoursProvider,
         maxRunningProvider = maxRunningProvider,
-        backendPrefProvider = backendPrefProvider,
         telemetryStore = telemetryStore,
         thermalProvider = thermalProvider,
         smoothingWindowProvider = smoothingWindowProvider,
@@ -52,13 +46,6 @@ fun buildInferenceController(
         probeInsulin = probeInsulin,
     )
     controller.registerBackend(ExecuTorchXnnpackBackend())
-    controller.registerBackend(ExecuTorchNeuronBackend())
-    controller.registerBackend(LiteRtNeuronBackend())
-    controller.registerBackend(LiteRtNpuBackend())
-    controller.registerBackend(ExecuTorchVulkanBackend())
-    controller.registerBackend(
-        ExecuTorchVulkanBackend(BackendId.EXECUTORCH_VULKAN_FP16, Precision.FP16),
-    )
     return controller
 }
 
@@ -69,7 +56,7 @@ object InferenceControllerDefaults {
     /** Kept well under each descriptor's own MIN_CONTEXT, so the setting never binds first. */
     const val MIN_WARMUP_HOURS = 8
 
-    /** INFERENCE.md §7.1. 7 taps ≙ the trailing 30 min; the fp16-agreement probe is pinned to it. */
+    /** INFERENCE.md §7.1. 7 taps ≙ the trailing 30 min. */
     const val SAVGOL_WINDOW = 7
 
     /** In samples (× 5 min); `1` is unfiltered. Discrete because the filter needs an ODD window. */

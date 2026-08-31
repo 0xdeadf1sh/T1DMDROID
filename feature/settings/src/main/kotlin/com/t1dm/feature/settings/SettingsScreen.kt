@@ -18,7 +18,6 @@ fun SettingsScreen(
     onOpenSignalSafety: () -> Unit = {},
     onOpenAlerts: () -> Unit = {},
     onOpenForecast: () -> Unit = {},
-    onOpenComputeBackend: () -> Unit = {},
     onOpenCalculator: () -> Unit = {},
     onOpenCurveParams: () -> Unit = {},
     onOpenModels: () -> Unit = {},
@@ -64,7 +63,6 @@ fun SettingsScreen(
 
                 SettingsSectionHeader("Forecast")
                 SettingsNavRow("Forecast", "Warmup, cadence, models at once, thermal gate", onClick = onOpenForecast)
-                SettingsNavRow("Compute backend (CPU / GPU)", "CPU authority or Vulkan GPU; measured & agreement-gated", onClick = onOpenComputeBackend)
                 SettingsNavRow("Dose calculator", "Objective, asymmetry, rails, thresholds — unbounded", onClick = onOpenCalculator)
                 SettingsNavRow("Curve & PK parameters", "Carb & insulin presets, Bézier designers", onClick = onOpenCurveParams)
                 SettingsNavRow("Models & backend", "Running model; backend, precision", onClick = onOpenModels)
@@ -109,18 +107,6 @@ internal val settingsModelsKnobs = listOf(
         synonyms = listOf(
             "model", "models", "checkpoint", "weights", "network", "executorch", "pte",
             "inference", "backend", "precision", "fp16", "fp32", "select model", "running model",
-        ),
-        anchored = false,
-    ),
-    SettingsKnob(
-        id = "models.compute_backend",
-        screen = SettingsScreenKey.MODELS,
-        section = "Forecast & models",
-        label = "Compute backend (CPU / GPU)",
-        subtitle = "CPU authority or Vulkan GPU; measured & agreement-gated",
-        synonyms = listOf(
-            "cpu", "gpu", "vulkan", "npu", "apu", "xnnpack", "neuropilot", "accelerator",
-            "hardware", "compute", "backend", "agreement gate", "benchmark", "measure", "speed",
         ),
         anchored = false,
     ),

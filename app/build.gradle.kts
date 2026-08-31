@@ -31,22 +31,8 @@ android {
             abiFilters += "arm64-v8a"
         }
 
-        // Vulkan capability-probe shim: enumerates the GPU without running the model.
-        externalNativeBuild {
-            cmake {
-                cppFlags += "-std=c++17"
-            }
-        }
-
         buildConfigField("String", "GIT_SHA", "\"$gitSha\"")
         buildConfigField("String", "EXECUTORCH_VERSION", "\"1.3.1\"")
-    }
-
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.22.1"
-        }
     }
 
     buildFeatures {

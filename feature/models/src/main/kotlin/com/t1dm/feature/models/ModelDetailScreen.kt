@@ -45,9 +45,6 @@ import com.t1dm.core.model.BASELINE_MODEL_ID
 import com.t1dm.core.model.BandCalibration
 import com.t1dm.core.model.BandCalibrationOutcome
 import com.t1dm.core.model.BandFitRefusal
-import com.t1dm.core.model.BackendAvailability
-import com.t1dm.core.model.BackendComparison
-import com.t1dm.core.model.BackendId
 import com.t1dm.core.model.CgEga
 import com.t1dm.core.model.CgEgaRegion
 import com.t1dm.core.model.ErrorGridLattices
@@ -82,14 +79,6 @@ fun ModelDetailScreen(
     cgEga: CgEga?,
     cgEgaLoading: Boolean,
     onComputeCgEga: () -> Unit,
-    catalog: List<BackendAvailability>,
-    requestedBackend: BackendId?,
-    comparison: BackendComparison?,
-    onSelectBackend: (BackendId?) -> Unit,
-    onRunComparison: () -> Unit,
-    probeRunning: Boolean = false,
-    /** Why the last probe produced no comparison; null when it produced one. */
-    probeRefusal: String? = null,
     /** §8.4. Null when never fitted. */
     bandCalibration: BandCalibration? = null,
     bandCalibrationFitting: Boolean = false,
@@ -206,28 +195,6 @@ fun ModelDetailScreen(
             }
         }
 
-        // [catalog]/[comparison] are the controller's SELECTED-model state, so a non-selected
-        // running model would show the wrong model's availability and probe against it.
-        if (running != null) {
-            section("Compute backend") {
-                if (running.selected) {
-                    ComputeBackendControls(
-                        running = running,
-                        catalog = catalog,
-                        requestedBackend = requestedBackend,
-                        comparison = comparison,
-                        onSelectBackend = onSelectBackend,
-                        onRunComparison = onRunComparison,
-                        probeRunning = probeRunning,
-                        probeRefusal = probeRefusal,
-                    )
-                } else {
-                    Note(
-                        "Applies to the selected model — pick it on Models",
-                    )
-                }
-            }
-        }
 
         // Keep prior rows through a recompute: collapse to "Computing…" only with no prior suite.
         val suite = accuracy?.suite
@@ -628,169 +595,6 @@ private fun emptyWhy(m: ModelMetrics?): String {
         built == 0 -> "CGM gaps — ${m.nIncomplete} of ${m.nMatured} forecasts dropped"
         m.suite.nWindows == 0 -> "Fan not scoreable — $built forecasts rejected"
         else -> "Insufficient history — ${m.suite.nWindows} scored windows"
-    }
-}
-
-/** §3.6-E — the display forecast only; dose advice stays on the fp32 XNNPACK CPU authority, or a
- *  backend that passed the agreement probe. */
-@Composable
-private fun ComputeBackendControls(
-    running: com.t1dm.core.model.RunningModel,
-    catalog: List<BackendAvailability>,
-    requestedBackend: BackendId?,
-    comparison: BackendComparison?,
-    onSelectBackend: (BackendId?) -> Unit,
-    onRunComparison: () -> Unit,
-    probeRunning: Boolean,
-    probeRefusal: String?,
-) {
-    var refusal by remember { mutableStateOf<String?>(null) }
-    val haptics = rememberT1dmHaptics()
-
-    Note(
-        "Display forecast only; dose advice stays on CPU unless probed",
-    )
-
-    // What is actually executing; may differ from the request after a load failure.
-    Row(Modifier.fillMaxWidth().padding(top = 4.dp)) {
-        Text("Executing on ", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(
-            running.backend.displayName(), // already ends in the precision
-            style = MaterialTheme.typography.bodySmall,
-            fontWeight = FontWeight.Bold,
-        )
-    }
-
-    BackendChoiceRow(
-        title = "Auto (fp32 CPU authority)",
-        subtitle = "Authoritative XNNPACK CPU path — trusted for dose advice",
-        available = true,
-        selected = requestedBackend == null,
-        onClick = { haptics.perform(HapticEvent.SegmentTick); refusal = null; onSelectBackend(null) },
-    )
-    // This build ships only the XNNPACK CPU and Vulkan paths; the Play-delivered NeuroPilot NPU
-    // and legacy LiteRT rows are unreachable.
-    val shown = catalog.filter {
-        it.backend == BackendId.EXECUTORCH_XNNPACK_FP32 ||
-            it.backend == BackendId.EXECUTORCH_VULKAN_FP16 ||
-            it.backend == BackendId.EXECUTORCH_VULKAN_FP32
-    }
-    shown.forEach { b ->
-        BackendChoiceRow(
-            title = b.backend.displayName(),
-            subtitle = buildString {
-                if (b.authoritative) append("authority · ")
-                if (b.available) append("available") else append("unavailable")
-                b.reason?.let { append("\n"); append(it) }
-            },
-            available = b.available,
-            selected = requestedBackend == b.backend,
-            // Stays enabled deliberately: a disabled row could not explain itself.
-            onClick = {
-                if (b.available) {
-                    haptics.perform(HapticEvent.SegmentTick)
-                    refusal = null
-                    onSelectBackend(b.backend)
-                } else {
-                    haptics.perform(HapticEvent.Reject)
-                    refusal = "${b.backend.displayName()} unavailable — ${b.reason ?: "no artifact on device"}"
-                }
-            },
-        )
-    }
-    // Each tap clears the other's, so whichever is set came from the last tap.
-    (refusal ?: probeRefusal)?.let {
-        Text(
-            it,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.error,
-            modifier = Modifier.padding(top = 4.dp),
-        )
-    }
-
-    Note(
-        "Backend vs CPU on one input — a PASS unlocks dose advice",
-    )
-    Button(
-        enabled = !probeRunning,
-        onClick = { haptics.perform(HapticEvent.Tap); refusal = null; onRunComparison() },
-    ) {
-        if (probeRunning) {
-            // Not the default primary: in a disabled filled button a primary spinner reads as live.
-            CircularProgressIndicator(
-                Modifier.size(16.dp),
-                strokeWidth = 2.dp,
-                color = LocalContentColor.current,
-            )
-            Spacer(Modifier.width(8.dp))
-        }
-        Text(if (probeRunning) "Probing…" else "Run agreement probe")
-    }
-    comparison?.let { BackendComparisonCard(it) }
-}
-
-@Composable
-private fun BackendChoiceRow(
-    title: String,
-    subtitle: String,
-    available: Boolean,
-    selected: Boolean,
-    onClick: () -> Unit,
-) {
-    val borderColor = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .border(if (selected) 2.dp else 1.dp, borderColor, RoundedCornerShape(10.dp))
-            .clickable(onClick = onClick)
-            .padding(12.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-    ) {
-        Column(Modifier.weight(1f).padding(end = 8.dp)) {
-            Text(
-                title,
-                style = MaterialTheme.typography.bodyLarge,
-                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                color = if (available) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        Text(
-            if (selected) "●" else "○",
-            style = MaterialTheme.typography.titleMedium,
-            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-}
-
-@Composable
-private fun BackendComparisonCard(c: BackendComparison) {
-    val pass = c.agreementOk
-    Card(
-        colors = CardDefaults.cardColors(
-            containerColor = if (pass) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.errorContainer,
-        ),
-    ) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(
-                "${c.backend.displayName()}  vs  ${c.authority.displayName()}",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold,
-            )
-            Mono("warm median   GPU ${"%.2f".format(c.warmMedianMsBackend)} ms   CPU ${"%.2f".format(c.warmMedianMsAuthority)} ms")
-            Mono("cold          GPU ${"%.1f".format(c.coldMsBackend)} ms   CPU ${"%.1f".format(c.coldMsAuthority)} ms")
-            Mono("max|Δ| head_raw    ${"%.3e".format(c.maxAbsHeadRawDelta)}")
-            Mono("max|Δ| mg/dL       ${"%.4f".format(c.maxAbsDecodedMgdlDelta)}  (tol ${"%.1f".format(c.toleranceMgdl)})")
-            c.loadRssGrowthKb?.let { Mono("load RSS growth    $it KB (unified memory)") }
-            Text(
-                if (pass) "AGREEMENT: PASS — may feed dose advice."
-                else "AGREEMENT: FAIL — forecast only; dose advice stays on the CPU authority.",
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Bold,
-                color = if (pass) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onErrorContainer,
-                modifier = Modifier.padding(top = 4.dp),
-            )
-        }
     }
 }
 

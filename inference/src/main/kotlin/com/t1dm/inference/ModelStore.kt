@@ -1,7 +1,6 @@
 package com.t1dm.inference
 
 import com.t1dm.core.common.NativeCore
-import com.t1dm.core.model.BackendId
 import com.t1dm.core.model.ModelDescriptor
 import com.t1dm.core.model.ModelMeta
 import com.t1dm.core.model.Precision
@@ -11,7 +10,7 @@ import org.json.JSONObject
 import timber.log.Timber
 import java.io.File
 
-/** [backendId] and [precision] come from the descriptor's top level, which the Rust
+/** [precision] comes from the descriptor's top level, which the Rust
  *  `parse_descriptor` (scoped to pre/post) does not read. [descriptorJson] is verbatim. */
 data class ModelBundle(
     val id: String,
@@ -19,7 +18,6 @@ data class ModelBundle(
     val pte: File,
     /** Null when the export shipped none, or it is missing. */
     val head: File? = null,
-    val backendId: BackendId,
     val precision: Precision,
     val descriptorJson: String,
     /** Display only; never decode-critical. */
@@ -80,12 +78,20 @@ class ModelStore(
             Timber.tag(TAG).w("head file %s for model %s absent; no adapter can attach", desc.head?.file, id)
         }
         val engine = obj.optString("engine", "executorch_xnnpack_fp32")
+        if (!isXnnpack(engine)) {
+            Timber.tag(TAG).w(
+                "descriptor %s declares engine %s; this build runs the XNNPACK CPU delegate only, " +
+                    "and its runtime registers no other. Skipping rather than loading an artifact " +
+                    "no delegate here can execute.",
+                descriptorFile.name, engine,
+            )
+            return null
+        }
         return ModelBundle(
             id = id,
             descriptor = desc,
             pte = pte,
             head = head,
-            backendId = backendOf(engine),
             precision = precisionOf(obj.optString("precision", "fp32")),
             descriptorJson = json,
             meta = metaOf(id, obj, pte),
@@ -158,15 +164,11 @@ class ModelStore(
         )
     }
 
-    private fun backendOf(engine: String): BackendId = when (engine.lowercase()) {
-        "executorch_xnnpack_fp32", "executorch_xnnpack" -> BackendId.EXECUTORCH_XNNPACK_FP32
-        "executorch_neuron_fp16", "executorch_neuron" -> BackendId.EXECUTORCH_NEURON_FP16
-        "litert_neuron_fp16", "litert_neuron" -> BackendId.LITERT_NEURON_FP16
-        "litert_npu_fp32", "litert_npu_fp16", "litert_npu" -> BackendId.LITERT_NPU
-        "executorch_vulkan_fp16" -> BackendId.EXECUTORCH_VULKAN_FP16
-        "executorch_vulkan_fp32", "executorch_vulkan" -> BackendId.EXECUTORCH_VULKAN_FP32
-        else -> BackendId.EXECUTORCH_XNNPACK_FP32
-    }
+    /** The one engine this build can execute. An unrecognised string is refused rather than
+     *  assumed to be this one: a wrongly-admitted artifact loads into the wrong delegate or not at
+     *  all, and the stub then forecasts under the model's name. */
+    private fun isXnnpack(engine: String): Boolean =
+        engine.lowercase() in setOf("executorch_xnnpack_fp32", "executorch_xnnpack")
 
     private fun precisionOf(p: String): Precision =
         if (p.lowercase().contains("16")) Precision.FP16 else Precision.FP32

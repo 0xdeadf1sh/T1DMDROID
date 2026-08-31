@@ -23,7 +23,6 @@ data class DecisionCard(
     val warmup: Boolean,
     val backend: BackendId,
     val precision: Precision,
-    val agreementOk: Boolean?,
     val assumedIobU: Double?,
     val minSinceLastLoggedDose: Long?,
     val bandWidthMgdl: Double?,

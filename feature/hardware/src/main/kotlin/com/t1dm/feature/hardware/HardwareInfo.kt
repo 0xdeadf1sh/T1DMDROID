@@ -20,8 +20,6 @@ data class HardwareInfo(
     /** Celsius; null when unreadable. */
     val batteryTempC: Double? = null,
     val backends: List<String>,
-    /** Null before the probe runs. */
-    val vulkan: VulkanInfo? = null,
 ) {
     companion object {
         val UNKNOWN = HardwareInfo(
@@ -29,15 +27,7 @@ data class HardwareInfo(
             abis = emptyList(), pageSizeKb = null, ramTotalMb = null, ramAvailMb = null,
             gpuRenderer = null, npu = null, display = null, androidVersion = null,
             securityPatch = null, thermalStatus = null, battery = null, batteryTempC = null,
-            backends = emptyList(), vulkan = null,
+            backends = emptyList(),
         )
     }
 }
-
-/** [rows] are ordered `Label → Value` pairs rendered verbatim; [note] carries a reason when
- *  [available] is false. Describes the GPU only — it does NOT imply the model runs on Vulkan. */
-data class VulkanInfo(
-    val available: Boolean,
-    val rows: List<Pair<String, String>>,
-    val note: String?,
-)

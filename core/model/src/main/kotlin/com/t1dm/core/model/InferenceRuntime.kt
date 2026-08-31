@@ -5,67 +5,21 @@ package com.t1dm.core.model
 enum class Precision { FP64, FP32, FP16 }
 
 /**
- * [EXECUTORCH_XNNPACK_FP32] is the authority and the only path that executes today; [STUB] is the
- * fixed-output fallback when no real `.pte` is present. The rest are enumerated but unavailable —
- * the NPU runtimes ship via Play, not to a sideload build.
+ * [EXECUTORCH_XNNPACK_FP32] is the one path that executes a `.pte`, and the only one a dose may be
+ * scored on; [STUB] is the fixed-output fallback when no real artifact is present, and
+ * [NATIVE_RIDGE_FP64] the classical baseline, which runs in the Rust core and loads no artifact.
  */
 enum class BackendId {
     EXECUTORCH_XNNPACK_FP32,
-    EXECUTORCH_NEURON_FP16,
-    LITERT_NEURON_FP16,
-    LITERT_NPU,
-    EXECUTORCH_VULKAN_FP32,
-    EXECUTORCH_VULKAN_FP16,
     NATIVE_RIDGE_FP64,
     STUB,
 }
 
 fun BackendId.displayName(): String = when (this) {
     BackendId.EXECUTORCH_XNNPACK_FP32 -> "XNNPACK CPU · fp32"
-    BackendId.EXECUTORCH_NEURON_FP16 -> "Neuron NPU · fp16"
-    BackendId.LITERT_NEURON_FP16 -> "LiteRT Neuron NPU · fp16"
-    BackendId.LITERT_NPU -> "LiteRT NPU · fp32"
-    BackendId.EXECUTORCH_VULKAN_FP32 -> "Vulkan GPU · fp32"
-    BackendId.EXECUTORCH_VULKAN_FP16 -> "Vulkan GPU · fp16"
     BackendId.NATIVE_RIDGE_FP64 -> "Ridge CPU · fp64"
     BackendId.STUB -> "Stub · no .pte"
 }
-
-/**
- * [available] is true only when a real `.pte` for this engine is on device AND its native `load`
- * succeeded; otherwise [reason] states why not. [authoritative] marks the fp32 XNNPACK reference —
- * the only backend trusted for dosing without an agreement probe (§3.6-E).
- */
-data class BackendAvailability(
-    val backend: BackendId,
-    val precision: Precision,
-    val available: Boolean,
-    val authoritative: Boolean,
-    val reason: String?,
-)
-
-/**
- * Both backends run the SAME fixed deterministic input; timings are medians over [runs] warm
- * forwards plus the first (cold) forward, numerics the worst-case absolute deltas of `head_raw`
- * (risk space) and the decoded mg/dL median fan. [agreementOk] gates the dosing path only (§3.6-E);
- * the forecast may render either way.
- */
-data class BackendComparison(
-    val backend: BackendId,
-    val authority: BackendId,
-    val runs: Int,
-    val warmMedianMsBackend: Double,
-    val warmMedianMsAuthority: Double,
-    val coldMsBackend: Double,
-    val coldMsAuthority: Double,
-    val maxAbsHeadRawDelta: Double,
-    val maxAbsDecodedMgdlDelta: Double,
-    val toleranceMgdl: Double,
-    val agreementOk: Boolean,
-    /** Resident-set growth (KB) attributable to the backend's load, best-effort; null if unmeasured.
-     *  Mali heaps are UNIFIED with system RAM — this is process RSS, not a discrete VRAM figure. */
-    val loadRssGrowthKb: Long? = null,
-)
 
 /** The running set is ≤5 (§2.3); [modelId] is the descriptor's `model_id`. */
 data class RunningModel(
@@ -242,14 +196,6 @@ data class InferenceState(
     /** Distinguishes the "no time section" empty state from a "decode failed" one. Defaults true
      *  until a cycle sets it. */
     val selectedHasTimeSection: Boolean = true,
-    val backendCatalog: List<BackendAvailability> = emptyList(),
-    /** null ⇒ auto (authority). What is ACTUALLY executing is [selectedPrediction]`.backend`. */
-    val requestedBackend: BackendId? = null,
-    /** An id absent here (or mapped to null) means auto = the fp32 XNNPACK authority. Steers only
-     *  the DISPLAY forecast, never the dosing/authority path (§3.6-E). */
-    val requestedBackendByModel: Map<String, BackendId?> = emptyMap(),
-    /** Null until one has been run. */
-    val backendComparison: BackendComparison? = null,
     /** Null when the baseline has never been fitted; its row is listed in [running] either way. The
      *  only provenance its drill-down has — it carries no descriptor and no [ModelMeta]. */
     val baselineModel: BaselineModel? = null,
@@ -266,6 +212,4 @@ data class InferenceState(
     fun telemetryOf(modelId: String): ModelTelemetry? = telemetry.firstOrNull { it.modelId == modelId }
 
     fun runningOf(modelId: String): RunningModel? = running.firstOrNull { it.modelId == modelId }
-
-    fun requestedBackendOf(modelId: String): BackendId? = requestedBackendByModel[modelId]
 }

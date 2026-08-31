@@ -283,11 +283,14 @@ that is the sensitivity probe's job and stays there.
 
 ## Backends
 
-One exported model, two implemented backends: fp32 CPU via XNNPACK as the
-reference authority, and fp16 GPU via the Vulkan delegate as a measured shadow.
-Both take `(patches, attn_mask, slot_sel)` and return `(head_raw, time_logits,
+One exported model, one backend: fp32 CPU via XNNPACK, which the stock ExecuTorch
+runtime registers and which `InferenceFactory` is the sole place to register. It
+takes `(patches, attn_mask, slot_sel)` and returns `(head_raw, time_logits,
 hidden)`; the masked set crosses as a one-hot selection matrix, so no int64
 tensor crosses the runtime boundary.
-A non-authoritative backend may render a forecast, but may not feed a dose until
-it has cleared the fp32-agreement gate. There is no NPU path — see
-`backend/NpuBackends.kt` for what each unavailable route would need.
+
+`ModelStore` admits only an `executorch_xnnpack` descriptor and `ModelSyncCoordinator`
+syncs only that artifact, so a model built for another delegate never reaches the
+device. A model whose `.pte` is absent or will not load runs on the `StubBackend`,
+which is never `real`: the forecast is a fixed shape and the dose calculator
+refuses (§3.6-E).

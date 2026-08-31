@@ -129,7 +129,6 @@ class SettingsIndexTest {
         assertTop("hypoglycaemia", "alarm.urgent_low")
         assertTop("ketoacidosis", "death_clock.dka")
         assertTop("stacking", "calc.rail_iob_ceiling")
-        assertTop("vulkan", "models.compute_backend")
         assertTop("rssi", "signal.weak_enabled")
         assertTop("tailscale", "server.base_url")
         assertTop("factory reset", "data.reset")

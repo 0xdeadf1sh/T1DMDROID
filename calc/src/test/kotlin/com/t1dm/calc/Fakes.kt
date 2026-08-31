@@ -72,8 +72,8 @@ fun fakeIob(
     lastLoggedDoseTsMs = lastLoggedMinAgo?.let { nowMs - it * 60_000L },
 )
 
-fun fp32Backend(agreementOk: Boolean? = null): BackendInfo =
-    BackendInfo(com.t1dm.core.model.BackendId.EXECUTORCH_XNNPACK_FP32, com.t1dm.core.model.Precision.FP32, agreementOk)
+fun fp32Backend(): BackendInfo =
+    BackendInfo(com.t1dm.core.model.BackendId.EXECUTORCH_XNNPACK_FP32, com.t1dm.core.model.Precision.FP32)
 
 fun advisorOf(
     port: ForecastPort,

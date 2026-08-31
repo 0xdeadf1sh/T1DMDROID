@@ -1,7 +1,6 @@
 package com.t1dm.calc
 
 import com.t1dm.core.model.CurveEvent
-import com.t1dm.core.model.displayName
 import com.t1dm.inference.InferenceControllerDefaults
 import kotlin.math.max
 
@@ -37,14 +36,9 @@ class DoseAdvisor(
             return AdviceResult.Refused(listOf("No selected model — refusing to recommend a dose."))
         }
         if (!backend.trustworthy) {
-            val why = if (backend.agreementOk == false) {
-                "disagrees with the fp32 CPU reference"
-            } else {
-                "has not passed the fp32-agreement gate"
-            }
             return AdviceResult.Refused(
                 listOf(
-                    "Selected backend ${backend.backend} ($why) is not the fp32 CPU authority — " +
+                    "Selected backend ${backend.backend} is not the fp32 CPU authority — " +
                         "withholding the dose to fail safe (the forecast may still show).",
                 ),
             )
@@ -61,14 +55,6 @@ class DoseAdvisor(
         if (!bypassDegeneracyGate && degen is RailVerdict.Block) return AdviceResult.Refused(listOf(degen.reason))
 
         val notes = ArrayList<String>()
-
-        val displayed = backend.displayedBackend
-        if (displayed != null && displayed != backend.backend) {
-            notes.add(
-                "Displayed forecast is rendered by ${displayed.displayName()}; this dose was computed on " +
-                    "the fp32 CPU authority (${backend.backend.displayName()}).",
-            )
-        }
 
         if (config.rails.hypoTreatment && inHypoTerritory(anchor, result.baseline, config)) {
             val grams = rescueCarbs(anchor, iob, config)
@@ -152,7 +138,6 @@ class DoseAdvisor(
             warmup = anchor?.warmup ?: false,
             backend = backend.backend,
             precision = backend.precision,
-            agreementOk = backend.agreementOk,
             assumedIobU = iob?.iobU,
             minSinceLastLoggedDose = iob?.minSinceLastDose(nowMs),
             bandWidthMgdl = bandWidth,

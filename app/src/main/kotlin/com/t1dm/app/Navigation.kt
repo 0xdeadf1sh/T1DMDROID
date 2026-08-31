@@ -1180,7 +1180,6 @@ private fun T1dmNavHost(
             val modelId = entry.arguments?.getString("modelId") ?: return@composable
             val scope = rememberCoroutineScope()
             val inference by container.inferenceState.collectAsState(InferenceState())
-            val requested by container.forecastBackendSetting(modelId).collectAsState(null)
             var accuracy by remember(modelId) { mutableStateOf<ModelMetrics?>(null) }
             var loading by remember(modelId) { mutableStateOf(true) }
             var reloadTick by remember(modelId) { mutableStateOf(0) }
@@ -1220,26 +1219,6 @@ private fun T1dmNavHost(
             var fitOutcome by remember(modelId) { mutableStateOf<BandCalibrationOutcome?>(null) }
             var fitting by remember(modelId) { mutableStateOf(false) }
             var fitTick by remember(modelId) { mutableStateOf(0) }
-            // §3.6-E: ~44 native forwards behind the cycle mutex. The probe REFUSES on a backend
-            // that is not loaded, and its note renders on the Models list, so the refusal is carried
-            // back here rather than vanishing.
-            var probing by remember(modelId) { mutableStateOf(false) }
-            var probeRefusal by remember(modelId) { mutableStateOf<String?>(null) }
-            var probeTick by remember(modelId) { mutableStateOf(0) }
-            LaunchedEffect(modelId, probeTick) {
-                if (probeTick == 0) return@LaunchedEffect
-                probing = true
-                probeRefusal = null
-                val outcome = runCatching { container.runBackendComparison() }
-                if (!isActive) return@LaunchedEffect
-                probeRefusal = outcome.fold(
-                    onSuccess = { cmp ->
-                        if (cmp == null) container.inferenceController.lastProbeRefusal else null
-                    },
-                    onFailure = { "Probe failed" },
-                )
-                probing = false
-            }
             LaunchedEffect(modelId, fitTick) {
                 if (fitTick == 0) return@LaunchedEffect
                 fitting = true
@@ -1265,14 +1244,6 @@ private fun T1dmNavHost(
                 cgEga = cgEga,
                 cgEgaLoading = cgEgaLoading,
                 onComputeCgEga = { cgEgaTick++ },
-                catalog = inference.backendCatalog,
-                requestedBackend = requested,
-                comparison = inference.backendComparison,
-                onSelectBackend = { b -> scope.launch { container.setForecastBackend(modelId, b) } },
-                // The button is disabled meanwhile; this drops a tick bump that arrives anyway.
-                onRunComparison = { if (!probing) probeTick++ },
-                probeRunning = probing,
-                probeRefusal = probeRefusal,
                 bandCalibration = bandCalibration,
                 bandCalibrationFitting = fitting,
                 bandCalibrationOutcome = fitOutcome,
@@ -1742,10 +1713,6 @@ private fun T1dmNavHost(
                 onOpenSignalSafety = { navController.navigate("settings/signal") },
                 onOpenAlerts = { navController.navigate("settings/alerts") },
                 onOpenForecast = { navController.navigate("settings/forecast") },
-                onOpenComputeBackend = {
-                    val id = inf.running.firstOrNull { it.selected }?.modelId ?: inf.running.firstOrNull()?.modelId
-                    navController.navigate(if (id != null) "models/$id" else "models")
-                },
                 onOpenCalculator = { navController.navigate("settings/calculator") },
                 onOpenCurveParams = { navController.navigate("settings/curves") },
                 onOpenModels = { navController.navigate("models") },

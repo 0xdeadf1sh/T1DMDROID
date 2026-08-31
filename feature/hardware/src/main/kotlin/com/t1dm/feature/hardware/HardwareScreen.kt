@@ -65,29 +65,6 @@ fun HardwareScreen(
         }
 
         item {
-            Text("GPU / Vulkan compute", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            val vk = hardware.vulkan
-            when {
-                vk == null ->
-                    Text("probing…", style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                !vk.available && vk.rows.isEmpty() ->
-                    Text(vk.note ?: "Vulkan unavailable", style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error)
-                else -> Column(Modifier.padding(top = 4.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    vk.rows.forEach { (label, value) -> HwRow(label, value) }
-                    Text(
-                        "GPU capability only — the model uses Vulkan only when a Vulkan-delegate backend is selected",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 4.dp),
-                    )
-                }
-            }
-            HorizontalDivider(Modifier.padding(top = 8.dp))
-        }
-
-        item {
             Text("Inference hardware", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             // STUB means no working .pte reached the device.
             val selected = state.running.firstOrNull { it.selected }

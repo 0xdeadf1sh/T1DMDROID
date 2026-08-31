@@ -3,8 +3,6 @@ package com.t1dm.inference
 import com.t1dm.core.common.NativeCore
 import com.t1dm.core.common.T1dmDispatchers
 import com.t1dm.core.model.BASELINE_MODEL_ID
-import com.t1dm.core.model.BackendAvailability
-import com.t1dm.core.model.BackendComparison
 import com.t1dm.core.model.BackendId
 import com.t1dm.core.model.BaselineFit
 import com.t1dm.core.model.displayName
@@ -69,9 +67,6 @@ class InferenceController(
     /** Read FRESH each cycle. The model's own MIN_CONTEXT is the binding floor
      *  (inference-runtime.md). */
     private val warmupHoursProvider: suspend () -> Double = { DEFAULT_WARMUP_HOURS },
-    /** Re-read per model at each discovery. null ⇒ auto (the fp32 XNNPACK authority). Steers the
-     *  DISPLAY forecast cycle ONLY — the dosing path ignores it entirely (§3.6-E). */
-    private val backendPrefProvider: suspend (modelId: String) -> BackendId? = { null },
     /** Null ⇒ session-only in-memory counters. */
     private val telemetryStore: TelemetryStore? = null,
     /** BATTERY-sensor °C, read FRESH each cycle; null (gate disabled or unreadable) never gates. No
@@ -79,14 +74,13 @@ class InferenceController(
      *  risk rather than a glucose alarm. */
     private val thermalProvider: suspend () -> ThermalStatus? = { null },
     /** INFERENCE.md §7.1, read FRESH each cycle. Snapped to an offered detent, so a corrupt setting
-     *  never reaches the Rust guard. It MOVES the §3.6-D `last_bg` anchor, hence its exclusion from
-     *  the agreement probe. */
+     *  never reaches the Rust guard. It MOVES the §3.6-D `last_bg` anchor. */
     private val smoothingWindowProvider: suspend () -> Int = { InferenceControllerDefaults.SAVGOL_WINDOW },
     /** Null ⇒ the counterfactual branch never runs, so every adapter stays `ABSENT`. */
     private val probeInsulin: ProbeInsulinPort? = null,
     /** Runs beside [loaded] and publishes an ordinary [ModelPrediction], but is not IN [loaded]: it
      *  has no descriptor and no artifact, which `SPEC/invariants.md` §4 rule 5 makes one unit. So
-     *  [authorityModelInfo] cannot resolve it and the dose path fails closed while it is selected. */
+     *  [selectedModelInfo] cannot resolve it and the dose path fails closed while it is selected. */
     private val baseline: BaselineRunner? = null,
     /** Re-read every cycle. Null ⇒ every model runs frozen. */
     private val loraStore: LoraStore? = null,
@@ -118,23 +112,9 @@ class InferenceController(
     )
 
     private val loaded = LinkedHashMap<String, Entry>()
-    /** Every DISCOVERED backend variant of a model id, before load. */
-    private val variants = LinkedHashMap<String, LinkedHashMap<BackendId, ModelBundle>>()
-    /** Every SUCCESSFULLY-LOADED variant, so the cycle and the agreement probe reuse handles. */
-    private val loadedVariants = LinkedHashMap<String, LinkedHashMap<BackendId, Entry>>()
-    private var catalog: List<BackendAvailability> = emptyList()
-    /** Per model id; absent/null ⇒ auto (the authority). Repopulated on every discovery. */
-    private val forecastBackendPrefs = HashMap<String, BackendId?>()
-    /** Per NON-authority backend; absent until a comparison runs. */
-    private val agreementByBackend = HashMap<BackendId, Boolean>()
-    private var lastComparison: BackendComparison? = null
-    /** Why the last [runBackendComparison] returned null. Reachable here for a caller that does not
-     *  render [state]'s note and would otherwise have nothing to say. */
-    @Volatile
-    var lastProbeRefusal: String? = null
-        private set
-    /** Process RSS growth in KB at the non-authority backend's load; best-effort. */
-    private var vulkanLoadRssKb: Long? = null
+    /** Every DISCOVERED model, before load. `ModelStore` admits only the XNNPACK engine, so a model
+     *  id has one bundle: the artifact the authority runs, or nothing. */
+    private val installed = LinkedHashMap<String, ModelBundle>()
     /** Written under [cycleMutex] on the inference thread, read unlocked off the default dispatcher
      *  in the [runFromHistory] preamble. */
     @Volatile
@@ -201,8 +181,8 @@ class InferenceController(
     }
 
     /** Loads every discovered model up to the [maxRunningProvider] cap, falling back to the
-     *  [StubBackend] when a `.pte` is absent or its load throws. Only the SELECTED model gets the
-     *  dual-backend catalog and agreement probe. Native loads run on the `inference` thread. */
+     *  [StubBackend] when a `.pte` is absent or its load throws. Native loads run on the
+     *  `inference` thread. */
     suspend fun refreshModels() = cycleMutex.withLock { refreshModelsLocked() }
 
     /** Call only while already holding [cycleMutex], which is not reentrant. Unlocked callers use
@@ -212,26 +192,16 @@ class InferenceController(
             runCatching { telemetryStore?.load() }.getOrNull()?.let { cumulative.putAll(it) }
             telemetryLoaded = true
         }
-        val bundles = store.discover()
+        val discovered = store.discover()
 
         // Refresh is rare, so a full close/reload beats diffing and cannot leave a stale handle.
-        loadedVariants.values.forEach { m -> m.values.forEach { runCatching { it.backend.close(it.handle) } } }
-        loadedVariants.clear()
+        loaded.values.forEach { runCatching { it.backend.close(it.handle) } }
         loaded.clear()
-        variants.clear()
-        agreementByBackend.clear()
-        lastComparison = null
-        for (b in bundles) {
-            variants.getOrPut(b.id) { LinkedHashMap() }[b.backendId] = b
-        }
-
-        // A stale entry for a vanished model simply goes unused.
-        for (id in variants.keys) {
-            forecastBackendPrefs[id] = runCatching { backendPrefProvider(id) }.getOrNull()
-        }
+        installed.clear()
+        for (b in discovered) installed[b.id] = b
 
         val cap = runCatching { maxRunningProvider() }.getOrNull()?.coerceAtLeast(1) ?: DEFAULT_MAX_RUNNING
-        val runningIds = variants.keys.take(cap).toList()
+        val runningIds = installed.keys.take(cap).toList()
         // A fitted baseline is a valid selection that is not in `runningIds` — it has no bundle to
         // discover — so it must survive a refresh, and with no neural model installed it is the only
         // thing left to select.
@@ -239,18 +209,14 @@ class InferenceController(
             ?.takeIf { it in runningIds || (it == BASELINE_MODEL_ID && baseline?.fitted != null) }
             ?: runningIds.firstOrNull()
             ?: BASELINE_MODEL_ID.takeIf { baseline?.fitted != null }
-        // SELECTED model only, and this is what loads its variants into loadedVariants.
-        catalog = buildCatalog(selectedId)
-        for (id in runningIds) {
-            if (id != selectedId) loadModelActive(id)   // selected already loaded by buildCatalog
-            loaded[id] = chooseActive(id)
-        }
 
-        val truncated = if (variants.size > cap)
-            "running $cap of ${variants.size} installed models (cap in Settings → Forecast & models)"
+        for (id in runningIds) loaded[id] = loadModel(id)
+
+        val truncated = if (installed.size > cap)
+            "running $cap of ${installed.size} installed models (cap in Settings → Forecast & models)"
         else null
         val note = when {
-            bundles.isEmpty() ->
+            discovered.isEmpty() ->
                 "no model — add a server and Sync models (Settings → Server)"
             loaded.values.none { it.real } ->
                 listOfNotNull(
@@ -262,110 +228,36 @@ class InferenceController(
                     "selected model has no working .pte — running on the StubBackend (real forecast path blocked)",
                     truncated,
                 ).joinToString(" · ")
-            loaded[selectedId]?.effectiveBackend?.let { it != BackendId.EXECUTORCH_XNNPACK_FP32 } == true ->
-                listOfNotNull(
-                    "forecast running on ${loaded[selectedId]?.effectiveBackend?.displayName()} " +
-                        "(non-authoritative; dosing needs the agreement probe)",
-                    truncated,
-                ).joinToString(" · ")
             else -> truncated
         }
         _state.value = _state.value.copy(
             running = runningModels(),
             metas = metasSnapshot(),
             telemetry = telemetrySnapshot(),
-            backendCatalog = catalog,
-            requestedBackend = selectedId?.let { forecastBackendPrefs[it] },
-            requestedBackendByModel = HashMap(forecastBackendPrefs),
-            backendComparison = lastComparison,
             note = note,
         )
         Timber.tag(TAG).i(
-            "refreshModels variants=%s active=%s prefs=%s catalog=%s",
-            variants.mapValues { it.value.keys }, loaded[selectedId]?.effectiveBackend, forecastBackendPrefs,
-            catalog.joinToString { "${it.backend}:${if (it.available) "ok" else "x"}" },
+            "refreshModels models=%s active=%s",
+            installed.keys, loaded[selectedId]?.effectiveBackend,
         )
     }
 
-    /** A real `.pte` is ATTEMPTED: success caches the handle in [loadedVariants], a failure carries
-     *  the native reason verbatim, and no artifact surfaces the backend's own documented reason — so
-     *  the switcher always states why a path is unavailable, never a bare "stub". */
-    private fun buildCatalog(primaryId: String?): List<BackendAvailability> {
-        val vmap = primaryId?.let { variants[it] } ?: LinkedHashMap()
-        val anyDesc = vmap.values.firstOrNull()?.descriptor
-        val loadedForId = primaryId?.let { loadedVariants.getOrPut(it) { LinkedHashMap() } }
-        return BACKEND_ORDER.mapNotNull { backends[it] }.map { backend ->
-            val bid = backend.id
-            val authoritative = bid == BackendId.EXECUTORCH_XNNPACK_FP32
-            val variant = vmap[bid]
-            if (variant != null && variant.pte.exists()) {
-                val rssBefore = residentKb()
-                val res = runCatching { backend.load(variant.descriptor, variant.pte) }
-                val handle = res.getOrNull()
-                if (handle != null) {
-                    val entry = Entry(variant, backend, handle, bid, variant.precision, real = true)
-                    loadedForId?.put(bid, entry)
-                    if (!authoritative) vulkanLoadRssKb = (residentKb() - rssBefore).coerceAtLeast(0)
-                    BackendAvailability(bid, variant.precision, available = true, authoritative, reason = null)
-                } else {
-                    BackendAvailability(
-                        bid, variant.precision, available = false, authoritative,
-                        reason = res.exceptionOrNull()?.message?.take(400) ?: "load failed",
-                    )
-                }
-            } else {
-                // No artifact for this engine: surface the backend's own documented reason.
-                val reason = if (anyDesc != null) {
-                    runCatching { backend.load(anyDesc, java.io.File(store.ensureDir(), "$primaryId.$bid.absent.pte")) }
-                        .exceptionOrNull()?.message?.take(400)
-                } else null
-                BackendAvailability(
-                    bid, backend.caps.precision, available = false, authoritative,
-                    reason = reason ?: "no $bid artifact on device",
-                )
+    /** The fp32 XNNPACK authority when its `.pte` loads, else the [StubBackend], which forecasts a
+     *  fixed shape and is never `real` — so a failed load costs the display nothing and fails the
+     *  dose path closed (§3.6-E) rather than promoting some other path. */
+    private fun loadModel(id: String): Entry {
+        val bundle = installed[id] ?: error("no bundle for $id")
+        val backend = backends[BackendId.EXECUTORCH_XNNPACK_FP32]
+        if (backend != null && bundle.pte.exists()) {
+            val handle = runCatching { backend.load(bundle.descriptor, bundle.pte) }
+                .onFailure { Timber.tag(TAG).w(it, "load failed for %s; falling back to the stub", id) }
+                .getOrNull()
+            if (handle != null) {
+                return Entry(bundle, backend, handle, BackendId.EXECUTORCH_XNNPACK_FP32, bundle.precision, real = true)
             }
         }
-    }
-
-    /** In order: the requested pref if loaded, the fp32 XNNPACK authority, any loaded variant, the
-     *  StubBackend. */
-    private fun chooseActive(id: String): Entry {
-        val vmap = loadedVariants[id] ?: LinkedHashMap()
-        val chosen = forecastBackendPrefs[id]?.let { vmap[it] }
-            ?: vmap[BackendId.EXECUTORCH_XNNPACK_FP32]
-            ?: vmap.values.firstOrNull()
-        if (chosen != null) return chosen
-        val bundle = variants[id]?.values?.firstOrNull() ?: error("no bundle for $id")
         val handle = stub.load(bundle.descriptor, bundle.pte)
         return Entry(bundle, stub, handle, BackendId.STUB, Precision.FP32, real = false)
-    }
-
-    /** For a NON-selected running model: ALWAYS the fp32 XNNPACK authority when present, so this
-     *  model can feed dosing the INSTANT it is selected (§3.6-E), plus its display pref, plus any
-     *  variant as a fallback. The full probe is [buildCatalog]'s job. */
-    private fun loadModelActive(id: String) {
-        val vmap = variants[id] ?: return
-        val loadedForId = loadedVariants.getOrPut(id) { LinkedHashMap() }
-        fun tryLoad(bid: BackendId?) {
-            if (bid == null || loadedForId.containsKey(bid)) return
-            val variant = vmap[bid] ?: return
-            val backend = backends[bid] ?: return
-            if (!variant.pte.exists()) return
-            val handle = runCatching { backend.load(variant.descriptor, variant.pte) }.getOrNull() ?: return
-            loadedForId[bid] = Entry(variant, backend, handle, bid, variant.precision, real = true)
-        }
-        tryLoad(BackendId.EXECUTORCH_XNNPACK_FP32) // authority — always, so selecting this model can dose
-        tryLoad(forecastBackendPrefs[id])          // the DISPLAY-active backend, if different
-        if (loadedForId.isEmpty()) for (bid in vmap.keys) { tryLoad(bid); if (loadedForId.isNotEmpty()) break }
-    }
-
-    /** DISPLAY cycle only; dosing stays fail-closed on a non-authoritative backend until the
-     *  agreement probe passes (§3.6-E). The caller has already persisted the choice; discovery
-     *  re-reads it. Returns the backend ACTUALLY active, which may be the authority fallback. */
-    suspend fun setForecastBackend(modelId: String, pref: BackendId?): BackendId? {
-        forecastBackendPrefs[modelId] = pref
-        refreshModels()
-        return loaded[modelId]?.effectiveBackend
     }
 
     /** Debug-only, not wired in release. */
@@ -451,32 +343,20 @@ class InferenceController(
         val backend: BackendId,
         val precision: Precision,
         val real: Boolean,
-        /** Null = not measured. The XNNPACK authority leaves it null and is trusted regardless; any
-         *  other backend is trusted for dosing ONLY when it is true (§3.6-E). */
-        val agreementOk: Boolean?,
     )
 
-    /** As DISPLAYED: follows [forecastBackendPrefs], and is NOT the dosing path (see
-     *  [authorityModelInfo]). */
+    /** The selected model, whatever is serving it. `:calc` reads [real] and fails closed on the
+     *  stub, so the dose path is on the fp32 XNNPACK authority or it does not run (§3.6-E). */
     fun selectedModelInfo(): SelectedModelInfo? {
         val id = selectedId ?: return null
         val e = loaded[id] ?: return null
-        val agreement = if (e.effectiveBackend == BackendId.EXECUTORCH_XNNPACK_FP32) null
-                        else agreementByBackend[e.effectiveBackend]
-        return SelectedModelInfo(id, e.bundle.descriptor, e.effectiveBackend, e.precision, e.real, agreement)
+        return SelectedModelInfo(id, e.bundle.descriptor, e.effectiveBackend, e.precision, e.real)
     }
 
-    /** The DOSING path's provenance (§3.6-E). Deliberately ignores [forecastBackendPrefs]: dose
-     *  advice is always computed on the fp32 CPU authority. Null when that variant is not loaded, so
-     *  `:calc` fails closed rather than a GPU/NPU path being silently promoted. */
-    fun authorityModelInfo(): SelectedModelInfo? {
-        val id = selectedId ?: return null
-        val e = loadedVariants[id]?.get(BackendId.EXECUTORCH_XNNPACK_FP32) ?: return null
-        if (!e.real) return null
-        return SelectedModelInfo(
-            id, e.bundle.descriptor, BackendId.EXECUTORCH_XNNPACK_FP32, e.precision, e.real, agreementOk = null,
-        )
-    }
+    /** The DOSING path's provenance (§3.6-E): null unless a real `.pte` is loaded on the authority,
+     *  so `:calc` fails closed on the stub and on the classical baseline alike. */
+    fun authorityModelInfo(): SelectedModelInfo? =
+        selectedModelInfo()?.takeIf { it.real && it.backend == BackendId.EXECUTORCH_XNNPACK_FP32 }
 
     /** Confined to the `inference` dispatcher and serialised on [cycleMutex] — never two forwards on
      *  the one command queue. Throws when nothing is selected; the caller fails closed. */
@@ -486,13 +366,12 @@ class InferenceController(
         withContext(dispatchers.inference) { e.backend.run(e.handle, input) }
     }
 
-    /** The DOSE path's forward, on the fp32 XNNPACK authority and NEVER the display backend
-     *  (§3.6-E). Same confinement as [runSelected]. Throws when that variant is not loaded; the
-     *  caller fails closed. */
+    /** The DOSE path's forward (§3.6-E). Same confinement as [runSelected]. Throws unless the
+     *  authority is what is loaded; the caller fails closed. */
     suspend fun runSelectedAuthority(input: GraphTensors): GraphOutput = cycleMutex.withLock {
         val id = selectedId ?: error("no selected model")
-        val e = loadedVariants[id]?.get(BackendId.EXECUTORCH_XNNPACK_FP32)
-            ?: error("fp32 XNNPACK authority variant not loaded for $id")
+        val e = loaded[id]?.takeIf { it.real && it.effectiveBackend == BackendId.EXECUTORCH_XNNPACK_FP32 }
+            ?: error("fp32 XNNPACK authority not loaded for $id")
         withContext(dispatchers.inference) { e.backend.run(e.handle, input) }
     }
 
@@ -842,118 +721,11 @@ class InferenceController(
             return@withLock had
         }
         val removed = withContext(dispatchers.inference) { runCatching { store.delete(id) }.getOrDefault(false) }
-        cumulative.remove(id); latencySamples.remove(id); forecastBackendPrefs.remove(id)
+        cumulative.remove(id); latencySamples.remove(id)
         runCatching { telemetryStore?.save(HashMap(cumulative)) }
         refreshModelsLocked() // already under cycleMutex — the public refreshModels would self-deadlock
         _state.value = _state.value.copy(predictions = _state.value.predictions.filterNot { it.modelId == id })
         removed
-    }
-
-    /** Both backends run the SAME fixed input: [runs] warm forwards each plus a cold one, and
-     *  `head_raw` and the decoded mg/dL median compared worst-case. Caching the mg/dL verdict in
-     *  [agreementByBackend] is what — and all that — lets a non-authority backend feed dosing. */
-    suspend fun runBackendComparison(runs: Int = 20): BackendComparison? = cycleMutex.withLock {
-        // Every refusal states itself, in the note AND in [lastProbeRefusal]; a bare null left the
-        // drill-down with nothing to show after its button ran the probe.
-        fun refuse(why: String): BackendComparison? {
-            lastProbeRefusal = why
-            _state.value = _state.value.copy(note = why)
-            return null
-        }
-        val id = selectedId ?: return@withLock refuse("no model selected")
-        val vmap = loadedVariants[id] ?: return@withLock refuse("selected model not loaded")
-        val authority = vmap[BackendId.EXECUTORCH_XNNPACK_FP32]
-            ?: return@withLock refuse("fp32 XNNPACK authority not loaded")
-        val other = vmap.entries.firstOrNull { it.key != BackendId.EXECUTORCH_XNNPACK_FP32 }?.value
-            ?: return@withLock refuse("no non-authoritative backend loaded to compare")
-        lastProbeRefusal = null
-        val desc = authority.bundle.descriptor
-
-        suspend fun timeOne(e: Entry): Double {
-            val input = probeInput(desc)
-            val t0 = System.nanoTime()
-            withContext(dispatchers.inference) { e.backend.run(e.handle, input) }
-            return (System.nanoTime() - t0) / 1_000_000.0
-        }
-
-        // First call, so it includes any lazy shader or kernel warmup on the GPU path.
-        val coldAuth = timeOne(authority)
-        val coldOther = timeOne(other)
-        val authMs = ArrayList<Double>(runs)
-        val otherMs = ArrayList<Double>(runs)
-        repeat(runs) { authMs.add(timeOne(authority)); otherMs.add(timeOne(other)) }
-
-        val probe = probeGraphInput(desc)
-        val authOut = withContext(dispatchers.inference) {
-            authority.backend.run(authority.handle, GraphIo.tensors(probe))
-        }
-        val otherOut = withContext(dispatchers.inference) {
-            other.backend.run(other.handle, GraphIo.tensors(probe))
-        }
-        val headDelta = maxAbsDelta(authOut.headRaw, otherOut.headRaw)
-        val fAuth = withContext(dispatchers.default) { decode(desc, authOut, probe) }
-        val fOther = withContext(dispatchers.default) { decode(desc, otherOut, probe) }
-        val mgdlDelta = maxAbsDeltaD(fAuth.medianBg, fOther.medianBg)
-        val agree = mgdlDelta.isFinite() && mgdlDelta <= AGREEMENT_TOL_MGDL && headDelta.isFinite()
-
-        agreementByBackend[other.effectiveBackend] = agree
-        val cmp = BackendComparison(
-            backend = other.effectiveBackend,
-            authority = BackendId.EXECUTORCH_XNNPACK_FP32,
-            runs = runs,
-            warmMedianMsBackend = median(otherMs),
-            warmMedianMsAuthority = median(authMs),
-            coldMsBackend = coldOther,
-            coldMsAuthority = coldAuth,
-            maxAbsHeadRawDelta = headDelta,
-            maxAbsDecodedMgdlDelta = mgdlDelta,
-            toleranceMgdl = AGREEMENT_TOL_MGDL,
-            agreementOk = agree,
-            loadRssGrowthKb = vulkanLoadRssKb,
-        )
-        lastComparison = cmp
-        _state.value = _state.value.copy(
-            backendComparison = cmp,
-            note = "agreement probe: ${other.effectiveBackend.displayName()} vs CPU — " +
-                "mg/dL Δ=%.3f (tol %.1f) ⇒ %s".format(mgdlDelta, AGREEMENT_TOL_MGDL, if (agree) "PASS" else "FAIL"),
-        )
-        Timber.tag(TAG).i(
-            "backend comparison %s vs XNNPACK: warm %.2f vs %.2f ms (cold %.1f vs %.1f), headΔ=%.3e mgdlΔ=%.4f agree=%s rss+%sKB",
-            other.effectiveBackend, cmp.warmMedianMsBackend, cmp.warmMedianMsAuthority,
-            cmp.coldMsBackend, cmp.coldMsAuthority, headDelta, mgdlDelta, agree, vulkanLoadRssKb,
-        )
-        cmp
-    }
-
-    /** Debug only: the CPU-unchanged proof compares this `head_raw` byte-for-byte across the stock
-     *  and custom AAR. Null when that variant is not loaded. */
-    suspend fun debugHeadRaw(backendId: BackendId): FloatArray? = cycleMutex.withLock {
-        val id = selectedId ?: return@withLock null
-        val e = loadedVariants[id]?.get(backendId) ?: return@withLock null
-        val input = probeInput(e.bundle.descriptor)
-        withContext(dispatchers.inference) { e.backend.run(e.handle, input) }.headRaw
-    }
-
-    /** FIXED, time-independent and dose-free. The smoothing window is PINNED to
-     *  [InferenceControllerDefaults.SAVGOL_WINDOW], never the user setting: the §3.6-E agreement
-     *  verdict and the CPU-unchanged proof must stay invariant under a Settings knob. */
-    private suspend fun probeInput(desc: ModelDescriptor): GraphTensors =
-        GraphIo.tensors(probeGraphInput(desc))
-
-    /** Kept apart from [probeInput] so the comparison reads the decode's anchors from here rather
-     *  than reconstructing them. */
-    private suspend fun probeGraphInput(desc: ModelDescriptor): GraphInput {
-        val steps = desc.maxContextPatches * desc.patchSize
-        val series = SyntheticContext.plausible24h(steps, anchorTsMs = PROBE_ANCHOR_MS)
-        val n = series.mgdl.size
-        return buildGraphInput(
-            desc,
-            series.mgdl,
-            ModelChannels.zero(n),
-            null,
-            emptyList(),
-            InferenceControllerDefaults.SAVGOL_WINDOW,
-        )
     }
 
     /** The banner note while BLOCKED, else null. A history-fed cycle passes this gate twice, so a
@@ -1163,18 +935,6 @@ class InferenceController(
             selPt?.let { "%.2fh R=%.3f (%d bins)".format(it.predictedHour, it.resultantR, it.nBins) } ?: "n/a",
         )
     }
-
-    /** Anchors and slot layout come from the input that produced [out], never re-derived: that is
-     *  how an infill span silently anchors on the forecast's neighbour. */
-    private fun decode(desc: ModelDescriptor, out: GraphOutput, gi: GraphInput): Forecast =
-        native.assembleDecode(
-            desc,
-            out.headRaw.map { it.toDouble() },
-            gi.anchors,
-            gi.slotPatch,
-            gi.nMasked,
-            CARRY_SPREAD,
-        )
 
     /** Null runs frozen — no adapter attached, or no store wired. NOT a fallback: an attached
      *  adapter that cannot be applied THROWS, dropping that model's prediction for the cycle rather
@@ -1487,48 +1247,10 @@ class InferenceController(
         if (loaded.isEmpty()) refreshModelsLocked()
     }
 
-    /** KB from /proc/self/statm; 0 when unreadable. */
-    private fun residentKb(): Long = runCatching {
-        val pages = java.io.File("/proc/self/statm").readText().trim().split(" ")[1].toLong()
-        pages * 4L // 4 KB page (K90 runtime page size = 4 KB — see target-device.md)
-    }.getOrDefault(0L)
-
     companion object {
         const val DEFAULT_MAX_RUNNING = 5
         const val TAG = "CycleRunner"
         const val GRID_MS = 300_000L
-        /** Fixed, so the probe input is reproducible across builds. */
-        const val PROBE_ANCHOR_MS = 1_700_000_000_000L
-        /** §3.6-E agreement tolerance on the decoded mg/dL median. */
-        const val AGREEMENT_TOL_MGDL = 3.0
-        /** Switcher display order, and only backends that can load on this build.
-         *  `EXECUTORCH_VULKAN_FP32` is deliberately absent: Vulkan ships fp16, so that entry could
-         *  only ever refuse with "artifact missing". The NPU ids stay in [BackendId], unoffered. */
-        val BACKEND_ORDER = listOf(
-            BackendId.EXECUTORCH_XNNPACK_FP32,
-            BackendId.EXECUTORCH_VULKAN_FP16,
-        )
-
-        fun maxAbsDelta(a: FloatArray, b: FloatArray): Double {
-            if (a.size != b.size) return Double.POSITIVE_INFINITY
-            var m = 0.0
-            for (i in a.indices) m = maxOf(m, kotlin.math.abs(a[i].toDouble() - b[i].toDouble()))
-            return m
-        }
-
-        fun maxAbsDeltaD(a: List<Double>, b: List<Double>): Double {
-            if (a.size != b.size) return Double.POSITIVE_INFINITY
-            var m = 0.0
-            for (i in a.indices) m = maxOf(m, kotlin.math.abs(a[i] - b[i]))
-            return m
-        }
-
-        fun median(xs: List<Double>): Double {
-            if (xs.isEmpty()) return 0.0
-            val s = xs.sorted()
-            val mid = s.size / 2
-            return if (s.size % 2 == 1) s[mid] else (s[mid - 1] + s[mid]) / 2.0
-        }
         const val MS_PER_HOUR = 3_600_000.0
         /** 5-min grid ⇒ 12 steps/hour (mirrors calc HorizonPolicy.STEPS_PER_HOUR). */
         const val STEPS_PER_HOUR = 12

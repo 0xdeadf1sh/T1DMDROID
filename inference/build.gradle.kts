@@ -17,16 +17,9 @@ dependencies {
     implementation(project(":core:model"))
     implementation(project(":core:common"))
 
-    // Pinned to the exporter's version (descriptor.json -> 1.3.1). `false` is the stock AAR
-    // (XNNPACK only); the default vendored AAR carries Vulkan and XNNPACK. flatDir supplies no POM,
-    // so the vendored branch declares the runtime transitives the stock POM would have.
-    if (providers.gradleProperty("t1dm.vulkan").orNull == "false") {
-        implementation(libs.executorch.android)
-    } else {
-        implementation(group = "", name = "executorch-vulkan-1.3.1", version = "", ext = "aar")
-        implementation("com.facebook.fbjni:fbjni:0.7.0")
-        implementation("com.facebook.soloader:nativeloader:0.10.5")
-    }
+    // Pinned to the exporter's version (descriptor.json -> 1.3.1). The stock AAR registers the
+    // XNNPACK CPU delegate and nothing else, which is the one backend this app runs.
+    implementation(libs.executorch.android)
 
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.timber)

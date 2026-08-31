@@ -162,16 +162,12 @@ class ModelSyncCoordinator(
         private const val DEFAULT_ENGINE = "executorch_xnnpack_fp32"
 
         /** Filename infixes (`<logicalId>.<infix>.pte`), distinct from the descriptor `engine`. */
-        private val ENGINE_INFIXES = setOf("xnnpack", "vulkan", "neuron", "litert_npu", "npu")
+        private val ENGINE_INFIXES = setOf("xnnpack")
 
-        /** The engine strings `ModelStore.backendOf` recognizes; anything else has no backend. */
+        /** The engine strings `ModelStore` admits; anything else it refuses at discovery, so
+         *  downloading it would fill the device with an artifact no delegate here can execute. */
         private val SUPPORTED_ENGINES = setOf(
             "executorch_xnnpack_fp32", "executorch_xnnpack",
-            "executorch_neuron_fp16", "executorch_neuron",
-            "litert_neuron_fp16", "litert_neuron",
-            "litert_npu_fp32", "litert_npu_fp16", "litert_npu",
-            "executorch_vulkan_fp16",
-            "executorch_vulkan_fp32", "executorch_vulkan",
         )
     }
 }

@@ -20,8 +20,8 @@
 -keep class uniffi.** { *; }
 -keep interface uniffi.** { *; }
 
-# ── ExecuTorch (JNI via fbjni). The stock AAR ships consumer rules, but the vendored Vulkan AAR does
-#    not. ExecuTorch's Java Module holds its native C++ object through an fbjni HybridData whose
+# ── ExecuTorch (JNI via fbjni). ExecuTorch's Java Module holds its native C++ object through an
+#    fbjni HybridData whose
 #    `mNativePointer` field the C++ side reads BY NAME — obfuscate it and `Module.load` aborts with
 #    'ptr' the instant a model loads. Keep the bindings AND fbjni/SoLoader (com.facebook.**) verbatim. ──
 -keep class org.pytorch.** { *; }

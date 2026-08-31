@@ -17,9 +17,6 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        // Vendored ExecuTorch AAR built with Vulkan on. flatDir carries no POM, so :inference adds
-        // its transitives (fbjni / soloader) explicitly.
-        flatDir { dirs("$rootDir/third_party/executorch-vulkan") }
     }
 }
 

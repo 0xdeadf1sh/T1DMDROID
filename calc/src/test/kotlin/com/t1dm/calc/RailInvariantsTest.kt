@@ -42,62 +42,37 @@ class RailInvariantsTest {
         assertTrue(advisor.recommendBolus(now, emptyList(), CalcConfig()) is AdviceResult.Refused)
     }
 
+    /** §3.6-E: the fp32 XNNPACK CPU authority is the only backend a dose may be scored on. */
     @Test
-    fun refuses_when_fp16_disagrees() = runTest {
-        val backend = BackendInfo(com.t1dm.core.model.BackendId.EXECUTORCH_NEURON_FP16, com.t1dm.core.model.Precision.FP16, agreementOk = false)
-        val advisor = advisorOf(FakeForecastPort(), anchor = fakeAnchor(now), iob = fakeIob(now), backend = backend)
-        assertTrue(advisor.recommendBolus(now, emptyList(), CalcConfig()) is AdviceResult.Refused)
-    }
-
-    @Test
-    fun authority_pinned_dosing_survives_a_non_agreeing_displayed_gpu() = runTest {
-        // The BackendInfo the composition root builds when Vulkan is selected.
-        val authorityWhileGpuDisplayed = BackendInfo(
-            backend = com.t1dm.core.model.BackendId.EXECUTORCH_XNNPACK_FP32,
-            precision = com.t1dm.core.model.Precision.FP32,
-            agreementOk = null,
-            displayedBackend = com.t1dm.core.model.BackendId.EXECUTORCH_VULKAN_FP32,
-        )
-        assertTrue("authority-pinned dosing is trustworthy regardless of the displayed backend",
-            authorityWhileGpuDisplayed.trustworthy)
-        val advisor = advisorOf(
-            FakeForecastPort(startBg = 230.0, mgdlPerU = 15.0),
-            anchor = fakeAnchor(now), iob = fakeIob(now, iobU = 0.0),
-            backend = authorityWhileGpuDisplayed,
-        )
-        val r = advisor.recommendBolus(now, emptyList(), CalcConfig())
-        assertTrue("a non-agreeing DISPLAYED backend must NOT refuse when dosing runs on the authority",
-            r is AdviceResult.Recommended)
-        r as AdviceResult.Recommended
-        assertEquals(com.t1dm.core.model.BackendId.EXECUTORCH_XNNPACK_FP32, r.card.backend)
-        assertEquals(com.t1dm.core.model.Precision.FP32, r.card.precision)
-        assertTrue("a non-blocking display-provenance note is surfaced",
-            r.railNotes.any { it.contains("rendered by", ignoreCase = true) && it.contains("CPU authority", ignoreCase = true) })
-    }
-
-    @Test
-    fun gpu_backend_cannot_feed_calc_without_agreement() = runTest {
-        // The composition root feeds `:calc` the authority, never a raw GPU BackendInfo, so this is
-        // defence in depth: a bad BackendInfo reaching the advisor must still block.
-        val vulkanUnproven = BackendInfo(
-            com.t1dm.core.model.BackendId.EXECUTORCH_VULKAN_FP32,
-            com.t1dm.core.model.Precision.FP32,
-            agreementOk = null,
-        )
-        assertFalse("fp32 GPU without an agreement probe must not be trustworthy", vulkanUnproven.trustworthy)
-        val advisor = advisorOf(FakeForecastPort(), anchor = fakeAnchor(now), iob = fakeIob(now), backend = vulkanUnproven)
+    fun only_the_fp32_cpu_authority_is_trustworthy() {
         assertTrue(
-            "dosing must fail closed on an unproven GPU backend",
-            advisor.recommendBolus(now, emptyList(), CalcConfig()) is AdviceResult.Refused,
+            BackendInfo(
+                com.t1dm.core.model.BackendId.EXECUTORCH_XNNPACK_FP32,
+                com.t1dm.core.model.Precision.FP32,
+            ).trustworthy,
         )
-        assertTrue(BackendInfo(com.t1dm.core.model.BackendId.EXECUTORCH_XNNPACK_FP32, com.t1dm.core.model.Precision.FP32, null).trustworthy)
-        assertTrue(BackendInfo(com.t1dm.core.model.BackendId.EXECUTORCH_VULKAN_FP32, com.t1dm.core.model.Precision.FP32, agreementOk = true).trustworthy)
-        assertFalse(BackendInfo(com.t1dm.core.model.BackendId.EXECUTORCH_VULKAN_FP32, com.t1dm.core.model.Precision.FP32, agreementOk = false).trustworthy)
-        assertFalse("fp16 GPU without a probe must not be trustworthy",
-            BackendInfo(com.t1dm.core.model.BackendId.EXECUTORCH_VULKAN_FP16, com.t1dm.core.model.Precision.FP16, agreementOk = null).trustworthy)
-        assertFalse("fp16 GPU that FAILS the probe must not be trustworthy",
-            BackendInfo(com.t1dm.core.model.BackendId.EXECUTORCH_VULKAN_FP16, com.t1dm.core.model.Precision.FP16, agreementOk = false).trustworthy)
-        assertTrue(BackendInfo(com.t1dm.core.model.BackendId.EXECUTORCH_VULKAN_FP16, com.t1dm.core.model.Precision.FP16, agreementOk = true).trustworthy)
+        for (bid in com.t1dm.core.model.BackendId.entries) {
+            if (bid == com.t1dm.core.model.BackendId.EXECUTORCH_XNNPACK_FP32) continue
+            assertFalse(
+                "$bid must never be trustworthy for dosing",
+                BackendInfo(bid, com.t1dm.core.model.Precision.FP32).trustworthy,
+            )
+        }
+    }
+
+    @Test
+    fun refuses_when_the_selected_model_is_not_on_the_authority() = runTest {
+        for (bid in listOf(
+            com.t1dm.core.model.BackendId.STUB,
+            com.t1dm.core.model.BackendId.NATIVE_RIDGE_FP64,
+        )) {
+            val backend = BackendInfo(bid, com.t1dm.core.model.Precision.FP32)
+            val advisor = advisorOf(FakeForecastPort(), anchor = fakeAnchor(now), iob = fakeIob(now), backend = backend)
+            assertTrue(
+                "dosing must fail closed on $bid",
+                advisor.recommendBolus(now, emptyList(), CalcConfig()) is AdviceResult.Refused,
+            )
+        }
     }
 
     @Test

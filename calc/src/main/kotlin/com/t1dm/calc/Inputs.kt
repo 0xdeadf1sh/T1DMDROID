@@ -29,15 +29,10 @@ data class IobSnapshot(
 data class BackendInfo(
     val backend: BackendId,
     val precision: Precision,
-    /** null = not measured; else the last fp32-agreement probe's verdict. */
-    val agreementOk: Boolean?,
-    /** The backend RENDERING the displayed forecast; null ⇒ the authority rendered it too. Purely
-     *  informational — it never touches [trustworthy] or any rail. */
-    val displayedBackend: BackendId? = null,
 ) {
-    /** §3.6-E: only the fp32 XNNPACK CPU authority drives a dose unconditionally. Any other backend,
-     *  fp32 included, needs a PASSED agreement probe — precision alone is never enough. */
-    val trustworthy: Boolean get() = backend == BackendId.EXECUTORCH_XNNPACK_FP32 || agreementOk == true
+    /** §3.6-E: the fp32 XNNPACK CPU authority drives a dose and nothing else does. The StubBackend
+     *  and the classical baseline both land here and both refuse. */
+    val trustworthy: Boolean get() = backend == BackendId.EXECUTORCH_XNNPACK_FP32
 }
 
 /** null ⇒ no signal. */
