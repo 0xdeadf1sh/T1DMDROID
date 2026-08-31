@@ -12,9 +12,9 @@ class BgHeatmapTest {
     private fun c(mgdl: Double) = heatColor(mgdl)
 
     @Test fun greenIsTheMidpointAlone() {
-        assertEquals(HEAT_IN, c(105.0))
-        assertNotEquals(HEAT_IN, c(104.0))
-        assertNotEquals(HEAT_IN, c(106.0))
+        assertEquals(HEAT_IN, c(125.0))
+        assertNotEquals(HEAT_IN, c(124.0))
+        assertNotEquals(HEAT_IN, c(126.0))
     }
 
     @Test fun theExtremesClampAtTheScaleEdges() {
@@ -33,14 +33,14 @@ class BgHeatmapTest {
                 (a.blue - b.blue) * (a.blue - b.blue)
 
         var prev = Float.MAX_VALUE
-        for (bg in 104 downTo 70) {
+        for (bg in 124 downTo 70) {
             val d = dist(c(bg.toDouble()), HEAT_LOW)
             assertTrue("$bg is no nearer blue than the value above it", d <= prev)
             prev = d
         }
 
         prev = Float.MAX_VALUE
-        for (bg in 106..180) {
+        for (bg in 126..180) {
             val d = dist(c(bg.toDouble()), HEAT_HIGH)
             assertTrue("$bg is no nearer red than the value below it", d <= prev)
             prev = d
@@ -48,15 +48,15 @@ class BgHeatmapTest {
     }
 
     @Test fun theScaleIsFixedAndIndependentOfTheTargetRange() {
-        // The bounds coincide with the usual 70-180 band, but green is 105 — not a target-range
-        // edge and not the midpoint of the bar — so a cell reads the same on every phone.
+        // The bounds coincide with the usual 70-180 band, but no setting feeds them: a cell reads
+        // the same glucose on every phone whatever the patient's target is.
         assertEquals(HEAT_IN, c(HEAT_MID_MGDL))
-        assertNotEquals(HEAT_IN, c(125.0))
+        assertNotEquals(HEAT_IN, c(105.0))
         assertNotEquals(HEAT_IN, c(140.0))
     }
 
     @Test fun everyValueYieldsAFiniteColour() {
-        for (bg in listOf(0.0, 69.0, 70.0, 105.0, 140.0, 180.0, 181.0, 600.0)) {
+        for (bg in listOf(0.0, 69.0, 70.0, 105.0, 125.0, 140.0, 180.0, 181.0, 600.0)) {
             val col = c(bg)
             assertTrue("$bg gave a non-finite red channel", col.red.isFinite())
             assertTrue("$bg gave a non-finite green channel", col.green.isFinite())
@@ -65,10 +65,10 @@ class BgHeatmapTest {
     }
 
     @Test fun theChipSelectsWhichSummaryColoursTheCell() {
-        // {100, 105, 400}: mean 201.67 is above the 180 ceiling, median 105 exactly on green.
-        val mean = (100.0 + 105.0 + 400.0) / 3.0
-        val cell = HeatCell(dow = 0, hour = 8, n = 3, meanBg = mean, medianBg = 105.0)
-        assertEquals(105.0, cell.value(HeatStat.Median), 0.0)
+        // {100, 125, 400}: mean 208.33 is above the 180 ceiling, median 125 exactly on green.
+        val mean = (100.0 + 125.0 + 400.0) / 3.0
+        val cell = HeatCell(dow = 0, hour = 8, n = 3, meanBg = mean, medianBg = 125.0)
+        assertEquals(125.0, cell.value(HeatStat.Median), 0.0)
         assertEquals(mean, cell.value(HeatStat.Mean), 0.0)
         assertEquals(HEAT_IN, c(cell.value(HeatStat.Median)))
         assertEquals(HEAT_HIGH, c(cell.value(HeatStat.Mean)))
