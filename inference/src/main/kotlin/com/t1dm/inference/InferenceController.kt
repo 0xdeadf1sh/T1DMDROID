@@ -216,6 +216,9 @@ class InferenceController(
             "running $cap of ${installed.size} installed models (cap in Settings → Forecast & models)"
         else null
         val note = when {
+            discovered.isEmpty() && store.refused.isNotEmpty() ->
+                "${store.refused.size} model(s) on device are built for another compute backend " +
+                    "(${store.refused.distinct().joinToString()}) and this build runs none of them"
             discovered.isEmpty() ->
                 "no model — add a server and Sync models (Settings → Server)"
             loaded.values.none { it.real } ->

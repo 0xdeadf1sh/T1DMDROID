@@ -89,14 +89,6 @@ fun HardwareScreen(
             HorizontalDivider(Modifier.padding(top = 8.dp))
         }
 
-        item {
-            Text(
-                "Choose the compute backend in Settings → Forecast & models → Compute backend",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            HorizontalDivider(Modifier.padding(top = 8.dp))
-        }
 
         if (state.running.isEmpty()) {
             item { Text("No models loaded", style = MaterialTheme.typography.bodyMedium) }

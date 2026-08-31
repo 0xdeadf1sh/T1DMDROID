@@ -13,12 +13,18 @@ enum class BackendId {
     EXECUTORCH_XNNPACK_FP32,
     NATIVE_RIDGE_FP64,
     STUB,
+
+    /** A stored row naming a backend this build no longer has. Never assigned to a live forecast:
+     *  it exists so a prediction written by an earlier build reads back as unknown provenance
+     *  instead of throwing out of the Room cursor. Never trustworthy for a dose. */
+    UNKNOWN,
 }
 
 fun BackendId.displayName(): String = when (this) {
     BackendId.EXECUTORCH_XNNPACK_FP32 -> "XNNPACK CPU · fp32"
     BackendId.NATIVE_RIDGE_FP64 -> "Ridge CPU · fp64"
     BackendId.STUB -> "Stub · no .pte"
+    BackendId.UNKNOWN -> "unknown backend"
 }
 
 /** The running set is ≤5 (§2.3); [modelId] is the descriptor's `model_id`. */

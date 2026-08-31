@@ -35,6 +35,7 @@ class ModelStore(
 
     /** A descriptor that fails to parse, or whose artifact is missing, is skipped, not fatal. */
     fun discover(): List<ModelBundle> {
+        refusedEngines.clear()
         val dir = ensureDir()
         val descriptors = dir.listFiles { f ->
             f.isFile && (f.name == "descriptor.json" || f.name.endsWith(".descriptor.json"))
@@ -45,6 +46,12 @@ class ModelStore(
         }
         return descriptors.mapNotNull { bundleOf(it, dir) }
     }
+
+    /** Engines the last [discover] refused, so the caller can say why a model on disk is not
+     *  listed instead of reporting that none is installed. */
+    val refused: List<String> get() = refusedEngines.toList()
+
+    private val refusedEngines = mutableListOf<String>()
 
     private fun bundleOf(descriptorFile: File, dir: File): ModelBundle? {
         val json = runCatching { descriptorFile.readText() }.getOrElse {
@@ -79,6 +86,7 @@ class ModelStore(
         }
         val engine = obj.optString("engine", "executorch_xnnpack_fp32")
         if (!isXnnpack(engine)) {
+            refusedEngines += engine
             Timber.tag(TAG).w(
                 "descriptor %s declares engine %s; this build runs the XNNPACK CPU delegate only, " +
                     "and its runtime registers no other. Skipping rather than loading an artifact " +
