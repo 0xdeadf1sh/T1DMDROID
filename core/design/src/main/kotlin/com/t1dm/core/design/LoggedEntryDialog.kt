@@ -10,11 +10,16 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.model.CurveKind
 import com.t1dm.core.model.InsulinKind
+import com.t1dm.core.model.InsulinType
 import com.t1dm.core.model.ExerciseKind
 import com.t1dm.core.model.LoggedEntry
 import java.time.Instant
@@ -86,14 +91,45 @@ internal fun logEntriesTitle(entries: List<LoggedEntry>): String =
     if (entries.size == 1) logAmountLabel(entries.single()) else "${entries.size} logs"
 
 /**
- * Read-only: deleting a log is the Logs panel's affordance. Lazy because M3's `text` slot carries no
- * scroll of its own, and at a week-wide zoom one mark can stand for the whole feed.
+ * A null [onEdit] or [onDelete] leaves that affordance off rather than offering one that refuses.
+ * Either replaces this dialog while it is open, and confirming dismisses the whole stack: the caller
+ * captured [entries] at the tap, so a row's fields are stale the moment it is written.
+ *
+ * Lazy because M3's `text` slot carries no scroll of its own, and at a week-wide zoom one mark can
+ * stand for the whole feed.
  */
 @Composable
-fun LoggedEntryDialog(entries: List<LoggedEntry>, onDismiss: () -> Unit) {
+fun LoggedEntryDialog(
+    entries: List<LoggedEntry>,
+    insulinTypes: List<InsulinType> = emptyList(),
+    onEdit: ((LoggedEntry, LogEdit) -> Unit)? = null,
+    onDelete: ((LoggedEntry) -> Unit)? = null,
+    onDismiss: () -> Unit,
+) {
     if (entries.isEmpty()) return
     val haptics = LocalT1dmHaptics.current
     val many = entries.size > 1
+    var editing by remember { mutableStateOf<LoggedEntry?>(null) }
+    var deleting by remember { mutableStateOf<LoggedEntry?>(null) }
+
+    editing?.let { entry ->
+        EditLogDialog(
+            entry = entry,
+            insulinTypes = insulinTypes,
+            onConfirm = { edit -> editing = null; onEdit?.invoke(entry, edit); onDismiss() },
+            onDismiss = { editing = null },
+        )
+        return
+    }
+    deleting?.let { entry ->
+        DeleteLogDialog(
+            entry = entry,
+            onConfirm = { deleting = null; onDelete?.invoke(entry); onDismiss() },
+            onDismiss = { deleting = null },
+        )
+        return
+    }
+
     AlertDialog(
         onDismissRequest = { haptics.perform(HapticEvent.Reject); onDismiss() },
         title = { Text(logEntriesTitle(entries)) },
@@ -118,6 +154,22 @@ fun LoggedEntryDialog(entries: List<LoggedEntry>, onDismiss: () -> Unit) {
                                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
                                 )
                                 Text(value, style = MaterialTheme.typography.bodyMedium)
+                            }
+                        }
+                        if (onEdit != null || onDelete != null) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                if (onEdit != null) {
+                                    TextButton(onClick = {
+                                        haptics.perform(HapticEvent.Tap)
+                                        editing = entry
+                                    }) { Text("Edit") }
+                                }
+                                if (onDelete != null) {
+                                    TextButton(onClick = {
+                                        haptics.perform(HapticEvent.Warn)
+                                        deleting = entry
+                                    }) { Text("Delete") }
+                                }
                             }
                         }
                     }

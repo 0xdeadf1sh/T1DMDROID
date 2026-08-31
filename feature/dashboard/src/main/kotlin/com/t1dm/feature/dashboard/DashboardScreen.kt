@@ -71,6 +71,7 @@ import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.LocalAnimationsEnabled
 import com.t1dm.core.design.LocalT1dmSemantics
 import com.t1dm.core.design.OnBoardReadout
+import com.t1dm.core.design.LogEdit
 import com.t1dm.core.design.LoggedEntryDialog
 import com.t1dm.core.design.SignalBars
 import com.t1dm.core.design.argbWithAlpha
@@ -87,6 +88,7 @@ import com.t1dm.core.model.AlertThresholds
 import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.isRealMeasurement
 import com.t1dm.core.model.IobCobReadout
+import com.t1dm.core.model.InsulinType
 import com.t1dm.core.model.LoggedEntry
 import com.t1dm.core.model.ModelPrediction
 import com.t1dm.core.model.PaintStroke
@@ -153,6 +155,11 @@ fun DashboardScreen(
     // The logged carb/insulin events, the same feed the Logs panel binds. Reduced to markers HERE so
     // a mark and the row it stands for are the same list position — how a tap names what it hit.
     logEntries: List<LoggedEntry> = emptyList(),
+    /** Offered by the tapped-mark dialog when a dose is retyped. */
+    insulinTypes: List<InsulinType> = emptyList(),
+    /** Null leaves the tapped-mark dialog read-only. */
+    onEditLog: ((LoggedEntry, LogEdit) -> Unit)? = null,
+    onDeleteLog: ((LoggedEntry) -> Unit)? = null,
     reconstructed: List<ReconstructedBg> = emptyList(),
     /** Non-null puts the panel in edit mode. */
     maskControls: MaskControls? = null,
@@ -735,7 +742,12 @@ fun DashboardScreen(
     }
 
     if (tappedLogs.isNotEmpty()) {
-        LoggedEntryDialog(tappedLogs) { tappedLogs = emptyList() }
+        LoggedEntryDialog(
+            entries = tappedLogs,
+            insulinTypes = insulinTypes,
+            onEdit = onEditLog,
+            onDelete = onDeleteLog,
+        ) { tappedLogs = emptyList() }
     }
 
     if (showPaintStyle) {

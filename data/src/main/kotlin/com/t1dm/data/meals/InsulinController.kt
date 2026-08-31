@@ -90,6 +90,35 @@ class InsulinController(
             )
         }
 
+    /**
+     * A row stores its resolved PK curve, not the type it came from, so a retype must rewrite every
+     * PK field and the note that names the insulin. [type] null leaves all of them, and with them a
+     * hand-drawn curve, as stored. [tsMs] is snapped by the repository.
+     */
+    suspend fun editDose(
+        row: LoggedDoseEntity,
+        type: InsulinType?,
+        units: Double,
+        tsMs: Long,
+        nowMs: Long = now(),
+    ): LoggedDoseEntity? = withContext(dispatchers.io) {
+        val retimed = row.copy(tsMs = tsMs, units = units)
+        val next = if (type == null) retimed else {
+            val curve = pkCurve(type, units)
+            retimed.copy(
+                kind = if (type.kind == InsulinKind.BOLUS) DoseKind.BOLUS else DoseKind.BASAL,
+                durationMin = type.durationMin,
+                k = type.k,
+                theta = type.theta,
+                kaPerHour = type.kaPerHour,
+                kePerHour = type.kePerHour,
+                customCurve = if (curve.isEmpty()) null else curve.toBlob(),
+                note = type.name,
+            )
+        }
+        repository.editLoggedDose(next, nowMs)
+    }
+
     companion object {
         val BUILTINS: List<InsulinType> = listOf(
             InsulinType(

@@ -11,7 +11,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.LocalContentColor
@@ -27,13 +26,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
-import com.t1dm.core.model.CurveKind
 import androidx.compose.ui.unit.dp
+import com.t1dm.core.design.DeleteLogDialog
+import com.t1dm.core.design.EditLogDialog
 import com.t1dm.core.design.HapticEvent
+import com.t1dm.core.design.LogEdit
 import com.t1dm.core.design.fadingEdges
 import com.t1dm.core.design.logAmountLabel
 import com.t1dm.core.design.logDetailLabel
@@ -41,6 +39,7 @@ import com.t1dm.core.design.logTimeLabel
 import com.t1dm.core.design.panelCardColors
 import com.t1dm.core.design.rememberHapticDetent
 import com.t1dm.core.design.rememberT1dmHaptics
+import com.t1dm.core.model.InsulinType
 import com.t1dm.core.model.LoggedEntry
 import kotlin.math.roundToInt
 
@@ -54,8 +53,8 @@ fun LogsScreen(
     onSetHoldMin: (Int) -> Unit = {},
     onPickMood: (Int) -> Unit = {},
     onDelete: (LoggedEntry) -> Unit = {},
-    /** Amount in grams or units by kind; the Long is an epoch-ms instant. */
-    onEdit: (LoggedEntry, Double, Long) -> Unit = { _, _, _ -> },
+    onEdit: (LoggedEntry, LogEdit) -> Unit = { _, _ -> },
+    insulinTypes: List<InsulinType> = emptyList(),
 ) {
     // Held here, not per-row: the confirmation outlives the row once the list re-sorts under it.
     var pending by remember { mutableStateOf<LoggedEntry?>(null) }
@@ -87,7 +86,7 @@ fun LogsScreen(
     }
 
     pending?.let { entry ->
-        DeleteConfirmDialog(
+        DeleteLogDialog(
             entry = entry,
             onConfirm = { pending = null; onDelete(entry) },
             onDismiss = { pending = null },
@@ -95,77 +94,14 @@ fun LogsScreen(
     }
 
     editing?.let { entry ->
-        EditEntryDialog(
+        EditLogDialog(
             entry = entry,
-            onConfirm = { amount, tsMs -> editing = null; onEdit(entry, amount, tsMs) },
+            insulinTypes = insulinTypes,
+            onConfirm = { edit -> editing = null; onEdit(entry, edit) },
             onDismiss = { editing = null },
         )
     }
 }
-
-/** The shift is minutes relative to the stored instant; the repository snaps the result back onto
- *  the five-minute grid. */
-@Composable
-private fun EditEntryDialog(
-    entry: LoggedEntry,
-    onConfirm: (Double, Long) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    val haptics = rememberT1dmHaptics()
-    var amountText by remember(entry.clientId) { mutableStateOf(fmtAmount(entry.amount)) }
-    var shiftText by remember(entry.clientId) { mutableStateOf("0") }
-    // A bout's magnitude is its duration times the carb-equivalent, and the duration is the bout's
-    // own — so a replay moves in time and in nothing else.
-    val timeOnly = entry.kind == CurveKind.EXERCISE
-    val amount = if (timeOnly) entry.amount else amountText.toDoubleOrNull()
-    val shiftMin = shiftText.toLongOrNull()
-    val valid = amount != null && amount > 0.0 && shiftMin != null
-
-    AlertDialog(
-        onDismissRequest = { haptics.perform(HapticEvent.Reject); onDismiss() },
-        title = { Text("Edit entry") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    logTimeLabel(entry.tsMs, entry.tzOffsetMin),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                )
-                if (!timeOnly) {
-                    OutlinedTextField(
-                        value = amountText,
-                        onValueChange = { amountText = it },
-                        label = { Text(if (entry.kind == CurveKind.CARB) "g" else "U") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                    )
-                }
-                OutlinedTextField(
-                    value = shiftText,
-                    onValueChange = { shiftText = it },
-                    label = { Text("shift min") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(
-                enabled = valid,
-                onClick = {
-                    haptics.perform(HapticEvent.Commit)
-                    onConfirm(amount!!, entry.tsMs + shiftMin!! * 60_000L)
-                },
-            ) { Text("Save") }
-        },
-        dismissButton = {
-            TextButton(onClick = { haptics.perform(HapticEvent.Reject); onDismiss() }) { Text("Cancel") }
-        },
-    )
-}
-
-private fun fmtAmount(v: Double): String =
-    if (v == Math.rint(v) && v.isFinite()) v.toLong().toString() else "%.1f".format(v)
 
 /** 1..5, worst→best; the value written to `sample.mood`. */
 private val MOODS = listOf(1 to "😞", 2 to "🙁", 3 to "😐", 4 to "🙂", 5 to "😀")
@@ -277,24 +213,3 @@ private fun EntryRow(entry: LoggedEntry, onDelete: () -> Unit, onEdit: () -> Uni
         }
     }
 }
-
-/** §3.6-F: deleting an OLDER dose lowers assumed IOB with the log-gap mark unmoved, silently
- *  relaxing `Rails.iobCeiling`. Nothing downstream catches that; this dialog is the only guard. */
-@Composable
-private fun DeleteConfirmDialog(entry: LoggedEntry, onConfirm: () -> Unit, onDismiss: () -> Unit) {
-    val haptics = rememberT1dmHaptics()
-    AlertDialog(
-        onDismissRequest = { haptics.perform(HapticEvent.Reject); onDismiss() },
-        title = { Text("Delete this entry?") },
-        text = {
-            Text("${logAmountLabel(entry)} · ${logTimeLabel(entry.tsMs, entry.tzOffsetMin)}")
-        },
-        confirmButton = {
-            TextButton(onClick = { haptics.perform(HapticEvent.Commit); onConfirm() }) { Text("Delete") }
-        },
-        dismissButton = {
-            TextButton(onClick = { haptics.perform(HapticEvent.Reject); onDismiss() }) { Text("Cancel") }
-        },
-    )
-}
-

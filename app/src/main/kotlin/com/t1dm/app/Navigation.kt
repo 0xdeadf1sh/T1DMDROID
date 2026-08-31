@@ -938,6 +938,7 @@ private fun T1dmNavHost(
             // The same feed the Logs panel binds; the screen reduces it to markers and the graph
             // never sees an amount.
             val logEntries by container.loggedEntries.collectAsState(emptyList())
+            val insulinTypes by container.insulinTypes.collectAsState(emptyList())
             // §8.4. Remembered against the map so the lambda's identity changes exactly when a fit
             // lands, and not on every recomposition.
             val bandCalibrations by container.bandCalibrations.collectAsState()
@@ -1002,6 +1003,13 @@ private fun T1dmNavHost(
                 curveChannels = container::dashboardOverlayChannels,
                 stepSeries = container::dashboardStepSeries,
                 logEntries = logEntries,
+                insulinTypes = insulinTypes,
+                onEditLog = { entry, edit ->
+                    container.appScope.launch { container.applyLogEdit(entry, edit) }
+                },
+                onDeleteLog = { entry ->
+                    container.appScope.launch { container.deleteLoggedEntry(entry) }
+                },
                 // Withheld with the forecast: a fill is reconstructed from the authoritative
                 // sensor's history. Nulling the controls takes the whole edit mode with it.
                 reconstructed = if (viewingOther) emptyList() else reconstructed,
@@ -2240,6 +2248,7 @@ private fun T1dmNavHost(
             val entries by container.loggedEntries.collectAsState(emptyList())
             val holdMin by container.pushHoldMin.collectAsState(SettingsStore.DEFAULT_PUSH_HOLD_MIN)
             val mood by container.latestMood.collectAsState(null)
+            val insulinTypes by container.insulinTypes.collectAsState(emptyList())
             LogsScreen(
                 entries = entries,
                 holdMin = holdMin,
@@ -2255,16 +2264,8 @@ private fun T1dmNavHost(
                 onDelete = { entry ->
                     container.appScope.launch { container.deleteLoggedEntry(entry) }
                 },
-                onEdit = { entry, amount, tsMs ->
-                    container.appScope.launch {
-                        when (entry.kind) {
-                            CurveKind.CARB -> container.editLoggedMeal(entry, amount, entry.gi, tsMs)
-                            CurveKind.INSULIN -> container.editLoggedDose(entry, amount, tsMs)
-                            // `amount` is the unchanged duration: the dialog offers no field for it.
-                            CurveKind.EXERCISE -> container.shiftLoggedExercise(entry, tsMs)
-                        }
-                    }
-                },
+                onEdit = { entry, edit -> container.appScope.launch { container.applyLogEdit(entry, edit) } },
+                insulinTypes = insulinTypes,
             )
         }
     }

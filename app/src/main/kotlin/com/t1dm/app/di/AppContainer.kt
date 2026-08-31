@@ -97,6 +97,7 @@ import com.t1dm.inference.backend.GraphTensors
 import com.t1dm.core.nativecore.UniffiNativeCore
 import com.t1dm.app.exercise.AppExerciseSource
 import com.t1dm.app.service.ExerciseService
+import com.t1dm.core.design.LogEdit
 import com.t1dm.core.design.exerciseKindLabel
 import com.t1dm.core.model.ActiveExercise
 import com.t1dm.core.model.ExerciseSession
@@ -2569,6 +2570,16 @@ class AppContainer(context: Context) {
         reforecastAfterCurveWrite()
     }
 
+    /** One entry point for every surface that edits a logged row, so the three writers are chosen in
+     *  one place. A bout carries no amount of its own to edit. */
+    suspend fun applyLogEdit(entry: LoggedEntry, edit: LogEdit) {
+        when (entry.kind) {
+            CurveKind.CARB -> editLoggedMeal(entry, edit.amount, edit.gi, edit.tsMs)
+            CurveKind.INSULIN -> editLoggedDose(entry, edit.amount, edit.insulin, edit.tsMs)
+            CurveKind.EXERCISE -> shiftLoggedExercise(entry, edit.tsMs)
+        }
+    }
+
     /** Keeps the row's identity and re-pushes under the same key, superseding whatever is queued. The
      *  shape is re-resolved from the edited GI and the stored curve rescaled by the repository writer. */
     suspend fun editLoggedMeal(entry: LoggedEntry, grams: Double, gi: Double?, tsMs: Long) {
@@ -2593,12 +2604,13 @@ class AppContainer(context: Context) {
         reforecastAfterCurveWrite()
     }
 
-    /** The dose twin of [editLoggedMeal]. [requireLoggableDose] guards the edit as it guards a write. */
-    suspend fun editLoggedDose(entry: LoggedEntry, units: Double, tsMs: Long) {
+    /** The dose twin of [editLoggedMeal]; [type] non-null re-resolves the PK curve and the note.
+     *  [requireLoggableDose] guards the edit as it guards a write. */
+    suspend fun editLoggedDose(entry: LoggedEntry, units: Double, type: InsulinType?, tsMs: Long) {
         requireLoggableDose(units)
         val now = System.currentTimeMillis()
         val old = repository.loggedDoseById(entry.rowId) ?: return
-        val edited = repository.editLoggedDose(old.copy(tsMs = tsMs, units = units), now) ?: return
+        val edited = insulinController.editDose(old, type, units, tsMs, now) ?: return
         outboxEnqueuer.enqueueDose(edited.toDoseEventDto(), now)
         remirrorEditedTreatment(edited.clientId) {
             nightscoutEnqueuer.enqueueDose(edited, now, holdMs = pushHoldMs())
