@@ -35,13 +35,15 @@ private val HHMM: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
 
 /** What a pending log will write, carried by value from the screen that raised the dialog. */
 sealed interface PendingLog {
-    /** [gi] is null for a multi-food builder meal, whose Ra curve combines its components.
+    /** [gi] is null for a multi-food builder meal, whose Ra curve combines its components. [detail]
+     *  is the components themselves; [note] the patient's own text, which the row stores and syncs.
      *  [photoAttached] must reflect a photo that will upload: there is no delete endpoint, so
      *  undoing the meal does not recall it. */
     data class Meal(
         val grams: Double,
         val gi: Double?,
         val detail: String? = null,
+        val note: String? = null,
         val photoAttached: Boolean = false,
     ) : PendingLog
 
@@ -70,8 +72,9 @@ internal fun confirmFields(pending: PendingLog, nowMs: Long, zone: ZoneId = Zone
     return when (pending) {
         is PendingLog.Meal -> buildList {
             add("Carbs" to "${fmtNum(pending.grams)} g")
-            add("Glycemic index" to (pending.gi?.let { fmtNum(it) } ?: "combined curve (multi-food)"))
+            add("Glycemic index" to (pending.gi?.let { fmtGi(it) } ?: "combined curve (multi-food)"))
             pending.detail?.takeIf { it.isNotBlank() }?.let { add("Foods" to it) }
+            pending.note?.takeIf { it.isNotBlank() }?.let { add("Note" to it) }
             add("Photo" to if (pending.photoAttached) "attached — uploads with the meal" else "none")
             add("Time" to time)
         }

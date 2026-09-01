@@ -21,7 +21,14 @@ class LogEditDialogTest {
         assertFalse(giFieldValid("-1"))
         assertTrue(giFieldValid("0"))
         assertTrue(giFieldValid("100"))
-        assertEquals(72.5, giFieldOrNull("72.5")!!, 0.0)
+        assertEquals(72.0, giFieldOrNull("72")!!, 0.0)
+    }
+
+    @Test
+    fun `a fractional index is refused`() {
+        // Whole points only; a stored fraction reads back as "GI 54.3".
+        assertFalse(giFieldValid("72.5"))
+        assertNull(giFieldOrNull("72.5"))
     }
 
     @Test

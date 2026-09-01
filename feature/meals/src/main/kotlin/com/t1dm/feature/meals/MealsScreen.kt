@@ -78,10 +78,11 @@ fun MealsScreen(
     onChoosePhoto: () -> Unit = {},
     onClearPhoto: () -> Unit = {},
     uploadStatus: String? = null,
-    onLogMeal: (grams: Double, gi: Double) -> Unit = { _, _ -> },
+    onLogMeal: (grams: Double, gi: Double, note: String?) -> Unit = { _, _, _ -> },
     footer: @Composable ColumnScope.() -> Unit = {},
 ) {
     var gramsText by remember { mutableStateOf("") }
+    var noteText by remember { mutableStateOf("") }
     var gi by remember { mutableFloatStateOf(GiChip.MIXED.gi.toFloat()) }
     val grams = gramsText.toDoubleOrNull()
     val scroll = rememberScrollState()
@@ -124,7 +125,7 @@ fun MealsScreen(
                         onClick = {
                             haptics.perform(HapticEvent.Tap)
                             gramsText = m.grams.toInt().toString()
-                            gi = m.gi.toFloat()
+                            gi = m.gi.roundToInt().toFloat()
                         },
                         label = { Text(m.label) },
                         leadingIcon = { Text("↺", style = MaterialTheme.typography.labelLarge) },
@@ -148,10 +149,11 @@ fun MealsScreen(
                 )
             }
         }
-        // GI is continuous; the grain is imposed here, one tick per 5 points.
+        // Whole points: the raw slider float logged GI 54.317, which every later restatement of the
+        // row read back as "GI 54.3". The haptic grain stays one tick per 5 points.
         Slider(
             value = gi,
-            onValueChange = { giDetent.at((it / 5f).roundToInt()); gi = it },
+            onValueChange = { giDetent.at((it / 5f).roundToInt()); gi = it.roundToInt().toFloat() },
             valueRange = 0f..100f,
         )
 
@@ -166,6 +168,14 @@ fun MealsScreen(
             }
             CurveSparkline(curve, MaterialTheme.colorScheme.secondary)
         }
+
+        OutlinedTextField(
+            value = noteText,
+            onValueChange = { noteText = it },
+            label = { Text("Note") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
+        )
 
         Row(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -216,6 +226,7 @@ fun MealsScreen(
                     pending = PendingLog.Meal(
                         grams = it,
                         gi = gi.toDouble(),
+                        note = noteText.trim().takeIf { t -> t.isNotEmpty() },
                         photoAttached = photoAttached,
                     )
                 }
@@ -231,8 +242,9 @@ fun MealsScreen(
         ConfirmLogDialog(
             pending = p,
             onConfirm = {
-                onLogMeal(p.grams, p.gi ?: GiChip.MIXED.gi)
+                onLogMeal(p.grams, p.gi ?: GiChip.MIXED.gi, p.note)
                 gramsText = ""
+                noteText = ""
                 pending = null
             },
             onDismiss = { pending = null },

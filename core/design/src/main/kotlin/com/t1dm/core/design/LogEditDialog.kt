@@ -1,8 +1,10 @@
 package com.t1dm.core.design
 
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilterChip
@@ -15,6 +17,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.model.CurveKind
@@ -24,30 +27,34 @@ import com.t1dm.core.model.LoggedEntry
 /**
  * [amount] is grams, units or minutes by [LoggedEntry.kind]. [gi] 0..100, null clearing the recorded
  * index; [insulin] null leaves the dose's stored PK curve untouched, since a type is re-resolved
- * only when one is picked and re-resolving discards a hand-drawn curve.
+ * only when one is picked and re-resolving discards a hand-drawn curve. [note] is read for a
+ * [CurveKind.CARB] row alone — a dose's note is the insulin the writer resolved, not the patient's
+ * text, and an edit must not overwrite it.
  */
 data class LogEdit(
     val amount: Double,
     val gi: Double?,
     val insulin: InsulinType?,
     val tsMs: Long,
+    val note: String? = null,
 )
 
 /** 0..100; `CurveEngine.Presets.carbGammaForGi` clamps to it, so a value outside is a typo. */
-private val GI_RANGE = 0.0..100.0
+private val GI_RANGE = 0..100
 
-/** Blank is a cleared index, not a rejected field: a meal may legitimately carry none. */
-internal fun giFieldOrNull(text: String): Double? = text.takeIf { it.isNotBlank() }?.toDoubleOrNull()
+/** Whole: the entry slider steps in whole points, and a fractional index reads back as "GI 54.3".
+ *  Blank is a cleared index, not a rejected field: a meal may legitimately carry none. */
+internal fun giFieldOrNull(text: String): Double? =
+    text.takeIf { it.isNotBlank() }?.toIntOrNull()?.toDouble()
 
 internal fun giFieldValid(text: String): Boolean =
-    text.isBlank() || giFieldOrNull(text)?.let { it in GI_RANGE } == true
+    text.isBlank() || text.toIntOrNull()?.let { it in GI_RANGE } == true
 
 /**
  * The shift is minutes relative to the stored instant; the repository snaps the result back onto the
  * five-minute grid. A retype rewrites the note as well as the curve — the note is where the insulin's
  * name is kept.
  */
-@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun EditLogDialog(
     entry: LoggedEntry,
@@ -57,7 +64,8 @@ fun EditLogDialog(
 ) {
     val haptics = LocalT1dmHaptics.current
     var amountText by remember(entry.clientId) { mutableStateOf(fmtNum(entry.amount)) }
-    var giText by remember(entry.clientId) { mutableStateOf(entry.gi?.let { fmtNum(it) }.orEmpty()) }
+    var giText by remember(entry.clientId) { mutableStateOf(entry.gi?.let { fmtGi(it) }.orEmpty()) }
+    var noteText by remember(entry.clientId) { mutableStateOf(entry.detail.orEmpty()) }
     var shiftText by remember(entry.clientId) { mutableStateOf("0") }
     // Null until a chip is tapped, so opening the dialog to change an amount cannot silently
     // re-resolve the curve the row is carrying.
@@ -94,16 +102,27 @@ fun EditLogDialog(
                 if (entry.kind == CurveKind.CARB) {
                     OutlinedTextField(
                         value = giText,
-                        onValueChange = { giText = it },
+                        onValueChange = { giText = it.filter(Char::isDigit) },
                         isError = !giValid,
                         label = { Text("GI") },
                         singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    )
+                    OutlinedTextField(
+                        value = noteText,
+                        onValueChange = { noteText = it },
+                        label = { Text("Note") },
+                        singleLine = true,
                     )
                 }
                 if (entry.kind == CurveKind.INSULIN && insulinTypes.isNotEmpty()) {
                     val pickedType = picked
-                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // Scrolls rather than wraps: the dialog's text slot carries no scroll of its own,
+                    // so a wrapped row past its height is clipped away unreachable.
+                    Row(
+                        Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
                         insulinTypes.forEach { type ->
                             FilterChip(
                                 // With nothing picked, the note names the type the dose was logged
@@ -139,6 +158,7 @@ fun EditLogDialog(
                             gi = gi,
                             insulin = picked,
                             tsMs = entry.tsMs + shiftMin!! * 60_000L,
+                            note = noteText.trim().takeIf { it.isNotEmpty() },
                         ),
                     )
                 },

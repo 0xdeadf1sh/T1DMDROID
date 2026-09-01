@@ -2288,14 +2288,15 @@ class AppContainer(context: Context) {
 
     /** The repository grid-snaps `ts` and mints the `client_id`; the push is built from the PERSISTED
      *  entity, so app and wire agree on one grid ts and one id (§3.1/§3.2). */
-    suspend fun logCarb(grams: Double, gi: Double): LogHandle {
+    suspend fun logCarb(grams: Double, gi: Double, note: String? = null): LogHandle {
         val now = System.currentTimeMillis()
         val tz = tzOffsetMin(now)
         val (k, theta, dur) = CurveEngine.Presets.carbGammaForGi(gi)
         val meal = repository.logMeal(
             LoggedMealEntity(
                 clientId = "", tsMs = now, grams = grams, gi = gi, k = k, theta = theta,
-                durationMin = dur, customCurve = null, tzOffsetMin = tz, note = null, updatedAt = now,
+                durationMin = dur, customCurve = null, tzOffsetMin = tz,
+                note = note?.trim()?.takeIf { it.isNotEmpty() }, updatedAt = now,
             ),
         )
         val outboxId = outboxEnqueuer.enqueueMeal(meal.toMealEventDto(), now, holdMs = pushHoldMs())
@@ -2571,7 +2572,7 @@ class AppContainer(context: Context) {
      *  one place. A bout carries no amount of its own to edit. */
     suspend fun applyLogEdit(entry: LoggedEntry, edit: LogEdit) {
         when (entry.kind) {
-            CurveKind.CARB -> editLoggedMeal(entry, edit.amount, edit.gi, edit.tsMs)
+            CurveKind.CARB -> editLoggedMeal(entry, edit.amount, edit.gi, edit.note, edit.tsMs)
             CurveKind.INSULIN -> editLoggedDose(entry, edit.amount, edit.insulin, edit.tsMs)
             CurveKind.EXERCISE -> shiftLoggedExercise(entry, edit.tsMs)
         }
@@ -2579,7 +2580,7 @@ class AppContainer(context: Context) {
 
     /** Keeps the row's identity and re-pushes under the same key, superseding whatever is queued. The
      *  shape is re-resolved from the edited GI and the stored curve rescaled by the repository writer. */
-    suspend fun editLoggedMeal(entry: LoggedEntry, grams: Double, gi: Double?, tsMs: Long) {
+    suspend fun editLoggedMeal(entry: LoggedEntry, grams: Double, gi: Double?, note: String?, tsMs: Long) {
         val now = System.currentTimeMillis()
         val old = repository.loggedMealById(entry.rowId) ?: return
         val shape = gi?.let { GiToGamma.paramsForGi(it) }
@@ -2591,6 +2592,7 @@ class AppContainer(context: Context) {
                 k = shape?.k ?: old.k,
                 theta = shape?.theta ?: old.theta,
                 durationMin = shape?.durationMin ?: old.durationMin,
+                note = note,
             ),
             now,
         ) ?: return

@@ -39,6 +39,12 @@ class ConfirmLogDialogTest {
     }
 
     @Test
+    fun `a note is restated, and a blank one is left out`() {
+        assertEquals("hospital canteen", fields(PendingLog.Meal(45.0, 60.0, note = "hospital canteen"))["Note"])
+        assertEquals(null, fields(PendingLog.Meal(45.0, 60.0, note = "  "))["Note"])
+    }
+
+    @Test
     fun `a bolus restates units, kind and the resolved insulin`() {
         val f = fields(PendingLog.Dose(4.0, InsulinKind.BOLUS, "Aspart · NovoRapid/Novolog"))
         assertEquals("4 U bolus", f["Dose"])

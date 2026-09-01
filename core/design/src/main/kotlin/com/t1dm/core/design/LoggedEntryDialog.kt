@@ -66,8 +66,13 @@ fun exerciseKindLabel(kind: String): String =
 fun logTimeLabel(tsMs: Long, tzOffsetMin: Int): String =
     Instant.ofEpochMilli(tsMs).atOffset(ZoneOffset.ofTotalSeconds(tzOffsetMin * 60)).format(TS_FMT)
 
+/** Whole: an index is entered as an integer, and a stored fraction is a slider artefact. */
+internal fun fmtGi(gi: Double): String = Math.round(gi).toString()
+
 fun logDetailLabel(entry: LoggedEntry): String? = when (entry.kind) {
-    CurveKind.CARB -> entry.gi?.let { "GI ${fmtNum(it)}" } ?: logNote(entry)
+    CurveKind.CARB ->
+        listOfNotNull(entry.gi?.let { "GI ${fmtGi(it)}" }, logNote(entry))
+            .takeIf { it.isNotEmpty() }?.joinToString(" · ")
     CurveKind.INSULIN -> logNote(entry)
     // Already in the headline; repeating it under would read as a second fact.
     CurveKind.EXERCISE -> null
@@ -79,7 +84,7 @@ private fun logNote(entry: LoggedEntry): String? = entry.detail?.takeIf { it.isN
  *  absent; an absent note is simply left out, since nothing was withheld. */
 internal fun logEntryFields(entry: LoggedEntry): List<Pair<String, String>> = buildList {
     if (entry.kind == CurveKind.CARB) {
-        add("Glycemic index" to (entry.gi?.let { fmtNum(it) } ?: NOT_RECORDED))
+        add("Glycemic index" to (entry.gi?.let { fmtGi(it) } ?: NOT_RECORDED))
     }
     if (entry.kind != CurveKind.EXERCISE) logNote(entry)?.let { add("Note" to it) }
     add("Time" to logTimeLabel(entry.tsMs, entry.tzOffsetMin))

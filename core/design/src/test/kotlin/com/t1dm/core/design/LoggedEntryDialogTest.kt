@@ -86,9 +86,15 @@ class LoggedEntryDialogTest {
     }
 
     @Test
-    fun `a meal with no index falls back to its note rather than dropping it`() {
+    fun `a meal states its index and its note, either alone or both`() {
         assertEquals("hospital canteen", logDetailLabel(meal(62.0, null, detail = "hospital canteen")))
-        assertEquals("GI 60", logDetailLabel(meal(45.0, 60.0, detail = "hospital canteen")))
+        assertEquals("GI 60 · hospital canteen", logDetailLabel(meal(45.0, 60.0, detail = "hospital canteen")))
+    }
+
+    @Test
+    fun `a fractional index left by an older slider still reads whole`() {
+        assertEquals("GI 54", logDetailLabel(meal(45.0, 54.317)))
+        assertEquals("54", fields(meal(45.0, 54.317))["Glycemic index"])
     }
 
     @Test

@@ -1387,14 +1387,14 @@ private fun T1dmNavHost(
                     photoThumbnail = null
                     uploadStatus = null
                 },
-                onLogMeal = { grams, gi ->
+                onLogMeal = { grams, gi, note ->
                     container.appScope.launch {
                         val uri = pendingPhotoUri
                         // The photo rides a direct POST, not the outbox, and the server has no delete
                         // endpoint, so an undone meal leaves its photo behind. Conditional: the receipt
                         // is posted before the upload is attempted, and the POST may never happen.
                         onLogged(
-                            container.logCarb(grams, gi).let { h ->
+                            container.logCarb(grams, gi, note).let { h ->
                                 if (uri == null) h
                                 else h.copy(caveats = h.caveats + "Any uploaded photo stays on the server")
                             },
