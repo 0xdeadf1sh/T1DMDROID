@@ -100,44 +100,6 @@ private fun DrawScope.drawTronBackground(p: T1dmPalette) {
         radius = w * 0.6f,
         center = Offset(cx, horizon),
     )
-
-    fun glow(a: Offset, b: Offset, wide: Color, core: Color, wWide: Float, wCore: Float) {
-        drawLine(wide, a, b, strokeWidth = wWide, cap = StrokeCap.Round)
-        drawLine(core, a, b, strokeWidth = wCore, cap = StrokeCap.Round)
-    }
-
-    val meshWide = lerp(p.grid, p.primary, 0.30f).copy(alpha = 0.20f)
-    val meshCore = lerp(p.grid, p.primary, 0.60f).copy(alpha = 0.55f)
-
-    for (half in intArrayOf(1, -1)) {
-        val farY = if (half == 1) h else 0f
-        val span = kotlin.math.abs(farY - horizon)
-        // Quadratic spacing bunches them toward the horizon.
-        val rows = 9
-        for (i in 1..rows) {
-            val t = i.toFloat() / rows
-            val tt = t * t
-            val y = horizon + half * span * tt
-            val fade = 1f - 0.55f * tt
-            glow(
-                Offset(0f, y), Offset(w, y),
-                meshWide.copy(alpha = meshWide.alpha * fade),
-                meshCore.copy(alpha = meshCore.alpha * fade),
-                h * 0.006f, h * 0.0015f,
-            )
-        }
-        val cols = 7
-        for (k in -cols..cols) {
-            val xFar = cx + k.toFloat() / cols * w * 1.9f
-            glow(Offset(cx, horizon), Offset(xFar, farY), meshWide, meshCore, h * 0.006f, h * 0.0015f)
-        }
-    }
-
-    glow(
-        Offset(0f, horizon), Offset(w, horizon),
-        p.primary.copy(alpha = 0.30f), p.primary.copy(alpha = 0.95f),
-        h * 0.022f, h * 0.004f,
-    )
 }
 
 private fun DrawScope.drawUmbrellaBackground(p: T1dmPalette) {
