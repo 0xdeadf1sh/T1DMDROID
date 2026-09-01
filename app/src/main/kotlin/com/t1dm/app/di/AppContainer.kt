@@ -138,6 +138,7 @@ import com.t1dm.core.model.AdvancedStats
 import com.t1dm.core.model.Food
 import com.t1dm.core.model.MealComponent
 import com.t1dm.core.model.RecentMeal
+import com.t1dm.core.model.InsulinChoice
 import com.t1dm.core.model.InsulinKind
 import com.t1dm.core.model.InsulinType
 import com.t1dm.core.model.SavedMeal
@@ -1862,6 +1863,14 @@ class AppContainer(context: Context) {
     val recentMeals: Flow<List<RecentMeal>> get() = repository.observeRecentMeals(3)
     val insulinTypes: Flow<List<InsulinType>> get() = insulinController.types
 
+    /** Everything a logged dose could have been written against, in the order the writers are
+     *  reached: the catalogue the Insulin screen names, then the builder's own rows. Retyping an
+     *  edited dose picks from here, so it can name whatever the row already names. */
+    val insulinChoices: Flow<List<InsulinChoice>>
+        get() = insulinController.types.map { types ->
+            insulinPresetCatalog().map(InsulinChoice::Preset) + types.map(InsulinChoice::Type)
+        }
+
     /** Idempotent. Also settles an exercise bout the last process died in the middle of. */
     fun startBuilders() {
         appScope.launch {
@@ -2320,7 +2329,8 @@ class AppContainer(context: Context) {
         )
     }
 
-    /** The only set of insulins a dose write can name. */
+    /** The insulins the Insulin screen's writes name; the builder's `insulin_type` rows are the
+     *  other half, and [insulinChoices] is the union an edit picks from. */
     suspend fun insulinPresetCatalog(): List<InsulinPresetSpec> = curveEngine.presetCatalog()
 
     /** The single place a preset becomes numbers, so preview and commit cannot diverge. */
@@ -2603,18 +2613,45 @@ class AppContainer(context: Context) {
         reforecastAfterCurveWrite()
     }
 
-    /** The dose twin of [editLoggedMeal]; [type] non-null re-resolves the PK curve and the note.
+    /** The dose twin of [editLoggedMeal]; [insulin] non-null re-resolves the PK curve and the note,
+     *  through the writer that owns its catalogue, so a retype lands the row a fresh write would.
      *  [requireLoggableDose] guards the edit as it guards a write. */
-    suspend fun editLoggedDose(entry: LoggedEntry, units: Double, type: InsulinType?, tsMs: Long) {
+    suspend fun editLoggedDose(entry: LoggedEntry, units: Double, insulin: InsulinChoice?, tsMs: Long) {
         requireLoggableDose(units)
         val now = System.currentTimeMillis()
         val old = repository.loggedDoseById(entry.rowId) ?: return
-        val edited = insulinController.editDose(old, type, units, tsMs, now) ?: return
+        val edited = when (insulin) {
+            is InsulinChoice.Preset -> repository.editLoggedDose(old.retypedTo(insulin.spec, units, tsMs), now)
+            else -> insulinController.editDose(old, (insulin as? InsulinChoice.Type)?.type, units, tsMs, now)
+        } ?: return
         outboxEnqueuer.enqueueDose(edited.toDoseEventDto(), now)
         remirrorEditedTreatment(edited.clientId) {
             nightscoutEnqueuer.enqueueDose(edited, now, holdMs = pushHoldMs())
         }
         reforecastAfterCurveWrite()
+    }
+
+    /** Every PK field a preset write sets, set exactly as [logBolus] and [logBasal] set it: a rapid
+     *  carries its resolved curve, a basal reconstructs analytically from DIA + ka/ke. */
+    private suspend fun LoggedDoseEntity.retypedTo(
+        spec: InsulinPresetSpec,
+        units: Double,
+        tsMs: Long,
+    ): LoggedDoseEntity = when (spec.family) {
+        InsulinFamily.RapidExp -> {
+            val curve = presetCurve(units, spec)
+            copy(
+                tsMs = tsMs, units = units, kind = DoseKind.BOLUS, durationMin = spec.diaMin,
+                k = null, theta = null, kaPerHour = null, kePerHour = null,
+                customCurve = if (curve.isEmpty()) null else curve.toList().toBlob(),
+                note = spec.label,
+            )
+        }
+        InsulinFamily.BasalBateman -> copy(
+            tsMs = tsMs, units = units, kind = DoseKind.BASAL, durationMin = spec.diaMin,
+            k = null, theta = null, kaPerHour = spec.kaPerHour, kePerHour = spec.kePerHour,
+            customCurve = null, note = spec.label,
+        )
     }
 
     /** Minutes. */

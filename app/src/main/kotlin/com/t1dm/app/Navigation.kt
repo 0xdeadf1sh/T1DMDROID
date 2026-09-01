@@ -937,7 +937,7 @@ private fun T1dmNavHost(
             // The same feed the Logs panel binds; the screen reduces it to markers and the graph
             // never sees an amount.
             val logEntries by container.loggedEntries.collectAsState(emptyList())
-            val insulinTypes by container.insulinTypes.collectAsState(emptyList())
+            val insulins by container.insulinChoices.collectAsState(emptyList())
             // §8.4. Remembered against the map so the lambda's identity changes exactly when a fit
             // lands, and not on every recomposition.
             val bandCalibrations by container.bandCalibrations.collectAsState()
@@ -1002,7 +1002,7 @@ private fun T1dmNavHost(
                 curveChannels = container::dashboardOverlayChannels,
                 stepSeries = container::dashboardStepSeries,
                 logEntries = logEntries,
-                insulinTypes = insulinTypes,
+                insulins = insulins,
                 onEditLog = { entry, edit ->
                     container.appScope.launch { container.applyLogEdit(entry, edit) }
                 },
@@ -2247,7 +2247,7 @@ private fun T1dmNavHost(
             val entries by container.loggedEntries.collectAsState(emptyList())
             val holdMin by container.pushHoldMin.collectAsState(SettingsStore.DEFAULT_PUSH_HOLD_MIN)
             val mood by container.latestMood.collectAsState(null)
-            val insulinTypes by container.insulinTypes.collectAsState(emptyList())
+            val insulins by container.insulinChoices.collectAsState(emptyList())
             LogsScreen(
                 entries = entries,
                 holdMin = holdMin,
@@ -2264,7 +2264,7 @@ private fun T1dmNavHost(
                     container.appScope.launch { container.deleteLoggedEntry(entry) }
                 },
                 onEdit = { entry, edit -> container.appScope.launch { container.applyLogEdit(entry, edit) } },
-                insulinTypes = insulinTypes,
+                insulins = insulins,
             )
         }
     }

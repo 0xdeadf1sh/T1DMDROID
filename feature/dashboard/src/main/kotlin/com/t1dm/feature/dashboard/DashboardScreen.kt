@@ -88,7 +88,7 @@ import com.t1dm.core.model.AlertThresholds
 import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.isRealMeasurement
 import com.t1dm.core.model.IobCobReadout
-import com.t1dm.core.model.InsulinType
+import com.t1dm.core.model.InsulinChoice
 import com.t1dm.core.model.LoggedEntry
 import com.t1dm.core.model.ModelPrediction
 import com.t1dm.core.model.PaintStroke
@@ -156,7 +156,7 @@ fun DashboardScreen(
     // a mark and the row it stands for are the same list position — how a tap names what it hit.
     logEntries: List<LoggedEntry> = emptyList(),
     /** Offered by the tapped-mark dialog when a dose is retyped. */
-    insulinTypes: List<InsulinType> = emptyList(),
+    insulins: List<InsulinChoice> = emptyList(),
     /** Null leaves the tapped-mark dialog read-only. */
     onEditLog: ((LoggedEntry, LogEdit) -> Unit)? = null,
     onDeleteLog: ((LoggedEntry) -> Unit)? = null,
@@ -744,7 +744,7 @@ fun DashboardScreen(
     if (tappedLogs.isNotEmpty()) {
         LoggedEntryDialog(
             entries = tappedLogs,
-            insulinTypes = insulinTypes,
+            insulins = insulins,
             onEdit = onEditLog,
             onDelete = onDeleteLog,
         ) { tappedLogs = emptyList() }

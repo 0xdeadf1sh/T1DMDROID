@@ -1,10 +1,9 @@
 package com.t1dm.core.design
 
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilterChip
@@ -13,15 +12,15 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.model.CurveKind
-import com.t1dm.core.model.InsulinType
+import com.t1dm.core.model.InsulinChoice
 import com.t1dm.core.model.LoggedEntry
 
 /**
@@ -34,7 +33,7 @@ import com.t1dm.core.model.LoggedEntry
 data class LogEdit(
     val amount: Double,
     val gi: Double?,
-    val insulin: InsulinType?,
+    val insulin: InsulinChoice?,
     val tsMs: Long,
     val note: String? = null,
 )
@@ -50,6 +49,16 @@ internal fun giFieldOrNull(text: String): Double? =
 internal fun giFieldValid(text: String): Boolean =
     text.isBlank() || text.toIntOrNull()?.let { it in GI_RANGE } == true
 
+/** Of the row's own kind, in the order given: retyping a bolus into a basal is a different dose,
+ *  not an edit. */
+internal fun offeredInsulins(entry: LoggedEntry, insulins: List<InsulinChoice>): List<InsulinChoice> =
+    insulins.filter { it.kind == entry.insulin }
+
+/** Which chip opens selected, or -1. The row keeps only the LABEL it was logged under, and the two
+ *  catalogues share no id, so the label is the whole of the match. */
+internal fun loggedInsulinIndex(entry: LoggedEntry, offered: List<InsulinChoice>): Int =
+    offered.indexOfFirst { it.label == entry.detail }
+
 /**
  * The shift is minutes relative to the stored instant; the repository snaps the result back onto the
  * five-minute grid. A retype rewrites the note as well as the curve — the note is where the insulin's
@@ -58,7 +67,7 @@ internal fun giFieldValid(text: String): Boolean =
 @Composable
 fun EditLogDialog(
     entry: LoggedEntry,
-    insulinTypes: List<InsulinType> = emptyList(),
+    insulins: List<InsulinChoice> = emptyList(),
     onConfirm: (LogEdit) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -69,7 +78,9 @@ fun EditLogDialog(
     var shiftText by remember(entry.clientId) { mutableStateOf("0") }
     // Null until a chip is tapped, so opening the dialog to change an amount cannot silently
     // re-resolve the curve the row is carrying.
-    var picked by remember(entry.clientId) { mutableStateOf<InsulinType?>(null) }
+    var picked by remember(entry.clientId) { mutableStateOf<InsulinChoice?>(null) }
+    val offered = offeredInsulins(entry, insulins)
+    val loggedIndex = loggedInsulinIndex(entry, offered)
 
     // A bout's magnitude is its duration times the carb-equivalent, and the duration is the bout's
     // own — so a replay moves in time and in nothing else.
@@ -115,25 +126,27 @@ fun EditLogDialog(
                         singleLine = true,
                     )
                 }
-                if (entry.kind == CurveKind.INSULIN && insulinTypes.isNotEmpty()) {
-                    val pickedType = picked
+                if (entry.kind == CurveKind.INSULIN && offered.isNotEmpty()) {
+                    val pickedChoice = picked
+                    val chipScroll = rememberLazyListState()
+                    // Opens on the row's own insulin. A catalogue wider than the dialog otherwise
+                    // starts scrolled past the selected chip, reading as nothing selected at all.
+                    LaunchedEffect(entry.clientId, loggedIndex) {
+                        if (loggedIndex >= 0) chipScroll.scrollToItem(loggedIndex)
+                    }
                     // Scrolls rather than wraps: the dialog's text slot carries no scroll of its own,
                     // so a wrapped row past its height is clipped away unreachable.
-                    Row(
-                        Modifier.horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        insulinTypes.forEach { type ->
+                    LazyRow(state = chipScroll, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(offered.size) { i ->
+                            val choice = offered[i]
                             FilterChip(
-                                // With nothing picked, the note names the type the dose was logged
-                                // against — the row stores no id to select by.
-                                selected = if (pickedType != null) pickedType.id == type.id
-                                else type.name == entry.detail,
+                                selected = if (pickedChoice != null) pickedChoice == choice
+                                else i == loggedIndex,
                                 onClick = {
                                     haptics.perform(HapticEvent.SegmentTick)
-                                    picked = type
+                                    picked = choice
                                 },
-                                label = { Text(type.name) },
+                                label = { Text(choice.label, maxLines = 1) },
                             )
                         }
                     }

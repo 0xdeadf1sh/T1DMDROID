@@ -18,8 +18,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.model.CurveKind
+import com.t1dm.core.model.InsulinChoice
 import com.t1dm.core.model.InsulinKind
-import com.t1dm.core.model.InsulinType
 import com.t1dm.core.model.ExerciseKind
 import com.t1dm.core.model.LoggedEntry
 import java.time.Instant
@@ -106,7 +106,7 @@ internal fun logEntriesTitle(entries: List<LoggedEntry>): String =
 @Composable
 fun LoggedEntryDialog(
     entries: List<LoggedEntry>,
-    insulinTypes: List<InsulinType> = emptyList(),
+    insulins: List<InsulinChoice> = emptyList(),
     onEdit: ((LoggedEntry, LogEdit) -> Unit)? = null,
     onDelete: ((LoggedEntry) -> Unit)? = null,
     onDismiss: () -> Unit,
@@ -120,7 +120,7 @@ fun LoggedEntryDialog(
     editing?.let { entry ->
         EditLogDialog(
             entry = entry,
-            insulinTypes = insulinTypes,
+            insulins = insulins,
             onConfirm = { edit -> editing = null; onEdit?.invoke(entry, edit); onDismiss() },
             onDismiss = { editing = null },
         )

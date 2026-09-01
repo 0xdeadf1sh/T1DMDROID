@@ -22,3 +22,26 @@ data class InsulinType(
     val customCurve: List<Double>? = null,
     val builtin: Boolean = false,
 )
+
+/**
+ * The two disjoint catalogues a logged dose can be written against, unified for the surfaces that
+ * offer one to be re-picked. A row keeps only the [label] it was logged under, in
+ * `logged_dose.note`, so that string is the only thing a re-pick can be matched against.
+ */
+sealed interface InsulinChoice {
+    val label: String
+    val kind: InsulinKind
+
+    /** The native preset catalogue, which the Insulin screen's bolus and basal writes name. */
+    data class Preset(val spec: InsulinPresetSpec) : InsulinChoice {
+        override val label: String get() = spec.label
+        override val kind: InsulinKind
+            get() = if (spec.family == InsulinFamily.RapidExp) InsulinKind.BOLUS else InsulinKind.BASAL
+    }
+
+    /** An `insulin_type` row, which the type builder's writes name. */
+    data class Type(val type: InsulinType) : InsulinChoice {
+        override val label: String get() = type.name
+        override val kind: InsulinKind get() = type.kind
+    }
+}

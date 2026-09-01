@@ -39,7 +39,7 @@ import com.t1dm.core.design.logTimeLabel
 import com.t1dm.core.design.panelCardColors
 import com.t1dm.core.design.rememberHapticDetent
 import com.t1dm.core.design.rememberT1dmHaptics
-import com.t1dm.core.model.InsulinType
+import com.t1dm.core.model.InsulinChoice
 import com.t1dm.core.model.LoggedEntry
 import kotlin.math.roundToInt
 
@@ -54,7 +54,7 @@ fun LogsScreen(
     onPickMood: (Int) -> Unit = {},
     onDelete: (LoggedEntry) -> Unit = {},
     onEdit: (LoggedEntry, LogEdit) -> Unit = { _, _ -> },
-    insulinTypes: List<InsulinType> = emptyList(),
+    insulins: List<InsulinChoice> = emptyList(),
 ) {
     // Held here, not per-row: the confirmation outlives the row once the list re-sorts under it.
     var pending by remember { mutableStateOf<LoggedEntry?>(null) }
@@ -96,7 +96,7 @@ fun LogsScreen(
     editing?.let { entry ->
         EditLogDialog(
             entry = entry,
-            insulinTypes = insulinTypes,
+            insulins = insulins,
             onConfirm = { edit -> editing = null; onEdit(entry, edit) },
             onDismiss = { editing = null },
         )
