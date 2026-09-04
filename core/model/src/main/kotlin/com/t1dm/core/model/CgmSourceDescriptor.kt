@@ -14,6 +14,10 @@ enum class CgmSourceStatus {
     /** Receiving fresh, valid, out-of-warmup readings. */
     Live,
 
+    /** Linked and answering, but the sensor marks its own records faulty, so none becomes a reading.
+     *  Distinct from [Scanning]: there is nothing wrong with the link. */
+    Faulted,
+
     /** Was Live but no MEASURED reading has arrived within the loss-of-signal window. */
     SignalLost,
 }
