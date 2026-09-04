@@ -23,8 +23,8 @@ android {
 
     defaultConfig {
         applicationId = "com.t1dm.app"
-        versionCode = 138
-        versionName = "0.58.0"
+        versionCode = 140
+        versionName = "0.59.1"
 
         // Single target device.
         ndk {
