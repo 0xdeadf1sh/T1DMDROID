@@ -7,8 +7,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** `serial` is the number printed on the sensor; omitting it is not a contract change
- *  (`SPEC/http-api.md`, CGM source). Every value below is fabricated. */
+/** serial is the sensor's printed number; omitting it is no contract change (SPEC/http-api.md). */
 class CgmSourcePushTest {
 
     private val descriptor = CgmSourceDescriptor(

@@ -11,12 +11,7 @@ import androidx.work.WorkerParameters
 import timber.log.Timber
 import java.util.concurrent.TimeUnit
 
-/**
- * The provider declares `updatePeriodMillis="0"` and every live render is driven by the foreground
- * service, so a reaped service freezes the tile with no path back; this re-pushes at WorkManager's
- * 15-minute floor. Doze defers it too, so it is a second path, not a guarantee. A throw yields
- * `success` because a periodic worker that fails is cancelled outright.
- */
+/** Backstop for a reaped FGS (provider has no periodic update); re-pushes at WM's 15-min floor. */
 class WidgetRefreshWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
         runCatching { GlucoseWidget().updateAll(applicationContext) }
@@ -28,7 +23,7 @@ class WidgetRefreshWorker(context: Context, params: WorkerParameters) : Coroutin
         private const val TAG = "GlucoseWidget"
         private const val NAME = "t1dm.widget.refresh"
 
-        /** KEEP means a later change to the request shape needs UPDATE to reach installs that hold one. */
+        /** KEEP: a later shape change needs UPDATE to reach installs already holding one. */
         fun enqueue(context: Context) {
             val request = PeriodicWorkRequestBuilder<WidgetRefreshWorker>(15, TimeUnit.MINUTES)
                 .setConstraints(Constraints.NONE)

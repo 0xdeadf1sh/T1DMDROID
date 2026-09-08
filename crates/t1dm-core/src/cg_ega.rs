@@ -1,11 +1,4 @@
-//! CG-EGA, transcribed from `T1DMAI/cg_ega.py` (a port of the dotXem reference). Anchoring
-//! and window: `SPEC/invariants.md` §6.3.
-//!
-//! Not Kovatchev's published grid: §6.3 lists dotXem's departures, two of which under-report
-//! danger. Reproduced anyway so this and `T1DMAI` publish one statistic.
-//!
-//! The 70 / 180 / 240 mg/dL below are the published grid's zone boundaries, never the
-//! configurable hypo/hyper thresholds of §6.1.
+//! CG-EGA, transcribed from T1DMAI/cg_ega.py; not Kovatchev's published grid (SPEC §6.3).
 
 /// `[A, B, C, D, E]`.
 const P_MARKS: usize = 5;
@@ -17,14 +10,12 @@ const LABEL_AP: u8 = 0;
 const LABEL_BE: u8 = 1;
 const LABEL_EP: u8 = 2;
 
-/// P-mark columns (indices into `[A,B,C,D,E]`) each region's filters carry. A cell whose
-/// P-mark is not among them is in neither filter, hence EP.
+/// P-mark columns each region's filters carry; a cell in neither filter is EP.
 const HYPO_P_COLS: [usize; 3] = [0, 3, 4];
 const EU_P_COLS: [usize; 3] = [0, 1, 2];
 const HYPER_P_COLS: [usize; 5] = [0, 1, 2, 3, 4];
 
-// Verbatim from the reference. Rows are the 8 R-marks in order, columns the region's
-// P-columns above.
+// Verbatim from the reference; rows are the 8 R-marks in order, columns the P-columns above.
 const FILTER_AP_HYPO: [[bool; 3]; R_MARKS] = [
     [true, false, false],
     [true, false, false],
@@ -174,8 +165,7 @@ fn p_ega_mark(y_true: f64, y_pred: f64, dy_true: f64) -> usize {
     first_true(&[a, b, c, d, e])
 }
 
-/// Index into `[A, B, uC, lC, uD, lD, uE, lE]`. An all-false stack is reachable here and
-/// yields `A`, as numpy's `argmax` does; diverging would rescore points.
+/// Index into [A,B,uC,lC,uD,lD,uE,lE]; all-false yields A, matching numpy's argmax.
 fn r_ega_mark(dy_true: f64, dy_pred: f64) -> usize {
     let a = ((dy_pred >= dy_true - 1.0) && (dy_pred <= dy_true + 1.0))
         || ((dy_pred <= dy_true / 2.0) && (dy_pred >= dy_true * 2.0))
@@ -203,9 +193,7 @@ fn first_true(flags: &[bool]) -> usize {
 /// `counts[region][verdict]` — `[hypo, eu, hyper] × [ap, be, ep]`.
 pub(crate) type CgEgaCounts = [[u32; 3]; 3];
 
-/// `y_pred` is band-projected (§6.2) mg/dL; §6.3 scores every step of the window, not one
-/// horizon. `last_bg` anchors both rate series, `freq_min` is §1's grid. A length mismatch
-/// contributes nothing.
+/// y_pred is band-projected (§6.2) mg/dL; scores every step, not one horizon; mismatch is a no-op.
 pub(crate) fn accumulate(
     counts: &mut CgEgaCounts,
     y_true: &[f64],

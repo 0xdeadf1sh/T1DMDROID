@@ -28,8 +28,7 @@ private fun defaultBlueskyOkHttp(): OkHttpClient =
         .readTimeout(20, TimeUnit.SECONDS)
         .build()
 
-/** Unauthenticated: no token, one read endpoint. Every failure throws with a plain-language
- *  message, never a bare status code. */
+/** Unauthenticated, one read endpoint; every failure throws plain-language, no bare code. */
 class BlueskyClient(
     private val dispatchers: T1dmDispatchers,
     private val http: OkHttpClient = defaultBlueskyOkHttp(),
@@ -65,8 +64,7 @@ class BlueskyClient(
         }
     }
 
-    /** Enqueued, so cancelling the coroutine cancels the call instead of parking a thread in a
-     *  blocking `execute()` until the read timeout. */
+    /** Enqueued; cancelling the coroutine cancels the call, no thread parked till timeout. */
     private suspend fun fetch(request: Request): Pair<Int, String> =
         suspendCancellableCoroutine { cont ->
             val call = http.newCall(request)

@@ -16,29 +16,20 @@ import java.time.OffsetDateTime
 import java.time.format.DateTimeFormatter
 import java.util.concurrent.TimeUnit
 
-/** Distinct from `NoActiveProfileException`, which stands the whole outbox down: an unconfigured
- *  BRIDGE must never stall T1DMSERVER sync. */
+/** Distinct from NoActiveProfileException (stands outbox down): unconfigured bridge must not. */
 class NightscoutDisabledException : IllegalStateException("nightscout bridge off / unconfigured")
 
 @Serializable
 private data class NsStatusDto(val status: String = "", val name: String = "", val version: String = "")
 
-/**
- * [execute] deliberately mirrors `SyncHttpClient.execute` so `QueueDrainer` replays an outbox
- * envelope through either destination with one branch. The credential is an `api-secret` header
- * carrying a SHA-1, and this host is on the public internet, so HTTPS is expected.
- */
+/** [execute] mirrors SyncHttpClient.execute so QueueDrainer replays via either dest, one branch. */
 interface NightscoutClient {
     suspend fun execute(request: SyncRequest): SyncResponse
 
     /** Never throws: the string IS the result. */
     suspend fun probe(): String
 
-    /**
-     * Consulted ONLY before a retry: `/api/v1` has no idempotency key, so a POST whose ack was lost
-     * would commit twice. Narrows that window, does not close it. A `false` covers both "never
-     * arrived" and "not recognisable in the copy read back", and the caller re-posts on either.
-     */
+    /** Before a retry only: no idempotency key, a lost ack commits twice. Narrows, not closes. */
     suspend fun alreadyPosted(request: SyncRequest): Boolean
 }
 
@@ -51,12 +42,11 @@ class OkHttpNightscoutClient(
     private val config: suspend () -> NightscoutConfig?,
     private val dispatchers: T1dmDispatchers,
     private val client: OkHttpClient = OkHttpClient.Builder()
-        // Tighter than the T1DMSERVER client's: a bridged row shares the drain pass with the patient's own.
+        // Tighter than T1DMSERVER: a bridged row shares the drain pass with the patients own.
         .connectTimeout(5_000, TimeUnit.MILLISECONDS)
         .readTimeout(8_000, TimeUnit.MILLISECONDS)
         .writeTimeout(8_000, TimeUnit.MILLISECONDS)
-        // OkHttp strips only `Authorization` across a cross-host redirect, so a 30x would forward this
-        // credential to an arbitrary third party. Nothing here needs redirects.
+        // OkHttp strips only `Authorization` cross-host; a 30x would forward this secret elsewhere.
         .followRedirects(false)
         .followSslRedirects(false)
         .build(),
@@ -86,11 +76,7 @@ class OkHttpNightscoutClient(
         }
     }.getOrElse { if (it is NightscoutDisabledException) "off — set a URL and secret" else "unreachable" }
 
-    /**
-     * Two ways to recognise a treatment, since which fields a host preserves is not knowable: the
-     * `client_id` written into `notes`, else the (event type, timestamp, amount) triple. The window
-     * filter is sent as a `find[…]` query AND applied again locally, in case the host ignores it.
-     */
+    /** Two recognition modes: client_id in notes, else (type, ts, amount). Re-filtered locally. */
     override suspend fun alreadyPosted(request: SyncRequest): Boolean {
         if (!request.path.startsWith("/api/v1/treatments")) return false
         val body = request.body ?: return false
@@ -104,9 +90,7 @@ class OkHttpNightscoutClient(
         val to = stamps.max().plus(MATCH_WINDOW)
 
         val existing = runCatching { fetchTreatments(from, to) }.getOrNull() ?: return false
-        // Tested by looking for a note SHAPED like a `client_id`, not merely a non-empty one: this
-        // host composes its own note text ("Bolus: 6u"), and taking that as proof would demand a
-        // marker that can never match. Where the marker does survive it is required.
+        // Tests for a note SHAPED like client_id, not just non-empty: hosts compose their own text.
         val markersSurvive = existing.any { clientIdMarker(it.notes)?.let(::looksLikeClientId) == true }
         return mine.all { m -> existing.any { it.matches(m, requireMarker = markersSurvive) } }
     }
@@ -137,11 +121,7 @@ class OkHttpNightscoutClient(
         }
 }
 
-/**
- * [requireMarker] is the caller's finding about whether this host keeps `notes`. With notes kept the
- * `client_id` is the only sound test — the triple cannot separate two same-shaped events inside one
- * grid slot. With notes dropped the triple is all there is, and its ambiguity is accepted.
- */
+/** [requireMarker]: with notes kept, client_id is the only sound test; the triple cant separate. */
 internal fun NsTreatmentDto.matches(other: NsTreatmentDto, requireMarker: Boolean = false): Boolean {
     val marker = clientIdMarker(other.notes)
     if (marker != null && notes?.contains(marker) == true) return true
@@ -152,27 +132,21 @@ internal fun NsTreatmentDto.matches(other: NsTreatmentDto, requireMarker: Boolea
         sameAmount(insulin, other.insulin)
 }
 
-/** Absent is zero: a host may materialise the field it was not given (`carbs: 0` on a bolus), and
- *  `null` against `0.0` would call an event's own echo a different event. */
+/** Absent is zero: a host may materialise a field unasked; null vs 0.0 calls an echo new. */
 internal fun sameAmount(a: Double?, b: Double?): Boolean = (a ?: 0.0) == (b ?: 0.0)
 
 /** The ids are UUIDs; nothing a host composes for a human resembles one. */
 internal fun looksLikeClientId(s: String): Boolean =
     s.length == 36 && s.matches(Regex("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"))
 
-/**
- * Parsed instants, NOT strings: this host re-renders what it is given — `+03:00` reads back as the
- * same instant at `+00:00` — so a string comparison would call every replay "not present".
- * Unparseable on either side falls back to equality.
- */
+/** Parsed instants, NOT strings: +03:00 reads back as +00:00, so string compare misses replays. */
 internal fun sameInstant(a: String, b: String): Boolean {
     val x = parseIso(a)
     val y = parseIso(b)
     return if (x != null && y != null) x.isEqual(y) else a == b
 }
 
-/** Either shape [noteWithClientId] writes: bracketed at the end of the user's own note, or standing
- *  alone when there was none — in which case the whole string IS the id. */
+/** Either shape written: bracketed at the notes end, or alone, then the string IS the id. */
 internal fun clientIdMarker(notes: String?): String? {
     val n = notes?.trim()?.takeIf { it.isNotBlank() } ?: return null
     if (!n.endsWith("]")) return n

@@ -137,23 +137,18 @@ fun DashboardScreen(
     unit: UnitSpace = UnitSpace.MgDl,
     predictions: List<ModelPrediction> = emptyList(),
     kovatchevF: ((Double) -> Double)? = null,
-    // `SPEC/inference.md` §8.4, fitted on device and applied by `:app`. DISPLAY ONLY: [predictions]
-    // stay raw, so the alarm engine, the rails and everything stored read the fan the model produced.
+    // `SPEC/inference.md` §8.4; DISPLAY ONLY — [predictions] stays raw for alarms, rails, storage.
     calibrateBands: ((ModelPrediction) -> List<Double>?)? = null,
-    // The same correction for the hindsight sweep, batched: one model's fans laid end to end, one
-    // apply. Calibrated all-or-nothing, so it never draws a different basis from the fan beside it.
+    // Hindsight sweep's correction, batched: one apply, so no fan draws a different basis.
     calibrateFans: ((modelId: String, fansMgdl: () -> List<Double>, steps: Int, nQuantiles: Int) -> List<Double>?)? = null,
     iobCob: IobCobReadout? = null,
-    // Display only: no rail, alarm or stored row reads it. Null ⇒ the probe could not justify a
-    // figure and the line carries none — never a dash or a zero.
+    // Display only; null ⇒ the probe could not justify a figure — never a dash or a zero.
     sensitivity: SensitivityEstimate? = null,
     // (carb, combined insulin, basal-only) for one grid window, from ONE resolve.
     curveChannels: (suspend (gridStartMs: Long, nSteps: Int) -> OverlayInput)? = null,
-    // Per-bucket step counts over one grid window. A lambda over an IntArray because this module
-    // holds no `:data` dependency. Null ⇒ no step source, and the Steps chip is not offered.
+    // Per-bucket step counts; a lambda since this module has no `:data` dep. Null ⇒ no Steps chip.
     stepSeries: (suspend (gridStartMs: Long, nSteps: Int) -> IntArray)? = null,
-    // The logged carb/insulin events, the same feed the Logs panel binds. Reduced to markers HERE so
-    // a mark and the row it stands for are the same list position — how a tap names what it hit.
+    // Same feed the Logs panel binds, reduced to markers here so a tap's index names its row.
     logEntries: List<LoggedEntry> = emptyList(),
     /** Offered by the tapped-mark dialog when a dose is retyped. */
     insulins: List<InsulinChoice> = emptyList(),
@@ -167,8 +162,7 @@ fun DashboardScreen(
     onFillSpan: ((MaskSelection, MaskGeometry) -> Unit)? = null,
     /** Verbatim from the runner, refusals included. */
     maskNote: String? = null,
-    /** Erase every BG on the grid in `[fromMs, toMs]`, locally and on the server. Null leaves the
-     *  affordance off the panel rather than offering one that refuses. */
+    /** Erase every BG in `[fromMs, toMs]`, locally and on the server. Null omits the affordance. */
     onCutBg: ((fromMs: Long, toMs: Long) -> Unit)? = null,
     onUndoBgEdit: (() -> Unit)? = null,
     /** The stack lives in `:app`, not here: an edit outlives this composable. */
@@ -184,12 +178,10 @@ fun DashboardScreen(
     onPreviewTau: ((spanStartMs: Long, tau: Double) -> Unit)? = null,
     /** The uncommitted line, applied over [reconstructed]. */
     tauPreview: SpanLinePreview? = null,
-    // Where the record begins, against where [readings] begins: the panel loads a window, not the
-    // whole store. Null ⇒ everything is loaded and the oldest reading is the floor.
+    // Where the record begins vs [readings]: the panel loads a window. Null ⇒ oldest is the floor.
     historyFloorMs: Long? = null,
     onExtendHistory: (Long) -> Unit = {},
-    // Where the SELECTED model's horizon reaches, supplied whether or not the fan is drawn, so a
-    // sensor whose forecast is withheld anchors on the same instant. Layout only; nothing is drawn.
+    // Selected model's horizon end, supplied with the fan withheld too; layout only, draws nothing.
     forecastEndMs: Long? = null,
     warmup: WarmupProgress? = null,
     // Suppresses the "next forecast" countdown when no forecast is being made.
@@ -204,55 +196,42 @@ fun DashboardScreen(
     deviceTempC: Double? = null,
     temperatureUnit: TempUnit = TempUnit.CELSIUS,
     stepsToday: Int? = null,
-    // The sensor's expiry instant (absolute epoch-ms): its reported age plus the configured service
-    // life. Null ⇒ no countdown.
+    // Sensor expiry instant (epoch-ms): reported age + service life. Null ⇒ no countdown.
     sensorExpiryMs: Long? = null,
-    // The instant the active sensor's warm-up ends (absolute epoch-ms). The NULLITY is the warm-up
-    // state, not the ordering against the clock — the sensor's own bit may outlive the configured
-    // window. CGM sensor warm-up, not the inference context warm-up [warmup] carries.
+    // Active sensor warm-up end (epoch-ms); nullity IS the state. Distinct from [warmup]'s context.
     sensorWarmupEndMs: Long? = null,
-    // The warmup-surviving belief, so the top axis renders a clock while the forecast is suppressed.
+    // Warmup-surviving belief, so the top axis renders a clock while the forecast is suppressed.
     circadianTime: PredictedTime? = null,
     circadianAnchorMs: Long? = null,
-    // The causal SavGol smoother the model consumes (mg/dL, clamps [20,500]); a lambda so this module
-    // keeps no JNI dependency. [smoothingWindow] smooths nothing here — it only invalidates the cached
-    // trace, since the memoized lambda is not a reliable key.
+    // SavGol smoother (mg/dL, clamps [20,500]); [smoothingWindow] only busts the memo cache.
     smoothMgdl: ((DoubleArray) -> DoubleArray)? = null,
     smoothingWindow: Int = 7,
-    // The ephemeral, DISPLAY-ONLY rolled forecast; never drives an alert or a dose. [onRoll] rolls to
-    // the requested horizon in hours.
+    // Ephemeral, DISPLAY-ONLY forecast; never drives an alert/dose. [onRoll] rolls to hours ahead.
     rolledForecast: RolledForecast? = null,
     rollComputing: Boolean = false,
     onRoll: ((Double) -> Unit)? = null,
     onClearRoll: (() -> Unit)? = null,
-    // Adaptive: a cycle runs on every CGM reading, so no fixed countdown is meaningful. Timed: the
-    // countdown ticks to the next [forecastPeriodMin]-minute wall-clock boundary.
+    // Adaptive: a cycle runs on every reading, no countdown. Timed: ticks to next period boundary.
     forecastAdaptive: Boolean = true,
     forecastPeriodMin: Int = 5,
     // The thermal-gate threshold in battery-sensor °C; null ⇒ the gate is disabled.
     thermalThresholdC: Double? = null,
     thermalWarnMarginC: Double = 3.0,
-    // The panel's freehand annotation layer, collected by `:app`. In-app panel only: it never reaches
-    // the widget, the notification or the watch.
+    // Freehand annotation layer, collected by `:app`. In-app only — never widget, notif, or watch.
     paintStrokes: List<PaintStroke> = emptyList(),
-    // `suspend` because the insert hands back the row id undo and the eraser address by. Null on
-    // either ⇒ the paint toggle is not offered at all.
+    // `suspend`: insert hands back the row id undo/erase address by. Null either ⇒ no paint toggle.
     onAddPaintStroke: (suspend (PaintStroke) -> Long)? = null,
     onDeletePaintStroke: (suspend (Long) -> Unit)? = null,
-    // The selected model's STORED forecasts over a window. A resolver, not a list: the window follows
-    // the viewport, and it is called off the main thread. Null ⇒ the chip is not offered. Read-only.
+    // Selected model's stored forecasts; a resolver so the window follows the viewport, off-thread.
     hindsightIn: (suspend (modelId: String, fromMs: Long, toMs: Long) -> List<ModelPrediction>)? = null,
-    // The hill-climb minigame, whose terrain IS this panel's trace. A MODE, not a destination: it
-    // renders in the graph's place and the rest of the dashboard stays put. Null ⇒ not offered.
+    // Hill-climb minigame; terrain IS this panel's trace. A mode, not a destination. Null ⇒ off.
     gameSlot: (@Composable (Modifier, trackFromMs: Long, dropAtMs: Long, spanMinutes: Float, predictedClock: PredictedClock?, onReady: () -> Unit, exit: () -> Unit) -> Unit)? = null,
 ) {
     val logMarkers = remember(logEntries) { logEntries.map { it.marker } }
-    // Held by VALUE: the feed re-sorts and a row can be deleted, and the dialog must go on restating
-    // what was tapped.
+    // Held by VALUE: the feed re-sorts and rows can be deleted; the dialog keeps restating the tap.
     var tappedLogs by remember { mutableStateOf<List<LoggedEntry>>(emptyList()) }
     var gameOn by remember { mutableStateOf(false) }
-    // The chart's LIVE viewport, moved by pinch and pan; drive mode adopts it wholesale, and a tap on
-    // the panel is turned into an instant through it.
+    // Chart's LIVE viewport, moved by pinch/pan; drive mode adopts it, a tap turns into an instant.
     var viewStartMs by remember { mutableStateOf(0.0) }
     var viewSpanMs by remember { mutableStateOf(0.0) }
     // Where the car is to be dropped: the instant under the finger. Null until the user picks.
@@ -268,13 +247,10 @@ fun DashboardScreen(
         value = rolledSeriesOf(rolledForecast, unit, kovatchevF)
     }
 
-    // [RolledSeries.paintsBand], the same predicate the draw uses, never a second reading of it. A
-    // roll that exists is not a roll that draws: at the validated horizon only a median line is painted.
+    // [RolledSeries.paintsBand]: a roll exists but past the validated horizon only a median draws.
     val rollOnPanel = rolledSeries?.paintsBand() == true
 
-    // Only the SELECTED model's fan is painted. Keyed on [calibrateBands] so a fresh §8.4 fit repaints
-    // without waiting for the next cycle. While a rolled band is on the panel the correction is
-    // DROPPED: §8.4 is fitted against the 2 h forecast, and two bases on one picture read as one fan.
+    // Only the selected fan paints; §8.4 correction drops with a rolled band up (avoids 2 bases).
     val overlay by produceState(emptyList<PredSeries>(), predictions, unit, calibrateBands, rollOnPanel) {
         value = predOverlayOf(
             predictions.filter { it.selected },
@@ -289,26 +265,21 @@ fun DashboardScreen(
     var showRollDialog by remember { mutableStateOf(false) }
 
 
-    // The carb / insulin / exercise channels over the readings' grid span, extended into the future so committed
-    // doses' tails are visible there too. Built whenever the resolver is wired, not gated on the
-    // toggles: the scrub read-out reports the rates with the overlay hidden. Keyed on iobCob as well.
+    // Carb/insulin/exercise channels, extended into the future for tails; not gated on the toggles.
     val curveOverlay by produceState(CurveOverlayFrame.EMPTY, readings, predictions, curveChannels, iobCob, rolledForecast) {
         val resolver = curveChannels
         if (resolver == null || readings.isEmpty()) {
             value = CurveOverlayFrame.EMPTY
             return@produceState
         }
-        // Ends, not scans: `observeReadings` is `ORDER BY tsMs` ascending, so the bounds ARE the two
-        // ends of the list, and this block runs on the main thread.
+        // Ends, not scans: `observeReadings` is `ORDER BY tsMs` asc, so bounds are list ends.
         val oldestReading = readings.first().tsMs / STEP_MS * STEP_MS
         val lastReading = readings.last().tsMs
         val lastForecast = predictions.maxOfOrNull { it.anchorTsMs + it.horizonSteps.toLong() * it.stepMs } ?: lastReading
         val rolledEnd = rolledForecast?.takeUnless { it.isEmpty }?.horizonEndMs ?: lastReading
-        // Always reach past now so a just-logged dose shows its rising tail even before a forecast
-        // exists, and across the full future the graph can pan to.
+        // Reaches past now: a just-logged dose's tail shows pre-forecast, across the pannable span.
         val end = maxOf(lastReading, lastForecast, rolledEnd, System.currentTimeMillis() + maxOf(OVERLAY_FUTURE_MS, FUTURE_VIEW_MS))
-        // Anchored on the recent end: a server re-sync can push `readings` back weeks, and the
-        // MAX_OVERLAY_STEPS cap would otherwise strand the window in the far past.
+        // Anchored on the recent end: a re-sync can push `readings` back weeks and strand the cap.
         val earliestStart = ((end / STEP_MS) - (MAX_OVERLAY_STEPS - 1L)) * STEP_MS
         val gridStart = maxOf(oldestReading, earliestStart)
         val nSteps = (((end - gridStart) / STEP_MS).toInt() + 1).coerceIn(1, MAX_OVERLAY_STEPS)
@@ -316,8 +287,7 @@ fun DashboardScreen(
         value = curveOverlayOf(ch.carb, ch.insulin, gridStart, STEP_MS, ch.basal, ch.exercise)
     }
 
-    // No insulin action over the forecast horizon: no committed bolus tail and no basal schedule (the
-    // auto-extended basal is folded into the combined channel). Advisory; never actuates.
+    // No insulin over the horizon: no bolus tail, no basal (folded into the channel). Advisory.
     val noFutureInsulin = remember(curveOverlay, predictions) {
         noFutureInsulinOverForecast(curveOverlay, predictions, System.currentTimeMillis())
     }
@@ -329,11 +299,9 @@ fun DashboardScreen(
     }
     var showSmoothed by remember { mutableStateOf(false) }
 
-    // Built over the SAME grid window the curve overlay uses, so the two band layers cannot disagree
-    // about where a bucket is. Not gated on the chip: the scrub read-out reports the steps either way.
+    // Same grid window as the curve overlay, so bucket edges agree. Not gated on the Steps chip.
     var showSteps by remember { mutableStateOf(false) }
-    // The steps window's right edge comes from the CLOCK, not the reading stream — steps accrue while
-    // the CGM is out of range. Changes once per bucket, so it re-keys at most every five minutes.
+    // Steps window's right edge is the CLOCK, not readings — steps accrue while CGM is dropped.
     val stepGridTick by produceState(0L) {
         while (true) {
             value = System.currentTimeMillis() / STEP_MS
@@ -346,8 +314,7 @@ fun DashboardScreen(
             value = null
             return@produceState
         }
-        // Capped to the same fortnight of buckets as the curve overlay and anchored on the recent end.
-        // No future half: a pedometer cannot report one.
+        // Capped to the curve overlay's window, anchored on recent end; no future — no pedometer.
         val oldest = readings.first().tsMs / STEP_MS * STEP_MS
         val newest = maxOf(readings.last().tsMs, System.currentTimeMillis()) / STEP_MS * STEP_MS
         val earliest = ((newest / STEP_MS) - (MAX_OVERLAY_STEPS - 1L)) * STEP_MS
@@ -362,8 +329,7 @@ fun DashboardScreen(
     }
 
     var showHindsight by remember { mutableStateOf(false) }
-    // BUCKETED to the hour, so a pan re-reads on bucket crossings rather than per frame. Reaches
-    // HINDSIGHT_LEAD_MS further back: a cycle just off the left edge still forecasts INTO the window.
+    // Bucketed to the hour, re-reading on crossings not per frame; reaches HINDSIGHT_LEAD_MS back.
     val hindsightBucket = remember(viewStartMs, viewSpanMs, showHindsight) {
         // viewStartMs is 0.0 until the panel has laid out and reported its viewport once.
         if (!showHindsight || viewSpanMs <= 0.0 || viewStartMs <= 0.0) null
@@ -377,8 +343,7 @@ fun DashboardScreen(
     // The model whose fan is live on the panel, so the comparison is a comparison.
     val hindsightSelected = predictions.firstOrNull { it.selected }
     val hindsightModelId = hindsightSelected?.modelId
-    // A key, not a value the producer reads: without it the sweep would miss every cycle issued since
-    // the bucket last moved — the most recent stretch, and the one most worth looking at.
+    // A key, not a producer value: without it the sweep misses cycles since the bucket last moved.
     val hindsightLatestCycleMs = hindsightSelected?.cycleTsMs
     // Keyed on [calibrateFans] so a fresh §8.4 fit redraws the sweep.
     val hindsight by produceState<HindsightFrame?>(
@@ -388,7 +353,7 @@ fun DashboardScreen(
         val resolve = hindsightIn
         val bucket = hindsightBucket
         val modelId = hindsightModelId
-        // Gated with the forecast overlay: a calibrated sweep beside a raw fan is two bases on one picture.
+        // Gated with the overlay: a calibrated sweep beside a raw fan is two bases on one plot.
         val calibrate = calibrateFans.takeIf { !rollOnPanel }
         value = if (resolve == null || bucket == null || modelId == null) null
         else hindsightFrameOf(
@@ -399,7 +364,7 @@ fun DashboardScreen(
         )
     }
 
-    // Transient, like [showSmoothed]: only the strokes are durable, and they live behind the callbacks.
+    // Transient like [showSmoothed]: only the strokes are durable, and live behind the callbacks.
     val paintHaptics = rememberT1dmHaptics()
     val paintScope = rememberCoroutineScope()
     val paintAvailable = onAddPaintStroke != null && onDeletePaintStroke != null
@@ -467,8 +432,7 @@ fun DashboardScreen(
         }
     }
 
-    // The rows as DRAWN: the stored fan with any uncommitted τ line over it. One list feeds both the
-    // panel and the edit bar, so the curve and the level the bar reports cannot disagree.
+    // Rows as DRAWN: stored fan plus any uncommitted τ line. One list feeds panel and edit bar.
     val shown = remember(reconstructed, tauPreview) {
         val p = tauPreview
         if (p == null) {
@@ -531,13 +495,12 @@ fun DashboardScreen(
         }
         warmup?.let { WarmupBanner(it) }
         if (noFutureInsulin) NoFutureInsulinBanner()
-        // Only a failure speaks: a row that rendered anyway took its height out of the panel's weight.
+        // Only a failure speaks: a row rendered anyway took its height out of the panel's weight.
         rolledForecast?.takeIf { it.reason != null || it.isEmpty }?.let { rf ->
             RolledStatusBanner(rf, onClear = onClearRoll)
         }
         val panelModifier = Modifier.fillMaxWidth().weight(1f)
-        // Drawn OVER the panel, not above it: stacked in the column they took their height out of the
-        // panel's weight. Declared after the chart, so they take the touch first.
+        // Drawn OVER the panel; declared after the chart, so toolbars take the touch first.
         @Composable
         fun PanelToolbars() {
             if (paintOn && paintAvailable) {
@@ -585,15 +548,13 @@ fun DashboardScreen(
         val spanMin = if (viewSpanMs > 0.0) (viewSpanMs / 60_000.0).toFloat() else windowHours * 60f
         val dropAt = gameStartMs
         Box(panelModifier) {
-            // ONE call site, always: from two branches it sits at two positions in the composition
-            // tree, and flipping between them DISPOSES the running world and reloads the track.
+            // ONE call site: two branches sit at two composition spots and DISPOSE on flip.
             if (gameOn && slot != null && dropAt != null) {
                 slot(Modifier.fillMaxSize(), viewStartMs.toLong(), dropAt, spanMin, predictedClock, { gameReady = true }) {
                     gameOn = false
                 }
             }
-            // The chart stays ON TOP until the game can draw, then cross-fades out over it — dropping
-            // the car must not flash through a loading state. Instant with motion off.
+            // Chart stays ON TOP until the game can draw, then cross-fades; no loading-gap flash.
             val motionOn = LocalAnimationsEnabled.current
             val handOff = gameOn && dropAt != null && gameReady
             val chartAlpha by animateFloatAsState(
@@ -602,8 +563,7 @@ fun DashboardScreen(
                 label = "chartHandOff",
             )
             if (chartAlpha > 0.001f) {
-                // Its own layer, outside the dissolve: an alpha change stays a RenderNode property
-                // update and never re-records the chart below it.
+                // Its own layer: an alpha change stays a RenderNode property, never re-records.
                 Box(
                     Modifier
                         .fillMaxSize()
@@ -642,7 +602,7 @@ fun DashboardScreen(
             onViewportChange = { st, sp ->
                 viewStartMs = st
                 viewSpanMs = sp
-                // One span of slack, so the next chunk is loaded before a pan reaches the loaded edge.
+                // One span of slack, so the next chunk loads before a pan reaches the loaded edge.
                 val oldestHeld = readings.firstOrNull()?.tsMs
                 val floor = historyFloorMs
                 if (oldestHeld != null && floor != null && floor < oldestHeld && st - sp <= oldestHeld) {
@@ -662,17 +622,14 @@ fun DashboardScreen(
                 }
                 }
             }
-            // Declared last, so a press on a chip is taken here and never reaches the panel's own
-            // gesture handler underneath. Nearly opaque, so it reads as sitting ON the panel.
+            // Declared last: a chip press is taken here, never the panel's gesture handler beneath.
             if ((paintOn && paintAvailable) || (editOn && editAvailable)) {
                 Box(
                     Modifier
                         .align(Alignment.TopCenter)
                         .fillMaxWidth()
                         .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.94f))
-                        // Records the hit and nothing else: the test stops descending to a lower
-                        // sibling only once some node has recorded one, so a press on the bar's dead
-                        // ground reached the panel. It CONSUMES NOTHING — that would freeze the slider.
+                        // Records the hit only, so dead ground reaches the panel; CONSUMES NOTHING.
                         .pointerInput(Unit) {
                             awaitPointerEventScope {
                                 while (true) awaitPointerEvent()
@@ -692,7 +649,7 @@ fun DashboardScreen(
             Box(
                 Modifier
                     .fillMaxWidth()
-                    // A CAP, never a fixed height: a fixed one padded the block out with empty surface.
+                    // A CAP, never a fixed height: fixed padded the block out with empty surface.
                     .heightIn(max = controlsHeightDp.dp)
                     .clipToBounds(),
             ) {
@@ -798,12 +755,10 @@ fun DashboardScreen(
     }
 }
 
-/** [added] says which direction undoing runs in. [stroke] is `var` because a re-insert mints a NEW
- *  row id, and the op has to adopt it. */
+/** [added] says which direction undo runs. [stroke] is `var`: a re-insert mints a NEW row id. */
 private class PaintUndoOp(var stroke: PaintStroke, val added: Boolean)
 
-/** Spelled out because [PaintStroke] is not a data class — array fields would give it an identity
- *  `equals` that lies. */
+/** Spelled out: [PaintStroke] is not a data class — array fields would give it a lying `equals`. */
 private fun PaintStroke.withId(newId: Long): PaintStroke =
     PaintStroke(newId, createdAtMs, tool, colorArgb, widthDp, tsMs, yFrac)
 
@@ -824,8 +779,7 @@ private fun rollHoursLabel(hours: Double): String {
     }
 }
 
-/** Beyond 2 h the roll is EXTRAPOLATED and unvalidated — for inspection only, and it never raises
- *  an alert. */
+/** Beyond 2 h the roll is EXTRAPOLATED, unvalidated — inspection only, never raises an alert. */
 @Composable
 private fun RollConfirmDialog(onDismiss: () -> Unit, onConfirm: (Double) -> Unit) {
     // Slider stops 1..24 map to 0.5 h … 12 h in 30-min steps; default index 4 = 2 h.
@@ -834,7 +788,7 @@ private fun RollConfirmDialog(onDismiss: () -> Unit, onConfirm: (Double) -> Unit
     val rolls = Math.ceil(hours / 2.0).toInt()
     val haptics = rememberT1dmHaptics()
     LaunchedEffect(Unit) { haptics.perform(HapticEvent.Warn) }
-    // Keyed on the ROUNDED index, never the raw Float: Slider reports continuous values between stops.
+    // Keyed on the ROUNDED index, never the raw Float: Slider reports continuous values.
     val stopDetent = rememberHapticDetent()
     AlertDialog(
         onDismissRequest = { haptics.perform(HapticEvent.Reject); onDismiss() },
@@ -873,15 +827,14 @@ private fun RollConfirmDialog(onDismiss: () -> Unit, onConfirm: (Double) -> Unit
 
 @Composable
 private fun RolledStatusBanner(rf: RolledForecast, onClear: (() -> Unit)?) {
-    // Only a FAILURE speaks: a roll that came back whole is drawn on the panel in the forecast's own hand.
+    // Only a FAILURE speaks: a whole roll is drawn on the panel in the forecast's own hand.
     val msg = when {
         rf.reason != null -> rf.reason!!
         rf.isEmpty -> "No rolled forecast"
         else -> null
     }
     val haptics = rememberT1dmHaptics()
-    // A degenerate roll lands while the user is watching the graph, so it says so in the hand. Keyed
-    // on the flag, so a redraw of the same banner is silent.
+    // A degenerate roll lands while watched, so it warns; keyed on the flag, a redraw stays silent.
     LaunchedEffect(rf.degenerate) { if (rf.degenerate) haptics.perform(HapticEvent.Warn) }
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
@@ -911,17 +864,14 @@ private const val MAX_OVERLAY_STEPS: Int = 4032 // ~14 days of 5-min buckets
 private const val OVERLAY_FUTURE_MS: Long = 6L * 3_600_000L // show ~6 h of future dose tails
 private const val FUTURE_VIEW_MS: Long = 24L * 3_600_000L // +24 h future-view extent
 
-// Bucketed to the hour so a pan re-reads on crossings rather than on frames, leading by one validated
-// horizon since a cycle just off the left edge still forecasts into view. Capped so one sweep cannot
-// hold weeks resident — ~576 fans at 5-min cycles.
+// Bucketed to the hour, re-reading on crossings; capped so one sweep can't hold weeks resident.
 private const val HINDSIGHT_BUCKET_MS: Long = 3_600_000L
 private const val HINDSIGHT_LEAD_MS: Long = 2L * 3_600_000L
 private const val HINDSIGHT_MAX_SPAN_MS: Long = 48L * 3_600_000L
 /** Below this resultant length the belief is too diffuse to anchor a clock axis on. */
 private const val MIN_CLOCK_R: Double = 0.05
 
-/** While fewer than the configured hours of MEASURED context have accrued the forecast overlay is
- *  empty; this states the progress. */
+/** Below the configured MEASURED-context hours the overlay is empty; states the progress. */
 @Composable
 private fun WarmupBanner(warmup: WarmupProgress) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
@@ -1009,8 +959,7 @@ private fun OverlayControls(
                     label = { Text("Clear roll") },
                 )
             }
-            // Latches, not a single-choice group, so each speaks the ToggleOn/ToggleOff pair rather
-            // than a chip picker's detent.
+            // Latches, not a single-choice group: each speaks ToggleOn/ToggleOff, not a detent.
             FilterChip(
                 selected = toggles.carbs,
                 onClick = {
@@ -1057,7 +1006,7 @@ private fun OverlayControls(
                     label = { Text("Hindsight") },
                 )
             }
-            // While it is on, one finger draws and two or more pan/zoom; the long-press scrub is suspended.
+            // While on, one finger draws and 2+ pan/zoom; the long-press scrub is suspended.
             if (paintAvailable) {
                 FilterChip(
                     selected = paintOn,
@@ -1089,13 +1038,10 @@ private fun OverlayControls(
                 )
             }
         }
-        // The countdown stays a separate composable so its per-second tick never re-renders the static
-        // IOB/COB text. Unlike every other segment, the ICR/ISF pair is shown even when empty, as
-        // "N/A": a blank where a figure belongs cannot be told from a feature that never shipped.
+        // Countdown is separate: its tick never re-renders IOB/COB. ICR/ISF shows N/A when empty.
         val ink = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
         val suspectInk = MaterialTheme.colorScheme.error
-        // Wording and ORDER come from `:core:design` OnBoardReadout, the one definition the Meals and
-        // Insulin panels also render. Only the density is local.
+        // Wording/ORDER come from `:core:design` OnBoardReadout, shared with Meals/Insulin panels.
         val sep = OnBoardReadout.separator(compact = true)
         val readout = remember(iobCob, sensitivity, unit, ink, suspectInk) {
             buildAnnotatedString {
@@ -1182,8 +1128,7 @@ private fun nextForecastRemainingMs(periodMs: Long): Long {
     return (now / periodMs + 1) * periodMs - now
 }
 
-/** OFF = not configured or paired — a neutral grey, not a fault. `:app` maps the transport state
- *  onto this. */
+/** OFF = not configured/paired — neutral grey, not a fault. `:app` maps transport state to this. */
 enum class LinkHealth { OK, DEGRADED, DOWN, OFF }
 
 data class ReachLight(val health: LinkHealth, val label: String)
@@ -1193,8 +1138,7 @@ data class BgReachability(val server: ReachLight, val cgm: ReachLight, val watch
 /** [watchRssi] is null until a source wires `readRemoteRssi` through `:watch`. */
 data class BgSignals(val cgmRssi: Int? = null, val watchRssi: Int? = null)
 
-/** Per-channel "last activity" tokens: any change flashes that channel's light once. Unchanged or
- *  zero ⇒ no flash. */
+/** Per-channel "last activity" tokens: a change flashes the light; unchanged/zero ⇒ none. */
 data class BgPulses(val server: Long = 0L, val cgm: Long = 0L, val watch: Long = 0L)
 
 @Composable
@@ -1216,25 +1160,20 @@ private fun ReachabilityBar(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         ReachChip("SRV", r.server, null, pulses?.server ?: 0L)
-        // No bars here: the CGM RSSI is shown in the header, in exactly one place.
+        // No bars: CGM RSSI is shown in the header, exactly once.
         ReachChip("CGM", r.cgm, null, pulses?.cgm ?: 0L)
         ReachChip("WCH", r.watch, signals?.watchRssi, pulses?.watch ?: 0L)
         deviceTempC?.let { TempChip(it, tempUnit, thermalThresholdC, thermalWarnMarginC) }
         stepsToday?.let { StepsChip(it) }
         HeartbeatChip()
-        // Either instant alone is enough: gating the chip on the expiry would suppress the warm-up
-        // state whenever no expiry is known.
+        // Either instant alone is enough: gating on expiry suppresses warm-up when none is known.
         if (sensorExpiryMs != null || sensorWarmupEndMs != null) {
             SensorLifeChip(sensorExpiryMs, sensorWarmupEndMs)
         }
     }
 }
 
-/**
- * The warm-up STATE is [warmupEndMs]'s nullity, not its ordering against the clock: a deadline
- * already past means the sensor is still warming and the app cannot say for how much longer, so it
- * prints `WARM` rather than fabricate an instant. Colour separates the states, so each also speaks.
- */
+/** Warm-up STATE is [warmupEndMs]'s nullity, not clock order: past deadline still prints `WARM`. */
 @Composable
 private fun SensorLifeChip(expiryMs: Long?, warmupEndMs: Long?) {
     val now by produceState(System.currentTimeMillis(), expiryMs, warmupEndMs) {
@@ -1289,8 +1228,7 @@ private fun formatRemaining(ms: Long): String {
     }
 }
 
-/** The battery sensor's reading, LABELLED so it is never taken for a fan or ambient figure. Amber as
- *  it nears the thermal gate, red past it; a null [thermalThresholdC] leaves it neutral. */
+/** Battery reading, LABELLED so it's never a fan value. Null [thermalThresholdC] ⇒ neutral. */
 @Composable
 private fun TempChip(celsius: Double, unit: TempUnit, thermalThresholdC: Double?, thermalWarnMarginC: Double) {
     val level = com.t1dm.core.model.thermalLevel(celsius, thermalThresholdC, thermalWarnMarginC)
@@ -1342,17 +1280,14 @@ private fun ReachChip(tag: String, light: ReachLight, rssi: Int?, pulseKey: Long
     }
 }
 
-/** A FIXED 60 bpm — decorative liveness, never a reading from any sensor. Static when
- *  [LocalAnimationsEnabled] is off. */
+/** A FIXED 60 bpm — decorative liveness, never a sensor reading. Static when animations are off. */
 @Composable
 private fun HeartbeatChip() {
     val animationsOn = LocalAnimationsEnabled.current
     val style = iconStyleForTheme(LocalT1dmSemantics.current.id)
     val icon = remember(style) { com.t1dm.core.design.heartIcon(style) }
     val color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
-    // 60 bpm ⇒ a 1000 ms beat period; the keyframe span fixes the cadence.
-    // The State is HELD, never unwrapped here: `.value` is read inside the graphicsLayer block, so a
-    // beat invalidates that layer's placement alone instead of recomposing this Row.
+    // State HELD, unwrapped in graphicsLayer only, so a beat skips recomposing this Row.
     val scale = if (animationsOn) {
         val transition = rememberInfiniteTransition(label = "heartbeat")
         transition.animateFloat(
@@ -1383,8 +1318,7 @@ private fun HeartbeatChip() {
     }
 }
 
-/** A dot whose pulse cadence encodes severity, steady when [LocalAnimationsEnabled] is off. A halo
- *  blooms and fades once each time [pulseKey] changes. */
+/** Pulse cadence encodes severity, steady with animations off. Halo blooms once per [pulseKey]. */
 @Composable
 private fun PulsingDot(health: LinkHealth, pulseKey: Long = 0L) {
     val animationsOn = LocalAnimationsEnabled.current
@@ -1394,8 +1328,7 @@ private fun PulsingDot(health: LinkHealth, pulseKey: Long = 0L) {
         LinkHealth.DOWN -> 600
         else -> 0
     }
-    // Held as State, unwrapped in the layer blocks below (see [HeartbeatChip]): read in composition it
-    // rebuilt the modifier chain and re-laid-out the dot every frame.
+    // Held as State, unwrapped below (see [HeartbeatChip]); avoids per-frame re-layout of the dot.
     val pulseAlpha = if (animationsOn && periodMs > 0) {
         val transition = rememberInfiniteTransition(label = "reach")
         transition.animateFloat(
@@ -1405,7 +1338,7 @@ private fun PulsingDot(health: LinkHealth, pulseKey: Long = 0L) {
             label = "reachAlpha",
         )
     } else remember { mutableFloatStateOf(1f) }
-    // Never fires on the very first composition: the caller seeds [pulseKey] from the current value.
+    // Never fires on the first composition: the caller seeds [pulseKey] from the current value.
     val flash = remember { androidx.compose.animation.core.Animatable(0f) }
     if (animationsOn) {
         LaunchedEffect(pulseKey) {
@@ -1416,9 +1349,7 @@ private fun PulsingDot(health: LinkHealth, pulseKey: Long = 0L) {
         }
     }
     Box(contentAlignment = Alignment.Center) {
-        // Composed UNCONDITIONALLY and hidden by its own layer alpha: gating on `flash.value > 0f`
-        // added a node when the ring bloomed and removed it when it died, re-measuring this Box on
-        // every frame. At f = 0 the layer draws nothing and the node is the same 9.dp as its sibling.
+        // Composed UNCONDITIONALLY, hidden by layer alpha: gating re-measured this Box per frame.
         Box(
             Modifier
                 .size(9.dp)
@@ -1430,8 +1361,7 @@ private fun PulsingDot(health: LinkHealth, pulseKey: Long = 0L) {
                 .clip(CircleShape)
                 .background(color),
         )
-        // A layer alpha rather than a per-frame `background(color.copy(…))`: a fill of alpha `A` at
-        // layer alpha `a` is the same source-over result, without rebuilding the chain.
+        // Layer alpha, not per-frame `background(color.copy(…))`: same result, no chain rebuild.
         Box(
             Modifier
                 .size(9.dp)
@@ -1450,8 +1380,7 @@ private fun LinkHealth.color(): Color = when (this) {
     LinkHealth.OFF -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.30f)
 }
 
-/** A tap on the panel, mapped back through the viewport the graph just reported. [topInset] is the
- *  panel's own top strip, not a constant: the predicted-clock labels are drawn there. */
+/** Tap mapped through the last-reported viewport. [topInset] is the strip clock labels draw in. */
 @Composable
 private fun BoxScope.TapToPlace(
     viewStartMs: Double,
@@ -1485,16 +1414,13 @@ private fun BoxScope.TapToPlace(
     }
 }
 
-/** Resizes the controls block; the panel has `weight` and takes the complement, so the graph grows by
- *  exactly what the read-out gives up. */
+/** Resizes the controls block; the panel's `weight` grows by exactly what the read-out gives up. */
 @Composable
 private fun PanelResizeHandle(heightDp: Float, onHeightDp: (Float) -> Unit) {
     val haptics = rememberT1dmHaptics()
     val detent = rememberHapticDetent(HapticEvent.SegmentTick)
     val density = LocalDensity.current
-    // The handler is keyed on `Unit` — a re-key cancels a drag in flight — and the node is REUSED
-    // across recompositions, keeping the first lambda instance: reading the parameter directly would
-    // freeze `heightDp` at its first value for the life of the node.
+    // Keyed on `Unit` (re-key cancels the drag) and REUSED, so a direct param read would freeze it.
     val currentHeight by rememberUpdatedState(heightDp)
     val emit by rememberUpdatedState(onHeightDp)
     Box(
@@ -1502,16 +1428,14 @@ private fun PanelResizeHandle(heightDp: Float, onHeightDp: (Float) -> Unit) {
             .fillMaxWidth()
             .height(14.dp)
             .pointerInput(Unit) {
-                // Accumulated across the gesture: `detectVerticalDragGestures` reports the delta since
-                // the PREVIOUS event, not since the start.
+                // Accumulated: `detectVerticalDragGestures` reports delta since the PREVIOUS event.
                 var live = 0f
                 detectVerticalDragGestures(
                     onDragStart = { live = currentHeight; haptics.perform(HapticEvent.DragStart) },
                     onDragEnd = { haptics.perform(HapticEvent.DragEnd) },
                 ) { change, dy ->
                     change.consume()
-                    // The block sits BELOW this grip and the bottom edge is fixed, so subtracting makes
-                    // the boundary travel WITH the finger.
+                    // Below; bottom fixed, so subtracting moves the edge with the finger.
                     live = (live - dy / density.density)
                         .coerceIn(CONTROLS_HEIGHT_MIN_DP, CONTROLS_HEIGHT_MAX_DP)
                     detent.at((live / 8f).toInt())

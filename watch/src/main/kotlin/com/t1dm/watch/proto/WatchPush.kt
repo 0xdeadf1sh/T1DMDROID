@@ -3,11 +3,7 @@ package com.t1dm.watch.proto
 import com.t1dm.core.model.AlertBand
 import com.t1dm.core.model.ForecastStatus
 
-/**
- * The 5-min glance pushed phone -> watch: the plaintext [WatchPushCodec] serialises and the crypto
- * layer seals. Forecast fields come from the selected model. Byte layout frozen in
- * docs/WATCH_BLE.md.
- */
+/** 5-min glance, phone→watch: [WatchPushCodec] serialises, crypto seals. Layout in WATCH_BLE.md. */
 data class WatchPush(
     /** mg/dL. */
     val bgMgdl: Int?,
@@ -35,10 +31,7 @@ data class WatchPush(
 /** Ordinal is the wire value. */
 enum class WatchTrend { FLAT, RISING, FALLING, RISING_FAST, FALLING_FAST }
 
-/**
- * [lowPowerSuspending] tells the watch the phone has suspended the 5-min scheduler, so a glance
- * that then freezes is expected rather than a fault.
- */
+/** [lowPowerSuspending]: scheduler suspended, so a frozen glance is expected, not a fault. */
 data class WatchStatus(
     val stale: Boolean = false,
     val signalLoss: Boolean = false,

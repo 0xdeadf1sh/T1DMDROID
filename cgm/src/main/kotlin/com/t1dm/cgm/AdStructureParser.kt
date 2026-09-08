@@ -1,12 +1,9 @@
 package com.t1dm.cgm
 
-/** Android's `ScanRecord.getManufacturerSpecificData` returns the MERGED concatenation of the two
- *  0x0059 structures the sensor advertises (CGM.md §3), so the `[len][type][data…]` TLV stream is
- *  walked here instead. */
+/** ScanRecord's manufacturer data merges both 0x0059 structures (CGM.md §3); TLV walked here. */
 object AdStructureParser {
 
-    /** The bytes AFTER the 2-byte company id, from the first matching structure whose payload is at
-     *  least [minLen] — the glucose block, never the short status block. Null when there is none. */
+    /** Bytes after 2-byte company id, from first structure ≥[minLen] (glucose, not status). */
     fun manufacturerPayload(
         adBytes: ByteArray,
         companyId: Int = CgmConstants.MANUFACTURER_ID,

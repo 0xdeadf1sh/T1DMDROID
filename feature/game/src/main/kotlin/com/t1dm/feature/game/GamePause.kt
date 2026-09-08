@@ -12,8 +12,7 @@ enum class GameHold {
     Modal,
 }
 
-/** A bitmask over [GameHold]. A set, not one flag, because releases arrive out of order: an alarm
- *  clearing while the screen is still backgrounded must not resume the world. */
+/** A bitmask, not one flag: releases arrive out of order, an alarm must not resume the world. */
 @JvmInline
 value class GameHolds(val bits: Int) {
     fun with(hold: GameHold, on: Boolean): GameHolds =
@@ -30,8 +29,7 @@ value class GameHolds(val bits: Int) {
     }
 }
 
-/** Plain volatile memory, not snapshot state: written from the main thread, polled from the game
- *  thread every frame, and a hold must not recompose anything at frame rate. */
+/** Plain volatile memory, not snapshot state: polled every frame, must not recompose per frame. */
 class GamePauseGate {
     @Volatile
     var holds: GameHolds = GameHolds.NONE
@@ -44,11 +42,7 @@ class GamePauseGate {
     }
 }
 
-/**
- * The schedule is a PHASE, not a minimum delta: [dueNs] advances by exactly [periodNs] per simulated
- * frame, because a gate re-derived from the last simulated stamp has an error budget smaller than
- * ordinary vsync jitter. Returns the REAL elapsed wall clock, never the nominal period.
- */
+/** A PHASE, not a min delta: [dueNs] advances by [periodNs]. Returns REAL elapsed, not nominal. */
 class FrameClockPacer(private val periodNs: Long = FRAME_NS_60) {
     private val slackNs = periodNs / 4
     private var markNs = 0L
@@ -74,8 +68,7 @@ class FrameClockPacer(private val periodNs: Long = FRAME_NS_60) {
     }
 
     companion object {
-        /** Nominal 60 fps. The quarter-period slack admits ±4.2 ms of drift against a 120 Hz
-         *  callback's 8.3 ms separation. No rate governor: thermal headroom does not throttle this. */
+        /** Nominal 60 fps; ¼-period slack admits ±4.2 ms drift vs 120 Hz. No rate governor. */
         const val FRAME_NS_60 = 16_666_667L
     }
 }

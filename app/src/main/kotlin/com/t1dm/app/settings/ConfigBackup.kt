@@ -18,25 +18,19 @@ import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import java.util.Base64
 
-/**
- * The legacy backup envelope; nothing writes it any more. [parse] still restores the files already
- * on disk and [wrap] builds the fixtures the compatibility tests parse. A root with a `config`
- * OBJECT is this envelope; anything else is handed to [SettingsStore.importJson] unchanged.
- */
+/** Legacy envelope: [parse] restores old files, [wrap] builds fixtures; `config` ⇒ envelope. */
 object ConfigBackup {
 
     const val FORMAT = "t1dm.backup"
     const val VERSION = 1
 
-    /** Export size guard: nothing else prunes strokes. Past either cap the OLDEST are dropped and
-     *  the count is reported. */
+    /** Export size guard (nothing else prunes); past either cap, OLDEST drop, count reported. */
     const val MAX_PAINTINGS = 4_000
     const val MAX_POINTS = 250_000
 
     class Document(val json: String, val note: String?)
 
-    /** [configJson] is null only where the file identifies itself as a backup with no settings
-     *  document; the caller then skips [SettingsStore.importJson] instead of tripping its refusal. */
+    /** [configJson] null only for a no-settings file; caller skips [SettingsStore.importJson]. */
     class Parsed(
         val configJson: String?,
         val paintings: List<PaintStroke>,
@@ -48,8 +42,7 @@ object ConfigBackup {
             .getOrElse { throw IllegalArgumentException("Could not render the settings for export.") }
         val kept = capped(paintings)
         val omitted = paintings.size - kept.size
-        // `importJson` refuses an empty `kv`, so omitting `config` is what makes the drawings-only
-        // shape [Parsed] reserves reachable.
+        // `importJson` refuses empty `kv`; omitting `config` makes drawings-only reachable.
         val hasSettings = (config["kv"] as? JsonObject)?.isNotEmpty() == true
         val doc = buildJsonObject {
             put("format", FORMAT)
@@ -64,14 +57,12 @@ object ConfigBackup {
         return Document(json.encodeToString(JsonObject.serializer(), doc), note)
     }
 
-    /** A malformed painting is skipped and counted; one unreadable blob must not cost the settings. */
+    /** A malformed painting is skipped and counted; one bad blob must not cost the settings. */
     fun parse(text: String): Parsed {
         val root = runCatching { json.parseToJsonElement(text).jsonObject }
             .getOrElse { throw IllegalArgumentException("Not a valid backup file (could not parse JSON).") }
 
-        // Structure, not a version tag: a `config` OBJECT is the envelope. Anything else falls
-        // through as raw text, so `SettingsStore.importJson` refuses a foreign file rather than
-        // importing a silent no-op. A drawings-only file is known by a positive marker of its own.
+        // Structure not version: `config` OBJECT ⇒ envelope, else raw; importJson refuses foreign.
         val wrapped = root["config"] as? JsonObject
         val paintings = root["paintings"] as? JsonArray
         val configJson = when {
@@ -90,7 +81,7 @@ object ConfigBackup {
         return Parsed(configJson, strokes, skipped)
     }
 
-    /** Newest first: a stroke over a window the user can no longer pan to is the one missed least. */
+    /** Newest first: dropping an unreachable-window stroke is missed least. */
     internal fun capped(paintings: List<PaintStroke>): List<PaintStroke> {
         val newestFirst = paintings.sortedByDescending { it.createdAtMs }
         val kept = ArrayList<PaintStroke>(minOf(paintings.size, MAX_PAINTINGS))
@@ -120,8 +111,7 @@ object ConfigBackup {
 
     private fun decodePainting(o: JsonObject): PaintStroke {
         val points = PaintStrokeBlob.decode(Base64.getDecoder().decode(o.str("points")))
-        // A zero-point blob decodes cleanly but `addPaintStroke` refuses it, and reaching that insert
-        // would abort the import mid-array, stranding the settings already committed.
+        // Zero-point blob decodes but `addPaintStroke` refuses it, aborting mid-import, stranding.
         if (points.tsMs.isEmpty()) throw IllegalArgumentException("painting carries no points")
         return PaintStroke(
             // id 0: the store mints a fresh row id.

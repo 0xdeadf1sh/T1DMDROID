@@ -93,24 +93,19 @@ private data class GlanceInputs(
     val theme: Pair<String, String?>,
 )
 
-/** The always-on foreground service (§2.3): the passive BLE scan, the step counter, the 5-min
- *  heartbeat and the model-free alarm path (§3.6-A), with no `:inference` dependency. Typed
- *  `connectedDevice`, NOT `dataSync` — that carries an Android-15+ 6 h/24 h cap and a
- *  `BOOT_COMPLETED`-start ban. */
+/** Always-on FGS (§2.3): connectedDevice, NOT dataSync — caps at 6h/24h on Android 15+. */
 class CgmScanService : LifecycleService() {
 
     private lateinit var container: AppContainer
     private lateinit var alarmEngine: AlarmEngine
     private lateinit var alarmController: AlarmController
     private var alarmNotifier: AndroidAlarmNotifier? = null
-    /** The single-thread slice the engine and its collectors run on; snooze/config updates are posted
-     *  here so they serialise with those collectors (§2.3). Set in [startPipeline]. */
+    /** Single-thread slice the engine and collectors run on; updates posted here to serialise. */
     private var alarmScope: CoroutineScope? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var started = false
 
-    /** Touched only from `refreshGlanceSurfaces`, which the combine collects on one coroutine, so it
-     *  needs no synchronization. */
+    /** Touched only from refreshGlanceSurfaces, on one coroutine; needs no synchronization. */
     private var lastGlancePushSig: List<Any?>? = null
 
     /** Alarm-engine input: the active source's readings plus injected ones. */
@@ -123,17 +118,14 @@ class CgmScanService : LifecycleService() {
     private val repeatScheduler by lazy { AlertRepeatScheduler(this) }
     @Volatile private var repeatArmed = false
 
-    /** Debug step folding so injected TYPE_STEP_COUNTER cumulatives bucket exactly as the sensor's. */
+    /** Debug step folding so injected TYPE_STEP_COUNTER cumulatives bucket as the sensor's. */
     private val debugBucketer = StepBucketer()
 
-    /** Scan report delay, ms: 0 is real-time, [screenOffReportDelayMs] is offloaded batching. A new
-     *  value restarts the scan in that mode (see [AidexXSourceRegistry.start]). */
+    /** Scan report delay, ms: 0 real-time, screenOffReportDelayMs offloaded batching. */
     private val reportDelayFlow = MutableStateFlow(0L)
     @Volatile private var screenOffReportDelayMs = 0L
 
-    /** On screen-off (while engaged) raise the keep-screen-on [AodScanActivity] after a grace, so the
-     *  phone never deep-idles. Holding the display on does NOT rescue a reportDelay-0 scan, so under
-     *  the AOD the scan stays in BATCH mode. Main looper: activity starts must run there. */
+    /** Screen-off: raises AodScanActivity after a grace so the phone doesn't idle; runs on main. */
     private val mainHandler = Handler(Looper.getMainLooper())
     private val reengageRunnable = Runnable { maybeEngageAod() }
     private val screenReceiver = object : BroadcastReceiver() {
@@ -147,10 +139,7 @@ class CgmScanService : LifecycleService() {
                     }
                 }
                 Intent.ACTION_SCREEN_ON -> {
-                    // Do NOT arm real-time here: the phone is still on the keyguard and HyperOS
-                    // suspends a reportDelay-0 scan the whole time it is locked. Locked cannot be told
-                    // from unlocked at this edge either — a showWhenLocked activity OCCLUDES the
-                    // keyguard and isKeyguardLocked() then reports FALSE. Only ACTION_USER_PRESENT arms.
+                    // Locked; isKeyguardLocked() unreliable; only USER_PRESENT arms real-time.
                     mainHandler.removeCallbacks(reengageRunnable)
                     runCatching { getSystemService(NotificationManager::class.java).cancel(NOTIF_ID_AOD) }
                 }
@@ -168,13 +157,11 @@ class CgmScanService : LifecycleService() {
     private fun isCharging(): Boolean =
         runCatching { getSystemService(BatteryManager::class.java)?.isCharging == true }.getOrDefault(false)
 
-    /** Reports FALSE while a showWhenLocked activity OCCLUDES the keyguard, so it is used ONLY for the
-     *  initial mode at scan start; ACTION_USER_PRESENT is the trustworthy "unlocked" signal. */
+    /** Reports FALSE under an occluding activity; used only for initial mode, not live unlock. */
     private fun isKeyguardLocked(): Boolean =
         runCatching { getSystemService(KeyguardManager::class.java)?.isKeyguardLocked == true }.getOrDefault(false)
 
-    /** A background `startActivity` is refused on Android 14+ with no visible window (BAL); a
-     *  full-screen-intent notification launches the activity over the keyguard instead. */
+    /** Android 14+ BAL refuses a background startActivity; full-screen-intent notif works. */
     private fun maybeEngageAod() {
         if (!aggressiveEngaged()) return
         val interactive = runCatching { getSystemService(PowerManager::class.java)?.isInteractive == true }
@@ -205,8 +192,7 @@ class CgmScanService : LifecycleService() {
         container = (application as T1dmApplication).container
 
         createChannel()
-        // Fail closed: a connectedDevice foreground service legally cannot start without
-        // BLUETOOTH_SCAN. MainActivity restarts the service once the permission is granted.
+        // Fail closed: connectedDevice FGS needs BLUETOOTH_SCAN; MainActivity restarts it.
         if (!hasScanPermission()) {
             Timber.w(
                 "CgmScanService: BLUETOOTH_SCAN not granted — the connectedDevice foreground service " +
@@ -223,7 +209,7 @@ class CgmScanService : LifecycleService() {
         container.serviceRunning.value = true
     }
 
-    /** The connectedDevice FGS type requires a granted BT-scan permission to start (Android 14+). */
+    /** connectedDevice FGS requires a granted BT-scan permission to start (Android 14+). */
     private fun hasScanPermission(): Boolean =
         checkSelfPermission(android.Manifest.permission.BLUETOOTH_SCAN) ==
             android.content.pm.PackageManager.PERMISSION_GRANTED
@@ -232,8 +218,7 @@ class CgmScanService : LifecycleService() {
         if (started) return
         started = true
 
-        // A single-threaded `default` slice (§2.3): keeps the notifier's posting off the main thread
-        // and serialises the two collectors driving the engine.
+        // Single-threaded default slice (§2.3): keeps notifier off main, serialises the collectors.
         val alarmScope = CoroutineScope(
             lifecycleScope.coroutineContext + container.dispatchers.default.limitedParallelism(1),
         )
@@ -267,9 +252,7 @@ class CgmScanService : LifecycleService() {
                 temperatureC = { container.readDeviceTempC() },
             )
             alarmController.launchIn(alarmScope, readingBus)
-            // A Settings save pushes the new config into the ALREADY-running engine on this same
-            // slice — no restart. It never clears an active breach; the engine re-classifies on the
-            // next reading.
+            // Settings push into the running engine, no restart; never clears an active breach.
             container.setAlarmConfigSink { cfg ->
                 alarmScope.launch {
                     alarmEngine.updateConfig(cfg)
@@ -297,9 +280,7 @@ class CgmScanService : LifecycleService() {
             }
         }
 
-        // Only the AUTHORITATIVE source reaches the bus: the engine downstream is one state machine
-        // over an undifferentiated stream (§3.6-A), so two sensors would interleave threshold
-        // hysteresis and staleness. Re-collected on promotion so the bus follows authority.
+        // Only the AUTHORITATIVE source reaches the bus (§3.6-A); re-collected on promotion.
         lifecycleScope.launch {
             container.registry.authoritative.collectLatest {
                 val src = container.registry.authoritativeSource() ?: return@collectLatest
@@ -307,9 +288,7 @@ class CgmScanService : LifecycleService() {
             }
         }
 
-        // A promotion is a transition between two non-null ids; hydration (null → the persisted id)
-        // is not one, and `drop(1)` eats only the initial null. `isInitialized`: the alarm init
-        // coroutine suspends on Room reads before assigning it and shares this dispatcher slice.
+        // Promotion: between two non-null ids, not hydration from null; drop(1) eats only that.
         lifecycleScope.launch {
             var previous: CgmSourceId? = null
             container.registry.authoritative.collect { id ->
@@ -334,8 +313,7 @@ class CgmScanService : LifecycleService() {
             }
         }
 
-        // 5-min housekeeping, structurally independent of the alarm path (§2.3, §3.6-A): a failed
-        // drain, push or sweep never touches the alarm.
+        // 5-min housekeeping, independent of the alarm path (§2.3, §3.6-A); failure isolated.
         lifecycleScope.launch {
             while (isActive) {
                 val now = System.currentTimeMillis()
@@ -350,10 +328,7 @@ class CgmScanService : LifecycleService() {
             }
         }
 
-        // The forecast driver, independent of the alarm path (§2.3, §3.6-A). ADAPTIVE fires one
-        // forecast per incoming reading; TIMED on a wall-clock grid. Merged and CONFLATED so a burst
-        // collapses to the latest `nowMs` rather than queueing. Drives ONLY runFromHistory — the
-        // chokepoint the §3.6 gate and the warmup latch guard.
+        // Forecast driver, independent of alarm path (§2.3, §3.6-A); conflated to latest tick.
         lifecycleScope.launch(container.dispatchers.default) {
             container.inferenceController.refreshModels()
             val adaptiveTicks = readingBus
@@ -365,7 +340,7 @@ class CgmScanService : LifecycleService() {
                         // coerceAtLeast(1): a 0-minute period would divide by zero below.
                         val periodMs = container.forecastPeriodMin().coerceAtLeast(1) * 60_000L
                         val now = System.currentTimeMillis()
-                        delay((periodMs - now % periodMs).coerceAtLeast(1L)) // to the next period boundary
+                        delay((periodMs - now % periodMs).coerceAtLeast(1L)) // to next boundary
                         // The user may have left TIMED while we slept.
                         if (container.forecastModeSnapshot == SettingsStore.FORECAST_MODE_TIMED) {
                             emit(System.currentTimeMillis())
@@ -385,8 +360,7 @@ class CgmScanService : LifecycleService() {
 
         container.watchLink.start(lifecycleScope)
 
-        // Off-main: a LifecycleService's lifecycleScope is Main, and compute/DB/updateAll must not run
-        // there. The ticker forces a re-emit so the "updated N min ago" ages between readings.
+        // Off-main: lifecycleScope is Main; compute/DB/updateAll must not run on it.
         lifecycleScope.launch(container.dispatchers.default) {
             val ticker = kotlinx.coroutines.flow.flow {
                 while (isActive) { emit(Unit); delay(NOTIF_TICK_MS) }
@@ -409,15 +383,13 @@ class CgmScanService : LifecycleService() {
             }
         }
 
-        // DEATH: tear down a showing alarm and predictive alert; the ongoing monitoring surface stays.
+        // DEATH: tear down a showing alarm and predictive alert; monitoring surface stays.
         lifecycleScope.launch {
             container.deathMode.collect { on -> if (on) { alarmNotifier?.clear(); predictiveAlerts.clear() } }
         }
     }
 
-    /** The §3.6 gate lives inside [BgGlanceComputer]; this only renders. The predictive alert is
-     *  suppressed while a deterministic critical breach fires, so it can only ever add an EARLIER
-     *  warning. */
+    /** §3.6 gate lives in BgGlanceComputer; predictive alert only ever adds an EARLIER warning. */
     private suspend fun refreshGlanceSurfaces(
         readings: GlanceReadings,
         state: InferenceState,
@@ -432,16 +404,11 @@ class CgmScanService : LifecycleService() {
             staleMin = 15,
             nowMs = System.currentTimeMillis(),
         )
-        // From the SAME (id, json) that drove this refresh, not the container's own snapshot, so a
-        // theme change repaints both surfaces at once and cannot race it. ONE resolution feeds both:
-        // two decodes parsed an imported theme's JSON twice on every refresh.
+        // Same (id, json) that drove refresh, not container's snapshot; avoids a repaint race.
         val (themeId, customJson) = themeSig
         val palette = resolvePalette(themeId, customJson)
         val accent = palette.primary.toArgb()
-        // Push only what CHANGED: `SessionWorker` composes Glance on the MAIN thread and one widget
-        // push parcels ~2 MB per instance, and unguarded this ran at the rate `cgm_reading` was
-        // written. A list, not a class, so a rendered input cannot silently fall out of the
-        // comparison; `nowMs` staleness lives inside `glance`, so the ticker still gets through.
+        // Push only what CHANGED: unguarded, a widget push parcels ~2 MB per cgm_reading write.
         val pushSig: List<Any?> =
             listOf(glance, unit, accent, state.selectedPredictedTime, themeId, customJson)
         val surfacesChanged = pushSig != lastGlancePushSig
@@ -456,8 +423,7 @@ class CgmScanService : LifecycleService() {
 
         val deterministicCriticalActive = ::alarmController.isInitialized &&
             alarmController.state.value.threshold?.severity == AlarmSeverity.CRITICAL
-        // Mirrored for the minigame's interlock: a predicted urgent crossing buzzes the SAME actuator
-        // the deterministic alarm does, so a cosmetic surface holding an effect must yield to it.
+        // Interlock: predicted urgent crossing buzzes the SAME actuator as the deterministic alarm.
         container.predictiveAlertRaised.value = if (container.deathModeSnapshot) {
             predictiveAlerts.clear()
             false
@@ -467,15 +433,12 @@ class CgmScanService : LifecycleService() {
             )
         }
 
-        // Seed the palette globals BEFORE pushing, so the widget renders the persisted theme
-        // headlessly rather than waiting on an Activity composition.
+        // Seed palette globals BEFORE pushing so the widget renders headlessly, no Activity needed.
         if (surfacesChanged) {
             applyWidgetPalette(palette)
             runCatching { GlucoseWidget().updateAll(this) }
         }
-        // Freshness blink: a fresh reading renders bright, and ONE delayed re-render settles it — two
-        // updates per reading, never a loop. Age first, toggle second: the age rules the blink out
-        // without the toggle's Room read.
+        // Freshness blink: one delayed re-render settles it, two updates per reading, never a loop.
         val ageMs = readings.lastMeasured?.let { System.currentTimeMillis() - it.rxWallMs }
             ?: Long.MAX_VALUE
         val animate = ageMs in 0 until GlucoseWidget.FRESH_WINDOW_MS &&
@@ -517,9 +480,7 @@ class CgmScanService : LifecycleService() {
         )
     }
 
-    /** Snooze (timed) or Dismiss (until-clear) on the live breach of the tapped KIND (§3.6 C1–C5).
-     *  Reads the LIVE engine state, so the snooze records the band actually firing now and escalation
-     *  still pierces (C2). */
+    /** Snooze/Dismiss on the live breach of tapped KIND (§3.6 C1-C5); escalation still pierces. */
     private fun handleAlarmAction(intent: Intent, dismiss: Boolean) {
         val kindName = intent.getStringExtra(AlarmActionReceiver.EXTRA_ALARM_KIND) ?: return
         val kind = runCatching { AlarmKind.valueOf(kindName) }.getOrNull() ?: return
@@ -532,8 +493,7 @@ class CgmScanService : LifecycleService() {
             AlarmKind.OVER_TEMPERATURE -> null // C5
         }
         if (alarm == null) return
-        // A Dismiss on an urgent tier is a no-op — those are Snooze-only, so no forged intent can win
-        // an unbounded silence. `SnoozeState.dismiss` refuses it too; this bails before the gate.
+        // A Dismiss on an urgent tier is a no-op; no forged intent can win an unbounded silence.
         if (dismiss && !alarm.isDismissable()) {
             Timber.tag(TAG).i("ALARM_ACTION DISMISS ignored — %s is not dismissable (urgent tier)", kind)
             return
@@ -557,9 +517,7 @@ class CgmScanService : LifecycleService() {
             Timber.tag(TAG).w("No BluetoothLeScanner (adapter off / no BLE / permission); scan idle")
             return
         }
-        // Screen ON → real-time (reportDelay 0): maximum capture sensitivity for a marginal advert.
-        // Screen OFF → offloaded batching, the only mode HyperOS does not suspend while locked.
-        // Batching's lower duty cycle can drop a marginal signal, so it is used ONLY screen-off.
+        // Screen ON: real-time (delay 0). Screen OFF: batching, only mode HyperOS won't suspend.
         screenOffReportDelayMs =
             if (runCatching { adapter.isOffloadedScanBatchingSupported }.getOrDefault(false)) {
                 BATCH_REPORT_DELAY_MS
@@ -568,8 +526,7 @@ class CgmScanService : LifecycleService() {
             }
         val interactive = runCatching { getSystemService(PowerManager::class.java)?.isInteractive == true }
             .getOrDefault(true)
-        // Initial mode only: isKeyguardLocked() is reliable here because a normal start is not behind
-        // the AOD. Once running, ACTION_USER_PRESENT re-arms real-time on every genuine unlock.
+        // Initial mode only: isKeyguardLocked() is reliable at a normal start, not behind the AOD.
         reportDelayFlow.value = if (interactive && !isKeyguardLocked()) 0L else screenOffReportDelayMs
         runCatching {
             registerReceiver(
@@ -706,8 +663,7 @@ class CgmScanService : LifecycleService() {
         return START_STICKY
     }
 
-    /** `ageMin == 0` drives the REAL [AppContainer.logCarb]; `ageMin > 0` backdates the `logged_meal`
-     *  row so its appearance curve sits INSIDE the context window. */
+    /** ageMin==0 drives the real logCarb; ageMin>0 backdates logged_meal inside context window. */
     private fun logMeal(grams: Double, gi: Double, ageMin: Int) {
         lifecycleScope.launch {
             if (ageMin <= 0) {
@@ -729,8 +685,7 @@ class CgmScanService : LifecycleService() {
         }
     }
 
-    /** `ageMin == 0` drives the REAL [AppContainer.logBolus]; `ageMin > 0` backdates the `logged_dose`
-     *  so its PK action pulls down inside the context window. */
+    /** ageMin==0 drives the real logBolus; ageMin>0 backdates logged_dose inside context window. */
     private fun logBolus(units: Double, ageMin: Int) {
         lifecycleScope.launch {
             if (ageMin <= 0) {
@@ -754,8 +709,7 @@ class CgmScanService : LifecycleService() {
         }
     }
 
-    /** The brand is matched against the catalogue's own labels, so a renamed or dropped preset
-     *  degrades to the sticky last-logged basal rather than a curve invented here. */
+    /** Brand matched against catalogue labels; a dropped preset degrades to last-logged basal. */
     private fun logBasalDebug(units: Double, tresiba: Boolean) {
         lifecycleScope.launch {
             val brand = if (tresiba) "Tresiba" else "Lantus"
@@ -767,8 +721,7 @@ class CgmScanService : LifecycleService() {
         }
     }
 
-    /** Bulk-seeds [hours] of MEASURED, NORMAL grid-aligned readings on the active source, so the
-     *  warmup numerator and the context history have signal without a sensor. */
+    /** Bulk-seeds hours of MEASURED, NORMAL readings so warmup/context have signal, no sensor. */
     private fun seedMeasuredContext(hours: Double) {
         lifecycleScope.launch {
             val src = ensureActiveSource()
@@ -815,9 +768,7 @@ class CgmScanService : LifecycleService() {
         }
     }
 
-    /** An injected reading contests its grid slot like any other (`data/GridSlotSelection.kt`): a
-     *  second inject into a slot already holding a nearer sample is stored as a sub-grid sample and
-     *  does not change the grid row. It still reaches `readingBus`. */
+    /** Injected reading contests its grid slot like any other; nearer sample wins, hits bus. */
     private fun injectReading(bgMgdl: Int, ageMin: Int, warmup: Boolean, trendTenths: Int) {
         lifecycleScope.launch {
             val src = ensureActiveSource()
@@ -920,8 +871,7 @@ class CgmScanService : LifecycleService() {
         )
         // A retired channel; harmless no-op once already deleted.
         runCatching { nm.deleteNotificationChannel("t1dm.glance.bg") }
-        // HIGH importance is required for a full-screen intent to launch rather than merely post;
-        // kept silent, since its only job is to raise the AOD surface.
+        // HIGH importance required for full-screen intent to launch, not merely post; kept silent.
         nm.createNotificationChannel(
             NotificationChannel(CH_AOD, "Background scan wake", NotificationManager.IMPORTANCE_HIGH).apply {
                 description = "Raises the dark keep-screen-on view that keeps the CGM scan alive while locked."
@@ -932,7 +882,7 @@ class CgmScanService : LifecycleService() {
         )
     }
 
-    @Suppress("WakelockTimeout") // Advisory monitor must stay awake across Doze; released in onDestroy.
+    @Suppress("WakelockTimeout") // stays awake across Doze; released in onDestroy.
     private fun acquireWakeLock() {
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "t1dm:cgm-scan").apply {
@@ -947,7 +897,7 @@ class CgmScanService : LifecycleService() {
         private const val CH_AOD = "t1dm.aod.scan"
         private const val NOTIF_ID = 4100
         private const val NOTIF_ID_AOD = 4104
-        /** Any non-zero value engages offloaded batching; HyperOS overrides it to ~5 min while locked. */
+        /** Any non-zero value engages offloaded batching; HyperOS overrides to ~5 min locked. */
         private const val BATCH_REPORT_DELAY_MS = 10_000L
         private const val HEARTBEAT_MS = 60_000L
         /** Long enough that an off → on double-press to check the phone cancels the AOD. */
@@ -956,8 +906,7 @@ class CgmScanService : LifecycleService() {
         private const val NOTIF_TICK_MS = 30_000L
         const val KV_LAST_ALIVE = "last_alive_ts"
 
-        /** Spelled once in `:core:model`: the archive restore and `MIGRATION_10_11` both must
-         *  recognise this id to put it in the debug model class. */
+        /** Spelled once in :core:model; restore and MIGRATION_10_11 must recognise this id. */
         private val DEBUG_SOURCE = CgmSourceId.DEBUG
 
         const val ACTION_INJECT_READING = "com.t1dm.app.INJECT_READING"

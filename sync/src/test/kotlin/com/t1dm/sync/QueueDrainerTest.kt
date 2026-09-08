@@ -91,7 +91,7 @@ class QueueDrainerTest {
         assertTrue(http.requests.isEmpty())
     }
 
-    /** Nothing is DUE, but the pass must still run or the wedged row is never reclaimed to PENDING. */
+    /** Nothing DUE, but the pass must still run or the wedged row is never reclaimed to PENDING. */
     @Test
     fun inflightOnlyQueueStillRunsTheFullPass() = runTest {
         val inner = FakeOutboxDao()
@@ -198,8 +198,7 @@ class QueueDrainerTest {
 
     @Test
     fun rowWithdrawnAfterTheBatchSnapshotIsNeverSent() = runTest {
-        // `dueBatch` snapshots the pass up front, so a tail row stays PENDING while the rows ahead of
-        // it send; the conditional PENDING→INFLIGHT claim is what makes an undo's WITHDRAWN honest.
+        // dueBatch snapshots up front; conditional PENDING→INFLIGHT claim makes WITHDRAWN honest.
         val dao = FakeOutboxDao()
         dao.enqueue(OutboxEntity(kind = OutboxKind.ALERT, dedupKey = "a", payload = envelope("/a"), createdAtMs = 10, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
         val doseId = dao.enqueue(OutboxEntity(kind = OutboxKind.DOSE, dedupKey = "dose:x", payload = envelope("/v1/doses"), createdAtMs = 20, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))

@@ -5,8 +5,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** §3.6-F; the disclosed BG input filter is INFERENCE.md §7.1. One recommendation resolves the window
- *  once and pins it onto every roll — the source here returns a different detent on every read. */
+/** §3.6-F, filter is INFERENCE.md §7.1: one recommendation pins the window across every roll. */
 class SmoothingWindowPinTest {
 
     private class RecordingPort(private val inner: ForecastPort) : ForecastPort {

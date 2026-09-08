@@ -1,12 +1,8 @@
 package com.t1dm.core.model
 
-/**
- * The hill-climb minigame's 2D car physics. The terrain IS the glucose trace, driven left→right,
- * forward in time toward now. Cosmetic only: nothing here touches the fail-closed path.
- */
+/** Hill-climb minigame car physics; terrain IS the glucose trace. Cosmetic, no fail-closed path. */
 
-/** Every non-[Running] value is TERMINAL: the world freezes and re-returns the same [CarState]
- *  until reset. */
+/** Every non-Running value is TERMINAL: world freezes, re-returns the same CarState until reset. */
 enum class RunState {
     Running,
 
@@ -17,11 +13,7 @@ enum class RunState {
     Finished,
 }
 
-/**
- * [heights] is ground height at `x = i · dx` in world units, piecewise-linear between samples; a
- * negative or non-finite sample is a GAP with no ground, which is how a CGM dropout becomes a
- * chasm. [worldHeight] only fixes the kill plane, one world-height below the floor.
- */
+/** heights: ground at x=i*dx, piecewise-linear; negative/non-finite is a GAP (dropout=chasm). */
 data class TerrainSpec(
     val heights: List<Float>,
     val dx: Float,
@@ -48,13 +40,7 @@ data class CarTuning(
     val crashTiltRad: Float,
 )
 
-/**
- * Angles are radians, y-up and counter-clockwise-positive; [rearAngle]/[frontAngle] roll in the
- * driving sense, so a y-up canvas draws them negated. [rpm] drives synthesised audio, not a crank
- * speed. [impactImpulse] is normal impulse above the car's own weight (haptics amplitude);
- * [roughness] is local slope change saturating at 1 (rumble). Only the pose is interpolated between
- * ticks, so [x] can lag [vx] by one tick — read [vx], do not differentiate [x].
- */
+/** Angles radians, y-up CCW-positive; rearAngle/frontAngle negated on canvas. Read vx, not dx. */
 data class CarState(
     val x: Float,
     val y: Float,
@@ -66,8 +52,7 @@ data class CarState(
     val rearY: Float,
     val rearAngle: Float,
     val rearOmega: Float,
-    /** Carrying load, or within the solver's 0.2 m speculative reach of the ground — near-contact,
-     *  not geometric contact. Instantaneous. */
+    /** Carrying load or within 0.2m speculative reach of ground — near-contact, not geometric. */
     val rearContact: Boolean,
     val frontX: Float,
     val frontY: Float,
@@ -78,9 +63,7 @@ data class CarState(
     val throttleApplied: Float,
     val impactImpulse: Float,
     val roughness: Float,
-    /** Nothing touching for eight physics ticks running (67 ms). Deliberately NOT the negation of
-     *  the contact flags: read as an edge, and a wheel clears the 0.2 m tolerance for a single tick
-     *  over any sharp lip. Slow to arm, instant to clear. */
+    /** No contact for 8 ticks (67ms); not the negation of contact; slow to arm, fast to clear. */
     val airborne: Boolean,
     /** Furthest x reached, from the start line. Monotone non-decreasing. */
     val distanceM: Float,

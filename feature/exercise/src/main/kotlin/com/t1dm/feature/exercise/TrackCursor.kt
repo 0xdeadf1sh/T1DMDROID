@@ -2,15 +2,10 @@ package com.t1dm.feature.exercise
 
 import com.t1dm.core.model.TrackPoint
 
-/** Degrees. Not osmdroid's `GeoPoint`: that is `Parcelable`, and this must resolve in a host JVM
- *  test with no Android on the classpath. */
+/** Degrees. Not osmdroid's `GeoPoint`: resolves in a host JVM test, no Android on classpath. */
 data class TrackFix(val lat: Double, val lon: Double)
 
-/**
- * Null outside the track's own span, and beyond half a slot from the NEARER bracketing fix — not
- * the bracket width, which would withhold the dot seconds from a real fix. Interpolates, because a
- * stationary stretch emits no fixes at all. [track] ascending by `tsMs`.
- */
+/** Null outside the span, or past half-slot from the NEAREST fix. Interpolates; [track] by tsMs. */
 internal fun trackPositionAt(
     track: List<TrackPoint>,
     cursorMs: Long,

@@ -1,7 +1,6 @@
 package com.t1dm.calc
 
-/** §3.6-C. An enabled rail BLOCKS on missing, degenerate, stale or collapsed input; a disabled one
- *  is a no-op, and that is the only way bad input gets through. */
+/** §3.6-C: enabled rail BLOCKS bad input; disabled is the only way bad input passes. */
 sealed interface RailVerdict {
     data object Pass : RailVerdict
 
@@ -15,8 +14,7 @@ sealed interface RailVerdict {
 
 object Rails {
 
-    /** §3.6-B/-C. Gates the whole recommendation and is never disableable: a degenerate fan is
-     *  unscoreable. */
+    /** §3.6-B/-C: gates the recommendation, never disableable — a degenerate fan is unscoreable. */
     fun baselineDegeneracy(baseline: PredFan): RailVerdict {
         val name = "degeneracy"
         return when (baseline.eligibility) {
@@ -30,9 +28,7 @@ object Rails {
         }
     }
 
-    /** §3.6-C. Reads the MEDIAN over the VALIDATED window: the τ=.05 edge was monotone in dose, so
-     *  once the baseline tripped every candidate did and the advisor could only return 0 U. Deliberately
-     *  less cautious — the objective's own hypo term ([Scoring]) and the degeneracy gate remain. */
+    /** §3.6-C: MEDIAN/VALIDATED window; τ=.05 monotone forced 0U at trip; hypo+gate still apply. */
     fun predictedLowVeto(fan: PredFan, config: CalcConfig): RailVerdict {
         val name = "predicted-low"
         if (!config.rails.predictedLowVeto) return RailVerdict.Pass
@@ -52,8 +48,7 @@ object Rails {
         return RailVerdict.Pass
     }
 
-    /** §3.6-C. Fail-closed: an unknown IOB with a nonzero dose blocks, since a forgotten log
-     *  under-counts active insulin. */
+    /** §3.6-C: fail-closed; unknown IOB with nonzero dose blocks — a forgotten log under-counts. */
     fun iobCeiling(iob: IobSnapshot?, candidateU: Double, config: CalcConfig): RailVerdict {
         val name = "iob-ceiling"
         if (!config.rails.iobCeiling) return RailVerdict.Pass

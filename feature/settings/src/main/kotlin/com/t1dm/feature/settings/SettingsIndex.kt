@@ -1,11 +1,8 @@
 package com.t1dm.feature.settings
 
-/** Every knob in Settings, for the hub's search field. Each screen file declares its own
- *  `settings*Knobs` list; the shared controls take a [SettingsKnob], so an unindexed knob does not
- *  compile. Entries name a [SettingsScreenKey], never a route. */
+/** Every knob, for hub search; each screen owns a list; names [SettingsScreenKey], never route. */
 data class SettingsKnob(
-    /** Globally unique, hand-assigned: labels collide, so an id derived from one could not address
-     *  a row. */
+    /** Globally unique, hand-assigned; labels collide, so a derived id couldn't address a row. */
     val id: String,
     val screen: SettingsScreenKey,
     /** The section header, or "" on a headerless page. */
@@ -79,7 +76,7 @@ object SettingsIndex {
         if (deathModeSupported) ALL else ALL.filterNot { it.screen == SettingsScreenKey.DEATH_MODE }
 }
 
-/** Case-insensitive. Field worth: label > synonym > section > subtitle. Blank query ⇒ no results. */
+/** Case-insensitive; field worth label>synonym>section>subtitle. Blank query ⇒ no results. */
 fun searchSettings(query: String, index: List<SettingsKnob> = SettingsIndex.ALL): List<SettingsKnob> {
     val tokens = query.lowercase().split(' ', '\t', '\n', ',', '/').filter { it.isNotBlank() }
     if (tokens.isEmpty()) return emptyList()

@@ -8,9 +8,7 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import com.t1dm.core.model.ReconstructedBg
 
-/** Drawn in the forecast's hand — same pairs, alphas, weight — since a fill and a forecast are one
- *  head under different inputs. A run opens from and closes into the trace at zero width, breaks at
- *  every discontinuity, and a row with no fan is drawn as its `lo90`/`hi90` pair alone. */
+/** In the forecasts hand: a run opens/closes into the trace at zero width, breaks at gaps. */
 internal fun DrawScope.drawReconstruction(
     rows: List<ReconstructedBg>,
     xOf: (Long) -> Float,
@@ -21,8 +19,7 @@ internal fun DrawScope.drawReconstruction(
     plotRight: Float,
     /** The trace's y in pixels at a grid slot; null where it draws nothing there. */
     anchorPxAt: (Long) -> Float?,
-    /** Hoisted by the caller and reused for every band of every run: a `Path` is a native object,
-     *  and this built three per run per frame. */
+    /** Hoisted by caller, reused every band/run: Path is native, else 3 built per run per frame. */
     scratch: Path,
 ) {
     if (rows.isEmpty()) return
@@ -157,16 +154,14 @@ internal data class ReconTween(
     val to: List<ReconstructedBg>,
 )
 
-/** The only case a move may be interpolated through: sliding between different slot sets would
- *  draw a curve through slots the model never spoke about. */
+/** The only case a move interpolates: sliding between slot sets draws through unspoken-of slots. */
 internal fun sameSlots(a: List<ReconstructedBg>, b: List<ReconstructedBg>): Boolean {
     if (a.size != b.size || a.isEmpty()) return false
     for (i in a.indices) if (a[i].tsMs != b[i].tsMs) return false
     return true
 }
 
-/** Only [ReconstructedBg.mgdl] moves: a τ sweep retraces an already-emitted fan, and the fan itself
- *  does not change. */
+/** Only [ReconstructedBg.mgdl] moves: a τ sweep retraces an already-emitted fan, unchanged. */
 internal fun lerpReconstruction(
     from: List<ReconstructedBg>,
     to: List<ReconstructedBg>,

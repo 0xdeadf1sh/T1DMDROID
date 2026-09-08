@@ -6,8 +6,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** The source scan below holds each screen file's anchoring call sites equal to its declared
- *  entries — the one check that also covers bespoke controls, which the type system cannot see. */
+/** Source scan holds each screen's call sites equal to its entries; covers what types can't see. */
 class SettingsIndexTest {
 
     @Test

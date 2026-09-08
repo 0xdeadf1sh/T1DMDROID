@@ -17,12 +17,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
 
-/**
- * The persisted AiDEX X sources, those being read, and the authoritative one (§3.1). Owns the one
- * shared [BleAdvertScanner]; the first-ever source adopted becomes authoritative. Widening
- * [activeIds] never widens what is believed: that narrowing is at the `sample` projection and the
- * reading bus, not here.
- */
+/** Persisted AiDEX X sources, active ones, and the authoritative one (§3.1); first adopted wins. */
 class AidexXSourceRegistry(
     private val plugin: AidexXPlugin,
     private val repository: CgmRepository,
@@ -41,11 +36,7 @@ class AidexXSourceRegistry(
 
     private val live = ConcurrentHashMap<String, AidexXSource>()
 
-    /**
-     * A new [reportDelayMs] RESTARTS the scan ([collectLatest]); the caller drives 0 while the screen
-     * is on and offloaded-batch while it is off. [BleAdvertScanner.rawAdverts] closes itself on any
-     * `onScanFailed`, so a drop is retried with bounded exponential backoff.
-     */
+    /** A new reportDelayMs restarts the scan; a drop retries with bounded exponential backoff. */
     fun start(reportDelayMs: Flow<Long>, scannerFor: (Long) -> BleAdvertScanner) {
         scope.launch {
             hydrate()
@@ -83,18 +74,13 @@ class AidexXSourceRegistry(
         _activeIds.value = repository.activeSourceIds().toSet()
         repository.authoritativeSourceId()?.let { _authoritative.value = it }
 
-        // Once per process start, so the descriptor reaches the server: `adopt` is the only other
-        // caller and it returns early for a source already live. Idempotent, deduped in the outbox.
+        // Once per process start so the descriptor reaches the server; deduped in the outbox.
         persisted.forEach { d ->
             repository.upsertSource(d, authoritative = d.id == _authoritative.value, lastSeenMs = nowMs())
         }
     }
 
-    /**
-     * Every recognised advert is decoded and stored whatever the source's `active` flag says — a
-     * deliberate divergence from the connected branch, where `active` gates a held GATT link. Here
-     * `active` is only what the BG panel may switch to; `authoritative` alone decides what is believed.
-     */
+    /** Every recognised advert decodes/stores regardless of active; authoritative alone decides. */
     suspend fun onRawAdvert(raw: RawAdvert) {
         val payload = AdStructureParser.manufacturerPayload(raw.adBytes)
         val id = plugin.recognize(
@@ -112,11 +98,7 @@ class AidexXSourceRegistry(
         scope.launch { repository.setAuthoritative(id) }
     }
 
-    /**
-     * Minutes. All three copies move together: the live [AidexXSource] classifies the next advert, the
-     * column survives the process, [_sources] is this registry's view. The clamp repeats
-     * [AidexXSource.setWarmupWindowMin]'s so the value stored is the one installed.
-     */
+    /** Minutes; all three copies (live source, column, _sources) move together, clamped alike. */
     fun setWarmupWindowMin(id: CgmSourceId, minutes: Int) {
         val clamped = minutes.coerceIn(CgmSourceDescriptor.WARMUP_WINDOW_RANGE)
         live[id.value]?.setWarmupWindowMin(clamped)
@@ -126,11 +108,7 @@ class AidexXSourceRegistry(
         scope.launch { repository.setWarmupWindowMin(id, clamped) }
     }
 
-    /**
-     * Off the lists, not deleted. The live [AidexXSource] is deliberately left in place: a removed
-     * sensor still advertising keeps being decoded and stored ([onRawAdvert]). The authoritative
-     * source is refused — authority can move on its own before the press lands.
-     */
+    /** Off the lists, not deleted; a removed sensor still advertising keeps being decoded. */
     fun hide(id: CgmSourceId) {
         if (id == _authoritative.value) return
         _sources.update { current ->

@@ -26,11 +26,7 @@ import java.time.Instant
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 
-/**
- * One vocabulary for every surface that restates a logged row. A value the row does not carry reads
- * [NOT_RECORDED], never a default. [LoggedEntry.detail] is free text — `SPEC/http-api.md` types the
- * wire's `note` as such — so it is labelled as a note, never as the insulin it happens to name.
- */
+/** One vocabulary for every restating surface; missing reads [NOT_RECORDED]; free-text note. */
 
 private const val NOT_RECORDED = "not recorded"
 
@@ -46,8 +42,7 @@ fun logAmountLabel(entry: LoggedEntry): String = when (entry.kind) {
         }
         "${fmtNum(entry.amount)} U$shape"
     }
-    // Minutes, not the grams they resolve to: duration is what the patient chose and what §5 scales
-    // the disposal by. The kind rides here because the headline is the whole row for a replay.
+    // Minutes not grams: duration is the patient's choice, §5 scales it; kind rides as headline.
     CurveKind.EXERCISE -> "${fmtNum(entry.amount)} min" + entry.detail?.let { " ${it.lowercase()}" }.orEmpty()
 }
 
@@ -57,8 +52,7 @@ fun exerciseKindLabel(kind: ExerciseKind): String = when (kind) {
     ExerciseKind.OTHER -> "Other"
 }
 
-/** Unknown names read as [ExerciseKind.OTHER]: `kind` is raw TEXT so a bout a later build wrote
- *  still labels. */
+/** Unknown names read as [ExerciseKind.OTHER]: raw TEXT so a later-build bout still labels. */
 fun exerciseKindLabel(kind: String): String =
     exerciseKindLabel(runCatching { ExerciseKind.valueOf(kind) }.getOrNull() ?: ExerciseKind.OTHER)
 
@@ -80,8 +74,7 @@ fun logDetailLabel(entry: LoggedEntry): String? = when (entry.kind) {
 
 private fun logNote(entry: LoggedEntry): String? = entry.detail?.takeIf { it.isNotBlank() }
 
-/** The amount is not among them — it is the block's headline. A meal's index is stated even when
- *  absent; an absent note is simply left out, since nothing was withheld. */
+/** Amount excluded — it's the headline; index stated even absent; absent note is just left out. */
 internal fun logEntryFields(entry: LoggedEntry): List<Pair<String, String>> = buildList {
     if (entry.kind == CurveKind.CARB) {
         add("Glycemic index" to (entry.gi?.let { fmtGi(it) } ?: NOT_RECORDED))
@@ -95,14 +88,7 @@ internal fun logEntryFields(entry: LoggedEntry): List<Pair<String, String>> = bu
 internal fun logEntriesTitle(entries: List<LoggedEntry>): String =
     if (entries.size == 1) logAmountLabel(entries.single()) else "${entries.size} logs"
 
-/**
- * A null [onEdit] or [onDelete] leaves that affordance off rather than offering one that refuses.
- * Either replaces this dialog while it is open, and confirming dismisses the whole stack: the caller
- * captured [entries] at the tap, so a row's fields are stale the moment it is written.
- *
- * Lazy because M3's `text` slot carries no scroll of its own, and at a week-wide zoom one mark can
- * stand for the whole feed.
- */
+/** Null [onEdit]/[onDelete] omits affordance; entries go stale; lazy, M3 text has no scroll. */
 @Composable
 fun LoggedEntryDialog(
     entries: List<LoggedEntry>,

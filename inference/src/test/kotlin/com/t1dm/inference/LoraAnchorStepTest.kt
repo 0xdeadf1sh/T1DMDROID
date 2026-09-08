@@ -5,8 +5,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
-/** `build_graph_input`'s rule: last step of the patch left of the span, else the FIRST step of the
- *  patch to its right. */
+/** build_graph_input rule: last step left of the span, else FIRST step of the patch right. */
 class LoraAnchorStepTest {
 
     private val patchSize = 6

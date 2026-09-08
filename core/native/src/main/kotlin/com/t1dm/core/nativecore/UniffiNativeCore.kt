@@ -183,11 +183,7 @@ import uniffi.t1dm_core.TimeHead as UniffiTimeHead
 import uniffi.t1dm_core.StatSample as UniffiStatSample
 import uniffi.t1dm_core.SubBands as UniffiSubBands
 
-/**
- * Needs libt1dm_core.so in jniLibs; [StubNativeCore] stands in on host-only builds. A
- * `CoreException` from `decode_advert` / `parse_descriptor` maps to the contract's `null`; the other
- * pre/post fns let theirs propagate, being programmer errors on this side of the seam.
- */
+/** Needs libt1dm_core.so (else [StubNativeCore]); CoreException from decode/parse maps to null */
 class UniffiNativeCore : NativeCore {
     override fun roundtrip(msg: String): String = uniffiRoundtrip(msg)
 
@@ -367,7 +363,7 @@ class UniffiNativeCore : NativeCore {
     override fun forecastDegeneracyCheck(desc: ModelDescriptor, forecast: Forecast): ForecastStatus =
         uniffiForecastDegeneracyCheck(desc.toUniffi(), forecast.toUniffi()).toModel()
 
-    /** Fail-open `null`: a malformed time output must not crash a cycle, and the BG path is unaffected. */
+    /** Fail-open null: malformed time output must not crash a cycle; BG path unaffected. */
     override fun decodeTime(timeLogits: List<Double>, nBins: Int, binHours: Double): PredictedTime? =
         try {
             uniffiDecodeTime(timeLogits, nBins, binHours).toModel()
@@ -403,7 +399,7 @@ class UniffiNativeCore : NativeCore {
     override fun extendBasal(schedule: BasalSchedule, fromMs: Long, toMs: Long): List<CurveEvent> =
         uniffiExtendBasal(schedule.toUniffi(), fromMs, toMs).map { it.toModel() }
 
-    /** Fail-closed to [AdvancedStats.EMPTY] so a malformed argument cannot crash the stats screen. */
+    /** Fail-closed to [AdvancedStats.EMPTY]; a malformed argument can't crash the stats screen. */
     override fun advancedStats(
         samples: List<StatSample>,
         targetLow: Int,
@@ -421,7 +417,7 @@ class UniffiNativeCore : NativeCore {
             AdvancedStats.EMPTY
         }
 
-    /** Cannot fail; the fail-closed map is kept anyway — a scale anchored on a guess is worse than none. */
+    /** Cannot fail; fail-closed map kept anyway — a guessed scale anchor is worse than none. */
     override fun clinicalCuts(): ClinicalCuts =
         try {
             uniffiClinicalCuts().let { ClinicalCuts(it.veryLowMgdl, it.veryHighMgdl) }
@@ -447,7 +443,7 @@ class UniffiNativeCore : NativeCore {
             MetricsSuite.EMPTY
         }
 
-    /** No lattice at all rather than a partial one, which would paint regions wrong rather than absent. */
+    /** No lattice at all, not partial — a partial one paints regions wrong instead of absent. */
     override fun clarkeZoneGrid(
         truthAxisMgdl: List<Double>,
         predAxisMgdl: List<Double>,
@@ -503,7 +499,7 @@ class UniffiNativeCore : NativeCore {
             null
         }
 
-    /** As [applyQuantileConformal], and for the whole batch: the core refuses rather than correct part. */
+    /** Like [applyQuantileConformal], batched; core refuses rather than partially correct. */
     override fun applyQuantileConformalBatch(
         fansMgdl: List<Double>,
         delta: List<Double>,
@@ -516,8 +512,7 @@ class UniffiNativeCore : NativeCore {
 
     override fun baselineDefaultSpec(): BaselineSpec = uniffiBaselineDefaultSpec().toModel()
 
-    /** `null` means there is no model. A fit that RAN but found too little held-out history is not
-     *  an error: it returns an all-zero delta and the withholding happens at the degeneracy guard. */
+    /** null: no model; a too-short fit returns all-zero delta, not an error (guard withholds). */
     override fun fitBaselineRidge(
         bgMgdl: List<Double>,
         gridStartMs: Long,
@@ -539,7 +534,7 @@ class UniffiNativeCore : NativeCore {
             null
         }
 
-    /** Fail-closed: this cycle publishes nothing rather than a forecast built from a padded input. */
+    /** Fail-closed: cycle publishes nothing rather than a forecast built from a padded input. */
     override fun baselinePredict(
         model: BaselineModel,
         bgTail: List<Double>,
@@ -562,14 +557,12 @@ class UniffiNativeCore : NativeCore {
 
     override fun defaultCarTuning(): CarTuning = uniffiDefaultCarTuning().toModel()
 
-    /** NOT swallowed, unlike every mapping above: the constructor only rejects a degenerate terrain
-     *  or tuning, and a stub world would hide that caller bug behind a frozen car. */
+    /** NOT swallowed (unlike above): rejects degenerate terrain/tuning; a stub would hide bug. */
     override fun createGameWorld(terrain: TerrainSpec, tuning: CarTuning): GameWorld =
         UniffiGameWorld(UniffiGameWorldObject(terrain.toUniffi(), tuning.toUniffi()))
 }
 
-/** Holds `trackLength` locally: a per-frame FFI round trip for a constant is the cost the Rust
- *  solver exists to avoid. */
+/** Holds trackLength locally; a per-frame FFI round trip for a constant is what Rust avoids. */
 private class UniffiGameWorld(private val rust: UniffiGameWorldObject) : GameWorld {
     override val trackLength: Float = rust.trackLength()
 
@@ -927,8 +920,7 @@ private fun UniffiInsulinFamily.toModel(): InsulinFamily = when (this) {
     else -> throw IllegalStateException("Unexpected UniffiInsulinFamily: $this")
 }
 
-// The Rust `preset` enum is deliberately not projected: a selection keys on the stable
-// [InsulinPresetSpec.label], not on a round-trip of uniffi variant names.
+// Rust preset enum not projected: keys on stable [InsulinPresetSpec.label], not uniffi names.
 private fun UniffiInsulinPresetSpec.toModel(): InsulinPresetSpec = InsulinPresetSpec(
     family = family.toModel(),
     label = label,

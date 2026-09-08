@@ -247,8 +247,7 @@ fun T1dmApp(container: AppContainer) {
     // The opaque base is painted here so the Scaffold can stay transparent and only the motif dims.
     val bgAlphaPct by container.settingsStore.backgroundAlphaPct
         .collectAsState(com.t1dm.app.settings.SettingsStore.DEFAULT_BG_ALPHA_PCT)
-    // Hosted here, not per-route: a route scope is cancelled on exit and would take the undo window
-    // with it. The writes run on `container.appScope` for the same reason.
+    // Hosted here (not per-route): a route scope cancels on exit and would drop the undo window.
     val snackbars = remember { SnackbarHostState() }
     val receiptScope = rememberCoroutineScope()
     val haptics = LocalT1dmHaptics.current
@@ -271,16 +270,13 @@ fun T1dmApp(container: AppContainer) {
         ThemeBackdrop(bgAlphaPct)
         Scaffold(
             containerColor = Color.Transparent,
-            // imePadding on the host: Scaffold knows nothing of the IME and targetSdk 36 never
-            // resizes the window, so a receipt would sit under a raised keyboard. §3.7's one-place
-            // inset rule governs the content column, not this slot.
+            // imePadding on host: Scaffold/SDK36 skip IME resize; §3.7 inset covers content only.
             snackbarHost = { SnackbarHost(snackbars, Modifier.imePadding()) },
             // contentColorFor(Transparent) is Unspecified and collapses to black; pin the ink back.
             contentColor = MaterialTheme.colorScheme.onBackground,
             bottomBar = { T1dmBottomBar(navController, container, wheel, wheelMotion, onWheelSelect) },
         ) { padding ->
-            // The one place the Scaffold insets are applied; feature screens must not re-apply them.
-            // `consumeWindowInsets` first, so `imePadding` cannot stack a second full inset.
+            // Sole Scaffold-inset site (screens must not re-apply); avoids a doubled IME inset.
             Column(
                 Modifier.fillMaxSize()
                     .padding(padding)
@@ -333,8 +329,7 @@ private suspend fun SnackbarHostState.postLogReceipt(
 /** [route] non-null ⇒ tappable. */
 internal data class Crumb(val label: String, val route: String?)
 
-/** Most-recent last; the tail is the current screen and is never tappable. [editLabel] is resolved
- *  by [Breadcrumb] — this stays a pure function of the route. */
+/** Most-recent last; tail (current screen) never tappable. Pure function of the route only. */
 internal fun crumbsFor(route: String?, modelId: String?, editLabel: String? = null): List<Crumb> {
     fun settings(vararg tail: Crumb) = listOf(Crumb("Settings", "settings"), *tail)
     return when (route) {
@@ -390,8 +385,7 @@ internal fun crumbsFor(route: String?, modelId: String?, editLabel: String? = nu
     }
 }
 
-/** `:feature:settings` names a screen by [SettingsScreenKey] and never sees a route. Kept beside
- *  [crumbsFor] so one host test can assert both agree. */
+/** `:feature:settings` uses [SettingsScreenKey], never a route; test asserts both agree. */
 internal fun settingsRouteFor(screen: SettingsScreenKey): String = when (screen) {
     SettingsScreenKey.ROOT -> "settings"
     SettingsScreenKey.DISPLAY -> "settings/display"
@@ -416,8 +410,7 @@ internal fun settingsRouteFor(screen: SettingsScreenKey): String = when (screen)
     SettingsScreenKey.DEATH_MODE -> "settings/death"
 }
 
-/** Pops at most once: `popBackStack()` returns before the composition is torn down, so an unguarded
- *  pair would ascend two screens. */
+/** Pops at most once: popBackStack() returns before composition tears down (else ascends two). */
 @Composable
 private fun rememberSingleAscent(navController: NavHostController): () -> Unit {
     var spent by remember { mutableStateOf(false) }
@@ -431,8 +424,7 @@ private fun rememberSingleAscent(navController: NavHostController): () -> Unit {
     }
 }
 
-/** Scoped to the two editor routes: `savedMeals` costs a query per meal and this bar is on every
- *  screen. Null before the first emission and once the row is gone. */
+/** Only two editor routes (savedMeals costs a query/meal); null pre-emission or post-delete. */
 @Composable
 private fun editedRowName(
     container: AppContainer,
@@ -470,8 +462,7 @@ private fun Breadcrumb(navController: NavHostController, container: AppContainer
     val inference by container.inferenceState.collectAsState(InferenceState())
     // A flow, not the @Volatile snapshot: a Settings edit must invalidate this composition.
     val alarmCfg by container.alarmConfigFlow.collectAsState()
-    // Freshness is a function of the clock, but in ADAPTIVE cadence only an arriving reading
-    // republishes InferenceState — so nothing re-evaluates exactly when readings stop. This tick does.
+    // ADAPTIVE cadence republishes only on a reading; this tick keeps status live when stopped.
     val nowMs by produceState(System.currentTimeMillis()) {
         while (true) {
             value = System.currentTimeMillis()
@@ -548,8 +539,7 @@ private fun Breadcrumb(navController: NavHostController, container: AppContainer
 /** Fast enough that a stale badge is not stale advice; one chrome recomposition, no layout. */
 private const val CHROME_TICK_MS = 20_000L
 
-/** STABLE is a positive claim: emitted only for a §3.6-eligible forecast with no predicted
- *  crossing. Every ineligible state is VOID with its reason. */
+/** STABLE is a positive claim (§3.6-eligible forecast, no crossing); else VOID with reason. */
 private sealed interface GlyStatus {
     val text: String
     object Stable : GlyStatus { override val text = "STABLE" }
@@ -580,8 +570,7 @@ private fun glycemicStatusOf(
     if (p.stale) {
         return GlyStatus.Void("Anchor reading stale")
     }
-    // `p.stale` is stamped inside a cycle, so it cannot become true on its own once the link drops.
-    // The clock is the only term that keeps moving.
+    // p.stale is stamped inside a cycle; only the clock term keeps moving after the link drops.
     if (nowMs - p.anchorTsMs > STALE_MIN * 60_000L) {
         return GlyStatus.Void("Anchor reading stale")
     }
@@ -614,8 +603,7 @@ private fun GlycemicStatusBadge(status: GlyStatus) {
         is GlyStatus.Void -> 0
     }
     val floor = if (status is GlyStatus.Excursion) 0.35f else 0.8f
-    // Held, not unwrapped: reading `.value` here would recompose this chrome row every frame. Read
-    // inside `graphicsLayer` it is a layer property. The rule is stated in `core/design/Pulse.kt`.
+    // Held, not unwrapped: .value here would recompose row every frame; read inside graphicsLayer.
     val alphaState = if (animationsOn && periodMs > 0) {
         val transition = rememberInfiniteTransition(label = "status")
         transition.animateFloat(
@@ -651,10 +639,7 @@ private fun GlycemicStatusBadge(status: GlyStatus) {
     )
 }
 
-/** Past [STALE_MIN] the arrow is dropped and the value reddens: a missing reading is stale by the
- *  same argument, and a source reporting no rate is drawn without an arrow. Figures come from
- *  [BgFormat], not the dashboard's native `f` — this is chrome, drawn where the graph's transform
- *  is not in scope. */
+/** Past [STALE_MIN]: arrow drops, value reddens; no-rate source draws none. Uses [BgFormat]. */
 @Composable
 private fun T1dmBottomBar(
     navController: NavHostController,
@@ -668,19 +653,15 @@ private fun T1dmBottomBar(
     val cs = MaterialTheme.colorScheme
     val reading by container.latestReading.collectAsState(null)
     val unit by container.statsRepository.unitSpace.collectAsState(UnitSpace.MgDl)
-    // The VIEWED source, not the authoritative one; off the authoritative one the whole read-out
-    // takes [ColorScheme.tertiary]. Pre-resolved: the sensor-name privacy setting is applied where
-    // the flow is built, so this composition does no string work of its own.
+    // VIEWED source; off-authoritative uses tertiary color. Privacy-resolved upstream in the flow.
     val sourceLabel by container.viewedSourceLabel.collectAsState(null)
     val viewingOther by container.viewingNonAuthoritative.collectAsState(false)
     val viewedReading by container.viewedReading.collectAsState(null)
 
-    // The VIEWED sensor drives the whole read-out. `reading` stays the authoritative one — what the
-    // alarm engine, the statistics, the dose calculator and the wire read.
+    // VIEWED sensor drives the read-out; `reading` stays authoritative (alarm/stats/calc/wire).
     val shown = if (viewingOther) viewedReading else reading
 
-    // One clock for the age chip and the staleness verdict. Fast while the reading is young, coarse
-    // after — this composition sits on every screen in the app.
+    // One clock for age chip/staleness; fast while young, coarse after (sits on every screen).
     val rxWallMs = shown?.rxWallMs
     val nowMs by produceState(System.currentTimeMillis(), rxWallMs) {
         while (true) {
@@ -691,9 +672,7 @@ private fun T1dmBottomBar(
     val ageMs = rxWallMs?.let { (nowMs - it).coerceAtLeast(0L) }
     val stale = ageMs == null || ageMs > STALE_MIN * 60_000L
 
-    // No Surface: it clips to its shape, and the hub's glow and pointer reach past the bar's bounds
-    // by design. A bare Row does not clip. Losing the Surface loses what resolved an unset `Text`
-    // colour, so LocalContentColor is provided here instead.
+    // No Surface (clips glow/pointer); LocalContentColor replaces its unset-Text color resolve.
     CompositionLocalProvider(LocalContentColor provides cs.onSurface) {
         Row(
             Modifier
@@ -711,8 +690,7 @@ private fun T1dmBottomBar(
                         text = BgFormat.value(shown?.bgMgdl, unit),
                         style = MaterialTheme.typography.displaySmall,
                         fontWeight = FontWeight.Bold,
-                        // Order matters: stale wins over the viewed-source tint — a number minutes old
-                        // is the stronger warning.
+                        // Stale beats viewed-tint order (older number is the stronger warning).
                         color = when {
                             stale -> cs.error
                             viewingOther -> cs.tertiary
@@ -757,9 +735,7 @@ private fun T1dmBottomBar(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    // The VIEWED sensor's link, so the name and the bars describe one sensor. The
-                    // stored reading's RSSI is the fallback for an ADVERTISEMENT source, and only
-                    // while that reading is fresh.
+                    // Matches VIEWED sensor; RSSI falls back to reading's if fresh (ADVERTISEMENT).
                     viewedReading?.rssi?.takeUnless { stale }?.let { SignalBars(it) }
                 }
                 ageMs?.let { LastReadingChip(it, stale) }
@@ -768,8 +744,7 @@ private fun T1dmBottomBar(
     }
 }
 
-/** A promoted reconstruction is a `cgm_reading` row like any other; unlabelled, a model's output
- *  would read as the patient's glucose. */
+/** A promoted reconstruction is a normal `cgm_reading` row; unlabelled it reads as real glucose. */
 private fun readingSuffix(r: CgmReading): String = when {
     r.flag == ReadingFlag.WARMUP -> "  • warmup"
     r.provenance == ReadingProvenance.INTERPOLATED -> "  • interpolated"
@@ -777,8 +752,7 @@ private fun readingSuffix(r: CgmReading): String = when {
     else -> ""
 }
 
-/** Age of [CgmReading.rxWallMs], before the grid snap. Past the cutoff this line carries the whole
- *  freshness message, the trend arrow above it having been withdrawn. */
+/** Age of [CgmReading.rxWallMs] pre-grid-snap; past cutoff this line alone carries freshness. */
 @Composable
 private fun LastReadingChip(ageMs: Long, stale: Boolean) {
     Text(
@@ -805,9 +779,7 @@ private fun formatReadingAge(ms: Long): String {
     }
 }
 
-/** A ticker, not a key on the inference cycle: `lastCycleTsMs` stops advancing on exactly the gated
- *  paths that stop forecasts. Called from each route that renders the figures, so a panel cannot
- *  show them without keeping them fresh. */
+/** A ticker, not an inference-cycle key; called per route so figures stay fresh despite gating. */
 @Composable
 private fun rememberSensitivity(container: AppContainer): SensitivityEstimate? {
     val sensitivity by container.sensitivity.collectAsState()
@@ -820,9 +792,7 @@ private fun rememberSensitivity(container: AppContainer): SensitivityEstimate? {
     return sensitivity
 }
 
-/** Volume up ⇒ Meals, down ⇒ Insulin. Stands down while an alarm is ACTIVE rather than sounding — a
- *  snoozed low is still a low — and while the predictive alert is up: that second actuator publishes
- *  independently and spends its whole working life with `alarmState` CLEAR. */
+/** Volume up = Meals, down = Insulin; stands down while an alarm is ACTIVE or predictive is up. */
 @Composable
 private fun VolumeKeyShortcuts(
     navController: NavHostController,
@@ -856,8 +826,7 @@ private tailrec fun Context.findMainActivity(): MainActivity? = when (this) {
     else -> null
 }
 
-/** [onNotice] posts a bare line with no Undo. Both are hoisted to [T1dmApp], which owns the snackbar
- *  and a scope that survives leaving the route that spoke. */
+/** [onNotice] posts a bare line, no Undo; hoisted to [T1dmApp], whose scope outlives the route. */
 @Composable
 private fun T1dmNavHost(
     navController: NavHostController,
@@ -868,9 +837,7 @@ private fun T1dmNavHost(
     val animationsOn = LocalAnimationsEnabled.current
     // The footer drill-down links are `:app`'s own navigation, so the haptic is spoken here.
     val navHaptics = LocalT1dmHaptics.current
-    // Hoisted above the graph so it outlives the navigation it triggers. Not a route argument:
-    // `crumbsFor` matches route literals exactly, and an argument would replay the pulse on every
-    // Back into the screen (SettingsAnchors.kt).
+    // Hoisted to outlive navigation; not a route arg (crumbsFor matches literals exactly).
     val settingsFocus = remember { SettingsFocusController() }
     CompositionLocalProvider(LocalSettingsFocus provides settingsFocus) {
     NavHost(
@@ -921,12 +888,9 @@ private fun T1dmNavHost(
             val thermalMaxC by container.inferenceMaxTempC.collectAsState(SettingsStore.DEFAULT_MAX_TEMP_C)
             val thermalWarn by container.thermalWarnMarginC.collectAsState(SettingsStore.DEFAULT_WARN_MARGIN_C)
             val glucoseUnit by container.statsRepository.unitSpace.collectAsState(UnitSpace.MgDl)
-            // The BG input filter the model consumes — INFERENCE.md §7.1. Passed as a value as well
-            // as captured below: a memoized lambda would leave a stale trace after a Settings change.
+            // BG filter the model consumes (INFERENCE.md §7.1); passed by value, not just captured
             val savgolWindow by container.savgolWindow.collectAsState(SettingsStore.DEFAULT_SAVGOL_WINDOW)
-            // Memoised on the window, the only thing it closes over that varies: `container` is
-            // Compose-UNSTABLE (public `var`s), so an inline lambda never compares equal and re-ran a
-            // full-history smoothing pass across the FFI on every recomposition.
+            // Memoised on window only (container is Compose-UNSTABLE); else re-runs FFI smoothing.
             val smoothMgdl = remember(savgolWindow) {
                 { arr: DoubleArray ->
                     container.nativeCore.causalSmooth(arr.toList(), 20.0, 500.0, savgolWindow).toDoubleArray()
@@ -934,12 +898,10 @@ private fun T1dmNavHost(
             }
             // `:feature:dashboard` and `:ui:graph` see no store.
             val paintStrokes by container.paintStrokes.collectAsState(emptyList())
-            // The same feed the Logs panel binds; the screen reduces it to markers and the graph
-            // never sees an amount.
+            // Same feed the Logs panel binds; screen reduces to markers, graph never sees amount.
             val logEntries by container.loggedEntries.collectAsState(emptyList())
             val insulins by container.insulinChoices.collectAsState(emptyList())
-            // §8.4. Remembered against the map so the lambda's identity changes exactly when a fit
-            // lands, and not on every recomposition.
+            // §8.4: remembered on the map, so lambda identity changes only when a fit lands.
             val bandCalibrations by container.bandCalibrations.collectAsState()
             val calibrateBands: (ModelPrediction) -> List<Double>? = remember(bandCalibrations) {
                 { p ->
@@ -958,26 +920,21 @@ private fun T1dmNavHost(
                         container.calibratedFanBatch(bandCalibrations, modelId, fans, steps, nq)
                     }
                 }
-            // A probe costs three forwards on the fp32 authority, so it is driven from the panels
-            // that show it; the container's TTL absorbs a burst of ticks.
+            // Probe costs three fp32 forwards; driven from panels showing it, TTL absorbs bursts.
             val sensitivity = rememberSensitivity(container)
-            // Every forecast here was computed from the AUTHORITATIVE sensor's history, so none of it
-            // describes the sensor on screen once the bar has stepped off it. Emptying the list
-            // withholds all three at their single source.
+            // Forecasts derive from AUTHORITATIVE sensor; emptying withholds all three together.
             val viewingOther by container.viewingNonAuthoritative.collectAsState(false)
             val viewedSourceKey by container.viewedSourceKey.collectAsState(null)
             // Off the UNWITHHELD predictions: withholding the fan must not move the trace.
             val forecastEndMs = inference.predictions.firstOrNull { it.selected }
                 ?.takeIf { it.horizonSteps > 0 }
                 ?.let { it.anchorTsMs + it.horizonSteps * it.stepMs }
-            // `maskControls` is null until a model with a descriptor is selected, which hides the
-            // affordance rather than offering one the app has no geometry for.
+            // maskControls null until a model has a descriptor; hides rather than offers a no-op.
             val maskNote by container.panelMaskNote.collectAsState()
             val bgEditDepth by container.bgEditDepth.collectAsState()
             val tauPreview by container.tauPreview.collectAsState()
             var maskControls by remember { mutableStateOf<MaskControls?>(null) }
-            // Keyed on the newest reading too: a cut moves both `newestMeasuredMs` and
-            // `contextFloorMs`, which the geometry is derived from.
+            // Keyed on reading too (cut moves newestMeasuredMs/contextFloorMs, geometry basis).
             LaunchedEffect(
                 inference.predictions.firstOrNull { it.selected }?.modelId,
                 readings.lastOrNull()?.tsMs,
@@ -1009,8 +966,7 @@ private fun T1dmNavHost(
                 onDeleteLog = { entry ->
                     container.appScope.launch { container.deleteLoggedEntry(entry) }
                 },
-                // Withheld with the forecast: a fill is reconstructed from the authoritative
-                // sensor's history. Nulling the controls takes the whole edit mode with it.
+                // Withheld with forecast (fill uses authoritative history); nulls edit mode too.
                 reconstructed = if (viewingOther) emptyList() else reconstructed,
                 maskControls = if (viewingOther) null else maskControls,
                 onFillSpan = { sel, geometry -> container.runPanelMask(sel, geometry) },
@@ -1122,8 +1078,7 @@ private fun T1dmNavHost(
             val lab = container.labController
             val labState by lab.state.collectAsState()
             val scope = rememberCoroutineScope()
-            // The running set changes under the Lab, so the surface follows it rather than sampling
-            // it once.
+            // Running set changes under the Lab; the surface follows it, not a one-time sample.
             LaunchedEffect(inference.running) {
                 lab.refresh(inference.running.map { it.modelId }.filter { it != BASELINE_MODEL_ID })
             }
@@ -1171,8 +1126,7 @@ private fun T1dmNavHost(
                 onSelect = { id ->
                     scope.launch {
                         container.inferenceController.selectModel(id)
-                        // The figures belong to the model, and the BG panel is not composed to
-                        // notice the switch.
+                        // Figures belong to the model; BG panel isn't composed to notice a switch.
                         container.refreshSensitivityIfStale()
                     }
                 },
@@ -1197,13 +1151,10 @@ private fun T1dmNavHost(
                 accuracy = runCatching { container.modelMetrics(modelId) }.getOrNull()
                 loading = false
             }
-            // Fetched, not passed: building it classifies 25 600 cells across the FFI seam. Null
-            // until it lands, which the figure states as "computing".
+            // Fetched not passed (25 600 cells across FFI); null until landed (else "computing").
             var lattices by remember { mutableStateOf<ErrorGridLattices?>(null) }
             LaunchedEffect(Unit) { lattices = container.errorGridLattices() }
-            // §6.3. Keyed on its own tick so a reload cancels an in-flight walk by zeroing it —
-            // clearing the result is not enough: the walk would land afterwards, under freshly
-            // reloaded tables.
+            // §6.3: keyed on own tick; zeroing cancels an in-flight walk (else it lands late).
             var cgEga by remember(modelId) { mutableStateOf<CgEga?>(null) }
             var cgEgaLoading by remember(modelId) { mutableStateOf(false) }
             var cgEgaTick by remember(modelId) { mutableStateOf(0) }
@@ -1212,15 +1163,12 @@ private fun T1dmNavHost(
                 if (cgEgaTick == 0) return@LaunchedEffect
                 cgEgaLoading = true
                 val walked = runCatching { container.modelCgEga(modelId) }
-                // A superseded pass must not write back: `runCatching` swallows the cancellation and
-                // the native walk is uninterruptible, so a cancelled job resumes here seconds later.
+                // Blocks stale writes: runCatching hides cancellation; the walk can't stop.
                 if (!isActive) return@LaunchedEffect
                 cgEga = walked.getOrNull()
                 cgEgaLoading = false
             }
-            // §8.4. The stored correction is observed; this screen's last outcome is local, so a
-            // reopen does not re-announce a fit already read. `fitTick == 0` is the never-asked-for
-            // guard.
+            // §8.4: local correction observed; fitTick==0 guards against re-announcing on reopen
             val bandCalibrations by container.bandCalibrations.collectAsState()
             val bandCalibration: BandCalibration? = bandCalibrations[modelId]
             var fitOutcome by remember(modelId) { mutableStateOf<BandCalibrationOutcome?>(null) }
@@ -1230,9 +1178,7 @@ private fun T1dmNavHost(
                 if (fitTick == 0) return@LaunchedEffect
                 fitting = true
                 val outcome = runCatching { container.fitBandCalibration(modelId) }
-                // A cancelled fit must not write its verdict over its successor's; both the walk and
-                // the native fit are uninterruptible. The correction itself is safe either way:
-                // `fitBandCalibration` persists once, at the end, and only a sufficient fit.
+                // Cancelled fit mustn't overwrite its successor; persists once, only if sufficient
                 if (!isActive) return@LaunchedEffect
                 fitOutcome = outcome.getOrNull()
                 fitting = false
@@ -1242,8 +1188,7 @@ private fun T1dmNavHost(
                 modelId = modelId,
                 accuracy = accuracy,
                 accuracyLoading = loading,
-                // Zeroing the tick cancels a running CG-EGA walk; the relaunch returns on the same
-                // guard a never-asked-for pass does.
+                // Zeroing tick cancels a running walk; relaunch reuses the never-asked-for guard.
                 onRecomputeAccuracy = { reloadTick++; cgEgaTick = 0 },
                 // Data-independent, so the container builds one pair for every model's drill-down.
                 lattices = lattices,
@@ -1254,8 +1199,7 @@ private fun T1dmNavHost(
                 bandCalibration = bandCalibration,
                 bandCalibrationFitting = fitting,
                 bandCalibrationOutcome = fitOutcome,
-                // Cleared on every exit, including a throw, or the button stays dead for the life of
-                // the screen.
+                // Cleared on every exit (throw included), else the button stays dead forever.
                 onFitBaseline = if (modelId == BASELINE_MODEL_ID) {
                     {
                         baselineFitting = true
@@ -1273,8 +1217,7 @@ private fun T1dmNavHost(
                 },
                 baselineFitting = baselineFitting,
                 baselineFitNote = baselineFitNote,
-                // Three guards, because only the container's holds when a fit is started somewhere
-                // this screen cannot see.
+                // Three guards; only container's holds when a fit starts elsewhere.
                 onFitBandCalibration = { if (!fitting) fitTick++ },
                 onDropBandCalibration = { scope.launch { container.dropBandCalibration(modelId) } },
             )
@@ -1390,9 +1333,7 @@ private fun T1dmNavHost(
                 onLogMeal = { grams, gi, note ->
                     container.appScope.launch {
                         val uri = pendingPhotoUri
-                        // The photo rides a direct POST, not the outbox, and the server has no delete
-                        // endpoint, so an undone meal leaves its photo behind. Conditional: the receipt
-                        // is posted before the upload is attempted, and the POST may never happen.
+                        // Direct POST, no outbox/delete route; undo leaves the photo behind.
                         onLogged(
                             container.logCarb(grams, gi, note).let { h ->
                                 if (uri == null) h
@@ -1418,8 +1359,7 @@ private fun T1dmNavHost(
                     }
                 },
             ) {
-                // The screen's own footer, inside its single scroll column: wrapped in a Column
-                // around the screen they sit after a child that has claimed the whole main axis.
+                // Screen's footer in its scroll column; wrapped in Column after a full-axis child.
                 TextButton(onClick = { navHaptics.perform(HapticEvent.NavSwitch); navController.navigate("meals/builder") }) {
                     Text("Meal builder →")
                 }
@@ -1451,13 +1391,11 @@ private fun T1dmNavHost(
         }
         composable("meals/builder/meal/{mealId}") { entry ->
             val mealId = entry.arguments?.getString("mealId")?.toLongOrNull() ?: return@composable
-            // Null until the first emission: popping on the initial empty value would make the route
-            // unreachable.
+            // Null until first emission; popping on initial empty value makes route unreachable.
             val saved: List<SavedMeal>? by container.savedMeals.collectAsState(null)
             val meal = saved?.firstOrNull { it.id == mealId }
             val ascend = rememberSingleAscent(navController)
-            // Deleted out from under the editor: leave rather than hold a Save at a header that is
-            // gone.
+            // Deleted under the editor: leave rather than hold a Save at a header that's gone.
             LaunchedEffect(saved, meal) { if (saved != null && meal == null) ascend() }
             if (meal == null) return@composable
             MealEditorScreen(
@@ -1502,8 +1440,7 @@ private fun T1dmNavHost(
             val iobCob by container.iobCob.collectAsState()
             val sensitivity = rememberSensitivity(container)
             val glucoseUnit by container.statsRepository.unitSpace.collectAsState(UnitSpace.MgDl)
-            // Read once each: the panel owns the selection from here, and re-seeding it mid-entry
-            // would move the chip out from under the finger.
+            // Read once each; panel owns selection after, re-seeding mid-entry moves the chip.
             val presetCatalog by produceState(emptyList<InsulinPresetSpec>()) { value = container.insulinPresetCatalog() }
             val rapidLabel by produceState<String?>(null) { value = container.resolvedRapidLabel() }
             val basalLabel by produceState<String?>(null) { value = container.resolvedBasalLabel() }
@@ -1555,8 +1492,7 @@ private fun T1dmNavHost(
                             )
                         }
                     }
-                    // Clears `bolusAdvice` to Idle; an Undo cannot bring the card back, hence the
-                    // caveat above.
+                    // Clears bolusAdvice to Idle; Undo can't restore the card (see caveat above).
                     DoseCalcService.cancel(ctx)
                 },
                 onRecompute = { target -> DoseCalcService.recommend(ctx, targetMgdl = target) },
@@ -1578,11 +1514,9 @@ private fun T1dmNavHost(
             val sessions by container.exercise.sessions.collectAsState(emptyList())
             val active by container.exercise.active.collectAsState()
             val bodyMassKg by container.exercise.bodyMassKg.collectAsState(null)
-            // The bout's own reason while one records, the refusal that stopped the service otherwise.
+            // Bout's own reason while recording; else the refusal that stopped the service.
             val degraded by container.exerciseDegraded.collectAsState()
-            // Held across the permission round trip, and saveable because that trip can outlive the
-            // Activity: the dialog is where a low-memory kill lands, and MainActivity declares no
-            // `configChanges`. A plain `remember` would meet the re-delivered grant holding null.
+            // Saveable: survives a low-memory kill mid permission trip (no configChanges).
             var pendingKind by rememberSaveable { mutableStateOf<ExerciseKind?>(null) }
             val locationLauncher = rememberLauncherForActivityResult(
                 ActivityResultContracts.RequestMultiplePermissions(),
@@ -1591,11 +1525,10 @@ private fun T1dmNavHost(
                 pendingKind = null
                 when {
                     kind == null -> Unit
-                    // Either grant opens a bout; a coarse-only one says so on the card rather than
-                    // drawing a track.
+                    // Either grant opens a bout; coarse-only shows on the card, not a track.
                     grants.values.any { it } ->
                         container.appScope.launch { container.exercise.start(kind) }
-                    // A permanent denial shows no system dialog, so this is the only feedback there is.
+                    // Permanent denial shows no system dialog; this is the only feedback there is.
                     else -> container.exerciseRefusal.value = ExerciseService.NO_PERMISSION
                 }
             }
@@ -1608,8 +1541,7 @@ private fun T1dmNavHost(
                 onStart = { kind ->
                     // A refusal must not outlive the attempt that produced it.
                     container.exerciseRefusal.value = null
-                    // FINE specifically: a coarse-only grant is fuzzed to ~2 km and the bucketer
-                    // refuses every fix.
+                    // FINE only: coarse grant fuzzes to ~2 km and the bucketer refuses every fix.
                     if (ExerciseService.hasPreciseLocation(ctx)) {
                         container.appScope.launch { container.exercise.start(kind) }
                     } else {
@@ -1624,7 +1556,7 @@ private fun T1dmNavHost(
                 },
                 onDelete = { id -> container.appScope.launch { container.exercise.delete(id) } },
                 previewExerciseCurve = container.previewExerciseCurve,
-                // The container's scope: the write and its re-forecast must survive leaving the panel.
+                // Container's scope: write and re-forecast must survive leaving the panel.
                 onReplay = { session, startMs ->
                     container.appScope.launch { container.replayExercise(session, startMs) }
                 },
@@ -1657,9 +1589,7 @@ private fun T1dmNavHost(
             // The model whose fan the panel shows, so the sweep is not two models' history mixed.
             val modelId = inference.selectedPrediction?.modelId
                 ?: inference.running.firstOrNull { it.selected }?.modelId
-            // The same §8.4 correction the BG panel's display fans wear: drawn raw beside them it
-            // would state a second, narrower uncertainty with nothing saying why. No roll on this
-            // screen, so it is not gated.
+            // Same §8.4 correction as BG panel's fans; ungated here (no roll on this screen).
             val calibrateSessionFans: (String, () -> List<Double>, Int, Int) -> List<Double>? =
                 remember(bandCalibrations) {
                     { m, fans, steps, nq -> container.calibratedFanBatch(bandCalibrations, m, fans, steps, nq) }
@@ -1675,8 +1605,7 @@ private fun T1dmNavHost(
                     { fans, steps, nq -> calibrateSessionFans(m, fans, steps, nq) },
                 )
             }
-            // Not the live Logs feed: it is bounded at a few hundred rows, so it is empty for an old
-            // bout. Reduced to marks here, so the drawing layer sees no amounts.
+            // Not live Logs feed (bounded, empty for old bouts); reduced to marks, no amounts.
             val sessionMarkers by produceState(emptyList<LogMarker>(), window) {
                 val w = window
                 value = if (w == null) {
@@ -1742,8 +1671,7 @@ private fun T1dmNavHost(
                 onOpenDeathClock = { navController.navigate("settings/deathclock") },
                 recentSearches = recentSearches,
                 onOpenKnob = { knob ->
-                    // Before navigating: the destination reads the pending anchor on its first
-                    // composition.
+                    // Before nav: destination reads the pending anchor on first composition.
                     settingsFocus.request(knob.id.takeIf { knob.anchored })
                     navController.navigate(settingsRouteFor(knob.screen))
                 },
@@ -1800,8 +1728,7 @@ private fun T1dmNavHost(
             val customJson by ss.customThemeJson.collectAsState(null)
             val bgAlphaPct by ss.backgroundAlphaPct.collectAsState(com.t1dm.app.settings.SettingsStore.DEFAULT_BG_ALPHA_PCT)
             val hapticsKey by ss.hapticsLevel.collectAsState(SettingsStore.DEFAULT_HAPTICS)
-            // `preview` takes the strength explicitly, so the tapped chip is felt at its own level
-            // before the kv write round-trips back through the flow above.
+            // preview takes strength explicitly; chip felt before the kv round-trip returns.
             val haptics = LocalT1dmHaptics.current
             var importStatus by remember { mutableStateOf<String?>(null) }
             val customName = remember(customJson) {
@@ -2019,7 +1946,7 @@ private fun T1dmNavHost(
                         resetting = true
                         scope.launch {
                             container.resetAllData()
-                            container.restartApp() // in-place first-run relaunch; keeps the sensor connected
+                            container.restartApp() // in-place relaunch; keeps sensor connected
                         }
                     }
                 },
@@ -2074,7 +2001,7 @@ private fun T1dmNavHost(
         composable("settings/temperature") {
             val scope = rememberCoroutineScope()
             val ss = container.settingsStore
-            // One atomic config, so each per-field edit re-saves the tuple with its current siblings.
+            // One atomic config; each field edit re-saves the tuple with its siblings.
             val enabled by ss.overTempEnabled.collectAsState(SettingsStore.DEFAULT_OVERTEMP_ENABLED)
             val alertC by ss.overTempAlertC.collectAsState(SettingsStore.DEFAULT_OVERTEMP_ALERT_C)
             val clearC by ss.overTempClearC.collectAsState(SettingsStore.DEFAULT_OVERTEMP_CLEAR_C)
@@ -2204,8 +2131,7 @@ private fun T1dmNavHost(
             CgmSettingsScreen(
                 activeSourceName = active?.displayName,
                 activeStatus = active?.let { "active" },
-                // The registry keeps its whole set; the authoritative sensor is listed whatever its
-                // hidden flag says.
+                // Registry keeps whole set; authoritative sensor lists regardless of hidden flag.
                 recordedSources = sources.mapNotNull {
                     val isAuthoritative = it.id == active?.id
                     if (it.hidden && !isAuthoritative) null
@@ -2222,8 +2148,7 @@ private fun T1dmNavHost(
                 onStopReading = { id -> container.deactivateCgm(id) },
                 activeRssi = signals?.cgmRssi,
                 sensorExpiryMs = expiry,
-                // The persisted column, not the registry's in-memory set: it is what gets classified
-                // against.
+                // Persisted column, not the in-memory set: it is what warmup classifies against.
                 warmupWindowMin = active?.warmupWindowMin,
                 onSetWarmupMin = { m -> scope.launch { container.setSensorWarmupMin(m) } },
                 onSetSensorLifetime = { d, h, m -> scope.launch { container.setSensorLifetime(d, h, m) } },
@@ -2254,12 +2179,9 @@ private fun T1dmNavHost(
                 holdMaxMin = SettingsStore.MAX_PUSH_HOLD_MIN,
                 currentMood = mood,
                 onSetHoldMin = { m -> scope.launch { container.setPushHoldMin(m) } },
-                // The container's scope: leaving the panel between the row and its push must not
-                // cancel it.
+                // Container's scope: leaving between the row and its push must not cancel it.
                 onPickMood = { m -> container.appScope.launch { container.saveMood(m) } },
-                // The container's scope, for the same reason. Says nothing on success: the row
-                // leaving the list is the feedback, and the tombstone lands whatever the push had
-                // already done.
+                // Container's scope; silent on success (row leaving is the feedback).
                 onDelete = { entry ->
                     container.appScope.launch { container.deleteLoggedEntry(entry) }
                 },
@@ -2271,8 +2193,7 @@ private fun T1dmNavHost(
     }
 }
 
-/** Cosmetic: reads the record and writes nothing. The solver runs on the dedicated `t1dm-game`
- *  thread — never `t1dm-inference`, never a `default` worker the alarm engine shares. */
+/** Cosmetic, writes nothing; solver runs on `t1dm-game` thread, never inference/default. */
 @Composable
 private fun DashboardGamePanel(
     container: AppContainer,
@@ -2280,8 +2201,7 @@ private fun DashboardGamePanel(
     trackFromMs: Long,
     dropAtMs: Long,
     spanMinutes: Float,
-    // The panel's own clock: it carries the warmup-surviving circadian fallback, and a second
-    // derivation would drift from the axis the chart drew.
+    // Panel's own clock (warmup-surviving circadian fallback); a second derivation would drift.
     predictedClock: PredictedClock?,
     onReady: () -> Unit,
     onExit: () -> Unit,
@@ -2317,9 +2237,7 @@ private fun DashboardGamePanel(
         readingsFrom = container::gameReadings,
         openWorld = { terrain, t -> container.nativeCore.createGameWorld(terrain, t) },
         gameDispatcher = container.dispatchers.game,
-        // CRITICAL tiers only: a WARNING hypo can be up for hours. Both in-process actuators, since
-        // the predictive presenter buzzes a second vibrator of its own. DEATH is a fail-OPEN of
-        // §3.6's presentation; over-temperature is about the phone, so it keeps the interlock.
+        // CRITICAL only; DEATH fail-opens §3.6 presentation, over-temp keeps the interlock.
         alarmRaised = (
             alarm.alarms.any { it.severity == AlarmSeverity.CRITICAL } ||
                 alarm.overTemperature != null ||

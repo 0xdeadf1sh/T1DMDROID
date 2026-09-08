@@ -33,8 +33,7 @@ fun TimeOfDayIcon(size: Dp = 28.dp, modifier: Modifier = Modifier) {
     val style = iconStyleForTheme(LocalT1dmSemantics.current.id)
     val period = dayPeriodFor(hour)
     val icon = remember(period, style) { timeOfDayIcon(period, style) }
-    // Held as State and unwrapped inside the layer block: a breath that never ends must invalidate a
-    // layer property, not the composition that produced it.
+    // Held as State, unwrapped inside the layer block: a breath must invalidate a layer property.
     val scale: State<Float> = if (animationsOn) {
         val transition = rememberInfiniteTransition(label = "tod")
         transition.animateFloat(

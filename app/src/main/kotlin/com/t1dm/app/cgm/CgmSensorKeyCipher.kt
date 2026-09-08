@@ -9,11 +9,7 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
-/**
- * On-disk form is `iv || ciphertext`, 12-byte GCM IV first, raw bytes into a BLOB column.
- * A separate alias from the watch key on purpose: the full erase burns that one, this must survive it.
- * Non-exportable, so a sealed blob is readable only by this install — the archive omits these rows.
- */
+/** On-disk: 12-byte GCM iv || ciphertext, raw into a BLOB; non-exportable, archives omit it. */
 class CgmSensorKeyCipher {
 
     fun seal(plain: ByteArray): ByteArray {

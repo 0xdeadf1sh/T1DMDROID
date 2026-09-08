@@ -1,10 +1,6 @@
 package com.t1dm.data.meals
 
-/**
- * Carbohydrate per 100 g from USDA FoodData Central (public domain); GI from the International
- * Tables of Glycemic Index (Atkinson et al., Diabetes Care 31:2281, 2008), or for a composite dish
- * inherited from its dominant carbohydrate. Null GI is unmeasured; the resolver falls back.
- */
+/** Carbs/100g from USDA FDC; GI from ITGI (Atkinson 2008) or dominant carb; null=unmeasured. */
 internal data class FoodSeedRow(
     val name: String,
     val brand: String?,

@@ -3,11 +3,7 @@ package com.t1dm.watch.crypto
 import java.security.MessageDigest
 import java.security.SecureRandom
 
-/**
- * Host-test stand-in for the Rust [WatchSession]: SHA-256 as keystream/MAC, no real X25519. NOT
- * cryptographically secure, and never bound in a shipping build. Reproduces the authoritative record
- * layout of docs/WATCH_BLE.md §6.1 and fails closed on tamper or replay.
- */
+/** Host-test stand-in for Rust WatchSession: SHA-256 keystream/MAC, NOT secure, never shipped. */
 class LoopbackWatchSession internal constructor(
     override var epoch: Int,
     private var sendSeq: Long,
@@ -116,8 +112,7 @@ class LoopbackWatchSession internal constructor(
         sas = if (state == WatchSessionState.AWAIT_SAS) sas() else null,
     )
 
-    // Record: ver||epoch(u32le)||seq(u64le)||ct||tag (docs/WATCH_BLE.md §6.1); the 13-byte header is
-    // the authenticated AAD. No direction byte on the wire — `dir` only picks the keystream domain.
+    // Record: ver||epoch||seq||ct||tag (WATCH_BLE.md §6.1); 13-byte header is the AAD; no dir byte.
 
     private fun authHeader(seq: Long): ByteArray {
         val b = ByteArray(HDR_LEN)
@@ -209,7 +204,7 @@ class LoopbackWatchSessionFactory(private val burnMargin: Long = 256L) : WatchSe
     override fun fresh(): WatchSession = LoopbackWatchSession(epoch = 0, sendSeq = 0L)
 
     override fun resume(material: WatchKeyMaterial?, burnedCeiling: Long): WatchSession {
-        // No persisted keys, so a fresh session — but the seq still begins above the ceiling + margin.
+        // No persisted keys, so a fresh session, but seq still begins above the ceiling + margin.
         val start = if (burnedCeiling > 0) burnedCeiling + burnMargin else 0L
         return LoopbackWatchSession(epoch = 0, sendSeq = start)
     }

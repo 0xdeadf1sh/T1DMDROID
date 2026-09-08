@@ -13,18 +13,14 @@ import com.t1dm.inference.backend.GraphIo
 import kotlinx.coroutines.withContext
 import timber.log.Timber
 
-/** The production [ForecastPort]: rolls by re-feeding the median (INFERENCE.md §9), gating every
- *  roll on the Rust degeneracy guard (§3.6-B) before re-feeding it. No model, too little context, a
- *  throw, or a degenerate roll all yield a non-eligible [PredFan] rather than an exception. */
+/** Production [ForecastPort]: re-feeds median (§9), gated by degeneracy (§3.6-B); never throws. */
 class RollingForecaster(
     private val native: NativeCore,
     private val dispatchers: T1dmDispatchers,
     private val channels: ChannelBuilder,
     private val history: BgHistoryProvider,
     private val selected: SelectedModelProvider,
-    /** Read fresh only for a roll carrying no [ForecastRequest.smoothingWindow]. It MUST track the
-     *  display cycle's window, or the display roll anchors on a different `last_bg` than the forecast
-     *  drawn beside it (INFERENCE.md §7.1). */
+    /** Fresh only when no [ForecastRequest.smoothingWindow]; must track display window (§7.1). */
     private val smoothingWindowProvider: suspend () -> Int = { InferenceControllerDefaults.SAVGOL_WINDOW },
 ) : ForecastPort {
 
@@ -36,9 +32,7 @@ class RollingForecaster(
         }
     }
 
-    /** DISPLAY-ONLY: [RolledForecast] is a distinct type that cannot enter `:calc`, which reads
-     *  [PredFan] only. A per-roll degeneracy stops the roll and keeps the valid prefix; a missing
-     *  model yields [RolledForecast.missing]. Never throws. */
+    /** DISPLAY-ONLY: [RolledForecast] can't enter :calc; degeneracy keeps prefix; never throws. */
     suspend fun rollForDisplay(nowMs: Long, requestedHours: Double, validatedSteps: Int): RolledForecast {
         val fullRollSteps = Math.round(requestedHours * HorizonPolicy.STEPS_PER_HOUR).toInt().coerceAtLeast(1)
         val requestedRolls = (fullRollSteps + validatedSteps - 1) / validatedSteps.coerceAtLeast(1)
@@ -59,8 +53,7 @@ class RollingForecaster(
         val median = DoubleArray(n) { r.steps[it].medianBg }
         val lower = DoubleArray(n) { r.steps[it].lowerBg }
         val upper = DoubleArray(n) { r.steps[it].upperBg }
-        // Step-major, and only when EVERY step has a fan: a ragged array draws some steps as three
-        // bands and the rest as one.
+        // Step-major, only if EVERY step has a fan; else steps draw as mixed 3-band/1-band.
         val nq = r.steps.firstOrNull()?.bandsMgdl?.size ?: 0
         val bands = if (nq > 0 && r.steps.all { it.bandsMgdl.size == nq }) {
             DoubleArray(n * nq) { i -> r.steps[i / nq].bandsMgdl[i % nq] }
@@ -101,8 +94,7 @@ class RollingForecaster(
         val completedRolls: Int,
     )
 
-    /** The single source of the rolling math, shared by the dose and display paths. On the first
-     *  degeneracy it stops and returns the valid prefix. */
+    /** Single source of the rolling math (dose + display paths); stops at first degeneracy. */
     private suspend fun rollInternal(request: ForecastRequest): Rolled {
         val model = selected.current()
             ?: return Rolled(null, emptyList(), ForecastStatus.OK, ForecastEligibility.MISSING, "no selected model", 0)
@@ -122,9 +114,8 @@ class RollingForecaster(
             return Rolled(series.anchorTsMs, emptyList(), ForecastStatus.OK, ForecastEligibility.MISSING, "context length $nCtx not a valid multiple", 0)
         }
 
-        // The candidate is re-anchored onto the prediction zone's first bucket, or bucketize rounds
-        // its leading step to idx<0 (curve.rs) and under-counts its lowering effect — fail-OPEN.
-        val predZoneStartMs = series.gridStartMs + nCtx.toLong() * STEP_MS      // matches InferenceController
+        // Re-anchors onto zone's first bucket; else bucketize rounds idx<0 (curve.rs) — fail-OPEN.
+        val predZoneStartMs = series.gridStartMs + nCtx.toLong() * STEP_MS
         val candShift = predZoneStartMs - request.rollStartMs
         val shiftedCandidate = request.candidate?.map { it.copy(startMs = it.startMs + candShift) }
         val future = channels.futureOverrides(predZoneStartMs, request.fullRollSteps, request.announced, shiftedCandidate)
@@ -139,8 +130,7 @@ class RollingForecaster(
         val outSteps = ArrayList<FanStep>(request.fullRollSteps)
         var carrySpread = emptyList<Double>()
         val nRolls = (request.fullRollSteps + predSteps - 1) / predSteps
-        // Once for the whole roll: smoothing roll r+1 differently from roll r would push the re-fed
-        // median across a filter discontinuity.
+        // Fixed for the roll: differing smoothing per roll would discontinue the median filter.
         val smoothingWindow = InferenceControllerDefaults.nearestSmoothingStop(
             request.smoothingWindow
                 ?: runCatching { smoothingWindowProvider() }.getOrNull()
@@ -190,8 +180,7 @@ class RollingForecaster(
                 insulin.addLast(predInsulin.getOrElse(i) { 0.0 })
                 exercise.addLast(predExercise.getOrElse(i) { 0.0 })
             }
-            // The fan just measured already carries `carrySpread`, so this REPLACES it rather than
-            // folding in: folding would count this roll's carry twice (SPEC/inference.md §9).
+            // Fan already carries carrySpread; this REPLACES it (folding would double-count, §9).
             carrySpread = terminalOffsets(forecast)
         }
 
@@ -218,9 +207,7 @@ class RollingForecaster(
         }
     }
 
-    /** Terminal-step risk-space spread per level, in `carry_spread`'s own layout
-     *  `[up .75 .9 .95 | dn .25 .1 .05]` (SPEC/inference.md §9.4). Per level, not one half-width:
-     *  a shared carry hands the .75 edge the whole .05–.95 accumulation and the pairs collapse. */
+    /** Terminal spread per level, layout [up .75 .9 .95|dn .25 .1 .05] (SPEC/inference.md §9.4) */
     private fun terminalOffsets(f: Forecast): List<Double> {
         val nq = 7
         val nSpreads = nq / 2

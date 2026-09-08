@@ -1,12 +1,6 @@
 package com.t1dm.core.model
 
-/**
- * The model's own 2 h forecast re-fed into its context N times to reach a horizon of up to 12 h.
- * DISPLAY-ONLY: never placed in [InferenceState.predictions], never fed to `:calc`, never to the
- * top-bar HYPO/HYPER indicator or the ongoing-notification countdown — a distinct type from
- * [ModelPrediction] so it cannot be substituted for the validated 2 h forecast. All BG is step-major
- * mg/dL, and step `i` is the median for `anchorTsMs + (i + 1)·stepMs`.
- */
+/** 2h forecast re-fed to 12h; DISPLAY-ONLY, never :calc/alerts; step i=anchor+(i+1)·stepMs. */
 data class RolledForecast(
     val anchorTsMs: Long,
     val stepMs: Long,
@@ -16,12 +10,9 @@ data class RolledForecast(
     val lowerBg: DoubleArray,
     /** The τ=.95 upper band edge (mg/dL) per step. */
     val upperBg: DoubleArray,
-    /** The whole fan, `steps × nQuantiles` step-major and ascending in τ — the layout
-     *  [ModelPrediction.bandsMgdl] uses. [lowerBg]/[upperBg] are its outermost pair. EMPTY when the
-     *  producer had no fan for every step, which draws as the single band it is. */
+    /** Whole fan `steps×nQuantiles`, ascending τ (bandsMgdl layout); lower/upper its outer pair. */
     val bandsMgdl: DoubleArray = DoubleArray(0),
-    /** The prefix inside the VALIDATED horizon (2 h ⇒ 24). Steps past it are extrapolated, drawn
-     *  distinctly and never alerted on. */
+    /** VALIDATED-horizon prefix (2h⇒24); past it, steps extrapolate, drawn distinct, unalerted. */
     val validatedSteps: Int,
     /** The user-requested roll horizon in hours (30 min…12 h). */
     val requestedHours: Double,

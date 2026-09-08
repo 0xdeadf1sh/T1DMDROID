@@ -12,21 +12,15 @@ import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 
-/**
- * Reconciles the server's model registry against [modelsDir]. A download lands `.part` → fsync →
- * verify → rename, `.pte` first and descriptor last, so a model becomes discoverable only once both
- * files are present. An update to a RUNNING model is staged under [PENDING_DIR], never swapped.
- */
+/** Reconciles registry vs [modelsDir]: .part→fsync→verify→rename. RUNNING update stages, no swap */
 class ModelSyncCoordinator(
     private val modelsDir: File,
     private val http: SyncHttpClient,
-    /** `.pte` FILENAMES, NOT descriptor ids: an adb-pushed model's descriptor `id` omits the engine
-     *  infix, so an id-keyed check would miss it and swap the dosing model. */
+    /** `.pte` FILENAMES, NOT descriptor ids: an adb-pushed descriptor omits the engine infix. */
     private val runningArtifacts: suspend () -> Set<String> = { emptySet() },
     private val sha256Hex: (ByteArray) -> String = ::defaultSha256,
 ) {
-    /** Serialises whole passes: two would race on the shared `.part` staging path. Also guards
-     *  [applyPending]. */
+    /** Serialises passes: two would race on shared .part staging. Also guards [applyPending]. */
     private val mutex = Mutex()
 
     suspend fun sync(): ModelSyncSummary = mutex.withLock {
@@ -65,8 +59,7 @@ class ModelSyncCoordinator(
         val engine = (meta["engine"] as? JsonPrimitive)?.contentOrNull ?: DEFAULT_ENGINE
         if (engine.lowercase() !in SUPPORTED_ENGINES) return skip(row.id, "unsupported engine $engine")
 
-        // A cheap PRE-check, not the contract: the core's parse also requires the exercise channel,
-        // the geometry block and the risk transform, and skips at discovery with a logged reason.
+        // A cheap PRE-check, not the contract: the cores parse requires more, skips at discovery.
         if (meta["normalization_stats"] !is JsonObject) return skip(row.id, "descriptor missing normalization_stats")
 
         val name = row.id.removeSuffix(".pte")
@@ -100,8 +93,7 @@ class ModelSyncCoordinator(
         val art = http.downloadModel(row.id)
         val expected = art.sha256?.ifBlank { null } ?: row.sha256.ifBlank { null }
 
-        // Stage only when this would overwrite a LIVE artifact a running model is loaded from. A new
-        // model, or one with no live `.pte`, has nothing to swap and is applied in place.
+        // Stage only if overwriting a LIVE artifact a running model uses; else applied in place.
         val isRunning = livePte.exists() && pteName in running
         val destDir = if (isRunning) File(modelsDir, PENDING_DIR) else modelsDir
         destDir.mkdirs()
@@ -117,14 +109,12 @@ class ModelSyncCoordinator(
         }
 
         atomicRename(part, File(destDir, pteName))                 // .pte FIRST
-        writeDescriptor(destDir, descName, meta, name, pteName)    // descriptor LAST — the commit point
+        writeDescriptor(destDir, descName, meta, name, pteName)    // descriptor LAST: commit point
 
         return if (isRunning) ModelSyncOutcome.UpdateDownloaded(row.id) else ModelSyncOutcome.FetchedNew(row.id)
     }
 
-    /** The served meta verbatim, but `id` normalized to the LOGICAL id ([logicalIdOf]) so a model's
-     *  backend variants group as one. The running-set/dosing identity keys on the `.pte` filename
-     *  (see [runningArtifacts]), never this id. */
+    /** Meta verbatim, id normalized to LOGICAL ([logicalIdOf]); running keys .pte, not this id. */
     private fun writeDescriptor(dir: File, descName: String, meta: JsonObject, name: String, pteName: String) {
         val normalized = JsonObject(meta + mapOf("id" to JsonPrimitive(logicalIdOf(name)), "artifact" to JsonPrimitive(pteName)))
         val part = File(dir, "$descName.part")
@@ -164,8 +154,7 @@ class ModelSyncCoordinator(
         /** Filename infixes (`<logicalId>.<infix>.pte`), distinct from the descriptor `engine`. */
         private val ENGINE_INFIXES = setOf("xnnpack")
 
-        /** The engine strings `ModelStore` admits; anything else it refuses at discovery, so
-         *  downloading it would fill the device with an artifact no delegate here can execute. */
+        /** Engine strings ModelStore admits; else refused at discovery, no delegate can run it. */
         private val SUPPORTED_ENGINES = setOf(
             "executorch_xnnpack_fp32", "executorch_xnnpack",
         )

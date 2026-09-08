@@ -10,8 +10,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.unit.dp
 
-/** Preview only. `values[i]` is the rate over `[i·5, (i+1)·5)` min, so it is drawn at slot `i+1` and
- *  slot 0 is the zero baseline. Scaled to its own peak: the channels are incommensurable. */
+/** Preview: values[i] is rate over [i·5,(i+1)·5) min, drawn at slot i+1; slot 0 zero baseline. */
 @Composable
 fun CurveSparkline(values: DoubleArray, color: Color) {
     Canvas(Modifier.fillMaxWidth().height(56.dp).padding(vertical = 4.dp)) {

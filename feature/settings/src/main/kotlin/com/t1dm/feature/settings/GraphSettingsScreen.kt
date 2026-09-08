@@ -32,9 +32,7 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** mg/dL, stepped by 5; the axis grows above [maxMgdl] so highs never clip, and `min < max` is
- *  enforced upstream. [smoothingWindow] filters the channel the model reads, not just the drawing.
- *  [smoothingPreviewMgdl] is oldest→newest; [smoothMgdl] is the native `(series, window) -> series`. */
+/** mg/dL step 5, axis grows above maxMgdl; smoothingWindow filters model channel, not drawing. */
 @Composable
 fun GraphSettingsScreen(
     minMgdl: Int,
@@ -110,8 +108,7 @@ private fun SmoothingSection(
         "Filters the model input, not just the drawing",
         style = MaterialTheme.typography.bodyMedium,
     )
-    // Keyed on `window`: it arrives from a cold flow, so an unkeyed remember would seed the thumb
-    // from the placeholder default and never adopt the persisted value.
+    // Keyed on window: a cold flow means unkeyed remember never adopts the persisted value.
     val startIdx = stops.indexOf(window).coerceAtLeast(0)
     var sliderPos by remember(window) { mutableFloatStateOf(startIdx.toFloat()) }
     var lastIdx by remember(window) { mutableIntStateOf(startIdx) }

@@ -17,7 +17,7 @@ class RollDisplayIsolationTest {
 
     @Test fun doseCalculator_onlyConsumesPredFanFromForecastPort() {
         val m = ForecastPort::class.java.methods.first { it.name == "roll" }
-        // A suspend fun's erased return is Object, so assert on the absence of a RolledForecast instead.
+        // Suspend fun erased return is Object; assert absence of a RolledForecast instead.
         assertTrue(
             ForecastPort::class.java.methods.none { it.returnType == RolledForecast::class.java },
         )

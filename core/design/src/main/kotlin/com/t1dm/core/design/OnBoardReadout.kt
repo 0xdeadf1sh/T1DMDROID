@@ -17,10 +17,7 @@ import com.t1dm.core.model.IobCobReadout
 import com.t1dm.core.model.SensitivityEstimate
 import com.t1dm.core.model.UnitSpace
 
-/**
- * The one definition of the read-out's ORDER and WORDING — IOB, then COB, then ICR, then ISF. Layout
- * is not shared: the BG panel renders the parts itself, Meals and Insulin use [IobCobLine].
- */
+/** Sole ORDER/WORDING def: IOB, COB, ICR, ISF. Layout not shared; use [IobCobLine] elsewhere. */
 object OnBoardReadout {
 
     const val SENSITIVITY_NA = "ICR/ISF N/A"
@@ -33,17 +30,13 @@ object OnBoardReadout {
     fun cob(cobG: Double, compact: Boolean): String =
         if (compact) "COB ${"%.0f".format(cobG)}g" else "COB ${"%.0f".format(cobG)} g"
 
-    /** A decimal below 10 g/U: `%.0f` renders anything under 0.5 — a small negative included — as a
-     *  flat `0g/U`, hiding the sign. */
+    /** Below 10 g/U: %.0f rounds anything under 0.5 (even negative) to flat 0g/U, hiding sign. */
     fun icr(gPerU: Double, compact: Boolean): String {
         val n = if (Math.abs(gPerU) < 10.0) "%.1f".format(gPerU) else "%.0f".format(gPerU)
         return if (compact) "ICR ${n}g/U" else "ICR $n g/U"
     }
 
-    /**
-     * Scales per `SPEC/invariants.md` §3. Kovatchev falls back to mg/dL rather than converting: the
-     * risk transform is non-linear and dimensionless, so "risk per unit" is not a patient constant.
-     */
+    /** Scales per SPEC/invariants.md §3; Kovatchev stays mg/dL, not a per-unit constant. */
     fun isf(isfMgdlPerU: Double, unit: UnitSpace, compact: Boolean): String {
         val (n, u) = when (unit) {
             UnitSpace.MmolL -> "%.1f".format(isfMgdlPerU / MGDL_PER_MMOLL) to "mmol/L/U"
@@ -57,8 +50,7 @@ object OnBoardReadout {
         return if (minutes % 60L == 0L) "${minutes / 60L}h" else "${minutes}m"
     }
 
-    /** Sign only. Magnitude is deliberately NOT judged: no band survives in `SensitivityProbe`, and
-     *  inventing one in a renderer would put back the filter that was removed on purpose. */
+    /** Sign only; magnitude deliberately unjudged (no band in SensitivityProbe by design). */
     fun suspect(estimate: SensitivityEstimate): Boolean =
         estimate.isfMgdlPerU <= 0.0 || estimate.icrGPerU <= 0.0
 
@@ -68,8 +60,7 @@ object OnBoardReadout {
         } else {
             listOf(
                 icr(estimate.icrGPerU, compact),
-                // The horizon qualifies both figures: what is measured is the marginal response at
-                // that window, not the textbook whole-dose meaning the two names carry.
+                // Horizon qualifies both: marginal response at window, not whole-dose meaning.
                 "${isf(estimate.isfMgdlPerU, unit, compact)} @${horizon(estimate.horizonMs)}",
             )
         }
@@ -77,10 +68,7 @@ object OnBoardReadout {
     private const val MGDL_PER_MMOLL = 18.0182
 }
 
-/**
- * The sensitivity pair reads `N/A` rather than blanking: a blank cannot be told from a feature that
- * never shipped. [provenance] is the §3.6-F sub-line naming where IOB came from; Meals passes none.
- */
+/** Reads N/A, not blank (blank ≡ unshipped feature); [provenance] names IOB source (§3.6-F). */
 @Composable
 fun IobCobLine(
     iobCob: IobCobReadout,
@@ -106,9 +94,7 @@ fun IobCobLine(
             withStyle(SpanStyle(color = if (marked) suspectInk else ink)) { append(it) }
         }
     }
-    // Horizontally scrollable: four parts do not fit a phone width. `softWrap = false` is what makes
-    // the overflow scroll rather than wrap — the container alone still lets Text break. One
-    // ScrollState for both lines, so the provenance tracks the figures it qualifies.
+    // Horizontal scroll (4 parts, phone width); one ScrollState syncs the provenance line too.
     val scroll = rememberScrollState()
     Column(modifier.fillMaxWidth().horizontalScroll(scroll).padding(top = 4.dp)) {
         Text(text, style = MaterialTheme.typography.bodyMedium, color = ink, softWrap = false)

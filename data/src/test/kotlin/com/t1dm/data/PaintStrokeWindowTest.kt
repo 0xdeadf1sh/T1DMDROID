@@ -67,7 +67,7 @@ class PaintStrokeWindowTest {
         const val WINDOW_FROM = T0 + 1_000L
         const val WINDOW_TO = T0 + 2_000L
 
-        /** Transcribes `PaintStrokeDao.observeOverlapping`'s WHERE clause: intersection, inclusive. */
+        /** Transcribes `PaintStrokeDao.observeOverlapping`'s WHERE: intersection, inclusive. */
         fun overlaps(minTsMs: Long, maxTsMs: Long, fromMs: Long, toMs: Long): Boolean =
             maxTsMs >= fromMs && minTsMs <= toMs
 

@@ -199,7 +199,7 @@ class PaintCaptureTest {
     @Test fun `the TOPMOST stroke wins where two overlap`() {
         val f = frameOf(
             bar(id = 1, fromMs = T0, n = 30, yFrac = 0.5f, createdAtMs = T0),
-            bar(id = 2, fromMs = T0, n = 30, yFrac = 0.5f, createdAtMs = T0 + 1000), // painted later
+            bar(id = 2, fromMs = T0, n = 30, yFrac = 0.5f, createdAtMs = T0 + 1000), // later
         )
         assertEquals(2L, hit(f, LEFT + (600_000.0 * PPM).toFloat(), TOP + 0.5f * HEIGHT))
     }

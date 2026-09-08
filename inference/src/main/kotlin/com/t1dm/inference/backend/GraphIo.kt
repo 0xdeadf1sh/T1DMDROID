@@ -5,15 +5,13 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
 
-/** Copies a Rust-built [GraphInput] into direct NIO buffers. No geometry here and none may be
- *  added: it is all built in `t1dm-core::build_graph_input`, and a second copy drifts silently. */
+/** Copies [GraphInput] into direct NIO buffers; no geometry here — all in build_graph_input. */
 object GraphIo {
     /** Direct and native-order; the runtime accepts nothing else. */
     fun directFloats(n: Int): FloatBuffer =
         ByteBuffer.allocateDirect(n * java.lang.Float.BYTES).order(ByteOrder.nativeOrder()).asFloatBuffer()
 
-    /** `Tensor.fromBlob` reads a direct buffer BY REFERENCE, so each run consumes its own
-     *  [GraphTensors] — never a shared or rewound one. */
+    /** `Tensor.fromBlob` reads a buffer BY REFERENCE; each run needs its own [GraphTensors]. */
     fun tensors(gi: GraphInput): GraphTensors {
         require(gi.patches.size == gi.t * gi.patchDim) {
             "patches ${gi.patches.size} != T·PATCH_DIM ${gi.t * gi.patchDim}"

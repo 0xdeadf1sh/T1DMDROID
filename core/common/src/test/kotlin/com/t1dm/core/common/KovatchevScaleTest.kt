@@ -4,8 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** [KovatchevScale] against the Rust core's golden fixture, `crates/t1dm-core/src/testdata/golden.json`.
- *  Tolerance 1e-9: both reach the platform libm, which is not guaranteed bit-identical. */
+/** KovatchevScale against golden.json; tolerance 1e-9, libm is not guaranteed bit-identical. */
 class KovatchevScaleTest {
 
     private val golden: String by lazy {

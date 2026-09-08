@@ -20,11 +20,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/**
- * `saved_meal_item` has no foreign key and no cascade, so an item row outliving its header is a
- * permanent orphan. Built with [BundledSQLiteDriver] like production: `inWriteTx` reaches for the
- * driver-based `useWriterConnection`/`immediateTransaction` path.
- */
+/** saved_meal_item has no FK/cascade, so an orphan is permanent. BundledSQLiteDriver, like prod. */
 @RunWith(AndroidJUnit4::class)
 class SavedMealUpdateTest {
 
@@ -91,8 +87,7 @@ class SavedMealUpdateTest {
         assertEquals("the replaced portions must be gone, not merely hidden", 3L, totalItemRows())
     }
 
-    /** `observeMeals()` selects from `saved_meal` alone, so an item-only edit must still write the
-     *  header or the Flow never invalidates. */
+    /** observeMeals() selects saved_meal alone; item-only edit must write header or Flow stalls. */
     @Test
     fun itemOnlyEditStillWritesTheHeader() = runBlocking {
         val id = repo.saveMeal("lunch", listOf(item("rice", 100.0)), t0)
@@ -130,8 +125,7 @@ class SavedMealUpdateTest {
         assertEquals("the other meal is untouched and nothing was stranded", 3L, totalItemRows())
     }
 
-    /** The header UPDATE matches nothing; with no foreign key the items would be unreachable
-     *  orphans. */
+    /** Header UPDATE matches nothing; with no foreign key the items are unreachable orphans. */
     @Test
     fun updateOfADeletedMealWritesNothing() = runBlocking {
         val id = repo.saveMeal("gone", listOf(item("apple", 100.0)), t0)

@@ -57,11 +57,7 @@ import kotlin.math.roundToInt
 class GlucoseWidget : GlanceAppWidget() {
     override val sizeMode = SizeMode.Responsive(setOf(Compact, Medium, Large, XLarge))
 
-    /**
-     * Three tiers and never blank: the live pull, else the persisted snapshot, else the unknown floor.
-     * The pull runs under a wall clock because a read that never resumes is not an exception and would
-     * park this short of `provideContent`, leaving the host's loading spinner up for good.
-     */
+    /** Three tiers, never blank: live, else snapshot, else unknown; pull is wall-clock bounded. */
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         val nowMs = System.currentTimeMillis()
         val live = boundedWidgetPull(
@@ -71,8 +67,7 @@ class GlucoseWidget : GlanceAppWidget() {
         ) { currentWidgetSnapshot(context) }
         val cached = if (live != null) null else runCatching { lastKnown(context, id) }.getOrNull()
 
-        // Before composing: the palette holders are read at composition time. Nothing known ⇒ nothing
-        // written, so a render that cannot establish the theme leaves whatever authority last did.
+        // Before composing: palette holders read at composition time; nothing known writes nothing.
         themeOf(live, cached)?.let { (themeId, customThemeJson) ->
             runCatching { applyWidgetPalette(resolvePalette(themeId, customThemeJson)) }
                 .onFailure { Timber.tag(TAG).w(it, "widget palette seed failed — keeping the current palette") }
@@ -89,8 +84,7 @@ class GlucoseWidget : GlanceAppWidget() {
         }
     }
 
-    /** The default replaces the tile with Glance's "Can't show content" layout; a stale number is
-     *  better than an error card. */
+    /** Default replaces the tile with Glance error layout; a stale number beats an error card. */
     override fun onCompositionError(context: Context, glanceId: GlanceId, appWidgetId: Int, throwable: Throwable) {
         Timber.tag(TAG).w(throwable, "widget composition failed — leaving the previous tile in place")
     }
@@ -107,10 +101,10 @@ class GlucoseWidget : GlanceAppWidget() {
     companion object {
         private const val TAG = "GlucoseWidget"
 
-        /** A reading younger than this renders the "fresh" accent; the FGS schedules one re-render past it. */
+        /** Reading younger than this renders fresh accent; FGS schedules one re-render past it. */
         const val FRESH_WINDOW_MS = 2000L
 
-        /** A healthy pull is tens of milliseconds, so this only bounds a cold or still-locked process. */
+        /** Healthy pull is tens of ms; this only bounds a cold or still-locked process. */
         const val SNAPSHOT_BUDGET_MS = 2500L
     }
 }
@@ -334,7 +328,7 @@ private fun bandColor(band: AlertBand?, p: T1dmPalette): Color = when (band) {
     null -> p.inkMuted
 }
 
-/** [BgGlance.readingAgeMs] is 0 with no reading, which `BgFormat.age` would render as a confident "now". */
+/** readingAgeMs is 0 with no reading; BgFormat.age would wrongly render that as now. */
 private fun ageText(g: BgGlance): String = if (g.hasReading) BgFormat.age(g.readingAgeMs) else "no reading"
 
 private fun forecastText(g: BgGlance): String = when {

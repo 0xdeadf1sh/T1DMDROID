@@ -2,17 +2,13 @@ package com.t1dm.watch.ble
 
 import kotlinx.coroutines.flow.Flow
 
-/**
- * All calls are off-main. A dropped link surfaces as [WatchCentralEvent.Disconnected]; the caller
- * drives reconnect and backoff.
- */
+/** All calls off-main; a dropped link surfaces as Disconnected, caller drives reconnect/backoff. */
 interface WatchCentral {
 
     /** Hot stream. */
     val events: Flow<WatchCentralEvent>
 
-    /** Scan by [namePrefix] → connect → MTU → discover → subscribe CONTROL. [timeoutMs] bounds the
-     *  whole bring-up. */
+    /** Scan by namePrefix, connect, MTU, discover, subscribe CONTROL; timeoutMs bounds bring-up. */
     suspend fun connectByName(namePrefix: String, timeoutMs: Long)
 
     /** Null when unavailable. */
@@ -35,7 +31,7 @@ interface WatchCentral {
 }
 
 sealed interface WatchCentralEvent {
-    /** Connected, MTU negotiated, service discovered, CONTROL subscribed — ready for the handshake. */
+    /** Connected, MTU negotiated, service discovered, CONTROL subscribed; ready for handshake. */
     data class Ready(val deviceName: String, val mtu: Int) : WatchCentralEvent
 
     /** Raw CONTROL notification; decode with [com.t1dm.watch.proto.ControlFrame]. */

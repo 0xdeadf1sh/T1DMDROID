@@ -45,8 +45,7 @@ class CgmSourceNamingTest {
         assertEquals("AiDEX X", d.incidentalName(showNames = true))
     }
 
-    /** Regression: a name built from the serial with only a brand prefix and no separator would leak it
-     *  through the function meant to withhold it. The name below is fabricated and names no vendor. */
+    /** Regression: a serial-derived name, no separator, leaks through; fabricated, no vendor. */
     @Test
     fun `hiding names withholds the serial even when the name is built entirely from it`() {
         val d = descriptor(display = "Brand7000000001", serial = "7000000001", ordinal = 0)
@@ -58,8 +57,7 @@ class CgmSourceNamingTest {
         assertEquals("Brand", d.incidentalName(showNames = true))
     }
 
-    /** `shortName` falls back to the whole name when stripping would leave nothing, so only the
-     *  hidden branch can be relied on to drop a serial. */
+    /** shortName falls back to the whole name when stripping is empty; only hidden drops it. */
     @Test
     fun `a name that is nothing but the serial still hides`() {
         val d = descriptor(display = "7000000001", serial = "7000000001", ordinal = 3)

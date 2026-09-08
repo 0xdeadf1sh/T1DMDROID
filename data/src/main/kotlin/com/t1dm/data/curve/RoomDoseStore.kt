@@ -13,10 +13,7 @@ import com.t1dm.data.db.LoggedMealDao
 import com.t1dm.data.db.LoggedMealEntity
 import com.t1dm.data.db.toDoubleList
 
-/**
- * Each row carries its own curve params, so reconstruction is stable across preset changes.
- * Window reads key on `tsMs`; the caller pads the window back to catch a still-acting tail.
- */
+/** Each row carries own curve params (stable across preset changes); window reads key on tsMs. */
 class RoomDoseStore(
     private val engine: CurveEngine,
     private val loggedDoses: LoggedDoseDao,
@@ -33,7 +30,7 @@ class RoomDoseStore(
     override suspend fun basalInjectionEvents(fromMs: Long, toMs: Long): List<CurveEvent> =
         loggedDoses.inRange(fromMs, toMs).filter { it.kind == DoseKind.BASAL }.map { it.toCurveEvent() }
 
-    /** One window read for both halves; `filter` keeps order, so each half matches the separate call. */
+    /** One window read for both halves; filter keeps order, so each half matches its call. */
     override suspend fun insulinAndBasalInjectionEvents(
         fromMs: Long,
         toMs: Long,
@@ -66,7 +63,7 @@ class RoomDoseStore(
                 DoseKind.BOLUS -> if (k != null && theta != null) {
                     engine.gamma(units, k, theta, durationMin).asList()
                 } else {
-                    // Fallback only: a clinical exp-action bolus rides in customCurve. NovoRapid-shaped.
+                    // Fallback: clinical bolus rides in customCurve (NovoRapid-shaped).
                     engine.expAction(units, minOf(75.0, durationMin * 0.4), durationMin).asList()
                 }
                 DoseKind.BASAL -> engine.bateman(

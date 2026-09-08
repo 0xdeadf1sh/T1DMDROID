@@ -3,8 +3,7 @@ package com.t1dm.cgm
 import com.t1dm.core.model.DecodedAdvert
 import com.t1dm.core.model.PrevGlucose
 
-/** Pure-Kotlin port of the CGM.md §3.1 layout and §3.2 CRC32, to encode synthetic adverts for the
- *  tests without radio. */
+/** Pure-Kotlin port of CGM.md §3.1 layout / §3.2 CRC32; encodes synthetic adverts, no radio. */
 object AidexCodec {
 
     private const val POLY = 0x04C11DB7L

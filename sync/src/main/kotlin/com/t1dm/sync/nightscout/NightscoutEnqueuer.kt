@@ -10,19 +10,13 @@ import com.t1dm.sync.OutboxRequest
 import com.t1dm.sync.SyncJson
 import kotlinx.serialization.encodeToString
 
-/** Deterministic in the phone-minted `client_id`, so an undo can name the exact row after the
- *  enqueue rowid is forgotten. */
+/** Deterministic in phone-minted client_id, so undo can name the row after rowid is forgotten. */
 fun nsTreatmentDedupKey(clientId: String): String = "$NS_TREATMENT_DEDUP_PREFIX$clientId"
 
-/**
- * Files `NIGHTSCOUT` rows into the same durable outbox as `OutboxEnqueuer`, sharing its eviction,
- * backoff, bounds, crash recovery and withdrawal hold. Enqueueing does not check that the bridge is
- * configured — the caller does; a row for a bridge later switched off is dropped at drain time.
- */
+/** Files NIGHTSCOUT rows in the same outbox as OutboxEnqueuer; caller checks bridge configured. */
 class NightscoutEnqueuer(private val repo: OutboxSink) {
 
-    /** Like `INGEST`, an EMPTY payload: the drainer resolves the current `sample` and its trend at
-     *  drain time, so repeated writes into one slot coalesce into a single upload. */
+    /** Like INGEST, EMPTY payload; drainer resolves sample/trend at drain time, coalescing. */
     suspend fun enqueueEntry(gridTsMs: Long, nowMs: Long): Long = repo.enqueue(
         kind = OutboxKind.NIGHTSCOUT,
         dedupKey = "$NS_ENTRY_DEDUP_PREFIX$gridTsMs",
@@ -30,8 +24,7 @@ class NightscoutEnqueuer(private val repo: OutboxSink) {
         nowMs = nowMs,
     )
 
-    /** [holdMs] is the withdrawal window, as on the T1DMSERVER push, so an undo takes back both
-     *  copies. */
+    /** holdMs is the withdrawal window, as on T1DMSERVER's push; undo takes back both copies. */
     suspend fun enqueueMeal(meal: LoggedMealEntity, nowMs: Long, holdMs: Long = 0L): Long =
         enqueueTreatment(meal.clientId, listOf(meal.toNsTreatment()), nowMs, holdMs)
 

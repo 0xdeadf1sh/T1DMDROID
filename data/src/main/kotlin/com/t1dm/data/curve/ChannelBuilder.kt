@@ -4,15 +4,11 @@ import com.t1dm.core.model.BasalSchedule
 import com.t1dm.core.model.CurveEvent
 import com.t1dm.core.model.CurveKind
 
-/**
- * An event is returned when its ACTION overlaps `[fromMs, toMs)`, so a dose taken before `fromMs`
- * whose tail reaches in is included. Callers query a padded window and let bucketize/onBoard clip.
- */
+/** Returned when its ACTION overlaps [fromMs,toMs); a dose before fromMs whose tail reaches in. */
 interface DoseStore {
     suspend fun carbEvents(fromMs: Long, toMs: Long): List<CurveEvent>
 
-    /** Boluses only. The caller pairs this with exactly ONE basal representation — the extended
-     *  [activeBasalSchedule] if configured, else [basalInjectionEvents] — never both. */
+    /** Boluses only; pairs with exactly ONE basal rep - schedule if configured, else injections. */
     suspend fun insulinEvents(fromMs: Long, toMs: Long): List<CurveEvent>
 
     suspend fun activeBasalSchedule(): BasalSchedule?
@@ -30,8 +26,7 @@ interface DoseStore {
 data class ContextChannels(
     val carb: DoubleArray,
     val insulin: DoubleArray,
-    /** Grams of carbohydrate EQUIVALENT per bucket. READ, never reconstructed: rebuilding it would
-     *  re-rate every past bout at today's setting. */
+    /** Grams of carb EQUIVALENT per bucket, READ never reconstructed, or it re-rates past bouts. */
     val exercise: DoubleArray,
 ) {
     override fun equals(other: Any?): Boolean =
@@ -47,10 +42,7 @@ fun interface ExerciseChannelSource {
     suspend fun exercise(gridStartMs: Long, nSteps: Int): DoubleArray
 }
 
-/**
- * [carb]/[insulin] are per-5-min amounts over the roll horizon, folding together existing-dose
- * tails, announced future meals/boluses, an optional candidate dose, and the basal background.
- */
+/** carb/insulin are per-5-min over the roll horizon: tails, announced, candidate, basal. */
 data class FutureChannels(
     val carb: DoubleArray,
     val insulin: DoubleArray,
@@ -76,9 +68,7 @@ data class FutureChannels(
 
 data class InsulinOnBoard(val iobU: Double, val zeroMs: Long?)
 
-/** [basal] is a COMPONENT of [insulin], not an independent series; summing them double-counts.
- *  [exercise] is READ, not reconstructed, exactly as [ContextChannels.exercise] is — so what is
- *  drawn is what the model was fed, recorded bouts included. */
+/** basal is a COMPONENT of insulin, summing double-counts; exercise is READ not reconstructed. */
 data class OverlayChannels(
     val carb: DoubleArray,
     val insulin: DoubleArray,
@@ -99,10 +89,7 @@ data class OverlayChannels(
     }
 }
 
-/**
- * Carb/insulin channels are EVENT-RECONSTRUCTED, so the CGM gap interpolation only ever touches
- * the BG channel.
- */
+/** Carb/insulin channels are EVENT-RECONSTRUCTED; CGM gap interpolation only touches BG. */
 class ChannelBuilder(
     private val engine: CurveEngine,
     private val store: DoseStore,
@@ -123,7 +110,7 @@ class ChannelBuilder(
         return ContextChannels(carbCh, insulinCh, exerciseChannel(gridStartMs, nSteps))
     }
 
-    /** [contextChannels] plus the basal sub-series, from one gather; byte-for-byte the same arrays. */
+    /** contextChannels plus the basal sub-series, one gather; byte-for-byte the same arrays. */
     suspend fun overlayChannels(gridStartMs: Long, nSteps: Int): OverlayChannels {
         val gridEndMs = gridStartMs + nSteps * CurveEngine.STEP_MS
         val fromPadded = gridStartMs - PAD_MS
@@ -177,12 +164,11 @@ class ChannelBuilder(
         return FutureChannels(carbCh, insulinCh, exerciseChannel(rollStartMs, nSteps), iob, cob)
     }
 
-    /** Pads the look-back itself; a caller adding its own pad would be a second copy of [PAD_MS]. */
+    /** Pads the look-back itself; a caller's own pad would be a second copy of PAD_MS. */
     suspend fun eventsIn(fromMs: Long, toMs: Long): List<CurveEvent> =
         store.carbEvents(fromMs - PAD_MS, toMs) + insulinEventsIn(fromMs - PAD_MS, toMs).combined
 
-    /** Logged store doses only. Exercise has no on-board quantity: the channel is read from the
-     *  wide sample, not reconstructed from events, so there is nothing here to integrate. */
+    /** Logged store doses only; exercise has no on-board quantity, read not reconstructed. */
     suspend fun onBoard(atMs: Long, kind: CurveKind): Double {
         val events = when (kind) {
             CurveKind.CARB -> store.carbEvents(atMs - PAD_MS, atMs + CurveEngine.STEP_MS)
@@ -209,11 +195,7 @@ class ChannelBuilder(
         val combined: List<CurveEvent> get() = bolus + basal
     }
 
-    /**
-     * The only place the schedule-XOR-discrete rule is stated: the extended schedule if one is
-     * configured, ELSE the discrete BASAL injections, never both. PRESENCE of a schedule selects it,
-     * not the emptiness of its output — an extra basal would deflate the forecast into a larger dose.
-     */
+    /** Schedule-XOR-discrete: PRESENCE of a schedule selects it, not emptiness of its output. */
     private suspend fun insulinEventsIn(fromMs: Long, toMs: Long): InsulinEvents {
         val schedule = store.activeBasalSchedule()
         if (schedule != null) {
@@ -223,10 +205,7 @@ class ChannelBuilder(
         return InsulinEvents(bolus, basal)
     }
 
-    /**
-     * Null when no insulin event carries any action. Past instants are not clipped: a fully-decayed
-     * dose yields a zero instant earlier than [atMs] rather than being dropped.
-     */
+    /** Null when no insulin event carries action; a decayed dose yields a zero before atMs. */
     suspend fun insulinZeroMs(atMs: Long): Long? = insulinZeroOf(insulinEventsAt(atMs))
 
     private fun insulinZeroOf(events: List<CurveEvent>): Long? = events.asSequence()

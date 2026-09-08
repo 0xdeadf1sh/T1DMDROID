@@ -10,8 +10,7 @@ interface StepSampleWriter {
     suspend fun record(bucketStartMs: Long, tzOffsetMin: Int, steps: Int)
 }
 
-/** [SampleDao] offers only a whole-row upsert, so this reads-modifies-writes to keep the row's other
- *  series and bump `updatedAt` for LWW. Not atomic against a concurrent `sample` projector. */
+/** SampleDao only whole-row upserts, so this read-modify-writes. Not atomic vs a projector. */
 class RoomStepSampleWriter(
     private val sampleDao: SampleDao,
     private val dispatchers: T1dmDispatchers,

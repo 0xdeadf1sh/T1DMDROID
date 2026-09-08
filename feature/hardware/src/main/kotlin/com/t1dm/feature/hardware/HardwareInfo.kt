@@ -1,6 +1,6 @@
 package com.t1dm.feature.hardware
 
-/** Null in any field means the source was unreadable, never a crash. Pure data; no Android types. */
+/** Null in any field means unreadable source, never a crash; pure data, no Android types. */
 data class HardwareInfo(
     val device: String,
     val soc: String?,

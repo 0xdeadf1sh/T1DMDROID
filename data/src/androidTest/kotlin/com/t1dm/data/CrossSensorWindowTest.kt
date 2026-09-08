@@ -23,8 +23,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/** A matured window may only pair a forecast with truth from the SAME sensor; a cross-sensor gap
- *  reaches CG-EGA and the `SPEC/inference.md` §8.4 band fit as model error. */
+/** A window pairs a forecast only with SAME-sensor truth; cross-sensor gaps hit §8.4 as error. */
 @RunWith(AndroidJUnit4::class)
 class CrossSensorWindowTest {
 
@@ -125,8 +124,7 @@ class CrossSensorWindowTest {
         assertEquals(120.0, set.windows.single().realizedBg.first(), 1e-9)
     }
 
-    /** `sample` is one projection and its `bgSource` is null for every pre-v15 row, so it cannot
-     *  attribute a slot: the gap set is slots NO sensor covers. */
+    /** `bgSource` null pre-v15, can't attribute a slot: gap set = slots NO sensor covers. */
     @Test
     fun theReconcileSkipsSlotsAnotherSensorAlreadyCovers() = runTest {
         repo.upsertSource(descriptor(worn), authoritative = false, nowMs = t0)

@@ -7,8 +7,7 @@ import com.t1dm.core.model.TargetRange
 import com.t1dm.core.model.UnitSpace
 import kotlinx.coroutines.flow.Flow
 
-/** The port `:app` implements. `:core:model` types only, so this module needs neither `:data` nor
- *  `:sync`. */
+/** The port :app implements; :core:model types only, needs neither :data nor :sync. */
 interface StatsSource {
     /** Distinct from the alarm thresholds. */
     val targetRange: Flow<TargetRange>

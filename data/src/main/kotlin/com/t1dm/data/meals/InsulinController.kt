@@ -14,8 +14,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import java.util.TimeZone
 
-/** A logged dose carries its resolved PK curve in `logged_dose.customCurve`, so it reconstructs
- *  exactly whatever the presets become later. */
+/** Logged dose carries its resolved PK curve in customCurve, reconstructs later preset changes. */
 class InsulinController(
     private val repository: T1dmRepository,
     private val engine: CurveEngine,
@@ -65,9 +64,7 @@ class InsulinController(
 
     suspend fun logDose(type: InsulinType, units: Double, tsMs: Long = now()): LoggedDoseEntity =
         withContext(dispatchers.io) {
-            // Round-to-nearest, not floor, so this lands in the SAME slot as the CGM/single-dose
-            // writers (`repository.snapToGrid`, `GridStamper.snap`); a floor snap misaligns the
-            // insulin-action channel against BG by up to one step.
+            // Round-to-nearest, not floor, lands in the SAME slot as CGM/snapToGrid writers.
             val gridTs = Math.floorDiv(tsMs + CurveEngine.STEP_MS / 2, CurveEngine.STEP_MS) * CurveEngine.STEP_MS
             val curve = pkCurve(type, units)
             val tz = TimeZone.getDefault().getOffset(gridTs) / 60_000
@@ -90,11 +87,7 @@ class InsulinController(
             )
         }
 
-    /**
-     * A row stores its resolved PK curve, not the type it came from, so a retype must rewrite every
-     * PK field and the note that names the insulin. [type] null leaves all of them, and with them a
-     * hand-drawn curve, as stored. [tsMs] is snapped by the repository.
-     */
+    /** Row stores resolved PK curve, not the type; type null leaves fields, hand-drawn too. */
     suspend fun editDose(
         row: LoggedDoseEntity,
         type: InsulinType?,
@@ -123,7 +116,7 @@ class InsulinController(
         val BUILTINS: List<InsulinType> = listOf(
             InsulinType(
                 id = 0, name = "Novorapid", kind = InsulinKind.BOLUS,
-                durationMin = 360.0, // NovoRapid DIA 6 h (Loop rapidActingAdult); no gamma params ⇒ exp-action
+                durationMin = 360.0, // NovoRapid DIA 6h; no gamma params -> exp-action
                 builtin = true,
             ),
             InsulinType(

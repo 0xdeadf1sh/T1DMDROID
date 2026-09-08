@@ -2,9 +2,7 @@ package com.t1dm.inference
 
 import com.t1dm.core.model.MaskGeometry
 
-/** Which of `SPEC/inference.md` §4's three geometries each replayed window is built at. Forecast
- *  takes half: it is the only shape the counterfactual guard can measure on. Positional, not random,
- *  so each geometry falls in the same proportion either side of the chronological split. */
+/** §4's 3 geometries per window; forecast=half, the only guard-measurable shape; positional. */
 internal object LoraGeometryPlan {
     fun geometryAt(index: Int): MaskGeometry = when (index % 4) {
         0, 1 -> MaskGeometry.FORECAST
@@ -12,8 +10,7 @@ internal object LoraGeometryPlan {
         else -> MaskGeometry.BACKCAST
     }
 
-    /** `startPatch` of the masked run: the middle for an infill, the left edge for a backcast. Null
-     *  when the context cannot hold [lenPatches] with a patch to spare on each side. */
+    /** Masked-run startPatch: infill=middle, backcast=left edge; null if ctx too small. */
     fun startPatch(geometry: MaskGeometry, ctxPatches: Int, lenPatches: Int): Int? = when {
         lenPatches < 1 -> null
         geometry == MaskGeometry.BACKCAST -> if (ctxPatches >= lenPatches + 1) 0 else null
@@ -23,13 +20,11 @@ internal object LoraGeometryPlan {
     }
 }
 
-/** Index into the whole series; mirrors `build_graph_input` — left-preferring, else the right
- *  neighbour's FIRST step. [ctxFrom] is the window's first context step, [o] one past its last.
- *  A null [startPatch] is a trailing forecast. */
+/** Series index, mirrors build_graph_input: left-preferring else right neighbour's FIRST step. */
 internal fun anchorStepOf(
-    ctxFrom: Int,
-    o: Int,
-    startPatch: Int?,
+    ctxFrom: Int,                      // window's first context step
+    o: Int,                            // one past the window's last step
+    startPatch: Int?,                   // null = trailing forecast
     lenPatches: Int,
     patchSize: Int,
 ): Int {

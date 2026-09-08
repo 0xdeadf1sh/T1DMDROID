@@ -5,9 +5,7 @@ import com.t1dm.core.model.LoraWeights
 import com.t1dm.core.model.CurveEvent
 import com.t1dm.core.model.ModelPrediction
 
-/** Trailing per-5-min-step mg/dL. [anchorTsMs] is the last MEASURED sample; carry-forward never
- *  resets it. [gridStartMs] is the grid timestamp of `mgdl[0]`. [sourceId] is the CGM behind every
- *  value — two sensors differ by a median 28 mg/dL — null only for a synthetic context. */
+/** Trailing per-5-min mg/dL. [sourceId] sensors differ ~28 mg/dL median; null=synthetic. */
 data class BgSeries(
     val mgdl: DoubleArray,
     val anchorTsMs: Long,
@@ -27,63 +25,49 @@ data class BgSeries(
     }
 }
 
-/** A port, not a constant: a unit of insulin is a CURVE, and the whole unit in one 5-minute bucket
- *  is roughly nineteen sigma out of distribution once normalised. Not defaulted at the use site — a
- *  null port means the counterfactual branch does not run: no verdict, `ABSENT`, attach refused. */
+/** A port, not a constant: a whole unit in 5min is ~19σ OOD. Null ⇒ no counterfactual, ABSENT. */
 fun interface ProbeInsulinPort {
-    /** [units] of rapid insulin as absolute action per 5-minute step, [steps] long, zero-padded past
-     *  the curve's end. Same resolver as a logged bolus. */
+    /** [units] rapid insulin action per 5-min step, [steps] long, zero-padded past curve end. */
     suspend fun action(units: Double, steps: Int): DoubleArray
 }
 
 interface BgHistoryProvider {
-    /** Newest-last mg/dL, at most [maxSteps] 5-min steps, null under [minSteps]. May splice a
-     *  model-reconstructed sample into a slot the sensor never covered; [dosingBgSeries] may not. */
+    /** Newest-last mg/dL, ≤[maxSteps], null under [minSteps]. May splice recon; dosing may not. */
     suspend fun recentBgSeries(maxSteps: Int, minSteps: Int): BgSeries?
 
-    /** The series a DOSE may be scored on: no reconstructed sample in it, so a model's own output
-     *  never feeds the advice derived from it. Deliberately not defaulted. */
+    /** Series a DOSE may score on: no recon sample, so no model output feeds its own advice. */
     suspend fun dosingBgSeries(maxSteps: Int, minSteps: Int): BgSeries?
 
-    /** MEASURED (non-interpolated, NORMAL) readings in the trailing [windowSteps] grid slots — the
-     *  WARMUP gate's numerator. */
+    /** MEASURED (non-interp, NORMAL) readings in [windowSteps] — the WARMUP gates numerator. */
     suspend fun measuredStepsInWindow(windowSteps: Int): Int = 0
 
-    /** Gaps left as `NaN` rather than carried forward — the input a model is FITTED on, so a fit
-     *  never learns persistence from a flat stretch that never happened (`SPEC/invariants.md` §1).
-     *  Default null: a provider that cannot tell the two apart declines the fit. */
+    /** Gaps as NaN, not carried forward: a fit never learns fake persistence (§1). */
     suspend fun fitBgSeries(maxSteps: Int, minSteps: Int): BgSeries? = null
 
-    /** Slots in the trailing [maxSteps] holding a MODEL'S OWN OUTPUT. `SPEC/invariants.md` §1: never
-     *  a fit target or a fit window's context. A `NaN` test on [fitBgSeries] cannot stand in — an
-     *  ordinary sensor gap is `NaN` there too. Default empty. */
+    /** Slots in [maxSteps] holding a MODELS OWN OUTPUT (§1): never a fit target. NaN cant tell. */
     suspend fun reconstructedSlots(maxSteps: Int): Set<Long> = emptySet()
 }
 
-/** The baseline's causal IOB/COB source. Distinct from [ContextChannelSource], whose summed per-step
- *  amounts have thrown away which event contributed what and when it started. */
+/** Baseline causal IOB/COB source. Distinct from [ContextChannelSource]'s summed, lossy amounts. */
 fun interface CurveEventSource {
     /** Every curve whose action overlaps `[fromMs, toMs)`, including tails of earlier events. */
     suspend fun events(fromMs: Long, toMs: Long): List<CurveEvent>
 }
 
-/** Weights and band estimator persist as one unit; they are one model. A `null` store keeps the fit
- *  in memory for the session. */
+/** Weights and band estimator persist as one unit, one model. Null store keeps fit in-memory. */
 interface BaselineStore {
     suspend fun load(): BaselineModel?
     suspend fun save(model: BaselineModel)
     suspend fun clear()
 }
 
-/** Carb-appearance (feat 1) and insulin-action (feat 2) channels over a grid window. `null`
- *  (unwired) ⇒ the `normalize(0)` no-dose baseline. */
+/** Carb-appearance (feat 1)/insulin-action (feat 2) channels over a window. Null ⇒ no-dose. */
 fun interface ContextChannelSource {
     /** Per-5-min amounts over `[gridStartMs, gridStartMs + nSteps·STEP)`. */
     suspend fun channels(gridStartMs: Long, nSteps: Int): ModelChannels
 }
 
-/** Index-aligned to one grid window. [exercise] is grams of carbohydrate EQUIVALENT disposed per
- *  bucket, a positive magnitude — never a negative [carb], an intensity, a duration or an energy. */
+/** Index-aligned to a grid window. [exercise] is grams-carb EQUIVALENT, positive, per bucket. */
 data class ModelChannels(
     val carb: DoubleArray,
     val insulin: DoubleArray,
@@ -101,12 +85,9 @@ data class ModelChannels(
     }
 }
 
-/** COMMITTED dose tails carried into the PREDICTION ZONE (SPEC §3.3): already absorbing, not a
- *  what-if, so the forecast does not read a physically-impossible drop-off at the now-boundary.
- *  Announced and candidate doses are excluded. `null` ⇒ the `normalize(0)` no-dose baseline. */
+/** COMMITTED tails into PRED ZONE (§3.3), not what-if; excl. announced/candidate. Null=no-dose. */
 fun interface FutureOverrideSource {
-    /** Per-5-min committed amounts over `[rollStartMs, rollStartMs + nFutureSteps·STEP)`. A bout
-     *  that has already ended is still disposing glucose, so its tail is committed too. */
+    /** Per-5-min committed amounts over the roll window. An ended bout still disposes; counts. */
     suspend fun overrides(rollStartMs: Long, nFutureSteps: Int): ModelChannels
 }
 
@@ -123,9 +104,7 @@ interface TelemetryStore {
     suspend fun save(all: Map<String, CumulativeTelemetry>)
 }
 
-/** Read fresh every cycle, so attach and detach take effect on the next tick. `null` is the frozen
- *  model. An attached adapter changes the fan the app stores, alarms on and doses off, so the
- *  model's conformal correction and accuracy history are dropped when it changes. */
+/** Read fresh per cycle: attach/detach take effect next tick. Adapter change drops history. */
 fun interface LoraStore {
     suspend fun attached(modelId: String): LoraWeights?
 }

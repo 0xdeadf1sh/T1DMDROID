@@ -24,8 +24,7 @@ import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.rememberT1dmHaptics
 import org.json.JSONObject
 
-/** The token field is write-only: blank on entry, and a blank value on save keeps the stored one.
- *  A scanned token flows through [onSave] into the Keystore-backed TokenStore, never the DB. */
+/** Token write-only: blank on save keeps stored. Scanned tokens go to TokenStore, never the DB. */
 @Composable
 fun ServerSettingsScreen(
     initialLabel: String,
@@ -172,8 +171,7 @@ sealed interface ServerQrPayload {
     data class Invalid(val reason: String) : ServerQrPayload
 }
 
-/** JSON `{token}` plus `baseUrl`/`url`/`base_url`, or the login QR's `addr`+`port`; anything else is
- *  a bare token. An empty token yields [ServerQrPayload.Invalid]. */
+/** JSON {token}+baseUrl/url/base_url, or QR addr+port; else bare token, empty ⇒ Invalid. */
 fun parseServerQr(raw: String): ServerQrPayload {
     val trimmed = raw.trim()
     if (trimmed.isEmpty()) return ServerQrPayload.Invalid("it was empty")

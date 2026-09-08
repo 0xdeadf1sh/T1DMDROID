@@ -5,24 +5,12 @@ import com.t1dm.core.model.PROBE_DOSE_U
 import com.t1dm.core.model.SensitivityEstimate
 import timber.log.Timber
 
-/** The GI is the resolver's to pin: it moves how much of the meal has appeared by the probe's
- *  horizon, so probes taken under two GIs are not comparable. */
+/** GI is the resolver's to pin; it moves how much has appeared by the probe horizon. */
 fun interface CarbResolver {
     suspend fun resolve(grams: Double, atMs: Long): List<CurveEvent>
 }
 
-/**
- * ISF (mg/dL per U) and ICR (g per U) from three rolls of one [ForecastPort], differenced at the END
- * of the validated window — so the ISF is strictly smaller than the whole-action figure a clinician
- * quotes, and the ICR is shifted by however much of the meal has appeared by then.
- *
- * Both counterfactuals ride `candidate`, never `announced`: only the candidate is re-anchored onto
- * the prediction zone's first bucket, and as `announced` the meal and the dose land at instants that
- * differ, with the leading Ra bucket droppable by `bucketize`'s negative-index guard.
- *
- * Null ⇒ no model response was obtained. A response is reported unfiltered, wrong sign and all;
- * nothing downstream can act on it, since no rail, advisor or store accepts a [SensitivityEstimate].
- */
+/** ISF/ICR from three rolls, differenced at validated-window end; unfiltered, no rail reads it. */
 class SensitivityProbe(
     private val port: ForecastPort,
     private val insulin: BolusResolver,
@@ -33,8 +21,7 @@ class SensitivityProbe(
     suspend fun probe(
         nowMs: Long,
         config: CalcConfig,
-        /** Pinned across all three rolls: differencing fans built on different BG input filters
-         *  would attribute the filter's own step to the dose. */
+        /** Pinned across three rolls: different BG filters attribute the step to it. */
         smoothingWindow: Int? = null,
     ): SensitivityEstimate? {
         val steps = config.horizon.validatedSteps
@@ -76,8 +63,7 @@ class SensitivityProbe(
         val insulinDrop = terminal[0] - terminal[1]
         val carbRise = terminal[2] - terminal[0]
 
-        // No direction or magnitude filter: report what the model said. Only arithmetic with no
-        // result refuses — a zero carb response divides to an infinity, which is not a figure.
+        // No direction/magnitude filter: reports what the model said; only non-finite refuses.
         val isf = insulinDrop / PROBE_DOSE_U
         val icr = isf * PROBE_CARB_G / carbRise
         if (!isf.isFinite() || !icr.isFinite()) {
@@ -102,8 +88,7 @@ class SensitivityProbe(
     companion object {
         private const val TAG = "Sensitivity"
 
-        /** Ten grams, not one: a single gram's predicted rise sits inside the decode's own grain,
-         *  and the response is not assumed linear. */
+        /** Ten grams not one: a gram's rise sits inside the decode's own grain; not linear. */
         const val PROBE_CARB_G = 10.0
     }
 }

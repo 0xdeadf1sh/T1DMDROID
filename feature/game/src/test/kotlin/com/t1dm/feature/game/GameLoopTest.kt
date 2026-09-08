@@ -27,7 +27,7 @@ import kotlin.math.abs
 private const val MS = 1_000_000L
 private const val FRAME = 20 * MS
 
-/** The shipped opening takes ~160 frames; the cap only fails, rather than hangs, if it never ends. */
+/** The shipped opening takes ~160 frames; the cap fails rather than hangs if it never ends. */
 private const val OPEN_FRAME_CAP = 600
 
 /** Fake world; records the thread every call arrived on. */
@@ -116,7 +116,7 @@ private fun readings(n: Int): List<CgmReading> {
     }
 }
 
-/** `BroadcastFrameClock` is not `AndroidUiFrameClock`, so the Choreographer plumbing is not covered. */
+/** BroadcastFrameClock isn't AndroidUiFrameClock, so Choreographer plumbing isn't covered. */
 class GameLoopTest {
 
     private class Harness(val zoom: GameZoom) {
@@ -149,7 +149,7 @@ class GameLoopTest {
             }
 
         suspend fun frame(nanos: Long) {
-            // A frame sent before the loop is awaiting is lost; wait for the awaiter, never a guessed sleep.
+            // A frame sent before the loop awaits is lost; wait for it, not a guessed sleep.
             settle()
             clock.sendFrame(nanos)
         }
@@ -160,7 +160,7 @@ class GameLoopTest {
         }
     }
 
-    /** [zoom] defaults to NO drop: the shipped 0.42 s hold would swallow every step-counting burst here. */
+    /** zoom defaults to NO drop: the shipped 0.42s hold would swallow every step-counting burst. */
     private fun harness(
         dropAtX: Float = 0f,
         zoom: GameZoom = GameZoom(revealS = 0f),
@@ -226,7 +226,7 @@ class GameLoopTest {
             settle()
             assertFalse("the car must not be drawn on the placement frame", bus.published.carShown)
 
-            // The draw is invalidated by a commit and nothing else, so a held loop must keep publishing.
+            // The draw is invalidated by a commit only, so a held loop must keep publishing.
             val tickAfterPlacement = bus.tick
             repeat(6) {
                 t += FRAME
@@ -364,7 +364,7 @@ class GameLoopTest {
         t += FRAME
         frame(t)
         settle()
-        // The crash is simulated, and must reach the HUD at once or the terminal card never appears.
+        // The crash is simulated, and must reach the HUD at once or the terminal card never shows.
         val stepsAtCrash = world.steps
         val tickAtCrash = bus.tick
         assertEquals(RunState.Crashed, hud.value.run)

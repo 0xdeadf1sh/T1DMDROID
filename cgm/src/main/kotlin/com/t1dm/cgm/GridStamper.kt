@@ -6,11 +6,7 @@ import com.t1dm.core.model.DecodedAdvert
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 
-/**
- * Snaps each accepted reading to the 5-minute grid and back-fills dropouts linearly on BG (§3.1;
- * INTERPOLATED rows can never suppress or clear an alarm, §3.6-A). `minFromStart` never defines a
- * stamp — `tsMs` is `rxWallMs` snapped. Stateful per source: one stamper on one dispatcher.
- */
+/** Snaps to the 5-min grid, linear-fills gaps (§3.1); INTERPOLATED never suppresses an alarm. */
 class GridStamper(private val gridMs: Long = CgmConstants.GRID_MS) {
 
     private var lastMeasuredTs: Long? = null
@@ -38,11 +34,7 @@ class GridStamper(private val gridMs: Long = CgmConstants.GRID_MS) {
         rssi = rssi,
     )
 
-    /**
-     * [stamp] over plain values. [bgMgdl] is NULLABLE here, which is why this overload exists: a source
-     * that can report "no value" must pass it through as absent, since a zero would band URGENT_LOW
-     * downstream and go on the wire as a real reading.
-     */
+    /** stamp over plain values; bgMgdl NULLABLE, a zero would wrongly band URGENT_LOW. */
     fun stamp(
         sourceId: CgmSourceId,
         bgMgdl: Int?,
@@ -95,8 +87,7 @@ class GridStamper(private val gridMs: Long = CgmConstants.GRID_MS) {
             rssi = rssi,
         )
 
-        // A valueless NORMAL reading cannot anchor the next interpolation: carrying the previous anchor
-        // forward would draw a line across a gap nothing measured.
+        // A valueless NORMAL reading cannot anchor interpolation across a gap nothing measured.
         if (flag == ReadingFlag.NORMAL) {
             lastMeasuredTs = if (bgMgdl != null) ts else null
             lastMeasuredBg = bgMgdl

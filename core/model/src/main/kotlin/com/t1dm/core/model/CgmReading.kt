@@ -8,11 +8,7 @@ enum class ReadingProvenance {
     /** A gap-fill value (linear interpolation across a dropout); never clears an alarm. */
     INTERPOLATED,
 
-    /**
-     * Model-reconstructed over a gap, promoted by a deliberate patient action
-     * (`SPEC/invariants.md` §1, `http-api.md`'s `bg_reconstructed`). Never clears an alarm, never
-     * counts as measured context, never enters a statistic as a measurement.
-     */
+    /** Reconstructed, deliberate action (§1,`bg_reconstructed`); never alarm, measured, or stat. */
     RECONSTRUCTED,
 }
 
@@ -21,26 +17,20 @@ enum class ReadingFlag {
     /** Passed the validity gate; eligible for inference and alarm evaluation. */
     NORMAL,
 
-    /** Within the sensor warm-up window (minFromStart < WARMUP_WINDOW_MIN); suppressed from
-     *  inference and alarm evaluation, shown distinctly on the graph. */
+    /** minFromStart<WARMUP_WINDOW_MIN; suppressed from inference/alarm, shown distinct on graph. */
     WARMUP,
 
     /** Failed the validity gate (bad valid-bit / status / range); not persisted as a value. */
     INVALID,
 }
 
-/**
- * One 5-minute grid sample (§3.1). `tsMs` is [rxWallMs] snapped to the grid (`tsMs % 300_000 == 0`).
- * [rxWallMs] is the instant the reading is FILED under: the phone-receive instant, or the sample
- * instant reconstructed from a source's sample index. Never a sensor's own clock — nothing on the
- * wire says whether it was ever set.
- */
+/** 5-min sample (§3.1): tsMs=rxWallMs snapped (%300_000==0); filed instant, never sensor clock. */
 data class CgmReading(
     val sourceId: CgmSourceId,
     val tsMs: Long,                    // ts % 300_000 == 0
     val bgMgdl: Int?,
     val trendTenthsPerMin: Int?,       // rate-of-change in 0.1 mg/dL/min units
-    val minFromStart: Int?,            // sensor minutes-since-activation; ordering/dedup/warmup only
+    val minFromStart: Int?,            // sensor min-since-activation; ordering/dedup/warmup only
     val quality: Int?,
     val provenance: ReadingProvenance,
     val flag: ReadingFlag,
@@ -49,7 +39,6 @@ data class CgmReading(
     val rssi: Int?,
 )
 
-/** Deliberately excludes `bgMgdl != null`: whether a value is present is a separate question, asked
- *  at the call sites that need both. */
+/** Excludes `bgMgdl != null` deliberately; presence is asked separately where both are needed. */
 fun isRealMeasurement(provenance: ReadingProvenance, flag: ReadingFlag): Boolean =
     provenance == ReadingProvenance.MEASURED && flag == ReadingFlag.NORMAL

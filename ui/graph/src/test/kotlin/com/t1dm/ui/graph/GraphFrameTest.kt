@@ -20,8 +20,7 @@ class GraphFrameTest {
     )
 
     @Test fun frameCarriesTheNewestOffset_notTheOldest() {
-        // A history begun at +120 and continuing past a DST transition must render on +60, the
-        // offset the phone keeps now.
+        // History begun at +120, continuing past a DST transition, must render on +60 now.
         val summer = (0 until 10).map { reading(T0 + it * GRID, 120, tz = 120) }
         val winter = (0 until 10).map { reading(T0 + (10 + it) * GRID, 120, tz = 60) }
         assertEquals(60, buildGraphFrame(summer + winter).tzOffsetMin)

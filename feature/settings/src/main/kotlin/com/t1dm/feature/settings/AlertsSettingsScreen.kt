@@ -2,8 +2,7 @@ package com.t1dm.feature.settings
 
 import androidx.compose.runtime.Composable
 
-/** Vibration presets are opaque strings so this module needs no `:alerts` dependency.
- *  None of these change when an alarm fires (§3.6-A). */
+/** Vibration presets are opaque strings, no `:alerts` dep; none change when alarm fires (§3.6-A) */
 @Composable
 fun AlertsSettingsScreen(
     vibrationOptions: List<String>,

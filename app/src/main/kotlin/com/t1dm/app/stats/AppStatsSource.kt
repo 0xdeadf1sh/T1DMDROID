@@ -38,8 +38,7 @@ class AppStatsSource(
         stats.localStats(window, force = refresh)
 }
 
-/** §3.6. [updatedAt] is the phone clock, never re-stamped. `mean_hr`/`bg_hr_corr` have no source
- *  yet (§8.2), so they default 0. */
+/** §3.6: [updatedAt] is the phone clock, never re-stamped; mean_hr/bg_hr_corr default 0 (§8.2). */
 internal fun AdvancedStats.toStatsPushDto(window: StatsWindow, updatedAt: Long): StatsPushDto = StatsPushDto(
     window = window.wire,
     updated_at = updatedAt,

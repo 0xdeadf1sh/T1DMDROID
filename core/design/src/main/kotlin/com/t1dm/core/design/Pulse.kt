@@ -16,11 +16,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 
-/**
- * The one place [motionSpec] would be actively wrong: with motion off it returns `snap()`, and a
- * snapped 1→0 fade is invisible. So the disabled branch is a STATIC tint held for
- * [PULSE_HIGHLIGHT_MS], not an animation.
- */
+/** Where [motionSpec] would be wrong: off ⇒ `snap()`, a 1→0 snap is invisible; STATIC tint held. */
 
 private const val PULSE_CYCLES = 2
 private const val PULSE_RISE_MS = 260

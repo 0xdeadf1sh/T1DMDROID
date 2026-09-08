@@ -10,8 +10,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** [FakeForecastPort] is linear, so the expected figures are exact: by the end of the roll it has
- *  applied the whole of `mgdlPerU` per candidate unit and of `mgdlPerG` per carb gram. */
+/** FakeForecastPort is linear; by roll end it applies the whole mgdlPerU/mgdlPerG per unit. */
 class SensitivityProbeTest {
 
     private val now = 1_900_000_000_000L
@@ -111,8 +110,7 @@ class SensitivityProbeTest {
         assertNull(probeOf(FakeForecastPort()).probe(now, flat))
     }
 
-    /** [RollingForecaster] re-anchors only the candidate onto the prediction zone's first bucket, so a
-     *  meal passed as `announced` lands at a different instant than the dose it is ratioed against. */
+    /** RollingForecaster re-anchors only candidate; announced meal lands at a different instant. */
     @Test
     fun both_counterfactuals_ride_candidate_so_the_forecaster_re_anchors_them_alike() = runTest {
         val seen = mutableListOf<ForecastRequest>()

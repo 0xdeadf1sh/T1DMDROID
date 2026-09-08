@@ -10,8 +10,7 @@ import org.json.JSONObject
 import timber.log.Timber
 import java.io.File
 
-/** [precision] comes from the descriptor's top level, which the Rust
- *  `parse_descriptor` (scoped to pre/post) does not read. [descriptorJson] is verbatim. */
+/** precision comes from the descriptor top level; Rust parse_descriptor doesn't read it. */
 data class ModelBundle(
     val id: String,
     val descriptor: ModelDescriptor,
@@ -24,9 +23,7 @@ data class ModelBundle(
     val meta: ModelMeta,
 )
 
-/** Loads `.pte` + `descriptor.json` pairs pushed to `getExternalFilesDir("models")`; the `.pte` is
- *  gitignored, never bundled. The descriptor is the sole pre/post source — the app never parses the
- *  `.pt` pickle. */
+/** Loads .pte+descriptor.json pushed to getExternalFilesDir(models); app never parses the .pt. */
 class ModelStore(
     private val modelsDir: File,
     private val native: NativeCore,
@@ -47,8 +44,7 @@ class ModelStore(
         return descriptors.mapNotNull { bundleOf(it, dir) }
     }
 
-    /** Engines the last [discover] refused, so the caller can say why a model on disk is not
-     *  listed instead of reporting that none is installed. */
+    /** Engines the last discover refused, so caller can say why, not just "none installed". */
     val refused: List<String> get() = refusedEngines.toList()
 
     private val refusedEngines = mutableListOf<String>()
@@ -60,8 +56,7 @@ class ModelStore(
         val obj = runCatching { JSONObject(json) }.getOrElse {
             Timber.tag(TAG).w(it, "descriptor %s is not valid JSON", descriptorFile.name); return null
         }
-        // No projection step: a second transcription of the schema drops keys silently, and it
-        // stays invisible until a forecast decodes wrong. A malformed descriptor skips itself.
+        // No projection step: retranscription drops keys silently until a forecast decodes wrong.
         val desc = native.parseDescriptor(json)
         if (desc == null) {
             Timber.tag(TAG).w(
@@ -73,13 +68,12 @@ class ModelStore(
         }
         val id = resolveId(descriptorFile, obj)
         val artifact = obj.optString("artifact").ifBlank { "$id.xnnpack.pte" }
-        // Pushed separately from the descriptor, so it may be absent. The bundle is returned with a
-        // non-existent [pte] and the controller routes to StubBackend; the descriptor is still needed.
+        // Pushed separately, may be absent; bundle returns non-existent pte, routes to StubBackend.
         val pte = File(dir, artifact)
         if (!pte.exists()) {
             Timber.tag(TAG).w("artifact %s for model %s absent; StubBackend will stand in", artifact, id)
         }
-        // Absent, the model still forecasts from the graph's own head_raw; it just takes no adapter.
+        // Absent, the model still forecasts from its own head_raw; it just takes no adapter.
         val head = desc.head?.let { File(dir, it.file) }?.takeIf { it.exists() }
         if (desc.head != null && head == null) {
             Timber.tag(TAG).w("head file %s for model %s absent; no adapter can attach", desc.head?.file, id)
@@ -110,8 +104,7 @@ class ModelStore(
     private fun resolveId(descriptorFile: File, obj: JSONObject): String =
         obj.optString("id").ifBlank { descriptorFile.name.removeSuffix(".descriptor.json").ifBlank { "model" } }
 
-    /** Every pair sharing [modelId]: a model may ship several backend-variant descriptors. The
-     *  `pending/` staging dir is a subdirectory, so the `isFile` filter leaves it alone. */
+    /** Every pair sharing modelId; pending/ staging dir is a subdir, the isFile filter skips it. */
     fun delete(modelId: String): Boolean {
         val dir = ensureDir()
         val descriptors = dir.listFiles { f ->
@@ -172,9 +165,7 @@ class ModelStore(
         )
     }
 
-    /** The one engine this build can execute. An unrecognised string is refused rather than
-     *  assumed to be this one: a wrongly-admitted artifact loads into the wrong delegate or not at
-     *  all, and the stub then forecasts under the model's name. */
+    /** The one engine this build can execute; an unrecognised string is refused, never assumed. */
     private fun isXnnpack(engine: String): Boolean =
         engine.lowercase() in setOf("executorch_xnnpack_fp32", "executorch_xnnpack")
 

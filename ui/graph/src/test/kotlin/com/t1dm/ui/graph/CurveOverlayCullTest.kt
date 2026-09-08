@@ -4,9 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** The curve overlay's viewport cull, held to the one thing that licenses it: what the clip
- *  rectangle can show is identical to what a full scan would have shown. Each case emits twice —
- *  whole array, then culled window — and compares every segment that meets the plot rectangle. */
+/** Viewport cull: clip must show identical to a full scan; emits whole array, then culled. */
 class CurveOverlayCullTest {
 
     private val grid = 1_700_000_000_000L
@@ -39,8 +37,7 @@ class CurveOverlayCullTest {
 
     private data class Seg(val x0: Float, val y0: Float, val x1: Float, val y1: Float)
 
-    /** [Move] starts a new sub-path; [End] closes to a point already on the floor, so it adds no
-     *  boundary the clip can distinguish and is no segment here. */
+    /** Move starts a new sub-path; End closes to a floor point, adds no clip-visible boundary. */
     private fun segments(cmds: List<Cmd>): List<Seg> {
         val out = ArrayList<Seg>()
         var cx = Float.NaN

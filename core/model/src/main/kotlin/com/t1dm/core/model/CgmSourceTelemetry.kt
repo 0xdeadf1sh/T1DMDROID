@@ -1,10 +1,6 @@
 package com.t1dm.core.model
 
-/**
- * One CGM source's NON-glucose channels, as of its most recent record. Display and diagnosis only,
- * never persisted — absent before the first record and after the link drops. Null means the source
- * cannot report that channel, never zero. Units are the wire's own, unscaled.
- */
+/** NON-glucose channels, latest record; display/diagnosis, never persisted; null≠0; unscaled. */
 data class CgmSourceTelemetry(
     /** The same clock and the same instant as the [CgmReading.rxWallMs] beside it. */
     val sampledAtMs: Long,
@@ -18,13 +14,8 @@ data class CgmSourceTelemetry(
     val ibX100: Int? = null,
     /** Electrode potentials in mV, in the family's own order. */
     val electrodesMv: List<Int>? = null,
-    /**
-     * The vendor's error code, verbatim. `0` is a REPORTED "no error", not an absence: a record
-     * whose code is non-zero is exactly the record whose reading was withheld, so it reaches the
-     * display by a path the value gate does not sit on.
-     */
+    /** Vendor error code verbatim; `0` = REPORTED no-error; non-zero withholds the reading. */
     val errorCode: Int? = null,
-    /** A small enum, not a rate. A rate is [CgmReading.trendTenthsPerMin] and is never derived
-     *  from this. */
+    /** A small enum, not a rate; rate is [CgmReading.trendTenthsPerMin], never from this. */
     val trendCode: Int? = null,
 )

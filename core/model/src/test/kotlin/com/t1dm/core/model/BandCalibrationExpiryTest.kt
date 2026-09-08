@@ -5,10 +5,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * Split conformal holds only under exchangeability, and nothing on device detects a change in
- * behaviour — so a correction is trusted for exactly the span it was fitted on and no longer.
- */
+/** Split conformal needs exchangeability: a correction is trusted only for the fitted span. */
 class BandCalibrationExpiryTest {
 
     private val day = 86_400_000L

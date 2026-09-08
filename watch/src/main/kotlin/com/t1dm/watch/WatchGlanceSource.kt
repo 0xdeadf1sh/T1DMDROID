@@ -2,11 +2,7 @@ package com.t1dm.watch
 
 import com.t1dm.watch.proto.WatchPush
 
-/**
- * Null means nothing worth pushing yet; the link skips the tick.
- *
- * [WatchLink] fills [WatchPush.status]'s `lowPowerSuspending` bit itself; the rest comes from here.
- */
+/** Null ⇒ nothing to push, link skips the tick. [WatchLink] fills lowPowerSuspending itself. */
 fun interface WatchGlanceSource {
     suspend fun currentGlance(nowMs: Long): WatchPush?
 }

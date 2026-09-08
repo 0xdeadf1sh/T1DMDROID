@@ -10,8 +10,7 @@ import java.io.ObjectInputStream
 import java.io.ObjectOutputStream
 import java.io.Serializable
 
-/** The route holds the pending kind in `rememberSaveable` across Activity recreation, so
- *  [ExerciseKind] must stay `Serializable` and round-trip to the same constant. */
+/** Route keeps pending kind in `rememberSaveable`; [ExerciseKind] must round-trip Serializable. */
 class ExercisePendingKindTest {
 
     @Test

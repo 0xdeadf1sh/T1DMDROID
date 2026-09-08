@@ -13,11 +13,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
 import java.util.concurrent.locks.LockSupport
 
-/**
- * The blocking `AudioTrack.write` is the clock: no sleep and no timer on this path. The game thread
- * only writes volatile fields, so a stalled mixer can never stall the physics. A track built at
- * anything but the HAL's own rate is resampled off the fast path; the constants below are fallback.
- */
+/** Blocking AudioTrack.write is the clock: no sleep/timer; game thread writes volatile only. */
 class GameAudio private constructor(
     private val audioManager: AudioManager,
     private val track: AudioTrack,
@@ -66,8 +62,7 @@ class GameAudio private constructor(
         LockSupport.unpark(thread)
     }
 
-    /** The alarm interlock's audio half: an alarm ringtone must not arrive ducked under a game
-     *  engine. The fade is the synth's master ramp, so silence lands ~30 ms later. */
+    /** Alarm interlock's audio half; fade is the synth's master ramp, silence lands ~30ms later. */
     fun release() {
         if (!active) return
         active = false
@@ -75,8 +70,7 @@ class GameAudio private constructor(
         runCatching { audioManager.abandonAudioFocusRequest(focusRequest) }
     }
 
-    /** The generator thread does the release itself, one burst later, so nothing is freed under a
-     *  native write in flight. */
+    /** Generator thread releases itself one burst later, so nothing frees under a native write. */
     fun close() {
         if (!running) return
         running = false
@@ -137,7 +131,7 @@ class GameAudio private constructor(
 
         private const val DRAIN_BURSTS = 12
 
-        /** A poll, not a pure park: a lost wake-up costs a fifth of a second of silence, not the engine. */
+        /** A poll, not a pure park: a lost wake-up costs a fifth-second of silence, not engine. */
         private const val PARK_POLL_NS = 200_000_000L
 
         private fun gameAttributes(): AudioAttributes =
@@ -166,7 +160,7 @@ class GameAudio private constructor(
                 .setAudioAttributes(gameAttributes())
                 .setAudioFormat(
                     AudioFormat.Builder()
-                        // The mixer's own format: nothing converts per sample, and an overshoot clips.
+                        // The mixer's own format: nothing converts per sample, overshoot clips.
                         .setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
                         .setSampleRate(rate)
                         .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)

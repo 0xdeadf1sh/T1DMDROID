@@ -1,5 +1,4 @@
-//! Release builds are `panic = "abort"`: every `#[uniffi::export]` fn returns `Result` or is
-//! total, and never panics on hostile input.
+//! Release panic="abort": every #[uniffi::export] fn returns Result or is total, never panics.
 
 uniffi::setup_scaffolding!();
 
@@ -11,8 +10,7 @@ pub use preproc::*;
 mod head;
 pub use head::*;
 
-/// Seeded synthetic channels on the five-minute grid. Never stored, never synced, never read
-/// by anything that classifies a category.
+/// Seeded synthetic channels, 5-min grid; never stored/synced, never read by classification.
 mod synth;
 pub use synth::*;
 
@@ -30,8 +28,7 @@ pub use stats::*;
 mod accuracy;
 pub use accuracy::*;
 
-/// `SPEC/inference.md` §8.4. Display-side only: nothing that classifies a category reads a
-/// calibrated fan.
+/// SPEC/inference.md §8.4; display-only, nothing that classifies reads a calibrated fan.
 mod conformal;
 pub use conformal::*;
 
@@ -42,14 +39,11 @@ pub use baseline::*;
 /// Continuous Glucose-Error Grid Analysis (Kovatchev 2004).
 mod cg_ega;
 
-/// Cosmetic only: no reading, dose or alarm depends on it. A uniffi Object so a 60 Hz frame
-/// loop costs one FFI call per frame.
+/// Cosmetic: no reading/dose/alarm depends on it; uniffi Object, one FFI call per frame.
 mod game;
 pub use game::*;
 
-// The PUBLISHED parameterization (Kovatchev 1997, INFERENCE.md §5), for literature
-// comparability. NOT the risk space the model forecasts in: a checkpoint carries its own
-// re-anchored constants in the descriptor. Never decode a model output with these.
+// PUBLISHED params (Kovatchev 1997, §5); NOT model risk space — never decode outputs with these.
 const KOV_CLINICAL_SCALE: f64 = 1.509;
 const KOV_CLINICAL_POWER: f64 = 1.084;
 const KOV_CLINICAL_OFFSET: f64 = 5.381;
@@ -68,8 +62,7 @@ const ADVERT_SEED_MOD: u32 = 0x7F_A777;
 /// Glucose is the low 10 bits of the 16-bit bitfield; the valid flag is bit 15.
 const GLUCOSE_MASK: u16 = 0x03FF;
 
-/// uniffi maps this onto Kotlin `CoreException`; the adapter maps `Decode` to the contract's
-/// `null` (`NativeCore.decodeAdvert` returns `DecodedAdvert?`).
+/// Maps to Kotlin CoreException; adapter maps Decode to null (decodeAdvert → DecodedAdvert?).
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum CoreError {
     #[error("decode failed: {reason}")]
@@ -114,8 +107,7 @@ fn le16(b: &[u8]) -> u16 {
     u16::from_le_bytes([b[0], b[1]])
 }
 
-/// CGM.md §3.2. `<< 1` on u32 drops the high bit rather than panicking: shift-overflow
-/// panics only on an out-of-range shift amount.
+/// CGM.md §3.2; <<1 on u32 drops the high bit (shift-overflow only panics out-of-range).
 fn crc32_normal(buf: &[u8], init: u32) -> u32 {
     let mut crc = init;
     for &b in buf {
@@ -131,11 +123,9 @@ fn crc32_normal(buf: &[u8], init: u32) -> u32 {
     crc
 }
 
-/// CGM.md §3.2. Seed is the four LE words summed mod `0x7FA777`. `data` must be at least
-/// 16 bytes; only the first 16 are used.
+/// CGM.md §3.2: seed = four LE words summed mod 0x7FA777; data must be ≥16 bytes, rest ignored.
 fn advert_crc(data: &[u8]) -> u32 {
-    // WRAPPING u32 — the firmware's native uint32. A wider accumulator diverges once the four
-    // LE words sum past 2^32, which CGM.md's published vectors never reach but live hardware does.
+    // WRAPPING u32 (firmware's native type); a wider accumulator diverges once sums pass 2^32.
     let seed = le32(&data[0..4])
         .wrapping_add(le32(&data[4..8]))
         .wrapping_add(le32(&data[8..12]))
@@ -149,8 +139,7 @@ fn glucose_of(bitfield: u16) -> (i32, bool) {
     ((bitfield & GLUCOSE_MASK) as i32, (bitfield >> 15) & 1 == 1)
 }
 
-/// CGM.md §3.1/§3.2. `payload` is the 0x0059 manufacturer data, ≥20 bytes; trailing bytes are
-/// ignored. `Err(Decode)` — never a panic — on short or CRC-failing input; Kotlin maps it to `null`.
+/// CGM.md §3.1/§3.2; payload ≥20 bytes, trailing ignored. Err(Decode) — never panic — maps to null
 #[uniffi::export]
 pub fn decode_advert(payload: Vec<u8>) -> Result<DecodedAdvert, CoreError> {
     if payload.len() < ADVERT_LEN {
@@ -191,8 +180,7 @@ pub fn decode_advert(payload: Vec<u8>) -> Result<DecodedAdvert, CoreError> {
     })
 }
 
-/// CGM.md §3.2, over the 16-byte data region; returned unsigned in the low 32 bits of the i64.
-/// `Err(Decode)` — never a panic — if the payload is shorter than 16 bytes.
+/// CGM.md §3.2 over 16-byte region; unsigned in low 32 bits of i64. Err(Decode), never panic.
 #[uniffi::export]
 pub fn advert_crc32(payload: Vec<u8>) -> Result<i64, CoreError> {
     if payload.len() < ADVERT_DATA_LEN {
@@ -206,9 +194,7 @@ pub fn advert_crc32(payload: Vec<u8>) -> Result<i64, CoreError> {
     Ok(advert_crc(&payload) as i64)
 }
 
-/// mg/dL → risk on the CLINICAL scale (INFERENCE.md §5). NaN is treated as the low bound.
-/// Model outputs are not on this scale — decode those through the descriptor's own
-/// [`ModelDescriptor::kovatchev`].
+/// mg/dL → risk, CLINICAL scale (§5); NaN = low bound. Model outputs use their own scale.
 #[uniffi::export]
 pub fn kovatchev_f(mgdl: f64) -> f64 {
     let g = if mgdl.is_nan() {
@@ -219,8 +205,7 @@ pub fn kovatchev_f(mgdl: f64) -> f64 {
     KOV_CLINICAL_SCALE * (g.ln().powf(KOV_CLINICAL_POWER) - KOV_CLINICAL_OFFSET)
 }
 
-/// risk → mg/dL, the inverse of [`kovatchev_f`] with the guards of INFERENCE.md §5. Not the
-/// transform that decodes a forecast.
+/// risk → mg/dL, inverse of kovatchev_f with §5 guards; not the forecast-decode transform.
 #[uniffi::export]
 pub fn kovatchev_f_inv(risk: f64) -> f64 {
     let r_lo = kovatchev_f(CLINICAL_BG_CLAMP_MIN); // f(20) ≈ −3.1629

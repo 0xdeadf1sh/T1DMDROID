@@ -16,15 +16,13 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import timber.log.Timber
 
-/** No SavGol filter, unlike the neural cycle: fitted and predicted on the raw series. The fit reads
- *  [BgHistoryProvider.fitBgSeries], whose gaps are `NaN` so the core drops those rows; prediction
- *  uses the ordinary dense series. */
+/** No SavGol, unlike the neural cycle: fit/predict on raw series. Fit gaps NaN, core drops rows. */
 class BaselineRunner(
     private val native: NativeCore,
     private val dispatchers: T1dmDispatchers,
     private val store: BaselineStore?,
     private val events: CurveEventSource?,
-    /** Committed dose tails over the prediction zone, so a just-logged dose moves the forecast now. */
+    /** Committed dose tails over the pred zone, so a just-logged dose moves the forecast now. */
     private val futureOverrides: FutureOverrideSource?,
 ) {
     private val fitMutex = Mutex()
@@ -51,9 +49,7 @@ class BaselineRunner(
         }
     }
 
-    /** Serialised: a second entry while a fit is in flight is refused, not queued. Too little
-     *  held-out history still returns a [BaselineFit], with an all-zero delta and
-     *  `conformal.sufficient = false`; the degeneracy guard then withholds every forecast. */
+    /** Serialised: a fit in flight refuses a 2nd entry. Thin history returns a zero-delta fit. */
     suspend fun fit(history: BgHistoryProvider, nowMs: Long, minCalWindows: Int): Result<BaselineFit> {
         if (!fitMutex.tryLock()) return Result.failure(BaselineFitException(BaselineFitRefusal.BUSY))
         try {
@@ -72,8 +68,7 @@ class BaselineRunner(
                     events = ev,
                     spec = spec,
                     nowMs = nowMs,
-                    // The caller's policy threshold, not the core's floor (19), which only clamps a
-                    // level's order statistic. This delta IS the interval the degeneracy guard judges.
+                    // Callers threshold, not cores floor (19). This delta IS the guards interval.
                     minCalWindows = minCalWindows,
                 )
             } ?: return Result.failure(BaselineFitException(BaselineFitRefusal.CORE_REFUSED))
@@ -111,7 +106,7 @@ class BaselineRunner(
         if (series.mgdl.size < p) return null
 
         val t0 = System.nanoTime()
-        // The last GRID slot covered, not `anchorTsMs`, which tracks the last MEASURED reading.
+        // Last GRID slot covered, not `anchorTsMs`, which tracks the last MEASURED reading.
         val anchorMs = series.gridStartMs + (series.mgdl.size - 1L) * GRID_MS
         val ev = if (m.spec.useIob || m.spec.useCob) {
             events?.events(anchorMs, anchorMs + GRID_MS).orEmpty()
@@ -119,9 +114,7 @@ class BaselineRunner(
             emptyList()
         }
 
-        // The zone opens at the step AFTER the anchor, the alignment the fit slices out. Unwired or
-        // short ⇒ the core rejects the array and this cycle publishes nothing, never a fabricated
-        // zero future.
+        // Zone opens AFTER the anchor, fits alignment. Unwired/short ⇒ core rejects, no fabricate.
         val future = if (m.spec.useForward) {
             futureOverrides?.overrides(anchorMs + GRID_MS, m.spec.horizonSteps)
         } else {
@@ -176,7 +169,7 @@ class BaselineRunner(
         /** 14 days at 5-minute cadence — both splits meaningful without an `O(n·d²)` wait. */
         const val FIT_WINDOW_STEPS = 4032
 
-        /** Headroom above lag+horizon, so a just-clearing fit does not fail the core's split guard. */
+        /** Headroom above lag+horizon so a just-clearing fit doesnt fail the split guard. */
         private const val MIN_FIT_SLACK_STEPS = 288
     }
 }

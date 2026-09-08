@@ -84,7 +84,7 @@ class BgGlanceComputerTest {
         assertEquals(GlanceTrend.RISING_FAST, g.fcTrend)
     }
 
-    /** The bottom bar classifies for itself; it and the glance must never disagree about one reading. */
+    /** Bottom bar classifies for itself; it and the glance must never disagree about a reading. */
     @Test fun `the bottom bar and the glance classify one reading identically`() {
         val state = InferenceState(predictions = listOf(prediction(falling)))
         for (tenths in listOf(null, -25, -18, -3, 0, 8, 25)) {

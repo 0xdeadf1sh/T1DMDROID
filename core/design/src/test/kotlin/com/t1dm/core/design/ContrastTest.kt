@@ -94,10 +94,7 @@ class ContrastTest {
         }
     }
 
-    /**
-     * As [parseThemeJson] builds one: surfaceVariant defaults to surface. Assembled, not parsed —
-     * org.json is a stub in a JVM unit test.
-     */
+    /** As parseThemeJson builds one: surfaceVariant defaults to surface; org.json is stubbed. */
     private fun imported(surface: Color, ink: Color) = TronPalette.copy(
         id = ThemeIds.CUSTOM,
         surface = surface,

@@ -1,7 +1,4 @@
-//! Curve / PK engine (SPEC §3.3; INFERENCE.md §9). The model consumes carbs as an appearance
-//! (Ra) rate and insulin as a PK action rate — not delivery, not IOB; basal and bolus sum into
-//! one `insulin_combined` channel. `gamma`/`bateman` are transcribed from
-//! `T1DMSIM/simulator.py` at fixed noise-free presets.
+//! Curve/PK (SPEC §3.3; INFERENCE.md §9): carbs=Ra, insulin=PK; basal+bolus → `insulin_combined`.
 
 use crate::CoreError;
 
@@ -10,8 +7,7 @@ pub const DT_MINUTES: f64 = 5.0;
 /// Milliseconds per curve/grid step. `values[]` are amount-per-this-step.
 pub const STEP_MS: i64 = 300_000;
 
-/// ~2.85 years of steps. Bounds [`bucketize`]'s allocation so a hostile size returns `Err`
-/// rather than aborting the process (`panic = "abort"`) on a failed allocation.
+/// ~2.85y of steps; bounds [`bucketize`]'s alloc so a hostile size returns `Err`, not an abort.
 const MAX_GRID_STEPS: i32 = 300_000;
 
 // The simulator's central values, per-patient and per-event RNG noise switched off.
@@ -30,12 +26,10 @@ pub const BOLUS_DIA_MAX_HOURS: f64 = 7.5;
 /// θ drift per unit of `sqrt(dose) - sqrt(5)`. `simulator.BOLUS_THETA_DOSE_SLOPE`.
 pub const BOLUS_THETA_DOSE_SLOPE: f64 = 0.06;
 
-/// Bateman absorption / elimination (1/h). `simulator.BASAL_KA_PER_HOUR` / `_KE_PER_HOUR`.
-/// tmax = ln(ka/ke)/(ka-ke) ≈ 6.3 h.
+/// Bateman ka/ke (1/h): `simulator.BASAL_KA_PER_HOUR`/`_KE_PER_HOUR`; tmax=ln(ka/ke)/(ka-ke)≈6.3h.
 pub const BASAL_KA_PER_HOUR: f64 = 0.30;
 pub const BASAL_KE_PER_HOUR: f64 = 0.07;
-/// Tail-taper window (hours), so consecutive daily doses join without a step discontinuity.
-/// `simulator.BASAL_TAIL_CLIP_HOURS`.
+/// Tail-taper (h) so doses join seamlessly. `simulator.BASAL_TAIL_CLIP_HOURS`.
 pub const BASAL_TAIL_CLIP_HOURS: f64 = 5.0;
 
 /// Nominal durations of action (minutes): Lantus ~24 h, Tresiba ~42 h.
@@ -74,16 +68,14 @@ pub struct BasalDoseSpec {
     pub ke_per_hour: f64,
 }
 
-/// SPEC §3.6. `tz_offset_min` maps epoch-ms to the local midnight `time_of_day_min` is
-/// measured from.
+/// SPEC §3.6: `tz_offset_min` maps epoch-ms to the local midnight `time_of_day_min` is from.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct BasalSchedule {
     pub tz_offset_min: i32,
     pub doses: Vec<BasalDoseSpec>,
 }
 
-/// Amount-per-`dt`-step, `sum == total_amount`. Bit-faithful to `simulator.gamma_curve`:
-/// `t = [dt, 2·dt, … n·dt]`, `v = t^(k-1)·e^(-t/θ)`, sum-normalized. `n` non-positive ⇒ `[0.0]`.
+/// Amount/`dt`-step, sum=total_amount; = `simulator.gamma_curve` (t^(k-1)e^(-t/θ)); n≤0⇒[0.0].
 #[uniffi::export]
 pub fn gamma(total_amount: f64, k: f64, theta: f64, duration_min: f64) -> Vec<f64> {
     let n_steps = (duration_min / DT_MINUTES) as i64;
@@ -108,9 +100,7 @@ pub fn gamma(total_amount: f64, k: f64, theta: f64, duration_min: f64) -> Vec<f6
     values
 }
 
-/// Amount-per-`dt`-step, `sum == total_amount`. Bit-faithful to `simulator.basal_curve`:
-/// `f(t)=e^(-ke·t)-e^(-ka·t)` (t in hours), clamped ≥0, smootherstep-tapered to zero over the
-/// last `tail_clip`, sum-normalized. `ka` floored at `ke + 1e-3`. `values[0]` is always 0.
+/// Amount/`dt`-step summing to total; `simulator.basal_curve`, smootherstep-tapered; `values[0]`=0.
 #[uniffi::export]
 pub fn bateman(total_amount: f64, duration_min: f64, ka_per_hour: f64, ke_per_hour: f64) -> Vec<f64> {
     let n_steps = (duration_min / DT_MINUTES) as i64;
@@ -156,12 +146,9 @@ pub fn bateman(total_amount: f64, duration_min: f64, ka_per_hour: f64, ke_per_ho
     curve
 }
 
-// The Loop/OpenAPS exponential insulin-activity model (oref0 `lib/iob/calculate.js`). Opt-in:
-// selecting one moves the model's insulin-action channel OFF the training distribution the
-// simulator-matched curves above sit on.
+// Loop/OpenAPS exp model (oref0 `lib/iob/calculate.js`), opt-in: off the distribution above.
 
-/// Amount-per-`dt`-step, `sum == total`. Peaks at `peak_min`, ~0 by `dia_min`. Yields `[0.0]`
-/// unless `dia_min >= dt` and `0 < peak_min < dia_min/2` (τ finite).
+/// Amount/`dt`-step, sum==total; peaks `peak_min`; `[0.0]` unless dia_min≥dt, 0<peak_min<dia_min/2.
 #[uniffi::export]
 pub fn exp_action_curve(total: f64, peak_min: f64, dia_min: f64) -> Vec<f64> {
     let n_steps = (dia_min / DT_MINUTES) as i64;
@@ -315,9 +302,7 @@ pub fn insulin_preset_catalog() -> Vec<InsulinPresetSpec> {
     ]
 }
 
-/// Sum every `kind`-matching event onto `[grid_start_ms, grid_start_ms + n_steps·STEP_MS)`,
-/// aligning each by rounding `(start_ms − grid_start_ms)/STEP_MS` and dropping out-of-window
-/// steps — so an event starting before the grid still contributes its overlapping tail.
+/// Sums `kind`-events onto `[grid_start_ms,+n_steps·STEP_MS)`; a pre-grid event's tail counts.
 #[uniffi::export]
 pub fn bucketize(
     events: Vec<CurveEvent>,
@@ -363,9 +348,7 @@ pub(crate) fn bucketize_into(
     }
 }
 
-/// Remaining tail area at `at_ms`: the sum of `values[j]` whose step has not started. `values`
-/// is a rate, so this is the action still to come — `total` before onset, 0 after DIA. A step in
-/// progress counts as delivered, so IOB is never over-stated.
+/// Remaining tail at `at_ms`: sum of not-yet-started `values[j]`; total before onset, 0 after DIA.
 #[uniffi::export]
 pub fn on_board(events: Vec<CurveEvent>, at_ms: i64, kind: CurveKind) -> f64 {
     let mut acc = 0.0f64;
@@ -386,9 +369,7 @@ pub fn on_board(events: Vec<CurveEvent>, at_ms: i64, kind: CurveKind) -> f64 {
 const DAY_MS: i64 = 86_400_000;
 const MIN_MS: i64 = 60_000;
 
-/// Expand a [`BasalSchedule`] into the Bateman events whose `[start, start+DIA)` intersects
-/// `[from_ms, to_ms)` — a dose taken before `from_ms` included, when its tail still reaches in.
-/// Sorted by `start_ms`.
+/// Expands [`BasalSchedule`] to Bateman events overlapping `[from_ms,to_ms)`, sorted by `start_ms`.
 #[uniffi::export]
 pub fn extend_basal(
     schedule: BasalSchedule,
@@ -632,8 +613,7 @@ mod tests {
 
     #[test]
     fn extend_basal_background_is_near_flat() {
-        // Degludec's 42 h DIA ≫ the 24 h cadence, so doses overlap and the sum has no seam
-        // trough. Lantus q24h legitimately troughs, so flatness is asserted on degludec.
+        // Degludec's 42h DIA ≫ 24h cadence: doses overlap, no seam trough (Lantus q24h troughs).
         let sched = BasalSchedule {
             tz_offset_min: 0,
             doses: vec![BasalDoseSpec {

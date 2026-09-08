@@ -1,16 +1,9 @@
 package com.t1dm.core.model
 
-/**
- * One unit, so the difference IS the response. One definition: `:calc`'s `SensitivityProbe` and
- * `:inference`'s adapter guard both report a response PER UNIT against this same probe.
- */
+/** One unit, so difference IS response; :calc's SensitivityProbe and adapter guard share it. */
 const val PROBE_DOSE_U = 1.0
 
-/**
- * Display-only: never enters `:calc`'s decision path, never stored, never synced. [isfMgdlPerU] is
- * mg/dL the median falls per unit of rapid insulin, [icrGPerU] grams one unit cancels; both
- * positive, both marginal at [horizonMs] so smaller than the whole-action definitions.
- */
+/** Display-only, never :calc/stored/synced; [isfMgdlPerU] mg/dL/U, [icrGPerU] g/U, both positive */
 data class SensitivityEstimate(
     val atMs: Long,
     val horizonMs: Long,

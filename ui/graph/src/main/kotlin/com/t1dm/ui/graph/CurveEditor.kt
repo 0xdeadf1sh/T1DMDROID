@@ -31,9 +31,7 @@ import com.t1dm.core.model.BezierCurve
 import com.t1dm.core.model.BezierPoint
 import kotlin.math.hypot
 
-/** Tap empty space to add a control point, long-press one to delete it while more than two remain.
- *  [onChange] fires with a fresh x-sorted curve; a changing [resetKey] reseeds from [curve]. The
- *  absolute y scale is irrelevant — consumers area-normalise via [BezierCurve.sampleNormalized]. */
+/** Tap adds, long-press deletes (>2 pts). onChange x-sorted. Y scale irrelevant, normalised. */
 @Composable
 fun CurveEditor(
     curve: BezierCurve,
@@ -78,8 +76,7 @@ fun CurveEditor(
             .fillMaxWidth()
             .height(height)
             .onSizeChanged { sizePx = Offset(it.width.toFloat(), it.height.toFloat()) }
-            // A bare Canvas gives no other feedback about whether the finger hit a control point, so
-            // every branch answers. The drag is silent between its ends: no detents to cross.
+            // A bare Canvas gives no other hit feedback, so every branch answers; drag is silent.
             .pointerInput(resetKey) {
                 detectTapGestures(
                     onTap = { pos ->

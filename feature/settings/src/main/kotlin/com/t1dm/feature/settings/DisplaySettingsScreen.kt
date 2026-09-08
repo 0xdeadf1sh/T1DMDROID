@@ -12,8 +12,7 @@ import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.model.TempUnit
 import com.t1dm.core.model.UnitSpace
 
-/** Theme / font / haptic ids are opaque strings: no `:core:design` or `:alerts` type crosses this
- *  signature. The haptics engine arrives ambiently via `LocalT1dmHaptics`, never as a parameter. */
+/** Theme/font/haptic ids are opaque strings; haptics arrives ambiently via LocalT1dmHaptics. */
 @Composable
 fun DisplaySettingsScreen(
     unitSpace: UnitSpace,

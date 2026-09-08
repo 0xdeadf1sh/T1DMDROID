@@ -14,37 +14,28 @@ import com.t1dm.core.model.CurveKind
 import com.t1dm.core.model.LogMarker
 import kotlin.math.abs
 
-/** One fixed lane per channel in the plot's lower region, carbs on the floor and exercise on top,
- *  decided by channel alone and measured down from the caller's `plotBottom` — an overlay, never a
- *  reduction of the plot. A tap is answered by position: indices into the caller's own list, so no
- *  amount enters this layer. */
+/** One fixed lane per channel, carbs floor to exercise top, from plotBottom; overlay only. */
 
-/** Glyph edge, in dp. The tap reach and the clustering distance both derive from it, so the reach is
- *  well under the platform's 48 dp guideline. */
+/** Glyph edge, dp; tap reach and clustering distance derive from it, under the 48dp guideline. */
 internal const val LOG_MARKER_DP = 15f
 
-/** Clear space between two marks that did not combine, in dp. With [LOG_MARKER_DP] it is the
- *  clustering distance. */
+/** Clear space between two uncombined marks, dp; with LOG_MARKER_DP is the clustering distance. */
 private const val LOG_MARKER_GAP_DP = 3f
 
-/** Lower lane's foot above the plot floor, in dp. A clearance against the axis line, so it does not
- *  grow with [LOG_MARKER_DP]. */
+/** Lower lane's foot above the plot floor, dp; a clearance against the axis, not scaled by DP. */
 private const val LOG_MARKER_FOOT_DP = 2.5f
 
-/** Clear space between the lanes, in dp. A clearance, not a proportion: every dp is taken from the
- *  plot. */
+/** Clear space between the lanes, dp; a clearance not a proportion, every dp taken from plot. */
 private const val LOG_MARKER_LANE_GAP_DP = 2.5f
 
 /** One per [CurveKind]. */
 private const val LOG_MARKER_LANES = 3f
 
-/** The layer's whole claim on the plot, in dp up from `plotBottom`. Everything that must stand clear
- *  of the lanes measures from this. */
+/** Layer's whole claim on the plot, dp up from plotBottom; clearances measure from this. */
 internal const val LOG_MARKER_BAND_DP =
     LOG_MARKER_FOOT_DP + LOG_MARKER_LANES * LOG_MARKER_DP + (LOG_MARKER_LANES - 1) * LOG_MARKER_LANE_GAP_DP
 
-/** One alpha for every log: the outbox has no SENT state, so no per-mark claim about the server can
- *  be made here. */
+/** One alpha for every log: outbox has no SENT state, no per-mark server claim can be made. */
 internal const val LOG_MARKER_ALPHA = 0.85f
 
 /** Distance within which two marks of one lane combine. */
@@ -53,8 +44,7 @@ internal fun logMarkerSeparationPx(dpPx: Float): Float = (LOG_MARKER_DP + LOG_MA
 /** Half the clustering distance, so no point lies within reach of two marks of one lane. */
 internal fun logMarkerTapReachPx(dpPx: Float): Float = logMarkerSeparationPx(dpPx) / 2f
 
-/** [plotBottom] is the caller's plot floor, never the composable's height, which the model-axis
- *  strip moves. */
+/** plotBottom is the caller's plot floor, never the composable's height (axis strip moves it). */
 internal fun logMarkerLaneTop(kind: CurveKind, plotBottom: Float, dpPx: Float): Float {
     // Bottom-up, carbs on the floor: the order the panel's legend reads.
     val lane = when (kind) {
@@ -66,9 +56,7 @@ internal fun logMarkerLaneTop(kind: CurveKind, plotBottom: Float, dpPx: Float): 
     return plotBottom - (foot + LOG_MARKER_DP) * dpPx
 }
 
-/** One channel, ascending by `tsMs`. `source[i]` is `marks[i]`'s position in the list passed to
- *  [markerLane] — no row id, and the layer's only answer to "which log is this". Sorted once per
- *  feed, never per frame. */
+/** One channel, ascending by tsMs; source[i] is marks[i]'s position, the only row identity. */
 internal class MarkerLane(
     val marks: List<LogMarker>,
     val source: IntArray,
@@ -88,8 +76,7 @@ internal fun markerLane(markers: List<LogMarker>, kind: CurveKind): MarkerLane {
     return MarkerLane(idx.map { markers[it] }, idx.toIntArray())
 }
 
-/** [xPx] is the members' mean x. [from]..[to] is the half-open run of [MarkerLane.marks] behind the
- *  glyph, for the tap to resolve — two logs can share a slot, so a timestamp is not an identity. */
+/** xPx is the mean x; from..to is the half-open run behind the glyph the tap resolves against. */
 internal data class MarkerCluster(
     val xPx: Float,
     val from: Int,
@@ -98,9 +85,7 @@ internal data class MarkerCluster(
     val size: Int get() = to - from
 }
 
-/** One lane, in pixel space: collision is a pixel fact, so the behaviour holds at any zoom.
- *  Single-linkage against [minSeparationPx], so two drawn marks never overlap. [markers] must be
- *  ascending by `tsMs`; the pass is linear and reads the projection as monotone. Clusters ascend in x. */
+/** One lane, pixel space; single-linkage vs minSeparationPx, markers must be ascending tsMs. */
 internal fun clusterLogMarkers(
     markers: List<LogMarker>,
     viewStartMs: Double,
@@ -143,9 +128,7 @@ internal fun clusterLogMarkers(
     return out
 }
 
-/** Empty is a miss and must open nothing. y decides only whether the tap is in the band; x decides
- *  which marks answer, per lane, and both lanes are unioned. Bounded to [plotLeft]..[plotRight] so no
- *  tap names a mark the clip hides. Returned ascending. */
+/** Empty is a miss; y decides band, x decides marks per lane, unioned; bounded to left/right. */
 internal fun hitTestLogMarkers(
     xPx: Float,
     yPx: Float,
@@ -191,13 +174,10 @@ private fun collectHits(
     for (i in hit.from until hit.to) out.add(lane.source[i])
 }
 
-/** Consumes nothing, so a peer detector cannot tell whether it is registered. Register it FIRST: the
- *  main pass dispatches in reverse registration order, so by the time it sees an event any peer that
- *  meant to claim it already has. */
+/** Consumes nothing; register it FIRST, since dispatch is reverse registration order. */
 internal suspend fun PointerInputScope.detectLogMarkerTaps(onTap: (Offset) -> Unit) {
     awaitEachGesture {
-        // Judged after, not by `requireUnconsumed`: that flag parks the detector mid-gesture until a
-        // fresh down. A claimed down is an overlay's gesture, such as drive mode's tap-to-place.
+        // Judged after not requireUnconsumed: parks mid-gesture; a claimed down is another overlay.
         val down = awaitFirstDown(requireUnconsumed = false)
         if (down.isConsumed) return@awaitEachGesture
         val slop = viewConfiguration.touchSlop
@@ -220,8 +200,7 @@ internal suspend fun PointerInputScope.detectLogMarkerTaps(onTap: (Offset) -> Un
     }
 }
 
-/** Call inside the plot clip and BEFORE the BG trace: a hypo excursion drops into this region and
- *  must never be occluded. [laneTopY] is the glyph's top edge, from [logMarkerLaneTop]. */
+/** Call inside plot clip and BEFORE the BG trace, or a hypo drops into this region occluded. */
 internal fun DrawScope.drawLogMarkers(
     clusters: List<MarkerCluster>,
     painter: Painter,

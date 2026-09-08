@@ -9,11 +9,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 
-/**
- * A migration may not read a Kotlin constant a later rename could move, and its hand-written DDL is
- * checked nowhere until an upgrade runs on a device — a launch crash, with no destructive fallback.
- * These read `MigrationRunner`'s own statements, never a transcription.
- */
+/** Migrations can't read a renameable constant; DDL unchecked till device upgrade, no fallback. */
 class MigrationConstantsTest {
 
     /** One exported schema, whichever directory the suite runs from. */
@@ -50,10 +46,7 @@ class MigrationConstantsTest {
         assertTrue("the lora index DDL is not the one Room expects: $index", text.contains(index))
     }
 
-    /**
-     * A Kotlin default governs the INSERT and says nothing about the DDL, so an additive migration can
-     * build a different table from a fresh install's. Read from the migration's own SQL by reflection.
-     */
+    /** A Kotlin default governs INSERT, not DDL; additive migration can build an unlike table. */
     @Test
     fun `every column the additive migrations add is in the exported schema`() {
         val text = schemaText(23)
@@ -241,10 +234,7 @@ class MigrationConstantsTest {
         assertTrue("zero-based: $sql", sql.trimEnd().endsWith("- 1"))
     }
 
-    /**
-     * An allowlist, not a denylist: a denylist would have to spell every vendor's name in a file
-     * shared verbatim with the public branch.
-     */
+    /** An allowlist, not a denylist: a denylist would name every vendor in a public-branch file. */
     @Test
     fun `the v19 statements name only tables and columns`() {
         val statements = listOf(
@@ -262,10 +252,7 @@ class MigrationConstantsTest {
         }
     }
 
-    /**
-     * `loggedAtMs` takes `updatedAt`: a backfill to 0 would put every existing dose's log-gap mark at
-     * the epoch and make `Rails.mandatoryConfirmation` fire forever.
-     */
+    /** loggedAtMs backfills from updatedAt, not 0 — else gap marks hit epoch, firing confirm. */
     @Test
     fun `the v21 statements add columns and back-fill loggedAtMs from updatedAt`() {
         for (sql in listOf(
@@ -295,10 +282,7 @@ class MigrationConstantsTest {
         assertTrue("the rail reads this after the dose row is gone", create.contains("`actingUntilMs`"))
     }
 
-    /**
-     * `ABSENT` means nobody has checked, and must block like a checked-and-failed adapter; a `'PASS'`
-     * default would silently attach every adapter that predates the guard.
-     */
+    /** ABSENT means unchecked, blocks like a failed check; 'PASS' attaches pre-guard adapters. */
     @Test
     fun `the v23 verdict back-fills to the state that refuses attach`() {
         val sql = MigrationRunner.SQL_22_23_LORA_GUARD_VERDICT
@@ -329,7 +313,7 @@ class MigrationConstantsTest {
         }
     }
 
-    /** The unwind re-derives a replay's curve from the row, so the shape columns must be NOT NULL. */
+    /** The unwind re-derives a replay's curve from the row; shape columns must be NOT NULL. */
     @Test
     fun `the replay DDL declares exactly the entity's columns, curve shape included`() {
         val declared = BACKTICKED.findAll(MigrationRunner.SQL_26_27_LOGGED_EXERCISE)

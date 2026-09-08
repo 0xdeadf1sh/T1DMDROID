@@ -6,9 +6,7 @@ import com.t1dm.core.model.UnitSpace
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** The smoothed trace the model consumes: mg/dL after `t1dm-core::causal_smooth` (order 2, clamps
- *  `[20,500]`), before any Kovatchev transform. The window is baked into [smoothMgdl] by the caller.
- *  Values are projected into the active unit; the SOURCE is always the mg/dL smooth. */
+/** mg/dL after causal_smooth (order 2, clamps [20,500]), pre-Kovatchev, into active unit. */
 class SmoothedTrace internal constructor(
     /** Absolute epoch-ms per point (ascending). */
     val tsMs: LongArray,
@@ -25,9 +23,7 @@ class SmoothedTrace internal constructor(
     }
 }
 
-/** The contiguous index range the polyline is drawn over: the visible window widened by one full span
- *  each side. The bounds are exact — [tsMs] is integral and ascending, so ceil/floor admit the
- *  identical set of points. Empty (`first > last`) when nothing is in reach. */
+/** Index range drawn: visible window widened by one span each side. Empty if nothing in reach. */
 internal fun SmoothedTrace.visibleRange(viewStartMs: Double, viewSpanMs: Double): IntRange {
     if (isEmpty) return IntRange.EMPTY
     val lo = lowerBoundLong(tsMs, kotlin.math.ceil(viewStartMs - viewSpanMs).toLong())
@@ -35,8 +31,7 @@ internal fun SmoothedTrace.visibleRange(viewStartMs: Double, viewSpanMs: Double)
     return lo..hi
 }
 
-/** Off the main thread. [smoothMgdl] is the causal SavGol smoother in mg/dL, passed in so this module
- *  never links the JNI seam; [kovatchevF] only projects into risk space. */
+/** Off main thread. [smoothMgdl] causal SavGol, mg/dL, so this module avoids the JNI seam. */
 suspend fun smoothedTraceOf(
     readings: List<CgmReading>,
     unit: UnitSpace,

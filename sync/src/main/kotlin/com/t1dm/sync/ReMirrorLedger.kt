@@ -1,7 +1,6 @@
 package com.t1dm.sync
 
-/** One copy of each §3.8 kv key: the gate that records them is [CatchUpCoordinator], the walk that
- *  earns them lives at the `:app` root. */
+/** One copy of each §3.8 kv key; CatchUpCoordinator gates them, the walk lives at :app root. */
 object ReMirrorKeys {
     /** The last server `store_epoch` whose history the phone has seen DELIVERED. */
     const val MIRRORED_EPOCH = "sync.mirrored_epoch"
@@ -23,21 +22,15 @@ object ReMirrorKeys {
 }
 
 data class ReMirrorWalk(
-    /** The `createdAtMs` the event/stats phase stamps its rows with; the eviction horizon runs
-     *  from here. */
+    /** createdAtMs the event/stats phase stamps rows with; eviction horizon runs from here. */
     val stampMs: Long,
-    /** Resume the scalar page walk from here (exclusive). 0 = from the start of the local history. */
+    /** Resume scalar page walk from here (exclusive); 0 = start of local history. */
     val scalarCursor: Long,
-    /** True for a different store or epoch, a stamp that can no longer be trusted, or the first
-     *  walk ever. */
+    /** True for a different store/epoch, an untrusted stamp, or the first walk ever. */
     val raiseEvents: Boolean,
 )
 
-/**
- * Delivery is inferred from ABSENCE: the outbox has no SENT state and [QueueDrainer] deletes a row on
- * success, on a permanent 4xx and on eviction alike. So an aged-out walk is refused promotion, a walk
- * whose target store moved is discarded, and a permanent 4xx does read as delivered, deliberately.
- */
+/** Delivery inferred from ABSENCE: QueueDrainer deletes on success, 4xx, AND eviction alike. */
 class ReMirrorLedger(
     private val getKv: suspend (String) -> String?,
     private val putKv: suspend (String, String, Long) -> Unit,
@@ -46,11 +39,7 @@ class ReMirrorLedger(
     /** [DrainConfig.maxAgeMs] — past this an age-evictable row's absence stops meaning "sent". */
     private val maxQueueAgeMs: Long,
 ) {
-    /**
-     * Claim a walk against [serverEpoch] and [storeIdentity]; the state returned is the state just
-     * persisted. The scalar cursor survives an aged-out walk but not a move of either half of the
-     * (store, epoch) pair it was proved against — banking is what forecloses re-sending.
-     */
+    /** Claims a walk against serverEpoch/storeIdentity; cursor survives aging out, not a move. */
     suspend fun resume(serverEpoch: String, storeIdentity: String, nowMs: Long): ReMirrorWalk {
         val sameEpoch = getKv(ReMirrorKeys.PENDING_EPOCH) == serverEpoch
         val sameStore = getKv(ReMirrorKeys.WALK_STORE) == storeIdentity
@@ -77,15 +66,11 @@ class ReMirrorLedger(
     suspend fun bankScalarCursor(ts: Long, nowMs: Long) =
         putKv(ReMirrorKeys.SCALAR_CURSOR, ts.toString(), nowMs)
 
-    /** True once no outbox row is as old as [throughMs]. Rows stamped later (live samples,
-     *  forecasts) do not count, so a busy phone still converges. */
+    /** True once no outbox row is as old as throughMs; later rows don't count, phones converge. */
     suspend fun drainedThrough(throughMs: Long): Boolean =
         oldestQueuedAtMs()?.let { it > throughMs } ?: true
 
-    /**
-     * The one question whose wrong answer is silent, permanent loss: a recorded epoch is never
-     * revisited. Every condition must hold at this instant; a false sends the caller round again.
-     */
+    /** Wrong answer here is silent, permanent loss: a recorded epoch is never revisited. */
     suspend fun delivered(serverEpoch: String, storeIdentity: String, nowMs: Long): Boolean {
         if (getKv(ReMirrorKeys.PENDING_EPOCH) != serverEpoch) return false
         if (getKv(ReMirrorKeys.WALK_STORE) != storeIdentity) return false

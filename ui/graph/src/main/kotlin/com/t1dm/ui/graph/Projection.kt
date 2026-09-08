@@ -1,7 +1,6 @@
 package com.t1dm.ui.graph
 
-/** `fun interface`s over primitives, not function types: `Function1` erases to `invoke(Object)` and
- *  boxes both ends of every projected coordinate. */
+/** `fun interface`s over primitives: `Function1` erases to `invoke(Object)`, boxes both ends. */
 
 /** Absolute epoch-ms → x pixel. */
 internal fun interface AbsToPx {

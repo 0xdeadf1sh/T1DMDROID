@@ -26,8 +26,7 @@ const val HEATMAP_HOURS = 24
 /** Index 0 = Monday, the ISO order `HeatCell.dow` is emitted in. */
 val DAY_LABELS = arrayOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
-/** 7 rows × 24 columns summarised by [stat] — both summaries come from one core pass, so [stat] is
- *  a repaint. An empty cell is an outline, never a fill. */
+/** 7x24 grid summarised by stat; both summaries come from one core pass, so stat is a repaint. */
 @Composable
 fun BgHeatmap(
     heatmap: List<HeatCell>,
@@ -141,8 +140,7 @@ private fun HeatLegend(
     }
 }
 
-/** Fixed, never read from the patient's target setting: a cell colour means the same glucose on
- *  every phone. The bounds coincide with the usual 70-180 band, but nothing derives them from it. */
+/** Fixed, never from patient's target: a cell colour means the same glucose everywhere. */
 const val HEAT_FLOOR_MGDL = 70.0
 const val HEAT_MID_MGDL = 125.0
 const val HEAT_CEIL_MGDL = 180.0
@@ -150,8 +148,7 @@ const val HEAT_CEIL_MGDL = 180.0
 private val HEAT_MID_STOP =
     ((HEAT_MID_MGDL - HEAT_FLOOR_MGDL) / (HEAT_CEIL_MGDL - HEAT_FLOOR_MGDL)).toFloat()
 
-/** mg/dL → colour: blue at [HEAT_FLOOR_MGDL], green at [HEAT_MID_MGDL], red at [HEAT_CEIL_MGDL],
- *  clamped outside. */
+/** mg/dL to colour: blue at HEAT_FLOOR_MGDL, green at HEAT_MID_MGDL, red at HEAT_CEIL_MGDL. */
 fun heatColor(mgdl: Double): Color = when {
     mgdl <= HEAT_FLOOR_MGDL -> HEAT_LOW
     mgdl <= HEAT_MID_MGDL ->
@@ -167,9 +164,7 @@ private fun fmtHeatAxis(v: Double, unit: UnitSpace): String = when (unit) {
     UnitSpace.Kovatchev -> String.format("%.1f", v)
 }
 
-// Fixed, not theme-linked: a cell colour is a clinical statement. Validated under
-// Machado-Oliveira-Fernandes — worst pair ΔE 9.1 (OKLab ×100) in protanopia, 26.5 under normal
-// vision. Narrow: lifting HEAT_IN two steps collapses the red-green pair to ΔE 4.0. Never by eye.
+// Fixed, not theme-linked; validated for protanopia (dE 9.1); narrow margin, never retune by eye.
 val HEAT_LOW = Color(0xFF57ACEE)
 val HEAT_IN = Color(0xFF24794A)
 val HEAT_HIGH = Color(0xFFFF7062)

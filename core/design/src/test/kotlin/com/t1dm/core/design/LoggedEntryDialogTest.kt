@@ -52,7 +52,7 @@ class LoggedEntryDialogTest {
 
     @Test
     fun `a note is stated as a note, whatever the writer put in it`() {
-        // The note column is free text; calling it "Insulin" would assert an insulin it never promised.
+        // The note column is free text; calling it "Insulin" would assert what it never promised.
         assertEquals("NovoRapid", fields(dose(4.0, InsulinKind.BOLUS, "NovoRapid"))["Note"])
         assertEquals("backdated", fields(dose(4.0, InsulinKind.BOLUS, "backdated"))["Note"])
         assertNull(fields(dose(4.0, InsulinKind.BOLUS, null))["Insulin"])

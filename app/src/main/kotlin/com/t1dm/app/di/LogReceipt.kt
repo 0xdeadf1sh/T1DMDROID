@@ -6,8 +6,7 @@ import java.time.format.DateTimeFormatter
 
 enum class LoggedEventKind { MEAL, DOSE }
 
-/** [tsMs] is the persisted grid-snapped time, not the press; [clientId] the phone-minted event id
- *  (§3.2). [outboxId] null when nothing was enqueued; [dedupKey] guards a recycled one. */
+/** [tsMs] grid-snap time; [clientId] phone-minted (§3.2); [outboxId] null = nothing enqueued. */
 data class LogHandle(
     val kind: LoggedEventKind,
     val rowId: Long,

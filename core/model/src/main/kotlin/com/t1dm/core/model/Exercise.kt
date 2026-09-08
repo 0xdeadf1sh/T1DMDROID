@@ -1,21 +1,12 @@
 package com.t1dm.core.model
 
-/**
- * The per-5-minute magnitude lands in the wide-sample `exercise` scalar; sessions and track points
- * are phone-local and cross no wire. [ExerciseSession.kcal] is null wherever body mass or distance
- * is missing — withheld rather than guessed.
- */
+/** Per-5-min magnitude in `exercise` scalar, phone-local; [kcal] null if mass/dist gone. */
 enum class ExerciseKind { WALK, RUN, OTHER }
 
-/** Longer than any bout logged in one go, short enough that a forgotten one does not hold the GPS
- *  open for days. Shared: the foreground service enforces it, the review panel explains it. */
+/** Longer than any real bout, short enough a forgotten one won't hold GPS for days; shared cap. */
 const val EXERCISE_MAX_BOUT_MS: Long = 12L * 60L * 60L * 1_000L
 
-/**
- * [startMs]/[endMs] are wall-clock, NOT snapped to the five-minute grid; only the derived
- * per-bucket sample write is. [activeSec] is whole seconds recorded. [interrupted] marks a session
- * the app never saw stopped, closed at the last thing actually recorded.
- */
+/** [startMs]/[endMs] wall-clock, not grid-snapped; [interrupted] closes at last recorded thing. */
 data class ExerciseSession(
     val id: Long,
     val startMs: Long,
@@ -28,8 +19,7 @@ data class ExerciseSession(
     val interrupted: Boolean,
 )
 
-/** [speedMps] is the receiver's own figure where it reported one; the track's distance is measured
- *  between fixes, never from this. */
+/** [speedMps] is the receiver's figure if reported; distance is between fixes, never from this. */
 data class TrackPoint(
     val tsMs: Long,
     val lat: Double,
@@ -38,8 +28,7 @@ data class TrackPoint(
     val speedMps: Float?,
 )
 
-/** [lastFixAgeMs] and [degraded]: a suspended or denied location service still holds a session
- *  open, and a track that stops growing otherwise looks like a walk that went nowhere. */
+/** [lastFixAgeMs]/[degraded]: suspended location holds the session; a stalled track looks empty. */
 data class ActiveExercise(
     val session: ExerciseSession,
     val elapsedMs: Long,

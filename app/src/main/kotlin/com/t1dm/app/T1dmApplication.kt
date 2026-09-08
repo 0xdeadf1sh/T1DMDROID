@@ -33,7 +33,7 @@ class T1dmApplication : Application() {
         CgmWatchdog.enqueue(this)
         SyncDrainWorker.enqueue(this) // fallback; the FGS drains opportunistically
         WidgetRefreshWorker.enqueue(this) // fallback; the FGS is the only live driver
-        // Reconciled every start, not only on edit: an upgrade or a force stop cancels pending work.
+        // Reconciled every start, not only on edit: upgrade/force-stop cancels pending work.
         container.appScope.launch {
             AutoBackupWorker.sync(this@T1dmApplication, container.settingsStore.currentBackupCadenceHours())
         }
@@ -46,7 +46,7 @@ class T1dmApplication : Application() {
                 .detectDiskWrites()
                 .detectCustomSlowCalls()
                 .detectNetwork()
-                // No penaltyFlashScreen: its red border on a main-thread kv touch was the press-flash.
+                // No penaltyFlashScreen: its red border was the main-thread kv press-flash.
                 .penaltyLog()
                 .build(),
         )

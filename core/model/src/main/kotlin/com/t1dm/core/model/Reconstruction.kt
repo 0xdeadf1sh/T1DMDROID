@@ -1,11 +1,6 @@
 package com.t1dm.core.model
 
-/**
- * The 90 % band lives ONLY here: the wire carries a boolean saying a sample was reconstructed and
- * nothing about how uncertain it was, so a value arriving back from a re-mirror or a restore has no
- * band and must be drawn as what it is — hatched, band-less, not promotable again. [spanStartMs] is
- * the `tsMs` of the run's first slot, because promotion and demotion act on a span.
- */
+/** 90% band lives ONLY here (wire has no uncertainty); re-mirrored/restored rows draw band-less */
 data class ReconstructedBg(
     val tsMs: Long,
     val mgdl: Double,
@@ -14,34 +9,25 @@ data class ReconstructedBg(
     val modelId: String,
     val spanStartMs: Long,
     val promoted: Boolean,
-    /** The whole fan at this slot — seven mg/dL levels, ascending τ — or empty when the row predates
-     *  the column and holds only its outer pair. Draw what is given: filling the interior in from the
-     *  edges would put a shape on the panel the model never emitted. */
+    /** 7 mg/dL levels, ascending τ; empty if row predates column (outer pair only). */
     val bands: List<Double> = emptyList(),
     /** Which quantile [mgdl] is the line at. `0.5` is the median. */
     val tau: Double = 0.5,
 )
 
-/** Which of `SPEC/inference.md` §4's three geometries a masked span is — derived from where the
- *  span sits, never chosen. */
+/** Which of §4's three geometries (SPEC/inference.md) a span is; derived, never chosen. */
 enum class MaskGeometry {
-    /** Nothing brackets it on the left, so its only anchor is its right neighbour. Drawable, never
-     *  promotable — storing one extends the patient's history backwards on a single anchor. */
+    /** No left bracket, anchored only by its right neighbour; drawable, never promotable. */
     BACKCAST,
 
     /** Measured evidence on both sides. The only geometry a promotion may come from. */
     INFILL,
 
-    /** Past the newest measurement. Its length is the descriptor's horizon rather than the drag,
-     *  and nothing from it is stored. */
+    /** Past newest measurement; length is the descriptor's horizon, not drag; nothing stored. */
     FORECAST,
 }
 
-/**
- * Held in memory, never stored: a commit per frame would put a Room transaction under the τ slider
- * for as long as a thumb is down, so the sweep previews and commits on release. Every position it
- * passes through is still a level the model emitted. [mgdl] is one value per slot, keyed by `tsMs`.
- */
+/** In-memory only (no Room txn under the slider); commits on release. [mgdl] keyed by tsMs. */
 data class SpanLinePreview(
     val spanStartMs: Long,
     val tau: Double,

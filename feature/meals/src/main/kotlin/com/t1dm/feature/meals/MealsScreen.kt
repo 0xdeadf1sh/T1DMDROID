@@ -56,11 +56,7 @@ private const val CARB_MIN = 5.0
 private const val CARB_MAX = 120.0
 private const val CARB_STEPS = 22
 
-/**
- * Owns EXACTLY ONE vertical scroll, with [footer] inside it: a sibling placed after this screen in a
- * plain Column is measured with `maxHeight = 0` — undrawn, unhittable, no warning. A scrollable
- * Column is no escape either; two nested vertical scrolls throw at measure time.
- */
+/** Owns EXACTLY ONE vertical scroll ([footer] inside); sibling after gets maxHeight=0, no nest. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun MealsScreen(
@@ -71,8 +67,7 @@ fun MealsScreen(
     recentMeals: List<RecentMeal> = emptyList(),
     previewCurve: (suspend (grams: Double, gi: Double) -> DoubleArray)? = null,
     photoThumbnail: ImageBitmap? = null,
-    /** Must be the cell that gates the POST. [photoThumbnail] is only what the preview can draw;
-     *  the two are set independently, and a failed decode leaves an upload still pending. */
+    /** Gates the POST; [photoThumbnail] is only preview draw — decode failure still queues it. */
     photoAttached: Boolean = photoThumbnail != null,
     onTakePhoto: () -> Unit = {},
     onChoosePhoto: () -> Unit = {},
@@ -149,8 +144,7 @@ fun MealsScreen(
                 )
             }
         }
-        // Whole points: the raw slider float logged GI 54.317, which every later restatement of the
-        // row read back as "GI 54.3". The haptic grain stays one tick per 5 points.
+        // Whole points: a raw slider float logged GI 54.317, read back as "GI 54.3"; grain=5pts.
         Slider(
             value = gi,
             onValueChange = { giDetent.at((it / 5f).roundToInt()); gi = it.roundToInt().toFloat() },
@@ -188,8 +182,7 @@ fun MealsScreen(
                 onClick = { haptics.perform(HapticEvent.Tap); onChoosePhoto() },
             ) { Text("Choose photo") }
         }
-        // Gated on the ATTACHMENT, not the thumbnail: a photo whose preview will not decode still
-        // uploads, so Remove must stay reachable.
+        // Gated on ATTACHMENT not thumbnail: an undecodable photo uploads; Remove stays reachable.
         if (photoAttached) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,

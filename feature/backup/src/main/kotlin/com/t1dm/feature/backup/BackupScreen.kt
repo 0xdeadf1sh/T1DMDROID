@@ -62,10 +62,7 @@ class BackupPanelState(
     val nowMs: Long = 0L,
 )
 
-/**
- * A restore merges and never overwrites, so only deleting an archive — the one irreversible act here
- * — is behind a dialog.
- */
+/** A restore merges and never overwrites; only deleting an archive is behind a dialog. */
 @Composable
 fun BackupScreen(
     state: BackupPanelState,

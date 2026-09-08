@@ -1,9 +1,4 @@
-//! A seeded synthetic patient, on the five-minute grid, for a model that reads more context than
-//! the phone has history.
-//!
-//! Not a simulator and not the patient: synthetic samples are never stored, never synced, and
-//! never fed to an alarm, a dose calculator, a statistic or a conformal fit. The caller keeps them
-//! in memory for one run. Deterministic in the seed.
+//! Seeded synthetic patient on the 5-min grid; never stored, synced, or fed to an alarm/dose/fit.
 
 use crate::head::Rng;
 use crate::CoreError;
@@ -51,8 +46,7 @@ pub fn synth_default_params() -> SynthParams {
     SynthParams::default()
 }
 
-/// Four channels on the grid, in the units the model reads: BG mg/dL, carbohydrate appearance
-/// g/step, combined insulin U/step, exercise carbohydrate-equivalent g/step.
+/// Four channels the model reads: BG mg/dL, carb g/step, insulin U/step, exercise g/step.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct SynthSeries {
     pub bg: Vec<f64>,
@@ -64,8 +58,7 @@ pub struct SynthSeries {
     pub n_bouts: i32,
 }
 
-/// Per five-minute step, summing to `total`. Delegates to `crate::curve::gamma` — §5's curve, in
-/// the one place the crate implements it.
+/// Per 5-min step summing to total; delegates to curve::gamma, §5's curve, one implementation.
 fn gamma_steps(total: f64, k: f64, theta_min: f64, span_min: f64) -> Vec<f64> {
     crate::curve::gamma(total, k, theta_min, span_min)
 }
@@ -78,8 +71,7 @@ fn add_at(dst: &mut [f64], start: usize, src: &[f64]) {
     }
 }
 
-/// `n_steps` of history ending at the caller's "now". `start_hour_of_day` is the local clock hour
-/// at step 0, which is what puts breakfast at breakfast time.
+/// n_steps of history ending at now; start_hour_of_day puts breakfast at breakfast time.
 #[uniffi::export]
 pub fn synth_series(
     n_steps: i32,
@@ -173,9 +165,7 @@ pub fn synth_series(
         }
     }
 
-    // Insulin acts on its EXCESS over basal, so a resting patient on their own basal drifts
-    // nowhere. A coefficient set that lets basal itself push glucose walks the trace into the floor
-    // over a week while looking plausible step by step.
+    // Insulin acts on its EXCESS over basal; letting basal itself push glucose drifts the trace.
     let basal_per_step = p.basal_u_per_hour / STEPS_PER_HOUR as f64;
     let mut bg = vec![0.0f64; n];
     let mut g = p.baseline_bg;
@@ -189,8 +179,7 @@ pub fn synth_series(
         ins_effect += 0.16 * (insulin[t] - ins_effect);
         let hour = ((start_step_of_day + t as i64) as f64 / STEPS_PER_HOUR as f64).rem_euclid(24.0);
         let dawn = if (3.0..8.0).contains(&hour) { 0.35 } else { 0.0 };
-        // Counter-regulation. Without it a bolus with no meal behind it parks the trace on the
-        // 40 mg/dL clamp, which reads as a rail-pinned forecast rather than as a hypo.
+        // Counter-regulation: without it an unmet bolus parks the trace on the 40 mg/dL clamp.
         let counter = if g < 80.0 { 0.16 * (80.0 - g) } else { 0.0 };
         let d = k_carb * carb[t] - k_ins * (ins_effect - basal_per_step) - k_ex * exercise[t]
             + dawn
@@ -212,9 +201,7 @@ pub fn synth_series(
     })
 }
 
-/// Real data wins wherever it exists; the synthetic trace reaches only the steps that have none.
-/// `real_bg` carries `NaN` where the grid has no reading. The dose channels are filled on the SAME
-/// steps as the BG, so a real meal is never paired with a synthetic glucose response.
+/// Real data wins; synthetic reaches only steps with none. real_bg NaN marks a gap, doses match.
 #[uniffi::export]
 pub fn synth_fill_gaps(
     real_bg: Vec<f64>,
@@ -266,9 +253,7 @@ pub fn synth_fill_gaps(
             filled += 1;
         }
     }
-    // The counts describe what the caller is LOOKING AT, so only events inside a filled stretch
-    // count. An event is one run of consecutive live steps; boluses ride over a constant basal, so
-    // a run has to clear that floor to be one.
+    // Counts only events inside a filled stretch; a run must clear the constant basal floor.
     fn runs(real_bg: &[f64], channel: &[f64], floor: f64) -> i32 {
         let mut n = 0i32;
         let mut inside = false;

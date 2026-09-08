@@ -5,15 +5,10 @@ import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.data.db.CgmReadingEntity
 import kotlin.math.abs
 
-/**
- * Does [incoming] take the five-minute slot from [stored]? — the STORAGE-side decision, within one
- * source. Ranks `NORMAL` over suppressed, then nearest `|rxWallMs − tsMs|`, then the earlier
- * instant. Distinct from [collapseByGridSlot], which ranks SEVERAL SOURCES for display.
- */
+/** Does [incoming] take [stored]'s slot? Storage-side: NORMAL>suppressed, nearest, earlier wins. */
 internal fun supersedesGridSlot(stored: CgmReadingEntity?, incoming: CgmReadingEntity): Boolean {
     if (stored == null) return true
-    // A reconstruction fills a HOLE only; without this it meets the early-out below and takes the
-    // slot from a real reading.
+    // A reconstruction fills a HOLE only; without this it would take the slot from a real reading.
     if (incoming.provenance == ReadingProvenance.RECONSTRUCTED) {
         return stored.bgMgdl == null || stored.provenance == ReadingProvenance.RECONSTRUCTED
     }

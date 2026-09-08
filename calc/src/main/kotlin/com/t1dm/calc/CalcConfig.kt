@@ -1,7 +1,6 @@
 package com.t1dm.calc
 
-/** Every threshold here is user-set and UNBOUNDED (§3.6); a rail still fails closed, the
- *  threshold only tunes where it trips. */
+/** Every threshold is user-set and UNBOUNDED (§3.6); a rail fails closed, threshold tunes where. */
 
 data class TargetRange(
     val lowMgdl: Double = 70.0,
@@ -17,19 +16,17 @@ sealed interface Objective {
     /** [atMsFromNow] is measured from the roll start. */
     data class HitTargetAtTime(val atMsFromNow: Long) : Objective
 
-    /** Its scorer carries an intrinsic median hypo term, so hypo protection on the objective the
-     *  Bolus advisor forces does not rest on the user-disableable predicted-low veto. */
+    /** Median hypo term, so protection doesn't rest on the disableable predicted-low veto. */
     data class HitTargetBg(val targetMgdl: Double) : Objective
 }
 
-/** Both directions score off the median; these weights are the whole of the hypo/hyper preference. */
+/** Both directions score off the median; these weights are the whole hypo/hyper preference. */
 data class Asymmetry(
     val hypoWeight: Double = 3.0,
     val hyperWeight: Double = 1.0,
 )
 
-/** A disabled rail is a no-op; an enabled one fails closed on bad input (§3.6-C).
- *  [Rails.baselineDegeneracy] is deliberately not toggleable here. */
+/** Disabled rail is a no-op, enabled fails closed (§3.6-C); baselineDegeneracy not toggleable. */
 data class RailToggles(
     val predictedLowVeto: Boolean = true,
     val iobCeiling: Boolean = true,
@@ -81,8 +78,7 @@ data class SplitSpec(
     val firstFractionGrid: List<Double> = listOf(0.5, 0.6, 0.7),
 )
 
-/** Past [predictionHorizonHours] the median is self-fed and the widening uncalibrated, hence the
- *  [beyondWindowWeight] discount when selecting a dose. The full roll is still produced. */
+/** Past predictionHorizonHours the median is self-fed, uncalibrated; discounted for dosing. */
 data class HorizonPolicy(
     val predictionHorizonHours: Double = 2.0,
     val fullRollHours: Double = 5.0,

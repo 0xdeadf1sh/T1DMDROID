@@ -1,7 +1,6 @@
 package com.t1dm.feature.pubs
 
-/** The UI-facing form of a post; `BlueskyDto.kt` holds the wire form. Resolved up front, so the
- *  card carries no AT-protocol detail. */
+/** UI-facing post form; wire form is `BlueskyDto.kt`; resolved up front, no AT-protocol detail. */
 data class PubPost(
     val id: String,
     val postUrl: String,

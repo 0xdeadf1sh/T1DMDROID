@@ -23,7 +23,7 @@ class ExerciseEnergyTest {
     /** On [ExerciseBucketer]'s own sphere, so a synthetic track measures back as its own metres. */
     private val mPerDegLat = ExerciseBucketer.haversineM(0.0, 0.0, 1.0, 0.0)
 
-    /** Scored after every fix as [ExerciseRecorder] scores it: closed buckets plus the open partial. */
+    /** Scored after every fix as ExerciseRecorder scores it: closed buckets plus open partial. */
     private fun kcalAfterEachFix(
         startMs: Long,
         cadenceMs: Long,
@@ -74,8 +74,7 @@ class ExerciseEnergyTest {
 
     @Test
     fun anActivityTheEquationsDoNotDescribeGetsNoFigure() {
-        // A 20 km/h ride is 333 m/min: the running equation would state ~1470 kcal against ~590,
-        // because a rider's mass is carried by the bicycle.
+        // A 20 km/h ride is 333 m/min: running eq states ~1470 kcal vs ~590, mass carried by bike.
         assertNull(ExerciseEnergy.kcal(ExerciseKind.OTHER, steady(333.333, 60), mass))
         // The point is the activity, not the speed.
         assertNull(ExerciseEnergy.kcal(ExerciseKind.OTHER, steady(83.333, 60), mass))
@@ -89,8 +88,7 @@ class ExerciseEnergyTest {
 
     @Test
     fun aBoutMostlyNotTheExerciseItWasLabelledGetsNoFigure() {
-        // 800 m walked in 10 min then 8 km driven in 15 averages 352 m/min, under the guard, and
-        // would state ~650 kcal for a walk that cost 50. Per segment the drive is 533 m/min.
+        // 800m/10min + 8km/15min averages 352 m/min, under guard; per-segment drive is 533 m/min.
         val walked = List(2) { seg(400.0, 300) }
         val driven = List(3) { seg(2_666.67, 300) }
         assertNull(ExerciseEnergy.kcal(ExerciseKind.WALK, walked + driven, mass))
@@ -110,8 +108,7 @@ class ExerciseEnergyTest {
 
     @Test
     fun theSpeedIsTakenOverTheIntervalTheMetresWereCoveredOverNotTheBucketsSeconds() {
-        // The straddling 4 s segment is charged whole to a bucket 1 s old: 13.3 m over that 1 s is
-        // 800 m/min, which no gait reaches; over its real 4 s it is a 12 km/h run.
+        // Straddling 4s segment charged to a 1s-old bucket: 13.3m/1s=800m/min, real 4s is 12km/h.
         val young = seg(13.3333, seconds = 1, trackedMs = 4_000L)
         assertEquals(200.0, 13.3333 / (4_000L / 60_000.0), 0.01)
         val kcal = ExerciseEnergy.kcal(ExerciseKind.RUN, steady(200.0, 5) + young, mass)!!
@@ -121,8 +118,7 @@ class ExerciseEnergyTest {
 
     @Test
     fun aRunAcrossBucketBoundariesAlwaysHasAFigure() {
-        // At every boundary phase and both cadences, a 12 km/h run must have a figure at every fix;
-        // a null is the panel's kcal blanking out mid-run.
+        // At every phase/cadence, a 12km/h run must have a figure at every fix; null blanks panel.
         for ((cadenceMs, phaseStepMs) in mapOf(
             LocationSource.MIN_TIME_MS to 250L,
             LocationSource.LOW_POWER_MIN_TIME_MS to 500L,
@@ -140,8 +136,7 @@ class ExerciseEnergyTest {
 
     @Test
     fun aBoutFoldedIntoBucketsScoresWhatItsMetresAndSecondsSay() {
-        // 20 min at 200 m/min is 4000 m over 1200 s: 0.2 * 4000 + 3.5 * 20 = 870 mL O2/kg, 304.5
-        // kcal at 70 kg.
+        // 20 min at 200 m/min: 0.2*4000 + 3.5*20 = 870 mL O2/kg, 304.5 kcal at 70 kg.
         val run = kcalAfterEachFix(b0, LocationSource.MIN_TIME_MS, paceMPerMin = 200.0, fixes = 301)
         assertEquals(304.5, run.last()!!.toDouble(), 2.0)
         // The same 20 min walked: 0.1 * 1666.7 + 3.5 * 20 = 236.7 mL O2/kg, 82.8 kcal.
@@ -189,8 +184,7 @@ class ExerciseEnergyTest {
 
     @Test
     fun theEquationSwitchesFromWalkingToRunningAtOneHundredMetresPerMinute() {
-        // At the threshold the running equation applies; the discontinuity is the equations' own.
-        // Within a foot-borne bout the gait follows the speed, not the label.
+        // At threshold the running eq applies; a foot-borne bout's gait follows speed, not label.
         val running = ExerciseEnergy.kcal(ExerciseKind.WALK, listOf(seg(100.0, 60)), mass)!!
         val walking = ExerciseEnergy.kcal(ExerciseKind.WALK, listOf(seg(99.0, 60)), mass)!!
         assertEquals(8, running)

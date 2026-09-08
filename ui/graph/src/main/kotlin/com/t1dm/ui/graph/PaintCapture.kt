@@ -2,8 +2,7 @@ package com.t1dm.ui.graph
 
 import com.t1dm.core.model.PaintStroke
 
-/** Floor of the min-distance capture gate, in dp; [paintMinStepPx] widens it for a wide nib.
- *  This is the thinning that decides what reaches the blob. */
+/** Floor of the min-distance capture gate, dp; [paintMinStepPx] widens it for a wide nib. */
 internal const val PAINT_MIN_STEP_DP = 2f
 
 private const val PAINT_STEPS_PER_WIDTH = 8f
@@ -18,8 +17,7 @@ internal const val PAINT_ERASE_RADIUS_DP = 10f
 /** A stroke longer than this is refused rather than truncated; see [StrokeCapture.add]. */
 internal const val PAINT_MAX_POINTS = 8192
 
-/** The in-flight stroke, in [PaintStroke]'s own coordinates: absolute epoch-ms, plot-box height
- *  fraction. The min-distance gate is in PIXELS. [begin] rewinds rather than reallocating. */
+/** In-flight stroke in [PaintStroke] coords: abs epoch-ms, plot-box fraction. Gate is in PIXELS. */
 internal class StrokeCapture {
     private var ts = LongArray(256)
     private var ys = FloatArray(256)
@@ -47,7 +45,7 @@ internal class StrokeCapture {
 
     fun yFracAt(i: Int): Float = ys[i]
 
-    /** True when accepted. Gated on distance from the last ACCEPTED sample, not the previous one. */
+    /** True when accepted. Gated on distance from the last ACCEPTED sample, not the prior one. */
     fun add(xPx: Float, yPx: Float, tsMs: Long, yFrac: Float, minStepPx: Float): Boolean {
         if (size > 0) {
             val dx = xPx - lastXPx
@@ -95,8 +93,7 @@ internal class StrokeCapture {
 /** No stroke was hit; row ids are `autoGenerate` and so always >= 1, leaving 0 free. */
 internal const val NO_STROKE = 0L
 
-/** The TOPMOST stroke under `(xPx, yPx)`, or [NO_STROKE]. Distance to the stroke's SEGMENTS, with
- *  a tolerance of [radiusPx] plus its own half-width. Erases whole strokes, never part of one. */
+/** TOPMOST stroke under (xPx,yPx), or [NO_STROKE]. Erases whole strokes, never part of one. */
 internal fun hitTestPaint(
     paint: PaintFrame,
     xPx: Float,

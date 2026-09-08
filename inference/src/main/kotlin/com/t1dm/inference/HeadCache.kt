@@ -6,9 +6,7 @@ import com.t1dm.core.model.LoraWeights
 import timber.log.Timber
 import kotlin.math.abs
 
-/** Re-runnable BG heads, one per model, opened from the artifact's side file; only needed when an
- *  adapter is attached. A head paired with the wrong graph produces a finite, plausible, WRONG fan,
- *  so one that fails the parity check is [Unusable] and refuses every adapter. */
+/** Re-runnable heads/model; wrong graph gives plausible WRONG fan; failed parity ⇒ [Unusable]. */
 class HeadCache(private val native: NativeCore) {
 
     sealed interface State {
@@ -57,15 +55,12 @@ class HeadCache(private val native: NativeCore) {
         return State.Ready(head, maxDelta = Double.NaN)
     }
 
-    /** True while a model's head still owes a parity check, so the caller only pays for the step
-     *  states when they are actually needed. */
+    /** True while a head owes a parity check; caller pays for step states only when needed. */
     @Synchronized
     fun needsVerify(bundle: ModelBundle): Boolean =
         (stateOf(bundle) as? State.Ready)?.maxDelta?.isNaN() == true
 
-    /** Once per model. [stepStates] is `preproc::step_states` over the graph's own `hidden`; null
-     *  when the export emits none. [TOL] is loose because `head_raw` is risk-space coefficients and
-     *  the two paths differ only in fp32-vs-fp64; above it is a different head, not rounding. */
+    /** Once/model; [stepStates]=step_states of hidden, null if none; [TOL] fp32-fp64 loose. */
     @Synchronized
     fun verify(bundle: ModelBundle, stepStates: List<Double>?, headRaw: FloatArray, mSlots: Int) {
         val state = states[bundle.id] as? State.Ready ?: return

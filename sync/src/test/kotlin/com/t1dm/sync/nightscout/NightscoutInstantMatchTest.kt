@@ -4,8 +4,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** The host re-renders timestamps: posted at `+03:00`, read back as the same instant at `+00:00`.
- *  A guard comparing the rendering rather than the moment would duplicate every replayed dose. */
+/** Host re-renders: +03:00 posted reads back as +00:00. Comparing text duplicates doses. */
 class NightscoutInstantMatchTest {
 
     private fun bolus(at: String, notes: String? = null) = NsTreatmentDto(

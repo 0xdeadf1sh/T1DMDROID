@@ -16,8 +16,7 @@ import kotlin.math.sin
 private const val SWEEP_DEG = 225f
 private const val START_DEG = 157.5f
 
-/** Not composables: [CarFrame] is read in the draw phase, so a needle moving sixty times a second
- *  invalidates the draw and recomposes nothing. */
+/** Not composables: [CarFrame] reads in draw phase; 60/s needle invalidates draw, no recompose. */
 internal fun DrawScope.drawGauges(
     f: CarFrame,
     centreX: Float,
@@ -45,9 +44,7 @@ internal fun DrawScope.drawGauges(
     )
 }
 
-/** Spans exactly the PLOT's width: the plot's x axis is time and the track is time, so the boundary
- *  sits directly above the stretch of trace the car has covered. Measured from the SEAT — see
- *  [CarFrame.progress]. */
+/** Spans the PLOT's width (x axis is time); sits over trace covered. See [CarFrame.progress]. */
 internal fun DrawScope.drawProgress(
     progress: Float,
     left: Float,
@@ -71,7 +68,7 @@ internal fun DrawScope.drawProgress(
         drawRoundRect(
             accent,
             topLeft = Offset(left, top),
-            // Never thinner than it is tall: a rounded rect narrower than its corner radius pinches.
+            // Never thinner than tall: a rounded rect narrower than its corner radius pinches.
             size = Size((w * p).coerceAtLeast(thickness), thickness),
             cornerRadius = radius,
         )

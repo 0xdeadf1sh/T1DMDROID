@@ -173,8 +173,7 @@ class RailInvariantsTest {
 
     @Test
     fun a_wide_fan_still_yields_a_nonzero_dose_end_to_end() = runTest {
-        // Base 60 / growth 3.0 puts the lower edge under the 70 floor across the whole roll; the
-        // default band (5 / 0.6) is far too narrow to reproduce this at all.
+        // Base 60/growth 3.0 keeps lower edge under 70 all roll; default band (5/0.6) too narrow.
         val port = FakeForecastPort(startBg = 260.0, mgdlPerU = 15.0, bandBase = 60.0, bandGrowthPerStep = 3.0)
         val advisor = advisorOf(port, anchor = fakeAnchor(now, currentBg = 260.0), iob = fakeIob(now, iobU = 0.0))
         val r = advisor.recommendBolus(now, emptyList(), CalcConfig()) as AdviceResult.Recommended
@@ -201,7 +200,7 @@ class RailInvariantsTest {
 
     @Test
     fun iob_unknown_forces_zero_dose_fallback() = runTest {
-        val port = FakeForecastPort(startBg = 240.0, mgdlPerU = 15.0) // hyper: a bolus is otherwise wanted
+        val port = FakeForecastPort(startBg = 240.0, mgdlPerU = 15.0) // hyper: bolus wanted
         val advisor = advisorOf(port, anchor = fakeAnchor(now), iob = IobSnapshot(null, 0.0, null))
         val r = advisor.recommendBolus(now, emptyList(), CalcConfig()) as AdviceResult.Recommended
         assertEquals("unknown IOB must fall back to 0 U", 0.0, r.best.doseU, 0.0)

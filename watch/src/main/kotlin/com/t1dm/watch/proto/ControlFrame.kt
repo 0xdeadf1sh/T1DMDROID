@@ -2,11 +2,7 @@ package com.t1dm.watch.proto
 
 import com.t1dm.watch.WatchGatt
 
-/**
- * Handshake and control framing, `[u8 type][u8 proto][body]` (docs/WATCH_BLE.md §Handshake,
- * §Control). Not AEAD-sealed: the handshake bootstraps the keys and the SAS is its integrity check.
- * Only [WatchPush] glances are sealed.
- */
+/** Handshake/control framing [type][proto][body]; not AEAD-sealed, only WatchPush is. */
 private const val PROTO = WatchGatt.PROTO_VERSION
 
 /** Phone -> watch KEX writes. */
@@ -63,7 +59,7 @@ sealed interface ControlFrame {
         override val type get() = TYPE_PUSH_ACK
     }
 
-    /** A reflash or a persisted desync. Not recoverable in place: [com.t1dm.watch.WatchLink] re-pairs. */
+    /** A reflash or persisted desync; not recoverable in place, WatchLink re-pairs. */
     data class ErrEpoch(val watchEpoch: Int) : ControlFrame {
         override val type get() = TYPE_ERR_EPOCH
     }

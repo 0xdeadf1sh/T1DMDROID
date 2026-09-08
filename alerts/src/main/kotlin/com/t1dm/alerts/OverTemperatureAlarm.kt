@@ -1,7 +1,6 @@
 package com.t1dm.alerts
 
-/** Battery-sensor °C, latched with hysteresis between [AlarmConfig.overTempAlertC] and
- *  [AlarmConfig.overTempClearC] so a temperature at the limit does not chatter. */
+/** Battery-sensor °C, latched with hysteresis so a temperature at the limit does not chatter. */
 class OverTemperatureAlarm(private var config: AlarmConfig) {
 
     var state: OverTemperature? = null

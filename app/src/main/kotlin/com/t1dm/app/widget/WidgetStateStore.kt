@@ -20,12 +20,7 @@ import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.core.model.UnitSpace
 
-/**
- * The last-known render, in Glance's own per-widget Preferences, for when the live pull cannot run.
- * Not a second glance computation: it rebuilds a [CgmReading] and re-runs the same [BgGlanceComputer],
- * so a cached tile ages against the wall clock and, with no [InferenceState] to replay, fails closed
- * to VOID rather than asserting a stale STABLE (§3.6).
- */
+/** Last-known render; rebuilds a CgmReading and re-runs BgGlanceComputer, fails closed to VOID. */
 internal object WidgetStateStore {
 
     /** Absent ⇒ no last-known render for this widget id. */
@@ -55,7 +50,7 @@ internal object WidgetStateStore {
     /** Synthetic: never stored, never re-ingested. */
     private val CACHED_SOURCE = CgmSourceId("t1dm.widget.cache")
 
-    /** [nowMs] must be the instant [snap] was computed at, or the recovered receive time is wrong. */
+    /** nowMs must be the instant snap was computed at, or the recovered receive time is wrong. */
     fun write(prefs: MutablePreferences, snap: WidgetSnapshot, nowMs: Long) {
         prefs[KEY_SAVED_AT] = nowMs
         val g = snap.glance

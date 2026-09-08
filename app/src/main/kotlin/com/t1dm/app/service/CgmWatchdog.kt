@@ -10,11 +10,7 @@ import androidx.work.WorkerParameters
 import timber.log.Timber
 import java.util.concurrent.TimeUnit
 
-/**
- * Periodic nudge to restart [CgmScanService] after a Doze/HyperOS kill (§2.3). A background
- * foreground-service start can be refused on 14+, so the restart is best-effort; §3.6-A's
- * loss-of-signal alarm covers the kill window.
- */
+/** Periodic nudge to restart CgmScanService after a Doze/HyperOS kill (§2.3), best-effort. */
 class CgmWatchdog(context: Context, params: WorkerParameters) : Worker(context, params) {
     override fun doWork(): Result {
         runCatching { CgmScanService.start(applicationContext) }

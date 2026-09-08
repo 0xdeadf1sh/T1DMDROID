@@ -31,8 +31,7 @@ internal class FeelFrame {
     }
 }
 
-/** Edges, not levels: a landing rendered from `!airborne` alone would fire every frame the car sat
- *  still. */
+/** Edges, not levels: a landing from !airborne alone would fire every frame the car sat still. */
 internal class FeelTracker {
     private val out = FeelFrame()
     private var airborne = false
@@ -62,8 +61,7 @@ internal class FeelTracker {
             return out
         }
 
-        // Terminal first, and exclusively: a crash IS a landing, and both would put an Impact in the
-        // Shock's own window.
+        // Terminal first, exclusively: a crash IS a landing, both would double an Impact in Shock.
         if (s.run != run) {
             val was = run
             run = s.run
@@ -90,8 +88,7 @@ internal class FeelTracker {
             val hit = impactIntensity(s.impactImpulse)
             out.cue = HapticCue.Impact
             out.cueIntensity = hit
-            // Touchdown only: a wheels-down bump re-arms several times a second, which the speaker
-            // renders as tapping.
+            // Touchdown only: a wheels-down bump re-arms several times a sec, reads as tapping.
             if (landed) {
                 out.sfx = GameSfx.Landing
                 out.sfxIntensity = hit
@@ -101,8 +98,7 @@ internal class FeelTracker {
     }
 
     internal companion object {
-        /** The REACHABLE rev range, so `rev` spans [0, 1] over what the car can do rather than over
-         *  the solver's tuning rail of 9 000. See [TOP_RPM] for why both are transcribed. */
+        /** REACHABLE rev range, so rev spans [0,1] over the car, not the solver's 9000 rail. */
         const val IDLE_RPM = 800f
         const val MAX_RPM = TOP_RPM
 
@@ -113,8 +109,7 @@ internal class FeelTracker {
         const val ENGINE_FULL_BED = 0.52f
         const val TERRAIN_BED = 0.55f
 
-        /** Newton-seconds of normal impulse above the car's own weight. `CarState.impactImpulse` sits
-         *  under 5 at rest and peaks past 100 on a 10 m/s landing. */
+        /** Newton-seconds above car's weight; impactImpulse under 5 at rest, 100+ on landing. */
         const val BUMP_IMPULSE = 45f
 
         /** Half-intensity impulse for the saturating curve. */
@@ -123,7 +118,7 @@ internal class FeelTracker {
         /** Even the gentlest touchdown is felt; only its scale varies. */
         const val IMPACT_FLOOR = 0.28f
 
-        /** Impulse → cue amplitude, saturating. A hyperbola: the interesting range spans a decade. */
+        /** Impulse to cue amplitude, saturating; a hyperbola, interesting range spans a decade. */
         fun impactIntensity(impulse: Float): Float {
             if (!impulse.isFinite() || impulse <= 0f) return IMPACT_FLOOR
             val k = impulse / (impulse + IMPACT_HALF)
@@ -132,8 +127,7 @@ internal class FeelTracker {
     }
 }
 
-/** Narrower than [GameFeel] on purpose: the lifecycle verbs, [GameFeel.release] above all, belong to
- *  the composition, which knows the surface's lifetime. */
+/** Narrower than GameFeel on purpose: lifecycle verbs like release belong to the composition. */
 internal interface FeelSink {
     fun frame(s: CarState)
 
@@ -147,8 +141,7 @@ internal interface FeelSink {
     }
 }
 
-/** [release] is the alarm interlock: an alarm takes BOTH surfaces in one place, and the vibrator is
- *  handed back rather than turned down. */
+/** release is the alarm interlock: alarm takes BOTH surfaces, vibrator handed back not off. */
 internal class GameFeel(
     private val audio: GameAudio?,
     private val haptics: HapticMixer,

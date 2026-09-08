@@ -1,10 +1,6 @@
 package com.t1dm.watch.crypto
 
-/**
- * The AEAD nonce is a monotonic counter: reusing a `(key, nonce)` annihilates GCM confidentiality
- * AND integrity, so across process death the session must resume STRICTLY ABOVE the last seq that
- * could conceivably have gone out.
- */
+/** AEAD nonce is monotonic: reusing (key,nonce) breaks GCM. Resume STRICTLY ABOVE last seq sent. */
 interface NonceStore {
     /** Highest send seq possibly transmitted for [epoch]; 0 if none. */
     suspend fun loadCeiling(epoch: Int): Long
@@ -14,8 +10,7 @@ interface NonceStore {
 
     suspend fun clear()
 
-    /** Added on top of the persisted ceiling at cold start, so a checkpoint that lagged the last
-     *  in-flight seals cannot collide. Generous: the seq is 64 bits and one frame goes out per 5 min. */
+    /** Added atop the ceiling at cold start so a lagged checkpoint cant collide. Seq is 64 bits. */
     val burnMargin: Long get() = 256L
 }
 

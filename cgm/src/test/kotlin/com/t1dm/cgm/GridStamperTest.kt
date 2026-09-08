@@ -48,7 +48,7 @@ class GridStamperTest {
         assertEquals(ReadingProvenance.MEASURED, out[0].provenance)
     }
 
-    // Zero wire glucose in warm-up is ABSENT, not 0 mg/dL: a zero bands URGENT_LOW and goes on the wire.
+    // Zero wire glucose in warm-up is ABSENT, not 0 mg/dL (0 bands URGENT_LOW on the wire).
 
     @Test
     fun `the overload files a warm-up reading with no value at all`() {
@@ -103,7 +103,7 @@ class GridStamperTest {
     fun `a reading whose instant precedes the last one fabricates nothing`() {
         val gs = GridStamper()
         gs.stamp(sourceId, 120, null, 30, null, ReadingFlag.NORMAL, base + 900_000, 0, null)
-        // The source's own sample clock makes a backwards step reachable; a receive instant never could.
+        // Source's sample clock makes a backwards step reachable; receive instant never could.
         val out = gs.stamp(sourceId, 100, null, 27, null, ReadingFlag.NORMAL, base, 0, null)
         assertEquals(listOf(100), out.map { it.bgMgdl })
         assertEquals(base, out.single().tsMs)

@@ -71,7 +71,7 @@ fun CgmSettingsScreen(
             if (recordedSources.isEmpty()) {
                 Text("none", style = MaterialTheme.typography.bodyMedium)
             } else {
-                // Hoisted above the rows: a re-sighting rebuilds the list and would take the ask with it.
+                // Hoisted above the rows: a re-sighting rebuilds the list and would drop the ask.
                 var confirming by remember { mutableStateOf<RecordedSource?>(null) }
                 recordedSources.forEach { src ->
                     RecordedSourceRow(
@@ -172,7 +172,7 @@ private fun RecordedSourceRow(
             color = if (src.authoritative) MaterialTheme.colorScheme.primary
             else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
         )
-        // Stopping undoes with one press, so it does not ask; delisting cannot be undone, so it does.
+        // Stopping undoes in one press, so it doesn't ask; delisting can't undo, so it does.
         if (!src.authoritative) {
             val stops = src.active
             IconButton(

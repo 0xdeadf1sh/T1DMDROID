@@ -19,9 +19,7 @@ import kotlinx.coroutines.withContext
 
 data class ExerciseSummary(val activeSec: Int, val distanceM: Double?, val kcal: Int?)
 
-/** One instance per bout. [run] collects until its scope is cancelled; [finish] must then run on a
- *  scope that outlives it, since the flush has to survive that cancellation. Never stops itself on a
- *  degraded or silent signal: a truncated track that looks complete is the failure to avoid. */
+/** One instance/bout; [run] cancels its scope, [finish] must outlive it; never self-stops. */
 class ExerciseRecorder(
     private val session: ExerciseSession,
     private val source: LocationSource,
@@ -58,8 +56,7 @@ class ExerciseRecorder(
         merge(fixes.map { Event.Fix(it) }, ticker().map { Event.Tick(it) }).collect { onEvent(it) }
     }
 
-    /** Safe on a double stop: the same duration resolves to the same curve, which the writer finds
-     *  unchanged, so a bout's magnitude cannot be counted twice. */
+    /** Safe on a double stop: same duration ⇒ same curve, unchanged, no double count. */
     suspend fun finish(endMs: Long): ExerciseSummary = withContext(dispatchers.default) {
         bodyMass = bodyMassKg()
         advance(bucketer.onTick(endMs))
@@ -91,9 +88,7 @@ class ExerciseRecorder(
         }
     }
 
-    /** The open partial comes from [ExerciseBucketer.peek] because `onFix` returns only the buckets
-     *  it closed. The magnitude write is driven by the grid, not the ticker: the curve is a function
-     *  of the whole duration, so only a boundary crossing can change the stored series. */
+    /** Open partial via [ExerciseBucketer.peek] (onFix returns only closed); grid-driven write. */
     private suspend fun advance(buckets: List<ExerciseBucket>) {
         for (b in buckets) segments[b.bucketStartMs] = b
         val open = bucketer.peek()
@@ -159,11 +154,10 @@ class ExerciseRecorder(
     }
 
     companion object {
-        /** Finer than the grid the magnitude is written on, because the live panel reads the same
-         *  seconds. */
+        /** Finer than the write grid, because the live panel reads the same seconds. */
         const val TICK_MS = 30_000L
 
-        /** Fixes per track write. At a 4 s cadence that is a batch every 40 s, not a write per fix. */
+        /** Fixes per track write; at a 4s cadence that's a batch every 40s, not a write per fix. */
         const val TRACK_BATCH = 10
 
         /** The project's discriminator for a suspended scan: alive, newest stamp frozen. */

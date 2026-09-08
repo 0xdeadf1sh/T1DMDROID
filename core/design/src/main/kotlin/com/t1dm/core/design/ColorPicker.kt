@@ -34,10 +34,9 @@ import androidx.compose.ui.unit.dp
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
-/** HSV colour picker. The numeric kernel ([hsvToArgb] / [argbToHsv]) is deliberately Android-free
- *  and unit-tested: hue is undefined at zero saturation, and 360° must fold onto 0°. */
+/** HSV picker; hsvToArgb/argbToHsv Android-free, unit-tested. Hue undefined at zero sat. */
 
-/** [hue] is in degrees, folded into `[0, 360)`; [sat], [value] and [alpha] are clamped to `[0, 1]`. */
+/** hue in degrees, folded into [0,360); sat/value/alpha clamped to [0,1]. */
 fun hsvToArgb(hue: Float, sat: Float, value: Float, alpha: Float = 1f): Int {
     val h = ((hue % 360f) + 360f) % 360f
     val s = sat.coerceIn(0f, 1f)
@@ -60,8 +59,7 @@ fun hsvToArgb(hue: Float, sat: Float, value: Float, alpha: Float = 1f): Int {
     return (a shl 24) or (chan(r1) shl 16) or (chan(g1) shl 8) or chan(b1)
 }
 
-/** `[hue°, saturation, value]`. Alpha is deliberately NOT returned; the picker's own slider carries
- *  it (see [argbAlpha]). Hue is undefined for a grey and reported as 0, never NaN. */
+/** [hue,sat,value]; alpha NOT returned (see argbAlpha). Hue undefined for grey reports 0. */
 fun argbToHsv(argb: Int): FloatArray {
     val r = ((argb shr 16) and 0xFF) / 255f
     val g = ((argb shr 8) and 0xFF) / 255f
@@ -86,9 +84,7 @@ fun argbWithAlpha(argb: Int, alpha: Float): Int {
     return (argb and 0x00FFFFFF) or (a shl 24)
 }
 
-/** Fully controlled; holds no colour of its own. The hue is derived from [colorArgb] each frame, so
- *  it is unrecoverable once saturation or value reaches zero — [hueOverride] pins the last chosen
- *  hue across that pass through grey, and null accepts the slider snapping to red. */
+/** Fully controlled; hue derives from colorArgb each frame, hueOverride pins it through grey. */
 @Composable
 fun ColorPicker(
     colorArgb: Int,
@@ -121,8 +117,7 @@ fun ColorPicker(
             thumb(Offset(sat * size.width, (1f - value) * size.height))
         }
 
-        // Seven stops is exact: the sRGB hue ramp is piecewise linear in 60° sectors, and the last
-        // closes the wrap back onto red.
+        // Seven stops: sRGB hue ramp is piecewise linear in 60° sectors, last closes the wrap.
         RampSlider(
             brush = Brush.horizontalGradient(List(7) { Color(hsvToArgb(it * 60f, 1f, 1f)) }),
             fraction = hue / 360f,
@@ -214,8 +209,7 @@ private fun DrawScope.checkerboard(cell: Float = 7f) {
     }
 }
 
-/** Every pointer position from the touch-down onwards, with NO slop gate. The lambda is read through
- *  [rememberUpdatedState] so the handler never restarts, and so never drops a gesture. */
+/** Every pointer position from touch-down, NO slop gate; rememberUpdatedState avoids restarts. */
 @Composable
 private fun Modifier.trackPointer(onPos: (Offset, Size) -> Unit): Modifier {
     val current by rememberUpdatedState(onPos)
@@ -235,7 +229,7 @@ private fun Modifier.trackPointer(onPos: (Offset, Size) -> Unit): Modifier {
     }
 }
 
-/** From the ACTIVE theme: glucose-band semantics first, then the Material accents. Alpha is stripped. */
+/** From the ACTIVE theme: glucose-band semantics first, then Material accents; alpha stripped. */
 @Composable
 fun themeSwatches(): List<Int> {
     val p = LocalT1dmSemantics.current

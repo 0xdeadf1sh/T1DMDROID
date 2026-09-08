@@ -6,9 +6,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** Pinned as TEXT: the server drops what it cannot decode in silence, so a shape that serializes
- *  cleanly but is not the contract's — a wrapper property nesting the fields under `body` — fails
- *  invisibly, both sides reporting success. */
+/** Pinned as TEXT: server silently drops what it can't decode; a wrong shape fails invisibly. */
 class WsClientFrameTest {
 
     private val dto = PredictionWriteDto(
@@ -37,8 +35,7 @@ class WsClientFrameTest {
         assertTrue("the discriminant is `type`", json.startsWith("""{"type":"prediction","""))
     }
 
-    /** An absent belief is omitted, not nulled: `explicitNulls = false`, and the server's field is
-     *  `#[serde(default)]`, so either decodes. */
+    /** Absent belief omitted not nulled: explicitNulls=false; #[serde(default)] decodes either. */
     @Test
     fun `a circadian belief is carried inline`() {
         val json = SyncJson.encodeToString<WsClientFrame>(

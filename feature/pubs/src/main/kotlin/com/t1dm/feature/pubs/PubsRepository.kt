@@ -45,8 +45,7 @@ private fun PostView.toPubPost(): PubPost {
     )
 }
 
-/** Keyed on the resolvable [handle], not the DID. Anything not shaped like a post degrades to the
- *  author's profile page. */
+/** Keyed on the resolvable handle, not DID; a non-post shape degrades to the author's profile. */
 private fun permalink(atUri: String, handle: String): String {
     val rkey = atUri
         .takeIf { it.startsWith("at://") && it.contains("/app.bsky.feed.post/") }

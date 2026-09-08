@@ -9,10 +9,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * What a replay puts into `sample.exercise` and what a delete takes back out. The merge itself is
- * `ExerciseBucketMergeTest`; this is the pair of bucket lists either side of it.
- */
+/** What a replay puts in `sample.exercise` and delete removes; merge is ExerciseBucketMergeTest. */
 class ExerciseReplayCurveTest {
 
     private val dispatchers = DefaultT1dmDispatchers(

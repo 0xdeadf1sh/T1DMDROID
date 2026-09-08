@@ -9,14 +9,13 @@ fun interface BackendInfoSource {
     suspend fun current(): BackendInfo?
 }
 
-/** Sequences the §3.6 fail-closed bolus pipeline. Terminal value is advice; nothing here actuates. */
+/** Sequences the §3.6 fail-closed bolus pipeline; terminal value is advice, nothing actuates. */
 class DoseAdvisor(
     private val bolus: BolusCalculator,
     private val anchorSource: AnchorInfoSource,
     private val iobSource: IobSource,
     private val backendSource: BackendInfoSource,
-    /** Read once per recommendation and pinned onto every roll. A throw degrades to the default
-     *  rather than refusing: this is provenance the card discloses, not a gate. */
+    /** Read once, pinned onto every roll; a throw degrades to default (disclosed, not a gate). */
     private val smoothingWindowSource: suspend () -> Int = { InferenceControllerDefaults.SAVGOL_WINDOW },
 ) {
 
@@ -44,8 +43,7 @@ class DoseAdvisor(
             )
         }
 
-        // Resolved here, not at card-construction time: a Settings edit landing mid-search would
-        // otherwise rank fans anchored on two different `last_bg` values.
+        // Resolved here, not at card time (a mid-search edit would split last_bg across fans).
         val smoothing = InferenceControllerDefaults.nearestSmoothingStop(
             runCatching { smoothingWindowSource() }.getOrNull() ?: InferenceControllerDefaults.SAVGOL_WINDOW,
         )
@@ -104,8 +102,7 @@ class DoseAdvisor(
 
     private fun inHypoTerritory(anchor: AnchorInfo?, baseline: PredFan, config: CalcConfig): Boolean {
         val nowLow = anchor?.currentBgMgdl?.let { it < config.hypoNowThresholdMgdl } ?: false
-        // Off the median, like every dose-path read: a band edge dips under the threshold on nearly
-        // every fan, which diverted almost every session to carb rescue.
+        // Off the median, like every dose-path read: a band edge nearly always dips into rescue.
         val nearLow = baseline.eligible && baseline.validatedWindow()
             .any { it.medianBg < config.hypoNowThresholdMgdl }
         return nowLow || nearLow

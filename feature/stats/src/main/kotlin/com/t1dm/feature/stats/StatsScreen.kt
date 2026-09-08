@@ -55,8 +55,7 @@ import com.t1dm.core.model.UnitSpace
 fun StatsScreen(
     state: StatsViewModel.UiState,
     kovatchevF: (Double) -> Double,
-    // [ClinicalCuts.UNAVAILABLE] (no native library) suppresses the heatmap rather than colouring it
-    // on a scale cut in the wrong place.
+    // ClinicalCuts.UNAVAILABLE (no native lib) suppresses heatmap, rather than a wrong scale cut.
     cuts: ClinicalCuts,
     onSelectWindow: (StatsWindow) -> Unit,
     onSetUnitSpace: (UnitSpace) -> Unit,
@@ -203,8 +202,7 @@ fun StatsScreen(
                 }
             }
 
-            // In phase with the diurnal card above: both key on the patient's local day, resolved
-            // per sample from its own tz_offset. See `advanced_stats` in crates/t1dm-core/src/stats.rs.
+            // In phase with diurnal card: keys on local day, per-sample tz_offset; see stats.rs.
             if (local.heatmap.isNotEmpty() && cuts.isUsable) {
                 // Not hoisted: the core computes both in one pass, so this is a repaint.
                 var heatStat by remember { mutableStateOf(HeatStat.Median) }
@@ -322,9 +320,7 @@ private fun UnitSwitcher(current: UnitSpace, onSelect: (UnitSpace) -> Unit) {
     }
 }
 
-// Every dimmed line below derives from `LocalContentColor.current`, never from
-// `MaterialTheme.colorScheme.onSurface`: inside a panel the first is the ink `panelCardColors` has
-// proved clears AA against the card, the second the raw palette role it may have rejected.
+// Dimmed lines derive from LocalContentColor.current, never onSurface panelCardColors rejects.
 
 @Composable
 private fun SectionCard(title: String, content: @Composable () -> Unit) {
@@ -548,8 +544,7 @@ private fun fmtLevel(mgdl: Double, unit: UnitSpace, kovatchevF: (Double) -> Doub
 
 private fun fmtPct(frac: Double): String = "${fmt(frac * 100.0, 1)}%"
 
-/** Glycemia Risk Index (Klonoff 2022) = 3·VLow + 2.4·Low + 1.6·VHigh + 0.8·High, capped at 100;
- *  the bands are fractions here, hence the ×100. */
+/** Glycemia Risk Index (Klonoff 2022) = 3*VLow+2.4*Low+1.6*VHigh+0.8*High, cap 100; fractions. */
 internal fun griOf(b: SubBands): Double =
     (3.0 * b.veryLow * 100 + 2.4 * b.low * 100 + 1.6 * b.veryHigh * 100 + 0.8 * b.high * 100).coerceIn(0.0, 100.0)
 

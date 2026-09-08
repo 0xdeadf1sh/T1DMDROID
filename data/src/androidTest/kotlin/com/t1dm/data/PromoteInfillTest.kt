@@ -121,7 +121,7 @@ class PromoteInfillTest {
         assertTrue(db.bgInfillDao().span(spanStart).all { it.promotedAtMs != null })
     }
 
-    /** A span with nothing measured before it has one anchor: drawing it is fine, storing it is not. */
+    /** A span with nothing measured before it has one anchor: draw is fine, storing is not. */
     @Test
     fun a_backcast_span_is_refused() = runTest {
         repo.upsertSource(descriptor(), authoritative = true, nowMs = t0)
@@ -134,7 +134,7 @@ class PromoteInfillTest {
         assertNull(db.cgmReadingDao().byTs(src.value, spanStart))
     }
 
-    /** It would become the newest `cgm_reading` row, which every glance surface reads as current BG. */
+    /** It would become the newest `cgm_reading` row, every glance surface reads as current BG. */
     @Test
     fun a_forecast_span_is_refused() = runTest {
         repo.upsertSource(descriptor(), authoritative = true, nowMs = t0)
@@ -158,7 +158,7 @@ class PromoteInfillTest {
         assertNull(db.cgmReadingDao().byTs(src.value, spanStart))
     }
 
-    /** A real measurement always beats a reconstruction for a slot — the contest is not symmetric. */
+    /** A real measurement always beats a reconstruction for a slot; the contest isn't symmetric. */
     @Test
     fun a_measurement_landing_in_a_promoted_slot_wins_and_keeps_the_band() = runTest {
         val spanStart = seedPromotableSpan()

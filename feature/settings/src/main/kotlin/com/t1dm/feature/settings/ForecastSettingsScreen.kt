@@ -107,7 +107,7 @@ private fun WarmupSection(hours: Int, minHours: Int, maxHours: Int, onChange: (I
     SettingsNote("Min $minHours h (the model's context floor) · max $maxHours h")
 }
 
-/** Every running model pushes under its own id; the Models screen picks the one the dashboard draws. */
+/** Every running model pushes under its own id; Models screen picks the one the dashboard draws. */
 @Composable
 private fun ModelCountSection(count: Int, minCount: Int, maxCount: Int, onChange: (Int) -> Unit) {
     val haptics = rememberT1dmHaptics()

@@ -14,11 +14,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import timber.log.Timber
 
-/**
- * The service is typed `connectedDevice`, which may start from `BOOT_COMPLETED`; `dataSync` may not.
- * The widget needs a push of its own: the host does not persist RemoteViews across a reboot and the
- * provider declares `updatePeriodMillis="0"`, so no `APPWIDGET_UPDATE` is ever broadcast.
- */
+/** connectedDevice type starts on BOOT_COMPLETED; widget pushed here too (no periodic update). */
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         when (intent.action) {
@@ -51,10 +47,7 @@ private fun BroadcastReceiver.resumeMonitoring(context: Context) {
     }
 }
 
-/**
- * `ACTION_USER_UNLOCKED` reaches registered receivers only, never manifest ones, so it must be armed
- * from a running process. Unreached today: this receiver is not `directBootAware`.
- */
+/** ACTION_USER_UNLOCKED needs a runtime-registered receiver; unreached (not directBootAware). */
 private fun armUnlockResume(context: Context) {
     val app = context.applicationContext
     val onUnlock = object : BroadcastReceiver() {

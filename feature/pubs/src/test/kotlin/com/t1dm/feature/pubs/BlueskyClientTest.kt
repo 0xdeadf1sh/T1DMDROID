@@ -144,7 +144,7 @@ class BlueskyClientTest {
         assertNull(textPost.link)
         assertTrue(textPost.images.isEmpty())
         assertEquals("A diabetes diagnosis should not determine fitness for a job.", textPost.text)
-        assertEquals("adapubs.bsky.social", textPost.authorName) // displayName absent → handle fallback
+        assertEquals("adapubs.bsky.social", textPost.authorName) // no displayName → handle fallback
         assertNull(textPost.authorAvatar)
     }
 

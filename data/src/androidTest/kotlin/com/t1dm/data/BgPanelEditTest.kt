@@ -202,8 +202,7 @@ class BgPanelEditTest {
         assertFalse("and discarding a span that is gone reports so", repo.discardInfillSpan(spanStart))
     }
 
-    /** A stored forecast is the record of what the model SAID at that cycle, and the hindsight
-     *  sweep replays it, so `invalidateForecastDerivedInTx` must not reach it. */
+    /** Stored forecast is what the model SAID; invalidateForecastDerivedInTx must skip it. */
     @Test
     fun a_cut_keeps_the_forecasts_that_were_already_made() = runTest {
         seedThreeReadings()
@@ -240,8 +239,7 @@ class BgPanelEditTest {
         )
     }
 
-    /** Cutting the `RECONSTRUCTED` rows while `bg_infill` still calls the span promoted leaves the
-     *  band — the only copy there is — as ordinary deletable state. */
+    /** Cutting RECONSTRUCTED rows while bg_infill calls span promoted leaves it deletable state. */
     @Test
     fun a_cut_refuses_to_cross_a_promoted_span() = runTest {
         repo.upsertSource(descriptor(), authoritative = true, nowMs = t0)
@@ -261,8 +259,7 @@ class BgPanelEditTest {
         assertEquals(2, repo.cutBgRange(t0, t0 + 3 * step, now).size)
     }
 
-    /** A measurement replaces the reconstruction in place while the promoted row is spared, so
-     *  demotion finds nothing to remove and must still succeed, or the span is stranded. */
+    /** A measurement replaces reconstruction in place; demotion finds nothing but must succeed. */
     @Test
     fun a_span_the_sensor_superseded_can_still_be_demoted_and_discarded() = runTest {
         repo.upsertSource(descriptor(), authoritative = true, nowMs = t0)

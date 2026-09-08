@@ -4,9 +4,7 @@ import com.t1dm.core.model.PaintStroke
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** An immutable primitive-array snapshot of the BG panel's annotation layer, built off the main
- *  thread. Coordinates are viewport-independent: x is an absolute epoch-ms instant, y a fraction
- *  of the PLOT BOX height (0 = plot top, 1 = plot bottom). */
+/** Immutable snapshot of the annotation layer, off-thread. x=abs epoch-ms, y=plot-box fraction. */
 class PaintFrame internal constructor(
     /** Row id per stroke, in paint order. */
     val ids: LongArray,
@@ -30,8 +28,7 @@ class PaintFrame internal constructor(
 
     val pointCount: Int get() = tsMs.size
 
-    /** Intersection, not containment; both edges inclusive, matching
-     *  `PaintStrokeDao.observeOverlapping`'s predicate in `:data`. */
+    /** Intersection, not containment; edges inclusive, matching observeOverlapping in :data. */
     fun intersects(s: Int, fromMs: Double, toMs: Double): Boolean =
         maxTsMs[s] >= fromMs && minTsMs[s] <= toMs
 
@@ -44,12 +41,10 @@ class PaintFrame internal constructor(
 
         const val TOOL_HIGHLIGHTER = 3
 
-        /** Geometry is [TOOL_FINE]'s, so an older build resolving the name onto it still draws
-         *  the stroke correctly rather than merely drawing something. */
+        /** Geometry is [TOOL_FINE]'s, so an older build resolving onto it still draws correctly. */
         const val TOOL_BROAD = 4
 
-        /** Total: a name a later build invents resolves to [TOOL_FINE] rather than throwing or
-         *  vanishing from the panel. */
+        /** Total: a future name resolves to [TOOL_FINE], not throwing or vanishing. */
         fun toolIdOf(tool: String): Int = when (tool) {
             "marker" -> TOOL_MARKER
             "chalk" -> TOOL_CHALK
@@ -76,8 +71,7 @@ suspend fun paintFrameOf(
     maxPointsPerStroke: Int = 4096,
 ): PaintFrame = withContext(Dispatchers.Default) { buildPaintFrame(strokes, maxPointsPerStroke) }
 
-/** Pure; safe from a `@Preview` or a test. Ordered by `createdAtMs` then `id` — the order `:data`
- *  reads them back in. Past [maxPointsPerStroke] a stroke is strided, endpoints kept. */
+/** Pure, safe from @Preview/test. Past maxPointsPerStroke a stroke is strided, endpoints kept. */
 fun buildPaintFrame(strokes: List<PaintStroke>, maxPointsPerStroke: Int = 4096): PaintFrame {
     val kept = strokes.asSequence()
         .filter { !it.isEmpty }

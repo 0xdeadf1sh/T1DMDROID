@@ -83,7 +83,7 @@ class ModelSyncCoordinatorTest {
         val (coord, _) = coordinator(
             dir,
             rows = listOf(row("m.pte", meta(), "not-the-real-hash")),
-            artifacts = mapOf("m.pte" to ModelArtifact(bytes, "deadbeef")), // X-SHA256 != hash(bytes)
+            artifacts = mapOf("m.pte" to ModelArtifact(bytes, "deadbeef")), // hash mismatch
         )
 
         val summary = coord.sync()
@@ -282,8 +282,7 @@ class ModelSyncCoordinatorTest {
 
     @Test
     fun runningIdentityIsArtifactFilename_adbPushedModelUpdate_stages_notSwapped() = runBlocking {
-        // The running-set identity is the `.pte` FILENAME: an adb-pushed model's descriptor id
-        // ("t1dmai_best") is not its registry id, and keying on it would overwrite the live model.
+        // Running-set identity is .pte FILENAME, not descriptor id, or it overwrites live model.
         val dir = tmp.newFolder("models")
         val id = "t1dmai_best.xnnpack.pte"
         val oldBytes = byteArrayOf(1, 1, 1)

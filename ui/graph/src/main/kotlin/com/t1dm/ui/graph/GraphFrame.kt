@@ -7,9 +7,7 @@ import com.t1dm.core.model.UnitSpace
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** Screen-independent snapshot, built off the main thread by [buildGraphFrame], so pan and zoom
- *  never rebuild. [xs] minutes since [t0Ms], ascending; [ys] already in [unit]; [breakAfter] true
- *  where a real dropout follows point `i`, cutting the polyline instead of bridging it. */
+/** Screen-independent snapshot, off main thread; xs minutes since t0Ms, breakAfter cuts gaps. */
 class GraphFrame internal constructor(
     val t0Ms: Long,
     val tzOffsetMin: Int,
@@ -47,8 +45,7 @@ class GraphFrame internal constructor(
         const val FLAG_INTERPOLATED = 1
         const val FLAG_WARMUP = 2
 
-        /** Own flag: the one value otherwise pixel-identical to sensor signal, and at 6 h and wider
-         *  the markers are suppressed, so the polyline must carry the distinction. */
+        /** Own flag: pixel-identical to sensor signal, markers suppress past 6h, line carries. */
         const val FLAG_RECONSTRUCTED = 3
 
         val EMPTY = GraphFrame(
@@ -69,8 +66,7 @@ suspend fun graphFrameOf(
     buildGraphFrame(readings, unit, maxGapMin, maxPoints, kovatchevF)
 }
 
-/** Pure CPU: callable from a `@Preview` or a test. [kovatchevF] is the native `f(g)`; without it
- *  [UnitSpace.Kovatchev] falls back to mg/dL rather than fabricating a curve. */
+/** Pure CPU, callable from @Preview or a test; missing kovatchevF falls to mg/dL, never fakes. */
 fun buildGraphFrame(
     readings: List<CgmReading>,
     unit: UnitSpace = UnitSpace.MgDl,
@@ -126,8 +122,7 @@ fun buildGraphFrame(
         // Breaks iff a raw dropout falls between the two kept source indices, not from spacing.
         for (k in 0 until m - 1) breakAfter[k] = breakPrefix[srcIdx[k + 1]] - breakPrefix[srcIdx[k]] > 0
     }
-    // Newest offset, not the oldest: the oldest freezes the axis on the offset in force when the
-    // record began, leaving every tick an hour off after a DST change or a move.
+    // Newest offset, not oldest: oldest freezes axis on record start offset, wrong after DST/move.
     return GraphFrame(t0, kept.last().tzOffsetMin, unit, xs, ys, flags, breakAfter, minY, maxY)
 }
 
@@ -143,8 +138,7 @@ private class Decimated(
     val xs: FloatArray, val ys: FloatArray, val flags: IntArray, val srcIdx: IntArray,
 )
 
-/** Keeps each bucket's min and max in time order, so spikes and nadirs survive where striding
- *  would drop them. Endpoints always kept. */
+/** Keeps each bucket's min/max in time order, so spikes/nadirs survive striding; endpoints kept. */
 private fun decimateMinMax(
     xs: FloatArray, ys: FloatArray, flags: IntArray, maxPoints: Int,
 ): Decimated {

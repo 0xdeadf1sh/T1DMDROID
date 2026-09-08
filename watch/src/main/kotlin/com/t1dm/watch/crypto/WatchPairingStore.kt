@@ -1,9 +1,6 @@
 package com.t1dm.watch.crypto
 
-/**
- * Durable pairing state; :app binds it to the Room `kv` store with the key material wrapped by the
- * Keystore. [Pairing.material] is null on the loopback, where only the paired/epoch bits mean anything.
- */
+/** :app binds to Room `kv`, Keystore-wrapped; [material] null on loopback (paired/epoch only). */
 interface WatchPairingStore {
     suspend fun load(): Pairing?
     suspend fun save(pairing: Pairing)

@@ -54,7 +54,7 @@ class CgmPipelineTest {
         val advB = AdvertFixtures.fullAdvert(AidexCodec.encode(minFromStart = 103, glucose = 130))
 
         val outA = p.process(AdvertFixtures.raw(advA, rxWallMs = base))
-        val outB = p.process(AdvertFixtures.raw(advB, rxWallMs = base + 900_000)) // +15 min = 3 slots
+        val outB = p.process(AdvertFixtures.raw(advB, rxWallMs = base + 900_000)) // +15min=3 slots
 
         assertEquals(listOf(100), outA.readings.map { it.bgMgdl })
         assertEquals(listOf(110, 120, 130), outB.readings.map { it.bgMgdl })

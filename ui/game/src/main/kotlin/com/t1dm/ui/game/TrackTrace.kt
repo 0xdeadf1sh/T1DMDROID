@@ -27,8 +27,7 @@ class TrackTrace internal constructor(
             0L, UnitSpace.MgDl, FloatArray(0), FloatArray(0), BooleanArray(0), 0f, 0f,
         )
 
-        /** Build [frame] with `maxPoints` ABOVE the reading count: envelope decimation can emit a
-         *  bucket's maximum before its minimum, harmless as a drawn line but a false cliff as terrain. */
+        /** maxPoints ABOVE reading count: decimation may emit max before min, a false cliff. */
         fun of(frame: GraphFrame): TrackTrace =
             if (frame.isEmpty) {
                 EMPTY

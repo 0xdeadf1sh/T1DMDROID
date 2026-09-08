@@ -22,8 +22,7 @@ import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.KeyValueRow
 import com.t1dm.core.design.rememberT1dmHaptics
 
-/** One-way mirror into a host speaking the Nightscout `/api/v1` subset. The secret field is
- *  write-only: blank on entry, and a blank value on save keeps the stored one. */
+/** One-way mirror to a Nightscout `/api/v1` host. Secret write-only: blank on save keeps stored. */
 @Composable
 fun NightscoutSettingsScreen(
     initialUrl: String,

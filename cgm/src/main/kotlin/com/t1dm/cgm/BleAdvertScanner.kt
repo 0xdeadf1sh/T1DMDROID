@@ -17,11 +17,7 @@ import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flowOn
 import java.util.UUID
 
-/**
- * Passive AiDEX X advertisement scanner. A name prefix cannot be expressed as a `ScanFilter`, so it
- * is post-filtered downstream. [reportDelayMs] > 0 selects offloaded batch scanning, the only mode
- * HyperOS does not suspend at screen-off; it costs up to ~5 min of latency on the alarm path.
- */
+/** Passive AiDEX X, name post-filtered; [reportDelayMs]>0=batch mode, ~5min alarm latency. */
 class BleAdvertScanner(
     private val scanner: BluetoothLeScanner?,
     private val dispatchers: T1dmDispatchers,
@@ -76,9 +72,7 @@ class BleAdvertScanner(
             .setReportDelay(reportDelayMs)
             .build()
 
-        /** Stamped from the record's boot-clock [ScanResult.getTimestampNanos], not the flush moment,
-         *  so a late-flushed batch keeps each advert's true capture instant. Null when the record
-         *  carries no raw AD bytes. */
+        /** Stamped from boot-clock timestampNanos, not flush time; null if no raw AD bytes. */
         @SuppressLint("MissingPermission")
         fun rawAdvertFrom(result: ScanResult): RawAdvert? {
             val record = result.scanRecord ?: return null

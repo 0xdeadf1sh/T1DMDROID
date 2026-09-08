@@ -3,11 +3,7 @@ package com.t1dm.core.model
 /** A rate [y] (>= 0, linear amount axis) at time [xMin] (min). */
 data class PwlKnot(val xMin: Double, val y: Double)
 
-/**
- * A pure shape: the knots' absolute [y] scale is irrelevant, because [sampleNormalized] area-
- * normalizes to a caller-supplied total. Knots are kept sorted by [PwlKnot.xMin]; the curve is
- * defined on `[0, durationMin]` and clamped to 0 outside the first and last knot. No x-snapping.
- */
+/** Pure shape; absolute y scale is irrelevant, sampleNormalized area-normalizes to a total. */
 data class PwlCurve(
     val durationMin: Double,
     val knots: List<PwlKnot>,
@@ -28,8 +24,7 @@ data class PwlCurve(
         return (a.y + (b.y - a.y) * t).coerceAtLeast(0.0)
     }
 
-    /** `ceil(durationMin / stepMin)` buckets, each the midpoint-rule mean rate over its step, then
-     *  scaled to sum to [total]. A zero-area curve yields all zeros. */
+    /** ceil(durationMin/stepMin) buckets, midpoint-rule mean rate, scaled to sum to total. */
     fun sampleNormalized(total: Double, stepMin: Double = 5.0): List<Double> {
         val n = kotlin.math.ceil(durationMin / stepMin).toInt().coerceAtLeast(1)
         val raw = DoubleArray(n) { i ->

@@ -23,13 +23,7 @@ import com.t1dm.core.model.CurveKind
 import com.t1dm.core.model.InsulinChoice
 import com.t1dm.core.model.LoggedEntry
 
-/**
- * [amount] is grams, units or minutes by [LoggedEntry.kind]. [gi] 0..100, null clearing the recorded
- * index; [insulin] null leaves the dose's stored PK curve untouched, since a type is re-resolved
- * only when one is picked and re-resolving discards a hand-drawn curve. [note] is read for a
- * [CurveKind.CARB] row alone — a dose's note is the insulin the writer resolved, not the patient's
- * text, and an edit must not overwrite it.
- */
+/** [amount]: grams/units/min; nulls: [gi] clears index, [insulin] keeps curve, [note] CARB-only */
 data class LogEdit(
     val amount: Double,
     val gi: Double?,
@@ -41,29 +35,22 @@ data class LogEdit(
 /** 0..100; `CurveEngine.Presets.carbGammaForGi` clamps to it, so a value outside is a typo. */
 private val GI_RANGE = 0..100
 
-/** Whole: the entry slider steps in whole points, and a fractional index reads back as "GI 54.3".
- *  Blank is a cleared index, not a rejected field: a meal may legitimately carry none. */
+/** Whole: slider steps whole (fractional reads "GI 54.3"); blank = cleared, not rejected. */
 internal fun giFieldOrNull(text: String): Double? =
     text.takeIf { it.isNotBlank() }?.toIntOrNull()?.toDouble()
 
 internal fun giFieldValid(text: String): Boolean =
     text.isBlank() || text.toIntOrNull()?.let { it in GI_RANGE } == true
 
-/** Of the row's own kind, in the order given: retyping a bolus into a basal is a different dose,
- *  not an edit. */
+/** Of the row's own kind, order preserved; retyping bolus→basal is a different dose, not edit. */
 internal fun offeredInsulins(entry: LoggedEntry, insulins: List<InsulinChoice>): List<InsulinChoice> =
     insulins.filter { it.kind == entry.insulin }
 
-/** Which chip opens selected, or -1. The row keeps only the LABEL it was logged under, and the two
- *  catalogues share no id, so the label is the whole of the match. */
+/** Which chip opens selected, or -1; row keeps only the LABEL (catalogues share no id). */
 internal fun loggedInsulinIndex(entry: LoggedEntry, offered: List<InsulinChoice>): Int =
     offered.indexOfFirst { it.label == entry.detail }
 
-/**
- * The shift is minutes relative to the stored instant; the repository snaps the result back onto the
- * five-minute grid. A retype rewrites the note as well as the curve — the note is where the insulin's
- * name is kept.
- */
+/** Shift in minutes from stored instant, snapped to 5-min grid; retype rewrites note too. */
 @Composable
 fun EditLogDialog(
     entry: LoggedEntry,
@@ -76,14 +63,12 @@ fun EditLogDialog(
     var giText by remember(entry.clientId) { mutableStateOf(entry.gi?.let { fmtGi(it) }.orEmpty()) }
     var noteText by remember(entry.clientId) { mutableStateOf(entry.detail.orEmpty()) }
     var shiftText by remember(entry.clientId) { mutableStateOf("0") }
-    // Null until a chip is tapped, so opening the dialog to change an amount cannot silently
-    // re-resolve the curve the row is carrying.
+    // Null until tapped, so opening to edit an amount can't silently re-resolve the curve.
     var picked by remember(entry.clientId) { mutableStateOf<InsulinChoice?>(null) }
     val offered = offeredInsulins(entry, insulins)
     val loggedIndex = loggedInsulinIndex(entry, offered)
 
-    // A bout's magnitude is its duration times the carb-equivalent, and the duration is the bout's
-    // own — so a replay moves in time and in nothing else.
+    // Bout magnitude = duration × carb-equivalent (own duration); a replay moves time only.
     val timeOnly = entry.kind == CurveKind.EXERCISE
     val amount = if (timeOnly) entry.amount else amountText.toDoubleOrNull()
     val gi = giFieldOrNull(giText)
@@ -129,13 +114,11 @@ fun EditLogDialog(
                 if (entry.kind == CurveKind.INSULIN && offered.isNotEmpty()) {
                     val pickedChoice = picked
                     val chipScroll = rememberLazyListState()
-                    // Opens on the row's own insulin. A catalogue wider than the dialog otherwise
-                    // starts scrolled past the selected chip, reading as nothing selected at all.
+                    // Opens on row's insulin; else wide catalogue scrolls past the selected chip.
                     LaunchedEffect(entry.clientId, loggedIndex) {
                         if (loggedIndex >= 0) chipScroll.scrollToItem(loggedIndex)
                     }
-                    // Scrolls rather than wraps: the dialog's text slot carries no scroll of its own,
-                    // so a wrapped row past its height is clipped away unreachable.
+                    // Scrolls not wraps: text slot has no scroll; overflow row is unreachable.
                     LazyRow(state = chipScroll, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         items(offered.size) { i ->
                             val choice = offered[i]
@@ -183,8 +166,7 @@ fun EditLogDialog(
     )
 }
 
-/** §3.6-F: deleting an OLDER dose lowers assumed IOB with the log-gap mark unmoved, silently
- *  relaxing `Rails.iobCeiling`. Nothing downstream catches that; this dialog is the only guard. */
+/** §3.6-F: deleting an OLDER dose silently relaxes iobCeiling; this dialog is the only guard. */
 @Composable
 fun DeleteLogDialog(entry: LoggedEntry, onConfirm: () -> Unit, onDismiss: () -> Unit) {
     val haptics = LocalT1dmHaptics.current

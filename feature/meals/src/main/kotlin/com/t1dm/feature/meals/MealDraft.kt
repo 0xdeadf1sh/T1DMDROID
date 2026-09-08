@@ -44,8 +44,7 @@ import com.t1dm.core.model.MealComponent
 import com.t1dm.core.model.ResolvedMealCurve
 import com.t1dm.ui.graph.CurvePreview
 
-/** The re-gram draft is POSITIONAL — it names a slot, not a component — so every mutation that
- *  shifts or replaces what sits at that slot closes it first. */
+/** Re-gram draft is POSITIONAL — names a slot, not a component; a slot mutation closes it. */
 @Stable
 internal class MealDraft(initial: List<MealComponent>) {
     val components: SnapshotStateList<MealComponent> =
@@ -85,8 +84,7 @@ internal class MealDraft(initial: List<MealComponent>) {
         regramText = text.filter { it.isDigit() || it == '.' }
     }
 
-    /** Committed on the button, never per keystroke: the off-thread re-resolve is keyed on the
-     *  component list by value. */
+    /** Committed on the button, never per keystroke: re-resolve keys on the list by value. */
     fun commitRegram(): Boolean {
         val i = regramIndex ?: return false
         val grams = regramText.toDoubleOrNull()
@@ -102,9 +100,7 @@ internal class MealDraft(initial: List<MealComponent>) {
     }
 }
 
-/** Parallel Bundle-storable lists, one entry per component. Saveable rather than remembered
- *  because a ✎ pushes a route and Navigation-Compose disposes the composition it displaces. The
- *  open re-gram field is deliberately not carried. */
+/** Parallel Bundle-storable lists; Saveable since ✎ disposes composition. Re-gram unsaved. */
 internal val MealDraftSaver: Saver<MealDraft, Any> = listSaver(
     save = { draft ->
         val c = draft.snapshot()
@@ -171,8 +167,7 @@ internal fun resolvedCurve(
 internal fun ComponentRows(draft: MealDraft) {
     val haptics = rememberT1dmHaptics()
     draft.components.forEachIndexed { i, c ->
-        // The name is the elastic member: unweighted it claims its intrinsic width and starves the
-        // carb read-out and the two actions.
+        // Name is the elastic member: unweighted it claims intrinsic width, starving the actions.
         Row(
             Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -189,8 +184,7 @@ internal fun ComponentRows(draft: MealDraft) {
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                // Ellipsis, not the default Clip: a clipped label reads as a shorter word, not a
-                // truncated one.
+                // Ellipsis, not default Clip: clipped reads as a shorter word, not a truncated one.
                 Text(
                     "${"%.0f".format(c.carbs)} g carb",
                     style = MaterialTheme.typography.bodyMedium,
@@ -238,8 +232,7 @@ internal fun ResolvedCurveSummary(resolved: ResolvedMealCurve) {
     CurvePreview(values = resolved.values)
 }
 
-/** The bounded height lets this list nest inside an outer vertical scroll without an
- *  infinite-constraint conflict. */
+/** Bounded height nests this in an outer vertical scroll without infinite-constraint conflict. */
 @Composable
 internal fun FoodSearch(
     onSearch: suspend (String) -> List<Food>,

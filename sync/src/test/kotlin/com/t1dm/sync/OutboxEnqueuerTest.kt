@@ -58,8 +58,7 @@ private class RecordingSink : OutboxSink {
     }
 }
 
-/** Faithful to Room where it matters: `dedupKey` is UNIQUE (a taken key yields -1), INFLIGHT is the
- *  drainer's claim, and ids are strictly increasing and never reused. */
+/** Faithful to Room: dedupKey UNIQUE (taken ⇒ -1), INFLIGHT=drainers claim, ids strictly rise. */
 private class QueueSink : OutboxSink {
     data class Row(
         val id: Long,
@@ -239,7 +238,7 @@ class OutboxEnqueuerTest {
         assertEquals(4, OutboxKind.STATS.priority)
         assertEquals(3, OutboxKind.PREDICTIONS.priority)
         assertEquals(2, OutboxKind.SERIES.priority)      // retired tombstone
-        assertEquals(1, OutboxKind.NIGHTSCOUT.priority)  // a mirror of a record the phone still holds
+        assertEquals(1, OutboxKind.NIGHTSCOUT.priority)  // mirror of a record the phone still holds
         assertEquals(0, OutboxKind.PHOTO.priority)
 
         val ranked = listOf(

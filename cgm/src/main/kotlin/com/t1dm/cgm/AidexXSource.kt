@@ -13,7 +13,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-/** The AiDEX X [CgmSource] (§3.1). Owns no radio: [AidexXSourceRegistry] routes adverts to [ingest]. */
+/** AiDEX X CgmSource (§3.1); owns no radio, AidexXSourceRegistry routes adverts to ingest. */
 class AidexXSource(
     descriptor: CgmSourceDescriptor,
     nativeCore: NativeCore,
@@ -37,8 +37,7 @@ class AidexXSource(
         classifier = classifier,
     )
 
-    /** Effective from the next advert. Mutates the classifier: [CgmPipeline] state must survive the
-     *  edit. The clamp lives in [ReadingClassifier], so [descriptor] takes the installed value. */
+    /** Effective from the next advert; mutates classifier, descriptor takes the installed value. */
     fun setWarmupWindowMin(minutes: Int) {
         classifier.warmupWindowMin = minutes
         descriptor = descriptor.copy(warmupWindowMin = classifier.warmupWindowMin)

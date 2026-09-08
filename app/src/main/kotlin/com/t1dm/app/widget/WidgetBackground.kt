@@ -17,22 +17,17 @@ import com.t1dm.core.design.drawThemeBackground
 import kotlin.math.max
 import kotlin.math.roundToInt
 
-/**
- * Glance renders to `RemoteViews`, which has no `Canvas`, so the app's motif is rasterised offscreen.
- * The composite mirrors `T1dmApp`/`ThemeBackdrop`: an opaque base, the painter over it at a group alpha.
- * The painters are purely proportional, so the long edge can be capped and scaled back up by FillBounds.
- */
+/** Glance has no Canvas: motif rasterises offscreen, proportional, capped, FillBounds-rescaled. */
 private const val MAX_DIM = 480
 
-// Keyed on the palette's full content hash, not p.id: every custom theme shares the id "custom", so
-// an id-only key served a stale backdrop after an edit.
+// Keyed on palette hash, not p.id: every custom theme shares id "custom" (else stale backdrop).
 private data class BackdropKey(val paletteHash: Int, val w: Int, val h: Int, val alphaPct: Int)
 
 /** Process-wide: theme, size and alpha rarely change, but Glance re-composes on every push. */
 private val cache = LinkedHashMap<BackdropKey, Bitmap>()
 private const val CACHE_CAP = 6
 
-/** Opaque. Null when the motif is off (`alphaPct <= 0`), the size is degenerate, or rasterising fails. */
+/** Opaque; null when motif is off (`alphaPct<=0`), size is degenerate, or rasterising fails. */
 internal fun widgetBackdropBitmap(p: T1dmPalette, widthPx: Int, heightPx: Int, alphaPct: Int): Bitmap? {
     val a = (alphaPct / 100f)
     if (a <= 0f || widthPx <= 0 || heightPx <= 0) return null

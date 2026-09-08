@@ -12,8 +12,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** Three distinct mg/dL bands, coincident at 70/180 by default: coins from [TargetRange], hazards
- *  from [AlertThresholds.lowMgdl], and the graph's axis span. They must diverge once one is edited. */
+/** Three mg/dL bands, coincident at 70/180 by default: coins TargetRange, hazards lowMgdl. */
 class PickupsTest {
 
     private val GRID = 300_000L
@@ -42,8 +41,7 @@ class PickupsTest {
     }
 
     @Test fun coinsFollowTheTargetRangeAndHazardsFollowTheAlarmLine() {
-        // 65 is out of range (no coin) but above the alarm line (no hazard); deriving one band from
-        // the other would break that.
+        // 65 out of range (no coin), above alarm line (no hazard); bands can't derive each other.
         val rs = listOf(65, 100, 50).mapIndexed { i, v -> reading(T0 + i * GRID, v) }
         val t = trackOf(rs)
         val f = buildPickups(t, rs, TargetRange(80, 140), AlertThresholds(40, 55, 180, 250))

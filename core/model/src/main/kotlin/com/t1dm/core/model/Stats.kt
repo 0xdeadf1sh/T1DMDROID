@@ -1,10 +1,9 @@
 package com.t1dm.core.model
 
-/** `bgMgdl` <= 0 or non-finite is excluded from every BG-derived metric, but the sample's
- *  treatment/activity channels still count toward the totals. */
+/** Non-finite/<=0 `bgMgdl` excludes BG-derived metrics; treatment/activity channels still count. */
 data class StatSample(
     val tsMs: Long,
-    /** MINUTES, east-positive, at [tsMs] (`SPEC/invariants.md` §2). Never shifts [tsMs], which is UTC. */
+    /** MINUTES, east-positive, at [tsMs] (§2); never shifts [tsMs], which is UTC. */
     val tzOffsetMin: Int,
     val bgMgdl: Double,
     val carbsG: Double?,
@@ -14,8 +13,7 @@ data class StatSample(
     val mood: Int?,
 )
 
-/** Time-weighted, summing to 1 over a non-empty series. [inRange] uses the configurable target
- *  edges; [veryLow]/[veryHigh] the fixed 54/250 mg/dL clinical cuts. */
+/** Time-weighted, sums to 1; [inRange] configurable, [veryLow]/[veryHigh] fixed 54/250 mg/dL. */
 data class SubBands(
     val veryLow: Double,
     val low: Double,
@@ -44,11 +42,7 @@ data class ClinicalCuts(val veryLowMgdl: Double, val veryHighMgdl: Double) {
     }
 }
 
-/**
- * [dow] 0 = Monday .. 6 = Sunday, [hour] 0..23, both LOCAL, resolved per sample from that sample's
- * own [StatSample.tzOffsetMin]. Only POPULATED cells exist: an absent `(dow, hour)` means no reading
- * was taken then and must render as absent, never as a value and never as an in-range one.
- */
+/** [dow] 0=Mon..6=Sun, [hour] 0..23, LOCAL; only POPULATED cells exist, absent stays absent. */
 data class HeatCell(val dow: Int, val hour: Int, val n: Int, val meanBg: Double, val medianBg: Double) {
     fun value(stat: HeatStat): Double = when (stat) {
         HeatStat.Median -> medianBg
@@ -129,7 +123,7 @@ data class AdvancedStats(
     val histogram: List<HistBin>,
     val hypoEpisodes: EpisodeSummary,
     val hyperEpisodes: EpisodeSummary,
-    /** LOCAL time, populated cells only, ascending by `(dow, hour)`. [agp] and [tod] share the clock. */
+    /** LOCAL time, populated only, ascending by `(dow, hour)`; [agp]/[tod] share the clock. */
     val heatmap: List<HeatCell>,
 ) {
     val isEmpty: Boolean get() = nSamples == 0
@@ -165,8 +159,7 @@ data class TargetRange(val lowMgdl: Int, val highMgdl: Int) {
 
 data class EventStat(val count: Int, val durationMs: Long)
 
-/** Neutral mirror of `:sync`'s `StatsDto`, so `:feature:stats` need not depend on `:sync`.
- *  [meanBg]/[gmi]/[cv]/[sd] are the cross-check against the local [AdvancedStats]. */
+/** Neutral mirror of `:sync`'s StatsDto (no :sync dep from :feature:stats); cross-checks local. */
 data class ServerStats(
     val window: StatsWindow,
     val tir: Double,
@@ -186,8 +179,7 @@ data class ServerStats(
     val nSamples: Int,
 )
 
-/** [server] is null when the server is unreachable or unconfigured, [serverReason] saying why.
- *  [local] is always present, [AdvancedStats.EMPTY] when the window is too sparse. */
+/** [server] null if unreachable/unconfigured ([serverReason] why); [local] always present. */
 data class StatsComposite(
     val window: StatsWindow,
     val targetRange: TargetRange,

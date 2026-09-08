@@ -4,8 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** Zero is a legitimate hold — push at once, no withdrawal window — so unlike the snooze it is not
- *  floored at a minute. */
+/** Zero is legitimate (push at once, no window); unlike snooze, not floored at a minute. */
 class PushHoldSettingTest {
 
     @Test

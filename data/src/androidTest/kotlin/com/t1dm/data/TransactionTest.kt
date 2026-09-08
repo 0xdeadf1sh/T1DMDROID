@@ -28,11 +28,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/**
- * Built with [BundledSQLiteDriver] — the production configuration — so these run against the same
- * connection-confinement machinery as the app. [daoWritesInsideTransactionRollBackTogether] is the
- * proof that suspend DAO calls made inside the transaction join it rather than auto-committing.
- */
+/** [BundledSQLiteDriver] (prod config); proves suspend DAO calls join the tx, not auto-commit. */
 @RunWith(AndroidJUnit4::class)
 class TransactionTest {
 
@@ -57,8 +53,7 @@ class TransactionTest {
     @After
     fun tearDown() = db.close()
 
-    /** Both rows gone can only happen if the two DAOs executed on the same confined writer
-     *  connection. */
+    /** Both rows gone only if both DAOs executed on the same confined writer connection. */
     @Test
     fun daoWritesInsideTransactionRollBackTogether() = runBlocking {
         val src = sourceEntity("aidexx:ROLLBACK")
@@ -68,7 +63,7 @@ class TransactionTest {
                 transactor.immediateTransaction {
                     db.cgmSourceDao().upsert(src)
                     db.kvDao().put(KvEntity("k", "v", 1L))
-                    // A read DAO inside the writer tx must confine too and see the uncommitted rows.
+                    // A read DAO inside the writer tx confines too, seeing the uncommitted rows.
                     assertNotNull(db.cgmSourceDao().byId(src.sourceId))
                     assertEquals("v", db.kvDao().get("k"))
                     throw boom
@@ -109,8 +104,7 @@ class TransactionTest {
         assertEquals("both stay active", 2, rows.count { it.active })
     }
 
-    /** `upsertSource` runs on every enumeration from a descriptor held in memory, so it must take
-     *  `authoritative` from the stored row or a pass racing a promotion leaves none. */
+    /** upsertSource runs per enumeration; must read authoritative from stored row, not memory. */
     @Test
     fun upsertSource_reSightingPreservesAuthority() = runBlocking {
         repo.upsertSource(descriptor("aidexx:A"), authoritative = true, nowMs = 1L)
@@ -157,8 +151,7 @@ class TransactionTest {
         assertEquals(ids[0], rows.single { it.authoritative }.sourceId)
     }
 
-    /** Each promotion is one atomic clear-all-then-set; a non-atomic rewrite could terminally
-     *  leave zero. */
+    /** Each promotion is one atomic clear-all-then-set; a non-atomic rewrite could leave zero. */
     @Test
     fun concurrentSetAuthoritative_leavesExactlyOne() = runBlocking {
         val ids = (0 until 8).map { "aidexx:S$it" }

@@ -168,8 +168,7 @@ private fun HoldSection(holdMin: Int, maxMin: Int, onSet: (Int) -> Unit) {
 private fun EntryRow(entry: LoggedEntry, onDelete: () -> Unit, onEdit: () -> Unit) {
     val cs = MaterialTheme.colorScheme
     Card(Modifier.fillMaxWidth(), colors = panelCardColors()) {
-        // `panelCardColors` guarantees this ink clears AA against the container; `cs.onSurface` is
-        // the unguarded role it may have had to reject.
+        // `panelCardColors` guarantees this ink clears AA; unguarded `cs.onSurface` may not have.
         val ink = LocalContentColor.current
         Row(
             Modifier.fillMaxWidth().padding(12.dp),

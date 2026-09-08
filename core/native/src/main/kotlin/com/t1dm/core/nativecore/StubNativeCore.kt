@@ -179,8 +179,7 @@ class StubNativeCore : NativeCore {
     // Fails OPEN: the predicted hour is optional and never blocks the BG path.
     override fun decodeTime(timeLogits: List<Double>, nBins: Int, binHours: Double): PredictedTime? = null
 
-    // The curve math is pure, so the stub ports `t1dm-core::curve`. The Rust stays the numeric
-    // authority; this mirror is golden-checked against it and against simulator.py.
+    // Pure curve math: stub ports t1dm-core::curve; golden-checked against Rust and simulator.py.
 
     override fun gamma(total: Double, k: Double, theta: Double, durMin: Double): List<Double> {
         val n = (durMin / DT_MIN).toInt()
@@ -326,11 +325,10 @@ class StubNativeCore : NativeCore {
         agpBins: Int,
     ): AdvancedStats = AdvancedStats.EMPTY
 
-    // Refuses rather than repeat the crate's values; a caller that cannot anchor a scale draws none.
+    // Refuses rather than repeat crate values; a caller with no scale anchor draws none.
     override fun clinicalCuts(): ClinicalCuts = ClinicalCuts.UNAVAILABLE
 
-    // Fail-closed empty suite: the metrics are pinned bit-for-bit to `T1DMAI`'s reference, and a
-    // Kotlin reproduction would be a second copy free to drift from it.
+    // Fail-closed empty: metrics pin bit-for-bit to T1DMAI; a Kotlin copy would drift.
     override fun forecastMetricsSuite(
         windows: List<ForecastWindow>,
         horizonsMin: List<Int>,
@@ -370,8 +368,7 @@ class StubNativeCore : NativeCore {
         delta: List<Double>,
     ): List<Double>? = null
 
-    // The baseline is what the neural model is MEASURED against, so a second Kotlin numeric
-    // authority would corrupt the comparison rather than one reading. Refuses throughout.
+    // Baseline is what the model is MEASURED against; a second numeric authority corrupts it.
     override fun baselineDefaultSpec(): BaselineSpec =
         TODO("the baseline is Rust-only; use UniffiNativeCore")
 

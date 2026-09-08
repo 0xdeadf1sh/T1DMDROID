@@ -17,14 +17,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import kotlin.math.roundToInt
 
-/**
- * UI interaction haptics only. Never fold into `:alerts`' `VibrationActuator`: that is the §3.6-A
- * alarm path, and safety actuation may not be attenuated by a UI comfort preference. Not Compose's
- * `HapticFeedbackType` — 1.7.6 carries only LongPress and TextHandleMove, and the BOM is pinned.
- */
+/** UI interaction haptics only; never fold into :alerts' VibrationActuator (§3.6-A alarm path). */
 
-/** [nominalMs] is roughly what each occupies on the actuator; it exists only to synthesise the
- *  [HapticWaveform] fallback. */
+/** nominalMs is roughly the actuator time; exists only to synthesise the Waveform fallback. */
 enum class HapticPrimitive(internal val nominalMs: Long) {
     CLICK(20),
     TICK(10),
@@ -52,8 +47,7 @@ private fun recipe(vararg steps: HapticStep) = HapticRecipe(steps.toList())
 private fun step(primitive: HapticPrimitive, amplitude: Float, delayMs: Int = 0) =
     HapticStep(primitive, amplitude, delayMs)
 
-/** [minIntervalMs] floors re-firing. It is not a substitute for quantising the value at the call
- *  site — see [HapticDetent]. */
+/** minIntervalMs floors re-firing; not a substitute for quantising at the call site (Detent). */
 enum class HapticEvent(internal val recipe: HapticRecipe, internal val minIntervalMs: Long = 0) {
     Tap(recipe(step(HapticPrimitive.CLICK, 0.50f))),
 
@@ -133,8 +127,7 @@ private const val SEGMENT_MIN_MS = 40L
 private const val SCRUB_MIN_MS = 28L
 private const val EDGE_MIN_MS = 120L
 
-/** [scale] multiplies every step amplitude; [STRONG] exceeds 1 deliberately, and the product is
- *  clamped at render time. */
+/** scale multiplies every step amplitude; STRONG exceeds 1, product clamped at render time. */
 enum class HapticStrength(val scale: Float, val displayName: String) {
     OFF(0f, "Off"),
     SUBTLE(0.55f, "Subtle"),
@@ -162,8 +155,7 @@ internal sealed interface HapticPlan {
 internal fun HapticRecipe.scaled(strength: HapticStrength): List<HapticStep> =
     steps.map { it.copy(amplitude = (it.amplitude * strength.scale).coerceIn(MIN_AMPLITUDE, 1f)) }
 
-/** Each step becomes an off-segment of its delay then an on-segment of the primitive's nominal
- *  duration. The envelope is lost; the rhythm survives. */
+/** Each step: off-segment of delay, on-segment of nominal duration; envelope lost, rhythm kept. */
 internal fun List<HapticStep>.toWaveform(): HapticWaveform {
     val timings = LongArray(size * 2)
     val amplitudes = IntArray(size * 2)
@@ -187,10 +179,7 @@ internal fun hapticPlan(
     else HapticPlan.Waveform(steps.toWaveform())
 }
 
-/**
- * Never throws: an absent, busy or policy-blocked vibrator must not take a tap with it. One instance
- * per process; [strength] is a plain field, not composition state, so changing it recomposes nothing.
- */
+/** Never throws; one instance per process, strength is a plain field, not composition state. */
 @Stable
 class T1dmHaptics internal constructor(
     private val vibrator: Vibrator?,
@@ -200,7 +189,7 @@ class T1dmHaptics internal constructor(
     @Volatile
     var strength: HapticStrength = strength
 
-    // Main thread only. A torn read drops or duplicates one tick at worst, so neither is synchronised.
+    // Main thread only; a torn read drops or duplicates one tick at worst, unsynchronised.
     private val lastFiredMs = LongArray(HapticEvent.entries.size)
     private val composable = arrayOfNulls<Boolean>(HapticEvent.entries.size)
 
@@ -215,11 +204,10 @@ class T1dmHaptics internal constructor(
         play(event, level)
     }
 
-    /** [on] is the state being ADOPTED, as Material's `onCheckedChange` reports it — easily written
-     *  backwards. */
+    /** on is the state being ADOPTED, as onCheckedChange reports it; easily written backwards. */
     fun toggled(on: Boolean) = perform(if (on) HapticEvent.ToggleOn else HapticEvent.ToggleOff)
 
-    /** Ignores the stored strength: the settings chip must be felt before the kv write round-trips. */
+    /** Ignores stored strength: the settings chip must be felt before the kv write round-trips. */
     fun preview(strength: HapticStrength, event: HapticEvent = HapticEvent.Confirm) {
         if (strength == HapticStrength.OFF || vibrator == null) return
         play(event, strength)
@@ -275,8 +263,7 @@ internal fun androidId(primitive: HapticPrimitive): Int = when (primitive) {
 /** Static: the instance never changes for the life of the process, only the field inside it. */
 val LocalT1dmHaptics = staticCompositionLocalOf { T1dmHaptics.None }
 
-/** Haptics reach a screen this way and not as a parameter: feature-module signatures stay free of
- *  `:core:design` types. */
+/** Haptics reach a screen this way, not a parameter: feature-module signatures stay free. */
 @Composable
 @ReadOnlyComposable
 fun rememberT1dmHaptics(): T1dmHaptics = LocalT1dmHaptics.current
@@ -290,8 +277,7 @@ internal fun rememberHapticsEngine(strength: HapticStrength): T1dmHaptics {
     return engine
 }
 
-/** Foundation 1.7.6's `clickable` emits no haptic of its own, so nothing double-fires. The buzz
- *  precedes [onClick] unconditionally, including where the click is a no-op. */
+/** Foundation clickable emits no haptic; buzz precedes onClick unconditionally, even a no-op. */
 @Composable
 fun Modifier.hapticClickable(
     event: HapticEvent = HapticEvent.Tap,
@@ -307,11 +293,7 @@ fun Modifier.hapticClickable(
     }
 }
 
-/**
- * Feed it the QUANTISED value — only the call site knows the grain. The first observation seeds
- * silently, so rendering a control never buzzes. A two-way-bound slider whose value also moves when
- * typed must drive this from the drag interaction, not from the value.
- */
+/** Feed it the QUANTISED value; first observation seeds silently, rendering never buzzes. */
 @Stable
 class HapticDetent internal constructor(
     private val haptics: T1dmHaptics,

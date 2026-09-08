@@ -38,7 +38,7 @@ class ExerciseBucketMergeTest {
 
     @Test
     fun `a stored value smaller than this bout's claim is not credited backwards`() {
-        // The slot can be re-materialised under a running bout; subtracting past zero would undo that.
+        // The slot can re-materialise under a running bout; subtracting past zero would undo that.
         assertEquals(1.0, merged(stored = 0.2, prior = 3.0, grams = 1.0), EPS)
         assertEquals(0.0, merged(stored = null, prior = 3.0, grams = 0.0), EPS)
     }
@@ -51,7 +51,7 @@ class ExerciseBucketMergeTest {
 
     @Test
     fun `a non-finite value reads as nothing rather than poisoning the column`() {
-        // The column crosses the wire: a NaN would be authored onto the server as the phone's judgement.
+        // The column crosses the wire: a NaN would be authored server-side as a judgement.
         assertEquals(0.0, merged(stored = Double.NaN, prior = 0.0, grams = 0.0), EPS)
         assertEquals(2.0, merged(stored = 2.0, prior = Double.NaN, grams = 0.0), EPS)
         assertEquals(2.0, merged(stored = 2.0, prior = 0.0, grams = Double.POSITIVE_INFINITY), EPS)

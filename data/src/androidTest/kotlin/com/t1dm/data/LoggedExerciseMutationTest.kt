@@ -88,8 +88,7 @@ class LoggedExerciseMutationTest {
         assertNull("no meal, dose or wire tombstone exists", repo.newestEventTs())
     }
 
-    /** §2: the offset is the one the slot was authored at. A past-dated replay resolves it from the
-     *  device's zone TODAY, which after a move renames the local hour of every statistic. */
+    /** §2: offset is the one the slot was authored at; a replay reads it from zone TODAY. */
     @Test
     fun aPastDatedReplayLeavesAnExistingSamplesOffsetAlone() = runTest {
         repo.recordSteps(nowMs, tzOffsetMin = 120, steps = 40, nowMs = nowMs)

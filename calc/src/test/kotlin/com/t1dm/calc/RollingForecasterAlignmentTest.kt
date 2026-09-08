@@ -35,8 +35,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** Roll origins CONTEXT at `series.gridStartMs` and FUTURE at `gridStartMs + nCtx·STEP`, re-anchoring
- *  the scored candidate by the same shift. An under-counted candidate fails OPEN. */
+/** CONTEXT at gridStartMs, FUTURE at +nCtx·STEP; candidate re-anchored by shift, fails OPEN. */
 class RollingForecasterAlignmentTest {
 
     // G is grid-aligned; every event sits on an exact bucket boundary.
@@ -134,7 +133,7 @@ class RollingForecasterAlignmentTest {
 
         val built = native.buildContextCalls.first()
 
-        // Without the re-anchor the leading step rounds to idx<0 and is dropped — the fail-open under-count.
+        // Without re-anchor the leading step rounds to idx<0 and drops — fail-open under-count.
         val announcedInsulin = built.announcedInsulin!!
         assertTrue("re-anchored candidate must occupy future bucket 0", announcedInsulin[0] > 0.0)
         assertEquals("re-anchored candidate must integrate to its full U", candidateU, announcedInsulin.sum(), 1e-9)
@@ -145,8 +144,7 @@ class RollingForecasterAlignmentTest {
         assertEquals("context insulin event must NOT land at the pre-fix index 5", 0.0, contextInsulin.getOrElse(5) { 0.0 }, 1e-9)
     }
 
-    /** The dosing context uses the user's BG smoothing window, not the default — the window shifts
-     *  `last_bg`. An even or garbage persisted value is snapped; the Rust guard would reject it. */
+    /** Dosing context uses user's BG smoothing window (shifts last_bg); garbage gets snapped. */
     @Test
     fun rollBuildsContextAtTheUserSmoothingWindow() = runTest {
         for ((persisted, expected) in listOf(25 to 25, 1 to 1, 12 to 13, 0 to 1, -4 to 1)) {
@@ -193,8 +191,7 @@ class RollingForecasterAlignmentTest {
         }
     }
 
-    /** `SPEC/inference.md` §8.1, §9. Carry layout `[up .75 .9 .95 | dn .25 .1 .05]`; roll 0 carries
-     *  nothing. */
+    /** SPEC/inference.md §8.1/§9: layout [up .75 .9 .95|dn .25 .1 .05]; roll 0 carries none. */
     @Test
     fun rollCarriesSpreadPerLevel() = runTest {
         val native = RecordingNativeCore()
@@ -237,7 +234,7 @@ class RollingForecasterAlignmentTest {
             "roll 0 has no seam behind it and must carry nothing, got ${native.carryCalls[0]}",
             native.carryCalls[0].isEmpty(),
         )
-        // Off RISK_ROW: median 3.0, up edges 5/7/9 ⇒ [2,4,6]; down edges 2/1/0 ⇒ [1,2,3] nearest→far.
+        // Off RISK_ROW: median 3.0, up 5/7/9⇒[2,4,6]; down 2/1/0⇒[1,2,3] nearest→far.
         val expected = listOf(2.0, 4.0, 6.0, 1.0, 2.0, 3.0)
         for (r in 1 until native.carryCalls.size) {
             assertEquals(
@@ -247,8 +244,7 @@ class RollingForecasterAlignmentTest {
         }
     }
 
-    /** `bucketize` mirrors the Rust rule: a step whose absolute time maps to `idx < 0` is DROPPED.
-     *  Every other method is unused on this path. */
+    /** bucketize mirrors Rust: a step mapping to idx<0 is DROPPED; other methods unused here. */
     private class RecordingNativeCore : NativeCore {
         /** In roll order. */
         val carryCalls = mutableListOf<List<Double>>()
@@ -275,7 +271,7 @@ class RollingForecasterAlignmentTest {
                 if (ev.kind != kind) continue
                 for (j in ev.values.indices) {
                     val absMs = ev.startMs + j.toLong() * ev.stepMs
-                    val idx = Math.floorDiv(absMs - gridStartMs, STEP_MS).toInt()   // idx<0 dropped, per curve.rs
+                    val idx = Math.floorDiv(absMs - gridStartMs, STEP_MS).toInt() // idx<0: curve.rs
                     if (idx in 0 until nSteps) out[idx] += ev.values[j]
                 }
             }

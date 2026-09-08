@@ -11,11 +11,7 @@ import com.t1dm.watch.crypto.sasWords
 import java.security.MessageDigest
 import uniffi.t1dm_core.WatchSession as RustWatchSession
 
-/**
- * The `:watch` [WatchSession] port over Rust's [RustWatchSession]; it lives in `:app` because
- * `:watch` may not depend on `:core:native`. [acceptPeer] establishes the keys, so the SAS gate to
- * LIVE is phone-side only. Seal/open carry the full record with EMPTY caller AAD (docs/WATCH_BLE.md §6.1).
- */
+/** [WatchSession] over [RustWatchSession]; in `:app` (no `:core:native` dep); EMPTY AAD (§6.1). */
 class UniffiWatchSession internal constructor(
     private val rust: RustWatchSession,
     established: Boolean,
@@ -85,7 +81,7 @@ class UniffiWatchSession internal constructor(
         state = state,
         epoch = epoch,
         keyFingerprint = runCatching { fingerprint(rust.publicKey()) }.getOrNull(),
-        // Rust's counters survive a restore; the locals only cover the pre-LIVE handshake, where these Err.
+        // Rust's counters survive a restore; locals cover only pre-LIVE handshake, where they Err.
         sendSeq = runCatching { rust.sendSeq().toLong() }.getOrDefault(lastSendSeq),
         recvSeq = runCatching { rust.recvMin().toLong() }.getOrDefault(lastRecvSeq),
         sas = if (state == WatchSessionState.AWAIT_SAS) runCatching { sas() }.getOrNull() else null,
@@ -106,8 +102,7 @@ class UniffiWatchSession internal constructor(
     }
 }
 
-/** `burnedCeiling` is ignored: Rust's `restore` burns the send-nonce window from the blob itself,
- *  which is the source of truth. An undecodable blob falls back to [fresh] ⇒ a re-pair. */
+/** `burnedCeiling` ignored: `restore` burns nonce window from blob itself; bad blob ⇒ [fresh]. */
 class UniffiWatchSessionFactory : WatchSessionFactory {
     override fun fresh(): WatchSession = UniffiWatchSession(RustWatchSession(), established = false)
 

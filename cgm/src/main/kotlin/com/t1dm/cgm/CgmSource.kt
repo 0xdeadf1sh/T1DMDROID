@@ -7,11 +7,7 @@ import com.t1dm.core.model.CgmSourceStatus
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 
-/**
- * One CGM source (§3.1). Several may be read at once; exactly one is authoritative
- * ([CgmSourceRegistry]) and inference runs only on that one. [readings] emits CRC-validated,
- * deduped, grid-stamped readings, decoded on the Default dispatcher.
- */
+/** One CGM source (§3.1); several may be read, exactly one authoritative feeds inference. */
 interface CgmSource {
     val descriptor: CgmSourceDescriptor
     val status: StateFlow<CgmSourceStatus>
@@ -23,23 +19,17 @@ interface CgmVendorPlugin {
     /** Stable, e.g. "aidexx". */
     val vendorId: String
 
-    /** Null unless the advert is this vendor's. `manufacturerId` is the BLE company id;
-     *  `manufacturerData` the raw manufacturer-specific payload. */
+    /** Null unless this vendor's; manufacturerId = BLE company id, manufacturerData = payload. */
     fun recognize(name: String?, manufacturerId: Int, manufacturerData: ByteArray): CgmSourceId?
 
-    /** Seeded from vendor defaults. For a source already on record use the descriptor overload —
-     *  the seed overwrites the tuned warm-up window. */
+    /** Seeded from vendor defaults; a known source should use the descriptor overload instead. */
     fun createSource(id: CgmSourceId): CgmSource
 
     /** Adopts [descriptor] verbatim. */
     fun createSource(descriptor: CgmSourceDescriptor): CgmSource
 }
 
-/**
- * The known CGM sources, those being read, and the authoritative one (§3.1). [activeIds] is what the
- * BG panel may switch between; [authoritative] alone feeds inference, the statistics, the alarms and
- * the wire. Auto-discovery may set the FIRST authoritative source; after that it is the user's.
- */
+/** Known/active/authoritative sources (§3.1); [authoritative] alone feeds inference/stats/wire. */
 interface CgmSourceRegistry {
     val sources: StateFlow<List<CgmSourceDescriptor>>
 

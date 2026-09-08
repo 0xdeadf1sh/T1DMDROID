@@ -164,7 +164,7 @@ class ArchiveCodecTest {
 
     @Test
     fun `the archive records WHICH source was authoritative, as a preference the reader may consult`() {
-        // Recorded, not applied: the exactly-one-authoritative invariant is the local table's to keep.
+        // Recorded, not applied: exactly-one-authoritative invariant is the local table's to keep.
         assertEquals(true, parse(render { Archive.write(it, source(authoritative = true)) }).bool("ac"))
         assertEquals(false, parse(render { Archive.write(it, source(authoritative = false)) }).bool("ac"))
     }

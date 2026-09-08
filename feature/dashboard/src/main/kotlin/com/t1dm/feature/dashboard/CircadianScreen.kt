@@ -116,17 +116,14 @@ fun CircadianScreen(
 /** Display only: no §3.6 rail reads this. An estimate, not a clinical alarm. */
 @Composable
 private fun DeathCountdownSection(iobU: Double?, iobZeroMs: Long?, tl: DkaTimeline) {
-    // The State is deliberately not unwrapped: every reader below is a lambda the Canvas invokes in
-    // its draw phase, so a tick repaints and nothing recomposes.
+    // State kept wrapped: readers are lambdas the Canvas invokes; ticks repaint, not recompose.
     val nowMs = produceState(System.currentTimeMillis()) {
         while (true) {
             value = System.currentTimeMillis()
             kotlinx.coroutines.delay(1_000L)
         }
     }
-    // Captured once, not the live nowMs, else landmark − nowMs cancels to a constant and the clock
-    // freezes. The projected IOB-zero instant and nothing else: substituting `now` when the crossing
-    // is unknown would render an invented countdown in the typography of a real projection.
+    // Captured once; live nowMs would cancel to a constant, freezing or faking the crossing.
     val anchor = iobZeroMs
     fun h(x: Double) = (x * 3_600_000.0).toLong()
     val marks = JourneyMarks.EVEN

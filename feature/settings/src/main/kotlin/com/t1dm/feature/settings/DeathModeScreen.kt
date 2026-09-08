@@ -145,7 +145,7 @@ fun DeathModeScreen(active: Boolean, onActivate: () -> Unit, onDeactivate: () ->
                     )
                     DeathView.SEALED -> SealedRite(
                         onRescind = {
-                            // The tear plays first; onDeactivate fires only once the halves fall away.
+                            // The tear plays first; onDeactivate fires once the halves fall away.
                             if (animationsOn) {
                                 tearing = true
                             } else {
@@ -550,8 +550,7 @@ private fun idlePhase(durationMs: Int, label: String): Float =
         ).value
     } else 0f
 
-// Withheld from the index in the public flavor by SettingsIndex.visible; the override is compiled
-// out there.
+// Withheld from the index in public flavor by SettingsIndex.visible; the override is compiled out.
 
 private val deathModeRite = SettingsKnob(
     id = "death_mode.rite",

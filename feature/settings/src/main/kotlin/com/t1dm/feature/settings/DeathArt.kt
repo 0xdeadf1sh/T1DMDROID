@@ -14,8 +14,7 @@ import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.lerp
 import kotlin.math.sin
 
-/** Each figure draws centred and scaled to the caller's `size`. Roles: [primary] theme accent,
- *  [accent] `colorScheme.error`, [ink] neutral foreground. */
+/** Centred, scaled to `size`; [primary]=theme accent, [accent]=colorScheme.error, [ink]=fg. */
 
 private fun Color.toward(other: Color, t: Float): Color = lerp(this, other, t)
 private val Color.deep get() = toward(Color.Black, 0.62f)
@@ -486,7 +485,7 @@ fun DrawScope.drawSkull(phase: Float, primary: Color, accent: Color, ink: Color)
     )
 }
 
-/** [phase] is a clock in [0, 2π); 0f is still. The sheet is pale in every theme, not ink-derived. */
+/** [phase] is a clock in [0,2π); 0f is still. Sheet is pale in every theme, not ink-derived. */
 fun DrawScope.drawContract(phase: Float, primary: Color, accent: Color, ink: Color) {
     val w = size.width
     val h = size.height

@@ -12,7 +12,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-/** [start] and [stop] only signal the foreground service; the bout row is opened and closed there. */
+/** [start]/[stop] only signal the foreground service; the bout row opens/closes there. */
 class AppExerciseSource(
     private val controller: ExerciseController,
     private val settings: SettingsStore,

@@ -32,11 +32,7 @@ import kotlinx.coroutines.flow.distinctUntilChangedBy
 import kotlinx.coroutines.launch
 import timber.log.Timber
 
-/**
- * A `location`-typed service of its own: OR-ing the type into [CgmScanService] would make the
- * monitor refuse to start on 34+ for anyone who declines location. It joins no auto-restart path,
- * deliberately. The final flush runs on [AppContainer.appScope] to survive this service's death.
- */
+/** location-typed service on purpose; joins no auto-restart; final flush runs on appScope. */
 class ExerciseService : LifecycleService() {
 
     private lateinit var container: AppContainer
@@ -96,8 +92,7 @@ class ExerciseService : LifecycleService() {
             stopSelf()
             return
         }
-        // LAZY: `lifecycleScope` is `Main.immediate` and would run the body inline, before the
-        // assignment to `recordJob` the failure path clears.
+        // LAZY: lifecycleScope is Main.immediate, would run inline before recordJob assignment.
         recordJob = lifecycleScope.launch(start = CoroutineStart.LAZY) {
             try {
                 val session = container.exerciseController.start(kind)
@@ -124,7 +119,7 @@ class ExerciseService : LifecycleService() {
                 recorder = rec
                 runCatching { rec.run() }
                     .onFailure {
-                        // Rethrown: swallowing it completes the job under the cancel `stopBout` awaits.
+                        // Rethrown: swallowing it completes the job the cancel stopBout awaits.
                         if (it is CancellationException) throw it
                         Timber.tag(TAG).w(it, "exercise recording stopped")
                     }
@@ -138,10 +133,7 @@ class ExerciseService : LifecycleService() {
         recordJob?.start()
     }
 
-    /**
-     * No row to close; the open is what failed. [recordJob] must be cleared — `startBout`'s guard
-     * reads it, so left set it refuses every later ACTION_START. Silent once superseded or stopping.
-     */
+    /** No row to close; recordJob must clear or startBout's guard refuses every ACTION_START. */
     private fun failStart(generation: Int, cause: Throwable) {
         if (!gate.isCurrent(generation) || gate.stopping) return
         recordJob = null
@@ -152,11 +144,7 @@ class ExerciseService : LifecycleService() {
         stopSelf()
     }
 
-    /**
-     * The job is joined, not just cancelled: [com.t1dm.sensors.ExerciseBucketer] is single-collector
-     * and `finish` drives it. [stopSelf] runs last, so the process stays foreground across the flush.
-     * [interrupted] marks a bout ended at [EXERCISE_MAX_BOUT_MS] rather than by the user.
-     */
+    /** Job joined not cancelled: ExerciseBucketer is single-collector; stopSelf runs last. */
     private fun stopBout(interrupted: Boolean = false) {
         if (!gate.beginStop()) return
         val endMs = System.currentTimeMillis()
@@ -184,7 +172,7 @@ class ExerciseService : LifecycleService() {
                     )
                 }.onFailure { Timber.tag(TAG).w(it, "closing the exercise bout failed") }
             }
-            // A Start during the flush owns the service; clearing or stopping now would end that bout.
+            // A Start during the flush owns the service; stopping now would end that bout.
             if (gate.isCurrent(generation)) {
                 container.activeExercise.value = null
                 stopSelf()
@@ -192,10 +180,7 @@ class ExerciseService : LifecycleService() {
         }
     }
 
-    /**
-     * The backstop on a forgotten bout: nothing else here ends a recording, and GNSS at a four-second
-     * cadence drains. The row it closes is marked interrupted.
-     */
+    /** Backstop on a forgotten bout: GNSS at 4s cadence drains; row it closes is interrupted. */
     private fun observeBoutLimit() {
         lifecycleScope.launch {
             container.activeExercise.collect { active ->
@@ -229,8 +214,7 @@ class ExerciseService : LifecycleService() {
             .addAction(Notification.Action.Builder(null as Icon?, "Stop", stopIntent()).build())
             .build()
 
-    /** Its own request code: this intent is `filterEquals` to the monitor's, and a shared code would
-     *  have the two update each other. */
+    /** Its own request code: filterEquals to the monitor's, a shared code would update both. */
     private fun openIntent(): PendingIntent {
         val i = Intent(this, MainActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
@@ -276,15 +260,13 @@ class ExerciseService : LifecycleService() {
         private const val RQ_OPEN = 4301
         private const val RQ_STOP = 4302
 
-        /** Either grant gives the service its `location` type; a track needs FINE — see
-         *  [hasPreciseLocation]. */
+        /** Either grant gives the location type; a track needs FINE (hasPreciseLocation). */
         val LOCATION_PERMISSIONS = arrayOf(
             Manifest.permission.ACCESS_FINE_LOCATION,
             Manifest.permission.ACCESS_COARSE_LOCATION,
         )
 
-        /** A coarse-only client still gets fixes, but fuzzed to roughly 2 km, which
-         *  `ExerciseBucketer` refuses at its 50 m ceiling. */
+        /** Coarse-only fixes fuzz to ~2 km; ExerciseBucketer refuses below its 50 m ceiling. */
         fun hasPreciseLocation(context: Context): Boolean =
             context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
                 PackageManager.PERMISSION_GRANTED
@@ -310,10 +292,7 @@ class ExerciseService : LifecycleService() {
     }
 }
 
-/**
- * Which bout [ExerciseService] is on, and whether that bout's close-out has begun. [generation] is
- * written on the main thread and read from [AppContainer.appScope]; [stopping] is main-thread only.
- */
+/** Which bout is on, whether close-out began; generation written main, read from appScope. */
 internal class BoutGate {
 
     @Volatile
@@ -343,10 +322,7 @@ internal fun progressText(active: ActiveExercise): String {
     return "$minutes · $distance"
 }
 
-/**
- * Coarser than what [progressText] renders: keying the rebuild on the metres would be roughly 75
- * `notify` calls per five-minute bucket.
- */
+/** Coarser than progressText: keying on metres would be ~75 notify calls per 5-min bucket. */
 internal fun progressKey(active: ActiveExercise): String =
     "${active.session.id}|${active.elapsedMs / 60_000L}|${distanceLabel(active.distanceM) != null}"
 

@@ -1,10 +1,4 @@
-//! Direct multi-step ridge on lagged CGM plus causal on-board, fitted per patient. One weight
-//! vector per horizon step; the fan is `SPEC/inference.md` §8.4's split conformal over a
-//! degenerate fan, so it and the neural fan score on one basis (`SPEC/invariants.md` §6.2).
-//!
-//! On-board here is CAUSAL, deliberately unlike [`crate::on_board`]: that sums every matching
-//! event's remaining tail, which at a historical step would leak a later-logged dose into the
-//! fit. [`on_board_series`] gates on having started (`SPEC/inference.md` §7.1).
+//! Per-patient multi-step ridge on lagged CGM + causal on-board; §8.4 conformal fan (§6.2 basis).
 
 use crate::accuracy::{ForecastWindow, QUANTILE_LEVELS};
 use crate::conformal::{apply_quantile_conformal, fit_quantile_conformal, ConformalFit};
@@ -12,27 +6,22 @@ use crate::curve::{CurveEvent, CurveKind, STEP_MS};
 use crate::preproc::{fan_is_ascending, fan_is_collapsed, median_is_rail_pinned, ForecastStatus};
 use crate::{CoreError, CLINICAL_BG_CLAMP_MAX, CLINICAL_BG_CLAMP_MIN};
 
-/// Ridge share of the usable rows; the rest becomes the conformal window set, which
-/// [`fit_quantile_conformal`] splits again, so no reported coverage is in-sample.
+/// Ridge share of usable rows; rest feeds conformal (split again), so no coverage is in-sample.
 const RIDGE_FIT_FRACTION: f64 = 0.6;
 
 /// 8 weeks of 5-minute steps. The normal-equation accumulation is `O(n·d²)`, on the phone.
 const MAX_FIT_STEPS: usize = 16_128;
 
-/// 6 h of lags. Past a few hours the design matrix is collinear and Cholesky conditioning
-/// degrades for no accuracy.
+/// 6h of lags; past a few hours the design matrix collinearizes, degrading Cholesky for nothing.
 const MAX_LAGS: u32 = 72;
 
 /// 6 h, in 5-minute steps.
 const MAX_HORIZON: u32 = 72;
 
-/// A floor, not a default: a non-positive penalty leaves a singular system for a patient
-/// whose COB is identically zero.
+/// A floor, not default; a non-positive penalty singularizes the system for zero-COB patients.
 const MIN_LAMBDA: f64 = 1e-6;
 
-/// Forward windows in five-minute steps — 30, 60, 120 min — summing committed carb appearance
-/// and insulin action. They count every curve overlapping the window, one starting after the
-/// anchor included, so `holdout_rmse_mgdl` is optimistic against a strictly-causal figure.
+/// Forward windows: 30/60/120min, summing carb+insulin; counts curves after anchor (optimistic).
 const FORWARD_BLOCKS: [usize; 3] = [6, 12, 24];
 
 #[derive(Debug, Clone, Copy, PartialEq, uniffi::Record)]
@@ -60,9 +49,7 @@ pub fn baseline_default_spec() -> BaselineSpec {
     }
 }
 
-/// `weights` is `horizon_steps × (1 + n_features)`, row-major, intercept first, standardization
-/// folded in. `band_delta` is part of the model, not §8.4's display-only correction: a ridge has
-/// no interval of its own. All zeros until fitted, which the degeneracy guard withholds.
+/// weights: horizon×(1+features) row-major, intercept first; band_delta is model-owned, not §8.4.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct BaselineModel {
     pub spec: BaselineSpec,
@@ -77,8 +64,7 @@ pub struct BaselineModel {
     pub train_to_ms: i64,
 }
 
-/// `holdout_rmse_mgdl` is per horizon step over the conformal split, a MEDIAN-LINE figure —
-/// not `SPEC/invariants.md` §6.2's band projection, and never in one column with it.
+/// holdout_rmse_mgdl is per-horizon MEDIAN-LINE (conformal split); not §6.2's band projection.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct BaselineFit {
     pub model: BaselineModel,
@@ -96,8 +82,7 @@ pub struct BaselineForecast {
     pub bands_mgdl: Vec<f64>,
 }
 
-/// Per step, the remaining tail area of every matching event THAT HAS ALREADY STARTED —
-/// [`crate::on_board`] restricted to started events; see the module note.
+/// Per step: remaining tail of every STARTED event; on_board restricted, see module note.
 fn on_board_series(
     events: &[CurveEvent],
     kind: CurveKind,
@@ -136,9 +121,7 @@ fn on_board_series(
     }
 }
 
-/// The causal on-board amount at one instant — the feature [`baseline_predict`] consumes. NOT
-/// [`crate::on_board`]: computing this column any other way infers on a definition the fit did
-/// not train on, and the bias is invisible in every forecast.
+/// Causal on-board baseline_predict consumes; NOT crate::on_board — a different def leaks bias.
 #[uniffi::export]
 pub fn baseline_on_board_at(events: Vec<CurveEvent>, at_ms: i64, kind: CurveKind) -> f64 {
     let mut out = [0.0f64; 1];
@@ -147,8 +130,7 @@ pub fn baseline_on_board_at(events: Vec<CurveEvent>, at_ms: i64, kind: CurveKind
     out[0]
 }
 
-/// `a` is `d×d` row-major, overwritten with `L`; `b` is overwritten with the solution. False if
-/// `A` is not positive definite, which with a positive ridge means a non-finite design.
+/// a: d×d row-major, overwritten with L; b overwritten with solution. False if A not pos-def.
 fn cholesky_solve_in_place(a: &mut [f64], b: &mut [f64], d: usize) -> bool {
     for i in 0..d {
         for j in 0..=i {
@@ -219,8 +201,7 @@ fn checked_shape(spec: &BaselineSpec) -> Result<(usize, usize, usize), CoreError
     Ok((p, h, d))
 }
 
-/// `carb`/`ins` are per-step rates whose index 0 is the step immediately AFTER the anchor — the
-/// same alignment at fit time and at inference.
+/// carb/ins: per-step rates, index 0 is the step AFTER anchor; same alignment fit and inference.
 #[inline]
 fn forward_row(carb: &[f64], ins: &[f64], row: &mut [f64], at: usize) -> bool {
     for (b, &block) in FORWARD_BLOCKS.iter().enumerate() {
@@ -238,8 +219,7 @@ fn forward_row(carb: &[f64], ins: &[f64], row: &mut [f64], at: usize) -> bool {
     true
 }
 
-/// False if any component is non-finite: the row is dropped, never imputed, since gap-filling
-/// is a presentation step only (`SPEC/invariants.md` §1).
+/// False if any component non-finite: row dropped, never imputed (gap-fill is display-only, §1).
 #[allow(clippy::too_many_arguments)]
 #[inline]
 fn design_row(
@@ -289,9 +269,7 @@ fn design_row(
     true
 }
 
-/// `bg_mgdl` is grid-aligned from `grid_start_ms`, newest last, a non-finite entry marking a
-/// gap; `events` must include the tails of anything still acting when the window opens. The
-/// split is chronological. Too small a held-out set returns an all-zero, withheld band.
+/// bg_mgdl grid-aligned, newest last, NaN=gap; events must include tails still acting at open.
 #[uniffi::export]
 pub fn fit_baseline_ridge(
     bg_mgdl: Vec<f64>,
@@ -425,8 +403,7 @@ pub fn fit_baseline_ridge(
                 k + 1
             )));
         }
-        // This horizon's rows are a subset of the standardized set, so its column means are
-        // not 0. Exact re-centring: `Z_cᵀZ_c = ZᵀZ − n·z̄z̄ᵀ`, `Z_cᵀy_c = Zᵀy − ȳ·Zᵀ1`.
+        // Subset means aren't 0; re-centring: Z_cᵀZ_c = ZᵀZ − n·z̄z̄ᵀ, Z_cᵀy_c = Zᵀy − ȳ·Zᵀ1.
         let g = &gram[k * dd..(k + 1) * dd];
         let xy = &xty[k * d..(k + 1) * d];
         let cs = &colsum[k * d..(k + 1) * d];
@@ -460,8 +437,7 @@ pub fn fit_baseline_ridge(
         w[0] = intercept;
     }
 
-    // The roll below reads only the weights, so `band_delta` is still empty here — which is
-    // why the roll calls `predict_median` rather than `baseline_predict`.
+    // Roll reads only weights (band_delta empty); calls predict_median, not baseline_predict.
     let model = BaselineModel {
         spec,
         n_features: d as u32,
@@ -556,9 +532,7 @@ fn predict_median(model: &BaselineModel, row: &[f64], d: usize, h: usize) -> Vec
     out
 }
 
-/// `bg_tail` is the trailing `n_lags` mg/dL values OLDEST→NEWEST; `iob`/`cob` are causal
-/// on-board at the anchor. With an unfitted `band_delta` the fan stays degenerate and
-/// [`baseline_degeneracy_check`] withholds it: a median with no interval is not shown.
+/// bg_tail: trailing n_lags mg/dL OLDEST→NEWEST; iob/cob causal; unfitted delta ⇒ withheld.
 #[uniffi::export]
 pub fn baseline_predict(
     model: &BaselineModel,
@@ -613,8 +587,7 @@ pub fn baseline_predict(
         k += 1;
     }
     if model.spec.use_forward {
-        // Index 0 is the step after the anchor, as at fit time. A zero-padded short future
-        // would read as "no dose is coming", so withhold instead.
+        // Index 0 = step after anchor; a zero-padded future reads "no dose" — withhold instead.
         if future_carb.len() < h || future_insulin.len() < h {
             return Err(bad(format!(
                 "baseline future channels are {} / {} steps, need {h}",
@@ -642,8 +615,7 @@ pub fn baseline_predict(
     } else {
         apply_quantile_conformal(bands, model.band_delta.clone())?
     };
-    // The delta lands downstream of the median's own clamp, so an edge can leave the physical
-    // domain even though the median cannot. Clamping a monotone sequence keeps it monotone.
+    // Delta applies after median clamp, so an edge can escape domain; clamping stays monotone.
     for v in bands_mgdl.iter_mut() {
         *v = v.clamp(CLINICAL_BG_CLAMP_MIN, CLINICAL_BG_CLAMP_MAX);
     }
@@ -654,8 +626,7 @@ pub fn baseline_predict(
     })
 }
 
-/// The §3.6-B guard for a forecast with no risk space: [`crate::forecast_degeneracy_check`]'s
-/// predicates over the mg/dL bands and the clinical rails.
+/// §3.6-B guard, no risk space: forecast_degeneracy_check's predicates over mg/dL bands/rails.
 #[uniffi::export]
 pub fn baseline_degeneracy_check(f: &BaselineForecast) -> ForecastStatus {
     let nq = QUANTILE_LEVELS.len();

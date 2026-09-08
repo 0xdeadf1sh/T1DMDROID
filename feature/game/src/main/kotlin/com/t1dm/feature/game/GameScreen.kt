@@ -87,12 +87,10 @@ import kotlin.math.roundToInt
 /** Above the 48 dp touch-target floor; two fit without crowding the 220 dp panel. */
 private val PEDAL_SIZE = 76.dp
 
-/** Apparent car width. [GameViewport.zoomedWidthM] picks the span at which a true-scale car is
- *  this wide. */
+/** Apparent car width; GameViewport.zoomedWidthM picks the span a true-scale car is this wide. */
 private val CAR_DRAW_DP = 120.dp
 
-/** Ground cut before the chart's left edge, as a multiple of the visible span: a fixed margin is
- *  ample at a half-hour window and nothing at six hours. */
+/** Ground cut before chart's left edge, as a multiple of visible span; fixed margin fails at 6h. */
 private const val TRACK_LEAD_SPANS = 1f
 
 /** Fits the top inset's base 10 dp band without touching the plot edge or the clock axis. */
@@ -102,16 +100,14 @@ private val PROGRESS_H = 5.dp
 private val GAUGE_RADIUS = 30.dp
 
 
-/** Hand-off fade, paired BY HAND with the dashboard's chart cross-fade. See `handOff` in [GameStage]. */
+/** Hand-off fade, paired BY HAND with dashboard cross-fade; see handOff in GameStage. */
 private const val HAND_OFF_MS = 220
 
 
 
 private val DAY_LABEL: DateTimeFormatter = DateTimeFormatter.ofPattern("EEE d MMM")
 
-/** Solver runs on [gameDispatcher], never on `t1dm-inference` or a shared `default` worker. The frame
- *  path touches snapshot state twice: a draw-lambda tick and a 4 Hz HUD cell. [alarmRaised] releases
- *  the vibrator and audio focus outright rather than ducking — `:alerts` uses the same actuator. */
+/** Solver runs on gameDispatcher, never inference/default; alarmRaised releases the actuator. */
 @Composable
 fun GameScreen(
     modifier: Modifier = Modifier,
@@ -171,7 +167,7 @@ fun GameScreen(
     }
 }
 
-/** Own composable so every per-run holder is remembered against one scene's lifetime (via `key`). */
+/** Own composable so every per-run holder is remembered against one scene's lifetime (via key). */
 @Composable
 private fun GameStage(
     scene: GameScene,
@@ -213,12 +209,10 @@ private fun GameStage(
     // The loop outlives any recomposition that swaps the lambda.
     val firstFrame by rememberUpdatedState(onFirstFrame)
 
-    /** Flipped in the same Main-thread write as the caller's hand-off, so both land in ONE
-     *  recomposition; gating on the published frame alone draws the threshold bands twice. */
+    /** Flipped in same Main-thread write as hand-off; frame-alone gating draws bands twice. */
     var handedOver by remember { mutableStateOf(false) }
 
-    /** Complementary to the dashboard's chart cross-fade — shared translucent fills add rather than
-     *  cross-fade. Duration coupled to it by hand. */
+    /** Complementary to dashboard's cross-fade: translucent fills add; duration coupled by hand. */
     val motionOn = LocalAnimationsEnabled.current
     val handOff by animateFloatAsState(
         targetValue = if (handedOver) 1f else 0f,
@@ -239,8 +233,7 @@ private fun GameStage(
         if (alarmRaised || gate.holds.has(GameHold.Background)) feel.release() else feel.resume()
     }
 
-    // The frame clock stops only on window DETACH, so a dialog would leave the world running under
-    // it. Pedals released too: a pointer that never gets its up event resumes at full throttle.
+    // Frame clock stops only on DETACH, so a dialog leaves the world running; pedals released too.
     val owner = LocalLifecycleOwner.current
     val alarmNow by rememberUpdatedState(alarmRaised)
     DisposableEffect(owner) {
@@ -297,11 +290,11 @@ private fun GameStage(
     val topInsetPx = with(density) { GraphInsets.top(runClock != null).toPx() }
     val bottomInsetPx = with(density) { GraphInsets.Bottom.toPx() }
     val modelAxisPx = with(density) { if (runClock != null) GraphInsets.ModelAxis.toPx() else 0f }
-    // Past the furniture's per-frame working set (>20 strings); every miss is a text layout at 60 Hz.
+    // Past furniture's per-frame working set (>20 strings); every miss is a text layout at 60 Hz.
     val measurer = rememberTextMeasurer(cacheSize = 32)
     val labelCache = remember { GraphLabelCache() }
     val gaugeRadiusPx = with(density) { GAUGE_RADIUS.toPx() }
-    // Pixels per car-local metre, off the tune's own length so a retune cannot change the drawn size.
+    // Pixels per car-local metre off tune's length, so a retune can't change the drawn size.
     val carScalePx = with(density) { CAR_DRAW_DP.toPx() } / (tuning.chassisHalfLen * 2f)
     val gaugeInsetPx = with(density) { 8.dp.toPx() }
     val progressThicknessPx = with(density) { PROGRESS_H.toPx() }
@@ -328,9 +321,7 @@ private fun GameStage(
         ) {
             // Draw-phase read only: read the tick in composition and every frame recomposes.
             val frameTick = bus.tick
-            // Nothing until the hand-off. This Canvas draws from scene build and has no opaque base, so
-            // an earlier frame paints the game under the live chart. `frameTick` is read above because
-            // that read is what subscribes this draw to the bus.
+            // Nothing until hand-off: no opaque base; earlier frame paints under; tick subscribes.
             if (!handedOver || frameTick == 0L) return@Canvas
             val f = bus.published
 
@@ -341,16 +332,16 @@ private fun GameStage(
             val plotW = (plotRight - plotLeft).coerceAtLeast(1f)
             val plotH = (plotBottom - plotTop).coerceAtLeast(1f)
 
-            // Anisotropic by design: value maps down the height, time across the width, independently.
+            // Anisotropic by design: value maps down height, time across width, independently.
             val map = scene.track.map
             val pxX = plotW / f.camWidth.coerceAtLeast(1e-3f)
             // No intro pan: the panel must be identical the frame before and after Drive is tapped.
             val camLeftM = f.camLeft
-            // From the frame, not the map: the speed widening opens the value axis too. See [GameZoom.fov].
+            // From the frame, not the map: speed widening opens the value axis too (GameZoom.fov).
             val pxY = plotH / f.camHeight.coerceAtLeast(1e-3f)
             // World metres, so it rides the vertical scale.
             val carLiftPx = f.carLiftM * pxY
-            // Dead-band rescue, zero in the normal case; unhonoured, a car above the ceiling stays gone.
+            // Dead-band rescue, zero normally; unhonoured, a car above the ceiling stays gone.
             val camBottomM = f.camBottom
             val floorPx = plotBottom + camBottomM * pxY
             val camRightMs = map.tsMsAt(camLeftM + f.camWidth)
@@ -382,7 +373,7 @@ private fun GameStage(
                     // True scale on both axes. See [drawCar].
                     if (f.carShown) {
                         translate(top = -carLiftPx) {
-                            // Before the car, so the plume sits behind it, and inside the same lift.
+                            // Before the car, so the plume sits behind it, inside the same lift.
                             drawSmoke(art, f, skin, camLeftM, floorPx, pxX, worldY = pxY)
                             drawCar(art, f, skin, camLeftM, floorPx, pxX, worldY = pxY)
                         }
@@ -390,7 +381,7 @@ private fun GameStage(
                 }
             }
 
-            // In the top inset, not the plot: the plot's top holds the peaks and the highest label.
+            // In the top inset, not the plot: plot's top holds the peaks and the highest label.
             drawProgress(
                 progress = f.progress,
                 left = plotLeft,
@@ -403,7 +394,7 @@ private fun GameStage(
 
             drawGauges(
                 f,
-                // Panel, not plot rect: the plot's asymmetric insets would sit the pair right of centre.
+                // Panel, not plot rect: the plot's asymmetric insets sit the pair off-centre.
                 centreX = size.width * 0.5f,
                 bottomY = plotBottom - gaugeInsetPx,
                 radius = gaugeRadiusPx,
@@ -467,8 +458,7 @@ private fun TerminalCard(hud: HudState, modifier: Modifier, onRestart: () -> Uni
     }
 }
 
-/** `pressed` is read only inside the draw lambda: a press invalidates this zone's draw, not
- *  composition. */
+/** pressed reads only in the draw lambda: a press invalidates the zone's draw, not composition. */
 @Composable
 private fun PedalZone(
     skin: GameSkin,

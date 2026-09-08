@@ -6,11 +6,7 @@ import com.t1dm.data.db.PredictionEntity
 import com.t1dm.data.db.toBlob
 import com.t1dm.data.db.toDoubleList
 
-/**
- * [ModelPrediction.bandsMgdl] is step-major, τ-minor (`s·nQ + q`); [PredictionEntity.fanBlob] is
- * quantile-major (`q·H + s`), wire order, ascending τ `[0.05,0.1,0.25,0.5,0.75,0.9,0.95]`, row 3
- * the median line. This transpose is the single place the two conventions meet.
- */
+/** bandsMgdl is step-major tau-minor (s*nQ+q); fanBlob is quantile-major (q*H+s); the transpose. */
 
 internal fun ModelPrediction.toEntity(nowMs: Long): PredictionEntity {
     val h = medianBg.size

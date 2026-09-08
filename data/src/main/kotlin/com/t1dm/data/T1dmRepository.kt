@@ -99,18 +99,16 @@ data class BgCut(
 class T1dmRepository(
     private val db: AppDatabase,
     private val dispatchers: T1dmDispatchers,
-    /** Wall clock for an outbox row's `createdAtMs`; every other timestamp comes from the caller. */
+    /** Wall clock for an outbox row's createdAtMs; every other timestamp comes from the caller. */
     private val nowMs: () -> Long = System::currentTimeMillis,
 ) : OutboxSink {
     private val io get() = dispatchers.io
 
-    /** Bumped on every logged meal/dose write. Those no longer touch `sample`, so
-     *  [observeSampleWrites] does not fire for them. */
+    /** Bumped on logged meal/dose writes, which skip sample and observeSampleWrites. */
     private val _logEvents = MutableStateFlow(0L)
     val logEvents: StateFlow<Long> = _logEvents.asStateFlow()
 
-    /** Set by `:app` from the persisted config. Volatile rather than a kv read: checked inside the
-     *  reading-projection transaction on the CGM hot path. False keeps an unconfigured bridge quiet. */
+    /** Set by :app from persisted config; volatile not kv, checked on the CGM hot path. */
     @Volatile
     var nightscoutBridgeEnabled: Boolean = false
 
@@ -138,8 +136,7 @@ class T1dmRepository(
     private val tombstones get() = db.eventTombstoneDao()
     private val exerciseFixes get() = db.exerciseFixDao()
 
-    /** Room KTX `withTransaction` throws once a `SQLiteDriver` is configured, hence the writer
-     *  connection directly. Connection confinement puts every DAO call in [body] in this transaction. */
+    /** Room KTX withTransaction throws with a SQLiteDriver; uses the writer connection directly. */
     private suspend fun <R> inWriteTx(body: suspend () -> R): R =
         db.useWriterConnection { transactor ->
             transactor.immediateTransaction { body() }
@@ -148,8 +145,7 @@ class T1dmRepository(
     fun observeSources(): Flow<List<CgmSourceDescriptor>> =
         sources.observeAll().map { list -> list.map { it.toDescriptor() } }
 
-    /** Deduplicated: a `lastSeenMs` touch re-runs the query but yields an equal descriptor, and the
-     *  `flatMapLatest` consumers rebuild on every emission. */
+    /** Deduplicated: a lastSeenMs touch re-runs the query but yields an equal descriptor. */
     fun observeAuthoritativeSource(): Flow<CgmSourceDescriptor?> =
         sources.observeAuthoritative().map { it?.toDescriptor() }.distinctUntilChanged()
 
@@ -184,8 +180,7 @@ class T1dmRepository(
                     addedAtMs = existing?.addedAtMs ?: nowMs,
                     lastSeenMs = nowMs,
                     hidden = !authoritative && (existing?.hidden ?: false),
-                    // Minted once, never revised. An archive restore bypasses this path and numbers
-                    // its own rows; see `ArchiveReader.renumbered`.
+                    // Minted once, never revised; archive restore numbers its own rows.
                     ordinal = ordinal,
                 ),
             )
@@ -197,7 +192,7 @@ class T1dmRepository(
         }
     }
 
-    /** Last line of defence: number any row still carrying the unassigned sentinel, in list order. */
+    /** Last line of defence: numbers any row still carrying the unassigned sentinel, list order. */
     suspend fun assignMissingSourceOrdinals() = withContext(io) {
         val pending = sources.unnumberedSourceIds()
         if (pending.isEmpty()) return@withContext
@@ -258,11 +253,7 @@ class T1dmRepository(
     fun observeReadings(sourceId: CgmSourceId, fromMs: Long, toMs: Long): Flow<List<CgmReading>> =
         readings.observeRange(sourceId.value, fromMs, toMs).map { list -> list.map { it.toModel() } }
 
-    /**
-     * One reading per grid slot (§3.1) across every source of one sensor MODEL. [selectedSourceId]
-     * resolves a contested slot only; it does not filter, and null falls through to the newest
-     * reception. Widens no AUTHORITY: live value, alarms and the `sample` projection stay scoped.
-     */
+    /** One reading per grid slot (§3.1) across a sensor MODEL; widens no AUTHORITY, scope stays. */
     @OptIn(ExperimentalCoroutinesApi::class)
     fun observeReadingsForSensorModel(
         sensorModelId: String,
@@ -285,8 +276,7 @@ class T1dmRepository(
             // The operators above walk every row, and the sole consumer collects in composition.
             .flowOn(io)
 
-    /** Read separately from the windowed trace so the graph's pannable domain still reaches the
-     *  whole record. */
+    /** Read separately from the windowed trace so the graph's pannable domain reaches the whole. */
     @OptIn(ExperimentalCoroutinesApi::class)
     fun observeOldestTsForSensorModel(sensorModelId: String): Flow<Long?> =
         sources.observeIdsForSensorModel(sensorModelId)
@@ -301,8 +291,7 @@ class T1dmRepository(
     fun observeLatestReading(sourceId: CgmSourceId): Flow<CgmReading?> =
         readings.observeLatest(sourceId.value).map { it?.toModel() }.distinctUntilChanged()
 
-    /** Separate from [observeLatestReading] so a promoted reconstruction never reaches a glance
-     *  surface as the patient's glucose. */
+    /** Separate from observeLatestReading so a promoted reconstruction never reads as glucose. */
     fun observeLastMeasuredReading(sourceId: CgmSourceId): Flow<CgmReading?> =
         readings.observeLatestMeasured(sourceId.value).map { it?.toModel() }.distinctUntilChanged()
 
@@ -317,11 +306,7 @@ class T1dmRepository(
     }
 
 
-    /**
-     * The raw sub-grid row first and unconditionally — only a MEASURED reading has a receive instant
-     * to be filed under. Then the slot contest: where [supersedesGridSlot] says no, nothing but the
-     * raw store changed. That skip is the only thing keeping `sample.bgMgdl` equal to the winner.
-     */
+    /** Raw sub-grid row first, unconditionally; skip on lost contest keeps sample.bgMgdl right. */
     suspend fun upsertReading(reading: CgmReading) = withContext(io) {
         requireGrid(reading.tsMs)
         inWriteTx {
@@ -334,28 +319,23 @@ class T1dmRepository(
             readings.upsert(entity)
             val authoritative = sources.authoritativeSourceId()
             if (authoritative == reading.sourceId.value && reading.flag != ReadingFlag.INVALID) {
-                // A real measurement in a slot a model reconstructed makes the fill stale. A PROMOTED
-                // span is spared: its row is the only copy of the band the stored sample carries, and
-                // demotion is a deliberate act, not a side effect.
+                // A real measurement stales a fill; PROMOTED spared, demotion is deliberate.
                 if (isRealMeasurement(reading.provenance, reading.flag)) {
                     val fill = infills.at(reading.tsMs)
                     if (fill != null && fill.promotedAtMs == null) infills.deleteAt(reading.tsMs)
                 }
                 projectBg(reading)
-                // The WRITE instant, never the event's: a reading recovered from a sensor's own store
-                // would otherwise be age-evicted before a single attempt.
+                // WRITE instant not the event's: sensor-recovered would else be age-evicted.
                 val queuedAt = nowMs()
                 enqueueIngest(reading.tsMs, queuedAt)
-                // Not in `enqueueIngest`: a steps or mood write would re-queue a slot whose BG has not
-                // changed, and the receiver has no idempotency key to absorb it.
+                // Not in enqueueIngest: steps/mood would re-queue unchanged BG, no idempotency key.
                 if (nightscoutBridgeEnabled) {
                     enqueueRow(
                         OutboxKind.NIGHTSCOUT,
                         "$NS_ENTRY_DEDUP_PREFIX${reading.tsMs}",
                         ByteArray(0),
                         queuedAt,
-                        // Held until the slot closes: the marker coalesces only while QUEUED, so a
-                        // later sub-grid sample would upload the same `date` twice.
+                        // Held until slot closes; coalesces while QUEUED, else date re-uploads.
                         notBeforeMs = reading.tsMs + GRID_MS,
                     )
                 }
@@ -369,21 +349,18 @@ class T1dmRepository(
         samples.upsert(projectedBgSample(base, reading))
     }
 
-    /** A change signal, not a value: the newest grid ts on every `sample` write. Deliberately NOT
-     *  deduplicated — the emission is the signal. */
+    /** Change signal, not a value: newest grid ts per sample write; deliberately not deduped. */
     fun observeSampleWrites(): Flow<Long?> = samples.observeMaxTs()
 
     suspend fun sampleAt(ts: Long): SampleEntity? = withContext(io) { samples.byTs(ts) }
 
-    /** Tenths of mg/dL per minute. Authoritative rather than active, so the arrow and the number
-     *  beside it come from one source. */
+    /** Tenths mg/dL/min; authoritative not active, so the arrow and the number share one source. */
     suspend fun authoritativeTrendAt(ts: Long): Int? = withContext(io) {
         val sourceId = sources.authoritativeSourceId() ?: return@withContext null
         readings.byTs(sourceId, ts)?.trendTenthsPerMin
     }
 
-    /** Bounded, not a bare `MAX(ts)`: [recordExerciseCurve] writes slots ahead of the clock, and a
-     *  cursor past now would fetch nothing. */
+    /** Bounded, not MAX(ts): recordExerciseCurve writes ahead, past-now cursor finds nothing. */
     suspend fun newestSampleTsAtOrBefore(atMs: Long): Long? =
         withContext(io) { samples.maxTsAtOrBefore(atMs) }
 
@@ -408,11 +385,7 @@ class T1dmRepository(
     suspend fun recordMood(gridTs: Long, tzOffsetMin: Int, mood: Int, nowMs: Long) =
         mergeSample(gridTs, tzOffsetMin, nowMs) { it.copy(mood = mood) }
 
-    /**
-     * [buckets] carry grams of carbohydrate equivalent per five-minute bucket
-     * (`../T1DMCOMMON/SPEC/invariants.md` §3, §5's exercise gamma) — never seconds, intensity or
-     * energy. One transaction, so a partly rewritten curve is never visible. Writes past `now`.
-     */
+    /** buckets carry grams of carb equivalent per 5-min bucket (SPEC §3,§5), not seconds. */
     suspend fun recordExerciseCurve(buckets: List<ExerciseCurveBucket>, nowMs: Long) = withContext(io) {
         if (buckets.isEmpty()) return@withContext
         inWriteTx {
@@ -427,11 +400,7 @@ class T1dmRepository(
     /** Legacy `dose_event` store, superseded by [logLoggedDose]. */
     suspend fun logDose(dose: DoseEventEntity): Long = withContext(io) { doses.insert(dose) }
 
-    /**
-     * Snaps `tsMs` to the grid (§4-#1), mints a blank `clientId` (§3.2, never re-minted) and stamps an
-     * unset `loggedAtMs` — one unstamped row pins the log-gap mark at zero forever. Returns the
-     * PERSISTED row, so the `:app` seam's `PUT /v1/doses` carries the same id and grid ts.
-     */
+    /** Snaps tsMs to grid (§4-#1), mints blank clientId (§3.2), stamps loggedAtMs; returns row. */
     suspend fun logLoggedDose(dose: LoggedDoseEntity): LoggedDoseEntity = withContext(io) {
         val row = dose.copy(
             clientId = dose.clientId.ifBlank { newClientId() },
@@ -451,11 +420,7 @@ class T1dmRepository(
         row.copy(id = loggedMeals.insert(row)).also { _logEvents.update { t -> t + 1 } }
     }
 
-    /**
-     * `clientId` and `loggedAtMs` are preserved — the server upserts on the first, and the second is
-     * the log-gap mark. `updatedAt` is forced strictly newer than the create it replaces. Returns the
-     * persisted row.
-     */
+    /** clientId/loggedAtMs preserved (server upserts on the first); updatedAt forced newer. */
     suspend fun editLoggedMeal(row: LoggedMealEntity, nowMs: Long): LoggedMealEntity? =
         withContext(io) {
             val stored = inWriteTx {
@@ -477,11 +442,7 @@ class T1dmRepository(
             stored?.also { _logEvents.update { t -> t + 1 } }
         }
 
-    /**
-     * The dose twin of [editLoggedMeal]. `mutatedActingUntilMs` records the PRE-edit action end and is
-     * written once, so a chain of edits cannot walk it forward and a shortened `durationMin` cannot
-     * shorten the block.
-     */
+    /** Dose twin of editLoggedMeal; mutatedActingUntilMs records PRE-edit end, once only. */
     suspend fun editLoggedDose(row: LoggedDoseEntity, nowMs: Long): LoggedDoseEntity? =
         withContext(io) {
             val stored = inWriteTx {
@@ -504,11 +465,7 @@ class T1dmRepository(
             stored?.also { _logEvents.update { t -> t + 1 } }
         }
 
-    /**
-     * `updatedAt` is forced strictly newer than the row it retires rather than trusting [nowMs]: a
-     * phone clock that has not advanced (`SPEC/invariants.md` §7) would author a stamp the server
-     * ignores. Returns the tombstone; `:app` owns the wire envelope and files the push.
-     */
+    /** updatedAt forced strictly newer than the retired row (SPEC §7), never from nowMs. */
     suspend fun tombstoneLoggedMeal(rowId: Long, nowMs: Long): EventTombstone? =
         withContext(io) {
             val out = inWriteTx {
@@ -532,8 +489,7 @@ class T1dmRepository(
             out?.also { _logEvents.update { t -> t + 1 } }
         }
 
-    /** The dose twin of [tombstoneLoggedMeal]. Records the action end — after the delete no row is
-     *  left to read a duration off, and the rail must keep blocking. */
+    /** Dose twin of tombstoneLoggedMeal; records the action end since no row remains to read it. */
     suspend fun tombstoneLoggedDose(rowId: Long, nowMs: Long): EventTombstone? =
         withContext(io) {
             val out = inWriteTx {
@@ -564,8 +520,7 @@ class T1dmRepository(
     suspend fun markTombstonePushed(clientId: String, atMs: Long) =
         withContext(io) { tombstones.markPushed(clientId, atMs) }
 
-    /** Ordered on `updatedAt`, so a redelivery cannot walk the stamp backward. `pushEnqueuedAtMs` is
-     *  stamped: this deletion did not originate here, so there is nothing to push. */
+    /** Ordered on updatedAt; pushEnqueuedAtMs marks a remotely-originated delete. */
     suspend fun applyServerTombstone(
         clientId: String,
         kind: CurveKind,
@@ -609,11 +564,7 @@ class T1dmRepository(
         _logEvents.update { t -> t + 1 }
     }
 
-    /**
-     * The hydration path is `insertIgnore`, which drops an edit against an existing row. Ordered on
-     * `updatedAt`. The wire carries neither mutation column, so both are minted here or the
-     * dose-history rail never sees a remote edit; the pre-edit end is taken only on the first one.
-     */
+    /** Hydration is insertIgnore, drops an edit on an existing row; columns minted here. */
     suspend fun applyServerDoseEdit(ev: LoggedDoseEntity): Boolean = withContext(io) {
         val changed = inWriteTx {
             val old = loggedDoses.byClientId(ev.clientId) ?: return@inWriteTx false
@@ -658,15 +609,11 @@ class T1dmRepository(
     private suspend fun tombstoned(clientId: String, updatedAt: Long): Boolean =
         (tombstones.byClientId(clientId)?.updatedAt ?: Long.MIN_VALUE) >= updatedAt
 
-    /**
-     * The single owner of what a channel-affecting mutation invalidates. Runs inside the caller's
-     * transaction. A note or a timezone correction moves no curve and must not reach here.
-     */
+    /** Sole owner of what a channel mutation invalidates; a note/tz correction must not. */
     private suspend fun invalidateForecastDerivedInTx(affectedFromMs: Long) {
         predictions.deleteFrom(affectedFromMs)
         infills.deleteFrom(affectedFromMs)
-        // Only where the fit window reaches the change. Losing a correction draws a visibly TIGHTER
-        // band — `conformal.rs` fits an offset that usually widens the fan — with nothing saying why.
+        // Only where the fit window reaches the change; losing it TIGHTENS the band silently.
         for (row in conformalDeltas.all()) {
             if (row.fittedAtMs >= affectedFromMs) conformalDeltas.deleteByModel(row.modelId)
         }
@@ -684,8 +631,7 @@ class T1dmRepository(
     suspend fun loggedMealsInRange(fromMs: Long, toMs: Long): List<LoggedMealEntity> =
         withContext(io) { loggedMeals.inRange(fromMs, toMs) }
 
-    /** Newest first. Entities, not a domain type: the delivered verdict joins against the outbox on
-     *  a dedupKey format `:sync` owns and this module must not re-spell. */
+    /** Newest first, entities not a domain type; dedupKey format is :sync's, not re-spelled. */
     fun observeRecentLoggedMeals(limit: Int): Flow<List<LoggedMealEntity>> =
         loggedMeals.observeRecent(limit)
 
@@ -715,12 +661,10 @@ class T1dmRepository(
     suspend fun activeBasalDoses(): List<BasalScheduleEntity> =
         withContext(io) { basalSchedules.activeDoses() }
 
-    /** `MAX(MIN(tsMs, loggedAtMs))`, not `MAX(tsMs)`: a dose retimed forward must not quiet the
-     *  log-gap rail. */
+    /** MAX(MIN(tsMs,loggedAtMs)) not MAX(tsMs): retimed forward must not quiet log-gap rail. */
     suspend fun latestLoggedInsulinTs(): Long? = withContext(io) { loggedDoses.latestLoggedMarkTs() }
 
-    /** The union of both stores: `logged_dose` answers for an EDITED dose, the tombstone for a
-     *  DELETED one, which has no row left to read a duration off. */
+    /** Union of both stores: logged_dose answers EDITED, tombstone answers DELETED. */
     suspend fun editedDoseActiveUntilMs(): Long? = withContext(io) {
         val edited = loggedDoses.editedDoseActiveUntilMs()
         val deleted = tombstones.latestActingUntilMs(TOMBSTONE_KIND_DOSE)
@@ -731,8 +675,7 @@ class T1dmRepository(
         }
     }
 
-    /** Unioned like [editedDoseActiveUntilMs]: without the deletion term a block raised by a delete
-     *  could never be acknowledged. */
+    /** Unioned like editedDoseActiveUntilMs: without it a delete-raised block never clears. */
     suspend fun latestDoseMutationMs(): Long? = withContext(io) {
         val edited = loggedDoses.latestMutationMs()
         val deleted = tombstones.latestCreatedAtMs(TOMBSTONE_KIND_DOSE)
@@ -743,8 +686,7 @@ class T1dmRepository(
         }
     }
 
-    /** The catch-up's event high-water mark. The tombstone term stops a deletion moving the mark
-     *  backward and pulling the deleted event back in. */
+    /** Catch-up's event high-water mark; tombstone stops a delete pulling the event back in. */
     suspend fun newestEventTs(): Long? = withContext(io) {
         listOfNotNull(
             loggedMeals.latestTs(),
@@ -762,8 +704,7 @@ class T1dmRepository(
             // `toModel` decodes geometry per row and the collectors are `collectAsState`.
             .flowOn(io)
 
-    /** A zero-point stroke is refused: it has no time bounds to index by, so it could never be
-     *  selected back out. */
+    /** Zero-point stroke refused: no time bounds to index by, could never be selected back out. */
     suspend fun addPaintStroke(stroke: PaintStroke): Long = withContext(io) {
         require(!stroke.isEmpty) { "a paint stroke must carry at least one point" }
         paintStrokes.insert(stroke.toEntity())
@@ -773,14 +714,9 @@ class T1dmRepository(
 
     suspend fun deleteAllPaintStrokes() = withContext(io) { paintStrokes.deleteAll() }
 
-    // Phone-local, all three tables. What syncs is the disposal curve [recordExerciseCurve] lays
-    // into the wide sample, and nothing here.
+    // Phone-local, all three tables; only the disposal curve recordExerciseCurve lays into sample.
 
-    /**
-     * Row and curve in ONE transaction: a row whose grams never reached `sample.exercise`, or grams
-     * with no row to unwind them, are both unrecoverable by inspection. [buckets] carry
-     * `priorGrams = 0` — nothing of this row is in the slots yet. Returns the PERSISTED row.
-     */
+    /** Row and curve in ONE transaction, else unrecoverable by inspection; buckets priorGrams=0. */
     suspend fun logLoggedExercise(
         row: LoggedExerciseEntity,
         buckets: List<ExerciseCurveBucket>,
@@ -802,11 +738,7 @@ class T1dmRepository(
         }.also { _logEvents.update { t -> t + 1 } }
     }
 
-    /**
-     * [unwind] takes the row's OLD curve back out and [write] lays the new one in — separate lists
-     * because a shift overlaps itself, and one merged bucket per slot would lose whichever half it
-     * did not carry. Order matters: unwind first. Null when the row is gone.
-     */
+    /** unwind takes old curve out, write lays new in, separate lists so an overlap keeps both. */
     suspend fun editLoggedExercise(
         row: LoggedExerciseEntity,
         unwind: List<ExerciseCurveBucket>,
@@ -835,13 +767,7 @@ class T1dmRepository(
         }?.also { _logEvents.update { t -> t + 1 } }
     }
 
-    /**
-     * [unwind] carries this row's own grams as `priorGrams`, so an overlapping bout's share stays.
-     * The tombstone is what stops a restore bringing the row back without its grams — the archive
-     * merge would insert it, the archived samples would lose to the phone's own, and a later delete
-     * or shift would then move grams this row never laid. `pushEnqueuedAtMs` is stamped for the same
-     * reason [applyServerTombstone] stamps it: there is nothing to push.
-     */
+    /** unwind carries this row's grams as priorGrams; tombstone stops a restore losing them. */
     suspend fun deleteLoggedExercise(
         id: Long,
         unwind: List<ExerciseCurveBucket>,
@@ -881,8 +807,7 @@ class T1dmRepository(
     fun observeRecentLoggedExercise(limit: Int): Flow<List<LoggedExerciseEntity>> =
         loggedExercise.observeRecent(limit)
 
-    /** Returns the PERSISTED row. `startMs` is NOT grid-snapped, unlike [logMeal]: a bout boundary is
-     *  the instant the user chose. Only the per-bucket sample write is on the grid. */
+    /** Returns the PERSISTED row; startMs is NOT grid-snapped, only the per-bucket write is. */
     suspend fun startExerciseSession(row: ExerciseSessionEntity): ExerciseSessionEntity =
         withContext(io) {
             val minted = row.copy(clientId = row.clientId.ifBlank { newClientId() })
@@ -922,16 +847,14 @@ class T1dmRepository(
     suspend fun newestExerciseFixTs(sessionId: Long): Long? =
         withContext(io) { exerciseFixes.newestTs(sessionId) }
 
-    /** One transaction: there is no foreign key, so a half-applied delete orphans the fixes and
-     *  nothing would ever select them again to notice. */
+    /** One transaction: no foreign key, so a half-applied delete orphans fixes unnoticed. */
     suspend fun deleteExerciseSession(
         id: Long,
         unwind: List<ExerciseCurveBucket>,
         nowMs: Long,
     ) = withContext(io) {
         inWriteTx {
-            // Take the bout's grams back out, or the model goes on seeing disposal from a bout the
-            // patient erased. `priorGrams` is THIS bout's share; an overlapping bout's is left alone.
+            // Takes the bout's grams back out, else disposal persists; priorGrams is its own share.
             for (b in unwind) {
                 mergeSampleInTx(b.gridTs, b.tzOffsetMin, nowMs) {
                     it.copy(exercise = mergedExerciseGrams(it.exercise, b.priorGrams, 0.0))
@@ -961,11 +884,7 @@ class T1dmRepository(
 
     suspend fun upsertFood(food: FoodEntity) = withContext(io) { db.foodDao().upsert(food) }
 
-    /**
-     * Returns false having written nothing when the row is gone or is a bundled seed row. `@Upsert` is
-     * NOT gated on `custom`, so an unguarded write would resurrect a deleted id or convert a shipped
-     * row into a user food; read and write share one transaction so the check cannot be raced.
-     */
+    /** Returns false, writes nothing, if gone or a seed row; @Upsert not gated on custom. */
     suspend fun updateCustomFood(food: FoodEntity): Boolean = withContext(io) {
         inWriteTx {
             val existing = db.foodDao().byId(food.id)
@@ -988,9 +907,7 @@ class T1dmRepository(
             }
         }
 
-    /** Items are replaced wholesale under the existing [id]. Returns false having written nothing
-     *  when the header is gone: `saved_meal_item` has no foreign key, so items inserted against a
-     *  vanished header are orphans no query reaches. */
+    /** Items replaced wholesale under id; false/no-write if header gone (orphans unreachable). */
     suspend fun updateSavedMeal(id: Long, name: String, items: List<SavedMealItemEntity>, nowMs: Long): Boolean =
         withContext(io) {
             inWriteTx {
@@ -1042,16 +959,13 @@ class T1dmRepository(
         edit: (SampleEntity) -> SampleEntity,
     ) {
         requireGrid(gridTs)
-        // [tzOffsetMin] seeds a NEW row only. §2 fixes `tz_offset` as the offset the slot was
-        // authored at, and a caller writing into a PAST slot resolves it from the device's zone
-        // today — after a move that renames the local hour of every statistic keyed on it.
+        // tzOffsetMin seeds a NEW row only; §2 fixes tz_offset to the authoring offset, not today.
         val base = samples.byTs(gridTs) ?: emptySample(gridTs, tzOffsetMin, nowMs)
         samples.upsert(edit(base).copy(updatedAt = maxOf(base.updatedAt, nowMs)))
         enqueueIngest(gridTs, nowMs)
     }
 
-    /** Oldest first, including the samples that lost the slot. Empty is legitimate: a five-minute
-     *  sensor puts one sample in a slot, and a gap-filled slot never had one. */
+    /** Oldest first, including samples that lost the slot; empty means a gap-filled slot. */
     suspend fun rawSamplesForSlot(sourceId: CgmSourceId, gridTs: Long): List<CgmRawSample> =
         withContext(io) {
             requireGrid(gridTs)
@@ -1067,8 +981,7 @@ class T1dmRepository(
 
     suspend fun rawSampleCount(): Int = withContext(io) { rawSamples.count() }
 
-    /** Returns how many went. An AGE bound with no size bound, unlike the outbox's: samples arrive at
-     *  the sensor's cadence and cannot burst, and nothing derives from these rows. */
+    /** Returns how many went; AGE bound only, no size bound, samples arrive at sensor cadence. */
     suspend fun pruneRawSamples(nowMs: Long): Int =
         withContext(io) { rawSamples.pruneBefore(rawSampleCutoff(nowMs)) }
 
@@ -1088,11 +1001,7 @@ class T1dmRepository(
         notBeforeMs: Long,
     ): Long = withContext(io) { enqueueRow(kind, dedupKey, payload, nowMs, notBeforeMs) }
 
-    /**
-     * Returns -1 when the key is held by a row the drainer has already claimed. Only PENDING is swept:
-     * INFLIGHT means the body is on the wire. The delete and the insert share one transaction, and
-     * `outbox.id` is AUTOINCREMENT, so the drainer's snapshot cannot resolve onto the replacement.
-     */
+    /** Returns -1 if the key is claimed; only PENDING is swept, delete+insert share a tx. */
     override suspend fun enqueueReplacingPending(
         kind: OutboxKind,
         dedupKey: String,
@@ -1119,36 +1028,26 @@ class T1dmRepository(
         }
     }
 
-    /** The third party has no tombstone: an undelivered mirror left queued arrives THERE after the
-     *  patient deleted it here, with no route to take it back out. */
+    /** Third party has no tombstone; an undelivered mirror lands there after a local delete. */
     private suspend fun withdrawBridgedTreatment(clientId: String) =
         outbox.deleteByDedupKey("$NS_TREATMENT_DEDUP_PREFIX$clientId")
 
-    /**
-     * Answers whether the mirror was still there to take. `/api/v1` has no update for a landed
-     * treatment, and its `created_at` derives from `updatedAt`, so re-sending files a SECOND treatment
-     * and the logbook double-counts. PENDING only: deleting an INFLIGHT row would not unsend it.
-     */
+    /** Whether the mirror was there to take; PENDING only, an INFLIGHT delete won't unsend it. */
     suspend fun withdrawEditedBridgedTreatment(clientId: String): Boolean = withContext(io) {
         outbox.deleteByDedupKeyInState("$NS_TREATMENT_DEDUP_PREFIX$clientId", OutboxState.PENDING) > 0
     }
 
-    /** Deduplicated: the queue table is written far more often than its DEPTH moves — a claim, a
-     *  backoff reschedule and an attempt bump all invalidate it without changing the count. */
+    /** Deduplicated: the queue writes far more often than DEPTH moves (claim/backoff/attempt). */
     fun observeOutboxDepth(): Flow<Int> = outbox.observeDepth().distinctUntilChanged()
 
     /** Null when empty. */
     suspend fun oldestOutboxCreatedAt(): Long? = withContext(io) { outbox.oldestCreatedAt() }
 
-    /** Server-bound rows only: a stuck bridge row must not falsify the re-mirror's delivery proof. */
+    /** Server-bound rows only: a stuck bridge row must not falsify the re-mirror delivery proof. */
     suspend fun oldestServerBoundOutboxCreatedAt(): Long? =
         withContext(io) { outbox.oldestCreatedAtExcluding(OutboxKind.NIGHTSCOUT) }
 
-    /**
-     * DISPLACES whatever is queued for the slot. A plain enqueue is `INSERT OR IGNORE`, so a slot
-     * already INFLIGHT would drop a demotion or a BG deletion and `mergeServerSample` would gap-fill
-     * the old value back. Safe in flight: the drainer deletes by ROW ID, so its delete no-ops.
-     */
+    /** DISPLACES whatever is queued; plain enqueue would drop a demotion under an INFLIGHT row. */
     private suspend fun enqueueIngest(gridTs: Long, nowMs: Long): Long {
         val key = "ingest:sample:$gridTs"
         outbox.deleteByDedupKey(key)
@@ -1168,8 +1067,7 @@ class T1dmRepository(
             payload = payload,
             createdAtMs = nowMs,
             attempts = 0,
-            // Not a backoff: `attempts` stays 0 and `createdAtMs` is untouched, so FIFO order and the
-            // age bound stay measured from the write.
+            // Not a backoff: attempts stays 0, createdAtMs untouched, FIFO/age stay from the write.
             nextAttemptMs = notBeforeMs,
             state = OutboxState.PENDING,
         ),
@@ -1188,11 +1086,7 @@ class T1dmRepository(
     suspend fun predictionsInRange(fromMs: Long, toMs: Long): List<ModelPrediction> =
         withContext(io) { predictions.range(fromMs, toMs).map { it.toModel() } }
 
-    /**
-     * The rows as written, never a re-forecast. Scoped to the authoritative source: a fan conditioned
-     * on the outgoing sensor would otherwise be painted over the incoming sensor's trace. A forecast
-     * with no recorded source (pre-v25) is refused on the same terms.
-     */
+    /** Rows as written, never re-forecast; scoped to authoritative source, pre-v25 refused too. */
     suspend fun predictionsForModelInRange(modelId: String, fromMs: Long, toMs: Long): List<ModelPrediction> =
         withContext(io) {
             val authoritative = sources.authoritativeSourceId() ?: return@withContext emptyList()
@@ -1206,11 +1100,7 @@ class T1dmRepository(
     fun observeLatestPrediction(): Flow<ModelPrediction?> =
         predictions.observeLatest().map { it?.toModel() }
 
-    /**
-     * MATURED windows of [modelId] for the on-device metric suite. `lastBg` is the persistence anchor
-     * of `SPEC/invariants.md` §6.3 — measured BG at the forecast's `made_at`. A window is dropped
-     * whole when the realized trajectory misses any step.
-     */
+    /** MATURED windows for the on-device metric suite; lastBg anchors persistence (SPEC §6.3). */
     suspend fun forecastWindows(
         modelId: String,
         horizonMaxMin: Int,
@@ -1223,9 +1113,7 @@ class T1dmRepository(
         if (horizonMaxMin <= 0 || horizonMs % stepMs != 0L) return@withContext ForecastWindowSet.EMPTY
         val nSteps = (horizonMs / stepMs).toInt()
 
-        // Sorted ascending for the binary-search match, reaching back one tolerance so the earliest
-        // anchor is matchable. Scoped to the AUTHORITATIVE source: `cgm_reading` holds a row per
-        // (source, slot), so an unscoped read scores one sensor's forecast against another's readings.
+        // Sorted for binary-search, back one tolerance; scoped to AUTHORITATIVE source only.
         val authoritative = sources.authoritativeSourceId() ?: return@withContext ForecastWindowSet.EMPTY
         val truth = readings.rangeForSource(authoritative, sinceMs - toleranceMs, nowMs)
             .asSequence()
@@ -1237,12 +1125,11 @@ class T1dmRepository(
         if (truth.isEmpty()) return@withContext ForecastWindowSet.EMPTY
         val truthTs = LongArray(truth.size) { truth[it].first }
 
-        // The forecast side of the same scoping. A null `sourceId` is UNKNOWN (pre-v25) and never
-        // matches, so it is refused rather than assumed to be this one.
+        // Forecast side of the same scoping; null sourceId (pre-v25) is refused, not assumed.
         val ofModel = predictions.range(sinceMs, nowMs - horizonMs).map { it.toModel() }
             .filter { it.modelId == modelId && it.status == ForecastStatus.OK }
         val rows = ofModel.filter { it.sourceId == authoritative }
-        // Counted, not merely dropped: an unexplained empty panel after a sensor change reads as a bug.
+        // Counted not dropped: an unexplained empty panel after a sensor change reads as a bug.
         val nForeignSource = ofModel.size - rows.size
 
         var nMatured = 0
@@ -1321,14 +1208,11 @@ class T1dmRepository(
 
     suspend fun deleteProfile(id: String) = withContext(io) { profiles.delete(id) }
 
-    /** No-server-over-local presence gap-fill (§3.3): [SampleGapFill] fills only fields the local row
-     *  lacks, comparing no `updated_at`. The phone is the sole read-write author. */
+    /** No-server-over-local gap-fill (§3.3): fills only fields the local row lacks. */
     suspend fun mergeServerSample(patch: SamplePatch): Boolean = withContext(io) {
         requireGrid(patch.ts)
         inWriteTx {
-            // Gap-fill only: never overwrite a local reading, and enqueue NO ingest — this data
-            // originated here and re-pushing would echo-loop. The "already have it" test spans the
-            // whole MODEL CLASS, or a sensor change re-imports the entire record under the new id.
+            // Gap-fill only, no ingest (echo-loop); have-it test spans the whole MODEL CLASS.
             val authoritative = sources.authoritativeSourceId()
             val klass = authoritative?.let { sources.byId(it)?.sensorModelId }
             val siblings = when {
@@ -1361,15 +1245,10 @@ class T1dmRepository(
         }
     }
 
-    /**
-     * One-shot gap-fill of the authoritative source's `cgm_reading` from the wide `sample` projection
-     * — the migration path for server history synced before reading hydration existed, and a self-heal
-     * since. Inserts only slots with no reading; returns how many. Off-main; one transaction.
-     */
+    /** One-shot gap-fill of authoritative cgm_reading from sample; inserts only missing slots. */
     suspend fun reconcileReadingsFromSamples(): Int = withContext(io) {
         val authoritative = sources.authoritativeSourceId() ?: return@withContext 0
-        // Slots NO sensor holds a reading for. A narrower test lets a sensor change re-import another
-        // sensor's record under this one's id.
+        // Slots NO sensor holds a reading for; a narrower test lets a change re-import a record.
         inWriteTx {
             val fill = samples.bgSlotsMissingReading().asSequence()
                 .map { s ->
@@ -1393,8 +1272,7 @@ class T1dmRepository(
         }
     }
 
-    /** Id-keyed hydration on REST catch-up (§3.4). Idempotent on the unique `clientId` index; never
-     *  enqueues — the event originated on this phone and re-pushing would echo-loop. */
+    /** Id-keyed hydration on REST catch-up (§3.4); idempotent on clientId, never enqueues. */
     suspend fun hydrateMealEvent(ev: LoggedMealEntity): Long = withContext(io) {
         if (tombstoned(ev.clientId, ev.updatedAt)) -1L else loggedMeals.insertIgnore(ev)
     }
@@ -1403,11 +1281,7 @@ class T1dmRepository(
         if (tombstoned(ev.clientId, ev.updatedAt)) -1L else loggedDoses.insertIgnore(ev)
     }
 
-    /**
-     * One bounded page of the §3.8 re-mirror. Returns the newest ts enqueued — the next page's
-     * exclusive cursor — or null when the walk is complete. INGEST is reconstruct-at-drain, so this
-     * re-uploads without encoding anything and keeps `:data` free of any `:sync` type.
-     */
+    /** One bounded page of the §3.8 re-mirror; newest ts enqueued, or null when done. */
     suspend fun reMirrorScalarsBatch(afterTs: Long, limit: Int, nowMs: Long): Long? = withContext(io) {
         val page = samples.page(afterTs, limit)
         if (page.isEmpty()) return@withContext null
@@ -1420,9 +1294,7 @@ class T1dmRepository(
 
     suspend fun getKv(key: String): String? = withContext(io) { kv.get(key) }
 
-    /** Deduplicated: Room invalidates per TABLE, so the FGS heartbeat and the telemetry blob re-run
-     *  every kv query. Safe for a liveness reader too — anything meaning "still alive" is a stamp that
-     *  differs on every write, and the first emission is always delivered. */
+    /** Deduplicated: Room invalidates per TABLE, so heartbeat/telemetry re-run every kv query. */
     fun observeKv(key: String): Flow<String?> = kv.observe(key).distinctUntilChanged()
 
     suspend fun allKv(): Map<String, String> =
@@ -1431,8 +1303,7 @@ class T1dmRepository(
     suspend fun putKvBatch(pairs: Map<String, String>, nowMs: Long) =
         withContext(io) { kv.putAll(pairs.map { (k, v) -> KvEntity(k, v, nowMs) }) }
 
-    /** `SPEC/inference.md` §8.4. A sufficient fit only: a refusal says nothing about whether the
-     *  stored correction is wrong, and overwriting it would drop the user back to the raw fan. */
+    /** SPEC/inference.md §8.4; sufficient fit only, a refusal keeps the stored correction as-is. */
     suspend fun putBandCalibration(cal: BandCalibration) = withContext(io) {
         conformalDeltas.upsert(
             ConformalDeltaEntity(
@@ -1457,8 +1328,7 @@ class T1dmRepository(
     suspend fun bandCalibration(modelId: String): BandCalibration? =
         withContext(io) { conformalDeltas.get(modelId)?.toModel() }
 
-    /** A row whose blob length disagrees with its own `steps · nQuantiles` is dropped rather than
-     *  reshaped; that model draws the raw fan. */
+    /** A row whose blob disagrees with steps*nQuantiles is dropped, not reshaped; draws raw fan. */
     fun observeBandCalibrations(): Flow<Map<String, BandCalibration>> =
         conformalDeltas.observeAll()
             .map { rows -> rows.mapNotNull { it.toModel() }.associateBy { it.modelId } }
@@ -1468,8 +1338,7 @@ class T1dmRepository(
     suspend fun deleteBandCalibration(modelId: String) =
         withContext(io) { conformalDeltas.deleteByModel(modelId) }
 
-    /** For when what the model IS changes under a fixed id — a replaced artifact, an adapter attached
-     *  or detached. Keeping either would report one model's calibration on another's fan. */
+    /** For when the model IS changes under a fixed id; keeping either misreports calibration. */
     suspend fun clearForecastDerived(modelId: String) = withContext(io) {
         conformalDeltas.deleteByModel(modelId)
         predictions.deleteByModel(modelId)
@@ -1507,8 +1376,7 @@ class T1dmRepository(
         nowMs: Long,
     ): ArchiveCounts = withContext(io) { ArchiveWriter(db).write(out, configJson, appVersion, nowMs) }
 
-    /** The local row always wins, so this only ever adds what is missing. Throws
-     *  [com.t1dm.data.backup.NotAnArchiveException] when the stream is some other kind of file. */
+    /** Local row always wins, only adds what's missing; throws on a non-archive stream. */
     suspend fun readArchive(input: InputStream): ArchiveResult =
         withContext(io) { ArchiveReader(db).read(input) }
 
@@ -1545,8 +1413,7 @@ class T1dmRepository(
         )
     }
 
-    /** An adapter fitted on windows the patient has since rewritten describes a record that no longer
-     *  exists; attach refuses until it is re-fitted. */
+    /** Adapter fit on since-rewritten windows describes a stale record; refuses until re-fit. */
     suspend fun markLoraHistoryMutated(nowMs: Long) =
         withContext(io) { loras.markHistoryMutated(nowMs) }
 
@@ -1561,11 +1428,7 @@ class T1dmRepository(
 
     suspend fun deleteLorasForModel(modelId: String) = withContext(io) { loras.deleteByModel(modelId) }
 
-    /**
-     * Never a reading: see [BgInfillEntity]. Rows come in `ts` order; the span key is the first row's
-     * `ts` unless the caller set one. Returns false, writing nothing, when any slot already holds a
-     * PROMOTED fill — the upsert REPLACEs on `ts`, and that would orphan the promotion outright.
-     */
+    /** Never a reading (BgInfillEntity); false/no-write if a slot already holds a PROMOTED fill. */
     suspend fun saveInfill(rows: List<BgInfillEntity>): Boolean = withContext(io) {
         if (rows.isEmpty()) return@withContext false
         inWriteTx {
@@ -1595,11 +1458,7 @@ class T1dmRepository(
     suspend fun reconstructedSpanSize(spanStartMs: Long): Int =
         withContext(io) { infills.spanSize(spanStartMs) }
 
-    /**
-     * The one act that turns model output into stored history. The value stays flagged
-     * `RECONSTRUCTED`, which [isRealMeasurement] keys on: it may never clear an alarm, feed a dose, be
-     * a fit target, or be scored. Not via [upsertReading]: no `bgSource`, and nothing for the bridge.
-     */
+    /** Turns model output into history, flagged RECONSTRUCTED; never clears alarm or feeds dose. */
     suspend fun promoteInfillSpan(spanStartMs: Long, nowMs: Long): PromoteResult = withContext(io) {
         inWriteTx {
             val rows = infills.span(spanStartMs)
@@ -1610,17 +1469,15 @@ class T1dmRepository(
             val src = sources.authoritativeSourceId()
                 ?: return@inWriteTx PromoteResult.Refused("No authoritative sensor")
 
-            // Fails closed: with nothing to promote behind, these rows would be the newest for the
-            // source and every glance surface would show a model's number as the patient's glucose.
+            // Fails closed: with nothing behind it, glance surfaces show a model's number.
             val newestMeasured = readings.newestMeasuredTs(src)
                 ?: return@inWriteTx PromoteResult.Refused("No measured reading to promote behind")
             if (rows.any { it.ts >= newestMeasured }) {
-                // Forbids promoting a FORECAST span: it would be the newest row and read as current BG.
+                // Forbids promoting a FORECAST span: it would read as the current BG.
                 return@inWriteTx PromoteResult.Refused("Not in the past")
             }
 
-            // Forbids promoting a BACKCAST: one-sided, so promoting it extends the patient's history
-            // backwards on a single anchor. Drawing one is fine.
+            // Forbids a BACKCAST: extends history backwards on one anchor. Drawing is fine.
             if (readings.newestMeasuredBefore(src, rows.first().ts) == null) {
                 return@inWriteTx PromoteResult.Refused("Nothing measured before the span")
             }
@@ -1639,8 +1496,7 @@ class T1dmRepository(
 
             var written = 0
             for (row in rows) {
-                // The row's OWN offset, never the clock's current zone (`SPEC/invariants.md` §2): a gap
-                // can straddle a DST change or a flight. Left-preferring, per `inference.md` §7.4.
+                // Row's OWN offset, not the clock's zone (SPEC §2): a gap can span a DST change.
                 val tz = readings.tzOffsetNearest(src, row.ts) ?: 0
                 val entity = CgmReadingEntity(
                     sourceId = src,
@@ -1652,13 +1508,11 @@ class T1dmRepository(
                     provenance = ReadingProvenance.RECONSTRUCTED,
                     flag = ReadingFlag.NORMAL,
                     tzOffsetMin = tz,
-                    // Never received, so there is no receive instant: the slot is the only honest
-                    // answer. It gets no `cgm_sample_raw` row for the same reason.
+                    // Never received, no receive instant: the slot is the only honest answer.
                     rxWallMs = row.ts,
                     rssi = null,
                 )
-                // The grid-slot rule also declines to displace a valued INTERPOLATED row, so the count
-                // is of what was WRITTEN, not of what was considered.
+                // Grid-slot rule declines a valued INTERPOLATED row; count is what was WRITTEN.
                 if (!supersedesGridSlot(readings.byTs(src, row.ts), entity)) continue
                 readings.upsert(entity)
                 written++
@@ -1666,8 +1520,7 @@ class T1dmRepository(
                 samples.upsert(
                     base.copy(
                         bgMgdl = entity.bgMgdl,
-                        // Null, not the source id: `bgSource` asserts which SENSOR produced the
-                        // number, and none did. The reading row's `sourceId` is a storage key.
+                        // Null not source id: bgSource asserts which SENSOR produced it; none did.
                         bgSource = null,
                         bgProvenance = ReadingProvenance.RECONSTRUCTED,
                         bgFlag = ReadingFlag.NORMAL,
@@ -1683,11 +1536,7 @@ class T1dmRepository(
         }.also { if (it is PromoteResult.Promoted) _logEvents.update { t -> t + 1 } }
     }
 
-    /**
-     * Only rows still flagged `RECONSTRUCTED` go; a measurement that has since landed stays. The slot
-     * is resolved across EVERY source, not under the current authority: a sensor change between
-     * promoting and demoting would leave the reading in place while this reported it removed.
-     */
+    /** Only RECONSTRUCTED rows go; resolved across EVERY source, not just current authority. */
     suspend fun demoteInfillSpan(spanStartMs: Long, nowMs: Long): PromoteResult = withContext(io) {
         inWriteTx {
             val rows = infills.span(spanStartMs)
@@ -1716,9 +1565,7 @@ class T1dmRepository(
                 }
                 removed++
             }
-            // `removed == 0` is a legitimate end state, not a refusal: a real measurement can have
-            // superseded the fill in place. Refusing here stranded the span — undemotable and
-            // undiscardable. The desync is closed in `cutBgRange`, which refuses to erase one.
+            // removed==0 is legitimate, not a refusal, else the span strands; cutBgRange closes it.
             infills.markPromoted(spanStartMs, null)
             PromoteResult.Promoted(removed)
         }.also { _logEvents.update { t -> t + 1 } }
@@ -1731,17 +1578,12 @@ class T1dmRepository(
     fun observeInfill(fromMs: Long, toMs: Long): Flow<List<BgInfillEntity>> =
         infills.observeRange(fromMs, toMs)
 
-    /** Refuses a PROMOTED span, in the statement rather than here: its rows are in `sample` and on the
-     *  server, and this table holds the only copy of their band. Demotion is the way out of that. */
+    /** Refuses a PROMOTED span in the statement; this table holds the only copy of its band. */
     suspend fun discardInfillSpan(spanStartMs: Long): Boolean = withContext(io) {
         infills.deleteSpanIfUnpromoted(spanStartMs) > 0
     }
 
-    /**
-     * [line] is one mg/dL value per span row, oldest first, read off the stored fan at [tau]. Nothing
-     * is recomputed and no fan is touched. Refuses a promoted span: its line is a stored sample, and
-     * moving it would rewrite the patient's history from a slider.
-     */
+    /** line: one mg/dL per span row, oldest first, off the stored fan at tau; refuses promoted. */
     suspend fun retauInfillSpan(spanStartMs: Long, tau: Double, line: List<Double>): Boolean =
         withContext(io) {
             inWriteTx {
@@ -1753,8 +1595,7 @@ class T1dmRepository(
             }
         }
 
-    /** The returned rows are the whole of what [restoreBgCut] needs. Captured before the delete:
-     *  nothing else holds a deleted reading's provenance, and an undo that guessed would misfile it. */
+    /** Returned rows are all restoreBgCut needs, captured before delete; nothing else holds it. */
     suspend fun cutBgRange(fromMs: Long, toMs: Long, nowMs: Long): List<BgCut> = withContext(io) {
         requireGrid(fromMs)
         requireGrid(toMs)
@@ -1763,9 +1604,7 @@ class T1dmRepository(
             var ts = fromMs
             while (ts <= toMs) {
                 val slotReadings = readings.allAt(ts)
-                // A stored reconstruction is refused whole: erasing one leaves `bg_infill` calling the
-                // span promoted with the only copy of the band now ordinary deletable state. Keyed on
-                // the stored ROW — a measurement can supersede a promoted fill in place.
+                // Reconstruction refused whole, else bg_infill's only band copy becomes deletable.
                 if (slotReadings.any { it.provenance == ReadingProvenance.RECONSTRUCTED }) {
                     throw IllegalStateException("Demote the reconstruction in this stretch first")
                 }
@@ -1800,17 +1639,14 @@ class T1dmRepository(
                 }
                 enqueueIngest(c.ts, nowMs)
             }
-            // Unpromoted fills only, deliberately NOT [invalidateForecastDerivedInTx]: that also drops
-            // `prediction`, the record of what the model SAID, which the hindsight sweep replays. A BG
-            // edit falsifies only a reconstruction OF that stretch.
+            // Unpromoted fills only, not invalidateForecastDerivedInTx: drops what sweep replays.
             if (cuts.isNotEmpty()) infills.deleteFrom(fromMs)
         }
         if (cuts.isNotEmpty()) _logEvents.update { t -> t + 1 }
         cuts
     }
 
-    /** The re-push is not optional: a cut sends the server a `clear`, and without a matching push the
-     *  value is back on the phone and gone everywhere else. */
+    /** Re-push not optional: a cut sends a clear; without it the value survives on the phone. */
     suspend fun restoreBgCut(cuts: List<BgCut>, nowMs: Long) = withContext(io) {
         if (cuts.isEmpty()) return@withContext
         inWriteTx {
@@ -1839,9 +1675,7 @@ class T1dmRepository(
 
     suspend fun infillCount(): Int = withContext(io) { infills.count() }
 
-    /** A row-only wipe to first-run contents: the seed `food` and builtin `insulin_type` rows stay,
-     *  and so does `cgm_sensor_secret` — for a sensor still worn those bytes can be the only copy in
-     *  existence, so clearing one is [deleteSensorSecret]'s job, never a global reset's. */
+    /** Row-only wipe to first-run; cgm_sensor_secret stays, only deleteSensorSecret clears it. */
     suspend fun wipeAllData(preserveCgmSources: Boolean = false) = withContext(io) {
         inWriteTx {
             readings.deleteAll()
@@ -1865,8 +1699,7 @@ class T1dmRepository(
             conformalDeltas.deleteAll()
             loras.deleteAll()
             infills.deleteAll()
-            // A deletion outlives what it deleted: left behind, it re-pushes into a new server profile
-            // and then permanently refuses to re-hydrate the events it names.
+            // A deletion outlives what it deleted, else it re-pushes and blocks re-hydration.
             tombstones.deleteAll()
             exerciseFixes.deleteAll()
             exerciseSessions.deleteAll()
@@ -1879,22 +1712,16 @@ class T1dmRepository(
     companion object {
         const val GRID_MS: Long = 300_000L
 
-        /** Seven days, the same age bound the outbox uses (`sync/Backoff.kt`): these rows are for
-         *  display and diagnosis, and the grid series they were snapped into is keep-forever. */
+        /** Seven days, same age bound as outbox (sync/Backoff.kt); grid series is keep-forever. */
         const val RAW_SAMPLE_RETENTION_MS: Long = 7L * 24 * 60 * 60 * 1000
 
         internal fun rawSampleCutoff(nowMs: Long): Long = nowMs - RAW_SAMPLE_RETENTION_MS
 
-        /** The inverse of [snapToGrid]: `[gridTs − GRID_MS/2, gridTs + GRID_MS/2 − 1]`. Half-open on
-         *  the late side because that is which way the snap rounds a tie. */
+        /** Inverse of snapToGrid: [gridTs-GRID_MS/2, gridTs+GRID_MS/2-1], late side half-open. */
         internal fun rawSampleWindowFor(gridTs: Long): LongRange =
             (gridTs - GRID_MS / 2)..(gridTs + GRID_MS / 2 - 1)
 
-        /**
-         * `stored − prior` is what every OTHER bout put in the slot, and it is kept. Floored at zero:
-         * the slot can be re-materialised under a running bout. No ceiling — clamping would break §5's
-         * sum-to-total. A non-finite input reads as nothing rather than sending a NaN over the wire.
-         */
+        /** stored-prior is every OTHER bout's share, kept, floored at zero; no ceiling (§5 sum). */
         internal fun mergedExerciseGrams(storedGrams: Double?, priorGrams: Double, grams: Double): Double {
             fun sane(v: Double) = if (v.isFinite()) v.coerceAtLeast(0.0) else 0.0
             val others = (sane(storedGrams ?: 0.0) - sane(priorGrams)).coerceAtLeast(0.0)
@@ -1904,28 +1731,19 @@ class T1dmRepository(
         private fun requireGrid(ts: Long) =
             require(ts % GRID_MS == 0L) { "timestamp not on the 5-min grid: $ts" }
 
-        /**
-         * Round-to-nearest, per `../T1DMCOMMON/SPEC/invariants.md` §1: floor and round both land on the
-         * grid and both pass every validation while filing the same event in different buckets. Public
-         * because the exercise recorder aligns a bout's curve with it, and a second copy would diverge.
-         */
+        /** Round-to-nearest (SPEC §1): floor/round validate but file into different buckets. */
         fun snapToGrid(ts: Long): Long =
             Math.floorDiv(ts + GRID_MS / 2, GRID_MS) * GRID_MS
 
-        /** §3.2. v4 rather than v7 per §8.6: v7 is preferred for time-ordering but is not in the JDK. */
+        /** §3.2: v4 not v7 (§8.6) — v7 orders by time but isn't in the JDK. */
         private fun newClientId(): String = java.util.UUID.randomUUID().toString()
 
-        /**
-         * No last-writer-wins guard here, deliberately: [supersedesGridSlot] has already decided the
-         * slot. `updatedAt` stays a MAXIMUM — it is §7's ordering key, and `POST /v1/ingest` accepts an
-         * EQUAL stamp (`http-api.md`), so a BG projected onto an already-stamped slot still reaches.
-         */
+        /** No LWW guard: supersedesGridSlot already decided; updatedAt stays a MAXIMUM (§7 key). */
         internal fun projectedBgSample(base: SampleEntity, reading: CgmReading): SampleEntity =
             base.copy(
                 tzOffsetMin = reading.tzOffsetMin,
                 bgMgdl = reading.bgMgdl,
-                // Stamped from the reading rather than looked up: only the authoritative source
-                // reaches here, so the label can never name a sensor other than the one that produced it.
+                // Stamped from the reading, not looked up; only authoritative source reaches here.
                 bgSource = reading.sourceId.opaque,
                 bgProvenance = reading.provenance,
                 bgFlag = reading.flag,

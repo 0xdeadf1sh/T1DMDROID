@@ -96,7 +96,7 @@ class GameSynthTest {
         val red = rateAt(9_000f)
         assertTrue("idle=$idle mid=$mid", mid > idle)
         assertTrue("mid=$mid red=$red", red > mid)
-        // 800 → 9000 rpm is an 11× fundamental; a mapping collapsed to a constant clears no doubling.
+        // 800→9000 rpm is an 11× fundamental; a constant mapping clears no doubling.
         assertTrue("idle=$idle red=$red", red > idle * 3)
     }
 
@@ -148,7 +148,7 @@ class GameSynthTest {
             s.trigger(sfx)
             val out = s.take(2f)
             assertTrue("$sfx never sounded", out.peak() > 0.05f)
-            // Nothing may still ring two seconds later, or a run accumulates voices until the pool is stolen.
+            // Nothing may still ring 2s later, or a run accumulates voices till the pool is stolen.
             assertEquals("$sfx is still ringing", 0f, out.peak(out.size - rate / 4), 1e-4f)
         }
     }

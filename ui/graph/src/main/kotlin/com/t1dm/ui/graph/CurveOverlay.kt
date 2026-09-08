@@ -8,9 +8,7 @@ import com.t1dm.core.model.ModelPrediction
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** Bucket `i` spans `[gridStartMs + i·stepMs, +stepMs)`, so the overlay lines up with the BG
- *  viewport's absolute-ms projection and pan/zoom never forces a rebuild. Grams and units are
- *  incommensurable, so each channel is scaled to its own peak. */
+/** Bucket i spans [gridStart+i*step,+step); grams/units incommensurable, own-peak scaled. */
 class CurveOverlayFrame internal constructor(
     val gridStartMs: Long,
     val stepMs: Long,
@@ -18,12 +16,10 @@ class CurveOverlayFrame internal constructor(
     val insulin: FloatArray,    // units-per-step action, bolus + basal COMBINED
     val carbMax: Float,
     val insulinMax: Float,
-    // Rendering only: the model consumes the COMBINED [insulin] above. A 24-42 h basal is ~1/300 of a
-    // bolus gamma peak, so on the shared insulin scale it vanishes.
+    // Rendering only: model consumes COMBINED insulin; basal ~1/300 of bolus peak, this scale.
     val basal: FloatArray = FloatArray(0),
     val basalMax: Float = 0f,
-    /** Grams of carbohydrate EQUIVALENT disposed per step, positive. Read from the wide sample, so
-     *  it carries recorded bouts and replays alike — what the model was actually fed. */
+    /** Grams of carb EQUIVALENT per step; read from wide sample, what model was actually fed. */
     val exercise: FloatArray = FloatArray(0),
     val exerciseMax: Float = 0f,
 ) {
@@ -37,9 +33,7 @@ class CurveOverlayFrame internal constructor(
     /** Absolute epoch-ms at the LEFT edge of bucket [i]. */
     fun tsAt(i: Int): Long = gridStartMs + i.toLong() * stepMs
 
-    /** Bucket containing [ms], or -1 outside the grid. `floorDiv`, not `/`: truncation toward zero
-     *  would resolve the five minutes before `gridStartMs` to bucket 0, and the panel is scrubbable
-     *  to the left of the grid. */
+    /** Bucket containing ms, or -1 outside grid; floorDiv not /, panel scrubs left of grid. */
     fun indexAt(ms: Long): Int {
         if (size == 0) return -1
         val i = Math.floorDiv(ms - gridStartMs, stepMs).toInt()
@@ -72,11 +66,7 @@ class CurveOverlayFrame internal constructor(
     }
 }
 
-/**
- * The per-step series the overlay is built from, index-aligned to one grid window. [carb] and
- * [insulin] are reconstructed from logged events; [exercise] is READ from the wide sample, so it
- * carries recorded bouts as well as replays. Not a value type — it is carried, never compared.
- */
+/** Per-step series, index-aligned to one grid window; carb/insulin rebuilt, exercise read raw. */
 class OverlayInput(
     val carb: DoubleArray,
     val insulin: DoubleArray,
@@ -130,9 +120,7 @@ const val INSULIN_EPS: Float = 1e-6f
 /** How far ahead the no-future-insulin advisory looks when no forecast bounds it. */
 const val NO_INSULIN_HORIZON_MS: Long = 3L * 3_600_000L
 
-/** Does no insulin action cover [nowMs] out to the forecast horizon? With no channel at all the
- *  answer is `false` — nothing to reason about. Keys on `size`, NOT [CurveOverlayFrame.isEmpty]: a
- *  channel with buckets but flat zero is exactly the case to warn about. Advisory only. */
+/** No insulin to horizon? Keys on size, NOT isEmpty: flat-zero buckets are the case to warn. */
 fun noFutureInsulinOverForecast(
     frame: CurveOverlayFrame,
     predictions: List<ModelPrediction>,
@@ -159,8 +147,7 @@ data class CurveOverlayToggles(
     val any: Boolean get() = carbs || insulin || exercise
 }
 
-/** Fill and roof are one command stream; only the fill's runs are closed. The seam a host test
- *  records the geometry through. */
+/** Fill and roof are one command stream; only fill's runs close. Host test reads geometry. */
 internal interface CurvePathSink {
     fun moveTo(x: Float, y: Float)
     fun lineTo(x: Float, y: Float)
@@ -178,9 +165,7 @@ internal class CurveChannelPaths : CurvePathSink {
     override fun endRun() { fill.close() }
 }
 
-/** `values[i]` covers `[tsAt(i), tsAt(i)+step)` and is plotted at its RIGHT edge; a run opens from
- *  the floor at the event instant. `[lo, hi]` is a viewport cull: a run still open at `lo` is
- *  re-opened at `(x(tsAt(lo)), y(values[lo-1]))`, the vertex a full scan draws there, not back-scanned. */
+/** values[i] plotted at its RIGHT edge; run opens from floor at event instant; lo,hi is a cull. */
 internal fun emitCurveChannel(
     values: FloatArray,
     peak: Float,
@@ -215,7 +200,7 @@ internal fun emitCurveChannel(
         if (!open) {
             val xLeft = absToPx.of(tsAt(i)) // the event instant
             sink.moveTo(xLeft, floorY)
-            // Entering mid-run: rise to the previous bucket's vertex, the segment a full scan draws.
+            // Entering mid-run: rise to previous bucket's vertex, the segment a full scan draws.
             if (i == first && i > 0 && values[i - 1] > 0f) sink.lineTo(xLeft, yOf(values[i - 1]))
             sink.lineTo(xRight, y)
             open = true
@@ -229,9 +214,7 @@ internal fun emitCurveChannel(
     }
 }
 
-/** [absToPx] maps absolute epoch-ms to x; the band occupies `[bandTop, plotBottom]` and each channel
- *  is scaled to its own peak. Only strictly-positive buckets fill, so a flat-zero stretch draws
- *  nothing. [paths] is the caller's scratch, not two allocations per channel per frame. */
+/** absToPx maps epoch-ms to x; only strictly-positive buckets fill; paths is caller's scratch. */
 internal fun DrawScope.drawCurveOverlay(
     frame: CurveOverlayFrame,
     toggles: CurveOverlayToggles,

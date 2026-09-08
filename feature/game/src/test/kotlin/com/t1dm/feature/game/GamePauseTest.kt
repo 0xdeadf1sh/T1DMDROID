@@ -11,8 +11,7 @@ private const val MS = 1_000_000L
 private const val FRAME_120 = 8_333_333L
 private const val FRAME_60 = 16_666_667L
 
-/** Vsync jitter as PHASE noise about a fixed grid: the times wander inside a band, they do not
- *  random-walk away from the nominal rate. */
+/** Vsync jitter as PHASE noise on a fixed grid: wanders in a band, no random-walk from nominal. */
 private fun vsyncStamps(t0: Long, periodNs: Long, count: Int, jitterNs: Long, seed: Long): LongArray {
     val rng = Random(seed)
     return LongArray(count) { k ->
@@ -115,7 +114,7 @@ class FrameClockPacerTest {
 
     @Test
     fun `a 60 Hz panel is simulated every frame despite its own jitter`() {
-        // A callback 0.4 ms early is still THE frame for its slot; read as early it collapses to 30 fps.
+        // A callback 0.4 ms early is still THE frame for its slot; else it collapses to 30 fps.
         val p = FrameClockPacer()
         var t = 1_000 * MS
         p.tick(t, false)
@@ -129,8 +128,7 @@ class FrameClockPacerTest {
 
     @Test
     fun `a jittery 120 Hz panel simulates every other callback and never every third`() {
-        // Gating on elapsed-since-last-SIMULATED-frame leaves 0.667 ms of margin across two 120 Hz
-        // callbacks, so any jitter past that waits for a third. Phase-locked, the cadence is unconditional.
+        // Gating on elapsed-since-last-SIMULATED leaves 0.667 ms margin over two 120 Hz callbacks.
         val p = FrameClockPacer()
         val t0 = 1_000 * MS
         p.tick(t0, false)
@@ -217,7 +215,7 @@ class FrameClockPacerTest {
 
     @Test
     fun `a genuine stall is handed over whole for the solver to clamp`() {
-        // `GameWorld.step` drops its own surplus; clamping here too would be two places to get it wrong.
+        // `GameWorld.step` drops its own surplus; clamping here too is a 2nd place to get it wrong.
         val p = FrameClockPacer()
         var t = 1_000 * MS
         p.tick(t, false)

@@ -3,8 +3,7 @@ package com.t1dm.feature.pubs
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
-// Non-optional fields are the ones the mapper hard-depends on; the rest default so a sparse post
-// still decodes.
+// Non-optional fields are what the mapper hard-depends on; rest default so a sparse post decodes.
 
 @Serializable
 internal data class AuthorFeedResponse(
@@ -42,8 +41,7 @@ internal data class PostRecord(
     val createdAt: String? = null,
 )
 
-/** Only the image and external shapes are modelled; any other [type] carries neither, so the
- *  mapper degrades it to a text-only post. */
+/** Only image and external shapes are modelled; any other type degrades to a text-only post. */
 @Serializable
 internal data class EmbedView(
     @SerialName("\$type") val type: String? = null,

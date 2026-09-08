@@ -80,8 +80,7 @@ class ReMirrorLedgerTest {
         assertEquals(epochB, kv[ReMirrorKeys.PENDING_EPOCH])
     }
 
-    /** A matching epoch is not evidence the banked prefix reached this store: the epoch is read once
-     *  per pass, the endpoint per request, so a mid-pass repoint banks the new host's pages. */
+    /** Matching epoch isn't proof of a banked prefix: epoch reads once/pass, endpoint/request. */
     @Test
     fun aChangedProfileOnTheSameEpochDiscardsTheStampAndTheCursor() = runTest {
         val l = ledger()
@@ -107,7 +106,7 @@ class ReMirrorLedgerTest {
         assertEquals(0L, l.resume(epochA, storeA, nowMs = 4_000).scalarCursor)
     }
 
-    /** Past the horizon a missing row stops meaning "sent"; the cursor's own proof does not expire. */
+    /** Past the horizon a missing row stops meaning "sent"; the cursor's proof doesn't expire. */
     @Test
     fun aWalkPastTheEvictionHorizonIsReRaisedWithItsCursorIntact() = runTest {
         val l = ledger()

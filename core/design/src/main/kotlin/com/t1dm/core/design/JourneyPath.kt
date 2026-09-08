@@ -17,11 +17,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.lerp
 import com.t1dm.core.model.DkaTimeline
 
-/**
- * The landmarks sit EVENLY, one leg of road apiece, rather than on a time axis; [journeyProgress]
- * warps time to match, so the arrow still reaches each figure when that landmark is projected.
- * Display-only: no §3.6 rail reads it.
- */
+/** Landmarks sit EVENLY, one leg apiece, not by time; [journeyProgress] warps; display-only. */
 
 private fun Color.blend(other: Color, t: Float): Color = lerp(this, other, t)
 
@@ -35,11 +31,7 @@ data class JourneyMarks(val dka: Float, val coma: Float, val death: Float) {
 /** One leg of road per landmark. */
 private const val LEG = 1f / 3f
 
-/**
- * Clamped to `[0, 1]`. [anchorMs] is the projected IOB-zero instant and may lie in the PAST (a
- * decayed dose) or the FUTURE (insulin on board). PIECEWISE, one third of the road per leg: the
- * landmarks are evenly spaced while the hours behind them are not.
- */
+/** Clamped [0,1]; [anchorMs]=IOB-zero, PAST or FUTURE; piecewise, 1/3 road/leg, hours uneven. */
 fun journeyProgress(nowMs: Long, anchorMs: Long, tl: DkaTimeline): Float {
     val legs = doubleArrayOf(
         tl.iobZeroToDkaHours.coerceAtLeast(0.0),
@@ -63,8 +55,7 @@ fun journeyProgress(nowMs: Long, anchorMs: Long, tl: DkaTimeline): Float {
     return frac.coerceIn(0f, 1f)
 }
 
-/** [progress] is read inside the draw scope, so a ticker repaints the road without recomposing the
- *  panel around it. */
+/** [progress] read inside draw scope; a ticker repaints the road without recomposing the panel. */
 @Composable
 fun JourneyPath(
     progress: () -> Float,

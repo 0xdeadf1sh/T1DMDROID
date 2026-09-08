@@ -10,8 +10,7 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
-/** The `rw` token at rest, keyed by profile id. It must never sit in the keep-forever Room DB, which
- *  a backup or export could leak. */
+/** `rw` token at rest, keyed by profile id; never in the Room DB (backup/export could leak). */
 interface TokenStore {
     suspend fun get(profileId: String): String?
     suspend fun put(profileId: String, token: String)
@@ -29,26 +28,16 @@ class InMemoryTokenStore(seed: Map<String, String> = emptyMap()) : TokenStore {
     override suspend fun clearAll() { map.clear() }
 }
 
-/**
- * A hardware-bound AES-256-GCM key wraps each token; the `iv:ciphertext` sits in a private
- * `SharedPreferences`. The raw token never touches disk in the clear and the wrapping key is
- * non-exportable. Drives the Keystore directly rather than depend on `security-crypto`.
- */
+/** HW-bound AES-256-GCM wraps tokens; iv:ciphertext in private prefs, key non-exportable. */
 class KeystoreTokenStore(context: Context) : TokenStore {
     private val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
-    /**
-     * One profile's plaintext, in heap, until [put]/[remove]/[clearAll] or process death. Keyed by
-     * the exact `iv:ciphertext` it came from, so invalidation is the ciphertext, not a clock: [put]
-     * mints a fresh IV per call, and a TTL could only ever expire an entry that is still correct.
-     */
+    /** One profile's plaintext in heap till put/remove/clearAll/death; keyed by iv:ciphertext. */
     private var cachedFor: String? = null
     private var cachedPacked: String? = null
     private var cachedToken: String? = null
 
-    /** Bumped by [forget], read by [get] across its unwrap. The decrypt runs OUTSIDE the monitor, so
-     *  a write path can land mid-unwrap; comparing the epoch on the way out is what stops an unwrap
-     *  that began before an erase publishing after it. */
+    /** Bumped by [forget], read in [get]'s unwrap; stops a pre-erase unwrap publishing late. */
     private var epoch = 0L
 
     /** The Keystore HANDLE, not key material: its bytes never leave the TEE. */
@@ -67,8 +56,7 @@ class KeystoreTokenStore(context: Context) : TokenStore {
         val cipher = Cipher.getInstance(TRANSFORM)
         cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(GCM_TAG_BITS, iv))
         val token = String(cipher.doFinal(ct), Charsets.UTF_8)
-        // The caller asked before the erase and is answered; the CACHE is what must not outlive the
-        // ciphertext.
+        // Caller asked before the erase, answered; the CACHE must not outlive the ciphertext.
         synchronized(this) {
             if (epoch == began) {
                 cachedFor = profileId
@@ -94,7 +82,7 @@ class KeystoreTokenStore(context: Context) : TokenStore {
         forget()
     }
 
-    /** Drops every wrapped token AND the wrapping key; a fresh token minted later regenerates it. */
+    /** Drops every wrapped token AND the wrapping key; a later token regenerates it. */
     override suspend fun clearAll() {
         prefs.edit().clear().apply()
         forget()

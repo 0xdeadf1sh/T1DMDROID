@@ -14,18 +14,12 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
-/**
- * Modifier order is load-bearing: BEFORE `verticalScroll`, so the draw scope's size is the viewport
- * and its coordinates do not translate with the scroll; after [verticalScrollbar], so the thumb
- * draws outside the layer.
- */
+/** Order load-bearing: before verticalScroll (viewport-sized draw), after verticalScrollbar. */
 
 /** Public: a panel that scrolls a row INTO view has to clear this. */
 val FADE_EDGE_DEPTH = 40.dp
 
-// DstIn reads only the source's alpha, so the mask's colour is arbitrary. The band is squeezed onto
-// its edge by SCALING the canvas: `drawRect`'s size does not bound an unbounded brush, and `inset`
-// makes the resolved size the band's, rebuilding the native shader on every frame of a ramp.
+// DstIn reads only alpha (colour arbitrary); band scaled onto edge, not inset (avoids reshader).
 private val ERASE_DOWNWARD = Brush.verticalGradient(listOf(Color.Transparent, Color.Black))
 private val ERASE_UPWARD = Brush.verticalGradient(listOf(Color.Black, Color.Transparent))
 
@@ -46,7 +40,7 @@ fun Modifier.fadingEdges(state: LazyListState, depth: Dp = FADE_EDGE_DEPTH): Mod
         else state.firstVisibleItemScrollOffset.toFloat().coerceAtMost(d)
     },
     bottom = { d ->
-        // A lazy list knows no total height; the last visible item's overhang stands in for what is left.
+        // A lazy list has no total height; the last item's overhang stands in for what's left.
         val info = state.layoutInfo
         val last = info.visibleItemsInfo.lastOrNull()
         when {

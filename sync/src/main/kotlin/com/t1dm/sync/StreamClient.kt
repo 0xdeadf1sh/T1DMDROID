@@ -31,8 +31,7 @@ data class StreamConfig(
     val pingIntervalMs: Long = 20_000,
 )
 
-/** [Reconnected] carries the last-seen Sample cursor for the Network panel only; the coordinator
- *  catches up from its own local high-water marks. */
+/** [Reconnected]s cursor is for the Network panel; coordinator uses its own high-water marks. */
 sealed interface StreamEvent {
     data class Sample(val patch: SamplePatch) : StreamEvent
     data class Alert(val ts: Long, val kind: String, val payload: JsonElement?) : StreamEvent
@@ -45,14 +44,10 @@ sealed interface StreamEvent {
 interface StreamClient {
     fun events(): Flow<StreamEvent>
 
-    /** Set when a live event is dropped because the stream channel was full. This client is the sole
-     *  producer; only the catch-up coordinator reads and clears it. */
+    /** Set when a live event is dropped, channel full. Sole producer; coordinator clears it. */
     val desync: AtomicBoolean
 
-    /**
-     * Not delivered when there is no live socket or the outgoing buffer is full — the whole failure
-     * model. No route stores a forecast, and a dropped frame is dropped.
-     */
+    /** Not delivered with no live socket or a full outgoing buffer — the whole failure model. */
     suspend fun sendPrediction(dto: PredictionWriteDto): ForecastFrame
 }
 
@@ -67,11 +62,7 @@ private fun defaultStreamOkHttp(config: StreamConfig): OkHttpClient =
         .pingInterval(config.pingIntervalMs, TimeUnit.MILLISECONDS)
         .build()
 
-/**
- * Follows the active profile via [endpoint] and reconnects with jittered backoff. Collection is
- * confined to [T1dmDispatchers.io]; OkHttp delivers its callbacks on its own dispatcher and they hop
- * back through the channel.
- */
+/** Follows [endpoint], reconnects with jittered backoff. Confined to [T1dmDispatchers.io]. */
 class WebSocketStreamClient(
     private val endpoint: suspend () -> ServerEndpoint?,
     private val dispatchers: T1dmDispatchers,
@@ -115,7 +106,7 @@ class WebSocketStreamClient(
                 override fun onMessage(webSocket: WebSocket, text: String) {
                     decode(text)?.let { ev ->
                         if (ev is StreamEvent.Sample) lastCursor = ev.patch.ts
-                        // A full channel drops the event silently; the next connect resyncs in full.
+                        // A full channel drops the event silently; next connect resyncs in full.
                         if (trySend(ev).isFailure) desync.set(true)
                     }
                 }

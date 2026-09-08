@@ -8,11 +8,7 @@ import com.t1dm.alerts.AlertActuatorConfig
 import com.t1dm.alerts.AlertChannels
 import com.t1dm.alerts.VibrationActuator
 
-/**
- * Suppresses itself while the deterministic critical alarm is firing, so it can only ever add an
- * earlier warning, never mute one. In `:app` rather than `:alerts`, which keeps no `:inference`
- * dependency.
- */
+/** Suppresses itself during the critical alarm; adds an earlier warning, never mutes one. */
 class PredictiveAlertPresenter(
     context: Context,
     private val fullScreenIntent: () -> PendingIntent?,

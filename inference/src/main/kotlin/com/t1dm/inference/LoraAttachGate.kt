@@ -2,9 +2,7 @@ package com.t1dm.inference
 
 import com.t1dm.core.model.LoraGuardVerdict
 
-/** Null when the adapter may attach. Enforced in `LabController.attach`, not the UI. [overrideAtMs]
- *  clears ABSENT, BLOCKED and INCONCLUSIVE, only for the row it is stored on, and never the
- *  history-edit refusal. */
+/** Null when adapter may attach (LabController.attach); overrideAtMs skips history-edit only. */
 fun loraAttachRefusal(
     verdict: LoraGuardVerdict,
     overrideAtMs: Long?,
@@ -12,8 +10,7 @@ fun loraAttachRefusal(
     fittedAtMs: Long,
     why: String = "",
 ): String? {
-    // Never overridable: an edit landing AFTER an override is information it could not weigh.
-    // `fittedAtMs == 0` is an imported adapter, never fitted here — not an ancient fit.
+    // Never overridable: an edit after an override is info it can't weigh; fittedAtMs==0 imported.
     if (fittedAtMs > 0L && historyMutatedAtMs != null && historyMutatedAtMs > fittedAtMs) {
         return "Fitted on a dose or meal history that has since been edited — re-fit it"
     }

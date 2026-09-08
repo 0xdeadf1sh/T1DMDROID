@@ -39,20 +39,10 @@ data class ArchiveCounts(
             loras + exerciseSessions + loggedExercise + exerciseFixes + tombstones + infills
 }
 
-/**
- * Excludes the outbox, raw adverts, `prediction`, `hw_telemetry`, legacy `dose_event`, and
- * `cgm_sample_raw` — that last is retention-bounded, and a merging restore would re-add rows the
- * phone has already dropped. UNPROMOTED `bg_infill` is out; PROMOTED is in, as the only place a
- * promoted sample's band exists. Carries `exercise_fix`, so the file holds the user's GPS tracks:
- * never relax it into an automatic upload.
- */
+/** Excludes outbox/adverts/prediction/telemetry/cgm_sample_raw; has GPS, never auto-upload it. */
 class ArchiveWriter(private val db: AppDatabase) {
 
-    /**
-     * [out] is NOT closed here — the caller owns it; the gzip trailer is written, so the document
-     * is complete on return. One deferred read transaction, so the archive is a consistent
-     * snapshot; under WAL that defers checkpointing but does not block writers.
-     */
+    /** out is NOT closed here, caller owns it; one deferred read tx keeps a consistent snapshot. */
     suspend fun write(
         out: OutputStream,
         configJson: String?,
@@ -168,8 +158,7 @@ class ArchiveWriter(private val db: AppDatabase) {
         }
         counts = counts.copy(strokes = strokes)
 
-        // Parent before its fixes: a fix names its bout by `clientId`, so a streaming restore can
-        // resolve the link without buffering.
+        // Parent before its fixes: a fix names its bout by clientId, so restore resolves streaming.
         var exerciseSessions = 0
         var exerciseFixes = 0
         var sessionStart = Long.MIN_VALUE

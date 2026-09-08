@@ -1,10 +1,6 @@
 package com.t1dm.cgm
 
-/**
- * One captured BLE advertisement, copied off the binder thread (§2.3). [adBytes] is the raw AD
- * structure array (`ScanRecord.getBytes()`), re-parsed by [AdStructureParser]: Android merges the two
- * 0x0059 manufacturer structures, so `getManufacturerSpecificData()` cannot be trusted (CGM.md §3).
- */
+/** adBytes: raw AD array, re-parsed since Android merges dup 0x0059 structs (CGM.md §3). */
 data class RawAdvert(
     val adBytes: ByteArray,
     val name: String?,

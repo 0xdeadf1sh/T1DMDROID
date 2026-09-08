@@ -31,7 +31,7 @@ class WatchPushCodecTest {
         val got = WatchPushCodec.decode(WatchPushCodec.encode(full))
         assertEquals(full.bgMgdl, got.bgMgdl)
         assertEquals(full.trendTenths, got.trendTenths)
-        assertEquals(full.readingAgeMs, got.readingAgeMs) // second-granular; input is a whole second
+        assertEquals(full.readingAgeMs, got.readingAgeMs) // second-granular; input is a whole sec
         assertEquals(full.alertBand, got.alertBand)
         assertEquals(full.forecastStatus, got.forecastStatus)
         assertEquals(full.fcEndMgdl, got.fcEndMgdl)

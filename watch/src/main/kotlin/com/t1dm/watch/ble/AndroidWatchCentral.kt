@@ -23,11 +23,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import timber.log.Timber
 
-/**
- * A CONNECTED session: needs BLUETOOTH_CONNECT, unlike the CGM's passive BLUETOOTH_SCAN. Every GATT
- * callback hops onto the injected dispatchers, never main. Permission is the caller's gate, which is
- * what the `MissingPermission` suppress rests on.
- */
+/** CONNECTED session, needs BLUETOOTH_CONNECT; every GATT callback hops to injected dispatchers. */
 @SuppressLint("MissingPermission")
 class AndroidWatchCentral(
     private val context: Context,
@@ -60,12 +56,11 @@ class AndroidWatchCentral(
         withTimeout(timeoutMs) {
             val device = scanForDevice(namePrefix)
             deviceName = device.name ?: namePrefix
-            val g = device.connectGatt(context, /* autoConnect = */ false, callback, BluetoothDevice.TRANSPORT_LE)
+            val g = device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
                 ?: throw IllegalStateException("connectGatt returned null (adapter off?)")
             gatt = g
 
-            // A requestMtu/discoverServices issued before STATE_CONNECTED is silently dropped, and
-            // no callback ever fires.
+            // requestMtu/discoverServices before STATE_CONNECTED is silently dropped, no callback.
             connectDone = CompletableDeferred()
             check(connectDone!!.await()) { "GATT connection failed before bring-up" }
 

@@ -1,18 +1,8 @@
 package com.t1dm.core.model
 
-/**
- * Split-conformal band recalibration, fitted on device: `SPEC/inference.md` §8.4.
- *
- * The median never moves. Every consumer that decides a category reads the raw fan; the calibrated
- * fan is display-only, reaches the BG panel alone, and is never stored or pushed — the wire has no
- * raw/calibrated discriminator.
- */
+/** Split-conformal recalibration (§8.4); median never moves; fan is display-only, unstored. */
 
-/**
- * [delta] is `steps · nQuantiles`, step-major in ascending τ — [ModelPrediction.bandsMgdl]'s
- * layout, so it applies without a transpose. All zeros when [sufficient] is false. The coverage
- * and width pairs are τ.05–.95 realized on the held-out [nEval] split.
- */
+/** [delta]: steps·nQuantiles, step-major τ (bandsMgdl layout); zero when [sufficient] false. */
 data class ConformalFit(
     val delta: List<Double>,
     val steps: Int,
@@ -65,8 +55,7 @@ data class BandCalibration(
     val meanWidth90Cal: Double?,
     val windowDays: Int,
     val fittedAtMs: Long,
-    /** CGM source every window was scoped to. Null is unknown and never matches, so an unstamped
-     *  correction stops being applied. */
+    /** CGM source scoped to; null never matches, so an unstamped correction stops applying. */
     val sourceId: String? = null,
 ) {
     /** Trusted only as long as the history it was fitted on; past it, the raw fan. */
@@ -74,8 +63,7 @@ data class BandCalibration(
 
     fun expiredAt(nowMs: Long): Boolean = nowMs >= expiresAtMs
 
-    /** By the identity of the fit — one fit per model is in flight, so `(modelId, fittedAtMs)`
-     *  decides it exactly and the boxed [delta] is never walked. Structural, not reference. */
+    /** Identity is (modelId, fittedAtMs) — one fit per model; structural, not reference. */
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         val o = other as? BandCalibration ?: return false
@@ -93,10 +81,7 @@ enum class BandFitRefusal {
     HORIZON_UNKNOWN,
 }
 
-/**
- * [refusal] non-null: the walk never ran, so [fit] and the counts are absent rather than zero.
- * Both null: the walk scored nothing. `fit.sufficient == false`: the fit's own refusal.
- */
+/** [refusal] non-null: walk never ran ([fit]/counts absent). Both null: walk scored nothing. */
 data class BandCalibrationOutcome(
     val fit: ConformalFit?,
     val stored: Boolean,

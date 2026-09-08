@@ -1,8 +1,6 @@
 package com.t1dm.core.model
 
-/** Snapshots the food's carbs-per-100 g, GI and custom shape as they were when it was added, so a
- *  saved meal survives a later edit or deletion of the [Food]. [foodId] is a soft link back to the
- *  dictionary, null for an ad-hoc entry. */
+/** Snapshots food's carbs/100g, GI, shape at add time (survives Food edits); [foodId] soft link */
 data class MealComponent(
     val foodId: Long?,
     val name: String,
@@ -23,8 +21,7 @@ data class SavedMeal(
     val totalCarbs: Double get() = components.sumOf { it.carbs }
 }
 
-/** The combined carb appearance (Ra) curve the model consumes on its carb channel: [values] are
- *  grams per [stepMs] and integrate to [totalCarbs] over the window. */
+/** Combined Ra curve; [values] are grams per [stepMs], integrate to [totalCarbs]. */
 data class ResolvedMealCurve(
     val totalCarbs: Double,
     val values: List<Double>,

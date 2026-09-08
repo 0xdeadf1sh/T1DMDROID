@@ -5,8 +5,7 @@ import com.t1dm.core.model.ModelDescriptor
 import com.t1dm.core.model.Precision
 import java.io.File
 
-/** Fixed plausible `head_raw` so the path runs with no model present. The controller marks
- *  [com.t1dm.core.model.InferenceState.realBackendAvailable] false when a model resolves here. */
+/** Fixed plausible head_raw runs with no model; controller marks realBackendAvailable false. */
 class StubBackend : InferenceBackend {
     override val id = BackendId.STUB
     override val caps = BackendCaps(precision = Precision.FP32)
@@ -22,8 +21,7 @@ class StubBackend : InferenceBackend {
                 val i = (p * S + s) * Q
                 // col0: risk-space rise, added to the slot's anchor downstream.
                 head[i] = 0.015f * (p * S + s)
-                // cols 1..6: pre-softplus spreads; softplus(-1.6)+1e-3 ≈ 0.19 risk each, cumsum'd
-                // into a widening fan that clears the degeneracy guard.
+                // cols 1..6: pre-softplus spreads, softplus(-1.6)+1e-3~=0.19, clears degeneracy.
                 for (c in 1 until Q) head[i + c] = -1.6f
             }
         }

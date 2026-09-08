@@ -1,11 +1,6 @@
 package com.t1dm.core.model
 
-/**
- * Per-100 g facts; the meal builder scales by portion grams and the curve engine turns
- * `(gi, grams)` into a carb appearance (Ra) gamma. [giOrNull] is 0..100; null is unknown GI and the
- * resolver falls back to medium. [customCurve] is per-5-min buckets summing to 1.0, and overrides
- * the GI-derived gamma.
- */
+/** Per-100g facts; [giOrNull] 0..100, null=unknown→medium; [customCurve] per-5-min sums to 1.0 */
 data class Food(
     val id: Long,
     val name: String,

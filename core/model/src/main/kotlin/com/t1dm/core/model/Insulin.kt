@@ -1,15 +1,9 @@
 package com.t1dm.core.model
 
-/** [BOLUS] (rapid-acting) is a gamma peaking ~50 min; [BASAL] (long-acting) a broad Bateman,
- *  near-flat once tiled. */
+/** BOLUS (rapid) is gamma peaking ~50 min; BASAL (long) a broad Bateman, near-flat once tiled. */
 enum class InsulinKind { BOLUS, BASAL }
 
-/**
- * Self-describing: it carries the exact curve parameters, so a dose logged against it reconstructs
- * the same PK-action curve even if defaults later change. A [BOLUS] fills [k]/[theta] (gamma), a
- * [BASAL] [kaPerHour]/[kePerHour] (Bateman). [customCurve] is per-5-min buckets summing to 1.0 and
- * overrides the analytic curve; [durationMin] is the DIA.
- */
+/** Self-describing PK params, so a logged dose reconstructs its curve even if defaults change. */
 data class InsulinType(
     val id: Long,
     val name: String,
@@ -23,11 +17,7 @@ data class InsulinType(
     val builtin: Boolean = false,
 )
 
-/**
- * The two disjoint catalogues a logged dose can be written against, unified for the surfaces that
- * offer one to be re-picked. A row keeps only the [label] it was logged under, in
- * `logged_dose.note`, so that string is the only thing a re-pick can be matched against.
- */
+/** Two disjoint catalogues a dose can be written against; a row keeps only the logged label. */
 sealed interface InsulinChoice {
     val label: String
     val kind: InsulinKind

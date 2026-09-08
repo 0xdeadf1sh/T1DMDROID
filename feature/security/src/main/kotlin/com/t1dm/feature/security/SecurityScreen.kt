@@ -127,7 +127,7 @@ private fun Kv(key: String, value: String) {
     )
 }
 
-/** Keeps `:feature:security` free of a `:watch` dependency; `:app` maps `WatchSecurityState` onto it. */
+/** Keeps `:feature:security` free of `:watch`; `:app` maps `WatchSecurityState` onto it. */
 data class SecurityPanelState(
     val phase: String = "Unpaired",
     val deviceName: String? = null,

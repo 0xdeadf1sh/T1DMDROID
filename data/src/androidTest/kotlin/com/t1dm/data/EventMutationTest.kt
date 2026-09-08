@@ -25,8 +25,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/** Instrumented against the production [BundledSQLiteDriver]: `inWriteTx` is only reachable
- *  through a configured driver. */
+/** Instrumented against production BundledSQLiteDriver: inWriteTx only reachable configured. */
 @RunWith(AndroidJUnit4::class)
 class EventMutationTest {
 
@@ -66,8 +65,7 @@ class EventMutationTest {
             tzOffsetMin = 0, note = "NovoRapid", updatedAt = nowMs, loggedAtMs = nowMs,
         )
 
-    /** The tombstone outranks the row it retires even when the clock has not advanced
-     *  (`SPEC/invariants.md` §7), or the server's ordering guard ignores the deletion. */
+    /** Tombstone outranks the row even with no clock advance (SPEC/invariants.md §7). */
     @Test
     fun deleting_a_dose_leaves_a_tombstone_with_a_strictly_newer_stamp() = runTest {
         val row = repo.logLoggedDose(dose())
@@ -86,8 +84,7 @@ class EventMutationTest {
         assertNull("nothing has filed its push yet", db.eventTombstoneDao().byClientId(row.clientId)!!.pushEnqueuedAtMs)
     }
 
-    /** `/api/v1` has no update for a treatment that has landed, and the bridged `created_at`
-     *  derives from `updatedAt`, which an edit bumps — a re-send files a SECOND treatment. */
+    /** /api/v1 has no update for a landed treatment; bridged created_at derives from updatedAt. */
     @Test
     fun an_edited_events_bridged_mirror_is_recalled_only_while_it_is_still_pending() = runTest {
         val row = repo.logLoggedDose(dose())
@@ -119,8 +116,7 @@ class EventMutationTest {
         assertNotNull("and the row it could not recall is still queued", db.outboxDao().byId(id))
     }
 
-    /** Without the tombstone term the mark moves back and the widened pull re-hydrates the
-     *  deletion. */
+    /** Without the tombstone term the mark moves back and a widened pull re-hydrates it. */
     @Test
     fun deleting_the_newest_event_does_not_walk_the_catch_up_cursor_backward() = runTest {
         val older = repo.logLoggedDose(dose(ts = nowMs - 300_000L))
@@ -137,7 +133,7 @@ class EventMutationTest {
         assertNotNull(db.loggedDoseDao().byId(older.id))
     }
 
-    /** A catch-up must not resurrect a deleted event — and must still admit a genuinely newer one. */
+    /** A catch-up must not resurrect a deleted event, yet must admit a genuinely newer one. */
     @Test
     fun hydration_refuses_an_event_the_local_record_has_deleted() = runTest {
         val row = repo.logLoggedDose(dose())
@@ -152,8 +148,7 @@ class EventMutationTest {
         assertNotNull(db.loggedDoseDao().byClientId(row.clientId))
     }
 
-    /** The rail's window is the LATER of the pre-edit and post-edit action ends; the post-edit row
-     *  alone would end the block while the IOB it invalidated stayed wrong. */
+    /** Rail window is the LATER of pre/post-edit action ends; post-edit alone leaves stale IOB. */
     @Test
     fun an_edit_that_shortens_a_dose_keeps_the_original_action_end() = runTest {
         val row = repo.logLoggedDose(dose(durationMin = 360.0))
@@ -182,7 +177,7 @@ class EventMutationTest {
         assertEquals(nowMs + 1_000, repo.latestDoseMutationMs())
     }
 
-    /** The log-gap mark is pinned by when the phone was TOLD, so retiming forward cannot quiet it. */
+    /** Log-gap mark is pinned by when the phone was TOLD, so retiming forward can't quiet it. */
     @Test
     fun retiming_a_dose_forward_cannot_move_the_log_gap_mark_later() = runTest {
         val row = repo.logLoggedDose(dose(ts = nowMs - 5 * 3_600_000L))

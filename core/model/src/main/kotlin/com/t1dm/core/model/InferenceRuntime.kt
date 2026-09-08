@@ -1,22 +1,15 @@
 package com.t1dm.core.model
 
-/** [FP64] is not an ExecuTorch path at all — it is the Rust core's own `f64`, which the classical
- *  baseline's solve and forecast run in end to end. */
+/** [FP64] isn't ExecuTorch — it's the Rust core's f64, used end-to-end by classical baseline. */
 enum class Precision { FP64, FP32, FP16 }
 
-/**
- * [EXECUTORCH_XNNPACK_FP32] is the one path that executes a `.pte`, and the only one a dose may be
- * scored on; [STUB] is the fixed-output fallback when no real artifact is present, and
- * [NATIVE_RIDGE_FP64] the classical baseline, which runs in the Rust core and loads no artifact.
- */
+/** XNNPACK_FP32 executes .pte (only dose-scoreable path); STUB fallback; RIDGE_FP64 classical. */
 enum class BackendId {
     EXECUTORCH_XNNPACK_FP32,
     NATIVE_RIDGE_FP64,
     STUB,
 
-    /** A stored row naming a backend this build no longer has. Never assigned to a live forecast:
-     *  it exists so a prediction written by an earlier build reads back as unknown provenance
-     *  instead of throwing out of the Room cursor. Never trustworthy for a dose. */
+    /** Backend name this build lost; reads as unknown, not throw; never trusted for dosing. */
     UNKNOWN,
 }
 
@@ -35,11 +28,7 @@ data class RunningModel(
     val selected: Boolean,
 )
 
-/**
- * [diskBytes] is the `stat`'d artifact size, null when the `.pte` is absent and the StubBackend
- * stands in. [reference] carries the model's own held-out validation metrics as a REFERENCE —
- * distinct from the on-device realized [MetricsSuite].
- */
+/** [diskBytes] null ⇒ StubBackend; [reference] is REFERENCE metrics, ≠ [MetricsSuite]. */
 data class ModelMeta(
     val modelId: String,
     val paramCount: Long? = null,
@@ -57,9 +46,7 @@ data class ModelMeta(
     val reference: ReferenceMetrics? = null,
 )
 
-/** Parsed because the block is part of the descriptor, and rendered NOWHERE: these are another
- *  dataset's numbers, and beside the realized suite they read as a second opinion on this patient's
- *  forecasts, which is the one thing they cannot be. */
+/** Parsed (descriptor field) but rendered NOWHERE: another dataset's numbers, not patient's. */
 data class ReferenceMetrics(
     val horizonsMin: List<Int>,
     val rmseMgdl: List<Double?>,
@@ -89,19 +76,12 @@ data class ModelLatency(
     val lastMs: Double,
 )
 
-/**
- * [medianBg] is the `P·S` mg/dL headline line; [bandsMgdl] the `P·S·[nQuantiles]` ascending-τ fan,
- * step-major (`i = p·S + s`) then the τ column, both already `f_inv`-decoded in the Rust core.
- * [status] is the §3.6-B degeneracy verdict and [stale] an anchor past the freshness gate (§3.6-D);
- * a non-`OK` or stale prediction may not drive a rail or a predictive alert.
- */
+/** [medianBg]:P·S mg/dL; [bandsMgdl]:P·S·nQ, step-major asc-τ; non-OK/[stale] blocks rails. */
 data class ModelPrediction(
     val modelId: String,
     val cycleTsMs: Long,
     val anchorTsMs: Long,
-    /** The CGM source whose readings conditioned this forecast. Two sensors worn at once disagree,
-     *  so scoring a matured window across a swap measures that gap and calls it model error. Null
-     *  is UNKNOWN and never matches, so an unstamped forecast is dropped rather than guessed at. */
+    /** CGM source conditioning this forecast; null=UNKNOWN never matches, so unstamped drops. */
     val sourceId: String? = null,
     val stepMs: Long,
     val medianBg: List<Double>,
@@ -114,8 +94,7 @@ data class ModelPrediction(
     val selected: Boolean,
     val stale: Boolean,
     val latencyMs: Double?,
-    /** Null when the descriptor lacks a time section (graph cut at `head_raw`), the backend
-     *  returned no second output, or the decode failed — fail-open, never blocks the BG forecast. */
+    /** Null: no time section, no second output, or decode failed; fail-open, blocks nothing. */
     val predictedTime: PredictedTime? = null,
 ) {
     val eligible: Boolean get() = status == ForecastStatus.OK && !stale
@@ -123,12 +102,7 @@ data class ModelPrediction(
     val horizonSteps: Int get() = medianBg.size
 }
 
-/**
- * The model's estimate of WHAT HOUR-OF-DAY IT IS NOW, not a per-forecast-step timestamp; a
- * predicted-time axis is [predictedHour] plus each step's offset. [probs] is the [nBins]-long
- * softmax of the ORIGIN prediction patch's logits, [predictedHour] the mean-resultant hour in
- * `[0,24)`, [resultantR] the resultant length in `[0,1]` — near 0 the belief is diffuse.
- */
+/** Current hour-of-day belief; [predictedHour]∈[0,24); [resultantR]∈[0,1], diffuse near 0. */
 data class PredictedTime(
     val probs: List<Double>,
     val predictedHour: Double,
@@ -137,15 +111,10 @@ data class PredictedTime(
     val binHours: Double,
 )
 
-/** [LOG_WRITE] is a cycle a logged meal or dose (or its withdrawal) fired off the curve channels it
- *  moved rather than the cadence tick; same controller path, same gates. */
+/** [LOG_WRITE]: a logged meal/dose (or withdrawal) fired this, not cadence tick; same gates. */
 enum class InferenceCause { GRID_TICK, LOG_WRITE, MANUAL, SYNTHETIC, COLLECTING_CONTEXT, OVER_TEMPERATURE }
 
-/**
- * The BATTERY sensor's °C — a true die temp is unreadable on this device. [thresholdC] is the pause
- * line, [warnMarginC] how far below it the TEMP chip turns amber, [resumeMarginC] the hysteresis
- * inference stays paused across until the reading falls below `thresholdC - resumeMarginC`.
- */
+/** BATTERY °C; [thresholdC] pause line, [warnMarginC] amber margin, [resumeMarginC] hysteresis. */
 data class ThermalStatus(
     val currentC: Double,
     val thresholdC: Double,
@@ -153,7 +122,7 @@ data class ThermalStatus(
     val resumeMarginC: Double,
 )
 
-/** TEMP-chip band (D1): NORMAL below the warn margin, WARN within it, CRITICAL at/above threshold. */
+/** TEMP-chip band (D1): NORMAL below margin, WARN within, CRITICAL at/above threshold. */
 enum class ThermalLevel { NORMAL, WARN, CRITICAL }
 
 /** Celsius; null [thresholdC] ⇒ NORMAL, the gate being disabled. */
@@ -164,18 +133,12 @@ fun thermalLevel(celsius: Double, thresholdC: Double?, warnMarginC: Double): The
     else -> ThermalLevel.NORMAL
 }
 
-/**
- * Hours of MEASURED (non-interpolated) BG in the trailing window; below [requiredHours] the cycle
- * suppresses every prediction. [requiredHours] is the user's `warmupHours` setting floored at the
- * model's MIN_CONTEXT (8 h). Distinct from the freshness gate (§3.6-D), which only marks an anchor
- * stale.
- */
+/** Hours of MEASURED BG in window; below [requiredHours] all predictions suppressed. */
 data class WarmupProgress(val measuredHours: Double, val requiredHours: Double) {
     val fraction: Double get() = if (requiredHours <= 0.0) 1.0 else (measuredHours / requiredHours).coerceIn(0.0, 1.0)
 }
 
-/** The immutable snapshot the UI observes as a `StateFlow`. [predictions] is selected-first, and
- *  [note] states why a refusal refused. */
+/** Immutable StateFlow snapshot; [predictions] selected-first, [note] states refusal reason. */
 data class InferenceState(
     val running: List<RunningModel> = emptyList(),
     val predictions: List<ModelPrediction> = emptyList(),
@@ -185,25 +148,19 @@ data class InferenceState(
     val lastCycleTsMs: Long? = null,
     val lastCause: InferenceCause? = null,
     val lastCycleDurationMs: Long? = null,
-    /** `false` when the selected model is served by the [BackendId.STUB] fallback (no real `.pte`). */
+    /** false when selected model served by [BackendId.STUB] fallback (no real .pte). */
     val realBackendAvailable: Boolean = true,
-    /** Non-null while the WARMUP gate is withholding forecasts (predictions cleared); null once met. */
+    /** Non-null while WARMUP withholds forecasts (predictions cleared); null once met. */
     val warmup: WarmupProgress? = null,
-    /**
-     * Published INDEPENDENTLY of the BG forecast so it SURVIVES the warmup gate: during warmup it is
-     * a low-context belief formed while [predictions] stays (correctly) empty. A phase belief, NOT a
-     * glucose forecast and NOT a dosing signal — no §3.6 gate depends on it.
-     */
+    /** Published independent of BG forecast, surviving warmup; phase belief, not dosing signal. */
     val circadianTime: PredictedTime? = null,
-    /** Anchor (epoch-ms) the [circadianTime] belief was formed at — the clock offset is measured from it. */
+    /** Anchor (epoch-ms) [circadianTime] formed at; clock offset is measured from it. */
     val circadianAnchorMs: Long? = null,
     /** True when [circadianTime] was formed during warmup on limited history. */
     val circadianLowContext: Boolean = false,
-    /** Distinguishes the "no time section" empty state from a "decode failed" one. Defaults true
-     *  until a cycle sets it. */
+    /** Distinguishes "no time section" from "decode failed"; defaults true until cycle sets it. */
     val selectedHasTimeSection: Boolean = true,
-    /** Null when the baseline has never been fitted; its row is listed in [running] either way. The
-     *  only provenance its drill-down has — it carries no descriptor and no [ModelMeta]. */
+    /** Null if never fitted (still listed in [running]); only provenance, no [ModelMeta]. */
     val baselineModel: BaselineModel? = null,
     val note: String? = null,
 ) {

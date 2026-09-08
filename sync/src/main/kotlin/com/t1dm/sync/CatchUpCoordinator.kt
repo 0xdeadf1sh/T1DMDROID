@@ -11,17 +11,12 @@ import kotlinx.coroutines.sync.Mutex
 import timber.log.Timber
 import java.util.concurrent.atomic.AtomicBoolean
 
-/**
- * Wires [StreamClient] to the app-authoritative reconcile (§3.4/§3.5/§3.8). Only `sample` frames
- * ever come back; meal/dose/basal/stats history is hydrated over REST. The reconcile is a side
- * effect of collecting [events], so nothing runs until someone subscribes.
- */
+/** Wires [StreamClient] to reconcile (§3.4/3.5/3.8); `sample` via WS; runs on [events] collect. */
 class CatchUpCoordinator(
     private val stream: StreamClient,
     private val http: SyncHttpClient,
     private val repo: T1dmRepository,
-    // Where the §3.8 pass runs. Must NOT be the scope collecting [events]: the pass waits on a
-    // drain that happens downstream of that collector.
+    // Where §3.8 runs; must NOT be [events]'s scope — the pass waits on a downstream drain.
     private val scope: CoroutineScope,
     // Must be wired at the `:app` root; left at this default the §3.8 gate is inert.
     private val reMirror: HistoryReMirror = HistoryReMirror { false },
@@ -32,7 +27,7 @@ class CatchUpCoordinator(
     private val pageLimit: Int = 5_000,
     private val nowMs: () -> Long = { System.currentTimeMillis() },
 ) {
-    /** Tried, never waited on: a pass resumes from its own cursor, so a redundant connect is dropped. */
+    /** Tried, never waited on: a pass resumes its own cursor, redundant connect is dropped. */
     private val reMirrorLock = Mutex()
 
     fun events(): Flow<StreamEvent> = stream.events().onEach { ev ->
@@ -62,11 +57,7 @@ class CatchUpCoordinator(
         if (replayed > 0) Timber.tag(TAG).i("re-filed %d unpushed tombstone(s)", replayed)
     }
 
-    /**
-     * Off the collector: the pass waits on an outbox drain the collector's own downstream performs.
-     * The lock is taken INSIDE the coroutine — taken outside, an already-cancelled [scope] would hold
-     * it forever and disable the §3.8 gate for the life of the process.
-     */
+    /** Off collector; lock INSIDE coroutine — outside, a dead [scope] holds it, gate stuck. */
     private fun kickReMirror() {
         scope.launch {
             if (!reMirrorLock.tryLock()) {
@@ -85,11 +76,7 @@ class CatchUpCoordinator(
         }
     }
 
-    /**
-     * §3.8. The epoch is recorded only once the history is DELIVERED, not merely enqueued: banked
-     * over an outbox still holding the walk, an interrupted upload is permanent silent loss. A blank
-     * or absent epoch is unknown, not changed, and never grounds for a replay.
-     */
+    /** §3.8: epoch recorded only once DELIVERED, not enqueued; blank/absent means unknown. */
     private suspend fun maybeReMirror() {
         val serverEpoch = http.health().store_epoch?.toString()?.takeIf { it.isNotBlank() } ?: return
         if (serverEpoch == repo.getKv(ReMirrorKeys.MIRRORED_EPOCH)) return
@@ -102,10 +89,7 @@ class CatchUpCoordinator(
         }
     }
 
-    /**
-     * Pages `GET /v1/series` forward from [fromCursor] (exclusive; null = full re-download). Returns
-     * the rows that actually wrote — the presence merge rejects fields the phone already holds.
-     */
+    /** Pages GET /v1/series from [fromCursor] (excl; null=full); returns rows the merge wrote. */
     suspend fun catchUp(fromCursor: Long?): Int {
         var cursor = fromCursor
         var merged = 0
@@ -132,10 +116,7 @@ class CatchUpCoordinator(
         return processed
     }
 
-    /**
-     * A tombstone is applied, not hydrated. A `client_id` already here is an EDIT — `insertIgnore`
-     * would drop it and leave the local row stale.
-     */
+    /** Tombstone applied, not hydrated; existing client_id is EDIT, insertIgnore leaves stale. */
     private suspend fun applyMeal(dto: MealEventDto, now: Long) {
         if (dto.deleted) {
             repo.applyServerTombstone(
@@ -173,19 +154,12 @@ class CatchUpCoordinator(
     }
 }
 
-/**
- * §3.8: bulk re-push of the phone's local history to a wiped server, in bounded batches. True only
- * once that history has LEFT the phone. One pass need not finish it, but must persist a per-epoch
- * cursor ([ReMirrorLedger]) and resume from it, or a walk restarted each connect never converges.
- */
+/** §3.8: bulk re-push to a wiped server, true once LEFT phone; persists a cursor to converge. */
 fun interface HistoryReMirror {
     suspend fun reMirror(serverEpoch: String): Boolean
 }
 
-/**
- * Re-file the outbox push for every deletion that lacks one — a process death between `:data`'s
- * delete transaction and `:app` filing the push, or a tombstone the size cap evicted.
- */
+/** Re-files an outbox push missing one — death between :data delete and :app filing, or evicted. */
 fun interface TombstoneReplay {
     suspend fun replay(): Int
 }

@@ -23,8 +23,7 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.lerp
 
-/** The painters paint at full strength; the caller applies the user's alpha once, over the whole
- *  layer. */
+/** Painters paint at full strength; caller applies the user's alpha once, over the whole layer. */
 @Composable
 fun ThemeBackdrop(alphaPct: Int, modifier: Modifier = Modifier) {
     if (alphaPct <= 0) return
@@ -294,8 +293,7 @@ private fun DrawScope.drawHelloKittyBackground(p: T1dmPalette) {
     drawCircle(lerp(bow, Color.White, 0.30f).copy(alpha = 0.7f), radius = rF * 0.11f, center = Offset(bx, by), style = Stroke(width = w * 0.005f))
 }
 
-/** Paper, not print: a soft page wash and grain. Every speck comes from [hashFrac], so the page is
- *  the same on every recompose. */
+/** Paper, not print: soft page wash and grain; every speck from [hashFrac], same each recompose. */
 private fun DrawScope.drawEInkBackground(p: T1dmPalette) {
     val w = size.width
     val h = size.height

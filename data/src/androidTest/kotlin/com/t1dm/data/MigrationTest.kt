@@ -15,9 +15,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/** There is no destructive fallback, so a DDL drift is a launch crash on the phone. The helper must
- *  open the [BundledSQLiteDriver] production ships, and its connection-based validate is lenient
- *  about unknown tables — which is what lets the Room-invisible `food_fts` shadow tables pass. */
+/** No destructive fallback, DDL drift crashes on launch; validate is lenient about food_fts. */
 @RunWith(AndroidJUnit4::class)
 class MigrationTest {
 
@@ -34,7 +32,7 @@ class MigrationTest {
 
     @Before
     fun cleanFile() {
-        // Each @Test recreates the DB at v1/vN from scratch; drop any file the previous method left.
+        // Each @Test recreates the DB at v1/vN from scratch, dropping any prior method's file.
         dbFile.delete()
         instrumentation.targetContext.getDatabasePath("$TEST_DB-wal").delete()
         instrumentation.targetContext.getDatabasePath("$TEST_DB-shm").delete()
@@ -115,8 +113,7 @@ class MigrationTest {
 
     @Test
     fun migrate6To7_clientIdColumnsAndUniqueIndexMatchSchema() {
-        // `clientId` is back-filled with a fresh UUID before the UNIQUE index is built; the retired
-        // sample.carbsG/bolusU/basalU columns are left dead in place.
+        // clientId back-filled with a fresh UUID before the UNIQUE index; retired columns dead.
         helper.createDatabase(6).close()
         helper.runMigrationsAndValidate(7, listOf(MigrationRunner.MIGRATION_6_7))
     }
@@ -145,8 +142,7 @@ class MigrationTest {
 
     @Test
     fun migrate8To9_noteTableIsGoneAndQueuedNoteRowsArePurged() {
-        // The outbox purge is the load-bearing half: `OutboxKind.valueOf("NOTE")` would throw on
-        // every later drain.
+        // Outbox purge is load-bearing: OutboxKind.valueOf(NOTE) would throw on every later drain.
         helper.createDatabase(8).use { db ->
             db.execSQL("INSERT INTO `note` (`tsMs`,`tzOffsetMin`,`text`,`updatedAt`) VALUES (1,0,'x',1)")
             db.execSQL(
@@ -221,8 +217,7 @@ class MigrationTest {
 
     @Test
     fun migrate11To12_advertNameIsAddedAndLeftNull() {
-        // Nothing is backfilled: the advertised name was discarded at match time, so for a sensor
-        // already on record it is genuinely unknown.
+        // Nothing is backfilled: advertised name was discarded at match time, genuinely unknown.
         helper.createDatabase(11).use { db ->
             db.execSQL(
                 "INSERT INTO `cgm_source` " +
@@ -263,8 +258,7 @@ class MigrationTest {
 
     @Test
     fun migrate13To14_authorityIsRenamedAndActivitySeededFromIt() {
-        // `active` is RENAMED to `authoritative` and a new `active` is seeded from it: seeding every
-        // known sensor active instead would open a link to every sensor ever met on the next start.
+        // active RENAMED to authoritative, new active seeded from it, not all sensors made active.
         helper.createDatabase(13).use { db ->
             db.execSQL(
                 "INSERT INTO `cgm_source` " +
@@ -318,8 +312,7 @@ class MigrationTest {
 
     @Test
     fun migrate15To16_exerciseTablesMatchSchemaAndNoSampleIsBackfilled() {
-        // No backfill: null `sample.exercise` means the magnitude was never recorded, which for
-        // every bucket predating this feature is true.
+        // No backfill: null sample.exercise means magnitude was never recorded, true pre-feature.
         helper.createDatabase(15).use { db ->
             db.execSQL(
                 "INSERT INTO `sample` (`ts`,`tzOffsetMin`,`bgMgdl`,`bgSource`,`bgProvenance`,`bgFlag`," +
@@ -362,8 +355,7 @@ class MigrationTest {
 
     @Test
     fun migrate16To17_exerciseBecomesGramsAndTheSecondsAreDropped() {
-        // The column changes MEANING: whole active seconds per bucket become grams of carbohydrate
-        // equivalent. No per-bucket function recovers the grams, so the old values are dropped.
+        // Column changes MEANING: active seconds become carb-equiv grams; unrecoverable, dropped.
         helper.createDatabase(16).use { db ->
             db.execSQL(
                 "INSERT INTO `sample` (`ts`,`tzOffsetMin`,`bgMgdl`,`bgSource`,`bgProvenance`,`bgFlag`," +
@@ -423,8 +415,7 @@ class MigrationTest {
                     "AND `bgMgdl` = 120 AND `provenance` = 'MEASURED'",
             ),
         )
-        // The key is (sourceId, rxWallMs): two samples inside one slot survive, a repeated instant
-        // does not.
+        // Key is (sourceId, rxWallMs): two samples in one slot survive, a repeated instant doesn't.
         db.execSQL(
             "INSERT INTO `cgm_sample_raw` " +
                 "(`sourceId`,`rxWallMs`,`bgMgdl`,`trendTenthsPerMin`,`minFromStart`,`quality`," +
@@ -452,8 +443,7 @@ class MigrationTest {
 
     @Test
     fun migrate18To19_theSecretTableIsAddedAndEverySourceIsNumberedInListOrder() {
-        // The ordinal is what a user reads as "this physical sensor", so the backfill has to be
-        // deterministic and to agree with the list order (`addedAtMs`, then `sourceId`).
+        // Ordinal is what a user reads as 'this sensor'; backfill is deterministic, list-ordered.
         helper.createDatabase(18).use { db ->
             fun source(id: String, added: Long) = db.execSQL(
                 "INSERT INTO `cgm_source` " +
@@ -486,7 +476,7 @@ class MigrationTest {
         assertEquals(3, countRows(db, "SELECT COUNT(*) FROM `cgm_source`"))
         assertEquals(3, countRows(db, "SELECT COUNT(*) FROM `cgm_source` WHERE `warmupWindowMin` = 60"))
 
-        // One row per sensor: two secrets for one sensor is two answers to "which key does it hold".
+        // One row per sensor: two secrets for one sensor is two answers to which key it holds.
         db.execSQL("INSERT INTO `cgm_sensor_secret` (`sourceId`,`blob`,`updatedAtMs`) VALUES ('aidexx:A',X'0102',1)")
         assertTrue(
             "a second secret was accepted for a sensor that already had one",
@@ -500,8 +490,7 @@ class MigrationTest {
 
     @Test
     fun migrate18To19_isIdempotentOnADatabaseThatAlreadyHasTheColumn() {
-        // A migration interrupted part way is re-applied whole on the next open, so both statements
-        // must survive a re-run. The ALTER cannot, which is why it is not one of them.
+        // Interrupted migration re-applies whole on next open; the ALTER can't survive a re-run.
         helper.createDatabase(18).use { db ->
             db.execSQL(
                 "INSERT INTO `cgm_source` " +
@@ -623,8 +612,7 @@ class MigrationTest {
         db.close()
     }
 
-    /** A pre-v24 row's fan is EMPTY, not levels synthesised from its two edges — a manufactured
-     *  interior would be indistinguishable from one a model emitted. `tau` back-fills to 0.5. */
+    /** Pre-v24 fan is EMPTY, not synthesised from two edges (indistinguishable from a model). */
     @Test
     fun migrate23To24_anOldFillHasNoFanAndIsTheMedian() {
         val seed = helper.createDatabase(23)

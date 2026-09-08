@@ -12,8 +12,7 @@ data class BackendCaps(
     val maskIsExternalStruct: Boolean = true,
 )
 
-/** Direct buffers positioned at 0: `patches (1,T,PATCH_DIM)` step-major z-space, `mask (T,T)`
- *  additive (`0` attend / `neg_fill` block), `slotSel (M,T)` one-hot rows naming each slot's patch. */
+/** Direct buffers at 0: patches(1,T,PATCH_DIM) z-space, mask(T,T) additive, slotSel(M,T) 1-hot. */
 class GraphTensors(
     val patches: FloatBuffer,
     val mask: FloatBuffer,
@@ -23,10 +22,7 @@ class GraphTensors(
     val mSlots: Int,
 )
 
-/** [headRaw] is the flattened `M·S·7` risk-space `head_raw`, C-contiguous over
- *  `(slot, step, level)`. [timeLogits] is the hour-of-day probe, flat `(M, nBins)`; [hidden] the
- *  final-normed state of every PATCH, flat `(T, D_MODEL)` — a span's spline nodes reach outside its
- *  own slots, so the seam carries the whole window. Both null when the export omits them. */
+/** headRaw flat M*S*7 risk-space, C-contig (slot,step,level); timeLogits/hidden null if unset. */
 class GraphOutput(
     val headRaw: FloatArray,
     val timeLogits: FloatArray? = null,

@@ -14,8 +14,7 @@ import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-// Nothing here scores a forecast: the horizons are synthetic records standing in for whatever
-// `forecast_metrics_suite` returned.
+// Nothing here scores a forecast: horizons are synthetic, standing in for `forecast_metrics_suite`.
 class ClarkeGridPickerTest {
 
     private fun points(n: Int): List<ScoredPoint> = List(n) {
@@ -97,7 +96,7 @@ class ClarkeGridPickerTest {
         }
     }
 
-    /** A choice is minutes, not a position, so it survives a suite that gains or drops a horizon. */
+    /** A choice is minutes, not a position: it survives a suite gaining or dropping a horizon. */
     @Test
     fun `a choice absent from the suite resolves to the nearest offered horizon`() {
         assertEquals(30, clarkeGridPick(suite(horizon(30, 40), horizon(120, 40)), 60).selected?.horizonMin)

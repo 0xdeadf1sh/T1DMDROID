@@ -18,8 +18,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import java.util.TimeZone
 
-/** Does NOT write the per-bucket magnitude: that goes into the wide sample through
- *  [T1dmRepository.recordExerciseCurve], from the recorder in `:sensors`. */
+/** Does NOT write per-bucket magnitude; that goes into the wide sample via recordExerciseCurve. */
 class ExerciseController(
     private val repository: T1dmRepository,
     private val dispatchers: T1dmDispatchers,
@@ -34,8 +33,7 @@ class ExerciseController(
     val sessions: Flow<List<ExerciseSession>> =
         repository.observeExerciseSessions().map { rows -> rows.map { it.toModel() } }
 
-    /** [startMs] stays a wall-clock instant, and the offset is resolved from it rather than from
-     *  whatever the clock says when the bout ends. */
+    /** startMs stays a wall-clock instant; offset resolved from it, not from the bout's end. */
     suspend fun start(kind: ExerciseKind, startMs: Long = now()): ExerciseSession =
         withContext(dispatchers.io) {
             repository.startExerciseSession(
@@ -55,8 +53,7 @@ class ExerciseController(
             ).toModel()
         }
 
-    /** [kcal] is null where no figure could be justified, and nothing recomputes it. [interrupted]
-     *  marks a bout the app ended: the `EXERCISE_MAX_BOUT_MS` limit, or [reconcileOpenSessions]. */
+    /** kcal is null where unjustified, never recomputed; interrupted marks a bout the app ended. */
     suspend fun stop(
         id: Long,
         endMs: Long,
@@ -87,11 +84,7 @@ class ExerciseController(
     suspend fun track(id: Long): List<TrackPoint> =
         withContext(dispatchers.io) { repository.exerciseTrack(id).map { it.toModel() } }
 
-    /**
-     * Takes the bout's disposal grams back out of the wide sample. The unwind is re-derived from the
-     * bout's own parameters — what it contributed per slot lived only in the recorder's memory — and
-     * is exact: the magnitude is a function of duration alone (`SPEC/invariants.md` §5).
-     */
+    /** Takes disposal grams back out; re-derived from params, exact per SPEC/invariants.md §5. */
     suspend fun delete(id: Long) = withContext(dispatchers.io) {
         val bout = repository.exerciseSession(id)
         val unwind = if (bout == null) {
@@ -118,11 +111,7 @@ class ExerciseController(
         repository.deleteExerciseSession(id, unwind, now())
     }
 
-    /**
-     * [source] laid down again at [startMs]: its kind and its duration, rated at the patient's
-     * CURRENT carb-equivalent. Null for a bout with no duration — §5's magnitude is duration times
-     * rate, so a zero-length bout disposes of nothing and a row for it would unwind nothing.
-     */
+    /** source relaid at startMs, rated at CURRENT carb-equiv; null for a zero-duration bout. */
     suspend fun replay(source: ExerciseSession, startMs: Long): LoggedExerciseEntity? =
         logExercise(source.kind, source.activeSec / 60.0, startMs, source.id)
 
@@ -155,11 +144,7 @@ class ExerciseController(
         repository.logLoggedExercise(row, exerciseCurveLaid(gridStart, values, tzOffsetMinAt), nowMs)
     }
 
-    /**
-     * Moves a replay in time and nothing else: the magnitude is a function of duration alone, so the
-     * curve is the same array laid at a new start. Re-derived from what the ROW stores, so a
-     * carb-equivalent changed since it was logged cannot rewrite its history.
-     */
+    /** Moves a replay in time only; re-derived from the ROW, so a rate change can't rewrite it. */
     suspend fun shiftLoggedExercise(id: Long, tsMs: Long): LoggedExerciseEntity? =
         withContext(dispatchers.io) {
             val row = repository.loggedExerciseById(id) ?: return@withContext null
@@ -184,11 +169,7 @@ class ExerciseController(
     private suspend fun curveOf(row: LoggedExerciseEntity): DoubleArray =
         curves.gamma(row.grams, row.k, row.theta, row.curveDurationMin)
 
-    /**
-     * Close every bout the app never saw stopped, at the newest instant it can prove it was still
-     * running, and mark it interrupted. Run once at launch. A killed recording is NOT resumed: a
-     * foreground service restarted from the background would record a bout the user believes ended.
-     */
+    /** Closes every unstopped bout at its last provable instant; run at launch, never resumed. */
     suspend fun reconcileOpenSessions(nowMs: Long): Int = withContext(dispatchers.io) {
         val open = repository.openExerciseSessions()
         for (row in open) {
@@ -206,16 +187,11 @@ class ExerciseController(
     }
 }
 
-/**
- * Never "now": the process died at an unknown moment and the phone may have been off since, so the
- * newest fix is the last instant the recording can be proven to have been running. Clamped, so a
- * track holding a stamp older than the start cannot end a bout before it began.
- */
+/** Never "now": newest fix is the last provable instant; clamped so a bout can't end early. */
 internal fun interruptedEndMs(startMs: Long, newestFixTsMs: Long?): Long =
     maxOf(newestFixTsMs ?: startMs, startMs)
 
-/** Unknown names decode to [ExerciseKind.OTHER]: `kind` is raw TEXT so a bout recorded by a later
- *  build stays readable. */
+/** Unknown names decode to ExerciseKind.OTHER; kind is raw TEXT so a later build stays readable. */
 internal fun ExerciseSessionEntity.toModel() = ExerciseSession(
     id = id,
     startMs = startMs,

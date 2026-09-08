@@ -33,8 +33,7 @@ import com.t1dm.core.design.verticalScrollbar
 /** Tall enough for a screen of hits, short enough to leave the hub's rows visible. */
 private val RESULTS_MAX_HEIGHT = 320.dp
 
-/** Results are grouped by destination under the full breadcrumb path — labels alone collide.
- *  A search is recorded on RESULT TAP, never per keystroke. [recent] is persisted by `:app`. */
+/** Grouped by destination (labels alone collide); recorded on RESULT TAP; [recent] via `:app`. */
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun SettingsSearchBar(

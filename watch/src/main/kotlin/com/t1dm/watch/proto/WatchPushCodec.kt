@@ -6,11 +6,7 @@ import com.t1dm.watch.crypto.SealedFrame
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
-/**
- * The frozen little-endian layout of a [WatchPush] plaintext (17-byte head + UTF-8 summary) and the
- * sealed record for the PUSH characteristic (docs/WATCH_BLE.md §Push, §6.1). Golden-tested so the
- * firmware decoder and the app encoder cannot drift.
- */
+/** Frozen LE [WatchPush] layout (17B head+summary), PUSH char §6.1; golden-tested vs firmware. */
 object WatchPushCodec {
 
     /** docs/WATCH_BLE.md §9.1. */
@@ -69,10 +65,10 @@ object WatchPushCodec {
         )
     }
 
-    /** The sealed record IS the wire frame; the cipher already built and authenticated its header. */
+    /** The sealed record IS the wire frame; the cipher already built/authenticated its header. */
     fun wireFrame(sealed: SealedFrame): ByteArray = sealed.frame
 
-    /** `(epoch, SealedFrame(seq, wholeRecord))`; null if too short or a wrong version (fail-closed). */
+    /** `(epoch, SealedFrame(seq, record))`; null if too short or wrong version (fail-closed). */
     fun parseWireFrame(b: ByteArray): Pair<Int, SealedFrame>? {
         if (b.size < HEADER_LEN + TAG_LEN) return null
         if (b[0].toInt() and 0xFF != FRAME_VERSION) return null

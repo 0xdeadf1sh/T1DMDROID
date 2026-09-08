@@ -75,8 +75,7 @@ fun LoraPanel(
     onAttach: (Long) -> Unit,
     /** The route out of `ABSENT` for an imported or restored adapter, short of the override. */
     onProbe: (Long) -> Unit = {},
-    /** Clears a guard refusal for one adapter. The controller, not this dialog, compares the
-     *  typed name. */
+    /** Clears a guard refusal; the controller, not this dialog, compares the typed name. */
     onOverride: (Long, String) -> Unit = { _, _ -> },
     onDetach: () -> Unit,
     onRename: (Long, String) -> Unit,
@@ -147,8 +146,7 @@ fun LoraPanel(
                         )
                         Spacer()
                         if (!a.attached) {
-                            // `LabController.attach` enforces the same predicate; this is the
-                            // affordance, never the gate.
+                            // `attach` enforces the same predicate; this is affordance, not gate.
                             TextButton(
                                 enabled = a.attachRefusal == null,
                                 onClick = { haptics.perform(HapticEvent.Commit); onAttach(a.id) },
@@ -171,8 +169,7 @@ fun LoraPanel(
                             color = MaterialTheme.colorScheme.error,
                         )
                     }
-                    // An INCONCLUSIVE verdict can carry a non-finite retention (frozen model,
-                    // divide by zero), and "NaN%" would read as a measurement.
+                    // INCONCLUSIVE can carry non-finite retention (frozen, /0); NaN% misleads.
                     if (a.guardWindows > 0 && a.guardRetention.isFinite()) {
                         Text(
                             "dose response ${"%.0f".format(a.guardRetention * 100)}% over " +

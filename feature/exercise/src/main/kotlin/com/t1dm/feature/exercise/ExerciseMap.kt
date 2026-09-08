@@ -36,11 +36,7 @@ import org.osmdroid.views.overlay.Overlay
 import org.osmdroid.views.overlay.Polyline
 import java.io.File
 
-/**
- * `MapView` is an opaque self-drawing `ViewGroup` — no palette, no font — holding a tile thread and
- * a disk cache, so its lifecycle is driven explicitly and `onDetach` is not optional. The track
- * never leaves the phone; no wire field carries it.
- */
+/** Opaque `ViewGroup`, explicit lifecycle, `onDetach` mandatory. Track never leaves the phone. */
 @Composable
 fun ExerciseMap(
     track: List<TrackPoint>,
@@ -62,7 +58,7 @@ fun ExerciseMap(
         return
     }
 
-    // Constructed without the map: handed one, osmdroid attaches an info window and inflates a layout.
+    // Constructed without the map: handed one, osmdroid attaches an info window and inflates it.
     val line = remember(map) {
         Polyline().also {
             it.outlinePaint.isAntiAlias = true
@@ -74,8 +70,7 @@ fun ExerciseMap(
     val dot = remember(map) { CursorOverlay().also { map.overlays.add(it) } }
     val cursorPoint = remember(cursor) { cursor?.let { GeoPoint(it.lat, it.lon) } }
 
-    // Fitting before measurement lands on a zero-sized viewport. Registered once per map, not from
-    // `update`, which would add a listener per recomposition.
+    // Fitting before measurement lands zero-sized. Registered once per map, not from `update`.
     val latest by rememberUpdatedState(points)
     // One-shot, and a plain holder so setting it cannot invalidate composition.
     val fitted = remember(map, points) { booleanArrayOf(false) }
@@ -90,7 +85,7 @@ fun ExerciseMap(
         onDispose { map.removeOnFirstLayoutListener(fit) }
     }
 
-    // Not in `update`: `setPoints` rebuilds a `LinearRing` per call, and `update` runs on cursor moves.
+    // Not in `update`: `setPoints` rebuilds a `LinearRing`, and `update` runs on cursor moves.
     LaunchedEffect(map, points, ink) {
         line.setPoints(points)
         line.outlinePaint.color = ink
@@ -127,8 +122,7 @@ fun ExerciseMap(
     )
 }
 
-/** `Overlay`, not `Marker`: `Marker(mapView)` inflates an info-window layout. osmdroid's
- *  three-argument `draw` delegates to this one. */
+/** `Overlay`, not `Marker`: `Marker(mapView)` inflates an info-window layout. */
 private class CursorOverlay : Overlay() {
     var at: GeoPoint? = null
     var fillArgb: Int = 0
@@ -153,14 +147,10 @@ private class CursorOverlay : Overlay() {
 private const val CURSOR_RADIUS_PX = 9f
 private const val CURSOR_HALO_PX = 3f
 
-/** Raw white, outside the palette: separates the dot from arbitrary raster, not from the app's surface. */
+/** Raw white, outside the palette: separates the dot from any raster, not the app's surface. */
 private val CURSOR_HALO_ARGB = 0xE6FFFFFF.toInt()
 
-/**
- * Provider built on IO — its constructor opens osmdroid's SQLite tile store. The `MapView` cannot
- * be: its `Handler` and `GestureDetector` take the constructing thread's Looper. Handover locks
- * against [release]; a provider dropped rather than detached leaks three broadcast receivers.
- */
+/** Built on IO (opens SQLite tile store); `MapView` can't — takes the Looper. Locks [release]. */
 private class MapHost(private val context: Context) {
     var map by mutableStateOf<MapView?>(null)
         private set
@@ -213,7 +203,7 @@ private fun newTileProvider(app: Context): MapTileProviderBasic {
     return MapTileProviderBasic(app, TileSourceFactory.MAPNIK)
 }
 
-/** The tile source rides on the provider; setting it again here would clear a cache never filled. */
+/** Tile source rides on the provider; re-setting it here would clear a cache never filled. */
 private fun newMapView(context: Context, tiles: MapTileProviderBasic) = MapView(context, tiles).apply {
     setMultiTouchControls(true)
     zoomController.setVisibility(CustomZoomButtonsController.Visibility.NEVER)

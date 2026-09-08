@@ -6,8 +6,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
-/** Provenance is what the safety gates key on: only a measured reading clears an alarm or enters the
- *  dosing series. Both inbound paths are pinned because they are separate code. */
+/** Safety gates key on provenance: only measured clears alarms/dosing; both paths pinned. */
 class WireMappersTest {
 
     private fun rest(bg: Double?, reconstructed: Boolean) = SampleDto(

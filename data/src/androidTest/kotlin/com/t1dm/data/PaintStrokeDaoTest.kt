@@ -16,8 +16,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/** The window predicate is intersection, not containment, inclusive at both ends. `minTsMs`/
- *  `maxTsMs` come from scanning every point. Same case table as host-JVM `PaintStrokeWindowTest`. */
+/** Window predicate is intersection not containment, inclusive; minTsMs/maxTsMs scan all points. */
 @RunWith(AndroidJUnit4::class)
 class PaintStrokeDaoTest {
 

@@ -2,7 +2,7 @@ package com.t1dm.feature.settings
 
 import androidx.compose.runtime.Composable
 
-/** Hours, each measured from the preceding landmark. Display-only: no §3.6 rail or gate reads them. */
+/** Hours, each from the preceding landmark. Display-only: no §3.6 rail or gate reads them. */
 @Composable
 fun DeathClockSettingsScreen(
     dkaAfterIobZeroH: Double,

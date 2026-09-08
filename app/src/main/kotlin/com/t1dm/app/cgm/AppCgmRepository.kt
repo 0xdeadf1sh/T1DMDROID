@@ -8,9 +8,7 @@ import com.t1dm.data.T1dmRepository
 import com.t1dm.data.db.CgmAdvertRawEntity
 import kotlinx.coroutines.flow.first
 
-/** `serial` is never sent, by any setting: it identifies a real device, and the server would hold it
- *  permanently (`SPEC/http-api.md`, CGM source). `family` and `model` name a product, not a device.
- *  Never keyed off a display setting: a local display choice must not move data off the device. */
+/** `serial` never sent: server holds it forever (SPEC/http-api.md); family/model name a product. */
 internal fun cgmSourceDto(
     descriptor: CgmSourceDescriptor,
     nowMs: Long,
@@ -66,8 +64,7 @@ class AppCgmRepository(
 
     override suspend fun upsertReading(reading: CgmReading) = repository.upsertReading(reading)
 
-    /** An unreadable row returns null and the bytes stay on disk: it is the only copy of material that
-     *  cannot be recovered from the sensor, so a failed open must never become a delete. */
+    /** An unreadable row returns null; bytes stay: only copy, a failed open must never delete. */
     override suspend fun loadSensorSecret(id: CgmSourceId): ByteArray? =
         repository.sensorSecret(id)?.let(cipher::open)
 

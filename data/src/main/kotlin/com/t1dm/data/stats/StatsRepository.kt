@@ -17,11 +17,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 
-/**
- * No server dependency: `:data` sits below `:sync`, and the server's cached block is unioned
- * upstream. The reduction runs on [T1dmDispatchers.default]; an empty or sparse window yields
- * [AdvancedStats.EMPTY], never a throw.
- */
+/** No server dep, :data below :sync; runs on default dispatcher; sparse window yields EMPTY. */
 class StatsRepository(
     private val repository: T1dmRepository,
     private val native: NativeCore,
@@ -47,24 +43,19 @@ class StatsRepository(
         repository.putKv(KV_UNIT_SPACE, space.name, clock())
     }
 
-    /**
-     * [AdvancedStats] over the trailing `[now − window, now]` rows. [agpBins] must divide 1440.
-     * Memoized per window; [force] recomputes regardless.
-     */
+    /** [AdvancedStats] over trailing [now−window,now]; [agpBins] divides 1440; memoized/window. */
     suspend fun localStats(
         window: StatsWindow,
         agpBins: Int = DEFAULT_AGP_BINS,
         force: Boolean = false,
     ): AdvancedStats {
         val target = currentTargetRange()
-        // Snap the window's upper edge DOWN to the grid: without it the interval slides on every
-        // call, no two are comparable, and the memo is unsound rather than merely useless.
+        // Snap upper edge DOWN to grid: else the interval slides each call, memo unsound.
         val to = clock() / T1dmRepository.GRID_MS * T1dmRepository.GRID_MS
         val from = to - window.millis
         val key = CacheKey(window, target, to, agpBins)
 
-        // One lock across the whole read-compute-store, so two callers cannot start the same
-        // reduction; the second waits and is served the first one's answer.
+        // One lock across read-compute-store: callers can't race; the second gets first's answer.
         return cacheLock.withLock {
             val fingerprint = repository.sampleWindowFingerprint(from, to)
             if (!force) {
@@ -78,8 +69,7 @@ class StatsRepository(
         }
     }
 
-    /** Everything the reduction is a function of; equality of this and the window's
-     *  [SampleWindowFingerprint] is equality of the answer. */
+    /** Everything the reduction is a function of; equal this+fingerprint means an equal answer. */
     private data class CacheKey(
         val window: StatsWindow,
         val target: TargetRange,
@@ -93,13 +83,11 @@ class StatsRepository(
         val stats: AdvancedStats,
     )
 
-    /** One memo per [StatsWindow]: the push loop asks for all three in turn and the screen for
-     *  whichever is on show, so a single slot would have each evict the other's. */
+    /** One memo per [StatsWindow]: push loop asks all three, screen one; a slot evicts others. */
     private val statsCache = mutableMapOf<StatsWindow, CacheEntry>()
     private val cacheLock = Mutex()
 
-    /** For the process-preserving wipe: derived PATIENT data on an app-lifetime object. Correctness
-     *  does not depend on it — residency does. */
+    /** Process-preserving wipe: PATIENT data on an app-lifetime object; residency needs it. */
     suspend fun invalidateCache() = cacheLock.withLock { statsCache.clear() }
 
     private companion object {
@@ -119,15 +107,10 @@ internal fun parseTargetRange(raw: String?): TargetRange {
 internal fun parseUnitSpace(raw: String?): UnitSpace =
     raw?.let { runCatching { UnitSpace.valueOf(it) }.getOrNull() } ?: UnitSpace.MgDl
 
-/**
- * A null or RECONSTRUCTED BG maps to `0.0`, which the crate excludes from every glucose metric: a
- * promoted reconstruction may never enter a statistic as a measurement (`SPEC/invariants.md` §1).
- * Carbs/bolus/basal are curve events, so they are null here.
- */
+/** null/RECONSTRUCTED BG maps to 0.0, excluded from metrics (§1); carbs/bolus/basal null here. */
 internal fun SampleEntity.toStatSample(): StatSample = StatSample(
     tsMs = ts,
-    // The offset stamped on the ROW, never the phone's now: a 90-day window may straddle a DST
-    // change or a flight.
+    // The offset stamped on the ROW, never phone's now: a 90-day window may cross DST or a flight.
     tzOffsetMin = tzOffsetMin,
     bgMgdl = bgMgdl?.takeIf { bgProvenance != ReadingProvenance.RECONSTRUCTED }?.toDouble() ?: 0.0,
     carbsG = null,

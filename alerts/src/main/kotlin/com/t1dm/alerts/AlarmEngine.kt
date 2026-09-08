@@ -25,9 +25,7 @@ class AlarmEngine(config: AlarmConfig = AlarmConfig.DEFAULT) {
         publish()
     }
 
-    /** Forgets link state only. [LossOfSignalAlarm] restarts its clock rather than forgetting, so a
-     *  silent new sensor still trips. [ThresholdAlarm] is deliberately not reset: a standing low is a
-     *  fact about the patient, and clearing it here would go quiet mid-excursion. */
+    /** Forgets link state only; a standing threshold breach is never cleared here. */
     @Synchronized
     fun onSourceChanged(nowMs: Long) {
         lossOfSignal.onSourceChanged(nowMs)
@@ -35,8 +33,7 @@ class AlarmEngine(config: AlarmConfig = AlarmConfig.DEFAULT) {
         publish()
     }
 
-    /** Swaps the sub-evaluators' params. Deliberately clears no active breach and does not publish:
-     *  a raised threshold must not silence a standing low; the next MEASURED reading re-classifies. */
+    /** Swaps sub-evaluator params only; never clears a breach, so a standing low stays audible. */
     @Synchronized
     fun updateConfig(config: AlarmConfig) {
         threshold.updateThresholds(config.thresholds)

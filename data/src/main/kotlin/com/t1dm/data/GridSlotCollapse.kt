@@ -3,11 +3,7 @@ package com.t1dm.data
 import com.t1dm.core.model.isRealMeasurement
 import com.t1dm.data.db.CgmReadingEntity
 
-/**
- * One reading per five-minute grid slot across the sources of one sensor model (§3.1). Ranks real
- * measurement, then the selected source, then newest `rxWallMs` — NOT [supersedesGridSlot]'s
- * nearest-to-the-instant rule. [rows] must be ordered by `tsMs` ascending.
- */
+/** One reading per 5-min slot (§3.1): ranks real, selected, rxWallMs; rows tsMs-ascending. */
 internal fun collapseByGridSlot(
     rows: List<CgmReadingEntity>,
     selectedSourceId: String?,

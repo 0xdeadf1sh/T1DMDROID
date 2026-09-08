@@ -4,8 +4,7 @@ import com.t1dm.ui.graph.PaintFrame
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** [PaintFrame] projected into the world once at track build: cull keys become world x and widths
- *  become world metres. No collision. */
+/** [PaintFrame] in world coords at track build: cull keys/widths=world x/metres; no collision. */
 class WorldPaint internal constructor(
     /** Packed sRGB ARGB per stroke. */
     val colors: IntArray,
@@ -42,8 +41,7 @@ class WorldPaint internal constructor(
     }
 }
 
-/** Nominal dp height of the BG panel a stroke was authored over. `paint_stroke` keeps `widthDp` but
- *  nothing about the panel, so a width is mapped as a fraction of a typical one. */
+/** Nominal dp height of the panel authored over; width maps to a typical-panel fraction. */
 const val PAINT_PANEL_DP = 320f
 
 suspend fun worldPaintOf(
@@ -52,8 +50,7 @@ suspend fun worldPaintOf(
     panelDp: Float = PAINT_PANEL_DP,
 ): WorldPaint = withContext(Dispatchers.Default) { buildWorldPaint(paint, track, panelDp) }
 
-/** Pure; safe from a `@Preview` or a test. Strokes missing the run's window are dropped here, on the
- *  same overlap predicate as `PaintStrokeDao.observeOverlapping`. */
+/** Pure, safe off-Preview/test; strokes off the run window drop here, per observeOverlapping. */
 fun buildWorldPaint(paint: PaintFrame, track: GameTrack, panelDp: Float = PAINT_PANEL_DP): WorldPaint {
     if (paint.isEmpty || track.heights.isEmpty()) return WorldPaint.EMPTY
     val from = track.startMs.toDouble()
@@ -97,7 +94,7 @@ fun buildWorldPaint(paint: PaintFrame, track: GameTrack, panelDp: Float = PAINT_
             if (x > hi) hi = x
             w++
         }
-        // Scanned, not read off the ends: a stroke can be dragged backwards or double back on itself.
+        // Scanned, not read off the ends: a stroke can be dragged back or double back on itself.
         minX[k] = lo
         maxX[k] = hi
     }

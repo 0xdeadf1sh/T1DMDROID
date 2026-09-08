@@ -1,11 +1,6 @@
 package com.t1dm.core.model
 
-/**
- * IOB/COB are computed from LOGGED DOSES only, never from an announced what-if (§3.6-F), so
- * [minsSinceLastLoggedInsulin] is what the dose card escalates on. [hasBasalSchedule] says whether
- * the basal background is included in [iobU]. [iobZeroMs] is when combined insulin action decays to
- * zero, null when none is on board — display-only, never read by §3.6.
- */
+/** IOB/COB from LOGGED DOSES only, never a what-if (§3.6-F); iobZeroMs is display-only. */
 data class IobCobReadout(
     val atMs: Long,
     val iobU: Double,
@@ -15,8 +10,7 @@ data class IobCobReadout(
     val iobZeroMs: Long? = null,
 )
 
-/** Only GI-bearing logged meals qualify: a meal from the multi-food builder carries a custom curve
- *  and a null GI, which the simple form cannot round-trip. */
+/** Only GI-bearing meals qualify; multi-food builder meals carry a null GI, no round-trip. */
 data class RecentMeal(val grams: Double, val gi: Double) {
     val label: String get() = "${grams.toInt()} g · GI ${gi.toInt()}"
 }

@@ -15,11 +15,7 @@ import kotlinx.coroutines.launch
 import timber.log.Timber
 import kotlin.math.roundToInt
 
-/**
- * Foreground host for the dose calculator's rolled grid search (§5) — seconds of CPU that must
- * survive the Activity going to the background. Advisory only: it never actuates insulin, and
- * acceptance separately logs the dose the human says they administered.
- */
+/** Foreground host for the §5 rolled grid search; advisory only, never actuates insulin. */
 class DoseCalcService : LifecycleService() {
 
     private lateinit var container: AppContainer
@@ -45,8 +41,7 @@ class DoseCalcService : LifecycleService() {
                 searchJob = lifecycleScope.launch {
                     runCatching { container.runBolusAdvice(grams, gi, manualTargetMgdl = target) }
                         .onFailure { Timber.tag(TAG).w(it, "bolus advice failed") }
-                    // runCatching swallows a superseded job's CancellationException, so stop only if THIS
-                    // job is still current — else our stopSelf tears down the search that cancelled us.
+                    // runCatching hides cancellation; stopSelf only if THIS job is still current.
                     if (coroutineContext[Job] === searchJob) stopSelf(startId)
                 }
             }
@@ -100,10 +95,7 @@ class DoseCalcService : LifecycleService() {
         const val EXTRA_GI = "gi"
         const val EXTRA_TARGET_MGDL = "targetMgdl"
 
-        /**
-         * [targetMgdl] is mg/dL; null leaves the persisted objective in force. It is UNBOUNDED — the
-         * slider's own bounds are the only limit.
-         */
+        /** [targetMgdl] mg/dL; null keeps objective. UNBOUNDED — slider's bounds are the limit. */
         fun recommend(context: Context, carbG: Int = 0, gi: Int = DEFAULT_GI, targetMgdl: Double? = null) {
             val i = Intent(context, DoseCalcService::class.java).apply {
                 action = ACTION_RECOMMEND

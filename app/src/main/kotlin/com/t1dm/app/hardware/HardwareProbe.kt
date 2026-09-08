@@ -14,8 +14,7 @@ import android.view.WindowManager
 import com.t1dm.feature.hardware.HardwareInfo
 import java.io.File
 
-/** Every field degrades to null rather than throwing. Call [probe] off the main thread: the GL
- *  query spins up a throwaway EGL pbuffer context. */
+/** Every field degrades to null, never throws. Call [probe] off-main: GL spins an EGL pbuffer. */
 class HardwareProbe(private val context: Context) {
 
     fun probe(): HardwareInfo = HardwareInfo(
@@ -135,8 +134,7 @@ class HardwareProbe(private val context: Context) {
         }
     }.getOrNull()
 
-    /** Static routing targets, not what ran: the live backend is the selected model's
-     *  [com.t1dm.core.model.RunningModel.backend]. */
+    /** Static routing targets, not what ran; live backend is [RunningModel.backend]. */
     private fun backends(): List<String> = listOf(
         "ExecuTorch XNNPACK fp32 (CPU) — the only delegate this build registers, and the only path a " +
             "dose may be scored on",

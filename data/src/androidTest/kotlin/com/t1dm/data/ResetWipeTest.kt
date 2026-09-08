@@ -45,8 +45,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/** The in-memory builder omits the `food_fts` callback, so the custom-food DELETE is a plain row
- *  delete. */
+/** In-memory builder omits food_fts callback, so custom-food DELETE is a plain row delete. */
 @RunWith(AndroidJUnit4::class)
 class ResetWipeTest {
 

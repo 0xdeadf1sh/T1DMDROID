@@ -8,8 +8,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 
-/** The hub. Rows only navigate; the search field is pinned OUTSIDE the scrolling scaffold so it
- *  stays reachable while the rows move under it. [onOpenKnob] navigates and reveals the matched row. */
+/** The hub; rows only navigate. Search pinned OUTSIDE scaffold, stays reachable as rows scroll. */
 @Composable
 fun SettingsScreen(
     onOpenDisplay: () -> Unit = {},
@@ -36,8 +35,7 @@ fun SettingsScreen(
     onOpenKnob: (SettingsKnob) -> Unit = {},
     onRecordSearch: (String) -> Unit = {},
     onClearRecentSearches: () -> Unit = {},
-    // False in the public flavor: the fail-open DEATH-mode override is compiled out, so its row is
-    // withheld rather than shown inert.
+    // False in public flavor: fail-open DEATH-mode override is compiled out, row withheld.
     deathModeSupported: Boolean = true,
 ) {
     Column(Modifier.fillMaxSize()) {

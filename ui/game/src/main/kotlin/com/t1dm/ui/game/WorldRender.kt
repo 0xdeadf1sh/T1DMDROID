@@ -11,8 +11,7 @@ import com.t1dm.ui.graph.strokeWithTool
 import kotlin.math.ceil
 import kotlin.math.floor
 
-/** Allocates nothing per frame: [scratch] is rewound for every stroke and [chalk] is the caller's.
- *  CALL BEFORE THE GROUND FILL — that is what buries strokes under the trace, with no depth test. */
+/** Allocates nothing/frame: [scratch] rewinds; CALL BEFORE GROUND FILL, no depth test. */
 fun DrawScope.drawWorldPaint(
     paint: WorldPaint,
     camLeft: Float,
@@ -68,8 +67,7 @@ fun DrawScope.drawWorldPaint(
     }
 }
 
-/** Open polyline, never filled: this is the BG curve. A dropout breaks the line rather than
- *  bridging it. */
+/** Open polyline, never filled — the BG curve; a dropout breaks the line, not bridges it. */
 fun GameTrack.appendGroundLine(
     path: Path,
     camLeft: Float,

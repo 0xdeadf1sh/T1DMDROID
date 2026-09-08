@@ -31,11 +31,7 @@ data class DrainResult(
     enum class StandDown { NO_PROFILE, AUTH }
 }
 
-/**
- * One [drainOnce] pass: evict by size and age, then replay due `PENDING` rows FIFO, deleting on
- * success, dropping malformed 4xx and rescheduling transient failures with [Backoff]. A `NIGHTSCOUT`
- * row goes out through [nightscout] and must NEVER stand the queue down; only T1DMSERVER may.
- */
+/** One drainOnce pass: evict, replay PENDING FIFO; NIGHTSCOUT rows must NEVER stand queue down. */
 class QueueDrainer(
     private val dao: OutboxDao,
     private val http: SyncHttpClient,
@@ -72,12 +68,9 @@ class QueueDrainer(
 
     suspend fun drainOnce(): DrainResult = mutex.withLock {
         withContext(dispatchers.io) {
-            // An empty queue is the steady state and the four table operations below all no-op over
-            // it. This is the pass that runs most and does least.
+            // Empty queue is steady state; the four table ops below all no-op over it.
             if (dao.count() == 0) return@withContext DrainResult()
-            // WHICH rows the reclaim moves, captured before it moves them. `resetState` does not
-            // advance `attempts`, so a row that was mid-POST when the process died then looks like
-            // one that never reached the wire — the exact case `alreadyPosted` exists for.
+            // Reclaimed ids captured before resetState (no attempts bump); alreadyPosted covers it.
             val reclaimed = dao.idsInState(OutboxState.INFLIGHT).toHashSet()
             dao.resetState(OutboxState.INFLIGHT, OutboxState.PENDING)
             val evicted = evict(clock())
@@ -88,23 +81,18 @@ class QueueDrainer(
             var retried = 0
             var standDown: DrainResult.StandDown? = null
             var nightscoutError: String? = null
-            // One unreachable bridge must not cost the pass a connect timeout PER bridged row; the
-            // batch is FIFO, so a third party's outage would delay the patient's own pushes.
+            // Unreachable bridge must not cost a timeout PER row; batch is FIFO, delaying pushes.
             var bridgeUnreachable = false
 
             loop@ for (row in batch) {
-                // Claim BEFORE anything reaches the wire. A row near the tail stays PENDING for as
-                // long as the whole pass takes, comfortably inside the undo window; the conditional
-                // claim is what makes `withdrawPush`'s WITHDRAWN receipt true.
+                // Claim BEFORE the wire; makes withdrawPush's WITHDRAWN receipt true.
                 if (dao.claim(row.id, OutboxState.PENDING, OutboxState.INFLIGHT) == 0) continue@loop
                 val request = resolve(row)
-                if (request == null) { dao.delete(row.id); dropped++; continue } // INGEST slot vanished
+                if (request == null) { dao.delete(row.id); dropped++; continue }
                 val bridged = row.kind == OutboxKind.NIGHTSCOUT
                 if (bridged && bridgeUnreachable) { reschedule(row, now); retried++; continue@loop }
 
-                // A REPLAY of a bridged treatment, not a first attempt. `/api/v1` has no idempotency
-                // key, so a POST whose ack was lost has already committed and would commit again — a
-                // double-counted bolus. A false covers "never arrived" AND "not recognisable".
+                // Bridge replay; /api/v1 has no idempotency key, a lost ack re-posts.
                 if (bridged && (row.attempts > 0 || row.id in reclaimed) && nightscout != null) {
                     val already = runCatching { nightscout.alreadyPosted(request) }.getOrDefault(false)
                     if (already) {
@@ -131,8 +119,7 @@ class QueueDrainer(
                 }
                 when {
                     response.ok -> { dao.delete(row.id); sent++ }
-                    // A third party rejecting its own credential is no reason to stop syncing the
-                    // patient's record; only T1DMSERVER may stand the whole queue down.
+                    // Bridge credential reject isn't reason to stop; only T1DMSERVER stands queue.
                     response.authError && bridged -> {
                         reschedule(row, now); retried++
                         nightscoutError = "HTTP ${response.code} — secret rejected"
@@ -168,8 +155,7 @@ class QueueDrainer(
             val sample = ts?.let { sampleAt(it) }
             sample?.let { SyncRequest("POST", "/v1/ingest", SyncJson.encodeToString(it.toIngest()).toByteArray()) }
         }
-        // A dirty-marker like INGEST — resolved now, so a slot rewritten while the row waited
-        // uploads once, current. A slot with no BG yields null and the row is dropped.
+        // Dirty-marker like INGEST, resolved now: a slot rewritten mid-wait uploads once, current.
         row.kind == OutboxKind.NIGHTSCOUT && row.dedupKey.startsWith(NS_ENTRY_DEDUP_PREFIX) -> {
             val ts = row.dedupKey.removePrefix(NS_ENTRY_DEDUP_PREFIX).toLongOrNull()
             val entry = ts?.let { sampleAt(it)?.toNsEntry(trendAt(it)) }

@@ -110,8 +110,7 @@ class ArchiveRoundTripTest {
 
     @Test
     fun aReplayComesBackWithTheCurveItLaidDown() = runTest {
-        // Without the shape a restored replay could not be deleted: the unwind re-derives from it,
-        // and the grams are already in the samples this same archive carries.
+        // Without the shape a restored replay can't be deleted: unwind re-derives from these grams.
         populate(source)
         restoreInto(target, archiveOf(source))
         val restored = target.loggedExerciseDao().pageFrom(Long.MIN_VALUE, Long.MIN_VALUE, 100).single()
@@ -316,7 +315,7 @@ class ArchiveRoundTripTest {
 
     @Test
     fun twoSavedMealsSharingANameBothSurviveARestore() = runTest {
-        // `saved_meal.name` carries no unique index, so two meals called "Breakfast" are legitimate.
+        // `saved_meal.name` has no unique index; two meals called "Breakfast" are legitimate.
         val a = source.savedMealDao().insertMeal(SavedMealEntity(name = "Breakfast", updatedAt = 1L))
         val b = source.savedMealDao().insertMeal(SavedMealEntity(name = "Breakfast", updatedAt = 2L))
         source.savedMealDao().insertItems(
@@ -383,8 +382,7 @@ class ArchiveRoundTripTest {
 
     @Test
     fun aTruncatedGZIPPEDArchiveIsRecoveredRatherThanThrown() = runTest {
-        // Unlike the cut above, this one reaches the inflater: a cut deflate raises EOFException
-        // from inside `readLine`.
+        // Unlike the cut above, this hits the inflater: cut deflate EOFExceptions in readLine.
         populate(source)
         val whole = archiveOf(source)
         val cut = whole.copyOf(whole.size / 2)
@@ -397,8 +395,7 @@ class ArchiveRoundTripTest {
 
     @Test
     fun losingOnlyTheGzipTrailerCostsNothingAtAll() = runTest {
-        // Every record including the terminator is present; the stream still throws on the
-        // 8-byte trailer.
+        // Every record incl. the terminator is present; the stream throws on the 8-byte trailer.
         populate(source)
         val whole = archiveOf(source)
         val result = restoreInto(target, whole.copyOf(whole.size - 1))

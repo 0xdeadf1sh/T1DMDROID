@@ -2,8 +2,7 @@ package com.t1dm.feature.settings
 
 import androidx.compose.runtime.Composable
 
-/** Thresholds are deliberately unbounded; an enabled rail still fails closed on missing or stale
- *  input, and nothing here actuates. Objective is an opaque key: no `:calc` dependency (§3.6). */
+/** Thresholds unbounded; rail fails closed regardless; objective is opaque, no :calc dep (§3.6). */
 @Composable
 fun CalculatorSettingsScreen(
     objectiveOptions: List<Pair<String, String>>,

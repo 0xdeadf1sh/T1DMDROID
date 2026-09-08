@@ -2,9 +2,7 @@ package com.t1dm.alerts
 
 import com.t1dm.core.model.AlertThresholds
 
-/** Defaults only; thresholds are user-set and deliberately unbounded (§3.6-A).
- *  [fallingTrendThresholdTenths] is 0.1 mg/dL/min, negative falling. [minActuationIntervalMin]
- *  throttles actuation, never when the engine fires. [overTempClearC] is hysteresis under [overTempAlertC]. */
+/** Defaults unbounded (§3.6-A). fallingTrendThresholdTenths: 0.1 mg/dL/min, negative falling. */
 data class AlarmConfig(
     val thresholds: AlertThresholds,
     val lossMin: Int = 20,

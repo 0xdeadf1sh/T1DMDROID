@@ -19,15 +19,13 @@ private const val PICKUP_HOVER_M = 1.6f
 /** Only bites on a scale coarser than the 5-min grid's 5 m at one metre per minute. */
 private const val COIN_MIN_SPACING_M = 3f
 
-/** Parallel primitive arrays, in ascending world x. Immutable: whether a pickup has been taken is run
- *  state and belongs to whoever owns the frame loop. */
+/** Parallel primitive arrays, ascending world x; taken-state is run state, owned by frame loop. */
 class PickupField internal constructor(
     /** [PickupKind.ordinal] per entry. */
     val kinds: IntArray,
     val xs: FloatArray,
     val ys: FloatArray,
-    /** [PickupKind.Coin]: a count, always 1. [PickupKind.Hazard]: mg/dL below the low alarm threshold
-     *  at the excursion's nadir. */
+    /** Coin: a count, always 1. Hazard: mg/dL below the low alarm threshold at excursion nadir. */
     val amounts: FloatArray,
     val tsMs: LongArray,
 ) {
@@ -62,9 +60,7 @@ suspend fun pickupsOf(
     buildPickups(track, readings, targetRange, thresholds, maxGapMin)
 }
 
-/** Coins use [TargetRange] with `stats.rs`'s own inclusive `low <= bg <= high`; hazards use
- *  [AlertThresholds.lowMgdl], the user's danger line, unbounded under the §3.6 lock. Neither band
- *  derives from the other; classify in mg/dL off the reading, never off terrain heights. */
+/** Coins use TargetRange (stats.rs inclusive bounds); hazards use lowMgdl; classify off mg/dL. */
 fun buildPickups(
     track: GameTrack,
     readings: List<CgmReading>,
@@ -108,8 +104,7 @@ fun buildPickups(
         if (kinds.size != before) lastCoinX = x
     }
 
-    // One hazard per EXCURSION, at its nadir. Runs are cut at a dropout as well as at a recovery:
-    // nothing says the glucose stayed low across an hour the sensor was silent.
+    // One hazard per EXCURSION, at nadir; runs cut at a dropout too, not just recovery.
     val gapMs = maxGapMin.toDouble() * 60_000.0
     var i = 0
     while (i < scored.size) {

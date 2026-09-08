@@ -36,11 +36,7 @@ data class PipelineOutput(
     }
 }
 
-/**
- * The passive-advert decode pipeline for one CGM source. Stages are synchronous and
- * side-effect-free; persistence is the caller's job. Stateful (the dedup ring and the grid stamper),
- * so exactly one instance per source per thread.
- */
+/** Passive-advert pipeline, one per source per thread; stateful (dedup ring, grid stamper). */
 class CgmPipeline(
     private val sourceId: CgmSourceId,
     private val nativeCore: NativeCore,

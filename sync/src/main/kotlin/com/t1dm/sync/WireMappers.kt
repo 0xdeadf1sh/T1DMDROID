@@ -12,11 +12,7 @@ import com.t1dm.data.db.SampleEntity
 import com.t1dm.data.db.toBlob
 import com.t1dm.data.db.toDoubleList
 
-/**
- * `fan` is the `nQuantiles × H` matrix in ascending-τ order (row 3 == line). The model carries it
- * step-major/τ-minor (`i = s·nQ + q`), so it transposes to quantile-major rows here. `made_at` is the
- * cycle grid ts and `updated_at` the phone wall clock, both stored verbatim.
- */
+/** fan is nQuantiles×H, ascending-τ; model is step-major/τ-minor, transposed here; ts verbatim. */
 fun ModelPrediction.toWrite(cycleTsMs: Long, nowMs: Long): PredictionWriteDto {
     val h = medianBg.size
     val nq = nQuantiles
@@ -34,11 +30,7 @@ fun ModelPrediction.toWrite(cycleTsMs: Long, nowMs: Long): PredictionWriteDto {
     )
 }
 
-/**
- * The integer series widened to the wire's floats — except `exercise`, which is grams of
- * carbohydrate equivalent per bucket (`SPEC/invariants.md` §3) and must cross unrounded: a bucket
- * holds a couple of grams, so rounding would quantise the disposal curve away.
- */
+/** Integer series widened to wire floats, except exercise (grams/bucket, §3): stays unrounded. */
 fun SampleEntity.toIngest(): IngestDto = IngestDto(
     ts = ts,
     tz_offset = tzOffsetMin,
@@ -52,21 +44,18 @@ fun SampleEntity.toIngest(): IngestDto = IngestDto(
     sleep = sleep?.toDouble(),
     exercise = exercise,
     mood = mood,
-    // A deleted BG has to be named: an omitted field leaves the server's copy untouched, so the next
-    // catch-up would merge the value straight back.
+    // A deleted BG must be named: an omitted field leaves the server's copy, catch-up re-merges.
     clear = if (bgMgdl == null) listOf("bg") else null,
 )
 
-/** Floats snap back to the local integer series, `exercise` excepted — it is grams and stays a
- *  float. */
+/** Floats snap back to the local integer series; exercise excepted — grams, stays a float. */
 fun SampleDto.toPatch(): SamplePatch = SamplePatch(
     ts = ts,
     bgSource = bg_source,
     tzOffsetMin = tz_offset,
     updatedAt = updated_at,
     bgMgdl = bg?.let { Math.round(it).toInt() },
-    // A reconstructed value is NOT a measurement. Every safety gate keys on provenance — an alarm
-    // may only be cleared by a measured reading — so it must arrive carrying what it is.
+    // RECONSTRUCTED is NOT a measurement; every safety gate keys on provenance to gate alarms.
     bgProvenance = bg?.let {
         if (bg_reconstructed) ReadingProvenance.RECONSTRUCTED else ReadingProvenance.MEASURED
     },
@@ -78,8 +67,7 @@ fun SampleDto.toPatch(): SamplePatch = SamplePatch(
     exercise = exercise,
 )
 
-/** The same provenance rule as the REST twin: a reconstruction arriving flagged MEASURED can clear
- *  an alarm and feed a dose. */
+/** Same provenance rule as REST: a MEASURED-flagged reconstruction could clear an alarm. */
 fun WsEvent.Sample.toPatch(): SamplePatch = SamplePatch(
     ts = ts,
     bgSource = bg_source,
@@ -97,8 +85,7 @@ fun WsEvent.Sample.toPatch(): SamplePatch = SamplePatch(
     exercise = exercise,
 )
 
-/** The stored appearance-curve BLOB (little-endian `f64`) decodes to the wire's `List<Double>` on
- *  the 300 000 ms grid; a parametric meal has a null curve. */
+/** Stored curve BLOB (LE f64) decodes to List<Double> on the 300000ms grid; parametric=null. */
 fun LoggedMealEntity.toMealEventDto(): MealEventDto = MealEventDto(
     client_id = clientId,
     ts = tsMs,
@@ -113,8 +100,7 @@ fun LoggedMealEntity.toMealEventDto(): MealEventDto = MealEventDto(
     note = note,
 )
 
-/** `kind` widens the local [DoseKind] to the wire's lowercase `"bolus"`/`"basal"`; a BOLUS carries
- *  gamma `k`/`theta`, a BASAL Bateman `ka_per_hour`/`ke_per_hour`. */
+/** kind widens [DoseKind] to wire lowercase bolus/basal; BOLUS is gamma k/theta, BASAL ka/ke. */
 fun LoggedDoseEntity.toDoseEventDto(): DoseEventDto = DoseEventDto(
     client_id = clientId,
     ts = tsMs,
@@ -144,7 +130,7 @@ fun MealEventDto.toLoggedMealEntity(): LoggedMealEntity = LoggedMealEntity(
     tzOffsetMin = tz_offset,
     note = note,
     updatedAt = updated_at,
-    // Authored elsewhere, so its authoring stamp is the only honest "when", and it has no local edit.
+    // Authored elsewhere: its authoring stamp is the only honest "when"; no local edit exists.
     loggedAtMs = updated_at,
     mutatedAtMs = null,
 )

@@ -100,8 +100,7 @@ class AlarmControllerTest {
         assertEquals(AlertBand.HIGH, notifier.lastEmit?.threshold?.band)
         val emitsAfterFire = notifier.emitCount
 
-        // A stable WARNING breach reuses the same object, so the StateFlow dedupes and the collector
-        // never re-fires. Without onTick re-presenting it, a snoozed WARNING stays silenced for good.
+        // A stable WARNING dedupes on StateFlow; onTick re-presents so it isn't silenced for good.
         now = MIN
         ticks.emit(Unit)
         runCurrent()

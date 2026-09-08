@@ -64,7 +64,6 @@ object InferenceControllerDefaults {
 
     /** The single coercion both `:app`'s store and the controller apply. */
     fun nearestSmoothingStop(window: Int): Int =
-        // Long deliberately: `abs(1 - Int.MIN_VALUE)` overflows into a small distance and would snap
-        // the most hostile value to the WIDEST filter.
+        // Long deliberately: `abs(1 - Int.MIN_VALUE)` overflows small, snapping worst input wide.
         SAVGOL_STOPS.minByOrNull { kotlin.math.abs(it.toLong() - window.toLong()) } ?: SAVGOL_WINDOW
 }

@@ -8,8 +8,7 @@ import com.t1dm.data.backup.Archive
 import java.io.InputStream
 import java.io.OutputStream
 
-/** Files are matched by [PREFIX], not by extension: some providers rewrite or append one on create,
- *  and the archive is identified by its gzip magic rather than its name. */
+/** Matched by [PREFIX], not extension (providers rewrite it); archive id is its gzip magic. */
 class SafFolderDestination(
     context: Context,
     private val treeUri: Uri,
@@ -27,8 +26,7 @@ class SafFolderDestination(
     override suspend fun write(name: String, body: suspend (OutputStream) -> Unit): StoredBackup {
         val target = DocumentsContract.createDocument(resolver, parentDocUri, MIME, name)
             ?: throw BackupDestinationException("could not create a file in $label")
-        // A partial document left here would be counted by the retention sweep, which would then
-        // prune a good backup to make room for it.
+        // A partial document here would be swept by retention, pruning a good backup for room.
         try {
             resolver.openOutputStream(target)?.use { body(it) }
                 ?: throw BackupDestinationException("could not open $name for writing")
@@ -64,8 +62,7 @@ class SafFolderDestination(
                 )
             }
         }
-        // Name as the tie-break: some providers report no last-modified, and the name carries a
-        // sortable stamp.
+        // Name is the tie-break: providers report no last-modified, but name carries a stamp.
         out.sortWith(compareByDescending<StoredBackup> { it.modifiedAtMs }.thenByDescending { it.name })
         return out
     }
@@ -126,6 +123,5 @@ class SafFolderDestination(
     }
 }
 
-/** Its message is shown to the user. Distinct from an archive parse failure, so the panel can say
- *  whether the folder or the file was the problem. */
+/** Message shown to user; distinct from a parse failure so the panel names folder vs file. */
 class BackupDestinationException(message: String) : java.io.IOException(message)

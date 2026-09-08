@@ -81,7 +81,7 @@ class PredOverlayCalibrationTest {
 
     @Test
     fun aCorrectionOfTheWrongShapeIsIgnoredRatherThanReshaped() {
-        // A delta fitted at another horizon is not this forecast's; the raw fan is the honest fallback.
+        // A delta fitted at another horizon isn't this forecast's; raw fan is the honest fallback.
         val p = prediction()
         val raw = buildPredSeries(p, UnitSpace.MgDl, null)!!
         for (wrong in listOf(emptyList(), widened(p).dropLast(nq), widened(p) + 0.0)) {

@@ -8,9 +8,7 @@ import kotlin.math.min
 import kotlin.math.sin
 import kotlin.math.sqrt
 
-/** Emitted totals are this bout's running total for the bucket, not a delta. A segment's metres go
- *  whole to the bucket its fix arrives in, timed by [ExerciseBucket.trackedMs] rather than the
- *  bucket's clipped [ExerciseBucket.activeSec]. A refused fix is not remembered. Not thread-safe. */
+/** Totals are running for the bucket, not a delta. Timed by trackedMs. Not thread-safe. */
 class ExerciseBucketer(
     private val startMs: Long,
     private val bucketMs: Long = T1dmRepository.GRID_MS,
@@ -36,8 +34,7 @@ class ExerciseBucketer(
     /** Newest accepted fix; `lastFix === fix` is how a caller learns its own fix was believed. */
     val lastFix: ExerciseFix? get() = lastAccepted
 
-    /** Returns the buckets the advance closed, then the open partial — withheld while it holds
-     *  neither a second nor a fix, which would mint a grid row for a bucket never touched. */
+    /** Buckets the advance closed, then the open partial; withheld with neither second nor fix. */
     fun onTick(wallMs: Long): List<ExerciseBucket> {
         val out = ArrayList<ExerciseBucket>(2)
         advanceTo(wallMs, out)
@@ -46,8 +43,7 @@ class ExerciseBucketer(
         return out
     }
 
-    /** Returns the buckets the fix's stamp closed; empty when it is refused, and empty while the
-     *  bout stays inside the open bucket. */
+    /** Buckets the fixs stamp closed; empty if refused, or while inside the open bucket. */
     fun onFix(fix: ExerciseFix): List<ExerciseBucket> {
         val prev = lastAccepted
         val segmentM = segmentFor(fix) ?: return emptyList()
@@ -110,13 +106,12 @@ class ExerciseBucketer(
         /** Wider than this and the fix locates a city block, not a path. */
         const val MAX_ACCURACY_M = 50f
 
-        /** Above any running pace (a 2:20 marathon is ~5 m/s), so only a receiver glitch exceeds it. */
+        /** Above any running pace (2:20 marathon ~5 m/s): only a receiver glitch exceeds it. */
         const val MAX_SPEED_MPS = 12.0
 
         private const val EARTH_RADIUS_M = 6_371_008.8
 
-        /** Great-circle metres, WGS84 spherical: ~0.5 % error, under the receiver's own scatter.
-         *  The one distance function this feature uses; `Location.distanceTo` would be a second. */
+        /** Great-circle, WGS84 spherical: ~0.5% error. The one distance fn this feature uses. */
         fun haversineM(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
             val sLat = sin(Math.toRadians(lat2 - lat1) / 2)
             val sLon = sin(Math.toRadians(lon2 - lon1) / 2)

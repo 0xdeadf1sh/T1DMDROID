@@ -8,8 +8,7 @@ import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** The index names a screen by an opaque key and knows nothing of routes, so `:app` is the only
- *  place the two halves can be held against each other. */
+/** Index knows only an opaque key, not routes; :app is where both halves are checked. */
 class SettingsSearchRoutingTest {
 
     @Test
@@ -67,10 +66,7 @@ class SettingsSearchRoutingTest {
     }
 
     private companion object {
-        /**
-         * Settings destinations outside `:feature:settings`, so missed by [registeredSettingsRoutes]'
-         * prefix filter. Listed explicitly: a filter wide enough to admit them would admit a typo.
-         */
+        /** Outside :feature:settings, missed by the prefix filter; listed explicitly. */
         val OFF_MODULE_ROUTES = setOf("models", "backup")
     }
 

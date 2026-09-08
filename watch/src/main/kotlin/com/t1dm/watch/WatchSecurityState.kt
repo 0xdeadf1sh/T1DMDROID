@@ -3,7 +3,7 @@ package com.t1dm.watch
 import com.t1dm.watch.crypto.SasCode
 import com.t1dm.watch.crypto.WatchSessionState
 
-/** Everything here is safe to display: a truncated fingerprint, counters, the SAS — never key bytes. */
+/** Everything here is safe to display: truncated fingerprint, counters, SAS - never key bytes. */
 data class WatchSecurityState(
     val phase: WatchLinkPhase = WatchLinkPhase.UNPAIRED,
     val deviceName: String? = null,

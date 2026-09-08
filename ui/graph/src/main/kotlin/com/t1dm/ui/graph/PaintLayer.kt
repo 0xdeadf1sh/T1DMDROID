@@ -13,7 +13,7 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.translate
 
-/** Total width, in dp, of the corridor the annotation layer is masked out of around the BG trace. */
+/** Total width, dp, of the corridor the annotation layer masks around the BG trace. */
 internal const val PAINT_CORRIDOR_DP = 7f
 
 internal fun corridorWidthPx(dpPx: Float): Float = PAINT_CORRIDOR_DP * dpPx
@@ -27,13 +27,11 @@ const val MIN_STROKE_PX = 1f
 internal fun paintXPx(tsMs: Long, viewStartMs: Double, ppm: Double, plotLeft: Float): Float =
     (plotLeft + (tsMs - viewStartMs) * ppm).toFloat()
 
-/** Anchored to the PLOT BOX, never the value axis, so the Y auto-fit cannot move or distort the art. */
+/** Anchored to the PLOT BOX, never value axis, so Y auto-fit can't move or distort the art. */
 internal fun paintYPx(yFrac: Float, plotTop: Float, plotHeight: Float): Float =
     plotTop + yFrac * plotHeight
 
-/** The maximal unbroken runs over `[iLo, iHi]`. Must cut where the polyline cuts — [GlucoseGraph]
- *  draws segment `i → i+1` exactly when `!breakAfter(i)` — or the corridor carves a halo through a
- *  gap. A point isolated between two breaks is emitted as its own single-index run. */
+/** Maximal unbroken runs over [iLo,iHi]; must cut where GlucoseGraph cuts, or a halo carves in. */
 inline fun forEachTraceRun(
     iLo: Int,
     iHi: Int,
@@ -51,9 +49,7 @@ inline fun forEachTraceRun(
     run(start, iHi)
 }
 
-/** The memoised corridor mask: the stroke-to-fill outline, rebuilt only when [stale] says so and
- *  rewound in place otherwise. Held by `remember` and mutated inside the draw phase — safe only
- *  because none of its state is snapshot state. */
+/** Memoised corridor mask; rebuilt only when stale, else mutated in draw phase, no snapshot. */
 internal class PaintCorridor {
     private val source = Path()
     private val outline = android.graphics.Path()
@@ -78,8 +74,7 @@ internal class PaintCorridor {
     private var kWidthPx = Float.NaN
     private var empty = true
 
-    /** Stale for this frame, RECORDING the key as a side effect: follow a true answer with
-     *  [begin] / [append] / [commit] and nothing else. [traceId] is the trace object's identity. */
+    /** Stale for this frame, RECORDING the key; answer true then call begin/append/commit only. */
     fun stale(
         traceId: Int,
         smoothed: Boolean,
@@ -126,8 +121,7 @@ internal class PaintCorridor {
             if (b > a) {
                 for (i in a + 1..b) source.lineTo(xPx(i), yPx(i))
             } else {
-                // A bare moveTo strokes to nothing; the zero-length segment lets the round cap
-                // carve the disc.
+                // A bare moveTo strokes nothing; zero-length segment lets round cap carve a disc.
                 source.lineTo(xPx(a), yPx(a))
             }
         }
@@ -144,15 +138,13 @@ internal class PaintCorridor {
     val mask: Path? get() = if (empty) null else composeOutline
 }
 
-/** The two dashed passes chalk is drawn as. The pattern is in raw pixels and independent of the
- *  stroke, so one pair is built per draw call and shared by every chalk stroke on screen. */
+/** The two dashed passes chalk draws as, raw pixels, indep of stroke; one pair per draw call. */
 class ChalkPens(dpPx: Float) {
     val coarse: PathEffect = PathEffect.dashPathEffect(floatArrayOf(2.6f * dpPx, 1.5f * dpPx), 0f)
     val fine: PathEffect = PathEffect.dashPathEffect(floatArrayOf(1.2f * dpPx, 2.1f * dpPx), 1.3f * dpPx)
 }
 
-/** [tool] decides cap, join and texture only: width and alpha ride on the stroke, and re-applying a
- *  tool alpha here would multiply the two. [path] is in already-projected pixels. */
+/** tool decides cap/join/texture only; width/alpha ride stroke, re-applying alpha multiplies. */
 fun DrawScope.strokeWithTool(
     path: Path,
     color: Color,
@@ -162,8 +154,7 @@ fun DrawScope.strokeWithTool(
 ) {
     when (tool) {
         PaintFrame.TOOL_HIGHLIGHTER ->
-            // Flat nib: a round cap would bulge past the ends of a band drawn to line up with a
-            // threshold.
+            // Flat nib: a round cap would bulge past the ends of a band lined up with a threshold.
             drawPath(path, color, style = Stroke(width = widthPx, cap = StrokeCap.Butt, join = StrokeJoin.Bevel))
 
         PaintFrame.TOOL_CHALK -> {
@@ -196,9 +187,7 @@ fun DrawScope.dotWithTool(at: Offset, color: Color, widthPx: Float, tool: Int) {
     }
 }
 
-/** Two culls: whole strokes in O(1) on their time bounds, then segments wholly outside the viewport
- *  ± one span, which also keeps emitted coordinates near the plot at maximum zoom. A single-point
- *  stroke draws as a dot. [scratch] is rewound and reused across every stroke. */
+/** Two culls: whole strokes O(1) on time bounds, then segments outside viewport +/- one span. */
 internal fun DrawScope.drawPaintFrame(
     paint: PaintFrame,
     viewStartMs: Double,
@@ -262,8 +251,7 @@ internal fun DrawScope.drawPaintFrame(
     }
 }
 
-/** [count] is passed rather than read off [capture]: the buffer is plain memory mutated from the
- *  pointer handler, and the redraw is driven by the snapshot-state count. */
+/** count passed rather than read off capture: buffer is plain memory, redraw driven by snapshot. */
 internal fun DrawScope.drawLiveStroke(
     capture: StrokeCapture,
     count: Int,

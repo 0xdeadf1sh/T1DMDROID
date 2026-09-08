@@ -9,10 +9,7 @@ import com.t1dm.core.model.InferenceState
 import com.t1dm.core.model.ModelPrediction
 import kotlin.math.roundToInt
 
-/**
- * mg/dL and minutes throughout; presenters convert to the active unit. The predictive crossing
- * fields are non-null only for a §3.6-eligible, non-warmup forecast.
- */
+/** mg/dL and minutes throughout; crossing fields non-null only for a §3.6-eligible forecast. */
 data class BgGlance(
     val bgMgdl: Int?,
     val trendTenths: Int?,
@@ -20,7 +17,7 @@ data class BgGlance(
     val band: AlertBand?,
     /** Measured rate only; null where the source reports no rate. */
     val trend: GlanceTrend?,
-    /** The selected forecast's own slope; drives the watch's `fc_trend` and nothing drawn as an arrow. */
+    /** Forecast slope, drives the watch fc_trend; never drawn as an arrow. */
     val fcTrend: GlanceTrend,
     /** §3.6-eligible — OK status, fresh anchor — and not in warmup. */
     val forecastEligible: Boolean,
@@ -60,8 +57,7 @@ data class PredictiveCrossing(
     enum class Severity { WARNING, CRITICAL }
 }
 
-/** One value so no call site can pass the same row twice: a promoted reconstruction is a row like
- *  any other, and as the current BG it would put a model's number on the lock screen. */
+/** One value per call site: a promoted reconstruction must not appear as the lock-screen BG. */
 data class GlanceReadings private constructor(
     /** Newest row, whatever its provenance. */
     val latest: CgmReading?,
@@ -154,8 +150,7 @@ object BgGlanceComputer {
         )
     }
 
-    /** (earliest-any, earliest-urgent). ETA is `(i+1)·stepMin`: the first step is one past the
-     *  now-line. */
+    /** (earliest-any, earliest-urgent). ETA is (i+1)*stepMin, one step past the now-line. */
     private fun findCrossings(
         sel: ModelPrediction,
         t: AlertThresholds,

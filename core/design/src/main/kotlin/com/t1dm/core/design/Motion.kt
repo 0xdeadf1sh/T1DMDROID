@@ -21,11 +21,7 @@ import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.graphics.rememberGraphicsLayer
 
-/**
- * Every path motion takes reads [LocalAnimationsEnabled]: specs through [motionSpec], nav transitions
- * through [navEnter]/[navExit], imperative scrolls by branching at the call site. Decorative and
- * looping motion is simply not started when the flag is off.
- */
+/** Every path reads [LocalAnimationsEnabled]: [motionSpec], nav enter/exit; loops don't start. */
 
 const val DEFAULT_MOTION_MS = 220
 
@@ -42,11 +38,7 @@ fun navEnter(enabled: Boolean): EnterTransition =
 fun navExit(enabled: Boolean): ExitTransition =
     if (enabled) fadeOut(tween(DEFAULT_MOTION_MS)) else ExitTransition.None
 
-/**
- * Cross-dissolve this node's contents when [key] changes. The recording must OWN its draw commands: a
- * layer under the content would leave both recordings referencing one RenderNode and blend the new
- * picture with itself, so a caller's own fade belongs in a `graphicsLayer` OUTSIDE this modifier.
- */
+/** Cross-dissolves contents on [key] change; recording must OWN draw commands, fades go OUTSIDE. */
 @Composable
 fun Modifier.crossfadeOnSwap(key: Any?): Modifier {
     if (!animationsOn()) return this
@@ -54,8 +46,7 @@ fun Modifier.crossfadeOnSwap(key: Any?): Modifier {
     val second = rememberGraphicsLayer()
     val progress = remember { Animatable(1f) }
     val swap = remember { SwapCrossfade() }
-    // Armed in COMPOSITION: the first draw under a new key must already know not to overwrite the
-    // outgoing recording. Effect-versus-draw ordering within a frame is not safe to bet on.
+    // Armed in COMPOSITION: first draw under a new key must already know not to overwrite outgoing.
     remember(key) {
         if (swap.last != null && key != null) {
             swap.pending = true
@@ -71,9 +62,7 @@ fun Modifier.crossfadeOnSwap(key: Any?): Modifier {
     }
     return this
         .drawWithContent {
-            // Read UNCONDITIONALLY, before any branch: a draw pass re-collects its snapshot reads, so
-            // one that branches around this read unsubscribes the node from the animation and freezes
-            // the dissolve on the outgoing picture.
+            // Read UNCONDITIONALLY: branching around it unsubscribes the draw, freezes dissolve.
             val p = progress.value
             val t = if (swap.pending) 0f else p
             val live = if (swap.flip) second else first
@@ -84,9 +73,7 @@ fun Modifier.crossfadeOnSwap(key: Any?): Modifier {
                 live.blendMode = BlendMode.SrcOver
                 drawLayer(live)
             } else {
-                // Both halves inside ONE offscreen, the incoming one ADDED. Two source-over layers at
-                // t and 1 - t cover `a + b - ab`, losing `t(1 - t)` of coverage and flashing at the
-                // midpoint; added inside a layer they sum exactly. The offscreen also clips.
+                // Both halves ONE offscreen, incoming ADDED: source-over loses coverage, flashes.
                 held.alpha = 1f - t
                 held.blendMode = BlendMode.SrcOver
                 live.alpha = t
@@ -99,8 +86,7 @@ fun Modifier.crossfadeOnSwap(key: Any?): Modifier {
         }
 }
 
-/** Plain fields, not snapshot state: nothing here may recompose, and [Animatable] alone invalidates
- *  the draw. */
+/** Plain fields, not snapshot state: nothing may recompose; [Animatable] alone invalidates draw. */
 private class SwapCrossfade {
     var last: Any? = null
     var pending = false

@@ -2,8 +2,7 @@ package com.t1dm.sensors
 
 import com.t1dm.core.model.TrackPoint
 
-/** Phone wall time, before [ExerciseBucketer] has decided to believe it. [TrackPoint] is the stored
- *  point; [toTrackPoint] is the one crossing, taken only on an accepted fix. */
+/** Phone wall time, before [ExerciseBucketer] believes it. [toTrackPoint] crosses on accept. */
 data class ExerciseFix(
     val tsMs: Long,
     val lat: Double,
@@ -20,9 +19,7 @@ fun ExerciseFix.toTrackPoint() = TrackPoint(
     speedMps = speedMps,
 )
 
-/** [bucketStartMs] is grid-aligned; [activeSec] is this bout's whole seconds in it; [distanceM] is
- *  null when no fix was accepted there. [trackedMs] is the wall clock those metres were covered
- *  over — metres over [activeSec] is not a speed. Never `sample.exercise`, which holds carb grams. */
+/** [distanceM] null ⇒ no fix accepted. [trackedMs] is real time; metres/[activeSec] isnt speed. */
 data class ExerciseBucket(
     val bucketStartMs: Long,
     val activeSec: Int,

@@ -13,12 +13,11 @@ import com.t1dm.core.model.UnitSpace
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** The DISPLAY-ONLY rolled forecast. Built from a [RolledForecast] and never a `ModelPrediction`,
- *  so it cannot reach the top-bar indicator, the notification countdown or `:calc`. */
+/** DISPLAY-ONLY: from [RolledForecast], never ModelPrediction, so it cant reach :calc or alerts. */
 class RolledSeries internal constructor(
     val tsMs: LongArray,
     val median: FloatArray,
-    /** Nested lower edges, outer→inner. A roll whose producer gave no interior levels has ONE pair. */
+    /** Nested lower edges, outer→inner. A producer with no interior levels gives ONE pair. */
     val lo: Array<FloatArray>,
     val hi: Array<FloatArray>,
     /** Prefix length inside the validated horizon; steps past it are extrapolated. */
@@ -31,8 +30,7 @@ class RolledSeries internal constructor(
     val extrapolatedSteps: Int get() = (size - validatedSteps).coerceAtLeast(0)
     val maxTsMs: Long? get() = if (isEmpty) null else tsMs.last()
 
-    /** The rolled step nearest absolute [ms], or -1 outside the drawn span. The INDEX, because the
-     *  caller must ask [extrapolatedAt] about the same step before printing the value. */
+    /** Rolled step nearest [ms], or -1 outside span. INDEX, so caller checks [extrapolatedAt]. */
     fun nearestIndex(ms: Double): Int = nearestWithinHalfStep(tsMs, ms)
 
     fun extrapolatedAt(i: Int): Boolean = i >= validatedSteps
@@ -60,8 +58,7 @@ fun buildRolledSeries(
     }.toFloat()
     val ts = LongArray(n) { i -> rolled.anchorTsMs + (i + 1L) * rolled.stepMs }
     val median = FloatArray(n) { conv(rolled.medianBg[it]) }
-    // Ascending-τ columns: 0=.05 1=.10 2=.25 3=.50 4=.75 5=.90 6=.95. Fan pairs outer→inner, the
-    // same three `buildPredSeries` takes.
+    // Ascending-τ: 0=.05 1=.10 2=.25 3=.50 4=.75 5=.90 6=.95. Pairs outer→inner as buildPredSeries.
     val q = if (n > 0 && rolled.bandsMgdl.size % n == 0) rolled.bandsMgdl.size / n else 0
     val lo: Array<FloatArray>
     val hi: Array<FloatArray>
@@ -82,21 +79,17 @@ fun buildRolledSeries(
     )
 }
 
-/** The forecast fan's terminal outer edge, for the one instant the rolled band shares with it. Drawn
- *  once, from the fan, so two renderings never state two uncertainties at one x and no §8.4
- *  correction is extrapolated into the tail. [tsMs] is checked rather than assumed. */
+/** Fans terminal outer edge at the shared instant. Drawn once, no double uncertainty state. */
 class RolledSeam(val tsMs: Long, val lo: Float, val hi: Float)
 
 /** Where the band opens: one step before the validated boundary, so the tail abuts the prefix. */
 internal fun RolledSeries.bandFromIndex(): Int =
     (validatedSteps.coerceIn(0, size) - 1).coerceAtLeast(0)
 
-/** Whether the roll paints a BAND rather than a bare median line: sound, and a tail of at least two
- *  steps. Also what decides whether the panel's other fans may wear the §8.4 correction — one
- *  predicate for both, since two copies of this rule drift silently. */
+/** Paints a BAND, not bare median: sound, tail ≥2 steps. Also gates other fans §8.4 correction. */
 fun RolledSeries.paintsBand(): Boolean = !degenerate && size - bandFromIndex() >= 2
 
-/** The band's opening lower edge: the fan's when [seam] falls on that instant, else the roll's own. */
+/** Band's opening lower edge: the fan's when [seam] falls on that instant, else the roll's own. */
 internal fun RolledSeries.bandOpenLo(seam: RolledSeam?, band: Int): Float {
     val i = bandFromIndex()
     // Only the OUTERMOST pair meets the fan: the seam carries one uncertainty, not a fan.
@@ -112,9 +105,7 @@ internal fun RolledSeries.bandOpenHi(seam: RolledSeam?, band: Int): Float {
 // Raw-pixel and roll-independent; one immutable effect serves every draw.
 private val EXTRAPOLATED_MEDIAN_DASH: PathEffect = PathEffect.dashPathEffect(floatArrayOf(6f, 5f))
 
-/** Drawn in [drawPredSeries]'s own hand — same band alphas, stroke weight and endpoint marker —
- *  deliberately: the roll is the cycle forecast re-fed to itself, so distinguishing it would claim a
- *  difference in kind that does not exist. A degenerate roll loses its band, as a forecast does. */
+/** In [drawPredSeries]s own hand (same alphas/weight): the roll is the cycle re-fed to itself. */
 internal fun DrawScope.drawRolledSeries(
     s: RolledSeries,
     absToPx: AbsToPx,
@@ -127,8 +118,7 @@ internal fun DrawScope.drawRolledSeries(
     if (s.isEmpty) return
     fun px(i: Int) = absToPx.of(s.tsMs[i].toDouble())
 
-    // The band starts where the cycle fan stops, opening from the fan's own edge where the two meet:
-    // past that boundary no correction is fitted and none may be invented.
+    // Band starts where the cycle fan stops, opening from its edge; past that no correction is fit.
     if (s.paintsBand()) {
         val from = s.bandFromIndex()
         // `drawPredSeries`'s own order and alphas: innermost first, outermost last and heaviest.
@@ -151,8 +141,7 @@ internal fun DrawScope.drawRolledSeries(
         }
     }
 
-    // Over the prefix too: during warm-up there is no cycle forecast, and a roll beginning in
-    // mid-air would be unreadable.
+    // Over the prefix too: no cycle forecast at warm-up, a roll beginning mid-air is unreadable.
     val alpha = if (s.degenerate) 0.5f else 1f
     val effect = if (s.degenerate) EXTRAPOLATED_MEDIAN_DASH else null
     for (i in 0 until s.size - 1) {

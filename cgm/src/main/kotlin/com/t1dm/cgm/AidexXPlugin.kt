@@ -5,8 +5,7 @@ import com.t1dm.core.model.CgmSensorModelId
 import com.t1dm.core.model.CgmSourceDescriptor
 import com.t1dm.core.model.CgmSourceId
 
-/** Recognition is by advertised name / serial suffix, NEVER by BLE address — a resolvable-random
- *  address rotates (CGM.md §1). */
+/** Recognized by advertised name/serial, NEVER by BLE address (resolvable-random, CGM.md §1). */
 class AidexXPlugin(
     private val nativeCore: NativeCore,
     private val repository: CgmRepository,
@@ -25,8 +24,7 @@ class AidexXPlugin(
         return CgmSourceId("$VENDOR_ID:${match.serial}")
     }
 
-    /** Seeds a source never met; one already on record carries the user's own window and arrives
-     *  through the descriptor overload instead. */
+    /** Seeds a source never met; a known one carries its own window via the descriptor overload. */
     override fun createSource(id: CgmSourceId): AidexXSource = createSource(descriptorFor(id.value.substringAfter(':')))
 
     override fun createSource(descriptor: CgmSourceDescriptor): AidexXSource =
@@ -35,8 +33,7 @@ class AidexXPlugin(
     companion object {
         internal const val VENDOR_ID = "aidexx"
 
-        /** The advert name is kept verbatim so a later model split can reclassify a source already on
-         *  record. A name that matched nothing falls back to this plugin's only model. */
+        /** Advert name kept verbatim so a later split can reclassify; else falls to sole model. */
         fun descriptorFor(serial: String, advertName: String? = null): CgmSourceDescriptor {
             val match = advertName?.let(CgmConstants::matchAdvertName)
             return CgmSourceDescriptor(

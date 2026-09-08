@@ -99,8 +99,7 @@ class MaskSelectionTest {
         assertEquals(t0 + 3 * patchMs, past.endMs)
     }
 
-    /** endMs is exclusive: anchor a left-handle drag on the last included patch's start,
-     *  endMs - patchMs, or the right edge grows by a patch. */
+    /** endMs is exclusive: anchor a left-handle drag on endMs-patchMs, or the right edge grows. */
     @Test
     fun a_left_handle_resize_holds_the_right_edge() {
         val c = controls(maxSpanPatches = 8)

@@ -40,11 +40,7 @@ import com.t1dm.ui.graph.SessionScrubGraph
 import com.t1dm.ui.graph.scrubCursorOf
 import com.t1dm.ui.graph.sessionScrubRows
 
-/**
- * Display-only: the swept fan is stored rows read back through the same §8.4 band correction as the
- * BG panel's; none of it reaches an alarm, a rail, a calculator or the wire. [session] is null while
- * the lookup is in flight and for an id that no longer resolves.
- */
+/** Display-only, via §8.4; no alarm/rail/calc/wire reads it. session null while loading. */
 @Composable
 fun ExerciseSessionScreen(
     session: ExerciseSession?,
@@ -54,8 +50,7 @@ fun ExerciseSessionScreen(
     hindsight: HindsightFrame? = null,
     unit: UnitSpace = UnitSpace.MgDl,
     thresholds: AlertThresholds? = null,
-    /** Loaded over exactly [reviewWindow], not from the live Logs feed, which is bounded at a few
-     *  hundred rows. */
+    /** Loaded over exactly reviewWindow, not the live Logs feed, bounded at a few hundred rows. */
     logMarkers: List<LogMarker> = emptyList(),
     rangeMinMgdl: Int? = null,
     rangeMaxMgdl: Int? = null,
@@ -140,7 +135,7 @@ fun ExerciseSessionScreen(
             sessionScrubRows(frame, hindsight, cursorMs, gridMs, unit, session.tzOffsetMin),
             numeric = true,
         )
-        // Only where there is an absence to explain: over a fan that is drawn it reads as a disclaimer.
+        // Only where there is an absence to explain: over a drawn fan it reads as a disclaimer.
         val cycle = hindsight?.cycleAt(cursorMs.toDouble()) ?: -1
         val why = when {
             hindsight == null -> "No stored forecasts"
@@ -159,14 +154,13 @@ fun ExerciseSessionScreen(
     }
 }
 
-/** The trailing reach is the point of it: the response a bout provokes lands after the bout ends. */
+/** The trailing reach is the point: the response a bout provokes lands after the bout ends. */
 fun reviewWindow(session: ExerciseSession): LongRange {
     val end = session.endMs ?: session.startMs
     return (session.startMs - REVIEW_LEAD_MS)..(end + REVIEW_TRAIL_MS)
 }
 
-/** The stored flag says only "not the user": a bout that ran to [EXERCISE_MAX_BOUT_MS] hit the
- *  limit, a shorter one was cut short by process death. */
+/** Stored flag says only "not the user": ran to EXERCISE_MAX_BOUT_MS, or cut short by death. */
 internal fun interruptedNote(session: ExerciseSession): String? {
     if (!session.interrupted) return null
     val ranMs = (session.endMs ?: session.startMs) - session.startMs

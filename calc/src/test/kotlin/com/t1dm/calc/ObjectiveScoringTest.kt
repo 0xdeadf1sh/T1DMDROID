@@ -74,8 +74,7 @@ class ObjectiveScoringTest {
             objective = Objective.HitTargetBg(targetMgdl = 110.0),
             asymmetry = Asymmetry(hypoWeight = 5.0, hyperWeight = 1.0),
         )
-        // Equal distance either side under symmetric weights: the deviation term cancels, so only the
-        // intrinsic hypo term can separate them.
+        // Equal distance under symmetric weights cancels deviation; only hypo term separates.
         val symmetric = CalcConfig(
             objective = Objective.HitTargetBg(targetMgdl = 110.0),
             asymmetry = Asymmetry(hypoWeight = 1.0, hyperWeight = 1.0),
@@ -98,7 +97,7 @@ class ObjectiveScoringTest {
 
     @Test
     fun hit_target_at_time_penalises_deviation_at_the_requested_step() {
-        val config = CalcConfig(objective = Objective.HitTargetAtTime(atMsFromNow = 60 * 60_000L)) // step 12
+        val config = CalcConfig(objective = Objective.HitTargetAtTime(atMsFromNow = 60 * 60_000L))
         val target = config.target.targetMgdl
         val onIt = fan(List(24) { target })
         val off = fan(List(24) { target + 60.0 })

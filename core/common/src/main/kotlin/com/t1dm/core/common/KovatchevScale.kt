@@ -4,9 +4,7 @@ import kotlin.math.exp
 import kotlin.math.ln
 import kotlin.math.pow
 
-/** Kovatchev `f`/`f_inv` (INFERENCE.md §5, §11), mirroring the Rust `kovatchev_f`/`kovatchev_f_inv`.
- *  For DISPLAY chrome that cannot reach the JNI seam; everything else calls [NativeCore.kovatchevF].
- *  `KovatchevScaleTest` pins this copy to the crate's golden fixture. */
+/** Kovatchev f/f_inv (§5/§11), Rust mirror for DISPLAY chrome; pinned by KovatchevScaleTest. */
 object KovatchevScale {
     const val SCALE = 1.509
     const val POWER = 1.084
@@ -22,15 +20,13 @@ object KovatchevScale {
     /** `f(500)` ≈ +2.8133. */
     val RISK_MAX: Double = f(BG_MAX)
 
-    /** mg/dL → risk. Total: BG clamped to `[20, 500]` first, NaN read as the low bound. The output
-     *  is deliberately NOT clamped. */
+    /** mg/dL → risk; BG clamped [20,500] first (NaN = low bound); output NOT clamped. */
     fun f(mgdl: Double): Double {
         val g = if (mgdl.isNaN()) BG_MIN else mgdl.coerceIn(BG_MIN, BG_MAX)
         return SCALE * (ln(g).pow(POWER) - OFFSET)
     }
 
-    /** risk → mg/dL, with the §5 guards: non-finite risk replaced, risk clamped to
-     *  `[RISK_MIN, RISK_MAX]` (base ≥ 0, so no NaN and no `exp` overflow), result clamped. */
+    /** risk → mg/dL (§5 guards): non-finite replaced, risk and result both clamped to bounds. */
     fun fInv(risk: Double): Double {
         val r = when {
             risk.isNaN() || risk == Double.NEGATIVE_INFINITY -> RISK_MIN

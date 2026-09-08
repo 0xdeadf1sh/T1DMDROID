@@ -74,8 +74,7 @@ class NightscoutDrainTest {
         state = state,
     )
 
-    /** Deliberately not an INGEST marker: `sampleAt` is null here, so one would be dropped before the
-     *  wire and could not witness whether the bridge disturbed it. */
+    /** Not an INGEST marker: null `sampleAt` drops pre-wire, can't witness bridge disturbance. */
     private fun serverRow(key: String) = OutboxEntity(
         kind = OutboxKind.ALERT,
         dedupKey = key,
@@ -99,8 +98,7 @@ class NightscoutDrainTest {
         { 10_000L }, { 0.0 }, bridge, { null },
     )
 
-    /** `resetState` reclaims a crash-wedged INFLIGHT row WITHOUT advancing `attempts`, so keying the
-     *  replay check on `attempts` alone would re-POST a bolus the host already holds. */
+    /** resetState reclaims wedged INFLIGHT, no attempts bump; replay keyed on it alone re-POSTs. */
     @Test
     fun `a row reclaimed from INFLIGHT is treated as a replay`() = runTest {
         val dao = FakeOutboxDao()
@@ -141,8 +139,7 @@ class NightscoutDrainTest {
         assertTrue(result.nightscoutError!!.contains("401"))
     }
 
-    /** The batch is FIFO and interleaved: one unreachable bridge must cost the pass one timeout, not
-     *  one per bridged row. */
+    /** Batch is FIFO/interleaved: one unreachable bridge costs one timeout, not one per row. */
     @Test
     fun `one bridge transport failure stands the bridge down for the rest of the pass`() = runTest {
         val dao = FakeOutboxDao()

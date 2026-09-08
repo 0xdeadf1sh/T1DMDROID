@@ -23,8 +23,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/** `mergeServerSample` gap-fills the wide `sample` by PRESENCE — no `updated_at` discriminator, so
- *  a server echo never wins over a local value (§3.1). Re-hydration keys on `clientId` (§3.4). */
+/** mergeServerSample gap-fills sample by PRESENCE, no updated_at; re-hydration keys on clientId. */
 @RunWith(AndroidJUnit4::class)
 class PredictionDaoTest {
 
@@ -152,7 +151,7 @@ class PredictionDaoTest {
     fun hydrateDoseEventIgnoresRedeliveryByClientId() = kotlinx.coroutines.test.runTest {
         val ev = doseEvent(clientId = "dose-A", tsMs = 300_000L, units = 5.0)
         assertTrue(repo.hydrateDoseEvent(ev) > 0)
-        assertEquals(-1L, repo.hydrateDoseEvent(ev.copy(units = 999.0)))   // same clientId ⇒ ignored
+        assertEquals(-1L, repo.hydrateDoseEvent(ev.copy(units = 999.0))) // same clientId ⇒ ignored
 
         val rows = repo.loggedDosesInRange(0L, 10_000_000L)
         assertEquals(1, rows.size)

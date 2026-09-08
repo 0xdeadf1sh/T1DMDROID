@@ -13,9 +13,7 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** One model's forecast, ready to draw. [tsMs] is absolute epoch-ms per step and the values are
- *  already unit-converted. [lo]/[hi] are the three nested fan pairs ordered outer→inner: `.05/.95`,
- *  `.10/.90`, `.25/.75`. [degenerate] is §3.6-B, [stale] §3.6-D; neither may drive a rail or alert. */
+/** One forecast to draw; tsMs epoch-ms per step, values unit-converted, lo/hi three nested fans. */
 class PredSeries internal constructor(
     val modelId: String,
     val selected: Boolean,
@@ -30,9 +28,7 @@ class PredSeries internal constructor(
     val isEmpty: Boolean get() = tsMs.isEmpty()
 }
 
-/** Off-thread (§2.3). [calibrateBands] is `SPEC/inference.md` §8.4, applied here at the last point
- *  before pixels and nowhere else — the stored row, the pushed row, the alarms and `:calc` all read
- *  the raw fan. §8.4 pins the median, so only the fan moves. */
+/** Off-thread (§2.3); calibrateBands is SPEC/inference.md §8.4, applied only here before pixels. */
 suspend fun predOverlayOf(
     predictions: List<ModelPrediction>,
     unit: UnitSpace = UnitSpace.MgDl,
@@ -42,8 +38,7 @@ suspend fun predOverlayOf(
     predictions.mapNotNull { buildPredSeries(it, unit, kovatchevF, calibrateBands?.invoke(it)) }
 }
 
-/** Pure. [calibratedBandsMgdl] is an applied §8.4 fan in [ModelPrediction.bandsMgdl]'s own step-major
- *  layout; a length disagreeing with this forecast's is IGNORED and the raw fan drawn. */
+/** Pure. calibratedBandsMgdl is an applied §8.4 fan; a length mismatch IGNORED, raw fan drawn. */
 fun buildPredSeries(
     p: ModelPrediction,
     unit: UnitSpace,
@@ -60,8 +55,7 @@ fun buildPredSeries(
         UnitSpace.Kovatchev -> kovatchevF?.invoke(mgdl) ?: mgdl
     }.toFloat()
 
-    // Element 0 is the ANCHOR — the last measured BG at anchorTsMs, fan zero-width — so the median
-    // and fan grow out of the trace instead of floating one step ahead of it.
+    // Element 0 is the ANCHOR: last BG at anchorTsMs, fan zero-width, median grows from it.
     val anchorVal = conv(p.lastBg)
     val ts = LongArray(n + 1) { i -> p.anchorTsMs + i.toLong() * p.stepMs }
     val median = FloatArray(n + 1) { i -> if (i == 0) anchorVal else conv(p.medianBg[i - 1]) }
@@ -151,9 +145,7 @@ internal fun DrawScope.drawPredSeries(
 internal fun List<PredSeries>.maxTsMs(): Long? =
     mapNotNull { if (it.isEmpty) null else it.tsMs.last() }.maxOrNull()
 
-/** The first crossing of [lowMgdl]/[highMgdl] by the SELECTED, §3.6-eligible median, with an ETA
- *  from [nowMs]. Empty for a degenerate, stale or unselected forecast, so a marker is never
- *  fabricated. mg/dL throughout, whatever the display unit. */
+/** First crossing of lowMgdl/highMgdl by the SELECTED, §3.6-eligible median; empty otherwise. */
 fun excursionsOf(
     predictions: List<ModelPrediction>,
     lowMgdl: Int,

@@ -64,8 +64,7 @@ import kotlin.math.cos
 import kotlin.math.min
 import kotlin.math.sin
 
-/** Near-black keep-screen-on surface over the keyguard: powerkeeper suspends a backgrounded BLE
- *  scan unless the display is genuinely on. Raised by [com.t1dm.app.service.CgmScanService]. */
+/** Near-black over the keyguard: powerkeeper suspends backgrounded BLE scan unless truly on. */
 class AodScanActivity : ComponentActivity() {
 
     private val container: AppContainer get() = (application as T1dmApplication).container
@@ -90,7 +89,7 @@ class AodScanActivity : ComponentActivity() {
         setContent { AodSurface(container) }
     }
 
-    /** Finish while invisible so the next wake shows the real keyguard; the service re-raises us. */
+    /** Finish while invisible so the next wake shows the real keyguard; service re-raises us. */
     override fun onStop() {
         super.onStop()
         finish()

@@ -3,8 +3,7 @@ package com.t1dm.alerts
 import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.ReadingProvenance
 
-/** Weak-signal (§3.6-A). Goes quiet once the last RSSI-bearing reading ages past the loss window,
- *  so it never double-alarms with [LossOfSignalAlarm]. */
+/** Weak-signal (§3.6-A); quiets past the RSSI window, never double-alarms [LossOfSignalAlarm]. */
 class WeakSignalAlarm(private var config: AlarmConfig) {
 
     private var lastRssiDbm: Int? = null

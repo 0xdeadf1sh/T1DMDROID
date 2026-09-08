@@ -1,7 +1,6 @@
 package com.t1dm.feature.models
 
-/** Nothing here is stored, pushed, or read by an alarm, a rail, a statistic or a fit target; it is
- *  thrown away on the next generate. */
+/** Nothing here is stored, pushed, or read by an alarm/rail/statistic/fit target; thrown away. */
 data class LabSynth(
     val seed: Long,
     val gridStartMs: Long,
@@ -46,8 +45,7 @@ data class LabAdapter(
     val improved: Boolean,
     val attached: Boolean,
     val updatedAtMs: Long,
-    /** Null when it may attach. Resolved by the same predicate `LabController.attach` enforces, so
-     *  the button and the gate cannot disagree. */
+    /** Null when it may attach; same predicate as LabController.attach so button/gate agree. */
     val attachRefusal: String? = null,
     /** Marginal dose response kept, as a ratio in risk space; 1.0 is preservation. */
     val guardRetention: Double = 0.0,

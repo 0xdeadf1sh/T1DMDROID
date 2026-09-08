@@ -6,19 +6,14 @@ import kotlinx.serialization.json.Json
 /** `device` / `enteredBy` on everything this bridge writes. */
 const val NS_DEVICE = "T1DMDROID"
 
-/** NOT `SyncJson`: its `classDiscriminator = "type"` would collide with [NsEntryDto]'s own `type`
- *  field, and the two contracts are unrelated. */
+/** NOT SyncJson: its classDiscriminator=type collides with NsEntryDto's own type field. */
 internal val NsJson: Json = Json {
     ignoreUnknownKeys = true
     encodeDefaults = true
     explicitNulls = false
 }
 
-/**
- * [sgv] is mg/dL, the storage unit on both sides (`SPEC/invariants.md` §3), so nothing is converted.
- * [date] is epoch-ms and is what the receiver dedupes and orders on; [dateString] is the same instant
- * rendered at the phone's own UTC offset.
- */
+/** sgv is mg/dL (SPEC/invariants.md §3); date is epoch-ms, the dedup/order key. */
 @Serializable
 data class NsEntryDto(
     val sgv: Int,
@@ -30,11 +25,7 @@ data class NsEntryDto(
     val utcOffset: Int = 0,
 )
 
-/**
- * Nightscout has no CURVE: `carbs`/`insulin` are bare amounts and the gamma/Bateman parameters are
- * dropped, which is why this bridge is one-way. [created_at] is snake_case because the wire is;
- * [notes] carries the phone's `client_id` so a retry can recognise a treatment it already posted.
- */
+/** No CURVE on Nightscout, so this bridge is one-way; notes carries client_id for retry dedup. */
 @Serializable
 data class NsTreatmentDto(
     val eventType: String,
@@ -46,8 +37,7 @@ data class NsTreatmentDto(
     val utcOffset: Int = 0,
 )
 
-/** A meal is carbohydrate with no insulin and a bolus insulin with no carbohydrate — separate
- *  events here. */
+/** A meal is carb with no insulin, a bolus is insulin with no carb; separate events here. */
 object NsEventType {
     const val CARBS = "Carb Correction"
     const val BOLUS = "Correction Bolus"

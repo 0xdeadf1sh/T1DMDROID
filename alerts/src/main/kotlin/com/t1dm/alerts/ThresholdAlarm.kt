@@ -4,8 +4,7 @@ import com.t1dm.core.model.AlertBand
 import com.t1dm.core.model.AlertThresholds
 import com.t1dm.core.model.CgmReading
 
-/** Threshold alarm (§3.6-A). Only an eligible MEASURED reading may change [breach]; no forecast,
- *  backend or Rust decode can suppress it. */
+/** Threshold alarm (§3.6-A); only an eligible MEASURED reading changes [breach], nothing else. */
 class ThresholdAlarm(private var thresholds: AlertThresholds) {
 
     var breach: ThresholdBreach? = null

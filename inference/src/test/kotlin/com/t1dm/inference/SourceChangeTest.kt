@@ -15,8 +15,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 
-/** `SPEC/invariants.md` §7.1. The caller is `CgmScanService`, on a transition between two non-null
- *  authoritative ids. */
+/** `SPEC/invariants.md` §7.1. Caller is `CgmScanService`, on transitions between non-null ids. */
 class SourceChangeTest {
 
     @get:Rule val tmp = TemporaryFolder()

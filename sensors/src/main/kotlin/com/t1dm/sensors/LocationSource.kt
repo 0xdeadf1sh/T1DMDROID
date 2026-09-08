@@ -8,9 +8,7 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 
-/** `GPS_PROVIDER` alone: the fused provider needs Play Services, which this app does not carry, and
- *  the network provider is tower trilateration. `ACCESS_FINE_LOCATION` specifically — a coarse grant
- *  still yields fixes, fuzzed to a ~2 km circle the bucketer refuses at its 50 m ceiling. */
+/** GPS_PROVIDER alone: no Play Services. Coarse grant ⇒ ~2km fuzz, past the 50m ceiling. */
 class LocationSource(
     private val locationManager: LocationManager,
     private val precise: () -> Boolean,
@@ -22,14 +20,11 @@ class LocationSource(
     /** Asked live, so a grant changed under a running bout is read as it stands. */
     fun isPrecise(): Boolean = runCatching { precise() }.getOrDefault(false)
 
-    /** Off is a live, reversible state, not a missing capability — hence separate from
-     *  [isAvailable]. */
+    /** Off is a live, reversible state, not a missing capability — separate from [isAvailable]. */
     fun isEnabled(): Boolean =
         runCatching { locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) }.getOrDefault(false)
 
-    /** Callbacks arrive on a dedicated [HandlerThread], never the main one: every fix walks the
-     *  bucketer and may hit Room behind it. An absent permission throws from `requestLocationUpdates`,
-     *  which closes the flow empty. */
+    /** Dedicated [HandlerThread], never main. No permission throws, closing the flow empty. */
     @SuppressLint("MissingPermission")
     fun fixes(minTimeMs: Long = MIN_TIME_MS, minDistanceM: Float = MIN_DISTANCE_M): Flow<ExerciseFix> =
         callbackFlow {

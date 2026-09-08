@@ -38,15 +38,10 @@ data class SyncResponse(val code: Int, val body: ByteArray) {
 /** The drainer treats this as stand down. */
 class NoActiveProfileException : IllegalStateException("no active server profile / token")
 
-/** Held whole in memory (≤~9 MB). [sha256] is the `X-SHA256` header, null when the server omitted
- *  it — the registry-row hash is then the fallback. */
+/** Held whole in memory (≤~9MB); [sha256]=X-SHA256 header, null ⇒ registry-row hash fallback. */
 class ModelArtifact(val bytes: ByteArray, val sha256: String?)
 
-/**
- * The `/v1` client (docs/T1DMSERVER_API.md). Every call carries the active profile's `rw` Bearer
- * token and runs on [T1dmDispatchers.io]. Tailscale makes transport TLS moot, so plaintext `http://`
- * is expected.
- */
+/** /v1 client; every call carries `rw` Bearer, runs on io; Tailscale makes TLS moot, http:// ok. */
 interface SyncHttpClient {
     suspend fun execute(request: SyncRequest): SyncResponse
     suspend fun health(): HealthDto
@@ -66,11 +61,11 @@ interface SyncHttpClient {
     /** `GET /v1/doses?from&to`; a null bound is unbounded. */
     suspend fun getDoses(from: Long?, to: Long?): DosesPageDto
     suspend fun getBasalSchedule(): BasalScheduleDto
-    /** `POST /v1/photos`, multipart `ts` (epoch-ms) + `image` whose filename carries the extension. */
+    /** `POST /v1/photos`, multipart `ts` (epoch-ms) + `image`, filename carries the extension. */
     suspend fun postPhoto(tsMs: Long, bytes: ByteArray, ext: String): PhotoAck
     /** `GET /v1/models`, unwrapped from its `models` envelope. */
     suspend fun listModels(): List<ModelDto>
-    /** Streams the artifact into memory and surfaces `X-SHA256` for the caller's integrity check. */
+    /** Streams the artifact to memory, surfaces `X-SHA256` for the caller's integrity check. */
     suspend fun downloadModel(id: String): ModelArtifact
 }
 
@@ -179,10 +174,7 @@ class OkHttpSyncClient(
 
     override suspend fun listModels(): List<ModelDto> = get<ModelsEnvelope>("/v1/models").models
 
-    /**
-     * A direct GET, not the JSON [get] helper: the artifact is a large binary. [id] is percent-encoded
-     * as a single path segment.
-     */
+    /** Direct GET, not JSON [get]: large binary; [id] percent-encoded as one path segment. */
     override suspend fun downloadModel(id: String): ModelArtifact = withContext(dispatchers.io) {
         val ep = endpoint() ?: throw NoActiveProfileException()
         val url = ep.baseUrl.toHttpUrl().newBuilder()
@@ -202,10 +194,7 @@ class OkHttpSyncClient(
         }
     }
 
-    /**
-     * A direct multipart POST, not the JSON outbox: a photo is unfit for the text-JSON replay queue.
-     * The server derives the extension from the filename.
-     */
+    /** Direct multipart POST, not JSON outbox — unfit for replay; extension from filename. */
     override suspend fun postPhoto(tsMs: Long, bytes: ByteArray, ext: String): PhotoAck =
         withContext(dispatchers.io) {
             val ep = endpoint() ?: throw NoActiveProfileException()

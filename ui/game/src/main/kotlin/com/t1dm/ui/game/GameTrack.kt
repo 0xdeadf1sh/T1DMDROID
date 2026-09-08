@@ -13,20 +13,16 @@ const val DEFAULT_AXIS_MIN_MGDL = 20
 
 const val DEFAULT_AXIS_MAX_MGDL = 250
 
-/** Shortest ground a run may present: a one-reading run is otherwise a needle the car cannot land on. */
+/** Shortest ground a run may present: a one-reading run else is a needle the car cannot land on. */
 private const val MIN_PLATFORM_M = 4f
 
 /** Per-side ceiling on widening a lip into the chasm beside it. */
 private const val MAX_LIP_PAD_M = 2f
 
-/** Grid coincidence tolerance, in samples: a lip lands on an exact integer only up to float error. */
+/** Grid coincidence tolerance, samples: a lip lands on an exact integer only up to float error. */
 private const val GRID_EPS = 1e-4f
 
-/**
- * World x = 0 is the start instant and x grows with time. [heights] is metres above the world floor
- * at `x = i · dx`; NaN marks a chasm, and is the only gap marker — the core reads non-finite OR
- * negative as no ground, and heights here are floored non-negative.
- */
+/** World x=0 is start, grows with time. [heights] metres at x=i·dx; NaN=chasm, floored ≥0. */
 class GameTrack internal constructor(
     val map: WorldMap,
     val heights: FloatArray,
@@ -81,11 +77,7 @@ suspend fun gameTrackOf(
     buildGameTrack(trace, rangeMinMgdl, rangeMaxMgdl, kovatchevF, metresPerMinute, worldHeight, dx)
 }
 
-/**
- * Pure CPU — safe from a `@Preview`. Runs come from [forEachTraceRun], the walk the polyline and the
- * corridor mask use, so the ground is cut at exactly the dropouts the panel refuses to bridge.
- * [dx] is coarsened past the solver's sample cap — level of detail on the terrain, never the trace.
- */
+/** Pure CPU, safe from @Preview. Runs from [forEachTraceRun]; ground cuts at panel dropouts. */
 fun buildGameTrack(
     trace: TrackTrace,
     rangeMinMgdl: Int = DEFAULT_AXIS_MIN_MGDL,
@@ -122,8 +114,7 @@ fun buildGameTrack(
         var iLo = ceil(xa / step - GRID_EPS).toInt().coerceIn(0, n - 1)
         var iHi = floor(xb / step + GRID_EPS).toInt().coerceIn(0, n - 1)
         if (iLo > iHi) {
-            // The run falls between two grid samples — a lone reading under a coarse grid. Give it the
-            // nearest sample rather than no ground, unless a neighbour already owns it.
+            // Run falls between grid samples (lone reading, coarse grid); give it the nearest.
             val i = Math.round(((xa + xb) / 2f) / step).coerceIn(0, n - 1)
             if (heights[i].isNaN()) {
                 heights[i] = map.worldYOf(trace.values[a])
@@ -145,8 +136,7 @@ fun buildGameTrack(
                         trace.values[j] + (trace.values[j + 1] - trace.values[j]) * t.coerceIn(0f, 1f)
                     }
                 }
-                // Floored: the solver reads a negative sample as a gap, and a lerp can land an ulp
-                // under the run's minimum, which at the axis floor turns the nadir into a chasm.
+                // Floored: solver reads negative as a gap; a lerp ulp under min turns nadir chasm.
                 heights[i] = max(0f, map.worldYOf(v))
             }
         }
@@ -159,8 +149,7 @@ fun buildGameTrack(
     return GameTrack(map, heights, step, trace.t0Ms, trace.absMs(last))
 }
 
-/** Extend a short run's lips at constant height into the chasm beside it, never over ground another
- *  run owns. A run already long enough is untouched, so its chasm keeps the dropout's exact width. */
+/** Extend a short runs lips into its chasm, never over anothers ground. Long runs untouched. */
 private fun widenShortPlatforms(
     heights: FloatArray, runLo: IntArray, runHi: IntArray, runs: Int, step: Float,
 ) {

@@ -129,7 +129,7 @@ private fun ModelRow(model: RunningModel, latency: ModelLatency?) {
 
 @Composable
 private fun HwRow(label: String, value: String?) {
-    // numeric = false: a long SoC string wraps at word boundaries instead of stealing the value column.
+    // numeric = false: a long SoC string wraps at word boundaries, not the value column.
     com.t1dm.core.design.KeyValueRow(label, value, numeric = false)
 }
 

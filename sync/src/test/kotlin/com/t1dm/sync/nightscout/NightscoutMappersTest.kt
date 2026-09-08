@@ -13,7 +13,7 @@ import org.junit.Test
 
 class NightscoutMappersTest {
 
-    /** Fail closed: `sgv` claims sensor signal, and the host has no route to take a record back out. */
+    /** Fail closed: `sgv` claims sensor signal, and the host has no route to retract it. */
     @Test
     fun `a promoted reconstruction is never bridged`() {
         val recon = sample(112).copy(bgProvenance = ReadingProvenance.RECONSTRUCTED)
@@ -72,8 +72,7 @@ class NightscoutMappersTest {
         assertNull(sample(null).toNsEntry(10))
     }
 
-    /** `exercise` is carbohydrate EQUIVALENT, opposite in sign to a meal: near a carb field a bout of
-     *  exercise would read as food eaten. */
+    /** exercise is carb EQUIVALENT, opposite sign to a meal: near carbs it reads as food eaten. */
     @Test
     fun `entry carries bg only, never exercise or steps`() {
         val json = NsJson.encodeToString(NsEntryDto.serializer(), sample(100).toNsEntry(0)!!)

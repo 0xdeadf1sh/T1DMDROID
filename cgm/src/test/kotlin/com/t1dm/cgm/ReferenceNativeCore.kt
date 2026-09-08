@@ -41,8 +41,7 @@ import com.t1dm.core.model.SynthParams
 import com.t1dm.core.model.SynthSeries
 import com.t1dm.core.model.TerrainSpec
 
-/** Test-only [NativeCore] on [AidexCodec]: only advert decode and the risk conversions answer.
- *  Every other member throws rather than return a zero a test could pass on. */
+/** Test-only NativeCore; only decode and risk conversions answer, everything else throws. */
 class ReferenceNativeCore : NativeCore {
     override fun roundtrip(msg: String): String = msg
     override fun decodeAdvert(payload: ByteArray): DecodedAdvert? = AidexCodec.decode(payload)

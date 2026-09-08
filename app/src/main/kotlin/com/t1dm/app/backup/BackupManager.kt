@@ -16,8 +16,7 @@ import java.time.format.DateTimeFormatter
 
 class BackupRun(val file: StoredBackup, val counts: ArchiveCounts, val pruned: Int)
 
-/** Not the restore path: that stays in `AppContainer`, which owns the alarm and actuator policies a
- *  restore re-hydrates. */
+/** Not the restore path: that stays in AppContainer, which owns the actuator policies. */
 class BackupManager(
     private val appContext: Context,
     private val repository: T1dmRepository,
@@ -27,8 +26,7 @@ class BackupManager(
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
 
-    /** Null when no folder has been granted. Rebuilt per call: the grant can be revoked between one
-     *  run and the next, and a cached handle would keep reporting a destination that is gone. */
+    /** Null when no folder is granted; rebuilt per call since the grant can be revoked. */
     suspend fun destination(): BackupDestination? {
         val uri = settings.currentBackupFolder() ?: return null
         // The URI-derived label is the fallback for a grant made before the label was stored.
@@ -46,7 +44,7 @@ class BackupManager(
                 written = repository.writeArchive(out, configJson, appVersion, now)
             }
             val counts = written
-            // Only after a successful write: pruning first would spend the oldest backup for nothing.
+            // Pruning happens only after a successful write, so nothing is spent for nothing.
             val pruned = prune(dest)
             settings.recordBackupOk(now, file.sizeBytes, counts.total)
             settings.clearBackupError()
@@ -57,8 +55,7 @@ class BackupManager(
         }
     }
 
-    /** Failure is logged and swallowed: the backup itself succeeded, and failing the run would
-     *  trigger a worker retry that writes a second archive. */
+    /** Failure is logged and swallowed: failing here would trigger a second archive write. */
     private suspend fun prune(dest: BackupDestination): Int {
         val keep = settings.currentBackupKeep()
         return runCatching {

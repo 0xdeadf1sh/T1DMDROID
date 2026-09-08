@@ -15,8 +15,7 @@ class ConvertersTest {
         }
     }
 
-    /** `prediction.backend` is never pruned, so a row written by a build that had a backend this
-     *  one dropped must read back rather than throw the whole cursor. */
+    /** prediction.backend never pruned; a dropped backend must read back, not throw the cursor. */
     @Test
     fun `a backend this build no longer has reads back as UNKNOWN`() {
         assertEquals(BackendId.UNKNOWN, c.stringToBackendId("EXECUTORCH_VULKAN_FP32"))

@@ -1,10 +1,6 @@
 package com.t1dm.core.model
 
-/**
- * Every sample as received, filed at [rxWallMs] — off the grid, and never snapped and stored back;
- * [CgmReading] is the grid (`../T1DMCOMMON/SPEC/invariants.md` §1). No `provenance`: a row here was
- * sent by the sensor. Display and diagnosis only, bounded retention — absence is normal.
- */
+/** As-received sample at [rxWallMs], off-grid, never snapped back; display/diagnosis only. */
 data class CgmRawSample(
     val sourceId: CgmSourceId,
     val rxWallMs: Long,

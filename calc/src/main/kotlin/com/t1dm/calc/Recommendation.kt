@@ -15,8 +15,7 @@ data class Candidate(
 /** [offsetMin] is measured from the first part. */
 data class SplitPart(val units: Double, val offsetMin: Int)
 
-/** §3.6-F. [requiresConfirmation] is the hard rail flag; even a clean card must still be
- *  acknowledged before Accept. */
+/** §3.6-F: [requiresConfirmation] is the hard rail flag; even a clean card needs Accept ack. */
 data class DecisionCard(
     val ageOfLastRealReadingMin: Long?,
     val interpolatedFraction: Double,
@@ -37,8 +36,7 @@ data class DecisionCard(
     }
 }
 
-/** The terminal output of the module. It has no "administer"/"deliver"/"actuate" member by design;
- *  the structural no-actuator test asserts that. */
+/** Terminal output; no "administer"/"deliver"/"actuate" member, per the no-actuator test. */
 sealed interface AdviceResult {
 
     data class Refused(val reasons: List<String>) : AdviceResult

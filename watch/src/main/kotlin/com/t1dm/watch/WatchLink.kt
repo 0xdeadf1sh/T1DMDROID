@@ -26,8 +26,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import timber.log.Timber
 
-/** Runs on [T1dmDispatchers.default] (crypto/seal) and `.io` (GATT), never main. Dormant unless
- *  [WatchLinkConfig.enabled]. */
+/** Runs on default (crypto) and io (GATT), never main; dormant unless [WatchLinkConfig.enabled]. */
 class WatchLink(
     private val centralProvider: () -> WatchCentral,
     private val sessionFactory: WatchSessionFactory,
@@ -83,8 +82,7 @@ class WatchLink(
 
     fun setConfig(newConfig: WatchLinkConfig) { config = newConfig }
 
-    /** Undoes [stopForReset]: `enabled = false` is teardown state, not a preference, and nothing
-     *  else clears it. Deliberately does NOT re-pair — the reset erased the key material. */
+    /** Undoes [stopForReset]: enabled=false is teardown, not a preference; no re-pair here. */
     suspend fun resumeAfterReset() {
         linkMutex.withLock {
             config = config.copy(enabled = true)
@@ -92,9 +90,7 @@ class WatchLink(
         }
     }
 
-    /** Takes [linkMutex] so it serialises with an in-flight [pushNow]: a push starting later finds
-     *  the link disabled and returns before persisting, so it cannot re-persist key material or a
-     *  nonce ceiling into a store the reset is wiping. Does not touch the stores. Idempotent. */
+    /** [linkMutex] serialises with in-flight [pushNow]: a later push sees disabled, no persist. */
     suspend fun stopForReset() {
         linkMutex.withLock {
             config = config.copy(enabled = false)
@@ -188,23 +184,20 @@ class WatchLink(
         syncCrypto()
     }
 
-    /** Reserves and persists a fresh send-nonce window. The loopback double exports null material. */
+    /** Reserves+persists a fresh send-nonce window. The loopback double exports null material. */
     private suspend fun persistSession(session: WatchSession) {
         val material = runCatching { session.exportState() }.getOrNull()
         pairingStore.save(WatchPairingStore.Pairing(epoch = session.epoch, bonded = true, material = material))
     }
 
 
-    /**
-     * Checkpoints the nonce ceiling BEFORE the write, so a crash mid-write cannot re-issue the seq.
-     * In low power it sends one final `lowPowerSuspending` frame, then idles. Off-main.
-     */
+    /** Checkpoints ceiling BEFORE write, so a crash can't re-issue seq; low power sends 1 frame. */
     suspend fun pushNow(nowMs: Long): Unit = withContext(dispatchers.default) {
         linkMutex.withLock {
             val session = session
             if (!config.enabled || session == null || session.state != WatchSessionState.LIVE) return@withLock
             val lp = runCatching { lowPower.isLowPower() }.getOrDefault(false)
-            if (lp && _state.value.lowPowerSuspended) return@withLock // already suspended; stay idle
+            if (lp && _state.value.lowPowerSuspended) return@withLock // already idle
 
             val c = central
             if (c?.isReady != true) {
@@ -215,8 +208,7 @@ class WatchLink(
             val glance = runCatching { glanceSource.currentGlance(nowMs) }.getOrNull() ?: return@withLock
             val push = glance.copy(status = glance.status.copy(lowPowerSuspending = lp))
             val sealed = session.seal(WatchPushCodec.encode(push))
-            // The link may have been disabled while we were suspended in the currentGlance() read; do
-            // not persist into kv rows a reset is wiping. The burnMargin resume floor covers this seq.
+            // Link may disable after currentGlance() suspends us; skip persist to a wiping store.
             if (!config.enabled) return@withLock
             nonceStore.recordCeiling(session.epoch, sealed.seq)
             persistSession(session)
@@ -240,9 +232,7 @@ class WatchLink(
         val ceiling = nonceStore.loadCeiling(pairing.epoch)
         val session = sessionFactory.resume(pairing.material, ceiling).also { this.session = it }
         _state.update { it.copy(bonded = true, epoch = pairing.epoch) }
-        // The restore burned the send window; reserve a fresh one now, independently of transport
-        // success, so the first push can seal without reusing a (key, nonce) (§5.5). The only
-        // reservation on this path.
+        // Restore burned the window; reserve fresh now (regardless of transport); no repeat (§5.5).
         if (session.state == WatchSessionState.LIVE) persistSession(session)
         runCatching {
             connectTransport()

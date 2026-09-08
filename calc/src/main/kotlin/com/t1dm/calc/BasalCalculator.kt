@@ -19,8 +19,7 @@ data class BasalCandidate(
 /** Fail-closed: an ineligible roll scores +∞ and can never be recommended. */
 class BasalCalculator(private val port: BasalForecastPort) {
 
-    /** [template] supplies the injection times and kinetics; only its doses are scaled.
-     *  [totalGrid] is whole-day totals in units, user-set and unbounded. */
+    /** [template] gives times/kinetics, only doses scale; [totalGrid] is whole-day units. */
     suspend fun search(
         template: BasalSchedule,
         totalGrid: List<Double>,

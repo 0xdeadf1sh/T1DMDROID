@@ -16,7 +16,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 /** Mirrors Navigation.glycemicStatusOf (U1); VOID is any fail-closed ineligibility. */
 internal enum class GlyKind { STABLE, EXCURSION, VOID }
 
-/** BG, trend and forecast come from the same [BgGlanceComputer] the notification and the watch use. */
+/** BG, trend and forecast share [BgGlanceComputer] with the notification and the watch. */
 internal data class WidgetSnapshot(
     val glance: BgGlance,
     val unit: UnitSpace,
@@ -47,11 +47,7 @@ internal data class WidgetSnapshot(
 /** Minutes. Shared so the live pull and [WidgetStateStore]'s rebuild cannot drift apart. */
 internal const val STALE_MIN = 15
 
-/**
- * Collapses both failure modes to the one `null` the fallback keys on. A read that suspends and never
- * resumes is not an exception, so no guard catches it, and it would park `provideGlance` short of
- * `provideContent` with the host's loading spinner up.
- */
+/** Collapses both failures to null; an eternal suspend isn't caught, else spinner stays up. */
 internal suspend fun boundedWidgetPull(
     budgetMs: Long,
     onTimeout: () -> Unit = {},
@@ -65,12 +61,7 @@ internal suspend fun boundedWidgetPull(
     return snapshot
 }
 
-/**
- * Must fail as a UNIT so the caller falls back to [WidgetStateStore] rather than persisting a snapshot
- * of boot defaults; the extras are per-read guarded because their absence is a missing metric, not a
- * failed pull. Pinned to `default` to give [boundedWidgetPull]'s timeout a cancellable context, and
- * settings are read one-shot — a live Flow's first emission is what parks a cold process.
- */
+/** Fails as a UNIT (else persists boot defaults); pinned to `default` for cancellable timeout. */
 internal suspend fun currentWidgetSnapshot(context: Context): WidgetSnapshot {
     val container = (context.applicationContext as T1dmApplication).container
     return withContext(container.dispatchers.default) {
@@ -91,8 +82,7 @@ internal suspend fun currentWidgetSnapshot(context: Context): WidgetSnapshot {
         val onBoard = runCatching { container.iobCobNow() }.getOrNull()
         val clock = state.selectedPredictedTime
         val steps = runCatching { container.stepsToday() }.getOrNull()
-        // The volatile holds coded defaults until the first refresh, and this snapshot is persisted as
-        // the tile's alarm geometry — a cold-start render would write those in as the user's.
+        // Volatile holds coded defaults pre-refresh; persisted here as the tile's alarm geometry.
         if (!container.alarmConfigHydrated) runCatching { container.refreshAlarmConfig() }
         val cfg = container.alarmConfig
         val (glyText, glyKind) = computeGlyStatus(state, cfg.thresholds, nowMs)
@@ -128,8 +118,7 @@ internal suspend fun currentWidgetSnapshot(context: Context): WidgetSnapshot {
     }
 }
 
-/** Recomputed from the same inputs as Navigation.glycemicStatusOf, so the tile agrees with the top
- *  bar. Fail-closed: any ineligibility is VOID, never a positive STABLE. */
+/** Recomputed like Navigation.glycemicStatusOf so the tile agrees; fail-closed to VOID always. */
 internal fun computeGlyStatus(state: InferenceState, thr: AlertThresholds?, nowMs: Long): Pair<String, GlyKind> {
     if (state.warmup != null) return "VOID" to GlyKind.VOID
     val p = state.selectedPrediction ?: return "VOID" to GlyKind.VOID

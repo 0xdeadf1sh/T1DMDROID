@@ -6,8 +6,7 @@ import android.content.Intent
 import com.t1dm.app.service.CgmScanService
 import timber.log.Timber
 
-/** Forwards Snooze/Dismiss to the service holding the live [com.t1dm.alerts.AlarmEngine].
- *  Presentation only (§3.6 C4): the engine keeps firing and escalation still pierces (C1–C3). */
+/** Forwards Snooze/Dismiss; presentation only (§3.6 C4), escalation still pierces (C1-C3). */
 class AlarmActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val action = intent.action

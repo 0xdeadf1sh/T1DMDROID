@@ -10,8 +10,7 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 
-/** Readings are stamped with phone wall time, as the CGM path stamps its own. Requires the
- *  `ACTIVITY_RECOGNITION` runtime permission, declared by `:app`. */
+/** Stamped with phone wall time, like CGM; needs `ACTIVITY_RECOGNITION` perm from `:app`. */
 class StepSource(
     private val sensorManager: SensorManager,
     private val clock: () -> Long = System::currentTimeMillis,
@@ -19,9 +18,7 @@ class StepSource(
 ) {
     fun isAvailable(): Boolean = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER) != null
 
-    /** Each subscription owns a fresh [StepBucketer], so its first sample only primes the baseline.
-     *  Callbacks arrive on a dedicated [HandlerThread], never the main one, since the bucketing and
-     *  the Room write behind it must stay off the UI. Closes empty with no step counter. */
+    /** Fresh [StepBucketer] per subscription; callbacks off-main on [HandlerThread], not UI. */
     fun buckets(): Flow<StepBucket> = callbackFlow {
         val sensor = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)
         if (sensor == null) {

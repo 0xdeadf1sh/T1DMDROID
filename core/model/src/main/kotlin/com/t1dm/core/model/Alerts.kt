@@ -3,8 +3,7 @@ package com.t1dm.core.model
 /** Deterministic glucose bands for the model-free alarm (§3.6-A). */
 enum class AlertBand { URGENT_LOW, LOW, IN_RANGE, HIGH, URGENT_HIGH }
 
-/** Deliberately UNBOUNDED, user-set. Ordered `urgentLow < low <= high < urgentHigh`.
- *  [bandFor] classifies a MEASURED reading — no forecast. */
+/** Deliberately UNBOUNDED, user-set, urgentLow<low<=high<urgentHigh; bandFor is MEASURED only. */
 data class AlertThresholds(
     val urgentLowMgdl: Int,
     val lowMgdl: Int,

@@ -12,9 +12,7 @@ import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.rememberT1dmHaptics
 import kotlinx.coroutines.launch
 
-/** Stated ONCE per install. `onDismissRequest` is empty deliberately: neither Back nor a scrim tap
- *  may walk past it. `initial = true` because the kv read is async — flashing this at a returning
- *  user is the worse error. */
+/** Stated ONCE; empty onDismissRequest blocks Back/scrim; initial=true avoids a flash on return. */
 @Composable
 fun Disclaimer(container: AppContainer) {
     val acknowledged by container.disclaimerAcknowledged.collectAsState(initial = true)
@@ -28,8 +26,7 @@ fun Disclaimer(container: AppContainer) {
             TextButton(
                 onClick = {
                     haptics.perform(HapticEvent.Confirm)
-                    // appScope: this composable leaves the tree the instant the flag flips, and a
-                    // write on a scope that dies with it would be cancelled mid-flight.
+                    // appScope: leaving the tree flips the flag, cancelling a tied scope mid-write.
                     container.appScope.launch { container.acknowledgeDisclaimer() }
                 },
             ) { Text("I understand") }

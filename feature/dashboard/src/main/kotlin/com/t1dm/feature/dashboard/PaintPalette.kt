@@ -92,8 +92,7 @@ internal fun PaintPalette(
     }
 }
 
-/** Width lives here, not in the palette row: a horizontal slider inside a horizontally-scrolling
- *  container is a gesture fight. */
+/** Width lives here, not palette row: a slider in a scrolling row is a gesture fight. */
 @Composable
 internal fun PaintStyleDialog(
     colorArgb: Int,
@@ -103,8 +102,7 @@ internal fun PaintStyleDialog(
     onDismiss: () -> Unit,
 ) {
     val haptics = rememberT1dmHaptics()
-    // No Warn on raise, no Reject on dismiss, unlike the log confirmations: every edit has already
-    // landed live. The detent is the whole dp the label shows, not the Float behind it.
+    // No Warn/Reject haptics, unlike log confirms: edits land live. Detent is shown dp, not Float.
     val widthDetent = rememberHapticDetent(HapticEvent.ScrubTick)
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -130,8 +128,7 @@ internal fun PaintStyleDialog(
 
 internal const val PAINT_WIDTH_MIN_DP = 1f
 
-/** The plot box is 164–178 dp tall: past 120 dp the round cap's radius exceeds its half-height and
- *  every tap lands as a full-panel dab. */
+/** Plot box 164-178dp tall; past 120dp round cap radius exceeds half-height, tap is a full dab. */
 internal const val PAINT_WIDTH_MAX_DP = 120f
 
 internal fun seedInk(tool: PaintTool, colorArgb: Int): Int = argbWithAlpha(colorArgb, tool.defaultAlpha)

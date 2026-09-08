@@ -3,11 +3,7 @@ package com.t1dm.data.db
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
-/**
- * Little-endian codec for `bg_paint_stroke.points`: `'T' '1' 'P' | u8 version | u32 count`, then
- * `(i64 tsMs, f32 yFrac)` per point. Fixed endianness so a DB copied between hosts decodes
- * identically; X is absolute, an i32 delta overflowing the 90-day window.
- */
+/** LE codec for bg_paint_stroke.points: T1P|ver|count, then (i64 tsMs,f32 yFrac); X is absolute. */
 object PaintStrokeBlob {
 
     const val VERSION: Int = 1

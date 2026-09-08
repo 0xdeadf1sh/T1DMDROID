@@ -2,8 +2,7 @@ package com.t1dm.cgm
 
 import com.t1dm.core.model.CgmSensorModelId
 
-/** Passive-AiDEX pipeline constants (§3.1, CGM.md §1/§3). Pure JVM — no `android.*` here, so every
- *  stage reading them stays unit-testable without Robolectric. */
+/** Passive-AiDEX consts (§3.1, CGM.md §1/§3); pure JVM, unit-testable w/o Robolectric. */
 object CgmConstants {
     /** CGM.md §3. */
     const val MANUFACTURER_ID: Int = 0x0059
@@ -11,11 +10,7 @@ object CgmConstants {
     /** CGM.md §3. */
     const val SERVICE_UUID16: Int = 0x181F
 
-    /**
-     * Advertised-name prefix → sensor model (CGM.md §1). Match by name / serial suffix, NEVER by BLE
-     * address (resolvable-random rotates). All four are brand skins of one MicroTech platform, so one
-     * model is deliberate, not a placeholder; only wear duration differs and that is a user setting.
-     */
+    /** Name prefix→model (CGM.md §1); match name/serial, never rotating BLE addr; wear varies. */
     val MODEL_BY_NAME_PREFIX: Map<String, String> = linkedMapOf(
         "LinX-" to CgmSensorModelId.AIDEX_X,     // EU
         "AiDEX X-" to CgmSensorModelId.AIDEX_X,  // Asia
@@ -34,10 +29,7 @@ object CgmConstants {
         val serial: String,
     )
 
-    /**
-     * The one matcher: `startsWith` in [MODEL_BY_NAME_PREFIX] order, and on an overlap that order is
-     * the only answer. Null when no prefix matches or the serial would be empty.
-     */
+    /** The one matcher: startsWith in prefix order; overlap picks order; empty serial ⇒ null. */
     fun matchAdvertName(advertName: String): AdvertMatch? {
         val entry = MODEL_BY_NAME_PREFIX.entries.firstOrNull { advertName.startsWith(it.key) } ?: return null
         val serial = advertName.removePrefix(entry.key)
@@ -53,8 +45,7 @@ object CgmConstants {
     /** CGM.md §3.1; the interleaved ~5-byte status advert is rejected by this floor. */
     const val GLUCOSE_PAYLOAD_MIN_LEN: Int = 20
 
-    /** Seed only (§3.1). The passive advert carries no warm-up bit, so
-     *  `minFromStart < WARMUP_WINDOW_MIN ⇒ WARMUP`. AiDEX X warm-up ≈ 60 min. */
+    /** Seed only (§3.1): no warm-up bit, minFromStart<WARMUP_WINDOW_MIN⇒WARMUP; AiDEX X≈60min. */
     const val WARMUP_WINDOW_MIN: Int = 60
 
     /** Grid quantum, ms; every persisted `tsMs % GRID_MS == 0`. */

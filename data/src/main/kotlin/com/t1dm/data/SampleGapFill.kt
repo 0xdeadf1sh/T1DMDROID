@@ -4,12 +4,7 @@ import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.data.db.SampleEntity
 
-/**
- * A server row folded into the local wide `sample` table; a null series never clobbers a local
- * value. [updatedAt] is not a merge discriminator. Do NOT default [bgProvenance] to MEASURED:
- * `:sync` maps it from the wire `bg_reconstructed` flag, and a promoted span read back as sensor
- * signal could clear an alarm and feed a dose.
- */
+/** Null server field never clobbers local. Never default [bgProvenance]=MEASURED: clears alarms. */
 data class SamplePatch(
     val ts: Long,
     val tzOffsetMin: Int,
@@ -26,11 +21,7 @@ data class SamplePatch(
     val exercise: Double? = null,
 )
 
-/**
- * Fills ONLY the fields the local row lacks (§3.3), never overwriting a present local value, and
- * compares no `updated_at`, so clock skew cannot let a server echo win. Local
- * `tzOffsetMin`/`updatedAt` are preserved.
- */
+/** Fills only fields local lacks (§3.3); no updated_at compare — clock skew can't win. */
 object SampleGapFill {
 
     /** Null when the patch adds nothing the local row lacked. */
@@ -54,8 +45,7 @@ object SampleGapFill {
         ts = p.ts,
         tzOffsetMin = p.tzOffsetMin,
         bgMgdl = p.bgMgdl,
-        // The SERVER's label — never the currently authoritative sensor's, which may not have
-        // produced this reading, and never null, which the re-push would clear on the server.
+        // SERVER's label, never the current sensor's or null (which clears it on the server).
         bgSource = p.bgSource,
         bgProvenance = p.bgProvenance,
         bgFlag = p.bgFlag,

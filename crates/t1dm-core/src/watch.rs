@@ -1,13 +1,4 @@
-//! Watch-link cryptography (SPEC §3): every byte that crosses the phone → ESP32-C3 air. Kotlin
-//! owns the GATT plumbing and the at-rest key wrap (Keystore/StrongBox).
-//!
-//! Suite v1, versioned on the wire and in the persisted state: X25519 ECDH, HKDF-SHA256 to two
-//! per-direction AES-128-GCM keys bound to both public keys, a nonce of `epoch:u32_le ||
-//! seq:u64_le`, and a 6-digit SAS compared aloud to defeat a MITM on first pair. The send
-//! counter's window is burned on cold start, so a `kill -9` can never re-emit a `(key, nonce)`.
-//!
-//! `seal` is the local send direction, `open` the receive one (PUSH_ACK), each with its own key
-//! and counter. Hostile input is always `Err`, never a panic.
+//! Watch-link crypto (SPEC §3), v1: X25519 ECDH, HKDF-SHA256->AES-128-GCM/direction, SAS anti-MITM.
 
 use std::sync::{Arc, Mutex};
 
@@ -32,9 +23,7 @@ const FRAME_VER: u8 = 1;
 const STATE_MAGIC: &[u8; 4] = b"T1WC";
 const STATE_VER: u8 = 1;
 
-/// `export_state` reserves seqs up to `send_next + NONCE_WINDOW`; `seal` refuses at the ceiling
-/// until the caller checkpoints again. Cold start jumps to the persisted ceiling, burning the
-/// unused window, so no `(key, nonce)` can repeat.
+/// export_state reserves seqs to send_next+NONCE_WINDOW; cold start burns unused window, no repeat.
 const NONCE_WINDOW: u64 = 64;
 
 const KEY_LEN: usize = 16;
@@ -54,8 +43,7 @@ fn internal(reason: impl Into<String>) -> CoreError {
     CoreError::Internal { reason: reason.into() }
 }
 
-/// Which side of the canonical (lower, higher) pubkey ordering we are; fixes send vs receive
-/// without a negotiated role bit.
+/// Which side of the canonical (lower,higher) pubkey order we are; fixes send/receive, no role bit.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Role {
     A,
@@ -199,13 +187,10 @@ impl WatchSession {
         })
     }
 
-    /// Restore a persisted session and BURN the send window: `send_next` jumps to the persisted
-    /// ceiling with no headroom, so the first `seal` refuses until `export_state` reserves and the
-    /// caller persists a fresh one. That mandatory checkpoint is what makes a second crash safe.
+    /// Restore burns send window: send_next jumps to ceiling; export_state must checkpoint first.
     #[uniffi::constructor]
     pub fn restore(state: Vec<u8>) -> Result<Arc<Self>, CoreError> {
-        // magic(4) ver(1) role(1) epoch(4) send_ceiling(8) recv_min(8)
-        //   root(32) our_secret(32) our_public(32) peer_public(32)
+        // magic(4) ver(1) role(1) epoch(4) ceiling(8) recv_min(8) root(32) sec(32) pub(32) peer(32)
         const LEN: usize = 4 + 1 + 1 + 4 + 8 + 8 + 32 + 32 + 32 + 32;
         if state.len() != LEN {
             return Err(dec(format!("state blob: expected {LEN} bytes, got {}", state.len())));
@@ -289,8 +274,7 @@ impl WatchSession {
         }
     }
 
-    /// ECDH → the epoch-0 root, both direction keys, armed counters. Re-accepting RESETS the
-    /// session to a fresh epoch 0; use `rotate` to advance an established link.
+    /// ECDH -> epoch-0 root, both keys, armed counters; re-accept RESETS to epoch 0, use rotate.
     pub fn accept_peer(&self, peer_public: Vec<u8>) -> Result<(), CoreError> {
         let peer = to_arr32(&peer_public, "peer public")?;
         if peer == [0u8; 32] {
@@ -335,9 +319,7 @@ impl WatchSession {
         }
     }
 
-    /// Seal for the send direction → `ver||epoch||seq||ct||tag`. `aad` is authenticated but not
-    /// transmitted, and may be empty. Refuses once the reserved nonce window is exhausted —
-    /// checkpoint via `export_state` to extend it.
+    /// Seal send: ver||epoch||seq||ct||tag; aad authenticated, not sent; refuses past window.
     pub fn seal(&self, plaintext: Vec<u8>, aad: Vec<u8>) -> Result<Vec<u8>, CoreError> {
         let mut inner = self.lock()?;
         let e = match &mut inner.phase {
@@ -366,8 +348,7 @@ impl WatchSession {
         Ok(frame)
     }
 
-    /// Enforces frame version, epoch match, strictly-increasing seq and the GCM tag. `aad` must
-    /// match what the sender authenticated.
+    /// Enforces frame version, epoch, strictly-increasing seq, GCM tag; aad must match sender's.
     pub fn open(&self, frame: Vec<u8>, aad: Vec<u8>) -> Result<Vec<u8>, CoreError> {
         let mut inner = self.lock()?;
         let e = match &mut inner.phase {
@@ -403,8 +384,7 @@ impl WatchSession {
         Ok(pt)
     }
 
-    /// Ratchet the root one epoch, re-derive both keys, reset the per-epoch counters. The previous
-    /// root is zeroized; the peer must ratchet in lockstep (REKEY on the wire).
+    /// Ratchets root one epoch, re-derives keys, resets counters; zeroizes old root; peer follows.
     pub fn rotate(&self) -> Result<u32, CoreError> {
         let mut inner = self.lock()?;
         let public = inner.public;
@@ -437,9 +417,7 @@ impl WatchSession {
         Ok(())
     }
 
-    /// Serialize the session and reserve a fresh send window. The caller MUST durably persist the
-    /// blob before trusting later seals. It carries the root and our secret in the clear — Kotlin
-    /// wraps it at rest.
+    /// Serializes session, reserves a send window; caller MUST persist before seals; Kotlin wraps.
     pub fn export_state(&self) -> Result<Vec<u8>, CoreError> {
         let mut inner = self.lock()?;
         let secret_bytes = inner.secret.to_bytes();
@@ -718,8 +696,7 @@ mod tests {
         let blob = b.export_state().unwrap();
         let b2 = WatchSession::restore(blob).unwrap();
         assert_eq!(b2.epoch().unwrap(), 1, "epoch survives restore");
-        // The watermark is asserted indirectly: re-deriving an epoch-1 seq-0 frame from a fresh
-        // sender sharing b2's keys is impractical here.
+        // Watermark asserted indirectly: re-deriving an epoch-1 seq-0 frame here is impractical.
         let f2 = a.seal(b"n".to_vec(), vec![]).unwrap(); // seq 1
         assert_eq!(b2.open(f2, vec![]).unwrap(), b"n");
     }

@@ -7,7 +7,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.roundToInt
 
-/** On the K90 `supportedPrimitives = []`, so the waveform fallback is the only path it ever takes. */
+/** On the K90 supportedPrimitives=[]; the waveform fallback is the only path it ever takes. */
 class HapticPlanTest {
 
     /** CLICK + TICK: all a modest LRA is guaranteed to compose. */

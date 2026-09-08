@@ -19,8 +19,7 @@ class TestDispatchers : T1dmDispatchers {
     override val game = Dispatchers.Unconfined
 }
 
-/** Faithful to the Room contract the drainer leans on: unique `dedupKey` (IGNORE on conflict), FIFO
- *  `dueBatch`, oldest-first `evictionRows`, ids strictly increasing and never reused. */
+/** Faithful to Room: unique dedupKey, FIFO dueBatch, oldest-first eviction, ids never reused. */
 class FakeOutboxDao : OutboxDao {
     private val rows = LinkedHashMap<Long, OutboxEntity>()
     private var seq = 0L

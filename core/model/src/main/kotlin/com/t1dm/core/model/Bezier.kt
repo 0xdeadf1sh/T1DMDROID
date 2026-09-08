@@ -5,11 +5,7 @@ import kotlin.math.ceil
 /** Rate [y] (>= 0) at [xMin] minutes from the log instant. */
 data class BezierPoint(val xMin: Double, val y: Double)
 
-/**
- * A pure shape: [sampleNormalized] area-normalises to a caller-supplied total, so the absolute [y]
- * scale is irrelevant. C¹ cubic Hermite with Catmull-Rom tangents through the x-sorted points,
- * clamped to 0 outside the first and last, never negative.
- */
+/** Pure shape; [sampleNormalized] area-normalises to total. C¹ Catmull-Rom Hermite, clamped ≥0. */
 data class BezierCurve(
     val durationMin: Double,
     val points: List<BezierPoint>,
@@ -40,8 +36,7 @@ data class BezierCurve(
         return (h00 * p1.y + h10 * m1 + h01 * p2.y + h11 * m2).coerceAtLeast(0.0)
     }
 
-    /** `ceil(durationMin / stepMin)` buckets by the midpoint rule, scaled to sum to [total]; all
-     *  zeros for a curve that encloses no area. */
+    /** ceil(durationMin/stepMin) buckets, midpoint rule, sum to [total]; zero if no area. */
     fun sampleNormalized(total: Double, stepMin: Double = 5.0): List<Double> {
         val n = ceil(durationMin / stepMin).toInt().coerceAtLeast(1)
         val raw = DoubleArray(n) { i -> valueAt((i + 0.5) * stepMin).coerceAtLeast(0.0) }
@@ -51,8 +46,7 @@ data class BezierCurve(
         return raw.map { it * scale }
     }
 
-    /** Encloses no positive area. Refuse it with a plain reason rather than saving a silent zero
-     *  curve: a flat input is out-of-distribution as well as clinically meaningless. */
+    /** No positive area; refuse plainly, don't save a silent zero (OOD, clinically meaningless). */
     fun isDegenerate(stepMin: Double = 5.0): Boolean {
         val n = ceil(durationMin / stepMin).toInt().coerceAtLeast(1)
         var area = 0.0

@@ -9,14 +9,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
 
-/**
- * [remainingMs] is a LAMBDA invoked inside the draw scope, so a 1 s ticker read only here invalidates
- * DRAW alone and never recomposes the panel. A lapsed span clamps to `00:00:00:00` rather than
- * wrapping negative. The colon pulse is decoration, hence gated on [LocalAnimationsEnabled].
- */
+/** remainingMs is a LAMBDA invoked in draw scope; a lapsed span clamps to 00:00:00:00, no wrap. */
 
-/** Bit 0…6 = a…g: a top, b upper-right, c lower-right, d bottom, e lower-left, f upper-left,
- *  g middle. */
+/** Bit 0-6 = a-g: top, upper-right, lower-right, bottom, lower-left, upper-left, middle. */
 private val SEGMENT_MASKS = intArrayOf(
     0x3F, // 0
     0x06, // 1

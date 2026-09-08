@@ -48,8 +48,7 @@ class BgHeatmapTest {
     }
 
     @Test fun theScaleIsFixedAndIndependentOfTheTargetRange() {
-        // The bounds coincide with the usual 70-180 band, but no setting feeds them: a cell reads
-        // the same glucose on every phone whatever the patient's target is.
+        // Bounds coincide with the 70-180 band, but no setting feeds them; same on every phone.
         assertEquals(HEAT_IN, c(HEAT_MID_MGDL))
         assertNotEquals(HEAT_IN, c(105.0))
         assertNotEquals(HEAT_IN, c(140.0))

@@ -28,15 +28,11 @@ import kotlinx.coroutines.flow.StateFlow
 
 private const val GRID_MS = 300_000L
 
-/**
- * Staleness and signal loss come off the last MEASURED reading's age;
- * [WatchStatus.lowPowerSuspending] is set later by the link.
- */
+/** Staleness and signal loss come off the last MEASURED reading age; lowPowerSuspending later. */
 class AppWatchGlanceSource(
     private val repository: T1dmRepository,
     private val inferenceState: StateFlow<InferenceState>,
-    // Providers, not values: the thresholds and loss window are live config that Settings edits
-    // re-hydrate, and capturing them at construction freezes the watch to boot-time values.
+    // Providers not values: thresholds/loss window are live config, capturing them freezes it.
     private val thresholdsProvider: () -> AlertThresholds,
     private val lossMinProvider: () -> Int,
     private val staleMin: Int = 15,
@@ -130,10 +126,7 @@ class RoomNonceStore(private val repository: T1dmRepository) : NonceStore {
     private fun key(epoch: Int) = "watch.nonce.ceiling.$epoch"
 }
 
-/**
- * On-disk form is `base64(iv):base64(ct)`. StrongBox preferred, TEE if unavailable. In `:app`
- * because only the composition root has the Keystore.
- */
+/** On-disk: base64(iv):base64(ct); StrongBox preferred, TEE fallback; in :app for Keystore. */
 internal class WatchKeyCipher(context: Context) {
     private val appContext = context.applicationContext
 
@@ -145,7 +138,7 @@ internal class WatchKeyCipher(context: Context) {
             Base64.encodeToString(ct, Base64.NO_WRAP)
     }
 
-    /** Throws on any envelope this key did not produce; the caller catches for the legacy fallback. */
+    /** Throws on any envelope this key did not produce; caller catches for legacy fallback. */
     fun unwrap(packed: String): ByteArray {
         val sep = packed.indexOf(':')
         require(sep > 0) { "not a wrapped envelope" }
@@ -162,7 +155,7 @@ internal class WatchKeyCipher(context: Context) {
         return generate(strongBox = true) ?: generate(strongBox = false)!!
     }
 
-    /** Null when StrongBox was requested and the platform rejects it; the caller retries in the TEE. */
+    /** Null when StrongBox requested and platform rejects it; caller retries in the TEE. */
     private fun generate(strongBox: Boolean): SecretKey? {
         val gen = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
         val spec = KeyGenParameterSpec.Builder(
@@ -188,7 +181,7 @@ internal class WatchKeyCipher(context: Context) {
         private const val TRANSFORM = "AES/GCM/NoPadding"
         private const val GCM_TAG_BITS = 128
 
-        /** Deletes the wrapping key; the wrapped material is a kv blob the DB wipe drops. Idempotent. */
+        /** Deletes the wrapping key; material is a kv blob the DB wipe drops. Idempotent. */
         fun deleteKey() = runCatching {
             val ks = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
             if (ks.containsAlias(KEY_ALIAS)) ks.deleteEntry(KEY_ALIAS)
@@ -196,9 +189,7 @@ internal class WatchKeyCipher(context: Context) {
     }
 }
 
-/** The blob is wrapped at rest by [WatchKeyCipher]; a plaintext base64 blob written before the wrap
- *  existed is read via the legacy fallback and re-wrapped on the next save. The host-test loopback
- *  double carries no key material, so [WatchPairingStore.Pairing.material] is null there. */
+/** Wrapped at rest; a pre-wrap plaintext blob reads via legacy fallback, re-wrapped on save. */
 class RoomWatchPairingStore(
     private val repository: T1dmRepository,
     context: Context,

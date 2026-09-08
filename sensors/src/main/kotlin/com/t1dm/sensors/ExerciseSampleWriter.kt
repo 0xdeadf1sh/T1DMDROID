@@ -10,14 +10,11 @@ import com.t1dm.data.exercise.ExerciseController
 import java.util.TimeZone
 
 interface ExerciseSampleWriter {
-    /** Replaces everything this writer previously recorded for the bout. A duration, not a bucket:
-     *  `SPEC/invariants.md` §5 makes the magnitude a function of the whole bout. One per bout. */
+    /** Replaces prior bout record; duration not bucket — §5 makes magnitude fn of whole bout. */
     suspend fun record(startMs: Long, durationMin: Double)
 }
 
-/** Through [T1dmRepository.recordExerciseCurve], never `SampleDao` — the bare upsert
- *  [RoomStepSampleWriter] uses is why measured step buckets never reach the server. One instance per
- *  bout; the curve is rebuilt each call, so recording the same duration twice writes nothing. */
+/** Via [recordExerciseCurve], never SampleDao's bare upsert; rebuilds each call, idempotent. */
 class RepositoryExerciseSampleWriter(
     private val repository: T1dmRepository,
     private val curves: CurveEngine,

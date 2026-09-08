@@ -18,29 +18,18 @@ import com.t1dm.core.model.ReadingProvenance
 
 enum class DoseKind { BOLUS, BASAL }
 
-/**
- * Persisted by name. Adding a constant is safe; REMOVING one poisons every later drain unless the
- * same migration purges its surviving rows, `valueOf` throwing on a name it does not know. `SERIES`
- * is kept only so rows enqueued before it stopped being written still decode.
- */
+/** Persisted by name; removing a constant poisons drains unless the migration purges rows. */
 enum class OutboxKind { ALERT, DOSE, MEAL, INGEST, STATS, PREDICTIONS, SERIES, PHOTO, CGM_SOURCE, NIGHTSCOUT }
 
-/** Marks a `NIGHTSCOUT` row as a BG slot, not a treatment. Here rather than in `:sync` because this
- *  module writes the row and `:sync` reads it back; two spellings would silently drift. */
+/** Marks a NIGHTSCOUT row as a BG slot; here not :sync, since this module writes it. */
 const val NS_ENTRY_DEDUP_PREFIX = "ns:entry:"
 
-/** Bridged meal/dose key prefix. Here because the repository must WITHDRAW one when the event it
- *  mirrors is deleted, and a second spelling would withdraw nothing. */
+/** Bridged meal/dose key prefix; here so the repository can WITHDRAW it on deletion. */
 const val NS_TREATMENT_DEDUP_PREFIX = "ns:treat:"
 
 enum class OutboxState { PENDING, INFLIGHT, FAILED }
 
-/**
- * [authoritative] — the one source feeding the model, stats, alarms, the `sample` projection and the
- * wire; exactly one row carries it, and it implies [active]. [active] — the app is reading this
- * sensor; many rows may. [sensorModelId] is the FAMILY the panel's history spans. [hidden] is
- * display-only: the row survives so its readings stay reachable, and hiding clears [active].
- */
+/** authoritative feeds model/stats/wire, implies active; sensorModelId is the panel's FAMILY. */
 @Entity(tableName = "cgm_source", indices = [Index("sensorModelId")])
 data class CgmSourceEntity(
     @PrimaryKey val sourceId: String,
@@ -55,17 +44,11 @@ data class CgmSourceEntity(
     val addedAtMs: Long,
     val lastSeenMs: Long?,
     val hidden: Boolean,
-    /** Stable zero-based number per sensor, for naming one without printing what it advertises;
-     *  `-1` until minted. Persisted, not derived from `addedAtMs` order: an archive restore inserts
-     *  an older row and would renumber every sensor after it. */
+    /** Stable zero-based ordinal per sensor, -1 until minted; persisted, not derived from order. */
     @ColumnInfo(defaultValue = "-1") val ordinal: Int,
 )
 
-/**
- * [blob] is opaque here — the owning CGM plugin decides its layout — and arrives already wrapped by
- * an AndroidKeyStore key. Its own table rather than a `kv` row, so the full-erase can preserve it
- * alongside the source rows. Not in the archive: sealing is per-install.
- */
+/** blob is opaque, AndroidKeyStore-wrapped; own table so full-erase keeps it; not archived. */
 @Entity(tableName = "cgm_sensor_secret")
 data class CgmSensorSecretEntity(
     @PrimaryKey val sourceId: String,
@@ -89,8 +72,7 @@ data class CgmSensorSecretEntity(
         "CgmSensorSecretEntity(sourceId=$sourceId, ${blob.size} sealed bytes, updatedAtMs=$updatedAtMs)"
 }
 
-/** Grid-keyed on `(sourceId, tsMs)`; `tsMs % 300_000 == 0`. One row per slot — the samples
- *  [com.t1dm.data.supersedesGridSlot] discards are kept in [CgmRawSampleEntity]. */
+/** Grid-keyed (sourceId, tsMs), tsMs%300_000==0; discards kept in CgmRawSampleEntity. */
 @Entity(
     tableName = "cgm_reading",
     primaryKeys = ["sourceId", "tsMs"],
@@ -111,11 +93,7 @@ data class CgmReadingEntity(
     val rssi: Int?,
 )
 
-/**
- * Keyed on `(sourceId, rxWallMs)` rather than a slot, so a sensor faster than the grid keeps every
- * sample. Insert is IGNORE, so a re-delivery of an instant already held is a no-op. The `rxWallMs`
- * index serves the retention sweep alone. Not in the archive; see `ArchiveWriter`.
- */
+/** Keyed (sourceId, rxWallMs) not a slot; insert IGNORE; not archived. */
 @Entity(
     tableName = "cgm_sample_raw",
     primaryKeys = ["sourceId", "rxWallMs"],
@@ -134,16 +112,14 @@ data class CgmRawSampleEntity(
     val rssi: Int?,
 )
 
-/** Six nullable series. Carbs/bolus/basal are NOT projected here — they are curve events
- *  (`logged_meal`/`logged_dose`/`basal_schedule`). `exercise` is the one non-integral series. */
+/** Six nullable series; carbs/bolus/basal are curve events, not here; exercise is non-integral. */
 @Entity(tableName = "sample")
 @TypeConverters(Converters::class)
 data class SampleEntity(
     @PrimaryKey val ts: Long,          // ts % 300_000 == 0
     val tzOffsetMin: Int,
     val bgMgdl: Int?,                  // projected from cgm_reading (authoritative source)
-    // Opaque stable sensor id (`CgmSourceId.opaque`), so it crosses the wire without the serial.
-    // Null for a row written before v15, and for a slot with no bg.
+    // Opaque sensor id, crosses wire without serial; null pre-v15 or no bg.
     val bgSource: String?,
     val bgProvenance: ReadingProvenance?,
     val bgFlag: ReadingFlag?,
@@ -151,20 +127,14 @@ data class SampleEntity(
     val mood: Int?,                    // from the Logs panel's mood picker
     val hr: Int?,                      // wired-but-null until a source exists
     val sleep: Int?,
-    // Grams of carbohydrate equivalent disposed in this bucket (`SPEC/invariants.md` §3, §5),
-    // fractional. Written only by [com.t1dm.data.T1dmRepository.recordExerciseCurve].
+    // Carb-equiv grams disposed this bucket (§3, §5); written only by recordExerciseCurve.
     val exercise: Double?,
     val updatedAt: Long,
 )
 
 data class StepBucketRow(val ts: Long, val steps: Int)
 
-/**
- * The staleness key the stats cache validates against. `n` catches an insert, `maxUpdatedAt` an
- * in-place merge, and the three per-column counts a `SampleGapFill.fill` that moves neither. They
- * are exactly the columns `toStatSample` projects: a statistic that starts reading `exercise` must
- * add a count for it here, or the cache serves a window it has already missed.
- */
+/** Staleness key: n catches inserts, maxUpdatedAt merges, per-column counts gap-fills. */
 data class SampleWindowFingerprint(
     val n: Int,
     val maxUpdatedAt: Long,
@@ -185,11 +155,7 @@ data class DoseEventEntity(
     val updatedAt: Long,
 )
 
-/**
- * Self-describing: a [DoseKind.BOLUS] fills `k`/`theta` (gamma), a [DoseKind.BASAL]
- * `kaPerHour`/`kePerHour` (Bateman), so the reconstructed channel is stable when the presets
- * change. `durationMin` is the DIA; `units` is the total the curve integrates to.
- */
+/** BOLUS fills k/theta (gamma), BASAL fills ka/kePerHour (Bateman); units is the curve total. */
 @Entity(
     tableName = "logged_dose",
     indices = [Index("tsMs"), Index(value = ["clientId"], unique = true)],
@@ -197,8 +163,7 @@ data class DoseEventEntity(
 @TypeConverters(Converters::class)
 data class LoggedDoseEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    // Phone-minted UUID, set once at insert: the key the server upserts on (PUT /v1/doses) and the
-    // id this row is re-hydrated by on catch-up.
+    // Phone-minted UUID at insert: server's upsert key (PUT /v1/doses).
     val clientId: String,
     val tsMs: Long,
     val kind: DoseKind,
@@ -208,34 +173,27 @@ data class LoggedDoseEntity(
     val theta: Double?,      // gamma scale (BOLUS)
     val kaPerHour: Double?,  // Bateman absorption (BASAL)
     val kePerHour: Double?,  // Bateman elimination (BASAL)
-    // User-drawn action curve: per-5-min absolute units, f64 BLOB. When present it OVERRIDES the
-    // analytic gamma/Bateman on reconstruction.
+    // User-drawn curve, per-5-min units f64 BLOB; overrides gamma/Bateman when present.
     @ColumnInfo(typeAffinity = ColumnInfo.BLOB) val customCurve: ByteArray? = null,
     val tzOffsetMin: Int,
     val note: String?,
     val updatedAt: Long,
-    // Wall clock at INSERT, never revised by an edit: retiming a dose must not quiet the stale-log
-    // rail. `defaultValue` as well as the Kotlin default, which governs the INSERT and says nothing
-    // about the DDL — without it a fresh install's table differs from an upgraded one's.
+    // Wall clock at INSERT, never revised; defaultValue needed too, it governs DDL not just Kotlin.
     @ColumnInfo(defaultValue = "0") val loggedAtMs: Long = 0L,
     // Null until first edited.
     val mutatedAtMs: Long? = null,
-    // `ts + durationMin` of this row BEFORE its first edit; null until then. The dose-history rail
-    // takes the LATER of this and the current end, since an edit that shortens `durationMin` would
-    // otherwise stop blocking while IOB stayed wrong.
+    // ts+durationMin before first edit; rail takes the LATER of this and current end.
     val mutatedActingUntilMs: Long? = null,
 )
 
-/** Carbs feed the model as a gamma appearance (Ra) curve parameterised by `gi`, with
- *  `k`/`theta`/`durationMin` stored resolved. [customCurve], a per-5-min f64 BLOB, overrides it. */
+/** Carbs feed model as a gamma Ra curve from gi; customCurve, a per-5-min BLOB, overrides it. */
 @Entity(
     tableName = "logged_meal",
     indices = [Index("tsMs"), Index(value = ["clientId"], unique = true)],
 )
 data class LoggedMealEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    // Phone-minted UUID, set once at insert: the key the server upserts on (PUT /v1/meals) and the
-    // id this row is re-hydrated by on catch-up.
+    // Phone-minted UUID at insert: server's upsert key (PUT /v1/meals).
     val clientId: String,
     val tsMs: Long,
     val grams: Double,
@@ -253,11 +211,7 @@ data class LoggedMealEntity(
     val mutatedAtMs: Long? = null,
 )
 
-/**
- * Survives the event it retires: it carries the `updatedAt` the server's ordering guard compares a
- * stale redelivery against, and stops an id-keyed catch-up hydration from resurrecting it.
- * [pushEnqueuedAtMs] is null until `:app` has filed the outbox row. [kind] is raw TEXT.
- */
+/** Survives its event, carrying updatedAt for the server's ordering guard; kind is raw TEXT. */
 @Entity(tableName = "event_tombstone", indices = [Index("tsMs"), Index("pushEnqueuedAtMs")])
 data class EventTombstoneEntity(
     @PrimaryKey val clientId: String,
@@ -268,13 +222,11 @@ data class EventTombstoneEntity(
     val updatedAt: Long,
     val createdAtMs: Long,
     val pushEnqueuedAtMs: Long?,
-    // For a dose, `tsMs + durationMin` as it stood at deletion: the rail keeps blocking while a
-    // deleted dose could still be acting, and no row is left to read a duration off.
+    // For a dose, tsMs+durationMin at deletion: rail keeps blocking a deleted-but-acting dose.
     val actingUntilMs: Long? = null,
 )
 
-/** Rows sharing [scheduleId] form one daily schedule; exactly one schedule has `active = 1`.
- *  `timeOfDayMin` is minutes from the local midnight defined by `tzOffsetMin`. */
+/** Rows share scheduleId as one daily schedule, one active=1; timeOfDayMin is local midnight. */
 @Entity(tableName = "basal_schedule", indices = [Index("scheduleId"), Index("active")])
 data class BasalScheduleEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -290,9 +242,7 @@ data class BasalScheduleEntity(
     val updatedAt: Long,
 )
 
-/** The authoritative content behind the external-content FTS5 table `food_fts`, which triggers keep
- *  in sync. [customCurve] is a normalized per-5-min f64 shape summing to ~1.0, overriding the
- *  GI-derived gamma. */
+/** Authoritative content behind FTS5 food_fts; customCurve overrides GI gamma, per-5-min f64. */
 @Entity(tableName = "food", indices = [Index("name"), Index("custom")])
 data class FoodEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -315,8 +265,7 @@ data class SavedMealEntity(
     val updatedAt: Long,
 )
 
-/** Nutrition is snapshotted at save time, so a saved meal is stable when the food is later edited
- *  or deleted; [foodId] stays a soft link for re-opening in the builder. */
+/** Nutrition snapshotted at save, stable across later food edits; foodId is a link to reopen. */
 @Entity(tableName = "saved_meal_item", indices = [Index("mealId")])
 data class SavedMealItemEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -329,8 +278,7 @@ data class SavedMealItemEntity(
     @ColumnInfo(typeAffinity = ColumnInfo.BLOB) val customCurve: ByteArray?,
 )
 
-/** Self-describing like [LoggedDoseEntity]: BOLUS fills `k`/`theta`, BASAL `kaPerHour`/`kePerHour`.
- *  [customCurve] is a normalized per-5-min action shape overriding the analytic curve. */
+/** Like LoggedDoseEntity: BOLUS fills k/theta, BASAL ka/kePerHour; customCurve overrides it. */
 @Entity(tableName = "insulin_type", indices = [Index("builtin")])
 @TypeConverters(Converters::class)
 data class InsulinTypeEntity(
@@ -385,11 +333,7 @@ data class KvEntity(
     val updatedAt: Long,
 )
 
-/**
- * Little-endian f64 BLOBs (see [Blobs]): [lineBlob] is `H` doubles (the 0.5 row); [fanBlob] is
- * `nQuantiles·H` QUANTILE-MAJOR (`fan[q·H + s]`) in the server row order
- * `[0.05,0.1,0.25,0.5,0.75,0.9,0.95]`. `(madeAtMs, modelId)` is unique, so a re-run REPLACEs.
- */
+/** LE f64 BLOBs: lineBlob is H doubles; fanBlob is nQuantiles*H QUANTILE-MAJOR. */
 @Entity(
     tableName = "prediction",
     indices = [
@@ -407,12 +351,11 @@ data class PredictionEntity(
     val nQuantiles: Int,
     val stepMs: Long,
     val anchorTsMs: Long,
-    /** NULL is UNKNOWN and matches no source, so the row is refused by the maturation walk rather
-     *  than scored against whichever sensor is authoritative later. */
+    /** NULL is UNKNOWN: refused by the maturation walk, not scored against a later sensor. */
     val sourceId: String?,
     val lastBg: Double,
     @ColumnInfo(typeAffinity = ColumnInfo.BLOB) val lineBlob: ByteArray,   // H f64
-    @ColumnInfo(typeAffinity = ColumnInfo.BLOB) val fanBlob: ByteArray,    // nQuantiles·H f64, q-major
+    @ColumnInfo(typeAffinity = ColumnInfo.BLOB) val fanBlob: ByteArray,    // nQ*H f64, q-major
     @ColumnInfo(typeAffinity = ColumnInfo.BLOB) val todBlob: ByteArray?,   // 12 f64 or null
     val todConf: Double?,
     val status: ForecastStatus,
@@ -424,8 +367,7 @@ data class PredictionEntity(
     val createdAtMs: Long,
 )
 
-/** Exactly one row has `active = true`. The `rw` token never lands here — it lives in the
- *  Keystore-backed `TokenStore`, keyed by [id] — so a DB export never leaks it. */
+/** One row has active=true; the rw token lives in Keystore's TokenStore keyed by id, not here. */
 @Entity(tableName = "server_profile")
 data class ServerProfileEntity(
     @PrimaryKey val id: String,
@@ -446,12 +388,7 @@ data class HwTelemetryEntity(
     val valueText: String?,
 )
 
-/**
- * Display-only: no channel, calculator or rail reads it. [points] is the (epoch-ms, plot-height
- * fraction) polyline in [PaintStrokeBlob]'s encoding, never pixels; [minTsMs]/[maxTsMs] are its
- * bounds hoisted out and indexed for viewport culling, derived and never authored. A stroke is
- * immutable, so there is no `updatedAt` and [createdAtMs] doubles as the stacking order.
- */
+/** Display-only; points is (epoch-ms, plot-fraction); immutable, createdAtMs orders the stack. */
 @Entity(tableName = "bg_paint_stroke", indices = [Index("minTsMs"), Index("maxTsMs")])
 data class PaintStrokeEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -464,17 +401,13 @@ data class PaintStrokeEntity(
     @ColumnInfo(typeAffinity = ColumnInfo.BLOB) val points: ByteArray,
 )
 
-/**
- * `SPEC/inference.md` §8.4. [deltaBlob] is STEP-major, τ-minor (`i = s·nQuantiles + q`) — NOT the
- * quantile-major layout [PredictionEntity.fanBlob] uses for the wire. One row per model, replaced
- * whole by a later fit; only a SUFFICIENT fit is written, so a refusal leaves the previous intact.
- */
+/** §8.4: deltaBlob is STEP-major tau-minor, not fanBlob's quantile-major; SUFFICIENT fits only. */
 @Entity(tableName = "conformal_delta")
 data class ConformalDeltaEntity(
     @PrimaryKey val modelId: String,
     val steps: Int,
     val nQuantiles: Int,
-    @ColumnInfo(typeAffinity = ColumnInfo.BLOB) val deltaBlob: ByteArray,  // steps·nQuantiles f64, step-major
+    @ColumnInfo(typeAffinity = ColumnInfo.BLOB) val deltaBlob: ByteArray,  // steps*nQ, step-major
     val nCal: Int,
     val nEval: Int,
     val maxAbsDeltaMgdl: Double,
@@ -488,11 +421,7 @@ data class ConformalDeltaEntity(
     val sourceId: String?,
 )
 
-/**
- * Not a reading, and never counted as one (`SPEC/invariants.md` §1). [spanStartMs] is the `ts` of
- * the first row of the contiguous run promotion and demotion act on; [promotedAtMs] is null while
- * the span is only a drawing. [lo90]/[hi90] are the outer pair of [bandsMgdl].
- */
+/** Not a reading, never counted as one (§1); spanStartMs is run's first ts, lo90/hi90 bracket. */
 @Entity(tableName = "bg_infill", indices = [Index(value = ["spanStartMs"])])
 data class BgInfillEntity(
     @PrimaryKey val ts: Long,
@@ -503,14 +432,10 @@ data class BgInfillEntity(
     val createdAtMs: Long,
     @ColumnInfo(defaultValue = "0") val spanStartMs: Long = 0,
     val promotedAtMs: Long? = null,
-    // `defaultValue` must agree with `MIGRATION_23_24`'s `ALTER TABLE … DEFAULT`: a Kotlin default
-    // governs the INSERT and says nothing about the DDL, so without it a fresh install's table
-    // differs from an upgraded one's.
-    /** Seven mg/dL levels per slot, ascending τ. Empty on a pre-v24 row. */
+    /** Seven mg/dL levels, ascending tau, empty pre-v24; defaultValue matches MIGRATION_23_24. */
     @ColumnInfo(typeAffinity = ColumnInfo.BLOB, defaultValue = "x''")
     val bandsMgdl: ByteArray = ByteArray(0),
-    /** The same fan in risk space — what τ is interpolated in; mg/dL would cross the warp. Empty
-     *  on a pre-v24 row. */
+    /** Same fan in risk space, what tau interpolates in (mg/dL crosses the warp); empty pre-v24. */
     @ColumnInfo(typeAffinity = ColumnInfo.BLOB, defaultValue = "x''")
     val bandsRisk: ByteArray = ByteArray(0),
     /** Which quantile [mgdl] is the line at; every pre-v24 row is the median. */
@@ -543,11 +468,7 @@ data class BgInfillEntity(
     }
 }
 
-/**
- * [blob] is opaque here — `t1dm-core::lora_serialize` owns its format. [modelId] is the only model
- * the adapter may attach to. At most one adapter per model carries [attached], which the repository
- * enforces rather than the schema.
- */
+/** blob opaque, lora_serialize owns format; modelId is the only attach target, repo enforces it. */
 @Entity(tableName = "lora", indices = [Index(value = ["modelId"])])
 data class LoraEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -567,14 +488,10 @@ data class LoraEntity(
     val attached: Boolean,
     val createdAtMs: Long,
     val updatedAtMs: Long,
-    // Guard provenance, on the row rather than in the blob, so an adapter arriving by import or
-    // archive restore has no verdict and is refused. `defaultValue` must agree with
-    // `MIGRATION_22_23`'s DDL: a Kotlin default governs the INSERT and says nothing about it.
-    /** `PASS` / `BLOCKED` / `INCONCLUSIVE` / `ABSENT`, by name. Absent means never probed. */
+    /** PASS/BLOCKED/INCONCLUSIVE/ABSENT by name; on the row not blob, import/restore = ABSENT. */
     @ColumnInfo(defaultValue = "ABSENT") val guardVerdict: String = "ABSENT",
     @ColumnInfo(defaultValue = "0") val guardWindows: Int = 0,
-    /** mg/dL per unit at the horizon, frozen model and adapted; the ratio alone hides which
-     *  side moved. */
+    /** mg/dL per unit at horizon, frozen and adapted; the ratio alone hides which side moved. */
     @ColumnInfo(defaultValue = "0") val guardFrozenMgdl: Double = 0.0,
     @ColumnInfo(defaultValue = "0") val guardAdaptedMgdl: Double = 0.0,
     @ColumnInfo(defaultValue = "0") val guardRetention: Double = 0.0,
@@ -583,11 +500,9 @@ data class LoraEntity(
     /** Zero means the fit could not see the dose response at all. */
     @ColumnInfo(defaultValue = "0") val nPaired: Int = 0,
     @ColumnInfo(defaultValue = "0") val distillScale: Double = 0.0,
-    /** When the user overrode a refusal, or null. It sticks to THIS row: a re-fit makes a fresh row
-     *  with no override. */
+    /** When the user overrode a refusal, or null; sticks to THIS row, a re-fit starts fresh. */
     val guardOverrideAtMs: Long? = null,
-    /** When the history this adapter was fitted on was last edited or deleted, or null. Attach
-     *  refuses until it is re-fitted or overridden. */
+    /** When fitted-on history is edited/deleted, or null; attach refuses till re-fit/override. */
     val historyMutatedAtMs: Long? = null,
     @ColumnInfo(defaultValue = "0") val fittedAtMs: Long = 0,
 ) {
@@ -610,12 +525,7 @@ data class LoraEntity(
     override fun hashCode(): Int = 31 * (31 * id.hashCode() + modelId.hashCode()) + blob.contentHashCode()
 }
 
-/**
- * Phone-local; nothing here syncs. [startMs]/[endMs] are wall-clock and deliberately NOT
- * grid-snapped, and a null [endMs] is a bout still open or one the app never saw stopped.
- * [activeSec] stays SECONDS while the `sample.exercise` scalar it feeds is grams. [kind] is raw
- * TEXT, mapped at the repository edge, where an unknown name becomes `ExerciseKind.OTHER`.
- */
+/** Phone-local; startMs/endMs wall-clock not grid-snapped; null endMs = open/unclosed bout. */
 @Entity(
     tableName = "exercise_session",
     indices = [Index(value = ["clientId"], unique = true), Index("startMs")],
@@ -635,9 +545,7 @@ data class ExerciseSessionEntity(
     val updatedAt: Long,
 )
 
-/** No foreign key onto `exercise_session`: the cascade is an explicit delete in the same
- *  transaction ([com.t1dm.data.T1dmRepository.deleteExerciseSession]), because enforcement would
- *  rest on a `PRAGMA foreign_keys` nothing here sets. [accuracyM] is horizontal accuracy. */
+/** No FK onto exercise_session: cascade is an explicit delete, same transaction, PRAGMA unset. */
 @Entity(tableName = "exercise_fix", indices = [Index(value = ["sessionId", "tsMs"])])
 data class ExerciseFixEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -649,16 +557,7 @@ data class ExerciseFixEntity(
     val speedMps: Float?,
 )
 
-/**
- * A replayed bout: the disposal gamma of `../T1DMCOMMON/SPEC/invariants.md` §5 laid into
- * `sample.exercise` and nothing more. Phone-local — the wire has no exercise event, only the wide
- * sample's scalar, so this table neither pushes nor tombstones.
- *
- * [durationMin] is the BOUT, [curveDurationMin] the curve it spreads over (`durationMin + 90`).
- * [grams], [k], [theta] are stored RESOLVED so an unwind reproduces what this row actually wrote;
- * re-deriving them would re-rate the row at whatever `exercise.carb_equiv_per_min` says today.
- * [sourceSessionId] is the bout replayed from, kept for provenance and not joined on.
- */
+/** Replayed bout's disposal gamma (§5) into sample.exercise; grams/k/theta stored RESOLVED. */
 @Entity(
     tableName = "logged_exercise",
     indices = [Index("tsMs"), Index(value = ["clientId"], unique = true)],
@@ -687,8 +586,7 @@ const val TOMBSTONE_KIND_MEAL = "meal"
 
 const val TOMBSTONE_KIND_DOSE = "dose"
 
-/** Phone-local: it stops a restore resurrecting a deleted replay, and never reaches the wire — there
- *  is no exercise event in `SPEC/http-api.md` for a server to have heard of. */
+/** Phone-local: stops a restore resurrecting a deleted replay; no exercise event on the wire. */
 const val TOMBSTONE_KIND_EXERCISE = "exercise"
 
 fun EventTombstoneEntity.toModel(): EventTombstone = EventTombstone(
@@ -706,8 +604,7 @@ fun EventTombstoneEntity.toModel(): EventTombstone = EventTombstone(
 
 fun LoggedDoseEntity.actingUntilMs(): Long = tsMs + (durationMin * 60_000.0).toLong()
 
-/** True when [next] moves the insulin channel rather than relabelling the row: a note or timezone
- *  edit must not invalidate a band correction and a window of stored predictions. */
+/** True when next moves the insulin channel, not just relabels; a tz edit mustn't invalidate. */
 fun LoggedDoseEntity.affectsChannel(next: LoggedDoseEntity): Boolean =
     tsMs != next.tsMs ||
         kind != next.kind ||
@@ -729,11 +626,7 @@ fun LoggedMealEntity.affectsChannel(next: LoggedMealEntity): Boolean =
         durationMin != next.durationMin ||
         !customCurve.contentEquals(next.customCurve)
 
-/**
- * A stored curve is ABSOLUTE, keyed to the amount that produced it, and the engine prefers it over
- * `units` — so an edit must rescale it or IOB goes on reading the pre-edit dose. The ratio is exact
- * because all four generators are linear in the amount. A changed SHAPE input drops the curve.
- */
+/** Stored curve is ABSOLUTE; an edit must rescale it, or IOB reads the pre-edit dose. */
 fun LoggedDoseEntity.curveAfterEdit(next: LoggedDoseEntity): ByteArray? = when {
     !next.customCurve.contentEquals(customCurve) -> next.customCurve
     kind != next.kind || durationMin != next.durationMin || k != next.k || theta != next.theta ||
@@ -765,8 +658,7 @@ fun BgInfillEntity.toModel(): ReconstructedBg = ReconstructedBg(
     modelId = modelId,
     spanStartMs = if (spanStartMs == 0L) ts else spanStartMs,
     promoted = promotedAtMs != null,
-    // Only a fan of the expected width is handed on: another length was written by a build that
-    // meant something else, and half a fan would draw a shape nothing emitted.
+    // Only the expected-width fan is handed on; a different length means something else.
     bands = bandsMgdl.toDoubleList().takeIf { it.size == FAN_LEVELS }.orEmpty(),
     tau = tau,
 )

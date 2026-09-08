@@ -7,9 +7,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** The BG panel's log-marker geometry. Clustering is handed ONE LANE at a time, so nothing here
- *  mixes channels. The projection is deliberately trivial — 1000 px over 1 000 000 ms — so
- *  1 px == 1000 ms and every expected position reads off the timestamps. */
+/** BG panel log-marker geometry; clustering handed ONE LANE at a time. 1px==1000ms projection. */
 class LogMarkerClusterTest {
 
     private val T0 = 1_700_000_000_000L
@@ -54,16 +52,14 @@ class LogMarkerClusterTest {
     }
 
     @Test fun separationIsInclusiveAndChains() {
-        // Single linkage on the LAST member admitted: 0 → 30 → 60 px, each step exactly the
-        // separation, so all three chain even though the ends are 60 px apart.
+        // Single linkage on the LAST member admitted: 0->30->60px, chains despite 60px end gap.
         val out = cluster(listOf(mark(0), mark(30_000), mark(60_000)))
         assertEquals(1, out.size)
         assertEquals(30f, out.single().xPx, 1e-3f)
     }
 
     @Test fun twoIconsInOneLaneNeverOverlapAtAnyZoom() {
-        // Two icons that touched would be indistinguishable from one. Single linkage keeps every
-        // gap past the separation, which is a glyph plus its clear space.
+        // Touching icons are indistinguishable; single linkage keeps every gap past separation.
         val dpPx = 3f
         val sep = logMarkerSeparationPx(dpPx)
         val glyph = LOG_MARKER_DP * dpPx
@@ -106,8 +102,7 @@ class LogMarkerClusterTest {
     }
 
     @Test fun everythingTheLanesClaimIsDerivedFromTheGlyph() {
-        // The glyph size is the ONE knob: the band, the distance at which two marks combine and the
-        // reach of a tap are all measured from it. Stated as relations, never as figures.
+        // Glyph size is the ONE knob: band, combine distance, tap reach derive from it, as ratios.
         val dpPx = 3f
         assertTrue("every lane fits inside the band", LOG_MARKER_BAND_DP > LOG_MARKER_DP * CurveKind.entries.size)
         assertTrue("marks combine only past a whole glyph", logMarkerSeparationPx(dpPx) > LOG_MARKER_DP * dpPx)
@@ -116,8 +111,7 @@ class LogMarkerClusterTest {
     }
 
     @Test fun theWholeBandIsWhatTheLanesBorrowFromThePlot() {
-        // The band is an OVERLAY: the only claim on the plot is the strip from the topmost lane's
-        // top down to the floor.
+        // The band is an OVERLAY: its only plot claim is the strip from topmost lane to floor.
         val dpPx = 3f
         val plotBottom = 600f
         val topmost = CurveKind.entries.minOf { logMarkerLaneTop(it, plotBottom, dpPx) }
@@ -125,7 +119,7 @@ class LogMarkerClusterTest {
     }
 
     @Test fun aClusterNamesTheRunOfItsLaneItStandsFor() {
-        // A timestamp cannot name the members — two rows share a 5-min slot — so the run is carried.
+        // A timestamp can't name the members - two rows share a 5-min slot - so the run is carried.
         val out = cluster(listOf(mark(0), mark(20_000), mark(500_000)))
         assertEquals(2, out.size)
         assertEquals(0, out[0].from)

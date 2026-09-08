@@ -77,7 +77,7 @@ class BackupSettingsCodecTest {
 
     @Test
     fun `an error message cannot forge a field boundary`() {
-        // The separator is the row's only structure; a message carrying one could fabricate a timestamp.
+        // The separator is the row's only structure; a stray one could fabricate a timestamp.
         val encoded = SettingsStore.encodeBackupError(7L, "broke|at|17\nline two\rline three")
         assertEquals(1, encoded.count { it == '|' })
         val back = SettingsStore.decodeBackupError(encoded)!!
@@ -105,8 +105,7 @@ class BackupSettingsCodecTest {
 
     @Test
     fun `no backup key is exportable`() {
-        // A folder grant belongs to this install; on a fresh phone it is a URI with no permission.
-        // The last-run rows are state, not configuration.
+        // Folder grant belongs to this install; last-run rows are state, not configuration.
         for (key in listOf(
             SettingsStore.K_BACKUP_CADENCE_H,
             SettingsStore.K_BACKUP_KEEP,

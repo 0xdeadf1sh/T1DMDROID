@@ -83,11 +83,7 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
-/*
- * The gesture must not recompose: every quantity the finger moves is snapshot state read only inside
- * a draw lambda, so icons and labels are drawn onto one Canvas rather than composed, and the assets
- * are built in [NavWheelArc], above the mount gate. The latched path alone is composed, for TalkBack.
- */
+// Gesture state is snapshot-read in draw, never recomposed; only the latched path composes.
 
 private const val SLOT_DEG = 26f
 
@@ -100,8 +96,7 @@ private const val SOLID_HALF = 2.0f
 /** Outermost latched touch target. Within [VISIBLE_HALF], so each sits under a drawn icon. */
 private const val LATCHED_HALF = 3
 
-/** Thumb travel along the turn, in dp, per destination. Distance rather than angle: angular gain
- *  goes as 1/radius and is undefined at the hub's centre. */
+/** Thumb travel per destination, in dp; distance not angle (gain ~1/r, undefined at centre). */
 private val TURN_TRAVEL_DP = 42.dp
 
 /** Fractions of the overlay width, and of the height above the hub, the arc may claim. */
@@ -113,9 +108,7 @@ private const val LATCHED_SWIPE_FRAC = 0.16f
 
 private const val SCRIM_ALPHA = 0.90f
 
-/** The scrim's clear centre, as a multiple of the hub radius, and the fraction of it that stays fully
- *  clear. Both stay inside the icon ring at about 2.7r, or the falloff reads as a point light under
- *  the thumb; the clear radius holds the swollen hub and the pointer above it. */
+/** Scrim clear centre/fade, as multiples of hub radius; must stay inside the ~2.7r icon ring. */
 private const val SCRIM_FADE_R = 2.0f
 private const val SCRIM_CLEAR = 0.75f
 
@@ -123,9 +116,7 @@ private val PUCK_DP = 104.dp
 
 private const val PRESS_SWELL = 0.20f
 
-/** Glow radius, as a multiple of the hub, and alpha: resting value plus breath plus press. Drawn once
- *  at [GLOW_R] and [GLOW_A_MAX] and animated by a layer; a `Brush` built in the draw lambda would
- *  construct a shader every frame for the life of the process. */
+/** Glow radius/alpha, multiples of hub; drawn at [GLOW_R]/[GLOW_A_MAX], animated via layer. */
 private const val GLOW_R = 1.5f
 private const val GLOW_R_BREATH = 0.22f
 private const val GLOW_R_PRESS = 0.30f
@@ -134,8 +125,7 @@ private const val GLOW_A_BREATH = 0.20f
 private const val GLOW_A_PRESS = 0.34f
 private const val GLOW_A_MAX = GLOW_A + GLOW_A_BREATH + GLOW_A_PRESS
 
-/** The glow's node, as a multiple of the puck. A layer carrying an alpha crops to its own bounds, so
- *  this must contain the gradient at its largest. */
+/** Glow node size, a multiple of the puck; must contain the gradient at its largest extent. */
 private const val GLOW_BOX = 2.05f
 
 /** Fractions of the hub radius. */
@@ -149,7 +139,7 @@ private val ARC_SLOT_TOUCH_DP = 56.dp
 
 @Stable
 internal class NavWheelState(val count: Int) {
-    /** Fractional list position under the centre slot, unbounded. Written by the pointer loop, read in draw. */
+    /** Fractional slot position, unbounded; set by the pointer loop, read in draw. */
     var offset by mutableFloatStateOf(0f)
 
     var pressed by mutableStateOf(false)
@@ -157,7 +147,7 @@ internal class NavWheelState(val count: Int) {
     /** Tap-opened menu; the accessible path. */
     var latched by mutableStateOf(false)
 
-    /** The top-level destination, not the current route: sub-screens sit on no slot of the wheel. */
+    /** Top-level destination, not the current route; sub-screens sit on no wheel slot. */
     var seated by mutableIntStateOf(0)
 
     /** 0 = shut, 1 = open. [Animatable] so the reveal is a draw property, not a recomposition. */
@@ -176,8 +166,7 @@ internal class NavWheelState(val count: Int) {
         offset = offset.roundToInt().toFloat()
     }
 
-    /** Seat on [index] by the shortest turn; [offset] is unbounded, so assigning the index would spin
-     *  the wheel by up to a full revolution. */
+    /** Seats on [index] by shortest turn; direct assign of [offset] could spin a full turn. */
     fun seatOn(index: Int) {
         val base = floor(offset / count) * count
         var best = base + index
@@ -192,8 +181,7 @@ internal class NavWheelState(val count: Int) {
 @Composable
 internal fun rememberNavWheelState(count: Int): NavWheelState = remember(count) { NavWheelState(count) }
 
-/** [press] runs only while a finger is on the wheel; [breath] never stops, so it must stay out of
- *  every draw lambda and drive a `graphicsLayer` instead. Neither may be read in composition. */
+/** [press] runs only while touched; [breath] never stops. Neither may be read in composition. */
 @Stable
 internal class NavWheelMotion(
     val press: Animatable<Float, androidx.compose.animation.core.AnimationVector1D>,
@@ -267,8 +255,7 @@ internal fun NavWheelPuck(
     Box(
         modifier
             .size(PUCK_DP)
-            // Without its own layer the press animation dirties the Scaffold's full-window RenderNode.
-            // `clip` stays false: the glow and the pointer both reach outside these bounds.
+            // Needs own layer (else dirties Scaffold); clip false, glow/pointer exceed bounds.
             .graphicsLayer()
             .onGloballyPositioned {
                 val p = it.positionInRoot()
@@ -278,7 +265,7 @@ internal fun NavWheelPuck(
             .semantics {
                 role = Role.Button
                 contentDescription = "Navigation wheel, on $hubLabel"
-                // Role.Button alone leaves `isClickable` false, so Switch Access finds nothing to scan.
+                // Role.Button leaves `isClickable` false; Switch Access finds nothing to scan.
                 onClick(label = "Open navigation") {
                     state.quantise()
                     state.latched = true
@@ -294,8 +281,7 @@ internal fun NavWheelPuck(
                     var prev = down.position
                     val startOffset = state.offset
                     val startSlot = state.pointed()
-                    // Compose does not unwind on ACTION_CANCEL; it synthesises a released change that
-                    // arrives already consumed. Without this the app navigates off a cancelled gesture.
+                    // ACTION_CANCEL makes a consumed release; else it navigates off a cancel.
                     var cancelled = false
 
                     state.pressed = true
@@ -312,9 +298,7 @@ internal fun NavWheelPuck(
                         }
                         change.consume()
 
-                        // Turn by the tangential arc about the hub: the cross product of the two radius
-                        // vectors (y negated to y-up) is |a||b|sin(dθ), so dividing by the mean radius
-                        // leaves r·dθ.
+                        // Tangential arc: radius cross product (y-up) over mean radius = r·dθ.
                         val p = change.position
                         val ax = prev.x - cx
                         val ay = -(prev.y - cy)
@@ -331,9 +315,7 @@ internal fun NavWheelPuck(
 
                     state.pressed = false
                     val pointed = state.pointed()
-                    // Committed only if the wheel turned, tested against the start slot: on a sub-screen
-                    // no destination matches the route, so a route test reads "different" always and
-                    // any stray brush of the hub navigates away.
+                    // Commits if turned vs start slot; a sub-screen matches no route (fallback).
                     if (!cancelled && pointed != startSlot) {
                         state.quantise()
                         select(pointed)
@@ -374,8 +356,7 @@ internal fun NavWheelPuck(
                 },
         )
         Canvas(Modifier.fillMaxSize()) {
-            // The only place the dial is drawn. `Painter.draw` resolves against the DrawScope it is
-            // handed, so a second copy in the overlay's full-screen canvas landed 14px off.
+            // Sole draw site: Painter.draw resolves against DrawScope; a stray copy drifted 14px.
             drawHub(
                 c = Offset(size.width / 2f, size.height / 2f),
                 r = min(size.width, size.height) / 2f,
@@ -392,7 +373,7 @@ internal fun NavWheelPuck(
     }
 }
 
-/** The dial, without the glow — that is a sibling layer. Every term is a function of [press] alone. */
+/** The dial, minus the glow (a sibling layer); every term is a function of [press] alone. */
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawHub(
     c: Offset,
     r: Float,
@@ -410,8 +391,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawHub(
     scale(1f + PRESS_SWELL * press, c) {
         drawCircle(plate, radius = r * 0.80f, center = c)
 
-        // Negated: `rotate` is clockwise-positive on a y-down canvas while `offset` falls under a
-        // clockwise finger, so without the sign the ticks creep against the arc above.
+        // Negated: rotate is CW-positive on y-down canvas; offset grows CW, so sign flips creep.
         rotate(-offset * 360f / count, c) {
             for (i in 0 until 36) {
                 val a = Math.toRadians(i * 10.0)
@@ -448,9 +428,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawHub(
         }
     }
 
-    // Nothing below may vary with [press]: `Painter.draw` places content by comparing the size it is
-    // handed against the DrawScope's own, and a press term in that comparison walked the glyph's
-    // centre 5.5px on device. The enclosing scale is an affine about `c`, so it cannot.
+    // No [press] below: Painter.draw compares size to DrawScope; a press term drifted glyph 5.5px.
     val base = r * 0.52f
     scale(1f + PRESS_SWELL * press, c) {
         translate(left = c.x - base / 2f, top = c.y - base / 2f) {
@@ -467,8 +445,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawHub(
     }
 }
 
-/** In the root Box above the Scaffold: the `bottomBar` slot is measured to its content and drawn
- *  before it. Owns the mount decision and the assets; must not read `open.value`. */
+/** In root Box above Scaffold; owns mount decision and assets; must not read `open.value`. */
 @Composable
 internal fun NavWheelArc(
     state: NavWheelState,
@@ -540,8 +517,7 @@ private fun NavWheelArcContent(
             .then(
                 if (latched) {
                     Modifier.pointerInput(state) {
-                        // Whole slots only: a fractional offset would put the composed targets off the
-                        // icons the Canvas draws, and recompose them on every pointer sample.
+                        // Whole slots only: a fractional offset misaligns targets vs drawn icons.
                         var acc = 0f
                         val step = size.width * LATCHED_SWIPE_FRAC
                         detectHorizontalDragGestures(
@@ -564,9 +540,7 @@ private fun NavWheelArcContent(
                         detectTapGestures { state.latched = false }
                     }
                 } else {
-                    // Swallows every other pointer: the app underneath stays live, so a second finger
-                    // could log a dose behind a menu the user believes is modal. The turning finger
-                    // was hit-tested to the hub already and keeps its own stream.
+                    // Swallows every pointer; a stray finger could log a dose behind a modal menu.
                     Modifier.pointerInput(Unit) {
                         awaitPointerEventScope {
                             while (true) {
@@ -577,9 +551,7 @@ private fun NavWheelArcContent(
                 },
             ),
     ) {
-        // Clears around the hub as a radial fade, not a punched circle: a hard edge crops whatever
-        // reaches past its radius, the pointer and the glow included. The shader runs only over the
-        // square where it varies; the rest is flat fill.
+        // Radial fade, not a hard punch (crops pointer/glow); shader varies only inside the square
         Box(
             Modifier
                 .matchParentSize()
@@ -666,8 +638,7 @@ private fun NavWheelArcContent(
             }
         }
 
-        // Real targets with a real click action: TalkBack cannot focus the Canvas above. Safe at
-        // integer slots because the wheel is held at an integer position while latched.
+        // Real click targets: TalkBack can't focus Canvas; safe since latched offset is integer.
         if (latched) {
             val slotPx = with(density) { ARC_SLOT_TOUCH_DP.roundToPx() }
             for (k in -LATCHED_HALF..LATCHED_HALF) {

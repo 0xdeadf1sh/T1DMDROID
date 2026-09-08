@@ -121,7 +121,7 @@ class ClassScopedHistoryTest {
 
     @Test
     fun aClassWithNoSourceYieldsNoHistoryRatherThanFailing() = runTest {
-        // Room emits `IN ()` for an empty id list and SQLite rejects it, so this must short-circuit.
+        // Room emits IN () for an empty id list; SQLite rejects it, so this must short-circuit.
         assertTrue(
             repo.observeReadingsForSensorModel("aidexx:nothing", null, 0, Long.MAX_VALUE).first().isEmpty(),
         )

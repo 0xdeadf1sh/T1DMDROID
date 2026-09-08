@@ -5,8 +5,7 @@ import com.t1dm.data.db.ServerProfileEntity
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
-/** N profiles, exactly one active. Metadata in Room; the `rw` token in [TokenStore], keyed by
- *  profile id. */
+/** N profiles, exactly one active; metadata in Room, `rw` token in [TokenStore] by profile id. */
 class ServerProfileStore(
     private val repo: T1dmRepository,
     private val tokens: TokenStore,

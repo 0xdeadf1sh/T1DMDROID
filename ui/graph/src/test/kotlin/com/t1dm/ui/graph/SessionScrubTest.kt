@@ -18,7 +18,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.abs
 
-/** Fixture: cycle `c` sits at `T0 + c·STEP` and forecasts a flat `200 + c`, so a value names its cycle. */
+/** Fixture: cycle `c` sits at `T0 + c·STEP`, forecasts flat `200 + c` — a value names its cycle. */
 class SessionScrubTest {
 
     private val STEP = 300_000L
@@ -98,7 +98,7 @@ class SessionScrubTest {
     }
 
     @Test fun theCursorSpansTheWindowAndClampsOutsideIt() {
-        // The window's ends are off-grid wall clock, so a travel limit lands on the nearest grid line.
+        // The window's ends are off-grid wall clock; a travel limit lands on the nearest grid line.
         val start = T0
         val span = 2 * 3_600_000L
         val lo = scrubCursorOf(start, span, 0f, STEP)
@@ -116,7 +116,7 @@ class SessionScrubTest {
     }
 
     @Test fun theMarkerIsDrawnEverywhereTheSliderCanReach() {
-        // Inside the window the marker is the trace's own transform; the box only limits where it draws.
+        // Inside the window the marker is the trace's own transform; the box only limits drawing.
         val span = 2 * 3_600_000L + 1_800_000L
         val ppm = (PLOT_RIGHT - PLOT_LEFT) / span.toDouble()
         for (residual in 0 until 20) {
@@ -221,8 +221,7 @@ class SessionScrubTest {
     }
 
     @Test fun aNonFiniteMedianIsRefusedRatherThanRoundedToZero() {
-        // formatValue(NaN, MgDl) rounds to "0", so a NaN would assert a forecast of 0 mg/dL.
-        // The store keeps non-finite rows, so the guard has to be here.
+        // formatValue(NaN, MgDl) rounds to "0"; store keeps non-finite rows, so the guard is here.
         val f = frameOf(listOf(pred(0, median = Double.NaN)))
         // Step 0 is the measured anchor and is finite; every forecast step past it is not.
         assertNotNull(f.medianAt(0, T0))

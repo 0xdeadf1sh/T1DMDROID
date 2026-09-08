@@ -14,8 +14,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.abs
 
-// Nothing here classifies a pair: the boundaries live in `t1dm-core::accuracy` and the lattices
-// below are synthetic fixtures.
+// Nothing classifies a pair here: boundaries live in t1dm-core::accuracy; lattices are synthetic.
 class AccuracyFiguresTest {
 
     private fun block(a: Double, ab: Double, d: Double, e: Double) = PointBlock(
@@ -74,8 +73,7 @@ class AccuracyFiguresTest {
         assertEquals("n=1000", row.note)
     }
 
-    /** The real lattice's structure — a diagonal A band, four zones lobed above and below it —
-     *  with none of its zone algebra. */
+    /** Real lattice's structure — diagonal A band, 4 zones lobed above/below — no zone algebra. */
     private fun syntheticGrid(cells: Int = 40): ZoneLattice {
         val zones = ArrayList<ClarkeZone>(cells * cells)
         for (ti in 0 until cells) for (pi in 0 until cells) {
@@ -160,7 +158,7 @@ class AccuracyFiguresTest {
         assertTrue("the thin lobe kept no letter", anchors.any { it.zone == ClarkeZone.E.ordinal })
     }
 
-    /** A straddles the diagonal, so its two candidates collapse to one; the other four lobe twice. */
+    /** A straddles the diagonal, so its 2 candidates collapse to one; the other 4 lobe twice. */
     @Test
     fun `a zone that lobes twice is lettered twice and one that straddles is lettered once`() {
         val byZone = zoneAnchors(syntheticGrid()).groupBy { it.zone }
@@ -179,8 +177,7 @@ class AccuracyFiguresTest {
         assertTrue(ZoneLattice.of(400.0, 4, listOf(ClarkeZone.A)).isEmpty)
     }
 
-    /** [zoneAnchors] sizes its arrays from it and indexes them with the stored ordinals, so an
-     *  undershooting count would throw inside composition rather than fail closed. */
+    /** [zoneAnchors] sizes arrays here, indexed by ordinal; undershoot throws, not fail-closed. */
     @Test
     fun `zoneCount is derived from the cells it actually holds`() {
         assertEquals(ClarkeZone.values().size, syntheticGrid().zoneCount)
@@ -229,8 +226,7 @@ class AccuracyFiguresTest {
         assertEquals(100f, s.sum(), 1e-3f)
     }
 
-    /** Off the points here against off the core's four totals; disagreement puts two Clarke figures
-     *  on screen that contradict each other. */
+    /** Off points here against the core's totals; disagreement puts 2 clashing figures onscreen. */
     @Test
     fun `the two reductions of one population agree`() {
         val pts = points(ClarkeZone.A to 70, ClarkeZone.B to 10, ClarkeZone.C to 13, ClarkeZone.D to 5, ClarkeZone.E to 2)
@@ -280,8 +276,7 @@ class AccuracyFiguresTest {
         )
     }
 
-    /** A stub core supplies the empty list, and an axis captioned from a guess is worse than an
-     *  unlabelled one. */
+    /** Stub core supplies the empty list; a guessed axis caption is worse than unlabelled. */
     @Test
     fun `a wrong-length edge list labels nothing`() {
         assertEquals(emptyList<String>(), trendBinLabels(emptyList()))

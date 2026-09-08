@@ -88,8 +88,7 @@ fun CurveParamsScreen(
     }
 }
 
-/** Grams per minute. Committed on release, not per drag sample: the value is kv-backed.
- *  [range] is the store's own, so the thumb cannot reach a value the writer would clamp. */
+/** Grams/min, committed on release not per drag; range is store's own, thumb can't hit a clamp. */
 @Composable
 private fun CarbEquivSlider(
     value: Double,

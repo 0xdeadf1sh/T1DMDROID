@@ -1,10 +1,6 @@
 package com.t1dm.data.curve
 
-/**
- * Duration → the disposal gamma of `../T1DMCOMMON/SPEC/invariants.md` §5. Channel is grams of
- * carbohydrate EQUIVALENT per 5-min bucket; magnitude scales with duration alone, never intensity.
- * §5's post-bout insulin-sensitivity rise is a separate mechanism, not this curve's tail.
- */
+/** Duration → disposal gamma (§5); channel is carb-EQUIVALENT g/5min, scales with duration. */
 object ExerciseDisposal {
 
     /** §5's shape. Peak at `(k−1)·θ` = 30 min. */
@@ -28,7 +24,7 @@ object ExerciseDisposal {
         val durationMin: Double,
     )
 
-    /** Clamps rather than throws: a hand-edited kv row's NaN would otherwise reach the model input. */
+    /** Clamps not throws: a hand-edited kv row's NaN would otherwise reach the model input. */
     fun paramsFor(
         durationMin: Double,
         carbEquivPerMin: Double = DEFAULT_CARB_EQUIV_PER_MIN,

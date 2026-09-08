@@ -40,8 +40,7 @@ internal data class BgEditState(
     val busy: Boolean,
 )
 
-/** Acts on a selection; never makes one. A drag picks the stretch and stops there; every
- *  destructive act here is a separate press. */
+/** Acts on a selection; never makes one. Every destructive act here is a separate press. */
 @Composable
 internal fun BgEditBar(
     state: BgEditState,
@@ -103,10 +102,9 @@ internal fun BgEditBar(
                 label = { Text("Fills") },
             )
         }
-        // Every position is a level the model already emitted; nothing is interpolated between them.
+        // Every position is a level the model emitted; nothing is interpolated between them.
         if (state.spanTauSweepable) {
-            // The knob is local, the line previews on every move, the store is written on release.
-            // Re-seeded when the stored level changes under it.
+            // Local knob; preview on every move, store on release, re-seeded when the level moves.
             var knob by remember(state.spanStartMs, state.tau) { mutableFloatStateOf(state.tau.toFloat()) }
             Row(
                 Modifier.fillMaxWidth(),
@@ -121,7 +119,7 @@ internal fun BgEditBar(
                 Slider(
                     value = knob,
                     onValueChange = {
-                        // The ladder step, never the raw float: the fan is only read at those levels.
+                        // Ladder step, never the raw float: the fan is only read at those levels.
                         tauDetent.at((it * 20f).roundToInt())
                         knob = it
                         onTauPreview(it.toDouble())

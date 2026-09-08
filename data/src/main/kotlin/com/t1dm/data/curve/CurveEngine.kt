@@ -7,11 +7,7 @@ import com.t1dm.core.model.CurveEvent
 import com.t1dm.core.model.CurveKind
 import kotlinx.coroutines.withContext
 
-/**
- * JNI bridge over `t1dm-core::curve`; every call on [T1dmDispatchers.default].
- * Carbs feed the model as an appearance (Ra) curve, insulin as a PK ACTION rate — not delivery,
- * not IOB. Basal and bolus sum into one `insulin_combined` channel.
- */
+/** JNI bridge over t1dm-core::curve; carbs are appearance (Ra), insulin PK ACTION not IOB. */
 class CurveEngine(
     private val native: NativeCore,
     private val dispatchers: T1dmDispatchers,
@@ -24,7 +20,7 @@ class CurveEngine(
     suspend fun bateman(total: Double, durMin: Double, ka: Double, ke: Double): DoubleArray =
         withContext(dispatchers.default) { native.bateman(total, durMin, ka, ke).toDoubleArray() }
 
-    /** Amount per 5-min step; `sum == total`. Peaks at [peakMin], ~0 by [diaMin]. Off-distribution. */
+    /** Amount per 5-min step; sum==total. Peaks at peakMin, ~0 by diaMin. Off-distribution. */
     suspend fun expAction(total: Double, peakMin: Double, diaMin: Double): DoubleArray =
         withContext(dispatchers.default) { native.expActionCurve(total, peakMin, diaMin).toDoubleArray() }
 

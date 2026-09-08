@@ -2,17 +2,13 @@ package com.t1dm.watch
 
 import java.util.UUID
 
-/**
- * Authoritative UUID map; `docs/WATCH_BLE.md` restates it for the firmware side and the two must
- * stay in lock-step. Phone is BLE central, the ESP32-C3 is peripheral.
- */
+/** Authoritative UUID map; WATCH_BLE.md mirrors for firmware, lock-step; phone=central. */
 object WatchGatt {
 
     /** Match by prefix: the LE random address rotates. Firmware advertises `T1DM-Watch-<id>`. */
     const val ADV_NAME_PREFIX = "T1DM-Watch"
 
-    /** Negotiated up from the 23-byte default so a sealed PUSH (header + ~40 B glance + 16 B GCM
-     *  tag) rides a single write; falls back gracefully. */
+    /** From 23B default so sealed PUSH (header+~40B glance+16B tag) fits one write; falls back. */
     const val MTU_TARGET = 247
 
     /** In every frame header; a mismatch forces a re-pair. */
@@ -32,7 +28,7 @@ object WatchGatt {
     /** Phone → watch, write-without-response: sealed glance frames, one every 5 min. */
     val PUSH: UUID = uuid("7ed10003")
 
-    /** Read-only identity block: `[u8 proto][u8 epoch][u8 flags][8B watch-id][…]`, read on discovery. */
+    /** Read-only identity: `[u8 proto][u8 epoch][u8 flags][8B watch-id]…`, read on discovery. */
     val STATUS: UUID = uuid("7ed10004")
 
     val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")

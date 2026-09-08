@@ -1,10 +1,6 @@
 package com.t1dm.cgm
 
-/**
- * A fixed-capacity ring of recently-committed `minFromStart` values. [contains] short-circuits before
- * the CRC/decode; [record] runs only after a CRC-valid decode, so a corrupt frame cannot poison a
- * minute slot. Not thread-safe: one [CgmSource] drives one ring from one dispatcher.
- */
+/** Recent `minFromStart` ring; [record] is post-CRC only; not thread-safe, one ring per source. */
 class DedupRing(private val capacity: Int = 16) {
     private val ring = IntArray(capacity) { Int.MIN_VALUE }
     private var idx = 0

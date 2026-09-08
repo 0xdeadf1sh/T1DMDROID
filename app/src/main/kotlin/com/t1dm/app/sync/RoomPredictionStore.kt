@@ -8,9 +8,7 @@ import com.t1dm.sync.StreamClient
 import com.t1dm.sync.toWrite
 import timber.log.Timber
 
-/** No queue and no retry behind a forecast: lost if no socket takes it, never replayed stale. Table
- *  first, so the local store reflects a cycle even when nothing is sent; only a finite line + fan is
- *  offered (§3.6-B). */
+/** No queue/retry: unsent is lost, never stale; table first; finite line+fan only (§3.6-B). */
 class RoomPredictionStore(
     private val repository: T1dmRepository,
     private val stream: StreamClient,
@@ -29,18 +27,14 @@ class RoomPredictionStore(
                 val dto = p.toWrite(cycleTsMs, now)
                 val frame = stream.sendPrediction(dto)
                 status.onForecastFrame(p.modelId, frame.bytes, frame.delivered)
-                // Held even when undelivered: on DELIVERED only, a re-send after an outage would
-                // offer a frame older than this one.
+                // Held even undelivered; a re-send offers an older frame only on DELIVERED.
                 latest = dto
                 latestAtMs = now
             }.onFailure { Timber.tag(TAG).w(it, "forecast frame failed (table already updated)") }
         }
     }
 
-    /**
-     * Called on every stream (re)connect. A frame older than [MAX_RESEND_AGE_MS] is dropped: the
-     * receiver draws what arrives as the current fan and cannot mark one as old.
-     */
+    /** Called on every reconnect; older than [MAX_RESEND_AGE_MS] drops — can't mark a fan old. */
     suspend fun resendLatest() {
         val dto = latest ?: return
         if (System.currentTimeMillis() - latestAtMs > MAX_RESEND_AGE_MS) return
@@ -52,7 +46,7 @@ class RoomPredictionStore(
 
     override suspend fun loadLast(): List<ModelPrediction>? = repository.latestCyclePredictions()
 
-    /** Last frame offered to the socket, for the reconnect re-send. Process-local, never persisted. */
+    /** Last frame offered to the socket, for reconnect re-send. Process-local, never persisted. */
     @Volatile
     private var latest: PredictionWriteDto? = null
 

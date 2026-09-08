@@ -15,8 +15,7 @@ fun nsIso(tsMs: Long, tzOffsetMin: Int): String =
     OffsetDateTime.ofInstant(Instant.ofEpochMilli(tsMs), ZoneOffset.ofTotalSeconds(tzOffsetMin * 60))
         .format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)
 
-/** Trend is TENTHS of mg/dL per minute; Nightscout's arrows cut at whole units, hence 10/20/30.
- *  A null trend yields null, not `Flat`. */
+/** Trend is TENTHS of mg/dL/min; Nightscout arrows cut at whole units (10/20/30). Null ⇒ null. */
 fun nsDirection(trendTenthsPerMin: Int?): String? = when {
     trendTenthsPerMin == null -> null
     trendTenthsPerMin >= 30 -> "DoubleUp"
@@ -28,12 +27,10 @@ fun nsDirection(trendTenthsPerMin: Int?): String? = when {
     else -> "DoubleDown"
 }
 
-/** Only `bgMgdl` crosses: `exercise` is carbohydrate EQUIVALENT, opposite in sign to a meal
- *  (`SPEC/invariants.md` §3), and must never reach a `carbs` field. */
+/** Only bgMgdl crosses: exercise is carb EQUIVALENT, opposite sign to a meal (§3); never carbs. */
 fun SampleEntity.toNsEntry(trendTenthsPerMin: Int?): NsEntryDto? {
     val bg = bgMgdl ?: return null
-    // Fail closed: `sgv` claims sensor signal, and a third party has no route to take a record back
-    // out. Second of two stops; promotion files no bridge row either.
+    // Fail closed: `sgv` claims sensor signal a third party can't retract. 2nd of two stops.
     if (bgProvenance == ReadingProvenance.RECONSTRUCTED) return null
     return NsEntryDto(
         sgv = bg,
@@ -53,8 +50,7 @@ fun LoggedMealEntity.toNsTreatment(): NsTreatmentDto = NsTreatmentDto(
     utcOffset = tzOffsetMin,
 )
 
-/** Null for BASAL: a T1DM basal is units DELIVERED (`SPEC/invariants.md` §3), Nightscout's is a RATE
- *  with a duration — no mapping between them without a factor-of-duration error. */
+/** Null for BASAL: T1DM basal is units DELIVERED (§3), Nightscout a RATE — errs by duration. */
 fun LoggedDoseEntity.toNsTreatment(): NsTreatmentDto? {
     if (kind != DoseKind.BOLUS) return null
     return NsTreatmentDto(
@@ -66,8 +62,7 @@ fun LoggedDoseEntity.toNsTreatment(): NsTreatmentDto? {
     )
 }
 
-// A treatment carries `updatedAt`, not grid-snapped `tsMs`: a meal and its bolus land on one slot,
-// and a host keying treatments by timestamp discards the second with a 200.
+// A treatment carries `updatedAt`, not grid-snapped `tsMs`: same-slot host-keying would drop one.
 
 /** Best-effort: a host may overwrite `notes` — see [NightscoutClient.alreadyPosted]. */
 internal fun noteWithClientId(note: String?, clientId: String): String =

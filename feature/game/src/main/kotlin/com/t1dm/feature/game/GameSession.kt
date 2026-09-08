@@ -25,9 +25,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import kotlin.coroutines.coroutineContext
 
-/** Decimation lifted out of reach: min/max envelope decimation emits a bucket's extremes in time
- *  order, so a bucket whose max precedes its min becomes a cliff placed by bucket boundaries
- *  rather than by the data. 1e6 readings is ~9.5 years of the 5-min grid. */
+/** Decimation buckets place a max-before-min cliff at edges, not the data; 1e6 = ~9.5y grid. */
 private const val TRACK_MAX_POINTS = 1_000_000
 
 /** Immutable; shared by the loop and the draw. */
@@ -58,7 +56,7 @@ suspend fun loadGameScene(
     GameScene(track, paint, unit, frame.tzOffsetMin)
 }
 
-/** Rebuilt at [HUD_PERIOD_NS], never at frame rate: the one cell whose change recomposes anything. */
+/** Rebuilt at HUD_PERIOD_NS, never frame rate: the one cell whose change recomposes anything. */
 data class GameHud(
     val clock: String,
     val distanceM: Float,
@@ -94,15 +92,13 @@ private const val SMOKE_HZ = 26f
 /** Used only modulo the puff count; wraps to keep the phase out of float's coarse range. */
 private const val SMOKE_PHASE_WRAP = 1_048_576f
 
-/** Runs on `T1dmDispatchers.game`, never `t1dm-inference` or a shared `default` worker. `withFrameNanos`
- *  runs its body on MAIN and does nothing there but return the stamp. Snapshot state is touched only
- *  by [GameFrameBus.commit] and the 4 Hz HUD cell. */
+/** Runs on game dispatcher, never inference/default; withFrameNanos on MAIN returns the stamp. */
 internal suspend fun runGameLoop(
     /** World x of the tap, not the track's origin. */
     dropAtX: Float,
-    /** Once, on the game thread, after the first publish. The caller keeps the chart up until then. */
+    /** Once, on the game thread, after the first publish; caller keeps the chart up until then. */
     onFirstFrame: suspend () -> Unit,
-    /** World x the camera opens on; the track's lead must sit outside the view, not shift it. */
+    /** World x camera opens on; the track's lead must sit outside the view, not shift it. */
     seatAtX: Float,
     world: GameWorld,
     track: GameTrack,
@@ -129,7 +125,7 @@ internal suspend fun runGameLoop(
     var presentNs = 0L
     // One frame behind the solver; zeroed on placement so a restart opens at rest.
     var lastSpeed = 0f
-    // Zero of the progress bar; `CarState.distanceM` is a monotone furthest-reached, not a position.
+    // Zero of the progress bar; CarState.distanceM is a monotone furthest-reached, not a position.
     var seatX = 0f
     // Advanced on the SIMULATED timestep, so the trail stops with the car during a hold.
     var exhaustPhase = 0f
@@ -157,28 +153,27 @@ internal suspend fun runGameLoop(
             hold = gate.holds.primary,
         )
     }
-    // A terminal run is a hold: the scene cannot change, so simulating it is sixty FFI round trips a
-    // second of a frozen picture. Loop-local because the gate is composition's to write.
+    // Terminal run is a hold: simulating a frozen scene wastes 60 FFI round trips/s; loop-local.
     var terminal = false
 
     while (coroutineContext.isActive) {
         val nowNs = withFrameNanos { it }
         if (!viewport.ready) {
-            // A hold, so the pacer does not bank the wait for the first measure into the opening frame.
+            // A hold, so the pacer doesn't bank the first-measure wait into the opening frame.
             pacer.tick(nowNs, paused = true)
             continue
         }
-        // Presentation time, kept apart from simulation time: the opening animates while the solver is HELD.
+        // Presentation time, apart from simulation time: opening animates while the solver is HELD.
         val presentDt = if (presentNs == 0L) 0f else ((nowNs - presentNs) * 1e-6f).coerceIn(0f, 100f)
         presentNs = nowNs
         // Placement is itself a hold: the frame it consumes is dropped rather than simulated.
         val placing = !placed || commands.reset
         if (placing) {
-            // Opens on the chart's span, so the panel is identical the frame before and after Drive.
+            // Opens on the chart's span, so the panel is identical before and after Drive.
             zoom.seatAt(viewport.visibleWidthM)
             lastSpeed = 0f
         }
-        // Read BEFORE `opening`: off last frame's state the loop would owe the caller a frame of simulation.
+        // Read BEFORE opening: off last frame's state, the loop owes the caller a frame.
         val animating = !gate.paused && presentDt > 0f
         // Last frame's speed: the view is sized before the solver runs.
         val viewW = if (animating) zoom.step(viewport.zoomedWidthM, lastSpeed, presentDt / 1000f) else zoom.spanM
@@ -189,7 +184,7 @@ internal suspend fun runGameLoop(
         val dtMs = pacer.tick(nowNs, paused)
 
         if (placing) {
-            // Always resetAt, not only on a restart: `state()` leaves the car at the track origin.
+            // Always resetAt, not only on a restart: state() leaves the car at the track origin.
             val s = world.resetAt(dropAtX)
             commands.reset = false
             terminal = s.run != RunState.Running
@@ -202,10 +197,10 @@ internal suspend fun runGameLoop(
                 onFirstFrame()
             }
             placed = true
-            // At once, not at the cadence: this dismisses the terminal card the instant Restart is pressed.
+            // At once, not the cadence: dismisses the terminal card the instant Restart is pressed.
             pushHud(s, nowNs)
         } else if (dtMs > 0f) {
-            // Ramp before stepping: a boolean step from rest only lifts the nose at this thrust-to-weight.
+            // Ramp before stepping: a boolean step from rest lifts the nose at this thrust/weight.
             controls.ramp(dtMs / 1000f)
             val s = world.step(dtMs, controls.throttle, controls.brake)
             camera.follow(s.x, s.y, s.vx, s.vy, viewW, viewH, trackLength, dtMs / 1000f)
@@ -223,9 +218,7 @@ internal suspend fun runGameLoop(
                 pushHud(s, nowNs)
             }
         } else if (opening && animating) {
-            // Republish every frame: the draw is invalidated by a frame commit and nothing else.
-            // `state()`, not `step()` — the car is shown, not driven. The camera must ease: `targetLeft`
-            // is a function of the span.
+            // Republish every frame, invalidates on commit only; state(), not step(), eases camera.
             val s = world.state()
             camera.follow(s.x, s.y, 0f, 0f, viewW, viewH, trackLength, presentDt / 1000f)
             publish(bus, s, controls, camera, viewW, viewH, zoom.carShown, zoom.liftM, exhaustPhase, progressOf(s.x))
@@ -233,7 +226,7 @@ internal suspend fun runGameLoop(
             // The reason can change while the answer does not, and the banner names the reason.
             hud.value = hud.value.copy(hold = gate.holds.primary)
         }
-        // The haptic layer is finite and re-armed, so ceasing to ask IS the stop; the synth must be told.
+        // Haptic layer is finite, re-armed: ceasing to ask IS the stop; the synth must be told.
         if (paused) feel.hold()
         lastPaused = paused
     }

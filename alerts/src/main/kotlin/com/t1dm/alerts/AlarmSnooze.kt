@@ -2,9 +2,7 @@ package com.t1dm.alerts
 
 import com.t1dm.core.model.AlertBand
 
-/** Presentation gate only: a snooze never touches [AlarmEngine], which keeps firing. C1 a snooze is
- *  time-bounded; C2 worse severity or a low↔high crossing pierces it; C3 a dismiss holds only until
- *  the breach clears; C5 over-temperature is never snoozable. */
+/** Snooze/dismiss gate: C1 time-bound, C2 worse severity/side pierces, C3 till-clear, C5 never. */
 data class SnoozeState(val entries: Map<AlarmKind, SnoozeEntry> = emptyMap()) {
 
     fun silences(alarm: ActiveAlarm, nowMs: Long): Boolean {
@@ -21,8 +19,7 @@ data class SnoozeState(val entries: Map<AlarmKind, SnoozeEntry> = emptyMap()) {
 
     fun snooze(alarm: ActiveAlarm, untilMs: Long): SnoozeState = put(alarm, untilMs, dismiss = false)
 
-    /** Dismiss until the breach clears (C3). A no-op on urgent tiers: an urgent condition may never
-     *  be quieted permanently, even by a forged intent. */
+    /** Dismiss until breach clears (C3); a no-op on urgent tiers (never quieted permanently). */
     fun dismiss(alarm: ActiveAlarm): SnoozeState =
         if (alarm.isDismissable()) put(alarm, Long.MAX_VALUE, dismiss = true) else this
 
@@ -73,8 +70,7 @@ private fun AlertBand.side(): ExcursionSide? = when (this) {
     AlertBand.IN_RANGE -> null
 }
 
-/** The §3.6 presentation gate. Over-temperature always passes: exempt from DEATH (D4) and from
- *  snooze (C5). */
+/** §3.6 presentation gate; over-temperature always passes (exempt from DEATH D4 and snooze C5). */
 fun AlarmState.visibleAfterGates(suppressed: Boolean, snooze: SnoozeState, nowMs: Long): AlarmState =
     AlarmState(
         threshold = threshold?.takeUnless { suppressed || snooze.silences(it, nowMs) },

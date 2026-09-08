@@ -3,13 +3,7 @@ package com.t1dm.data.curve
 import com.t1dm.data.ExerciseCurveBucket
 import com.t1dm.data.T1dmRepository
 
-/**
- * Bucket `i` of [values] is the five minutes beginning `i` steps after [startMs]'s slot; the snap is
- * the repository's, per `../T1DMCOMMON/SPEC/invariants.md` §1. [written] is what the SAME event last
- * claimed in each slot, which makes the write idempotent within an event and additive across events.
- * A slot whose value has not moved is dropped — the write would mint the row and an `INGEST` push
- * for nothing.
- */
+/** Bucket i is 5min after startMs (§1); [written]=idempotent; unmoved values dropped. */
 fun exerciseCurveBuckets(
     startMs: Long,
     values: DoubleArray,
@@ -34,10 +28,7 @@ internal fun exerciseCurveLaid(
     tzOffsetMinAt: (Long) -> Int,
 ): List<ExerciseCurveBucket> = exerciseCurveBuckets(gridStart, values, emptyMap(), tzOffsetMinAt)
 
-/**
- * The slots a curve laid at [gridStart] REMOVES from: it claimed [values] and now claims nothing, so
- * `priorGrams` is its own share alone and an overlapping event's is left exactly where it is.
- */
+/** Slots a curve laid at gridStart REMOVES from; priorGrams is its own share, others untouched. */
 internal fun exerciseCurveTaken(
     gridStart: Long,
     values: DoubleArray,

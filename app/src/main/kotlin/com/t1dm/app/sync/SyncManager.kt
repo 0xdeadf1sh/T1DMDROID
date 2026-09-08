@@ -11,8 +11,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import timber.log.Timber
 
-/** Three long-lived collectors, all on [T1dmDispatchers.io]. [drainNow] is also called from the
- *  5-min grid tick; the drainer serialises passes. Never blocks the alarm path (§2.3, §3.6-A). */
+/** 3 collectors on io; [drainNow] runs on the 5-min tick too; never blocks alarms (§2.3,§3.6-A). */
 class SyncManager(
     private val drainer: QueueDrainer,
     private val catchUp: CatchUpCoordinator,

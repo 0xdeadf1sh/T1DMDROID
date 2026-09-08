@@ -32,8 +32,7 @@ class AndroidAlarmNotifier(
     private val app = context.applicationContext
     private val nm = app.getSystemService(android.app.NotificationManager::class.java)
     private val vibrations = VibrationActuator(app)
-    // A channel's sound, importance and DND-bypass are frozen at creation, so a config change needs
-    // a fresh channel id.
+    // Channel sound/importance/DND-bypass freeze at creation; a config change needs a new id.
     @Volatile private var channelsFor: Pair<String, AlertChannels.Ids>? = null
 
     private fun channels(): AlertChannels.Ids {
@@ -109,8 +108,7 @@ class AndroidAlarmNotifier(
         val icon = smallIcon(critical)
         if (icon != null) builder.setSmallIcon(icon) else builder.setSmallIcon(android.R.drawable.stat_sys_warning)
         accentColor()?.let { builder.setColor(it) }
-        // Snooze rides every glucose/signal tier; Dismiss only the WARNING tier, so a critical alarm
-        // can never be quieted permanently. Over-temp gets neither (§3.6 C5).
+        // Snooze every tier; dismiss WARNING only (critical audible); over-temp neither (§3.6 C5).
         if (alarm !is OverTemperature) {
             snoozeIntent(alarm)?.let { pi ->
                 builder.addAction(
@@ -126,7 +124,7 @@ class AndroidAlarmNotifier(
             }
         }
         if (critical) {
-            // Android falls back to a heads-up banner when the screen is on or the access is ungranted.
+            // Falls back to a heads-up banner when the screen is on or access is ungranted.
             fullScreenIntent()?.let { builder.setFullScreenIntent(it, true) }
         }
         nm.notify(tag, id, builder.build())

@@ -11,7 +11,7 @@ object WatchHandshake {
     fun hello(session: WatchSession): KexFrame.Hello =
         KexFrame.Hello(epoch = session.epoch, publicKey = session.startHandshake())
 
-    /** Throws on an epoch mismatch — a reflash or desync mid-handshake — and the caller re-pairs. */
+    /** Throws on an epoch mismatch — reflash or desync mid-handshake; caller re-pairs. */
     fun onHelloAck(session: WatchSession, ack: ControlFrame.HelloAck): SasCode {
         require(ack.epoch == session.epoch) { "HELLO_ACK epoch ${ack.epoch} != ${session.epoch}" }
         session.acceptPeer(ack.publicKey)

@@ -37,11 +37,7 @@ import com.t1dm.ui.graph.CurveEditor
 import com.t1dm.ui.graph.CurvePreview
 import java.util.Locale
 
-/**
- * Edits the dictionary row only; meals keep the snapshot they took at add time.
- * A stored [Food.customCurve] is normalized per-5-min buckets with no inverse back to a
- * [BezierCurve], so a drawn curve is kept verbatim or redrawn from scratch — never nudged.
- */
+/** customCurve has no inverse to Bezier; kept verbatim or redrawn from scratch, never nudged. */
 @Composable
 fun FoodEditorScreen(
     food: Food,

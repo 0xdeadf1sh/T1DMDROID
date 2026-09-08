@@ -7,7 +7,7 @@ import androidx.compose.runtime.Composable
 import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.rememberT1dmHaptics
 
-/** Pairing, the SAS, key rotation and unpair all live in the Security panel; this only routes there. */
+/** Pairing, SAS, key rotation and unpair live in the Security panel; this only routes there. */
 @Composable
 fun WatchSettingsScreen(
     linkStatus: String,
