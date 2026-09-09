@@ -49,6 +49,7 @@ fun ExerciseSessionScreen(
     frame: GraphFrame = GraphFrame.EMPTY,
     hindsight: HindsightFrame? = null,
     unit: UnitSpace = UnitSpace.MgDl,
+    kovatchevF: ((Double) -> Double)? = null,
     thresholds: AlertThresholds? = null,
     /** Loaded over exactly reviewWindow, not the live Logs feed, bounded at a few hundred rows. */
     logMarkers: List<LogMarker> = emptyList(),
@@ -115,6 +116,7 @@ fun ExerciseSessionScreen(
             modifier = Modifier.fillMaxWidth().height(GRAPH_HEIGHT),
             hindsight = hindsight,
             unit = unit,
+            kovatchevF = kovatchevF,
             thresholds = thresholds,
             logMarkers = logMarkers,
             tzOffsetMin = session.tzOffsetMin,

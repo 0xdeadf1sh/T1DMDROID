@@ -149,6 +149,7 @@ fun GameScreen(
             else -> key(built) {
                 GameStage(
                     scene = built,
+                    kovatchevF = kovatchevF,
                     onFirstFrame = onReady,
                     seatAtMs = trackFromMs,
                     dropAtMs = dropAtMs,
@@ -171,6 +172,7 @@ fun GameScreen(
 @Composable
 private fun GameStage(
     scene: GameScene,
+    kovatchevF: ((Double) -> Double)?,
     onFirstFrame: () -> Unit,
     seatAtMs: Long,
     dropAtMs: Long,
@@ -348,6 +350,7 @@ private fun GameStage(
             val camLeftMs = map.tsMsAt(camLeftM)
             drawGraphFurniture(
                 unit = scene.unit,
+                kovatchevF = kovatchevF,
                 tzOffsetMin = scene.tzOffsetMin,
                 plotLeft = plotLeft, plotTop = plotTop, plotRight = plotRight, plotBottom = plotBottom,
                 viewStartMs = camLeftMs.toDouble(),

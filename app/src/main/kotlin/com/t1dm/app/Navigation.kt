@@ -1743,6 +1743,7 @@ private fun T1dmNavHost(
                 frame = frame,
                 hindsight = hindsight,
                 unit = unit,
+                kovatchevF = container.nativeCore::kovatchevF,
                 thresholds = container.alarmConfig.thresholds,
                 rangeMinMgdl = range.minMgdl,
                 rangeMaxMgdl = range.maxMgdl,

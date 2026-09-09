@@ -797,11 +797,14 @@ fun GlucoseGraph(
             }
             // HINDSIGHT fan deliberately NOT folded in: a bad sweep would flatten the truth axis.
             if (!yMin.isFinite() || !yMax.isFinite()) { yMin = 0f; yMax = 1f }
-            // Covers the configured range, grows past it, never clips. Kovatchev keeps auto-fit.
-            val fixedApplies = rangeMinMgdl != null && rangeMaxMgdl != null && frame.unit != UnitSpace.Kovatchev
-            if (fixedApplies) {
-                val (a, b) = fixedYRange(yMin, yMax, frame.unit, rangeMinMgdl, rangeMaxMgdl)
-                yMin = a; yMax = b
+            // Covers the configured range, grows past it, never clips; on the risk axis through f.
+            val fixed = if (rangeMinMgdl != null && rangeMaxMgdl != null) {
+                fixedYRange(yMin, yMax, frame.unit, rangeMinMgdl, rangeMaxMgdl, kovatchevF)
+            } else {
+                null
+            }
+            if (fixed != null) {
+                yMin = fixed.first; yMax = fixed.second
             } else {
                 val minSpanY = minValueSpan(frame.unit)
                 if (yMax - yMin < minSpanY) {
@@ -828,6 +831,7 @@ fun GlucoseGraph(
             // Extracted so drive mode can render the same furniture around its own viewport.
             drawGraphFurniture(
                 unit = frame.unit,
+                kovatchevF = kovatchevF,
                 tzOffsetMin = frame.tzOffsetMin,
                 plotLeft = plotLeft, plotTop = plotTop, plotRight = plotRight, plotBottom = plotBottom,
                 viewStartMs = viewStartMs, viewSpanMs = viewSpanMs,
@@ -964,20 +968,13 @@ fun GlucoseGraph(
                 }
                 // Kovatchev is a RISK axis; no core transform, a reconstruction lands off-plot.
                 val recon = lerpReconstruction(reconTween.from, reconTween.to, reconProgress.value)
-                if (recon.isNotEmpty() && (frame.unit != UnitSpace.Kovatchev || kovatchevF != null)) {
+                val reconToAxis = mgdlToAxis(frame.unit, kovatchevF)
+                if (recon.isNotEmpty() && reconToAxis != null) {
                     drawReconstruction(
                         rows = recon,
                         xOf = { ts -> ((ts - viewStartMs) * ppm + plotLeft).toFloat() },
                         // The frame's own unit, through the same transforms the trace used.
-                        yOf = { mgdl ->
-                            yToPx(
-                                if (frame.unit == UnitSpace.Kovatchev) {
-                                    (kovatchevF?.invoke(mgdl) ?: mgdl).toFloat()
-                                } else {
-                                    convertMgdlTo(mgdl.toFloat(), frame.unit)
-                                },
-                            )
-                        },
+                        yOf = { mgdl -> yToPx(reconToAxis(mgdl.toFloat())) },
                         // The forecast's own ink: a fill and a forecast are one artifact.
                         ink = cs.tertiary,
                         fanColor = cs.tertiary,
@@ -1231,9 +1228,14 @@ internal fun scrubRows(sc: GraphScrub): List<Pair<String, String>> {
     return out
 }
 
-private fun convertMgdlTo(mgdl: Float, unit: UnitSpace): Float = when (unit) {
-    UnitSpace.MgDl, UnitSpace.Kovatchev -> mgdl
-    UnitSpace.MmolL -> (mgdl / 18.0182).toFloat()
+/** A mg/dL chrome value onto the drawn axis; null when the risk axis has no `f` to place it. */
+internal fun mgdlToAxis(unit: UnitSpace, kovatchevF: ((Double) -> Double)?): ((Float) -> Float)? {
+    val f = kovatchevF
+    return when (unit) {
+        UnitSpace.MgDl -> ({ v: Float -> v })
+        UnitSpace.MmolL -> ({ v: Float -> (v / 18.0182).toFloat() })
+        UnitSpace.Kovatchev -> if (f == null) null else ({ v: Float -> f(v.toDouble()).toFloat() })
+    }
 }
 
 /** Covers [rangeMinMgdl]..[rangeMaxMgdl] in [unit], grows for data beyond, rounds to a tick. */
@@ -1243,9 +1245,11 @@ internal fun fixedYRange(
     unit: UnitSpace,
     rangeMinMgdl: Int,
     rangeMaxMgdl: Int,
-): Pair<Float, Float> {
-    val rLo = convertMgdlTo(rangeMinMgdl.toFloat(), unit)
-    val rHi = convertMgdlTo(rangeMaxMgdl.toFloat(), unit)
+    kovatchevF: ((Double) -> Double)? = null,
+): Pair<Float, Float>? {
+    val toAxis = mgdlToAxis(unit, kovatchevF) ?: return null
+    val rLo = toAxis(rangeMinMgdl.toFloat())
+    val rHi = toAxis(rangeMaxMgdl.toFloat())
     var yMin = minOf(dataYMin, rLo)
     var yMax = maxOf(dataYMax, rHi)
     val step = niceStep((yMax - yMin).toDouble() / 5.0)
@@ -1268,24 +1272,21 @@ internal fun minValueSpan(unit: UnitSpace): Float = when (unit) {
 }
 
 private fun DrawScope.drawBands(
-    t: AlertThresholds, unit: UnitSpace, left: Float, right: Float,
+    t: AlertThresholds, unit: UnitSpace, kovatchevF: ((Double) -> Double)?,
+    left: Float, right: Float,
     yToPx: (Float) -> Float, yMin: Float, yMax: Float, urgent: Color, warn: Color,
 ) {
-    fun conv(mgdl: Int) = when (unit) {
-        UnitSpace.MgDl -> mgdl.toFloat()
-        UnitSpace.MmolL -> (mgdl / 18.0182).toFloat()
-        UnitSpace.Kovatchev -> mgdl.toFloat()
-    }
+    // Fails closed: no `f` on the risk axis draws no band, never a band at a mg/dL number.
+    val conv = mgdlToAxis(unit, kovatchevF) ?: return
     fun band(loV: Float, hiV: Float, color: Color) {
         val a = yToPx(hiV.coerceIn(yMin, yMax))
         val b = yToPx(loV.coerceIn(yMin, yMax))
         if (b - a > 0.5f) drawRect(color, topLeft = Offset(left, a), size = androidx.compose.ui.geometry.Size(right - left, b - a))
     }
-    if (unit == UnitSpace.Kovatchev) return // thresholds are mg/dL-defined; skip in raw space
-    band(yMin, conv(t.urgentLowMgdl), urgent.copy(alpha = 0.10f))
-    band(conv(t.urgentLowMgdl), conv(t.lowMgdl), warn.copy(alpha = 0.08f))
-    band(conv(t.highMgdl), conv(t.urgentHighMgdl), warn.copy(alpha = 0.08f))
-    band(conv(t.urgentHighMgdl), yMax, urgent.copy(alpha = 0.10f))
+    band(yMin, conv(t.urgentLowMgdl.toFloat()), urgent.copy(alpha = 0.10f))
+    band(conv(t.urgentLowMgdl.toFloat()), conv(t.lowMgdl.toFloat()), warn.copy(alpha = 0.08f))
+    band(conv(t.highMgdl.toFloat()), conv(t.urgentHighMgdl.toFloat()), warn.copy(alpha = 0.08f))
+    band(conv(t.urgentHighMgdl.toFloat()), yMax, urgent.copy(alpha = 0.10f))
 }
 
 /** First index >= [target]; [xs] must be ascending. */
@@ -1436,6 +1437,8 @@ private fun syntheticReadings(): List<CgmReading> {
 /** Everything framing the plot, not data. Extracted so hill-climb mode draws the same frame. */
 fun DrawScope.drawGraphFurniture(
     unit: UnitSpace,
+    /** mg/dL -> Kovatchev risk; null on the risk axis draws no threshold band. */
+    kovatchevF: ((Double) -> Double)? = null,
     tzOffsetMin: Int,
     plotLeft: Float,
     plotTop: Float,
@@ -1461,7 +1464,9 @@ fun DrawScope.drawGraphFurniture(
     val labelColor = cs.onSurface.copy(alpha = 0.65f)
     val labelStyle = TextStyle(color = labelColor, fontSize = 10.sp)
 
-        thresholds?.let { drawBands(it, unit, plotLeft, plotRight, ::yToPx, yMin, yMax, cs.error, cs.secondary) }
+        thresholds?.let {
+            drawBands(it, unit, kovatchevF, plotLeft, plotRight, ::yToPx, yMin, yMax, cs.error, cs.secondary)
+        }
 
         val vStep = niceStep((yMax - yMin).toDouble() / 5.0)
         var vy = floor(yMin / vStep) * vStep

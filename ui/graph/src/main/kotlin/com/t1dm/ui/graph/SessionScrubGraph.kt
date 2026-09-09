@@ -36,6 +36,7 @@ fun SessionScrubGraph(
     modifier: Modifier = Modifier,
     hindsight: HindsightFrame? = null,
     unit: UnitSpace = UnitSpace.MgDl,
+    kovatchevF: ((Double) -> Double)? = null,
     thresholds: AlertThresholds? = null,
     /** Loaded over the review window, not live Logs (bounded 400 rows, empty for a month-old). */
     logMarkers: List<LogMarker> = emptyList(),
@@ -91,9 +92,13 @@ fun SessionScrubGraph(
             if (frame.ys[i] > yMax) yMax = frame.ys[i]
         }
         if (!yMin.isFinite() || !yMax.isFinite()) { yMin = 0f; yMax = 1f }
-        if (rangeMinMgdl != null && rangeMaxMgdl != null && unit != UnitSpace.Kovatchev) {
-            val (a, b) = fixedYRange(yMin, yMax, unit, rangeMinMgdl, rangeMaxMgdl)
-            yMin = a; yMax = b
+        val fixed = if (rangeMinMgdl != null && rangeMaxMgdl != null) {
+            fixedYRange(yMin, yMax, unit, rangeMinMgdl, rangeMaxMgdl, kovatchevF)
+        } else {
+            null
+        }
+        if (fixed != null) {
+            yMin = fixed.first; yMax = fixed.second
         } else {
             val minSpanY = minValueSpan(unit)
             if (yMax - yMin < minSpanY) {
@@ -110,6 +115,7 @@ fun SessionScrubGraph(
 
         drawGraphFurniture(
             unit = unit,
+            kovatchevF = kovatchevF,
             tzOffsetMin = tzOffsetMin,
             plotLeft = plotLeft, plotTop = plotTop, plotRight = plotRight, plotBottom = plotBottom,
             viewStartMs = viewStartMs, viewSpanMs = viewSpanMs,

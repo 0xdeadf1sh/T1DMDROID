@@ -15,6 +15,10 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.math.ln
+
+/** Monotone stand-in for the native clinical f; the axis needs the shape, not the anchoring. */
+private val STUB_F: (Double) -> Double = { mgdl -> 1.509 * (ln(mgdl) * ln(mgdl) - 5.381) }
 
 class BgPanelTest {
 
@@ -35,25 +39,35 @@ class BgPanelTest {
     }
 
     @Test fun fixedRange_alwaysCoversConfiguredWindow() {
-        val (lo, hi) = fixedYRange(90f, 160f, UnitSpace.MgDl, 20, 250)
+        val (lo, hi) = fixedYRange(90f, 160f, UnitSpace.MgDl, 20, 250)!!
         assertTrue("floor covers 20", lo <= 20f)
         assertTrue("ceiling covers 250", hi >= 250f)
     }
 
     @Test fun fixedRange_growsAboveCeilingForHigh() {
-        val (_, hi) = fixedYRange(90f, 360f, UnitSpace.MgDl, 20, 250)
+        val (_, hi) = fixedYRange(90f, 360f, UnitSpace.MgDl, 20, 250)!!
         assertTrue("ceiling grew to fit the 360 reading", hi >= 360f)
     }
 
     @Test fun fixedRange_growsBelowFloorForLow() {
-        val (lo, _) = fixedYRange(12f, 160f, UnitSpace.MgDl, 20, 250)
+        val (lo, _) = fixedYRange(12f, 160f, UnitSpace.MgDl, 20, 250)!!
         assertTrue("floor dropped to fit the 12 reading", lo <= 12f)
     }
 
     @Test fun fixedRange_convertsToMmol() {
-        val (lo, hi) = fixedYRange(5f, 9f, UnitSpace.MmolL, 20, 250)
+        val (lo, hi) = fixedYRange(5f, 9f, UnitSpace.MmolL, 20, 250)!!
         assertTrue("floor covers 20 mg/dL ≈ 1.1 mmol/L", lo <= 20f / 18.0182f)
         assertTrue("ceiling covers 250 mg/dL ≈ 13.9 mmol/L", hi >= 250f / 18.0182f)
+    }
+
+    @Test fun fixedRange_convertsToRisk() {
+        val (lo, hi) = fixedYRange(-0.5f, 0.9f, UnitSpace.Kovatchev, 20, 250, STUB_F)!!
+        assertTrue("floor covers f(20)", lo <= STUB_F(20.0).toFloat())
+        assertTrue("ceiling covers f(250)", hi >= STUB_F(250.0).toFloat())
+    }
+
+    @Test fun fixedRange_riskWithoutTransformIsNull() {
+        assertNull(fixedYRange(-0.5f, 0.9f, UnitSpace.Kovatchev, 20, 250, null))
     }
 
     private fun pred(
