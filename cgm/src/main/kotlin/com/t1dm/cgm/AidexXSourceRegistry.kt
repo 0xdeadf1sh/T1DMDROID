@@ -3,8 +3,10 @@ package com.t1dm.cgm
 import android.util.Log
 import com.t1dm.core.model.CgmSourceDescriptor
 import com.t1dm.core.model.CgmSourceId
+import com.t1dm.core.model.CgmSourceStatus
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -12,6 +14,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -121,6 +125,11 @@ class AidexXSourceRegistry(
     override fun authoritativeSource(): AidexXSource? = _authoritative.value?.let { live[it.value] }
 
     override fun liveSource(id: CgmSourceId): AidexXSource? = live[id.value]
+
+    /** Keyed off `_sources`, which `adopt` updates only after filling `live`, so it re-resolves. */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun statusOf(id: CgmSourceId): Flow<CgmSourceStatus> =
+        _sources.flatMapLatest { live[id.value]?.status ?: flowOf(CgmSourceStatus.Idle) }
 
     /** Costs no radio: a recognised sensor in range is decoded whatever its flag. */
     override fun activate(id: CgmSourceId) {
