@@ -18,6 +18,7 @@ import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.consumeWindowInsets
@@ -479,64 +480,93 @@ private fun Breadcrumb(navController: NavHostController, container: AppContainer
     }
     val animationsOn = LocalAnimationsEnabled.current
     val trailScroll = rememberScrollState()
-    Row(
+    val trailWidth = crumbTrailWidth(crumbs)
+    BoxWithConstraints(
         // Deliberately no background: the backdrop shows through.
         Modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(
-            Modifier
-                .weight(1f)
-                .then(
-                    if (animationsOn) Modifier.basicMarquee(iterations = Int.MAX_VALUE)
-                    else Modifier.horizontalScroll(trailScroll),
-                ),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            crumbs.forEachIndexed { i, crumb ->
-                if (i > 0) {
-                    Text("›", style = MaterialTheme.typography.titleMedium, color = cs.onSurfaceVariant)
-                }
-                val isLast = i == crumbs.lastIndex
-                Text(
-                    crumb.label,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = if (isLast) FontWeight.Bold else FontWeight.Normal,
-                    color = when {
-                        isLast -> cs.onSurface
-                        crumb.route != null -> cs.primary
-                        else -> cs.onSurfaceVariant
-                    },
-                    maxLines = 1,
-                    modifier = if (!isLast && crumb.route != null) {
-                        Modifier
-                            .clip(RoundedCornerShape(6.dp))
-                            .hapticClickable(HapticEvent.NavSwitch) {
-                                if (!navController.popBackStack(crumb.route, inclusive = false)) {
-                                    navController.navigate(crumb.route) { launchSingleTop = true }
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                Modifier
+                    .weight(1f)
+                    .then(
+                        if (animationsOn) Modifier.basicMarquee(iterations = Int.MAX_VALUE)
+                        else Modifier.horizontalScroll(trailScroll),
+                    ),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(CRUMB_GAP),
+            ) {
+                crumbs.forEachIndexed { i, crumb ->
+                    if (i > 0) {
+                        Text("›", style = MaterialTheme.typography.titleMedium, color = cs.onSurfaceVariant)
+                    }
+                    val isLast = i == crumbs.lastIndex
+                    Text(
+                        crumb.label,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = if (isLast) FontWeight.Bold else FontWeight.Normal,
+                        color = when {
+                            isLast -> cs.onSurface
+                            crumb.route != null -> cs.primary
+                            else -> cs.onSurfaceVariant
+                        },
+                        maxLines = 1,
+                        modifier = if (!isLast && crumb.route != null) {
+                            Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .hapticClickable(HapticEvent.NavSwitch) {
+                                    if (!navController.popBackStack(crumb.route, inclusive = false)) {
+                                        navController.navigate(crumb.route) { launchSingleTop = true }
+                                    }
                                 }
-                            }
-                            .padding(horizontal = 8.dp, vertical = 8.dp)
-                    } else {
-                        Modifier.padding(horizontal = 8.dp, vertical = 8.dp)
-                    },
+                                .padding(horizontal = CRUMB_H_PAD, vertical = 8.dp)
+                        } else {
+                            Modifier.padding(horizontal = CRUMB_H_PAD, vertical = 8.dp)
+                        },
+                    )
+                }
+            }
+            GlycemicStatusBadge(status)
+            if (death) {
+                Text(
+                    "☠",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontSize = 20.sp,
+                    color = cs.error,
+                    maxLines = 1,
+                    modifier = Modifier.padding(start = 8.dp),
                 )
             }
         }
-        GlycemicStatusBadge(status)
-        if (death) {
-            Text(
-                "☠",
-                style = MaterialTheme.typography.titleMedium,
-                fontSize = 20.sp,
-                color = cs.error,
-                maxLines = 1,
-                modifier = Modifier.padding(start = 8.dp),
-            )
+        // Centred on the bar, not on what the trail leaves: it yields rather than drift.
+        if (trailWidth <= maxWidth / 2 - TOD_ICON_SIZE / 2 - CRUMB_GAP) {
+            TimeOfDayIcon(TOD_ICON_SIZE, Modifier.align(Alignment.Center))
         }
+    }
+}
+
+private val CRUMB_H_PAD = 8.dp
+private val CRUMB_GAP = 4.dp
+private val TOD_ICON_SIZE = 36.dp
+
+/** Laid-out width of the whole trail, so the centred clock can yield before the two meet. */
+@Composable
+private fun crumbTrailWidth(crumbs: List<Crumb>): Dp {
+    val measurer = rememberTextMeasurer()
+    val style = MaterialTheme.typography.titleMedium
+    val density = LocalDensity.current
+    return remember(crumbs, style, density) {
+        if (crumbs.isEmpty()) return@remember 0.dp
+        var px = 0
+        crumbs.forEachIndexed { i, crumb ->
+            if (i > 0) px += measurer.measure("›", style).size.width
+            val weight = if (i == crumbs.lastIndex) FontWeight.Bold else FontWeight.Normal
+            px += measurer.measure(crumb.label, style.copy(fontWeight = weight)).size.width
+        }
+        val gaps = 2 * crumbs.size - 2
+        with(density) { px.toDp() } + CRUMB_H_PAD * 2 * crumbs.size + CRUMB_GAP * gaps
     }
 }
 
@@ -697,28 +727,20 @@ private fun T1dmBottomBar(
                     .hapticClickable(HapticEvent.SegmentTick) {
                         container.setUnitSpace(UnitSpace.entries[(unit.ordinal + 1) % UnitSpace.entries.size])
                     }
-                    // Clearance from the puck: the icon is pinned to this column's right edge.
+                    // Clearance from the puck.
                     .padding(end = 12.dp),
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Text(
-                        text = bgText,
-                        style = bgStyle,
-                        // Stale beats viewed-tint order (older number is the stronger warning).
-                        color = when {
-                            stale -> cs.error
-                            viewingOther -> cs.tertiary
-                            else -> Color.Unspecified
-                        },
-                        maxLines = 1,
-                        // Filled, so the icon holds its place as the value's width changes.
-                        modifier = Modifier.weight(1f),
-                    )
-                    TimeOfDayIcon()
-                }
+                Text(
+                    text = bgText,
+                    style = bgStyle,
+                    // Stale beats viewed-tint order (older number is the stronger warning).
+                    color = when {
+                        stale -> cs.error
+                        viewingOther -> cs.tertiary
+                        else -> Color.Unspecified
+                    },
+                    maxLines = 1,
+                )
                 Text(
                     text = BgFormat.unitLabel(unit) + (shown?.let { readingSuffix(it) } ?: ""),
                     style = MaterialTheme.typography.bodySmall,
