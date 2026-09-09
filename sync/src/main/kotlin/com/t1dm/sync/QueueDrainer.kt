@@ -10,6 +10,7 @@ import com.t1dm.data.db.NS_ENTRY_DEDUP_PREFIX
 import com.t1dm.data.db.SampleEntity
 import com.t1dm.sync.nightscout.NightscoutClient
 import com.t1dm.sync.nightscout.NightscoutDisabledException
+import com.t1dm.sync.nightscout.NsEntryDto
 import com.t1dm.sync.nightscout.NsJson
 import com.t1dm.sync.nightscout.toNsEntry
 import kotlinx.coroutines.sync.Mutex
@@ -126,24 +127,33 @@ class QueueDrainer(
         var error: String? = null
         // One unreachable host must not cost a connect timeout per row; batch is FIFO.
         var unreachable = false
+        var requests = 0
         val bridge = nightscout
+        val groups = if (bridged) bridgeGroups(batch) else batch.map { listOf(it) }
 
-        loop@ for (row in batch) {
+        loop@ for (group in groups) {
+            // A third party is owed no burst; the rest keeps its place for the next pass.
+            if (bridged && requests >= BRIDGE_REQUESTS_PER_PASS) break@loop
             // Claim before the wire: a tail row stays PENDING within the undo window.
-            if (dao.claim(row.id, OutboxState.PENDING, OutboxState.INFLIGHT) == 0) continue@loop
-            val request = resolve(row)
-            if (request == null) { dao.delete(row.id); dropped++; continue } // slot vanished
-            if (unreachable) { reschedule(row, now); retried++; continue@loop }
+            val claimed = group.filter { dao.claim(it.id, OutboxState.PENDING, OutboxState.INFLIGHT) == 1 }
+            if (claimed.isEmpty()) continue@loop
+            val (request, vanished) = resolveGroup(claimed)
+            for (row in vanished) { dao.delete(row.id); dropped++ }
+            val rows = claimed - vanished.toSet()
+            if (request == null) continue@loop
+            if (unreachable) { rows.forEach { reschedule(it, now); retried++ }; continue@loop }
 
             // Replay of bridged send: /api/v1 has no idempotency key, a lost ack double-counts.
-            if (bridged && (row.attempts > 0 || row.id in reclaimed) && bridge != null) {
+            if (bridged && rows.any { it.attempts > 0 || it.id in reclaimed } && bridge != null) {
                 val already = runCatching { bridge.alreadyPosted(request) }.getOrDefault(false)
                 if (already) {
-                    Timber.tag(TAG).i("bridge row %d already present; not re-posting", row.id)
-                    dao.delete(row.id); sent++; continue@loop
+                    Timber.tag(TAG).i("bridge group of %d already present; not re-posting", rows.size)
+                    rows.forEach { dao.delete(it.id); sent++ }
+                    continue@loop
                 }
             }
 
+            requests++
             val response = try {
                 if (bridged) {
                     bridge?.execute(request) ?: throw NightscoutDisabledException()
@@ -152,35 +162,65 @@ class QueueDrainer(
                 }
             } catch (e: NightscoutDisabledException) {
                 // Switched off while the row sat queued; nothing will ever send it.
-                dao.delete(row.id); dropped++; continue@loop
+                rows.forEach { dao.delete(it.id); dropped++ }
+                continue@loop
             } catch (e: NoActiveProfileException) {
-                revert(row); standDown = DrainResult.StandDown.NO_PROFILE; break@loop
+                rows.forEach { revert(it) }
+                standDown = DrainResult.StandDown.NO_PROFILE
+                break@loop
             } catch (e: Exception) {
-                reschedule(row, now); retried++
+                rows.forEach { reschedule(it, now); retried++ }
                 error = e.javaClass.simpleName
                 unreachable = true
                 continue@loop
             }
             when {
-                response.ok -> { dao.delete(row.id); sent++ }
-                // A rejected bridge secret backs off one row; only T1DMSERVER stands a lane down.
+                response.ok -> rows.forEach { dao.delete(it.id); sent++ }
+                // A rejected bridge secret backs off its rows; only T1DMSERVER stands a lane down.
                 response.authError && bridged -> {
-                    reschedule(row, now); retried++
+                    rows.forEach { reschedule(it, now); retried++ }
                     error = "HTTP ${response.code} — secret rejected"
                 }
-                response.authError -> { revert(row); standDown = DrainResult.StandDown.AUTH; break@loop }
+                response.authError -> {
+                    rows.forEach { revert(it) }
+                    standDown = DrainResult.StandDown.AUTH
+                    break@loop
+                }
                 response.permanentClientError -> {
-                    Timber.tag(TAG).w("dropping %s row %d: HTTP %d", row.kind, row.id, response.code)
-                    dao.delete(row.id); dropped++
+                    Timber.tag(TAG).w("dropping %d row(s): HTTP %d", rows.size, response.code)
+                    rows.forEach { dao.delete(it.id); dropped++ }
                     error = "HTTP ${response.code}"
                 }
                 else -> {
-                    reschedule(row, now); retried++
+                    rows.forEach { reschedule(it, now); retried++ }
                     error = "HTTP ${response.code}"
                 }
             }
         }
         return LaneResult(sent, dropped, retried, standDown, error)
+    }
+
+    /** BG markers ride one entries array; a treatment stays alone, its guard is per-row. */
+    private fun bridgeGroups(batch: List<OutboxEntity>): List<List<OutboxEntity>> {
+        val (entries, rest) = batch.partition { it.dedupKey.startsWith(NS_ENTRY_DEDUP_PREFIX) }
+        return entries.chunked(ENTRY_CHUNK) + rest.map { listOf(it) }
+    }
+
+    /** The group's one request, plus the rows whose slot vanished and which the caller drops. */
+    private suspend fun resolveGroup(rows: List<OutboxEntity>): Pair<SyncRequest?, List<OutboxEntity>> {
+        if (!rows[0].dedupKey.startsWith(NS_ENTRY_DEDUP_PREFIX)) {
+            val request = resolve(rows[0])
+            return if (request == null) null to rows else request to emptyList()
+        }
+        val vanished = mutableListOf<OutboxEntity>()
+        val entries = mutableListOf<NsEntryDto>()
+        for (row in rows) {
+            val entry = resolveEntry(row)
+            if (entry == null) vanished += row else entries += entry
+        }
+        if (entries.isEmpty()) return null to vanished
+        val body = NsJson.encodeToString(entries).toByteArray()
+        return SyncRequest("POST", "/api/v1/entries", body) to vanished
     }
 
     /** Restore a row to PENDING without advancing its backoff (auth / no-profile stand-down). */
@@ -198,17 +238,15 @@ class QueueDrainer(
             val sample = ts?.let { sampleAt(it) }
             sample?.let { SyncRequest("POST", "/v1/ingest", SyncJson.encodeToString(it.toIngest()).toByteArray()) }
         }
-        // Dirty-marker like INGEST, resolved now: a slot rewritten mid-wait uploads once, current.
-        row.kind == OutboxKind.NIGHTSCOUT && row.dedupKey.startsWith(NS_ENTRY_DEDUP_PREFIX) -> {
-            val ts = row.dedupKey.removePrefix(NS_ENTRY_DEDUP_PREFIX).toLongOrNull()
-            val entry = ts?.let { sampleAt(it)?.toNsEntry(trendAt(it)) }
-            entry?.let {
-                SyncRequest("POST", "/api/v1/entries", NsJson.encodeToString(listOf(it)).toByteArray())
-            }
-        }
         else -> runCatching {
             SyncJson.decodeFromString<OutboxRequest>(String(row.payload, Charsets.UTF_8)).toSyncRequest()
         }.getOrNull()
+    }
+
+    /** Dirty-marker like INGEST, resolved now; a slot with no BG yields null and the row drops. */
+    private suspend fun resolveEntry(row: OutboxEntity): NsEntryDto? {
+        val ts = row.dedupKey.removePrefix(NS_ENTRY_DEDUP_PREFIX).toLongOrNull() ?: return null
+        return sampleAt(ts)?.toNsEntry(trendAt(ts))
     }
 
     private companion object {
@@ -216,5 +254,11 @@ class QueueDrainer(
 
         /** Bridge floor as a fraction of maxQueueSize; ~7 d of five-minute rows at 20 000. */
         const val BRIDGE_RESERVE_DIVISOR = 10
+
+        /** BG readings per entries POST; 100 is ~8 h of the five-minute grid. */
+        const val ENTRY_CHUNK = 100
+
+        /** Bridge requests per pass. At a 60 s pass that is 4/min against a third party. */
+        const val BRIDGE_REQUESTS_PER_PASS = 4
     }
 }

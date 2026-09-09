@@ -1,9 +1,12 @@
 package com.t1dm.sync.nightscout
 
+import com.t1dm.core.model.ReadingFlag
+import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.data.db.NS_ENTRY_DEDUP_PREFIX
 import com.t1dm.data.db.OutboxEntity
 import com.t1dm.data.db.OutboxKind
 import com.t1dm.data.db.OutboxState
+import com.t1dm.data.db.SampleEntity
 import com.t1dm.sync.DrainConfig
 import com.t1dm.sync.FakeOutboxDao
 import com.t1dm.sync.OutboxRequest
@@ -90,16 +93,71 @@ class NightscoutDrainTest {
         state = OutboxState.PENDING,
     )
 
+    private fun entryRow(ts: Long) = OutboxEntity(
+        kind = OutboxKind.NIGHTSCOUT,
+        dedupKey = "$NS_ENTRY_DEDUP_PREFIX$ts",
+        payload = ByteArray(0),
+        createdAtMs = ts,
+        attempts = 0,
+        nextAttemptMs = 0,
+        state = OutboxState.PENDING,
+    )
+
+    private fun sampleAt(ts: Long) = SampleEntity(
+        ts = ts,
+        tzOffsetMin = 240,
+        bgMgdl = 120,
+        bgSource = "src",
+        bgProvenance = ReadingProvenance.MEASURED,
+        bgFlag = ReadingFlag.NORMAL,
+        steps = null,
+        mood = null,
+        hr = null,
+        sleep = null,
+        exercise = null,
+        updatedAt = ts,
+    )
+
     private fun drainer(
         dao: FakeOutboxDao,
         http: SyncHttpClient,
         bridge: NightscoutClient?,
         batchLimit: Int = 200,
+        sampleAt: suspend (Long) -> SampleEntity? = { null },
     ) = QueueDrainer(
-        dao, http, { null }, dispatchers,
+        dao, http, sampleAt, dispatchers,
         DrainConfig(baseBackoffMs = 1_000, jitterFrac = 0.0, batchLimit = batchLimit, maxQueueSize = 100),
         { 10_000L }, { 0.0 }, bridge, { null },
     )
+
+    /** One POST per reading is a burst a third-party host is not owed. */
+    @Test
+    fun `bg markers ride one entries POST`() = runTest {
+        val dao = FakeOutboxDao()
+        repeat(3) { dao.enqueue(entryRow(1_787_000_000_000L + it * 300_000L)) }
+        val bridge = RecordingBridge({ SyncResponse(200, ByteArray(0)) })
+
+        val result = drainer(dao, FakeServer(), bridge, sampleAt = ::sampleAt).drainOnce()
+
+        assertEquals("three readings, one request", 1, bridge.requests.size)
+        val body = NsJson.decodeFromString<List<NsEntryDto>>(String(bridge.requests[0].body!!))
+        assertEquals(3, body.size)
+        assertEquals(3, result.sent)
+        assertEquals(0, dao.count())
+    }
+
+    @Test
+    fun `the bridge sends no more than its per-pass request budget`() = runTest {
+        val dao = FakeOutboxDao()
+        repeat(10) { dao.enqueue(treatmentRow(it + 1L)) }
+        val bridge = RecordingBridge({ SyncResponse(200, ByteArray(0)) })
+
+        val result = drainer(dao, FakeServer(), bridge).drainOnce()
+
+        assertEquals(4, bridge.requests.size)
+        assertEquals(4, result.sent)
+        assertEquals("the rest keeps its place for the next pass", 6, dao.count())
+    }
 
     /** resetState reclaims wedged INFLIGHT, no attempts bump; replay keyed on it alone re-POSTs. */
     @Test
