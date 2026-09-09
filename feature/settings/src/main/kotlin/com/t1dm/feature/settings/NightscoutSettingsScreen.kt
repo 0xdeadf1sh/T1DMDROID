@@ -111,7 +111,7 @@ private val nsEnabled = SettingsKnob(
     label = "Mirror BG, carbs & bolus",
     subtitle = "Upload readings and logged events to a Nightscout-compatible host",
     synonyms = listOf(
-        "nightscout", "gluroo", "bridge", "mirror", "upload", "share", "xdrip", "sync",
+        "nightscout", "bridge", "mirror", "upload", "share", "xdrip", "sync",
         "third party", "logbook", "export",
     ),
 )
@@ -122,7 +122,7 @@ private val nsUrl = SettingsKnob(
     section = NS_SECTION,
     label = "URL",
     subtitle = "The Nightscout URL the host gave you",
-    synonyms = listOf("url", "site", "address", "host", "endpoint", "nightscout", "gluroo"),
+    synonyms = listOf("url", "site", "address", "host", "endpoint", "nightscout"),
 )
 
 private val nsSecret = SettingsKnob(
