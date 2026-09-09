@@ -21,6 +21,16 @@ enum class CgmSourceStatus {
     SignalLost,
 }
 
+/** Never `status.name` — that prints the enum identifier. */
+fun statusWord(status: CgmSourceStatus): String = when (status) {
+    CgmSourceStatus.Idle -> "idle"
+    CgmSourceStatus.Scanning -> "connecting"
+    CgmSourceStatus.Warmup -> "warming up"
+    CgmSourceStatus.Live -> "live"
+    CgmSourceStatus.Faulted -> "sensor fault"
+    CgmSourceStatus.SignalLost -> "signal lost"
+}
+
 /** Sensor MODEL a source instances, scope of history (§3.1); DISPLAY only, never authority. */
 object CgmSensorModelId {
     /** Only real sensor family the app reads today; the class every pre-v11 row belongs to. */
@@ -59,9 +69,19 @@ data class CgmSourceDescriptor(
     /** One function per incidental surface; CGM panel shows displayName+ordinalLabel instead. */
     fun incidentalName(showNames: Boolean): String = if (showNames) shortName else ordinalLabel()
 
+    /** Serial for incidental surfaces; masked it is the ordinal digit repeated, not the serial. */
+    fun incidentalSerial(showNames: Boolean): String? = when {
+        showNames -> serialSuffix
+        ordinal >= 0 -> ordinal.toString().repeat(MASKED_SERIAL_LEN).take(MASKED_SERIAL_LEN)
+        else -> null
+    }
+
     companion object {
         /** ordinal before storage mints one. Negative, so >= 0 is the whole is-it-numbered. */
         const val UNASSIGNED_ORDINAL: Int = -1
+
+        /** Characters in a masked serial; fixed so a two-digit ordinal cannot widen the row. */
+        const val MASKED_SERIAL_LEN: Int = 6
 
         /** Knob's travel range; seed is a vendor constant; 0=no warm-up, minFromStart stays >=0. */
         val WARMUP_WINDOW_RANGE: IntRange = 0..360

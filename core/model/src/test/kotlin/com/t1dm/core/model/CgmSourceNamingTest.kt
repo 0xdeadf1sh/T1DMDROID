@@ -57,6 +57,24 @@ class CgmSourceNamingTest {
         assertEquals("Brand", d.incidentalName(showNames = true))
     }
 
+    @Test
+    fun `an incidental serial is the ordinal digit while names are hidden`() {
+        assertEquals("22222C74D9", descriptor(ordinal = 2).incidentalSerial(showNames = true))
+        assertEquals("222222", descriptor(ordinal = 2).incidentalSerial(showNames = false))
+        assertEquals("000000", descriptor(ordinal = 0).incidentalSerial(showNames = false))
+    }
+
+    /** Fixed width, so a two-digit ordinal cannot widen the row it is drawn in. */
+    @Test
+    fun `a masked serial is always six characters and never the real one`() {
+        for (ordinal in 0..30) {
+            val masked = descriptor(ordinal = ordinal).incidentalSerial(showNames = false)
+            assertEquals(CgmSourceDescriptor.MASKED_SERIAL_LEN, masked?.length)
+            assertTrue("the mask must not contain the serial", masked?.contains("22222C74D9") == false)
+        }
+        assertEquals(null, descriptor().incidentalSerial(showNames = false))
+    }
+
     /** shortName falls back to the whole name when stripping is empty; only hidden drops it. */
     @Test
     fun `a name that is nothing but the serial still hides`() {
