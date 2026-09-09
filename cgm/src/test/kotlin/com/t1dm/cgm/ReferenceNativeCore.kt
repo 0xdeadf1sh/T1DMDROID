@@ -16,7 +16,6 @@ import com.t1dm.core.model.DtsZone
 import com.t1dm.core.model.Forecast
 import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.ForecastWindow
-import com.t1dm.core.model.GapRun
 import com.t1dm.core.model.GraphInput
 import com.t1dm.core.model.HeadSpec
 import com.t1dm.core.model.LoraConfig
@@ -33,8 +32,6 @@ import com.t1dm.core.model.MetricsSuite
 import com.t1dm.core.model.ModelDescriptor
 import com.t1dm.core.model.PredictedTime
 import com.t1dm.core.model.StatSample
-import com.t1dm.core.model.SynthParams
-import com.t1dm.core.model.SynthSeries
 import com.t1dm.core.model.TerrainSpec
 
 /** Test-only NativeCore; only decode and risk conversions answer, everything else throws. */
@@ -61,10 +58,6 @@ class ReferenceNativeCore : NativeCore {
     override fun loraNew(config: LoraConfig, headSha256: String, dModel: Int, hidden: Int, outDim: Int, seed: Long): LoraWeights = TODO("not exercised by :cgm tests")
     override fun loraSerialize(w: LoraWeights): ByteArray = TODO("not exercised by :cgm tests")
     override fun loraDeserialize(bytes: ByteArray): LoraWeights? = TODO("not exercised by :cgm tests")
-    override fun synthDefaultParams(): SynthParams = TODO("not exercised by :cgm tests")
-    override fun synthSeries(nSteps: Int, startHourOfDay: Double, params: SynthParams, seed: Long): SynthSeries = TODO("not exercised by :cgm tests")
-    override fun synthFillGaps(realBg: List<Double>, realCarb: List<Double>, realInsulin: List<Double>, realExercise: List<Double>, synth: SynthSeries): SynthSeries = TODO("not exercised by :cgm tests")
-    override fun findGaps(bg: List<Double>, minSteps: Int): List<GapRun> = TODO("not exercised by :cgm tests")
     override fun forecastDegeneracyCheck(desc: ModelDescriptor, forecast: Forecast): ForecastStatus = TODO("not exercised by :cgm tests")
     override fun decodeTime(timeLogits: List<Double>, nBins: Int, binHours: Double): PredictedTime? = TODO("not exercised by :cgm tests")
     override fun gamma(total: Double, k: Double, theta: Double, durMin: Double): List<Double> = TODO("not exercised by :cgm tests")

@@ -56,9 +56,33 @@ data class LoraFitProgress(val phase: Phase, val done: Int, val total: Int) {
     }
 }
 
+data class LoraAdapter(
+    val id: Long,
+    val modelId: String,
+    val name: String,
+    val rank: Int,
+    val nParams: Int,
+    val nTrain: Int,
+    val nHoldout: Int,
+    val holdoutBefore: Double,
+    val holdoutAfter: Double,
+    val improved: Boolean,
+    val attached: Boolean,
+    val updatedAtMs: Long,
+    /** Null when it may attach; same predicate as LabController.attach so button/gate agree. */
+    val attachRefusal: String? = null,
+    /** Marginal dose response kept, as a ratio in risk space; 1.0 is preservation. */
+    val guardRetention: Double = 0.0,
+    val guardWindows: Int = 0,
+    /** mg/dL per unit at the horizon, frozen model and adapted. */
+    val guardFrozenMgdl: Double = 0.0,
+    val guardAdaptedMgdl: Double = 0.0,
+    val guardOverridden: Boolean = false,
+)
+
 data class LoraPanelState(
     val modelId: String,
-    val adapters: List<LabAdapter> = emptyList(),
+    val adapters: List<LoraAdapter> = emptyList(),
     /** Why no adapter can be taken; null when one can. */
     val unavailable: String? = null,
     val progress: LoraFitProgress? = null,
@@ -92,9 +116,9 @@ fun LoraPanel(
         }
         wasBusy = state.busy
     }
-    var renaming by remember { mutableStateOf<LabAdapter?>(null) }
-    var deleting by remember { mutableStateOf<LabAdapter?>(null) }
-    var overriding by remember { mutableStateOf<LabAdapter?>(null) }
+    var renaming by remember { mutableStateOf<LoraAdapter?>(null) }
+    var deleting by remember { mutableStateOf<LoraAdapter?>(null) }
+    var overriding by remember { mutableStateOf<LoraAdapter?>(null) }
 
     Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         state.unavailable?.let {

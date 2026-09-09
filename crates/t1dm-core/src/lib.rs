@@ -10,10 +10,6 @@ pub use preproc::*;
 mod head;
 pub use head::*;
 
-/// Seeded synthetic channels, 5-min grid; never stored/synced, never read by classification.
-mod synth;
-pub use synth::*;
-
 /// Bit-faithful to `simulator.py`.
 mod curve;
 pub use curve::*;

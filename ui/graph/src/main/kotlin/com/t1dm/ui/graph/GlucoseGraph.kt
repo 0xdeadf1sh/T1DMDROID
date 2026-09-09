@@ -157,7 +157,7 @@ fun GlucoseGraph(
     logMarkers: List<LogMarker> = emptyList(),
     /** Positions behind the mark in [logMarkers] — a cluster, both lanes. Logs can share a slot. */
     onMarkerTap: ((List<Int>) -> Unit)? = null,
-    /** DISPLAY ONLY: nothing drawn here is stored; the write into the record lives in the Lab. */
+    /** DISPLAY ONLY: nothing drawn here is stored; the edit bar's Fill writes into the record. */
     reconstructed: List<ReconstructedBg> = emptyList(),
     /** mg/dL → Kovatchev risk, from the Rust core. Null on the risk axis draws no reconstruction */
     kovatchevF: ((Double) -> Double)? = null,

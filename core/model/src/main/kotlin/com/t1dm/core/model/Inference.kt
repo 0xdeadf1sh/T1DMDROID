@@ -212,25 +212,3 @@ fun interface LoraProgressSink {
 
 data class LoraTrainResult(val weights: LoraWeights, val report: LoraTrainReport)
 
-data class SynthParams(
-    val baselineBg: Double,
-    val mealGrams: Double,
-    val carbRatio: Double,
-    val basalUPerHour: Double,
-    val exerciseProb: Double,
-    val exerciseCarbEquivPerMin: Double,
-    val cgmNoiseSd: Double,
-    val missedBolusProb: Double,
-)
-
-data class SynthSeries(
-    val bg: List<Double>,
-    val carb: List<Double>,
-    val insulin: List<Double>,
-    val exercise: List<Double>,
-    val nMeals: Int,
-    val nBoluses: Int,
-    val nBouts: Int,
-)
-
-data class GapRun(val start: Int, val end: Int)

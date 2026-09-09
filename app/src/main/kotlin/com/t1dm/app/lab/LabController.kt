@@ -8,34 +8,23 @@ import com.t1dm.inference.loraAttachRefusal
 import com.t1dm.core.model.MaskGeometry
 import com.t1dm.core.model.LoraTrainOpts
 import com.t1dm.core.model.MaskSpan
-import com.t1dm.core.model.ModelDescriptor
 import com.t1dm.data.PromoteResult
 import com.t1dm.data.T1dmRepository
 import com.t1dm.data.db.BgInfillEntity
 import com.t1dm.data.db.toBlob
 import com.t1dm.data.db.toDoubleList
 import com.t1dm.data.db.LoraEntity
-import com.t1dm.feature.models.LabAdapter
 import com.t1dm.core.model.SpanLinePreview
-import com.t1dm.feature.models.LabSynth
-import com.t1dm.feature.models.LabUiState
+import com.t1dm.feature.models.LoraAdapter
 import com.t1dm.feature.models.LoraFitSpec
 import com.t1dm.inference.BgHistoryProvider
 import com.t1dm.inference.BgSeries
 import com.t1dm.inference.InferenceController
 import com.t1dm.inference.ModelChannels
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
-import timber.log.Timber
 import java.io.File
-import java.util.Calendar
-import java.util.TimeZone
-import kotlin.math.max
 import kotlin.math.min
 
-/** Drives Lab/adapter panel/BG reconstruction; writes nothing except runSpan's own table. */
+/** Drives the adapter panel and BG reconstruction; writes nothing except runSpan's own table. */
 class LabController(
     private val native: NativeCore,
     private val controller: InferenceController,
@@ -45,101 +34,8 @@ class LabController(
     private val adaptersDir: () -> File,
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
-    private val _state = MutableStateFlow(LabUiState())
-    val state: StateFlow<LabUiState> = _state.asStateFlow()
-
-    suspend fun refresh(models: List<String>) {
-        val picked = _state.value.modelId?.takeIf { it in models } ?: models.firstOrNull()
-        val desc = picked?.let { controller.descriptorOf(it) }
-        val realPatches = realContextPatches(desc)
-        _state.update {
-            it.copy(
-                models = models,
-                modelId = picked,
-                contextPatches = desc?.minContextPatches ?: 0,
-                realPatches = realPatches,
-                adapters = picked?.let { id -> adaptersFor(id) } ?: emptyList(),
-            )
-        }
-    }
-
-    fun pickModel(id: String) = _state.update { it.copy(modelId = id, generated = null) }
-    fun setSeed(seed: Long) = _state.update { it.copy(seed = seed, generated = null) }
-
-    private suspend fun realContextPatches(desc: ModelDescriptor?): Int {
-        if (desc == null) return 0
-        val steps = desc.maxContextPatches * desc.patchSize
-        val s = runCatching { history.recentBgSeries(steps, desc.patchSize) }.getOrNull() ?: return 0
-        return s.mgdl.size / desc.patchSize
-    }
-
-    suspend fun adaptersOf(modelId: String): List<LabAdapter> = adaptersFor(modelId)
-
-    private suspend fun adaptersFor(modelId: String): List<LabAdapter> =
+    suspend fun adaptersOf(modelId: String): List<LoraAdapter> =
         runCatching { repository.lorasFor(modelId).map { it.toUi() } }.getOrElse { emptyList() }
-
-    /** Only MISSING steps invented, real samples survive; model picked for window length only. */
-    suspend fun generate() {
-        val st = _state.value
-        val modelId = st.modelId ?: return
-        val desc = controller.descriptorOf(modelId) ?: return
-        _state.update { it.copy(generating = true, error = null) }
-        try {
-            val steps = desc.minContextPatches * desc.patchSize
-            val synth = windowFor(desc, steps, st.seed)
-                ?: run {
-                    _state.update { it.copy(generating = false, error = "No window to generate over") }
-                    return
-                }
-            _state.update { it.copy(generating = false, generated = synth) }
-        } catch (t: Throwable) {
-            Timber.w(t, "lab generate failed")
-            _state.update { it.copy(generating = false, error = t.message ?: "Generate failed") }
-        }
-    }
-
-    private suspend fun windowFor(desc: ModelDescriptor, steps: Int, seed: Long): LabSynth? {
-        val real = runCatching { history.recentBgSeries(steps, desc.patchSize) }.getOrNull()
-        val anchorMs = real?.let { it.gridStartMs + (it.mgdl.size - 1).toLong() * STEP_MS }
-            ?: (clock() / STEP_MS * STEP_MS)
-        val startMs = anchorMs - (steps - 1).toLong() * STEP_MS
-        val gen = native.synthSeries(steps, localHourAt(startMs), native.synthDefaultParams(), seed)
-        val realBg = DoubleArray(steps) { Double.NaN }
-        val realCh = runCatching { channels(startMs, steps) }.getOrElse { ModelChannels.zero(steps) }
-        // The MEASURED series: the dense one would hand back a carry-forward and call it real.
-        val measured = runCatching { history.fitBgSeries(steps, desc.patchSize) }.getOrNull() ?: real
-        if (measured != null) {
-            // By timestamp, not index: the two windows share an end, not a length.
-            val offset = ((measured.gridStartMs - startMs) / STEP_MS).toInt()
-            measured.mgdl.forEachIndexed { i, v ->
-                val j = offset + i
-                if (j in 0 until steps && !v.isNaN()) realBg[j] = v
-            }
-        }
-        val filled = native.synthFillGaps(
-            realBg.toList(),
-            realCh.carb.toList(),
-            realCh.insulin.toList(),
-            realCh.exercise.toList(),
-            gen,
-        )
-        return LabSynth(
-            seed = seed,
-            gridStartMs = startMs,
-            stepMs = STEP_MS,
-            bg = filled.bg,
-            real = List(steps) { !realBg[it].isNaN() },
-            carb = filled.carb,
-            insulin = filled.insulin,
-            exercise = filled.exercise,
-        )
-    }
-
-    private fun localHourAt(ms: Long): Double {
-        val c = Calendar.getInstance(TimeZone.getDefault())
-        c.timeInMillis = ms
-        return c.get(Calendar.HOUR_OF_DAY) + c.get(Calendar.MINUTE) / 60.0
-    }
 
     /** Stores adapter DETACHED; onReplay/onEpoch called on this coroutine's own thread. */
     suspend fun fit(
@@ -207,7 +103,6 @@ class LabController(
                 fittedAtMs = now,
             ),
         )
-        _state.update { it.copy(adapters = adaptersFor(modelId)) }
         val r = result.report
         // At the one-hour stride windows are ~99% shared; non-overlap is the honest denominator.
         val windowSteps = desc.minContextPatches * desc.patchSize +
@@ -240,7 +135,6 @@ class LabController(
         if (refusal != null) return refusal
         repository.attachLora(id, modelId, clock())
         repository.clearForecastDerived(modelId)
-        _state.update { it.copy(adapters = adaptersFor(modelId)) }
         return null
     }
 
@@ -270,37 +164,32 @@ class LabController(
             why = report.why,
             nowMs = clock(),
         )
-        _state.update { it.copy(adapters = adaptersFor(modelId)) }
         return report.why.ifBlank {
             "${report.verdict.name.lowercase()} over ${report.nWindows} windows"
         }
     }
 
     /** typedName must equal the adapter's name, compared here not the dialog; re-fit resets it. */
-    suspend fun overrideGuard(modelId: String, id: Long, typedName: String): String? {
+    suspend fun overrideGuard(id: Long, typedName: String): String? {
         val row = repository.loraById(id) ?: return "Adapter is gone"
         if (typedName.trim() != row.name) return "Type the adapter's name exactly to override"
         repository.setLoraGuardOverride(id, clock())
-        _state.update { it.copy(adapters = adaptersFor(modelId)) }
         return null
     }
 
     suspend fun detach(modelId: String) {
         repository.detachLoras(modelId, clock())
         repository.clearForecastDerived(modelId)
-        _state.update { it.copy(adapters = adaptersFor(modelId)) }
     }
 
-    suspend fun rename(modelId: String, id: Long, name: String) {
+    suspend fun rename(id: Long, name: String) {
         repository.renameLora(id, name, clock())
-        _state.update { it.copy(adapters = adaptersFor(modelId)) }
     }
 
     suspend fun delete(modelId: String, id: Long) {
         val row = repository.loraById(id)
         repository.deleteLora(id)
         if (row?.attached == true) repository.clearForecastDerived(modelId)
-        _state.update { it.copy(adapters = adaptersFor(modelId)) }
     }
 
     suspend fun export(id: Long): String {
@@ -355,7 +244,6 @@ class LabController(
             )
             added++
         }
-        _state.update { it.copy(adapters = adaptersFor(modelId)) }
         return "Imported $added" + if (refused > 0) ", refused $refused" else ""
     }
 
@@ -543,7 +431,7 @@ class LabController(
 
     suspend fun spanSize(spanStartMs: Long): Int = repository.reconstructedSpanSize(spanStartMs)
 
-    private fun LoraEntity.toUi() = LabAdapter(
+    private fun LoraEntity.toUi() = LoraAdapter(
         id = id,
         modelId = modelId,
         name = name,

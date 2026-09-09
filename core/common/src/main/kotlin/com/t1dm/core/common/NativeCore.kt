@@ -3,7 +3,6 @@ package com.t1dm.core.common
 import com.t1dm.core.model.AdvancedStats
 import com.t1dm.core.model.ClinicalCuts
 import com.t1dm.core.model.BasalSchedule
-import com.t1dm.core.model.GapRun
 import com.t1dm.core.model.GraphInput
 import com.t1dm.core.model.HeadSpec
 import com.t1dm.core.model.LoraConfig
@@ -15,8 +14,6 @@ import com.t1dm.core.model.LoraTrainOpts
 import com.t1dm.core.model.LoraTrainResult
 import com.t1dm.core.model.LoraWeights
 import com.t1dm.core.model.MaskSpan
-import com.t1dm.core.model.SynthParams
-import com.t1dm.core.model.SynthSeries
 import com.t1dm.core.model.CarTuning
 import com.t1dm.core.model.ClarkeZone
 import com.t1dm.core.model.DtsZone
@@ -162,28 +159,6 @@ interface NativeCore {
 
     /** `null` on a truncated, corrupted or foreign blob. */
     fun loraDeserialize(bytes: ByteArray): LoraWeights?
-
-    fun synthDefaultParams(): SynthParams
-
-    /** Ends at the caller's "now"; [startHourOfDay] is the local clock hour at step 0. */
-    fun synthSeries(
-        nSteps: Int,
-        startHourOfDay: Double,
-        params: SynthParams,
-        seed: Long,
-    ): SynthSeries
-
-    /** Fills the `NaN` steps only; the dose channels fill on the SAME steps as the BG. */
-    fun synthFillGaps(
-        realBg: List<Double>,
-        realCarb: List<Double>,
-        realInsulin: List<Double>,
-        realExercise: List<Double>,
-        synth: SynthSeries,
-    ): SynthSeries
-
-    /** The absent-sample runs in a gridded BG series (`NaN` marks absent), longest first. */
-    fun findGaps(bg: List<Double>, minSteps: Int): List<GapRun>
 
     /** Safety guard every rail/alert gates on (§3.6-B); desc must match the decoded forecast. */
     fun forecastDegeneracyCheck(desc: ModelDescriptor, forecast: Forecast): ForecastStatus

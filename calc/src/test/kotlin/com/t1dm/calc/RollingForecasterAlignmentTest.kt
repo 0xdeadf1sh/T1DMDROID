@@ -11,7 +11,6 @@ import com.t1dm.data.curve.DoseStore
 import com.t1dm.inference.BgHistoryProvider
 import com.t1dm.inference.BgSeries
 import com.t1dm.core.common.NativeHead
-import com.t1dm.core.model.GapRun
 import com.t1dm.core.model.GraphInput
 import com.t1dm.core.model.HeadSpec
 import com.t1dm.core.model.LoraConfig
@@ -20,8 +19,6 @@ import com.t1dm.core.model.LoraTrainOpts
 import com.t1dm.core.model.LoraTrainResult
 import com.t1dm.core.model.LoraWeights
 import com.t1dm.core.model.MaskSpan
-import com.t1dm.core.model.SynthParams
-import com.t1dm.core.model.SynthSeries
 import com.t1dm.inference.backend.GraphTensors
 import com.t1dm.inference.backend.GraphOutput
 import kotlinx.coroutines.Dispatchers
@@ -389,16 +386,6 @@ class RollingForecasterAlignmentTest {
         ): LoraWeights = unused()
         override fun loraSerialize(w: LoraWeights): ByteArray = unused()
         override fun loraDeserialize(bytes: ByteArray): LoraWeights? = null
-        override fun synthDefaultParams(): SynthParams = unused()
-        override fun synthSeries(nSteps: Int, startHourOfDay: Double, params: SynthParams, seed: Long): SynthSeries = unused()
-        override fun synthFillGaps(
-            realBg: List<Double>,
-            realCarb: List<Double>,
-            realInsulin: List<Double>,
-            realExercise: List<Double>,
-            synth: SynthSeries,
-        ): SynthSeries = unused()
-        override fun findGaps(bg: List<Double>, minSteps: Int): List<GapRun> = emptyList()
         override fun denormalizeSample(desc: ModelDescriptor, z: List<Double>): List<Double> = unused()
         override fun decodeTime(timeLogits: List<Double>, nBins: Int, binHours: Double): PredictedTime? = unused()
         override fun gamma(total: Double, k: Double, theta: Double, durMin: Double): List<Double> = unused()

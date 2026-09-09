@@ -1362,7 +1362,6 @@ class AppContainer(context: Context) {
 
     /** What the selected model's descriptor permits a mask to be; null hides the control. */
     suspend fun maskControls(): MaskControls? {
-        // The SELECTED model, not the Lab's pick, which is null until the Lab has been opened once.
         val desc = inferenceController.selectedModelInfo()?.takeIf { it.real }?.descriptor
         val src = repository.authoritativeSourceId() ?: return null
         val span = desc?.let { it.minContextPatches * it.patchSize } ?: CUT_ONLY_CONTEXT_STEPS
@@ -1400,7 +1399,7 @@ class AppContainer(context: Context) {
 
     /** [geometry] from where [selection] sits, not a control; one selection at a time. */
     fun runPanelMask(selection: MaskSelection, geometry: MaskGeometry) {
-        // Same model [maskControls] took geometry from: the Lab's pick could differ.
+        // The same model [maskControls] took its geometry from.
         val modelId = inferenceController.selectedModelInfo()?.takeIf { it.real }?.id ?: run {
             _panelMaskNote.value = "No model selected"
             return
@@ -1542,7 +1541,6 @@ class AppContainer(context: Context) {
             desc.head == null -> "This model ships no head file — nothing to adapt"
             else -> (inferenceController.headState(modelId) as? HeadCache.State.Unusable)?.why
         }
-        // THIS model's adapters, not whichever model the Lab has picked.
         val adapters = runCatching { labController.adaptersOf(modelId) }.getOrElse { emptyList() }
         _loraPanel.value = LoraPanelState(modelId = modelId, unavailable = unavailable, adapters = adapters)
     }
@@ -1602,7 +1600,7 @@ class AppContainer(context: Context) {
 
     /** The typed name is compared by the controller, not by the dialog that collected it. */
     suspend fun overrideAdapterGuard(modelId: String, adapterId: Long, typedName: String) {
-        runCatching { labController.overrideGuard(modelId, adapterId, typedName) }
+        runCatching { labController.overrideGuard(adapterId, typedName) }
             .onSuccess { refusal ->
                 if (refusal != null) _loraPanel.update { s -> s.copy(error = refusal) }
             }

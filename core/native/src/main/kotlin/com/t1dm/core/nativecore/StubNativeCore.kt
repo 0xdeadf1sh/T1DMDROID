@@ -13,7 +13,6 @@ import com.t1dm.core.model.AdvancedStats
 import com.t1dm.core.model.ClinicalCuts
 import com.t1dm.core.model.BasalSchedule
 import com.t1dm.core.common.NativeHead
-import com.t1dm.core.model.GapRun
 import com.t1dm.core.model.GraphInput
 import com.t1dm.core.model.HeadSpec
 import com.t1dm.core.model.LoraConfig
@@ -23,8 +22,6 @@ import com.t1dm.core.model.LoraTrainOpts
 import com.t1dm.core.model.LoraTrainResult
 import com.t1dm.core.model.LoraWeights
 import com.t1dm.core.model.MaskSpan
-import com.t1dm.core.model.SynthParams
-import com.t1dm.core.model.SynthSeries
 import com.t1dm.core.model.StatSample
 import com.t1dm.core.model.CurveEvent
 import com.t1dm.core.model.CurveKind
@@ -149,25 +146,6 @@ class StubNativeCore : NativeCore {
     override fun loraSerialize(w: LoraWeights): ByteArray = TODO("Phase 2: native lora_serialize")
 
     override fun loraDeserialize(bytes: ByteArray): LoraWeights? = null
-
-    override fun synthDefaultParams(): SynthParams = TODO("Phase 2: native synth_default_params")
-
-    override fun synthSeries(
-        nSteps: Int,
-        startHourOfDay: Double,
-        params: SynthParams,
-        seed: Long,
-    ): SynthSeries = TODO("Phase 2: native synth_series")
-
-    override fun synthFillGaps(
-        realBg: List<Double>,
-        realCarb: List<Double>,
-        realInsulin: List<Double>,
-        realExercise: List<Double>,
-        synth: SynthSeries,
-    ): SynthSeries = TODO("Phase 2: native synth_fill_gaps")
-
-    override fun findGaps(bg: List<Double>, minSteps: Int): List<GapRun> = emptyList()
 
     override fun forecastDegeneracyCheck(desc: ModelDescriptor, forecast: Forecast): ForecastStatus =
         TODO("Phase 2: native forecast_degeneracy_check")

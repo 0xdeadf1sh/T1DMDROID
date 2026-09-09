@@ -3,7 +3,6 @@ package com.t1dm.core.nativecore
 import com.t1dm.core.common.GameWorld
 import com.t1dm.core.common.NativeCore
 import com.t1dm.core.common.NativeHead
-import com.t1dm.core.model.GapRun
 import com.t1dm.core.model.GraphInput
 import com.t1dm.core.model.HeadSpec
 import com.t1dm.core.model.HeadTensorSpec
@@ -18,8 +17,6 @@ import com.t1dm.core.model.LoraTrainReport
 import com.t1dm.core.model.LoraTrainResult
 import com.t1dm.core.model.LoraWeights
 import com.t1dm.core.model.MaskSpan
-import com.t1dm.core.model.SynthParams
-import com.t1dm.core.model.SynthSeries
 import com.t1dm.core.model.CarState
 import com.t1dm.core.model.CarTuning
 import com.t1dm.core.model.RunState
@@ -89,10 +86,6 @@ import uniffi.t1dm_core.LoraProgress as UniffiLoraProgress
 import uniffi.t1dm_core.loraTrain as uniffiLoraTrain
 import uniffi.t1dm_core.loraSerialize as uniffiLoraSerialize
 import uniffi.t1dm_core.loraDeserialize as uniffiLoraDeserialize
-import uniffi.t1dm_core.synthDefaultParams as uniffiSynthDefaultParams
-import uniffi.t1dm_core.synthSeries as uniffiSynthSeries
-import uniffi.t1dm_core.synthFillGaps as uniffiSynthFillGaps
-import uniffi.t1dm_core.findGaps as uniffiFindGaps
 import uniffi.t1dm_core.HeadModel as UniffiHeadModel
 import uniffi.t1dm_core.HeadSpec as UniffiHeadSpec
 import uniffi.t1dm_core.HeadTensorSpec as UniffiHeadTensorSpec
@@ -109,9 +102,6 @@ import uniffi.t1dm_core.loraGuard as uniffiLoraGuard
 import uniffi.t1dm_core.loraGuardOptsFit as uniffiLoraGuardOptsFit
 import uniffi.t1dm_core.LoraTrainReport as UniffiLoraTrainReport
 import uniffi.t1dm_core.LoraTrainResult as UniffiLoraTrainResult
-import uniffi.t1dm_core.SynthParams as UniffiSynthParams
-import uniffi.t1dm_core.SynthSeries as UniffiSynthSeries
-import uniffi.t1dm_core.GapRun as UniffiGapRun
 import uniffi.t1dm_core.causalSmooth as uniffiCausalSmooth
 import uniffi.t1dm_core.decodeAdvert as uniffiDecodeAdvert
 import uniffi.t1dm_core.decodeTime as uniffiDecodeTime
@@ -325,27 +315,6 @@ class UniffiNativeCore : NativeCore {
         } catch (_: CoreException) {
             null
         }
-
-    override fun synthDefaultParams(): SynthParams = uniffiSynthDefaultParams().toModel()
-
-    override fun synthSeries(
-        nSteps: Int,
-        startHourOfDay: Double,
-        params: SynthParams,
-        seed: Long,
-    ): SynthSeries = uniffiSynthSeries(nSteps, startHourOfDay, params.toUniffi(), seed).toModel()
-
-    override fun synthFillGaps(
-        realBg: List<Double>,
-        realCarb: List<Double>,
-        realInsulin: List<Double>,
-        realExercise: List<Double>,
-        synth: SynthSeries,
-    ): SynthSeries =
-        uniffiSynthFillGaps(realBg, realCarb, realInsulin, realExercise, synth.toUniffi()).toModel()
-
-    override fun findGaps(bg: List<Double>, minSteps: Int): List<GapRun> =
-        uniffiFindGaps(bg, minSteps).map { it.toModel() }
 
     override fun forecastDegeneracyCheck(desc: ModelDescriptor, forecast: Forecast): ForecastStatus =
         uniffiForecastDegeneracyCheck(desc.toUniffi(), forecast.toUniffi()).toModel()
@@ -1041,24 +1010,6 @@ private fun UniffiLoraTrainReport.toModel(): LoraTrainReport = LoraTrainReport(
 
 private fun UniffiLoraTrainResult.toModel(): LoraTrainResult =
     LoraTrainResult(weights.toModel(), report.toModel())
-
-private fun SynthParams.toUniffi(): UniffiSynthParams = UniffiSynthParams(
-    baselineBg, mealGrams, carbRatio, basalUPerHour,
-    exerciseProb, exerciseCarbEquivPerMin, cgmNoiseSd, missedBolusProb,
-)
-
-private fun UniffiSynthParams.toModel(): SynthParams = SynthParams(
-    baselineBg, mealGrams, carbRatio, basalUPerHour,
-    exerciseProb, exerciseCarbEquivPerMin, cgmNoiseSd, missedBolusProb,
-)
-
-private fun SynthSeries.toUniffi(): UniffiSynthSeries =
-    UniffiSynthSeries(bg, carb, insulin, exercise, nMeals, nBoluses, nBouts)
-
-private fun UniffiSynthSeries.toModel(): SynthSeries =
-    SynthSeries(bg, carb, insulin, exercise, nMeals, nBoluses, nBouts)
-
-private fun UniffiGapRun.toModel(): GapRun = GapRun(start, end)
 
 private fun UniffiForecast.toModel(): Forecast = Forecast(
     medianRisk = medianRisk,

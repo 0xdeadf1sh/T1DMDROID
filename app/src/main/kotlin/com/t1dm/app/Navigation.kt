@@ -153,7 +153,6 @@ import com.t1dm.feature.meals.FoodEditorScreen
 import com.t1dm.feature.meals.MealBuilderScreen
 import com.t1dm.feature.meals.MealEditorScreen
 import com.t1dm.feature.meals.MealsScreen
-import com.t1dm.feature.models.LabScreen
 import com.t1dm.feature.models.LoraPanel
 import com.t1dm.feature.models.ModelDetailScreen
 import com.t1dm.feature.models.ModelsScreen
@@ -236,7 +235,6 @@ internal val destinations = listOf(
     Destination("circadian", "Clock"),
     Destination("stats", "Stats"),
     Destination("models", "Models"),
-    Destination("lab", "Lab"),
     Destination("hardware", "Hardware"),
     Destination("network", "Network"),
     Destination("meals", "Meals"),
@@ -1206,24 +1204,6 @@ private fun T1dmNavHost(
                 exportStatus = exportStatus,
             )
         }
-        composable("lab") {
-            val inference by container.inferenceState.collectAsState(InferenceState())
-            val lab = container.labController
-            val labState by lab.state.collectAsState()
-            val scope = rememberCoroutineScope()
-            // Running set changes under the Lab; the surface follows it, not a one-time sample.
-            LaunchedEffect(inference.running) {
-                lab.refresh(inference.running.map { it.modelId })
-            }
-            LabScreen(
-                state = labState,
-                onPickModel = { lab.pickModel(it); scope.launch { lab.refresh(labState.models) } },
-                onSeed = lab::setSeed,
-                onGenerate = { scope.launch { lab.generate() } },
-                onOpenAdapters = { id -> navController.navigate("models/$id/lora") },
-            )
-        }
-
         composable("models/{modelId}/lora") { backStackEntry ->
             val id = backStackEntry.arguments?.getString("modelId").orEmpty()
             val lab = container.labController
@@ -1240,7 +1220,7 @@ private fun T1dmNavHost(
                 },
                 onDetach = { scope.launch { container.detachAdapter(id) } },
                 onRename = { adapterId, name ->
-                    scope.launch { lab.rename(id, adapterId, name); container.refreshLoraPanel(id) }
+                    scope.launch { lab.rename(adapterId, name); container.refreshLoraPanel(id) }
                 },
                 onDelete = { adapterId ->
                     scope.launch { lab.delete(id, adapterId); container.refreshLoraPanel(id) }

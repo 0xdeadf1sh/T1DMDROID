@@ -167,20 +167,6 @@ the head over those states and puts a low-rank adapter in front of it.
   them back DETACHED, because which adapter a model runs is a property of this
   phone and not of a backup file.
 
-## The Lab
-
-One screen that generates a synthetic patient over the selected model's context
-window. Nothing it produces is stored, pushed, alarmed on, or read by the dose
-calculator, which is what lets it invent a week of history.
-
-**Synthetic mode** fills only the steps the real history lacks — every real sample
-survives — from the seeded generator in `crates/t1dm-core/src/synth.rs`. It exists
-because the newer models read up to seven days of context and a phone that has
-been running two days cannot give them one. It is a shaped plausibility, not a
-simulator and not the patient. The trace marks which steps it invented.
-
-The model is picked for its window LENGTH. No inference runs here.
-
 ## Editing the curve
 
 The BG panel is the editing surface. `Edit` swaps the chip row for a toolbar; one
