@@ -45,7 +45,7 @@ class CgmSourceNamingTest {
         assertEquals("AiDEX X", d.incidentalName(showNames = true))
     }
 
-    /** Regression: a serial-derived name, no separator, leaks through; fabricated, no vendor. */
+    /** Regression: no-separator brand+serial could leak the serial. Name below is fabricated. */
     @Test
     fun `hiding names withholds the serial even when the name is built entirely from it`() {
         val d = descriptor(display = "Brand7000000001", serial = "7000000001", ordinal = 0)
