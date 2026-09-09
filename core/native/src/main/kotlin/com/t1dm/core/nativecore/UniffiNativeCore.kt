@@ -26,10 +26,6 @@ import com.t1dm.core.model.RunState
 import com.t1dm.core.model.TerrainSpec
 import com.t1dm.core.model.AdvancedStats
 import com.t1dm.core.model.AgpBin
-import com.t1dm.core.model.BaselineFit
-import com.t1dm.core.model.BaselineForecast
-import com.t1dm.core.model.BaselineModel
-import com.t1dm.core.model.BaselineSpec
 import com.t1dm.core.model.BasalDoseSpec
 import com.t1dm.core.model.BasalSchedule
 import com.t1dm.core.model.MoodSummary
@@ -154,15 +150,6 @@ import uniffi.t1dm_core.AgpBin as UniffiAgpBin
 import uniffi.t1dm_core.BasalDoseSpec as UniffiBasalDoseSpec
 import uniffi.t1dm_core.BasalSchedule as UniffiBasalSchedule
 import uniffi.t1dm_core.ChannelStat as UniffiChannelStat
-import uniffi.t1dm_core.BaselineFit as UniffiBaselineFit
-import uniffi.t1dm_core.BaselineForecast as UniffiBaselineForecast
-import uniffi.t1dm_core.BaselineModel as UniffiBaselineModel
-import uniffi.t1dm_core.BaselineSpec as UniffiBaselineSpec
-import uniffi.t1dm_core.baselineDefaultSpec as uniffiBaselineDefaultSpec
-import uniffi.t1dm_core.baselineDegeneracyCheck as uniffiBaselineDegeneracyCheck
-import uniffi.t1dm_core.baselineOnBoardAt as uniffiBaselineOnBoardAt
-import uniffi.t1dm_core.baselinePredict as uniffiBaselinePredict
-import uniffi.t1dm_core.fitBaselineRidge as uniffiFitBaselineRidge
 import uniffi.t1dm_core.CurveEvent as UniffiCurveEvent
 import uniffi.t1dm_core.CurveKind as UniffiCurveKind
 import uniffi.t1dm_core.InsulinFamily as UniffiInsulinFamily
@@ -510,51 +497,6 @@ class UniffiNativeCore : NativeCore {
             null
         }
 
-    override fun baselineDefaultSpec(): BaselineSpec = uniffiBaselineDefaultSpec().toModel()
-
-    /** null: no model; a too-short fit returns all-zero delta, not an error (guard withholds). */
-    override fun fitBaselineRidge(
-        bgMgdl: List<Double>,
-        gridStartMs: Long,
-        events: List<CurveEvent>,
-        spec: BaselineSpec,
-        nowMs: Long,
-        minCalWindows: Int,
-    ): BaselineFit? =
-        try {
-            uniffiFitBaselineRidge(
-                bgMgdl,
-                gridStartMs,
-                events.map { it.toUniffi() },
-                spec.toUniffi(),
-                nowMs,
-                minCalWindows.toUInt(),
-            ).toModel()
-        } catch (_: CoreException) {
-            null
-        }
-
-    /** Fail-closed: cycle publishes nothing rather than a forecast built from a padded input. */
-    override fun baselinePredict(
-        model: BaselineModel,
-        bgTail: List<Double>,
-        iob: Double,
-        cob: Double,
-        futureCarb: List<Double>,
-        futureInsulin: List<Double>,
-    ): BaselineForecast? =
-        try {
-            uniffiBaselinePredict(model.toUniffi(), bgTail, iob, cob, futureCarb, futureInsulin).toModel()
-        } catch (_: CoreException) {
-            null
-        }
-
-    override fun baselineOnBoardAt(events: List<CurveEvent>, atMs: Long, kind: CurveKind): Double =
-        uniffiBaselineOnBoardAt(events.map { it.toUniffi() }, atMs, kind.toUniffi())
-
-    override fun baselineDegeneracyCheck(forecast: BaselineForecast): ForecastStatus =
-        uniffiBaselineDegeneracyCheck(forecast.toUniffi()).toModel()
-
     override fun defaultCarTuning(): CarTuning = uniffiDefaultCarTuning().toModel()
 
     /** NOT swallowed (unlike above): rejects degenerate terrain/tuning; a stub would hide bug. */
@@ -666,64 +608,6 @@ private fun ForecastWindow.toUniffi(): UniffiForecastWindow = UniffiForecastWind
     medianBg = medianBg,
     realizedBg = realizedBg,
     lastBg = lastBg,
-)
-
-private fun UniffiBaselineSpec.toModel(): BaselineSpec = BaselineSpec(
-    nLags = nLags.toInt(),
-    horizonSteps = horizonSteps.toInt(),
-    ridgeLambda = ridgeLambda,
-    useIob = useIob,
-    useCob = useCob,
-    useForward = useForward,
-)
-
-private fun BaselineSpec.toUniffi(): UniffiBaselineSpec = UniffiBaselineSpec(
-    nLags = nLags.toUInt(),
-    horizonSteps = horizonSteps.toUInt(),
-    ridgeLambda = ridgeLambda,
-    useIob = useIob,
-    useCob = useCob,
-    useForward = useForward,
-)
-
-private fun UniffiBaselineModel.toModel(): BaselineModel = BaselineModel(
-    spec = spec.toModel(),
-    nFeatures = nFeatures.toInt(),
-    weights = weights,
-    bandDelta = bandDelta,
-    nTrainRows = nTrainRows.toInt(),
-    fittedAtMs = fittedAtMs,
-    trainFromMs = trainFromMs,
-    trainToMs = trainToMs,
-)
-
-private fun BaselineModel.toUniffi(): UniffiBaselineModel = UniffiBaselineModel(
-    spec = spec.toUniffi(),
-    nFeatures = nFeatures.toUInt(),
-    weights = weights,
-    bandDelta = bandDelta,
-    nTrainRows = nTrainRows.toUInt(),
-    fittedAtMs = fittedAtMs,
-    trainFromMs = trainFromMs,
-    trainToMs = trainToMs,
-)
-
-private fun UniffiBaselineFit.toModel(): BaselineFit = BaselineFit(
-    model = model.toModel(),
-    conformal = conformal.toModel(),
-    holdoutRmseMgdl = holdoutRmseMgdl,
-    nHoldoutWindows = nHoldoutWindows.toInt(),
-    persistenceRmseMgdl = persistenceRmseMgdl,
-)
-
-private fun UniffiBaselineForecast.toModel(): BaselineForecast = BaselineForecast(
-    medianBg = medianBg,
-    bandsMgdl = bandsMgdl,
-)
-
-private fun BaselineForecast.toUniffi(): UniffiBaselineForecast = UniffiBaselineForecast(
-    medianBg = medianBg,
-    bandsMgdl = bandsMgdl,
 )
 
 private fun MetricsConfig.toUniffi(): UniffiMetricsConfig = UniffiMetricsConfig(

@@ -21,6 +21,7 @@ class ConvertersTest {
         assertEquals(BackendId.UNKNOWN, c.stringToBackendId("EXECUTORCH_VULKAN_FP32"))
         assertEquals(BackendId.UNKNOWN, c.stringToBackendId("EXECUTORCH_VULKAN_FP16"))
         assertEquals(BackendId.UNKNOWN, c.stringToBackendId("LITERT_NPU"))
+        assertEquals(BackendId.UNKNOWN, c.stringToBackendId("NATIVE_RIDGE_FP64"))
         assertEquals(BackendId.UNKNOWN, c.stringToBackendId(""))
         assertEquals(null, c.stringToBackendId(null))
     }

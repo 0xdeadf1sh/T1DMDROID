@@ -1,10 +1,6 @@
 package com.t1dm.core.common
 
 import com.t1dm.core.model.AdvancedStats
-import com.t1dm.core.model.BaselineFit
-import com.t1dm.core.model.BaselineForecast
-import com.t1dm.core.model.BaselineModel
-import com.t1dm.core.model.BaselineSpec
 import com.t1dm.core.model.ClinicalCuts
 import com.t1dm.core.model.BasalSchedule
 import com.t1dm.core.model.GapRun
@@ -259,36 +255,6 @@ interface NativeCore {
 
     /** applyQuantileConformal for many same-shape fans (§8.4); fails closed for the WHOLE batch. */
     fun applyQuantileConformalBatch(fansMgdl: List<Double>, delta: List<Double>): List<Double>?
-
-
-    /** Read from the core rather than restated here. */
-    fun baselineDefaultSpec(): BaselineSpec
-
-    /** bgMgdl grid-aligned, NaN marks a gap that drops the row (SPEC §1); null on reject. */
-    fun fitBaselineRidge(
-        bgMgdl: List<Double>,
-        gridStartMs: Long,
-        events: List<CurveEvent>,
-        spec: BaselineSpec,
-        nowMs: Long,
-        minCalWindows: Int,
-    ): BaselineFit?
-
-    /** bgTail is trailing nLags mg/dL OLDEST-FIRST; short future arrays yield null. */
-    fun baselinePredict(
-        model: BaselineModel,
-        bgTail: List<Double>,
-        iob: Double,
-        cob: Double,
-        futureCarb: List<Double>,
-        futureInsulin: List<Double>,
-    ): BaselineForecast?
-
-    /** IOB/COB feature for baselinePredict: only STARTED events, not onBoard's future ones. */
-    fun baselineOnBoardAt(events: List<CurveEvent>, atMs: Long, kind: CurveKind): Double
-
-    /** §3.6-B with no risk space: order on mg/dL bands; uncalibrated baseline is CollapsedBand. */
-    fun baselineDegeneracyCheck(forecast: BaselineForecast): ForecastStatus
 
 
     /** Rust owns these numbers; nothing on this side transcribes them. */

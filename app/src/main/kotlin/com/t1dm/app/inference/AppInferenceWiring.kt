@@ -1,17 +1,13 @@
 package com.t1dm.app.inference
 
 import com.t1dm.cgm.AidexXSourceRegistry
-import com.t1dm.core.model.BaselineModel
-import com.t1dm.core.model.BaselineSpec
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
-import com.t1dm.inference.BaselineStore
 import com.t1dm.inference.BgHistoryProvider
 import com.t1dm.inference.BgSeries
 import com.t1dm.inference.CumulativeTelemetry
 import com.t1dm.inference.TelemetryStore
 import com.t1dm.data.T1dmRepository
-import org.json.JSONArray
 import org.json.JSONObject
 import timber.log.Timber
 import java.util.TreeMap
@@ -175,84 +171,5 @@ class KvTelemetryStore(private val repository: T1dmRepository) : TelemetryStore 
 
     private companion object {
         const val KV_KEY = "inference.telemetry.cumulative"
-    }
-}
-
-/** Fitted baseline as one JSON blob; fail-closed, corrupt or shape-mismatched loads as null. */
-class KvBaselineStore(private val repository: T1dmRepository) : BaselineStore {
-
-    override suspend fun load(): BaselineModel? {
-        val raw = repository.getKv(KV_KEY)?.takeIf { it.isNotBlank() } ?: return null
-        return runCatching {
-            val o = JSONObject(raw)
-            if (o.optInt("v") != BLOB_VERSION) return null
-            val s = o.getJSONObject("spec")
-            val spec = BaselineSpec(
-                nLags = s.getInt("nLags"),
-                horizonSteps = s.getInt("horizonSteps"),
-                ridgeLambda = s.getDouble("ridgeLambda"),
-                useIob = s.getBoolean("useIob"),
-                useCob = s.getBoolean("useCob"),
-                useForward = s.getBoolean("useForward"),
-            )
-            val nFeatures = o.getInt("nFeatures")
-            val weights = o.getJSONArray("weights").toDoubleList()
-            val bandDelta = o.getJSONArray("bandDelta").toDoubleList()
-            // A weight count disagreeing with spec would decode against misaligned features.
-            if (weights.size != spec.horizonSteps * (1 + nFeatures)) return null
-            if (bandDelta.isNotEmpty() && bandDelta.size != spec.horizonSteps * N_QUANTILES) return null
-            if (weights.any { !it.isFinite() } || bandDelta.any { !it.isFinite() }) return null
-            BaselineModel(
-                spec = spec,
-                nFeatures = nFeatures,
-                weights = weights,
-                bandDelta = bandDelta,
-                nTrainRows = o.getInt("nTrainRows"),
-                fittedAtMs = o.getLong("fittedAtMs"),
-                trainFromMs = o.getLong("trainFromMs"),
-                trainToMs = o.getLong("trainToMs"),
-            )
-        }.getOrElse {
-            Timber.tag("Baseline").w(it, "unreadable baseline blob; the model is treated as unfitted")
-            null
-        }
-    }
-
-    override suspend fun save(model: BaselineModel) {
-        val obj = JSONObject()
-            .put("v", BLOB_VERSION)
-            .put(
-                "spec",
-                JSONObject()
-                    .put("nLags", model.spec.nLags)
-                    .put("horizonSteps", model.spec.horizonSteps)
-                    .put("ridgeLambda", model.spec.ridgeLambda)
-                    .put("useIob", model.spec.useIob)
-                    .put("useCob", model.spec.useCob)
-                    .put("useForward", model.spec.useForward),
-            )
-            .put("nFeatures", model.nFeatures)
-            .put("weights", JSONArray(model.weights))
-            .put("bandDelta", JSONArray(model.bandDelta))
-            .put("nTrainRows", model.nTrainRows)
-            .put("fittedAtMs", model.fittedAtMs)
-            .put("trainFromMs", model.trainFromMs)
-            .put("trainToMs", model.trainToMs)
-        repository.putKv(KV_KEY, obj.toString(), System.currentTimeMillis())
-    }
-
-    override suspend fun clear() {
-        repository.putKv(KV_KEY, "", System.currentTimeMillis())
-    }
-
-    private fun JSONArray.toDoubleList(): List<Double> = List(length()) { getDouble(it) }
-
-    private companion object {
-        const val KV_KEY = "inference.baseline.model"
-
-        /** Bumped when blob SHAPE changes; dropped not migrated. 2: forward blocks added. */
-        const val BLOB_VERSION = 2
-
-        const val N_QUANTILES = 7
     }
 }

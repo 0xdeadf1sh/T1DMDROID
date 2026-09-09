@@ -5,10 +5,6 @@ import com.t1dm.core.common.NativeCore
 import com.t1dm.core.common.NativeHead
 import com.t1dm.core.model.AdvancedStats
 import com.t1dm.core.model.BasalSchedule
-import com.t1dm.core.model.BaselineFit
-import com.t1dm.core.model.BaselineForecast
-import com.t1dm.core.model.BaselineModel
-import com.t1dm.core.model.BaselineSpec
 import com.t1dm.core.model.CarTuning
 import com.t1dm.core.model.ClarkeZone
 import com.t1dm.core.model.ClinicalCuts
@@ -88,11 +84,6 @@ class ReferenceNativeCore : NativeCore {
     override fun fitQuantileConformal(windows: List<ForecastWindow>, minCalWindows: Int): ConformalFit = TODO("not exercised by :cgm tests")
     override fun applyQuantileConformal(bandsMgdl: List<Double>, delta: List<Double>): List<Double>? = TODO("not exercised by :cgm tests")
     override fun applyQuantileConformalBatch(fansMgdl: List<Double>, delta: List<Double>): List<Double>? = TODO("not exercised by :cgm tests")
-    override fun baselineDefaultSpec(): BaselineSpec = TODO("not exercised by :cgm tests")
-    override fun fitBaselineRidge(bgMgdl: List<Double>, gridStartMs: Long, events: List<CurveEvent>, spec: BaselineSpec, nowMs: Long, minCalWindows: Int): BaselineFit? = TODO("not exercised by :cgm tests")
-    override fun baselinePredict(model: BaselineModel, bgTail: List<Double>, iob: Double, cob: Double, futureCarb: List<Double>, futureInsulin: List<Double>): BaselineForecast? = TODO("not exercised by :cgm tests")
-    override fun baselineOnBoardAt(events: List<CurveEvent>, atMs: Long, kind: CurveKind): Double = TODO("not exercised by :cgm tests")
-    override fun baselineDegeneracyCheck(forecast: BaselineForecast): ForecastStatus = TODO("not exercised by :cgm tests")
     override fun defaultCarTuning(): CarTuning = TODO("not exercised by :cgm tests")
     override fun createGameWorld(terrain: TerrainSpec, tuning: CarTuning): GameWorld = TODO("not exercised by :cgm tests")
 }

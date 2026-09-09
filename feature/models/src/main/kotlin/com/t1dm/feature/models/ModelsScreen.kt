@@ -35,7 +35,6 @@ import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.fadingEdges
 import com.t1dm.core.design.hapticClickable
 import com.t1dm.core.design.rememberT1dmHaptics
-import com.t1dm.core.model.BASELINE_MODEL_ID
 import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.InferenceState
 import com.t1dm.core.model.ModelMeta
@@ -94,8 +93,6 @@ fun ModelsScreen(
                         onApplyUpdate = onApplyUpdate,
                         onRequestDelete = { confirmDelete = it },
                         onOpenAdapters = onOpenAdapters,
-                        // The baseline is listed before it has ever been fitted.
-                        selectable = model.modelId != BASELINE_MODEL_ID || state.baselineModel != null,
                     )
                     HorizontalDivider()
                 }
@@ -107,14 +104,7 @@ fun ModelsScreen(
                 onDismissRequest = { haptics.perform(HapticEvent.Reject); confirmDelete = null },
                 title = { Text("Remove model?") },
                 text = {
-                    // The baseline has no artifact to unlink; its row stays, refittable.
-                    Text(
-                        if (id == BASELINE_MODEL_ID) {
-                            "Discard the fitted baseline? Its forecasts stop until you fit again."
-                        } else {
-                            "Delete \"$id\" and its artifact? Removing the selected model stops forecast and dose advice."
-                        },
-                    )
+                    Text("Delete \"$id\" and its artifact? Removing the selected model stops forecast and dose advice.")
                 },
                 confirmButton = {
                     TextButton(
@@ -144,7 +134,6 @@ private fun ModelRow(
     onApplyUpdate: (String) -> Unit,
     onRequestDelete: (String) -> Unit,
     onOpenAdapters: (String) -> Unit = {},
-    selectable: Boolean = true,
 ) {
     val haptics = rememberT1dmHaptics()
     Column(
@@ -157,7 +146,6 @@ private fun ModelRow(
             // §3.6-E — the dosing model picker, not a nav affordance.
             RadioButton(
                 selected = model.selected,
-                enabled = selectable,
                 onClick = { haptics.perform(HapticEvent.SegmentTick); onSelect(model.modelId) },
                 modifier = Modifier.size(28.dp),
             )
@@ -203,12 +191,9 @@ private fun ModelRow(
                 onClick = { haptics.perform(HapticEvent.Commit); onApplyUpdate(model.modelId) },
             ) { Text("Apply update") }
         }
-        if (model.modelId != BASELINE_MODEL_ID) {
-            // The ridge baseline has no head to adapt.
-            OutlinedButton(
-                onClick = { haptics.perform(HapticEvent.Tap); onOpenAdapters(model.modelId) },
-            ) { Text("Adapters") }
-        }
+        OutlinedButton(
+            onClick = { haptics.perform(HapticEvent.Tap); onOpenAdapters(model.modelId) },
+        ) { Text("Adapters") }
     }
 }
 

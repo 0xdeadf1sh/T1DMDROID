@@ -3,10 +3,6 @@ package com.t1dm.calc
 import com.t1dm.core.common.DefaultT1dmDispatchers
 import com.t1dm.core.common.GameWorld
 import com.t1dm.core.common.NativeCore
-import com.t1dm.core.model.BaselineFit
-import com.t1dm.core.model.BaselineForecast
-import com.t1dm.core.model.BaselineModel
-import com.t1dm.core.model.BaselineSpec
 import com.t1dm.core.model.ClinicalCuts
 import com.t1dm.core.model.*
 import com.t1dm.data.curve.ChannelBuilder
@@ -423,25 +419,6 @@ class RollingForecasterAlignmentTest {
         override fun trendBinEdges(): List<Double> = unused()
         override fun conformalMinCalWindows(): Int = unused()
         override fun fitQuantileConformal(windows: List<ForecastWindow>, minCalWindows: Int): ConformalFit = unused()
-        override fun baselineDefaultSpec(): BaselineSpec = unused()
-        override fun fitBaselineRidge(
-            bgMgdl: List<Double>,
-            gridStartMs: Long,
-            events: List<CurveEvent>,
-            spec: BaselineSpec,
-            nowMs: Long,
-            minCalWindows: Int,
-        ): BaselineFit? = unused()
-        override fun baselinePredict(
-            model: BaselineModel,
-            bgTail: List<Double>,
-            iob: Double,
-            cob: Double,
-            futureCarb: List<Double>,
-            futureInsulin: List<Double>,
-        ): BaselineForecast? = unused()
-        override fun baselineOnBoardAt(events: List<CurveEvent>, atMs: Long, kind: CurveKind): Double = unused()
-        override fun baselineDegeneracyCheck(forecast: BaselineForecast): ForecastStatus = unused()
         // Not `unused()`: the roll reads the RAW fan, and `null` is every caller's fallback to it.
         override fun applyQuantileConformal(bandsMgdl: List<Double>, delta: List<Double>): List<Double>? = null
         override fun applyQuantileConformalBatch(fansMgdl: List<Double>, delta: List<Double>): List<Double>? = null

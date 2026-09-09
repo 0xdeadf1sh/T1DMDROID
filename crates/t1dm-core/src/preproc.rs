@@ -1314,8 +1314,6 @@ pub fn forecast_degeneracy_check(desc: &ModelDescriptor, f: &Forecast) -> Foreca
     ForecastStatus::Ok
 }
 
-// crate::baseline runs same tests without a risk space/descriptor; epsilons stay here, one copy.
-
 pub(crate) fn fan_is_ascending(fan: &[f64], n: usize, nq: usize) -> bool {
     for i in 0..n {
         let row = i * nq;

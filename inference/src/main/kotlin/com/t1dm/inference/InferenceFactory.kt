@@ -22,8 +22,6 @@ fun buildInferenceController(
     telemetryStore: TelemetryStore? = null,
     thermalProvider: suspend () -> ThermalStatus? = { null },
     smoothingWindowProvider: suspend () -> Int = { InferenceControllerDefaults.SAVGOL_WINDOW },
-    baselineStore: BaselineStore? = null,
-    curveEvents: CurveEventSource? = null,
     loraStore: LoraStore? = null,
     probeInsulin: ProbeInsulinPort? = null,
 ): InferenceController {
@@ -41,7 +39,6 @@ fun buildInferenceController(
         telemetryStore = telemetryStore,
         thermalProvider = thermalProvider,
         smoothingWindowProvider = smoothingWindowProvider,
-        baseline = BaselineRunner(native, dispatchers, baselineStore, curveEvents, futureOverrides),
         loraStore = loraStore,
         probeInsulin = probeInsulin,
     )

@@ -1,8 +1,6 @@
 package com.t1dm.inference
 
-import com.t1dm.core.model.BaselineModel
 import com.t1dm.core.model.LoraWeights
-import com.t1dm.core.model.CurveEvent
 import com.t1dm.core.model.ModelPrediction
 
 /** Trailing per-5-min mg/dL. [sourceId] sensors differ ~28 mg/dL median; null=synthetic. */
@@ -46,19 +44,6 @@ interface BgHistoryProvider {
 
     /** Slots in [maxSteps] holding a MODELS OWN OUTPUT (§1): never a fit target. NaN cant tell. */
     suspend fun reconstructedSlots(maxSteps: Int): Set<Long> = emptySet()
-}
-
-/** Baseline causal IOB/COB source. Distinct from [ContextChannelSource]'s summed, lossy amounts. */
-fun interface CurveEventSource {
-    /** Every curve whose action overlaps `[fromMs, toMs)`, including tails of earlier events. */
-    suspend fun events(fromMs: Long, toMs: Long): List<CurveEvent>
-}
-
-/** Weights and band estimator persist as one unit, one model. Null store keeps fit in-memory. */
-interface BaselineStore {
-    suspend fun load(): BaselineModel?
-    suspend fun save(model: BaselineModel)
-    suspend fun clear()
 }
 
 /** Carb-appearance (feat 1)/insulin-action (feat 2) channels over a window. Null ⇒ no-dose. */

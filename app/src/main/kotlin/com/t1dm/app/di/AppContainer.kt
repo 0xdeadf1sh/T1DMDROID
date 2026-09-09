@@ -15,7 +15,6 @@ import com.t1dm.alerts.VibrationPreset
 import androidx.glance.appwidget.updateAll
 import com.t1dm.app.cgm.AppCgmRepository
 import com.t1dm.app.hardware.HardwareProbe
-import com.t1dm.app.inference.KvBaselineStore
 import com.t1dm.app.inference.KvTelemetryStore
 import com.t1dm.app.inference.RoomBgHistoryProvider
 import com.t1dm.app.backup.BackupManager
@@ -164,7 +163,6 @@ import com.t1dm.inference.HeadCache
 import com.t1dm.inference.ContextChannelSource
 import com.t1dm.inference.LoraStore
 import com.t1dm.inference.ModelChannels
-import com.t1dm.inference.CurveEventSource
 import com.t1dm.inference.FutureOverrideSource
 import com.t1dm.inference.InferenceController
 import com.t1dm.inference.InferenceControllerDefaults
@@ -638,9 +636,6 @@ class AppContainer(context: Context) {
                         ?: null.also { Timber.w("adapter %d for %s failed to load; running frozen", row.id, modelId) }
                 }
             },
-            // Same ChannelBuilder the context channels use, so both logged-dose views agree.
-            baselineStore = KvBaselineStore(repository),
-            curveEvents = CurveEventSource { fromMs, toMs -> channelBuilder.eventsIn(fromMs, toMs) },
             // Disabled ⇒ null ⇒ no gate. No death-mode check: the gate stays active in DEATH (D4).
             thermalProvider = {
                 if (!settingsStore.currentThermalGateEnabled()) null
@@ -1871,10 +1866,6 @@ class AppContainer(context: Context) {
             settingsStore.comaAfterDkaH,
             settingsStore.deathAfterComaH,
         ) { a, b, c -> DkaTimeline(a, b, c) }
-
-    /** Held to the SAME §8.4 calibration threshold; this band gates the collapsed-band guard. */
-    suspend fun fitBaseline() =
-        inferenceController.fitBaseline(System.currentTimeMillis(), CONFORMAL_MIN_CAL_WINDOWS)
 
     private val selectedModelProvider = SelectedModelProvider {
         val info = inferenceController.authorityModelInfo()

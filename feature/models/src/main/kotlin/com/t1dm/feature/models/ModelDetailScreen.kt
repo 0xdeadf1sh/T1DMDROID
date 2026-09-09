@@ -41,7 +41,6 @@ import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.fadingEdges
 import com.t1dm.core.design.rememberT1dmHaptics
-import com.t1dm.core.model.BASELINE_MODEL_ID
 import com.t1dm.core.model.BandCalibration
 import com.t1dm.core.model.BandCalibrationOutcome
 import com.t1dm.core.model.BandFitRefusal
@@ -83,13 +82,7 @@ fun ModelDetailScreen(
     onFitBandCalibration: () -> Unit = {},
     /** Manual: a swap-crossing correction measures the gap; only the user knows it swapped. */
     onDropBandCalibration: () -> Unit = {},
-    /** Non-null only when this drill-down is the baseline's. */
-    onFitBaseline: (() -> Unit)? = null,
-    baselineFitting: Boolean = false,
-    /** Null on a fresh open, so a reopen re-announces nothing already read. */
-    baselineFitNote: String? = null,
 ) {
-    val isBaseline = modelId == BASELINE_MODEL_ID
     val meta = state.metaOf(modelId)
     val telemetry = state.telemetryOf(modelId)
     val running = state.runningOf(modelId)
@@ -111,54 +104,14 @@ fun ModelDetailScreen(
             running?.let {
                 Text(
                     // displayName() carries precision; only a graph model is fp32 authority.
-                    it.backend.displayName() + when {
-                        it.selected && isBaseline -> " · SELECTED"
-                        it.selected -> " · SELECTED (fp32-authoritative)"
-                        else -> ""
-                    },
+                    it.backend.displayName() + if (it.selected) " · SELECTED (fp32-authoritative)" else "",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
 
-        if (isBaseline && onFitBaseline != null) {
-            section("Baseline") {
-                val b = state.baselineModel
-                if (b == null) {
-                    Note("Not fitted — no forecast")
-                } else {
-                    KeyVal("fitted", "%tF %<tR".format(b.fittedAtMs))
-                    KeyVal("trained on", "${b.nTrainRows} rows")
-                    KeyVal(
-                        "features",
-                        listOfNotNull(
-                            "${b.spec.nLags} BG lags",
-                            "IOB".takeIf { b.spec.useIob },
-                            "COB".takeIf { b.spec.useCob },
-                        ).joinToString(" · "),
-                    )
-                    KeyVal("horizon", "${b.spec.horizonSteps * 5 / 60} h")
-                    // §3.6-B: band IS the model here, so uncalibrated withholds every cycle.
-                    if (!b.calibrated) Note("Band uncalibrated — forecasts withheld")
-                }
-                // Said here so the calculator's refusal does not read as a fault.
-                Note("No dose advice — the calculator needs a graph model")
-                baselineFitNote?.let { Note(it) }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(
-                        enabled = !baselineFitting,
-                        onClick = { haptics.perform(HapticEvent.Commit); onFitBaseline() },
-                    ) { Text(if (b == null) "Fit" else "Refit") }
-                    if (baselineFitting) {
-                        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-                    }
-                }
-            }
-        }
-
-        // Skipped for baseline: every field is descriptor- or artifact-derived, has neither.
-        if (!isBaseline) section("Model") {
+        section("Model") {
             if (meta == null) {
                 Note("No descriptor metadata")
             } else {
@@ -294,8 +247,7 @@ fun ModelDetailScreen(
             }
         }
 
-        // §8.4, skipped for baseline: its band IS its interval, else two estimators stack.
-        if (!isBaseline) section("Band recalibration") {
+        section("Band recalibration") {
             Note("Display only — alarms and doses read the raw band")
             if (bandCalibration == null) {
                 Note("Not fitted — raw bands")

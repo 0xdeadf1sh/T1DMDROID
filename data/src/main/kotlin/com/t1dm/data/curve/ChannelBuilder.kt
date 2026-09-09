@@ -164,10 +164,6 @@ class ChannelBuilder(
         return FutureChannels(carbCh, insulinCh, exerciseChannel(rollStartMs, nSteps), iob, cob)
     }
 
-    /** Pads the look-back itself; a caller's own pad would be a second copy of PAD_MS. */
-    suspend fun eventsIn(fromMs: Long, toMs: Long): List<CurveEvent> =
-        store.carbEvents(fromMs - PAD_MS, toMs) + insulinEventsIn(fromMs - PAD_MS, toMs).combined
-
     /** Logged store doses only; exercise has no on-board quantity, read not reconstructed. */
     suspend fun onBoard(atMs: Long, kind: CurveKind): Double {
         val events = when (kind) {

@@ -4,10 +4,6 @@ import com.t1dm.core.common.GameWorld
 import com.t1dm.core.common.NativeCore
 import com.t1dm.core.model.LoraGuardOpts
 import com.t1dm.core.model.LoraGuardReport
-import com.t1dm.core.model.BaselineFit
-import com.t1dm.core.model.BaselineForecast
-import com.t1dm.core.model.BaselineModel
-import com.t1dm.core.model.BaselineSpec
 import com.t1dm.core.model.CarTuning
 import com.t1dm.core.model.ClarkeZone
 import com.t1dm.core.model.DtsZone
@@ -367,33 +363,6 @@ class StubNativeCore : NativeCore {
         fansMgdl: List<Double>,
         delta: List<Double>,
     ): List<Double>? = null
-
-    // Baseline is what the model is MEASURED against; a second numeric authority corrupts it.
-    override fun baselineDefaultSpec(): BaselineSpec =
-        TODO("the baseline is Rust-only; use UniffiNativeCore")
-
-    override fun fitBaselineRidge(
-        bgMgdl: List<Double>,
-        gridStartMs: Long,
-        events: List<CurveEvent>,
-        spec: BaselineSpec,
-        nowMs: Long,
-        minCalWindows: Int,
-    ): BaselineFit? = null
-
-    override fun baselinePredict(
-        model: BaselineModel,
-        bgTail: List<Double>,
-        iob: Double,
-        cob: Double,
-        futureCarb: List<Double>,
-        futureInsulin: List<Double>,
-    ): BaselineForecast? = null
-
-    override fun baselineOnBoardAt(events: List<CurveEvent>, atMs: Long, kind: CurveKind): Double = 0.0
-
-    override fun baselineDegeneracyCheck(forecast: BaselineForecast): ForecastStatus =
-        ForecastStatus.NON_FINITE
 
     // Rust-only by design: a zero-allocation per-frame path, and the minigame only runs on device.
 

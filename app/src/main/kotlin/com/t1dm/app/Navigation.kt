@@ -101,10 +101,8 @@ import com.t1dm.core.design.hapticClickable
 import com.t1dm.core.design.navEnter
 import com.t1dm.core.design.navExit
 import com.t1dm.core.design.parseThemeJson
-import com.t1dm.core.model.BASELINE_MODEL_ID
 import com.t1dm.core.model.BandCalibration
 import com.t1dm.core.model.BandCalibrationOutcome
-import com.t1dm.core.model.BaselineFit
 import com.t1dm.core.model.BezierCurve
 import com.t1dm.core.model.CarTuning
 import com.t1dm.core.model.CgEga
@@ -1080,7 +1078,7 @@ private fun T1dmNavHost(
             val scope = rememberCoroutineScope()
             // Running set changes under the Lab; the surface follows it, not a one-time sample.
             LaunchedEffect(inference.running) {
-                lab.refresh(inference.running.map { it.modelId }.filter { it != BASELINE_MODEL_ID })
+                lab.refresh(inference.running.map { it.modelId })
             }
             LabScreen(
                 state = labState,
@@ -1144,8 +1142,6 @@ private fun T1dmNavHost(
             var accuracy by remember(modelId) { mutableStateOf<ModelMetrics?>(null) }
             var loading by remember(modelId) { mutableStateOf(true) }
             var reloadTick by remember(modelId) { mutableStateOf(0) }
-            var baselineFitting by remember(modelId) { mutableStateOf(false) }
-            var baselineFitNote by remember(modelId) { mutableStateOf<String?>(null) }
             LaunchedEffect(modelId, reloadTick) {
                 loading = true
                 accuracy = runCatching { container.modelMetrics(modelId) }.getOrNull()
@@ -1199,24 +1195,6 @@ private fun T1dmNavHost(
                 bandCalibration = bandCalibration,
                 bandCalibrationFitting = fitting,
                 bandCalibrationOutcome = fitOutcome,
-                // Cleared on every exit (throw included), else the button stays dead forever.
-                onFitBaseline = if (modelId == BASELINE_MODEL_ID) {
-                    {
-                        baselineFitting = true
-                        scope.launch {
-                            baselineFitNote = runCatching { container.fitBaseline() }.fold(
-                                onSuccess = { r -> r.fold(::baselineFitSummary) { "Not enough history" } },
-                                onFailure = { "Fit failed" },
-                            )
-                            baselineFitting = false
-                            container.reevaluateInferenceNow()
-                        }
-                    }
-                } else {
-                    null
-                },
-                baselineFitting = baselineFitting,
-                baselineFitNote = baselineFitNote,
                 // Three guards; only container's holds when a fit starts elsewhere.
                 onFitBandCalibration = { if (!fitting) fitTick++ },
                 onDropBandCalibration = { scope.launch { container.dropBandCalibration(modelId) } },
@@ -2245,17 +2223,4 @@ private fun DashboardGamePanel(
             ) && (!death || alarm.overTemperature != null),
         onExit = onExit,
     )
-}
-
-
-/** Index 5 is the sixth step — 30 min on the five-minute grid. */
-private fun baselineFitSummary(fit: BaselineFit): String {
-    if (!fit.model.calibrated) return "Fitted — band needs more history"
-    val rmse = fit.holdoutRmseMgdl.getOrNull(5)
-    val zoh = fit.persistenceRmseMgdl.getOrNull(5)
-    return if (rmse != null && zoh != null && rmse.isFinite() && zoh.isFinite()) {
-        "RMSE %.1f vs ZOH %.1f @30 min".format(rmse, zoh)
-    } else {
-        "Fitted"
-    }
 }

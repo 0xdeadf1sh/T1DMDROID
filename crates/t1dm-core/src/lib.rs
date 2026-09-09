@@ -32,10 +32,6 @@ pub use accuracy::*;
 mod conformal;
 pub use conformal::*;
 
-/// Ridge baseline; band fan from the same §8.4 conformal. Advisory and comparative only.
-mod baseline;
-pub use baseline::*;
-
 /// Continuous Glucose-Error Grid Analysis (Kovatchev 2004).
 mod cg_ega;
 

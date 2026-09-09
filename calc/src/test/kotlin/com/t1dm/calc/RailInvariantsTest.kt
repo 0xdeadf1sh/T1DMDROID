@@ -64,7 +64,7 @@ class RailInvariantsTest {
     fun refuses_when_the_selected_model_is_not_on_the_authority() = runTest {
         for (bid in listOf(
             com.t1dm.core.model.BackendId.STUB,
-            com.t1dm.core.model.BackendId.NATIVE_RIDGE_FP64,
+            com.t1dm.core.model.BackendId.UNKNOWN,
         )) {
             val backend = BackendInfo(bid, com.t1dm.core.model.Precision.FP32)
             val advisor = advisorOf(FakeForecastPort(), anchor = fakeAnchor(now), iob = fakeIob(now), backend = backend)

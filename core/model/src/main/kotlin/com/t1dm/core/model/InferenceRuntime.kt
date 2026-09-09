@@ -1,12 +1,10 @@
 package com.t1dm.core.model
 
-/** [FP64] isn't ExecuTorch — it's the Rust core's f64, used end-to-end by classical baseline. */
-enum class Precision { FP64, FP32, FP16 }
+enum class Precision { FP32, FP16 }
 
-/** XNNPACK_FP32 executes .pte (only dose-scoreable path); STUB fallback; RIDGE_FP64 classical. */
+/** XNNPACK_FP32 executes .pte (only dose-scoreable path); STUB fallback. */
 enum class BackendId {
     EXECUTORCH_XNNPACK_FP32,
-    NATIVE_RIDGE_FP64,
     STUB,
 
     /** Backend name this build lost; reads as unknown, not throw; never trusted for dosing. */
@@ -15,7 +13,6 @@ enum class BackendId {
 
 fun BackendId.displayName(): String = when (this) {
     BackendId.EXECUTORCH_XNNPACK_FP32 -> "XNNPACK CPU · fp32"
-    BackendId.NATIVE_RIDGE_FP64 -> "Ridge CPU · fp64"
     BackendId.STUB -> "Stub · no .pte"
     BackendId.UNKNOWN -> "unknown backend"
 }
@@ -160,8 +157,6 @@ data class InferenceState(
     val circadianLowContext: Boolean = false,
     /** Distinguishes "no time section" from "decode failed"; defaults true until cycle sets it. */
     val selectedHasTimeSection: Boolean = true,
-    /** Null if never fitted (still listed in [running]); only provenance, no [ModelMeta]. */
-    val baselineModel: BaselineModel? = null,
     val note: String? = null,
 ) {
     val selectedPrediction: ModelPrediction? get() = predictions.firstOrNull { it.selected }

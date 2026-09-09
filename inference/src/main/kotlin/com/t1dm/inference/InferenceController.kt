@@ -2,9 +2,7 @@ package com.t1dm.inference
 
 import com.t1dm.core.common.NativeCore
 import com.t1dm.core.common.T1dmDispatchers
-import com.t1dm.core.model.BASELINE_MODEL_ID
 import com.t1dm.core.model.BackendId
-import com.t1dm.core.model.BaselineFit
 import com.t1dm.core.model.displayName
 import com.t1dm.core.model.LoraConfig
 import com.t1dm.core.model.LoraGuardReport
@@ -71,8 +69,6 @@ class InferenceController(
     private val smoothingWindowProvider: suspend () -> Int = { InferenceControllerDefaults.SAVGOL_WINDOW },
     /** Null ⇒ the counterfactual branch never runs, so every adapter stays `ABSENT`. */
     private val probeInsulin: ProbeInsulinPort? = null,
-    /** Runs beside loaded, publishes a prediction, but not IN loaded (no descriptor/artifact). */
-    private val baseline: BaselineRunner? = null,
     /** Re-read every cycle. Null ⇒ every model runs frozen. */
     private val loraStore: LoraStore? = null,
 ) {
@@ -129,23 +125,7 @@ class InferenceController(
     /** After an IN-PLACE data wipe, re-earn warmup, or the forecast runs on empty context. */
     suspend fun resetWarmupLatch() = cycleMutex.withLock { warmupSatisfiedUpTo = 0 }
 
-    /** Not serialised on cycleMutex: fit touches no handle, would else stall the forecast. */
-    suspend fun fitBaseline(nowMs: Long, minCalWindows: Int): Result<BaselineFit> {
-        val b = baseline ?: return Result.failure(IllegalStateException("no baseline runner"))
-        val result = b.fit(history, nowMs, minCalWindows)
-        if (result.isSuccess) {
-            // Republish now so the drill-down shows the new provenance without waiting for a tick.
-            _state.value = _state.value.copy(running = runningModels(), baselineModel = b.fitted)
-        }
-        return result
-    }
-
     suspend fun restoreLast() {
-        runCatching { baseline?.restore() }.onFailure { Timber.tag(TAG).w(it, "baseline restore failed") }
-        // Baseline row exists before any cycle/fit; publish it, not leave the panel empty.
-        if (baseline != null) {
-            _state.value = _state.value.copy(running = runningModels(), baselineModel = baseline.fitted)
-        }
         val last = runCatching { predictionStore.loadLast() }.getOrNull() ?: return
         if (last.isNotEmpty()) {
             // Cold start won't show a lit forecast on a dark clock; null belief leaves it be.
@@ -178,11 +158,7 @@ class InferenceController(
 
         val cap = runCatching { maxRunningProvider() }.getOrNull()?.coerceAtLeast(1) ?: DEFAULT_MAX_RUNNING
         val runningIds = installed.keys.take(cap).toList()
-        // A fitted baseline is valid, not in runningIds; it must survive a refresh regardless.
-        selectedId = selectedId
-            ?.takeIf { it in runningIds || (it == BASELINE_MODEL_ID && baseline?.fitted != null) }
-            ?: runningIds.firstOrNull()
-            ?: BASELINE_MODEL_ID.takeIf { baseline?.fitted != null }
+        selectedId = selectedId?.takeIf { it in runningIds } ?: runningIds.firstOrNull()
 
         for (id in runningIds) loaded[id] = loadModel(id)
 
@@ -618,8 +594,7 @@ class InferenceController(
     suspend fun selectModel(id: String) {
         // Write/re-flag race refreshModelsLocked; release BEFORE refreshModels (non-reentrant).
         cycleMutex.withLock {
-            val isFittedBaseline = id == BASELINE_MODEL_ID && baseline?.fitted != null
-            if (id !in loaded.keys && !isFittedBaseline) return
+            if (id !in loaded.keys) return
             selectedId = id
             val hasTime = loaded[id]?.bundle?.descriptor?.time != null
             val sel = _state.value.predictions.firstOrNull { it.modelId == id }
@@ -645,22 +620,6 @@ class InferenceController(
     /** Deletes pair from disk, purges telemetry/latency/prediction; returns whether removed. */
     suspend fun deleteModel(id: String): Boolean = cycleMutex.withLock {
         heads.evict(id)
-        // The baseline has no artifact to unlink; discarding the fitted weights is the same act.
-        if (id == BASELINE_MODEL_ID) {
-            val had = baseline?.fitted != null
-            baseline?.clear()
-            if (selectedId == BASELINE_MODEL_ID) selectedId = null
-            // Stale counters would otherwise be attributed to the next fit under the same id.
-            cumulative.remove(id); latencySamples.remove(id)
-            runCatching { telemetryStore?.save(HashMap(cumulative)) }
-            refreshModelsLocked()
-            _state.value = _state.value.copy(
-                running = runningModels(),
-                baselineModel = null,
-                predictions = _state.value.predictions.filterNot { it.modelId == id },
-            )
-            return@withLock had
-        }
         val removed = withContext(dispatchers.inference) { runCatching { store.delete(id) }.getOrDefault(false) }
         cumulative.remove(id); latencySamples.remove(id)
         runCatching { telemetryStore?.save(HashMap(cumulative)) }
@@ -692,9 +651,7 @@ class InferenceController(
             val desc = (selEntry ?: loaded.values.firstOrNull())?.bundle?.descriptor
             Triple(desc, selEntry?.real ?: false, selEntry?.bundle?.descriptor?.time != null)
         }
-        // A fitted baseline runs with no descriptor; without this fallback it never forecasts.
-        val baselineOnly = descAny == null && baseline?.fitted != null
-        if (descAny == null && !baselineOnly) { refreshModels(); return }
+        if (descAny == null) { refreshModels(); return }
         // Before warmup gate: banner is over-temp not warmup; copy keeps circadianTime lit.
         overTempNote(nowMs)?.let { note ->
             _state.value = _state.value.copy(
@@ -703,10 +660,8 @@ class InferenceController(
             Timber.tag(TAG).i(note)
             return
         }
-        val minSteps = descAny?.let { it.minContextPatches * it.patchSize }
-            ?: NO_DESCRIPTOR_MIN_STEPS
-        val maxSteps = descAny?.let { it.maxContextPatches * it.patchSize }
-            ?: NO_DESCRIPTOR_MAX_STEPS
+        val minSteps = descAny.minContextPatches * descAny.patchSize
+        val maxSteps = descAny.maxContextPatches * descAny.patchSize
 
         // WARMUP gate: withhold until warmupHours MEASURED, floored at MIN_CONTEXT; distinct gate.
         val minContextHours = minSteps * GRID_MS / MS_PER_HOUR
@@ -725,12 +680,8 @@ class InferenceController(
             } else {
                 null
             }
-            // BASELINE not gated by this window: reads nLags trailing, not calc/probe/overlay.
-            val warmupBaseline = runCatching { baselineDuringWarmup(nowMs) }
-                .getOrElse { Timber.tag(TAG).w(it, "baseline cycle failed during warmup"); null }
             _state.value = _state.value.copy(
-                // Only the baseline's; the neural fan stays suppressed.
-                predictions = listOfNotNull(warmupBaseline),
+                predictions = emptyList(),
                 lastCause = InferenceCause.COLLECTING_CONTEXT,
                 warmup = com.t1dm.core.model.WarmupProgress(measuredHours, requiredHours),
                 circadianTime = warmupBelief?.first,
@@ -741,9 +692,8 @@ class InferenceController(
                 note = "collecting context — %.1f / %.0f h of measured data".format(measuredHours, requiredHours),
             )
             Timber.tag(TAG).i(
-                "warmup: %.1f/%.0f h measured — neural suppressed, baseline=%s; circadian=%s",
+                "warmup: %.1f/%.0f h measured — forecast suppressed; circadian=%s",
                 measuredHours, requiredHours,
-                if (warmupBaseline != null) "published" else "n/a",
                 warmupBelief?.let { "%.2fh R=%.3f".format(it.first.predictedHour, it.first.resultantR) } ?: "n/a",
             )
             return
@@ -769,10 +719,9 @@ class InferenceController(
 
     /** Public so the service can drive a synthetic or manual cycle with no sensor present. */
     suspend fun runCycle(cause: InferenceCause, series: BgSeries, nowMs: Long) = cycleMutex.withLock {
-        // A fitted baseline runs in its own right; a device with no .pte still has something.
-        if (loaded.isEmpty() && baseline?.fitted == null) {
+        if (loaded.isEmpty()) {
             refreshOrNote()
-            if (loaded.isEmpty() && baseline?.fitted == null) return@withLock
+            if (loaded.isEmpty()) return@withLock
         }
         // UNIVERSAL chokepoint: tick, manual, synthetic funnel here; copy keeps circadianTime lit.
         overTempNote(nowMs)?.let { note ->
@@ -803,20 +752,11 @@ class InferenceController(
             if (pred != null) preds.add(pred)
         }
 
-        // Same anchor/grid, off the RAW series and its own causal IOB/COB (see BaselineRunner).
-        baseline?.let { b ->
-            val pred = runCatching { b.predict(series, cycleTs, selectedId == BASELINE_MODEL_ID, stale) }
-                .getOrElse { Timber.tag(TAG).w(it, "baseline cycle failed"); null }
-            if (pred != null) {
-                preds.add(pred)
-                pred.latencyMs?.let { recordLatency(BASELINE_MODEL_ID, it); recordCumulative(BASELINE_MODEL_ID, it) }
-            }
-        }
         preds.sortByDescending { it.selected }
 
         val durationMs = ((System.nanoTime() - t0) / 1_000_000.0).toLong()
         val selPred = preds.firstOrNull { it.selected }
-        // False for the classical baseline, and for any neural export cut without a time head.
+        // False for any neural export cut without a time head.
         val selHasTime = loaded[selectedId]?.bundle?.descriptor?.time != null
         _state.value = _state.value.copy(
             running = runningModels(),
@@ -827,11 +767,7 @@ class InferenceController(
             lastCycleTsMs = cycleTs,
             lastCause = cause,
             lastCycleDurationMs = durationMs,
-            realBackendAvailable = if (selectedId == BASELINE_MODEL_ID) {
-                baseline?.fitted != null
-            } else {
-                loaded[selectedId]?.real ?: false
-            },
+            realBackendAvailable = loaded[selectedId]?.real ?: false,
             // Keeps last belief across a TRANSIENT failure, not across a no-time-head switch.
             circadianTime = if (selHasTime) selPred?.predictedTime ?: _state.value.circadianTime else null,
             circadianAnchorMs = if (selHasTime) {
@@ -841,7 +777,6 @@ class InferenceController(
             },
             circadianLowContext = selHasTime && selPred?.predictedTime == null && _state.value.circadianLowContext,
             selectedHasTimeSection = selHasTime,
-            baselineModel = baseline?.fitted,
             warmup = null, // a published cycle clears the warmup banner
             note = if (stale) "forecast STALE — last real BG is ${(nowMs - series.anchorTsMs) / 60_000} min old" else null,
         )
@@ -989,19 +924,6 @@ class InferenceController(
         }
     }
 
-    /** Series asked at BASELINE's own floor (nLags), not neural minimum; never marked selected. */
-    private suspend fun baselineDuringWarmup(nowMs: Long): ModelPrediction? {
-        val b = baseline ?: return null
-        val lags = b.fitted?.spec?.nLags ?: return null
-        val series = history.recentBgSeries(NO_DESCRIPTOR_MAX_STEPS, lags) ?: return null
-        return b.predict(
-            series,
-            snapToGrid(nowMs),
-            selected = false,
-            stale = (nowMs - series.anchorTsMs) > freshnessThresholdMs,
-        )
-    }
-
     private suspend fun circadianDuringWarmup(): Pair<PredictedTime, Long>? {
         val id = selectedId ?: return null
         val entry = loaded[id] ?: return null
@@ -1097,18 +1019,8 @@ class InferenceController(
             runCatching { smoothingWindowProvider() }.getOrNull() ?: InferenceControllerDefaults.SAVGOL_WINDOW,
         )
 
-    /** Baseline listed whether fitted or not; hiding until a fit strands its own Fit action. */
-    private fun runningModels(): List<RunningModel> {
-        val neural = loaded.map { (id, e) ->
-            RunningModel(id, e.effectiveBackend, e.precision, id == selectedId)
-        }
-        if (baseline == null) return neural
-        return neural + RunningModel(
-            modelId = BASELINE_MODEL_ID,
-            backend = BackendId.NATIVE_RIDGE_FP64,
-            precision = Precision.FP64,
-            selected = selectedId == BASELINE_MODEL_ID,
-        )
+    private fun runningModels(): List<RunningModel> = loaded.map { (id, e) ->
+        RunningModel(id, e.effectiveBackend, e.precision, id == selectedId)
     }
 
     /** .pte filenames, NOT model_id (can diverge for adb-pushed); sync coordinator keys on this. */
@@ -1162,10 +1074,6 @@ class InferenceController(
         /** Empty: cycle forecast is one window, no seam; §9 carry belongs to RollingForecaster. */
         val CARRY_SPREAD = emptyList<Double>()
         const val LATENCY_WINDOW = 60
-
-        /** 8h/24h steps for a descriptor-less cycle; NOT the neural bounds (those run to days). */
-        const val NO_DESCRIPTOR_MIN_STEPS = 96
-        const val NO_DESCRIPTOR_MAX_STEPS = 288
 
         fun snapToGrid(ts: Long): Long = Math.floorDiv(ts + GRID_MS / 2, GRID_MS) * GRID_MS
 
