@@ -799,7 +799,8 @@ fun GlucoseGraph(
             if (!yMin.isFinite() || !yMax.isFinite()) { yMin = 0f; yMax = 1f }
             // Covers the configured range, grows past it, never clips; on the risk axis through f.
             val fixed = if (rangeMinMgdl != null && rangeMaxMgdl != null) {
-                fixedYRange(yMin, yMax, frame.unit, rangeMinMgdl, rangeMaxMgdl, kovatchevF)
+                val (railLo, railHi) = axisRailsMgdl(frame.unit, rangeMinMgdl, rangeMaxMgdl, thresholds)
+                fixedYRange(yMin, yMax, frame.unit, railLo, railHi, kovatchevF)
             } else {
                 null
             }
@@ -1236,6 +1237,18 @@ internal fun mgdlToAxis(unit: UnitSpace, kovatchevF: ((Double) -> Double)?): ((F
         UnitSpace.MmolL -> ({ v: Float -> (v / 18.0182).toFloat() })
         UnitSpace.Kovatchev -> if (f == null) null else ({ v: Float -> f(v.toDouble()).toFloat() })
     }
+}
+
+/** Axis rails in mg/dL. f is steep past the urgent bands, so they bound the risk axis instead. */
+internal fun axisRailsMgdl(
+    unit: UnitSpace,
+    rangeMinMgdl: Int,
+    rangeMaxMgdl: Int,
+    thresholds: AlertThresholds?,
+): Pair<Int, Int> {
+    if (unit != UnitSpace.Kovatchev || thresholds == null) return rangeMinMgdl to rangeMaxMgdl
+    val lo = maxOf(rangeMinMgdl, thresholds.urgentLowMgdl)
+    return lo to maxOf(lo + 1, minOf(rangeMaxMgdl, thresholds.urgentHighMgdl))
 }
 
 /** Covers [rangeMinMgdl]..[rangeMaxMgdl] in [unit], grows for data beyond, rounds to a tick. */

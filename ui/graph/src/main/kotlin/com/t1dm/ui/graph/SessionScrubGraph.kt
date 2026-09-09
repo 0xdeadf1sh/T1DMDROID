@@ -93,7 +93,8 @@ fun SessionScrubGraph(
         }
         if (!yMin.isFinite() || !yMax.isFinite()) { yMin = 0f; yMax = 1f }
         val fixed = if (rangeMinMgdl != null && rangeMaxMgdl != null) {
-            fixedYRange(yMin, yMax, unit, rangeMinMgdl, rangeMaxMgdl, kovatchevF)
+            val (railLo, railHi) = axisRailsMgdl(unit, rangeMinMgdl, rangeMaxMgdl, thresholds)
+            fixedYRange(yMin, yMax, unit, railLo, railHi, kovatchevF)
         } else {
             null
         }

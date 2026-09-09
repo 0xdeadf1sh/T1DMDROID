@@ -1,5 +1,6 @@
 package com.t1dm.ui.graph
 
+import com.t1dm.core.model.AlertThresholds
 import com.t1dm.core.model.BackendId
 import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.CgmSourceId
@@ -19,6 +20,9 @@ import kotlin.math.ln
 
 /** Monotone stand-in for the native clinical f; the axis needs the shape, not the anchoring. */
 private val STUB_F: (Double) -> Double = { mgdl -> 1.509 * (ln(mgdl) * ln(mgdl) - 5.381) }
+
+private fun thresholds(urgentLow: Int, urgentHigh: Int) =
+    AlertThresholds(urgentLow, urgentLow + 15, urgentHigh - 70, urgentHigh)
 
 class BgPanelTest {
 
@@ -68,6 +72,17 @@ class BgPanelTest {
 
     @Test fun fixedRange_riskWithoutTransformIsNull() {
         assertNull(fixedYRange(-0.5f, 0.9f, UnitSpace.Kovatchev, 20, 250, null))
+    }
+
+    @Test fun axisRails_riskTakesTheUrgentBandEdges() {
+        val t = thresholds(urgentLow = 55, urgentHigh = 250)
+        assertEquals(55 to 250, axisRailsMgdl(UnitSpace.Kovatchev, 20, 400, t))
+    }
+
+    @Test fun axisRails_mgdlKeepsTheConfiguredRange() {
+        val t = thresholds(urgentLow = 55, urgentHigh = 250)
+        assertEquals(20 to 400, axisRailsMgdl(UnitSpace.MgDl, 20, 400, t))
+        assertEquals(20 to 400, axisRailsMgdl(UnitSpace.Kovatchev, 20, 400, null))
     }
 
     private fun pred(
