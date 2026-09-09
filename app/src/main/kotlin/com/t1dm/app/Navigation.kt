@@ -683,7 +683,13 @@ private fun T1dmBottomBar(
                 .padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Column(Modifier.weight(1f)) {
+            Column(
+                Modifier
+                    .weight(1f)
+                    .hapticClickable(HapticEvent.SegmentTick) {
+                        container.setUnitSpace(UnitSpace.entries[(unit.ordinal + 1) % UnitSpace.entries.size])
+                    },
+            ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
