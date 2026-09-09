@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.LocalContentColor
@@ -64,6 +65,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -551,6 +553,9 @@ private val CRUMB_H_PAD = 8.dp
 private val CRUMB_GAP = 4.dp
 private val TOD_ICON_SIZE = 36.dp
 
+/** Shared by the arrow and the R/S beneath it, so the two centre on one axis. */
+private val TREND_COL_W = 28.dp
+
 /** Laid-out width of the whole trail, so the centred clock can yield before the two meet. */
 @Composable
 private fun crumbTrailWidth(crumbs: List<Crumb>): Dp {
@@ -693,6 +698,7 @@ private fun T1dmBottomBar(
     val sourceStatus by container.viewedStatus.collectAsState(CgmSourceStatus.Idle)
     val viewingOther by container.viewingNonAuthoritative.collectAsState(false)
     val viewedReading by container.viewedReading.collectAsState(null)
+    val direction by container.viewedDirection.collectAsState(null)
 
     // VIEWED sensor drives the read-out; `reading` stays authoritative (alarm/stats/calc/wire).
     val shown = if (viewingOther) viewedReading else reading
@@ -730,30 +736,57 @@ private fun T1dmBottomBar(
                     // Clearance from the puck.
                     .padding(end = 12.dp),
             ) {
-                Text(
-                    text = bgText,
-                    style = bgStyle,
-                    // Stale beats viewed-tint order (older number is the stronger warning).
-                    color = when {
-                        stale -> cs.error
-                        viewingOther -> cs.tertiary
-                        else -> Color.Unspecified
-                    },
-                    maxLines = 1,
-                )
-                Text(
-                    text = BgFormat.unitLabel(unit) + (shown?.let { readingSuffix(it) } ?: ""),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = when {
-                        stale -> cs.error
-                        viewingOther -> cs.tertiary
-                        else -> cs.onSurfaceVariant
-                    },
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    // Under the first digit: this line's own space is narrower than the value's.
-                    modifier = Modifier.padding(start = leadGlyphWidth(bgText, bgStyle)),
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = bgText,
+                        style = bgStyle,
+                        // Stale beats viewed-tint order (older number is the stronger warning).
+                        color = when {
+                            stale -> cs.error
+                            viewingOther -> cs.tertiary
+                            else -> Color.Unspecified
+                        },
+                        maxLines = 1,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        text = BgFormat.arrow(direction?.trend),
+                        style = MaterialTheme.typography.headlineSmall,
+                        color = when {
+                            stale -> cs.error
+                            viewingOther -> cs.tertiary
+                            else -> Color.Unspecified
+                        },
+                        maxLines = 1,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.width(TREND_COL_W),
+                    )
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = BgFormat.unitLabel(unit) + (shown?.let { readingSuffix(it) } ?: ""),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = when {
+                            stale -> cs.error
+                            viewingOther -> cs.tertiary
+                            else -> cs.onSurfaceVariant
+                        },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        // Under the first digit: this line is narrower than the value's.
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(start = leadGlyphWidth(bgText, bgStyle)),
+                    )
+                    Text(
+                        text = direction?.let { if (it.reported) "R" else "S" } ?: "",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = cs.onSurfaceVariant,
+                        maxLines = 1,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.width(TREND_COL_W),
+                    )
+                }
             }
             NavWheelPuck(wheel, motion, destinations, current, onWheelSelect)
             SensorPanel(

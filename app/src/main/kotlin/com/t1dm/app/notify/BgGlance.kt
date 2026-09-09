@@ -45,6 +45,35 @@ data class BgGlance(
 
 enum class GlanceTrend { FLAT, RISING, FALLING, RISING_FAST, FALLING_FAST }
 
+/** [reported] false ⇒ fitted by [fitTrendTenthsPerMin] because the sensor sent no rate. */
+data class BgDirection(val trend: GlanceTrend, val reported: Boolean)
+
+const val TREND_FIT_WINDOW_MS = 15 * 60_000L
+
+/** The 5-min grid points [TREND_FIT_WINDOW_MS] spans, newest inclusive. */
+const val TREND_FIT_POINTS = 4
+
+/** Least-squares slope over real measurements, in 0.1 mg/dL/min; null under two usable points. */
+fun fitTrendTenthsPerMin(readings: List<CgmReading>): Int? {
+    val pts = readings.mapNotNull { r ->
+        if (!isRealMeasurement(r.provenance, r.flag)) null else r.bgMgdl?.let { r.tsMs to it }
+    }
+    if (pts.size < 2) return null
+    val t0 = pts.first().first
+    val xs = pts.map { (it.first - t0) / 60_000.0 }
+    val ys = pts.map { it.second.toDouble() }
+    val mx = xs.average()
+    val my = ys.average()
+    var num = 0.0
+    var den = 0.0
+    for (i in xs.indices) {
+        val dx = xs[i] - mx
+        num += dx * (ys[i] - my)
+        den += dx * dx
+    }
+    return if (den <= 0.0) null else (num / den * 10.0).roundToInt()
+}
+
 /** CRITICAL is the urgent bands, WARNING is low/high. */
 data class PredictiveCrossing(
     val kind: Kind,

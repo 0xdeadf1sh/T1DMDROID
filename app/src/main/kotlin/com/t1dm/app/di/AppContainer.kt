@@ -4,7 +4,12 @@ import android.content.Context
 import android.net.NetworkCapabilities
 import android.content.Intent
 import android.media.RingtoneManager
+import com.t1dm.app.notify.BgDirection
+import com.t1dm.app.notify.BgGlanceComputer
 import com.t1dm.app.notify.GlanceReadings
+import com.t1dm.app.notify.TREND_FIT_POINTS
+import com.t1dm.app.notify.TREND_FIT_WINDOW_MS
+import com.t1dm.app.notify.fitTrendTenthsPerMin
 import com.t1dm.alerts.ActiveAlarm
 import com.t1dm.alerts.AlarmConfig
 import com.t1dm.alerts.AlarmEngine
@@ -2620,6 +2625,28 @@ class AppContainer(context: Context) {
     /** Bottom bar's sensor chip; [latestReading] stays authoritative for BG/trend/staleness. */
     val viewedReading: Flow<CgmReading?> = viewedSource.flatMapLatest { d ->
         if (d == null) flowOf(null) else repository.observeLatestReading(d.id)
+    }
+
+    /** Follows [viewedReading], so the arrow and the number beside it describe the same sensor. */
+    val viewedDirection: Flow<BgDirection?> = viewedSource.flatMapLatest { d ->
+        if (d == null) {
+            flowOf(null)
+        } else {
+            repository.observeLatestReading(d.id).mapLatest { latest ->
+                val reported = latest?.trendTenthsPerMin
+                if (reported != null) {
+                    BgGlanceComputer.measuredTrend(reported)?.let { BgDirection(it, reported = true) }
+                } else if (latest == null) {
+                    null
+                } else {
+                    val rows = repository.recentReadings(d.id, TREND_FIT_POINTS)
+                        .filter { it.tsMs >= latest.tsMs - TREND_FIT_WINDOW_MS }
+                    fitTrendTenthsPerMin(rows)
+                        ?.let { BgGlanceComputer.measuredTrend(it) }
+                        ?.let { BgDirection(it, reported = false) }
+                }
+            }
+        }
     }
 
 
