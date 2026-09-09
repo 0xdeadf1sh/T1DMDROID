@@ -44,6 +44,16 @@ class BgFormatTest {
         assertEquals("+2.81", BgFormat.value(9999, UnitSpace.Kovatchev))
     }
 
+    /** Signed values are untouched; "--" reads as signed, so it never gains a pad either. */
+    @Test fun valueSignAligned_pads_only_the_unsigned_units() {
+        assertEquals("+0.09", BgFormat.valueSignAligned(118, UnitSpace.Kovatchev))
+        assertEquals("-0.88", BgFormat.valueSignAligned(70, UnitSpace.Kovatchev))
+        assertEquals("--", BgFormat.valueSignAligned(null, UnitSpace.MgDl))
+        assertEquals(0x2007, BgFormat.valueSignAligned(118, UnitSpace.MgDl)[0].code)
+        assertEquals("118", BgFormat.valueSignAligned(118, UnitSpace.MgDl).substring(1))
+        assertEquals("6.5", BgFormat.valueSignAligned(118, UnitSpace.MmolL).substring(1))
+    }
+
     @Test fun kovatchev_value_and_label_agree() {
         assertEquals("risk", BgFormat.unitLabel(UnitSpace.Kovatchev))
         assertEquals("mg/dL", BgFormat.unitLabel(UnitSpace.MgDl))

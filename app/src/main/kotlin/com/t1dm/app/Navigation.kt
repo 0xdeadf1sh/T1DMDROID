@@ -58,9 +58,13 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavHostController
@@ -683,21 +687,26 @@ private fun T1dmBottomBar(
                 .padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            // 28sp, not displaySmall's 36: a signed risk value plus the icon overruns 132dp.
+            val bgStyle = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold)
+            val bgText = BgFormat.valueSignAligned(shown?.bgMgdl, unit)
             Column(
                 Modifier
+                    // Equal to the sensor panel, or the puck between them leaves the centre.
                     .weight(1f)
                     .hapticClickable(HapticEvent.SegmentTick) {
                         container.setUnitSpace(UnitSpace.entries[(unit.ordinal + 1) % UnitSpace.entries.size])
-                    },
+                    }
+                    // Clearance from the puck: the icon is pinned to this column's right edge.
+                    .padding(end = 12.dp),
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Text(
-                        text = BgFormat.value(shown?.bgMgdl, unit),
-                        style = MaterialTheme.typography.displaySmall,
-                        fontWeight = FontWeight.Bold,
+                        text = bgText,
+                        style = bgStyle,
                         // Stale beats viewed-tint order (older number is the stronger warning).
                         color = when {
                             stale -> cs.error
@@ -705,7 +714,8 @@ private fun T1dmBottomBar(
                             else -> Color.Unspecified
                         },
                         maxLines = 1,
-                        modifier = Modifier.weight(1f, fill = false),
+                        // Filled, so the icon holds its place as the value's width changes.
+                        modifier = Modifier.weight(1f),
                     )
                     TimeOfDayIcon()
                 }
@@ -719,6 +729,8 @@ private fun T1dmBottomBar(
                     },
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
+                    // Under the first digit: this line's own space is narrower than the value's.
+                    modifier = Modifier.padding(start = leadGlyphWidth(bgText, bgStyle)),
                 )
             }
             NavWheelPuck(wheel, motion, destinations, current, onWheelSelect)
@@ -734,6 +746,23 @@ private fun T1dmBottomBar(
                 viewingOther = viewingOther,
                 onCycle = container::cycleViewedSource,
             )
+        }
+    }
+}
+
+/** Width of [text]'s first glyph, measured against a digit: a lone space measures zero. */
+@Composable
+private fun leadGlyphWidth(text: String, style: TextStyle): Dp {
+    val measurer = rememberTextMeasurer()
+    val density = LocalDensity.current
+    val lead = text.take(1)
+    return remember(lead, style, density) {
+        if (lead.isEmpty()) {
+            0.dp
+        } else {
+            with(density) {
+                (measurer.measure(lead + "0", style).size.width - measurer.measure("0", style).size.width).toDp()
+            }
         }
     }
 }

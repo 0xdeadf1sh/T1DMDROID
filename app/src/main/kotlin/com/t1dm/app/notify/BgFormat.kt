@@ -16,6 +16,14 @@ object BgFormat {
         }
     }
 
+    /** U+2007 FIGURE SPACE is digit-width: it holds Kovatchev's sign column open in the others. */
+    private val SIGN_PAD = Char(0x2007).toString()
+
+    fun valueSignAligned(bgMgdl: Int?, unit: UnitSpace): String {
+        val v = value(bgMgdl, unit)
+        return if (v.startsWith('+') || v.startsWith('-')) v else SIGN_PAD + v
+    }
+
     fun unitLabel(unit: UnitSpace): String = when (unit) {
         UnitSpace.MgDl -> "mg/dL"
         UnitSpace.MmolL -> "mmol/L"
