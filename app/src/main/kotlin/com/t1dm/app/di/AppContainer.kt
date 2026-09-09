@@ -2521,6 +2521,18 @@ class AppContainer(context: Context) {
             d?.incidentalName(showNames)
         }.distinctUntilChanged()
 
+    /** Its serial, same privacy setting; masked it is the ordinal digit, never the real one. */
+    val viewedSourceSerial: Flow<String?> =
+        combine(viewedSource, settingsStore.showSensorNames) { d, showNames ->
+            d?.incidentalSerial(showNames)
+        }.distinctUntilChanged()
+
+    /** Its lifecycle state; Idle stands in before a source is adopted. */
+    val viewedStatus: Flow<com.t1dm.core.model.CgmSourceStatus> =
+        viewedSource.flatMapLatest { d ->
+            if (d == null) flowOf(com.t1dm.core.model.CgmSourceStatus.Idle) else registry.statusOf(d.id)
+        }.distinctUntilChanged()
+
     /** The same, for the believed sensor. */
     val authoritativeSourceLabel: Flow<String?> =
         combine(authoritativeSource, settingsStore.showSensorNames) { d, showNames ->

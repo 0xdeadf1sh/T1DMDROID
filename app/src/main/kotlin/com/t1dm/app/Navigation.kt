@@ -91,6 +91,7 @@ import com.t1dm.core.design.LocalAnimationsEnabled
 import com.t1dm.core.design.LocalDeathMode
 import com.t1dm.core.design.LocalT1dmHaptics
 import com.t1dm.core.design.LocalT1dmSemantics
+import com.t1dm.core.design.CgmStatusIcon
 import com.t1dm.core.design.SignalBars
 import com.t1dm.core.design.T1dmFontId
 import com.t1dm.core.design.T1dmHaptics
@@ -107,6 +108,7 @@ import com.t1dm.core.model.BezierCurve
 import com.t1dm.core.model.CarTuning
 import com.t1dm.core.model.CgEga
 import com.t1dm.core.model.CgmReading
+import com.t1dm.core.model.CgmSourceStatus
 import com.t1dm.core.model.CurveKind
 import com.t1dm.core.model.DkaTimeline
 import com.t1dm.core.model.ErrorGridLattices
@@ -653,6 +655,8 @@ private fun T1dmBottomBar(
     val unit by container.statsRepository.unitSpace.collectAsState(UnitSpace.MgDl)
     // VIEWED source; off-authoritative uses tertiary color. Privacy-resolved upstream in the flow.
     val sourceLabel by container.viewedSourceLabel.collectAsState(null)
+    val sourceSerial by container.viewedSourceSerial.collectAsState(null)
+    val sourceStatus by container.viewedStatus.collectAsState(CgmSourceStatus.Idle)
     val viewingOther by container.viewingNonAuthoritative.collectAsState(false)
     val viewedReading by container.viewedReading.collectAsState(null)
 
@@ -695,6 +699,7 @@ private fun T1dmBottomBar(
                             else -> Color.Unspecified
                         },
                         maxLines = 1,
+                        modifier = Modifier.weight(1f, fill = false),
                     )
                     TimeOfDayIcon()
                 }
@@ -707,37 +712,22 @@ private fun T1dmBottomBar(
                         else -> cs.onSurfaceVariant
                     },
                     maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
             NavWheelPuck(wheel, motion, destinations, current, onWheelSelect)
-            Column(Modifier.weight(1f), horizontalAlignment = Alignment.End) {
-                // A direction measured minutes ago is not a current one.
-                if (!stale) {
-                    Text(
-                        text = BgFormat.arrow(
-                            BgGlanceComputer.measuredTrend(shown?.trendTenthsPerMin),
-                        ),
-                        style = MaterialTheme.typography.headlineSmall,
-                        color = if (viewingOther) cs.tertiary else Color.Unspecified,
-                    )
-                }
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    modifier = Modifier.hapticClickable(HapticEvent.NavSwitch) { container.cycleViewedSource() },
-                ) {
-                    Text(
-                        text = sourceLabel ?: "no source",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (viewingOther) cs.tertiary else Color.Unspecified,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    // Matches VIEWED sensor; RSSI falls back to reading's if fresh (ADVERTISEMENT).
-                    viewedReading?.rssi?.takeUnless { stale }?.let { SignalBars(it) }
-                }
-                ageMs?.let { LastReadingChip(it, stale) }
-            }
+            SensorPanel(
+                Modifier.weight(1f),
+                sourceLabel = sourceLabel,
+                sourceSerial = sourceSerial,
+                // Matches VIEWED sensor; RSSI falls back to reading's if fresh (ADVERTISEMENT).
+                rssi = viewedReading?.rssi?.takeUnless { stale },
+                status = sourceStatus,
+                ageMs = ageMs,
+                stale = stale,
+                viewingOther = viewingOther,
+                onCycle = container::cycleViewedSource,
+            )
         }
     }
 }
@@ -750,12 +740,67 @@ private fun readingSuffix(r: CgmReading): String = when {
     else -> ""
 }
 
-/** Age of [CgmReading.rxWallMs] pre-grid-snap; past cutoff this line alone carries freshness. */
+/** Name, serial, signal, then state and reading age. Tapping anywhere steps to the next sensor. */
+@Composable
+private fun SensorPanel(
+    modifier: Modifier,
+    sourceLabel: String?,
+    sourceSerial: String?,
+    rssi: Int?,
+    status: CgmSourceStatus,
+    ageMs: Long?,
+    stale: Boolean,
+    viewingOther: Boolean,
+    onCycle: () -> Unit,
+) {
+    val cs = MaterialTheme.colorScheme
+    val tint = if (viewingOther) cs.tertiary else Color.Unspecified
+    val muted = cs.onSurface.copy(alpha = 0.7f)
+    Column(
+        modifier.hapticClickable(HapticEvent.NavSwitch) { onCycle() },
+        horizontalAlignment = Alignment.End,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Text(
+            text = sourceLabel ?: "no source",
+            style = MaterialTheme.typography.titleMedium,
+            color = tint,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            text = sourceSerial ?: "—",
+            style = MaterialTheme.typography.bodyMedium,
+            fontFamily = FontFamily.Monospace,
+            color = if (viewingOther) cs.tertiary else muted,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        // Em dash, not a zero: no fresh advert is an unknown, not a floor.
+        if (rssi == null) {
+            Text("—", style = MaterialTheme.typography.bodyMedium, color = muted)
+        } else {
+            SignalBars(rssi)
+        }
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            CgmStatusIcon(status)
+            ageMs?.let { LastReadingChip(it, stale) }
+        }
+    }
+}
+
+/** Age of [CgmReading.rxWallMs] pre-grid-snap; this line alone carries freshness. */
 @Composable
 private fun LastReadingChip(ageMs: Long, stale: Boolean) {
     Text(
-        "received ${formatReadingAge(ageMs)}",
-        style = MaterialTheme.typography.labelSmall,
+        formatReadingAge(ageMs),
+        style = MaterialTheme.typography.bodyMedium,
+        // Wrapping here would grow the bottomBar slot and move the content inset with it.
+        maxLines = 1,
+        softWrap = false,
         // Monospace so the per-second tick does not shift the chip.
         fontFamily = FontFamily.Monospace,
         color = if (stale) {
@@ -766,13 +811,13 @@ private fun LastReadingChip(ageMs: Long, stale: Boolean) {
     )
 }
 
-/** Space-padded so the monospace chip keeps a constant width as it ticks. */
+/** Space-padded to a constant 7 monospace columns; coarse past the hour so the row cannot grow. */
 private fun formatReadingAge(ms: Long): String {
     val s = ms / 1000
     return when {
         s < 60 -> "%2ds ago".format(s)
         s < 3600 -> "%2dm ago".format(s / 60)
-        s < 86_400 -> "%2dh %2dm ago".format(s / 3600, (s % 3600) / 60)
+        s < 86_400 -> "%2dh ago".format(s / 3600)
         else -> "%2dd ago".format(s / 86_400)
     }
 }
