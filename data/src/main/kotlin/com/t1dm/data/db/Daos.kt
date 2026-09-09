@@ -494,11 +494,19 @@ interface OutboxDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun enqueue(item: OutboxEntity): Long
 
+    /** One destination only: a shared batch lets the older lane's backlog take every slot. */
     @Query(
-        "SELECT * FROM outbox WHERE state = :state AND nextAttemptMs <= :nowMs " +
+        "SELECT * FROM outbox WHERE state = :state AND nextAttemptMs <= :nowMs AND kind = :kind " +
             "ORDER BY createdAtMs, id LIMIT :limit",
     )
-    suspend fun dueBatch(state: OutboxState, nowMs: Long, limit: Int): List<OutboxEntity>
+    suspend fun dueBatchOfKind(state: OutboxState, nowMs: Long, kind: OutboxKind, limit: Int): List<OutboxEntity>
+
+    /** The other lane; see [dueBatchOfKind]. */
+    @Query(
+        "SELECT * FROM outbox WHERE state = :state AND nextAttemptMs <= :nowMs AND kind != :kind " +
+            "ORDER BY createdAtMs, id LIMIT :limit",
+    )
+    suspend fun dueBatchExcludingKind(state: OutboxState, nowMs: Long, kind: OutboxKind, limit: Int): List<OutboxEntity>
 
     @Query("SELECT COUNT(*) FROM outbox")
     fun observeDepth(): Flow<Int>

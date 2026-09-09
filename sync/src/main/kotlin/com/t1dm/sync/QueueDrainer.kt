@@ -3,6 +3,7 @@ package com.t1dm.sync
 import com.t1dm.core.common.T1dmDispatchers
 import com.t1dm.data.db.OutboxDao
 import com.t1dm.data.db.OutboxEntity
+import com.t1dm.data.db.OutboxEvictRow
 import com.t1dm.data.db.OutboxKind
 import com.t1dm.data.db.OutboxState
 import com.t1dm.data.db.NS_ENTRY_DEDUP_PREFIX
@@ -31,7 +32,7 @@ data class DrainResult(
     enum class StandDown { NO_PROFILE, AUTH }
 }
 
-/** One drainOnce pass: evict, replay PENDING FIFO; NIGHTSCOUT rows must NEVER stand queue down. */
+/** drainOnce: evict, then one FIFO lane per destination; neither can stand the other down. */
 class QueueDrainer(
     private val dao: OutboxDao,
     private val http: SyncHttpClient,
@@ -54,16 +55,22 @@ class QueueDrainer(
         val expired = rows.filter { it.kind.ageEvictable && it.createdAtMs < ageCut }.map { it.id }
         val expiredIds = expired.toHashSet()
         val survivors = rows.filterNot { it.id in expiredIds }
-        val overflow = survivors.size - config.maxQueueSize
-        val trimmed = if (overflow > 0) {
-            survivors.sortedWith(compareBy({ it.kind.priority }, { it.createdAtMs }, { it.id }))
-                .take(overflow).map { it.id }
-        } else {
-            emptyList()
-        }
-        val toDelete = expired + trimmed
+        val (bridge, server) = survivors.partition { it.kind == OutboxKind.NIGHTSCOUT }
+        // Per-lane budgets: one shared cap evicts every bridged row first, they rank below all.
+        val reserve = config.maxQueueSize / BRIDGE_RESERVE_DIVISOR
+        // Each borrows what the other leaves unused, down to its own floor.
+        val bridgeCap = maxOf(config.maxQueueSize - server.size, reserve)
+        val serverCap = config.maxQueueSize - minOf(bridge.size, bridgeCap)
+        val toDelete = expired + trim(bridge, bridgeCap) + trim(server, serverCap)
         if (toDelete.isNotEmpty()) dao.deleteAll(toDelete)
         toDelete.size
+    }
+
+    private fun trim(lane: List<OutboxEvictRow>, cap: Int): List<Long> {
+        val overflow = lane.size - cap
+        if (overflow <= 0) return emptyList()
+        return lane.sortedWith(compareBy({ it.kind.priority }, { it.createdAtMs }, { it.id }))
+            .take(overflow).map { it.id }
     }
 
     suspend fun drainOnce(): DrainResult = mutex.withLock {
@@ -75,69 +82,105 @@ class QueueDrainer(
             dao.resetState(OutboxState.INFLIGHT, OutboxState.PENDING)
             val evicted = evict(clock())
             val now = clock()
-            val batch = dao.dueBatch(OutboxState.PENDING, now, config.batchLimit)
-            var sent = 0
-            var dropped = 0
-            var retried = 0
-            var standDown: DrainResult.StandDown? = null
-            var nightscoutError: String? = null
-            // Unreachable bridge must not cost a timeout PER row; batch is FIFO, delaying pushes.
-            var bridgeUnreachable = false
+            val bridgeKind = OutboxKind.NIGHTSCOUT
+            // Own batch each: one FIFO lets the lane holding the older rows take every slot.
+            val server = drainLane(
+                dao.dueBatchExcludingKind(OutboxState.PENDING, now, bridgeKind, config.batchLimit),
+                now, reclaimed, bridged = false,
+            )
+            val bridge = drainLane(
+                dao.dueBatchOfKind(OutboxState.PENDING, now, bridgeKind, config.batchLimit),
+                now, reclaimed, bridged = true,
+            )
+            DrainResult(
+                sent = server.sent + bridge.sent,
+                dropped = server.dropped + bridge.dropped,
+                retried = server.retried + bridge.retried,
+                evicted = evicted,
+                standDown = server.standDown,
+                remaining = dao.count(),
+                nightscoutError = bridge.error,
+            )
+        }
+    }
 
-            loop@ for (row in batch) {
-                // Claim BEFORE the wire; makes withdrawPush's WITHDRAWN receipt true.
-                if (dao.claim(row.id, OutboxState.PENDING, OutboxState.INFLIGHT) == 0) continue@loop
-                val request = resolve(row)
-                if (request == null) { dao.delete(row.id); dropped++; continue }
-                val bridged = row.kind == OutboxKind.NIGHTSCOUT
-                if (bridged && bridgeUnreachable) { reschedule(row, now); retried++; continue@loop }
+    private data class LaneResult(
+        val sent: Int = 0,
+        val dropped: Int = 0,
+        val retried: Int = 0,
+        val standDown: DrainResult.StandDown? = null,
+        val error: String? = null,
+    )
 
-                // Bridge replay; /api/v1 has no idempotency key, a lost ack re-posts.
-                if (bridged && (row.attempts > 0 || row.id in reclaimed) && nightscout != null) {
-                    val already = runCatching { nightscout.alreadyPosted(request) }.getOrDefault(false)
-                    if (already) {
-                        Timber.tag(TAG).i("bridge row %d already present; not re-posting", row.id)
-                        dao.delete(row.id); sent++; continue@loop
-                    }
-                }
+    /** One destination's turn. A stand-down or an unreachable host ends THIS lane only. */
+    private suspend fun drainLane(
+        batch: List<OutboxEntity>,
+        now: Long,
+        reclaimed: Set<Long>,
+        bridged: Boolean,
+    ): LaneResult {
+        var sent = 0
+        var dropped = 0
+        var retried = 0
+        var standDown: DrainResult.StandDown? = null
+        var error: String? = null
+        // One unreachable host must not cost a connect timeout per row; batch is FIFO.
+        var unreachable = false
+        val bridge = nightscout
 
-                val response = try {
-                    if (bridged) {
-                        nightscout?.execute(request) ?: throw NightscoutDisabledException()
-                    } else {
-                        http.execute(request)
-                    }
-                } catch (e: NightscoutDisabledException) {
-                    // Switched off while the row sat queued; nothing will ever send it.
-                    dao.delete(row.id); dropped++; continue@loop
-                } catch (e: NoActiveProfileException) {
-                    revert(row); standDown = DrainResult.StandDown.NO_PROFILE; break@loop
-                } catch (e: Exception) {
-                    reschedule(row, now); retried++
-                    if (bridged) { nightscoutError = e.javaClass.simpleName; bridgeUnreachable = true }
-                    continue@loop
-                }
-                when {
-                    response.ok -> { dao.delete(row.id); sent++ }
-                    // Bridge credential reject isn't reason to stop; only T1DMSERVER stands queue.
-                    response.authError && bridged -> {
-                        reschedule(row, now); retried++
-                        nightscoutError = "HTTP ${response.code} — secret rejected"
-                    }
-                    response.authError -> { revert(row); standDown = DrainResult.StandDown.AUTH; break@loop }
-                    response.permanentClientError -> {
-                        Timber.tag(TAG).w("dropping %s row %d: HTTP %d", row.kind, row.id, response.code)
-                        dao.delete(row.id); dropped++
-                        if (bridged) nightscoutError = "HTTP ${response.code}"
-                    }
-                    else -> {
-                        reschedule(row, now); retried++
-                        if (bridged) nightscoutError = "HTTP ${response.code}"
-                    }
+        loop@ for (row in batch) {
+            // Claim before the wire: a tail row stays PENDING within the undo window.
+            if (dao.claim(row.id, OutboxState.PENDING, OutboxState.INFLIGHT) == 0) continue@loop
+            val request = resolve(row)
+            if (request == null) { dao.delete(row.id); dropped++; continue } // slot vanished
+            if (unreachable) { reschedule(row, now); retried++; continue@loop }
+
+            // Replay of bridged send: /api/v1 has no idempotency key, a lost ack double-counts.
+            if (bridged && (row.attempts > 0 || row.id in reclaimed) && bridge != null) {
+                val already = runCatching { bridge.alreadyPosted(request) }.getOrDefault(false)
+                if (already) {
+                    Timber.tag(TAG).i("bridge row %d already present; not re-posting", row.id)
+                    dao.delete(row.id); sent++; continue@loop
                 }
             }
-            DrainResult(sent, dropped, retried, evicted, standDown, remaining = dao.count(), nightscoutError = nightscoutError)
+
+            val response = try {
+                if (bridged) {
+                    bridge?.execute(request) ?: throw NightscoutDisabledException()
+                } else {
+                    http.execute(request)
+                }
+            } catch (e: NightscoutDisabledException) {
+                // Switched off while the row sat queued; nothing will ever send it.
+                dao.delete(row.id); dropped++; continue@loop
+            } catch (e: NoActiveProfileException) {
+                revert(row); standDown = DrainResult.StandDown.NO_PROFILE; break@loop
+            } catch (e: Exception) {
+                reschedule(row, now); retried++
+                error = e.javaClass.simpleName
+                unreachable = true
+                continue@loop
+            }
+            when {
+                response.ok -> { dao.delete(row.id); sent++ }
+                // A rejected bridge secret backs off one row; only T1DMSERVER stands a lane down.
+                response.authError && bridged -> {
+                    reschedule(row, now); retried++
+                    error = "HTTP ${response.code} — secret rejected"
+                }
+                response.authError -> { revert(row); standDown = DrainResult.StandDown.AUTH; break@loop }
+                response.permanentClientError -> {
+                    Timber.tag(TAG).w("dropping %s row %d: HTTP %d", row.kind, row.id, response.code)
+                    dao.delete(row.id); dropped++
+                    error = "HTTP ${response.code}"
+                }
+                else -> {
+                    reschedule(row, now); retried++
+                    error = "HTTP ${response.code}"
+                }
+            }
         }
+        return LaneResult(sent, dropped, retried, standDown, error)
     }
 
     /** Restore a row to PENDING without advancing its backoff (auth / no-profile stand-down). */
@@ -170,5 +213,8 @@ class QueueDrainer(
 
     private companion object {
         const val TAG = "QueueDrainer"
+
+        /** Bridge floor as a fraction of maxQueueSize; ~7 d of five-minute rows at 20 000. */
+        const val BRIDGE_RESERVE_DIVISOR = 10
     }
 }

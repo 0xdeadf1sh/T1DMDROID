@@ -103,7 +103,7 @@ class QueueDrainerTest {
 
         assertEquals(1, dao.resetStateCalls)
         assertEquals(1, dao.evictionRowsCalls)
-        assertEquals(1, dao.dueBatchCalls)
+        assertEquals(2, dao.dueBatchCalls)
         assertEquals(1, r.sent)
         assertEquals(0, inner.count())
     }
@@ -123,9 +123,24 @@ class QueueDrainerTest {
             return inner.evictionRows()
         }
 
-        override suspend fun dueBatch(state: OutboxState, nowMs: Long, limit: Int): List<OutboxEntity> {
+        override suspend fun dueBatchOfKind(
+            state: OutboxState,
+            nowMs: Long,
+            kind: OutboxKind,
+            limit: Int,
+        ): List<OutboxEntity> {
             dueBatchCalls++
-            return inner.dueBatch(state, nowMs, limit)
+            return inner.dueBatchOfKind(state, nowMs, kind, limit)
+        }
+
+        override suspend fun dueBatchExcludingKind(
+            state: OutboxState,
+            nowMs: Long,
+            kind: OutboxKind,
+            limit: Int,
+        ): List<OutboxEntity> {
+            dueBatchCalls++
+            return inner.dueBatchExcludingKind(state, nowMs, kind, limit)
         }
     }
 
@@ -243,6 +258,24 @@ class QueueDrainerTest {
         assertEquals(2, evicted)
         val kinds = dao.snapshot().map { it.kind }.toSet()
         assertEquals(setOf(OutboxKind.ALERT, OutboxKind.MEAL), kinds)
+    }
+
+    /** The bridge ranks below every server kind; one shared cap would evict all of it first. */
+    @Test
+    fun sizeEvictionKeepsTheBridgeItsReserve() = runTest {
+        val dao = FakeOutboxDao()
+        repeat(20) {
+            dao.enqueue(OutboxEntity(kind = OutboxKind.ALERT, dedupKey = "a$it", payload = ByteArray(0), createdAtMs = it.toLong(), attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
+        }
+        repeat(5) {
+            dao.enqueue(OutboxEntity(kind = OutboxKind.NIGHTSCOUT, dedupKey = "n$it", payload = ByteArray(0), createdAtMs = 100L + it, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
+        }
+        val d = drainer(dao, RecordingHttpClient { _, _ -> ok() }, config = DrainConfig(maxQueueSize = 20, maxAgeMs = Long.MAX_VALUE))
+
+        d.evict(nowMs = 1_000)
+
+        assertEquals(2, dao.snapshot().count { it.kind == OutboxKind.NIGHTSCOUT })
+        assertEquals(20, dao.count())
     }
 
     @Test

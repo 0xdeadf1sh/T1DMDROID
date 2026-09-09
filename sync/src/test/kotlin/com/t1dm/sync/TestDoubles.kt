@@ -33,8 +33,19 @@ class FakeOutboxDao : OutboxDao {
         return id
     }
 
-    override suspend fun dueBatch(state: OutboxState, nowMs: Long, limit: Int): List<OutboxEntity> =
-        rows.values.filter { it.state == state && it.nextAttemptMs <= nowMs }
+    override suspend fun dueBatchOfKind(state: OutboxState, nowMs: Long, kind: OutboxKind, limit: Int) =
+        due(state, nowMs, limit) { it.kind == kind }
+
+    override suspend fun dueBatchExcludingKind(state: OutboxState, nowMs: Long, kind: OutboxKind, limit: Int) =
+        due(state, nowMs, limit) { it.kind != kind }
+
+    private fun due(
+        state: OutboxState,
+        nowMs: Long,
+        limit: Int,
+        lane: (OutboxEntity) -> Boolean,
+    ): List<OutboxEntity> =
+        rows.values.filter { it.state == state && it.nextAttemptMs <= nowMs && lane(it) }
             .sortedWith(compareBy({ it.createdAtMs }, { it.id }))
             .take(limit)
 

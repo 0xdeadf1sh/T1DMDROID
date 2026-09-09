@@ -39,11 +39,13 @@ class NightscoutDrainTest {
         }
     }
 
-    private class FakeServer(private val code: Int = 200) : SyncHttpClient {
+    private class FakeServer(
+        private val onExecute: (SyncRequest) -> SyncResponse = { SyncResponse(200, ByteArray(0)) },
+    ) : SyncHttpClient {
         val requests = mutableListOf<SyncRequest>()
         override suspend fun execute(request: SyncRequest): SyncResponse {
             requests += request
-            return SyncResponse(code, ByteArray(0))
+            return onExecute(request)
         }
         override suspend fun health() = throw UnsupportedOperationException()
         override suspend fun ingest(body: com.t1dm.sync.IngestDto) = throw UnsupportedOperationException()
@@ -75,14 +77,14 @@ class NightscoutDrainTest {
     )
 
     /** Not an INGEST marker: null `sampleAt` drops pre-wire, can't witness bridge disturbance. */
-    private fun serverRow(key: String) = OutboxEntity(
+    private fun serverRow(key: String, createdAtMs: Long = 20) = OutboxEntity(
         kind = OutboxKind.ALERT,
         dedupKey = key,
         payload = com.t1dm.sync.SyncJson.encodeToString(
             OutboxRequest.serializer(),
             OutboxRequest("POST", "/v1/alerts", "{}"),
         ).toByteArray(),
-        createdAtMs = 20,
+        createdAtMs = createdAtMs,
         attempts = 0,
         nextAttemptMs = 0,
         state = OutboxState.PENDING,
@@ -92,9 +94,10 @@ class NightscoutDrainTest {
         dao: FakeOutboxDao,
         http: SyncHttpClient,
         bridge: NightscoutClient?,
+        batchLimit: Int = 200,
     ) = QueueDrainer(
         dao, http, { null }, dispatchers,
-        DrainConfig(baseBackoffMs = 1_000, jitterFrac = 0.0, maxQueueSize = 100),
+        DrainConfig(baseBackoffMs = 1_000, jitterFrac = 0.0, batchLimit = batchLimit, maxQueueSize = 100),
         { 10_000L }, { 0.0 }, bridge, { null },
     )
 
@@ -137,6 +140,46 @@ class NightscoutDrainTest {
         assertEquals("the queue must not stand down", null, result.standDown)
         assertTrue("the server row must still have been attempted", server.requests.isNotEmpty())
         assertTrue(result.nightscoutError!!.contains("401"))
+    }
+
+    /** One shared FIFO gives every slot to the lane holding the older rows. */
+    @Test
+    fun `an older server backlog does not starve the bridge`() = runTest {
+        val dao = FakeOutboxDao()
+        repeat(4) { dao.enqueue(serverRow("alert:$it", createdAtMs = 1)) }
+        dao.enqueue(treatmentRow(1))
+        val bridge = RecordingBridge({ SyncResponse(200, ByteArray(0)) })
+
+        drainer(dao, FakeServer(), bridge, batchLimit = 2).drainOnce()
+
+        assertEquals("the bridged row must reach the wire", 1, bridge.requests.size)
+    }
+
+    @Test
+    fun `a server stand-down does not stop the bridge`() = runTest {
+        val dao = FakeOutboxDao()
+        dao.enqueue(serverRow("alert:1", createdAtMs = 1))
+        dao.enqueue(treatmentRow(1))
+        val bridge = RecordingBridge({ SyncResponse(200, ByteArray(0)) })
+        val server = FakeServer { throw com.t1dm.sync.NoActiveProfileException() }
+
+        val result = drainer(dao, server, bridge).drainOnce()
+
+        assertEquals(com.t1dm.sync.DrainResult.StandDown.NO_PROFILE, result.standDown)
+        assertEquals("the bridge takes its own turn", 1, bridge.requests.size)
+    }
+
+    /** Without it an unreachable server costs one connect timeout per row, 200 to a pass. */
+    @Test
+    fun `one server transport failure stands the server down for the rest of the pass`() = runTest {
+        val dao = FakeOutboxDao()
+        repeat(4) { dao.enqueue(serverRow("alert:$it")) }
+        val server = FakeServer { throw IOException("unreachable") }
+
+        val result = drainer(dao, server, null).drainOnce()
+
+        assertEquals("only the first server row may touch the wire", 1, server.requests.size)
+        assertEquals("every server row is still retried", 4, result.retried)
     }
 
     /** Batch is FIFO/interleaved: one unreachable bridge costs one timeout, not one per row. */
