@@ -6,7 +6,6 @@ import com.t1dm.core.model.AdvancedStats
 import com.t1dm.core.model.StatsWindow
 import com.t1dm.core.model.UnitSpace
 import com.t1dm.data.stats.StatsRepository
-import com.t1dm.feature.stats.ServerStatsResult
 import com.t1dm.feature.stats.StatsSource
 import com.t1dm.sync.EventStatDto
 import com.t1dm.sync.StatsPushDto
@@ -29,10 +28,6 @@ class AppStatsSource(
     override suspend fun setTargetRange(lowMgdl: Int, highMgdl: Int) = stats.setTargetRange(lowMgdl, highMgdl)
 
     override fun kovatchevF(mgdl: Double): Double = native.kovatchevF(mgdl)
-
-    /** The phone authors stats (§3.6); the server block would only be its own echo. */
-    override suspend fun serverStats(window: StatsWindow, refresh: Boolean): ServerStatsResult =
-        ServerStatsResult.Unavailable("local (authoritative)")
 
     override suspend fun localStats(window: StatsWindow, refresh: Boolean): AdvancedStats =
         stats.localStats(window, force = refresh)

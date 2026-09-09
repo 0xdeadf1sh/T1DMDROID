@@ -113,10 +113,6 @@ fun StatsScreen(
                 return@Column
             }
 
-            composite.serverReason?.let {
-                InfoCard(it)
-            }
-
             if (state.emptyReason != null) {
                 InfoCard(state.emptyReason)
                 return@Column
@@ -266,23 +262,6 @@ fun StatsScreen(
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         channels.forEach { (label, value, u) -> Metric(label, value, u) }
                     }
-                }
-            }
-
-            composite.server?.let { s ->
-                SectionCard("Server cache (cross-check)") {
-                    Text(
-                        "n=${s.nSamples} · mean ${fmtLevel(s.meanBg, unit, kovatchevF)} ${unitLabel(unit)} · " +
-                            "GMI ${fmt(s.gmi, 1)}% · CV ${fmt(s.cv, 1)}% · SD ${fmtSpread(s.sd, unit)} ${spreadUnit(unit)}",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                    Text(
-                        "Local: mean ${fmtLevel(local.meanBg, unit, kovatchevF)} · GMI ${fmt(local.gmi, 1)}% · " +
-                            "CV ${fmt(local.cv, 1)}% · SD ${fmtSpread(local.sd, unit)}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = LocalContentColor.current.copy(alpha = 0.7f),
-                        modifier = Modifier.padding(top = 4.dp),
-                    )
                 }
             }
         }

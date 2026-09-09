@@ -157,35 +157,10 @@ data class TargetRange(val lowMgdl: Int, val highMgdl: Int) {
     }
 }
 
-data class EventStat(val count: Int, val durationMs: Long)
-
-/** Neutral mirror of `:sync`'s StatsDto (no :sync dep from :feature:stats); cross-checks local. */
-data class ServerStats(
-    val window: StatsWindow,
-    val tir: Double,
-    val timeBelow: Double,
-    val timeAbove: Double,
-    val meanBg: Double,
-    val gmi: Double,
-    val cv: Double,
-    val sd: Double,
-    val hypoEvents: EventStat,
-    val hyperEvents: EventStat,
-    val meanDailyCarbs: Double,
-    val tdd: Double,
-    val bolusBasalRatio: Double,
-    val meanHr: Double,
-    val bgHrCorr: Double,
-    val nSamples: Int,
-)
-
-/** [server] null if unreachable/unconfigured ([serverReason] why); [local] always present. */
 data class StatsComposite(
     val window: StatsWindow,
     val targetRange: TargetRange,
     val unitSpace: UnitSpace,
-    val server: ServerStats?,
-    val serverReason: String?,
     val local: AdvancedStats,
     val recomputed: Boolean,
 )

@@ -67,27 +67,22 @@ class StatsViewModel(
         loadJob?.cancel()
         loadJob = scope.launch {
             _state.update { it.copy(window = window, loading = true, recomputing = refresh) }
-            val server = source.serverStats(window, refresh)
             val local = source.localStats(window, refresh)
             val unit = _state.value.unitSpace
             val target = _state.value.targetRange
-            val serverStats = (server as? ServerStatsResult.Ok)?.stats
             val composite = StatsComposite(
                 window = window,
                 targetRange = target,
                 unitSpace = unit,
-                server = serverStats,
-                serverReason = (server as? ServerStatsResult.Unavailable)?.reason,
                 local = local,
                 recomputed = refresh,
             )
-            val bothEmpty = local.isEmpty && (serverStats == null || serverStats.nSamples == 0)
             _state.update {
                 it.copy(
                     loading = false,
                     recomputing = false,
                     composite = composite,
-                    emptyReason = if (bothEmpty) {
+                    emptyReason = if (local.isEmpty) {
                         "Not enough history for ${window.wire} yet — still collecting readings"
                     } else {
                         null

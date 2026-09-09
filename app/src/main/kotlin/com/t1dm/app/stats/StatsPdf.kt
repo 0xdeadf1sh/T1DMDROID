@@ -123,12 +123,6 @@ object StatsPdf {
             s.mood?.let { p.kv("Mood", "${d(it.mean, 1)} (n=${it.n})") }
         }
 
-        c.server?.let { sv ->
-            p.section("Server cache (cross-check)")
-            p.kv("Server mean / GMI / CV", "${d(sv.meanBg, 0)}  /  ${d(sv.gmi, 1)}%  /  ${d(sv.cv, 1)}%")
-            p.kv("Local recompute", "${d(s.meanBg, 0)}  /  ${d(s.gmi, 1)}%  /  ${d(s.cv, 1)}%")
-        }
-
         p.finish(out)
     }
 
