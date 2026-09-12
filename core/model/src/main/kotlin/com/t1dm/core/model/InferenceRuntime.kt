@@ -1,7 +1,5 @@
 package com.t1dm.core.model
 
-enum class Precision { FP32, FP16 }
-
 /** XNNPACK_FP32 executes .pte (only dose-scoreable path); STUB fallback. */
 enum class BackendId {
     EXECUTORCH_XNNPACK_FP32,
@@ -21,7 +19,6 @@ fun BackendId.displayName(): String = when (this) {
 data class RunningModel(
     val modelId: String,
     val backend: BackendId,
-    val precision: Precision,
     val selected: Boolean,
 )
 
@@ -87,7 +84,6 @@ data class ModelPrediction(
     val lastBg: Double,
     val status: ForecastStatus,
     val backend: BackendId,
-    val precision: Precision,
     val selected: Boolean,
     val stale: Boolean,
     val latencyMs: Double?,

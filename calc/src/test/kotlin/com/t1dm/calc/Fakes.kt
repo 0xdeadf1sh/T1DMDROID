@@ -73,7 +73,7 @@ fun fakeIob(
 )
 
 fun fp32Backend(): BackendInfo =
-    BackendInfo(com.t1dm.core.model.BackendId.EXECUTORCH_XNNPACK_FP32, com.t1dm.core.model.Precision.FP32)
+    BackendInfo(com.t1dm.core.model.BackendId.EXECUTORCH_XNNPACK_FP32)
 
 fun advisorOf(
     port: ForecastPort,

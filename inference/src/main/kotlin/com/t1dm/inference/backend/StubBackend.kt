@@ -2,13 +2,12 @@ package com.t1dm.inference.backend
 
 import com.t1dm.core.model.BackendId
 import com.t1dm.core.model.ModelDescriptor
-import com.t1dm.core.model.Precision
 import java.io.File
 
 /** Fixed plausible head_raw runs with no model; controller marks realBackendAvailable false. */
 class StubBackend : InferenceBackend {
     override val id = BackendId.STUB
-    override val caps = BackendCaps(precision = Precision.FP32)
+    override val caps = BackendCaps()
 
     private class StubModel(override val id: String, override val caps: BackendCaps) : LoadedModel
 

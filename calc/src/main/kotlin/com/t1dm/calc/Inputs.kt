@@ -1,7 +1,6 @@
 package com.t1dm.calc
 
 import com.t1dm.core.model.BackendId
-import com.t1dm.core.model.Precision
 
 /** null [lastMeasuredTsMs] ⇒ no MEASURED; [interpolatedFraction] = INTERPOLATED/WARMUP share. */
 data class AnchorInfo(
@@ -26,7 +25,6 @@ data class IobSnapshot(
 
 data class BackendInfo(
     val backend: BackendId,
-    val precision: Precision,
 ) {
     /** §3.6-E: only fp32 XNNPACK CPU drives a dose; StubBackend and classical baseline refuse. */
     val trustworthy: Boolean get() = backend == BackendId.EXECUTORCH_XNNPACK_FP32

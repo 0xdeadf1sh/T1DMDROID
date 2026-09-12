@@ -2,12 +2,10 @@ package com.t1dm.inference.backend
 
 import com.t1dm.core.model.BackendId
 import com.t1dm.core.model.ModelDescriptor
-import com.t1dm.core.model.Precision
 import java.io.File
 import java.nio.FloatBuffer
 
 data class BackendCaps(
-    val precision: Precision,
     /** Additive-float struct mask, never a bool one; one-hot selection, never an int64 index. */
     val maskIsExternalStruct: Boolean = true,
 )

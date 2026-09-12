@@ -7,7 +7,6 @@ import com.t1dm.core.common.DefaultT1dmDispatchers
 import com.t1dm.core.model.BackendId
 import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.ModelPrediction
-import com.t1dm.core.model.Precision
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.data.db.AppDatabase
@@ -48,7 +47,6 @@ class PredictionDaoTest {
         lastBg = 100.0,
         status = ForecastStatus.OK,
         backend = BackendId.EXECUTORCH_XNNPACK_FP32,
-        precision = Precision.FP32,
         selected = selected,
         stale = false,
         latencyMs = 12.5,
@@ -78,7 +76,6 @@ class PredictionDaoTest {
         assertEquals(original.bandsMgdl, p.bandsMgdl)
         assertEquals(ForecastStatus.OK, p.status)
         assertEquals(BackendId.EXECUTORCH_XNNPACK_FP32, p.backend)
-        assertEquals(Precision.FP32, p.precision)
         assertTrue(p.selected)
         assertEquals(100.0, p.lastBg, 0.0)
     }

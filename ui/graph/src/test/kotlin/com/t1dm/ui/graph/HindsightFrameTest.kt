@@ -3,7 +3,6 @@ package com.t1dm.ui.graph
 import com.t1dm.core.model.BackendId
 import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.ModelPrediction
-import com.t1dm.core.model.Precision
 import com.t1dm.core.model.UnitSpace
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -39,7 +38,7 @@ class HindsightFrameTest {
         return ModelPrediction(
             modelId = "m", cycleTsMs = T0 + c * STEP, anchorTsMs = T0 + anchorC * STEP, stepMs = stepMs,
             medianBg = median, bandsMgdl = bands, nQuantiles = nq, lastBg = level,
-            status = status, backend = BackendId.EXECUTORCH_XNNPACK_FP32, precision = Precision.FP32,
+            status = status, backend = BackendId.EXECUTORCH_XNNPACK_FP32,
             selected = true, stale = stale, latencyMs = null,
         )
     }

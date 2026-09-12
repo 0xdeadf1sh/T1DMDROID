@@ -13,7 +13,6 @@ import com.t1dm.core.model.CgmSourceDescriptor
 import com.t1dm.core.model.CgmSourceId
 import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.PaintStroke
-import com.t1dm.core.model.Precision
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.data.db.AppDatabase
@@ -136,7 +135,7 @@ class ResetWipeTest {
                 madeAtMs = 300_000L, modelId = "m", horizonSteps = 1, nQuantiles = 1, stepMs = 300_000L,
                 anchorTsMs = 300_000L, sourceId = "src", lastBg = 120.0, lineBlob = ByteArray(8), fanBlob = ByteArray(8),
                 todBlob = null, todConf = null, status = ForecastStatus.OK, backend = BackendId.EXECUTORCH_XNNPACK_FP32,
-                precision = Precision.FP32, selected = true, stale = false, latencyMs = 9.0, createdAtMs = 300_000L,
+                selected = true, stale = false, latencyMs = 9.0, createdAtMs = 300_000L,
             ),
         )
 

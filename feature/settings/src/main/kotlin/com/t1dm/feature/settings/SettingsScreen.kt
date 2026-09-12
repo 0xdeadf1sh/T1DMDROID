@@ -63,7 +63,7 @@ fun SettingsScreen(
                 SettingsNavRow("Forecast", "Warmup, cadence, models at once, thermal gate", onClick = onOpenForecast)
                 SettingsNavRow("Dose calculator", "Objective, asymmetry, rails, thresholds — unbounded", onClick = onOpenCalculator)
                 SettingsNavRow("Curve & PK parameters", "Carb & insulin presets, Bézier designers", onClick = onOpenCurveParams)
-                SettingsNavRow("Models & backend", "Running model; backend, precision", onClick = onOpenModels)
+                SettingsNavRow("Models & backend", "Running model; backend", onClick = onOpenModels)
 
                 SettingsSectionHeader("Devices")
                 SettingsNavRow("CGM source", "Active sensor, recorded sources", onClick = onOpenCgm)
@@ -101,10 +101,10 @@ internal val settingsModelsKnobs = listOf(
         screen = SettingsScreenKey.MODELS,
         section = "Forecast & models",
         label = "Models & backend",
-        subtitle = "Running model; backend, precision",
+        subtitle = "Running model; backend",
         synonyms = listOf(
             "model", "models", "checkpoint", "weights", "network", "executorch", "pte",
-            "inference", "backend", "precision", "fp16", "fp32", "select model", "running model",
+            "inference", "backend", "select model", "running model",
         ),
         anchored = false,
     ),

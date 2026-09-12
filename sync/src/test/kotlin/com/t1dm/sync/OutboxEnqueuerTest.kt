@@ -3,7 +3,6 @@ package com.t1dm.sync
 import com.t1dm.core.model.BackendId
 import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.ModelPrediction
-import com.t1dm.core.model.Precision
 import com.t1dm.data.OutboxSink
 import com.t1dm.data.db.OutboxKind
 import kotlinx.coroutines.test.runTest
@@ -222,7 +221,6 @@ class OutboxEnqueuerTest {
         lastBg = mgdl,
         status = ForecastStatus.OK,
         backend = BackendId.EXECUTORCH_XNNPACK_FP32,
-        precision = Precision.FP32,
         selected = true,
         stale = false,
         latencyMs = 13.8,

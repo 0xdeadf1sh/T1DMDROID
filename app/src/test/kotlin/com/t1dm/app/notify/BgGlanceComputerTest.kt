@@ -7,7 +7,6 @@ import com.t1dm.core.model.CgmSourceId
 import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.InferenceState
 import com.t1dm.core.model.ModelPrediction
-import com.t1dm.core.model.Precision
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.core.model.WarmupProgress
@@ -42,7 +41,7 @@ class BgGlanceComputerTest {
             modelId = "m", cycleTsMs = now, anchorTsMs = now, stepMs = 300_000L,
             medianBg = median, bandsMgdl = median.flatMap { listOf(it - 15, it, it + 15) }, nQuantiles = 3,
             lastBg = median.first(), status = status, backend = BackendId.EXECUTORCH_XNNPACK_FP32,
-            precision = Precision.FP32, selected = true, stale = stale, latencyMs = null,
+            selected = true, stale = stale, latencyMs = null,
         )
 
     // idx:        0    1   2    3    4    5    6

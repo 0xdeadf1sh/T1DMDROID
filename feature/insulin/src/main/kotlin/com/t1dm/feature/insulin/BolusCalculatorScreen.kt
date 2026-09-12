@@ -245,7 +245,7 @@ private fun DecisionCardView(card: DecisionCard) {
             Text("Decision card", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
             fieldRow("Last real reading", card.ageOfLastRealReadingMin?.let { "$it min ago" } ?: "none")
             fieldRow("Interpolated/warm-up", "${(card.interpolatedFraction * 100).toInt()}%" + if (card.warmup) " · WARM-UP" else "")
-            fieldRow("Backend", "${card.backend} · ${card.precision}")
+            fieldRow("Backend", "${card.backend}")
             fieldRow("Assumed IOB", card.assumedIobU?.let { "${fmt(it)} U (logged only)" } ?: "unknown")
             fieldRow("Last logged dose", card.minSinceLastLoggedDose?.let { "$it min ago" } ?: "never")
             fieldRow("Forecast band width", card.bandWidthMgdl?.let { "±${(it / 2).toInt()} mg/dL" } ?: "—")

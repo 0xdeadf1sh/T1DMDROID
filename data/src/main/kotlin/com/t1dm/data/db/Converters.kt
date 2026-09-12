@@ -3,7 +3,6 @@ package com.t1dm.data.db
 import androidx.room.TypeConverter
 import com.t1dm.core.model.BackendId
 import com.t1dm.core.model.ForecastStatus
-import com.t1dm.core.model.Precision
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 
@@ -33,7 +32,4 @@ class Converters {
     /** Total: unpruned backend column; a dropped-backend row must not crash the whole query. */
     @TypeConverter fun stringToBackendId(v: String?): BackendId? =
         v?.let { runCatching { BackendId.valueOf(it) }.getOrDefault(BackendId.UNKNOWN) }
-
-    @TypeConverter fun precisionToString(v: Precision?): String? = v?.name
-    @TypeConverter fun stringToPrecision(v: String?): Precision? = v?.let(Precision::valueOf)
 }

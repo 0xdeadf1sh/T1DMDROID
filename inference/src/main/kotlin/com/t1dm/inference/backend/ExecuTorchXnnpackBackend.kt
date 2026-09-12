@@ -2,7 +2,6 @@ package com.t1dm.inference.backend
 
 import com.t1dm.core.model.BackendId
 import com.t1dm.core.model.ModelDescriptor
-import com.t1dm.core.model.Precision
 import org.pytorch.executorch.EValue
 import org.pytorch.executorch.Module
 import org.pytorch.executorch.Tensor
@@ -11,7 +10,7 @@ import java.io.File
 /** CPU fp32, ExecuTorch 1.3.1. [Module] unsafe concurrently; forward runs single-thread only. */
 class ExecuTorchXnnpackBackend : InferenceBackend {
     override val id = BackendId.EXECUTORCH_XNNPACK_FP32
-    override val caps = BackendCaps(precision = Precision.FP32)
+    override val caps = BackendCaps()
 
     private class EtModel(
         override val id: String,

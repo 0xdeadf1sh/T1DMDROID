@@ -3,21 +3,18 @@ package com.t1dm.inference
 import com.t1dm.core.common.NativeCore
 import com.t1dm.core.model.ModelDescriptor
 import com.t1dm.core.model.ModelMeta
-import com.t1dm.core.model.Precision
 import com.t1dm.core.model.ReferenceMetrics
 import org.json.JSONArray
 import org.json.JSONObject
 import timber.log.Timber
 import java.io.File
 
-/** precision comes from the descriptor top level; Rust parse_descriptor doesn't read it. */
 data class ModelBundle(
     val id: String,
     val descriptor: ModelDescriptor,
     val pte: File,
     /** Null when the export shipped none, or it is missing. */
     val head: File? = null,
-    val precision: Precision,
     val descriptorJson: String,
     /** Display only; never decode-critical. */
     val meta: ModelMeta,
@@ -94,7 +91,6 @@ class ModelStore(
             descriptor = desc,
             pte = pte,
             head = head,
-            precision = precisionOf(obj.optString("precision", "fp32")),
             descriptorJson = json,
             meta = metaOf(id, obj, pte),
         )
@@ -168,9 +164,6 @@ class ModelStore(
     /** The one engine this build can execute; an unrecognised string is refused, never assumed. */
     private fun isXnnpack(engine: String): Boolean =
         engine.lowercase() in setOf("executorch_xnnpack_fp32", "executorch_xnnpack")
-
-    private fun precisionOf(p: String): Precision =
-        if (p.lowercase().contains("16")) Precision.FP16 else Precision.FP32
 
     private companion object {
         const val TAG = "ModelStore"

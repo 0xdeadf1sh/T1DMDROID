@@ -24,7 +24,6 @@ import com.t1dm.core.model.ModelLatency
 import com.t1dm.core.model.ModelMeta
 import com.t1dm.core.model.ModelPrediction
 import com.t1dm.core.model.ModelTelemetry
-import com.t1dm.core.model.Precision
 import com.t1dm.core.model.PredictedTime
 import com.t1dm.core.model.RunningModel
 import com.t1dm.core.model.ThermalStatus
@@ -92,7 +91,6 @@ class InferenceController(
         val backend: InferenceBackend,
         val handle: LoadedModel,
         val effectiveBackend: BackendId,
-        val precision: Precision,
         val real: Boolean,
     )
 
@@ -204,11 +202,11 @@ class InferenceController(
                 .onFailure { Timber.tag(TAG).w(it, "load failed for %s; falling back to the stub", id) }
                 .getOrNull()
             if (handle != null) {
-                return Entry(bundle, backend, handle, BackendId.EXECUTORCH_XNNPACK_FP32, bundle.precision, real = true)
+                return Entry(bundle, backend, handle, BackendId.EXECUTORCH_XNNPACK_FP32, real = true)
             }
         }
         val handle = stub.load(bundle.descriptor, bundle.pte)
-        return Entry(bundle, stub, handle, BackendId.STUB, Precision.FP32, real = false)
+        return Entry(bundle, stub, handle, BackendId.STUB, real = false)
     }
 
     /** Debug-only, not wired in release. */
@@ -228,7 +226,6 @@ class InferenceController(
             lastBg = Double.NaN,
             status = ForecastStatus.NON_FINITE,
             backend = entry.effectiveBackend,
-            precision = entry.precision,
             selected = true,
             stale = false,
             latencyMs = null,
@@ -270,7 +267,6 @@ class InferenceController(
             lastBg = startBg,
             status = ForecastStatus.OK,
             backend = entry.effectiveBackend,
-            precision = entry.precision,
             selected = true,
             stale = false,
             latencyMs = null,
@@ -290,7 +286,6 @@ class InferenceController(
         val id: String,
         val descriptor: ModelDescriptor,
         val backend: BackendId,
-        val precision: Precision,
         val real: Boolean,
     )
 
@@ -298,7 +293,7 @@ class InferenceController(
     fun selectedModelInfo(): SelectedModelInfo? {
         val id = selectedId ?: return null
         val e = loaded[id] ?: return null
-        return SelectedModelInfo(id, e.bundle.descriptor, e.effectiveBackend, e.precision, e.real)
+        return SelectedModelInfo(id, e.bundle.descriptor, e.effectiveBackend, e.real)
     }
 
     /** Dosing path's provenance (§3.6-E): null unless a real .pte is loaded on the authority. */
@@ -901,7 +896,6 @@ class InferenceController(
             lastBg = anchorBg,
             status = status,
             backend = entry.effectiveBackend,
-            precision = entry.precision,
             selected = selected,
             stale = stale,
             latencyMs = latMs,
@@ -1020,7 +1014,7 @@ class InferenceController(
         )
 
     private fun runningModels(): List<RunningModel> = loaded.map { (id, e) ->
-        RunningModel(id, e.effectiveBackend, e.precision, id == selectedId)
+        RunningModel(id, e.effectiveBackend, id == selectedId)
     }
 
     /** .pte filenames, NOT model_id (can diverge for adb-pushed); sync coordinator keys on this. */

@@ -10,7 +10,6 @@ import com.t1dm.core.model.CurveKind
 import com.t1dm.core.model.EventTombstone
 import com.t1dm.core.model.ReconstructedBg
 import com.t1dm.core.model.ForecastStatus
-import com.t1dm.core.model.Precision
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 
@@ -360,7 +359,6 @@ data class PredictionEntity(
     val todConf: Double?,
     val status: ForecastStatus,
     val backend: BackendId,
-    val precision: Precision,
     val selected: Boolean,
     val stale: Boolean,
     val latencyMs: Double?,

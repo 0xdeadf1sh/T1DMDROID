@@ -3,7 +3,6 @@ package com.t1dm.ui.graph
 import com.t1dm.core.model.BackendId
 import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.ModelPrediction
-import com.t1dm.core.model.Precision
 import com.t1dm.core.model.RolledForecast
 import com.t1dm.core.model.UnitSpace
 import org.junit.Assert.assertArrayEquals
@@ -35,7 +34,6 @@ class PredOverlayCalibrationTest {
             lastBg = 95.0,
             status = ForecastStatus.OK,
             backend = BackendId.EXECUTORCH_XNNPACK_FP32,
-            precision = Precision.FP32,
             selected = true,
             stale = false,
             latencyMs = null,

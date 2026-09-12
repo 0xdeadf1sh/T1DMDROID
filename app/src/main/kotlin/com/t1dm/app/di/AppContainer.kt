@@ -1888,7 +1888,7 @@ class AppContainer(context: Context) {
 
     /** Pinned to the fp32 XNNPACK CPU authority (§3.6-E); displayed backend can't affect a rail. */
     private fun calcBackendInfo(info: com.t1dm.inference.InferenceController.SelectedModelInfo): BackendInfo =
-        BackendInfo(backend = info.backend, precision = info.precision)
+        BackendInfo(backend = info.backend)
 
     private val rollingForecaster by lazy {
         RollingForecaster(

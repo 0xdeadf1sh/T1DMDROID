@@ -725,10 +725,32 @@ class MigrationTest {
     }
 
     @Test
-    fun migrate1To27_fullChain() {
+    fun migrate27To28_theColumnGoesAndTheForecastRowsStay() {
+        val seed = helper.createDatabase(27)
+        seed.execSQL(
+            "INSERT INTO `prediction` (`madeAtMs`,`modelId`,`horizonSteps`,`nQuantiles`,`stepMs`," +
+                "`anchorTsMs`,`lastBg`,`lineBlob`,`fanBlob`,`todBlob`,`todConf`,`status`," +
+                "`backend`,`precision`,`selected`,`stale`,`latencyMs`,`createdAtMs`,`sourceId`) " +
+                "VALUES (300000,'m',1,1,300000,300000,120.0,X'00',X'00',NULL,NULL,'OK'," +
+                "'NATIVE_RIDGE_FP64','FP64',1,0,9.0,300000,'src')",
+        )
+        seed.close()
+
+        val db = helper.runMigrationsAndValidate(28, listOf(MigrationRunner.MIGRATION_27_28))
+
+        assertEquals(
+            "a row written by a removed backend survives; only its precision column goes",
+            1,
+            countRows(db, "SELECT COUNT(*) FROM `prediction`"),
+        )
+        db.close()
+    }
+
+    @Test
+    fun migrate1To28_fullChain() {
         helper.createDatabase(1).close()
         helper.runMigrationsAndValidate(
-            27,
+            28,
             listOf(
                 MigrationRunner.MIGRATION_1_2,
                 MigrationRunner.MIGRATION_2_3,
@@ -756,6 +778,7 @@ class MigrationTest {
                 MigrationRunner.MIGRATION_24_25,
                 MigrationRunner.MIGRATION_25_26,
                 MigrationRunner.MIGRATION_26_27,
+                MigrationRunner.MIGRATION_27_28,
             ),
         )
     }

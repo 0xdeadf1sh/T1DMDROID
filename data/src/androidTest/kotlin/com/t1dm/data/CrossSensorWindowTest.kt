@@ -10,7 +10,6 @@ import com.t1dm.core.model.CgmSourceDescriptor
 import com.t1dm.core.model.CgmSourceId
 import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.ModelPrediction
-import com.t1dm.core.model.Precision
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.data.db.AppDatabase
@@ -77,7 +76,6 @@ class CrossSensorWindowTest {
         lastBg = 120.0,
         status = ForecastStatus.OK,
         backend = BackendId.EXECUTORCH_XNNPACK_FP32,
-        precision = Precision.FP32,
         selected = true,
         stale = false,
         latencyMs = 1.0,

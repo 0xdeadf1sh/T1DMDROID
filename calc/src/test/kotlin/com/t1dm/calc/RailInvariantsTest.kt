@@ -46,16 +46,13 @@ class RailInvariantsTest {
     @Test
     fun only_the_fp32_cpu_authority_is_trustworthy() {
         assertTrue(
-            BackendInfo(
-                com.t1dm.core.model.BackendId.EXECUTORCH_XNNPACK_FP32,
-                com.t1dm.core.model.Precision.FP32,
-            ).trustworthy,
+            BackendInfo(com.t1dm.core.model.BackendId.EXECUTORCH_XNNPACK_FP32).trustworthy,
         )
         for (bid in com.t1dm.core.model.BackendId.entries) {
             if (bid == com.t1dm.core.model.BackendId.EXECUTORCH_XNNPACK_FP32) continue
             assertFalse(
                 "$bid must never be trustworthy for dosing",
-                BackendInfo(bid, com.t1dm.core.model.Precision.FP32).trustworthy,
+                BackendInfo(bid).trustworthy,
             )
         }
     }
@@ -66,7 +63,7 @@ class RailInvariantsTest {
             com.t1dm.core.model.BackendId.STUB,
             com.t1dm.core.model.BackendId.UNKNOWN,
         )) {
-            val backend = BackendInfo(bid, com.t1dm.core.model.Precision.FP32)
+            val backend = BackendInfo(bid)
             val advisor = advisorOf(FakeForecastPort(), anchor = fakeAnchor(now), iob = fakeIob(now), backend = backend)
             assertTrue(
                 "dosing must fail closed on $bid",
@@ -237,7 +234,7 @@ class RailInvariantsTest {
         val c = r.card
         assertEquals(3L, c.ageOfLastRealReadingMin)
         assertEquals(0.1, c.interpolatedFraction, 1e-9)
-        assertEquals(com.t1dm.core.model.Precision.FP32, c.precision)
+        assertEquals(com.t1dm.core.model.BackendId.EXECUTORCH_XNNPACK_FP32, c.backend)
         assertEquals(1.5, c.assumedIobU!!, 1e-9)
         assertEquals(20L, c.minSinceLastLoggedDose)
         assertNotNull("band width surfaced", c.bandWidthMgdl)

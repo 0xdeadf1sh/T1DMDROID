@@ -616,6 +616,16 @@ object MigrationRunner {
         }
     }
 
+    internal const val SQL_27_28_DROP_PRECISION =
+        "ALTER TABLE `prediction` DROP COLUMN `precision`"
+
+    /** Every backend this build runs is fp32, so the column only carried a value nothing read. */
+    val MIGRATION_27_28 = object : Migration(27, 28) {
+        override fun migrate(connection: SQLiteConnection) {
+            connection.execSQL(SQL_27_28_DROP_PRECISION)
+        }
+    }
+
     val ALL: Array<Migration> = arrayOf(
         MIGRATION_1_2,
         MIGRATION_2_3,
@@ -643,6 +653,7 @@ object MigrationRunner {
         MIGRATION_24_25,
         MIGRATION_25_26,
         MIGRATION_26_27,
+        MIGRATION_27_28,
     )
 
     fun <T : RoomDatabase> configure(builder: RoomDatabase.Builder<T>): RoomDatabase.Builder<T> =

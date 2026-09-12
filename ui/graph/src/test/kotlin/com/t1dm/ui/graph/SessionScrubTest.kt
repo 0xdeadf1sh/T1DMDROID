@@ -5,7 +5,6 @@ import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.CgmSourceId
 import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.ModelPrediction
-import com.t1dm.core.model.Precision
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.core.model.UnitSpace
@@ -46,7 +45,7 @@ class SessionScrubTest {
             medianBg = List(steps) { median ?: level }, bandsMgdl = bands, nQuantiles = NQ,
             lastBg = level,
             status = status, backend = BackendId.EXECUTORCH_XNNPACK_FP32,
-            precision = Precision.FP32, selected = true, stale = stale, latencyMs = null,
+            selected = true, stale = stale, latencyMs = null,
         )
     }
 

@@ -1,7 +1,6 @@
 package com.t1dm.calc
 
 import com.t1dm.core.model.BackendId
-import com.t1dm.core.model.Precision
 import com.t1dm.inference.InferenceControllerDefaults
 
 /** [doseU] is the TOTAL insulin; [splits], when present, sums back to it. */
@@ -21,7 +20,6 @@ data class DecisionCard(
     val interpolatedFraction: Double,
     val warmup: Boolean,
     val backend: BackendId,
-    val precision: Precision,
     val assumedIobU: Double?,
     val minSinceLastLoggedDose: Long?,
     val bandWidthMgdl: Double?,

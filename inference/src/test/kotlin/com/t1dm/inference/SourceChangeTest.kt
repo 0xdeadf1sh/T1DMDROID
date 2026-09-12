@@ -4,7 +4,6 @@ import com.t1dm.core.common.T1dmDispatchers
 import com.t1dm.core.model.BackendId
 import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.ModelPrediction
-import com.t1dm.core.model.Precision
 import com.t1dm.core.nativecore.StubNativeCore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.runTest
@@ -77,7 +76,6 @@ class SourceChangeTest {
         lastBg = 119.0,
         status = ForecastStatus.OK,
         backend = BackendId.EXECUTORCH_XNNPACK_FP32,
-        precision = Precision.FP32,
         selected = selected,
         stale = false,
         latencyMs = 12.0,

@@ -134,7 +134,6 @@ class DoseAdvisor(
             interpolatedFraction = anchor?.interpolatedFraction ?: 1.0,
             warmup = anchor?.warmup ?: false,
             backend = backend.backend,
-            precision = backend.precision,
             assumedIobU = iob?.iobU,
             minSinceLastLoggedDose = iob?.minSinceLastDose(nowMs),
             bandWidthMgdl = bandWidth,

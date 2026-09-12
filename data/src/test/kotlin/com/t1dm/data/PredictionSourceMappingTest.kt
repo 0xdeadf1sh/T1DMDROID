@@ -3,7 +3,6 @@ package com.t1dm.data
 import com.t1dm.core.model.BackendId
 import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.ModelPrediction
-import com.t1dm.core.model.Precision
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -22,7 +21,6 @@ class PredictionSourceMappingTest {
         lastBg = 118.0,
         status = ForecastStatus.OK,
         backend = BackendId.EXECUTORCH_XNNPACK_FP32,
-        precision = Precision.FP32,
         selected = true,
         stale = false,
         latencyMs = 2.0,

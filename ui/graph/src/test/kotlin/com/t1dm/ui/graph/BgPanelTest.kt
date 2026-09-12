@@ -6,7 +6,6 @@ import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.CgmSourceId
 import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.ModelPrediction
-import com.t1dm.core.model.Precision
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.core.model.RolledForecast
@@ -95,7 +94,7 @@ class BgPanelTest {
         modelId = "m", cycleTsMs = anchor, anchorTsMs = anchor, stepMs = STEP,
         medianBg = medians, bandsMgdl = List(medians.size * 7) { 100.0 }, nQuantiles = 7,
         lastBg = medians.first(), status = status, backend = BackendId.EXECUTORCH_XNNPACK_FP32,
-        precision = Precision.FP32, selected = selected, stale = stale, latencyMs = null,
+        selected = selected, stale = stale, latencyMs = null,
     )
 
     @Test fun excursions_flagsFirstHypoAndHyper() {

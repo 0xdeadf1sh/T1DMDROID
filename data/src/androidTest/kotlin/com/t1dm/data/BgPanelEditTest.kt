@@ -9,7 +9,6 @@ import com.t1dm.core.model.BackendId
 import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.ModelPrediction
-import com.t1dm.core.model.Precision
 import com.t1dm.core.model.CgmSourceDescriptor
 import com.t1dm.core.model.CgmSourceId
 import com.t1dm.core.model.ReadingFlag
@@ -220,7 +219,6 @@ class BgPanelEditTest {
                     lastBg = 100.0,
                     status = ForecastStatus.OK,
                     backend = BackendId.EXECUTORCH_XNNPACK_FP32,
-                    precision = Precision.FP32,
                     selected = true,
                     stale = false,
                     latencyMs = 10.0,

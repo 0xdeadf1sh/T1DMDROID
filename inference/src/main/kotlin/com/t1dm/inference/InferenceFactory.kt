@@ -3,7 +3,6 @@ package com.t1dm.inference
 import com.t1dm.core.common.NativeCore
 import com.t1dm.core.common.T1dmDispatchers
 import com.t1dm.core.model.BackendId
-import com.t1dm.core.model.Precision
 import com.t1dm.core.model.ThermalStatus
 import com.t1dm.inference.backend.ExecuTorchXnnpackBackend
 import java.io.File

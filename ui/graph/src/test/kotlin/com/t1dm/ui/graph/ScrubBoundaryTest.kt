@@ -5,7 +5,6 @@ import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.CgmSourceId
 import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.ModelPrediction
-import com.t1dm.core.model.Precision
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.core.model.RolledForecast
@@ -40,7 +39,7 @@ class ScrubBoundaryTest {
                 modelId = "m", cycleTsMs = T0, anchorTsMs = T0, stepMs = STEP,
                 medianBg = median, bandsMgdl = bands, nQuantiles = NQ, lastBg = 100.0,
                 status = ForecastStatus.OK, backend = BackendId.EXECUTORCH_XNNPACK_FP32,
-                precision = Precision.FP32, selected = true, stale = false, latencyMs = null,
+                selected = true, stale = false, latencyMs = null,
             ),
             UnitSpace.MgDl, null,
         )!!
