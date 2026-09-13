@@ -46,6 +46,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -572,6 +573,8 @@ private fun crumbTrailWidth(crumbs: List<Crumb>): Dp {
 
 /** Fast enough that a stale badge is not stale advice; one chrome recomposition, no layout. */
 private const val CHROME_TICK_MS = 20_000L
+
+private const val LOG_PAGE_ROWS = 20
 
 /** STABLE is a positive claim (§3.6-eligible forecast, no crossing); else VOID with reason. */
 private sealed interface GlyStatus {
@@ -2260,7 +2263,9 @@ private fun T1dmNavHost(
         }
         composable("logs") {
             val scope = rememberCoroutineScope()
-            val entries by container.loggedEntries.collectAsState(emptyList())
+            var logLimit by rememberSaveable { mutableIntStateOf(LOG_PAGE_ROWS) }
+            val feed = remember(logLimit) { container.loggedEntryFeed(logLimit) }
+            val entries by feed.collectAsState(emptyList())
             val holdMin by container.pushHoldMin.collectAsState(SettingsStore.DEFAULT_PUSH_HOLD_MIN)
             val mood by container.latestMood.collectAsState(null)
             val insulins by container.insulinChoices.collectAsState(emptyList())
@@ -2278,6 +2283,8 @@ private fun T1dmNavHost(
                 },
                 onEdit = { entry, edit -> container.appScope.launch { container.applyLogEdit(entry, edit) } },
                 insulins = insulins,
+                canLoadMore = entries.size >= logLimit,
+                onLoadMore = { logLimit += LOG_PAGE_ROWS },
             )
         }
     }

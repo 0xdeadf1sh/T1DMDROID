@@ -2313,11 +2313,13 @@ class AppContainer(context: Context) {
         label = label,
     )
 
-    /** ONE feed for Logs list and BG marks; no queue join: an absent row means sent/rejected. */
-    val loggedEntries: Flow<List<LoggedEntry>> = combine(
-        repository.observeRecentLoggedMeals(LOG_FEED_LIMIT),
-        repository.observeRecentLoggedDoses(LOG_FEED_LIMIT),
-        repository.observeRecentLoggedExercise(LOG_FEED_LIMIT),
+    /** Feeds BG marks; no queue join: an absent row means sent/rejected. */
+    val loggedEntries: Flow<List<LoggedEntry>> = loggedEntryFeed(LOG_FEED_LIMIT)
+
+    fun loggedEntryFeed(limit: Int): Flow<List<LoggedEntry>> = combine(
+        repository.observeRecentLoggedMeals(limit),
+        repository.observeRecentLoggedDoses(limit),
+        repository.observeRecentLoggedExercise(limit),
     ) { meals, doses, exercise ->
         val rows = meals.map { it.toLoggedEntry() } + doses.map { it.toLoggedEntry() } +
             exercise.map { it.toLoggedEntry() }
@@ -2328,7 +2330,7 @@ class AppContainer(context: Context) {
                     .thenBy { it.kind }
                     .thenByDescending { it.rowId },
             )
-            .take(LOG_FEED_LIMIT)
+            .take(limit)
     }
 
     /** Unconditional, same tombstone path as undo; exercise tombstones locally, pushes nothing. */

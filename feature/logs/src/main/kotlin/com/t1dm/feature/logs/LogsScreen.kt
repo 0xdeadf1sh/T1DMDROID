@@ -19,6 +19,8 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -43,6 +45,8 @@ import com.t1dm.core.model.InsulinChoice
 import com.t1dm.core.model.LoggedEntry
 import kotlin.math.roundToInt
 
+private const val LOAD_AHEAD_ROWS = 5
+
 @Composable
 fun LogsScreen(
     entries: List<LoggedEntry> = emptyList(),
@@ -55,12 +59,22 @@ fun LogsScreen(
     onDelete: (LoggedEntry) -> Unit = {},
     onEdit: (LoggedEntry, LogEdit) -> Unit = { _, _ -> },
     insulins: List<InsulinChoice> = emptyList(),
+    canLoadMore: Boolean = false,
+    onLoadMore: () -> Unit = {},
 ) {
     // Held here, not per-row: the confirmation outlives the row once the list re-sorts under it.
     var pending by remember { mutableStateOf<LoggedEntry?>(null) }
     var editing by remember { mutableStateOf<LoggedEntry?>(null) }
 
     val listState = rememberLazyListState()
+    val nearEnd by remember {
+        derivedStateOf {
+            val info = listState.layoutInfo
+            val last = info.visibleItemsInfo.lastOrNull() ?: return@derivedStateOf false
+            last.index >= info.totalItemsCount - LOAD_AHEAD_ROWS
+        }
+    }
+    LaunchedEffect(nearEnd, canLoadMore) { if (nearEnd && canLoadMore) onLoadMore() }
     LazyColumn(
         Modifier.fillMaxSize().padding(horizontal = 16.dp).fadingEdges(listState),
         state = listState,
