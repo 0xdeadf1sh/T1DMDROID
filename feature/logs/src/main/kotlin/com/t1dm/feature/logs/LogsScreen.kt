@@ -20,7 +20,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -45,7 +44,8 @@ import com.t1dm.core.model.InsulinChoice
 import com.t1dm.core.model.LoggedEntry
 import kotlin.math.roundToInt
 
-private const val LOAD_AHEAD_ROWS = 5
+/** After the mood and hold items. */
+private const val FIRST_ENTRY_INDEX = 2
 
 @Composable
 fun LogsScreen(
@@ -59,43 +59,49 @@ fun LogsScreen(
     onDelete: (LoggedEntry) -> Unit = {},
     onEdit: (LoggedEntry, LogEdit) -> Unit = { _, _ -> },
     insulins: List<InsulinChoice> = emptyList(),
-    canLoadMore: Boolean = false,
-    onLoadMore: () -> Unit = {},
+    /** Position of the first of [entries] in the whole log, from 0. */
+    firstRow: Int = 0,
+    hasNext: Boolean = false,
+    onPrev: () -> Unit = {},
+    onNext: () -> Unit = {},
 ) {
     // Held here, not per-row: the confirmation outlives the row once the list re-sorts under it.
     var pending by remember { mutableStateOf<LoggedEntry?>(null) }
     var editing by remember { mutableStateOf<LoggedEntry?>(null) }
 
     val listState = rememberLazyListState()
-    val nearEnd by remember {
-        derivedStateOf {
-            val info = listState.layoutInfo
-            val last = info.visibleItemsInfo.lastOrNull() ?: return@derivedStateOf false
-            last.index >= info.totalItemsCount - LOAD_AHEAD_ROWS
+    // Scrolled into the rows: land on the new page's first. Still above them: stay put.
+    LaunchedEffect(firstRow) {
+        if (listState.firstVisibleItemIndex >= FIRST_ENTRY_INDEX) {
+            listState.scrollToItem(FIRST_ENTRY_INDEX)
         }
     }
-    LaunchedEffect(nearEnd, canLoadMore) { if (nearEnd && canLoadMore) onLoadMore() }
-    LazyColumn(
-        Modifier.fillMaxSize().padding(horizontal = 16.dp).fadingEdges(listState),
-        state = listState,
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-        contentPadding = PaddingValues(vertical = 16.dp),
-    ) {
-        item(key = "mood") { MoodPicker(currentMood, onPickMood) }
-        item(key = "hold") { HoldSection(holdMin, holdMaxMin, onSetHoldMin) }
-        if (entries.isEmpty()) {
-            item(key = "empty") {
-                Text(
-                    "Nothing logged yet",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
-                )
+    Column(Modifier.fillMaxSize()) {
+        LazyColumn(
+            Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp).fadingEdges(listState),
+            state = listState,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            contentPadding = PaddingValues(vertical = 16.dp),
+        ) {
+            item(key = "mood") { MoodPicker(currentMood, onPickMood) }
+            item(key = "hold") { HoldSection(holdMin, holdMaxMin, onSetHoldMin) }
+            if (entries.isEmpty()) {
+                item(key = "empty") {
+                    Text(
+                        "Nothing logged yet",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                    )
+                }
+            } else {
+                // `clientId` is unique across BOTH tables, so the key needs no kind.
+                items(entries, key = { it.clientId }) { entry ->
+                    EntryRow(entry, onDelete = { pending = entry }, onEdit = { editing = entry })
+                }
             }
-        } else {
-            // `clientId` is unique across BOTH tables, so the kind need not be folded into the key.
-            items(entries, key = { it.clientId }) { entry ->
-                EntryRow(entry, onDelete = { pending = entry }, onEdit = { editing = entry })
-            }
+        }
+        if (entries.isNotEmpty() && (firstRow > 0 || hasNext)) {
+            PageBar(firstRow, entries.size, hasNext, onPrev, onNext)
         }
     }
 
@@ -114,6 +120,24 @@ fun LogsScreen(
             onConfirm = { edit -> editing = null; onEdit(entry, edit) },
             onDismiss = { editing = null },
         )
+    }
+}
+
+@Composable
+private fun PageBar(firstRow: Int, rows: Int, hasNext: Boolean, onPrev: () -> Unit, onNext: () -> Unit) {
+    val haptics = rememberT1dmHaptics()
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        TextButton(onClick = { haptics.perform(HapticEvent.Tap); onPrev() }, enabled = firstRow > 0) {
+            Text("‹", style = MaterialTheme.typography.titleLarge)
+        }
+        Text("${firstRow + 1}–${firstRow + rows}", style = MaterialTheme.typography.labelLarge)
+        TextButton(onClick = { haptics.perform(HapticEvent.Tap); onNext() }, enabled = hasNext) {
+            Text("›", style = MaterialTheme.typography.titleLarge)
+        }
     }
 }
 

@@ -47,6 +47,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import com.t1dm.core.model.LoggedEntry
+import kotlinx.coroutines.flow.map
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -575,6 +577,11 @@ private fun crumbTrailWidth(crumbs: List<Crumb>): Dp {
 private const val CHROME_TICK_MS = 20_000L
 
 private const val LOG_PAGE_ROWS = 20
+
+/** [start]: position of the first of [entries] in the whole log, from 0. */
+private data class LogPage(val start: Int, val entries: List<LoggedEntry>, val hasNext: Boolean)
+
+private val EMPTY_LOG_PAGE = LogPage(0, emptyList(), false)
 
 /** STABLE is a positive claim (§3.6-eligible forecast, no crossing); else VOID with reason. */
 private sealed interface GlyStatus {
@@ -2263,14 +2270,26 @@ private fun T1dmNavHost(
         }
         composable("logs") {
             val scope = rememberCoroutineScope()
-            var logLimit by rememberSaveable { mutableIntStateOf(LOG_PAGE_ROWS) }
-            val feed = remember(logLimit) { container.loggedEntryFeed(logLimit) }
-            val entries by feed.collectAsState(emptyList())
+            var logPage by rememberSaveable { mutableIntStateOf(0) }
+            val pageFeed = remember(logPage) {
+                val start = logPage * LOG_PAGE_ROWS
+                val end = start + LOG_PAGE_ROWS
+                // One row past the page: its presence is what enables ›.
+                container.loggedEntryFeed(end + 1).map { rows ->
+                    val slice = rows.subList(minOf(start, rows.size), minOf(end, rows.size))
+                    LogPage(start, slice, hasNext = rows.size > end)
+                }
+            }
+            val page by pageFeed.collectAsState(EMPTY_LOG_PAGE)
+            // Emptied by deletes: step back until a page holds rows.
+            LaunchedEffect(page) {
+                if (page.entries.isEmpty() && page.start > 0) logPage = page.start / LOG_PAGE_ROWS - 1
+            }
             val holdMin by container.pushHoldMin.collectAsState(SettingsStore.DEFAULT_PUSH_HOLD_MIN)
             val mood by container.latestMood.collectAsState(null)
             val insulins by container.insulinChoices.collectAsState(emptyList())
             LogsScreen(
-                entries = entries,
+                entries = page.entries,
                 holdMin = holdMin,
                 holdMaxMin = SettingsStore.MAX_PUSH_HOLD_MIN,
                 currentMood = mood,
@@ -2283,8 +2302,10 @@ private fun T1dmNavHost(
                 },
                 onEdit = { entry, edit -> container.appScope.launch { container.applyLogEdit(entry, edit) } },
                 insulins = insulins,
-                canLoadMore = entries.size >= logLimit,
-                onLoadMore = { logLimit += LOG_PAGE_ROWS },
+                firstRow = page.start,
+                hasNext = page.hasNext,
+                onPrev = { if (logPage > 0) logPage -= 1 },
+                onNext = { logPage += 1 },
             )
         }
     }
