@@ -69,6 +69,8 @@ fun ExerciseSessionScreen(
     val spanMs = window.last - window.first
     var fraction by remember(session.id) { mutableFloatStateOf(0f) }
     val cursorMs = scrubCursorOf(window.first, spanMs, fraction, gridMs)
+    // Unsnapped: the grid is the glucose record's, and a 5-min hop skips most of a track.
+    val trackMs = window.first + (fraction.coerceIn(0f, 1f).toDouble() * spanMs).toLong()
     val detent = rememberHapticDetent(HapticEvent.ScrubTick)
 
     Column(
@@ -98,7 +100,7 @@ fun ExerciseSessionScreen(
                 ExerciseMap(
                     track,
                     Modifier.fillMaxWidth().height(MAP_HEIGHT),
-                    cursor = trackPositionAt(track, cursorMs, gridMs),
+                    cursor = trackPositionAt(track, trackMs),
                 )
             }
         }

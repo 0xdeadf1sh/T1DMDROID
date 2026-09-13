@@ -14,10 +14,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.t1dm.core.design.LocalT1dmSemantics
 import com.t1dm.core.model.TrackPoint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -46,6 +48,9 @@ fun ExerciseMap(
     val context = LocalContext.current
     // Composable-only getters, unreachable from `update`; the Int is what crosses.
     val ink = MaterialTheme.colorScheme.primary.toArgb()
+    // Not the track's ink: a puck the colour of the line under it vanishes into it.
+    val puckInk = LocalT1dmSemantics.current.secondary.toArgb()
+    val dpPx = LocalDensity.current.density
 
     val host = remember(context) { MapHost(context) }
     DisposableEffect(host) { onDispose { host.release() } }
@@ -111,7 +116,8 @@ fun ExerciseMap(
         modifier = modifier,
         update = { view ->
             dot.at = cursorPoint
-            dot.fillArgb = ink
+            dot.fillArgb = puckInk
+            dot.dpPx = dpPx
             if (!fitted[0] && view.width > 0 && view.height > 0 && points.isNotEmpty()) {
                 fitTo(view, points)
                 fitted[0] = true
@@ -126,29 +132,43 @@ fun ExerciseMap(
 private class CursorOverlay : Overlay() {
     var at: GeoPoint? = null
     var fillArgb: Int = 0
+    var dpPx: Float = 1f
 
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
-    private val halo = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    private val ring = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        strokeWidth = CURSOR_HALO_PX
-        color = CURSOR_HALO_ARGB
+        color = CURSOR_RING_ARGB
+    }
+    private val edge = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        color = CURSOR_EDGE_ARGB
     }
     private val px = Point()
 
     override fun draw(canvas: Canvas, projection: Projection) {
         val p = at ?: return
         projection.toPixels(p, px)
+        val x = px.x.toFloat()
+        val y = px.y.toFloat()
+        val r = CURSOR_RADIUS_DP * dpPx
+        val ringW = CURSOR_RING_DP * dpPx
+        val edgeW = CURSOR_EDGE_DP * dpPx
         fill.color = fillArgb
-        canvas.drawCircle(px.x.toFloat(), px.y.toFloat(), CURSOR_RADIUS_PX, fill)
-        canvas.drawCircle(px.x.toFloat(), px.y.toFloat(), CURSOR_RADIUS_PX, halo)
+        ring.strokeWidth = ringW
+        edge.strokeWidth = edgeW
+        canvas.drawCircle(x, y, r, fill)
+        canvas.drawCircle(x, y, r + ringW / 2f, ring)
+        canvas.drawCircle(x, y, r + ringW + edgeW / 2f, edge)
     }
 }
 
-private const val CURSOR_RADIUS_PX = 9f
-private const val CURSOR_HALO_PX = 3f
+private const val CURSOR_RADIUS_DP = 8f
+private const val CURSOR_RING_DP = 2f
+private const val CURSOR_EDGE_DP = 1f
 
-/** Raw white, outside the palette: separates the dot from any raster, not the app's surface. */
-private val CURSOR_HALO_ARGB = 0xE6FFFFFF.toInt()
+/** Raw white and black, outside the palette: they separate the puck from raster, not surface. */
+private val CURSOR_RING_ARGB = 0xFFFFFFFF.toInt()
+private val CURSOR_EDGE_ARGB = 0x99000000.toInt()
 
 /** Built on IO (opens SQLite tile store); `MapView` can't — takes the Looper. Locks [release]. */
 private class MapHost(private val context: Context) {
