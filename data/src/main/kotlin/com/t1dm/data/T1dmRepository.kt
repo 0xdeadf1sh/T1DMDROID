@@ -264,6 +264,11 @@ class T1dmRepository(
             // Entity→domain pass would run on Compose main; Room already emits off-main.
             .flowOn(io)
 
+    /** The sensor holding the most readings in the window, believed now or not; null if none. */
+    suspend fun sourceWithMostReadingsIn(fromMs: Long, toMs: Long): CgmSourceId? = withContext(io) {
+        readings.sourceWithMostReadings(fromMs, toMs)?.let { CgmSourceId(it) }
+    }
+
     /** This sensor's floor as one aggregate, not windowed; covers the whole wear. */
     fun observeOldestTsForSource(sourceId: CgmSourceId): Flow<Long?> =
         readings.observeOldestTsForSource(sourceId.value)

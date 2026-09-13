@@ -114,6 +114,13 @@ interface CgmReadingDao {
     )
     fun observeRange(sourceId: String, fromMs: Long, toMs: Long): Flow<List<CgmReadingEntity>>
 
+    /** Ties go to the lower id, so the same window always resolves to the same sensor. */
+    @Query(
+        "SELECT sourceId FROM cgm_reading WHERE tsMs BETWEEN :fromMs AND :toMs " +
+            "AND bgMgdl IS NOT NULL GROUP BY sourceId ORDER BY COUNT(*) DESC, sourceId LIMIT 1",
+    )
+    suspend fun sourceWithMostReadings(fromMs: Long, toMs: Long): String?
+
     @Query("SELECT * FROM cgm_reading WHERE sourceId = :sourceId ORDER BY tsMs DESC LIMIT 1")
     fun observeLatest(sourceId: String): Flow<CgmReadingEntity?>
 

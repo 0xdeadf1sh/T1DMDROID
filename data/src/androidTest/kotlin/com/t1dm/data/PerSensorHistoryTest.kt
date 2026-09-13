@@ -124,4 +124,17 @@ class PerSensorHistoryTest {
 
         assertEquals(listOf(102, 103, 104), windowed.map { it.bgMgdl })
     }
+
+    /** A bout worn on a replaced sensor resolves to that sensor, not the one believed now. */
+    @Test
+    fun aWindowResolvesToTheSensorHoldingItsReadings() = runTest {
+        repo.upsertSource(descriptor(worn), authoritative = false, nowMs = 0)
+        repo.upsertSource(descriptor(alsoWorn), authoritative = true, nowMs = 0)
+        for (slot in 1..3) repo.upsertReading(reading(worn, slot * 300_000L, bg = 90))
+        for (slot in 3..8) repo.upsertReading(reading(alsoWorn, slot * 300_000L, bg = 140))
+
+        assertEquals(worn, repo.sourceWithMostReadingsIn(0, 900_000L))
+        assertEquals(alsoWorn, repo.sourceWithMostReadingsIn(1_200_000L, 2_400_000L))
+        assertNull(repo.sourceWithMostReadingsIn(3_000_000L, 4_000_000L))
+    }
 }

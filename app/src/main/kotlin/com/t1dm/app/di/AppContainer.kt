@@ -2665,10 +2665,10 @@ class AppContainer(context: Context) {
         return repository.observeReadingsForSource(source.id, fromMs, Long.MAX_VALUE).first()
     }
 
-    /** [gameReadings], bounded at BOTH ends: a review is a fixed picture of a finished bout. */
+    /** The bout's own sensor, not today's: a bout worn on a replaced sensor keeps its trace. */
     suspend fun sessionReadings(fromMs: Long, toMs: Long): List<CgmReading> {
-        val source = repository.observeAuthoritativeSource().first() ?: return emptyList()
-        return repository.observeReadingsForSource(source.id, fromMs, toMs).first()
+        val source = repository.sourceWithMostReadingsIn(fromMs, toMs) ?: return emptyList()
+        return repository.observeReadingsForSource(source, fromMs, toMs).first()
     }
 
     val graphSettings: GraphSettingsStore by lazy { GraphSettingsStore(repository) }
