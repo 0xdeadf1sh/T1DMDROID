@@ -2326,6 +2326,16 @@ class AppContainer(context: Context) {
             .take(limit)
     }
 
+    /** [loggedEntryFeed] over a fixed window instead of a row budget; oldest first. */
+    fun loggedEntriesIn(fromMs: Long, toMs: Long): Flow<List<LoggedEntry>> = combine(
+        repository.observeLoggedMealsInRange(fromMs, toMs),
+        repository.observeLoggedDosesInRange(fromMs, toMs),
+        repository.observeLoggedExerciseInRange(fromMs, toMs),
+    ) { meals, doses, exercise ->
+        (meals.map { it.toLoggedEntry() } + doses.map { it.toLoggedEntry() } + exercise.map { it.toLoggedEntry() })
+            .sortedWith(compareBy<LoggedEntry> { it.tsMs }.thenBy { it.kind }.thenBy { it.rowId })
+    }
+
     /** Unconditional, same tombstone path as undo; exercise tombstones locally, pushes nothing. */
     suspend fun deleteLoggedEntry(entry: LoggedEntry) {
         when (entry.kind) {

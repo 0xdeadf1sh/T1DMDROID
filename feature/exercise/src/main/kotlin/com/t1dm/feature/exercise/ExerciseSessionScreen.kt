@@ -15,12 +15,15 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.KeyValueTable
+import com.t1dm.core.design.LogEdit
+import com.t1dm.core.design.LoggedEntryDialog
 import com.t1dm.core.design.exerciseKindLabel as kindLabel
 import com.t1dm.core.design.fadingEdges
 import com.t1dm.core.design.logTimeLabel
@@ -28,9 +31,10 @@ import com.t1dm.core.design.panelCardColors
 import com.t1dm.core.design.rememberHapticDetent
 import com.t1dm.core.design.verticalScrollbar
 import com.t1dm.core.model.AlertThresholds
-import com.t1dm.core.model.LogMarker
 import com.t1dm.core.model.EXERCISE_MAX_BOUT_MS
 import com.t1dm.core.model.ExerciseSession
+import com.t1dm.core.model.InsulinChoice
+import com.t1dm.core.model.LoggedEntry
 import com.t1dm.core.model.TrackPoint
 import com.t1dm.core.model.UnitSpace
 import com.t1dm.ui.graph.GraphFrame
@@ -51,7 +55,10 @@ fun ExerciseSessionScreen(
     kovatchevF: ((Double) -> Double)? = null,
     thresholds: AlertThresholds? = null,
     /** Loaded over exactly reviewWindow, not the live Logs feed, bounded at a few hundred rows. */
-    logMarkers: List<LogMarker> = emptyList(),
+    logEntries: List<LoggedEntry> = emptyList(),
+    insulins: List<InsulinChoice> = emptyList(),
+    onEditLog: ((LoggedEntry, LogEdit) -> Unit)? = null,
+    onDeleteLog: ((LoggedEntry) -> Unit)? = null,
     rangeMinMgdl: Int? = null,
     rangeMaxMgdl: Int? = null,
 ) {
@@ -74,6 +81,8 @@ fun ExerciseSessionScreen(
     // Unsnapped: the grid is the glucose record's, and a 5-min hop skips most of a track.
     val trackMs = window.first + (fraction.coerceIn(0f, 1f).toDouble() * spanMs).toLong()
     val detent = rememberHapticDetent(HapticEvent.ScrubTick)
+    val logMarkers = remember(logEntries) { logEntries.map { it.marker } }
+    var tappedLogs by remember { mutableStateOf<List<LoggedEntry>>(emptyList()) }
 
     Column(
         Modifier.fillMaxSize().verticalScrollbar(scroll).fadingEdges(scroll).verticalScroll(scroll)
@@ -119,6 +128,7 @@ fun ExerciseSessionScreen(
             kovatchevF = kovatchevF,
             thresholds = thresholds,
             logMarkers = logMarkers,
+            onMarkerTap = { hits -> tappedLogs = hits.mapNotNull { logEntries.getOrNull(it) } },
             tzOffsetMin = session.tzOffsetMin,
             rangeMinMgdl = rangeMinMgdl,
             rangeMaxMgdl = rangeMaxMgdl,
@@ -137,6 +147,15 @@ fun ExerciseSessionScreen(
             sessionScrubRows(frame, cursorMs, gridMs, unit, session.tzOffsetMin),
             numeric = true,
         )
+    }
+
+    if (tappedLogs.isNotEmpty()) {
+        LoggedEntryDialog(
+            entries = tappedLogs,
+            insulins = insulins,
+            onEdit = onEditLog,
+            onDelete = onDeleteLog,
+        ) { tappedLogs = emptyList() }
     }
 }
 

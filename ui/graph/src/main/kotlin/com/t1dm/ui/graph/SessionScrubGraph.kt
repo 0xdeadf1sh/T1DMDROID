@@ -3,7 +3,9 @@ package com.t1dm.ui.graph
 import androidx.compose.foundation.Canvas
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -13,9 +15,12 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.text.rememberTextMeasurer
+import com.t1dm.core.design.HapticEvent
+import com.t1dm.core.design.LocalT1dmHaptics
 import com.t1dm.core.design.LocalT1dmSemantics
 import com.t1dm.core.design.logMarkerIcon
 import com.t1dm.core.model.AlertThresholds
@@ -39,6 +44,8 @@ fun SessionScrubGraph(
     thresholds: AlertThresholds? = null,
     /** Loaded over the review window, not live Logs (bounded 400 rows, empty for a month-old). */
     logMarkers: List<LogMarker> = emptyList(),
+    /** Positions in logMarkers of every log behind the tapped mark, all lanes. */
+    onMarkerTap: ((List<Int>) -> Unit)? = null,
     tzOffsetMin: Int = 0,
     rangeMinMgdl: Int? = null,
     rangeMaxMgdl: Int? = null,
@@ -71,7 +78,34 @@ fun SessionScrubGraph(
     val topPx = with(density) { GraphInsets.top(false).toPx() }
     val bottomPx = with(density) { GraphInsets.Bottom.toPx() }
 
-    Canvas(modifier) {
+    val haptics = LocalT1dmHaptics.current
+    val markerTap by rememberUpdatedState(onMarkerTap)
+    // Clusters rebuilt per tap from the current window, exactly as the draw pass builds them.
+    val hitMarkers by rememberUpdatedState<(Offset, Float, Float) -> List<Int>>({ pos, w, h ->
+        val plotRight = w - rightPx
+        val start = windowStartMs.toDouble()
+        val span = windowSpanMs.toDouble()
+        fun clusters(lane: MarkerLane) =
+            clusterLogMarkers(lane.marks, start, span, leftPx, plotRight, markSepPx)
+        hitTestLogMarkers(
+            pos.x, pos.y, leftPx, plotRight, h - bottomPx, dpPx,
+            insulinLane, clusters(insulinLane),
+            carbLane, clusters(carbLane),
+            exerciseLane, clusters(exerciseLane),
+        )
+    })
+
+    Canvas(
+        modifier.pointerInput(Unit) {
+            detectLogMarkerTaps { pos ->
+                val sink = markerTap ?: return@detectLogMarkerTaps
+                val hit = hitMarkers(pos, size.width.toFloat(), size.height.toFloat())
+                if (hit.isEmpty()) return@detectLogMarkerTaps
+                haptics.perform(HapticEvent.Tap)
+                sink(hit)
+            }
+        },
+    ) {
         val plotLeft = leftPx
         val plotTop = topPx
         val plotRight = size.width - rightPx

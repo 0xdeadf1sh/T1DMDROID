@@ -991,6 +991,9 @@ interface LoggedExerciseDao {
     @Query("SELECT * FROM logged_exercise WHERE tsMs BETWEEN :fromMs AND :toMs ORDER BY tsMs")
     suspend fun inRange(fromMs: Long, toMs: Long): List<LoggedExerciseEntity>
 
+    @Query("SELECT * FROM logged_exercise WHERE tsMs BETWEEN :fromMs AND :toMs ORDER BY tsMs")
+    fun observeRange(fromMs: Long, toMs: Long): Flow<List<LoggedExerciseEntity>>
+
     @Query("SELECT * FROM logged_exercise ORDER BY tsMs DESC, id DESC LIMIT :limit")
     fun observeRecent(limit: Int): Flow<List<LoggedExerciseEntity>>
 

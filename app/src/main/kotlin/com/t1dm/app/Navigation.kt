@@ -48,6 +48,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import com.t1dm.core.model.LoggedEntry
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -119,7 +120,6 @@ import com.t1dm.core.model.CarTuning
 import com.t1dm.core.model.CgEga
 import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.CgmSourceStatus
-import com.t1dm.core.model.CurveKind
 import com.t1dm.core.model.DkaTimeline
 import com.t1dm.core.model.ErrorGridLattices
 import com.t1dm.core.model.ExerciseKind
@@ -128,7 +128,6 @@ import com.t1dm.core.model.Food
 import com.t1dm.core.model.InferenceCause
 import com.t1dm.core.model.InferenceState
 import com.t1dm.core.model.InsulinPresetSpec
-import com.t1dm.core.model.LogMarker
 import com.t1dm.core.model.ModelMetrics
 import com.t1dm.core.model.ModelPrediction
 import com.t1dm.core.model.ReadingFlag
@@ -1674,29 +1673,27 @@ private fun T1dmNavHost(
                     kovatchevF = container.nativeCore::kovatchevF,
                 )
             }
-            // Not live Logs feed (bounded, empty for old bouts); reduced to marks, no amounts.
-            val sessionMarkers by produceState(emptyList<LogMarker>(), window) {
-                val w = window
-                value = if (w == null) {
-                    emptyList()
-                } else {
-                    runCatching {
-                        val meals = container.repository.loggedMealsInRange(w.first, w.last)
-                            .map { LogMarker(it.tsMs, CurveKind.CARB) }
-                        val doses = container.repository.loggedDosesInRange(w.first, w.last)
-                            .map { LogMarker(it.tsMs, CurveKind.INSULIN) }
-                        val replays = container.repository.loggedExerciseInRange(w.first, w.last)
-                            .map { LogMarker(it.tsMs, CurveKind.EXERCISE) }
-                        (meals + doses + replays).sortedBy { it.tsMs }
-                    }.getOrDefault(emptyList())
-                }
+            // Not live Logs feed (bounded, empty for old bouts).
+            val sessionLogs by produceState(emptyList<LoggedEntry>(), window) {
+                val w = window ?: return@produceState
+                container.loggedEntriesIn(w.first, w.last)
+                    .catch { emit(emptyList()) }
+                    .collect { value = it }
             }
+            val insulins by container.insulinChoices.collectAsState(emptyList())
             ExerciseSessionScreen(
                 session = session,
                 gridMs = T1dmRepository.GRID_MS,
                 nowMs = openedAtMs,
                 track = track,
-                logMarkers = sessionMarkers,
+                logEntries = sessionLogs,
+                insulins = insulins,
+                onEditLog = { entry, edit ->
+                    container.appScope.launch { container.applyLogEdit(entry, edit) }
+                },
+                onDeleteLog = { entry ->
+                    container.appScope.launch { container.deleteLoggedEntry(entry) }
+                },
                 frame = frame,
                 unit = unit,
                 kovatchevF = container.nativeCore::kovatchevF,

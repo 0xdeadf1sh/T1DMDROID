@@ -612,12 +612,18 @@ class T1dmRepository(
     suspend fun loggedDosesInRange(fromMs: Long, toMs: Long): List<LoggedDoseEntity> =
         withContext(io) { loggedDoses.inRange(fromMs, toMs) }
 
+    fun observeLoggedDosesInRange(fromMs: Long, toMs: Long): Flow<List<LoggedDoseEntity>> =
+        loggedDoses.observeRange(fromMs, toMs)
+
     suspend fun loggedMealById(id: Long): LoggedMealEntity? = withContext(io) { loggedMeals.byId(id) }
 
     suspend fun loggedDoseById(id: Long): LoggedDoseEntity? = withContext(io) { loggedDoses.byId(id) }
 
     suspend fun loggedMealsInRange(fromMs: Long, toMs: Long): List<LoggedMealEntity> =
         withContext(io) { loggedMeals.inRange(fromMs, toMs) }
+
+    fun observeLoggedMealsInRange(fromMs: Long, toMs: Long): Flow<List<LoggedMealEntity>> =
+        loggedMeals.observeRange(fromMs, toMs)
 
     /** Newest first, entities not a domain type; dedupKey format is :sync's, not re-spelled. */
     fun observeRecentLoggedMeals(limit: Int): Flow<List<LoggedMealEntity>> =
@@ -791,6 +797,9 @@ class T1dmRepository(
 
     suspend fun loggedExerciseInRange(fromMs: Long, toMs: Long): List<LoggedExerciseEntity> =
         withContext(io) { loggedExercise.inRange(fromMs, toMs) }
+
+    fun observeLoggedExerciseInRange(fromMs: Long, toMs: Long): Flow<List<LoggedExerciseEntity>> =
+        loggedExercise.observeRange(fromMs, toMs)
 
     fun observeRecentLoggedExercise(limit: Int): Flow<List<LoggedExerciseEntity>> =
         loggedExercise.observeRecent(limit)
