@@ -132,16 +132,7 @@ private fun settings(s: IconStyle) = glyph("settings", s) { // a gear
     moveTo(12f, 9f); arcTo(3f, 3f, 0f, true, false, 12.01f, 9f); close()
 }
 
-private fun pubs(s: IconStyle) = glyph("pubs", s) { // a page with text lines
-    // The lines are wound opposite the outline, so NonZero fill knocks them out as holes.
-    moveTo(6f, 3f); lineTo(18f, 3f); lineTo(18f, 21f); lineTo(6f, 21f); close()
-    moveTo(8f, 7f); lineTo(8f, 8f); lineTo(16f, 8f); lineTo(16f, 7f); close()
-    moveTo(8f, 11f); lineTo(8f, 12f); lineTo(16f, 12f); lineTo(16f, 11f); close()
-    moveTo(8f, 15f); lineTo(8f, 16f); lineTo(13f, 16f); lineTo(13f, 15f); close()
-}
-
 private fun logs(s: IconStyle) = glyph("logs", s) { // a bulleted list
-    // No enclosing shape, unlike `pubs`, so the two stay apart at 28 dp.
     moveTo(4f, 5.5f); lineTo(7f, 5.5f); lineTo(7f, 8.5f); lineTo(4f, 8.5f); close()
     moveTo(9.5f, 6f); lineTo(20f, 6f); lineTo(20f, 8f); lineTo(9.5f, 8f); close()
     moveTo(4f, 10.5f); lineTo(7f, 10.5f); lineTo(7f, 13.5f); lineTo(4f, 13.5f); close()
@@ -254,7 +245,6 @@ fun timeOfDayIcon(period: DayPeriod, style: IconStyle): ImageVector = when (peri
 
 fun navIcon(route: String, style: IconStyle): ImageVector = when (route) {
     "dashboard" -> dashboard(style)
-    "pubs" -> pubs(style)
     "circadian" -> clock(style)
     "stats" -> stats(style)
     "models" -> models(style)

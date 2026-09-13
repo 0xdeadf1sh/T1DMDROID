@@ -26,7 +26,6 @@ include(":app")
 
 include(
     ":feature:dashboard",
-    ":feature:pubs",
     ":feature:stats",
     ":feature:models",
     ":feature:hardware",

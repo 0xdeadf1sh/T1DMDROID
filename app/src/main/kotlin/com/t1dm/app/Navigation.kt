@@ -157,7 +157,6 @@ import com.t1dm.feature.models.LoraPanel
 import com.t1dm.feature.models.ModelDetailScreen
 import com.t1dm.feature.models.ModelsScreen
 import com.t1dm.feature.network.NetworkScreen
-import com.t1dm.feature.pubs.PubsScreen
 import com.t1dm.feature.security.SecurityPanelState
 import com.t1dm.feature.security.SecurityScreen
 import com.t1dm.feature.settings.AboutScreen
@@ -231,7 +230,6 @@ internal data class Destination(val route: String, val label: String)
 // In wheel order.
 internal val destinations = listOf(
     Destination("dashboard", "BG"),
-    Destination("pubs", "Pubs"),
     Destination("circadian", "Clock"),
     Destination("stats", "Stats"),
     Destination("models", "Models"),
@@ -339,7 +337,6 @@ internal fun crumbsFor(route: String?, modelId: String?, editLabel: String? = nu
     fun settings(vararg tail: Crumb) = listOf(Crumb("Settings", "settings"), *tail)
     return when (route) {
         null, "dashboard" -> listOf(Crumb("BG", null))
-        "pubs" -> listOf(Crumb("Pubs", null))
         "circadian" -> listOf(Crumb("Circadian clock", null))
         "stats" -> listOf(Crumb("Stats", null))
         "models" -> listOf(Crumb("Models", null))
@@ -1149,9 +1146,6 @@ private fun T1dmNavHost(
                     DashboardGamePanel(container, m, fromMs, dropMs, spanMin, clock, ready, exit)
                 },
             )
-        }
-        composable("pubs") {
-            PubsScreen(container.pubsRepository)
         }
         composable("circadian") {
             val inference by container.inferenceState.collectAsState(InferenceState())

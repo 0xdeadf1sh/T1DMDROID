@@ -29,8 +29,6 @@ import com.t1dm.app.BuildConfig
 import com.t1dm.feature.hardware.HardwareInfo
 import com.t1dm.feature.network.NetIface
 import com.t1dm.feature.network.NetworkDiagnostics
-import com.t1dm.feature.pubs.BlueskyClient
-import com.t1dm.feature.pubs.PubsRepository
 import com.t1dm.feature.settings.AboutInfo
 import com.t1dm.app.sync.RoomPredictionStore
 import com.t1dm.app.sync.SyncManager
@@ -291,8 +289,6 @@ class AppContainer(context: Context) {
     val backupManager: BackupManager by lazy {
         BackupManager(appContext, repository, settingsStore, dispatchers, BuildConfig.VERSION_NAME)
     }
-
-    val pubsRepository: PubsRepository by lazy { PubsRepository(BlueskyClient(dispatchers), dispatchers) }
 
     private val cgmRepository by lazy {
         AppCgmRepository(repository, outboxEnqueuer)

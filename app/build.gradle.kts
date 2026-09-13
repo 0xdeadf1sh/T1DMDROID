@@ -97,7 +97,6 @@ dependencies {
     implementation(project(":watch"))
 
     implementation(project(":feature:dashboard"))
-    implementation(project(":feature:pubs"))
     implementation(project(":feature:stats"))
     implementation(project(":feature:models"))
     implementation(project(":feature:hardware"))
