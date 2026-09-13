@@ -24,7 +24,7 @@ import com.t1dm.core.model.LogMarker
 import com.t1dm.core.model.UnitSpace
 import kotlin.math.abs
 
-/** Fixed-viewport chart, one bout: glucose + cursor forecast; no pinch/pan/follow; miss=no fan. */
+/** Fixed-viewport chart over one bout's glucose; no pinch/pan/follow. */
 @Composable
 fun SessionScrubGraph(
     frame: GraphFrame,
@@ -34,7 +34,6 @@ fun SessionScrubGraph(
     sessionStartMs: Long,
     sessionEndMs: Long,
     modifier: Modifier = Modifier,
-    hindsight: HindsightFrame? = null,
     unit: UnitSpace = UnitSpace.MgDl,
     kovatchevF: ((Double) -> Double)? = null,
     thresholds: AlertThresholds? = null,
@@ -49,7 +48,6 @@ fun SessionScrubGraph(
     val measurer = rememberTextMeasurer(cacheSize = 32)
     val labels = remember { GraphLabelCache() }
     // Draw-phase scratch: the cursor moves at pointer rate.
-    val fanPath = remember { Path() }
     val tracePath = remember { Path() }
     // Inks from SEMANTIC roles, not Material: a mark is always its curve channel's colour.
     val dpPx = density.density
@@ -185,19 +183,6 @@ fun SessionScrubGraph(
                 flush()
             }
 
-            // The second accent, as on the BG panel: a hindsight fan, not a live one.
-            hindsight?.let { hf ->
-                if (!hf.isEmpty) {
-                    val c = hf.cycleAt(cursorMs.toDouble())
-                    if (c >= 0) {
-                        drawHindsightFan(
-                            hf, c, AbsToPx(::absToPx), ValToPx(::yToPx),
-                            cs.secondary, cs.secondary, fanPath,
-                        )
-                    }
-                }
-            }
-
             val cx = scrubCursorPx(cursorMs, viewStartMs, ppm, plotLeft, plotRight)
             drawLine(
                 cs.onSurface.copy(alpha = 0.55f),
@@ -226,29 +211,17 @@ fun scrubCursorOf(windowStartMs: Long, windowSpanMs: Long, fraction: Float, grid
     return Math.floorDiv(raw + gridMs / 2, gridMs) * gridMs
 }
 
-/** How far past the cursor the read-out quotes the swept forecast. */
-private val SCRUB_LOOKAHEAD = listOf("+30 min" to 1_800_000L, "+60 min" to 3_600_000L)
-
-/** (label,value) rows; ALWAYS 4, null if nothing to say; BG bounded a slot; bad cycle=no number. */
+/** The read-out as (label, value) pairs; a null value is a row with nothing measured there. */
 fun sessionScrubRows(
     frame: GraphFrame,
-    hindsight: HindsightFrame?,
     cursorMs: Long,
     gridMs: Long,
     unit: UnitSpace,
     tzOffsetMin: Int,
-): List<Pair<String, String?>> {
-    val cycle = hindsight?.cycleAt(cursorMs.toDouble()) ?: -1
-    val rows = ArrayList<Pair<String, String?>>(2 + SCRUB_LOOKAHEAD.size)
-    rows.add("Local" to formatClock(cursorMs, tzOffsetMin))
-    rows.add("BG" to measuredAt(frame, cursorMs, gridMs)?.let { formatValue(it, unit) })
-    for ((label, offsetMs) in SCRUB_LOOKAHEAD) {
-        // No guard on cycle: medianAt refuses bad index, out-of-horizon, or ineligible alike.
-        val v = hindsight?.medianAt(cycle, cursorMs + offsetMs)
-        rows.add(label to v?.let { formatValue(it, unit) })
-    }
-    return rows
-}
+): List<Pair<String, String?>> = listOf(
+    "Local" to formatClock(cursorMs, tzOffsetMin),
+    "BG" to measuredAt(frame, cursorMs, gridMs)?.let { formatValue(it, unit) },
+)
 
 private fun measuredAt(frame: GraphFrame, cursorMs: Long, gridMs: Long): Float? {
     if (frame.isEmpty) return null

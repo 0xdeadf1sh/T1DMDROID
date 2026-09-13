@@ -187,11 +187,9 @@ import com.t1dm.feature.settings.SignalSafetyScreen
 import com.t1dm.feature.settings.WatchSettingsScreen
 import com.t1dm.feature.stats.StatsScreen
 import com.t1dm.ui.graph.GraphFrame
-import com.t1dm.ui.graph.HindsightFrame
 import com.t1dm.ui.graph.MaskControls
 import com.t1dm.ui.graph.PredictedClock
 import com.t1dm.ui.graph.graphFrameOf
-import com.t1dm.ui.graph.hindsightFrameOf
 import com.t1dm.watch.WatchSecurityState
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -1654,10 +1652,8 @@ private fun T1dmNavHost(
         }
         composable("exercise/{sessionId}") { entry ->
             val id = entry.arguments?.getString("sessionId")?.toLongOrNull() ?: return@composable
-            val inference by container.inferenceState.collectAsState(InferenceState())
             val unit by container.statsRepository.unitSpace.collectAsState(UnitSpace.MgDl)
             val range by container.graphRange.collectAsState(com.t1dm.data.settings.BgRange.DEFAULT)
-            val bandCalibrations by container.bandCalibrations.collectAsState()
             // Keyed on the id, not Unit: the list this is reached from re-sorts under it.
             val session by produceState<ExerciseSession?>(null, id) {
                 value = container.exercise.session(id)
@@ -1674,25 +1670,6 @@ private fun T1dmNavHost(
                     container.sessionReadings(w.first, w.last),
                     unit,
                     kovatchevF = container.nativeCore::kovatchevF,
-                )
-            }
-            // The model whose fan the panel shows, so the sweep is not two models' history mixed.
-            val modelId = inference.selectedPrediction?.modelId
-                ?: inference.running.firstOrNull { it.selected }?.modelId
-            // Same §8.4 correction as BG panel's fans; ungated here (no roll on this screen).
-            val calibrateSessionFans: (String, () -> List<Double>, Int, Int) -> List<Double>? =
-                remember(bandCalibrations) {
-                    { m, fans, steps, nq -> container.calibratedFanBatch(bandCalibrations, m, fans, steps, nq) }
-                }
-            val hindsight by produceState<HindsightFrame?>(null, window, unit, modelId, calibrateSessionFans) {
-                val w = window
-                val m = modelId
-                value = if (w == null || m == null) null
-                else hindsightFrameOf(
-                    container.repository.predictionsForModelInRange(m, w.first, w.last),
-                    unit,
-                    container.nativeCore::kovatchevF,
-                    { fans, steps, nq -> calibrateSessionFans(m, fans, steps, nq) },
                 )
             }
             // Not live Logs feed (bounded, empty for old bouts); reduced to marks, no amounts.
@@ -1718,7 +1695,6 @@ private fun T1dmNavHost(
                 track = track,
                 logMarkers = sessionMarkers,
                 frame = frame,
-                hindsight = hindsight,
                 unit = unit,
                 kovatchevF = container.nativeCore::kovatchevF,
                 thresholds = container.alarmConfig.thresholds,

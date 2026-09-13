@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
-import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
@@ -35,19 +34,17 @@ import com.t1dm.core.model.ExerciseSession
 import com.t1dm.core.model.TrackPoint
 import com.t1dm.core.model.UnitSpace
 import com.t1dm.ui.graph.GraphFrame
-import com.t1dm.ui.graph.HindsightFrame
 import com.t1dm.ui.graph.SessionScrubGraph
 import com.t1dm.ui.graph.scrubCursorOf
 import com.t1dm.ui.graph.sessionScrubRows
 
-/** Display-only, via §8.4; no alarm/rail/calc/wire reads it. session null while loading. */
+/** session null while loading. */
 @Composable
 fun ExerciseSessionScreen(
     session: ExerciseSession?,
     gridMs: Long,
     track: List<TrackPoint> = emptyList(),
     frame: GraphFrame = GraphFrame.EMPTY,
-    hindsight: HindsightFrame? = null,
     unit: UnitSpace = UnitSpace.MgDl,
     kovatchevF: ((Double) -> Double)? = null,
     thresholds: AlertThresholds? = null,
@@ -114,7 +111,6 @@ fun ExerciseSessionScreen(
             sessionStartMs = session.startMs,
             sessionEndMs = session.endMs ?: session.startMs,
             modifier = Modifier.fillMaxWidth().height(GRAPH_HEIGHT),
-            hindsight = hindsight,
             unit = unit,
             kovatchevF = kovatchevF,
             thresholds = thresholds,
@@ -134,25 +130,9 @@ fun ExerciseSessionScreen(
         )
 
         KeyValueTable(
-            sessionScrubRows(frame, hindsight, cursorMs, gridMs, unit, session.tzOffsetMin),
+            sessionScrubRows(frame, cursorMs, gridMs, unit, session.tzOffsetMin),
             numeric = true,
         )
-        // Only where there is an absence to explain: over a drawn fan it reads as a disclaimer.
-        val cycle = hindsight?.cycleAt(cursorMs.toDouble()) ?: -1
-        val why = when {
-            hindsight == null -> "No stored forecasts"
-            cycle < 0 -> "No forecast issued here"
-            hindsight.degenerateAt(cycle) -> "Forecast degenerate"
-            hindsight.staleAt(cycle) -> "Anchor reading stale"
-            else -> null
-        }
-        why?.let {
-            Text(
-                it,
-                style = MaterialTheme.typography.bodySmall,
-                color = LocalContentColor.current.copy(alpha = 0.6f),
-            )
-        }
     }
 }
 

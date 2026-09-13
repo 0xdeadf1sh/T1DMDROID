@@ -1,91 +1,31 @@
 package com.t1dm.ui.graph
 
-import com.t1dm.core.model.BackendId
 import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.CgmSourceId
-import com.t1dm.core.model.ForecastStatus
-import com.t1dm.core.model.ModelPrediction
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.core.model.UnitSpace
-import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.abs
 
-/** Fixture: cycle `c` sits at `T0 + c·STEP`, forecasts flat `200 + c` — a value names its cycle. */
 class SessionScrubTest {
 
     private val STEP = 300_000L
     private val T0 = 1_700_000_000_000L
-    private val NQ = 7
-    private val H = 24
 
     // Plot box, in px.
     private val PLOT_LEFT = 40f
     private val PLOT_RIGHT = 1000f
-
-    private fun pred(
-        c: Int,
-        anchorC: Int = c,
-        steps: Int = H,
-        status: ForecastStatus = ForecastStatus.OK,
-        stale: Boolean = false,
-        median: Double? = null,
-    ): ModelPrediction {
-        val level = 200.0 + c
-        val bands = ArrayList<Double>(steps * NQ)
-        repeat(steps) { for (k in 0 until NQ) bands += level + (k - NQ / 2) * 5.0 }
-        return ModelPrediction(
-            modelId = "m", cycleTsMs = T0 + c * STEP, anchorTsMs = T0 + anchorC * STEP, stepMs = STEP,
-            medianBg = List(steps) { median ?: level }, bandsMgdl = bands, nQuantiles = NQ,
-            lastBg = level,
-            status = status, backend = BackendId.EXECUTORCH_XNNPACK_FP32,
-            selected = true, stale = stale, latencyMs = null,
-        )
-    }
-
-    private fun frameOf(rows: List<ModelPrediction>) =
-        runBlocking { hindsightFrameOf(rows, UnitSpace.MgDl, null) }!!
 
     private fun reading(ts: Long, bg: Int) = CgmReading(
         sourceId = CgmSourceId("t"), tsMs = ts, bgMgdl = bg, trendTenthsPerMin = 0,
         minFromStart = 5, quality = 100, provenance = ReadingProvenance.MEASURED,
         flag = ReadingFlag.NORMAL, tzOffsetMin = 0, rxWallMs = ts, rssi = -60,
     )
-
-
-    @Test fun medianAtWalksStepsFromTheAnchorNotTheIssueInstant() {
-        // Step 0 sits at the ANCHOR, not at the issue instant: here +3 for a cycle issued at +9.
-        val f = frameOf((0 until 6).map { pred(it) } + listOf(pred(9, anchorC = 3)))
-        val c = f.cycleAt((T0 + 9 * STEP).toDouble())
-        assertEquals(6, c)
-        assertEquals(209f, f.medianAt(c, T0 + 3 * STEP)!!, 1e-3f)
-        assertEquals(209f, f.medianAt(c, T0 + 9 * STEP)!!, 1e-3f)
-        // The last step the block holds is the anchor plus the whole horizon.
-        assertNotNull(f.medianAt(c, T0 + (3 + H) * STEP))
-    }
-
-    @Test fun medianAtRefusesOutsideTheHorizon() {
-        val f = frameOf((0 until 3).map { pred(it) })
-        assertNull(f.medianAt(1, T0 + (1 + H + 1) * STEP))
-        assertNull(f.medianAt(1, T0 - STEP))
-        // An index the frame does not hold refuses rather than reading out of bounds.
-        assertNull(f.medianAt(-1, T0 + STEP))
-        assertNull(f.medianAt(3, T0 + STEP))
-    }
-
-    @Test fun medianAtTakesTheNearestStep() {
-        val f = frameOf(listOf(pred(0)))
-        // Flat 200 either side of the nearest-step boundary, so what matters is neither refuses.
-        assertNotNull(f.medianAt(0, T0 + 2 * STEP + STEP * 2 / 5))
-        assertNotNull(f.medianAt(0, T0 + 2 * STEP + STEP * 3 / 5))
-    }
-
 
     @Test fun theCursorLandsOnGridMultiples() {
         val start = T0 - 1_800_000L
@@ -148,91 +88,30 @@ class SessionScrubTest {
         assertEquals(PLOT_LEFT, scrubCursorPx(lo, start.toDouble(), ppm, PLOT_LEFT, PLOT_RIGHT), 1e-3f)
     }
 
-
     @Test fun theReadOutKeepsItsShapeWhereverTheCursorIs() {
-        val f = frameOf((0 until 6).map { pred(it) })
         val frame = buildGraphFrame((0 until 6).map { reading(T0 + it * STEP, 140) })
-        val labels = listOf("Local", "BG", "+30 min", "+60 min")
         for (offset in listOf(-4L * STEP, 0L, 3 * STEP, 40 * STEP)) {
-            val rows = sessionScrubRows(frame, f, T0 + offset, STEP, UnitSpace.MgDl, 0)
-            assertEquals(labels, rows.map { it.first })
+            val rows = sessionScrubRows(frame, T0 + offset, STEP, UnitSpace.MgDl, 0)
+            assertEquals(listOf("Local", "BG"), rows.map { it.first })
             // The clock is the one row that cannot be absent.
             assertNotNull(rows[0].second)
         }
-    }
-
-    @Test fun theReadOutQuotesTheForecastIssuedAtTheCursor() {
-        val f = frameOf((0 until 6).map { pred(it) })
-        val frame = buildGraphFrame((0 until 6).map { reading(T0 + it * STEP, 140) })
-        val rows = sessionScrubRows(frame, f, T0 + 3 * STEP, STEP, UnitSpace.MgDl, 0)
-        assertEquals("140", rows[1].second)
-        // Both horizons are inside cycle 3's reach.
-        assertEquals("203", rows[2].second)
-        assertEquals("203", rows[3].second)
-    }
-
-    @Test fun aCursorInAHoleQuotesNoForecastAtAll() {
-        // Falling back to the nearest fan would pin a forecast under a thumb it was not issued for.
-        val f = frameOf(listOf(pred(0), pred(1), pred(14), pred(15)))
-        assertEquals(-1, f.cycleAt((T0 + 7 * STEP).toDouble()))
-        val frame = buildGraphFrame((0 until 16).map { reading(T0 + it * STEP, 140) })
-        val rows = sessionScrubRows(frame, f, T0 + 7 * STEP, STEP, UnitSpace.MgDl, 0)
-        assertNull(rows[2].second)
-        assertNull(rows[3].second)
-        // The CGM ran through the hole; blanking it too would misreport why the fan is missing.
-        assertEquals("140", rows[1].second)
     }
 
     @Test fun theBgIsBoundedToHalfASlotRatherThanClampedToTheLastReading() {
         // nearestIndex clamps to the ends, so past the newest reading it answers with that reading.
         val frame = buildGraphFrame((0 until 6).map { reading(T0 + it * STEP, 140) })
         val last = T0 + 5 * STEP
-        assertEquals("140", sessionScrubRows(frame, null, last, STEP, UnitSpace.MgDl, 0)[1].second)
-        assertEquals("140", sessionScrubRows(frame, null, last + STEP / 2, STEP, UnitSpace.MgDl, 0)[1].second)
-        assertNull(sessionScrubRows(frame, null, last + STEP, STEP, UnitSpace.MgDl, 0)[1].second)
-        assertNull(sessionScrubRows(frame, null, last + 24 * STEP, STEP, UnitSpace.MgDl, 0)[1].second)
-        assertNull(sessionScrubRows(frame, null, T0 - STEP, STEP, UnitSpace.MgDl, 0)[1].second)
-    }
-
-
-    @Test fun aDegenerateCycleQuotesNoForecast() {
-        // Rail-pinned is finite: printed flatly it would read as a forecast the app stood behind.
-        val f = frameOf((0 until 3).map { pred(it) } + pred(3, status = ForecastStatus.RAIL_PINNED))
-        val c = f.cycleAt((T0 + 3 * STEP).toDouble())
-        assertEquals(3, c)
-        assertTrue(f.degenerateAt(c))
-        assertFalse(f.eligible(c))
-        assertNull(f.medianAt(c, T0 + 4 * STEP))
-        val frame = buildGraphFrame((0 until 6).map { reading(T0 + it * STEP, 140) })
-        val rows = sessionScrubRows(frame, f, T0 + 3 * STEP, STEP, UnitSpace.MgDl, 0)
-        assertNull(rows[2].second)
-        assertNull(rows[3].second)
-        assertEquals("140", rows[1].second)
-    }
-
-    @Test fun aStaleCycleQuotesNoForecast() {
-        // §3.6-D.
-        val f = frameOf((0 until 3).map { pred(it) } + pred(3, stale = true))
-        val c = f.cycleAt((T0 + 3 * STEP).toDouble())
-        assertTrue(f.staleAt(c))
-        assertFalse(f.eligible(c))
-        assertNull(f.medianAt(c, T0 + 4 * STEP))
-    }
-
-    @Test fun aNonFiniteMedianIsRefusedRatherThanRoundedToZero() {
-        // formatValue(NaN, MgDl) rounds to "0"; store keeps non-finite rows, so the guard is here.
-        val f = frameOf(listOf(pred(0, median = Double.NaN)))
-        // Step 0 is the measured anchor and is finite; every forecast step past it is not.
-        assertNotNull(f.medianAt(0, T0))
-        assertNull(f.medianAt(0, T0 + STEP))
-        assertNull(f.medianAt(0, T0 + 6 * STEP))
+        assertEquals("140", sessionScrubRows(frame, last, STEP, UnitSpace.MgDl, 0)[1].second)
+        assertEquals("140", sessionScrubRows(frame, last + STEP / 2, STEP, UnitSpace.MgDl, 0)[1].second)
+        assertNull(sessionScrubRows(frame, last + STEP, STEP, UnitSpace.MgDl, 0)[1].second)
+        assertNull(sessionScrubRows(frame, last + 24 * STEP, STEP, UnitSpace.MgDl, 0)[1].second)
+        assertNull(sessionScrubRows(frame, T0 - STEP, STEP, UnitSpace.MgDl, 0)[1].second)
     }
 
     @Test fun anEmptyRecordAnswersTheClockAndNothingElse() {
-        val rows = sessionScrubRows(GraphFrame.EMPTY, null, T0, STEP, UnitSpace.MgDl, 0)
+        val rows = sessionScrubRows(GraphFrame.EMPTY, T0, STEP, UnitSpace.MgDl, 0)
         assertNotNull(rows[0].second)
         assertNull(rows[1].second)
-        assertNull(rows[2].second)
-        assertNull(rows[3].second)
     }
 }

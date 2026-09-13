@@ -46,23 +46,9 @@ class HindsightFrame internal constructor(
         return if (kotlin.math.min(dLo, dHi) <= half) best else -1
     }
 
-    /** The §3.6 degeneracy guard as it stood the day the cycle was made. Out of range is false. */
-    fun degenerateAt(cycle: Int): Boolean = cycle in 0 until cycles && degenerate[cycle]
-
-    /** Issued off an anchor already past the freshness gate (§3.6-D). */
-    fun staleAt(cycle: Int): Boolean = cycle in 0 until cycles && stale[cycle]
-
-    /** One rule for everything that draws or quotes a cycle. */
+    /** One rule for everything that draws a cycle. */
     fun eligible(cycle: Int): Boolean =
         cycle in 0 until cycles && !degenerate[cycle] && !stale[cycle]
-
-    /** From anchorMs not madeMs; null past horizon or ineligible, NON_FINITE NaN would print 0. */
-    fun medianAt(cycle: Int, atMs: Long): Float? {
-        if (!eligible(cycle) || span < 1 || stepMs <= 0L) return null
-        val i = Math.round((atMs - anchorMs[cycle]).toDouble() / stepMs)
-        if (i < 0L || i >= span) return null
-        return median[cycle * span + i.toInt()].takeIf { it.isFinite() }
-    }
 }
 
 /** The three nested pairs [buildPredSeries] fixes. */
