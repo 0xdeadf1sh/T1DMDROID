@@ -114,17 +114,6 @@ interface CgmReadingDao {
     )
     fun observeRange(sourceId: String, fromMs: Long, toMs: Long): Flow<List<CgmReadingEntity>>
 
-    /** Ordered by tsMs alone (co-located sources collapse); bound window; sourceIds non-empty. */
-    @Query(
-        "SELECT * FROM cgm_reading WHERE sourceId IN (:sourceIds) " +
-            "AND tsMs BETWEEN :fromMs AND :toMs ORDER BY tsMs",
-    )
-    fun observeRangeForSources(
-        sourceIds: List<String>,
-        fromMs: Long,
-        toMs: Long,
-    ): Flow<List<CgmReadingEntity>>
-
     @Query("SELECT * FROM cgm_reading WHERE sourceId = :sourceId ORDER BY tsMs DESC LIMIT 1")
     fun observeLatest(sourceId: String): Flow<CgmReadingEntity?>
 
@@ -165,8 +154,8 @@ interface CgmReadingDao {
     suspend fun oldestTs(sourceId: String): Long?
 
     /** How far back the BG panel may be PANNED, which is not how far back it has loaded. */
-    @Query("SELECT MIN(tsMs) FROM cgm_reading WHERE sourceId IN (:sourceIds)")
-    fun observeOldestTsForSources(sourceIds: List<String>): Flow<Long?>
+    @Query("SELECT MIN(tsMs) FROM cgm_reading WHERE sourceId = :sourceId")
+    fun observeOldestTsForSource(sourceId: String): Flow<Long?>
 
     @Query("SELECT MAX(tsMs) FROM cgm_reading WHERE sourceId = :sourceId")
     suspend fun newestTs(sourceId: String): Long?

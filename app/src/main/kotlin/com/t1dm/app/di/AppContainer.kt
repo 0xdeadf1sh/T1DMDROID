@@ -2558,17 +2558,17 @@ class AppContainer(context: Context) {
         historyLoadedFromMs.update { current -> if (target < current) target else current }
     }
 
-    /** VIEWED source's whole MODEL CLASS: one reading/slot, real beats warm-up/interpolated. */
+    /** The viewed sensor's own readings; two sensors never share a trace. */
     val dashboardReadings: Flow<List<CgmReading>> =
         combine(viewedSource, historyLoadedFromMs) { d, from -> d to from }
             .flatMapLatest { (d, from) ->
                 if (d == null) flowOf(emptyList())
-                else repository.observeReadingsForSensorModel(d.sensorModelId, d.id, from, Long.MAX_VALUE)
+                else repository.observeReadingsForSource(d.id, from, Long.MAX_VALUE)
             }
 
-    /** Where record begins for viewed class; null if empty. Pannable floor, not oldest read. */
+    /** Where the viewed sensor's record begins, or null while empty. One aggregate, not window. */
     val historyFloorMs: Flow<Long?> = viewedSource.flatMapLatest { d ->
-        if (d == null) flowOf(null) else repository.observeOldestTsForSensorModel(d.sensorModelId)
+        if (d == null) flowOf(null) else repository.observeOldestTsForSource(d.id)
     }
 
     /** mg/dL oldest to newest. Bounded at the QUERY: a settings screen shouldn't scan the store. */
@@ -2659,16 +2659,16 @@ class AppContainer(context: Context) {
     /** PredictiveAlertPresenter is a SECOND, independent vibrator writer; the GATED call. */
     val predictiveAlertRaised = MutableStateFlow(false)
 
-    /** [fromMs] to newest reading; one shot, class-scoped, never subscribed mid-run. */
+    /** [fromMs] to newest reading; one shot, never subscribed mid-run. */
     suspend fun gameReadings(fromMs: Long): List<CgmReading> {
         val source = repository.observeAuthoritativeSource().first() ?: return emptyList()
-        return repository.observeReadingsForSensorModel(source.sensorModelId, source.id, fromMs, Long.MAX_VALUE).first()
+        return repository.observeReadingsForSource(source.id, fromMs, Long.MAX_VALUE).first()
     }
 
     /** [gameReadings], bounded at BOTH ends: a review is a fixed picture of a finished bout. */
     suspend fun sessionReadings(fromMs: Long, toMs: Long): List<CgmReading> {
         val source = repository.observeAuthoritativeSource().first() ?: return emptyList()
-        return repository.observeReadingsForSensorModel(source.sensorModelId, source.id, fromMs, toMs).first()
+        return repository.observeReadingsForSource(source.id, fromMs, toMs).first()
     }
 
     val graphSettings: GraphSettingsStore by lazy { GraphSettingsStore(repository) }

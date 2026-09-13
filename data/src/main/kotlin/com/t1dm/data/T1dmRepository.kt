@@ -253,37 +253,20 @@ class T1dmRepository(
     fun observeReadings(sourceId: CgmSourceId, fromMs: Long, toMs: Long): Flow<List<CgmReading>> =
         readings.observeRange(sourceId.value, fromMs, toMs).map { list -> list.map { it.toModel() } }
 
-    /** One reading per grid slot (§3.1) across a sensor MODEL; widens no AUTHORITY, scope stays. */
-    @OptIn(ExperimentalCoroutinesApi::class)
-    fun observeReadingsForSensorModel(
-        sensorModelId: String,
-        selectedSourceId: CgmSourceId?,
+    /** One sensor's readings only; splicing two same-model sensors draws an unmeasured line. */
+    fun observeReadingsForSource(
+        sourceId: CgmSourceId,
         fromMs: Long,
         toMs: Long,
     ): Flow<List<CgmReading>> =
-        sources.observeIdsForSensorModel(sensorModelId)
-            .distinctUntilChanged()
-            .flatMapLatest { ids ->
-                // SQLite rejects `IN ()`, which is what Room emits for an empty list.
-                if (ids.isEmpty()) {
-                    flowOf(emptyList())
-                } else {
-                    readings.observeRangeForSources(ids, fromMs, toMs).map { rows ->
-                        collapseByGridSlot(rows, selectedSourceId?.value).map { it.toModel() }
-                    }
-                }
-            }
-            // The operators above walk every row, and the sole consumer collects in composition.
+        readings.observeRange(sourceId.value, fromMs, toMs)
+            .map { rows -> rows.map { it.toModel() } }
+            // Entity→domain pass would run on Compose main; Room already emits off-main.
             .flowOn(io)
 
-    /** Read separately from the windowed trace so the graph's pannable domain reaches the whole. */
-    @OptIn(ExperimentalCoroutinesApi::class)
-    fun observeOldestTsForSensorModel(sensorModelId: String): Flow<Long?> =
-        sources.observeIdsForSensorModel(sensorModelId)
-            .distinctUntilChanged()
-            .flatMapLatest { ids ->
-                if (ids.isEmpty()) flowOf(null) else readings.observeOldestTsForSources(ids)
-            }
+    /** This sensor's floor as one aggregate, not windowed; covers the whole wear. */
+    fun observeOldestTsForSource(sourceId: CgmSourceId): Flow<Long?> =
+        readings.observeOldestTsForSource(sourceId.value)
             .distinctUntilChanged()
             .flowOn(io)
 
