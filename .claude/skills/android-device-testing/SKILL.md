@@ -1,13 +1,13 @@
 ---
 name: android-device-testing
 description: >-
-  Build, deploy, screenshot, and verify the T1DMDROID app on the physical phone using the `android`
-  CLI (with adb for on-device inspection). Use whenever you need to run / install / launch the app on
+  Deploy, screenshot, and verify the T1DMDROID app on the physical phone using the `android` CLI
+  (with adb for on-device inspection). Use whenever you need to run / install / launch the app on
   device, capture a screenshot, inspect the UI layout, or confirm a change actually works on-device
-  (foreground-service liveness, BLE scan mode, CGM readings landing in the DB). Covers the build
-  command, the variant→package map, APK output paths, the launcher-alias activity ambiguity, and the
-  dumpsys / DB verification patterns. Prefer this over hand-rolled adb for the build→deploy→screenshot
-  loop.
+  (foreground-service liveness, BLE scan mode, CGM readings landing in the DB). Covers the
+  variant→package map, APK output paths, the launcher-alias activity ambiguity, and the dumpsys / DB
+  verification patterns. Builds go through the `t1dmdroid-install` skill, never a bare `./gradlew`.
+  Prefer this over hand-rolled adb for the deploy→screenshot loop.
 ---
 
 # Testing T1DMDROID on-device with the `android` CLI
@@ -23,24 +23,17 @@ pulling the app database during verification.
 
 ## The loop: build → deploy → observe
 
-1. **Build the APK.** The Rust core needs `cargo-ndk` on PATH and AGP needs the pinned JDK (the
-   system JDK is too new for AGP), so the invocation is non-obvious:
+1. **Build the APK** through the `t1dmdroid-install` skill (`~/.claude/skills/`). A bare `./gradlew`
+   is uncapped and freezes the development machine. Default to the **personalDebug** variant — that
+   is the daily build.
+
+2. **Find the built APK** without starting Gradle, which `android describe` does:
 
    ```bash
-   PATH="$HOME/.cargo/bin:$PATH" env -u JAVA_HOME ./gradlew :app:assemblePersonalDebug
+   cat app/build/outputs/apk/personal/debug/output-metadata.json   # versionCode, versionName, outputFile
    ```
 
-   Skipping the `PATH=` prefix silently repackages a stale `.so`; omitting `env -u JAVA_HOME` picks up
-   the too-new system JDK. Default to the **personalDebug** variant — that is the daily build.
-
-2. **Find the built APK** without guessing paths:
-
-   ```bash
-   android describe --project_dir .          # lists every module, variant, and its APK output path
-   ```
-
-   Grep the output for `Task: :app` to read the exact APK locations. For reference, the two debug
-   variants land at:
+   The two debug variants land at:
 
    - personalDebug → `app/build/outputs/apk/personal/debug/app-personal-debug.apk` → package **`com.t1dm.app`**
    - publicDebug   → `app/build/outputs/apk/public/debug/app-public-debug.apk`      → package **`com.t1dm.app.pub`**

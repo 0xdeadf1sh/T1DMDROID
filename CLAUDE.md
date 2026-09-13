@@ -59,15 +59,15 @@ mirroring it if it is one of these:
 
 ## Build both branches, every time
 
-Both branches get built, every time, and the same invocation serves both:
+Both branches get built, every time, one after the other, through the
+`t1dmdroid-install` skill (`~/.claude/skills/`): it holds the resource-capped
+invocation, the order, and the install. Never run a bare `./gradlew` or `cargo`
+build; uncapped, it freezes the development machine.
 
-```sh
-PATH="$HOME/.cargo/bin:$PATH" env -u JAVA_HOME ./gradlew :app:assemblePersonalRelease
-```
-
-The prefixes are load-bearing. Without `PATH=`, `cargo-ndk` is off the path and
-Gradle silently repackages a **stale** `.so` against fresh bindings; without
-`env -u JAVA_HOME`, AGP picks up the too-new system JDK. Neither failure is loud.
+The wrapper's `PATH=` and `env -u JAVA_HOME` are load-bearing. Without `PATH=`,
+`cargo-ndk` is off the path and Gradle silently repackages a **stale** `.so`
+against fresh bindings; without `env -u JAVA_HOME`, AGP picks up the too-new
+system JDK. Neither failure is loud.
 
 What differs is the purpose, and therefore what you do with the result.
 
@@ -96,9 +96,8 @@ branches: `Bump to 0.21.4 (versionCode 56).`
 Check `adb devices` first. If nothing is attached, build anyway, say the install
 was skipped, and do not treat an absent phone as a failed task.
 
-If it is attached, locate the APK with `android describe --project_dir .` rather
-than guessing the path, then deploy and launch it as `android-device-testing`
-describes. Worth knowing before the first install of a session: without a
+If it is attached, install it as `t1dmdroid-install` describes; HyperOS install
+traps are in `android-device-testing`. Worth knowing before the first install of a session: without a
 `keystore.properties` the release build is signed with the **debug** key, so it
 installs straight over an existing debug build rather than failing on a signature
 mismatch.
