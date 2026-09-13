@@ -147,7 +147,6 @@ import com.t1dm.feature.exercise.ExerciseScreen
 import com.t1dm.feature.exercise.ExerciseSessionScreen
 import com.t1dm.feature.exercise.reviewWindow
 import com.t1dm.feature.game.GameScreen
-import com.t1dm.feature.hardware.HardwareScreen
 import com.t1dm.feature.insulin.BolusCalculatorScreen
 import com.t1dm.feature.insulin.InsulinScreen
 import com.t1dm.feature.insulin.InsulinTypeBuilderScreen
@@ -236,7 +235,6 @@ internal val destinations = listOf(
     Destination("circadian", "Clock"),
     Destination("stats", "Stats"),
     Destination("models", "Models"),
-    Destination("hardware", "Hardware"),
     Destination("network", "Network"),
     Destination("meals", "Meals"),
     Destination("insulin", "Insulin"),
@@ -345,7 +343,6 @@ internal fun crumbsFor(route: String?, modelId: String?, editLabel: String? = nu
         "models" -> listOf(Crumb("Models", null))
         "models/{modelId}/lora" -> listOf(Crumb("Models", "models"), Crumb("Adapters", null))
         "models/{modelId}" -> listOf(Crumb("Models", "models"), Crumb(modelId ?: "model", null))
-        "hardware" -> listOf(Crumb("Hardware", null))
         "network" -> listOf(Crumb("Network", null))
         "meals" -> listOf(Crumb("Meals", null))
         "meals/builder" -> listOf(Crumb("Meals", "meals"), Crumb("Meal builder", null))
@@ -1321,13 +1318,6 @@ private fun T1dmNavHost(
                 onFitBandCalibration = { if (!fitting) fitTick++ },
                 onDropBandCalibration = { scope.launch { container.dropBandCalibration(modelId) } },
             )
-        }
-        composable("hardware") {
-            val inference by container.inferenceState.collectAsState(InferenceState())
-            var hardware by remember { mutableStateOf(com.t1dm.feature.hardware.HardwareInfo.UNKNOWN) }
-            LaunchedEffect(Unit) { hardware = container.detectHardware() }
-            val tempUnit by container.temperatureUnit.collectAsState(com.t1dm.core.model.TempUnit.CELSIUS)
-            HardwareScreen(state = inference, hardware = hardware, temperatureUnit = tempUnit)
         }
         composable("network") {
             val status by container.syncStatus.collectAsState(SyncStatus())

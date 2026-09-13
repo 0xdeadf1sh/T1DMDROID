@@ -19,14 +19,12 @@ import com.t1dm.alerts.AlertActuatorConfig
 import com.t1dm.alerts.VibrationPreset
 import androidx.glance.appwidget.updateAll
 import com.t1dm.app.cgm.AppCgmRepository
-import com.t1dm.app.hardware.HardwareProbe
 import com.t1dm.app.inference.KvTelemetryStore
 import com.t1dm.app.inference.RoomBgHistoryProvider
 import com.t1dm.app.backup.BackupManager
 import com.t1dm.app.settings.ConfigBackup
 import com.t1dm.app.settings.SettingsStore
 import com.t1dm.app.BuildConfig
-import com.t1dm.feature.hardware.HardwareInfo
 import com.t1dm.feature.network.NetIface
 import com.t1dm.feature.network.NetworkDiagnostics
 import com.t1dm.feature.settings.AboutInfo
@@ -704,11 +702,6 @@ class AppContainer(context: Context) {
             nativeCoreStatus = if (nativeOk) "t1dm-core (uniffi) — alive" else "t1dm-core — stub / unavailable",
         )
     }
-
-    private val hardwareProbe by lazy { HardwareProbe(appContext) }
-
-    suspend fun detectHardware(): HardwareInfo =
-        withContext(dispatchers.io) { hardwareProbe.probe() }
 
     // BatteryManager EXTRA_TEMPERATURE, tenths of °C; a real sensor, never a proxied fan figure.
     val temperatureUnit: Flow<TempUnit> = settingsStore.temperatureUnit.map { TempUnit.fromKey(it) }

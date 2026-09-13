@@ -224,7 +224,7 @@ private val displayTemperatureUnit = SettingsKnob(
     screen = SettingsScreenKey.DISPLAY,
     section = "Device temperature",
     label = "Temperature unit",
-    subtitle = "For the phone temperature on the BG and Hardware panels",
+    subtitle = "For the phone temperature on the BG panel",
     synonyms = listOf(
         "temperature", "temp", "celsius", "centigrade", "fahrenheit", "kelvin", "degrees",
         "thermometer", "heat", "unit",
