@@ -1,10 +1,8 @@
 package com.t1dm.feature.security
 
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -12,17 +10,21 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.ui.Alignment
 import com.t1dm.core.design.HapticEvent
-import com.t1dm.core.design.drawEsp32Watch
 import com.t1dm.core.design.fadingEdges
 import com.t1dm.core.design.panelCardColors
 import com.t1dm.core.design.rememberT1dmHaptics
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -32,7 +34,6 @@ import androidx.compose.ui.unit.dp
 @Composable
 fun SecurityScreen(
     state: SecurityPanelState = SecurityPanelState(),
-    onPair: () -> Unit = {},
     onConfirmSas: () -> Unit = {},
     onRotate: () -> Unit = {},
     onUnpair: () -> Unit = {},
@@ -42,13 +43,6 @@ fun SecurityScreen(
         Modifier.fillMaxSize().fadingEdges(scroll).verticalScroll(scroll).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        val cs = MaterialTheme.colorScheme
-        Canvas(
-            Modifier.fillMaxWidth(0.62f).aspectRatio(1f).align(Alignment.CenterHorizontally),
-        ) {
-            drawEsp32Watch(cs.primary, cs.onSurface)
-        }
-
         Card(
             Modifier.fillMaxWidth(),
             colors = panelCardColors(),
@@ -71,6 +65,7 @@ fun SecurityScreen(
         val haptics = rememberT1dmHaptics()
         LaunchedEffect(state.sas) { if (state.sas != null) haptics.perform(HapticEvent.Warn) }
         LaunchedEffect(state.lastError) { if (state.lastError != null) haptics.perform(HapticEvent.Warn) }
+        var pairNotImplemented by remember { mutableStateOf(false) }
 
         if (state.sas != null) {
             Card(
@@ -96,7 +91,9 @@ fun SecurityScreen(
 
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             if (state.canPair) {
-                Button(onClick = { haptics.perform(HapticEvent.Tap); onPair() }) { Text("Pair watch") }
+                Button(
+                    onClick = { haptics.perform(HapticEvent.Tap); pairNotImplemented = true },
+                ) { Text("Pair watch") }
             }
             // Commit, not Confirm: cannot be walked back without a rotation.
             if (state.canConfirmSas) {
@@ -114,6 +111,14 @@ fun SecurityScreen(
                     onClick = { haptics.perform(HapticEvent.Reject); onUnpair() },
                 ) { Text("Unpair") }
             }
+        }
+
+        if (pairNotImplemented) {
+            AlertDialog(
+                onDismissRequest = { pairNotImplemented = false },
+                text = { Text("Not implemented") },
+                confirmButton = { TextButton(onClick = { pairNotImplemented = false }) { Text("OK") } },
+            )
         }
     }
 }

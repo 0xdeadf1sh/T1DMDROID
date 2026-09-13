@@ -1730,7 +1730,6 @@ private fun T1dmNavHost(
             val watch by container.watchSecurity.collectAsState()
             SecurityScreen(
                 state = watch.toPanelState(),
-                onPair = container::pairWatch,
                 onConfirmSas = container::confirmWatchSas,
                 onRotate = container::rotateWatchKeys,
                 onUnpair = container::unpairWatch,
