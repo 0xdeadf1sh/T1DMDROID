@@ -1015,7 +1015,8 @@ private fun T1dmNavHost(
             val thermalGateOn by container.thermalGateEnabled.collectAsState(SettingsStore.DEFAULT_THERMAL_ON)
             val thermalMaxC by container.inferenceMaxTempC.collectAsState(SettingsStore.DEFAULT_MAX_TEMP_C)
             val thermalWarn by container.thermalWarnMarginC.collectAsState(SettingsStore.DEFAULT_WARN_MARGIN_C)
-            val glucoseUnit by container.statsRepository.unitSpace.collectAsState(UnitSpace.MgDl)
+            val storedUnit by container.statsRepository.unitSpace.collectAsState(null)
+            val glucoseUnit = storedUnit ?: UnitSpace.MgDl
             // BG filter the model consumes (INFERENCE.md §7.1); passed by value, not just captured
             val savgolWindow by container.savgolWindow.collectAsState(SettingsStore.DEFAULT_SAVGOL_WINDOW)
             // Memoised on window only (container is Compose-UNSTABLE); else re-runs FFI smoothing.
@@ -1053,6 +1054,8 @@ private fun T1dmNavHost(
             // Forecasts derive from AUTHORITATIVE sensor; emptying withholds all three together.
             val viewingOther by container.viewingNonAuthoritative.collectAsState(false)
             val viewedSourceKey by container.viewedSourceKey.collectAsState(null)
+            // Null until both load, so the mg/dL placeholder on entry does not dissolve.
+            val swapKey = storedUnit?.let { u -> viewedSourceKey?.let { it to u } }
             // Off the UNWITHHELD predictions: withholding the fan must not move the trace.
             val forecastEndMs = inference.predictions.firstOrNull { it.selected }
                 ?.takeIf { it.horizonSteps > 0 }
@@ -1075,7 +1078,7 @@ private fun T1dmNavHost(
             }.collectAsState(emptyList())
             DashboardScreen(
                 readings = readings,
-                sourceKey = viewedSourceKey,
+                swapKey = swapKey,
                 unit = glucoseUnit,
                 thresholds = container.alarmConfig.thresholds,
                 predictions = if (viewingOther) emptyList() else inference.predictions,

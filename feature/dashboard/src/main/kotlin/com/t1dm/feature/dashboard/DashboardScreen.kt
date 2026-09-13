@@ -131,8 +131,8 @@ import com.t1dm.ui.graph.predOverlayOf
 @Composable
 fun DashboardScreen(
     readings: List<CgmReading>,
-    // Identity only: what the chart cross-fades across when the bottom bar steps to another sensor.
-    sourceKey: String? = null,
+    // Identity only: chart cross-fades on change (sensor or unit); null on either side skips.
+    swapKey: Any? = null,
     thresholds: AlertThresholds? = null,
     unit: UnitSpace = UnitSpace.MgDl,
     predictions: List<ModelPrediction> = emptyList(),
@@ -568,7 +568,7 @@ fun DashboardScreen(
                     Modifier
                         .fillMaxSize()
                         .graphicsLayer { alpha = chartAlpha }
-                        .crossfadeOnSwap(sourceKey),
+                        .crossfadeOnSwap(swapKey),
                 ) {
                 GlucoseGraph(
                 frame = frame,
