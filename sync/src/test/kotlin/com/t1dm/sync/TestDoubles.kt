@@ -7,8 +7,6 @@ import com.t1dm.data.db.OutboxEvictRow
 import com.t1dm.data.db.OutboxState
 import com.t1dm.sync.nightscout.NightscoutClient
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableStateFlow
 
 class TestDispatchers : T1dmDispatchers {
     override val main = Dispatchers.Unconfined
@@ -22,13 +20,11 @@ class TestDispatchers : T1dmDispatchers {
 class FakeOutboxDao : OutboxDao {
     private val rows = LinkedHashMap<Long, OutboxEntity>()
     private var seq = 0L
-    private val depth = MutableStateFlow(0)
 
     override suspend fun enqueue(item: OutboxEntity): Long {
         if (rows.values.any { it.dedupKey == item.dedupKey }) return -1L
         val id = ++seq
         rows[id] = item.copy(id = id)
-        depth.value = rows.size
         return id
     }
 
@@ -37,11 +33,7 @@ class FakeOutboxDao : OutboxDao {
             .sortedWith(compareBy({ it.createdAtMs }, { it.id }))
             .take(limit)
 
-    override fun observeDepth(): Flow<Int> = depth
-
     override suspend fun count(): Int = rows.size
-
-    override suspend fun oldestCreatedAt(): Long? = rows.values.minOfOrNull { it.createdAtMs }
 
     override suspend fun evictionRows(): List<OutboxEvictRow> =
         rows.values.sortedWith(compareBy({ it.createdAtMs }, { it.id }))
@@ -55,23 +47,20 @@ class FakeOutboxDao : OutboxDao {
     override suspend fun deleteByDedupKey(dedupKey: String): Int {
         val hit = rows.values.filter { it.dedupKey == dedupKey }
         hit.forEach { rows.remove(it.id) }
-        depth.value = rows.size
         return hit.size
     }
 
-    override suspend fun delete(id: Long) { rows.remove(id); depth.value = rows.size }
+    override suspend fun delete(id: Long) { rows.remove(id) }
 
     override suspend fun deleteByDedupKeyInState(dedupKey: String, state: OutboxState): Int {
         val doomed = rows.values.filter { it.dedupKey == dedupKey && it.state == state }.map { it.id }
         doomed.forEach { rows.remove(it) }
-        depth.value = rows.size
         return doomed.size
     }
 
     override suspend fun deleteAll(ids: List<Long>): Int {
         val before = rows.size
         ids.forEach { rows.remove(it) }
-        depth.value = rows.size
         return before - rows.size
     }
 
@@ -80,7 +69,6 @@ class FakeOutboxDao : OutboxDao {
 
     override suspend fun deleteAllRows() {
         rows.clear()
-        depth.value = 0
     }
 
     override suspend fun resetState(from: OutboxState, to: OutboxState): Int {

@@ -99,7 +99,6 @@ dependencies {
     implementation(project(":feature:dashboard"))
     implementation(project(":feature:stats"))
     implementation(project(":feature:models"))
-    implementation(project(":feature:network"))
     implementation(project(":feature:meals"))
     implementation(project(":feature:insulin"))
     implementation(project(":feature:exercise"))

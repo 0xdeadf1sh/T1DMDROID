@@ -89,8 +89,6 @@ import com.t1dm.app.notify.BgGlanceComputer
 import com.t1dm.app.service.DoseCalcService
 import com.t1dm.app.service.ExerciseService
 import com.t1dm.app.settings.SettingsStore
-import com.t1dm.app.sync.SyncStatus
-import com.t1dm.app.sync.toPanelState
 import com.t1dm.app.widget.STALE_MIN
 import com.t1dm.core.design.BundledPalettes
 import com.t1dm.core.design.HapticEvent
@@ -154,7 +152,6 @@ import com.t1dm.feature.meals.MealsScreen
 import com.t1dm.feature.models.LoraPanel
 import com.t1dm.feature.models.ModelDetailScreen
 import com.t1dm.feature.models.ModelsScreen
-import com.t1dm.feature.network.NetworkScreen
 import com.t1dm.feature.security.SecurityPanelState
 import com.t1dm.feature.security.SecurityScreen
 import com.t1dm.feature.settings.AboutScreen
@@ -221,7 +218,6 @@ internal val destinations = listOf(
     Destination("circadian", "Clock"),
     Destination("stats", "Stats"),
     Destination("models", "Models"),
-    Destination("network", "Network"),
     Destination("meals", "Meals"),
     Destination("insulin", "Insulin"),
     Destination("exercise", "Exercise"),
@@ -329,7 +325,6 @@ internal fun crumbsFor(route: String?, modelId: String?, editLabel: String? = nu
         "models" -> listOf(Crumb("Models", null))
         "models/{modelId}/lora" -> listOf(Crumb("Models", "models"), Crumb("Adapters", null))
         "models/{modelId}" -> listOf(Crumb("Models", "models"), Crumb(modelId ?: "model", null))
-        "network" -> listOf(Crumb("Network", null))
         "meals" -> listOf(Crumb("Meals", null))
         "meals/builder" -> listOf(Crumb("Meals", "meals"), Crumb("Meal builder", null))
         "meals/builder/meal/{mealId}" -> listOf(
@@ -1300,28 +1295,6 @@ private fun T1dmNavHost(
                 onDropBandCalibration = { scope.launch { container.dropBandCalibration(modelId) } },
             )
         }
-        composable("network") {
-            val status by container.syncStatus.collectAsState(SyncStatus())
-            // The SyncStatus mapping is device-net-agnostic, so the posture is attached here.
-            val net by produceState<com.t1dm.feature.network.NetworkDiagnostics?>(null) {
-                while (true) {
-                    value = container.networkDiagnostics()
-                    kotlinx.coroutines.delay(4000)
-                }
-            }
-            val ns by produceState<Pair<Boolean, String?>>(false to null) {
-                val store = container.nightscoutConfigStore
-                value = (store.current() != null) to store.url()
-            }
-            NetworkScreen(
-                state = status.toPanelState(
-                    container.outboxMaxSize,
-                    container.outboxMaxAgeMs,
-                    nightscoutEnabled = ns.first,
-                    nightscoutUrl = ns.second,
-                ).copy(net = net),
-            )
-        }
         composable("meals") {
             val iobCob by container.iobCob.collectAsState()
             val sensitivity = rememberSensitivity(container)
@@ -1993,6 +1966,7 @@ private fun T1dmNavHost(
             val scope = rememberCoroutineScope()
             var busy by remember { mutableStateOf(false) }
             var status by remember { mutableStateOf<String?>(null) }
+            val lastError by container.nightscoutError.collectAsState()
             // Read once: edit-time facts, and the field is uncontrolled after first composition.
             var initial by remember { mutableStateOf<Triple<String, Boolean, Boolean>?>(null) }
             LaunchedEffect(Unit) {
@@ -2010,6 +1984,7 @@ private fun T1dmNavHost(
                     initialEnabled = loaded.third,
                     busy = busy,
                     status = status,
+                    lastError = lastError,
                     onSave = { url, secret, enabled ->
                         scope.launch {
                             busy = true

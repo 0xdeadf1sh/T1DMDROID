@@ -463,13 +463,7 @@ interface OutboxDao {
     suspend fun dueBatch(state: OutboxState, nowMs: Long, limit: Int): List<OutboxEntity>
 
     @Query("SELECT COUNT(*) FROM outbox")
-    fun observeDepth(): Flow<Int>
-
-    @Query("SELECT COUNT(*) FROM outbox")
     suspend fun count(): Int
-
-    @Query("SELECT MIN(createdAtMs) FROM outbox")
-    suspend fun oldestCreatedAt(): Long?
 
     /** Any state, unlike deleteByDedupKeyInState (spares INFLIGHT for no-idempotency hosts). */
     @Query("DELETE FROM outbox WHERE dedupKey = :dedupKey")

@@ -77,12 +77,6 @@ private fun models(s: IconStyle) = glyph("models", s) { // hexagon node
     lineTo(4f, 16.5f); lineTo(4f, 7.5f); close()
 }
 
-private fun network(s: IconStyle) = glyph("net", s) { // a globe
-    moveTo(12f, 3f); arcTo(9f, 9f, 0f, true, true, 11.99f, 3f); close()
-    moveTo(3f, 12f); lineTo(21f, 12f); lineTo(21f, 13f); lineTo(3f, 13f); close()
-    moveTo(11.5f, 3f); lineTo(12.5f, 3f); lineTo(12.5f, 21f); lineTo(11.5f, 21f); close()
-}
-
 private fun meals(s: IconStyle) = glyph("meals", s) { // plate ring
     moveTo(12f, 4f); arcTo(8f, 8f, 0f, true, true, 11.99f, 4f); close()
     moveTo(12f, 8f); arcTo(4f, 4f, 0f, true, false, 12.01f, 8f); close()
@@ -240,7 +234,6 @@ fun navIcon(route: String, style: IconStyle): ImageVector = when (route) {
     "circadian" -> clock(style)
     "stats" -> stats(style)
     "models" -> models(style)
-    "network" -> network(style)
     "meals" -> meals(style)
     "insulin" -> insulin(style)
     "exercise" -> exercise(style)

@@ -893,12 +893,6 @@ class T1dmRepository(
         outbox.deleteByDedupKeyInState("$NS_TREATMENT_DEDUP_PREFIX$clientId", OutboxState.PENDING) > 0
     }
 
-    /** Deduplicated: the queue writes far more often than DEPTH moves (claim/backoff/attempt). */
-    fun observeOutboxDepth(): Flow<Int> = outbox.observeDepth().distinctUntilChanged()
-
-    /** Null when empty. */
-    suspend fun oldestOutboxCreatedAt(): Long? = withContext(io) { outbox.oldestCreatedAt() }
-
     private suspend fun enqueueRow(
         kind: OutboxKind,
         dedupKey: String,

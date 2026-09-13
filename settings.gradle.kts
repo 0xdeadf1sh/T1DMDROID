@@ -28,7 +28,6 @@ include(
     ":feature:dashboard",
     ":feature:stats",
     ":feature:models",
-    ":feature:network",
     ":feature:meals",
     ":feature:insulin",
     ":feature:exercise",

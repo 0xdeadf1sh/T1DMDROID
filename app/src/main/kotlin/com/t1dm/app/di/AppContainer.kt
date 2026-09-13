@@ -1,7 +1,6 @@
 package com.t1dm.app.di
 
 import android.content.Context
-import android.net.NetworkCapabilities
 import android.content.Intent
 import android.media.RingtoneManager
 import com.t1dm.app.notify.BgDirection
@@ -25,13 +24,9 @@ import com.t1dm.app.backup.BackupManager
 import com.t1dm.app.settings.ConfigBackup
 import com.t1dm.app.settings.SettingsStore
 import com.t1dm.app.BuildConfig
-import com.t1dm.feature.network.NetIface
-import com.t1dm.feature.network.NetworkDiagnostics
 import com.t1dm.feature.settings.AboutInfo
 import com.t1dm.app.sync.RoomPredictionStore
 import com.t1dm.app.sync.SyncManager
-import com.t1dm.app.sync.SyncStatus
-import com.t1dm.app.sync.SyncStatusStore
 import com.t1dm.app.watch.AndroidLowPowerProvider
 import com.t1dm.app.watch.AppWatchGlanceSource
 import com.t1dm.app.watch.RoomNonceStore
@@ -160,7 +155,6 @@ import com.t1dm.inference.InferenceController
 import com.t1dm.inference.InferenceControllerDefaults
 import com.t1dm.inference.ProbeInsulinPort
 import com.t1dm.inference.buildInferenceController
-import com.t1dm.sync.DrainConfig
 import com.t1dm.data.curve.GiToGamma
 import com.t1dm.sync.QueueDrainer
 import com.t1dm.sync.KeystoreTokenStore
@@ -954,17 +948,11 @@ class AppContainer(context: Context) {
 
     suspend fun probeNightscout(): String = nightscoutClient.probe()
 
-    /** Process-scoped; the durable outbox itself is persisted. */
-    val syncStatusStore: SyncStatusStore = SyncStatusStore()
-
-    private val drainConfig: DrainConfig = DrainConfig()
-
     private val queueDrainer: QueueDrainer by lazy {
         QueueDrainer(
             dao = database.outboxDao(),
             sampleAt = repository::sampleAt,
             dispatchers = dispatchers,
-            config = drainConfig,
             nightscout = nightscoutClient,
             trendAt = repository::authoritativeTrendAt,
         )
@@ -972,77 +960,10 @@ class AppContainer(context: Context) {
 
     /** The FGS calls [SyncManager.launch] in its own lifecycle scope. */
     val syncManager: SyncManager by lazy {
-        SyncManager(
-            drainer = queueDrainer,
-            repository = repository,
-            status = syncStatusStore,
-            dispatchers = dispatchers,
-        )
+        SyncManager(drainer = queueDrainer, dispatchers = dispatchers)
     }
 
-    val syncStatus: StateFlow<SyncStatus> get() = syncStatusStore.state
-
-    val outboxMaxAgeMs: Long get() = drainConfig.maxAgeMs
-    val outboxMaxSize: Int get() = drainConfig.maxQueueSize
-
-    /** Guarded per service; missing service or Wi-Fi off yields a partial snapshot, not a throw. */
-    suspend fun networkDiagnostics(): NetworkDiagnostics = withContext(dispatchers.io) {
-        val cm = runCatching {
-            appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
-        }.getOrNull()
-        val caps = runCatching { cm?.let { it.getNetworkCapabilities(it.activeNetwork) } }.getOrNull()
-        val online = caps != null && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-        val validated = caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
-        val transport = when {
-            caps == null -> "none"
-            caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "Wi-Fi"
-            caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "Cellular"
-            caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "Ethernet"
-            caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> "VPN"
-            else -> "none"
-        }
-        val metered = caps == null || !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
-
-        val wifi = runCatching {
-            appContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
-        }.getOrNull()
-        // -127 is WifiInfo.INVALID_RSSI: no readable RSSI.
-        val info = runCatching { @Suppress("DEPRECATION") wifi?.connectionInfo }.getOrNull()
-        val rssi = runCatching { info?.rssi }.getOrNull()?.takeIf { it != -127 && it > -200 }
-        val level = rssi?.let {
-            runCatching { @Suppress("DEPRECATION") android.net.wifi.WifiManager.calculateSignalLevel(it, 5) }.getOrNull()
-        }
-        val linkMbps = runCatching { info?.linkSpeed }.getOrNull()?.takeIf { it > 0 }
-        val freq = runCatching { info?.frequency }.getOrNull()?.takeIf { it > 0 }
-        val ssid = runCatching {
-            @Suppress("DEPRECATION") info?.ssid?.trim('"')?.takeIf { it.isNotBlank() && it != "<unknown ssid>" }
-        }.getOrNull()
-
-        val interfaces = runCatching {
-            java.net.NetworkInterface.getNetworkInterfaces()?.toList().orEmpty()
-                .filter { runCatching { it.isUp && !it.isLoopback }.getOrDefault(false) }
-                .map { ni ->
-                    val addrs = ni.inetAddresses.toList()
-                        .filterNot { it.isLinkLocalAddress || it.isLoopbackAddress }
-                        .mapNotNull { it.hostAddress?.substringBefore('%')?.takeIf { s -> s.isNotBlank() } }
-                    NetIface(ni.name, addrs)
-                }
-                .filter { it.addresses.isNotEmpty() }
-        }.getOrDefault(emptyList())
-
-        NetworkDiagnostics(
-            online = online,
-            validated = validated,
-            transport = transport,
-            metered = metered,
-            wifiSsid = ssid,
-            wifiRssiDbm = rssi,
-            wifiLevel = level,
-            wifiLinkMbps = linkMbps,
-            wifiFreqMhz = freq,
-            interfaces = interfaces,
-        )
-    }
+    val nightscoutError: StateFlow<String?> get() = syncManager.nightscoutError
 
     /** DESTRUCTIVE, IN-PLACE: FGS/process stay alive, so GATT session and cgm_source survive. */
     suspend fun resetAllData() = withContext(dispatchers.io) {

@@ -30,6 +30,7 @@ fun NightscoutSettingsScreen(
     initialEnabled: Boolean,
     busy: Boolean,
     status: String?,
+    lastError: String?,
     onSave: (url: String, secret: String, enabled: Boolean) -> Unit,
     onTest: () -> Unit,
 ) {
@@ -94,6 +95,16 @@ fun NightscoutSettingsScreen(
             KeyValueRow(
                 label = "status",
                 value = status,
+                labelStyle = MaterialTheme.typography.bodyMedium,
+                valueStyle = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
+
+        if (initialEnabled && lastError != null) {
+            KeyValueRow(
+                label = "upload error",
+                value = lastError,
                 labelStyle = MaterialTheme.typography.bodyMedium,
                 valueStyle = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier.padding(top = 4.dp),

@@ -101,7 +101,7 @@ Restore merges: a record already present is kept, so importing the same file twi
 | `:data` | Room database, repositories, curve reconstruction, the backup archive codec |
 | `:core:common`, `:core:model`, `:core:design`, `:core:native` | Shared dispatchers, domain types, theming, and the Rust-core JNI bindings |
 | `:ui:graph` | The custom Compose blood-glucose graph |
-| `:feature:*` | Screen features — dashboard, stats, models, network, meals, insulin, security, settings, logs, backup |
+| `:feature:*` | Screen features — dashboard, stats, models, meals, insulin, security, settings, logs, backup |
 
 
 ## Building
