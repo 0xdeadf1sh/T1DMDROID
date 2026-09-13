@@ -17,8 +17,5 @@ dependencies {
     implementation(libs.bundles.compose)
     implementation(libs.androidx.activity.compose)
 
-    // Apache-2.0, no Play Services.
-    implementation(libs.zxing.android.embedded)
-
     testImplementation(libs.junit)
 }

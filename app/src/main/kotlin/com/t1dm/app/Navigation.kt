@@ -6,7 +6,6 @@ import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -60,8 +59,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -178,7 +175,6 @@ import com.t1dm.feature.settings.LocalSettingsFocus
 import com.t1dm.feature.settings.NightscoutSettingsScreen
 import com.t1dm.feature.settings.PowerSettingsScreen
 import com.t1dm.feature.settings.RecordedSource
-import com.t1dm.feature.settings.ServerSettingsScreen
 import com.t1dm.feature.settings.SettingsFocusController
 import com.t1dm.feature.settings.SettingsScreen
 import com.t1dm.feature.settings.SettingsScreenKey
@@ -216,13 +212,6 @@ private fun WatchSecurityState.toPanelState() = SecurityPanelState(
     canRotate = canRotate,
     canReset = canReset,
 )
-
-/** The extension the server splits on; jpg by default, the camera-capture format. */
-private fun photoExtFor(ctx: android.content.Context, uri: android.net.Uri): String =
-    when (runCatching { ctx.contentResolver.getType(uri) }.getOrNull()) {
-        "image/png" -> "png"
-        else -> "jpg"
-    }
 
 internal data class Destination(val route: String, val label: String)
 
@@ -306,7 +295,7 @@ fun T1dmApp(container: AppContainer) {
     }
 }
 
-/** The undo is partial: a push that already drained stays on the server (no DELETE in the API). */
+/** The undo is partial: a Nightscout mirror already sent stays on that host. */
 private suspend fun SnackbarHostState.postLogReceipt(
     container: AppContainer,
     handle: LogHandle,
@@ -374,7 +363,6 @@ internal fun crumbsFor(route: String?, modelId: String?, editLabel: String? = nu
         "settings/calculator" -> settings(Crumb("Bolus calculator", null))
         "settings/curves" -> settings(Crumb("Curve & PK", null))
         "settings/cgm" -> settings(Crumb("CGM source", null))
-        "settings/server" -> settings(Crumb("Server", null))
         "settings/nightscout" -> settings(Crumb("Nightscout", null))
         "settings/watch" -> settings(Crumb("Watch", null))
         "settings/power" -> settings(Crumb("Low power", null))
@@ -398,7 +386,6 @@ internal fun settingsRouteFor(screen: SettingsScreenKey): String = when (screen)
     SettingsScreenKey.CURVES -> "settings/curves"
     SettingsScreenKey.MODELS -> "models"
     SettingsScreenKey.CGM -> "settings/cgm"
-    SettingsScreenKey.SERVER -> "settings/server"
     SettingsScreenKey.NIGHTSCOUT -> "settings/nightscout"
     SettingsScreenKey.WATCH -> "settings/watch"
     SettingsScreenKey.POWER -> "settings/power"
@@ -1233,7 +1220,6 @@ private fun T1dmNavHost(
 
         composable("models") {
             val inference by container.inferenceState.collectAsState(InferenceState())
-            val pendingUpdates by container.pendingModelUpdates.collectAsState(emptySet())
             val scope = rememberCoroutineScope()
             ModelsScreen(
                 state = inference,
@@ -1246,8 +1232,6 @@ private fun T1dmNavHost(
                 },
                 onOpen = { id -> navController.navigate("models/$id") },
                 onOpenAdapters = { id -> navController.navigate("models/$id/lora") },
-                pendingUpdates = pendingUpdates,
-                onApplyUpdate = { id -> scope.launch { container.applyModelUpdate(id) } },
                 onDelete = { id -> scope.launch { container.removeModel(id) } },
             )
         }
@@ -1318,7 +1302,6 @@ private fun T1dmNavHost(
         }
         composable("network") {
             val status by container.syncStatus.collectAsState(SyncStatus())
-            val active by container.activeServerProfile.collectAsState(null)
             // The SyncStatus mapping is device-net-agnostic, so the posture is attached here.
             val net by produceState<com.t1dm.feature.network.NetworkDiagnostics?>(null) {
                 while (true) {
@@ -1332,7 +1315,6 @@ private fun T1dmNavHost(
             }
             NetworkScreen(
                 state = status.toPanelState(
-                    active,
                     container.outboxMaxSize,
                     container.outboxMaxAgeMs,
                     nightscoutEnabled = ns.first,
@@ -1341,47 +1323,10 @@ private fun T1dmNavHost(
             )
         }
         composable("meals") {
-            val scope = rememberCoroutineScope()
-            val ctx = LocalContext.current
             val iobCob by container.iobCob.collectAsState()
             val sensitivity = rememberSensitivity(container)
             val glucoseUnit by container.statsRepository.unitSpace.collectAsState(UnitSpace.MgDl)
             val recent by container.recentMeals.collectAsState(emptyList())
-            var pendingPhotoUri by remember { mutableStateOf<android.net.Uri?>(null) }
-            var photoThumbnail by remember { mutableStateOf<ImageBitmap?>(null) }
-            var uploadStatus by remember { mutableStateOf<String?>(null) }
-
-            suspend fun loadThumbnail(uri: android.net.Uri) {
-                photoThumbnail = withContext(container.dispatchers.io) {
-                    runCatching {
-                        ctx.contentResolver.openInputStream(uri)?.use { stream ->
-                            val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = 4 }
-                            android.graphics.BitmapFactory.decodeStream(stream, null, opts)?.asImageBitmap()
-                        }
-                    }.getOrNull()
-                }
-            }
-
-            val cameraLauncher = rememberLauncherForActivityResult(
-                ActivityResultContracts.TakePicture(),
-            ) { ok ->
-                val uri = pendingPhotoUri
-                if (ok && uri != null) {
-                    uploadStatus = null
-                    scope.launch { loadThumbnail(uri) }
-                } else {
-                    pendingPhotoUri = null
-                }
-            }
-            val galleryLauncher = rememberLauncherForActivityResult(
-                ActivityResultContracts.PickVisualMedia(),
-            ) { uri ->
-                if (uri != null) {
-                    pendingPhotoUri = uri
-                    uploadStatus = null
-                    scope.launch { loadThumbnail(uri) }
-                }
-            }
 
             MealsScreen(
                 iobCob = iobCob,
@@ -1389,61 +1334,8 @@ private fun T1dmNavHost(
                 unit = glucoseUnit,
                 recentMeals = recent,
                 previewCurve = container.previewCarbCurve,
-                photoThumbnail = photoThumbnail,
-                // The Uri gates the POST below; the thumbnail is only what the preview draws.
-                photoAttached = pendingPhotoUri != null,
-                uploadStatus = uploadStatus,
-                onTakePhoto = {
-                    val uri = runCatching {
-                        val dir = java.io.File(ctx.cacheDir, "meal_photos").apply { mkdirs() }
-                        val file = java.io.File(dir, "meal_${System.currentTimeMillis()}.jpg")
-                        androidx.core.content.FileProvider.getUriForFile(
-                            ctx, "${ctx.packageName}.fileprovider", file,
-                        )
-                    }.getOrNull()
-                    if (uri != null) {
-                        pendingPhotoUri = uri
-                        uploadStatus = null
-                        runCatching { cameraLauncher.launch(uri) }
-                    }
-                },
-                onChoosePhoto = {
-                    galleryLauncher.launch(
-                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
-                    )
-                },
-                onClearPhoto = {
-                    pendingPhotoUri = null
-                    photoThumbnail = null
-                    uploadStatus = null
-                },
                 onLogMeal = { grams, gi, note ->
-                    container.appScope.launch {
-                        val uri = pendingPhotoUri
-                        // Direct POST, no outbox/delete route; undo leaves the photo behind.
-                        onLogged(
-                            container.logCarb(grams, gi, note).let { h ->
-                                if (uri == null) h
-                                else h.copy(caveats = h.caveats + "Any uploaded photo stays on the server")
-                            },
-                        )
-                        if (uri != null) {
-                            val now = System.currentTimeMillis()
-                            val bytes = withContext(container.dispatchers.io) {
-                                runCatching { ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
-                            }
-                            uploadStatus = if (bytes == null) {
-                                "Logged; photo unreadable"
-                            } else {
-                                container.uploadMealPhoto(now, bytes, photoExtFor(ctx, uri)).fold(
-                                    onSuccess = { "Logged, photo uploaded" },
-                                    onFailure = { "Logged; photo upload failed — ${it.message ?: it::class.simpleName}" },
-                                )
-                            }
-                            pendingPhotoUri = null
-                            photoThumbnail = null
-                        }
-                    }
+                    container.appScope.launch { onLogged(container.logCarb(grams, gi, note)) }
                 },
             ) {
                 // Screen's footer in its scroll column; wrapped in Column after a full-axis child.
@@ -1726,7 +1618,6 @@ private fun T1dmNavHost(
                 onOpenCurveParams = { navController.navigate("settings/curves") },
                 onOpenModels = { navController.navigate("models") },
                 onOpenCgm = { navController.navigate("settings/cgm") },
-                onOpenServer = { navController.navigate("settings/server") },
                 onOpenNightscout = { navController.navigate("settings/nightscout") },
                 onOpenWatch = { navController.navigate("settings/watch") },
                 onOpenPower = { navController.navigate("settings/power") },
@@ -2096,48 +1987,6 @@ private fun T1dmNavHost(
                 onSetDka = { h -> scope.launch { ss.setDkaAfterIobZeroH(h) } },
                 onSetComa = { h -> scope.launch { ss.setComaAfterDkaH(h) } },
                 onSetDeath = { h -> scope.launch { ss.setDeathAfterComaH(h) } },
-            )
-        }
-        composable("settings/server") {
-            val active by container.activeServerProfile.collectAsState(null)
-            val scope = rememberCoroutineScope()
-            var busy by remember { mutableStateOf(false) }
-            var health by remember { mutableStateOf<String?>(null) }
-            val syncStatus by container.modelSyncStatus.collectAsState(null)
-            ServerSettingsScreen(
-                initialLabel = active?.label ?: "local",
-                initialBaseUrl = active?.baseUrl ?: "http://127.0.0.1:8443",
-                hasToken = active != null,
-                isActive = active != null,
-                busy = busy,
-                healthStatus = health,
-                syncStatus = syncStatus,
-                onSyncModels = {
-                    scope.launch {
-                        busy = true
-                        container.syncModelsFromServer()
-                        busy = false
-                    }
-                },
-                onSave = { label, baseUrl, token ->
-                    scope.launch {
-                        busy = true
-                        container.saveServerProfile(label, baseUrl, token)
-                        health = "Checking health…"
-                        health = container.checkServerHealth()
-                        // Refills an empty store after a reset → re-add-profile round trip.
-                        val merged = runCatching { container.resyncFromServer() }.getOrDefault(0)
-                        if (merged > 0) health = (health ?: "") + " · re-downloaded $merged history point(s)"
-                        busy = false
-                    }
-                },
-                onHealthCheck = {
-                    scope.launch {
-                        busy = true
-                        health = container.checkServerHealth()
-                        busy = false
-                    }
-                },
             )
         }
         composable("settings/nightscout") {

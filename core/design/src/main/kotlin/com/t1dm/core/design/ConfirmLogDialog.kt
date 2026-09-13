@@ -32,13 +32,12 @@ private val HHMM: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
 
 /** What a pending log will write, carried by value from the screen that raised the dialog. */
 sealed interface PendingLog {
-    /** [gi] null for multi-food meals; [photoAttached] implies upload, no delete/undo. */
+    /** [gi] null for multi-food meals. */
     data class Meal(
         val grams: Double,
         val gi: Double?,
         val detail: String? = null,
         val note: String? = null,
-        val photoAttached: Boolean = false,
     ) : PendingLog
 
     /** [typeLabel] must be the RESOLVED curve persisted, or dialog restates the wrong row. */
@@ -67,7 +66,6 @@ internal fun confirmFields(pending: PendingLog, nowMs: Long, zone: ZoneId = Zone
             add("Glycemic index" to (pending.gi?.let { fmtGi(it) } ?: "combined curve (multi-food)"))
             pending.detail?.takeIf { it.isNotBlank() }?.let { add("Foods" to it) }
             pending.note?.takeIf { it.isNotBlank() }?.let { add("Note" to it) }
-            add("Photo" to if (pending.photoAttached) "attached — uploads with the meal" else "none")
             add("Time" to time)
         }
         is PendingLog.Dose -> listOf(

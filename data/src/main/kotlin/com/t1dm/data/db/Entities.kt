@@ -17,8 +17,8 @@ import com.t1dm.core.model.ReadingProvenance
 
 enum class DoseKind { BOLUS, BASAL }
 
-/** Persisted by name; removing a constant poisons drains unless the migration purges rows. */
-enum class OutboxKind { ALERT, DOSE, MEAL, INGEST, STATS, PREDICTIONS, SERIES, PHOTO, CGM_SOURCE, NIGHTSCOUT }
+/** Persisted by name; MIGRATION_28_29 purged every other kind, so valueOf never meets one. */
+enum class OutboxKind { NIGHTSCOUT }
 
 /** Marks a NIGHTSCOUT row as a BG slot; here not :sync, since this module writes it. */
 const val NS_ENTRY_DEDUP_PREFIX = "ns:entry:"
@@ -118,7 +118,7 @@ data class SampleEntity(
     @PrimaryKey val ts: Long,          // ts % 300_000 == 0
     val tzOffsetMin: Int,
     val bgMgdl: Int?,                  // projected from cgm_reading (authoritative source)
-    // Opaque sensor id, crosses wire without serial; null pre-v15 or no bg.
+    // Opaque stable id (CgmSourceId.opaque), never the serial. Null pre-v15 or no bg.
     val bgSource: String?,
     val bgProvenance: ReadingProvenance?,
     val bgFlag: ReadingFlag?,
@@ -162,7 +162,7 @@ data class DoseEventEntity(
 @TypeConverters(Converters::class)
 data class LoggedDoseEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    // Phone-minted UUID at insert: server's upsert key (PUT /v1/doses).
+    // Phone-minted UUID at insert: the tombstone, restore-merge and Nightscout dedup key.
     val clientId: String,
     val tsMs: Long,
     val kind: DoseKind,
@@ -192,7 +192,7 @@ data class LoggedDoseEntity(
 )
 data class LoggedMealEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    // Phone-minted UUID at insert: server's upsert key (PUT /v1/meals).
+    // Phone-minted UUID at insert: see [LoggedDoseEntity.clientId].
     val clientId: String,
     val tsMs: Long,
     val grams: Double,
@@ -210,8 +210,8 @@ data class LoggedMealEntity(
     val mutatedAtMs: Long? = null,
 )
 
-/** Survives its event, carrying updatedAt for the server's ordering guard; kind is raw TEXT. */
-@Entity(tableName = "event_tombstone", indices = [Index("tsMs"), Index("pushEnqueuedAtMs")])
+/** Survives its event: updatedAt stops a restore resurrecting it; kind is raw TEXT. */
+@Entity(tableName = "event_tombstone", indices = [Index("tsMs")])
 data class EventTombstoneEntity(
     @PrimaryKey val clientId: String,
     val kind: String,
@@ -220,7 +220,6 @@ data class EventTombstoneEntity(
     // Phone clock at deletion, forced strictly newer than the row it retires.
     val updatedAt: Long,
     val createdAtMs: Long,
-    val pushEnqueuedAtMs: Long?,
     // For a dose, tsMs+durationMin at deletion: rail keeps blocking a deleted-but-acting dose.
     val actingUntilMs: Long? = null,
 )
@@ -344,7 +343,7 @@ data class KvEntity(
 @TypeConverters(Converters::class)
 data class PredictionEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    val madeAtMs: Long,                 // == ModelPrediction.cycleTsMs; server `made_at`
+    val madeAtMs: Long,                 // == ModelPrediction.cycleTsMs
     val modelId: String,
     val horizonSteps: Int,
     val nQuantiles: Int,
@@ -363,17 +362,6 @@ data class PredictionEntity(
     val stale: Boolean,
     val latencyMs: Double?,
     val createdAtMs: Long,
-)
-
-/** One row has active=true; the rw token lives in Keystore's TokenStore keyed by id, not here. */
-@Entity(tableName = "server_profile")
-data class ServerProfileEntity(
-    @PrimaryKey val id: String,
-    val label: String,
-    val baseUrl: String,
-    val active: Boolean,
-    val createdAtMs: Long,
-    val updatedAtMs: Long,
 )
 
 @Entity(tableName = "hw_telemetry", indices = [Index("tsMs"), Index("modelId")])
@@ -584,7 +572,7 @@ const val TOMBSTONE_KIND_MEAL = "meal"
 
 const val TOMBSTONE_KIND_DOSE = "dose"
 
-/** Phone-local: stops a restore resurrecting a deleted replay; no exercise event on the wire. */
+/** Stops a restore resurrecting a deleted replay. */
 const val TOMBSTONE_KIND_EXERCISE = "exercise"
 
 fun EventTombstoneEntity.toModel(): EventTombstone = EventTombstone(

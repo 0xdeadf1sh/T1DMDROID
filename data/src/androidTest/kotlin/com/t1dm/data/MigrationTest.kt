@@ -747,10 +747,41 @@ class MigrationTest {
     }
 
     @Test
-    fun migrate1To28_fullChain() {
+    fun migrate28To29_dropsRetiredSyncStateAndKeepsBridgeQueue() {
+        val seed = helper.createDatabase(28)
+        seed.execSQL(
+            "INSERT INTO `outbox` (`kind`,`dedupKey`,`payload`,`createdAtMs`,`attempts`,`nextAttemptMs`,`state`) " +
+                "VALUES ('MEAL','meal:a',X'00',1,0,0,'PENDING'), ('NIGHTSCOUT','ns:treat:a',X'00',1,0,0,'PENDING')",
+        )
+        seed.execSQL(
+            "INSERT INTO `server_profile` (`id`,`label`,`baseUrl`,`active`,`createdAtMs`,`updatedAtMs`) " +
+                "VALUES ('default','srv','http://x',1,0,0)",
+        )
+        seed.execSQL(
+            "INSERT INTO `event_tombstone` (`clientId`,`kind`,`tsMs`,`tzOffsetMin`,`updatedAt`," +
+                "`createdAtMs`,`pushEnqueuedAtMs`,`actingUntilMs`) VALUES ('gone','dose',300000,0,2,2,NULL,600000)",
+        )
+        seed.execSQL(
+            "INSERT INTO `kv` (`key`,`value`,`updatedAt`) VALUES ('sync.mirrored_epoch','e',0), " +
+                "('sync.push_hold_min','15',0)",
+        )
+        seed.close()
+
+        val db = helper.runMigrationsAndValidate(29, listOf(MigrationRunner.MIGRATION_28_29))
+
+        assertEquals(1, countRows(db, "SELECT COUNT(*) FROM `outbox` WHERE `kind` = 'NIGHTSCOUT'"))
+        assertEquals("every other kind is purged", 1, countRows(db, "SELECT COUNT(*) FROM `outbox`"))
+        assertEquals(0, countTables(db, "server_profile"))
+        assertEquals(1, countRows(db, "SELECT COUNT(*) FROM `event_tombstone` WHERE `actingUntilMs` = 600000"))
+        assertEquals("the hold setting survives", 1, countRows(db, "SELECT COUNT(*) FROM `kv`"))
+        db.close()
+    }
+
+    @Test
+    fun migrate1To29_fullChain() {
         helper.createDatabase(1).close()
         helper.runMigrationsAndValidate(
-            28,
+            29,
             listOf(
                 MigrationRunner.MIGRATION_1_2,
                 MigrationRunner.MIGRATION_2_3,
@@ -779,6 +810,7 @@ class MigrationTest {
                 MigrationRunner.MIGRATION_25_26,
                 MigrationRunner.MIGRATION_26_27,
                 MigrationRunner.MIGRATION_27_28,
+                MigrationRunner.MIGRATION_28_29,
             ),
         )
     }

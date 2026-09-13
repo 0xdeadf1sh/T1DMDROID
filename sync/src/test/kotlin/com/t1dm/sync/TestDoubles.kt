@@ -4,12 +4,11 @@ import com.t1dm.core.common.T1dmDispatchers
 import com.t1dm.data.db.OutboxDao
 import com.t1dm.data.db.OutboxEntity
 import com.t1dm.data.db.OutboxEvictRow
-import com.t1dm.data.db.OutboxKind
 import com.t1dm.data.db.OutboxState
+import com.t1dm.sync.nightscout.NightscoutClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.map
 
 class TestDispatchers : T1dmDispatchers {
     override val main = Dispatchers.Unconfined
@@ -19,7 +18,7 @@ class TestDispatchers : T1dmDispatchers {
     override val game = Dispatchers.Unconfined
 }
 
-/** Faithful to Room: unique dedupKey, FIFO dueBatch, oldest-first eviction, ids never reused. */
+/** Room contract the drainer leans on: unique dedupKey, FIFO dueBatch, ids never reused. */
 class FakeOutboxDao : OutboxDao {
     private val rows = LinkedHashMap<Long, OutboxEntity>()
     private var seq = 0L
@@ -33,19 +32,8 @@ class FakeOutboxDao : OutboxDao {
         return id
     }
 
-    override suspend fun dueBatchOfKind(state: OutboxState, nowMs: Long, kind: OutboxKind, limit: Int) =
-        due(state, nowMs, limit) { it.kind == kind }
-
-    override suspend fun dueBatchExcludingKind(state: OutboxState, nowMs: Long, kind: OutboxKind, limit: Int) =
-        due(state, nowMs, limit) { it.kind != kind }
-
-    private fun due(
-        state: OutboxState,
-        nowMs: Long,
-        limit: Int,
-        lane: (OutboxEntity) -> Boolean,
-    ): List<OutboxEntity> =
-        rows.values.filter { it.state == state && it.nextAttemptMs <= nowMs && lane(it) }
+    override suspend fun dueBatch(state: OutboxState, nowMs: Long, limit: Int): List<OutboxEntity> =
+        rows.values.filter { it.state == state && it.nextAttemptMs <= nowMs }
             .sortedWith(compareBy({ it.createdAtMs }, { it.id }))
             .take(limit)
 
@@ -90,9 +78,6 @@ class FakeOutboxDao : OutboxDao {
     override suspend fun idsInState(state: OutboxState): List<Long> =
         rows.values.filter { it.state == state }.map { it.id }
 
-    override suspend fun oldestCreatedAtExcluding(excluded: OutboxKind): Long? =
-        rows.values.filter { it.kind != excluded }.minOfOrNull { it.createdAtMs }
-
     override suspend fun deleteAllRows() {
         rows.clear()
         depth.value = 0
@@ -121,34 +106,23 @@ class FakeOutboxDao : OutboxDao {
     fun snapshot(): List<OutboxEntity> = rows.values.toList()
 }
 
-open class NoopSyncHttpClient : SyncHttpClient {
-    protected fun nope(): Nothing = throw UnsupportedOperationException("not used in these tests")
-    override suspend fun execute(request: SyncRequest): SyncResponse = nope()
-    override suspend fun health(): HealthDto = nope()
-    override suspend fun ingest(body: IngestDto): IngestAck = nope()
-    override suspend fun putMeals(meals: List<MealEventDto>): EventBatchAck = nope()
-    override suspend fun putDoses(doses: List<DoseEventDto>): EventBatchAck = nope()
-    override suspend fun putBasalSchedule(body: BasalScheduleDto): EventBatchAck = nope()
-    override suspend fun putStats(body: StatsPushDto): EventBatchAck = nope()
-    override suspend fun postAlert(body: AlertWriteDto): IdAck = nope()
-    override suspend fun getSeries(from: Long?, to: Long?, cursor: Long?, limit: Int?, fields: String?): SeriesPageDto = nope()
-    override suspend fun getMeals(from: Long?, to: Long?): MealsPageDto = nope()
-    override suspend fun getDoses(from: Long?, to: Long?): DosesPageDto = nope()
-    override suspend fun getBasalSchedule(): BasalScheduleDto = nope()
-    override suspend fun postPhoto(tsMs: Long, bytes: ByteArray, ext: String): PhotoAck = nope()
-    override suspend fun listModels(): List<ModelDto> = nope()
-    override suspend fun downloadModel(id: String): ModelArtifact = nope()
-}
-
-class RecordingHttpClient(
-    private val handler: (SyncRequest, Int) -> SyncResponse,
-) : NoopSyncHttpClient() {
+class RecordingBridge(
+    private val onExecute: (SyncRequest) -> SyncResponse = { ok() },
+    var posted: Boolean = false,
+) : NightscoutClient {
     val requests = mutableListOf<SyncRequest>()
+    var alreadyPostedCalls = 0
 
     override suspend fun execute(request: SyncRequest): SyncResponse {
-        val idx = requests.size
         requests += request
-        return handler(request, idx)
+        return onExecute(request)
+    }
+
+    override suspend fun probe() = "ok"
+
+    override suspend fun alreadyPosted(request: SyncRequest): Boolean {
+        alreadyPostedCalls++
+        return posted
     }
 }
 

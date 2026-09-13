@@ -25,9 +25,9 @@ Designed by a T1DM patient, informed by lived experience.
 
 The AiDEX X broadcasts its current reading roughly once per minute and the app listens passively — no pairing, no bond, no GATT connection. Activation, calibration and warmup stay with the sensor's official app on a separate phone. Each reading is stamped with the phone's receive time snapped to a 5-minute grid.
 
-A small transformer runs over that feed entirely on the device. It predicts any withheld stretch of glucose rather than only the next two hours, so one artifact fills a gap the sensor left as well as it forecasts, and a low-rank adapter can personalise it from the wearer's own matured forecasts while the exported weights stay frozen. Around it sit meal and insulin logs, advisory statistics, and a deterministic, model-free alarm path for out-of-range and loss-of-signal. Optional integrations add a self-hosted sync server and an encrypted BLE watch accessory.
+A small transformer runs over that feed entirely on the device. It predicts any withheld stretch of glucose rather than only the next two hours, so one artifact fills a gap the sensor left as well as it forecasts, and a low-rank adapter can personalise it from the wearer's own matured forecasts while the exported weights stay frozen. Around it sit meal and insulin logs, advisory statistics, and a deterministic, model-free alarm path for out-of-range and loss-of-signal. Optional integrations add a one-way Nightscout bridge and an encrypted BLE watch accessory.
 
-The Bluetooth, inference, and watch protocols are documented under [`docs/`](docs): [`CGM.md`](docs/CGM.md), [`INFERENCE.md`](docs/INFERENCE.md), [`WATCH_BLE.md`](docs/WATCH_BLE.md), and [`T1DMSERVER_API.md`](docs/T1DMSERVER_API.md).
+The Bluetooth, inference, and watch protocols are documented under [`docs/`](docs): [`CGM.md`](docs/CGM.md), [`INFERENCE.md`](docs/INFERENCE.md), and [`WATCH_BLE.md`](docs/WATCH_BLE.md).
 
 
 ## Features
@@ -75,7 +75,7 @@ A bout can also be replayed at a chosen instant, past or future, which lays its 
 
 One gzipped, line-delimited JSON file holds the whole local record — every glucose reading, the wide sensor series, meals, doses, basal schedules, custom foods, saved meals, insulin types, exercise bouts and their tracks, replayed bouts, the graph's freehand drawings, and every setting. Automatic backups run on a chosen cadence into a folder outside app storage, so they survive an uninstall, with a configurable number of older archives retained.
 
-Restore merges: a record already present is kept, so importing the same file twice changes nothing and an older archive can never roll back newer data. The server token is never written to a backup — it lives in the Android Keystore rather than in the database.
+Restore merges: a record already present is kept, so importing the same file twice changes nothing and an older archive can never roll back newer data. The Nightscout secret is never written to a backup — it lives in the Android Keystore rather than in the database.
 
 
 ## Architecture
@@ -83,7 +83,7 @@ Restore merges: a record already present is kept, so importing the same file twi
 - **UI:** Jetpack Compose, organized as a multi-module Gradle build so the CGM-source and model-backend seams stay pluggable.
 - **Rust core (`t1dm-core`, via JNI/NDK):** the correctness-critical, hot numerics — AiDEX frame decode and its CRCs, session crypto, the model pre/post pipeline (causal Savitzky-Golay smoothing, normalize/denormalize, the Kovatchev risk transform, quantile assembly), and the watch AES-128-GCM. Kotlin keeps the UI, BLE plumbing, storage, and orchestration. The core is tested bit-for-bit against golden vectors in CI.
 - **On-device inference:** [ExecuTorch](https://pytorch.org/executorch/). One exported model on one backend, behind a seam that keeps it replaceable: the CPU XNNPACK fp32 delegate, which the stock runtime registers. It is the only path a dose is scored on; a model whose artifact will not load there falls back to a fixed-output stub and the dose calculator refuses.
-- **Storage & orchestration:** Room on the bundled SQLite driver; an always-on foreground service plus WorkManager run the passive scan, the 5-minute grid, inference, sync, and the alarm path off the main thread.
+- **Storage & orchestration:** Room on the bundled SQLite driver; an always-on foreground service plus WorkManager run the passive scan, the 5-minute grid, inference, the Nightscout bridge, and the alarm path off the main thread.
 
 
 ## Module map
@@ -96,7 +96,7 @@ Restore merges: a record already present is kept, so importing the same file twi
 | `:sensors` | Step counter, GPS track recording, and other phone sensors |
 | `:calc` | Advisory bolus/basal and statistics calculators |
 | `:alerts` | The deterministic, model-free alarm engine (out-of-range, loss-of-signal, device temperature) |
-| `:sync` | Durable-outbox sync with the self-hosted server |
+| `:sync` | The durable outbox behind the one-way Nightscout bridge |
 | `:watch` | Encrypted BLE link to the optional ESP32-C3 watch |
 | `:data` | Room database, repositories, curve reconstruction, the backup archive codec |
 | `:core:common`, `:core:model`, `:core:design`, `:core:native` | Shared dispatchers, domain types, theming, and the Rust-core JNI bindings |
@@ -161,7 +161,6 @@ The build targets a single phone: a **Redmi K90 Max** (MediaTek Dimensity 9500 /
 
 - **[T1DMSIM](https://github.com/0xdeadf1sh/T1DMSIM)** — the behavioral simulator whose synthetic traces pretrain the model this app runs.
 - **[T1DMAI](https://github.com/0xdeadf1sh/T1DMAI)** — the training and ExecuTorch export pipeline that produces the artifact and descriptor loaded here.
-- **[T1DMSERVER](https://github.com/0xdeadf1sh/T1DMSERVER)** — the optional sync backend this app pushes to, phone-authoritative (protocol in [`docs/T1DMSERVER_API.md`](docs/T1DMSERVER_API.md)).
 
 
 ## License

@@ -1,4 +1,4 @@
-//! Sample series → AdvancedStats (mg/dL); shared block matches T1DMSERVER, empty ⇒ never NaN.
+//! Sample series → AdvancedStats (mg/dL); empty ⇒ never NaN.
 
 use crate::{kovatchev_f, CoreError};
 
@@ -138,7 +138,7 @@ pub struct GradeSplit {
     pub hyper: f64,
 }
 
-/// Daily rates use observed span_ms; server's fixed-window denominator re-derives from total_*.
+/// Daily rates use observed span_ms; a fixed-window denominator re-derives from total_*.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct AdvancedStats {
     /// Valid-BG samples only.
@@ -512,7 +512,7 @@ fn episodes(valid: &[&StatSample], edge: f64, below: bool) -> EpisodeSummary {
     }
 }
 
-/// target_low/high mg/dL; band fractions weight sums, shared block sample-count (server-matched).
+/// target_low/high mg/dL; band fractions weight sums, shared block sample-count.
 #[uniffi::export]
 pub fn advanced_stats(
     samples: Vec<StatSample>,
@@ -817,7 +817,7 @@ mod tests {
         close(out.hbgi, e["hbgi"].as_f64().unwrap(), 1e-6, "hbgi");
         close(out.mage, e["mage"].as_f64().unwrap(), 1e-6, "mage");
 
-        // Server parity → tight tol.
+        // Exact reductions → tight tol.
         close(out.mean_bg, e["mean_bg"].as_f64().unwrap(), 1e-9, "mean_bg");
         close(out.sd, e["sd"].as_f64().unwrap(), 1e-9, "sd");
         close(out.cv, e["cv"].as_f64().unwrap(), 1e-9, "cv");

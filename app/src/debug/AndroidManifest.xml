@@ -16,7 +16,6 @@
                 <action android:name="com.t1dm.app.FORCE_PREDICT" />
                 <action android:name="com.t1dm.app.RUN_GRID_TICK" />
                 <action android:name="com.t1dm.app.SEED_CONTEXT" />
-                <action android:name="com.t1dm.app.SET_SERVER" />
             </intent-filter>
         </receiver>
 

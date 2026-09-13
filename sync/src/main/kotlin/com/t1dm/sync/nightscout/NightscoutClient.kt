@@ -16,13 +16,12 @@ import java.time.OffsetDateTime
 import java.time.format.DateTimeFormatter
 import java.util.concurrent.TimeUnit
 
-/** Distinct from NoActiveProfileException (stands outbox down): unconfigured bridge must not. */
+/** The drainer drops the row: nothing will ever send it. */
 class NightscoutDisabledException : IllegalStateException("nightscout bridge off / unconfigured")
 
 @Serializable
 private data class NsStatusDto(val status: String = "", val name: String = "", val version: String = "")
 
-/** [execute] mirrors SyncHttpClient.execute so QueueDrainer replays via either dest, one branch. */
 interface NightscoutClient {
     suspend fun execute(request: SyncRequest): SyncResponse
 
@@ -42,7 +41,6 @@ class OkHttpNightscoutClient(
     private val config: suspend () -> NightscoutConfig?,
     private val dispatchers: T1dmDispatchers,
     private val client: OkHttpClient = OkHttpClient.Builder()
-        // Tighter than T1DMSERVER: a bridged row shares the drain pass with the patients own.
         .connectTimeout(5_000, TimeUnit.MILLISECONDS)
         .readTimeout(8_000, TimeUnit.MILLISECONDS)
         .writeTimeout(8_000, TimeUnit.MILLISECONDS)

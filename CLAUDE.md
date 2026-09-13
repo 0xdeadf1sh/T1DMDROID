@@ -15,8 +15,8 @@ restated here, and this file is only what is local and operational.
 - `../T1DMCOMMON/PROJECTS/T1DMDROID.md` — the target device, the HyperOS traps,
   the build traps, the debugging discipline, the watch link.
 
-`docs/` is the interface documentation — `CGM.md`, `INFERENCE.md`,
-`WATCH_BLE.md`, `T1DMSERVER_API.md`. Read the one your change touches, and keep
+`docs/` is the interface documentation — `CGM.md`, `INFERENCE.md` and
+`WATCH_BLE.md`. Read the one your change touches, and keep
 it true afterwards.
 
 ## The skills are gates, not suggestions

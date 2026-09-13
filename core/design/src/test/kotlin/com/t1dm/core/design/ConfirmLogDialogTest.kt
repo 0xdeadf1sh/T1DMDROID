@@ -2,7 +2,6 @@ package com.t1dm.core.design
 
 import com.t1dm.core.model.InsulinKind
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.time.ZoneOffset
 
@@ -17,18 +16,11 @@ class ConfirmLogDialogTest {
         confirmFields(pending, nowMs, utc).toMap()
 
     @Test
-    fun `a simple meal restates grams, gi, photo and time`() {
+    fun `a simple meal restates grams, gi and time`() {
         val f = fields(PendingLog.Meal(grams = 45.0, gi = 60.0))
         assertEquals("45 g", f["Carbs"])
         assertEquals("60", f["Glycemic index"])
-        assertEquals("none", f["Photo"])
         assertEquals("14:32 · 5-min slot 14:30", f["Time"])
-    }
-
-    @Test
-    fun `an attached photo is named, because undo cannot recall it`() {
-        val f = fields(PendingLog.Meal(grams = 45.0, gi = 60.0, photoAttached = true))
-        assertTrue(f.getValue("Photo").startsWith("attached"))
     }
 
     @Test

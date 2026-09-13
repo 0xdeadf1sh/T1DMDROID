@@ -55,7 +55,7 @@ class RoomDoseGridSnapTest {
         assertEquals(expected, persisted.tsMs)
 
         // requireGrid(expected) passing is the proof the snapped ts is a legal sample key.
-        assertTrue(repo.mergeServerSample(SamplePatch(ts = expected, tzOffsetMin = 0, updatedAt = raw, steps = 1)))
+        repo.recordSteps(expected, tzOffsetMin = 0, steps = 1, nowMs = raw)
         assertEquals(stored.tsMs, repo.sampleAt(expected)!!.ts)
     }
 

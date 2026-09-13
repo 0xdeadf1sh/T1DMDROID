@@ -8,22 +8,8 @@ import com.t1dm.data.T1dmRepository
 import com.t1dm.data.db.CgmAdvertRawEntity
 import kotlinx.coroutines.flow.first
 
-/** `serial` never sent: server holds it forever (SPEC/http-api.md); family/model name a product. */
-internal fun cgmSourceDto(
-    descriptor: CgmSourceDescriptor,
-    nowMs: Long,
-): com.t1dm.sync.CgmSourceDto = com.t1dm.sync.CgmSourceDto(
-    id = descriptor.id.opaque,
-    family = descriptor.vendorId,
-    model = descriptor.sensorModelId,
-    serial = null,
-    updated_at = nowMs,
-)
-
 class AppCgmRepository(
     private val repository: T1dmRepository,
-    /** Null when none is wired: construction order, and test doubles. */
-    private val enqueuer: com.t1dm.sync.OutboxEnqueuer? = null,
     private val nowMs: () -> Long = System::currentTimeMillis,
     /** Its own Keystore alias, never the watch's. */
     private val cipher: CgmSensorKeyCipher = CgmSensorKeyCipher(),
@@ -33,13 +19,7 @@ class AppCgmRepository(
         descriptor: CgmSourceDescriptor,
         authoritative: Boolean,
         lastSeenMs: Long,
-    ): Int {
-        val ordinal = repository.upsertSource(descriptor, authoritative, lastSeenMs)
-        // Deduped on the source id, so the coordinator's re-upserts collapse to one queued row.
-        val now = nowMs()
-        enqueuer?.enqueueCgmSource(cgmSourceDto(descriptor, nowMs = now), nowMs = now)
-        return ordinal
-    }
+    ): Int = repository.upsertSource(descriptor, authoritative, lastSeenMs)
 
     override suspend fun setAuthoritative(id: CgmSourceId) = repository.setAuthoritativeSource(id)
 

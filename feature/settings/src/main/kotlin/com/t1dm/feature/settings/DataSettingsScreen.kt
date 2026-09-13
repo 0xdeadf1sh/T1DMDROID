@@ -68,9 +68,8 @@ private fun ResetSection(resetting: Boolean, onReset: () -> Unit) {
             "• every drawing on the glucose graph\n" +
             "• model performance and accuracy history (the model files themselves are kept)\n" +
             "• every setting, threshold, target, curve, theme and font — back to defaults\n" +
-            "• the server profile and its saved token — re-enter it afterwards\n" +
             "• the watch pairing and its keys — re-pair the watch\n\n" +
-            "Restarts; reconnect the server to re-download history",
+            "Restarts",
     )
     OutlinedTextField(
         value = typed,

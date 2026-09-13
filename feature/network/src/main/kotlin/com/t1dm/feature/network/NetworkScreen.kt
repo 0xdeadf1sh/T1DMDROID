@@ -16,15 +16,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.fadingEdges
 
-/** One `model_id`'s forecast-frame liveness, this process lifetime. */
-data class ForecastStreamRow(
-    val modelId: String,
-    val sent: Long,
-    val dropped: Long,
-    val lastSentAgeMs: Long?,
-    val lastBytes: Int,
-)
-
 /** An up, non-loopback interface and its non-link-local addresses. */
 data class NetIface(val name: String, val addresses: List<String>)
 
@@ -42,20 +33,12 @@ data class NetworkDiagnostics(
 )
 
 data class NetworkPanelState(
-    val hasProfile: Boolean = false,
-    val profileLabel: String? = null,
-    val baseUrl: String? = null,
     val outboxDepth: Int = 0,
     val outboxMaxSize: Int = 0,
     val oldestAgeMs: Long? = null,
     val maxAgeMs: Long = 0,
-    val wsState: String = "disconnected",
-    val wsCursor: Long? = null,
     val lastDrain: String = "no drain yet",
     val backoff: String = "idle",
-    val lastAlert: String? = null,
-    val alertCount: Long = 0,
-    val forecastStream: List<ForecastStreamRow> = emptyList(),
     val net: NetworkDiagnostics? = null,
     val nightscoutEnabled: Boolean = false,
     val nightscoutUrl: String? = null,
@@ -102,14 +85,6 @@ fun NetworkScreen(state: NetworkPanelState = NetworkPanelState()) {
             }
         }
 
-        Section("Server")
-        if (!state.hasProfile) {
-            Field("profile", "none — Settings → Server")
-        } else {
-            Field("profile", state.profileLabel ?: "—")
-            Field("base URL", state.baseUrl ?: "—")
-        }
-
         Section("Nightscout")
         Field("bridge", if (state.nightscoutEnabled) "on" else "off")
         if (state.nightscoutEnabled) {
@@ -122,24 +97,6 @@ fun NetworkScreen(state: NetworkPanelState = NetworkPanelState()) {
         Field("oldest", "${age(state.oldestAgeMs)} (bound ${duration(state.maxAgeMs)})")
         Field("last drain", state.lastDrain)
         Field("retry", state.backoff)
-
-        Section("WebSocket")
-        Field("state", state.wsState)
-        Field("catch-up cursor", state.wsCursor?.toString() ?: "—")
-
-        Section("Forecast stream")
-        if (state.forecastStream.isEmpty()) {
-            Field("—", "none sent yet")
-        } else {
-            state.forecastStream.forEach { m ->
-                val age = m.lastSentAgeMs?.let { "${it / 60_000L} min ago" } ?: "never"
-                Field(m.modelId, "$age • ${m.sent} sent, ${m.dropped} dropped • ${bytes(m.lastBytes.toLong())}")
-            }
-        }
-
-        Section("Alerts (incoming)")
-        Field("count", state.alertCount.toString())
-        Field("last", state.lastAlert ?: "—")
     }
 }
 
@@ -180,10 +137,4 @@ private fun duration(ms: Long): String {
         s < 86_400 -> "${s / 3600}h"
         else -> "${s / 86_400}d"
     }
-}
-
-private fun bytes(b: Long): String = when {
-    b < 1024 -> "$b B"
-    b < 1024 * 1024 -> "${b / 1024} KiB"
-    else -> "${b / (1024 * 1024)} MiB"
 }

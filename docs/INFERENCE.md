@@ -111,10 +111,8 @@ per model in the `conformal_delta` table.
   hindsight sweep drop the correction too, on the same rule as above: one basis per
   panel. The trigger is the band, not the roll — a roll no longer than the validated
   horizon, or a degenerate one, draws only a median line and takes nothing away.
-- **The wire carries the raw fan.** `SPEC/http-api.md`'s Prediction has no
-  calibrated/raw discriminator, and a calibrated fan would satisfy its "row index
-  3 equals `line`" and travel indistinguishably. Nothing calibrated is written to
-  the `prediction` table or pushed.
+- **The `prediction` table carries the raw fan.** Nothing calibrated is written to
+  it.
 - The descriptor's `conformal.enabled` flag is unrelated to this and is read by
   nothing.
 
@@ -174,9 +172,8 @@ finger drags out a stretch of time and stops there, and every act on that stretc
 is a separate press. A drag shorter than the touch slop selects nothing, and each
 end of a selection is a handle that resizes it.
 
-- **Cut** erases every stored BG on the grid in the selection, locally and on the
-  server. It is the only operation in the app that destroys measured physiologic
-  data on purpose.
+- **Cut** erases every stored BG on the grid in the selection. It is the only
+  operation in the app that destroys measured physiologic data on purpose.
 - **Fill** reconstructs the selection. Forecast, backcast and infill are the same
   artifact under a different `slot_sel`, so this needs no second inference path —
   it passes a masked set the cycle never asks for. The geometry is derived from
@@ -185,9 +182,8 @@ end of a selection is a handle that resizes it.
   crate, in risk space, between the two published levels that bracket τ. It moves
   the drawn line through the fan and records which level it landed on, so a
   promotion of it cannot later be read as the median.
-- **Undo** takes back the last cut or fill. It holds in memory for the session: a
-  cut is pushed to the server as it is made, and undoing one restores the rows
-  with their provenance and re-pushes each slot.
+- **Undo** takes back the last cut or fill. It holds in memory for the session,
+  and undoing a cut restores the rows with their provenance.
 - **Fills** hides the reconstruction overlay without discarding anything.
 
 A gap in the sensor signal is a hole, and a seven-day context with a hole in it is
@@ -205,8 +201,8 @@ the surface's own muted ink and never in a glucose colour. A row that predates t
 fan columns has two band edges and nothing between them, and draws as the single
 band it is. A span nobody wants is **discarded**; the fan and the row go with it.
 
-**A fill can be PROMOTED into the record** from the panel's edit bar, and it then
-crosses the wire as a sample flagged reconstructed. The flag is for life: the
+**A fill can be PROMOTED into the record** from the panel's edit bar, and it is then
+stored as a sample flagged reconstructed. The flag is for life: the
 value may never clear an alarm, feed a dose, count as measured context for a cold
 start, or enter a statistic. A backcast may not be promoted at all — nothing
 brackets it on the left, so storing one extends the history backwards on a single
@@ -275,8 +271,7 @@ takes `(patches, attn_mask, slot_sel)` and returns `(head_raw, time_logits,
 hidden)`; the masked set crosses as a one-hot selection matrix, so no int64
 tensor crosses the runtime boundary.
 
-`ModelStore` admits only an `executorch_xnnpack` descriptor and `ModelSyncCoordinator`
-syncs only that artifact, so a model built for another delegate never reaches the
-device. A model whose `.pte` is absent or will not load runs on the `StubBackend`,
+`ModelStore` admits only an `executorch_xnnpack` descriptor, so a model built for
+another delegate never loads. A model whose `.pte` is absent or will not load runs on the `StubBackend`,
 which is never `real`: the forecast is a fixed shape and the dose calculator
 refuses (§3.6-E).

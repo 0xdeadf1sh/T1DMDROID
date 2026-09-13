@@ -626,6 +626,32 @@ object MigrationRunner {
         }
     }
 
+    internal const val SQL_28_29_PURGE_OUTBOX = "DELETE FROM `outbox` WHERE `kind` != 'NIGHTSCOUT'"
+
+    internal const val SQL_28_29_DROP_PROFILE = "DROP TABLE IF EXISTS `server_profile`"
+
+    internal const val SQL_28_29_DROP_PUSHED_INDEX =
+        "DROP INDEX IF EXISTS `index_event_tombstone_pushEnqueuedAtMs`"
+
+    internal const val SQL_28_29_DROP_PUSHED =
+        "ALTER TABLE `event_tombstone` DROP COLUMN `pushEnqueuedAtMs`"
+
+    internal const val SQL_28_29_PURGE_KV =
+        "DELETE FROM `kv` WHERE `key` IN ('sync.mirrored_epoch', 'sync.mirror_pending_epoch', " +
+            "'sync.mirror_walk_stamp', 'sync.mirror_events_stamp', 'sync.mirror_walk_store', " +
+            "'sync.mirror_scalar_cursor')"
+
+    /** Outbox purge first: `OutboxKind.valueOf` throws on a retired kind at the next drain. */
+    val MIGRATION_28_29 = object : Migration(28, 29) {
+        override fun migrate(connection: SQLiteConnection) {
+            connection.execSQL(SQL_28_29_PURGE_OUTBOX)
+            connection.execSQL(SQL_28_29_DROP_PROFILE)
+            connection.execSQL(SQL_28_29_DROP_PUSHED_INDEX)
+            connection.execSQL(SQL_28_29_DROP_PUSHED)
+            connection.execSQL(SQL_28_29_PURGE_KV)
+        }
+    }
+
     val ALL: Array<Migration> = arrayOf(
         MIGRATION_1_2,
         MIGRATION_2_3,
@@ -654,6 +680,7 @@ object MigrationRunner {
         MIGRATION_25_26,
         MIGRATION_26_27,
         MIGRATION_27_28,
+        MIGRATION_28_29,
     )
 
     fun <T : RoomDatabase> configure(builder: RoomDatabase.Builder<T>): RoomDatabase.Builder<T> =

@@ -162,7 +162,7 @@ fun DashboardScreen(
     onFillSpan: ((MaskSelection, MaskGeometry) -> Unit)? = null,
     /** Verbatim from the runner, refusals included. */
     maskNote: String? = null,
-    /** Erase every BG in `[fromMs, toMs]`, locally and on the server. Null omits the affordance. */
+    /** Erase every BG in `[fromMs, toMs]`. Null omits the affordance. */
     onCutBg: ((fromMs: Long, toMs: Long) -> Unit)? = null,
     onUndoBgEdit: (() -> Unit)? = null,
     /** The stack lives in `:app`, not here: an edit outlives this composable. */
@@ -733,8 +733,7 @@ fun DashboardScreen(
             title = {
                 Text("Cut $cutCount from " + hhmm(range.startMs, tz) + "–" + hhmm(range.endMs - STEP_MS, tz))
             },
-            // The cut reaches the server the moment it is made; the undo is held in memory.
-            text = { Text("Erased here and on the server. Undo holds until you leave the app.") },
+            text = { Text("Undo holds until you leave the app") },
         )
     }
 
@@ -1117,13 +1116,13 @@ enum class LinkHealth { OK, DEGRADED, DOWN, OFF }
 
 data class ReachLight(val health: LinkHealth, val label: String)
 
-data class BgReachability(val server: ReachLight, val cgm: ReachLight, val watch: ReachLight)
+data class BgReachability(val cgm: ReachLight, val watch: ReachLight)
 
 /** [watchRssi] is null until a source wires `readRemoteRssi` through `:watch`. */
 data class BgSignals(val cgmRssi: Int? = null, val watchRssi: Int? = null)
 
 /** Per-channel "last activity" tokens: a change flashes the light; unchanged/zero ⇒ none. */
-data class BgPulses(val server: Long = 0L, val cgm: Long = 0L, val watch: Long = 0L)
+data class BgPulses(val cgm: Long = 0L, val watch: Long = 0L)
 
 @Composable
 private fun ReachabilityBar(
@@ -1143,7 +1142,6 @@ private fun ReachabilityBar(
         horizontalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        ReachChip("SRV", r.server, null, pulses?.server ?: 0L)
         // No bars: CGM RSSI is shown in the header, exactly once.
         ReachChip("CGM", r.cgm, null, pulses?.cgm ?: 0L)
         ReachChip("WCH", r.watch, signals?.watchRssi, pulses?.watch ?: 0L)

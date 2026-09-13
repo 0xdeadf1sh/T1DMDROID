@@ -21,8 +21,6 @@ class LogReceiptTest {
         rowId = 7,
         clientId = "c-1",
         tsMs = slotTs,
-        outboxId = 3,
-        dedupKey = "meal:c-1",
         label = label,
         caveats = caveats,
     )
@@ -34,7 +32,7 @@ class LogReceiptTest {
 
     /** A deletion is ordered against the create it removes, so there is nothing to hedge. */
     @Test
-    fun `the undo names what was removed and claims nothing about the server`() {
+    fun `the undo names what was removed and hedges nothing`() {
         val msg = undoReceipt(handle())
         assertEquals("Removed 45 g (GI 60).", msg)
         for (hedge in listOf("may have landed", "already sent", "next sync")) {
@@ -45,7 +43,7 @@ class LogReceiptTest {
     /** Caveats name what the undo could not unwind. */
     @Test
     fun `caveats are appended to the undo line`() {
-        val h = handle(caveats = listOf("Any uploaded photo stays on the server"))
-        assertTrue(undoReceipt(h).endsWith("Any uploaded photo stays on the server"))
+        val h = handle(caveats = listOf("Recommendation cleared — recompute to see it again"))
+        assertTrue(undoReceipt(h).endsWith("Recommendation cleared — recompute to see it again"))
     }
 }

@@ -1,6 +1,5 @@
 package com.t1dm.feature.meals
 
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -8,17 +7,14 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
@@ -29,9 +25,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -66,13 +60,6 @@ fun MealsScreen(
     unit: UnitSpace = UnitSpace.MgDl,
     recentMeals: List<RecentMeal> = emptyList(),
     previewCurve: (suspend (grams: Double, gi: Double) -> DoubleArray)? = null,
-    photoThumbnail: ImageBitmap? = null,
-    /** Gates the POST; [photoThumbnail] is only preview draw — decode failure still queues it. */
-    photoAttached: Boolean = photoThumbnail != null,
-    onTakePhoto: () -> Unit = {},
-    onChoosePhoto: () -> Unit = {},
-    onClearPhoto: () -> Unit = {},
-    uploadStatus: String? = null,
     onLogMeal: (grams: Double, gi: Double, note: String?) -> Unit = { _, _, _ -> },
     footer: @Composable ColumnScope.() -> Unit = {},
 ) {
@@ -171,47 +158,6 @@ fun MealsScreen(
             modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
         )
 
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.padding(top = 16.dp),
-        ) {
-            OutlinedButton(
-                onClick = { haptics.perform(HapticEvent.Tap); onTakePhoto() },
-            ) { Text("Take photo") }
-            OutlinedButton(
-                onClick = { haptics.perform(HapticEvent.Tap); onChoosePhoto() },
-            ) { Text("Choose photo") }
-        }
-        // Gated on ATTACHMENT not thumbnail: an undecodable photo uploads; Remove stays reachable.
-        if (photoAttached) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.padding(top = 8.dp),
-            ) {
-                if (photoThumbnail != null) {
-                    Image(
-                        bitmap = photoThumbnail,
-                        contentDescription = "Attached meal photo",
-                        modifier = Modifier.size(64.dp),
-                    )
-                } else {
-                    Text("Photo attached", style = MaterialTheme.typography.bodySmall)
-                }
-                OutlinedButton(
-                    onClick = { haptics.perform(HapticEvent.Reject); onClearPhoto() },
-                ) { Text("Remove") }
-            }
-        }
-        uploadStatus?.let {
-            Text(
-                it,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
-                modifier = Modifier.padding(top = 8.dp),
-            )
-        }
-
         Button(
             onClick = {
                 haptics.perform(HapticEvent.Tap)
@@ -220,7 +166,6 @@ fun MealsScreen(
                         grams = it,
                         gi = gi.toDouble(),
                         note = noteText.trim().takeIf { t -> t.isNotEmpty() },
-                        photoAttached = photoAttached,
                     )
                 }
             },

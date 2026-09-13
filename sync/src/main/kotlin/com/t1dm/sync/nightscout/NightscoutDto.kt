@@ -6,7 +6,7 @@ import kotlinx.serialization.json.Json
 /** `device` / `enteredBy` on everything this bridge writes. */
 const val NS_DEVICE = "T1DMDROID"
 
-/** NOT SyncJson: its classDiscriminator=type collides with NsEntryDto's own type field. */
+/** No classDiscriminator: `type` is NsEntryDto's own field. Also encodes [OutboxRequest]. */
 internal val NsJson: Json = Json {
     ignoreUnknownKeys = true
     encodeDefaults = true

@@ -51,7 +51,7 @@ class ExerciseBucketMergeTest {
 
     @Test
     fun `a non-finite value reads as nothing rather than poisoning the column`() {
-        // The column crosses the wire: a NaN would be authored server-side as a judgement.
+        // A NaN kept in the column would poison every later sum over that slot.
         assertEquals(0.0, merged(stored = Double.NaN, prior = 0.0, grams = 0.0), EPS)
         assertEquals(2.0, merged(stored = 2.0, prior = Double.NaN, grams = 0.0), EPS)
         assertEquals(2.0, merged(stored = 2.0, prior = 0.0, grams = Double.POSITIVE_INFINITY), EPS)

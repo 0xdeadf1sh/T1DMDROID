@@ -111,15 +111,4 @@ class RoomTest {
             }
         }
     }
-
-    @Test
-    fun enqueuesOneDedupedIngestPerGridSlot() = runTest {
-        repo.upsertSource(descriptor, authoritative = true, nowMs = 1_000L)
-        val ts = 900_000L
-        repo.upsertReading(reading(ts, bg = 110, provenance = ReadingProvenance.INTERPOLATED, rxWallMs = ts))
-        repo.upsertReading(reading(ts, bg = 115, provenance = ReadingProvenance.MEASURED, rxWallMs = ts + 1))
-
-        // dedupKey = "ingest:sample:$ts", so the second write adds no row.
-        assertEquals(1, repo.observeOutboxDepth().first())
-    }
 }

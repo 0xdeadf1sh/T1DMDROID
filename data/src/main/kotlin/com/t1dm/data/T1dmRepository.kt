@@ -66,7 +66,6 @@ import com.t1dm.data.db.SampleEntity
 import com.t1dm.data.db.SampleWindowFingerprint
 import com.t1dm.data.db.SavedMealEntity
 import com.t1dm.data.db.SavedMealItemEntity
-import com.t1dm.data.db.ServerProfileEntity
 import com.t1dm.data.db.StepBucketRow
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -127,7 +126,6 @@ class T1dmRepository(
     private val kv get() = db.kvDao()
     private val telemetry get() = db.hwTelemetryDao()
     private val predictions get() = db.predictionDao()
-    private val profiles get() = db.serverProfileDao()
     private val paintStrokes get() = db.paintStrokeDao()
     private val conformalDeltas get() = db.conformalDeltaDao()
     private val loras get() = db.loraDao()
@@ -313,16 +311,14 @@ class T1dmRepository(
                     if (fill != null && fill.promotedAtMs == null) infills.deleteAt(reading.tsMs)
                 }
                 projectBg(reading)
-                // WRITE instant not the event's: sensor-recovered would else be age-evicted.
-                val queuedAt = nowMs()
-                enqueueIngest(reading.tsMs, queuedAt)
-                // Not in enqueueIngest: steps/mood would re-queue unchanged BG, no idempotency key.
+                // Fed here, not via mergeSampleInTx; else steps/mood re-queue unchanged BG.
                 if (nightscoutBridgeEnabled) {
                     enqueueRow(
                         OutboxKind.NIGHTSCOUT,
                         "$NS_ENTRY_DEDUP_PREFIX${reading.tsMs}",
                         ByteArray(0),
-                        queuedAt,
+                        // Write instant, not the event's; a late reading else age-evicts at once.
+                        nowMs(),
                         // Held until slot closes; coalesces while QUEUED, else date re-uploads.
                         notBeforeMs = reading.tsMs + GRID_MS,
                     )
@@ -408,7 +404,7 @@ class T1dmRepository(
         row.copy(id = loggedMeals.insert(row)).also { _logEvents.update { t -> t + 1 } }
     }
 
-    /** clientId/loggedAtMs preserved (server upserts on the first); updatedAt forced newer. */
+    /** clientId/loggedAtMs preserved; updatedAt forced newer. */
     suspend fun editLoggedMeal(row: LoggedMealEntity, nowMs: Long): LoggedMealEntity? =
         withContext(io) {
             val stored = inWriteTx {
@@ -453,7 +449,7 @@ class T1dmRepository(
             stored?.also { _logEvents.update { t -> t + 1 } }
         }
 
-    /** updatedAt forced strictly newer than the retired row (SPEC §7), never from nowMs. */
+    /** updatedAt forced strictly newer than the retired row, never from nowMs. */
     suspend fun tombstoneLoggedMeal(rowId: Long, nowMs: Long): EventTombstone? =
         withContext(io) {
             val out = inWriteTx {
@@ -465,7 +461,6 @@ class T1dmRepository(
                     tzOffsetMin = row.tzOffsetMin,
                     updatedAt = maxOf(nowMs, row.updatedAt + 1),
                     createdAtMs = nowMs,
-                    pushEnqueuedAtMs = null,
                     actingUntilMs = null,
                 )
                 tombstones.upsert(tomb)
@@ -489,7 +484,6 @@ class T1dmRepository(
                     tzOffsetMin = row.tzOffsetMin,
                     updatedAt = maxOf(nowMs, row.updatedAt + 1),
                     createdAtMs = nowMs,
-                    pushEnqueuedAtMs = null,
                     actingUntilMs = maxOf(row.actingUntilMs(), row.mutatedActingUntilMs ?: 0L),
                 )
                 tombstones.upsert(tomb)
@@ -500,102 +494,6 @@ class T1dmRepository(
             }
             out?.also { _logEvents.update { t -> t + 1 } }
         }
-
-    /** The connect-time replay's work list. */
-    suspend fun unpushedTombstones(): List<EventTombstone> =
-        withContext(io) { tombstones.unpushed().map { it.tombstoneToModel() } }
-
-    suspend fun markTombstonePushed(clientId: String, atMs: Long) =
-        withContext(io) { tombstones.markPushed(clientId, atMs) }
-
-    /** Ordered on updatedAt; pushEnqueuedAtMs marks a remotely-originated delete. */
-    suspend fun applyServerTombstone(
-        clientId: String,
-        kind: CurveKind,
-        tsMs: Long,
-        tzOffsetMin: Int,
-        updatedAt: Long,
-        nowMs: Long,
-    ) = withContext(io) {
-        inWriteTx {
-            val known = tombstones.byClientId(clientId)
-            if (known != null && known.updatedAt >= updatedAt) return@inWriteTx
-            // No exercise event exists on the wire, so the server can never have authored one.
-            require(kind != CurveKind.EXERCISE) { "the server authors no exercise tombstone" }
-            val kindText = if (kind == CurveKind.INSULIN) TOMBSTONE_KIND_DOSE else TOMBSTONE_KIND_MEAL
-            val acting = if (kind == CurveKind.INSULIN) {
-                loggedDoses.byClientId(clientId)?.let { d ->
-                    maxOf(d.actingUntilMs(), d.mutatedActingUntilMs ?: 0L)
-                }
-            } else {
-                null
-            }
-            tombstones.upsert(
-                EventTombstoneEntity(
-                    clientId = clientId,
-                    kind = kindText,
-                    tsMs = tsMs,
-                    tzOffsetMin = tzOffsetMin,
-                    updatedAt = updatedAt,
-                    createdAtMs = nowMs,
-                    pushEnqueuedAtMs = nowMs,
-                    actingUntilMs = acting,
-                ),
-            )
-            if (kind == CurveKind.INSULIN) {
-                loggedDoses.byClientId(clientId)?.let { loggedDoses.delete(it.id) }
-            } else {
-                loggedMeals.byClientId(clientId)?.let { loggedMeals.delete(it.id) }
-            }
-            invalidateForecastDerivedInTx(tsMs)
-        }
-        _logEvents.update { t -> t + 1 }
-    }
-
-    /** Hydration is insertIgnore, drops an edit on an existing row; columns minted here. */
-    suspend fun applyServerDoseEdit(ev: LoggedDoseEntity): Boolean = withContext(io) {
-        val changed = inWriteTx {
-            val old = loggedDoses.byClientId(ev.clientId) ?: return@inWriteTx false
-            if (ev.updatedAt <= old.updatedAt) return@inWriteTx false
-            val candidate = ev.copy(
-                id = old.id,
-                loggedAtMs = old.loggedAtMs,
-                mutatedAtMs = old.mutatedAtMs,
-                mutatedActingUntilMs = old.mutatedActingUntilMs,
-            )
-            val moved = old.affectsChannel(candidate)
-            val next = if (!moved) candidate else candidate.copy(
-                mutatedAtMs = maxOf(ev.updatedAt, old.mutatedAtMs ?: Long.MIN_VALUE),
-                mutatedActingUntilMs = old.mutatedActingUntilMs ?: old.actingUntilMs(),
-            )
-            loggedDoses.update(next)
-            if (moved) invalidateForecastDerivedInTx(minOf(old.tsMs, next.tsMs))
-            true
-        }
-        if (changed) _logEvents.update { t -> t + 1 }
-        changed
-    }
-
-    /** The meal twin of [applyServerDoseEdit]. */
-    suspend fun applyServerMealEdit(ev: LoggedMealEntity): Boolean = withContext(io) {
-        val changed = inWriteTx {
-            val old = loggedMeals.byClientId(ev.clientId) ?: return@inWriteTx false
-            if (ev.updatedAt <= old.updatedAt) return@inWriteTx false
-            val candidate = ev.copy(id = old.id, loggedAtMs = old.loggedAtMs, mutatedAtMs = old.mutatedAtMs)
-            val moved = old.affectsChannel(candidate)
-            val next = if (!moved) candidate else {
-                candidate.copy(mutatedAtMs = maxOf(ev.updatedAt, old.mutatedAtMs ?: Long.MIN_VALUE))
-            }
-            loggedMeals.update(next)
-            if (old.affectsChannel(next)) invalidateForecastDerivedInTx(minOf(old.tsMs, next.tsMs))
-            true
-        }
-        if (changed) _logEvents.update { t -> t + 1 }
-        changed
-    }
-
-    private suspend fun tombstoned(clientId: String, updatedAt: Long): Boolean =
-        (tombstones.byClientId(clientId)?.updatedAt ?: Long.MIN_VALUE) >= updatedAt
 
     /** Sole owner of what a channel mutation invalidates; a note/tz correction must not. */
     private suspend fun invalidateForecastDerivedInTx(affectedFromMs: Long) {
@@ -625,7 +523,7 @@ class T1dmRepository(
     fun observeLoggedMealsInRange(fromMs: Long, toMs: Long): Flow<List<LoggedMealEntity>> =
         loggedMeals.observeRange(fromMs, toMs)
 
-    /** Newest first, entities not a domain type; dedupKey format is :sync's, not re-spelled. */
+    /** Newest first; entities, not the domain type. */
     fun observeRecentLoggedMeals(limit: Int): Flow<List<LoggedMealEntity>> =
         loggedMeals.observeRecent(limit)
 
@@ -680,15 +578,6 @@ class T1dmRepository(
         }
     }
 
-    /** Catch-up's event high-water mark; tombstone stops a delete pulling the event back in. */
-    suspend fun newestEventTs(): Long? = withContext(io) {
-        listOfNotNull(
-            loggedMeals.latestTs(),
-            loggedDoses.latestTs(),
-            tombstones.latestTs(listOf(TOMBSTONE_KIND_MEAL, TOMBSTONE_KIND_DOSE)),
-        ).maxOrNull()
-    }
-
     fun observeLatestMood(): Flow<Int?> = samples.observeLatestMood()
 
     /** Oldest-authored first — the order they must be painted in. Intersecting, not contained. */
@@ -708,7 +597,7 @@ class T1dmRepository(
 
     suspend fun deleteAllPaintStrokes() = withContext(io) { paintStrokes.deleteAll() }
 
-    // Phone-local, all three tables; only the disposal curve recordExerciseCurve lays into sample.
+    // Phone-local, all three tables.
 
     /** Row and curve in ONE transaction, else unrecoverable by inspection; buckets priorGrams=0. */
     suspend fun logLoggedExercise(
@@ -777,7 +666,6 @@ class T1dmRepository(
                         tzOffsetMin = row.tzOffsetMin,
                         updatedAt = maxOf(nowMs, row.updatedAt + 1),
                         createdAtMs = nowMs,
-                        pushEnqueuedAtMs = nowMs,
                         actingUntilMs = null,
                     ),
                 )
@@ -856,7 +744,6 @@ class T1dmRepository(
                 mergeSampleInTx(b.gridTs, b.tzOffsetMin, nowMs) {
                     it.copy(exercise = mergedExerciseGrams(it.exercise, b.priorGrams, 0.0))
                 }
-                enqueueIngest(b.gridTs, nowMs)
             }
             exerciseFixes.deleteForSession(id)
             exerciseSessions.delete(id)
@@ -959,7 +846,6 @@ class T1dmRepository(
         // tzOffsetMin seeds a NEW row only; §2 fixes tz_offset to the authoring offset, not today.
         val base = samples.byTs(gridTs) ?: emptySample(gridTs, tzOffsetMin, nowMs)
         samples.upsert(edit(base).copy(updatedAt = maxOf(base.updatedAt, nowMs)))
-        enqueueIngest(gridTs, nowMs)
     }
 
     /** Oldest first, including samples that lost the slot; empty means a gap-filled slot. */
@@ -998,33 +884,6 @@ class T1dmRepository(
         notBeforeMs: Long,
     ): Long = withContext(io) { enqueueRow(kind, dedupKey, payload, nowMs, notBeforeMs) }
 
-    /** Returns -1 if the key is claimed; only PENDING is swept, delete+insert share a tx. */
-    override suspend fun enqueueReplacingPending(
-        kind: OutboxKind,
-        dedupKey: String,
-        payload: ByteArray,
-        nowMs: Long,
-        notBeforeMs: Long,
-    ): Long = withContext(io) {
-        inWriteTx {
-            outbox.deleteByDedupKeyInState(dedupKey, OutboxState.PENDING)
-            enqueueRow(kind, dedupKey, payload, nowMs, notBeforeMs)
-        }
-    }
-
-    override suspend fun enqueueSuperseding(
-        kind: OutboxKind,
-        dedupKey: String,
-        payload: ByteArray,
-        nowMs: Long,
-        notBeforeMs: Long,
-    ): Long = withContext(io) {
-        inWriteTx {
-            outbox.deleteByDedupKey(dedupKey)
-            enqueueRow(kind, dedupKey, payload, nowMs, notBeforeMs)
-        }
-    }
-
     /** Third party has no tombstone; an undelivered mirror lands there after a local delete. */
     private suspend fun withdrawBridgedTreatment(clientId: String) =
         outbox.deleteByDedupKey("$NS_TREATMENT_DEDUP_PREFIX$clientId")
@@ -1039,17 +898,6 @@ class T1dmRepository(
 
     /** Null when empty. */
     suspend fun oldestOutboxCreatedAt(): Long? = withContext(io) { outbox.oldestCreatedAt() }
-
-    /** Server-bound rows only: a stuck bridge row must not falsify the re-mirror delivery proof. */
-    suspend fun oldestServerBoundOutboxCreatedAt(): Long? =
-        withContext(io) { outbox.oldestCreatedAtExcluding(OutboxKind.NIGHTSCOUT) }
-
-    /** DISPLACES whatever is queued; plain enqueue would drop a demotion under an INFLIGHT row. */
-    private suspend fun enqueueIngest(gridTs: Long, nowMs: Long): Long {
-        val key = "ingest:sample:$gridTs"
-        outbox.deleteByDedupKey(key)
-        return enqueueRow(OutboxKind.INGEST, key, ByteArray(0), nowMs)
-    }
 
     private suspend fun enqueueRow(
         kind: OutboxKind,
@@ -1176,114 +1024,6 @@ class T1dmRepository(
             if (d <= toleranceMs && d < bestDelta) { bestDelta = d; best = truth[j].second }
         }
         return best
-    }
-
-    fun observeProfiles(): Flow<List<ServerProfileEntity>> = profiles.observeAll()
-
-    fun observeActiveProfile(): Flow<ServerProfileEntity?> = profiles.observeActive()
-
-    suspend fun activeProfile(): ServerProfileEntity? = withContext(io) { profiles.active() }
-
-    suspend fun profileById(id: String): ServerProfileEntity? = withContext(io) { profiles.byId(id) }
-
-    suspend fun upsertProfile(profile: ServerProfileEntity, makeActive: Boolean) = withContext(io) {
-        inWriteTx {
-            profiles.upsert(profile)
-            if (makeActive) {
-                profiles.clearActive()
-                profiles.setActive(profile.id)
-            }
-        }
-    }
-
-    suspend fun setActiveProfile(id: String) = withContext(io) {
-        inWriteTx {
-            profiles.clearActive()
-            profiles.setActive(id)
-        }
-    }
-
-    suspend fun deleteProfile(id: String) = withContext(io) { profiles.delete(id) }
-
-    /** No-server-over-local gap-fill (§3.3): fills only fields the local row lacks. */
-    suspend fun mergeServerSample(patch: SamplePatch): Boolean = withContext(io) {
-        requireGrid(patch.ts)
-        inWriteTx {
-            // Gap-fill only, no ingest (echo-loop); have-it test spans the whole MODEL CLASS.
-            val authoritative = sources.authoritativeSourceId()
-            val klass = authoritative?.let { sources.byId(it)?.sensorModelId }
-            val siblings = when {
-                authoritative == null -> emptyList()
-                klass == null -> listOf(authoritative)
-                else -> sources.idsForSensorModel(klass)
-            }
-            if (authoritative != null && patch.bgMgdl != null &&
-                !readings.existsForSources(siblings, patch.ts)
-            ) {
-                readings.upsert(
-                    CgmReadingEntity(
-                        sourceId = authoritative,
-                        tsMs = patch.ts,
-                        bgMgdl = patch.bgMgdl,
-                        trendTenthsPerMin = null,
-                        minFromStart = null,
-                        quality = null,
-                        provenance = patch.bgProvenance ?: ReadingProvenance.MEASURED,
-                        flag = patch.bgFlag ?: ReadingFlag.NORMAL,
-                        tzOffsetMin = patch.tzOffsetMin,
-                        rxWallMs = patch.updatedAt,
-                        rssi = null,
-                    ),
-                )
-            }
-            val merged = SampleGapFill.fill(samples.byTs(patch.ts), patch) ?: return@inWriteTx false
-            samples.upsert(merged)
-            true
-        }
-    }
-
-    /** One-shot gap-fill of authoritative cgm_reading from sample; inserts only missing slots. */
-    suspend fun reconcileReadingsFromSamples(): Int = withContext(io) {
-        val authoritative = sources.authoritativeSourceId() ?: return@withContext 0
-        // Slots NO sensor holds a reading for; a narrower test lets a change re-import a record.
-        inWriteTx {
-            val fill = samples.bgSlotsMissingReading().asSequence()
-                .map { s ->
-                    CgmReadingEntity(
-                        sourceId = authoritative,
-                        tsMs = s.ts,
-                        bgMgdl = s.bgMgdl,
-                        trendTenthsPerMin = null,
-                        minFromStart = null,
-                        quality = null,
-                        provenance = s.bgProvenance ?: ReadingProvenance.MEASURED,
-                        flag = s.bgFlag ?: ReadingFlag.NORMAL,
-                        tzOffsetMin = s.tzOffsetMin,
-                        rxWallMs = s.updatedAt,
-                        rssi = null,
-                    )
-                }
-                .toList()
-            if (fill.isNotEmpty()) readings.upsertAll(fill)
-            fill.size
-        }
-    }
-
-    /** Id-keyed hydration on REST catch-up (§3.4); idempotent on clientId, never enqueues. */
-    suspend fun hydrateMealEvent(ev: LoggedMealEntity): Long = withContext(io) {
-        if (tombstoned(ev.clientId, ev.updatedAt)) -1L else loggedMeals.insertIgnore(ev)
-    }
-
-    suspend fun hydrateDoseEvent(ev: LoggedDoseEntity): Long = withContext(io) {
-        if (tombstoned(ev.clientId, ev.updatedAt)) -1L else loggedDoses.insertIgnore(ev)
-    }
-
-    /** One bounded page of the §3.8 re-mirror; newest ts enqueued, or null when done. */
-    suspend fun reMirrorScalarsBatch(afterTs: Long, limit: Int, nowMs: Long): Long? = withContext(io) {
-        val page = samples.page(afterTs, limit)
-        if (page.isEmpty()) return@withContext null
-        inWriteTx { for (s in page) enqueueIngest(s.ts, nowMs) }
-        page.last().ts
     }
 
     suspend fun putKv(key: String, value: String, nowMs: Long) =
@@ -1525,7 +1265,6 @@ class T1dmRepository(
                         updatedAt = maxOf(base.updatedAt + 1, nowMs),
                     ),
                 )
-                enqueueIngest(row.ts, nowMs)
             }
             if (written == 0) return@inWriteTx PromoteResult.Refused("Every slot already holds a value")
             infills.markPromoted(spanStartMs, nowMs)
@@ -1558,7 +1297,6 @@ class T1dmRepository(
                             updatedAt = maxOf(sample.updatedAt + 1, nowMs),
                         ),
                     )
-                    enqueueIngest(row.ts, nowMs)
                 }
                 removed++
             }
@@ -1634,7 +1372,6 @@ class T1dmRepository(
                         ),
                     )
                 }
-                enqueueIngest(c.ts, nowMs)
             }
             // Unpromoted fills only, not invalidateForecastDerivedInTx: drops what sweep replays.
             if (cuts.isNotEmpty()) infills.deleteFrom(fromMs)
@@ -1643,7 +1380,6 @@ class T1dmRepository(
         cuts
     }
 
-    /** Re-push not optional: a cut sends a clear; without it the value survives on the phone. */
     suspend fun restoreBgCut(cuts: List<BgCut>, nowMs: Long) = withContext(io) {
         if (cuts.isEmpty()) return@withContext
         inWriteTx {
@@ -1661,7 +1397,6 @@ class T1dmRepository(
                         ),
                     )
                 }
-                enqueueIngest(c.ts, nowMs)
             }
             infills.deleteFrom(cuts.minOf { it.ts })
         }
@@ -1686,7 +1421,6 @@ class T1dmRepository(
             advertsRaw.deleteAll()
             outbox.deleteAllRows()
             predictions.deleteAll()
-            profiles.deleteAll()
             telemetry.deleteAll()
             db.savedMealDao().deleteAllItems()
             db.savedMealDao().deleteAllMeals()
@@ -1696,7 +1430,7 @@ class T1dmRepository(
             conformalDeltas.deleteAll()
             loras.deleteAll()
             infills.deleteAll()
-            // A deletion outlives what it deleted, else it re-pushes and blocks re-hydration.
+            // A deletion outlives what it deleted; left behind, it would veto a later restore.
             tombstones.deleteAll()
             exerciseFixes.deleteAll()
             exerciseSessions.deleteAll()

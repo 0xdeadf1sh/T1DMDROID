@@ -73,19 +73,7 @@ class LoggedExerciseMutationTest {
         assertNotNull("a restore would otherwise bring the row back without its grams", tomb)
         assertEquals(TOMBSTONE_KIND_EXERCISE, tomb!!.kind)
         assertEquals(CurveKind.EXERCISE, tomb.toModel().kind)
-        // Nothing to push: no exercise event exists on the wire.
-        assertEquals(nowMs + 1000, tomb.pushEnqueuedAtMs)
-        assertEquals(emptyList<Any>(), repo.unpushedTombstones())
         assertNull(repo.loggedExerciseById(stored.id))
-    }
-
-    /** A phone-local deletion must not advance the cursor past server events never fetched. */
-    @Test
-    fun anExerciseTombstoneStaysOutOfTheEventHighWaterMark() = runTest {
-        val late = nowMs + 30 * grid
-        val stored = repo.logLoggedExercise(row(tsMs = late), buckets(late, doubleArrayOf(1.0), 0), nowMs)
-        repo.deleteLoggedExercise(stored.id, buckets(late, doubleArrayOf(1.0), 0, prior = true), nowMs)
-        assertNull("no meal, dose or wire tombstone exists", repo.newestEventTs())
     }
 
     /** §2: offset is the one the slot was authored at; a replay reads it from zone TODAY. */

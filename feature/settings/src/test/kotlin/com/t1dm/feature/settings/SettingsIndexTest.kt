@@ -123,13 +123,11 @@ class SettingsIndexTest {
         assertTop("do not disturb", "alerts.bypass_dnd")
         assertTop("savgol", "graph.smoothing")
         assertTop("erase", "data.reset")
-        assertTop("qr", "server.scan_qr")
         assertTop("wallpaper", "display.background_opacity")
         assertTop("hypoglycaemia", "alarm.urgent_low")
         assertTop("ketoacidosis", "death_clock.dka")
         assertTop("stacking", "calc.rail_iob_ceiling")
         assertTop("rssi", "signal.weak_enabled")
-        assertTop("tailscale", "server.base_url")
         assertTop("factory reset", "data.reset")
     }
 
@@ -226,7 +224,6 @@ private val SCREEN_SOURCES = mapOf(
     SettingsScreenKey.FORECAST to "ForecastSettingsScreen.kt",
     SettingsScreenKey.CALCULATOR to "CalculatorSettingsScreen.kt",
     SettingsScreenKey.CURVES to "CurveParamsScreen.kt",
-    SettingsScreenKey.SERVER to "ServerSettingsScreen.kt",
     SettingsScreenKey.NIGHTSCOUT to "NightscoutSettingsScreen.kt",
     SettingsScreenKey.WATCH to "WatchSettingsScreen.kt",
     SettingsScreenKey.POWER to "PowerSettingsScreen.kt",

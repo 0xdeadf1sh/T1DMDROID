@@ -24,7 +24,6 @@ data class ArchiveCounts(
     val insulinTypes: Int = 0,
     val strokes: Int = 0,
     val sources: Int = 0,
-    val profiles: Int = 0,
     val conformal: Int = 0,
     val loras: Int = 0,
     val exerciseSessions: Int = 0,
@@ -35,7 +34,7 @@ data class ArchiveCounts(
 ) {
     val total: Int
         get() = readings + samples + doses + meals + basal + foods + savedMeals +
-            savedItems + insulinTypes + strokes + sources + profiles + conformal +
+            savedItems + insulinTypes + strokes + sources + conformal +
             loras + exerciseSessions + loggedExercise + exerciseFixes + tombstones + infills
 }
 
@@ -225,9 +224,6 @@ class ArchiveWriter(private val db: AppDatabase) {
         val sources = db.cgmSourceDao().all()
         for (r in sources) Archive.write(rw, r)
 
-        val profiles = db.serverProfileDao().all()
-        for (r in profiles) Archive.write(rw, r)
-
         val conformal = db.conformalDeltaDao().all()
         for (r in conformal) Archive.write(rw, r)
 
@@ -249,7 +245,6 @@ class ArchiveWriter(private val db: AppDatabase) {
             savedItems = savedItems,
             insulinTypes = insulinTypes.size,
             sources = sources.size,
-            profiles = profiles.size,
             conformal = conformal.size,
             loras = loras.size,
         )
@@ -270,7 +265,6 @@ class ArchiveWriter(private val db: AppDatabase) {
         rw.put(Archive.T_INSULIN, c.insulinTypes)
         rw.put(Archive.T_STROKE, c.strokes)
         rw.put(Archive.T_SOURCE, c.sources)
-        rw.put(Archive.T_PROFILE, c.profiles)
         rw.put(Archive.T_CONFORMAL, c.conformal)
         rw.put(Archive.T_LORA, c.loras)
         rw.put(Archive.T_EXERCISE, c.exerciseSessions)

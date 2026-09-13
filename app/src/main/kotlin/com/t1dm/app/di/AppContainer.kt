@@ -119,7 +119,6 @@ import com.t1dm.feature.dashboard.BgReachability
 import com.t1dm.feature.dashboard.BgSignals
 import com.t1dm.feature.dashboard.LinkHealth
 import com.t1dm.feature.dashboard.ReachLight
-import com.t1dm.app.sync.WsConnState
 import com.t1dm.watch.WatchLinkPhase
 import com.t1dm.data.curve.ChannelBuilder
 import com.t1dm.data.curve.ExerciseDisposal
@@ -134,7 +133,6 @@ import com.t1dm.data.meals.MealsController
 import com.t1dm.data.stats.StatsRepository
 import com.t1dm.feature.exercise.ExerciseSource
 import com.t1dm.feature.stats.StatsViewModel
-import com.t1dm.core.model.AdvancedStats
 import com.t1dm.core.model.Food
 import com.t1dm.core.model.MealComponent
 import com.t1dm.core.model.RecentMeal
@@ -149,13 +147,6 @@ import com.t1dm.data.db.LoggedDoseEntity
 import com.t1dm.data.db.toBlob
 import com.t1dm.data.db.LoggedExerciseEntity
 import com.t1dm.data.db.LoggedMealEntity
-import com.t1dm.data.db.OutboxKind
-import com.t1dm.sync.EventStatDto
-import com.t1dm.sync.StatsPushDto
-import com.t1dm.sync.doseDedupKey
-import com.t1dm.sync.mealDedupKey
-import com.t1dm.sync.toDoseEventDto
-import com.t1dm.sync.toMealEventDto
 import com.t1dm.app.lab.LabController
 import com.t1dm.feature.models.LoraFitSpec
 import com.t1dm.feature.models.LoraFitProgress
@@ -169,29 +160,15 @@ import com.t1dm.inference.InferenceController
 import com.t1dm.inference.InferenceControllerDefaults
 import com.t1dm.inference.ProbeInsulinPort
 import com.t1dm.inference.buildInferenceController
-import com.t1dm.sync.CatchUpCoordinator
 import com.t1dm.sync.DrainConfig
-import com.t1dm.sync.HistoryReMirror
-import com.t1dm.sync.TombstoneReplay
-import com.t1dm.sync.toDoseTombstoneDto
-import com.t1dm.sync.toMealTombstoneDto
 import com.t1dm.data.curve.GiToGamma
-import com.t1dm.sync.ModelSyncCoordinator
-import com.t1dm.sync.NoActiveProfileException
-import com.t1dm.sync.OkHttpSyncClient
-import com.t1dm.sync.OutboxEnqueuer
 import com.t1dm.sync.QueueDrainer
-import com.t1dm.sync.ReMirrorLedger
-import com.t1dm.sync.ServerProfile
-import com.t1dm.sync.ServerProfileStore
-import com.t1dm.sync.SyncHttpClient
 import com.t1dm.sync.KeystoreTokenStore
 import com.t1dm.sync.TokenStore
 import com.t1dm.sync.nightscout.NightscoutClient
 import com.t1dm.sync.nightscout.NightscoutConfigStore
 import com.t1dm.sync.nightscout.NightscoutEnqueuer
 import com.t1dm.sync.nightscout.OkHttpNightscoutClient
-import com.t1dm.sync.WebSocketStreamClient
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -252,15 +229,6 @@ private const val CONFORMAL_MIN_CAL_WINDOWS = 144
 /** mg/dL. Duplicates T1DMAI's tolerance constant; absent from `SPEC/invariants.md` §6.1. */
 private const val EXCURSION_PRECISION_TOLERANCE_MGDL = 10.0
 
-/** H7 re-mirror: `sample` rows enqueued per resumable page; work per round trip, not a bound. */
-private const val REMIRROR_SCALAR_PAGE = 500
-
-/** H7 re-mirror: covers one page several times; the queue's backoff handles a slow server. */
-private const val REMIRROR_MAX_DRAIN_PASSES = 12
-
-/** H7 re-mirror: bounds one pass; the persisted cursor resumes the next connect, not restarts. */
-private const val REMIRROR_MAX_PAGES_PER_PASS = 20
-
 /** Bounded: each Cut entry carries every row it removed. */
 private const val BG_EDIT_UNDO_MAX = 32
 
@@ -289,7 +257,7 @@ class AppContainer(context: Context) {
     }
 
     private val cgmRepository by lazy {
-        AppCgmRepository(repository, outboxEnqueuer)
+        AppCgmRepository(repository)
     }
 
     val plugin: AidexXPlugin by lazy { AidexXPlugin(nativeCore, cgmRepository) }
@@ -594,10 +562,7 @@ class AppContainer(context: Context) {
     /** Dev-time models dir on external files; the `.pte` is not bundled. */
     val modelsDir: File = File(appContext.getExternalFilesDir(null), "models").apply { mkdirs() }
 
-    /** Held, not inline: the contract obliges a re-send of the latest forecast on reconnect. */
-    val roomPredictionStore: RoomPredictionStore by lazy {
-        RoomPredictionStore(repository, streamClient, syncStatusStore)
-    }
+    private val roomPredictionStore: RoomPredictionStore by lazy { RoomPredictionStore(repository) }
 
     val inferenceController: InferenceController by lazy {
         buildInferenceController(
@@ -605,7 +570,6 @@ class AppContainer(context: Context) {
             dispatchers = dispatchers,
             modelsDir = modelsDir,
             history = RoomBgHistoryProvider(repository, registry),
-            // The `prediction` table is the source of truth; the stream stores none.
             predictionStore = roomPredictionStore,
             // feat1/feat2: reconstructed carb-appearance and insulin-action channels (SPEC §3.3).
             contextChannels = ContextChannelSource { gridStartMs, nSteps ->
@@ -933,10 +897,6 @@ class AppContainer(context: Context) {
             refreshAlarmConfig()
             inferenceController.restoreLast()
             inferenceController.refreshModels()
-            // An update staged in a prior session, before any sync.
-            refreshPendingModelUpdates()
-            // After discovery, running set known: staged for manual apply, never applied in place.
-            autoSyncModels("startup")
         }
         // Read on the CGM hot path from a plain field, so it has to be published at startup.
         appScope.launch { refreshNightscoutEnabled() }
@@ -951,55 +911,19 @@ class AppContainer(context: Context) {
         // Slow-moving; recomputed every 30 min so the widget reads a cached value.
         appScope.launch(dispatchers.default) {
             while (isActive) {
-                val now = System.currentTimeMillis()
                 gmiSnapshot = runCatching { statsRepository.localStats(StatsWindow.D30).gmi }
                     .getOrNull()?.takeIf { it in 3.0..25.0 }
-                // §3.6 — the phone is the sole stats author. enqueueStats dedups to ≤1/window/day.
-                pushStats(now)
                 delay(30 * 60_000L)
             }
         }
-        // §3.8 (H7) re-mirror runs via `reMirror` hook on [catchUpCoordinator], not launched here.
     }
 
-    /** Keystore-wrapped at rest — never in the keep-forever Room DB. */
+    /** The Nightscout api-secret at rest, Keystore-wrapped — never in the keep-forever Room DB. */
     val tokenStore: TokenStore by lazy { KeystoreTokenStore(appContext) }
 
-    val serverProfileStore: ServerProfileStore by lazy { ServerProfileStore(repository, tokenStore) }
+    // One-way mirror of BG, carbs and bolus to a Nightscout host.
 
-    val syncHttpClient: SyncHttpClient by lazy {
-        OkHttpSyncClient(
-            endpoint = { serverProfileStore.activeEndpoint() },
-            dispatchers = dispatchers,
-        )
-    }
-
-    /** Guard matches on-disk `.pte` filenames, not ids; update staged, SHA-256 verified first. */
-    val modelSyncCoordinator: ModelSyncCoordinator by lazy {
-        ModelSyncCoordinator(
-            modelsDir = modelsDir,
-            http = syncHttpClient,
-            runningArtifacts = { inferenceController.runningArtifactFileNames() },
-        )
-    }
-
-    /** Null until run. */
-    val modelSyncStatus = MutableStateFlow<String?>(null)
-
-    /** Descriptor ids staged in `pending/`; a staged update never swaps the running model. */
-    val pendingModelUpdates = MutableStateFlow<Set<String>>(emptySet())
-
-    private suspend fun refreshPendingModelUpdates() {
-        pendingModelUpdates.value = withContext(dispatchers.io) {
-            runCatching { modelSyncCoordinator.pendingModelIds() }.getOrDefault(emptySet())
-        }
-    }
-
-    val outboxEnqueuer: OutboxEnqueuer by lazy { OutboxEnqueuer(repository) }
-
-    // One-way Nightscout bridge; shares only the outbox. Off/unreachable never stalls sync.
-
-    /** URL + on/off in `kv`, the api-secret in the Keystore beside the `rw` token. */
+    /** URL + on/off in `kv`, the api-secret in the Keystore. */
     val nightscoutConfigStore: NightscoutConfigStore by lazy {
         NightscoutConfigStore(
             getKv = repository::getKv,
@@ -1038,7 +962,6 @@ class AppContainer(context: Context) {
     private val queueDrainer: QueueDrainer by lazy {
         QueueDrainer(
             dao = database.outboxDao(),
-            http = syncHttpClient,
             sampleAt = repository::sampleAt,
             dispatchers = dispatchers,
             config = drainConfig,
@@ -1047,46 +970,13 @@ class AppContainer(context: Context) {
         )
     }
 
-    private val streamClient by lazy {
-        WebSocketStreamClient(
-            endpoint = { serverProfileStore.activeEndpoint() },
-            dispatchers = dispatchers,
-        )
-    }
-
-    private val catchUpCoordinator by lazy {
-        // Desync shared with StreamClient; scope is appScope, not the collecting service scope.
-        CatchUpCoordinator(
-            stream = streamClient,
-            http = syncHttpClient,
-            repo = repository,
-            scope = appScope,
-            reMirror = HistoryReMirror { epoch -> reMirrorHistory(epoch) },
-            tombstones = TombstoneReplay { replayTombstones() },
-            desync = streamClient.desync,
-        )
-    }
-
-    /** §3.8 walk's bookkeeping; plain functions, so judgements are testable without Room. */
-    private val reMirrorLedger: ReMirrorLedger by lazy {
-        ReMirrorLedger(
-            getKv = repository::getKv,
-            putKv = repository::putKv,
-            // Server-bound rows ONLY: counting a bridge row stalls the walk on a dead third party.
-            oldestQueuedAtMs = repository::oldestServerBoundOutboxCreatedAt,
-            maxQueueAgeMs = drainConfig.maxAgeMs,
-        )
-    }
-
     /** The FGS calls [SyncManager.launch] in its own lifecycle scope. */
     val syncManager: SyncManager by lazy {
         SyncManager(
             drainer = queueDrainer,
-            catchUp = catchUpCoordinator,
             repository = repository,
             status = syncStatusStore,
             dispatchers = dispatchers,
-            resendForecast = { roomPredictionStore.resendLatest() },
         )
     }
 
@@ -1154,110 +1044,6 @@ class AppContainer(context: Context) {
         )
     }
 
-    val serverProfiles: Flow<List<ServerProfile>> = serverProfileStore.observeProfiles()
-
-    val activeServerProfile: Flow<ServerProfile?> = serverProfileStore.observeActive()
-
-    /** A blank [token] keeps the stored one. */
-    suspend fun saveServerProfile(label: String, baseUrl: String, token: String) {
-        val existing = repository.activeProfile()
-        serverProfileStore.upsert(
-            id = existing?.id ?: "default",
-            label = label.ifBlank { "server" },
-            baseUrl = baseUrl,
-            token = token.ifBlank { null },
-            makeActive = true,
-            nowMs = System.currentTimeMillis(),
-        )
-        launchAutoModelSync("profile-saved")
-    }
-
-    /** Pages `GET /v1/series`, LWW-merges into `sample`; 0 rows with no profile/token. Off-main. */
-    suspend fun resyncFromServer(): Int = withContext(dispatchers.io) {
-        if (serverProfileStore.activeEndpoint() == null) 0
-        else runCatching { catchUpCoordinator.catchUp(null) }.getOrDefault(0)
-    }
-
-    /** Store a §3.8 walk targets: id, base URL, edit stamp; null when there's no usable target. */
-    private suspend fun activeStoreIdentity(): String? {
-        if (serverProfileStore.activeEndpoint() == null) return null
-        val p = repository.activeProfile() ?: return null
-        return "${p.id}\u001f${p.baseUrl}\u001f${p.updatedAtMs}"
-    }
-
-    /** §3.8 (H7) re-mirror to a wiped/new server; resumable, bail-out is `false`, no throw. */
-    private suspend fun reMirrorHistory(serverEpoch: String): Boolean = withContext(dispatchers.io) {
-        val identity = activeStoreIdentity() ?: return@withContext false
-        val walk = reMirrorLedger.resume(serverEpoch, identity, System.currentTimeMillis())
-
-        if (walk.raiseEvents) {
-            Timber.i(
-                "re-mirroring history to store_epoch %s (stamp %d, resuming scalars after ts %d)",
-                serverEpoch, walk.stampMs, walk.scalarCursor,
-            )
-            // Never age-evictable, top outbox priority.
-            for (m in repository.loggedMealsInRange(0L, walk.stampMs).sortedBy { it.tsMs }) {
-                outboxEnqueuer.enqueueMeal(m.toMealEventDto(), walk.stampMs)
-            }
-            for (d in repository.loggedDosesInRange(0L, walk.stampMs).sortedBy { it.tsMs }) {
-                outboxEnqueuer.enqueueDose(d.toDoseEventDto(), walk.stampMs)
-            }
-            // Deduped ≤1/window/day.
-            pushStats(walk.stampMs)
-        }
-        // Prove the phase out of the queue first: a scalar page's proof is nothing older remains.
-        if (!drainThrough(walk.stampMs)) return@withContext false
-        reMirrorLedger.bankEvents(walk.stampMs, System.currentTimeMillis())
-
-        var cursor = walk.scalarCursor
-        var pages = 0
-        var scalarsComplete = false
-        while (pages < REMIRROR_MAX_PAGES_PER_PASS) {
-            val stamp = System.currentTimeMillis()
-            // One dirty-marker per bucket; null = no sample past cursor, walk is done.
-            val next = repository.reMirrorScalarsBatch(cursor, REMIRROR_SCALAR_PAGE, stamp)
-            if (next == null) { scalarsComplete = true; break }
-            if (!drainThrough(stamp)) return@withContext false
-            // Re-read target before crediting: a repointed store must not bank a skipped cursor.
-            if (activeStoreIdentity() != identity) return@withContext false
-            cursor = next
-            reMirrorLedger.bankScalarCursor(cursor, stamp)
-            pages++
-        }
-        if (!scalarsComplete) {
-            Timber.i("re-mirror banked %d scalar page(s) to ts %d; resumes on the next connect", pages, cursor)
-            return@withContext false
-        }
-        // Re-read: the profile may have been repointed while the walk drained.
-        val stillIdentity = activeStoreIdentity() ?: return@withContext false
-        reMirrorLedger.delivered(serverEpoch, stillIdentity, System.currentTimeMillis())
-    }
-
-    /** Drives outbox until rows at/before [throughMs] leave it; drains DIRECTLY, bounded 3 ways. */
-    private suspend fun drainThrough(throughMs: Long): Boolean {
-        var passes = 0
-        while (!reMirrorLedger.drainedThrough(throughMs)) {
-            if (passes >= REMIRROR_MAX_DRAIN_PASSES) {
-                Timber.i("re-mirror: rows at or before %d still queued after %d drain pass(es)", throughMs, passes)
-                return false
-            }
-            val result = runCatching { queueDrainer.drainOnce() }
-                .onFailure { Timber.w(it, "re-mirror drain pass failed") }
-                .getOrNull() ?: return false
-            syncStatusStore.onDrain(result, repository.oldestOutboxCreatedAt())
-            if (result.standDown != null) {
-                Timber.i("re-mirror stood down: %s", result.standDown)
-                return false
-            }
-            if (result.sent == 0 && result.dropped == 0) {
-                Timber.i("re-mirror drain made no progress (retried %d, remaining %d)", result.retried, result.remaining)
-                return false
-            }
-            passes++
-        }
-        return true
-    }
-
     /** DESTRUCTIVE, IN-PLACE: FGS/process stay alive, so GATT session and cgm_source survive. */
     suspend fun resetAllData() = withContext(dispatchers.io) {
         // Drop watch session BEFORE the wipe, so no late push re-persists key material/nonce.
@@ -1287,44 +1073,6 @@ class AppContainer(context: Context) {
         appContext.packageManager.getLaunchIntentForPackage(appContext.packageName)
             ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
             ?.let { appContext.startActivity(it) }
-    }
-
-    /** `POST /v1/photos`, direct multipart not JSON outbox; a fault returns failed [Result]. */
-    suspend fun uploadMealPhoto(tsMs: Long, bytes: ByteArray, ext: String): Result<Unit> =
-        withContext(dispatchers.io) {
-            runCatching { syncHttpClient.postPhoto(tsMs, bytes, ext); Unit }
-        }
-
-    /** Never throws — failure is the returned status; a model update is STAGED, not applied. */
-    suspend fun syncModelsFromServer(): String {
-        val line = if (serverProfileStore.activeEndpoint() == null) {
-            "no active profile / token configured"
-        } else {
-            runCatching {
-                val summary = withContext(dispatchers.io) { modelSyncCoordinator.sync() }
-                inferenceController.refreshModels()
-                summarizeModelSync(summary)
-            }.getOrElse { e -> "sync failed — ${e.message ?: e::class.simpleName}" }
-        }
-        refreshPendingModelUpdates()
-        modelSyncStatus.value = line
-        return line
-    }
-
-    /** applyPending renames the staged pair under an UNCHANGED id; stale forecasts/bands drop. */
-    suspend fun applyModelUpdate(modelId: String): Boolean = withContext(dispatchers.io) {
-        val applied = runCatching { modelSyncCoordinator.applyPending(modelId) }.getOrDefault(false)
-        if (applied) {
-            runCatching { repository.deletePredictionsForModel(modelId) }
-            runCatching { repository.deleteBandCalibration(modelId) }
-            // Cached head too: served against new graph; parity check memoized per model id.
-            runCatching { repository.deleteLorasForModel(modelId) }
-            runCatching { repository.clearInfillForModel(modelId) }
-            inferenceController.evictHead(modelId)
-            inferenceController.refreshModels()
-        }
-        refreshPendingModelUpdates()
-        applied
     }
 
     /** Beside the models, so `adb pull` reaches it. */
@@ -1646,43 +1394,7 @@ class AppContainer(context: Context) {
             runCatching { repository.deleteLorasForModel(modelId) }
             runCatching { repository.clearInfillForModel(modelId) }
         }
-        refreshPendingModelUpdates()
         reevaluateInferenceNow()
-    }
-
-    private fun summarizeModelSync(s: com.t1dm.sync.ModelSyncSummary): String {
-        if (s.outcomes.isEmpty()) return "no models served"
-        return buildList {
-            if (s.fetchedNew.isNotEmpty()) add("downloaded ${s.fetchedNew.size}")
-            if (s.updatesPendingApply.isNotEmpty()) add("${s.updatesPendingApply.size} update(s) available — apply in Models")
-            if (s.alreadyCurrent.isNotEmpty()) add("${s.alreadyCurrent.size} up to date")
-            if (s.skipped.isNotEmpty()) add("${s.skipped.size} skipped")
-            if (s.failed.isNotEmpty()) add("${s.failed.size} failed")
-        }.joinToString(" · ").ifEmpty { "nothing to do" }
-    }
-
-    /** Silent, guarded: a failure is logged, never a crash; suspends to sequence after startup. */
-    private suspend fun autoSyncModels(reason: String) {
-        if (serverProfileStore.activeEndpoint() == null) return
-        runCatching { modelSyncCoordinator.sync() }
-            .onFailure { Timber.tag(ModelSyncCoordinator.TAG).w(it, "auto model sync failed (%s)", reason) }
-        runCatching { inferenceController.refreshModels() }
-        refreshPendingModelUpdates()
-    }
-
-    /** For the profile-saved trigger; nothing to order against the initial discovery. */
-    private fun launchAutoModelSync(reason: String) {
-        appScope.launch { autoSyncModels(reason) }
-    }
-
-    suspend fun checkServerHealth(): String = runCatching {
-        val h = syncHttpClient.health()
-        "reachable — status=${h.status}, ${h.ws_clients} ws client(s)"
-    }.getOrElse { e ->
-        when (e) {
-            is NoActiveProfileException -> "no active profile / token configured"
-            else -> "unreachable — ${e.message ?: e::class.simpleName}"
-        }
     }
 
     /** The shared curve/PK engine — SPEC §3.3. */
@@ -2087,11 +1799,11 @@ class AppContainer(context: Context) {
         )
     }.getOrNull()
 
-    /** How long a fresh push is held back for Logs-panel withdrawal; delays only the outbox row. */
+    /** Window an undo can still recall the Nightscout mirror; delays only the outbox row. */
     private suspend fun pushHoldMs(): Long =
         settingsStore.currentPushHoldMin().toLong() * 60_000L
 
-    /** Repository grid-snaps ts, mints client_id; push built from PERSISTED entity (§3.1/§3.2). */
+    /** Repository grid-snaps ts, mints client_id; the mirror reads the persisted row. */
     suspend fun logCarb(grams: Double, gi: Double, note: String? = null): LogHandle {
         val now = System.currentTimeMillis()
         val tz = tzOffsetMin(now)
@@ -2103,24 +1815,19 @@ class AppContainer(context: Context) {
                 note = note?.trim()?.takeIf { it.isNotEmpty() }, updatedAt = now,
             ),
         )
-        val outboxId = outboxEnqueuer.enqueueMeal(meal.toMealEventDto(), now, holdMs = pushHoldMs())
         mirrorToNightscout { nightscoutEnqueuer.enqueueMeal(meal, now, holdMs = pushHoldMs()) }
         reforecastAfterCurveWrite()
-        return meal.handle(outboxId, "${fmtAmount(grams)} g (GI ${fmtAmount(gi)})")
+        return meal.handle("${fmtAmount(grams)} g (GI ${fmtAmount(gi)})")
     }
 
     /** Persisted by [MealsController]: resolves curve into customCurve, grid-snaps, mints id. */
     suspend fun logBuilderMeal(components: List<MealComponent>): LogHandle {
         val now = System.currentTimeMillis()
         val meal = mealsController.logMeal(components)
-        val outboxId = outboxEnqueuer.enqueueMeal(meal.toMealEventDto(), now, holdMs = pushHoldMs())
         mirrorToNightscout { nightscoutEnqueuer.enqueueMeal(meal, now, holdMs = pushHoldMs()) }
         reforecastAfterCurveWrite()
         val foods = components.size
-        return meal.handle(
-            outboxId,
-            "${fmtAmount(meal.grams)} g ($foods food${if (foods == 1) "" else "s"})",
-        )
+        return meal.handle("${fmtAmount(meal.grams)} g ($foods food${if (foods == 1) "" else "s"})")
     }
 
     /** Insulin screen's own writes; [insulinChoices] unions with builder's insulin_type rows. */
@@ -2160,7 +1867,7 @@ class AppContainer(context: Context) {
         require(units.isFinite() && units > 0.0) { "Dose units must be positive and finite (was $units)." }
     }
 
-    /** Null [presetLabel] falls back to last insulin logged; push built from PERSISTED entity. */
+    /** Null [presetLabel] falls back to last insulin logged; mirror built from PERSISTED entity. */
     suspend fun logBolus(units: Double, presetLabel: String? = null): LogHandle {
         requireLoggableDose(units)
         val now = System.currentTimeMillis()
@@ -2176,10 +1883,9 @@ class AppContainer(context: Context) {
             ),
         )
         rememberLoggedPreset(rapid, presetLabel)
-        val outboxId = outboxEnqueuer.enqueueDose(dose.toDoseEventDto(), now, holdMs = pushHoldMs())
         mirrorToNightscout { nightscoutEnqueuer.enqueueDose(dose, now, holdMs = pushHoldMs()) }
         reforecastAfterCurveWrite()
-        return dose.handle(outboxId, "${fmtAmount(units)} U bolus · ${rapid.label}")
+        return dose.handle("${fmtAmount(units)} U bolus · ${rapid.label}")
     }
 
     /** Carries the preset's DIA, ka/ke, so Bateman reconstructs analytically; null as logBolus. */
@@ -2196,10 +1902,9 @@ class AppContainer(context: Context) {
             ),
         )
         rememberLoggedPreset(basal, presetLabel)
-        val outboxId = outboxEnqueuer.enqueueDose(dose.toDoseEventDto(), now, holdMs = pushHoldMs())
         mirrorToNightscout { nightscoutEnqueuer.enqueueDose(dose, now, holdMs = pushHoldMs()) }
         reforecastAfterCurveWrite()
-        return dose.handle(outboxId, "${fmtAmount(units)} U basal · ${basal.label}")
+        return dose.handle("${fmtAmount(units)} U basal · ${basal.label}")
     }
 
     /** Only AFTER the row persists, only when a preset was named; fallback expresses no pick. */
@@ -2211,58 +1916,25 @@ class AppContainer(context: Context) {
         }
     }
 
-    /** Persisted by [InsulinController], grid-snapped, id-minted; pushed as logBolus/logBasal. */
+    /** Persisted by [InsulinController], grid-snapped, id-minted; mirrored as logBolus/logBasal. */
     suspend fun logTypedDose(type: InsulinType, units: Double): LogHandle {
         requireLoggableDose(units)
         val now = System.currentTimeMillis()
         val dose = insulinController.logDose(type, units)
-        val outboxId = outboxEnqueuer.enqueueDose(dose.toDoseEventDto(), now, holdMs = pushHoldMs())
         mirrorToNightscout { nightscoutEnqueuer.enqueueDose(dose, now, holdMs = pushHoldMs()) }
         reforecastAfterCurveWrite()
         val kind = if (type.kind == InsulinKind.BOLUS) "bolus" else "basal"
-        return dose.handle(outboxId, "${fmtAmount(units)} U $kind · ${type.name}")
+        return dose.handle("${fmtAmount(units)} U $kind · ${type.name}")
     }
 
-    /** Deletion travels as a tombstone on the create's own upsert, ordered by updated_at. */
+    /** One transaction writes the tombstone and recalls a mirror still queued. */
     suspend fun undoLog(handle: LogHandle) {
+        val now = System.currentTimeMillis()
         when (handle.kind) {
-            LoggedEventKind.MEAL -> tombstoneAndPushMeal(handle.rowId)
-            LoggedEventKind.DOSE -> tombstoneAndPushDose(handle.rowId)
+            LoggedEventKind.MEAL -> repository.tombstoneLoggedMeal(handle.rowId, now)
+            LoggedEventKind.DOSE -> repository.tombstoneLoggedDose(handle.rowId, now)
         }
         reforecastAfterCurveWrite()
-    }
-
-    /** Pushed under the SAME dedup key as create; marked pushed only after enqueue returns. */
-    private suspend fun tombstoneAndPushMeal(rowId: Long) {
-        val now = System.currentTimeMillis()
-        val tomb = repository.tombstoneLoggedMeal(rowId, now) ?: return
-        outboxEnqueuer.enqueueMealTombstone(tomb.toMealTombstoneDto(), now)
-        repository.markTombstonePushed(tomb.clientId, now)
-    }
-
-    /** The dose twin of [tombstoneAndPushMeal]. */
-    private suspend fun tombstoneAndPushDose(rowId: Long) {
-        val now = System.currentTimeMillis()
-        val tomb = repository.tombstoneLoggedDose(rowId, now) ?: return
-        outboxEnqueuer.enqueueDoseTombstone(tomb.toDoseTombstoneDto(), now)
-        repository.markTombstonePushed(tomb.clientId, now)
-    }
-
-    /** Covers a death between delete and enqueue, and an evicted tombstone; returns re-filed n. */
-    private suspend fun replayTombstones(): Int {
-        val now = System.currentTimeMillis()
-        var n = 0
-        for (tomb in repository.unpushedTombstones()) {
-            when (tomb.kind) {
-                CurveKind.CARB -> outboxEnqueuer.enqueueMealTombstone(tomb.toMealTombstoneDto(), now)
-                CurveKind.INSULIN -> outboxEnqueuer.enqueueDoseTombstone(tomb.toDoseTombstoneDto(), now)
-                // Unreachable: event_tombstone.kind is CARB/INSULIN; exercise unwinds via grams.
-                CurveKind.EXERCISE -> continue
-            }
-            repository.markTombstonePushed(tomb.clientId, now)
-            n++
-        }
-        return n
     }
 
     /** Swallowing, deliberately: the record is already committed; nothing may reach the receipt. */
@@ -2286,23 +1958,19 @@ class AppContainer(context: Context) {
             .onFailure { Timber.tag("Nightscout").w(it, "mirror re-enqueue failed") }
     }
 
-    private fun LoggedMealEntity.handle(outboxId: Long, label: String) = LogHandle(
+    private fun LoggedMealEntity.handle(label: String) = LogHandle(
         kind = LoggedEventKind.MEAL,
         rowId = id,
         clientId = clientId,
         tsMs = tsMs,
-        outboxId = outboxId,
-        dedupKey = mealDedupKey(clientId),
         label = label,
     )
 
-    private fun LoggedDoseEntity.handle(outboxId: Long, label: String) = LogHandle(
+    private fun LoggedDoseEntity.handle(label: String) = LogHandle(
         kind = LoggedEventKind.DOSE,
         rowId = id,
         clientId = clientId,
         tsMs = tsMs,
-        outboxId = outboxId,
-        dedupKey = doseDedupKey(clientId),
         label = label,
     )
 
@@ -2336,11 +2004,12 @@ class AppContainer(context: Context) {
             .sortedWith(compareBy<LoggedEntry> { it.tsMs }.thenBy { it.kind }.thenBy { it.rowId })
     }
 
-    /** Unconditional, same tombstone path as undo; exercise tombstones locally, pushes nothing. */
+    /** Unconditional, same tombstone path as undo. */
     suspend fun deleteLoggedEntry(entry: LoggedEntry) {
+        val now = System.currentTimeMillis()
         when (entry.kind) {
-            CurveKind.CARB -> tombstoneAndPushMeal(entry.rowId)
-            CurveKind.INSULIN -> tombstoneAndPushDose(entry.rowId)
+            CurveKind.CARB -> repository.tombstoneLoggedMeal(entry.rowId, now)
+            CurveKind.INSULIN -> repository.tombstoneLoggedDose(entry.rowId, now)
             CurveKind.EXERCISE -> exerciseController.deleteLoggedExercise(entry.rowId)
         }
         reforecastAfterCurveWrite()
@@ -2367,7 +2036,7 @@ class AppContainer(context: Context) {
         }
     }
 
-    /** Keeps identity, re-pushes under same key; shape re-resolved, curve rescaled by writer. */
+    /** Keeps identity; re-mirrors only if still recallable; shape re-resolved, curve rescaled. */
     suspend fun editLoggedMeal(entry: LoggedEntry, grams: Double, gi: Double?, note: String?, tsMs: Long) {
         val now = System.currentTimeMillis()
         val old = repository.loggedMealById(entry.rowId) ?: return
@@ -2384,7 +2053,6 @@ class AppContainer(context: Context) {
             ),
             now,
         ) ?: return
-        outboxEnqueuer.enqueueMeal(edited.toMealEventDto(), now)
         remirrorEditedTreatment(edited.clientId) {
             nightscoutEnqueuer.enqueueMeal(edited, now, holdMs = pushHoldMs())
         }
@@ -2400,7 +2068,6 @@ class AppContainer(context: Context) {
             is InsulinChoice.Preset -> repository.editLoggedDose(old.retypedTo(insulin.spec, units, tsMs), now)
             else -> insulinController.editDose(old, (insulin as? InsulinChoice.Type)?.type, units, tsMs, now)
         } ?: return
-        outboxEnqueuer.enqueueDose(edited.toDoseEventDto(), now)
         remirrorEditedTreatment(edited.clientId) {
             nightscoutEnqueuer.enqueueDose(edited, now, holdMs = pushHoldMs())
         }
@@ -2695,17 +2362,10 @@ class AppContainer(context: Context) {
         while (true) { emit(System.currentTimeMillis()); delay(15_000L) }
     }
 
-    /** Neutral-typed, so `:feature:dashboard` never sees `:sync` or `:watch`. */
+    /** Neutral-typed, so `:feature:dashboard` never sees `:watch`. */
     val bgReachability: Flow<BgReachability> by lazy {
-        combine(
-            syncStatus,
-            activeServerProfile,
-            latestReading,
-            watchSecurity,
-            reachabilityTicker,
-        ) { sync, profile, latest, watch, now ->
+        combine(latestReading, watchSecurity, reachabilityTicker) { latest, watch, now ->
             BgReachability(
-                server = serverLight(sync, profile),
                 cgm = cgmLight(latest, now),
                 watch = watchLight(watch.phase),
             )
@@ -2721,11 +2381,8 @@ class AppContainer(context: Context) {
 
     /** Per-channel activity tokens: a change fires a one-shot flash, the value itself is opaque. */
     val bgPulses: Flow<BgPulses> by lazy {
-        combine(latestReading, syncStatus, watchSecurity) { latest, sync, watch ->
-            val serverToken = (sync.wsCursor ?: 0L) + sync.alertCount +
-                sync.forecastStream.values.sumOf { it.sent }
+        combine(latestReading, watchSecurity) { latest, watch ->
             BgPulses(
-                server = serverToken,
                 cgm = latest?.tsMs ?: 0L,
                 watch = watch.lastPushMs ?: 0L,
             )
@@ -2793,15 +2450,6 @@ class AppContainer(context: Context) {
         }
     }
 
-    private fun serverLight(sync: SyncStatus, profile: ServerProfile?): ReachLight = when {
-        profile == null -> ReachLight(LinkHealth.OFF, "no server profile configured")
-        sync.lastDrain?.standDown == com.t1dm.sync.DrainResult.StandDown.AUTH ->
-            ReachLight(LinkHealth.DEGRADED, "auth failed — check token")
-        sync.wsState == WsConnState.CONNECTED -> ReachLight(LinkHealth.OK, "connected — streaming & draining")
-        sync.wsState == WsConnState.RECONNECTING -> ReachLight(LinkHealth.DEGRADED, "reconnecting…")
-        else -> ReachLight(LinkHealth.DOWN, "disconnected from ${profile.baseUrl}")
-    }
-
     private fun cgmLight(latest: CgmReading?, nowMs: Long): ReachLight {
         if (latest == null) return ReachLight(LinkHealth.DOWN, "no CGM readings yet")
         val ageMin = (nowMs - latest.tsMs) / 60_000L
@@ -2823,7 +2471,7 @@ class AppContainer(context: Context) {
 
     val statsRepository: StatsRepository by lazy { StatsRepository(repository, nativeCore, dispatchers) }
 
-    private val statsSource by lazy { AppStatsSource(statsRepository, syncHttpClient, nativeCore, dispatchers) }
+    private val statsSource by lazy { AppStatsSource(statsRepository, nativeCore) }
 
     /** App-lifetime, so the window and composite survive Activity churn. */
     val statsViewModel: StatsViewModel by lazy { StatsViewModel(statsSource, appScope) }
@@ -2833,26 +2481,6 @@ class AppContainer(context: Context) {
         appScope.launch {
             statsRepository.setUnitSpace(space)
             runCatching { com.t1dm.app.widget.GlucoseWidget().updateAll(appContext) }
-        }
-    }
-
-    /** `mean_hr`/`bg_hr_corr` are not in the phone's [AdvancedStats] yet (§8.2) ⇒ 0. */
-    private fun AdvancedStats.toPush(window: StatsWindow, nowMs: Long): StatsPushDto = StatsPushDto(
-        window = window.wire,
-        updated_at = nowMs,
-        tir = tir, time_below = tbr, time_above = tar,
-        mean_bg = meanBg, gmi = gmi, cv = cv, sd = sd,
-        hypo_events = EventStatDto(hypoEpisodes.count, hypoEpisodes.totalDurationMs),
-        hyper_events = EventStatDto(hyperEpisodes.count, hyperEpisodes.totalDurationMs),
-        mean_daily_carbs = meanDailyCarbs, tdd = tdd, bolus_basal_ratio = bolusBasalRatio,
-        n_samples = nSamples,
-    )
-
-    /** §3.6, sole stats producer; each window deduped <=1/day inside enqueueStats. */
-    private suspend fun pushStats(nowMs: Long) {
-        for (w in StatsWindow.entries) {
-            runCatching { outboxEnqueuer.enqueueStats(statsRepository.localStats(w).toPush(w, nowMs), nowMs) }
-                .onFailure { Timber.w(it, "stats push failed for %s", w.wire) }
         }
     }
 

@@ -35,7 +35,7 @@ private const val LOG_MARKER_LANES = 3f
 internal const val LOG_MARKER_BAND_DP =
     LOG_MARKER_FOOT_DP + LOG_MARKER_LANES * LOG_MARKER_DP + (LOG_MARKER_LANES - 1) * LOG_MARKER_LANE_GAP_DP
 
-/** One alpha for every log: outbox has no SENT state, no per-mark server claim can be made. */
+/** One alpha for every log: outbox has no SENT state, no per-mark delivery claim can be made. */
 internal const val LOG_MARKER_ALPHA = 0.85f
 
 /** Distance within which two marks of one lane combine. */

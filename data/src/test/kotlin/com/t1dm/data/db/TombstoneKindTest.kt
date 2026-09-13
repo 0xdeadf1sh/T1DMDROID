@@ -4,12 +4,12 @@ import com.t1dm.core.model.CurveKind
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
-/** `kind` is raw TEXT, and the wire types only two of the three. */
+/** `kind` is raw TEXT. */
 class TombstoneKindTest {
 
     private fun tombstone(kind: String) = EventTombstoneEntity(
         clientId = "c", kind = kind, tsMs = 0L, tzOffsetMin = 0,
-        updatedAt = 0L, createdAtMs = 0L, pushEnqueuedAtMs = null,
+        updatedAt = 0L, createdAtMs = 0L,
     )
 
     @Test

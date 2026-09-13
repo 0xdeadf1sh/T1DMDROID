@@ -36,10 +36,6 @@ interface CgmSourceDao {
     @Query("SELECT sourceId FROM cgm_source WHERE sensorModelId = :sensorModelId ORDER BY addedAtMs, sourceId")
     fun observeIdsForSensorModel(sensorModelId: String): Flow<List<String>>
 
-    /** One-shot [observeIdsForSensorModel], for callers already inside a transaction. */
-    @Query("SELECT sourceId FROM cgm_source WHERE sensorModelId = :sensorModelId ORDER BY addedAtMs, sourceId")
-    suspend fun idsForSensorModel(sensorModelId: String): List<String>
-
     /** Exactly-one-authoritative: clear all, then set the row. Run inside a @Transaction. */
     @Query("UPDATE cgm_source SET authoritative = 0")
     suspend fun clearAuthoritative()
@@ -133,12 +129,6 @@ interface CgmReadingDao {
 
     @Query("SELECT * FROM cgm_reading WHERE sourceId = :sourceId AND tsMs = :ts LIMIT 1")
     suspend fun byTs(sourceId: String, ts: Long): CgmReadingEntity?
-
-    /** Spans model class, not source; sample follows whichever held authority (avoids reimport). */
-    @Query(
-        "SELECT EXISTS(SELECT 1 FROM cgm_reading WHERE sourceId IN (:sourceIds) AND tsMs = :ts)",
-    )
-    suspend fun existsForSources(sourceIds: List<String>, ts: Long): Boolean
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAll(readings: List<CgmReadingEntity>)
@@ -257,14 +247,6 @@ interface SampleDao {
     @Query("SELECT MAX(ts) FROM sample")
     fun observeMaxTs(): Flow<Long?>
 
-    /** Test spans EVERY source (sample isn't source-scoped), else fakes a missing history. */
-    @Query(
-        "SELECT * FROM sample WHERE bgMgdl IS NOT NULL AND NOT EXISTS (" +
-            "SELECT 1 FROM cgm_reading WHERE cgm_reading.tsMs = sample.ts" +
-            ") ORDER BY ts",
-    )
-    suspend fun bgSlotsMissingReading(): List<SampleEntity>
-
     @Query("SELECT * FROM sample WHERE ts BETWEEN :fromMs AND :toMs ORDER BY ts")
     suspend fun rangeList(fromMs: Long, toMs: Long): List<SampleEntity>
 
@@ -317,19 +299,11 @@ interface LoggedDoseDao {
 
     @Upsert suspend fun upsert(dose: LoggedDoseEntity)
 
-    /** Conflicts on unique clientId (catch-up can't duplicate); -1 if held; sample untouched. */
-    @Insert(onConflict = OnConflictStrategy.IGNORE)
-    suspend fun insertIgnore(dose: LoggedDoseEntity): Long
-
     @Query("SELECT * FROM logged_dose WHERE tsMs BETWEEN :fromMs AND :toMs ORDER BY tsMs")
     suspend fun inRange(fromMs: Long, toMs: Long): List<LoggedDoseEntity>
 
     @Query("SELECT * FROM logged_dose WHERE tsMs BETWEEN :fromMs AND :toMs ORDER BY tsMs")
     fun observeRange(fromMs: Long, toMs: Long): Flow<List<LoggedDoseEntity>>
-
-    /** The dose half of the event high-water mark, max'd with [LoggedMealDao.latestTs]. */
-    @Query("SELECT MAX(tsMs) FROM logged_dose")
-    suspend fun latestTs(): Long?
 
     @Update suspend fun update(dose: LoggedDoseEntity)
 
@@ -382,14 +356,6 @@ interface LoggedMealDao {
     @Insert suspend fun insert(meal: LoggedMealEntity): Long
 
     @Upsert suspend fun upsert(meal: LoggedMealEntity)
-
-    /** Conflicts on unique clientId (catch-up can't duplicate); -1 if held; sample untouched. */
-    @Insert(onConflict = OnConflictStrategy.IGNORE)
-    suspend fun insertIgnore(meal: LoggedMealEntity): Long
-
-    /** The meal half of the event high-water mark, max'd with [LoggedDoseDao.latestTs]. */
-    @Query("SELECT MAX(tsMs) FROM logged_meal")
-    suspend fun latestTs(): Long?
 
     @Update suspend fun update(meal: LoggedMealEntity)
 
@@ -490,19 +456,11 @@ interface OutboxDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun enqueue(item: OutboxEntity): Long
 
-    /** One destination only: a shared batch lets the older lane's backlog take every slot. */
     @Query(
-        "SELECT * FROM outbox WHERE state = :state AND nextAttemptMs <= :nowMs AND kind = :kind " +
+        "SELECT * FROM outbox WHERE state = :state AND nextAttemptMs <= :nowMs " +
             "ORDER BY createdAtMs, id LIMIT :limit",
     )
-    suspend fun dueBatchOfKind(state: OutboxState, nowMs: Long, kind: OutboxKind, limit: Int): List<OutboxEntity>
-
-    /** The other lane; see [dueBatchOfKind]. */
-    @Query(
-        "SELECT * FROM outbox WHERE state = :state AND nextAttemptMs <= :nowMs AND kind != :kind " +
-            "ORDER BY createdAtMs, id LIMIT :limit",
-    )
-    suspend fun dueBatchExcludingKind(state: OutboxState, nowMs: Long, kind: OutboxKind, limit: Int): List<OutboxEntity>
+    suspend fun dueBatch(state: OutboxState, nowMs: Long, limit: Int): List<OutboxEntity>
 
     @Query("SELECT COUNT(*) FROM outbox")
     fun observeDepth(): Flow<Int>
@@ -512,10 +470,6 @@ interface OutboxDao {
 
     @Query("SELECT MIN(createdAtMs) FROM outbox")
     suspend fun oldestCreatedAt(): Long?
-
-    /** Re-mirror walk infers delivered from absence; bridge row (bound elsewhere) mustn't count. */
-    @Query("SELECT MIN(createdAtMs) FROM outbox WHERE kind != :excluded")
-    suspend fun oldestCreatedAtExcluding(excluded: OutboxKind): Long?
 
     /** Any state, unlike deleteByDedupKeyInState (spares INFLIGHT for no-idempotency hosts). */
     @Query("DELETE FROM outbox WHERE dedupKey = :dedupKey")
@@ -596,46 +550,6 @@ interface PredictionDao {
 
     @Query("DELETE FROM prediction")
     suspend fun deleteAll()
-}
-
-@Dao
-interface ServerProfileDao {
-    @Upsert suspend fun upsert(profile: ServerProfileEntity)
-
-    @Query("SELECT * FROM server_profile ORDER BY createdAtMs")
-    fun observeAll(): Flow<List<ServerProfileEntity>>
-
-    @Query("SELECT * FROM server_profile WHERE active = 1 LIMIT 1")
-    fun observeActive(): Flow<ServerProfileEntity?>
-
-    @Query("SELECT * FROM server_profile WHERE active = 1 LIMIT 1")
-    suspend fun active(): ServerProfileEntity?
-
-    @Query("SELECT * FROM server_profile WHERE id = :id")
-    suspend fun byId(id: String): ServerProfileEntity?
-
-    @Query("UPDATE server_profile SET active = 0")
-    suspend fun clearActive()
-
-    @Query("UPDATE server_profile SET active = 1 WHERE id = :id")
-    suspend fun setActive(id: String)
-
-    @Query("DELETE FROM server_profile WHERE id = :id")
-    suspend fun delete(id: String)
-
-    @Query("DELETE FROM server_profile")
-    suspend fun deleteAll()
-
-    /** rw token is NOT a column (lives in Keystore); this query can't leak it into a backup. */
-    @Query("SELECT * FROM server_profile ORDER BY createdAtMs")
-    suspend fun all(): List<ServerProfileEntity>
-
-    /** See [CgmSourceDao.authoritativeCount]. */
-    @Query("SELECT COUNT(*) FROM server_profile WHERE active = 1")
-    suspend fun activeCount(): Int
-
-    @Insert(onConflict = OnConflictStrategy.IGNORE)
-    suspend fun insertIgnoreAll(rows: List<ServerProfileEntity>): List<Long>
 }
 
 @Dao
@@ -1086,24 +1000,13 @@ interface ExerciseFixDao {
     suspend fun pageFrom(sessionId: Long, afterTs: Long, afterId: Long, limit: Int): List<ExerciseFixEntity>
 }
 
-/** Keep-forever: dropping a tombstone re-opens resurrection hole; phone can't know retention. */
+/** Keep-forever: dropping a tombstone lets a restore resurrect what it deleted. */
 @Dao
 interface EventTombstoneDao {
     @Upsert suspend fun upsert(row: EventTombstoneEntity)
 
     @Query("SELECT * FROM event_tombstone WHERE clientId = :clientId")
     suspend fun byClientId(clientId: String): EventTombstoneEntity?
-
-    /** Tombstone term in high-water mark (else deletes re-hydrate); [kinds] is WIRE kinds only. */
-    @Query("SELECT MAX(tsMs) FROM event_tombstone WHERE kind IN (:kinds)")
-    suspend fun latestTs(kinds: List<String>): Long?
-
-    /** Connect-time replay's work list: death between delete and enqueue, or queue-cap eviction. */
-    @Query("SELECT * FROM event_tombstone WHERE pushEnqueuedAtMs IS NULL ORDER BY createdAtMs")
-    suspend fun unpushed(): List<EventTombstoneEntity>
-
-    @Query("UPDATE event_tombstone SET pushEnqueuedAtMs = :atMs WHERE clientId = :clientId")
-    suspend fun markPushed(clientId: String, atMs: Long)
 
     /** `logged_dose` cannot answer this: the row the duration would be read from is gone. */
     @Query("SELECT MAX(actingUntilMs) FROM event_tombstone WHERE kind = :kind")

@@ -48,8 +48,6 @@ fun ModelsScreen(
     state: InferenceState,
     onSelect: (String) -> Unit,
     onOpen: (String) -> Unit,
-    pendingUpdates: Set<String> = emptySet(),
-    onApplyUpdate: (String) -> Unit = {},
     onDelete: (String) -> Unit = {},
     onOpenAdapters: (String) -> Unit = {},
 ) {
@@ -77,7 +75,7 @@ fun ModelsScreen(
             if (state.running.isEmpty()) {
                 item {
                     Text(
-                        "No models loaded — sync from Settings → Server",
+                        "No models loaded",
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 }
@@ -87,10 +85,8 @@ fun ModelsScreen(
                         model = model,
                         prediction = state.predictions.firstOrNull { it.modelId == model.modelId },
                         meta = state.metaOf(model.modelId),
-                        updateAvailable = model.modelId in pendingUpdates,
                         onSelect = onSelect,
                         onOpen = onOpen,
-                        onApplyUpdate = onApplyUpdate,
                         onRequestDelete = { confirmDelete = it },
                         onOpenAdapters = onOpenAdapters,
                     )
@@ -128,10 +124,8 @@ private fun ModelRow(
     model: RunningModel,
     prediction: ModelPrediction?,
     meta: ModelMeta?,
-    updateAvailable: Boolean,
     onSelect: (String) -> Unit,
     onOpen: (String) -> Unit,
-    onApplyUpdate: (String) -> Unit,
     onRequestDelete: (String) -> Unit,
     onOpenAdapters: (String) -> Unit = {},
 ) {
@@ -178,18 +172,6 @@ private fun ModelRow(
                 fontFamily = FontFamily.Monospace,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-        }
-        if (updateAvailable) {
-            Text(
-                "Update downloaded — not applied",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(top = 4.dp),
-            )
-            // Swaps the artifact under a possibly-dosing model, so never silent.
-            OutlinedButton(
-                onClick = { haptics.perform(HapticEvent.Commit); onApplyUpdate(model.modelId) },
-            ) { Text("Apply update") }
         }
         OutlinedButton(
             onClick = { haptics.perform(HapticEvent.Tap); onOpenAdapters(model.modelId) },

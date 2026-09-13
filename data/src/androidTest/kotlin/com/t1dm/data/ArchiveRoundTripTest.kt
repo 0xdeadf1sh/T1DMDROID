@@ -27,7 +27,6 @@ import com.t1dm.data.db.PaintStrokeBlob
 import com.t1dm.data.db.PaintStrokeEntity
 import com.t1dm.data.db.SavedMealEntity
 import com.t1dm.data.db.SavedMealItemEntity
-import com.t1dm.data.db.ServerProfileEntity
 import com.t1dm.data.db.toBlob
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.runTest
@@ -99,7 +98,6 @@ class ArchiveRoundTripTest {
         assertEquals(1, target.insulinTypeDao().allCustom().size)
         assertEquals(1, target.paintStrokeDao().pageFrom(Long.MIN_VALUE, 100).size)
         assertEquals(1, target.cgmSourceDao().all().size)
-        assertEquals(1, target.serverProfileDao().all().size)
         assertEquals(1, target.savedMealDao().allMeals().size)
         assertEquals(2, target.savedMealDao().allItems().size)
         assertEquals(1, target.conformalDeltaDao().all().size)
@@ -227,7 +225,7 @@ class ArchiveRoundTripTest {
     }
 
     @Test
-    fun anArchivedEventDoesNotDuplicateOneTheServerAlreadyRehydrated() = runTest {
+    fun anArchivedEventDoesNotDuplicateOneAlreadyHere() = runTest {
         populate(source)
         val bytes = archiveOf(source)
         target.loggedDoseDao().insert(dose(0))
@@ -277,20 +275,6 @@ class ArchiveRoundTripTest {
             SOURCE_ID,
             target.cgmSourceDao().authoritativeSourceId(),
         )
-    }
-
-    @Test
-    fun aRestoredProfileTakesTheOneThatWasActive() = runTest {
-        source.serverProfileDao().upsert(
-            ServerProfileEntity(
-                id = "profile-0", label = "old", baseUrl = "http://10.0.0.9:8080",
-                active = false, createdAtMs = 0L, updatedAtMs = 0L,
-            ),
-        )
-        populate(source) // adds profile-1, active = true
-        restoreInto(target, archiveOf(source))
-        assertEquals(1, target.serverProfileDao().activeCount())
-        assertEquals("profile-1", target.serverProfileDao().active()!!.id)
     }
 
     @Test
@@ -512,12 +496,6 @@ class ArchiveRoundTripTest {
         )
         db.paintStrokeDao().insert(strokeRow())
         db.conformalDeltaDao().upsert(conformalRow())
-        db.serverProfileDao().upsert(
-            ServerProfileEntity(
-                id = "profile-1", label = "home", baseUrl = "http://10.0.0.2:8080",
-                active = true, createdAtMs = 1L, updatedAtMs = 2L,
-            ),
-        )
         val runId = db.exerciseSessionDao().insert(boutRow(BOUT_RUN, "RUN"))
         db.exerciseFixDao().insertAll(List(FIXES) { fix(runId, it) })
         db.exerciseSessionDao().insert(

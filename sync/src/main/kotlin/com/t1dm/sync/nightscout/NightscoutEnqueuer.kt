@@ -7,16 +7,15 @@ import com.t1dm.data.db.NS_ENTRY_DEDUP_PREFIX
 import com.t1dm.data.db.NS_TREATMENT_DEDUP_PREFIX
 import com.t1dm.data.db.OutboxKind
 import com.t1dm.sync.OutboxRequest
-import com.t1dm.sync.SyncJson
 import kotlinx.serialization.encodeToString
 
 /** Deterministic in phone-minted client_id, so undo can name the row after rowid is forgotten. */
 fun nsTreatmentDedupKey(clientId: String): String = "$NS_TREATMENT_DEDUP_PREFIX$clientId"
 
-/** Files NIGHTSCOUT rows in the same outbox as OutboxEnqueuer; caller checks bridge configured. */
+/** Files NIGHTSCOUT rows in the outbox; caller checks bridge configured. */
 class NightscoutEnqueuer(private val repo: OutboxSink) {
 
-    /** Like INGEST, EMPTY payload; drainer resolves sample/trend at drain time, coalescing. */
+    /** EMPTY payload: drainer resolves sample/trend at drain time, coalescing. */
     suspend fun enqueueEntry(gridTsMs: Long, nowMs: Long): Long = repo.enqueue(
         kind = OutboxKind.NIGHTSCOUT,
         dedupKey = "$NS_ENTRY_DEDUP_PREFIX$gridTsMs",
@@ -24,7 +23,7 @@ class NightscoutEnqueuer(private val repo: OutboxSink) {
         nowMs = nowMs,
     )
 
-    /** holdMs is the withdrawal window, as on T1DMSERVER's push; undo takes back both copies. */
+    /** holdMs is the withdrawal window: an undo inside it recalls the copy unsent. */
     suspend fun enqueueMeal(meal: LoggedMealEntity, nowMs: Long, holdMs: Long = 0L): Long =
         enqueueTreatment(meal.clientId, listOf(meal.toNsTreatment()), nowMs, holdMs)
 
@@ -42,7 +41,7 @@ class NightscoutEnqueuer(private val repo: OutboxSink) {
     ): Long = repo.enqueue(
         kind = OutboxKind.NIGHTSCOUT,
         dedupKey = nsTreatmentDedupKey(clientId),
-        payload = SyncJson.encodeToString(
+        payload = NsJson.encodeToString(
             OutboxRequest("POST", "/api/v1/treatments", NsJson.encodeToString(treatments)),
         ).toByteArray(Charsets.UTF_8),
         nowMs = nowMs,

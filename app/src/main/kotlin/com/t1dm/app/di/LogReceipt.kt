@@ -6,14 +6,12 @@ import java.time.format.DateTimeFormatter
 
 enum class LoggedEventKind { MEAL, DOSE }
 
-/** [tsMs] grid-snap time; [clientId] phone-minted (§3.2); [outboxId] null = nothing enqueued. */
+/** [tsMs] grid-snap time; [clientId] phone-minted. */
 data class LogHandle(
     val kind: LoggedEventKind,
     val rowId: Long,
     val clientId: String,
     val tsMs: Long,
-    val outboxId: Long?,
-    val dedupKey: String?,
     val label: String,
     val caveats: List<String> = emptyList(),
 )

@@ -122,51 +122,6 @@ class CrossSensorWindowTest {
         assertEquals(120.0, set.windows.single().realizedBg.first(), 1e-9)
     }
 
-    /** `bgSource` null pre-v15, can't attribute a slot: gap set = slots NO sensor covers. */
-    @Test
-    fun theReconcileSkipsSlotsAnotherSensorAlreadyCovers() = runTest {
-        repo.upsertSource(descriptor(worn), authoritative = false, nowMs = t0)
-        repo.upsertSource(descriptor(truthSrc), authoritative = true, nowMs = t0)
-
-        // Five slots the outgoing sensor measured and projected; the incoming one has none of them.
-        for (i in 0 until 5) {
-            val ts = t0 + i * step
-            repo.upsertReading(reading(worn, ts, 148))
-            db.sampleDao().upsert(
-                SampleEntity(
-                    ts = ts, tzOffsetMin = 0, bgMgdl = 148, bgSource = null,
-                    bgProvenance = ReadingProvenance.MEASURED, bgFlag = ReadingFlag.NORMAL,
-                    steps = null, mood = null, hr = null, sleep = null, exercise = null,
-                    updatedAt = ts,
-                ),
-            )
-        }
-        // The slot no sensor covers — what the reconcile exists to recover.
-        val orphan = t0 + 10 * step
-        db.sampleDao().upsert(
-            SampleEntity(
-                ts = orphan, tzOffsetMin = 0, bgMgdl = 101, bgSource = null,
-                bgProvenance = ReadingProvenance.MEASURED, bgFlag = ReadingFlag.NORMAL,
-                steps = null, mood = null, hr = null, sleep = null, exercise = null,
-                updatedAt = orphan,
-            ),
-        )
-
-        val inserted = repo.reconcileReadingsFromSamples()
-
-        assertEquals("only the uncovered slot may be filled", 1, inserted)
-        assertEquals(
-            "the incoming sensor must not be given the outgoing one's readings",
-            null,
-            db.cgmReadingDao().byTs(truthSrc.value, t0),
-        )
-        assertEquals(
-            "and the genuinely missing slot is recovered",
-            101,
-            db.cgmReadingDao().byTs(truthSrc.value, orphan)?.bgMgdl,
-        )
-    }
-
     private companion object {
         const val MODEL = "m"
     }

@@ -17,7 +17,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 
-/** No server dep, :data below :sync; runs on default dispatcher; sparse window yields EMPTY. */
+/** :data below :sync; runs on default dispatcher; sparse window yields EMPTY. */
 class StatsRepository(
     private val repository: T1dmRepository,
     private val native: NativeCore,

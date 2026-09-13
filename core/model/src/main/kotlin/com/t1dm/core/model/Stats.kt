@@ -165,7 +165,7 @@ data class StatsComposite(
     val recomputed: Boolean,
 )
 
-/** [wire] is the server contract's serde form. */
+/** [wire] is the short spelling: `7d`, `30d`, `90d`. */
 enum class StatsWindow(val wire: String, val days: Int) {
     D7("7d", 7),
     D30("30d", 30),

@@ -615,16 +615,6 @@ class CgmScanService : LifecycleService() {
                     repeatArmed = false
                 }
             }
-            ACTION_SET_SERVER -> configureServer(
-                url = intent.getStringExtra(EXTRA_URL) ?: "http://127.0.0.1:8443",
-                token = intent.getStringExtra(EXTRA_TOKEN).orEmpty(),
-                label = intent.getStringExtra(EXTRA_LABEL) ?: "local",
-            )
-            // Pages GET /v1/series from the start and LWW-merges into `sample`.
-            ACTION_RESYNC -> lifecycleScope.launch {
-                val merged = container.resyncFromServer()
-                Timber.tag(TAG).i("RESYNC merged=%d rows", merged)
-            }
             ACTION_SEED_CONTEXT -> seedMeasuredContext(intent.getDoubleExtra(EXTRA_HOURS, 25.0))
             ACTION_RUN_GRID_TICK -> lifecycleScope.launch {
                 container.inferenceController.refreshModels()
@@ -742,16 +732,6 @@ class CgmScanService : LifecycleService() {
                 )
             }
             Timber.tag(TAG).i("SEED_CONTEXT hours=%.1f steps=%d src=%s", hours, steps, src.value)
-        }
-    }
-
-    /** Drives the REAL [com.t1dm.app.di.AppContainer.saveServerProfile] → health → drain path. */
-    private fun configureServer(url: String, token: String, label: String) {
-        lifecycleScope.launch {
-            container.saveServerProfile(label, url, token)
-            val health = container.checkServerHealth()
-            Timber.tag(TAG).i("SET_SERVER url=%s label=%s health=%s", url, label, health)
-            container.syncManager.drainNow()
         }
     }
 
@@ -918,8 +898,6 @@ class CgmScanService : LifecycleService() {
         const val ACTION_FORCE_PREDICT = "com.t1dm.app.FORCE_PREDICT"
         /** Delivered by [AlertRepeatScheduler] via [com.t1dm.app.notify.AlertRepeatReceiver]. */
         const val ACTION_ALERT_REPEAT = AlertRepeatScheduler.ACTION_ALERT_REPEAT
-        const val ACTION_SET_SERVER = "com.t1dm.app.SET_SERVER"
-        const val ACTION_RESYNC = "com.t1dm.app.RESYNC"
         const val ACTION_SEED_CONTEXT = "com.t1dm.app.SEED_CONTEXT"
         const val ACTION_RUN_GRID_TICK = "com.t1dm.app.RUN_GRID_TICK"
         const val ACTION_SET_WARMUP = "com.t1dm.app.SET_WARMUP"
@@ -938,9 +916,6 @@ class CgmScanService : LifecycleService() {
         const val EXTRA_WARMUP = "warmup"
         const val EXTRA_TREND = "trend"
         const val EXTRA_CUMULATIVE = "cumulative"
-        const val EXTRA_URL = "url"
-        const val EXTRA_TOKEN = "token"
-        const val EXTRA_LABEL = "label"
         const val EXTRA_HOURS = "hours"
         const val EXTRA_GRAMS = "grams"
         const val EXTRA_GI = "gi"

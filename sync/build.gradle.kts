@@ -23,7 +23,7 @@ dependencies {
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.timber)
-    // `api`: an injectable default on the client/stream constructors, so it crosses into :app's DI.
+    // `api`: an injectable default on the client constructor, so it crosses into :app's DI.
     api(libs.okhttp)
 
     // Room entity/DAO types cross the seam; the DB itself is built in :app.

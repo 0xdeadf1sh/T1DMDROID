@@ -8,7 +8,7 @@ value class CgmSourceId(val value: String) {
         val DEBUG = CgmSourceId("aidexx:DEBUG")
     }
 
-    /** Non-identifying wire label (bg_source); hashes vendor:serial; 16 bytes, 32-bit bruteable. */
+    /** Non-identifying label (bg_source); hashes vendor:serial; 16 bytes, 32-bit bruteable. */
     val opaque: String
         get() {
             val digest = java.security.MessageDigest.getInstance("SHA-256").digest(value.toByteArray())

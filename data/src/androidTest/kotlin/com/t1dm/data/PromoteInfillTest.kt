@@ -116,7 +116,7 @@ class PromoteInfillTest {
         // `bgSource` is an assertion about which SENSOR produced the number, and none did.
         assertNull(sample.bgSource)
 
-        // The band survives, and it is the only copy: the wire carries a boolean and no fan.
+        // The band survives, and it is the only copy.
         assertEquals(2, db.bgInfillDao().span(spanStart).size)
         assertTrue(db.bgInfillDao().span(spanStart).all { it.promotedAtMs != null })
     }
@@ -173,7 +173,7 @@ class PromoteInfillTest {
         assertEquals(2, db.bgInfillDao().span(spanStart).size)
     }
 
-    /** Demotion removes only what is still a reconstruction, and clears the slot for the wire. */
+    /** Demotion removes only what is still a reconstruction, and clears the slot. */
     @Test
     fun demotion_removes_the_reconstruction_and_leaves_a_measurement_alone() = runTest {
         val spanStart = seedPromotableSpan()

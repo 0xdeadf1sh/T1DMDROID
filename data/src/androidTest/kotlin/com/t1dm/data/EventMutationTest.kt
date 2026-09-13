@@ -65,7 +65,7 @@ class EventMutationTest {
             tzOffsetMin = 0, note = "NovoRapid", updatedAt = nowMs, loggedAtMs = nowMs,
         )
 
-    /** Tombstone outranks the row even with no clock advance (SPEC/invariants.md §7). */
+    /** Tombstone outranks the row even with no clock advance, else a restore revives it. */
     @Test
     fun deleting_a_dose_leaves_a_tombstone_with_a_strictly_newer_stamp() = runTest {
         val row = repo.logLoggedDose(dose())
@@ -81,7 +81,6 @@ class EventMutationTest {
         )
         assertNull("the event itself is gone", db.loggedDoseDao().byId(row.id))
         assertNotNull(db.eventTombstoneDao().byClientId(row.clientId))
-        assertNull("nothing has filed its push yet", db.eventTombstoneDao().byClientId(row.clientId)!!.pushEnqueuedAtMs)
     }
 
     /** /api/v1 has no update for a landed treatment; bridged created_at derives from updatedAt. */
@@ -114,38 +113,6 @@ class EventMutationTest {
 
         assertFalse(repo.withdrawEditedBridgedTreatment(row.clientId))
         assertNotNull("and the row it could not recall is still queued", db.outboxDao().byId(id))
-    }
-
-    /** Without the tombstone term the mark moves back and a widened pull re-hydrates it. */
-    @Test
-    fun deleting_the_newest_event_does_not_walk_the_catch_up_cursor_backward() = runTest {
-        val older = repo.logLoggedDose(dose(ts = nowMs - 300_000L))
-        val newest = repo.logLoggedDose(dose(ts = nowMs))
-        assertEquals(newest.tsMs, repo.newestEventTs())
-
-        repo.tombstoneLoggedDose(newest.id, nowMs + 1)
-
-        assertEquals(
-            "the mark stays at the deleted event's ts, not the survivor's",
-            newest.tsMs,
-            repo.newestEventTs(),
-        )
-        assertNotNull(db.loggedDoseDao().byId(older.id))
-    }
-
-    /** A catch-up must not resurrect a deleted event, yet must admit a genuinely newer one. */
-    @Test
-    fun hydration_refuses_an_event_the_local_record_has_deleted() = runTest {
-        val row = repo.logLoggedDose(dose())
-        val tomb = repo.tombstoneLoggedDose(row.id, nowMs)!!
-
-        val stale = dose().copy(clientId = row.clientId, updatedAt = tomb.updatedAt - 500)
-        assertEquals("a stale redelivery must be refused", -1L, repo.hydrateDoseEvent(stale))
-        assertNull(db.loggedDoseDao().byClientId(row.clientId))
-
-        val fresh = dose().copy(clientId = row.clientId, updatedAt = tomb.updatedAt + 500)
-        assertTrue(repo.hydrateDoseEvent(fresh) > 0)
-        assertNotNull(db.loggedDoseDao().byClientId(row.clientId))
     }
 
     /** Rail window is the LATER of pre/post-edit action ends; post-edit alone leaves stale IOB. */

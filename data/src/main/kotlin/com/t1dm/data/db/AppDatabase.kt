@@ -23,7 +23,6 @@ import kotlinx.coroutines.Dispatchers
         KvEntity::class,
         HwTelemetryEntity::class,
         PredictionEntity::class,
-        ServerProfileEntity::class,
         LoggedDoseEntity::class,
         LoggedMealEntity::class,
         LoggedExerciseEntity::class,
@@ -40,7 +39,7 @@ import kotlinx.coroutines.Dispatchers
         ExerciseFixEntity::class,
         EventTombstoneEntity::class,
     ],
-    version = 28,
+    version = 29,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -56,7 +55,6 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun kvDao(): KvDao
     abstract fun hwTelemetryDao(): HwTelemetryDao
     abstract fun predictionDao(): PredictionDao
-    abstract fun serverProfileDao(): ServerProfileDao
     abstract fun loggedDoseDao(): LoggedDoseDao
     abstract fun loggedMealDao(): LoggedMealDao
     abstract fun loggedExerciseDao(): LoggedExerciseDao
@@ -76,7 +74,7 @@ abstract class AppDatabase : RoomDatabase() {
         const val NAME = "t1dm.db"
 
         /** Must equal @Database version; every branch bumps — a branch-only enum throws on read. */
-        const val SCHEMA_VERSION = 27
+        const val SCHEMA_VERSION = 29
 
         /** [FoodFts] isn't a Room entity: fresh install creates it, upgrade via M4_5, same DDL. */
         fun build(context: Context): AppDatabase =

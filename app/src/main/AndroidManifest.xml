@@ -38,11 +38,6 @@
          claimed `location` would refuse to start for anyone who declines it. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
 
-    <!-- QR token scan (Phase 7C item 12): the ZXing CaptureActivity uses the camera to read a
-         server-token / {baseUrl,token} QR. Optional feature — the token can always be typed. -->
-    <uses-permission android:name="android.permission.CAMERA" />
-    <uses-feature android:name="android.hardware.camera" android:required="false" />
-
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
 
     <application
@@ -89,18 +84,6 @@
             android:name=".service.ExerciseService"
             android:exported="false"
             android:foregroundServiceType="location" />
-
-        <!-- Issue 7 — share camera-capture temp files (meal photos) with the camera app via a
-             content:// Uri; also grants read to the bytes we re-open for the multipart upload. -->
-        <provider
-            android:name="androidx.core.content.FileProvider"
-            android:authorities="${applicationId}.fileprovider"
-            android:exported="false"
-            android:grantUriPermissions="true">
-            <meta-data
-                android:name="android.support.FILE_PROVIDER_PATHS"
-                android:resource="@xml/file_paths" />
-        </provider>
 
         <!-- Deliberately NOT directBootAware: AppContainer opens credential-encrypted Room and touches
              external storage while constructing, so a process started in the direct-boot window would

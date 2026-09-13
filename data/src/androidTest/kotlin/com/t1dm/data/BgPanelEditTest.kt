@@ -152,20 +152,6 @@ class BgPanelEditTest {
         assertEquals(100.0, db.sampleDao().byTs(t0)?.bgMgdl?.toDouble())
     }
 
-    /** A cut and its undo both push the slot, or the phone and the server disagree about it. */
-    @Test
-    fun a_cut_and_its_undo_both_enqueue_the_slot() = runTest {
-        seedThreeReadings()
-        db.outboxDao().deleteAllRows()
-
-        val taken = repo.cutBgRange(t0, t0, now)
-        assertTrue("the cut is pushed", db.outboxDao().count() > 0)
-
-        db.outboxDao().deleteAllRows()
-        repo.restoreBgCut(taken, now + step)
-        assertTrue("and so is the restore", db.outboxDao().count() > 0)
-    }
-
     @Test
     fun a_cut_drops_the_unpromoted_fills_that_followed_it() = runTest {
         seedThreeReadings()

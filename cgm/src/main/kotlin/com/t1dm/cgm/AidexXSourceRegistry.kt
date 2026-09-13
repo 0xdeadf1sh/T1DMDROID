@@ -77,11 +77,6 @@ class AidexXSourceRegistry(
         if (persisted.isNotEmpty()) _sources.value = persisted
         _activeIds.value = repository.activeSourceIds().toSet()
         repository.authoritativeSourceId()?.let { _authoritative.value = it }
-
-        // Once per process start so the descriptor reaches the server; deduped in the outbox.
-        persisted.forEach { d ->
-            repository.upsertSource(d, authoritative = d.id == _authoritative.value, lastSeenMs = nowMs())
-        }
     }
 
     /** Every recognised advert decodes/stores regardless of active; authoritative alone decides. */

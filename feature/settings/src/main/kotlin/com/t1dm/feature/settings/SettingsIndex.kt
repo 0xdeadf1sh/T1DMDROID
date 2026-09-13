@@ -29,7 +29,6 @@ enum class SettingsScreenKey(val breadcrumb: String, internal val indexed: Boole
     CURVES("Curve & PK"),
     MODELS("Models"),
     CGM("CGM source"),
-    SERVER("Server"),
     NIGHTSCOUT("Nightscout"),
     WATCH("Watch"),
     POWER("Low power"),
@@ -56,7 +55,6 @@ object SettingsIndex {
         addAll(settingsCurveKnobs)
         addAll(settingsModelsKnobs)
         addAll(settingsCgmKnobs)
-        addAll(settingsServerKnobs)
         addAll(settingsNightscoutKnobs)
         addAll(settingsWatchKnobs)
         addAll(settingsPowerKnobs)

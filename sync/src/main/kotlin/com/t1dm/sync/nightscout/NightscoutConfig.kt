@@ -6,12 +6,10 @@ import java.security.MessageDigest
 /** Only ever built when the bridge is enabled AND both halves are present. */
 data class NightscoutConfig(val baseUrl: String, val secretSha1: String)
 
-/** One copy of each string, for the same reason `ReMirrorKeys` exists. */
+/** One copy of each kv key. */
 object NightscoutKeys {
     const val URL = "ns.url"
     const val ENABLED = "ns.enabled"
-
-    /** Not a server profile: must never appear in `server_profile` as a T1DMSERVER target. */
     const val SECRET_ID = "nightscout"
 }
 

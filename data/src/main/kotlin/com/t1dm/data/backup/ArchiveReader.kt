@@ -138,7 +138,7 @@ class ArchiveReader(private val db: AppDatabase) {
             Archive.T_TOMBSTONE -> {
                 val r = runCatching { Archive.readTombstone(o) }.getOrNull() ?: return s.skip()
                 s.tombstones.add(r)
-                // Forward only: an updatedAt walk-back would let catch-up re-hydrate a deletion.
+                // Forward only: an updatedAt walk-back would let a later restore resurrect a row.
                 val ix = deletions(s)
                 if ((ix[r.clientId] ?: Long.MIN_VALUE) < r.updatedAt) {
                     tx { db.eventTombstoneDao().upsert(r) }
@@ -196,7 +196,7 @@ class ArchiveReader(private val db: AppDatabase) {
             }
             // Held raw: the `active` flag is not the file's to decide. Decoded in `applyBounded`.
             Archive.T_SOURCE -> s.sources.add(o)
-            Archive.T_PROFILE -> s.profiles.add(o)
+            Archive.T_PROFILE -> Unit
             Archive.T_SAVED_MEAL -> {
                 val r = runCatching { readSavedMeal(o) }.getOrNull()
                 if (r == null) s.skip() else s.savedMeals.add(r)
@@ -244,7 +244,7 @@ class ArchiveReader(private val db: AppDatabase) {
         flushLoggedExercise(s)
     }
 
-    /** clientId->stamp; restore bypasses hydrateMealEvent's deletion filter, so mark is a MAX. */
+    /** clientId->stamp; mark is a MAX, never rewinds. */
     private suspend fun deletions(s: MergeState): HashMap<String, Long> =
         s.deletions ?: HashMap<String, Long>().also { m ->
             for (t in db.eventTombstoneDao().all()) m[t.clientId] = t.updatedAt
@@ -438,24 +438,6 @@ class ArchiveReader(private val db: AppDatabase) {
             s.skipped += s.sources.size - rows.size
         }
 
-        if (s.profiles.isNotEmpty()) {
-            val free = db.serverProfileDao().activeCount() == 0
-            val rows = s.profiles.mapNotNull { o ->
-                runCatching { Archive.readProfile(o, active = false) }.getOrNull()
-            }
-            val added = db.serverProfileDao().insertIgnoreAll(rows).count { it != -1L }
-            if (free) {
-                // As for sources; no last-seen for a server, fallback is most-recently-updated.
-                val claimed = s.profiles.firstOrNull { it.bool("ac") == true }?.str("id")
-                val target = claimed?.takeIf { id -> rows.any { it.id == id } }
-                    ?: rows.maxByOrNull { it.updatedAtMs }?.id
-                if (target != null) db.serverProfileDao().setActive(target)
-            }
-            s.applied = s.applied.copy(profiles = added)
-            s.duplicates += rows.size - added
-            s.skipped += s.profiles.size - rows.size
-        }
-
         if (s.conformal.isNotEmpty()) {
             val added = db.conformalDeltaDao().insertIgnoreAll(s.conformal).count { it != -1L }
             s.applied = s.applied.copy(conformal = added)
@@ -520,7 +502,6 @@ class ArchiveReader(private val db: AppDatabase) {
         val conformal = ArrayList<ConformalDeltaEntity>()
         val loras = ArrayList<LoraEntity>()
         val sources = ArrayList<JsonObject>()
-        val profiles = ArrayList<JsonObject>()
         val savedMeals = ArrayList<Pair<Int, SavedMealEntity>>()
         val savedItems = ArrayList<Pair<Int, SavedMealItemEntity>>()
 

@@ -1,17 +1,15 @@
 package com.t1dm.sync
 
-import com.t1dm.core.model.ReadingFlag
-import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.data.db.OutboxDao
 import com.t1dm.data.db.OutboxEntity
 import com.t1dm.data.db.OutboxEvictRow
 import com.t1dm.data.db.OutboxKind
 import com.t1dm.data.db.OutboxState
-import com.t1dm.data.db.SampleEntity
+import com.t1dm.sync.nightscout.NightscoutClient
+import com.t1dm.sync.nightscout.NsJson
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.encodeToString
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -19,36 +17,43 @@ class QueueDrainerTest {
 
     private val dispatchers = TestDispatchers()
 
-    private fun envelope(path: String, body: String = "{}") =
-        SyncJson.encodeToString(OutboxRequest("POST", path, body)).toByteArray()
+    private fun envelope(path: String, body: String = "[]") =
+        NsJson.encodeToString(OutboxRequest("POST", path, body)).toByteArray()
 
-    private fun sample(ts: Long, bg: Int) = SampleEntity(
-        ts = ts, tzOffsetMin = 0, bgMgdl = bg, bgSource = null,
-        bgProvenance = ReadingProvenance.MEASURED, bgFlag = ReadingFlag.NORMAL,
-        steps = null, mood = null,
-        hr = null, sleep = null, exercise = null, updatedAt = ts,
+    private fun row(
+        key: String,
+        createdAtMs: Long,
+        path: String = "/api/v1/treatments",
+        state: OutboxState = OutboxState.PENDING,
+    ) = OutboxEntity(
+        kind = OutboxKind.NIGHTSCOUT,
+        dedupKey = key,
+        payload = envelope(path),
+        createdAtMs = createdAtMs,
+        attempts = 0,
+        nextAttemptMs = 0,
+        state = state,
     )
 
     private fun drainer(
-        dao: FakeOutboxDao,
-        http: SyncHttpClient,
+        dao: OutboxDao,
+        bridge: NightscoutClient,
         config: DrainConfig = DrainConfig(baseBackoffMs = 1_000, jitterFrac = 0.0, maxQueueSize = 100),
         clock: () -> Long = { 10_000L },
-        sampleAt: suspend (Long) -> SampleEntity? = { null },
-    ) = QueueDrainer(dao, http, sampleAt, dispatchers, config, clock, random = { 0.0 })
+    ) = QueueDrainer(dao, { null }, dispatchers, config, clock, random = { 0.0 }, nightscout = bridge)
 
     @Test
     fun drainsFifoAndDeletesOnSuccess() = runTest {
         val dao = FakeOutboxDao()
         // FIFO is by createdAtMs, not insertion order.
-        dao.enqueue(OutboxEntity(kind = OutboxKind.ALERT, dedupKey = "c", payload = envelope("/c"), createdAtMs = 30, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
-        dao.enqueue(OutboxEntity(kind = OutboxKind.ALERT, dedupKey = "a", payload = envelope("/a"), createdAtMs = 10, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
-        dao.enqueue(OutboxEntity(kind = OutboxKind.ALERT, dedupKey = "b", payload = envelope("/b"), createdAtMs = 20, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
-        val http = RecordingHttpClient { _, _ -> ok() }
+        dao.enqueue(row("c", 30, "/c"))
+        dao.enqueue(row("a", 10, "/a"))
+        dao.enqueue(row("b", 20, "/b"))
+        val bridge = RecordingBridge()
 
-        val result = drainer(dao, http).drainOnce()
+        val result = drainer(dao, bridge).drainOnce()
 
-        assertEquals(listOf("/a", "/b", "/c"), http.requests.map { it.path })
+        assertEquals(listOf("/a", "/b", "/c"), bridge.requests.map { it.path })
         assertEquals(3, result.sent)
         assertEquals(0, dao.count())
     }
@@ -56,10 +61,10 @@ class QueueDrainerTest {
     @Test
     fun transientFailureReschedulesWithExponentialBackoff() = runTest {
         val dao = FakeOutboxDao()
-        dao.enqueue(OutboxEntity(kind = OutboxKind.ALERT, dedupKey = "n", payload = envelope("/v1/alerts"), createdAtMs = 1, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
-        val http = RecordingHttpClient { _, _ -> status(500) }
+        dao.enqueue(row("n", 1))
+        val bridge = RecordingBridge({ status(500) })
         var now = 10_000L
-        val d = drainer(dao, http, clock = { now })
+        val d = drainer(dao, bridge, clock = { now })
 
         val r1 = d.drainOnce()
         assertEquals(1, r1.retried)
@@ -80,30 +85,29 @@ class QueueDrainerTest {
     @Test
     fun emptyQueueCostsOneCountAndNoTableWork() = runTest {
         val dao = CountingOutboxDao(FakeOutboxDao())
-        val http = RecordingHttpClient { _, _ -> ok() }
+        val bridge = RecordingBridge()
 
-        val r = QueueDrainer(dao, http, { null }, dispatchers, DrainConfig(), { 10_000L }, { 0.0 }).drainOnce()
+        val r = drainer(dao, bridge).drainOnce()
 
         assertEquals(DrainResult(), r)
         assertEquals(0, dao.resetStateCalls)
         assertEquals(0, dao.evictionRowsCalls)
         assertEquals(0, dao.dueBatchCalls)
-        assertTrue(http.requests.isEmpty())
+        assertTrue(bridge.requests.isEmpty())
     }
 
-    /** Nothing DUE, but the pass must still run or the wedged row is never reclaimed to PENDING. */
+    /** Nothing is DUE, but the pass must run or the wedged row is never reclaimed to PENDING. */
     @Test
     fun inflightOnlyQueueStillRunsTheFullPass() = runTest {
         val inner = FakeOutboxDao()
-        inner.enqueue(OutboxEntity(kind = OutboxKind.ALERT, dedupKey = "w", payload = envelope("/w"), createdAtMs = 1, attempts = 0, nextAttemptMs = 0, state = OutboxState.INFLIGHT))
+        inner.enqueue(row("w", 1, "/w", state = OutboxState.INFLIGHT))
         val dao = CountingOutboxDao(inner)
-        val http = RecordingHttpClient { _, _ -> ok() }
 
-        val r = QueueDrainer(dao, http, { null }, dispatchers, DrainConfig(), { 10_000L }, { 0.0 }).drainOnce()
+        val r = drainer(dao, RecordingBridge()).drainOnce()
 
         assertEquals(1, dao.resetStateCalls)
         assertEquals(1, dao.evictionRowsCalls)
-        assertEquals(2, dao.dueBatchCalls)
+        assertEquals(1, dao.dueBatchCalls)
         assertEquals(1, r.sent)
         assertEquals(0, inner.count())
     }
@@ -123,112 +127,43 @@ class QueueDrainerTest {
             return inner.evictionRows()
         }
 
-        override suspend fun dueBatchOfKind(
-            state: OutboxState,
-            nowMs: Long,
-            kind: OutboxKind,
-            limit: Int,
-        ): List<OutboxEntity> {
+        override suspend fun dueBatch(state: OutboxState, nowMs: Long, limit: Int): List<OutboxEntity> {
             dueBatchCalls++
-            return inner.dueBatchOfKind(state, nowMs, kind, limit)
-        }
-
-        override suspend fun dueBatchExcludingKind(
-            state: OutboxState,
-            nowMs: Long,
-            kind: OutboxKind,
-            limit: Int,
-        ): List<OutboxEntity> {
-            dueBatchCalls++
-            return inner.dueBatchExcludingKind(state, nowMs, kind, limit)
+            return inner.dueBatch(state, nowMs, limit)
         }
     }
 
     @Test
     fun permanentClientErrorIsDropped() = runTest {
         val dao = FakeOutboxDao()
-        dao.enqueue(OutboxEntity(kind = OutboxKind.SERIES, dedupKey = "s", payload = envelope("/v1/series/carbs"), createdAtMs = 1, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
-        val http = RecordingHttpClient { _, _ -> status(400) }
+        dao.enqueue(row("s", 1))
 
-        val r = drainer(dao, http).drainOnce()
-
-        assertEquals(1, r.dropped)
-        assertEquals(0, dao.count())
-    }
-
-    @Test
-    fun authErrorStandsDownWithoutDropping() = runTest {
-        val dao = FakeOutboxDao()
-        dao.enqueue(OutboxEntity(kind = OutboxKind.ALERT, dedupKey = "a", payload = envelope("/a"), createdAtMs = 1, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
-        dao.enqueue(OutboxEntity(kind = OutboxKind.ALERT, dedupKey = "b", payload = envelope("/b"), createdAtMs = 2, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
-        val http = RecordingHttpClient { _, _ -> status(401) }
-
-        val r = drainer(dao, http).drainOnce()
-
-        assertEquals(DrainResult.StandDown.AUTH, r.standDown)
-        assertEquals(0, r.sent)
-        assertEquals(2, dao.count())
-        assertEquals(1, http.requests.size)                  // broke after the first 401
-        assertTrue(dao.snapshot().all { it.state == OutboxState.PENDING })
-    }
-
-    @Test
-    fun noActiveProfileStandsDown() = runTest {
-        val dao = FakeOutboxDao()
-        dao.enqueue(OutboxEntity(kind = OutboxKind.INGEST, dedupKey = "${INGEST_DEDUP_PREFIX}300000", payload = ByteArray(0), createdAtMs = 1, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
-        val http = RecordingHttpClient { _, _ -> throw NoActiveProfileException() }
-
-        val r = drainer(dao, http, sampleAt = { sample(it, 120) }).drainOnce()
-
-        assertEquals(DrainResult.StandDown.NO_PROFILE, r.standDown)
-        assertEquals(1, dao.count())
-        assertEquals(OutboxState.PENDING, dao.snapshot().single().state)
-    }
-
-    @Test
-    fun ingestResolvesCurrentSampleAtDrainTime() = runTest {
-        val dao = FakeOutboxDao()
-        dao.enqueue(OutboxEntity(kind = OutboxKind.INGEST, dedupKey = "${INGEST_DEDUP_PREFIX}300000", payload = ByteArray(0), createdAtMs = 1, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
-        val http = RecordingHttpClient { _, _ -> ok() }
-
-        val r = drainer(dao, http, sampleAt = { ts -> sample(ts, 140) }).drainOnce()
-
-        assertEquals(1, r.sent)
-        assertEquals("/v1/ingest", http.requests.single().path)
-        assertTrue(String(http.requests.single().body!!).contains("\"bg\":140.0"))
-    }
-
-    @Test
-    fun ingestForVanishedSlotIsDropped() = runTest {
-        val dao = FakeOutboxDao()
-        dao.enqueue(OutboxEntity(kind = OutboxKind.INGEST, dedupKey = "${INGEST_DEDUP_PREFIX}300000", payload = ByteArray(0), createdAtMs = 1, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
-        val http = RecordingHttpClient { _, _ -> ok() }
-
-        val r = drainer(dao, http, sampleAt = { null }).drainOnce()
+        val r = drainer(dao, RecordingBridge({ status(400) })).drainOnce()
 
         assertEquals(1, r.dropped)
-        assertEquals(0, http.requests.size)
         assertEquals(0, dao.count())
     }
 
     @Test
     fun rowWithdrawnAfterTheBatchSnapshotIsNeverSent() = runTest {
-        // dueBatch snapshots up front; conditional PENDING→INFLIGHT claim makes WITHDRAWN honest.
+        // dueBatch snapshots up front; conditional PENDING->INFLIGHT keeps undo's WITHDRAWN honest.
         val dao = FakeOutboxDao()
-        dao.enqueue(OutboxEntity(kind = OutboxKind.ALERT, dedupKey = "a", payload = envelope("/a"), createdAtMs = 10, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
-        val doseId = dao.enqueue(OutboxEntity(kind = OutboxKind.DOSE, dedupKey = "dose:x", payload = envelope("/v1/doses"), createdAtMs = 20, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
-        val http = object : NoopSyncHttpClient() {
+        dao.enqueue(row("a", 10, "/a"))
+        val withdrawnId = dao.enqueue(row("ns:treat:x", 20, "/x"))
+        val bridge = object : NightscoutClient {
             val paths = mutableListOf<String>()
             override suspend fun execute(request: SyncRequest): SyncResponse {
                 paths += request.path
-                dao.delete(doseId) // the undo lands while the row ahead is still on the wire
+                dao.delete(withdrawnId) // the undo lands while the row ahead is still on the wire
                 return ok()
             }
+            override suspend fun probe() = "ok"
+            override suspend fun alreadyPosted(request: SyncRequest) = false
         }
 
-        val r = drainer(dao, http).drainOnce()
+        val r = drainer(dao, bridge).drainOnce()
 
-        assertEquals(listOf("/a"), http.paths)
+        assertEquals(listOf("/a"), bridge.paths)
         assertEquals(1, r.sent)
         assertEquals(0, dao.count())
     }
@@ -236,8 +171,8 @@ class QueueDrainerTest {
     @Test
     fun dedupKeyRejectsDuplicateEnqueue() = runTest {
         val dao = FakeOutboxDao()
-        val a = dao.enqueue(OutboxEntity(kind = OutboxKind.INGEST, dedupKey = "${INGEST_DEDUP_PREFIX}300000", payload = ByteArray(0), createdAtMs = 1, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
-        val b = dao.enqueue(OutboxEntity(kind = OutboxKind.INGEST, dedupKey = "${INGEST_DEDUP_PREFIX}300000", payload = ByteArray(0), createdAtMs = 2, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
+        val a = dao.enqueue(row("ns:entry:300000", 1))
+        val b = dao.enqueue(row("ns:entry:300000", 2))
 
         assertTrue(a > 0)
         assertEquals(-1L, b)          // IGNORE on the unique dedupKey
@@ -245,52 +180,31 @@ class QueueDrainerTest {
     }
 
     @Test
-    fun sizeEvictionDropsLowestPriorityOldestFirst() = runTest {
+    fun sizeEvictionDropsOldestFirst() = runTest {
         val dao = FakeOutboxDao()
-        dao.enqueue(OutboxEntity(kind = OutboxKind.ALERT, dedupKey = "1", payload = ByteArray(0), createdAtMs = 10, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
-        dao.enqueue(OutboxEntity(kind = OutboxKind.PHOTO, dedupKey = "2", payload = ByteArray(0), createdAtMs = 20, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
-        dao.enqueue(OutboxEntity(kind = OutboxKind.SERIES, dedupKey = "3", payload = ByteArray(0), createdAtMs = 30, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
-        dao.enqueue(OutboxEntity(kind = OutboxKind.MEAL, dedupKey = "4", payload = ByteArray(0), createdAtMs = 40, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
-        val d = drainer(dao, RecordingHttpClient { _, _ -> ok() }, config = DrainConfig(maxQueueSize = 2, maxAgeMs = Long.MAX_VALUE))
+        dao.enqueue(row("1", 10))
+        dao.enqueue(row("2", 20))
+        dao.enqueue(row("3", 30))
+        dao.enqueue(row("4", 40))
+        val d = drainer(dao, RecordingBridge(), config = DrainConfig(maxQueueSize = 2, maxAgeMs = Long.MAX_VALUE))
 
         val evicted = d.evict(nowMs = 100)
 
         assertEquals(2, evicted)
-        val kinds = dao.snapshot().map { it.kind }.toSet()
-        assertEquals(setOf(OutboxKind.ALERT, OutboxKind.MEAL), kinds)
-    }
-
-    /** The bridge ranks below every server kind; one shared cap would evict all of it first. */
-    @Test
-    fun sizeEvictionKeepsTheBridgeItsReserve() = runTest {
-        val dao = FakeOutboxDao()
-        repeat(20) {
-            dao.enqueue(OutboxEntity(kind = OutboxKind.ALERT, dedupKey = "a$it", payload = ByteArray(0), createdAtMs = it.toLong(), attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
-        }
-        repeat(5) {
-            dao.enqueue(OutboxEntity(kind = OutboxKind.NIGHTSCOUT, dedupKey = "n$it", payload = ByteArray(0), createdAtMs = 100L + it, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
-        }
-        val d = drainer(dao, RecordingHttpClient { _, _ -> ok() }, config = DrainConfig(maxQueueSize = 20, maxAgeMs = Long.MAX_VALUE))
-
-        d.evict(nowMs = 1_000)
-
-        assertEquals(2, dao.snapshot().count { it.kind == OutboxKind.NIGHTSCOUT })
-        assertEquals(20, dao.count())
+        assertEquals(listOf("3", "4"), dao.snapshot().map { it.dedupKey })
     }
 
     @Test
-    fun ageEvictionSparesNonEvictableClinicalKindsButExpiresRegenerable() = runTest {
-        // §3.7: age-eviction is gated on `ageEvictable`, not on priority.
+    fun ageEvictionExpiresRowsPastTheBound() = runTest {
         val dao = FakeOutboxDao()
-        dao.enqueue(OutboxEntity(kind = OutboxKind.ALERT, dedupKey = "old", payload = ByteArray(0), createdAtMs = 0, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
-        dao.enqueue(OutboxEntity(kind = OutboxKind.PHOTO, dedupKey = "old-photo", payload = ByteArray(0), createdAtMs = 0, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
-        dao.enqueue(OutboxEntity(kind = OutboxKind.PHOTO, dedupKey = "new", payload = ByteArray(0), createdAtMs = 9_000, attempts = 0, nextAttemptMs = 0, state = OutboxState.PENDING))
-        val d = drainer(dao, RecordingHttpClient { _, _ -> ok() }, config = DrainConfig(maxQueueSize = 100, maxAgeMs = 5_000))
+        dao.enqueue(row("old", 0))
+        dao.enqueue(row("old-2", 0))
+        dao.enqueue(row("new", 9_000))
+        val d = drainer(dao, RecordingBridge(), config = DrainConfig(maxQueueSize = 100, maxAgeMs = 5_000))
 
         val evicted = d.evict(nowMs = 10_000)   // cutoff = 5_000; both ts-0 rows are old
 
-        assertEquals(1, evicted)
-        assertEquals(setOf(OutboxKind.ALERT, OutboxKind.PHOTO), dao.snapshot().map { it.kind }.toSet())
-        assertEquals(listOf("old", "new"), dao.snapshot().map { it.dedupKey })
+        assertEquals(2, evicted)
+        assertEquals(listOf("new"), dao.snapshot().map { it.dedupKey })
     }
 }

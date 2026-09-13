@@ -10,13 +10,13 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
-/** `rw` token at rest, keyed by profile id; never in the Room DB (backup/export could leak). */
+/** A credential at rest, keyed by id; never in the Room DB (backup/export could leak). */
 interface TokenStore {
     suspend fun get(profileId: String): String?
     suspend fun put(profileId: String, token: String)
     suspend fun remove(profileId: String)
 
-    /** Every profile's `rw` credential at once. */
+    /** Every stored credential at once. */
     suspend fun clearAll()
 }
 
@@ -32,7 +32,7 @@ class InMemoryTokenStore(seed: Map<String, String> = emptyMap()) : TokenStore {
 class KeystoreTokenStore(context: Context) : TokenStore {
     private val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
-    /** One profile's plaintext in heap till put/remove/clearAll/death; keyed by iv:ciphertext. */
+    /** One id's plaintext in heap till put/remove/clearAll/death; keyed by iv:ciphertext. */
     private var cachedFor: String? = null
     private var cachedPacked: String? = null
     private var cachedToken: String? = null

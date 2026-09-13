@@ -37,7 +37,6 @@ class NightscoutClientTest {
         assertEquals("/api/v1/entries", req.path)
     }
 
-    /** Never `NoActiveProfileException`: that stands the whole outbox down. */
     @Test(expected = NightscoutDisabledException::class)
     fun `disabled bridge throws its own exception`() = runTest {
         client(enabled = false).execute(SyncRequest("GET", "/api/v1/status.json", null))

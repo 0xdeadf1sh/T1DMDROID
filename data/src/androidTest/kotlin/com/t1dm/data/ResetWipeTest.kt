@@ -35,7 +35,6 @@ import com.t1dm.data.db.PredictionEntity
 import com.t1dm.data.db.TOMBSTONE_KIND_DOSE
 import com.t1dm.data.db.SavedMealEntity
 import com.t1dm.data.db.SavedMealItemEntity
-import com.t1dm.data.db.ServerProfileEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.runTest
 import org.junit.After
@@ -124,10 +123,6 @@ class ResetWipeTest {
         )
         repo.recordRawAdvert(CgmAdvertRawEntity(sourceId = sourceId.value, rxWallMs = now, rssi = -60, payload = ByteArray(4), crcValid = true, minFromStart = 1))
         repo.recordTelemetry(HwTelemetryEntity(tsMs = now, metric = "exec_ms", modelId = "m", valueReal = 9.0, valueText = null))
-        repo.upsertProfile(
-            ServerProfileEntity(id = "default", label = "srv", baseUrl = "http://x", active = true, createdAtMs = now, updatedAtMs = now),
-            makeActive = true,
-        )
         repo.saveMeal("saved", listOf(SavedMealItemEntity(mealId = 0, foodId = null, name = "rice", grams = 100.0, carbsPer100g = 28.0, gi = 70.0, customCurve = null)), now)
 
         db.predictionDao().upsert(
@@ -188,8 +183,7 @@ class ResetWipeTest {
         db.eventTombstoneDao().upsert(
             EventTombstoneEntity(
                 clientId = "gone-1", kind = TOMBSTONE_KIND_DOSE, tsMs = now, tzOffsetMin = 0,
-                updatedAt = now, createdAtMs = now, pushEnqueuedAtMs = null,
-                actingUntilMs = now + 300_000L,
+                updatedAt = now, createdAtMs = now, actingUntilMs = now + 300_000L,
             ),
         )
         db.loraDao().upsert(
@@ -249,7 +243,7 @@ class ResetWipeTest {
         /** food + insulin_type are absent: they keep their seed rows. */
         val WIPED_EMPTY = listOf(
             "cgm_source", "cgm_reading", "cgm_sample_raw", "sample", "dose_event", "logged_dose",
-            "logged_meal", "basal_schedule", "cgm_advert_raw", "outbox", "prediction", "server_profile",
+            "logged_meal", "basal_schedule", "cgm_advert_raw", "outbox", "prediction",
             "hw_telemetry", "saved_meal", "saved_meal_item", "bg_paint_stroke", "conformal_delta",
             "exercise_session", "exercise_fix", "logged_exercise", "kv",
             "event_tombstone", "lora", "bg_infill",

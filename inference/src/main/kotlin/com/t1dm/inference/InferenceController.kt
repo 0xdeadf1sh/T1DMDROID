@@ -168,7 +168,7 @@ class InferenceController(
                 "${store.refused.size} model(s) on device are built for another compute backend " +
                     "(${store.refused.distinct().joinToString()}) and this build runs none of them"
             discovered.isEmpty() ->
-                "no model — add a server and Sync models (Settings → Server)"
+                "no model — adb push a .pte and its descriptor.json"
             loaded.values.none { it.real } ->
                 listOfNotNull(
                     "running on the StubBackend (no working .pte) — real forecast path blocked",

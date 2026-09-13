@@ -22,7 +22,6 @@ import com.t1dm.data.db.PaintStrokeEntity
 import com.t1dm.data.db.SampleEntity
 import com.t1dm.data.db.SavedMealEntity
 import com.t1dm.data.db.SavedMealItemEntity
-import com.t1dm.data.db.ServerProfileEntity
 import com.t1dm.data.legacySensorModelIdFor
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -60,6 +59,8 @@ object Archive {
     const val T_INSULIN = "insulinType"
     const val T_STROKE = "stroke"
     const val T_SOURCE = "source"
+
+    /** Retired record kind; a restore reads past it. */
     const val T_PROFILE = "profile"
     const val T_CONFORMAL = "conformal"
     const val T_LORA = "lora"
@@ -72,7 +73,7 @@ object Archive {
     /** Without it a restore resurrects everything the patient deleted. */
     const val T_TOMBSTONE = "tombstone"
 
-    /** Only copy of a promoted reconstruction's 90% band; wire carries a boolean, no fan. */
+    /** Only copy of a promoted reconstruction's 90% band. */
     const val T_INFILL = "infill"
     const val T_END = "end"
 
@@ -346,7 +347,6 @@ object Archive {
         w.put("tz", r.tzOffsetMin)
         w.put("ua", r.updatedAt)
         w.put("ca", r.createdAtMs)
-        w.putOrSkip("pe", r.pushEnqueuedAtMs)
         w.putOrSkip("au", r.actingUntilMs)
         w.close()
     }
@@ -358,8 +358,6 @@ object Archive {
         tzOffsetMin = o.int("tz") ?: err("tombstone", "tz"),
         updatedAt = o.long("ua") ?: err("tombstone", "ua"),
         createdAtMs = o.long("ca") ?: err("tombstone", "ca"),
-        // Restored deletion already accounted for server-side; null would re-file every deletion.
-        pushEnqueuedAtMs = o.long("pe") ?: o.long("ca"),
         actingUntilMs = o.long("au"),
     )
 
@@ -544,28 +542,6 @@ object Archive {
             ordinal = o.int("or") ?: -1,
         )
     }
-
-    /** `ac` is a preference, exactly as on [write] for a source. */
-    fun write(w: RecordWriter, r: ServerProfileEntity) {
-        w.open(T_PROFILE)
-        w.put("id", r.id)
-        w.put("lb", r.label)
-        w.put("url", r.baseUrl)
-        w.put("ca", r.createdAtMs)
-        w.put("ua", r.updatedAtMs)
-        w.put("ac", r.active)
-        w.close()
-    }
-
-    /** [active] is the caller's, for the reason given on [readSource]. */
-    fun readProfile(o: JsonObject, active: Boolean) = ServerProfileEntity(
-        id = o.str("id") ?: err("profile", "id"),
-        label = o.str("lb") ?: err("profile", "lb"),
-        baseUrl = o.str("url") ?: err("profile", "url"),
-        active = active,
-        createdAtMs = o.long("ca") ?: err("profile", "ca"),
-        updatedAtMs = o.long("ua") ?: err("profile", "ua"),
-    )
 
     fun write(w: RecordWriter, r: ConformalDeltaEntity) {
         w.open(T_CONFORMAL)
