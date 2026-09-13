@@ -152,7 +152,6 @@ fun GlucoseGraph(
     curveToggles: CurveOverlayToggles = CurveOverlayToggles(),
     // Separate from [curveOverlay], which carries the two MODEL-INPUT curves; steps are measured.
     stepsFrame: StepsFrame? = null,
-    showSteps: Boolean = false,
     // One icon per logged event, in two fixed lanes low in the plot. No amount, no row id.
     logMarkers: List<LogMarker> = emptyList(),
     /** Positions behind the mark in [logMarkers] — a cluster, both lanes. Logs can share a slot. */
@@ -898,7 +897,7 @@ fun GlucoseGraph(
                 }
 
                 // Steps first of 3 layers: bar is opaque measured context, curves are the model.
-                if (stepsFrame != null && showSteps && !stepsFrame.isEmpty) {
+                if (stepsFrame != null && curveToggles.exercise && !stepsFrame.isEmpty) {
                     fun absToPx(ms: Double): Float = (plotLeft + (ms - viewStartMs) * ppm).toFloat()
                     drawStepsBars(
                         stepsFrame, AbsToPx(::absToPx),

@@ -146,7 +146,7 @@ fun DashboardScreen(
     sensitivity: SensitivityEstimate? = null,
     // (carb, combined insulin, basal-only) for one grid window, from ONE resolve.
     curveChannels: (suspend (gridStartMs: Long, nSteps: Int) -> OverlayInput)? = null,
-    // Per-bucket step counts; a lambda since this module has no `:data` dep. Null ⇒ no Steps chip.
+    // Per-bucket step counts; a lambda since this module has no `:data` dep. Null ⇒ no step bars.
     stepSeries: (suspend (gridStartMs: Long, nSteps: Int) -> IntArray)? = null,
     // Same feed the Logs panel binds, reduced to markers here so a tap's index names its row.
     logEntries: List<LoggedEntry> = emptyList(),
@@ -299,8 +299,6 @@ fun DashboardScreen(
     }
     var showSmoothed by remember { mutableStateOf(false) }
 
-    // Same grid window as the curve overlay, so bucket edges agree. Not gated on the Steps chip.
-    var showSteps by remember { mutableStateOf(false) }
     // Steps window's right edge is the CLOCK, not readings — steps accrue while CGM is dropped.
     val stepGridTick by produceState(0L) {
         while (true) {
@@ -579,7 +577,6 @@ fun DashboardScreen(
             curveOverlay = curveOverlay,
             curveToggles = toggles,
             stepsFrame = stepsFrame,
-            showSteps = showSteps,
             logMarkers = logMarkers,
             onMarkerTap = { hits -> tappedLogs = hits.mapNotNull { logEntries.getOrNull(it) } },
             onScrub = { s -> if (s != null) scrubbed = s },
@@ -662,8 +659,6 @@ fun DashboardScreen(
                 forecastPeriodMin = forecastPeriodMin,
                 toggles = toggles,
                 windowHours = windowHours,
-                stepsAvailable = stepSeries != null,
-                showSteps = showSteps,
                 smoothAvailable = smoothMgdl != null,
                 showSmoothed = showSmoothed,
                 hindsightAvailable = hindsightIn != null,
@@ -681,7 +676,6 @@ fun DashboardScreen(
                 onToggleGame = { gameOn = it },
                 onRollClick = { showRollDialog = true },
                 onToggle = { toggles = it },
-                onToggleSteps = { showSteps = it },
                 onToggleSmoothed = { showSmoothed = it },
                 onToggleHindsight = { showHindsight = it },
                 onTogglePaint = { on -> paintOn = on; if (on) editOn = false },
@@ -909,8 +903,6 @@ private fun OverlayControls(
     forecastPeriodMin: Int,
     toggles: CurveOverlayToggles,
     windowHours: Int,
-    stepsAvailable: Boolean,
-    showSteps: Boolean,
     smoothAvailable: Boolean,
     showSmoothed: Boolean,
     hindsightAvailable: Boolean,
@@ -929,7 +921,6 @@ private fun OverlayControls(
     onToggleGame: (Boolean) -> Unit,
     onRollClick: () -> Unit,
     onToggle: (CurveOverlayToggles) -> Unit,
-    onToggleSteps: (Boolean) -> Unit,
     onToggleSmoothed: (Boolean) -> Unit,
     onToggleHindsight: (Boolean) -> Unit,
     onTogglePaint: (Boolean) -> Unit,
@@ -984,13 +975,6 @@ private fun OverlayControls(
                 },
                 label = { Text("Exercise") },
             )
-            if (stepsAvailable) {
-                FilterChip(
-                    selected = showSteps,
-                    onClick = { haptics.toggled(!showSteps); onToggleSteps(!showSteps) },
-                    label = { Text("Steps") },
-                )
-            }
             if (smoothAvailable) {
                 FilterChip(
                     selected = showSmoothed,
