@@ -43,6 +43,8 @@ import com.t1dm.ui.graph.sessionScrubRows
 fun ExerciseSessionScreen(
     session: ExerciseSession?,
     gridMs: Long,
+    /** Where an unfinished bout's window ends. */
+    nowMs: Long,
     track: List<TrackPoint> = emptyList(),
     frame: GraphFrame = GraphFrame.EMPTY,
     unit: UnitSpace = UnitSpace.MgDl,
@@ -65,7 +67,7 @@ fun ExerciseSessionScreen(
     }
 
     val scroll = rememberScrollState()
-    val window = reviewWindow(session)
+    val window = reviewWindow(session, nowMs)
     val spanMs = window.last - window.first
     var fraction by remember(session.id) { mutableFloatStateOf(0f) }
     val cursorMs = scrubCursorOf(window.first, spanMs, fraction, gridMs)
@@ -111,7 +113,7 @@ fun ExerciseSessionScreen(
             windowStartMs = window.first,
             windowSpanMs = spanMs,
             sessionStartMs = session.startMs,
-            sessionEndMs = session.endMs ?: session.startMs,
+            sessionEndMs = session.endMs ?: nowMs,
             modifier = Modifier.fillMaxWidth().height(GRAPH_HEIGHT),
             unit = unit,
             kovatchevF = kovatchevF,
@@ -138,10 +140,11 @@ fun ExerciseSessionScreen(
     }
 }
 
-/** The trailing reach is the point: the response a bout provokes lands after the bout ends. */
-fun reviewWindow(session: ExerciseSession): LongRange {
-    val end = session.endMs ?: session.startMs
-    return (session.startMs - REVIEW_LEAD_MS)..(end + REVIEW_TRAIL_MS)
+/** The bout itself, padded about its middle to REVIEW_MIN_SPAN_MS; unfinished runs to nowMs. */
+fun reviewWindow(session: ExerciseSession, nowMs: Long): LongRange {
+    val end = (session.endMs ?: nowMs).coerceAtLeast(session.startMs)
+    val pad = (REVIEW_MIN_SPAN_MS - (end - session.startMs)).coerceAtLeast(0L)
+    return (session.startMs - pad / 2)..(end + (pad - pad / 2))
 }
 
 /** Stored flag says only "not the user": ran to EXERCISE_MAX_BOUT_MS, or cut short by death. */
@@ -152,8 +155,8 @@ internal fun interruptedNote(session: ExerciseSession): String? {
     else "Ended early — app stopped"
 }
 
-private const val REVIEW_LEAD_MS = 30L * 60_000L
-private const val REVIEW_TRAIL_MS = 120L * 60_000L
+/** Six 5-min grid slots: fewer and a short bout's trace is one or two readings. */
+private const val REVIEW_MIN_SPAN_MS = 30L * 60_000L
 
 private val MAP_HEIGHT = 200.dp
 private val GRAPH_HEIGHT = 200.dp

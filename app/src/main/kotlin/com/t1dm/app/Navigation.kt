@@ -1661,8 +1661,10 @@ private fun T1dmNavHost(
             val track by produceState(emptyList<TrackPoint>(), id) {
                 value = container.exercise.track(id)
             }
+            // Once per open: an unfinished bout's window must not move on every recomposition.
+            val openedAtMs = remember(id) { System.currentTimeMillis() }
             // Resolved once, so the load and the viewport cannot disagree.
-            val window = session?.let { reviewWindow(it) }
+            val window = session?.let { reviewWindow(it, openedAtMs) }
             val frame by produceState(GraphFrame.EMPTY, window, unit) {
                 val w = window
                 value = if (w == null) GraphFrame.EMPTY
@@ -1692,6 +1694,7 @@ private fun T1dmNavHost(
             ExerciseSessionScreen(
                 session = session,
                 gridMs = T1dmRepository.GRID_MS,
+                nowMs = openedAtMs,
                 track = track,
                 logMarkers = sessionMarkers,
                 frame = frame,
