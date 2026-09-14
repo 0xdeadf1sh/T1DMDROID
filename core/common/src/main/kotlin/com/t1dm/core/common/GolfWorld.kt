@@ -5,7 +5,7 @@ import com.t1dm.core.model.GolfCup
 
 /** Refcounted, freed by a JVM Cleaner; leaks until GC unless held in remember{} and closed. */
 interface GolfWorld : AutoCloseable {
-    /** x of the present moment — the cup's right rim. Fixed at construction. */
+    /** x of the last heightfield sample; a trailing dropout puts it PAST [cup]`.x1`, the rim. */
     val trackLength: Float
 
     /** Geometry the hole is drawn from; fixed at construction. */

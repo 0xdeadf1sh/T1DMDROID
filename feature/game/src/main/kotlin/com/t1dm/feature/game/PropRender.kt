@@ -25,8 +25,8 @@ import kotlin.math.cos
 import kotlin.math.floor
 import kotlin.math.sin
 
-/** Units either side of the plot a glyph may still reach into it; culling margin. */
-private const val REACH_DP = 30f
+/** Units either side of the plot a glyph may reach into it; a blimp's sway plus tail is 47. */
+private const val REACH_DP = 48f
 
 /** Hours the sun is up, and when the stars are fully out; each fades over the hour beside it. */
 private const val SUNRISE_H = 6f
@@ -36,6 +36,9 @@ private const val STARS_GONE_H = 5.5f
 private const val STAR_COUNT = 24
 
 private const val TAU = (2.0 * PI).toFloat()
+
+/** Hoisted: `intArrayOf(-1, 1)` in a glyph is a fresh array on every draw of it. */
+private val SIDES = intArrayOf(-1, 1)
 
 /** Glyph unit in dp: a tree at 17 units stands ~44 dp, two thirds of the 64 dp golfer. */
 private const val UNIT_DP = 2.6f
@@ -49,6 +52,12 @@ class PropArt(
 ) {
     val unitPx = dpPx * UNIT_DP
     val path = Path()
+
+    /** Hoisted: a `Stroke(...)` in the draw is an allocation at 60 Hz, and [unitPx] never moves. */
+    val hair = Stroke(width = 1f * unitPx)
+    val thin = Stroke(width = 1.2f * unitPx)
+    val mid = Stroke(width = 1.4f * unitPx)
+    val ore = Stroke(width = 2f * unitPx, cap = StrokeCap.Round)
     private val labels = HashMap<Int, TextLayoutResult>()
 
     /** Sign [i]'s label, measured once; a handful per trace. */
@@ -74,7 +83,8 @@ internal fun DrawScope.drawSkyProps(
 ) {
     val u = art.unitPx
     val reach = REACH_DP * u / pxX
-    drawSkyBodies(skin, u, hour, tS, size.width, plotTop, plotBottom)
+    // Not `size.width`: this scope is translated by plotLeft and clipped to the plot.
+    drawSkyBodies(skin, u, hour, tS, camWidth * pxX, plotTop, plotBottom)
 
     // Clouds: half the camera's pace, so the sky sits behind the hills, and a slow drift downwind.
     val cloudLeft = CLOUD_PARALLAX * camLeft
@@ -91,8 +101,8 @@ internal fun DrawScope.drawSkyProps(
         val sy = floorPx - props.sky.ys[i] * pxY
         val seed = props.sky.seeds[i]
         when (props.sky.kindAt(i)) {
-            PropKind.Balloon -> drawBalloon(skin, u, sx, sy + 4f * u * sin(tS * 0.7f + seed * TAU), seed)
-            PropKind.Blimp -> drawBlimp(skin, u, sx + 20f * u * sin(tS * 0.15f + seed * TAU), sy, seed)
+            PropKind.Balloon -> drawBalloon(skin, art, sx, sy + 4f * u * sin(tS * 0.7f + seed * TAU), seed)
+            PropKind.Blimp -> drawBlimp(skin, art, sx + 20f * u * sin(tS * 0.15f + seed * TAU), sy, seed)
             PropKind.Kite -> drawKite(skin, u, sx, sy, props.sky.amounts[i] * pxY, seed, tS)
             else -> Unit
         }
@@ -121,23 +131,23 @@ internal fun DrawScope.drawUndergroundProps(
         val w = 2f * propHalfW(kind, seed) * pxX
         val h = propH(kind, seed) * pxY
         when (kind) {
-            PropKind.Fossil -> drawFossil(skin, u, sx, sy, w, h, seed)
-            PropKind.Trilobite -> drawTrilobite(skin, u, sx, sy, w, h)
-            PropKind.Skull -> drawSkull(skin, u, sx, sy, w, h, seed)
-            PropKind.Ammonite -> drawAmmonite(skin, u, sx, sy, w, h)
+            PropKind.Fossil -> drawFossil(skin, art, sx, sy, w, h, seed)
+            PropKind.Trilobite -> drawTrilobite(skin, art, sx, sy, w, h)
+            PropKind.Skull -> drawSkull(skin, art, sx, sy, w, h, seed)
+            PropKind.Ammonite -> drawAmmonite(skin, art, sx, sy, w, h)
             PropKind.Bone -> drawBone(skin, u, sx, sy, w, h, seed)
-            PropKind.Pipe -> drawPipe(skin, u, sx, sy, w, h, seed, tS)
+            PropKind.Pipe -> drawPipe(skin, art, sx, sy, w, h, seed, tS)
             PropKind.Manhole -> drawManhole(skin, u, sx, sy, w, h)
-            PropKind.Vein -> drawVein(skin, art.path, u, sx, sy, w, h, seed)
+            PropKind.Vein -> drawVein(skin, art, sx, sy, w, h, seed)
             PropKind.Root -> drawRoots(skin, u, sx, sy, w, h)
-            PropKind.Chest -> drawChest(skin, u, sx, sy, w, h)
+            PropKind.Chest -> drawChest(skin, art, sx, sy, w, h)
             else -> Unit
         }
     }
 }
 
-/** Widest world-sized prop, metres either side; the culling margin for ground and buried layers. */
-private const val GROUND_REACH_M = 20f
+/** Culling margin for ground and buried layers: a barn's roof reaches 1.1 × its 24 m half-width. */
+private const val GROUND_REACH_M = 27f
 
 /** Trees, rocks, a cabin, a windmill: WORLD-sized, so each fills the box its collider is. */
 internal fun DrawScope.drawGroundProps(
@@ -166,7 +176,7 @@ internal fun DrawScope.drawGroundProps(
             PropKind.Bush -> drawBush(skin, sx, sy, w, h, seed)
             PropKind.Barn -> drawBarn(skin, art.path, u, sx, sy, w, h, seed)
             PropKind.Tent -> drawTent(skin, art.path, u, sx, sy, w, h, seed)
-            PropKind.WaterTower -> drawWaterTower(skin, u, sx, sy, w, h)
+            PropKind.WaterTower -> drawWaterTower(skin, art, sx, sy, w, h)
             PropKind.Tuft -> drawTuft(skin, u, sx, sy, w, h, seed, tS)
             PropKind.Cabin -> drawCabin(skin, art.path, u, sx, sy, w, h, tS)
             PropKind.Windmill -> drawWindmill(skin, art.path, u, sx, sy, w, h, seed, tS)
@@ -215,11 +225,11 @@ internal fun DrawScope.drawSigns(
             art.path.lineTo(sx - w * 0.7f, top + h)
             art.path.close()
             drawPath(art.path, skin.signFace)
-            drawPath(art.path, border, style = Stroke(width = 1.2f * u))
+            drawPath(art.path, border, style = art.thin)
             textY = top + h * 0.55f
         } else {
             drawRect(skin.signFace, Offset(sx - w * 0.5f, top), Size(w, h))
-            drawRect(border, Offset(sx - w * 0.5f, top), Size(w, h), style = Stroke(width = 1.2f * u))
+            drawRect(border, Offset(sx - w * 0.5f, top), Size(w, h), style = art.thin)
             textY = top + h * 0.5f
         }
         val kx = w * 0.7f / label.size.width.coerceAtLeast(1)
@@ -340,10 +350,11 @@ private fun DrawScope.drawCloud(skin: GameSkin, u: Float, x: Float, y: Float, se
     }
 }
 
-private fun DrawScope.drawBlimp(skin: GameSkin, u: Float, x: Float, y: Float, seed: Float) {
+private fun DrawScope.drawBlimp(skin: GameSkin, art: PropArt, x: Float, y: Float, seed: Float) {
+    val u = art.unitPx
     val s = u * (0.8f + 0.5f * seed)
     drawOval(skin.balloon, Offset(x - 18f * s, y - 6f * s), Size(36f * s, 12f * s))
-    drawOval(skin.balloonBand, Offset(x - 18f * s, y - 6f * s), Size(36f * s, 12f * s), style = Stroke(width = 1.2f * u))
+    drawOval(skin.balloonBand, Offset(x - 18f * s, y - 6f * s), Size(36f * s, 12f * s), style = art.thin)
     drawLine(skin.balloonBand, Offset(x - 18f * s, y), Offset(x + 18f * s, y), 1f * u)
     // Tail fins and the gondola slung below the hull.
     drawLine(skin.balloonBand, Offset(x - 15f * s, y - 3f * s), Offset(x - 21f * s, y - 9f * s), 2f * u, StrokeCap.Round)
@@ -367,10 +378,11 @@ private fun DrawScope.drawFlock(skin: GameSkin, u: Float, x: Float, y: Float, se
     }
 }
 
-private fun DrawScope.drawBalloon(skin: GameSkin, u: Float, x: Float, y: Float, seed: Float) {
+private fun DrawScope.drawBalloon(skin: GameSkin, art: PropArt, x: Float, y: Float, seed: Float) {
+    val u = art.unitPx
     val r = 8f * u
     drawCircle(skin.balloon, r, Offset(x, y))
-    drawCircle(skin.balloonBand, r, Offset(x, y), style = Stroke(width = 1.2f * u))
+    drawCircle(skin.balloonBand, r, Offset(x, y), style = art.thin)
     drawLine(skin.balloonBand, Offset(x, y - r), Offset(x, y + r), 1f * u)
     val basketY = y + r + 7f * u
     drawLine(skin.figure, Offset(x - 3f * u, y + r * 0.8f), Offset(x - 2f * u, basketY), 1f * u)
@@ -402,8 +414,8 @@ private fun DrawScope.drawKite(skin: GameSkin, u: Float, x: Float, y: Float, str
 
 // Buried glyphs fill a w × h box centred on (x, y); a manhole or root hangs from the ground at y.
 
-private fun DrawScope.drawFossil(skin: GameSkin, u: Float, x: Float, y: Float, w: Float, h: Float, seed: Float) {
-    val s = 1.4f * u
+private fun DrawScope.drawFossil(skin: GameSkin, art: PropArt, x: Float, y: Float, w: Float, h: Float, seed: Float) {
+    val s = 1.4f * art.unitPx
     // Facing either way, with a ribcage of five or a long-spined eight.
     val face = if (variant(seed, 2) == 0) 1f else -1f
     val ribs = if (variant(seed, 3) == 2) 8 else 5
@@ -415,15 +427,15 @@ private fun DrawScope.drawFossil(skin: GameSkin, u: Float, x: Float, y: Float, w
         drawLine(skin.buried, Offset(rx, y), Offset(rx - face * w * 0.04f, y + h * 0.45f), s, StrokeCap.Round)
     }
     val headX = if (face > 0f) x + w * 0.3f else x - w * 0.5f
-    drawOval(skin.buried, Offset(headX, y - h * 0.3f), Size(w * 0.2f, h * 0.6f), style = Stroke(width = s))
+    drawOval(skin.buried, Offset(headX, y - h * 0.3f), Size(w * 0.2f, h * 0.6f), style = art.mid)
     drawLine(skin.buried, Offset(x - face * w * 0.36f, y), Offset(x - face * w * 0.5f, y - h * 0.4f), s, StrokeCap.Round)
     drawLine(skin.buried, Offset(x - face * w * 0.36f, y), Offset(x - face * w * 0.5f, y + h * 0.4f), s, StrokeCap.Round)
 }
 
-private fun DrawScope.drawTrilobite(skin: GameSkin, u: Float, x: Float, y: Float, w: Float, h: Float) {
-    val s = 1.4f * u
-    drawOval(skin.buried, Offset(x - w * 0.5f, y - h * 0.5f), Size(w, h), style = Stroke(width = s))
-    drawOval(skin.buried, Offset(x - w * 0.4f, y - h * 0.5f), Size(w * 0.8f, h * 0.3f), style = Stroke(width = s))
+private fun DrawScope.drawTrilobite(skin: GameSkin, art: PropArt, x: Float, y: Float, w: Float, h: Float) {
+    val u = art.unitPx
+    drawOval(skin.buried, Offset(x - w * 0.5f, y - h * 0.5f), Size(w, h), style = art.mid)
+    drawOval(skin.buried, Offset(x - w * 0.4f, y - h * 0.5f), Size(w * 0.8f, h * 0.3f), style = art.mid)
     // Segments across the thorax, and a spine down the middle.
     for (k in 1..5) {
         val ry = y - h * 0.2f + k * h * 0.12f
@@ -433,38 +445,37 @@ private fun DrawScope.drawTrilobite(skin: GameSkin, u: Float, x: Float, y: Float
     drawLine(skin.buried, Offset(x, y - h * 0.2f), Offset(x, y + h * 0.5f), 1f * u)
 }
 
-private fun DrawScope.drawSkull(skin: GameSkin, u: Float, x: Float, y: Float, w: Float, h: Float, seed: Float) {
-    val s = 1.4f * u
+private fun DrawScope.drawSkull(skin: GameSkin, art: PropArt, x: Float, y: Float, w: Float, h: Float, seed: Float) {
+    val u = art.unitPx
     // A long jaw one way, or a blunt dome: two kinds of skull.
     val long = variant(seed, 2) == 0
     if (long) {
-        drawOval(skin.buried, Offset(x - w * 0.5f, y - h * 0.5f), Size(w * 0.6f, h), style = Stroke(width = s))
-        drawRect(skin.buried, Offset(x + w * 0.05f, y - h * 0.1f), Size(w * 0.45f, h * 0.5f), style = Stroke(width = s))
+        drawOval(skin.buried, Offset(x - w * 0.5f, y - h * 0.5f), Size(w * 0.6f, h), style = art.mid)
+        drawRect(skin.buried, Offset(x + w * 0.05f, y - h * 0.1f), Size(w * 0.45f, h * 0.5f), style = art.mid)
         for (k in 0 until 4) {
             val tx = x + w * 0.1f + k * w * 0.1f
             drawLine(skin.buried, Offset(tx, y + h * 0.4f), Offset(tx, y + h * 0.25f), 1f * u)
         }
-        drawCircle(skin.buried, h * 0.12f, Offset(x - w * 0.2f, y - h * 0.15f), style = Stroke(width = 1f * u))
+        drawCircle(skin.buried, h * 0.12f, Offset(x - w * 0.2f, y - h * 0.15f), style = art.hair)
     } else {
-        drawOval(skin.buried, Offset(x - w * 0.45f, y - h * 0.5f), Size(w * 0.9f, h * 0.85f), style = Stroke(width = s))
-        drawCircle(skin.buried, h * 0.13f, Offset(x - w * 0.15f, y - h * 0.1f), style = Stroke(width = 1f * u))
-        drawCircle(skin.buried, h * 0.13f, Offset(x + w * 0.15f, y - h * 0.1f), style = Stroke(width = 1f * u))
-        drawRect(skin.buried, Offset(x - w * 0.25f, y + h * 0.25f), Size(w * 0.5f, h * 0.25f), style = Stroke(width = s))
+        drawOval(skin.buried, Offset(x - w * 0.45f, y - h * 0.5f), Size(w * 0.9f, h * 0.85f), style = art.mid)
+        drawCircle(skin.buried, h * 0.13f, Offset(x - w * 0.15f, y - h * 0.1f), style = art.hair)
+        drawCircle(skin.buried, h * 0.13f, Offset(x + w * 0.15f, y - h * 0.1f), style = art.hair)
+        drawRect(skin.buried, Offset(x - w * 0.25f, y + h * 0.25f), Size(w * 0.5f, h * 0.25f), style = art.mid)
         for (k in -1..1) {
             drawLine(skin.buried, Offset(x + k * w * 0.12f, y + h * 0.25f), Offset(x + k * w * 0.12f, y + h * 0.5f), 1f * u)
         }
     }
 }
 
-private fun DrawScope.drawAmmonite(skin: GameSkin, u: Float, x: Float, y: Float, w: Float, h: Float) {
-    val s = 1.4f * u
+private fun DrawScope.drawAmmonite(skin: GameSkin, art: PropArt, x: Float, y: Float, w: Float, h: Float) {
     // Four half-turns, each tighter than the last, alternating sides: a spiral in arcs.
     var rx = w * 0.5f
     var ry = h * 0.5f
     var cx = x
     var start = 180f
     for (k in 0 until 4) {
-        drawArc(skin.buried, start, 180f, false, Offset(cx - rx, y - ry), Size(2f * rx, 2f * ry), style = Stroke(width = s))
+        drawArc(skin.buried, start, 180f, false, Offset(cx - rx, y - ry), Size(2f * rx, 2f * ry), style = art.mid)
         val nx = rx * 0.62f
         cx += if (k % 2 == 0) (rx - nx) else -(rx - nx)
         rx = nx
@@ -477,7 +488,7 @@ private fun DrawScope.drawBone(skin: GameSkin, u: Float, x: Float, y: Float, w: 
     rotate(-25f + 50f * seed, Offset(x, y)) {
         if (variant(seed, 2) == 0) {
             drawLine(skin.buried, Offset(x - w * 0.4f, y), Offset(x + w * 0.4f, y), h * 0.3f, StrokeCap.Round)
-            for (side in intArrayOf(-1, 1)) {
+            for (side in SIDES) {
                 drawOval(skin.buried, Offset(x + side * w * 0.4f - w * 0.1f, y - h * 0.5f), Size(w * 0.2f, h * 0.55f))
                 drawOval(skin.buried, Offset(x + side * w * 0.4f - w * 0.1f, y - h * 0.05f), Size(w * 0.2f, h * 0.55f))
             }
@@ -491,10 +502,11 @@ private fun DrawScope.drawBone(skin: GameSkin, u: Float, x: Float, y: Float, w: 
     }
 }
 
-private fun DrawScope.drawPipe(skin: GameSkin, u: Float, x: Float, y: Float, w: Float, h: Float, seed: Float, tS: Float) {
+private fun DrawScope.drawPipe(skin: GameSkin, art: PropArt, x: Float, y: Float, w: Float, h: Float, seed: Float, tS: Float) {
+    val u = art.unitPx
     val half = w * 0.5f
-    drawRect(skin.buried, Offset(x - half, y - h * 0.5f), Size(w, h), style = Stroke(width = 1.4f * u))
-    for (side in intArrayOf(-1, 1)) {
+    drawRect(skin.buried, Offset(x - half, y - h * 0.5f), Size(w, h), style = art.mid)
+    for (side in SIDES) {
         drawRect(skin.buried, Offset(x + side * half - w * 0.02f, y - h * 0.7f), Size(w * 0.04f, h * 1.4f))
     }
     // Flow: ticks marching along the bore.
@@ -516,7 +528,8 @@ private fun DrawScope.drawManhole(skin: GameSkin, u: Float, x: Float, y: Float, 
     drawOval(skin.stone, Offset(x - w * 0.5f, y - h * 0.08f), Size(w, h * 0.16f))
 }
 
-private fun DrawScope.drawVein(skin: GameSkin, path: Path, u: Float, x: Float, y: Float, w: Float, h: Float, seed: Float) {
+private fun DrawScope.drawVein(skin: GameSkin, art: PropArt, x: Float, y: Float, w: Float, h: Float, seed: Float) {
+    val path = art.path
     path.rewind()
     var px = x - w * 0.5f
     var py = y
@@ -526,7 +539,7 @@ private fun DrawScope.drawVein(skin: GameSkin, path: Path, u: Float, x: Float, y
         py += (if (k % 2 == 0) -1f else 1f) * h * (0.2f + 0.3f * seed)
         path.lineTo(px, py)
     }
-    drawPath(path, skin.ore, style = Stroke(width = 2f * u, cap = StrokeCap.Round))
+    drawPath(path, skin.ore, style = art.ore)
 }
 
 private fun DrawScope.drawRoots(skin: GameSkin, u: Float, x: Float, y: Float, w: Float, h: Float) {
@@ -538,12 +551,12 @@ private fun DrawScope.drawRoots(skin: GameSkin, u: Float, x: Float, y: Float, w:
     drawLine(skin.buried, Offset(x + w * 0.17f, y + h * 0.4f), Offset(x + w * 0.5f, y + h * 0.35f), s, StrokeCap.Round)
 }
 
-private fun DrawScope.drawChest(skin: GameSkin, u: Float, x: Float, y: Float, w: Float, h: Float) {
+private fun DrawScope.drawChest(skin: GameSkin, art: PropArt, x: Float, y: Float, w: Float, h: Float) {
     val box = h * 0.7f
     drawRect(skin.wood, Offset(x - w * 0.5f, y - h * 0.2f), Size(w, box))
-    drawRect(skin.buried, Offset(x - w * 0.5f, y - h * 0.2f), Size(w, box), style = Stroke(width = 1.4f * u))
-    drawArc(skin.buried, 180f, 180f, false, Offset(x - w * 0.5f, y - h * 0.5f), Size(w, h * 0.6f), style = Stroke(width = 1.4f * u))
-    drawCircle(skin.ore, 1.6f * u, Offset(x, y + h * 0.15f))
+    drawRect(skin.buried, Offset(x - w * 0.5f, y - h * 0.2f), Size(w, box), style = art.mid)
+    drawArc(skin.buried, 180f, 180f, false, Offset(x - w * 0.5f, y - h * 0.5f), Size(w, h * 0.6f), style = art.mid)
+    drawCircle(skin.ore, 1.6f * art.unitPx, Offset(x, y + h * 0.15f))
 }
 
 // Ground ---------------------------------------------------------------------------------------
@@ -704,9 +717,10 @@ private fun DrawScope.drawTent(skin: GameSkin, path: Path, u: Float, x: Float, y
     drawLine(skin.wood, Offset(x, y - h), Offset(x, y - h * 1.12f), 1.2f * u, StrokeCap.Round)
 }
 
-private fun DrawScope.drawWaterTower(skin: GameSkin, u: Float, x: Float, y: Float, w: Float, h: Float) {
+private fun DrawScope.drawWaterTower(skin: GameSkin, art: PropArt, x: Float, y: Float, w: Float, h: Float) {
+    val u = art.unitPx
     val legTop = y - h * 0.6f
-    for (side in intArrayOf(-1, 1)) {
+    for (side in SIDES) {
         drawLine(skin.wood, Offset(x + side * w * 0.45f, y), Offset(x + side * w * 0.3f, legTop), 1.6f * u, StrokeCap.Round)
     }
     drawLine(skin.wood, Offset(x - w * 0.4f, y - h * 0.2f), Offset(x + w * 0.4f, y - h * 0.2f), 1.2f * u)
@@ -714,7 +728,7 @@ private fun DrawScope.drawWaterTower(skin: GameSkin, u: Float, x: Float, y: Floa
     drawLine(skin.wood, Offset(x - w * 0.4f, y - h * 0.2f), Offset(x + w * 0.35f, y - h * 0.4f), 1f * u)
     drawLine(skin.wood, Offset(x + w * 0.4f, y - h * 0.2f), Offset(x - w * 0.35f, y - h * 0.4f), 1f * u)
     drawRect(skin.stone, Offset(x - w * 0.5f, y - h * 0.92f), Size(w, h * 0.32f))
-    drawRect(skin.figure, Offset(x - w * 0.5f, y - h * 0.92f), Size(w, h * 0.32f), style = Stroke(width = 1f * u))
+    drawRect(skin.figure, Offset(x - w * 0.5f, y - h * 0.92f), Size(w, h * 0.32f), style = art.hair)
     drawLine(skin.figure, Offset(x - w * 0.5f, y - h * 0.76f), Offset(x + w * 0.5f, y - h * 0.76f), 1f * u)
     drawOval(skin.roof, Offset(x - w * 0.55f, y - h), Size(w * 1.1f, h * 0.14f))
 }

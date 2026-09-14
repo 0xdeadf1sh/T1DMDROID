@@ -2,6 +2,7 @@ package com.t1dm.calc
 
 import com.t1dm.core.common.DefaultT1dmDispatchers
 import com.t1dm.core.common.GameWorld
+import com.t1dm.core.common.GolfWorld
 import com.t1dm.core.common.NativeCore
 import com.t1dm.core.model.ClinicalCuts
 import com.t1dm.core.model.*
@@ -410,7 +411,9 @@ class RollingForecasterAlignmentTest {
         override fun applyQuantileConformal(bandsMgdl: List<Double>, delta: List<Double>): List<Double>? = null
         override fun applyQuantileConformalBatch(fansMgdl: List<Double>, delta: List<Double>): List<Double>? = null
         override fun defaultCarTuning(): CarTuning = unused()
-        override fun createGameWorld(terrain: TerrainSpec, tuning: CarTuning): GameWorld = unused()
+        override fun createGameWorld(terrain: TerrainSpec, tuning: CarTuning, obstacles: List<Obstacle>): GameWorld = unused()
+        override fun defaultGolfTuning(): GolfTuning = unused()
+        override fun createGolfWorld(terrain: TerrainSpec, tuning: GolfTuning, obstacles: List<Obstacle>): GolfWorld = unused()
     }
 }
 

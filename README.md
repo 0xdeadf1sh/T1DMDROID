@@ -101,6 +101,7 @@ Restore merges: a record already present is kept, so importing the same file twi
 | `:data` | Room database, repositories, curve reconstruction, the backup archive codec |
 | `:core:common`, `:core:model`, `:core:design`, `:core:native` | Shared dispatchers, domain types, theming, and the Rust-core JNI bindings |
 | `:ui:graph` | The custom Compose blood-glucose graph |
+| `:ui:game`, `:feature:game` | Drive and Golf, the cosmetic minigames drawn on the glucose trace over a rapier2d solver in `t1dm-core` |
 | `:feature:*` | Screen features — dashboard, stats, models, meals, insulin, security, settings, logs, backup |
 
 

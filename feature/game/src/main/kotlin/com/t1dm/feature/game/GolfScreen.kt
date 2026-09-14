@@ -49,6 +49,8 @@ import com.t1dm.ui.game.GameTrack
 import com.t1dm.ui.graph.ChalkPens
 import com.t1dm.ui.graph.PredictedClock
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.time.ZoneId
 
 /** Settled span as a share of a 45° full-power carry: the shot fits, the ball stays aimable. */
@@ -221,6 +223,13 @@ private fun GolfStage(
 
     BackHandler { requestExit() }
 
+    // The shell draws nothing until the loop hands off, so a refused world must say so itself.
+    var openFailed by remember { mutableStateOf(false) }
+    if (openFailed) {
+        GameRefusal("This stretch cannot be played", onExit)
+        return
+    }
+
     val aimInput = Modifier.pointerInput(tuning) {
         awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false)
@@ -272,7 +281,10 @@ private fun GolfStage(
                 scene.track.map.worldXOf(dropAtMs), TEE_BEHIND_M, TEE_AHEAD_M, insetM = tuning.ballRadius,
             )
             val world = runCatching { openWorld(scene.track.terrain, tuning, walls) }.getOrNull()
-                ?: return@GameShell
+            if (world == null) {
+                withContext(Dispatchers.Main) { openFailed = true }
+                return@GameShell
+            }
             try {
                 art.cup = world.cup
                 runGolfLoop(

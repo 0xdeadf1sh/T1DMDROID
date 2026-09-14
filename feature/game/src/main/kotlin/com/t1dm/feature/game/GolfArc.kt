@@ -58,7 +58,7 @@ internal fun grabRadiusPx(ballRadiusM: Float, pxPerXM: Float, minPx: Float): Flo
 internal fun nearBall(dxPx: Float, dyPx: Float, grabPx: Float): Boolean =
     hypot(dxPx, dyPx) <= grabPx
 
-/** Flight is drag-free in the solver, so this closed form IS the arc, not an approximation. */
+/** Drag-free like the solver, but TERRAIN-only: an obstacle box the shot will hit is not read. */
 internal fun ballisticArc(
     x0: Float,
     y0: Float,

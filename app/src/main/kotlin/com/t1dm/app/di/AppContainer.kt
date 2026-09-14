@@ -52,6 +52,7 @@ import com.t1dm.core.model.ErrorGridLattices
 import com.t1dm.core.model.ZoneLattice
 import com.t1dm.core.model.CgmSourceDescriptor
 import com.t1dm.core.model.CurveKind
+import com.t1dm.core.model.GamePropDensity
 import com.t1dm.core.model.MaskGeometry
 import com.t1dm.core.model.ReconstructedBg
 import com.t1dm.core.model.CurveEvent
@@ -2270,6 +2271,10 @@ class AppContainer(context: Context) {
     }
 
     val graphSettings: GraphSettingsStore by lazy { GraphSettingsStore(repository) }
+
+    /** Eager: a minigame keys its scene on this, and a first emission after mount reloads it. */
+    val gameProps: StateFlow<GamePropDensity> =
+        settingsStore.gameProps.stateIn(appScope, SharingStarted.Eagerly, GamePropDensity.Sparse)
 
     val graphRange: Flow<BgRange> get() = graphSettings.range
     val graphWindowHours: Flow<Int> get() = graphSettings.windowHours

@@ -113,6 +113,32 @@ class PropsTest {
         assertEquals(set.signs.size, set.signLabels.size)
     }
 
+    @Test fun aRunAtExactlyTheHighThresholdStillGrowsOneSign() {
+        val bg = intArrayOf(120, 200, 180, 180, 120)
+        val rs = bg.mapIndexed { i, v -> reading(T0 + i * GRID, v) }
+        val set = buildProps(trackOf(rs), rs, alarms, GamePropDensity.Sparse)
+        assertEquals(1, set.signs.size)
+        assertEquals(PropKind.SignHigh, set.signs.kindAt(0))
+        assertEquals(200f, set.signs.amounts[0], 0f)
+    }
+
+    @Test fun nothingBuriedSurfacesWhereTheGroundSitsAtTheWorldFloor() {
+        // A trace flat on the axis minimum: every ground sample maps to world y = 0 exactly.
+        val rs = day { DEFAULT_AXIS_MIN_MGDL }
+        val track = trackOf(rs)
+        val set = buildProps(track, rs, alarms, GamePropDensity.Busy)
+        assertEquals(0f, track.groundAt(track.length * 0.5f), 1e-3f)
+        var buried = 0
+        for (i in 0 until set.underground.size) {
+            val kind = set.underground.kindAt(i)
+            if (hangsFromGround(kind)) continue
+            buried++
+            val top = set.underground.ys[i] + propH(kind, set.underground.seeds[i]) * 0.5f
+            assertTrue("$kind top above ground", top <= track.groundAt(set.underground.xs[i]) + 1e-3f)
+        }
+        assertTrue(buried > 0)
+    }
+
     @Test fun aDropoutCutsAnExcursionInTwo() {
         val rs = listOf(
             reading(T0, 60), reading(T0 + GRID, 55),

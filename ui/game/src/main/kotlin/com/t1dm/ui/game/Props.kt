@@ -278,7 +278,8 @@ fun buildProps(
             g
         } else {
             val half = propH(k, seed) * 0.5f
-            (g - (BURY_MIN_M + r * (BURY_MAX_M - BURY_MIN_M)).coerceAtLeast(half + COVER_M)).coerceAtLeast(half)
+            // No floor at the world's: lifting a low-ground prop to clear y=0 surfaces it.
+            g - (BURY_MIN_M + r * (BURY_MAX_M - BURY_MIN_M)).coerceAtLeast(half + COVER_M)
         }
     }
     val ground = scatter(track, rng, spacing.groundM, GROUND, needsFooting = true) { g, _, _, _ -> g }
@@ -372,14 +373,15 @@ private fun signs(
     while (i < scored.size) {
         val bg = scored[i].bgMgdl!!
         val low = bg < thresholds.lowMgdl
-        val high = bg > thresholds.highMgdl
+        // Inclusive, like AlertThresholds.bandFor: exactly high reads HIGH everywhere else.
+        val high = bg >= thresholds.highMgdl
         if (!low && !high) { i++; continue }
         var j = i
         var extreme = i
         while (j + 1 < scored.size && (scored[j + 1].tsMs - scored[j].tsMs) <= gapMs) {
             val next = scored[j + 1].bgMgdl!!
             if (low && next >= thresholds.lowMgdl) break
-            if (high && next <= thresholds.highMgdl) break
+            if (high && next < thresholds.highMgdl) break
             j++
             if (low && next < scored[extreme].bgMgdl!!) extreme = j
             if (high && next > scored[extreme].bgMgdl!!) extreme = j

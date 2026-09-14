@@ -347,6 +347,9 @@ class GolfLoopTest {
         frame(t)
         settle()
         assertEquals("the release is not yet the strike", 0, world.shots)
+        // The figure LEADS the strike: without the flag the club arrives after the ball has left.
+        assertTrue("the frame carries the pending shot", bus.published.shotPending)
+        assertEquals("and the figure is already swinging", 1, golfer.swings)
         repeat(DOWNSWING_FRAMES) {
             t += FRAME
             frame(t)
@@ -355,6 +358,8 @@ class GolfLoopTest {
         assertEquals("exactly one shot leaves the queue", 1, world.shots)
         assertEquals(31f, world.lastShotVx, 1e-4f)
         assertEquals(27f, world.lastShotVy, 1e-4f)
+        assertFalse("the strike clears the pending shot", bus.published.shotPending)
+        assertEquals("one swing, not a second on the stroke", 1, golfer.swings)
 
         repeat(10) {
             t += FRAME
