@@ -31,9 +31,17 @@ pub use conformal::*;
 /// Continuous Glucose-Error Grid Analysis (Kovatchev 2004).
 mod cg_ega;
 
+/// The heightfield both minigames stand on; cosmetic only, like them.
+mod terrain;
+pub use terrain::*;
+
 /// Cosmetic: no reading/dose/alarm depends on it; uniffi Object, one FFI call per frame.
 mod game;
 pub use game::*;
+
+/// Cosmetic only — the same trace, played as a hole rather than a track.
+mod golf;
+pub use golf::*;
 
 // PUBLISHED params (Kovatchev 1997, §5); NOT model risk space — never decode outputs with these.
 const KOV_CLINICAL_SCALE: f64 = 1.509;

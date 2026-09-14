@@ -1,7 +1,9 @@
 package com.t1dm.core.nativecore
 
 import com.t1dm.core.common.GameWorld
+import com.t1dm.core.common.GolfWorld
 import com.t1dm.core.common.NativeCore
+import com.t1dm.core.model.GolfTuning
 import com.t1dm.core.model.LoraGuardOpts
 import com.t1dm.core.model.LoraGuardReport
 import com.t1dm.core.model.CarTuning
@@ -348,6 +350,11 @@ class StubNativeCore : NativeCore {
 
     override fun createGameWorld(terrain: TerrainSpec, tuning: CarTuning): GameWorld =
         TODO("game physics is Rust-only; use UniffiNativeCore")
+
+    override fun defaultGolfTuning(): GolfTuning = TODO("golf physics is Rust-only; use UniffiNativeCore")
+
+    override fun createGolfWorld(terrain: TerrainSpec, tuning: GolfTuning): GolfWorld =
+        TODO("golf physics is Rust-only; use UniffiNativeCore")
 
     private companion object {
         const val DT_MIN = 5.0

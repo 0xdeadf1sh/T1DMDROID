@@ -1,7 +1,12 @@
 package com.t1dm.core.nativecore
 
 import com.t1dm.core.common.GameWorld
+import com.t1dm.core.common.GolfWorld
 import com.t1dm.core.common.NativeCore
+import com.t1dm.core.model.BallState
+import com.t1dm.core.model.GolfCup
+import com.t1dm.core.model.GolfRun
+import com.t1dm.core.model.GolfTuning
 import com.t1dm.core.common.NativeHead
 import com.t1dm.core.model.GraphInput
 import com.t1dm.core.model.HeadSpec
@@ -123,6 +128,12 @@ import uniffi.t1dm_core.CarTuning as UniffiCarTuning
 import uniffi.t1dm_core.GameWorld as UniffiGameWorldObject
 import uniffi.t1dm_core.RunState as UniffiRunState
 import uniffi.t1dm_core.TerrainSpec as UniffiTerrainSpec
+import uniffi.t1dm_core.defaultGolfTuning as uniffiDefaultGolfTuning
+import uniffi.t1dm_core.BallState as UniffiBallState
+import uniffi.t1dm_core.GolfCup as UniffiGolfCup
+import uniffi.t1dm_core.GolfRun as UniffiGolfRun
+import uniffi.t1dm_core.GolfTuning as UniffiGolfTuning
+import uniffi.t1dm_core.GolfWorld as UniffiGolfWorldObject
 import uniffi.t1dm_core.CgEga as UniffiCgEga
 import uniffi.t1dm_core.CgEgaRegion as UniffiCgEgaRegion
 import uniffi.t1dm_core.ScoredPoint as UniffiScoredPoint
@@ -471,6 +482,12 @@ class UniffiNativeCore : NativeCore {
     /** NOT swallowed (unlike above): rejects degenerate terrain/tuning; a stub would hide bug. */
     override fun createGameWorld(terrain: TerrainSpec, tuning: CarTuning): GameWorld =
         UniffiGameWorld(UniffiGameWorldObject(terrain.toUniffi(), tuning.toUniffi()))
+
+    override fun defaultGolfTuning(): GolfTuning = uniffiDefaultGolfTuning().toModel()
+
+    /** As [createGameWorld]: a terrain with no room for a cup is an error, not a silent stub. */
+    override fun createGolfWorld(terrain: TerrainSpec, tuning: GolfTuning): GolfWorld =
+        UniffiGolfWorld(UniffiGolfWorldObject(terrain.toUniffi(), tuning.toUniffi()))
 }
 
 /** Holds trackLength locally; a per-frame FFI round trip for a constant is what Rust avoids. */
@@ -489,6 +506,67 @@ private class UniffiGameWorld(private val rust: UniffiGameWorldObject) : GameWor
     /** Frees the Rust world now rather than at the next GC. */
     override fun close() = rust.close()
 }
+
+/** Holds `trackLength` and `cup` locally: both fixed at construction, so a round trip is waste. */
+private class UniffiGolfWorld(private val rust: UniffiGolfWorldObject) : GolfWorld {
+    override val trackLength: Float = rust.trackLength()
+
+    override val cup: GolfCup = rust.cup().toModel()
+
+    override fun step(dtMs: Float): BallState = rust.step(dtMs).toModel()
+
+    override fun state(): BallState = rust.state().toModel()
+
+    override fun shoot(vx: Float, vy: Float): BallState = rust.shoot(vx, vy).toModel()
+
+    override fun teeAt(x: Float): BallState = rust.teeAt(x).toModel()
+
+    override fun reset(): BallState = rust.reset().toModel()
+
+    /** Frees the Rust world now rather than at the next GC. */
+    override fun close() = rust.close()
+}
+
+private fun GolfTuning.toUniffi(): UniffiGolfTuning = UniffiGolfTuning(
+    ballRadius = ballRadius,
+    ballMass = ballMass,
+    restitution = restitution,
+    friction = friction,
+    rollingDamping = rollingDamping,
+    gravity = gravity,
+    maxLaunchSpeed = maxLaunchSpeed,
+    restSpeed = restSpeed,
+    restHoldS = restHoldS,
+)
+
+private fun UniffiGolfTuning.toModel(): GolfTuning = GolfTuning(
+    ballRadius = ballRadius,
+    ballMass = ballMass,
+    restitution = restitution,
+    friction = friction,
+    rollingDamping = rollingDamping,
+    gravity = gravity,
+    maxLaunchSpeed = maxLaunchSpeed,
+    restSpeed = restSpeed,
+    restHoldS = restHoldS,
+)
+
+private fun UniffiGolfCup.toModel(): GolfCup = GolfCup(x0 = x0, x1 = x1, rimY = rimY, depth = depth)
+
+private fun UniffiGolfRun.toModel(): GolfRun = when (this) {
+    UniffiGolfRun.PLAYING -> GolfRun.Playing
+    UniffiGolfRun.HOLED -> GolfRun.Holed
+}
+
+private fun UniffiBallState.toModel(): BallState = BallState(
+    x = x, y = y, vx = vx, vy = vy, angle = angle,
+    atRest = atRest,
+    airborne = airborne,
+    strokes = strokes.toInt(),
+    penalties = penalties.toInt(),
+    impact = impact,
+    run = run.toModel(),
+)
 
 private fun TerrainSpec.toUniffi(): UniffiTerrainSpec = UniffiTerrainSpec(
     heights = heights,

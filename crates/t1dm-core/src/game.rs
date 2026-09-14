@@ -2,44 +2,20 @@
 
 use std::sync::{Arc, Mutex};
 
-use rapier2d::parry::shape::{Polyline, PolylineFlags};
 use rapier2d::prelude::*;
 
+use crate::terrain::{
+    build_ground, dec, internal, lerp, lerp_angle, normal_impulse, sane01, solver_params, touching,
+    validate_terrain, wrap_pi, Terrain, TerrainSpec, FIXED_DT, IMPULSE_WARMSTART_BIAS,
+    MAX_FRAME_DT_S, MAX_SPEED, MAX_SUBSTEPS, PI, TWO_PI,
+};
 use crate::CoreError;
 
-/// 1/120 s ⇒ two substeps per 60 fps frame.
-const FIXED_DT: f32 = 1.0 / 120.0;
-/// Surplus beyond this is dropped, not chased: avoids wedging the UI thread on a spiral.
-const MAX_SUBSTEPS: u32 = 8;
-/// Longest frame delta honoured; a longer gap is truncated so the car cannot tunnel.
-const MAX_FRAME_DT_S: f32 = 0.25;
-
-/// ~200 km at 1 m spacing; bounds the Vec so a hostile size is Err, not an alloc abort.
-const MAX_TERRAIN_SAMPLES: usize = 200_000;
-/// The minimum that defines a segment.
-const MIN_TERRAIN_SAMPLES: usize = 2;
-/// Metres; past ~1e6 f32 loses precision between samples and an infinite AABB drops the car.
-const MAX_TRACK_LENGTH: f32 = 1.0e6;
-/// Flat run-off left of start (m); sized so a car railed at MAX_SPEED can't cross it.
-const RUN_OFF_LENGTH: f32 = 10_000.0;
-
-/// m/s. Far above anything reachable; catches a divergence early.
-const MAX_SPEED: f32 = 200.0;
 /// rad/s — ~5 flips per second.
 const MAX_ANGULAR: f32 = 32.0;
 /// validate_tuning bounds by sign not magnitude; caps an absurd torque from overflowing to +inf.
 const MAX_MOTOR_GAIN: f32 = 1.0e12;
 
-/// rapier scales metre tolerances by this; car is ~28 m long on 3.6 m wheels, 10x human-scale.
-const LENGTH_UNIT: f32 = 10.0;
-/// TGS-Soft substeps per step; rapier divides dt by this, an integration rate: 8 = 960 Hz.
-const SOLVER_SUBSTEPS: usize = 8;
-/// Before LENGTH_UNIT scale = 0.20 m; a wheel at the rev limiter outruns the default look-ahead.
-const PREDICTION_DISTANCE: f32 = 0.02;
-/// Before the `LENGTH_UNIT` scale ⇒ 0.01 m, which is what a resting wheel actually sinks.
-const ALLOWED_LINEAR_ERROR: f32 = 0.001;
-/// Undoes warm-start inflation: accumulator folds prior residual, steady-state = (N+1)/N over N.
-const IMPULSE_WARMSTART_BIAS: f32 = 8.0 / 9.0; // SOLVER_SUBSTEPS / (SOLVER_SUBSTEPS + 1)
 /// Gain multiple saturating standstill torque; above 1, full torque till near the limiter.
 const DRIVE_MOTOR_GAIN: f32 = 4.0;
 
@@ -74,10 +50,6 @@ const RPM_PER_RAD_S: f32 = 9.5493 * 7.0;
 /// Revving a stalled wheel still makes noise.
 const THROTTLE_RPM_BUMP: f32 = 900.0;
 const MAX_RPM: f32 = 9_000.0;
-/// Samples either side of the car.
-const ROUGH_HALF_WINDOW: usize = 6;
-/// Mean slope-change per sample at which roughness saturates to 1.
-const ROUGH_REF: f32 = 0.5;
 
 /// Tune sized to the world: 3 m/min terrain, so a 5-min reading is 15 m; anti-wheelie L/h = 2.25.
 const D_MASS: f32 = 450.0;
@@ -108,34 +80,6 @@ const D_GRAVITY: f32 = 34.0;
 /// rad. ~80°, steeper than any climbable slope, so a hill cannot masquerade as a crash.
 const D_CRASH_TILT: f32 = 1.4;
 
-const PI: f32 = std::f32::consts::PI;
-const TWO_PI: f32 = std::f32::consts::TAU;
-
-#[inline]
-fn dec(reason: impl Into<String>) -> CoreError {
-    CoreError::Decode { reason: reason.into() }
-}
-#[inline]
-fn internal(reason: impl Into<String>) -> CoreError {
-    CoreError::Internal { reason: reason.into() }
-}
-
-/// Finite and non-negative is ground; anything else is a GAP.
-#[inline]
-fn solid(h: f32) -> bool {
-    h.is_finite() && h >= 0.0
-}
-
-/// Saturate a caller-supplied control. Non-finite ⇒ 0, released.
-#[inline]
-fn sane01(v: f32) -> f32 {
-    if v.is_finite() {
-        v.clamp(0.0, 1.0)
-    } else {
-        0.0
-    }
-}
-
 /// Non-finite ⇒ 0.
 #[inline]
 fn gain(v: f32, hi: f32) -> f32 {
@@ -146,32 +90,6 @@ fn gain(v: f32, hi: f32) -> f32 {
     }
 }
 
-/// To (−π, π]. Left unbounded across many flips, `ang` loses its fraction in f32.
-#[inline]
-fn wrap_pi(a: f32) -> f32 {
-    if !a.is_finite() {
-        return 0.0;
-    }
-    let mut a = a % TWO_PI;
-    if a > PI {
-        a -= TWO_PI;
-    } else if a <= -PI {
-        a += TWO_PI;
-    }
-    a
-}
-
-#[inline]
-fn lerp(a: f32, b: f32, t: f32) -> f32 {
-    a + (b - a) * t
-}
-
-/// The SHORT way round; a naive lerp across the wrap seam takes a whole extra turn in one frame.
-#[inline]
-fn lerp_angle(a: f32, b: f32, t: f32) -> f32 {
-    a + wrap_pi(b - a) * t
-}
-
 /// Crashed/Finished are TERMINAL: step re-returns frozen state; reset is the only way back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum RunState {
@@ -180,14 +98,6 @@ pub enum RunState {
     Crashed,
     /// Reached the right-hand edge of the heightfield.
     Finished,
-}
-
-/// heights[i] is height at x=i*dx, linear; neg/non-finite = GAP; kill = -world_height.
-#[derive(Debug, Clone, PartialEq, uniffi::Record)]
-pub struct TerrainSpec {
-    pub heights: Vec<f32>,
-    pub dx: f32,
-    pub world_height: f32,
 }
 
 /// The `D_*` constants [`default_car_tuning`] is built from carry the provenance of each number.
@@ -282,103 +192,6 @@ pub fn default_car_tuning() -> CarTuning {
         gravity: D_GRAVITY,
         crash_tilt_rad: D_CRASH_TILT,
     }
-}
-
-/// Raw heightfield, gap markers intact; collider's copy is sanitised (see build_ground).
-struct Terrain {
-    heights: Vec<f32>,
-    dx: f32,
-    inv_dx: f32,
-    /// x of the last sample; reaching it is `Finished`.
-    length: f32,
-    /// Falling below this ends the run (one world-height under the floor).
-    kill_y: f32,
-}
-
-impl Terrain {
-    /// Ground height at x, None at a gap; both indices clamped, so no x (even inf) slices OOB.
-    #[inline]
-    fn sample(&self, x: f32) -> Option<f32> {
-        if !x.is_finite() {
-            return None;
-        }
-        let n = self.heights.len(); // ≥ MIN_TERRAIN_SAMPLES by construction
-        let last = n - 1;
-        // A negative or NaN cast saturates to 0 in Rust; the clamp makes that explicit.
-        let u = (x * self.inv_dx).clamp(0.0, last as f32);
-        let i = (u as usize).min(last);
-        let j = (i + 1).min(last);
-        let (h0, h1) = (self.heights[i], self.heights[j]);
-        if !solid(h0) || !solid(h1) {
-            return None;
-        }
-        let f = (u - i as f32).clamp(0.0, 1.0);
-        Some(h0 + (h1 - h0) * f)
-    }
-
-    /// Mean |2nd diff| over a window centred on x, per dx, in [0,1]; gaps skipped not cliffs.
-    fn roughness(&self, x: f32) -> f32 {
-        let n = self.heights.len();
-        if n < 3 || !x.is_finite() {
-            return 0.0;
-        }
-        let last = n - 1;
-        let c = ((x * self.inv_dx).clamp(0.0, last as f32) as usize).min(last);
-        let lo = c.saturating_sub(ROUGH_HALF_WINDOW).max(1);
-        let hi = (c + ROUGH_HALF_WINDOW).min(n - 2);
-        if hi < lo {
-            return 0.0;
-        }
-        let mut acc = 0.0f32;
-        let mut cnt = 0u32;
-        for i in lo..=hi {
-            let (a, b, d) = (self.heights[i - 1], self.heights[i], self.heights[i + 1]);
-            if !solid(a) || !solid(b) || !solid(d) {
-                continue;
-            }
-            acc += (a - 2.0 * b + d).abs();
-            cnt += 1;
-        }
-        if cnt == 0 {
-            return 0.0;
-        }
-        // One signal downstream of firewall/per-substep check; crosses FFI as [0,1], NaN unchecked.
-        let r = (acc / cnt as f32) * self.inv_dx / ROUGH_REF;
-        if r.is_finite() {
-            r.clamp(0.0, 1.0)
-        } else {
-            0.0
-        }
-    }
-}
-
-/// Collider for raw/dx: ORIENTED polyline avoids heightfield kicks; gap vertex poisons AABB.
-fn build_ground(raw: &[f32], dx: f32) -> Option<SharedShape> {
-    let seed = raw.iter().copied().find(|h| solid(*h))?;
-    let mut carry = seed;
-    let mut verts = Vec::with_capacity(raw.len() + 1);
-    for (i, &h) in raw.iter().enumerate() {
-        if solid(h) {
-            carry = h;
-        }
-        verts.push(Vector::new(i as f32 * dx, carry));
-    }
-    let mut idx: Vec<[u32; 2]> = Vec::with_capacity(raw.len());
-    for i in 0..raw.len() - 1 {
-        if solid(raw[i]) && solid(raw[i + 1]) {
-            idx.push([i as u32 + 1, i as u32]);
-        }
-    }
-    // Run-off: sample clamps its index, so ground stays flat left of start; can't roll off x=0.
-    if solid(raw[0]) {
-        let apron = verts.len() as u32;
-        verts.push(Vector::new(-RUN_OFF_LENGTH, raw[0]));
-        idx.push([0, apron]);
-    }
-    if idx.is_empty() {
-        return None;
-    }
-    Some(SharedShape::new(Polyline::with_flags(verts, Some(idx), PolylineFlags::ORIENTED)))
 }
 
 #[derive(Clone, Copy)]
@@ -570,20 +383,12 @@ impl Phys {
         );
     }
 
-    /// Carrying, or nearly; not has_any_active_contact. tol = speculative dist, not 0.01m slop.
     fn touching(&self, col: ColliderHandle, tol: f32) -> bool {
-        self.narrow_phase.contact_pairs_with(col).any(|pair| {
-            pair.total_impulse_magnitude() > 0.0
-                || pair.find_deepest_contact().is_some_and(|(_, c)| c.dist <= tol)
-        })
+        touching(&self.narrow_phase, col, tol)
     }
 
-    /// Total normal impulse through this collider this step (N*s); folds manifolds together.
     fn normal_impulse(&self, col: ColliderHandle) -> f32 {
-        self.narrow_phase
-            .contact_pairs_with(col)
-            .map(|pair| pair.total_impulse_magnitude())
-            .sum()
+        normal_impulse(&self.narrow_phase, col)
     }
 }
 
@@ -630,15 +435,7 @@ struct Sim {
 impl Sim {
     fn new(terrain: Terrain, tune: CarTuning) -> Self {
         let ground = build_ground(&terrain.heights, terrain.dx);
-        let params = IntegrationParameters {
-            dt: FIXED_DT,
-            length_unit: LENGTH_UNIT,
-            num_solver_iterations: SOLVER_SUBSTEPS,
-            normalized_prediction_distance: PREDICTION_DISTANCE,
-            normalized_allowed_linear_error: ALLOWED_LINEAR_ERROR,
-            max_ccd_substeps: 0,
-            ..Default::default()
-        };
+        let params = solver_params();
         // The extension at which both springs carry half the weight each.
         let sag = if tune.suspension_stiffness > 0.0 {
             (0.5 * tune.chassis_mass * tune.gravity / tune.suspension_stiffness)
@@ -735,23 +532,6 @@ impl Sim {
         self.reset_from(0.0);
     }
 
-    /// First run of more than span solid samples from `from`; None if no landable ground remains.
-    fn landable_from(&self, from: usize, span: usize) -> Option<usize> {
-        let n = self.terrain.heights.len();
-        let mut run = 0usize;
-        for i in from..n {
-            if solid(self.terrain.heights[i]) {
-                run += 1;
-                if run > span {
-                    return Some(i + 1 - run);
-                }
-            } else {
-                run = 0;
-            }
-        }
-        None
-    }
-
     /// Places the car on first solid ground at/after from_x; start is wherever the user tapped.
     fn reset_from(&mut self, from_x: f32) {
         let t = self.tune;
@@ -764,8 +544,9 @@ impl Sim {
         };
         // No landable run after the tap: falls back to first anywhere, seat always has ground.
         let first = self
-            .landable_from(begin, span)
-            .or_else(|| self.landable_from(0, span))
+            .terrain
+            .first_run_from(begin, span)
+            .or_else(|| self.terrain.first_run_from(0, span))
             .unwrap_or(begin);
         // first near the end can push sx past terrain.length; clamped here for every caller.
         let max_sx = (self.terrain.length - t.chassis_half_len).max(0.0);
@@ -1037,39 +818,8 @@ impl GameWorld {
     /// The ONE fallible, allocating, message-formatting entry point; `step` is not.
     #[uniffi::constructor]
     pub fn new(terrain: TerrainSpec, tuning: CarTuning) -> Result<Arc<Self>, CoreError> {
-        let n = terrain.heights.len();
-        if n < MIN_TERRAIN_SAMPLES {
-            return Err(dec(format!("terrain: {n} samples (need ≥ {MIN_TERRAIN_SAMPLES})")));
-        }
-        if n > MAX_TERRAIN_SAMPLES {
-            return Err(dec(format!("terrain: {n} samples (max {MAX_TERRAIN_SAMPLES})")));
-        }
-        // inv_dx must be finite too: sub-normal dx overflows it; clamp can't fix a NaN self.
-        if !terrain.dx.is_finite() || terrain.dx <= 0.0 || !(1.0 / terrain.dx).is_finite() {
-            return Err(dec(format!("terrain: dx must be finite and > 0, got {}", terrain.dx)));
-        }
-        if !terrain.world_height.is_finite() || terrain.world_height <= 0.0 {
-            return Err(dec(format!(
-                "terrain: world_height must be finite and > 0, got {}",
-                terrain.world_height
-            )));
-        }
-        let length = (n - 1) as f32 * terrain.dx;
-        if !length.is_finite() || length <= 0.0 || length > MAX_TRACK_LENGTH {
-            return Err(dec(format!(
-                "terrain: track length must be in (0, {MAX_TRACK_LENGTH}] m, got {length}"
-            )));
-        }
+        let t = validate_terrain(terrain)?;
         validate_tuning(&tuning)?;
-
-        let dx = terrain.dx;
-        let t = Terrain {
-            inv_dx: 1.0 / dx,
-            length,
-            kill_y: -terrain.world_height,
-            heights: terrain.heights,
-            dx,
-        };
         Ok(Arc::new(Self { inner: Mutex::new(Sim::new(t, tuning)) }))
     }
 
@@ -1165,6 +915,7 @@ fn validate_tuning(t: &CarTuning) -> Result<(), CoreError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::terrain::MAX_TERRAIN_SAMPLES;
     use serde_json::Value;
 
     const GOLDEN: &str = include_str!("testdata/game_golden.json");

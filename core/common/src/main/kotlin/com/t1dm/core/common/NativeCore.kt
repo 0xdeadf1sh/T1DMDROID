@@ -15,6 +15,7 @@ import com.t1dm.core.model.LoraTrainResult
 import com.t1dm.core.model.LoraWeights
 import com.t1dm.core.model.MaskSpan
 import com.t1dm.core.model.CarTuning
+import com.t1dm.core.model.GolfTuning
 import com.t1dm.core.model.ClarkeZone
 import com.t1dm.core.model.DtsZone
 import com.t1dm.core.model.ConformalFit
@@ -237,4 +238,10 @@ interface NativeCore {
 
     /** Heightfield crosses FFI here; caller OWNS the result and must GameWorld.close it. */
     fun createGameWorld(terrain: TerrainSpec, tuning: CarTuning): GameWorld
+
+    /** Rust owns these numbers; nothing on this side transcribes them. */
+    fun defaultGolfTuning(): GolfTuning
+
+    /** Same heightfield, cup cut at the last sample; caller must GolfWorld.close it. */
+    fun createGolfWorld(terrain: TerrainSpec, tuning: GolfTuning): GolfWorld
 }

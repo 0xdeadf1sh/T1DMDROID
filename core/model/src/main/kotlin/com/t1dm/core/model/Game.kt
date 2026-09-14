@@ -2,6 +2,12 @@ package com.t1dm.core.model
 
 /** Hill-climb minigame car physics; terrain IS the glucose trace. Cosmetic, no fail-closed path. */
 
+/** Which minigame the dashboard panel is in; both read the same trace and write nothing. */
+enum class GameKind {
+    Drive,
+    Golf,
+}
+
 /** Every non-Running value is TERMINAL: world freezes, re-returns the same CarState until reset. */
 enum class RunState {
     Running,
@@ -70,4 +76,53 @@ data class CarState(
     val run: RunState,
     /** Simulated seconds consumed — substeps actually run, not wall clock. */
     val elapsedS: Float,
+)
+
+/** The same trace played as a hole. [Holed] is TERMINAL: the world freezes until it is re-teed. */
+enum class GolfRun {
+    Playing,
+    Holed,
+}
+
+/** Rust `defaultGolfTuning()` is the authority for these numbers — do not transcribe them. */
+data class GolfTuning(
+    val ballRadius: Float,
+    val ballMass: Float,
+    val restitution: Float,
+    val friction: Float,
+    /** Linear rolling bleed (1/s), applied ONLY in ground contact — flight is drag-free. */
+    val rollingDamping: Float,
+    val gravity: Float,
+    /** Speed cap on [GolfWorld.shoot]; direction is kept, magnitude clipped. */
+    val maxLaunchSpeed: Float,
+    val restSpeed: Float,
+    val restHoldS: Float,
+)
+
+/** Cut at the last solid sample, so [x1] IS the present moment; both lips sit at [rimY]. */
+data class GolfCup(
+    val x0: Float,
+    val x1: Float,
+    val rimY: Float,
+    val depth: Float,
+)
+
+/** Flight is drag-free BY CONTRACT: `x+vx·t, y+vy·t−g·t²/2`, so a preview arc needs no FFI. */
+data class BallState(
+    val x: Float,
+    val y: Float,
+    val vx: Float,
+    val vy: Float,
+    /** Rolled angle, positive rolling toward +x. Render only. */
+    val angle: Float,
+    /** Settled: the only state a shot is honoured in. */
+    val atRest: Boolean,
+    /** True after 8 ticks (67 ms) clear, not simply !contact — a lip can clear for one tick. */
+    val airborne: Boolean,
+    val strokes: Int,
+    /** Water drops. Each is a stroke's worth of score and a re-placement, not a stroke. */
+    val penalties: Int,
+    /** Normal impulse over step, excess of weight (N·s); rectified. Haptics amplitude. */
+    val impact: Float,
+    val run: GolfRun,
 )
