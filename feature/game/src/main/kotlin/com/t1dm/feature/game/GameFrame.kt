@@ -14,6 +14,9 @@ open class WorldFrame {
 
     /** 0 at the drop, 1 at the finish. Measured from the SEAT, not the track's origin. */
     var progress = 0f
+
+    /** Simulated seconds since the drop: the scenery's clock, so a hold freezes the sky too. */
+    var simS = 0f
 }
 
 /** Flat scalars in PLAIN memory, outside Compose snapshot: reading in composition breaks that. */

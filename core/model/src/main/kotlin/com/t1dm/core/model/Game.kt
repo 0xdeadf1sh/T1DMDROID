@@ -8,6 +8,12 @@ enum class GameKind {
     Golf,
 }
 
+/** How thickly both games dress the trace with scenery; a Settings choice, stored by name. */
+enum class GamePropDensity {
+    Sparse,
+    Busy,
+}
+
 /** Every non-Running value is TERMINAL: world freezes, re-returns the same CarState until reset. */
 enum class RunState {
     Running,

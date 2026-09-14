@@ -5,15 +5,19 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import com.t1dm.core.common.GameWorld
+import com.t1dm.core.model.AlertThresholds
 import com.t1dm.core.model.CarState
 import com.t1dm.core.model.CgmReading
+import com.t1dm.core.model.GamePropDensity
 import com.t1dm.core.model.PaintStroke
 import com.t1dm.core.model.RunState
 import com.t1dm.core.model.UnitSpace
 import com.t1dm.ui.game.GameTrack
+import com.t1dm.ui.game.PropSet
 import com.t1dm.ui.game.TrackTrace
 import com.t1dm.ui.game.WorldPaint
 import com.t1dm.ui.game.buildGameTrack
+import com.t1dm.ui.game.buildProps
 import com.t1dm.ui.game.buildWorldPaint
 import com.t1dm.ui.graph.buildGraphFrame
 import com.t1dm.ui.graph.buildPaintFrame
@@ -35,6 +39,7 @@ class GameScene(
     /** The unit the trace was cut in, not the live setting. */
     val unit: UnitSpace,
     val tzOffsetMin: Int,
+    val props: PropSet,
 )
 
 /** [readings] is the run's window: the chosen start day's midnight to the newest reading. */
@@ -45,6 +50,8 @@ suspend fun loadGameScene(
     kovatchevF: ((Double) -> Double)?,
     rangeMinMgdl: Int,
     rangeMaxMgdl: Int,
+    thresholds: AlertThresholds? = null,
+    propDensity: GamePropDensity = GamePropDensity.Sparse,
 ): GameScene = withContext(Dispatchers.Default) {
     val frame = buildGraphFrame(readings, unit, maxPoints = TRACK_MAX_POINTS, kovatchevF = kovatchevF)
     val track = buildGameTrack(TrackTrace.of(frame), rangeMinMgdl, rangeMaxMgdl, kovatchevF)
@@ -53,7 +60,7 @@ suspend fun loadGameScene(
     } else {
         buildWorldPaint(buildPaintFrame(strokes), track)
     }
-    GameScene(track, paint, unit, frame.tzOffsetMin)
+    GameScene(track, paint, unit, frame.tzOffsetMin, buildProps(track, readings, thresholds, unit, propDensity))
 }
 
 /** Rebuilt at HUD_PERIOD_NS, never frame rate: the one cell whose change recomposes anything. */
@@ -155,6 +162,7 @@ internal suspend fun runGameLoop(
     }
     // Terminal run is a hold: simulating a frozen scene wastes 60 FFI round trips/s; loop-local.
     var terminal = false
+    var simS = 0f
 
     while (coroutineContext.isActive) {
         val nowNs = withFrameNanos { it }
@@ -191,7 +199,7 @@ internal suspend fun runGameLoop(
             // On the chart's viewport, not on the car: entering drive mode must not move the panel.
             seatX = s.x
             camera.seatAt(seatAtX, s.y, viewH)
-            publish(bus, s, controls, camera, viewW, viewH, zoom.carShown, zoom.liftM, exhaustPhase, progressOf(s.x))
+            publish(bus, s, controls, camera, viewW, viewH, zoom.carShown, zoom.liftM, exhaustPhase, progressOf(s.x), simS)
             if (!signalled) {
                 signalled = true
                 onFirstFrame()
@@ -200,11 +208,12 @@ internal suspend fun runGameLoop(
             // At once, not the cadence: dismisses the terminal card the instant Restart is pressed.
             pushHud(s, nowNs)
         } else if (dtMs > 0f) {
+            simS += dtMs / 1000f
             // Ramp before stepping: a boolean step from rest lifts the nose at this thrust/weight.
             controls.ramp(dtMs / 1000f)
             val s = world.step(dtMs, controls.throttle, controls.brake)
             camera.follow(s.x, s.y, s.vx, s.vy, viewW, viewH, trackLength, dtMs / 1000f)
-            publish(bus, s, controls, camera, viewW, viewH, zoom.carShown, zoom.liftM, exhaustPhase, progressOf(s.x))
+            publish(bus, s, controls, camera, viewW, viewH, zoom.carShown, zoom.liftM, exhaustPhase, progressOf(s.x), simS)
             // Simulated frames only: on a 120 Hz panel half the callbacks carry no timestep.
             feel.frame(s)
             lastSpeed = s.vx
@@ -221,7 +230,7 @@ internal suspend fun runGameLoop(
             // Republish every frame, invalidates on commit only; state(), not step(), eases camera.
             val s = world.state()
             camera.follow(s.x, s.y, 0f, 0f, viewW, viewH, trackLength, presentDt / 1000f)
-            publish(bus, s, controls, camera, viewW, viewH, zoom.carShown, zoom.liftM, exhaustPhase, progressOf(s.x))
+            publish(bus, s, controls, camera, viewW, viewH, zoom.carShown, zoom.liftM, exhaustPhase, progressOf(s.x), simS)
         } else if (paused != lastPaused || (paused && gate.holds.primary != hud.value.hold)) {
             // The reason can change while the answer does not, and the banner names the reason.
             hud.value = hud.value.copy(hold = gate.holds.primary)
@@ -243,11 +252,14 @@ private fun publish(
     carLiftM: Float,
     exhaustPhase: Float,
     progress: Float,
+    simS: Float,
 ) {
-    bus.back().set(
+    val f = bus.back()
+    f.set(
         s, controls.throttle, controls.brake, camera,
         camWidthM, camHeightM, carShown, carLiftM, exhaustPhase, progress,
     )
+    f.simS = simS
     bus.commit()
 }
 

@@ -114,12 +114,15 @@ internal suspend fun runGolfLoop(
         )
     }
 
+    var simS = 0f
     fun publish(s: BallState, viewW: Float, viewH: Float, dtS: Float, placing: Boolean) {
         val f = bus.back()
         f.set(
             s, camera, viewW, viewH, zoom.carShown, zoom.liftM, controls,
             teeX, teeY, splashX, splashY, splash, progressOf(s.x),
         )
+        simS += dtS
+        f.simS = simS
         // After the set, before the commit: the figure reads the frame it is published on.
         if (golfer != null) {
             val pxX = (viewport.widthPx - viewport.plotInsetPx).coerceAtLeast(1f) / viewW.coerceAtLeast(1e-3f)

@@ -20,6 +20,7 @@ enum class SettingsScreenKey(val breadcrumb: String, internal val indexed: Boole
     ROOT("Settings", indexed = false),
     DISPLAY("Display"),
     GRAPH("Graph"),
+    GAMES("Games"),
     ALARM_THRESHOLDS("Alarms › Thresholds"),
     SIGNAL("Alarms › Signal"),
     ALERTS("Sound"),
@@ -46,6 +47,7 @@ object SettingsIndex {
     val ALL: List<SettingsKnob> = buildList {
         addAll(settingsDisplayKnobs)
         addAll(settingsGraphKnobs)
+        addAll(settingsGameKnobs)
         addAll(settingsAlarmThresholdKnobs)
         addAll(settingsSignalKnobs)
         addAll(settingsAlertKnobs)

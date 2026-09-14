@@ -13,6 +13,7 @@ import com.t1dm.calc.TargetRange as CalcTargetRange
 import com.t1dm.core.design.HapticStrength
 import com.t1dm.core.design.normalizeThemeId
 import com.t1dm.core.model.AlertThresholds
+import com.t1dm.core.model.GamePropDensity
 import com.t1dm.data.T1dmRepository
 import com.t1dm.data.curve.ExerciseDisposal
 import com.t1dm.inference.InferenceControllerDefaults
@@ -136,6 +137,13 @@ class SettingsStore(
     suspend fun setBypassDnd(on: Boolean) = put(K_BYPASS_DND, if (on) "1" else "0")
     suspend fun setCriticalSoundOn(on: Boolean) = put(K_CRIT_SOUND_ON, if (on) "1" else "0")
     suspend fun setWarningSoundOn(on: Boolean) = put(K_WARN_SOUND_ON, if (on) "1" else "0")
+
+    /** Stored by enum name; an unknown name reads as the default rather than as a crash. */
+    val gameProps: Flow<GamePropDensity> = repository.observeKv(K_GAME_PROPS).map { v ->
+        GamePropDensity.entries.firstOrNull { it.name == v } ?: GamePropDensity.Sparse
+    }
+
+    suspend fun setGameProps(density: GamePropDensity) = put(K_GAME_PROPS, density.name)
 
     val lowPowerEnabled: Flow<Boolean> = boolFlow(K_POWER_ENABLED, true)
     val lowPowerPercent: Flow<Int> = intFlow(K_POWER_PCT, DEFAULT_LOW_POWER_PCT)
@@ -745,6 +753,8 @@ class SettingsStore(
         private const val K_BYPASS_DND = "alerts.bypass_dnd_bool"
         private const val K_CRIT_SOUND_ON = "alerts.sound.critical_on"
         private const val K_WARN_SOUND_ON = "alerts.sound.warning_on"
+
+        private const val K_GAME_PROPS = "game.props"
 
         private const val K_POWER_ENABLED = "power.low_enabled"
         private const val K_POWER_PCT = "power.low_pct"

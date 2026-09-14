@@ -13,6 +13,7 @@ import androidx.compose.ui.unit.dp
 fun SettingsScreen(
     onOpenDisplay: () -> Unit = {},
     onOpenGraph: () -> Unit = {},
+    onOpenGames: () -> Unit = {},
     onOpenAlarmThresholds: () -> Unit = {},
     onOpenSignalSafety: () -> Unit = {},
     onOpenAlerts: () -> Unit = {},
@@ -51,6 +52,7 @@ fun SettingsScreen(
                 SettingsSectionHeader("Display")
                 SettingsNavRow("Theme, font, units & targets", "3 themes, custom JSON, fonts, animations", onClick = onOpenDisplay)
                 SettingsNavRow("BG graph range & window", "Floor, ceiling, default window", onClick = onOpenGraph)
+                SettingsNavRow("Games", "Drive & Golf scenery", onClick = onOpenGames)
 
                 SettingsSectionHeader("Alarms")
                 SettingsNavRow("Alarm thresholds", "Urgent-low / low / high / urgent-high — unbounded", onClick = onOpenAlarmThresholds)

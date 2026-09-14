@@ -11,6 +11,8 @@ import androidx.compose.ui.graphics.lerp
 import com.t1dm.core.design.T1dmPalette
 import com.t1dm.core.model.CarTuning
 import com.t1dm.ui.game.GameTrack
+import com.t1dm.ui.game.PropSet
+import com.t1dm.ui.game.WorldMap
 import com.t1dm.ui.game.WorldPaint
 import com.t1dm.ui.game.appendGroundLine
 import com.t1dm.ui.game.drawWorldPaint
@@ -71,6 +73,34 @@ class GameSkin(p: T1dmPalette) {
     val trousers: Color = lerp(p.ink, p.surface, 0.30f)
     val cap: Color = p.primary
     val flesh: Color = lerp(p.ink, p.surface, if (p.dark) 0.55f else 0.40f)
+
+    /** Scenery: buried things a step quieter than the trace, sky things a step off the sky. */
+    val buried: Color = p.inkMuted.copy(alpha = 0.55f)
+    val water: Color = p.secondary.copy(alpha = 0.35f)
+    val waterLine: Color = p.secondary.copy(alpha = 0.7f)
+    val ore: Color = p.high.copy(alpha = 0.7f)
+    val wood: Color = lerp(p.ink, p.surface, 0.35f)
+    val leaf: Color = lerp(p.inRange, p.surface, 0.25f)
+    val stone: Color = lerp(p.surfaceVariant, p.ink, 0.35f)
+    val roof: Color = lerp(p.urgentHigh, p.surface, 0.35f)
+    val window: Color = p.high
+    val cloth: Color = p.secondary
+    val straw: Color = lerp(p.high, p.surface, 0.3f)
+    val cloud: Color = lerp(p.surface, p.ink, if (p.dark) 0.22f else 0.06f)
+    val bird: Color = p.inkMuted
+    val balloon: Color = p.low
+    val balloonBand: Color = p.ink
+    val kite: Color = p.urgentHigh
+    val string: Color = p.inkMuted.copy(alpha = 0.6f)
+    val sun: Color = p.high
+    val moon: Color = lerp(p.surface, p.ink, 0.6f)
+    val star: Color = p.ink.copy(alpha = 0.8f)
+
+    /** Road signs: a light face, the band's own alarm colour, dark text in every theme. */
+    val signFace: Color = ball
+    val signLow: Color = p.low
+    val signHigh: Color = p.high
+    val signText: Color = if (p.dark) p.surface else p.ink
 }
 
 /** Built once per tuning, CAR-LOCAL METRES, y flipped; a frame is translate/rotate/scale. */
@@ -504,17 +534,47 @@ fun DrawScope.drawGameWorld(
     pxPerWorldY: Float = pxPerWorld,
     /** Panel's background is the per-theme backdrop behind the whole app; filling hides it. */
     fillSky: Boolean = true,
+    /** Scenery, both games; null draws the bare trace. [simS]: simulated seconds, held on hold. */
+    props: PropSet? = null,
+    propArt: PropArt? = null,
+    simS: Float = 0f,
+    /** Local hour of day at the camera's centre, for sun, moon and stars; NaN skips them. */
+    hour: Float = Float.NaN,
+    plotTop: Float = 0f,
+    plotBottom: Float = 0f,
 ) {
     if (fillSky) drawRect(skin.sky)
+    if (props != null && propArt != null) {
+        drawSkyProps(
+            props, propArt, skin, track.length, camLeft, camWidth, pxPerWorld, pxPerWorldY, floorPx,
+            simS, hour, plotTop, plotBottom,
+        )
+    }
     drawWorldPaint(paint, camLeft, camWidth, pxPerWorld, floorPx, paintPath, chalk, pxPerWorldY)
+    if (props != null && propArt != null) {
+        drawUndergroundProps(props, propArt, skin, camLeft, camWidth, pxPerWorld, pxPerWorldY, floorPx, simS)
+        drawGroundProps(props, propArt, skin, camLeft, camWidth, pxPerWorld, pxPerWorldY, floorPx, simS)
+    }
 
     // STROKED not filled: the curve must read exactly as with the game off; nothing below it.
     track.appendGroundLine(groundPath, camLeft, camWidth, pxPerWorld, floorPx, pxPerWorldY)
     drawPath(groundPath, skin.trace, style = Stroke(width = TRACE_W, cap = StrokeCap.Round))
 
+    if (props != null && propArt != null) {
+        drawSigns(props, propArt, skin, camLeft, camWidth, pxPerWorld, pxPerWorldY, floorPx)
+    }
     drawEndMarker(0f, skin.marker, camLeft, camWidth, pxPerWorld, floorPx, track)
     drawEndMarker(track.length, skin.finish, camLeft, camWidth, pxPerWorld, floorPx, track)
 }
+
+/** Local hour of the day, [0, 24), at a world x; sun and moon ride the camera's centre. */
+internal fun hourAt(map: WorldMap, tzOffsetMin: Int, worldX: Float): Float {
+    if (!worldX.isFinite()) return Float.NaN
+    val ms = map.tsMsAt(worldX) + tzOffsetMin * 60_000L
+    return ((ms % DAY_MS + DAY_MS) % DAY_MS) / 3_600_000f
+}
+
+private const val DAY_MS = 86_400_000L
 
 /** The start line, and the present moment. */
 private fun DrawScope.drawEndMarker(

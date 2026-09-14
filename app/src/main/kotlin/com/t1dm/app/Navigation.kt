@@ -121,6 +121,7 @@ import com.t1dm.core.model.ExerciseKind
 import com.t1dm.core.model.ExerciseSession
 import com.t1dm.core.model.Food
 import com.t1dm.core.model.GameKind
+import com.t1dm.core.model.GamePropDensity
 import com.t1dm.core.model.GolfTuning
 import com.t1dm.core.model.InferenceCause
 import com.t1dm.core.model.InferenceState
@@ -170,6 +171,7 @@ import com.t1dm.feature.settings.DeathModeScreen
 import com.t1dm.feature.settings.DeviceTempAlertScreen
 import com.t1dm.feature.settings.DisplaySettingsScreen
 import com.t1dm.feature.settings.ForecastSettingsScreen
+import com.t1dm.feature.settings.GameSettingsScreen
 import com.t1dm.feature.settings.GraphSettingsScreen
 import com.t1dm.feature.settings.LocalSettingsFocus
 import com.t1dm.feature.settings.NightscoutSettingsScreen
@@ -375,6 +377,7 @@ internal fun settingsRouteFor(screen: SettingsScreenKey): String = when (screen)
     SettingsScreenKey.ROOT -> "settings"
     SettingsScreenKey.DISPLAY -> "settings/display"
     SettingsScreenKey.GRAPH -> "settings/graph"
+    SettingsScreenKey.GAMES -> "settings/games"
     SettingsScreenKey.ALARM_THRESHOLDS -> "settings/alarms"
     SettingsScreenKey.SIGNAL -> "settings/signal"
     SettingsScreenKey.ALERTS -> "settings/alerts"
@@ -1587,6 +1590,7 @@ private fun T1dmNavHost(
             SettingsScreen(
                 onOpenDisplay = { navController.navigate("settings/display") },
                 onOpenGraph = { navController.navigate("settings/graph") },
+                onOpenGames = { navController.navigate("settings/games") },
                 onOpenAlarmThresholds = { navController.navigate("settings/alarms") },
                 onOpenSignalSafety = { navController.navigate("settings/signal") },
                 onOpenAlerts = { navController.navigate("settings/alerts") },
@@ -1857,6 +1861,14 @@ private fun T1dmNavHost(
                 },
             )
         }
+        composable("settings/games") {
+            val scope = rememberCoroutineScope()
+            val props by container.settingsStore.gameProps.collectAsState(GamePropDensity.Sparse)
+            GameSettingsScreen(
+                props = props,
+                onSetProps = { d -> scope.launch { container.settingsStore.setGameProps(d) } },
+            )
+        }
         composable("settings/power") {
             val scope = rememberCoroutineScope()
             val enabled by container.settingsStore.lowPowerEnabled.collectAsState(true)
@@ -2122,6 +2134,7 @@ private fun DashboardGamePanel(
     val glucoseUnit by container.statsRepository.unitSpace.collectAsState(UnitSpace.MgDl)
     val range by container.graphRange.collectAsState(com.t1dm.data.settings.BgRange.DEFAULT)
     val paintStrokes by container.paintStrokes.collectAsState(emptyList())
+    val propDensity by container.settingsStore.gameProps.collectAsState(GamePropDensity.Sparse)
     val latest by container.latestReading.collectAsState(null)
     val alarm by container.alarmState.collectAsState()
     val predicted by container.predictiveAlertRaised.collectAsState()
@@ -2159,6 +2172,7 @@ private fun DashboardGamePanel(
             rangeMaxMgdl = range.maxMgdl,
             paintStrokes = paintStrokes,
             carTuning = tuning,
+            propDensity = propDensity,
             readingsFrom = container::gameReadings,
             openWorld = { terrain, t -> container.nativeCore.createGameWorld(terrain, t) },
             gameDispatcher = container.dispatchers.game,
@@ -2180,6 +2194,7 @@ private fun DashboardGamePanel(
             rangeMaxMgdl = range.maxMgdl,
             paintStrokes = paintStrokes,
             golfTuning = golfTuning,
+            propDensity = propDensity,
             readingsFrom = container::gameReadings,
             openWorld = { terrain, t -> container.nativeCore.createGolfWorld(terrain, t) },
             gameDispatcher = container.dispatchers.game,

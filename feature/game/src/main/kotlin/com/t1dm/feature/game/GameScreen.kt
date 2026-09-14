@@ -45,6 +45,7 @@ import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.model.AlertThresholds
 import com.t1dm.core.model.CarTuning
 import com.t1dm.core.model.CgmReading
+import com.t1dm.core.model.GamePropDensity
 import com.t1dm.core.model.PaintStroke
 import com.t1dm.core.model.RunState
 import com.t1dm.core.model.TerrainSpec
@@ -84,18 +85,19 @@ fun GameScreen(
     rangeMaxMgdl: Int,
     paintStrokes: List<PaintStroke>,
     carTuning: CarTuning?,
+    propDensity: GamePropDensity,
     readingsFrom: suspend (fromMs: Long) -> List<CgmReading>,
     openWorld: (TerrainSpec, CarTuning) -> GameWorld,
     gameDispatcher: CoroutineDispatcher,
     alarmRaised: Boolean,
     onExit: () -> Unit,
 ) {
-    val scene by produceState<GameScene?>(null, trackFromMs, spanMinutes, unit) {
+    val scene by produceState<GameScene?>(null, trackFromMs, spanMinutes, unit, thresholds, propDensity) {
         value = null
         val leadMs = (spanMinutes.toDouble() * 60_000.0 * TRACK_LEAD_SPANS).toLong()
         value = loadGameScene(
             readingsFrom(trackFromMs - leadMs),
-            paintStrokes, unit, kovatchevF, rangeMinMgdl, rangeMaxMgdl,
+            paintStrokes, unit, kovatchevF, rangeMinMgdl, rangeMaxMgdl, thresholds, propDensity,
         )
     }
 
@@ -153,6 +155,9 @@ private fun GameStage(
     // The frame path allocates nothing; a Path rewound is a Path reused.
     val groundPath = remember { Path() }
     val paintPath = remember { Path() }
+    val propMeasurer = rememberTextMeasurer(cacheSize = 8)
+    val signStyle = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold)
+    val propArt = remember(dpPx, propMeasurer, signStyle) { PropArt(propMeasurer, signStyle, dpPx) }
 
     val bus = remember { GameFrameBus() }
     val camera = remember { GameCamera() }
@@ -232,6 +237,12 @@ private fun GameStage(
                 groundPath, paintPath, chalk,
                 pxPerWorldY = p.pxPerYM,
                 fillSky = false,
+                props = scene.props,
+                propArt = propArt,
+                simS = f.simS,
+                hour = hourAt(scene.track.map, scene.tzOffsetMin, p.camLeftM + p.camWidthM * 0.5f),
+                plotTop = p.plotTop,
+                plotBottom = p.plotBottom,
             )
             // True scale on both axes. See [drawCar].
             if (f.carShown) {

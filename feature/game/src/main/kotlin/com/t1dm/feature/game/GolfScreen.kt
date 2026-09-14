@@ -28,6 +28,7 @@ import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.common.GolfWorld
 import com.t1dm.core.design.HapticEvent
@@ -36,6 +37,7 @@ import com.t1dm.core.design.rememberHapticMixer
 import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.model.AlertThresholds
 import com.t1dm.core.model.CgmReading
+import com.t1dm.core.model.GamePropDensity
 import com.t1dm.core.model.GolfRun
 import com.t1dm.core.model.GolfTuning
 import com.t1dm.core.model.PaintStroke
@@ -74,18 +76,19 @@ fun GolfScreen(
     rangeMaxMgdl: Int,
     paintStrokes: List<PaintStroke>,
     golfTuning: GolfTuning?,
+    propDensity: GamePropDensity,
     readingsFrom: suspend (fromMs: Long) -> List<CgmReading>,
     openWorld: (TerrainSpec, GolfTuning) -> GolfWorld,
     gameDispatcher: CoroutineDispatcher,
     alarmRaised: Boolean,
     onExit: () -> Unit,
 ) {
-    val scene by produceState<GameScene?>(null, trackFromMs, spanMinutes, unit) {
+    val scene by produceState<GameScene?>(null, trackFromMs, spanMinutes, unit, thresholds, propDensity) {
         value = null
         val leadMs = (spanMinutes.toDouble() * 60_000.0 * TRACK_LEAD_SPANS).toLong()
         value = loadGameScene(
             readingsFrom(trackFromMs - leadMs),
-            paintStrokes, unit, kovatchevF, rangeMinMgdl, rangeMaxMgdl,
+            paintStrokes, unit, kovatchevF, rangeMinMgdl, rangeMaxMgdl, thresholds, propDensity,
         )
     }
 
@@ -162,6 +165,9 @@ private fun GolfStage(
     // The frame path allocates nothing; a Path rewound is a Path reused.
     val groundPath = remember { Path() }
     val paintPath = remember { Path() }
+    val propMeasurer = rememberTextMeasurer(cacheSize = 8)
+    val signStyle = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold)
+    val propArt = remember(dpPx, propMeasurer, signStyle) { PropArt(propMeasurer, signStyle, dpPx) }
 
     val bus = remember { GolfFrameBus() }
     // Tighter and longer-sighted than the drive's: the ball outruns a car's follow at launch.
@@ -280,6 +286,12 @@ private fun GolfStage(
                 groundPath, paintPath, chalk,
                 pxPerWorldY = p.pxPerYM,
                 fillSky = false,
+                props = scene.props,
+                propArt = propArt,
+                simS = f.simS,
+                hour = hourAt(scene.track.map, scene.tzOffsetMin, p.camLeftM + p.camWidthM * 0.5f),
+                plotTop = p.plotTop,
+                plotBottom = p.plotBottom,
             )
             drawCup(art, skin, p.camLeftM, p.pxPerXM, p.pxPerYM, p.floorPx)
             drawTee(art, f, skin, p.camLeftM, p.pxPerXM, p.pxPerYM, p.floorPx)
