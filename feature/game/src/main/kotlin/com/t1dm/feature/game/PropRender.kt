@@ -17,6 +17,8 @@ import com.t1dm.ui.game.CLOUD_PARALLAX
 import com.t1dm.ui.game.PropField
 import com.t1dm.ui.game.PropKind
 import com.t1dm.ui.game.PropSet
+import com.t1dm.ui.game.groundH
+import com.t1dm.ui.game.groundHalfW
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.floor
@@ -129,7 +131,10 @@ internal fun DrawScope.drawUndergroundProps(
     }
 }
 
-/** Trees, rocks, a cabin, a windmill: feet on the ground line. */
+/** Widest ground prop, metres either side; the culling margin for the world-sized layer. */
+private const val GROUND_REACH_M = 12f
+
+/** Trees, rocks, a cabin, a windmill: WORLD-sized, so each fills the box its collider is. */
 internal fun DrawScope.drawGroundProps(
     props: PropSet,
     art: PropArt,
@@ -142,22 +147,24 @@ internal fun DrawScope.drawGroundProps(
     tS: Float,
 ) {
     val u = art.unitPx
-    val reach = REACH_DP * u / pxX
     val f = props.ground
-    f.visible(camLeft - reach, camLeft + camWidth + reach) { i ->
+    f.visible(camLeft - GROUND_REACH_M, camLeft + camWidth + GROUND_REACH_M) { i ->
         val sx = (f.xs[i] - camLeft) * pxX
         val sy = floorPx - f.ys[i] * pxY
         val seed = f.seeds[i]
-        when (f.kindAt(i)) {
-            PropKind.Tree -> drawTree(skin, u, sx, sy, seed)
-            PropKind.Pine -> drawPine(skin, art.path, u, sx, sy, seed)
-            PropKind.Bush -> drawBush(skin, u, sx, sy, seed)
-            PropKind.Tuft -> drawTuft(skin, u, sx, sy, seed, tS)
-            PropKind.Rock -> drawRock(skin, art.path, u, sx, sy, seed)
-            PropKind.Cabin -> drawCabin(skin, art.path, u, sx, sy, tS)
-            PropKind.Windmill -> drawWindmill(skin, art.path, u, sx, sy, seed, tS)
-            PropKind.Fence -> drawFence(skin, u, sx, sy)
-            PropKind.Scarecrow -> drawScarecrow(skin, art.path, u, sx, sy)
+        val kind = f.kindAt(i)
+        val w = 2f * groundHalfW(kind, seed) * pxX
+        val h = groundH(kind, seed) * pxY
+        when (kind) {
+            PropKind.Tree -> drawTree(skin, u, sx, sy, w, h)
+            PropKind.Pine -> drawPine(skin, art.path, u, sx, sy, w, h)
+            PropKind.Bush -> drawBush(skin, sx, sy, w, h)
+            PropKind.Tuft -> drawTuft(skin, u, sx, sy, w, h, seed, tS)
+            PropKind.Rock -> drawRock(skin, art.path, u, sx, sy, w, h)
+            PropKind.Cabin -> drawCabin(skin, art.path, u, sx, sy, w, h, tS)
+            PropKind.Windmill -> drawWindmill(skin, art.path, u, sx, sy, w, h, seed, tS)
+            PropKind.Fence -> drawFence(skin, u, sx, sy, w, h)
+            PropKind.Scarecrow -> drawScarecrow(skin, art.path, u, sx, sy, w, h)
             else -> Unit
         }
     }
@@ -461,125 +468,122 @@ private fun DrawScope.drawChest(skin: GameSkin, u: Float, x: Float, y: Float) {
 
 // Ground ---------------------------------------------------------------------------------------
 
-private fun DrawScope.drawTree(skin: GameSkin, u: Float, x: Float, y: Float, seed: Float) {
-    val s = u * (0.8f + 0.6f * seed)
-    drawRect(skin.wood, Offset(x - 1.5f * s, y - 12f * s), Size(3f * s, 12f * s))
-    drawCircle(skin.leaf, 6f * s, Offset(x - 4f * s, y - 13f * s))
-    drawCircle(skin.leaf, 7f * s, Offset(x + 1f * s, y - 17f * s))
-    drawCircle(skin.leaf, 6f * s, Offset(x + 5f * s, y - 12f * s))
+// Each glyph fills the w × h box its collider is; x is the box's centre, y its ground line.
+
+private fun DrawScope.drawTree(skin: GameSkin, u: Float, x: Float, y: Float, w: Float, h: Float) {
+    drawRect(skin.wood, Offset(x - w * 0.09f, y - h * 0.55f), Size(w * 0.18f, h * 0.55f))
+    drawOval(skin.leaf, Offset(x - w * 0.5f, y - h * 0.78f), Size(w * 0.62f, h * 0.44f))
+    drawOval(skin.leaf, Offset(x - w * 0.12f, y - h * 0.78f), Size(w * 0.62f, h * 0.44f))
+    drawOval(skin.leaf, Offset(x - w * 0.34f, y - h), Size(w * 0.68f, h * 0.5f))
 }
 
-private fun DrawScope.drawPine(skin: GameSkin, path: Path, u: Float, x: Float, y: Float, seed: Float) {
-    val s = u * (0.8f + 0.6f * seed)
-    drawRect(skin.wood, Offset(x - 1.2f * s, y - 6f * s), Size(2.4f * s, 6f * s))
-    var base = y - 5f * s
-    var half = 8f * s
+private fun DrawScope.drawPine(skin: GameSkin, path: Path, u: Float, x: Float, y: Float, w: Float, h: Float) {
+    drawRect(skin.wood, Offset(x - w * 0.07f, y - h * 0.3f), Size(w * 0.14f, h * 0.3f))
+    var base = y - h * 0.22f
+    var half = w * 0.5f
     for (k in 0 until 3) {
         path.rewind()
-        path.moveTo(x, base - 9f * s)
+        path.moveTo(x, base - h * 0.42f)
         path.lineTo(x + half, base)
         path.lineTo(x - half, base)
         path.close()
         drawPath(path, skin.leaf)
-        base -= 5f * s
-        half *= 0.75f
+        base -= h * 0.18f
+        half *= 0.72f
     }
 }
 
-private fun DrawScope.drawBush(skin: GameSkin, u: Float, x: Float, y: Float, seed: Float) {
-    val s = u * (0.7f + 0.6f * seed)
-    drawCircle(skin.leaf, 4f * s, Offset(x - 4f * s, y - 3f * s))
-    drawCircle(skin.leaf, 5f * s, Offset(x, y - 4.5f * s))
-    drawCircle(skin.leaf, 4f * s, Offset(x + 4f * s, y - 3f * s))
+private fun DrawScope.drawBush(skin: GameSkin, x: Float, y: Float, w: Float, h: Float) {
+    drawOval(skin.leaf, Offset(x - w * 0.5f, y - h * 0.8f), Size(w * 0.5f, h * 0.8f))
+    drawOval(skin.leaf, Offset(x, y - h * 0.8f), Size(w * 0.5f, h * 0.8f))
+    drawOval(skin.leaf, Offset(x - w * 0.3f, y - h), Size(w * 0.6f, h))
 }
 
-private fun DrawScope.drawTuft(skin: GameSkin, u: Float, x: Float, y: Float, seed: Float, tS: Float) {
-    val lean = 1.5f * u * sin(tS * 1.7f + seed * TAU)
+private fun DrawScope.drawTuft(skin: GameSkin, u: Float, x: Float, y: Float, w: Float, h: Float, seed: Float, tS: Float) {
+    val lean = w * 0.2f * sin(tS * 1.7f + seed * TAU)
     for (k in -1..1) {
-        drawLine(skin.leaf, Offset(x + k * 1.5f * u, y), Offset(x + k * 3.5f * u + lean, y - 6f * u), 1.2f * u, StrokeCap.Round)
+        drawLine(skin.leaf, Offset(x + k * w * 0.2f, y), Offset(x + k * w * 0.45f + lean, y - h), 1.2f * u, StrokeCap.Round)
     }
 }
 
-private fun DrawScope.drawRock(skin: GameSkin, path: Path, u: Float, x: Float, y: Float, seed: Float) {
-    val s = u * (0.7f + 0.8f * seed)
+private fun DrawScope.drawRock(skin: GameSkin, path: Path, u: Float, x: Float, y: Float, w: Float, h: Float) {
     path.rewind()
-    path.moveTo(x - 7f * s, y)
-    path.lineTo(x - 5f * s, y - 5f * s)
-    path.lineTo(x + 1f * s, y - 7f * s)
-    path.lineTo(x + 6f * s, y - 4f * s)
-    path.lineTo(x + 7f * s, y)
+    path.moveTo(x - w * 0.5f, y)
+    path.lineTo(x - w * 0.36f, y - h * 0.7f)
+    path.lineTo(x + w * 0.07f, y - h)
+    path.lineTo(x + w * 0.43f, y - h * 0.55f)
+    path.lineTo(x + w * 0.5f, y)
     path.close()
     drawPath(path, skin.stone)
-    drawLine(skin.buried, Offset(x - 2f * s, y - 5.5f * s), Offset(x + 2f * s, y - 2f * s), 1f * u, StrokeCap.Round)
+    drawLine(skin.buried, Offset(x - w * 0.14f, y - h * 0.75f), Offset(x + w * 0.14f, y - h * 0.3f), 1f * u, StrokeCap.Round)
 }
 
-private fun DrawScope.drawCabin(skin: GameSkin, path: Path, u: Float, x: Float, y: Float, tS: Float) {
-    val w = 20f * u
-    val h = 11f * u
-    drawRect(skin.wood, Offset(x - w * 0.5f, y - h), Size(w, h))
+private fun DrawScope.drawCabin(skin: GameSkin, path: Path, u: Float, x: Float, y: Float, w: Float, h: Float, tS: Float) {
+    val wall = h * 0.6f
+    drawRect(skin.wood, Offset(x - w * 0.5f, y - wall), Size(w, wall))
     path.rewind()
-    path.moveTo(x - w * 0.6f, y - h)
-    path.lineTo(x, y - h - 8f * u)
-    path.lineTo(x + w * 0.6f, y - h)
+    path.moveTo(x - w * 0.58f, y - wall)
+    path.lineTo(x, y - h)
+    path.lineTo(x + w * 0.58f, y - wall)
     path.close()
     drawPath(path, skin.roof)
-    drawRect(skin.figure, Offset(x - 2f * u, y - 6f * u), Size(4f * u, 6f * u))
-    drawRect(skin.window, Offset(x + 4f * u, y - 8f * u), Size(4f * u, 3.5f * u))
-    drawRect(skin.stone, Offset(x + 5f * u, y - h - 6f * u), Size(3f * u, 5f * u))
+    drawRect(skin.figure, Offset(x - w * 0.1f, y - wall * 0.55f), Size(w * 0.2f, wall * 0.55f))
+    drawRect(skin.window, Offset(x + w * 0.18f, y - wall * 0.75f), Size(w * 0.2f, wall * 0.3f))
+    drawRect(skin.stone, Offset(x + w * 0.22f, y - h * 0.98f), Size(w * 0.14f, h * 0.3f))
     // Smoke: three puffs rising on a three-second loop, growing as they thin out.
     for (k in 0 until 3) {
         val t = ((tS + k * 1f) % 3f) / 3f
         drawCircle(
             skin.smoke.copy(alpha = (1f - t) * 0.6f),
             (1.5f + 3f * t) * u,
-            Offset(x + 6.5f * u + 4f * u * t, y - h - 7f * u - 10f * u * t),
+            Offset(x + w * 0.29f + w * 0.2f * t, y - h - 2f * u - h * 0.35f * t),
         )
     }
 }
 
-private fun DrawScope.drawWindmill(skin: GameSkin, path: Path, u: Float, x: Float, y: Float, seed: Float, tS: Float) {
-    val h = 22f * u
+private fun DrawScope.drawWindmill(skin: GameSkin, path: Path, u: Float, x: Float, y: Float, w: Float, h: Float, seed: Float, tS: Float) {
+    val tower = h * 0.9f
     path.rewind()
-    path.moveTo(x - 4f * u, y)
-    path.lineTo(x + 4f * u, y)
-    path.lineTo(x + 2f * u, y - h)
-    path.lineTo(x - 2f * u, y - h)
+    path.moveTo(x - w * 0.5f, y)
+    path.lineTo(x + w * 0.5f, y)
+    path.lineTo(x + w * 0.22f, y - tower)
+    path.lineTo(x - w * 0.22f, y - tower)
     path.close()
     drawPath(path, skin.stone)
-    val hubY = y - h
+    val hubY = y - tower
     val spin = tS * (0.6f + 0.6f * seed)
+    val blade = h * 0.5f
     for (k in 0 until 4) {
         val a = spin + k * TAU / 4f
-        drawLine(skin.figure, Offset(x, hubY), Offset(x + cos(a) * 13f * u, hubY + sin(a) * 13f * u), 1.6f * u, StrokeCap.Round)
+        drawLine(skin.figure, Offset(x, hubY), Offset(x + cos(a) * blade, hubY + sin(a) * blade), 1.6f * u, StrokeCap.Round)
         // Each sail: a slat off the blade's leading edge.
-        val bx = x + cos(a) * 9f * u
-        val by = hubY + sin(a) * 9f * u
-        drawLine(skin.cloth, Offset(bx, by), Offset(bx - sin(a) * 3.5f * u, by + cos(a) * 3.5f * u), 3f * u)
+        val bx = x + cos(a) * blade * 0.7f
+        val by = hubY + sin(a) * blade * 0.7f
+        drawLine(skin.cloth, Offset(bx, by), Offset(bx - sin(a) * blade * 0.25f, by + cos(a) * blade * 0.25f), 3f * u)
     }
     drawCircle(skin.figure, 1.6f * u, Offset(x, hubY))
 }
 
-private fun DrawScope.drawFence(skin: GameSkin, u: Float, x: Float, y: Float) {
-    val post = 7f * u
+private fun DrawScope.drawFence(skin: GameSkin, u: Float, x: Float, y: Float, w: Float, h: Float) {
     for (k in -2..2) {
-        val px = x + k * 5f * u
-        drawLine(skin.wood, Offset(px, y), Offset(px, y - post), 1.6f * u, StrokeCap.Round)
+        val px = x + k * w * 0.23f
+        drawLine(skin.wood, Offset(px, y), Offset(px, y - h), 1.6f * u, StrokeCap.Round)
     }
-    drawLine(skin.wood, Offset(x - 11f * u, y - post * 0.75f), Offset(x + 11f * u, y - post * 0.75f), 1.2f * u)
-    drawLine(skin.wood, Offset(x - 11f * u, y - post * 0.35f), Offset(x + 11f * u, y - post * 0.35f), 1.2f * u)
+    drawLine(skin.wood, Offset(x - w * 0.5f, y - h * 0.75f), Offset(x + w * 0.5f, y - h * 0.75f), 1.2f * u)
+    drawLine(skin.wood, Offset(x - w * 0.5f, y - h * 0.35f), Offset(x + w * 0.5f, y - h * 0.35f), 1.2f * u)
 }
 
-private fun DrawScope.drawScarecrow(skin: GameSkin, path: Path, u: Float, x: Float, y: Float) {
-    drawLine(skin.wood, Offset(x, y), Offset(x, y - 16f * u), 1.6f * u, StrokeCap.Round)
-    drawLine(skin.wood, Offset(x - 7f * u, y - 12f * u), Offset(x + 7f * u, y - 12f * u), 1.6f * u, StrokeCap.Round)
+private fun DrawScope.drawScarecrow(skin: GameSkin, path: Path, u: Float, x: Float, y: Float, w: Float, h: Float) {
+    drawLine(skin.wood, Offset(x, y), Offset(x, y - h * 0.75f), 1.6f * u, StrokeCap.Round)
+    drawLine(skin.wood, Offset(x - w * 0.5f, y - h * 0.55f), Offset(x + w * 0.5f, y - h * 0.55f), 1.6f * u, StrokeCap.Round)
     path.rewind()
-    path.moveTo(x - 5f * u, y - 4f * u)
-    path.lineTo(x - 3f * u, y - 12f * u)
-    path.lineTo(x + 3f * u, y - 12f * u)
-    path.lineTo(x + 5f * u, y - 4f * u)
+    path.moveTo(x - w * 0.36f, y - h * 0.18f)
+    path.lineTo(x - w * 0.22f, y - h * 0.55f)
+    path.lineTo(x + w * 0.22f, y - h * 0.55f)
+    path.lineTo(x + w * 0.36f, y - h * 0.18f)
     path.close()
     drawPath(path, skin.cloth)
-    drawCircle(skin.straw, 3f * u, Offset(x, y - 16f * u))
-    drawLine(skin.figure, Offset(x - 4.5f * u, y - 18.5f * u), Offset(x + 4.5f * u, y - 18.5f * u), 1.4f * u, StrokeCap.Round)
-    drawRect(skin.figure, Offset(x - 2.5f * u, y - 22f * u), Size(5f * u, 3.5f * u))
+    drawOval(skin.straw, Offset(x - w * 0.22f, y - h * 0.9f), Size(w * 0.44f, h * 0.16f))
+    drawLine(skin.figure, Offset(x - w * 0.34f, y - h * 0.9f), Offset(x + w * 0.34f, y - h * 0.9f), 1.4f * u, StrokeCap.Round)
+    drawRect(skin.figure, Offset(x - w * 0.18f, y - h), Size(w * 0.36f, h * 0.1f))
 }

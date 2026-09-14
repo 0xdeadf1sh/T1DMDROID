@@ -116,6 +116,73 @@ pub struct TerrainSpec {
     pub world_height: f32,
 }
 
+/// A fixed box standing on the ground line at `x`: `half_w` either side, `h` up. Metres.
+#[derive(Debug, Clone, Copy, PartialEq, uniffi::Record)]
+pub struct Obstacle {
+    pub x: f32,
+    pub half_w: f32,
+    pub h: f32,
+}
+
+/// Bounds the collider set a hostile caller can ask for; a busy day of trace is ~100.
+const MAX_OBSTACLES: usize = 4096;
+/// Metres; larger than any glyph, small enough that a box never spans the world.
+const MAX_OBSTACLE_M: f32 = 1_000.0;
+
+/// Centre x, centre y, half w, half h of a placed box; the tuple rapier's cuboid wants.
+pub(crate) type Block = [f32; 4];
+
+pub(crate) fn validate_obstacles(obstacles: &[Obstacle]) -> Result<(), CoreError> {
+    if obstacles.len() > MAX_OBSTACLES {
+        return Err(dec(format!("obstacles: {} (max {MAX_OBSTACLES})", obstacles.len())));
+    }
+    for o in obstacles {
+        let ok = o.x.is_finite()
+            && o.half_w.is_finite()
+            && o.h.is_finite()
+            && o.half_w > 0.0
+            && o.h > 0.0
+            && o.half_w <= MAX_OBSTACLE_M
+            && o.h <= MAX_OBSTACLE_M;
+        if !ok {
+            return Err(dec(format!("obstacle: x {} half_w {} h {} out of range", o.x, o.half_w, o.h)));
+        }
+    }
+    Ok(())
+}
+
+/// Boxes stood on the ground under them; one over a gap or off the track is dropped, not an error.
+pub(crate) fn place_obstacles(terrain: &Terrain, obstacles: &[Obstacle]) -> Vec<Block> {
+    obstacles
+        .iter()
+        .filter_map(|o| terrain.sample(o.x).map(|g| [o.x, g + o.h * 0.5, o.half_w, o.h * 0.5]))
+        .collect()
+}
+
+/// One fixed body, one cuboid per block, in the ground's own surface.
+pub(crate) fn add_obstacles(
+    bodies: &mut RigidBodySet,
+    colliders: &mut ColliderSet,
+    blocks: &[Block],
+    friction: f32,
+    restitution: f32,
+) {
+    if blocks.is_empty() {
+        return;
+    }
+    let body = bodies.insert(RigidBodyBuilder::fixed());
+    for b in blocks {
+        colliders.insert_with_parent(
+            ColliderBuilder::cuboid(b[2], b[3])
+                .translation(Vector::new(b[0], b[1]))
+                .friction(friction)
+                .restitution(restitution),
+            body,
+            bodies,
+        );
+    }
+}
+
 /// Raw heightfield, gap markers intact (collider's copy is sanitised); ground-vs-dropout reads it.
 pub(crate) struct Terrain {
     pub(crate) heights: Vec<f32>,

@@ -121,6 +121,30 @@ class PropsTest {
         assertEquals(2, set.signs.size)
     }
 
+    @Test fun obstaclesFollowTheGroundPropsAndTheLowFilter() {
+        val rs = day { 130 }
+        val track = trackOf(rs)
+        val set = buildProps(track, rs, alarms, UnitSpace.MgDl, GamePropDensity.Busy)
+        val all = set.obstacles(lowOnly = false, keepOutX = -1_000f, keepOutM = 0f)
+        val low = set.obstacles(lowOnly = true, keepOutX = -1_000f, keepOutM = 0f)
+        val stands = (0 until set.ground.size).count { set.ground.kindAt(it) != PropKind.Tuft }
+        assertEquals(stands, all.size)
+        assertTrue(low.size < all.size)
+        for (o in all) {
+            assertTrue(o.halfW > 0f && o.h > 0f)
+            assertTrue(track.groundAt(o.x).isFinite())
+        }
+        for (o in low) assertTrue("${o.h}", o.h <= 3.5f * 1.2f + 1e-3f)
+    }
+
+    @Test fun theKeepOutClearsTheDrop() {
+        val rs = day { 130 }
+        val set = buildProps(trackOf(rs), rs, alarms, UnitSpace.MgDl, GamePropDensity.Busy)
+        val first = set.ground.xs[0]
+        val cleared = set.obstacles(lowOnly = false, keepOutX = first, keepOutM = 60f)
+        for (o in cleared) assertTrue(kotlin.math.abs(o.x - first) > 60f)
+    }
+
     @Test fun noThresholdsMeansNoSigns() {
         val rs = day { 50 }
         val set = buildProps(trackOf(rs), rs, null, UnitSpace.MgDl, GamePropDensity.Sparse)

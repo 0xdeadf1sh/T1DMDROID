@@ -190,7 +190,7 @@ class GolferTest {
         f.strokes = 1
         f.atRest = false
         // Creeping and never settling: what a lie the turf almost holds leaves on the panel.
-        repeat((WATCH_MAX_S / DT).toInt() + 60) {
+        repeat((WATCH_MAX_S / DT).toInt() + 150) {
             f.x += 0.02f
             g.advance(f, g.pullOf(f), DT, flat)
         }
@@ -212,11 +212,11 @@ class GolferTest {
         strike(g, f, 1)
         f.x = 60f
         f.atRest = true
-        repeat(40) { g.advance(f, g.pullOf(f), DT, gapped) }
+        repeat(90) { g.advance(f, g.pullOf(f), DT, gapped) }
         assertTrue("out over the gap: ${f.golferX}", f.golferX > 20f && f.golferX < 40f)
         assertEquals("the feet keep the last solid height", GROUND, f.golferY, 0f)
         assertTrue("and the legs keep turning", f.legPhase > 0f)
-        repeat(60) { g.advance(f, g.pullOf(f), DT, gapped) }
+        repeat(150) { g.advance(f, g.pullOf(f), DT, gapped) }
         assertEquals(stanceOf(60f), f.golferX, 0.05f)
         assertEquals("onto the far side's ground", GROUND + 5f, f.golferY, 0f)
     }

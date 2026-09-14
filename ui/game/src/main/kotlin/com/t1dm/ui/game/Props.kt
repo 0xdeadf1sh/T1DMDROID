@@ -3,6 +3,7 @@ package com.t1dm.ui.game
 import com.t1dm.core.model.AlertThresholds
 import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.GamePropDensity
+import com.t1dm.core.model.Obstacle
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.UnitSpace
 import java.util.Locale
@@ -82,6 +83,50 @@ class PropSet(
             PropField.EMPTY, emptyArray(),
         )
     }
+}
+
+/** Half width (m) of a ground prop: the box it stands in, shared by its glyph and collider. */
+fun groundHalfW(kind: PropKind, seed: Float): Float = groundScale(seed) * when (kind) {
+    PropKind.Tree, PropKind.Pine -> 5f
+    PropKind.Bush -> 4f
+    PropKind.Tuft -> 1.5f
+    PropKind.Rock -> 4.5f
+    PropKind.Cabin, PropKind.Fence -> 8f
+    PropKind.Windmill -> 3f
+    PropKind.Scarecrow -> 2.5f
+    else -> 0f
+}
+
+/** Height (m) of a ground prop, from the ground line. */
+fun groundH(kind: PropKind, seed: Float): Float = groundScale(seed) * when (kind) {
+    PropKind.Tree, PropKind.Windmill -> 20f
+    PropKind.Pine -> 18f
+    PropKind.Bush, PropKind.Rock -> 3.5f
+    PropKind.Tuft -> 1.5f
+    PropKind.Cabin, PropKind.Scarecrow -> 14f
+    PropKind.Fence -> 3f
+    else -> 0f
+}
+
+private fun groundScale(seed: Float): Float = 0.8f + 0.4f * seed
+
+/** Low enough for the car to bump over; the rest only stand in a golf ball's way. */
+fun isLowProp(kind: PropKind): Boolean =
+    kind == PropKind.Bush || kind == PropKind.Rock || kind == PropKind.Fence
+
+/** Ground props as solid boxes, less those near [keepOutX] and, if asked, the tall ones. */
+fun PropSet.obstacles(lowOnly: Boolean, keepOutX: Float, keepOutM: Float): List<Obstacle> {
+    val f = ground
+    val out = ArrayList<Obstacle>(f.size)
+    for (i in 0 until f.size) {
+        val kind = f.kindAt(i)
+        if (kind == PropKind.Tuft) continue
+        if (lowOnly && !isLowProp(kind)) continue
+        val halfW = groundHalfW(kind, f.seeds[i])
+        if (kotlin.math.abs(f.xs[i] - keepOutX) <= keepOutM + halfW) continue
+        out.add(Obstacle(f.xs[i], halfW, groundH(kind, f.seeds[i])))
+    }
+    return out
 }
 
 /** Clouds cross the panel at half the camera's pace, and drift downwind on their own. */

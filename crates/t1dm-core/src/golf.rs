@@ -5,9 +5,10 @@ use std::sync::{Arc, Mutex};
 use rapier2d::prelude::*;
 
 use crate::terrain::{
-    build_ground_to, dec, internal, lerp, lerp_angle, normal_impulse, sane01, solid, solver_params,
-    touching, validate_terrain, Terrain, TerrainSpec, FIXED_DT, IMPULSE_WARMSTART_BIAS,
-    MAX_FRAME_DT_S, MAX_SPEED, MAX_SUBSTEPS, RUN_OFF_LENGTH, TWO_PI,
+    add_obstacles, build_ground_to, dec, internal, lerp, lerp_angle, normal_impulse, place_obstacles,
+    sane01, solid, solver_params, touching, validate_obstacles, validate_terrain, Block, Obstacle,
+    Terrain, TerrainSpec, FIXED_DT, IMPULSE_WARMSTART_BIAS, MAX_FRAME_DT_S, MAX_SPEED, MAX_SUBSTEPS,
+    RUN_OFF_LENGTH, TWO_PI,
 };
 use crate::CoreError;
 
@@ -146,6 +147,7 @@ struct Phys {
 impl Phys {
     fn build(
         ground: &Option<SharedShape>,
+        blocks: &[Block],
         t: &GolfTuning,
         x: f32,
         y: f32,
@@ -166,6 +168,7 @@ impl Phys {
                 &mut bodies,
             );
         }
+        add_obstacles(&mut bodies, &mut colliders, blocks, t.friction, t.restitution);
 
         let ball = bodies.insert(
             RigidBodyBuilder::dynamic()
@@ -228,6 +231,7 @@ struct Sim {
     cup: GolfCup,
     /// Last solid sample clear of the left lip; every fallback placement lands on it.
     approach: usize,
+    blocks: Vec<Block>,
     params: IntegrationParameters,
     gravity: Vector,
     phys: Phys,
@@ -265,7 +269,7 @@ struct Sim {
 }
 
 impl Sim {
-    fn new(terrain: Terrain, tune: GolfTuning) -> Result<Self, CoreError> {
+    fn new(terrain: Terrain, tune: GolfTuning, obstacles: &[Obstacle]) -> Result<Self, CoreError> {
         let r = tune.ball_radius;
         let width = CUP_WIDTH_R * r;
         let depth = CUP_DEPTH_R * r;
@@ -294,13 +298,15 @@ impl Sim {
         let ground = build_ground_to(&terrain.heights, terrain.dx, approach + 1, &tail);
 
         let water_y = (-(WATER_DEPTH_R * r)).max(terrain.kill_y).min(cup.rim_y - depth);
-        let phys = Phys::build(&ground, &tune, 0.0, 0.0, 0.0, 0.0);
+        let blocks = place_obstacles(&terrain, obstacles);
+        let phys = Phys::build(&ground, &blocks, &tune, 0.0, 0.0, 0.0, 0.0);
         let mut s = Sim {
             terrain,
             tune,
             ground,
             cup,
             approach,
+            blocks,
             params: solver_params(),
             gravity: Vector::new(0.0, -tune.gravity),
             phys,
@@ -340,7 +346,7 @@ impl Sim {
         let ok = x.is_finite() && y.is_finite() && vx.is_finite() && vy.is_finite();
         let (x, y, vx, vy) =
             if ok { (x, y, vx, vy) } else { (self.tee_x, self.cup.rim_y, 0.0, 0.0) };
-        self.phys = Phys::build(&self.ground, &self.tune, x, y, vx, vy);
+        self.phys = Phys::build(&self.ground, &self.blocks, &self.tune, x, y, vx, vy);
         self.x = x;
         self.y = y;
         self.vx = vx;
@@ -621,9 +627,20 @@ impl GolfWorld {
     /// The ONE fallible, allocating, message-formatting entry point; `step` is not.
     #[uniffi::constructor]
     pub fn new(terrain: TerrainSpec, tuning: GolfTuning) -> Result<Arc<Self>, CoreError> {
+        Self::with_obstacles(terrain, tuning, Vec::new())
+    }
+
+    /// Fixed boxes on the ground line; one over a gap is dropped, a malformed one is an error.
+    #[uniffi::constructor]
+    pub fn with_obstacles(
+        terrain: TerrainSpec,
+        tuning: GolfTuning,
+        obstacles: Vec<Obstacle>,
+    ) -> Result<Arc<Self>, CoreError> {
         let t = validate_terrain(terrain)?;
         validate_tuning(&tuning)?;
-        Ok(Arc::new(Self { inner: Mutex::new(Sim::new(t, tuning)?) }))
+        validate_obstacles(&obstacles)?;
+        Ok(Arc::new(Self { inner: Mutex::new(Sim::new(t, tuning, &obstacles)?) }))
     }
 
     /// `dt_ms`: wall-clock delta, 1/120s ticks; past MAX_SUBSTEPS drops, non-finite = no time.
@@ -786,6 +803,25 @@ mod tests {
             }
         }
         last
+    }
+
+    #[test]
+    fn a_ball_rebounds_off_a_wall() {
+        let wall = Obstacle { x: 60.0, half_w: 1.5, h: 30.0 };
+        let w = GolfWorld::with_obstacles(flat(), default_golf_tuning(), vec![wall]).unwrap();
+        w.tee_at(0.0).unwrap();
+        w.shoot(40.0, 0.0).unwrap();
+        let mut furthest = 0.0f32;
+        let mut turned = false;
+        for _ in 0..240 {
+            let s = w.step(1000.0 / 60.0).unwrap();
+            furthest = furthest.max(s.x);
+            if s.vx < 0.0 {
+                turned = true;
+            }
+        }
+        assert!(furthest < 60.0, "reached {furthest} m, past the wall at 60");
+        assert!(turned, "the wall must send the ball back");
     }
 
     #[test]

@@ -41,7 +41,9 @@ import com.t1dm.core.model.GamePropDensity
 import com.t1dm.core.model.GolfRun
 import com.t1dm.core.model.GolfTuning
 import com.t1dm.core.model.PaintStroke
+import com.t1dm.core.model.Obstacle
 import com.t1dm.core.model.TerrainSpec
+import com.t1dm.ui.game.obstacles
 import com.t1dm.core.model.UnitSpace
 import com.t1dm.ui.game.GameTrack
 import com.t1dm.ui.graph.ChalkPens
@@ -54,6 +56,9 @@ private const val VIEW_CARRY_FRAC = 0.65f
 
 /** Floor on the press radius, so the ball can be grabbed at any zoom the camera reaches. */
 private val MIN_GRAB = 28.dp
+
+/** Metres around the tee kept clear of obstacles: room to swing, not room to carry. */
+private const val TEE_KEEP_OUT_M = 15f
 
 /** The figure's screen height: fixed, so the golfer is a golfer at every zoom the round reaches. */
 private val GOLFER_H = 64.dp
@@ -78,7 +83,7 @@ fun GolfScreen(
     golfTuning: GolfTuning?,
     propDensity: GamePropDensity,
     readingsFrom: suspend (fromMs: Long) -> List<CgmReading>,
-    openWorld: (TerrainSpec, GolfTuning) -> GolfWorld,
+    openWorld: (TerrainSpec, GolfTuning, List<Obstacle>) -> GolfWorld,
     gameDispatcher: CoroutineDispatcher,
     alarmRaised: Boolean,
     onExit: () -> Unit,
@@ -152,7 +157,7 @@ private fun GolfStage(
     spanMinutes: Float,
     tuning: GolfTuning,
     latestReadingMs: Long?,
-    openWorld: (TerrainSpec, GolfTuning) -> GolfWorld,
+    openWorld: (TerrainSpec, GolfTuning, List<Obstacle>) -> GolfWorld,
     gameDispatcher: CoroutineDispatcher,
     alarmRaised: Boolean,
     onExit: () -> Unit,
@@ -262,7 +267,8 @@ private fun GolfStage(
         onBackground = { controls.release() },
         canvasModifier = aimInput,
         loop = { handOff ->
-            val world = runCatching { openWorld(scene.track.terrain, tuning) }.getOrNull()
+            val walls = scene.props.obstacles(lowOnly = false, scene.track.map.worldXOf(dropAtMs), TEE_KEEP_OUT_M)
+            val world = runCatching { openWorld(scene.track.terrain, tuning, walls) }.getOrNull()
                 ?: return@GameShell
             try {
                 art.cup = world.cup

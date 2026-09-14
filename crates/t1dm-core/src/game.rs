@@ -5,9 +5,10 @@ use std::sync::{Arc, Mutex};
 use rapier2d::prelude::*;
 
 use crate::terrain::{
-    build_ground, dec, internal, lerp, lerp_angle, normal_impulse, sane01, solver_params, touching,
-    validate_terrain, wrap_pi, Terrain, TerrainSpec, FIXED_DT, IMPULSE_WARMSTART_BIAS,
-    MAX_FRAME_DT_S, MAX_SPEED, MAX_SUBSTEPS, PI, TWO_PI,
+    add_obstacles, build_ground, dec, internal, lerp, lerp_angle, normal_impulse, place_obstacles,
+    sane01, solver_params, touching, validate_obstacles, validate_terrain, wrap_pi, Block, Obstacle,
+    Terrain, TerrainSpec, FIXED_DT, IMPULSE_WARMSTART_BIAS, MAX_FRAME_DT_S, MAX_SPEED, MAX_SUBSTEPS,
+    PI, TWO_PI,
 };
 use crate::CoreError;
 
@@ -254,7 +255,7 @@ struct Phys {
 }
 
 impl Phys {
-    fn build(ground: &Option<SharedShape>, t: &CarTuning, seat: &Seat) -> Self {
+    fn build(ground: &Option<SharedShape>, blocks: &[Block], t: &CarTuning, seat: &Seat) -> Self {
         let mut bodies = RigidBodySet::new();
         let mut colliders = ColliderSet::new();
         let mut joints = ImpulseJointSet::new();
@@ -268,6 +269,7 @@ impl Phys {
                 &mut bodies,
             );
         }
+        add_obstacles(&mut bodies, &mut colliders, blocks, t.grip, 0.0);
 
         let chassis = bodies.insert(
             RigidBodyBuilder::dynamic()
@@ -397,6 +399,7 @@ struct Sim {
     tune: CarTuning,
     /// Arc: rebuild re-hangs the shape, not re-BVHs 200k segments; None if nowhere solid.
     ground: Option<SharedShape>,
+    blocks: Vec<Block>,
     params: IntegrationParameters,
     gravity: Vector,
     phys: Phys,
@@ -433,8 +436,9 @@ struct Sim {
 }
 
 impl Sim {
-    fn new(terrain: Terrain, tune: CarTuning) -> Self {
+    fn new(terrain: Terrain, tune: CarTuning, obstacles: &[Obstacle]) -> Self {
         let ground = build_ground(&terrain.heights, terrain.dx);
+        let blocks = place_obstacles(&terrain, obstacles);
         let params = solver_params();
         // The extension at which both springs carry half the weight each.
         let sag = if tune.suspension_stiffness > 0.0 {
@@ -445,11 +449,12 @@ impl Sim {
         };
         let sag_ext = (tune.suspension_rest - sag).clamp(0.0, tune.suspension_travel);
         let seat = Seat { x: 0.0, y: 0.0, ang: 0.0, vx: 0.0, vy: 0.0, av: 0.0, ext: sag_ext };
-        let phys = Phys::build(&ground, &tune, &seat);
+        let phys = Phys::build(&ground, &blocks, &tune, &seat);
         let mut s = Sim {
             terrain,
             tune,
             ground,
+            blocks,
             params,
             gravity: Vector::new(0.0, -tune.gravity),
             phys,
@@ -496,7 +501,7 @@ impl Sim {
         } else {
             Seat { x: 0.0, y: 0.0, ang: 0.0, vx: 0.0, vy: 0.0, av: 0.0, ext: self.sag_ext }
         };
-        self.phys = Phys::build(&self.ground, &self.tune, &seat);
+        self.phys = Phys::build(&self.ground, &self.blocks, &self.tune, &seat);
 
         self.x = seat.x;
         self.y = seat.y;
@@ -818,9 +823,20 @@ impl GameWorld {
     /// The ONE fallible, allocating, message-formatting entry point; `step` is not.
     #[uniffi::constructor]
     pub fn new(terrain: TerrainSpec, tuning: CarTuning) -> Result<Arc<Self>, CoreError> {
+        Self::with_obstacles(terrain, tuning, Vec::new())
+    }
+
+    /// Fixed boxes on the ground line; one over a gap is dropped, a malformed one is an error.
+    #[uniffi::constructor]
+    pub fn with_obstacles(
+        terrain: TerrainSpec,
+        tuning: CarTuning,
+        obstacles: Vec<Obstacle>,
+    ) -> Result<Arc<Self>, CoreError> {
         let t = validate_terrain(terrain)?;
         validate_tuning(&tuning)?;
-        Ok(Arc::new(Self { inner: Mutex::new(Sim::new(t, tuning)) }))
+        validate_obstacles(&obstacles)?;
+        Ok(Arc::new(Self { inner: Mutex::new(Sim::new(t, tuning, &obstacles)) }))
     }
 
     /// dt_ms consumes fixed 1/120s ticks, past MAX_SUBSTEPS dropped; throttle/brake saturate [0,1].
@@ -1089,6 +1105,29 @@ mod tests {
             s.run
         );
         assert!(s.roughness > 0.0, "a jagged trace must read as rough");
+    }
+
+    #[test]
+    fn a_wall_stops_the_car_and_a_wall_over_a_gap_does_not_exist() {
+        let wall = Obstacle { x: 120.0, half_w: 2.0, h: 12.0 };
+        let w = GameWorld::with_obstacles(flat(), default_car_tuning(), vec![wall]).unwrap();
+        let s = drive(&w, 900, 1.0, 0.0);
+        assert!(s.x < 120.0, "drove through the wall to {}", s.x);
+
+        let mut gapped = flat();
+        for h in &mut gapped.heights[110..130] {
+            *h = f32::NAN;
+        }
+        let w = GameWorld::with_obstacles(gapped, default_car_tuning(), vec![wall]).unwrap();
+        assert_eq!(w.lock().unwrap().blocks.len(), 0, "a box over a chasm has nothing to stand on");
+    }
+
+    #[test]
+    fn rejects_a_malformed_obstacle() {
+        let bad = Obstacle { x: 10.0, half_w: -1.0, h: 5.0 };
+        assert!(GameWorld::with_obstacles(flat(), default_car_tuning(), vec![bad]).is_err());
+        let nan = Obstacle { x: f32::NAN, half_w: 1.0, h: 5.0 };
+        assert!(GameWorld::with_obstacles(flat(), default_car_tuning(), vec![nan]).is_err());
     }
 
     #[test]

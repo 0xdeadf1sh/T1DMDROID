@@ -25,6 +25,7 @@ import com.t1dm.core.model.MaskSpan
 import com.t1dm.core.model.CarState
 import com.t1dm.core.model.CarTuning
 import com.t1dm.core.model.RunState
+import com.t1dm.core.model.Obstacle
 import com.t1dm.core.model.TerrainSpec
 import com.t1dm.core.model.AdvancedStats
 import com.t1dm.core.model.AgpBin
@@ -128,6 +129,7 @@ import uniffi.t1dm_core.CarTuning as UniffiCarTuning
 import uniffi.t1dm_core.GameWorld as UniffiGameWorldObject
 import uniffi.t1dm_core.RunState as UniffiRunState
 import uniffi.t1dm_core.TerrainSpec as UniffiTerrainSpec
+import uniffi.t1dm_core.Obstacle as UniffiObstacle
 import uniffi.t1dm_core.defaultGolfTuning as uniffiDefaultGolfTuning
 import uniffi.t1dm_core.BallState as UniffiBallState
 import uniffi.t1dm_core.GolfCup as UniffiGolfCup
@@ -480,14 +482,18 @@ class UniffiNativeCore : NativeCore {
     override fun defaultCarTuning(): CarTuning = uniffiDefaultCarTuning().toModel()
 
     /** NOT swallowed (unlike above): rejects degenerate terrain/tuning; a stub would hide bug. */
-    override fun createGameWorld(terrain: TerrainSpec, tuning: CarTuning): GameWorld =
-        UniffiGameWorld(UniffiGameWorldObject(terrain.toUniffi(), tuning.toUniffi()))
+    override fun createGameWorld(terrain: TerrainSpec, tuning: CarTuning, obstacles: List<Obstacle>): GameWorld =
+        UniffiGameWorld(
+            UniffiGameWorldObject.withObstacles(terrain.toUniffi(), tuning.toUniffi(), obstacles.map { it.toUniffi() }),
+        )
 
     override fun defaultGolfTuning(): GolfTuning = uniffiDefaultGolfTuning().toModel()
 
     /** As [createGameWorld]: a terrain with no room for a cup is an error, not a silent stub. */
-    override fun createGolfWorld(terrain: TerrainSpec, tuning: GolfTuning): GolfWorld =
-        UniffiGolfWorld(UniffiGolfWorldObject(terrain.toUniffi(), tuning.toUniffi()))
+    override fun createGolfWorld(terrain: TerrainSpec, tuning: GolfTuning, obstacles: List<Obstacle>): GolfWorld =
+        UniffiGolfWorld(
+            UniffiGolfWorldObject.withObstacles(terrain.toUniffi(), tuning.toUniffi(), obstacles.map { it.toUniffi() }),
+        )
 }
 
 /** Holds trackLength locally; a per-frame FFI round trip for a constant is what Rust avoids. */
@@ -573,6 +579,8 @@ private fun TerrainSpec.toUniffi(): UniffiTerrainSpec = UniffiTerrainSpec(
     dx = dx,
     worldHeight = worldHeight,
 )
+
+private fun Obstacle.toUniffi(): UniffiObstacle = UniffiObstacle(x = x, halfW = halfW, h = h)
 
 private fun CarTuning.toUniffi(): UniffiCarTuning = UniffiCarTuning(
     chassisMass = chassisMass,

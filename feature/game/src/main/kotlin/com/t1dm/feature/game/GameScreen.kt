@@ -48,7 +48,9 @@ import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.GamePropDensity
 import com.t1dm.core.model.PaintStroke
 import com.t1dm.core.model.RunState
+import com.t1dm.core.model.Obstacle
 import com.t1dm.core.model.TerrainSpec
+import com.t1dm.ui.game.obstacles
 import com.t1dm.core.model.UnitSpace
 import com.t1dm.ui.graph.ChalkPens
 import com.t1dm.ui.graph.PredictedClock
@@ -66,6 +68,9 @@ internal const val TRACK_LEAD_SPANS = 1f
 
 /** The pair must fit between the pedals. */
 private val GAUGE_RADIUS = 30.dp
+
+/** Metres around the drop kept clear of obstacles: a few car lengths, so no run opens in one. */
+private const val DROP_KEEP_OUT_M = 60f
 
 /** Solver runs on gameDispatcher, never inference/default; alarmRaised releases the actuator. */
 @Composable
@@ -87,7 +92,7 @@ fun GameScreen(
     carTuning: CarTuning?,
     propDensity: GamePropDensity,
     readingsFrom: suspend (fromMs: Long) -> List<CgmReading>,
-    openWorld: (TerrainSpec, CarTuning) -> GameWorld,
+    openWorld: (TerrainSpec, CarTuning, List<Obstacle>) -> GameWorld,
     gameDispatcher: CoroutineDispatcher,
     alarmRaised: Boolean,
     onExit: () -> Unit,
@@ -142,7 +147,7 @@ private fun GameStage(
     spanMinutes: Float,
     tuning: CarTuning,
     latestReadingMs: Long?,
-    openWorld: (TerrainSpec, CarTuning) -> GameWorld,
+    openWorld: (TerrainSpec, CarTuning, List<Obstacle>) -> GameWorld,
     gameDispatcher: CoroutineDispatcher,
     alarmRaised: Boolean,
     onExit: () -> Unit,
@@ -215,7 +220,8 @@ private fun GameStage(
         onFirstFrame = onFirstFrame,
         onBackground = { controls.release() },
         loop = { handOff ->
-            val world = runCatching { openWorld(scene.track.terrain, tuning) }.getOrNull()
+            val walls = scene.props.obstacles(lowOnly = true, scene.track.map.worldXOf(dropAtMs), DROP_KEEP_OUT_M)
+            val world = runCatching { openWorld(scene.track.terrain, tuning, walls) }.getOrNull()
                 ?: return@GameShell
             try {
                 runGameLoop(

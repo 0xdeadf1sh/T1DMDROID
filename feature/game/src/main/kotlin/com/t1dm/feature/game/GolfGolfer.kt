@@ -12,8 +12,8 @@ private const val TAU = (2.0 * Math.PI).toFloat()
 private const val STANCE_R = 1.3f
 
 /** m/s floor on the walk, and the seconds any walk is budgeted to take; distance sets the pace. */
-private const val RUN_MIN_MS = 40f
-internal const val ARRIVE_S = 1.2f
+private const val RUN_MIN_MS = 18f
+internal const val ARRIVE_S = 3f
 
 /** Seconds of a still-rolling ball watched before the figure gives up and follows it. */
 internal const val WATCH_MAX_S = 6f

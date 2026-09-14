@@ -30,6 +30,7 @@ import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.ModelDescriptor
 import com.t1dm.core.model.PredictedTime
 import com.t1dm.core.model.StatSample
+import com.t1dm.core.model.Obstacle
 import com.t1dm.core.model.TerrainSpec
 
 /** Kotlin surface of Rust t1dm-core; depend on THIS, not the uniffi binding. Total on garbage. */
@@ -237,11 +238,11 @@ interface NativeCore {
     fun defaultCarTuning(): CarTuning
 
     /** Heightfield crosses FFI here; caller OWNS the result and must GameWorld.close it. */
-    fun createGameWorld(terrain: TerrainSpec, tuning: CarTuning): GameWorld
+    fun createGameWorld(terrain: TerrainSpec, tuning: CarTuning, obstacles: List<Obstacle>): GameWorld
 
     /** Rust owns these numbers; nothing on this side transcribes them. */
     fun defaultGolfTuning(): GolfTuning
 
     /** Same heightfield, cup cut at the last sample; caller must GolfWorld.close it. */
-    fun createGolfWorld(terrain: TerrainSpec, tuning: GolfTuning): GolfWorld
+    fun createGolfWorld(terrain: TerrainSpec, tuning: GolfTuning, obstacles: List<Obstacle>): GolfWorld
 }
