@@ -1143,6 +1143,7 @@ private fun T1dmNavHost(
             CircadianScreen(
                 predictedTime = inference.selectedPredictedTime,
                 realBackendAvailable = inference.realBackendAvailable,
+                noModel = inference.running.isEmpty(),
                 hasTimeSection = inference.selectedHasTimeSection,
                 // The real reason during warmup / before the first cycle — never "no time section".
                 warmingUp = inference.warmup != null ||

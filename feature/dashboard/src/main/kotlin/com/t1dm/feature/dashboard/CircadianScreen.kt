@@ -48,6 +48,7 @@ import kotlin.math.sin
 fun CircadianScreen(
     predictedTime: PredictedTime?,
     realBackendAvailable: Boolean,
+    noModel: Boolean = false,
     hasTimeSection: Boolean = true,
     warmingUp: Boolean = false,
     lowContext: Boolean = false,
@@ -74,7 +75,7 @@ fun CircadianScreen(
         )
 
         if (predictedTime == null) {
-            EmptyCircadian(realBackendAvailable, hasTimeSection, warmingUp)
+            EmptyCircadian(realBackendAvailable, noModel, hasTimeSection, warmingUp)
         } else {
             if (lowContext) LowContextCaveat()
 
@@ -175,8 +176,16 @@ private fun CountdownRow(label: String, remainingMs: () -> Long) {
 }
 
 @Composable
-private fun EmptyCircadian(realBackendAvailable: Boolean, hasTimeSection: Boolean, warmingUp: Boolean) {
+private fun EmptyCircadian(
+    realBackendAvailable: Boolean,
+    noModel: Boolean,
+    hasTimeSection: Boolean,
+    warmingUp: Boolean,
+) {
     val msg = when {
+        // First: with nothing installed the other three flags still hold the last model's values.
+        noModel ->
+            "Model time unavailable — no model installed"
         !realBackendAvailable ->
             "Model time unavailable — stub backend has no circadian probe"
         !hasTimeSection ->

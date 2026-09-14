@@ -181,11 +181,17 @@ class InferenceController(
                 ).joinToString(" · ")
             else -> truncated
         }
+        // runFromHistory returns at descAny == null before its own clear; nothing else drops these.
+        val noModel = installed.isEmpty()
         _state.value = _state.value.copy(
             running = runningModels(),
             metas = metasSnapshot(),
             telemetry = telemetrySnapshot(),
             note = note,
+            predictions = if (noModel) emptyList() else _state.value.predictions,
+            circadianTime = if (noModel) null else _state.value.circadianTime,
+            circadianAnchorMs = if (noModel) null else _state.value.circadianAnchorMs,
+            circadianLowContext = if (noModel) false else _state.value.circadianLowContext,
         )
         Timber.tag(TAG).i(
             "refreshModels models=%s active=%s",
