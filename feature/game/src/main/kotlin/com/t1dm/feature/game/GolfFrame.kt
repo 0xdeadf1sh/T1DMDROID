@@ -38,6 +38,32 @@ class BallFrame : WorldFrame() {
     var splashY = 0f
     var splash = 0f
 
+    /** [Golfer]'s outputs, written after [set] and before the commit; feet at golferX, golferY. */
+    var golferShown = false
+    var golferX = 0f
+    var golferY = 0f
+
+    /** +1 looking toward the hole, −1 back down the trace. */
+    var golferFacing = 1f
+
+    /** Radians of swing from address, positive BACK; the club lags the shoulders. */
+    var shoulderRad = 0f
+    var clubRad = 0f
+
+    /** Radians of one full stride, and how far the arms are raised in [0,1]. */
+    var legPhase = 0f
+    var armsUp = 0f
+
+    /** Radians the upper body tilts toward the hole. */
+    var lean = 0f
+
+    /** Knee flex and weight on the front foot, both [0,1]; 0.5 of the weight is even. */
+    var kneeBend = 0f
+    var weightFwd = 0.5f
+
+    /** How much of the figure is walking, [0,1]: eased, so arriving does not snap the stance. */
+    var golferWalk = 0f
+
     fun set(
         s: BallState,
         camera: GameCamera,

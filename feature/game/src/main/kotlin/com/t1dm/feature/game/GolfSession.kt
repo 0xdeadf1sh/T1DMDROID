@@ -66,9 +66,13 @@ internal suspend fun runGolfLoop(
     latest: LiveReadingRef,
     zone: ZoneId,
     feel: GolfFeelSink = GolfFeelSink.None,
+    /** Advanced on the frame it is published with; null leaves the figure undrawn. */
+    golfer: Golfer? = null,
     pacer: FrameClockPacer = FrameClockPacer(),
 ) {
     val cup = world.cup
+    // Bound once: a method reference is an allocation, and this one is taken every frame.
+    val groundAt: (Float) -> Float = track::groundAt
     var placed = false
     var signalled = false
     var hudAtNs = 0L
@@ -110,11 +114,17 @@ internal suspend fun runGolfLoop(
         )
     }
 
-    fun publish(s: BallState, viewW: Float, viewH: Float) {
-        bus.back().set(
+    fun publish(s: BallState, viewW: Float, viewH: Float, dtS: Float, placing: Boolean) {
+        val f = bus.back()
+        f.set(
             s, camera, viewW, viewH, zoom.carShown, zoom.liftM, controls,
             teeX, teeY, splashX, splashY, splash, progressOf(s.x),
         )
+        // After the set, before the commit: the figure reads the frame it is published on.
+        if (golfer != null) {
+            val pxX = (viewport.widthPx - viewport.plotInsetPx).coerceAtLeast(1f) / viewW.coerceAtLeast(1e-3f)
+            if (placing) golfer.place(f, groundAt, pxX) else golfer.advance(f, golfer.pullOf(f), dtS, groundAt, pxX)
+        }
         bus.commit()
     }
     // A holed round is a hold: simulating it is sixty FFI round trips a second of a frozen frame.
@@ -160,7 +170,7 @@ internal suspend fun runGolfLoop(
             splash = 0f
             // On the chart's viewport, not the ball: entering golf mode must not move the panel.
             camera.seatAt(seatAtX, s.y, viewH)
-            publish(s, viewW, viewH)
+            publish(s, viewW, viewH, 0f, placing = true)
             if (!signalled) {
                 signalled = true
                 onFirstFrame()
@@ -182,7 +192,7 @@ internal suspend fun runGolfLoop(
                 splash = (splash - (dtMs / 1000f) / SPLASH_LIFE_S).coerceAtLeast(0f)
             }
             camera.follow(s.x, s.y, s.vx, s.vy, viewW, viewH, cup.x1, dtMs / 1000f)
-            publish(s, viewW, viewH)
+            publish(s, viewW, viewH, dtMs / 1000f, placing = false)
             // Simulated frames only: on a 120 Hz panel half the callbacks carry no timestep.
             feel.frame(s)
             lastSpeed = hypot(s.vx, s.vy)
@@ -196,7 +206,7 @@ internal suspend fun runGolfLoop(
             // Republish every frame; state() not step(): shown not played; camera eases the span.
             val s = world.state()
             camera.follow(s.x, s.y, 0f, 0f, viewW, viewH, cup.x1, presentDt / 1000f)
-            publish(s, viewW, viewH)
+            publish(s, viewW, viewH, presentDt / 1000f, placing = false)
         } else if (paused != lastPaused || (paused && gate.holds.primary != hud.value.hold)) {
             // The reason can change while the answer does not, and the banner names the reason.
             hud.value = hud.value.copy(hold = gate.holds.primary)

@@ -22,8 +22,11 @@ const CUP_DEPTH_R: f32 = 2.4;
 /// Ball centres this many radii under the world floor are unrecoverable: heights floor at 0.
 const WATER_DEPTH_R: f32 = 3.0;
 
-/// Speed-independent share of weight the turf resists with; `atan` of it is the slope it holds.
-const ROLL_STATIC_G: f32 = 0.45;
+/// Share of weight the turf resists a rolling ball with: ×[`D_GRAVITY`] is 9 m/s².
+const ROLL_STATIC_G: f32 = 0.15;
+
+/// Steepest grade (rise/run) the turf holds a ball under `rest_speed` on: 0.45 ⇒ 24°.
+const HOLD_GRADE: f32 = 0.45;
 
 /// Contact-free ticks before airborne reports, 8 ⇒ 67 ms; an EDGE, tie breaks toward GROUNDED.
 const AIRBORNE_ARM_TICKS: u32 = 8;
@@ -38,10 +41,10 @@ const D_FRICTION: f32 = 0.9;
 /// Linear rolling bleed (1/s) on top of [`ROLL_STATIC_G`]; together, 40 m/s runs out in ~49 m.
 const D_ROLLING_DAMPING: f32 = 0.30;
 /// Exaggerated like the car's, and the divisor of the carry: `v²/g` at 45°.
-const D_GRAVITY: f32 = 20.0;
-/// m/s ⇒ 180 m of carry, about 12 readings of trace, on a 100 m-tall world.
-const D_MAX_LAUNCH_SPEED: f32 = 60.0;
-/// m/s. Above the creep a hillside leaves, below anything a shot still carries.
+const D_GRAVITY: f32 = 60.0;
+/// m/s ⇒ 180 m of carry, ~12 readings of trace, in 2.45 s of hang on a 100 m-tall world.
+const D_MAX_LAUNCH_SPEED: f32 = 104.0;
+/// m/s. Above the jitter a settled ball keeps, below anything still rolling out or carrying.
 const D_REST_SPEED: f32 = 0.8;
 /// Seconds held under [`D_REST_SPEED`]; long enough that a bounce apex cannot satisfy it.
 const D_REST_HOLD_S: f32 = 0.35;
@@ -462,9 +465,12 @@ impl Sim {
         self.contact = down;
         // Pure rolling while down, so friction cannot re-accelerate what the turf just bled off.
         if down {
+            let px = self.phys.bodies[self.phys.ball].translation().x;
+            // Along the LIE: off `vx` alone it is short by cosθ, and the slip is μN of braking.
+            let (tx, ty) = lie_tangent(&self.terrain, px);
             if let Some(b) = self.phys.bodies.get_mut(self.phys.ball) {
-                let vx = b.linvel().x;
-                b.set_angvel(-vx / t.ball_radius, true);
+                let v = b.linvel();
+                b.set_angvel(-(v.x * tx + v.y * ty) / t.ball_radius, true);
             }
         }
         self.mirror(dt);
@@ -495,15 +501,26 @@ impl Sim {
     /// Turf: a fixed share of weight plus a linear bleed. Never a reversal — it only takes speed.
     fn roll_resist(&mut self, dt: f32) {
         let t = self.tune;
+        let held = self.turf_holds(self.x);
         let Some(b) = self.phys.bodies.get_mut(self.phys.ball) else { return };
         let v = b.linvel();
         let s = (v.x * v.x + v.y * v.y).sqrt();
         if !(s > 1.0e-6) {
             return;
         }
+        // Static hold: a slow ball on a gentle enough lie stops, else it rolls to the next one.
+        if s < t.rest_speed && held {
+            b.set_linvel(Vector::new(0.0, 0.0), true);
+            return;
+        }
         let cut = (ROLL_STATIC_G * t.gravity + t.rolling_damping * s) * dt;
         let k = ((s - cut) / s).max(0.0);
         b.set_linvel(Vector::new(v.x * k, v.y * k), true);
+    }
+
+    /// A gap on either side never holds.
+    fn turf_holds(&self, x: f32) -> bool {
+        grade_at(&self.terrain, x).is_some_and(|g| g.abs() <= HOLD_GRADE)
     }
 
     /// Back to where the ball last stood still, at rest. The one recovery from water or a poison.
@@ -570,6 +587,26 @@ impl Sim {
             impact: self.impact,
             run: self.run,
         }
+    }
+}
+
+/// Grade under the ball (rise/run) from the samples either side of it; `None` at a gap.
+fn grade_at(terrain: &Terrain, x: f32) -> Option<f32> {
+    let dx = terrain.dx;
+    match (terrain.sample(x - dx), terrain.sample(x + dx)) {
+        (Some(a), Some(b)) => Some((b - a) / (2.0 * dx)),
+        _ => None,
+    }
+}
+
+/// Unit tangent of that grade, toward +x; a gap either side reads as flat.
+fn lie_tangent(terrain: &Terrain, x: f32) -> (f32, f32) {
+    let s = grade_at(terrain, x).unwrap_or(0.0);
+    let inv = (1.0 + s * s).sqrt().recip();
+    if inv.is_finite() {
+        (inv, s * inv)
+    } else {
+        (1.0, 0.0)
     }
 }
 
@@ -773,6 +810,30 @@ mod tests {
         assert_close(s.y, start.y, 0.05, "resting y drift");
         assert!(s.at_rest, "must still read as settled");
         assert!(!s.airborne);
+    }
+
+    fn grade(g: f32) -> TerrainSpec {
+        TerrainSpec { heights: (0..1201).map(|i| 400.0 - g * i as f32).collect(), dx: 1.0, world_height: 1_200.0 }
+    }
+
+    #[test]
+    fn a_slow_ball_holds_on_a_grade_the_turf_can_hold() {
+        let w = world(grade(0.3));
+        w.tee_at(0.0).unwrap();
+        let start = w.state().unwrap();
+        let s = run(&w, 600);
+        assert!(s.at_rest, "24° holds a 17° lie");
+        assert!(s.x - start.x < 5.0, "crept {} m", s.x - start.x);
+    }
+
+    #[test]
+    fn a_ball_rolls_off_a_grade_steeper_than_the_turf_holds() {
+        let w = world(grade(0.6));
+        w.tee_at(0.0).unwrap();
+        let start = w.state().unwrap();
+        let s = run(&w, 600);
+        assert!(!s.at_rest, "31° must not hold");
+        assert!(s.x - start.x > 5.0, "moved only {} m", s.x - start.x);
     }
 
     #[test]
@@ -1221,31 +1282,89 @@ mod tests {
         }
     }
 
+    /// A true 1200 m of slope at any grade: a sample under 0 is a GAP, so the top rises with it.
+    fn slope(grade: f32) -> TerrainSpec {
+        let top = grade * 1_200.0 + 10.0;
+        TerrainSpec {
+            heights: (0..1201).map(|i| top - grade * i as f32).collect(),
+            dx: 1.0,
+            world_height: top + 100.0,
+        }
+    }
+
+    #[test]
+    fn a_steep_lie_rolls_away_at_pace() {
+        let w = world(slope(0.6));
+        w.tee_at(0.0).unwrap();
+        let start = w.state().unwrap();
+        let s = run(&w, 300);
+        // Forced rolling off `vx` alone left this at ~2 m/s: minutes to leave a 31° lie.
+        assert!(s.x - start.x >= 100.0, "31° rolled only {} m in 5 s", s.x - start.x);
+    }
+
     /// Diagnostic. `cargo test -p t1dm-core rest_probe -- --ignored --nocapture`
     #[test]
     #[ignore]
     fn rest_probe() {
         for grade in [0.0f32, 0.1, 0.2, 0.3, 0.45, 0.6, 0.9] {
-            let heights: Vec<f32> = (0..1201).map(|i| 400.0 - grade * i as f32).collect();
-            let spec = TerrainSpec { heights, dx: 1.0, world_height: 1_200.0 };
-            let w = GolfWorld::new(spec, default_golf_tuning()).unwrap();
+            let w = GolfWorld::new(slope(grade), default_golf_tuning()).unwrap();
             w.tee_at(0.0).unwrap();
             let start = w.state().unwrap();
-            let mut settled = None;
+            let deg = grade.atan().to_degrees();
+            let mut done = None;
             for i in 0..7_200 {
                 let s = w.step(1000.0 / 60.0).unwrap();
-                if s.at_rest && i > 60 {
-                    settled = Some((i, s.x - start.x));
+                // Either terminus counts: a lie that holds settles, one that does not runs out.
+                if (s.at_rest && i > 60) || s.run != GolfRun::Playing {
+                    done = Some((i, s.x - start.x, s.run));
                     break;
                 }
             }
-            let deg = grade.atan().to_degrees();
-            match settled {
-                Some((i, dist)) => println!(
-                    "grade {grade:>4.2} ({deg:>4.1}°)  settled after {:>5.1} s, {dist:>7.1} m",
+            match done {
+                Some((i, dist, run)) => println!(
+                    "grade {grade:>4.2} ({deg:>4.1}°)  {} after {:>5.1} s, {dist:>7.1} m",
+                    if run == GolfRun::Playing { "settled" } else { "holed out" },
                     i as f32 / 60.0
                 ),
-                None => println!("grade {grade:>4.2} ({deg:>4.1}°)  NEVER SETTLES"),
+                None => println!(
+                    "grade {grade:>4.2} ({deg:>4.1}°)  still rolling at 120.0 s, {:>7.1} m",
+                    w.state().unwrap().x - start.x
+                ),
+            }
+        }
+    }
+
+    /// Haptic thresholds. `cargo test -p t1dm-core impact_probe -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn impact_probe() {
+        let t = default_golf_tuning();
+        println!("weight {:.1} N·s per substep", t.ball_mass * t.gravity * FIXED_DT);
+        for (name, spec) in [("flat", flat()), ("trace", glucose_terrain())] {
+            for (shot, deg, frac) in
+                [("putt", 0.0f32, 0.15f32), ("chip", 35.0, 0.45), ("drive", 45.0, 1.0)]
+            {
+                let w = world(spec.clone());
+                w.tee_at(40.0).unwrap();
+                let a = deg.to_radians();
+                let v = t.max_launch_speed * frac;
+                w.shoot(v * a.cos(), v * a.sin()).unwrap();
+                let (mut land, mut roll) = (0.0f32, 0.0f32);
+                // Frames since the ball last read airborne: the first few are the touchdown.
+                let mut since = u32::MAX;
+                for _ in 0..3_000 {
+                    let s = w.step(1000.0 / 60.0).unwrap();
+                    since = if s.airborne { 0 } else { since.saturating_add(1) };
+                    if since <= 6 {
+                        land = land.max(s.impact);
+                    } else if since > 30 {
+                        roll = roll.max(s.impact);
+                    }
+                    if s.at_rest {
+                        break;
+                    }
+                }
+                println!("{name:>5} {shot:>5} v={v:>5.1}  landing {land:>7.1}  rolling {roll:>7.1}");
             }
         }
     }

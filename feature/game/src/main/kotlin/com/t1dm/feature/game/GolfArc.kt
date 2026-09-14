@@ -13,7 +13,7 @@ internal const val DRAG_DEAD_PX = 14f
 internal const val GRAB_RADII = 5f
 
 /** Seconds between preview samples; 96 of them covers the longest hang at the longest carry. */
-internal const val ARC_STEP_S = 0.09f
+internal const val ARC_STEP_S = 0.05f
 
 /** Sampled points the preview may draw. */
 internal const val ARC_POINTS = 96

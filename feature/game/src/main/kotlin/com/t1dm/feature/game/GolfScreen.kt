@@ -53,6 +53,9 @@ private const val VIEW_CARRY_FRAC = 0.65f
 /** Floor on the press radius, so the ball can be grabbed at any zoom the camera reaches. */
 private val MIN_GRAB = 28.dp
 
+/** The figure's screen height: fixed, so the golfer is a golfer at every zoom the round reaches. */
+private val GOLFER_H = 64.dp
+
 /** Solver runs on gameDispatcher, never inference or default; alarmRaised releases actuator now. */
 @Composable
 fun GolfScreen(
@@ -188,8 +191,13 @@ private fun GolfStage(
         VIEW_CARRY_FRAC * tuning.maxLaunchSpeed * tuning.maxLaunchSpeed / tuning.gravity
     }
     val minGrabPx = with(LocalDensity.current) { MIN_GRAB.toPx() }
+    // Converted in composition, not per frame: sixty density lookups a second for a constant.
+    val golferPx = with(LocalDensity.current) { GOLFER_H.toPx() }
 
-    SideEffect { liveRef.tsMs = latestReadingMs }
+    SideEffect {
+        liveRef.tsMs = latestReadingMs
+        art.golferPx = golferPx
+    }
 
     var confirmExit by remember { mutableStateOf(false) }
     LaunchedEffect(confirmExit) { gate.set(GameHold.Modal, confirmExit) }
@@ -258,6 +266,7 @@ private fun GolfStage(
                     scene.track.map.worldXOf(seatAtMs),
                     world, scene.track, bus, camera, zoom, controls, viewport,
                     gate, commands, hud, liveRef, zone, feel,
+                    Golfer(tuning.ballRadius, tuning.maxLaunchSpeed).also { it.stancePx = STANCE_H * golferPx },
                 )
             } finally {
                 // Refcounted in Rust, freed by a JVM Cleaner: dropping it leaks the heightfield.
@@ -275,6 +284,10 @@ private fun GolfStage(
             drawCup(art, skin, p.camLeftM, p.pxPerXM, p.pxPerYM, p.floorPx)
             drawTee(art, f, skin, p.camLeftM, p.pxPerXM, p.pxPerYM, p.floorPx)
             drawSplash(art, f, skin, p.camLeftM, p.pxPerXM, p.pxPerYM, p.floorPx)
+            drawGolfer(art, f, skin, scene.track, p.camLeftM, p.pxPerXM, p.pxPerYM, p.floorPx)
+            val rPx = ballPx(art, p.pxPerXM)
+            // Drawn centre less physical centre; the drop's lift rides the vertical scale.
+            val ballDy = art.ballRadius * p.pxPerYM - rPx - f.ballLiftM * p.pxPerYM
             if (f.ballShown) {
                 // World metres, so the opening drop rides the vertical scale.
                 translate(top = -f.ballLiftM * p.pxPerYM) {
@@ -283,11 +296,12 @@ private fun GolfStage(
             }
             if (f.aiming) {
                 val n = arcOf(art, f, scene.track)
-                drawAimArc(art, n, p.camLeftM, p.pxPerXM, p.pxPerYM, p.floorPx, skin)
+                drawAimArc(art, n, p.camLeftM, p.pxPerXM, p.pxPerYM, p.floorPx, skin, ballDy)
             }
             // Panel coordinates, so the pointer handler need not redo the plot transform.
             anchor.ballPxX = p.plotLeft + (f.x - p.camLeftM) * p.pxPerXM
-            anchor.ballPxY = p.floorPx - f.y * p.pxPerYM
+            // The DRAWN disc's centre: the finger grabs what is on the panel, not the collider.
+            anchor.ballPxY = p.floorPx - f.y * p.pxPerYM + ballDy
             anchor.grabPx = grabRadiusPx(art.ballRadius, p.pxPerXM, minGrabPx)
             anchor.fullPx = dragFullPx(size.width, size.height)
             anchor.live = f.ballShown && f.atRest && f.run == GolfRun.Playing.ordinal

@@ -54,6 +54,23 @@ class GameSkin(p: T1dmPalette) {
     val pedalIdle: Color = p.ink.copy(alpha = 0.10f)
     val pedalDown: Color = p.primary.copy(alpha = 0.26f)
     val pedalInk: Color = p.ink.copy(alpha = 0.55f)
+
+    /** A golf ball is white in every theme: whichever neutral the palette made the light one. */
+    val ball: Color = if (p.dark) p.ink else p.surface
+
+    /** Mixed toward the dark neutral, never alpha: the turf behind must not tint the ball. */
+    val ballEdge: Color = lerp(ball, if (p.dark) p.surface else p.ink, 0.45f)
+    val ballShade: Color = lerp(ball, if (p.dark) p.surface else p.ink, 0.20f)
+
+    /** The golfer: ink over both sky and turf, the club a step back from it. */
+    val figure: Color = p.ink
+    val club: Color = p.inkMuted
+
+    /** Kit and skin, from the palette rather than literal: the figure must read in every theme. */
+    val shirt: Color = p.secondary
+    val trousers: Color = lerp(p.ink, p.surface, 0.30f)
+    val cap: Color = p.primary
+    val flesh: Color = lerp(p.ink, p.surface, if (p.dark) 0.55f else 0.40f)
 }
 
 /** Built once per tuning, CAR-LOCAL METRES, y flipped; a frame is translate/rotate/scale. */

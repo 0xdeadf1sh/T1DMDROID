@@ -108,10 +108,10 @@ internal class GolfFeelTracker(private val maxLaunchSpeed: Float) {
         /** Quieter than the car's engine bed: a ball on turf is a whisper, not a motor. */
         const val ROLL_BED = 0.30f
 
-        /** N·s above the ball's own weight; a 3 m ball weighs ~2 N·s per substep. */
-        const val BUMP_IMPULSE = 30f
+        /** N·s over the ball's own 6 per substep: a steady roll knocks ~2, a trace notch ~100. */
+        const val BUMP_IMPULSE = 60f
 
-        /** Even a tap putt is felt; only its scale varies. */
+        /** Even a tap putt is felt; only its scale varies, and it scales with the PULL. */
         const val STRIKE_FLOOR = 0.30f
 
         /** Water costs a stroke: felt, but not as hard as a crash. */

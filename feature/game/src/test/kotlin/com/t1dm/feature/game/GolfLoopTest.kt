@@ -161,6 +161,9 @@ class GolfLoopTest {
         val live = LiveReadingRef()
         val clock = BroadcastFrameClock()
         val feel = RecordingGolfFeel()
+
+        /** Arbitrary: the figure is a function OF the tuning, not a copy of a shipped number. */
+        val golfer = Golfer(3f, 60f)
         val executor = Executors.newSingleThreadExecutor { r -> Thread(r, GAME_THREAD) }
 
         fun CoroutineScope.startLoop(track: com.t1dm.ui.game.GameTrack, teeAtX: Float): Job =
@@ -171,7 +174,7 @@ class GolfLoopTest {
                         {},
                         0f,
                         world, track, bus, camera, zoom, controls, viewport,
-                        gate, commands, hud, live, ZoneId.of("UTC"), feel,
+                        gate, commands, hud, live, ZoneId.of("UTC"), feel, golfer,
                     )
                 } finally {
                     world.close()
@@ -479,6 +482,8 @@ class GolfLoopTest {
         assertEquals("teed at the tap", 137f, world.lastTeeX, 0.001f)
         assertEquals("and the published frame agrees", 137f, bus.published.x, 0.001f)
         assertEquals("the tee mark too", 137f, bus.published.teeX, 0.001f)
+        assertTrue("the figure is placed with it", bus.published.golferShown)
+        assertTrue("behind the ball", bus.published.golferX < bus.published.x)
     }
 
     @Test

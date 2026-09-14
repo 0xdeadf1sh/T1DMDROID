@@ -9,6 +9,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
+/** Arbitrary: the cue is a function OF the tuning, so nothing here mirrors a shipped number. */
 private const val MAX_LAUNCH = 60f
 
 class GolfFeelTest {
@@ -111,9 +112,11 @@ class GolfFeelTest {
     }
 
     @Test
-    fun `resting on a slope is not a bump`() {
+    fun `resting on a slope is not a bump, a notch in the trace is`() {
         val t = seeded()
+        // Measured: a steady roll peaks near 2 N·s of excess, a notch in a real trace near 100.
         repeat(20) { assertNull(t.observe(ball(impact = 4f)).cue) }
+        assertEquals(HapticCue.Impact, t.observe(ball(atRest = false, impact = 100f)).cue)
     }
 
     @Test
