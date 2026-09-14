@@ -5,8 +5,6 @@ import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.GamePropDensity
 import com.t1dm.core.model.Obstacle
 import com.t1dm.core.model.ReadingFlag
-import com.t1dm.core.model.UnitSpace
-import java.util.Locale
 
 /** Metres of trace between props, per layer; the jitter around it is ±40 %. */
 class PropSpacing(
@@ -25,9 +23,10 @@ class PropSpacing(
 }
 
 enum class PropKind {
-    Fossil, Ammonite, Bone, Pipe, Manhole, Aquifer, Vein, Root, Chest,
-    Tree, Pine, Bush, Tuft, Rock, Cabin, Windmill, Fence, Scarecrow,
-    Cloud, Bird, Balloon, Kite,
+    Fossil, Ammonite, Bone, Trilobite, Skull, Pipe, Manhole, Vein, Root, Chest,
+    Tree, Pine, Birch, Palm, Willow, Bush, Tuft, Grass, Flowers, Cabin, Barn, Tent, WaterTower,
+    Windmill, Scarecrow,
+    Cloud, Bird, Balloon, Blimp, Kite,
     SignLow, SignHigh,
 }
 
@@ -74,7 +73,7 @@ class PropSet(
     /** Balloons and kites: world-anchored. */
     val sky: PropField,
     val signs: PropField,
-    /** One per sign, in the trace's unit; formatted once so the draw never formats. */
+    /** One per sign, "LO" or "HI"; a string per entry so the draw lays out once. */
     val signLabels: Array<String>,
 ) {
     companion object {
@@ -85,46 +84,132 @@ class PropSet(
     }
 }
 
-/** Half width (m) of a ground prop: the box it stands in, shared by its glyph and collider. */
-fun groundHalfW(kind: PropKind, seed: Float): Float = groundScale(seed) * when (kind) {
-    PropKind.Tree, PropKind.Pine -> 5f
+/** Half width (m) of a ground or buried prop: its box, shared by glyph and collider. */
+fun propHalfW(kind: PropKind, seed: Float): Float = propScale(seed) * when (kind) {
+    PropKind.Tree, PropKind.Pine -> 10f
+    PropKind.Birch -> 5f
+    PropKind.Palm -> 8f
+    PropKind.Willow -> 11f
     PropKind.Bush -> 4f
     PropKind.Tuft -> 1.5f
-    PropKind.Rock -> 4.5f
-    PropKind.Cabin, PropKind.Fence -> 8f
+    PropKind.Grass, PropKind.Flowers -> 3f
+    PropKind.Cabin -> 16f
+    PropKind.Barn -> 20f
+    PropKind.Tent -> 8f
+    PropKind.WaterTower -> 6f
     PropKind.Windmill -> 3f
     PropKind.Scarecrow -> 2.5f
+    PropKind.Fossil -> 7f
+    PropKind.Skull -> 5f
+    PropKind.Ammonite, PropKind.Bone, PropKind.Trilobite, PropKind.Manhole, PropKind.Chest -> 4f
+    PropKind.Pipe -> 13f
+    PropKind.Vein -> 11f
+    PropKind.Root -> 6f
     else -> 0f
 }
 
-/** Height (m) of a ground prop, from the ground line. */
-fun groundH(kind: PropKind, seed: Float): Float = groundScale(seed) * when (kind) {
-    PropKind.Tree, PropKind.Windmill -> 20f
-    PropKind.Pine -> 18f
-    PropKind.Bush, PropKind.Rock -> 3.5f
+/** Height (m) of a ground prop up from the ground line, or of a buried prop's box. */
+fun propH(kind: PropKind, seed: Float): Float = propScale(seed) * when (kind) {
+    PropKind.Tree -> 40f
+    PropKind.Pine, PropKind.Birch -> 36f
+    PropKind.Palm -> 34f
+    PropKind.Willow -> 32f
+    PropKind.Windmill -> 20f
+    PropKind.Bush -> 3.5f
     PropKind.Tuft -> 1.5f
-    PropKind.Cabin, PropKind.Scarecrow -> 14f
-    PropKind.Fence -> 3f
+    PropKind.Grass -> 2f
+    PropKind.Flowers -> 3f
+    PropKind.Cabin -> 28f
+    PropKind.Barn -> 30f
+    PropKind.Tent -> 12f
+    PropKind.WaterTower -> 34f
+    PropKind.Scarecrow -> 14f
+    PropKind.Fossil, PropKind.Chest, PropKind.Skull -> 6f
+    PropKind.Ammonite -> 8f
+    PropKind.Bone -> 4f
+    PropKind.Trilobite -> 5f
+    PropKind.Pipe -> 5f
+    PropKind.Root -> 10f
+    PropKind.Vein -> 8f
+    PropKind.Manhole -> 12f
     else -> 0f
 }
 
-private fun groundScale(seed: Float): Float = 0.8f + 0.4f * seed
+private fun propScale(seed: Float): Float = 0.8f + 0.4f * seed
 
-/** Low enough for the car to bump over; the rest only stand in a golf ball's way. */
-fun isLowProp(kind: PropKind): Boolean =
-    kind == PropKind.Bush || kind == PropKind.Rock || kind == PropKind.Fence
+/** Anchored at the ground line and reaching DOWN; the rest are buried by their centre. */
+fun hangsFromGround(kind: PropKind): Boolean = kind == PropKind.Manhole || kind == PropKind.Root
 
-/** Ground props as solid boxes, less those near [keepOutX] and, if asked, the tall ones. */
-fun PropSet.obstacles(lowOnly: Boolean, keepOutX: Float, keepOutM: Float): List<Obstacle> {
+/** Metres of turf over a buried prop's box, at least. */
+private const val COVER_M = 2f
+
+/** Thinnest a box may go once inset; a tree's trunk still stands. */
+private const val MIN_BOX_M = 0.5f
+
+/** Solid props as boxes, skipping those between [behindM] before and [aheadM] past [teeX]. */
+fun PropSet.obstacles(
+    teeX: Float,
+    behindM: Float,
+    aheadM: Float,
+    /** Off every face but a grounded base: the ball's radius, so the drawn ball meets the edge. */
+    insetM: Float = 0f,
+): List<Obstacle> {
     val f = ground
     val out = ArrayList<Obstacle>(f.size)
+    fun box(x: Float, halfW: Float, h: Float, lift: Float) {
+        val hw = (halfW - insetM).coerceAtLeast(MIN_BOX_M)
+        if (lift > 0f) {
+            out.add(Obstacle(x, hw, (h - 2f * insetM).coerceAtLeast(MIN_BOX_M), lift + insetM))
+        } else {
+            out.add(Obstacle(x, hw, (h - insetM).coerceAtLeast(MIN_BOX_M), 0f))
+        }
+    }
     for (i in 0 until f.size) {
         val kind = f.kindAt(i)
-        if (kind == PropKind.Tuft) continue
-        if (lowOnly && !isLowProp(kind)) continue
-        val halfW = groundHalfW(kind, f.seeds[i])
-        if (kotlin.math.abs(f.xs[i] - keepOutX) <= keepOutM + halfW) continue
-        out.add(Obstacle(f.xs[i], halfW, groundH(kind, f.seeds[i])))
+        val seed = f.seeds[i]
+        val x = f.xs[i]
+        val halfW = propHalfW(kind, seed)
+        val h = propH(kind, seed)
+        if (x + halfW >= teeX - behindM && x - halfW <= teeX + aheadM) continue
+        // Each box traces the glyph: a trunk and a crown, a wall and a roof, never the whole frame.
+        when (kind) {
+            PropKind.Tree -> {
+                box(x, halfW * 0.18f, h * 0.55f, 0f)
+                box(x, halfW * 0.8f, h * 0.5f, h * 0.5f)
+            }
+            PropKind.Pine -> {
+                box(x, halfW * 0.14f, h * 0.3f, 0f)
+                box(x, halfW * 0.6f, h * 0.7f, h * 0.28f)
+            }
+            PropKind.Birch -> {
+                box(x, halfW * 0.12f, h * 0.6f, 0f)
+                box(x, halfW * 0.7f, h * 0.45f, h * 0.55f)
+            }
+            PropKind.Palm -> {
+                box(x, halfW * 0.12f, h * 0.75f, 0f)
+                box(x, halfW, h * 0.3f, h * 0.7f)
+            }
+            PropKind.Willow -> {
+                box(x, halfW * 0.14f, h * 0.5f, 0f)
+                box(x, halfW * 0.9f, h * 0.65f, h * 0.35f)
+            }
+            PropKind.Cabin -> {
+                box(x, halfW, h * 0.6f, 0f)
+                box(x, halfW * 0.6f, h * 0.4f, h * 0.6f)
+            }
+            PropKind.Barn -> {
+                box(x, halfW, h * 0.65f, 0f)
+                box(x, halfW * 0.75f, h * 0.35f, h * 0.65f)
+            }
+            PropKind.Tent -> box(x, halfW * 0.7f, h, 0f)
+            PropKind.WaterTower -> {
+                box(x, halfW * 0.5f, h * 0.6f, 0f)
+                box(x, halfW, h * 0.4f, h * 0.6f)
+            }
+            PropKind.Windmill -> box(x, halfW * 0.6f, h * 0.9f, 0f)
+            PropKind.Scarecrow -> box(x, halfW * 0.4f, h, 0f)
+            else -> Unit
+        }
     }
     return out
 }
@@ -151,29 +236,35 @@ private const val KITE_MAX_M = 32f
 /** Two dropouts this far apart cut an excursion in two: sensor silence proves nothing. */
 private const val MAX_GAP_MIN = 30f
 
-private const val MGDL_PER_MMOLL = 18.0182
 
 /** Weighted kinds per layer; the weight is how many draws of the bag the kind holds. */
 private val UNDERGROUND = intArrayOf(
-    PropKind.Fossil.ordinal, PropKind.Fossil.ordinal, PropKind.Ammonite.ordinal, PropKind.Bone.ordinal,
-    PropKind.Bone.ordinal, PropKind.Pipe.ordinal, PropKind.Pipe.ordinal, PropKind.Manhole.ordinal,
-    PropKind.Aquifer.ordinal, PropKind.Aquifer.ordinal, PropKind.Vein.ordinal, PropKind.Root.ordinal,
-    PropKind.Root.ordinal, PropKind.Chest.ordinal,
+    PropKind.Fossil.ordinal, PropKind.Fossil.ordinal, PropKind.Fossil.ordinal, PropKind.Fossil.ordinal,
+    PropKind.Fossil.ordinal, PropKind.Fossil.ordinal, PropKind.Ammonite.ordinal, PropKind.Ammonite.ordinal,
+    PropKind.Ammonite.ordinal, PropKind.Bone.ordinal, PropKind.Bone.ordinal, PropKind.Bone.ordinal,
+    PropKind.Trilobite.ordinal, PropKind.Trilobite.ordinal, PropKind.Skull.ordinal, PropKind.Skull.ordinal,
+    PropKind.Pipe.ordinal, PropKind.Manhole.ordinal, PropKind.Vein.ordinal, PropKind.Root.ordinal,
+    PropKind.Chest.ordinal,
 )
 private val GROUND = intArrayOf(
     PropKind.Tree.ordinal, PropKind.Tree.ordinal, PropKind.Tree.ordinal, PropKind.Pine.ordinal,
-    PropKind.Pine.ordinal, PropKind.Bush.ordinal, PropKind.Bush.ordinal, PropKind.Tuft.ordinal,
-    PropKind.Tuft.ordinal, PropKind.Tuft.ordinal, PropKind.Rock.ordinal, PropKind.Rock.ordinal,
-    PropKind.Cabin.ordinal, PropKind.Windmill.ordinal, PropKind.Fence.ordinal, PropKind.Scarecrow.ordinal,
+    PropKind.Pine.ordinal, PropKind.Birch.ordinal, PropKind.Birch.ordinal, PropKind.Palm.ordinal,
+    PropKind.Willow.ordinal, PropKind.Bush.ordinal, PropKind.Bush.ordinal, PropKind.Tuft.ordinal,
+    PropKind.Tuft.ordinal, PropKind.Grass.ordinal, PropKind.Grass.ordinal, PropKind.Grass.ordinal,
+    PropKind.Flowers.ordinal, PropKind.Flowers.ordinal, PropKind.Flowers.ordinal, PropKind.Cabin.ordinal,
+    PropKind.Barn.ordinal, PropKind.Tent.ordinal, PropKind.WaterTower.ordinal, PropKind.Windmill.ordinal,
+    PropKind.Scarecrow.ordinal,
 )
-private val SKY = intArrayOf(PropKind.Balloon.ordinal, PropKind.Kite.ordinal, PropKind.Kite.ordinal)
+private val SKY = intArrayOf(
+    PropKind.Balloon.ordinal, PropKind.Balloon.ordinal, PropKind.Blimp.ordinal, PropKind.Kite.ordinal,
+    PropKind.Kite.ordinal,
+)
 
 /** Deterministic in the track's start: the same day always grows the same world. */
 fun buildProps(
     track: GameTrack,
     readings: List<CgmReading>,
     thresholds: AlertThresholds?,
-    unit: UnitSpace,
     density: GamePropDensity,
 ): PropSet {
     if (!track.isPlayable) return PropSet.EMPTY
@@ -181,18 +272,23 @@ fun buildProps(
     val rng = Xorshift(track.startMs)
     val top = track.map.worldHeight
 
-    val underground = scatter(track, rng, spacing.undergroundM, UNDERGROUND, needsFooting = true) { g, r, kind ->
-        if (kind == PropKind.Manhole.ordinal || kind == PropKind.Root.ordinal) g
-        else (g - BURY_MIN_M - r * (BURY_MAX_M - BURY_MIN_M)).coerceAtLeast(1f)
+    val underground = scatter(track, rng, spacing.undergroundM, UNDERGROUND, needsFooting = true) { g, r, kind, seed ->
+        val k = PropKind.entries[kind]
+        if (hangsFromGround(k)) {
+            g
+        } else {
+            val half = propH(k, seed) * 0.5f
+            (g - (BURY_MIN_M + r * (BURY_MAX_M - BURY_MIN_M)).coerceAtLeast(half + COVER_M)).coerceAtLeast(half)
+        }
     }
-    val ground = scatter(track, rng, spacing.groundM, GROUND, needsFooting = true) { g, _, _ -> g }
-    val clouds = scatter(track, rng, spacing.cloudM, intArrayOf(PropKind.Cloud.ordinal), needsFooting = false) { g, r, _ ->
+    val ground = scatter(track, rng, spacing.groundM, GROUND, needsFooting = true) { g, _, _, _ -> g }
+    val clouds = scatter(track, rng, spacing.cloudM, intArrayOf(PropKind.Cloud.ordinal), needsFooting = false) { g, r, _, _ ->
         skyY(g, r, top)
     }
-    val birds = scatter(track, rng, spacing.birdM, intArrayOf(PropKind.Bird.ordinal), needsFooting = false) { g, r, _ ->
+    val birds = scatter(track, rng, spacing.birdM, intArrayOf(PropKind.Bird.ordinal), needsFooting = false) { g, r, _, _ ->
         skyY(g, r, top)
     }
-    val sky = scatter(track, rng, spacing.skyM, SKY, needsFooting = true) { g, r, kind ->
+    val sky = scatter(track, rng, spacing.skyM, SKY, needsFooting = true) { g, r, kind, _ ->
         if (kind == PropKind.Kite.ordinal) g + KITE_MIN_M + r * (KITE_MAX_M - KITE_MIN_M) else skyY(g, r, top)
     }
     // A kite's amount is its string, so the draw can reach the ground without sampling it.
@@ -200,7 +296,7 @@ fun buildProps(
         if (sky.kinds[i] == PropKind.Kite.ordinal) sky.amounts[i] = sky.ys[i] - track.groundAt(sky.xs[i])
     }
 
-    val (signs, labels) = if (thresholds == null) PropField.EMPTY to emptyArray() else signs(track, readings, thresholds, unit)
+    val (signs, labels) = if (thresholds == null) PropField.EMPTY to emptyArray() else signs(track, readings, thresholds)
     return PropSet(underground, ground, clouds, birds, sky, signs, labels)
 }
 
@@ -217,7 +313,7 @@ private inline fun scatter(
     spacingM: Float,
     bag: IntArray,
     needsFooting: Boolean,
-    yOf: (ground: Float, r: Float, kind: Int) -> Float,
+    yOf: (ground: Float, r: Float, kind: Int, seed: Float) -> Float,
 ): PropField {
     val length = track.length
     val cap = (length / (spacingM * 0.6f)).toInt() + 2
@@ -235,7 +331,7 @@ private inline fun scatter(
             val seed = rng.next()
             kinds[n] = kind
             xs[n] = x
-            ys[n] = yOf(g, rng.next(), kind)
+            ys[n] = yOf(g, rng.next(), kind, seed)
             seeds[n] = seed
             n++
         }
@@ -249,7 +345,6 @@ private fun signs(
     track: GameTrack,
     readings: List<CgmReading>,
     thresholds: AlertThresholds,
-    unit: UnitSpace,
 ): Pair<PropField, Array<String>> {
     val scored = readings.asSequence()
         .filter { it.bgMgdl != null && it.flag == ReadingFlag.NORMAL }
@@ -303,17 +398,11 @@ private fun signs(
         seeds = FloatArray(n),
         amounts = FloatArray(n) { amounts[order[it]] },
     )
-    val labels = Array(n) { signLabel(field.kinds[it], field.amounts[it], unit) }
+    val labels = Array(n) { signLabel(field.kinds[it]) }
     return field to labels
 }
 
-private fun signLabel(kind: Int, mgdl: Float, unit: UnitSpace): String {
-    val value = when (unit) {
-        UnitSpace.MmolL -> String.format(Locale.ROOT, "%.1f", mgdl / MGDL_PER_MMOLL)
-        else -> mgdl.toInt().toString()
-    }
-    return if (kind == PropKind.SignLow.ordinal) "LOW $value" else "HIGH $value"
-}
+private fun signLabel(kind: Int): String = if (kind == PropKind.SignLow.ordinal) "LO" else "HI"
 
 /** Marsaglia xorshift64*, seeded once; `next()` is uniform in [0, 1). */
 private class Xorshift(seed: Long) {

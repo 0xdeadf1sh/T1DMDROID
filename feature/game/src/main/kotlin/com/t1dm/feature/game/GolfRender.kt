@@ -98,6 +98,9 @@ internal val STANCE_H =
 /** Dash and gap of the preview arc, in pixels. */
 private const val ARC_DASH_PX = 9f
 
+/** Share of the preview flight drawn at all; the dashes fade out across it. */
+private const val ARC_SHOWN_FRAC = 0.35f
+
 /** Splash ring's reach in DRAWN ball radii, and its stroke. */
 private const val SPLASH_R = 5f
 private const val SPLASH_W_PX = 3f
@@ -206,9 +209,14 @@ internal fun DrawScope.drawAimArc(
     var on = true
     var px = (art.arc[0] - camLeft) * pxX
     var py = floorPx - art.arc[1] * pxY + ballDy
-    for (i in 1 until n) {
+    // Fades to nothing well short of the landing: the far end of the flight is the player's guess.
+    val shown = (n * ARC_SHOWN_FRAC).toInt().coerceAtLeast(2)
+    for (i in 1 until shown) {
         val nx = (art.arc[2 * i] - camLeft) * pxX
-        val ny = floorPx - art.arc[2 * i + 1] * pxY
+        // The whole flight rides the drawn ball's offset; only the first point did, and it kinked.
+        val ny = floorPx - art.arc[2 * i + 1] * pxY + ballDy
+        val fade = 1f - i.toFloat() / shown
+        val ink = skin.accent.copy(alpha = skin.accent.alpha * fade * fade)
         // Walked in pixels, so the dash is even however the zoom has stretched the segment.
         val len = hypot(nx - px, ny - py)
         var t = 0f
@@ -218,7 +226,7 @@ internal fun DrawScope.drawAimArc(
                 val a = t / len
                 val b = (t + step) / len
                 drawLine(
-                    skin.accent,
+                    ink,
                     Offset(px + (nx - px) * a, py + (ny - py) * a),
                     Offset(px + (nx - px) * b, py + (ny - py) * b),
                     strokeWidth = 2.4f,
@@ -235,8 +243,6 @@ internal fun DrawScope.drawAimArc(
         px = nx
         py = ny
     }
-    // The landing point, so a shot can be aimed at the hole rather than merely away from the tee.
-    drawCircle(skin.accent, 3.5f, Offset(px, py))
 }
 
 /** Expanding ring where the ball was lost; fades with [BallFrame.splash]. */
@@ -414,7 +420,8 @@ internal fun DrawScope.drawGolfer(
     )
     drawLine(skin.cap, Offset(headX, brimY), Offset(brimX, brimY), BRIM_W * h, StrokeCap.Butt)
 
-    drawArm(skin.flesh, shX, shY, leadX, leadY, face, ELBOW_H * h, ARM_W * h)
+    // Bowed the other way from the trailing arm: elbows out, not both folded to one side.
+    drawArm(skin.flesh, shX, shY, leadX, leadY, face, -ELBOW_H * h, ARM_W * h)
     val handR = HAND_R_H * h
     drawCircle(skin.flesh, handR, Offset(leadX, leadY))
     drawCircle(skin.flesh, handR, Offset(trailX, trailY))

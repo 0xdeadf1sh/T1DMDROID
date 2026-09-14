@@ -580,7 +580,7 @@ private fun TerrainSpec.toUniffi(): UniffiTerrainSpec = UniffiTerrainSpec(
     worldHeight = worldHeight,
 )
 
-private fun Obstacle.toUniffi(): UniffiObstacle = UniffiObstacle(x = x, halfW = halfW, h = h)
+private fun Obstacle.toUniffi(): UniffiObstacle = UniffiObstacle(x = x, halfW = halfW, h = h, lift = lift)
 
 private fun CarTuning.toUniffi(): UniffiCarTuning = UniffiCarTuning(
     chassisMass = chassisMass,

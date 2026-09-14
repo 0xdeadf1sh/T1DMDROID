@@ -32,11 +32,12 @@ data class TerrainSpec(
     val worldHeight: Float,
 )
 
-/** A fixed box on the ground line at [x], [halfW] either side and [h] up; metres, both games. */
+/** A fixed box over the ground at [x]: [halfW] either side, [lift] up to its base, [h] tall. */
 data class Obstacle(
     val x: Float,
     val halfW: Float,
     val h: Float,
+    val lift: Float = 0f,
 )
 
 /** Rust `defaultCarTuning()` is the single authority for these numbers — do not transcribe them. */

@@ -29,6 +29,9 @@ class BallFrame : WorldFrame() {
     var aimVx = 0f
     var aimVy = 0f
 
+    /** Released but not yet struck: the downswing is on its way to the ball. */
+    var shotPending = false
+
     /** Where the tee mark goes. */
     var teeX = 0f
     var teeY = 0f

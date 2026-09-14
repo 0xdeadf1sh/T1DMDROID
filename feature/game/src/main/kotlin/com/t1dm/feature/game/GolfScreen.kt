@@ -57,8 +57,9 @@ private const val VIEW_CARRY_FRAC = 0.65f
 /** Floor on the press radius, so the ball can be grabbed at any zoom the camera reaches. */
 private val MIN_GRAB = 28.dp
 
-/** Metres around the tee kept clear of obstacles: room to swing, not room to carry. */
-private const val TEE_KEEP_OUT_M = 15f
+/** Metres kept clear of obstacles behind the tee, and ahead of it: room for the opening shot. */
+private const val TEE_BEHIND_M = 15f
+private const val TEE_AHEAD_M = 80f
 
 /** The figure's screen height: fixed, so the golfer is a golfer at every zoom the round reaches. */
 private val GOLFER_H = 64.dp
@@ -267,7 +268,9 @@ private fun GolfStage(
         onBackground = { controls.release() },
         canvasModifier = aimInput,
         loop = { handOff ->
-            val walls = scene.props.obstacles(lowOnly = false, scene.track.map.worldXOf(dropAtMs), TEE_KEEP_OUT_M)
+            val walls = scene.props.obstacles(
+                scene.track.map.worldXOf(dropAtMs), TEE_BEHIND_M, TEE_AHEAD_M, insetM = tuning.ballRadius,
+            )
             val world = runCatching { openWorld(scene.track.terrain, tuning, walls) }.getOrNull()
                 ?: return@GameShell
             try {
@@ -292,7 +295,8 @@ private fun GolfStage(
                 groundPath, paintPath, chalk,
                 pxPerWorldY = p.pxPerYM,
                 fillSky = false,
-                props = scene.props,
+                // With the ball, not before it: the scenery lands when the drop does.
+                props = if (f.ballShown) scene.props else null,
                 propArt = propArt,
                 simS = f.simS,
                 hour = hourAt(scene.track.map, scene.tzOffsetMin, p.camLeftM + p.camWidthM * 0.5f),

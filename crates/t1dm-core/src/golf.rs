@@ -263,6 +263,8 @@ struct Sim {
     penalties: u32,
     run: GolfRun,
     tee_x: f32,
+    /// What `tee_from` was ASKED for; `tee_x` is the snapped answer, and re-feeding that walks +r.
+    tee_req: f32,
     accumulator: f32,
     impact: f32,
     elapsed: f32,
@@ -298,8 +300,12 @@ impl Sim {
         let ground = build_ground_to(&terrain.heights, terrain.dx, approach + 1, &tail);
 
         let water_y = (-(WATER_DEPTH_R * r)).max(terrain.kill_y).min(cup.rim_y - depth);
-        let blocks = place_obstacles(&terrain, obstacles);
-        let phys = Phys::build(&ground, &blocks, &tune, 0.0, 0.0, 0.0, 0.0);
+        let mut blocks = place_obstacles(&terrain, obstacles);
+        // The caller cannot see the cup; a box over its mouth would make the hole unholeable.
+        let lip = approach as f32 * terrain.dx;
+        blocks.retain(|b| b[0] + b[2] < lip || b[0] - b[2] > cup.x1);
+        // Empty placeholder: `tee_from` below replaces it unconditionally, colliders and all.
+        let phys = Phys::build(&None, &[], &tune, 0.0, 0.0, 0.0, 0.0);
         let mut s = Sim {
             terrain,
             tune,
@@ -329,6 +335,7 @@ impl Sim {
             penalties: 0,
             run: GolfRun::Playing,
             tee_x: 0.0,
+            tee_req: 0.0,
             accumulator: 0.0,
             impact: 0.0,
             elapsed: 0.0,
@@ -369,6 +376,7 @@ impl Sim {
 
     /// Tees on the first solid run at/after `from_x`, never on the green side of the left lip.
     fn tee_from(&mut self, from_x: f32) {
+        self.tee_req = from_x;
         let r = self.tune.ball_radius;
         let dx = self.terrain.dx;
         let n = self.terrain.heights.len();
@@ -672,7 +680,7 @@ impl GolfWorld {
     /// Replays the same hole: back to the tee this round started from.
     pub fn reset(&self) -> Result<BallState, CoreError> {
         let mut sim = self.lock()?;
-        let tee = sim.tee_x;
+        let tee = sim.tee_req;
         sim.tee_from(tee);
         Ok(sim.snapshot())
     }
@@ -807,7 +815,7 @@ mod tests {
 
     #[test]
     fn a_ball_rebounds_off_a_wall() {
-        let wall = Obstacle { x: 60.0, half_w: 1.5, h: 30.0 };
+        let wall = Obstacle { x: 60.0, half_w: 1.5, h: 30.0, lift: 0.0 };
         let w = GolfWorld::with_obstacles(flat(), default_golf_tuning(), vec![wall]).unwrap();
         w.tee_at(0.0).unwrap();
         w.shoot(40.0, 0.0).unwrap();
@@ -822,6 +830,31 @@ mod tests {
         }
         assert!(furthest < 60.0, "reached {furthest} m, past the wall at 60");
         assert!(turned, "the wall must send the ball back");
+    }
+
+    #[test]
+    fn a_lifted_box_lets_a_rolling_ball_under_it() {
+        let canopy = Obstacle { x: 40.0, half_w: 6.0, h: 10.0, lift: 12.0 };
+        let w = GolfWorld::with_obstacles(flat(), default_golf_tuning(), vec![canopy]).unwrap();
+        w.tee_at(0.0).unwrap();
+        w.shoot(40.0, 0.0).unwrap();
+        let under = run(&w, 240);
+        let free = world(flat());
+        free.tee_at(0.0).unwrap();
+        free.shoot(40.0, 0.0).unwrap();
+        let open = run(&free, 240);
+        assert!(under.x > 46.0, "stopped at {}: the canopy caught a ball on the ground", under.x);
+        assert_close(under.x, open.x, 1e-3, "a box overhead must not touch the roll");
+    }
+
+    #[test]
+    fn a_box_over_the_cup_is_dropped() {
+        let cup = world(flat()).cup().unwrap();
+        let over = Obstacle { x: 0.5 * (cup.x0 + cup.x1), half_w: 1.5, h: 30.0, lift: 0.0 };
+        let w = GolfWorld::with_obstacles(flat(), default_golf_tuning(), vec![over]).unwrap();
+        assert!(w.inner.lock().unwrap().blocks.is_empty(), "a box over the mouth must not stand");
+        let last = hole_out(&w, cup.x0 - 25.0);
+        assert_eq!(last.run, GolfRun::Holed, "the cup must still take a putt, last x = {}", last.x);
     }
 
     #[test]
@@ -1085,6 +1118,20 @@ mod tests {
         assert!(fresh.at_rest);
         assert_eq!(fresh.vx, 0.0);
         assert_eq!(fresh.vy, 0.0);
+    }
+
+    #[test]
+    fn a_reset_replays_the_same_tee() {
+        for w in [world(flat()), world(glucose_terrain())] {
+            let first = w.tee_at(120.0).unwrap();
+            for i in 0..10 {
+                w.shoot(40.0, 30.0).unwrap();
+                run(&w, 120);
+                let again = w.reset().unwrap();
+                assert_close(again.x, first.x, 1e-4, &format!("reset {i} walked the tee"));
+                assert_close(again.y, first.y, 1e-4, &format!("reset {i} moved the lie"));
+            }
+        }
     }
 
     #[test]

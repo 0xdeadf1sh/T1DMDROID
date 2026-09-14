@@ -28,6 +28,9 @@ import org.junit.Test
 private const val MS = 1_000_000L
 private const val FRAME = 20 * MS
 
+/** Frames of [FRAME] that cover [DOWNSWING_S], the lead from release to strike. */
+private const val DOWNSWING_FRAMES = 7
+
 /** Shipped opening takes ~160 frames; cap fails rather than hangs if it never ends. */
 private const val OPEN_FRAME_CAP = 600
 
@@ -331,7 +334,7 @@ class GolfLoopTest {
     }
 
     @Test
-    fun `a shot is taken once, on the next simulated frame`() = harness { job ->
+    fun `a shot is taken once, when the downswing reaches the ball`() = harness { job ->
         var t = 1_000L * MS
         frame(t)
         t += FRAME
@@ -342,6 +345,12 @@ class GolfLoopTest {
         commands.fire(31f, 27f)
         t += FRAME
         frame(t)
+        settle()
+        assertEquals("the release is not yet the strike", 0, world.shots)
+        repeat(DOWNSWING_FRAMES) {
+            t += FRAME
+            frame(t)
+        }
         settle()
         assertEquals("exactly one shot leaves the queue", 1, world.shots)
         assertEquals(31f, world.lastShotVx, 1e-4f)
@@ -366,15 +375,19 @@ class GolfLoopTest {
         frame(t)
         settle()
         commands.fire(40f, 20f)
-        t += FRAME
-        frame(t)
+        repeat(1 + DOWNSWING_FRAMES) {
+            t += FRAME
+            frame(t)
+        }
         settle()
         assertEquals(1, world.strokes)
         assertFalse("the ball is moving now", world.atRest)
 
         commands.fire(40f, 20f)
-        t += FRAME
-        frame(t)
+        repeat(1 + DOWNSWING_FRAMES) {
+            t += FRAME
+            frame(t)
+        }
         settle()
         job.cancel()
         job.join()

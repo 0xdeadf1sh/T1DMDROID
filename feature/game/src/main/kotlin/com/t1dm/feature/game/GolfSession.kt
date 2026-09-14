@@ -115,6 +115,9 @@ internal suspend fun runGolfLoop(
     }
 
     var simS = 0f
+    // A released shot waits for the downswing to reach the ball; the figure swings first.
+    var pendingShot = 0L
+    var pendingS = 0f
     fun publish(s: BallState, viewW: Float, viewH: Float, dtS: Float, placing: Boolean) {
         val f = bus.back()
         f.set(
@@ -123,6 +126,7 @@ internal suspend fun runGolfLoop(
         )
         simS += dtS
         f.simS = simS
+        f.shotPending = pendingShot != 0L
         // After the set, before the commit: the figure reads the frame it is published on.
         if (golfer != null) {
             val pxX = (viewport.widthPx - viewport.plotInsetPx).coerceAtLeast(1f) / viewW.coerceAtLeast(1e-3f)
@@ -165,6 +169,7 @@ internal suspend fun runGolfLoop(
             val s = world.teeAt(teeAtX)
             commands.reset = false
             commands.takeShot()
+            pendingShot = 0L
             controls.release()
             terminal = s.run != GolfRun.Playing
             teeX = s.x
@@ -183,7 +188,17 @@ internal suspend fun runGolfLoop(
             pushHud(s, nowNs)
         } else if (dtMs > 0f) {
             val shot = commands.takeShot()
-            if (shot != 0L) world.shoot(GolfCommands.shotVx(shot), GolfCommands.shotVy(shot))
+            if (shot != 0L) {
+                pendingShot = shot
+                pendingS = 0f
+            }
+            if (pendingShot != 0L) {
+                pendingS += dtMs / 1000f
+                if (pendingS >= DOWNSWING_S) {
+                    world.shoot(GolfCommands.shotVx(pendingShot), GolfCommands.shotVy(pendingShot))
+                    pendingShot = 0L
+                }
+            }
             val s = world.step(dtMs)
             // The drop-back has already moved the ball, so the ring is pinned where it went in.
             if (s.penalties != penalties) {

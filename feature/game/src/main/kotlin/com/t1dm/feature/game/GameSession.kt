@@ -60,7 +60,7 @@ suspend fun loadGameScene(
     } else {
         buildWorldPaint(buildPaintFrame(strokes), track)
     }
-    GameScene(track, paint, unit, frame.tzOffsetMin, buildProps(track, readings, thresholds, unit, propDensity))
+    GameScene(track, paint, unit, frame.tzOffsetMin, buildProps(track, readings, thresholds, propDensity))
 }
 
 /** Rebuilt at HUD_PERIOD_NS, never frame rate: the one cell whose change recomposes anything. */

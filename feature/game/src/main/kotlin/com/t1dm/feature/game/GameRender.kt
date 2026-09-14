@@ -77,7 +77,6 @@ class GameSkin(p: T1dmPalette) {
     /** Scenery: buried things a step quieter than the trace, sky things a step off the sky. */
     val buried: Color = p.inkMuted.copy(alpha = 0.55f)
     val water: Color = p.secondary.copy(alpha = 0.35f)
-    val waterLine: Color = p.secondary.copy(alpha = 0.7f)
     val ore: Color = p.high.copy(alpha = 0.7f)
     val wood: Color = lerp(p.ink, p.surface, 0.35f)
     val leaf: Color = lerp(p.inRange, p.surface, 0.25f)
@@ -86,6 +85,9 @@ class GameSkin(p: T1dmPalette) {
     val window: Color = p.high
     val cloth: Color = p.secondary
     val straw: Color = lerp(p.high, p.surface, 0.3f)
+    val birch: Color = lerp(p.surface, p.ink, if (p.dark) 0.5f else 0.1f)
+    val petal: Color = p.urgentLow
+    val petalAlt: Color = p.secondary
     val cloud: Color = lerp(p.surface, p.ink, if (p.dark) 0.22f else 0.06f)
     val bird: Color = p.inkMuted
     val balloon: Color = p.low
@@ -96,10 +98,10 @@ class GameSkin(p: T1dmPalette) {
     val moon: Color = lerp(p.surface, p.ink, 0.6f)
     val star: Color = p.ink.copy(alpha = 0.8f)
 
-    /** Road signs: a light face, the band's own alarm colour, dark text in every theme. */
+    /** Road signs: a light face, the urgent red on both, dark text in every theme. */
     val signFace: Color = ball
-    val signLow: Color = p.low
-    val signHigh: Color = p.high
+    val signLow: Color = p.urgentLow
+    val signHigh: Color = p.urgentHigh
     val signText: Color = if (p.dark) p.surface else p.ink
 }
 

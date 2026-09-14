@@ -28,8 +28,8 @@ private const val ARRIVE_R = 0.1f
 private const val SWAY_RAD = 0.05f
 private const val SWAY_HZ = 0.5f
 
-/** Radians of shoulder turn at a full-power pull; 45°, since the arm has no wrist to hinge. */
-internal const val BACKSWING_RAD = 0.79f
+/** Radians of shoulder turn at a full-power pull; 90°, the club level with the shoulders. */
+internal const val BACKSWING_RAD = 1.57f
 
 /** Knee flex per act, in [0,1]; the draw stands the figure on [ADDRESS_BEND] to reach the ball. */
 internal const val ADDRESS_BEND = 0.55f
@@ -49,7 +49,7 @@ private const val WALK_BLEND_S = 0.18f
 private const val FOLLOW_RAD = -0.79f
 
 /** Seconds from the top of the backswing through the ball, then held before the ball is watched. */
-private const val DOWNSWING_S = 0.12f
+internal const val DOWNSWING_S = 0.12f
 private const val FOLLOW_HOLD_S = 0.40f
 
 /** Seconds for the club to catch the shoulders; the lag IS the whip. */
@@ -156,7 +156,8 @@ internal class Golfer(private val ballRadiusM: Float, private val maxLaunchSpeed
         // Terminal first, then the stroke: a ball that has dropped in is cheered, not swung at.
         if (f.run != GolfRun.Playing.ordinal) {
             if (act != Act.Cheer) enter(Act.Cheer)
-        } else if (stroked) {
+        } else if ((f.shotPending || stroked) && act != Act.Swing) {
+            // On the release: the club reaches the ball as it leaves; the stroke lands mid-swing.
             swingTop = shoulder
             swings++
             enter(Act.Swing)

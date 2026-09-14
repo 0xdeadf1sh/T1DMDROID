@@ -449,7 +449,8 @@ impl Sim {
         };
         let sag_ext = (tune.suspension_rest - sag).clamp(0.0, tune.suspension_travel);
         let seat = Seat { x: 0.0, y: 0.0, ang: 0.0, vx: 0.0, vy: 0.0, av: 0.0, ext: sag_ext };
-        let phys = Phys::build(&ground, &blocks, &tune, &seat);
+        // Empty placeholder: `reset` below replaces it unconditionally, colliders and all.
+        let phys = Phys::build(&None, &[], &tune, &seat);
         let mut s = Sim {
             terrain,
             tune,
@@ -1109,7 +1110,7 @@ mod tests {
 
     #[test]
     fn a_wall_stops_the_car_and_a_wall_over_a_gap_does_not_exist() {
-        let wall = Obstacle { x: 120.0, half_w: 2.0, h: 12.0 };
+        let wall = Obstacle { x: 120.0, half_w: 2.0, h: 12.0, lift: 0.0 };
         let w = GameWorld::with_obstacles(flat(), default_car_tuning(), vec![wall]).unwrap();
         let s = drive(&w, 900, 1.0, 0.0);
         assert!(s.x < 120.0, "drove through the wall to {}", s.x);
@@ -1124,10 +1125,12 @@ mod tests {
 
     #[test]
     fn rejects_a_malformed_obstacle() {
-        let bad = Obstacle { x: 10.0, half_w: -1.0, h: 5.0 };
+        let bad = Obstacle { x: 10.0, half_w: -1.0, h: 5.0, lift: 0.0 };
         assert!(GameWorld::with_obstacles(flat(), default_car_tuning(), vec![bad]).is_err());
-        let nan = Obstacle { x: f32::NAN, half_w: 1.0, h: 5.0 };
+        let nan = Obstacle { x: f32::NAN, half_w: 1.0, h: 5.0, lift: 0.0 };
         assert!(GameWorld::with_obstacles(flat(), default_car_tuning(), vec![nan]).is_err());
+        let sunk = Obstacle { x: 10.0, half_w: 1.0, h: 5.0, lift: -1.0 };
+        assert!(GameWorld::with_obstacles(flat(), default_car_tuning(), vec![sunk]).is_err());
     }
 
     #[test]

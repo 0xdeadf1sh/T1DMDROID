@@ -50,7 +50,6 @@ import com.t1dm.core.model.PaintStroke
 import com.t1dm.core.model.RunState
 import com.t1dm.core.model.Obstacle
 import com.t1dm.core.model.TerrainSpec
-import com.t1dm.ui.game.obstacles
 import com.t1dm.core.model.UnitSpace
 import com.t1dm.ui.graph.ChalkPens
 import com.t1dm.ui.graph.PredictedClock
@@ -68,9 +67,6 @@ internal const val TRACK_LEAD_SPANS = 1f
 
 /** The pair must fit between the pedals. */
 private val GAUGE_RADIUS = 30.dp
-
-/** Metres around the drop kept clear of obstacles: a few car lengths, so no run opens in one. */
-private const val DROP_KEEP_OUT_M = 60f
 
 /** Solver runs on gameDispatcher, never inference/default; alarmRaised releases the actuator. */
 @Composable
@@ -220,8 +216,8 @@ private fun GameStage(
         onFirstFrame = onFirstFrame,
         onBackground = { controls.release() },
         loop = { handOff ->
-            val walls = scene.props.obstacles(lowOnly = true, scene.track.map.worldXOf(dropAtMs), DROP_KEEP_OUT_M)
-            val world = runCatching { openWorld(scene.track.terrain, tuning, walls) }.getOrNull()
+            // Scenery only: nothing above the ground line stands in the car's way.
+            val world = runCatching { openWorld(scene.track.terrain, tuning, emptyList()) }.getOrNull()
                 ?: return@GameShell
             try {
                 runGameLoop(
@@ -243,7 +239,8 @@ private fun GameStage(
                 groundPath, paintPath, chalk,
                 pxPerWorldY = p.pxPerYM,
                 fillSky = false,
-                props = scene.props,
+                // With the car, not before it: the scenery lands when the drop does.
+                props = if (f.carShown) scene.props else null,
                 propArt = propArt,
                 simS = f.simS,
                 hour = hourAt(scene.track.map, scene.tzOffsetMin, p.camLeftM + p.camWidthM * 0.5f),

@@ -249,6 +249,8 @@ fun T1dmApp(container: AppContainer) {
     val wheelMotion = rememberNavWheelMotion()
     val onWheelSelect: (Int) -> Unit = remember(navController, haptics) {
         { index ->
+            // The current tab is not re-entered: a re-navigation rebuilds the panel mid-game.
+            if (navController.currentBackStackEntry?.destination?.route == destinations[index].route) return@remember Unit
             haptics.perform(HapticEvent.NavSwitch)
             navController.navigate(destinations[index].route) {
                 launchSingleTop = true

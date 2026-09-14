@@ -116,12 +116,13 @@ pub struct TerrainSpec {
     pub world_height: f32,
 }
 
-/// A fixed box standing on the ground line at `x`: `half_w` either side, `h` up. Metres.
+/// A fixed box over the ground line at `x`: `half_w` either side, `lift` up to its base, `h` tall.
 #[derive(Debug, Clone, Copy, PartialEq, uniffi::Record)]
 pub struct Obstacle {
     pub x: f32,
     pub half_w: f32,
     pub h: f32,
+    pub lift: f32,
 }
 
 /// Bounds the collider set a hostile caller can ask for; a busy day of trace is ~100.
@@ -140,12 +141,18 @@ pub(crate) fn validate_obstacles(obstacles: &[Obstacle]) -> Result<(), CoreError
         let ok = o.x.is_finite()
             && o.half_w.is_finite()
             && o.h.is_finite()
+            && o.lift.is_finite()
             && o.half_w > 0.0
             && o.h > 0.0
+            && o.lift >= 0.0
             && o.half_w <= MAX_OBSTACLE_M
-            && o.h <= MAX_OBSTACLE_M;
+            && o.h <= MAX_OBSTACLE_M
+            && o.lift <= MAX_OBSTACLE_M;
         if !ok {
-            return Err(dec(format!("obstacle: x {} half_w {} h {} out of range", o.x, o.half_w, o.h)));
+            return Err(dec(format!(
+                "obstacle: x {} half_w {} h {} lift {} out of range",
+                o.x, o.half_w, o.h, o.lift
+            )));
         }
     }
     Ok(())
@@ -155,7 +162,7 @@ pub(crate) fn validate_obstacles(obstacles: &[Obstacle]) -> Result<(), CoreError
 pub(crate) fn place_obstacles(terrain: &Terrain, obstacles: &[Obstacle]) -> Vec<Block> {
     obstacles
         .iter()
-        .filter_map(|o| terrain.sample(o.x).map(|g| [o.x, g + o.h * 0.5, o.half_w, o.h * 0.5]))
+        .filter_map(|o| terrain.sample(o.x).map(|g| [o.x, g + o.lift + o.h * 0.5, o.half_w, o.h * 0.5]))
         .collect()
 }
 
