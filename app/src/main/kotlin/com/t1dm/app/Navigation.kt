@@ -1976,6 +1976,7 @@ private fun T1dmNavHost(
                     container.nightscoutConfigStore.enabled(),
                 )
             }
+            val holdMin by container.pushHoldMin.collectAsState(SettingsStore.DEFAULT_PUSH_HOLD_MIN)
             val loaded = initial
             if (loaded != null) {
                 NightscoutSettingsScreen(
@@ -1985,6 +1986,8 @@ private fun T1dmNavHost(
                     busy = busy,
                     status = status,
                     lastError = lastError,
+                    holdMin = holdMin,
+                    holdMaxMin = SettingsStore.MAX_PUSH_HOLD_MIN,
                     onSave = { url, secret, enabled ->
                         scope.launch {
                             busy = true
@@ -2000,6 +2003,7 @@ private fun T1dmNavHost(
                             busy = false
                         }
                     },
+                    onSetHoldMin = { m -> scope.launch { container.setPushHoldMin(m) } },
                 )
             }
         }
@@ -2074,15 +2078,11 @@ private fun T1dmNavHost(
             LaunchedEffect(page) {
                 if (page.entries.isEmpty() && page.start > 0) logPage = page.start / LOG_PAGE_ROWS - 1
             }
-            val holdMin by container.pushHoldMin.collectAsState(SettingsStore.DEFAULT_PUSH_HOLD_MIN)
             val mood by container.latestMood.collectAsState(null)
             val insulins by container.insulinChoices.collectAsState(emptyList())
             LogsScreen(
                 entries = page.entries,
-                holdMin = holdMin,
-                holdMaxMin = SettingsStore.MAX_PUSH_HOLD_MIN,
                 currentMood = mood,
-                onSetHoldMin = { m -> scope.launch { container.setPushHoldMin(m) } },
                 // Container's scope: leaving between the row and its push must not cancel it.
                 onPickMood = { m -> container.appScope.launch { container.saveMood(m) } },
                 // Container's scope; silent on success (row leaving is the feedback).

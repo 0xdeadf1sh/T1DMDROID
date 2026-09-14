@@ -8,6 +8,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -16,11 +17,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.KeyValueRow
+import com.t1dm.core.design.rememberHapticDetent
 import com.t1dm.core.design.rememberT1dmHaptics
+import kotlin.math.roundToInt
 
 /** One-way mirror to a Nightscout `/api/v1` host. Secret write-only: blank on save keeps stored. */
 @Composable
@@ -31,8 +35,11 @@ fun NightscoutSettingsScreen(
     busy: Boolean,
     status: String?,
     lastError: String?,
+    holdMin: Int,
+    holdMaxMin: Int,
     onSave: (url: String, secret: String, enabled: Boolean) -> Unit,
     onTest: () -> Unit,
+    onSetHoldMin: (Int) -> Unit,
 ) {
     var url by remember(initialUrl) { mutableStateOf(initialUrl) }
     var secret by remember { mutableStateOf("") }
@@ -110,6 +117,37 @@ fun NightscoutSettingsScreen(
                 modifier = Modifier.padding(top = 4.dp),
             )
         }
+
+        // Written on release, not by Save: the slider owns the setting outright.
+        SettingsAnchor(nsHold) { PushHoldSection(holdMin, holdMaxMin, onSetHoldMin) }
+    }
+}
+
+/** Minutes; the app's five-minute event quantum. */
+private const val HOLD_STEP_MIN = 5
+
+@Composable
+private fun PushHoldSection(holdMin: Int, maxMin: Int, onSet: (Int) -> Unit) {
+    Text("Hold before upload", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 16.dp))
+    SettingsNote("An undo inside the window recalls the copy unsent")
+    Text(
+        if (holdMin == 0) "off" else "$holdMin min",
+        style = MaterialTheme.typography.titleMedium,
+        fontWeight = FontWeight.SemiBold,
+    )
+    // Fed the quantised value, not Material's continuous Float, so it ticks once per stop.
+    val detent = rememberHapticDetent()
+    if (maxMin >= HOLD_STEP_MIN) {
+        Slider(
+            value = holdMin.toFloat(),
+            onValueChange = {
+                val minutes = ((it / HOLD_STEP_MIN).roundToInt() * HOLD_STEP_MIN).coerceIn(0, maxMin)
+                detent.at(minutes)
+                onSet(minutes)
+            },
+            valueRange = 0f..maxMin.toFloat(),
+            steps = maxMin / HOLD_STEP_MIN - 1,
+        )
     }
 }
 
@@ -166,4 +204,16 @@ private val nsTest = SettingsKnob(
     synonyms = listOf("test", "probe", "check", "ping", "status", "reachable", "connection", "diagnose"),
 )
 
-internal val settingsNightscoutKnobs = listOf(nsEnabled, nsUrl, nsSecret, nsSave, nsTest)
+private val nsHold = SettingsKnob(
+    id = "nightscout.push_hold",
+    screen = SettingsScreenKey.NIGHTSCOUT,
+    section = NS_SECTION,
+    label = "Hold before upload",
+    subtitle = "How long a logged event stays withdrawable before the mirror sends it",
+    synonyms = listOf(
+        "hold", "delay", "defer", "withdraw", "undo", "grace", "window", "queue", "outbox",
+        "wait", "before sending",
+    ),
+)
+
+internal val settingsNightscoutKnobs = listOf(nsEnabled, nsUrl, nsSecret, nsSave, nsTest, nsHold)

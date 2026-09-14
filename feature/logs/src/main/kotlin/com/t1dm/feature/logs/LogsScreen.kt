@@ -15,7 +15,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -38,23 +37,18 @@ import com.t1dm.core.design.logAmountLabel
 import com.t1dm.core.design.logDetailLabel
 import com.t1dm.core.design.logTimeLabel
 import com.t1dm.core.design.panelCardColors
-import com.t1dm.core.design.rememberHapticDetent
 import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.model.InsulinChoice
 import com.t1dm.core.model.LoggedEntry
-import kotlin.math.roundToInt
 
-/** After the mood and hold items. */
-private const val FIRST_ENTRY_INDEX = 2
+/** After the mood item. */
+private const val FIRST_ENTRY_INDEX = 1
 
 @Composable
 fun LogsScreen(
     entries: List<LoggedEntry> = emptyList(),
-    holdMin: Int = 0,
-    holdMaxMin: Int = 0,
     /** 1..5; null when none has been written. */
     currentMood: Int? = null,
-    onSetHoldMin: (Int) -> Unit = {},
     onPickMood: (Int) -> Unit = {},
     onDelete: (LoggedEntry) -> Unit = {},
     onEdit: (LoggedEntry, LogEdit) -> Unit = { _, _ -> },
@@ -84,7 +78,6 @@ fun LogsScreen(
             contentPadding = PaddingValues(vertical = 16.dp),
         ) {
             item(key = "mood") { MoodPicker(currentMood, onPickMood) }
-            item(key = "hold") { HoldSection(holdMin, holdMaxMin, onSetHoldMin) }
             if (entries.isEmpty()) {
                 item(key = "empty") {
                     Text(
@@ -167,46 +160,11 @@ private fun MoodPicker(current: Int?, onPick: (Int) -> Unit) {
     }
 }
 
-/** Minutes; the app's five-minute event quantum. */
-private const val HOLD_STEP_MIN = 5
-
-/** How long a newly logged row waits before its push is first attempted. */
-@Composable
-private fun HoldSection(holdMin: Int, maxMin: Int, onSet: (Int) -> Unit) {
-    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text("Hold before sending", style = MaterialTheme.typography.labelMedium)
-        Text(
-            "Spares an immediate undo a round trip",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-        )
-        Text(
-            if (holdMin == 0) "off" else "$holdMin min",
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.SemiBold,
-        )
-        // Fed the quantised value, not Material's continuous Float, so it ticks once per stop.
-        val detent = rememberHapticDetent()
-        if (maxMin >= HOLD_STEP_MIN) {
-            Slider(
-                value = holdMin.toFloat(),
-                onValueChange = {
-                    val minutes = ((it / HOLD_STEP_MIN).roundToInt() * HOLD_STEP_MIN).coerceIn(0, maxMin)
-                    detent.at(minutes)
-                    onSet(minutes)
-                },
-                valueRange = 0f..maxMin.toFloat(),
-                steps = maxMin / HOLD_STEP_MIN - 1,
-            )
-        }
-    }
-}
-
 @Composable
 private fun EntryRow(entry: LoggedEntry, onDelete: () -> Unit, onEdit: () -> Unit) {
     val cs = MaterialTheme.colorScheme
     Card(Modifier.fillMaxWidth(), colors = panelCardColors()) {
-        // `panelCardColors` guarantees this ink clears AA; unguarded `cs.onSurface` may not have.
+        // panelCardColors guarantees this ink clears AA; cs.onSurface is the role it may reject.
         val ink = LocalContentColor.current
         Row(
             Modifier.fillMaxWidth().padding(12.dp),
