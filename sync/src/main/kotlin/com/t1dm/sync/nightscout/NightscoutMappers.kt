@@ -32,10 +32,12 @@ fun SampleEntity.toNsEntry(trendTenthsPerMin: Int?): NsEntryDto? {
     val bg = bgMgdl ?: return null
     // Fail closed: `sgv` claims sensor signal a third party can't retract. 2nd of two stops.
     if (bgProvenance == ReadingProvenance.RECONSTRUCTED) return null
+    // Unsnapped, so two readings contesting one slot reach the host as the two readings they are.
+    val at = bgMeasuredAtMs ?: ts
     return NsEntryDto(
         sgv = bg,
-        date = ts,
-        dateString = nsIso(ts, tzOffsetMin),
+        date = at,
+        dateString = nsIso(at, tzOffsetMin),
         direction = nsDirection(trendTenthsPerMin),
         utcOffset = tzOffsetMin,
     )

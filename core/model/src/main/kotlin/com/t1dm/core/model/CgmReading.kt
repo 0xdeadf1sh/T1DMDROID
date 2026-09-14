@@ -24,7 +24,7 @@ enum class ReadingFlag {
     INVALID,
 }
 
-/** 5-min sample (§3.1): tsMs=rxWallMs snapped (%300_000==0); filed instant, never sensor clock. */
+/** 5-min sample (§3.1): tsMs=measuredAtMs snapped (%300_000==0); rxWallMs never sensor clock. */
 data class CgmReading(
     val sourceId: CgmSourceId,
     val tsMs: Long,                    // ts % 300_000 == 0
@@ -35,8 +35,10 @@ data class CgmReading(
     val provenance: ReadingProvenance,
     val flag: ReadingFlag,
     val tzOffsetMin: Int,
-    val rxWallMs: Long,                // the instant filed under, before the grid snap
+    val rxWallMs: Long,                // when the phone received it
     val rssi: Int?,
+    // Unsnapped instant tsMs came from: receipt passively, the sensor's own clock when connected.
+    val measuredAtMs: Long? = null,
 )
 
 /** Excludes `bgMgdl != null` deliberately; presence is asked separately where both are needed. */

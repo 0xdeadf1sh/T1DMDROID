@@ -652,6 +652,20 @@ object MigrationRunner {
         }
     }
 
+    internal const val SQL_29_30_READING_MEASURED_AT =
+        "ALTER TABLE `cgm_reading` ADD COLUMN `measuredAtMs` INTEGER"
+
+    internal const val SQL_29_30_SAMPLE_MEASURED_AT =
+        "ALTER TABLE `sample` ADD COLUMN `bgMeasuredAtMs` INTEGER"
+
+    /** Left NULL, not backfilled to tsMs: a pre-v30 row has no record of its unsnapped instant. */
+    val MIGRATION_29_30 = object : Migration(29, 30) {
+        override fun migrate(connection: SQLiteConnection) {
+            connection.execSQL(SQL_29_30_READING_MEASURED_AT)
+            connection.execSQL(SQL_29_30_SAMPLE_MEASURED_AT)
+        }
+    }
+
     val ALL: Array<Migration> = arrayOf(
         MIGRATION_1_2,
         MIGRATION_2_3,
@@ -681,6 +695,7 @@ object MigrationRunner {
         MIGRATION_26_27,
         MIGRATION_27_28,
         MIGRATION_28_29,
+        MIGRATION_29_30,
     )
 
     fun <T : RoomDatabase> configure(builder: RoomDatabase.Builder<T>): RoomDatabase.Builder<T> =

@@ -72,6 +72,30 @@ class NightscoutMappersTest {
         assertNull(sample(null).toNsEntry(10))
     }
 
+    /** The grid is the phone's own quantisation; the host is told when the reading was taken. */
+    @Test
+    fun `the unsnapped instant crosses, not the grid slot`() {
+        val e = sample(137).copy(bgMeasuredAtMs = 1_787_000_137_000L).toNsEntry(null)!!
+        assertEquals(1_787_000_137_000L, e.date)
+        assertEquals("2026-08-17T23:55:37+03:00", e.dateString)
+    }
+
+    /** No idempotency key on /api/v1/entries: equal dates are what a re-post would collide on. */
+    @Test
+    fun `two readings contesting one slot do not share a date`() {
+        val first = sample(142).copy(bgMeasuredAtMs = 1_787_000_020_000L).toNsEntry(null)!!
+        val second = sample(138).copy(bgMeasuredAtMs = 1_787_000_130_000L).toNsEntry(null)!!
+        assertEquals("the grid puts both in one slot", sample(142).ts, sample(138).ts)
+        assertTrue("the bridged copies must not collide", first.date != second.date)
+    }
+
+    @Test
+    fun `a pre-v30 sample falls back to its grid slot`() {
+        val e = sample(137).toNsEntry(null)!!
+        assertEquals(1_787_000_000_000L, e.date)
+        assertEquals(nsIso(1_787_000_000_000L, 180), e.dateString)
+    }
+
     /** exercise is carb EQUIVALENT, opposite sign to a meal: near carbs it reads as food eaten. */
     @Test
     fun `entry carries bg only, never exercise or steps`() {

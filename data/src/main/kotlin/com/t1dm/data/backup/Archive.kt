@@ -187,6 +187,7 @@ object Archive {
         w.put("tz", r.tzOffsetMin)
         w.put("rx", r.rxWallMs)
         w.putOrSkip("rs", r.rssi)
+        w.putOrSkip("mat", r.measuredAtMs)
         w.close()
     }
 
@@ -202,6 +203,8 @@ object Archive {
         tzOffsetMin = o.int("tz") ?: err("reading", "tz"),
         rxWallMs = o.long("rx") ?: err("reading", "rx"),
         rssi = o.int("rs"),
+        // Absent pre-column: that archive kept only the snapped instant.
+        measuredAtMs = o.long("mat"),
     )
 
     fun write(w: RecordWriter, r: SampleEntity) {
@@ -218,6 +221,7 @@ object Archive {
         // exg not ex (pre-schema-17); ex held whole SECONDS/bucket, reading as grams is 100x off.
         w.putOrSkip("exg", r.exercise)
         w.putOrSkip("bs", r.bgSource)
+        w.putOrSkip("bmat", r.bgMeasuredAtMs)
         w.put("ua", r.updatedAt)
         w.close()
     }
@@ -230,6 +234,7 @@ object Archive {
         bgSource = o.str("bs"),
         bgProvenance = o.str("pv")?.let(ReadingProvenance::valueOf),
         bgFlag = o.str("fl")?.let(ReadingFlag::valueOf),
+        bgMeasuredAtMs = o.long("bmat"),
         steps = o.int("st"),
         mood = o.int("md"),
         hr = o.int("hr"),

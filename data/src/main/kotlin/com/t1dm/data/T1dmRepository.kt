@@ -319,8 +319,6 @@ class T1dmRepository(
                         ByteArray(0),
                         // Write instant, not the event's; a late reading else age-evicts at once.
                         nowMs(),
-                        // Held until slot closes; coalesces while QUEUED, else date re-uploads.
-                        notBeforeMs = reading.tsMs + GRID_MS,
                     )
                 }
             }
@@ -1255,6 +1253,8 @@ class T1dmRepository(
                         bgSource = null,
                         bgProvenance = ReadingProvenance.RECONSTRUCTED,
                         bgFlag = ReadingFlag.NORMAL,
+                        // Cleared with the value it belonged to; a reconstruction was not measured.
+                        bgMeasuredAtMs = null,
                         tzOffsetMin = tz,
                         updatedAt = maxOf(base.updatedAt + 1, nowMs),
                     ),
@@ -1472,6 +1472,7 @@ class T1dmRepository(
                 bgSource = reading.sourceId.opaque,
                 bgProvenance = reading.provenance,
                 bgFlag = reading.flag,
+                bgMeasuredAtMs = reading.measuredAtMs,
                 updatedAt = maxOf(base.updatedAt, reading.rxWallMs),
             )
 

@@ -175,10 +175,10 @@ class QueueDrainer(
     private companion object {
         const val TAG = "QueueDrainer"
 
-        /** BG readings per entries POST; 100 is ~8 h of the five-minute grid. */
-        const val ENTRY_CHUNK = 100
+        /** BG readings per entries POST; 25 is ~2 h of the five-minute grid. */
+        const val ENTRY_CHUNK = 25
 
-        /** Requests per pass. At a 60 s pass that is 4/min against a third party. */
-        const val REQUESTS_PER_PASS = 4
+        /** Requests per pass. At a 60 s pass that is 2/min, so 50 readings/min at most. */
+        const val REQUESTS_PER_PASS = 2
     }
 }

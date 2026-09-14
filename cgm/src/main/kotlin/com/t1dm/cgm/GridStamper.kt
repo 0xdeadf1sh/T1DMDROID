@@ -85,6 +85,8 @@ class GridStamper(private val gridMs: Long = CgmConstants.GRID_MS) {
             tzOffsetMin = tzOffsetMin,
             rxWallMs = rxWallMs,
             rssi = rssi,
+            // Passive: the sensor broadcasts its current value, so receipt is the best clock.
+            measuredAtMs = rxWallMs,
         )
 
         // A valueless NORMAL reading cannot anchor interpolation across a gap nothing measured.

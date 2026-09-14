@@ -39,7 +39,7 @@ import kotlinx.coroutines.Dispatchers
         ExerciseFixEntity::class,
         EventTombstoneEntity::class,
     ],
-    version = 29,
+    version = 30,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -74,7 +74,7 @@ abstract class AppDatabase : RoomDatabase() {
         const val NAME = "t1dm.db"
 
         /** Must equal @Database version; every branch bumps — a branch-only enum throws on read. */
-        const val SCHEMA_VERSION = 29
+        const val SCHEMA_VERSION = 30
 
         /** [FoodFts] isn't a Room entity: fresh install creates it, upgrade via M4_5, same DDL. */
         fun build(context: Context): AppDatabase =

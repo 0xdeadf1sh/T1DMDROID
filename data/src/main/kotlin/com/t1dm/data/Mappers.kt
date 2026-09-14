@@ -23,6 +23,7 @@ internal fun CgmReadingEntity.toModel(): CgmReading = CgmReading(
     tzOffsetMin = tzOffsetMin,
     rxWallMs = rxWallMs,
     rssi = rssi,
+    measuredAtMs = measuredAtMs,
 )
 
 internal fun CgmReading.toEntity(): CgmReadingEntity = CgmReadingEntity(
@@ -37,6 +38,7 @@ internal fun CgmReading.toEntity(): CgmReadingEntity = CgmReadingEntity(
     tzOffsetMin = tzOffsetMin,
     rxWallMs = rxWallMs,
     rssi = rssi,
+    measuredAtMs = measuredAtMs,
 )
 
 /** No `provenance`: caller keeps gap-fills out, all MEASURED; no `tsMs`, snapToGrid's job. */

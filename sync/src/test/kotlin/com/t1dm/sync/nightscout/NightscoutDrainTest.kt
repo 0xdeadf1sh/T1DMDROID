@@ -12,6 +12,7 @@ import com.t1dm.sync.FakeOutboxDao
 import com.t1dm.sync.OutboxRequest
 import com.t1dm.sync.QueueDrainer
 import com.t1dm.sync.RecordingBridge
+import com.t1dm.sync.SyncRequest
 import com.t1dm.sync.SyncResponse
 import com.t1dm.sync.TestDispatchers
 import kotlinx.coroutines.test.runTest
@@ -62,6 +63,9 @@ class NightscoutDrainTest {
         updatedAt = ts,
     )
 
+    private fun entriesOf(request: SyncRequest): List<NsEntryDto> =
+        NsJson.decodeFromString(String(request.body!!))
+
     private fun drainer(
         dao: FakeOutboxDao,
         bridge: NightscoutClient?,
@@ -96,9 +100,25 @@ class NightscoutDrainTest {
 
         val result = drainer(dao, bridge).drainOnce()
 
-        assertEquals(4, bridge.requests.size)
-        assertEquals(4, result.sent)
-        assertEquals("the rest keeps its place for the next pass", 6, dao.count())
+        assertEquals(2, bridge.requests.size)
+        assertEquals(2, result.sent)
+        assertEquals("the rest keeps its place for the next pass", 8, dao.count())
+    }
+
+    /** A backlog must not arrive as one burst: 25 a POST, 2 POSTs a pass, 50 readings a minute. */
+    @Test
+    fun `a backlog of bg readings is chunked, not sent whole`() = runTest {
+        val dao = FakeOutboxDao()
+        repeat(60) { dao.enqueue(entryRow(1_787_000_000_000L + it * 300_000L)) }
+        val bridge = RecordingBridge({ SyncResponse(200, ByteArray(0)) })
+
+        val result = drainer(dao, bridge, ::sampleAt).drainOnce()
+
+        assertEquals(2, bridge.requests.size)
+        assertEquals(25, entriesOf(bridge.requests[0]).size)
+        assertEquals(25, entriesOf(bridge.requests[1]).size)
+        assertEquals(50, result.sent)
+        assertEquals("the tail waits for the next pass", 10, dao.count())
     }
 
     /** resetState reclaims INFLIGHT WITHOUT advancing attempts; attempts alone would re-POST. */

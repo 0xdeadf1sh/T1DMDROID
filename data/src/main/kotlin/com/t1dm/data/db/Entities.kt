@@ -90,6 +90,8 @@ data class CgmReadingEntity(
     val tzOffsetMin: Int,
     val rxWallMs: Long,
     val rssi: Int?,
+    /** See [com.t1dm.core.model.CgmReading.measuredAtMs]. Null on rows written before v30. */
+    val measuredAtMs: Long? = null,
 )
 
 /** Keyed (sourceId, rxWallMs) not a slot; insert IGNORE; not archived. */
@@ -122,6 +124,8 @@ data class SampleEntity(
     val bgSource: String?,
     val bgProvenance: ReadingProvenance?,
     val bgFlag: ReadingFlag?,
+    // Unsnapped instant of the projected reading; the bridge sends it. Null falls back to ts.
+    val bgMeasuredAtMs: Long? = null,
     val steps: Int?,                   // from :sensors StepSource
     val mood: Int?,                    // from the Logs panel's mood picker
     val hr: Int?,                      // wired-but-null until a source exists

@@ -53,9 +53,9 @@ class QueueDrainerTest {
 
         val result = drainer(dao, bridge).drainOnce()
 
-        assertEquals(listOf("/a", "/b", "/c"), bridge.requests.map { it.path })
-        assertEquals(3, result.sent)
-        assertEquals(0, dao.count())
+        assertEquals("oldest first, and the budget stops at two", listOf("/a", "/b"), bridge.requests.map { it.path })
+        assertEquals(2, result.sent)
+        assertEquals("/c keeps its place for the next pass", 1, dao.count())
     }
 
     @Test

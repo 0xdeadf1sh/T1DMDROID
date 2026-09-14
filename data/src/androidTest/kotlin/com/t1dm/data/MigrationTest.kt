@@ -778,10 +778,45 @@ class MigrationTest {
     }
 
     @Test
-    fun migrate1To29_fullChain() {
+    fun migrate29To30_addsUnsnappedInstantsLeftNullOnOldRows() {
+        val seed = helper.createDatabase(29)
+        seed.execSQL(
+            "INSERT INTO `cgm_reading` (`sourceId`,`tsMs`,`bgMgdl`,`trendTenthsPerMin`,`minFromStart`," +
+                "`quality`,`provenance`,`flag`,`tzOffsetMin`,`rxWallMs`,`rssi`) " +
+                "VALUES ('src',300000,142,0,10,100,'MEASURED','NORMAL',180,300040,-60)",
+        )
+        seed.execSQL(
+            "INSERT INTO `sample` (`ts`,`tzOffsetMin`,`bgMgdl`,`bgSource`,`bgProvenance`,`bgFlag`," +
+                "`steps`,`mood`,`hr`,`sleep`,`exercise`,`updatedAt`) " +
+                "VALUES (300000,180,142,'op','MEASURED','NORMAL',NULL,NULL,NULL,NULL,NULL,300040)",
+        )
+        seed.close()
+
+        val db = helper.runMigrationsAndValidate(30, listOf(MigrationRunner.MIGRATION_29_30))
+
+        assertEquals(
+            "a pre-v30 reading has no record of its unsnapped instant",
+            1,
+            countRows(db, "SELECT COUNT(*) FROM `cgm_reading` WHERE `measuredAtMs` IS NULL"),
+        )
+        assertEquals(
+            "and neither does the sample it projected onto",
+            1,
+            countRows(db, "SELECT COUNT(*) FROM `sample` WHERE `bgMeasuredAtMs` IS NULL"),
+        )
+        assertEquals(
+            "the reading itself survives untouched",
+            1,
+            countRows(db, "SELECT COUNT(*) FROM `cgm_reading` WHERE `bgMgdl` = 142 AND `rxWallMs` = 300040"),
+        )
+        db.close()
+    }
+
+    @Test
+    fun migrate1To30_fullChain() {
         helper.createDatabase(1).close()
         helper.runMigrationsAndValidate(
-            29,
+            30,
             listOf(
                 MigrationRunner.MIGRATION_1_2,
                 MigrationRunner.MIGRATION_2_3,
@@ -811,6 +846,7 @@ class MigrationTest {
                 MigrationRunner.MIGRATION_26_27,
                 MigrationRunner.MIGRATION_27_28,
                 MigrationRunner.MIGRATION_28_29,
+                MigrationRunner.MIGRATION_29_30,
             ),
         )
     }
