@@ -3,8 +3,21 @@ package com.t1dm.feature.game
 import com.t1dm.core.model.CarState
 import com.t1dm.ui.game.WORLD_HEIGHT_M
 
+/** What GameShell itself draws from: the camera window and the run's progress along the trace. */
+open class WorldFrame {
+    var camLeft = 0f
+    var camBottom = 0f
+    var camWidth = VISIBLE_WIDTH_M
+
+    /** World metres visible DOWN the panel; draw derives scale/labels from this, not `WorldMap`. */
+    var camHeight = WORLD_HEIGHT_M
+
+    /** 0 at the drop, 1 at the finish. Measured from the SEAT, not the track's origin. */
+    var progress = 0f
+}
+
 /** Flat scalars in PLAIN memory, outside Compose snapshot: reading in composition breaks that. */
-class CarFrame {
+class CarFrame : WorldFrame() {
     var x = 0f
     var y = 0f
     var angle = 0f
@@ -28,22 +41,12 @@ class CarFrame {
     /** [com.t1dm.core.model.RunState.ordinal]; an int, so no object reference crosses threads. */
     var run = 0
 
-    var camLeft = 0f
-    var camBottom = 0f
-    var camWidth = VISIBLE_WIDTH_M
-
-    /** World metres visible DOWN the panel; draw derives scale/labels from this, not `WorldMap`. */
-    var camHeight = WORLD_HEIGHT_M
-
     /** [carLiftM]: WORLD metres above settled pose. Loop holds the solver until the drop lands. */
     var carShown = false
     var carLiftM = 0f
 
     /** The solver's own `throttleApplied`, not the pedal. */
     var throttleApplied = 0f
-
-    /** 0 at the drop, 1 at the finish. Measured from the SEAT, not the track's origin. */
-    var progress = 0f
 
     /** Emission phase in puff-intervals; wrapped, never into float's coarse range. */
     var exhaustPhase = 0f
@@ -91,12 +94,12 @@ class CarFrame {
 }
 
 /** THREE buffers, not two: with two, the writer's 2nd swap hands back the reader's own buffer. */
-class GameFrameBus {
-    private val buffers = arrayOf(CarFrame(), CarFrame(), CarFrame())
+open class FrameBus<T : WorldFrame>(factory: () -> T) {
+    private val buffers = listOf(factory(), factory(), factory())
     private var writeIndex = 0
 
     @Volatile
-    var published: CarFrame = buffers[2]
+    var published: T = buffers[2]
         private set
 
     private val ticks = androidx.compose.runtime.mutableLongStateOf(0L)
@@ -105,7 +108,7 @@ class GameFrameBus {
     val tick: Long get() = ticks.longValue
 
     /** Valid until the next [commit]. */
-    fun back(): CarFrame = buffers[writeIndex]
+    fun back(): T = buffers[writeIndex]
 
     fun commit() {
         published = buffers[writeIndex]
@@ -113,6 +116,8 @@ class GameFrameBus {
         ticks.longValue = ticks.longValue + 1L
     }
 }
+
+class GameFrameBus : FrameBus<CarFrame>({ CarFrame() })
 
 /** Plain volatile memory, not `mutableStateOf`: a resting finger else recomposes the screen. */
 class GameControls {
@@ -176,11 +181,16 @@ class GameViewport {
     @Volatile
     var plotInsetPx = 0f
 
+    /** Settled span (m) where the play sets the scale, not an art size; 0 = use carScalePx. */
+    @Volatile
+    var settledWidthM = 0f
+
     val ready: Boolean get() = widthPx > 0f && heightPx > 0f
 
     /** [GameZoom]'s eased target: scale = [carScalePx], so a true-scale car matches the art. */
     val zoomedWidthM: Float
         get() {
+            if (settledWidthM > 0f) return settledWidthM
             val plotW = widthPx - plotInsetPx
             return if (plotW > 0f && carScalePx > 0f) plotW / carScalePx else visibleWidthM
         }

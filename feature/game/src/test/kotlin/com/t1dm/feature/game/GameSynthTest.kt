@@ -211,6 +211,36 @@ class GameSynthTest {
     }
 
     @Test
+    fun `the golf one-shots sound, stay inside full scale, and stop`() {
+        val golf = listOf(GameSfx.Strike, GameSfx.Bounce, GameSfx.Splash, GameSfx.Holed)
+        golf.forEach { sfx ->
+            val s = synth()
+            s.master = 1f
+            s.take(0.1f)
+            s.trigger(sfx)
+            val out = s.take(2f)
+            assertTrue("$sfx never sounded", out.peak() > 0.05f)
+            assertTrue("$sfx clipped at ${out.peak()}", out.peak() <= 1f)
+            assertEquals("$sfx is still ringing", 0f, out.peak(out.size - rate / 4), 1e-4f)
+        }
+    }
+
+    @Test
+    fun `a whole round's worth of golf one-shots at once never clips`() {
+        val s = synth()
+        s.master = 1f
+        // No engine: golf is one-shots over silence, and they must hold the budget alone.
+        repeat(8) {
+            listOf(GameSfx.Strike, GameSfx.Bounce, GameSfx.Splash, GameSfx.Holed)
+                .forEach { sfx -> s.trigger(sfx) }
+            s.take(0.03f)
+        }
+        val out = s.take(2f)
+        assertTrue("peak ${out.peak()}", out.peak() <= 1f)
+        assertEquals("everything must still decay away", 0f, out.peak(out.size - rate / 4), 1e-3f)
+    }
+
+    @Test
     fun `reset drops every voice`() {
         val s = synth()
         s.master = 1f

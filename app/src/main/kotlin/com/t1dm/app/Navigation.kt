@@ -120,6 +120,8 @@ import com.t1dm.core.model.ErrorGridLattices
 import com.t1dm.core.model.ExerciseKind
 import com.t1dm.core.model.ExerciseSession
 import com.t1dm.core.model.Food
+import com.t1dm.core.model.GameKind
+import com.t1dm.core.model.GolfTuning
 import com.t1dm.core.model.InferenceCause
 import com.t1dm.core.model.InferenceState
 import com.t1dm.core.model.InsulinPresetSpec
@@ -141,6 +143,7 @@ import com.t1dm.feature.exercise.ExerciseScreen
 import com.t1dm.feature.exercise.ExerciseSessionScreen
 import com.t1dm.feature.exercise.reviewWindow
 import com.t1dm.feature.game.GameScreen
+import com.t1dm.feature.game.GolfScreen
 import com.t1dm.feature.insulin.BolusCalculatorScreen
 import com.t1dm.feature.insulin.InsulinScreen
 import com.t1dm.feature.insulin.InsulinTypeBuilderScreen
@@ -1131,8 +1134,8 @@ private fun T1dmNavHost(
                 onAddPaintStroke = container::addPaintStroke,
                 onDeletePaintStroke = container::deletePaintStroke,
                 hindsightIn = container.repository::predictionsForModelInRange,
-                gameSlot = { m, fromMs, dropMs, spanMin, clock, ready, exit ->
-                    DashboardGamePanel(container, m, fromMs, dropMs, spanMin, clock, ready, exit)
+                gameSlot = { m, kind, fromMs, dropMs, spanMin, clock, ready, exit ->
+                    DashboardGamePanel(container, m, kind, fromMs, dropMs, spanMin, clock, ready, exit)
                 },
             )
         }
@@ -2107,6 +2110,7 @@ private fun T1dmNavHost(
 private fun DashboardGamePanel(
     container: AppContainer,
     modifier: Modifier,
+    kind: GameKind,
     trackFromMs: Long,
     dropAtMs: Long,
     spanMinutes: Float,
@@ -2123,35 +2127,64 @@ private fun DashboardGamePanel(
     val predicted by container.predictiveAlertRaised.collectAsState()
     val death by container.deathMode.collectAsState(false)
     // FFI: the art needs the same numbers the solver was built with, not a transcription.
-    val tuning by produceState<CarTuning?>(null) {
-        value = withContext(container.dispatchers.default) {
+    val tuning by produceState<CarTuning?>(null, kind) {
+        value = if (kind != GameKind.Drive) null else withContext(container.dispatchers.default) {
             runCatching { container.nativeCore.defaultCarTuning() }.getOrNull()
         }
     }
-    GameScreen(
-        modifier = modifier,
-        trackFromMs = trackFromMs,
-        dropAtMs = dropAtMs,
-        thresholds = container.alarmConfig.thresholds,
-        onReady = onReady,
-        spanMinutes = spanMinutes,
-        predictedClock = predictedClock,
-        latestReadingMs = latest?.tsMs,
-        unit = glucoseUnit,
-        kovatchevF = container.nativeCore::kovatchevF,
-        rangeMinMgdl = range.minMgdl,
-        rangeMaxMgdl = range.maxMgdl,
-        paintStrokes = paintStrokes,
-        carTuning = tuning,
-        readingsFrom = container::gameReadings,
-        openWorld = { terrain, t -> container.nativeCore.createGameWorld(terrain, t) },
-        gameDispatcher = container.dispatchers.game,
-        // CRITICAL only; DEATH fail-opens §3.6 presentation, over-temp keeps the interlock.
-        alarmRaised = (
-            alarm.alarms.any { it.severity == AlarmSeverity.CRITICAL } ||
-                alarm.overTemperature != null ||
-                predicted
-            ) && (!death || alarm.overTemperature != null),
-        onExit = onExit,
-    )
+    val golfTuning by produceState<GolfTuning?>(null, kind) {
+        value = if (kind != GameKind.Golf) null else withContext(container.dispatchers.default) {
+            runCatching { container.nativeCore.defaultGolfTuning() }.getOrNull()
+        }
+    }
+    // CRITICAL only; DEATH fail-opens §3.6 presentation, over-temp keeps the interlock.
+    val alarmRaised = (
+        alarm.alarms.any { it.severity == AlarmSeverity.CRITICAL } ||
+            alarm.overTemperature != null ||
+            predicted
+        ) && (!death || alarm.overTemperature != null)
+    when (kind) {
+        GameKind.Drive -> GameScreen(
+            modifier = modifier,
+            trackFromMs = trackFromMs,
+            dropAtMs = dropAtMs,
+            thresholds = container.alarmConfig.thresholds,
+            onReady = onReady,
+            spanMinutes = spanMinutes,
+            predictedClock = predictedClock,
+            latestReadingMs = latest?.tsMs,
+            unit = glucoseUnit,
+            kovatchevF = container.nativeCore::kovatchevF,
+            rangeMinMgdl = range.minMgdl,
+            rangeMaxMgdl = range.maxMgdl,
+            paintStrokes = paintStrokes,
+            carTuning = tuning,
+            readingsFrom = container::gameReadings,
+            openWorld = { terrain, t -> container.nativeCore.createGameWorld(terrain, t) },
+            gameDispatcher = container.dispatchers.game,
+            alarmRaised = alarmRaised,
+            onExit = onExit,
+        )
+        GameKind.Golf -> GolfScreen(
+            modifier = modifier,
+            trackFromMs = trackFromMs,
+            dropAtMs = dropAtMs,
+            thresholds = container.alarmConfig.thresholds,
+            onReady = onReady,
+            spanMinutes = spanMinutes,
+            predictedClock = predictedClock,
+            latestReadingMs = latest?.tsMs,
+            unit = glucoseUnit,
+            kovatchevF = container.nativeCore::kovatchevF,
+            rangeMinMgdl = range.minMgdl,
+            rangeMaxMgdl = range.maxMgdl,
+            paintStrokes = paintStrokes,
+            golfTuning = golfTuning,
+            readingsFrom = container::gameReadings,
+            openWorld = { terrain, t -> container.nativeCore.createGolfWorld(terrain, t) },
+            gameDispatcher = container.dispatchers.game,
+            alarmRaised = alarmRaised,
+            onExit = onExit,
+        )
+    }
 }

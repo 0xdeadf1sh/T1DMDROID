@@ -145,7 +145,7 @@ internal interface FeelSink {
 internal class GameFeel(
     private val audio: GameAudio?,
     private val haptics: HapticMixer,
-) : FeelSink {
+) : FeelSink, GameSenses {
     private val tracker = FeelTracker()
 
     /** Game thread only. */
@@ -168,19 +168,19 @@ internal class GameFeel(
     }
 
     /** An alarm is up: hand the actuator back. */
-    fun release() {
+    override fun release() {
         hold()
         haptics.release()
         audio?.release()
     }
 
-    fun resume() {
+    override fun resume() {
         haptics.resume()
         audio?.resume()
     }
 
     /** The mixer and the track are closed by their own composition scopes. */
-    fun close() {
+    override fun close() {
         hold()
         haptics.release()
         audio?.release()

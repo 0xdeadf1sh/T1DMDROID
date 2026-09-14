@@ -169,6 +169,27 @@ class GameSynth(private val sampleRate: Int) {
             voice(f0 = 110f, f1 = 36f, durS = 0.50f, amp = 0.68f * gain, timbre = 0.40f)
             voice(f0 = 0f, f1 = 0f, durS = 0.34f, amp = 0.52f * gain, noise = 1f)
         }
+        // A click, not a thud: the club meets the ball for a couple of milliseconds.
+        GameSfx.Strike -> {
+            voice(f0 = 1_760f, f1 = 620f, durS = 0.05f, amp = 0.40f * gain, timbre = 0.55f)
+            voice(f0 = 0f, f1 = 0f, durS = 0.02f, amp = 0.30f * gain, noise = 1f)
+        }
+        // Shorter and higher than Landing: turf under a small ball, and it repeats.
+        GameSfx.Bounce -> {
+            voice(f0 = 320f, f1 = 160f, durS = 0.09f, amp = 0.34f * gain, timbre = 0.20f)
+            voice(f0 = 0f, f1 = 0f, durS = 0.03f, amp = 0.16f * gain, noise = 1f)
+        }
+        // Noise that opens then shuts, with a low gulp under it.
+        GameSfx.Splash -> {
+            voice(f0 = 0f, f1 = 0f, durS = 0.26f, amp = 0.42f * gain, noise = 1f)
+            voice(f0 = 240f, f1 = 90f, durS = 0.22f, amp = 0.28f * gain, timbre = 0.15f, delayS = 0.02f)
+        }
+        // A rattle in the cup: two knocks, the second quieter.
+        GameSfx.Holed -> {
+            voice(f0 = 660f, f1 = 660f, durS = 0.06f, amp = 0.30f * gain, timbre = 0.30f)
+            voice(f0 = 494f, f1 = 494f, durS = 0.10f, amp = 0.22f * gain, timbre = 0.25f, delayS = 0.07f)
+            voice(f0 = 988f, f1 = 988f, durS = 0.26f, amp = 0.26f * gain, timbre = 0.20f, delayS = 0.16f)
+        }
     }
 
     private fun voice(
@@ -279,4 +300,8 @@ enum class GameSfx {
     Coin,
     Landing,
     Crash,
+    Strike,
+    Bounce,
+    Splash,
+    Holed,
 }

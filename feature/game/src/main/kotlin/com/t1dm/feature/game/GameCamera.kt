@@ -46,6 +46,9 @@ class GameZoom(
     /** Seconds the car takes to fall in once span arrives; injectable, so tests can skip it. */
     private val revealS: Float = REVEAL_S,
     private val dropM: Float = REVEAL_DROP_M,
+    /** Speed at which [fov] reaches full widening; each game's own ceiling, not the car's. */
+    private val fullScaleSpeedMs: Float = TOP_SPEED_MS,
+    private val fovWiden: Float = FOV_WIDEN,
 ) {
     var spanM = 0f
         private set
@@ -85,7 +88,7 @@ class GameZoom(
         if (dtS <= 0f) return spanM
         val a = (1f - exp(-rateHz * dtS)).coerceIn(0f, 1f)
         val speed = if (speedMs.isFinite()) abs(speedMs) else 0f
-        val wantFov = 1f + FOV_WIDEN * (speed / TOP_SPEED_MS).coerceIn(0f, 1f)
+        val wantFov = 1f + fovWiden * (speed / fullScaleSpeedMs).coerceIn(0f, 1f)
         fov += (wantFov - fov) * a
         val targetM = baseM * fov
         if (spanM > 0f && targetM > 0f && targetM.isFinite()) {

@@ -91,6 +91,7 @@ import com.t1dm.core.model.IobCobReadout
 import com.t1dm.core.model.InsulinChoice
 import com.t1dm.core.model.LoggedEntry
 import com.t1dm.core.model.ModelPrediction
+import com.t1dm.core.model.GameKind
 import com.t1dm.core.model.PaintStroke
 import com.t1dm.core.model.PaintTool
 import com.t1dm.core.model.PredictedTime
@@ -224,20 +225,20 @@ fun DashboardScreen(
     onDeletePaintStroke: (suspend (Long) -> Unit)? = null,
     // Selected model's stored forecasts; a resolver so the window follows the viewport, off-thread.
     hindsightIn: (suspend (modelId: String, fromMs: Long, toMs: Long) -> List<ModelPrediction>)? = null,
-    // Hill-climb minigame; terrain IS this panel's trace. A mode, not a destination. Null ⇒ off.
-    gameSlot: (@Composable (Modifier, trackFromMs: Long, dropAtMs: Long, spanMinutes: Float, predictedClock: PredictedClock?, onReady: () -> Unit, exit: () -> Unit) -> Unit)? = null,
+    // Minigames; terrain IS this panel's trace. A mode, not a destination. Null ⇒ off.
+    gameSlot: (@Composable (Modifier, kind: GameKind, trackFromMs: Long, dropAtMs: Long, spanMinutes: Float, predictedClock: PredictedClock?, onReady: () -> Unit, exit: () -> Unit) -> Unit)? = null,
 ) {
     val logMarkers = remember(logEntries) { logEntries.map { it.marker } }
     // Held by VALUE: the feed re-sorts and rows can be deleted; the dialog keeps restating the tap.
     var tappedLogs by remember { mutableStateOf<List<LoggedEntry>>(emptyList()) }
-    var gameOn by remember { mutableStateOf(false) }
+    var gameKind by remember { mutableStateOf<GameKind?>(null) }
     // Chart's LIVE viewport, moved by pinch/pan; drive mode adopts it, a tap turns into an instant.
     var viewStartMs by remember { mutableStateOf(0.0) }
     var viewSpanMs by remember { mutableStateOf(0.0) }
     // Where the car is to be dropped: the instant under the finger. Null until the user picks.
     var gameStartMs by remember { mutableStateOf<Long?>(null) }
     var gameReady by remember { mutableStateOf(false) }
-    LaunchedEffect(gameOn) { if (!gameOn) { gameStartMs = null; gameReady = false } }
+    LaunchedEffect(gameKind) { gameStartMs = null; gameReady = false }
     LaunchedEffect(gameStartMs) { if (gameStartMs == null) gameReady = false }
     val frame by produceState(GraphFrame.EMPTY, readings, unit) {
         value = graphFrameOf(readings, unit, kovatchevF = kovatchevF)
@@ -545,16 +546,17 @@ fun DashboardScreen(
         val slot = gameSlot
         val spanMin = if (viewSpanMs > 0.0) (viewSpanMs / 60_000.0).toFloat() else windowHours * 60f
         val dropAt = gameStartMs
+        val kind = gameKind
         Box(panelModifier) {
             // ONE call site: two branches sit at two composition spots and DISPOSE on flip.
-            if (gameOn && slot != null && dropAt != null) {
-                slot(Modifier.fillMaxSize(), viewStartMs.toLong(), dropAt, spanMin, predictedClock, { gameReady = true }) {
-                    gameOn = false
+            if (kind != null && slot != null && dropAt != null) {
+                slot(Modifier.fillMaxSize(), kind, viewStartMs.toLong(), dropAt, spanMin, predictedClock, { gameReady = true }) {
+                    gameKind = null
                 }
             }
             // Chart stays ON TOP until the game can draw, then cross-fades; no loading-gap flash.
             val motionOn = LocalAnimationsEnabled.current
-            val handOff = gameOn && dropAt != null && gameReady
+            val handOff = kind != null && dropAt != null && gameReady
             val chartAlpha by animateFloatAsState(
                 targetValue = if (handOff) 0f else 1f,
                 animationSpec = tween(if (motionOn) 220 else 0),
@@ -613,9 +615,11 @@ fun DashboardScreen(
                     onPaintStroke = { stroke -> commitStroke(stroke) },
                     onErasePaintStroke = { id -> eraseStroke(id) },
                 )
-                // Only before the car is placed: once dropped, a stray tap must not re-place it.
-                if (gameOn && slot != null && dropAt == null) {
-                    TapToPlace(viewStartMs, viewSpanMs, GraphInsets.top(predictedClock != null)) { gameStartMs = it }
+                // Only before it is placed: once dropped, a stray tap must not re-place it.
+                if (kind != null && slot != null && dropAt == null) {
+                    TapToPlace(kind, viewStartMs, viewSpanMs, GraphInsets.top(predictedClock != null)) {
+                        gameStartMs = it
+                    }
                 }
                 }
             }
@@ -672,8 +676,8 @@ fun DashboardScreen(
                 editAvailable = editAvailable,
                 editOn = editOn,
                 gameAvailable = gameSlot != null,
-                gameOn = gameOn,
-                onToggleGame = { gameOn = it },
+                gameKind = gameKind,
+                onSelectGame = { gameKind = it },
                 onRollClick = { showRollDialog = true },
                 onToggle = { toggles = it },
                 onToggleSmoothed = { showSmoothed = it },
@@ -916,8 +920,8 @@ private fun OverlayControls(
     editAvailable: Boolean,
     editOn: Boolean,
     gameAvailable: Boolean,
-    gameOn: Boolean,
-    onToggleGame: (Boolean) -> Unit,
+    gameKind: GameKind?,
+    onSelectGame: (GameKind?) -> Unit,
     onRollClick: () -> Unit,
     onToggle: (CurveOverlayToggles) -> Unit,
     onToggleSmoothed: (Boolean) -> Unit,
@@ -1005,12 +1009,16 @@ private fun OverlayControls(
                     label = { Text("Edit") },
                 )
             }
+            // Mutually exclusive: one panel, one world, and the slot disposes the other's.
             if (gameAvailable) {
-                FilterChip(
-                    selected = gameOn,
-                    onClick = { haptics.toggled(!gameOn); onToggleGame(!gameOn) },
-                    label = { Text("Drive") },
-                )
+                GameKind.entries.forEach { k ->
+                    val on = gameKind == k
+                    FilterChip(
+                        selected = on,
+                        onClick = { haptics.toggled(!on); onSelectGame(if (on) null else k) },
+                        label = { Text(if (k == GameKind.Golf) "Golf" else "Drive") },
+                    )
+                }
             }
             // The window buttons ARE a single-choice group — a detent, not a latch.
             listOf(6, 12, 24).forEach { h ->
@@ -1365,6 +1373,7 @@ private fun LinkHealth.color(): Color = when (this) {
 /** Tap mapped through the last-reported viewport. [topInset] is the strip clock labels draw in. */
 @Composable
 private fun BoxScope.TapToPlace(
+    kind: GameKind,
     viewStartMs: Double,
     viewSpanMs: Double,
     topInset: Dp,
@@ -1388,7 +1397,7 @@ private fun BoxScope.TapToPlace(
             },
     ) {
         Text(
-            "Tap to drop the car",
+            if (kind == GameKind.Golf) "Tap to tee off" else "Tap to drop the car",
             style = MaterialTheme.typography.labelLarge,
             color = MaterialTheme.colorScheme.primary,
             modifier = Modifier.align(Alignment.TopCenter).padding(top = topInset + 2.dp),
