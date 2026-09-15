@@ -70,6 +70,8 @@ class InferenceController(
     private val probeInsulin: ProbeInsulinPort? = null,
     /** Re-read every cycle. Null ⇒ every model runs frozen. */
     private val loraStore: LoraStore? = null,
+    /** mg/dL by model id, read FRESH each discovery; absent id runs its descriptor's BG_SHIFT. */
+    private val bgShiftProvider: suspend () -> Map<String, Double> = { emptyMap() },
 ) {
     private val _state = MutableStateFlow(InferenceState())
     val state: StateFlow<InferenceState> = _state.asStateFlow()
@@ -146,7 +148,10 @@ class InferenceController(
             runCatching { telemetryStore?.load() }.getOrNull()?.let { cumulative.putAll(it) }
             telemetryLoaded = true
         }
-        val discovered = store.discover()
+        val bgShifts = runCatching { bgShiftProvider() }
+            .onFailure { Timber.tag(TAG).w(it, "BG offsets unreadable; every model runs its trained offset") }
+            .getOrDefault(emptyMap())
+        val discovered = store.discover(bgShifts)
 
         // Refresh is rare, so a full close/reload beats diffing and cannot leave a stale handle.
         loaded.values.forEach { runCatching { it.backend.close(it.handle) } }

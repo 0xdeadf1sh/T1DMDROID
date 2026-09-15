@@ -32,6 +32,14 @@ without a `kovatchev` block is rejected rather than defaulted, and the physical
 bounds it carries are what the rail-pinned degeneracy check tests against; given
 the wrong range that check cannot fire at all.
 
+## The BG offset
+
+A descriptor's `BG_SHIFT` is the offset the model was trained with. Each model's
+drill-down can override it; the override is written into the descriptor before
+the parse, so the parse's own bounds check accepts or refuses it. A refused
+override is named on the drill-down, and the trained offset runs. Changing the
+offset keeps the model's stored predictions and band correction.
+
 ## The optional BG pre-filter
 
 The reference pipeline applies no smoother. This app offers one, on the BG
@@ -153,9 +161,9 @@ the head over those states and puts a low-rank adapter in front of it.
 - **Attaching changes what the model is.** The adapted fan is the one the panel
   draws, the one that is stored and pushed, the one the alarm engine classifies and
   the one the dose calculator rolls — there is one forecaster, not a display variant
-  and a real one. The band correction and the stored predictions the realised-accuracy
-  suite reads were both fitted against the frozen forecaster, so both are dropped when
-  an adapter is attached or detached.
+  and a real one. Attaching or detaching keeps the band correction and the stored
+  predictions the realised-accuracy suite reads, though both came from the forecaster
+  that ran before.
 - **It fails closed, not open.** A model with an adapter attached whose adapter
   cannot be applied — an unusable head, a graph with no `hidden` — produces NO
   forecast that cycle rather than a frozen one. Falling back silently would store and

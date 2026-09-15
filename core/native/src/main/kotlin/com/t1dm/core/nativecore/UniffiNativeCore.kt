@@ -930,12 +930,12 @@ private fun UniffiPredictedTime.toModel(): PredictedTime = PredictedTime(
 
 private fun UniffiKovatchevParams.toModel(): KovatchevParams = KovatchevParams(
     scale = scale, power = power, offset = offset,
-    bgClampMin = bgClampMin, bgClampMax = bgClampMax,
+    bgClampMin = bgClampMin, bgClampMax = bgClampMax, bgShift = bgShift,
 )
 
 private fun KovatchevParams.toUniffi(): UniffiKovatchevParams = UniffiKovatchevParams(
     scale = scale, power = power, offset = offset,
-    bgClampMin = bgClampMin, bgClampMax = bgClampMax,
+    bgClampMin = bgClampMin, bgClampMax = bgClampMax, bgShift = bgShift,
 )
 
 private fun UniffiModelDescriptor.toModel(): ModelDescriptor = ModelDescriptor(

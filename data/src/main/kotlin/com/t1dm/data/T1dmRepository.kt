@@ -1067,12 +1067,6 @@ class T1dmRepository(
     suspend fun deleteBandCalibration(modelId: String) =
         withContext(io) { conformalDeltas.deleteByModel(modelId) }
 
-    /** For when the model IS changes under a fixed id; keeping either misreports calibration. */
-    suspend fun clearForecastDerived(modelId: String) = withContext(io) {
-        conformalDeltas.deleteByModel(modelId)
-        predictions.deleteByModel(modelId)
-    }
-
     private fun ConformalDeltaEntity.toModel(): BandCalibration? {
         val delta = deltaBlob.toDoubleList()
         if (steps <= 0 || nQuantiles <= 0 || delta.size != steps * nQuantiles) return null

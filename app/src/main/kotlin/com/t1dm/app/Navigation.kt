@@ -1216,7 +1216,7 @@ private fun T1dmNavHost(
                     scope.launch { lab.rename(adapterId, name); container.refreshLoraPanel(id) }
                 },
                 onDelete = { adapterId ->
-                    scope.launch { lab.delete(id, adapterId); container.refreshLoraPanel(id) }
+                    scope.launch { lab.delete(adapterId); container.refreshLoraPanel(id) }
                 },
                 onExport = { adapterId -> scope.launch { container.exportAdapter(adapterId) } },
                 onImport = { scope.launch { container.importAdapters(id) } },
@@ -1303,6 +1303,7 @@ private fun T1dmNavHost(
                 // Three guards; only container's holds when a fit starts elsewhere.
                 onFitBandCalibration = { if (!fitting) fitTick++ },
                 onDropBandCalibration = { scope.launch { container.dropBandCalibration(modelId) } },
+                onSetBgShift = { mgdl -> scope.launch { container.setBgShift(modelId, mgdl) } },
             )
         }
         composable("meals") {

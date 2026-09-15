@@ -27,8 +27,8 @@ class ModelStore(
 ) {
     fun ensureDir(): File = modelsDir.apply { if (!exists()) mkdirs() }
 
-    /** A descriptor that fails to parse, or whose artifact is missing, is skipped, not fatal. */
-    fun discover(): List<ModelBundle> {
+    /** Unparseable or artifact-less is skipped. [bgShifts]: mg/dL overrides by model id. */
+    fun discover(bgShifts: Map<String, Double> = emptyMap()): List<ModelBundle> {
         refusedEngines.clear()
         val dir = ensureDir()
         val descriptors = dir.listFiles { f ->
@@ -38,7 +38,7 @@ class ModelStore(
             Timber.tag(TAG).i("no descriptors in %s (adb push a descriptor.json + .pte)", dir.absolutePath)
             return emptyList()
         }
-        return descriptors.mapNotNull { bundleOf(it, dir) }
+        return descriptors.mapNotNull { bundleOf(it, dir, bgShifts) }
     }
 
     /** Engines the last discover refused, so caller can say why, not just "none installed". */
@@ -46,15 +46,22 @@ class ModelStore(
 
     private val refusedEngines = mutableListOf<String>()
 
-    private fun bundleOf(descriptorFile: File, dir: File): ModelBundle? {
+    private fun bundleOf(descriptorFile: File, dir: File, bgShifts: Map<String, Double>): ModelBundle? {
         val json = runCatching { descriptorFile.readText() }.getOrElse {
             Timber.tag(TAG).w(it, "unreadable descriptor %s", descriptorFile.name); return null
         }
         val obj = runCatching { JSONObject(json) }.getOrElse {
             Timber.tag(TAG).w(it, "descriptor %s is not valid JSON", descriptorFile.name); return null
         }
+        val id = resolveId(descriptorFile, obj)
+        val shift = bgShifts[id]
+        // The parse is the sole bounds check; a refused override leaves the trained offset.
+        val shifted = shift?.let { native.parseDescriptor(withBgShift(obj, it)) }
+        if (shift != null && shifted == null) {
+            Timber.tag(TAG).w("BG offset %s for model %s refused by the descriptor parse", shift, id)
+        }
         // No projection step: retranscription drops keys silently until a forecast decodes wrong.
-        val desc = native.parseDescriptor(json)
+        val desc = shifted ?: native.parseDescriptor(json)
         if (desc == null) {
             Timber.tag(TAG).w(
                 "descriptor %s failed the pre/post parse (a pre-exercise-channel model is refused " +
@@ -63,7 +70,6 @@ class ModelStore(
             )
             return null
         }
-        val id = resolveId(descriptorFile, obj)
         val artifact = obj.optString("artifact").ifBlank { "$id.xnnpack.pte" }
         // Pushed separately, may be absent; bundle returns non-existent pte, routes to StubBackend.
         val pte = File(dir, artifact)
@@ -92,7 +98,7 @@ class ModelStore(
             pte = pte,
             head = head,
             descriptorJson = json,
-            meta = metaOf(id, obj, pte),
+            meta = metaOf(id, obj, pte, desc, refusedShift = shift.takeIf { shifted == null }),
         )
     }
 
@@ -128,7 +134,13 @@ class ModelStore(
     }
 
     /** Display only: outside the Rust pre/post contract, so every absent field degrades to null. */
-    private fun metaOf(id: String, obj: JSONObject, pte: File): ModelMeta {
+    private fun metaOf(
+        id: String,
+        obj: JSONObject,
+        pte: File,
+        desc: ModelDescriptor,
+        refusedShift: Double?,
+    ): ModelMeta {
         val geo = obj.optJSONObject("geometry")
         val card = obj.optJSONObject("model_card")
         val ref = card?.optJSONObject("reference_metrics")
@@ -158,6 +170,10 @@ class ModelStore(
                     todMaeHiconfH = it.optDoubleOrNull("tod_mae_hiconf_h"),
                 )
             },
+            bgShiftMgdl = desc.kovatchev.bgShift,
+            trainedBgShiftMgdl = obj.optJSONObject("kovatchev")?.optDoubleOrNull("BG_SHIFT") ?: 0.0,
+            refusedBgShiftMgdl = refusedShift,
+            bgClampMinMgdl = desc.kovatchev.bgClampMin,
         )
     }
 
@@ -169,6 +185,10 @@ class ModelStore(
         const val TAG = "ModelStore"
     }
 }
+
+/** The descriptor with `kovatchev.BG_SHIFT` set to [mgdl]; [obj] is left untouched. */
+internal fun withBgShift(obj: JSONObject, mgdl: Double): String =
+    JSONObject(obj.toString()).apply { optJSONObject("kovatchev")?.put("BG_SHIFT", mgdl) }.toString()
 
 private fun JSONObject.optLongOrNull(key: String): Long? = if (has(key) && !isNull(key)) optLong(key) else null
 private fun JSONObject.optIntOrNull(key: String): Int? = if (has(key) && !isNull(key)) optInt(key) else null

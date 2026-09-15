@@ -61,20 +61,23 @@ pub struct KovatchevParams {
     /// mg/dL.
     #[serde(rename = "BG_CLAMP_MAX")]
     pub bg_clamp_max: f64,
+    /// mg/dL added before ln, removed after exp; absent ⇒ 0.
+    #[serde(rename = "BG_SHIFT", default)]
+    pub bg_shift: f64,
 }
 
 impl KovatchevParams {
-    /// f(g)=scale*(ln(g)^power-offset); clamped first so ln's base is positive, NaN=low.
+    /// f(g)=scale*(ln(g+shift)^power-offset); clamped first so ln's base is positive, NaN=low.
     pub(crate) fn f(&self, mgdl: f64) -> f64 {
         let g = if mgdl.is_nan() {
             self.bg_clamp_min
         } else {
             mgdl.clamp(self.bg_clamp_min, self.bg_clamp_max)
         };
-        self.scale * (g.ln().powf(self.power) - self.offset)
+        self.scale * ((g + self.bg_shift).ln().powf(self.power) - self.offset)
     }
 
-    /// f_inv(r)=exp((r/scale+offset)^(1/power)); NaN/-inf=low, +inf=high, clamped [f(min),f(max)].
+    /// f_inv(r)=exp((r/scale+offset)^(1/power))-shift; NaN/-inf=low, +inf=high.
     pub(crate) fn f_inv(&self, risk: f64) -> f64 {
         let r_lo = self.f(self.bg_clamp_min);
         let r_hi = self.f(self.bg_clamp_max);
@@ -87,7 +90,7 @@ impl KovatchevParams {
         };
         let r = r.clamp(r_lo, r_hi);
         let base = r / self.scale + self.offset; // ≥ 0 by the clamp above
-        let mgdl = base.powf(1.0 / self.power).exp();
+        let mgdl = base.powf(1.0 / self.power).exp() - self.bg_shift;
         mgdl.clamp(self.bg_clamp_min, self.bg_clamp_max)
     }
 }
@@ -404,9 +407,9 @@ pub fn parse_descriptor(json: String) -> Result<ModelDescriptor, CoreError> {
             reason: format!("rope_base {} must be > 0", desc.rope_base),
         });
     }
-    // bg_clamp_min>1 keeps ln(g)>0 (else NaN^power); scale>0 keeps f increasing; power>0 finite.
+    // bg_clamp_min+shift>1 keeps ln>0 (else NaN^power); scale>0 keeps f increasing; power>0 finite.
     let k = desc.kovatchev;
-    if ![k.scale, k.power, k.offset, k.bg_clamp_min, k.bg_clamp_max]
+    if ![k.scale, k.power, k.offset, k.bg_clamp_min, k.bg_clamp_max, k.bg_shift]
         .iter()
         .all(|v| v.is_finite())
     {
@@ -419,11 +422,12 @@ pub fn parse_descriptor(json: String) -> Result<ModelDescriptor, CoreError> {
             reason: format!("kovatchev scale {} and power {} must be > 0", k.scale, k.power),
         });
     }
-    if !(k.bg_clamp_min > 1.0 && k.bg_clamp_min < k.bg_clamp_max) {
+    if !(k.bg_clamp_min + k.bg_shift > 1.0 && k.bg_clamp_min < k.bg_clamp_max) {
         return Err(CoreError::Decode {
             reason: format!(
-                "kovatchev bounds invalid: require 1 < bg_clamp_min ({}) < bg_clamp_max ({})",
-                k.bg_clamp_min, k.bg_clamp_max
+                "kovatchev bounds invalid: require 1 < bg_clamp_min ({}) + bg_shift ({}) and \
+                 bg_clamp_min < bg_clamp_max ({})",
+                k.bg_clamp_min, k.bg_shift, k.bg_clamp_max
             ),
         });
     }
@@ -1520,6 +1524,7 @@ mod tests {
         offset: 5.381,
         bg_clamp_min: 20.0,
         bg_clamp_max: 500.0,
+        bg_shift: 0.0,
     };
 
     const SHIPPED_KOVATCHEV: KovatchevParams = KovatchevParams {
@@ -1528,6 +1533,15 @@ mod tests {
         offset: 5.540076976170212,
         bg_clamp_min: 10.0,
         bg_clamp_max: 400.0,
+        bg_shift: 0.0,
+    };
+
+    /// The shipped curve moved 50 mg/dL down: anchors at −10 and 350, clamp [−40, 350].
+    const SHIFTED_KOVATCHEV: KovatchevParams = KovatchevParams {
+        bg_clamp_min: -40.0,
+        bg_clamp_max: 350.0,
+        bg_shift: 50.0,
+        ..SHIPPED_KOVATCHEV
     };
 
     const REFERENCE_DESCRIPTOR: &str = include_str!("testdata/reference_descriptor.json");
@@ -1679,6 +1693,42 @@ mod tests {
         assert!(is_decode(bad("BG_CLAMP_MIN", serde_json::json!(1.0))));
         assert!(is_decode(bad("BG_CLAMP_MIN", serde_json::json!(0.0))));
         assert!(is_decode(bad("BG_CLAMP_MAX", serde_json::json!(5.0))));
+        assert!(is_decode(bad("BG_SHIFT", serde_json::json!(f64::NAN))), "NaN → JSON null");
+        assert!(is_decode(bad("BG_SHIFT", serde_json::json!(-9.0))), "10 − 9 leaves ln(1) = 0");
+    }
+
+    #[test]
+    fn bg_shift_moves_the_curve_and_its_inverse() {
+        let root_ten = 10.0f64.sqrt();
+        let k = SHIFTED_KOVATCHEV;
+        assert!((k.f(-10.0) + root_ten).abs() < 1e-12, "f(−10) = −sqrt(10), got {}", k.f(-10.0));
+        assert!((k.f(350.0) - root_ten).abs() < 1e-12, "f(350) = +sqrt(10), got {}", k.f(350.0));
+        for g in [-40.0, -10.0, 0.0, 55.0, 120.0, 300.0, 350.0] {
+            assert_eq!(k.f(g), SHIPPED_KOVATCHEV.f(g + 50.0), "f({g}) is the shipped f({g} + 50)");
+            let back = k.f_inv(k.f(g));
+            assert!((back - g).abs() < 1e-9, "f_inv(f({g})) = {back}");
+        }
+    }
+
+    #[test]
+    fn parse_descriptor_reads_bg_shift_and_bounds_it_with_the_clamp() {
+        let with = |shift: Option<f64>| {
+            let mut v: Value = serde_json::from_str(REFERENCE_DESCRIPTOR).unwrap();
+            v["kovatchev"]["BG_CLAMP_MIN"] = serde_json::json!(-40.0);
+            v["kovatchev"]["BG_CLAMP_MAX"] = serde_json::json!(350.0);
+            match shift {
+                Some(s) => v["kovatchev"]["BG_SHIFT"] = serde_json::json!(s),
+                None => {
+                    v["kovatchev"].as_object_mut().unwrap().remove("BG_SHIFT");
+                }
+            }
+            parse_descriptor(v.to_string())
+        };
+        let k = with(Some(50.0)).expect("clamp −40 with shift 50 parses").kovatchev;
+        assert_eq!(k, SHIFTED_KOVATCHEV);
+        assert!(matches!(with(None), Err(CoreError::Decode { .. })), "−40 unshifted has no ln");
+        assert!(matches!(with(Some(41.0)), Err(CoreError::Decode { .. })), "−40 + 41 = ln(1)");
+        assert_eq!(test_descriptor().kovatchev.bg_shift, 0.0, "absent BG_SHIFT reads 0");
     }
 
     #[test]
@@ -1737,12 +1787,16 @@ mod tests {
         assert_eq!(forecast_degeneracy_check(&other, &pinned(20.0)), ForecastStatus::RailPinned);
         assert_eq!(forecast_degeneracy_check(&other, &pinned(500.0)), ForecastStatus::RailPinned);
         assert_eq!(forecast_degeneracy_check(&other, &pinned(40.0)), ForecastStatus::Ok);
+        let shifted = ModelDescriptor { kovatchev: SHIFTED_KOVATCHEV, ..test_descriptor() };
+        assert_eq!(forecast_degeneracy_check(&shifted, &pinned(-40.0)), ForecastStatus::RailPinned);
+        assert_eq!(forecast_degeneracy_check(&shifted, &pinned(350.0)), ForecastStatus::RailPinned);
+        assert_eq!(forecast_degeneracy_check(&shifted, &pinned(10.0)), ForecastStatus::Ok);
     }
 
     #[test]
     fn descriptor_kovatchev_guards_are_total() {
         // The same totality the clinical pair guarantees (INFERENCE.md §5).
-        for kov in [OTHER_KOVATCHEV, SHIPPED_KOVATCHEV] {
+        for kov in [OTHER_KOVATCHEV, SHIPPED_KOVATCHEV, SHIFTED_KOVATCHEV] {
             for r in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1e9, 1e9] {
                 let g = kov.f_inv(r);
                 assert!(

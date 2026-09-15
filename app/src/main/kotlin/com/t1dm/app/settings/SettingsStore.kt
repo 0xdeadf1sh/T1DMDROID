@@ -20,6 +20,8 @@ import com.t1dm.inference.InferenceControllerDefaults
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
 
 class BackupRunOk(val atMs: Long, val bytes: Long, val rows: Int)
@@ -213,6 +215,20 @@ class SettingsStore(
 
     suspend fun setSavgolWindow(window: Int) =
         put(K_INF_SAVGOL_WINDOW, InferenceControllerDefaults.nearestSmoothingStop(window).toString())
+
+    // mg/dL per model id; an id absent here runs its descriptor's own BG_SHIFT.
+
+    private val bgShiftLock = Mutex()
+
+    suspend fun bgShiftOverrides(): Map<String, Double> =
+        decodeBgShifts(repository.getKv(K_INF_BG_SHIFTS))
+
+    /** Null drops [modelId]'s override. */
+    suspend fun setBgShiftOverride(modelId: String, mgdl: Double?) = bgShiftLock.withLock {
+        val shifts = bgShiftOverrides().toMutableMap()
+        if (mgdl == null || !mgdl.isFinite()) shifts.remove(modelId) else shifts[modelId] = mgdl
+        put(K_INF_BG_SHIFTS, JSONObject(shifts.toMap()).toString())
+    }
 
     // DISPLAY-ONLY forward offsets in hours from each prior landmark; no §3.6 gate reads these.
 
@@ -583,6 +599,7 @@ class SettingsStore(
             K_INF_WARN_MARGIN_C,
             K_INF_MAX_MODELS,
             K_INF_SAVGOL_WINDOW,
+            K_INF_BG_SHIFTS,
             K_DEATH_DKA_H,
             K_DEATH_COMA_H,
             K_DEATH_DEATH_H,
@@ -626,6 +643,16 @@ class SettingsStore(
         const val K_INF_SAVGOL_WINDOW = "inference.savgol_window"
         const val DEFAULT_SAVGOL_WINDOW = InferenceControllerDefaults.SAVGOL_WINDOW
         val SAVGOL_STOPS: List<Int> = InferenceControllerDefaults.SAVGOL_STOPS
+
+        const val K_INF_BG_SHIFTS = "inference.bg_shift_mgdl"
+
+        /** JSON object of finite mg/dL by model id; an unreadable value reads as no overrides. */
+        internal fun decodeBgShifts(raw: String?): Map<String, Double> {
+            val obj = raw?.let { runCatching { JSONObject(it) }.getOrNull() } ?: return emptyMap()
+            return obj.keys().asSequence()
+                .mapNotNull { id -> obj.optDouble(id).takeIf { it.isFinite() }?.let { id to it } }
+                .toMap()
+        }
 
         const val K_DEATH_DKA_H = "death.dka_after_iob_zero_h"
         const val K_DEATH_COMA_H = "death.coma_after_dka_h"

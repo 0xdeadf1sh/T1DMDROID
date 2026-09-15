@@ -113,7 +113,6 @@ class LabController(
             if (r.improved) " @ epoch ${r.bestEpoch}" else " · no gain"
     }
 
-    /** Attaching drops band correction/accuracy history: both fit against the frozen forecaster. */
     suspend fun attach(modelId: String, id: Long): String? {
         val row = repository.loraById(id) ?: return "Adapter is gone"
         // Blob before the gate: an unloadable one attaches clean and runs as NOTHING silently.
@@ -134,7 +133,6 @@ class LabController(
         )
         if (refusal != null) return refusal
         repository.attachLora(id, modelId, clock())
-        repository.clearForecastDerived(modelId)
         return null
     }
 
@@ -179,17 +177,14 @@ class LabController(
 
     suspend fun detach(modelId: String) {
         repository.detachLoras(modelId, clock())
-        repository.clearForecastDerived(modelId)
     }
 
     suspend fun rename(id: Long, name: String) {
         repository.renameLora(id, name, clock())
     }
 
-    suspend fun delete(modelId: String, id: Long) {
-        val row = repository.loraById(id)
+    suspend fun delete(id: Long) {
         repository.deleteLora(id)
-        if (row?.attached == true) repository.clearForecastDerived(modelId)
     }
 
     suspend fun export(id: Long): String {
