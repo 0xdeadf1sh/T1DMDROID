@@ -3,10 +3,12 @@ package com.t1dm.app.inference
 import com.t1dm.cgm.AidexXSourceRegistry
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
+import com.t1dm.inference.BG_SERIES_ROW_MARGIN
 import com.t1dm.inference.BgHistoryProvider
 import com.t1dm.inference.BgSeries
 import com.t1dm.inference.CumulativeTelemetry
 import com.t1dm.inference.TelemetryStore
+import com.t1dm.inference.assembleBgSeries
 import com.t1dm.data.T1dmRepository
 import org.json.JSONObject
 import timber.log.Timber
@@ -28,49 +30,23 @@ class RoomBgHistoryProvider(
 
     private suspend fun series(maxSteps: Int, minSteps: Int, withReconstructed: Boolean): BgSeries? {
         val srcId = registry.authoritative.value ?: repository.authoritativeSourceId() ?: return null
-        val readings = repository.recentReadings(srcId, maxSteps + 12)
-            // Dosing excludes PROMOTED: model output must not drive advice derived from it.
-            .filter {
-                it.bgMgdl != null && it.flag == ReadingFlag.NORMAL &&
-                    (withReconstructed || it.provenance != ReadingProvenance.RECONSTRUCTED)
-            }
-        if (readings.size < minSteps) return null
-
-        val byTs = TreeMap<Long, Double>()
-        for (r in readings) byTs[r.tsMs] = r.bgMgdl!!.toDouble()
-        val anchor = byTs.lastKey()
-        val earliest = byTs.firstKey()
-
-        var nSteps = ((anchor - earliest) / GRID_MS + 1L).toInt().coerceAtMost(maxSteps)
-        nSteps -= nSteps % 6 // whole patches (PATCH_SIZE = 6)
-        if (nSteps < minSteps) return null
-
-        val start = anchor - (nSteps - 1L) * GRID_MS
-        // A fill stands in for a slot the sensor never covered; real readings still win outright.
-        val filled = if (!withReconstructed) {
-            emptyMap()
-        } else {
+        return assembleBgSeries(
+            repository.recentReadings(srcId, maxSteps + BG_SERIES_ROW_MARGIN),
+            srcId.value,
+            maxSteps,
+            minSteps,
+            withReconstructed,
+        ) { start, anchor ->
             runCatching {
                 repository.infillInRange(start, anchor).associate { it.ts to it.mgdl }
             }.getOrElse { emptyMap() }
         }
-        val out = DoubleArray(nSteps)
-        var last = byTs.ceilingEntry(start)?.value ?: byTs.firstEntry()?.value ?: out[0]
-        for (i in 0 until nSteps) {
-            val ts = start + i * GRID_MS
-            val v = byTs[ts] ?: filled[ts]
-            if (v != null) last = v
-            out[i] = last
-        }
-        // Anchors on MEASURED (§3.6-D); readings is newest-first, so firstOrNull, not last.
-        val lastMeasured = readings.firstOrNull { it.provenance == ReadingProvenance.MEASURED }?.tsMs ?: anchor
-        return BgSeries(out, anchorTsMs = lastMeasured, gridStartMs = start, sourceId = srcId.value)
     }
 
     /** Fit series: MEASURED only, uncovered slots NaN not carried forward (SPEC §1). */
     override suspend fun fitBgSeries(maxSteps: Int, minSteps: Int): BgSeries? {
         val srcId = registry.authoritative.value ?: repository.authoritativeSourceId() ?: return null
-        val readings = repository.recentReadings(srcId, maxSteps + 12)
+        val readings = repository.recentReadings(srcId, maxSteps + BG_SERIES_ROW_MARGIN)
             .filter {
                 it.bgMgdl != null &&
                     it.flag == ReadingFlag.NORMAL &&
@@ -94,7 +70,7 @@ class RoomBgHistoryProvider(
     override suspend fun reconstructedSlots(maxSteps: Int): Set<Long> {
         if (maxSteps <= 0) return emptySet()
         val srcId = registry.authoritative.value ?: repository.authoritativeSourceId() ?: return emptySet()
-        val readings = repository.recentReadings(srcId, maxSteps + 12)
+        val readings = repository.recentReadings(srcId, maxSteps + BG_SERIES_ROW_MARGIN)
         if (readings.isEmpty()) return emptySet()
         val covered = HashSet<Long>()
         val fromModel = HashSet<Long>()
@@ -125,7 +101,7 @@ class RoomBgHistoryProvider(
     override suspend fun measuredStepsInWindow(windowSteps: Int): Int {
         if (windowSteps <= 0) return 0
         val srcId = registry.authoritative.value ?: repository.authoritativeSourceId() ?: return 0
-        val readings = repository.recentReadings(srcId, windowSteps + 12)
+        val readings = repository.recentReadings(srcId, windowSteps + BG_SERIES_ROW_MARGIN)
             .filter {
                 it.bgMgdl != null &&
                     it.flag == ReadingFlag.NORMAL &&

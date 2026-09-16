@@ -120,7 +120,6 @@ import com.t1dm.data.curve.ChannelBuilder
 import com.t1dm.data.curve.ExerciseDisposal
 import com.t1dm.data.curve.CurveEngine
 import com.t1dm.data.curve.ExerciseChannelSource
-import com.t1dm.data.curve.DoseStore
 import com.t1dm.data.curve.MealCurveResolver
 import com.t1dm.data.curve.RoomDoseStore
 import com.t1dm.data.exercise.ExerciseController
@@ -140,6 +139,14 @@ import com.t1dm.core.model.TempUnit
 import com.t1dm.data.db.AppDatabase
 import com.t1dm.data.db.DoseKind
 import com.t1dm.data.db.LoggedDoseEntity
+import com.t1dm.data.db.SampleEntity
+import com.t1dm.inference.BG_SERIES_ROW_MARGIN
+import com.t1dm.inference.assembleBgSeries
+import com.t1dm.core.model.BacktestRefusal
+import com.t1dm.core.model.ForecastWindowSet
+import com.t1dm.core.model.ModelBacktest
+import com.t1dm.core.model.ModelDescriptor
+import kotlin.coroutines.cancellation.CancellationException
 import com.t1dm.data.db.toBlob
 import com.t1dm.data.db.LoggedExerciseEntity
 import com.t1dm.data.db.LoggedMealEntity
@@ -215,11 +222,17 @@ private const val LOG_FEED_LIMIT = 400
 /** Minutes. The longest also sets the scored window — `SPEC/invariants.md` §6.2, §6.3. */
 private val ACCURACY_HORIZONS_MIN = listOf(30, 60, 120)
 
+/** Windows per horizon below which a row is shown as insufficient. */
+private const val ACCURACY_MIN_SAMPLES = 6
+
 /** The scored window, and the band-recalibration fit window. Deliberately one number. */
 private const val ACCURACY_WINDOW_DAYS = 14
 
 /** `SPEC/inference.md` §8.4. Floor on the 0.7 CAL_FRACTION split, not window set: needs 206. */
 private const val CONFORMAL_MIN_CAL_WINDOWS = 144
+
+/** Progress events between panel updates: an hour of origins. */
+private const val BACKTEST_PROGRESS_EVERY = 12
 
 /** mg/dL. Duplicates T1DMAI's tolerance constant; absent from `SPEC/invariants.md` §6.1. */
 private const val EXCURSION_PRECISION_TOLERANCE_MGDL = 10.0
@@ -700,11 +713,11 @@ class AppContainer(context: Context) {
     suspend fun modelMetrics(
         modelId: String,
         days: Int = ACCURACY_WINDOW_DAYS,
-        minSamples: Int = 6,
+        minSamples: Int = ACCURACY_MIN_SAMPLES,
     ): ModelMetrics = modelMetrics(modelId, days, minSamples, includeCgEga = false)
 
     /** §6.3, whole-window. Null when nothing scoreable was found. Off-main. */
-    suspend fun modelCgEga(modelId: String, days: Int = ACCURACY_WINDOW_DAYS, minSamples: Int = 6): CgEga? =
+    suspend fun modelCgEga(modelId: String, days: Int = ACCURACY_WINDOW_DAYS, minSamples: Int = ACCURACY_MIN_SAMPLES): CgEga? =
         modelMetrics(modelId, days, minSamples, includeCgEga = true).suite.cgega
 
     private suspend fun modelMetrics(
@@ -717,6 +730,10 @@ class AppContainer(context: Context) {
         val since = now - days.toLong() * 86_400_000L
         val horizonMax = ACCURACY_HORIZONS_MIN.max()
         val set = repository.forecastWindows(modelId, horizonMax, since, now)
+        return metricsOf(set, minSamples, includeCgEga)
+    }
+
+    private suspend fun metricsOf(set: ForecastWindowSet, minSamples: Int, includeCgEga: Boolean): ModelMetrics {
         // §6.1 leaves the threshold to the consumer: here, the patient's own alarm bands.
         val config = MetricsConfig(
             hypoThresholdMgdl = settingsStore.alarmLow.first().toDouble(),
@@ -728,6 +745,137 @@ class AppContainer(context: Context) {
             nativeCore.forecastMetricsSuite(set.windows, ACCURACY_HORIZONS_MIN, config, includeCgEga)
         }
         return ModelMetrics(suite, set.nMatured, set.nIncomplete, minSamples, set.nForeignSource)
+    }
+
+    private val backtestRunning = AtomicBoolean(false)
+    private var backtestJob: Job? = null
+    private val _backtests = MutableStateFlow<Map<String, ModelBacktest>>(emptyMap())
+
+    /** By model id; this process only. */
+    val backtests: StateFlow<Map<String, ModelBacktest>> = _backtests.asStateFlow()
+
+    /** One at a time, process-wide; in [appScope], so leaving the panel does not cancel it. */
+    fun startBacktest(modelId: String, days: Int) {
+        if (!backtestRunning.compareAndSet(false, true)) {
+            if (_backtests.value[modelId] !is ModelBacktest.Running) {
+                _backtests.update { it + (modelId to ModelBacktest.Refused(days, BacktestRefusal.BUSY)) }
+            }
+            return
+        }
+        _backtests.update { it + (modelId to ModelBacktest.Running(days, 0, 0)) }
+        backtestJob = appScope.launch(dispatchers.default) {
+            try {
+                val outcome = runBacktest(modelId, days) { done, total ->
+                    if (done % BACKTEST_PROGRESS_EVERY == 0 || done == total) {
+                        _backtests.update { it + (modelId to ModelBacktest.Running(days, done, total)) }
+                    }
+                }
+                _backtests.update { it + (modelId to outcome) }
+            } catch (e: CancellationException) {
+                _backtests.update { it - modelId }
+                throw e
+            } catch (e: Exception) {
+                Timber.w(e, "backtest of %s failed", modelId)
+                _backtests.update { it + (modelId to ModelBacktest.Refused(days, BacktestRefusal.FAILED)) }
+            } finally {
+                backtestRunning.set(false)
+            }
+        }
+    }
+
+    fun cancelBacktest(modelId: String) {
+        if (_backtests.value[modelId] is ModelBacktest.Running) backtestJob?.cancel()
+    }
+
+    /** A result describes the model as it ran; an offset, adapter or artifact change voids it. */
+    private fun dropBacktest(modelId: String) {
+        cancelBacktest(modelId)
+        _backtests.update { it - modelId }
+    }
+
+    private suspend fun runBacktest(
+        modelId: String,
+        days: Int,
+        onProgress: (done: Int, total: Int) -> Unit,
+    ): ModelBacktest {
+        val t0 = System.nanoTime()
+        val now = System.currentTimeMillis()
+        val desc = inferenceController.descriptorOf(modelId)
+            ?: return ModelBacktest.Refused(days, BacktestRefusal.NOT_LOADED)
+        // From the repository, not the registry: must match `forecastWindowsOf`'s filter.
+        val source = repository.authoritativeSourceId()
+            ?: return ModelBacktest.Refused(days, BacktestRefusal.NO_SENSOR)
+        val horizonMaxMin = ACCURACY_HORIZONS_MIN.max()
+        val since = now - days.toLong() * 86_400_000L
+        val lastOrigin = now - horizonMaxMin * 60_000L
+        // Whole source: the live series takes its rows by count, not by time.
+        val newestFirst = repository.readingsInRange(source, 0L, now).asReversed()
+        val origins = newestFirst.asReversed()
+            .filter { it.bgMgdl != null && isRealMeasurement(it.provenance, it.flag) && it.tsMs in since..lastOrigin }
+            .map { it.tsMs }
+        if (origins.isEmpty()) return ModelBacktest.Refused(days, BacktestRefusal.NO_HISTORY)
+
+        val maxSteps = desc.maxContextPatches * desc.patchSize
+        val minSteps = desc.minContextPatches * desc.patchSize
+        val contextFrom = origins.first() - maxSteps * CurveEngine.STEP_MS
+        val horizonEnd = origins.last() + desc.predictionHorizonHours * 3_600_000L + CurveEngine.STEP_MS
+        val doses = doseStore.snapshot(contextFrom - ChannelBuilder.PAD_MS, horizonEnd)
+        val sampleRows = repository.samplesInRange(contextFrom, horizonEnd)
+        // Stored merged grams carry no per-bout write time, so exercise is read as it stands today.
+        val exercise = ExerciseChannelSource { g, n -> exerciseChannelOf(sampleRows, g, n) }
+        val infills = repository.infillInRange(0L, now)
+        val infillCreatedAt = infills.associate { it.ts to it.createdAtMs }
+        val indexOf = HashMap<Long, Int>(newestFirst.size * 2).apply {
+            newestFirst.forEachIndexed { i, r -> put(r.tsMs, i) }
+        }
+
+        // What the phone held when the anchor arrived; a promoted reconstruction's rx is its slot.
+        fun known(r: CgmReading, asOfMs: Long): Boolean =
+            if (r.provenance == ReadingProvenance.RECONSTRUCTED) {
+                (infillCreatedAt[r.tsMs] ?: Long.MAX_VALUE) <= asOfMs
+            } else {
+                r.rxWallMs <= asOfMs
+            }
+
+        val inputAt: suspend (Long, ModelDescriptor) -> InferenceController.BacktestInput? = { origin, _ ->
+            val at = indexOf.getValue(origin)
+            val asOf = maxOf(origin, newestFirst[at].rxWallMs)
+            val limit = maxSteps + BG_SERIES_ROW_MARGIN
+            val rows = ArrayList<CgmReading>(limit)
+            var j = at
+            while (j < newestFirst.size && rows.size < limit) {
+                if (known(newestFirst[j], asOf)) rows += newestFirst[j]
+                j++
+            }
+            assembleBgSeries(rows, source.value, maxSteps, minSteps, withReconstructed = true) { from, to ->
+                infills.asSequence()
+                    .filter { it.ts in from..to && it.createdAtMs <= asOf }
+                    .associate { it.ts to it.mgdl }
+            }?.let { series ->
+                val builder = ChannelBuilder(curveEngine, doses.at(asOf), exercise)
+                InferenceController.BacktestInput(
+                    cycleTsMs = origin,
+                    series = series,
+                    context = ContextChannelSource { g, n -> dashboardCurveChannels(g, n, builder) },
+                    future = FutureOverrideSource { r, n -> dashboardFutureChannels(r, n, builder) },
+                )
+            }
+        }
+        val run = inferenceController.backtest(modelId, origins, inputAt, onProgress)
+        run.refusal?.let { return ModelBacktest.Refused(days, it) }
+
+        // Newest first, as `forecastWindows` hands the suite its rows.
+        val set = repository.forecastWindowsOf(run.forecasts.asReversed(), horizonMaxMin, since, now)
+        return ModelBacktest.Done(
+            days = days,
+            metrics = metricsOf(set, ACCURACY_MIN_SAMPLES, includeCgEga = true),
+            nForecasts = run.forecasts.size,
+            nOrigins = origins.size,
+            adapterAttached = run.adapterAttached,
+            stopped = run.stopped,
+            elapsedMs = (System.nanoTime() - t0) / 1_000_000L,
+            finishedAtMs = System.currentTimeMillis(),
+        )
     }
 
     // Band recalibration §8.4: median never moves; only [calibratedBands]'s BG overlay applies it.
@@ -890,6 +1038,7 @@ class AppContainer(context: Context) {
 
     /** Null returns [modelId] to its trained offset; stored forecasts and band correction stay. */
     suspend fun setBgShift(modelId: String, mgdl: Double?) {
+        dropBacktest(modelId)
         settingsStore.setBgShiftOverride(modelId, mgdl)
         inferenceController.refreshModels()
         reevaluateInferenceNow()
@@ -1252,6 +1401,7 @@ class AppContainer(context: Context) {
 
     /** Changes what the model IS: the standing forecast's forecaster just stopped existing. */
     suspend fun attachAdapter(modelId: String, adapterId: Long) {
+        dropBacktest(modelId)
         // A refusal is a RESULT, not an exception.
         runCatching { labController.attach(modelId, adapterId) }
             .onSuccess { refusal ->
@@ -1300,6 +1450,7 @@ class AppContainer(context: Context) {
     }
 
     suspend fun detachAdapter(modelId: String) {
+        dropBacktest(modelId)
         runCatching { labController.detach(modelId) }
             .onFailure { _loraPanel.update { s -> s.copy(error = it.message ?: "Detach failed") } }
         refreshLoraPanel(modelId)
@@ -1318,6 +1469,7 @@ class AppContainer(context: Context) {
     }
 
     suspend fun removeModel(modelId: String) {
+        dropBacktest(modelId)
         runCatching { inferenceController.deleteModel(modelId) }
         withContext(dispatchers.io) {
             runCatching { repository.deletePredictionsForModel(modelId) }
@@ -1332,7 +1484,7 @@ class AppContainer(context: Context) {
     /** The shared curve/PK engine — SPEC §3.3. */
     val curveEngine: CurveEngine by lazy { CurveEngine(nativeCore, dispatchers) }
 
-    private val doseStore: DoseStore by lazy {
+    private val doseStore: RoomDoseStore by lazy {
         RoomDoseStore(
             engine = curveEngine,
             loggedDoses = database.loggedDoseDao(),
@@ -1428,8 +1580,12 @@ class AppContainer(context: Context) {
     }
 
     /** feat1/feat2 over a grid window; model uses COMBINED insulin, not the basal series. */
-    suspend fun dashboardCurveChannels(gridStartMs: Long, nSteps: Int): ModelChannels {
-        val ch = channelBuilder.contextChannels(gridStartMs, nSteps)
+    suspend fun dashboardCurveChannels(
+        gridStartMs: Long,
+        nSteps: Int,
+        builder: ChannelBuilder = channelBuilder,
+    ): ModelChannels {
+        val ch = builder.contextChannels(gridStartMs, nSteps)
         return ModelChannels(ch.carb, ch.insulin, ch.exercise)
     }
 
@@ -1442,10 +1598,16 @@ class AppContainer(context: Context) {
             Timber.w(it, "exercise channel read failed; the model sees no disposal")
             return out
         }
+        return exerciseChannelOf(rows, gridStartMs, nSteps)
+    }
+
+    /** [rows] may overhang the window; only its slots are read. */
+    private fun exerciseChannelOf(rows: List<SampleEntity>, gridStartMs: Long, nSteps: Int): DoubleArray {
+        val out = DoubleArray(nSteps)
         for (r in rows) {
             val g = r.exercise ?: continue
-            val i = ((r.ts - gridStartMs) / CurveEngine.STEP_MS).toInt()
-            if (i in 0 until nSteps && g.isFinite() && g > 0.0) out[i] = g
+            val i = Math.floorDiv(r.ts - gridStartMs, CurveEngine.STEP_MS).toInt()
+            if (r.ts >= gridStartMs && i in 0 until nSteps && g.isFinite() && g > 0.0) out[i] = g
         }
         return out
     }
@@ -1471,8 +1633,12 @@ class AppContainer(context: Context) {
     }
 
     /** COMMITTED dose tails over the future window (§3.3); announced/candidate passed empty. */
-    suspend fun dashboardFutureChannels(rollStartMs: Long, nFutureSteps: Int): ModelChannels {
-        val fc = channelBuilder.futureOverrides(rollStartMs, nFutureSteps, announced = emptyList(), candidate = null)
+    suspend fun dashboardFutureChannels(
+        rollStartMs: Long,
+        nFutureSteps: Int,
+        builder: ChannelBuilder = channelBuilder,
+    ): ModelChannels {
+        val fc = builder.futureOverrides(rollStartMs, nFutureSteps, announced = emptyList(), candidate = null)
         // The writer laid those slots down: the committed future is a read, not a projection.
         return ModelChannels(fc.carb, fc.insulin, fc.exercise)
     }

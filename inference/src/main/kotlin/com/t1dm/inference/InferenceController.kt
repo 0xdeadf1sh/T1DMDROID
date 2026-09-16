@@ -3,6 +3,8 @@ package com.t1dm.inference
 import com.t1dm.core.common.NativeCore
 import com.t1dm.core.common.T1dmDispatchers
 import com.t1dm.core.model.BackendId
+import com.t1dm.core.model.BacktestRefusal
+import com.t1dm.core.model.BacktestStop
 import com.t1dm.core.model.displayName
 import com.t1dm.core.model.LoraConfig
 import com.t1dm.core.model.LoraGuardReport
@@ -365,24 +367,7 @@ class InferenceController(
         val t0 = System.nanoTime()
         val out = withContext(dispatchers.inference) { entry.backend.run(entry.handle, GraphIo.tensors(gi)) }
         val latMs = (System.nanoTime() - t0) / 1_000_000.0
-        val steps = stepStates(entry.bundle, gi, out, needed = lora != null)
-        heads.verify(entry.bundle, steps, out.headRaw, gi.mSlots)
-
-        val headRaw: List<Double> = if (lora == null) {
-            out.headRaw.map { it.toDouble() }
-        } else {
-            val state = heads.stateOf(entry.bundle)
-            if (state !is HeadCache.State.Ready) {
-                error("model $modelId takes no adapter: ${(state as? HeadCache.State.Unusable)?.why ?: "no head file"}")
-            }
-            val input = steps ?: error("the graph emitted no hidden state to adapt")
-            state.head.setLora(lora)
-            try {
-                withContext(dispatchers.default) { state.head.forward(input, gi.mSlots) }
-            } finally {
-                state.head.setLora(null)
-            }
-        }
+        val headRaw = verifiedHeadRaw(entry, gi, out, lora)
         val forecast = withContext(dispatchers.default) {
             native.assembleDecode(desc, headRaw, gi.anchors, gi.slotPatch, gi.nMasked, CARRY_SPREAD)
         }
@@ -401,6 +386,99 @@ class InferenceController(
             loraAttached = lora != null,
             latencyMs = latMs,
         )
+    }
+
+    /** Caller holds [cycleMutex]: the head is shared, and [lora] is set on it for one forward. */
+    private suspend fun verifiedHeadRaw(entry: Entry, gi: GraphInput, out: GraphOutput, lora: LoraWeights?): List<Double> {
+        val steps = stepStates(entry.bundle, gi, out, needed = lora != null)
+        heads.verify(entry.bundle, steps, out.headRaw, gi.mSlots)
+        if (lora == null) return out.headRaw.map { it.toDouble() }
+        val state = heads.stateOf(entry.bundle)
+        if (state !is HeadCache.State.Ready) {
+            error("model ${entry.bundle.id} takes no adapter: ${(state as? HeadCache.State.Unusable)?.why ?: "no head file"}")
+        }
+        val input = steps ?: error("the graph emitted no hidden state to adapt")
+        state.head.setLora(lora)
+        return try {
+            withContext(dispatchers.default) { state.head.forward(input, gi.mSlots) }
+        } finally {
+            state.head.setLora(null)
+        }
+    }
+
+    /** One origin, built as the live cycle would have built it then. */
+    class BacktestInput(
+        val cycleTsMs: Long,
+        val series: BgSeries,
+        val context: ContextChannelSource,
+        val future: FutureOverrideSource,
+    )
+
+    /** [forecasts] oldest first; [refusal] non-null means nothing ran. */
+    class BacktestRun(
+        val forecasts: List<ModelPrediction>,
+        val adapterAttached: Boolean,
+        val stopped: BacktestStop?,
+        val refusal: BacktestRefusal? = null,
+    )
+
+    /**
+     * Replays [origins] through [modelId] as it runs now — offset, adapter, smoothing — and stores
+     * nothing. Null from [inputAt] skips an origin. One forward per lock, so the live cycle interleaves.
+     */
+    suspend fun backtest(
+        modelId: String,
+        origins: List<Long>,
+        inputAt: suspend (originTsMs: Long, desc: ModelDescriptor) -> BacktestInput?,
+        onProgress: (done: Int, total: Int) -> Unit,
+    ): BacktestRun {
+        val entry = cycleMutex.withLock { loaded[modelId] }
+            ?: return BacktestRun(emptyList(), false, null, BacktestRefusal.NOT_LOADED)
+        if (!entry.real) return BacktestRun(emptyList(), false, null, BacktestRefusal.NO_ARTIFACT)
+        val desc = entry.bundle.descriptor
+        // Read once: a per-origin read would deserialize the adapter thousands of times.
+        val lora = loraStore?.attached(modelId)
+        val window = smoothingWindow()
+        val out = ArrayList<ModelPrediction>(origins.size)
+        for ((i, ts) in origins.withIndex()) {
+            onProgress(i, origins.size)
+            if (i % BACKTEST_THERMAL_EVERY == 0 && overTempNote(System.currentTimeMillis()) != null) {
+                return BacktestRun(out, lora != null, BacktestStop.TOO_HOT)
+            }
+            val input = inputAt(ts, desc) ?: continue
+            val gi = buildGraphInput(
+                desc,
+                input.series.mgdl,
+                buildDoseChannels(input.series, input.context),
+                buildFutureChannels(input.series, desc, input.future),
+                emptyList(),
+                window,
+            )
+            val headRaw = cycleMutex.withLock {
+                if (loaded[modelId] !== entry) return BacktestRun(out, lora != null, BacktestStop.MODEL_CHANGED)
+                val graph = withContext(dispatchers.inference) { entry.backend.run(entry.handle, GraphIo.tensors(gi)) }
+                verifiedHeadRaw(entry, gi, graph, lora)
+            }
+            val decoded = decode(desc, headRaw, gi)
+            out += ModelPrediction(
+                modelId = modelId,
+                cycleTsMs = input.cycleTsMs,
+                anchorTsMs = input.series.anchorTsMs,
+                sourceId = input.series.sourceId,
+                stepMs = GRID_MS,
+                medianBg = decoded.forecast.medianBg,
+                bandsMgdl = decoded.forecast.bandsMgdl,
+                nQuantiles = N_QUANTILES,
+                lastBg = decoded.anchorBg,
+                status = decoded.status,
+                backend = entry.effectiveBackend,
+                selected = false,
+                stale = false,
+                latencyMs = null,
+            )
+        }
+        onProgress(origins.size, origins.size)
+        return BacktestRun(out, lora != null, null)
     }
 
     /** Windows returned OLDEST-FIRST for a chronological split; gapped horizon window DROPPED. */
@@ -875,22 +953,7 @@ class InferenceController(
 
         heads.verify(entry.bundle, stepStates(entry.bundle, gi, out, needed = false), out.headRaw, gi.mSlots)
         val adapted = adaptedHeadRaw(entry, gi, out)
-
-        // Slice by patch not count, so an added infill span can't shift which rows are read.
-        val forecast: Forecast = withContext(dispatchers.default) {
-            val all = native.assembleDecode(
-                desc,
-                adapted ?: out.headRaw.map { it.toDouble() },
-                gi.anchors,
-                gi.slotPatch,
-                gi.nMasked,
-                CARRY_SPREAD,
-            )
-            native.forecastSlice(all, gi.firstForecastPatch, gi.t)
-        }
-        val anchorBg = gi.anchors.getOrElse(gi.slotPatch.indexOf(gi.firstForecastPatch)) { Double.NaN }
-        val status: ForecastStatus =
-            withContext(dispatchers.default) { native.forecastDegeneracyCheck(desc, forecast) }
+        val (forecast, anchorBg, status) = decode(desc, adapted ?: out.headRaw.map { it.toDouble() }, gi)
 
         // Fail-OPEN to null, so the time probe can never perturb the BG forecast above.
         val predictedTime: PredictedTime? = decodeTimeSafely(desc, out.timeLogits)
@@ -912,6 +975,19 @@ class InferenceController(
             latencyMs = latMs,
             predictedTime = predictedTime,
         )
+    }
+
+    private data class Decoded(val forecast: Forecast, val anchorBg: Double, val status: ForecastStatus)
+
+    private suspend fun decode(desc: ModelDescriptor, headRaw: List<Double>, gi: GraphInput): Decoded {
+        // Slice by patch not count, so an added infill span can't shift which rows are read.
+        val forecast: Forecast = withContext(dispatchers.default) {
+            val all = native.assembleDecode(desc, headRaw, gi.anchors, gi.slotPatch, gi.nMasked, CARRY_SPREAD)
+            native.forecastSlice(all, gi.firstForecastPatch, gi.t)
+        }
+        val anchorBg = gi.anchors.getOrElse(gi.slotPatch.indexOf(gi.firstForecastPatch)) { Double.NaN }
+        val status = withContext(dispatchers.default) { native.forecastDegeneracyCheck(desc, forecast) }
+        return Decoded(forecast, anchorBg, status)
     }
 
     /** Fail-OPEN: null unless desc declares time AND tensor is flat (P,nBins); never throws. */
@@ -957,9 +1033,12 @@ class InferenceController(
     }
 
     /** Aligned to series.gridStartMs (SPEC §3.3); missing or mismatched falls to normalize(0). */
-    private suspend fun buildDoseChannels(series: BgSeries): ModelChannels {
+    private suspend fun buildDoseChannels(
+        series: BgSeries,
+        source: ContextChannelSource? = contextChannels,
+    ): ModelChannels {
         val n = series.mgdl.size
-        val src = contextChannels ?: return ModelChannels.zero(n)
+        val src = source ?: return ModelChannels.zero(n)
         return runCatching {
             val ch = src.channels(series.gridStartMs, n)
             if (ch.carb.size == n && ch.insulin.size == n && ch.exercise.size == n) ch
@@ -971,8 +1050,12 @@ class InferenceController(
     }
 
     /** Aligned one step past the last context sample; fixed pred zone (P*S), null=normalize(0). */
-    private suspend fun buildFutureChannels(series: BgSeries, desc: ModelDescriptor): ModelChannels? {
-        val src = futureOverrides ?: return null
+    private suspend fun buildFutureChannels(
+        series: BgSeries,
+        desc: ModelDescriptor,
+        source: FutureOverrideSource? = futureOverrides,
+    ): ModelChannels? {
+        val src = source ?: return null
         val predSteps = predSteps(desc)
         if (predSteps <= 0) return null
         val rollStartMs = series.gridStartMs + series.mgdl.size.toLong() * GRID_MS
@@ -1079,6 +1162,8 @@ class InferenceController(
         /** Empty: cycle forecast is one window, no seam; §9 carry belongs to RollingForecaster. */
         val CARRY_SPREAD = emptyList<Double>()
         const val LATENCY_WINDOW = 60
+        /** An hour of origins between thermal reads. */
+        const val BACKTEST_THERMAL_EVERY = 12
 
         fun snapToGrid(ts: Long): Long = Math.floorDiv(ts + GRID_MS / 2, GRID_MS) * GRID_MS
 

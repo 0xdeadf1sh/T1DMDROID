@@ -40,6 +40,19 @@ class RoomDoseStore(
             rows.filter { it.kind == DoseKind.BASAL }.map { it.toCurveEvent() }
     }
 
+    /** Rows in `[fromMs, toMs]`, curves resolved once. */
+    suspend fun snapshot(fromMs: Long, toMs: Long): DoseSnapshot {
+        val doses = loggedDoses.inRange(fromMs, toMs)
+        return DoseSnapshot(
+            meals = loggedMeals.inRange(fromMs, toMs).map { DoseSnapshot.Logged(it.tsMs, it.loggedAtMs, it.toCurveEvent()) },
+            boluses = doses.filter { it.kind == DoseKind.BOLUS }
+                .map { DoseSnapshot.Logged(it.tsMs, it.loggedAtMs, it.toCurveEvent()) },
+            basalInjections = doses.filter { it.kind == DoseKind.BASAL }
+                .map { DoseSnapshot.Logged(it.tsMs, it.loggedAtMs, it.toCurveEvent()) },
+            schedule = activeBasalSchedule(),
+        )
+    }
+
     override suspend fun activeBasalSchedule(): BasalSchedule? {
         val rows = basalSchedules.activeDoses()
         if (rows.isEmpty()) return null

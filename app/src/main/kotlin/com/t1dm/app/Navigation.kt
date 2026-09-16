@@ -1269,6 +1269,7 @@ private fun T1dmNavHost(
                 cgEga = walked.getOrNull()
                 cgEgaLoading = false
             }
+            val backtests by container.backtests.collectAsState()
             // §8.4: local correction observed; fitTick==0 guards against re-announcing on reopen
             val bandCalibrations by container.bandCalibrations.collectAsState()
             val bandCalibration: BandCalibration? = bandCalibrations[modelId]
@@ -1304,6 +1305,9 @@ private fun T1dmNavHost(
                 onFitBandCalibration = { if (!fitting) fitTick++ },
                 onDropBandCalibration = { scope.launch { container.dropBandCalibration(modelId) } },
                 onSetBgShift = { mgdl -> scope.launch { container.setBgShift(modelId, mgdl) } },
+                backtest = backtests[modelId],
+                onBacktest = { days -> container.startBacktest(modelId, days) },
+                onCancelBacktest = { container.cancelBacktest(modelId) },
             )
         }
         composable("meals") {

@@ -43,6 +43,8 @@ import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.fadingEdges
 import com.t1dm.core.design.rememberT1dmHaptics
+import com.t1dm.core.model.BacktestRefusal
+import com.t1dm.core.model.BacktestStop
 import com.t1dm.core.model.BandCalibration
 import com.t1dm.core.model.BandCalibrationOutcome
 import com.t1dm.core.model.BandFitRefusal
@@ -53,6 +55,7 @@ import com.t1dm.core.model.ExcursionAccuracy
 import com.t1dm.core.model.HorizonMetrics
 import com.t1dm.core.model.InferenceState
 import com.t1dm.core.model.ModelMeta
+import com.t1dm.core.model.ModelBacktest
 import com.t1dm.core.model.ModelMetrics
 import com.t1dm.core.model.PointBlock
 import com.t1dm.core.model.TrendMatrix
@@ -86,6 +89,10 @@ fun ModelDetailScreen(
     onDropBandCalibration: () -> Unit = {},
     /** mg/dL; null returns to the trained offset. */
     onSetBgShift: (Double?) -> Unit = {},
+    /** Null until one is run for this model in this process. */
+    backtest: ModelBacktest? = null,
+    onBacktest: (days: Int) -> Unit = {},
+    onCancelBacktest: () -> Unit = {},
 ) {
     val meta = state.metaOf(modelId)
     val telemetry = state.telemetryOf(modelId)
@@ -96,6 +103,13 @@ fun ModelDetailScreen(
 
     // Hoisted for the same reason; saveable across rotation, fresh open starts at default.
     var gridHorizonMin by rememberSaveable(modelId) { mutableStateOf(CLARKE_GRID_DEFAULT_MIN) }
+
+    val backtestDone = backtest as? ModelBacktest.Done
+    // Keyed on the run: a finished backtest opens on its own figures.
+    var viewBacktest by rememberSaveable(modelId, backtestDone?.finishedAtMs) { mutableStateOf(true) }
+    val showingBacktest = backtestDone != null && viewBacktest
+    val shown = if (backtestDone != null && viewBacktest) backtestDone.metrics else accuracy
+    val shownLoading = !showingBacktest && accuracyLoading
 
     val listState = rememberLazyListState()
     LazyColumn(
@@ -152,30 +166,35 @@ fun ModelDetailScreen(
         }
 
 
+        section("Backtest") { BacktestControls(backtest, onBacktest, onCancelBacktest) }
+
         // Keep prior rows through a recompute: collapse to "Computing…" only with no prior suite.
-        val suite = accuracy?.suite
+        val suite = shown?.suite
         val scored = suite?.horizons.orEmpty().filter { it.sufficient }
 
         section("Realized accuracy — band τ.25–.75") {
-            Note("Forecast vs realized BG")
+            if (backtestDone != null) AccuracySourcePicker(showingBacktest) { viewBacktest = it }
+            Note(if (showingBacktest) "Replayed forecast vs realized BG" else "Forecast vs realized BG")
             when {
                 scored.isNotEmpty() -> {
                     BandTable(scored)
                     // §6.2: a band figure can't stand apart from coverage/width; table has both.
                     ErrorByHorizonFigure(scored)
                 }
-                accuracyLoading -> Note("Computing…")
-                else -> Note(emptyWhy(accuracy))
+                shownLoading -> Note("Computing…")
+                else -> Note(emptyWhy(shown))
             }
             suite?.horizons.orEmpty().filterNot { it.sufficient }.forEach {
-                Note("${it.horizonMin} min: n=${it.n}, need ${accuracy?.minSamples ?: 0}")
+                Note("${it.horizonMin} min: n=${it.n}, need ${shown?.minSamples ?: 0}")
             }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                TextButton(
-                    onClick = { haptics.perform(HapticEvent.Tap); onRecomputeAccuracy() },
-                ) { Text("Recompute") }
-                if (accuracyLoading && scored.isNotEmpty()) {
-                    Note("Recomputing…")
+            if (!showingBacktest) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(
+                        onClick = { haptics.perform(HapticEvent.Tap); onRecomputeAccuracy() },
+                    ) { Text("Recompute") }
+                    if (accuracyLoading && scored.isNotEmpty()) {
+                        Note("Recomputing…")
+                    }
                 }
             }
         }
@@ -206,13 +225,13 @@ fun ModelDetailScreen(
 
         // Outside scored gate: a declined figure must say why; horizons are the suite's own.
         val pick = clarkeGridPick(suite?.horizons.orEmpty(), gridHorizonMin)
-        val gridRefusal = pick.refusal(accuracy?.minSamples ?: 0)
+        val gridRefusal = pick.refusal(shown?.minSamples ?: 0)
 
         // One horizon behind all three: a 30-min Clarke share never reads against 120-min DTS.
         gridSection(
             "Clarke error grid — median line",
             "Band projection clips to the truth; its grid reads as coverage",
-            pick, gridRefusal, accuracy, { gridHorizonMin = it },
+            pick, gridRefusal, shown, { gridHorizonMin = it },
         ) { h ->
             when {
                 lattices == null -> Note("Computing…")
@@ -226,7 +245,7 @@ fun ModelDetailScreen(
         gridSection(
             "DTS error grid — median line",
             "Klonoff 2024 · reading high scores worse than reading low",
-            pick, gridRefusal, accuracy, { gridHorizonMin = it },
+            pick, gridRefusal, shown, { gridHorizonMin = it },
         ) { h ->
             when {
                 lattices == null -> Note("Computing…")
@@ -240,20 +259,23 @@ fun ModelDetailScreen(
         gridSection(
             "Trend accuracy — median line",
             "Rate over 15 min vs realized",
-            pick, gridRefusal, accuracy, { gridHorizonMin = it },
+            pick, gridRefusal, shown, { gridHorizonMin = it },
         ) { h ->
             if (h.trend.isEmpty) Note("No scored pairs") else TrendMatrixFigure(h.trend, trendBinLabels(trendBinEdges))
         }
 
         // §6.3 — whole window; the costly pass, so only on request.
         section("CG-EGA") {
+            // A backtest walks it in the same pass; the live one only on request.
+            val shownCgEga = if (showingBacktest) suite?.cgega else cgEga
             when {
-                cgEga != null -> {
-                    CgEgaFigure(cgEga)
-                    CgEgaTable(cgEga)
+                shownCgEga != null -> {
+                    CgEgaFigure(shownCgEga)
+                    CgEgaTable(shownCgEga)
                 }
-                cgEgaLoading -> Note("Computing…")
+                !showingBacktest && cgEgaLoading -> Note("Computing…")
                 scored.isEmpty() -> Note("Needs scored windows")
+                showingBacktest -> Note("Nothing scoreable")
                 else -> TextButton(
                     onClick = { haptics.perform(HapticEvent.Tap); onComputeCgEga() },
                 ) { Text("Compute") }
@@ -516,6 +538,76 @@ private fun ClarkeHorizonPicker(options: List<Int>, selected: Int?, onSelect: (I
                 onClick = { haptics.perform(HapticEvent.SegmentTick); onSelect(h) },
                 shape = SegmentedButtonDefaults.itemShape(i, options.size),
             ) { Text("${h}m") }
+        }
+    }
+}
+
+private val BACKTEST_DAYS = listOf(1, 3, 7, 14)
+
+@Composable
+private fun BacktestControls(backtest: ModelBacktest?, onRun: (days: Int) -> Unit, onCancel: () -> Unit) {
+    val haptics = rememberT1dmHaptics()
+    val running = backtest as? ModelBacktest.Running
+    var days by rememberSaveable { mutableStateOf(backtest?.days ?: 7) }
+    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(top = 4.dp)) {
+        BACKTEST_DAYS.forEachIndexed { i, d ->
+            SegmentedButton(
+                selected = d == days,
+                enabled = running == null,
+                onClick = { haptics.perform(HapticEvent.SegmentTick); days = d },
+                shape = SegmentedButtonDefaults.itemShape(i, BACKTEST_DAYS.size),
+            ) { Text("$d d") }
+        }
+    }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        if (running == null) {
+            TextButton(onClick = { haptics.perform(HapticEvent.Tap); onRun(days) }) { Text("Run") }
+        } else {
+            TextButton(onClick = { haptics.perform(HapticEvent.Reject); onCancel() }) { Text("Cancel") }
+            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+            if (running.total > 0) {
+                Spacer(Modifier.width(8.dp))
+                Mono("%,d / %,d".format(running.done, running.total))
+            }
+        }
+    }
+    when (backtest) {
+        is ModelBacktest.Done -> {
+            Note(
+                "${backtest.days} d · %,d / %,d forecasts · ".format(backtest.nForecasts, backtest.nOrigins) +
+                    fmtDuration(backtest.elapsedMs.toDouble()),
+            )
+            if (backtest.adapterAttached) Note("Adapter attached — may be in-sample")
+            when (backtest.stopped) {
+                BacktestStop.TOO_HOT -> Note("Stopped — too hot")
+                BacktestStop.MODEL_CHANGED -> Note("Stopped — model reloaded")
+                null -> Unit
+            }
+        }
+        is ModelBacktest.Refused -> Note(
+            when (backtest.refusal) {
+                BacktestRefusal.BUSY -> "Another backtest running"
+                BacktestRefusal.NOT_LOADED -> "Model not loaded"
+                BacktestRefusal.NO_ARTIFACT -> "No artifact"
+                BacktestRefusal.NO_SENSOR -> "No sensor"
+                BacktestRefusal.NO_HISTORY -> "No readings in ${backtest.days} d"
+                BacktestRefusal.FAILED -> "Failed"
+            },
+        )
+        is ModelBacktest.Running, null -> Unit
+    }
+}
+
+@Composable
+private fun AccuracySourcePicker(backtest: Boolean, onSelect: (backtest: Boolean) -> Unit) {
+    val haptics = rememberT1dmHaptics()
+    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+        listOf(false to "Live", true to "Backtest").forEachIndexed { i, (isBacktest, label) ->
+            SegmentedButton(
+                selected = backtest == isBacktest,
+                onClick = { haptics.perform(HapticEvent.SegmentTick); onSelect(isBacktest) },
+                shape = SegmentedButtonDefaults.itemShape(i, 2),
+            ) { Text(label) }
         }
     }
 }

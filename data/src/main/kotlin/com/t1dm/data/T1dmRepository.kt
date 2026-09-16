@@ -285,6 +285,10 @@ class T1dmRepository(
     suspend fun recentReadings(sourceId: CgmSourceId, limit: Int): List<CgmReading> =
         withContext(io) { readings.recent(sourceId.value, limit).map { it.toModel() } }
 
+    /** Oldest first. */
+    suspend fun readingsInRange(sourceId: CgmSourceId, fromMs: Long, toMs: Long): List<CgmReading> =
+        withContext(io) { readings.rangeForSource(sourceId.value, fromMs, toMs).map { it.toModel() } }
+
     suspend fun readingExtent(sourceId: CgmSourceId): ReadingExtent? = withContext(io) {
         val oldest = readings.oldestTs(sourceId.value) ?: return@withContext null
         val newest = readings.newestTs(sourceId.value) ?: return@withContext null
@@ -944,6 +948,25 @@ class T1dmRepository(
         sinceMs: Long,
         nowMs: Long,
         toleranceMs: Long = 150_000L, // half a 5-min grid step
+    ): ForecastWindowSet = windowsOf(horizonMaxMin, sinceMs, nowMs, toleranceMs) { horizonMs ->
+        predictions.range(sinceMs, nowMs - horizonMs).map { it.toModel() }.filter { it.modelId == modelId }
+    }
+
+    /** [forecastWindows]'s pairing for forecasts that were never stored: a backtest's. */
+    suspend fun forecastWindowsOf(
+        forecasts: List<ModelPrediction>,
+        horizonMaxMin: Int,
+        sinceMs: Long,
+        nowMs: Long,
+        toleranceMs: Long = 150_000L,
+    ): ForecastWindowSet = windowsOf(horizonMaxMin, sinceMs, nowMs, toleranceMs) { forecasts }
+
+    private suspend fun windowsOf(
+        horizonMaxMin: Int,
+        sinceMs: Long,
+        nowMs: Long,
+        toleranceMs: Long,
+        forecasts: suspend (horizonMs: Long) -> List<ModelPrediction>,
     ): ForecastWindowSet = withContext(io) {
         val stepMs = CurveEngine.STEP_MS
         val horizonMs = horizonMaxMin.toLong() * 60_000L
@@ -963,8 +986,7 @@ class T1dmRepository(
         val truthTs = LongArray(truth.size) { truth[it].first }
 
         // Forecast side of the same scoping; null sourceId (pre-v25) is refused, not assumed.
-        val ofModel = predictions.range(sinceMs, nowMs - horizonMs).map { it.toModel() }
-            .filter { it.modelId == modelId && it.status == ForecastStatus.OK }
+        val ofModel = forecasts(horizonMs).filter { it.status == ForecastStatus.OK }
         val rows = ofModel.filter { it.sourceId == authoritative }
         // Counted not dropped: an unexplained empty panel after a sensor change reads as a bug.
         val nForeignSource = ofModel.size - rows.size
