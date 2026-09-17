@@ -164,7 +164,6 @@ class StubNativeCore : NativeCore {
         if (n <= 0) return listOf(0.0)
         val h = DT_MIN / GAMMA_CURVE_SUBSTEPS
         val v = DoubleArray(n)
-        var area = 0.0
         for (i in 0 until n) {
             var acc = 0.0
             for (j in 0 until GAMMA_CURVE_SUBSTEPS) {
@@ -172,8 +171,9 @@ class StubNativeCore : NativeCore {
                 acc += t.pow(k - 1.0) * exp(-t / theta)
             }
             v[i] = acc / GAMMA_CURVE_SUBSTEPS
-            area += v[i]
         }
+        taperTail(v)
+        val area = v.sum()
         if (area > 0.0) for (i in 0 until n) v[i] *= total / area
         return v.asList()
     }
@@ -187,21 +187,29 @@ class StubNativeCore : NativeCore {
             val th = i * (DT_MIN / 60.0)
             curve[i] = maxOf(0.0, exp(-ke * th) - exp(-kaEff * th))
         }
-        val tail = (n * BASAL_TAIL_CLIP_FRACTION).toInt()
-        if (tail in 1 until n) {
-            val start = n - tail
-            for (j in 0 until tail) {
-                val s = when {
-                    tail == 1 -> 1.0
-                    j == tail - 1 -> 0.0
-                    else -> 1.0 - j.toDouble() / (tail - 1)
-                }
-                curve[start + j] *= s * s * s * (s * (s * 6.0 - 15.0) + 10.0)
-            }
-        }
+        taperTail(curve)
+        val onset = (BASAL_ONSET_RAMP_HOURS * 60.0 / DT_MIN).toInt()
+        if (onset in 1 until n) for (i in 0 until onset) curve[i] *= smootherstep(i.toDouble() / onset)
         val area = curve.sum()
         if (area > 0.0) for (i in 0 until n) curve[i] *= total / area
         return curve.asList()
+    }
+
+    private fun smootherstep(s: Double) = s * s * s * (s * (s * 6.0 - 15.0) + 10.0)
+
+    private fun taperTail(curve: DoubleArray) {
+        val n = curve.size
+        val tail = (n * CURVE_TAIL_CLIP_FRACTION).toInt()
+        if (tail !in 1 until n) return
+        val start = n - tail
+        for (j in 0 until tail) {
+            val s = when {
+                tail == 1 -> 1.0
+                j == tail - 1 -> 0.0
+                else -> 1.0 - j.toDouble() / (tail - 1)
+            }
+            curve[start + j] *= smootherstep(s)
+        }
     }
 
     override fun bolusPkForDose(doseU: Double, k: Double, theta: Double, diaBaseHours: Double): BolusPk {
@@ -217,10 +225,10 @@ class StubNativeCore : NativeCore {
         fun basal(label: String, ka: Double, ke: Double, actionH: Double) =
             InsulinPresetSpec(InsulinFamily.BasalBateman, label, 0.0, 0.0, 0.0, ka, ke, actionH * 60.0, "Label half-life")
         return listOf(
-            rapid("Aspart · NovoRapid/Novolog", 3.0, 45.0, 5.6, "Clamp fit, Heise 2015"),
-            rapid("Faster aspart · Fiasp", 2.55, 52.0, 4.7, "Clamp fit, Heise 2015 and label dose tables"),
-            rapid("Lispro · Humalog", 3.0, 45.0, 5.6, "Clamp fit, Heise 2015"),
-            rapid("Ultra-rapid lispro · Lyumjev", 2.55, 52.0, 4.7, "Clamp fit, Heise 2015 and label dose tables"),
+            rapid("Aspart · NovoRapid/Novolog", 3.0, 30.0, 4.0, "Simulator shape"),
+            rapid("Faster aspart · Fiasp", 2.55, 35.0, 3.4, "Simulator shape"),
+            rapid("Lispro · Humalog", 3.0, 30.0, 4.0, "Simulator shape"),
+            rapid("Ultra-rapid lispro · Lyumjev", 2.55, 35.0, 3.4, "Simulator shape"),
             basal("Glargine U100 · Lantus", 0.477, 0.0499, 73.0),
             basal("Glargine U300 · Toujeo", 0.156, 0.0377, 101.0),
             basal("Degludec · Tresiba", 0.187, 0.0277, 133.0),
@@ -349,11 +357,12 @@ class StubNativeCore : NativeCore {
         const val STEP_MS = 300_000L
         const val MIN_MS = 60_000L
         const val DAY_MS = 86_400_000L
-        const val BASAL_TAIL_CLIP_FRACTION = 1.0 / 6.0
+        const val CURVE_TAIL_CLIP_FRACTION = 1.0 / 6.0
+        const val BASAL_ONSET_RAMP_HOURS = 3.0
         const val GAMMA_CURVE_SUBSTEPS = 16
-        const val BOLUS_DIA_DOSE_SCALE = 0.8
+        const val BOLUS_DIA_DOSE_SCALE = 0.6
         const val BOLUS_DIA_MIN_HOURS = 2.0
-        const val BOLUS_DIA_MAX_HOURS = 9.0
-        const val BOLUS_THETA_DOSE_SLOPE = 0.17
+        const val BOLUS_DIA_MAX_HOURS = 7.5
+        const val BOLUS_THETA_DOSE_SLOPE = 0.06
     }
 }

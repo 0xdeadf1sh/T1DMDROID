@@ -13,14 +13,16 @@ const MAX_GRID_STEPS: i32 = 300_000;
 // SPEC/invariants.md §5; every value is `T1DMSIM/simulator.py`'s, pinned by curve_golden.json.
 
 /// Hours of DIA per unit of `sqrt(dose) - sqrt(5)`.
-pub const BOLUS_DIA_DOSE_SCALE: f64 = 0.8;
+pub const BOLUS_DIA_DOSE_SCALE: f64 = 0.6;
 /// Hours.
 pub const BOLUS_DIA_MIN_HOURS: f64 = 2.0;
-pub const BOLUS_DIA_MAX_HOURS: f64 = 9.0;
+pub const BOLUS_DIA_MAX_HOURS: f64 = 7.5;
 /// θ multiplier per unit of `sqrt(dose) - sqrt(5)`.
-pub const BOLUS_THETA_DOSE_SLOPE: f64 = 0.17;
-/// Share of a Bateman window, at its end, tapered to zero.
-pub const BASAL_TAIL_CLIP_FRACTION: f64 = 1.0 / 6.0;
+pub const BOLUS_THETA_DOSE_SLOPE: f64 = 0.06;
+/// Share of a gamma or Bateman window, at its end, tapered to zero.
+pub const CURVE_TAIL_CLIP_FRACTION: f64 = 1.0 / 6.0;
+/// Hours at the start of a Bateman window eased in from zero.
+pub const BASAL_ONSET_RAMP_HOURS: f64 = 3.0;
 /// Density samples per gamma step.
 const GAMMA_CURVE_SUBSTEPS: usize = 16;
 
@@ -63,7 +65,31 @@ pub struct BasalSchedule {
     pub doses: Vec<BasalDoseSpec>,
 }
 
-/// Sum == total_amount; `simulator.gamma_curve`: each step averages 16 midpoints from t=0.
+fn smootherstep(s: f64) -> f64 {
+    s * s * s * (s * (s * 6.0 - 15.0) + 10.0)
+}
+
+/// Last [`CURVE_TAIL_CLIP_FRACTION`] multiplied by a smootherstep over `linspace(1, 0)`; ends at exactly 0.
+fn taper_tail(curve: &mut [f64]) {
+    let n = curve.len();
+    let ts = (n as f64 * CURVE_TAIL_CLIP_FRACTION) as usize;
+    if ts == 0 || ts >= n {
+        return;
+    }
+    let start = n - ts;
+    for j in 0..ts {
+        let s = if ts == 1 {
+            1.0
+        } else if j == ts - 1 {
+            0.0
+        } else {
+            1.0 - j as f64 / (ts as f64 - 1.0)
+        };
+        curve[start + j] *= smootherstep(s);
+    }
+}
+
+/// Sum == total_amount; `simulator.gamma_curve`: each step averages 16 midpoints from t=0, tail tapered.
 #[uniffi::export]
 pub fn gamma(total_amount: f64, k: f64, theta: f64, duration_min: f64) -> Vec<f64> {
     let n_steps = (duration_min / DT_MINUTES) as i64;
@@ -74,7 +100,6 @@ pub fn gamma(total_amount: f64, k: f64, theta: f64, duration_min: f64) -> Vec<f6
     let sub = GAMMA_CURVE_SUBSTEPS;
     let h = DT_MINUTES / sub as f64;
     let mut values = vec![0.0f64; n];
-    let mut area = 0.0f64;
     for (i, v) in values.iter_mut().enumerate() {
         let mut acc = 0.0f64;
         for j in 0..sub {
@@ -82,8 +107,9 @@ pub fn gamma(total_amount: f64, k: f64, theta: f64, duration_min: f64) -> Vec<f6
             acc += t.powf(k - 1.0) * (-t / theta).exp();
         }
         *v = acc / sub as f64;
-        area += *v;
     }
+    taper_tail(&mut values);
+    let area: f64 = values.iter().sum();
     if area > 0.0 {
         let scale = total_amount / area;
         for v in values.iter_mut() {
@@ -111,21 +137,12 @@ pub fn bateman(total_amount: f64, duration_min: f64, ka_per_hour: f64, ke_per_ho
         *c = v.max(0.0);
     }
 
-    let tail_steps = (n as f64 * BASAL_TAIL_CLIP_FRACTION) as i64;
-    if tail_steps > 0 && (tail_steps as usize) < n {
-        let ts = tail_steps as usize;
-        let start = n - ts;
-        for j in 0..ts {
-            // linspace(1, 0, ts); the last is exactly 0.
-            let s = if ts == 1 {
-                1.0
-            } else if j == ts - 1 {
-                0.0
-            } else {
-                1.0 - j as f64 / (ts as f64 - 1.0)
-            };
-            let w = s * s * s * (s * (s * 6.0 - 15.0) + 10.0);
-            curve[start + j] *= w;
+    taper_tail(&mut curve);
+
+    let onset = (BASAL_ONSET_RAMP_HOURS * 60.0 / DT_MINUTES) as usize;
+    if onset > 0 && onset < n {
+        for (i, c) in curve[..onset].iter_mut().enumerate() {
+            *c *= smootherstep(i as f64 / onset as f64);
         }
     }
 
@@ -201,10 +218,10 @@ pub struct InsulinPresetSpec {
     pub citation: String,
 }
 
-const RAPID: (f64, f64, f64) = (3.0, 45.0, 5.6);
-const ULTRA_RAPID: (f64, f64, f64) = (2.55, 52.0, 4.7);
-const RAPID_CITE: &str = "Clamp fit, Heise 2015";
-const ULTRA_RAPID_CITE: &str = "Clamp fit, Heise 2015 and label dose tables";
+const RAPID: (f64, f64, f64) = (3.0, 30.0, 4.0);
+const ULTRA_RAPID: (f64, f64, f64) = (2.55, 35.0, 3.4);
+const RAPID_CITE: &str = "Simulator shape";
+const ULTRA_RAPID_CITE: &str = "Simulator shape";
 const BASAL_CITE: &str = "Label half-life";
 
 #[uniffi::export]
@@ -458,10 +475,10 @@ mod tests {
     #[test]
     fn catalog_is_the_spec_table() {
         let aspart = preset(InsulinPreset::AspartNovorapid);
-        assert_eq!((aspart.gamma_k, aspart.gamma_theta, aspart.dia_base_hours), (3.0, 45.0, 5.6));
-        assert_eq!(preset(InsulinPreset::LisproHumalog).gamma_theta, 45.0);
+        assert_eq!((aspart.gamma_k, aspart.gamma_theta, aspart.dia_base_hours), (3.0, 30.0, 4.0));
+        assert_eq!(preset(InsulinPreset::LisproHumalog).gamma_theta, 30.0);
         let fiasp = preset(InsulinPreset::FiaspFasterAspart);
-        assert_eq!((fiasp.gamma_k, fiasp.gamma_theta, fiasp.dia_base_hours), (2.55, 52.0, 4.7));
+        assert_eq!((fiasp.gamma_k, fiasp.gamma_theta, fiasp.dia_base_hours), (2.55, 35.0, 3.4));
         assert_eq!(preset(InsulinPreset::LisproLyumjev).gamma_k, 2.55);
         let deg = preset(InsulinPreset::DegludecTresiba);
         assert_eq!((deg.ka_per_hour, deg.ke_per_hour, deg.action_min), (0.187, 0.0277, 133.0 * 60.0));

@@ -77,10 +77,12 @@ class ExerciseReplayCurveTest {
     fun `the laid buckets sum to the magnitude, and the window is the bout plus ninety minutes`() =
         runTest {
             val p = ExerciseDisposal.paramsFor(60.0, 0.5)
-            val buckets = exerciseCurveLaid(b0, curve(60.0), TZ)
+            val values = curve(60.0)
+            val buckets = exerciseCurveLaid(b0, values, TZ)
             assertEquals(p.grams, buckets.sumOf { it.grams }, TOTAL_EPS)
-            // 150 min at a 5-min grid.
-            assertEquals(b0 + 29 * grid, buckets.last().gridTs)
+            // 150 min at a 5-min grid; the tapered last bucket is exactly zero and writes nothing.
+            assertEquals(30, values.size)
+            assertEquals(b0 + 28 * grid, buckets.last().gridTs)
         }
 
     private companion object {

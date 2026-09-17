@@ -13,16 +13,18 @@ ultra = S.BOLUS_VARIANTS["faster_aspart"]
 golden = {
     "gamma": [
         {"total": t, "k": k, "theta": th, "dur": d, "values": S.gamma_curve(t, k, th, d).tolist()}
-        for t, k, th, d in [(60.0, 2.0, 15.0, 120.0), (45.0, 3.25, 22.5, 292.5), (5.0, 3.0, 45.0, 336.0),
-                            (15.0, 2.55, 66.5, 360.0), (0.0, 3.0, 20.0, 100.0), (1.0, 3.0, 20.0, 3.0)]
+        for t, k, th, d in [(60.0, 2.0, 15.0, 120.0), (45.0, 3.25, 22.5, 292.5),
+                            (5.0, *S.bolus_pk_for_dose(5.0, rapid["gamma_k"], rapid["gamma_theta"], rapid["dia_base_hours"])),
+                            (15.0, *S.bolus_pk_for_dose(15.0, ultra["gamma_k"], ultra["gamma_theta"], ultra["dia_base_hours"])),
+                            (0.0, 3.0, 20.0, 100.0), (1.0, 3.0, 20.0, 3.0), (1.0, 3.0, 20.0, 30.0), (2.0, 2.0, 10.0, 60.0)]
     ],
     "bateman": [
         {"total": t, "dur": v["action_hours"] * 60.0, "ka": v["ka"], "ke": v["ke"],
          "values": S.basal_curve(t, v["action_hours"] * 60.0, v["ka"], v["ke"]).tolist()}
         for t, v in [(24.0, S.BASAL_VARIANTS["glargine_u100"]), (30.0, S.BASAL_VARIANTS["glargine_u300"]),
                      (18.0, S.BASAL_VARIANTS["degludec"])]
-    ] + [{"total": 24.0, "dur": 1440.0, "ka": 0.3, "ke": 0.07,
-          "values": S.basal_curve(24.0, 1440.0, 0.3, 0.07).tolist()}],
+    ] + [{"total": t, "dur": d, "ka": 0.3, "ke": 0.07, "values": S.basal_curve(t, d, 0.3, 0.07).tolist()}
+         for t, d in [(24.0, 1440.0), (1.0, 150.0), (1.0, 185.0)]],
     "bolus_pk": [
         dict(zip(("k", "theta", "dur"), S.bolus_pk_for_dose(dose, v["gamma_k"], v["gamma_theta"], v["dia_base_hours"])),
              dose=dose, base_k=v["gamma_k"], base_theta=v["gamma_theta"], base_dia_h=v["dia_base_hours"])
