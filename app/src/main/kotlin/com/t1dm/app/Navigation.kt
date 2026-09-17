@@ -1304,7 +1304,6 @@ private fun T1dmNavHost(
                 // Three guards; only container's holds when a fit starts elsewhere.
                 onFitBandCalibration = { if (!fitting) fitTick++ },
                 onDropBandCalibration = { scope.launch { container.dropBandCalibration(modelId) } },
-                onSetBgShift = { mgdl -> scope.launch { container.setBgShift(modelId, mgdl) } },
                 backtest = backtests[modelId],
                 onBacktest = { days -> container.startBacktest(modelId, days) },
                 onCancelBacktest = { container.cancelBacktest(modelId) },

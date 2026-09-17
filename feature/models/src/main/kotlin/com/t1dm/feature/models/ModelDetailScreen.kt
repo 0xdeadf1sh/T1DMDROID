@@ -22,7 +22,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
@@ -38,7 +37,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.fadingEdges
@@ -87,8 +85,6 @@ fun ModelDetailScreen(
     onFitBandCalibration: () -> Unit = {},
     /** Manual: a swap-crossing correction measures the gap; only the user knows it swapped. */
     onDropBandCalibration: () -> Unit = {},
-    /** mg/dL; null returns to the trained offset. */
-    onSetBgShift: (Double?) -> Unit = {},
     /** Null until one is run for this model in this process. */
     backtest: ModelBacktest? = null,
     onBacktest: (days: Int) -> Unit = {},
@@ -140,15 +136,6 @@ fun ModelDetailScreen(
                 KeyVal("context patches", rangeOrNa(meta.minContextPatches, meta.maxContextPatches))
                 KeyVal("forecast horizon", meta.predictionHorizonHours?.let { "$it h" } ?: "n/a")
                 KeyVal("arch / ExecuTorch", "${meta.archVersion ?: "?"} / ${meta.executorchVersion ?: "?"}")
-                meta.bgShiftMgdl?.let { shift ->
-                    BgShiftStepper(
-                        shift = shift,
-                        trained = meta.trainedBgShiftMgdl ?: 0.0,
-                        refused = meta.refusedBgShiftMgdl,
-                        clampMin = meta.bgClampMinMgdl,
-                        onSet = onSetBgShift,
-                    )
-                }
             }
         }
 
@@ -664,51 +651,6 @@ private inline fun androidx.compose.foundation.lazy.LazyListScope.section(
         Column(Modifier.padding(top = 4.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) { body() }
     }
 }
-
-/** Moves this model's risk curve along the BG axis; each tap reloads the models. */
-@Composable
-private fun BgShiftStepper(
-    shift: Double,
-    trained: Double,
-    refused: Double?,
-    clampMin: Double?,
-    onSet: (Double?) -> Unit,
-) {
-    val haptics = rememberT1dmHaptics()
-    // Taps outrun the reload that republishes [shift]; the next step must build on the last tap.
-    var pending by remember(shift, refused) { mutableStateOf(shift) }
-    Row(
-        Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text("BG offset", style = MaterialTheme.typography.bodyMedium)
-        OutlinedButton(
-            onClick = { haptics.perform(HapticEvent.SegmentTick); pending -= 5.0; onSet(pending) },
-        ) { Text("−5") }
-        Text(
-            signedMgdl(pending),
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold,
-            maxLines = 1,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.weight(1f),
-        )
-        Button(
-            onClick = { haptics.perform(HapticEvent.SegmentTick); pending += 5.0; onSet(pending) },
-        ) { Text("+5") }
-    }
-    refused?.let { Note("${signedMgdl(it)} refused (clamp ${clampMin?.let { c -> "%.0f".format(c) } ?: "?"})") }
-    if (pending != trained) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Note("Trained ${signedMgdl(trained)}")
-            TextButton(onClick = { haptics.perform(HapticEvent.Tap); onSet(null) }) { Text("Reset") }
-        }
-    }
-}
-
-private fun signedMgdl(v: Double): String =
-    if (v == Math.rint(v)) "%+d mg/dL".format(v.toLong()) else "%+.1f mg/dL".format(v)
 
 @Composable
 private fun KeyVal(k: String, v: String) {

@@ -33,8 +33,6 @@ data class KovatchevParams(
     val offset: Double,
     val bgClampMin: Double,
     val bgClampMax: Double,
-    /** mg/dL added before ln, removed after exp. */
-    val bgShift: Double = 0.0,
 )
 
 /** Parsed from a model `descriptor.json` — SPEC §2.4. */

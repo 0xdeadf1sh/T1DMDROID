@@ -598,8 +598,6 @@ class AppContainer(context: Context) {
             },
             // Read fresh each discovery.
             maxRunningProvider = { maxRunningModels() },
-            // Read fresh each discovery; an offset edit triggers that refresh itself.
-            bgShiftProvider = { settingsStore.bgShiftOverrides() },
             // Re-read for every discovered id.
             telemetryStore = KvTelemetryStore(repository),
             // Re-read every cycle; deserialize failure ⇒ null ⇒ frozen model, never half-applied.
@@ -1036,14 +1034,6 @@ class AppContainer(context: Context) {
     /** Snapped to an offered detent. */
     suspend fun setSmoothingWindow(window: Int) = settingsStore.setSavgolWindow(window)
 
-    /** Null returns [modelId] to its trained offset; stored forecasts and band correction stay. */
-    suspend fun setBgShift(modelId: String, mgdl: Double?) {
-        dropBacktest(modelId)
-        settingsStore.setBgShiftOverride(modelId, mgdl)
-        inferenceController.refreshModels()
-        reevaluateInferenceNow()
-    }
-
     /** Hydrates [alarmConfig] before the FGS reads it. */
     fun startInference() {
         appScope.launch {
@@ -1476,7 +1466,6 @@ class AppContainer(context: Context) {
             runCatching { repository.deleteBandCalibration(modelId) }
             runCatching { repository.deleteLorasForModel(modelId) }
             runCatching { repository.clearInfillForModel(modelId) }
-            runCatching { settingsStore.setBgShiftOverride(modelId, null) }
         }
         reevaluateInferenceNow()
     }

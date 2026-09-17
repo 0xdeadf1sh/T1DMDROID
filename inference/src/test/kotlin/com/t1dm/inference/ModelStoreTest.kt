@@ -1,8 +1,6 @@
 package com.t1dm.inference
 
 import com.t1dm.core.nativecore.StubNativeCore
-import org.json.JSONObject
-import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -36,21 +34,6 @@ class ModelStoreTest {
         assertFalse(File(dir, "alpha.neuron.pte").exists())
         assertTrue(File(dir, "beta.descriptor.json").exists())
         assertTrue(File(dir, "beta.xnnpack.pte").exists())
-    }
-
-    /** The parse reads the patched JSON whole, so every other key must survive exactly. */
-    @Test
-    fun bg_shift_patch_sets_only_the_shift() {
-        val obj = JSONObject(
-            """{"id":"a","kovatchev":{"SCALE":2.2211457449985317,"BG_CLAMP_MIN":-40.0},"geometry":{"T":340}}"""
-        )
-        val out = JSONObject(withBgShift(obj, 50.0))
-        val kov = out.getJSONObject("kovatchev")
-        assertEquals(50.0, kov.getDouble("BG_SHIFT"), 0.0)
-        assertEquals(2.2211457449985317, kov.getDouble("SCALE"), 0.0)
-        assertEquals(-40.0, kov.getDouble("BG_CLAMP_MIN"), 0.0)
-        assertEquals(340, out.getJSONObject("geometry").getInt("T"))
-        assertFalse(obj.getJSONObject("kovatchev").has("BG_SHIFT"))
     }
 
     @Test

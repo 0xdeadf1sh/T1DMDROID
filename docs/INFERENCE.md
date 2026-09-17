@@ -32,14 +32,6 @@ without a `kovatchev` block is rejected rather than defaulted, and the physical
 bounds it carries are what the rail-pinned degeneracy check tests against; given
 the wrong range that check cannot fire at all.
 
-## The BG offset
-
-A descriptor's `BG_SHIFT` is the offset the model was trained with. Each model's
-drill-down can override it; the override is written into the descriptor before
-the parse, so the parse's own bounds check accepts or refuses it. A refused
-override is named on the drill-down, and the trained offset runs. Changing the
-offset keeps the model's stored predictions and band correction.
-
 ## The optional BG pre-filter
 
 The reference pipeline applies no smoother. This app offers one, on the BG

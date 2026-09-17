@@ -38,12 +38,6 @@ data class ModelMeta(
     val executorchVersion: String? = null,
     val valStep: Int? = null,
     val reference: ReferenceMetrics? = null,
-    /** mg/dL, as running. */
-    val bgShiftMgdl: Double? = null,
-    /** The descriptor's own BG_SHIFT, mg/dL; 0 when it carries none. */
-    val trainedBgShiftMgdl: Double? = null,
-    /** An override the descriptor parse refused, mg/dL; the trained offset runs instead. */
-    val refusedBgShiftMgdl: Double? = null,
     val bgClampMinMgdl: Double? = null,
 )
 
