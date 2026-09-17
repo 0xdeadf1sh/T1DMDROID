@@ -43,6 +43,7 @@ import com.t1dm.core.model.TodBucket
 import com.t1dm.core.model.ChannelStat
 import com.t1dm.core.model.CurveEvent
 import com.t1dm.core.model.CurveKind
+import com.t1dm.core.model.BolusPk
 import com.t1dm.core.model.InsulinFamily
 import com.t1dm.core.model.InsulinPresetSpec
 import com.t1dm.core.model.DecodedAdvert
@@ -112,7 +113,7 @@ import uniffi.t1dm_core.causalSmooth as uniffiCausalSmooth
 import uniffi.t1dm_core.decodeAdvert as uniffiDecodeAdvert
 import uniffi.t1dm_core.decodeTime as uniffiDecodeTime
 import uniffi.t1dm_core.denormalizeSample as uniffiDenormalizeSample
-import uniffi.t1dm_core.expActionCurve as uniffiExpActionCurve
+import uniffi.t1dm_core.bolusPkForDose as uniffiBolusPkForDose
 import uniffi.t1dm_core.insulinPresetCatalog as uniffiInsulinPresetCatalog
 import uniffi.t1dm_core.extendBasal as uniffiExtendBasal
 import uniffi.t1dm_core.forecastDegeneracyCheck as uniffiForecastDegeneracyCheck
@@ -348,8 +349,8 @@ class UniffiNativeCore : NativeCore {
     override fun bateman(total: Double, durMin: Double, ka: Double, ke: Double): List<Double> =
         uniffiBateman(total, durMin, ka, ke)
 
-    override fun expActionCurve(total: Double, peakMin: Double, diaMin: Double): List<Double> =
-        uniffiExpActionCurve(total, peakMin, diaMin)
+    override fun bolusPkForDose(doseU: Double, k: Double, theta: Double, diaBaseHours: Double): BolusPk =
+        uniffiBolusPkForDose(doseU, k, theta, diaBaseHours).let { BolusPk(it.k, it.theta, it.durationMin) }
 
     override fun insulinPresetCatalog(): List<InsulinPresetSpec> =
         uniffiInsulinPresetCatalog().map { it.toModel() }
@@ -854,7 +855,7 @@ private fun CurveKind.toUniffi(): UniffiCurveKind = when (this) {
 }
 
 private fun UniffiInsulinFamily.toModel(): InsulinFamily = when (this) {
-    UniffiInsulinFamily.RAPID_EXP -> InsulinFamily.RapidExp
+    UniffiInsulinFamily.RAPID_GAMMA -> InsulinFamily.RapidGamma
     UniffiInsulinFamily.BASAL_BATEMAN -> InsulinFamily.BasalBateman
     else -> throw IllegalStateException("Unexpected UniffiInsulinFamily: $this")
 }
@@ -863,11 +864,12 @@ private fun UniffiInsulinFamily.toModel(): InsulinFamily = when (this) {
 private fun UniffiInsulinPresetSpec.toModel(): InsulinPresetSpec = InsulinPresetSpec(
     family = family.toModel(),
     label = label,
-    peakMin = peakMin,
-    diaMin = diaMin,
+    gammaK = gammaK,
+    gammaTheta = gammaTheta,
+    diaBaseHours = diaBaseHours,
     kaPerHour = kaPerHour,
     kePerHour = kePerHour,
-    offDistribution = offDistribution,
+    actionMin = actionMin,
     citation = citation,
 )
 

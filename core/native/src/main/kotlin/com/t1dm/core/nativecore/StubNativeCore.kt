@@ -32,9 +32,9 @@ import com.t1dm.core.model.DecodedAdvert
 import com.t1dm.core.model.ForecastWindow
 import com.t1dm.core.model.MetricsConfig
 import com.t1dm.core.model.MetricsSuite
+import com.t1dm.core.model.BolusPk
 import com.t1dm.core.model.InsulinFamily
 import com.t1dm.core.model.InsulinPresetSpec
-import kotlin.math.ln
 import com.t1dm.core.model.Forecast
 import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.ModelDescriptor
@@ -42,6 +42,7 @@ import com.t1dm.core.model.PredictedTime
 import kotlin.math.exp
 import kotlin.math.pow
 import kotlin.math.roundToLong
+import kotlin.math.sqrt
 
 /** Pure-Kotlin stand-in for host-only builds, where there is no .so to load. */
 class StubNativeCore : NativeCore {
@@ -161,13 +162,17 @@ class StubNativeCore : NativeCore {
     override fun gamma(total: Double, k: Double, theta: Double, durMin: Double): List<Double> {
         val n = (durMin / DT_MIN).toInt()
         if (n <= 0) return listOf(0.0)
+        val h = DT_MIN / GAMMA_CURVE_SUBSTEPS
         val v = DoubleArray(n)
         var area = 0.0
         for (i in 0 until n) {
-            val t = (i + 1) * DT_MIN
-            val x = t.pow(k - 1.0) * exp(-t / theta)
-            v[i] = x
-            area += x
+            var acc = 0.0
+            for (j in 0 until GAMMA_CURVE_SUBSTEPS) {
+                val t = ((i * GAMMA_CURVE_SUBSTEPS + j) + 0.5) * h
+                acc += t.pow(k - 1.0) * exp(-t / theta)
+            }
+            v[i] = acc / GAMMA_CURVE_SUBSTEPS
+            area += v[i]
         }
         if (area > 0.0) for (i in 0 until n) v[i] *= total / area
         return v.asList()
@@ -182,7 +187,7 @@ class StubNativeCore : NativeCore {
             val th = i * (DT_MIN / 60.0)
             curve[i] = maxOf(0.0, exp(-ke * th) - exp(-kaEff * th))
         }
-        val tail = (BASAL_TAIL_CLIP_HOURS * 60.0 / DT_MIN).toInt()
+        val tail = (n * BASAL_TAIL_CLIP_FRACTION).toInt()
         if (tail in 1 until n) {
             val start = n - tail
             for (j in 0 until tail) {
@@ -199,44 +204,26 @@ class StubNativeCore : NativeCore {
         return curve.asList()
     }
 
-    override fun expActionCurve(total: Double, peakMin: Double, diaMin: Double): List<Double> {
-        // Loop/OpenAPS exponential activity model.
-        val n = (diaMin / DT_MIN).toInt()
-        if (n <= 0 || peakMin <= 0.0 || peakMin >= diaMin / 2.0) return listOf(0.0)
-        val tp = peakMin
-        val td = diaMin
-        val tau = tp * (1.0 - tp / td) / (1.0 - 2.0 * tp / td)
-        val a = 2.0 * tau / td
-        val s = 1.0 / (1.0 - a + (1.0 + a) * exp(-td / tau))
-        val v = DoubleArray(n)
-        var area = 0.0
-        for (i in 0 until n) {
-            val t = (i + 1) * DT_MIN
-            val ia = maxOf(0.0, (s / (tau * tau)) * t * (1.0 - t / td) * exp(-t / tau))
-            v[i] = ia
-            area += ia
-        }
-        if (area > 0.0) for (i in 0 until n) v[i] *= total / area
-        return v.asList()
+    override fun bolusPkForDose(doseU: Double, k: Double, theta: Double, diaBaseHours: Double): BolusPk {
+        val x = sqrt(maxOf(doseU, 0.5)) - sqrt(5.0)
+        val durH = (diaBaseHours + BOLUS_DIA_DOSE_SCALE * x).coerceIn(BOLUS_DIA_MIN_HOURS, BOLUS_DIA_MAX_HOURS)
+        return BolusPk(k, theta * (1.0 + BOLUS_THETA_DOSE_SLOPE * x), durH * 60.0)
     }
 
     override fun insulinPresetCatalog(): List<InsulinPresetSpec> {
-        // Values and citations transcribed from the Rust `insulin_preset_catalog()`.
-        fun rapid(label: String, peak: Double, dia: Double, cite: String) =
-            InsulinPresetSpec(InsulinFamily.RapidExp, label, peak, dia, 0.0, 0.0, true, cite)
-        fun basal(label: String, diaH: Double, ka: Double, ke: Double, cite: String) =
-            InsulinPresetSpec(
-                InsulinFamily.BasalBateman, label,
-                (ln(ka) - ln(ke)) / (ka - ke) * 60.0, diaH * 60.0, ka, ke, true, cite,
-            )
+        // Transcribed from the Rust `insulin_preset_catalog()`.
+        fun rapid(label: String, k: Double, theta: Double, dia: Double, cite: String) =
+            InsulinPresetSpec(InsulinFamily.RapidGamma, label, k, theta, dia, 0.0, 0.0, 0.0, cite)
+        fun basal(label: String, ka: Double, ke: Double, actionH: Double) =
+            InsulinPresetSpec(InsulinFamily.BasalBateman, label, 0.0, 0.0, 0.0, ka, ke, actionH * 60.0, "Label half-life")
         return listOf(
-            rapid("Aspart · NovoRapid/Novolog", 75.0, 360.0, "Loop/OpenAPS rapid-acting adult exponential: peak 75 min, DIA 6 h"),
-            rapid("Faster aspart · Fiasp", 55.0, 360.0, "Loop `.fiasp` exponential preset: peak 55 min, DIA 6 h"),
-            rapid("Lispro · Humalog", 75.0, 360.0, "Loop/OpenAPS rapid-acting adult exponential: peak 75 min, DIA 6 h"),
-            rapid("Ultra-rapid lispro · Lyumjev", 45.0, 300.0, "Ultra-rapid class (Fiasp-like); Bionic Wookiee 2022 peak ≈45 min, DIA 5 h"),
-            basal("Glargine U100 · Lantus", 24.0, 0.30, 0.07, "Glargine U100 duration ~24 h (Healio ultra-long-acting review)"),
-            basal("Glargine U300 · Toujeo", 36.0, 0.18, 0.05, "Glargine U300 duration ~36 h, flatter GIR than U100 (Healio review)"),
-            basal("Degludec · Tresiba", 42.0, 0.12, 0.04, "Degludec duration ~42 h, flat profile, t½ >25 h (Healio review)"),
+            rapid("Aspart · NovoRapid/Novolog", 3.0, 45.0, 5.6, "Clamp fit, Heise 2015"),
+            rapid("Faster aspart · Fiasp", 2.55, 52.0, 4.7, "Clamp fit, Heise 2015 and label dose tables"),
+            rapid("Lispro · Humalog", 3.0, 45.0, 5.6, "Clamp fit, Heise 2015"),
+            rapid("Ultra-rapid lispro · Lyumjev", 2.55, 52.0, 4.7, "Clamp fit, Heise 2015 and label dose tables"),
+            basal("Glargine U100 · Lantus", 0.477, 0.0499, 73.0),
+            basal("Glargine U300 · Toujeo", 0.156, 0.0377, 101.0),
+            basal("Degludec · Tresiba", 0.187, 0.0277, 133.0),
         )
     }
 
@@ -362,6 +349,11 @@ class StubNativeCore : NativeCore {
         const val STEP_MS = 300_000L
         const val MIN_MS = 60_000L
         const val DAY_MS = 86_400_000L
-        const val BASAL_TAIL_CLIP_HOURS = 5.0
+        const val BASAL_TAIL_CLIP_FRACTION = 1.0 / 6.0
+        const val GAMMA_CURVE_SUBSTEPS = 16
+        const val BOLUS_DIA_DOSE_SCALE = 0.8
+        const val BOLUS_DIA_MIN_HOURS = 2.0
+        const val BOLUS_DIA_MAX_HOURS = 9.0
+        const val BOLUS_THETA_DOSE_SLOPE = 0.17
     }
 }

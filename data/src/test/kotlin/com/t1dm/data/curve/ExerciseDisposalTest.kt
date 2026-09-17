@@ -113,8 +113,8 @@ class ExerciseDisposalTest {
         val p = ExerciseDisposal.paramsFor(60.0)
         val values = engine.gamma(p.grams, p.k, p.theta, p.durationMin)
         val peak = values.indices.maxByOrNull { values[it] }!!
-        // Buckets are (i+1)·5 minutes, so the mode at 30 min lands on index 5.
-        assertEquals(5, peak)
+        // Bucket i averages [5i, 5i+5) min; right skew puts the 30-min mode's heavier side in index 6.
+        assertEquals(6, peak)
         assertTrue(values.first() < values[peak])
         assertTrue(values.last() < values[peak])
     }

@@ -593,7 +593,7 @@ class AppContainer(context: Context) {
             smoothingWindowProvider = { smoothingWindow() },
             // Real insulin unit: guard's mg/dL-per-unit is what the sensitivity read-out reports.
             probeInsulin = ProbeInsulinPort { units, steps ->
-                val curve = presetCurve(units, resolveRapidPreset(null))
+                val curve = curveEngine.presetCurve(units, resolveRapidPreset(null))
                 DoubleArray(steps) { i -> curve.getOrElse(i) { 0.0 } }
             },
             // Read fresh each discovery.
@@ -1522,7 +1522,7 @@ class AppContainer(context: Context) {
     fun startBuilders() {
         appScope.launch {
             mealsController.seedIfEmpty()
-            insulinController.seedBuiltinsIfEmpty()
+            insulinController.syncBuiltins()
             exerciseController.reconcileOpenSessions(System.currentTimeMillis())
         }
     }
@@ -1576,7 +1576,7 @@ class AppContainer(context: Context) {
 
     /** Bit-for-bit [logBolus]/[logBasal]'s curve for [spec]; preset by value so a chip redraws. */
     val previewDoseCurve: suspend (Double, InsulinPresetSpec) -> DoubleArray = { units, spec ->
-        presetCurve(units, spec)
+        curveEngine.presetCurve(units, spec)
     }
 
     /** feat1/feat2 over a grid window; model uses COMBINED insulin, not the basal series. */
@@ -1702,8 +1702,7 @@ class AppContainer(context: Context) {
 
     /** §3.3. The advisor has no pick of its own, so it searches against the insulin last logged. */
     private val bolusResolver = BolusResolver { doseU, atMs ->
-        val spec = resolveRapidPreset(null)
-        listOf(curveEngine.rapidEvent(doseU, atMs, spec.peakMin, spec.diaMin))
+        listOf(curveEngine.rapidEvent(doseU, atMs, resolveRapidPreset(null)))
     }
 
     private val bolusCalculator by lazy { BolusCalculator(rollingForecaster, bolusResolver) }
@@ -1932,12 +1931,6 @@ class AppContainer(context: Context) {
     /** Insulin screen's own writes; [insulinChoices] unions with builder's insulin_type rows. */
     suspend fun insulinPresetCatalog(): List<InsulinPresetSpec> = curveEngine.presetCatalog()
 
-    /** The single place a preset becomes numbers, so preview and commit cannot diverge. */
-    private suspend fun presetCurve(units: Double, spec: InsulinPresetSpec): DoubleArray = when (spec.family) {
-        InsulinFamily.RapidExp -> curveEngine.expAction(units, spec.peakMin, spec.diaMin)
-        InsulinFamily.BasalBateman -> curveEngine.bateman(units, spec.diaMin, spec.kaPerHour, spec.kePerHour)
-    }
-
     /** Throws on an empty catalogue rather than substitute a curve: an invented PK is worse. */
     private suspend fun resolvePreset(family: InsulinFamily, requestedLabel: String?): InsulinPresetSpec =
         requireNotNull(
@@ -1946,13 +1939,13 @@ class AppContainer(context: Context) {
                 family = family,
                 requested = requestedLabel,
                 lastLogged = when (family) {
-                    InsulinFamily.RapidExp -> settingsStore.lastRapidPreset()
+                    InsulinFamily.RapidGamma -> settingsStore.lastRapidPreset()
                     InsulinFamily.BasalBateman -> settingsStore.lastBasalPreset()
                 },
             ),
         ) { "The insulin preset catalogue holds no $family entry." }
 
-    private suspend fun resolveRapidPreset(label: String?) = resolvePreset(InsulinFamily.RapidExp, label)
+    private suspend fun resolveRapidPreset(label: String?) = resolvePreset(InsulinFamily.RapidGamma, label)
 
     private suspend fun resolveBasalPreset(label: String?) = resolvePreset(InsulinFamily.BasalBateman, label)
 
@@ -1966,18 +1959,17 @@ class AppContainer(context: Context) {
         require(units.isFinite() && units > 0.0) { "Dose units must be positive and finite (was $units)." }
     }
 
-    /** Null [presetLabel] falls back to last insulin logged; mirror built from PERSISTED entity. */
+    /** Row carries the dose's gamma k/theta/DIA (§3.1); null label falls to last logged. */
     suspend fun logBolus(units: Double, presetLabel: String? = null): LogHandle {
         requireLoggableDose(units)
         val now = System.currentTimeMillis()
         val tz = tzOffsetMin(now)
         val rapid = resolveRapidPreset(presetLabel)
-        val curve = presetCurve(units, rapid)
+        val pk = curveEngine.bolusPk(units, rapid)
         val dose = repository.logLoggedDose(
             LoggedDoseEntity(
-                clientId = "", tsMs = now, kind = DoseKind.BOLUS, units = units, durationMin = rapid.diaMin,
-                k = null, theta = null, kaPerHour = null, kePerHour = null,
-                customCurve = if (curve.isEmpty()) null else curve.toList().toBlob(),
+                clientId = "", tsMs = now, kind = DoseKind.BOLUS, units = units, durationMin = pk.durationMin,
+                k = pk.k, theta = pk.theta, kaPerHour = null, kePerHour = null,
                 tzOffsetMin = tz, note = rapid.label, updatedAt = now,
             ),
         )
@@ -1987,7 +1979,7 @@ class AppContainer(context: Context) {
         return dose.handle("${fmtAmount(units)} U bolus · ${rapid.label}")
     }
 
-    /** Carries the preset's DIA, ka/ke, so Bateman reconstructs analytically; null as logBolus. */
+    /** Long-acting twin of [logBolus]: row carries the action window + ka/ke, Bateman reconstructs it. */
     suspend fun logBasal(units: Double, presetLabel: String? = null): LogHandle {
         requireLoggableDose(units)
         val now = System.currentTimeMillis()
@@ -1995,7 +1987,7 @@ class AppContainer(context: Context) {
         val basal = resolveBasalPreset(presetLabel)
         val dose = repository.logLoggedDose(
             LoggedDoseEntity(
-                clientId = "", tsMs = now, kind = DoseKind.BASAL, units = units, durationMin = basal.diaMin,
+                clientId = "", tsMs = now, kind = DoseKind.BASAL, units = units, durationMin = basal.actionMin,
                 k = null, theta = null, kaPerHour = basal.kaPerHour, kePerHour = basal.kePerHour,
                 tzOffsetMin = tz, note = basal.label, updatedAt = now,
             ),
@@ -2010,7 +2002,7 @@ class AppContainer(context: Context) {
     private suspend fun rememberLoggedPreset(spec: InsulinPresetSpec, requestedLabel: String?) {
         if (requestedLabel == null) return
         when (spec.family) {
-            InsulinFamily.RapidExp -> settingsStore.setLastRapidPreset(spec.label)
+            InsulinFamily.RapidGamma -> settingsStore.setLastRapidPreset(spec.label)
             InsulinFamily.BasalBateman -> settingsStore.setLastBasalPreset(spec.label)
         }
     }
@@ -2173,23 +2165,22 @@ class AppContainer(context: Context) {
         reforecastAfterCurveWrite()
     }
 
-    /** Every PK field a preset write sets, as logBolus/logBasal do: rapid curve, basal analytic. */
+    /** Every PK field set as [logBolus]/[logBasal] set it. */
     private suspend fun LoggedDoseEntity.retypedTo(
         spec: InsulinPresetSpec,
         units: Double,
         tsMs: Long,
     ): LoggedDoseEntity = when (spec.family) {
-        InsulinFamily.RapidExp -> {
-            val curve = presetCurve(units, spec)
+        InsulinFamily.RapidGamma -> {
+            val pk = curveEngine.bolusPk(units, spec)
             copy(
-                tsMs = tsMs, units = units, kind = DoseKind.BOLUS, durationMin = spec.diaMin,
-                k = null, theta = null, kaPerHour = null, kePerHour = null,
-                customCurve = if (curve.isEmpty()) null else curve.toList().toBlob(),
-                note = spec.label,
+                tsMs = tsMs, units = units, kind = DoseKind.BOLUS, durationMin = pk.durationMin,
+                k = pk.k, theta = pk.theta, kaPerHour = null, kePerHour = null,
+                customCurve = null, note = spec.label,
             )
         }
         InsulinFamily.BasalBateman -> copy(
-            tsMs = tsMs, units = units, kind = DoseKind.BASAL, durationMin = spec.diaMin,
+            tsMs = tsMs, units = units, kind = DoseKind.BASAL, durationMin = spec.actionMin,
             k = null, theta = null, kaPerHour = spec.kaPerHour, kePerHour = spec.kePerHour,
             customCurve = null, note = spec.label,
         )

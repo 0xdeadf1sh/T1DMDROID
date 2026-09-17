@@ -14,6 +14,8 @@ android {
     }
     // androidTest assets so MigrationTestHelper can read the exported schemas.
     sourceSets.getByName("androidTest").assets.srcDir("$projectDir/schemas")
+    // CurveGoldenTest reads the Rust core's curve fixture, generated from T1DMSIM.
+    sourceSets.getByName("test").resources.srcDir(rootProject.file("crates/t1dm-core/src/testdata"))
 }
 
 room {

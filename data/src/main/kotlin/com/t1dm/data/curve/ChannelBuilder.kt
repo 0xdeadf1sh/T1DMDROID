@@ -214,8 +214,8 @@ class ChannelBuilder(
         .maxOrNull()
 
     companion object {
-        /** Minutes. Covers the longest plausible tail, degludec ~42 h. */
-        const val PAD_MIN: Long = 48 * 60
+        /** Minutes. Covers the longest action window, degludec 133 h. */
+        const val PAD_MIN: Long = 134 * 60
         val PAD_MS: Long = PAD_MIN * 60_000
     }
 }

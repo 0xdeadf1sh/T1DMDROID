@@ -391,7 +391,7 @@ class RollingForecasterAlignmentTest {
         override fun decodeTime(timeLogits: List<Double>, nBins: Int, binHours: Double): PredictedTime? = unused()
         override fun gamma(total: Double, k: Double, theta: Double, durMin: Double): List<Double> = unused()
         override fun bateman(total: Double, durMin: Double, ka: Double, ke: Double): List<Double> = unused()
-        override fun expActionCurve(total: Double, peakMin: Double, diaMin: Double): List<Double> = unused()
+        override fun bolusPkForDose(doseU: Double, k: Double, theta: Double, diaBaseHours: Double) = unused()
         override fun insulinPresetCatalog(): List<InsulinPresetSpec> = unused()
         override fun extendBasal(schedule: BasalSchedule, fromMs: Long, toMs: Long): List<CurveEvent> = unused()
         override fun advancedStats(samples: List<StatSample>, targetLow: Int, targetHigh: Int, agpBins: Int): AdvancedStats = unused()

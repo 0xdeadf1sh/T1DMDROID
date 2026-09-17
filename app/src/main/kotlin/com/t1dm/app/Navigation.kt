@@ -1847,12 +1847,10 @@ private fun T1dmNavHost(
             val insulinCurve = remember(insEnc) { BezierCurve.decode(insEnc) ?: BezierCurve.default(300.0) }
             val carbEquiv by container.settingsStore.carbEquivPerMin
                 .collectAsState(ExerciseDisposal.DEFAULT_CARB_EQUIV_PER_MIN)
+            val insulinPresets by produceState(emptyList<InsulinPresetSpec>()) { value = container.insulinPresetCatalog() }
             CurveParamsScreen(
                 params = CurveParams(
-                    basalKaPerHour = CurveEngine.Presets.BASAL_KA_PER_HOUR,
-                    basalKePerHour = CurveEngine.Presets.BASAL_KE_PER_HOUR,
-                    lantusDiaHours = CurveEngine.Presets.LANTUS_DIA_MIN / 60.0,
-                    tresibaDiaHours = CurveEngine.Presets.TRESIBA_DIA_MIN / 60.0,
+                    insulinPresets = insulinPresets,
                     carbHighGiK = hi.first, carbHighGiTheta = hi.second,
                     carbLowGiK = lo.first, carbLowGiTheta = lo.second,
                     exerciseK = ExerciseDisposal.K, exerciseTheta = ExerciseDisposal.THETA,

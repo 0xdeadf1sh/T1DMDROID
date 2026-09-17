@@ -1,6 +1,6 @@
 package com.t1dm.core.model
 
-/** BOLUS (rapid) is gamma peaking ~50 min; BASAL (long) a broad Bateman, near-flat once tiled. */
+/** [BOLUS] is a dose-scaled gamma; [BASAL] a broad Bateman, near-flat once tiled. */
 enum class InsulinKind { BOLUS, BASAL }
 
 /** Self-describing PK params, so a logged dose reconstructs its curve even if defaults change. */
@@ -26,7 +26,7 @@ sealed interface InsulinChoice {
     data class Preset(val spec: InsulinPresetSpec) : InsulinChoice {
         override val label: String get() = spec.label
         override val kind: InsulinKind
-            get() = if (spec.family == InsulinFamily.RapidExp) InsulinKind.BOLUS else InsulinKind.BASAL
+            get() = if (spec.family == InsulinFamily.RapidGamma) InsulinKind.BOLUS else InsulinKind.BASAL
     }
 
     /** An `insulin_type` row, which the type builder's writes name. */

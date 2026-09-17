@@ -816,10 +816,7 @@ class T1dmRepository(
         }
     }
 
-    suspend fun insulinTypeBuiltinCount(): Int = withContext(io) { db.insulinTypeDao().builtinCount() }
-
-    suspend fun seedInsulinTypes(types: List<InsulinTypeEntity>) =
-        withContext(io) { db.insulinTypeDao().insertAll(types) }
+    suspend fun builtinInsulinTypes(): List<InsulinTypeEntity> = withContext(io) { db.insulinTypeDao().builtins() }
 
     fun observeInsulinTypes(): Flow<List<InsulinTypeEntity>> = db.insulinTypeDao().observeAll()
 

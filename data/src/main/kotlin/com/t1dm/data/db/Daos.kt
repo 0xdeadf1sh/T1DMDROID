@@ -672,7 +672,7 @@ interface InsulinTypeDao {
 
     @Upsert suspend fun upsert(type: InsulinTypeEntity)
 
-    @Query("SELECT COUNT(*) FROM insulin_type WHERE builtin = 1") suspend fun builtinCount(): Int
+    @Query("SELECT * FROM insulin_type WHERE builtin = 1") suspend fun builtins(): List<InsulinTypeEntity>
 
     @Query("SELECT * FROM insulin_type ORDER BY builtin DESC, name")
     fun observeAll(): Flow<List<InsulinTypeEntity>>

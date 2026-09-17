@@ -77,7 +77,7 @@ fun InsulinScreen(
     var tab by remember { mutableStateOf(Tab.BOLUS) }
     val scroll = rememberScrollState()
     val haptics = rememberT1dmHaptics()
-    val rapids = remember(presetCatalog) { presetCatalog.filter { it.family == InsulinFamily.RapidExp } }
+    val rapids = remember(presetCatalog) { presetCatalog.filter { it.family == InsulinFamily.RapidGamma } }
     val basals = remember(presetCatalog) { presetCatalog.filter { it.family == InsulinFamily.BasalBateman } }
 
     Column(

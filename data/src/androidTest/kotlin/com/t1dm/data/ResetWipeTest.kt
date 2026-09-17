@@ -230,7 +230,7 @@ class ResetWipeTest {
 
         assertEquals("seed food kept", 1L, count("food"))
         assertEquals("custom food wiped", 0L, count("food WHERE custom = 1"))
-        assertEquals("builtin insulin kept", 1L, db.insulinTypeDao().builtinCount().toLong())
+        assertEquals("builtin insulin kept", 1, db.insulinTypeDao().builtins().size)
         assertEquals("custom insulin wiped", 0L, count("insulin_type WHERE builtin = 0"))
 
         assertEquals("kv fully cleared (nonce ceilings + pairing + settings)", 0L, count("kv"))

@@ -45,15 +45,15 @@ class LogEditDialogTest {
     }
 
     private fun preset(label: String, family: InsulinFamily) = InsulinChoice.Preset(
-        InsulinPresetSpec(family, label, 75.0, 360.0, 0.3, 0.07, true, "cite"),
+        InsulinPresetSpec(family, label, 3.0, 45.0, 5.6, 0.477, 0.0499, 4380.0, "cite"),
     )
 
     private fun type(name: String, kind: InsulinKind) =
         InsulinChoice.Type(InsulinType(id = 1, name = name, kind = kind, durationMin = 360.0))
 
     private val catalogue = listOf(
-        preset("Aspart · NovoRapid/Novolog", InsulinFamily.RapidExp),
-        preset("Lispro · Humalog", InsulinFamily.RapidExp),
+        preset("Aspart · NovoRapid/Novolog", InsulinFamily.RapidGamma),
+        preset("Lispro · Humalog", InsulinFamily.RapidGamma),
         preset("Glargine U100 · Lantus", InsulinFamily.BasalBateman),
         type("My pen", InsulinKind.BOLUS),
     )

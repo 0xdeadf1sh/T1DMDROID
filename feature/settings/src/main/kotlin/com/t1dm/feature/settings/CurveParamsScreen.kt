@@ -24,16 +24,15 @@ import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.rememberHapticDetent
 import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.model.BezierCurve
+import com.t1dm.core.model.InsulinFamily
+import com.t1dm.core.model.InsulinPresetSpec
 import com.t1dm.ui.graph.CurveEditor
 import com.t1dm.ui.graph.CurvePreview
 import kotlin.math.roundToInt
 
 /** The clinical insulin preset is not chosen here; the insulin panel picks it per dose. */
 data class CurveParams(
-    val basalKaPerHour: Double,
-    val basalKePerHour: Double,
-    val lantusDiaHours: Double,
-    val tresibaDiaHours: Double,
+    val insulinPresets: List<InsulinPresetSpec>,
     val carbHighGiK: Double,
     val carbHighGiTheta: Double,
     val carbLowGiK: Double,
@@ -69,11 +68,15 @@ fun CurveParamsScreen(
             BezierDesigner(insulinCurve, defaultDurationMin = 300.0, onSave = onSaveInsulinCurve)
         }
 
-        SettingsSectionHeader("Long-acting basal preset (Bateman)")
-        Kv("Absorption kₐ", "%.2f /h".format(params.basalKaPerHour))
-        Kv("Elimination kₑ", "%.2f /h".format(params.basalKePerHour))
-        Kv("Lantus duration", "%.0f h".format(params.lantusDiaHours))
-        Kv("Tresiba duration", "%.0f h".format(params.tresibaDiaHours))
+        SettingsSectionHeader("Rapid insulin (gamma, at 5 U)")
+        params.insulinPresets.filter { it.family == InsulinFamily.RapidGamma }.forEach {
+            Kv(it.label, "k %.2f · θ %.0f min · %.1f h".format(it.gammaK, it.gammaTheta, it.diaBaseHours))
+        }
+
+        SettingsSectionHeader("Basal insulin (Bateman)")
+        params.insulinPresets.filter { it.family == InsulinFamily.BasalBateman }.forEach {
+            Kv(it.label, "kₐ %.3f · kₑ %.4f /h · %.0f h".format(it.kaPerHour, it.kePerHour, it.actionMin / 60.0))
+        }
 
         SettingsSectionHeader("Carb appearance preset (GI → gamma)")
         SettingsNote("High-GI carbs peak early and sharp; low-GI spread out.")

@@ -25,6 +25,9 @@ class ChannelBuilderTest {
     )
 
     private val engine = CurveEngine(StubNativeCore(), dispatchers)
+    private val catalog = StubNativeCore().insulinPresetCatalog()
+    private val aspart = catalog.first { it.label.startsWith("Aspart") }
+    private val tresiba = catalog.first { it.label.startsWith("Degludec") }
 
     /** [insulin] is BOLUS-only; [basalInjections] apply only when no [schedule] is active. */
     private class FakeStore(
@@ -54,10 +57,10 @@ class ChannelBuilderTest {
     fun contextChannels_separate_carb_and_insulin_by_kind() = runTest {
         val g0 = 1_000_000_000_000L
         val carb = engine.carbEvent(grams = 40.0, startMs = g0, k = 3.0, theta = 20.0, durMin = 240.0)
-        val bolus = engine.rapidEvent(units = 6.0, startMs = g0, peakMin = 75.0, diaMin = 360.0)
+        val bolus = engine.rapidEvent(units = 6.0, startMs = g0, spec = aspart)
         val builder = ChannelBuilder(engine, FakeStore(carbs = listOf(carb), insulin = listOf(bolus)))
 
-        val n = 72 // 6 h, covering the 360-min rapid DIA
+        val n = 72 // 6 h, covering 6 U of aspart's 346-min action
         val ch = builder.contextChannels(g0, n)
         assertEquals(40.0, ch.carb.sum(), 1e-6)
         assertEquals(6.0, ch.insulin.sum(), 1e-6)
@@ -67,11 +70,11 @@ class ChannelBuilderTest {
     @Test
     fun futureOverrides_carries_existing_tail_and_injects_candidate() = runTest {
         val rollStart = 2_000_000_000_000L
-        val existing = engine.rapidEvent(units = 5.0, startMs = rollStart - 20 * 60_000L, peakMin = 75.0, diaMin = 360.0)
+        val existing = engine.rapidEvent(units = 5.0, startMs = rollStart - 20 * 60_000L, spec = aspart)
         val builder = ChannelBuilder(engine, FakeStore(insulin = listOf(existing)))
 
         val n = 60 // 5 h horizon
-        val candidate = listOf(engine.rapidEvent(units = 3.0, startMs = rollStart, peakMin = 75.0, diaMin = 360.0))
+        val candidate = listOf(engine.rapidEvent(units = 3.0, startMs = rollStart, spec = aspart))
         val fc = builder.futureOverrides(rollStart, n, announced = emptyList(), candidate = candidate)
 
         val tailOnly = builder.futureOverrides(rollStart, n, emptyList(), null)
@@ -86,7 +89,7 @@ class ChannelBuilderTest {
         // Channel order: carb→feat1, insulin→feat2, no swap.
         val rollStart = 4_000_000_000_000L
         val committedMeal = engine.carbEvent(grams = 50.0, startMs = rollStart - 15 * 60_000L, k = 3.0, theta = 20.0, durMin = 240.0)
-        val committedBolus = engine.rapidEvent(units = 4.0, startMs = rollStart - 15 * 60_000L, peakMin = 75.0, diaMin = 360.0)
+        val committedBolus = engine.rapidEvent(units = 4.0, startMs = rollStart - 15 * 60_000L, spec = aspart)
         val builder = ChannelBuilder(engine, FakeStore(carbs = listOf(committedMeal), insulin = listOf(committedBolus)))
 
         val fc = builder.futureOverrides(rollStart, nSteps = 48, announced = emptyList(), candidate = null)
@@ -108,9 +111,9 @@ class ChannelBuilderTest {
                 BasalDoseSpec(
                     timeOfDayMin = 8 * 60,
                     doseU = 24.0,
-                    durationMin = CurveEngine.Presets.TRESIBA_DIA_MIN,
-                    kaPerHour = CurveEngine.Presets.BASAL_KA_PER_HOUR,
-                    kePerHour = CurveEngine.Presets.BASAL_KE_PER_HOUR,
+                    durationMin = tresiba.actionMin,
+                    kaPerHour = tresiba.kaPerHour,
+                    kePerHour = tresiba.kePerHour,
                 ),
             ),
         )
@@ -131,15 +134,15 @@ class ChannelBuilderTest {
                 BasalDoseSpec(
                     timeOfDayMin = 8 * 60,
                     doseU = 24.0,
-                    durationMin = CurveEngine.Presets.TRESIBA_DIA_MIN,
-                    kaPerHour = CurveEngine.Presets.BASAL_KA_PER_HOUR,
-                    kePerHour = CurveEngine.Presets.BASAL_KE_PER_HOUR,
+                    durationMin = tresiba.actionMin,
+                    kaPerHour = tresiba.kaPerHour,
+                    kePerHour = tresiba.kePerHour,
                 ),
             ),
         )
         val injection = CurveEvent(
             g0, CurveEngine.STEP_MS, CurveKind.INSULIN, 12.0,
-            engine.bateman(12.0, CurveEngine.Presets.TRESIBA_DIA_MIN, CurveEngine.Presets.BASAL_KA_PER_HOUR, CurveEngine.Presets.BASAL_KE_PER_HOUR).toList(),
+            engine.bateman(12.0, tresiba.actionMin, tresiba.kaPerHour, tresiba.kePerHour).toList(),
         )
         val inj = listOf(injection)
 
@@ -170,10 +173,10 @@ class ChannelBuilderTest {
         val g0 = 3_000_000_000_000L
         val n = 72
         val meal = engine.carbEvent(grams = 35.0, startMs = g0, k = 3.0, theta = 20.0, durMin = 240.0)
-        val bolus = engine.rapidEvent(units = 5.0, startMs = g0, peakMin = 75.0, diaMin = 360.0)
+        val bolus = engine.rapidEvent(units = 5.0, startMs = g0, spec = aspart)
         val injection = CurveEvent(
             g0, CurveEngine.STEP_MS, CurveKind.INSULIN, 14.0,
-            engine.bateman(14.0, CurveEngine.Presets.TRESIBA_DIA_MIN, CurveEngine.Presets.BASAL_KA_PER_HOUR, CurveEngine.Presets.BASAL_KE_PER_HOUR).toList(),
+            engine.bateman(14.0, tresiba.actionMin, tresiba.kaPerHour, tresiba.kePerHour).toList(),
         )
         val builder = ChannelBuilder(
             engine,
@@ -193,7 +196,7 @@ class ChannelBuilderTest {
     @Test
     fun overlayChannels_gathers_the_window_once() = runTest {
         val g0 = 3_500_000_000_000L
-        val store = FakeStore(insulin = listOf(engine.rapidEvent(units = 2.0, startMs = g0, peakMin = 75.0, diaMin = 360.0)))
+        val store = FakeStore(insulin = listOf(engine.rapidEvent(units = 2.0, startMs = g0, spec = aspart)))
         val builder = ChannelBuilder(engine, store)
 
         builder.overlayChannels(g0, 72)
@@ -211,9 +214,9 @@ class ChannelBuilderTest {
                 BasalDoseSpec(
                     timeOfDayMin = 8 * 60,
                     doseU = 20.0,
-                    durationMin = CurveEngine.Presets.TRESIBA_DIA_MIN,
-                    kaPerHour = CurveEngine.Presets.BASAL_KA_PER_HOUR,
-                    kePerHour = CurveEngine.Presets.BASAL_KE_PER_HOUR,
+                    durationMin = tresiba.actionMin,
+                    kaPerHour = tresiba.kaPerHour,
+                    kePerHour = tresiba.kePerHour,
                 ),
             ),
         )
@@ -230,7 +233,7 @@ class ChannelBuilderTest {
     @Test
     fun insulinZeroMs_single_bolus_is_last_nonzero_step_of_its_pk() = runTest {
         val g0 = 1_000_000_000_000L
-        val bolus = engine.rapidEvent(units = 5.0, startMs = g0, peakMin = 75.0, diaMin = 360.0)
+        val bolus = engine.rapidEvent(units = 5.0, startMs = g0, spec = aspart)
         val builder = ChannelBuilder(engine, FakeStore(insulin = listOf(bolus)))
 
         val expected = g0 + bolus.values.indexOfLast { it > 0.0 } * bolus.stepMs
@@ -246,16 +249,16 @@ class ChannelBuilderTest {
     @Test
     fun insulinZeroMs_basal_tail_extends_past_a_shorter_bolus() = runTest {
         val g0 = 3_000_000_000_000L
-        val bolus = engine.rapidEvent(units = 5.0, startMs = g0, peakMin = 75.0, diaMin = 360.0)
+        val bolus = engine.rapidEvent(units = 5.0, startMs = g0, spec = aspart)
         val sched = BasalSchedule(
             tzOffsetMin = 0,
             doses = listOf(
                 BasalDoseSpec(
                     timeOfDayMin = 8 * 60,
                     doseU = 24.0,
-                    durationMin = CurveEngine.Presets.TRESIBA_DIA_MIN,
-                    kaPerHour = CurveEngine.Presets.BASAL_KA_PER_HOUR,
-                    kePerHour = CurveEngine.Presets.BASAL_KE_PER_HOUR,
+                    durationMin = tresiba.actionMin,
+                    kaPerHour = tresiba.kaPerHour,
+                    kePerHour = tresiba.kePerHour,
                 ),
             ),
         )
@@ -271,10 +274,10 @@ class ChannelBuilderTest {
     @Test
     fun insulinOnBoard_matches_the_two_calls_it_replaces() = runTest {
         val g0 = 4_000_000_000_000L
-        val bolus = engine.rapidEvent(units = 4.5, startMs = g0, peakMin = 75.0, diaMin = 360.0)
+        val bolus = engine.rapidEvent(units = 4.5, startMs = g0, spec = aspart)
         val injection = CurveEvent(
             g0 - 60 * 60_000L, CurveEngine.STEP_MS, CurveKind.INSULIN, 18.0,
-            engine.bateman(18.0, CurveEngine.Presets.TRESIBA_DIA_MIN, CurveEngine.Presets.BASAL_KA_PER_HOUR, CurveEngine.Presets.BASAL_KE_PER_HOUR).toList(),
+            engine.bateman(18.0, tresiba.actionMin, tresiba.kaPerHour, tresiba.kePerHour).toList(),
         )
         val atMs = g0 + 2 * 60 * 60_000L
         val builder = ChannelBuilder(engine, FakeStore(insulin = listOf(bolus), basalInjections = listOf(injection)))
@@ -288,7 +291,7 @@ class ChannelBuilderTest {
     @Test
     fun insulinOnBoard_reads_the_window_once() = runTest {
         val g0 = 4_500_000_000_000L
-        val store = FakeStore(insulin = listOf(engine.rapidEvent(units = 3.0, startMs = g0, peakMin = 75.0, diaMin = 360.0)))
+        val store = FakeStore(insulin = listOf(engine.rapidEvent(units = 3.0, startMs = g0, spec = aspart)))
         val builder = ChannelBuilder(engine, store)
 
         builder.insulinOnBoard(g0 + 60 * 60_000L)
@@ -304,7 +307,7 @@ class ChannelBuilderTest {
     fun insulinZeroMs_fully_decayed_past_dose_is_before_now() = runTest {
         val g0 = 5_000_000_000_000L
         // Past instants are not clipped: the dose reports where its action ended.
-        val bolus = engine.rapidEvent(units = 3.0, startMs = g0, peakMin = 75.0, diaMin = 360.0)
+        val bolus = engine.rapidEvent(units = 3.0, startMs = g0, spec = aspart)
         val builder = ChannelBuilder(engine, FakeStore(insulin = listOf(bolus)))
 
         val atMs = g0 + 8 * 60 * 60_000L

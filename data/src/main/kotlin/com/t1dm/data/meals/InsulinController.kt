@@ -1,6 +1,7 @@
 package com.t1dm.data.meals
 
 import com.t1dm.core.common.T1dmDispatchers
+import com.t1dm.core.model.InsulinFamily
 import com.t1dm.core.model.InsulinKind
 import com.t1dm.core.model.InsulinType
 import com.t1dm.data.T1dmRepository
@@ -21,10 +22,23 @@ class InsulinController(
     private val dispatchers: T1dmDispatchers,
     private val now: () -> Long = System::currentTimeMillis,
 ) {
-    suspend fun seedBuiltinsIfEmpty() = withContext(dispatchers.io) {
-        if (repository.insulinTypeBuiltinCount() == 0) {
-            val ts = now()
-            repository.seedInsulinTypes(BUILTINS.map { it.toEntity(ts) })
+    /** Idempotent: inserts missing builtins and rewrites existing ones to the current catalogue. */
+    suspend fun syncBuiltins() = withContext(dispatchers.io) {
+        val catalog = engine.presetCatalog()
+        val existing = repository.builtinInsulinTypes().associateBy { it.name }
+        val ts = now()
+        for ((name, label) in BUILTIN_PRESETS) {
+            val spec = catalog.first { it.label == label }
+            val type = InsulinType(
+                id = existing[name]?.id ?: 0,
+                name = name,
+                kind = if (spec.family == InsulinFamily.RapidGamma) InsulinKind.BOLUS else InsulinKind.BASAL,
+                durationMin = if (spec.family == InsulinFamily.RapidGamma) spec.diaBaseHours * 60.0 else spec.actionMin,
+                kaPerHour = spec.kaPerHour.takeIf { spec.family == InsulinFamily.BasalBateman },
+                kePerHour = spec.kePerHour.takeIf { spec.family == InsulinFamily.BasalBateman },
+                builtin = true,
+            )
+            repository.upsertInsulinType(type.toEntity(ts))
         }
     }
 
@@ -38,6 +52,8 @@ class InsulinController(
         val shape = type.customCurve
         val k = type.k
         val theta = type.theta
+        val ka = type.kaPerHour
+        val ke = type.kePerHour
         return when {
             shape != null && shape.isNotEmpty() -> {
                 val tot = shape.sum()
@@ -47,15 +63,15 @@ class InsulinController(
             type.kind == InsulinKind.BOLUS && k != null && theta != null ->
                 engine.gamma(units, k, theta, type.durationMin).toList()
             type.kind == InsulinKind.BOLUS ->
-                engine.expAction(units, minOf(75.0, type.durationMin * 0.4), type.durationMin).toList()
-            else -> engine.bateman(
-                units,
-                type.durationMin,
-                type.kaPerHour ?: CurveEngine.Presets.BASAL_KA_PER_HOUR,
-                type.kePerHour ?: CurveEngine.Presets.BASAL_KE_PER_HOUR,
-            ).toList()
+                engine.presetCurve(units, engine.defaultPreset(InsulinFamily.RapidGamma)).toList()
+            ka != null && ke != null -> engine.bateman(units, type.durationMin, ka, ke).toList()
+            else -> engine.presetCurve(units, engine.defaultPreset(InsulinFamily.BasalBateman)).toList()
         }
     }
+
+    /** A dose-scaled bolus acts for its own curve's length, not the type's 5 U reference. */
+    private fun actingMin(curve: List<Double>, type: InsulinType): Double =
+        if (curve.isEmpty()) type.durationMin else curve.size * (CurveEngine.STEP_MS / 60_000.0)
 
     suspend fun saveCustomType(type: InsulinType) =
         repository.upsertInsulinType(type.copy(builtin = false).toEntity(now()))
@@ -74,7 +90,7 @@ class InsulinController(
                     tsMs = gridTs,
                     kind = if (type.kind == InsulinKind.BOLUS) DoseKind.BOLUS else DoseKind.BASAL,
                     units = units,
-                    durationMin = type.durationMin,
+                    durationMin = actingMin(curve, type),
                     k = type.k,
                     theta = type.theta,
                     kaPerHour = type.kaPerHour,
@@ -100,7 +116,7 @@ class InsulinController(
             val curve = pkCurve(type, units)
             retimed.copy(
                 kind = if (type.kind == InsulinKind.BOLUS) DoseKind.BOLUS else DoseKind.BASAL,
-                durationMin = type.durationMin,
+                durationMin = actingMin(curve, type),
                 k = type.k,
                 theta = type.theta,
                 kaPerHour = type.kaPerHour,
@@ -113,26 +129,11 @@ class InsulinController(
     }
 
     companion object {
-        val BUILTINS: List<InsulinType> = listOf(
-            InsulinType(
-                id = 0, name = "Novorapid", kind = InsulinKind.BOLUS,
-                durationMin = 360.0, // NovoRapid DIA 6h; no gamma params -> exp-action
-                builtin = true,
-            ),
-            InsulinType(
-                id = 0, name = "Lantus", kind = InsulinKind.BASAL,
-                durationMin = CurveEngine.Presets.LANTUS_DIA_MIN,
-                kaPerHour = CurveEngine.Presets.BASAL_KA_PER_HOUR,
-                kePerHour = CurveEngine.Presets.BASAL_KE_PER_HOUR,
-                builtin = true,
-            ),
-            InsulinType(
-                id = 0, name = "Tresiba", kind = InsulinKind.BASAL,
-                durationMin = CurveEngine.Presets.TRESIBA_DIA_MIN,
-                kaPerHour = CurveEngine.Presets.BASAL_KA_PER_HOUR,
-                kePerHour = CurveEngine.Presets.BASAL_KE_PER_HOUR,
-                builtin = true,
-            ),
+        /** Builtin type name → the catalogue label its PK is read from. */
+        val BUILTIN_PRESETS: List<Pair<String, String>> = listOf(
+            "Novorapid" to "Aspart · NovoRapid/Novolog",
+            "Lantus" to "Glargine U100 · Lantus",
+            "Tresiba" to "Degludec · Tresiba",
         )
     }
 }

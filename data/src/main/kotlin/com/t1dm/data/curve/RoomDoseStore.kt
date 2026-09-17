@@ -4,6 +4,7 @@ import com.t1dm.core.model.BasalDoseSpec
 import com.t1dm.core.model.BasalSchedule
 import com.t1dm.core.model.CurveEvent
 import com.t1dm.core.model.CurveKind
+import com.t1dm.core.model.InsulinFamily
 import com.t1dm.data.db.BasalScheduleDao
 import com.t1dm.data.db.DoseKind
 import com.t1dm.data.db.BasalScheduleEntity
@@ -76,15 +77,13 @@ class RoomDoseStore(
                 DoseKind.BOLUS -> if (k != null && theta != null) {
                     engine.gamma(units, k, theta, durationMin).asList()
                 } else {
-                    // Fallback: clinical bolus rides in customCurve (NovoRapid-shaped).
-                    engine.expAction(units, minOf(75.0, durationMin * 0.4), durationMin).asList()
+                    engine.presetCurve(units, engine.defaultPreset(InsulinFamily.RapidGamma)).asList()
                 }
-                DoseKind.BASAL -> engine.bateman(
-                    units,
-                    durationMin,
-                    kaPerHour ?: CurveEngine.Presets.BASAL_KA_PER_HOUR,
-                    kePerHour ?: CurveEngine.Presets.BASAL_KE_PER_HOUR,
-                ).asList()
+                DoseKind.BASAL -> if (kaPerHour != null && kePerHour != null) {
+                    engine.bateman(units, durationMin, kaPerHour, kePerHour).asList()
+                } else {
+                    engine.presetCurve(units, engine.defaultPreset(InsulinFamily.BasalBateman)).asList()
+                }
             }
         return CurveEvent(tsMs, CurveEngine.STEP_MS, CurveKind.INSULIN, units, values)
     }

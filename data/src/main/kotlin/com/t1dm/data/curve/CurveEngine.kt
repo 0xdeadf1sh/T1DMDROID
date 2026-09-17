@@ -3,8 +3,11 @@ package com.t1dm.data.curve
 import com.t1dm.core.common.NativeCore
 import com.t1dm.core.common.T1dmDispatchers
 import com.t1dm.core.model.BasalSchedule
+import com.t1dm.core.model.BolusPk
 import com.t1dm.core.model.CurveEvent
 import com.t1dm.core.model.CurveKind
+import com.t1dm.core.model.InsulinFamily
+import com.t1dm.core.model.InsulinPresetSpec
 import kotlinx.coroutines.withContext
 
 /** JNI bridge over t1dm-core::curve; carbs are appearance (Ra), insulin PK ACTION not IOB. */
@@ -20,12 +23,20 @@ class CurveEngine(
     suspend fun bateman(total: Double, durMin: Double, ka: Double, ke: Double): DoubleArray =
         withContext(dispatchers.default) { native.bateman(total, durMin, ka, ke).toDoubleArray() }
 
-    /** Amount per 5-min step; sum==total. Peaks at peakMin, ~0 by diaMin. Off-distribution. */
-    suspend fun expAction(total: Double, peakMin: Double, diaMin: Double): DoubleArray =
-        withContext(dispatchers.default) { native.expActionCurve(total, peakMin, diaMin).toDoubleArray() }
-
-    suspend fun presetCatalog(): List<com.t1dm.core.model.InsulinPresetSpec> =
+    suspend fun presetCatalog(): List<InsulinPresetSpec> =
         withContext(dispatchers.default) { native.insulinPresetCatalog() }
+
+    /** The catalogue's first [family] entry: aspart, glargine U100. */
+    suspend fun defaultPreset(family: InsulinFamily): InsulinPresetSpec = presetCatalog().first { it.family == family }
+
+    suspend fun bolusPk(units: Double, spec: InsulinPresetSpec): BolusPk =
+        withContext(dispatchers.default) { native.bolusPkForDose(units, spec.gammaK, spec.gammaTheta, spec.diaBaseHours) }
+
+    /** Amount per 5-min step of [units] of [spec]; sum == units. */
+    suspend fun presetCurve(units: Double, spec: InsulinPresetSpec): DoubleArray = when (spec.family) {
+        InsulinFamily.RapidGamma -> bolusPk(units, spec).let { gamma(units, it.k, it.theta, it.durationMin) }
+        InsulinFamily.BasalBateman -> bateman(units, spec.actionMin, spec.kaPerHour, spec.kePerHour)
+    }
 
     /** Window is half-open: `[gridStartMs, gridStartMs + nSteps·STEP_MS)`. */
     suspend fun bucketize(
@@ -43,8 +54,8 @@ class CurveEngine(
     suspend fun extendBasal(schedule: BasalSchedule, fromMs: Long, toMs: Long): List<CurveEvent> =
         withContext(dispatchers.default) { native.extendBasal(schedule, fromMs, toMs) }
 
-    suspend fun rapidEvent(units: Double, startMs: Long, peakMin: Double, diaMin: Double): CurveEvent =
-        withContext(dispatchers.default) { CurveEvent(startMs, STEP_MS, CurveKind.INSULIN, units, native.expActionCurve(units, peakMin, diaMin)) }
+    suspend fun rapidEvent(units: Double, startMs: Long, spec: InsulinPresetSpec): CurveEvent =
+        CurveEvent(startMs, STEP_MS, CurveKind.INSULIN, units, presetCurve(units, spec).asList())
 
     suspend fun carbEvent(grams: Double, startMs: Long, k: Double, theta: Double, durMin: Double): CurveEvent =
         CurveEvent(startMs, STEP_MS, CurveKind.CARB, grams, native.gamma(grams, k, theta, durMin))
@@ -56,16 +67,8 @@ class CurveEngine(
         private fun List<Double>.toDoubleArray(): DoubleArray = DoubleArray(size) { this[it] }
     }
 
-    /** The simulator's noise-free central values; the model was trained on this neighbourhood. */
+    /** SPEC/invariants.md §5; curve_golden.json pins it to `simulator.gi_gamma_params`. */
     object Presets {
-        // Per hour. tmax ≈ 6.3 h, near-flat once tiled at cadence.
-        const val BASAL_KA_PER_HOUR: Double = 0.30
-        const val BASAL_KE_PER_HOUR: Double = 0.07
-
-        /** Minutes. */
-        const val LANTUS_DIA_MIN: Double = 24.0 * 60.0
-        const val TRESIBA_DIA_MIN: Double = 42.0 * 60.0
-
         /** [gi] 0..100. */
         fun carbGammaForGi(gi: Double): Triple<Double, Double, Double> {
             val g = gi.coerceIn(0.0, 100.0) / 100.0 // 1.0 = highest GI

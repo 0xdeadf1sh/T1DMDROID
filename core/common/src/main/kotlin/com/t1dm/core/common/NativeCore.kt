@@ -172,13 +172,13 @@ interface NativeCore {
     /** Amount per 5-min step, `sum == total`; == `simulator.gamma_curve`. */
     fun gamma(total: Double, k: Double, theta: Double, durMin: Double): List<Double>
 
-    /** Amount per 5-min step, `sum == total`; == `simulator.basal_curve`, default 5 h tail-clip. */
+    /** Amount per 5-min step, `sum == total`; == `simulator.basal_curve`, last sixth tapered. */
     fun bateman(total: Double, durMin: Double, ka: Double, ke: Double): List<Double>
 
-    /** Amount per 5-min step, sum==total; peaks at peakMin, ~0 by diaMin. Off-distribution. */
-    fun expActionCurve(total: Double, peakMin: Double, diaMin: Double): List<Double>
+    /** == `simulator.bolus_pk_for_dose`; [theta] minutes and [diaBaseHours] at 5 U. */
+    fun bolusPkForDose(doseU: Double, k: Double, theta: Double, diaBaseHours: Double): com.t1dm.core.model.BolusPk
 
-    /** The two in-distribution simulator defaults plus the OPT-IN, off-distribution presets. */
+    /** SPEC/invariants.md §5 insulin table. */
     fun insulinPresetCatalog(): List<com.t1dm.core.model.InsulinPresetSpec>
 
     /** Sums matching events' curve onto the fixed grid; pre-grid tails carry forward. */

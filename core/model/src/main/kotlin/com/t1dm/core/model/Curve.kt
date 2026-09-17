@@ -13,7 +13,7 @@ data class CurveEvent(
     val values: List<Double>,
 )
 
-/** [durationMin] is DIA (Lantus ~1440, Tresiba ~2520); expands to Bateman [CurveEvent], tiled. */
+/** durationMin is the Bateman action window; each occurrence expands to Bateman. */
 data class BasalDoseSpec(
     val timeOfDayMin: Int,
     val doseU: Double,
@@ -28,17 +28,24 @@ data class BasalSchedule(
     val doses: List<BasalDoseSpec>,
 )
 
-/** [RapidExp] is the Loop/OpenAPS exponential activity curve. */
-enum class InsulinFamily { RapidExp, BasalBateman }
+/** SPEC/invariants.md §5: [RapidGamma] is a dose-scaled gamma, [BasalBateman] a Bateman. */
+enum class InsulinFamily { RapidGamma, BasalBateman }
 
-/** [label] is preset identity (Rust enum not projected); [offDistribution] unread, deliberate. */
+/** label keys a preset's identity. Rapid fields are 0 on a basal, basal fields 0 on a rapid. */
 data class InsulinPresetSpec(
     val family: InsulinFamily,
     val label: String,
-    val peakMin: Double,
-    val diaMin: Double,
+    val gammaK: Double,
+    /** Minutes, at 5 U. */
+    val gammaTheta: Double,
+    /** Hours, at 5 U. */
+    val diaBaseHours: Double,
     val kaPerHour: Double,
     val kePerHour: Double,
-    val offDistribution: Boolean,
+    /** Minutes. */
+    val actionMin: Double,
     val citation: String,
 )
+
+/** A rapid bolus's gamma for one dose; [theta] and [durationMin] in minutes. */
+data class BolusPk(val k: Double, val theta: Double, val durationMin: Double)
