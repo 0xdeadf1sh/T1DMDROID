@@ -169,7 +169,7 @@ private val calcRailIobCeiling = SettingsKnob(
     screen = SettingsScreenKey.CALCULATOR,
     section = "Rails",
     label = "IOB ceiling",
-    subtitle = "Block when IOB + candidate exceeds the ceiling",
+    subtitle = "Block when bolus IOB + candidate exceeds the ceiling",
     synonyms = listOf(
         "iob", "insulin on board", "stacking", "rail", "ceiling", "block", "cap", "safety", "veto",
     ),

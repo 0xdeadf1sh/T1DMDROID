@@ -53,13 +53,13 @@ object Rails {
         val name = "iob-ceiling"
         if (!config.rails.iobCeiling) return RailVerdict.Pass
         if (candidateU <= 0.0) return RailVerdict.Pass
-        val iobU = iob?.iobU
+        val iobU = iob?.bolusIobU
             ?: return RailVerdict.Block(name, "Active insulin (IOB) is unknown — dose log unavailable — blocking a nonzero dose to fail safe.")
         val total = iobU + candidateU
         if (total > config.iobCeilingU) {
             return RailVerdict.Block(
                 name,
-                "IOB ${fmt(iobU)} U + dose ${fmt(candidateU)} U = ${fmt(total)} U exceeds the ceiling ${fmt(config.iobCeilingU)} U.",
+                "Bolus IOB ${fmt(iobU)} U + dose ${fmt(candidateU)} U = ${fmt(total)} U exceeds the ceiling ${fmt(config.iobCeilingU)} U.",
             )
         }
         return RailVerdict.Pass

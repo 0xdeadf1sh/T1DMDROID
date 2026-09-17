@@ -89,6 +89,17 @@ class RailInvariantsTest {
     }
 
     @Test
+    fun iob_ceiling_reads_bolus_iob_not_basal() {
+        val cfg = CalcConfig()
+        val basalHeavy = IobSnapshot(iobU = 40.0, cobG = 0.0, lastLoggedDoseTsMs = null, bolusIobU = 2.0)
+        assertEquals(RailVerdict.Pass, Rails.iobCeiling(basalHeavy, 4.0, cfg))
+        val bolusHeavy = IobSnapshot(iobU = 40.0, cobG = 0.0, lastLoggedDoseTsMs = null, bolusIobU = 10.0)
+        assertTrue(Rails.iobCeiling(bolusHeavy, 4.0, cfg) is RailVerdict.Block)
+        val unknown = IobSnapshot(iobU = 40.0, cobG = 0.0, lastLoggedDoseTsMs = null, bolusIobU = null)
+        assertTrue("unknown bolus IOB must block", Rails.iobCeiling(unknown, 4.0, cfg) is RailVerdict.Block)
+    }
+
+    @Test
     fun all_rails_off_is_identity_over_randomized_scenarios() = runTest {
         val rng = Random(42)
         repeat(60) {

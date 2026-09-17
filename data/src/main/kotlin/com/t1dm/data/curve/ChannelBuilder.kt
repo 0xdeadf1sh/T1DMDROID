@@ -201,6 +201,10 @@ class ChannelBuilder(
         return InsulinEvents(bolus, basal)
     }
 
+    /** The IOB ceiling's input: boluses only, basal excluded. */
+    suspend fun bolusOnBoard(atMs: Long): Double =
+        engine.onBoard(insulinEventsIn(atMs - PAD_MS, atMs + CurveEngine.STEP_MS).bolus, atMs, CurveKind.INSULIN)
+
     /** Null when no insulin event carries action; a decayed dose yields a zero before atMs. */
     suspend fun insulinZeroMs(atMs: Long): Long? = insulinZeroOf(insulinEventsAt(atMs))
 

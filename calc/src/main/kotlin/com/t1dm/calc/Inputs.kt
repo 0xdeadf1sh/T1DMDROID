@@ -13,12 +13,15 @@ data class AnchorInfo(
     fun ageMs(nowMs: Long): Long? = lastMeasuredTsMs?.let { nowMs - it }
 }
 
-/** From logged doses only (§3.6-F). [iobU] null ⇒ unknown, which fails the IOB rail closed. */
+/** From logged doses only (§3.6-F). [bolusIobU] null ⇒ unknown, which fails the IOB rail closed. */
 data class IobSnapshot(
+    /** Bolus and basal. */
     val iobU: Double?,
     val cobG: Double,
     /** `MAX(MIN(tsMs,loggedAtMs))`, not `MAX(tsMs)`: a dragged dose mustn't quiet its rail. */
     val lastLoggedDoseTsMs: Long?,
+    /** What the IOB ceiling reads; basal on board runs to tens of units at steady state. */
+    val bolusIobU: Double? = iobU,
 ) {
     fun minSinceLastDose(nowMs: Long): Long? = lastLoggedDoseTsMs?.let { (nowMs - it) / 60_000L }
 }

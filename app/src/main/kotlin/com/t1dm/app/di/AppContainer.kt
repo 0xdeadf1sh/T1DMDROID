@@ -1892,6 +1892,7 @@ class AppContainer(context: Context) {
     private suspend fun buildIobSnapshot(nowMs: Long): IobSnapshot? = runCatching {
         IobSnapshot(
             iobU = channelBuilder.onBoard(nowMs, CurveKind.INSULIN),
+            bolusIobU = channelBuilder.bolusOnBoard(nowMs),
             cobG = channelBuilder.onBoard(nowMs, CurveKind.CARB),
             lastLoggedDoseTsMs = repository.latestLoggedInsulinTs(),
         )
