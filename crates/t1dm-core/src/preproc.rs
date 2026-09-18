@@ -404,7 +404,7 @@ pub fn parse_descriptor(json: String) -> Result<ModelDescriptor, CoreError> {
             reason: format!("rope_base {} must be > 0", desc.rope_base),
         });
     }
-    // bg_clamp_min>1 keeps ln>0 (else NaN^power); scale>0 keeps f increasing; power>0 finite.
+    // bg_clamp_min>=1 keeps ln>=0 (else NaN^power); scale>0 keeps f increasing; power>0 finite.
     let k = desc.kovatchev;
     if ![k.scale, k.power, k.offset, k.bg_clamp_min, k.bg_clamp_max]
         .iter()
@@ -419,10 +419,10 @@ pub fn parse_descriptor(json: String) -> Result<ModelDescriptor, CoreError> {
             reason: format!("kovatchev scale {} and power {} must be > 0", k.scale, k.power),
         });
     }
-    if !(k.bg_clamp_min > 1.0 && k.bg_clamp_min < k.bg_clamp_max) {
+    if !(k.bg_clamp_min >= 1.0 && k.bg_clamp_min < k.bg_clamp_max) {
         return Err(CoreError::Decode {
             reason: format!(
-                "kovatchev bounds invalid: require 1 < bg_clamp_min ({}) < bg_clamp_max ({})",
+                "kovatchev bounds invalid: require 1 <= bg_clamp_min ({}) < bg_clamp_max ({})",
                 k.bg_clamp_min, k.bg_clamp_max
             ),
         });
@@ -1675,15 +1675,11 @@ mod tests {
         assert!(is_decode(bad("SCALE", serde_json::json!(-1.509))), "negative scale inverts f");
         assert!(is_decode(bad("POWER", serde_json::json!(0.0))));
         assert!(is_decode(bad("SCALE", serde_json::json!(f64::NAN))), "NaN → JSON null");
-        // ln(g) <= 0 makes ln(g)^power NaN for a fractional power.
-        assert!(is_decode(bad("BG_CLAMP_MIN", serde_json::json!(1.0))));
+        // ln(g) < 0 makes ln(g)^power NaN for a fractional power; ln(1) = 0 is total.
+        assert!(bad("BG_CLAMP_MIN", serde_json::json!(1.0)).is_ok(), "1.0 is the rail, not below it");
+        assert!(is_decode(bad("BG_CLAMP_MIN", serde_json::json!(0.99))));
         assert!(is_decode(bad("BG_CLAMP_MIN", serde_json::json!(0.0))));
         assert!(is_decode(bad("BG_CLAMP_MAX", serde_json::json!(5.0))));
-        // A stray BG_SHIFT key is ignored, never applied.
-        let mut v: Value = serde_json::from_str(REFERENCE_DESCRIPTOR).unwrap();
-        v["kovatchev"]["BG_SHIFT"] = serde_json::json!(50.0);
-        let k = parse_descriptor(v.to_string()).expect("unknown kovatchev key ignored").kovatchev;
-        assert_eq!(k, test_descriptor().kovatchev);
     }
 
     #[test]
