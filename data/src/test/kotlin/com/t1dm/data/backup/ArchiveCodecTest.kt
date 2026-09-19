@@ -14,6 +14,7 @@ import com.t1dm.data.db.FoodEntity
 import com.t1dm.data.db.InsulinTypeEntity
 import com.t1dm.data.db.LoggedDoseEntity
 import com.t1dm.data.db.LoggedMealEntity
+import com.t1dm.data.db.LoraEntity
 import com.t1dm.data.db.PaintStrokeBlob
 import com.t1dm.data.db.PaintStrokeEntity
 import com.t1dm.data.db.SampleEntity
@@ -133,6 +134,22 @@ class ArchiveCodecTest {
     fun `a corrupt stroke polyline is refused`() {
         val line = """{"t":"stroke","ca":1,"tl":"marker","col":-1,"wd":4.0,"pts":"bm90IGEgc3Ryb2tl"}"""
         assertTrue(runCatching { Archive.readStroke(parse(line)) }.isFailure)
+    }
+
+    @Test
+    fun `an adapter's objective and metric survive, and a pre-v31 adapter restores them as null`() {
+        val r = LoraEntity(
+            modelId = "m", name = "fit 1", blob = ByteArray(64) { it.toByte() }, rank = 4, alpha = 8.0,
+            targets = 12, nParams = 100, nTrain = 90, nHoldout = 30, epochs = 20,
+            holdoutBefore = 0.12, holdoutAfter = 0.11, improved = true, attached = false,
+            createdAtMs = 1L, updatedAtMs = 2L, fittedAtMs = 2L,
+            objective = "DTS_A", metricBefore = 81.5, metricAfter = 84.0,
+        )
+        assertEquals(r, Archive.readLora(parse(render { Archive.write(it, r) })))
+        val old = Archive.readLora(parse(render { Archive.write(it, r.copy(objective = null, metricBefore = null, metricAfter = null)) }))
+        assertNull(old.objective)
+        assertNull(old.metricBefore)
+        assertNull(old.metricAfter)
     }
 
     @Test

@@ -813,10 +813,42 @@ class MigrationTest {
     }
 
     @Test
-    fun migrate1To30_fullChain() {
+    fun migrate30To31_labelsFittedAdaptersAndLeavesImportsUnrecorded() {
+        val seed = helper.createDatabase(30)
+        val cols = "`modelId`,`name`,`blob`,`rank`,`alpha`,`targets`,`nParams`,`nTrain`,`nHoldout`," +
+            "`epochs`,`holdoutBefore`,`holdoutAfter`,`improved`,`attached`,`createdAtMs`,`updatedAtMs`"
+        seed.execSQL("INSERT INTO `lora` ($cols) VALUES ('m','fit',X'00',4,8.0,12,100,90,30,20,0.12,0.11,1,0,1,2)")
+        seed.execSQL("INSERT INTO `lora` ($cols) VALUES ('m','imp',X'01',4,8.0,12,100,0,0,0,0,0,0,0,1,2)")
+        seed.close()
+
+        val db = helper.runMigrationsAndValidate(31, listOf(MigrationRunner.MIGRATION_30_31))
+
+        assertEquals(
+            "a phone fit is the dose-response objective, its metric the held-out pinball",
+            1,
+            countRows(
+                db,
+                "SELECT COUNT(*) FROM `lora` WHERE `name` = 'fit' AND `objective` = 'DOSE_RESPONSE' " +
+                    "AND `metricBefore` = 0.12 AND `metricAfter` = 0.11",
+            ),
+        )
+        assertEquals(
+            "an import never recorded its objective",
+            1,
+            countRows(
+                db,
+                "SELECT COUNT(*) FROM `lora` WHERE `name` = 'imp' AND `objective` IS NULL " +
+                    "AND `metricBefore` IS NULL AND `metricAfter` IS NULL",
+            ),
+        )
+        db.close()
+    }
+
+    @Test
+    fun migrate1To31_fullChain() {
         helper.createDatabase(1).close()
         helper.runMigrationsAndValidate(
-            30,
+            31,
             listOf(
                 MigrationRunner.MIGRATION_1_2,
                 MigrationRunner.MIGRATION_2_3,
@@ -847,6 +879,7 @@ class MigrationTest {
                 MigrationRunner.MIGRATION_27_28,
                 MigrationRunner.MIGRATION_28_29,
                 MigrationRunner.MIGRATION_29_30,
+                MigrationRunner.MIGRATION_30_31,
             ),
         )
     }

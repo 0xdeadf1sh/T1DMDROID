@@ -32,6 +32,7 @@ import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.rememberHapticDetent
 import com.t1dm.core.design.rememberT1dmHaptics
+import com.t1dm.core.model.LoraObjective
 import kotlin.math.roundToInt
 
 data class LoraFitSpec(
@@ -43,7 +44,18 @@ data class LoraFitSpec(
     val targetL0: Boolean = false,
     val targetL1: Boolean = true,
     val targetL2: Boolean = true,
+    val objective: LoraObjective = LoraObjective.DOSE_RESPONSE,
 )
+
+/** Held-out metric, frozen → adapter; null [objective] falls back to held-out pinball. */
+fun loraMetricLine(objective: LoraObjective?, before: Double?, after: Double?): String {
+    fun f(v: Double?, fmt: String) = v?.takeIf { it.isFinite() }?.let { fmt.format(it) } ?: "—"
+    return when (objective) {
+        LoraObjective.MEAN_RMSE -> "RMSE ${f(before, "%.1f")} → ${f(after, "%.1f")} mg/dL"
+        LoraObjective.DTS_A -> "DTS A ${f(before, "%.1f")} → ${f(after, "%.1f")}%"
+        LoraObjective.DOSE_RESPONSE, null -> "pinball ${f(before, "%.4f")} → ${f(after, "%.4f")}"
+    }
+}
 
 data class LoraFitProgress(val phase: Phase, val done: Int, val total: Int) {
     enum class Phase { Replay, Train }
@@ -78,6 +90,10 @@ data class LoraAdapter(
     val guardFrozenMgdl: Double = 0.0,
     val guardAdaptedMgdl: Double = 0.0,
     val guardOverridden: Boolean = false,
+    /** Null for an import, which never recorded what it was fitted for. */
+    val objective: LoraObjective? = null,
+    val metricBefore: Double? = null,
+    val metricAfter: Double? = null,
 )
 
 data class LoraPanelState(
@@ -208,8 +224,11 @@ fun LoraPanel(
                         style = MaterialTheme.typography.bodySmall,
                     )
                     Text(
-                        "held out ${"%.4f".format(a.holdoutBefore)} → ${"%.4f".format(a.holdoutAfter)}" +
-                            if (a.improved) "" else " · no gain",
+                        (if (a.objective == null) {
+                            loraMetricLine(null, a.holdoutBefore, a.holdoutAfter)
+                        } else {
+                            loraMetricLine(a.objective, a.metricBefore, a.metricAfter)
+                        }) + if (a.improved) "" else " · no gain",
                         style = MaterialTheme.typography.bodySmall,
                         color = if (a.improved) {
                             MaterialTheme.colorScheme.onSurface
@@ -340,6 +359,7 @@ private fun FitDialog(defaultName: String, onDismiss: () -> Unit, onFit: (LoraFi
     var tL0 by remember { mutableStateOf(false) }
     var tL1 by remember { mutableStateOf(true) }
     var tL2 by remember { mutableStateOf(true) }
+    var objective by remember { mutableStateOf(LoraObjective.DOSE_RESPONSE) }
     val noSite = !tHidden && !tL0 && !tL1 && !tL2
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -352,6 +372,16 @@ private fun FitDialog(defaultName: String, onDismiss: () -> Unit, onFit: (LoraFi
                     singleLine = true,
                     label = { Text("Name") },
                 )
+                Text("Objective", style = MaterialTheme.typography.bodySmall)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    for ((o, label) in listOf(
+                        LoraObjective.MEAN_RMSE to "RMSE",
+                        LoraObjective.DTS_A to "DTS A",
+                        LoraObjective.DOSE_RESPONSE to "Dose response",
+                    )) {
+                        FilterChip(objective == o, { objective = o }, { Text(label) })
+                    }
+                }
                 Text("Rank ${rank.roundToInt()}", style = MaterialTheme.typography.bodySmall)
                 Slider(
                     value = rank,
@@ -397,6 +427,7 @@ private fun FitDialog(defaultName: String, onDismiss: () -> Unit, onFit: (LoraFi
                             targetL0 = tL0,
                             targetL1 = tL1,
                             targetL2 = tL2,
+                            objective = objective,
                         ),
                     )
                 },

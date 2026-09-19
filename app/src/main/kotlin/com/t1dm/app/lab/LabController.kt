@@ -6,6 +6,7 @@ import com.t1dm.core.model.targetBits
 import com.t1dm.core.model.LoraGuardVerdict
 import com.t1dm.inference.loraAttachRefusal
 import com.t1dm.core.model.MaskGeometry
+import com.t1dm.core.model.LoraObjective
 import com.t1dm.core.model.LoraTrainOpts
 import com.t1dm.core.model.MaskSpan
 import com.t1dm.data.PromoteResult
@@ -17,6 +18,7 @@ import com.t1dm.data.db.LoraEntity
 import com.t1dm.core.model.SpanLinePreview
 import com.t1dm.feature.models.LoraAdapter
 import com.t1dm.feature.models.LoraFitSpec
+import com.t1dm.feature.models.loraMetricLine
 import com.t1dm.inference.BgHistoryProvider
 import com.t1dm.inference.BgSeries
 import com.t1dm.inference.InferenceController
@@ -48,7 +50,9 @@ class LabController(
         val head = desc.head ?: return "This model ships no head file — no adapter can attach"
         // One hour: wider loses windows faster than it gains, starves a fresh sensor under 16.
         val stride = desc.patchSize * 2
-        val samples = controller.loraSamples(modelId, spec.windows, stride, onReplay)
+        // RMSE and DTS read horizons only a forecast has; the crate drops any other geometry.
+        val forecastOnly = spec.objective != LoraObjective.DOSE_RESPONSE
+        val samples = controller.loraSamples(modelId, spec.windows, stride, onReplay, forecastOnly)
         if (samples.size < 16) return "Only ${samples.size} usable windows — need more history"
         val config = LoraConfig(
             rank = spec.rank,
@@ -64,6 +68,7 @@ class LabController(
             holdoutFrac = 0.25,
             weightDecay = 1e-4,
             seed = clock(),
+            objective = spec.objective,
         )
         val result = controller.trainLora(modelId, samples, config, opts) { epoch, epochs, _, _ ->
             onEpoch?.invoke(epoch, epochs)
@@ -101,6 +106,10 @@ class LabController(
                 nPaired = result.report.nPaired,
                 distillScale = result.report.distillScale,
                 fittedAtMs = now,
+                objective = result.report.objective.name,
+                // SQLite stores NaN as NULL; say so here rather than let the column decide.
+                metricBefore = result.report.metricBefore.takeIf { it.isFinite() },
+                metricAfter = result.report.metricAfter.takeIf { it.isFinite() },
             ),
         )
         val r = result.report
@@ -109,8 +118,9 @@ class LabController(
             (desc.predictionHorizonHours * 12 / desc.patchSize) * desc.patchSize
         val independent = (windowSteps + (samples.size - 1) * stride) / windowSteps
         return "${r.nTrain}+${r.nHoldout} windows (~$independent independent) · " +
-            "held out ${"%.4f".format(r.holdoutLossBefore)} → ${"%.4f".format(r.holdoutLossAfter)}" +
-            if (r.improved) " @ epoch ${r.bestEpoch}" else " · no gain"
+            loraMetricLine(r.objective, r.metricBefore, r.metricAfter) +
+            (if (r.improved) " @ epoch ${r.bestEpoch}" else " · no gain") +
+            if (r.nEpochsGated > 0) " · ${r.nEpochsGated} epochs failed dose check" else ""
     }
 
     suspend fun attach(modelId: String, id: Long): String? {
@@ -453,6 +463,9 @@ class LabController(
         guardFrozenMgdl = guardFrozenMgdl,
         guardAdaptedMgdl = guardAdaptedMgdl,
         guardOverridden = guardOverrideAtMs != null,
+        objective = objective?.let { runCatching { LoraObjective.valueOf(it) }.getOrNull() },
+        metricBefore = metricBefore,
+        metricAfter = metricAfter,
     )
 
     private companion object {

@@ -4,6 +4,8 @@ use std::sync::Mutex;
 
 use sha2::{Digest, Sha256};
 
+use crate::accuracy::{dts_abs_risk_grad, dts_risk, dts_zone_of_abs_risk, horizon_step, DtsZone};
+use crate::curve::DT_MINUTES;
 use crate::preproc::{assemble_decode, HeadSpec, ModelDescriptor, QUANTILE_LEVELS};
 use crate::CoreError;
 
@@ -20,7 +22,6 @@ const LR_MIN_RATIO: f64 = 0.1;
 const GUARD_OPTS_FIT: LoraGuardOpts = LoraGuardOpts {
     max_windows: 64,
     min_windows: 8,
-    probe_dose_u: 1.0,
     min_frozen_response: 2.0,
     min_retention: 0.25,
     max_retention: 4.0,
@@ -738,9 +739,25 @@ pub struct LoraSample {
     pub n_slots: i32,
     /// Same window step states with a probe dose injected into the masked span; empty if unpaired.
     pub hidden_pert: Vec<f64>,
+    /// Units injected into `hidden_pert`; the guard divides by it. Ignored when unpaired.
+    pub probe_dose_u: f64,
     /// Trailing-forecast geometry: the only one the guard measures on.
     pub is_forecast: bool,
 }
+
+/// What a fit minimises; it also picks the returned epoch and decides `improved`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum LoraObjective {
+    /// Median-line RMSE, mg/dL, mean over `OBJECTIVE_HORIZONS_MIN`; forecast windows only.
+    MeanRmse,
+    /// Median-line DTS zone-A share, %, mean over the same horizons; forecast windows only.
+    DtsA,
+    /// Pinball over every geometry; the returned epoch must pass the held-out guard.
+    DoseResponse,
+}
+
+/// Minutes past the anchor that `MeanRmse` and `DtsA` score.
+const OBJECTIVE_HORIZONS_MIN: [u32; 3] = [30, 60, 120];
 
 #[derive(Debug, Clone, Copy, PartialEq, uniffi::Record)]
 pub struct LoraTrainOpts {
@@ -750,8 +767,9 @@ pub struct LoraTrainOpts {
     pub holdout_frac: f64,
     pub weight_decay: f64,
     pub seed: i64,
-    /// Pins adapted marginal dose response to the frozen model's; a MULTIPLE of its pinball loss.
+    /// Pins adapted marginal dose response to the frozen model's; a MULTIPLE of its training loss.
     pub distill_weight: f64,
+    pub objective: LoraObjective,
 }
 
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
@@ -779,13 +797,21 @@ pub struct LoraTrainReport {
     pub distill_history: Vec<f64>,
     /// `None` when there were no held-out forecast windows to measure on.
     pub guard: Option<LoraGuardReport>,
+    pub objective: LoraObjective,
+    /// Held-out, frozen head: mg/dL for `MeanRmse`, % for `DtsA`, pinball for `DoseResponse`.
+    pub metric_before: f64,
+    /// The same, at `best_epoch`.
+    pub metric_after: f64,
+    /// Held-out, at the end of each epoch.
+    pub metric_history: Vec<f64>,
+    /// `DoseResponse`: epochs the held-out guard refused, so never returnable.
+    pub n_epochs_gated: i32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, uniffi::Record)]
 pub struct LoraGuardOpts {
     pub max_windows: i32,
     pub min_windows: i32,
-    pub probe_dose_u: f64,
     /// Below this the guard declines to judge rather than pass what it cannot measure.
     pub min_frozen_response: f64,
     pub min_retention: f64,
@@ -823,7 +849,7 @@ pub trait LoraProgress: Send + Sync {
     fn on_epoch(&self, epoch: i32, epochs: i32, train_loss: f64, holdout_loss: f64);
 }
 
-/// Loss is pinball over the seven levels, RISK space, on the assembled fan; attaches nothing.
+/// Loss per `opts.objective`, on the assembled fan; attaches nothing.
 #[uniffi::export]
 pub fn lora_train(
     head: &HeadModel,
@@ -872,11 +898,37 @@ pub fn lora_train(
                 ),
             });
         }
+        check_probe_dose(i, s)?;
     }
     if !opts.distill_weight.is_finite() || opts.distill_weight < 0.0 {
         return Err(CoreError::Internal {
             reason: format!("distill_weight {} is not a finite non-negative number", opts.distill_weight),
         });
+    }
+    let steps = objective_steps()?;
+    let median_term = match opts.objective {
+        LoraObjective::MeanRmse => Some(MedianTerm::SquaredError),
+        LoraObjective::DtsA => Some(MedianTerm::AbsDtsRisk),
+        LoraObjective::DoseResponse => None,
+    };
+    // An infill or backcast has no 30/60/120 min horizon.
+    let samples: Vec<LoraSample> = if median_term.is_some() {
+        samples.into_iter().filter(|s| s.is_forecast).collect()
+    } else {
+        samples
+    };
+    let last = steps[steps.len() - 1];
+    if median_term.is_some() {
+        if let Some(s) = samples.iter().find(|s| (s.n_slots.max(0) as usize) * PATCH_SIZE <= last) {
+            let steps_have = s.n_slots.max(0) as usize * PATCH_SIZE;
+            return Err(CoreError::Internal {
+                reason: format!(
+                    "the model forecasts {:.0} min; the objective reads {} min",
+                    steps_have as f64 * DT_MINUTES,
+                    OBJECTIVE_HORIZONS_MIN[OBJECTIVE_HORIZONS_MIN.len() - 1],
+                ),
+            });
+        }
     }
     let n_total = samples.len();
     let n_holdout = ((n_total as f64) * opts.holdout_frac).floor() as usize;
@@ -889,9 +941,32 @@ pub fn lora_train(
     let (train, holdout) = samples.split_at(n_train);
 
     let mut w = lora_new(config, head.sha256.clone(), d as i32, head.hidden as i32, out_dim as i32, opts.seed)?;
-    let holdout_before = mean_loss(head, desc, holdout, None)?;
+    let holdout_before = mean_loss(head, desc, holdout, None, TrainLoss::Pinball)?;
 
-    // d0: frozen model's own median response per unit; S is a GLOBAL mean, not per-sample divisor.
+    // Each term divided by its frozen training mean, so neither swamps the other in Adam.
+    let train_loss = match median_term {
+        None => TrainLoss::Pinball,
+        Some(term) => {
+            let unit = TrainLoss::Median { term, last, m0: 1.0, s0: 1.0 };
+            let (mut m0, mut s0) = (0.0f64, 0.0f64);
+            for s in train {
+                let mut p = Parts::default();
+                sample_loss_and_grad(head, desc, s, None, unit, None, None, Some(&mut p))?;
+                m0 += p.median;
+                s0 += p.spreads;
+            }
+            m0 /= n_train as f64;
+            s0 /= n_train as f64;
+            if !(m0.is_finite() && m0 > 0.0 && s0.is_finite() && s0 > 0.0) {
+                return Err(CoreError::Internal {
+                    reason: format!("frozen training terms are {m0} and {s0}; nothing to scale by"),
+                });
+            }
+            TrainLoss::Median { term, last, m0, s0 }
+        }
+    };
+
+    // d0: frozen model's own median response to the probe; S is a GLOBAL mean, not per-sample.
     let distill_on = opts.distill_weight > 0.0;
     let mut d0_train: Vec<Option<Vec<f64>>> = vec![None; train.len()];
     // Counted whatever the weight is: a property of the replay, not of the optimiser.
@@ -915,7 +990,7 @@ pub fn lora_train(
         }
         if sq_n > 0 {
             let s_mean = sq_acc / sq_n as f64;
-            let f_mean = mean_loss(head, desc, train, None)?;
+            let f_mean = mean_loss(head, desc, train, None, train_loss)?;
             if s_mean > 0.0 && f_mean.is_finite() {
                 distill_scale = opts.distill_weight * f_mean / s_mean;
             }
@@ -933,8 +1008,22 @@ pub fn lora_train(
     let (b1, b2, eps) = (0.9f64, 0.999f64, 1e-8f64);
     let mut t = 0.0f64;
     let mut first_loss = f64::NAN;
+    let metric_of = |lora: Option<&Lora>, pinball_holdout: f64| -> Result<f64, CoreError> {
+        match opts.objective {
+            LoraObjective::DoseResponse => Ok(pinball_holdout),
+            obj => horizon_metric(head, desc, holdout, lora, obj, &steps),
+        }
+    };
+    let metric_before = metric_of(None, holdout_before)?;
+    let mut metric_history = Vec::with_capacity(opts.epochs as usize);
+    // A guard that cannot pass the frozen head cannot judge an epoch either: the gate lifts.
+    let identity = Lora::from_weights(&w, d, head.hidden, out_dim)?;
+    let gate = opts.objective == LoraObjective::DoseResponse
+        && guard_report(head, desc, holdout, &identity, &GUARD_OPTS_FIT).verdict
+            == LoraGuardVerdict::Pass;
+    let mut n_epochs_gated = 0i32;
     // Epoch 0 is the identity adapter, so the frozen head is itself a candidate.
-    let mut best = (0i32, holdout_before);
+    let mut best = (0i32, metric_before);
     let mut best_params = w.params.clone();
 
     for epoch in 0..opts.epochs {
@@ -958,18 +1047,19 @@ pub fn lora_train(
             let ctx = d0_train[idx].as_ref().and_then(|d0| {
                 if distill_scale > 0.0 { Some(DistillCtx { d0, scale: distill_scale }) } else { None }
             });
-            let mut distill_term = 0.0;
+            let mut parts = Parts::default();
             let loss = sample_loss_and_grad(
                 head,
                 desc,
                 &train[idx],
                 Some(&lora),
+                train_loss,
                 Some(&mut grad),
                 ctx.as_ref(),
-                Some(&mut distill_term),
+                Some(&mut parts),
             )?;
             epoch_loss += loss;
-            epoch_distill += distill_term;
+            epoch_distill += parts.distill;
             t += 1.0;
             let lr_t = opts.lr * sched * (1.0 - b2.powf(t)).sqrt() / (1.0 - b1.powf(t));
             for p in 0..n_params {
@@ -990,11 +1080,18 @@ pub fn lora_train(
                 reason: format!("training diverged at epoch {epoch}"),
             });
         }
-        // Selects the returned weights. One forward pass over the holdout, no gradient.
-        let h = mean_loss(head, desc, holdout, Some(&w))?;
+        // Selects the returned weights. Forward passes over the holdout, no gradient.
+        let now = Lora::from_weights(&w, d, head.hidden, out_dim)?;
+        let h = mean_loss(head, desc, holdout, Some(&now), TrainLoss::Pinball)?;
         holdout_history.push(h);
-        if n_holdout > 0 && h < best.1 {
-            best = (epoch + 1, h);
+        let score = metric_of(Some(&now), h)?;
+        metric_history.push(score);
+        let eligible = !gate
+            || guard_report(head, desc, holdout, &now, &GUARD_OPTS_FIT).verdict
+                == LoraGuardVerdict::Pass;
+        n_epochs_gated += i32::from(!eligible);
+        if n_holdout > 0 && eligible && beats(opts.objective, score, best.1) {
+            best = (epoch + 1, score);
             best_params.copy_from_slice(&w.params);
         }
         if let Some(p) = progress.as_ref() {
@@ -1003,16 +1100,22 @@ pub fn lora_train(
     }
 
     // No holdout: nothing to select on, so the last epoch stands.
-    let (best_epoch, holdout_after) = if n_holdout > 0 {
+    let (best_epoch, metric_after) = if n_holdout > 0 {
         w.params.copy_from_slice(&best_params);
         best
     } else {
         (opts.epochs, f64::NAN)
     };
-    let improved = n_holdout > 0 && holdout_after < holdout_before;
+    let holdout_after = match best_epoch {
+        _ if n_holdout == 0 => f64::NAN,
+        0 => holdout_before,
+        e => holdout_history[e as usize - 1],
+    };
+    let improved = n_holdout > 0 && best_epoch > 0;
     // On the weights actually RETURNED, held-out only; the fit isn't refused, block is on ATTACH.
     let guard = if holdout.iter().any(|s| s.is_forecast && !s.hidden_pert.is_empty()) {
-        Some(lora_guard(head, desc, holdout.to_vec(), &w, GUARD_OPTS_FIT)?)
+        let returned = Lora::from_weights(&w, d, head.hidden, out_dim)?;
+        Some(guard_report(head, desc, holdout, &returned, &GUARD_OPTS_FIT))
     } else {
         None
     };
@@ -1032,8 +1135,74 @@ pub fn lora_train(
         distill_scale,
         distill_history,
         guard,
+        objective: opts.objective,
+        metric_before,
+        metric_after,
+        metric_history,
+        n_epochs_gated,
     };
     Ok(LoraTrainResult { weights: w, report })
+}
+
+/// `a` is strictly better than `b` under `objective`; NaN is never better.
+fn beats(objective: LoraObjective, a: f64, b: f64) -> bool {
+    match objective {
+        LoraObjective::DtsA => a > b,
+        LoraObjective::MeanRmse | LoraObjective::DoseResponse => a < b,
+    }
+}
+
+/// Step indices of `OBJECTIVE_HORIZONS_MIN`, ascending.
+fn objective_steps() -> Result<[usize; 3], CoreError> {
+    let mut out = [0usize; 3];
+    for (o, &h) in out.iter_mut().zip(&OBJECTIVE_HORIZONS_MIN) {
+        *o = horizon_step(h).ok_or_else(|| CoreError::Internal {
+            reason: format!("objective horizon {h} min is off the grid"),
+        })?;
+    }
+    Ok(out)
+}
+
+fn check_probe_dose(i: usize, s: &LoraSample) -> Result<(), CoreError> {
+    if !s.hidden_pert.is_empty() && !(s.probe_dose_u.is_finite() && s.probe_dose_u > 0.0) {
+        return Err(CoreError::Internal {
+            reason: format!("sample {i}'s counterfactual carries a {} U dose", s.probe_dose_u),
+        });
+    }
+    Ok(())
+}
+
+/// Held-out median line at `steps`: mean RMSE in mg/dL, or mean DTS zone-A share in %.
+fn horizon_metric(
+    head: &HeadModel,
+    desc: &ModelDescriptor,
+    samples: &[LoraSample],
+    lora: Option<&Lora>,
+    objective: LoraObjective,
+    steps: &[usize],
+) -> Result<f64, CoreError> {
+    if samples.is_empty() {
+        return Ok(f64::NAN);
+    }
+    let kov = desc.kovatchev;
+    let mut sq = vec![0.0f64; steps.len()];
+    let mut in_a = vec![0usize; steps.len()];
+    for s in samples {
+        let median = branch_median_risk(head, desc, s, lora, false)?;
+        for (j, &k) in steps.iter().enumerate() {
+            let (bg, y) = (kov.f_inv(median[k]), s.target_bg[k]);
+            sq[j] += (bg - y) * (bg - y);
+            in_a[j] += usize::from(dts_zone_of_abs_risk(dts_risk(bg, y).abs()) == DtsZone::A);
+        }
+    }
+    let n = samples.len() as f64;
+    let per: Vec<f64> = match objective {
+        LoraObjective::DtsA => in_a.iter().map(|&c| 100.0 * c as f64 / n).collect(),
+        LoraObjective::MeanRmse | LoraObjective::DoseResponse => {
+            sq.iter().map(|&v| (v / n).sqrt()).collect()
+        }
+    };
+    Ok(per.iter().sum::<f64>() / per.len() as f64)
 }
 
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
@@ -1167,6 +1336,20 @@ pub fn lora_guard(
             });
         }
     }
+    for (i, s) in samples.iter().enumerate() {
+        check_probe_dose(i, s)?;
+    }
+    Ok(guard_report(head, desc, &samples, &lora, &opts))
+}
+
+/// Samples already validated: shapes, anchors and a positive dose on every paired one.
+fn guard_report(
+    head: &HeadModel,
+    desc: &ModelDescriptor,
+    samples: &[LoraSample],
+    lora: &Lora,
+    opts: &LoraGuardOpts,
+) -> LoraGuardReport {
     let usable: Vec<&LoraSample> = samples
         .iter()
         .filter(|s| s.is_forecast && !s.hidden_pert.is_empty())
@@ -1179,23 +1362,25 @@ pub fn lora_guard(
     let mut r1 = Vec::with_capacity(windows.len());
     let mut m0 = Vec::with_capacity(windows.len());
     let mut m1 = Vec::with_capacity(windows.len());
+    let kov = desc.kovatchev;
     for s in windows {
         let n = s.n_slots.max(0) as usize;
         if n == 0 {
             continue;
         }
         let last = n * PATCH_SIZE - 1;
-        let dose = if opts.probe_dose_u.abs() > 0.0 { opts.probe_dose_u } else { 1.0 };
-        let f_base = branch_median_risk(head, desc, s, None, false)?[last];
-        let f_pert = branch_median_risk(head, desc, s, None, true)?[last];
-        let a_base = branch_median_risk(head, desc, s, Some(&lora), false)?[last];
-        let a_pert = branch_median_risk(head, desc, s, Some(&lora), true)?[last];
+        let dose = s.probe_dose_u;
+        let at_last = |lora: Option<&Lora>, pert: bool| -> f64 {
+            branch_median_risk(head, desc, s, lora, pert).map_or(f64::NAN, |m| m[last])
+        };
+        let (f_base, f_pert) = (at_last(None, false), at_last(None, true));
+        let (a_base, a_pert) = (at_last(Some(lora), false), at_last(Some(lora), true));
         r0.push((f_base - f_pert) / dose);
         r1.push((a_base - a_pert) / dose);
-        m0.push((desc.kovatchev.f_inv(f_base) - desc.kovatchev.f_inv(f_pert)) / dose);
-        m1.push((desc.kovatchev.f_inv(a_base) - desc.kovatchev.f_inv(a_pert)) / dose);
+        m0.push((kov.f_inv(f_base) - kov.f_inv(f_pert)) / dose);
+        m1.push((kov.f_inv(a_base) - kov.f_inv(a_pert)) / dose);
     }
-    Ok(guard_verdict(&r0, &r1, &m0, &m1, &opts))
+    guard_verdict(&r0, &r1, &m0, &m1, opts)
 }
 
 /// One branch's median line, in risk space.
@@ -1222,34 +1407,71 @@ fn mean_loss(
     head: &HeadModel,
     desc: &ModelDescriptor,
     samples: &[LoraSample],
-    w: Option<&LoraWeights>,
+    lora: Option<&Lora>,
+    kind: TrainLoss,
 ) -> Result<f64, CoreError> {
     if samples.is_empty() {
         return Ok(f64::NAN);
     }
-    let lora = match w {
-        None => None,
-        Some(w) => Some(Lora::from_weights(w, head.d_model, head.hidden, N_QUANTILES)?),
-    };
     let mut acc = 0.0;
     for s in samples {
-        acc += sample_loss_and_grad(head, desc, s, lora.as_ref(), None, None, None)?;
+        acc += sample_loss_and_grad(head, desc, s, lora, kind, None, None, None)?;
     }
     Ok(acc / samples.len() as f64)
 }
 
-/// Risk-space pinball loss of an assembled fan, averaged over steps and levels.
-fn pinball(desc: &ModelDescriptor, q_tau_risk: &[f64], target_bg: &[f64], n_steps: usize) -> f64 {
+const ALL_LEVELS: [usize; N_QUANTILES] = [0, 1, 2, 3, 4, 5, 6];
+/// Every level but the median, `N_SPREADS`.
+const SPREAD_LEVELS: [usize; N_QUANTILES - 1] = [0, 1, 2, 4, 5, 6];
+
+/// Per-sample training loss, before the distillation term.
+#[derive(Debug, Clone, Copy)]
+enum TrainLoss {
+    /// Seven levels, risk space: the number every report calls held-out loss.
+    Pinball,
+    /// `median/m0 + spreads/s0`: median over steps `0..=last`; spreads' pinball, median held.
+    Median { term: MedianTerm, last: usize, m0: f64, s0: f64 },
+}
+
+#[derive(Debug, Clone, Copy)]
+enum MedianTerm {
+    /// mg/dL².
+    SquaredError,
+    /// `|dts_risk|`.
+    AbsDtsRisk,
+}
+
+/// Unscaled terms of one sample's loss.
+#[derive(Default)]
+struct Parts {
+    median: f64,
+    spreads: f64,
+    distill: f64,
+}
+
+/// Risk-space pinball over `levels`, mean over steps and those levels; `dq` gets `scale ×` grad.
+fn pinball(
+    desc: &ModelDescriptor,
+    q_tau_risk: &[f64],
+    target_bg: &[f64],
+    n_steps: usize,
+    levels: &[usize],
+    scale: f64,
+    dq: &mut [f64],
+) -> f64 {
     let kov = desc.kovatchev;
+    let norm = 1.0 / (n_steps * levels.len()) as f64;
     let mut acc = 0.0;
     for i in 0..n_steps {
         let y = kov.f(target_bg[i]);
-        for (k, tau) in QUANTILE_LEVELS.iter().enumerate() {
+        for &k in levels {
+            let tau = QUANTILE_LEVELS[k];
             let e = y - q_tau_risk[i * N_QUANTILES + k];
             acc += if e > 0.0 { tau * e } else { (tau - 1.0) * e };
+            dq[i * N_QUANTILES + k] = scale * norm * if e > 0.0 { -tau } else { 1.0 - tau };
         }
     }
-    acc / (n_steps * N_QUANTILES) as f64
+    acc * norm
 }
 
 /// The frozen model's marginal response for one sample, and the coefficient to pin it with.
@@ -1259,14 +1481,16 @@ struct DistillCtx<'a> {
     scale: f64,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn sample_loss_and_grad(
     head: &HeadModel,
     desc: &ModelDescriptor,
     sample: &LoraSample,
     lora: Option<&Lora>,
+    kind: TrainLoss,
     mut grad: Option<&mut [f64]>,
     distill: Option<&DistillCtx<'_>>,
-    mut distill_out: Option<&mut f64>,
+    mut parts: Option<&mut Parts>,
 ) -> Result<f64, CoreError> {
     let n = sample.n_slots.max(0) as usize;
     let n_steps = n * PATCH_SIZE;
@@ -1291,7 +1515,37 @@ fn sample_loss_and_grad(
         n as i32,
         vec![],
     )?;
-    let mut loss = pinball(desc, &fan.q_tau_risk, &sample.target_bg, n_steps);
+    let kov = desc.kovatchev;
+    // d loss / d q_tau_risk, and d loss / d median risk from a median-only term.
+    let mut dq = vec![0.0f64; n_steps * N_QUANTILES];
+    let mut d_med = vec![0.0f64; n_steps];
+    let (mut loss, median_moves_levels) = match kind {
+        TrainLoss::Pinball => {
+            (pinball(desc, &fan.q_tau_risk, &sample.target_bg, n_steps, &ALL_LEVELS, 1.0, &mut dq), true)
+        }
+        TrainLoss::Median { term, last, m0, s0 } => {
+            let q = &fan.q_tau_risk;
+            let spreads =
+                pinball(desc, q, &sample.target_bg, n_steps, &SPREAD_LEVELS, 1.0 / s0, &mut dq);
+            let w = 1.0 / ((last + 1) as f64 * m0);
+            let mut acc = 0.0;
+            for i in 0..=last {
+                let (bg, y) = (fan.median_bg[i], sample.target_bg[i]);
+                let (v, dv) = match term {
+                    MedianTerm::SquaredError => ((bg - y) * (bg - y), 2.0 * (bg - y)),
+                    MedianTerm::AbsDtsRisk => (dts_risk(bg, y).abs(), dts_abs_risk_grad(bg, y)),
+                };
+                acc += v;
+                d_med[i] = w * dv * kov.f_inv_grad(fan.median_risk[i]);
+            }
+            let median = acc / (last + 1) as f64;
+            if let Some(p) = parts.as_deref_mut() {
+                p.median = median;
+                p.spreads = spreads;
+            }
+            (median / m0 + spreads / s0, false)
+        }
+    };
 
     // Second forward over perturbed state squared against d0, ASSEMBLED median; MEDIAN COLUMN ONLY.
     let paired = distill.filter(|c| c.scale > 0.0 && !sample.hidden_pert.is_empty());
@@ -1316,8 +1570,8 @@ fn sample_loss_and_grad(
         }
         let term = ctx.scale * acc / n_steps as f64;
         loss += term;
-        if let Some(out) = distill_out.take() {
-            *out = term;
+        if let Some(p) = parts.as_deref_mut() {
+            p.distill = term;
         }
         pert = Some((acts_p, raw_p, m_pert));
     }
@@ -1334,28 +1588,15 @@ fn sample_loss_and_grad(
         Some(l) => l,
     };
 
-    let kov = desc.kovatchev;
-    let scale_n = 1.0 / (n_steps * N_QUANTILES) as f64;
-    let mut dq = vec![0.0f64; n_steps * N_QUANTILES];
-    for i in 0..n_steps {
-        let y = kov.f(sample.target_bg[i]);
-        for (k, tau) in QUANTILE_LEVELS.iter().enumerate() {
-            let e = y - fan.q_tau_risk[i * N_QUANTILES + k];
-            dq[i * N_QUANTILES + k] = scale_n * if e > 0.0 { -tau } else { 1.0 - tau };
-        }
-    }
-
-    // The median moves all seven levels; anchor plus column 0, so dL/dm lands on column 0.
+    // Median is anchor plus column 0, so dL/dm lands on column 0.
     let mut d_head_raw = vec![0.0f64; n_steps * N_QUANTILES];
     // Baseline median takes +c*e[i], perturbed -c*e[i]: e is their difference minus a constant.
     let c_distill = paired.map_or(0.0, |ctx| 2.0 * ctx.scale / n_steps as f64);
     for i in 0..n_steps {
         let row = i * N_QUANTILES;
-        let mut dm = 0.0;
-        for k in 0..N_QUANTILES {
-            dm += dq[row + k];
-        }
-        d_head_raw[row] = dm + c_distill * err[i];
+        // Pinball's median moves all seven levels; the spreads-only term holds it.
+        let dm: f64 = if median_moves_levels { dq[row..row + N_QUANTILES].iter().sum() } else { 0.0 };
+        d_head_raw[row] = dm + d_med[i] + c_distill * err[i];
         // up_j (levels 4..6) = m + Σ_{t<=j} d_up_t ; dn_j (levels 2−j) = m − Σ_{t<=j} d_dn_t
         for t in 0..N_SPREADS {
             let mut d_up = 0.0;
@@ -1534,6 +1775,7 @@ mod tests {
             target_bg: (0..n_slots * PATCH_SIZE).map(|i| 190.0 + i as f64).collect(),
             n_slots: n_slots as i32,
             hidden_pert: Vec::new(),
+            probe_dose_u: 0.0,
             is_forecast: true,
         }
     }
@@ -1543,6 +1785,7 @@ mod tests {
         let mut rng = Rng::new(pert_seed);
         LoraSample {
             hidden_pert: (0..n_slots * PATCH_SIZE * d_model).map(|_| rng.normal()).collect(),
+            probe_dose_u: 1.0,
             ..sample(d_model, n_slots, seed)
         }
     }
@@ -1671,7 +1914,7 @@ mod tests {
         }
         let lora = Lora::from_weights(&w, 8, 6, 7).unwrap();
         let mut analytic = vec![0.0f64; w.params.len()];
-        sample_loss_and_grad(&head, &d, &s, Some(&lora), Some(&mut analytic), None, None).unwrap();
+        sample_loss_and_grad(&head, &d, &s, Some(&lora), TrainLoss::Pinball,Some(&mut analytic), None, None).unwrap();
 
         let h = 1e-6;
         let mut checked = 0;
@@ -1682,8 +1925,8 @@ mod tests {
             minus.params[p] -= h;
             let lp = Lora::from_weights(&plus, 8, 6, 7).unwrap();
             let lm = Lora::from_weights(&minus, 8, 6, 7).unwrap();
-            let f_plus = sample_loss_and_grad(&head, &d, &s, Some(&lp), None, None, None).unwrap();
-            let f_minus = sample_loss_and_grad(&head, &d, &s, Some(&lm), None, None, None).unwrap();
+            let f_plus = sample_loss_and_grad(&head, &d, &s, Some(&lp), TrainLoss::Pinball, None,None, None).unwrap();
+            let f_minus = sample_loss_and_grad(&head, &d, &s, Some(&lm), TrainLoss::Pinball, None,None, None).unwrap();
             let fd = (f_plus - f_minus) / (2.0 * h);
             let got = analytic[p];
             let scale = fd.abs().max(got.abs()).max(1e-6);
@@ -1719,13 +1962,13 @@ mod tests {
         let lora = Lora::from_weights(&w, 8, 6, 7).unwrap();
         let mut analytic = vec![0.0f64; w.params.len()];
         let with_term =
-            sample_loss_and_grad(&head, &d, &s, Some(&lora), Some(&mut analytic), Some(&ctx), None)
+            sample_loss_and_grad(&head, &d, &s, Some(&lora), TrainLoss::Pinball,Some(&mut analytic), Some(&ctx), None)
                 .unwrap();
 
         // Check differences the SAME function as the gradient; proves something to agree about.
         let mut without = vec![0.0f64; w.params.len()];
         let no_term =
-            sample_loss_and_grad(&head, &d, &s, Some(&lora), Some(&mut without), None, None)
+            sample_loss_and_grad(&head, &d, &s, Some(&lora), TrainLoss::Pinball,Some(&mut without), None, None)
                 .unwrap();
         assert!(
             (with_term - no_term).abs() > 1e-9,
@@ -1751,8 +1994,8 @@ mod tests {
             minus.params[p] -= h;
             let lp = Lora::from_weights(&plus, 8, 6, 7).unwrap();
             let lm = Lora::from_weights(&minus, 8, 6, 7).unwrap();
-            let f_plus = sample_loss_and_grad(&head, &d, &s, Some(&lp), None, Some(&ctx), None).unwrap();
-            let f_minus = sample_loss_and_grad(&head, &d, &s, Some(&lm), None, Some(&ctx), None).unwrap();
+            let f_plus = sample_loss_and_grad(&head, &d, &s, Some(&lp), TrainLoss::Pinball, None,Some(&ctx), None).unwrap();
+            let f_minus = sample_loss_and_grad(&head, &d, &s, Some(&lm), TrainLoss::Pinball, None,Some(&ctx), None).unwrap();
             let fd = (f_plus - f_minus) / (2.0 * h);
             let got = analytic[p];
             let scale = fd.abs().max(got.abs()).max(1e-6);
@@ -1778,12 +2021,12 @@ mod tests {
         let lora = Lora::from_weights(&w, 8, 6, 7).unwrap();
 
         let mut g_off = vec![0.0f64; w.params.len()];
-        let l_off = sample_loss_and_grad(&head, &d, &unpaired, Some(&lora), Some(&mut g_off), None, None).unwrap();
+        let l_off = sample_loss_and_grad(&head, &d, &unpaired, Some(&lora), TrainLoss::Pinball,Some(&mut g_off), None, None).unwrap();
 
         let d0 = vec![1.0f64; unpaired.n_slots as usize * PATCH_SIZE];
         let ctx = DistillCtx { d0: &d0, scale: 5.0 };
         let mut g_on = vec![0.0f64; w.params.len()];
-        let l_on = sample_loss_and_grad(&head, &d, &unpaired, Some(&lora), Some(&mut g_on), Some(&ctx), None).unwrap();
+        let l_on = sample_loss_and_grad(&head, &d, &unpaired, Some(&lora), TrainLoss::Pinball,Some(&mut g_on), Some(&ctx), None).unwrap();
 
         assert_eq!(l_off, l_on);
         assert_eq!(g_off, g_on);
@@ -1792,8 +2035,8 @@ mod tests {
         let zero = DistillCtx { d0: &d0, scale: 0.0 };
         let mut g_zero = vec![0.0f64; w.params.len()];
         let mut g_none = vec![0.0f64; w.params.len()];
-        let l_zero = sample_loss_and_grad(&head, &d, &paired, Some(&lora), Some(&mut g_zero), Some(&zero), None).unwrap();
-        let l_none = sample_loss_and_grad(&head, &d, &paired, Some(&lora), Some(&mut g_none), None, None).unwrap();
+        let l_zero = sample_loss_and_grad(&head, &d, &paired, Some(&lora), TrainLoss::Pinball,Some(&mut g_zero), Some(&zero), None).unwrap();
+        let l_none = sample_loss_and_grad(&head, &d, &paired, Some(&lora), TrainLoss::Pinball,Some(&mut g_none), None, None).unwrap();
         assert_eq!(l_zero, l_none);
         assert_eq!(g_zero, g_none);
     }
@@ -1803,7 +2046,6 @@ mod tests {
         let opts = LoraGuardOpts {
             max_windows: 64,
             min_windows: 4,
-            probe_dose_u: 1.0,
             min_frozen_response: 2.0,
             min_retention: 0.25,
             max_retention: 4.0,
@@ -1869,6 +2111,7 @@ mod tests {
             weight_decay: 0.0,
             seed: 4,
             distill_weight: 1.0,
+            objective: LoraObjective::DoseResponse,
         };
         let out = lora_train(&head, &d, samples, cfg(), opts, None).expect("training runs");
 
@@ -1904,6 +2147,7 @@ mod tests {
             weight_decay: 0.0,
             seed: 4,
             distill_weight: 1.0,
+            objective: LoraObjective::DoseResponse,
         };
         let err = lora_train(&head, &d, samples, cfg(), opts, None).unwrap_err();
         assert!(format!("{err:?}").contains("counterfactual"), "{err:?}");
@@ -1921,6 +2165,7 @@ mod tests {
             weight_decay: 0.0,
             seed: 4,
             distill_weight: 0.0,
+            objective: LoraObjective::DoseResponse,
         };
         let out = lora_train(&head, &d, samples, cfg(), opts, None).expect("training runs");
         assert_eq!(out.report.n_holdout, 6);
@@ -1957,7 +2202,7 @@ mod tests {
         let d = desc();
         let (head, _) = synthetic_head(8, 6);
         let mk = || -> Vec<LoraSample> { (0..24).map(|i| sample(8, 4, 100 + i as u64)).collect() };
-        let base = LoraTrainOpts { epochs: 4, lr: 2e-2, holdout_frac: 0.25, weight_decay: 0.0, seed: 9, distill_weight: 0.0 };
+        let base = LoraTrainOpts { epochs: 4, lr: 2e-2, holdout_frac: 0.25, weight_decay: 0.0, seed: 9, distill_weight: 0.0, objective: LoraObjective::DoseResponse };
         let short = lora_train(&head, &d, mk(), cfg(), base, None).unwrap().report;
         let long = lora_train(&head, &d, mk(), cfg(), LoraTrainOpts { epochs: 200, ..base }, None)
             .unwrap()
@@ -1977,7 +2222,7 @@ mod tests {
         let d = desc();
         let (head, _) = synthetic_head(8, 6);
         let samples: Vec<LoraSample> = (0..12).map(|i| sample(8, 4, i as u64)).collect();
-        let opts = LoraTrainOpts { epochs: 3, lr: 1e-3, holdout_frac: 0.0, weight_decay: 0.0, seed: 2, distill_weight: 0.0 };
+        let opts = LoraTrainOpts { epochs: 3, lr: 1e-3, holdout_frac: 0.0, weight_decay: 0.0, seed: 2, distill_weight: 0.0, objective: LoraObjective::DoseResponse };
         let out = lora_train(&head, &d, samples, cfg(), opts, None).unwrap();
         assert_eq!(out.report.n_holdout, 0);
         assert_eq!(out.report.best_epoch, 3);
@@ -1998,7 +2243,7 @@ mod tests {
         let d = desc();
         let (head, _) = synthetic_head(8, 6);
         let samples: Vec<LoraSample> = (0..24).map(|i| sample(8, 4, i as u64)).collect();
-        let opts = LoraTrainOpts { epochs: 5, lr: 1e-3, holdout_frac: 0.25, weight_decay: 0.0, seed: 3, distill_weight: 0.0 };
+        let opts = LoraTrainOpts { epochs: 5, lr: 1e-3, holdout_frac: 0.25, weight_decay: 0.0, seed: 3, distill_weight: 0.0, objective: LoraObjective::DoseResponse };
         let rec = std::sync::Arc::new(Rec(StdMutex::new(Vec::new())));
         lora_train(&head, &d, samples, cfg(), opts, Some(rec.clone())).unwrap();
         assert_eq!(*rec.0.lock().unwrap(), vec![(1, 5), (2, 5), (3, 5), (4, 5), (5, 5)]);
@@ -2009,7 +2254,7 @@ mod tests {
         let d = desc();
         let (head, _) = synthetic_head(8, 6);
         let samples: Vec<LoraSample> = (0..6).map(|i| sample(8, 4, i as u64)).collect();
-        let opts = LoraTrainOpts { epochs: 4, lr: 1e-3, holdout_frac: 0.2, weight_decay: 0.0, seed: 1, distill_weight: 0.0 };
+        let opts = LoraTrainOpts { epochs: 4, lr: 1e-3, holdout_frac: 0.2, weight_decay: 0.0, seed: 1, distill_weight: 0.0, objective: LoraObjective::DoseResponse };
         assert!(lora_train(&head, &d, samples, cfg(), opts, None).is_err());
     }
 
@@ -2018,7 +2263,7 @@ mod tests {
         let d = desc();
         let (head, _) = synthetic_head(8, 6);
         let good: Vec<LoraSample> = (0..12).map(|i| sample(8, 4, i as u64)).collect();
-        let base = LoraTrainOpts { epochs: 2, lr: 1e-3, holdout_frac: 0.2, weight_decay: 0.0, seed: 1, distill_weight: 0.0 };
+        let base = LoraTrainOpts { epochs: 2, lr: 1e-3, holdout_frac: 0.2, weight_decay: 0.0, seed: 1, distill_weight: 0.0, objective: LoraObjective::DoseResponse };
         for opts in [
             LoraTrainOpts { epochs: 0, ..base },
             LoraTrainOpts { epochs: 100_000, ..base },
@@ -2032,5 +2277,196 @@ mod tests {
         let mut ragged = good.clone();
         ragged[3].target_bg.pop();
         assert!(lora_train(&head, &d, ragged, cfg(), base, None).is_err());
+    }
+
+    fn opts_for(objective: LoraObjective, epochs: i32, distill_weight: f64) -> LoraTrainOpts {
+        LoraTrainOpts {
+            epochs,
+            lr: 5e-3,
+            holdout_frac: 0.25,
+            weight_decay: 0.0,
+            seed: 4,
+            distill_weight,
+            objective,
+        }
+    }
+
+    #[test]
+    fn the_objective_horizons_are_30_60_120_min_on_the_grid() {
+        assert_eq!(objective_steps().unwrap(), [5, 11, 23]);
+    }
+
+    fn head_raw_of(head: &HeadModel, s: &LoraSample, l: &Lora) -> Vec<f64> {
+        let n_steps = s.n_slots as usize * PATCH_SIZE;
+        let mut raw = vec![0.0f64; n_steps * N_QUANTILES];
+        let mut a = Activations::new(head.hidden, N_QUANTILES, head.d_model);
+        for i in 0..n_steps {
+            head.forward_step(&s.hidden[i * head.d_model..(i + 1) * head.d_model], Some(l), &mut a);
+            raw[i * N_QUANTILES..(i + 1) * N_QUANTILES].copy_from_slice(&a.out);
+        }
+        raw
+    }
+
+    /// Spreads' pinball with column 0 pinned to `raw0_held`: what the gradient differentiates.
+    fn spreads_median_held(d: &ModelDescriptor, head: &HeadModel, s: &LoraSample, l: &Lora, raw0_held: &[f64]) -> f64 {
+        let mut raw = head_raw_of(head, s, l);
+        for (i, &r) in raw0_held.iter().enumerate() {
+            raw[i * N_QUANTILES] = r;
+        }
+        let n = s.n_slots as usize;
+        let fan = assemble_decode(d, raw, s.anchors.clone(), (0..n as i32).collect(), n as i32, vec![]).unwrap();
+        let mut sink = vec![0.0f64; fan.q_tau_risk.len()];
+        pinball(d, &fan.q_tau_risk, &s.target_bg, n * PATCH_SIZE, &SPREAD_LEVELS, 1.0, &mut sink)
+    }
+
+    /// Both median terms, with the spreads' pinball and the distillation term beside them.
+    #[test]
+    fn the_median_objective_gradients_match_finite_differences() {
+        let d = desc();
+        let (head, spec) = synthetic_head(8, 6);
+        let s = sample_paired(8, 4, 3, 77);
+        let mut w = lora_new(cfg(), spec.sha256.clone(), spec.d_model, spec.hidden, spec.out_dim, 17).unwrap();
+        let mut rng = Rng::new(23);
+        for p in w.params.iter_mut() {
+            *p = rng.normal() * 0.2;
+        }
+        let m = branch_median_risk(&head, &d, &s, None, false).unwrap();
+        let mp = branch_median_risk(&head, &d, &s, None, true).unwrap();
+        let d0: Vec<f64> = m.iter().zip(&mp).map(|(a, b)| a - b).collect();
+        let ctx = DistillCtx { d0: &d0, scale: 2.0 };
+
+        for term in [MedianTerm::SquaredError, MedianTerm::AbsDtsRisk] {
+            let (m0, s0) = (3.0, 0.5);
+            let kind = TrainLoss::Median { term, last: 23, m0, s0 };
+            let lora = Lora::from_weights(&w, 8, 6, 7).unwrap();
+            let mut analytic = vec![0.0f64; w.params.len()];
+            sample_loss_and_grad(&head, &d, &s, Some(&lora), kind, Some(&mut analytic), Some(&ctx), None)
+                .unwrap();
+            assert!(analytic.iter().any(|g| g.abs() > 1e-8), "{term:?}: the gradient is zero");
+            let raw0: Vec<f64> =
+                head_raw_of(&head, &s, &lora).iter().step_by(N_QUANTILES).copied().collect();
+
+            let h = 1e-6;
+            let mut checked = 0;
+            for p in (0..w.params.len()).step_by(7) {
+                let mut plus = w.clone();
+                plus.params[p] += h;
+                let mut minus = w.clone();
+                minus.params[p] -= h;
+                let lp = Lora::from_weights(&plus, 8, 6, 7).unwrap();
+                let lm = Lora::from_weights(&minus, 8, 6, 7).unwrap();
+                // The loss with the spreads' median swapped for the held one.
+                let f = |l: &Lora| {
+                    let mut p = Parts::default();
+                    let total =
+                        sample_loss_and_grad(&head, &d, &s, Some(l), kind, None, Some(&ctx), Some(&mut p))
+                            .unwrap();
+                    total - p.spreads / s0 + spreads_median_held(&d, &head, &s, l, &raw0) / s0
+                };
+                let fd = (f(&lp) - f(&lm)) / (2.0 * h);
+                let got = analytic[p];
+                let scale = fd.abs().max(got.abs()).max(1e-6);
+                assert!(
+                    (fd - got).abs() / scale < 1e-4,
+                    "{term:?} param {p}: analytic {got:.9e} vs finite difference {fd:.9e}"
+                );
+                checked += 1;
+            }
+            assert!(checked > 10, "only {checked} parameters were checked");
+        }
+    }
+
+    #[test]
+    fn a_median_objective_fits_forecast_windows_only_and_picks_on_its_own_metric() {
+        let d = desc();
+        let (head, _) = synthetic_head(8, 6);
+        for objective in [LoraObjective::MeanRmse, LoraObjective::DtsA] {
+            let samples: Vec<LoraSample> = (0..48)
+                .map(|i| LoraSample { is_forecast: i % 3 != 2, ..sample(8, 4, 100 + i as u64) })
+                .collect();
+            let r = lora_train(&head, &d, samples, cfg(), opts_for(objective, 10, 0.0), None)
+                .expect("training runs")
+                .report;
+            assert_eq!(r.n_train + r.n_holdout, 32, "{objective:?}: infill windows were fitted");
+            assert_eq!(r.objective, objective);
+            assert_eq!(r.metric_history.len(), 10);
+            assert!(r.metric_before.is_finite(), "{objective:?}");
+            assert!(!beats(objective, r.metric_before, r.metric_after), "{objective:?}: worse");
+            assert_eq!(r.improved, r.best_epoch > 0);
+            if r.best_epoch > 0 {
+                assert_eq!(r.metric_history[r.best_epoch as usize - 1], r.metric_after);
+                assert_eq!(r.holdout_history[r.best_epoch as usize - 1], r.holdout_loss_after);
+            }
+        }
+    }
+
+    #[test]
+    fn the_rmse_objective_lowers_held_out_rmse_on_a_learnable_offset() {
+        let d = desc();
+        let (head, _) = synthetic_head(8, 6);
+        // One shared offset of the truth from the frozen median: a bias an adapter can learn.
+        let samples: Vec<LoraSample> = (0..48)
+            .map(|i| {
+                let s = sample(8, 4, 100 + i as u64);
+                let m = branch_median_risk(&head, &d, &s, None, false).unwrap();
+                LoraSample { target_bg: m.iter().map(|&r| d.kovatchev.f_inv(r) + 25.0).collect(), ..s }
+            })
+            .collect();
+        let r = lora_train(&head, &d, samples, cfg(), opts_for(LoraObjective::MeanRmse, 30, 0.0), None)
+            .unwrap()
+            .report;
+        assert!(r.improved, "RMSE {} -> {}", r.metric_before, r.metric_after);
+        assert!(r.metric_after < r.metric_before - 1.0, "RMSE {} -> {}", r.metric_before, r.metric_after);
+    }
+
+    #[test]
+    fn a_median_objective_refuses_a_model_that_does_not_reach_120_min() {
+        let d = desc();
+        let (head, _) = synthetic_head(8, 6);
+        let samples: Vec<LoraSample> = (0..24).map(|i| sample(8, 3, i as u64)).collect();
+        let err = lora_train(&head, &d, samples, cfg(), opts_for(LoraObjective::MeanRmse, 2, 0.0), None)
+            .unwrap_err();
+        assert!(format!("{err:?}").contains("120 min"), "{err:?}");
+    }
+
+    #[test]
+    fn the_dose_response_objective_returns_only_an_epoch_the_guard_passes() {
+        let d = desc();
+        let (head, _) = synthetic_head(8, 6);
+        // One shared shift, so the frozen response keeps its sign across windows and is measurable.
+        let mut rng = Rng::new(5);
+        let shift: Vec<f64> = (0..8).map(|_| rng.normal()).collect();
+        let samples: Vec<LoraSample> = (0..48)
+            .map(|i| {
+                let s = sample(8, 4, 100 + i as u64);
+                let hidden_pert = s.hidden.iter().enumerate().map(|(j, h)| h + shift[j % 8]).collect();
+                LoraSample { hidden_pert, probe_dose_u: 1.0, ..s }
+            })
+            .collect();
+        let opts = LoraTrainOpts { lr: 5e-2, ..opts_for(LoraObjective::DoseResponse, 20, 0.0) };
+        let r = lora_train(&head, &d, samples.clone(), cfg(), opts, None).unwrap().report;
+        let n_holdout = r.n_holdout as usize;
+        let holdout = &samples[samples.len() - n_holdout..];
+        let fresh = lora_new(cfg(), head.sha256(), 8, 6, 7, opts.seed).unwrap();
+        let identity = lora_guard(&head, &d, holdout.to_vec(), &fresh, GUARD_OPTS_FIT).unwrap();
+        assert_eq!(identity.verdict, LoraGuardVerdict::Pass, "{}", identity.why);
+        let returned = r.guard.expect("held-out forecast windows existed");
+        assert_eq!(returned.verdict, LoraGuardVerdict::Pass, "{}", returned.why);
+        assert!(r.n_epochs_gated >= 0 && r.n_epochs_gated <= 20);
+        assert_eq!(r.metric_before, r.holdout_loss_before);
+    }
+
+    #[test]
+    fn a_counterfactual_without_a_positive_dose_is_refused() {
+        let d = desc();
+        let (head, spec) = synthetic_head(8, 6);
+        let mut samples: Vec<LoraSample> =
+            (0..16).map(|i| sample_paired(8, 4, 100 + i as u64, 900 + i as u64)).collect();
+        samples[5].probe_dose_u = 0.0;
+        let opts = opts_for(LoraObjective::DoseResponse, 2, 1.0);
+        let err = lora_train(&head, &d, samples.clone(), cfg(), opts, None).unwrap_err();
+        assert!(format!("{err:?}").contains("dose"), "{err:?}");
+        let w = lora_new(cfg(), spec.sha256.clone(), 8, 6, 7, 4).unwrap();
+        assert!(lora_guard(&head, &d, samples, &w, GUARD_OPTS_FIT).is_err());
     }
 }

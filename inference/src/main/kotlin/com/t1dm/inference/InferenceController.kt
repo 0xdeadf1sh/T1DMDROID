@@ -482,6 +482,7 @@ class InferenceController(
         maxWindows: Int,
         strideSteps: Int,
         onWindow: ((done: Int, total: Int) -> Unit)? = null,
+        forecastOnly: Boolean = false,
     ): List<LoraSample> {
         // Captured under the lock, re-checked before every forward: a refresh can close it mid-run.
         val entry = cycleMutex.withLock { loaded[modelId] } ?: error("model $modelId is not loaded")
@@ -534,7 +535,7 @@ class InferenceController(
                 ch.exercise.copyOfRange(o, o + predSteps),
             )
             // A backcast/infill masks a run INSIDE context, no future zone; target is its own.
-            val geometry = LoraGeometryPlan.geometryAt(index)
+            val geometry = if (forecastOnly) MaskGeometry.FORECAST else LoraGeometryPlan.geometryAt(index)
             val startPatch = LoraGeometryPlan.startPatch(geometry, ctxPatches, spanPatches)
             val isForecastWindow = geometry == MaskGeometry.FORECAST || startPatch == null
             // ANCHOR must be a real measurement; pinball target, baseline d0, guard measure it.
@@ -617,6 +618,7 @@ class InferenceController(
                     } else {
                         emptyList()
                     },
+                    probeDoseU = PROBE_DOSE_U,
                     isForecast = isForecastWindow,
                 ),
             )

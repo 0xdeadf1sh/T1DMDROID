@@ -90,6 +90,16 @@ impl KovatchevParams {
         let mgdl = base.powf(1.0 / self.power).exp();
         mgdl.clamp(self.bg_clamp_min, self.bg_clamp_max)
     }
+
+    /// `d f_inv / d risk`, mg/dL per risk unit; zero wherever a clamp binds.
+    pub(crate) fn f_inv_grad(&self, risk: f64) -> f64 {
+        if !(risk > self.f(self.bg_clamp_min) && risk < self.f(self.bg_clamp_max)) {
+            return 0.0;
+        }
+        let base = risk / self.scale + self.offset;
+        let e = 1.0 / self.power;
+        base.powf(e).exp() * e * base.powf(e - 1.0) / self.scale
+    }
 }
 
 /// Co-trained hour-of-day probe; absent past head_raw is fail-open, no hour surfaced.

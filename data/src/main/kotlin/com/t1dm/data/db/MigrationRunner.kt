@@ -666,6 +666,27 @@ object MigrationRunner {
         }
     }
 
+    internal const val SQL_30_31_LORA_OBJECTIVE = "ALTER TABLE `lora` ADD COLUMN `objective` TEXT"
+
+    internal const val SQL_30_31_LORA_METRIC_BEFORE = "ALTER TABLE `lora` ADD COLUMN `metricBefore` REAL"
+
+    internal const val SQL_30_31_LORA_METRIC_AFTER = "ALTER TABLE `lora` ADD COLUMN `metricAfter` REAL"
+
+    /** Fitted here before v31: pinball with the dose term, the objective's own metric. */
+    internal const val SQL_30_31_BACKFILL =
+        "UPDATE `lora` SET `objective` = 'DOSE_RESPONSE', `metricBefore` = `holdoutBefore`, " +
+            "`metricAfter` = `holdoutAfter` WHERE `nTrain` > 0"
+
+    /** An import (nTrain 0) stays null: its blob never recorded what it was fitted for. */
+    val MIGRATION_30_31 = object : Migration(30, 31) {
+        override fun migrate(connection: SQLiteConnection) {
+            connection.execSQL(SQL_30_31_LORA_OBJECTIVE)
+            connection.execSQL(SQL_30_31_LORA_METRIC_BEFORE)
+            connection.execSQL(SQL_30_31_LORA_METRIC_AFTER)
+            connection.execSQL(SQL_30_31_BACKFILL)
+        }
+    }
+
     val ALL: Array<Migration> = arrayOf(
         MIGRATION_1_2,
         MIGRATION_2_3,
@@ -696,6 +717,7 @@ object MigrationRunner {
         MIGRATION_27_28,
         MIGRATION_28_29,
         MIGRATION_29_30,
+        MIGRATION_30_31,
     )
 
     fun <T : RoomDatabase> configure(builder: RoomDatabase.Builder<T>): RoomDatabase.Builder<T> =

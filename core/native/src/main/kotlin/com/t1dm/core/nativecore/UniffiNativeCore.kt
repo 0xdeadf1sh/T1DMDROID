@@ -18,6 +18,7 @@ import com.t1dm.core.model.LoraConfig
 import com.t1dm.core.model.LoraProgressSink
 import com.t1dm.core.model.LoraSample
 import com.t1dm.core.model.LoraTrainOpts
+import com.t1dm.core.model.LoraObjective
 import com.t1dm.core.model.LoraTrainReport
 import com.t1dm.core.model.LoraTrainResult
 import com.t1dm.core.model.LoraWeights
@@ -105,6 +106,7 @@ import uniffi.t1dm_core.LoraGuardOpts as UniffiLoraGuardOpts
 import uniffi.t1dm_core.LoraGuardReport as UniffiLoraGuardReport
 import uniffi.t1dm_core.LoraGuardVerdict as UniffiLoraGuardVerdict
 import uniffi.t1dm_core.LoraTrainOpts as UniffiLoraTrainOpts
+import uniffi.t1dm_core.LoraObjective as UniffiLoraObjective
 import uniffi.t1dm_core.loraGuard as uniffiLoraGuard
 import uniffi.t1dm_core.loraGuardOptsFit as uniffiLoraGuardOptsFit
 import uniffi.t1dm_core.LoraTrainReport as UniffiLoraTrainReport
@@ -1049,18 +1051,30 @@ private fun UniffiLoraWeights.toModel(): LoraWeights =
     LoraWeights(config.toModel(), headSha256, dModel, hidden, outDim, params)
 
 private fun LoraSample.toUniffi(): UniffiLoraSample =
-    UniffiLoraSample(hidden, anchors, targetBg, nSlots, hiddenPert, isForecast)
+    UniffiLoraSample(hidden, anchors, targetBg, nSlots, hiddenPert, probeDoseU, isForecast)
+
+private fun LoraObjective.toUniffi(): UniffiLoraObjective = when (this) {
+    LoraObjective.MEAN_RMSE -> UniffiLoraObjective.MEAN_RMSE
+    LoraObjective.DTS_A -> UniffiLoraObjective.DTS_A
+    LoraObjective.DOSE_RESPONSE -> UniffiLoraObjective.DOSE_RESPONSE
+}
+
+private fun UniffiLoraObjective.toModel(): LoraObjective = when (this) {
+    UniffiLoraObjective.MEAN_RMSE -> LoraObjective.MEAN_RMSE
+    UniffiLoraObjective.DTS_A -> LoraObjective.DTS_A
+    UniffiLoraObjective.DOSE_RESPONSE -> LoraObjective.DOSE_RESPONSE
+}
 
 private fun LoraTrainOpts.toUniffi(): UniffiLoraTrainOpts =
-    UniffiLoraTrainOpts(epochs, lr, holdoutFrac, weightDecay, seed, distillWeight)
+    UniffiLoraTrainOpts(epochs, lr, holdoutFrac, weightDecay, seed, distillWeight, objective.toUniffi())
 
 private fun LoraGuardOpts.toUniffi(): UniffiLoraGuardOpts = UniffiLoraGuardOpts(
-    maxWindows, minWindows, probeDoseU, minFrozenResponse,
+    maxWindows, minWindows, minFrozenResponse,
     minRetention, maxRetention, minSignAgreement,
 )
 
 private fun UniffiLoraGuardOpts.toModel(): LoraGuardOpts = LoraGuardOpts(
-    maxWindows, minWindows, probeDoseU, minFrozenResponse,
+    maxWindows, minWindows, minFrozenResponse,
     minRetention, maxRetention, minSignAgreement,
 )
 
@@ -1094,6 +1108,11 @@ private fun UniffiLoraTrainReport.toModel(): LoraTrainReport = LoraTrainReport(
     distillScale = distillScale,
     distillHistory = distillHistory,
     guard = guard?.toModel(),
+    objective = objective.toModel(),
+    metricBefore = metricBefore,
+    metricAfter = metricAfter,
+    metricHistory = metricHistory,
+    nEpochsGated = nEpochsGated,
 )
 
 private fun UniffiLoraTrainResult.toModel(): LoraTrainResult =

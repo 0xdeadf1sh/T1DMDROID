@@ -108,6 +108,12 @@ const FAN_ORDER_TOL_MGDL: f64 = 1e-6;
 /// Persistence RMSE below which the skill score is `None` (`metrics.py`'s `> 1e-9` guard).
 const PERSIST_RMSE_EPS: f64 = 1e-9;
 
+/// Step index of a horizon `h` minutes past the anchor; `None` off the grid.
+pub(crate) fn horizon_step(h: u32) -> Option<usize> {
+    let grid_min = DT_MINUTES as u32;
+    (h > 0 && h % grid_min == 0).then(|| (h / grid_min - 1) as usize)
+}
+
 pub(crate) fn tau_index(tau: f64) -> Option<usize> {
     QUANTILE_LEVELS.iter().position(|&t| t == tau)
 }
@@ -327,15 +333,31 @@ const DTS_ZONE_CEILINGS: [f64; 4] = [0.5, 1.5, 2.5, 3.5];
 
 /// DTS risk, positive where forecast read HIGH; NOT §4's risk space (log-ratio of two values).
 #[inline]
-fn dts_risk(pred: f64, truth: f64) -> f64 {
+pub(crate) fn dts_risk(pred: f64, truth: f64) -> f64 {
     let m = pred.max(DTS_CLAMP_MGDL);
     let r = truth.max(DTS_CLAMP_MGDL);
     let l = (m / r).ln();
     if m > r { DTS_RISK_COEF_OVER * l } else { DTS_RISK_COEF_UNDER * l }
 }
 
+/// `d|dts_risk|/d pred`; zero on the pred floor and at `pred == truth`.
 #[inline]
-fn dts_zone_of_abs_risk(abs_risk: f64) -> DtsZone {
+pub(crate) fn dts_abs_risk_grad(pred: f64, truth: f64) -> f64 {
+    if pred <= DTS_CLAMP_MGDL {
+        return 0.0;
+    }
+    let r = truth.max(DTS_CLAMP_MGDL);
+    if pred > r {
+        DTS_RISK_COEF_OVER / pred
+    } else if pred < r {
+        -DTS_RISK_COEF_UNDER / pred
+    } else {
+        0.0
+    }
+}
+
+#[inline]
+pub(crate) fn dts_zone_of_abs_risk(abs_risk: f64) -> DtsZone {
     if abs_risk <= DTS_ZONE_CEILINGS[0] {
         DtsZone::A
     } else if abs_risk <= DTS_ZONE_CEILINGS[1] {
@@ -735,16 +757,14 @@ pub fn forecast_metrics_suite(
         return Ok(MetricsSuite { n_rejected, n_steps: n_steps as u32, ..empty });
     }
 
-    let grid_min = DT_MINUTES as u32; // §1's five-minute grid.
     let mut wanted: Vec<u32> = horizons_min;
     wanted.sort_unstable();
     wanted.dedup();
     let mut horizons = Vec::with_capacity(wanted.len());
     for h in wanted {
-        if h == 0 || h % grid_min != 0 {
-            return Err(bad(format!("horizon {h} min is not a positive multiple of {grid_min}")));
-        }
-        let k = (h / grid_min - 1) as usize;
+        let k = horizon_step(h).ok_or_else(|| {
+            bad(format!("horizon {h} min is not a positive multiple of {}", DT_MINUTES as u32))
+        })?;
         if k >= n_steps {
             return Err(bad(format!(
                 "horizon {h} min is step {k}, past the {n_steps}-step window"

@@ -623,6 +623,9 @@ object Archive {
         w.put("npr", r.nPaired)
         w.put("ds", r.distillScale)
         w.put("fa", r.fittedAtMs)
+        r.objective?.let { w.put("obj", it) }
+        r.metricBefore?.let { w.put("mb", it) }
+        r.metricAfter?.let { w.put("ma", it) }
         w.close()
     }
 
@@ -662,6 +665,10 @@ object Archive {
             distillScale = o.dbl("ds") ?: 0.0,
             // Zero = "not fitted on THIS phone", not an instant every edit would invalidate.
             fittedAtMs = o.long("fa") ?: 0L,
+            // Absent in a pre-v31 archive: not recorded, not guessed.
+            objective = o.str("obj"),
+            metricBefore = o.dbl("mb"),
+            metricAfter = o.dbl("ma"),
         )
     }
 

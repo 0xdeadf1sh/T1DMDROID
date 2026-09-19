@@ -69,6 +69,20 @@ class MigrationConstantsTest {
     }
 
     @Test
+    fun `the v31 adapter columns are exactly what Room generates`() {
+        val create = createSqlOf(schemaText(31), "lora")
+        val re = Regex("ALTER TABLE `lora` ADD COLUMN (.+)$")
+        for (sql in listOf(
+            MigrationRunner.SQL_30_31_LORA_OBJECTIVE,
+            MigrationRunner.SQL_30_31_LORA_METRIC_BEFORE,
+            MigrationRunner.SQL_30_31_LORA_METRIC_AFTER,
+        )) {
+            val column = re.find(sql)?.groupValues?.get(1) ?: error("unparsed: $sql")
+            assertTrue("schema 31 lacks $column | createSql: $create", create.contains(column))
+        }
+    }
+
+    @Test
     fun `the real-sensor backfill writes exactly CgmSensorModelId AIDEX_X`() {
         assertTrue(
             "MIGRATION_10_11 no longer backfills ${CgmSensorModelId.AIDEX_X}: " +

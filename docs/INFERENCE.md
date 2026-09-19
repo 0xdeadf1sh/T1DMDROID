@@ -138,13 +138,28 @@ the head over those states and puts a low-rank adapter in front of it.
   recover their hidden states — not stored, since they are a function of the model
   and would go stale the moment the artifact was replaced — and paired with the BG
   that actually followed. A window whose horizon carries a gap is dropped. The loss
-  is the pinball loss over the seven levels, in risk space, read on the ASSEMBLED
-  fan; the gradient is analytic through the assembly and is gated by a
+  is read on the ASSEMBLED fan and is set by the objective the fit is asked for:
+  - **RMSE** — the median line's squared error in mg/dL at every step through
+    120 min, plus the pinball loss of the six other levels with the median held,
+    each divided by its frozen training mean. Forecast windows only: an infill or
+    a backcast has no 30, 60 or 120 min horizon. A model whose horizon stops short
+    of 120 min is refused.
+  - **DTS A** — the same, with the DTS error grid's `|risk|` in place of the
+    squared error.
+  - **Dose response** — the pinball loss over the seven levels, in risk space,
+    across every geometry.
+
+  The gradient is analytic through the assembly and is gated by a
   finite-difference check in the crate's tests.
 - **The bar for attaching.** The fit holds out the newest quarter of the windows
-  and reports the frozen head's loss beside the adapter's on them. A fit that does
-  not beat the frozen head learnt the patient's past, not their physiology, and the
-  panel says so rather than hiding it.
+  and scores them after every epoch on the objective's own metric: the median
+  line's RMSE or DTS zone-A share, each a mean over 30, 60 and 120 min, or the
+  held-out pinball loss. It returns the best epoch, the frozen head included, and
+  stores the metric before and after on the adapter's row. Under Dose response an
+  epoch is returnable only if the counterfactual guard passes it on the same
+  held-out windows; the gate lifts when the guard cannot pass the frozen head
+  either. A fit that does not beat the frozen head learnt the patient's past, not
+  their physiology, and the panel says so rather than hiding it.
 - **A head that is not the graph's own is refused.** With no adapter attached the
   re-run head must reproduce the graph's `head_raw` from the graph's own `hidden`;
   that is checked once per model at first run. A mismatch disables
@@ -236,7 +251,7 @@ because that rail tests the MEDIAN line and not a band edge.
 
 Two things stand against it, and they are independent:
 
-- **A distillation term during the fit.** Every forecast window is replayed twice —
+- **A distillation term during the fit, under every objective.** Every forecast window is replayed twice —
   once as it happened and once with one unit of RAPID INSULIN added to the horizon,
   as the action curve the preset resolves and a logged bolus stores, not as a lump
   in one bucket — and the term pins the ADAPTED difference between the two to the

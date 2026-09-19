@@ -495,6 +495,11 @@ data class LoraEntity(
     /** When fitted-on history is edited/deleted, or null; attach refuses till re-fit/override. */
     val historyMutatedAtMs: Long? = null,
     @ColumnInfo(defaultValue = "0") val fittedAtMs: Long = 0,
+    /** `LoraObjective` by name; null when not recorded (an import). */
+    val objective: String? = null,
+    /** Held-out objective metric, frozen head then adapter; null when not recorded. */
+    val metricBefore: Double? = null,
+    val metricAfter: Double? = null,
 ) {
     override fun equals(other: Any?): Boolean =
         other is LoraEntity && id == other.id && modelId == other.modelId && name == other.name &&
@@ -510,7 +515,9 @@ data class LoraEntity(
             guardSignAgreement == other.guardSignAgreement && guardWhy == other.guardWhy &&
             nPaired == other.nPaired && distillScale == other.distillScale &&
             guardOverrideAtMs == other.guardOverrideAtMs &&
-            historyMutatedAtMs == other.historyMutatedAtMs && fittedAtMs == other.fittedAtMs
+            historyMutatedAtMs == other.historyMutatedAtMs && fittedAtMs == other.fittedAtMs &&
+            objective == other.objective && metricBefore == other.metricBefore &&
+            metricAfter == other.metricAfter
 
     override fun hashCode(): Int = 31 * (31 * id.hashCode() + modelId.hashCode()) + blob.contentHashCode()
 }

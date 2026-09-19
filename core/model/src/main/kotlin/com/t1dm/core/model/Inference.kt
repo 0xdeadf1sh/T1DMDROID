@@ -142,9 +142,21 @@ data class LoraSample(
     val nSlots: Int,
     /** Same window, probe dose injected in masked span; empty if unpaired. */
     val hiddenPert: List<Double> = emptyList(),
+    /** Units injected into [hiddenPert]; the guard divides by it. */
+    val probeDoseU: Double = 0.0,
     /** True for the trailing-forecast geometry — the only one the guard measures on. */
     val isForecast: Boolean = true,
 )
+
+/** What a fit minimises, picks its epoch on, and calls `improved`; stored by name. */
+enum class LoraObjective {
+    /** Median-line RMSE, mg/dL, mean over the crate's objective horizons; forecast windows only. */
+    MEAN_RMSE,
+    /** Median-line DTS zone-A share, %, same horizons; forecast windows only. */
+    DTS_A,
+    /** Pinball; the returned epoch must pass the held-out dose-response guard. */
+    DOSE_RESPONSE,
+}
 
 data class LoraTrainOpts(
     val epochs: Int,
@@ -152,6 +164,7 @@ data class LoraTrainOpts(
     val holdoutFrac: Double,
     val weightDecay: Double,
     val seed: Long,
+    val objective: LoraObjective,
     /** Pins adapted dose response to frozen model's; 0.0=off; multiple of frozen mean loss. */
     val distillWeight: Double = 1.0,
 )
@@ -160,7 +173,6 @@ data class LoraTrainOpts(
 data class LoraGuardOpts(
     val maxWindows: Int,
     val minWindows: Int,
-    val probeDoseU: Double,
     val minFrozenResponse: Double,
     val minRetention: Double,
     val maxRetention: Double,
@@ -203,6 +215,14 @@ data class LoraTrainReport(
     val distillHistory: List<Double> = emptyList(),
     /** Null when there was nothing to measure on, which is itself a reason not to attach. */
     val guard: LoraGuardReport? = null,
+    val objective: LoraObjective = LoraObjective.DOSE_RESPONSE,
+    /** Held-out, frozen head: mg/dL for MEAN_RMSE, % for DTS_A, pinball for DOSE_RESPONSE. */
+    val metricBefore: Double = Double.NaN,
+    /** The same, at [bestEpoch]. */
+    val metricAfter: Double = Double.NaN,
+    val metricHistory: List<Double> = emptyList(),
+    /** DOSE_RESPONSE: epochs the held-out guard refused. */
+    val nEpochsGated: Int = 0,
 )
 
 /** Called once per epoch while a fit runs. Never per sample. */
