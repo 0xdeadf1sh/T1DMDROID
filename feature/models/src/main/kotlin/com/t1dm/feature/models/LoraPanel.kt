@@ -51,8 +51,8 @@ data class LoraFitSpec(
 fun loraMetricLine(objective: LoraObjective?, before: Double?, after: Double?): String {
     fun f(v: Double?, fmt: String) = v?.takeIf { it.isFinite() }?.let { fmt.format(it) } ?: "—"
     return when (objective) {
-        LoraObjective.MEAN_RMSE -> "RMSE ${f(before, "%.1f")} → ${f(after, "%.1f")} mg/dL"
-        LoraObjective.DTS_A -> "DTS A ${f(before, "%.1f")} → ${f(after, "%.1f")}%"
+        LoraObjective.MEAN_RMSE -> "median RMSE ${f(before, "%.1f")} → ${f(after, "%.1f")} mg/dL"
+        LoraObjective.DTS_A -> "median DTS A ${f(before, "%.1f")} → ${f(after, "%.1f")}%"
         LoraObjective.DOSE_RESPONSE, null -> "pinball ${f(before, "%.4f")} → ${f(after, "%.4f")}"
     }
 }
