@@ -191,7 +191,9 @@ impl ModelDescriptor {
     }
 }
 
+/// Exactly the three INFERENCE.md §6 names; a fourth is a channel this build never normalizes.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct NormStatsDto {
     bg_absolute: ChannelStat,
     carb_intake: ChannelStat,
@@ -1567,6 +1569,16 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("insulin_combined");
+        assert!(matches!(parse_descriptor(v.to_string()), Err(CoreError::Decode { .. })));
+    }
+
+    /// A four-feature geometry plus a fourth stat is a checkpoint normalized on a channel we drop.
+    #[test]
+    fn parse_descriptor_refuses_a_fourth_normalization_channel() {
+        let mut v: Value = serde_json::from_str(REFERENCE_DESCRIPTOR).unwrap();
+        v["normalization_stats"]["exercise_equiv"] =
+            serde_json::json!({"mean": 0.0, "std": 1.0});
+        assert_eq!(v["geometry"]["N_INPUT_FEATURES"], serde_json::json!(4));
         assert!(matches!(parse_descriptor(v.to_string()), Err(CoreError::Decode { .. })));
     }
 
