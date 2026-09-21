@@ -222,6 +222,9 @@ struct GeometryDto {
     patch_size: i32,
     #[serde(rename = "N_INPUT_FEATURES")]
     n_input_features: i32,
+    /// Absent costs nothing — the flatten runs off the two above; present, it must agree.
+    #[serde(rename = "PATCH_DIM", default)]
+    patch_dim: Option<i32>,
     #[serde(rename = "MIN_CONTEXT_PATCHES")]
     min_context_patches: i32,
     #[serde(rename = "MAX_CONTEXT_PATCHES")]
@@ -247,12 +250,27 @@ struct ConstantsDto {
     prediction_horizon_hours: i32,
 }
 
+/// Only the patch tensor is read here; every other entry is the runtime's business.
+#[derive(Deserialize)]
+struct IoDto {
+    #[serde(default)]
+    input_patches: Option<IoTensorDto>,
+}
+
+#[derive(Deserialize)]
+struct IoTensorDto {
+    #[serde(default)]
+    shape: Vec<i32>,
+}
+
 #[derive(Deserialize)]
 struct DescriptorDto {
     arch_version: String,
     normalization_stats: NormStatsDto,
     geometry: GeometryDto,
     constants: ConstantsDto,
+    #[serde(default)]
+    io: Option<IoDto>,
     /// No safe default: absent ⇒ rejected, never decoded against a guessed scale.
     kovatchev: KovatchevParams,
     #[serde(default)]
@@ -322,6 +340,12 @@ pub fn parse_descriptor(json: String) -> Result<ModelDescriptor, CoreError> {
             })
         }
     };
+    let declared_patch_dim = d.geometry.patch_dim;
+    let declared_patch_width = d
+        .io
+        .as_ref()
+        .and_then(|io| io.input_patches.as_ref())
+        .and_then(|p| p.shape.last().copied());
     let g = d.geometry;
     let c = d.constants;
     let desc = ModelDescriptor {
@@ -375,6 +399,21 @@ pub fn parse_descriptor(json: String) -> Result<ModelDescriptor, CoreError> {
         return Err(CoreError::Decode {
             reason: format!("patch_size {} != fixed architecture {PATCH_SIZE}", desc.patch_size),
         });
+    }
+    // The flatten width the graph was built at; a disagreement mis-lays every step of every patch.
+    let patch_dim = desc.patch_size * desc.n_input_features;
+    for (name, declared) in [
+        ("geometry PATCH_DIM", declared_patch_dim),
+        ("io.input_patches patch width", declared_patch_width),
+    ] {
+        match declared {
+            Some(v) if v != patch_dim => {
+                return Err(CoreError::Decode {
+                    reason: format!("{name} {v} != PATCH_SIZE·N_INPUT_FEATURES {patch_dim}"),
+                })
+            }
+            _ => {}
+        }
     }
     if !(desc.neg_fill.is_finite() && desc.neg_fill < 0.0) {
         return Err(CoreError::Decode {
@@ -1580,6 +1619,25 @@ mod tests {
             serde_json::json!({"mean": 0.0, "std": 1.0});
         assert_eq!(v["geometry"]["N_INPUT_FEATURES"], serde_json::json!(4));
         assert!(matches!(parse_descriptor(v.to_string()), Err(CoreError::Decode { .. })));
+    }
+
+    /// A stale PATCH_DIM lays every step of every patch at the wrong offset, all shapes agreeing.
+    #[test]
+    fn parse_descriptor_cross_checks_the_patch_width() {
+        let mut v: Value = serde_json::from_str(REFERENCE_DESCRIPTOR).unwrap();
+        v["geometry"]["PATCH_DIM"] = serde_json::json!(30);
+        assert!(matches!(parse_descriptor(v.to_string()), Err(CoreError::Decode { .. })));
+
+        let mut v: Value = serde_json::from_str(REFERENCE_DESCRIPTOR).unwrap();
+        v["io"]["input_patches"]["shape"] = serde_json::json!([1, 340, 30]);
+        assert!(matches!(parse_descriptor(v.to_string()), Err(CoreError::Decode { .. })));
+
+        // Neither is required: absent, the flatten runs off PATCH_SIZE and N_INPUT_FEATURES.
+        let mut v: Value = serde_json::from_str(REFERENCE_DESCRIPTOR).unwrap();
+        v["geometry"].as_object_mut().unwrap().remove("PATCH_DIM");
+        v.as_object_mut().unwrap().remove("io");
+        let d = parse_descriptor(v.to_string()).expect("a descriptor without either still decodes");
+        assert_eq!(d.patch_size * d.n_input_features, 24);
     }
 
     /// Pinned numerically: a stale descriptor beside a newer .pte decodes plausible, wrong mg/dL.
