@@ -63,6 +63,7 @@ import com.t1dm.core.model.HorizonMetrics
 import com.t1dm.core.model.MetricsConfig
 import com.t1dm.core.model.MetricsSuite
 import com.t1dm.core.model.PointBlock
+import com.t1dm.core.model.DescriptorParse
 import com.t1dm.core.model.KovatchevParams
 import com.t1dm.core.model.ModelDescriptor
 import com.t1dm.core.model.PredictedTime
@@ -195,11 +196,13 @@ class UniffiNativeCore : NativeCore {
 
     // INFERENCE.md §§6-8
 
-    override fun parseDescriptor(json: String): ModelDescriptor? =
+    override fun parseDescriptor(json: String): ModelDescriptor? = parseDescriptorOrRefusal(json).descriptor
+
+    override fun parseDescriptorOrRefusal(json: String): DescriptorParse =
         try {
-            uniffiParseDescriptor(json).toModel()
-        } catch (_: CoreException) {
-            null
+            DescriptorParse(uniffiParseDescriptor(json).toModel(), null)
+        } catch (e: CoreException) {
+            DescriptorParse(null, e.refusalText)
         }
 
     override fun causalSmooth(series: List<Double>, clampMin: Double?, clampMax: Double?, window: Int): List<Double> =
@@ -1123,6 +1126,13 @@ private fun Forecast.toUniffi(): UniffiForecast = UniffiForecast(
     bandsMgdl = bandsMgdl,
     slotPatch = slotPatch,
 )
+
+/** The crate's own text; the generated `message` wraps it in `reason=`, which no UI wants. */
+private val CoreException.refusalText: String
+    get() = when (this) {
+        is CoreException.Decode -> reason
+        is CoreException.Internal -> reason
+    }
 
 private fun UniffiForecastStatus.toModel(): ForecastStatus = when (this) {
     UniffiForecastStatus.OK -> ForecastStatus.OK

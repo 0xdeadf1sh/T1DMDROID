@@ -69,6 +69,9 @@ data class ModelDescriptor(
     val head: HeadSpec? = null,
 )
 
+/** [descriptor] null iff the parse refused, and then [reason] is the crate's own refusal text. */
+data class DescriptorParse(val descriptor: ModelDescriptor?, val reason: String?)
+
 /** CONTEXT-relative: patch 0 is the oldest context patch, whatever left-padding precedes it. */
 data class MaskSpan(val startPatch: Int, val length: Int)
 

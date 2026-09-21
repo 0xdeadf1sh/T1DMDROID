@@ -20,6 +20,9 @@ data class ModelBundle(
     val meta: ModelMeta,
 )
 
+/** A descriptor the crate would not decode: model files are present, so say which and why. */
+data class RefusedDescriptor(val file: String, val reason: String)
+
 /** Loads .pte+descriptor.json pushed to getExternalFilesDir(models); app never parses the .pt. */
 class ModelStore(
     private val modelsDir: File,
@@ -27,9 +30,10 @@ class ModelStore(
 ) {
     fun ensureDir(): File = modelsDir.apply { if (!exists()) mkdirs() }
 
-    /** Unparseable or artifact-less is skipped. */
+    /** Artifact-less still bundles; unparseable is skipped, into [refusedDescriptors]. */
     fun discover(): List<ModelBundle> {
         refusedEngines.clear()
+        refusedDescriptorList.clear()
         val dir = ensureDir()
         val descriptors = dir.listFiles { f ->
             f.isFile && (f.name == "descriptor.json" || f.name.endsWith(".descriptor.json"))
@@ -44,25 +48,29 @@ class ModelStore(
     /** Engines the last discover refused, so caller can say why, not just "none installed". */
     val refused: List<String> get() = refusedEngines.toList()
 
+    /** Descriptors the last discover refused, read like [refused]: name one, not "none". */
+    val refusedDescriptors: List<RefusedDescriptor> get() = refusedDescriptorList.toList()
+
     private val refusedEngines = mutableListOf<String>()
+
+    private val refusedDescriptorList = mutableListOf<RefusedDescriptor>()
 
     private fun bundleOf(descriptorFile: File, dir: File): ModelBundle? {
         val json = runCatching { descriptorFile.readText() }.getOrElse {
-            Timber.tag(TAG).w(it, "unreadable descriptor %s", descriptorFile.name); return null
+            Timber.tag(TAG).w(it, "unreadable descriptor %s", descriptorFile.name)
+            return refuse(descriptorFile, "unreadable")
         }
         val obj = runCatching { JSONObject(json) }.getOrElse {
-            Timber.tag(TAG).w(it, "descriptor %s is not valid JSON", descriptorFile.name); return null
+            Timber.tag(TAG).w(it, "descriptor %s is not valid JSON", descriptorFile.name)
+            return refuse(descriptorFile, "not valid JSON")
         }
         val id = resolveId(descriptorFile, obj)
         // No projection step: retranscription drops keys silently until a forecast decodes wrong.
-        val desc = native.parseDescriptor(json)
+        val parsed = native.parseDescriptorOrRefusal(json)
+        val desc = parsed.descriptor
         if (desc == null) {
-            Timber.tag(TAG).w(
-                "descriptor %s failed the pre/post parse (only a four-feature input decodes here, " +
-                    "never a model run against an input it never saw); skipping",
-                descriptorFile.name,
-            )
-            return null
+            Timber.tag(TAG).w("descriptor %s refused: %s", descriptorFile.name, parsed.reason)
+            return refuse(descriptorFile, firstClause(parsed.reason))
         }
         val artifact = obj.optString("artifact").ifBlank { "$id.xnnpack.pte" }
         // Pushed separately, may be absent; bundle returns non-existent pte, routes to StubBackend.
@@ -95,6 +103,16 @@ class ModelStore(
             meta = metaOf(id, obj, pte, desc),
         )
     }
+
+    private fun refuse(descriptorFile: File, reason: String): ModelBundle? {
+        refusedDescriptorList += RefusedDescriptor(descriptorFile.name, reason)
+        return null
+    }
+
+    /** The crate states the fault first and explains after; the note has room for the fault. */
+    private fun firstClause(reason: String?): String =
+        reason?.substringBefore(';')?.substringBefore(" at line ")?.trim()?.ifBlank { null }
+            ?: "refused by the pre/post parse"
 
     /** Sole source of truth, so `discover` and [delete] agree on which artifact an id names. */
     private fun resolveId(descriptorFile: File, obj: JSONObject): String =

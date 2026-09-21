@@ -45,7 +45,7 @@ import kotlin.math.roundToLong
 import kotlin.math.sqrt
 
 /** Pure-Kotlin stand-in for host-only builds, where there is no .so to load. */
-class StubNativeCore : NativeCore {
+open class StubNativeCore : NativeCore {
     override fun roundtrip(msg: String): String = "t1dm-core(stub):$msg"
 
     override fun decodeAdvert(payload: ByteArray): DecodedAdvert? =

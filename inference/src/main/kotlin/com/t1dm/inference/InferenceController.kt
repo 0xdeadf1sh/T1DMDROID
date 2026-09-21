@@ -169,6 +169,11 @@ class InferenceController(
             discovered.isEmpty() && store.refused.isNotEmpty() ->
                 "${store.refused.size} model(s) on device are built for another compute backend " +
                     "(${store.refused.distinct().joinToString()}) and this build runs none of them"
+            discovered.isEmpty() && store.refusedDescriptors.isNotEmpty() -> {
+                val first = store.refusedDescriptors.first()
+                val rest = store.refusedDescriptors.size - 1
+                "refused ${first.file}: ${first.reason}" + if (rest > 0) " (+$rest more)" else ""
+            }
             discovered.isEmpty() ->
                 "no model — adb push a .pte and its descriptor.json"
             loaded.values.none { it.real } ->

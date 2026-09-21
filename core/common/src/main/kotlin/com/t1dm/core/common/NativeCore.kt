@@ -22,6 +22,7 @@ import com.t1dm.core.model.ConformalFit
 import com.t1dm.core.model.CurveEvent
 import com.t1dm.core.model.CurveKind
 import com.t1dm.core.model.DecodedAdvert
+import com.t1dm.core.model.DescriptorParse
 import com.t1dm.core.model.ForecastWindow
 import com.t1dm.core.model.MetricsConfig
 import com.t1dm.core.model.MetricsSuite
@@ -62,6 +63,10 @@ interface NativeCore {
 
     /** Parse a model `descriptor.json` (SPEC §2.4); `null` on malformed JSON / a missing field. */
     fun parseDescriptor(json: String): ModelDescriptor?
+
+    /** [parseDescriptor] keeping the refusal text, so a refused model is named, never dropped. */
+    fun parseDescriptorOrRefusal(json: String): DescriptorParse =
+        DescriptorParse(parseDescriptor(json), null)
 
     /** Causal SavGol smooth (INFERENCE.md §7.1), ODD window (1=pass-through); bad -> default. */
     fun causalSmooth(series: List<Double>, clampMin: Double?, clampMax: Double?, window: Int): List<Double>
