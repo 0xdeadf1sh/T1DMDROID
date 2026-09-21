@@ -66,16 +66,10 @@ interface NativeCore {
     /** Causal SavGol smooth (INFERENCE.md §7.1), ODD window (1=pass-through); bad -> default. */
     fun causalSmooth(series: List<Double>, clampMin: Double?, clampMax: Double?, window: Int): List<Double>
 
-    /** z-score a raw `[bg, carb, insulin, exercise]` sample (bg risk-z, the rest log1p-z). */
-    fun normalizeSample(
-        desc: ModelDescriptor,
-        bg: Double,
-        carb: Double,
-        insulin: Double,
-        exercise: Double,
-    ): List<Double>
+    /** z-score a raw `[bg, carb, insulin]` sample (bg risk-z, the rest log1p-z). */
+    fun normalizeSample(desc: ModelDescriptor, bg: Double, carb: Double, insulin: Double): List<Double>
 
-    /** Inverse of [normalizeSample]; the 4-element `z` must carry all channels. */
+    /** Inverse of [normalizeSample]; the 3-element `z` must carry all channels. */
     fun denormalizeSample(desc: ModelDescriptor, z: List<Double>): List<Double>
 
     /** Fixed-shape graph input from per-step history (INFERENCE §§7.2-7.4); throws on bad shape. */
@@ -84,10 +78,8 @@ interface NativeCore {
         bg: List<Double>,
         carb: List<Double>,
         insulin: List<Double>,
-        exercise: List<Double>,
         announcedCarb: List<Double>?,
         announcedInsulin: List<Double>?,
-        announcedExercise: List<Double>?,
         maskSpans: List<MaskSpan>,
         withForecast: Boolean,
         smoothingWindow: Int,

@@ -12,7 +12,7 @@
       "shape": [
         1,
         340,
-        30
+        24
       ],
       "dtype": "fp32",
       "layout": "step-major: flat = t*N_INPUT_FEATURES + feat",
@@ -126,8 +126,8 @@
   "geometry": {
     "T": 340,
     "PATCH_SIZE": 6,
-    "N_INPUT_FEATURES": 5,
-    "PATCH_DIM": 30,
+    "N_INPUT_FEATURES": 4,
+    "PATCH_DIM": 24,
     "PREDICTION_PATCHES": 4,
     "MIN_CONTEXT_PATCHES": 168,
     "MAX_CONTEXT_PATCHES": 336,
@@ -145,45 +145,38 @@
       8
     ],
     "D_MODEL": 16,
-    "N_LAYERS": 32,
+    "N_LAYERS": 16,
     "N_HEADS": 1,
     "HEAD_DIM": 16,
     "CHANNEL_NAMES": [
       "bg_absolute",
       "carb_intake",
-      "insulin_combined",
-      "exercise_equiv"
+      "insulin_combined"
     ],
     "CHANNEL_TO_FEAT": {
       "0": 1,
-      "1": 2,
-      "2": 3
+      "1": 2
     },
     "NON_MASKABLE_FEATS": [
       0
     ],
     "MASKABLE_FEATS": [
       1,
-      2,
-      3
+      2
     ]
   },
   "normalization_stats": {
     "bg_absolute": {
-      "mean": 0.2866641556165267,
-      "std": 1.139516247121388
+      "mean": 0.15341974821878263,
+      "std": 1.3557943523904168
     },
     "carb_intake": {
-      "mean": 0.3761275783623586,
-      "std": 0.44933730436397956
+      "mean": 0.33553558020512375,
+      "std": 0.49800338988953075
     },
     "insulin_combined": {
-      "mean": 0.13767375003168303,
-      "std": 0.1049115188318763
-    },
-    "exercise_equiv": {
-      "mean": 0.025454530988451768,
-      "std": 0.18077422733814857
+      "mean": 0.13096254514925837,
+      "std": 0.12402183555016418
     }
   },
   "constants": {
@@ -210,9 +203,9 @@
     "SCALE": 2.2211457449985317,
     "POWER": 1.084,
     "OFFSET": 5.540076976170212,
-    "BG_CLAMP_MIN": 10.0,
+    "BG_CLAMP_MIN": 1.0,
     "BG_CLAMP_MAX": 400.0,
-    "RISK_CLAMP_MIN": -6.819785009645866,
+    "RISK_CLAMP_MIN": -12.305318402584799,
     "RISK_CLAMP_MAX": 3.1622776601683804
   },
   "conformal": {
@@ -225,7 +218,7 @@
     "byte_order": "little",
     "layout": "flat C-contiguous tensors concatenated in the order listed below",
     "activation": "silu",
-    "sha256": "323a4da7edf49150f186d4253976c2923b5d64f2df4ae4c84bc34773f96e42bf",
+    "sha256": "934e2f5106f297714b7fedf154e62f7571fa927f142175a309ef94e5f3385af2",
     "bytes": 2652,
     "d_model": 16,
     "hidden": 16,
@@ -275,8 +268,8 @@
     "decoder": "bspline-centre-nodes"
   },
   "model_card": {
-    "param_count": 61043,
-    "val_step": 9999,
+    "param_count": 31591,
+    "val_step": 0,
     "reference_metrics": {
       "source": "sim-validation",
       "note": "held-out simulator validation at the exported checkpoint (T1DMAI train.py); reference only, not on-device realized accuracy",
@@ -286,28 +279,28 @@
         120
       ],
       "rmse_mgdl": [
-        10.758,
-        15.3915,
-        23.7311
+        null,
+        null,
+        null
       ],
       "mard_pct": [
-        5.6529,
-        8.2254,
-        13.1293
+        null,
+        null,
+        null
       ],
       "clarke_a_pct": [
-        99.7399,
-        94.0182,
-        81.5345
+        null,
+        null,
+        null
       ],
       "coverage90": [
-        0.9103,
-        0.9038,
-        0.8934
+        null,
+        null,
+        null
       ],
-      "clarke_ab_pct": 99.171,
-      "tod_mae_h": 0.4454,
-      "tod_mae_hiconf_h": 0.3921
+      "clarke_ab_pct": null,
+      "tod_mae_h": null,
+      "tod_mae_hiconf_h": null
     }
   }
 }

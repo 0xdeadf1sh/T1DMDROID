@@ -818,9 +818,6 @@ class AppContainer(context: Context) {
         val contextFrom = origins.first() - maxSteps * CurveEngine.STEP_MS
         val horizonEnd = origins.last() + desc.predictionHorizonHours * 3_600_000L + CurveEngine.STEP_MS
         val doses = doseStore.snapshot(contextFrom - ChannelBuilder.PAD_MS, horizonEnd)
-        val sampleRows = repository.samplesInRange(contextFrom, horizonEnd)
-        // Stored merged grams carry no per-bout write time, so exercise is read as it stands today.
-        val exercise = ExerciseChannelSource { g, n -> exerciseChannelOf(sampleRows, g, n) }
         val infills = repository.infillInRange(0L, now)
         val infillCreatedAt = infills.associate { it.ts to it.createdAtMs }
         val indexOf = HashMap<Long, Int>(newestFirst.size * 2).apply {
@@ -850,7 +847,7 @@ class AppContainer(context: Context) {
                     .filter { it.ts in from..to && it.createdAtMs <= asOf }
                     .associate { it.ts to it.mgdl }
             }?.let { series ->
-                val builder = ChannelBuilder(curveEngine, doses.at(asOf), exercise)
+                val builder = ChannelBuilder(curveEngine, doses.at(asOf))
                 InferenceController.BacktestInput(
                     cycleTsMs = origin,
                     series = series,
@@ -1575,7 +1572,7 @@ class AppContainer(context: Context) {
         builder: ChannelBuilder = channelBuilder,
     ): ModelChannels {
         val ch = builder.contextChannels(gridStartMs, nSteps)
-        return ModelChannels(ch.carb, ch.insulin, ch.exercise)
+        return ModelChannels(ch.carb, ch.insulin)
     }
 
     /** Carb-equiv grams disposed per bucket, from `sample`; NOT reconstructed from bout records. */
@@ -1584,7 +1581,7 @@ class AppContainer(context: Context) {
         if (nSteps <= 0) return out
         val endMs = gridStartMs + (nSteps - 1).toLong() * CurveEngine.STEP_MS
         val rows = runCatching { repository.samplesInRange(gridStartMs, endMs) }.getOrElse {
-            Timber.w(it, "exercise channel read failed; the model sees no disposal")
+            Timber.w(it, "exercise channel read failed; the panel draws no disposal")
             return out
         }
         return exerciseChannelOf(rows, gridStartMs, nSteps)
@@ -1628,8 +1625,7 @@ class AppContainer(context: Context) {
         builder: ChannelBuilder = channelBuilder,
     ): ModelChannels {
         val fc = builder.futureOverrides(rollStartMs, nFutureSteps, announced = emptyList(), candidate = null)
-        // The writer laid those slots down: the committed future is a read, not a projection.
-        return ModelChannels(fc.carb, fc.insulin, fc.exercise)
+        return ModelChannels(fc.carb, fc.insulin)
     }
 
     /** §3.6-F provenance: logged doses only. */
@@ -2095,7 +2091,7 @@ class AppContainer(context: Context) {
         reforecastAfterCurveWrite()
     }
 
-    /** source replayed at startMs; disposal reaches the model via sample.exercise, next cycle. */
+    /** source replayed at startMs; its disposal lands in sample.exercise, no model input. */
     suspend fun replayExercise(source: ExerciseSession, startMs: Long) {
         exerciseController.replay(source, startMs) ?: return
         reforecastAfterCurveWrite()

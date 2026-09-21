@@ -121,11 +121,10 @@ class RollingForecaster(
         val future = channels.futureOverrides(predZoneStartMs, request.fullRollSteps, request.announced, shiftedCandidate)
         val ctx0 = channels.contextChannels(series.gridStartMs, nCtx)
 
-        // mg/dL BG; raw carb/insulin/exercise per step.
+        // mg/dL BG; raw carb/insulin per step.
         val bg = ArrayDeque<Double>(series.mgdl.toList())
         val carb = ArrayDeque<Double>(ctx0.carb.toList())
         val insulin = ArrayDeque<Double>(ctx0.insulin.toList())
-        val exercise = ArrayDeque<Double>(ctx0.exercise.toList())
 
         val outSteps = ArrayList<FanStep>(request.fullRollSteps)
         var carrySpread = emptyList<Double>()
@@ -141,14 +140,12 @@ class RollingForecaster(
             val base = r * predSteps
             val predCarb = sliceOrPad(future.carb, base, predSteps)
             val predInsulin = sliceOrPad(future.insulin, base, predSteps)
-            val predExercise = sliceOrPad(future.exercise, base, predSteps)
 
             val forecast: Forecast = try {
                 withContext(dispatchers.default) {
                     val built = native.buildGraphInput(
-                        desc, bg.toList(), carb.toList(), insulin.toList(), exercise.toList(),
-                        predCarb, predInsulin, predExercise,
-                        emptyList(), true, smoothingWindow,
+                        desc, bg.toList(), carb.toList(), insulin.toList(),
+                        predCarb, predInsulin, emptyList(), true, smoothingWindow,
                     )
                     val out = withContext(dispatchers.inference) { model.run(GraphIo.tensors(built)) }
                     // Not a fallback: `adapt` throws if an attached adapter cannot be applied.
@@ -173,12 +170,11 @@ class RollingForecaster(
 
             repeat(predSteps) { i ->
                 if (bg.isNotEmpty()) {
-                    bg.removeFirst(); carb.removeFirst(); insulin.removeFirst(); exercise.removeFirst()
+                    bg.removeFirst(); carb.removeFirst(); insulin.removeFirst()
                 }
                 bg.addLast(forecast.medianBg.getOrElse(i) { forecast.medianBg.lastOrNull() ?: 120.0 })
                 carb.addLast(predCarb.getOrElse(i) { 0.0 })
                 insulin.addLast(predInsulin.getOrElse(i) { 0.0 })
-                exercise.addLast(predExercise.getOrElse(i) { 0.0 })
             }
             // Fan already carries carrySpread; this REPLACES it (folding would double-count, §9).
             carrySpread = terminalOffsets(forecast)

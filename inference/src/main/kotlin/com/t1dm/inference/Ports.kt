@@ -52,21 +52,18 @@ fun interface ContextChannelSource {
     suspend fun channels(gridStartMs: Long, nSteps: Int): ModelChannels
 }
 
-/** Index-aligned to a grid window. [exercise] is grams-carb EQUIVALENT, positive, per bucket. */
+/** Index-aligned to a grid window: carb grams and insulin action, the model's only two signals. */
 data class ModelChannels(
     val carb: DoubleArray,
     val insulin: DoubleArray,
-    val exercise: DoubleArray,
 ) {
     override fun equals(other: Any?): Boolean =
-        other is ModelChannels && carb.contentEquals(other.carb) &&
-            insulin.contentEquals(other.insulin) && exercise.contentEquals(other.exercise)
+        other is ModelChannels && carb.contentEquals(other.carb) && insulin.contentEquals(other.insulin)
 
-    override fun hashCode(): Int =
-        (carb.contentHashCode() * 31 + insulin.contentHashCode()) * 31 + exercise.contentHashCode()
+    override fun hashCode(): Int = carb.contentHashCode() * 31 + insulin.contentHashCode()
 
     companion object {
-        fun zero(n: Int) = ModelChannels(DoubleArray(n), DoubleArray(n), DoubleArray(n))
+        fun zero(n: Int) = ModelChannels(DoubleArray(n), DoubleArray(n))
     }
 }
 

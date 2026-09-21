@@ -43,7 +43,6 @@ class RollingForecasterAlignmentTest {
         bg = ChannelStat(0.0, 1.0),
         carb = ChannelStat(0.0, 1.0),
         insulin = ChannelStat(0.0, 1.0),
-        exercise = ChannelStat(0.0, 1.0),
         ropeBase = 1000,
         quantileSpreadMin = 1e-3,
         negFill = -30000.0,
@@ -51,7 +50,7 @@ class RollingForecasterAlignmentTest {
         maxContextPatches = 8,        // maxSteps = 48
         minContextPatches = 4,        // minSteps = 24
         patchSize = 6,
-        nInputFeatures = 5,
+        nInputFeatures = 4,
         seqLen = 12,                  // maxContextPatches + predPatches
         maxMaskedPatches = 12,
         maskMaxSpans = 3,
@@ -248,10 +247,8 @@ class RollingForecasterAlignmentTest {
             val bg: List<Double>,
             val carb: List<Double>,
             val insulin: List<Double>,
-            val exercise: List<Double>,
             val announcedCarb: List<Double>?,
             val announcedInsulin: List<Double>?,
-            val announcedExercise: List<Double>?,
             val smoothingWindow: Int,
         )
 
@@ -279,17 +276,14 @@ class RollingForecasterAlignmentTest {
             bg: List<Double>,
             carb: List<Double>,
             insulin: List<Double>,
-            exercise: List<Double>,
             announcedCarb: List<Double>?,
             announcedInsulin: List<Double>?,
-            announcedExercise: List<Double>?,
             maskSpans: List<MaskSpan>,
             withForecast: Boolean,
             smoothingWindow: Int,
         ): GraphInput {
             buildContextCalls += BuildContextCall(
-                bg, carb, insulin, exercise, announcedCarb, announcedInsulin, announcedExercise,
-                smoothingWindow,
+                bg, carb, insulin, announcedCarb, announcedInsulin, smoothingWindow,
             )
             val patches = bg.size / desc.patchSize
             val predPatches = desc.predictionHorizonHours * 12 / desc.patchSize
@@ -358,7 +352,6 @@ class RollingForecasterAlignmentTest {
             bg: Double,
             carb: Double,
             insulin: Double,
-            exercise: Double,
         ): List<Double> = unused()
         override fun headOpen(bytes: ByteArray, spec: HeadSpec): NativeHead? = null
         override fun loraTrain(

@@ -526,13 +526,11 @@ class InferenceController(
             val window = ModelChannels(
                 ch.carb.copyOfRange(ctxFrom, o),
                 ch.insulin.copyOfRange(ctxFrom, o),
-                ch.exercise.copyOfRange(ctxFrom, o),
             )
             // Doses that ACTUALLY happened are the announced plan; no-event baseline teaches none.
             val ahead = ModelChannels(
                 ch.carb.copyOfRange(o, o + predSteps),
                 ch.insulin.copyOfRange(o, o + predSteps),
-                ch.exercise.copyOfRange(o, o + predSteps),
             )
             // A backcast/infill masks a run INSIDE context, no future zone; target is its own.
             val geometry = if (forecastOnly) MaskGeometry.FORECAST else LoraGeometryPlan.geometryAt(index)
@@ -583,7 +581,6 @@ class InferenceController(
             val probed = if (stimulus == null) null else ModelChannels(
                 ahead.carb,
                 DoubleArray(ahead.insulin.size) { i -> ahead.insulin[i] + stimulus.getOrElse(i) { 0.0 } },
-                ahead.exercise,
             )
             val hiddenPert = if (probed == null) {
                 null
@@ -1038,7 +1035,7 @@ class InferenceController(
         val src = source ?: return ModelChannels.zero(n)
         return runCatching {
             val ch = src.channels(series.gridStartMs, n)
-            if (ch.carb.size == n && ch.insulin.size == n && ch.exercise.size == n) ch
+            if (ch.carb.size == n && ch.insulin.size == n) ch
             else ModelChannels.zero(n)
         }.getOrElse {
             Timber.tag(TAG).w(it, "context channel build failed; falling back to no-event baseline")
@@ -1068,7 +1065,7 @@ class InferenceController(
     private fun predSteps(desc: ModelDescriptor): Int =
         (desc.predictionHorizonHours * STEPS_PER_HOUR / desc.patchSize) * desc.patchSize
 
-    /** Null future seeds pred-zone to normalize(0); channel order fixed carb-insulin-exercise. */
+    /** Null future seeds pred-zone to normalize(0); channel order fixed carb-insulin. */
     private suspend fun buildGraphInput(
         desc: ModelDescriptor,
         mgdl: DoubleArray,
@@ -1088,10 +1085,8 @@ class InferenceController(
                 mgdl.toList(),
                 ch.carb.toList(),
                 ch.insulin.toList(),
-                ch.exercise.toList(),
                 ann { it.carb },
                 ann { it.insulin },
-                ann { it.exercise },
                 maskSpans,
                 withForecast = withForecast,
                 smoothingWindow = smoothingWindow,

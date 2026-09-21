@@ -44,9 +44,9 @@ class ReferenceNativeCore : NativeCore {
 
     override fun parseDescriptor(json: String): ModelDescriptor? = TODO("not exercised by :cgm tests")
     override fun causalSmooth(series: List<Double>, clampMin: Double?, clampMax: Double?, window: Int): List<Double> = TODO("not exercised by :cgm tests")
-    override fun normalizeSample(desc: ModelDescriptor, bg: Double, carb: Double, insulin: Double, exercise: Double): List<Double> = TODO("not exercised by :cgm tests")
+    override fun normalizeSample(desc: ModelDescriptor, bg: Double, carb: Double, insulin: Double): List<Double> = TODO("not exercised by :cgm tests")
     override fun denormalizeSample(desc: ModelDescriptor, z: List<Double>): List<Double> = TODO("not exercised by :cgm tests")
-    override fun buildGraphInput(desc: ModelDescriptor, bg: List<Double>, carb: List<Double>, insulin: List<Double>, exercise: List<Double>, announcedCarb: List<Double>?, announcedInsulin: List<Double>?, announcedExercise: List<Double>?, maskSpans: List<MaskSpan>, withForecast: Boolean, smoothingWindow: Int): GraphInput = TODO("not exercised by :cgm tests")
+    override fun buildGraphInput(desc: ModelDescriptor, bg: List<Double>, carb: List<Double>, insulin: List<Double>, announcedCarb: List<Double>?, announcedInsulin: List<Double>?, maskSpans: List<MaskSpan>, withForecast: Boolean, smoothingWindow: Int): GraphInput = TODO("not exercised by :cgm tests")
     override fun assembleDecode(desc: ModelDescriptor, headRaw: List<Double>, anchors: List<Double>, slotPatch: List<Int>, nMasked: Int, carrySpread: Double): Forecast = TODO("not exercised by :cgm tests")
     override fun forecastSlice(f: Forecast, fromPatch: Int, toPatch: Int): Forecast = TODO("not exercised by :cgm tests")
     override fun bandLine(desc: ModelDescriptor, f: Forecast, tau: Double): List<Double> = TODO("not exercised by :cgm tests")

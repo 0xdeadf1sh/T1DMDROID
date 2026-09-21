@@ -205,13 +205,8 @@ class UniffiNativeCore : NativeCore {
     override fun causalSmooth(series: List<Double>, clampMin: Double?, clampMax: Double?, window: Int): List<Double> =
         uniffiCausalSmooth(series, clampMin, clampMax, window)
 
-    override fun normalizeSample(
-        desc: ModelDescriptor,
-        bg: Double,
-        carb: Double,
-        insulin: Double,
-        exercise: Double,
-    ): List<Double> = uniffiNormalizeSample(desc.toUniffi(), bg, carb, insulin, exercise)
+    override fun normalizeSample(desc: ModelDescriptor, bg: Double, carb: Double, insulin: Double): List<Double> =
+        uniffiNormalizeSample(desc.toUniffi(), bg, carb, insulin)
 
     override fun denormalizeSample(desc: ModelDescriptor, z: List<Double>): List<Double> =
         uniffiDenormalizeSample(desc.toUniffi(), z)
@@ -221,16 +216,13 @@ class UniffiNativeCore : NativeCore {
         bg: List<Double>,
         carb: List<Double>,
         insulin: List<Double>,
-        exercise: List<Double>,
         announcedCarb: List<Double>?,
         announcedInsulin: List<Double>?,
-        announcedExercise: List<Double>?,
         maskSpans: List<MaskSpan>,
         withForecast: Boolean,
         smoothingWindow: Int,
     ): GraphInput = uniffiBuildGraphInput(
-        desc.toUniffi(), bg, carb, insulin, exercise,
-        announcedCarb, announcedInsulin, announcedExercise,
+        desc.toUniffi(), bg, carb, insulin, announcedCarb, announcedInsulin,
         maskSpans.map { it.toUniffi() }, withForecast, smoothingWindow,
     ).toModel()
 
@@ -946,7 +938,6 @@ private fun UniffiModelDescriptor.toModel(): ModelDescriptor = ModelDescriptor(
     bg = bg.toModel(),
     carb = carb.toModel(),
     insulin = insulin.toModel(),
-    exercise = exercise.toModel(),
     ropeBase = ropeBase,
     quantileSpreadMin = quantileSpreadMin,
     negFill = negFill,
@@ -971,7 +962,6 @@ private fun ModelDescriptor.toUniffi(): UniffiModelDescriptor = UniffiModelDescr
     bg = bg.toUniffi(),
     carb = carb.toUniffi(),
     insulin = insulin.toUniffi(),
-    exercise = exercise.toUniffi(),
     ropeBase = ropeBase,
     quantileSpreadMin = quantileSpreadMin,
     negFill = negFill,

@@ -58,8 +58,8 @@ class ModelStore(
         val desc = native.parseDescriptor(json)
         if (desc == null) {
             Timber.tag(TAG).w(
-                "descriptor %s failed the pre/post parse (a pre-exercise-channel model is refused " +
-                    "here rather than run against an input it never saw); skipping",
+                "descriptor %s failed the pre/post parse (only a four-feature input decodes here, " +
+                    "never a model run against an input it never saw); skipping",
                 descriptorFile.name,
             )
             return null

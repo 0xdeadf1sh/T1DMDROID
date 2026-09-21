@@ -69,7 +69,7 @@ Bouts run from a manual start to a manual stop, following GPS during walks and r
 
 Every bout opens its own review: the route, the glucose trace from 30 minutes before to 2 hours after, and a slider sweeping the forecast issued at any instant in that window across the trace that followed it. Where no forecast was issued, the slider shows nothing rather than the nearest one. Tracks are never uploaded; map tiles are fetched for the surrounding area and cached on the device.
 
-A bout can also be replayed at a chosen instant, past or future, which lays its disposal curve into the exercise channel and lets the forecast answer it. A replay is a log like any other: it appears in Logs, its curve is drawn on the glucose panel beside the carbohydrate and insulin curves, and it can be moved in time or deleted, which takes its grams back out of the series.
+A bout can also be replayed at a chosen instant, past or future, which lays its disposal curve into the exercise channel. A replay is a log like any other: it appears in Logs, its curve is drawn on the glucose panel beside the carbohydrate and insulin curves, and it can be moved in time or deleted, which takes its grams back out of the series. The model takes carbohydrate and insulin only, so no exercise curve reaches the forecast.
 
 ### Backup and Restore
 

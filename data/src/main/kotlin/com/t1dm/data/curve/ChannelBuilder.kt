@@ -23,18 +23,12 @@ interface DoseStore {
         insulinEvents(fromMs, toMs) to basalInjectionEvents(fromMs, toMs)
 }
 
-data class ContextChannels(
-    val carb: DoubleArray,
-    val insulin: DoubleArray,
-    /** Grams of carb EQUIVALENT per bucket, READ never reconstructed, or it re-rates past bouts. */
-    val exercise: DoubleArray,
-) {
+data class ContextChannels(val carb: DoubleArray, val insulin: DoubleArray) {
     override fun equals(other: Any?): Boolean =
         other is ContextChannels && carb.contentEquals(other.carb) &&
-            insulin.contentEquals(other.insulin) && exercise.contentEquals(other.exercise)
+            insulin.contentEquals(other.insulin)
 
-    override fun hashCode(): Int =
-        31 * (31 * carb.contentHashCode() + insulin.contentHashCode()) + exercise.contentHashCode()
+    override fun hashCode(): Int = 31 * carb.contentHashCode() + insulin.contentHashCode()
 }
 
 /** Grams of carbohydrate equivalent per bucket. Unwired ⇒ zeros, not a fabricated curve. */
@@ -46,20 +40,16 @@ fun interface ExerciseChannelSource {
 data class FutureChannels(
     val carb: DoubleArray,
     val insulin: DoubleArray,
-    /** The committed disposal tail: a bout that ended minutes ago is still working. */
-    val exercise: DoubleArray,
     val iobAtStart: Double,
     val cobAtStart: Double,
 ) {
     override fun equals(other: Any?): Boolean =
         other is FutureChannels && carb.contentEquals(other.carb) && insulin.contentEquals(other.insulin) &&
-            exercise.contentEquals(other.exercise) &&
             iobAtStart == other.iobAtStart && cobAtStart == other.cobAtStart
 
     override fun hashCode(): Int {
         var h = carb.contentHashCode()
         h = 31 * h + insulin.contentHashCode()
-        h = 31 * h + exercise.contentHashCode()
         h = 31 * h + iobAtStart.hashCode()
         h = 31 * h + cobAtStart.hashCode()
         return h
@@ -107,7 +97,7 @@ class ChannelBuilder(
 
         val carbCh = engine.bucketize(carbs, gridStartMs, nSteps, CurveKind.CARB)
         val insulinCh = engine.bucketize(insulin.combined, gridStartMs, nSteps, CurveKind.INSULIN)
-        return ContextChannels(carbCh, insulinCh, exerciseChannel(gridStartMs, nSteps))
+        return ContextChannels(carbCh, insulinCh)
     }
 
     /** contextChannels plus the basal sub-series, one gather; byte-for-byte the same arrays. */
@@ -161,7 +151,7 @@ class ChannelBuilder(
         // Logged doses only, never announced or candidate.
         val iob = engine.onBoard(storeInsulin + basal, rollStartMs, CurveKind.INSULIN)
         val cob = engine.onBoard(storeCarbs, rollStartMs, CurveKind.CARB)
-        return FutureChannels(carbCh, insulinCh, exerciseChannel(rollStartMs, nSteps), iob, cob)
+        return FutureChannels(carbCh, insulinCh, iob, cob)
     }
 
     /** Logged store doses only; exercise has no on-board quantity, read not reconstructed. */

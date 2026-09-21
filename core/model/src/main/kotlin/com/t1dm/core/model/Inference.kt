@@ -40,8 +40,6 @@ data class ModelDescriptor(
     val bg: ChannelStat,
     val carb: ChannelStat,
     val insulin: ChannelStat,
-    /** Carb-EQUIVALENT disposal, g/step; positive in its own channel, never negative in carb. */
-    val exercise: ChannelStat,
     val ropeBase: Int,
     val quantileSpreadMin: Double,
     val negFill: Double,

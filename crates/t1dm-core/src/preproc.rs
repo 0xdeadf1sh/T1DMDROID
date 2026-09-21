@@ -7,12 +7,12 @@ use crate::CoreError;
 
 /// 6 × 5 min steps = 30 min.
 const PATCH_SIZE: usize = 6;
-/// `[bg_absolute, carb_intake, insulin_combined, exercise_equiv, bg_masked]`.
-const N_FEAT: usize = 5;
-/// Feats 0..3; feat 4 carries no statistics.
-const N_CHANNELS: usize = 4;
+/// `[bg_absolute, carb_intake, insulin_combined, bg_masked]`.
+const N_FEAT: usize = 4;
+/// Feats 0..2; feat 3 carries no statistics.
+const N_CHANNELS: usize = 3;
 /// Masked-announcement bit; unset, a masked patch reads as an observation, shapes still match.
-const BG_MASKED_FEAT: usize = 4;
+const BG_MASKED_FEAT: usize = 3;
 /// Per side of the median.
 const N_SPREADS: usize = 3;
 /// The only architecture this build decodes.
@@ -139,8 +139,6 @@ pub struct ModelDescriptor {
     pub bg: ChannelStat,
     pub carb: ChannelStat,
     pub insulin: ChannelStat,
-    /// Carb-equivalent glucose disposal, g/step; a positive magnitude, never a negative carb.
-    pub exercise: ChannelStat,
     pub rope_base: i32,
     /// Additive floor on each softplus spread.
     pub quantile_spread_min: f64,
@@ -176,7 +174,6 @@ impl ModelDescriptor {
             0 => self.bg,
             1 => self.carb,
             2 => self.insulin,
-            3 => self.exercise,
             _ => self.bg, // unreachable: feat ∈ [0, N_CHANNELS)
         }
     }
@@ -199,8 +196,6 @@ struct NormStatsDto {
     bg_absolute: ChannelStat,
     carb_intake: ChannelStat,
     insulin_combined: ChannelStat,
-    /// No default: without it the exercise column would be normalized on another channel's scale.
-    exercise_equiv: ChannelStat,
 }
 
 #[derive(Deserialize)]
@@ -279,8 +274,8 @@ pub fn parse_descriptor(json: String) -> Result<ModelDescriptor, CoreError> {
     if d.geometry.n_input_features as usize != N_FEAT {
         return Err(CoreError::Decode {
             reason: format!(
-                "n_input_features {} != {N_FEAT}; this build reads the five-feature masked-BG \
-                 input and cannot run an earlier architecture",
+                "n_input_features {} != {N_FEAT}; this build reads the four-feature masked-BG \
+                 input and cannot run another architecture",
                 d.geometry.n_input_features
             ),
         });
@@ -331,7 +326,6 @@ pub fn parse_descriptor(json: String) -> Result<ModelDescriptor, CoreError> {
         bg: d.normalization_stats.bg_absolute,
         carb: d.normalization_stats.carb_intake,
         insulin: d.normalization_stats.insulin_combined,
-        exercise: d.normalization_stats.exercise_equiv,
         rope_base: c.rope_base,
         quantile_spread_min: c.quantile_spread_min,
         neg_fill: c.neg_fill,
@@ -542,7 +536,7 @@ fn causal_smooth_w(
     out
 }
 
-/// feat 0 is bg risk-z, 1/2/3 log1p-z (INFERENCE.md §6).
+/// feat 0 is bg risk-z, 1/2 log1p-z (INFERENCE.md §6).
 fn normalize_feat(d: &ModelDescriptor, feat: usize, x: f64) -> f64 {
     let s = d.stat(feat);
     let pre = if feat == 0 {
@@ -563,24 +557,17 @@ fn denormalize_feat(d: &ModelDescriptor, feat: usize, z: f64) -> f64 {
     }
 }
 
-/// Raw `[bg_mgdl, carb, insulin, exercise]` → z.
+/// Raw `[bg_mgdl, carb, insulin]` → z.
 #[uniffi::export]
-pub fn normalize_sample(
-    desc: &ModelDescriptor,
-    bg: f64,
-    carb: f64,
-    insulin: f64,
-    exercise: f64,
-) -> Vec<f64> {
+pub fn normalize_sample(desc: &ModelDescriptor, bg: f64, carb: f64, insulin: f64) -> Vec<f64> {
     vec![
         normalize_feat(desc, 0, bg),
         normalize_feat(desc, 1, carb),
         normalize_feat(desc, 2, insulin),
-        normalize_feat(desc, 3, exercise),
     ]
 }
 
-/// z `[bg, carb, insulin, exercise]` → raw units.
+/// z `[bg, carb, insulin]` → raw units.
 #[uniffi::export]
 pub fn denormalize_sample(desc: &ModelDescriptor, z: Vec<f64>) -> Result<Vec<f64>, CoreError> {
     if z.len() != N_CHANNELS {
@@ -686,24 +673,21 @@ pub fn build_graph_input(
     bg: Vec<f64>,
     carb: Vec<f64>,
     insulin: Vec<f64>,
-    exercise: Vec<f64>,
     announced_carb: Option<Vec<f64>>,
     announced_insulin: Option<Vec<f64>>,
-    announced_exercise: Option<Vec<f64>>,
     mask_spans: Vec<MaskSpan>,
     with_forecast: bool,
     smoothing_window: i32,
 ) -> Result<GraphInput, CoreError> {
     let bg_window = validate_window(smoothing_window)?;
     let n = bg.len();
-    if n == 0 || carb.len() != n || insulin.len() != n || exercise.len() != n {
+    if n == 0 || carb.len() != n || insulin.len() != n {
         return Err(CoreError::Internal {
             reason: format!(
-                "channel lengths must match and be > 0: bg={} carb={} insulin={} exercise={}",
+                "channel lengths must match and be > 0: bg={} carb={} insulin={}",
                 n,
                 carb.len(),
-                insulin.len(),
-                exercise.len()
+                insulin.len()
             ),
         });
     }
@@ -735,7 +719,6 @@ pub fn build_graph_input(
     for (name, a) in [
         ("announced_carb", &announced_carb),
         ("announced_insulin", &announced_insulin),
-        ("announced_exercise", &announced_exercise),
     ] {
         if let Some(v) = a {
             if !with_forecast {
@@ -793,7 +776,6 @@ pub fn build_graph_input(
             normalize_feat(desc, 0, sm_bg[gs]),
             normalize_feat(desc, 1, carb[gs]),
             normalize_feat(desc, 2, insulin[gs]),
-            normalize_feat(desc, 3, exercise[gs]),
         ];
         ctx_bg_z[gs] = z[0];
         let base = ((pad0 + gs / PATCH_SIZE) * PATCH_SIZE + gs % PATCH_SIZE) * N_FEAT;
@@ -804,19 +786,13 @@ pub fn build_graph_input(
 
     // No-event baseline is normalize(0), not literal z=0, which would fake a dose via log1p.
     if with_forecast {
-        let zbase: [f64; 3] = [
-            normalize_feat(desc, 1, 0.0),
-            normalize_feat(desc, 2, 0.0),
-            normalize_feat(desc, 3, 0.0),
-        ];
+        let zbase: [f64; 2] =
+            [normalize_feat(desc, 1, 0.0), normalize_feat(desc, 2, 0.0)];
         for j in 0..pred_steps {
             let patch = pad0 + n_ctx + j / PATCH_SIZE;
             let base = (patch * PATCH_SIZE + j % PATCH_SIZE) * N_FEAT;
             patches[base] = 0.0; // BG withheld
-            for (k, announced) in [&announced_carb, &announced_insulin, &announced_exercise]
-                .iter()
-                .enumerate()
-            {
+            for (k, announced) in [&announced_carb, &announced_insulin].iter().enumerate() {
                 patches[base + 1 + k] = match announced {
                     Some(a) => normalize_feat(desc, 1 + k, a[j]) as f32,
                     None => zbase[k] as f32,
@@ -1494,8 +1470,6 @@ mod tests {
             f64s(&c["raw_bg"]),
             f64s(&c["raw_carb"]),
             f64s(&c["raw_insulin"]),
-            f64s(&c["raw_exercise"]),
-            None,
             None,
             None,
             spans,
@@ -1536,7 +1510,7 @@ mod tests {
         scale: 2.2211457449985317,
         power: 1.084,
         offset: 5.540076976170212,
-        bg_clamp_min: 10.0,
+        bg_clamp_min: 1.0,
         bg_clamp_max: 400.0,
     };
 
@@ -1573,7 +1547,7 @@ mod tests {
         assert!(d.max_context_patches >= d.min_context_patches);
         assert!(d.max_masked_patches >= 4, "the head must hold at least a forecast");
         assert!(d.d_model > 0);
-        assert!(d.exercise.std > 0.0);
+        assert!(d.insulin.std > 0.0);
         let head = d.head.as_ref().expect("the reference export ships a head file");
         assert_eq!(head.out_dim, N_QUANTILES as i32, "the head emits one row per step");
         assert_eq!(head.decoder, HEAD_DECODER);
@@ -1581,16 +1555,18 @@ mod tests {
     }
 
     #[test]
-    fn parse_descriptor_refuses_the_retired_three_feature_input() {
-        let mut v: Value = serde_json::from_str(REFERENCE_DESCRIPTOR).unwrap();
-        v["geometry"]["N_INPUT_FEATURES"] = serde_json::json!(3);
-        assert!(matches!(parse_descriptor(v.to_string()), Err(CoreError::Decode { .. })));
+    fn parse_descriptor_refuses_the_retired_exercise_channel_input() {
+        for n in [3, 5] {
+            let mut v: Value = serde_json::from_str(REFERENCE_DESCRIPTOR).unwrap();
+            v["geometry"]["N_INPUT_FEATURES"] = serde_json::json!(n);
+            assert!(matches!(parse_descriptor(v.to_string()), Err(CoreError::Decode { .. })));
+        }
 
         let mut v: Value = serde_json::from_str(REFERENCE_DESCRIPTOR).unwrap();
         v["normalization_stats"]
             .as_object_mut()
             .unwrap()
-            .remove("exercise_equiv");
+            .remove("insulin_combined");
         assert!(matches!(parse_descriptor(v.to_string()), Err(CoreError::Decode { .. })));
     }
 
@@ -1600,7 +1576,7 @@ mod tests {
         let k = test_descriptor().kovatchev;
         assert_eq!(k, SHIPPED_KOVATCHEV, "reference descriptor must carry the shipped constants");
         // The clamp is the physical range; the anchors the constants were solved for sit inside it.
-        assert_eq!(k.bg_clamp_min, 10.0);
+        assert_eq!(k.bg_clamp_min, 1.0);
         assert_eq!(k.bg_clamp_max, 400.0);
         let root_ten = 10.0f64.sqrt();
         assert!((k.f(40.0) + root_ten).abs() < 1e-12, "f(40) = -sqrt(10), got {}", k.f(40.0));
@@ -1689,7 +1665,7 @@ mod tests {
         assert!(bad("BG_CLAMP_MIN", serde_json::json!(1.0)).is_ok(), "1.0 is the rail, not below it");
         assert!(is_decode(bad("BG_CLAMP_MIN", serde_json::json!(0.99))));
         assert!(is_decode(bad("BG_CLAMP_MIN", serde_json::json!(0.0))));
-        assert!(is_decode(bad("BG_CLAMP_MAX", serde_json::json!(5.0))));
+        assert!(is_decode(bad("BG_CLAMP_MAX", serde_json::json!(1.0))), "max must exceed min");
     }
 
     #[test]
@@ -1742,7 +1718,7 @@ mod tests {
         let shipped = ModelDescriptor { kovatchev: SHIPPED_KOVATCHEV, ..test_descriptor() };
         let other = ModelDescriptor { kovatchev: OTHER_KOVATCHEV, ..test_descriptor() };
 
-        assert_eq!(forecast_degeneracy_check(&shipped, &pinned(10.0)), ForecastStatus::RailPinned);
+        assert_eq!(forecast_degeneracy_check(&shipped, &pinned(1.0)), ForecastStatus::RailPinned);
         assert_eq!(forecast_degeneracy_check(&shipped, &pinned(400.0)), ForecastStatus::RailPinned);
         assert_eq!(forecast_degeneracy_check(&shipped, &pinned(20.0)), ForecastStatus::Ok);
         assert_eq!(forecast_degeneracy_check(&other, &pinned(20.0)), ForecastStatus::RailPinned);
@@ -1834,15 +1810,12 @@ mod tests {
     #[test]
     fn normalize_denormalize_round_trip() {
         let d = test_descriptor();
-        for (bg, carb, ins, ex) in
-            [(75.0, 0.0, 0.02, 0.0), (180.0, 8.0, 0.5, 1.2), (40.0, 3.0, 0.1, 0.4)]
-        {
-            let z = normalize_sample(&d, bg, carb, ins, ex);
+        for (bg, carb, ins) in [(75.0, 0.0, 0.02), (180.0, 8.0, 0.5), (40.0, 3.0, 0.1)] {
+            let z = normalize_sample(&d, bg, carb, ins);
             let back = denormalize_sample(&d, z).unwrap();
             assert!((back[0] - bg).abs() < 1e-6, "bg round-trip {bg} -> {}", back[0]);
             assert!((back[1] - carb).abs() < 1e-6, "carb round-trip");
             assert!((back[2] - ins).abs() < 1e-6, "insulin round-trip");
-            assert!((back[3] - ex).abs() < 1e-6, "exercise round-trip");
         }
     }
 
@@ -2357,8 +2330,7 @@ mod tests {
 
         let build = |bg: Vec<f64>| {
             build_graph_input(
-                &d, bg, vec![0.0; n], vec![0.0; n], vec![0.0; n], None, None, None,
-                vec![span], false, 7,
+                &d, bg, vec![0.0; n], vec![0.0; n], None, None, vec![span], false, 7,
             )
             .expect("window builds")
         };
@@ -2391,8 +2363,7 @@ mod tests {
         let z = vec![0.0; n];
         let call = |spans: Vec<MaskSpan>, with_forecast: bool| {
             build_graph_input(
-                &d, bg.clone(), z.clone(), z.clone(), z.clone(), None, None, None, spans,
-                with_forecast, 1,
+                &d, bg.clone(), z.clone(), z.clone(), None, None, spans, with_forecast, 1,
             )
         };
         let sp = |s: i32, l: i32| MaskSpan { start_patch: s, length: l };
@@ -2418,20 +2389,16 @@ mod tests {
         let short = (d.min_context_patches as usize - 1) * PATCH_SIZE;
         let bg = vec![120.0; short];
         let z = vec![0.0; short];
-        assert!(build_graph_input(
-            &d, bg, z.clone(), z.clone(), z, None, None, None, vec![], true, 1
-        )
-        .is_err());
+        assert!(build_graph_input(&d, bg, z.clone(), z, None, None, vec![], true, 1).is_err());
         // ragged channels; a history that does not tile the patch
         let n = d.min_context_patches as usize * PATCH_SIZE;
         assert!(build_graph_input(
-            &d, vec![120.0; n], vec![0.0; n - 1], vec![0.0; n], vec![0.0; n],
-            None, None, None, vec![], true, 1
+            &d, vec![120.0; n], vec![0.0; n - 1], vec![0.0; n], None, None, vec![], true, 1
         )
         .is_err());
         assert!(build_graph_input(
-            &d, vec![120.0; n + 1], vec![0.0; n + 1], vec![0.0; n + 1], vec![0.0; n + 1],
-            None, None, None, vec![], true, 1
+            &d, vec![120.0; n + 1], vec![0.0; n + 1], vec![0.0; n + 1],
+            None, None, vec![], true, 1
         )
         .is_err());
     }
@@ -2444,26 +2411,26 @@ mod tests {
         let pred_steps = 4 * PATCH_SIZE;
         let carb: Vec<f64> = (0..pred_steps).map(|i| i as f64 * 0.5).collect();
         let gi = build_graph_input(
-            &d, vec![120.0; n], vec![0.0; n], vec![0.0; n], vec![0.0; n],
-            Some(carb.clone()), None, None, vec![], true, 1,
+            &d, vec![120.0; n], vec![0.0; n], vec![0.0; n],
+            Some(carb.clone()), None, vec![], true, 1,
         )
         .unwrap();
         let t = gi.t as usize;
         let first = gi.first_forecast_patch as usize;
         assert_eq!(first, t - 4);
-        let zbase = normalize_sample(&d, 0.0, 0.0, 0.0, 0.0);
+        let zbase = normalize_sample(&d, 0.0, 0.0, 0.0);
         for j in 0..pred_steps {
             let base = ((first + j / PATCH_SIZE) * PATCH_SIZE + j % PATCH_SIZE) * N_FEAT;
-            let want_carb = normalize_sample(&d, 0.0, carb[j], 0.0, 0.0)[1];
+            let want_carb = normalize_sample(&d, 0.0, carb[j], 0.0)[1];
             assert!((gi.patches[base + 1] as f64 - want_carb).abs() < 1e-6, "carb step {j}");
             assert!((gi.patches[base + 2] as f64 - zbase[2]).abs() < 1e-6, "insulin step {j}");
-            assert!((gi.patches[base + 3] as f64 - zbase[3]).abs() < 1e-6, "exercise step {j}");
+            assert_eq!(gi.patches[base + BG_MASKED_FEAT], 1.0, "masked bit step {j}");
             assert_eq!(gi.patches[base], 0.0, "future BG must stay withheld");
         }
         // A caller error, not a silently ignored argument.
         assert!(build_graph_input(
-            &d, vec![120.0; n], vec![0.0; n], vec![0.0; n], vec![0.0; n],
-            Some(carb), None, None, vec![MaskSpan { start_patch: 10, length: 2 }], false, 1,
+            &d, vec![120.0; n], vec![0.0; n], vec![0.0; n],
+            Some(carb), None, vec![MaskSpan { start_patch: 10, length: 2 }], false, 1,
         )
         .is_err());
     }

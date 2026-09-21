@@ -66,13 +66,8 @@ class StubNativeCore : NativeCore {
     override fun causalSmooth(series: List<Double>, clampMin: Double?, clampMax: Double?, window: Int): List<Double> =
         TODO("Phase 2: native causal_smooth")
 
-    override fun normalizeSample(
-        desc: ModelDescriptor,
-        bg: Double,
-        carb: Double,
-        insulin: Double,
-        exercise: Double,
-    ): List<Double> = TODO("Phase 2: native normalize_sample")
+    override fun normalizeSample(desc: ModelDescriptor, bg: Double, carb: Double, insulin: Double): List<Double> =
+        TODO("Phase 2: native normalize_sample")
 
     override fun denormalizeSample(desc: ModelDescriptor, z: List<Double>): List<Double> =
         TODO("Phase 2: native denormalize_sample")
@@ -82,10 +77,8 @@ class StubNativeCore : NativeCore {
         bg: List<Double>,
         carb: List<Double>,
         insulin: List<Double>,
-        exercise: List<Double>,
         announcedCarb: List<Double>?,
         announcedInsulin: List<Double>?,
-        announcedExercise: List<Double>?,
         maskSpans: List<MaskSpan>,
         withForecast: Boolean,
         smoothingWindow: Int,
