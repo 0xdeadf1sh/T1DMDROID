@@ -1000,7 +1000,6 @@ private fun T1dmNavHost(
             val rolled by container.rolledForecast.collectAsState()
             val rollComputing by container.rollComputing.collectAsState()
             val pulses by container.bgPulses.collectAsState(null)
-            val sensorExpiry by container.sensorExpiryMs.collectAsState(null)
             // Non-null only while the active sensor is warming up.
             val sensorWarmupEnd by container.sensorWarmupEndMs.collectAsState(null)
             val lowPowerActive by container.lowPowerActive.collectAsState(false)
@@ -1120,7 +1119,6 @@ private fun T1dmNavHost(
                 deviceTempC = deviceTempC,
                 temperatureUnit = tempUnit,
                 stepsToday = stepsToday,
-                sensorExpiryMs = sensorExpiry,
                 sensorWarmupEndMs = sensorWarmupEnd,
                 circadianTime = inference.circadianTime,
                 circadianAnchorMs = inference.circadianAnchorMs,
@@ -2034,7 +2032,6 @@ private fun T1dmNavHost(
             val active by container.authoritativeSource.collectAsState(null)
             val sources by container.allSources.collectAsState(emptyList())
             val signals by container.bgSignals.collectAsState(null)
-            val expiry by container.sensorExpiryMs.collectAsState(null)
             val aggEnabled by container.aggressiveScanEnabled.collectAsState(false)
             val aggShowBg by container.aggressiveShowGlucose.collectAsState(true)
             val aggOnlyCharging by container.aggressiveOnlyCharging.collectAsState(false)
@@ -2062,12 +2059,9 @@ private fun T1dmNavHost(
                 onStartReading = { id -> container.activateCgm(id) },
                 onStopReading = { id -> container.deactivateCgm(id) },
                 activeRssi = signals?.cgmRssi,
-                sensorExpiryMs = expiry,
                 // Persisted column, not the in-memory set: it is what warmup classifies against.
                 warmupWindowMin = active?.warmupWindowMin,
                 onSetWarmupMin = { m -> scope.launch { container.setSensorWarmupMin(m) } },
-                onSetSensorLifetime = { d, h, m -> scope.launch { container.setSensorLifetime(d, h, m) } },
-                onClearSensorLifetime = { scope.launch { container.clearSensorLifetime() } },
                 aggressiveEnabled = aggEnabled,
                 aggressiveShowGlucose = aggShowBg,
                 aggressiveOnlyCharging = aggOnlyCharging,

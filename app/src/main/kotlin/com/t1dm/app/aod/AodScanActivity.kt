@@ -122,7 +122,6 @@ private data class AodData(
     val gmi: Double?,
     val steps: Int?,
     val tempText: String?,
-    val sensorText: String?,
     val pt: PredictedTime?,
 )
 
@@ -139,9 +138,6 @@ private suspend fun fetchAod(ctx: Context): AodData {
     val bm = ctx.getSystemService(BatteryManager::class.java)
     val pct = bm?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)?.takeIf { it in 0..100 }
     val charging = bm?.isCharging == true
-
-    val sensorText = runCatching { container.settingsStore.sensorExpiryMs.first() }.getOrNull()
-        ?.let { fmtRemaining(it - System.currentTimeMillis()) }
 
     val forecastText = if (g.forecastEligible && g.fcEndMgdl != null) {
         val eta = g.approaching?.etaMin?.let { " · ${it}m" } ?: ""
@@ -166,20 +162,8 @@ private suspend fun fetchAod(ctx: Context): AodData {
         gmi = snap.gmi,
         steps = snap.steps,
         tempText = tempC?.let { tempUnit.format(it) },
-        sensorText = sensorText,
-        pt = container.inferenceState.value.selectedPredictedTime,
+        pt =container.inferenceState.value.selectedPredictedTime,
     )
-}
-
-private fun fmtRemaining(ms: Long): String {
-    if (ms <= 0) return "expired"
-    val totalMin = ms / 60_000L
-    val d = totalMin / 1440; val h = (totalMin % 1440) / 60; val m = totalMin % 60
-    return when {
-        d > 0 -> "${d}d ${h}h"
-        h > 0 -> "${h}h ${m}m"
-        else -> "${m}m"
-    }
 }
 
 @Composable
@@ -282,7 +266,6 @@ private fun AodDashboard(container: AppContainer) {
             "GMI" to (d.gmi?.let { "%.1f %%".format(it) } ?: "—"),
             "STEPS" to (d.steps?.toString() ?: "—"),
             "TEMP" to (d.tempText ?: "—"),
-            "SENSOR" to (d.sensorText ?: "—"),
         )
         Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
             cells.chunked(2).forEach { row ->

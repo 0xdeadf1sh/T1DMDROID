@@ -197,7 +197,7 @@ fun DashboardScreen(
     deviceTempC: Double? = null,
     temperatureUnit: TempUnit = TempUnit.CELSIUS,
     stepsToday: Int? = null,
-    // Sensor expiry instant (epoch-ms): reported age + service life. Null ⇒ no countdown.
+    // Sensor expiry instant (epoch-ms) = sensor start + the wear it states. Null = no countdown.
     sensorExpiryMs: Long? = null,
     // Active sensor warm-up end (epoch-ms); nullity IS the state. Distinct from [warmup]'s context.
     sensorWarmupEndMs: Long? = null,

@@ -387,14 +387,6 @@ class SettingsStore(
     suspend fun setCarbBezier(encoded: String) = put(K_CURVE_CARB_BEZIER, encoded)
     suspend fun setInsulinBezier(encoded: String) = put(K_CURVE_INSULIN_BEZIER, encoded)
 
-    // Sensor total lifetime in days; time-left derives from elapsed age; not exportable.
-    val sensorLifeDays: Flow<Int> = repository.observeKv(K_CGM_SENSOR_LIFE_DAYS)
-        .map { it?.toIntOrNull()?.coerceIn(SENSOR_LIFE_DAYS_MIN, SENSOR_LIFE_DAYS_MAX) ?: DEFAULT_SENSOR_LIFE_DAYS }
-    suspend fun currentSensorLifeDays(): Int =
-        repository.getKv(K_CGM_SENSOR_LIFE_DAYS)?.toIntOrNull()?.coerceIn(SENSOR_LIFE_DAYS_MIN, SENSOR_LIFE_DAYS_MAX) ?: DEFAULT_SENSOR_LIFE_DAYS
-    suspend fun setSensorLifeDays(days: Int) =
-        put(K_CGM_SENSOR_LIFE_DAYS, days.coerceIn(SENSOR_LIFE_DAYS_MIN, SENSOR_LIFE_DAYS_MAX).toString())
-
     // DEFAULT OFF: advertised name may embed the sensor serial; not exportable; drawing only.
     val showSensorNames: Flow<Boolean> = boolFlow(K_CGM_SHOW_SENSOR_NAMES, DEFAULT_SHOW_SENSOR_NAMES)
     suspend fun setShowSensorNames(on: Boolean) = put(K_CGM_SHOW_SENSOR_NAMES, if (on) "1" else "0")
@@ -527,19 +519,12 @@ class SettingsStore(
 
     suspend fun setAggressiveOnlyCharging(on: Boolean) = put(K_AGG_ONLY_CHARGING, if (on) "1" else "0")
 
-    val sensorExpiryMs: Flow<Long?> = repository.observeKv(K_CGM_SENSOR_EXPIRY).map { it?.toLongOrNull() }
-
-    suspend fun setSensorExpiryMs(ms: Long) = put(K_CGM_SENSOR_EXPIRY, ms.toString())
-
-    suspend fun clearSensorExpiry() = put(K_CGM_SENSOR_EXPIRY, "")
-
     val disclaimerAcknowledged: Flow<Boolean> = boolFlow(K_DISCLAIMER_ACK, false)
 
     suspend fun acknowledgeDisclaimer() = put(K_DISCLAIMER_ACK, "1")
 
     companion object {
         private const val K_DISCLAIMER_ACK = "disclaimer.acknowledged"
-        private const val K_CGM_SENSOR_EXPIRY = "cgm.sensor_expiry_ms"
         private const val K_AGG_SCAN = "cgm.aggressive_scan"
         private const val K_AGG_SHOW_BG = "cgm.aggressive_show_glucose"
         private const val K_AGG_ONLY_CHARGING = "cgm.aggressive_only_charging"
@@ -819,13 +804,9 @@ class SettingsStore(
             ExerciseDisposal.MAX_CARB_EQUIV_PER_MIN,
         )
 
-        private const val K_CGM_SENSOR_LIFE_DAYS = "cgm.sensor_life_days"
         internal const val K_CGM_SHOW_SENSOR_NAMES = "cgm.show_sensor_names"
         /** Hidden: a name that leaks a serial cannot be un-leaked from a screenshot. */
         const val DEFAULT_SHOW_SENSOR_NAMES = false
-        const val DEFAULT_SENSOR_LIFE_DAYS = 15
-        const val SENSOR_LIFE_DAYS_MIN = 3
-        const val SENSOR_LIFE_DAYS_MAX = 30
         /** Usage state, not configuration; catalogue's first family entry is the fallback. */
         internal const val K_LAST_RAPID_PRESET = "insulin.last_rapid_preset"
         internal const val K_LAST_BASAL_PRESET = "insulin.last_basal_preset"

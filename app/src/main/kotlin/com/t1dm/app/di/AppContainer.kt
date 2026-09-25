@@ -2468,9 +2468,6 @@ class AppContainer(context: Context) {
         }
     }
 
-    /** Days, 3-30. Only TOTAL is a setting; elapsed comes from the sensor ([sensorExpiryMs]). */
-    val sensorLifeDays: Flow<Int> get() = settingsStore.sensorLifeDays
-
     // Read synchronously off @Volatiles to decide whether to raise the keep-screen-on AOD surface.
     @Volatile
     var aggressiveScanSnapshot: Boolean = false
@@ -2496,28 +2493,10 @@ class AppContainer(context: Context) {
 
     suspend fun setAggressiveOnlyCharging(on: Boolean) = settingsStore.setAggressiveOnlyCharging(on)
 
-    /** Stores the ABSOLUTE expiry, so the countdown survives restarts. */
-    suspend fun setSensorLifetime(days: Int, hours: Int, minutes: Int) {
-        val durationMs = ((days.toLong() * 24 + hours) * 60 + minutes) * 60_000L
-        settingsStore.setSensorExpiryMs(System.currentTimeMillis() + durationMs)
-    }
-
-    suspend fun clearSensorLifetime() = settingsStore.clearSensorExpiry()
-
     /** False on a fresh install and after a full reset. */
     val disclaimerAcknowledged: Flow<Boolean> get() = settingsStore.disclaimerAcknowledged
 
     suspend fun acknowledgeDisclaimer() = settingsStore.acknowledgeDisclaimer()
-    suspend fun setSensorLifeDays(days: Int) = settingsStore.setSensorLifeDays(days)
-
-    /** Epoch-ms: sensor's own start, anchored on minFromStart, plus configured service life. */
-    val sensorExpiryMs: Flow<Long?> by lazy {
-        combine(latestReading, sensorLifeDays) { latest, lifeDays ->
-            val mfs = latest?.minFromStart ?: return@combine null
-            val startMs = latest.tsMs - mfs.toLong() * 60_000L
-            startMs + lifeDays.toLong() * 86_400_000L
-        }
-    }
 
     /** Epoch-ms or null unless warming; anchored on rxWallMs, not tsMs, held still per slot. */
     val sensorWarmupEndMs: Flow<Long?> by lazy {

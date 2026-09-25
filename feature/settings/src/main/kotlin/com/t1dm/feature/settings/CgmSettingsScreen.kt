@@ -3,20 +3,17 @@ package com.t1dm.feature.settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -41,12 +38,9 @@ fun CgmSettingsScreen(
     onStartReading: (String) -> Unit = {},
     onStopReading: (String) -> Unit = {},
     activeRssi: Int? = null,
-    sensorExpiryMs: Long? = null,
     /** Authoritative source's warm-up window, minutes; null when no source is on record. */
     warmupWindowMin: Int? = null,
     onSetWarmupMin: (Int) -> Unit = {},
-    onSetSensorLifetime: (days: Int, hours: Int, minutes: Int) -> Unit = { _, _, _ -> },
-    onClearSensorLifetime: () -> Unit = {},
     aggressiveEnabled: Boolean = false,
     aggressiveShowGlucose: Boolean = true,
     aggressiveOnlyCharging: Boolean = false,
@@ -90,12 +84,6 @@ fun CgmSettingsScreen(
                     )
                 }
             }
-        }
-
-        SettingsAnchor(cgmLifetime) {
-            SettingsSectionHeader(LIFETIME_SECTION)
-            SettingsNote("A passive listener can't read the sensor's age — this is your estimate")
-            SensorLifetimeSection(sensorExpiryMs, onSetSensorLifetime, onClearSensorLifetime)
         }
 
         SettingsSectionHeader(WARMUP_SECTION)
@@ -213,87 +201,7 @@ private fun RemoveSourceDialog(name: String, onConfirm: () -> Unit, onDismiss: (
     )
 }
 
-@Composable
-private fun SensorLifetimeSection(
-    expiryMs: Long?,
-    onSet: (Int, Int, Int) -> Unit,
-    onClear: () -> Unit,
-) {
-    if (expiryMs != null) {
-        val now by produceState(System.currentTimeMillis(), expiryMs) {
-            while (true) {
-                value = System.currentTimeMillis()
-                val remaining = expiryMs - value
-                kotlinx.coroutines.delay(if (remaining in 1..60_000L) 1_000L else 60_000L)
-            }
-        }
-        val remainingMs = expiryMs - now
-        Text(
-            if (remainingMs <= 0L) "Elapsed — renew for a new sensor" else "Remaining: ${fullRemaining(remainingMs)}",
-            style = MaterialTheme.typography.bodyLarge,
-            fontWeight = FontWeight.SemiBold,
-            color = if (remainingMs <= 0L) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
-        )
-    }
-
-    var days by remember { mutableStateOf(10) }
-    var hours by remember { mutableStateOf(0) }
-    var minutes by remember { mutableStateOf(0) }
-
-    DurationStepper("Days", days, max = 30) { days = it }
-    DurationStepper("Hours", hours, max = 23) { hours = it }
-    DurationStepper("Minutes", minutes, max = 59, step = 5) { minutes = it }
-
-    Row(
-        Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Button(
-            onClick = { onSet(days, hours, minutes) },
-            enabled = days > 0 || hours > 0 || minutes > 0,
-        ) { Text(if (expiryMs == null) "Set" else "Renew") }
-        if (expiryMs != null) {
-            OutlinedButton(onClick = onClear) { Text("Clear") }
-        }
-    }
-}
-
-@Composable
-private fun DurationStepper(label: String, value: Int, min: Int = 0, max: Int, step: Int = 1, onChange: (Int) -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().padding(vertical = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(label, style = MaterialTheme.typography.bodyMedium)
-        OutlinedButton(onClick = { onChange((value - step).coerceAtLeast(min)) }, enabled = value > min) { Text("−$step") }
-        Text(
-            value.toString(),
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.weight(1f),
-            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-            maxLines = 1,
-        )
-        Button(onClick = { onChange((value + step).coerceAtMost(max)) }, enabled = value < max) { Text("+$step") }
-    }
-}
-
-private fun fullRemaining(ms: Long): String {
-    val totalMin = ms / 60_000L
-    val d = totalMin / 1440
-    val h = (totalMin % 1440) / 60
-    val m = totalMin % 60
-    return buildList {
-        if (d > 0) add("${d} d")
-        if (h > 0) add("${h} h")
-        if (m > 0 || isEmpty()) add("${m} m")
-    }.joinToString(" ")
-}
-
 private const val SOURCE_SECTION = "Source"
-private const val LIFETIME_SECTION = "Sensor lifetime"
 private const val WARMUP_SECTION = "Sensor warm-up"
 private const val AGGRESSIVE_SECTION = "Aggressive background scanning"
 
@@ -309,18 +217,6 @@ private val cgmSource = SettingsKnob(
     synonyms = listOf(
         "cgm", "sensor", "aidex", "linx", "glucose sensor", "transmitter", "source", "device",
         "signal", "rssi", "bluetooth", "ble", "scan",
-    ),
-)
-
-private val cgmLifetime = SettingsKnob(
-    id = "cgm.sensor_lifetime",
-    screen = SettingsScreenKey.CGM,
-    section = LIFETIME_SECTION,
-    label = "Sensor lifetime",
-    subtitle = "Remaining life you enter yourself; counted down here and in the BG panel",
-    synonyms = listOf(
-        "lifetime", "life", "expiry", "expires", "remaining", "age", "days left", "renew",
-        "new sensor", "replace", "countdown", "wear time",
     ),
 )
 
@@ -367,4 +263,4 @@ private val cgmAggressiveCharging = SettingsKnob(
 )
 
 internal val settingsCgmKnobs =
-    listOf(cgmSource, cgmLifetime, cgmWarmup, cgmAggressive, cgmAggressiveShowBg, cgmAggressiveCharging)
+    listOf(cgmSource, cgmWarmup, cgmAggressive, cgmAggressiveShowBg, cgmAggressiveCharging)
