@@ -10,17 +10,14 @@ import com.t1dm.core.design.rememberT1dmHaptics
 /** Pairing, SAS, key rotation and unpair live in the Security panel; this only routes there. */
 @Composable
 fun WatchSettingsScreen(
-    linkStatus: String,
-    deviceName: String?,
+    /** (advertised name, link phase), one per pairing. */
+    devices: List<Pair<String, String>>,
     onOpenSecurity: () -> Unit = {},
 ) {
     SettingsScaffold(SettingsScreenKey.WATCH) {
-        Text(
-            "Optional ESP32-C3 glance, pushed every 5 min, encrypted",
-            style = MaterialTheme.typography.bodyMedium,
-        )
-        Text("Status: $linkStatus", style = MaterialTheme.typography.bodyLarge)
-        deviceName?.let { Text("Paired to: $it", style = MaterialTheme.typography.bodyMedium) }
+        Text("Glance every 5 min, encrypted", style = MaterialTheme.typography.bodyMedium)
+        if (devices.isEmpty()) Text("Nothing paired", style = MaterialTheme.typography.bodyLarge)
+        devices.forEach { (name, phase) -> Text("$name: $phase", style = MaterialTheme.typography.bodyLarge) }
 
         val haptics = rememberT1dmHaptics()
         SettingsAnchor(watchPairing) {
@@ -36,11 +33,11 @@ private val watchPairing = SettingsKnob(
     screen = SettingsScreenKey.WATCH,
     section = "Watch",
     label = "Pairing & keys",
-    subtitle = "The ESP32-C3 wrist glance: pair, compare the SAS, rotate keys, unpair (Security panel)",
+    subtitle = "Paired devices: pair, compare the SAS, rotate keys, unpair (Security panel)",
     synonyms = listOf(
         "watch", "wrist", "esp32", "esp32-c3", "accessory", "pair", "pairing", "unpair", "bond",
         "keys", "key rotation", "sas", "encryption", "x25519", "aes", "glance", "wearable",
-        "security", "crypto",
+        "security", "crypto", "desktop", "wallpaper", "kde", "peripheral",
     ),
 )
 

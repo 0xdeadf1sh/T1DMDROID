@@ -158,6 +158,7 @@ import com.t1dm.feature.models.ModelDetailScreen
 import com.t1dm.feature.models.ModelsScreen
 import com.t1dm.feature.security.SecurityPanelState
 import com.t1dm.feature.security.SecurityScreen
+import com.t1dm.feature.security.WatchPanelDevice
 import com.t1dm.feature.settings.AboutScreen
 import com.t1dm.feature.settings.AlarmThresholdsScreen
 import com.t1dm.feature.settings.AlertsSettingsScreen
@@ -194,9 +195,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /** Keeps `:feature:security` free of a `:watch` dependency. */
-private fun WatchSecurityState.toPanelState() = SecurityPanelState(
+private fun WatchSecurityState.toPanelDevice() = WatchPanelDevice(
+    id = deviceId.orEmpty(),
+    name = deviceName,
     phase = phase.name.lowercase().replace('_', ' '),
-    deviceName = deviceName,
+    extended = extended,
     sessionState = sessionState.name.lowercase(),
     epoch = epoch,
     keyFingerprint = keyFingerprint,
@@ -209,7 +212,6 @@ private fun WatchSecurityState.toPanelState() = SecurityPanelState(
     lowPowerSuspended = lowPowerSuspended,
     rssiDbm = rssiDbm,
     lastError = lastError,
-    canPair = canPair,
     canConfirmSas = canConfirmSas,
     canRotate = canRotate,
     canReset = canReset,
@@ -1580,12 +1582,18 @@ private fun T1dmNavHost(
             )
         }
         composable("security") {
-            val watch by container.watchSecurity.collectAsState()
+            val devices by container.watchDevices.collectAsState()
+            val pairing by container.watchPairing.collectAsState()
             SecurityScreen(
-                state = watch.toPanelState(),
+                state = SecurityPanelState(
+                    devices = devices.map { it.toPanelDevice() },
+                    pairing = pairing?.toPanelDevice(),
+                ),
+                onPair = container::pairWatch,
+                onCancelPairing = container::cancelWatchPairing,
                 onConfirmSas = container::confirmWatchSas,
-                onRotate = container::rotateWatchKeys,
-                onUnpair = container::unpairWatch,
+                onRotate = { container.rotateWatchKeys(it) },
+                onUnpair = { container.unpairWatch(it) },
             )
         }
         composable("settings") {
@@ -1905,10 +1913,9 @@ private fun T1dmNavHost(
             BackupRoute(container, onNotice)
         }
         composable("settings/watch") {
-            val watch by container.watchSecurity.collectAsState()
+            val devices by container.watchDevices.collectAsState()
             WatchSettingsScreen(
-                linkStatus = watch.phase.name.lowercase().replace('_', ' '),
-                deviceName = watch.deviceName,
+                devices = devices.map { (it.deviceName ?: "—") to it.phase.name.lowercase().replace('_', ' ') },
                 onOpenSecurity = { navController.navigate("security") },
             )
         }

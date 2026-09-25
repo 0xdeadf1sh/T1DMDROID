@@ -16,6 +16,11 @@
                 <action android:name="com.t1dm.app.FORCE_PREDICT" />
                 <action android:name="com.t1dm.app.RUN_GRID_TICK" />
                 <action android:name="com.t1dm.app.SEED_CONTEXT" />
+                <action android:name="com.t1dm.app.WATCH_PAIR" />
+                <action android:name="com.t1dm.app.WATCH_CONFIRM" />
+                <action android:name="com.t1dm.app.WATCH_ROTATE" />
+                <action android:name="com.t1dm.app.WATCH_UNPAIR" />
+                <action android:name="com.t1dm.app.WATCH_PUSH" />
             </intent-filter>
         </receiver>
 

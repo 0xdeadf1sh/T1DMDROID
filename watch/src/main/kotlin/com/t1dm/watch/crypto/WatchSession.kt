@@ -39,7 +39,7 @@ interface WatchSession {
 
 enum class WatchSessionState { UNPAIRED, AWAIT_PEER, AWAIT_SAS, LIVE }
 
-/** [frame]: version(1)||epoch:u32le||seq:u64le||ct||16B GCM tag (§6.1); 13B header is AEAD AAD. */
+/** [frame]: version(1)||epoch:u32le||seq:u64le||ct||16B GCM tag (§5.1); 13B header is AEAD AAD. */
 data class SealedFrame(val seq: Long, val frame: ByteArray) {
     override fun equals(other: Any?): Boolean =
         other is SealedFrame && seq == other.seq && frame.contentEquals(other.frame)

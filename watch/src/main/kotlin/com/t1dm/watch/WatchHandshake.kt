@@ -11,7 +11,7 @@ object WatchHandshake {
     fun hello(session: WatchSession): KexFrame.Hello =
         KexFrame.Hello(epoch = session.epoch, publicKey = session.startHandshake())
 
-    /** Throws on an epoch mismatch — reflash or desync mid-handshake; caller re-pairs. */
+    /** Throws on an epoch mismatch; the handshake fails, SPEC/watch.md §3. */
     fun onHelloAck(session: WatchSession, ack: ControlFrame.HelloAck): SasCode {
         require(ack.epoch == session.epoch) { "HELLO_ACK epoch ${ack.epoch} != ${session.epoch}" }
         session.acceptPeer(ack.publicKey)
@@ -22,7 +22,7 @@ object WatchHandshake {
     fun confirm(session: WatchSession): KexFrame.Confirm =
         KexFrame.Confirm(epoch = session.epoch, ok = true)
 
-    /** False on a rejected confirmation: a SAS mismatch at the watch, so re-pair. */
+    /** False on a rejected confirmation: the peripheral's user refused or never answered. */
     fun onConfirmAck(session: WatchSession, ack: ControlFrame.ConfirmAck): Boolean {
         if (!ack.ok || ack.epoch != session.epoch) return false
         session.confirm()

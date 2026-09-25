@@ -2,14 +2,26 @@ package com.t1dm.watch.ble
 
 import kotlinx.coroutines.flow.Flow
 
-/** All calls off-main; a dropped link surfaces as Disconnected, caller drives reconnect/backoff. */
+/** Which peripheral to connect to. */
+sealed interface WatchTarget {
+    /** A peripheral not yet paired: the name prefix, minus every paired name. */
+    data class New(val prefix: String, val exclude: Set<String>) : WatchTarget
+
+    /** A paired peripheral: [address] first, when known, then a scan for [name]. */
+    data class Known(val name: String, val address: String?) : WatchTarget
+}
+
+/** [deviceName] as advertised; [mtu] the ATT MTU; [address] the one the link rode. */
+data class WatchConnection(val deviceName: String, val mtu: Int, val address: String?)
+
+/** One instance per link, all calls off-main. A dropped link surfaces as Disconnected. */
 interface WatchCentral {
 
     /** Hot stream. */
     val events: Flow<WatchCentralEvent>
 
-    /** Scan by namePrefix, connect, MTU, discover, subscribe CONTROL; timeoutMs bounds bring-up. */
-    suspend fun connectByName(namePrefix: String, timeoutMs: Long)
+    /** Connect → MTU → discover → subscribe CONTROL; timeoutMs bounds it. Throws on failure. */
+    suspend fun connect(target: WatchTarget, timeoutMs: Long): WatchConnection
 
     /** Null when unavailable. */
     suspend fun readStatus(): ByteArray?
@@ -31,17 +43,11 @@ interface WatchCentral {
 }
 
 sealed interface WatchCentralEvent {
-    /** Connected, MTU negotiated, service discovered, CONTROL subscribed; ready for handshake. */
-    data class Ready(val deviceName: String, val mtu: Int) : WatchCentralEvent
-
-    /** Raw CONTROL notification; decode with [com.t1dm.watch.proto.ControlFrame]. */
+    /** Raw CONTROL notification; decode with [com.t1dm.watch.proto.WatchCodec.control]. */
     data class Notified(val bytes: ByteArray) : WatchCentralEvent {
         override fun equals(other: Any?) = other is Notified && bytes.contentEquals(other.bytes)
         override fun hashCode() = bytes.contentHashCode()
     }
 
     data class Disconnected(val reason: String) : WatchCentralEvent
-
-    /** Bring-up failed before Ready. */
-    data class Failed(val reason: String) : WatchCentralEvent
 }

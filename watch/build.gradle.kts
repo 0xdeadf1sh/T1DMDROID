@@ -12,10 +12,11 @@ android {
             isReturnDefaultValues = true
         }
     }
+    sourceSets.getByName("test").resources.srcDir(rootProject.file("crates/t1dm-watch/testdata"))
 }
 
 // A removable seam: nothing depends on :watch, and it reaches out only through ports.
-// The real X25519/AES-128-GCM lives in Rust `t1dm-core`; this module ships only a loopback session.
+// Crypto and record codecs live in Rust `t1dm-watch`; this module ships only a loopback session.
 dependencies {
     implementation(project(":core:model"))
     implementation(project(":core:common"))

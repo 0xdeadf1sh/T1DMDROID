@@ -28,13 +28,19 @@ import com.t1dm.feature.settings.AboutInfo
 import com.t1dm.app.sync.RoomPredictionStore
 import com.t1dm.app.sync.SyncManager
 import com.t1dm.app.watch.AndroidLowPowerProvider
+import com.t1dm.app.watch.AppWatchExtendedSource
 import com.t1dm.app.watch.AppWatchGlanceSource
-import com.t1dm.app.watch.RoomNonceStore
-import com.t1dm.app.watch.RoomWatchPairingStore
-import com.t1dm.watch.WatchLink
+import com.t1dm.app.watch.RoomWatchStores
+import com.t1dm.app.watch.UniffiWatchCodec
+import com.t1dm.watch.WatchHub
 import com.t1dm.watch.WatchLinkConfig
 import com.t1dm.watch.WatchSecurityState
 import com.t1dm.watch.ble.AndroidWatchCentral
+import com.t1dm.watch.ble.WatchScanner
+import com.t1dm.watch.proto.WatchDisplay
+import com.t1dm.watch.proto.WatchPalette
+import androidx.compose.ui.graphics.toArgb
+import kotlinx.coroutines.flow.drop
 import com.t1dm.app.watch.UniffiWatchSessionFactory
 import com.t1dm.core.common.DefaultT1dmDispatchers
 import com.t1dm.core.common.NativeCore
@@ -1114,7 +1120,7 @@ class AppContainer(context: Context) {
     /** DESTRUCTIVE, IN-PLACE: FGS/process stay alive, so GATT session and cgm_source survive. */
     suspend fun resetAllData() = withContext(dispatchers.io) {
         // Drop watch session BEFORE the wipe, so no late push re-persists key material/nonce.
-        runCatching { watchLink.stopForReset() }
+        runCatching { watchHub.stopForReset() }
         repository.wipeAllData(preserveCgmSources = true)
         runCatching { tokenStore.clearAll() }
         com.t1dm.app.watch.WatchKeyCipher.deleteKey()
@@ -1131,7 +1137,7 @@ class AppContainer(context: Context) {
         // Monotonic and in-memory: it would survive and let the forecast run on the empty history.
         runCatching { inferenceController.resetWarmupLatch() }
         // The wipe is done, and nothing else would ever undo `stopForReset`.
-        runCatching { watchLink.resumeAfterReset() }
+        runCatching { watchHub.resumeAfterReset() }
         reevaluateInferenceNow()
     }
 
@@ -2520,7 +2526,7 @@ class AppContainer(context: Context) {
     }
 
     private fun watchLight(phase: WatchLinkPhase): ReachLight = when (phase) {
-        WatchLinkPhase.UNPAIRED -> ReachLight(LinkHealth.OFF, "no watch paired")
+        WatchLinkPhase.UNPAIRED -> ReachLight(LinkHealth.OFF, "nothing paired")
         WatchLinkPhase.LIVE -> ReachLight(LinkHealth.OK, "paired — pushing every 5 min")
         WatchLinkPhase.SUSPENDED_LOW_POWER -> ReachLight(LinkHealth.DEGRADED, "low-power — push suspended")
         WatchLinkPhase.ERROR -> ReachLight(LinkHealth.DOWN, "link error — re-pair needed")
@@ -2542,7 +2548,7 @@ class AppContainer(context: Context) {
         }
     }
 
-    // REMOVABLE SEAM: crypto is uniffi WatchSession (WATCH_BLE.md); :watch's loopback is test-only.
+    // REMOVABLE SEAM: crypto and codecs are uniffi `t1dm-watch`; :watch's loopback is test-only.
 
     /** Shared by the watch push and [lowPowerActive]. Reads its knobs fresh per call. */
     private val lowPower: AndroidLowPowerProvider by lazy {
@@ -2562,12 +2568,14 @@ class AppContainer(context: Context) {
         }
     }
 
-    val watchLink: WatchLink by lazy {
-        WatchLink(
-            centralProvider = { AndroidWatchCentral(appContext, dispatchers) },
+    private val watchScanner by lazy { WatchScanner(appContext) }
+
+    val watchHub: WatchHub by lazy {
+        WatchHub(
+            centralProvider = { AndroidWatchCentral(appContext, dispatchers, watchScanner) },
             sessionFactory = UniffiWatchSessionFactory(),
-            nonceStore = RoomNonceStore(repository),
-            pairingStore = RoomWatchPairingStore(repository, appContext),
+            stores = RoomWatchStores(repository, appContext),
+            codec = UniffiWatchCodec(),
             glanceSource = AppWatchGlanceSource(
                 repository = repository,
                 inferenceState = inferenceState,
@@ -2575,18 +2583,94 @@ class AppContainer(context: Context) {
                 thresholdsProvider = { alarmConfig.thresholds },
                 lossMinProvider = { alarmConfig.lossMin },
             ),
+            extendedSource = AppWatchExtendedSource(
+                repository = repository,
+                inferenceState = inferenceState,
+                calibratedBands = { p ->
+                    calibratedBands(
+                        repository.observeBandCalibrations().first(),
+                        p.modelId, p.bandsMgdl, p.horizonSteps, p.nQuantiles,
+                    )
+                },
+                stats = statsRepository,
+                display = ::watchDisplay,
+            ),
             lowPower = lowPower,
             dispatchers = dispatchers,
             config = WatchLinkConfig(enabled = true, autoConnect = true),
         )
     }
 
-    val watchSecurity: StateFlow<WatchSecurityState> get() = watchLink.state
+    /** SPEC/watch.md §5.7: the theme, thresholds and graph frame the phone itself draws with. */
+    private suspend fun watchDisplay(): WatchDisplay {
+        val p = com.t1dm.core.design.resolvePalette(
+            settingsStore.currentThemeId(),
+            settingsStore.currentCustomThemeJson(),
+        )
+        val t = alarmConfig.thresholds
+        val range = graphSettings.currentRange()
+        return WatchDisplay(
+            dark = p.dark,
+            palette = WatchPalette(
+                background = p.background.toArgb(),
+                surface = p.surface.toArgb(),
+                surfaceVariant = p.surfaceVariant.toArgb(),
+                primary = p.primary.toArgb(),
+                onPrimary = p.onPrimary.toArgb(),
+                secondary = p.secondary.toArgb(),
+                onSecondary = p.onSecondary.toArgb(),
+                ink = p.ink.toArgb(),
+                inkMuted = p.inkMuted.toArgb(),
+                grid = p.grid.toArgb(),
+                urgentLow = p.urgentLow.toArgb(),
+                low = p.low.toArgb(),
+                inRange = p.inRange.toArgb(),
+                high = p.high.toArgb(),
+                urgentHigh = p.urgentHigh.toArgb(),
+            ),
+            thresholds = intArrayOf(t.urgentLowMgdl, t.lowMgdl, t.highMgdl, t.urgentHighMgdl),
+            rangeMin = range.minMgdl,
+            rangeMax = range.maxMgdl,
+            windowH = graphSettings.currentWindowHours(),
+            staleMin = AppWatchGlanceSource.STALE_MIN,
+            lossMin = alarmConfig.lossMin,
+            name = p.displayName,
+        )
+    }
 
-    fun pairWatch() = watchLink.beginPairing()
-    fun confirmWatchSas() = watchLink.confirmSas()
-    fun rotateWatchKeys() = watchLink.rotate()
-    fun unpairWatch() = watchLink.unpair()
+    /** Pushes the display on any change it carries, and the forecast on each inference cycle. */
+    fun startWatchFeeds(scope: CoroutineScope) {
+        scope.launch(dispatchers.default) {
+            combine(
+                settingsStore.themeId,
+                settingsStore.customThemeJson,
+                alarmConfigFlow,
+                graphSettings.range,
+                graphSettings.windowHours,
+            ) { a, b, c, d, e -> listOf(a, b, c, d, e) }
+                .distinctUntilChanged()
+                .drop(1)
+                .collect { runCatching { watchHub.pushDisplay(System.currentTimeMillis()) } }
+        }
+        scope.launch(dispatchers.default) {
+            inferenceState.map { it.lastCycleTsMs }
+                .distinctUntilChanged()
+                .drop(1)
+                .collect { runCatching { watchHub.pushForecast(System.currentTimeMillis()) } }
+        }
+    }
+
+    /** The best-connected pairing, for the dashboard light. */
+    val watchSecurity: StateFlow<WatchSecurityState> get() = watchHub.summary
+    val watchDevices: StateFlow<List<WatchSecurityState>> get() = watchHub.devices
+    val watchPairing: StateFlow<WatchSecurityState?> get() = watchHub.pairing
+
+    fun pairWatch() = watchHub.beginPairing()
+    fun cancelWatchPairing() = watchHub.cancelPairing()
+    /** Null [id] confirms the pairing in progress; otherwise that pairing's rotation. */
+    fun confirmWatchSas(id: String?) = watchHub.confirmSas(id)
+    fun rotateWatchKeys(id: String?) = watchHub.rotate(id)
+    fun unpairWatch(id: String?) = watchHub.unpair(id)
 
     /** The forecast was conditioned on the outgoing sensor's history. */
     fun invalidateInferenceOnSourceChange() = inferenceController.onCgmSourceChanged()
@@ -2610,7 +2694,7 @@ class AppContainer(context: Context) {
     }
 
     /** Suspends in low-power mode. */
-    suspend fun pushToWatch(nowMs: Long) = watchLink.pushNow(nowMs)
+    suspend fun pushToWatch(nowMs: Long) = watchHub.tick(nowMs)
 
     companion object {
         /** Hysteresis: tripped, resumes only at thresholdC - this; can't flap cycle to cycle. */

@@ -6,8 +6,12 @@ import com.t1dm.watch.crypto.WatchSessionState
 /** Everything here is safe to display: truncated fingerprint, counters, SAS - never key bytes. */
 data class WatchSecurityState(
     val phase: WatchLinkPhase = WatchLinkPhase.UNPAIRED,
+    /** STATUS device_id, 16 hex digits; null until a pairing has read it. */
+    val deviceId: String? = null,
     val deviceName: String? = null,
     val bonded: Boolean = false,
+    /** The peripheral takes records 0x02–0x05 and the MTU carries them. */
+    val extended: Boolean = false,
 
     val sessionState: WatchSessionState = WatchSessionState.UNPAIRED,
     val epoch: Int = 0,
@@ -30,7 +34,6 @@ data class WatchSecurityState(
 
     val lastError: String? = null,
 ) {
-    val canPair: Boolean get() = phase == WatchLinkPhase.UNPAIRED || phase == WatchLinkPhase.ERROR
     val canConfirmSas: Boolean get() = phase == WatchLinkPhase.AWAIT_SAS
     val canRotate: Boolean get() = phase == WatchLinkPhase.LIVE || phase == WatchLinkPhase.SUSPENDED_LOW_POWER
     val canReset: Boolean get() = phase != WatchLinkPhase.UNPAIRED

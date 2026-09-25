@@ -112,7 +112,7 @@ class LoopbackWatchSession internal constructor(
         sas = if (state == WatchSessionState.AWAIT_SAS) sas() else null,
     )
 
-    // Record: ver||epoch||seq||ct||tag (WATCH_BLE.md §6.1); 13-byte header is the AAD; no dir byte.
+    // Record: ver||epoch||seq||ct||tag (SPEC/watch.md §5.1); 13-byte header is the AAD.
 
     private fun authHeader(seq: Long): ByteArray {
         val b = ByteArray(HDR_LEN)

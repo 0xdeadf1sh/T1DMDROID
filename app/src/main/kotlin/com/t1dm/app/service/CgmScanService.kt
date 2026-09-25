@@ -357,7 +357,8 @@ class CgmScanService : LifecycleService() {
 
         container.syncManager.launch(lifecycleScope)
 
-        container.watchLink.start(lifecycleScope)
+        container.watchHub.start(lifecycleScope)
+        container.startWatchFeeds(lifecycleScope)
 
         // Off-main: lifecycleScope is Main; compute/DB/updateAll must not run on it.
         lifecycleScope.launch(container.dispatchers.default) {
@@ -641,9 +642,20 @@ class CgmScanService : LifecycleService() {
                 container.saveMood(intent.getIntExtra(EXTRA_MOOD, 3))
             }
             ACTION_WATCH_PAIR -> { container.pairWatch(); Timber.tag(TAG).i("WATCH_PAIR") }
-            ACTION_WATCH_CONFIRM -> { container.confirmWatchSas(); Timber.tag(TAG).i("WATCH_CONFIRM") }
-            ACTION_WATCH_ROTATE -> { container.rotateWatchKeys(); Timber.tag(TAG).i("WATCH_ROTATE") }
-            ACTION_WATCH_UNPAIR -> { container.unpairWatch(); Timber.tag(TAG).i("WATCH_UNPAIR") }
+            // No EXTRA_DEVICE_ID confirms the pairing in progress; with it, that device's rotation.
+            ACTION_WATCH_CONFIRM -> {
+                container.confirmWatchSas(intent.getStringExtra(EXTRA_DEVICE_ID))
+                Timber.tag(TAG).i("WATCH_CONFIRM")
+            }
+            // EXTRA_DEVICE_ID may be omitted while exactly one peripheral is paired.
+            ACTION_WATCH_ROTATE -> {
+                container.rotateWatchKeys(intent.getStringExtra(EXTRA_DEVICE_ID))
+                Timber.tag(TAG).i("WATCH_ROTATE")
+            }
+            ACTION_WATCH_UNPAIR -> {
+                container.unpairWatch(intent.getStringExtra(EXTRA_DEVICE_ID))
+                Timber.tag(TAG).i("WATCH_UNPAIR")
+            }
             ACTION_WATCH_PUSH -> lifecycleScope.launch {
                 container.pushToWatch(System.currentTimeMillis())
                 Timber.tag(TAG).i("WATCH_PUSH state=%s", container.watchSecurity.value.phase)
@@ -913,6 +925,7 @@ class CgmScanService : LifecycleService() {
         const val ACTION_WATCH_UNPAIR = "com.t1dm.app.WATCH_UNPAIR"
         const val ACTION_WATCH_PUSH = "com.t1dm.app.WATCH_PUSH"
         const val EXTRA_BG = "bg"
+        const val EXTRA_DEVICE_ID = "id"
         const val EXTRA_TRESIBA = "tresiba"
         const val EXTRA_AGE_MIN = "ageMin"
         const val EXTRA_WARMUP = "warmup"

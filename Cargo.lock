@@ -1044,15 +1044,25 @@ dependencies = [
 name = "t1dm-core"
 version = "0.0.0"
 dependencies = [
- "aes-gcm",
- "hkdf",
- "rand_core",
  "rapier2d",
  "serde",
  "serde_json",
  "sha2",
+ "t1dm-watch",
  "thiserror",
  "uniffi",
+]
+
+[[package]]
+name = "t1dm-watch"
+version = "0.0.0"
+dependencies = [
+ "aes-gcm",
+ "hkdf",
+ "rand_core",
+ "serde_json",
+ "sha2",
+ "thiserror",
  "x25519-dalek",
  "zeroize",
 ]

@@ -8,9 +8,6 @@ import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
-import android.bluetooth.le.ScanCallback
-import android.bluetooth.le.ScanResult
-import android.bluetooth.le.ScanSettings
 import android.content.Context
 import com.t1dm.core.common.T1dmDispatchers
 import com.t1dm.watch.WatchGatt
@@ -21,13 +18,15 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import timber.log.Timber
 
-/** CONNECTED session, needs BLUETOOTH_CONNECT; every GATT callback hops to injected dispatchers. */
+/** CONNECTED session needs BLUETOOTH_CONNECT (CGM scan is passive); GATT callbacks hop off main. */
 @SuppressLint("MissingPermission")
 class AndroidWatchCentral(
     private val context: Context,
     private val dispatchers: T1dmDispatchers,
+    private val scanner: WatchScanner,
 ) : WatchCentral {
 
     private val _events = MutableSharedFlow<WatchCentralEvent>(replay = 0, extraBufferCapacity = 64)
@@ -35,7 +34,6 @@ class AndroidWatchCentral(
 
     private val opLock = Mutex()
     private var gatt: BluetoothGatt? = null
-    private var deviceName: String = WatchGatt.ADV_NAME_PREFIX
 
     // Single-flight completions resolved by the GATT callback.
     private var connectDone: CompletableDeferred<Boolean>? = null
@@ -50,38 +48,59 @@ class AndroidWatchCentral(
     override var isReady: Boolean = false
         private set
 
-    private val bluetoothManager get() = context.getSystemService(BluetoothManager::class.java)
+    private val adapter get() = context.getSystemService(BluetoothManager::class.java)?.adapter
 
-    override suspend fun connectByName(namePrefix: String, timeoutMs: Long) = withContext(dispatchers.io) {
-        withTimeout(timeoutMs) {
-            val device = scanForDevice(namePrefix)
-            deviceName = device.name ?: namePrefix
-            val g = device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
-                ?: throw IllegalStateException("connectGatt returned null (adapter off?)")
-            gatt = g
-
-            // requestMtu/discoverServices before STATE_CONNECTED is silently dropped, no callback.
-            connectDone = CompletableDeferred()
-            check(connectDone!!.await()) { "GATT connection failed before bring-up" }
-
-            mtuDone = CompletableDeferred()
-            g.requestMtu(WatchGatt.MTU_TARGET)
-            val mtu = mtuDone!!.await()
-
-            discoverDone = CompletableDeferred()
-            check(g.discoverServices()) { "discoverServices() rejected by the stack" }
-            check(discoverDone!!.await()) { "service discovery failed" }
-
-            val service = g.getService(WatchGatt.SERVICE)
-                ?: throw IllegalStateException("watch service ${WatchGatt.SERVICE} not present")
-            listOf(WatchGatt.KEX, WatchGatt.CONTROL, WatchGatt.PUSH).forEach {
-                checkNotNull(service.getCharacteristic(it)) { "missing characteristic $it" }
+    override suspend fun connect(target: WatchTarget, timeoutMs: Long): WatchConnection =
+        withContext(dispatchers.io) {
+            withTimeout(timeoutMs) {
+                // A direct connect needs no scan, so it still works while HyperOS suspends scans.
+                val known = target as? WatchTarget.Known
+                val direct = known?.address
+                    ?.let { addr -> runCatching { adapter?.getRemoteDevice(addr) }.getOrNull() }
+                    ?.let { withTimeoutOrNull(timeoutMs / 2) { bringUp(it, known.name) } }
+                direct ?: run {
+                    disconnect()
+                    val found = scanner.find(target.matcher(), timeoutMs)
+                    bringUp(found.device, found.name)
+                        ?: throw IllegalStateException("GATT connection failed before bring-up")
+                }
             }
-            subscribeControl(g, service.getCharacteristic(WatchGatt.CONTROL))
-
-            isReady = true
-            _events.emit(WatchCentralEvent.Ready(deviceName, mtu))
         }
+
+    private fun WatchTarget.matcher(): (String) -> Boolean = when (this) {
+        is WatchTarget.Known -> { n -> n == name }
+        is WatchTarget.New -> { n -> n.startsWith(prefix) && n !in exclude }
+    }
+
+    /** Null when the GATT connection itself fails; throws on a peer that is not a watch. */
+    private suspend fun bringUp(device: BluetoothDevice, name: String): WatchConnection? {
+        // Armed before connectGatt: requestMtu/discoverServices before STATE_CONNECTED are dropped.
+        connectDone = CompletableDeferred()
+        val g = device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
+            ?: throw IllegalStateException("connectGatt returned null (adapter off?)")
+        gatt = g
+        if (!connectDone!!.await()) {
+            disconnect()
+            return null
+        }
+
+        mtuDone = CompletableDeferred()
+        g.requestMtu(WatchGatt.MTU_TARGET)
+        val mtu = mtuDone!!.await()
+
+        discoverDone = CompletableDeferred()
+        check(g.discoverServices()) { "discoverServices() rejected by the stack" }
+        check(discoverDone!!.await()) { "service discovery failed" }
+
+        val service = g.getService(WatchGatt.SERVICE)
+            ?: throw IllegalStateException("watch service ${WatchGatt.SERVICE} not present")
+        listOf(WatchGatt.KEX, WatchGatt.CONTROL, WatchGatt.PUSH, WatchGatt.STATUS).forEach {
+            checkNotNull(service.getCharacteristic(it)) { "missing characteristic $it" }
+        }
+        subscribeControl(g, service.getCharacteristic(WatchGatt.CONTROL))
+
+        isReady = true
+        return WatchConnection(deviceName = name, mtu = mtu, address = device.address)
     }
 
     override suspend fun readStatus(): ByteArray? = opLock.withLock {
@@ -123,33 +142,6 @@ class AndroidWatchCentral(
         gatt = null
     }
 
-    private suspend fun scanForDevice(namePrefix: String): BluetoothDevice {
-        val scanner = bluetoothManager?.adapter?.bluetoothLeScanner
-            ?: throw IllegalStateException("no BLE scanner (adapter off / no BLE)")
-        val found = CompletableDeferred<BluetoothDevice>()
-        val cb = object : ScanCallback() {
-            override fun onScanResult(callbackType: Int, result: ScanResult) {
-                val name = result.device?.name ?: result.scanRecord?.deviceName
-                if (name != null && name.startsWith(namePrefix) && !found.isCompleted) {
-                    found.complete(result.device)
-                }
-            }
-
-            override fun onScanFailed(errorCode: Int) {
-                if (!found.isCompleted) found.completeExceptionally(IllegalStateException("scan failed: $errorCode"))
-            }
-        }
-        val settings = ScanSettings.Builder()
-            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
-            .build()
-        scanner.startScan(/* filters = */ null, settings, cb)
-        try {
-            return found.await()
-        } finally {
-            runCatching { scanner.stopScan(cb) }
-        }
-    }
-
     private suspend fun subscribeControl(g: BluetoothGatt, control: BluetoothGattCharacteristic) {
         check(g.setCharacteristicNotification(control, true)) { "enable CONTROL notify failed" }
         val cccd = control.getDescriptor(WatchGatt.CCCD)
@@ -162,12 +154,15 @@ class AndroidWatchCentral(
 
     private val callback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
+            // A closed attempt's late callback must not fail or drop the live one.
+            if (gatt != null && g != gatt) return
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 connectDone?.complete(status == BluetoothGatt.GATT_SUCCESS)
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                val wasReady = isReady
                 isReady = false
                 connectDone?.complete(false)
-                emit(WatchCentralEvent.Disconnected("GATT disconnected (status=$status)"))
+                if (wasReady) emit(WatchCentralEvent.Disconnected("GATT disconnected (status=$status)"))
             }
         }
 
