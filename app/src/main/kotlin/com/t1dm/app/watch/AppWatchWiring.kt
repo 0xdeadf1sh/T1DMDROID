@@ -15,6 +15,8 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import com.t1dm.core.model.AlertThresholds
+import com.t1dm.core.model.CgmSourceId
+import com.t1dm.core.model.CgmSourceTelemetry
 import com.t1dm.core.model.InferenceState
 import com.t1dm.core.model.ModelPrediction
 import com.t1dm.core.model.ReadingFlag
@@ -53,6 +55,8 @@ class AppWatchGlanceSource(
     // Providers, not values: capturing at construction would freeze the watch to boot-time config.
     private val thresholdsProvider: () -> AlertThresholds,
     private val lossMinProvider: () -> Int,
+    /** The sensor's own arrow, live; null where its family sends none. */
+    private val sensorTelemetry: suspend (CgmSourceId) -> CgmSourceTelemetry?,
     private val staleMin: Int = STALE_MIN,
 ) : WatchGlanceSource {
 
@@ -63,6 +67,8 @@ class AppWatchGlanceSource(
         val readings = GlanceReadings.create(rows)
         if (readings.latest == null) return null
 
+        // The bottom bar's rule, so the arrow here and there agree.
+        val direction = directionOf(readings.latest, sensorTelemetry(src)) { rows.take(TREND_FIT_POINTS) }
         // The one shared computation, so watch, notification and widgets agree by construction.
         val g = com.t1dm.app.notify.BgGlanceComputer.compute(
             readings = readings,
@@ -71,9 +77,8 @@ class AppWatchGlanceSource(
             lossMin = lossMinProvider(),
             staleMin = staleMin,
             nowMs = nowMs,
+            trend = direction?.trend,
         )
-        // The bottom bar's rule, so the arrow here and there agree.
-        val direction = directionOf(readings.latest) { rows.take(TREND_FIT_POINTS) }
 
         return WatchPush(
             bgMgdl = g.bgMgdl,

@@ -46,6 +46,7 @@ class WidgetGlanceTest {
             lossMin = 25,
             staleMin = STALE_MIN,
             nowMs = nowMs,
+            trend = null,
         ),
         unit = UnitSpace.MmolL,
         animationsEnabled = true,

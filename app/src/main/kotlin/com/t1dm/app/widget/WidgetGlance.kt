@@ -68,9 +68,9 @@ internal suspend fun currentWidgetSnapshot(context: Context): WidgetSnapshot {
         val nowMs = System.currentTimeMillis()
         val src = container.repository.authoritativeSourceId()
         // 36 rows: the newest MEASUREMENT may sit behind promoted reconstructions.
-        val readings = GlanceReadings.create(
-            src?.let { container.repository.recentReadings(it, 36) } ?: emptyList(),
-        )
+        val rows = src?.let { container.repository.recentReadings(it, 36) } ?: emptyList()
+        val readings = GlanceReadings.create(rows)
+        val direction = runCatching { container.directionNow(rows) }.getOrNull()
         val latest = readings.latest
         val unit = runCatching { container.statsRepository.currentUnitSpace() }.getOrDefault(UnitSpace.MgDl)
         val animationsEnabled = runCatching { container.settingsStore.currentAnimationsEnabled() }.getOrDefault(true)
@@ -94,6 +94,7 @@ internal suspend fun currentWidgetSnapshot(context: Context): WidgetSnapshot {
             lossMin = cfg.lossMin,
             staleMin = STALE_MIN,
             nowMs = nowMs,
+            trend = direction?.trend,
         )
         WidgetSnapshot(
             glance = glance,

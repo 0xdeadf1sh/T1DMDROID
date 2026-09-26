@@ -1,12 +1,15 @@
 package com.t1dm.app.notify
 
+import com.t1dm.cgm.GridStamper
 import com.t1dm.core.model.AlertBand
 import com.t1dm.core.model.AlertThresholds
 import com.t1dm.core.model.CgmReading
+import com.t1dm.core.model.CgmSourceTelemetry
 import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.isRealMeasurement
 import com.t1dm.core.model.InferenceState
 import com.t1dm.core.model.ModelPrediction
+import com.t1dm.core.model.SensorArrow
 import kotlin.math.roundToInt
 
 /** mg/dL and minutes throughout; crossing fields non-null only for a §3.6-eligible forecast. */
@@ -15,7 +18,7 @@ data class BgGlance(
     val trendTenths: Int?,
     val readingAgeMs: Long,
     val band: AlertBand?,
-    /** Measured rate only; null where the source reports no rate. */
+    /** [directionOf]'s arrow, as the bottom bar and the watch draw it; null = none. */
     val trend: GlanceTrend?,
     /** Forecast slope, drives the watch fc_trend; never drawn as an arrow. */
     val fcTrend: GlanceTrend,
@@ -45,19 +48,35 @@ data class BgGlance(
 
 enum class GlanceTrend { FLAT, RISING, FALLING, RISING_FAST, FALLING_FAST }
 
-/** [reported] false ⇒ fitted by [fitTrendTenthsPerMin] because the sensor sent no rate. */
+/** [reported] false ⇒ fitted by [fitTrendTenthsPerMin]: the sensor named no arrow and no rate. */
 data class BgDirection(val trend: GlanceTrend, val reported: Boolean)
 
-/** The arrow beside [latest]: its own rate, else a fit over the window of [recent] before it. */
-suspend fun directionOf(latest: CgmReading?, recent: suspend () -> List<CgmReading>): BgDirection? {
-    val reported = latest?.trendTenthsPerMin
+/** [sensor]'s arrow in [latest]'s grid slot, else [latest]'s rate, else a fit; UNDETERMINED fits */
+suspend fun directionOf(
+    latest: CgmReading?,
+    sensor: CgmSourceTelemetry?,
+    recent: suspend () -> List<CgmReading>,
+): BgDirection? {
+    if (latest == null) return null
+    val own = sensor?.takeIf { GridStamper().snap(it.sampledAtMs) == latest.tsMs }?.arrow
+    val ownTrend = own?.toGlanceTrend()
+    val rate = latest.trendTenthsPerMin
     return when {
-        reported != null -> BgGlanceComputer.measuredTrend(reported)?.let { BgDirection(it, reported = true) }
-        latest == null -> null
+        ownTrend != null -> BgDirection(ownTrend, reported = true)
+        own == null && rate != null -> BgGlanceComputer.measuredTrend(rate)?.let { BgDirection(it, reported = true) }
         else -> fitTrendTenthsPerMin(recent().filter { it.tsMs >= latest.tsMs - TREND_FIT_WINDOW_MS })
             ?.let { BgGlanceComputer.measuredTrend(it) }
             ?.let { BgDirection(it, reported = false) }
     }
+}
+
+private fun SensorArrow.toGlanceTrend(): GlanceTrend? = when (this) {
+    SensorArrow.FALLING_FAST -> GlanceTrend.FALLING_FAST
+    SensorArrow.FALLING -> GlanceTrend.FALLING
+    SensorArrow.FLAT -> GlanceTrend.FLAT
+    SensorArrow.RISING -> GlanceTrend.RISING
+    SensorArrow.RISING_FAST -> GlanceTrend.RISING_FAST
+    SensorArrow.UNDETERMINED -> null
 }
 
 const val TREND_FIT_WINDOW_MS = 15 * 60_000L
@@ -131,6 +150,8 @@ object BgGlanceComputer {
         lossMin: Int,
         staleMin: Int,
         nowMs: Long,
+        /** [directionOf]'s, from the caller: only it holds the sensor's arrow and the fit rows. */
+        trend: GlanceTrend?,
     ): BgGlance {
         val latest = readings.lastMeasured
         val warmup = state.warmup != null
@@ -165,8 +186,6 @@ object BgGlanceComputer {
         val (approaching, urgent) =
             if (eligible) findCrossings(sel!!, thresholds) else null to null
 
-        val trend = measuredTrend(latest.trendTenthsPerMin)
-
         return BgGlance(
             bgMgdl = bg,
             trendTenths = latest.trendTenthsPerMin,
@@ -187,7 +206,7 @@ object BgGlanceComputer {
             alarmActive = alarmActive,
             approaching = approaching,
             urgent = urgent,
-            summary = summarize(bg, latest.trendTenthsPerMin, eligible, fcEnd, horizon, sel?.status, warmup),
+            summary = summarize(bg, trend, eligible, fcEnd, horizon, sel?.status, warmup),
         )
     }
 
@@ -255,7 +274,7 @@ object BgGlanceComputer {
     }
 
     private fun summarize(
-        bg: Int?, trendTenths: Int?, eligible: Boolean, fcEnd: Int?, horizonSteps: Int,
+        bg: Int?, trend: GlanceTrend?, eligible: Boolean, fcEnd: Int?, horizonSteps: Int,
         status: ForecastStatus?, warmup: Boolean,
     ): String = when {
         warmup -> "collecting context"
@@ -272,14 +291,15 @@ object BgGlanceComputer {
         }
         status != null && status != ForecastStatus.OK -> "forecast unavailable"
         bg != null -> {
-            val arrow = when {
-                (trendTenths ?: 0) > 20 -> "↑↑"
-                (trendTenths ?: 0) > 5 -> "↑"
-                (trendTenths ?: 0) < -20 -> "↓↓"
-                (trendTenths ?: 0) < -5 -> "↓"
-                else -> "→"
+            val arrow = when (trend) {
+                GlanceTrend.RISING_FAST -> "↑↑"
+                GlanceTrend.RISING -> "↑"
+                GlanceTrend.FALLING_FAST -> "↓↓"
+                GlanceTrend.FALLING -> "↓"
+                GlanceTrend.FLAT -> "→"
+                null -> null
             }
-            "$bg $arrow"
+            if (arrow == null) "$bg" else "$bg $arrow"
         }
         else -> "no reading"
     }.let { if (it.length <= 40) it else it.take(40) }

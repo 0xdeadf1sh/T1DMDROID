@@ -4,6 +4,7 @@ import com.t1dm.app.notify.GlanceReadings
 import androidx.datastore.preferences.core.mutablePreferencesOf
 import com.t1dm.alerts.AlarmConfig
 import com.t1dm.app.notify.BgGlanceComputer
+import com.t1dm.app.notify.GlanceTrend
 import com.t1dm.core.design.ThemeIds
 import com.t1dm.core.model.AlertBand
 import com.t1dm.core.model.AlertThresholds
@@ -38,7 +39,12 @@ class WidgetStateStoreTest {
         rssi = rssi,
     )
 
-    private fun snapshot(latest: CgmReading?, nowMs: Long, unit: UnitSpace = UnitSpace.MmolL) = WidgetSnapshot(
+    private fun snapshot(
+        latest: CgmReading?,
+        nowMs: Long,
+        unit: UnitSpace = UnitSpace.MmolL,
+        trend: GlanceTrend? = null,
+    ) = WidgetSnapshot(
         glance = BgGlanceComputer.compute(
             readings = GlanceReadings.create(listOfNotNull(latest)),
             state = InferenceState(),
@@ -46,6 +52,7 @@ class WidgetStateStoreTest {
             lossMin = 25,
             staleMin = STALE_MIN,
             nowMs = nowMs,
+            trend = trend,
         ),
         unit = unit,
         animationsEnabled = false,
@@ -76,12 +83,13 @@ class WidgetStateStoreTest {
         val writeAt = 1_700_000_000_000L
         val rxWallMs = writeAt - 120_000L // 2 min old when written
         val prefs = mutablePreferencesOf()
-        WidgetStateStore.write(prefs, snapshot(reading(120, 5, rxWallMs), writeAt), writeAt)
+        WidgetStateStore.write(prefs, snapshot(reading(120, 5, rxWallMs), writeAt, trend = GlanceTrend.RISING), writeAt)
 
         val readAt = writeAt + 8L * 60_000L
         val cached = requireNotNull(WidgetStateStore.read(prefs, readAt))
         assertEquals(120, cached.glance.bgMgdl)
         assertEquals(5, cached.glance.trendTenths)
+        assertEquals("the arrow drawn, not one re-derived from the rate", GlanceTrend.RISING, cached.glance.trend)
         assertEquals(10L * 60_000L, cached.glance.readingAgeMs)
     }
 

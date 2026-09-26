@@ -33,6 +33,7 @@ import com.t1dm.app.di.AppContainer
 import com.t1dm.app.notify.GlanceReadings
 import com.t1dm.app.notify.AlarmActionReceiver
 import com.t1dm.app.notify.AlertRepeatScheduler
+import com.t1dm.app.notify.BgDirection
 import com.t1dm.app.notify.BgGlance
 import com.t1dm.app.notify.BgGlanceComputer
 import com.t1dm.app.notify.LiveNotificationPresenter
@@ -87,6 +88,7 @@ import java.util.TimeZone
 /** [theme] is (themeId, customThemeJson). */
 private data class GlanceInputs(
     val readings: GlanceReadings,
+    val direction: BgDirection?,
     val state: InferenceState,
     val unit: UnitSpace,
     val theme: Pair<String, String?>,
@@ -381,15 +383,15 @@ class CgmScanService : LifecycleService() {
                 container.settingsStore.customThemeJson,
             ) { id, json -> id to json }
             combine(
-                container.glanceReadings.onStart { emit(GlanceReadings.EMPTY) },
+                container.glanceReadings.onStart { emit(GlanceReadings.EMPTY to null) },
                 container.inferenceState,
                 container.statsRepository.unitSpace.onStart { emit(UnitSpace.MgDl) },
                 ticker,
                 theme,
-            ) { readings, state, unit, _, themeSig ->
-                GlanceInputs(readings, state, unit, themeSig)
-            }.collectLatest { (readings, state, unit, themeSig) ->
-                runCatching { refreshGlanceSurfaces(readings, state, unit, themeSig) }
+            ) { (readings, direction), state, unit, _, themeSig ->
+                GlanceInputs(readings, direction, state, unit, themeSig)
+            }.collectLatest { (readings, direction, state, unit, themeSig) ->
+                runCatching { refreshGlanceSurfaces(readings, direction, state, unit, themeSig) }
                     .onFailure { Timber.tag(TAG).w(it, "glance refresh failed (alarm path unaffected)") }
             }
         }
@@ -403,6 +405,7 @@ class CgmScanService : LifecycleService() {
     /** §3.6 gate lives in BgGlanceComputer; predictive alert only ever adds an EARLIER warning. */
     private suspend fun refreshGlanceSurfaces(
         readings: GlanceReadings,
+        direction: BgDirection?,
         state: InferenceState,
         unit: UnitSpace,
         themeSig: Pair<String, String?>,
@@ -414,6 +417,7 @@ class CgmScanService : LifecycleService() {
             lossMin = container.alarmConfig.lossMin,
             staleMin = 15,
             nowMs = System.currentTimeMillis(),
+            trend = direction?.trend,
         )
         // Same (id, json) that drove refresh, not container's snapshot; avoids a repaint race.
         val (themeId, customJson) = themeSig

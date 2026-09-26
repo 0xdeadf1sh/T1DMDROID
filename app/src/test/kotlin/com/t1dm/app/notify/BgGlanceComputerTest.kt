@@ -4,11 +4,13 @@ import com.t1dm.core.model.AlertThresholds
 import com.t1dm.core.model.BackendId
 import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.CgmSourceId
+import com.t1dm.core.model.CgmSourceTelemetry
 import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.InferenceState
 import com.t1dm.core.model.ModelPrediction
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
+import com.t1dm.core.model.SensorArrow
 import com.t1dm.core.model.WarmupProgress
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -50,7 +52,7 @@ class BgGlanceComputerTest {
 
     @Test fun `eligible falling forecast yields approaching and urgent crossings with correct ETAs`() {
         val state = InferenceState(predictions = listOf(prediction(falling)))
-        val g = BgGlanceComputer.compute(GlanceReadings.create(listOf(reading(112))), state, thresholds, lossMin = 20, staleMin = 15, nowMs = now)
+        val g = BgGlanceComputer.compute(GlanceReadings.create(listOf(reading(112))), state, thresholds, lossMin = 20, staleMin = 15, nowMs = now, trend = null)
 
         assertTrue(g.forecastEligible)
         assertTrue(g.predictedLowCrossing)
@@ -70,44 +72,65 @@ class BgGlanceComputerTest {
     @Test fun `the arrow is the sensor's rate, else a fit over the last fifteen minutes`() = runBlocking<Unit> {
         assertEquals(
             BgDirection(GlanceTrend.FALLING, reported = true),
-            directionOf(reading(120)) { error("a reported rate needs no fit") },
+            directionOf(reading(120), null) { error("a reported rate needs no fit") },
         )
         val rows = listOf(130 to 0L, 120 to 5L, 110 to 10L, 40 to 20L).map { (bg, min) -> reading(bg, min * 60_000L, null) }
         assertEquals("2 mg/dL/min; the 20-min row is outside", BgDirection(GlanceTrend.RISING, reported = false),
-            directionOf(rows.first()) { rows })
-        assertNull(directionOf(null) { rows })
+            directionOf(rows.first(), null) { rows })
+        assertNull(directionOf(null, null) { rows })
     }
 
-    @Test fun `a source reporting no rate has no arrow, while the forecast keeps its own trend`() {
+    private val slot = 1_700_000_100_000L
+
+    private fun sensor(atMs: Long, arrow: SensorArrow) = CgmSourceTelemetry(sampledAtMs = atMs, arrow = arrow)
+
+    @Test fun `the sensor's own arrow in the reading's slot outranks its rate`() = runBlocking<Unit> {
+        val r = reading(120, trend = -18).copy(tsMs = slot)
+        assertEquals(BgDirection(GlanceTrend.FLAT, reported = true),
+            directionOf(r, sensor(slot + 120_000L, SensorArrow.FLAT)) { error("the sensor named one") })
+        assertEquals("the next slot's arrow is not this reading's", BgDirection(GlanceTrend.FALLING, reported = true),
+            directionOf(r, sensor(slot + 180_000L, SensorArrow.FLAT)) { error("the rate suffices") })
+    }
+
+    @Test fun `an undetermined sensor arrow is fitted, never read off the rate`() = runBlocking<Unit> {
+        val rows = listOf(130 to 0L, 120 to 5L, 110 to 10L).map { (bg, min) ->
+            reading(bg, trend = -18).copy(tsMs = slot - min * 60_000L)
+        }
+        assertEquals(BgDirection(GlanceTrend.RISING, reported = false),
+            directionOf(rows.first(), sensor(slot, SensorArrow.UNDETERMINED)) { rows })
+    }
+
+    @Test fun `no arrow draws none, while the forecast keeps its own trend`() {
         val state = InferenceState(predictions = listOf(prediction(falling)))
-        val g = BgGlanceComputer.compute(GlanceReadings.create(listOf(reading(123, trend = null))), state, thresholds, lossMin = 20, staleMin = 15, nowMs = now)
+        val g = BgGlanceComputer.compute(GlanceReadings.create(listOf(reading(123, trend = null))), state, thresholds, lossMin = 20, staleMin = 15, nowMs = now, trend = null)
 
         assertNull(g.trend)
         assertEquals("", BgFormat.arrow(g.trend))
         assertEquals(GlanceTrend.FALLING_FAST, g.fcTrend)
     }
 
-    @Test fun `a measured rate owns the arrow and the forecast never overrides it`() {
+    @Test fun `the arrow given is drawn and the forecast never overrides it`() {
         val state = InferenceState(predictions = listOf(prediction(listOf(200.0, 220.0, 240.0, 260.0))))
-        val g = BgGlanceComputer.compute(GlanceReadings.create(listOf(reading(123, trend = -18))), state, thresholds, lossMin = 20, staleMin = 15, nowMs = now)
+        val g = BgGlanceComputer.compute(GlanceReadings.create(listOf(reading(123))), state, thresholds, lossMin = 20, staleMin = 15, nowMs = now, trend = GlanceTrend.FALLING)
 
         assertEquals(GlanceTrend.FALLING, g.trend)
         assertEquals(GlanceTrend.RISING_FAST, g.fcTrend)
     }
 
-    /** Bottom bar classifies for itself; it and the glance must never disagree about a reading. */
-    @Test fun `the bottom bar and the glance classify one reading identically`() {
-        val state = InferenceState(predictions = listOf(prediction(falling)))
-        for (tenths in listOf(null, -25, -18, -3, 0, 8, 25)) {
-            val r = reading(123, trend = tenths)
-            val g = BgGlanceComputer.compute(GlanceReadings.create(listOf(r)), state, thresholds, lossMin = 20, staleMin = 15, nowMs = now)
-            assertEquals("tenths=$tenths", g.trend, BgGlanceComputer.measuredTrend(r.trendTenthsPerMin))
+    @Test fun `the summary draws the arrow it was given, and none for none`() {
+        val expected = mapOf(
+            GlanceTrend.RISING_FAST to "123 ↑↑", GlanceTrend.RISING to "123 ↑", GlanceTrend.FLAT to "123 →",
+            GlanceTrend.FALLING to "123 ↓", GlanceTrend.FALLING_FAST to "123 ↓↓", null to "123",
+        )
+        for ((trend, summary) in expected) {
+            val g = BgGlanceComputer.compute(GlanceReadings.create(listOf(reading(123))), InferenceState(), thresholds, lossMin = 20, staleMin = 15, nowMs = now, trend = trend)
+            assertEquals("trend=$trend", summary, g.summary)
         }
     }
 
     @Test fun `stale forecast is ineligible - no predictive fields`() {
         val state = InferenceState(predictions = listOf(prediction(falling, stale = true)))
-        val g = BgGlanceComputer.compute(GlanceReadings.create(listOf(reading(112))), state, thresholds, lossMin = 20, staleMin = 15, nowMs = now)
+        val g = BgGlanceComputer.compute(GlanceReadings.create(listOf(reading(112))), state, thresholds, lossMin = 20, staleMin = 15, nowMs = now, trend = null)
         assertFalse(g.forecastEligible)
         assertNull(g.approaching)
         assertNull(g.urgent)
@@ -116,7 +139,7 @@ class BgGlanceComputerTest {
 
     @Test fun `degenerate forecast is ineligible - no predictive fields`() {
         val state = InferenceState(predictions = listOf(prediction(falling, status = ForecastStatus.NON_FINITE)))
-        val g = BgGlanceComputer.compute(GlanceReadings.create(listOf(reading(112))), state, thresholds, lossMin = 20, staleMin = 15, nowMs = now)
+        val g = BgGlanceComputer.compute(GlanceReadings.create(listOf(reading(112))), state, thresholds, lossMin = 20, staleMin = 15, nowMs = now, trend = null)
         assertFalse(g.forecastEligible)
         assertNull(g.approaching)
     }
@@ -126,7 +149,7 @@ class BgGlanceComputerTest {
             predictions = emptyList(),
             warmup = WarmupProgress(measuredHours = 3.0, requiredHours = 24.0),
         )
-        val g = BgGlanceComputer.compute(GlanceReadings.create(listOf(reading(112))), state, thresholds, lossMin = 20, staleMin = 15, nowMs = now)
+        val g = BgGlanceComputer.compute(GlanceReadings.create(listOf(reading(112))), state, thresholds, lossMin = 20, staleMin = 15, nowMs = now, trend = null)
         assertFalse(g.forecastEligible)
         assertNull(g.approaching)
         assertEquals("collecting context", g.summary)
@@ -134,7 +157,7 @@ class BgGlanceComputerTest {
 
     @Test fun `signal loss and stale flags track the reading age`() {
         val state = InferenceState()
-        val g = BgGlanceComputer.compute(GlanceReadings.create(listOf(reading(112, ageMs = 25 * 60_000L))), state, thresholds, lossMin = 20, staleMin = 15, nowMs = now)
+        val g = BgGlanceComputer.compute(GlanceReadings.create(listOf(reading(112, ageMs = 25 * 60_000L))), state, thresholds, lossMin = 20, staleMin = 15, nowMs = now, trend = null)
         assertTrue(g.signalLoss)
         assertTrue(g.stale)
         assertTrue(g.alarmActive)

@@ -2355,16 +2355,25 @@ class AppContainer(context: Context) {
     }
 
     /** Pair is the guard: [latestReading] is newest regardless of provenance, reconstructed too. */
-    val glanceReadings: Flow<GlanceReadings> = authoritativeSource.flatMapLatest { d ->
+    val glanceReadings: Flow<Pair<GlanceReadings, BgDirection?>> = authoritativeSource.flatMapLatest { d ->
         if (d == null) {
-            flowOf(GlanceReadings.EMPTY)
+            flowOf(GlanceReadings.EMPTY to null)
         } else {
             combine(
                 repository.observeLatestReading(d.id),
                 repository.observeLastMeasuredReading(d.id),
-            ) { latest, measured -> GlanceReadings.of(latest, measured) }
+            ) { latest, measured -> latest to measured }
+                .mapLatest { (latest, measured) ->
+                    // No passive source names an arrow of its own.
+                    GlanceReadings.of(latest, measured) to
+                        directionOf(latest, null) { repository.recentReadings(d.id, TREND_FIT_POINTS) }
+                }
         }
     }
+
+    /** [directionOf] over rows already read, newest first; the widget's pull. */
+    suspend fun directionNow(rows: List<CgmReading>): BgDirection? =
+        directionOf(rows.firstOrNull(), null) { rows.take(TREND_FIT_POINTS) }
 
     /** Bottom bar's sensor chip; [latestReading] stays authoritative for BG/trend/staleness. */
     val viewedReading: Flow<CgmReading?> = viewedSource.flatMapLatest { d ->
@@ -2377,7 +2386,7 @@ class AppContainer(context: Context) {
             flowOf(null)
         } else {
             repository.observeLatestReading(d.id).mapLatest { latest ->
-                directionOf(latest) { repository.recentReadings(d.id, TREND_FIT_POINTS) }
+                directionOf(latest, null) { repository.recentReadings(d.id, TREND_FIT_POINTS) }
             }
         }
     }
@@ -2561,6 +2570,7 @@ class AppContainer(context: Context) {
                 // The live @Volatile per glance, so a Settings threshold edit reaches the watch.
                 thresholdsProvider = { alarmConfig.thresholds },
                 lossMinProvider = { alarmConfig.lossMin },
+                sensorTelemetry = { null },
             ),
             extendedSource = AppWatchExtendedSource(
                 repository = repository,

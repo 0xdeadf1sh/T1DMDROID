@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import com.t1dm.app.notify.GlanceReadings
 import com.t1dm.alerts.AlarmConfig
 import com.t1dm.app.notify.BgGlanceComputer
+import com.t1dm.app.notify.GlanceTrend
 import com.t1dm.app.settings.SettingsStore
 import com.t1dm.core.design.ThemeIds
 import com.t1dm.core.design.normalizeThemeId
@@ -29,6 +30,7 @@ internal object WidgetStateStore {
     // Removed together, so the cache can never resurrect a reading the live path stopped showing.
     private val KEY_BG = intPreferencesKey("t1dm.widget.bg_mgdl")
     private val KEY_TREND = intPreferencesKey("t1dm.widget.trend_tenths")
+    private val KEY_ARROW = stringPreferencesKey("t1dm.widget.arrow")
     private val KEY_RX_WALL = longPreferencesKey("t1dm.widget.rx_wall_ms")
     private val KEY_RSSI = intPreferencesKey("t1dm.widget.rssi")
 
@@ -58,11 +60,13 @@ internal object WidgetStateStore {
             prefs[KEY_BG] = g.bgMgdl!!
             prefs[KEY_RX_WALL] = nowMs - g.readingAgeMs
             g.trendTenths?.let { prefs[KEY_TREND] = it } ?: prefs.remove(KEY_TREND)
+            g.trend?.let { prefs[KEY_ARROW] = it.name } ?: prefs.remove(KEY_ARROW)
             snap.rssi?.let { prefs[KEY_RSSI] = it } ?: prefs.remove(KEY_RSSI)
         } else {
             prefs.remove(KEY_BG)
             prefs.remove(KEY_RX_WALL)
             prefs.remove(KEY_TREND)
+            prefs.remove(KEY_ARROW)
             prefs.remove(KEY_RSSI)
         }
         prefs[KEY_UNIT] = snap.unit.name
@@ -108,6 +112,7 @@ internal object WidgetStateStore {
         }
         return snapshotOf(
             latest = latest,
+            trend = latest?.let { GlanceTrend.entries.firstOrNull { it.name == prefs[KEY_ARROW] } },
             thresholds = thresholds,
             lossMin = prefs[KEY_LOSS_MIN] ?: AlarmConfig.DEFAULT.lossMin,
             unit = UnitSpace.entries.firstOrNull { it.name == prefs[KEY_UNIT] } ?: UnitSpace.MgDl,
@@ -127,6 +132,7 @@ internal object WidgetStateStore {
     /** The floor render: nothing known, nothing invented. */
     fun unknown(nowMs: Long): WidgetSnapshot = snapshotOf(
         latest = null,
+        trend = null,
         thresholds = DEFAULT_THRESHOLDS,
         lossMin = AlarmConfig.DEFAULT.lossMin,
         unit = UnitSpace.MgDl,
@@ -143,6 +149,7 @@ internal object WidgetStateStore {
 
     private fun snapshotOf(
         latest: CgmReading?,
+        trend: GlanceTrend?,
         thresholds: AlertThresholds,
         lossMin: Int,
         unit: UnitSpace,
@@ -166,6 +173,7 @@ internal object WidgetStateStore {
                 lossMin = lossMin,
                 staleMin = STALE_MIN,
                 nowMs = nowMs,
+                trend = trend,
             ),
             unit = unit,
             animationsEnabled = animationsEnabled,
