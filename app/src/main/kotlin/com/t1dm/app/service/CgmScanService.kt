@@ -414,6 +414,7 @@ class CgmScanService : LifecycleService() {
             readings = readings,
             state = state,
             thresholds = container.alarmConfig.thresholds,
+            edges = container.alarmFanEdges,
             lossMin = container.alarmConfig.lossMin,
             staleMin = 15,
             nowMs = System.currentTimeMillis(),

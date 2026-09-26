@@ -1,6 +1,7 @@
 package com.t1dm.app.notify
 
 import com.t1dm.cgm.GridStamper
+import com.t1dm.core.model.AlarmFanEdges
 import com.t1dm.core.model.AlertBand
 import com.t1dm.core.model.AlertThresholds
 import com.t1dm.core.model.CgmReading
@@ -36,7 +37,9 @@ data class BgGlance(
     val predictedLowCrossing: Boolean,
     val predictedHighCrossing: Boolean,
     val alarmActive: Boolean,
-    /** Earliest predicted crossing of any band. Null when ineligible or never out of range. */
+    /** Both §6.1 edges out at the first step either is; [approaching] and [urgent] are null. */
+    val unsure: Boolean,
+    /** Earliest §6.1-edge crossing of any band. Null when ineligible, unsure, or in range. */
     val approaching: PredictiveCrossing?,
     /** Earliest predicted crossing of an urgent band. */
     val urgent: PredictiveCrossing?,
@@ -117,6 +120,13 @@ data class PredictiveCrossing(
     enum class Severity { WARNING, CRITICAL }
 }
 
+sealed interface FanScan {
+    data object Clear : FanScan
+    data class Unsure(val step: Int) : FanScan
+    /** [edgeMgdl]: the hypo edge for HYPO, the hyper edge for HYPER. */
+    data class Out(val kind: PredictiveCrossing.Kind, val step: Int, val edgeMgdl: Double) : FanScan
+}
+
 /** One value per call site: a promoted reconstruction must not appear as the lock-screen BG. */
 data class GlanceReadings private constructor(
     /** Newest row, whatever its provenance. */
@@ -147,6 +157,8 @@ object BgGlanceComputer {
         readings: GlanceReadings,
         state: InferenceState,
         thresholds: AlertThresholds,
+        /** Null reads every forecast as unavailable. */
+        edges: AlarmFanEdges?,
         lossMin: Int,
         staleMin: Int,
         nowMs: Long,
@@ -162,7 +174,7 @@ object BgGlanceComputer {
                 forecastStatus = null,
                 fcEndMgdl = null, horizonSteps = 0, warmup = warmup, signalLoss = false,
                 stale = false, forecastUnavailable = true, predictedLowCrossing = false,
-                predictedHighCrossing = false, alarmActive = false, approaching = null,
+                predictedHighCrossing = false, alarmActive = false, unsure = false, approaching = null,
                 urgent = null, summary = if (warmup) "collecting context" else "no reading",
             )
         }
@@ -172,19 +184,33 @@ object BgGlanceComputer {
         val band = bg?.let { thresholds.bandFor(it) }
 
         val sel = state.selectedPrediction
-        val eligible = sel?.eligible == true // §3.6-B/D
+        // §3.6-B/D, and a fan that holds the §6.1 edges.
+        val scan = sel?.takeIf { it.eligible }?.let { scanFan(it, edges, thresholds.lowMgdl, thresholds.highMgdl) }
+        val eligible = scan != null
         val fcEnd = sel?.takeIf { eligible }?.medianBg?.lastOrNull()?.roundToInt()
         val horizon = sel?.horizonSteps ?: 0
 
-        val predLow = eligible && sel!!.medianBg.any { it < thresholds.lowMgdl }
-        val predHigh = eligible && sel!!.medianBg.any { it >= thresholds.highMgdl }
+        val predLow = eligible && (0 until horizon).any { edge(sel!!, edges!!.hypoIdx, it) < thresholds.lowMgdl }
+        val predHigh = eligible && (0 until horizon).any { edge(sel!!, edges!!.hyperIdx, it) >= thresholds.highMgdl }
 
         val signalLoss = ageMs > lossMin * 60_000L
         val stale = ageMs > staleMin * 60_000L
         val alarmActive = band == AlertBand.URGENT_LOW || band == AlertBand.URGENT_HIGH || signalLoss
 
-        val (approaching, urgent) =
-            if (eligible) findCrossings(sel!!, thresholds) else null to null
+        val unsure = scan is FanScan.Unsure
+        val stepMin = sel?.let { (it.stepMs / 60_000L).toInt().coerceAtLeast(1) } ?: 1
+        val approaching = (scan as? FanScan.Out)?.let { out ->
+            val critical = (out.kind == PredictiveCrossing.Kind.HYPO && out.edgeMgdl < thresholds.urgentLowMgdl) ||
+                (out.kind == PredictiveCrossing.Kind.HYPER && out.edgeMgdl >= thresholds.urgentHighMgdl)
+            out.toCrossing(
+                if (critical) PredictiveCrossing.Severity.CRITICAL else PredictiveCrossing.Severity.WARNING,
+                stepMin, thresholds.lowMgdl, thresholds.highMgdl,
+            )
+        }
+        val urgent = if (!eligible || unsure) null else {
+            (scanFan(sel!!, edges, thresholds.urgentLowMgdl, thresholds.urgentHighMgdl) as? FanScan.Out)
+                ?.toCrossing(PredictiveCrossing.Severity.CRITICAL, stepMin, thresholds.urgentLowMgdl, thresholds.urgentHighMgdl)
+        }
 
         return BgGlance(
             bgMgdl = bg,
@@ -204,60 +230,48 @@ object BgGlanceComputer {
             predictedLowCrossing = predLow,
             predictedHighCrossing = predHigh,
             alarmActive = alarmActive,
+            unsure = unsure,
             approaching = approaching,
             urgent = urgent,
             summary = summarize(bg, trend, eligible, fcEnd, horizon, sel?.status, warmup),
         )
     }
 
-    /** (earliest-any, earliest-urgent). ETA is (i+1)*stepMin, one step past the now-line. */
-    private fun findCrossings(
-        sel: ModelPrediction,
-        t: AlertThresholds,
-    ): Pair<PredictiveCrossing?, PredictiveCrossing?> {
-        val stepMin = (sel.stepMs / 60_000L).toInt().coerceAtLeast(1)
-        val median = sel.medianBg
-        var anyIdx = -1
-        var anyKind = PredictiveCrossing.Kind.HYPO
-        var urgentIdx = -1
-        var urgentKind = PredictiveCrossing.Kind.HYPO
-        for (i in median.indices) {
-            val v = median[i]
-            val hypo = v < t.lowMgdl
-            val hyper = v >= t.highMgdl
-            if (anyIdx < 0 && (hypo || hyper)) {
-                anyIdx = i
-                anyKind = if (hypo) PredictiveCrossing.Kind.HYPO else PredictiveCrossing.Kind.HYPER
+    /** First step a §6.1 edge leaves [low, high); null if [edges] is absent or off the fan. */
+    fun scanFan(sel: ModelPrediction, edges: AlarmFanEdges?, lowMgdl: Int, highMgdl: Int): FanScan? {
+        edges ?: return null
+        val nq = sel.nQuantiles
+        if (edges.hypoIdx !in 0 until nq || edges.hyperIdx !in 0 until nq) return null
+        if (sel.bandsMgdl.size < sel.horizonSteps * nq) return null
+        for (i in 0 until sel.horizonSteps) {
+            val lo = edge(sel, edges.hypoIdx, i)
+            val hi = edge(sel, edges.hyperIdx, i)
+            val hypo = lo < lowMgdl
+            val hyper = hi >= highMgdl
+            when {
+                hypo && hyper -> return FanScan.Unsure(i)
+                hypo -> return FanScan.Out(PredictiveCrossing.Kind.HYPO, i, lo)
+                hyper -> return FanScan.Out(PredictiveCrossing.Kind.HYPER, i, hi)
             }
-            val urgentHypo = v < t.urgentLowMgdl
-            val urgentHyper = v >= t.urgentHighMgdl
-            if (urgentIdx < 0 && (urgentHypo || urgentHyper)) {
-                urgentIdx = i
-                urgentKind = if (urgentHypo) PredictiveCrossing.Kind.HYPO else PredictiveCrossing.Kind.HYPER
-            }
-            if (anyIdx >= 0 && urgentIdx >= 0) break
         }
-        val approaching = if (anyIdx < 0) null else {
-            val v = median[anyIdx].roundToInt()
-            val critical = (anyKind == PredictiveCrossing.Kind.HYPO && v < t.urgentLowMgdl) ||
-                (anyKind == PredictiveCrossing.Kind.HYPER && v >= t.urgentHighMgdl)
-            PredictiveCrossing(
-                kind = anyKind,
-                severity = if (critical) PredictiveCrossing.Severity.CRITICAL else PredictiveCrossing.Severity.WARNING,
-                etaMin = (anyIdx + 1) * stepMin,
-                thresholdMgdl = if (anyKind == PredictiveCrossing.Kind.HYPO) t.lowMgdl else t.highMgdl,
-                projectedMgdl = v,
-            )
-        }
-        val urgent = if (urgentIdx < 0) null else PredictiveCrossing(
-            kind = urgentKind,
-            severity = PredictiveCrossing.Severity.CRITICAL,
-            etaMin = (urgentIdx + 1) * stepMin,
-            thresholdMgdl = if (urgentKind == PredictiveCrossing.Kind.HYPO) t.urgentLowMgdl else t.urgentHighMgdl,
-            projectedMgdl = median[urgentIdx].roundToInt(),
-        )
-        return approaching to urgent
+        return FanScan.Clear
     }
+
+    private fun edge(sel: ModelPrediction, idx: Int, step: Int): Double = sel.bandsMgdl[step * sel.nQuantiles + idx]
+
+    /** ETA is (step+1)*stepMin, first step past the now-line. */
+    private fun FanScan.Out.toCrossing(
+        severity: PredictiveCrossing.Severity,
+        stepMin: Int,
+        lowMgdl: Int,
+        highMgdl: Int,
+    ) = PredictiveCrossing(
+        kind = kind,
+        severity = severity,
+        etaMin = (step + 1) * stepMin,
+        thresholdMgdl = if (kind == PredictiveCrossing.Kind.HYPO) lowMgdl else highMgdl,
+        projectedMgdl = edgeMgdl.roundToInt(),
+    )
 
     /** Null, never FLAT: a forecast's slope is not a measurement and must not be drawn as one. */
     fun measuredTrend(trendTenths: Int?): GlanceTrend? = trendTenths?.let { classify(it / 10.0) }

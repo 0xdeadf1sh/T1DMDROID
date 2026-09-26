@@ -43,6 +43,7 @@ class WidgetGlanceTest {
             readings = GlanceReadings.create(listOfNotNull(latest)),
             state = InferenceState(),
             thresholds = thresholds,
+            edges = null,
             lossMin = 25,
             staleMin = STALE_MIN,
             nowMs = nowMs,

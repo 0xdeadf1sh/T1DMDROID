@@ -257,6 +257,7 @@ private fun BgRow(snap: WidgetSnapshot, p: T1dmPalette, numberSp: Int, arrowSp: 
 private fun GlyBadge(snap: WidgetSnapshot, p: T1dmPalette) {
     val bg = when (snap.glyKind) {
         GlyKind.STABLE -> p.inRange
+        GlyKind.UNSURE -> p.surfaceVariant
         GlyKind.EXCURSION -> p.urgentLow
         GlyKind.VOID -> p.surfaceVariant
     }

@@ -163,13 +163,14 @@ internal object WidgetStateStore {
     ): WidgetSnapshot {
         // Nothing off-process knows what the model last said, so every forecast field fails closed.
         val state = InferenceState()
-        val (glyText, glyKind) = computeGlyStatus(state, thresholds, nowMs)
+        val (glyText, glyKind) = computeGlyStatus(state, thresholds, null, nowMs)
         return WidgetSnapshot(
             // glance.bgMgdl already reads the last MEASUREMENT, so the cache can only hold one.
             glance = BgGlanceComputer.compute(
                 readings = GlanceReadings.create(listOfNotNull(latest)),
                 state = state,
                 thresholds = thresholds,
+                edges = null,
                 lossMin = lossMin,
                 staleMin = STALE_MIN,
                 nowMs = nowMs,

@@ -46,6 +46,7 @@ import com.t1dm.core.common.T1dmDispatchers
 import com.t1dm.cgm.AidexXPlugin
 import com.t1dm.cgm.AidexXSourceRegistry
 import com.t1dm.core.model.isRealMeasurement
+import com.t1dm.core.model.AlarmFanEdges
 import com.t1dm.core.model.BackendId
 import com.t1dm.core.model.StatsWindow
 import com.t1dm.core.model.CgmReading
@@ -709,6 +710,9 @@ class AppContainer(context: Context) {
 
     /** mg/dL per minute, from the crate. Empty on a stub core ⇒ unlabelled bins. */
     val trendBinEdges: List<Double> by lazy { nativeCore.trendBinEdges() }
+
+    /** §6.1 alarm levels' fan positions, from the crate. Null on a stub core. */
+    val alarmFanEdges: AlarmFanEdges? by lazy { nativeCore.alarmFanEdges() }
 
     /** Band projection `SPEC/invariants.md` §6.2; CG-EGA not computed here, see [modelCgEga]. */
     suspend fun modelMetrics(
@@ -2569,6 +2573,7 @@ class AppContainer(context: Context) {
                 inferenceState = inferenceState,
                 // The live @Volatile per glance, so a Settings threshold edit reaches the watch.
                 thresholdsProvider = { alarmConfig.thresholds },
+                edgesProvider = { alarmFanEdges },
                 lossMinProvider = { alarmConfig.lossMin },
                 sensorTelemetry = { null },
             ),

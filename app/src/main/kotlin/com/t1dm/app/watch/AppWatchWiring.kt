@@ -14,6 +14,7 @@ import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
+import com.t1dm.core.model.AlarmFanEdges
 import com.t1dm.core.model.AlertThresholds
 import com.t1dm.core.model.CgmSourceId
 import com.t1dm.core.model.CgmSourceTelemetry
@@ -54,6 +55,7 @@ class AppWatchGlanceSource(
     private val inferenceState: StateFlow<InferenceState>,
     // Providers, not values: capturing at construction would freeze the watch to boot-time config.
     private val thresholdsProvider: () -> AlertThresholds,
+    private val edgesProvider: () -> AlarmFanEdges?,
     private val lossMinProvider: () -> Int,
     /** The sensor's own arrow, live; null where its family sends none. */
     private val sensorTelemetry: suspend (CgmSourceId) -> CgmSourceTelemetry?,
@@ -74,6 +76,7 @@ class AppWatchGlanceSource(
             readings = readings,
             state = inferenceState.value,
             thresholds = thresholdsProvider(),
+            edges = edgesProvider(),
             lossMin = lossMinProvider(),
             staleMin = staleMin,
             nowMs = nowMs,

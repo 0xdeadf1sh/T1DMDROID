@@ -4,6 +4,7 @@ import com.t1dm.core.common.GameWorld
 import com.t1dm.core.common.GolfWorld
 import com.t1dm.core.common.NativeCore
 import com.t1dm.core.model.GolfTuning
+import com.t1dm.core.model.AlarmFanEdges
 import com.t1dm.core.model.LoraGuardOpts
 import com.t1dm.core.model.LoraGuardReport
 import com.t1dm.core.model.CarTuning
@@ -314,6 +315,8 @@ open class StubNativeCore : NativeCore {
 
     // The edges are the crate's; an axis labelled from a guess would caption a binning nothing did.
     override fun trendBinEdges(): List<Double> = emptyList()
+
+    override fun alarmFanEdges(): AlarmFanEdges? = null
 
     // INFERENCE.md §8.4. Refuses: no fit, and the raw fan back from any apply.
     override fun conformalMinCalWindows(): Int = 0

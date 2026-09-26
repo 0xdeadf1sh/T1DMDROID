@@ -1,6 +1,7 @@
 package com.t1dm.core.common
 
 import com.t1dm.core.model.AdvancedStats
+import com.t1dm.core.model.AlarmFanEdges
 import com.t1dm.core.model.ClinicalCuts
 import com.t1dm.core.model.BasalSchedule
 import com.t1dm.core.model.GraphInput
@@ -217,6 +218,8 @@ interface NativeCore {
     /** Rate-bin edges, mg/dL/min, ascending, TREND_BINS-1 long; fails closed to empty list. */
     fun trendBinEdges(): List<Double>
 
+    /** Read from crate; null fails every predictive alarm closed. */
+    fun alarmFanEdges(): AlarmFanEdges?
 
     /** Smallest calibration count where no order statistic clamps (SPEC/invariants.md §6). */
     fun conformalMinCalWindows(): Int

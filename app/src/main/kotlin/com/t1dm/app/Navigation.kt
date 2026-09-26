@@ -113,6 +113,9 @@ import com.t1dm.core.model.BandCalibrationOutcome
 import com.t1dm.core.model.BezierCurve
 import com.t1dm.core.model.CarTuning
 import com.t1dm.core.model.CgEga
+import com.t1dm.app.notify.FanScan
+import com.t1dm.app.notify.PredictiveCrossing
+import com.t1dm.core.model.AlarmFanEdges
 import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.CgmSourceStatus
 import com.t1dm.core.model.DkaTimeline
@@ -463,7 +466,7 @@ private fun Breadcrumb(navController: NavHostController, container: AppContainer
     }
     val readingAgeMs = reading?.rxWallMs?.let { (nowMs - it).coerceAtLeast(0L) }
     val status = remember(inference, alarmCfg, readingAgeMs) {
-        glycemicStatusOf(inference, alarmCfg.thresholds, nowMs, readingAgeMs)
+        glycemicStatusOf(inference, alarmCfg.thresholds, container.alarmFanEdges, nowMs, readingAgeMs)
     }
     val animationsOn = LocalAnimationsEnabled.current
     val trailScroll = rememberScrollState()
@@ -574,6 +577,7 @@ private val EMPTY_LOG_PAGE = LogPage(0, emptyList(), false)
 private sealed interface GlyStatus {
     val text: String
     object Stable : GlyStatus { override val text = "STABLE" }
+    object Unsure : GlyStatus { override val text = "UNSURE" }
     data class Excursion(val hyper: Boolean, val etaMin: Long) : GlyStatus {
         override val text: String get() = (if (hyper) "HYPER" else "HYPO") + " in ${etaMin}M"
     }
@@ -584,6 +588,7 @@ private sealed interface GlyStatus {
 private fun glycemicStatusOf(
     inf: InferenceState,
     thr: com.t1dm.core.model.AlertThresholds?,
+    edges: AlarmFanEdges?,
     nowMs: Long,
     readingAgeMs: Long?,
 ): GlyStatus {
@@ -609,14 +614,15 @@ private fun glycemicStatusOf(
         return GlyStatus.Void("Forecast degenerate (collapsed or rail-pinned)")
     }
     thr ?: return GlyStatus.Void("No thresholds set")
-    for (i in p.medianBg.indices) {
-        val v = p.medianBg[i]
-        val ts = p.anchorTsMs + (i + 1L) * p.stepMs
-        val eta = ((ts - nowMs) / 60_000L).coerceAtLeast(0L)
-        if (v <= thr.lowMgdl) return GlyStatus.Excursion(hyper = false, etaMin = eta)
-        if (v >= thr.highMgdl) return GlyStatus.Excursion(hyper = true, etaMin = eta)
+    return when (val s = BgGlanceComputer.scanFan(p, edges, thr.lowMgdl, thr.highMgdl)) {
+        null -> GlyStatus.Void("Alarm band unavailable")
+        FanScan.Clear -> GlyStatus.Stable
+        is FanScan.Unsure -> GlyStatus.Unsure
+        is FanScan.Out -> GlyStatus.Excursion(
+            hyper = s.kind == PredictiveCrossing.Kind.HYPER,
+            etaMin = ((p.anchorTsMs + (s.step + 1L) * p.stepMs - nowMs) / 60_000L).coerceAtLeast(0L),
+        )
     }
-    return GlyStatus.Stable
 }
 
 @Composable
@@ -625,11 +631,13 @@ private fun GlycemicStatusBadge(status: GlyStatus) {
     val ctx = LocalContext.current
     val color = when (status) {
         is GlyStatus.Stable -> LocalT1dmSemantics.current.inRange
+        is GlyStatus.Unsure -> MaterialTheme.colorScheme.onSurface
         is GlyStatus.Excursion -> MaterialTheme.colorScheme.error
         is GlyStatus.Void -> MaterialTheme.colorScheme.onSurfaceVariant
     }
     val periodMs = when (status) {
         is GlyStatus.Stable -> 2600
+        is GlyStatus.Unsure -> 0
         is GlyStatus.Excursion -> 700
         is GlyStatus.Void -> 0
     }

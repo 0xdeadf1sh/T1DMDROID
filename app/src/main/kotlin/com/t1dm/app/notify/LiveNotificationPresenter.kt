@@ -48,6 +48,7 @@ class LiveNotificationPresenter(
     /** Fail-closed: warmup or no eligible forecast reads VOID, never STABLE. */
     private fun statusToken(glance: BgGlance): String = when {
         glance.warmup || glance.forecastUnavailable || !glance.forecastEligible -> "VOID"
+        glance.unsure -> "UNSURE"
         glance.approaching != null ->
             if (glance.approaching!!.kind == PredictiveCrossing.Kind.HYPO) "HYPO" else "HYPER"
         else -> "STABLE"

@@ -36,6 +36,7 @@ import com.t1dm.core.model.MoodSummary
 import com.t1dm.core.model.EpisodeSummary
 import com.t1dm.core.model.GradeSplit
 import com.t1dm.core.model.ClinicalCuts
+import com.t1dm.core.model.AlarmFanEdges
 import com.t1dm.core.model.HeatCell
 import com.t1dm.core.model.HistBin
 import com.t1dm.core.model.StatSample
@@ -74,6 +75,7 @@ import uniffi.t1dm_core.forecastMetricsSuite as uniffiForecastMetricsSuite
 import uniffi.t1dm_core.clarkeZoneGrid as uniffiClarkeZoneGrid
 import uniffi.t1dm_core.dtsZoneGrid as uniffiDtsZoneGrid
 import uniffi.t1dm_core.trendBinEdges as uniffiTrendBinEdges
+import uniffi.t1dm_core.alarmFanEdges as uniffiAlarmFanEdges
 import uniffi.t1dm_core.ConformalFit as UniffiConformalFit
 import uniffi.t1dm_core.conformalMinCalWindows as uniffiConformalMinCalWindows
 import uniffi.t1dm_core.fitQuantileConformal as uniffiFitQuantileConformal
@@ -439,6 +441,9 @@ class UniffiNativeCore : NativeCore {
         } catch (_: CoreException) {
             emptyList()
         }
+
+    override fun alarmFanEdges(): AlarmFanEdges? =
+        uniffiAlarmFanEdges()?.let { AlarmFanEdges(it.hypoIdx.toInt(), it.hyperIdx.toInt()) }
 
     // INFERENCE.md §8.4
 

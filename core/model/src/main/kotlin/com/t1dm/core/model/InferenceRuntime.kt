@@ -96,6 +96,9 @@ data class ModelPrediction(
     val horizonSteps: Int get() = medianBg.size
 }
 
+/** §6.1 alarm levels as positions in a [ModelPrediction.bandsMgdl] row; the crate resolves them. */
+data class AlarmFanEdges(val hypoIdx: Int, val hyperIdx: Int)
+
 /** Current hour-of-day belief; [predictedHour]∈[0,24); [resultantR]∈[0,1], diffuse near 0. */
 data class PredictedTime(
     val probs: List<Double>,

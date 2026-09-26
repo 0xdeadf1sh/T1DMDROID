@@ -4,8 +4,11 @@ import android.content.Context
 import com.t1dm.app.T1dmApplication
 import com.t1dm.app.notify.BgGlance
 import com.t1dm.app.notify.BgGlanceComputer
+import com.t1dm.app.notify.FanScan
 import com.t1dm.app.notify.GlanceReadings
+import com.t1dm.app.notify.PredictiveCrossing
 import com.t1dm.core.design.ThemeIds
+import com.t1dm.core.model.AlarmFanEdges
 import com.t1dm.core.model.AlertThresholds
 import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.InferenceState
@@ -14,7 +17,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 /** Mirrors Navigation.glycemicStatusOf (U1); VOID is any fail-closed ineligibility. */
-internal enum class GlyKind { STABLE, EXCURSION, VOID }
+internal enum class GlyKind { STABLE, UNSURE, EXCURSION, VOID }
 
 /** BG, trend and forecast share [BgGlanceComputer] with the notification and the watch. */
 internal data class WidgetSnapshot(
@@ -85,12 +88,13 @@ internal suspend fun currentWidgetSnapshot(context: Context): WidgetSnapshot {
         // Volatile holds coded defaults pre-refresh; persisted here as the tile's alarm geometry.
         if (!container.alarmConfigHydrated) runCatching { container.refreshAlarmConfig() }
         val cfg = container.alarmConfig
-        val (glyText, glyKind) = computeGlyStatus(state, cfg.thresholds, nowMs)
+        val (glyText, glyKind) = computeGlyStatus(state, cfg.thresholds, container.alarmFanEdges, nowMs)
 
         val glance = BgGlanceComputer.compute(
             readings = readings,
             state = state,
             thresholds = cfg.thresholds,
+            edges = container.alarmFanEdges,
             lossMin = cfg.lossMin,
             staleMin = STALE_MIN,
             nowMs = nowMs,
@@ -120,19 +124,27 @@ internal suspend fun currentWidgetSnapshot(context: Context): WidgetSnapshot {
 }
 
 /** Recomputed like Navigation.glycemicStatusOf so the tile agrees; fail-closed to VOID always. */
-internal fun computeGlyStatus(state: InferenceState, thr: AlertThresholds?, nowMs: Long): Pair<String, GlyKind> {
+internal fun computeGlyStatus(
+    state: InferenceState,
+    thr: AlertThresholds?,
+    edges: AlarmFanEdges?,
+    nowMs: Long,
+): Pair<String, GlyKind> {
     if (state.warmup != null) return "VOID" to GlyKind.VOID
     val p = state.selectedPrediction ?: return "VOID" to GlyKind.VOID
     if (p.stale) return "VOID" to GlyKind.VOID
     if (p.status != ForecastStatus.OK) return "VOID" to GlyKind.VOID
     thr ?: return "VOID" to GlyKind.VOID
-    for (i in p.medianBg.indices) {
-        val v = p.medianBg[i]
-        val etaMs = (p.anchorTsMs + (i + 1L) * p.stepMs) - nowMs
-        if (v <= thr.lowMgdl) return "HYPO in ${formatEta(etaMs)}" to GlyKind.EXCURSION
-        if (v >= thr.highMgdl) return "HYPER in ${formatEta(etaMs)}" to GlyKind.EXCURSION
+    return when (val s = BgGlanceComputer.scanFan(p, edges, thr.lowMgdl, thr.highMgdl)) {
+        null -> "VOID" to GlyKind.VOID
+        FanScan.Clear -> "STABLE" to GlyKind.STABLE
+        is FanScan.Unsure -> "UNSURE" to GlyKind.UNSURE
+        is FanScan.Out -> {
+            val etaMs = (p.anchorTsMs + (s.step + 1L) * p.stepMs) - nowMs
+            val word = if (s.kind == PredictiveCrossing.Kind.HYPO) "HYPO" else "HYPER"
+            "$word in ${formatEta(etaMs)}" to GlyKind.EXCURSION
+        }
     }
-    return "STABLE" to GlyKind.STABLE
 }
 
 private fun formatEta(ms: Long): String {

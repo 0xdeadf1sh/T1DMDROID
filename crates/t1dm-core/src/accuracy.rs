@@ -118,6 +118,25 @@ pub(crate) fn tau_index(tau: f64) -> Option<usize> {
     QUANTILE_LEVELS.iter().position(|&t| t == tau)
 }
 
+/// Positions of the §6.1 alarm levels in a fan row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct AlarmFanEdges {
+    pub hypo_idx: u32,
+    pub hyper_idx: u32,
+}
+
+/// `None` when a level is off the fan or on the wrong side of the median.
+#[uniffi::export]
+pub fn alarm_fan_edges() -> Option<AlarmFanEdges> {
+    if !(HYPO_ALARM_QUANTILE_TAU < 0.5 && HYPER_ALARM_QUANTILE_TAU > 0.5) {
+        return None;
+    }
+    Some(AlarmFanEdges {
+        hypo_idx: tau_index(HYPO_ALARM_QUANTILE_TAU)? as u32,
+        hyper_idx: tau_index(HYPER_ALARM_QUANTILE_TAU)? as u32,
+    })
+}
+
 /// bands_mgdl: steps×7 row-major ascending τ, mg/dL; last_bg is the made_at persistence anchor.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct ForecastWindow {
@@ -1581,6 +1600,13 @@ mod tests {
         assert_eq!(tau_index(0.5), Some(3), "the median is index 3 (SPEC §6)");
         assert_eq!(tau_index(0.3), None, "a level outside the fan has no position");
         assert!(QUANTILE_LEVELS.windows(2).all(|w| w[0] < w[1]));
+    }
+
+    #[test]
+    fn alarm_fan_edges_point_at_the_alarm_levels() {
+        let e = alarm_fan_edges().expect("both alarm levels are fan members");
+        assert_eq!(QUANTILE_LEVELS[e.hypo_idx as usize], HYPO_ALARM_QUANTILE_TAU);
+        assert_eq!(QUANTILE_LEVELS[e.hyper_idx as usize], HYPER_ALARM_QUANTILE_TAU);
     }
 
     #[test]
