@@ -74,6 +74,7 @@ class AppWatchGlanceSource(
         return WatchPush(
             bgMgdl = g.bgMgdl,
             trendTenths = g.trendTenths,
+            bgTrend = g.trend?.toWatchTrend(),
             readingAgeMs = g.readingAgeMs,
             alertBand = g.band,
             forecastStatus = g.forecastStatus,

@@ -12,7 +12,7 @@ pub const KIND_STATS: u8 = 0x04;
 pub const KIND_DISPLAY: u8 = 0x05;
 pub const KIND_UNPAIR: u8 = 0x06;
 
-const GLANCE_HEAD: usize = 17;
+const GLANCE_HEAD: usize = 18;
 pub const SUMMARY_MAX: usize = 40;
 const HISTORY_HEAD: usize = 10;
 pub const HISTORY_MAX_SLOTS: usize = (RECORD_MAX - HISTORY_HEAD) / 2;
@@ -83,6 +83,8 @@ pub struct Glance {
     pub fc_horizon_steps: u8,
     pub fc_trend: u8,
     pub reading_age_s: u32,
+    /// The measured rate's direction, in fc_trend's order.
+    pub bg_trend: Option<u8>,
     pub summary: String,
 }
 
@@ -100,6 +102,7 @@ impl Glance {
         v.push(self.fc_horizon_steps);
         v.push(self.fc_trend);
         v.extend_from_slice(&self.reading_age_s.to_le_bytes());
+        v.push(self.bg_trend.unwrap_or(0xFF));
         v.push(summary.len() as u8);
         v.extend_from_slice(summary.as_bytes());
         v
@@ -116,6 +119,7 @@ impl Glance {
         let fc_horizon_steps = r.u8()?;
         let fc_trend = r.u8()?;
         let reading_age_s = r.u32()?;
+        let bg_trend = r.u8()?;
         let n = r.u8()? as usize;
         if n > SUMMARY_MAX {
             return Err(dec(format!("glance: summary {n} > {SUMMARY_MAX}")));
@@ -132,6 +136,7 @@ impl Glance {
             fc_horizon_steps,
             fc_trend,
             reading_age_s,
+            bg_trend: (bg_trend != 0xFF).then_some(bg_trend),
             summary,
         })
     }

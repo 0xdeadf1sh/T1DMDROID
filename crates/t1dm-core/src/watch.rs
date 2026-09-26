@@ -116,6 +116,7 @@ pub struct WatchGlanceIn {
     pub fc_horizon_steps: i32,
     pub fc_trend: i32,
     pub reading_age_ms: i64,
+    pub bg_trend: Option<i32>,
     pub summary: String,
 }
 
@@ -142,6 +143,7 @@ pub fn watch_encode_glance(g: WatchGlanceIn) -> Vec<u8> {
         fc_horizon_steps: g.fc_horizon_steps.clamp(0, u8::MAX as i32) as u8,
         fc_trend: g.fc_trend.clamp(0, u8::MAX as i32) as u8,
         reading_age_s: (g.reading_age_ms / 1000).clamp(0, u32::MAX as i64) as u32,
+        bg_trend: ordinal(g.bg_trend),
         summary: g.summary,
     }
     .encode()
@@ -415,9 +417,10 @@ mod tests {
             fc_horizon_steps: 24,
             fc_trend: 2,
             reading_age_ms: 125_900,
+            bg_trend: Some(2),
             summary: "falling to ~96 in 2h".into(),
         });
-        let golden = "01508e00f4ff0200600018027d0000001466616c6c696e6720746f207e393620696e203268";
+        let golden = "01508e00f4ff0200600018027d000000021466616c6c696e6720746f207e393620696e203268";
         assert_eq!(g.iter().map(|b| format!("{b:02x}")).collect::<String>(), golden);
 
         let h = watch_encode_history(1_699_999_800_000, vec![120, -1], vec![0, 0]).unwrap();

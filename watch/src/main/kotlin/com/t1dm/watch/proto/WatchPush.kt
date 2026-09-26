@@ -9,6 +9,8 @@ data class WatchPush(
     val bgMgdl: Int?,
     /** 0.1 mg/dL/min. */
     val trendTenths: Int?,
+    /** The measured rate's direction, as the phone draws it; null without a rate. */
+    val bgTrend: WatchTrend?,
     /** Age of the last MEASURED reading, ms. */
     val readingAgeMs: Long,
     val alertBand: AlertBand?,

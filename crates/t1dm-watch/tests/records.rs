@@ -26,6 +26,7 @@ fn glance() -> Glance {
         fc_horizon_steps: 24,
         fc_trend: 2,
         reading_age_s: 125,
+        bg_trend: Some(2),
         summary: "falling to ~96 in 2h".into(),
     }
 }
@@ -161,6 +162,9 @@ fn records_round_trip() {
     let g = glance();
     assert_eq!(Glance::decode(&g.encode()).unwrap(), g);
     assert_eq!(Record::decode(&g.encode()).unwrap(), Record::Glance(g));
+    let none = Glance { bg_trend: None, ..glance() };
+    assert_eq!(none.encode()[16], 0xFF);
+    assert_eq!(Glance::decode(&none.encode()).unwrap(), none);
 
     let recs = History::encode(TS, &history_slots()).unwrap();
     assert_eq!(recs.len(), 1);
