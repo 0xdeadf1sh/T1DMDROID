@@ -36,6 +36,8 @@ data class WatchLinkConfig(
     val handshakeTimeoutMs: Long = 15_000L,
     val backoffInitialMs: Long = 2_000L,
     val backoffMaxMs: Long = 5 * 60_000L,
+    /** RSSI and the STATUS liveness read (SPEC/watch.md §7, at most 15 s). */
+    val pollMs: Long = 15_000L,
     /** Informational: the FGS 5-min grid tick drives [WatchHub.tick]. */
     val pushIntervalMs: Long = 300_000L,
     val statsIntervalMs: Long = 60 * 60_000L,

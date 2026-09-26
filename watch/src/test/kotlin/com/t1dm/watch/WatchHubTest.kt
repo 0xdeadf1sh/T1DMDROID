@@ -33,6 +33,7 @@ class WatchHubTest {
         dispatchers = testDispatchers,
         config = WatchLinkConfig(
             enabled = true, autoConnect = false, backoffInitialMs = 50, backoffMaxMs = 100, handshakeTimeoutMs = 500,
+            pollMs = 50,
         ),
     )
 
@@ -101,6 +102,17 @@ class WatchHubTest {
         assertEquals(watchId, awaitValue { hub.devices.value.takeIf { it.size == 1 } }.single().deviceId)
         assertEquals("the sealed unpair record reached it", 6, desk.kinds().last())
         assertNull(stores.pairing(deskId).load())
+    }
+
+    @Test fun `a peripheral that moved its service is reconnected`() = runBlocking<Unit> {
+        hub.start(scope)
+        pairNext()
+        val stale = synchronized(centrals) { centrals.last() }
+        stale.moved = true
+        awaitValue { synchronized(centrals) { centrals.last() }.takeIf { it !== stale } }
+        desk.records.clear()
+        awaitValue { desk.kinds().takeIf { 1 in it } }
+        assertEquals(WatchLinkPhase.LIVE, device(deskId).phase)
     }
 
     @Test fun `a stranger at the pairing's name keeps the keys`() = runBlocking<Unit> {

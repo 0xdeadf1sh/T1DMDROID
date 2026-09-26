@@ -166,6 +166,13 @@ class AndroidWatchCentral(
             }
         }
 
+        // The cached handles are gone, so the link starts over.
+        override fun onServiceChanged(g: BluetoothGatt) {
+            if (g != gatt || !isReady) return
+            isReady = false
+            emit(WatchCentralEvent.Disconnected("GATT service changed"))
+        }
+
         override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) {
             mtuDone?.complete(mtu)
         }

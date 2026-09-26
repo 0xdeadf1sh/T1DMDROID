@@ -110,18 +110,29 @@ class WatchLink internal constructor(
         opJob = s.launch(dispatchers.default, block = block)
     }
 
-    /** Clears the reading to null when disconnected; a failed read is swallowed. */
+    /** RSSI, null when disconnected; on a live link a failed STATUS read is a lost link (§7). */
     private fun startRssiPoll(scope: CoroutineScope) {
         rssiJob?.cancel()
         rssiJob = scope.launch(dispatchers.io) {
             while (true) {
-                val dbm = if (config.enabled && central?.isReady == true) {
-                    runCatching { central?.readRssi() }.getOrNull()
-                } else null
+                val c = central?.takeIf { config.enabled && it.isReady }
+                val dbm = c?.let { runCatching { it.readRssi() }.getOrNull() }
                 if (_state.value.rssiDbm != dbm) _state.update { it.copy(rssiDbm = dbm) }
-                delay(RSSI_POLL_MS)
+                if (c != null && _state.value.phase == WatchLinkPhase.LIVE &&
+                    runCatching { c.readStatus() }.getOrNull() == null
+                ) {
+                    lost(c)
+                }
+                delay(config.pollMs)
             }
         }
+    }
+
+    /** A peripheral that re-registered its service keeps the link up and drops every push. */
+    private suspend fun lost(c: WatchCentral) {
+        linkMutex.withLock { if (central === c) teardown() else return }
+        _state.update { it.copy(lastError = "STATUS unreadable") }
+        scheduleReconnect()
     }
 
     /** Teardown for good: the hub drops this link or wipes everything. Keys stay persisted. */
@@ -537,7 +548,6 @@ class WatchLink internal constructor(
 
     private companion object {
         const val TAG = "WatchLink"
-        const val RSSI_POLL_MS = 15_000L
         const val UNPAIR_FLUSH_MS = 500L
         const val RECENT_SLOTS = 12
         const val DAY_SLOTS = 288

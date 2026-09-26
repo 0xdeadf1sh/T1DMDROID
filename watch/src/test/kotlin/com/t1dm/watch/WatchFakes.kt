@@ -154,9 +154,12 @@ internal class FakeCentral(private val air: FakeAir) : WatchCentral {
         return WatchConnection(p.name, 247, "02:00:00:00:00:0" + air.peripherals.indexOf(p))
     }
 
-    override suspend fun readStatus(): ByteArray? = peer?.status()
+    /** A peripheral that re-registered its service: STATUS fails, pushes vanish, link stays up. */
+    @Volatile var moved = false
+
+    override suspend fun readStatus(): ByteArray? = if (moved) null else peer?.status()
     override suspend fun writeKex(bytes: ByteArray) = peer!!.onKex(bytes, bus)
-    override suspend fun writePush(bytes: ByteArray) { peer!!.onPush(bytes) }
+    override suspend fun writePush(bytes: ByteArray) { if (!moved) peer!!.onPush(bytes) }
     override fun disconnect() { isReady = false }
 
     suspend fun drop() {
