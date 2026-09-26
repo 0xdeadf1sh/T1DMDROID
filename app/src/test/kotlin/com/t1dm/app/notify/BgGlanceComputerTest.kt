@@ -10,6 +10,7 @@ import com.t1dm.core.model.ModelPrediction
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.core.model.WarmupProgress
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -64,6 +65,17 @@ class BgGlanceComputerTest {
         assertEquals(PredictiveCrossing.Kind.HYPO, u.kind)
         assertEquals(55, u.thresholdMgdl)
         assertEquals(35, u.etaMin) // first <55 at idx 6 -> (6+1)*5
+    }
+
+    @Test fun `the arrow is the sensor's rate, else a fit over the last fifteen minutes`() = runBlocking<Unit> {
+        assertEquals(
+            BgDirection(GlanceTrend.FALLING, reported = true),
+            directionOf(reading(120)) { error("a reported rate needs no fit") },
+        )
+        val rows = listOf(130 to 0L, 120 to 5L, 110 to 10L, 40 to 20L).map { (bg, min) -> reading(bg, min * 60_000L, null) }
+        assertEquals("2 mg/dL/min; the 20-min row is outside", BgDirection(GlanceTrend.RISING, reported = false),
+            directionOf(rows.first()) { rows })
+        assertNull(directionOf(null) { rows })
     }
 
     @Test fun `a source reporting no rate has no arrow, while the forecast keeps its own trend`() {

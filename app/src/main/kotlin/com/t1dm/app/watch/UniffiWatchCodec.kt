@@ -65,6 +65,7 @@ class UniffiWatchCodec : WatchCodec {
             fcTrend = push.fcTrend.ordinal,
             readingAgeMs = push.readingAgeMs,
             bgTrend = push.bgTrend?.ordinal,
+            bgTrendFitted = push.bgTrendFitted,
             summary = push.summary,
         ),
     )

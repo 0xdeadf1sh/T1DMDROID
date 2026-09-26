@@ -7,6 +7,8 @@ import android.security.keystore.KeyProperties
 import android.security.keystore.StrongBoxUnavailableException
 import android.util.Base64
 import com.t1dm.app.notify.GlanceReadings
+import com.t1dm.app.notify.TREND_FIT_POINTS
+import com.t1dm.app.notify.directionOf
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -70,11 +72,14 @@ class AppWatchGlanceSource(
             staleMin = staleMin,
             nowMs = nowMs,
         )
+        // The bottom bar's rule, so the arrow here and there agree.
+        val direction = directionOf(readings.latest) { rows.take(TREND_FIT_POINTS) }
 
         return WatchPush(
             bgMgdl = g.bgMgdl,
             trendTenths = g.trendTenths,
-            bgTrend = g.trend?.toWatchTrend(),
+            bgTrend = direction?.trend?.toWatchTrend(),
+            bgTrendFitted = direction?.reported == false,
             readingAgeMs = g.readingAgeMs,
             alertBand = g.band,
             forecastStatus = g.forecastStatus,

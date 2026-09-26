@@ -36,7 +36,7 @@ internal val testDispatchers = object : T1dmDispatchers {
 }
 
 internal val testGlance = WatchPush(
-    bgMgdl = 140, trendTenths = 0, bgTrend = WatchTrend.FLAT, readingAgeMs = 60_000L,
+    bgMgdl = 140, trendTenths = 0, bgTrend = WatchTrend.FLAT, bgTrendFitted = false, readingAgeMs = 60_000L,
     alertBand = AlertBand.IN_RANGE, forecastStatus = ForecastStatus.OK,
     fcEndMgdl = 150, fcHorizonSteps = 24, fcTrend = WatchTrend.FLAT,
     summary = "140 flat", status = WatchStatus(),

@@ -4,11 +4,9 @@ import android.content.Context
 import android.content.Intent
 import android.media.RingtoneManager
 import com.t1dm.app.notify.BgDirection
-import com.t1dm.app.notify.BgGlanceComputer
 import com.t1dm.app.notify.GlanceReadings
 import com.t1dm.app.notify.TREND_FIT_POINTS
-import com.t1dm.app.notify.TREND_FIT_WINDOW_MS
-import com.t1dm.app.notify.fitTrendTenthsPerMin
+import com.t1dm.app.notify.directionOf
 import com.t1dm.alerts.ActiveAlarm
 import com.t1dm.alerts.AlarmConfig
 import com.t1dm.alerts.AlarmEngine
@@ -2380,18 +2378,7 @@ class AppContainer(context: Context) {
             flowOf(null)
         } else {
             repository.observeLatestReading(d.id).mapLatest { latest ->
-                val reported = latest?.trendTenthsPerMin
-                if (reported != null) {
-                    BgGlanceComputer.measuredTrend(reported)?.let { BgDirection(it, reported = true) }
-                } else if (latest == null) {
-                    null
-                } else {
-                    val rows = repository.recentReadings(d.id, TREND_FIT_POINTS)
-                        .filter { it.tsMs >= latest.tsMs - TREND_FIT_WINDOW_MS }
-                    fitTrendTenthsPerMin(rows)
-                        ?.let { BgGlanceComputer.measuredTrend(it) }
-                        ?.let { BgDirection(it, reported = false) }
-                }
+                directionOf(latest) { repository.recentReadings(d.id, TREND_FIT_POINTS) }
             }
         }
     }

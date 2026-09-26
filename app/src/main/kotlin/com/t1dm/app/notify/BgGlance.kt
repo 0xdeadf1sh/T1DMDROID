@@ -48,6 +48,18 @@ enum class GlanceTrend { FLAT, RISING, FALLING, RISING_FAST, FALLING_FAST }
 /** [reported] false ⇒ fitted by [fitTrendTenthsPerMin] because the sensor sent no rate. */
 data class BgDirection(val trend: GlanceTrend, val reported: Boolean)
 
+/** The arrow beside [latest]: its own rate, else a fit over the window of [recent] before it. */
+suspend fun directionOf(latest: CgmReading?, recent: suspend () -> List<CgmReading>): BgDirection? {
+    val reported = latest?.trendTenthsPerMin
+    return when {
+        reported != null -> BgGlanceComputer.measuredTrend(reported)?.let { BgDirection(it, reported = true) }
+        latest == null -> null
+        else -> fitTrendTenthsPerMin(recent().filter { it.tsMs >= latest.tsMs - TREND_FIT_WINDOW_MS })
+            ?.let { BgGlanceComputer.measuredTrend(it) }
+            ?.let { BgDirection(it, reported = false) }
+    }
+}
+
 const val TREND_FIT_WINDOW_MS = 15 * 60_000L
 
 /** The 5-min grid points [TREND_FIT_WINDOW_MS] spans, newest inclusive. */

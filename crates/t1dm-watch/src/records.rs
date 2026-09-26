@@ -13,6 +13,7 @@ pub const KIND_DISPLAY: u8 = 0x05;
 pub const KIND_UNPAIR: u8 = 0x06;
 
 const GLANCE_HEAD: usize = 18;
+const BG_TREND_FITTED: u8 = 0x80;
 pub const SUMMARY_MAX: usize = 40;
 const HISTORY_HEAD: usize = 10;
 pub const HISTORY_MAX_SLOTS: usize = (RECORD_MAX - HISTORY_HEAD) / 2;
@@ -83,8 +84,10 @@ pub struct Glance {
     pub fc_horizon_steps: u8,
     pub fc_trend: u8,
     pub reading_age_s: u32,
-    /// The measured rate's direction, in fc_trend's order.
+    /// The direction beside the reading, in fc_trend's order.
     pub bg_trend: Option<u8>,
+    /// The phone fitted [Glance::bg_trend] because the sensor reported no rate.
+    pub bg_trend_fitted: bool,
     pub summary: String,
 }
 
@@ -102,7 +105,8 @@ impl Glance {
         v.push(self.fc_horizon_steps);
         v.push(self.fc_trend);
         v.extend_from_slice(&self.reading_age_s.to_le_bytes());
-        v.push(self.bg_trend.unwrap_or(0xFF));
+        let fitted = if self.bg_trend_fitted { BG_TREND_FITTED } else { 0 };
+        v.push(self.bg_trend.map_or(0xFF, |d| (d & !BG_TREND_FITTED) | fitted));
         v.push(summary.len() as u8);
         v.extend_from_slice(summary.as_bytes());
         v
@@ -136,7 +140,8 @@ impl Glance {
             fc_horizon_steps,
             fc_trend,
             reading_age_s,
-            bg_trend: (bg_trend != 0xFF).then_some(bg_trend),
+            bg_trend: (bg_trend != 0xFF).then_some(bg_trend & !BG_TREND_FITTED),
+            bg_trend_fitted: bg_trend != 0xFF && bg_trend & BG_TREND_FITTED != 0,
             summary,
         })
     }
