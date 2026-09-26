@@ -73,7 +73,6 @@ import com.t1dm.core.design.LocalT1dmSemantics
 import com.t1dm.core.design.OnBoardReadout
 import com.t1dm.core.design.LogEdit
 import com.t1dm.core.design.LoggedEntryDialog
-import com.t1dm.core.design.SignalBars
 import com.t1dm.core.design.argbWithAlpha
 import com.t1dm.core.design.crossfadeOnSwap
 import com.t1dm.core.model.MaskGeometry
@@ -192,7 +191,6 @@ fun DashboardScreen(
     initialWindowHours: Int = 6,
     onSetWindowHours: ((Int) -> Unit)? = null,
     reachability: BgReachability? = null,
-    signals: BgSignals? = null,
     pulses: BgPulses? = null,
     deviceTempC: Double? = null,
     temperatureUnit: TempUnit = TempUnit.CELSIUS,
@@ -490,7 +488,7 @@ fun DashboardScreen(
 
     Column(Modifier.fillMaxSize()) {
         reachability?.let {
-            ReachabilityBar(it, signals, pulses, deviceTempC, temperatureUnit, sensorExpiryMs, sensorWarmupEndMs, thermalThresholdC, thermalWarnMarginC, stepsToday)
+            ReachabilityBar(it, pulses,deviceTempC, temperatureUnit, sensorExpiryMs, sensorWarmupEndMs, thermalThresholdC, thermalWarnMarginC, stepsToday)
         }
         warmup?.let { WarmupBanner(it) }
         if (noFutureInsulin) NoFutureInsulinBanner()
@@ -1126,16 +1124,12 @@ data class ReachLight(val health: LinkHealth, val label: String)
 
 data class BgReachability(val cgm: ReachLight, val watch: ReachLight)
 
-/** [watchRssi] is null until a source wires `readRemoteRssi` through `:watch`. */
-data class BgSignals(val cgmRssi: Int? = null, val watchRssi: Int? = null)
-
 /** Per-channel "last activity" tokens: a change flashes the light; unchanged/zero ⇒ none. */
 data class BgPulses(val cgm: Long = 0L, val watch: Long = 0L)
 
 @Composable
 private fun ReachabilityBar(
     r: BgReachability,
-    signals: BgSignals?,
     pulses: BgPulses?,
     deviceTempC: Double?,
     tempUnit: TempUnit,
@@ -1150,9 +1144,8 @@ private fun ReachabilityBar(
         horizontalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // No bars: CGM RSSI is shown in the header, exactly once.
-        ReachChip("CGM", r.cgm, null, pulses?.cgm ?: 0L)
-        ReachChip("WCH", r.watch, signals?.watchRssi, pulses?.watch ?: 0L)
+        ReachChip("CGM", r.cgm, pulses?.cgm ?: 0L)
+        ReachChip("WCH", r.watch, pulses?.watch ?: 0L)
         deviceTempC?.let { TempChip(it, tempUnit, thermalThresholdC, thermalWarnMarginC) }
         stepsToday?.let { StepsChip(it) }
         HeartbeatChip()
@@ -1261,12 +1254,11 @@ private fun humanSteps(n: Int): String {
 }
 
 @Composable
-private fun ReachChip(tag: String, light: ReachLight, rssi: Int?, pulseKey: Long = 0L) {
+private fun ReachChip(tag: String, light: ReachLight, pulseKey: Long = 0L) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
         PulsingDot(light.health, pulseKey)
         Text(tag, style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f))
-        rssi?.let { SignalBars(it) }
     }
 }
 

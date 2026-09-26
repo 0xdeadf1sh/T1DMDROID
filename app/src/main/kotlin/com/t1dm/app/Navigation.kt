@@ -983,7 +983,6 @@ private fun T1dmNavHost(
             val range by container.graphRange.collectAsState(com.t1dm.data.settings.BgRange.DEFAULT)
             val windowHours by container.graphWindowHours.collectAsState(6)
             val reachability by container.bgReachability.collectAsState(null)
-            val signals by container.bgSignals.collectAsState(null)
             val tempUnit by container.temperatureUnit.collectAsState(com.t1dm.core.model.TempUnit.CELSIUS)
             // The battery sensor; there is no fan RPM to read.
             val deviceTempC by produceState<Double?>(null) {
@@ -1116,7 +1115,6 @@ private fun T1dmNavHost(
                 initialWindowHours = windowHours,
                 onSetWindowHours = { h -> scope.launch { container.setGraphWindowHours(h) } },
                 reachability = reachability,
-                signals = signals,
                 pulses = pulses,
                 deviceTempC = deviceTempC,
                 temperatureUnit = tempUnit,
@@ -2038,7 +2036,7 @@ private fun T1dmNavHost(
             val scope = rememberCoroutineScope()
             val active by container.authoritativeSource.collectAsState(null)
             val sources by container.allSources.collectAsState(emptyList())
-            val signals by container.bgSignals.collectAsState(null)
+            val latest by container.latestReading.collectAsState(null)
             val aggEnabled by container.aggressiveScanEnabled.collectAsState(false)
             val aggShowBg by container.aggressiveShowGlucose.collectAsState(true)
             val aggOnlyCharging by container.aggressiveOnlyCharging.collectAsState(false)
@@ -2065,7 +2063,7 @@ private fun T1dmNavHost(
                 onMakeAuthoritative = { id -> container.makeAuthoritativeCgm(id) },
                 onStartReading = { id -> container.activateCgm(id) },
                 onStopReading = { id -> container.deactivateCgm(id) },
-                activeRssi = signals?.cgmRssi,
+                activeRssi = latest?.rssi,
                 // Persisted column, not the in-memory set: it is what warmup classifies against.
                 warmupWindowMin = active?.warmupWindowMin,
                 onSetWarmupMin = { m -> scope.launch { container.setSensorWarmupMin(m) } },

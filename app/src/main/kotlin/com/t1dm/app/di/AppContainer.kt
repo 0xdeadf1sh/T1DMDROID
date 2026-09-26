@@ -116,7 +116,6 @@ import com.t1dm.data.settings.BgRange
 import com.t1dm.data.settings.GraphSettingsStore
 import com.t1dm.feature.dashboard.BgPulses
 import com.t1dm.feature.dashboard.BgReachability
-import com.t1dm.feature.dashboard.BgSignals
 import com.t1dm.feature.dashboard.LinkHealth
 import com.t1dm.feature.dashboard.ReachLight
 import com.t1dm.watch.WatchLinkPhase
@@ -2441,13 +2440,6 @@ class AppContainer(context: Context) {
                 cgm = cgmLight(latest, now),
                 watch = watchLight(watch.phase),
             )
-        }
-    }
-
-    /** Null on either side ⇒ "no signal" in the WCH/CGM lights. */
-    val bgSignals: Flow<BgSignals> by lazy {
-        combine(latestReading, watchSecurity) { latest, watch ->
-            BgSignals(cgmRssi = latest?.rssi, watchRssi = watch.rssiDbm)
         }
     }
 
