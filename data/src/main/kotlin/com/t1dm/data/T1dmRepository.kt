@@ -1042,6 +1042,18 @@ class T1dmRepository(
 
     suspend fun getKv(key: String): String? = withContext(io) { kv.get(key) }
 
+    /** Rates under [sourcePrefix] before [beforeMs] ÷10, once: [onceKey] commits in the same tx. */
+    suspend fun divideRatesByTenOnce(sourcePrefix: String, beforeMs: Long, onceKey: String, nowMs: Long): Int =
+        withContext(io) {
+            inWriteTx {
+                if (kv.get(onceKey) != null) return@inWriteTx 0
+                val n = readings.divideRatesByTen(sourcePrefix, beforeMs) +
+                    rawSamples.divideRatesByTen(sourcePrefix, beforeMs)
+                kv.put(KvEntity(onceKey, nowMs.toString(), nowMs))
+                n
+            }
+        }
+
     /** Deduplicated: Room invalidates per TABLE, so heartbeat/telemetry re-run every kv query. */
     fun observeKv(key: String): Flow<String?> = kv.observe(key).distinctUntilChanged()
 

@@ -160,6 +160,14 @@ interface CgmReadingDao {
     @Query("DELETE FROM cgm_reading WHERE sourceId = :sourceId AND tsMs = :ts")
     suspend fun deleteAt(sourceId: String, ts: Long)
 
+    /** Half away from zero; the prefix match is exact, not LIKE. Returns rows changed. */
+    @Query(
+        "UPDATE cgm_reading SET trendTenthsPerMin = CAST(ROUND(trendTenthsPerMin / 10.0) AS INTEGER) " +
+            "WHERE substr(sourceId, 1, length(:prefix)) = :prefix AND trendTenthsPerMin IS NOT NULL " +
+            "AND tsMs < :beforeMs",
+    )
+    suspend fun divideRatesByTen(prefix: String, beforeMs: Long): Int
+
     /** Demotion must use this: promoted rows file under the authoritative source THEN, not now. */
     @Query("SELECT * FROM cgm_reading WHERE tsMs = :ts")
     suspend fun allAt(ts: Long): List<CgmReadingEntity>
@@ -220,6 +228,14 @@ interface CgmRawSampleDao {
     /** Returns the rows dropped. */
     @Query("DELETE FROM cgm_sample_raw WHERE rxWallMs < :beforeMs")
     suspend fun pruneBefore(beforeMs: Long): Int
+
+    /** [CgmReadingDao.divideRatesByTen]'s twin for the sub-grid rows, bounded on filed instants. */
+    @Query(
+        "UPDATE cgm_sample_raw SET trendTenthsPerMin = CAST(ROUND(trendTenthsPerMin / 10.0) AS INTEGER) " +
+            "WHERE substr(sourceId, 1, length(:prefix)) = :prefix AND trendTenthsPerMin IS NOT NULL " +
+            "AND rxWallMs < :beforeMs",
+    )
+    suspend fun divideRatesByTen(prefix: String, beforeMs: Long): Int
 
     @Query("DELETE FROM cgm_sample_raw")
     suspend fun deleteAll()
