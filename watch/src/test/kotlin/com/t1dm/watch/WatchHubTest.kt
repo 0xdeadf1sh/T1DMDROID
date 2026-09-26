@@ -70,6 +70,12 @@ class WatchHubTest {
         assertEquals("tick: recent history, forecast, glance", listOf(2, 3, 3, 1), desk.kinds())
         assertEquals(listOf(1), watch.kinds())
 
+        desk.records.clear(); watch.records.clear()
+        hub.pushReading(10_500L)
+        awaitValue { hub.devices.value.takeIf { ds -> ds.all { it.lastPushMs == 10_500L } } }
+        assertEquals("reading: recent history, glance", listOf(2, 1), desk.kinds())
+        assertEquals(listOf(1), watch.kinds())
+
         desk.records.clear()
         hub.pushDisplay(11_000L)
         awaitValue { desk.kinds().takeIf { it.isNotEmpty() } }

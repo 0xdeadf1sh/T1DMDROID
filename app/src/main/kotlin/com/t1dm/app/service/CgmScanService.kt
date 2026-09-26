@@ -327,6 +327,17 @@ class CgmScanService : LifecycleService() {
             }
         }
 
+        // The tick alone leaves a peripheral up to one grid step behind a 1-min sensor.
+        lifecycleScope.launch {
+            readingBus
+                .filter { it.provenance == ReadingProvenance.MEASURED }
+                .conflate()
+                .collect {
+                    runCatching { container.watchHub.pushReading(System.currentTimeMillis()) }
+                        .onFailure { Timber.tag(TAG).w(it, "watch push failed (independent of alarm/inference)") }
+                }
+        }
+
         // Forecast driver, independent of alarm path (§2.3, §3.6-A); conflated to latest tick.
         lifecycleScope.launch(container.dispatchers.default) {
             container.inferenceController.refreshModels()

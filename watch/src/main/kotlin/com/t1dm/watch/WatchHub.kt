@@ -192,6 +192,9 @@ class WatchHub(
     /** The FGS grid tick: glance, recent history and forecast; stats when due. */
     suspend fun tick(nowMs: Long) = pushAll(nowMs, TICK)
 
+    /** Each measured reading: glance and recent history, so a peripheral keeps up between ticks. */
+    suspend fun pushReading(nowMs: Long) = pushAll(nowMs, READING)
+
     suspend fun pushDisplay(nowMs: Long) = pushAll(nowMs, setOf(WatchRecordKind.DISPLAY))
 
     suspend fun pushForecast(nowMs: Long) = pushAll(nowMs, setOf(WatchRecordKind.FORECAST))
@@ -227,6 +230,8 @@ class WatchHub(
 
         val TICK: Set<WatchRecordKind> =
             setOf(WatchRecordKind.GLANCE, WatchRecordKind.HISTORY_RECENT, WatchRecordKind.FORECAST)
+
+        val READING: Set<WatchRecordKind> = setOf(WatchRecordKind.GLANCE, WatchRecordKind.HISTORY_RECENT)
 
         private val RANK = listOf(
             WatchLinkPhase.LIVE,

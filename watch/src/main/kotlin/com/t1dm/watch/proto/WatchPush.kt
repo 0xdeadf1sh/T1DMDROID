@@ -3,7 +3,7 @@ package com.t1dm.watch.proto
 import com.t1dm.core.model.AlertBand
 import com.t1dm.core.model.ForecastStatus
 
-/** The 5-min glance, SPEC/watch.md §5.3; [WatchCodec] serialises it, the session seals it. */
+/** The glance, SPEC/watch.md §5.3; [WatchCodec] serialises it, the session seals it. */
 data class WatchPush(
     /** mg/dL. */
     val bgMgdl: Int?,
