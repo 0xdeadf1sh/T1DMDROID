@@ -108,7 +108,7 @@ Restore merges: a record already present is kept, so importing the same file twi
 ## Building
 
 - Android SDK **36** and the NDK, JDK **21**.
-- A Rust toolchain with the `aarch64-linux-android` target and [`cargo-ndk`](https://github.com/bbqsrc/cargo-ndk) installed **and on `PATH`** — the native build silently skips if `cargo-ndk` is missing.
+- A Rust toolchain with the `aarch64-linux-android` target and [`cargo-ndk`](https://github.com/bbqsrc/cargo-ndk) installed **and on `PATH`**, or the build fails. With no NDK found, the native build is skipped and the APK may package a stale `.so` from an earlier build.
 
 The app targets **arm64-v8a only**, `minSdk 34`, `targetSdk 36`.
 

@@ -64,7 +64,7 @@ val cargoNdkBuild = tasks.register<Exec>("cargoNdkBuild") {
     inputs.file(rootProject.layout.projectDirectory.file("Cargo.lock"))
     outputs.dir(generatedJniLibsDir)
     val ndk = findNdkHome()
-    // No NDK is a legitimate host-only skip; an NDK without cargo-ndk is misconfigured, so it throws.
+    // No NDK: a host-only skip, which packages whatever .so generated/jniLibs still holds.
     onlyIf {
         if (ndk == null) {
             logger.warn("cargoNdkBuild SKIPPED — no NDK found; the arm64 .so will not be built (host-only).")

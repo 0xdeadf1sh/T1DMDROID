@@ -66,9 +66,10 @@ invocation, the order, and the install. Never run a bare `./gradlew` or `cargo`
 build; uncapped, it freezes the development machine.
 
 The wrapper's `PATH=` and `env -u JAVA_HOME` are load-bearing. Without `PATH=`,
-`cargo-ndk` is off the path and Gradle silently repackages a **stale** `.so`
-against fresh bindings; without `env -u JAVA_HOME`, AGP picks up the too-new
-system JDK. Neither failure is loud.
+`cargo` and `cargo-ndk` are off the path and the build fails; without
+`env -u JAVA_HOME`, AGP picks up the too-new system JDK. The silent case is no NDK
+found: `cargoNdkBuild` skips with a warning, and the APK packages the **stale**
+`.so` an earlier build left against fresh bindings.
 
 What differs is the purpose, and therefore what you do with the result.
 
