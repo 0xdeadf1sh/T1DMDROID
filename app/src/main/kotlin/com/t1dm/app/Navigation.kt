@@ -1109,7 +1109,9 @@ private fun T1dmNavHost(
                 onDeletePaintStroke = container::deletePaintStroke,
                 hindsightIn = container.repository::predictionsForModelInRange,
                 gameSlot = { m, kind, fromMs, dropMs, spanMin, clock, ready, exit ->
-                    DashboardGamePanel(container, m, kind, fromMs, dropMs, spanMin, clock, ready, exit)
+                    DashboardGamePanel(
+                        container, m, kind, fromMs, dropMs, spanMin, clock, ready, exit, range, paintStrokes,
+                    )
                 },
             )
         }
@@ -2114,10 +2116,11 @@ private fun DashboardGamePanel(
     predictedClock: PredictedClock?,
     onReady: () -> Unit,
     onExit: () -> Unit,
+    // The route's live values: a collect started here reads its defaults when the scene is built.
+    range: com.t1dm.data.settings.BgRange,
+    paintStrokes: List<com.t1dm.core.model.PaintStroke>,
 ) {
     val glucoseUnit by container.statsRepository.unitSpace.collectAsState(UnitSpace.MgDl)
-    val range by container.graphRange.collectAsState(com.t1dm.data.settings.BgRange.DEFAULT)
-    val paintStrokes by container.paintStrokes.collectAsState(emptyList())
     val propDensity by container.gameProps.collectAsState()
     val latest by container.latestReading.collectAsState(null)
     val alarm by container.alarmState.collectAsState()

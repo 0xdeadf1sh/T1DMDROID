@@ -93,7 +93,12 @@ fun GameScreen(
     alarmRaised: Boolean,
     onExit: () -> Unit,
 ) {
-    val scene by produceState<GameScene?>(null, trackFromMs, spanMinutes, unit, thresholds, propDensity) {
+    // Ids, not the list: PaintStroke equals by identity; a re-emit would restart the run.
+    val strokeIds = remember(paintStrokes) { paintStrokes.map { it.id } }
+    val scene by produceState<GameScene?>(
+        null, trackFromMs, spanMinutes, unit, thresholds, propDensity,
+        rangeMinMgdl, rangeMaxMgdl, strokeIds,
+    ) {
         value = null
         val leadMs = (spanMinutes.toDouble() * 60_000.0 * TRACK_LEAD_SPANS).toLong()
         value = loadGameScene(
