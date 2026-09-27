@@ -58,7 +58,9 @@ class CurveEngine(
         CurveEvent(startMs, STEP_MS, CurveKind.INSULIN, units, presetCurve(units, spec).asList())
 
     suspend fun carbEvent(grams: Double, startMs: Long, k: Double, theta: Double, durMin: Double): CurveEvent =
-        CurveEvent(startMs, STEP_MS, CurveKind.CARB, grams, native.gamma(grams, k, theta, durMin))
+        withContext(dispatchers.default) {
+            CurveEvent(startMs, STEP_MS, CurveKind.CARB, grams, native.gamma(grams, k, theta, durMin))
+        }
 
     companion object {
         /** Must equal `t1dm-core::curve::STEP_MS`. */

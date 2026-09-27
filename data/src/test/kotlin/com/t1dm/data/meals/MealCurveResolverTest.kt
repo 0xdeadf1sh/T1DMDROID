@@ -7,12 +7,14 @@ import com.t1dm.data.curve.GiToGamma
 import com.t1dm.data.curve.MealCurveResolver
 import com.t1dm.core.nativecore.StubNativeCore
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.concurrent.Executors
 
-/** SPEC §3.3. */
+/** SPEC/invariants.md §5. */
 class MealCurveResolverTest {
 
     private val dispatchers = DefaultT1dmDispatchers(
@@ -78,5 +80,29 @@ class MealCurveResolverTest {
         val curve = resolver.resolveCombined(listOf(chicken), startMs = 0L)
         assertEquals(0.0, curve.totalCarbs, 1e-12)
         assertTrue(curve.values.all { it == 0.0 })
+    }
+
+    @Test
+    fun `the carb gamma runs on the engine's default dispatcher`() = runTest {
+        val default = Executors.newSingleThreadExecutor { r -> Thread(r, "curve-default") }.asCoroutineDispatcher()
+        var gammaThread: String? = null
+        val native = object : StubNativeCore() {
+            override fun gamma(total: Double, k: Double, theta: Double, durMin: Double): List<Double> {
+                gammaThread = Thread.currentThread().name
+                return super.gamma(total, k, theta, durMin)
+            }
+        }
+        val engine = CurveEngine(native, DefaultT1dmDispatchers(
+            main = Dispatchers.Unconfined,
+            default = default,
+            io = Dispatchers.Unconfined,
+            inference = Dispatchers.Unconfined,
+        ))
+        try {
+            MealCurveResolver(engine).resolveComponent(food("Rice", grams = 100.0, gi = 70.0), startMs = 0L)
+        } finally {
+            default.close()
+        }
+        assertEquals("curve-default", gammaThread)
     }
 }
