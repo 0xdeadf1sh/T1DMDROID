@@ -1797,16 +1797,10 @@ class AppContainer(context: Context) {
         rollJob = appScope.launch {
             rollComputing.value = true
             try {
-                val cfg = runCatching { settingsStore.currentCalcConfig() }.getOrDefault(CalcConfig())
-                val validated = cfg.horizon.validatedSteps
                 val rf = runCatching {
-                    rollingForecaster.rollForDisplay(System.currentTimeMillis(), requestedHours, validated)
+                    rollingForecaster.rollForDisplay(System.currentTimeMillis(), requestedHours)
                 }.getOrElse {
-                    RolledForecast.missing(
-                        requestedHours,
-                        Math.ceil(requestedHours / 2.0).toInt(),
-                        "Roll failed — ${it.message ?: it::class.simpleName}",
-                    )
+                    RolledForecast.missing(requestedHours, 0, "Roll failed — ${it.message ?: it::class.simpleName}")
                 }
                 rolledForecast.value = rf
             } finally {

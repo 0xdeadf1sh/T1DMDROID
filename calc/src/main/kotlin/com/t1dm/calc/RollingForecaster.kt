@@ -27,24 +27,25 @@ class RollingForecaster(
     override suspend fun roll(request: ForecastRequest): PredFan {
         val r = rollInternal(request)
         return when (r.eligibility) {
-            ForecastEligibility.MISSING -> missing(request, r.reason ?: "forecast unavailable")
-            else -> PredFan(request.candidateU, r.steps, STEP_MS, request.validatedSteps, r.status, r.eligibility)
+            ForecastEligibility.MISSING -> missing(request, r.predSteps, r.reason ?: "forecast unavailable")
+            else -> PredFan(request.candidateU, r.steps, STEP_MS, r.predSteps, r.status, r.eligibility)
         }
     }
 
     /** DISPLAY-ONLY: [RolledForecast] can't enter :calc; degeneracy keeps prefix; never throws. */
-    suspend fun rollForDisplay(nowMs: Long, requestedHours: Double, validatedSteps: Int): RolledForecast {
+    suspend fun rollForDisplay(nowMs: Long, requestedHours: Double): RolledForecast {
         val fullRollSteps = Math.round(requestedHours * HorizonPolicy.STEPS_PER_HOUR).toInt().coerceAtLeast(1)
-        val requestedRolls = (fullRollSteps + validatedSteps - 1) / validatedSteps.coerceAtLeast(1)
         val request = ForecastRequest(
             rollStartMs = nowMs,
             fullRollSteps = fullRollSteps,
-            validatedSteps = validatedSteps,
+            validatedSteps = 0,
             announced = emptyList(),
             candidate = null,
             candidateU = 0.0,
         )
         val r = rollInternal(request)
+        val validatedSteps = r.predSteps
+        val requestedRolls = if (validatedSteps > 0) (fullRollSteps + validatedSteps - 1) / validatedSteps else 0
         val anchor = r.anchorTsMs
         if (anchor == null || (r.eligibility == ForecastEligibility.MISSING)) {
             return RolledForecast.missing(requestedHours, requestedRolls, r.reason ?: "forecast unavailable")
@@ -92,26 +93,28 @@ class RollingForecaster(
         val eligibility: ForecastEligibility,
         val reason: String?,
         val completedRolls: Int,
+        /** The descriptor's validated window, one roll; 0 without a usable model. */
+        val predSteps: Int,
     )
 
     /** Single source of the rolling math (dose + display paths); stops at first degeneracy. */
     private suspend fun rollInternal(request: ForecastRequest): Rolled {
         val model = selected.current()
-            ?: return Rolled(null, emptyList(), ForecastStatus.OK, ForecastEligibility.MISSING, "no selected model", 0)
+            ?: return Rolled(null, emptyList(), ForecastStatus.OK, ForecastEligibility.MISSING, "no selected model", 0, 0)
         val desc = model.descriptor
         // PREDICTION_PATCHES isn't a descriptor field; derive it from the validated horizon.
         val predPatches = desc.predictionHorizonHours * HorizonPolicy.STEPS_PER_HOUR / desc.patchSize
         val predSteps = predPatches * desc.patchSize
-        if (predSteps <= 0) return Rolled(null, emptyList(), ForecastStatus.OK, ForecastEligibility.MISSING, "descriptor prediction window is 0", 0)
+        if (predSteps <= 0) return Rolled(null, emptyList(), ForecastStatus.OK, ForecastEligibility.MISSING, "descriptor prediction window is 0", 0, 0)
 
         val minSteps = desc.minContextPatches * desc.patchSize
         val maxSteps = desc.maxContextPatches * desc.patchSize
         val series = history.dosingBgSeries(maxSteps, minSteps)
-            ?: return Rolled(null, emptyList(), ForecastStatus.OK, ForecastEligibility.MISSING, "still collecting context (< $minSteps steps)", 0)
+            ?: return Rolled(null, emptyList(), ForecastStatus.OK, ForecastEligibility.MISSING, "still collecting context (< $minSteps steps)", 0, predSteps)
 
         val nCtx = series.mgdl.size
         if (nCtx % desc.patchSize != 0 || nCtx < minSteps) {
-            return Rolled(series.anchorTsMs, emptyList(), ForecastStatus.OK, ForecastEligibility.MISSING, "context length $nCtx not a valid multiple", 0)
+            return Rolled(series.anchorTsMs, emptyList(), ForecastStatus.OK, ForecastEligibility.MISSING, "context length $nCtx not a valid multiple", 0, predSteps)
         }
 
         // Re-anchors onto zone's first bucket; else bucketize rounds idx<0 (curve.rs) — fail-OPEN.
@@ -157,13 +160,13 @@ class RollingForecaster(
                 }
             } catch (t: Throwable) {
                 Timber.tag(TAG).w(t, "roll %d failed for candidate %s U", r, request.candidateU)
-                return Rolled(series.anchorTsMs, outSteps.toList(), ForecastStatus.OK, ForecastEligibility.MISSING, "forecast forward failed: ${t.message}", r)
+                return Rolled(series.anchorTsMs, outSteps.toList(), ForecastStatus.OK, ForecastEligibility.MISSING, "forecast forward failed: ${t.message}", r, predSteps)
             }
 
             val status = withContext(dispatchers.default) { native.forecastDegeneracyCheck(desc, forecast) }
             if (status != ForecastStatus.OK) {
                 // §3.6-B: keep the valid prefix for display, but never re-feed roll r.
-                return Rolled(series.anchorTsMs, outSteps.toList(), status, ForecastEligibility.DEGENERATE, null, r)
+                return Rolled(series.anchorTsMs, outSteps.toList(), status, ForecastEligibility.DEGENERATE, null, r, predSteps)
             }
 
             appendWindow(forecast, predSteps, outSteps, desc.patchSize, predPatches)
@@ -181,7 +184,7 @@ class RollingForecaster(
         }
 
         val trimmed = if (outSteps.size > request.fullRollSteps) outSteps.subList(0, request.fullRollSteps).toList() else outSteps.toList()
-        return Rolled(series.anchorTsMs, trimmed, ForecastStatus.OK, ForecastEligibility.ELIGIBLE, null, nRolls)
+        return Rolled(series.anchorTsMs, trimmed, ForecastStatus.OK, ForecastEligibility.ELIGIBLE, null, nRolls, predSteps)
     }
 
     /** [f] is step-major: mg/dL median + a P·S·7 band fan. */
@@ -218,9 +221,9 @@ class RollingForecaster(
     private fun sliceOrPad(src: DoubleArray, from: Int, len: Int): List<Double> =
         List(len) { src.getOrElse(from + it) { 0.0 } }
 
-    private fun missing(request: ForecastRequest, why: String): PredFan {
+    private fun missing(request: ForecastRequest, predSteps: Int, why: String): PredFan {
         Timber.tag(TAG).i("forecast MISSING for %s U: %s", request.candidateU, why)
-        return PredFan(request.candidateU, emptyList(), STEP_MS, request.validatedSteps, ForecastStatus.OK, ForecastEligibility.MISSING)
+        return PredFan(request.candidateU, emptyList(), STEP_MS, predSteps, ForecastStatus.OK, ForecastEligibility.MISSING)
     }
 
     private companion object {

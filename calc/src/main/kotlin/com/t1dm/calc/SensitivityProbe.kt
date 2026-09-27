@@ -73,7 +73,7 @@ class SensitivityProbe(
 
         return SensitivityEstimate(
             atMs = nowMs,
-            horizonMs = steps.toLong() * baseline.stepMs,
+            horizonMs = n.toLong() * baseline.stepMs,
             isfMgdlPerU = isf,
             icrGPerU = icr,
             modelId = modelBefore,

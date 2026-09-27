@@ -1,6 +1,6 @@
 package com.t1dm.core.model
 
-/** 2h forecast re-fed to 12h; DISPLAY-ONLY, never :calc/alerts; step i=anchor+(i+1)·stepMs. */
+/** Model window re-fed to 12h; DISPLAY-ONLY, never :calc/alerts; step i=anchor+(i+1)·stepMs. */
 data class RolledForecast(
     val anchorTsMs: Long,
     val stepMs: Long,
@@ -12,7 +12,7 @@ data class RolledForecast(
     val upperBg: DoubleArray,
     /** Whole fan `steps×nQuantiles`, ascending τ (bandsMgdl layout); lower/upper its outer pair. */
     val bandsMgdl: DoubleArray = DoubleArray(0),
-    /** VALIDATED-horizon prefix (2h⇒24); past it, steps extrapolate, drawn distinct, unalerted. */
+    /** The descriptor's VALIDATED window (0 = no model); past it, drawn distinct, unalerted. */
     val validatedSteps: Int,
     /** The user-requested roll horizon in hours (30 min…12 h). */
     val requestedHours: Double,
@@ -22,8 +22,9 @@ data class RolledForecast(
     val degenerate: Boolean,
     /** Null when fully eligible. */
     val reason: String?,
-    /** The valid portion is `completedRolls · 2 h`. */
+    /** The valid portion is `completedRolls · validatedSteps`. */
     val completedRolls: Int,
+    /** 0 when no model sized the window. */
     val requestedRolls: Int,
 ) {
     val size: Int get() = medianBg.size

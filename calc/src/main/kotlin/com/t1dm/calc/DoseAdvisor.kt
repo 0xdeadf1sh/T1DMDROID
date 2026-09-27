@@ -62,7 +62,7 @@ class DoseAdvisor(
             return AdviceResult.Recommended(
                 best = zero,
                 ranked = result.ranked,
-                card = buildCard(anchor, iob, backend, zero, nowMs, false, emptyList(), config, smoothing),
+                card = buildCard(anchor, iob, backend, zero, nowMs, false, emptyList(), smoothing),
                 railNotes = notes,
                 requiresConfirmation = true, // a hypo recommendation is always acknowledged
                 rescueCarbsG = grams,
@@ -97,7 +97,7 @@ class DoseAdvisor(
         if (confirm is RailVerdict.RequireConfirm) { confirmReasons.add(confirm.reason); notes.add(confirm.reason) }
         val requiresConfirmation = confirmReasons.isNotEmpty()
 
-        val card = buildCard(anchor, iob, backend, chosen, nowMs, requiresConfirmation, confirmReasons, config, smoothing)
+        val card = buildCard(anchor, iob, backend, chosen, nowMs, requiresConfirmation, confirmReasons, smoothing)
         return AdviceResult.Recommended(
             best = chosen,
             ranked = result.ranked,
@@ -130,10 +130,9 @@ class DoseAdvisor(
         nowMs: Long,
         requiresConfirmation: Boolean,
         confirmReasons: List<String>,
-        config: CalcConfig,
         smoothing: Int,
     ): DecisionCard {
-        val bandWidth = chosen.fan.steps.getOrNull(config.horizon.validatedSteps - 1)?.bandWidth
+        val bandWidth = chosen.fan.steps.getOrNull(chosen.fan.validatedSteps - 1)?.bandWidth
             ?: chosen.fan.steps.lastOrNull()?.bandWidth
         return DecisionCard(
             ageOfLastRealReadingMin = anchor?.ageMs(nowMs)?.let { it / 60_000L },

@@ -78,7 +78,7 @@ data class SplitSpec(
     val firstFractionGrid: List<Double> = listOf(0.5, 0.6, 0.7),
 )
 
-/** Past predictionHorizonHours the median is self-fed, uncalibrated; discounted for dosing. */
+/** predictionHorizonHours sizes requests only; a fan's validated window is the descriptor's. */
 data class HorizonPolicy(
     val predictionHorizonHours: Double = 2.0,
     val fullRollHours: Double = 5.0,

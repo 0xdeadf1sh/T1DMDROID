@@ -55,6 +55,7 @@ data class PredFan(
 data class ForecastRequest(
     val rollStartMs: Long,
     val fullRollSteps: Int,
+    /** Ignored by [RollingForecaster], which stamps the descriptor's window on the fan. */
     val validatedSteps: Int,
     val announced: List<CurveEvent>,
     val candidate: List<CurveEvent>?,

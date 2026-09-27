@@ -237,6 +237,51 @@ class RollingForecasterAlignmentTest {
         }
     }
 
+    @Test
+    fun validated_window_follows_the_descriptor() = runTest {
+        for ((hours, predSteps) in listOf(1 to 12, 3 to 36)) {
+            val native = RecordingNativeCore()
+            val store = object : DoseStore {
+                override suspend fun carbEvents(fromMs: Long, toMs: Long): List<CurveEvent> = emptyList()
+                override suspend fun insulinEvents(fromMs: Long, toMs: Long): List<CurveEvent> = emptyList()
+                override suspend fun activeBasalSchedule(): BasalSchedule? = null
+            }
+            val history = object : BgHistoryProvider {
+                override suspend fun recentBgSeries(maxSteps: Int, minSteps: Int): BgSeries =
+                    BgSeries(DoubleArray(nCtx) { 120.0 }, anchorTsMs = g + (nCtx - 1) * STEP_MS, gridStartMs = g)
+
+                override suspend fun dosingBgSeries(maxSteps: Int, minSteps: Int): BgSeries =
+                    recentBgSeries(maxSteps, minSteps)
+            }
+            val model = object : SelectedModelHandle {
+                override val descriptor = this@RollingForecasterAlignmentTest.descriptor.copy(predictionHorizonHours = hours)
+                override val backendInfo = fp32Backend()
+                override suspend fun run(input: GraphTensors): GraphOutput = GraphOutput(FloatArray(4 * 6 * 7))
+            }
+            val forecaster = RollingForecaster(
+                native, dispatchers, ChannelBuilder(CurveEngine(native, dispatchers), store),
+                history, SelectedModelProvider { model },
+            )
+
+            val fan = forecaster.roll(
+                ForecastRequest(
+                    rollStartMs = nowMs,
+                    fullRollSteps = 72,
+                    validatedSteps = 24,
+                    announced = emptyList(),
+                    candidate = null,
+                    candidateU = 0.0,
+                ),
+            )
+            assertTrue("the $hours h roll must be eligible over the fakes", fan.eligible)
+            assertEquals("a $hours h descriptor validates $predSteps steps, not the request's 24", predSteps, fan.validatedSteps)
+
+            val shown = forecaster.rollForDisplay(nowMs, requestedHours = 6.0)
+            assertEquals("display window follows the $hours h descriptor", predSteps, shown.validatedSteps)
+            assertEquals("6 h in $predSteps-step rolls", (72 + predSteps - 1) / predSteps, shown.requestedRolls)
+        }
+    }
+
     /** bucketize mirrors Rust: a step mapping to idx<0 is DROPPED; other methods unused here. */
     private class RecordingNativeCore : NativeCore {
         /** In roll order. */
