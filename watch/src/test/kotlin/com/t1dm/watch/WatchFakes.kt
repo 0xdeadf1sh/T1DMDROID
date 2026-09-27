@@ -16,6 +16,7 @@ import com.t1dm.watch.proto.WatchDeviceStatus
 import com.t1dm.watch.proto.WatchDisplay
 import com.t1dm.watch.proto.WatchForecast
 import com.t1dm.watch.proto.WatchHistory
+import com.t1dm.watch.proto.WatchOutlook
 import com.t1dm.watch.proto.WatchPalette
 import com.t1dm.watch.proto.WatchPush
 import com.t1dm.watch.proto.WatchStats
@@ -39,7 +40,7 @@ internal val testGlance = WatchPush(
     bgMgdl = 140, trendTenths = 0, bgTrend = WatchTrend.FLAT, bgTrendFitted = false, readingAgeMs = 60_000L,
     alertBand = AlertBand.IN_RANGE, forecastStatus = ForecastStatus.OK,
     fcEndMgdl = 150, fcHorizonSteps = 24, fcTrend = WatchTrend.FLAT,
-    summary = "140 flat", status = WatchStatus(),
+    summary = "140 flat", status = WatchStatus(), outlook = WatchOutlook(WatchOutlook.State.STABLE),
 )
 
 /** FakePeripheral's frames; record byte 0 is the kind, byte 1 indexes [glances]. */
@@ -70,6 +71,7 @@ internal class FakeCodec : WatchCodec {
         byteArrayOf(1, (glances.size - 1).toByte())
     }
 
+    override fun outlook(o: WatchOutlook) = byteArrayOf(7, o.state.ordinal.toByte())
     override fun history(h: WatchHistory) = listOf(byteArrayOf(2))
     override fun forecast(f: WatchForecast) = listOf(byteArrayOf(3), byteArrayOf(3))
     override fun stats(s: WatchStats) = byteArrayOf(4)

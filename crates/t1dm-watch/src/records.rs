@@ -11,6 +11,7 @@ pub const KIND_FORECAST: u8 = 0x03;
 pub const KIND_STATS: u8 = 0x04;
 pub const KIND_DISPLAY: u8 = 0x05;
 pub const KIND_UNPAIR: u8 = 0x06;
+pub const KIND_OUTLOOK: u8 = 0x07;
 
 const GLANCE_HEAD: usize = 18;
 const BG_TREND_FITTED: u8 = 0x80;
@@ -626,6 +627,44 @@ impl Display {
     }
 }
 
+/// SPEC/watch.md §5.8; `eta_s` runs from the push to the first forecast step out of range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outlook {
+    Void,
+    Stable,
+    Unsure,
+    Hypo { eta_s: u16 },
+    Hyper { eta_s: u16 },
+}
+
+impl Outlook {
+    pub fn encode(&self) -> Vec<u8> {
+        let (state, eta_s) = match *self {
+            Outlook::Void => (0, 0),
+            Outlook::Stable => (1, 0),
+            Outlook::Unsure => (2, 0),
+            Outlook::Hypo { eta_s } => (3, eta_s),
+            Outlook::Hyper { eta_s } => (4, eta_s),
+        };
+        let [lo, hi] = eta_s.to_le_bytes();
+        vec![KIND_OUTLOOK, state, lo, hi]
+    }
+
+    pub fn decode(b: &[u8]) -> Result<Self> {
+        let mut r = Reader::new(b, KIND_OUTLOOK)?;
+        let state = r.u8()?;
+        let eta_s = r.u16()?;
+        r.end()?;
+        Ok(match state {
+            1 => Outlook::Stable,
+            2 => Outlook::Unsure,
+            3 => Outlook::Hypo { eta_s },
+            4 => Outlook::Hyper { eta_s },
+            _ => Outlook::Void,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Record {
     Glance(Glance),
@@ -635,6 +674,7 @@ pub enum Record {
     Display(Display),
     /// The central dropped this pairing; the peripheral wipes its keys, SPEC/watch.md §7.
     Unpair,
+    Outlook(Outlook),
     /// A kind this build does not know; the receiver ignores it.
     Unknown(u8),
 }
@@ -653,6 +693,7 @@ impl Record {
             Some(&KIND_FORECAST) => ForecastPart::decode(b).map(Record::Forecast),
             Some(&KIND_STATS) => Stats::decode(b).map(Record::Stats),
             Some(&KIND_DISPLAY) => Display::decode(b).map(Record::Display),
+            Some(&KIND_OUTLOOK) => Outlook::decode(b).map(Record::Outlook),
             Some(&k) => Ok(Record::Unknown(k)),
         }
     }

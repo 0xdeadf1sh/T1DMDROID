@@ -93,6 +93,8 @@ interface WatchCodec {
 
     fun glance(push: WatchPush): ByteArray
 
+    fun outlook(o: WatchOutlook): ByteArray
+
     fun history(h: WatchHistory): List<ByteArray>
 
     fun forecast(f: WatchForecast): List<ByteArray>

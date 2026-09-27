@@ -102,6 +102,16 @@ fn display() -> Display {
     }
 }
 
+fn outlooks() -> [Outlook; 5] {
+    [
+        Outlook::Void,
+        Outlook::Stable,
+        Outlook::Unsure,
+        Outlook::Hypo { eta_s: 1500 },
+        Outlook::Hyper { eta_s: u16::MAX },
+    ]
+}
+
 fn status() -> Status {
     Status { proto: 1, epoch: 0, flags: FLAG_EXTENDED, device_id: [1, 2, 3, 4, 5, 6, 7, 8] }
 }
@@ -134,6 +144,7 @@ fn encoded() -> Value {
         "forecast": hexes(forecast().encode().unwrap()),
         "stats": tohex(&stats().encode().unwrap()),
         "display": tohex(&display().encode()),
+        "outlook": outlooks().iter().map(|o| tohex(&o.encode())).collect::<Vec<_>>(),
         "status": tohex(&status().encode()),
         "status_name": advertised_name(&status().device_id),
         "kex": kex().iter().map(|k| tohex(&k.encode())).collect::<Vec<_>>(),
@@ -188,6 +199,12 @@ fn records_round_trip() {
     let d = display();
     assert_eq!(Display::decode(&d.encode()).unwrap(), d);
     assert_eq!(Record::decode(&Record::unpair()).unwrap(), Record::Unpair);
+
+    for o in outlooks() {
+        assert_eq!(Record::decode(&o.encode()).unwrap(), Record::Outlook(o));
+    }
+    assert_eq!(Outlook::decode(&[KIND_OUTLOOK, 5, 0x10, 0]).unwrap(), Outlook::Void, "unknown state");
+    assert_eq!(Outlook::decode(&[KIND_OUTLOOK, 1, 0x10, 0]).unwrap(), Outlook::Stable, "eta only on excursions");
 
     let st = status();
     assert_eq!(Status::decode(&st.encode()).unwrap(), st);
@@ -273,6 +290,7 @@ fn hostile_bytes_never_panic() {
         stats().encode().unwrap(),
         display().encode(),
         Record::unpair(),
+        Outlook::Hypo { eta_s: 1500 }.encode(),
     ];
     for v in &valid {
         for cut in 0..v.len() {

@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use t1dm_watch::frames::{Control, Kex, Status};
 use t1dm_watch::records::{
-    Display, Forecast, Glance, GlanceStatus, History, Palette, Provenance, Record, Sample, Stats, StatsWindow,
+    Display, Forecast, Glance, GlanceStatus, History, Outlook, Palette, Provenance, Record, Sample, Stats,
+    StatsWindow,
 };
 use t1dm_watch::WatchError;
 
@@ -147,6 +148,20 @@ pub fn watch_encode_glance(g: WatchGlanceIn) -> Vec<u8> {
         bg_trend: ordinal(g.bg_trend).filter(|&v| v < 0x80),
         bg_trend_fitted: g.bg_trend_fitted,
         summary: g.summary,
+    }
+    .encode()
+}
+
+/// §5.8: `state` 0 VOID … 4 HYPER, anything else VOID; `eta_ms` read for HYPO and HYPER only.
+#[uniffi::export]
+pub fn watch_encode_outlook(state: i32, eta_ms: i64) -> Vec<u8> {
+    let eta_s = (eta_ms / 1000).clamp(0, u16::MAX as i64) as u16;
+    match state {
+        1 => Outlook::Stable,
+        2 => Outlook::Unsure,
+        3 => Outlook::Hypo { eta_s },
+        4 => Outlook::Hyper { eta_s },
+        _ => Outlook::Void,
     }
     .encode()
 }
@@ -425,6 +440,12 @@ mod tests {
         });
         let golden = "01508e00f4ff0200600018027d000000821466616c6c696e6720746f207e393620696e203268";
         assert_eq!(g.iter().map(|b| format!("{b:02x}")).collect::<String>(), golden);
+
+        assert_eq!(watch_encode_outlook(3, 1_500_999), vec![0x07, 3, 0xDC, 0x05]);
+        assert_eq!(watch_encode_outlook(4, -5), vec![0x07, 4, 0, 0]);
+        assert_eq!(watch_encode_outlook(4, 1 << 40), vec![0x07, 4, 0xFF, 0xFF]);
+        assert_eq!(watch_encode_outlook(1, 60_000), vec![0x07, 1, 0, 0], "eta only on excursions");
+        assert_eq!(watch_encode_outlook(9, 60_000), vec![0x07, 0, 0, 0], "unknown state is VOID");
 
         let h = watch_encode_history(1_699_999_800_000, vec![120, -1], vec![0, 0]).unwrap();
         assert_eq!(h.len(), 1);

@@ -37,25 +37,25 @@ class LowPowerSuspendTest {
         awaitValue { hub.pairing.value?.takeIf { it.phase == WatchLinkPhase.AWAIT_SAS } }
         hub.confirmSas(null)
         awaitValue { hub.devices.value.singleOrNull()?.takeIf { it.lastPushMs != null } }
-        assertEquals("a plain watch takes the glance only", listOf(1), watch.kinds())
+        assertEquals("a plain watch takes the outlook and glance only", listOf(7, 1), watch.kinds())
 
         hub.tick(1_000L)
         awaitValue { hub.devices.value.single().takeIf { it.lastPushMs == 1_000L } }
-        assertEquals(2, watch.records.size)
-        assertFalse("normal frame must not set LOW_POWER", codec.glances[watch.records[1][1].toInt()].status.lowPowerSuspending)
+        assertEquals(4, watch.records.size)
+        assertFalse("normal frame must not set LOW_POWER", codec.glances[watch.records[3][1].toInt()].status.lowPowerSuspending)
 
         low = true
         hub.tick(2_000L)
         awaitValue { hub.devices.value.single().takeIf { it.phase == WatchLinkPhase.SUSPENDED_LOW_POWER } }
-        assertEquals(3, watch.records.size)
+        assertEquals(listOf(7, 1, 7, 1, 7, 1), watch.kinds())
         assertTrue(
             "final low-power frame must set LOW_POWER bit",
-            codec.glances[watch.records[2][1].toInt()].status.lowPowerSuspending,
+            codec.glances[watch.records[5][1].toInt()].status.lowPowerSuspending,
         )
 
         hub.tick(3_000L)
         delay(300)
-        assertEquals("pusher must stay idle while suspended", 3, watch.records.size)
+        assertEquals("pusher must stay idle while suspended", 6, watch.records.size)
 
         scope.coroutineContext[Job]?.cancel()
     }

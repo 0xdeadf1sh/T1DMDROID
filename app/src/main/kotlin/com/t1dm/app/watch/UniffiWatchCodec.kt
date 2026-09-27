@@ -7,6 +7,7 @@ import com.t1dm.watch.proto.WatchDeviceStatus
 import com.t1dm.watch.proto.WatchDisplay
 import com.t1dm.watch.proto.WatchForecast
 import com.t1dm.watch.proto.WatchHistory
+import com.t1dm.watch.proto.WatchOutlook
 import com.t1dm.watch.proto.WatchPush
 import com.t1dm.watch.proto.WatchStats
 import uniffi.t1dm_core.WatchControlOut
@@ -23,6 +24,7 @@ import uniffi.t1dm_core.watchEncodeForecast
 import uniffi.t1dm_core.watchEncodeGlance
 import uniffi.t1dm_core.watchEncodeHello
 import uniffi.t1dm_core.watchEncodeHistory
+import uniffi.t1dm_core.watchEncodeOutlook
 import uniffi.t1dm_core.watchEncodeStats
 import uniffi.t1dm_core.watchEncodeUnpair
 
@@ -69,6 +71,8 @@ class UniffiWatchCodec : WatchCodec {
             summary = push.summary,
         ),
     )
+
+    override fun outlook(o: WatchOutlook): ByteArray = watchEncodeOutlook(o.state.ordinal, o.etaMs)
 
     override fun history(h: WatchHistory): List<ByteArray> =
         watchEncodeHistory(h.startTsMs, h.mgdl.toList(), h.provenance.toList())

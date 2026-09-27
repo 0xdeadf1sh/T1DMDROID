@@ -2,6 +2,7 @@ package com.t1dm.watch
 
 import com.t1dm.watch.crypto.InMemoryWatchStores
 import com.t1dm.watch.crypto.LoopbackWatchSessionFactory
+import com.t1dm.watch.proto.WatchOutlook
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -62,26 +63,31 @@ class WatchHubTest {
         assertEquals("the second pairing skips the paired name", watchId, b.deviceId)
         assertTrue(a.extended)
         assertNull(hub.pairing.value)
-        assertEquals("connect pushes display, day history, stats, forecast, glance", listOf(5, 2, 4, 3, 3, 1), desk.kinds())
-        assertEquals(listOf(1), watch.kinds())
+        assertEquals(
+            "connect pushes display, day history, stats, forecast, outlook, glance",
+            listOf(5, 2, 4, 3, 3, 7, 1),
+            desk.kinds(),
+        )
+        assertEquals(listOf(7, 1), watch.kinds())
+        assertEquals(WatchOutlook.State.STABLE.ordinal, desk.records[5][1].toInt())
 
         desk.records.clear(); watch.records.clear()
         hub.tick(10_000L)
         awaitValue { hub.devices.value.takeIf { ds -> ds.all { it.lastPushMs == 10_000L } } }
-        assertEquals("tick: recent history, forecast, glance", listOf(2, 3, 3, 1), desk.kinds())
-        assertEquals(listOf(1), watch.kinds())
+        assertEquals("tick: recent history, forecast, outlook, glance", listOf(2, 3, 3, 7, 1), desk.kinds())
+        assertEquals(listOf(7, 1), watch.kinds())
 
         desk.records.clear(); watch.records.clear()
         hub.pushReading(10_500L)
         awaitValue { hub.devices.value.takeIf { ds -> ds.all { it.lastPushMs == 10_500L } } }
-        assertEquals("reading: recent history, glance", listOf(2, 1), desk.kinds())
-        assertEquals(listOf(1), watch.kinds())
+        assertEquals("reading: recent history, outlook, glance", listOf(2, 7, 1), desk.kinds())
+        assertEquals(listOf(7, 1), watch.kinds())
 
         desk.records.clear()
         hub.pushDisplay(11_000L)
         awaitValue { desk.kinds().takeIf { it.isNotEmpty() } }
         assertEquals(listOf(5), desk.kinds())
-        assertEquals("a plain watch takes no display", listOf(1), watch.kinds())
+        assertEquals("a plain watch takes no display", listOf(7, 1), watch.kinds())
         assertEquals(2, stores.devices.load().size)
     }
 

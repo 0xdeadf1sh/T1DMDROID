@@ -365,7 +365,8 @@ class WatchLink internal constructor(
         add(WatchRecordKind.FORECAST) { extendedSource.forecast()?.let(codec::forecast) }
         add(WatchRecordKind.GLANCE) {
             glanceSource.currentGlance(nowMs)?.let {
-                listOf(codec.glance(it.copy(status = it.status.copy(lowPowerSuspending = lp))))
+                val glance = it.copy(status = it.status.copy(lowPowerSuspending = lp))
+                listOf(codec.outlook(it.outlook), codec.glance(glance))
             }
         }
         return out

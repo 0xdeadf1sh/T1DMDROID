@@ -6,7 +6,10 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.security.keystore.StrongBoxUnavailableException
 import android.util.Base64
+import com.t1dm.app.notify.BgGlanceComputer
 import com.t1dm.app.notify.GlanceReadings
+import com.t1dm.app.notify.GlyStatus
+import com.t1dm.app.notify.PredictiveCrossing
 import com.t1dm.app.notify.TREND_FIT_POINTS
 import com.t1dm.app.notify.directionOf
 import java.security.KeyStore
@@ -37,6 +40,7 @@ import com.t1dm.watch.crypto.WatchStores
 import com.t1dm.watch.proto.WatchDisplay
 import com.t1dm.watch.proto.WatchForecast
 import com.t1dm.watch.proto.WatchHistory
+import com.t1dm.watch.proto.WatchOutlook
 import com.t1dm.watch.proto.WatchProvenance
 import com.t1dm.watch.proto.WatchPush
 import com.t1dm.watch.proto.WatchStats
@@ -67,21 +71,34 @@ class AppWatchGlanceSource(
         // 36 rows, not 1: the newest MEASUREMENT can sit behind a promoted reconstruction.
         val rows = repository.recentReadings(src, 36)
         val readings = GlanceReadings.create(rows)
-        if (readings.latest == null) return null
+        val latest = readings.latest ?: return null
 
         // The bottom bar's rule, so the arrow here and there agree.
-        val direction = directionOf(readings.latest, sensorTelemetry(src)) { rows.take(TREND_FIT_POINTS) }
+        val direction = directionOf(latest, sensorTelemetry(src)) { rows.take(TREND_FIT_POINTS) }
+        val state = inferenceState.value
+        val thresholds = thresholdsProvider()
+        val edges = edgesProvider()
         // The one shared computation, so watch, notification and widgets agree by construction.
-        val g = com.t1dm.app.notify.BgGlanceComputer.compute(
+        val g = BgGlanceComputer.compute(
             readings = readings,
-            state = inferenceState.value,
-            thresholds = thresholdsProvider(),
-            edges = edgesProvider(),
+            state = state,
+            thresholds = thresholds,
+            edges = edges,
             lossMin = lossMinProvider(),
             staleMin = staleMin,
             nowMs = nowMs,
             trend = direction?.trend,
         )
+        val ageMs = (nowMs - latest.rxWallMs).coerceAtLeast(0L)
+        val outlook = when (val s = BgGlanceComputer.status(state, thresholds, edges, nowMs, ageMs, staleMin)) {
+            is GlyStatus.Void -> WatchOutlook(WatchOutlook.State.VOID)
+            GlyStatus.Stable -> WatchOutlook(WatchOutlook.State.STABLE)
+            GlyStatus.Unsure -> WatchOutlook(WatchOutlook.State.UNSURE)
+            is GlyStatus.Excursion -> WatchOutlook(
+                if (s.kind == PredictiveCrossing.Kind.HYPO) WatchOutlook.State.HYPO else WatchOutlook.State.HYPER,
+                (s.atMs - nowMs).coerceAtLeast(0L),
+            )
+        }
 
         return WatchPush(
             bgMgdl = g.bgMgdl,
@@ -105,6 +122,7 @@ class AppWatchGlanceSource(
                 // Frozen wire semantics: true in warmup too, where fcEnd is null.
                 forecastUnavailable = g.fcEndMgdl == null,
             ),
+            outlook = outlook,
         )
     }
 

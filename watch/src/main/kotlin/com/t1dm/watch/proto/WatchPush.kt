@@ -25,6 +25,8 @@ data class WatchPush(
     /** At most [MAX_SUMMARY] bytes. */
     val summary: String,
     val status: WatchStatus,
+    /** Sealed as its own record, just before the glance. */
+    val outlook: WatchOutlook,
 ) {
     companion object {
         const val MAX_SUMMARY = 40
@@ -33,6 +35,12 @@ data class WatchPush(
 
 /** Ordinal is the wire value. */
 enum class WatchTrend { FLAT, RISING, FALLING, RISING_FAST, FALLING_FAST }
+
+/** SPEC/watch.md §5.8; [etaMs] runs from the push to the first step out, HYPO and HYPER only. */
+data class WatchOutlook(val state: State, val etaMs: Long = 0L) {
+    /** Ordinal is the wire value. */
+    enum class State { VOID, STABLE, UNSURE, HYPO, HYPER }
+}
 
 /** lowPowerSuspending: phone suspended the 5-min scheduler, a frozen glance is expected. */
 data class WatchStatus(
