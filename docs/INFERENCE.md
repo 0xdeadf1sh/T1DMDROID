@@ -207,12 +207,13 @@ a context the model never saw. A fill masks the gap's patches INSIDE a window th
 has real evidence on both sides of it — the whole advantage of an infill over a
 forecast — and stores the reconstruction in its own `bg_infill` table.
 
-**A fill is not a reading.** It conditions the DISPLAYED forecast and nothing else:
-not the alarm engine, not the statistics, not the accuracy suite, not the dose
-calculator. `fitBgSeries`, the series a model is FITTED on, never sees one, and
-neither does `dosingBgSeries` — a dose scored partly on a model's own
-reconstruction would close a loop between an output and the advice derived from
-it. The BG panel draws a fill as its quantile fan with a dashed line over it, in
+**A fill is not a reading.** It conditions the cycle forecast, and that fan is
+drawn, stored, scored by the accuracy suite and the band fit, pushed to the watch
+and read by the predictive alerts. It never reaches the threshold alarms, the
+statistics, the dose calculator or a fit: `fitBgSeries`, the series a model is
+FITTED on, never sees one, and neither does `dosingBgSeries` — a dose scored
+partly on a model's own reconstruction would close a loop between an output and
+the advice derived from it. The BG panel draws a fill as its quantile fan with a dashed line over it, in
 the surface's own muted ink and never in a glucose colour. A row that predates the
 fan columns has two band edges and nothing between them, and draws as the single
 band it is. A span nobody wants is **discarded**; the fan and the row go with it.
