@@ -3,7 +3,7 @@ package com.t1dm.data.curve
 import com.t1dm.core.model.BasalSchedule
 import com.t1dm.core.model.CurveEvent
 
-/** Logged rows read once; [at] serves them as the store stood then, so a later log is absent. */
+/** Rows read once; [at] drops rows logged after the instant. Later edits and deletes show. */
 class DoseSnapshot internal constructor(
     private val meals: List<Logged>,
     private val boluses: List<Logged>,
