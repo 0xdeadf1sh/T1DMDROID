@@ -115,6 +115,18 @@ class EventMutationTest {
         assertNotNull("and the row it could not recall is still queued", db.outboxDao().byId(id))
     }
 
+    /** A tried mirror may have landed with its ack lost; recall plus resend would file it twice. */
+    @Test
+    fun a_mirror_already_tried_is_not_recallable() = runTest {
+        val row = repo.logLoggedDose(dose())
+        val key = "$NS_TREATMENT_DEDUP_PREFIX${row.clientId}"
+        val id = repo.enqueue(OutboxKind.NIGHTSCOUT, key, byteArrayOf(1), nowMs, nowMs)
+        db.outboxDao().reschedule(id, OutboxState.PENDING, 1, nowMs)
+
+        assertFalse(repo.withdrawEditedBridgedTreatment(row.clientId))
+        assertNotNull("and it is still queued", db.outboxDao().byId(id))
+    }
+
     /** Rail window is the LATER of pre/post-edit action ends; post-edit alone leaves stale IOB. */
     @Test
     fun an_edit_that_shortens_a_dose_keeps_the_original_action_end() = runTest {

@@ -121,7 +121,7 @@ class NightscoutDrainTest {
         assertEquals("the tail waits for the next pass", 10, dao.count())
     }
 
-    /** resetState reclaims INFLIGHT WITHOUT advancing attempts; attempts alone would re-POST. */
+    /** A row left INFLIGHT died mid-POST and may have landed; reclaim counts it as tried. */
     @Test
     fun `a row reclaimed from INFLIGHT is treated as a replay`() = runTest {
         val dao = FakeOutboxDao()
@@ -133,6 +133,28 @@ class NightscoutDrainTest {
         assertEquals("the guard must be consulted", 1, bridge.alreadyPostedCalls)
         assertTrue("the treatment must not be POSTed again", bridge.requests.isEmpty())
         assertEquals(1, result.sent)
+    }
+
+    /** Entries go first, so a reclaimed treatment can wait a pass; its guard must wait with it. */
+    @Test
+    fun `a reclaimed row keeps its replay guard across passes`() = runTest {
+        val dao = FakeOutboxDao()
+        dao.enqueue(treatmentRow(1, state = OutboxState.INFLIGHT, attempts = 0))
+        repeat(50) { dao.enqueue(entryRow(1_787_000_000_000L + it * 300_000L)) }
+        val bridge = RecordingBridge({ SyncResponse(200, ByteArray(0)) }, posted = true)
+        val d = drainer(dao, bridge, ::sampleAt)
+
+        d.drainOnce()
+        assertEquals("pass 1 spends its budget on entries", 2, bridge.requests.size)
+        assertEquals(0, bridge.alreadyPostedCalls)
+
+        d.drainOnce()
+        assertEquals("pass 2 must still consult the guard", 1, bridge.alreadyPostedCalls)
+        assertTrue(
+            "the treatment must not be POSTed again",
+            bridge.requests.none { it.path == "/api/v1/treatments" },
+        )
+        assertEquals(0, dao.count())
     }
 
     @Test

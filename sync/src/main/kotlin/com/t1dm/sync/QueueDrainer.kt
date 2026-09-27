@@ -58,18 +58,17 @@ class QueueDrainer(
         withContext(dispatchers.io) {
             // Empty queue is the steady state; the four table ops below all no-op over it.
             if (dao.count() == 0) return@withContext DrainResult()
-            // reclaimed captured pre-resetState; alreadyPosted covers a mid-POST death row.
-            val reclaimed = dao.idsInState(OutboxState.INFLIGHT).toHashSet()
+            // Bumps attempts: a row that died mid-POST reaches alreadyPosted in any later pass.
             dao.resetState(OutboxState.INFLIGHT, OutboxState.PENDING)
             val evicted = evict(clock())
             val now = clock()
-            drain(dao.dueBatch(OutboxState.PENDING, now, config.batchLimit), now, reclaimed)
+            drain(dao.dueBatch(OutboxState.PENDING, now, config.batchLimit), now)
                 .copy(evicted = evicted, remaining = dao.count())
         }
     }
 
     /** An unreachable host ends the pass; the rest of the batch keeps its place. */
-    private suspend fun drain(batch: List<OutboxEntity>, now: Long, reclaimed: Set<Long>): DrainResult {
+    private suspend fun drain(batch: List<OutboxEntity>, now: Long): DrainResult {
         var sent = 0
         var dropped = 0
         var retried = 0
@@ -92,7 +91,7 @@ class QueueDrainer(
             if (unreachable) { rows.forEach { reschedule(it, now); retried++ }; continue@loop }
 
             // Replay: /api/v1 has no idempotency key, so a lost ack would double-count.
-            if (rows.any { it.attempts > 0 || it.id in reclaimed } && bridge != null) {
+            if (rows.any { it.attempts > 0 } && bridge != null) {
                 val already = runCatching { bridge.alreadyPosted(request) }.getOrDefault(false)
                 if (already) {
                     Timber.tag(TAG).i("bridge group of %d already present; not re-posting", rows.size)

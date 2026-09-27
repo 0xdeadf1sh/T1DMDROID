@@ -52,8 +52,10 @@ class FakeOutboxDao : OutboxDao {
 
     override suspend fun delete(id: Long) { rows.remove(id) }
 
-    override suspend fun deleteByDedupKeyInState(dedupKey: String, state: OutboxState): Int {
-        val doomed = rows.values.filter { it.dedupKey == dedupKey && it.state == state }.map { it.id }
+    override suspend fun deleteUntriedByDedupKey(dedupKey: String, state: OutboxState): Int {
+        val doomed = rows.values
+            .filter { it.dedupKey == dedupKey && it.state == state && it.attempts == 0 }
+            .map { it.id }
         doomed.forEach { rows.remove(it) }
         return doomed.size
     }
@@ -64,9 +66,6 @@ class FakeOutboxDao : OutboxDao {
         return before - rows.size
     }
 
-    override suspend fun idsInState(state: OutboxState): List<Long> =
-        rows.values.filter { it.state == state }.map { it.id }
-
     override suspend fun deleteAllRows() {
         rows.clear()
     }
@@ -75,7 +74,7 @@ class FakeOutboxDao : OutboxDao {
         var n = 0
         rows.keys.toList().forEach { k ->
             val r = rows.getValue(k)
-            if (r.state == from) { rows[k] = r.copy(state = to); n++ }
+            if (r.state == from) { rows[k] = r.copy(state = to, attempts = r.attempts + 1); n++ }
         }
         return n
     }

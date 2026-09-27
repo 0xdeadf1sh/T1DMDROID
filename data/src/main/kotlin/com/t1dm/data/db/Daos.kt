@@ -482,7 +482,7 @@ interface OutboxDao {
     @Query("SELECT COUNT(*) FROM outbox")
     suspend fun count(): Int
 
-    /** Any state, unlike deleteByDedupKeyInState (spares INFLIGHT for no-idempotency hosts). */
+    /** Any state, unlike [deleteUntriedByDedupKey] (spares tried rows: no-idempotency hosts). */
     @Query("DELETE FROM outbox WHERE dedupKey = :dedupKey")
     suspend fun deleteByDedupKey(dedupKey: String): Int
 
@@ -501,19 +501,15 @@ interface OutboxDao {
     @Query("DELETE FROM outbox WHERE id = :id")
     suspend fun delete(id: Long)
 
-    /** Returns 0 or 1 (unique index); already-claimed INFLIGHT row stays untouched (see repo). */
-    @Query("DELETE FROM outbox WHERE dedupKey = :dedupKey AND state = :state")
-    suspend fun deleteByDedupKeyInState(dedupKey: String, state: OutboxState): Int
+    /** Returns 0 or 1 (unique index); a row ever tried may have landed, so it stays. */
+    @Query("DELETE FROM outbox WHERE dedupKey = :dedupKey AND state = :state AND attempts = 0")
+    suspend fun deleteUntriedByDedupKey(dedupKey: String, state: OutboxState): Int
 
     @Query("DELETE FROM outbox WHERE id IN (:ids)")
     suspend fun deleteAll(ids: List<Long>): Int
 
-    /** Read just before [resetState] so drainer knows what moved; mid-send/never-sent unclear. */
-    @Query("SELECT id FROM outbox WHERE state = :state")
-    suspend fun idsInState(state: OutboxState): List<Long>
-
-    /** Reclaims rows wedged in INFLIGHT by a crash mid-send. */
-    @Query("UPDATE outbox SET state = :to WHERE state = :from")
+    /** Reclaims rows a crash wedged in INFLIGHT; each counts as tried, it may have landed. */
+    @Query("UPDATE outbox SET state = :to, attempts = attempts + 1 WHERE state = :from")
     suspend fun resetState(from: OutboxState, to: OutboxState): Int
 
     @Query("UPDATE outbox SET state = :state, attempts = :attempts, nextAttemptMs = :nextAttemptMs WHERE id = :id")

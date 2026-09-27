@@ -890,9 +890,9 @@ class T1dmRepository(
     private suspend fun withdrawBridgedTreatment(clientId: String) =
         outbox.deleteByDedupKey("$NS_TREATMENT_DEDUP_PREFIX$clientId")
 
-    /** Whether the mirror was there to take; PENDING only, an INFLIGHT delete won't unsend it. */
+    /** True only for a never-tried mirror: a tried one may have landed, /api/v1 has no update. */
     suspend fun withdrawEditedBridgedTreatment(clientId: String): Boolean = withContext(io) {
-        outbox.deleteByDedupKeyInState("$NS_TREATMENT_DEDUP_PREFIX$clientId", OutboxState.PENDING) > 0
+        outbox.deleteUntriedByDedupKey("$NS_TREATMENT_DEDUP_PREFIX$clientId", OutboxState.PENDING) > 0
     }
 
     private suspend fun enqueueRow(
