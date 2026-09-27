@@ -62,8 +62,8 @@ class InferenceController(
     private val contextChannels: ContextChannelSource? = null,
     /** Already-logged action absorbing past the now-boundary (SPEC §3.3); null=normalize(0). */
     private val futureOverrides: FutureOverrideSource? = null,
-    /** Read FRESH each cycle; MIN_CONTEXT is the binding floor (inference-runtime.md). */
-    private val warmupHoursProvider: suspend () -> Double = { DEFAULT_WARMUP_HOURS },
+    /** Read FRESH each cycle; MIN_CONTEXT is the binding floor. */
+    private val warmupHoursProvider: suspend () -> Double = { InferenceControllerDefaults.WARMUP_HOURS },
     /** Null ⇒ session-only in-memory counters. */
     private val telemetryStore: TelemetryStore? = null,
     /** Battery-sensor °C, read FRESH; null never gates. No DEATH check, thermal is a hw risk. */
@@ -1198,8 +1198,6 @@ class InferenceController(
         const val MS_PER_HOUR = 3_600_000.0
         /** 5-min grid ⇒ 12 steps/hour (mirrors calc HorizonPolicy.STEPS_PER_HOUR). */
         const val STEPS_PER_HOUR = 12
-        /** Hours (inference-runtime.md); the setting floors at MIN_CONTEXT = 8 h. */
-        const val DEFAULT_WARMUP_HOURS = 24.0
         /** Fraction of the window MEASURED; a gapless demand flapped completion. */
         const val WARMUP_COMPLETION_FRACTION = 0.85
         const val N_QUANTILES = 7

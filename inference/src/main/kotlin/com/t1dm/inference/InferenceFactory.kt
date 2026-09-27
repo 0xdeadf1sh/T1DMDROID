@@ -51,7 +51,7 @@ fun buildInferenceController(
     return controller
 }
 
-/** Shared with `:app`'s Settings floor (inference-runtime.md). */
+/** Shared with `:app`'s Settings floor. */
 object InferenceControllerDefaults {
     const val WARMUP_HOURS = 24.0
 
