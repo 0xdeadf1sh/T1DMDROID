@@ -95,6 +95,17 @@ class WidgetStateStoreTest {
     }
 
     @Test
+    fun `cached tile past STALE_MIN draws no arrow`() {
+        val writeAt = 1_700_000_000_000L
+        val prefs = mutablePreferencesOf()
+        WidgetStateStore.write(prefs, snapshot(reading(120, 5, writeAt), writeAt, trend = GlanceTrend.RISING), writeAt)
+
+        val cached = requireNotNull(WidgetStateStore.read(prefs, writeAt + 16L * 60_000L))
+        assertTrue(cached.glance.stale)
+        assertNull(cached.glance.trend)
+    }
+
+    @Test
     fun `presentation settings survive the round trip`() {
         val nowMs = 1_700_000_000_000L
         val prefs = mutablePreferencesOf()

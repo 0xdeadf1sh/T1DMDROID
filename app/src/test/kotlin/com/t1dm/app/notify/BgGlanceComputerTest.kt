@@ -170,6 +170,13 @@ class BgGlanceComputerTest {
         assertEquals(GlanceTrend.RISING_FAST, g.fcTrend)
     }
 
+    @Test fun `stale reading draws no arrow`() {
+        fun at(ageMin: Long) = BgGlanceComputer.compute(GlanceReadings.create(listOf(reading(123, ageMin * 60_000L))), InferenceState(), thresholds, edges, lossMin = 20, staleMin = 15, nowMs = now, trend = GlanceTrend.FALLING)
+        assertEquals(GlanceTrend.FALLING, at(15).trend)
+        assertNull(at(16).trend)
+        assertEquals("123", at(16).summary)
+    }
+
     @Test fun `the summary draws the arrow it was given, and none for none`() {
         val expected = mapOf(
             GlanceTrend.RISING_FAST to "123 ↑↑", GlanceTrend.RISING to "123 ↑", GlanceTrend.FLAT to "123 →",

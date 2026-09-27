@@ -668,6 +668,7 @@ private fun T1dmBottomBar(
     }
     val ageMs = rxWallMs?.let { (nowMs - it).coerceAtLeast(0L) }
     val stale = ageMs == null || ageMs > STALE_MIN * 60_000L
+    val shownDirection = direction.takeUnless { stale }
 
     // No Surface (clips glow/pointer); LocalContentColor replaces its unset-Text color resolve.
     CompositionLocalProvider(LocalContentColor provides cs.onSurface) {
@@ -705,13 +706,9 @@ private fun T1dmBottomBar(
                         modifier = Modifier.weight(1f),
                     )
                     Text(
-                        text = BgFormat.arrow(direction?.trend),
+                        text = BgFormat.arrow(shownDirection?.trend),
                         style = MaterialTheme.typography.headlineSmall,
-                        color = when {
-                            stale -> cs.error
-                            viewingOther -> cs.tertiary
-                            else -> Color.Unspecified
-                        },
+                        color = if (viewingOther) cs.tertiary else Color.Unspecified,
                         maxLines = 1,
                         textAlign = TextAlign.Center,
                         modifier = Modifier.width(TREND_COL_W),
@@ -734,7 +731,7 @@ private fun T1dmBottomBar(
                             .padding(start = leadGlyphWidth(bgText, bgStyle)),
                     )
                     Text(
-                        text = direction?.let { if (it.reported) "R" else "S" } ?: "",
+                        text = shownDirection?.let { if (it.reported) "R" else "S" } ?: "",
                         style = MaterialTheme.typography.bodySmall,
                         color = cs.onSurfaceVariant,
                         maxLines = 1,

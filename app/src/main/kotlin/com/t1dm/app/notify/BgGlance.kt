@@ -19,7 +19,7 @@ data class BgGlance(
     val trendTenths: Int?,
     val readingAgeMs: Long,
     val band: AlertBand?,
-    /** [directionOf]'s arrow, as the bottom bar and the watch draw it; null = none. */
+    /** [directionOf]'s arrow, as the bottom bar and watch draw it; null = none or stale. */
     val trend: GlanceTrend?,
     /** Forecast slope, drives the watch fc_trend; never drawn as an arrow. */
     val fcTrend: GlanceTrend,
@@ -222,13 +222,14 @@ object BgGlanceComputer {
             (scanFan(sel!!, edges, thresholds.urgentLowMgdl, thresholds.urgentHighMgdl) as? FanScan.Out)
                 ?.toCrossing(PredictiveCrossing.Severity.CRITICAL, stepMin, thresholds.urgentLowMgdl, thresholds.urgentHighMgdl)
         }
+        val shownTrend = trend.takeUnless { stale }
 
         return BgGlance(
             bgMgdl = bg,
             trendTenths = latest.trendTenthsPerMin,
             readingAgeMs = ageMs,
             band = band,
-            trend = trend,
+            trend = shownTrend,
             fcTrend = forecastTrend(bg, fcEnd, horizon * stepMin),
             forecastEligible = eligible && !warmup,
             forecastStatus = sel?.status,
@@ -244,7 +245,7 @@ object BgGlanceComputer {
             unsure = unsure,
             approaching = approaching,
             urgent = urgent,
-            summary = summarize(bg, trend, eligible, fcEnd, horizon, sel?.status, warmup),
+            summary = summarize(bg, shownTrend, eligible, fcEnd, horizon, sel?.status, warmup),
         )
     }
 
