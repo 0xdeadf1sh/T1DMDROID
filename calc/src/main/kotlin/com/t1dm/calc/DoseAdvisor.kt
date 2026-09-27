@@ -70,6 +70,12 @@ class DoseAdvisor(
 
         val zeroCandidate = result.ranked.firstOrNull { it.doseU == 0.0 } ?: Candidate(0.0, 0.0, result.baseline)
         var chosen: Candidate? = null
+        // Ineligible baseline (bypassed gate) is unverified, not low; candidates keep their veto.
+        val baselineVeto = if (zeroCandidate.fan.eligible) Rails.predictedLowVeto(zeroCandidate.fan, config) else RailVerdict.Pass
+        if (baselineVeto is RailVerdict.Block) {
+            notes.add("Every dose withheld — 0 U vetoed: ${baselineVeto.reason}")
+            chosen = zeroCandidate
+        }
         for (c in result.ranked) {
             if (chosen != null) break
             if (c.score == Double.POSITIVE_INFINITY) continue

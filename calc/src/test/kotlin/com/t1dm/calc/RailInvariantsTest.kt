@@ -136,6 +136,18 @@ class RailInvariantsTest {
     }
 
     @Test
+    fun a_vetoed_baseline_withholds_every_dose() = runTest {
+        // Wrong-signed model: insulin lifts the median, so a dose clears the floor 0 U fails.
+        val port = FakeForecastPort(startBg = 100.0, driftPerStep = -1.0, mgdlPerU = -15.0)
+        val advisor = advisorOf(port, anchor = fakeAnchor(now, currentBg = 100.0), iob = fakeIob(now))
+        val config = CalcConfig(predictedLowThresholdMgdl = 80.0)
+        val r = advisor.recommendBolus(now, emptyList(), config) as AdviceResult.Recommended
+        assertNull("a baseline above the hypo threshold is not a rescue", r.rescueCarbsG)
+        assertEquals("a vetoed 0 U baseline must withhold every dose", 0.0, r.best.doseU, 0.0)
+        assertTrue(r.railNotes.any { it.contains("0 U vetoed") })
+    }
+
+    @Test
     fun the_veto_ignores_a_low_that_lies_beyond_the_validated_window() = runTest {
         // The dip lies in the extrapolated tail only.
         val steps = List(48) { i -> FanStep(medianBg = if (i < 24) 140.0 else 50.0, lowerBg = 40.0, upperBg = 240.0) }
