@@ -13,6 +13,7 @@ import com.t1dm.alerts.AlarmEngine
 import com.t1dm.alerts.AlarmState
 import com.t1dm.alerts.SnoozeState
 import com.t1dm.alerts.AlertActuatorConfig
+import com.t1dm.alerts.LiveConfig
 import com.t1dm.alerts.VibrationPreset
 import androidx.glance.appwidget.updateAll
 import com.t1dm.app.cgm.AppCgmRepository
@@ -285,33 +286,25 @@ class AppContainer(context: Context) {
 
     val settingsStore: SettingsStore by lazy { SettingsStore(repository) }
 
-    /** §3.6-A. `@Volatile`; [refreshAlarmConfig] also pushes into the running [AlarmEngine]. */
-    @Volatile
-    var alarmConfig: AlarmConfig = AlarmConfig.DEFAULT
-        private set
+    private val alarmLive = LiveConfig(AlarmConfig.DEFAULT)
 
-    /** The same value for Compose readers: a `@Volatile` read never invalidates a composition. */
-    private val _alarmConfigFlow = MutableStateFlow(AlarmConfig.DEFAULT)
-    val alarmConfigFlow: StateFlow<AlarmConfig> = _alarmConfigFlow.asStateFlow()
+    /** §3.6-A. [refreshAlarmConfig] also pushes into the running [AlarmEngine]. */
+    val alarmConfig: AlarmConfig get() = alarmLive.value
+
+    /** The same value for Compose readers: a plain read never invalidates a composition. */
+    val alarmConfigFlow: StateFlow<AlarmConfig> = alarmLive.flow
 
     /** False until [alarmConfig] leaves defaults; a persisting reader (widget) must check it. */
-    @Volatile
-    var alarmConfigHydrated: Boolean = false
-        private set
+    val alarmConfigHydrated: Boolean get() = alarmLive.hydrated
 
     /** Pushes config to the running engine; null while the FGS is down (§3.6-A). */
-    @Volatile
-    private var liveAlarmConfigSink: ((AlarmConfig) -> Unit)? = null
+    fun setAlarmConfigSink(sink: ((AlarmConfig) -> Unit)?) = alarmLive.setSink(sink)
 
-    fun setAlarmConfigSink(sink: ((AlarmConfig) -> Unit)?) {
-        liveAlarmConfigSink = sink
-    }
+    suspend fun refreshAlarmConfig() = updateAlarmConfig {}
 
-    suspend fun refreshAlarmConfig() {
-        alarmConfig = runCatching { settingsStore.currentAlarmConfig() }.getOrDefault(AlarmConfig.DEFAULT)
-        alarmConfigHydrated = true
-        _alarmConfigFlow.value = alarmConfig
-        liveAlarmConfigSink?.invoke(alarmConfig)
+    private suspend fun updateAlarmConfig(write: suspend () -> Unit) {
+        alarmLive.update(write) { settingsStore.currentAlarmConfig() }
+            .onFailure { Timber.w(it, "alarm config read failed; last config kept") }
     }
 
     // Presenters run outside Compose, can't read LocalT1dmSemantics; @Volatile resolves it live.
@@ -389,50 +382,72 @@ class AppContainer(context: Context) {
     suspend fun forecastPeriodMin(): Int = settingsStore.currentForecastPeriodMin()
 
     /** System ALARM tone plays through DND; additive — never changes WHEN it fires (§3.6-A). */
-    suspend fun alertActuatorConfig(): AlertActuatorConfig {
+    suspend fun alertActuatorConfig(): AlertActuatorConfig = actuatorConfigOf(
+        warningSoundOn = settingsStore.currentWarningSoundOn(),
+        criticalSoundOn = settingsStore.currentCriticalSoundOn(),
+        warningVibration = settingsStore.currentWarningVibration(),
+        criticalVibration = settingsStore.currentCriticalVibration(),
+        bypassDnd = settingsStore.currentBypassDnd(),
+    )
+
+    private fun actuatorConfigOf(
+        warningSoundOn: Boolean,
+        criticalSoundOn: Boolean,
+        warningVibration: VibrationPreset,
+        criticalVibration: VibrationPreset,
+        bypassDnd: Boolean,
+    ): AlertActuatorConfig {
         val alarmTone = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
         return AlertActuatorConfig(
-            warningSound = if (settingsStore.currentWarningSoundOn()) alarmTone else null,
-            criticalSound = if (settingsStore.currentCriticalSoundOn()) alarmTone else null,
-            warningVibration = settingsStore.currentWarningVibration(),
-            criticalVibration = settingsStore.currentCriticalVibration(),
-            bypassDnd = settingsStore.currentBypassDnd(),
+            warningSound = if (warningSoundOn) alarmTone else null,
+            criticalSound = if (criticalSoundOn) alarmTone else null,
+            warningVibration = warningVibration,
+            criticalVibration = criticalVibration,
+            bypassDnd = bypassDnd,
+        )
+    }
+
+    /** Stock settings until the first read: an unread store must not silence a critical alarm. */
+    private val actuatorLive by lazy {
+        LiveConfig(
+            actuatorConfigOf(
+                warningSoundOn = SettingsStore.DEFAULT_WARNING_SOUND_ON,
+                criticalSoundOn = SettingsStore.DEFAULT_CRITICAL_SOUND_ON,
+                warningVibration = SettingsStore.DEFAULT_WARNING_VIBRATION,
+                criticalVibration = SettingsStore.DEFAULT_CRITICAL_VIBRATION,
+                bypassDnd = SettingsStore.DEFAULT_BYPASS_DND,
+            ),
         )
     }
 
     /** Synchronous: the notifier and presenter run outside Compose and cannot suspend. */
-    @Volatile
-    var alertActuatorSnapshot: AlertActuatorConfig = AlertActuatorConfig.SILENT
-        private set
+    val alertActuatorSnapshot: AlertActuatorConfig get() = actuatorLive.value
 
-    suspend fun refreshAlertActuatorConfig() {
-        alertActuatorSnapshot =
-            runCatching { alertActuatorConfig() }.getOrDefault(AlertActuatorConfig.SILENT)
+    suspend fun refreshAlertActuatorConfig() = updateActuatorConfig {}
+
+    private suspend fun updateActuatorConfig(write: suspend () -> Unit) {
+        actuatorLive.update(write) { alertActuatorConfig() }
+            .onFailure { Timber.w(it, "alert actuator config read failed; last config kept") }
     }
 
     suspend fun saveWarningVibration(preset: VibrationPreset) {
-        settingsStore.setWarningVibration(preset)
-        refreshAlertActuatorConfig()
+        updateActuatorConfig { settingsStore.setWarningVibration(preset) }
     }
 
     suspend fun saveCriticalVibration(preset: VibrationPreset) {
-        settingsStore.setCriticalVibration(preset)
-        refreshAlertActuatorConfig()
+        updateActuatorConfig { settingsStore.setCriticalVibration(preset) }
     }
 
     suspend fun saveWarningSoundOn(on: Boolean) {
-        settingsStore.setWarningSoundOn(on)
-        refreshAlertActuatorConfig()
+        updateActuatorConfig { settingsStore.setWarningSoundOn(on) }
     }
 
     suspend fun saveCriticalSoundOn(on: Boolean) {
-        settingsStore.setCriticalSoundOn(on)
-        refreshAlertActuatorConfig()
+        updateActuatorConfig { settingsStore.setCriticalSoundOn(on) }
     }
 
     suspend fun saveBypassDnd(on: Boolean) {
-        settingsStore.setBypassDnd(on)
-        refreshAlertActuatorConfig()
+        updateActuatorConfig { settingsStore.setBypassDnd(on) }
     }
 
     private val vibrationActuator by lazy { com.t1dm.alerts.VibrationActuator(appContext) }
@@ -444,35 +459,29 @@ class AppContainer(context: Context) {
     }
 
     suspend fun saveAlarmThresholds(urgentLow: Int, low: Int, high: Int, urgentHigh: Int) {
-        settingsStore.setAlarmThresholds(urgentLow, low, high, urgentHigh)
-        refreshAlarmConfig()
+        updateAlarmConfig { settingsStore.setAlarmThresholds(urgentLow, low, high, urgentHigh) }
     }
 
     suspend fun saveLossWindows(lossMin: Int, lossEscalatedMin: Int) {
-        settingsStore.setLossWindows(lossMin, lossEscalatedMin)
-        refreshAlarmConfig()
+        updateAlarmConfig { settingsStore.setLossWindows(lossMin, lossEscalatedMin) }
     }
 
     /** A signal-QUALITY alert, distinct from loss-of-signal (§3.6-A). */
     suspend fun saveWeakSignal(enabled: Boolean, dbm: Int, sustainMin: Int) {
-        settingsStore.setWeakSignal(enabled, dbm, sustainMin)
-        refreshAlarmConfig()
+        updateAlarmConfig { settingsStore.setWeakSignal(enabled, dbm, sustainMin) }
     }
 
     suspend fun saveRepeatCadence(min: Int) {
-        settingsStore.setRepeatCadence(min)
-        refreshAlarmConfig()
+        updateAlarmConfig { settingsStore.setRepeatCadence(min) }
     }
 
     suspend fun saveMinActuationMin(min: Int) {
-        settingsStore.setMinActuationMin(min)
-        refreshAlarmConfig()
+        updateAlarmConfig { settingsStore.setMinActuationMin(min) }
     }
 
     /** The over-temp alarm is EXEMPT from DEATH's global suppression (D4). */
     suspend fun saveOverTempConfig(enabled: Boolean, alertC: Double, clearC: Double, critical: Boolean) {
-        settingsStore.setOverTempConfig(enabled, alertC, clearC, critical)
-        refreshAlarmConfig()
+        updateAlarmConfig { settingsStore.setOverTempConfig(enabled, alertC, clearC, critical) }
     }
 
     /** Accepts the wrapped shape or legacy flat settings; throws on a foreign one. Off-main. */

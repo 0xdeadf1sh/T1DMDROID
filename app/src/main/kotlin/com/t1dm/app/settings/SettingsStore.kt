@@ -117,17 +117,17 @@ class SettingsStore(
 
     // Sound URIs live in AppContainer, not here.
 
-    val warningVibration: Flow<String> = repository.observeKv(K_VIB_WARN).map { it ?: VibrationPreset.DOUBLE.name }
-    val criticalVibration: Flow<String> = repository.observeKv(K_VIB_CRIT).map { it ?: VibrationPreset.INSISTENT.name }
-    val bypassDnd: Flow<Boolean> = boolFlow(K_BYPASS_DND, true)
-    val criticalSoundOn: Flow<Boolean> = boolFlow(K_CRIT_SOUND_ON, true)
-    val warningSoundOn: Flow<Boolean> = boolFlow(K_WARN_SOUND_ON, false)
+    val warningVibration: Flow<String> = repository.observeKv(K_VIB_WARN).map { it ?: DEFAULT_WARNING_VIBRATION.name }
+    val criticalVibration: Flow<String> = repository.observeKv(K_VIB_CRIT).map { it ?: DEFAULT_CRITICAL_VIBRATION.name }
+    val bypassDnd: Flow<Boolean> = boolFlow(K_BYPASS_DND, DEFAULT_BYPASS_DND)
+    val criticalSoundOn: Flow<Boolean> = boolFlow(K_CRIT_SOUND_ON, DEFAULT_CRITICAL_SOUND_ON)
+    val warningSoundOn: Flow<Boolean> = boolFlow(K_WARN_SOUND_ON, DEFAULT_WARNING_SOUND_ON)
 
-    suspend fun currentWarningVibration(): VibrationPreset = vibOrDefault(repository.getKv(K_VIB_WARN), VibrationPreset.DOUBLE)
-    suspend fun currentCriticalVibration(): VibrationPreset = vibOrDefault(repository.getKv(K_VIB_CRIT), VibrationPreset.INSISTENT)
-    suspend fun currentBypassDnd(): Boolean = getBool(K_BYPASS_DND, true)
-    suspend fun currentCriticalSoundOn(): Boolean = getBool(K_CRIT_SOUND_ON, true)
-    suspend fun currentWarningSoundOn(): Boolean = getBool(K_WARN_SOUND_ON, false)
+    suspend fun currentWarningVibration(): VibrationPreset = vibOrDefault(repository.getKv(K_VIB_WARN), DEFAULT_WARNING_VIBRATION)
+    suspend fun currentCriticalVibration(): VibrationPreset = vibOrDefault(repository.getKv(K_VIB_CRIT), DEFAULT_CRITICAL_VIBRATION)
+    suspend fun currentBypassDnd(): Boolean = getBool(K_BYPASS_DND, DEFAULT_BYPASS_DND)
+    suspend fun currentCriticalSoundOn(): Boolean = getBool(K_CRIT_SOUND_ON, DEFAULT_CRITICAL_SOUND_ON)
+    suspend fun currentWarningSoundOn(): Boolean = getBool(K_WARN_SOUND_ON, DEFAULT_WARNING_SOUND_ON)
 
     private fun vibOrDefault(raw: String?, fallback: VibrationPreset): VibrationPreset =
         raw?.let { runCatching { VibrationPreset.valueOf(it) }.getOrNull() } ?: fallback
@@ -738,6 +738,11 @@ class SettingsStore(
         private const val K_BYPASS_DND = "alerts.bypass_dnd_bool"
         private const val K_CRIT_SOUND_ON = "alerts.sound.critical_on"
         private const val K_WARN_SOUND_ON = "alerts.sound.warning_on"
+        val DEFAULT_WARNING_VIBRATION = VibrationPreset.DOUBLE
+        val DEFAULT_CRITICAL_VIBRATION = VibrationPreset.INSISTENT
+        const val DEFAULT_BYPASS_DND = true
+        const val DEFAULT_CRITICAL_SOUND_ON = true
+        const val DEFAULT_WARNING_SOUND_ON = false
 
         private const val K_GAME_PROPS = "game.props"
 

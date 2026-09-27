@@ -229,6 +229,7 @@ class CgmScanService : LifecycleService() {
         container.clearSnooze()
         alarmScope.launch {
             container.refreshAlertActuatorConfig()
+            container.refreshAlarmConfig()
             alarmEngine = AlarmEngine(container.alarmConfig)
             runCatching {
                 container.repository.authoritativeSourceId()
