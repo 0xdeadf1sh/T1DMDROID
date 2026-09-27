@@ -76,7 +76,6 @@ class CurveEngine(
             val g = gi.coerceIn(0.0, 100.0) / 100.0 // 1.0 = highest GI
             val k = lerp(4.5, 2.0, g)
             val theta = lerp(30.0, 15.0, g)
-            // ~5 mean-lives of tail, so the gamma integrates to ~grams.
             val durMin = ((k) * theta * 4.0).coerceIn(120.0, 360.0)
             return Triple(k, theta, durMin)
         }
