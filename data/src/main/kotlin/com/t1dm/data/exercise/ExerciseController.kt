@@ -18,7 +18,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import java.util.TimeZone
 
-/** Does NOT write per-bucket magnitude; that goes into the wide sample via recordExerciseCurve. */
+/** Lays and unwinds logged bouts' sample.exercise; live bouts write via ExerciseSampleWriter. */
 class ExerciseController(
     private val repository: T1dmRepository,
     private val dispatchers: T1dmDispatchers,
