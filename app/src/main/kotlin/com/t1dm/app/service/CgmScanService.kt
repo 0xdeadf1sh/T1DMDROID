@@ -195,7 +195,7 @@ class CgmScanService : LifecycleService() {
 
         createChannel()
         // Fail closed: connectedDevice FGS needs BLUETOOTH_SCAN; MainActivity restarts it.
-        if (!hasScanPermission()) {
+        if (missingGrants(this).isNotEmpty()) {
             Timber.w(
                 "CgmScanService: BLUETOOTH_SCAN not granted — the connectedDevice foreground service " +
                     "cannot start yet; stopping. It restarts once the permission is granted."
@@ -210,11 +210,6 @@ class CgmScanService : LifecycleService() {
         startPipeline()
         container.serviceRunning.value = true
     }
-
-    /** connectedDevice FGS requires a granted BT-scan permission to start (Android 14+). */
-    private fun hasScanPermission(): Boolean =
-        checkSelfPermission(android.Manifest.permission.BLUETOOTH_SCAN) ==
-            android.content.pm.PackageManager.PERMISSION_GRANTED
 
     private fun startPipeline() {
         if (started) return
@@ -852,8 +847,7 @@ class CgmScanService : LifecycleService() {
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         // START_STICKY covers process death; this covers a swipe-away.
-        val restart = Intent(applicationContext, CgmScanService::class.java)
-        startForegroundService(restart)
+        start(applicationContext)
         CgmWatchdog.enqueue(applicationContext)
         super.onTaskRemoved(rootIntent)
     }
@@ -970,8 +964,27 @@ class CgmScanService : LifecycleService() {
         private fun snapToGrid(ts: Long): Long =
             Math.floorDiv(ts + GRID_MS / 2, GRID_MS) * GRID_MS
 
+        private fun missingGrants(context: Context): List<String> = missingCgmGrants {
+            context.checkSelfPermission(it) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        }
+
+        /** Refused without the grant: a service stopped before startForeground crashes the app. */
+        fun send(context: Context, intent: Intent) {
+            val missing = missingGrants(context)
+            if (missing.isNotEmpty()) {
+                Timber.tag(TAG).w("not started: missing %s", missing.joinToString { it.substringAfterLast('.') })
+                return
+            }
+            context.startForegroundService(intent)
+        }
+
         fun start(context: Context) {
-            context.startForegroundService(Intent(context, CgmScanService::class.java))
+            send(context, Intent(context, CgmScanService::class.java))
         }
     }
 }
+
+/** connectedDevice FGS requires a granted BT-scan permission to start (Android 14+). */
+private val CGM_PERMISSIONS = listOf(android.Manifest.permission.BLUETOOTH_SCAN)
+
+internal fun missingCgmGrants(granted: (String) -> Boolean): List<String> = CGM_PERMISSIONS.filterNot(granted)

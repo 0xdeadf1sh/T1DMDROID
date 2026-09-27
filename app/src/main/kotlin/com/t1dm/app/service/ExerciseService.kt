@@ -48,10 +48,7 @@ class ExerciseService : LifecycleService() {
         container = (application as T1dmApplication).container
         createChannel()
         // Fail closed: a `location` foreground service cannot start without a location permission.
-        val granted = LOCATION_PERMISSIONS.any {
-            checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED
-        }
-        if (!granted) {
+        if (!locationGranted(this)) {
             Timber.tag(TAG).w("no location permission — the exercise track cannot start; stopping")
             container.exerciseRefusal.value = NO_PERMISSION
             refused = true
@@ -277,7 +274,15 @@ class ExerciseService : LifecycleService() {
 
         const val NO_PERMISSION = "Location denied — no track"
 
+        private fun locationGranted(context: Context): Boolean =
+            hasLocationGrant { context.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }
+
+        /** Refused without a grant: a service stopped before startForeground crashes the app. */
         fun start(context: Context, kind: ExerciseKind) {
+            if (!locationGranted(context)) {
+                (context.applicationContext as T1dmApplication).container.exerciseRefusal.value = NO_PERMISSION
+                return
+            }
             val i = Intent(context, ExerciseService::class.java).apply {
                 action = ACTION_START
                 putExtra(EXTRA_KIND, kind.name)
@@ -286,11 +291,15 @@ class ExerciseService : LifecycleService() {
         }
 
         fun stop(context: Context) {
+            if (!locationGranted(context)) return
             val i = Intent(context, ExerciseService::class.java).apply { action = ACTION_STOP }
             context.startForegroundService(i)
         }
     }
 }
+
+internal fun hasLocationGrant(granted: (String) -> Boolean): Boolean =
+    ExerciseService.LOCATION_PERMISSIONS.any(granted)
 
 /** Which bout is on, whether close-out began; generation written main, read from appScope. */
 internal class BoutGate {

@@ -16,7 +16,7 @@ class AlarmActionReceiver : BroadcastReceiver() {
         val forward = Intent(context, CgmScanService::class.java)
             .setAction(action)
             .putExtra(EXTRA_ALARM_KIND, kind)
-        runCatching { context.startForegroundService(forward) }
+        runCatching { CgmScanService.send(context, forward) }
             .onFailure { Timber.tag("CgmScan").w(it, "alarm-action forward failed") }
     }
 

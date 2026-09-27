@@ -33,7 +33,6 @@ class MainActivity : ComponentActivity() {
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
             grants.forEach { (perm, granted) -> Timber.tag(TAG).i("perm %s granted=%b", perm, granted) }
-            // Started regardless of grants: a missing one narrows the service, not fails it.
             CgmScanService.start(this)
         }
 

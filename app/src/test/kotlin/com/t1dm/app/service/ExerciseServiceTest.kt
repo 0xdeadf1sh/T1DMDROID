@@ -1,5 +1,6 @@
 package com.t1dm.app.service
 
+import android.Manifest
 import com.t1dm.core.model.ActiveExercise
 import com.t1dm.core.model.ExerciseKind
 import com.t1dm.core.model.ExerciseSession
@@ -105,6 +106,13 @@ class ExerciseServiceTest {
     fun `a start that failed names the fault`() {
         assertEquals("Didn't start — disk full", startFailureText(IllegalStateException("disk full")))
         assertEquals("Didn't start — IllegalStateException", startFailureText(IllegalStateException()))
+    }
+
+    @Test
+    fun `no location grant refuses the start`() {
+        assertFalse(hasLocationGrant { false })
+        assertTrue(hasLocationGrant { it == Manifest.permission.ACCESS_COARSE_LOCATION })
+        assertTrue(hasLocationGrant { it == Manifest.permission.ACCESS_FINE_LOCATION })
     }
 
     private fun active(elapsedMs: Long, distanceM: Double, id: Long = 1L) = ActiveExercise(

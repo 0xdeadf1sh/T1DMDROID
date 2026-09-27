@@ -12,7 +12,7 @@ class AlertRepeatReceiver : BroadcastReceiver() {
         Timber.tag("CgmScan").d("ALERT_REPEAT tick")
         val forward = Intent(context, CgmScanService::class.java)
             .setAction(CgmScanService.ACTION_ALERT_REPEAT)
-        runCatching { context.startForegroundService(forward) }
+        runCatching { CgmScanService.send(context, forward) }
             .onFailure { Timber.tag("CgmScan").w(it, "alert-repeat forward failed") }
     }
 }
