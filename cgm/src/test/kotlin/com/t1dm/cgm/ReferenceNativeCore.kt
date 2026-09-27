@@ -1,10 +1,13 @@
 package com.t1dm.cgm
 
 import com.t1dm.core.common.GameWorld
+import com.t1dm.core.common.GolfWorld
 import com.t1dm.core.common.NativeCore
 import com.t1dm.core.common.NativeHead
 import com.t1dm.core.model.AdvancedStats
+import com.t1dm.core.model.AlarmFanEdges
 import com.t1dm.core.model.BasalSchedule
+import com.t1dm.core.model.BolusPk
 import com.t1dm.core.model.CarTuning
 import com.t1dm.core.model.ClarkeZone
 import com.t1dm.core.model.ClinicalCuts
@@ -16,6 +19,7 @@ import com.t1dm.core.model.DtsZone
 import com.t1dm.core.model.Forecast
 import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.ForecastWindow
+import com.t1dm.core.model.GolfTuning
 import com.t1dm.core.model.GraphInput
 import com.t1dm.core.model.HeadSpec
 import com.t1dm.core.model.LoraConfig
@@ -30,6 +34,7 @@ import com.t1dm.core.model.MaskSpan
 import com.t1dm.core.model.MetricsConfig
 import com.t1dm.core.model.MetricsSuite
 import com.t1dm.core.model.ModelDescriptor
+import com.t1dm.core.model.Obstacle
 import com.t1dm.core.model.PredictedTime
 import com.t1dm.core.model.StatSample
 import com.t1dm.core.model.TerrainSpec
@@ -47,7 +52,8 @@ class ReferenceNativeCore : NativeCore {
     override fun normalizeSample(desc: ModelDescriptor, bg: Double, carb: Double, insulin: Double): List<Double> = TODO("not exercised by :cgm tests")
     override fun denormalizeSample(desc: ModelDescriptor, z: List<Double>): List<Double> = TODO("not exercised by :cgm tests")
     override fun buildGraphInput(desc: ModelDescriptor, bg: List<Double>, carb: List<Double>, insulin: List<Double>, announcedCarb: List<Double>?, announcedInsulin: List<Double>?, maskSpans: List<MaskSpan>, withForecast: Boolean, smoothingWindow: Int): GraphInput = TODO("not exercised by :cgm tests")
-    override fun assembleDecode(desc: ModelDescriptor, headRaw: List<Double>, anchors: List<Double>, slotPatch: List<Int>, nMasked: Int, carrySpread: Double): Forecast = TODO("not exercised by :cgm tests")
+    override fun assembleDecode(desc: ModelDescriptor, headRaw: List<Double>, anchors: List<Double>, slotPatch: List<Int>, nMasked: Int, carrySpread: List<Double>): Forecast = TODO("not exercised by :cgm tests")
+    override fun stepStates(desc: ModelDescriptor, hidden: List<Float>, slotPatch: List<Int>, attnMask: List<Float>): List<Double> = TODO("not exercised by :cgm tests")
     override fun forecastSlice(f: Forecast, fromPatch: Int, toPatch: Int): Forecast = TODO("not exercised by :cgm tests")
     override fun bandLine(desc: ModelDescriptor, f: Forecast, tau: Double): List<Double> = TODO("not exercised by :cgm tests")
     override fun bandLineAt(desc: ModelDescriptor, qTauRisk: List<Double>, tau: Double): List<Double> = TODO("not exercised by :cgm tests")
@@ -62,7 +68,7 @@ class ReferenceNativeCore : NativeCore {
     override fun decodeTime(timeLogits: List<Double>, nBins: Int, binHours: Double): PredictedTime? = TODO("not exercised by :cgm tests")
     override fun gamma(total: Double, k: Double, theta: Double, durMin: Double): List<Double> = TODO("not exercised by :cgm tests")
     override fun bateman(total: Double, durMin: Double, ka: Double, ke: Double): List<Double> = TODO("not exercised by :cgm tests")
-    override fun expActionCurve(total: Double, peakMin: Double, diaMin: Double): List<Double> = TODO("not exercised by :cgm tests")
+    override fun bolusPkForDose(doseU: Double, k: Double, theta: Double, diaBaseHours: Double): BolusPk = TODO("not exercised by :cgm tests")
     override fun insulinPresetCatalog(): List<com.t1dm.core.model.InsulinPresetSpec> = TODO("not exercised by :cgm tests")
     override fun bucketize(events: List<CurveEvent>, gridStartMs: Long, nSteps: Int, kind: CurveKind): List<Double> = TODO("not exercised by :cgm tests")
     override fun onBoard(events: List<CurveEvent>, atMs: Long, kind: CurveKind): Double = TODO("not exercised by :cgm tests")
@@ -78,5 +84,8 @@ class ReferenceNativeCore : NativeCore {
     override fun applyQuantileConformal(bandsMgdl: List<Double>, delta: List<Double>): List<Double>? = TODO("not exercised by :cgm tests")
     override fun applyQuantileConformalBatch(fansMgdl: List<Double>, delta: List<Double>): List<Double>? = TODO("not exercised by :cgm tests")
     override fun defaultCarTuning(): CarTuning = TODO("not exercised by :cgm tests")
-    override fun createGameWorld(terrain: TerrainSpec, tuning: CarTuning): GameWorld = TODO("not exercised by :cgm tests")
+    override fun createGameWorld(terrain: TerrainSpec, tuning: CarTuning, obstacles: List<Obstacle>): GameWorld = TODO("not exercised by :cgm tests")
+    override fun alarmFanEdges(): AlarmFanEdges? = TODO("not exercised by :cgm tests")
+    override fun defaultGolfTuning(): GolfTuning = TODO("not exercised by :cgm tests")
+    override fun createGolfWorld(terrain: TerrainSpec, tuning: GolfTuning, obstacles: List<Obstacle>): GolfWorld = TODO("not exercised by :cgm tests")
 }
