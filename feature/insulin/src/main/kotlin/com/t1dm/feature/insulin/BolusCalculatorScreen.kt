@@ -52,26 +52,29 @@ fun BolusCalculatorScreen(
     targetLowMgdl: Double,
     targetHighMgdl: Double,
     initialTargetMgdl: Double,
-    /** The target [result] was computed for. */
+    /** The target [result] was computed for; null = the Settings objective, or no result. */
     resultTargetMgdl: Double? = null,
+    /** Names the Settings objective an unmoved slider leaves in force. */
+    objectiveLabel: String,
     /** Null = fresh; else Accept is withheld. */
     stale: AdviceGate.Stale? = null,
     isComputing: Boolean = false,
     /** Null ⇒ not yet resolved; an Accept that would write a dose stays closed until it lands. */
     insulinLabel: String? = null,
     onAccept: (Candidate) -> Unit = {},
-    onRecompute: (targetMgdl: Double) -> Unit = {},
+    /** Null = the Settings objective. */
+    onRecompute: (targetMgdl: Double?) -> Unit = {},
 ) {
     // Guards only Slider's start ≤ end; the bounds are the clamp, this never narrows them.
     val lo = minOf(targetLowMgdl, targetHighMgdl)
     val hi = maxOf(targetLowMgdl, targetHighMgdl).let { if (it > lo) it else lo + 1.0 }
-    var targetMgdl by remember(lo, hi, initialTargetMgdl) {
-        mutableStateOf((resultTargetMgdl ?: initialTargetMgdl).coerceIn(lo, hi))
-    }
+    // Null until the slider moves: only a moved slider overrides the Settings objective.
+    var movedTarget by remember { mutableStateOf(resultTargetMgdl) }
     // Keyed on the result, not Running: the slider shows what the recommendation aimed at.
     LaunchedEffect(result) {
-        if (result != null && resultTargetMgdl != null) targetMgdl = resultTargetMgdl.coerceIn(lo, hi)
+        if (result != null) movedTarget = resultTargetMgdl
     }
+    val targetInForce = movedTarget?.coerceIn(lo, hi)
     val scroll = rememberScrollState()
     val haptics = rememberT1dmHaptics()
 
@@ -81,7 +84,12 @@ fun BolusCalculatorScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        TargetBgSlider(targetMgdl, lo, hi) { targetMgdl = it }
+        TargetBgSlider(
+            targetInForce ?: initialTargetMgdl.coerceIn(lo, hi),
+            lo,
+            hi,
+            if (targetInForce == null) "Settings objective: $objectiveLabel" else "Aims the forecast median here",
+        ) { movedTarget = it }
         when (result) {
             null -> Text("No recommendation yet", style = MaterialTheme.typography.bodyMedium)
             is AdviceResult.Refused -> RefusedCard(result)
@@ -89,12 +97,12 @@ fun BolusCalculatorScreen(
                 result,
                 insulinLabel,
                 stale,
-                AdviceGate.sameTarget(resultTargetMgdl, targetMgdl),
+                AdviceGate.sameTarget(resultTargetMgdl, targetInForce),
                 onAccept,
             )
         }
         Button(
-            onClick = { haptics.perform(HapticEvent.Tap); onRecompute(targetMgdl) },
+            onClick = { haptics.perform(HapticEvent.Tap); onRecompute(targetInForce) },
             enabled = !isComputing,
             modifier = Modifier.padding(top = 4.dp),
         ) {
@@ -115,7 +123,7 @@ fun BolusCalculatorScreen(
 
 /** The [low]…[high] bounds are the clamp; no separate "safe range" is imposed on the choice. */
 @Composable
-private fun TargetBgSlider(target: Double, low: Double, high: Double, onChange: (Double) -> Unit) {
+private fun TargetBgSlider(target: Double, low: Double, high: Double, caption: String, onChange: (Double) -> Unit) {
     // One detent per whole mg/dL, matching the read-out's digits.
     val targetDetent = rememberHapticDetent(HapticEvent.ScrubTick)
     Card(Modifier.fillMaxWidth(), colors = panelCardColors()) {
@@ -134,7 +142,7 @@ private fun TargetBgSlider(target: Double, low: Double, high: Double, onChange: 
                 Text("${high.roundToInt()}", style = MaterialTheme.typography.labelSmall, color = LocalContentColor.current.copy(alpha = 0.6f))
             }
             Text(
-                "Aims the forecast median here",
+                caption,
                 style = MaterialTheme.typography.labelSmall,
                 color = LocalContentColor.current.copy(alpha = 0.6f),
             )

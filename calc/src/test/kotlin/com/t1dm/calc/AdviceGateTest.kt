@@ -39,4 +39,11 @@ class AdviceGateTest {
         assertTrue(AdviceGate.sameTarget(123.0, 123.4))
         assertFalse("slider moved off the computed target", AdviceGate.sameTarget(123.0, 140.0))
     }
+
+    @Test
+    fun an_unmoved_slider_matches_only_the_settings_objective() {
+        assertTrue(AdviceGate.sameTarget(null, null))
+        assertFalse("Settings objective vs a moved slider", AdviceGate.sameTarget(null, 110.0))
+        assertFalse("manual target vs an unmoved slider", AdviceGate.sameTarget(110.0, null))
+    }
 }

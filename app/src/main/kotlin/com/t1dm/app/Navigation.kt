@@ -575,6 +575,13 @@ private data class LogPage(val start: Int, val entries: List<LoggedEntry>, val h
 
 private val EMPTY_LOG_PAGE = LogPage(0, emptyList(), false)
 
+/** First entry doubles as the label for an unknown key, which the store reads as Kovatchev. */
+private val CALC_OBJECTIVES = listOf(
+    SettingsStore.OBJ_KOVATCHEV to "Min Kovatchev risk",
+    SettingsStore.OBJ_MIN_TOR to "Min time out of range",
+    SettingsStore.OBJ_HIT_TARGET to "Hit target (1 h)",
+)
+
 private fun GlyStatus.text(nowMs: Long): String = when (this) {
     GlyStatus.Stable -> "STABLE"
     GlyStatus.Unsure -> "UNSURE"
@@ -1397,6 +1404,7 @@ private fun T1dmNavHost(
             val targetLow by ss.calcTargetLow.collectAsState(70.0)
             val targetHigh by ss.calcTargetHigh.collectAsState(180.0)
             val targetMid by ss.calcTargetMid.collectAsState(110.0)
+            val objective by ss.calcObjective.collectAsState(SettingsStore.OBJ_KOVATCHEV)
             val insulinLabel by produceState<String?>(null) { value = container.resolvedRapidLabel() }
             val ready = ui as? BolusAdviceUi.Ready
             val lastCurveWrite by container.lastCurveWriteMs.collectAsState()
@@ -1415,6 +1423,7 @@ private fun T1dmNavHost(
                 targetHighMgdl = targetHigh,
                 initialTargetMgdl = targetMid,
                 resultTargetMgdl = ready?.targetMgdl,
+                objectiveLabel = (CALC_OBJECTIVES.firstOrNull { it.first == objective } ?: CALC_OBJECTIVES.first()).second,
                 stale = ready?.let { AdviceGate.staleness(it.computedAtMs, lastCurveWrite, nowMs) },
                 isComputing = ui is BolusAdviceUi.Running,
                 insulinLabel = insulinLabel,
@@ -1798,11 +1807,7 @@ private fun T1dmNavHost(
             val rConfirm by ss.railConfirm.collectAsState(true)
             val rHypo by ss.railHypoTreatment.collectAsState(true)
             CalculatorSettingsScreen(
-                objectiveOptions = listOf(
-                    SettingsStore.OBJ_KOVATCHEV to "Min Kovatchev risk",
-                    SettingsStore.OBJ_MIN_TOR to "Min time out of range",
-                    SettingsStore.OBJ_HIT_TARGET to "Hit target (1 h)",
-                ),
+                objectiveOptions = CALC_OBJECTIVES,
                 objective = objective,
                 targetLow = tLow, targetHigh = tHigh, targetMid = tMid,
                 hypoWeight = hypoW, hyperWeight = hyperW,
