@@ -8,6 +8,7 @@ import com.t1dm.watch.crypto.WatchStores
 import com.t1dm.watch.proto.WatchCodec
 import com.t1dm.watch.proto.WatchRecordKind
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -91,7 +92,8 @@ class WatchHub(
                     .collect { _pairing.value = it; publishSummary() }
             }
         }
-        scope.launch(dispatchers.default) { rehost() }
+        // Undispatched: old links are gone before start returns, so a pairing begun next survives.
+        scope.launch(dispatchers.default, start = CoroutineStart.UNDISPATCHED) { rehost() }
     }
 
     /** After a service restart, links bound to the old scope are rebuilt from the stores. */
