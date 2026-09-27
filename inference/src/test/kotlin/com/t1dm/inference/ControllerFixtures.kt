@@ -3,8 +3,11 @@ package com.t1dm.inference
 import com.t1dm.core.common.T1dmDispatchers
 import com.t1dm.core.model.BackendId
 import com.t1dm.core.model.ChannelStat
+import com.t1dm.core.model.GraphInput
 import com.t1dm.core.model.HeadSpec
 import com.t1dm.core.model.KovatchevParams
+import com.t1dm.core.model.LoraConfig
+import com.t1dm.core.model.LoraWeights
 import com.t1dm.core.model.ModelDescriptor
 import com.t1dm.core.model.ModelPrediction
 import com.t1dm.core.nativecore.StubNativeCore
@@ -19,6 +22,15 @@ import java.io.File
 import java.nio.FloatBuffer
 
 internal const val FIXTURE_NOW = 1_700_000_000_000L
+
+internal val FIXTURE_ADAPTER = LoraWeights(
+    config = LoraConfig(rank = 1, alpha = 1.0, targetHidden = true, targetL0 = false, targetL1 = false, targetL2 = false),
+    headSha256 = "",
+    dModel = 4,
+    hidden = 4,
+    outDim = 7,
+    params = emptyList(),
+)
 
 internal class FixtureDispatchers(
     override val inference: CoroutineDispatcher = Dispatchers.Unconfined,
@@ -116,6 +128,20 @@ internal fun flatSeries(n: Int = 48, anchorTsMs: Long = FIXTURE_NOW) = BgSeries(
     mgdl = DoubleArray(n) { 120.0 },
     anchorTsMs = anchorTsMs,
     gridStartMs = anchorTsMs - (n - 1) * 300_000L,
+)
+
+internal fun emptyGraphInput() = GraphInput(
+    nCtx = 0,
+    t = 0,
+    patchDim = 0,
+    mSlots = 0,
+    nMasked = 0,
+    patches = FloatArray(0),
+    attnMask = FloatArray(0),
+    slotSel = FloatArray(0),
+    anchors = emptyList(),
+    slotPatch = emptyList(),
+    firstForecastPatch = 0,
 )
 
 internal fun emptyTensors() = GraphTensors(

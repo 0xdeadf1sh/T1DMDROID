@@ -316,12 +316,20 @@ class InferenceController(
         withContext(dispatchers.inference) { e.backend.run(e.handle, input) }
     }
 
-    /** Dose path's forward (§3.6-E), same confinement as runSelected; throws unless loaded. */
-    suspend fun runSelectedAuthority(input: GraphTensors): GraphOutput = cycleMutex.withLock {
-        val id = selectedId ?: error("no selected model")
-        val e = loaded[id]?.takeIf { it.real && it.effectiveBackend == BackendId.EXECUTORCH_XNNPACK_FP32 }
-            ?: error("fp32 XNNPACK authority not loaded for $id")
-        withContext(dispatchers.inference) { e.backend.run(e.handle, input) }
+    /** Dose path's forward (§3.6-E) on [expected], same confinement as runSelected. */
+    suspend fun runSelectedAuthority(expected: SelectedModelInfo, input: GraphTensors): GraphOutput =
+        cycleMutex.withLock {
+            val e = authorityEntry(expected)
+            withContext(dispatchers.inference) { e.backend.run(e.handle, input) }
+        }
+
+    /** Caller holds [cycleMutex]. Throws once a select or reload has replaced [expected]. */
+    private fun authorityEntry(expected: SelectedModelInfo): Entry {
+        check(selectedId == expected.id) { "selection moved off ${expected.id}" }
+        val e = loaded[expected.id]?.takeIf { it.real && it.effectiveBackend == BackendId.EXECUTORCH_XNNPACK_FP32 }
+            ?: error("fp32 XNNPACK authority not loaded for ${expected.id}")
+        check(e.bundle.descriptor === expected.descriptor) { "model ${expected.id} reloaded" }
+        return e
     }
 
     /** forecast holds EVERY decoded slot incl. infill spans, slotPatch names position; unstored. */
@@ -565,12 +573,12 @@ class InferenceController(
             // The branch that reads from inside the context; `realized` was checked above.
             if (spanTarget.any { it.isNaN() }) continue
             // ONE forward per lock; holding it across hundreds of windows starves the forecast.
-            val run = cycleMutex.withLock {
+            val steps = cycleMutex.withLock {
                 if (loaded[modelId] !== entry) return out
-                withContext(dispatchers.inference) { entry.backend.run(entry.handle, GraphIo.tensors(gi)) }
+                val run = withContext(dispatchers.inference) { entry.backend.run(entry.handle, GraphIo.tensors(gi)) }
+                stepStates(entry.bundle, gi, run, needed = true)
+                    .also { heads.verify(entry.bundle, it, run.headRaw, gi.mSlots) }
             }
-            val steps = stepStates(entry.bundle, gi, run, needed = true)
-            heads.verify(entry.bundle, steps, run.headRaw, gi.mSlots)
             val hidden = steps ?: return out
             val d = desc.dModel * desc.patchSize
 
@@ -913,24 +921,11 @@ class InferenceController(
     }
 
     /** Dose path scores on the same forecaster the panel draws; a bad adapter THROWS. */
-    suspend fun adaptedHeadRawFor(modelId: String, out: GraphOutput, gi: GraphInput): List<Double>? {
+    suspend fun adaptedHeadRawFor(expected: SelectedModelInfo, out: GraphOutput, gi: GraphInput): List<Double>? {
         val store = loraStore ?: return null
-        val w = store.attached(modelId) ?: return null
-        val entry = cycleMutex.withLock { loaded[modelId] } ?: error("model $modelId is not loaded")
-        val steps = stepStates(entry.bundle, gi, out, needed = true)
+        val w = store.attached(expected.id) ?: return null
         // Dose path can be the FIRST caller after a start; proved against this forward.
-        heads.verify(entry.bundle, steps, out.headRaw, gi.mSlots)
-        val state = heads.stateOf(entry.bundle)
-        if (state !is HeadCache.State.Ready) {
-            error("adapter attached to $modelId but its head is unusable: ${(state as? HeadCache.State.Unusable)?.why ?: "no head file"}")
-        }
-        val input = steps ?: error("adapter attached to $modelId but the graph emits no hidden state")
-        state.head.setLora(w)
-        return try {
-            withContext(dispatchers.default) { state.head.forward(input, gi.mSlots) }
-        } finally {
-            state.head.setLora(null)
-        }
+        return cycleMutex.withLock { verifiedHeadRaw(authorityEntry(expected), gi, out, w) }
     }
 
     private suspend fun runOne(

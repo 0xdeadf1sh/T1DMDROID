@@ -2,7 +2,6 @@ package com.t1dm.inference
 
 import com.t1dm.core.common.NativeCore
 import com.t1dm.core.common.NativeHead
-import com.t1dm.core.model.LoraWeights
 import timber.log.Timber
 import kotlin.math.abs
 
@@ -69,8 +68,6 @@ class HeadCache(private val native: NativeCore) {
             set(bundle.id, State.Unusable("the graph emits no hidden state; nothing to adapt"))
             return
         }
-        val had = state.head.hasLora()
-        if (had) state.head.setLora(null)
         val ours = runCatching { state.head.forward(steps, mSlots) }.getOrElse {
             set(bundle.id, State.Unusable("head forward failed: ${it.message}"))
             return
@@ -90,13 +87,6 @@ class HeadCache(private val native: NativeCore) {
                 State.Unusable("head disagrees with the graph by %.3e".format(worst))
             },
         )
-    }
-
-    /** Null detaches. False when the model has no usable head. */
-    @Synchronized
-    fun attach(bundle: ModelBundle, w: LoraWeights?): Boolean {
-        val state = stateOf(bundle) as? State.Ready ?: return false
-        return runCatching { state.head.setLora(w) }.isSuccess
     }
 
     private companion object {

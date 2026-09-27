@@ -1677,12 +1677,12 @@ class AppContainer(context: Context) {
             override val descriptor = info.descriptor
             override val backendInfo = calcBackendInfo(info)
             override suspend fun run(input: GraphTensors): com.t1dm.inference.backend.GraphOutput =
-                inferenceController.runSelectedAuthority(input)
+                inferenceController.runSelectedAuthority(info, input)
 
             override suspend fun adapt(
                 out: com.t1dm.inference.backend.GraphOutput,
                 gi: com.t1dm.core.model.GraphInput,
-            ): List<Double>? = inferenceController.adaptedHeadRawFor(info.id, out, gi)
+            ): List<Double>? = inferenceController.adaptedHeadRawFor(info, out, gi)
         }
     }
 
