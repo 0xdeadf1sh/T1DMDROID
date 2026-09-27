@@ -34,8 +34,9 @@ object AidexCodec {
         return crc and 0xFFFFFFFFL
     }
 
+    /** The word sum wraps at 2^32, as the firmware's u32 does. */
     fun seedFor(body16: ByteArray): Long =
-        (le32(body16, 0) + le32(body16, 4) + le32(body16, 8) + le32(body16, 12)) % SEED_MOD
+        ((le32(body16, 0) + le32(body16, 4) + le32(body16, 8) + le32(body16, 12)) and 0xFFFFFFFFL) % SEED_MOD
 
     fun crcOf(payload: ByteArray): Long = crc32Normal(payload, 16, seedFor(payload))
 
