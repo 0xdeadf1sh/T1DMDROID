@@ -24,24 +24,27 @@ pulling the app database during verification.
 ## The loop: build → deploy → observe
 
 1. **Build the APK** through the `t1dmdroid-install` skill (`~/.claude/skills/`). A bare `./gradlew`
-   is uncapped and freezes the development machine. Default to the **personalDebug** variant — that
-   is the daily build.
+   is uncapped and freezes the development machine. Default to the **personalRelease** variant — the
+   build on the phone.
 
 2. **Find the built APK** without starting Gradle, which `android describe` does:
 
    ```bash
-   cat app/build/outputs/apk/personal/debug/output-metadata.json   # versionCode, versionName, outputFile
+   cat app/build/outputs/apk/personal/release/output-metadata.json   # versionCode, versionName, outputFile
    ```
 
-   The two debug variants land at:
+   The two release variants land at:
 
-   - personalDebug → `app/build/outputs/apk/personal/debug/app-personal-debug.apk` → package **`com.t1dm.app`**
-   - publicDebug   → `app/build/outputs/apk/public/debug/app-public-debug.apk`      → package **`com.t1dm.app.pub`**
+   - personalRelease → `app/build/outputs/apk/personal/release/app-personal-release.apk` → package **`com.t1dm.app`**
+   - publicRelease   → `app/build/outputs/apk/public/release/app-public-release.apk`      → package **`com.t1dm.app.pub`**
+
+   personalDebug exports `CgmDebugReceiver` with no permission. Install it only for a receiver test,
+   then reinstall personalRelease.
 
 3. **Deploy + launch** (installs and starts the activity):
 
    ```bash
-   android run --apks app/build/outputs/apk/personal/debug/app-personal-debug.apk \
+   android run --apks app/build/outputs/apk/personal/release/app-personal-release.apk \
      --device <serial> --activity com.t1dm.app.MainActivity
    ```
 
@@ -89,6 +92,8 @@ inspecting service + DB state, which is `adb` territory:
   # then: python3 -c "import sqlite3; ..."  (system `sqlite3` CLI lacks features; use python)
   ```
 
+  `run-as` needs a debuggable build; personalRelease refuses it.
+
   `kv.last_alive_ts` advances every 60 s **iff the process lives**; the newest `cgm_reading.tsMs`
   advances **iff the scan is delivering**. Heartbeat-advances-but-readings-stall ⇒ a scan problem,
   not a process kill — the discriminator for background-collection bugs.
@@ -106,12 +111,12 @@ The ones that bite deployment on this Xiaomi/HyperOS device:
 
 - A **fresh-package** install (first-ever `com.t1dm.app.pub`) returns `INSTALL_FAILED_USER_RESTRICTED`
   and needs a physical on-screen tap (or Developer options → *Install via USB* + disable MIUI install
-  confirmation). An already-installed package (personalDebug `com.t1dm.app`) reinstalls fine.
+  confirmation). An already-installed package (`com.t1dm.app`) reinstalls fine.
 - `POST_NOTIFICATIONS` still prompts after install; `pm grant com.t1dm.app
   android.permission.POST_NOTIFICATIONS` before a scripted launch, or the dialog stalls it.
 - After `am force-stop`, an intent that starts the FGS trips
   `ForegroundServiceStartNotAllowedException` — relaunch `MainActivity` first.
-- The non-exported `CgmScanService` cannot be poked directly over adb (HyperOS refuses "Requires
+- **Debug build only.** The non-exported `CgmScanService` cannot be poked directly over adb (HyperOS refuses "Requires
   permission not exported"); the debug build ships an **exported** `CgmDebugReceiver` that forwards
   intents to the running FGS via an app-internal `startForegroundService`. Broadcast to it explicitly,
   e.g. `adb shell am broadcast -n com.t1dm.app/com.t1dm.app.service.CgmDebugReceiver -a
