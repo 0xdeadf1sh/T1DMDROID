@@ -73,7 +73,7 @@ A bout can also be replayed at a chosen instant, past or future, which lays its 
 
 ### Backup and Restore
 
-One gzipped, line-delimited JSON file holds the whole local record — every glucose reading, the wide sensor series, meals, doses, basal schedules, custom foods, saved meals, insulin types, exercise bouts and their tracks, replayed bouts, the graph's freehand drawings, and every setting. Automatic backups run on a chosen cadence into a folder outside app storage, so they survive an uninstall, with a configurable number of older archives retained.
+One gzipped, line-delimited JSON file holds the glucose readings, the wide sensor series, meals, doses, basal schedules, custom foods, saved meals, insulin types, exercise bouts and their tracks, replayed bouts, promoted gap-fills with their median and 90 % band, the CGM source list, LoRA adapters, band corrections, deletion tombstones, the graph's freehand drawings, and the exported settings. It leaves out raw sub-grid samples, unpromoted gap-fills, stored forecasts, the outbox, telemetry, and the settings that are not exported: the Nightscout link, the backup schedule, body mass, the sensor-name switch and the fail-open override. Automatic backups run on a chosen cadence into a folder outside app storage, so they survive an uninstall, with a configurable number of older archives retained.
 
 Restore merges: a record already present is kept, so importing the same file twice changes nothing and an older archive can never roll back newer data. The Nightscout secret is never written to a backup — it lives in the Android Keystore rather than in the database.
 
