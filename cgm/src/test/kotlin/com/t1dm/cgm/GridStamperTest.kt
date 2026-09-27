@@ -109,6 +109,17 @@ class GridStamperTest {
         assertEquals(base, out.single().tsMs)
     }
 
+    /** A history page lands behind the live edge; the next live reading fills from the edge. */
+    @Test
+    fun `a reading behind the newest one leaves the gap-fill anchored at the newest`() {
+        val gs = GridStamper()
+        gs.stamp(sourceId, 120, null, 30, null, ReadingFlag.NORMAL, base + 900_000, 0, null)
+        gs.stamp(sourceId, 100, null, 27, null, ReadingFlag.NORMAL, base, 0, null)
+        val out = gs.stamp(sourceId, 150, null, 45, null, ReadingFlag.NORMAL, base + 1_800_000, 0, null)
+        assertEquals(listOf(130, 140, 150), out.map { it.bgMgdl })
+        assertEquals(base + 1_200_000, out.first().tsMs)
+    }
+
     @Test
     fun `the AiDEX path still interpolates through the overload it delegates to`() {
         val gs = GridStamper()

@@ -89,9 +89,9 @@ class GridStamper(private val gridMs: Long = CgmConstants.GRID_MS) {
             measuredAtMs = rxWallMs,
         )
 
-        // A valueless NORMAL reading cannot anchor interpolation across a gap nothing measured.
-        if (flag == ReadingFlag.NORMAL) {
-            lastMeasuredTs = if (bgMgdl != null) ts else null
+        // Newest slot only; a valueless one keeps its null, so no line is drawn across it.
+        if (flag == ReadingFlag.NORMAL && (lTs == null || ts >= lTs)) {
+            lastMeasuredTs = ts
             lastMeasuredBg = bgMgdl
         }
         return out
