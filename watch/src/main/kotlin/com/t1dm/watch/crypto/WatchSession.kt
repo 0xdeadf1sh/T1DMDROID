@@ -76,6 +76,6 @@ class WatchKeyMaterial(val bytes: ByteArray)
 interface WatchSessionFactory {
     fun fresh(): WatchSession
 
-    /** Seeds send counter above [burnedCeiling], so no nonce repeats across process death. */
+    /** Send seq resumes at [material]'s persisted ceiling; without it, above [burnedCeiling]. */
     fun resume(material: WatchKeyMaterial?, burnedCeiling: Long): WatchSession
 }
