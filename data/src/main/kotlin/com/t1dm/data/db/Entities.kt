@@ -13,8 +13,6 @@ import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 
-/** Keep-forever storage: every schema change is additive, never a drop. */
-
 enum class DoseKind { BOLUS, BASAL }
 
 /** Persisted by name; MIGRATION_28_29 purged every other kind, so valueOf never meets one. */

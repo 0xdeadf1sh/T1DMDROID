@@ -9,7 +9,7 @@ import androidx.sqlite.SQLiteConnection
 import androidx.sqlite.driver.bundled.BundledSQLiteDriver
 import kotlinx.coroutines.Dispatchers
 
-/** Keep-forever: hand-written migrations only, never destructive fallback; revisions never drop. */
+/** Keep-forever: hand-written migrations only, never destructive fallback. */
 @Database(
     entities = [
         CgmSourceEntity::class,

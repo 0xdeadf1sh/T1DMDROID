@@ -7,7 +7,7 @@ import androidx.sqlite.execSQL
 import com.t1dm.data.meals.FoodSeed
 import java.util.UUID
 
-/** Append-only DDL, never destructive except MIGRATION_8_9; from schemas/<db>/n.json verbatim. */
+/** DDL from schemas/<db>/n.json verbatim; 6_7, 8_9, 16_17, 24_25, 27_28, 28_29 drop data. */
 object MigrationRunner {
 
     val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -157,7 +157,7 @@ object MigrationRunner {
         override fun migrate(connection: SQLiteConnection) {
             addClientId(connection, "logged_meal")
             addClientId(connection, "logged_dose")
-            // Rebuild, not ALTER TABLE DROP COLUMN: driver mishandles it, Room rejects extras.
+            // Rebuilt without carbsG/bolusU/basalU: Room rejects extra columns.
             connection.execSQL(
                 "CREATE TABLE IF NOT EXISTS `sample_new` (`ts` INTEGER NOT NULL, " +
                     "`tzOffsetMin` INTEGER NOT NULL, `bgMgdl` INTEGER, `bgProvenance` TEXT, " +
@@ -218,7 +218,7 @@ object MigrationRunner {
         }
     }
 
-    /** Sole subtractive migration: DELETE stops NOTE rows throwing on valueOf every drain. */
+    /** DELETE stops NOTE rows throwing on valueOf every drain. */
     val MIGRATION_8_9 = object : Migration(8, 9) {
         override fun migrate(connection: SQLiteConnection) {
             connection.execSQL("DROP INDEX IF EXISTS `index_note_tsMs`")
