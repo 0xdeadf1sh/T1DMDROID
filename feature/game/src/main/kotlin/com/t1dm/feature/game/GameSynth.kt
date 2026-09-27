@@ -266,7 +266,7 @@ class GameSynth(private val sampleRate: Int) {
         /** REACHABLE ceiling, not [MAX_RPM]: else it never leaves its first brightness fifth. */
         const val REV_FULL_RPM = TOP_RPM
 
-        /** Crank speed to fundamental. Idle lands at 40 Hz; [REV_FULL_RPM] lands at 132 Hz. */
+        /** Crank speed to fundamental. Idle lands at 40 Hz. */
         const val RPM_PER_HZ = 20f
 
         const val ENGINE_TRIM = 0.34f
