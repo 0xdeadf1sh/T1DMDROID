@@ -787,7 +787,7 @@ pub struct LoraTrainReport {
     pub loss_history: Vec<f64>,
     /// Measured at the END of each epoch, `epochs_run` long.
     pub holdout_history: Vec<f64>,
-    /// Epoch whose weights were RETURNED: argmin of holdout_history, or 0/epochs_run as fallback.
+    /// Epoch RETURNED: best guard-eligible metric_history; 0 = identity, epochs_run if no holdout.
     pub best_epoch: i32,
     /// Training samples that carried a usable counterfactual branch.
     pub n_paired: i32,
