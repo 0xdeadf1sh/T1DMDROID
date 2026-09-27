@@ -1203,6 +1203,19 @@ pub fn assemble_decode(
 /// Rows whose slot sits in [from_patch, to_patch); masked set may hold infill and forecast at once.
 #[uniffi::export]
 pub fn forecast_slice(f: &Forecast, from_patch: i32, to_patch: i32) -> Result<Forecast, CoreError> {
+    let n = f.slot_patch.len() * PATCH_SIZE;
+    if f.median_risk.len() != n
+        || f.median_bg.len() != n
+        || f.q_tau_risk.len() != n * N_QUANTILES
+        || f.bands_mgdl.len() != n * N_QUANTILES
+    {
+        return Err(CoreError::Internal {
+            reason: format!(
+                "forecast arrays do not match {} slots × {PATCH_SIZE} steps",
+                f.slot_patch.len()
+            ),
+        });
+    }
     let keep: Vec<usize> = f
         .slot_patch
         .iter()
@@ -2576,5 +2589,20 @@ mod tests {
         assert_eq!(infill.median_bg.len() + fc.median_bg.len(), f.median_bg.len());
         // An empty range is an error, not an empty forecast nothing checks.
         assert!(forecast_slice(&f, first, first).is_err());
+    }
+
+    #[test]
+    fn forecast_slice_refuses_mis_sized_forecast() {
+        // Two slots named, one slot of values: slot 1 would index past the end.
+        let f = Forecast {
+            median_risk: vec![0.0; PATCH_SIZE],
+            q_tau_risk: vec![0.0; PATCH_SIZE * N_QUANTILES],
+            median_bg: vec![100.0; PATCH_SIZE],
+            bands_mgdl: vec![100.0; PATCH_SIZE * N_QUANTILES],
+            slot_patch: vec![0, 1],
+        };
+        assert!(forecast_slice(&f, 0, 2).is_err());
+        let ragged_fan = Forecast { q_tau_risk: vec![0.0; PATCH_SIZE * N_QUANTILES - 1], slot_patch: vec![0], ..f };
+        assert!(forecast_slice(&ragged_fan, 0, 1).is_err());
     }
 }
