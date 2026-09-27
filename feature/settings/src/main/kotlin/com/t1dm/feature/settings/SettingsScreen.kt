@@ -50,13 +50,13 @@ fun SettingsScreen(
         Box(Modifier.weight(1f)) {
             SettingsScaffold(SettingsScreenKey.ROOT) {
                 SettingsSectionHeader("Display")
-                SettingsNavRow("Theme, font, units & targets", "3 themes, custom JSON, fonts, animations", onClick = onOpenDisplay)
+                SettingsNavRow("Theme, font, units & targets", "Themes, custom JSON, fonts, animations", onClick = onOpenDisplay)
                 SettingsNavRow("BG graph range & window", "Floor, ceiling, default window", onClick = onOpenGraph)
                 SettingsNavRow("Games", "Drive & Golf scenery", onClick = onOpenGames)
 
                 SettingsSectionHeader("Alarms")
                 SettingsNavRow("Alarm thresholds", "Urgent-low / low / high / urgent-high — unbounded", onClick = onOpenAlarmThresholds)
-                SettingsNavRow("Signal & freshness", "Loss-of-signal windows, dosing staleness gate", onClick = onOpenSignalSafety)
+                SettingsNavRow("Signal & freshness", "Loss-of-signal windows, weak signal", onClick = onOpenSignalSafety)
                 SettingsNavRow("Alert sound & vibration", "Per-tier tone, K90 vibration, DND bypass, repeat", onClick = onOpenAlerts)
                 SettingsNavRow("Device temperature alert", "Warn when the phone runs hot — fires even in Death mode", onClick = onOpenDeviceTemp)
 
