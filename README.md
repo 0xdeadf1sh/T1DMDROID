@@ -81,7 +81,7 @@ Restore merges: a record already present is kept, so importing the same file twi
 ## Architecture
 
 - **UI:** Jetpack Compose, organized as a multi-module Gradle build so the CGM-source and model-backend seams stay pluggable.
-- **Rust core (`t1dm-core`, via JNI/NDK):** the correctness-critical, hot numerics — AiDEX frame decode and its CRCs, session crypto, the model pre/post pipeline (causal Savitzky-Golay smoothing, normalize/denormalize, the Kovatchev risk transform, quantile assembly), and the watch AES-128-GCM. Kotlin keeps the UI, BLE plumbing, storage, and orchestration. The core is tested bit-for-bit against golden vectors in CI.
+- **Rust core (`t1dm-core`, via JNI/NDK):** the correctness-critical, hot numerics — AiDEX frame decode and its CRCs, session crypto, the model pre/post pipeline (causal Savitzky-Golay smoothing, normalize/denormalize, the Kovatchev risk transform, quantile assembly), and the watch AES-128-GCM. Kotlin keeps the UI, BLE plumbing, storage, and orchestration. `cargo test -p t1dm-core` tests the core bit-for-bit against golden vectors.
 - **On-device inference:** [ExecuTorch](https://pytorch.org/executorch/). One exported model on one backend, behind a seam that keeps it replaceable: the CPU XNNPACK fp32 delegate, which the stock runtime registers. It is the only path a dose is scored on; a model whose artifact will not load there falls back to a fixed-output stub and the dose calculator refuses.
 - **Storage & orchestration:** Room on the bundled SQLite driver; an always-on foreground service plus WorkManager run the passive scan, the 5-minute grid, inference, the Nightscout bridge, and the alarm path off the main thread.
 

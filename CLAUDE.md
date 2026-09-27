@@ -109,11 +109,17 @@ make it the last step of a task, relaunch, and confirm the service came back
 
 ## Gates
 
-CI runs `assemblePersonalDebug` + `assemblePublicDebug`, `cargo test --all-targets`,
-`:calc:testDebugUnitTest` (the dose-calculator rail invariants — a blocking safety
-gate), and `cargo test -p t1dm-core` (bit-for-bit golden vectors). Run the ones
-your change touches locally; the golden vectors and the rail invariants are cheap
-and catch the errors that matter most.
+No CI fires: `private` is never pushed, and `main`'s workflows run on
+`pull_request` only while `main` is pushed directly. The gates are local; run the
+ones your change touches:
+
+- `:calc:testDebugUnitTest` — the dose-calculator rail invariants.
+- `cargo test -p t1dm-core` — bit-for-bit golden vectors.
+- `cargo test --workspace --all-targets` — every Rust crate.
+- `:app:assemblePersonalRelease` — the build that goes on the phone.
+
+The rail invariants and the golden vectors are cheap and catch the errors that
+matter most.
 
 For the Rust core, run **both** `cargo test` and `cargo build --release`; see
 *Build traps* in `../T1DMCOMMON/PROJECTS/T1DMDROID.md` for why the first alone
