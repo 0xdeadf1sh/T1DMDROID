@@ -46,6 +46,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import com.t1dm.core.model.LoggedEntry
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
@@ -88,6 +89,7 @@ import com.t1dm.app.notify.BgFormat
 import com.t1dm.app.notify.BgGlanceComputer
 import com.t1dm.app.service.DoseCalcService
 import com.t1dm.app.service.ExerciseService
+import com.t1dm.calc.AdviceGate
 import com.t1dm.app.settings.SettingsStore
 import com.t1dm.app.widget.STALE_MIN
 import com.t1dm.core.design.BundledPalettes
@@ -1397,27 +1399,47 @@ private fun T1dmNavHost(
             val targetMid by ss.calcTargetMid.collectAsState(110.0)
             val insulinLabel by produceState<String?>(null) { value = container.resolvedRapidLabel() }
             val ready = ui as? BolusAdviceUi.Ready
+            val lastCurveWrite by container.lastCurveWriteMs.collectAsState()
+            val computedAt = ready?.computedAtMs
+            // Keyed: a new result must not be judged against the previous result's clock.
+            var nowMs by remember(computedAt) { mutableLongStateOf(System.currentTimeMillis()) }
+            LaunchedEffect(computedAt) {
+                if (computedAt == null) return@LaunchedEffect
+                val left = computedAt + AdviceGate.TTL_MS - System.currentTimeMillis()
+                if (left > 0L) delay(left)
+                nowMs = System.currentTimeMillis()
+            }
             BolusCalculatorScreen(
                 result = ready?.result,
                 targetLowMgdl = targetLow,
                 targetHighMgdl = targetHigh,
                 initialTargetMgdl = targetMid,
+                resultTargetMgdl = ready?.targetMgdl,
+                stale = ready?.let { AdviceGate.staleness(it.computedAtMs, lastCurveWrite, nowMs) },
                 isComputing = ui is BolusAdviceUi.Running,
                 insulinLabel = insulinLabel,
                 onAccept = { c ->
-                    scope.launch {
-                        // A 0 U / carb-rescue acceptance writes no dose, so there is no handle.
-                        container.acceptAdvisedBolus(c.doseU)?.let { h ->
-                            onLogged(
-                                h.copy(
-                                    caveats = h.caveats +
-                                        "Recommendation cleared — recompute to see it again",
-                                ),
-                            )
+                    val now = System.currentTimeMillis()
+                    val current = container.bolusAdvice.value as? BolusAdviceUi.Ready
+                    if (current == null || current !== ready ||
+                        !AdviceGate.fresh(current.computedAtMs, container.lastCurveWriteMs.value, now)
+                    ) {
+                        nowMs = now
+                    } else {
+                        scope.launch {
+                            // A 0 U / carb-rescue acceptance writes no dose, so there is no handle.
+                            container.acceptAdvisedBolus(c.doseU)?.let { h ->
+                                onLogged(
+                                    h.copy(
+                                        caveats = h.caveats +
+                                            "Recommendation cleared — recompute to see it again",
+                                    ),
+                                )
+                            }
                         }
+                        // Clears bolusAdvice to Idle; Undo can't restore the card (caveat above).
+                        DoseCalcService.cancel(ctx)
                     }
-                    // Clears bolusAdvice to Idle; Undo can't restore the card (see caveat above).
-                    DoseCalcService.cancel(ctx)
                 },
                 onRecompute = { target -> DoseCalcService.recommend(ctx, targetMgdl = target) },
             )

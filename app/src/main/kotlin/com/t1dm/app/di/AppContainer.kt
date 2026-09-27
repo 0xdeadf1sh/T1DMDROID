@@ -656,8 +656,12 @@ class AppContainer(context: Context) {
 
     private val curveReforecastScheduled = AtomicBoolean(false)
 
+    /** Wall ms of the last dose, meal or exercise write; expires a held bolus recommendation. */
+    val lastCurveWriteMs = MutableStateFlow<Long?>(null)
+
     /** Debounced, coalescing; guard releases BEFORE the run, so a mid-cycle write earns its own. */
     fun reforecastAfterCurveWrite() {
+        lastCurveWriteMs.value = System.currentTimeMillis()
         if (!curveReforecastScheduled.compareAndSet(false, true)) return
         appScope.launch {
             try {
@@ -1753,7 +1757,9 @@ class AppContainer(context: Context) {
     sealed interface BolusAdviceUi {
         data object Idle : BolusAdviceUi
         data object Running : BolusAdviceUi
-        data class Ready(val result: AdviceResult) : BolusAdviceUi
+
+        /** [computedAtMs] is the search start; [targetMgdl] null = the Settings objective. */
+        data class Ready(val result: AdviceResult, val computedAtMs: Long, val targetMgdl: Double?) : BolusAdviceUi
     }
 
     val bolusAdvice = MutableStateFlow<BolusAdviceUi>(BolusAdviceUi.Idle)
@@ -1778,7 +1784,7 @@ class AppContainer(context: Context) {
         // DEATH also lifts the §3.6-B degeneracy refusal; rails already off via currentCalcConfig.
         val result = runCatching { doseAdvisor.recommendBolus(now, announced, cfg, bypassDegeneracyGate = deathModeSnapshot) }
             .getOrElse { AdviceResult.Refused(listOf("Calculator error — ${it.message ?: it::class.simpleName}")) }
-        bolusAdvice.value = BolusAdviceUi.Ready(result)
+        bolusAdvice.value = BolusAdviceUi.Ready(result, now, manualTargetMgdl)
     }
 
     fun clearBolusAdvice() { bolusAdvice.value = BolusAdviceUi.Idle }

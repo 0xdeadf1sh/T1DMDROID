@@ -30,6 +30,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.t1dm.calc.AdviceGate
 import com.t1dm.calc.AdviceResult
 import com.t1dm.calc.Candidate
 import com.t1dm.calc.DecisionCard
@@ -51,6 +52,10 @@ fun BolusCalculatorScreen(
     targetLowMgdl: Double,
     targetHighMgdl: Double,
     initialTargetMgdl: Double,
+    /** The target [result] was computed for. */
+    resultTargetMgdl: Double? = null,
+    /** Null = fresh; else Accept is withheld. */
+    stale: AdviceGate.Stale? = null,
     isComputing: Boolean = false,
     /** Null ⇒ not yet resolved; an Accept that would write a dose stays closed until it lands. */
     insulinLabel: String? = null,
@@ -61,7 +66,11 @@ fun BolusCalculatorScreen(
     val lo = minOf(targetLowMgdl, targetHighMgdl)
     val hi = maxOf(targetLowMgdl, targetHighMgdl).let { if (it > lo) it else lo + 1.0 }
     var targetMgdl by remember(lo, hi, initialTargetMgdl) {
-        mutableStateOf(initialTargetMgdl.coerceIn(lo, hi))
+        mutableStateOf((resultTargetMgdl ?: initialTargetMgdl).coerceIn(lo, hi))
+    }
+    // Keyed on the result, not Running: the slider shows what the recommendation aimed at.
+    LaunchedEffect(result) {
+        if (result != null && resultTargetMgdl != null) targetMgdl = resultTargetMgdl.coerceIn(lo, hi)
     }
     val scroll = rememberScrollState()
     val haptics = rememberT1dmHaptics()
@@ -79,6 +88,8 @@ fun BolusCalculatorScreen(
             is AdviceResult.Recommended -> RecommendedBody(
                 result,
                 insulinLabel,
+                stale,
+                AdviceGate.sameTarget(resultTargetMgdl, targetMgdl),
                 onAccept,
             )
         }
@@ -148,6 +159,8 @@ private fun RefusedCard(refused: AdviceResult.Refused) {
 private fun RecommendedBody(
     rec: AdviceResult.Recommended,
     insulinLabel: String?,
+    stale: AdviceGate.Stale?,
+    targetMatches: Boolean,
     onAccept: (Candidate) -> Unit,
 ) {
     var acknowledged by remember(rec) { mutableStateOf(false) }
@@ -159,6 +172,18 @@ private fun RecommendedBody(
 
     Card(Modifier.fillMaxWidth(), colors = panelCardColors()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (stale != null) {
+                Text(
+                    when (stale) {
+                        AdviceGate.Stale.AGED -> "Expired: over ${AdviceGate.TTL_MS / 60_000L} min old"
+                        AdviceGate.Stale.LOG_CHANGED -> "Expired: log changed since"
+                        AdviceGate.Stale.CLOCK_BACK -> "Expired: clock moved back"
+                    },
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
             if (rec.rescueCarbsG != null) {
                 Text("Treat the low first", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 Text("~${rec.rescueCarbsG!!.toInt()} g fast carbs — insulin withheld", style = MaterialTheme.typography.headlineSmall)
@@ -181,6 +206,8 @@ private fun RecommendedBody(
     DecisionCardView(rec.card)
 
     RankedList(rec.ranked)
+
+    if (stale != null) return
 
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Checkbox(
@@ -205,6 +232,9 @@ private fun RecommendedBody(
     }
     // Only a dose-writing accept needs [insulinLabel], which is why it is a precondition below.
     val writesDose = rec.rescueCarbsG == null && rec.best.doseU > 0.0
+    if (!targetMatches) {
+        Text("Target changed since compute", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error)
+    }
     // Only press recording a dosing decision. Carb-rescue/0 U writes no dose, carries Commit.
     Button(
         onClick = {
@@ -216,7 +246,7 @@ private fun RecommendedBody(
                 pendingAccept = rec.best
             }
         },
-        enabled = acknowledged && confirmSatisfied && (!writesDose || insulinLabel != null),
+        enabled = acknowledged && confirmSatisfied && targetMatches && (!writesDose || insulinLabel != null),
         modifier = Modifier.fillMaxWidth(),
     ) {
         Text(
