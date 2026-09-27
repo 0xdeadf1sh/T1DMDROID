@@ -2122,7 +2122,6 @@ private fun DashboardGamePanel(
 ) {
     val glucoseUnit by container.statsRepository.unitSpace.collectAsState(UnitSpace.MgDl)
     val propDensity by container.gameProps.collectAsState()
-    val latest by container.latestReading.collectAsState(null)
     val alarm by container.alarmState.collectAsState()
     val predicted by container.predictiveAlertRaised.collectAsState()
     val death by container.deathMode.collectAsState(false)
@@ -2152,7 +2151,6 @@ private fun DashboardGamePanel(
             onReady = onReady,
             spanMinutes = spanMinutes,
             predictedClock = predictedClock,
-            latestReadingMs = latest?.tsMs,
             unit = glucoseUnit,
             kovatchevF = container.nativeCore::kovatchevF,
             rangeMinMgdl = range.minMgdl,
@@ -2174,7 +2172,6 @@ private fun DashboardGamePanel(
             onReady = onReady,
             spanMinutes = spanMinutes,
             predictedClock = predictedClock,
-            latestReadingMs = latest?.tsMs,
             unit = glucoseUnit,
             kovatchevF = container.nativeCore::kovatchevF,
             rangeMinMgdl = range.minMgdl,

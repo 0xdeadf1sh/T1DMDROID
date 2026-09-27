@@ -24,9 +24,6 @@ import com.t1dm.ui.graph.buildPaintFrame
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
-import java.time.Instant
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
 import kotlin.coroutines.coroutineContext
 
 /** Decimation buckets place a max-before-min cliff at edges, not the data; 1e6 = ~9.5y grid. */
@@ -65,32 +62,22 @@ suspend fun loadGameScene(
 
 /** Rebuilt at HUD_PERIOD_NS, never frame rate: the one cell whose change recomposes anything. */
 data class GameHud(
-    val clock: String,
     val distanceM: Float,
-    val readingAgeMin: Long?,
     val run: RunState,
     val hold: GameHold?,
 ) {
     companion object {
-        val EMPTY = GameHud("", 0f, null, RunState.Running, null)
+        val EMPTY = GameHud(0f, RunState.Running, null)
     }
 }
 
-/** Own holder, so the strip is the only composable that reads it. */
+/** Own holder, so the terminal card is the only composable that reads it. */
 class HudState {
     var value by mutableStateOf(GameHud.EMPTY)
 }
 
-/** Plain memory: the loop must not take a snapshot read for the reading age. */
-class LiveReadingRef {
-    @Volatile
-    var tsMs: Long? = null
-}
-
-/** 4 Hz — fast enough that the clock never looks stuck at speed. */
+/** 4 Hz: the terminal card and exit confirm need nothing faster. */
 private const val HUD_PERIOD_NS = 250_000_000L
-
-private val CLOCK_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm · d MMM")
 
 private const val SMOKE_IDLE_HZ = 4f
 
@@ -108,7 +95,6 @@ internal suspend fun runGameLoop(
     /** World x camera opens on; the track's lead must sit outside the view, not shift it. */
     seatAtX: Float,
     world: GameWorld,
-    track: GameTrack,
     bus: GameFrameBus,
     camera: GameCamera,
     zoom: GameZoom,
@@ -117,8 +103,6 @@ internal suspend fun runGameLoop(
     gate: GamePauseGate,
     commands: GameCommands,
     hud: HudState,
-    latest: LiveReadingRef,
-    zone: ZoneId,
     feel: FeelSink = FeelSink.None,
     pacer: FrameClockPacer = FrameClockPacer(),
 ) {
@@ -126,8 +110,6 @@ internal suspend fun runGameLoop(
     var placed = false
     var signalled = false
     var hudAtNs = 0L
-    var hudMinute = Long.MIN_VALUE
-    var clock = ""
     var lastPaused = false
     var presentNs = 0L
     // One frame behind the solver; zeroed on placement so a restart opens at rest.
@@ -147,18 +129,7 @@ internal suspend fun runGameLoop(
 
     fun pushHud(s: CarState, atNs: Long) {
         hudAtNs = atNs
-        val minute = track.map.tsMsAt(s.x) / 60_000L
-        if (minute != hudMinute) {
-            hudMinute = minute
-            clock = Instant.ofEpochMilli(minute * 60_000L).atZone(zone).format(CLOCK_FORMAT)
-        }
-        hud.value = GameHud(
-            clock = clock,
-            distanceM = s.distanceM,
-            readingAgeMin = latest.tsMs?.let { (System.currentTimeMillis() - it) / 60_000L },
-            run = s.run,
-            hold = gate.holds.primary,
-        )
+        hud.value = GameHud(distanceM = s.distanceM, run = s.run, hold = gate.holds.primary)
     }
     // Terminal run is a hold: simulating a frozen scene wastes 60 FFI round trips/s; loop-local.
     var terminal = false

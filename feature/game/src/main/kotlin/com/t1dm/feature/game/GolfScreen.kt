@@ -51,7 +51,6 @@ import com.t1dm.ui.graph.PredictedClock
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.time.ZoneId
 
 /** Settled span as a share of a 45° full-power carry: the shot fits, the ball stays aimable. */
 private const val VIEW_CARRY_FRAC = 0.65f
@@ -77,7 +76,6 @@ fun GolfScreen(
     /** Caller keeps the chart up until this fires. */
     onReady: () -> Unit = {},
     spanMinutes: Float,
-    latestReadingMs: Long?,
     unit: UnitSpace,
     kovatchevF: ((Double) -> Double)?,
     rangeMinMgdl: Int,
@@ -122,7 +120,6 @@ fun GolfScreen(
                     predictedClock = predictedClock,
                     spanMinutes = spanMinutes,
                     tuning = golfTuning,
-                    latestReadingMs = latestReadingMs,
                     openWorld = openWorld,
                     gameDispatcher = gameDispatcher,
                     alarmRaised = alarmRaised,
@@ -164,7 +161,6 @@ private fun GolfStage(
     predictedClock: PredictedClock?,
     spanMinutes: Float,
     tuning: GolfTuning,
-    latestReadingMs: Long?,
     openWorld: (TerrainSpec, GolfTuning, List<Obstacle>) -> GolfWorld,
     gameDispatcher: CoroutineDispatcher,
     alarmRaised: Boolean,
@@ -191,10 +187,8 @@ private fun GolfStage(
     val gate = remember { GamePauseGate() }
     val commands = remember { GolfCommands() }
     val hud = remember { GolfHudState() }
-    val liveRef = remember { LiveReadingRef() }
     val anchor = remember { AimAnchor() }
     val aim = remember { GolfAim() }
-    val zone = remember { ZoneId.systemDefault() }
     // Pinned for the round: a forecast arriving mid-round would re-lay the inset under the ball.
     val runClock = remember { predictedClock }
     val haptics = rememberT1dmHaptics()
@@ -213,10 +207,7 @@ private fun GolfStage(
     // Converted in composition, not per frame: sixty density lookups a second for a constant.
     val golferPx = with(LocalDensity.current) { GOLFER_H.toPx() }
 
-    SideEffect {
-        liveRef.tsMs = latestReadingMs
-        art.golferPx = golferPx
-    }
+    SideEffect { art.golferPx = golferPx }
 
     var confirmExit by remember { mutableStateOf(false) }
     LaunchedEffect(confirmExit) { gate.set(GameHold.Modal, confirmExit) }
@@ -297,7 +288,7 @@ private fun GolfStage(
                     handOff,
                     scene.track.map.worldXOf(seatAtMs),
                     world, scene.track, bus, camera, zoom, controls, viewport,
-                    gate, commands, hud, liveRef, zone, feel,
+                    gate, commands, hud, feel,
                     Golfer(tuning.ballRadius, tuning.maxLaunchSpeed).also { it.stancePx = STANCE_H * golferPx },
                 )
             } finally {

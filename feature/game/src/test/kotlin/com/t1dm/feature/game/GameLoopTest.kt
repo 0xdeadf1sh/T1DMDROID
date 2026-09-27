@@ -3,12 +3,7 @@ package com.t1dm.feature.game
 import androidx.compose.runtime.BroadcastFrameClock
 import com.t1dm.core.common.GameWorld
 import com.t1dm.core.model.CarState
-import com.t1dm.core.model.CgmReading
-import com.t1dm.core.model.CgmSourceId
-import com.t1dm.core.model.ReadingFlag
-import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.core.model.RunState
-import com.t1dm.core.model.UnitSpace
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.asCoroutineDispatcher
@@ -19,7 +14,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import java.time.ZoneId
 import java.util.Collections
 import java.util.concurrent.Executors
 import kotlin.math.abs
@@ -97,24 +91,6 @@ private class RecordingFeel : FeelSink {
     }
 }
 
-private fun readings(n: Int): List<CgmReading> {
-    val t0 = 1_700_000_000_000L / 300_000L * 300_000L
-    return List(n) { i ->
-        CgmReading(
-            sourceId = CgmSourceId("test"),
-            tsMs = t0 + i * 300_000L,
-            bgMgdl = 100 + (i % 40),
-            trendTenthsPerMin = 0,
-            minFromStart = 120 + i * 5,
-            quality = 1,
-            provenance = ReadingProvenance.MEASURED,
-            flag = ReadingFlag.NORMAL,
-            tzOffsetMin = 0,
-            rxWallMs = t0 + i * 300_000L,
-            rssi = -60,
-        )
-    }
-}
 
 /** BroadcastFrameClock isn't AndroidUiFrameClock, so Choreographer plumbing isn't covered. */
 class GameLoopTest {
@@ -128,20 +104,19 @@ class GameLoopTest {
         val gate = GamePauseGate()
         val commands = GameCommands()
         val hud = HudState()
-        val live = LiveReadingRef()
         val clock = BroadcastFrameClock()
         val feel = RecordingFeel()
         val executor = Executors.newSingleThreadExecutor { r -> Thread(r, GAME_THREAD) }
 
-        fun CoroutineScope.startLoop(track: com.t1dm.ui.game.GameTrack, dropAtX: Float): Job =
+        fun CoroutineScope.startLoop(dropAtX: Float): Job =
             launch(executor.asCoroutineDispatcher()) {
                 try {
                     runGameLoop(
                         dropAtX,
                         {},
                         0f,
-                        world, track, bus, camera, zoom, controls, viewport,
-                        gate, commands, hud, live, ZoneId.of("UTC"), feel,
+                        world, bus, camera, zoom, controls, viewport,
+                        gate, commands, hud, feel,
                     )
                 } finally {
                     world.close()
@@ -167,13 +142,9 @@ class GameLoopTest {
         block: suspend Harness.(Job) -> Unit,
     ) {
         val h = Harness(zoom)
-        val track = runBlocking {
-            loadGameScene(readings(300), emptyList(), UnitSpace.MgDl, null, 20, 250).track
-        }
-        assertTrue("the synthetic day must be drivable", track.isPlayable)
         try {
             runBlocking(h.clock) {
-                val job = with(h) { startLoop(track, dropAtX) }
+                val job = with(h) { startLoop(dropAtX) }
                 h.block(job)
                 job.cancel()
                 job.join()

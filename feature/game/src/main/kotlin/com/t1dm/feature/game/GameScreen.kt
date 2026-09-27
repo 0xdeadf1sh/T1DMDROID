@@ -17,7 +17,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
@@ -54,7 +53,6 @@ import com.t1dm.core.model.UnitSpace
 import com.t1dm.ui.graph.ChalkPens
 import com.t1dm.ui.graph.PredictedClock
 import kotlinx.coroutines.CoroutineDispatcher
-import java.time.ZoneId
 
 /** Above the 48 dp touch-target floor; two fit without crowding the 220 dp panel. */
 private val PEDAL_SIZE = 76.dp
@@ -79,7 +77,6 @@ fun GameScreen(
     /** Caller keeps the chart up until this fires. */
     onReady: () -> Unit = {},
     spanMinutes: Float,
-    latestReadingMs: Long?,
     unit: UnitSpace,
     kovatchevF: ((Double) -> Double)?,
     rangeMinMgdl: Int,
@@ -124,7 +121,6 @@ fun GameScreen(
                     predictedClock = predictedClock,
                     spanMinutes = spanMinutes,
                     tuning = carTuning,
-                    latestReadingMs = latestReadingMs,
                     openWorld = openWorld,
                     gameDispatcher = gameDispatcher,
                     alarmRaised = alarmRaised,
@@ -147,7 +143,6 @@ private fun GameStage(
     predictedClock: PredictedClock?,
     spanMinutes: Float,
     tuning: CarTuning,
-    latestReadingMs: Long?,
     openWorld: (TerrainSpec, CarTuning, List<Obstacle>) -> GameWorld,
     gameDispatcher: CoroutineDispatcher,
     alarmRaised: Boolean,
@@ -173,8 +168,6 @@ private fun GameStage(
     val gate = remember { GamePauseGate() }
     val commands = remember { GameCommands() }
     val hud = remember { HudState() }
-    val liveRef = remember { LiveReadingRef() }
-    val zone = remember { ZoneId.systemDefault() }
     // Pinned for the run: a forecast landing mid-run would re-lay the top inset under a moving car.
     val runClock = remember { predictedClock }
     val haptics = rememberT1dmHaptics()
@@ -185,8 +178,6 @@ private fun GameStage(
     val chrome = remember(scene, thresholds, runClock, kovatchevF) {
         GameChrome(scene.track.map, scene.unit, scene.tzOffsetMin, thresholds, runClock, kovatchevF)
     }
-
-    SideEffect { liveRef.tsMs = latestReadingMs }
 
     var confirmExit by remember { mutableStateOf(false) }
     LaunchedEffect(confirmExit) { gate.set(GameHold.Modal, confirmExit) }
@@ -229,8 +220,8 @@ private fun GameStage(
                     scene.track.map.worldXOf(dropAtMs),
                     handOff,
                     scene.track.map.worldXOf(seatAtMs),
-                    world, scene.track, bus, camera, zoom, controls, viewport,
-                    gate, commands, hud, liveRef, zone, feel,
+                    world, bus, camera, zoom, controls, viewport,
+                    gate, commands, hud, feel,
                 )
             } finally {
                 // Refcounted in Rust, freed by a JVM Cleaner: dropping it leaks the heightfield.

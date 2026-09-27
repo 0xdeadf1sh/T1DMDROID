@@ -9,18 +9,13 @@ import com.t1dm.core.model.BallState
 import com.t1dm.core.model.GolfRun
 import com.t1dm.ui.game.GameTrack
 import kotlinx.coroutines.isActive
-import java.time.Instant
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
 import kotlin.coroutines.coroutineContext
 import kotlin.math.hypot
 
 /** Rebuilt at HUD_PERIOD_NS, never at frame rate: the one cell whose change recomposes anything. */
 data class GolfHud(
-    val clock: String,
     val strokes: Int,
     val penalties: Int,
-    val readingAgeMin: Long?,
     val run: GolfRun,
     val hold: GameHold?,
 ) {
@@ -28,7 +23,7 @@ data class GolfHud(
     val score: Int get() = strokes + penalties
 
     companion object {
-        val EMPTY = GolfHud("", 0, 0, null, GolfRun.Playing, null)
+        val EMPTY = GolfHud(0, 0, GolfRun.Playing, null)
     }
 }
 
@@ -37,10 +32,8 @@ class GolfHudState {
     var value by mutableStateOf(GolfHud.EMPTY)
 }
 
-/** 4 Hz — fast enough that the stroke count never looks stuck. */
+/** 4 Hz: the end card and exit confirm need nothing faster. */
 private const val HUD_PERIOD_NS = 250_000_000L
-
-private val CLOCK_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm · d MMM")
 
 /** Seconds a splash ring stays on the panel after the ball is lost. */
 private const val SPLASH_LIFE_S = 1.1f
@@ -63,8 +56,6 @@ internal suspend fun runGolfLoop(
     gate: GamePauseGate,
     commands: GolfCommands,
     hud: GolfHudState,
-    latest: LiveReadingRef,
-    zone: ZoneId,
     feel: GolfFeelSink = GolfFeelSink.None,
     /** Advanced on the frame it is published with; null leaves the figure undrawn. */
     golfer: Golfer? = null,
@@ -76,8 +67,6 @@ internal suspend fun runGolfLoop(
     var placed = false
     var signalled = false
     var hudAtNs = 0L
-    var hudMinute = Long.MIN_VALUE
-    var clock = ""
     var lastPaused = false
     var presentNs = 0L
     // One frame behind the solver; zeroed on placement so a restart opens at rest.
@@ -99,16 +88,9 @@ internal suspend fun runGolfLoop(
 
     fun pushHud(s: BallState, atNs: Long) {
         hudAtNs = atNs
-        val minute = track.map.tsMsAt(s.x) / 60_000L
-        if (minute != hudMinute) {
-            hudMinute = minute
-            clock = Instant.ofEpochMilli(minute * 60_000L).atZone(zone).format(CLOCK_FORMAT)
-        }
         hud.value = GolfHud(
-            clock = clock,
             strokes = s.strokes,
             penalties = s.penalties,
-            readingAgeMin = latest.tsMs?.let { (System.currentTimeMillis() - it) / 60_000L },
             run = s.run,
             hold = gate.holds.primary,
         )

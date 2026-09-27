@@ -19,7 +19,6 @@ import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
-import java.time.ZoneId
 import java.util.Collections
 import java.util.concurrent.Executors
 import kotlin.math.abs
@@ -161,7 +160,6 @@ class GolfLoopTest {
         val gate = GamePauseGate()
         val commands = GolfCommands()
         val hud = GolfHudState()
-        val live = LiveReadingRef()
         val clock = BroadcastFrameClock()
         val feel = RecordingGolfFeel()
 
@@ -177,7 +175,7 @@ class GolfLoopTest {
                         {},
                         0f,
                         world, track, bus, camera, zoom, controls, viewport,
-                        gate, commands, hud, live, ZoneId.of("UTC"), feel, golfer,
+                        gate, commands, hud, feel, golfer,
                     )
                 } finally {
                     world.close()
