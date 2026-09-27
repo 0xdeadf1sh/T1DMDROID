@@ -1146,6 +1146,9 @@ class AppContainer(context: Context) {
         // Drop watch session BEFORE the wipe, so no late push re-persists key material/nonce.
         runCatching { watchHub.stopForReset() }
         repository.wipeAllData(preserveCgmSources = true)
+        // A cut entry holds the erased rows; its undo would write them back.
+        bgEdits.clear()
+        _bgEditDepth.value = 0
         runCatching { tokenStore.clearAll() }
         com.t1dm.app.watch.WatchKeyCipher.deleteKey()
         // The Room-backed StateFlows self-heal from the wiped store; these caches do not.
