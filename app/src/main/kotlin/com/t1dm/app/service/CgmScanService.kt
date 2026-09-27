@@ -96,6 +96,13 @@ private data class GlanceInputs(
     val theme: Pair<String, String?>,
 )
 
+/** The next epoch-aligned period boundary strictly after [nowMs]. */
+internal fun nextTimedCycleMs(nowMs: Long, periodMin: Int): Long {
+    // A 0-minute period (corrupt kv) would divide by zero.
+    val periodMs = periodMin.coerceAtLeast(1) * 60_000L
+    return (nowMs / periodMs + 1) * periodMs
+}
+
 /** Always-on FGS (§2.3): connectedDevice, NOT dataSync — caps at 6h/24h on Android 15+. */
 class CgmScanService : LifecycleService() {
 
@@ -354,10 +361,8 @@ class CgmScanService : LifecycleService() {
             val timedTicks = flow {
                 while (isActive) {
                     if (container.forecastModeSnapshot == SettingsStore.FORECAST_MODE_TIMED) {
-                        // coerceAtLeast(1): a 0-minute period would divide by zero below.
-                        val periodMs = container.forecastPeriodMin().coerceAtLeast(1) * 60_000L
                         val now = System.currentTimeMillis()
-                        delay((periodMs - now % periodMs).coerceAtLeast(1L)) // to next boundary
+                        delay((nextTimedCycleMs(now, container.forecastPeriodMin()) - now).coerceAtLeast(1L))
                         // The user may have left TIMED while we slept.
                         if (container.forecastModeSnapshot == SettingsStore.FORECAST_MODE_TIMED) {
                             emit(System.currentTimeMillis())
@@ -415,6 +420,7 @@ class CgmScanService : LifecycleService() {
         unit: UnitSpace,
         themeSig: Pair<String, String?>,
     ) {
+        val nowMs = System.currentTimeMillis()
         val glance: BgGlance = BgGlanceComputer.compute(
             readings = readings,
             state = state,
@@ -422,9 +428,14 @@ class CgmScanService : LifecycleService() {
             edges = container.alarmFanEdges,
             lossMin = container.alarmConfig.lossMin,
             staleMin = 15,
-            nowMs = System.currentTimeMillis(),
+            nowMs = nowMs,
             trend = direction?.trend,
         )
+        val nextForecastAtMs = if (container.forecastModeSnapshot == SettingsStore.FORECAST_MODE_TIMED) {
+            nextTimedCycleMs(nowMs, container.forecastPeriodMin())
+        } else {
+            null
+        }
         // Same (id, json) that drove refresh, not container's snapshot; avoids a repaint race.
         val (themeId, customJson) = themeSig
         val palette = resolvePalette(themeId, customJson)
@@ -439,7 +450,10 @@ class CgmScanService : LifecycleService() {
         val nm = getSystemService(NotificationManager::class.java)
         // Every refresh: the body counts seconds.
         runCatching {
-            nm.notify(NOTIF_ID, livePresenter.build(glance, unit, accent, state.selectedPredictedTime))
+            nm.notify(
+                NOTIF_ID,
+                livePresenter.build(glance, unit, accent, state.selectedPredictedTime, nextForecastAtMs),
+            )
         }
 
         val deterministicCriticalActive = ::alarmController.isInitialized &&

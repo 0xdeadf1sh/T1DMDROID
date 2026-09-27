@@ -20,9 +20,11 @@ class LiveNotificationPresenter(
         unit: UnitSpace,
         accentArgb: Int,
         predictedTime: PredictedTime?,
+        /** Wall ms of the next TIMED cycle; null in ADAPTIVE, which has no schedule to count to. */
+        nextForecastAtMs: Long?,
     ): Notification {
         val title = titleLine(glance, unit)
-        val body = bodyLine(glance, predictedTime)
+        val body = bodyLine(glance, predictedTime, nextForecastAtMs)
         return Notification.Builder(app, channelId)
             .setSmallIcon(NotificationIcons.res())
             .setColor(accentArgb)
@@ -45,7 +47,7 @@ class LiveNotificationPresenter(
         return "${statusToken(glance)} · $v $arrow${BgFormat.unitLabel(unit)}"
     }
 
-    private fun bodyLine(glance: BgGlance, predictedTime: PredictedTime?): String {
+    private fun bodyLine(glance: BgGlance, predictedTime: PredictedTime?, nextForecastAtMs: Long?): String {
         val age = when {
             glance.signalLoss -> "Signal lost ${BgFormat.ageShort(glance.readingAgeMs)}"
             !glance.hasReading -> "Scanning"
@@ -59,14 +61,12 @@ class LiveNotificationPresenter(
             else -> null
         }
         val circadian = predictedTime?.let { circadianLine(it) }
-        return listOfNotNull(age, forecast, circadian, nextForecastLine()).joinToString("\n")
+        val next = nextForecastAtMs?.let { nextForecastLine(it) }
+        return listOfNotNull(age, forecast, circadian, next).joinToString("\n")
     }
 
-    /** The model cycles on each 5-minute wall-clock boundary; this counts down to the next one. */
-    private fun nextForecastLine(): String {
-        val nowMs = System.currentTimeMillis()
-        val nextMs = (nowMs / 300_000L + 1) * 300_000L
-        val remSec = ((nextMs - nowMs).coerceAtLeast(0L) / 1000L).toInt()
+    private fun nextForecastLine(atMs: Long): String {
+        val remSec = ((atMs - System.currentTimeMillis()).coerceAtLeast(0L) / 1000L).toInt()
         val m = remSec / 60
         val s = remSec % 60
         val rem = if (m >= 1) "${m}m ${s}s" else "${s}s"
