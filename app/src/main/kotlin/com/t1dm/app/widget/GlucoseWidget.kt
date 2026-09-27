@@ -166,7 +166,12 @@ private fun CompactContent(snap: WidgetSnapshot, p: T1dmPalette) {
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         BgRow(snap, p, numberSp = 34, arrowSp = 24)
-        Text(BgFormat.unitLabel(snap.unit), style = TextStyle(fontSize = 11.sp, color = ColorProvider(p.inkMuted)))
+        val unit = BgFormat.unitLabel(snap.unit)
+        Text(
+            if (snap.glance.stale) "$unit · ${ageText(snap.glance)}" else unit,
+            maxLines = 1,
+            style = TextStyle(fontSize = 11.sp, color = ColorProvider(p.inkMuted)),
+        )
     }
 }
 
@@ -240,7 +245,11 @@ private fun BgRow(snap: WidgetSnapshot, p: T1dmPalette, numberSp: Int, arrowSp: 
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text(
             BgFormat.value(g.bgMgdl, snap.unit),
-            style = TextStyle(fontSize = numberSp.sp, fontWeight = FontWeight.Bold, color = ColorProvider(bandColor(g.band, p))),
+            style = TextStyle(
+                fontSize = numberSp.sp,
+                fontWeight = FontWeight.Bold,
+                color = ColorProvider(if (g.stale) p.inkMuted else bandColor(g.band, p)),
+            ),
         )
         val arrow = BgFormat.arrow(g.trend)
         if (arrow.isNotEmpty()) {
