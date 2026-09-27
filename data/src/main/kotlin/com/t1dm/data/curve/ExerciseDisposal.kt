@@ -10,7 +10,7 @@ object ExerciseDisposal {
     /** Minutes past the bout's length; §5's `duration_min + 90`. */
     const val TAIL_MIN: Double = 90.0
 
-    /** g/min. `T1DMSIM`'s population constant; overridden by `exercise.carb_equiv_per_min`. */
+    /** g/min. §5's default; overridden by `exercise.carb_equiv_per_min`. */
     const val DEFAULT_CARB_EQUIV_PER_MIN: Double = 0.5
 
     /** This app's rails, not §5's — §5 fixes the default and gives no range. */

@@ -40,7 +40,6 @@ class ExerciseDisposalTest {
 
     @Test
     fun `magnitude scales with duration alone`() {
-        // An intensity-scaled magnitude is off-distribution for models pretrained on T1DMSIM.
         val one = ExerciseDisposal.paramsFor(30.0, 0.5)
         val two = ExerciseDisposal.paramsFor(60.0, 0.5)
         assertEquals(2.0 * one.grams, two.grams, EPS)
