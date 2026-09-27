@@ -155,6 +155,8 @@ class InferenceController(
         // Refresh is rare, so a full close/reload beats diffing and cannot leave a stale handle.
         loaded.values.forEach { runCatching { it.backend.close(it.handle) } }
         loaded.clear()
+        // Parity is proved per graph; a reloaded one owes it again.
+        heads.closeAll()
         installed.clear()
         for (b in discovered) installed[b.id] = b
 

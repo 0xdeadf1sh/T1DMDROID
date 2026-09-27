@@ -62,7 +62,7 @@ class HeadCache(private val native: NativeCore) {
     /** Once/model; [stepStates]=step_states of hidden, null if none; [TOL] fp32-fp64 loose. */
     @Synchronized
     fun verify(bundle: ModelBundle, stepStates: List<Double>?, headRaw: FloatArray, mSlots: Int) {
-        val state = states[bundle.id] as? State.Ready ?: return
+        val state = stateOf(bundle) as? State.Ready ?: return
         if (!state.maxDelta.isNaN()) return // already verified
         val steps = stepStates ?: run {
             set(bundle.id, State.Unusable("the graph emits no hidden state; nothing to adapt"))
