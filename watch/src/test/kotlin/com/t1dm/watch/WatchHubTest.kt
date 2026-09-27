@@ -10,6 +10,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -23,7 +24,13 @@ class WatchHubTest {
     private val stores = InMemoryWatchStores()
     private val scope = CoroutineScope(SupervisorJob() + testDispatchers.default)
     private val centrals = mutableListOf<FakeCentral>()
-    private val hub = WatchHub(
+    private val config = WatchLinkConfig(
+        enabled = true, autoConnect = false, backoffInitialMs = 50, backoffMaxMs = 100, handshakeTimeoutMs = 500,
+        pollMs = 50,
+    )
+    private var hub = newHub(config)
+
+    private fun newHub(config: WatchLinkConfig) = WatchHub(
         centralProvider = { FakeCentral(air).also { synchronized(centrals) { centrals += it } } },
         sessionFactory = LoopbackWatchSessionFactory(),
         stores = stores,
@@ -32,10 +39,7 @@ class WatchHubTest {
         extendedSource = FakeSources,
         lowPower = { false },
         dispatchers = testDispatchers,
-        config = WatchLinkConfig(
-            enabled = true, autoConnect = false, backoffInitialMs = 50, backoffMaxMs = 100, handshakeTimeoutMs = 500,
-            pollMs = 50,
-        ),
+        config = config,
     )
 
     private val deskId = "0a01010101010101"
@@ -192,6 +196,36 @@ class WatchHubTest {
         desk.records.clear()
         hub.tick(30_000L)
         assertTrue("the old keys still open", 1 in awaitValue { desk.kinds().takeIf { 1 in it } })
+    }
+
+    @Test fun `a rotation awaiting its code keeps pushing on the live keys`() = runBlocking<Unit> {
+        hub.start(scope)
+        pairNext()
+        hub.rotate(deskId)
+        awaitValue { device(deskId).takeIf { it.phase == WatchLinkPhase.AWAIT_SAS } }
+        desk.records.clear()
+        hub.tick(40_000L)
+        assertTrue("the old keys still open", 1 in awaitValue { desk.kinds().takeIf { 1 in it } })
+        assertEquals(WatchLinkPhase.AWAIT_SAS, device(deskId).phase)
+
+        synchronized(centrals) { centrals.last() }.drop()
+        val back = awaitValue { device(deskId).takeIf { it.phase == WatchLinkPhase.LIVE } }
+        assertNull("the code went with the connection", back.sas)
+        assertFalse(back.canConfirmSas)
+        desk.records.clear()
+        hub.tick(50_000L)
+        assertTrue(1 in awaitValue { desk.kinds().takeIf { 1 in it } })
+    }
+
+    @Test fun `an unconfirmed rotation times out to the live keys`() = runBlocking<Unit> {
+        hub = newHub(config.copy(rotationSasTimeoutMs = 300))
+        hub.start(scope)
+        val before = pairNext()
+        hub.rotate(deskId)
+        val after = awaitValue { device(deskId).takeIf { it.lastError == "Rotation failed: code not confirmed" } }
+        assertEquals(WatchLinkPhase.LIVE, after.phase)
+        assertNull(after.sas)
+        assertEquals(before.keyFingerprint, after.keyFingerprint)
     }
 
     @Test fun `stored pairings come back after stopForReset and resume`() = runBlocking<Unit> {

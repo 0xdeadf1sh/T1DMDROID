@@ -85,6 +85,10 @@ class WatchLink internal constructor(
     @Volatile
     private var verified = false
 
+    /** CONFIRM sent, no answer yet: the peripheral may already hold the new keys. */
+    @Volatile
+    private var confirming = false
+
     /** Set on every connect and every low-power resume: the next push carries every kind. */
     @Volatile
     private var needsFull = true
@@ -168,6 +172,7 @@ class WatchLink internal constructor(
             attempt(::handshakeFailed, "Code not confirmed") {
                 val c = central ?: error("not connected")
                 val d = CompletableDeferred<ControlFrame.ConfirmAck>().also { confirmAck = it }
+                linkMutex.withLock { confirming = true }
                 c.writeKex(codec.kex(WatchHandshake.confirm(hs)))
                 val ack = withTimeoutOrNull(config.handshakeTimeoutMs) { d.await() }.also { confirmAck = null }
                     ?: error("no answer from the device")
@@ -186,6 +191,8 @@ class WatchLink internal constructor(
                 val fresh = sessionFactory.fresh().also { handshake = it }
                 if (central?.isReady != true) connectTransport()
                 doHandshakeFromHello(fresh)
+                delay(config.rotationSasTimeoutMs) // the next op, confirm included, cancels this
+                if (handshake === fresh) error("code not confirmed")
             }
         }
     }
@@ -246,6 +253,7 @@ class WatchLink internal constructor(
         handshake = null
         helloAck = null
         confirmAck = null
+        confirming = false
         if (session?.state != WatchSessionState.LIVE) return fail(reason)
         Timber.tag(TAG).w(reason)
         val up = central?.isReady == true
@@ -260,6 +268,7 @@ class WatchLink internal constructor(
         linkMutex.withLock {
             session = hs
             handshake = null
+            confirming = false
             // The real session refuses to seal until a send-nonce window is reserved (§4.5).
             persistSession(d, hs)
         }
@@ -295,14 +304,14 @@ class WatchLink internal constructor(
             if (!config.enabled || session == null || d == null || session.state != WatchSessionState.LIVE) {
                 return@withLock
             }
-            if (handshake != null) return@withLock // a rotation owns the phase until it resolves
+            if (confirming) return@withLock
             val lp = runCatching { lowPower.isLowPower() }.getOrDefault(false)
             val wasSuspended = _state.value.lowPowerSuspended
             if (lp && wasSuspended) return@withLock // already idle
 
             val c = central
             if (c?.isReady != true) {
-                setPhase(WatchLinkPhase.RECONNECTING)
+                if (handshake == null) setPhase(WatchLinkPhase.RECONNECTING)
                 return@withLock
             }
 
@@ -333,7 +342,11 @@ class WatchLink internal constructor(
                 it.copy(
                     lastPushMs = nowMs,
                     lowPowerSuspended = lp,
-                    phase = if (lp) WatchLinkPhase.SUSPENDED_LOW_POWER else WatchLinkPhase.LIVE,
+                    phase = when {
+                        handshake != null -> it.phase // a rotation owns the phase until it resolves
+                        lp -> WatchLinkPhase.SUSPENDED_LOW_POWER
+                        else -> WatchLinkPhase.LIVE
+                    },
                 )
             }
             syncCrypto()
@@ -394,7 +407,10 @@ class WatchLink internal constructor(
     }
 
     private fun onReconnected() {
-        _state.update { it.copy(phase = WatchLinkPhase.LIVE) }
+        // A code still awaiting the user belongs to the dropped connection's handshake.
+        val dropped = !confirming && handshake?.state == WatchSessionState.AWAIT_SAS
+        if (dropped) handshake = null
+        _state.update { it.copy(phase = WatchLinkPhase.LIVE, sas = if (dropped) null else it.sas) }
         syncCrypto()
         needsFull = true
         pushSoon()

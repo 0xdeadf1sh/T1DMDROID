@@ -34,6 +34,7 @@ data class WatchLinkConfig(
     val autoConnect: Boolean = true,
     val connectTimeoutMs: Long = 20_000L,
     val handshakeTimeoutMs: Long = 15_000L,
+    val rotationSasTimeoutMs: Long = 120_000L,
     val backoffInitialMs: Long = 2_000L,
     val backoffMaxMs: Long = 5 * 60_000L,
     /** RSSI and the STATUS liveness read (SPEC/watch.md §7, at most 15 s). */

@@ -100,7 +100,9 @@ internal class FakePeripheral(var deviceId: ByteArray, val extended: Boolean) {
     /** Set to advertise a name its STATUS does not back. */
     var advertisedName: String? = null
     val name get() = advertisedName ?: ("T1DM-Watch-" + deviceId.copyOf(4).joinToString("") { "%02x".format(it) })
-    val session = LoopbackWatchSessionFactory().fresh() as LoopbackWatchSession
+    /** Opens pushes; a handshake's keys replace it only on CONFIRM (SPEC/watch.md §3). */
+    @Volatile private var live: LoopbackWatchSession? = null
+    @Volatile private var pending: LoopbackWatchSession? = null
     /** Plaintexts as the peripheral opened them. */
     val records = mutableListOf<ByteArray>()
     var central: FakeCentral? = null
@@ -113,18 +115,24 @@ internal class FakePeripheral(var deviceId: ByteArray, val extended: Boolean) {
         val epoch = bytes[2]
         when (bytes[0].toInt() and 0xFF) {
             1 -> if (answersHello) {
-                val pub = session.startHandshake()
-                session.acceptPeer(bytes.copyOfRange(3, 35))
+                val s = LoopbackWatchSessionFactory().fresh() as LoopbackWatchSession
+                val pub = s.startHandshake()
+                s.acceptPeer(bytes.copyOfRange(3, 35))
+                pending = s
                 events.emit(WatchCentralEvent.Notified(byteArrayOf(0x02, 0x01, epoch) + pub))
             }
             3 -> {
-                session.confirm()
+                live = checkNotNull(pending) { "CONFIRM without HELLO" }.also { it.confirm() }
+                pending = null
                 events.emit(WatchCentralEvent.Notified(byteArrayOf(0x04, 0x01, epoch, 0x01)))
             }
         }
     }
 
-    fun onPush(frame: ByteArray) = synchronized(records) { records += session.emulatorOpenPush(frame) }
+    fun onPush(frame: ByteArray) {
+        val keys = checkNotNull(live) { "no keys" }
+        synchronized(records) { records += keys.emulatorOpenPush(frame) }
+    }
 
     fun kinds(): List<Int> = synchronized(records) { records.map { it[0].toInt() } }
 
