@@ -68,7 +68,7 @@ OUT: `Timber`/log messages, identifiers, kv keys, test names, the design docs, `
 Their audience is a developer, not the app's user.
 
 Comments and KDoc are out of scope here because they are cut **harder**, not because they are
-exempt — see the user-level `terse-code-comments` skill.
+exempt — see the user-level `mad-max` skill.
 
 ## Before you commit a string
 
