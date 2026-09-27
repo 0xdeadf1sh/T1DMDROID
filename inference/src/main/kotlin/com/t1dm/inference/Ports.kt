@@ -86,6 +86,12 @@ interface TelemetryStore {
     suspend fun save(all: Map<String, CumulativeTelemetry>)
 }
 
+/** The selected model id across restarts; null [load] is no choice yet. */
+interface SelectionStore {
+    suspend fun load(): String?
+    suspend fun save(id: String)
+}
+
 /** Read fresh per cycle: attach/detach take effect next tick. Adapter change drops history. */
 fun interface LoraStore {
     suspend fun attached(modelId: String): LoraWeights?

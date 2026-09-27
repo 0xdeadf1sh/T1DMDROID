@@ -17,6 +17,7 @@ import com.t1dm.alerts.LiveConfig
 import com.t1dm.alerts.VibrationPreset
 import androidx.glance.appwidget.updateAll
 import com.t1dm.app.cgm.AppCgmRepository
+import com.t1dm.app.inference.KvSelectionStore
 import com.t1dm.app.inference.KvTelemetryStore
 import com.t1dm.app.inference.RoomBgHistoryProvider
 import com.t1dm.app.backup.BackupManager
@@ -613,6 +614,7 @@ class AppContainer(context: Context) {
             maxRunningProvider = { maxRunningModels() },
             // Re-read for every discovered id.
             telemetryStore = KvTelemetryStore(repository),
+            selectionStore = KvSelectionStore(repository),
             // Re-read every cycle; deserialize failure ⇒ null ⇒ frozen model, never half-applied.
             loraStore = LoraStore { modelId ->
                 repository.attachedLora(modelId)?.let { row ->

@@ -7,6 +7,7 @@ import com.t1dm.inference.BG_SERIES_ROW_MARGIN
 import com.t1dm.inference.BgHistoryProvider
 import com.t1dm.inference.BgSeries
 import com.t1dm.inference.CumulativeTelemetry
+import com.t1dm.inference.SelectionStore
 import com.t1dm.inference.TelemetryStore
 import com.t1dm.inference.assembleBgSeries
 import com.t1dm.data.T1dmRepository
@@ -147,5 +148,19 @@ class KvTelemetryStore(private val repository: T1dmRepository) : TelemetryStore 
 
     private companion object {
         const val KV_KEY = "inference.telemetry.cumulative"
+    }
+}
+
+/** One kv row, outside the config export's keys. */
+class KvSelectionStore(private val repository: T1dmRepository) : SelectionStore {
+
+    override suspend fun load(): String? = repository.getKv(KV_KEY)?.ifBlank { null }
+
+    override suspend fun save(id: String) {
+        repository.putKv(KV_KEY, id, System.currentTimeMillis())
+    }
+
+    private companion object {
+        const val KV_KEY = "inference.selected_model"
     }
 }

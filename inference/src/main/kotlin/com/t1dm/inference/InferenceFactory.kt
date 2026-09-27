@@ -23,6 +23,7 @@ fun buildInferenceController(
     smoothingWindowProvider: suspend () -> Int = { InferenceControllerDefaults.SAVGOL_WINDOW },
     loraStore: LoraStore? = null,
     probeInsulin: ProbeInsulinPort? = null,
+    selectionStore: SelectionStore? = null,
 ): InferenceController {
     val store = ModelStore(modelsDir, native)
     val controller = InferenceController(
@@ -40,6 +41,7 @@ fun buildInferenceController(
         smoothingWindowProvider = smoothingWindowProvider,
         loraStore = loraStore,
         probeInsulin = probeInsulin,
+        selectionStore = selectionStore,
     )
     controller.registerBackend(ExecuTorchXnnpackBackend())
     return controller

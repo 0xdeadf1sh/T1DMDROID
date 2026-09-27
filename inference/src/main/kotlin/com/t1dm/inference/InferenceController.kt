@@ -72,6 +72,8 @@ class InferenceController(
     private val probeInsulin: ProbeInsulinPort? = null,
     /** Re-read every cycle. Null ⇒ every model runs frozen. */
     private val loraStore: LoraStore? = null,
+    /** Null ⇒ the choice lasts the session. */
+    private val selectionStore: SelectionStore? = null,
 ) {
     private val _state = MutableStateFlow(InferenceState())
     val state: StateFlow<InferenceState> = _state.asStateFlow()
@@ -105,7 +107,7 @@ class InferenceController(
     private val latencySamples = HashMap<String, ArrayDeque<Double>>()
     /** Durable via [telemetryStore]; loaded once, then in-memory. */
     private val cumulative = HashMap<String, CumulativeTelemetry>()
-    private var telemetryLoaded = false
+    private var storesLoaded = false
     /** Largest requiredSteps window EVER met; warmup latches monotonically, in-memory only. */
     @Volatile
     private var warmupSatisfiedUpTo = 0
@@ -146,9 +148,10 @@ class InferenceController(
 
     /** Call only while holding cycleMutex (not reentrant); unlocked callers use refreshModels. */
     private suspend fun refreshModelsLocked() = withContext(dispatchers.inference) {
-        if (!telemetryLoaded) {
+        if (!storesLoaded) {
             runCatching { telemetryStore?.load() }.getOrNull()?.let { cumulative.putAll(it) }
-            telemetryLoaded = true
+            selectedId = selectedId ?: runCatching { selectionStore?.load() }.getOrNull()
+            storesLoaded = true
         }
         val discovered = store.discover()
 
@@ -189,7 +192,14 @@ class InferenceController(
             metas = metasSnapshot(),
             telemetry = telemetrySnapshot(),
             note = note,
-            predictions = if (noModel) emptyList() else _state.value.predictions,
+            // A restored fan carries the flag of the run that stored it.
+            predictions = if (noModel) {
+                emptyList()
+            } else {
+                _state.value.predictions
+                    .map { it.copy(selected = it.modelId == selectedId) }
+                    .sortedByDescending { it.selected }
+            },
             circadianTime = if (noModel) null else _state.value.circadianTime,
             circadianAnchorMs = if (noModel) null else _state.value.circadianAnchorMs,
             circadianLowContext = if (noModel) false else _state.value.circadianLowContext,
@@ -706,6 +716,7 @@ class InferenceController(
                 selectedHasTimeSection = hasTime,
             )
         }
+        runCatching { selectionStore?.save(id) }.onFailure { Timber.tag(TAG).w(it, "selection persist failed") }
         refreshModels()
     }
 
