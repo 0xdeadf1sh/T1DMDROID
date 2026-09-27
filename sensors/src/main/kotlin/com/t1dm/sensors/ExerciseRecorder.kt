@@ -157,7 +157,7 @@ class ExerciseRecorder(
         /** Finer than the write grid, because the live panel reads the same seconds. */
         const val TICK_MS = 30_000L
 
-        /** Fixes per track write; at a 4s cadence that's a batch every 40s, not a write per fix. */
+        /** Burst cap between ticks; at a 4 s cadence the 30 s tick flushes first, at ≤8 fixes. */
         const val TRACK_BATCH = 10
 
         /** The project's discriminator for a suspended scan: alive, newest stamp frozen. */
