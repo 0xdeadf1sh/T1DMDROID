@@ -72,7 +72,7 @@ import com.t1dm.data.db.LoggedDoseEntity
 import com.t1dm.data.db.LoggedMealEntity
 import kotlin.math.sin
 import com.t1dm.inference.SyntheticContext
-import com.t1dm.sensors.RoomStepSampleWriter
+import com.t1dm.sensors.RepositoryStepSampleWriter
 import com.t1dm.sensors.StepBucketer
 import com.t1dm.sensors.StepRecorder
 import com.t1dm.sensors.StepSource
@@ -578,7 +578,7 @@ class CgmScanService : LifecycleService() {
             Timber.tag(TAG).i("No TYPE_STEP_COUNTER; step recorder idle")
             return
         }
-        val writer = RoomStepSampleWriter(container.database.sampleDao(), container.dispatchers)
+        val writer = RepositoryStepSampleWriter(container.repository)
         val recorder = StepRecorder(source, writer, container.dispatchers)
         lifecycleScope.launch { runCatching { recorder.run() } }
     }
