@@ -586,6 +586,11 @@ const val TOMBSTONE_KIND_DOSE = "dose"
 /** Stops a restore resurrecting a deleted replay. */
 const val TOMBSTONE_KIND_EXERCISE = "exercise"
 
+/** A cut BG slot (SPEC/invariants.md §1); clientId is [bgTombstoneId]. */
+const val TOMBSTONE_KIND_BG = "bg"
+
+fun bgTombstoneId(ts: Long): String = "bg:$ts"
+
 fun EventTombstoneEntity.toModel(): EventTombstone = EventTombstone(
     clientId = clientId,
     kind = when (kind) {

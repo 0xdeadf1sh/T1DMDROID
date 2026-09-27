@@ -27,6 +27,7 @@ import com.t1dm.data.db.PaintStrokeBlob
 import com.t1dm.data.db.PaintStrokeEntity
 import com.t1dm.data.db.SavedMealEntity
 import com.t1dm.data.db.SavedMealItemEntity
+import com.t1dm.data.db.bgTombstoneId
 import com.t1dm.data.db.toBlob
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.runTest
@@ -222,6 +223,33 @@ class ArchiveRoundTripTest {
         restoreInto(target, bytes)
         val kept = target.cgmReadingDao().pageFrom(SOURCE_ID, Long.MIN_VALUE, 1).single()
         assertEquals(999, kept.bgMgdl)
+    }
+
+    /** SPEC/invariants.md §1: a restore never re-fills a slot the patient cut. */
+    @Test
+    fun aCutSlotStaysCutWhenAnOlderArchiveIsRestored() = runTest {
+        populate(target)
+        val older = archiveOf(target)
+        T1dmRepository(target, dispatchers).cutBgRange(T0, T0 + 300_000L, NOW)
+
+        restoreInto(target, older)
+
+        assertNull(target.cgmReadingDao().byTs(SOURCE_ID, T0))
+        assertNull(target.cgmReadingDao().byTs(SOURCE_ID, T0 + 300_000L))
+        assertNotNull("the slot beside the cut is untouched", target.cgmReadingDao().byTs(SOURCE_ID, T0 + 600_000L))
+    }
+
+    @Test
+    fun aCutTravelsWithTheArchiveOntoAPhoneStillHoldingTheSlot() = runTest {
+        populate(source)
+        populate(target)
+        T1dmRepository(source, dispatchers).cutBgRange(T0 + 300_000L, T0 + 300_000L, NOW)
+
+        restoreInto(target, archiveOf(source))
+
+        assertNull(target.cgmReadingDao().byTs(SOURCE_ID, T0 + 300_000L))
+        assertNotNull(target.eventTombstoneDao().byClientId(bgTombstoneId(T0 + 300_000L)))
+        assertNotNull(target.cgmReadingDao().byTs(SOURCE_ID, T0))
     }
 
     @Test

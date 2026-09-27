@@ -2,6 +2,7 @@ package com.t1dm.data.backup
 
 import androidx.room.immediateTransaction
 import androidx.room.useWriterConnection
+import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.data.db.AppDatabase
 import com.t1dm.data.db.BasalScheduleEntity
 import com.t1dm.data.db.CgmReadingEntity
@@ -14,7 +15,9 @@ import com.t1dm.data.db.LoggedExerciseEntity
 import com.t1dm.data.db.FoodEntity
 import com.t1dm.data.db.InsulinTypeEntity
 import com.t1dm.data.db.EventTombstoneEntity
+import com.t1dm.data.db.TOMBSTONE_KIND_BG
 import com.t1dm.data.db.TOMBSTONE_KIND_DOSE
+import com.t1dm.data.db.bgTombstoneId
 import com.t1dm.data.db.LoggedDoseEntity
 import com.t1dm.data.db.LoggedMealEntity
 import com.t1dm.data.db.PaintStrokeEntity
@@ -263,6 +266,8 @@ class ArchiveReader(private val db: AppDatabase) {
                     db.loggedDoseDao().byClientId(t.clientId)
                         ?.takeIf { it.updatedAt <= t.updatedAt }
                         ?.let { db.loggedDoseDao().delete(it.id) }
+                } else if (t.kind == TOMBSTONE_KIND_BG) {
+                    recut(t)
                 } else {
                     db.loggedMealDao().byClientId(t.clientId)
                         ?.takeIf { it.updatedAt <= t.updatedAt }
@@ -272,10 +277,26 @@ class ArchiveReader(private val db: AppDatabase) {
         }
     }
 
+    /** Live row is the slot's sample: readings carry no stamp of their own. */
+    private suspend fun recut(t: EventTombstoneEntity) {
+        val sample = db.sampleDao().byTs(t.tsMs)
+        if (sample != null && sample.updatedAt > t.updatedAt) return
+        for (r in db.cgmReadingDao().allAt(t.tsMs)) {
+            if (cutRetires(r.provenance)) db.cgmReadingDao().deleteAt(r.sourceId, r.tsMs)
+        }
+        if (sample != null && sample.bgMgdl != null && cutRetires(sample.bgProvenance)) {
+            db.sampleDao().upsert(sample.withoutBg(t.updatedAt))
+        }
+    }
+
     private suspend fun flushReadings(s: MergeState) {
         if (s.readings.isEmpty()) return
-        val rows = s.readings.toList()
+        val all = s.readings.toList()
         s.readings.clear()
+        val ix = deletions(s)
+        val rows = all.filterNot { cutRetires(it.provenance) && bgTombstoneId(it.tsMs) in ix }
+        s.skipped += all.size - rows.size
+        if (rows.isEmpty()) return
         val added = tx { db.cgmReadingDao().insertIgnoreAll(rows).count { it != -1L } }
         s.applied = s.applied.copy(readings = s.applied.readings + added)
         s.duplicates += rows.size - added
@@ -283,7 +304,11 @@ class ArchiveReader(private val db: AppDatabase) {
 
     private suspend fun flushSamples(s: MergeState) {
         if (s.samples.isEmpty()) return
-        val rows = s.samples.toList()
+        val ix = deletions(s)
+        val rows = s.samples.map { r ->
+            val stamp = ix[bgTombstoneId(r.ts)]?.takeIf { r.bgMgdl != null && cutRetires(r.bgProvenance) }
+            if (stamp == null) r else r.withoutBg(stamp)
+        }
         s.samples.clear()
         val added = tx { db.sampleDao().insertIgnoreAll(rows).count { it != -1L } }
         s.applied = s.applied.copy(samples = s.applied.samples + added)
@@ -519,6 +544,18 @@ class ArchiveReader(private val db: AppDatabase) {
 
     internal companion object {
         const val BUF = 1 shl 16
+
+        /** A cut refuses a slot holding a RECONSTRUCTED row, so it never retired one. */
+        private fun cutRetires(provenance: ReadingProvenance?) = provenance != ReadingProvenance.RECONSTRUCTED
+
+        private fun SampleEntity.withoutBg(cutAtMs: Long) = copy(
+            bgMgdl = null,
+            bgSource = null,
+            bgProvenance = null,
+            bgFlag = null,
+            bgMeasuredAtMs = null,
+            updatedAt = maxOf(updatedAt, cutAtMs),
+        )
 
         /** ordinal is per-phone, not verbatim; kept where free, stored rows never renumbered. */
         fun renumbered(

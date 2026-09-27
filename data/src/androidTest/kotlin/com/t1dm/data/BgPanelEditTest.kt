@@ -15,6 +15,7 @@ import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.data.db.AppDatabase
 import com.t1dm.data.db.BgInfillEntity
+import com.t1dm.data.db.bgTombstoneId
 import com.t1dm.data.db.toBlob
 import com.t1dm.data.db.toDoubleList
 import kotlinx.coroutines.Dispatchers
@@ -150,6 +151,23 @@ class BgPanelEditTest {
         assertEquals("and so did the offset it was filed under", 60, back.tzOffsetMin)
         assertEquals(3, back.trendTenthsPerMin)
         assertEquals(100.0, db.sampleDao().byTs(t0)?.bgMgdl?.toDouble())
+    }
+
+    /** SPEC/invariants.md §1: a re-download or late reading must not re-fill a cut slot. */
+    @Test
+    fun a_cut_slot_refuses_a_later_reading_until_undone() = runTest {
+        seedThreeReadings()
+        val taken = repo.cutBgRange(t0, t0, now)
+        assertNotNull(db.eventTombstoneDao().byClientId(bgTombstoneId(t0)))
+
+        repo.upsertReading(measured(t0, 180))
+        assertNull("the cut slot took a reading", db.cgmReadingDao().byTs(src.value, t0))
+        assertNull(db.sampleDao().byTs(t0)?.bgMgdl)
+
+        repo.restoreBgCut(taken, now + step)
+        assertNull("the undo left the cut in force", db.eventTombstoneDao().byClientId(bgTombstoneId(t0)))
+        repo.upsertReading(measured(t0, 101))
+        assertEquals(101, db.cgmReadingDao().byTs(src.value, t0)?.bgMgdl)
     }
 
     @Test

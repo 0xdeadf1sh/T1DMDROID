@@ -26,10 +26,16 @@ class TombstoneKindTest {
     }
 
     @Test
-    fun `the three kinds are distinct`() {
+    fun `the four kinds are distinct`() {
         assertEquals(
-            3,
-            setOf(TOMBSTONE_KIND_MEAL, TOMBSTONE_KIND_DOSE, TOMBSTONE_KIND_EXERCISE).size,
+            4,
+            setOf(TOMBSTONE_KIND_MEAL, TOMBSTONE_KIND_DOSE, TOMBSTONE_KIND_EXERCISE, TOMBSTONE_KIND_BG).size,
         )
+    }
+
+    /** Archives carry this id; a new spelling would stop an older file's cut applying. */
+    @Test
+    fun `a cut slot's id names its slot`() {
+        assertEquals("bg:1700000100000", bgTombstoneId(1_700_000_100_000L))
     }
 }

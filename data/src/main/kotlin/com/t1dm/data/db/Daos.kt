@@ -1018,6 +1018,10 @@ interface EventTombstoneDao {
     @Query("SELECT * FROM event_tombstone WHERE clientId = :clientId")
     suspend fun byClientId(clientId: String): EventTombstoneEntity?
 
+    /** Undo of a BG cut only: the rows it retired are going back. */
+    @Query("DELETE FROM event_tombstone WHERE clientId = :clientId")
+    suspend fun deleteByClientId(clientId: String)
+
     /** `logged_dose` cannot answer this: the row the duration would be read from is gone. */
     @Query("SELECT MAX(actingUntilMs) FROM event_tombstone WHERE kind = :kind")
     suspend fun latestActingUntilMs(kind: String): Long?

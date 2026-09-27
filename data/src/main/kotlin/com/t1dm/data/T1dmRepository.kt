@@ -38,10 +38,12 @@ import com.t1dm.data.db.FoodEntity
 import com.t1dm.data.db.InsulinTypeEntity
 import com.t1dm.data.db.EventTombstoneEntity
 import com.t1dm.data.db.LoggedDoseEntity
+import com.t1dm.data.db.TOMBSTONE_KIND_BG
 import com.t1dm.data.db.TOMBSTONE_KIND_DOSE
 import com.t1dm.data.db.TOMBSTONE_KIND_EXERCISE
 import com.t1dm.data.db.TOMBSTONE_KIND_MEAL
 import com.t1dm.data.db.actingUntilMs
+import com.t1dm.data.db.bgTombstoneId
 import com.t1dm.data.db.toModel as infillToModel
 import com.t1dm.data.db.affectsChannel
 import com.t1dm.data.db.curveAfterEdit
@@ -296,13 +298,14 @@ class T1dmRepository(
     }
 
 
-    /** Raw sub-grid row first, unconditionally; skip on lost contest keeps sample.bgMgdl right. */
+    /** Raw sub-grid row first, unconditionally; a cut slot or lost contest skips the rest. */
     suspend fun upsertReading(reading: CgmReading) = withContext(io) {
         requireGrid(reading.tsMs)
         inWriteTx {
             if (reading.provenance == ReadingProvenance.MEASURED) {
                 rawSamples.insertIgnore(reading.toRawEntity())
             }
+            if (tombstones.byClientId(bgTombstoneId(reading.tsMs)) != null) return@inWriteTx
             val entity = reading.toEntity()
             val stored = readings.byTs(entity.sourceId, entity.tsMs)
             if (!supersedesGridSlot(stored, entity)) return@inWriteTx
@@ -1380,6 +1383,7 @@ class T1dmRepository(
             for (c in cuts) {
                 for (r in c.readings) readings.deleteAt(r.sourceId, c.ts)
                 val row = samples.byTs(c.ts)
+                val stamp = if (row == null) nowMs else maxOf(nowMs, row.updatedAt + 1)
                 if (row != null) {
                     samples.upsert(
                         row.copy(
@@ -1387,10 +1391,20 @@ class T1dmRepository(
                             bgSource = null,
                             bgProvenance = null,
                             bgFlag = null,
-                            updatedAt = maxOf(nowMs, row.updatedAt + 1),
+                            updatedAt = stamp,
                         ),
                     )
                 }
+                tombstones.upsert(
+                    EventTombstoneEntity(
+                        clientId = bgTombstoneId(c.ts),
+                        kind = TOMBSTONE_KIND_BG,
+                        tsMs = c.ts,
+                        tzOffsetMin = row?.tzOffsetMin ?: c.readings.firstOrNull()?.tzOffsetMin ?: 0,
+                        updatedAt = stamp,
+                        createdAtMs = nowMs,
+                    ),
+                )
             }
             // Unpromoted fills only, not invalidateForecastDerivedInTx: drops what sweep replays.
             if (cuts.isNotEmpty()) infills.deleteFrom(fromMs)
@@ -1403,6 +1417,7 @@ class T1dmRepository(
         if (cuts.isEmpty()) return@withContext
         inWriteTx {
             for (c in cuts) {
+                tombstones.deleteByClientId(bgTombstoneId(c.ts))
                 for (r in c.readings) readings.upsert(r)
                 val row = samples.byTs(c.ts)
                 if (row != null) {
