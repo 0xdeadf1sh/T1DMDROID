@@ -45,15 +45,6 @@ class LiveNotificationPresenter(
         return "${statusToken(glance)} · $v $arrow${BgFormat.unitLabel(unit)}"
     }
 
-    /** Fail-closed: warmup or no eligible forecast reads VOID, never STABLE. */
-    private fun statusToken(glance: BgGlance): String = when {
-        glance.warmup || glance.forecastUnavailable || !glance.forecastEligible -> "VOID"
-        glance.unsure -> "UNSURE"
-        glance.approaching != null ->
-            if (glance.approaching!!.kind == PredictiveCrossing.Kind.HYPO) "HYPO" else "HYPER"
-        else -> "STABLE"
-    }
-
     private fun bodyLine(glance: BgGlance, predictedTime: PredictedTime?): String {
         val age = when {
             glance.signalLoss -> "Signal lost ${BgFormat.ageShort(glance.readingAgeMs)}"
@@ -89,4 +80,13 @@ class LiveNotificationPresenter(
         val conf = (t.resultantR.coerceIn(0.0, 1.0) * 100.0).roundToInt()
         return "Model clock ~%02d:%02d (%d%%)".format(h, m, conf)
     }
+}
+
+/** Fail-closed: warmup or no eligible forecast reads VOID, never STABLE. */
+internal fun statusToken(glance: BgGlance): String = when {
+    glance.warmup || glance.forecastUnavailable || !glance.forecastEligible -> "VOID"
+    glance.unsure -> "UNSURE"
+    glance.approaching != null ->
+        if (glance.approaching!!.kind == PredictiveCrossing.Kind.HYPO) "HYPO" else "HYPER"
+    else -> "STABLE"
 }

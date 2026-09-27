@@ -181,6 +181,59 @@ class BgGlanceComputerTest {
         assertTrue(g.forecastUnavailable)
     }
 
+    @Test fun `anchor past staleMin is ineligible though unstamped`() {
+        val state = InferenceState(predictions = listOf(prediction(falling).copy(anchorTsMs = now - 16 * 60_000L)))
+        val g = BgGlanceComputer.compute(GlanceReadings.create(listOf(reading(112))), state, thresholds, edges, lossMin = 20, staleMin = 15, nowMs = now, trend = null)
+        assertFalse(g.forecastEligible)
+        assertTrue(g.forecastUnavailable)
+        assertNull(g.approaching)
+        assertNull(g.urgent)
+        assertNull(g.fcEndMgdl)
+    }
+
+    @Test fun `stale reading withholds forecast and crossings`() {
+        val state = InferenceState(predictions = listOf(prediction(falling)))
+        val g = BgGlanceComputer.compute(GlanceReadings.create(listOf(reading(112, ageMs = 16 * 60_000L))), state, thresholds, edges, lossMin = 20, staleMin = 15, nowMs = now, trend = null)
+        assertTrue(g.stale)
+        assertFalse(g.forecastEligible)
+        assertTrue(g.forecastUnavailable)
+        assertFalse(g.predictedLowCrossing)
+        assertNull(g.approaching)
+        assertNull(g.urgent)
+        assertNull(g.fcEndMgdl)
+    }
+
+    private fun token(s: GlyStatus): String = when (s) {
+        is GlyStatus.Void -> "VOID"
+        GlyStatus.Stable -> "STABLE"
+        GlyStatus.Unsure -> "UNSURE"
+        is GlyStatus.Excursion -> s.kind.name
+    }
+
+    @Test fun `notification token equals the status verdict`() {
+        val clear = prediction(listOf(120.0, 125.0, 130.0))
+        fun agree(case: String, p: ModelPrediction, ageMs: Long? = 60_000L, warmup: Boolean = false, fanEdges: AlarmFanEdges? = edges) {
+            val state = InferenceState(
+                predictions = listOf(p),
+                warmup = if (warmup) WarmupProgress(measuredHours = 3.0, requiredHours = 24.0) else null,
+            )
+            val rows = listOfNotNull(ageMs?.let { reading(112, it) })
+            val g = BgGlanceComputer.compute(GlanceReadings.create(rows), state, thresholds, fanEdges, lossMin = 20, staleMin = 15, nowMs = now, trend = null)
+            val s = BgGlanceComputer.status(state, thresholds, fanEdges, now, g.readingAgeMs.takeIf { g.hasReading }, staleMin = 15)
+            assertEquals(case, token(s), statusToken(g))
+        }
+        agree("warmup", clear, warmup = true)
+        agree("no reading", clear, ageMs = null)
+        agree("reading 16 min", clear, ageMs = 16 * 60_000L)
+        agree("anchor 16 min", clear.copy(anchorTsMs = now - 16 * 60_000L))
+        agree("stamped stale", clear.copy(stale = true))
+        agree("rail pinned", clear.copy(status = ForecastStatus.RAIL_PINNED))
+        agree("no edges", clear, fanEdges = null)
+        agree("clear", clear)
+        agree("unsure", prediction(listOf(120.0, 125.0, 100.0), spread = 60.0))
+        agree("out", prediction(falling))
+    }
+
     @Test fun `degenerate forecast is ineligible - no predictive fields`() {
         val state = InferenceState(predictions = listOf(prediction(falling, status = ForecastStatus.NON_FINITE)))
         val g = BgGlanceComputer.compute(GlanceReadings.create(listOf(reading(112))), state, thresholds, edges, lossMin = 20, staleMin = 15, nowMs = now, trend = null)

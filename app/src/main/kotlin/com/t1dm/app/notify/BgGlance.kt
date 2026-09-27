@@ -23,7 +23,7 @@ data class BgGlance(
     val trend: GlanceTrend?,
     /** Forecast slope, drives the watch fc_trend; never drawn as an arrow. */
     val fcTrend: GlanceTrend,
-    /** §3.6-eligible — OK status, fresh anchor — and not in warmup. */
+    /** §3.6-eligible — OK status, fresh reading and anchor — and not in warmup. */
     val forecastEligible: Boolean,
     val forecastStatus: ForecastStatus?,
     /** Selected-model median at the horizon end. */
@@ -191,10 +191,13 @@ object BgGlanceComputer {
         val bg = latest.bgMgdl
         val ageMs = (nowMs - latest.rxWallMs).coerceAtLeast(0L)
         val band = bg?.let { thresholds.bandFor(it) }
+        val staleMs = staleMin * 60_000L
+        val stale = ageMs > staleMs
 
         val sel = state.selectedPrediction
         // §3.6-B/D, and a fan that holds the §6.1 edges.
-        val scan = sel?.takeIf { it.eligible }?.let { scanFan(it, edges, thresholds.lowMgdl, thresholds.highMgdl) }
+        val scan = sel?.takeIf { it.eligible && !stale && anchorFresh(it, nowMs, staleMs) }
+            ?.let { scanFan(it, edges, thresholds.lowMgdl, thresholds.highMgdl) }
         val eligible = scan != null
         val fcEnd = sel?.takeIf { eligible }?.medianBg?.lastOrNull()?.roundToInt()
         val horizon = sel?.horizonSteps ?: 0
@@ -203,7 +206,6 @@ object BgGlanceComputer {
         val predHigh = eligible && (0 until horizon).any { edge(sel!!, edges!!.hyperIdx, it) >= thresholds.highMgdl }
 
         val signalLoss = ageMs > lossMin * 60_000L
-        val stale = ageMs > staleMin * 60_000L
         val alarmActive = band == AlertBand.URGENT_LOW || band == AlertBand.URGENT_HIGH || signalLoss
 
         val unsure = scan is FanScan.Unsure
@@ -263,8 +265,7 @@ object BgGlanceComputer {
             return GlyStatus.Void(if (readingAgeMs == null) "No reading" else "Reading stale")
         }
         val p = state.selectedPrediction ?: return GlyStatus.Void("No forecast yet")
-        // `p.stale` is stamped inside a cycle; once readings stop, only the anchor's age shows it.
-        if (p.stale || nowMs - p.anchorTsMs > staleMs) return GlyStatus.Void("Anchor reading stale")
+        if (!anchorFresh(p, nowMs, staleMs)) return GlyStatus.Void("Anchor reading stale")
         if (p.status != ForecastStatus.OK) return GlyStatus.Void("Forecast degenerate (collapsed or rail-pinned)")
         thresholds ?: return GlyStatus.Void("No thresholds set")
         return when (val s = scanFan(p, edges, thresholds.lowMgdl, thresholds.highMgdl)) {
@@ -274,6 +275,10 @@ object BgGlanceComputer {
             is FanScan.Out -> GlyStatus.Excursion(s.kind, p.anchorTsMs + (s.step + 1L) * p.stepMs)
         }
     }
+
+    /** `p.stale` is stamped inside a cycle; once readings stop, only the anchor's age shows it. */
+    private fun anchorFresh(p: ModelPrediction, nowMs: Long, staleMs: Long): Boolean =
+        !p.stale && nowMs - p.anchorTsMs <= staleMs
 
     /** First step a §6.1 edge leaves [low, high); null if [edges] is absent or off the fan. */
     fun scanFan(sel: ModelPrediction, edges: AlarmFanEdges?, lowMgdl: Int, highMgdl: Int): FanScan? {
