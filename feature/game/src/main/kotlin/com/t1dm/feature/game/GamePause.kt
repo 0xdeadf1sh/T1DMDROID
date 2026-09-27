@@ -5,10 +5,7 @@ enum class GameHold {
     /** The screen is no longer RESUMED. */
     Background,
 
-    /** The opening animation is still running. */
-    Intro,
-
-    /** The exit confirmation, or the run's own terminal card. */
+    /** The exit confirmation. */
     Modal,
 }
 
