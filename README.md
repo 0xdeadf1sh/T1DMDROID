@@ -94,7 +94,7 @@ Restore merges: a record already present is kept, so importing the same file twi
 | `:cgm` | Passive AiDEX X advertisement scan, recognition, and the CGM-source registry |
 | `:inference` | The forecasting cycle: context build, backend dispatch, decode, degeneracy gating |
 | `:sensors` | Step counter, GPS track recording, and other phone sensors |
-| `:calc` | Advisory bolus/basal and statistics calculators |
+| `:calc` | Advisory bolus calculator: rolled forecast, dose grid, fail-closed rails |
 | `:alerts` | The deterministic, model-free alarm engine (out-of-range, loss-of-signal, device temperature) |
 | `:sync` | The durable outbox behind the one-way Nightscout bridge |
 | `:watch` | Encrypted BLE link to the optional ESP32-C3 watch |

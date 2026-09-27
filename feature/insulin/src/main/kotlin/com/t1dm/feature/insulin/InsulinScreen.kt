@@ -168,15 +168,6 @@ private fun DoseEntry(
             )
         }
 
-        if (kind == InsulinKind.BASAL) {
-            Text(
-                "Logs a one-off injection — schedule + basal-rate search in Settings → Basal",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
-                modifier = Modifier.padding(top = 8.dp),
-            )
-        }
-
         Button(
             onClick = {
                 haptics.perform(HapticEvent.Tap)
