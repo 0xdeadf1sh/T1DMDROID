@@ -98,7 +98,7 @@ interface SelectionStore {
     suspend fun save(id: String)
 }
 
-/** Read fresh per cycle: attach/detach take effect next tick. Adapter change drops history. */
+/** Read fresh per cycle: attach/detach take effect next tick. */
 fun interface LoraStore {
     suspend fun attached(modelId: String): LoraWeights?
 }

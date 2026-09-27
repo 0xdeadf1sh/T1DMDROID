@@ -118,7 +118,7 @@ class ModelStore(
     private fun resolveId(descriptorFile: File, obj: JSONObject): String =
         obj.optString("id").ifBlank { descriptorFile.name.removeSuffix(".descriptor.json").ifBlank { "model" } }
 
-    /** Every pair sharing modelId; pending/ staging dir is a subdir, the isFile filter skips it. */
+    /** Every pair sharing modelId, head file included. */
     fun delete(modelId: String): Boolean {
         val dir = ensureDir()
         val descriptors = dir.listFiles { f ->

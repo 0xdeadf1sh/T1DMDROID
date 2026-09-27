@@ -403,9 +403,6 @@ class InferenceController(
         val latencyMs: Double,
     )
 
-    /** Call whenever an artifact changes under a fixed id; else it inherits the prior verdict. */
-    fun evictHead(modelId: String) = heads.evict(modelId)
-
     fun headState(modelId: String): HeadCache.State? =
         loaded[modelId]?.bundle?.let { heads.stateOf(it) }
 
@@ -1160,9 +1157,6 @@ class InferenceController(
     private fun runningModels(): List<RunningModel> = loaded.map { (id, e) ->
         RunningModel(id, e.effectiveBackend, id == selectedId)
     }
-
-    /** .pte filenames, NOT model_id (can diverge for adb-pushed); sync coordinator keys on this. */
-    fun runningArtifactFileNames(): Set<String> = loaded.values.map { it.bundle.pte.name }.toSet()
 
     private fun recordLatency(id: String, ms: Double) {
         val q = latencySamples.getOrPut(id) { ArrayDeque() }
