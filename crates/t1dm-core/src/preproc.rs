@@ -1432,7 +1432,7 @@ fn time_of_day_resultant(probs: &[f64], bin_hours: f64) -> (f64, f64) {
     (hour, r)
 }
 
-/// time_logits flat (P,n_bins); reduces to ORIGIN patch, as T1DMAI's estimate_current_hour does.
+/// time_logits (M,n_bins) row-major, row per slot; reads row 0, the origin unless infill precedes.
 #[uniffi::export]
 pub fn decode_time(time_logits: Vec<f64>, n_bins: i32, bin_hours: f64) -> Result<PredictedTime, CoreError> {
     if n_bins <= 0 {
