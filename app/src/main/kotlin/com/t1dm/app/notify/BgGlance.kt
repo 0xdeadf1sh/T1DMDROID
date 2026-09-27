@@ -120,6 +120,15 @@ data class PredictiveCrossing(
     enum class Severity { WARNING, CRITICAL }
 }
 
+/** STABLE: §3.6-eligible, no predicted crossing. Every ineligible state is VOID, never STABLE. */
+sealed interface GlyStatus {
+    data object Stable : GlyStatus
+    data object Unsure : GlyStatus
+    /** [atMs]: wall time of the first forecast step out of range. */
+    data class Excursion(val kind: PredictiveCrossing.Kind, val atMs: Long) : GlyStatus
+    data class Void(val reason: String) : GlyStatus
+}
+
 sealed interface FanScan {
     data object Clear : FanScan
     data class Unsure(val step: Int) : FanScan
@@ -235,6 +244,35 @@ object BgGlanceComputer {
             urgent = urgent,
             summary = summarize(bg, trend, eligible, fcEnd, horizon, sel?.status, warmup),
         )
+    }
+
+    /** The badge the top bar, widget tile and watch outlook show; [readingAgeMs] null is none. */
+    fun status(
+        state: InferenceState,
+        thresholds: AlertThresholds?,
+        edges: AlarmFanEdges?,
+        nowMs: Long,
+        readingAgeMs: Long?,
+        staleMin: Int,
+    ): GlyStatus {
+        state.warmup?.let {
+            return GlyStatus.Void("Collecting context — %.1f / %.0f h BG".format(it.measuredHours, it.requiredHours))
+        }
+        val staleMs = staleMin * 60_000L
+        if (readingAgeMs == null || readingAgeMs > staleMs) {
+            return GlyStatus.Void(if (readingAgeMs == null) "No reading" else "Reading stale")
+        }
+        val p = state.selectedPrediction ?: return GlyStatus.Void("No forecast yet")
+        // `p.stale` is stamped inside a cycle; once readings stop, only the anchor's age shows it.
+        if (p.stale || nowMs - p.anchorTsMs > staleMs) return GlyStatus.Void("Anchor reading stale")
+        if (p.status != ForecastStatus.OK) return GlyStatus.Void("Forecast degenerate (collapsed or rail-pinned)")
+        thresholds ?: return GlyStatus.Void("No thresholds set")
+        return when (val s = scanFan(p, edges, thresholds.lowMgdl, thresholds.highMgdl)) {
+            null -> GlyStatus.Void("Alarm band unavailable")
+            FanScan.Clear -> GlyStatus.Stable
+            is FanScan.Unsure -> GlyStatus.Unsure
+            is FanScan.Out -> GlyStatus.Excursion(s.kind, p.anchorTsMs + (s.step + 1L) * p.stepMs)
+        }
     }
 
     /** First step a §6.1 edge leaves [low, high); null if [edges] is absent or off the fan. */

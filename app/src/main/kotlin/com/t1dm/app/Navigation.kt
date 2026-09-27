@@ -113,9 +113,7 @@ import com.t1dm.core.model.BandCalibrationOutcome
 import com.t1dm.core.model.BezierCurve
 import com.t1dm.core.model.CarTuning
 import com.t1dm.core.model.CgEga
-import com.t1dm.app.notify.FanScan
-import com.t1dm.app.notify.PredictiveCrossing
-import com.t1dm.core.model.AlarmFanEdges
+import com.t1dm.app.notify.GlyStatus
 import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.CgmSourceStatus
 import com.t1dm.core.model.DkaTimeline
@@ -466,7 +464,9 @@ private fun Breadcrumb(navController: NavHostController, container: AppContainer
     }
     val readingAgeMs = reading?.rxWallMs?.let { (nowMs - it).coerceAtLeast(0L) }
     val status = remember(inference, alarmCfg, readingAgeMs) {
-        glycemicStatusOf(inference, alarmCfg.thresholds, container.alarmFanEdges, nowMs, readingAgeMs)
+        BgGlanceComputer.status(
+            inference, alarmCfg.thresholds, container.alarmFanEdges, nowMs, readingAgeMs, STALE_MIN,
+        )
     }
     val animationsOn = LocalAnimationsEnabled.current
     val trailScroll = rememberScrollState()
@@ -518,7 +518,7 @@ private fun Breadcrumb(navController: NavHostController, container: AppContainer
                     )
                 }
             }
-            GlycemicStatusBadge(status)
+            GlycemicStatusBadge(status, status.text(nowMs))
             if (death) {
                 Text(
                     "☠",
@@ -573,60 +573,15 @@ private data class LogPage(val start: Int, val entries: List<LoggedEntry>, val h
 
 private val EMPTY_LOG_PAGE = LogPage(0, emptyList(), false)
 
-/** STABLE is a positive claim (§3.6-eligible forecast, no crossing); else VOID with reason. */
-private sealed interface GlyStatus {
-    val text: String
-    object Stable : GlyStatus { override val text = "STABLE" }
-    object Unsure : GlyStatus { override val text = "UNSURE" }
-    data class Excursion(val hyper: Boolean, val etaMin: Long) : GlyStatus {
-        override val text: String get() = (if (hyper) "HYPER" else "HYPO") + " in ${etaMin}M"
-    }
-    data class Void(val reason: String) : GlyStatus { override val text = "VOID" }
-}
-
-/** Fail-closed: any ineligibility yields VOID, never STABLE. */
-private fun glycemicStatusOf(
-    inf: InferenceState,
-    thr: com.t1dm.core.model.AlertThresholds?,
-    edges: AlarmFanEdges?,
-    nowMs: Long,
-    readingAgeMs: Long?,
-): GlyStatus {
-    inf.warmup?.let {
-        return GlyStatus.Void(
-            "Collecting context — %.1f / %.0f h BG".format(it.measuredHours, it.requiredHours),
-        )
-    }
-    // A forecast under a stale reading describes a world that has since stopped reporting.
-    if (readingAgeMs == null || readingAgeMs > STALE_MIN * 60_000L) {
-        return GlyStatus.Void(if (readingAgeMs == null) "No reading" else "Reading stale")
-    }
-    val p = inf.selectedPrediction
-        ?: return GlyStatus.Void("No forecast yet")
-    if (p.stale) {
-        return GlyStatus.Void("Anchor reading stale")
-    }
-    // p.stale is stamped inside a cycle; only the clock term keeps moving after the link drops.
-    if (nowMs - p.anchorTsMs > STALE_MIN * 60_000L) {
-        return GlyStatus.Void("Anchor reading stale")
-    }
-    if (p.status != com.t1dm.core.model.ForecastStatus.OK) {
-        return GlyStatus.Void("Forecast degenerate (collapsed or rail-pinned)")
-    }
-    thr ?: return GlyStatus.Void("No thresholds set")
-    return when (val s = BgGlanceComputer.scanFan(p, edges, thr.lowMgdl, thr.highMgdl)) {
-        null -> GlyStatus.Void("Alarm band unavailable")
-        FanScan.Clear -> GlyStatus.Stable
-        is FanScan.Unsure -> GlyStatus.Unsure
-        is FanScan.Out -> GlyStatus.Excursion(
-            hyper = s.kind == PredictiveCrossing.Kind.HYPER,
-            etaMin = ((p.anchorTsMs + (s.step + 1L) * p.stepMs - nowMs) / 60_000L).coerceAtLeast(0L),
-        )
-    }
+private fun GlyStatus.text(nowMs: Long): String = when (this) {
+    GlyStatus.Stable -> "STABLE"
+    GlyStatus.Unsure -> "UNSURE"
+    is GlyStatus.Excursion -> "${kind.name} in ${((atMs - nowMs) / 60_000L).coerceAtLeast(0L)}M"
+    is GlyStatus.Void -> "VOID"
 }
 
 @Composable
-private fun GlycemicStatusBadge(status: GlyStatus) {
+private fun GlycemicStatusBadge(status: GlyStatus, text: String) {
     val animationsOn = LocalAnimationsEnabled.current
     val ctx = LocalContext.current
     val color = when (status) {
@@ -664,7 +619,7 @@ private fun GlycemicStatusBadge(status: GlyStatus) {
         Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
     }
     Text(
-        status.text,
+        text,
         style = MaterialTheme.typography.titleSmall,
         fontWeight = FontWeight.Bold,
         // The colour keeps its own alpha; the layer multiplies it.

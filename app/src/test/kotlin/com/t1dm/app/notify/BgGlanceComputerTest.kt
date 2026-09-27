@@ -199,6 +199,29 @@ class BgGlanceComputerTest {
         assertEquals("collecting context", g.summary)
     }
 
+    private fun status(p: ModelPrediction, readingAgeMs: Long? = 60_000L) = BgGlanceComputer.status(
+        InferenceState(predictions = listOf(p)), thresholds, edges, now, readingAgeMs, staleMin = 15,
+    )
+
+    @Test fun `status names the first step out and when it falls`() {
+        assertEquals(GlyStatus.Stable, status(prediction(listOf(120.0, 125.0, 130.0))))
+        assertEquals(
+            "lower edge 65 at idx 3",
+            GlyStatus.Excursion(PredictiveCrossing.Kind.HYPO, now + 4 * 300_000L),
+            status(prediction(falling)),
+        )
+        assertEquals(GlyStatus.Unsure, status(prediction(listOf(120.0, 125.0, 100.0), spread = 60.0)))
+    }
+
+    @Test fun `status is VOID on a stale reading or anchor, never STABLE`() {
+        val clear = prediction(listOf(120.0, 125.0, 130.0))
+        assertTrue(status(clear, readingAgeMs = null) is GlyStatus.Void)
+        assertTrue(status(clear, readingAgeMs = 16 * 60_000L) is GlyStatus.Void)
+        assertTrue(status(clear.copy(anchorTsMs = now - 16 * 60_000L)) is GlyStatus.Void)
+        assertTrue(status(clear.copy(stale = true)) is GlyStatus.Void)
+        assertTrue(status(clear.copy(status = ForecastStatus.RAIL_PINNED)) is GlyStatus.Void)
+    }
+
     @Test fun `signal loss and stale flags track the reading age`() {
         val state = InferenceState()
         val g = BgGlanceComputer.compute(GlanceReadings.create(listOf(reading(112, ageMs = 25 * 60_000L))), state, thresholds, edges, lossMin = 20, staleMin = 15, nowMs = now, trend = null)

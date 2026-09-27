@@ -4,19 +4,17 @@ import android.content.Context
 import com.t1dm.app.T1dmApplication
 import com.t1dm.app.notify.BgGlance
 import com.t1dm.app.notify.BgGlanceComputer
-import com.t1dm.app.notify.FanScan
 import com.t1dm.app.notify.GlanceReadings
-import com.t1dm.app.notify.PredictiveCrossing
+import com.t1dm.app.notify.GlyStatus
 import com.t1dm.core.design.ThemeIds
 import com.t1dm.core.model.AlarmFanEdges
 import com.t1dm.core.model.AlertThresholds
-import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.InferenceState
 import com.t1dm.core.model.UnitSpace
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
-/** Mirrors Navigation.glycemicStatusOf (U1); VOID is any fail-closed ineligibility. */
+/** [GlyStatus] as the tile colours it; VOID is any fail-closed ineligibility. */
 internal enum class GlyKind { STABLE, UNSURE, EXCURSION, VOID }
 
 /** BG, trend and forecast share [BgGlanceComputer] with the notification and the watch. */
@@ -88,7 +86,8 @@ internal suspend fun currentWidgetSnapshot(context: Context): WidgetSnapshot {
         // Volatile holds coded defaults pre-refresh; persisted here as the tile's alarm geometry.
         if (!container.alarmConfigHydrated) runCatching { container.refreshAlarmConfig() }
         val cfg = container.alarmConfig
-        val (glyText, glyKind) = computeGlyStatus(state, cfg.thresholds, container.alarmFanEdges, nowMs)
+        val ageMs = latest?.let { (nowMs - it.rxWallMs).coerceAtLeast(0L) }
+        val (glyText, glyKind) = computeGlyStatus(state, cfg.thresholds, container.alarmFanEdges, nowMs, ageMs)
 
         val glance = BgGlanceComputer.compute(
             readings = readings,
@@ -123,27 +122,20 @@ internal suspend fun currentWidgetSnapshot(context: Context): WidgetSnapshot {
     }
 }
 
-/** Recomputed like Navigation.glycemicStatusOf so the tile agrees; fail-closed to VOID always. */
+/** The top bar's status, so tile and top bar agree by construction. */
 internal fun computeGlyStatus(
     state: InferenceState,
     thr: AlertThresholds?,
     edges: AlarmFanEdges?,
     nowMs: Long,
+    readingAgeMs: Long?,
 ): Pair<String, GlyKind> {
-    if (state.warmup != null) return "VOID" to GlyKind.VOID
-    val p = state.selectedPrediction ?: return "VOID" to GlyKind.VOID
-    if (p.stale) return "VOID" to GlyKind.VOID
-    if (p.status != ForecastStatus.OK) return "VOID" to GlyKind.VOID
-    thr ?: return "VOID" to GlyKind.VOID
-    return when (val s = BgGlanceComputer.scanFan(p, edges, thr.lowMgdl, thr.highMgdl)) {
-        null -> "VOID" to GlyKind.VOID
-        FanScan.Clear -> "STABLE" to GlyKind.STABLE
-        is FanScan.Unsure -> "UNSURE" to GlyKind.UNSURE
-        is FanScan.Out -> {
-            val etaMs = (p.anchorTsMs + (s.step + 1L) * p.stepMs) - nowMs
-            val word = if (s.kind == PredictiveCrossing.Kind.HYPO) "HYPO" else "HYPER"
-            "$word in ${formatEta(etaMs)}" to GlyKind.EXCURSION
-        }
+    val s = BgGlanceComputer.status(state, thr, edges, nowMs, readingAgeMs, STALE_MIN)
+    return when (s) {
+        is GlyStatus.Void -> "VOID" to GlyKind.VOID
+        GlyStatus.Stable -> "STABLE" to GlyKind.STABLE
+        GlyStatus.Unsure -> "UNSURE" to GlyKind.UNSURE
+        is GlyStatus.Excursion -> "${s.kind.name} in ${formatEta(s.atMs - nowMs)}" to GlyKind.EXCURSION
     }
 }
 
