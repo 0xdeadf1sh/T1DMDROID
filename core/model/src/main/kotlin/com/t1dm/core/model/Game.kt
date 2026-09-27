@@ -83,7 +83,7 @@ data class CarState(
     val throttleApplied: Float,
     val impactImpulse: Float,
     val roughness: Float,
-    /** No contact for 8 ticks (67ms); not the negation of contact; slow to arm, fast to clear. */
+    /** No contact for game.rs AIRBORNE_ARM_TICKS; not !contact; slow to arm, fast to clear. */
     val airborne: Boolean,
     /** Furthest x reached, from the start line. Monotone non-decreasing. */
     val distanceM: Float,
