@@ -114,6 +114,24 @@ class WatchHubTest {
         assertNull(stores.pairing(deskId).load())
     }
 
+    @Test fun `a refusal stays shown and pairs again in place`() = runBlocking<Unit> {
+        hub = newHub(config.copy(backoffMaxMs = 60_000))
+        hub.start(scope)
+        pairNext()
+        desk.sendControl(byteArrayOf(0x11, 0x01, 0x00))
+        awaitValue { device(deskId).takeIf { it.phase == WatchLinkPhase.ERROR } }
+        hub.pushReading(1_000L)
+        delay(200)
+        assertEquals(WatchLinkPhase.ERROR, device(deskId).phase)
+
+        hub.beginPairing()
+        val code = awaitValue { hub.pairing.value?.takeIf { it.phase == WatchLinkPhase.AWAIT_SAS } }
+        assertEquals(deskId, code.deviceId)
+        hub.confirmSas(null)
+        val again = awaitValue { hub.devices.value.singleOrNull()?.takeIf { it.phase == WatchLinkPhase.LIVE } }
+        assertEquals(deskId, again.deviceId)
+    }
+
     @Test fun `a peripheral that moved its service is reconnected`() = runBlocking<Unit> {
         hub.start(scope)
         pairNext()

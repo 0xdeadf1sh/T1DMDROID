@@ -311,7 +311,7 @@ class WatchLink internal constructor(
 
             val c = central
             if (c?.isReady != true) {
-                if (handshake == null) setPhase(WatchLinkPhase.RECONNECTING)
+                if (handshake == null && _state.value.phase != WatchLinkPhase.ERROR) setPhase(WatchLinkPhase.RECONNECTING)
                 return@withLock
             }
 
@@ -422,7 +422,7 @@ class WatchLink internal constructor(
         val c = centralProvider().also { central = it }
         // Undispatched: the hot flow is subscribed before connect, so no early CONTROL is dropped.
         eventJob = scope!!.launch(dispatchers.default, start = CoroutineStart.UNDISPATCHED) { collectEvents(c) }
-        setPhase(WatchLinkPhase.CONNECTING)
+        if (_state.value.phase != WatchLinkPhase.ERROR) setPhase(WatchLinkPhase.CONNECTING)
         val known = device
         val target = if (known == null) {
             WatchTarget.New(WatchGatt.ADV_NAME_PREFIX, pairExclude)
