@@ -49,7 +49,7 @@ data class CgmSourceDescriptor(
     val displayName: String,       // e.g. "AiDEX X 22222C74D9"
     val serialSuffix: String?,     // the name/serial suffix used to match adverts
     val warmupWindowMin: Int,      // seeded per vendor, tunable; drives WARMUP heuristic
-    val passiveOnly: Boolean,      // AiDEX X: false (connected GATT session is the sole read path)
+    val passiveOnly: Boolean,      // informational; nothing branches on it
     /** Removed from sensor lists by user; DISPLAY flag, readings stay in BG panel history. */
     val hidden: Boolean = false,
     /** Zero-based stable number, UNASSIGNED till storage mints one at insert; never positional. */
