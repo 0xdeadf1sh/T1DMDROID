@@ -49,9 +49,10 @@ fun CurveEditor(
     val pts: SnapshotStateList<BezierPoint> = remember(resetKey) { curve.points.toMutableStateList() }
     var dragIdx by remember(resetKey) { mutableIntStateOf(-1) }
     var sizePx by remember { mutableStateOf(Offset.Zero) }
+    val yScale = remember(resetKey) { CurveYScale() }
 
     val dur = curve.durationMin.coerceAtLeast(1.0)
-    fun yMax(): Double = (pts.maxOfOrNull { it.y } ?: 1.0).coerceAtLeast(1e-6) * 1.15
+    fun yMax(): Double = yScale.max(pts)
 
     fun emit() = onChange(BezierCurve(dur, pts.sortedBy { it.xMin }))
 
@@ -104,9 +105,13 @@ fun CurveEditor(
                 detectDragGestures(
                     onDragStart = { pos ->
                         dragIdx = nearest(pos)
-                        if (dragIdx >= 0) haptics.perform(HapticEvent.DragStart)
+                        if (dragIdx >= 0) {
+                            haptics.perform(HapticEvent.DragStart)
+                            yScale.freeze(pts)
+                        }
                     },
                     onDragEnd = {
+                        yScale.release()
                         if (dragIdx >= 0) {
                             haptics.perform(HapticEvent.DragEnd)
                             pts.sortBy { it.xMin }
@@ -114,7 +119,10 @@ fun CurveEditor(
                             emit()
                         }
                     },
-                    onDragCancel = { dragIdx = -1 },
+                    onDragCancel = {
+                        yScale.release()
+                        dragIdx = -1
+                    },
                     onDrag = { change, _ ->
                         val i = dragIdx
                         if (i in pts.indices) {
@@ -164,6 +172,23 @@ fun CurveEditor(
                 drawCircle(cs.surface, radius = 4f, center = c)
             }
         }
+    }
+}
+
+/** Frozen for a drag: a max that includes the dragged point feeds back into it and runs away. */
+internal class CurveYScale {
+    private var frozen = Double.NaN
+
+    fun max(pts: List<BezierPoint>): Double =
+        if (!frozen.isNaN()) frozen else (pts.maxOfOrNull { it.y } ?: 1.0).coerceAtLeast(1e-6) * 1.15
+
+    fun freeze(pts: List<BezierPoint>) {
+        frozen = Double.NaN
+        frozen = max(pts)
+    }
+
+    fun release() {
+        frozen = Double.NaN
     }
 }
 
