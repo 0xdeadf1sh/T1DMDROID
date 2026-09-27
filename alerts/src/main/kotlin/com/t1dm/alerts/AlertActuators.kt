@@ -77,7 +77,7 @@ object AlertChannels {
             .build()
 
         val warning = NotificationChannel(ids.warning, "Glucose alerts", NotificationManager.IMPORTANCE_DEFAULT).apply {
-            description = "Low/high, approaching, and lost-signal warnings"
+            description = "Low/high, weak-signal and lost-signal warnings"
             configureVibration(config.warningVibration)
             setSound(config.warningSound, if (config.warningSound != null) alarmAttrs else null)
         }
