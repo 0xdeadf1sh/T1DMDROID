@@ -4,7 +4,7 @@ import com.t1dm.core.model.BasalSchedule
 import com.t1dm.core.model.CurveEvent
 import com.t1dm.core.model.CurveKind
 
-/** Returned when its ACTION overlaps [fromMs,toMs); a dose before fromMs whose tail reaches in. */
+/** Events keyed on start time; callers pad fromMs by [ChannelBuilder.PAD_MS] to reach each tail. */
 interface DoseStore {
     suspend fun carbEvents(fromMs: Long, toMs: Long): List<CurveEvent>
 
@@ -204,7 +204,7 @@ class ChannelBuilder(
         .maxOrNull()
 
     companion object {
-        /** Minutes. Covers the longest action window, degludec 133 h. */
+        /** Minutes. Covers the longest action window, degludec 133 h; caps custom insulin types. */
         const val PAD_MIN: Long = 134 * 60
         val PAD_MS: Long = PAD_MIN * 60_000
     }

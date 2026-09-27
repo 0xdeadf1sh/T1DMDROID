@@ -5,6 +5,7 @@ import com.t1dm.core.model.InsulinFamily
 import com.t1dm.core.model.InsulinKind
 import com.t1dm.core.model.InsulinType
 import com.t1dm.data.T1dmRepository
+import com.t1dm.data.curve.ChannelBuilder
 import com.t1dm.data.curve.CurveEngine
 import com.t1dm.data.db.DoseKind
 import com.t1dm.data.db.InsulinTypeEntity
@@ -150,7 +151,7 @@ internal suspend fun pkCurveOf(engine: CurveEngine, type: InsulinType, units: Do
     }
 }
 
-/** SPEC/invariants.md §5: the curve sums to the dose. */
+/** Sums to the dose, SPEC/invariants.md §5, and fits the [ChannelBuilder.PAD_MS] lookback. */
 internal fun encodesDose(curve: List<Double>, units: Double): Boolean =
-    curve.isNotEmpty() && curve.all { it.isFinite() && it >= 0.0 } &&
-        abs(curve.sum() - units) <= 1e-9 * max(1.0, units)
+    curve.isNotEmpty() && curve.size * CurveEngine.STEP_MS <= ChannelBuilder.PAD_MS &&
+        curve.all { it.isFinite() && it >= 0.0 } && abs(curve.sum() - units) <= 1e-9 * max(1.0, units)

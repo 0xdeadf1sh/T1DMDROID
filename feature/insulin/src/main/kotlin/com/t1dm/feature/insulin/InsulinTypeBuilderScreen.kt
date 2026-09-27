@@ -45,6 +45,7 @@ import com.t1dm.ui.graph.CurvePreview
 fun InsulinTypeBuilderScreen(
     types: List<InsulinType>,
     onResolve: suspend (InsulinType, Double) -> List<Double>,
+    maxActionMin: Long,
     onSaveType: (InsulinType) -> Unit,
     onDeleteType: (Long) -> Unit,
     onLogDose: (InsulinType, Double) -> Unit = { _, _ -> },
@@ -110,7 +111,7 @@ fun InsulinTypeBuilderScreen(
         }
 
         HorizontalDivider()
-        CustomTypeBuilder(onResolve, onSaveType)
+        CustomTypeBuilder(onResolve, maxActionMin, onSaveType)
     }
 
     pending?.let { (type, p) ->
@@ -125,6 +126,7 @@ fun InsulinTypeBuilderScreen(
 @Composable
 private fun CustomTypeBuilder(
     onResolve: suspend (InsulinType, Double) -> List<Double>,
+    maxActionMin: Long,
     onSaveType: (InsulinType) -> Unit,
 ) {
     var name by remember { mutableStateOf("") }
@@ -199,14 +201,17 @@ private fun CustomTypeBuilder(
             )
         }
     }
-    val draft = durText.toDoubleOrNull()?.let { dur ->
+    val dur = durText.toDoubleOrNull()
+    val actionMin = if (drawCurve) curve.durationMin else dur
+    val tooLong = actionMin != null && actionMin > maxActionMin
+    val draft = if (dur == null || actionMin == null || tooLong) null else {
         val p1 = p1Text.toDoubleOrNull()
         val p2 = p2Text.toDoubleOrNull()
         InsulinType(
             id = 0L,
             name = "",
             kind = kind,
-            durationMin = if (drawCurve) curve.durationMin else dur,
+            durationMin = actionMin,
             k = if (!drawCurve && kind == InsulinKind.BOLUS) p1 else null,
             theta = if (!drawCurve && kind == InsulinKind.BOLUS) p2 else null,
             kaPerHour = if (!drawCurve && kind == InsulinKind.BASAL) p1 else null,
@@ -219,7 +224,13 @@ private fun CustomTypeBuilder(
         value = draft?.let { d -> d to runCatching { onResolve(d, 1.0) }.getOrDefault(emptyList()).isNotEmpty() }
     }
     val encodes = verdict?.takeIf { it.first == draft }?.second
-    if (!drawCurve && encodes == false) {
+    if (tooLong) {
+        Text(
+            "Max action ${maxActionMin / 60} h",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error,
+        )
+    } else if (!drawCurve && encodes == false) {
         Text(
             "Encodes no insulin — check duration and shape",
             style = MaterialTheme.typography.bodySmall,

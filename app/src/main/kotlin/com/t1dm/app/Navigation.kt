@@ -138,6 +138,7 @@ import com.t1dm.core.model.SensitivityEstimate
 import com.t1dm.core.model.TrackPoint
 import com.t1dm.core.model.UnitSpace
 import com.t1dm.data.T1dmRepository
+import com.t1dm.data.curve.ChannelBuilder
 import com.t1dm.data.curve.CurveEngine
 import com.t1dm.data.curve.ExerciseDisposal
 import com.t1dm.data.settings.GraphSettingsStore
@@ -1459,6 +1460,7 @@ private fun T1dmNavHost(
             InsulinTypeBuilderScreen(
                 types = types,
                 onResolve = { type, units -> container.insulinController.resolvePreview(type, units) },
+                maxActionMin = ChannelBuilder.PAD_MIN,
                 onSaveType = { type -> scope.launch { container.insulinController.saveCustomType(type) } },
                 onDeleteType = { id -> scope.launch { container.insulinController.deleteCustomType(id) } },
                 onLogDose = { type, units -> container.appScope.launch { onLogged(container.logTypedDose(type, units)) } },

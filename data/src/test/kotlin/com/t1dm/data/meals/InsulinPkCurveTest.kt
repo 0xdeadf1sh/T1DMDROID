@@ -63,4 +63,10 @@ class InsulinPkCurveTest {
         assertTrue(encodes(bolus(k = 2.0, theta = 30.0, durationMin = 300.0)))
         assertTrue(encodes(catalogBasal(InsulinController.BUILTIN_PRESETS.first { it.first == "Lantus" }.second)))
     }
+
+    @Test
+    fun `action past the dose lookback is refused, the longest builtin is not`() = runTest {
+        assertFalse(encodes(basal(ka = 0.1, ke = 0.01, durationMin = 336 * 60.0)))
+        assertTrue(encodes(catalogBasal(InsulinController.BUILTIN_PRESETS.first { it.first == "Tresiba" }.second)))
+    }
 }
