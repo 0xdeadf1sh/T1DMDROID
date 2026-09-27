@@ -95,16 +95,16 @@ per model in the `conformal_delta` table.
 - **The median does not move.** §8.4 pins it and the crate rejects a delta that
   does not, so the forecast line, and every dose scored off it, is identical
   before and after a fit.
-- **Classify raw, calibrate for display.** The alarm engine, the calculator
+- **Classify raw, calibrate what is drawn.** The alarm engine, the calculator
   rails, the excursion detectors and the realized-accuracy suite all read the
-  stored fan, which is the raw one. The correction reaches three **display** fans
-  and nothing else: the BG panel's forecast overlay, the hindsight sweep beside
-  it, and the exercise review's swept fan. All three, because a fan drawn raw
-  beside a calibrated one — on the same axes or a screen away — states a second
-  and narrower uncertainty with nothing saying why. The two swept fans apply the
-  correction in-sample, to rows it was fitted on, which §8.4's exchangeability
-  argument does not cover; accepted because nothing either sweep draws is read by
-  anything.
+  stored fan, which is the raw one. The correction reaches what is drawn and
+  nothing else: the BG panel's forecast overlay, the hindsight sweep beside it,
+  and the watch forecast record, flagged `CALIBRATED` (`SPEC/watch.md` §5.5). All
+  three, because a fan drawn raw beside a calibrated one — on the same axes or
+  another screen — states a second and narrower uncertainty with nothing saying
+  why. The sweep applies the correction in-sample, to rows it was fitted on,
+  which §8.4's exchangeability argument does not cover; accepted because nothing
+  the sweep draws is read by anything.
 - **A rolled band takes the correction off the whole panel.** The on-demand roll
   extends past the 2 h masked set the delta is fitted against, and §8.4 forbids
   broadcasting a delta to another protocol, so the roll's tail can never wear one.

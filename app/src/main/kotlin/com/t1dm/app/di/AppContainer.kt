@@ -899,7 +899,7 @@ class AppContainer(context: Context) {
         )
     }
 
-    // Band recalibration §8.4: median never moves; only [calibratedBands]'s BG overlay applies it.
+    // Band recalibration §8.4: median never moves; reaches BG overlay, hindsight sweep, watch fan.
 
     /** One fit at a time, process-wide. A second entry is refused, never queued. */
     private val bandCalibrationRunning = AtomicBoolean(false)
