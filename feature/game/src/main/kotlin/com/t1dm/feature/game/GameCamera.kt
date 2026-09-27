@@ -5,7 +5,7 @@ import kotlin.math.exp
 import kotlin.math.ln
 import kotlin.math.max
 
-/** World visible across the SHORT axis of a portrait phone, in metres. The car is ~2.8 m. */
+/** World visible across the SHORT axis of a portrait phone, in metres. */
 const val VISIBLE_WIDTH_M = 10f
 
 /** Fraction of the viewport the car sits at when at rest. */

@@ -173,7 +173,7 @@ class GameViewport {
     @Volatile
     var heightPx = 0f
 
-    /** World metres visible ACROSS the panel — the graph window, one metre per minute. */
+    /** World metres visible ACROSS the panel — the graph window, METRES_PER_MINUTE a minute. */
     @Volatile
     var visibleWidthM = VISIBLE_WIDTH_M
 
