@@ -187,6 +187,7 @@ import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import java.text.SimpleDateFormat
@@ -1145,27 +1146,46 @@ class AppContainer(context: Context) {
     suspend fun resetAllData() = withContext(dispatchers.io) {
         // Drop watch session BEFORE the wipe, so no late push re-persists key material/nonce.
         runCatching { watchHub.stopForReset() }
-        repository.wipeAllData(preserveCgmSources = true)
-        // A cut entry holds the erased rows; its undo would write them back.
-        bgEdits.clear()
-        _bgEditDepth.value = 0
-        runCatching { tokenStore.clearAll() }
-        com.t1dm.app.watch.WatchKeyCipher.deleteKey()
-        // The Room-backed StateFlows self-heal from the wiped store; these caches do not.
-        refreshAlarmConfig()
-        runCatching { clearSnooze() }
-        runCatching { clearBolusAdvice() }
-        runCatching { clearRoll() }
-        gmiSnapshot = null
-        // A plain field on the hot path: without this it stays true after its kv rows are gone.
-        runCatching { refreshNightscoutEnabled() }
-        // Derived patient data, memoized on an app-lifetime object.
-        runCatching { statsRepository.invalidateCache() }
-        // Monotonic and in-memory: it would survive and let the forecast run on the empty history.
-        runCatching { inferenceController.resetWarmupLatch() }
-        // The wipe is done, and nothing else would ever undo `stopForReset`.
-        runCatching { watchHub.resumeAfterReset() }
+        try {
+            repository.wipeAllData(preserveCgmSources = true)
+            // A cut entry holds the erased rows; its undo would write them back.
+            bgEdits.clear()
+            _bgEditDepth.value = 0
+            runCatching { tokenStore.clearAll() }
+            com.t1dm.app.watch.WatchKeyCipher.deleteKey()
+            // The Room-backed StateFlows self-heal from the wiped store; these caches do not.
+            refreshAlarmConfig()
+            runCatching { clearSnooze() }
+            runCatching { clearBolusAdvice() }
+            runCatching { clearRoll() }
+            gmiSnapshot = null
+            // A plain field on the hot path: else it stays true after its kv rows are gone.
+            runCatching { refreshNightscoutEnabled() }
+            // Derived patient data, memoized on an app-lifetime object.
+            runCatching { statsRepository.invalidateCache() }
+            // Monotonic, in-memory: else the forecast would run on the empty history.
+            runCatching { inferenceController.resetWarmupLatch() }
+        } finally {
+            // Nothing else undoes `stopForReset`; a failed or cancelled wipe must still resume.
+            withContext(NonCancellable) { runCatching { watchHub.resumeAfterReset() } }
+        }
         reevaluateInferenceNow()
+    }
+
+    private val _resetting = MutableStateFlow(false)
+    val resetting: StateFlow<Boolean> = _resetting.asStateFlow()
+
+    /** App scope, not the screen's: leaving mid-wipe must not cancel it. */
+    fun eraseAllAndRestart() {
+        if (!_resetting.compareAndSet(false, true)) return
+        appScope.launch(dispatchers.main) {
+            try {
+                resetAllData()
+                restartApp()
+            } finally {
+                _resetting.value = false
+            }
+        }
     }
 
     /** Fresh Activity task WITHOUT killing the process; FGS and GATT session survive. */

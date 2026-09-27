@@ -1880,20 +1880,11 @@ private fun T1dmNavHost(
             )
         }
         composable("settings/data") {
-            val scope = rememberCoroutineScope()
-            var resetting by remember { mutableStateOf(false) }
+            val resetting by container.resetting.collectAsState()
             DataSettingsScreen(
                 resetting = resetting,
                 onOpenBackup = { navController.navigate("backup") { launchSingleTop = true } },
-                onReset = {
-                    if (!resetting) {
-                        resetting = true
-                        scope.launch {
-                            container.resetAllData()
-                            container.restartApp() // in-place relaunch; keeps sensor connected
-                        }
-                    }
-                },
+                onReset = container::eraseAllAndRestart,
             )
         }
         composable("backup") {
