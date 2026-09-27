@@ -34,6 +34,7 @@ import com.t1dm.core.design.CurveSparkline
 import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.IobCobLine
 import com.t1dm.core.design.PendingLog
+import com.t1dm.core.design.decimalFieldText
 import com.t1dm.core.design.fadingEdges
 import com.t1dm.core.design.rememberHapticDetent
 import com.t1dm.core.design.rememberT1dmHaptics
@@ -201,7 +202,7 @@ private fun UnitsField(value: String, onChange: (String) -> Unit) {
     Column(Modifier.fillMaxWidth()) {
         OutlinedTextField(
             value = value,
-            onValueChange = { onChange(it.filter { c -> c.isDigit() || c == '.' }.take(MAX_UNITS_CHARS)) },
+            onValueChange = { onChange(decimalFieldText(it).take(MAX_UNITS_CHARS)) },
             label = { Text("Units (U)") },
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
             singleLine = true,

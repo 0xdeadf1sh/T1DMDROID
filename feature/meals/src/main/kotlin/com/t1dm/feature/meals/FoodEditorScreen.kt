@@ -28,6 +28,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.HapticEvent
+import com.t1dm.core.design.decimalFieldText
 import com.t1dm.core.design.fadingEdges
 import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.design.verticalScrollbar
@@ -79,7 +80,7 @@ fun FoodEditorScreen(
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedTextField(
                 value = carbsText,
-                onValueChange = { carbsText = it.filter { c -> c.isDigit() || c == '.' } },
+                onValueChange = { carbsText = decimalFieldText(it) },
                 label = { Text("Carbs / 100 g") },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                 singleLine = true, modifier = Modifier.weight(1f),

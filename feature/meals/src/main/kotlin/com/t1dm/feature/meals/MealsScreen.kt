@@ -34,6 +34,7 @@ import com.t1dm.core.design.CurveSparkline
 import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.IobCobLine
 import com.t1dm.core.design.PendingLog
+import com.t1dm.core.design.decimalFieldText
 import com.t1dm.core.design.fadingEdges
 import com.t1dm.core.design.rememberHapticDetent
 import com.t1dm.core.design.rememberT1dmHaptics
@@ -82,7 +83,7 @@ fun MealsScreen(
 
         OutlinedTextField(
             value = gramsText,
-            onValueChange = { gramsText = it.filter { c -> c.isDigit() || c == '.' } },
+            onValueChange = { gramsText = decimalFieldText(it) },
             label = { Text("Carbs (g)") },
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
             singleLine = true,

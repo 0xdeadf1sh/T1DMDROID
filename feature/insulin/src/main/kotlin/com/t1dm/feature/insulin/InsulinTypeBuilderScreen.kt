@@ -31,6 +31,7 @@ import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.ConfirmLogDialog
 import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.PendingLog
+import com.t1dm.core.design.decimalFieldText
 import com.t1dm.core.design.fadingEdges
 import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.design.verticalScrollbar
@@ -80,7 +81,7 @@ fun InsulinTypeBuilderScreen(
             )
             OutlinedTextField(
                 value = unitsText,
-                onValueChange = { unitsText = it.filter { c -> c.isDigit() || c == '.' } },
+                onValueChange = { unitsText = decimalFieldText(it) },
                 label = { Text("Trial dose (U)") },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                 singleLine = true,
@@ -179,14 +180,14 @@ private fun CustomTypeBuilder(onSaveType: (InsulinType) -> Unit) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedTextField(
                 value = p1Text,
-                onValueChange = { p1Text = it.filter { c -> c.isDigit() || c == '.' } },
+                onValueChange = { p1Text = decimalFieldText(it) },
                 label = { Text(if (kind == InsulinKind.BOLUS) "shape k" else "ka /h") },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                 singleLine = true, modifier = Modifier.weight(1f),
             )
             OutlinedTextField(
                 value = p2Text,
-                onValueChange = { p2Text = it.filter { c -> c.isDigit() || c == '.' } },
+                onValueChange = { p2Text = decimalFieldText(it) },
                 label = { Text(if (kind == InsulinKind.BOLUS) "scale θ" else "ke /h") },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                 singleLine = true, modifier = Modifier.weight(1f),

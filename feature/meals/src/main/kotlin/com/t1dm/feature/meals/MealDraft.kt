@@ -35,6 +35,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.HapticEvent
+import com.t1dm.core.design.decimalFieldText
 import com.t1dm.core.design.hapticClickable
 import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.design.verticalScrollbar
@@ -81,7 +82,7 @@ internal class MealDraft(initial: List<MealComponent>) {
     }
 
     fun editRegramText(text: String) {
-        regramText = text.filter { it.isDigit() || it == '.' }
+        regramText = decimalFieldText(text)
     }
 
     /** Committed on the button, never per keystroke: re-resolve keys on the list by value. */
@@ -291,7 +292,7 @@ internal fun FoodSearch(
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedTextField(
                 value = gramsText,
-                onValueChange = { gramsText = it.filter { c -> c.isDigit() || c == '.' } },
+                onValueChange = { gramsText = decimalFieldText(it) },
                 label = { Text("Portion (g)") },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                 singleLine = true,
