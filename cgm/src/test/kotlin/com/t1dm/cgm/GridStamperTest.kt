@@ -21,6 +21,9 @@ class GridStamperTest {
         // The half-grid is 150 s.
         assertEquals(base + 300_000, gs.snap(base + 160_000))
         assertEquals(base, gs.snap(base + 120_000))
+        // SPEC/invariants.md §1: a tie goes to the later slot.
+        assertEquals(base + 300_000, gs.snap(base + 150_000))
+        assertEquals(base, gs.snap(base + 149_999))
     }
 
     @Test
